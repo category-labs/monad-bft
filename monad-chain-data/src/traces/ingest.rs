@@ -13,181 +13,64 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::{BTreeMap, BTreeSet};
-
 use alloy_primitives::U256;
 
-use super::{types::StoredTrace, BlockBlobHeader};
+use super::types::{selector_from_input, StoredTrace};
 use crate::{
     engine::{
-        bitmap::{
-            encode_grouped_bitmap_fragments, sharded_stream_id, touched_streams_by_page,
-            BitmapFragmentWrite,
-        },
-        digest::{ArtifactChecksum, RowDigest},
-        row_codec::RowCodec,
+        bitmap::{IndexKind, StreamKey},
+        digest::ChainDigest,
+        row_codec::{encode_block_rows, RowCodec},
     },
     error::{MonadChainDataError, Result},
-    family::{CallKind, FinalizedBlock, IngestTrace},
-    primitives::state::{FamilyWindowRecord, TraceId},
+    ingest_types::{CallKind, IngestTrace},
+    primitives::records::BlockBlobHeader,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TraceIngestPlan {
-    pub trace_window: FamilyWindowRecord,
-    pub block_trace_header: BlockBlobHeader,
-    pub block_trace_blob: Vec<u8>,
-    pub bitmap_fragments: Vec<BitmapFragmentWrite>,
-    pub touched_bitmap_streams_by_page: BTreeMap<u64, BTreeSet<String>>,
-    /// Checksum over this block's uncompressed trace row payloads, in order.
-    /// Fed into the per-block artifact digest for standby ingest verification.
-    pub rows_digest: ArtifactChecksum,
-    pub written_traces: usize,
-}
-
-impl TraceIngestPlan {
-    /// Derives the per-block trace artifacts and index fragments for one
-    /// finalized block. The caller is responsible for flattening the
-    /// per-tx `Vec<Vec<CallFrame>>` into a single DFS-ordered
-    /// `Vec<IngestTrace>` and assigning `trace_address` per frame; this
-    /// builder only consumes the flattened slice.
-    pub fn build(
-        block: &FinalizedBlock,
-        first_trace_id: TraceId,
-        codec: &RowCodec,
-    ) -> Result<Self> {
-        let trace_count = u32::try_from(block.traces.len())
-            .map_err(|_| MonadChainDataError::Decode("trace count overflow"))?;
-
-        let (block_trace_header, block_trace_blob, rows_digest) =
-            encode_block_traces(&block.traces, codec)?;
-        let bitmap_fragments = collect_bitmap_fragments(&block.traces, first_trace_id)?;
-        let touched_bitmap_streams_by_page = touched_streams_by_page(&bitmap_fragments)?;
-        let trace_window = FamilyWindowRecord {
-            first_primary_id: first_trace_id.into(),
-            count: trace_count,
-        };
-
-        Ok(Self {
-            trace_window,
-            block_trace_header,
-            block_trace_blob,
-            bitmap_fragments,
-            touched_bitmap_streams_by_page,
-            rows_digest,
-            written_traces: block.traces.len(),
-        })
-    }
-}
-
+/// Compresses a block's trace rows into the framed per-family blob. Frames
+/// must already be DFS-flattened with `trace_address` assigned.
 pub(crate) fn encode_block_traces(
     traces: &[IngestTrace],
     codec: &RowCodec,
-) -> Result<(BlockBlobHeader, Vec<u8>, ArtifactChecksum)> {
-    let mut offsets = Vec::with_capacity(traces.len() + 1);
-    let mut blob = Vec::new();
-    let mut rows_digest = RowDigest::new();
-    let mut compressor = codec.block_compressor()?;
-
-    for trace in traces.iter() {
-        offsets.push(
-            u32::try_from(blob.len())
-                .map_err(|_| MonadChainDataError::Decode("block trace blob too large"))?,
-        );
-        let stored = StoredTrace::from(trace);
-        let raw = stored.encode();
-        // Fold the uncompressed payload before framing so the artifact
-        // checksum is independent of the zstd codec/version.
-        rows_digest.row(&raw);
-        compressor.compress_row_into(&raw, &mut blob)?;
-    }
-
-    offsets.push(
-        u32::try_from(blob.len())
-            .map_err(|_| MonadChainDataError::Decode("block trace blob too large"))?,
-    );
-
-    Ok((
-        BlockBlobHeader {
-            offsets,
-            dict_version: codec.version(),
-            base_offset: 0,
-            physical_key: Vec::new(),
-            physical_base_offset: 0,
-        },
-        blob,
-        rows_digest.finish(),
-    ))
+) -> Result<(BlockBlobHeader, Vec<u8>, ChainDigest)> {
+    encode_block_rows(traces, codec, "block trace blob too large", |trace| {
+        StoredTrace::from(trace).encode()
+    })
 }
 
-fn collect_bitmap_fragments(
-    traces: &[IngestTrace],
-    first_trace_id: TraceId,
-) -> Result<Vec<BitmapFragmentWrite>> {
-    let mut stream_values = Vec::new();
-
-    for (ordinal, trace) in traces.iter().enumerate() {
-        let ordinal = u64::try_from(ordinal)
-            .map_err(|_| MonadChainDataError::Decode("trace ordinal overflow"))?;
-        let trace_id = first_trace_id.checked_add(ordinal)?;
-        stream_values.extend(stream_entries_for_trace(trace, trace_id));
-    }
-
-    encode_grouped_bitmap_fragments(stream_values)
-}
-
-/// Expands one frame into the indexed stream entries written at ingest.
-/// `to` and `selector` streams are skipped when the field is absent.
-/// `top_level` is emitted only for the root frame of each tx.
-/// `has_transfer` is emitted only when the transfer predicate holds.
-/// Shared with the new ingest engine (`ingest_core::accumulate_family`).
-pub(crate) fn stream_entries_for_trace(
-    trace: &IngestTrace,
-    global_trace_id: TraceId,
-) -> Vec<(String, u32)> {
-    let shard = global_trace_id.shard();
-    let local = global_trace_id.local();
-
+/// Expands one frame into the indexed streams written at ingest:
+/// `to`/`selector` skipped when absent, `top_level` only for root frames,
+/// `has_transfer` only when the transfer predicate holds.
+pub(crate) fn stream_entries_for_trace(trace: &IngestTrace) -> Vec<StreamKey> {
     let mut entries = Vec::with_capacity(5);
-    entries.push((
-        sharded_stream_id("from", trace.from.as_slice(), shard),
-        local,
-    ));
+    entries.push(StreamKey::new(IndexKind::From, trace.from.as_slice()));
 
     if let Some(to) = trace.to {
-        entries.push((sharded_stream_id("to", to.as_slice(), shard), local));
+        entries.push(StreamKey::new(IndexKind::To, to.as_slice()));
     }
 
-    if trace.input.len() >= 4 {
-        entries.push((
-            sharded_stream_id("selector", &trace.input[..4], shard),
-            local,
-        ));
+    if let Some(selector) = selector_from_input(&trace.input) {
+        entries.push(StreamKey::new(IndexKind::Selector, &selector));
     }
 
     if trace.trace_address.is_empty() {
-        entries.push((sharded_stream_id("top_level", &[], shard), local));
+        entries.push(StreamKey::new(IndexKind::TopLevel, &[]));
     }
 
     if is_transfer_frame(trace) {
-        entries.push((sharded_stream_id("has_transfer", &[], shard), local));
+        entries.push(StreamKey::new(IndexKind::HasTransfer, &[]));
     }
 
     entries
 }
 
-/// Native-transfer predicate. A frame qualifies for the `has_transfer`
-/// indexed clause when:
-/// - The call kind moves value (Call/CallCode/Create/Create2/SelfDestruct;
-///   DelegateCall and StaticCall never move value, so they are excluded
-///   even when their `value` field is set on the parent).
-/// - The transferred value is strictly positive.
-/// - The frame itself succeeded (`status == 0`, EVMC_SUCCESS).
-/// - The top-level tx that contains the frame committed (`tx_status`).
-///
-/// Both status checks are required: a successful sub-call inside a
-/// reverted parent tx keeps `frame.status == 0` because the tracer does
-/// not rewrite descendants when the parent reverts.
+/// THE definition of the `has_transfer` index bit: every trace frame this
+/// predicate accepts gets the bit at ingest, and the transfers view is
+/// exactly the frames carrying it (no read-side mirror exists). A frame
+/// transfers value iff the call kind moves value (DelegateCall/StaticCall
+/// never do), value > 0, the frame succeeded (`status == 0`), and the
+/// containing tx committed. Both status checks are required: the tracer
+/// does not rewrite descendant statuses when a parent reverts.
 pub fn is_transfer_frame(trace: &IngestTrace) -> bool {
     let kind_moves_value = matches!(
         trace.typ,
@@ -210,11 +93,9 @@ pub fn compute_trace_addresses<I>(frames: I) -> Result<Vec<Vec<u32>>>
 where
     I: IntoIterator<Item = u32>,
 {
-    // `cursor[d]` is the path component chosen at depth d so far; its
-    // length always equals the current depth (0 means we're at root).
+    // Path components so far; `cursor.len()` == current depth.
     let mut cursor: Vec<u32> = Vec::new();
-    // `next_child_slot[d]` is the next sibling index to assign at depth
-    // `d + 1`. Length grows monotonically with the maximum observed depth.
+    // `next_child_slot[d]` is the next sibling index to assign at depth d + 1.
     let mut next_child_slot: Vec<u32> = Vec::new();
     let mut out: Vec<Vec<u32>> = Vec::new();
     let mut seen_root = false;
@@ -222,35 +103,25 @@ where
     for depth in frames {
         let d = depth as usize;
         if d == 0 {
-            // New root frame. Reset all per-tx state.
             cursor.clear();
             next_child_slot.clear();
             out.push(Vec::new());
             seen_root = true;
         } else {
             if !seen_root {
-                return Err(MonadChainDataError::InvalidRequest(
+                return Err(MonadChainDataError::InvalidBlock(
                     "trace_address: first frame must have depth 0",
                 ));
             }
             if d > cursor.len() + 1 {
-                return Err(MonadChainDataError::InvalidRequest(
+                return Err(MonadChainDataError::InvalidBlock(
                     "trace_address: depth skipped a level",
                 ));
             }
-            // Pop sibling counters for any depths deeper than the parent.
-            // Walking from a deep frame back up to a shallower one means
-            // those subtrees are closed: the next frame at depth d is a
-            // sibling at depth d, not a continuation of a deeper line.
+            // Returning to a shallower depth closes deeper subtrees: drop
+            // their path components and sibling counters.
             cursor.truncate(d - 1);
-            // Ensure the sibling-counter slot for this depth exists.
-            if next_child_slot.len() < d {
-                next_child_slot.resize(d, 0);
-            }
-            // We're about to assign a child at depth d under the current
-            // parent. Drop any sibling counters deeper than d-1; those
-            // belonged to a subtree that just closed.
-            next_child_slot.truncate(d);
+            next_child_slot.resize(d, 0);
             let slot_idx = d - 1;
             let slot = next_child_slot[slot_idx];
             next_child_slot[slot_idx] = slot + 1;
@@ -268,13 +139,7 @@ mod tests {
 
     #[test]
     fn trace_address_simple_tree() {
-        // Tree:
-        //   root  (depth 0)        []
-        //     A   (depth 1)        [0]
-        //       A1 (depth 2)       [0, 0]
-        //       A2 (depth 2)       [0, 1]
-        //     B   (depth 1)        [1]
-        //       B1 (depth 2)       [1, 0]
+        // root -> {A -> {A1, A2}, B -> B1}
         let depths = [0u32, 1, 2, 2, 1, 2];
         let addresses = compute_trace_addresses(depths).expect("compute");
         assert_eq!(
@@ -315,12 +180,12 @@ mod tests {
     #[test]
     fn trace_address_rejects_orphan_depth() {
         let err = compute_trace_addresses([1u32]).unwrap_err();
-        assert!(matches!(err, MonadChainDataError::InvalidRequest(_)));
+        assert!(matches!(err, MonadChainDataError::InvalidBlock(_)));
     }
 
     #[test]
     fn trace_address_rejects_depth_jump() {
         let err = compute_trace_addresses([0u32, 2]).unwrap_err();
-        assert!(matches!(err, MonadChainDataError::InvalidRequest(_)));
+        assert!(matches!(err, MonadChainDataError::InvalidBlock(_)));
     }
 }

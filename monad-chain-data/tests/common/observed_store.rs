@@ -13,16 +13,15 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! Shared meta/blob store proxies used by cache and session tests. Each test
-//! file used to define its own near-identical CountingMeta / FailingMeta /
-//! TimingMeta variants; this module folds them into one observable store
-//! whose behavior the caller dials in via [`ObserveMode`].
+//! Observable in-memory meta/blob store proxies: counting, failure injection, delays.
 
 #![allow(dead_code)]
 
 use std::{
+    collections::HashMap,
+    future::Future,
     sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex,
     },
     time::{Duration, Instant},
@@ -33,7 +32,7 @@ use monad_chain_data::{
     error::{MonadChainDataError, Result},
     store::{
         BlobStore, BlobTableId, BlobWriteOp, InMemoryBlobStore, InMemoryMetaStore, MetaStore,
-        MetaWriteOp, Page, ScannableTableId, TableId,
+        MetaWriteOp, ScannableTableId, TableId,
     },
 };
 
@@ -41,16 +40,25 @@ use monad_chain_data::{
 pub struct OpCounters {
     pub get: AtomicUsize,
     pub scan_get: AtomicUsize,
-    pub scan_list: AtomicUsize,
+    pub scan_keys: AtomicUsize,
+    get_by_table: Mutex<HashMap<TableId, usize>>,
+}
+
+/// Point-in-time copy of the [`OpCounters`] tallies (all counters monotone).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct CountersSnapshot {
+    pub get: usize,
+    pub scan_get: usize,
+    pub scan_keys: usize,
 }
 
 impl OpCounters {
-    pub fn snapshot(&self) -> (usize, usize, usize) {
-        (
-            self.get.load(Ordering::Relaxed),
-            self.scan_get.load(Ordering::Relaxed),
-            self.scan_list.load(Ordering::Relaxed),
-        )
+    pub fn snapshot(&self) -> CountersSnapshot {
+        CountersSnapshot {
+            get: self.get.load(Ordering::Relaxed),
+            scan_get: self.scan_get.load(Ordering::Relaxed),
+            scan_keys: self.scan_keys.load(Ordering::Relaxed),
+        }
     }
 }
 
@@ -60,17 +68,47 @@ pub struct OpTimings {
     pub apply_finished_at: Mutex<Option<Instant>>,
 }
 
+impl OpTimings {
+    /// Runs `fut` with the observation choreography: record start (if
+    /// `record`), sleep `delay`, await `fut`, record finish.
+    async fn observe<T>(&self, record: bool, delay: Duration, fut: impl Future<Output = T>) -> T {
+        if record {
+            *self.apply_started_at.lock().unwrap() = Some(Instant::now());
+        }
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
+        }
+        let r = fut.await;
+        if record {
+            *self.apply_finished_at.lock().unwrap() = Some(Instant::now());
+        }
+        r
+    }
+
+    /// The recorded `apply_writes` interval; panics if none was recorded.
+    pub fn window(&self) -> (Instant, Instant) {
+        (
+            self.apply_started_at.lock().unwrap().expect("apply ran"),
+            self.apply_finished_at
+                .lock()
+                .unwrap()
+                .expect("apply finished"),
+        )
+    }
+}
+
 #[derive(Default)]
 pub struct ObserveMode {
     pub count_reads: bool,
-    pub fail_next_apply: AtomicUsize,
+    pub count_gets_by_table: AtomicBool,
+    pub fail_next_apply: AtomicBool,
     pub apply_delay: Duration,
     pub record_apply_timings: bool,
 }
 
 impl ObserveMode {
     pub fn fail_apply_writes_once(&self) {
-        self.fail_next_apply.store(1, Ordering::Relaxed);
+        self.fail_next_apply.store(true, Ordering::Relaxed);
     }
 }
 
@@ -83,37 +121,63 @@ pub struct ObservedMetaStore {
 }
 
 impl ObservedMetaStore {
-    pub fn new() -> Self {
+    fn build(inner: InMemoryMetaStore, mode: ObserveMode) -> Self {
         Self {
-            inner: InMemoryMetaStore::default(),
-            mode: Arc::new(ObserveMode::default()),
-            counters: Arc::new(OpCounters::default()),
-            timings: Arc::new(OpTimings::default()),
-        }
-    }
-
-    pub fn with_mode(mode: ObserveMode) -> Self {
-        Self {
-            inner: InMemoryMetaStore::default(),
+            inner,
             mode: Arc::new(mode),
             counters: Arc::new(OpCounters::default()),
             timings: Arc::new(OpTimings::default()),
         }
     }
 
+    pub fn new() -> Self {
+        Self::build(InMemoryMetaStore::default(), ObserveMode::default())
+    }
+
     pub fn counting() -> Self {
-        Self::with_mode(ObserveMode {
-            count_reads: true,
-            ..ObserveMode::default()
-        })
+        Self::build(
+            InMemoryMetaStore::default(),
+            ObserveMode {
+                count_reads: true,
+                ..ObserveMode::default()
+            },
+        )
     }
 
     pub fn timed(delay: Duration) -> Self {
-        Self::with_mode(ObserveMode {
-            apply_delay: delay,
-            record_apply_timings: true,
-            ..ObserveMode::default()
-        })
+        Self::build(
+            InMemoryMetaStore::default(),
+            ObserveMode {
+                apply_delay: delay,
+                record_apply_timings: true,
+                ..ObserveMode::default()
+            },
+        )
+    }
+
+    /// Wraps an already-populated store; the in-memory backing is clone-shared,
+    /// so reads observe everything the original (or the engine) wrote.
+    pub fn over(inner: InMemoryMetaStore) -> Self {
+        Self::build(inner, ObserveMode::default())
+    }
+
+    /// Clears the per-table `get` tallies and starts counting. With the
+    /// relevant cache disabled each page load issues exactly one `get` on its
+    /// table, so a table's tally is a faithful per-fetch counter.
+    pub fn start_counting(&self) {
+        self.counters.get_by_table.lock().unwrap().clear();
+        self.mode.count_gets_by_table.store(true, Ordering::SeqCst);
+    }
+
+    /// `get` calls observed on `table` since [`Self::start_counting`].
+    pub fn get_calls(&self, table: TableId) -> usize {
+        self.counters
+            .get_by_table
+            .lock()
+            .unwrap()
+            .get(&table)
+            .copied()
+            .unwrap_or(0)
     }
 }
 
@@ -121,6 +185,15 @@ impl MetaStore for ObservedMetaStore {
     async fn get(&self, table: TableId, key: &[u8]) -> Result<Option<Bytes>> {
         if self.mode.count_reads {
             self.counters.get.fetch_add(1, Ordering::Relaxed);
+        }
+        if self.mode.count_gets_by_table.load(Ordering::SeqCst) {
+            *self
+                .counters
+                .get_by_table
+                .lock()
+                .unwrap()
+                .entry(table)
+                .or_insert(0) += 1;
         }
         self.inner.get(table, key).await
     }
@@ -153,39 +226,26 @@ impl MetaStore for ObservedMetaStore {
             .await
     }
 
-    async fn scan_list(
-        &self,
-        table: ScannableTableId,
-        partition: &[u8],
-        prefix: &[u8],
-        cursor: Option<Vec<u8>>,
-        limit: usize,
-    ) -> Result<Page> {
+    async fn scan_keys(&self, table: ScannableTableId, partition: &[u8]) -> Result<Vec<Vec<u8>>> {
         if self.mode.count_reads {
-            self.counters.scan_list.fetch_add(1, Ordering::Relaxed);
+            self.counters.scan_keys.fetch_add(1, Ordering::Relaxed);
         }
-        self.inner
-            .scan_list(table, partition, prefix, cursor, limit)
-            .await
+        self.inner.scan_keys(table, partition).await
     }
 
     async fn apply_writes(&self, writes: Vec<MetaWriteOp>) -> Result<()> {
-        if self.mode.fail_next_apply.swap(0, Ordering::Relaxed) > 0 {
+        if self.mode.fail_next_apply.swap(false, Ordering::Relaxed) {
             return Err(MonadChainDataError::Backend(
                 "ObservedMetaStore: injected meta failure".into(),
             ));
         }
-        if self.mode.record_apply_timings {
-            *self.timings.apply_started_at.lock().unwrap() = Some(Instant::now());
-        }
-        if !self.mode.apply_delay.is_zero() {
-            tokio::time::sleep(self.mode.apply_delay).await;
-        }
-        let r = self.inner.apply_writes(writes).await;
-        if self.mode.record_apply_timings {
-            *self.timings.apply_finished_at.lock().unwrap() = Some(Instant::now());
-        }
-        r
+        self.timings
+            .observe(
+                self.mode.record_apply_timings,
+                self.mode.apply_delay,
+                self.inner.apply_writes(writes),
+            )
+            .await
     }
 }
 
@@ -217,17 +277,17 @@ impl BlobStore for ObservedBlobStore {
         self.inner.get_blob(table, key).await
     }
 
+    async fn delete_blob(&self, table: BlobTableId, key: &[u8]) -> Result<()> {
+        self.inner.delete_blob(table, key).await
+    }
+
     async fn apply_writes(&self, writes: Vec<BlobWriteOp>) -> Result<()> {
-        if self.record_apply_timings {
-            *self.timings.apply_started_at.lock().unwrap() = Some(Instant::now());
-        }
-        if !self.apply_delay.is_zero() {
-            tokio::time::sleep(self.apply_delay).await;
-        }
-        let r = self.inner.apply_writes(writes).await;
-        if self.record_apply_timings {
-            *self.timings.apply_finished_at.lock().unwrap() = Some(Instant::now());
-        }
-        r
+        self.timings
+            .observe(
+                self.record_apply_timings,
+                self.apply_delay,
+                self.inner.apply_writes(writes),
+            )
+            .await
     }
 }

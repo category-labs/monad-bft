@@ -13,7 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use super::page::{QueryOrder, DEFAULT_QUERY_LIMIT};
+use super::order::QueryOrder;
+use crate::error::{MonadChainDataError, Result};
+
+/// Default for [`QueryEnvelope::limit`].
+pub const DEFAULT_QUERY_LIMIT: usize = 100;
 
 /// Common request envelope shared by query families. `from_block`/`to_block`
 /// are interpreted in queryX spec semantics, with lower/upper roles depending
@@ -40,20 +44,12 @@ impl Default for QueryEnvelope {
     }
 }
 
-/// Per-deployment caps on accepted query shape. `max_limit` bounds the
-/// `request.limit` value the user may pass; `max_block_range` bounds the
-/// resolved range span. Breaches surface as
-/// [`crate::MonadChainDataError::LimitExceeded`], which the RPC layer maps
-/// to the queryX spec's `-32005 Limit exceeded` response. Neither cap
-/// constrains how many results a single block may return: the spec
-/// requires the server to complete the current block before stopping, so
-/// returned counts can exceed `max_limit` for a hot block.
-///
-/// `max_block_range` doubles as the worst-case scan budget for filters
-/// without an indexed clause: that path loads every block in the
-/// resolved window, so the bound on the window directly bounds the
-/// scan. A separate execution-time budget (e.g. wall-time for hot
-/// shards) is left for a future `ExecutionBudget` type.
+/// Per-deployment caps on query shape: `max_limit` bounds `request.limit`,
+/// `max_block_range` bounds the resolved span (and thus the worst-case
+/// non-indexed scan). Breaches surface as
+/// [`crate::MonadChainDataError::LimitExceeded`] (queryX `-32005`). Neither
+/// caps per-block results: the spec requires completing the current block, so
+/// counts can exceed `max_limit` for a hot block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueryLimits {
     pub max_limit: usize,
@@ -74,14 +70,14 @@ impl QueryLimits {
         }
     }
 
-    pub fn check_limit(&self, limit: usize) -> crate::error::Result<()> {
+    pub fn check_limit(&self, limit: usize) -> Result<()> {
         if limit == 0 {
-            return Err(crate::error::MonadChainDataError::InvalidRequest(
+            return Err(MonadChainDataError::InvalidRequest(
                 "limit must be at least 1",
             ));
         }
         if limit > self.max_limit {
-            return Err(crate::error::MonadChainDataError::LimitExceeded {
+            return Err(MonadChainDataError::LimitExceeded {
                 kind: LimitExceededKind::Limit,
                 max_limit: self.max_limit,
                 max_block_range: self.max_block_range,

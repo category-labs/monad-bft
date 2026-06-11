@@ -15,58 +15,62 @@
 
 use std::{
     collections::{BTreeMap, HashMap},
-    fmt,
     sync::{Arc, RwLock},
-    time::Duration,
 };
 
 use alloy_rlp::{Decodable, RlpDecodable, RlpEncodable};
 use bytes::Bytes;
+use futures::{
+    lock::Mutex,
+    stream::{StreamExt, TryStreamExt},
+};
 use tokio::sync::Semaphore;
 use zstd::dict::DecoderDictionary;
 
 use crate::{
     engine::{
-        bitmap::{BitmapBlob, BitmapTables, DecodedBitmapPage},
+        bitmap::{
+            decode_fragment_blob, decode_open_streams_chunk, decode_page, decode_page_counts,
+            BitmapPageCounts, BitmapTables, DecodedBitmapFragment, DecodedBitmapPage,
+        },
+        digest::ChainDigest,
         family::{Family, BLOCK_BLOB_TABLE},
-        primary_dir::{PrimaryDirBucket, PrimaryDirFragment, PrimaryDirTables},
+        primary_dir::{
+            decode_bucket, decode_fragment, PrimaryDirBucket, PrimaryDirFragment, PrimaryDirTables,
+        },
+        query::row_cache::RowCaches,
         row_codec::{
             decode_row_frame, should_sample_row, RowCodec, RowCodecState, DICT_VERSION_NONE,
             ROW_ZSTD_LEVEL,
         },
     },
     error::{MonadChainDataError, Result},
-    family::{FinalizedBlock, Hash32},
+    ingest_types::{FinalizedBlock, Hash32},
     primitives::{
-        state::{BlockBlobHeader, BlockRecord, PublicationState},
+        records::{BlockBlobHeader, BlockRecord, PublicationState},
         EvmBlockHeader,
     },
     store::{
-        BlobStore, BlobTable, BlobWriteOp, BlockRegionCache, CacheConfig, CachedKvTable,
-        CachedScannableTable, MetaStore, MetaWriteOp, ScannableTableId, SessionFuture, TableId,
-        WriteSession,
+        BlobStore, BlobTable, BlobWriteOp, CacheConfig, CachedKvTable, CachedScannableKvTable,
+        MetaStore, MetaWriteOp, SessionFuture, TableId, WriteSession,
     },
     txs::TxHashIndexTable,
 };
 
-/// Deterministic, epoch-based dictionary lifecycle parameters.
-///
-/// The dictionary version of block `n` is `n / epoch_blocks`; that epoch
-/// number *is* the version (still stamped on the header). Version `V >= 1` is
-/// trained from a sample of the first `sample_span` blocks of epoch `V - 1`
-/// and must be published before any block of epoch `V` is written. Epoch 0 is
-/// the version-0 plain bootstrap.
+/// Epoch-based dictionary lifecycle. Block `n` has dict version `n / epoch_blocks`;
+/// version `V >= 1` is trained from the first `sample_span_blocks` blocks of epoch `V - 1`
+/// and must be published before any block of epoch `V` is written. Epoch 0 is plain.
 #[derive(Debug, Clone, Copy)]
 pub struct DictConfig {
     /// Blocks per epoch; the epoch number doubles as the dict version.
     pub epoch_blocks: u64,
-    /// How many leading blocks of an epoch are sampled to train the next
-    /// epoch's dictionary. Clamped to `epoch_blocks` at read time.
-    pub sample_span: u64,
+    /// Leading blocks of an epoch sampled to train the next epoch's dictionary.
+    /// Clamped to `epoch_blocks` at read time.
+    pub sample_span_blocks: u64,
     /// Maximum trained dictionary size in bytes.
     pub max_dict_size_bytes: usize,
-    /// Minimum number of collected row samples before a non-empty dictionary
-    /// is trained; below this a family publishes the empty-dict sentinel.
+    /// Minimum row samples to train a non-empty dictionary; below this the
+    /// family publishes the empty-dict sentinel.
     pub min_training_samples: usize,
 }
 
@@ -74,7 +78,7 @@ impl Default for DictConfig {
     fn default() -> Self {
         Self {
             epoch_blocks: 1_000_000,
-            sample_span: 900_000,
+            sample_span_blocks: 900_000,
             max_dict_size_bytes: 112 * 1024,
             min_training_samples: 4_096,
         }
@@ -87,7 +91,7 @@ impl DictConfig {
     pub fn training_range(&self, version: u32) -> (u64, u64) {
         let prev_epoch = u64::from(version - 1);
         let start = prev_epoch * self.epoch_blocks;
-        let span = self.sample_span.min(self.epoch_blocks);
+        let span = self.sample_span_blocks.min(self.epoch_blocks);
         (start, start + span)
     }
 }
@@ -95,19 +99,53 @@ impl DictConfig {
 const BLOCK_BLOB_COALESCE_TARGET_BYTES: usize = 512 * 1024;
 const BLOCK_METADATA_TABLE_ID: TableId = TableId::new("block_metadata");
 
-/// Holds the per-family row-codec dictionary state: a write-side per-version
-/// codec map (version-0 plain pre-installed), a read-side decoder cache, and
-/// per-family single-flight training locks. Lives on [`Tables`] so both ingest
-/// and the materializers can reach it.
+/// Every logical kv/scan table name the engine declares, so backends that map
+/// logical tables to physical resources (dynamo `PerLogicalTable`) can
+/// provision/validate the complete set. A unit test below asserts this list
+/// matches the declared `TableId`s exactly, so drift fails loudly.
+pub(crate) const ALL_LOGICAL_TABLE_NAMES: &[&str] = &[
+    "publication_state",
+    "ingest_snapshot",
+    "block_metadata",
+    "block_evm_header",
+    "block_hash_to_number_index",
+    "tx_hash_index",
+    "log_dict_by_version",
+    "log_dir_by_block",
+    "log_dir_bucket",
+    "log_bitmap_by_block",
+    "log_bitmap_page_blob",
+    "log_bitmap_page_counts",
+    "log_open_bitmap_stream",
+    "log_seal_chain",
+    "tx_dict_by_version",
+    "tx_dir_by_block",
+    "tx_dir_bucket",
+    "tx_bitmap_by_block",
+    "tx_bitmap_page_blob",
+    "tx_bitmap_page_counts",
+    "tx_open_bitmap_stream",
+    "tx_seal_chain",
+    "trace_dict_by_version",
+    "trace_dir_by_block",
+    "trace_dir_bucket",
+    "trace_bitmap_by_block",
+    "trace_bitmap_page_blob",
+    "trace_bitmap_page_counts",
+    "trace_open_bitmap_stream",
+    "trace_seal_chain",
+];
+
+/// Per-family row-codec dictionary state: write-side per-version codecs,
+/// read-side decoder cache, and single-flight training locks.
 pub struct DictManager {
-    /// Write-side prepared codecs keyed by `(family, version)`. The version-0
-    /// plain codec is pre-installed for every family; epochs `>= 1` are
-    /// installed by `install_version` once their dictionary is published.
+    /// Write-side codecs keyed by `(family, version)`; version-0 plain is
+    /// pre-installed, epochs `>= 1` arrive via `install_version`.
     codecs: RwLock<HashMap<(Family, u32), Arc<RowCodecState>>>,
     decoders: RwLock<HashMap<(Family, u32), Arc<DecoderDictionary<'static>>>>,
-    /// Per-family single-flight gate so concurrent `ensure_epoch_dict` callers
-    /// (plan path + background pre-train) collapse onto one training run.
-    train_locks: BTreeMap<Family, futures::lock::Mutex<()>>,
+    /// Per-family single-flight gate collapsing concurrent `ensure_epoch_dict`
+    /// callers onto one training run.
+    train_locks: BTreeMap<Family, Mutex<()>>,
     config: DictConfig,
 }
 
@@ -115,12 +153,12 @@ impl DictManager {
     fn new(config: DictConfig) -> Self {
         let mut codecs = HashMap::new();
         let mut train_locks = BTreeMap::new();
-        for family in [Family::Log, Family::Tx, Family::Trace] {
+        for family in Family::ALL {
             codecs.insert(
                 (family, DICT_VERSION_NONE),
                 Arc::new(RowCodecState::bootstrap()),
             );
-            train_locks.insert(family, futures::lock::Mutex::new(()));
+            train_locks.insert(family, Mutex::new(()));
         }
         Self {
             codecs: RwLock::new(codecs),
@@ -135,14 +173,13 @@ impl DictManager {
     }
 
     /// The single-flight training lock for one family.
-    pub fn train_lock(&self, family: Family) -> &futures::lock::Mutex<()> {
+    fn train_lock(&self, family: Family) -> &Mutex<()> {
         self.train_locks
             .get(&family)
             .expect("family registered at construction")
     }
 
-    /// Returns the write-side codec for `(family, version)` if it has been
-    /// installed, else `None`.
+    /// Write-side codec for `(family, version)`, if installed.
     pub fn write_codec(&self, family: Family, version: u32) -> Option<RowCodec> {
         self.codecs
             .read()
@@ -151,7 +188,6 @@ impl DictManager {
             .map(|state| state.snapshot())
     }
 
-    /// Whether a write-side codec for `(family, version)` is installed.
     pub fn has_codec(&self, family: Family, version: u32) -> bool {
         self.codecs
             .read()
@@ -159,10 +195,9 @@ impl DictManager {
             .contains_key(&(family, version))
     }
 
-    /// Installs the write-side codec for a published dictionary version. Empty
-    /// `dict_bytes` is the sentinel "this epoch uses plain frames" — a plain
-    /// codec stamped with `version`. Non-empty bytes build a dictionary codec
-    /// and also seed the read-side decoder cache.
+    /// Installs the write-side codec for a published dictionary version.
+    /// Empty `dict_bytes` is the plain-frames sentinel; non-empty bytes also
+    /// seed the read-side decoder cache.
     pub fn install_version(&self, family: Family, version: u32, dict_bytes: &[u8]) {
         let state = if dict_bytes.is_empty() {
             Arc::new(RowCodecState::plain(version))
@@ -187,7 +222,7 @@ impl DictManager {
     }
 
     /// Pre-inserts a decoder dictionary into the read cache.
-    pub fn insert_decoder(
+    fn insert_decoder(
         &self,
         family: Family,
         version: u32,
@@ -212,245 +247,115 @@ impl DictManager {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct MetaBlobTimings {
-    pub meta: Duration,
-    pub blob: Duration,
-    pub writes: WriteOpCounts,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct StagedWrites {
-    pub meta_ops: Vec<MetaWriteOp>,
-    pub blob_ops: Vec<BlobWriteOp>,
-    pub counts: WriteOpCounts,
-}
-
-impl StagedWrites {
-    pub fn merge(&mut self, mut other: Self) {
-        self.meta_ops.append(&mut other.meta_ops);
-        self.blob_ops.append(&mut other.blob_ops);
-        self.counts.merge(&other.counts);
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct WriteOpCount {
-    pub ops: u64,
-    pub bytes: u64,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct WriteOpCounts {
-    by_table: BTreeMap<String, WriteOpCount>,
-}
-
-impl WriteOpCounts {
-    pub fn from_writes(meta_ops: &[MetaWriteOp], blob_ops: &[BlobWriteOp]) -> Self {
-        let mut counts = Self::default();
-        for op in meta_ops {
-            match op {
-                MetaWriteOp::Put { table, value, .. } => {
-                    counts.add(format!("kv:{}", table.as_str()), value.len());
-                }
-                MetaWriteOp::ScanPut { table, value, .. } => {
-                    counts.add(format!("scan:{}", table.as_str()), value.len());
-                }
-            }
-        }
-        for BlobWriteOp { table, value, .. } in blob_ops {
-            counts.add(format!("blob:{}", table.as_str()), value.len());
-        }
-        counts
-    }
-
-    pub fn merge(&mut self, other: &Self) {
-        for (table, count) in &other.by_table {
-            let entry = self.by_table.entry(table.clone()).or_default();
-            entry.ops = entry.ops.saturating_add(count.ops);
-            entry.bytes = entry.bytes.saturating_add(count.bytes);
-        }
-    }
-
-    pub fn total_ops(&self) -> u64 {
-        self.by_table.values().map(|count| count.ops).sum()
-    }
-
-    /// Write-op count for one prefixed table key (e.g. `scan:log_open_bitmap_stream`,
-    /// `kv:block_metadata`), or 0 if the table saw no writes. Used by telemetry
-    /// drill-downs and by tests asserting per-table write behavior.
-    pub fn ops_for_table(&self, table: &str) -> u64 {
-        self.by_table.get(table).map_or(0, |count| count.ops)
-    }
-
-    pub fn total_bytes(&self) -> u64 {
-        self.by_table.values().map(|count| count.bytes).sum()
-    }
-
-    pub fn top_by_ops(&self, limit: usize) -> WriteOpTopList<'_> {
-        WriteOpTopList {
-            counts: self,
-            limit,
-            sort_by_bytes: false,
-        }
-    }
-
-    pub fn top_by_bytes(&self, limit: usize) -> WriteOpTopList<'_> {
-        WriteOpTopList {
-            counts: self,
-            limit,
-            sort_by_bytes: true,
-        }
-    }
-
-    fn add(&mut self, table: String, bytes: usize) {
-        let entry = self.by_table.entry(table).or_default();
-        entry.ops = entry.ops.saturating_add(1);
-        entry.bytes = entry.bytes.saturating_add(bytes as u64);
-    }
-}
-
-pub struct WriteOpTopList<'a> {
-    counts: &'a WriteOpCounts,
-    limit: usize,
-    sort_by_bytes: bool,
-}
-
-impl fmt::Display for WriteOpTopList<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut entries: Vec<_> = self.counts.by_table.iter().collect();
-        if self.sort_by_bytes {
-            entries.sort_by(|a, b| b.1.bytes.cmp(&a.1.bytes).then_with(|| a.0.cmp(b.0)));
-        } else {
-            entries.sort_by(|a, b| b.1.ops.cmp(&a.1.ops).then_with(|| a.0.cmp(b.0)));
-        }
-        for (idx, (table, count)) in entries.into_iter().take(self.limit).enumerate() {
-            if idx > 0 {
-                f.write_str(",")?;
-            }
-            write!(f, "{}:{}ops/{}bytes", table, count.ops, count.bytes)?;
-        }
-        Ok(())
-    }
-}
-
 pub struct Tables<M: MetaStore, B: BlobStore> {
     meta_store: M,
     blob_store: B,
     blocks: BlockTables<M>,
     tx_hash_index: TxHashIndexTable<M>,
-    /// Raw shared-per-block blob table. Writes go here directly (the region
-    /// cache is read-populated only); range reads on a region-cache miss also
-    /// go here.
+    /// Raw shared-per-block blob table. Bytes are never cached; the
+    /// decoded-row caches above the decode layer absorb repeat reads.
     block_blobs: BlobTable<B>,
-    /// In-memory cache of compressed per-(family, block) regions, serving both
-    /// point and full-scan reads. See [`BlockRegionCache`].
-    block_regions: BlockRegionCache<B>,
-    /// Whether the region cache has a non-zero budget. When disabled, point
-    /// materialization must stay on the single-frame range-read path even if
-    /// the region would otherwise be small enough to cache.
-    block_region_cache_enabled: bool,
-    /// Compressed-region size cap: regions larger than this are read uncached
-    /// (full scans read the whole region; point reads do a single-frame range
-    /// read) so a giant object is never pulled into RAM. From
-    /// [`CacheConfig::block_region_max_bytes`].
-    block_region_max_bytes: usize,
     families: BTreeMap<Family, FamilyTables<M>>,
+    /// Per-family decoded-row caches; see [`crate::engine::query::row_cache`].
+    row_caches: RowCaches,
     dicts: DictManager,
-    /// Process-global, byte-weighted budget bounding concurrent stage-2 block
-    /// materialization (decode) across all queries. Shared by the query runner;
-    /// see `family_runner::block_materialize_permits`.
+    /// Process-global, byte-weighted budget bounding concurrent stage-2 decode
+    /// across all queries; see `family_runner::materialize_permits_for_bytes`.
     materialize_budget: Arc<Semaphore>,
-    /// Tunable query-runtime limits (fan-out + budgets). Read by the query
-    /// runner; the semaphores above are sized from it at construction.
+    /// Query-runtime limits; the semaphores above are sized from it at construction.
     query: QueryRuntimeConfig,
 }
 
-/// Tunable, process-global limits on the read path. Defaults are moderate —
-/// safe for a fast local backend, where wide fan-out is pure scheduling
-/// overhead. High-latency backends (S3/Dynamo) should raise
-/// `blob_io_concurrency` and `materialize_concurrency` so a sparse query (≈ 1
-/// record/block over many blocks) fans its reads out toward a single
-/// round-trip; the budgets still bound aggregate load across concurrent queries.
+/// Tunable, process-global limits on the read path. Defaults suit a fast
+/// local backend; high-latency backends (S3/Dynamo) should raise
+/// `blob_io_concurrency` and `materialize_concurrency` so sparse queries fan
+/// out toward a single round-trip.
 #[derive(Debug, Clone, Copy)]
 pub struct QueryRuntimeConfig {
-    /// Global cap on concurrent backend blob reads, shared by the block-blob
-    /// table and the region cache (bounds reads across every query path).
+    /// Global cap on concurrent backend blob reads across every query path.
     pub blob_io_concurrency: usize,
-    /// Per-request ceiling on blocks materialized concurrently in stage 2 (the
-    /// `buffered` width). The block-read fan-out for a single query.
+    /// Per-request ceiling on blocks materialized concurrently in stage 2
+    /// (the `buffered` width).
     pub materialize_concurrency: usize,
+    /// Per-request stage-1 fan-out: concurrent page intersections (bitmap
+    /// fetches + AND). Independent of the stage-2 fan-out — different
+    /// backends (bitmap pages vs block blobs).
+    pub page_intersect_concurrency: usize,
     /// Total permits in the process-global, byte-weighted stage-2 decode budget.
     pub materialize_budget_permits: usize,
     /// Bytes per decode-budget permit. A block acquires
     /// `clamp(decode_bytes / this, 1, materialize_budget_permits)` permits, so
     /// tiny blocks fan out while a huge region runs ~exclusively.
     pub materialize_permit_bytes: usize,
+    /// Maximum gap (compressed bytes) between two requested frames sharing one
+    /// coalesced range read; raise for high-latency backends where a
+    /// round-trip costs more than the over-read.
+    pub materialize_span_max_gap_bytes: usize,
+    /// Maximum length of one coalesced read span.
+    pub materialize_span_max_bytes: usize,
+    /// When a batch coalesces into more spans than this AND the region is
+    /// within `materialize_whole_region_max_bytes`, the batch reads the whole
+    /// family region in one request instead of per-span ranges.
+    pub materialize_whole_region_span_threshold: usize,
+    /// Largest region the dense-selection whole-region read will pull.
+    pub materialize_whole_region_max_bytes: usize,
 }
 
 impl Default for QueryRuntimeConfig {
     fn default() -> Self {
         Self {
-            // `materialize_concurrency` is the single primary knob. Default low:
-            // safe for a fast local backend (wide fan-out is pure scheduling
-            // overhead there). Raise it (toward the hundreds/thousand) for a
-            // high-latency backend so a sparse query reaches ≈ one round-trip.
+            // Primary knob; default low for fast local backends, raise toward
+            // the hundreds for high-latency backends.
             materialize_concurrency: 8,
-            // High ceilings that only engage once `materialize_concurrency` is
-            // raised: at the default fan-out neither binds. They cap aggregate
-            // backend reads / concurrent decode bytes across all queries.
+            page_intersect_concurrency: 32,
+            // Aggregate ceilings that only bind once the fan-out is raised.
             blob_io_concurrency: 1024,
             materialize_budget_permits: 1024,
-            // 32 KiB/permit: a tiny block takes one permit (fans out to the
-            // budget) while a 40 MiB trace region takes >1000 → clamped to the
-            // budget → runs exclusively.
+            // 32 KiB/permit: tiny blocks take one permit; a 40 MiB region
+            // clamps to the full budget and runs ~exclusively.
             materialize_permit_bytes: 32 * 1024,
+            materialize_span_max_gap_bytes: 16 * 1024,
+            materialize_span_max_bytes: 512 * 1024,
+            materialize_whole_region_span_threshold: 8,
+            materialize_whole_region_max_bytes: 8 * 1024 * 1024,
         }
     }
 }
 
 impl QueryRuntimeConfig {
-    /// Clamps every field to a sane minimum (≥ 1 permit/byte) so a zero from
-    /// config can never wedge a semaphore or divide-by-zero the permit math.
+    /// Clamps to ≥ 1 so a zero from config can't wedge a semaphore or
+    /// divide-by-zero the permit math.
     fn sanitized(self) -> Self {
         Self {
             blob_io_concurrency: self.blob_io_concurrency.max(1),
             materialize_concurrency: self.materialize_concurrency.max(1),
+            page_intersect_concurrency: self.page_intersect_concurrency.max(1),
             materialize_budget_permits: self.materialize_budget_permits.max(1),
             materialize_permit_bytes: self.materialize_permit_bytes.max(1),
+            // Zero is meaningful for the span knobs (per-frame reads /
+            // never-whole-region), so they are not clamped.
+            materialize_span_max_gap_bytes: self.materialize_span_max_gap_bytes,
+            materialize_span_max_bytes: self.materialize_span_max_bytes,
+            materialize_whole_region_span_threshold: self.materialize_whole_region_span_threshold,
+            materialize_whole_region_max_bytes: self.materialize_whole_region_max_bytes,
         }
     }
 }
 
 impl<M: MetaStore, B: BlobStore> Tables<M, B> {
+    /// Default-configured constructor; see [`Self::with_all_configs`].
     pub fn new(meta_store: M, blob_store: B) -> Self {
-        Self::with_cache_config(meta_store, blob_store, CacheConfig::default())
-    }
-
-    pub fn with_cache_config(meta_store: M, blob_store: B, cache: CacheConfig) -> Self {
-        Self::with_configs(meta_store, blob_store, cache, DictConfig::default())
-    }
-
-    /// Constructor threading a [`DictConfig`] (e.g. tests exercising the
-    /// epoch-based dictionary lifecycle); uses default [`QueryRuntimeConfig`].
-    pub fn with_configs(
-        meta_store: M,
-        blob_store: B,
-        cache: CacheConfig,
-        dict_config: DictConfig,
-    ) -> Self {
         Self::with_all_configs(
             meta_store,
             blob_store,
-            cache,
-            dict_config,
+            CacheConfig::default(),
+            DictConfig::default(),
             QueryRuntimeConfig::default(),
         )
     }
 
-    /// Full constructor also threading the [`QueryRuntimeConfig`] read-path
-    /// limits (fan-out + budgets). The reader-open path passes operator config;
-    /// all other callers get the defaults via the constructors above.
+    /// Full constructor threading every operator-tuned config (cache sizes,
+    /// dict lifecycle, read-path limits).
     pub fn with_all_configs(
         meta_store: M,
         blob_store: B,
@@ -460,21 +365,11 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
     ) -> Self {
         let query = query.sanitized();
         let mut families = BTreeMap::new();
-        families.insert(
-            Family::Log,
-            FamilyTables::new(meta_store.clone(), Family::Log, cache),
-        );
-        families.insert(
-            Family::Tx,
-            FamilyTables::new(meta_store.clone(), Family::Tx, cache),
-        );
-        families.insert(
-            Family::Trace,
-            FamilyTables::new(meta_store.clone(), Family::Trace, cache),
-        );
-        // Shared, process-global read limiter for the block-blob backend, held
-        // by both the raw block-blob table and the region cache so the cap is
-        // global across every blob-read path.
+        for family in Family::ALL {
+            families.insert(family, FamilyTables::new(meta_store.clone(), family, cache));
+        }
+        // Every blob read goes through `block_blobs`, so this cap is
+        // process-global across all blob-read paths.
         let blob_io = Arc::new(Semaphore::new(query.blob_io_concurrency));
         Self {
             blocks: BlockTables::new(meta_store.clone(), cache),
@@ -482,42 +377,29 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
             block_blobs: blob_store
                 .table(BLOCK_BLOB_TABLE)
                 .with_io_limit(Arc::clone(&blob_io)),
-            block_regions: BlockRegionCache::new(
-                blob_store
-                    .table(BLOCK_BLOB_TABLE)
-                    .with_io_limit(Arc::clone(&blob_io)),
-                cache.block_region_cache_bytes,
-            ),
-            block_region_cache_enabled: cache.block_region_cache_bytes > 0,
-            block_region_max_bytes: cache.block_region_max_bytes,
             meta_store,
             blob_store,
             families,
+            row_caches: RowCaches::new(cache.row_cache_bytes),
             dicts: DictManager::new(dict_config),
             materialize_budget: Arc::new(Semaphore::new(query.materialize_budget_permits)),
             query,
         }
     }
 
-    /// The process-global stage-2 decode budget (see field docs).
+    /// Process-global stage-2 decode budget (see field docs).
     pub(crate) fn materialize_budget(&self) -> &Arc<Semaphore> {
         &self.materialize_budget
     }
 
-    /// Per-request stage-2 materialization fan-out (the `buffered` width).
-    pub(crate) fn materialize_concurrency(&self) -> usize {
-        self.query.materialize_concurrency
+    /// The sanitized read-path limits this instance was constructed with;
+    /// see the [`QueryRuntimeConfig`] field docs for each knob.
+    pub(crate) fn query_config(&self) -> &QueryRuntimeConfig {
+        &self.query
     }
 
-    /// Total permits in the decode budget — the clamp ceiling for a block's
-    /// per-block permit weight.
-    pub(crate) fn materialize_budget_permits(&self) -> usize {
-        self.query.materialize_budget_permits
-    }
-
-    /// Bytes per decode-budget permit (the permit-weight unit).
-    pub(crate) fn materialize_permit_bytes(&self) -> usize {
-        self.query.materialize_permit_bytes
+    pub fn row_caches(&self) -> &RowCaches {
+        &self.row_caches
     }
 
     pub fn meta_store(&self) -> &M {
@@ -536,129 +418,33 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
         &self.tx_hash_index
     }
 
-    /// Raw byte-range read of the shared per-block blob object, bypassing the
-    /// region cache. Used for the large-region point-read fallback and as the
-    /// single backend fetch the region cache coalesces concurrent misses onto.
-    pub async fn read_block_blob_range(
-        &self,
-        block_number: u64,
-        start: usize,
-        end_exclusive: usize,
-    ) -> Result<Option<alloy_primitives::Bytes>> {
-        let key = block_number_key(block_number);
-        Ok(self
-            .block_blobs
-            .read_range(&key, start, end_exclusive)
-            .await?
-            .map(Into::into))
-    }
-
+    /// Raw byte-range read of the shared per-block blob object over an absolute
+    /// `[start, end_exclusive)` span, resolved through the header's physical
+    /// key (coalesced blocks share an object).
     pub async fn read_block_blob_header_range(
         &self,
         block_number: u64,
         header: &BlockBlobHeader,
         start: usize,
         end_exclusive: usize,
-    ) -> Result<Option<alloy_primitives::Bytes>> {
-        let default_key = block_number_key(block_number);
-        Ok(self
-            .block_blobs
-            .read_range(header.physical_key(&default_key), start, end_exclusive)
-            .await?
-            .map(Into::into))
-    }
-
-    /// Returns this family's WHOLE compressed region for `block_number`,
-    /// serving it from the [`BlockRegionCache`] (populating on miss when the
-    /// region is small enough to admit). Callers slice frames out with
-    /// FAMILY-RELATIVE offsets (`header.offsets[i]`), which line up exactly
-    /// because the returned buffer starts at the family's `base_offset`.
-    ///
-    /// A region larger than [`CacheConfig::block_region_max_bytes`] is read uncached (the
-    /// caller still gets the bytes, we just never resident-cache a giant
-    /// object). The full-scan read paths always go through here.
-    pub async fn read_block_blob_region(
-        &self,
-        family: Family,
-        block_number: u64,
-        header: &BlockBlobHeader,
     ) -> Result<Option<Bytes>> {
-        let (region_start, region_end) = header.region_range();
-        let region_len = region_end.saturating_sub(region_start);
-        if !self.block_region_cache_enabled || region_len > self.block_region_max_bytes {
-            // Too big to cache: read it directly without admitting it.
-            let default_key = block_number_key(block_number);
-            return Ok(self
-                .block_blobs
-                .read_range(header.physical_key(&default_key), region_start, region_end)
-                .await?
-                .map(Into::into));
-        }
         let default_key = block_number_key(block_number);
-        self.block_regions
-            .get_region(
-                family.slot(),
-                block_number,
-                header.physical_key(&default_key).to_vec(),
-                region_start,
-                region_end,
-            )
+        self.block_blobs
+            .read_range(header.physical_key_or(&default_key), start, end_exclusive)
             .await
     }
 
-    /// Returns the single compressed frame for row `idx_in_block` of `family`.
-    ///
-    /// On a region-cache hit (or for a small uncached region we choose to
-    /// admit) this slices the frame out of the cached region using
-    /// FAMILY-RELATIVE offsets. For a LARGE region (above
-    /// [`CacheConfig::block_region_max_bytes`]) it falls back to a single-frame ABSOLUTE
-    /// range read so a one-shot point read never pulls a huge region into RAM.
-    pub async fn read_block_blob_frame(
+    /// Reads this family's whole compressed region for `block_number` in one
+    /// uncached range read. The buffer starts at the family's `base_offset`,
+    /// so callers slice frames with family-relative offsets (`header.offsets[i]`).
+    pub async fn read_block_blob_region(
         &self,
-        family: Family,
         block_number: u64,
         header: &BlockBlobHeader,
-        idx_in_block: usize,
     ) -> Result<Option<Bytes>> {
         let (region_start, region_end) = header.region_range();
-        let region_len = region_end.saturating_sub(region_start);
-        if !self.block_region_cache_enabled || region_len > self.block_region_max_bytes {
-            // Bandwidth-frugal large-region path: one absolute single-frame
-            // read, no caching.
-            let (start, end) = header.abs_range(idx_in_block);
-            let default_key = block_number_key(block_number);
-            return Ok(self
-                .block_blobs
-                .read_range(header.physical_key(&default_key), start, end)
-                .await?
-                .map(Into::into));
-        }
-        // Small region: fetch (or hit) the whole region via the cache, then
-        // slice the row's frame with family-relative offsets. region-relative
-        // offset = abs offset - base_offset, and the cached buffer starts at
-        // base_offset, so `header.offsets[idx]` indexes the buffer directly.
-        let default_key = block_number_key(block_number);
-        let Some(region) = self
-            .block_regions
-            .get_region(
-                family.slot(),
-                block_number,
-                header.physical_key(&default_key).to_vec(),
-                region_start,
-                region_end,
-            )
-            .await?
-        else {
-            return Ok(None);
-        };
-        let start = header.offsets[idx_in_block] as usize;
-        let end = header.offsets[idx_in_block + 1] as usize;
-        if start > end || end > region.len() {
-            return Err(MonadChainDataError::Decode(
-                "invalid block blob frame range",
-            ));
-        }
-        Ok(Some(region.slice(start..end)))
+        self.read_block_blob_header_range(block_number, header, region_start, region_end)
+            .await
     }
 
     pub fn stage_block_blob(
@@ -675,28 +461,24 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
         w.put_blob(&self.block_blobs, &key, Bytes::from(combined));
     }
 
-    /// Returns the table set for a family. Panics if the family was not
-    /// registered at construction; the `Family` enum is closed, so missing
-    /// a variant here is a programmer error, not a data error.
+    /// Table set for a family. Panics if unregistered — the `Family` enum is
+    /// closed, so that is a programmer error.
     pub fn family(&self, family: Family) -> &FamilyTables<M> {
         self.families
             .get(&family)
             .expect("family registered at construction")
     }
 
-    /// Per-family row-codec dictionary manager (write-side per-version codecs,
-    /// read-side decoder cache, single-flight training locks).
     pub fn dicts(&self) -> &DictManager {
         &self.dicts
     }
 
     /// Resolves the decoder dictionary for `(family, version)`, populating the
-    /// read cache from the durable dict table on a miss. Returns `None` for a
-    /// plain frame: version 0, or a version `>= 1` that published the
-    /// empty-dict sentinel. A version `>= 1` whose bytes are *absent* (never
-    /// published) is a hard error — an invariant violation, since every block
-    /// is written only after its epoch dictionary is durably published.
-    async fn resolve_decoder(
+    /// read cache from the durable dict table on a miss. `None` means plain
+    /// frames (version 0 or the empty-dict sentinel). Absent bytes for a
+    /// version `>= 1` are a hard error: blocks are written only after their
+    /// epoch dictionary is durably published.
+    pub async fn block_decoder(
         &self,
         family: Family,
         dict_version: u32,
@@ -720,66 +502,47 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
         Ok(Some(decoder))
     }
 
-    /// Decodes a single compressed row frame for `family` written under
-    /// `dict_version`. The materializers' point-read path calls this after a
-    /// byte-range read returns the frame.
+    /// Decodes a single compressed row frame written under `dict_version`.
     pub async fn decode_block_row(
         &self,
         family: Family,
         dict_version: u32,
         frame: &[u8],
     ) -> Result<Bytes> {
-        let decoder = self.resolve_decoder(family, dict_version).await?;
+        let decoder = self.block_decoder(family, dict_version).await?;
         decode_row_frame(decoder.as_ref(), frame)
     }
 
-    /// Resolves the decoder dictionary once for a whole-block (full-scan)
-    /// decode pass. Returns `None` for version 0 (plain frames).
-    pub async fn block_decoder(
-        &self,
-        family: Family,
-        dict_version: u32,
-    ) -> Result<Option<Arc<DecoderDictionary<'static>>>> {
-        self.resolve_decoder(family, dict_version).await
-    }
-
-    /// Ensures `version`'s dictionary for one family is durably published and its
-    /// write-side codec installed, blocking until ready. Idempotent + single-
-    /// flight: the fast path returns if already installed; otherwise it adopts a
-    /// durably-published dict, or trains one from epoch `version - 1`'s blocks.
-    ///
-    /// Operates purely over `&self` (no service/reader needed) so both the query
-    /// service and the standalone ingest engine's codec resolver drive the same
-    /// logic over the same `Tables` — see [`crate::ingest_resolver`].
+    /// Ensures `version`'s dictionary is durably published and its write-side
+    /// codec installed; idempotent and single-flight. Adopts an already
+    /// published dict, else trains one from epoch `version - 1`'s blocks.
+    /// Operates over `&self` so the query service and the ingest engine's
+    /// codec resolver share the logic — see [`crate::ingest::resolver`].
     pub async fn ensure_epoch_dict(&self, family: Family, version: u32) -> Result<()> {
-        // Version 0 is the implicit plain bootstrap; its codec is pre-installed.
+        // Version 0 is the plain bootstrap; its codec is pre-installed.
         if version == DICT_VERSION_NONE {
             return Ok(());
         }
         let dicts = self.dicts();
-        // Fast path: already installed.
         if dicts.has_codec(family, version) {
             return Ok(());
         }
-        // Single-flight gate + double-check.
         let _g = dicts.train_lock(family).lock().await;
         if dicts.has_codec(family, version) {
             return Ok(());
         }
 
-        // Durable dict already published (e.g. a peer/standby wrote it, or a
-        // prior run): adopt it. `Some(empty)` is the plain sentinel.
+        // Adopt a durably-published dict (e.g. from a peer or prior run);
+        // `Some(empty)` is the plain sentinel.
         if let Some(bytes) = self.family(family).load_dict(version).await? {
             dicts.install_version(family, version, &bytes);
             return Ok(());
         }
 
-        // Otherwise train from epoch `version - 1`'s leading blocks.
         let samples = self.read_back_training_samples(family, version).await?;
         let dict_bytes: Vec<u8> = if samples.len() >= dicts.config().min_training_samples {
             let max_size = dicts.config().max_dict_size_bytes;
-            // `from_samples` is CPU-bound; run it on rayon's pool and await the
-            // result so the async executor thread isn't blocked.
+            // CPU-bound training runs on rayon so the executor thread isn't blocked.
             let (tx, rx) = futures::channel::oneshot::channel();
             rayon::spawn(move || {
                 let _ = tx.send(zstd::dict::from_samples(&samples, max_size));
@@ -788,9 +551,8 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
                 .await
                 .map_err(|_| MonadChainDataError::Backend("dict training canceled".into()))?;
             match trained {
-                // A non-empty trained dictionary; otherwise fall back to the
-                // empty-dict sentinel (this epoch uses plain frames).
                 Ok(bytes) if !bytes.is_empty() => bytes,
+                // Failed or empty training falls back to the empty-dict (plain) sentinel.
                 _ => Vec::new(),
             }
         } else {
@@ -800,9 +562,9 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
 
         // Persist durably BEFORE installing the codec, so a block written under
         // `version` always has its dict (or sentinel) present on the read path.
-        let dict_for_write = Bytes::from(dict_bytes.clone());
+        let dict_bytes = Bytes::from(dict_bytes);
+        let dict_for_write = dict_bytes.clone();
         self.with_writes(|w| {
-            let dict_for_write = dict_for_write.clone();
             Box::pin(async move {
                 self.family(family).stage_dict(w, version, dict_for_write);
                 Ok(())
@@ -815,19 +577,15 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
 
     /// Ensures the epoch dictionaries for all three families at `version`.
     pub async fn ensure_epoch_dicts(&self, version: u32) -> Result<()> {
-        for family in [Family::Log, Family::Tx, Family::Trace] {
+        for family in Family::ALL {
             self.ensure_epoch_dict(family, version).await?;
         }
         Ok(())
     }
 
-    /// Collects a deterministic training corpus for `(family, version)` from the
-    /// leading blocks of epoch `version - 1`. Block selection is strided (seeded
-    /// by `version`, no RNG) so the corpus is reproducible. At most
-    /// `TARGET_SAMPLE_BLOCKS` blocks are sampled, each contributing up to
-    /// `PER_BLOCK_SAMPLE_CAP` rows via [`should_sample_row`]. Sampled blocks
-    /// belong to epoch `version - 1`, whose dictionary was published earlier, so
-    /// `decode_block_row` just works.
+    /// Collects a deterministic training corpus from the leading blocks of
+    /// epoch `version - 1`: strided block selection seeded by `version` (no
+    /// RNG), rows filtered via [`should_sample_row`], so the corpus is reproducible.
     async fn read_back_training_samples(
         &self,
         family: Family,
@@ -851,16 +609,13 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
             if block_number >= end {
                 break;
             }
-            let Some(header) = family_tables.load_block_header(block_number).await? else {
+            let Some(header) = family_tables.load_blob_header(block_number).await? else {
                 continue;
             };
             if header.offsets.len() < 2 {
                 continue;
             }
-            let Some(region) = self
-                .read_block_blob_region(family, block_number, &header)
-                .await?
-            else {
+            let Some(region) = self.read_block_blob_region(block_number, &header).await? else {
                 continue;
             };
             let row_count = header.offsets.len() - 1;
@@ -885,125 +640,31 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
         Ok(samples)
     }
 
+    /// Runs `f` against a fresh [`WriteSession`], coalesces block-blob writes,
+    /// and applies the staged meta and blob ops concurrently.
     pub async fn with_writes<'a, F>(&'a self, f: F) -> Result<()>
     where
         F: for<'s> FnOnce(&'s mut WriteSession<'a, M, B>) -> SessionFuture<'s>,
     {
-        let (result, _timings) = self.with_writes_timed(f).await;
-        result
-    }
-
-    /// Like [`Self::with_writes`] but returns the meta/blob apply durations
-    /// separately so callers preserving per-phase instrumentation can
-    /// attribute commit latency. On closure error or backend error the
-    /// returned durations reflect work actually performed; zero when the
-    /// closure short-circuited the flush.
-    pub async fn with_writes_timed<'a, F>(&'a self, f: F) -> (Result<()>, MetaBlobTimings)
-    where
-        F: for<'s> FnOnce(&'s mut WriteSession<'a, M, B>) -> SessionFuture<'s>,
-    {
         let mut session = WriteSession::new(self);
-        let closure_result = f(&mut session).await;
-        if let Err(e) = closure_result {
-            return (Err(e), MetaBlobTimings::default());
-        }
-        let mut meta_ops = session.take_meta();
-        let mut blob_ops = session.take_blob();
-        if let Err(e) = coalesce_block_blob_writes(&mut meta_ops, &mut blob_ops) {
-            return (Err(e), MetaBlobTimings::default());
-        }
-        let writes = WriteOpCounts::from_writes(&meta_ops, &blob_ops);
-        let meta_apply = async {
-            let t = std::time::Instant::now();
-            self.meta_store.apply_writes(meta_ops).await?;
-            Ok::<_, crate::error::MonadChainDataError>(t.elapsed())
-        };
-        let blob_apply = async {
-            let t = std::time::Instant::now();
-            self.blob_store.apply_writes(blob_ops).await?;
-            Ok::<_, crate::error::MonadChainDataError>(t.elapsed())
-        };
-        match futures::try_join!(meta_apply, blob_apply) {
-            Ok((meta_elapsed, blob_elapsed)) => (
-                Ok(()),
-                MetaBlobTimings {
-                    meta: meta_elapsed,
-                    blob: blob_elapsed,
-                    writes,
-                },
-            ),
-            Err(e) => (Err(e), MetaBlobTimings::default()),
-        }
-    }
-
-    /// Stages write operations without applying them. The read caches are
-    /// read-populated only, so staging touches no cache and there is nothing
-    /// to roll back if the writes are later applied, retried, or abandoned by
-    /// a pipelined caller.
-    pub async fn stage_writes<'a, F>(&'a self, f: F) -> Result<StagedWrites>
-    where
-        F: for<'s> FnOnce(&'s mut WriteSession<'a, M, B>) -> SessionFuture<'s>,
-    {
-        let mut session = WriteSession::new(self);
-        let closure_result = f(&mut session).await;
-        closure_result?;
+        f(&mut session).await?;
         let mut meta_ops = session.take_meta();
         let mut blob_ops = session.take_blob();
         coalesce_block_blob_writes(&mut meta_ops, &mut blob_ops)?;
-        let counts = WriteOpCounts::from_writes(&meta_ops, &blob_ops);
-        Ok(StagedWrites {
-            meta_ops,
-            blob_ops,
-            counts,
-        })
+        futures::try_join!(
+            self.meta_store.apply_writes(meta_ops),
+            self.blob_store.apply_writes(blob_ops),
+        )?;
+        Ok(())
     }
 
-    pub async fn apply_staged_writes_timed(&self, writes: StagedWrites) -> Result<MetaBlobTimings> {
-        let counts = writes.counts;
-        let meta_apply = async {
-            let t = std::time::Instant::now();
-            self.meta_store.apply_writes(writes.meta_ops).await?;
-            Ok::<_, crate::error::MonadChainDataError>(t.elapsed())
-        };
-        let blob_apply = async {
-            let t = std::time::Instant::now();
-            self.blob_store.apply_writes(writes.blob_ops).await?;
-            Ok::<_, crate::error::MonadChainDataError>(t.elapsed())
-        };
-        let (meta, blob) = futures::try_join!(meta_apply, blob_apply)?;
-        Ok(MetaBlobTimings {
-            meta,
-            blob,
-            writes: counts,
-        })
-    }
-
-    /// Drains and returns the (hits, misses) counters for every cached
-    /// wrapper, tagged with its logical table name. Each call resets the
-    /// counters so consumers see per-window deltas.
+    /// Drains the (hits, misses) counters for every cached wrapper; each call
+    /// resets them, so consumers see per-window deltas.
     pub fn take_cache_window_stats(&self) -> Vec<(&'static str, u64, u64)> {
         let mut out = Vec::new();
         self.blocks.collect_window_stats(&mut out);
         self.tx_hash_index.collect_window_stats(&mut out);
-        // Per-family region-cache hit/miss, tagged with a stable per-family
-        // label so the log line stays legible.
-        for (slot, (h, m)) in self
-            .block_regions
-            .take_window_stats()
-            .into_iter()
-            .enumerate()
-        {
-            if h == 0 && m == 0 {
-                continue;
-            }
-            let name = match Family::from_slot(slot) {
-                Some(Family::Log) => "block_region:log",
-                Some(Family::Tx) => "block_region:tx",
-                Some(Family::Trace) => "block_region:trace",
-                None => "block_region:?",
-            };
-            out.push((name, h, m));
-        }
+        self.row_caches.collect_window_stats(&mut out);
         for fam in self.families.values() {
             fam.collect_window_stats(&mut out);
         }
@@ -1011,29 +672,127 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
     }
 }
 
-/// Pushes one (name, hits, misses) tuple per cached wrapper, skipping rows
-/// where both counters are zero so the per-window log line stays compact.
-pub(crate) fn collect_kv_stats<M: MetaStore, V>(
+/// Pushes one (name, hits, misses) tuple, skipping all-zero rows.
+fn push_window_stats(
     out: &mut Vec<(&'static str, u64, u64)>,
-    table: &CachedKvTable<M, V>,
-) where
-    V: Clone + Send + Sync + 'static,
-{
-    let (h, m) = table.take_window_stats();
-    if h != 0 || m != 0 {
-        out.push((table.table_id().as_str(), h, m));
+    name: &'static str,
+    (hits, misses): (u64, u64),
+) {
+    if hits != 0 || misses != 0 {
+        out.push((name, hits, misses));
     }
 }
 
+/// Collects this table's cache window stats into `out`.
+pub(crate) fn collect_kv_stats<M: MetaStore, V>(
+    out: &mut Vec<(&'static str, u64, u64)>,
+    table: &CachedKvTable<M, V>,
+) {
+    push_window_stats(out, table.table_id().as_str(), table.take_window_stats());
+}
+
+/// Collects this table's cache window stats into `out`.
 pub(crate) fn collect_scan_stats<M: MetaStore, V>(
     out: &mut Vec<(&'static str, u64, u64)>,
-    table: &CachedScannableTable<M, V>,
-) where
+    table: &CachedScannableKvTable<M, V>,
+) {
+    push_window_stats(out, table.table_id().as_str(), table.take_window_stats());
+}
+
+/// Max concurrent point gets after a keys-only fragment scan; turns a cold
+/// open page/bucket from N serial round-trips into ~one.
+pub(crate) const FRAGMENT_GET_CONCURRENCY: usize = 32;
+
+/// Keys-only scan of `partition` followed by concurrent point gets of every
+/// key, each missing value surfacing `missing`. Uses `buffered` (not
+/// `buffer_unordered`) so the values preserve the scan's key order, which the
+/// fragment-compaction callers rely on.
+pub(crate) async fn scan_get_all<M, V>(
+    table: &CachedScannableKvTable<M, V>,
+    partition: &[u8],
+    missing: &'static str,
+) -> Result<Vec<V>>
+where
+    M: MetaStore,
     V: Clone + Send + Sync + 'static,
 {
-    let (h, m) = table.take_window_stats();
-    if h != 0 || m != 0 {
-        out.push((table.table_id().as_str(), h, m));
+    let keys = table.scan_keys(partition).await?;
+    futures::stream::iter(keys)
+        .map(|clustering| async move {
+            table
+                .get(partition, &clustering)
+                .await?
+                .ok_or(MonadChainDataError::MissingData(missing))
+        })
+        .buffered(FRAGMENT_GET_CONCURRENCY)
+        .try_collect()
+        .await
+}
+
+/// Accumulates consecutive block-blob writes into one coalesced object,
+/// recording each source key's physical `(key, offset)` in `locators` so the
+/// matching metadata headers can be rewritten afterward.
+struct Coalescer {
+    group: Vec<BlobWriteOp>,
+    group_len: usize,
+    out: Vec<BlobWriteOp>,
+    locators: BTreeMap<Vec<u8>, (Vec<u8>, u64)>,
+}
+
+impl Coalescer {
+    fn new(capacity: usize) -> Self {
+        Self {
+            group: Vec::new(),
+            group_len: 0,
+            out: Vec::with_capacity(capacity),
+            locators: BTreeMap::new(),
+        }
+    }
+
+    /// Concatenates the current group into one physical object. A lone op is
+    /// emitted unchanged: its header's empty physical key already falls back to
+    /// the block-number key, so it needs no locator rewrite.
+    fn flush(&mut self) {
+        let group_len = std::mem::take(&mut self.group_len);
+        match self.group.len() {
+            0 => {}
+            1 => self.out.push(self.group.pop().expect("group has one item")),
+            _ => {
+                let first_key = &self.group.first().expect("non-empty group").key;
+                let last_key = &self.group.last().expect("non-empty group").key;
+                let mut physical_key = Vec::with_capacity(1 + first_key.len() + last_key.len());
+                physical_key.push(b'c');
+                physical_key.extend_from_slice(first_key);
+                physical_key.extend_from_slice(last_key);
+
+                let mut combined = Vec::with_capacity(group_len);
+                for op in self.group.drain(..) {
+                    // usize -> u64 is infallible on every supported target.
+                    let offset = combined.len() as u64;
+                    self.locators.insert(op.key, (physical_key.clone(), offset));
+                    combined.extend_from_slice(&op.value);
+                }
+                self.out.push(BlobWriteOp {
+                    table: BLOCK_BLOB_TABLE,
+                    key: physical_key,
+                    value: Bytes::from(combined),
+                });
+            }
+        }
+    }
+
+    /// Adds a block-blob op to the current group, first flushing if adding it
+    /// would push a non-empty group past the coalesce target (a single
+    /// oversized op still starts a group rather than being emitted alone).
+    fn push(&mut self, op: BlobWriteOp) {
+        debug_assert_eq!(op.table, BLOCK_BLOB_TABLE);
+        if !self.group.is_empty()
+            && self.group_len.saturating_add(op.value.len()) > BLOCK_BLOB_COALESCE_TARGET_BYTES
+        {
+            self.flush();
+        }
+        self.group_len = self.group_len.saturating_add(op.value.len());
+        self.group.push(op);
     }
 }
 
@@ -1049,66 +808,16 @@ fn coalesce_block_blob_writes(
         return Ok(());
     }
 
-    let mut locators: BTreeMap<Vec<u8>, (Vec<u8>, u64)> = BTreeMap::new();
-    let mut out = Vec::with_capacity(blob_ops.len());
-    let mut group: Vec<BlobWriteOp> = Vec::new();
-    let mut group_len = 0usize;
-
-    let flush_group = |group: &mut Vec<BlobWriteOp>,
-                       group_len: &mut usize,
-                       out: &mut Vec<BlobWriteOp>,
-                       locators: &mut BTreeMap<Vec<u8>, (Vec<u8>, u64)>|
-     -> Result<()> {
-        if group.is_empty() {
-            return Ok(());
-        }
-        if group.len() == 1 {
-            let op = group.pop().expect("group has one item");
-            locators.insert(op.key.clone(), (op.key.clone(), 0));
-            out.push(op);
-            *group_len = 0;
-            return Ok(());
-        }
-
-        let first_key = group.first().expect("non-empty group").key.clone();
-        let last_key = group.last().expect("non-empty group").key.clone();
-        let mut physical_key = Vec::with_capacity(1 + first_key.len() + last_key.len());
-        physical_key.push(b'c');
-        physical_key.extend_from_slice(&first_key);
-        physical_key.extend_from_slice(&last_key);
-
-        let mut combined = Vec::with_capacity(*group_len);
-        for op in group.drain(..) {
-            let offset = u64::try_from(combined.len()).map_err(|_| {
-                MonadChainDataError::Decode("coalesced block blob offset overflows u64")
-            })?;
-            locators.insert(op.key, (physical_key.clone(), offset));
-            combined.extend_from_slice(&op.value);
-        }
-        out.push(BlobWriteOp {
-            table: BLOCK_BLOB_TABLE,
-            key: physical_key,
-            value: Bytes::from(combined),
-        });
-        *group_len = 0;
-        Ok(())
-    };
-
+    let mut coalescer = Coalescer::new(blob_ops.len());
     for op in std::mem::take(blob_ops) {
-        if op.table != BLOCK_BLOB_TABLE {
-            flush_group(&mut group, &mut group_len, &mut out, &mut locators)?;
-            out.push(op);
-            continue;
+        if op.table == BLOCK_BLOB_TABLE {
+            coalescer.push(op);
+        } else {
+            coalescer.flush();
+            coalescer.out.push(op);
         }
-        if !group.is_empty()
-            && group_len.saturating_add(op.value.len()) > BLOCK_BLOB_COALESCE_TARGET_BYTES
-        {
-            flush_group(&mut group, &mut group_len, &mut out, &mut locators)?;
-        }
-        group_len = group_len.saturating_add(op.value.len());
-        group.push(op);
     }
-    flush_group(&mut group, &mut group_len, &mut out, &mut locators)?;
+    coalescer.flush();
 
     for op in meta_ops {
         let MetaWriteOp::Put { table, key, value } = op else {
@@ -1117,29 +826,21 @@ fn coalesce_block_blob_writes(
         if *table != BLOCK_METADATA_TABLE_ID {
             continue;
         }
-        let Some((physical_key, physical_base_offset)) = locators.get(key) else {
+        let Some((physical_key, physical_base_offset)) = coalescer.locators.get(key) else {
             continue;
         };
         let mut metadata = BlockMetadataRecord::decode(value)?;
-        rewrite_block_blob_header(
+        for header in [
             &mut metadata.log_header,
-            physical_key.clone(),
-            *physical_base_offset,
-        )?;
-        rewrite_block_blob_header(
             &mut metadata.tx_header,
-            physical_key.clone(),
-            *physical_base_offset,
-        )?;
-        rewrite_block_blob_header(
             &mut metadata.trace_header,
-            physical_key.clone(),
-            *physical_base_offset,
-        )?;
+        ] {
+            rewrite_block_blob_header(header, physical_key.clone(), *physical_base_offset)?;
+        }
         *value = metadata.encode();
     }
 
-    *blob_ops = out;
+    *blob_ops = coalescer.out;
     Ok(())
 }
 
@@ -1213,16 +914,12 @@ impl<M: MetaStore> PublicationTables<M> {
     pub const PUBLICATION_STATE_TABLE: TableId = TableId::new("publication_state");
     pub const PUBLICATION_STATE_KEY: &[u8] = b"state";
 
-    /// Builds a publication handle over `meta_store`. Exposed so a binary can
-    /// construct the `Arc<PublicationTables>` the branchless ingest engine
-    /// (`crate::ingest_controller`) requires, alongside the `Arc<Tables>`
-    /// built from the same store — no `MonadChainDataService` needed for ingest.
+    /// Public so a binary can build the `Arc<PublicationTables>` the ingest
+    /// engine requires without a `MonadChainDataService`.
     pub fn new(meta_store: M) -> Self {
         Self { meta_store }
     }
 
-    /// Loads the current publication state. Readers that only want the head can
-    /// use [`Self::load_published_head`].
     pub async fn load_state(&self) -> Result<Option<PublicationState>> {
         let Some(bytes) = self
             .meta_store
@@ -1232,17 +929,7 @@ impl<M: MetaStore> PublicationTables<M> {
             return Ok(None);
         };
 
-        match PublicationState::decode(&bytes) {
-            Ok(state) => Ok(Some(state)),
-            Err(_) => {
-                // One-shot migration for the pre-single-writer five-field row.
-                // Preserve the live head/checksum and rewrite this key in the
-                // new two-field format so future startups take the fast path.
-                let state = PublicationState::decode_legacy(&bytes)?;
-                self.store_state(state).await?;
-                Ok(Some(state))
-            }
-        }
+        Ok(Some(PublicationState::decode(&bytes)?))
     }
 
     pub async fn load_published_head(&self) -> Result<Option<u64>> {
@@ -1250,6 +937,30 @@ impl<M: MetaStore> PublicationTables<M> {
             .load_state()
             .await?
             .map(|state| state.indexed_finalized_head))
+    }
+
+    /// The published head usable for queries, or `None` when nothing is
+    /// queryable yet. Head 0 is the acquire-before-first-publish sentinel (a
+    /// writer claimed ownership but nothing is finalized); real heads start
+    /// at 1 since ingest starts at block 1, so 0 maps to `None` like a
+    /// never-written store.
+    pub async fn queryable_head(&self) -> Result<Option<u64>> {
+        Ok(self.load_published_head().await?.filter(|head| *head > 0))
+    }
+
+    /// Read the authoritative published head. A missing row is a cold start.
+    pub async fn published_head(&self) -> Result<u64> {
+        Ok(self.load_published_head().await?.unwrap_or(0))
+    }
+
+    /// Publish the new reader-visible head, carrying the standby row-chain
+    /// digest forward.
+    pub async fn publish(&self, new_head: u64, head_row_chain: ChainDigest) -> Result<()> {
+        self.store_state(PublicationState {
+            indexed_finalized_head: new_head,
+            head_row_chain,
+        })
+        .await
     }
 
     pub async fn store_state(&self, state: PublicationState) -> Result<()> {
@@ -1269,12 +980,9 @@ pub struct BlockTables<M: MetaStore> {
     block_hash_to_number_index: CachedKvTable<M, u64>,
 }
 
-/// The per-block metadata row. Holds only what the hot path needs: the
-/// `block_record` (window/continuity/recovery via `load_record`) and the three
-/// per-family blob headers (read by the family materializers). The bulky
-/// `EvmBlockHeader` is stored separately (`evm_header` table) because it is read
-/// only when serving a full block to a client (`load_block`), so bundling it
-/// here made every `load_record` pay for ~500 B it never decodes.
+/// Per-block metadata row: the `block_record` plus the three per-family blob
+/// headers. The bulky `EvmBlockHeader` lives in a separate table so hot
+/// `load_record` reads don't pay ~500 B they never decode.
 #[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 struct BlockMetadataRecord {
     block_record: Bytes,
@@ -1294,37 +1002,25 @@ impl BlockMetadataRecord {
     }
 }
 
-/// Cache decoder for the `BlockTables` view of the block-metadata row: yields
-/// the decoded `BlockRecord` (the only projection that view serves). Runs once
-/// per miss inside the cache fetch, so window/continuity/recovery reads that
-/// hit the cache skip both RLP decodes.
+/// Cache decoder for the `BlockTables` view of the block-metadata row; runs
+/// once per miss, so cache hits skip both RLP decodes.
 fn decode_block_record(bytes: Bytes) -> Result<BlockRecord> {
     let metadata = BlockMetadataRecord::decode(&bytes)?;
     BlockRecord::decode(&metadata.block_record)
 }
 
-/// Cache decoders for the per-family `FamilyTables` view: each yields the
-/// fully decoded `BlockBlobHeader` for one family, shared as an `Arc` so a hit
-/// clones a refcount rather than the offsets vector. The hot materializers read
-/// this on every block they touch; caching it decoded removes a per-block RLP
-/// decode from each query.
-fn decode_log_header(bytes: Bytes) -> Result<Arc<BlockBlobHeader>> {
+/// Per-family cache decoder yielding the decoded `BlockBlobHeader`, shared as
+/// an `Arc` so a hit clones a refcount rather than the offsets vector; `pick`
+/// selects which family's header field to decode.
+fn decode_family_header(
+    bytes: Bytes,
+    pick: fn(&BlockMetadataRecord) -> &Bytes,
+) -> Result<Arc<BlockBlobHeader>> {
     let metadata = BlockMetadataRecord::decode(&bytes)?;
-    Ok(Arc::new(BlockBlobHeader::decode(&metadata.log_header)?))
+    Ok(Arc::new(BlockBlobHeader::decode(pick(&metadata))?))
 }
 
-fn decode_tx_header(bytes: Bytes) -> Result<Arc<BlockBlobHeader>> {
-    let metadata = BlockMetadataRecord::decode(&bytes)?;
-    Ok(Arc::new(BlockBlobHeader::decode(&metadata.tx_header)?))
-}
-
-fn decode_trace_header(bytes: Bytes) -> Result<Arc<BlockBlobHeader>> {
-    let metadata = BlockMetadataRecord::decode(&bytes)?;
-    Ok(Arc::new(BlockBlobHeader::decode(&metadata.trace_header)?))
-}
-
-/// Cache decoder for the block-hash-to-number index: an 8-byte big-endian
-/// block number.
+/// Decodes the hash-to-number index value: an 8-byte big-endian block number.
 fn decode_block_number(bytes: Bytes) -> Result<u64> {
     let be: [u8; 8] = bytes
         .as_ref()
@@ -1341,19 +1037,20 @@ impl<M: MetaStore> BlockTables<M> {
 
     fn new(meta_store: M, cache: CacheConfig) -> Self {
         Self {
-            block_metadata: CachedKvTable::new_decoded(
+            block_metadata: CachedKvTable::new(
                 meta_store.table(Self::BLOCK_METADATA_TABLE),
-                cache.block_header_entries,
+                cache.block_header_cache_bytes,
                 decode_block_record,
             ),
-            // Cold path (only `load_block` reads it); sized off the same knob.
+            // Cold path (only `load_block` reads it); identity decode.
             evm_header: CachedKvTable::new(
                 meta_store.table(Self::BLOCK_EVM_HEADER_TABLE),
-                cache.block_header_entries,
+                cache.block_header_cache_bytes,
+                Ok,
             ),
-            block_hash_to_number_index: CachedKvTable::new_decoded(
+            block_hash_to_number_index: CachedKvTable::new(
                 meta_store.table(Self::BLOCK_HASH_TO_NUMBER_INDEX_TABLE),
-                cache.block_hash_to_number_entries,
+                cache.block_hash_to_number_cache_bytes,
                 decode_block_number,
             ),
         }
@@ -1399,13 +1096,9 @@ impl<M: MetaStore> BlockTables<M> {
         Ok(Some(header))
     }
 
-    /// Resolves a block hash to its block number via the hash-to-number index.
-    /// A returned `Some(n)` is not by itself a guarantee that block `n` is
-    /// fully published — the index entry is written before the publication
-    /// head advances, so a hash hit may name a block whose record/header is
-    /// not yet visible. Callers that turn the number into a record/header
-    /// load should expect `MissingData` if `n > published_head` or if the
-    /// follow-up loads fail.
+    /// Resolves a block hash to its block number. `Some(n)` does not guarantee
+    /// block `n` is fully published — the index entry lands before the
+    /// publication head advances, so follow-up loads may hit `MissingData`.
     pub async fn block_number_by_hash(&self, block_hash: &Hash32) -> Result<Option<u64>> {
         self.block_hash_to_number_index
             .get(block_hash.as_slice())
@@ -1436,33 +1129,33 @@ impl<M: MetaStore> BlockTables<M> {
         block: &FinalizedBlock,
         current_head: Option<u64>,
     ) -> Result<Option<BlockRecord>> {
-        match current_head {
-            None => {
-                if block.block_number() != 1 {
-                    return Err(crate::error::MonadChainDataError::InvalidRequest(
-                        "first ingested block must be block 1 in the first pass",
-                    ));
-                }
-                Ok(None)
+        let Some(head) = current_head else {
+            if block.block_number() != 1 {
+                return Err(MonadChainDataError::InvalidBlock(
+                    "first ingested block must be block 1 in the first pass",
+                ));
             }
-            Some(head) => {
-                if block.block_number() != head + 1 {
-                    return Err(crate::error::MonadChainDataError::InvalidRequest(
-                        "block_number must extend the published head contiguously",
-                    ));
-                }
+            return Ok(None);
+        };
 
-                let previous = self.load_record(head).await?.ok_or(
-                    crate::error::MonadChainDataError::MissingData("missing previous block record"),
-                )?;
-                if previous.block_hash != block.parent_hash() {
-                    return Err(crate::error::MonadChainDataError::InvalidRequest(
-                        "parent_hash must match the previous published block",
-                    ));
-                }
-                Ok(Some(previous))
-            }
+        if block.block_number() != head + 1 {
+            return Err(MonadChainDataError::InvalidBlock(
+                "block_number must extend the published head contiguously",
+            ));
         }
+
+        let previous = self
+            .load_record(head)
+            .await?
+            .ok_or(MonadChainDataError::MissingData(
+                "missing previous block record",
+            ))?;
+        if previous.block_hash != block.parent_hash() {
+            return Err(MonadChainDataError::InvalidBlock(
+                "parent_hash must match the previous published block",
+            ));
+        }
+        Ok(Some(previous))
     }
 }
 
@@ -1473,68 +1166,75 @@ pub struct FamilyTables<M: MetaStore> {
     dict_by_version: CachedKvTable<M>,
     dir: PrimaryDirTables<M>,
     bitmap: BitmapTables<M>,
+    /// Standby seal-chain rows (`span_start` -> chained seal digest). Read
+    /// only at recovery and by verification tooling — uncached.
+    seal_chain: CachedKvTable<M, Hash32>,
+}
+
+/// Cache decoder for one seal-chain row: exactly 32 raw digest bytes.
+fn decode_seal_chain(bytes: Bytes) -> Result<Hash32> {
+    let raw: [u8; 32] = bytes
+        .as_ref()
+        .try_into()
+        .map_err(|_| MonadChainDataError::Decode("invalid seal chain value"))?;
+    Ok(Hash32::from(raw))
 }
 
 impl<M: MetaStore> FamilyTables<M> {
     fn new(meta_store: M, family: Family, cache: CacheConfig) -> Self {
         let ids = family.table_ids();
         let header_decoder: fn(Bytes) -> Result<Arc<BlockBlobHeader>> = match family {
-            Family::Log => decode_log_header,
-            Family::Tx => decode_tx_header,
-            Family::Trace => decode_trace_header,
+            Family::Log => |b| decode_family_header(b, |m| &m.log_header),
+            Family::Tx => |b| decode_family_header(b, |m| &m.tx_header),
+            Family::Trace => |b| decode_family_header(b, |m| &m.trace_header),
         };
         Self {
             family,
-            block_metadata: CachedKvTable::new_decoded(
+            block_metadata: CachedKvTable::new(
                 meta_store.table(BlockTables::<M>::BLOCK_METADATA_TABLE),
-                cache.block_header_entries,
+                cache.block_header_cache_bytes,
                 header_decoder,
             ),
-            // The dict-by-version table is left uncached: the hot decode path
-            // memoizes decoders in `DictManager` (unbounded), so this table is
-            // read at most once per (family, version) per process — only by the
-            // `ensure_epoch_dict` adoption probe and a cold `resolve_decoder`
-            // miss. Caching it would also be the lone metadata cache still live
-            // on the writer (every other metadata cache is disabled during
-            // ingest), where the mint path's check-then-write would otherwise
-            // strand a negative-cached miss now that writes never seed caches.
-            dict_by_version: CachedKvTable::new(meta_store.table(ids.dict_by_version), 0),
+            // Uncached: `DictManager` memoizes decoders, so this table is read
+            // at most once per (family, version); caching it on the writer
+            // would also strand a negative-cached miss in the mint path's
+            // check-then-write, since writes never seed caches.
+            dict_by_version: CachedKvTable::new(meta_store.table(ids.dict_by_version), 0, Ok),
             dir: PrimaryDirTables::new(
-                CachedScannableTable::new_decoded(
+                CachedScannableKvTable::new(
                     meta_store.scannable_table(ids.dir_by_block),
-                    cache.dir_by_block_entries,
-                    crate::engine::primary_dir::decode_fragment,
+                    cache.dir_by_block_cache_bytes,
+                    decode_fragment,
                 ),
-                CachedKvTable::new_decoded(
+                CachedKvTable::new(
                     meta_store.table(ids.dir_bucket),
-                    cache.dir_bucket_entries,
-                    crate::engine::primary_dir::decode_bucket,
+                    cache.dir_bucket_cache_bytes,
+                    decode_bucket,
                 ),
             ),
             bitmap: BitmapTables::new(
-                CachedScannableTable::new_decoded_weighted(
+                CachedScannableKvTable::new(
                     meta_store.scannable_table(ids.bitmap_by_block),
                     cache.bitmap_by_block_cache_bytes,
-                    crate::engine::bitmap::decode_fragment_blob,
-                    crate::engine::bitmap::weigh_fragment,
+                    decode_fragment_blob,
                 ),
-                CachedKvTable::new_decoded_weighted(
+                CachedKvTable::new(
                     meta_store.table(ids.bitmap_page_blob),
                     cache.bitmap_page_blob_cache_bytes,
-                    crate::engine::bitmap::decode_page,
-                    crate::engine::bitmap::weigh_page,
+                    decode_page,
                 ),
-                CachedKvTable::new_decoded(
+                CachedKvTable::new(
                     meta_store.table(ids.bitmap_page_counts),
-                    cache.bitmap_page_counts_entries,
-                    crate::engine::bitmap::decode_page_counts,
+                    cache.bitmap_page_counts_cache_bytes,
+                    decode_page_counts,
                 ),
-                CachedScannableTable::new_decoded(
+                CachedScannableKvTable::new(
                     meta_store.scannable_table(ids.open_bitmap_stream),
-                    cache.open_bitmap_stream_entries,
-                    crate::engine::bitmap::decode_open_streams_chunk,
+                    cache.open_bitmap_stream_cache_bytes,
+                    decode_open_streams_chunk,
                 ),
             ),
+            seal_chain: CachedKvTable::new(meta_store.table(ids.seal_chain), 0, decode_seal_chain),
         }
     }
 
@@ -1546,18 +1246,13 @@ impl<M: MetaStore> FamilyTables<M> {
         &self.bitmap
     }
 
-    pub fn bitmap_by_block_table(&self) -> ScannableTableId {
-        self.bitmap.fragments_table()
-    }
-
     pub fn family(&self) -> Family {
         self.family
     }
 
-    /// Loads the decoded per-block blob header for this family, served from the
-    /// read cache (decoded once per miss). `None` means the block's metadata row
-    /// is absent.
-    pub async fn load_block_header(
+    /// Loads the decoded per-block blob header for this family from the read
+    /// cache. `None` means the block's metadata row is absent.
+    pub async fn load_blob_header(
         &self,
         block_number: u64,
     ) -> Result<Option<Arc<BlockBlobHeader>>> {
@@ -1595,11 +1290,9 @@ impl<M: MetaStore> FamilyTables<M> {
     pub async fn load_bitmap_fragments(
         &self,
         stream_id: &str,
-        page_start_local: u32,
-    ) -> Result<Vec<Arc<BitmapBlob>>> {
-        self.bitmap
-            .load_fragments(stream_id, page_start_local)
-            .await
+        page_start: u64,
+    ) -> Result<Vec<Arc<DecodedBitmapFragment>>> {
+        self.bitmap.load_fragments(stream_id, page_start).await
     }
 
     /// Loads a compacted bitmap page for one sealed stream page, decoded
@@ -1607,24 +1300,44 @@ impl<M: MetaStore> FamilyTables<M> {
     pub async fn load_bitmap_page_artifact(
         &self,
         stream_id: &str,
-        page_start_local: u32,
+        page_start: u64,
     ) -> Result<Option<Arc<DecodedBitmapPage>>> {
-        self.bitmap
-            .load_page_artifact(stream_id, page_start_local)
-            .await
+        self.bitmap.load_page_artifact(stream_id, page_start).await
     }
 
-    /// Loads the sealed-shard page-count manifest for one stream.
+    /// Loads one stream's page-count manifest for one sealed page group.
     pub async fn load_bitmap_page_counts(
         &self,
         stream_id: &str,
-    ) -> Result<Option<crate::engine::bitmap::BitmapPageCounts>> {
-        self.bitmap.load_page_counts(stream_id).await
+        group_start: u64,
+    ) -> Result<Option<BitmapPageCounts>> {
+        self.bitmap.load_page_counts(stream_id, group_start).await
     }
 
     /// Loads the open stream inventory for one frontier page.
-    pub async fn load_open_bitmap_streams(&self, global_page_start: u64) -> Result<Vec<String>> {
-        self.bitmap.load_open_streams(global_page_start).await
+    pub async fn load_open_bitmap_streams(&self, page_start: u64) -> Result<Vec<String>> {
+        self.bitmap.load_open_streams(page_start).await
+    }
+
+    /// Loads the chained seal digest persisted when span `span_start` sealed.
+    /// `None` for spans sealed before the seal chain existed (or never sealed).
+    pub async fn load_seal_chain(&self, span_start: u64) -> Result<Option<Hash32>> {
+        self.seal_chain.get(&span_start.to_be_bytes()).await
+    }
+
+    /// Stages span `span_start`'s chained seal digest; callers stage it in the
+    /// SAME write session as the span's sealed artifacts.
+    pub fn stage_seal_chain<B: BlobStore>(
+        &self,
+        w: &mut WriteSession<'_, M, B>,
+        span_start: u64,
+        value: Hash32,
+    ) {
+        w.put(
+            &self.seal_chain,
+            &span_start.to_be_bytes(),
+            Bytes::copy_from_slice(value.as_slice()),
+        );
     }
 
     pub(crate) fn collect_window_stats(&self, out: &mut Vec<(&'static str, u64, u64)>) {
@@ -1635,5 +1348,77 @@ impl<M: MetaStore> FamilyTables<M> {
         collect_kv_stats(out, self.bitmap.page_blobs_cache());
         collect_kv_stats(out, self.bitmap.page_counts_cache());
         collect_scan_stats(out, self.bitmap.open_streams_cache());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BlockTables, PublicationTables, ALL_LOGICAL_TABLE_NAMES};
+    use crate::{
+        engine::{
+            digest::EMPTY_DIGEST,
+            family::{Family, FamilyTableIds},
+        },
+        ingest::snapshot::SnapshotStore,
+        store::{InMemoryBlobStore, InMemoryMetaStore},
+        txs::TxHashIndexTable,
+    };
+
+    /// [`ALL_LOGICAL_TABLE_NAMES`] is the provisioning source of truth for
+    /// per-logical-table backends; this pins it to the declared `TableId`s.
+    #[test]
+    fn all_logical_table_names_match_declared_table_ids() {
+        type Meta = InMemoryMetaStore;
+        let mut declared = vec![
+            PublicationTables::<Meta>::PUBLICATION_STATE_TABLE.as_str(),
+            SnapshotStore::<Meta, InMemoryBlobStore>::MANIFEST_TABLE.as_str(),
+            BlockTables::<Meta>::BLOCK_METADATA_TABLE.as_str(),
+            BlockTables::<Meta>::BLOCK_EVM_HEADER_TABLE.as_str(),
+            BlockTables::<Meta>::BLOCK_HASH_TO_NUMBER_INDEX_TABLE.as_str(),
+            TxHashIndexTable::<Meta>::TABLE.as_str(),
+        ];
+        for family in Family::ALL {
+            // Exhaustive destructure (no `..`): adding a field to
+            // `FamilyTableIds` is a compile error here, forcing the canonical
+            // list above to be updated rather than silently drifting.
+            let FamilyTableIds {
+                dict_by_version,
+                dir_by_block,
+                dir_bucket,
+                bitmap_by_block,
+                bitmap_page_blob,
+                bitmap_page_counts,
+                open_bitmap_stream,
+                seal_chain,
+            } = family.table_ids();
+            declared.extend([
+                dict_by_version.as_str(),
+                dir_by_block.as_str(),
+                dir_bucket.as_str(),
+                bitmap_by_block.as_str(),
+                bitmap_page_blob.as_str(),
+                bitmap_page_counts.as_str(),
+                open_bitmap_stream.as_str(),
+                seal_chain.as_str(),
+            ]);
+        }
+
+        let mut canonical = ALL_LOGICAL_TABLE_NAMES.to_vec();
+        declared.sort_unstable();
+        canonical.sort_unstable();
+        assert_eq!(canonical, declared);
+    }
+
+    #[tokio::test]
+    async fn publication_tables_read_absent_and_publish_head() {
+        let tables = PublicationTables::new(InMemoryMetaStore::default());
+
+        assert_eq!(tables.published_head().await.unwrap(), 0);
+
+        tables.publish(7, EMPTY_DIGEST).await.unwrap();
+        assert_eq!(tables.published_head().await.unwrap(), 7);
+
+        tables.publish(9, EMPTY_DIGEST).await.unwrap();
+        assert_eq!(tables.published_head().await.unwrap(), 9);
     }
 }

@@ -13,55 +13,45 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-};
+use std::{collections::BTreeSet, sync::Arc};
 
 use bytes::Bytes;
-use futures::stream::{self, StreamExt, TryStreamExt};
 use roaring::RoaringBitmap;
 
 use crate::{
+    engine::tables::scan_get_all,
     error::{MonadChainDataError, Result},
-    primitives::state::PrimaryId,
     store::{
-        blob::BlobStore, CachedKvTable, CachedScannableTable, MetaStore, MetaWriteOp,
-        ScannableTableId, WriteSession,
+        blob::BlobStore, CachedKvTable, CachedScannableKvTable, MetaStore, ScannableTableId,
+        WriteSession,
     },
 };
 
-pub const LOCAL_ID_BITS: u32 = PrimaryId::LOCAL_ID_BITS;
-/// Max concurrent point gets when fetching a partition's fragments after a
-/// keys-only scan. The list returns the key set; the value gets are independent
-/// and cache-served when warm, so issuing them concurrently turns a cold open
-/// page/bucket from N serial round-trips into ~one.
-const FRAGMENT_GET_CONCURRENCY: usize = 32;
-pub const STREAM_PAGE_LOCAL_ID_SPAN: u32 = 64 * 1024;
-/// Number of [`STREAM_PAGE_LOCAL_ID_SPAN`]-wide pages in one shard's local-id
-/// space (`2^LOCAL_ID_BITS / STREAM_PAGE_LOCAL_ID_SPAN`). With `LOCAL_ID_BITS
-/// = 24` this is 256 pages of 64K, and it bounds the entries in one stream's
-/// page-count manifest.
-pub const STREAM_PAGES_PER_SHARD: u32 = (1u32 << LOCAL_ID_BITS) / STREAM_PAGE_LOCAL_ID_SPAN;
-const BITMAP_BLOB_VERSION: u8 = 2;
+/// Ids per bitmap page: the seal granule. A page covers the aligned id range
+/// `[page_start, page_start + STREAM_PAGE_ID_SPAN)`; bitmap bits are stored
+/// PAGE-RELATIVE (bit `v` in page `P` is id `P + v`, `v` in `[0, span)`).
+pub const STREAM_PAGE_ID_SPAN: u32 = 64 * 1024;
+/// Ids per page group (256 pages): purely the manifest's keying/completeness
+/// window — a stream's page-count manifest row covers exactly one group, and
+/// is written once the family frontier leaves that group.
+pub const PAGE_GROUP_ID_SPAN: u64 = 1 << 24;
+const BITMAP_BLOB_VERSION: u8 = 1;
 const BITMAP_PAGE_COUNTS_VERSION: u8 = 1;
 const BITMAP_BLOB_HEADER_LEN: usize = 1 + 4 * 3;
-const BITMAP_PAGE_ARTIFACT_VERSION: u8 = 3;
+// Must differ from `BITMAP_BLOB_VERSION`: a page artifact wraps a blob, and
+// `decode_bitmap_page_artifact` discriminates the two formats by leading byte.
+const BITMAP_PAGE_ARTIFACT_VERSION: u8 = 2;
 const BITMAP_PAGE_ARTIFACT_HEADER_LEN: usize = 1 + 4 * 3;
 
+/// A frontier-page bitmap fragment decoded from its stored bytes: the
+/// roaring bitmap plus its min/max/count header (see [`encode_bitmap_blob`]).
+/// Offsets are page-relative.
 #[derive(Debug, Clone)]
-pub struct BitmapBlob {
-    pub min_local: u32,
-    pub max_local: u32,
+pub struct DecodedBitmapFragment {
+    pub min_offset: u32,
+    pub max_offset: u32,
     pub count: u32,
     pub bitmap: RoaringBitmap,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BitmapFragmentWrite {
-    pub stream_id: String,
-    pub page_start_local: u32,
-    pub bitmap_blob: Bytes,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,51 +60,35 @@ pub struct BitmapPageArtifact {
     pub bitmap_blob: Bytes,
 }
 
+/// Page-relative min/max/count of one sealed page's bitmap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BitmapPageMeta {
-    pub min_local: u32,
-    pub max_local: u32,
+    pub min_offset: u32,
+    pub max_offset: u32,
     pub count: u32,
 }
 
-/// A sealed bitmap page decoded for the read cache: query metadata plus the
-/// fully deserialized roaring bitmap. Stored as `Arc` so a cache hit clones a
-/// refcount rather than re-deserializing. The on-disk [`BitmapPageArtifact`]
-/// (which carries the still-serialized blob) remains the write-path type.
+/// A sealed bitmap page decoded for the read cache, `Arc`-shared so a hit
+/// clones a refcount instead of re-deserializing. The on-disk
+/// [`BitmapPageArtifact`] remains the write-path type.
 #[derive(Debug, Clone)]
 pub struct DecodedBitmapPage {
     pub meta: BitmapPageMeta,
     pub bitmap: RoaringBitmap,
 }
 
-/// Cache decoder for a stream's sealed-shard page-count manifest.
+/// Cache decoder for a stream's per-group page-count manifest.
 pub(crate) fn decode_page_counts(bytes: Bytes) -> Result<BitmapPageCounts> {
     BitmapPageCounts::decode(&bytes)
 }
 
-/// Cache decoder for one stored bitmap fragment (frontier-page delta). Shared
-/// as `Arc` so a cache hit clones a refcount rather than the roaring bitmap.
-pub(crate) fn decode_fragment_blob(bytes: Bytes) -> Result<Arc<BitmapBlob>> {
+/// Cache decoder for one stored bitmap fragment (frontier-page delta).
+pub(crate) fn decode_fragment_blob(bytes: Bytes) -> Result<Arc<DecodedBitmapFragment>> {
     Ok(Arc::new(decode_bitmap_blob(bytes.as_ref())?))
 }
 
-/// Byte weight of a cached fragment: its serialized footprint (framing header +
-/// roaring `serialized_size()`), which equals the pre-decode stored length.
-pub(crate) fn weigh_fragment(v: &Option<Arc<BitmapBlob>>) -> usize {
-    v.as_ref()
-        .map_or(0, |b| BITMAP_BLOB_HEADER_LEN + b.bitmap.serialized_size())
-}
-
-/// Byte weight of a cached sealed page: page-artifact header + blob framing +
-/// roaring `serialized_size()`, equal to the pre-decode stored length.
-pub(crate) fn weigh_page(v: &Option<Arc<DecodedBitmapPage>>) -> usize {
-    v.as_ref().map_or(0, |p| {
-        BITMAP_PAGE_ARTIFACT_HEADER_LEN + BITMAP_BLOB_HEADER_LEN + p.bitmap.serialized_size()
-    })
-}
-
-/// Cache decoder for one sealed bitmap page artifact: parses the framing and
-/// fully deserializes the roaring bitmap, so a cache hit skips both.
+/// Cache decoder for one sealed bitmap page artifact; a cache hit skips both
+/// the framing parse and the roaring deserialize.
 pub(crate) fn decode_page(bytes: Bytes) -> Result<Arc<DecodedBitmapPage>> {
     let artifact = decode_bitmap_page_artifact(bytes.as_ref())?
         .ok_or(MonadChainDataError::Decode("invalid bitmap page artifact"))?;
@@ -126,25 +100,25 @@ pub(crate) fn decode_page(bytes: Bytes) -> Result<Arc<DecodedBitmapPage>> {
 }
 
 /// Cache decoder for one open-stream inventory delta row (a chunk of stream
-/// ids first-seen in one batch).
+/// ids: one flush's first-seen set, or a sealed page's complete inventory).
 pub(crate) fn decode_open_streams_chunk(bytes: Bytes) -> Result<Arc<Vec<String>>> {
     decode_open_streams_delta(&bytes).map(Arc::new)
 }
 
 #[derive(Clone)]
 pub struct BitmapTables<M: MetaStore> {
-    fragments: CachedScannableTable<M, Arc<BitmapBlob>>,
+    fragments: CachedScannableKvTable<M, Arc<DecodedBitmapFragment>>,
     page_blobs: CachedKvTable<M, Arc<DecodedBitmapPage>>,
     page_counts: CachedKvTable<M, BitmapPageCounts>,
-    open_streams: CachedScannableTable<M, Arc<Vec<String>>>,
+    open_streams: CachedScannableKvTable<M, Arc<Vec<String>>>,
 }
 
 impl<M: MetaStore> BitmapTables<M> {
     pub fn new(
-        fragments: CachedScannableTable<M, Arc<BitmapBlob>>,
+        fragments: CachedScannableKvTable<M, Arc<DecodedBitmapFragment>>,
         page_blobs: CachedKvTable<M, Arc<DecodedBitmapPage>>,
         page_counts: CachedKvTable<M, BitmapPageCounts>,
-        open_streams: CachedScannableTable<M, Arc<Vec<String>>>,
+        open_streams: CachedScannableKvTable<M, Arc<Vec<String>>>,
     ) -> Self {
         Self {
             fragments,
@@ -158,7 +132,7 @@ impl<M: MetaStore> BitmapTables<M> {
         self.fragments.table_id()
     }
 
-    pub(crate) fn fragments_cache(&self) -> &CachedScannableTable<M, Arc<BitmapBlob>> {
+    pub(crate) fn fragments_cache(&self) -> &CachedScannableKvTable<M, Arc<DecodedBitmapFragment>> {
         &self.fragments
     }
 
@@ -170,79 +144,29 @@ impl<M: MetaStore> BitmapTables<M> {
         &self.page_counts
     }
 
-    pub(crate) fn open_streams_cache(&self) -> &CachedScannableTable<M, Arc<Vec<String>>> {
+    pub(crate) fn open_streams_cache(&self) -> &CachedScannableKvTable<M, Arc<Vec<String>>> {
         &self.open_streams
     }
 
-    pub fn stage_fragments_for_global_page<B: BlobStore>(
-        &self,
-        w: &mut WriteSession<'_, M, B>,
-        fragments: &[BitmapFragmentWrite],
-        block_number: u64,
-        global_page_start: u64,
-    ) -> Result<(u64, u64)> {
-        let clustering = block_number_key(block_number);
-        let mut ops = Vec::new();
-        let mut total = 0u64;
-        let mut written = 0u64;
-
-        for fragment in fragments {
-            total = total.saturating_add(1);
-            let page_global_start =
-                stream_page_global_start(&fragment.stream_id, fragment.page_start_local)?;
-            if page_global_start != global_page_start {
-                continue;
-            }
-
-            written = written.saturating_add(1);
-            ops.push(MetaWriteOp::ScanPut {
-                table: self.fragments.table_id(),
-                partition: stream_page_key(&fragment.stream_id, fragment.page_start_local),
-                clustering: clustering.to_vec(),
-                value: fragment.bitmap_blob.clone(),
-            });
-        }
-
-        w.extend_meta_uncached(ops);
-        Ok((total, written))
-    }
-
-    /// Loads all retained fragments for one stream page.
-    ///
-    /// Keeps scan-keys + point gets explicit: point-table caches often make
-    /// this faster than value-bearing scans, and the store API can stay simple
-    /// until a backend proves it needs batched value reads.
+    /// Loads all retained fragments for one stream page: a keys-only scan plus
+    /// concurrent point gets, which point-table caches make faster than a
+    /// value-bearing scan.
     pub async fn load_fragments(
         &self,
         stream_id: &str,
-        page_start_local: u32,
-    ) -> Result<Vec<Arc<BitmapBlob>>> {
-        let partition = stream_page_key(stream_id, page_start_local);
-        let page = self
-            .fragments
-            .list_prefix(&partition, &[], None, usize::MAX)
-            .await?;
-        let fragments = &self.fragments;
-        let partition = &partition;
-        stream::iter(page.keys)
-            .map(|clustering| async move {
-                fragments.get(partition, &clustering).await?.ok_or(
-                    MonadChainDataError::MissingData("missing log bitmap fragment"),
-                )
-            })
-            .buffered(FRAGMENT_GET_CONCURRENCY)
-            .try_collect()
-            .await
+        page_start: u64,
+    ) -> Result<Vec<Arc<DecodedBitmapFragment>>> {
+        let partition = stream_page_key(stream_id, page_start);
+        scan_get_all(&self.fragments, &partition, "missing bitmap fragment").await
     }
 
-    /// Loads a compacted bitmap page from its combined artifact row, decoded
-    /// (metadata + roaring bitmap) and served from the read cache.
+    /// Loads a compacted bitmap page, decoded and served from the read cache.
     pub async fn load_page_artifact(
         &self,
         stream_id: &str,
-        page_start_local: u32,
+        page_start: u64,
     ) -> Result<Option<Arc<DecodedBitmapPage>>> {
-        let key = stream_page_key(stream_id, page_start_local);
+        let key = stream_page_key(stream_id, page_start);
         self.page_blobs.get(&key).await
     }
 
@@ -250,10 +174,10 @@ impl<M: MetaStore> BitmapTables<M> {
         &self,
         w: &mut WriteSession<'_, M, B>,
         stream_id: &str,
-        page_start_local: u32,
+        page_start: u64,
         artifact: &BitmapPageArtifact,
     ) {
-        let key = stream_page_key(stream_id, page_start_local);
+        let key = stream_page_key(stream_id, page_start);
         w.put(
             &self.page_blobs,
             &key,
@@ -261,121 +185,95 @@ impl<M: MetaStore> BitmapTables<M> {
         );
     }
 
-    /// Stages one already-encoded delta fragment for the open page of a stream,
-    /// keyed by `marker` (the batch's block number). Counterpart to
-    /// [`Self::stage_page_artifact`] for the open (unsealed) page.
+    /// Stages one encoded delta fragment for a stream's open (unsealed) page,
+    /// keyed by `flush_block` (the batch's block number).
     pub fn stage_page_fragment<B: BlobStore>(
         &self,
         w: &mut WriteSession<'_, M, B>,
         stream_id: &str,
-        page_start_local: u32,
-        marker: u64,
+        page_start: u64,
+        flush_block: u64,
         blob: Bytes,
     ) {
         w.scan_put(
             &self.fragments,
-            &stream_page_key(stream_id, page_start_local),
-            &block_number_key(marker),
+            &stream_page_key(stream_id, page_start),
+            &flush_block.to_be_bytes(),
             blob,
         );
     }
 
-    /// Loads the sealed-shard page-count manifest for one stream, if its
-    /// shard has fully sealed. The key is the `stream_id` itself, which
-    /// already encodes the shard (see [`sharded_stream_id`]).
-    pub async fn load_page_counts(&self, stream_id: &str) -> Result<Option<BitmapPageCounts>> {
-        self.page_counts.get(stream_id.as_bytes()).await
+    /// Loads a stream's page-count manifest for one sealed page group.
+    pub async fn load_page_counts(
+        &self,
+        stream_id: &str,
+        group_start: u64,
+    ) -> Result<Option<BitmapPageCounts>> {
+        self.page_counts
+            .get(&stream_group_key(stream_id, group_start))
+            .await
     }
 
     pub fn stage_page_counts<B: BlobStore>(
         &self,
         w: &mut WriteSession<'_, M, B>,
         stream_id: &str,
+        group_start: u64,
         counts: &BitmapPageCounts,
     ) {
-        w.put(&self.page_counts, stream_id.as_bytes(), counts.encode());
+        w.put(
+            &self.page_counts,
+            &stream_group_key(stream_id, group_start),
+            counts.encode(),
+        );
     }
 
-    /// Loads the open-stream inventory for one frontier page, unioning the
-    /// per-batch delta rows. Each row is a chunk of stream ids first-seen in one
-    /// batch (clustering key = `(marker, chunk_idx)`); the union is the page's
-    /// full open-stream set. The streams live in the row *values*, so this is a
-    /// keys scan + concurrent value fetch (the values are cache-served when warm).
+    /// Loads the stream inventory for one page by unioning its delta rows
+    /// (clustering key `(marker_block, chunk_idx)`). A page's partition holds
+    /// two row flavors with the same union semantics: per-flush first-seen
+    /// rows while the page is open, plus its complete inventory staged at
+    /// seal (see `ArtifactWrite::OpenStreams`) — recovery reads sealed pages'
+    /// partitions when rebuilding the open group's page counts.
     ///
-    /// Unlike the fragment loaders, this does not filter by `published_head`: a
-    /// row from a marker ahead of the head (visible during publisher CAS lag)
-    /// only adds stream ids whose own fragments are head-filtered to empty, so
-    /// the over-inclusion contributes no bits — it is wasteful, never wrong.
-    pub async fn load_open_streams(&self, global_page_start: u64) -> Result<Vec<String>> {
-        let partition = global_page_start.to_be_bytes();
-        let page = self
-            .open_streams
-            .list_prefix(&partition, &[], None, usize::MAX)
-            .await?;
-        let table = &self.open_streams;
-        let part = &partition;
-        let chunks: Vec<Arc<Vec<String>>> = stream::iter(page.keys)
-            .map(|key| async move {
-                table
-                    .get(part, &key)
-                    .await?
-                    .ok_or(MonadChainDataError::MissingData(
-                        "missing open_streams delta row",
-                    ))
-            })
-            .buffered(FRAGMENT_GET_CONCURRENCY)
-            .try_collect()
-            .await?;
+    /// Deliberately not filtered by `published_head`: a row ahead of the head
+    /// only adds stream ids whose own fragments are head-filtered to empty —
+    /// wasteful, never wrong.
+    pub async fn load_open_streams(&self, page_start: u64) -> Result<Vec<String>> {
+        let partition = page_start.to_be_bytes();
+        let chunks = scan_get_all(
+            &self.open_streams,
+            &partition,
+            "missing open_streams delta row",
+        )
+        .await?;
 
-        let mut union: BTreeSet<String> = BTreeSet::new();
-        for chunk in chunks {
-            union.extend(chunk.iter().cloned());
-        }
+        let union: BTreeSet<String> = chunks.iter().flat_map(|c| c.iter().cloned()).collect();
         Ok(union.into_iter().collect())
     }
 
-    /// Stages one open-streams delta row: the stream ids first-seen in this batch
-    /// for `global_page_start`, keyed by `(marker, chunk_idx)`. A batch's first-
-    /// seen set is split into chunks by the caller to bound row size.
+    /// Stages one open-streams delta row (a flush's first-seen stream ids, or
+    /// a chunk of a sealed page's complete inventory), keyed
+    /// `(marker_block, chunk_idx)` — the flush block for flush rows, the seal
+    /// block for seal rows; the caller chunks the set to bound row size.
     pub fn stage_open_streams_delta<B: BlobStore>(
         &self,
         w: &mut WriteSession<'_, M, B>,
-        global_page_start: u64,
-        marker: u64,
+        page_start: u64,
+        marker_block: u64,
         chunk_idx: u32,
         blob: Bytes,
     ) {
         w.scan_put(
             &self.open_streams,
-            &global_page_start.to_be_bytes(),
-            &open_streams_delta_key(marker, chunk_idx),
+            &page_start.to_be_bytes(),
+            &open_streams_delta_key(marker_block, chunk_idx),
             blob,
         );
-    }
-
-    /// LEGACY (dead old-ingest path only): stages the pre-delta per-stream
-    /// `open_streams` format. The reader ([`Self::load_open_streams`]) now expects
-    /// delta rows, so data written here is unreadable — do not use for new writes.
-    pub fn stage_open_streams<B: BlobStore>(
-        &self,
-        w: &mut WriteSession<'_, M, B>,
-        global_page_start: u64,
-        streams: &BTreeSet<String>,
-    ) {
-        let partition = global_page_start.to_be_bytes();
-        for stream_id in streams {
-            w.scan_put(
-                &self.open_streams,
-                &partition,
-                stream_id.as_bytes(),
-                Bytes::new(),
-            );
-        }
     }
 }
 
 /// Encodes one bitmap blob into the stored fragment/page format.
-pub fn encode_bitmap_blob(blob: &BitmapBlob) -> Result<Bytes> {
+pub fn encode_bitmap_blob(blob: &DecodedBitmapFragment) -> Result<Bytes> {
     let mut payload = Vec::new();
     blob.bitmap
         .serialize_into(&mut payload)
@@ -383,53 +281,57 @@ pub fn encode_bitmap_blob(blob: &BitmapBlob) -> Result<Bytes> {
 
     let mut out = Vec::with_capacity(BITMAP_BLOB_HEADER_LEN + payload.len());
     out.push(BITMAP_BLOB_VERSION);
-    out.extend_from_slice(&blob.min_local.to_be_bytes());
-    out.extend_from_slice(&blob.max_local.to_be_bytes());
+    out.extend_from_slice(&blob.min_offset.to_be_bytes());
+    out.extend_from_slice(&blob.max_offset.to_be_bytes());
     out.extend_from_slice(&blob.count.to_be_bytes());
     out.extend_from_slice(&payload);
     Ok(Bytes::from(out))
 }
 
-/// Decodes one stored bitmap blob and validates its framing header.
-pub fn decode_bitmap_blob(bytes: &[u8]) -> Result<BitmapBlob> {
-    let header = bytes
-        .get(..BITMAP_BLOB_HEADER_LEN)
-        .ok_or(MonadChainDataError::Decode("bitmap blob too short"))?;
-    if header[0] != BITMAP_BLOB_VERSION {
-        return Err(MonadChainDataError::Decode(
-            "unsupported bitmap blob version",
-        ));
-    }
+/// Reads a big-endian `u32` from `b[off..off+4]`. The caller has length-checked
+/// the slice, so the `try_into` is infallible.
+fn be_u32(b: &[u8], off: usize) -> u32 {
+    u32::from_be_bytes(b[off..off + 4].try_into().expect("4 bytes"))
+}
 
-    let min_local = u32::from_be_bytes(
-        header[1..5]
-            .try_into()
-            .map_err(|_| MonadChainDataError::Decode("bitmap blob min_local"))?,
-    );
-    let max_local = u32::from_be_bytes(
-        header[5..9]
-            .try_into()
-            .map_err(|_| MonadChainDataError::Decode("bitmap blob max_local"))?,
-    );
-    let count = u32::from_be_bytes(
-        header[9..13]
-            .try_into()
-            .map_err(|_| MonadChainDataError::Decode("bitmap blob count"))?,
-    );
+/// Parses the shared `[version u8][min u32][max u32][count u32]` framing header
+/// (used by both the fragment-blob and page-artifact formats), returning the
+/// `(min_offset, max_offset, count)` triple after checking the version byte.
+fn decode_bitmap_meta_header(
+    bytes: &[u8],
+    version: u8,
+    header_len: usize,
+    too_short: &'static str,
+    bad_version: &'static str,
+) -> Result<(u32, u32, u32)> {
+    let header = bytes
+        .get(..header_len)
+        .ok_or(MonadChainDataError::Decode(too_short))?;
+    if header[0] != version {
+        return Err(MonadChainDataError::Decode(bad_version));
+    }
+    Ok((be_u32(header, 1), be_u32(header, 5), be_u32(header, 9)))
+}
+
+/// Decodes one stored bitmap blob and validates its framing header.
+pub fn decode_bitmap_blob(bytes: &[u8]) -> Result<DecodedBitmapFragment> {
+    let (min_offset, max_offset, count) = decode_bitmap_meta_header(
+        bytes,
+        BITMAP_BLOB_VERSION,
+        BITMAP_BLOB_HEADER_LEN,
+        "bitmap blob too short",
+        "unsupported bitmap blob version",
+    )?;
 
     let bitmap = RoaringBitmap::deserialize_from(&bytes[BITMAP_BLOB_HEADER_LEN..])
         .map_err(|e| MonadChainDataError::Backend(format!("deserialize bitmap blob: {e}")))?;
 
-    // The framing header duplicates the bitmap's own bounds and cardinality.
-    // Query-time skip decisions trust `min_local`/`max_local` (see
-    // `engine::query::bitmap::overlaps`), so a corrupted header with a
-    // too-narrow range would silently drop a page from the result rather than
-    // surface an error. Validate the header against the decoded payload and
-    // fail loudly on any drift. We already paid for the full deserialize, so
-    // recomputing the bounds here is effectively free.
+    // Query-time skip decisions trust `min_offset`/`max_offset` (see
+    // `engine::query::bitmap::overlaps`); a corrupt too-narrow header would
+    // silently drop a page, so validate it against the decoded payload.
     let header_matches_payload = match bitmap.min().zip(bitmap.max()) {
         Some((actual_min, actual_max)) => {
-            u64::from(count) == bitmap.len() && min_local == actual_min && max_local == actual_max
+            u64::from(count) == bitmap.len() && min_offset == actual_min && max_offset == actual_max
         }
         None => count == 0,
     };
@@ -439,110 +341,96 @@ pub fn decode_bitmap_blob(bytes: &[u8]) -> Result<BitmapBlob> {
         ));
     }
 
-    Ok(BitmapBlob {
-        min_local,
-        max_local,
+    Ok(DecodedBitmapFragment {
+        min_offset,
+        max_offset,
         count,
         bitmap,
     })
 }
 
-/// Encodes one compacted bitmap page into a single KV value. The legacy layout
-/// wrote page metadata and page blob as two rows; version 3 keeps the page blob
-/// format intact and prefixes the query metadata so old split rows remain
-/// readable while new compactions write one row per page.
+/// Encodes one compacted bitmap page into a single KV value: the version byte
+/// prefixes the query metadata to the unchanged page-blob format.
 pub fn encode_bitmap_page_artifact(artifact: &BitmapPageArtifact) -> Bytes {
     let mut out = Vec::with_capacity(BITMAP_PAGE_ARTIFACT_HEADER_LEN + artifact.bitmap_blob.len());
     out.push(BITMAP_PAGE_ARTIFACT_VERSION);
-    out.extend_from_slice(&artifact.meta.min_local.to_be_bytes());
-    out.extend_from_slice(&artifact.meta.max_local.to_be_bytes());
+    out.extend_from_slice(&artifact.meta.min_offset.to_be_bytes());
+    out.extend_from_slice(&artifact.meta.max_offset.to_be_bytes());
     out.extend_from_slice(&artifact.meta.count.to_be_bytes());
     out.extend_from_slice(&artifact.bitmap_blob);
     Bytes::from(out)
 }
 
 pub fn decode_bitmap_page_artifact(bytes: &[u8]) -> Result<Option<BitmapPageArtifact>> {
+    // A leading byte that is not this version is not an artifact (`None`); the
+    // cache decoder turns that into a loud decode error rather than guessing.
     if bytes.first().copied() != Some(BITMAP_PAGE_ARTIFACT_VERSION) {
         return Ok(None);
     }
 
-    let header =
-        bytes
-            .get(..BITMAP_PAGE_ARTIFACT_HEADER_LEN)
-            .ok_or(MonadChainDataError::Decode(
-                "bitmap page artifact too short",
-            ))?;
-    let meta = BitmapPageMeta {
-        min_local: u32::from_be_bytes(
-            header[1..5]
-                .try_into()
-                .map_err(|_| MonadChainDataError::Decode("bitmap page artifact min_local"))?,
-        ),
-        max_local: u32::from_be_bytes(
-            header[5..9]
-                .try_into()
-                .map_err(|_| MonadChainDataError::Decode("bitmap page artifact max_local"))?,
-        ),
-        count: u32::from_be_bytes(
-            header[9..13]
-                .try_into()
-                .map_err(|_| MonadChainDataError::Decode("bitmap page artifact count"))?,
-        ),
-    };
+    let (min_offset, max_offset, count) = decode_bitmap_meta_header(
+        bytes,
+        BITMAP_PAGE_ARTIFACT_VERSION,
+        BITMAP_PAGE_ARTIFACT_HEADER_LEN,
+        "bitmap page artifact too short",
+        "unsupported bitmap page artifact version",
+    )?;
 
     Ok(Some(BitmapPageArtifact {
-        meta,
+        meta: BitmapPageMeta {
+            min_offset,
+            max_offset,
+            count,
+        },
         bitmap_blob: Bytes::copy_from_slice(&bytes[BITMAP_PAGE_ARTIFACT_HEADER_LEN..]),
     }))
 }
 
-/// Sparse per-stream roll-up of the compacted per-page `count`s for one
-/// sealed shard. Built once a shard fully seals (every page in the shard is
-/// compacted) and immutable thereafter, so query time can answer "is clause C
-/// empty in page P?" and "which clause is most selective in page P?" without
-/// fetching a single bitmap. Only non-empty pages are listed (≤
-/// [`STREAM_PAGES_PER_SHARD`] entries), kept sorted by `page_start_local` so a
-/// lookup is a binary search.
+/// Sparse per-stream roll-up of compacted per-page `count`s for one sealed
+/// page group; immutable once built. Lets query time answer page emptiness and
+/// clause selectivity without fetching bitmaps. Only non-empty pages are
+/// listed (at most the 256 pages of a group), sorted by page key.
+///
+/// Page keys are GROUP-RELATIVE page starts: `page_start - group_start`
+/// (equivalently the low 24 bits of the global page start), multiples of
+/// [`STREAM_PAGE_ID_SPAN`] in `[0, PAGE_GROUP_ID_SPAN)`. See
+/// [`page_start_in_group`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BitmapPageCounts {
-    /// `(page_start_local, count)` pairs for the stream's non-empty pages,
-    /// sorted ascending by `page_start_local`.
+    /// `(page_start_in_group, count)` pairs for the stream's non-empty pages,
+    /// sorted ascending by page.
     pub pages: Vec<(u32, u32)>,
 }
 
 impl BitmapPageCounts {
-    /// Builds a manifest from `(page_start_local, count)` pairs, dropping
-    /// zero-count pages and sorting by page so [`Self::count_for_page`] can
-    /// binary-search. Pages are expected unique; on a duplicate the last write
-    /// wins, mirroring the immutable-once-sealed contract.
+    /// Builds a manifest from `(page_start_in_group, count)` pairs, dropping
+    /// zero-count pages and sorting by page; on a duplicate page the first
+    /// (in input order) wins.
     pub fn from_pairs(pairs: impl IntoIterator<Item = (u32, u32)>) -> Self {
         let mut pages: Vec<(u32, u32)> =
             pairs.into_iter().filter(|(_, count)| *count != 0).collect();
-        pages.sort_by_key(|(page_start_local, _)| *page_start_local);
-        pages.dedup_by_key(|(page_start_local, _)| *page_start_local);
+        pages.sort_by_key(|(page_start_in_group, _)| *page_start_in_group);
+        pages.dedup_by_key(|(page_start_in_group, _)| *page_start_in_group);
         Self { pages }
     }
 
-    /// Per-page count for `page_start_local`. `Some(0)` is never returned —
-    /// zero-count pages are absent from the manifest, so a missing page means
-    /// the stream contributes nothing there.
-    pub fn count_for_page(&self, page_start_local: u32) -> Option<u32> {
+    /// Per-page count for `page_start_in_group`. `Some(0)` is never returned;
+    /// `None` means the stream contributes nothing in that page.
+    pub fn count_for_page(&self, page_start_in_group: u32) -> Option<u32> {
         self.pages
-            .binary_search_by_key(&page_start_local, |(page, _)| *page)
+            .binary_search_by_key(&page_start_in_group, |(page, _)| *page)
             .ok()
             .map(|idx| self.pages[idx].1)
     }
 
-    /// Encodes the manifest with a version byte followed by length-prefixed,
-    /// fixed-width `(page_start_local, count)` pairs. Mirrors the explicit
-    /// big-endian framing used by [`encode_bitmap_blob`] rather than RLP so
-    /// the on-disk layout stays self-describing and bounded.
+    /// Layout: `[version u8][len u32]( [page_start_in_group u32][count u32] )*`,
+    /// big-endian.
     pub fn encode(&self) -> Bytes {
         let mut out = Vec::with_capacity(1 + 4 + self.pages.len() * 8);
         out.push(BITMAP_PAGE_COUNTS_VERSION);
         out.extend_from_slice(&(self.pages.len() as u32).to_be_bytes());
-        for (page_start_local, count) in &self.pages {
-            out.extend_from_slice(&page_start_local.to_be_bytes());
+        for (page_start_in_group, count) in &self.pages {
+            out.extend_from_slice(&page_start_in_group.to_be_bytes());
             out.extend_from_slice(&count.to_be_bytes());
         }
         Bytes::from(out)
@@ -561,11 +449,7 @@ impl BitmapPageCounts {
         let len_bytes = bytes
             .get(1..5)
             .ok_or(MonadChainDataError::Decode("bitmap page counts too short"))?;
-        let len = u32::from_be_bytes(
-            len_bytes
-                .try_into()
-                .map_err(|_| MonadChainDataError::Decode("bitmap page counts length"))?,
-        ) as usize;
+        let len = be_u32(len_bytes, 0) as usize;
         let body = &bytes[5..];
         if body.len() != len * 8 {
             return Err(MonadChainDataError::Decode(
@@ -574,143 +458,200 @@ impl BitmapPageCounts {
         }
         let mut pages = Vec::with_capacity(len);
         for chunk in body.chunks_exact(8) {
-            let page_start_local = u32::from_be_bytes(
-                chunk[0..4]
-                    .try_into()
-                    .map_err(|_| MonadChainDataError::Decode("bitmap page counts page"))?,
-            );
-            let count = u32::from_be_bytes(
-                chunk[4..8]
-                    .try_into()
-                    .map_err(|_| MonadChainDataError::Decode("bitmap page counts count"))?,
-            );
-            pages.push((page_start_local, count));
+            pages.push((be_u32(chunk, 0), be_u32(chunk, 4)));
         }
         Ok(Self { pages })
     }
 }
 
-/// Groups `(stream_id, local_id)` pairs by stream and page, builds a roaring
-/// bitmap per page, and serializes each into a [`BitmapFragmentWrite`].
-///
-/// A single block may contribute entries to many streams (one per indexed
-/// address or topic) and each stream may span multiple pages if the block's
-/// local-ID range crosses a page boundary.
-pub fn encode_grouped_bitmap_fragments(
-    values: impl IntoIterator<Item = (String, u32)>,
-) -> Result<Vec<BitmapFragmentWrite>> {
-    let mut grouped = BTreeMap::<String, BTreeMap<u32, RoaringBitmap>>::new();
+/// Start of the page containing `id`: the id with its low 16 bits cleared.
+pub fn page_start(id: u64) -> u64 {
+    id & !u64::from(STREAM_PAGE_ID_SPAN - 1)
+}
 
-    for (stream_id, local_id) in values {
-        let page_start_local = page_start_local(local_id);
-        grouped
-            .entry(stream_id)
-            .or_default()
-            .entry(page_start_local)
-            .or_default()
-            .insert(local_id);
-    }
+/// Page-relative offset of `id` within its page: `id - page_start(id)`.
+pub fn page_offset(id: u64) -> u32 {
+    (id & u64::from(STREAM_PAGE_ID_SPAN - 1)) as u32
+}
 
-    let mut out = Vec::new();
-    for (stream_id, pages) in grouped {
-        for (page_start_local, bitmap) in pages {
-            let Some(bitmap_blob) = compacted_bitmap_blob(bitmap, page_start_local)? else {
-                continue;
-            };
-            out.push(BitmapFragmentWrite {
-                stream_id: stream_id.clone(),
-                page_start_local,
-                bitmap_blob: encode_bitmap_blob(&bitmap_blob)?,
-            });
+/// Start of the page group containing `id`: the id with its low 24 bits
+/// cleared.
+pub fn page_group_start(id: u64) -> u64 {
+    id & !(PAGE_GROUP_ID_SPAN - 1)
+}
+
+/// Group-relative page start (the manifest's page key):
+/// `page_start - page_group_start(page_start)`, i.e. the low 24 bits of the
+/// global page start.
+pub fn page_start_in_group(page_start: u64) -> u32 {
+    (page_start & (PAGE_GROUP_ID_SPAN - 1)) as u32
+}
+
+/// Renders the canonical stream id for an indexed `(kind, value)` pair. One
+/// logical stream spans the whole id space; pages and manifests key further
+/// segments under it.
+pub fn render_stream_id(index_kind: &str, value: &[u8]) -> String {
+    format!("{index_kind}/{}", alloy_primitives::hex::encode(value))
+}
+
+/// The index kinds that name bitmap streams (the first segment of a
+/// [`render_stream_id`]), across all families. This enum is the join key
+/// between ingest writes (`stream_entries_for_*`) and query reads
+/// (`IndexedClause::kind`); both sides must spell a kind through it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum IndexKind {
+    Addr,
+    Topic0,
+    Topic1,
+    Topic2,
+    Topic3,
+    From,
+    To,
+    Selector,
+    TopLevel,
+    HasTransfer,
+}
+
+impl IndexKind {
+    const ALL: [IndexKind; 10] = [
+        IndexKind::Addr,
+        IndexKind::Topic0,
+        IndexKind::Topic1,
+        IndexKind::Topic2,
+        IndexKind::Topic3,
+        IndexKind::From,
+        IndexKind::To,
+        IndexKind::Selector,
+        IndexKind::TopLevel,
+        IndexKind::HasTransfer,
+    ];
+
+    /// Topic kinds by topic position: index `i` holds `topic{i}`.
+    pub(crate) const TOPICS: [IndexKind; 4] = [
+        IndexKind::Topic0,
+        IndexKind::Topic1,
+        IndexKind::Topic2,
+        IndexKind::Topic3,
+    ];
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            IndexKind::Addr => "addr",
+            IndexKind::Topic0 => "topic0",
+            IndexKind::Topic1 => "topic1",
+            IndexKind::Topic2 => "topic2",
+            IndexKind::Topic3 => "topic3",
+            IndexKind::From => "from",
+            IndexKind::To => "to",
+            IndexKind::Selector => "selector",
+            IndexKind::TopLevel => "top_level",
+            IndexKind::HasTransfer => "has_transfer",
         }
     }
 
-    Ok(out)
+    /// The canonical stream-value byte length for this kind: 20 (address-like),
+    /// 32 (topic), 4 (selector), or 0 (flag streams).
+    fn expected_value_len(self) -> usize {
+        match self {
+            IndexKind::Addr | IndexKind::From | IndexKind::To => 20,
+            IndexKind::Topic0 | IndexKind::Topic1 | IndexKind::Topic2 | IndexKind::Topic3 => 32,
+            IndexKind::Selector => 4,
+            IndexKind::TopLevel | IndexKind::HasTransfer => 0,
+        }
+    }
 }
 
-pub fn page_start_local(local_id: u32) -> u32 {
-    (local_id / STREAM_PAGE_LOCAL_ID_SPAN) * STREAM_PAGE_LOCAL_ID_SPAN
+/// Compact `Copy` in-memory identity of a bitmap stream, used as the hot-path
+/// map key on the ingest index track. The canonical string form
+/// ([`Self::render`], byte-identical to [`render_stream_id`]) is produced
+/// exactly once per persisted artifact, so every stored byte is unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct StreamKey {
+    kind: IndexKind,
+    /// Stream-value length: 0 (flag streams), 4 (selector), 20 (address) or
+    /// 32 (topic); the value occupies `value[..len]`.
+    len: u8,
+    value: [u8; 32],
 }
 
-pub fn sharded_stream_id(index_kind: &str, value: &[u8], shard: u64) -> String {
-    let shard_hex_width = ((64 - PrimaryId::LOCAL_ID_BITS) as usize).div_ceil(4);
-    format!(
-        "{index_kind}/{}/{:0width$x}",
-        alloy_primitives::hex::encode(value),
-        shard,
-        width = shard_hex_width
-    )
+impl StreamKey {
+    pub(crate) fn new(kind: IndexKind, value: &[u8]) -> Self {
+        debug_assert_eq!(
+            value.len(),
+            kind.expected_value_len(),
+            "unexpected stream value length for {kind:?}"
+        );
+        let mut buf = [0u8; 32];
+        buf[..value.len()].copy_from_slice(value);
+        Self {
+            kind,
+            len: value.len() as u8,
+            value: buf,
+        }
+    }
+
+    /// Render the canonical stream id — byte-identical to what
+    /// [`render_stream_id`] produces for the same kind/value.
+    pub(crate) fn render(&self) -> String {
+        render_stream_id(self.kind.as_str(), &self.value[..self.len as usize])
+    }
+
+    /// Parse a stored canonical stream id back into its compact key (recovery
+    /// and snapshot decode read the rendered strings). Inverse of
+    /// [`Self::render`] for every id this engine writes.
+    pub(crate) fn parse(stream_id: &str) -> Result<Self> {
+        let err = || MonadChainDataError::Decode("malformed stream id");
+        let (kind_str, value_hex) = stream_id.split_once('/').ok_or_else(err)?;
+        let kind = *IndexKind::ALL
+            .iter()
+            .find(|k| k.as_str() == kind_str)
+            .ok_or_else(err)?;
+        // Strict inverse of `render`'s value segment: lowercase hex only
+        // (`hex::decode` would otherwise accept uppercase and `0x` prefixes).
+        if !value_hex
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(err());
+        }
+        let value = alloy_primitives::hex::decode(value_hex).map_err(|_| err())?;
+        if value.len() != kind.expected_value_len() {
+            return Err(err());
+        }
+        Ok(Self::new(kind, &value))
+    }
 }
 
-pub fn stream_page_key(stream_id: &str, page_start_local: u32) -> Vec<u8> {
+/// Row key for one stream page (fragments partition / page artifact): the
+/// stream id, a `/` separator, then the big-endian global page start.
+pub fn stream_page_key(stream_id: &str, page_start: u64) -> Vec<u8> {
+    stream_scoped_key(stream_id, page_start)
+}
+
+/// Row key for one stream's page-count manifest row: the stream id, a `/`
+/// separator, then the big-endian group start. Same shape as
+/// [`stream_page_key`]; the two live in different tables.
+fn stream_group_key(stream_id: &str, group_start: u64) -> Vec<u8> {
+    stream_scoped_key(stream_id, group_start)
+}
+
+fn stream_scoped_key(stream_id: &str, start: u64) -> Vec<u8> {
     let mut key = format!("{stream_id}/").into_bytes();
-    key.extend_from_slice(&u64::from(page_start_local).to_be_bytes());
+    key.extend_from_slice(&start.to_be_bytes());
     key
 }
 
-pub(crate) fn global_page_start(primary_id: u64) -> u64 {
-    (primary_id / u64::from(STREAM_PAGE_LOCAL_ID_SPAN)) * u64::from(STREAM_PAGE_LOCAL_ID_SPAN)
-}
-
-pub(crate) fn stream_page_global_start(stream_id: &str, page_start_local: u32) -> Result<u64> {
-    let shard = parse_stream_shard(stream_id)?;
-    Ok(PrimaryId::from_parts(shard, page_start_local)?.as_u64())
-}
-
-pub(crate) fn touched_streams_by_page(
-    fragments: &[BitmapFragmentWrite],
-) -> Result<BTreeMap<u64, BTreeSet<String>>> {
-    let mut out = BTreeMap::<u64, BTreeSet<String>>::new();
-
-    for fragment in fragments {
-        let page_start = stream_page_global_start(&fragment.stream_id, fragment.page_start_local)?;
-        out.entry(page_start)
-            .or_default()
-            .insert(fragment.stream_id.clone());
-    }
-
-    Ok(out)
-}
-
-pub(crate) fn local_page_start(global_page_start: u64) -> u32 {
-    (global_page_start % (1u64 << PrimaryId::LOCAL_ID_BITS)) as u32
-}
-
-fn compacted_bitmap_blob(
-    bitmap: RoaringBitmap,
-    page_start_local: u32,
-) -> Result<Option<BitmapBlob>> {
-    if bitmap.is_empty() {
-        return Ok(None);
-    }
-
-    let count = u32::try_from(bitmap.len())
-        .map_err(|_| MonadChainDataError::Decode("bitmap fragment count overflow"))?;
-    let min_local = bitmap.min().unwrap_or(page_start_local);
-    let max_local = bitmap.max().unwrap_or(page_start_local);
-    Ok(Some(BitmapBlob {
-        min_local,
-        max_local,
-        count,
-        bitmap,
-    }))
-}
-
-fn block_number_key(block_number: u64) -> [u8; 8] {
-    block_number.to_be_bytes()
-}
-
-/// Target encoded size of one open-streams delta row. A batch's first-seen set is
-/// chunked to stay under this, keeping rows well below the backend object limit
-/// (a backfill page can have hundreds of thousands of distinct streams).
+/// Target encoded size of one open-streams delta row; first-seen sets are
+/// chunked under this to stay well below the backend object limit.
 pub const OPEN_STREAMS_DELTA_TARGET_BYTES: usize = 4 * 1024 * 1024;
 const OPEN_STREAMS_DELTA_VERSION: u8 = 1;
 
-/// Clustering key for an open-streams delta row: `marker` (batch block) then the
-/// within-batch chunk index, both big-endian.
-fn open_streams_delta_key(marker: u64, chunk_idx: u32) -> [u8; 12] {
+/// Clustering key for an open-streams delta row: `marker_block` (the flush
+/// block for flush rows, the seal block for a sealed page's inventory rows)
+/// then the within-burst chunk index, both big-endian.
+fn open_streams_delta_key(marker_block: u64, chunk_idx: u32) -> [u8; 12] {
     let mut key = [0u8; 12];
-    key[..8].copy_from_slice(&marker.to_be_bytes());
+    key[..8].copy_from_slice(&marker_block.to_be_bytes());
     key[8..].copy_from_slice(&chunk_idx.to_be_bytes());
     key
 }
@@ -757,42 +698,97 @@ fn take_u32(cur: &mut &[u8]) -> Result<u32> {
     let bytes = cur
         .get(..4)
         .ok_or(MonadChainDataError::Decode("open_streams delta truncated"))?;
-    let value = u32::from_be_bytes(bytes.try_into().expect("4 bytes"));
+    let value = be_u32(bytes, 0);
     *cur = &cur[4..];
     Ok(value)
-}
-
-pub(crate) fn parse_stream_shard(stream_id: &str) -> Result<u64> {
-    let shard_hex = stream_id
-        .rsplit('/')
-        .next()
-        .ok_or(MonadChainDataError::Decode("empty stream id"))?;
-    u64::from_str_radix(shard_hex, 16)
-        .map_err(|_| MonadChainDataError::Decode("invalid stream id shard"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn sample_blob() -> BitmapBlob {
+    fn sample_blob() -> DecodedBitmapFragment {
         let mut bitmap = RoaringBitmap::new();
         for v in [3u32, 7, 42, 1000] {
             bitmap.insert(v);
         }
-        BitmapBlob {
-            min_local: 3,
-            max_local: 1000,
+        DecodedBitmapFragment {
+            min_offset: 3,
+            max_offset: 1000,
             count: 4,
             bitmap,
         }
     }
 
     #[test]
+    fn page_math_helpers_agree() {
+        let span = u64::from(STREAM_PAGE_ID_SPAN);
+        for id in [0u64, 1, span - 1, span, span + 7, PAGE_GROUP_ID_SPAN + 3] {
+            assert_eq!(page_start(id), (id / span) * span);
+            assert_eq!(u64::from(page_offset(id)), id - page_start(id));
+            assert_eq!(
+                page_group_start(id),
+                (id / PAGE_GROUP_ID_SPAN) * PAGE_GROUP_ID_SPAN
+            );
+        }
+        let page = page_start(PAGE_GROUP_ID_SPAN + 3 * span);
+        assert_eq!(
+            u64::from(page_start_in_group(page)),
+            page - page_group_start(page)
+        );
+    }
+
+    #[test]
+    fn stream_key_render_matches_render_stream_id_and_parses_back() {
+        // Every kind at its real value size.
+        let cases: &[(IndexKind, &[u8])] = &[
+            (IndexKind::Addr, &[0xab; 20]),
+            (IndexKind::Topic0, &[0x00; 32]),
+            (IndexKind::Topic1, &[0x11; 32]),
+            (IndexKind::Topic2, &[0xfe; 32]),
+            (IndexKind::Topic3, &[0x7f; 32]),
+            (IndexKind::From, &[0x01; 20]),
+            (IndexKind::To, &[0xee; 20]),
+            (IndexKind::Selector, &[0xde, 0xad, 0xbe, 0xef]),
+            (IndexKind::TopLevel, &[]),
+            (IndexKind::HasTransfer, &[]),
+        ];
+        for &(kind, value) in cases {
+            let key = StreamKey::new(kind, value);
+            let rendered = key.render();
+            assert_eq!(rendered, render_stream_id(kind.as_str(), value));
+            assert_eq!(StreamKey::parse(&rendered).unwrap(), key);
+        }
+    }
+
+    #[test]
+    fn stream_key_parse_rejects_malformed_ids() {
+        let addr20 = "00112233445566778899aabbccddeeff00112233";
+        let topic32 = "ab".repeat(32);
+        for bad in [
+            "",
+            "addr",
+            &format!("nope/{addr20}"), // unknown kind
+            "addr/zz",                 // bad hex value
+            "addr/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            // value length must match the kind: a topic-sized value under `addr`.
+            &format!("addr/{topic32}"),
+            // ...and an address-sized value under a topic kind.
+            &format!("topic0/{addr20}"),
+            // a retired shard-era id (trailing shard segment),
+            &format!("addr/{addr20}/0000000000"),
+            // and uppercase hex (not a strict inverse of render).
+            &format!("addr/{}", addr20.to_uppercase()),
+        ] {
+            assert!(StreamKey::parse(bad).is_err(), "should reject {bad:?}");
+        }
+    }
+
+    #[test]
     fn open_streams_delta_round_trips() {
         let streams = vec![
-            "addr/00112233445566778899aabbccddeeff00112233/0000000000".to_string(),
-            "topic0/".to_string() + &"ab".repeat(32) + "/0000000000",
+            "addr/00112233445566778899aabbccddeeff00112233".to_string(),
+            "topic0/".to_string() + &"ab".repeat(32),
             String::new(), // empty id survives the round trip
         ];
         let encoded = encode_open_streams_delta(&streams);
@@ -824,17 +820,16 @@ mod tests {
     fn bitmap_blob_round_trips() {
         let encoded = encode_bitmap_blob(&sample_blob()).unwrap();
         let decoded = decode_bitmap_blob(encoded.as_ref()).unwrap();
-        assert_eq!(decoded.min_local, 3);
-        assert_eq!(decoded.max_local, 1000);
+        assert_eq!(decoded.min_offset, 3);
+        assert_eq!(decoded.max_offset, 1000);
         assert_eq!(decoded.count, 4);
-        assert_eq!(decoded.bitmap.len(), 4);
+        assert_eq!(decoded.bitmap, sample_blob().bitmap);
     }
 
     #[test]
-    fn decode_rejects_header_with_wrong_max_local() {
+    fn decode_rejects_header_with_wrong_max_offset() {
         let mut encoded = encode_bitmap_blob(&sample_blob()).unwrap().to_vec();
-        // Corrupt `max_local` (bytes 5..9) to a too-narrow value that would
-        // make the query-time overlap check skip a page that actually matches.
+        // Corrupt `max_offset` to a too-narrow value.
         encoded[5..9].copy_from_slice(&10u32.to_be_bytes());
         assert!(matches!(
             decode_bitmap_blob(&encoded),
@@ -847,7 +842,6 @@ mod tests {
     #[test]
     fn decode_rejects_header_with_wrong_count() {
         let mut encoded = encode_bitmap_blob(&sample_blob()).unwrap().to_vec();
-        // Corrupt `count` (bytes 9..13).
         encoded[9..13].copy_from_slice(&99u32.to_be_bytes());
         assert!(matches!(
             decode_bitmap_blob(&encoded),
@@ -858,30 +852,35 @@ mod tests {
     }
 
     #[test]
+    fn decode_rejects_prior_format_version() {
+        // A pre-page-group blob (version byte 2) must fail loudly, not decode:
+        // its bits were shard-local, not page-relative.
+        let mut encoded = encode_bitmap_blob(&sample_blob()).unwrap().to_vec();
+        encoded[0] = 2;
+        assert!(matches!(
+            decode_bitmap_blob(&encoded),
+            Err(MonadChainDataError::Decode(
+                "unsupported bitmap blob version"
+            ))
+        ));
+    }
+
+    #[test]
     fn bitmap_page_counts_round_trips_and_sorts_dropping_empty_pages() {
-        // Out-of-order input with a zero-count page that must be dropped.
         let counts = BitmapPageCounts::from_pairs([
-            (2 * STREAM_PAGE_LOCAL_ID_SPAN, 5),
+            (2 * STREAM_PAGE_ID_SPAN, 5),
             (0, 9),
-            (STREAM_PAGE_LOCAL_ID_SPAN, 0),
+            (STREAM_PAGE_ID_SPAN, 0),
         ]);
-        assert_eq!(
-            counts.pages,
-            vec![(0, 9), (2 * STREAM_PAGE_LOCAL_ID_SPAN, 5)]
-        );
+        assert_eq!(counts.pages, vec![(0, 9), (2 * STREAM_PAGE_ID_SPAN, 5)]);
 
         let encoded = counts.encode();
         let decoded = BitmapPageCounts::decode(encoded.as_ref()).unwrap();
         assert_eq!(decoded, counts);
 
-        // Lookups: present pages return their count, the dropped/zero page and
-        // an untouched page both return `None`.
         assert_eq!(decoded.count_for_page(0), Some(9));
-        assert_eq!(
-            decoded.count_for_page(2 * STREAM_PAGE_LOCAL_ID_SPAN),
-            Some(5)
-        );
-        assert_eq!(decoded.count_for_page(STREAM_PAGE_LOCAL_ID_SPAN), None);
+        assert_eq!(decoded.count_for_page(2 * STREAM_PAGE_ID_SPAN), Some(5));
+        assert_eq!(decoded.count_for_page(STREAM_PAGE_ID_SPAN), None);
     }
 
     #[test]
@@ -908,10 +907,10 @@ mod tests {
     }
 
     #[test]
-    fn bitmap_page_artifact_roundtrips_and_legacy_blob_is_not_wrapped() {
-        let bitmap_blob = BitmapBlob {
-            min_local: 7,
-            max_local: 19,
+    fn bitmap_page_artifact_roundtrips_and_plain_blob_is_not_wrapped() {
+        let bitmap_blob = DecodedBitmapFragment {
+            min_offset: 7,
+            max_offset: 19,
             count: 2,
             bitmap: RoaringBitmap::from_iter([7, 19]),
         };
@@ -922,11 +921,11 @@ mod tests {
 
         let artifact = BitmapPageArtifact {
             meta: BitmapPageMeta {
-                min_local: 7,
-                max_local: 19,
+                min_offset: 7,
+                max_offset: 19,
                 count: 2,
             },
-            bitmap_blob: encoded_blob.clone(),
+            bitmap_blob: encoded_blob,
         };
         let encoded_artifact = encode_bitmap_page_artifact(&artifact);
         let decoded = decode_bitmap_page_artifact(encoded_artifact.as_ref())

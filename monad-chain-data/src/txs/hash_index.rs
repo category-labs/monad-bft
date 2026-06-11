@@ -17,7 +17,7 @@ use bytes::Bytes;
 
 use crate::{
     error::Result,
-    family::Hash32,
+    ingest_types::Hash32,
     store::{blob::BlobStore, CacheConfig, CachedKvTable, MetaStore, TableId, WriteSession},
     txs::types::TxLocation,
 };
@@ -26,7 +26,6 @@ pub struct TxHashIndexTable<M: MetaStore> {
     table: CachedKvTable<M, TxLocation>,
 }
 
-/// Cache decoder for the tx-hash index: a `TxLocation`.
 fn decode_tx_location(bytes: Bytes) -> Result<TxLocation> {
     TxLocation::decode(bytes.as_ref())
 }
@@ -36,9 +35,9 @@ impl<M: MetaStore> TxHashIndexTable<M> {
 
     pub(crate) fn new(meta_store: M, cache: CacheConfig) -> Self {
         Self {
-            table: CachedKvTable::new_decoded(
+            table: CachedKvTable::new(
                 meta_store.table(Self::TABLE),
-                cache.tx_hash_index_entries,
+                cache.tx_hash_index_cache_bytes,
                 decode_tx_location,
             ),
         }

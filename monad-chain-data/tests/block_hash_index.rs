@@ -13,58 +13,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use monad_chain_data::{
-    FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, MonadChainDataService, QueryLimits, B256,
-};
+use monad_chain_data::{FinalizedBlock, B256};
 
 mod common;
 
-use common::{chain_header, test_header};
+use common::{chain_header, empty_block, test_header};
 
 #[tokio::test(flavor = "current_thread")]
-async fn ingest_persists_block_hash_index_entry() {
-    let header = test_header(1, B256::ZERO);
-    let block_hash = header.hash_slow();
-
-    let blocks = vec![FinalizedBlock {
-        header,
-        logs_by_tx: vec![],
-        txs: Vec::new(),
-        traces: vec![],
-    }];
-    let store = common::populate::populate_via_engine(blocks).await;
-    let service = store.reader();
-
-    let resolved = service
-        .tables()
-        .blocks()
-        .block_number_by_hash(&block_hash)
-        .await
-        .expect("lookup");
-
-    assert_eq!(resolved, Some(1));
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn lookup_returns_none_for_unknown_hash() {
-    let service = MonadChainDataService::new(
-        InMemoryMetaStore::default(),
-        InMemoryBlobStore::default(),
-        QueryLimits::UNLIMITED,
-    );
-
-    let missing = service
-        .tables()
-        .blocks()
-        .block_number_by_hash(&B256::repeat_byte(0xFF))
-        .await
-        .expect("lookup");
-
-    assert!(missing.is_none());
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn multi_block_chain_indexes_each_hash_distinctly() {
+async fn ingest_indexes_each_block_hash_distinctly() {
     let h1 = test_header(1, B256::ZERO);
     let h2 = chain_header(2, &h1);
     let h3 = chain_header(3, &h2);
@@ -73,20 +29,28 @@ async fn multi_block_chain_indexes_each_hash_distinctly() {
     let hash_2 = h2.hash_slow();
     let hash_3 = h3.hash_slow();
 
-    let blocks: Vec<FinalizedBlock> = [h1, h2, h3]
-        .into_iter()
-        .map(|header| FinalizedBlock {
-            header,
-            logs_by_tx: vec![],
-            txs: Vec::new(),
-            traces: vec![],
-        })
-        .collect();
+    let blocks: Vec<FinalizedBlock> = [h1, h2, h3].into_iter().map(empty_block).collect();
     let store = common::populate::populate_via_engine(blocks).await;
     let service = store.reader();
 
-    let blocks = service.tables().blocks();
-    assert_eq!(blocks.block_number_by_hash(&hash_1).await.unwrap(), Some(1));
-    assert_eq!(blocks.block_number_by_hash(&hash_2).await.unwrap(), Some(2));
-    assert_eq!(blocks.block_number_by_hash(&hash_3).await.unwrap(), Some(3));
+    let block_tables = service.tables().blocks();
+    assert_eq!(
+        block_tables.block_number_by_hash(&hash_1).await.unwrap(),
+        Some(1)
+    );
+    assert_eq!(
+        block_tables.block_number_by_hash(&hash_2).await.unwrap(),
+        Some(2)
+    );
+    assert_eq!(
+        block_tables.block_number_by_hash(&hash_3).await.unwrap(),
+        Some(3)
+    );
+    assert_eq!(
+        block_tables
+            .block_number_by_hash(&B256::repeat_byte(0xFF))
+            .await
+            .unwrap(),
+        None
+    );
 }

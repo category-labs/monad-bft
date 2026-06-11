@@ -13,33 +13,27 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::HashSet;
-
 use monad_chain_data::{
-    Address, Bytes, EvmBlockHeader, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log,
-    LogData, LogFilter, LogsRelations, MonadChainDataService, QueryEnvelope, QueryLogsRequest,
-    QueryOrder, B256,
+    Address, EvmBlockHeader, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, Log, LogFilter,
+    LogsRelations, MonadChainDataService, QueryLogsRequest, B256,
 };
 
 mod common;
 
-use common::{chain_header, test_header};
+use common::{
+    address_filter, ascending_envelope, block_with_logs, chain_header, descending_envelope,
+    logs_request, test_header,
+};
 
 #[tokio::test(flavor = "current_thread")]
 async fn include_blocks_false_omits_block_headers() {
     let (service, _) = ingest_three_blocks().await;
 
     let page = service
-        .query_logs(QueryLogsRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(1),
-                to_block: Some(3),
-                order: QueryOrder::Ascending,
-                limit: 100,
-            },
-            filter: LogFilter::default(),
-            relations: LogsRelations::default(),
-        })
+        .query_logs(logs_request(
+            ascending_envelope(1, 3, 100),
+            LogFilter::default(),
+        ))
         .await
         .expect("query");
 
@@ -49,8 +43,7 @@ async fn include_blocks_false_omits_block_headers() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn include_blocks_true_returns_deduped_headers_for_matched_blocks() {
-    // Block 2 has no matching logs (address differs); only blocks 1 and 3
-    // should appear in the relation.
+    // Block 2's log address differs, so only blocks 1 and 3 appear.
     let matching = Address::repeat_byte(7);
     let other = Address::repeat_byte(9);
 
@@ -61,40 +54,17 @@ async fn include_blocks_true_returns_deduped_headers_for_matched_blocks() {
     let h3_hash = h3.hash_slow();
 
     let blocks = vec![
-        FinalizedBlock {
-            header: h1,
-            logs_by_tx: vec![vec![log(matching), log(matching)]],
-            txs: Vec::new(),
-            traces: vec![],
-        },
-        FinalizedBlock {
-            header: h2,
-            logs_by_tx: vec![vec![log(other)]],
-            txs: Vec::new(),
-            traces: vec![],
-        },
-        FinalizedBlock {
-            header: h3,
-            logs_by_tx: vec![vec![log(matching)]],
-            txs: Vec::new(),
-            traces: vec![],
-        },
+        block_with_logs(h1, vec![vec![log(matching), log(matching)]]),
+        block_with_logs(h2, vec![vec![log(other)]]),
+        block_with_logs(h3, vec![vec![log(matching)]]),
     ];
     let store = common::populate::populate_via_engine(blocks).await;
     let service = store.reader();
 
     let page = service
         .query_logs(QueryLogsRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(1),
-                to_block: Some(3),
-                order: QueryOrder::Ascending,
-                limit: 100,
-            },
-            filter: LogFilter {
-                address: Some(HashSet::from([matching])),
-                topics: [None, None, None, None],
-            },
+            envelope: ascending_envelope(1, 3, 100),
+            filter: address_filter(matching),
             relations: LogsRelations {
                 blocks: true,
                 transactions: false,
@@ -119,12 +89,7 @@ async fn descending_query_still_returns_blocks_ascending() {
 
     let page = service
         .query_logs(QueryLogsRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(3),
-                to_block: Some(1),
-                order: QueryOrder::Descending,
-                limit: 100,
-            },
+            envelope: descending_envelope(3, 1, 100),
             filter: LogFilter::default(),
             relations: LogsRelations {
                 blocks: true,
@@ -145,16 +110,8 @@ async fn include_blocks_empty_result_returns_empty_blocks() {
 
     let page = service
         .query_logs(QueryLogsRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(1),
-                to_block: Some(3),
-                order: QueryOrder::Ascending,
-                limit: 100,
-            },
-            filter: LogFilter {
-                address: Some(HashSet::from([Address::repeat_byte(0xEE)])),
-                topics: [None, None, None, None],
-            },
+            envelope: ascending_envelope(1, 3, 100),
+            filter: address_filter(Address::repeat_byte(0xEE)),
             relations: LogsRelations {
                 blocks: true,
                 transactions: false,
@@ -181,12 +138,7 @@ async fn ingest_three_blocks() -> (
 
     let blocks: Vec<FinalizedBlock> = [h1, h2, h3]
         .into_iter()
-        .map(|header| FinalizedBlock {
-            header,
-            logs_by_tx: vec![vec![log(addr)]],
-            txs: Vec::new(),
-            traces: vec![],
-        })
+        .map(|header| block_with_logs(header, vec![vec![log(addr)]]))
         .collect();
     let store = common::populate::populate_via_engine(blocks).await;
     (store.reader(), hashes)
@@ -210,8 +162,5 @@ fn tag_byte(n: u64) -> u8 {
 }
 
 fn log(address: Address) -> Log {
-    Log {
-        address,
-        data: LogData::new_unchecked(vec![B256::repeat_byte(0xAA)], Bytes::from(vec![1, 2, 3])),
-    }
+    common::log(address, vec![B256::repeat_byte(0xAA)])
 }

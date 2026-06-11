@@ -15,57 +15,61 @@
 
 //! Artifact content checksums for standby ingest verification.
 //!
-//! Every ingested block produces a deterministic *content digest* over the
-//! logical artifacts it would write: the uncompressed (pre-compression) row
-//! payloads, the EVM header, the per-family primary-id windows, the dictionary
-//! versions, and the index bitmap fragments. Per-block digests are folded into
-//! a hash chain whose running value is stored in every
-//! [`BlockRecord`](crate::primitives::state::BlockRecord) and surfaced in the
-//! publication head, so a single 32-byte value certifies the whole ingested
-//! history.
+//! Two replicas ingesting the same finalized block stream must reach
+//! byte-identical digests, so every chain here is a function of the LOGICAL
+//! block stream only — never of flush cadence, pack boundaries, compression,
+//! dict versions, physical keys, or timing.
 //!
-//! A standby that ingests the same finalized blocks re-derives the same chain
-//! and compares — proving it *would have written the same artifacts* without
-//! re-reading a single stored byte.
+//! Two independent chains:
 //!
-//! ## Why uncompressed values
+//! 1. **Row chain** (data track). Each block's logical content (number, hash,
+//!    parent hash, EVM header bytes, per-family windows + uncompressed row
+//!    payloads) folds into [`block_content_digest`]; per-block digests chain
+//!    into the running value stored in every
+//!    [`BlockRecord`](crate::primitives::records::BlockRecord)
+//!    `row_chain`, so one 32-byte value certifies the whole history.
 //!
-//! The digest folds the row bytes *before* zstd framing, so it never observes a
-//! compressed frame. Two nodes agree on the checksum whenever they agree on the
-//! logical content, even if their zstd library versions produce different
-//! compressed bytes. (The compressed-frame offsets in the per-family block
-//! headers are likewise excluded — they are a pure function of the frame sizes,
-//! which is exactly the zstd-dependent detail we want the digest to ignore.)
+//! 2. **Seal chains** (index track), one per family. Open-page FRAGMENTS are
+//!    flush-cadence artifacts and MUST NOT be hashed; sealed page/bucket
+//!    artifacts are content-deterministic (the union of everything in a 64K
+//!    id span) and keyed by id-space position, so they chain deterministically.
+//!    When a span seals, [`SealDigest`] hashes the exact persisted artifact
+//!    bytes in canonical order and the result folds into the family's chain,
+//!    persisted alongside the seal batch.
 //!
-//! ## Determinism rules
+//! Verification recipe: a standby comparison reads the primary's
+//! `row_chain` at height N (row data equality through N) plus each
+//! family's `(last sealed span, seal_chain)` row (index equality through the
+//! sealed frontier) and compares against its own — see
+//! `MonadChainDataService::standby_digests`.
 //!
-//! - Every variable-length field is length-prefixed, so the field stream is
-//!   unambiguous: `["ab", "c"]` and `["a", "bc"]` hash differently.
-//! - Sets with no inherent storage order (bitmap fragments) are folded in a
-//!   canonical sorted order, so map/iteration order cannot perturb the result.
-//! - Fixed-width fields use little-endian byte order.
+//! Determinism: row bytes are hashed pre-compression (and frame offsets are
+//! excluded) so the checksum is independent of the zstd codec/version;
+//! variable-length fields are length-prefixed; unordered sets are folded in
+//! canonical sorted order; fixed-width fields are little-endian.
 
 use blake3::Hasher;
 
 use crate::{
-    engine::bitmap::BitmapFragmentWrite, family::Hash32, primitives::state::FamilyWindowRecord,
+    engine::family::Family, ingest_types::Hash32, primitives::records::FamilyWindowRecord,
 };
 
-/// A 32-byte artifact checksum. Stored as [`Hash32`] (`B256`) so it round-trips
-/// through the existing RLP layouts of `BlockRecord` and `PublicationState`.
-pub type ArtifactChecksum = Hash32;
+/// A 32-byte chain digest, shared by the row chain and the per-family seal
+/// chains. Stored as [`Hash32`] (`B256`) so it round-trips through the existing
+/// RLP layouts of `BlockRecord` and `PublicationState`.
+pub type ChainDigest = Hash32;
 
 /// The chain seed, used before any block is ingested and as the stored value
 /// for an owner-less / empty publication head.
-pub const EMPTY_CHECKSUM: ArtifactChecksum = Hash32::ZERO;
+pub const EMPTY_DIGEST: ChainDigest = Hash32::ZERO;
 
-fn to_checksum(hash: blake3::Hash) -> ArtifactChecksum {
+fn to_checksum(hash: blake3::Hash) -> ChainDigest {
     Hash32::from(*hash.as_bytes())
 }
 
 /// Length-prefixing field hasher. Domain-separates variable-length inputs so
 /// concatenation is unambiguous, and writes fixed-width scalars little-endian.
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct FieldHasher(Hasher);
 
 impl FieldHasher {
@@ -85,64 +89,42 @@ impl FieldHasher {
         self
     }
 
-    fn finish(self) -> ArtifactChecksum {
+    fn finish(&self) -> ChainDigest {
         to_checksum(self.0.finalize())
     }
 }
 
-/// Incrementally folds a family's uncompressed row payloads into a digest as
-/// the rows are framed, so the row bytes are hashed in the same pass that
-/// compresses them — no extra pass and no retained payloads. Each row is
-/// length-prefixed, so the row count and boundaries are captured implicitly.
+/// Incrementally folds a family's uncompressed row payloads in the same pass
+/// that compresses them. Each row is length-prefixed, so row count and
+/// boundaries are captured implicitly.
 #[derive(Debug, Default)]
-pub struct RowDigest(Hasher);
+pub struct RowDigest(FieldHasher);
 
 impl RowDigest {
     pub fn new() -> Self {
-        Self(Hasher::new())
+        Self::default()
     }
 
     /// Folds one uncompressed (pre-compression) row payload.
     pub fn row(&mut self, raw: &[u8]) {
-        self.0.update(&(raw.len() as u64).to_le_bytes());
-        self.0.update(raw);
+        self.0.bytes(raw);
     }
 
-    /// Seals the row digest. Equality of two `RowDigest` results means the two
-    /// blocks framed byte-identical row payloads in the same order.
-    pub fn finish(&self) -> ArtifactChecksum {
-        to_checksum(self.0.finalize())
+    /// Finalizes the row digest. Equal results mean byte-identical row payloads
+    /// in the same order.
+    pub fn finish(&self) -> ChainDigest {
+        self.0.finish()
     }
 }
 
-/// Combines one family's logical artifacts into a content digest: its
-/// primary-id window, dictionary version, sealed [`RowDigest`], and index
-/// bitmap fragments. `fragments` need not be pre-sorted — they are folded in a
-/// canonical `(stream_id, page_start_local)` order.
-pub fn family_content_digest(
-    window: FamilyWindowRecord,
-    dict_version: u32,
-    rows: ArtifactChecksum,
-    fragments: &[BitmapFragmentWrite],
-) -> ArtifactChecksum {
+/// Combines one family's window (id position + row count) and sealed
+/// [`RowDigest`] into a content digest. Deliberately excludes dict versions,
+/// fragments, and anything else cadence- or compression-dependent.
+pub fn family_content_digest(window: FamilyWindowRecord, rows: ChainDigest) -> ChainDigest {
     let mut h = FieldHasher::default();
     h.u64(window.first_primary_id.as_u64())
         .u32(window.count)
-        .u32(dict_version)
         .bytes(rows.as_slice());
-
-    let mut ordered: Vec<&BitmapFragmentWrite> = fragments.iter().collect();
-    ordered.sort_unstable_by(|a, b| {
-        a.stream_id
-            .cmp(&b.stream_id)
-            .then(a.page_start_local.cmp(&b.page_start_local))
-    });
-    h.u64(ordered.len() as u64);
-    for f in ordered {
-        h.bytes(f.stream_id.as_bytes())
-            .u32(f.page_start_local)
-            .bytes(&f.bitmap_blob);
-    }
     h.finish()
 }
 
@@ -154,10 +136,10 @@ pub fn block_content_digest(
     block_hash: &Hash32,
     parent_hash: &Hash32,
     evm_header_rlp: &[u8],
-    log_family: ArtifactChecksum,
-    tx_family: ArtifactChecksum,
-    trace_family: ArtifactChecksum,
-) -> ArtifactChecksum {
+    log_family: ChainDigest,
+    tx_family: ChainDigest,
+    trace_family: ChainDigest,
+) -> ChainDigest {
     let mut h = FieldHasher::default();
     h.u64(block_number)
         .bytes(block_hash.as_slice())
@@ -172,27 +154,66 @@ pub fn block_content_digest(
 /// Folds a block's content digest into the running chain:
 /// `chain(prev, block) = H(prev ‖ block)`. Both inputs are fixed 32-byte
 /// values, so no length prefixing is needed.
-pub fn chain(previous: ArtifactChecksum, block_content: ArtifactChecksum) -> ArtifactChecksum {
+pub fn chain(previous: ChainDigest, block_content: ChainDigest) -> ChainDigest {
     let mut hasher = Hasher::new();
     hasher.update(previous.as_slice());
     hasher.update(block_content.as_slice());
     to_checksum(hasher.finalize())
 }
 
+/// Digest over the canonical FINAL sealed content of one 64K id span of one
+/// family: the per-stream sealed page artifacts (each framed as
+/// `(stream id, persisted artifact bytes)`, fed in ascending stream-id order)
+/// followed by the span's directory-bucket summary bytes. Hashes the exact
+/// bytes being persisted, so a standby that stores the same sealed artifacts
+/// reaches the same digest regardless of how many flushes produced them.
+///
+/// The page-group page-counts manifest is deliberately NOT folded in: every
+/// per-page count is already embedded in the hashed artifact bytes (the
+/// `encode_bitmap_blob` header), so the manifest row is a pure function of
+/// content this digest covers and hashing it would add nothing.
+#[derive(Debug)]
+pub struct SealDigest {
+    hasher: FieldHasher,
+}
+
+impl SealDigest {
+    pub fn new(family: Family, span_start: u64) -> Self {
+        // Stable per-family tag (Family::ALL order) for domain separation.
+        let tag = Family::ALL
+            .iter()
+            .position(|f| *f == family)
+            .expect("family is one of Family::ALL") as u32;
+        let mut hasher = FieldHasher::default();
+        hasher.u32(tag).u64(span_start);
+        Self { hasher }
+    }
+
+    /// Folds one sealed page artifact. Callers MUST feed pages in ascending
+    /// `stream_id` order; `artifact` is the exact persisted value bytes.
+    pub fn page(&mut self, stream_id: &str, artifact: &[u8]) -> &mut Self {
+        self.hasher.bytes(stream_id.as_bytes()).bytes(artifact);
+        self
+    }
+
+    /// Seals the digest with the span's directory-bucket summary bytes (the
+    /// exact persisted value). No page count is hashed: the length-prefixed
+    /// `(stream_id, artifact)` pairs are already injective and the
+    /// length-prefixed bucket bytes cleanly terminate the page run, so the
+    /// framing's injectivity rests on structure alone (no trailing fixed-width
+    /// scalar following an unbounded length-prefixed run, which is the one
+    /// mixing pattern that could alias across different (pages, bucket) splits).
+    /// This matches the `RowDigest` discipline.
+    pub fn finish(mut self, bucket: &[u8]) -> ChainDigest {
+        self.hasher.bytes(bucket);
+        self.hasher.finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use bytes::Bytes;
-
     use super::*;
-    use crate::primitives::state::PrimaryId;
-
-    fn frag(stream: &str, page: u32, blob: &[u8]) -> BitmapFragmentWrite {
-        BitmapFragmentWrite {
-            stream_id: stream.to_string(),
-            page_start_local: page,
-            bitmap_blob: Bytes::copy_from_slice(blob),
-        }
-    }
+    use crate::primitives::records::PrimaryId;
 
     fn window(first: u64, count: u32) -> FamilyWindowRecord {
         FamilyWindowRecord {
@@ -211,33 +232,44 @@ mod tests {
         b.row(b"a");
         b.row(b"bc");
 
-        // Length-prefixing makes the boundary significant.
+        // Length-prefixing makes the row boundary significant.
         assert_ne!(a.finish(), b.finish());
 
         let mut c = RowDigest::new();
         c.row(b"c");
         c.row(b"ab");
-        // Order matters.
         assert_ne!(a.finish(), c.finish());
     }
 
     #[test]
-    fn family_digest_ignores_fragment_order() {
+    fn family_digest_distinguishes_window_and_rows() {
         let rows = RowDigest::new().finish();
-        let f1 = frag("addr/0", 0, b"\x01\x02");
-        let f2 = frag("topic0/0", 64, b"\x03");
-        let forward = family_content_digest(window(10, 2), 1, rows, &[f1.clone(), f2.clone()]);
-        let reversed = family_content_digest(window(10, 2), 1, rows, &[f2, f1]);
-        assert_eq!(forward, reversed);
+        let mut other = RowDigest::new();
+        other.row(b"r");
+        let base = family_content_digest(window(10, 2), rows);
+        assert_ne!(base, family_content_digest(window(11, 2), rows));
+        assert_ne!(base, family_content_digest(window(10, 3), rows));
+        assert_ne!(base, family_content_digest(window(10, 2), other.finish()));
     }
 
     #[test]
-    fn family_digest_distinguishes_window_and_dict() {
-        let rows = RowDigest::new().finish();
-        let base = family_content_digest(window(10, 2), 1, rows, &[]);
-        assert_ne!(base, family_content_digest(window(11, 2), 1, rows, &[]));
-        assert_ne!(base, family_content_digest(window(10, 3), 1, rows, &[]));
-        assert_ne!(base, family_content_digest(window(10, 2), 2, rows, &[]));
+    fn seal_digest_distinguishes_family_span_pages_and_bucket() {
+        let seal = |family, span, pages: &[(&str, &[u8])], bucket: &[u8]| {
+            let mut d = SealDigest::new(family, span);
+            for (stream, artifact) in pages {
+                d.page(stream, artifact);
+            }
+            d.finish(bucket)
+        };
+        let pages: &[(&str, &[u8])] = &[("addr/aa/0", b"\x01"), ("topic0/bb/0", b"\x02")];
+        let base = seal(Family::Log, 0, pages, b"bucket");
+        assert_ne!(base, seal(Family::Tx, 0, pages, b"bucket"));
+        assert_ne!(base, seal(Family::Log, 65_536, pages, b"bucket"));
+        assert_ne!(base, seal(Family::Log, 0, &pages[..1], b"bucket"));
+        assert_ne!(base, seal(Family::Log, 0, pages, b"other"));
+        // Page order is significant: callers must feed ascending stream ids.
+        let swapped: &[(&str, &[u8])] = &[("topic0/bb/0", b"\x02"), ("addr/aa/0", b"\x01")];
+        assert_ne!(base, seal(Family::Log, 0, swapped, b"bucket"));
     }
 
     #[test]
@@ -247,25 +279,24 @@ mod tests {
             &Hash32::ZERO,
             &Hash32::ZERO,
             b"h1",
-            EMPTY_CHECKSUM,
-            EMPTY_CHECKSUM,
-            EMPTY_CHECKSUM,
+            EMPTY_DIGEST,
+            EMPTY_DIGEST,
+            EMPTY_DIGEST,
         );
         let b2 = block_content_digest(
             2,
             &Hash32::repeat_byte(7),
             &Hash32::ZERO,
             b"h2",
-            EMPTY_CHECKSUM,
-            EMPTY_CHECKSUM,
-            EMPTY_CHECKSUM,
+            EMPTY_DIGEST,
+            EMPTY_DIGEST,
+            EMPTY_DIGEST,
         );
 
-        let forward = chain(chain(EMPTY_CHECKSUM, b1), b2);
-        let swapped = chain(chain(EMPTY_CHECKSUM, b2), b1);
+        let forward = chain(chain(EMPTY_DIGEST, b1), b2);
+        let swapped = chain(chain(EMPTY_DIGEST, b2), b1);
         assert_ne!(forward, swapped);
 
-        // A different seed yields a different chain head.
         assert_ne!(forward, chain(chain(Hash32::repeat_byte(1), b1), b2));
     }
 }

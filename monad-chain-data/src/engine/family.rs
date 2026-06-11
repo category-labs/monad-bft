@@ -16,7 +16,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    primitives::state::{BlockRecord, FamilyWindowRecord},
+    primitives::records::{BlockRecord, FamilyWindowRecord},
     store::{BlobTableId, ScannableTableId, TableId},
 };
 
@@ -32,6 +32,10 @@ pub struct FamilyTableIds {
     pub bitmap_page_blob: TableId,
     pub bitmap_page_counts: TableId,
     pub open_bitmap_stream: ScannableTableId,
+    /// Standby seal-chain rows: `span_start (u64 BE)` -> chained 32-byte seal
+    /// digest (see [`crate::engine::digest`]). Written in the same batch as
+    /// the span's sealed artifacts.
+    pub seal_chain: TableId,
 }
 
 macro_rules! family_table_ids {
@@ -44,6 +48,7 @@ macro_rules! family_table_ids {
             bitmap_page_blob: TableId::new(concat!($prefix, "_bitmap_page_blob")),
             bitmap_page_counts: TableId::new(concat!($prefix, "_bitmap_page_counts")),
             open_bitmap_stream: ScannableTableId::new(concat!($prefix, "_open_bitmap_stream")),
+            seal_chain: TableId::new(concat!($prefix, "_seal_chain")),
         }
     };
 }
@@ -58,6 +63,9 @@ pub enum Family {
 }
 
 impl Family {
+    /// Every family in the canonical `Log`, `Tx`, `Trace` order.
+    pub const ALL: [Family; 3] = [Family::Log, Family::Tx, Family::Trace];
+
     pub const fn table_ids(self) -> FamilyTableIds {
         match self {
             Family::Log => family_table_ids!("log"),
@@ -66,34 +74,75 @@ impl Family {
         }
     }
 
-    /// Dense 0-based index for this family, matching the `[log, tx, trace]`
-    /// region order in the shared per-block blob. Used to index per-family
-    /// fixed-size arrays such as the block-region cache.
-    pub const fn slot(self) -> usize {
+    /// The block's primary-id window for this family. Every `BlockRecord`
+    /// carries all three windows (zero-count when the block has no rows).
+    pub fn window_in(self, block: &BlockRecord) -> FamilyWindowRecord {
         match self {
-            Family::Log => 0,
-            Family::Tx => 1,
-            Family::Trace => 2,
+            Family::Log => block.logs,
+            Family::Tx => block.txs,
+            Family::Trace => block.traces,
+        }
+    }
+}
+
+/// One value per [`Family`], stored in the canonical `Log`, `Tx`, `Trace`
+/// order. The typed accessors make passing the wrong family's slot alongside a
+/// `Family` tag a compile-time impossibility instead of a silent bug.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PerFamily<T> {
+    pub log: T,
+    pub tx: T,
+    pub trace: T,
+}
+
+impl<T> PerFamily<T> {
+    pub fn new(log: T, tx: T, trace: T) -> Self {
+        Self { log, tx, trace }
+    }
+
+    pub fn get(&self, family: Family) -> &T {
+        match family {
+            Family::Log => &self.log,
+            Family::Tx => &self.tx,
+            Family::Trace => &self.trace,
         }
     }
 
-    /// Inverse of [`Self::slot`]: the family occupying a given array slot.
-    pub const fn from_slot(slot: usize) -> Option<Family> {
-        match slot {
-            0 => Some(Family::Log),
-            1 => Some(Family::Tx),
-            2 => Some(Family::Trace),
-            _ => None,
+    pub fn get_mut(&mut self, family: Family) -> &mut T {
+        match family {
+            Family::Log => &mut self.log,
+            Family::Tx => &mut self.tx,
+            Family::Trace => &mut self.trace,
         }
     }
 
-    /// Returns the per-block window for this family, if this block recorded
-    /// any records in the family.
-    pub fn window_in(self, block: &BlockRecord) -> Option<FamilyWindowRecord> {
-        match self {
-            Family::Log => Some(block.logs),
-            Family::Tx => Some(block.txs),
-            Family::Trace => Some(block.traces),
+    /// Iterate in the fixed [`Family::ALL`] order (also the snapshot codec's
+    /// field order — see `ingest::snapshot`).
+    pub fn iter(&self) -> impl Iterator<Item = (Family, &T)> {
+        [
+            (Family::Log, &self.log),
+            (Family::Tx, &self.tx),
+            (Family::Trace, &self.trace),
+        ]
+        .into_iter()
+    }
+
+    /// Mutable [`Self::iter`], same fixed order.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (Family, &mut T)> {
+        [
+            (Family::Log, &mut self.log),
+            (Family::Tx, &mut self.tx),
+            (Family::Trace, &mut self.trace),
+        ]
+        .into_iter()
+    }
+
+    /// Apply `f` to every slot, preserving the family layout.
+    pub fn map<U>(self, mut f: impl FnMut(T) -> U) -> PerFamily<U> {
+        PerFamily {
+            log: f(self.log),
+            tx: f(self.tx),
+            trace: f(self.trace),
         }
     }
 }

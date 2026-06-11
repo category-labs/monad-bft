@@ -19,60 +19,45 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use monad_chain_data::{
-    engine::tables::{BlockTables, Tables},
+    engine::tables::{BlockTables, DictConfig, QueryRuntimeConfig, Tables},
     error::MonadChainDataError,
-    family::Hash32,
-    store::{CacheConfig, InMemoryBlobStore, MetaStore},
+    ingest_types::Hash32,
+    store::{BlobStore, InMemoryBlobStore, MetaStore},
 };
 
-use crate::common::observed_store::{ObservedBlobStore, ObservedMetaStore};
+use crate::common::{
+    observed_store::{ObservedBlobStore, ObservedMetaStore},
+    stage_block_header, test_cache_config,
+};
 
-fn cache() -> CacheConfig {
-    CacheConfig {
-        block_header_entries: 64,
-        block_hash_to_number_entries: 64,
-        dir_by_block_entries: 64,
-        dir_bucket_entries: 64,
-        bitmap_by_block_cache_bytes: 64 * 1024,
-        bitmap_page_blob_cache_bytes: 64 * 1024,
-        bitmap_page_counts_entries: 64,
-        open_bitmap_stream_entries: 64,
-        tx_hash_index_entries: 64,
-        block_region_cache_bytes: 64 * 1024,
-        block_region_max_bytes: 1024 * 1024,
-    }
-}
-
-// Tests stage a hash-index entry as a stand-in for any "did this write
-// reach the backend?" check: the hash index accepts arbitrary 32-byte keys
-// with 8-byte values and is otherwise read via [`MetaStore::get`] on
-// `BLOCK_HASH_TO_NUMBER_INDEX_TABLE`, so the test can verify presence
-// without going through a typed loader.
 fn test_hash(byte: u8) -> Hash32 {
     Hash32::from([byte; 32])
 }
 
-fn block_record(number: u64) -> monad_chain_data::BlockRecord {
-    let window = monad_chain_data::FamilyWindowRecord {
-        first_primary_id: monad_chain_data::PrimaryId::ZERO,
-        count: 0,
-    };
-    monad_chain_data::BlockRecord {
-        block_number: number,
-        block_hash: Default::default(),
-        parent_hash: Default::default(),
-        logs: window,
-        txs: window,
-        traces: window,
-        artifact_checksum: Default::default(),
-    }
+fn session_tables<B: BlobStore>(meta: ObservedMetaStore, blob: B) -> Tables<ObservedMetaStore, B> {
+    Tables::with_all_configs(
+        meta,
+        blob,
+        test_cache_config(),
+        DictConfig::default(),
+        QueryRuntimeConfig::default(),
+    )
+}
+
+// Hash-index entries act as a write-reached-backend probe, readable via plain `MetaStore::get`.
+async fn stored_hash_index(meta: &ObservedMetaStore, hash: &Hash32) -> Option<Bytes> {
+    meta.get(
+        BlockTables::<ObservedMetaStore>::BLOCK_HASH_TO_NUMBER_INDEX_TABLE,
+        hash.as_slice(),
+    )
+    .await
+    .unwrap()
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn closure_error_does_not_flush() {
     let meta = ObservedMetaStore::new();
-    let blob = InMemoryBlobStore::default();
-    let tables = Tables::with_cache_config(meta.clone(), blob, cache());
+    let tables = session_tables(meta.clone(), InMemoryBlobStore::default());
     let tables_ref = &tables;
     let hash = test_hash(0xAB);
     let hash_ref = &hash;
@@ -86,42 +71,18 @@ async fn closure_error_does_not_flush() {
         })
         .await;
     assert!(result.is_err());
-    assert!(meta
-        .get(
-            BlockTables::<ObservedMetaStore>::BLOCK_HASH_TO_NUMBER_INDEX_TABLE,
-            hash.as_slice(),
-        )
-        .await
-        .unwrap()
-        .is_none());
+    assert!(stored_hash_index(&meta, &hash).await.is_none());
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn closure_error_evicts_populated_cache_entries() {
-    let meta = ObservedMetaStore::new();
-    let blob = InMemoryBlobStore::default();
-    let tables = Tables::with_cache_config(meta, blob, cache());
+    let tables = session_tables(ObservedMetaStore::new(), InMemoryBlobStore::default());
     let tables_ref = &tables;
-    let header = monad_chain_data::EvmBlockHeader {
-        number: 1,
-        ..Default::default()
-    };
-    let header_ref = &header;
-    let record = block_record(1);
-    let record_ref = &record;
 
     let _ = tables
         .with_writes(|w| {
             Box::pin(async move {
-                tables_ref.blocks().stage_metadata(
-                    w,
-                    1,
-                    record_ref,
-                    header_ref,
-                    Bytes::new(),
-                    Bytes::new(),
-                    Bytes::new(),
-                );
+                stage_block_header(tables_ref, w, 1);
                 Err(MonadChainDataError::Backend("intentional".into()))
             })
         })
@@ -138,29 +99,13 @@ async fn closure_error_evicts_populated_cache_entries() {
 async fn partial_flush_failure_evicts_cache() {
     let meta = ObservedMetaStore::new();
     meta.mode.fail_apply_writes_once();
-    let blob = InMemoryBlobStore::default();
-    let tables = Tables::with_cache_config(meta, blob, cache());
+    let tables = session_tables(meta, InMemoryBlobStore::default());
     let tables_ref = &tables;
-    let header = monad_chain_data::EvmBlockHeader {
-        number: 1,
-        ..Default::default()
-    };
-    let header_ref = &header;
-    let record = block_record(1);
-    let record_ref = &record;
 
     let result = tables
         .with_writes(|w| {
             Box::pin(async move {
-                tables_ref.blocks().stage_metadata(
-                    w,
-                    1,
-                    record_ref,
-                    header_ref,
-                    Bytes::new(),
-                    Bytes::new(),
-                    Bytes::new(),
-                );
+                stage_block_header(tables_ref, w, 1);
                 Ok(())
             })
         })
@@ -174,8 +119,7 @@ async fn partial_flush_failure_evicts_cache() {
 #[tokio::test(flavor = "current_thread")]
 async fn closure_error_then_retry_is_idempotent() {
     let meta = ObservedMetaStore::new();
-    let blob = InMemoryBlobStore::default();
-    let tables = Tables::with_cache_config(meta.clone(), blob, cache());
+    let tables = session_tables(meta.clone(), InMemoryBlobStore::default());
     let tables_ref = &tables;
     let hash = test_hash(0xCD);
     let hash_ref = &hash;
@@ -199,21 +143,14 @@ async fn closure_error_then_retry_is_idempotent() {
         .await
         .expect("retry succeeds");
 
-    let stored = meta
-        .get(
-            BlockTables::<ObservedMetaStore>::BLOCK_HASH_TO_NUMBER_INDEX_TABLE,
-            hash.as_slice(),
-        )
-        .await
-        .unwrap();
+    let stored = stored_hash_index(&meta, &hash).await;
     assert_eq!(stored.as_deref(), Some(&42u64.to_be_bytes()[..]));
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn panic_in_closure_drops_pending() {
     let meta = ObservedMetaStore::new();
-    let blob = InMemoryBlobStore::default();
-    let tables = Tables::with_cache_config(meta.clone(), blob, cache());
+    let tables = session_tables(meta.clone(), InMemoryBlobStore::default());
     let tables_ref = &tables;
     let hash = test_hash(0x11);
     let hash_ref = &hash;
@@ -234,44 +171,21 @@ async fn panic_in_closure_drops_pending() {
     let r = futures::FutureExt::catch_unwind(panicked).await;
     assert!(r.is_err(), "panic must propagate");
     assert!(
-        meta.get(
-            BlockTables::<ObservedMetaStore>::BLOCK_HASH_TO_NUMBER_INDEX_TABLE,
-            hash.as_slice(),
-        )
-        .await
-        .unwrap()
-        .is_none(),
+        stored_hash_index(&meta, &hash).await.is_none(),
         "pending writes dropped on panic"
     );
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn panic_in_closure_evicts_populated_cache_entries() {
-    let meta = ObservedMetaStore::new();
-    let blob = InMemoryBlobStore::default();
-    let tables = Tables::with_cache_config(meta, blob, cache());
+    let tables = session_tables(ObservedMetaStore::new(), InMemoryBlobStore::default());
     let tables_ref = &tables;
-    let header = monad_chain_data::EvmBlockHeader {
-        number: 1,
-        ..Default::default()
-    };
-    let header_ref = &header;
-    let record = block_record(1);
-    let record_ref = &record;
 
     let panicked = std::panic::AssertUnwindSafe(async {
         tables
             .with_writes(|w| {
                 Box::pin(async move {
-                    tables_ref.blocks().stage_metadata(
-                        w,
-                        1,
-                        record_ref,
-                        header_ref,
-                        Bytes::new(),
-                        Bytes::new(),
-                        Bytes::new(),
-                    );
+                    stage_block_header(tables_ref, w, 1);
                     panic!("intentional panic");
                     #[allow(unreachable_code)]
                     Ok(())
@@ -283,9 +197,6 @@ async fn panic_in_closure_evicts_populated_cache_entries() {
     let r = futures::FutureExt::catch_unwind(panicked).await;
     assert!(r.is_err(), "panic must propagate");
 
-    // Reads against the cached accessor must miss after the panic:
-    // backend never received the write and Drop must have evicted the
-    // populated cache entry.
     let read = tables.blocks().load_header(1).await.unwrap();
     assert!(
         read.is_none(),
@@ -298,65 +209,23 @@ async fn parallel_meta_and_blob_flush() {
     let delay = Duration::from_millis(50);
     let meta = ObservedMetaStore::timed(delay);
     let blob = ObservedBlobStore::timed(delay);
-    let blob_for_check = blob.clone();
-    let meta_for_check = meta.clone();
-    let tables = Tables::with_cache_config(meta, blob, cache());
+    let tables = session_tables(meta.clone(), blob.clone());
     let tables_ref = &tables;
 
-    let header = monad_chain_data::EvmBlockHeader {
-        number: 1,
-        ..Default::default()
-    };
-    let header_ref = &header;
-    let record = block_record(1);
-    let record_ref = &record;
     tables
         .with_writes(|w| {
             Box::pin(async move {
-                // stage_block_blob covers the BlobStore side, stage_metadata
-                // covers the MetaStore side; both writes flush concurrently
-                // because the framework fires apply_writes on both stores
-                // before awaiting either future.
+                // Flush fires apply_writes on both stores before awaiting either.
                 tables_ref.stage_block_blob(w, 1, b"payload".to_vec());
-                tables_ref.blocks().stage_metadata(
-                    w,
-                    1,
-                    record_ref,
-                    header_ref,
-                    Bytes::new(),
-                    Bytes::new(),
-                    Bytes::new(),
-                );
+                stage_block_header(tables_ref, w, 1);
                 Ok(())
             })
         })
         .await
         .expect("with_writes");
 
-    let meta_start = meta_for_check
-        .timings
-        .apply_started_at
-        .lock()
-        .unwrap()
-        .unwrap();
-    let meta_end = meta_for_check
-        .timings
-        .apply_finished_at
-        .lock()
-        .unwrap()
-        .unwrap();
-    let blob_start = blob_for_check
-        .timings
-        .apply_started_at
-        .lock()
-        .unwrap()
-        .unwrap();
-    let blob_end = blob_for_check
-        .timings
-        .apply_finished_at
-        .lock()
-        .unwrap()
-        .unwrap();
+    let (meta_start, meta_end) = meta.timings.window();
+    let (blob_start, blob_end) = blob.timings.window();
 
     let overlap_start = meta_start.max(blob_start);
     let overlap_end = meta_end.min(blob_end);

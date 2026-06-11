@@ -15,12 +15,11 @@
 
 use alloy_primitives::{Address, U256};
 
-use crate::family::{CallKind, Hash32};
+use crate::ingest_types::{CallKind, Hash32};
 
-/// Public, owned per-transfer view returned by queries. Projected from a
-/// `TraceEntry` whose `has_transfer` bit was set at ingest; in
-/// particular, `to` is always present (Create/Create2 resolve to the
-/// new contract address; SelfDestruct resolves to the beneficiary).
+/// Per-transfer view projected from a `TraceEntry` whose `has_transfer`
+/// bit was set at ingest; `to` is always present (Create* -> new
+/// contract, SelfDestruct -> beneficiary).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransferEntry {
     pub block_number: u64,

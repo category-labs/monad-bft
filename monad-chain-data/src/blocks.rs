@@ -15,17 +15,17 @@
 
 use std::collections::BTreeSet;
 
-use futures::future::try_join_all;
+use futures::{stream, try_join, StreamExt, TryStreamExt};
 
 use crate::{
     engine::tables::{BlockTables, Tables},
     error::{MonadChainDataError, Result},
-    family::Hash32,
+    ingest_types::Hash32,
     primitives::{
         limits::QueryEnvelope,
         range::ResolvedBlockWindow,
+        records::BlockRecord,
         refs::{BlockRef, BlockSpan},
-        state::BlockRecord,
         EvmBlockHeader,
     },
     store::{BlobStore, MetaStore},
@@ -39,25 +39,27 @@ pub struct Block {
     pub header: EvmBlockHeader,
 }
 
-/// Public block query in queryX spec semantics: `from_block`/`to_block` are
-/// the inclusive range start/end, with the lower/upper roles depending on
-/// `order`. Omitted bounds default to `"earliest"`/`"latest"` per order.
-/// The spec does not support filters or relations on `eth_queryBlocks`.
+/// Public block query in queryX spec semantics: inclusive bounds whose
+/// lower/upper roles depend on `order`; omitted bounds default per order.
+/// `eth_queryBlocks` supports no filters or relations.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct QueryBlocksRequest {
     pub envelope: QueryEnvelope,
 }
 
-/// The span mirrors the resolved request bounds and records the last
-/// block returned. When `blocks` is empty there is no next page; callers
-/// should treat the response as terminal rather than advance the cursor.
+/// `span` mirrors the resolved bounds and records the last block returned.
+/// An empty `blocks` means no next page; do not advance the cursor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryBlocksResponse {
     pub blocks: Vec<Block>,
     pub span: BlockSpan,
 }
 
-pub async fn execute_query_blocks<M: MetaStore, B: BlobStore>(
+/// Fan-out for concurrent block loads (one record+header pair per block);
+/// mirrors the relation join bound (`RELATION_TX_CONCURRENCY`).
+const BLOCK_LOAD_CONCURRENCY: usize = 8;
+
+pub(crate) async fn execute_query_blocks<M: MetaStore, B: BlobStore>(
     tables: &Tables<M, B>,
     request: &QueryBlocksRequest,
     window: ResolvedBlockWindow,
@@ -67,11 +69,18 @@ pub async fn execute_query_blocks<M: MetaStore, B: BlobStore>(
     let mut blocks = Vec::new();
     let mut cursor_block = request_from;
 
-    for block_number in window.iter(request.envelope.order) {
-        if blocks.len() >= request.envelope.limit {
-            break;
-        }
-        let (block, record) = load_block_with_record(blocks_table, block_number).await?;
+    // Every block in the window must exist, so the page is exactly
+    // `min(limit, window_len)` blocks: prefetch them concurrently in window
+    // order (`buffered` preserves it), keeping cursor semantics identical to
+    // a serial walk.
+    let mut loaded = stream::iter(
+        window
+            .iter(request.envelope.order)
+            .take(request.envelope.limit)
+            .map(|block_number| load_block_with_record(blocks_table, block_number)),
+    )
+    .buffered(BLOCK_LOAD_CONCURRENCY);
+    while let Some((block, record)) = loaded.try_next().await? {
         cursor_block = BlockRef::from(&record);
         blocks.push(block);
     }
@@ -88,20 +97,22 @@ pub async fn execute_query_blocks<M: MetaStore, B: BlobStore>(
 
 /// Loads the blocks for the given numbers in ascending order, deduped.
 /// Used to fulfill the `blocks` relation on family queries.
-pub async fn load_blocks_by_numbers<M: MetaStore, I: IntoIterator<Item = u64>>(
+pub(crate) async fn load_blocks_by_numbers<M: MetaStore, I: IntoIterator<Item = u64>>(
     blocks: &BlockTables<M>,
     numbers: I,
 ) -> Result<Vec<Block>> {
     let distinct: BTreeSet<u64> = numbers.into_iter().collect();
-    try_join_all(
+    stream::iter(
         distinct
             .into_iter()
             .map(|number| load_block(blocks, number)),
     )
+    .buffered(BLOCK_LOAD_CONCURRENCY)
+    .try_collect()
     .await
 }
 
-pub async fn load_block<M: MetaStore>(blocks: &BlockTables<M>, number: u64) -> Result<Block> {
+async fn load_block<M: MetaStore>(blocks: &BlockTables<M>, number: u64) -> Result<Block> {
     Ok(load_block_with_record(blocks, number).await?.0)
 }
 
@@ -109,14 +120,9 @@ async fn load_block_with_record<M: MetaStore>(
     blocks: &BlockTables<M>,
     number: u64,
 ) -> Result<(Block, BlockRecord)> {
-    let record = blocks
-        .load_record(number)
-        .await?
-        .ok_or(MonadChainDataError::MissingData("missing block record"))?;
-    let header = blocks
-        .load_header(number)
-        .await?
-        .ok_or(MonadChainDataError::MissingData("missing block header"))?;
+    let (record, header) = try_join!(blocks.load_record(number), blocks.load_header(number))?;
+    let record = record.ok_or(MonadChainDataError::MissingData("missing block record"))?;
+    let header = header.ok_or(MonadChainDataError::MissingData("missing block header"))?;
     Ok((
         Block {
             hash: record.block_hash,

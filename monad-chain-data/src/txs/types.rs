@@ -20,7 +20,7 @@ use alloy_rlp::{RlpDecodable, RlpEncodable};
 
 use crate::{
     error::{MonadChainDataError, Result},
-    family::Hash32,
+    ingest_types::Hash32,
 };
 
 /// Public, owned per-transaction view returned by queries.
@@ -28,7 +28,7 @@ use crate::{
 pub struct TxEntry {
     pub block_number: u64,
     pub block_hash: Hash32,
-    pub tx_idx: u32,
+    pub tx_index: u32,
     pub tx_hash: Hash32,
     pub sender: Address,
     pub signed_tx_bytes: Bytes,
@@ -36,8 +36,7 @@ pub struct TxEntry {
 
 impl TxEntry {
     /// Decodes the stored signed-tx bytes into the consensus envelope.
-    /// Callers that need multiple fields should decode once and work
-    /// with the `TxEnvelope`; the per-field accessors each re-parse.
+    /// The per-field accessors each re-parse; decode once for many fields.
     pub fn envelope(&self) -> Result<TxEnvelope> {
         decode_envelope(&self.signed_tx_bytes)
     }
@@ -53,13 +52,10 @@ impl TxEntry {
         Ok(selector_from_envelope(&self.envelope()?))
     }
 
-    /// Assembles the queryX-spec `alloy_rpc_types_eth::Transaction` shape
-    /// from the stored envelope, sender, and block context.
-    ///
-    /// `effective_gas_price` is left as `None`: it depends on the block's
-    /// `base_fee_per_gas`, which is not carried on `TxEntry`. RPC layers
-    /// returning this shape directly must load the block header and
-    /// populate it via `envelope.effective_gas_price(Some(base_fee))`.
+    /// Assembles the queryX-spec `alloy_rpc_types_eth::Transaction` shape.
+    /// `effective_gas_price` is left `None` (needs the block's base fee,
+    /// not carried here); RPC layers must populate it from the header via
+    /// `envelope.effective_gas_price(Some(base_fee))`.
     #[cfg(feature = "alloy-rpc-types-eth")]
     pub fn to_rpc_transaction(&self) -> Result<alloy_rpc_types_eth::Transaction> {
         use alloy_consensus::transaction::Recovered;
@@ -68,20 +64,19 @@ impl TxEntry {
             inner: Recovered::new_unchecked(self.envelope()?, self.sender),
             block_hash: Some(self.block_hash),
             block_number: Some(self.block_number),
-            transaction_index: Some(u64::from(self.tx_idx)),
+            transaction_index: Some(u64::from(self.tx_index)),
             effective_gas_price: None,
+            block_timestamp: None,
         })
     }
 }
 
-/// Fixed 12-byte address of a transaction in the block-tx blobs:
-/// 8 bytes big-endian `block_number` followed by 4 bytes big-endian
-/// `tx_idx`. Written at ingest, keyed by `tx_hash`, and resolved by
-/// `get_transaction` into a `TxEntry` via the tx materializer.
+/// Fixed 12-byte tx location: 8-byte BE `block_number` then 4-byte BE
+/// `tx_index`. Written at ingest into `tx_hash_index`, keyed by `tx_hash`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TxLocation {
     pub block_number: u64,
-    pub tx_idx: u32,
+    pub tx_index: u32,
 }
 
 impl TxLocation {
@@ -90,7 +85,7 @@ impl TxLocation {
     pub fn encode(&self) -> [u8; Self::ENCODED_LEN] {
         let mut out = [0u8; Self::ENCODED_LEN];
         out[..8].copy_from_slice(&self.block_number.to_be_bytes());
-        out[8..].copy_from_slice(&self.tx_idx.to_be_bytes());
+        out[8..].copy_from_slice(&self.tx_index.to_be_bytes());
         out
     }
 
@@ -99,16 +94,16 @@ impl TxLocation {
             .try_into()
             .map_err(|_| MonadChainDataError::Decode("invalid tx_location length"))?;
         let block_number = u64::from_be_bytes(bytes[..8].try_into().expect("8-byte prefix"));
-        let tx_idx = u32::from_be_bytes(bytes[8..].try_into().expect("4-byte suffix"));
+        let tx_index = u32::from_be_bytes(bytes[8..].try_into().expect("4-byte suffix"));
         Ok(Self {
             block_number,
-            tx_idx,
+            tx_index,
         })
     }
 }
 
 /// Per-tx fields stored in the block blob. Block-level fields
-/// (block_number, block_hash, tx_idx) are reconstructed from the
+/// (block_number, block_hash, tx_index) are reconstructed from the
 /// `BlockRecord` and `BlockBlobHeader` at read time.
 #[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct StoredTxEnvelope {
@@ -127,11 +122,11 @@ impl StoredTxEnvelope {
             .map_err(|_| MonadChainDataError::Decode("invalid tx envelope rlp"))
     }
 
-    pub fn into_tx_entry(self, block_number: u64, block_hash: Hash32, tx_idx: u32) -> TxEntry {
+    pub fn into_tx_entry(self, block_number: u64, block_hash: Hash32, tx_index: u32) -> TxEntry {
         TxEntry {
             block_number,
             block_hash,
-            tx_idx,
+            tx_index,
             tx_hash: self.tx_hash,
             sender: self.sender,
             signed_tx_bytes: self.signed_tx_bytes,

@@ -15,8 +15,11 @@
 
 pub mod blob;
 pub mod cache;
-pub mod common;
+#[cfg(feature = "dynamo")]
+pub(crate) mod dynamo_common;
 pub mod meta;
+#[cfg(any(feature = "dynamo", feature = "s3"))]
+pub(crate) mod sdk;
 pub mod session;
 
 pub use blob::{BlobStore, BlobTable, BlobTableId, BlobWriteOp, InMemoryBlobStore};
@@ -24,11 +27,7 @@ pub use blob::{BlobStore, BlobTable, BlobTableId, BlobWriteOp, InMemoryBlobStore
 pub use blob::{DynamoBlobStore, DynamoBlobStoreConfig};
 #[cfg(feature = "s3")]
 pub use blob::{S3BlobStore, S3BlobStoreConfig, S3Credentials, S3ReadStatsSnapshot};
-pub use cache::{
-    BlockRegionCache, CacheConfig, CacheField, CachedBlobTable, CachedKvTable,
-    CachedScannableTable, REGION_CACHE_FAMILIES,
-};
-pub use common::Page;
+pub use cache::{CacheConfig, CachedKvTable, CachedScannableKvTable};
 #[cfg(feature = "dynamo")]
 pub use meta::{
     DynamoCredentials, DynamoMetaReadStatsSnapshot, DynamoMetaStore, DynamoMetaStoreConfig,

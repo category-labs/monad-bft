@@ -14,33 +14,22 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use bytes::Bytes;
-use futures::stream::{self, StreamExt, TryStreamExt};
 
 use crate::{
-    engine::bitmap::STREAM_PAGE_LOCAL_ID_SPAN,
+    engine::{bitmap::STREAM_PAGE_ID_SPAN, tables::scan_get_all},
     error::{MonadChainDataError, Result},
-    store::{
-        blob::BlobStore, CachedKvTable, CachedScannableTable, MetaStore, MetaWriteOp, WriteSession,
-    },
+    store::{blob::BlobStore, CachedKvTable, CachedScannableKvTable, MetaStore, WriteSession},
 };
 
-/// Directory buckets are aligned to the bitmap page span (2^16 family ids) so the
-/// two indexes share a single seal frontier: a primary id completes its page and
-/// its bucket at the same boundary. This lets ingest track one `sealed_id` per
-/// family and keeps the open (unsealed) region identical for both indexes.
-pub const DIRECTORY_BUCKET_SIZE: u64 = STREAM_PAGE_LOCAL_ID_SPAN as u64;
-/// Max concurrent point gets when fetching a bucket's fragments after a
-/// keys-only scan (see the bitmap-side counterpart). Cache-served when warm;
-/// turns a cold open bucket from N serial round-trips into ~one.
-const FRAGMENT_GET_CONCURRENCY: usize = 32;
+/// Buckets are aligned to the bitmap page span so both indexes share one seal
+/// frontier: ingest tracks a single `sealed_id` per family and the open
+/// (unsealed) region is identical for pages and buckets.
+pub const DIRECTORY_BUCKET_SIZE: u64 = STREAM_PAGE_ID_SPAN as u64;
 
-/// One stored block within a compacted bucket: the block number and the first
-/// primary id it minted. Only blocks that actually mint ids (`count > 0`) get an
-/// entry — empty blocks consume no ids and are omitted, so a bucket's encoded
-/// size is bounded by the number of *id-producing* blocks it spans, not its full
-/// block range. (Storing one entry per block, empty or not, is what let a sparse
-/// bucket spanning millions of blocks balloon past the backend's 16 MiB
-/// write limit.)
+/// One id-producing block within a compacted bucket. Blocks that mint no ids
+/// are omitted, so a bucket's encoded size is bounded by its id-producing
+/// blocks, not its full block span (sparse buckets stay under backend write
+/// limits).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
 pub struct PrimaryDirEntry {
     pub block_number: u64,
@@ -58,11 +47,10 @@ pub struct PrimaryDirBucket {
 }
 
 impl PrimaryDirBucket {
-    /// Constructs a bucket after enforcing its invariants. All producers — RLP
-    /// decode and ingest-side compaction — funnel through here so the type's
-    /// invariants live in one place: entries are strictly increasing in both
-    /// `first_primary_id` and `block_number`, and the sentinel sits strictly
-    /// above the last entry's first id.
+    /// Single constructor (RLP decode and compaction both funnel here)
+    /// enforcing the invariants: entries strictly increasing in both
+    /// `first_primary_id` and `block_number`; sentinel strictly above the last
+    /// entry's first id.
     pub(crate) fn new(
         entries: Vec<PrimaryDirEntry>,
         end_primary_id_exclusive: u64,
@@ -112,9 +100,8 @@ impl PrimaryDirFragment {
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self> {
-        alloy_rlp::decode_exact(bytes).map_err(|_| {
-            crate::error::MonadChainDataError::Decode("invalid primary directory fragment rlp")
-        })
+        alloy_rlp::decode_exact(bytes)
+            .map_err(|_| MonadChainDataError::Decode("invalid primary directory fragment rlp"))
     }
 }
 
@@ -130,19 +117,19 @@ pub(crate) fn decode_fragment(bytes: Bytes) -> Result<PrimaryDirFragment> {
 
 #[derive(Clone)]
 pub struct PrimaryDirTables<M: MetaStore> {
-    fragments: CachedScannableTable<M, PrimaryDirFragment>,
+    fragments: CachedScannableKvTable<M, PrimaryDirFragment>,
     buckets: CachedKvTable<M, PrimaryDirBucket>,
 }
 
 impl<M: MetaStore> PrimaryDirTables<M> {
     pub fn new(
-        fragments: CachedScannableTable<M, PrimaryDirFragment>,
+        fragments: CachedScannableKvTable<M, PrimaryDirFragment>,
         buckets: CachedKvTable<M, PrimaryDirBucket>,
     ) -> Self {
         Self { fragments, buckets }
     }
 
-    pub(crate) fn fragments_cache(&self) -> &CachedScannableTable<M, PrimaryDirFragment> {
+    pub(crate) fn fragments_cache(&self) -> &CachedScannableKvTable<M, PrimaryDirFragment> {
         &self.fragments
     }
 
@@ -162,25 +149,12 @@ impl<M: MetaStore> PrimaryDirTables<M> {
         bucket_start: u64,
     ) -> Result<Vec<PrimaryDirFragment>> {
         let partition = u64_key(bucket_start);
-        let page = self
-            .fragments
-            .list_prefix(&partition, &[], None, usize::MAX)
-            .await?;
-        // `buffered` (not `buffer_unordered`): the scan yields keys in block
-        // order and compaction requires the fragments stay strictly increasing.
-        let fragments = &self.fragments;
-        let partition = &partition;
-        stream::iter(page.keys)
-            .map(|clustering| async move {
-                fragments.get(partition, &clustering).await?.ok_or(
-                    crate::error::MonadChainDataError::MissingData(
-                        "missing primary directory fragment",
-                    ),
-                )
-            })
-            .buffered(FRAGMENT_GET_CONCURRENCY)
-            .try_collect()
-            .await
+        scan_get_all(
+            &self.fragments,
+            &partition,
+            "missing primary directory fragment",
+        )
+        .await
     }
 
     pub fn stage_bucket<B: BlobStore>(
@@ -193,9 +167,11 @@ impl<M: MetaStore> PrimaryDirTables<M> {
         w.put(&self.buckets, &key, Bytes::from(bucket.encode()));
     }
 
-    /// Stages every per-bucket fragment write the block contributes. Mirrors
-    /// [`Self::persist_block_fragment`] but pushes into a meta batch instead
-    /// of issuing one write per bucket.
+    /// Stages every per-bucket fragment write the block contributes.
+    ///
+    /// Ingest never stages a `count == 0` fragment: empty blocks mint no ids
+    /// (`if count > 0` in `ingest/index.rs`), and compaction closes the id
+    /// range across them via the next id-producing block (or the sentinel).
     pub fn stage_block_fragment<B: BlobStore>(
         &self,
         w: &mut WriteSession<'_, M, B>,
@@ -216,78 +192,25 @@ impl<M: MetaStore> PrimaryDirTables<M> {
             w.scan_put(&self.fragments, &partition, &clustering, encoded.clone());
         }
     }
-
-    pub fn stage_block_fragment_filtered<B, F>(
-        &self,
-        w: &mut WriteSession<'_, M, B>,
-        block_number: u64,
-        first_primary_id: u64,
-        count: u32,
-        mut should_write_bucket: F,
-    ) where
-        B: BlobStore,
-        F: FnMut(u64) -> bool,
-    {
-        // Empty blocks (`count == 0`) mint no ids; a fragment for them resolves
-        // nothing, so we omit it. Bucket compaction closes the id range across
-        // omitted empty blocks via the next id-producing block (or the sentinel).
-        if count == 0 {
-            return;
-        }
-
-        let fragment = PrimaryDirFragment {
-            block_number,
-            first_primary_id,
-            end_primary_id_exclusive: first_primary_id.saturating_add(u64::from(count)),
-        };
-
-        let encoded = Bytes::from(fragment.encode());
-        let clustering = u64_key(block_number);
-        let mut ops = Vec::new();
-        for bucket_start in fragment_bucket_starts(first_primary_id, count) {
-            if !should_write_bucket(bucket_start) {
-                continue;
-            }
-            let partition = u64_key(bucket_start);
-            ops.push(MetaWriteOp::ScanPut {
-                table: self.fragments.table_id(),
-                partition: partition.to_vec(),
-                clustering: clustering.to_vec(),
-                value: encoded.clone(),
-            });
-        }
-        w.extend_meta_uncached(ops);
-    }
 }
 
 pub fn bucket_start(primary_id: u64) -> u64 {
-    aligned_u64_start(primary_id, DIRECTORY_BUCKET_SIZE)
+    primary_id - (primary_id % DIRECTORY_BUCKET_SIZE)
 }
 
 pub(crate) fn fragment_bucket_starts(first_primary_id: u64, count: u32) -> Vec<u64> {
-    if count == 0 {
-        return vec![bucket_start(first_primary_id)];
-    }
+    // Ingest never stages a zero-count fragment (empty blocks mint no ids).
+    debug_assert!(count > 0, "fragment must cover at least one id");
 
-    let mut out = Vec::new();
-    let mut current = bucket_start(first_primary_id);
+    let first = bucket_start(first_primary_id);
     let last = bucket_start(
         first_primary_id
             .saturating_add(u64::from(count))
             .saturating_sub(1),
     );
-    loop {
-        out.push(current);
-        if current == last {
-            break;
-        }
-        current = current.saturating_add(DIRECTORY_BUCKET_SIZE);
-    }
-    out
-}
-
-fn aligned_u64_start(value: u64, alignment: u64) -> u64 {
-    value - (value % alignment)
+    (first..=last)
+        .step_by(DIRECTORY_BUCKET_SIZE as usize)
+        .collect()
 }
 
 fn u64_key(value: u64) -> [u8; 8] {

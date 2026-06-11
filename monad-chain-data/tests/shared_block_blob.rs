@@ -17,65 +17,83 @@ use std::collections::HashSet;
 
 use alloy_primitives::{Log, LogData, U256};
 use monad_chain_data::{
-    engine::family::BLOCK_BLOB_TABLE, logs::BlockBlobHeader, FinalizedBlock, InMemoryBlobStore,
-    InMemoryMetaStore, LogFilter, MonadChainDataService, QueryEnvelope, QueryLogsRequest,
-    QueryTracesRequest, QueryTransactionsRequest, TraceFilter, TxFilter, B256,
+    engine::family::BLOCK_BLOB_TABLE, Address, BlockBlobHeader, FinalizedBlock, InMemoryBlobStore,
+    InMemoryMetaStore, MonadChainDataService, QueryLogsRequest, QueryTracesRequest,
+    QueryTransactionsRequest, TraceFilter, B256,
 };
 
 mod common;
 
-use common::{ingest_tx, nested_call, test_header, top_level_call};
+use common::{
+    address_filter, ascending_envelope, ingest_tx, logs_request, nested_call, test_header,
+    top_level_call, traces_request, tx_query, with_hash,
+};
+
+const LOG_A: Address = Address::repeat_byte(0xa1);
+const LOG_B: Address = Address::repeat_byte(0xb2);
+const TX_SENDER_A: Address = Address::repeat_byte(0xc3);
+const TX_SENDER_B: Address = Address::repeat_byte(0xd4);
+const TRACE_FROM_A: Address = Address::repeat_byte(0xe5);
+const TRACE_FROM_B: Address = Address::repeat_byte(0xf6);
+const TX_HASH_A: B256 = B256::repeat_byte(0x11);
+const TX_HASH_B: B256 = B256::repeat_byte(0x22);
 
 fn set<T: Eq + std::hash::Hash>(value: T) -> HashSet<T> {
     HashSet::from([value])
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn ingest_stores_one_shared_blob_with_family_relative_headers() {
-    let log_a = monad_chain_data::Address::repeat_byte(0xa1);
-    let log_b = monad_chain_data::Address::repeat_byte(0xb2);
-    let tx_sender_a = monad_chain_data::Address::repeat_byte(0xc3);
-    let tx_sender_b = monad_chain_data::Address::repeat_byte(0xd4);
-    let trace_from_a = monad_chain_data::Address::repeat_byte(0xe5);
-    let trace_from_b = monad_chain_data::Address::repeat_byte(0xf6);
-    let tx_hash_a = B256::repeat_byte(0x11);
-    let tx_hash_b = B256::repeat_byte(0x22);
-
-    let mut tx_a = ingest_tx(tx_sender_a, None, vec![0xaa, 0xbb, 0xcc, 0xdd]);
-    tx_a.tx_hash = tx_hash_a;
-    let mut tx_b = ingest_tx(tx_sender_b, None, vec![0x12, 0x34, 0x56, 0x78]);
-    tx_b.tx_hash = tx_hash_b;
-
-    let blocks = vec![FinalizedBlock {
+/// One block with two logs, two txs, and two traces, each pair distinguishable
+/// by address/sender/from so per-family queries can pick out a single row.
+fn fixture_block() -> FinalizedBlock {
+    FinalizedBlock {
         header: test_header(1, B256::ZERO),
         logs_by_tx: vec![
             vec![Log {
-                address: log_a,
+                address: LOG_A,
                 data: LogData::new_unchecked(
                     vec![B256::repeat_byte(0x31)],
                     monad_chain_data::Bytes::from_static(b"log-a"),
                 ),
             }],
             vec![Log {
-                address: log_b,
+                address: LOG_B,
                 data: LogData::new_unchecked(
                     vec![B256::repeat_byte(0x32)],
                     monad_chain_data::Bytes::from_static(b"log-b"),
                 ),
             }],
         ],
-        txs: vec![tx_a, tx_b],
-        traces: vec![
-            top_level_call(0, trace_from_a, trace_from_b, U256::from(7u64), vec![1; 4]),
-            nested_call(1, trace_from_b, trace_from_a, U256::from(9u64), vec![2; 4]),
+        txs: vec![
+            with_hash(
+                ingest_tx(TX_SENDER_A, None, vec![0xaa, 0xbb, 0xcc, 0xdd]),
+                TX_HASH_A,
+            ),
+            with_hash(
+                ingest_tx(TX_SENDER_B, None, vec![0x12, 0x34, 0x56, 0x78]),
+                TX_HASH_B,
+            ),
         ],
-    }];
-    let store = common::populate::populate_via_engine(blocks).await;
+        traces: vec![
+            top_level_call(0, TRACE_FROM_A, TRACE_FROM_B, U256::from(7u64), vec![1; 4]),
+            nested_call(1, TRACE_FROM_B, TRACE_FROM_A, U256::from(9u64), vec![2; 4]),
+        ],
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn blob_layout_one_object_with_contiguous_family_regions() {
+    let store = common::populate::populate_via_engine(vec![fixture_block()]).await;
     let service = store.reader();
     let blob_store = store.blob.clone();
 
     let snapshot = blob_store.blob_snapshot();
-    assert_eq!(snapshot.len(), 1, "one blob object per block");
+    // The blob store also holds the recovery-snapshot payload (its own table);
+    // the block table itself must hold exactly one object per block.
+    let block_blobs = snapshot
+        .keys()
+        .filter(|(table, _)| *table == BLOCK_BLOB_TABLE)
+        .count();
+    assert_eq!(block_blobs, 1, "one blob object per block");
     assert!(snapshot.contains_key(&(BLOCK_BLOB_TABLE, 1u64.to_be_bytes().to_vec())));
 
     let log_header = load_header(&service, monad_chain_data::Family::Log).await;
@@ -88,9 +106,7 @@ async fn ingest_stores_one_shared_blob_with_family_relative_headers() {
         tx_header.base_offset + *tx_header.offsets.last().unwrap()
     );
 
-    // The whole shared object is the concatenation of every family region;
-    // read it straight from the raw blob fixture (the region cache only ever
-    // holds per-family slices, never the combined object).
+    // Read the raw shared object.
     let combined = snapshot
         .get(&(BLOCK_BLOB_TABLE, 1u64.to_be_bytes().to_vec()))
         .expect("shared blob present");
@@ -101,7 +117,12 @@ async fn ingest_stores_one_shared_blob_with_family_relative_headers() {
 
     let log_region = service
         .tables()
-        .read_block_blob_range(1, log_header.region_range().0, log_header.region_range().1)
+        .read_block_blob_header_range(
+            1,
+            &log_header,
+            log_header.region_range().0,
+            log_header.region_range().1,
+        )
         .await
         .expect("read log region")
         .expect("log region present");
@@ -109,60 +130,42 @@ async fn ingest_stores_one_shared_blob_with_family_relative_headers() {
         log_region.len(),
         usize::try_from(*log_header.offsets.last().unwrap()).unwrap()
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn indexed_and_scan_queries_read_through_shared_blob() {
+    let store = common::populate::populate_via_engine(vec![fixture_block()]).await;
+    let service = store.reader();
 
     let indexed_logs = service
-        .query_logs(QueryLogsRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(1),
-                to_block: Some(1),
-                ..QueryEnvelope::default()
-            },
-            filter: LogFilter {
-                address: Some(set(log_b)),
-                ..LogFilter::default()
-            },
-            ..QueryLogsRequest::default()
-        })
+        .query_logs(logs_request(
+            ascending_envelope(1, 1, 10),
+            address_filter(LOG_B),
+        ))
         .await
         .expect("indexed log query");
     assert_eq!(indexed_logs.logs.len(), 1);
-    assert_eq!(indexed_logs.logs[0].address, log_b);
+    assert_eq!(indexed_logs.logs[0].address, LOG_B);
 
     let indexed_txs = service
-        .query_transactions(QueryTransactionsRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(1),
-                to_block: Some(1),
-                ..QueryEnvelope::default()
-            },
-            filter: TxFilter {
-                from: Some(set(tx_sender_b)),
-                ..TxFilter::default()
-            },
-            ..QueryTransactionsRequest::default()
-        })
+        .query_transactions(tx_query(TX_SENDER_B, ascending_envelope(1, 1, 10)))
         .await
         .expect("indexed tx query");
     assert_eq!(indexed_txs.txs.len(), 1);
-    assert_eq!(indexed_txs.txs[0].tx_hash, tx_hash_b);
+    assert_eq!(indexed_txs.txs[0].tx_hash, TX_HASH_B);
 
     let indexed_traces = service
-        .query_traces(QueryTracesRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(1),
-                to_block: Some(1),
-                ..QueryEnvelope::default()
-            },
-            filter: TraceFilter {
-                from: Some(set(trace_from_b)),
+        .query_traces(traces_request(
+            ascending_envelope(1, 1, 10),
+            TraceFilter {
+                from: Some(set(TRACE_FROM_B)),
                 ..TraceFilter::default()
             },
-            ..QueryTracesRequest::default()
-        })
+        ))
         .await
         .expect("indexed trace query");
     assert_eq!(indexed_traces.traces.len(), 1);
-    assert_eq!(indexed_traces.traces[0].from, trace_from_b);
+    assert_eq!(indexed_traces.traces[0].from, TRACE_FROM_B);
 
     assert_eq!(
         service
@@ -200,7 +203,7 @@ async fn load_header(
     let header = service
         .tables()
         .family(family)
-        .load_block_header(1)
+        .load_blob_header(1)
         .await
         .expect("load family header")
         .expect("family header present");

@@ -19,15 +19,10 @@ mod materialize;
 mod types;
 
 pub use hash_index::TxHashIndexTable;
-pub(crate) use ingest::stream_entries_for_tx;
-pub use ingest::TxIngestPlan;
-pub(crate) use materialize::{
-    execute_block_scan_tx_query, execute_indexed_tx_query, load_txs_by_positions, TxMaterializer,
-};
+pub(crate) use ingest::{collect_hash_locations, encode_block_txs, stream_entries_for_tx};
+pub(crate) use materialize::{load_txs_by_positions, TxMaterializer};
 pub use materialize::{
     QueryTransactionsRequest, QueryTransactionsResponse, TxFilter, TxsRelations,
 };
 pub(crate) use types::TxLocation;
 pub use types::{StoredTxEnvelope, TxEntry};
-
-pub use crate::primitives::state::BlockBlobHeader;

@@ -13,384 +13,426 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
+use futures::future::try_join_all;
 use roaring::RoaringBitmap;
 
 use crate::{
     engine::{
-        bitmap::{page_start_local, BitmapPageCounts, LOCAL_ID_BITS, STREAM_PAGE_LOCAL_ID_SPAN},
+        bitmap::{
+            page_group_start, page_start, page_start_in_group, BitmapPageCounts, DecodedBitmapPage,
+            PAGE_GROUP_ID_SPAN, STREAM_PAGE_ID_SPAN,
+        },
         clause::IndexedClause,
         tables::FamilyTables,
     },
     error::Result,
+    primitives::order::QueryOrder,
     store::MetaStore,
 };
 
-/// Precomputed per-shard intersection plan: the clause streams and the
-/// per-clause page-count manifest, both functions of the shard alone, so they
-/// are computed once and reused across every page of the shard. The concurrent
-/// pipeline (`execute_indexed_family_query`) builds one of these per shard and
-/// drives the per-page intersection ([`FamilyTables::intersect_shard_page`])
-/// across pages concurrently; the legacy whole-shard
-/// [`FamilyTables::load_intersection_bitmap`] folds the same per-page calls
-/// serially.
-pub(crate) struct ShardPagePlan {
-    /// Per-clause list of value-streams for this shard (the OR set the clause
-    /// expands to). Indexed by clause position.
+/// A page bitmap for intersection: a cached decoded page shared by refcount,
+/// or an owned bitmap folded from fragments/clause streams. The clone in
+/// [`Self::into_owned`] is paid only when a consumer mutates (boundary clipping).
+pub(crate) enum PageBitmap {
+    Shared(Arc<DecodedBitmapPage>),
+    Owned(RoaringBitmap),
+}
+
+impl PageBitmap {
+    pub(crate) fn as_bitmap(&self) -> &RoaringBitmap {
+        match self {
+            PageBitmap::Shared(page) => &page.bitmap,
+            PageBitmap::Owned(bitmap) => bitmap,
+        }
+    }
+
+    fn into_owned(self) -> RoaringBitmap {
+        match self {
+            PageBitmap::Shared(page) => page.bitmap.clone(),
+            PageBitmap::Owned(bitmap) => bitmap,
+        }
+    }
+}
+
+/// Per-page-group intersection plan (clause streams + page-count manifests),
+/// computed once and reused across every page of the group by both the
+/// concurrent pipeline and the serial [`FamilyTables::load_intersection_ids`].
+pub(crate) struct PageGroupPlan {
+    /// The group this plan covers (manifest scope).
+    group_start: u64,
+    /// Per-clause value-streams (the OR set the clause expands to).
     clause_streams: Vec<Vec<String>>,
-    /// Per-clause page-count manifest, or `None` when no manifest covers the
-    /// clause (treated as "unknown", never "empty").
+    /// Per-clause page-count manifest; `None` means "unknown", never "empty".
     clause_counts: Vec<Option<BitmapPageCounts>>,
-    /// True iff the shard is fully sealed (below the frontier shard) and so its
-    /// manifest is authoritative for zero-fetch page skips. On the frontier
-    /// shard the manifest is an ordering hint only and never drives a skip.
-    shard_sealed: bool,
+    /// True iff the group is fully sealed: its manifest is authoritative for
+    /// zero-fetch page skips. On the frontier group the manifest only orders
+    /// fetches and never drives a skip.
+    group_sealed: bool,
 }
 
 impl<M: MetaStore> FamilyTables<M> {
-    /// Builds the per-shard plan (clause streams + manifest) shared by every
-    /// page of `shard`. Returns `None` when a clause has no streams in this
-    /// shard: it contributes an empty bitmap to every page, so the whole shard
-    /// intersection is empty and no page need be fetched — matching the old
-    /// loop's "empty clause => None" behavior.
+    /// Builds the per-group plan shared by every page of the group starting at
+    /// `group_start`. Returns `None` when a clause expands to no streams (its
+    /// empty bitmap makes the whole intersection empty, so no page need be
+    /// fetched).
     ///
-    /// `frontier_shard` is the single open shard — the shard holding the
-    /// family's id frontier at the publication head (`PrimaryId::shard` of the
-    /// frontier id, the same notion the directory resolver derives its
-    /// `sealed_below` from). Any `shard < frontier_shard` is fully sealed and
-    /// carries an immutable per-stream page-count manifest, which lets us skip
-    /// a page with zero clause-matches without any fetch and order each
-    /// surviving page's clause fetches most-selective-first. On the frontier
-    /// shard the manifest is absent (the shard has not sealed), so it is a hint
-    /// for ordering only and NEVER causes a page to be skipped — see
-    /// [`Self::clause_page_order`].
-    pub(crate) async fn build_shard_page_plan(
+    /// `frontier_group_start` is the group holding the family's id frontier at
+    /// the publication head. Groups below it are sealed and carry an immutable
+    /// page-count manifest (authoritative for skips); on the frontier group
+    /// the previous group's manifest serves as an ordering hint only and never
+    /// skips a page.
+    pub(crate) async fn build_page_group_plan(
         &self,
         clauses: &[IndexedClause],
-        shard: u64,
-        frontier_shard: u64,
-    ) -> Result<Option<ShardPagePlan>> {
-        // Precompute each clause's shard streams once; reused across all pages.
-        let clause_streams: Vec<Vec<String>> = clauses
-            .iter()
-            .map(|clause| clause.stream_ids_for_shard(shard))
-            .collect();
-        // A clause with no streams in this shard contributes an empty bitmap to
-        // every page, so the whole shard intersection is empty. Bail before any
-        // fetch, matching the old loop's "empty clause => None" behavior.
+        group_start: u64,
+        frontier_group_start: u64,
+    ) -> Result<Option<PageGroupPlan>> {
+        let clause_streams: Vec<Vec<String>> =
+            clauses.iter().map(IndexedClause::stream_ids).collect();
         if clause_streams.iter().any(|streams| streams.is_empty()) {
             return Ok(None);
         }
 
-        // A sealed shard is authoritative for skipping; the frontier shard's
-        // manifest is absent, so its per-page counts come from the last sealed
-        // shard as an ordering hint that may never drive a skip.
-        let shard_sealed = shard < frontier_shard;
-        let manifest_shard = if shard_sealed {
-            // The shard's own manifest is authoritative for skips.
-            Some(shard)
-        } else if shard == frontier_shard {
-            // Frontier shard: borrow the last sealed shard's manifest as an
-            // ordering hint only. Never used to skip (guarded by `shard_sealed`
-            // below), so a stale hint can only mis-order fetches, not drop a
-            // page.
-            shard.checked_sub(1)
+        let group_sealed = group_start < frontier_group_start;
+        let manifest_group = if group_sealed {
+            Some(group_start)
+        } else if group_start == frontier_group_start {
+            // The frontier group has no manifest yet; borrow the last sealed
+            // group's as a positional ordering hint (manifest page keys are
+            // group-relative). Never used to skip, so a stale hint can only
+            // mis-order fetches, not drop a page.
+            group_start.checked_sub(PAGE_GROUP_ID_SPAN)
         } else {
             // Above the frontier: no data, no manifest.
             None
         };
-        let clause_counts = match manifest_shard {
-            Some(manifest_shard) => {
-                self.load_clause_page_counts(clauses, manifest_shard)
+        let clause_counts = match manifest_group {
+            Some(manifest_group) => {
+                self.load_clause_page_counts(&clause_streams, manifest_group)
                     .await?
             }
             None => vec![None; clauses.len()],
         };
 
-        Ok(Some(ShardPagePlan {
+        Ok(Some(PageGroupPlan {
+            group_start,
             clause_streams,
             clause_counts,
-            shard_sealed,
+            group_sealed,
         }))
     }
 
-    /// Loads the AND-intersection of all clauses for one shard, clipped to
-    /// the local-id range. Returns `None` if the intersection is empty,
-    /// meaning the shard cannot contribute candidates.
+    /// AND-intersection of all clauses over the id range `[id_from, id_to]`,
+    /// returned as primary ids in `order`; `None` if empty. Pages partition
+    /// the id space, so intersection distributes over pages: this is the
+    /// serial group-outer/page-inner fold over [`Self::intersect_group_page`],
+    /// mirroring the pipeline's shape.
     ///
-    /// The shard's local-id space is partitioned into disjoint 64K pages
-    /// ([`STREAM_PAGE_LOCAL_ID_SPAN`]) and every clause bit in a page comes
-    /// only from that page's stream rows, so intersection distributes over
-    /// pages: `⋂_c (⋃_pages clause_c) = ⋃_pages (⋂_c clause_c_page)`. This is
-    /// the serial fold over [`Self::intersect_shard_page`]; the concurrent
-    /// pipeline drives the same per-page calls across pages concurrently
-    /// instead. Each page fetches clause[0]'s page bitmap and the moment the
-    /// running per-page intersection empties it breaks — skipping every
-    /// remaining clause's fetch for that page (including frontier-fragment
-    /// scans). That per-page short-circuit is the win over the old
-    /// clause-outer loop, which built each clause's full across-all-pages
-    /// bitmap before ANDing and so could only prune when an entire clause was
-    /// empty across the shard.
+    /// `frontier_id` is the family's id frontier at the publication head;
+    /// groups strictly below its group are sealed (manifest-skippable).
     ///
-    /// Retained as the serial reference implementation used by the equivalence
-    /// tests (`tests/query_bitmap_page_intersection.rs`,
-    /// `tests/query_bitmap_page_counts_manifest.rs`); it is no longer on the
-    /// production query path (the pipeline in `family_runner` calls
-    /// [`Self::build_shard_page_plan`] + [`Self::intersect_shard_page`]
-    /// directly). It must therefore stay behavior-equivalent to those helpers.
-    pub async fn load_intersection_bitmap(
+    /// Off the production path (the pipeline calls the per-page helpers
+    /// directly); retained as the serial reference for the equivalence tests
+    /// and must stay behavior-equivalent to those helpers.
+    pub async fn load_intersection_ids(
         &self,
         clauses: &[IndexedClause],
-        shard: u64,
-        frontier_shard: u64,
-        local_from: u32,
-        local_to: u32,
-    ) -> Result<Option<RoaringBitmap>> {
-        let Some(plan) = self
-            .build_shard_page_plan(clauses, shard, frontier_shard)
-            .await?
-        else {
-            return Ok(None);
-        };
+        frontier_id: u64,
+        id_from: u64,
+        id_to: u64,
+        order: QueryOrder,
+    ) -> Result<Option<Vec<u64>>> {
+        let frontier_group_start = page_group_start(frontier_id);
+        let first_group = page_group_start(id_from) / PAGE_GROUP_ID_SPAN;
+        let last_group = page_group_start(id_to) / PAGE_GROUP_ID_SPAN;
 
-        let mut result = RoaringBitmap::new();
-        for page_start in plan.candidate_pages(local_from, local_to) {
-            // Union each surviving page intersection into the shard result.
-            // Pages are disjoint, so this OR never double-counts.
-            if let Some(page_intersection) = self
-                .intersect_shard_page(&plan, page_start, local_from, local_to)
+        let mut result = Vec::new();
+        for group_idx in order.iterate(first_group..=last_group) {
+            let group_start = group_idx * PAGE_GROUP_ID_SPAN;
+            let Some(plan) = self
+                .build_page_group_plan(clauses, group_start, frontier_group_start)
                 .await?
-            {
-                result |= page_intersection;
+            else {
+                return Ok(None);
+            };
+
+            let first_page = page_start(id_from.max(group_start));
+            let last_page = page_start(id_to.min(group_start + (PAGE_GROUP_ID_SPAN - 1)));
+            for page in order.iterate(plan.candidate_pages(first_page, last_page)) {
+                let from_offset = if page == page_start(id_from) {
+                    (id_from - page) as u32
+                } else {
+                    0
+                };
+                let to_offset = if page == page_start(id_to) {
+                    (id_to - page) as u32
+                } else {
+                    STREAM_PAGE_ID_SPAN - 1
+                };
+                if let Some(page_intersection) = self
+                    .intersect_group_page(&plan, page, from_offset, to_offset)
+                    .await?
+                {
+                    result.extend(
+                        order
+                            .iterate(page_intersection.as_bitmap().iter())
+                            .map(|offset| page + u64::from(offset)),
+                    );
+                }
             }
         }
 
-        Ok(Some(result).filter(|bitmap| !bitmap.is_empty()))
+        Ok(Some(result).filter(|ids| !ids.is_empty()))
     }
 
-    /// Runs the per-`(shard, page)` clause intersection: fetch clauses
-    /// most-selective-first, AND down, and short-circuit the moment the running
-    /// set empties (skipping every remaining clause's page fetch). Returns the
-    /// surviving ids for this page, already clipped to `[local_from,
-    /// local_to]`, or `None` when the page contributes nothing. This is the
-    /// unit of work the concurrent pipeline runs per work-item.
-    ///
-    /// `page_start` must be a candidate page for `[local_from, local_to]` (see
-    /// [`ShardPagePlan::candidate_pages`]); the manifest skip is re-checked here
-    /// so the serial and concurrent callers agree even if a caller enqueues a
+    /// Per-page clause intersection: fetch clauses most-selective-first, AND
+    /// down, short-circuit when the running set empties. Returns the
+    /// surviving page-relative bits clipped to `[from_offset, to_offset]`, or
+    /// `None` if the page contributes nothing. The manifest skip is re-checked
+    /// here so serial and concurrent callers agree even if a caller enqueues a
     /// guaranteed-empty page.
-    pub(crate) async fn intersect_shard_page(
+    pub(crate) async fn intersect_group_page(
         &self,
-        plan: &ShardPagePlan,
-        page_start: u32,
-        local_from: u32,
-        local_to: u32,
-    ) -> Result<Option<RoaringBitmap>> {
-        // Per-clause count in this page from the manifest (`None` when the
-        // manifest is unavailable for this clause/page). On a sealed shard a
-        // `Some(0)` for any clause means the page cannot contribute, so we skip
-        // every clause's page fetch. On the frontier shard the counts only
-        // order the fetches.
-        let page_counts = clause_page_counts(&plan.clause_counts, page_start);
-
-        if plan.shard_sealed && page_counts.contains(&Some(0)) {
-            // Guaranteed-empty page on a sealed shard: zero fetches.
+        plan: &PageGroupPlan,
+        page: u64,
+        from_offset: u32,
+        to_offset: u32,
+    ) -> Result<Option<PageBitmap>> {
+        debug_assert_eq!(
+            page_group_start(page),
+            plan.group_start,
+            "page outside the plan's group"
+        );
+        let page_in_group = page_start_in_group(page);
+        if plan.group_sealed && manifest_proves_empty(&plan.clause_counts, page_in_group) {
+            // Manifest proves the page empty in a sealed group: zero fetches.
             return Ok(None);
         }
 
-        // Fetch clauses most-selective-first so the running intersection
-        // collapses earliest and short-circuits the rest. Clauses with a known
-        // count sort ascending ahead of clauses with no estimate.
+        let page_counts = clause_page_counts(&plan.clause_counts, page_in_group);
         let order = clause_page_order(&page_counts);
 
-        let mut page_intersection: Option<RoaringBitmap> = None;
+        let mut page_intersection: Option<PageBitmap> = None;
         for clause_idx in order {
-            if matches!(&page_intersection, Some(bitmap) if bitmap.is_empty()) {
-                // Running per-page intersection is already empty; skip the
-                // remaining clauses' page-P fetches and return early.
+            if matches!(&page_intersection, Some(pb) if pb.as_bitmap().is_empty()) {
                 break;
             }
             let clause_page = self
                 .load_clause_page_bitmap(
                     &plan.clause_streams[clause_idx],
-                    page_start,
-                    local_from,
-                    local_to,
+                    page,
+                    from_offset,
+                    to_offset,
                 )
                 .await?;
             page_intersection = Some(match page_intersection {
-                Some(mut acc) => {
-                    acc &= &clause_page;
-                    acc
+                // AND in place once owned; the first AND against a shared page
+                // allocates only the intersection, never cloning the page.
+                Some(PageBitmap::Owned(mut acc)) => {
+                    acc &= clause_page.as_bitmap();
+                    PageBitmap::Owned(acc)
                 }
+                Some(shared) => PageBitmap::Owned(shared.as_bitmap() & clause_page.as_bitmap()),
                 None => clause_page,
             });
         }
 
-        // Interior pages are fully inside the range; only the two boundary
-        // pages can carry out-of-range bits, so clip every surviving page once
-        // before returning it.
+        // Only boundary pages can carry out-of-range bits; clip only when
+        // needed so a cache-shared page is returned without a copy.
         Ok(page_intersection
-            .map(|mut bitmap| {
-                clip_bitmap_to_local_range(&mut bitmap, local_from, local_to);
-                bitmap
+            .map(|pb| {
+                let bitmap = pb.as_bitmap();
+                let needs_clip = bitmap.min().is_some_and(|min| min < from_offset)
+                    || bitmap.max().is_some_and(|max| max > to_offset);
+                if needs_clip {
+                    let mut owned = pb.into_owned();
+                    clip_bitmap_to_offset_range(&mut owned, from_offset, to_offset);
+                    PageBitmap::Owned(owned)
+                } else {
+                    pb
+                }
             })
-            .filter(|bitmap| !bitmap.is_empty()))
+            .filter(|pb| !pb.as_bitmap().is_empty()))
     }
 
-    /// Loads the page-count manifest for each clause in `manifest_shard`. A
-    /// clause's per-page count is the SUM of its OR value-streams' counts, so
-    /// a clause is empty in a page iff all its streams are empty there. Returns
-    /// one entry per clause; `None` means no manifest was available for that
-    /// clause (a missing sealed-shard manifest degrades to fetch-without-skip,
-    /// see the module note), so callers must treat `None` as "unknown", never
-    /// "empty".
+    /// Page-count manifest per clause in `manifest_group`: a clause's per-page
+    /// count is the SUM of its OR value-streams' counts. `None` for a clause
+    /// means no manifest covered it — callers must treat it as "unknown",
+    /// never "empty".
     async fn load_clause_page_counts(
         &self,
-        clauses: &[IndexedClause],
-        manifest_shard: u64,
+        clause_streams: &[Vec<String>],
+        manifest_group: u64,
     ) -> Result<Vec<Option<BitmapPageCounts>>> {
-        let mut out = Vec::with_capacity(clauses.len());
-        for clause in clauses {
-            let streams = clause.stream_ids_for_shard(manifest_shard);
-            let mut summed: Option<BTreeMap<u32, u32>> = None;
-            for stream_id in &streams {
-                match self.load_bitmap_page_counts(stream_id).await? {
-                    Some(counts) => {
-                        let acc = summed.get_or_insert_with(BTreeMap::new);
+        let mut out = Vec::with_capacity(clause_streams.len());
+        for streams in clause_streams {
+            // Every stream's manifest is needed; load them concurrently.
+            // A stream without a manifest row makes the clause count unknown
+            // (`None`) — abandon the estimate so we never under-count and skip
+            // a non-empty page. An empty stream set is likewise unknown.
+            let per_stream: Option<Vec<BitmapPageCounts>> = try_join_all(
+                streams
+                    .iter()
+                    .map(|stream_id| self.load_bitmap_page_counts(stream_id, manifest_group)),
+            )
+            .await?
+            .into_iter()
+            .collect();
+            let summed = per_stream
+                .filter(|streams| !streams.is_empty())
+                .map(|streams| {
+                    let mut acc: BTreeMap<u32, u32> = BTreeMap::new();
+                    for counts in streams {
                         for (page, count) in counts.pages {
                             let entry = acc.entry(page).or_insert(0);
                             *entry = entry.saturating_add(count);
                         }
                     }
-                    None => {
-                        // A stream with no manifest row leaves the clause's
-                        // count unknown for this shard; abandon the estimate so
-                        // we never under-count and skip a non-empty page.
-                        summed = None;
-                        break;
+                    BitmapPageCounts {
+                        pages: acc.into_iter().collect(),
                     }
-                }
-            }
-            out.push(summed.map(|pages| BitmapPageCounts {
-                pages: pages.into_iter().collect(),
-            }));
+                });
+            out.push(summed);
         }
         Ok(out)
     }
 
-    /// Loads one clause's bitmap for a single page: the OR over the clause's
-    /// stream values of that stream's page-P bitmap.
+    /// One clause's bitmap for a single page: the OR over the clause's
+    /// streams of that stream's page bitmap. Every stream is needed
+    /// unconditionally (an OR fold cannot short-circuit), so the pages are
+    /// fetched concurrently and folded after — unlike the cross-clause AND
+    /// in [`Self::intersect_group_page`], whose serial short-circuit is the
+    /// point.
     async fn load_clause_page_bitmap(
         &self,
         stream_ids: &[String],
-        page_start: u32,
-        local_from: u32,
-        local_to: u32,
-    ) -> Result<RoaringBitmap> {
-        let mut clause_page = RoaringBitmap::new();
-        for stream_id in stream_ids {
-            clause_page |= self
-                .load_bitmap_page(stream_id, page_start, local_from, local_to)
-                .await?;
+        page: u64,
+        from_offset: u32,
+        to_offset: u32,
+    ) -> Result<PageBitmap> {
+        let mut pages = try_join_all(
+            stream_ids
+                .iter()
+                .map(|stream_id| self.load_bitmap_page(stream_id, page, from_offset, to_offset)),
+        )
+        .await?
+        .into_iter();
+        let Some(first) = pages.next() else {
+            return Ok(PageBitmap::Owned(RoaringBitmap::new()));
+        };
+        // Single-stream clauses (the common case) pass the page through
+        // shared; only a multi-stream OR folds into an owned accumulator.
+        if pages.as_slice().is_empty() {
+            return Ok(first);
         }
-        Ok(clause_page)
+        let mut owned = first.into_owned();
+        for page in pages {
+            owned |= page.as_bitmap();
+        }
+        Ok(PageBitmap::Owned(owned))
     }
 
     async fn load_bitmap_page(
         &self,
         stream_id: &str,
-        page_start_local: u32,
-        local_from: u32,
-        local_to: u32,
-    ) -> Result<RoaringBitmap> {
+        page_start: u64,
+        from_offset: u32,
+        to_offset: u32,
+    ) -> Result<PageBitmap> {
         if let Some(page) = self
-            .load_bitmap_page_artifact(stream_id, page_start_local)
+            .load_bitmap_page_artifact(stream_id, page_start)
             .await?
         {
             if !overlaps(
-                page.meta.min_local,
-                page.meta.max_local,
-                local_from,
-                local_to,
+                page.meta.min_offset,
+                page.meta.max_offset,
+                from_offset,
+                to_offset,
             ) {
-                return Ok(RoaringBitmap::new());
+                return Ok(PageBitmap::Owned(RoaringBitmap::new()));
             }
 
-            // Page loads may include out-of-range bits from a partially overlapping
-            // page; the caller clips the final merged bitmap once per clause.
-            return Ok(page.bitmap.clone());
+            // May include out-of-range bits; the caller clips the final
+            // intersection once per page. Share the cached page, don't clone.
+            return Ok(PageBitmap::Shared(page));
         }
 
         let mut page_bitmap = RoaringBitmap::new();
-        for fragment in self
-            .load_bitmap_fragments(stream_id, page_start_local)
-            .await?
-        {
-            if overlaps(fragment.min_local, fragment.max_local, local_from, local_to) {
+        for fragment in self.load_bitmap_fragments(stream_id, page_start).await? {
+            if overlaps(
+                fragment.min_offset,
+                fragment.max_offset,
+                from_offset,
+                to_offset,
+            ) {
                 page_bitmap |= &fragment.bitmap;
             }
         }
 
-        Ok(page_bitmap)
+        Ok(PageBitmap::Owned(page_bitmap))
     }
 }
 
-impl ShardPagePlan {
-    /// Page starts in `[local_from, local_to]` that may contribute candidates,
-    /// in ascending page order. On a sealed shard a page whose manifest proves
-    /// any clause empty (`Some(0)`) is dropped here without any fetch, so the
-    /// pipeline never enqueues a guaranteed-empty page — the same pages the
-    /// serial loop skipped with zero fetches. On the frontier shard the
-    /// manifest is a hint only, so every page in range is a candidate.
-    pub(crate) fn candidate_pages(&self, local_from: u32, local_to: u32) -> Vec<u32> {
-        let first_page_start = page_start_local(local_from);
-        let last_page_start = page_start_local(local_to);
-
-        let mut pages = Vec::new();
-        let mut page_start = first_page_start;
-        loop {
-            let skip = self.shard_sealed
-                && clause_page_counts(&self.clause_counts, page_start).contains(&Some(0));
-            if !skip {
-                pages.push(page_start);
-            }
-            if page_start == last_page_start {
-                break;
-            }
-            page_start = page_start.saturating_add(STREAM_PAGE_LOCAL_ID_SPAN);
-        }
-        pages
+impl PageGroupPlan {
+    /// Page starts in `[first_page, last_page]` (inclusive, page-aligned,
+    /// within this plan's group) that may contribute candidates, ascending.
+    /// In a sealed group, pages the manifest proves empty for any clause are
+    /// dropped without a fetch; in the frontier group every page in range is
+    /// a candidate.
+    pub(crate) fn candidate_pages(&self, first_page: u64, last_page: u64) -> Vec<u64> {
+        debug_assert!(
+            page_group_start(first_page) == self.group_start
+                && page_group_start(last_page) == self.group_start,
+            "page bounds outside the plan's group"
+        );
+        // Both bounds are page-aligned, so the inclusive end is hit exactly.
+        (first_page..=last_page)
+            .step_by(STREAM_PAGE_ID_SPAN as usize)
+            .filter(|&page| {
+                !(self.group_sealed
+                    && manifest_proves_empty(&self.clause_counts, page_start_in_group(page)))
+            })
+            .collect()
     }
 }
 
-pub(crate) const fn max_local_id() -> u32 {
-    (1u32 << LOCAL_ID_BITS) - 1
+/// The central sealed-skip rule: the manifest proves the page empty when it
+/// covers some clause (`Some`) and that clause's count for the page is 0 (a
+/// page absent from the zero-dropped manifest counts as 0). `None` means the
+/// manifest did not cover the clause — unknown, never empty. Equivalent to
+/// `clause_page_counts(..).contains(&Some(0))` without the per-page `Vec` alloc.
+fn manifest_proves_empty(
+    clause_counts: &[Option<BitmapPageCounts>],
+    page_start_in_group: u32,
+) -> bool {
+    clause_counts.iter().any(|counts| {
+        counts
+            .as_ref()
+            .is_some_and(|counts| counts.count_for_page(page_start_in_group).unwrap_or(0) == 0)
+    })
 }
 
-/// Per-clause count for one page, looked up from each clause's manifest.
-/// `None` for a clause means the manifest did not cover it (unknown), `Some(0)`
-/// means the manifest proved the clause empty in this page.
+/// Per-clause count for one page. `None` = manifest did not cover the clause
+/// (unknown); `Some(0)` = manifest proved the clause empty in this page.
 fn clause_page_counts(
     clause_counts: &[Option<BitmapPageCounts>],
-    page_start: u32,
+    page_start_in_group: u32,
 ) -> Vec<Option<u32>> {
     clause_counts
         .iter()
         .map(|counts| {
             counts.as_ref().map(|counts| {
                 // A page absent from the (zero-dropped) manifest has count 0.
-                counts.count_for_page(page_start).unwrap_or(0)
+                counts.count_for_page(page_start_in_group).unwrap_or(0)
             })
         })
         .collect()
 }
 
-/// Orders clause indices for a page most-selective-first. Clauses with a known
-/// count sort ascending and ahead of clauses with an unknown (`None`) count;
-/// ties and unknowns preserve clause order (a stable sort), so with no manifest
-/// this reproduces the original clause-order fetch sequence exactly.
+/// Orders clause indices most-selective-first: known counts ascending, then
+/// unknowns; the stable sort preserves clause order for ties and unknowns.
 fn clause_page_order(page_counts: &[Option<u32>]) -> Vec<usize> {
     let mut order: Vec<usize> = (0..page_counts.len()).collect();
     order.sort_by_key(|&idx| match page_counts[idx] {
@@ -404,14 +446,13 @@ fn overlaps(start: u32, end: u32, query_start: u32, query_end: u32) -> bool {
     start <= query_end && end >= query_start
 }
 
-fn clip_bitmap_to_local_range(bitmap: &mut RoaringBitmap, local_from: u32, local_to: u32) {
-    if local_from > 0 {
-        bitmap.remove_range(0..local_from);
+fn clip_bitmap_to_offset_range(bitmap: &mut RoaringBitmap, from_offset: u32, to_offset: u32) {
+    if from_offset > 0 {
+        bitmap.remove_range(0..from_offset);
     }
-    if local_to < u32::MAX {
-        // Inclusive of `u32::MAX` so a bit at the very top of the id space is
-        // also cleared; an exclusive `..u32::MAX` would leave it set. The guard
-        // keeps `local_to + 1` from overflowing.
-        bitmap.remove_range((local_to + 1)..=u32::MAX);
+    if to_offset < u32::MAX {
+        // Inclusive end so a bit at `u32::MAX` is also cleared; the guard
+        // keeps `to_offset + 1` from overflowing.
+        bitmap.remove_range((to_offset + 1)..=u32::MAX);
     }
 }

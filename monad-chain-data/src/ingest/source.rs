@@ -13,11 +13,21 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-pub const DEFAULT_QUERY_LIMIT: usize = 100;
+//! The block source the ingest engine pulls from — its only inbound dependency.
+//! The implementor owns transport concerns, including fetch retry/backoff (see
+//! `TODO(fetch-retry)` in the `producer` module).
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum QueryOrder {
-    #[default]
-    Ascending,
-    Descending,
+use std::future::Future;
+
+use eyre::Result;
+
+use crate::ingest_types::FinalizedBlock;
+
+pub trait ChainDataIngestSource: Clone + Send + Sync + 'static {
+    fn get_latest_uploaded(&self) -> impl Future<Output = Result<Option<u64>>> + Send;
+
+    fn fetch_finalized_block(
+        &self,
+        block_number: u64,
+    ) -> impl Future<Output = Result<FinalizedBlock>> + Send;
 }

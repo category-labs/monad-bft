@@ -13,121 +13,57 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! DynamoDB-API-compatible [`MetaStore`] backend.
+//! DynamoDB-API-compatible [`MetaStore`] backend: AWS DynamoDB, DynamoDB
+//! Local, and ScyllaDB Alternator (point `endpoint_url` at the Alternator port).
 //!
-//! Talks to the DynamoDB HTTP API: AWS DynamoDB, DynamoDB Local, and -- the
-//! main portability target -- **ScyllaDB Alternator** (point `endpoint_url` at
-//! the Alternator port). Chain-data metadata (kv rows, scannable
-//! directory/index rows, and the publication head) can then live in a
-//! DynamoDB-shaped store.
-//!
-//! ## Single-table design (a wire contract once data exists)
-//!
-//! Every logical row lives in one physical table. Schema:
-//!
-//! | attribute | type | role |
-//! |---|---|---|
-//! | `pk` | Binary | partition key |
-//! | `sk` | Binary | sort key |
-//! | `val` | Binary | the stored value |
-//! The key kind (`kv`/`scan`) and the logical table name are folded into
-//! `pk` with explicit length prefixes so decoding is unambiguous and partitions
-//! are well distributed:
-//!
-//! ```text
-//! pk = u16-be(len(kind)) ∥ kind ∥ u16-be(len(table)) ∥ table ∥ key-or-partition
-//! sk = clustering            (scan rows)
-//! sk = 0x00 (sentinel)       (kv rows -- pk already identifies the row)
-//! ```
-//!
-//! Binary keys sort by unsigned byte order in DynamoDB/Alternator, which is
-//! exactly the ordering `scan_list`/`begins_with` rely on, so logical keys map
-//! natively with no hex hop. A scannable `(table, partition)` becomes the
-//! DynamoDB partition and its clustering keys become the sort keys within it, so
-//! `scan_list` is a single-partition `Query` (drained across response pages so a
-//! single call returns the whole requested range), never a cross-partition
-//! `Scan`.
+//! Wire contract: rows are `(pk: Binary, sk: Binary, val: Binary)`, with the
+//! key kind (`kv`/`scan`) and logical table name length-prefixed into `pk`
+//! (see [`encode_pk`]); `sk` is the scan clustering, or a 0x00 sentinel for kv
+//! rows. Binary keys sort by unsigned byte order, matching what `scan_keys`
+//! relies on, so a scan is a single-partition `Query`.
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     sync::{
-        atomic::{AtomicU64, AtomicUsize, Ordering},
-        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+        Arc,
     },
 };
 
-use aws_config::BehaviorVersion;
 use aws_sdk_dynamodb::{
-    config::{Credentials, Region},
-    error::{ProvideErrorMetadata, SdkError},
     primitives::Blob,
-    types::{
-        AttributeDefinition, AttributeValue, BillingMode, DeleteRequest, KeySchemaElement, KeyType,
-        PutRequest, ScalarAttributeType, TableStatus, WriteRequest,
-    },
+    types::{AttributeValue, DeleteRequest, PutRequest, WriteRequest},
     Client,
 };
 use bytes::Bytes;
 use futures::stream::{StreamExt, TryStreamExt};
-use tokio::sync::Semaphore;
 use tracing::{debug, info, warn};
 
 use crate::{
+    engine::tables::ALL_LOGICAL_TABLE_NAMES,
     error::{MonadChainDataError, Result},
     store::{
-        common::Page,
+        dynamo_common::{
+            backend_err, encode_pk, estimated_batch_write_item_bytes, run_batch_write_chunks,
+            split_batch_write_chunks, summarize_names, take_binary, ClientRing,
+            SharedDynamoConnection, ATTR_PK, ATTR_SK, ATTR_VAL, BATCH_WRITE_LIMIT,
+            BATCH_WRITE_PAYLOAD_SOFT_LIMIT,
+        },
         meta::{MetaStore, MetaWriteOp, ScannableTableId, TableId},
+        sdk::{load_sdk_config, ReadGuard, ReadStats},
     },
 };
 
-/// Attribute names. Short to keep item overhead low; these are a wire contract.
-pub(crate) const ATTR_PK: &str = "pk";
-pub(crate) const ATTR_SK: &str = "sk";
-pub(crate) const ATTR_VAL: &str = "val";
+/// Explicit static credentials, for DynamoDB Local / Alternator deployments
+/// with no ambient AWS credential chain (they accept any non-empty pair).
+pub type DynamoCredentials = crate::store::sdk::StaticCredentials;
+
 /// Key-kind discriminators folded into `pk`.
 const KIND_KV: &[u8] = b"kv";
 const KIND_SCAN: &[u8] = b"scan";
 
-/// Sort-key sentinel for rows whose `pk` already uniquely identifies them
-/// (kv). A single byte keeps the row addressable by a fixed `sk`.
+/// Sort-key sentinel for kv rows, whose `pk` alone identifies them.
 const SK_SENTINEL: &[u8] = &[0x00];
-
-/// DynamoDB caps `BatchWriteItem` at 25 write requests per call.
-pub(crate) const BATCH_WRITE_LIMIT: usize = 25;
-
-/// Alternator rejects oversized HTTP request bodies. DynamoDB's documented
-/// BatchWriteItem payload cap is 16 MiB; keep a margin for JSON/base64 framing.
-const BATCH_WRITE_PAYLOAD_SOFT_LIMIT: usize = 12 * 1024 * 1024;
-const BATCH_WRITE_ITEM_OVERHEAD: usize = 512;
-// With a 50ms exponential backoff, 8 retry sleeps have a worst-case cumulative
-// delay of 12.75s; the 9th would raise it to 25.55s.
-pub(crate) const BATCH_WRITE_CHUNK_MAX_RETRIES: u32 = 8;
-const BATCH_WRITE_CHUNK_BASE_BACKOFF_MS: u64 = 50;
-const BATCH_WRITE_CHUNK_MAX_BACKOFF_MS: u64 = 20_000;
-
-/// Static credentials supplied explicitly rather than via the ambient AWS
-/// credential chain. Required for DynamoDB Local / Alternator deployments that
-/// have no instance/profile credentials (they accept any non-empty pair).
-#[derive(Clone)]
-pub struct DynamoCredentials {
-    pub access_key_id: String,
-    pub secret_access_key: String,
-    pub session_token: Option<String>,
-}
-
-impl std::fmt::Debug for DynamoCredentials {
-    // Never print secret material.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DynamoCredentials")
-            .field("access_key_id", &self.access_key_id)
-            .field("secret_access_key", &"<redacted>")
-            .field(
-                "session_token",
-                &self.session_token.as_ref().map(|_| "<redacted>"),
-            )
-            .finish()
-    }
-}
 
 /// Physical DynamoDB table mapping for logical metadata tables.
 #[derive(Debug, Clone)]
@@ -152,11 +88,9 @@ impl DynamoTableLayout {
 pub struct DynamoMetaStoreConfig {
     /// Physical table layout for logical kv/scan/cas rows.
     pub table_layout: DynamoTableLayout,
-    /// Endpoints for DynamoDB Local / Alternator. Empty targets real AWS
-    /// DynamoDB via the default resolver. Multiple endpoints (e.g. the three
-    /// Alternator nodes) build one client each and round-robin requests across
-    /// them, spreading coordinator load — Alternator nodes are peers, so any can
-    /// coordinate any write.
+    /// Endpoints for DynamoDB Local / Alternator; empty targets real AWS.
+    /// Multiple endpoints get one client each, round-robined to spread
+    /// coordinator load (Alternator nodes are peers).
     pub endpoint_urls: Vec<String>,
     /// AWS region. `None` falls through to the default region provider chain.
     /// DynamoDB Local / Alternator accept any value (commonly `"us-east-1"`).
@@ -169,12 +103,11 @@ pub struct DynamoMetaStoreConfig {
     /// Max in-flight `BatchWriteItem` calls per physical table for
     /// [`DynamoMetaStore::apply_writes`]. Clamped to >= 1.
     pub batch_table_max_concurrency: usize,
-    /// Max write requests per `BatchWriteItem` call. DynamoDB caps this at 25
-    /// ([`BATCH_WRITE_LIMIT`]); ScyllaDB Alternator defaults to 100 (tunable via
-    /// `alternator_max_items_in_batch_write`). Larger batches mean proportionally
-    /// fewer round-trips. Clamped to `[1, ..]`; verify with
-    /// [`DynamoMetaStore::discover_batch_write_limit`] before exceeding 25, since
-    /// an over-limit batch fails non-retryably.
+    /// Max write requests per `BatchWriteItem`. DynamoDB caps this at 25
+    /// ([`BATCH_WRITE_LIMIT`]); Alternator defaults to 100 (tunable via
+    /// `alternator_max_items_in_batch_write`). Verify with
+    /// [`DynamoMetaStore::discover_batch_write_limit`] before exceeding 25 —
+    /// an over-limit batch fails non-retryably. Clamped to >= 1.
     pub batch_write_max_items: usize,
     /// Explicit static credentials. `None` uses the ambient AWS credential
     /// chain (env, profile, instance role, ...).
@@ -182,8 +115,8 @@ pub struct DynamoMetaStoreConfig {
 }
 
 impl DynamoMetaStoreConfig {
-    /// Minimal config targeting real AWS DynamoDB with ambient credentials and
-    /// the default region chain. Callers tweak the remaining fields as needed.
+    /// Minimal config targeting real AWS DynamoDB with ambient credentials
+    /// and the default region chain.
     pub fn new(table_name: impl Into<String>) -> Self {
         Self {
             table_layout: DynamoTableLayout::single(table_name),
@@ -199,31 +132,19 @@ impl DynamoMetaStoreConfig {
 }
 
 struct Inner {
-    /// One client per configured endpoint (>=1). Requests round-robin via
-    /// [`DynamoMetaStore::rr_client`] to spread coordinator load across nodes.
-    clients: Vec<Client>,
-    next_client: AtomicUsize,
+    /// One client per configured endpoint (>=1), round-robined.
+    ring: ClientRing,
     table_layout: DynamoTableLayout,
     batch_max_concurrency: usize,
     batch_table_max_concurrency: usize,
-    /// Effective max write requests per `BatchWriteItem`. Mutable so
-    /// [`DynamoMetaStore::discover_batch_write_limit`] can raise it after probing.
-    batch_write_max_items: AtomicUsize,
-    read_stats: DynamoMetaReadStats,
-}
-
-#[derive(Debug, Default)]
-struct DynamoMetaReadStats {
-    started: AtomicU64,
-    completed: AtomicU64,
-    errors: AtomicU64,
-    canceled: AtomicU64,
-    get_items: AtomicU64,
-    queries: AtomicU64,
-    items: AtomicU64,
-    bytes: AtomicU64,
-    in_flight: AtomicU64,
-    max_in_flight: AtomicU64,
+    /// Effective max write requests per `BatchWriteItem`; atomic so
+    /// [`DynamoMetaStore::discover_batch_write_limit`] can raise it. `Arc`d so
+    /// a co-deployed dynamo blob store shares the probed value.
+    batch_write_max_items: Arc<AtomicUsize>,
+    read_stats: Arc<ReadStats>,
+    /// Configured endpoint URLs, retained so a co-deployed dynamo blob store can
+    /// recognize when it shares this store's endpoint(s) and skip its warn.
+    endpoint_urls: Arc<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -240,102 +161,14 @@ pub struct DynamoMetaReadStatsSnapshot {
     pub max_in_flight: u64,
 }
 
+/// `kinds` slot assignment for the shared [`ReadStats`].
 #[derive(Debug, Clone, Copy)]
 enum DynamoMetaReadKind {
-    GetItem,
-    Query,
+    GetItem = 0,
+    Query = 1,
 }
 
-#[derive(Default)]
-struct BatchWriteProgress {
-    started: AtomicUsize,
-    completed: AtomicUsize,
-    failed: AtomicUsize,
-    retries: AtomicUsize,
-    unprocessed_items: AtomicUsize,
-    active: Mutex<HashMap<usize, ActiveBatchWriteChunk>>,
-}
-
-#[derive(Clone)]
-struct ActiveBatchWriteChunk {
-    table: String,
-}
-
-impl BatchWriteProgress {
-    fn mark_started(&self, chunk_idx: usize, table: &str, attempt: u32) {
-        if attempt == 0 {
-            self.started.fetch_add(1, Ordering::Relaxed);
-        } else {
-            self.retries.fetch_add(1, Ordering::Relaxed);
-        }
-        self.active.lock().expect("batch progress poisoned").insert(
-            chunk_idx,
-            ActiveBatchWriteChunk {
-                table: table.to_string(),
-            },
-        );
-    }
-
-    fn mark_completed(&self, chunk_idx: usize) {
-        self.completed.fetch_add(1, Ordering::Relaxed);
-        self.active
-            .lock()
-            .expect("batch progress poisoned")
-            .remove(&chunk_idx);
-    }
-
-    fn mark_attempt_finished(&self, chunk_idx: usize) {
-        self.active
-            .lock()
-            .expect("batch progress poisoned")
-            .remove(&chunk_idx);
-    }
-
-    fn mark_failed(&self, chunk_idx: usize) {
-        self.failed.fetch_add(1, Ordering::Relaxed);
-        self.active
-            .lock()
-            .expect("batch progress poisoned")
-            .remove(&chunk_idx);
-    }
-
-    fn mark_unprocessed(&self, count: usize) {
-        self.unprocessed_items.fetch_add(count, Ordering::Relaxed);
-    }
-
-    fn snapshot(&self) -> BatchWriteProgressSnapshot {
-        let active = self.active.lock().expect("batch progress poisoned");
-        let mut active_by_table: HashMap<String, usize> = HashMap::new();
-        for chunk in active.values() {
-            *active_by_table.entry(chunk.table.clone()).or_default() += 1;
-        }
-        let mut active_by_table = active_by_table.into_iter().collect::<Vec<_>>();
-        active_by_table.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-        BatchWriteProgressSnapshot {
-            started: self.started.load(Ordering::Relaxed),
-            completed: self.completed.load(Ordering::Relaxed),
-            failed: self.failed.load(Ordering::Relaxed),
-            retries: self.retries.load(Ordering::Relaxed),
-            unprocessed_items: self.unprocessed_items.load(Ordering::Relaxed),
-            active: active.len(),
-            active_by_table,
-        }
-    }
-}
-
-struct BatchWriteProgressSnapshot {
-    started: usize,
-    completed: usize,
-    failed: usize,
-    retries: usize,
-    unprocessed_items: usize,
-    active: usize,
-    active_by_table: Vec<(String, usize)>,
-}
-
-/// DynamoDB-API-compatible [`MetaStore`]. Cheaply cloneable
-/// -- all state lives behind an `Arc`, and the underlying SDK `Client` is itself
-/// `Arc`-backed.
+/// DynamoDB-API-compatible [`MetaStore`]. Cheaply cloneable (`Arc`-backed).
 #[derive(Clone)]
 pub struct DynamoMetaStore {
     inner: Arc<Inner>,
@@ -355,10 +188,9 @@ impl std::fmt::Debug for DynamoMetaStore {
 }
 
 impl DynamoMetaStore {
-    /// Builds the SDK client from `config` and returns a ready store. Async
-    /// because resolving the AWS credential/region chain performs I/O. Assumes
-    /// the table already exists (see [`DynamoMetaStore::create_table`] for the
-    /// opt-in test/dev provisioning helper).
+    /// Builds the SDK clients (async: resolving the AWS credential/region
+    /// chain performs I/O). Assumes the tables already exist; see
+    /// [`DynamoMetaStore::create_table`] for the test/dev provisioning helper.
     pub async fn new(config: DynamoMetaStoreConfig) -> Result<Self> {
         let DynamoMetaStoreConfig {
             table_layout,
@@ -371,26 +203,10 @@ impl DynamoMetaStore {
             credentials,
         } = config;
 
-        // Resolve the credential/region chain once, then derive one client per
-        // endpoint by overriding only the endpoint — avoids re-resolving creds N
-        // times and shares nothing mutable between clients.
-        let mut loader = aws_config::defaults(BehaviorVersion::latest());
-        if let Some(region) = region {
-            loader = loader.region(Region::new(region));
-        }
-        if let Some(profile) = profile {
-            loader = loader.profile_name(profile);
-        }
-        if let Some(creds) = credentials {
-            loader = loader.credentials_provider(Credentials::new(
-                creds.access_key_id,
-                creds.secret_access_key,
-                creds.session_token,
-                None,
-                "DynamoMetaStoreConfig",
-            ));
-        }
-        let sdk_config = loader.load().await;
+        // Resolve the credential/region chain once; derive one client per
+        // endpoint by overriding only the endpoint.
+        let sdk_config =
+            load_sdk_config(region, profile, credentials, "DynamoMetaStoreConfig").await;
 
         let clients: Vec<Client> = if endpoint_urls.is_empty() {
             vec![Client::new(&sdk_config)]
@@ -408,75 +224,50 @@ impl DynamoMetaStore {
 
         Ok(Self {
             inner: Arc::new(Inner {
-                clients,
-                next_client: AtomicUsize::new(0),
+                ring: ClientRing::new(clients),
                 table_layout,
                 batch_max_concurrency: batch_max_concurrency.max(1),
                 batch_table_max_concurrency: batch_table_max_concurrency.max(1),
-                batch_write_max_items: AtomicUsize::new(batch_write_max_items.max(1)),
-                read_stats: DynamoMetaReadStats::default(),
+                batch_write_max_items: Arc::new(AtomicUsize::new(batch_write_max_items.max(1))),
+                read_stats: Arc::new(ReadStats::default()),
+                endpoint_urls: Arc::new(endpoint_urls),
             }),
         })
     }
 
-    /// Round-robin one of the per-endpoint clients. With a single endpoint this
-    /// always returns the same client; with several it spreads load across the
-    /// Alternator nodes.
+    /// Round-robin one of the per-endpoint clients.
     fn rr_client(&self) -> &Client {
-        let clients = &self.inner.clients;
-        if clients.len() == 1 {
-            return &clients[0];
-        }
-        let i = self.inner.next_client.fetch_add(1, Ordering::Relaxed) % clients.len();
-        &clients[i]
+        self.inner.ring.get()
     }
 
-    /// An SDK client for sharing with the blob backend (see
-    /// `DynamoBlobStore::new_with_client`). Cloning is cheap (`Arc`-backed).
-    pub fn client(&self) -> Client {
-        self.inner.clients[0].clone()
+    /// Connection state (client ring + probed batch-write limit) for sharing
+    /// with a co-deployed dynamo blob backend.
+    pub(crate) fn shared_connection(&self) -> SharedDynamoConnection {
+        SharedDynamoConnection {
+            ring: self.inner.ring.clone(),
+            batch_write_max_items: self.inner.batch_write_max_items.clone(),
+            endpoint_urls: self.inner.endpoint_urls.clone(),
+        }
     }
 
     pub fn take_read_stats(&self) -> DynamoMetaReadStatsSnapshot {
-        let stats = &self.inner.read_stats;
+        let window = self.inner.read_stats.take();
         DynamoMetaReadStatsSnapshot {
-            started: stats.started.swap(0, Ordering::Relaxed),
-            completed: stats.completed.swap(0, Ordering::Relaxed),
-            errors: stats.errors.swap(0, Ordering::Relaxed),
-            canceled: stats.canceled.swap(0, Ordering::Relaxed),
-            get_items: stats.get_items.swap(0, Ordering::Relaxed),
-            queries: stats.queries.swap(0, Ordering::Relaxed),
-            items: stats.items.swap(0, Ordering::Relaxed),
-            bytes: stats.bytes.swap(0, Ordering::Relaxed),
-            in_flight: stats.in_flight.load(Ordering::Relaxed),
-            max_in_flight: stats.max_in_flight.swap(0, Ordering::Relaxed),
+            started: window.started,
+            completed: window.completed,
+            errors: window.errors,
+            canceled: window.canceled,
+            get_items: window.kinds[DynamoMetaReadKind::GetItem as usize],
+            queries: window.kinds[DynamoMetaReadKind::Query as usize],
+            items: window.items,
+            bytes: window.bytes,
+            in_flight: window.in_flight,
+            max_in_flight: window.max_in_flight,
         }
     }
 
-    fn read_started(&self, kind: DynamoMetaReadKind) -> DynamoMetaReadGuard {
-        let stats = &self.inner.read_stats;
-        stats.started.fetch_add(1, Ordering::Relaxed);
-        match kind {
-            DynamoMetaReadKind::GetItem => stats.get_items.fetch_add(1, Ordering::Relaxed),
-            DynamoMetaReadKind::Query => stats.queries.fetch_add(1, Ordering::Relaxed),
-        };
-        let in_flight = stats.in_flight.fetch_add(1, Ordering::Relaxed) + 1;
-        let mut prev = stats.max_in_flight.load(Ordering::Relaxed);
-        while in_flight > prev {
-            match stats.max_in_flight.compare_exchange_weak(
-                prev,
-                in_flight,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            ) {
-                Ok(_) => break,
-                Err(next) => prev = next,
-            }
-        }
-        DynamoMetaReadGuard {
-            inner: self.inner.clone(),
-            finished: false,
-        }
+    fn read_started(&self, kind: DynamoMetaReadKind) -> ReadGuard {
+        self.inner.read_stats.start(kind as usize)
     }
 
     fn table_name_for_kv(&self, table: TableId) -> String {
@@ -499,8 +290,8 @@ impl DynamoMetaStore {
     fn physical_table_names(&self) -> Vec<String> {
         match &self.inner.table_layout {
             DynamoTableLayout::Single { table_name } => vec![table_name.clone()],
-            DynamoTableLayout::PerLogicalTable { prefix } => known_logical_table_names()
-                .into_iter()
+            DynamoTableLayout::PerLogicalTable { prefix } => ALL_LOGICAL_TABLE_NAMES
+                .iter()
                 .map(|logical| format!("{prefix}-{}", dynamo_safe_name(logical)))
                 .collect(),
         }
@@ -558,208 +349,22 @@ impl DynamoMetaStore {
             .table_name(physical_table)
             .item(ATTR_PK, AttributeValue::B(Blob::new(pk)))
             .item(ATTR_SK, AttributeValue::B(Blob::new(sk)))
-            .item(ATTR_VAL, AttributeValue::B(Blob::new(value.to_vec())))
+            // `Blob::new(value)` reclaims the backing Vec when uniquely owned.
+            .item(ATTR_VAL, AttributeValue::B(Blob::new(value)))
             .send()
             .await
             .map_err(|e| backend_err("put_item", e))?;
         Ok(())
     }
 
-    /// One `BatchWriteItem` call (<= 25 items), retrying `UnprocessedItems`
-    /// until they drain.
-    async fn write_chunk(
-        &self,
-        chunk_idx: usize,
-        table: String,
-        requests: Vec<WriteRequest>,
-        progress: Arc<BatchWriteProgress>,
-    ) -> Result<()> {
-        let mut pending: HashMap<String, Vec<WriteRequest>> = HashMap::new();
-        let initial_request_count = requests.len();
-        pending.insert(table.clone(), requests);
-
-        // Bounded retry of throttled/unprocessed items with exponential full
-        // jitter. Batch-level IO retry is intentionally expensive; concentrate
-        // retry pressure on the residual items in this one chunk first.
-        // BatchWriteItem returns the leftovers rather than erroring on partial
-        // capacity, so we resubmit only what was not applied.
-        let mut attempt = 0u32;
-        loop {
-            let pending_count = pending.values().map(Vec::len).sum::<usize>();
-            let log_sample = chunk_idx < 8 || chunk_idx % 100 == 0 || attempt > 0;
-            if log_sample {
-                debug!(
-                    chunk_idx,
-                    table = %table,
-                    attempt,
-                    pending_count,
-                    initial_request_count,
-                    "dynamo batch_write_item send starting"
-                );
-            }
-            progress.mark_started(chunk_idx, &table, attempt);
-            let send_started = std::time::Instant::now();
-            let send = self
-                .rr_client()
-                .batch_write_item()
-                .set_request_items(Some(pending.clone()))
-                .send();
-            tokio::pin!(send);
-
-            let mut next_warn = std::time::Duration::from_secs(10);
-            let resp = loop {
-                tokio::select! {
-                    result = &mut send => break result,
-                    _ = tokio::time::sleep(next_warn) => {
-                        warn!(
-                            chunk_idx,
-                            table = %table,
-                            attempt,
-                            pending_count,
-                            initial_request_count,
-                            elapsed_ms = send_started.elapsed().as_millis() as u64,
-                            "dynamo batch_write_item send still in flight"
-                        );
-                        next_warn = std::time::Duration::from_secs(60);
-                    }
-                }
-            };
-            let resp = match resp {
-                Ok(resp) => resp,
-                Err(e) => {
-                    progress.mark_attempt_finished(chunk_idx);
-                    let error = backend_err("batch_write_item", e);
-                    attempt += 1;
-                    if attempt > BATCH_WRITE_CHUNK_MAX_RETRIES {
-                        progress.mark_failed(chunk_idx);
-                        return Err(error);
-                    }
-                    let backoff = batch_write_retry_backoff(chunk_idx, &table, attempt);
-                    warn!(
-                        chunk_idx,
-                        table = %table,
-                        attempt,
-                        max_retries = BATCH_WRITE_CHUNK_MAX_RETRIES,
-                        pending_count,
-                        elapsed_ms = send_started.elapsed().as_millis() as u64,
-                        backoff_ms = backoff.as_millis() as u64,
-                        %error,
-                        "dynamo batch_write_item send failed; retrying chunk"
-                    );
-                    tokio::time::sleep(backoff).await;
-                    continue;
-                }
-            };
-            if log_sample {
-                debug!(
-                    chunk_idx,
-                    table = %table,
-                    attempt,
-                    pending_count,
-                    elapsed_ms = send_started.elapsed().as_millis() as u64,
-                    "dynamo batch_write_item send completed"
-                );
-            }
-
-            let leftovers = resp
-                .unprocessed_items
-                .and_then(|mut m| m.remove(&table))
-                .unwrap_or_default();
-            if leftovers.is_empty() {
-                progress.mark_completed(chunk_idx);
-                return Ok(());
-            }
-            progress.mark_attempt_finished(chunk_idx);
-            progress.mark_unprocessed(leftovers.len());
-            warn!(
-                chunk_idx,
-                table = %table,
-                attempt,
-                max_retries = BATCH_WRITE_CHUNK_MAX_RETRIES,
-                leftover_count = leftovers.len(),
-                "dynamo batch_write_item returned unprocessed items"
-            );
-            attempt += 1;
-            if attempt > BATCH_WRITE_CHUNK_MAX_RETRIES {
-                progress.mark_failed(chunk_idx);
-                return Err(MonadChainDataError::Backend(format!(
-                    "dynamo batch_write_item: {} items still unprocessed after {attempt} retries",
-                    leftovers.len()
-                )));
-            }
-            let backoff = batch_write_retry_backoff(chunk_idx, &table, attempt);
-            tokio::time::sleep(backoff).await;
-            pending.clear();
-            pending.insert(table.clone(), leftovers);
-        }
-    }
-
     /// Idempotent table provisioning for tests/dev ONLY -- never called by
-    /// [`DynamoMetaStore::new`]. Creates the single shared table with the
-    /// `pk` (Binary HASH) + `sk` (Binary RANGE) schema in on-demand billing
-    /// mode, treating `ResourceInUseException` (table already exists) as
-    /// success, then polls `DescribeTable` until the table is `ACTIVE`.
+    /// [`DynamoMetaStore::new`]. Creates the binary `pk` HASH + binary `sk`
+    /// RANGE schema in on-demand billing mode and polls until `ACTIVE`.
     pub async fn create_table(&self) -> Result<()> {
         for table in self.physical_table_names() {
-            self.create_one_table(&table).await?;
+            crate::store::dynamo_common::create_pk_sk_table(&self.inner.ring, &table).await?;
         }
         Ok(())
-    }
-
-    async fn create_one_table(&self, table: &str) -> Result<()> {
-        let attr = |name: &str| {
-            AttributeDefinition::builder()
-                .attribute_name(name)
-                .attribute_type(ScalarAttributeType::B)
-                .build()
-                .expect("attribute definition")
-        };
-        let key = |name: &str, kt: KeyType| {
-            KeySchemaElement::builder()
-                .attribute_name(name)
-                .key_type(kt)
-                .build()
-                .expect("key schema element")
-        };
-
-        let create = self
-            .rr_client()
-            .create_table()
-            .table_name(table.to_string())
-            .attribute_definitions(attr(ATTR_PK))
-            .attribute_definitions(attr(ATTR_SK))
-            .key_schema(key(ATTR_PK, KeyType::Hash))
-            .key_schema(key(ATTR_SK, KeyType::Range))
-            .billing_mode(BillingMode::PayPerRequest)
-            .send()
-            .await;
-        match create {
-            Ok(_) => {}
-            // Already provisioned: idempotent success. Match both the typed
-            // variant and the metadata code (Alternator may report untyped).
-            Err(e) if e.code() == Some("ResourceInUseException") => {}
-            Err(e) => return Err(backend_err("create_table", e)),
-        }
-
-        // Poll until ACTIVE. No generated waiter is available without the
-        // `waiters` SDK feature, so describe-and-sleep.
-        for _ in 0..60 {
-            let desc = self
-                .rr_client()
-                .describe_table()
-                .table_name(table.to_string())
-                .send()
-                .await
-                .map_err(|e| backend_err("describe_table", e))?;
-            let status = desc.table.and_then(|t| t.table_status);
-            if status == Some(TableStatus::Active) {
-                return Ok(());
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-        }
-        Err(MonadChainDataError::Backend(format!(
-            "dynamo create_table: table {table} did not become ACTIVE in time"
-        )))
     }
 
     /// Startup connectivity/schema check. Verifies the configured table exists,
@@ -767,26 +372,22 @@ impl DynamoMetaStore {
     /// key schema before ingest workers begin writing.
     pub async fn validate_table(&self) -> Result<()> {
         let tables = self.physical_table_names();
-        let concurrency = self
-            .inner
-            .batch_table_max_concurrency
-            .min(tables.len())
-            .max(1);
+        // batch_table_max_concurrency is clamped >= 1 at construction and the
+        // layout always yields at least one table, so this stays >= 1.
+        let concurrency = self.inner.batch_table_max_concurrency.min(tables.len());
         futures::stream::iter(tables)
-            .map(|table| async move { self.validate_one_table(&table).await })
+            .map(|table| async move {
+                crate::store::dynamo_common::validate_pk_sk_table(&self.inner.ring, &table).await
+            })
             .buffer_unordered(concurrency)
-            .try_collect::<Vec<_>>()
-            .await?;
-        Ok(())
+            .try_collect::<()>()
+            .await
     }
 
-    /// Probe and set the effective `BatchWriteItem` item limit by sending one
-    /// batch of `candidate` delete-requests for non-existent keys (deletes of
-    /// absent keys are idempotent no-ops, so this writes nothing). On success the
-    /// store uses `candidate`; if the backend rejects it (DynamoDB and any
-    /// Alternator with a lower `alternator_max_items_in_batch_write`), it falls
-    /// back to the safe [`BATCH_WRITE_LIMIT`] of 25. Idempotent; call once at
-    /// startup after the table is ACTIVE.
+    /// Probe and set the effective `BatchWriteItem` item limit by sending
+    /// `candidate` deletes of non-existent keys (idempotent no-ops). If the
+    /// backend rejects the batch, falls back to [`BATCH_WRITE_LIMIT`]. Call
+    /// once at startup after the table is ACTIVE.
     pub async fn discover_batch_write_limit(&self, candidate: usize) -> usize {
         let candidate = candidate.max(1);
         if candidate <= BATCH_WRITE_LIMIT {
@@ -795,12 +396,11 @@ impl DynamoMetaStore {
                 .store(candidate, Ordering::Relaxed);
             return candidate;
         }
-        let Some(table) = self.physical_table_names().into_iter().next() else {
-            self.inner
-                .batch_write_max_items
-                .store(BATCH_WRITE_LIMIT, Ordering::Relaxed);
-            return BATCH_WRITE_LIMIT;
-        };
+        let table = self
+            .physical_table_names()
+            .into_iter()
+            .next()
+            .expect("layout yields at least one physical table");
         let probe: Vec<WriteRequest> = (0..candidate)
             .map(|i| {
                 let pk = format!("__alternator_batch_probe__#{i}").into_bytes();
@@ -840,83 +440,6 @@ impl DynamoMetaStore {
             .batch_write_max_items
             .store(effective, Ordering::Relaxed);
         effective
-    }
-
-    async fn validate_one_table(&self, table: &str) -> Result<()> {
-        let desc = self
-            .rr_client()
-            .describe_table()
-            .table_name(table.to_string())
-            .send()
-            .await
-            .map_err(|e| backend_err("describe_table", e))?;
-        let Some(table_desc) = desc.table else {
-            return Err(MonadChainDataError::Backend(format!(
-                "dynamo describe_table: table {table} missing from response"
-            )));
-        };
-        if table_desc.table_status != Some(TableStatus::Active) {
-            return Err(MonadChainDataError::Backend(format!(
-                "dynamo table {table} is not ACTIVE: {:?}",
-                table_desc.table_status
-            )));
-        }
-
-        let attrs = table_desc.attribute_definitions.unwrap_or_default();
-        let attr_type = |name: &str| {
-            attrs
-                .iter()
-                .find(|a| a.attribute_name == name)
-                .map(|a| a.attribute_type.clone())
-        };
-        let keys = table_desc.key_schema.unwrap_or_default();
-        let key_type = |name: &str| {
-            keys.iter()
-                .find(|k| k.attribute_name == name)
-                .map(|k| k.key_type.clone())
-        };
-
-        if attr_type(ATTR_PK) != Some(ScalarAttributeType::B)
-            || attr_type(ATTR_SK) != Some(ScalarAttributeType::B)
-            || key_type(ATTR_PK) != Some(KeyType::Hash)
-            || key_type(ATTR_SK) != Some(KeyType::Range)
-        {
-            return Err(MonadChainDataError::Backend(format!(
-                "dynamo table {table} schema mismatch: expected binary pk HASH + binary sk RANGE"
-            )));
-        }
-        Ok(())
-    }
-}
-
-struct DynamoMetaReadGuard {
-    inner: Arc<Inner>,
-    finished: bool,
-}
-
-impl DynamoMetaReadGuard {
-    fn finish(mut self, error: bool, items: u64, bytes: u64) {
-        self.finished = true;
-        let stats = &self.inner.read_stats;
-        if error {
-            stats.errors.fetch_add(1, Ordering::Relaxed);
-        } else {
-            stats.completed.fetch_add(1, Ordering::Relaxed);
-            stats.items.fetch_add(items, Ordering::Relaxed);
-            stats.bytes.fetch_add(bytes, Ordering::Relaxed);
-        }
-        stats.in_flight.fetch_sub(1, Ordering::Relaxed);
-    }
-}
-
-impl Drop for DynamoMetaReadGuard {
-    fn drop(&mut self) {
-        if self.finished {
-            return;
-        }
-        let stats = &self.inner.read_stats;
-        stats.canceled.fetch_add(1, Ordering::Relaxed);
-        stats.in_flight.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -1003,7 +526,8 @@ impl MetaStore for DynamoMetaStore {
                 let put = PutRequest::builder()
                     .item(ATTR_PK, AttributeValue::B(Blob::new(pk)))
                     .item(ATTR_SK, AttributeValue::B(Blob::new(sk)))
-                    .item(ATTR_VAL, AttributeValue::B(Blob::new(value.to_vec())))
+                    // `Blob::new(value)` reclaims the Vec when uniquely owned.
+                    .item(ATTR_VAL, AttributeValue::B(Blob::new(value)))
                     .build()
                     .map_err(|e| {
                         MonadChainDataError::Backend(format!("dynamo build put_request: {e}"))
@@ -1018,170 +542,73 @@ impl MetaStore for DynamoMetaStore {
 
         let request_count = requests.len();
         let estimated_wire_bytes = requests.iter().map(|(_, _, bytes)| *bytes).sum::<usize>();
-        let concurrency = self.inner.batch_max_concurrency;
-        let table_concurrency = self.inner.batch_table_max_concurrency;
         let batch_write_max_items = self.inner.batch_write_max_items.load(Ordering::Relaxed);
-        let count_only_chunks = count_only_chunks_by_table(&requests, batch_write_max_items);
         let chunks = split_batch_write_chunks(requests, batch_write_max_items);
         let chunk_count = chunks.len();
+        // Any table whose chunk count exceeds the count-only minimum was split
+        // by the payload soft limit (derived from `chunks`, O(#chunks)).
+        let mut by_table: HashMap<&str, (usize, usize)> = HashMap::new();
+        for (table, chunk) in &chunks {
+            let (items, chunk_count) = by_table.entry(table.as_str()).or_default();
+            *items += chunk.len();
+            *chunk_count += 1;
+        }
+        let payload_split = by_table
+            .values()
+            .any(|(items, chunk_count)| *chunk_count > items.div_ceil(batch_write_max_items));
         let chunk_tables = chunks.iter().map(|(table, _)| table.as_str());
         let chunks_by_table = summarize_names(chunk_tables, 8);
-        info!(
+        debug!(
             input_write_count,
             request_count,
             chunks = chunk_count,
-            count_only_chunks,
             estimated_wire_bytes,
-            concurrency,
-            table_concurrency,
+            concurrency = self.inner.batch_max_concurrency,
+            table_concurrency = self.inner.batch_table_max_concurrency,
             batch_write_max_items,
             chunks_by_table = %chunks_by_table,
             build_ms = build_started.elapsed().as_millis() as u64,
             "dynamo apply_writes built BatchWriteItem requests"
         );
-        if chunks.len() > count_only_chunks {
+        if payload_split {
             warn!(
                 request_count,
                 chunks = chunk_count,
-                count_only_chunks,
                 estimated_wire_bytes,
                 payload_soft_limit = BATCH_WRITE_PAYLOAD_SOFT_LIMIT,
                 "dynamo batch_write_item split by estimated payload size"
             );
         }
-        let progress = Arc::new(BatchWriteProgress::default());
-        let mut table_permits = HashMap::new();
-        for (table, _) in &chunks {
-            table_permits
-                .entry(table.clone())
-                .or_insert_with(|| Arc::new(Semaphore::new(table_concurrency)));
-        }
-        let table_permits = Arc::new(table_permits);
-        let send_started = std::time::Instant::now();
-        let result =
-            futures::stream::iter(chunks.into_iter().enumerate().map(|(chunk_idx, chunk)| {
-                let store = self.clone();
-                let progress = progress.clone();
-                let table_permits = table_permits.clone();
-                async move {
-                    let (table, requests): (String, Vec<WriteRequest>) = chunk;
-                    let permit = table_permits
-                        .get(&table)
-                        .expect("table semaphore must exist for every write chunk")
-                        .clone()
-                        .acquire_owned()
-                        .await
-                        .expect("table semaphore should not be closed");
-                    let _permit = permit;
-                    store
-                        .write_chunk(chunk_idx, table, requests, progress)
-                        .await
-                }
-            }))
-            .buffer_unordered(concurrency)
-            .try_collect::<Vec<()>>()
-            .await;
-        if let Err(error) = &result {
-            let snapshot = progress.snapshot();
-            warn!(
-                %error,
-                request_count,
-                chunks = chunk_count,
-                started_chunks = snapshot.started,
-                completed_chunks = snapshot.completed,
-                failed_chunks = snapshot.failed,
-                active_chunks = snapshot.active,
-                retry_attempts = snapshot.retries,
-                unprocessed_items = snapshot.unprocessed_items,
-                active_by_table = %format_count_pairs(&snapshot.active_by_table, 8),
-                "dynamo apply_writes BatchWriteItem stream failed"
-            );
-        }
-        result?;
-        let snapshot = progress.snapshot();
-        info!(
-            request_count,
-            chunks = chunk_count,
-            started_chunks = snapshot.started,
-            completed_chunks = snapshot.completed,
-            failed_chunks = snapshot.failed,
-            retry_attempts = snapshot.retries,
-            unprocessed_items = snapshot.unprocessed_items,
-            send_ms = send_started.elapsed().as_millis() as u64,
-            "dynamo apply_writes completed BatchWriteItem requests"
-        );
-        Ok(())
+        run_batch_write_chunks(
+            "apply_writes",
+            &self.inner.ring,
+            chunks,
+            self.inner.batch_max_concurrency,
+            self.inner.batch_table_max_concurrency,
+        )
+        .await
     }
 
-    async fn scan_list(
-        &self,
-        table: ScannableTableId,
-        partition: &[u8],
-        prefix: &[u8],
-        cursor: Option<Vec<u8>>,
-        limit: usize,
-    ) -> Result<Page> {
+    async fn scan_keys(&self, table: ScannableTableId, partition: &[u8]) -> Result<Vec<Vec<u8>>> {
         let pk = scan_pk(table, partition);
         let physical_table = self.table_name_for_scan(table);
-        // A DynamoDB `Query` returns at most 1 MB per response (and at most
-        // `Limit` items), signalling more via `LastEvaluatedKey`. The trait
-        // contract -- matching in-memory -- is to return the whole
-        // matching range up to `limit` in one call, so we drain pages here.
-        //
-        // We over-read by one row past `limit` (`want = limit + 1`) so we can
-        // tell whether a *further matching* row exists: that distinguishes "the
-        // page happened to end exactly on `limit`" (no more rows -> next_cursor
-        // None) from "there is genuinely more" (next_cursor Some), with no
-        // spurious trailing empty page. `usize::MAX` (the
-        // unbounded callers) saturates, so no per-page `Limit` is set and we
-        // drain until the partition is exhausted.
-        let want = limit.saturating_add(1);
-        // Resume server-side just past the prior clustering via
-        // ExclusiveStartKey = {pk, sk: cursor}.
-        let mut start_key: Option<HashMap<String, AttributeValue>> = cursor.map(|c| {
-            HashMap::from([
-                (
-                    ATTR_PK.to_string(),
-                    AttributeValue::B(Blob::new(pk.clone())),
-                ),
-                (ATTR_SK.to_string(), AttributeValue::B(Blob::new(c))),
-            ])
-        });
-
+        // A `Query` response is capped at 1 MB, but the trait contract is the
+        // whole partition in one call, so follow `LastEvaluatedKey` until the
+        // server stops handing one back.
+        let mut start_key: Option<HashMap<String, AttributeValue>> = None;
         let mut keys: Vec<Vec<u8>> = Vec::new();
         loop {
-            let mut req = self
+            let req = self
                 .rr_client()
                 .query()
                 .table_name(physical_table.clone())
+                .key_condition_expression("pk = :p")
                 .expression_attribute_values(":p", AttributeValue::B(Blob::new(pk.clone())))
-                // Callers only consume the clustering (`sk`); projecting it
-                // alone keeps `val` off the wire.
+                // Callers only consume the clustering; keeps `val` off the wire.
                 .projection_expression(ATTR_SK)
                 .consistent_read(true)
-                .scan_index_forward(true);
-            // An empty prefix means "every clustering in the partition" (matching
-            // in-memory). DynamoDB/Alternator rejects `begins_with(sk, "")`
-            // -- an empty value on a key attribute -- so drop the term entirely
-            // and let `pk = :p` select the whole partition. A non-empty prefix
-            // keeps the `begins_with` filter (and only then binds `:prefix`, so
-            // no unused expression value is sent).
-            req = if prefix.is_empty() {
-                req.key_condition_expression("pk = :p")
-            } else {
-                req.key_condition_expression("pk = :p AND begins_with(sk, :prefix)")
-                    .expression_attribute_values(
-                        ":prefix",
-                        AttributeValue::B(Blob::new(prefix.to_vec())),
-                    )
-            };
-            // Bound each page to what we still need (when finite).
-            if let Ok(remaining) = i32::try_from(want - keys.len()) {
-                req = req.limit(remaining);
-            }
-            if let Some(start) = &start_key {
-                req = req.set_exclusive_start_key(Some(start.clone()));
-            }
+                .scan_index_forward(true)
+                .set_exclusive_start_key(start_key.take());
 
             let read_guard = self.read_started(DynamoMetaReadKind::Query);
             let resp = match req.send().await {
@@ -1201,50 +628,16 @@ impl MetaStore for DynamoMetaStore {
             }
             read_guard.finish(false, page_items, page_bytes);
 
-            // Got the look-ahead row -> we have enough to answer.
-            if keys.len() >= want {
+            // Follow the server's cursor (an empty page can still carry a
+            // LastEvaluatedKey); absence means the range is exhausted.
+            start_key = resp.last_evaluated_key;
+            if start_key.is_none() {
                 break;
-            }
-            // Follow the server's cursor (robust against an empty page that
-            // still carries a LastEvaluatedKey); a missing one means the
-            // matching range is exhausted.
-            match resp.last_evaluated_key {
-                Some(lek) => start_key = Some(lek),
-                None => break,
             }
         }
 
-        // If we over-read past `limit`, a further matching row exists: trim to
-        // `limit` and hand back the last returned clustering as the cursor.
-        let next_cursor = if keys.len() > limit {
-            keys.truncate(limit);
-            keys.last().cloned()
-        } else {
-            None
-        };
-
-        Ok(Page { keys, next_cursor })
+        Ok(keys)
     }
-}
-
-// ----- key encoding (client-free, unit-tested) -----
-
-/// `pk = u16-be(len(kind)) ∥ kind ∥ u16-be(len(table)) ∥ table ∥ tail`. Length
-/// prefixes keep the kind/table boundaries unambiguous; `tail` is the kv/cas
-/// key or the scan partition appended raw.
-pub(crate) fn encode_pk(kind: &[u8], table: &str, tail: &[u8]) -> Vec<u8> {
-    let table = table.as_bytes();
-    let mut out = Vec::with_capacity(2 + kind.len() + 2 + table.len() + tail.len());
-    push_len_prefixed(&mut out, kind);
-    push_len_prefixed(&mut out, table);
-    out.extend_from_slice(tail);
-    out
-}
-
-fn push_len_prefixed(out: &mut Vec<u8>, bytes: &[u8]) {
-    let len = u16::try_from(bytes.len()).expect("pk segment length fits in u16");
-    out.extend_from_slice(&len.to_be_bytes());
-    out.extend_from_slice(bytes);
 }
 
 fn kv_pk(table: TableId, key: &[u8]) -> Vec<u8> {
@@ -1259,205 +652,8 @@ fn dynamo_safe_name(logical_table: &str) -> String {
     logical_table.replace('_', "-")
 }
 
-fn known_logical_table_names() -> Vec<&'static str> {
-    vec![
-        "publication_state",
-        "block_metadata",
-        "block_evm_header",
-        "block_hash_to_number_index",
-        "tx_hash_index",
-        "log_dict_by_version",
-        "log_dir_by_block",
-        "log_dir_bucket",
-        "log_bitmap_by_block",
-        "log_bitmap_page_blob",
-        "log_bitmap_page_counts",
-        "log_open_bitmap_stream",
-        "tx_dict_by_version",
-        "tx_dir_by_block",
-        "tx_dir_bucket",
-        "tx_bitmap_by_block",
-        "tx_bitmap_page_blob",
-        "tx_bitmap_page_counts",
-        "tx_open_bitmap_stream",
-        "trace_dict_by_version",
-        "trace_dir_by_block",
-        "trace_dir_bucket",
-        "trace_bitmap_by_block",
-        "trace_bitmap_page_blob",
-        "trace_bitmap_page_counts",
-        "trace_open_bitmap_stream",
-    ]
-}
-
-// ----- attribute extraction -----
-
-/// Removes and returns a Binary attribute, erroring if absent or wrong type.
-pub(crate) fn take_binary(
-    item: &mut HashMap<String, AttributeValue>,
-    attr: &str,
-) -> Result<Vec<u8>> {
-    match item.remove(attr) {
-        Some(AttributeValue::B(blob)) => Ok(blob.into_inner()),
-        _ => Err(MonadChainDataError::Backend(format!(
-            "dynamo item missing binary attribute `{attr}`"
-        ))),
-    }
-}
-
 fn take_val(item: &mut HashMap<String, AttributeValue>) -> Result<Bytes> {
     take_binary(item, ATTR_VAL).map(Bytes::from)
-}
-
-// ----- error helpers -----
-
-pub(crate) fn backend_err<E, R>(op: &str, e: SdkError<E, R>) -> MonadChainDataError
-where
-    E: ProvideErrorMetadata + std::error::Error + std::fmt::Debug + Send + Sync + 'static,
-    R: std::fmt::Debug,
-{
-    // Prefer the service-reported code/message; SdkError's own Display is terse.
-    let detail = match e.code() {
-        Some(code) => format!("{code}: {}", e.message().unwrap_or("")),
-        None => format!("{e}; debug={e:?}"),
-    };
-    MonadChainDataError::Backend(format!("dynamo {op}: {detail}"))
-}
-
-pub(crate) fn estimated_batch_write_item_bytes(
-    pk_len: usize,
-    sk_len: usize,
-    value_len: usize,
-) -> usize {
-    BATCH_WRITE_ITEM_OVERHEAD
-        + base64_encoded_len(pk_len)
-        + base64_encoded_len(sk_len)
-        + base64_encoded_len(value_len)
-}
-
-fn base64_encoded_len(raw_len: usize) -> usize {
-    raw_len.div_ceil(3).saturating_mul(4)
-}
-
-pub(crate) fn split_batch_write_chunks<T>(
-    items: Vec<(String, T, usize)>,
-    max_items: usize,
-) -> Vec<(String, Vec<T>)> {
-    let max_items = max_items.max(1);
-    let mut by_table: HashMap<String, Vec<(T, usize)>> = HashMap::new();
-    for (table, item, estimated_wire_bytes) in items {
-        by_table
-            .entry(table)
-            .or_default()
-            .push((item, estimated_wire_bytes));
-    }
-
-    let mut chunks_by_table = Vec::new();
-    for (table, table_items) in by_table {
-        let mut current = Vec::new();
-        let mut current_bytes = 0usize;
-        let mut table_chunks = VecDeque::new();
-
-        for (item, estimated_wire_bytes) in table_items {
-            let exceeds_count = current.len() >= max_items;
-            let exceeds_bytes = !current.is_empty()
-                && current_bytes.saturating_add(estimated_wire_bytes)
-                    > BATCH_WRITE_PAYLOAD_SOFT_LIMIT;
-            if exceeds_count || exceeds_bytes {
-                table_chunks.push_back(std::mem::take(&mut current));
-                current_bytes = 0;
-            }
-            current.push(item);
-            current_bytes = current_bytes.saturating_add(estimated_wire_bytes);
-        }
-
-        if !current.is_empty() {
-            table_chunks.push_back(current);
-        }
-        chunks_by_table.push((table, table_chunks));
-    }
-    chunks_by_table.sort_by(|a, b| a.0.cmp(&b.0));
-
-    let mut chunks = Vec::new();
-    loop {
-        let mut emitted = false;
-        for (table, table_chunks) in &mut chunks_by_table {
-            if let Some(chunk) = table_chunks.pop_front() {
-                chunks.push((table.clone(), chunk));
-                emitted = true;
-            }
-        }
-        if !emitted {
-            break;
-        }
-    }
-
-    chunks
-}
-
-pub(crate) fn batch_write_retry_backoff(
-    chunk_idx: usize,
-    table: &str,
-    attempt: u32,
-) -> std::time::Duration {
-    let exp = attempt.saturating_sub(1).min(30);
-    let cap_ms = BATCH_WRITE_CHUNK_BASE_BACKOFF_MS
-        .saturating_mul(1_u64 << exp)
-        .min(BATCH_WRITE_CHUNK_MAX_BACKOFF_MS);
-    let jitter_ms = deterministic_jitter_ms(chunk_idx, table, attempt, cap_ms);
-    std::time::Duration::from_millis(jitter_ms.max(1))
-}
-
-fn deterministic_jitter_ms(chunk_idx: usize, table: &str, attempt: u32, cap_ms: u64) -> u64 {
-    if cap_ms == 0 {
-        return 0;
-    }
-    let mut x = 0xcbf29ce484222325_u64;
-    for byte in table.as_bytes() {
-        x ^= u64::from(*byte);
-        x = x.wrapping_mul(0x100000001b3);
-    }
-    x ^= chunk_idx as u64;
-    x = x.wrapping_mul(0x9e3779b97f4a7c15);
-    x ^= u64::from(attempt);
-    x ^= x >> 12;
-    x ^= x << 25;
-    x ^= x >> 27;
-    x = x.wrapping_mul(0x2545f4914f6cdd1d);
-    x % (cap_ms + 1)
-}
-
-fn count_only_chunks_by_table<T>(items: &[(String, T, usize)], max_items: usize) -> usize {
-    let max_items = max_items.max(1);
-    let mut counts: HashMap<&str, usize> = HashMap::new();
-    for (table, _, _) in items {
-        *counts.entry(table.as_str()).or_default() += 1;
-    }
-    counts.values().map(|count| count.div_ceil(max_items)).sum()
-}
-
-fn summarize_names<'a>(names: impl Iterator<Item = &'a str>, limit: usize) -> String {
-    let mut counts: HashMap<&str, usize> = HashMap::new();
-    for name in names {
-        *counts.entry(name).or_default() += 1;
-    }
-    let mut counts = counts.into_iter().collect::<Vec<_>>();
-    counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
-    counts
-        .into_iter()
-        .take(limit)
-        .map(|(name, count)| format!("{name}:{count}"))
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
-fn format_count_pairs(pairs: &[(String, usize)], limit: usize) -> String {
-    pairs
-        .iter()
-        .take(limit)
-        .map(|(name, count)| format!("{name}:{count}"))
-        .collect::<Vec<_>>()
-        .join(",")
 }
 
 #[cfg(test)]
@@ -1465,7 +661,6 @@ mod tests {
     use super::*;
 
     const KV: TableId = TableId::new("blocks");
-    const SCAN: ScannableTableId = ScannableTableId::new("logs");
 
     #[test]
     fn pk_encoding_is_length_prefixed() {
@@ -1483,8 +678,6 @@ mod tests {
 
     #[test]
     fn pk_kinds_are_disjoint() {
-        // Same logical name across kinds must never collide: the kind prefix
-        // keeps kv/scan in separate partitions.
         let a = encode_pk(KIND_KV, "t", b"x");
         let b = encode_pk(KIND_SCAN, "t", b"x");
         assert_ne!(a, b);
@@ -1492,148 +685,9 @@ mod tests {
 
     #[test]
     fn pk_table_boundary_is_unambiguous() {
-        // ("ab", "c") and ("a", "bc") must not alias: the length prefix on the
-        // table segment disambiguates the table/tail split.
+        // ("ab", "c") vs ("a", "bc"): the table length prefix must disambiguate.
         let lhs = encode_pk(KIND_KV, "ab", b"c");
         let rhs = encode_pk(KIND_KV, "a", b"bc");
         assert_ne!(lhs, rhs);
-    }
-
-    #[test]
-    fn scan_sk_orders_by_clustering_byte_order() {
-        // Within one (table, partition) the pk is identical, so DynamoDB's
-        // unsigned-byte sort on sk must equal byte-order on the clustering. We
-        // verify the sk bytes we hand the server are exactly the clustering.
-        let part = b"p";
-        let pk = scan_pk(SCAN, part);
-        let clusterings: Vec<Vec<u8>> =
-            vec![vec![0x00], vec![0x01, 0x00], vec![0x01, 0xff], vec![0xff]];
-        // sk == clustering verbatim, so sorting sks == sorting clusterings.
-        let mut sks = clusterings.clone();
-        sks.sort();
-        assert_eq!(sks, clusterings, "input already in byte order");
-        // All share the same pk (single-partition Query).
-        assert!(clusterings.iter().all(|_| scan_pk(SCAN, part) == pk));
-    }
-
-    #[test]
-    fn batch_write_chunks_respect_item_count_limit() {
-        let items = (0..(BATCH_WRITE_LIMIT * 2 + 1))
-            .map(|i| ("table-a".to_string(), i, 1usize))
-            .collect();
-
-        let chunks = split_batch_write_chunks(items, BATCH_WRITE_LIMIT);
-
-        assert_eq!(chunks.len(), 3);
-        // Larger max_items (e.g. Alternator's 100) yields proportionally fewer
-        // chunks for the same items.
-        let items100: Vec<_> = (0..250)
-            .map(|i| ("table-a".to_string(), i, 1usize))
-            .collect();
-        let chunks100 = split_batch_write_chunks(items100, 100);
-        let mut lens100: Vec<_> = chunks100.iter().map(|(_, c)| c.len()).collect();
-        lens100.sort_unstable();
-        assert_eq!(lens100, vec![50, 100, 100]);
-        let mut lens: Vec<_> = chunks
-            .iter()
-            .map(|(table, chunk)| (table.as_str(), chunk.len()))
-            .collect();
-        lens.sort();
-        assert_eq!(
-            lens,
-            vec![
-                ("table-a", 1),
-                ("table-a", BATCH_WRITE_LIMIT),
-                ("table-a", BATCH_WRITE_LIMIT)
-            ]
-        );
-    }
-
-    #[test]
-    fn batch_write_chunks_respect_payload_soft_limit() {
-        let large = BATCH_WRITE_PAYLOAD_SOFT_LIMIT / 2 + 1;
-        let chunks = split_batch_write_chunks(
-            vec![
-                ("table-a".to_string(), 0, large),
-                ("table-a".to_string(), 1, large),
-                ("table-a".to_string(), 2, large),
-            ],
-            BATCH_WRITE_LIMIT,
-        );
-
-        let mut payloads: Vec<_> = chunks
-            .into_iter()
-            .map(|(table, chunk)| (table, chunk))
-            .collect();
-        payloads.sort_by(|a, b| a.1[0].cmp(&b.1[0]));
-        assert_eq!(
-            payloads,
-            vec![
-                ("table-a".to_string(), vec![0]),
-                ("table-a".to_string(), vec![1]),
-                ("table-a".to_string(), vec![2])
-            ]
-        );
-    }
-
-    #[test]
-    fn batch_write_chunks_do_not_mix_physical_tables() {
-        let chunks = split_batch_write_chunks(
-            vec![
-                ("table-a".to_string(), 1, 1),
-                ("table-b".to_string(), 2, 1),
-                ("table-a".to_string(), 3, 1),
-            ],
-            BATCH_WRITE_LIMIT,
-        );
-
-        let mut chunks: Vec<_> = chunks.into_iter().collect();
-        chunks.sort_by(|a, b| a.0.cmp(&b.0));
-        assert_eq!(
-            chunks,
-            vec![
-                ("table-a".to_string(), vec![1, 3]),
-                ("table-b".to_string(), vec![2])
-            ]
-        );
-    }
-
-    #[test]
-    fn batch_write_chunks_interleave_physical_tables() {
-        let mut items = Vec::new();
-        for i in 0..(BATCH_WRITE_LIMIT * 2) {
-            items.push(("table-a".to_string(), i, 1));
-        }
-        for i in 0..(BATCH_WRITE_LIMIT * 2) {
-            items.push(("table-b".to_string(), 100 + i, 1));
-        }
-        for i in 0..(BATCH_WRITE_LIMIT * 2) {
-            items.push(("table-c".to_string(), 200 + i, 1));
-        }
-
-        let chunk_tables: Vec<_> = split_batch_write_chunks(items, BATCH_WRITE_LIMIT)
-            .into_iter()
-            .map(|(table, _)| table)
-            .collect();
-
-        assert_eq!(
-            chunk_tables,
-            vec!["table-a", "table-b", "table-c", "table-a", "table-b", "table-c"]
-        );
-    }
-
-    #[test]
-    fn logical_table_names_are_dynamo_safe() {
-        assert_eq!(dynamo_safe_name("block_evm_header"), "block-evm-header");
-    }
-
-    #[test]
-    fn take_val_extracts_binary() {
-        let mut item = HashMap::new();
-        item.insert(
-            ATTR_VAL.to_string(),
-            AttributeValue::B(Blob::new(vec![1u8, 2, 3])),
-        );
-        assert_eq!(take_val(&mut item).unwrap().as_ref(), &[1, 2, 3]);
     }
 }

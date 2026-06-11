@@ -28,72 +28,51 @@ use crate::{
     store::blob::{BlobStore, BlobTableId, BlobWriteOp},
 };
 
-/// Test-only blob fixture. Holds blobs in memory behind a sync `RwLock`.
-/// Not intended as a deployable backend.
+/// Test-only in-memory blob fixture; not a deployable backend.
 #[derive(Debug, Clone, Default)]
 pub struct InMemoryBlobStore {
     blobs: Arc<RwLock<BTreeMap<(BlobTableId, Vec<u8>), Bytes>>>,
-    /// Count of backend object accesses (`get_blob`, which also backs the
-    /// default `read_range`). Lets cache tests assert that single-flight +
-    /// region caching collapse N row reads of one block onto one fetch.
+    /// Backend object accesses (`get_blob`, which also backs the default
+    /// `read_range`); lets cache tests assert fetch collapsing.
     get_blob_calls: Arc<AtomicU64>,
 }
 
 impl InMemoryBlobStore {
-    pub fn len(&self) -> usize {
-        self.blobs
-            .read()
-            .map(|guard| guard.len())
-            .unwrap_or_default()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    /// Number of object-level reads served so far. One range read counts as one
-    /// access (the default `read_range` fetches the object via `get_blob`).
+    /// Object-level reads served so far; a range read counts as one access.
     pub fn get_blob_calls(&self) -> u64 {
         self.get_blob_calls.load(Ordering::SeqCst)
     }
 
-    /// Test-only: clones the entire blob map. Enables byte-equality assertions
-    /// across two fixture instances without exposing the internal `RwLock`.
+    /// Clones the entire blob map for cross-fixture equality assertions.
     pub fn blob_snapshot(&self) -> BTreeMap<(BlobTableId, Vec<u8>), Bytes> {
-        self.blobs
-            .read()
-            .map(|guard| guard.clone())
-            .unwrap_or_default()
+        self.blobs.read().expect("poisoned lock").clone()
     }
 }
 
 impl BlobStore for InMemoryBlobStore {
     async fn put_blob(&self, table: BlobTableId, key: &[u8], value: Bytes) -> Result<()> {
-        let mut guard = self
-            .blobs
-            .write()
-            .map_err(|_| crate::error::MonadChainDataError::Backend("poisoned lock".to_string()))?;
+        let mut guard = self.blobs.write().expect("poisoned lock");
         guard.insert((table, key.to_vec()), value);
         Ok(())
     }
 
     async fn apply_writes(&self, writes: Vec<BlobWriteOp>) -> Result<()> {
-        let mut guard = self
-            .blobs
-            .write()
-            .map_err(|_| crate::error::MonadChainDataError::Backend("poisoned lock".to_string()))?;
+        let mut guard = self.blobs.write().expect("poisoned lock");
         for BlobWriteOp { table, key, value } in writes {
             guard.insert((table, key), value);
         }
         Ok(())
     }
 
+    async fn delete_blob(&self, table: BlobTableId, key: &[u8]) -> Result<()> {
+        let mut guard = self.blobs.write().expect("poisoned lock");
+        guard.remove(&(table, key.to_vec()));
+        Ok(())
+    }
+
     async fn get_blob(&self, table: BlobTableId, key: &[u8]) -> Result<Option<Bytes>> {
         self.get_blob_calls.fetch_add(1, Ordering::SeqCst);
-        let guard = self
-            .blobs
-            .read()
-            .map_err(|_| crate::error::MonadChainDataError::Backend("poisoned lock".to_string()))?;
+        let guard = self.blobs.read().expect("poisoned lock");
         Ok(guard.get(&(table, key.to_vec())).cloned())
     }
 }

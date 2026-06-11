@@ -17,7 +17,7 @@ use alloy_rlp::{RlpDecodable, RlpEncodable};
 
 use crate::{
     error::{MonadChainDataError, Result},
-    family::Hash32,
+    ingest_types::Hash32,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, RlpEncodable, RlpDecodable)]
@@ -25,11 +25,6 @@ pub struct PrimaryId(u64);
 
 impl PrimaryId {
     pub const ZERO: Self = Self(0);
-    /// Number of low bits used for the in-shard local index. The remaining
-    /// high bits encode the shard. Shared with `engine::bitmap` so the on-disk
-    /// bit layout cannot drift between encode and decode sites.
-    pub const LOCAL_ID_BITS: u32 = 24;
-    const LOCAL_ID_MASK: u64 = (1u64 << Self::LOCAL_ID_BITS) - 1;
 
     pub const fn new(value: u64) -> Self {
         Self(value)
@@ -46,30 +41,6 @@ impl PrimaryId {
             .ok_or(MonadChainDataError::Decode("primary id overflow"))
     }
 
-    pub const fn shard(self) -> u64 {
-        self.0 >> Self::LOCAL_ID_BITS
-    }
-
-    pub const fn local(self) -> u32 {
-        (self.0 & Self::LOCAL_ID_MASK) as u32
-    }
-
-    pub fn from_parts(shard: u64, local: u32) -> Result<Self> {
-        if u64::from(local) > Self::LOCAL_ID_MASK {
-            return Err(MonadChainDataError::Decode(
-                "primary id local part overflow",
-            ));
-        }
-        if shard > (u64::MAX >> Self::LOCAL_ID_BITS) {
-            return Err(MonadChainDataError::Decode("primary id shard overflow"));
-        }
-
-        let shifted_shard = shard
-            .checked_shl(Self::LOCAL_ID_BITS)
-            .ok_or(MonadChainDataError::Decode("primary id shard overflow"))?;
-        Ok(Self(shifted_shard | u64::from(local)))
-    }
-
     pub fn idx_in_block(self, first: PrimaryId) -> Result<usize> {
         let delta = self
             .0
@@ -82,7 +53,7 @@ impl PrimaryId {
 
 /// Defines a `PrimaryId` newtype scoped to one record family, so a family's
 /// signatures can't accidentally accept ids minted for another family. Each
-/// variant shares `PrimaryId`'s representation and forwards to the inner id.
+/// variant shares `PrimaryId`'s representation.
 macro_rules! family_id {
     ($name:ident, $family:literal) => {
         #[doc = concat!("`PrimaryId` scoped to the ", $family, " family. Kept as a distinct")]
@@ -92,22 +63,6 @@ macro_rules! family_id {
             Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, RlpEncodable, RlpDecodable,
         )]
         pub struct $name(PrimaryId);
-
-        impl $name {
-            pub const ZERO: Self = Self(PrimaryId::ZERO);
-
-            pub fn checked_add(self, rhs: u64) -> Result<Self> {
-                self.0.checked_add(rhs).map(Self)
-            }
-
-            pub const fn shard(self) -> u64 {
-                self.0.shard()
-            }
-
-            pub const fn local(self) -> u32 {
-                self.0.local()
-            }
-        }
 
         impl From<PrimaryId> for $name {
             fn from(id: PrimaryId) -> Self {
@@ -139,8 +94,9 @@ pub struct BlockBlobHeader {
     pub dict_version: u32,
     /// Start of this family's region within the shared per-block blob.
     pub base_offset: u32,
-    /// Physical blob object key. Empty means the legacy deterministic
-    /// `block_number` key.
+    /// Physical blob object key. Empty means this block owns its object under
+    /// the deterministic `block_number` key (set explicitly once the coalescer
+    /// repoints the block into a shared object).
     pub physical_key: Vec<u8>,
     /// Byte offset of this block's shared blob inside `physical_key`.
     pub physical_base_offset: u64,
@@ -152,8 +108,13 @@ impl BlockBlobHeader {
         self.offsets.len().saturating_sub(1)
     }
 
+    /// Absolute byte offset of this family's region within `physical_key`.
+    fn base(&self) -> usize {
+        self.physical_base_offset as usize + self.base_offset as usize
+    }
+
     pub fn abs_range(&self, idx: usize) -> (usize, usize) {
-        let base = self.physical_base_offset as usize + self.base_offset as usize;
+        let base = self.base();
         (
             base + self.offsets[idx] as usize,
             base + self.offsets[idx + 1] as usize,
@@ -161,11 +122,11 @@ impl BlockBlobHeader {
     }
 
     pub fn region_range(&self) -> (usize, usize) {
-        let base = self.physical_base_offset as usize + self.base_offset as usize;
+        let base = self.base();
         (base, base + *self.offsets.last().unwrap_or(&0) as usize)
     }
 
-    pub fn physical_key<'a>(&'a self, default: &'a [u8]) -> &'a [u8] {
+    pub fn physical_key_or<'a>(&'a self, default: &'a [u8]) -> &'a [u8] {
         if self.physical_key.is_empty() {
             default
         } else {
@@ -178,34 +139,14 @@ impl BlockBlobHeader {
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self> {
-        alloy_rlp::decode_exact(bytes)
-            .map_err(|_| MonadChainDataError::Decode("invalid block blob header rlp"))
+        decode_rlp(bytes, "invalid block blob header rlp")
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::PrimaryId;
-
-    #[test]
-    fn primary_id_from_parts_rejects_local_overflow() {
-        assert!(PrimaryId::from_parts(0, 1 << PrimaryId::LOCAL_ID_BITS).is_err());
-    }
-
-    #[test]
-    fn primary_id_from_parts_rejects_shard_overflow() {
-        let overflowing_shard = (u64::MAX >> PrimaryId::LOCAL_ID_BITS) + 1;
-
-        assert!(PrimaryId::from_parts(overflowing_shard, 0).is_err());
-    }
-
-    #[test]
-    fn primary_id_from_parts_round_trips_shard_and_local() {
-        let id = PrimaryId::from_parts(7, 42).expect("valid primary id parts");
-
-        assert_eq!(id.shard(), 7);
-        assert_eq!(id.local(), 42);
-    }
+/// Shared RLP decode body: `decode_exact` mapping any failure to a
+/// [`MonadChainDataError::Decode`] carrying the call site's message.
+fn decode_rlp<T: alloy_rlp::Decodable>(bytes: &[u8], err: &'static str) -> Result<T> {
+    alloy_rlp::decode_exact(bytes).map_err(|_| MonadChainDataError::Decode(err))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, RlpEncodable, RlpDecodable)]
@@ -227,16 +168,13 @@ pub struct BlockRecord {
     pub parent_hash: Hash32,
     pub logs: FamilyWindowRecord,
     pub txs: FamilyWindowRecord,
-    /// Per-block trace family window. Adding this field is a hard break
-    /// of the on-disk RLP layout; data dirs from before the trace family
-    /// existed must be wiped and re-ingested.
+    /// Per-block trace family window. Its addition was a hard break of the
+    /// on-disk RLP layout; pre-trace data dirs must be wiped and re-ingested.
     pub traces: FamilyWindowRecord,
-    /// Running artifact checksum chained through this block: the head value of
-    /// the per-block content-digest chain (see [`crate::engine::digest`]). A
-    /// standby that re-derives the chain from the same finalized blocks must
-    /// arrive at this exact value, proving it would have written the same
-    /// artifacts. Adding this field is a hard break of the on-disk RLP layout.
-    pub artifact_checksum: Hash32,
+    /// Head of the per-block content-digest chain (see [`crate::engine::digest`]):
+    /// a standby re-deriving the chain from the same finalized blocks must reach
+    /// this exact value. Its addition was a hard break of the on-disk RLP layout.
+    pub row_chain: Hash32,
 }
 
 impl BlockRecord {
@@ -245,23 +183,19 @@ impl BlockRecord {
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self> {
-        alloy_rlp::decode_exact(bytes)
-            .map_err(|_| MonadChainDataError::Decode("invalid block record rlp"))
+        decode_rlp(bytes, "invalid block record rlp")
     }
 }
 
-/// The single publication row. `indexed_finalized_head` is the reader-visible
-/// publication watermark and `head_artifact_checksum` is the chained artifact
-/// checksum at that head (see [`crate::engine::digest`]).
-///
-/// Field order is the on-disk RLP list order — do not reorder without a
-/// migration.
+/// The single publication row: the reader-visible head watermark plus the
+/// row chain at that head (see [`crate::engine::digest`]).
+/// Field order is the on-disk RLP list order; reordering changes the wire format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct PublicationState {
     pub indexed_finalized_head: u64,
-    /// Chained artifact checksum at `indexed_finalized_head`, mirroring the
-    /// published head block's [`BlockRecord::artifact_checksum`].
-    pub head_artifact_checksum: Hash32,
+    /// Row chain at `indexed_finalized_head`, mirroring the
+    /// published head block's [`BlockRecord::row_chain`].
+    pub head_row_chain: Hash32,
 }
 
 impl PublicationState {
@@ -270,41 +204,28 @@ impl PublicationState {
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self> {
-        alloy_rlp::decode_exact::<Self>(bytes)
-            .map_err(|_| MonadChainDataError::Decode("invalid publication state rlp"))
-    }
-
-    /// Decode the pre-single-writer publication row and preserve the fields that
-    /// still exist. This migration shim can be removed once the live store's row
-    /// has been rewritten in the new two-field format.
-    pub(crate) fn decode_legacy(bytes: &[u8]) -> Result<Self> {
-        #[derive(RlpDecodable)]
-        struct LegacyPublicationState {
-            indexed_finalized_head: u64,
-            _owner_id: u64,
-            _session_id: [u8; 16],
-            _lease_valid_through_block: u64,
-            head_artifact_checksum: Hash32,
-        }
-
-        let legacy = alloy_rlp::decode_exact::<LegacyPublicationState>(bytes)
-            .map_err(|_| MonadChainDataError::Decode("invalid publication state rlp"))?;
-        Ok(Self {
-            indexed_finalized_head: legacy.indexed_finalized_head,
-            head_artifact_checksum: legacy.head_artifact_checksum,
-        })
+        decode_rlp(bytes, "invalid publication state rlp")
     }
 }
 
 #[cfg(test)]
-mod publication_state_tests {
-    use super::{Hash32, PublicationState};
+mod tests {
+    use super::{Hash32, PrimaryId, PublicationState};
+
+    #[test]
+    fn primary_id_checked_add_rejects_overflow() {
+        assert!(PrimaryId::new(u64::MAX).checked_add(1).is_err());
+        assert_eq!(
+            PrimaryId::new(7).checked_add(35).expect("no overflow"),
+            PrimaryId::new(42)
+        );
+    }
 
     #[test]
     fn publication_state_round_trips() {
         let state = PublicationState {
             indexed_finalized_head: 91,
-            head_artifact_checksum: Hash32::repeat_byte(0xab),
+            head_row_chain: Hash32::repeat_byte(0xab),
         };
         let encoded = state.encode();
         let decoded = PublicationState::decode(&encoded).expect("decode state");

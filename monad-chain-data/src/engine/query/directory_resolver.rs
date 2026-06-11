@@ -24,37 +24,24 @@ use crate::{
         tables::FamilyTables,
     },
     error::{MonadChainDataError, Result},
-    primitives::state::PrimaryId,
+    primitives::records::PrimaryId,
     store::MetaStore,
 };
 
 /// Resolves a primary id to its block number and position within that block.
 ///
-/// A bucket's representation is a pure function of the family id frontier:
-/// every bucket whose entire id range (one `DIRECTORY_BUCKET_SIZE` span) lies
-/// below the published-head frontier is sealed and carries a compacted summary;
-/// at most one bucket — the one holding the frontier — is open and resolves from
-/// fragments. The resolver routes each lookup analytically on `sealed_below`
-/// rather than probing the summary and scanning fragments on a miss. Sealed
-/// buckets take a single summary `get`; only the open bucket scans.
+/// Routes each lookup analytically on `sealed_below`: buckets below the
+/// frontier are sealed and resolve from a compacted summary (single `get`);
+/// only the one open bucket scans fragments. Memoizes the chosen source per
+/// bucket.
 ///
-/// Caches the chosen directory source for each bucket so repeated id
-/// lookups do not re-read summaries or fragments.
-///
-/// Safe to share across the concurrent page futures of the indexed pipeline:
-/// `resolve` takes `&self` and guards the memo with a plain `Mutex` that is
-/// held ONLY for the in-memory check/insert and NEVER across the
-/// `load_bucket`/`load_bucket_fragments` `await` (mirroring the cache layer's
-/// no-await-under-lock discipline). Two tasks racing on the same bucket each
-/// fetch and the second insert wins harmlessly; concurrent `load_bucket` gets
-/// for the same sealed bucket are already coalesced by the cache-layer
-/// single-flight, so only the single open bucket's fragment scan can duplicate
-/// — an idempotent read.
+/// Safe to share across concurrent page futures: the memo `Mutex` is held only
+/// for the in-memory check/insert, never across an `await`. Races duplicate at
+/// most an idempotent fetch (last insert wins).
 pub(crate) struct PrimaryIdResolver<'a, M: MetaStore> {
     family: &'a FamilyTables<M>,
-    /// First bucket start that is *not* sealed — i.e. `bucket_start` of the
-    /// family's frontier id at the publication head. Buckets strictly below
-    /// this are sealed; the bucket at or above it is the single open bucket.
+    /// First bucket start that is *not* sealed — `bucket_start` of the family's
+    /// frontier id at the publication head.
     sealed_below: u64,
     bucket_cache: Mutex<HashMap<u64, Arc<CachedBucket>>>,
 }
@@ -68,23 +55,18 @@ impl<'a, M: MetaStore> PrimaryIdResolver<'a, M> {
         }
     }
 
-    pub(crate) async fn resolve(&self, id: PrimaryId) -> Result<Option<ResolvedPrimaryIdLocation>> {
+    pub(crate) async fn resolve(&self, id: PrimaryId) -> Result<ResolvedPrimaryIdLocation> {
         let bucket = bucket_start(id.as_u64());
 
-        // Fast path: the bucket is already memoized. Lock, clone the resolved
-        // source out, drop the lock before doing any work. Never await here.
         if let Some(cached) = self.lookup(bucket) {
             return cached.resolve(id);
         }
 
-        // Miss: fetch the bucket's source WITHOUT holding the lock. A concurrent
-        // task may fetch the same bucket; that is acceptable (sealed gets are
-        // coalesced by the cache single-flight, the open bucket's fragment scan
-        // is idempotent), and the insert below is last-write-wins.
+        // Miss: fetch WITHOUT holding the lock; a racing fetch of the same
+        // bucket is harmless and the insert below is last-write-wins.
         let cached = if bucket < self.sealed_below {
-            // Guaranteed sealed: its summary was flushed in the same
-            // `WriteSession` as the batch, before the publication CAS, so a
-            // missing summary breaks the commit contract — surface it loudly
+            // A sealed bucket's summary was flushed before the head was
+            // published, so a missing summary breaks the commit contract — fail loud
             // instead of falling back to a fragment scan.
             let summary = self.family.load_bucket(bucket).await?.ok_or(
                 MonadChainDataError::SealedDirectoryBucketMissingSummary {
@@ -93,12 +75,10 @@ impl<'a, M: MetaStore> PrimaryIdResolver<'a, M> {
             )?;
             CachedBucket::Summary(summary)
         } else {
-            // The single open/frontier bucket has no summary yet; resolve it
-            // from the retained fragments.
+            // The open/frontier bucket has no summary yet; resolve from fragments.
             CachedBucket::Fragments(self.family.load_bucket_fragments(bucket).await?)
         };
 
-        // Re-lock only to insert the memo entry and resolve against it.
         let mut guard = self.bucket_cache.lock().expect("resolver mutex poisoned");
         guard
             .entry(bucket)
@@ -106,10 +86,8 @@ impl<'a, M: MetaStore> PrimaryIdResolver<'a, M> {
             .resolve(id)
     }
 
-    /// Clones the memoized source handle for `bucket`, if present. The value is
-    /// an `Arc`, so this bumps a refcount rather than deep-copying the bucket
-    /// summary or fragment list; the lock is held only for the in-memory `get`
-    /// and released before any `resolve` work.
+    /// Clones the memoized `Arc` handle for `bucket`; the lock is released
+    /// before any `resolve` work.
     fn lookup(&self, bucket: u64) -> Option<Arc<CachedBucket>> {
         self.bucket_cache
             .lock()
@@ -132,20 +110,37 @@ enum CachedBucket {
 }
 
 impl CachedBucket {
-    fn resolve(&self, id: PrimaryId) -> Result<Option<ResolvedPrimaryIdLocation>> {
-        match self {
-            Self::Summary(bucket) => resolved_location_from_bucket(bucket, id)?
-                .ok_or(MonadChainDataError::Decode(
-                    "compacted primary directory bucket missing queried id",
-                ))
-                .map(Some),
-            Self::Fragments(fragments) => resolved_location_from_fragments(fragments, id)?
-                .ok_or(MonadChainDataError::Decode(
-                    "primary directory fragments missing queried id",
-                ))
-                .map(Some),
-        }
+    fn resolve(&self, id: PrimaryId) -> Result<ResolvedPrimaryIdLocation> {
+        // Both sources convert a missing id into a hard error: the id came
+        // from a bitmap candidate, so the directory must contain it.
+        let (located, backing) = match self {
+            Self::Summary(bucket) => (
+                resolved_location_from_bucket(bucket, id)?,
+                "compacted bucket",
+            ),
+            Self::Fragments(fragments) => (
+                resolved_location_from_fragments(fragments, id)?,
+                "fragments",
+            ),
+        };
+        located.ok_or(MonadChainDataError::PrimaryDirectoryMissingId {
+            id: id.as_u64(),
+            backing,
+        })
     }
+}
+
+/// Builds a location from the directory entry holding `id` (the entry's block
+/// and `id`'s offset within that block's id range).
+fn location_in_block(
+    block_number: u64,
+    first_primary_id: u64,
+    id: PrimaryId,
+) -> Result<ResolvedPrimaryIdLocation> {
+    Ok(ResolvedPrimaryIdLocation {
+        block_number,
+        idx_in_block: id.idx_in_block(PrimaryId::new(first_primary_id))?,
+    })
 }
 
 fn resolved_location_from_bucket(
@@ -155,11 +150,7 @@ fn resolved_location_from_bucket(
     let Some(entry) = containing_bucket_entry(bucket, id.as_u64()) else {
         return Ok(None);
     };
-
-    Ok(Some(ResolvedPrimaryIdLocation {
-        block_number: entry.block_number,
-        idx_in_block: id.idx_in_block(PrimaryId::new(entry.first_primary_id))?,
-    }))
+    location_in_block(entry.block_number, entry.first_primary_id, id).map(Some)
 }
 
 fn containing_bucket_entry(bucket: &PrimaryDirBucket, id: u64) -> Option<&PrimaryDirEntry> {
@@ -191,11 +182,7 @@ fn resolved_location_from_fragments(
     }) else {
         return Ok(None);
     };
-
-    Ok(Some(ResolvedPrimaryIdLocation {
-        block_number: fragment.block_number,
-        idx_in_block: id.idx_in_block(PrimaryId::new(fragment.first_primary_id))?,
-    }))
+    location_in_block(fragment.block_number, fragment.first_primary_id, id).map(Some)
 }
 
 #[cfg(test)]
@@ -210,7 +197,7 @@ mod tests {
             primary_dir::{PrimaryDirBucket, PrimaryDirEntry, DIRECTORY_BUCKET_SIZE},
             tables::Tables,
         },
-        primitives::state::PrimaryId,
+        primitives::records::PrimaryId,
         store::{InMemoryBlobStore, InMemoryMetaStore},
     };
 
@@ -220,9 +207,7 @@ mod tests {
 
     #[test]
     fn bucket_lookup_routes_past_omitted_empty_blocks() {
-        // Block 50 minted ids [1000, 1003), block 51 was empty (omitted), block 52
-        // minted [1003, 1008). An id in block 52's range must resolve to block 52,
-        // not to the omitted empty block between them.
+        // Block 50 minted [1000, 1003), block 51 empty (omitted), block 52 minted [1003, 1008).
         let bucket = PrimaryDirBucket {
             entries: vec![
                 PrimaryDirEntry {
@@ -283,7 +268,8 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "decode error: primary directory fragments missing queried id"
+            "primary directory fragments missing queried id 104; \
+             the ingestion/compaction commit contract is broken"
         );
     }
 
@@ -292,9 +278,7 @@ mod tests {
         let tables = tables();
         let family = tables.family(Family::Log);
 
-        // Bucket 0 is sealed: its summary is the only directory artifact. No
-        // fragments are written, so a routing bug that scanned would resolve to
-        // `None`/error instead of finding the id.
+        // Only the sealed-bucket summary exists; a routing bug that scanned fragments would miss.
         tables
             .seed_dir_bucket(
                 Family::Log,
@@ -320,10 +304,8 @@ mod tests {
         let location = resolver
             .resolve(PrimaryId::new(5))
             .await
-            .expect("resolve sealed id")
-            .expect("id contained in summary");
+            .expect("resolve sealed id");
 
-        // Second entry: ids [3, 8) at start_block + 1.
         assert_eq!(location.block_number, 8);
         assert_eq!(location.idx_in_block, 2);
     }
@@ -333,10 +315,8 @@ mod tests {
         let tables = tables();
         let family = tables.family(Family::Log);
 
-        // Fragments exist for bucket 0 but the summary does not. A correct
-        // routing implementation must NOT fall back to these fragments for a
-        // bucket it classified as sealed; it must surface the broken commit
-        // contract loudly. (If it scanned, id 5 would resolve cleanly.)
+        // Fragments exist but the summary does not: a sealed bucket must fail loud
+        // on the broken commit contract, never silently fall back to fragments.
         tables.seed_dir_fragment(Family::Log, 7, 0, 8).await;
 
         let resolver = PrimaryIdResolver::new(family, DIRECTORY_BUCKET_SIZE);
@@ -357,8 +337,6 @@ mod tests {
         let tables = tables();
         let family = tables.family(Family::Log);
 
-        // The frontier sits inside bucket 0, so bucket 0 is the single open
-        // bucket and resolves from fragments — no summary is written.
         tables.seed_dir_fragment(Family::Log, 7, 0, 8).await;
 
         // sealed_below = 0 => no bucket is sealed; everything routes to scan.
@@ -366,8 +344,7 @@ mod tests {
         let location = resolver
             .resolve(PrimaryId::new(5))
             .await
-            .expect("resolve open id")
-            .expect("id contained in fragments");
+            .expect("resolve open id");
 
         assert_eq!(location.block_number, 7);
         assert_eq!(location.idx_in_block, 5);

@@ -29,31 +29,62 @@ use lru::LruCache;
 
 use crate::{
     error::{MonadChainDataError, Result},
-    store::{
-        blob::{BlobStore, BlobTable, BlobTableId},
-        common::Page,
-        meta::{KvTable, MetaStore, ScannableKvTable, ScannableTableId, TableId},
-    },
+    store::meta::{KvTable, MetaStore, ScannableKvTable, ScannableTableId, TableId},
 };
 
 const DEFAULT_CACHE_TOTAL_MIB: usize = 2048;
-const DEFAULT_BLOCK_REGION_MAX_BYTES: usize = 8 * 1024 * 1024;
 
-/// Output stored in the single-flight map. [`Shared`] requires its output to
-/// be `Clone`, but [`MonadChainDataError`] is not `Clone`, so the error is
-/// wrapped in an `Arc`. Converted back to the crate `Result` at the boundary
-/// by [`unshare`]. Generic over the cached value type `V` so the byte-budgeted
-/// region cache (`V = Bytes`) shares the same single-flight machinery as the
-/// byte-payload tables (also `V = Bytes`).
+/// Fixed per-entry bookkeeping charge (key, LRU node, `Arc`) added to a
+/// [`Weighted`] payload weight, so tiny decoded rows don't let a cache hold
+/// far more entries than its byte budget affords.
+pub const CACHE_ENTRY_OVERHEAD: usize = 64;
+
+/// A decoded cache value plus the byte weight to charge it at, stamped at
+/// decode time from the pre-decode byte length (unrecoverable after decoding).
+#[derive(Debug, Clone)]
+pub struct Weighted<T> {
+    pub value: T,
+    /// Payload weight in bytes (pre-decode length). [`CACHE_ENTRY_OVERHEAD`]
+    /// is added by the weigher, not stored here.
+    pub weight: usize,
+}
+
+/// Stamped payload weight plus per-entry overhead. Negatively cached misses
+/// pay only the overhead, keeping absent-key floods bounded by the budget.
+pub(crate) fn weigh_weighted<T>(value: &Option<Weighted<T>>) -> usize {
+    value.as_ref().map_or(CACHE_ENTRY_OVERHEAD, |w| {
+        w.weight.saturating_add(CACHE_ENTRY_OVERHEAD)
+    })
+}
+
+/// Decodes a fetched payload into a [`Weighted`] value, stamping the weight
+/// from the pre-decode byte length — the one moment it is known.
+fn decode_weighted<V>(
+    bytes: Option<Bytes>,
+    decode: fn(Bytes) -> Result<V>,
+) -> Result<Option<Weighted<V>>> {
+    match bytes {
+        Some(bytes) => {
+            let weight = bytes.len();
+            Ok(Some(Weighted {
+                value: decode(bytes)?,
+                weight,
+            }))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Output stored in the single-flight map. [`Shared`] requires `Clone` output
+/// and [`MonadChainDataError`] is not `Clone`, so errors are `Arc`-wrapped;
+/// [`unshare`] converts back at the boundary.
 type SharedResult<V> = std::result::Result<Option<V>, Arc<MonadChainDataError>>;
 
 /// A boxed, `'static` backend-fetch future shared by every coalesced caller.
 type SharedFetch<V> = Shared<BoxFuture<'static, SharedResult<V>>>;
 
-/// Maps a shared (Arc-wrapped error) fetch result back to the crate `Result`.
-/// The leader usually owns the only `Arc` and hands the original error back
-/// untouched; a follower that raced onto the same fetch re-wraps the message
-/// in [`MonadChainDataError::Backend`] so callers still get a crate `Result`.
+/// Maps a shared fetch result back to the crate `Result`: the sole `Arc` owner
+/// gets the original error; a racing follower gets a re-wrapped `Backend` one.
 fn unshare<V>(shared: SharedResult<V>) -> Result<Option<V>> {
     shared.map_err(|e| match Arc::try_unwrap(e) {
         Ok(err) => err,
@@ -61,35 +92,24 @@ fn unshare<V>(shared: SharedResult<V>) -> Result<Option<V>> {
     })
 }
 
+/// Per-cache byte budgets. Caches hold decoded values but weigh them by their
+/// pre-decode byte length (plus [`CACHE_ENTRY_OVERHEAD`] per entry), so each
+/// budget tracks stored size.
 #[derive(Debug, Clone, Copy)]
 pub struct CacheConfig {
-    pub dir_by_block_entries: usize,
-    pub dir_bucket_entries: usize,
-    /// Byte budgets (NOT entry counts): these caches hold decoded roaring
-    /// bitmaps, weighed by their serialized footprint (header +
-    /// `RoaringBitmap::serialized_size()`, equal to the pre-decode stored
-    /// length). Budgeted like `block_region_cache_bytes` so `--cache-mib`
-    /// reflects real resident size despite the decode expansion.
+    pub dir_by_block_cache_bytes: usize,
+    pub dir_bucket_cache_bytes: usize,
     pub bitmap_by_block_cache_bytes: usize,
     pub bitmap_page_blob_cache_bytes: usize,
-    pub bitmap_page_counts_entries: usize,
-    pub open_bitmap_stream_entries: usize,
-    pub block_header_entries: usize,
-    pub block_hash_to_number_entries: usize,
-    pub tx_hash_index_entries: usize,
-    /// Byte budget (NOT an entry count) for the in-memory compressed
-    /// per-(family, block) region cache on the query read path. Distinct from
-    /// the other fields, which are entry counts; this is integrated into the
-    /// `--cache-mib` byte math at a 1:1 weight (it already IS bytes).
-    pub block_region_cache_bytes: usize,
-    /// Upper bound on the compressed region size admitted into the region
-    /// cache. A region larger than this is read uncached: full scans still read
-    /// the whole region, and one-shot point reads fall back to a single-frame
-    /// range read so we never pull a huge object into RAM for one row. This is a
-    /// per-region size CAP, not a budget, so it does NOT scale with
-    /// `--cache-mib`. Default is comfortably above a typical block's compressed
-    /// per-family region (a few KiB–tens of KiB).
-    pub block_region_max_bytes: usize,
+    pub bitmap_page_counts_cache_bytes: usize,
+    pub open_bitmap_stream_cache_bytes: usize,
+    pub block_header_cache_bytes: usize,
+    pub block_hash_to_number_cache_bytes: usize,
+    pub tx_hash_index_cache_bytes: usize,
+    /// Budget for the per-(family, block, row) decoded-row caches, split
+    /// evenly across the three families. Only rows queries actually
+    /// materialize are cached, never a whole block's blob.
+    pub row_cache_bytes: usize,
 }
 
 impl Default for CacheConfig {
@@ -100,7 +120,7 @@ impl Default for CacheConfig {
 
 impl CacheConfig {
     const RATIO_DENOMINATOR: usize = 1024;
-    const RATIO_BLOCK_REGION: usize = 512;
+    const RATIO_ROW_CACHE: usize = 512;
     const RATIO_BITMAP_BY_BLOCK: usize = 256;
     const RATIO_BITMAP_PAGE_BLOB: usize = 128;
     const RATIO_DIR_BY_BLOCK: usize = 32;
@@ -111,61 +131,23 @@ impl CacheConfig {
     const RATIO_BLOCK_HASH_TO_NUMBER: usize = 16;
     const RATIO_TX_HASH_INDEX: usize = 8;
 
-    /// Resolves a total MiB budget into per-table entry counts using the
-    /// reader-oriented default ratios. A zero budget disables all caches while
-    /// preserving the per-region admission cap.
+    /// Splits a total MiB budget into per-cache byte budgets via the default
+    /// ratios. A zero budget disables all caches.
     pub fn from_total_mib(total_mib: usize) -> Self {
-        Self::from_total_mib_with_region_cap(total_mib, DEFAULT_BLOCK_REGION_MAX_BYTES)
-    }
-
-    fn from_total_mib_with_region_cap(total_mib: usize, block_region_max_bytes: usize) -> Self {
+        let ratio_bytes =
+            |ratio| Self::budget_mib_to_bytes(Self::ratio_budget_mib(total_mib, ratio));
         Self {
-            dir_by_block_entries: Self::entries_for_budget_mib(
-                CacheField::DirByBlock,
-                Self::ratio_budget_mib(total_mib, Self::RATIO_DIR_BY_BLOCK),
-            ),
-            dir_bucket_entries: Self::entries_for_budget_mib(
-                CacheField::DirBucket,
-                Self::ratio_budget_mib(total_mib, Self::RATIO_DIR_BUCKET),
-            ),
-            bitmap_by_block_cache_bytes: Self::budget_mib_to_bytes(Self::ratio_budget_mib(
-                total_mib,
-                Self::RATIO_BITMAP_BY_BLOCK,
-            )),
-            bitmap_page_blob_cache_bytes: Self::budget_mib_to_bytes(Self::ratio_budget_mib(
-                total_mib,
-                Self::RATIO_BITMAP_PAGE_BLOB,
-            )),
-            bitmap_page_counts_entries: Self::entries_for_budget_mib(
-                CacheField::BitmapPageCounts,
-                Self::ratio_budget_mib(total_mib, Self::RATIO_BITMAP_PAGE_COUNTS),
-            ),
-            open_bitmap_stream_entries: Self::entries_for_budget_mib(
-                CacheField::OpenBitmapStream,
-                Self::ratio_budget_mib(total_mib, Self::RATIO_OPEN_BITMAP_STREAM),
-            ),
-            block_header_entries: Self::entries_for_budget_mib(
-                CacheField::BlockHeader,
-                Self::ratio_budget_mib(total_mib, Self::RATIO_BLOCK_HEADER),
-            ),
-            block_hash_to_number_entries: Self::entries_for_budget_mib(
-                CacheField::BlockHashToNumber,
-                Self::ratio_budget_mib(total_mib, Self::RATIO_BLOCK_HASH_TO_NUMBER),
-            ),
-            tx_hash_index_entries: Self::entries_for_budget_mib(
-                CacheField::TxHashIndex,
-                Self::ratio_budget_mib(total_mib, Self::RATIO_TX_HASH_INDEX),
-            ),
-            block_region_cache_bytes: Self::budget_mib_to_bytes(Self::ratio_budget_mib(
-                total_mib,
-                Self::RATIO_BLOCK_REGION,
-            )),
-            block_region_max_bytes,
+            dir_by_block_cache_bytes: ratio_bytes(Self::RATIO_DIR_BY_BLOCK),
+            dir_bucket_cache_bytes: ratio_bytes(Self::RATIO_DIR_BUCKET),
+            bitmap_by_block_cache_bytes: ratio_bytes(Self::RATIO_BITMAP_BY_BLOCK),
+            bitmap_page_blob_cache_bytes: ratio_bytes(Self::RATIO_BITMAP_PAGE_BLOB),
+            bitmap_page_counts_cache_bytes: ratio_bytes(Self::RATIO_BITMAP_PAGE_COUNTS),
+            open_bitmap_stream_cache_bytes: ratio_bytes(Self::RATIO_OPEN_BITMAP_STREAM),
+            block_header_cache_bytes: ratio_bytes(Self::RATIO_BLOCK_HEADER),
+            block_hash_to_number_cache_bytes: ratio_bytes(Self::RATIO_BLOCK_HASH_TO_NUMBER),
+            tx_hash_index_cache_bytes: ratio_bytes(Self::RATIO_TX_HASH_INDEX),
+            row_cache_bytes: ratio_bytes(Self::RATIO_ROW_CACHE),
         }
-    }
-
-    pub fn entries_for_budget_mib(field: CacheField, mib: usize) -> usize {
-        Self::budget_mib_to_bytes(mib) / Self::approx_bytes_per_entry(field).max(1)
     }
 
     pub fn budget_mib_to_bytes(mib: usize) -> usize {
@@ -176,182 +158,53 @@ impl CacheConfig {
         total_mib.saturating_mul(ratio) / Self::RATIO_DENOMINATOR
     }
 
-    /// Total entry count across every entry-counted table. Retained for
-    /// diagnostic logging; cache budgeting itself goes through per-table size
-    /// weights via [`Self::approx_total_bytes`]. `block_region_cache_bytes` is
-    /// a byte budget, not an entry count, so it is intentionally excluded here.
-    pub fn total_entries(&self) -> usize {
-        self.dir_by_block_entries
-            .saturating_add(self.dir_bucket_entries)
-            .saturating_add(self.bitmap_page_counts_entries)
-            .saturating_add(self.open_bitmap_stream_entries)
-            .saturating_add(self.block_header_entries)
-            .saturating_add(self.block_hash_to_number_entries)
-            .saturating_add(self.tx_hash_index_entries)
-    }
-
-    /// Per-entry size estimate in bytes for each cached table. Roaring-bitmap
-    /// payloads are capped at 8 KiB per fragment / page blob and dominate the
-    /// budget; other tables are dominated by small metadata. Returned values
-    /// are rounded up so `--cache-mib N` produces a conservative entry count.
-    pub const fn approx_bytes_per_entry(field: CacheField) -> usize {
-        match field {
-            // Byte budgets already, like the region cache: weight 1 so
-            // `count * weight == bytes` in the `--cache-mib` math.
-            CacheField::BitmapByBlock
-            | CacheField::BitmapPageBlob
-            | CacheField::BlockRegionBytes => 1,
-            CacheField::BlockHeader => 512,
-            CacheField::DirBucket => 256,
-            CacheField::DirByBlock => 64,
-            CacheField::TxHashIndex => 64,
-            // Sparse `(page, count)` rows: ≤256 pairs, typically far fewer.
-            CacheField::BitmapPageCounts => 256,
-            CacheField::BlockHashToNumber => 40,
-            CacheField::OpenBitmapStream => 32,
-        }
-    }
-
-    /// Sum of per-table `entries * approx_bytes_per_entry`. Used by the CLI
-    /// to scale `--cache-mib N` into proportional per-table entry counts.
-    pub fn approx_total_bytes(&self) -> usize {
-        let mut total: usize = 0;
-        for (field, entries) in self.per_field() {
-            total =
-                total.saturating_add(entries.saturating_mul(Self::approx_bytes_per_entry(field)));
-        }
-        total
-    }
-
-    /// `approx_total_bytes` rendered in MiB. The denominator for `--cache-mib`
-    /// linear scaling, so `--cache-mib default.approx_total_mib()` reproduces
-    /// `CacheConfig::default()`.
-    pub fn approx_total_mib(&self) -> usize {
-        self.approx_total_bytes() / (1024 * 1024)
-    }
-
-    /// Scales every per-table entry count by `numer / denom`, weighted by the
-    /// per-table size estimate so the result honors a byte budget rather than
-    /// a uniform entry budget. With `numer == 0` every entry count drops to
-    /// 0, disabling caches (compile-time skip in the cached wrappers).
-    pub fn scale(self, numer: usize, denom: usize) -> Self {
-        if numer == 0 {
-            return Self {
-                dir_by_block_entries: 0,
-                dir_bucket_entries: 0,
-                bitmap_by_block_cache_bytes: 0,
-                bitmap_page_blob_cache_bytes: 0,
-                bitmap_page_counts_entries: 0,
-                open_bitmap_stream_entries: 0,
-                block_header_entries: 0,
-                block_hash_to_number_entries: 0,
-                tx_hash_index_entries: 0,
-                block_region_cache_bytes: 0,
-                // A per-region size cap, not a budget; preserved as-is (it is
-                // irrelevant once the region cache budget is 0/disabled).
-                block_region_max_bytes: self.block_region_max_bytes,
-            };
-        }
-        let denom = denom.max(1);
-        let scale = |n: usize| n.saturating_mul(numer) / denom;
-        Self {
-            dir_by_block_entries: scale(self.dir_by_block_entries),
-            dir_bucket_entries: scale(self.dir_bucket_entries),
-            bitmap_by_block_cache_bytes: scale(self.bitmap_by_block_cache_bytes),
-            bitmap_page_blob_cache_bytes: scale(self.bitmap_page_blob_cache_bytes),
-            bitmap_page_counts_entries: scale(self.bitmap_page_counts_entries),
-            open_bitmap_stream_entries: scale(self.open_bitmap_stream_entries),
-            block_header_entries: scale(self.block_header_entries),
-            block_hash_to_number_entries: scale(self.block_hash_to_number_entries),
-            tx_hash_index_entries: scale(self.tx_hash_index_entries),
-            // Scaled like everything else; it is bytes, and the region field's
-            // per-entry weight is 1, so it contributes its bytes 1:1 to the
-            // byte budget that drives `--cache-mib` scaling.
-            block_region_cache_bytes: scale(self.block_region_cache_bytes),
-            // Per-region size cap, not a budget: passed through unscaled.
-            block_region_max_bytes: self.block_region_max_bytes,
-        }
-    }
-
-    fn per_field(&self) -> [(CacheField, usize); 10] {
+    /// Sum of every per-cache byte budget. Diagnostic only.
+    pub fn total_bytes(&self) -> usize {
         [
-            (CacheField::DirByBlock, self.dir_by_block_entries),
-            (CacheField::DirBucket, self.dir_bucket_entries),
-            (CacheField::BitmapByBlock, self.bitmap_by_block_cache_bytes),
-            (
-                CacheField::BitmapPageBlob,
-                self.bitmap_page_blob_cache_bytes,
-            ),
-            (
-                CacheField::BitmapPageCounts,
-                self.bitmap_page_counts_entries,
-            ),
-            (
-                CacheField::OpenBitmapStream,
-                self.open_bitmap_stream_entries,
-            ),
-            (CacheField::BlockHeader, self.block_header_entries),
-            (
-                CacheField::BlockHashToNumber,
-                self.block_hash_to_number_entries,
-            ),
-            (CacheField::TxHashIndex, self.tx_hash_index_entries),
-            (CacheField::BlockRegionBytes, self.block_region_cache_bytes),
+            self.dir_by_block_cache_bytes,
+            self.dir_bucket_cache_bytes,
+            self.bitmap_by_block_cache_bytes,
+            self.bitmap_page_blob_cache_bytes,
+            self.bitmap_page_counts_cache_bytes,
+            self.open_bitmap_stream_cache_bytes,
+            self.block_header_cache_bytes,
+            self.block_hash_to_number_cache_bytes,
+            self.tx_hash_index_cache_bytes,
+            self.row_cache_bytes,
         ]
+        .into_iter()
+        .fold(0usize, |acc, b| acc.saturating_add(b))
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CacheField {
-    DirByBlock,
-    DirBucket,
-    BitmapByBlock,
-    BitmapPageBlob,
-    BitmapPageCounts,
-    OpenBitmapStream,
-    BlockHeader,
-    BlockHashToNumber,
-    TxHashIndex,
-    BlockRegionBytes,
-}
-
-/// LRU cache plus its running weighted size, guarded by ONE mutex so the
-/// size counter can never drift from the map under concurrent inserts/evicts.
-/// Holding both behind a single lock preserves the crate-wide invariant that
-/// the cache lock is never held across an `.await`.
+/// LRU cache plus its running weighted size under one mutex, so the size
+/// counter can never drift from the map. The lock is never held across an
+/// `.await` (crate-wide invariant).
 struct WeightedLru<K, V>
 where
     K: Hash + Eq,
 {
     lru: LruCache<K, Option<V>>,
-    /// Sum of `weigher(value)` over every resident entry. Kept in lockstep
-    /// with `lru` (add on insert, refund the replaced value's weight, subtract
-    /// on eviction) so it always equals the true resident byte weight.
+    /// Sum of `weigher(value)` over resident entries, kept in lockstep with
+    /// `lru` on insert/replace/evict.
     size: usize,
-    /// Maximum total weight. For count-based caches this is the entry count and
-    /// the weigher returns 1 per entry, reproducing the old behavior exactly.
+    /// Maximum total weight in bytes.
     budget: usize,
 }
 
-/// The per-key/per-counter machinery shared by every cached wrapper.
-/// Generic over the key type so the three table flavors (KV / scannable /
-/// blob) compose with the same LRU + hits/misses + populate/evict logic, and
-/// over the value type `V` (defaulting to [`Bytes`]) so the byte-budgeted
-/// region cache reuses the same single-flight + eviction logic. Wrapped in
-/// `Arc` by every owner so WriteSession can capture an eviction handle without
-/// going back through the parent `Tables` to re-resolve.
-pub(crate) struct CachedInner<K, V = Bytes>
+/// LRU + single-flight + hit/miss machinery shared by every cached wrapper,
+/// generic over key and value so all table flavors reuse it. Owners wrap it
+/// in `Arc`.
+pub(crate) struct CachedInner<K, V>
 where
     K: Hash + Eq,
 {
     cache: Option<Mutex<WeightedLru<K, V>>>,
-    /// Per-value weight function (in bytes). Count-based caches use a unit
-    /// weigher; the region cache weighs the exact compressed-region length.
-    /// `None` (a negatively cached miss) weighs 0.
+    /// Per-value weight in bytes; `None` (a negatively cached miss) still pays
+    /// [`CACHE_ENTRY_OVERHEAD`] via [`weigh_weighted`].
     weigher: fn(&Option<V>) -> usize,
-    /// Single-flight map: concurrent misses on the same key share the one
-    /// in-flight backend fetch held here instead of each issuing their own.
-    /// Kept separate from the LRU mutex so neither is held across an `.await`.
+    /// Single-flight map: concurrent misses on a key share one in-flight
+    /// fetch. Separate from the LRU mutex; neither is held across an `.await`.
     in_flight: Mutex<HashMap<K, SharedFetch<V>>>,
     hits: AtomicU64,
     misses: AtomicU64,
@@ -362,24 +215,11 @@ where
     K: Hash + Eq,
     V: Clone,
 {
-    /// Count-based cache: at most `entries` resident values, every value
-    /// weighing 1. Byte-for-byte the historical behavior (the budget *is* the
-    /// entry count). `entries == 0` disables the cache entirely.
-    fn new(entries: usize) -> Arc<Self> {
-        Self::build(entries, |_| 1)
-    }
-
     /// Byte-budgeted cache: evicts LRU entries until the summed `weigher`
     /// weight is `<= budget` bytes. `budget == 0` disables the cache.
-    fn with_weigher(budget: usize, weigher: fn(&Option<V>) -> usize) -> Arc<Self> {
-        Self::build(budget, weigher)
-    }
-
-    fn build(budget: usize, weigher: fn(&Option<V>) -> usize) -> Arc<Self> {
-        // The LRU is `unbounded()` because eviction is driven by the weight
-        // budget, not an entry count; capping by count too would evict early.
-        // `lru 0.16` provides both `unbounded()` and `pop_lru()` (verified
-        // against Cargo.lock), so no count-cap fallback is needed.
+    pub(crate) fn with_weigher(budget: usize, weigher: fn(&Option<V>) -> usize) -> Arc<Self> {
+        // Unbounded: eviction is driven by the byte budget, not entry count;
+        // a count cap too would evict early.
         let cache = (budget > 0).then(|| {
             Mutex::new(WeightedLru {
                 lru: LruCache::unbounded(),
@@ -396,7 +236,11 @@ where
         })
     }
 
-    fn lookup(&self, key: &K) -> Option<Option<V>> {
+    /// Cache-only lookup that PROMOTES the entry's LRU position and counts
+    /// hit/miss (unlike the non-promoting `peek` of the underlying lru crate);
+    /// never fetches. Batch readers probe with this, fetch misses themselves,
+    /// then [`Self::insert`] the results.
+    pub(crate) fn probe(&self, key: &K) -> Option<Option<V>> {
         let c = self.cache.as_ref()?;
         let hit = c
             .lock()
@@ -413,40 +257,44 @@ where
     }
 
     fn store(&self, key: K, value: Option<V>) {
-        if let Some(c) = &self.cache {
-            let added = (self.weigher)(&value);
-            let mut guard = c.lock().expect("cache mutex poisoned");
-            // Refund the weight of any value this key replaces before adding
-            // the new one, so `size` tracks resident weight exactly.
-            if let Some(old) = guard.lru.put(key, value) {
-                let refund = (self.weigher)(&old);
-                guard.size = guard.size.saturating_sub(refund);
-            }
-            guard.size = guard.size.saturating_add(added);
-            // Evict the least-recently-used entries until back within budget.
-            // A single oversized value can leave `size > budget` with one
-            // entry resident; callers gate that with a size threshold, but the
-            // loop still terminates because `pop_lru` eventually empties.
-            while guard.size > guard.budget {
-                let Some((_, evicted)) = guard.lru.pop_lru() else {
-                    break;
-                };
-                let freed = (self.weigher)(&evicted);
-                guard.size = guard.size.saturating_sub(freed);
-            }
+        let Some(c) = &self.cache else {
+            return;
+        };
+        let added = (self.weigher)(&value);
+        let mut guard = c.lock().expect("cache mutex poisoned");
+        // Refund a replaced value's weight so `size` tracks residency exactly.
+        if let Some(old) = guard.lru.put(key, value) {
+            let refund = (self.weigher)(&old);
+            guard.size = guard.size.saturating_sub(refund);
+        }
+        guard.size = guard.size.saturating_add(added);
+        // Evict LRU entries until within budget; terminates because
+        // `pop_lru` eventually empties even for one oversized value.
+        while guard.size > guard.budget {
+            let Some((_, evicted)) = guard.lru.pop_lru() else {
+                break;
+            };
+            let freed = (self.weigher)(&evicted);
+            guard.size = guard.size.saturating_sub(freed);
         }
     }
 
-    /// Seeds the cache directly. Only the test suite uses this now: the
-    /// production caches are read-populated through [`Self::get_or_fetch`], and
-    /// the write path no longer seeds them.
-    #[cfg(test)]
-    pub(crate) fn populate(&self, key: K, value: V) {
+    /// Seeds the cache with a caller-fetched value; no-op when disabled.
+    pub(crate) fn insert(&self, key: K, value: V) {
         self.store(key, Some(value));
     }
+}
 
+/// Stats reader needing no `V: Clone`, so the unbounded table accessors
+/// ([`CachedKvTable::take_window_stats`] and its scannable twin) resolve —
+/// keep it split out so a future merge into the `V: Clone` block does not
+/// silently re-tighten [`WriteSession::put`](crate::store::session::WriteSession::put)'s bounds.
+impl<K, V> CachedInner<K, V>
+where
+    K: Hash + Eq,
+{
     /// Atomically reads and zeroes the (hits, misses) counters since the last
-    /// call. Used by the ingest binary to emit per-window hit-ratio metrics.
+    /// call, for per-window hit-ratio metrics.
     pub(crate) fn take_window_stats(&self) -> (u64, u64) {
         (
             self.hits.swap(0, Ordering::Relaxed),
@@ -460,91 +308,65 @@ where
     K: Hash + Eq + Clone + Send + 'static,
     V: Clone + Send + 'static,
 {
-    /// Point-read with cache + single-flight (in-flight request coalescing).
+    /// Point-read with cache + single-flight: concurrent misses on a key share
+    /// ONE fetch. The first caller (leader) inserts the shared future and
+    /// owns the in-flight cleanup; followers clone and await it.
     ///
-    /// On a cache hit the value is returned immediately. On a miss, concurrent
-    /// callers for the same key share ONE `fetch` future: the first caller (the
-    /// "leader") inserts the shared future and owns the in-flight map cleanup,
-    /// every other caller (a "follower") clones and awaits the same shared
-    /// future. Whichever awaiter drives the shared future to completion observes
-    /// the result, and EVERY awaiter populates the cache from it on `Ok`.
+    /// `make_fetch` builds the owned `'static` fetch future and runs only on
+    /// the MISS path, so a hit pays no fetch-capture allocations.
     ///
-    /// Why every awaiter populates: the leader's task can be dropped mid-await
-    /// (e.g. the stage-2 stream is dropped on the pipeline's early return, or a
-    /// client disconnects). A follower still drives the `Shared` future to
-    /// completion and returns the value, so if only the leader populated, that
-    /// value would be silently uncached. All awaiters observe the same completed
-    /// result at the same time and `LruCache::put` is idempotent, so redundant
-    /// populates are harmless. No `.await` is held while the LRU or in-flight
-    /// mutex is locked.
-    ///
-    /// `fetch` is the backend read. It lives on the wrapper, not here, so the
-    /// caller passes it in already owned and `'static` (the wrappers build it
-    /// by cloning their inner table handle and the key — both are `Clone` and
-    /// `'static`), which lets it be stored in the `Shared` inside `in_flight`.
-    ///
-    /// Hit/miss accounting: the initial [`Self::lookup`] counts every call that
-    /// reaches the backend as a miss, including followers that coalesce onto an
-    /// existing in-flight fetch. We keep that behavior — a follower did observe
-    /// a cache miss — so the miss counter reflects "requests not served from
-    /// the LRU", and the win from single-flight shows up as fewer backend
-    /// round-trips rather than in the ratio.
-    async fn get_or_fetch<Fut>(&self, key: K, fetch: Fut) -> Result<Option<V>>
+    /// EVERY awaiter populates the cache on `Ok`: the leader can be cancelled
+    /// mid-await, leaving a follower to drive the `Shared` to completion — if
+    /// only the leader populated, that value would be silently uncached.
+    /// Redundant populates are idempotent. No mutex is held across an `.await`.
+    /// Coalesced followers still count as misses, so single-flight wins show
+    /// up as fewer backend reads, not in the hit ratio.
+    pub(crate) async fn get_or_fetch<F, Fut>(&self, key: K, make_fetch: F) -> Result<Option<V>>
     where
+        F: FnOnce(&K) -> Fut,
         Fut: Future<Output = Result<Option<V>>> + Send + 'static,
     {
-        // 1. Fast path: serve from the LRU (and count hit/miss).
-        if let Some(v) = self.lookup(&key) {
+        if let Some(v) = self.probe(&key) {
             return Ok(v);
         }
 
-        // 2. Join or start the single flight. Either clone an existing shared
-        //    future (follower) or insert our own (leader). The mutex is never
-        //    held across an `.await`.
+        // Join an existing flight (follower) or start one (leader).
         let (fut, is_leader) = {
             let mut map = self.in_flight.lock().expect("in_flight mutex poisoned");
             if let Some(existing) = map.get(&key) {
                 (existing.clone(), false)
             } else {
-                let shared = fetch.map(|r| r.map_err(Arc::new)).boxed().shared();
+                let shared = make_fetch(&key)
+                    .map(|r| r.map_err(Arc::new))
+                    .boxed()
+                    .shared();
                 map.insert(key.clone(), shared.clone());
                 (shared, true)
             }
         };
 
-        // The leader holds a guard that removes the in-flight entry when this
-        // scope ends — on completion, early return, error, or panic — so a
-        // failed or cancelled fetch never leaves a stale entry (and an error is
-        // never cached, since population below only happens on `Ok`). A
-        // follower performs no map cleanup; it relies on the leader's guard.
+        // The leader's guard removes the in-flight entry when this scope ends
+        // (completion, error, or panic), so a failed or cancelled fetch never
+        // leaves a stale entry.
         let _guard = is_leader.then(|| InFlightGuard {
             inner: self,
             key: &key,
         });
 
-        // 3. Await the shared fetch. Whichever awaiter drives it to completion
-        //    (leader or, if the leader was cancelled, a follower) observes the
-        //    result here; all awaiters that reach this point see the same
-        //    completed value.
         let result = fut.await;
 
-        // 4. Populate the cache from the completed result regardless of which
-        //    awaiter drove it. `LruCache::put` is idempotent, so concurrent
-        //    awaiters storing the same value is harmless. The LRU mutex is
-        //    taken and released inside `store`, never across an `.await`.
         if let Ok(value) = &result {
-            // Negative caching matches the existing behavior: `None` is stored
-            // so repeat lookups for an absent key skip the backend. Errors are
-            // never cached (this branch is `Ok`-only).
+            // Negative caching: `None` is stored so repeat lookups for an
+            // absent key skip the backend. Errors are never cached.
             self.store(key.clone(), value.clone());
         }
         unshare(result)
     }
 }
 
-/// Removes a key from the single-flight map when the leader's drive scope
-/// ends, including on early return, error, or panic. Guarantees a failed or
-/// cancelled fetch never leaves a stale entry that would wedge later callers.
+/// Drop guard that removes the leader's single-flight entry — including on
+/// early return, error, or panic — so a failed or cancelled fetch never
+/// leaves a stale entry that would wedge later callers.
 struct InFlightGuard<'a, K, V>
 where
     K: Hash + Eq,
@@ -566,84 +388,50 @@ where
     }
 }
 
-/// A point-read KV table fronted by a read-populated cache.
-///
-/// Generic over the cached value type `V` (default [`Bytes`]). A `Bytes` cache
-/// (`CachedKvTable::new`) stores the raw stored payload; a decoded cache
-/// (`CachedKvTable::new_decoded`) runs `decode` once per miss inside the
-/// single-flight fetch and caches the decoded value, so every hit skips the
-/// decode entirely. Decode errors propagate and are never cached. Decoded
-/// caches typically use `V = Arc<T>` so a hit clones a refcount, not the value.
-///
-/// The cache is read-populated only: writes go through [`WriteSession`] which
-/// stages durable ops without seeding the cache, so there is no write path
-/// here and nothing to invalidate on a failed commit.
-///
-/// [`WriteSession`]: crate::store::session::WriteSession
+/// A point-read KV table fronted by a read-populated, byte-budgeted cache.
+/// `decode` runs once per miss inside the single-flight fetch; the value is
+/// cached as [`Weighted`] (stamped with the payload's byte length), so hits
+/// skip both the backend read and the decode. Read-populated only — writes
+/// never seed it, so nothing needs invalidation on a failed commit.
 #[derive(Clone)]
 pub struct CachedKvTable<M: MetaStore, V = Bytes> {
     inner: KvTable<M>,
-    cache: Arc<CachedInner<Vec<u8>, V>>,
+    cache: Arc<CachedInner<Vec<u8>, Weighted<V>>>,
     decode: fn(Bytes) -> Result<V>,
-}
-
-impl<M: MetaStore> CachedKvTable<M, Bytes> {
-    pub fn new(inner: KvTable<M>, entries: usize) -> Self {
-        Self {
-            inner,
-            cache: CachedInner::new(entries),
-            decode: |bytes| Ok(bytes),
-        }
-    }
 }
 
 impl<M: MetaStore, V> CachedKvTable<M, V>
 where
     V: Clone + Send + Sync + 'static,
 {
-    pub fn new_decoded(inner: KvTable<M>, entries: usize, decode: fn(Bytes) -> Result<V>) -> Self {
+    pub fn new(inner: KvTable<M>, budget_bytes: usize, decode: fn(Bytes) -> Result<V>) -> Self {
         Self {
             inner,
-            cache: CachedInner::new(entries),
-            decode,
-        }
-    }
-
-    /// Decoded cache whose budget is in BYTES, not entries. `weigher` returns
-    /// each decoded value's serialized footprint (e.g. header + roaring
-    /// `serialized_size()`, which equals the pre-decode stored length), so the
-    /// budget tracks on-disk size rather than the larger decoded size.
-    pub fn new_decoded_weighted(
-        inner: KvTable<M>,
-        budget_bytes: usize,
-        decode: fn(Bytes) -> Result<V>,
-        weigher: fn(&Option<V>) -> usize,
-    ) -> Self {
-        Self {
-            inner,
-            cache: CachedInner::with_weigher(budget_bytes, weigher),
+            cache: CachedInner::with_weigher(budget_bytes, weigh_weighted),
             decode,
         }
     }
 
     pub async fn get(&self, key: &[u8]) -> Result<Option<V>> {
-        // Build an owned, `'static` fetch by cloning the inner handle and key
-        // so it can live in the single-flight `Shared`. The decode runs inside
-        // the fetch so concurrent missers coalesce onto one decode, not just
-        // one backend read.
-        let inner = self.inner.clone();
-        let k = key.to_vec();
+        // The fetch is built only on a miss; decode runs inside it so missers
+        // coalesce on the decode too.
         let decode = self.decode;
-        self.cache
-            .get_or_fetch(key.to_vec(), async move {
-                match inner.get(&k).await? {
-                    Some(bytes) => decode(bytes).map(Some),
-                    None => Ok(None),
-                }
+        Ok(self
+            .cache
+            .get_or_fetch(key.to_vec(), |key| {
+                let inner = self.inner.clone();
+                let key = key.clone();
+                async move { decode_weighted(inner.get(&key).await?, decode) }
             })
-            .await
+            .await?
+            .map(|w| w.value))
     }
+}
 
+/// Accessors needing no `V` bounds, so callers that only read identity/stats
+/// (e.g. [`WriteSession::put`](crate::store::session::WriteSession::put))
+/// need not carry them.
+impl<M: MetaStore, V> CachedKvTable<M, V> {
     pub fn table_id(&self) -> TableId {
         self.inner.table
     }
@@ -653,224 +441,69 @@ where
     }
 }
 
-/// A scannable (partition, clustering) KV table fronted by a read-populated
-/// per-clustering point cache. Generic over the cached value type `V` (default
-/// [`Bytes`]); see [`CachedKvTable`] for the decode-on-miss semantics. Prefix
-/// scans always bypass the cache.
+/// A scannable (partition, clustering) KV table with a read-populated
+/// per-clustering point cache; see [`CachedKvTable`] for decode-on-miss
+/// semantics. Prefix scans always bypass the cache.
 #[derive(Clone)]
-pub struct CachedScannableTable<M: MetaStore, V = Bytes> {
+pub struct CachedScannableKvTable<M: MetaStore, V> {
     inner: ScannableKvTable<M>,
-    cache: Arc<CachedInner<(Vec<u8>, Vec<u8>), V>>,
+    cache: Arc<CachedInner<(Vec<u8>, Vec<u8>), Weighted<V>>>,
     decode: fn(Bytes) -> Result<V>,
 }
 
-impl<M: MetaStore> CachedScannableTable<M, Bytes> {
-    pub fn new(inner: ScannableKvTable<M>, entries: usize) -> Self {
-        Self {
-            inner,
-            cache: CachedInner::new(entries),
-            decode: |bytes| Ok(bytes),
-        }
-    }
-
-    /// Write-through durable put. The read cache is read-populated only, so the
-    /// write never seeds it (kept for the legacy open-stream inventory path).
-    pub async fn put(&self, partition: &[u8], clustering: &[u8], value: Bytes) -> Result<()> {
-        self.inner.put(partition, clustering, value).await
-    }
-}
-
-impl<M: MetaStore, V> CachedScannableTable<M, V>
+impl<M: MetaStore, V> CachedScannableKvTable<M, V>
 where
     V: Clone + Send + Sync + 'static,
 {
-    pub fn new_decoded(
-        inner: ScannableKvTable<M>,
-        entries: usize,
-        decode: fn(Bytes) -> Result<V>,
-    ) -> Self {
-        Self {
-            inner,
-            cache: CachedInner::new(entries),
-            decode,
-        }
-    }
-
-    /// Byte-budgeted decoded scannable cache. See
-    /// [`CachedKvTable::new_decoded_weighted`].
-    pub fn new_decoded_weighted(
+    pub fn new(
         inner: ScannableKvTable<M>,
         budget_bytes: usize,
         decode: fn(Bytes) -> Result<V>,
-        weigher: fn(&Option<V>) -> usize,
     ) -> Self {
         Self {
             inner,
-            cache: CachedInner::with_weigher(budget_bytes, weigher),
+            cache: CachedInner::with_weigher(budget_bytes, weigh_weighted),
             decode,
         }
     }
 
-    pub async fn get(&self, partition: &[u8], clustering: &[u8]) -> Result<Option<V>> {
-        let key = (partition.to_vec(), clustering.to_vec());
-        // Build an owned, `'static` fetch by cloning the inner handle and key
-        // so it can live in the single-flight `Shared`.
-        let inner = self.inner.clone();
-        let (p, c) = key.clone();
-        let decode = self.decode;
-        self.cache
-            .get_or_fetch(key, async move {
-                match inner.get(&p, &c).await? {
-                    Some(bytes) => decode(bytes).map(Some),
-                    None => Ok(None),
-                }
-            })
-            .await
+    /// Durable put; never seeds the read cache.
+    pub async fn put(&self, partition: &[u8], clustering: &[u8], value: Bytes) -> Result<()> {
+        self.inner.put(partition, clustering, value).await
     }
 
+    pub async fn get(&self, partition: &[u8], clustering: &[u8]) -> Result<Option<V>> {
+        // The fetch is built only on a miss; decode runs inside it so missers
+        // coalesce on the decode too.
+        let decode = self.decode;
+        Ok(self
+            .cache
+            .get_or_fetch((partition.to_vec(), clustering.to_vec()), |key| {
+                let inner = self.inner.clone();
+                let (p, c) = key.clone();
+                async move { decode_weighted(inner.get(&p, &c).await?, decode) }
+            })
+            .await?
+            .map(|w| w.value))
+    }
+
+    /// Lists every clustering key in the partition, in clustering order.
+    /// Bypasses the cache:
+    /// caching unbounded result sets would require invalidation on every
+    /// adjacent write.
+    pub async fn scan_keys(&self, partition: &[u8]) -> Result<Vec<Vec<u8>>> {
+        self.inner.scan_keys(partition).await
+    }
+}
+
+/// Accessors needing no `V` bounds; see [`CachedKvTable`]'s twin block.
+impl<M: MetaStore, V> CachedScannableKvTable<M, V> {
     pub fn table_id(&self) -> ScannableTableId {
         self.inner.table
     }
 
     pub fn take_window_stats(&self) -> (u64, u64) {
         self.cache.take_window_stats()
-    }
-
-    pub async fn list_prefix(
-        &self,
-        partition: &[u8],
-        prefix: &[u8],
-        cursor: Option<Vec<u8>>,
-        limit: usize,
-    ) -> Result<Page> {
-        // Prefix scans intentionally bypass the cache: caching unbounded
-        // result sets requires invalidation on every adjacent write. The
-        // per-clustering point gets that follow benefit from populated
-        // entries instead.
-        self.inner
-            .list_prefix(partition, prefix, cursor, limit)
-            .await
-    }
-}
-
-pub struct CachedBlobTable<B: BlobStore> {
-    inner: BlobTable<B>,
-    cache: Arc<CachedInner<Vec<u8>>>,
-}
-
-impl<B: BlobStore> CachedBlobTable<B> {
-    pub fn new(inner: BlobTable<B>, entries: usize) -> Self {
-        Self {
-            inner,
-            cache: CachedInner::new(entries),
-        }
-    }
-
-    pub async fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
-        // Build an owned, `'static` fetch by cloning the inner handle and key
-        // so it can live in the single-flight `Shared`.
-        let inner = self.inner.clone();
-        let k = key.to_vec();
-        self.cache
-            .get_or_fetch(key.to_vec(), async move { inner.get(&k).await })
-            .await
-    }
-
-    /// Write-through durable put. The read cache is read-populated only, so the
-    /// write never seeds it.
-    pub async fn put(&self, key: &[u8], value: Bytes) -> Result<()> {
-        self.inner.put(key, value).await
-    }
-
-    pub fn table_id(&self) -> BlobTableId {
-        self.inner.table
-    }
-
-    pub fn take_window_stats(&self) -> (u64, u64) {
-        self.cache.take_window_stats()
-    }
-
-    pub async fn read_range(
-        &self,
-        key: &[u8],
-        start: usize,
-        end_exclusive: usize,
-    ) -> Result<Option<Bytes>> {
-        // Range reads ignore the cache. Blob caches default to zero entries
-        // and are not in the hot path; a partial-range hit would require
-        // tracking full payload presence separately.
-        self.inner.read_range(key, start, end_exclusive).await
-    }
-}
-
-/// Byte-budgeted, in-memory cache of COMPRESSED per-(family, block) blob
-/// regions, keyed by `block_number`. One [`CachedInner`] per family shares the
-/// single byte budget split evenly, so a hot family cannot starve the others
-/// of a shared pool, and per-family hit/miss stats stay legible. Values are the
-/// raw compressed region [`Bytes`] (`base_offset .. region_end` of the shared
-/// per-block object); callers slice individual frames out with FAMILY-RELATIVE
-/// offsets. Regions are immutable once written, so there is no invalidation.
-///
-/// The cache stores compressed (not decompressed) regions because memory is the
-/// binding constraint and decompress is cheap relative to an object-store miss;
-/// the compressed form packs the most rows per resident MiB.
-pub struct BlockRegionCache<B: BlobStore> {
-    inner: BlobTable<B>,
-    /// One cache per family, indexed by `family_slot(family)`. Each gets an
-    /// equal share of the configured byte budget.
-    per_family: [Arc<CachedInner<u64, Bytes>>; 3],
-}
-
-/// Maps a family to its slot in [`BlockRegionCache::per_family`]. Kept local so
-/// the cache module does not depend on the engine `Family` enum; callers pass
-/// the slot index they derive from their own `Family`.
-pub const REGION_CACHE_FAMILIES: usize = 3;
-
-impl<B: BlobStore> BlockRegionCache<B> {
-    /// `budget_bytes` is the TOTAL byte budget; it is split evenly across the
-    /// three families. `0` disables the cache (every family resolves straight
-    /// to the backend).
-    pub fn new(inner: BlobTable<B>, budget_bytes: usize) -> Self {
-        // Exact weigher: a resident region weighs its compressed length; a
-        // negatively cached `None` weighs 0. Empty regions weigh ~0 and never
-        // panic (no division), satisfying the zero-row family edge.
-        let weigher: fn(&Option<Bytes>) -> usize = |v| v.as_ref().map_or(0, Bytes::len);
-        let per_family_budget = budget_bytes / REGION_CACHE_FAMILIES;
-        Self {
-            inner,
-            per_family: std::array::from_fn(|_| {
-                CachedInner::with_weigher(per_family_budget, weigher)
-            }),
-        }
-    }
-
-    /// Returns the whole compressed region for `(family_slot, block_number)`,
-    /// fetching `region_start..region_end` from the backend on a miss and
-    /// caching it. Concurrent callers for the same block coalesce onto ONE
-    /// backend fetch via the single-flight path, so N point reads of distinct
-    /// rows in one uncached block issue exactly one region fetch.
-    pub async fn get_region(
-        &self,
-        family_slot: usize,
-        block_number: u64,
-        physical_key: Vec<u8>,
-        region_start: usize,
-        region_end: usize,
-    ) -> Result<Option<Bytes>> {
-        let inner = self.inner.clone();
-        self.per_family[family_slot]
-            .get_or_fetch(block_number, async move {
-                inner
-                    .read_range(&physical_key, region_start, region_end)
-                    .await
-            })
-            .await
-    }
-
-    /// Drains the per-family (hits, misses) window counters, tagged by family
-    /// slot, so the caller can label them with the matching family name.
-    pub fn take_window_stats(&self) -> [(u64, u64); REGION_CACHE_FAMILIES] {
-        std::array::from_fn(|slot| self.per_family[slot].take_window_stats())
     }
 }
 
@@ -879,16 +512,9 @@ mod tests {
     use std::{collections::BTreeMap, time::Duration};
 
     use super::*;
-    use crate::store::{
-        blob::BlobWriteOp,
-        common::Page,
-        meta::{MetaWriteOp, ScannableTableId as ScanId, TableId},
-    };
+    use crate::store::meta::{MetaWriteOp, ScannableTableId as ScanId, TableId};
 
-    /// Backend double that counts `get`/`get_blob`/`scan_get` calls and sleeps
-    /// briefly inside each so concurrent callers overlap. Backs both the
-    /// `MetaStore` and `BlobStore` traits so a single double exercises all
-    /// three cached wrappers.
+    /// Backend double counting `get`/`scan_get` calls; each sleeps so concurrent callers overlap.
     #[derive(Clone, Default)]
     struct CountingStore {
         get_calls: Arc<AtomicU64>,
@@ -908,8 +534,6 @@ mod tests {
 
         async fn lookup(&self, key: &[u8]) -> Result<Option<Bytes>> {
             self.get_calls.fetch_add(1, Ordering::SeqCst);
-            // Hold the fetch open long enough that concurrent callers reach the
-            // single-flight join point before the leader completes.
             tokio::time::sleep(Duration::from_millis(50)).await;
             Ok(self.data.lock().unwrap().get(key).cloned())
         }
@@ -941,14 +565,7 @@ mod tests {
         ) -> Result<()> {
             unimplemented!("not exercised by single-flight tests")
         }
-        async fn scan_list(
-            &self,
-            _table: ScanId,
-            _partition: &[u8],
-            _prefix: &[u8],
-            _cursor: Option<Vec<u8>>,
-            _limit: usize,
-        ) -> Result<Page> {
+        async fn scan_keys(&self, _table: ScanId, _partition: &[u8]) -> Result<Vec<Vec<u8>>> {
             unimplemented!("not exercised by single-flight tests")
         }
         async fn apply_writes(&self, _writes: Vec<MetaWriteOp>) -> Result<()> {
@@ -956,27 +573,13 @@ mod tests {
         }
     }
 
-    impl BlobStore for CountingStore {
-        async fn put_blob(&self, _table: BlobTableId, _key: &[u8], _value: Bytes) -> Result<()> {
-            unimplemented!("not exercised by single-flight tests")
-        }
-        async fn get_blob(&self, _table: BlobTableId, key: &[u8]) -> Result<Option<Bytes>> {
-            self.lookup(key).await
-        }
-        async fn apply_writes(&self, _writes: Vec<BlobWriteOp>) -> Result<()> {
-            unimplemented!("not exercised by single-flight tests")
-        }
-    }
-
     const N: usize = 16;
 
-    /// N concurrent misses on the same key collapse to one backend fetch, and
-    /// every caller receives the value.
     #[tokio::test]
     async fn kv_get_coalesces_concurrent_misses() {
         let store = CountingStore::with_value(b"k", Bytes::from_static(b"v"));
         let table = KvTable::new(store.clone(), TableId::new("t"));
-        let cached = Arc::new(CachedKvTable::new(table, 64));
+        let cached = Arc::new(CachedKvTable::new(table, 4096, Ok));
 
         let mut handles = Vec::new();
         for _ in 0..N {
@@ -989,7 +592,6 @@ mod tests {
         }
 
         assert_eq!(store.get_calls(), 1, "single-flight should issue one fetch");
-        // A subsequent get is served from the populated cache.
         assert_eq!(
             cached.get(b"k").await.unwrap(),
             Some(Bytes::from_static(b"v"))
@@ -997,13 +599,11 @@ mod tests {
         assert_eq!(store.get_calls(), 1, "cache hit must not touch the backend");
     }
 
-    /// Coalescing also covers the negative-cache case: a concurrent flood of
-    /// misses on an absent key shares one fetch and all observe `None`.
     #[tokio::test]
     async fn kv_get_coalesces_absent_key() {
         let store = CountingStore::default();
         let table = KvTable::new(store.clone(), TableId::new("t"));
-        let cached = Arc::new(CachedKvTable::new(table, 64));
+        let cached = Arc::new(CachedKvTable::new(table, 4096, Ok));
 
         let mut handles = Vec::new();
         for _ in 0..N {
@@ -1014,7 +614,6 @@ mod tests {
             assert_eq!(h.await.unwrap().unwrap(), None);
         }
         assert_eq!(store.get_calls(), 1);
-        // Negative result is cached: no further backend calls.
         assert_eq!(cached.get(b"missing").await.unwrap(), None);
         assert_eq!(store.get_calls(), 1);
     }
@@ -1023,7 +622,7 @@ mod tests {
     async fn scannable_get_coalesces_concurrent_misses() {
         let store = CountingStore::with_value(b"pc", Bytes::from_static(b"v"));
         let table = ScannableKvTable::new(store.clone(), ScanId::new("t"));
-        let cached = Arc::new(CachedScannableTable::new(table, 64));
+        let cached = Arc::new(CachedScannableKvTable::new(table, 4096, Ok));
 
         let mut handles = Vec::new();
         for _ in 0..N {
@@ -1037,27 +636,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn blob_get_coalesces_concurrent_misses() {
-        let store = CountingStore::with_value(b"k", Bytes::from_static(b"v"));
-        let table = BlobTable::new(store.clone(), BlobTableId::new("t"));
-        let cached = Arc::new(CachedBlobTable::new(table, 64));
-
-        let mut handles = Vec::new();
-        for _ in 0..N {
-            let c = cached.clone();
-            handles.push(tokio::spawn(async move { c.get(b"k").await }));
-        }
-        for h in handles {
-            assert_eq!(h.await.unwrap().unwrap(), Some(Bytes::from_static(b"v")));
-        }
-        assert_eq!(store.get_calls(), 1);
-    }
-
-    /// After a fetch fails, the in-flight entry is removed so the next call
-    /// retries the backend (errors are not cached).
-    #[tokio::test]
     async fn failed_fetch_is_not_cached_and_retries() {
-        // A store whose `get` always errors, counting attempts.
         #[derive(Clone, Default)]
         struct ErrStore {
             calls: Arc<AtomicU64>,
@@ -1077,14 +656,7 @@ mod tests {
             async fn scan_put(&self, _t: ScanId, _p: &[u8], _c: &[u8], _v: Bytes) -> Result<()> {
                 unimplemented!()
             }
-            async fn scan_list(
-                &self,
-                _t: ScanId,
-                _p: &[u8],
-                _pre: &[u8],
-                _cur: Option<Vec<u8>>,
-                _l: usize,
-            ) -> Result<Page> {
+            async fn scan_keys(&self, _t: ScanId, _p: &[u8]) -> Result<Vec<Vec<u8>>> {
                 unimplemented!()
             }
             async fn apply_writes(&self, _w: Vec<MetaWriteOp>) -> Result<()> {
@@ -1095,9 +667,8 @@ mod tests {
         let store = ErrStore::default();
         let calls = store.calls.clone();
         let table = KvTable::new(store, TableId::new("t"));
-        let cached = Arc::new(CachedKvTable::new(table, 64));
+        let cached = Arc::new(CachedKvTable::new(table, 4096, Ok));
 
-        // First flight: all coalesce onto one failing fetch, all see an error.
         let mut handles = Vec::new();
         for _ in 0..N {
             let c = cached.clone();
@@ -1108,47 +679,35 @@ mod tests {
         }
         assert_eq!(calls.load(Ordering::SeqCst), 1);
 
-        // The error was not cached and the in-flight entry was cleared, so a
-        // later call hits the backend again.
         assert!(cached.get(b"k").await.is_err());
         assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
-    /// If the leader is cancelled (its task dropped mid-await), a follower still
-    /// drives the shared fetch to completion AND populates the cache, so the
-    /// result is not silently uncached. Proves every awaiter populates.
+    /// A cancelled leader must not leave the result uncached: every awaiter populates.
     #[tokio::test]
     async fn follower_populates_cache_when_leader_is_cancelled() {
         let store = CountingStore::with_value(b"k", Bytes::from_static(b"v"));
         let table = KvTable::new(store.clone(), TableId::new("t"));
-        let cached = Arc::new(CachedKvTable::new(table, 64));
+        let cached = Arc::new(CachedKvTable::new(table, 4096, Ok));
 
-        // Leader: spawn so we can drop/cancel its task before the fetch (which
-        // sleeps 50ms inside the backend double) resolves.
         let leader = {
             let c = cached.clone();
             tokio::spawn(async move { c.get(b"k").await })
         };
-        // Follower: a concurrent get for the same missing key. It coalesces onto
-        // the leader's in-flight fetch.
         let follower = {
             let c = cached.clone();
             tokio::spawn(async move { c.get(b"k").await })
         };
 
-        // Give both tasks time to reach the single-flight join point, then
-        // cancel the leader before the backend fetch resolves.
+        // Let both reach the single-flight join point, then cancel the leader mid-fetch.
         tokio::time::sleep(Duration::from_millis(10)).await;
         leader.abort();
         let _ = leader.await;
 
-        // (a) The follower still completes with the correct value.
         let got = follower.await.unwrap().unwrap();
         assert_eq!(got, Some(Bytes::from_static(b"v")));
         assert_eq!(store.get_calls(), 1, "single backend fetch despite cancel");
 
-        // (b) A subsequent get is served from cache: the follower populated it,
-        // so the backend call count does NOT increase.
         assert_eq!(
             cached.get(b"k").await.unwrap(),
             Some(Bytes::from_static(b"v"))
@@ -1165,58 +724,79 @@ mod tests {
         v.as_ref().map_or(0, Bytes::len)
     }
 
-    /// The byte-budgeted cache evicts LRU entries until resident weight is back
-    /// within budget, and refunds a replaced key's old weight before adding the
-    /// new one so `size` never drifts.
     #[test]
     fn byte_budget_evicts_lru_until_within_budget() {
-        // Budget of 10 bytes. Each value below is 4 bytes.
         let cache = CachedInner::<u64, Bytes>::with_weigher(10, byte_weigher);
-        cache.populate(1, Bytes::from_static(b"aaaa")); // size 4
-        cache.populate(2, Bytes::from_static(b"bbbb")); // size 8
-                                                        // Touch key 1 so key 2 becomes the LRU victim.
-        assert_eq!(cache.lookup(&1), Some(Some(Bytes::from_static(b"aaaa"))));
-        cache.populate(3, Bytes::from_static(b"cccc")); // size 12 -> evict LRU (key 2) -> size 8
+        cache.insert(1, Bytes::from_static(b"aaaa")); // size 4
+        cache.insert(2, Bytes::from_static(b"bbbb")); // size 8
+                                                      // Touch key 1 so key 2 becomes the LRU victim.
+        assert_eq!(cache.probe(&1), Some(Some(Bytes::from_static(b"aaaa"))));
+        cache.insert(3, Bytes::from_static(b"cccc")); // size 12 -> evict LRU (key 2) -> size 8
 
-        assert_eq!(cache.lookup(&1), Some(Some(Bytes::from_static(b"aaaa"))));
-        assert_eq!(cache.lookup(&3), Some(Some(Bytes::from_static(b"cccc"))));
-        assert_eq!(cache.lookup(&2), None, "LRU entry evicted to honor budget");
+        assert_eq!(cache.probe(&1), Some(Some(Bytes::from_static(b"aaaa"))));
+        assert_eq!(cache.probe(&3), Some(Some(Bytes::from_static(b"cccc"))));
+        assert_eq!(cache.probe(&2), None, "LRU entry evicted to honor budget");
     }
 
-    /// Replacing a key refunds the old value's weight, so a same-key overwrite
-    /// does not inflate `size` and wrongly evict other entries.
     #[test]
     fn byte_budget_refunds_replaced_weight() {
         let cache = CachedInner::<u64, Bytes>::with_weigher(10, byte_weigher);
-        cache.populate(1, Bytes::from_static(b"aaaa")); // size 4
-        cache.populate(2, Bytes::from_static(b"bbbb")); // size 8
-                                                        // Overwrite key 1 with an equal-size value: size stays 8, no eviction.
-        cache.populate(1, Bytes::from_static(b"AAAA"));
-        assert_eq!(cache.lookup(&1), Some(Some(Bytes::from_static(b"AAAA"))));
-        assert_eq!(cache.lookup(&2), Some(Some(Bytes::from_static(b"bbbb"))));
+        cache.insert(1, Bytes::from_static(b"aaaa")); // size 4
+        cache.insert(2, Bytes::from_static(b"bbbb")); // size 8
+                                                      // Overwrite key 1 with an equal-size value: size stays 8, no eviction.
+        cache.insert(1, Bytes::from_static(b"AAAA"));
+        assert_eq!(cache.probe(&1), Some(Some(Bytes::from_static(b"AAAA"))));
+        assert_eq!(cache.probe(&2), Some(Some(Bytes::from_static(b"bbbb"))));
     }
 
-    /// A zero-byte (empty-region) value weighs 0 and is cached without
-    /// tripping the budget or dividing by anything.
     #[test]
     fn byte_budget_handles_empty_value() {
         let cache = CachedInner::<u64, Bytes>::with_weigher(8, byte_weigher);
-        cache.populate(1, Bytes::new()); // weighs 0
-        assert_eq!(cache.lookup(&1), Some(Some(Bytes::new())));
-        // Room remains for an 8-byte value alongside the empty one.
-        cache.populate(2, Bytes::from_static(b"bbbbbbbb"));
-        assert_eq!(cache.lookup(&1), Some(Some(Bytes::new())));
-        assert_eq!(
-            cache.lookup(&2),
-            Some(Some(Bytes::from_static(b"bbbbbbbb")))
-        );
+        cache.insert(1, Bytes::new()); // weighs 0
+        assert_eq!(cache.probe(&1), Some(Some(Bytes::new())));
+        cache.insert(2, Bytes::from_static(b"bbbbbbbb"));
+        assert_eq!(cache.probe(&1), Some(Some(Bytes::new())));
+        assert_eq!(cache.probe(&2), Some(Some(Bytes::from_static(b"bbbbbbbb"))));
     }
 
-    /// A zero budget disables the cache entirely (every lookup misses).
     #[test]
     fn zero_budget_disables_cache() {
         let cache = CachedInner::<u64, Bytes>::with_weigher(0, byte_weigher);
-        cache.populate(1, Bytes::from_static(b"x"));
-        assert_eq!(cache.lookup(&1), None);
+        cache.insert(1, Bytes::from_static(b"x"));
+        assert_eq!(cache.probe(&1), None);
+    }
+
+    #[test]
+    fn weighted_values_evict_by_stamped_weight() {
+        // Budget fits exactly two entries of payload weight 100.
+        let budget = 2 * (100 + CACHE_ENTRY_OVERHEAD);
+        let cache =
+            CachedInner::<u64, Weighted<&'static str>>::with_weigher(budget, weigh_weighted);
+        cache.insert(
+            1,
+            Weighted {
+                value: "a",
+                weight: 100,
+            },
+        );
+        cache.insert(
+            2,
+            Weighted {
+                value: "b",
+                weight: 100,
+            },
+        );
+        assert_eq!(cache.probe(&1).flatten().map(|w| w.value), Some("a"));
+        // Key 1 was just touched, so inserting a third evicts key 2 (LRU).
+        cache.insert(
+            3,
+            Weighted {
+                value: "c",
+                weight: 100,
+            },
+        );
+        assert_eq!(cache.probe(&1).flatten().map(|w| w.value), Some("a"));
+        assert!(cache.probe(&2).is_none());
+        assert_eq!(cache.probe(&3).flatten().map(|w| w.value), Some("c"));
     }
 }

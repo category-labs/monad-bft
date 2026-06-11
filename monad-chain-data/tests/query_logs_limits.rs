@@ -14,45 +14,49 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use monad_chain_data::{
-    Address, Bytes, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, LimitExceededKind, Log,
-    LogData, LogFilter, LogsRelations, MonadChainDataError, MonadChainDataService, QueryEnvelope,
-    QueryLimits, QueryLogsRequest, QueryOrder, B256,
+    Address, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore, LimitExceededKind, LogFilter,
+    MonadChainDataError, MonadChainDataService, QueryEnvelope, QueryLimits, QueryLogsRequest, B256,
 };
 
 mod common;
 
-use common::{chain_header, test_header};
+use common::{ascending_envelope, block_with_logs, chain_header, log, logs_request, test_header};
+
+/// Asserts `err` is `LimitExceeded` with exactly these fields.
+#[track_caller]
+fn assert_limit_exceeded(
+    err: MonadChainDataError,
+    kind: LimitExceededKind,
+    max_limit: usize,
+    max_block_range: u64,
+) {
+    match err {
+        MonadChainDataError::LimitExceeded {
+            kind: got_kind,
+            max_limit: got_max_limit,
+            max_block_range: got_max_block_range,
+        } => {
+            assert_eq!(got_kind, kind);
+            assert_eq!(got_max_limit, max_limit);
+            assert_eq!(got_max_block_range, max_block_range);
+        }
+        other => panic!("expected LimitExceeded, got {other:?}"),
+    }
+}
 
 #[tokio::test(flavor = "current_thread")]
 async fn limit_above_max_limit_returns_limit_exceeded() {
     let service = ingest_three_block_chain(QueryLimits::new(5, 1_000)).await;
 
     let err = service
-        .query_logs(QueryLogsRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(1),
-                to_block: Some(3),
-                order: QueryOrder::Ascending,
-                limit: 10,
-            },
-            filter: LogFilter::default(),
-            relations: LogsRelations::default(),
-        })
+        .query_logs(logs_request(
+            ascending_envelope(1, 3, 10),
+            LogFilter::default(),
+        ))
         .await
         .expect_err("limit above max_limit should error");
 
-    match err {
-        MonadChainDataError::LimitExceeded {
-            kind,
-            max_limit,
-            max_block_range,
-        } => {
-            assert_eq!(kind, LimitExceededKind::Limit);
-            assert_eq!(max_limit, 5);
-            assert_eq!(max_block_range, 1_000);
-        }
-        other => panic!("expected LimitExceeded, got {other:?}"),
-    }
+    assert_limit_exceeded(err, LimitExceededKind::Limit, 5, 1_000);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -60,31 +64,14 @@ async fn block_range_above_max_block_range_returns_limit_exceeded() {
     let service = ingest_three_block_chain(QueryLimits::new(100, 2)).await;
 
     let err = service
-        .query_logs(QueryLogsRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(1),
-                to_block: Some(3),
-                order: QueryOrder::Ascending,
-                limit: 10,
-            },
-            filter: LogFilter::default(),
-            relations: LogsRelations::default(),
-        })
+        .query_logs(logs_request(
+            ascending_envelope(1, 3, 10),
+            LogFilter::default(),
+        ))
         .await
         .expect_err("block range above max_block_range should error");
 
-    match err {
-        MonadChainDataError::LimitExceeded {
-            kind,
-            max_limit,
-            max_block_range,
-        } => {
-            assert_eq!(kind, LimitExceededKind::BlockRange);
-            assert_eq!(max_limit, 100);
-            assert_eq!(max_block_range, 2);
-        }
-        other => panic!("expected LimitExceeded, got {other:?}"),
-    }
+    assert_limit_exceeded(err, LimitExceededKind::BlockRange, 100, 2);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -92,16 +79,10 @@ async fn block_range_at_max_block_range_succeeds() {
     let service = ingest_three_block_chain(QueryLimits::new(100, 3)).await;
 
     let page = service
-        .query_logs(QueryLogsRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(1),
-                to_block: Some(3),
-                order: QueryOrder::Ascending,
-                limit: 10,
-            },
-            filter: LogFilter::default(),
-            relations: LogsRelations::default(),
-        })
+        .query_logs(logs_request(
+            ascending_envelope(1, 3, 10),
+            LogFilter::default(),
+        ))
         .await
         .expect("query at max should succeed");
 
@@ -111,20 +92,19 @@ async fn block_range_at_max_block_range_succeeds() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn defaulted_block_range_is_bounded_by_max_block_range() {
-    // Limits allow a 2-block window; defaults expand to the full chain
-    // (3 blocks), which should still be bounded.
+    // Defaults expand to the full 3-block chain, exceeding the 2-block window.
     let service = ingest_three_block_chain(QueryLimits::new(100, 2)).await;
 
     let err = service
         .query_logs(QueryLogsRequest {
+            // The defaulted (None) endpoints are the property under test.
             envelope: QueryEnvelope {
                 from_block: None,
                 to_block: None,
-                order: QueryOrder::Ascending,
                 limit: 10,
+                ..QueryEnvelope::default()
             },
-            filter: LogFilter::default(),
-            relations: LogsRelations::default(),
+            ..QueryLogsRequest::default()
         })
         .await
         .expect_err("defaulted full-chain range should be bounded");
@@ -150,21 +130,17 @@ async fn ingest_three_block_chain(
 
     let blocks: Vec<FinalizedBlock> = [h1, h2, h3]
         .into_iter()
-        .map(|header| FinalizedBlock {
-            header,
-            logs_by_tx: vec![vec![log()]],
-            txs: Vec::new(),
-            traces: vec![],
+        .map(|header| {
+            block_with_logs(
+                header,
+                vec![vec![log(
+                    Address::repeat_byte(1),
+                    vec![B256::repeat_byte(1)],
+                )]],
+            )
         })
         .collect();
 
     let store = common::populate::populate_via_engine(blocks).await;
     store.reader_with_limits(limits)
-}
-
-fn log() -> Log {
-    Log {
-        address: Address::repeat_byte(1),
-        data: LogData::new_unchecked(vec![B256::repeat_byte(1)], Bytes::from(vec![1, 2, 3])),
-    }
 }

@@ -41,7 +41,7 @@ fn to_rpc_transaction_carries_envelope_sender_and_block_context() {
     let tx = TxEntry {
         block_number: 123,
         block_hash: B256::repeat_byte(0xbb),
-        tx_idx: 4,
+        tx_index: 4,
         tx_hash: B256::repeat_byte(0xcc),
         sender: Address::repeat_byte(0xdd),
         signed_tx_bytes: signed_tx_bytes.into(),
@@ -49,18 +49,18 @@ fn to_rpc_transaction_carries_envelope_sender_and_block_context() {
 
     let rpc = tx.to_rpc_transaction().expect("convert");
 
+    // The rpc projection.
     assert_eq!(rpc.block_number, Some(123));
     assert_eq!(rpc.block_hash, Some(B256::repeat_byte(0xbb)));
     assert_eq!(rpc.transaction_index, Some(4));
     assert_eq!(rpc.effective_gas_price, None);
     assert_eq!(rpc.inner.signer(), Address::repeat_byte(0xdd));
+    assert_eq!(rpc.inner.inner().tx_type() as u8, 0);
 
-    // The inner envelope round-trips the original fields.
-    let envelope = rpc.inner.inner();
+    // TxEntry decode accessors over the same envelope.
     assert_eq!(tx.to().expect("to"), Some(recipient));
     assert_eq!(
         tx.selector().expect("selector"),
         Some([0x11, 0x22, 0x33, 0x44])
     );
-    assert_eq!(envelope.tx_type() as u8, 0);
 }

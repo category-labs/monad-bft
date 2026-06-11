@@ -16,4 +16,5 @@
 pub(crate) mod bitmap;
 pub(crate) mod directory_resolver;
 pub(crate) mod family_runner;
+pub(crate) mod row_cache;
 pub(crate) mod window;

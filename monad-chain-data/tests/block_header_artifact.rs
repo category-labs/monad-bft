@@ -15,13 +15,13 @@
 
 use alloy_primitives::{aliases::B64, Address, Bloom, Bytes as AlloyBytes, U256};
 use monad_chain_data::{
-    store::TableId, EvmBlockHeader, FinalizedBlock, InMemoryBlobStore, InMemoryMetaStore,
-    MonadChainDataService, QueryLimits, B256,
+    store::TableId, EvmBlockHeader, InMemoryBlobStore, InMemoryMetaStore, MonadChainDataService,
+    QueryLimits, B256,
 };
 
 mod common;
 
-use common::test_header;
+use common::{empty_block, test_header};
 
 #[tokio::test(flavor = "current_thread")]
 async fn ingest_persists_block_header() {
@@ -32,13 +32,7 @@ async fn ingest_persists_block_header() {
     header.timestamp = 1_700_000_000;
     header.extra_data = AlloyBytes::from_static(b"monad-test");
 
-    let store = common::populate::populate_via_engine(vec![FinalizedBlock {
-        header: header.clone(),
-        logs_by_tx: vec![],
-        txs: Vec::new(),
-        traces: vec![],
-    }])
-    .await;
+    let store = common::populate::populate_via_engine(vec![empty_block(header.clone())]).await;
     let service = store.reader();
 
     let loaded = service
@@ -50,6 +44,12 @@ async fn ingest_persists_block_header() {
         .expect("header present");
 
     assert_eq!(loaded, header);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ingest_writes_no_legacy_tables() {
+    let store =
+        common::populate::populate_via_engine(vec![empty_block(test_header(1, B256::ZERO))]).await;
 
     let kv = store.meta.kv_snapshot();
     assert!(kv
@@ -112,15 +112,11 @@ async fn block_header_roundtrips_with_all_optional_fields_populated() {
         excess_blob_gas: Some(262_144),
         parent_beacon_block_root: Some(B256::repeat_byte(11)),
         requests_hash: Some(B256::repeat_byte(12)),
+        block_access_list_hash: Some(B256::repeat_byte(13)),
+        slot_number: Some(14),
     };
 
-    let store = common::populate::populate_via_engine(vec![FinalizedBlock {
-        header: header.clone(),
-        logs_by_tx: vec![],
-        txs: Vec::new(),
-        traces: vec![],
-    }])
-    .await;
+    let store = common::populate::populate_via_engine(vec![empty_block(header.clone())]).await;
     let service = store.reader();
 
     let loaded = service

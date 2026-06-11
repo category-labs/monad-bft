@@ -15,18 +15,11 @@
 
 pub mod api;
 pub mod blocks;
+pub mod config;
 pub mod engine;
 pub mod error;
-pub mod family;
-pub mod ingest_config;
-pub mod ingest_controller;
-pub mod ingest_core;
-pub mod ingest_helpers;
-pub mod ingest_recover;
-pub mod ingest_resolver;
-#[cfg(test)]
-mod ingest_rtt;
-pub mod ingest_source;
+pub mod ingest;
+pub mod ingest_types;
 pub mod logs;
 pub mod mem_scan;
 pub mod primitives;
@@ -36,39 +29,42 @@ pub mod traces;
 pub mod transfers;
 pub mod txs;
 
+// Root re-exports: the surface intended for external consumers (the transport
+// layer and binaries) — service/reader constructors and their config types,
+// every query request/response/filter type, ingest wiring, the mem-scan tip
+// helpers, and the span/ref primitives those responses carry. Internal types
+// stay reachable through their modules but are deliberately not re-exported.
 pub use alloy_primitives::{Address, Bytes, Log, LogData, B256};
 pub use api::MonadChainDataService;
 pub use blocks::{Block, QueryBlocksRequest, QueryBlocksResponse};
-pub use engine::{
-    authority::HeadPublisher,
-    digest::{ArtifactChecksum, EMPTY_CHECKSUM},
-    family::Family,
-    tables::{PublicationTables, QueryRuntimeConfig, Tables, WriteOpCounts},
-};
-pub use error::MonadChainDataError;
-pub use family::{CallKind, FinalizedBlock, Hash32, IngestTrace, IngestTx};
 #[cfg(feature = "s3")]
-pub use ingest_config::ChainDataS3BlobConfig;
-pub use ingest_config::{
+pub use config::ChainDataS3BlobConfig;
+pub use config::{
     open_configured_chain_data_reader, run_configured_chain_data_engine_ingest,
     ChainDataBlobBackendConfig, ChainDataEngineConfig, ChainDataMetaBackendConfig,
     ChainDataStoreConfig, ConfiguredChainDataReader,
 };
 #[cfg(feature = "dynamo")]
-pub use ingest_config::{
+pub use config::{
     ChainDataDynamoBlobConfig, ChainDataDynamoMetaConfig, ChainDataDynamoTableLayoutConfig,
 };
-pub use ingest_source::ChainDataIngestSource;
+pub use engine::{
+    family::Family,
+    tables::{DictConfig, PublicationTables, QueryRuntimeConfig, Tables},
+};
+pub use error::MonadChainDataError;
+pub use ingest::source::ChainDataIngestSource;
+pub use ingest_types::{CallKind, FinalizedBlock, Hash32, IngestTrace, IngestTx};
 pub use logs::{LogEntry, LogFilter, LogsRelations, QueryLogsRequest, QueryLogsResponse};
 pub use mem_scan::{scan_block_logs, scan_block_txs, MemLogsBlock, MemTx};
 pub use primitives::{
     limits::{LimitExceededKind, QueryEnvelope, QueryLimits},
-    page::{QueryOrder, DEFAULT_QUERY_LIMIT},
+    order::QueryOrder,
+    records::{BlockBlobHeader, BlockRecord, FamilyWindowRecord, PrimaryId},
     refs::{BlockRef, BlockSpan},
-    state::{BlockBlobHeader, BlockRecord, FamilyWindowRecord, LogId, PrimaryId, TraceId, TxId},
     EvmBlockHeader,
 };
-pub use store::{InMemoryBlobStore, InMemoryMetaStore};
+pub use store::{CacheConfig, InMemoryBlobStore, InMemoryMetaStore};
 pub use traces::{
     compute_trace_addresses, QueryTracesRequest, QueryTracesResponse, TraceEntry, TraceFilter,
     TracesRelations,

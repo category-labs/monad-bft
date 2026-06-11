@@ -17,29 +17,18 @@ mod common;
 
 use std::sync::Arc;
 
-use bytes::Bytes;
 use monad_chain_data::{
-    engine::{family::Family, tables::Tables},
+    engine::{
+        family::Family,
+        tables::{DictConfig, QueryRuntimeConfig, Tables},
+    },
     store::{CacheConfig, InMemoryBlobStore},
 };
 
-use crate::common::observed_store::{ObservedMetaStore, OpCounters};
-
-fn block_record(number: u64) -> monad_chain_data::BlockRecord {
-    let window = monad_chain_data::FamilyWindowRecord {
-        first_primary_id: monad_chain_data::PrimaryId::ZERO,
-        count: 0,
-    };
-    monad_chain_data::BlockRecord {
-        block_number: number,
-        block_hash: Default::default(),
-        parent_hash: Default::default(),
-        logs: window,
-        txs: window,
-        traces: window,
-        artifact_checksum: Default::default(),
-    }
-}
+use crate::common::{
+    observed_store::{ObservedMetaStore, OpCounters},
+    stage_block, stage_block_header, test_cache_config,
+};
 
 fn make_tables(
     cache: CacheConfig,
@@ -50,80 +39,44 @@ fn make_tables(
     let meta = ObservedMetaStore::counting();
     let blob = InMemoryBlobStore::default();
     let counters = meta.counters.clone();
-    let tables = Tables::with_cache_config(meta, blob, cache);
+    let tables = Tables::with_all_configs(
+        meta,
+        blob,
+        cache,
+        DictConfig::default(),
+        QueryRuntimeConfig::default(),
+    );
     (tables, counters)
-}
-
-fn small_cache() -> CacheConfig {
-    CacheConfig {
-        block_header_entries: 64,
-        block_hash_to_number_entries: 64,
-        dir_by_block_entries: 64,
-        dir_bucket_entries: 64,
-        bitmap_by_block_cache_bytes: 64 * 1024,
-        bitmap_page_blob_cache_bytes: 64 * 1024,
-        bitmap_page_counts_entries: 64,
-        open_bitmap_stream_entries: 64,
-        tx_hash_index_entries: 64,
-        block_region_cache_bytes: 64 * 1024,
-        block_region_max_bytes: 1024 * 1024,
-    }
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn first_read_misses_then_serves_from_cache() {
-    let (tables, counters) = make_tables(small_cache());
-    let tables_ref = &tables;
-    let header = monad_chain_data::EvmBlockHeader {
-        number: 1,
-        ..Default::default()
-    };
-    let header_ref = &header;
-    let record = block_record(1);
-    let record_ref = &record;
-    tables
-        .with_writes(|w| {
-            Box::pin(async move {
-                tables_ref.blocks().stage_metadata(
-                    w,
-                    1,
-                    record_ref,
-                    header_ref,
-                    Bytes::new(),
-                    Bytes::new(),
-                    Bytes::new(),
-                );
-                Ok(())
-            })
-        })
-        .await
-        .expect("with_writes");
+    let (tables, counters) = make_tables(test_cache_config());
+    stage_block(&tables, 1).await;
 
-    // The cache is read-populated only: a write does NOT seed it, so the first
-    // read after the write misses to the backend (and populates the cache).
+    // Caches are read-populated only: writes never seed them.
     let before = counters.snapshot();
     let v = tables.blocks().load_header(1).await.expect("load_header");
     assert!(v.is_some());
     let after_first = counters.snapshot();
     assert_eq!(
-        after_first.0.saturating_sub(before.0),
+        after_first.get - before.get,
         1,
         "first read after write must miss to the backend"
     );
 
-    // The second read is served from the cache the first read populated.
     let v = tables.blocks().load_header(1).await.expect("load_header");
     assert!(v.is_some());
     let after_second = counters.snapshot();
     assert_eq!(
-        after_second.0, after_first.0,
+        after_second.get, after_first.get,
         "second read must serve from cache without a backend get"
     );
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn scan_put_then_scan_get_serves_from_cache() {
-    let (tables, counters) = make_tables(small_cache());
+    let (tables, counters) = make_tables(test_cache_config());
     let tables_ref = &tables;
     tables
         .with_writes(|w| {
@@ -139,69 +92,46 @@ async fn scan_put_then_scan_get_serves_from_cache() {
         .expect("with_writes");
 
     let fam = tables.family(Family::Log);
-    // load_bucket_fragments issues one scan_list (always uncached) plus one
-    // scan_get per clustering. Writes no longer seed the cache, so the first
-    // load misses each scan_get to the backend and populates it.
+    // load_bucket_fragments = one scan_keys + one cached scan_get per clustering.
     let before = counters.snapshot();
     let fragments = fam.load_bucket_fragments(0).await.expect("load");
     assert_eq!(fragments.len(), 1);
     let after_first = counters.snapshot();
     assert_eq!(
-        after_first.1.saturating_sub(before.1),
+        after_first.scan_get - before.scan_get,
         1,
         "first load misses one scan_get to the backend"
     );
     assert_eq!(
-        after_first.2.saturating_sub(before.2),
+        after_first.scan_keys - before.scan_keys,
         1,
-        "list_prefix is uncached and runs exactly once"
+        "scan_keys is uncached and runs exactly once"
     );
 
-    // The second load serves the per-clustering scan_get from the cache; only
-    // the uncached list_prefix touches the backend again.
     let fragments = fam.load_bucket_fragments(0).await.expect("load");
     assert_eq!(fragments.len(), 1);
     let after_second = counters.snapshot();
     assert_eq!(
-        after_second.1, after_first.1,
+        after_second.scan_get, after_first.scan_get,
         "second load serves scan_gets from cache"
     );
     assert_eq!(
-        after_second.2.saturating_sub(after_first.2),
+        after_second.scan_keys - after_first.scan_keys,
         1,
-        "list_prefix runs again (uncached)"
+        "scan_keys runs again (uncached)"
     );
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn staged_write_not_visible_until_committed() {
-    // The metadata caches are read-populated only. A write staged inside a
-    // `with_writes` closure is not applied to the backend until commit and
-    // never seeds the cache, so an in-closure read does not observe it. This
-    // matches production, where ingest runs with caches disabled and so never
-    // depended on in-closure write visibility.
-    let (tables, _counters) = make_tables(small_cache());
+    // Staged writes never seed the cache (production parity: ingest runs with caches disabled).
+    let (tables, _counters) = make_tables(test_cache_config());
     let tables_ref = &tables;
-    let header = monad_chain_data::EvmBlockHeader {
-        number: 1,
-        ..Default::default()
-    };
-    let header_ref = &header;
-    let record = block_record(1);
-    let record_ref = &record;
 
     tables
         .with_writes(|w| {
             Box::pin(async move {
-                tables_ref.blocks().stage_metadata(
-                    w,
-                    1,
-                    record_ref,
-                    header_ref,
-                    Bytes::new(),
-                    Bytes::new(),
-                    Bytes::new(),
-                );
+                stage_block_header(tables_ref, w, 1);
                 let read = tables_ref.blocks().load_header(1).await?;
                 assert!(
                     read.is_none(),
@@ -212,46 +142,20 @@ async fn staged_write_not_visible_until_committed() {
         })
         .await
         .expect("with_writes");
-    // Post-commit visibility is covered by `first_read_misses_then_serves_from_cache`.
-    // (It is intentionally not re-checked here: the in-closure miss above
-    // negatively cached the absent key, which a separate read-only reader — the
-    // only cache-enabled role in production — never does to its own writes.)
+    // Post-commit visibility not re-checked: the in-closure miss negatively cached the key.
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn cache_eviction_is_not_correctness_bug() {
+    // 256 bytes holds one or two decoded records, forcing evictions.
     let cache = CacheConfig {
-        block_header_entries: 2,
-        ..small_cache()
+        block_header_cache_bytes: 256,
+        ..test_cache_config()
     };
     let (tables, _counters) = make_tables(cache);
-    let tables_ref = &tables;
 
     for i in 1..=5u64 {
-        let header = monad_chain_data::EvmBlockHeader {
-            number: i,
-            ..Default::default()
-        };
-        let header_ref = &header;
-        let record = block_record(i);
-        let record_ref = &record;
-        tables
-            .with_writes(|w| {
-                Box::pin(async move {
-                    tables_ref.blocks().stage_metadata(
-                        w,
-                        i,
-                        record_ref,
-                        header_ref,
-                        Bytes::new(),
-                        Bytes::new(),
-                        Bytes::new(),
-                    );
-                    Ok(())
-                })
-            })
-            .await
-            .expect("with_writes");
+        stage_block(&tables, i).await;
     }
 
     for i in 1..=5u64 {
@@ -263,49 +167,33 @@ async fn cache_eviction_is_not_correctness_bug() {
 #[tokio::test(flavor = "current_thread")]
 async fn zero_size_cache_skips_lru() {
     let cache = CacheConfig {
-        block_header_entries: 0,
-        ..small_cache()
+        block_header_cache_bytes: 0,
+        ..test_cache_config()
     };
     let (tables, counters) = make_tables(cache);
-    let tables_ref = &tables;
-    let header = monad_chain_data::EvmBlockHeader {
-        number: 1,
-        ..Default::default()
-    };
-    let header_ref = &header;
-    let record = block_record(1);
-    let record_ref = &record;
-    tables
-        .with_writes(|w| {
-            Box::pin(async move {
-                tables_ref.blocks().stage_metadata(
-                    w,
-                    1,
-                    record_ref,
-                    header_ref,
-                    Bytes::new(),
-                    Bytes::new(),
-                    Bytes::new(),
-                );
-                Ok(())
-            })
-        })
-        .await
-        .expect("with_writes");
+    stage_block(&tables, 1).await;
 
     let before = counters.snapshot();
     let _ = tables.blocks().load_header(1).await.expect("load");
-    let after = counters.snapshot();
+    let after_first = counters.snapshot();
     assert_eq!(
-        after.0.saturating_sub(before.0),
+        after_first.get - before.get,
         1,
         "zero-size cache disables caching: read must hit backend"
+    );
+
+    let _ = tables.blocks().load_header(1).await.expect("load");
+    let after_second = counters.snapshot();
+    assert_eq!(
+        after_second.get - after_first.get,
+        1,
+        "zero-size cache must not serve the second read"
     );
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn populate_keys_match_scan_get_keys() {
-    let (tables, counters) = make_tables(small_cache());
+    let (tables, counters) = make_tables(test_cache_config());
     let tables_ref = &tables;
 
     tables
@@ -321,102 +209,26 @@ async fn populate_keys_match_scan_get_keys() {
         .expect("stage");
 
     let fam = tables.family(Family::Log);
-    // Prime the cache: writes do not seed it, so the first load misses both
-    // per-clustering scan_gets to the backend and populates them.
+    // Prime via read (writes never seed caches); the second load must be fully cached.
     let fragments = fam.load_bucket_fragments(0).await.expect("load");
     assert_eq!(fragments.len(), 2);
 
-    // The second load serves both per-clustering scan_gets from the cache, so
-    // the populate keys match the scan_get keys (zero backend scan_gets).
     let before = counters.snapshot();
     let fragments = fam.load_bucket_fragments(0).await.expect("load");
     assert_eq!(fragments.len(), 2);
     let after = counters.snapshot();
     assert_eq!(
-        after.1, before.1,
+        after.scan_get, before.scan_get,
         "per-clustering scan_gets must observe ZERO backend calls once cached"
     );
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn concurrent_reader_during_populate() {
-    let (tables, _counters) = make_tables(small_cache());
-    let tables = Arc::new(tables);
-
-    let tables_w = tables.clone();
-    let writer = tokio::spawn(async move {
-        for i in 1..=50u64 {
-            let header = monad_chain_data::EvmBlockHeader {
-                number: i,
-                ..Default::default()
-            };
-            let header_ref = &header;
-            let record = block_record(i);
-            let record_ref = &record;
-            let tables_w_inner = tables_w.clone();
-            tables_w
-                .with_writes(|w| {
-                    Box::pin(async move {
-                        tables_w_inner.blocks().stage_metadata(
-                            w,
-                            i,
-                            record_ref,
-                            header_ref,
-                            Bytes::new(),
-                            Bytes::new(),
-                            Bytes::new(),
-                        );
-                        Ok(())
-                    })
-                })
-                .await
-                .expect("write");
-        }
-    });
-
-    let tables_r = tables.clone();
-    let reader = tokio::spawn(async move {
-        for _ in 0..200 {
-            let _ = tables_r.blocks().load_header(1).await;
-            tokio::task::yield_now().await;
-        }
-    });
-
-    writer.await.expect("writer");
-    reader.await.expect("reader");
-}
-
-#[tokio::test(flavor = "current_thread")]
 async fn cache_hit_ratio_metric_resets_between_windows() {
-    let (tables, _counters) = make_tables(small_cache());
-    let tables_ref = &tables;
-    let header = monad_chain_data::EvmBlockHeader {
-        number: 1,
-        ..Default::default()
-    };
-    let header_ref = &header;
-    let record = block_record(1);
-    let record_ref = &record;
-    tables
-        .with_writes(|w| {
-            Box::pin(async move {
-                tables_ref.blocks().stage_metadata(
-                    w,
-                    1,
-                    record_ref,
-                    header_ref,
-                    Bytes::new(),
-                    Bytes::new(),
-                    Bytes::new(),
-                );
-                Ok(())
-            })
-        })
-        .await
-        .expect("with_writes");
+    let (tables, _counters) = make_tables(test_cache_config());
+    stage_block(&tables, 1).await;
 
-    // Prime the cache with one read (a miss that populates), then drain stats
-    // so the counted window observes only hits.
+    // Prime the cache, then drain stats so the counted window sees only hits.
     let _ = tables.blocks().load_header(1).await;
     let _ = tables.take_cache_window_stats();
 

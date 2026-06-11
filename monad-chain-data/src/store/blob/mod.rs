@@ -35,13 +35,9 @@ pub struct BlobWriteOp {
     pub value: Bytes,
 }
 
-/// Logical identifier for a blob table.
-///
-/// Identifiers are opaque names. Backends are responsible for any
-/// prefixing or keyspacing required to map logical tables onto shared
-/// physical resources without collisions (e.g. distinct S3 buckets,
-/// per-deployment object-key prefixes). This type makes no namespacing
-/// guarantees on its own.
+/// Logical identifier for a blob table. Names are opaque; backends own any
+/// prefixing/keyspacing needed to avoid collisions on shared physical
+/// resources -- this type makes no namespacing guarantees on its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BlobTableId(&'static str);
 
@@ -55,15 +51,13 @@ impl BlobTableId {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BlobTable<B> {
     store: B,
     pub table: BlobTableId,
-    /// Optional process-global cap on concurrent backend reads (`get` /
-    /// `read_range`), shared across every query. Bounds blob-read fan-out so a
-    /// single sparse query can burst wide (≈ one round-trip) without N
-    /// concurrent queries collectively overwhelming the backend. `None` leaves
-    /// reads unbounded (writes are never gated — that is the ingest path).
+    /// Optional process-global cap on concurrent backend reads, shared across
+    /// every query so collective fan-out cannot overwhelm the backend. `None`
+    /// leaves reads unbounded; writes (the ingest path) are never gated.
     io_limit: Option<std::sync::Arc<tokio::sync::Semaphore>>,
 }
 
@@ -76,22 +70,11 @@ impl<B> BlobTable<B> {
         }
     }
 
-    /// Attaches a shared read-concurrency limiter. All clones of the returned
-    /// handle share the same semaphore, so the cap is global across the tables
-    /// (block blobs + region cache) that hold it.
+    /// Attaches a shared read-concurrency limiter; all clones share the same
+    /// semaphore, so the cap is global across the tables that hold it.
     pub fn with_io_limit(mut self, io_limit: std::sync::Arc<tokio::sync::Semaphore>) -> Self {
         self.io_limit = Some(io_limit);
         self
-    }
-}
-
-impl<B: Clone> Clone for BlobTable<B> {
-    fn clone(&self) -> Self {
-        Self {
-            store: self.store.clone(),
-            table: self.table,
-            io_limit: self.io_limit.clone(),
-        }
     }
 }
 
@@ -103,6 +86,11 @@ impl<B: BlobStore> BlobTable<B> {
     pub async fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
         let _permit = self.acquire_read().await;
         self.store.get_blob(self.table, key).await
+    }
+
+    /// Like writes, deletes (GC paths) are never gated by the read limiter.
+    pub async fn delete(&self, key: &[u8]) -> Result<()> {
+        self.store.delete_blob(self.table, key).await
     }
 
     pub async fn read_range(
@@ -117,8 +105,7 @@ impl<B: BlobStore> BlobTable<B> {
             .await
     }
 
-    /// Acquires one global read permit, held for the duration of the backend
-    /// call. Returns `None` when no limiter is attached.
+    /// Acquires one global read permit; `None` when no limiter is attached.
     async fn acquire_read(&self) -> Option<tokio::sync::SemaphorePermit<'_>> {
         match &self.io_limit {
             Some(sem) => Some(
@@ -143,23 +130,26 @@ pub trait BlobStore: Clone + Send + Sync + 'static {
         BlobTable::new(self.clone(), table)
     }
 
-    // These all return `Send` futures so callers can drive them across thread
-    // boundaries (e.g. the ingest binary spawns the IO/plan workers that call
-    // through here on a `tokio::spawn`ed task, which requires `Send`). Impls may
-    // still use plain `async fn` as long as their bodies are `Send`.
+    // All methods return `Send` futures: callers drive them from spawned tasks,
+    // and the cache layer stores `get_blob` in a cross-thread single-flight
+    // `Shared`. Impls may use plain `async fn` as long as bodies are `Send`.
     fn put_blob(
         &self,
         table: BlobTableId,
         key: &[u8],
         value: Bytes,
     ) -> impl std::future::Future<Output = Result<()>> + Send;
-    // Point read returns a `Send` future so the cache layer can store it in a
-    // cross-thread single-flight `Shared` (see `store/cache`).
     fn get_blob(
         &self,
         table: BlobTableId,
         key: &[u8],
     ) -> impl std::future::Future<Output = Result<Option<Bytes>>> + Send;
+    /// Removes a blob; deleting a missing key is an idempotent no-op.
+    fn delete_blob(
+        &self,
+        table: BlobTableId,
+        key: &[u8],
+    ) -> impl std::future::Future<Output = Result<()>> + Send;
     fn apply_writes(
         &self,
         writes: Vec<BlobWriteOp>,

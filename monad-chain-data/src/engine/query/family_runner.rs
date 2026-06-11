@@ -21,60 +21,53 @@ use std::{
     time::Instant,
 };
 
-use futures::{stream, StreamExt, TryStreamExt};
-use roaring::RoaringBitmap;
+use futures::{stream, stream::FuturesOrdered, StreamExt, TryStreamExt};
 use tracing::debug;
 
 use crate::{
     engine::{
+        bitmap::page_group_start,
         clause::IndexedFilter,
         family::Family,
         primary_dir::bucket_start,
         query::{
-            bitmap::ShardPagePlan,
+            bitmap::PageGroupPlan,
             directory_resolver::{PrimaryIdResolver, ResolvedPrimaryIdLocation},
+            row_cache::RowCache,
             window::resolve_primary_id_window,
         },
+        row_codec::RowDecompressor,
         tables::{BlockTables, Tables},
     },
     error::{MonadChainDataError, Result},
     primitives::{
-        page::QueryOrder,
+        order::QueryOrder,
         range::ResolvedBlockWindow,
+        records::{BlockRecord, PrimaryId},
         refs::{BlockRef, BlockSpan},
-        state::PrimaryId,
     },
     store::{BlobStore, MetaStore},
 };
 
-/// Pages whose per-page clause intersection runs concurrently in stage 1 of the
-/// indexed pipeline. Each in-flight page issues its own bitmap fetches, so this
-/// bounds the bitmap read fan-out. Static for now; independent of the
-/// materialize fan-out (`QueryRuntimeConfig::materialize_concurrency`) — they
-/// govern different stages and backends (bitmap pages vs block blobs). A
-/// low-tens value overlaps enough page fetches to hide per-fetch latency without
-/// flooding the backend.
-const PAGE_CONCURRENCY: usize = 32;
+// Stage-1/stage-2 fan-outs, the byte-weighted decode budget, and the
+// span-coalescing shape are operator-tunable via `QueryRuntimeConfig`
+// (`Tables::query_config`), since the right values depend on backend latency.
 
-// Stage-2 fan-out and the byte-weighted decode budget are operator-tunable via
-// `QueryRuntimeConfig` (on `Tables`), not constants: a fast local backend wants
-// a modest fan-out (wide fan-out is pure scheduling overhead there) while a
-// high-latency backend wants it high so a sparse query reaches ≈ one round-trip.
-// See `Tables::materialize_concurrency` / `materialize_budget` /
-// `materialize_permit_bytes` and `block_materialize_permits` below.
+/// Stage-0 group-plan look-ahead: how many per-group plans (manifest loads)
+/// build concurrently ahead of page intersection. Small — most queries span
+/// few page groups, and each plan fans out internally across its clause
+/// streams.
+const GROUP_PLAN_LOOKAHEAD: usize = 4;
 
-const MATERIALIZE_SPAN_MAX_BYTES: usize = 512 * 1024;
-const MATERIALIZE_SPAN_MAX_GAP_BYTES: usize = 16 * 1024;
-pub(crate) const MATERIALIZE_WHOLE_REGION_SPAN_THRESHOLD: usize = 8;
-pub(crate) const MATERIALIZE_WHOLE_REGION_MAX_BYTES: usize = 8 * 1024 * 1024;
-
-/// Blocks whose filtered-record loads run concurrently in the block-scan
-/// runner. Each in-flight block reads that block's header + blob, so this
-/// bounds the block-blob read fan-out. Block blobs are large and uncached by
-/// default, so keep this modest (lower than [`PAGE_CONCURRENCY`]) — enough to
-/// overlap a handful of block reads without flooding the backend with large
-/// payloads.
+/// Block-scan fan-out; bounds concurrent block-blob reads. Blobs are large
+/// and uncached, so this stays lower than the default page-intersection
+/// fan-out.
 const BLOCK_SCAN_CONCURRENCY: usize = 16;
+
+/// Initial block-scan fan-out, doubled per consumed block up to
+/// [`BLOCK_SCAN_CONCURRENCY`]. In-flight blocks are wasted whole-region reads
+/// if the limit fills first (e.g. `limit=1`), so read-ahead starts small.
+const BLOCK_SCAN_INITIAL_CONCURRENCY: usize = 2;
 
 /// Outcome returned by the shared family query runners. Families wrap this
 /// into their own response types.
@@ -83,20 +76,97 @@ pub(crate) struct IndexedQueryOutcome<T> {
     pub span: BlockSpan,
 }
 
-/// Per-family interface consumed by the shared indexed and block-scan
-/// runners. Implemented by each family's materializer.
+// Family-agnostic error wording for the shared materialization helpers.
+const ERR_INDEX_OUT_OF_RANGE: &str = "row index out of range";
+const ERR_INVALID_RANGE: &str = "invalid row frame range";
+const ERR_MISSING_HEADER: &str = "missing family block header";
+const ERR_MISSING_BLOB: &str = "missing family block blob";
+const ERR_MISSING_RECORD: &str = "missing materialized row";
+
+/// Per-family interface consumed by the shared indexed and block-scan runners.
+/// A family supplies only the small hooks (decode/stamp/cache selection); the
+/// point, batched, and block-scan read paths are provided here once.
 pub(crate) trait IndexedFamilyQuery {
+    type Meta: MetaStore;
+    type Blob: BlobStore;
     type Filter: IndexedFilter<Record = Self::Record>;
     type Record;
+    /// Query-invariant decoded form of one row frame (the stored type minus
+    /// per-query stamping); the unit the decoded-row cache holds.
+    type StoredRow: Clone + Send + Sync + 'static;
 
     fn family() -> Family;
 
+    fn tables(&self) -> &Tables<Self::Meta, Self::Blob>;
+
+    /// This family's decoded-row cache instance (transfers share the trace
+    /// instance — same frames, same stored rows).
+    fn row_cache(&self) -> &RowCache<Self::StoredRow>;
+
+    /// Decodes one already-decompressed row frame into its query-invariant
+    /// stored form.
+    fn decode_stored(bytes: &[u8]) -> Result<Self::StoredRow>;
+
+    /// Stamps per-query context (block number/hash, idx) onto a stored row,
+    /// producing the public record. Borrows so a cached row can be stamped
+    /// without giving up the cached copy; the default clones into
+    /// [`Self::into_record_owned`].
+    fn into_record(
+        stored: &Self::StoredRow,
+        block_record: &BlockRecord,
+        idx_in_block: usize,
+    ) -> Result<Self::Record> {
+        Self::into_record_owned(stored.clone(), block_record, idx_in_block)
+    }
+
+    /// Owned variant of [`Self::into_record`]: stamps a row that will not be
+    /// cached, moving it rather than cloning-then-dropping.
+    fn into_record_owned(
+        stored: Self::StoredRow,
+        block_record: &BlockRecord,
+        idx_in_block: usize,
+    ) -> Result<Self::Record>;
+
+    /// One decompressed frame straight to a record: decode then stamp.
+    fn decode_record(
+        bytes: &[u8],
+        block_record: &BlockRecord,
+        idx_in_block: usize,
+    ) -> Result<Self::Record> {
+        Self::into_record_owned(Self::decode_stored(bytes)?, block_record, idx_in_block)
+    }
+
+    /// Decodes one decompressed row frame for the block-scan path. `Ok(None)`
+    /// skips the frame: projected families (transfers) store frames that yield
+    /// no record. The default suits frames that map one-to-one onto records.
+    fn decode_scan_record(
+        bytes: &[u8],
+        block_record: &BlockRecord,
+        idx_in_block: usize,
+    ) -> Result<Option<Self::Record>> {
+        Self::decode_record(bytes, block_record, idx_in_block).map(Some)
+    }
+
+    async fn load_block_ref(&self, block_number: u64) -> Result<BlockRef> {
+        Ok(BlockRef::from(
+            &load_block_record(self.tables().blocks(), block_number).await?,
+        ))
+    }
+
+    /// Point read: one row through the batched path, so the row cache, the
+    /// single-frame range read (one frame coalesces to one span), and the
+    /// decode budget all apply uniformly.
     async fn load_record_at(
         &self,
         block_number: u64,
         idx_in_block: usize,
         stats: &IndexedQueryStats,
-    ) -> Result<Self::Record>;
+    ) -> Result<Self::Record> {
+        self.load_records_in_block(block_number, &[idx_in_block], stats)
+            .await?
+            .pop()
+            .ok_or(MonadChainDataError::MissingData(ERR_MISSING_RECORD))
+    }
 
     async fn load_records_in_block(
         &self,
@@ -104,21 +174,232 @@ pub(crate) trait IndexedFamilyQuery {
         indices: &[usize],
         stats: &IndexedQueryStats,
     ) -> Result<Vec<Self::Record>> {
-        let mut records = Vec::with_capacity(indices.len());
-        for idx in indices {
-            records.push(self.load_record_at(block_number, *idx, stats).await?);
+        let family = Self::family();
+
+        IndexedQueryStats::add_count(&stats.materialize_blocks, 1);
+        let started = Instant::now();
+        let block_record = load_block_record(self.tables().blocks(), block_number).await?;
+        IndexedQueryStats::add_us(&stats.materialize_block_record_us, started);
+
+        // Probe the row cache for every index first: if all rows are resident,
+        // the header and blob are never read. Misses remember their output
+        // position so fetched rows slot back in place.
+        let cache = self.row_cache();
+        let mut rows: Vec<Option<Arc<Self::StoredRow>>> = indices
+            .iter()
+            .map(|&idx| cache.probe(block_number, idx))
+            .collect();
+        let misses: Vec<(usize, usize)> = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.is_none())
+            .map(|(pos, _)| (pos, indices[pos]))
+            .collect();
+
+        if !misses.is_empty() {
+            let started = Instant::now();
+            let header = self
+                .tables()
+                .family(family)
+                .load_blob_header(block_number)
+                .await?
+                .ok_or(MonadChainDataError::MissingData(ERR_MISSING_HEADER))?;
+            IndexedQueryStats::add_us(&stats.materialize_header_us, started);
+
+            // Coalesce only the missed rows; a frame's `output_pos` is the
+            // caller's position, so fetched rows slot straight into `rows`.
+            let mut spans = coalesce_frame_ranges(
+                misses.iter().copied(),
+                self.tables().query_config().materialize_span_max_gap_bytes,
+                self.tables().query_config().materialize_span_max_bytes,
+                |idx_in_block| {
+                    if idx_in_block + 1 >= header.offsets.len() {
+                        return Err(MonadChainDataError::Decode(ERR_INDEX_OUT_OF_RANGE));
+                    }
+                    Ok(header.abs_range(idx_in_block))
+                },
+            )?;
+            let selected_bytes: usize = spans
+                .iter()
+                .flat_map(|span| &span.frames)
+                .map(|frame| frame.abs_end.saturating_sub(frame.abs_start))
+                .sum();
+            let decoder = self
+                .tables()
+                .block_decoder(family, header.dict_version)
+                .await?;
+            let mut decompressor = RowDecompressor::new(decoder.as_ref())?;
+
+            // A dense selection collapses to one merged span covering the
+            // whole family region: same fetch+decode loop, one range read.
+            let (region_start, region_end) = header.region_range();
+            let region_len = region_end.saturating_sub(region_start);
+            let query_config = self.tables().query_config();
+            if spans.len() > query_config.materialize_whole_region_span_threshold
+                && region_len <= query_config.materialize_whole_region_max_bytes
+            {
+                let frames = spans.into_iter().flat_map(|span| span.frames).collect();
+                spans = vec![ReadSpan {
+                    abs_start: region_start,
+                    abs_end: region_end,
+                    frames,
+                }];
+            }
+
+            // Byte-weighted decode budget: acquired only on a cache miss
+            // (fully-cached blocks never touch the semaphore) and held across
+            // the reads+decodes below.
+            let permits = materialize_permits_for_bytes(self.tables(), selected_bytes);
+            let _permit = self
+                .tables()
+                .materialize_budget()
+                .acquire_many(permits)
+                .await
+                .expect("materialization budget semaphore is never closed");
+
+            for span in spans {
+                let span_selected_bytes: usize = span
+                    .frames
+                    .iter()
+                    .map(|frame| frame.abs_end.saturating_sub(frame.abs_start))
+                    .sum();
+                let span_read_bytes = span.abs_end.saturating_sub(span.abs_start);
+                IndexedQueryStats::add_count(&stats.materialize_spans, 1);
+                IndexedQueryStats::add_count(
+                    &stats.materialize_coalesced_read_bytes,
+                    span_read_bytes as u64,
+                );
+                IndexedQueryStats::add_count(
+                    &stats.materialize_selected_frame_bytes,
+                    span_selected_bytes as u64,
+                );
+                IndexedQueryStats::add_count(
+                    &stats.materialize_coalesced_overread_bytes,
+                    span_read_bytes.saturating_sub(span_selected_bytes) as u64,
+                );
+                let started = Instant::now();
+                let span_bytes = self
+                    .tables()
+                    .read_block_blob_header_range(
+                        block_number,
+                        &header,
+                        span.abs_start,
+                        span.abs_end,
+                    )
+                    .await?
+                    .ok_or(MonadChainDataError::MissingData(ERR_MISSING_BLOB))?;
+                IndexedQueryStats::add_us(&stats.materialize_blob_frame_us, started);
+
+                for frame in span.frames {
+                    let start = frame.abs_start.saturating_sub(span.abs_start);
+                    let end = frame.abs_end.saturating_sub(span.abs_start);
+                    if start > end || end > span_bytes.len() {
+                        return Err(MonadChainDataError::Decode(ERR_INVALID_RANGE));
+                    }
+                    let started = Instant::now();
+                    let bytes = decompressor.decompress(&span_bytes[start..end])?;
+                    IndexedQueryStats::add_us(&stats.materialize_decode_row_us, started);
+                    let started = Instant::now();
+                    let stored = Arc::new(Self::decode_stored(&bytes)?);
+                    cache.insert(
+                        block_number,
+                        frame.idx_in_block,
+                        Arc::clone(&stored),
+                        bytes.len(),
+                    );
+                    rows[frame.output_pos] = Some(stored);
+                    IndexedQueryStats::add_us(&stats.materialize_entry_decode_us, started);
+                }
+            }
         }
-        Ok(records)
+
+        rows.into_iter()
+            .zip(indices)
+            .map(|(row, &idx)| {
+                let stored = row.ok_or(MonadChainDataError::MissingData(ERR_MISSING_RECORD))?;
+                Self::into_record(&stored, &block_record, idx)
+            })
+            .collect()
     }
 
-    async fn load_block_ref(&self, block_number: u64) -> Result<BlockRef>;
-
+    /// Block-scan materialization: reads the block's whole family region and
+    /// decodes every row in query order, keeping the rows the filter accepts.
+    /// Used when the query carries no viable indexed clause.
     async fn load_filtered_block_records(
         &self,
         block_number: u64,
         order: QueryOrder,
         filter: &Self::Filter,
-    ) -> Result<(BlockRef, Vec<Self::Record>)>;
+    ) -> Result<(BlockRef, Vec<Self::Record>)> {
+        let family = Self::family();
+
+        let block_record = load_block_record(self.tables().blocks(), block_number).await?;
+        let block_ref = BlockRef::from(&block_record);
+        if family.window_in(&block_record).count == 0 {
+            return Ok((block_ref, Vec::new()));
+        }
+
+        let header = self
+            .tables()
+            .family(family)
+            .load_blob_header(block_number)
+            .await?
+            .ok_or(MonadChainDataError::MissingData(ERR_MISSING_HEADER))?;
+
+        // Whole-region read+decode: weight the shared byte budget by the
+        // region length and hold the permits across the read and the loop.
+        let (region_start, region_end) = header.region_range();
+        let permits =
+            materialize_permits_for_bytes(self.tables(), region_end.saturating_sub(region_start));
+        let _permit = self
+            .tables()
+            .materialize_budget()
+            .acquire_many(permits)
+            .await
+            .expect("materialization budget semaphore is never closed");
+
+        let blob = self
+            .tables()
+            .read_block_blob_region(block_number, &header)
+            .await?
+            .ok_or(MonadChainDataError::MissingData(ERR_MISSING_BLOB))?;
+
+        let decoder = self
+            .tables()
+            .block_decoder(family, header.dict_version)
+            .await?;
+        let mut decompressor = RowDecompressor::new(decoder.as_ref())?;
+        let mut records = Vec::new();
+        for idx in order.iterate(0..header.row_count()) {
+            if idx + 1 >= header.offsets.len() {
+                return Err(MonadChainDataError::Decode(ERR_INDEX_OUT_OF_RANGE));
+            }
+            let start = header.offsets[idx] as usize;
+            let end = header.offsets[idx + 1] as usize;
+            if start > end || end > blob.len() {
+                return Err(MonadChainDataError::Decode(ERR_INVALID_RANGE));
+            }
+            let bytes = decompressor.decompress(&blob[start..end])?;
+            let Some(record) = Self::decode_scan_record(&bytes, &block_record, idx)? else {
+                continue;
+            };
+            if filter.matches(&record) {
+                records.push(record);
+            }
+        }
+
+        Ok((block_ref, records))
+    }
+}
+
+async fn load_block_record<M: MetaStore>(
+    blocks: &BlockTables<M>,
+    block_number: u64,
+) -> Result<BlockRecord> {
+    blocks
+        .load_record(block_number)
+        .await?
+        .ok_or(MonadChainDataError::MissingData("missing block record"))
 }
 
 #[derive(Default)]
@@ -159,70 +440,39 @@ impl IndexedQueryStats {
     fn load(target: &AtomicU64) -> u64 {
         target.load(Ordering::Relaxed)
     }
-
-    pub(crate) fn record_materialize_block_record(&self, started: Instant) {
-        Self::add_us(&self.materialize_block_record_us, started);
-    }
-
-    pub(crate) fn record_materialize_header(&self, started: Instant) {
-        Self::add_us(&self.materialize_header_us, started);
-    }
-
-    pub(crate) fn record_materialize_blob_frame(&self, started: Instant) {
-        Self::add_us(&self.materialize_blob_frame_us, started);
-    }
-
-    pub(crate) fn record_materialize_decode_row(&self, started: Instant) {
-        Self::add_us(&self.materialize_decode_row_us, started);
-    }
-
-    pub(crate) fn record_materialize_entry_decode(&self, started: Instant) {
-        Self::add_us(&self.materialize_entry_decode_us, started);
-    }
-
-    pub(crate) fn record_materialize_block(&self) {
-        Self::add_count(&self.materialize_blocks, 1);
-    }
-
-    pub(crate) fn record_materialize_span(&self, read_bytes: usize, selected_bytes: usize) {
-        Self::add_count(&self.materialize_spans, 1);
-        Self::add_count(&self.materialize_coalesced_read_bytes, read_bytes as u64);
-        Self::add_count(
-            &self.materialize_selected_frame_bytes,
-            selected_bytes as u64,
-        );
-        Self::add_count(
-            &self.materialize_coalesced_overread_bytes,
-            read_bytes.saturating_sub(selected_bytes) as u64,
-        );
-    }
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct CoalescedFrame {
-    pub output_pos: usize,
-    pub idx_in_block: usize,
-    pub abs_start: usize,
-    pub abs_end: usize,
+struct CoalescedFrame {
+    output_pos: usize,
+    idx_in_block: usize,
+    abs_start: usize,
+    abs_end: usize,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct CoalescedFrameSpan {
-    pub abs_start: usize,
-    pub abs_end: usize,
-    pub frames: Vec<CoalescedFrame>,
+struct ReadSpan {
+    abs_start: usize,
+    abs_end: usize,
+    frames: Vec<CoalescedFrame>,
 }
 
-pub(crate) fn coalesce_frame_ranges<I, F>(
+/// Sorts the requested `(output_pos, idx_in_block)` frames by byte offset and
+/// merges neighbors into read spans: a frame joins the previous span when the
+/// gap to it is at most `span_max_gap_bytes` (wasted gap bytes are cheaper
+/// than another range read) and the merged span stays within `span_max_bytes`.
+fn coalesce_frame_ranges<I, F>(
     indices: I,
+    span_max_gap_bytes: usize,
+    span_max_bytes: usize,
     mut range_for_index: F,
-) -> Result<Vec<CoalescedFrameSpan>>
+) -> Result<Vec<ReadSpan>>
 where
-    I: IntoIterator<Item = usize>,
+    I: IntoIterator<Item = (usize, usize)>,
     F: FnMut(usize) -> Result<(usize, usize)>,
 {
     let mut frames = Vec::new();
-    for (output_pos, idx_in_block) in indices.into_iter().enumerate() {
+    for (output_pos, idx_in_block) in indices {
         let (abs_start, abs_end) = range_for_index(idx_in_block)?;
         if abs_start > abs_end {
             return Err(MonadChainDataError::Decode("invalid frame range"));
@@ -236,10 +486,10 @@ where
     }
     frames.sort_by_key(|frame| (frame.abs_start, frame.abs_end, frame.output_pos));
 
-    let mut spans: Vec<CoalescedFrameSpan> = Vec::new();
+    let mut spans: Vec<ReadSpan> = Vec::new();
     for frame in frames {
         let Some(last) = spans.last_mut() else {
-            spans.push(CoalescedFrameSpan {
+            spans.push(ReadSpan {
                 abs_start: frame.abs_start,
                 abs_end: frame.abs_end,
                 frames: vec![frame],
@@ -250,11 +500,11 @@ where
         let merged_end = last.abs_end.max(frame.abs_end);
         let gap = frame.abs_start.saturating_sub(last.abs_end);
         let merged_len = merged_end.saturating_sub(last.abs_start);
-        if gap <= MATERIALIZE_SPAN_MAX_GAP_BYTES && merged_len <= MATERIALIZE_SPAN_MAX_BYTES {
+        if gap <= span_max_gap_bytes && merged_len <= span_max_bytes {
             last.abs_end = merged_end;
             last.frames.push(frame);
         } else {
-            spans.push(CoalescedFrameSpan {
+            spans.push(ReadSpan {
                 abs_start: frame.abs_start,
                 abs_end: frame.abs_end,
                 frames: vec![frame],
@@ -264,12 +514,10 @@ where
     Ok(spans)
 }
 
-/// Shared indexed query runner. Walks the primary-id window for the
-/// runner's family, intersects bitmaps per shard, resolves candidates
-/// through the shared directory, and materializes each match through the
-/// runner. Completes the current block when `limit` is reached.
-pub(crate) async fn execute_indexed_family_query<M, B, R>(
-    tables: &Tables<M, B>,
+/// Dispatches a family query: the indexed runner when the filter emits at
+/// least one indexed clause, the block-scan runner otherwise. Families wrap
+/// the outcome into their own response types.
+pub(crate) async fn run_family_query<R>(
     runner: &R,
     filter: &R::Filter,
     block_window: ResolvedBlockWindow,
@@ -278,10 +526,32 @@ pub(crate) async fn execute_indexed_family_query<M, B, R>(
     limit: usize,
 ) -> Result<IndexedQueryOutcome<R::Record>>
 where
-    M: MetaStore,
-    B: BlobStore,
     R: IndexedFamilyQuery,
 {
+    if filter.has_indexed_clause() {
+        execute_indexed_family_query(runner, filter, block_window, published_head, order, limit)
+            .await
+    } else {
+        execute_block_scan_family_query(runner, filter, block_window, order, limit).await
+    }
+}
+
+/// Shared indexed query runner. Walks the primary-id window for the
+/// runner's family, intersects bitmaps page by page, resolves candidates
+/// through the shared directory, and materializes each match through the
+/// runner. Completes the current block when `limit` is reached.
+async fn execute_indexed_family_query<R>(
+    runner: &R,
+    filter: &R::Filter,
+    block_window: ResolvedBlockWindow,
+    published_head: u64,
+    order: QueryOrder,
+    limit: usize,
+) -> Result<IndexedQueryOutcome<R::Record>>
+where
+    R: IndexedFamilyQuery,
+{
+    let tables = runner.tables();
     let query_started = Instant::now();
     let stats = Arc::new(IndexedQueryStats::default());
     let plan_started = Instant::now();
@@ -307,160 +577,139 @@ where
         ));
     }
 
-    // A bucket is sealed iff its whole 10k id range sits below the *global*
-    // family frontier at the publication head — the family-window end of the
-    // published-head block, not the query's high block. Deriving this from the
-    // query range would misclassify a globally-sealed bucket whose ids sit
-    // above the range as the open bucket. Compute it once and route every
-    // candidate analytically.
+    // Sealing is a function of the *global* family frontier at the publication
+    // head, not the query's high block — deriving it from the query range would
+    // misclassify a sealed bucket above the range as open.
     let frontier_id = family_frontier_id(tables.blocks(), family, published_head).await?;
     let sealed_below = bucket_start(frontier_id.as_u64());
-    // The single open shard at the publication head. Any shard below it is
-    // fully sealed and carries an immutable page-count manifest the
-    // intersection may use to skip pages; the frontier shard's manifest is a
-    // hint only (see `load_intersection_bitmap`).
-    let frontier_shard = frontier_id.shard();
-
-    let resolver = PrimaryIdResolver::new(tables.family(family), sealed_below);
-
-    // Build a flat, query-ordered work-list of `(shard, page)` items. Per
-    // shard we precompute the intersection plan (clause streams + manifest)
-    // once and ask it for the candidate pages in this shard's local range; the
-    // manifest's `Some(0)` skip drops guaranteed-empty pages on sealed shards
-    // here, so the work-list is dense — we never enqueue a page the serial
-    // loop would have skipped with zero fetches. Page order == block order, so
-    // emitting pages in query order keeps the whole pipeline globally ordered.
-    let mut work_items: Vec<PageWorkItem> = Vec::new();
-    for shard in window.shard_iter(order) {
-        let (local_from, local_to) = window.local_range_for_shard(shard);
-        let Some(plan) = tables
-            .family(family)
-            .build_shard_page_plan(&clauses, shard, frontier_shard)
-            .await?
-        else {
-            continue;
-        };
-        let plan = Arc::new(plan);
-        let mut pages = plan.candidate_pages(local_from, local_to);
-        if order == QueryOrder::Descending {
-            pages.reverse();
-        }
-        for page_start in pages {
-            work_items.push(PageWorkItem {
-                shard,
-                page_start,
-                local_from,
-                local_to,
-                plan: Arc::clone(&plan),
-            });
-        }
-    }
-    stats
-        .work_items
-        .store(work_items.len() as u64, Ordering::Relaxed);
-    IndexedQueryStats::add_us(&stats.plan_us, plan_started);
+    // Page groups below the frontier's group are sealed and carry an
+    // authoritative page-count manifest; the frontier group has no manifest at
+    // all (rows are written only when a group completes; absent ⇒ unknown,
+    // never a skip).
+    let frontier_group = page_group_start(frontier_id.as_u64());
 
     let family_tables = tables.family(family);
+    let resolver = PrimaryIdResolver::new(family_tables, sealed_below);
+    IndexedQueryStats::add_us(&stats.plan_us, plan_started);
 
-    // Stage 1 — page filtering + resolve. Each page future runs the per-page
-    // clause intersection and resolves every survivor (serially, in in-page
-    // query order) to a block location. `buffered(N1)` runs N1 page futures
+    // Stage 0 — per-group planning, streamed: plans build concurrently (a
+    // small look-ahead) and flatten lazily into the query-ordered page
+    // work-list, so page intersection starts as soon as the first group's
+    // plan lands instead of after every group's manifest loads. `buffered`
+    // preserves group order, plans flatten to pages in order, and page order
+    // == block order, so the pipeline stays globally ordered. The per-group
+    // plan drops manifest-proven-empty pages, keeping the list dense.
+    let clauses = &clauses;
+    let window = &window;
+    let work_item_stream = stream::iter(window.group_iter(order))
+        .map(|group_start| {
+            let stats = Arc::clone(&stats);
+            async move {
+                let plan_started = Instant::now();
+                let (first_page, last_page) = window.page_bounds_in_group(group_start);
+                let Some(plan) = family_tables
+                    .build_page_group_plan(clauses, group_start, frontier_group)
+                    .await?
+                else {
+                    return Ok::<_, MonadChainDataError>(Vec::new());
+                };
+                let plan = Arc::new(plan);
+                let items: Vec<PageWorkItem> = order
+                    .iterate(plan.candidate_pages(first_page, last_page))
+                    .map(|page_start| {
+                        let (from_offset, to_offset) = window.offsets_in_page(page_start);
+                        PageWorkItem {
+                            page_start,
+                            from_offset,
+                            to_offset,
+                            plan: Arc::clone(&plan),
+                        }
+                    })
+                    .collect();
+                IndexedQueryStats::add_count(&stats.work_items, items.len() as u64);
+                IndexedQueryStats::add_us(&stats.plan_us, plan_started);
+                Ok(items)
+            }
+        })
+        .buffered(GROUP_PLAN_LOOKAHEAD)
+        .map_ok(|items| stream::iter(items.into_iter().map(Ok)))
+        .try_flatten();
+
+    // Stage 1 — page intersection + resolve. `buffered` runs page futures
     // concurrently while preserving input order, so the flattened location
-    // stream stays globally query-ordered. The shared resolver is `&self`-safe
-    // (memo behind a mutex, never held across a fetch await).
-    let location_stream = stream::iter(work_items)
+    // stream stays globally query-ordered.
+    let location_stream = work_item_stream
         .map(|item| {
             let resolver = &resolver;
             let stats = Arc::clone(&stats);
             async move {
-                let mut page_log = PageFutureLog::new(
-                    family,
-                    item.shard,
-                    item.page_start,
-                    item.local_from,
-                    item.local_to,
-                );
+                let item = item?;
                 let intersect_started = Instant::now();
                 let Some(page_bitmap) = family_tables
-                    .intersect_shard_page(
+                    .intersect_group_page(
                         &item.plan,
                         item.page_start,
-                        item.local_from,
-                        item.local_to,
+                        item.from_offset,
+                        item.to_offset,
                     )
                     .await?
                 else {
-                    page_log.intersect_us = intersect_started.elapsed().as_micros() as u64;
                     return Ok::<_, MonadChainDataError>(Vec::new());
                 };
                 let intersect_us = intersect_started.elapsed().as_micros() as u64;
-                page_log.intersect_us = intersect_us;
-                page_log.had_bitmap = true;
-                stats
-                    .page_intersect_us
-                    .fetch_add(intersect_us, Ordering::Relaxed);
+                IndexedQueryStats::add_count(&stats.page_intersect_us, intersect_us);
                 IndexedQueryStats::add_count(&stats.pages, 1);
 
                 let mut locations = Vec::new();
                 let mut candidates = 0u64;
                 let resolve_started = Instant::now();
-                for local in locals_in_query_order(page_bitmap, order) {
+                // Roaring's iterator is double-ended, so descending order
+                // reverses in place with no intermediate collect.
+                for offset in order.iterate(page_bitmap.as_bitmap().iter()) {
                     candidates += 1;
-                    page_log.candidates = candidates;
-                    let id = PrimaryId::from_parts(item.shard, local)?;
-                    if let Some(location) = resolver.resolve(id).await? {
-                        locations.push(location);
-                        page_log.resolved_locations = locations.len() as u64;
-                    }
+                    let id = PrimaryId::new(item.page_start + u64::from(offset));
+                    locations.push(resolver.resolve(id).await?);
                 }
-                page_log.resolve_us = resolve_started.elapsed().as_micros() as u64;
-                page_log.completed = true;
-                stats
-                    .page_resolve_us
-                    .fetch_add(page_log.resolve_us, Ordering::Relaxed);
+                let resolve_us = resolve_started.elapsed().as_micros() as u64;
+                IndexedQueryStats::add_count(&stats.page_resolve_us, resolve_us);
                 IndexedQueryStats::add_count(&stats.bitmap_candidates, candidates);
                 IndexedQueryStats::add_count(&stats.resolved_locations, locations.len() as u64);
+                debug!(
+                    family = ?family,
+                    page_start = item.page_start,
+                    from_offset = item.from_offset,
+                    to_offset = item.to_offset,
+                    candidates,
+                    resolved_locations = locations.len() as u64,
+                    intersect_us,
+                    resolve_us,
+                    "chain-data indexed page future stats"
+                );
                 Ok(locations)
             }
         })
-        .buffered(PAGE_CONCURRENCY)
+        .buffered(tables.query_config().page_intersect_concurrency)
         // Flatten each page's ordered location vec into one ordered stream.
         .map_ok(|locations| stream::iter(locations.into_iter().map(Ok)))
         .try_flatten();
 
-    // Stage 2 — count-gated, byte-budgeted block materialization.
-    //
-    // We pull the globally-ordered location stream into per-block
-    // `(block_number, indices)` groups (`next_block_group`, resolving meta only),
-    // accumulating until the cumulative candidate count covers the records still
-    // needed, then materialize that batch concurrently (bounded by the decode
-    // byte budget below). For families where every candidate is emitted
-    // (logs/txs/transfers) one batch satisfies the limit and no block past the
-    // limit block is ever resolved or decoded — over-fetch is prevented at the
-    // resolve layer. The trace `is_top_level: Some(false)` case can drop
-    // candidates, so it loops; that is the only path that materializes beyond the
-    // optimistic block set, and only within one batch.
+    // Stage 2 — count-gated, byte-budgeted block materialization: pull the
+    // ordered location stream into per-block groups until the candidate count
+    // covers the records still needed, then materialize that batch
+    // concurrently. Families that emit every candidate (logs/txs/transfers)
+    // never decode past the limit block; only the trace post-filter
+    // (`is_top_level: Some(false)`) can drop candidates and force another loop.
     let mut location_stream = Box::pin(location_stream);
-    // The location straddling the last group's block boundary (first of the next
-    // block). Stashed by `next_block_group` so `carry.is_some()` answers
-    // "is there a later block?" for the cursor with a single already-paid resolve.
+    // Location straddling the last group's block boundary, stashed by
+    // `next_block_group`; `carry.is_some()` answers "is there a later block?"
+    // for the cursor without an extra resolve.
     let mut carry: Option<ResolvedPrimaryIdLocation> = None;
-
-    // Process-global, byte-weighted decode budget (CPU/bandwidth): a block
-    // acquires permits proportional to the bytes it will decode, so a few huge
-    // regions run ~exclusively while many small blocks fan out — bounded across
-    // all concurrent queries, not just this one.
-    let budget = tables.materialize_budget().clone();
 
     let mut records: Vec<R::Record> = Vec::new();
     let mut stop_block: Option<u64> = None;
-    let mut last_materialized_block: Option<u64> = None;
     let mut groups_exhausted = false;
 
     while stop_block.is_none() && !groups_exhausted {
-        // Collect a batch of groups whose cumulative candidate count covers the
-        // records still needed. Exact families need exactly this many and never
-        // loop; inexact families may come up short after post-filtering.
         let need = limit - records.len();
         let mut batch: Vec<(u64, Vec<usize>)> = Vec::new();
         let mut batch_candidates = 0usize;
@@ -480,47 +729,37 @@ where
             break;
         }
 
+        // The process-global, byte-weighted decode budget is acquired inside
+        // `load_records_in_block`, after the row-cache probe: fully-cached
+        // blocks skip the semaphore entirely.
         let mut materialized = Box::pin(
             stream::iter(batch)
                 .map(|(block_number, indices)| {
                     let stats = Arc::clone(&stats);
-                    let budget = Arc::clone(&budget);
                     async move {
-                        // Acquire the size-weighted decode budget BEFORE the heavy
-                        // read+decode so a few huge regions run ~exclusively while
-                        // small blocks fan out.
-                        let permits =
-                            block_materialize_permits(tables, family, block_number, &indices)
-                                .await?;
-                        let _permit = budget
-                            .acquire_many(permits)
-                            .await
-                            .expect("materialization budget semaphore is never closed");
                         let block_records =
                             materialize_indexed_block_batch(runner, block_number, &indices, &stats)
                                 .await?;
                         Ok::<_, MonadChainDataError>((block_number, block_records))
                     }
                 })
-                .buffered(tables.materialize_concurrency()),
+                .buffered(tables.query_config().materialize_concurrency),
         );
 
         while let Some((block_number, block_records)) = materialized.try_next().await? {
-            // Once the limit block is complete, the first record of any later
-            // block ends the page (cursor = limit block). Stop before counting it
-            // so we never emit blocks past the limit — that would duplicate rows
-            // on the next page. `last_materialized_block` records that a later
-            // block exists (proves a non-terminal page below).
-            if stop_block.is_some_and(|sb| block_number != sb) {
-                last_materialized_block = Some(block_number);
-                break;
-            }
-            last_materialized_block = Some(block_number);
+            // Batching invariant: the batch loop stops at the FIRST group
+            // crossing the candidate threshold, so every group before the
+            // batch's last carries fewer candidates than records still
+            // needed — and a group emits at most its candidate count. The
+            // limit can therefore only fill on the batch's final block,
+            // after which this stream is exhausted.
+            debug_assert!(
+                stop_block.is_none(),
+                "limit filled before the batch's final block"
+            );
             for record in block_records {
-                // Post-filter is authoritative: the trace family can surface
-                // candidates that must be dropped here (`is_top_level: Some(false)`
-                // with another clause), which is why the batch loop refills when a
-                // batch comes up short.
+                // Post-filter is authoritative: trace candidates can be dropped
+                // here, which is why the batch loop refills when short.
                 if !filter.matches(&record) {
                     IndexedQueryStats::add_count(&stats.post_filter_dropped, 1);
                     continue;
@@ -534,20 +773,20 @@ where
         }
     }
 
-    // Cursor: the stop block is the page cursor only if a later block exists
-    // (non-terminal page). A block materialized after the stop block proves it;
-    // otherwise the straddling `carry` location (pulled while closing the last
-    // group) does — both already paid, no extra read. If nothing follows, the
-    // page is terminal (cursor stays `to_block`).
-    let mut cursor_block = to_block;
-    if let Some(sb) = stop_block {
-        let more = last_materialized_block.is_some_and(|lb| lb > sb) || carry.is_some();
-        if more {
+    // Cursor: the stop block is the page cursor only if a later block exists,
+    // proved by the straddling `carry` location (already paid — the limit can
+    // only fill on the last materialized group, so `carry` is the sole source
+    // of a later block). Otherwise the page is terminal and the cursor stays
+    // `to_block`.
+    let cursor_block = match stop_block {
+        Some(sb) if carry.is_some() => {
             let cursor_started = Instant::now();
-            cursor_block = runner.load_block_ref(sb).await?;
+            let block_ref = runner.load_block_ref(sb).await?;
             IndexedQueryStats::add_us(&stats.load_cursor_block_ref_us, cursor_started);
+            block_ref
         }
-    }
+        _ => to_block,
+    };
 
     log_indexed_query_stats(
         family,
@@ -555,7 +794,7 @@ where
         &stats,
         records.len(),
         limit,
-        tables.materialize_concurrency(),
+        tables.query_config().materialize_concurrency,
         stop_block.is_some(),
     );
     Ok(IndexedQueryOutcome {
@@ -568,12 +807,10 @@ where
     })
 }
 
-/// Pulls the next per-block group `(block_number, indices)` off the ordered
-/// location stream, coalescing consecutive same-block locations. The location
-/// straddling the block boundary (the first of the next block) is stashed in
-/// `carry` for the next call — so after a group is returned, `carry.is_some()`
-/// answers "does a later block exist?" with the single boundary resolve already
-/// paid, rather than resolving a whole extra group just to check for a next page.
+/// Pulls the next per-block `(block_number, indices)` group off the ordered
+/// location stream. The location straddling the block boundary is stashed in
+/// `carry`, so afterwards `carry.is_some()` answers "does a later block
+/// exist?" without resolving an extra group.
 async fn next_block_group<S>(
     locations: &mut S,
     carry: &mut Option<ResolvedPrimaryIdLocation>,
@@ -593,7 +830,6 @@ where
     loop {
         match locations.try_next().await? {
             Some(loc) if loc.block_number == block_number => indices.push(loc.idx_in_block),
-            // Block boundary: stash the straddling location for the next call.
             Some(loc) => {
                 *carry = Some(loc);
                 break;
@@ -613,9 +849,8 @@ async fn materialize_indexed_block_batch<R>(
 where
     R: IndexedFamilyQuery,
 {
-    if indices.is_empty() {
-        return Ok(Vec::new());
-    }
+    // Every group off `next_block_group` is seeded with at least one index.
+    debug_assert!(!indices.is_empty());
     let materialize_started = Instant::now();
     let records = runner
         .load_records_in_block(block_number, indices, stats)
@@ -625,50 +860,18 @@ where
     Ok(records)
 }
 
-/// Permits a block should hold against the stage-2 byte budget, sized from the
-/// bytes its materialization will actually decode — not the whole block. Logs
-/// and txs read only the coalesced *selected* frames (often a few hundred bytes
-/// even in a fat block), so weighting them by region size would needlessly
-/// serialize sparse queries over large blocks; the trace family reads the whole
-/// region, so it is weighted by region size. Clamped to
-/// `[1, materialize_budget_permits]` so a single oversized block runs exclusively
-/// rather than deadlocking on a permit request above the budget. A missing
-/// header yields one permit (materialize surfaces the real error); the header
-/// read is a cached meta lookup.
-async fn block_materialize_permits<M, B>(
-    tables: &Tables<M, B>,
-    family: Family,
-    block_number: u64,
-    indices: &[usize],
-) -> Result<u32>
+/// Permits a materialization should hold against the process-global,
+/// byte-weighted decode budget, sized from the bytes it will read+decode.
+/// Clamped to `[1, materialize_budget_permits]` so an oversized block runs
+/// exclusively rather than deadlocking.
+fn materialize_permits_for_bytes<M, B>(tables: &Tables<M, B>, cost_bytes: usize) -> u32
 where
     M: MetaStore,
     B: BlobStore,
 {
-    let Some(header) = tables
-        .family(family)
-        .load_block_header(block_number)
-        .await?
-    else {
-        return Ok(1);
-    };
-    let offsets = &header.offsets;
-    let region_bytes = *offsets.last().unwrap_or(&0) as usize;
-    // The trace family reads the whole region per block; logs/txs read only the
-    // selected frames (with coalescing that approaches the region only when most
-    // frames are selected — exactly when heavy weighting is warranted).
-    let cost_bytes = if family == Family::Trace {
-        region_bytes
-    } else {
-        indices
-            .iter()
-            .filter(|&&i| i + 1 < offsets.len())
-            .map(|&i| (offsets[i + 1] - offsets[i]) as usize)
-            .sum()
-    };
-    let permits = (cost_bytes / tables.materialize_permit_bytes())
-        .clamp(1, tables.materialize_budget_permits());
-    Ok(permits as u32)
+    let query_config = tables.query_config();
+    (cost_bytes / query_config.materialize_permit_bytes)
+        .clamp(1, query_config.materialize_budget_permits) as u32
 }
 
 fn log_indexed_query_stats(
@@ -680,9 +883,6 @@ fn log_indexed_query_stats(
     materialize_concurrency: usize,
     stopped_after_limit_block: bool,
 ) {
-    if !tracing::enabled!(target: module_path!(), tracing::Level::DEBUG) {
-        return;
-    }
     debug!(
         ?family,
         rows,
@@ -719,78 +919,20 @@ fn log_indexed_query_stats(
     );
 }
 
-/// One `(shard, page)` unit of stage-1 work. Carries the per-shard plan (shared
-/// via `Arc` across the shard's pages) and the shard's clipped local range.
+/// One page of stage-1 work. Carries the global page start, the window's
+/// clipped page-relative offset range, and the per-group plan (shared via
+/// `Arc` across the group's pages).
 struct PageWorkItem {
-    shard: u64,
-    page_start: u32,
-    local_from: u32,
-    local_to: u32,
-    plan: Arc<ShardPagePlan>,
-}
-
-struct PageFutureLog {
-    family: Family,
-    shard: u64,
-    page_start: u32,
-    local_from: u32,
-    local_to: u32,
-    started: Instant,
-    intersect_us: u64,
-    resolve_us: u64,
-    candidates: u64,
-    resolved_locations: u64,
-    had_bitmap: bool,
-    completed: bool,
-}
-
-impl PageFutureLog {
-    fn new(family: Family, shard: u64, page_start: u32, local_from: u32, local_to: u32) -> Self {
-        Self {
-            family,
-            shard,
-            page_start,
-            local_from,
-            local_to,
-            started: Instant::now(),
-            intersect_us: 0,
-            resolve_us: 0,
-            candidates: 0,
-            resolved_locations: 0,
-            had_bitmap: false,
-            completed: false,
-        }
-    }
-}
-
-impl Drop for PageFutureLog {
-    fn drop(&mut self) {
-        if !tracing::enabled!(target: module_path!(), tracing::Level::DEBUG) {
-            return;
-        }
-        debug!(
-            family = ?self.family,
-            shard = self.shard,
-            page_start = self.page_start,
-            local_from = self.local_from,
-            local_to = self.local_to,
-            had_bitmap = self.had_bitmap,
-            completed = self.completed,
-            canceled = !self.completed,
-            candidates = self.candidates,
-            resolved_locations = self.resolved_locations,
-            page_total_us = self.started.elapsed().as_micros() as u64,
-            intersect_us = self.intersect_us,
-            resolve_us = self.resolve_us,
-            "chain-data indexed page future stats"
-        );
-    }
+    page_start: u64,
+    from_offset: u32,
+    to_offset: u32,
+    plan: Arc<PageGroupPlan>,
 }
 
 /// Shared block-scan runner used when the query filter carries no indexed
 /// clause. Walks blocks in query order, lets the family filter each
 /// block's records, and stops once `limit` is reached.
-pub(crate) async fn execute_block_scan_family_query<R>(
+async fn execute_block_scan_family_query<R>(
     runner: &R,
     filter: &R::Filter,
     block_window: ResolvedBlockWindow,
@@ -804,25 +946,31 @@ where
     let mut records = Vec::new();
     let mut cursor_block = from_block;
 
-    // Each block is the unit of concurrency: `load_filtered_block_records`
-    // reads that block's header + blob, so overlapping them hides per-block I/O
-    // latency. `block_window.iter(order)` yields blocks in query order and
-    // `buffered` preserves input order, so the consumed stream stays ordered —
-    // identical to the serial walk. Dropping the stream on the `break` below
-    // cancels any in-flight read-ahead.
-    let mut block_stream = stream::iter(block_window.iter(order))
-        .map(|block_number| runner.load_filtered_block_records(block_number, order, filter))
-        .buffered(BLOCK_SCAN_CONCURRENCY);
-
-    while let Some((block_ref, block_records)) = block_stream.try_next().await? {
+    // `FuturesOrdered` preserves input order, so the consumed stream matches
+    // the serial walk; dropping the set on `break` cancels in-flight
+    // read-ahead. The fan-out ramps up by doubling per consumed block so a
+    // scan that fills its limit early wastes few whole-region reads.
+    let mut blocks = block_window.iter(order);
+    let mut in_flight = FuturesOrdered::new();
+    let mut target = BLOCK_SCAN_INITIAL_CONCURRENCY;
+    loop {
+        while in_flight.len() < target {
+            let Some(block_number) = blocks.next() else {
+                break;
+            };
+            in_flight.push_back(runner.load_filtered_block_records(block_number, order, filter));
+        }
+        let Some((block_ref, block_records)) = in_flight.try_next().await? else {
+            break;
+        };
         records.extend(block_records);
         cursor_block = block_ref;
-        // Block-aligned stop: this path's unit is a whole block's filtered
-        // records, so the limit check stays after extending a full block,
-        // exactly as the serial loop did.
+        // Block-aligned stop: the limit check runs only after extending a
+        // whole block's records.
         if records.len() >= limit {
             break;
         }
+        target = (target * 2).min(BLOCK_SCAN_CONCURRENCY);
     }
 
     Ok(IndexedQueryOutcome {
@@ -835,12 +983,10 @@ where
     })
 }
 
-/// Returns the family's global id frontier — the first id not yet assigned —
-/// at the publication head. This is the family-window end of the published-head
-/// block (`next_primary_id_exclusive`); even a zero-count window carries it,
-/// since `first_primary_id` is the running id cursor. If the published head has
-/// no block record (no data), there are no sealed buckets, so the frontier is
-/// `PrimaryId::ZERO` and every bucket routes to the open-bucket scan path.
+/// The family's global id frontier (first id not yet assigned) at the
+/// publication head: the published-head block's family-window end — carried
+/// even by a zero-count window. No block record means no data, so the
+/// frontier is `PrimaryId::ZERO` and every bucket routes to the scan path.
 async fn family_frontier_id<M: MetaStore>(
     blocks: &BlockTables<M>,
     family: Family,
@@ -849,16 +995,5 @@ async fn family_frontier_id<M: MetaStore>(
     let Some(record) = blocks.load_record(published_head).await? else {
         return Ok(PrimaryId::ZERO);
     };
-    match family.window_in(&record) {
-        Some(window) => window.next_primary_id_exclusive(),
-        None => Ok(PrimaryId::ZERO),
-    }
-}
-
-fn locals_in_query_order(bitmap: RoaringBitmap, order: QueryOrder) -> Vec<u32> {
-    let mut locals: Vec<u32> = bitmap.into_iter().collect();
-    if order == QueryOrder::Descending {
-        locals.reverse();
-    }
-    locals
+    family.window_in(&record).next_primary_id_exclusive()
 }

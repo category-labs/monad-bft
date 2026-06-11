@@ -14,14 +14,17 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use monad_chain_data::{
-    primitives::state::PublicationState, Address, Bytes, FinalizedBlock, InMemoryBlobStore,
-    InMemoryMetaStore, Log, LogData, LogFilter, LogsRelations, MonadChainDataError,
-    MonadChainDataService, QueryEnvelope, QueryLimits, QueryLogsRequest, QueryOrder, B256,
+    primitives::records::PublicationState, Address, InMemoryBlobStore, InMemoryMetaStore,
+    LogFilter, MonadChainDataError, MonadChainDataService, QueryEnvelope, QueryLimits,
+    QueryLogsRequest, QueryOrder, B256,
 };
 
 mod common;
 
-use common::{chain_header, test_header};
+use common::{
+    ascending_envelope, block_with_logs, chain_header, descending_envelope, log, logs_request,
+    test_header,
+};
 
 #[tokio::test(flavor = "current_thread")]
 async fn from_block_above_head_returns_invalid_request() {
@@ -31,19 +34,20 @@ async fn from_block_above_head_returns_invalid_request() {
         .query_logs(QueryLogsRequest {
             envelope: QueryEnvelope {
                 from_block: Some(50),
-                to_block: Some(60),
-                order: QueryOrder::Ascending,
-                limit: 10,
+                to_block: None,
+                ..QueryEnvelope::default()
             },
-            filter: LogFilter::default(),
-            relations: LogsRelations::default(),
+            ..QueryLogsRequest::default()
         })
         .await
         .expect_err("from_block above head should not silently collapse");
 
     assert!(
-        matches!(err, MonadChainDataError::InvalidRequest(_)),
-        "expected InvalidRequest, got {err:?}"
+        matches!(
+            err,
+            MonadChainDataError::InvalidRequest("block range starts above the published head")
+        ),
+        "expected InvalidRequest(block range starts above the published head), got {err:?}"
     );
 }
 
@@ -52,16 +56,10 @@ async fn to_block_above_head_clips_to_head() {
     let service = ingest_two_block_chain().await;
 
     let page = service
-        .query_logs(QueryLogsRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(1),
-                to_block: Some(50),
-                order: QueryOrder::Ascending,
-                limit: 100,
-            },
-            filter: LogFilter::default(),
-            relations: LogsRelations::default(),
-        })
+        .query_logs(logs_request(
+            ascending_envelope(1, 50, 100),
+            LogFilter::default(),
+        ))
         .await
         .expect("query");
 
@@ -75,16 +73,10 @@ async fn inverted_range_returns_invalid_request() {
     let service = ingest_two_block_chain().await;
 
     let err = service
-        .query_logs(QueryLogsRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(2),
-                to_block: Some(1),
-                order: QueryOrder::Ascending,
-                limit: 10,
-            },
-            filter: LogFilter::default(),
-            relations: LogsRelations::default(),
-        })
+        .query_logs(logs_request(
+            ascending_envelope(2, 1, 10),
+            LogFilter::default(),
+        ))
         .await
         .expect_err("from > to should error");
 
@@ -98,20 +90,16 @@ async fn inverted_range_returns_invalid_request() {
 async fn descending_to_block_above_head_returns_invalid_request() {
     let service = ingest_two_block_chain().await;
 
-    // In descending order to_block is the lower numeric bound, so
-    // to=50 against head=2 puts the lower bound above head. Leaving
-    // from_block unspecified isolates the lower-bound-above-head path
-    // from the inverted-range path.
+    // Descending: to_block is the lower bound; from_block is None to dodge the inverted-range path.
     let err = service
         .query_logs(QueryLogsRequest {
             envelope: QueryEnvelope {
-                from_block: None,
                 to_block: Some(50),
                 order: QueryOrder::Descending,
                 limit: 10,
+                ..QueryEnvelope::default()
             },
-            filter: LogFilter::default(),
-            relations: LogsRelations::default(),
+            ..QueryLogsRequest::default()
         })
         .await
         .expect_err("to_block above head in desc should not silently collapse");
@@ -126,20 +114,12 @@ async fn descending_to_block_above_head_returns_invalid_request() {
 async fn descending_from_above_head_clips_to_head() {
     let service = ingest_two_block_chain().await;
 
-    // In descending order from_block is the upper bound; values above
-    // the published head clip to head, mirroring the ascending
-    // to_block-above-head behavior.
+    // Descending: from_block is the upper bound and clips to head.
     let page = service
-        .query_logs(QueryLogsRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(50),
-                to_block: Some(1),
-                order: QueryOrder::Descending,
-                limit: 100,
-            },
-            filter: LogFilter::default(),
-            relations: LogsRelations::default(),
-        })
+        .query_logs(logs_request(
+            descending_envelope(50, 1, 100),
+            LogFilter::default(),
+        ))
         .await
         .expect("query");
 
@@ -153,16 +133,10 @@ async fn from_block_zero_floors_to_earliest_queryable_block() {
     let service = ingest_two_block_chain().await;
 
     let page = service
-        .query_logs(QueryLogsRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(0),
-                to_block: Some(2),
-                order: QueryOrder::Ascending,
-                limit: 100,
-            },
-            filter: LogFilter::default(),
-            relations: LogsRelations::default(),
-        })
+        .query_logs(logs_request(
+            ascending_envelope(0, 2, 100),
+            LogFilter::default(),
+        ))
         .await
         .expect("query");
 
@@ -174,19 +148,12 @@ async fn from_block_zero_floors_to_earliest_queryable_block() {
 async fn descending_inverted_range_returns_invalid_request() {
     let service = ingest_two_block_chain().await;
 
-    // In descending order from_block is the upper bound; from < to is
-    // the wrong shape.
+    // Descending: from_block is the upper bound, so from < to is inverted.
     let err = service
-        .query_logs(QueryLogsRequest {
-            envelope: QueryEnvelope {
-                from_block: Some(1),
-                to_block: Some(2),
-                order: QueryOrder::Descending,
-                limit: 10,
-            },
-            filter: LogFilter::default(),
-            relations: LogsRelations::default(),
-        })
+        .query_logs(logs_request(
+            descending_envelope(1, 2, 10),
+            LogFilter::default(),
+        ))
         .await
         .expect_err("descending from < to should error");
 
@@ -208,8 +175,7 @@ async fn descending_defaulted_range_inverts_endpoints() {
                 order: QueryOrder::Descending,
                 limit: 100,
             },
-            filter: LogFilter::default(),
-            relations: LogsRelations::default(),
+            ..QueryLogsRequest::default()
         })
         .await
         .expect("query");
@@ -230,8 +196,7 @@ async fn defaulted_range_resolves_to_full_chain() {
                 order: QueryOrder::Ascending,
                 limit: 100,
             },
-            filter: LogFilter::default(),
-            relations: LogsRelations::default(),
+            ..QueryLogsRequest::default()
         })
         .await
         .expect("query");
@@ -242,12 +207,7 @@ async fn defaulted_range_resolves_to_full_chain() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn head_zero_is_treated_as_no_published_blocks() {
-    // A writer that has initialized publication but not yet published any block
-    // leaves the publication row at head 0 (block numbers start at 1, so head 0
-    // means "nothing finalized yet"). A reader must treat this exactly like an
-    // unpublished store — "no published blocks" — rather than resolving a range
-    // against head 0, which would surface a confusing "block range starts above
-    // the published head".
+    // Block numbers start at 1, so a published head of 0 means "no published blocks".
     let service = MonadChainDataService::new(
         InMemoryMetaStore::default(),
         InMemoryBlobStore::default(),
@@ -257,7 +217,7 @@ async fn head_zero_is_treated_as_no_published_blocks() {
         .publication()
         .store_state(PublicationState {
             indexed_finalized_head: 0,
-            head_artifact_checksum: Default::default(),
+            head_row_chain: Default::default(),
         })
         .await
         .expect("seed head-0 publication row");
@@ -265,13 +225,10 @@ async fn head_zero_is_treated_as_no_published_blocks() {
     let err = service
         .query_logs(QueryLogsRequest {
             envelope: QueryEnvelope {
-                from_block: None,
-                to_block: None,
-                order: QueryOrder::Ascending,
                 limit: 10,
+                ..QueryEnvelope::default()
             },
-            filter: LogFilter::default(),
-            relations: LogsRelations::default(),
+            ..QueryLogsRequest::default()
         })
         .await
         .expect_err("query against head 0 must report no published blocks");
@@ -287,27 +244,22 @@ async fn ingest_two_block_chain() -> MonadChainDataService<InMemoryMetaStore, In
     let h2 = chain_header(2, &h1);
 
     let blocks = vec![
-        FinalizedBlock {
-            header: h1,
-            logs_by_tx: vec![vec![log(Address::repeat_byte(1), B256::repeat_byte(1))]],
-            txs: Vec::new(),
-            traces: vec![],
-        },
-        FinalizedBlock {
-            header: h2,
-            logs_by_tx: vec![vec![log(Address::repeat_byte(2), B256::repeat_byte(2))]],
-            txs: Vec::new(),
-            traces: vec![],
-        },
+        block_with_logs(
+            h1,
+            vec![vec![log(
+                Address::repeat_byte(1),
+                vec![B256::repeat_byte(1)],
+            )]],
+        ),
+        block_with_logs(
+            h2,
+            vec![vec![log(
+                Address::repeat_byte(2),
+                vec![B256::repeat_byte(2)],
+            )]],
+        ),
     ];
 
     let store = common::populate::populate_via_engine(blocks).await;
     store.reader()
-}
-
-fn log(address: Address, topic0: B256) -> Log {
-    Log {
-        address,
-        data: LogData::new_unchecked(vec![topic0], Bytes::from(vec![1, 2, 3])),
-    }
 }

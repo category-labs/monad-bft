@@ -18,12 +18,11 @@ use alloy_rlp::{RlpDecodable, RlpEncodable};
 
 use crate::{
     error::{MonadChainDataError, Result},
-    family::{CallKind, Hash32, IngestTrace},
+    ingest_types::{CallKind, Hash32, IngestTrace},
 };
 
 /// Public, owned per-trace view returned by queries. Block-level fields
-/// (`block_number`, `block_hash`) are reconstructed from the
-/// `BlockRecord` at read time, mirroring the log and tx materializers.
+/// are reconstructed from the `BlockRecord` at read time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TraceEntry {
     pub block_number: u64,
@@ -51,20 +50,19 @@ impl TraceEntry {
     /// 4-byte function selector; `None` when `input` is shorter than 4
     /// bytes (e.g. value-only transfers).
     pub fn selector(&self) -> Option<[u8; 4]> {
-        if self.input.len() < 4 {
-            None
-        } else {
-            let mut out = [0u8; 4];
-            out.copy_from_slice(&self.input[..4]);
-            Some(out)
-        }
+        selector_from_input(&self.input)
     }
 }
 
-/// Per-trace fields stored in the block trace blob. The RLP layout
-/// encodes `typ` as a single byte (via `CallKind::as_u8`) and packs the
-/// remaining fields positionally. Block-level fields are reconstructed
-/// from the `BlockRecord` at read time.
+/// 4-byte selector from raw call input; `None` when shorter than 4 bytes.
+/// The single extraction rule shared by the `selector` index writes
+/// (`ingest::stream_entries_for_trace`) and the read-side accessor.
+pub(crate) fn selector_from_input(input: &[u8]) -> Option<[u8; 4]> {
+    input.get(..4).and_then(|s| s.try_into().ok())
+}
+
+/// Per-trace fields stored in the block trace blob (RLP, `typ` as one
+/// byte). Block-level fields are reconstructed at read time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredTrace {
     pub typ: CallKind,
@@ -82,10 +80,8 @@ pub struct StoredTrace {
     pub tx_status: bool,
 }
 
-/// On-disk shape. `to_bytes` is empty for contract-creation /
-/// SelfDestruct-with-zero-beneficiary frames, otherwise a 20-byte
-/// address. Encoding `Option<Address>` via the derive macros isn't
-/// supported, so we marshal it through a `Bytes` field.
+/// On-disk shape. `to_bytes` is empty when `to` is `None`, else a 20-byte
+/// address; the RLP derives can't encode `Option<Address>` directly.
 #[derive(Debug, RlpEncodable, RlpDecodable)]
 struct StoredTraceRlp {
     typ_byte: u8,
@@ -132,14 +128,14 @@ impl StoredTrace {
             .map_err(|_| MonadChainDataError::Decode("invalid trace entry rlp"))?;
         let typ = CallKind::from_u8(rlp.typ_byte)
             .ok_or(MonadChainDataError::Decode("invalid trace call kind byte"))?;
-        let to = if rlp.to_bytes.is_empty() {
-            None
-        } else if rlp.to_bytes.len() == 20 {
-            Some(Address::from_slice(&rlp.to_bytes))
-        } else {
-            return Err(MonadChainDataError::Decode(
-                "invalid trace `to` byte length",
-            ));
+        let to = match rlp.to_bytes.len() {
+            0 => None,
+            20 => Some(Address::from_slice(&rlp.to_bytes)),
+            _ => {
+                return Err(MonadChainDataError::Decode(
+                    "invalid trace `to` byte length",
+                ))
+            }
         };
         Ok(Self {
             typ,

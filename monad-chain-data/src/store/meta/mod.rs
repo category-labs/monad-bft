@@ -25,7 +25,7 @@ pub use dynamo::{
 };
 pub use in_memory::InMemoryMetaStore;
 
-use crate::{error::Result, store::common::Page};
+use crate::error::Result;
 
 #[derive(Debug, Clone)]
 pub enum MetaWriteOp {
@@ -42,13 +42,9 @@ pub enum MetaWriteOp {
     },
 }
 
-/// Logical identifier for a key/value table.
-///
-/// Identifiers are opaque names. Backends are responsible for any
-/// prefixing or keyspacing required to map logical tables onto shared
-/// physical resources without collisions (e.g. distinct Scylla
-/// keyspaces, per-deployment table prefixes). This type makes no
-/// namespacing guarantees on its own.
+/// Logical identifier for a key/value table. Names are opaque; backends own
+/// any prefixing/keyspacing needed to avoid collisions on shared physical
+/// resources.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TableId(&'static str);
 
@@ -63,9 +59,7 @@ impl TableId {
 }
 
 /// Logical identifier for a scannable (partitioned + clustered) table.
-///
-/// Same namespacing model as [`TableId`]: backends own collision
-/// avoidance when these names map onto shared physical resources.
+/// Same namespacing model as [`TableId`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ScannableTableId(&'static str);
 
@@ -79,7 +73,7 @@ impl ScannableTableId {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct KvTable<M> {
     store: M,
     pub table: TableId,
@@ -88,15 +82,6 @@ pub struct KvTable<M> {
 impl<M> KvTable<M> {
     pub fn new(store: M, table: TableId) -> Self {
         Self { store, table }
-    }
-}
-
-impl<M: Clone> Clone for KvTable<M> {
-    fn clone(&self) -> Self {
-        Self {
-            store: self.store.clone(),
-            table: self.table,
-        }
     }
 }
 
@@ -110,7 +95,7 @@ impl<M: MetaStore> KvTable<M> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ScannableKvTable<M> {
     store: M,
     pub table: ScannableTableId,
@@ -119,15 +104,6 @@ pub struct ScannableKvTable<M> {
 impl<M> ScannableKvTable<M> {
     pub fn new(store: M, table: ScannableTableId) -> Self {
         Self { store, table }
-    }
-}
-
-impl<M: Clone> Clone for ScannableKvTable<M> {
-    fn clone(&self) -> Self {
-        Self {
-            store: self.store.clone(),
-            table: self.table,
-        }
     }
 }
 
@@ -142,50 +118,31 @@ impl<M: MetaStore> ScannableKvTable<M> {
             .await
     }
 
-    pub async fn list_prefix(
-        &self,
-        partition: &[u8],
-        prefix: &[u8],
-        cursor: Option<Vec<u8>>,
-        limit: usize,
-    ) -> Result<Page> {
-        self.store
-            .scan_list(self.table, partition, prefix, cursor, limit)
-            .await
+    /// Lists every clustering key in the partition, in clustering order.
+    pub async fn scan_keys(&self, partition: &[u8]) -> Result<Vec<Vec<u8>>> {
+        self.store.scan_keys(self.table, partition).await
     }
 }
 
 /// Plain key-value and scannable metadata storage.
 ///
-/// All writes are idempotent and content-deterministic at the chain-data
-/// layer (keys are derived from finalized block identity, values are
-/// the encoded artifacts), so the trait surface intentionally has no
-/// versioning or compare-and-set semantics.
-///
+/// Writes are idempotent and content-deterministic at the chain-data layer,
+/// so there are intentionally no versioning or compare-and-set semantics.
 /// Implementations must be cheaply cloneable (e.g. via internal `Arc`).
 #[allow(async_fn_in_trait)]
 pub trait MetaStore: Clone + Send + Sync + 'static {
-    fn table(&self, table: TableId) -> KvTable<Self>
-    where
-        Self: Sized,
-    {
+    fn table(&self, table: TableId) -> KvTable<Self> {
         KvTable::new(self.clone(), table)
     }
 
-    fn scannable_table(&self, table: ScannableTableId) -> ScannableKvTable<Self>
-    where
-        Self: Sized,
-    {
+    fn scannable_table(&self, table: ScannableTableId) -> ScannableKvTable<Self> {
         ScannableKvTable::new(self.clone(), table)
     }
 
-    // Every method returns a `Send` future. Point reads need it so the cache
-    // layer can store them in a cross-thread single-flight `Shared` (see
-    // `store/cache`); the rest need it so a generic `MetaStore` can be driven
-    // from a `tokio::spawn`ed task (see the ingest binary's IO worker), which is
-    // why the trait declares `impl Future + Send` rather than bare `async fn`.
-    // Implementations may still use `async fn`; that satisfies the RPITIT bound
-    // as long as the produced future is `Send`.
+    // Every method returns a `Send` future (hence `impl Future + Send`, not
+    // bare `async fn`): point reads feed the cache layer's cross-thread
+    // single-flight `Shared`, and stores are driven from spawned tasks.
+    // Implementations may still use `async fn` if the future is `Send`.
     fn get(
         &self,
         table: TableId,
@@ -212,14 +169,13 @@ pub trait MetaStore: Clone + Send + Sync + 'static {
         value: Bytes,
     ) -> impl std::future::Future<Output = Result<()>> + Send;
 
-    fn scan_list(
+    /// Lists every clustering key in the partition, in clustering (unsigned
+    /// byte) order.
+    fn scan_keys(
         &self,
         table: ScannableTableId,
         partition: &[u8],
-        prefix: &[u8],
-        cursor: Option<Vec<u8>>,
-        limit: usize,
-    ) -> impl std::future::Future<Output = Result<Page>> + Send;
+    ) -> impl std::future::Future<Output = Result<Vec<Vec<u8>>>> + Send;
 
     fn apply_writes(
         &self,
