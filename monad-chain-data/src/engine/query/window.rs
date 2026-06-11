@@ -75,63 +75,43 @@ impl ResolvedPrimaryIdWindow {
     }
 }
 
+/// Resolves the family's primary-id window from the range's two endpoint
+/// block records alone. Ingest stamps `first_primary_id` with the running
+/// family frontier on EVERY block (count-0 blocks included), so the frontier
+/// is monotone in block number and:
+///
+/// - the first in-range id is `start.first_primary_id` — if the start block
+///   is empty, the frontier is unchanged until the first in-range block with
+///   data, whose window begins at exactly that id;
+/// - the end-exclusive id is the frontier after the end block;
+/// - the range holds no rows iff the two are equal.
+///
+/// (A prior version walked block records inward from both ends serially —
+/// one point-get per block, unbounded on data-empty spans: a filtered query
+/// over a quiet 100k-block historical range cost ~60s of cold gets.)
 pub(crate) async fn resolve_primary_id_window<M: MetaStore>(
     blocks: &BlockTables<M>,
     family: Family,
     block_window: &ResolvedBlockWindow,
 ) -> Result<Option<ResolvedPrimaryIdWindow>> {
-    let start_block = block_window.low.number;
-    let end_block = block_window.high.number;
-
-    // The low and high walks are independent reads; run them concurrently to
-    // overlap their per-block fetches.
-    let (start, end_exclusive) = futures::try_join!(
-        first_primary_id_in_range(blocks, family, start_block, end_block),
-        end_primary_id_exclusive_in_range(blocks, family, start_block, end_block),
+    // The range bounds were verified present by [`ResolvedBlockWindow`], so
+    // a missing endpoint record is a broken store contract — fail loud
+    // rather than serve a wrongly-empty page.
+    let (start_record, end_record) = futures::try_join!(
+        load_record_in_range(blocks, block_window.low.number),
+        load_record_in_range(blocks, block_window.high.number),
     )?;
-    // If either walk found no in-range id the window is empty.
-    let (Some(start), Some(end_exclusive)) = (start, end_exclusive) else {
+
+    let start = family.window_in(&start_record).first_primary_id;
+    let end_exclusive = family.window_in(&end_record).next_primary_id_exclusive()?;
+    if end_exclusive <= start {
         return Ok(None);
-    };
+    }
 
     Ok(Some(ResolvedPrimaryIdWindow {
         start,
-        end_inclusive: PrimaryId::new(end_exclusive.as_u64().saturating_sub(1)),
+        end_inclusive: PrimaryId::new(end_exclusive.as_u64() - 1),
     }))
-}
-
-async fn first_primary_id_in_range<M: MetaStore>(
-    blocks: &BlockTables<M>,
-    family: Family,
-    start_block: u64,
-    end_block: u64,
-) -> Result<Option<PrimaryId>> {
-    for block_number in start_block..=end_block {
-        let record = load_record_in_range(blocks, block_number).await?;
-        let window = family.window_in(&record);
-        if window.count > 0 {
-            return Ok(Some(window.first_primary_id));
-        }
-    }
-
-    Ok(None)
-}
-
-async fn end_primary_id_exclusive_in_range<M: MetaStore>(
-    blocks: &BlockTables<M>,
-    family: Family,
-    start_block: u64,
-    end_block: u64,
-) -> Result<Option<PrimaryId>> {
-    for block_number in (start_block..=end_block).rev() {
-        let record = load_record_in_range(blocks, block_number).await?;
-        let window = family.window_in(&record);
-        if window.count > 0 {
-            return Ok(Some(window.next_primary_id_exclusive()?));
-        }
-    }
-
-    Ok(None)
 }
 
 /// Loads one block record inside the resolved range. The range bounds were
