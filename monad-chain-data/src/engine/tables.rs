@@ -315,7 +315,7 @@ impl Default for QueryRuntimeConfig {
             // necessary on high-latency ones (mainnet-1 bench: 64 cut warm
             // analytic pages ~8x vs 8).
             materialize_concurrency: 64,
-            page_intersect_concurrency: 32,
+            page_intersect_concurrency: 64,
             // Aggregate ceilings that only bind once the fan-out is raised.
             blob_io_concurrency: 1024,
             materialize_budget_permits: 1024,

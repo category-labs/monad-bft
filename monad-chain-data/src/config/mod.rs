@@ -63,7 +63,7 @@ pub struct ChainDataStoreConfig {
 #[serde(default)]
 pub struct ChainDataCacheConfig {
     /// Total cache budget in MiB. If absent, the caller's mode default applies:
-    /// ingest resolves to 0 MiB, reader resolves to 2048 MiB.
+    /// ingest resolves to 0 MiB, reader resolves to 8192 MiB.
     pub total_mib: Option<usize>,
     /// Per-table budget overrides in MiB. Unspecified tables get the default
     /// ratio of the total budget.
@@ -528,7 +528,7 @@ pub(crate) enum ChainDataCacheMode {
 }
 
 #[cfg(feature = "dynamo")]
-const READER_DEFAULT_CACHE_MIB: usize = 2048;
+const READER_DEFAULT_CACHE_MIB: usize = 8192;
 
 #[cfg(feature = "dynamo")]
 pub(crate) fn resolve_cache_config(
@@ -855,16 +855,16 @@ mod tests {
     }
 
     #[test]
-    fn reader_cache_default_is_two_gib_ratio_based() {
+    fn reader_cache_default_is_eight_gib_ratio_based() {
         let config =
             resolve_cache_config(&ChainDataStoreConfig::default(), ChainDataCacheMode::Reader);
-        // 464/1024 of 2048 MiB, as a byte budget.
-        assert_eq!(config.row_cache_bytes, 928 * 1024 * 1024);
-        // 256/1024 of 2048 MiB.
-        assert_eq!(config.bitmap_by_block_cache_bytes, 512 * 1024 * 1024);
-        // 64/1024 of 2048 MiB: block metadata sits on every materialization
+        // 464/1024 of 8192 MiB, as a byte budget.
+        assert_eq!(config.row_cache_bytes, 3712 * 1024 * 1024);
+        // 256/1024 of 8192 MiB.
+        assert_eq!(config.bitmap_by_block_cache_bytes, 2048 * 1024 * 1024);
+        // 64/1024 of 8192 MiB: block metadata sits on every materialization
         // path, so it must not be starved (see `CacheConfig` ratios).
-        assert_eq!(config.block_header_cache_bytes, 128 * 1024 * 1024);
+        assert_eq!(config.block_header_cache_bytes, 512 * 1024 * 1024);
     }
 
     #[test]

@@ -32,7 +32,7 @@ use crate::{
     store::meta::{KvTable, MetaStore, ScannableKvTable, ScannableTableId, TableId},
 };
 
-const DEFAULT_CACHE_TOTAL_MIB: usize = 2048;
+const DEFAULT_CACHE_TOTAL_MIB: usize = 8192;
 
 /// Fixed per-entry bookkeeping charge (key, LRU node, `Arc`) added to a
 /// [`Weighted`] payload weight, so tiny decoded rows don't let a cache hold
