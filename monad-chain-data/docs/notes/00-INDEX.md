@@ -21,7 +21,8 @@ and mints dense per-family primary ids, fanning each block to a **data track** (
 RLP→zstd-framed block blobs + the per-block blake3 **row chain**) and an **index track**
 (page-relative roaring-bitmap streams + a primary directory, continuously **sealed** per 64Ki-id
 granule with per-family **seal chains**, flushed as fragments on an adaptive cadence). A publisher
-advances the single reader-visible head to `min(data_durable, index_visible)`. Reads run a
+advances the single reader-visible head to the newest index flush boundary covered by
+`data_durable`. Reads run a
 3-stage ordered pipeline (group plan → page intersect/resolve → count-gated materialize) over
 sealed artifacts + open fragments, with block-aligned limits and stateless block-cursor pagination.
 Storage is two traits — `MetaStore` (Dynamo/Alternator) and `BlobStore` (S3/RustFS or chunked

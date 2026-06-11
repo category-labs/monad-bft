@@ -150,7 +150,7 @@ Draft MIP introducing five JSON-RPC methods: `eth_queryBlocks`, `eth_queryTransa
 - `TxEntry::to_rpc_transaction` carries block context, signer, tx type; `effective_gas_price` is `None`; `to()`/`selector()` decode from the stored 2718 envelope.
 
 ### Unit tests in `src/` (124 total, run in 0.5s)
-Heaviest: `src/ingest/index.rs` (16 — seal/flush accumulator logic), `src/engine/bitmap.rs` (14 — codec, version byte, page math), `src/ingest/snapshot.rs` (11), `src/store/cache/mod.rs` (10), `src/primitives/range.rs` (10 — window resolution table), `src/engine/query/directory_resolver.rs` (6), `src/config/mod.rs` (6 — TOML wire shapes incl. Redacted), plus digest, row_codec, records, mem_scan, traces/ingest, dynamo/s3 helpers. Recovery logic is exercised via `src/ingest/rtt.rs` + unit tests — there is **no integration test in `tests/` for crash recovery, the publisher frontier (`min(data_durable, index_visible)`), or standby digest comparison**.
+Heaviest: `src/ingest/index.rs` (16 — seal/flush accumulator logic), `src/engine/bitmap.rs` (14 — codec, version byte, page math), `src/ingest/snapshot.rs` (11), `src/store/cache/mod.rs` (10), `src/primitives/range.rs` (10 — window resolution table), `src/engine/query/directory_resolver.rs` (6), `src/config/mod.rs` (6 — TOML wire shapes incl. Redacted), plus digest, row_codec, records, mem_scan, traces/ingest, dynamo/s3 helpers. Recovery logic is exercised via `src/ingest/rtt.rs` + unit tests — there is **no integration test in `tests/` for crash recovery, the publisher frontier (flush boundaries vs `data_durable`), or standby digest comparison**.
 
 ---
 

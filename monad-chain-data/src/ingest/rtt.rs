@@ -274,8 +274,9 @@ async fn warm_resume_past_end_publishes_durable_tail() {
         .expect("regress head for setup");
     assert_eq!(h.publication.load_published_head().await.unwrap(), Some(2));
 
-    // Resume = 6 > end = 5: only the terminal BatchFlush runs; the head recovers to 5
-    // only because `data_durable` is seeded to the resume point.
+    // Resume = 6 > end = 5: only the terminal BatchFlush runs; the head recovers
+    // to 5 because that flush records the resume block as a boundary already
+    // covered by the seeded data frontier.
     h.run_backfill(log_chain(specs), backfill_config(1, 5))
         .await
         .expect("resume backfill");

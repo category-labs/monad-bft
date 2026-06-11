@@ -68,7 +68,19 @@ pub(crate) enum Recovered {
 /// Decide recovery from `max(checkpoint_block, published_head)`: restore the
 /// checkpoint when it is at/ahead of `head` (the authoritative published head),
 /// else rebuild from fragments at the head.
-/// The rebuilt tail is empty because the head is always a flush boundary.
+///
+/// The rebuild path requires `head` to be an index flush boundary, and the
+/// publisher guarantees it: `Progress::publishable_head` only ever returns
+/// recorded `batch_flush` horizons (or its seed — the prior published head,
+/// itself such a boundary), never the data track's raw pack boundary or the
+/// checkpoint block. At a flush boundary `H` the rebuild is complete: seals
+/// run inline per block, so every sealed span at/below the frontier@`H` has
+/// durable artifacts before `H` was recorded, and the open granule's bits and
+/// dir entries below frontier@`H` are fully covered by the fragments flushed
+/// at `H` — a mid-batch head would instead lose the tail bits/entries that
+/// `seal_family` consumed without ever fragmenting. Deterministic replay from
+/// `H + 1` then re-seals identical artifacts. The rebuilt tail is empty for
+/// the same reason: nothing below `H` is still unflushed.
 pub(crate) async fn recover<M, B>(
     tables: &Tables<M, B>,
     snapshots: &SnapshotStore<M, B>,
@@ -88,6 +100,10 @@ where
         }),
         // head > checkpoint, or no checkpoint but blocks are published.
         _ => {
+            // Trusts the flush-boundary guarantee above; a head published by a
+            // build predating it may not satisfy the premise (see the ops
+            // runbook's upgrade note).
+            tracing::info!(head, "rebuilding open index state from fragments");
             let (state, frontier) = rebuild_from_fragments(tables, head).await?;
             Ok(Recovered::Warm {
                 state,
@@ -101,8 +117,8 @@ where
 
 /// Rebuild `OpenState` and the id frontier from the durable artifacts at the
 /// published `head`, clamped to the head's id frontier (the index track can
-/// flush fragments for blocks above the published head, since
-/// `data_durable`/`index_visible` advance independently).
+/// flush fragments for blocks above the published head, since the data
+/// track's durability can lag the index track's flush boundaries).
 async fn rebuild_from_fragments<M, B>(
     tables: &Tables<M, B>,
     head: u64,

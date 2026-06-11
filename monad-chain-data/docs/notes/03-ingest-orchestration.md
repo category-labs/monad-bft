@@ -6,13 +6,13 @@ All paths relative to `/home/jhow/monad-bft/monad-chain-data/src` unless prefixe
 
 - **`ingest/mod.rs`** — Pipeline assembly and supervision. Defines the cross-track message protocol (`IngestMsg`), id-assignment types (`FamilyFrontier`, `FamilyRanges`, `AssignedBlock`), run knobs (`IngestRunConfig`), and `run_ingest` (mod.rs:204), which performs recovery, seeds the checksum chain, resolves `count`→`end`, spawns the four tasks (producer, data track, index track, publisher), and supervises them (first error aborts all; publisher gets a graceful final-publish shutdown). Module doc (mod.rs:16-34) states the core thesis: **there is no backfill/live mode branch** — the engine always follows the tip; "backfill" is just the catch-up phase, and the `SignalPolicy` cadences are the only knobs.
 - **`ingest/producer.rs`** — The single ordered stage: fetch blocks from the source with bounded parallel prefetch, assign primary ids (the one cross-block sequential step), fan each block out to both tracks, and emit `BatchFlush`/`Checkpoint` signals on adaptive cadences. Carries the `TODO(fetch-retry)` (producer.rs:194-197).
-- **`ingest/publisher.rs`** — `Progress` (the shared durable-frontier object: `data_durable`, `index_visible`, a `Notify`) and the publisher task that advances the reader-visible head to `min(data_durable, index_visible)`, carrying the head block's `row_chain` into `PublicationState`.
+- **`ingest/publisher.rs`** — `Progress` (the shared durable-progress object: `data_durable`, the pending flush-boundary queue + promoted head, a `Notify`) and the publisher task that advances the reader-visible head to the newest recorded flush boundary at/below `data_durable`, carrying the head block's `row_chain` into `PublicationState`.
 - **`ingest/source.rs`** — The 2-method `ChainDataIngestSource` trait (`get_latest_uploaded`, `fetch_finalized_block`), the engine's **only inbound dependency**. The implementor owns transport concerns including retry/backoff (source.rs:16-18).
 - **`ingest/resolver.rs`** — `TablesCodecResolver`: production `CodecResolver` backed by the *same* `Arc<Tables>` the engine writes through, so per-epoch dictionary training (which reads back prior-epoch blocks) needs no second service/cache. `ensure` is single-flight via `Tables::ensure_epoch_dicts`; `prewarm` spawns a background train.
 - **`ingest/recover.rs`** — Crash recovery decision + the fragment-rebuild path: resume from `max(checkpoint_block, published_head)`; if the head is ahead of (or there is no) checkpoint, rebuild `OpenState` + id frontier + seal chains + sealed-page-count accumulators from durable artifacts at the head, clamped to the head's frontier.
 - **`ingest/snapshot.rs`** — `SnapshotStore`: blob-centric checkpoint persistence (payload blob keyed by generation = checkpoint block; small manifest meta row as the commit point, blake3-verified), plus the versioned binary snapshot codec for (`OpenState`, `OpenTail`, frontier, block). Includes the unsafe `seed_snapshot_at` fixture knob.
 - **`ingest/data_track.rs`** — The data track: per-epoch codec resolution (epoch barrier), parallel CPU row encoding on blocking tasks drained in strict block order (where the per-block `row_chain` checksum folds), pack accumulation (`BlobPacker`), and depth-1 pipelined pack flushes that advance `data_durable`.
-- **`ingest/index.rs`** — The branchless index engine: accumulate per-block stream bits/dir entries into `OpenTail`, *continuously* seal completed 64Ki-id granules (`OpenState[g] ∪ OpenTail[g]` → page/bucket artifacts + seal-chain rows + page-count manifests), flush the tail as reader-visible fragments on `BatchFlush` (advances `index_visible`), and snapshot the working set on `Checkpoint`.
+- **`ingest/index.rs`** — The branchless index engine: accumulate per-block stream bits/dir entries into `OpenTail`, *continuously* seal completed 64Ki-id granules (`OpenState[g] ∪ OpenTail[g]` → page/bucket artifacts + seal-chain rows + page-count manifests), flush the tail as reader-visible fragments on `BatchFlush` (records the flush boundary), and snapshot the working set on `Checkpoint`.
 - **`ingest/probe.rs`** — Zero-cost-when-off timing probe (`RUST_LOG=info,ingest::timing=trace`); cumulative ns counters per stage + a 5s delta reporter. Bottleneck diagnosis is by backpressure: `producer_send_*_blocked` high ⇒ that track is the limiter; `*_recv_blocked` high ⇒ that track is starved.
 - **`ingest/rtt.rs`** — `#[cfg(test)]`-only end-to-end round-trip tests over in-memory stores (mod.rs:62-63): publish/snapshot behaviour, both recovery regimes' equivalence, clamping, row-chain/seal-chain cadence-independence, restart continuity, and perturbation sensitivity.
 - **`ingest_types.rs`** — Wire-agnostic input model: `FinalizedBlock {header, logs_by_tx, txs, traces}`, `IngestTx` (caller-authoritative `sender` + hash; raw `signed_tx_bytes`), `IngestTrace` (DFS-flattened call frames with `trace_address`, `tx_status`), and a local `CallKind` mirror to avoid a `monad-archive` dependency (ingest_types.rs:42-53).
@@ -29,7 +29,7 @@ All paths relative to `/home/jhow/monad-bft/monad-chain-data/src` unless prefixe
 - `FamilyFrontier = PerFamily<u64>` — next-primary-id per family; `assign()` (mod.rs:103-121) mints contiguous id ranges per block (logs/txs/traces counted from the block) and advances the frontier. Owned by the producer's `Signaller`; the index track keeps its own copy advanced in `accumulate`.
 
 ### Progress / publication
-- `Progress` (publisher.rs:33-44): `data_durable: AtomicU64` (highest block whose pack flush is durable), `index_visible: AtomicU64` (highest block whose flushed fragments are durable AND reader-visible), `advance: Notify` (permit-storing pulse, so a notification racing the publisher's read-publish-rewait loop is never lost; bursts coalesce). Owned as `Arc` shared by data track (sets `data_durable`), index track (sets `index_visible`), and publisher (reads min).
+- `Progress` (publisher.rs): `data_durable: AtomicU64` (highest block whose pack flush is durable), a mutex-guarded `Heads` (ascending `VecDeque` of `batch_flush` boundaries not yet covered by `data_durable`, plus the promoted publishable head), `advance: Notify` (permit-storing pulse, so a notification racing the publisher's read-publish-rewait loop is never lost; bursts coalesce). Owned as `Arc` shared by data track (sets `data_durable`), index track (records flush boundaries), and publisher (promotes/reads the head).
 - `PublicationTables` (engine/tables.rs:909): single meta row `publication_state/state` holding `PublicationState {indexed_finalized_head, head_row_chain}`; `publish()` at tables.rs:958.
 
 ### Index-side state (the "open working set")
@@ -53,13 +53,13 @@ All paths relative to `/home/jhow/monad-bft/monad-chain-data/src` unless prefixe
 
 ```
 producer (fetch, assign ids, emit signals) ─┬─► data track  (encode rows, pack, write blobs)  → data_durable
-                                            └─► index track (accumulate, seal, flush, ckpt)   → index_visible
-                        publisher: published head = min(data_durable, index_visible)
+                                            └─► index track (accumulate, seal, flush, ckpt)   → flush boundaries
+                        publisher: published head = newest flush boundary <= data_durable
 ```
 
 **Setup (`run_ingest`, mod.rs:204-356):**
 1. `publisher.published_head()` (mod.rs:230) → `recover(tables, snapshots, published)` (mod.rs:241) → `Boot`. Warm: `chain_seed` = `blocks().load_record(resume).row_chain` (mod.rs:258-263, `unwrap_or(EMPTY_DIGEST)` only for the validated `unsafe_seed_begin` floor); `begin = (resume+1).max(config.start)`. Cold: everything default, `begin = config.start`, `chain_seed = EMPTY_DIGEST`.
-2. `progress.set_data_durable(durable_floor)` (mod.rs:287) — seeded so a restart with nothing left to ingest can still publish the durable tail. **`index_visible` is deliberately NOT seeded** (mod.rs:283-287): it must only reflect fragments actually re-written by `batch_flush`.
+2. `Progress::new(durable_floor, published)` (mod.rs) — `data_durable` seeds at the durable floor so a restart with nothing left to ingest can still publish its durable tail via the terminal flush; the head seeds at the **prior published head, deliberately NOT the checkpoint block** — a checkpoint above the last flush boundary has its tail index only in the snapshot (no fragments), so re-publishing it at boot would hide those blocks from indexed queries until the first post-resume flush.
 3. `end` resolution: explicit `end` wins; `count` → `begin + count - 1` (mod.rs:291-295).
 4. Spawn: `run_producer` (mod.rs:332), `run_data_track` (mod.rs:340), `run_index_track` (mod.rs:349) in one `JoinSet`; `run_publisher` separately (mod.rs:350) with a shutdown channel so it can always publish the final head.
 
@@ -76,10 +76,10 @@ producer (fetch, assign ids, emit signals) ─┬─► data track  (encode rows
 
 **Index track (`run_index_track`, index.rs:373-402), per message:**
 - `Block`: `accumulate(&b)` (index.rs:267-302 — per family, expand each record via `stream_entries_for_{log,tx,trace}` into page-relative bits + one dir entry per block; advance frontier/last_block) then `seal_ready()` (index.rs:306-318) — runs **per block**, sealing every granule the frontier just completed via `seal_family` (index.rs:418-542): union `state[g] ∪ tail[g]` → `Page` artifacts + `Bucket` + per-span `SealChain` fold (`SealDigest` over the exact persisted artifact bytes, stream-id-sorted; index.rs:478-489) + complete `OpenStreams` inventory keyed by seal block (index.rs:494-504) + once-per-group `PageCounts` manifests when the boundary leaves a page group (index.rs:517-536). Writes go through `write_all` (index.rs:229-248): depth-1 pipelined `with_writes` burst (bursts commit in order; commit overlaps the next block's compute).
-- `BatchFlush` → `batch_flush()` (index.rs:322-339): `flush_family` per family (index.rs:563-615 — each touched open page/dir entry written as a delta fragment AND unioned into `FamilyState`; tail drained; first-seen streams emit an `OpenStreams` delta), then `write_all` + `drain_write`, then `set_index_visible(last_block)` — unconditionally, so empty blocks / terminal flush still move the head.
+- `BatchFlush` → `batch_flush()` (index.rs:322-339): `flush_family` per family (index.rs:563-615 — each touched open page/dir entry written as a delta fragment AND unioned into `FamilyState`; tail drained; first-seen streams emit an `OpenStreams` delta), then `write_all` + `drain_write`, then `record_flush_boundary(last_block)` — unconditionally, so empty blocks / a terminal flush still yield a publishable boundary once `data_durable` covers it.
 - `Checkpoint(rx)` → `checkpoint()` (index.rs:344-370): `drain_write()`, await the data track's durability oneshot, then `persist_snapshot(snapshots, state, tail, last_block, frontier)`. **Does not flush fragments or advance the head** — snapshotting the tail too is what allows that (snapshot.rs:271-273).
 
-**Publisher (`run_publisher`, publisher.rs:100-128):** publish any already-durable head before parking (warm-resume case, publisher.rs:111-113); then on each `progress.changed()` pulse, `publish_if_ahead` (publisher.rs:74-98): load `BlockRecord` at `min(data_durable, index_visible)` (missing record = invariant violation, hard error) and `publisher.publish(head, record.row_chain)`. On shutdown signal: one final publish, return.
+**Publisher (`run_publisher`, publisher.rs):** publish any already-publishable head before parking; then on each `progress.changed()` pulse, `publish_if_ahead`: load `BlockRecord` at the newest recorded flush boundary at/below `data_durable` (missing record = invariant violation, hard error) and `publisher.publish(head, record.row_chain)`. On shutdown signal: one final publish, return.
 
 **Supervision (mod.rs:361-391):** first pipeline error/panic captured via `capture_first` → `abort_all`; cancellations from our own aborts are swallowed (`join_to_result`, mod.rs:409-420). Pipeline drained ⇒ send publisher shutdown; outcome = pipeline result AND publisher result.
 
@@ -171,13 +171,13 @@ Validation (config/ingest.rs:118-149): `end` xor `count`; `count ≥ 1`; `unsafe
 
 ## 8. Invariants
 
-1. **Published head = `min(data_durable, index_visible)`** — its `BlockRecord` is durable by construction; a missing record is a hard invariant violation (publisher.rs:72-74).
+1. **Published head = newest recorded flush boundary <= `data_durable`** — never raw `data_durable` (a mid-flush-batch head would strand seal-consumed tail bits the rebuild can't recover); its `BlockRecord` is durable by construction, so a missing record is a hard invariant violation (publisher.rs).
 2. **Gap-free up to head**: the store has every block from genesis (or the unsafe seed floor) through the published head; begin is always derived from store state, never operator-set (config/ingest.rs:46-50).
 3. **Idempotent re-ingest**: replaying blocks after a crash rewrites byte-identical records/blobs — same logical block, same prior chain value ⇒ same content digest and `row_chain` (data_track.rs:140-146); manifest `PageCounts` replays rewrite identical values (index.rs:128-137); `OpenStreams` re-emits are union-idempotent for readers (snapshot.rs:328-330).
 4. **Cadence independence**: `row_chain` and per-family `seal_chain` are deterministic functions of the logical block stream — independent of flush cadence, pack boundaries, checkpoint cadence, and restarts in either regime (rtt.rs:611-918). Seal digests cover final sealed artifact bytes, never fragments.
 5. **Checkpoint never outruns durability**: the snapshot persists only after the data track's flush barrier signals (the oneshot rendezvous) and after the index track's own in-flight burst drains (index.rs:344-357).
 6. **Snapshot commit atomicity**: blob first, manifest put is the single commit point; load verifies length+blake3; equal/lower generations never move the manifest backwards; GC keeps current+previous.
-7. **`batch_flush` advances the head without a sink barrier** because index artifact writes are inline-durable on return (mod.rs:28-30) — the one `drain_write()` before `set_index_visible` (index.rs:336-337) is the guard.
+7. **`batch_flush` records a publishable boundary without a sink barrier** because index artifact writes are inline-durable on return (mod.rs module doc) — the one `drain_write()` before `record_flush_boundary` (index.rs) is the guard.
 8. **Rebuild safety**: fragment rebuild only *reads* existing artifacts — it cannot corrupt published data (recover.rs:21-22); everything above the head frontier is clamped.
 9. **Exactly-once manifest emission**: a `(stream, page-group)` `PageCounts` row is written exactly once, when the seal boundary leaves the group; never merged with a stored row (index.rs:128-137, tests index.rs:919-1003).
 10. **Dir contiguity is checked at seal**: id gaps or out-of-order blocks in the directory chain are hard errors (`compact_dir_bucket`, index.rs:658-670); an empty sealed bucket is impossible (index.rs:678-682).
@@ -186,8 +186,8 @@ Validation (config/ingest.rs:118-149): `end` xor `count`; `count ≥ 1`; `unsafe
 
 - **Producer** — the fetch/assign/signal task; the only ordered cross-block stage.
 - **Data track** — the row-persistence half: encode → pack → blob flush; owns `data_durable`.
-- **Index track / index engine** — the query-index half: accumulate → seal → flush → checkpoint; owns `index_visible`.
-- **Publisher** — advances the reader-visible head to `min(data_durable, index_visible)` with the head's `row_chain`.
+- **Index track / index engine** — the query-index half: accumulate → seal → flush → checkpoint; records the flush boundaries.
+- **Publisher** — advances the reader-visible head to the newest flush boundary at/below `data_durable`, with the head's `row_chain`.
 - **Signaller** — producer-side struct holding the id frontier, both senders, and cadence counters.
 - **Family** — one of Log / Tx / Trace; everything index-side is `PerFamily`.
 - **Primary id / frontier** — per-family monotonically minted record id; frontier = next id.
@@ -199,7 +199,7 @@ Validation (config/ingest.rs:118-149): `end` xor `count`; `count ≥ 1`; `unsafe
 - **Fragment / delta** — open-region partial writes emitted at `BatchFlush` (page fragments keyed by flush block; dir fragments; open-streams delta rows) that make the open tail reader-visible before sealing.
 - **`OpenTail`** — current-batch delta since the last flush (per family).
 - **`OpenState`** — flushed-but-unsealed carry-over plus `sealed_id`, seal chain, and the sealed-page-count accumulator.
-- **BatchFlush** — the signal that drains the tail into fragments and advances `index_visible`; cadence adapts to distance-to-tip.
+- **BatchFlush** — the signal that drains the tail into fragments and records a publishable flush boundary; cadence adapts to distance-to-tip.
 - **Checkpoint** — the cross-track durability rendezvous that snapshots `OpenState`+`OpenTail`; **snapshot** is the persisted artifact it produces (snapshot.rs:19-21).
 - **Resume block** — last fully-durable block; engine continues at `resume + 1`.
 - **Row chain** — per-block chained blake3 digest over block content; stored in each `BlockRecord`; the standby verification spine.
@@ -214,7 +214,7 @@ Validation (config/ingest.rs:118-149): `end` xor `count`; `count ≥ 1`; `unsafe
 
 **Gotchas / surprising design choices:**
 - **"Branchless" is literal**: no mode flag anywhere; backfill behaviour emerges purely from `flush_interval(distance)` and `end` being a run bound (mod.rs:32-34). Docs should not describe "backfill mode" as code.
-- `index_visible` deliberately unseeded on resume while `data_durable` is seeded (mod.rs:283-287) — asymmetric on purpose; getting this wrong would publish heads covering non-durable fragments.
+- The head seed is the prior published head while `data_durable` seeds at the durable floor (mod.rs seed comment) — asymmetric on purpose; seeding the head at the checkpoint block would publish blocks whose tail index exists only in the snapshot, invisible to readers until the next flush.
 - The chain seed is keyed on recovery *regime*, not `resume == 0` — the genesis-warm-resume distinction (mod.rs:252-257) is subtle enough to have its own test.
 - `open_streams_seen` intentionally **not** in the snapshot; restores empty and the first flush idempotently re-emits inventory rows (snapshot.rs:328-330).
 - Checkpoints don't flush or advance the head at all — only because the tail rides the snapshot (snapshot.rs:271-273).

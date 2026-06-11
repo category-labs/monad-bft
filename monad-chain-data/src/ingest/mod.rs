@@ -18,16 +18,17 @@
 //! ```text
 //! producer (fetch, assign ids, emit signals) ─┬─► data track  (pack rows, write blobs)
 //!                                              └─► index engine (accumulate, seal, flush, write)
-//!                       publisher: head = min(data_durable, index_visible)
+//!                  publisher: head = newest flush boundary <= data_durable
 //! ```
 //!
 //! The index engine is branchless across modes: bits accumulate in [`OpenTail`];
 //! `seal` continuously writes completed granules (`OpenState[g] ∪ OpenTail[g]`);
 //! `batch_flush` writes each `OpenTail` entry as a fragment, carries it into
-//! [`OpenState`], and advances the reader horizon; `checkpoint` snapshots both
-//! once the data track's flush is durable — it neither writes fragments nor
-//! advances the head. Artifacts are written inline and durable on return, so
-//! `batch_flush` advances the head without a sink barrier.
+//! [`OpenState`], and records the tip as a publishable flush boundary;
+//! `checkpoint` snapshots both once the data track's flush is durable — it
+//! neither writes fragments nor records a boundary. Artifacts are written
+//! inline and durable on return, so `batch_flush` records the boundary without
+//! a sink barrier.
 //!
 //! There is no backfill/live mode: the engine always follows the tip ("backfill"
 //! is just the catch-up phase); the [`SignalPolicy`] cadences are the only knobs,
@@ -236,8 +237,6 @@ where
         "checkpoint_every_blocks must be positive"
     );
 
-    let progress = Arc::new(Progress::default());
-
     // The fragment rebuild path keys off the reader-visible watermark.
     let published = publisher.published_head().await?;
 
@@ -293,12 +292,17 @@ where
         },
     };
 
-    // Seed the data frontier (packs are durable through the resume block) so a
-    // restart with nothing left to ingest can still publish its already-durable
-    // tail. `index_visible` is NOT seeded — it must only reflect fragments
-    // actually re-written by `batch_flush`, so the published head can never
-    // cover fragments that aren't durable.
-    progress.set_data_durable(durable_floor);
+    // Seed the data frontier at the durable floor (the resume block on a warm
+    // start) so the terminal/first flush boundary at the resume block promotes
+    // immediately — a restart with nothing left to ingest still publishes its
+    // already-durable tail. The head seeds at the stored published head, NOT
+    // the floor: a checkpoint block above the last flush boundary has its tail
+    // index only in the snapshot (no fragments), so re-publishing it at boot
+    // would let indexed queries silently miss those blocks until the first
+    // post-resume flush. Beyond the seed, only `batch_flush` records
+    // publishable heads, so the published head can never cover index data that
+    // isn't durable as fragments or sealed artifacts.
+    let progress = Arc::new(Progress::new(durable_floor, published));
 
     // Resolve the stop ceiling now that the begin block is known; an explicit
     // `end` wins (at most one of end/count, validated upstream).

@@ -217,6 +217,13 @@ journalctl -u monad-chain-data-archiver -f
   `max(checkpoint, published_head)`; re-ingest of overlapping blocks is
   idempotent. Checkpoints land every 10k blocks by default
   (`engine.checkpoint_every_blocks`).
+- **Upgrade note (flush-boundary heads).** Builds since the flush-boundary
+  publisher only publish heads the fragment rebuild can recover from. A store
+  last written by an older build may hold a mid-pack head; before restarting
+  it under the new build, confirm the latest checkpoint block is at/ahead of
+  the published head (`chain-data-head` vs the resume-point log line) — the
+  normal backfill state. If the head is ahead, let the old build reach its
+  next checkpoint first, or plan a re-backfill.
 - **The process is fail-fast by design.** A source fetch error, an exhausted
   Scylla batch-write retry budget, or a persistent blob write failure aborts
   the pipeline — recovery is `Restart=always` + automatic resume. A

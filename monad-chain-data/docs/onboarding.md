@@ -311,9 +311,9 @@ producer     fetch block, assign sequential per-family primary ids, emit
 data track   frame-compress each row (RLP → zstd) into packed blobs; flush packs
              on a size threshold → advances `data_durable`
 index track  accumulate inverted-index bits + directory entries; seal completed
-             granules and flush fragments → advances `index_visible`
-publisher    CAS the published head forward to min(data_durable, index_visible)
-             under the write lease
+             granules and flush fragments → records flush boundaries
+publisher    CAS the published head forward to the newest recorded flush
+             boundary <= data_durable, under the write lease
 ```
 
 The two tracks are split so row compression runs in parallel with index
@@ -336,7 +336,7 @@ Three operations, identical in backfill and live:
   artifact and drop it from both.
 * **batch_flush** → write each OpenTail entry as a reader-visible *fragment*
   (keyed by the same stream id the query reads), carry it into OpenState,
-  and advance `index_visible` to the tip.
+  and record the tip as a publishable flush boundary.
 
 The only difference between backfill and live is the signal cadence
 (`SignalPolicy`) and the fetch plan (`FetchPlan`): backfill flushes/checkpoints
@@ -346,10 +346,12 @@ tip-drain so the head tracks the tip.
 ### Publication — the single atomic reveal
 
 Nothing is visible to a query until the publisher's CAS lands. The published head
-lives in one `PublicationState` row, and `min(data_durable, index_visible)`
-guarantees it never covers a block whose rows or index aren't both durable. A
-writer can crash mid-batch and a reader never sees a half-written block: the
-artifacts may be on disk, but the head never moved.
+lives in one `PublicationState` row, and the head is always an index flush
+boundary at/below `data_durable`: it never covers a block whose rows or index
+aren't both durable, and crash recovery's fragment rebuild always sees a
+complete flush (a mid-batch head would lose the tail bits a seal consumed
+without fragmenting). A writer can crash mid-batch and a reader never sees a
+half-written block: the artifacts may be on disk, but the head never moved.
 
 ### Write authority — who's allowed to publish
 

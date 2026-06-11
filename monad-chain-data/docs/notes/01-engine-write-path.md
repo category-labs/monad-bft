@@ -115,9 +115,9 @@ Validation on decode: bitmap blob header is cross-checked against the decoded pa
 
 ## 4. Write-path data flow (end to end)
 
-Pipeline shape (`ingest/mod.rs:16-34`): one **producer** fans the same block stream into two tracks over mpsc channels, a **data track** (rows) and an **index track** (the "branchless index engine"); a **publisher** advances the head to `min(data_durable, index_visible)`.
+Pipeline shape (`ingest/mod.rs:16-34`): one **producer** fans the same block stream into two tracks over mpsc channels, a **data track** (rows) and an **index track** (the "branchless index engine"); a **publisher** advances the head to the newest index flush boundary at/below `data_durable`.
 
-**Step 0 — boot.** `run_ingest` (`ingest/mod.rs:204-392`): read published head, run recovery, seed `chain_seed` from the resume block's stored `row_chain` (`:258-263`; `EMPTY_DIGEST` on cold), seed `data_durable`, spawn the four tasks.
+**Step 0 — boot.** `run_ingest` (`ingest/mod.rs:204-392`): read published head, run recovery, seed `chain_seed` from the resume block's stored `row_chain` (`:258-263`; `EMPTY_DIGEST` on cold), seed `Progress` (`data_durable` at the durable floor, the head at the prior published head), spawn the four tasks.
 
 **Step 1 — id assignment (producer).** `FamilyFrontier::assign` (`ingest/mod.rs:103-120`) mints contiguous per-family primary-id ranges for each `FinalizedBlock`, producing `AssignedBlock{number, ranges, block}` sent to both tracks as `IngestMsg::Block`. Cadence signals: `BatchFlush` (reader-visibility) and `Checkpoint` (snapshot rendezvous: data track signals durability via oneshot, index track awaits it — `ingest/mod.rs:132-144`).
 
@@ -144,11 +144,11 @@ Pipeline shape (`ingest/mod.rs:16-34`): one **producer** fans the same block str
 
 **Step 8 — burst commit.** `IndexEngine::write_all` (`index.rs:229-247`): drain the previous in-flight burst (depth-1 pipeline; bursts commit *in order*), then one `with_writes` over all `ArtifactWrite`s via `stage_artifact_write` (`:743-819`), which dispatches to the table `stage_*` methods so write keying matches the reader byte-for-byte.
 
-**Step 9 — `BatchFlush` (reader visibility).** `batch_flush` (`index.rs:322-339`) → `flush_family` (`:563-615`): each tail page becomes a `PageFragment` delta (keyed by flush block) AND is unioned into carry-over `state.pages`; newly seen streams of the single open page emit a flush-marker `OpenStreams` delta; tail dir entries become `DirFragment`s and move into `state.dir`. After `drain_write()` (writes durable), `set_index_visible(last_block)`.
+**Step 9 — `BatchFlush` (reader visibility).** `batch_flush` (`index.rs:322-339`) → `flush_family` (`:563-615`): each tail page becomes a `PageFragment` delta (keyed by flush block) AND is unioned into carry-over `state.pages`; newly seen streams of the single open page emit a flush-marker `OpenStreams` delta; tail dir entries become `DirFragment`s and move into `state.dir`. After `drain_write()` (writes durable), `record_flush_boundary(last_block)`.
 
 **Step 10 — `Checkpoint` (recovery only).** `IndexEngine::checkpoint` (`index.rs:344-370`): drain writes, await the data track's durability oneshot, `persist_snapshot(state, tail, last_block, frontier)`. Writes no fragments, advances no head.
 
-**Step 11 — publish.** `run_publisher` (`ingest/publisher.rs:100-128`) / `publish_if_ahead` (`:74-98`): when `min(data_durable, index_visible)` advances past `published`, load that block's `BlockRecord` and `PublicationTables::publish(head, record.row_chain)` — head and `head_row_chain` land in one row.
+**Step 11 — publish.** `run_publisher` / `publish_if_ahead` (`ingest/publisher.rs`): when the newest recorded flush boundary at/below `data_durable` advances past `published`, load that block's `BlockRecord` and `PublicationTables::publish(head, record.row_chain)` — head and `head_row_chain` land in one row.
 
 ## 5. Invariants and assumptions
 
@@ -167,7 +167,7 @@ Pipeline shape (`ingest/mod.rs:16-34`): one **producer** fans the same block str
 - **Zero-count dir fragments never staged** (`primary_dir.rs:175-179` doc; `if count > 0` at `index.rs:734`); straddling blocks are filed in every overlapped bucket (`fragment_bucket_starts`).
 - **Single open page per family per flush**: seal removes everything below the frontier and the open span is narrower than a page (`flush_family` debug_assert, `index.rs:571-582`).
 - **Snapshot never outruns durable rows**: checkpoint's cross-track oneshot rendezvous (`ingest/mod.rs:135-139`, `index.rs:344-358`).
-- **`index_visible` never seeded at boot** — only `batch_flush` sets it, so the published head can't cover fragments that aren't durable (`ingest/mod.rs:283-287`).
+- **Only `batch_flush` records publishable flush boundaries** — the boot head seed is the prior published head, never the checkpoint block (whose tail index lives only in the snapshot, with no fragments), so the published head can't cover index data that isn't durable as fragments or sealed artifacts (`ingest/mod.rs` seed comment; `ingest/publisher.rs`).
 - **Caches are read-populated only**; staging never seeds them (`session/mod.rs:53-55`) — no phantom values from failed sessions.
 - **Hash-index lookups can lead the head**: the hash→number entry lands before publication advances (`tables.rs:1099-1101`), so `Some(n)` doesn't guarantee block n is published.
 
@@ -194,10 +194,10 @@ Pipeline shape (`ingest/mod.rs:16-34`): one **producer** fans the same block str
 - **Clause (`IndexedClause`)** — one AND-term of an indexed query: a kind + OR'd values, expanding to stream ids.
 - **Row chain** — the per-block blake3 chain over logical block content (rows hashed uncompressed); stored in every `BlockRecord.row_chain` and mirrored as `head_row_chain` in `PublicationState`.
 - **Seal chain** — the per-family blake3 chain over sealed span artifacts (pages sorted by stream id + bucket bytes); one row per sealed span in `{fam}_seal_chain`.
-- **Publication state / head** — the single row publishing the reader-visible finalized head = `min(data_durable, index_visible)`; head 0 is the not-yet-queryable sentinel.
+- **Publication state / head** — the single row publishing the reader-visible finalized head = the newest flush boundary covered by `data_durable`; head 0 is the not-yet-queryable sentinel.
 - **Pack** — a group of consecutive encoded blocks flushed in one write session by the data track.
 - **Coalescer** — the `with_writes` post-pass merging consecutive block blobs into one ≤512 KiB physical object and rewriting their headers' physical locators.
-- **Checkpoint vs flush** — `BatchFlush` makes fragments reader-visible and advances the head; `Checkpoint` only snapshots the open working set for fast recovery (no fragments, no head movement).
+- **Checkpoint vs flush** — `BatchFlush` makes fragments reader-visible and records a publishable flush boundary; `Checkpoint` only snapshots the open working set for fast recovery (no fragments, no head movement).
 
 ## 7. Gotchas / surprising design choices
 

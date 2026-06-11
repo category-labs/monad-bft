@@ -318,7 +318,8 @@ where
     }
 
     /// Flush the tail as reader-visible fragments and carry it into the state;
-    /// once the fragments are durable, advance the reader horizon to the tip.
+    /// once the fragments are durable, record the tip as a publishable flush
+    /// boundary.
     async fn batch_flush(&mut self) -> Result<()> {
         let mut writes = Vec::new();
         for family in Family::ALL {
@@ -329,18 +330,23 @@ where
                 self.last_block,
             )?);
         }
-        // Inline writes are durable on return — no barrier. The horizon advances
-        // unconditionally so empty blocks / a terminal flush still move the head.
+        // Inline writes are durable on return — no barrier. The boundary is
+        // recorded unconditionally so empty blocks / a terminal flush still
+        // yield a publishable head once the data track covers it.
         self.write_all(writes).await?;
-        // The horizon must not advance past writes still in flight.
+        // The boundary must not be recorded past writes still in flight.
         self.drain_write().await?;
-        self.progress.set_index_visible(self.last_block);
+        // Everything at/below `last_block` — this flush's fragments AND every
+        // prior seal's artifacts — is durable here, so the block is safe for
+        // the publisher to expose as a head (the fragment rebuild depends on
+        // the head being a flush boundary; see `Progress`).
+        self.progress.record_flush_boundary(self.last_block);
         Ok(())
     }
 
     /// Recovery-only: snapshot the open working set without flushing fragments
-    /// or advancing the head. Awaits `data_durable` first so the snapshot's
-    /// resume block never outruns durable row data.
+    /// or recording a flush boundary. Awaits `data_durable` first so the
+    /// snapshot's resume block never outruns durable row data.
     async fn checkpoint(&mut self, data_durable: oneshot::Receiver<()>) -> Result<()> {
         // The snapshot's state assumes every issued burst is durable (a resume
         // must find the artifacts the checkpointed state says were sealed), so
