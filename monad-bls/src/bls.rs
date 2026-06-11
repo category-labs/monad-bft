@@ -289,10 +289,23 @@ impl std::fmt::Display for BlsSecretKeyView {
     }
 }
 
-/// BLS keypair
-pub struct BlsKeyPair {
-    pubkey: BlsPubKey,
-    secretkey: BlsSecretKey,
+/// BLS keypair.
+///
+/// Either holds the secret locally or proxies signing to a remote signer (e.g.
+/// a SEV-SNP enclave). The remote variant carries only the public key and a
+/// connection; the secret never enters this process.
+pub struct BlsKeyPair(BlsKeyPairInner);
+
+enum BlsKeyPairInner {
+    Local {
+        pubkey: BlsPubKey,
+        secretkey: BlsSecretKey,
+    },
+    #[cfg(feature = "remote-signer")]
+    Remote {
+        client: std::sync::Arc<monad_remote_signer_proto::RemoteSigner>,
+        pubkey: BlsPubKey,
+    },
 }
 
 impl BlsSecretKey {
@@ -317,10 +330,10 @@ impl BlsKeyPair {
     pub fn from_bytes(mut secret: impl AsMut<[u8]>) -> Result<Self, BlsError> {
         let secret_mut = secret.as_mut();
         let sk = BlsSecretKey::key_gen(secret_mut, &[])?;
-        let keypair = Self {
+        let keypair = Self(BlsKeyPairInner::Local {
             pubkey: sk.sk_to_pk(),
             secretkey: sk,
-        };
+        });
         Ok(keypair)
     }
 
@@ -331,10 +344,10 @@ impl BlsKeyPair {
         // blst validates the scalar (non-zero, < r).
         let sk = BlsSecretKey(blst_core::SecretKey::from_bytes(b).map_err(BlsError)?);
         b.zeroize();
-        let keypair = Self {
+        let keypair = Self(BlsKeyPairInner::Local {
             pubkey: sk.sk_to_pk(),
             secretkey: sk,
-        };
+        });
         Ok(keypair)
     }
 
@@ -342,24 +355,72 @@ impl BlsKeyPair {
         let dst = b"monad-bls-keygen";
         let ikm_mut = ikm.as_mut();
         let sk = BlsSecretKey::key_gen(ikm_mut, dst)?;
-        let keypair = Self {
+        let keypair = Self(BlsKeyPairInner::Local {
             pubkey: sk.sk_to_pk(),
             secretkey: sk,
-        };
+        });
         Ok(keypair)
     }
 
+    /// Construct a keypair that proxies signing to a remote signer. The private
+    /// key stays inside the signer; this fetches the public key and holds only
+    /// that plus the shared client (which should also back the secp remote
+    /// keypair so one enclave serves both).
+    #[cfg(feature = "remote-signer")]
+    pub fn remote(
+        client: std::sync::Arc<monad_remote_signer_proto::RemoteSigner>,
+    ) -> Result<Self, monad_remote_signer_proto::ProtoError> {
+        let pubkeys = client.pubkeys()?;
+        let pubkey = BlsPubKey::uncompress(&pubkeys.bls).map_err(|_| {
+            monad_remote_signer_proto::protocol::ProtoError::Malformed(
+                "remote signer returned an invalid bls pubkey",
+            )
+        })?;
+        Ok(Self(BlsKeyPairInner::Remote { client, pubkey }))
+    }
+
     pub fn sign<SD: SigningDomain>(&self, msg: &[u8]) -> BlsSignature {
-        let msg = [SD::PREFIX, msg].concat();
-        self.secretkey.0.sign(&msg, DST, &[]).into()
+        self.sign_prefixed(&[SD::PREFIX, msg].concat())
+    }
+
+    /// Sign an already-prefixed message (`SD::PREFIX || msg`) without
+    /// re-applying the signing-domain prefix.
+    ///
+    /// This is the raw signing primitive shared by [`BlsKeyPair::sign`] and the
+    /// remote signer: the node concatenates the prefix host-side and the enclave
+    /// (or local key) signs the result with `DST`, needing no signing-domain
+    /// knowledge.
+    pub fn sign_prefixed(&self, prefixed_msg: &[u8]) -> BlsSignature {
+        match &self.0 {
+            BlsKeyPairInner::Local { secretkey, .. } => {
+                secretkey.0.sign(prefixed_msg, DST, &[]).into()
+            }
+            #[cfg(feature = "remote-signer")]
+            BlsKeyPairInner::Remote { client, .. } => {
+                let bytes = client
+                    .sign_bls(prefixed_msg)
+                    .expect("remote signer bls sign failed");
+                BlsSignature::deserialize(&bytes)
+                    .expect("remote signer returned an invalid bls signature")
+            }
+        }
     }
 
     pub fn privkey_view(&self) -> BlsSecretKeyView {
-        self.secretkey.sk_view()
+        match &self.0 {
+            BlsKeyPairInner::Local { secretkey, .. } => secretkey.sk_view(),
+            // The secret lives in the remote signer and is unavailable here.
+            #[cfg(feature = "remote-signer")]
+            BlsKeyPairInner::Remote { .. } => BlsSecretKeyView(Vec::new()),
+        }
     }
 
     pub fn pubkey(&self) -> BlsPubKey {
-        self.pubkey
+        match &self.0 {
+            BlsKeyPairInner::Local { pubkey, .. } => *pubkey,
+            #[cfg(feature = "remote-signer")]
+            BlsKeyPairInner::Remote { pubkey, .. } => *pubkey,
+        }
     }
 }
 

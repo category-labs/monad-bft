@@ -39,10 +39,14 @@ use serde_with::serde_as;
 const MAGIC_BYTE: u8 = 0xCD;
 
 const _: () = assert!(
-    size_of::<MockSecpKeyPair>() == size_of::<crate::secp::KeyPair>()
-        && size_of::<MockSecpPubKey>() == size_of::<crate::secp::PubKey>()
+    size_of::<MockSecpPubKey>() == size_of::<crate::secp::PubKey>()
         && size_of::<MockSecpSignature>() == size_of::<crate::secp::SecpSignature>(),
 );
+
+// With the `remote-signer` feature, `KeyPair` becomes an enum that can also
+// hold a remote client, so it is intentionally larger than a bare secp keypair.
+#[cfg(not(feature = "remote-signer"))]
+const _: () = assert!(size_of::<MockSecpKeyPair>() == size_of::<crate::secp::KeyPair>());
 
 #[serde_as]
 #[derive(

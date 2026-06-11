@@ -18,6 +18,7 @@ use std::{
     ffi::OsStr,
     path::{Path, PathBuf},
     str::FromStr,
+    sync::Arc,
     time::Duration,
 };
 
@@ -29,6 +30,7 @@ use monad_consensus_types::validator_data::ValidatorsConfigFile;
 use monad_control_panel::TracingReload;
 use monad_keystore::keystore::Keystore;
 use monad_node_config::{ForkpointConfig, MonadNodeConfig, ValidatorsConfigType};
+use monad_remote_signer_proto::{RemoteSigner, TransportConfig};
 use monad_secp::KeyPair;
 use monad_types::Round;
 use reqwest::{blocking::Client, Url};
@@ -104,6 +106,10 @@ impl NodeState {
             statesync_sq_thread_cpu,
             otel_endpoint,
             keystore_password,
+            remote_signer_vsock_cid,
+            remote_signer_vsock_port,
+            remote_signer_unix,
+            remote_signer_pool,
             record_metrics_interval_seconds,
             metrics,
             metrics_labels,
@@ -118,26 +124,67 @@ impl NodeState {
 
         let keystore_password = keystore_password.as_deref().unwrap_or("");
 
-        let secp_key = load_secp256k1_keypair(&secp_identity, keystore_password)?;
+        let remote_signer = remote_signer_transport(
+            remote_signer_vsock_cid,
+            remote_signer_vsock_port,
+            remote_signer_unix,
+        );
+
+        let (secp_key, router_key, bls_key) = match remote_signer {
+            Some(transport) => {
+                // Offloaded signing: keys live only inside the remote signer
+                // (e.g. a SEV-SNP enclave). This process holds public keys and a
+                // connection, never private key material.
+                let client = Arc::new(RemoteSigner::connect(transport, remote_signer_pool)
+                    .map_err(|e| NodeSetupError::Custom {
+                        kind: ErrorKind::Io,
+                        msg: format!("failed to connect to remote signer: {e}"),
+                    })?);
+                let remote_secp = || {
+                    KeyPair::remote(Arc::clone(&client)).map_err(|e| NodeSetupError::Custom {
+                        kind: ErrorKind::Io,
+                        msg: format!("remote signer secp key unavailable: {e}"),
+                    })
+                };
+                let secp_key = remote_secp()?;
+                let router_key = remote_secp()?;
+                let bls_key =
+                    BlsKeyPair::remote(Arc::clone(&client)).map_err(|e| NodeSetupError::Custom {
+                        kind: ErrorKind::Io,
+                        msg: format!("remote signer bls key unavailable: {e}"),
+                    })?;
+                info!(
+                    "Using remote signer; node holds no private key material. \
+                     secp pubkey=0x{}, bls pubkey=0x{}",
+                    hex::encode(secp_key.pubkey().bytes_compressed()),
+                    hex::encode(bls_key.pubkey().compress()),
+                );
+                (secp_key, router_key, bls_key)
+            }
+            None => {
+                let secp_key = load_secp256k1_keypair(&secp_identity, keystore_password)?;
+                info!(
+                    "Loaded secp256k1 key from {:?}, pubkey=0x{}",
+                    &secp_identity,
+                    hex::encode(secp_key.pubkey().bytes_compressed())
+                );
+                // FIXME this is somewhat jank.. is there a better way?
+                let router_key = load_secp256k1_keypair(&secp_identity, keystore_password)?;
+                info!(
+                    "Loaded router key from {:?}, pubkey=0x{}",
+                    &secp_identity,
+                    hex::encode(router_key.pubkey().bytes_compressed())
+                );
+                let bls_key = load_bls12_381_keypair(&bls_identity, keystore_password)?;
+                info!(
+                    "Loaded bls12_381 key from {:?}, pubkey=0x{}",
+                    &bls_identity,
+                    hex::encode(bls_key.pubkey().compress())
+                );
+                (secp_key, router_key, bls_key)
+            }
+        };
         let secp_pubkey = secp_key.pubkey();
-        info!(
-            "Loaded secp256k1 key from {:?}, pubkey=0x{}",
-            &secp_identity,
-            hex::encode(secp_pubkey.bytes_compressed())
-        );
-        // FIXME this is somewhat jank.. is there a better way?
-        let router_key = load_secp256k1_keypair(&secp_identity, keystore_password)?;
-        info!(
-            "Loaded router key from {:?}, pubkey=0x{}",
-            &secp_identity,
-            hex::encode(router_key.pubkey().bytes_compressed())
-        );
-        let bls_key = load_bls12_381_keypair(&bls_identity, keystore_password)?;
-        info!(
-            "Loaded bls12_381 key from {:?}, pubkey=0x{}",
-            &bls_identity,
-            hex::encode(bls_key.pubkey().compress())
-        );
 
         let node_config: MonadNodeConfig =
             toml::from_str(&std::fs::read_to_string(&node_config_path)?)?;
@@ -462,6 +509,21 @@ fn get_latest_configs(
             replace_local_configs(&remote_forkpoint_config, &remote_validators_config);
             Ok((remote_forkpoint_config, remote_validators_config))
         }
+    }
+}
+
+/// Resolve the remote-signer transport from CLI flags, or `None` for local
+/// keystore loading. The CLI guarantees vsock cid/port come together and that
+/// the unix flag is mutually exclusive with them.
+fn remote_signer_transport(
+    cid: Option<u32>,
+    port: Option<u32>,
+    unix: Option<PathBuf>,
+) -> Option<TransportConfig> {
+    match (cid, port, unix) {
+        (Some(cid), Some(port), _) => Some(TransportConfig::Vsock { cid, port }),
+        (_, _, Some(path)) => Some(TransportConfig::Unix { path }),
+        _ => None,
     }
 }
 

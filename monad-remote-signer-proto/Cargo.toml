@@ -1,0 +1,20 @@
+[package]
+name = "monad-remote-signer-proto"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+bench = false
+
+# Wire protocol + client + transport for the SEV-SNP remote signer.
+# Deliberately has NO dependency on monad-secp / monad-bls (deals only in raw
+# byte arrays) so those crates can depend on this one without a cycle.
+
+[dependencies]
+crossbeam-queue = "0.3"
+hdrhistogram = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+vsock = "0.5"

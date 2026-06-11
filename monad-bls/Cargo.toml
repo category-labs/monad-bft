@@ -8,8 +8,14 @@ edition = "2021"
 [lib]
 bench = false
 
+[features]
+# Enables the `BlsKeyPair::Remote` variant, which offloads signing to a remote
+# signer (e.g. a SEV-SNP enclave) over a vsock/unix transport.
+remote-signer = ["dep:monad-remote-signer-proto"]
+
 [dependencies]
 monad-crypto = { workspace = true }
+monad-remote-signer-proto = { workspace = true, optional = true }
 monad-types = { workspace = true }
 monad-validator = { workspace = true }
 

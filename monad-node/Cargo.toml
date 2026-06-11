@@ -13,7 +13,7 @@ default = ["jemallocator"]
 jemallocator = ["tikv-jemallocator", "monad-pprof/jemallocator"]
 
 [dependencies]
-monad-bls = { workspace = true }
+monad-bls = { workspace = true, features = ["remote-signer"] }
 monad-chain-config = { workspace = true }
 monad-consensus-state = { workspace = true }
 monad-consensus-types = { workspace = true }
@@ -34,8 +34,9 @@ monad-peer-discovery = { workspace = true }
 monad-peer-score = { workspace = true }
 monad-pprof = { workspace = true }
 monad-raptorcast = { workspace = true }
+monad-remote-signer-proto = { workspace = true }
 monad-router-multi = { workspace = true }
-monad-secp = { workspace = true }
+monad-secp = { workspace = true, features = ["remote-signer"] }
 monad-state = { workspace = true }
 monad-statesync-executor = { workspace = true }
 monad-triedb-utils = { workspace = true }
