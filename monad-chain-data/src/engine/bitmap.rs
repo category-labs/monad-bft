@@ -93,8 +93,26 @@ pub(crate) fn decode_page(bytes: Bytes) -> Result<Arc<DecodedBitmapPage>> {
     let artifact = decode_bitmap_page_artifact(bytes.as_ref())?
         .ok_or(MonadChainDataError::Decode("invalid bitmap page artifact"))?;
     let blob = decode_bitmap_blob(artifact.bitmap_blob.as_ref())?;
+    // The writer duplicates the inner blob header into the outer artifact
+    // header, and the query-time page skip reads the OUTER copy (see
+    // `engine::query::bitmap::overlaps`). `decode_bitmap_blob` validated the
+    // inner header against the payload; reject a divergent outer copy so a
+    // corrupt too-narrow header fails loud instead of silently dropping the
+    // page from results.
+    let expected = BitmapPageMeta {
+        min_offset: blob.min_offset,
+        max_offset: blob.max_offset,
+        count: blob.count,
+    };
+    if artifact.meta != expected {
+        return Err(MonadChainDataError::Decode(
+            "bitmap page artifact header does not match blob header",
+        ));
+    }
+    // Built from the payload-validated inner triple, not the outer copy, so
+    // downstream readers cannot depend on the unvalidated bytes.
     Ok(Arc::new(DecodedBitmapPage {
-        meta: artifact.meta,
+        meta: expected,
         bitmap: blob.bitmap,
     }))
 }
@@ -329,6 +347,8 @@ pub fn decode_bitmap_blob(bytes: &[u8]) -> Result<DecodedBitmapFragment> {
     // Query-time skip decisions trust `min_offset`/`max_offset` (see
     // `engine::query::bitmap::overlaps`); a corrupt too-narrow header would
     // silently drop a page, so validate it against the decoded payload.
+    // (`decode_page` extends this defense to the outer artifact header by
+    // requiring it to match the triple validated here.)
     let header_matches_payload = match bitmap.min().zip(bitmap.max()) {
         Some((actual_min, actual_max)) => {
             u64::from(count) == bitmap.len() && min_offset == actual_min && max_offset == actual_max
@@ -938,5 +958,35 @@ mod tests {
                 .bitmap,
             bitmap_blob.bitmap
         );
+    }
+
+    #[test]
+    fn decode_page_rejects_outer_header_diverging_from_blob_header() {
+        let blob = sample_blob();
+        let artifact = BitmapPageArtifact {
+            meta: BitmapPageMeta {
+                min_offset: blob.min_offset,
+                max_offset: blob.max_offset,
+                count: blob.count,
+            },
+            bitmap_blob: encode_bitmap_blob(&blob).unwrap(),
+        };
+        // The pristine artifact decodes with the (matching) outer meta.
+        let decoded = decode_page(encode_bitmap_page_artifact(&artifact)).unwrap();
+        assert_eq!(decoded.meta, artifact.meta);
+
+        // Corrupt the OUTER `max_offset` to a too-narrow value; the inner blob
+        // header still matches its payload, so only the cross-check catches
+        // the divergence (the query page skip reads the outer copy). The
+        // artifact header is `[version u8][min u32][max u32][count u32]`.
+        const OUTER_MAX_OFFSET: std::ops::Range<usize> = 1 + 4..1 + 4 + 4;
+        let mut corrupt = encode_bitmap_page_artifact(&artifact).to_vec();
+        corrupt[OUTER_MAX_OFFSET].copy_from_slice(&10u32.to_be_bytes());
+        assert!(matches!(
+            decode_page(Bytes::from(corrupt)),
+            Err(MonadChainDataError::Decode(
+                "bitmap page artifact header does not match blob header"
+            ))
+        ));
     }
 }
