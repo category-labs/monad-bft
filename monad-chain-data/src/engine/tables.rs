@@ -86,13 +86,19 @@ impl Default for DictConfig {
 }
 
 impl DictConfig {
+    /// `sample_span_blocks` with the documented read-time clamp applied. Every
+    /// consumer of the span (training and the prewarm trigger) goes through
+    /// this, so they agree on the corpus size by construction.
+    pub fn clamped_sample_span(&self) -> u64 {
+        self.sample_span_blocks.min(self.epoch_blocks)
+    }
+
     /// Clamped training sample range `[start, end)` for version `V >= 1`,
     /// drawn from the leading blocks of epoch `V - 1`.
     pub fn training_range(&self, version: u32) -> (u64, u64) {
         let prev_epoch = u64::from(version - 1);
         let start = prev_epoch * self.epoch_blocks;
-        let span = self.sample_span_blocks.min(self.epoch_blocks);
-        (start, start + span)
+        (start, start + self.clamped_sample_span())
     }
 }
 

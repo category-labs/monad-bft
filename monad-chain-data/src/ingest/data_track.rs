@@ -34,7 +34,7 @@ use crate::{
         digest::{block_content_digest, chain, family_content_digest, ChainDigest},
         family::PerFamily,
         row_codec::RowCodec,
-        tables::Tables,
+        tables::{DictConfig, Tables},
     },
     error::{MonadChainDataError, Result},
     ingest_types::Hash32,
@@ -158,9 +158,8 @@ where
     B: BlobStore,
     R: CodecResolver,
 {
-    let dict_config = tables.dicts().config();
+    let dict_config = *tables.dicts().config();
     let epoch_blocks = dict_config.epoch_blocks;
-    let sample_span_blocks = dict_config.sample_span_blocks;
     debug_assert!(epoch_blocks > 0, "epoch_blocks must be positive");
     // Encode is pure CPU; cap parallelism at core count.
     let encode_concurrency = std::thread::available_parallelism()
@@ -244,8 +243,7 @@ where
         maybe_prewarm(
             &resolver,
             pipeline.progress.data_durable(),
-            epoch_blocks,
-            sample_span_blocks,
+            &dict_config,
             &mut last_prewarmed,
         );
     }
@@ -351,18 +349,29 @@ where
     }
 }
 
-/// Once the leading `sample_span_blocks` blocks of the current epoch are durable, the
+/// Once the leading clamped-span blocks of the current epoch are durable, the
 /// NEXT epoch's dict corpus is complete: hint the resolver to pre-train. Keyed
 /// on the durable frontier so the sampled blocks are persisted before training
 /// reads them back; idempotent per epoch via `last_prewarmed`.
+///
+/// The span MUST be the same clamped value [`DictConfig::training_range`]
+/// samples (`clamped_sample_span`): the corpus is `[start, start + span)`, so
+/// it is durable once `data_durable` reaches `start + span - 1` — with
+/// `sample_span_blocks >= epoch_blocks` that is the epoch's last block, the
+/// raw span would never trigger.
 fn maybe_prewarm<R: CodecResolver>(
     resolver: &R,
     data_durable: u64,
-    epoch_blocks: u64,
-    sample_span_blocks: u64,
+    dict_config: &DictConfig,
     last_prewarmed: &mut u32,
 ) {
-    if epoch_blocks == 0 || data_durable % epoch_blocks < sample_span_blocks {
+    let epoch_blocks = dict_config.epoch_blocks;
+    let span = dict_config.clamped_sample_span();
+    // `span <= 1`: prewarm buys nothing (`ensure` trains a one-block corpus
+    // trivially at the barrier), and cold boot seeds `data_durable = 0` for
+    // "nothing durable" — a span-1 trigger there would pre-train against a
+    // missing corpus and durably persist the empty-dict sentinel for epoch 1.
+    if epoch_blocks == 0 || span <= 1 || data_durable % epoch_blocks + 1 < span {
         return;
     }
     let next = data_durable / epoch_blocks + 1;
@@ -491,38 +500,88 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
+
+    struct Fake(Mutex<Vec<u32>>);
+    impl CodecResolver for Fake {
+        async fn ensure(&self, _v: u32) -> Result<Codecs> {
+            Err(MonadChainDataError::Backend("unused".into()))
+        }
+        fn prewarm(&self, version: u32) {
+            self.0.lock().unwrap().push(version);
+        }
+    }
+
+    fn dict_config(epoch_blocks: u64, sample_span_blocks: u64) -> DictConfig {
+        DictConfig {
+            epoch_blocks,
+            sample_span_blocks,
+            ..DictConfig::default()
+        }
+    }
 
     #[test]
     fn maybe_prewarm_fires_once_per_epoch_when_corpus_durable() {
-        use std::sync::Mutex;
-
-        struct Fake(Mutex<Vec<u32>>);
-        impl CodecResolver for Fake {
-            async fn ensure(&self, _v: u32) -> Result<Codecs> {
-                Err(MonadChainDataError::Backend("unused".into()))
-            }
-            fn prewarm(&self, version: u32) {
-                self.0.lock().unwrap().push(version);
-            }
-        }
-
         let fake = Fake(Mutex::new(Vec::new()));
         let mut last = 0u32;
-        let (epoch_blocks, sample_span_blocks) = (100u64, 60u64);
+        let cfg = dict_config(100, 60);
         let fired = || fake.0.lock().unwrap().clone();
 
-        // Before the sampling window completes: no pre-train.
-        maybe_prewarm(&fake, 59, epoch_blocks, sample_span_blocks, &mut last);
+        // Corpus for epoch 1 is blocks [0, 60); through 58 it is incomplete.
+        maybe_prewarm(&fake, 58, &cfg, &mut last);
         assert!(fired().is_empty());
-        // Corpus for epoch 1 complete (durable pos 60 >= 60): pre-train epoch 1.
-        maybe_prewarm(&fake, 60, epoch_blocks, sample_span_blocks, &mut last);
+        // Block 59 durable completes the corpus: pre-train epoch 1.
+        maybe_prewarm(&fake, 59, &cfg, &mut last);
         assert_eq!(fired(), vec![1]);
         // Further durable progress in the same epoch: no repeat.
-        maybe_prewarm(&fake, 99, epoch_blocks, sample_span_blocks, &mut last);
+        maybe_prewarm(&fake, 99, &cfg, &mut last);
         assert_eq!(fired(), vec![1]);
-        // Next epoch's corpus complete: pre-train epoch 2.
-        maybe_prewarm(&fake, 160, epoch_blocks, sample_span_blocks, &mut last);
+        // Next epoch's corpus [100, 160) complete: pre-train epoch 2.
+        maybe_prewarm(&fake, 159, &cfg, &mut last);
         assert_eq!(fired(), vec![1, 2]);
+    }
+
+    /// `sample_span_blocks >= epoch_blocks` is a tolerated config (clamped to
+    /// `epoch_blocks`, see `DictConfig::training_range`): the corpus is the
+    /// whole previous epoch, complete at its last durable block. The raw span
+    /// would make the trigger unreachable.
+    #[test]
+    fn maybe_prewarm_fires_with_span_clamped_to_epoch() {
+        let fake = Fake(Mutex::new(Vec::new()));
+        let mut last = 0u32;
+        let cfg = dict_config(100, 900_000);
+        let fired = || fake.0.lock().unwrap().clone();
+
+        // Epoch 0 not fully durable: corpus for epoch 1 incomplete.
+        maybe_prewarm(&fake, 98, &cfg, &mut last);
+        assert!(fired().is_empty());
+        // Last block of epoch 0 durable: pre-train epoch 1, exactly once.
+        maybe_prewarm(&fake, 99, &cfg, &mut last);
+        maybe_prewarm(&fake, 150, &cfg, &mut last);
+        assert_eq!(fired(), vec![1]);
+        // Last block of epoch 1 durable: pre-train epoch 2.
+        maybe_prewarm(&fake, 199, &cfg, &mut last);
+        assert_eq!(fired(), vec![1, 2]);
+    }
+
+    /// A clamped span <= 1 never prewarms: `ensure` trains a one-block corpus
+    /// trivially at the barrier, and cold boot seeds `data_durable = 0` for
+    /// "nothing durable", so firing there would pre-train against a missing
+    /// corpus and persist the empty-dict sentinel.
+    #[test]
+    fn maybe_prewarm_skips_degenerate_span() {
+        let fake = Fake(Mutex::new(Vec::new()));
+        let mut last = 0u32;
+
+        // sample_span_blocks == 1: no fire on the cold-boot sentinel or later.
+        let cfg = dict_config(100, 1);
+        maybe_prewarm(&fake, 0, &cfg, &mut last);
+        maybe_prewarm(&fake, 100, &cfg, &mut last);
+        // epoch_blocks == 1 clamps any span to 1: same skip.
+        let cfg = dict_config(1, 900_000);
+        maybe_prewarm(&fake, 0, &cfg, &mut last);
+        assert!(fake.0.lock().unwrap().is_empty());
     }
 }
