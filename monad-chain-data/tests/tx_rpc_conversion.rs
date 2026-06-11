@@ -18,7 +18,7 @@
 use alloy_consensus::{SignableTransaction, TxEnvelope, TxLegacy};
 use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{Signature, TxKind, U256};
-use monad_chain_data::{Address, Bytes, TxEntry, B256};
+use monad_chain_data::{Address, Bytes, StoredTxEnvelope, B256};
 
 #[test]
 fn to_rpc_transaction_carries_envelope_sender_and_block_context() {
@@ -38,16 +38,15 @@ fn to_rpc_transaction_carries_envelope_sender_and_block_context() {
     let mut signed_tx_bytes = Vec::new();
     TxEnvelope::Legacy(signed).encode_2718(&mut signed_tx_bytes);
 
-    let tx = TxEntry {
-        block_number: 123,
-        block_hash: B256::repeat_byte(0xbb),
-        tx_index: 4,
+    let tx = StoredTxEnvelope {
         tx_hash: B256::repeat_byte(0xcc),
         sender: Address::repeat_byte(0xdd),
         signed_tx_bytes: signed_tx_bytes.into(),
-    };
+    }
+    .into_tx_entry(123, B256::repeat_byte(0xbb), 4)
+    .expect("decode entry");
 
-    let rpc = tx.to_rpc_transaction().expect("convert");
+    let rpc = tx.to_rpc_transaction();
 
     // The rpc projection.
     assert_eq!(rpc.block_number, Some(123));
@@ -56,11 +55,10 @@ fn to_rpc_transaction_carries_envelope_sender_and_block_context() {
     assert_eq!(rpc.effective_gas_price, None);
     assert_eq!(rpc.inner.signer(), Address::repeat_byte(0xdd));
     assert_eq!(rpc.inner.inner().tx_type() as u8, 0);
+    // The envelope hash is seeded from the stored tx_hash, never recomputed.
+    assert_eq!(*rpc.inner.inner().tx_hash(), B256::repeat_byte(0xcc));
 
-    // TxEntry decode accessors over the same envelope.
-    assert_eq!(tx.to().expect("to"), Some(recipient));
-    assert_eq!(
-        tx.selector().expect("selector"),
-        Some([0x11, 0x22, 0x33, 0x44])
-    );
+    // TxEntry accessors over the same envelope.
+    assert_eq!(tx.to(), Some(recipient));
+    assert_eq!(tx.selector(), Some([0x11, 0x22, 0x33, 0x44]));
 }

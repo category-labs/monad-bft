@@ -706,10 +706,16 @@ where
         .map_ok(|items| stream::iter(items.into_iter().map(Ok)))
         .try_flatten();
 
-    // Stage 1 — page intersection + resolve, ramping fan-out (order-preserving
-    // like `buffered`), so the flattened location stream stays globally
-    // query-ordered while a limit-bounded query that fills from its first
-    // page never intersects a full fan-out of speculative pages.
+    // Stage 1 — page intersection plus an eager resolve of the first
+    // `limit + 1` bits (need + the carry probe), ramping fan-out
+    // (order-preserving like `buffered`): the page stream stays globally
+    // query-ordered, a limit-bounded query that fills from its first page
+    // never intersects a full fan-out of speculative pages, and the resolves
+    // a page will almost surely need overlap across in-flight pages. The
+    // remaining bits resolve lazily in stage 2 (`LocationCursor`) — a hot
+    // stream packs tens of thousands of candidates into one 64Ki-id page,
+    // and only trace post-filter refills ever read past the prefix.
+    let resolve_prefix = limit.saturating_add(1);
     let page_futures = work_item_stream.map(|item| {
         let resolver = &resolver;
         let stats = Arc::clone(&stats);
@@ -725,56 +731,68 @@ where
                 )
                 .await?
             else {
-                return Ok::<_, MonadChainDataError>(Vec::new());
+                return Ok::<_, MonadChainDataError>(None);
             };
             let intersect_us = intersect_started.elapsed().as_micros() as u64;
             IndexedQueryStats::add_count(&stats.page_intersect_us, intersect_us);
             IndexedQueryStats::add_count(&stats.pages, 1);
+            let bitmap = page_bitmap.into_owned();
+            IndexedQueryStats::add_count(&stats.bitmap_candidates, bitmap.len());
 
-            let mut locations = Vec::new();
-            let mut candidates = 0u64;
             let resolve_started = Instant::now();
-            // Roaring's iterator is double-ended, so descending order
-            // reverses in place with no intermediate collect.
-            for offset in order.iterate(page_bitmap.as_bitmap().iter()) {
-                candidates += 1;
+            let mut bits = bitmap.into_iter();
+            let mut resolved = Vec::new();
+            while resolved.len() < resolve_prefix {
+                let bit = match order {
+                    QueryOrder::Ascending => bits.next(),
+                    QueryOrder::Descending => bits.next_back(),
+                };
+                let Some(offset) = bit else { break };
                 let id = PrimaryId::new(item.page_start + u64::from(offset));
-                locations.push(resolver.resolve(id).await?);
+                resolved.push(resolver.resolve(id).await?);
             }
             let resolve_us = resolve_started.elapsed().as_micros() as u64;
             IndexedQueryStats::add_count(&stats.page_resolve_us, resolve_us);
-            IndexedQueryStats::add_count(&stats.bitmap_candidates, candidates);
-            IndexedQueryStats::add_count(&stats.resolved_locations, locations.len() as u64);
+            IndexedQueryStats::add_count(&stats.resolved_locations, resolved.len() as u64);
             debug!(
                 family = ?family,
                 page_start = item.page_start,
                 from_offset = item.from_offset,
                 to_offset = item.to_offset,
-                candidates,
-                resolved_locations = locations.len() as u64,
+                resolved_prefix = resolved.len(),
                 intersect_us,
                 resolve_us,
                 "chain-data indexed page future stats"
             );
-            Ok(locations)
+            Ok(Some(ResolvedPage {
+                page_start: item.page_start,
+                prefix: resolved.into_iter(),
+                bits,
+            }))
         }
     });
-    let location_stream = ramping_buffered(
+    let page_stream = ramping_buffered(
         page_futures,
         PAGE_INTERSECT_INITIAL_CONCURRENCY,
         tables.query_config().page_intersect_concurrency,
-    )
-    // Flatten each page's ordered location vec into one ordered stream.
-    .map_ok(|locations| stream::iter(locations.into_iter().map(Ok)))
-    .try_flatten();
+    );
 
-    // Stage 2 — count-gated, byte-budgeted block materialization: pull the
-    // ordered location stream into per-block groups until the candidate count
-    // covers the records still needed, then materialize that batch
-    // concurrently. Families that emit every candidate (logs/txs/transfers)
-    // never decode past the limit block; only the trace post-filter
-    // (`is_top_level: Some(false)`) can drop candidates and force another loop.
-    let mut location_stream = Box::pin(location_stream);
+    // Stage 2 — count-gated, byte-budgeted block materialization: pull
+    // resolved locations off the ordered page stream into per-block groups
+    // until the candidate count covers the records still needed, then
+    // materialize that batch concurrently. Bits resolve lazily as they are
+    // pulled, so a limit-bounded query landing on a hot stream resolves
+    // ~limit bits, not whole 64Ki-id pages. Families that emit every
+    // candidate (logs/txs/transfers) never decode past the limit block; only
+    // the trace post-filter (`is_top_level: Some(false)`) can drop candidates
+    // and force another loop.
+    let mut location_stream = LocationCursor {
+        pages: Box::pin(page_stream),
+        current: None,
+        resolver: &resolver,
+        order,
+        stats: Arc::clone(&stats),
+    };
     // Location straddling the last group's block boundary, stashed by
     // `next_block_group`; `carry.is_some()` answers "is there a later block?"
     // for the cursor without an extra resolve.
@@ -882,16 +900,76 @@ where
     })
 }
 
+/// One intersected page off stage 1: an eagerly-resolved location prefix
+/// (covering the records a request can still need, resolved concurrently
+/// across in-flight pages) plus the remaining bits, resolved lazily only if
+/// post-filter refills read past the prefix.
+struct ResolvedPage {
+    page_start: u64,
+    prefix: std::vec::IntoIter<ResolvedPrimaryIdLocation>,
+    /// Owned bit iterator (double-ended, so descending order walks
+    /// back-to-front in place).
+    bits: roaring::bitmap::IntoIter,
+}
+
+/// Ordered location source for stage 2: drains each page's resolved prefix,
+/// then resolves overflow bits on pull. A hot stream can pack tens of
+/// thousands of candidates into one 64Ki-id page; a limit-bounded query
+/// must not pay a resolve per bit it never consumes.
+struct LocationCursor<'a, S, M: MetaStore> {
+    pages: S,
+    current: Option<ResolvedPage>,
+    resolver: &'a PrimaryIdResolver<'a, M>,
+    order: QueryOrder,
+    stats: Arc<IndexedQueryStats>,
+}
+
+impl<S, M> LocationCursor<'_, S, M>
+where
+    S: Stream<Item = Result<Option<ResolvedPage>>> + Unpin,
+    M: MetaStore,
+{
+    async fn try_next(&mut self) -> Result<Option<ResolvedPrimaryIdLocation>> {
+        loop {
+            if let Some(page) = &mut self.current {
+                if let Some(location) = page.prefix.next() {
+                    return Ok(Some(location));
+                }
+                let bit = match self.order {
+                    QueryOrder::Ascending => page.bits.next(),
+                    QueryOrder::Descending => page.bits.next_back(),
+                };
+                if let Some(offset) = bit {
+                    let resolve_started = Instant::now();
+                    let id = PrimaryId::new(page.page_start + u64::from(offset));
+                    let location = self.resolver.resolve(id).await?;
+                    IndexedQueryStats::add_us(&self.stats.page_resolve_us, resolve_started);
+                    IndexedQueryStats::add_count(&self.stats.resolved_locations, 1);
+                    return Ok(Some(location));
+                }
+                self.current = None;
+            }
+            match self.pages.try_next().await? {
+                // Manifest- or intersection-empty pages yield no work.
+                Some(None) => continue,
+                Some(Some(page)) => self.current = Some(page),
+                None => return Ok(None),
+            }
+        }
+    }
+}
+
 /// Pulls the next per-block `(block_number, indices)` group off the ordered
-/// location stream. The location straddling the block boundary is stashed in
+/// location cursor. The location straddling the block boundary is stashed in
 /// `carry`, so afterwards `carry.is_some()` answers "does a later block
 /// exist?" without resolving an extra group.
-async fn next_block_group<S>(
-    locations: &mut S,
+async fn next_block_group<S, M>(
+    locations: &mut LocationCursor<'_, S, M>,
     carry: &mut Option<ResolvedPrimaryIdLocation>,
 ) -> Result<Option<(u64, Vec<usize>)>>
 where
-    S: futures::Stream<Item = Result<ResolvedPrimaryIdLocation>> + Unpin,
+    S: Stream<Item = Result<Option<ResolvedPage>>> + Unpin,
+    M: MetaStore,
 {
     let head = match carry.take() {
         Some(loc) => loc,

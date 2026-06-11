@@ -121,10 +121,7 @@ async fn indexed_query_transactions_filters_by_selector() {
 
     assert_eq!(response.txs.len(), 1);
     assert_eq!(response.txs[0].tx_index, 1);
-    assert_eq!(
-        response.txs[0].selector().expect("selector"),
-        Some(selector)
-    );
+    assert_eq!(response.txs[0].selector(), Some(selector));
 }
 
 #[tokio::test(flavor = "current_thread")]

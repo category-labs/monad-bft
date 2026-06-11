@@ -119,7 +119,7 @@ pub async fn monad_eth_queryLogs(
     let logs: Vec<LogWire> = response.logs.into_iter().map(LogWire::from).collect();
     fields.insert(&mut out.data, "logs", &logs)?;
     if let Some(txs) = response.transactions {
-        fields.insert(&mut out.data, "transactions", &wire::rpc_transactions(txs)?)?;
+        fields.insert(&mut out.data, "transactions", &wire::rpc_transactions(txs))?;
     }
     if let Some(blocks) = response.blocks {
         let blocks: Vec<BlockWire> = blocks.into_iter().map(BlockWire::from).collect();
@@ -152,7 +152,7 @@ pub async fn monad_eth_queryTransactions(
     fields.insert(
         &mut out.data,
         "transactions",
-        &wire::rpc_transactions(response.txs)?,
+        &wire::rpc_transactions(response.txs),
     )?;
     if let Some(blocks) = response.blocks {
         let blocks: Vec<BlockWire> = blocks.into_iter().map(BlockWire::from).collect();
@@ -186,7 +186,7 @@ pub async fn monad_eth_queryTraces(
     let traces: Vec<TraceWire> = response.traces.into_iter().map(TraceWire::from).collect();
     fields.insert(&mut out.data, "traces", &traces)?;
     if let Some(txs) = response.transactions {
-        fields.insert(&mut out.data, "transactions", &wire::rpc_transactions(txs)?)?;
+        fields.insert(&mut out.data, "transactions", &wire::rpc_transactions(txs))?;
     }
     if let Some(blocks) = response.blocks {
         let blocks: Vec<BlockWire> = blocks.into_iter().map(BlockWire::from).collect();
@@ -227,7 +227,7 @@ pub async fn monad_eth_queryTransfers(
         .collect();
     fields.insert(&mut out.data, "transfers", &transfers)?;
     if let Some(txs) = response.transactions {
-        fields.insert(&mut out.data, "transactions", &wire::rpc_transactions(txs)?)?;
+        fields.insert(&mut out.data, "transactions", &wire::rpc_transactions(txs))?;
     }
     if let Some(blocks) = response.blocks {
         let blocks: Vec<BlockWire> = blocks.into_iter().map(BlockWire::from).collect();

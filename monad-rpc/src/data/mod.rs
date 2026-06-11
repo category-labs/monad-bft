@@ -422,16 +422,13 @@ where
                 .await
                 .map_err(|e| ChainStateError::ChainData(e.to_string()))?
             {
-                let tx = entry
-                    .envelope()
-                    .map_err(|e| ChainStateError::ChainData(e.to_string()))?;
                 return Ok(parse_tx_content(
                     entry.block_hash,
                     entry.block_number,
                     header.timestamp,
                     header.base_fee_per_gas,
                     TxEnvelopeWithSender {
-                        tx,
+                        tx: entry.envelope,
                         sender: entry.sender,
                     },
                     u64::from(entry.tx_index),

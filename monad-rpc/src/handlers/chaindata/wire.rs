@@ -344,14 +344,12 @@ impl FieldsPlan {
     }
 }
 
-/// Decodes `transactions` objects into the standard RPC transaction shape via
-/// [`TxEntry::to_rpc_transaction`] (`gasPrice` for dynamic-fee transactions is
-/// omitted — it needs the block base fee, which this path does not join).
-pub fn rpc_transactions(txs: Vec<TxEntry>) -> JsonRpcResult<Vec<alloy_rpc_types::Transaction>> {
-    txs.iter()
-        .map(TxEntry::to_rpc_transaction)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| JsonRpcError::internal_error(format!("decode stored tx: {e}")))
+/// Projects `transactions` objects into the standard RPC transaction shape
+/// via [`TxEntry::to_rpc_transaction`] (`gasPrice` for dynamic-fee
+/// transactions is omitted — it needs the block base fee, which this path
+/// does not join).
+pub fn rpc_transactions(txs: Vec<TxEntry>) -> Vec<alloy_rpc_types::Transaction> {
+    txs.iter().map(TxEntry::to_rpc_transaction).collect()
 }
 
 /// One resolved block reference: `{ number, hash, parentHash }`.

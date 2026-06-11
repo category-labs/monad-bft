@@ -48,7 +48,7 @@ impl PageBitmap {
         }
     }
 
-    fn into_owned(self) -> RoaringBitmap {
+    pub(crate) fn into_owned(self) -> RoaringBitmap {
         match self {
             PageBitmap::Shared(page) => page.bitmap.clone(),
             PageBitmap::Owned(bitmap) => bitmap,

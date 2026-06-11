@@ -15,11 +15,10 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use alloy_consensus::Transaction;
 use alloy_primitives::Address;
 use futures::{stream, StreamExt, TryStreamExt};
 
-use super::types::{selector_from_envelope, StoredTxEnvelope, TxEntry};
+use super::types::{StoredTxEnvelope, TxEntry};
 use crate::{
     blocks::Block,
     engine::{
@@ -94,19 +93,12 @@ impl IndexedFilter for TxFilter {
             return false;
         }
 
-        // Contract-creation txs and bad envelopes do not match a `to` or
-        // `selector` filter; decode once and reuse for both.
-        if self.to.is_some() || self.selector.is_some() {
-            let Ok(envelope) = tx.envelope() else {
-                return false;
-            };
-
-            if !set_allows(&self.to, envelope.to().as_ref()) {
-                return false;
-            }
-            if !set_allows(&self.selector, selector_from_envelope(&envelope).as_ref()) {
-                return false;
-            }
+        // Contract-creation txs do not match a `to` or `selector` filter.
+        if !set_allows(&self.to, tx.to().as_ref()) {
+            return false;
+        }
+        if !set_allows(&self.selector, tx.selector().as_ref()) {
+            return false;
         }
 
         true
@@ -153,7 +145,7 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery for TxMaterializer<'a, M
     ) -> Result<TxEntry> {
         let tx_index = u32::try_from(idx_in_block)
             .map_err(|_| MonadChainDataError::Decode("tx index overflow"))?;
-        Ok(stored.into_tx_entry(block_record.block_number, block_record.block_hash, tx_index))
+        stored.into_tx_entry(block_record.block_number, block_record.block_hash, tx_index)
     }
 }
 

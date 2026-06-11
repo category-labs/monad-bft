@@ -74,7 +74,8 @@ pub use transfers::{
     TransfersRelations,
 };
 pub use txs::{
-    QueryTransactionsRequest, QueryTransactionsResponse, TxEntry, TxFilter, TxsRelations,
+    QueryTransactionsRequest, QueryTransactionsResponse, StoredTxEnvelope, TxEntry, TxFilter,
+    TxsRelations,
 };
 
 pub type Topic = B256;

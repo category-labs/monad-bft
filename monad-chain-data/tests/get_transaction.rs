@@ -93,7 +93,7 @@ async fn get_transaction_resolves_contract_creation_tx() {
         .expect("lookup")
         .expect("hit");
     assert_eq!(entry.tx_hash, hash);
-    assert!(entry.to().expect("decode").is_none());
+    assert!(entry.to().is_none());
 }
 
 #[tokio::test(flavor = "current_thread")]

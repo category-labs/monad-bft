@@ -21,8 +21,11 @@
 use alloy_primitives::{Address, Bytes, Log};
 
 use crate::{
-    engine::clause::IndexedFilter, ingest_types::Hash32, logs::LogEntry, txs::TxEntry, LogFilter,
-    TxFilter,
+    engine::clause::IndexedFilter,
+    ingest_types::Hash32,
+    logs::LogEntry,
+    txs::{StoredTxEnvelope, TxEntry},
+    LogFilter, TxFilter,
 };
 
 /// One unfinalized block's logs; index `i` holds the logs of transaction `i`.
@@ -84,14 +87,16 @@ pub fn scan_block_txs(
     txs.iter()
         .enumerate()
         .filter_map(|(tx_index, tx)| {
-            let entry = TxEntry {
-                block_number,
-                block_hash,
-                tx_index: tx_index as u32,
+            // Undecodable envelopes cannot exist in finalized blocks (ingest
+            // validates them); in-memory blocks drop such rows rather than
+            // failing the scan.
+            let entry = StoredTxEnvelope {
                 tx_hash: tx.tx_hash,
                 sender: tx.sender,
                 signed_tx_bytes: tx.signed_tx_bytes.clone(),
-            };
+            }
+            .into_tx_entry(block_number, block_hash, tx_index as u32)
+            .ok()?;
             filter.matches(&entry).then_some(entry)
         })
         .collect()
@@ -153,6 +158,26 @@ mod tests {
         assert_eq!(narrowed[0].block_number, 7);
     }
 
+    fn signed_tx_bytes(nonce: u64) -> Bytes {
+        use alloy_consensus::{SignableTransaction, TxEnvelope, TxLegacy};
+        use alloy_eips::eip2718::Encodable2718;
+        use alloy_primitives::{Signature, TxKind, U256};
+
+        let signed = TxLegacy {
+            chain_id: Some(1),
+            nonce,
+            gas_price: 10,
+            gas_limit: 21_000,
+            to: TxKind::Call(Address::repeat_byte(0xee)),
+            value: U256::from(1u64),
+            input: Bytes::new(),
+        }
+        .into_signed(Signature::test_signature());
+        let mut buf = Vec::new();
+        TxEnvelope::Legacy(signed).encode_2718(&mut buf);
+        buf.into()
+    }
+
     #[test]
     fn scan_block_txs_filters_by_sender() {
         let sender_a = Address::from([0x01; 20]);
@@ -161,12 +186,12 @@ mod tests {
             MemTx {
                 tx_hash: B256::from([0x10; 32]),
                 sender: sender_a,
-                signed_tx_bytes: Bytes::new(),
+                signed_tx_bytes: signed_tx_bytes(0),
             },
             MemTx {
                 tx_hash: B256::from([0x20; 32]),
                 sender: sender_b,
-                signed_tx_bytes: Bytes::new(),
+                signed_tx_bytes: signed_tx_bytes(1),
             },
         ];
 

@@ -13,7 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_consensus::{Transaction, TxEnvelope};
+use alloy_consensus::{
+    transaction::RlpEcdsaDecodableTx, Signed, Transaction, TxEip1559, TxEip2930, TxEip4844Variant,
+    TxEip7702, TxEnvelope, TxLegacy,
+};
 use alloy_eips::eip2718::Decodable2718;
 use alloy_primitives::{Address, Bytes};
 use alloy_rlp::{RlpDecodable, RlpEncodable};
@@ -23,7 +26,9 @@ use crate::{
     ingest_types::Hash32,
 };
 
-/// Public, owned per-transaction view returned by queries.
+/// Public, owned per-transaction view returned by queries. Carries the
+/// envelope already decoded (hash seeded from the stored `tx_hash`), so
+/// filter checks and RPC conversion never re-parse or re-hash the raw bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TxEntry {
     pub block_number: u64,
@@ -31,25 +36,19 @@ pub struct TxEntry {
     pub tx_index: u32,
     pub tx_hash: Hash32,
     pub sender: Address,
-    pub signed_tx_bytes: Bytes,
+    pub envelope: TxEnvelope,
 }
 
 impl TxEntry {
-    /// Decodes the stored signed-tx bytes into the consensus envelope.
-    /// The per-field accessors each re-parse; decode once for many fields.
-    pub fn envelope(&self) -> Result<TxEnvelope> {
-        decode_envelope(&self.signed_tx_bytes)
-    }
-
     /// Recipient address; `None` for contract-creation transactions.
-    pub fn to(&self) -> Result<Option<Address>> {
-        Ok(self.envelope()?.to())
+    pub fn to(&self) -> Option<Address> {
+        self.envelope.to()
     }
 
     /// 4-byte function selector; `None` for contract-creation transactions
     /// or when the calldata is shorter than 4 bytes.
-    pub fn selector(&self) -> Result<Option<[u8; 4]>> {
-        Ok(selector_from_envelope(&self.envelope()?))
+    pub fn selector(&self) -> Option<[u8; 4]> {
+        selector_from_envelope(&self.envelope)
     }
 
     /// Assembles the queryX-spec `alloy_rpc_types_eth::Transaction` shape.
@@ -57,17 +56,17 @@ impl TxEntry {
     /// not carried here); RPC layers must populate it from the header via
     /// `envelope.effective_gas_price(Some(base_fee))`.
     #[cfg(feature = "alloy-rpc-types-eth")]
-    pub fn to_rpc_transaction(&self) -> Result<alloy_rpc_types_eth::Transaction> {
+    pub fn to_rpc_transaction(&self) -> alloy_rpc_types_eth::Transaction {
         use alloy_consensus::transaction::Recovered;
 
-        Ok(alloy_rpc_types_eth::Transaction {
-            inner: Recovered::new_unchecked(self.envelope()?, self.sender),
+        alloy_rpc_types_eth::Transaction {
+            inner: Recovered::new_unchecked(self.envelope.clone(), self.sender),
             block_hash: Some(self.block_hash),
             block_number: Some(self.block_number),
             transaction_index: Some(u64::from(self.tx_index)),
             effective_gas_price: None,
             block_timestamp: None,
-        })
+        }
     }
 }
 
@@ -122,21 +121,65 @@ impl StoredTxEnvelope {
             .map_err(|_| MonadChainDataError::Decode("invalid tx envelope rlp"))
     }
 
-    pub fn into_tx_entry(self, block_number: u64, block_hash: Hash32, tx_index: u32) -> TxEntry {
-        TxEntry {
+    pub fn into_tx_entry(
+        self,
+        block_number: u64,
+        block_hash: Hash32,
+        tx_index: u32,
+    ) -> Result<TxEntry> {
+        let envelope = decode_envelope_with_hash(&self.signed_tx_bytes, self.tx_hash)?;
+        Ok(TxEntry {
             block_number,
             block_hash,
             tx_index,
             tx_hash: self.tx_hash,
             sender: self.sender,
-            signed_tx_bytes: self.signed_tx_bytes,
-        }
+            envelope,
+        })
     }
 }
 
 pub(crate) fn decode_envelope(signed_tx_bytes: &[u8]) -> Result<TxEnvelope> {
     TxEnvelope::decode_2718(&mut &signed_tx_bytes[..])
         .map_err(|_| MonadChainDataError::Decode("invalid signed tx envelope"))
+}
+
+/// Decodes a signed-tx envelope, seeding the signed hash from the stored
+/// `tx_hash` (ingest-validated) instead of re-hashing the payload.
+/// `TxEnvelope::decode_2718` keccaks the full byte span to recover the hash
+/// we already carry — on dense queryTransactions pages that hashing alone
+/// was ~18% of process CPU.
+fn decode_envelope_with_hash(signed_tx_bytes: &[u8], tx_hash: Hash32) -> Result<TxEnvelope> {
+    fn signed<T: RlpEcdsaDecodableTx>(buf: &mut &[u8], tx_hash: Hash32) -> Result<Signed<T>> {
+        let (tx, signature) = T::rlp_decode_with_signature(buf)
+            .map_err(|_| MonadChainDataError::Decode("invalid signed tx envelope"))?;
+        Ok(Signed::new_unchecked(tx, signature, tx_hash))
+    }
+
+    let buf = &mut &signed_tx_bytes[..];
+    match signed_tx_bytes.first() {
+        Some(0x01) => {
+            *buf = &buf[1..];
+            Ok(TxEnvelope::Eip2930(signed::<TxEip2930>(buf, tx_hash)?))
+        }
+        Some(0x02) => {
+            *buf = &buf[1..];
+            Ok(TxEnvelope::Eip1559(signed::<TxEip1559>(buf, tx_hash)?))
+        }
+        Some(0x03) => {
+            *buf = &buf[1..];
+            Ok(TxEnvelope::Eip4844(signed::<TxEip4844Variant>(
+                buf, tx_hash,
+            )?))
+        }
+        Some(0x04) => {
+            *buf = &buf[1..];
+            Ok(TxEnvelope::Eip7702(signed::<TxEip7702>(buf, tx_hash)?))
+        }
+        // Legacy txs start with their RLP list header.
+        Some(byte) if *byte >= 0xc0 => Ok(TxEnvelope::Legacy(signed::<TxLegacy>(buf, tx_hash)?)),
+        _ => Err(MonadChainDataError::Decode("invalid signed tx envelope")),
+    }
 }
 
 pub(crate) fn selector_from_envelope(envelope: &TxEnvelope) -> Option<[u8; 4]> {
