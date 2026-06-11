@@ -36,6 +36,10 @@ pub struct FamilyTableIds {
     /// digest (see [`crate::engine::digest`]). Written in the same batch as
     /// the span's sealed artifacts.
     pub seal_chain: TableId,
+    /// Cache window-stats label for the per-family block-header cache, whose
+    /// backing `TableId` ("block_metadata") is shared with `BlockTables`'
+    /// record cache. A label only — nothing is provisioned under this name.
+    pub block_metadata_cache_label: &'static str,
 }
 
 macro_rules! family_table_ids {
@@ -49,6 +53,7 @@ macro_rules! family_table_ids {
             bitmap_page_counts: TableId::new(concat!($prefix, "_bitmap_page_counts")),
             open_bitmap_stream: ScannableTableId::new(concat!($prefix, "_open_bitmap_stream")),
             seal_chain: TableId::new(concat!($prefix, "_seal_chain")),
+            block_metadata_cache_label: concat!($prefix, "_block_metadata"),
         }
     };
 }

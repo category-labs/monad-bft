@@ -1341,6 +1341,14 @@ impl<M: MetaStore> FamilyTables<M> {
     }
 
     pub(crate) fn collect_window_stats(&self, out: &mut Vec<(&'static str, u64, u64)>) {
+        // The per-family header cache shares its `TableId` ("block_metadata")
+        // with `BlockTables`' record cache, so report it under the family-
+        // prefixed label declared with this family's table ids.
+        push_window_stats(
+            out,
+            self.family.table_ids().block_metadata_cache_label,
+            self.block_metadata.take_window_stats(),
+        );
         collect_kv_stats(out, &self.dict_by_version);
         collect_scan_stats(out, self.dir.fragments_cache());
         collect_kv_stats(out, self.dir.buckets_cache());
@@ -1348,6 +1356,7 @@ impl<M: MetaStore> FamilyTables<M> {
         collect_kv_stats(out, self.bitmap.page_blobs_cache());
         collect_kv_stats(out, self.bitmap.page_counts_cache());
         collect_scan_stats(out, self.bitmap.open_streams_cache());
+        collect_kv_stats(out, &self.seal_chain);
     }
 }
 
@@ -1390,6 +1399,8 @@ mod tests {
                 bitmap_page_counts,
                 open_bitmap_stream,
                 seal_chain,
+                // Stats label only — nothing is provisioned under this name.
+                block_metadata_cache_label: _,
             } = family.table_ids();
             declared.extend([
                 dict_by_version.as_str(),
