@@ -129,16 +129,6 @@ impl CheckerModel {
         Ok(())
     }
 
-    /// Retrieves replica configuration from S3
-    async fn get_replica_args(s3: &impl KVStore) -> Result<HashSet<ArchiveArgs>> {
-        match s3.get(REPLICAS_KEY).await? {
-            Some(data) => {
-                serde_json::from_slice(&data).wrap_err("Failed to deserialize replica list")
-            }
-            None => Ok(HashSet::new()),
-        }
-    }
-
     /// Initializes and loads all configured replicas
     async fn load_replicas(
         s3: &impl KVStore,
@@ -148,8 +138,27 @@ impl CheckerModel {
         let mut readers = HashMap::new();
 
         // Get the list of replicas from S3
-        let mut replica_args = Self::get_replica_args(s3).await?;
+        let raw_replica_args = s3.get(REPLICAS_KEY).await?;
+        let mut replica_args: HashSet<ArchiveArgs> = match &raw_replica_args {
+            Some(data) => {
+                serde_json::from_slice(data).wrap_err("Failed to deserialize replica list")?
+            }
+            None => HashSet::new(),
+        };
         info!("Loaded replicas from s3: {:?}", replica_args);
+
+        // Replica lists persisted before static credentials were removed may
+        // still carry key material in S3. Deserialization drops the legacy
+        // fields, so rewrite the stored list to scrub them from the bucket.
+        // TODO: remove this scrub once existing deployments have restarted
+        // past it (added 2026-06-10).
+        let has_legacy_credentials = raw_replica_args.is_some_and(|data| {
+            let raw = String::from_utf8_lossy(&data);
+            raw.contains("access_key_id") || raw.contains("secret_access_key")
+        });
+        if has_legacy_credentials {
+            Self::set_replica_args(s3, &replica_args).await?;
+        }
 
         // Initialize replica args bucket
         // Handle errors cases
@@ -832,8 +841,6 @@ mod tests {
             region: Some("us-east-1".to_string()),
             endpoint: Some("http://minio-a".to_string()),
             profile: Some("profile-a".to_string()),
-            access_key_id: Some("key-a".to_string()),
-            secret_access_key: Some("secret-a".to_string()),
             concurrency: 1,
             operation_timeout_secs: 11,
             operation_attempt_timeout_secs: 12,
@@ -844,8 +851,6 @@ mod tests {
             region: Some("us-east-1".to_string()),
             endpoint: Some("http://minio-b".to_string()),
             profile: Some("profile-b".to_string()),
-            access_key_id: Some("key-b".to_string()),
-            secret_access_key: Some("secret-b".to_string()),
             concurrency: 99,
             operation_timeout_secs: 21,
             operation_attempt_timeout_secs: 22,
@@ -886,6 +891,76 @@ mod tests {
             }));
 
         assert_ne!(mongo, different_mongo);
+    }
+
+    #[tokio::test]
+    async fn load_replicas_scrubs_legacy_credentials_from_stored_list() {
+        let store: KVStoreErased = MemoryStorage::new("test-store").into();
+
+        // A replica list written before static credentials were removed,
+        // with leaked key material inline. The explicit region keeps the AWS
+        // SDK region provider from probing the environment.
+        let legacy = r#"[{"Aws": {
+            "bucket": "legacy-bucket",
+            "region": "us-east-1",
+            "access_key_id": "LEAKEDKEY",
+            "secret_access_key": "LEAKEDSECRET",
+            "concurrency": 10,
+            "operation_timeout_secs": 40,
+            "operation_attempt_timeout_secs": 10,
+            "read_timeout_secs": 10
+        }}]"#;
+        store
+            .put(
+                REPLICAS_KEY,
+                legacy.as_bytes().to_vec(),
+                WritePolicy::AllowOverwrite,
+            )
+            .await
+            .unwrap();
+
+        CheckerModel::load_replicas(&store, &Metrics::none(), None)
+            .await
+            .unwrap();
+
+        let stored = store.get(REPLICAS_KEY).await.unwrap().unwrap();
+        let stored = String::from_utf8(stored.to_vec()).unwrap();
+        assert!(stored.contains("legacy-bucket"));
+        assert!(!stored.contains("LEAKEDKEY"));
+        assert!(!stored.contains("LEAKEDSECRET"));
+        assert!(!stored.contains("access_key_id"));
+        assert!(!stored.contains("secret_access_key"));
+    }
+
+    #[tokio::test]
+    async fn load_replicas_does_not_rewrite_clean_stored_list() {
+        let store: KVStoreErased = MemoryStorage::new("test-store").into();
+
+        let clean = r#"[{"Aws": {
+            "bucket": "clean-bucket",
+            "region": "us-east-1",
+            "concurrency": 10,
+            "operation_timeout_secs": 40,
+            "operation_attempt_timeout_secs": 10,
+            "read_timeout_secs": 10
+        }}]"#;
+        store
+            .put(
+                REPLICAS_KEY,
+                clean.as_bytes().to_vec(),
+                WritePolicy::AllowOverwrite,
+            )
+            .await
+            .unwrap();
+
+        CheckerModel::load_replicas(&store, &Metrics::none(), None)
+            .await
+            .unwrap();
+
+        // The stored bytes are untouched: no scrub rewrite happens for lists
+        // without legacy credential fields.
+        let stored = store.get(REPLICAS_KEY).await.unwrap().unwrap();
+        assert_eq!(stored, Bytes::from(clean.as_bytes().to_vec()));
     }
 
     #[tokio::test]
