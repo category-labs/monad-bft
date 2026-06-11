@@ -81,7 +81,8 @@ type SharedResult<V> = std::result::Result<Option<V>, Arc<MonadChainDataError>>;
 type SharedFetch<V> = Shared<BoxFuture<'static, SharedResult<V>>>;
 
 /// Maps a shared fetch result back to the crate `Result`: the sole `Arc` owner
-/// gets the original error; a racing follower gets a re-wrapped `Backend` one.
+/// gets the original error; under contention any awaiter gets a re-wrapped
+/// `Backend` one (the other awaiters' shared handles keep the `Arc` alive).
 fn unshare<V>(shared: SharedResult<V>) -> Result<Option<V>> {
     shared.map_err(|e| match Arc::try_unwrap(e) {
         Ok(err) => err,
@@ -341,7 +342,7 @@ where
         // The leader's guard removes the in-flight entry when this scope ends
         // (completion, error, or panic), so a failed or cancelled fetch never
         // leaves a stale entry.
-        let _guard = is_leader.then(|| InFlightGuard {
+        let guard = is_leader.then(|| InFlightGuard {
             inner: self,
             key: &key,
         });
@@ -356,6 +357,14 @@ where
             // Errors are never cached either.
             self.insert(key.clone(), value.clone());
         }
+        // Release the leader's in-flight entry BEFORE unwrapping: the map's
+        // `Shared` clone keeps the slot's copy of an `Err(Arc)` alive, and
+        // `unshare` recovers the original error only for the sole `Arc`
+        // owner. An uncontended caller is then guaranteed the original
+        // variant; under contention any awaiter (leader included) may see
+        // the `Backend` re-wrap, since the other awaiters' shared handles
+        // keep the error `Arc` alive.
+        drop(guard);
         unshare(result)
     }
 }
@@ -700,6 +709,43 @@ mod tests {
 
         assert!(cached.get(b"k").await.is_err());
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    /// A sole uncontended caller must get the ORIGINAL error variant back,
+    /// not a `Backend` re-wrap: the leader has to release its in-flight
+    /// entry before `unshare` tries to unwrap the error `Arc`.
+    #[tokio::test]
+    async fn sole_caller_gets_original_error_variant() {
+        #[derive(Clone, Default)]
+        struct CorruptStore;
+        impl MetaStore for CorruptStore {
+            async fn get(&self, _t: TableId, _k: &[u8]) -> Result<Option<Bytes>> {
+                Err(MonadChainDataError::Decode("invalid block metadata rlp"))
+            }
+            async fn scan_get(&self, _t: ScanId, _p: &[u8], _c: &[u8]) -> Result<Option<Bytes>> {
+                unimplemented!()
+            }
+            async fn put(&self, _t: TableId, _k: &[u8], _v: Bytes) -> Result<()> {
+                unimplemented!()
+            }
+            async fn scan_put(&self, _t: ScanId, _p: &[u8], _c: &[u8], _v: Bytes) -> Result<()> {
+                unimplemented!()
+            }
+            async fn scan_keys(&self, _t: ScanId, _p: &[u8]) -> Result<Vec<Vec<u8>>> {
+                unimplemented!()
+            }
+            async fn apply_writes(&self, _w: Vec<MetaWriteOp>) -> Result<()> {
+                unimplemented!()
+            }
+        }
+
+        let table = KvTable::new(CorruptStore, TableId::new("t"));
+        let cached = CachedKvTable::new(table, 4096, Ok);
+        let err = cached.get(b"k").await.expect_err("fetch fails");
+        assert!(
+            matches!(err, MonadChainDataError::Decode(_)),
+            "sole caller must see the original variant, got {err:?}"
+        );
     }
 
     /// A cancelled leader must not leave the result uncached: every awaiter populates.
