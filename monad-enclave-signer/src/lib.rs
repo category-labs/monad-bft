@@ -28,7 +28,7 @@ use std::{
 
 use monad_bls::BlsKeyPair;
 use monad_keystore::keystore::Keystore;
-use monad_remote_signer_proto::{
+use monad_enclave_signer_proto::{
     protocol::{read_frame, write_frame, Op, SECP_DIGEST_LEN, SECP_PUBKEY_LEN},
     ProvisionBundle, ProvisionRequest, Pubkeys,
 };

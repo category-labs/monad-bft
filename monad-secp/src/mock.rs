@@ -43,9 +43,9 @@ const _: () = assert!(
         && size_of::<MockSecpSignature>() == size_of::<crate::secp::SecpSignature>(),
 );
 
-// With the `remote-signer` feature, `KeyPair` becomes an enum that can also
+// With the `enclave-signer` feature, `KeyPair` becomes an enum that can also
 // hold a remote client, so it is intentionally larger than a bare secp keypair.
-#[cfg(not(feature = "remote-signer"))]
+#[cfg(not(feature = "enclave-signer"))]
 const _: () = assert!(size_of::<MockSecpKeyPair>() == size_of::<crate::secp::KeyPair>());
 
 #[serde_as]

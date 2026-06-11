@@ -23,7 +23,7 @@
 
 use sha2::{Digest, Sha256};
 
-use monad_remote_signer_proto::Pubkeys;
+use monad_enclave_signer_proto::Pubkeys;
 
 /// `report_data` ties an attestation report to the exact keys held by the
 /// enclave: `sha256(nonce || secp_pubkey || bls_pubkey)`. The keyloader

@@ -1,11 +1,11 @@
-# monad-remote-signer
+# monad-enclave-signer
 
 Offload a validator's secp256k1 + BLS12-381 private keys off the node host into
-a **remote signer** — designed for an **AMD SEV-SNP confidential VM** on the same
+a **enclave signer** — designed for an **AMD SEV-SNP confidential VM** on the same
 physical box, reached over `AF_VSOCK`. A compromised host (root / hypervisor)
 cannot read the CVM's encrypted memory, so the keys survive host compromise,
 while the local crossing is fast enough for the hot RaptorCast signing path
-(unlike a network remote signer, which RTT rules out).
+(unlike a network enclave signer, which RTT rules out).
 
 ## Why this shape
 
@@ -16,7 +16,7 @@ Every signing caller in monad-bft bottoms out in methods on the concrete
 - consensus votes — `monad-state`
 - wireauth ECDH — `monad-wireauth/.../crypto.rs` (calls `KeyPair::ecdh` directly)
 
-So both key types became `Local | Remote` enums (feature `remote-signer`). The
+So both key types became `Local | Remote` enums (feature `enclave-signer`). The
 `Remote` variant holds only the public key + a connection; `sign`/`ecdh`/`pubkey`
 dispatch to the signer. **Every existing caller compiles unchanged.**
 
@@ -31,7 +31,7 @@ opaque blobs, nothing more. Smallest possible trusted surface.
 
 ## Crates / binaries
 
-- `monad-remote-signer-proto` — wire protocol, pooled client, transport
+- `monad-enclave-signer-proto` — wire protocol, pooled client, transport
   (vsock on Linux, unix socket for dev). No `monad-secp` dep (avoids a cycle).
 - `monad-signer` — the enclave service. Keys live in RAM only.
 - `monad-keyloader` — one-time provisioning client.
@@ -44,7 +44,7 @@ opaque blobs, nothing more. Smallest possible trusted surface.
 2. keyloader --> enclave:  Provision { ciphertext + password }
 3. enclave decrypts INSIDE protected memory  → keys held in RAM, returns pubkeys
 4. operator: shred the keystore files on the host
-5. node starts with --remote-signer-*  → no key material on the host
+5. node starts with --enclave-signer-*  → no key material on the host
 ```
 
 The keyloader forwards **ciphertext + password**; decryption happens inside the
@@ -54,14 +54,14 @@ enclave, so the plaintext secret never exists in host RAM. Keys are ephemeral
 ## Build (Linux, via Docker — no host toolchain)
 
 ```bash
-./monad-remote-signer/scripts/build-linux.sh   # -> target-linux/release/{monad-signer,monad-keyloader,monad-signer-bench}
+./monad-enclave-signer/scripts/build-linux.sh   # -> target-linux/release/{monad-signer,monad-keyloader,monad-signer-bench}
 ```
 
 ## Run + benchmark over real vsock loopback (single host)
 
 ```bash
 # on the Linux host, with the three binaries present:
-./monad-remote-signer/scripts/run-vsock-loopback.sh
+./monad-enclave-signer/scripts/run-vsock-loopback.sh
 ```
 
 Dev (no Linux/vsock): use `--unix /tmp/signer.sock` on both server and client.
@@ -69,7 +69,7 @@ Dev (no Linux/vsock): use `--unix /tmp/signer.sock` on both server and client.
 ## Node integration
 
 ```bash
-monad-node … --remote-signer-vsock-cid <guest-cid> --remote-signer-vsock-port 5005
+monad-node … --enclave-signer-vsock-cid <guest-cid> --enclave-signer-vsock-port 5005
 # (omit --secp-identity/--bls-identity keystores; keys come from the signer)
 ```
 
@@ -83,6 +83,6 @@ the documented TODO — it needs a real SEV-SNP guest.
 ## Tests
 
 ```bash
-cargo test -p monad-remote-signer-proto
-cargo test -p monad-remote-signer            # incl. e2e over a unix socket
+cargo test -p monad-enclave-signer-proto
+cargo test -p monad-enclave-signer            # incl. e2e over a unix socket
 ```

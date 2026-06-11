@@ -28,9 +28,9 @@ use monad_bls::BlsKeyPair;
 use monad_chain_config::MonadChainConfig;
 use monad_consensus_types::validator_data::ValidatorsConfigFile;
 use monad_control_panel::TracingReload;
+use monad_enclave_signer_proto::{EnclaveSigner, TransportConfig};
 use monad_keystore::keystore::Keystore;
 use monad_node_config::{ForkpointConfig, MonadNodeConfig, ValidatorsConfigType};
-use monad_remote_signer_proto::{RemoteSigner, TransportConfig};
 use monad_secp::KeyPair;
 use monad_types::Round;
 use reqwest::{blocking::Client, Url};
@@ -106,10 +106,10 @@ impl NodeState {
             statesync_sq_thread_cpu,
             otel_endpoint,
             keystore_password,
-            remote_signer_vsock_cid,
-            remote_signer_vsock_port,
-            remote_signer_unix,
-            remote_signer_pool,
+            enclave_signer_vsock_cid,
+            enclave_signer_vsock_port,
+            enclave_signer_unix,
+            enclave_signer_pool,
             record_metrics_interval_seconds,
             metrics,
             metrics_labels,
@@ -124,26 +124,26 @@ impl NodeState {
 
         let keystore_password = keystore_password.as_deref().unwrap_or("");
 
-        let remote_signer = remote_signer_transport(
-            remote_signer_vsock_cid,
-            remote_signer_vsock_port,
-            remote_signer_unix,
+        let enclave_signer = enclave_signer_transport(
+            enclave_signer_vsock_cid,
+            enclave_signer_vsock_port,
+            enclave_signer_unix,
         );
 
-        let (secp_key, router_key, bls_key) = match remote_signer {
+        let (secp_key, router_key, bls_key) = match enclave_signer {
             Some(transport) => {
-                // Offloaded signing: keys live only inside the remote signer
+                // Offloaded signing: keys live only inside the enclave signer
                 // (e.g. a SEV-SNP enclave). This process holds public keys and a
                 // connection, never private key material.
-                let client = Arc::new(RemoteSigner::connect(transport, remote_signer_pool)
+                let client = Arc::new(EnclaveSigner::connect(transport, enclave_signer_pool)
                     .map_err(|e| NodeSetupError::Custom {
                         kind: ErrorKind::Io,
-                        msg: format!("failed to connect to remote signer: {e}"),
+                        msg: format!("failed to connect to enclave signer: {e}"),
                     })?);
                 let remote_secp = || {
                     KeyPair::remote(Arc::clone(&client)).map_err(|e| NodeSetupError::Custom {
                         kind: ErrorKind::Io,
-                        msg: format!("remote signer secp key unavailable: {e}"),
+                        msg: format!("enclave signer secp key unavailable: {e}"),
                     })
                 };
                 let secp_key = remote_secp()?;
@@ -151,10 +151,10 @@ impl NodeState {
                 let bls_key =
                     BlsKeyPair::remote(Arc::clone(&client)).map_err(|e| NodeSetupError::Custom {
                         kind: ErrorKind::Io,
-                        msg: format!("remote signer bls key unavailable: {e}"),
+                        msg: format!("enclave signer bls key unavailable: {e}"),
                     })?;
                 info!(
-                    "Using remote signer; node holds no private key material. \
+                    "Using enclave signer; node holds no private key material. \
                      secp pubkey=0x{}, bls pubkey=0x{}",
                     hex::encode(secp_key.pubkey().bytes_compressed()),
                     hex::encode(bls_key.pubkey().compress()),
@@ -512,10 +512,10 @@ fn get_latest_configs(
     }
 }
 
-/// Resolve the remote-signer transport from CLI flags, or `None` for local
+/// Resolve the enclave-signer transport from CLI flags, or `None` for local
 /// keystore loading. The CLI guarantees vsock cid/port come together and that
 /// the unix flag is mutually exclusive with them.
-fn remote_signer_transport(
+fn enclave_signer_transport(
     cid: Option<u32>,
     port: Option<u32>,
     unix: Option<PathBuf>,

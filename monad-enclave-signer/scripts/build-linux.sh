@@ -18,7 +18,7 @@ docker run --rm --platform linux/amd64 \
   -e CARGO_TARGET_DIR=/work/target-linux \
   -w /work \
   rust:1-bookworm \
-  cargo build --release -p monad-remote-signer --bins
+  cargo build --release -p monad-enclave-signer --bins
 
 echo
 echo "built:"

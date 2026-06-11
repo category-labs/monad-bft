@@ -29,8 +29,8 @@ use monad_crypto::{
     signing_domain::{self, SigningDomain},
 };
 use monad_keystore::keystore::Keystore;
-use monad_remote_signer::{serve_conn, SignerState};
-use monad_remote_signer_proto::{ProvisionBundle, ProvisionRequest, RemoteSigner, TransportConfig};
+use monad_enclave_signer::{serve_conn, SignerState};
+use monad_enclave_signer_proto::{ProvisionBundle, ProvisionRequest, EnclaveSigner, TransportConfig};
 use monad_secp::{KeyPair, SecpSignature};
 
 fn secp_digest<SD: SigningDomain>(msg: &[u8]) -> [u8; 32] {
@@ -76,7 +76,7 @@ fn provision_then_sign_and_ecdh_over_unix() {
     }
 
     let signer =
-        Arc::new(RemoteSigner::connect(TransportConfig::Unix { path: sock.clone() }, 4).unwrap());
+        Arc::new(EnclaveSigner::connect(TransportConfig::Unix { path: sock.clone() }, 4).unwrap());
 
     // Provision: forward ciphertext + password; the server decrypts internally.
     let req = ProvisionRequest {

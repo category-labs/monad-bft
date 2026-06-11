@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! Throughput + latency benchmark for the remote signer's hot secp path.
+//! Throughput + latency benchmark for the enclave signer's hot secp path.
 //!
 //! Connects to a (provisioned, or `--generate`-d) signer and hammers `SignSecp`
 //! from N threads for a fixed duration, reporting signs/sec and p50/p99/max
@@ -30,10 +30,10 @@ use std::{
 };
 
 use clap::Parser;
-use monad_remote_signer_proto::{RemoteSigner, TransportConfig};
+use monad_enclave_signer_proto::{EnclaveSigner, TransportConfig};
 
 #[derive(Parser, Debug)]
-#[command(about = "Benchmark the remote signer hot secp path")]
+#[command(about = "Benchmark the enclave signer hot secp path")]
 struct Args {
     #[arg(long)]
     vsock_cid: Option<u32>,
@@ -74,7 +74,7 @@ fn main() {
     };
 
     let pool = args.pool.unwrap_or(args.threads);
-    let signer = Arc::new(RemoteSigner::connect(transport, pool).unwrap_or_else(|e| {
+    let signer = Arc::new(EnclaveSigner::connect(transport, pool).unwrap_or_else(|e| {
         eprintln!("error: cannot reach signer: {e}");
         exit(1);
     }));

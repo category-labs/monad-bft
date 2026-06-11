@@ -13,9 +13,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! Host-side client for the remote signer.
+//! Host-side client for the enclave signer.
 //!
-//! [`RemoteSigner`] is `Send + Sync` and is shared (behind an `Arc`) by the
+//! [`EnclaveSigner`] is `Send + Sync` and is shared (behind an `Arc`) by the
 //! `Remote` variants of the key types. It keeps a small pool of pre-opened
 //! connections so the hot RaptorCast signing path is not serialised behind a
 //! single mutexed socket, and records per-op round-trip latency for the
@@ -136,13 +136,13 @@ impl Metrics {
     }
 }
 
-pub struct RemoteSigner {
+pub struct EnclaveSigner {
     cfg: TransportConfig,
     pool: ArrayQueue<Box<dyn Transport>>,
     metrics: Mutex<Metrics>,
 }
 
-impl RemoteSigner {
+impl EnclaveSigner {
     /// Connect and pre-open `pool_size` connections (min 1). Fails fast if the
     /// signer is unreachable, which surfaces a missing/unprovisioned enclave at
     /// node startup.
@@ -153,7 +153,7 @@ impl RemoteSigner {
             let conn = cfg.connect()?;
             let _ = pool.push(conn);
         }
-        Ok(RemoteSigner {
+        Ok(EnclaveSigner {
             cfg,
             pool,
             metrics: Mutex::new(Metrics::new()),

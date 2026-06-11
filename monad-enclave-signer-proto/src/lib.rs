@@ -13,10 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! Wire protocol and client for the SEV-SNP remote signer.
+//! Wire protocol and client for the SEV-SNP enclave signer.
 //!
 //! The node holds private keys as `Local | Remote` enums; the `Remote` variant
-//! carries a [`RemoteSigner`] that talks to a signer service inside a
+//! carries a [`EnclaveSigner`] that talks to a signer service inside a
 //! confidential VM over a [`Transport`] (AF_VSOCK in production, a unix socket
 //! for laptop development).
 //!
@@ -28,6 +28,6 @@ pub mod client;
 pub mod protocol;
 pub mod transport;
 
-pub use client::{ProvisionBundle, ProvisionRequest, Pubkeys, RemoteSigner};
+pub use client::{ProvisionBundle, ProvisionRequest, Pubkeys, EnclaveSigner};
 pub use protocol::{Op, ProtoError, BLS_PREFIXED_MAX, SECP_DIGEST_LEN, SECP_SIG_LEN};
 pub use transport::{Transport, TransportConfig};

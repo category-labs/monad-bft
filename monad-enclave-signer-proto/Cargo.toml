@@ -1,12 +1,12 @@
 [package]
-name = "monad-remote-signer-proto"
+name = "monad-enclave-signer-proto"
 version = "0.1.0"
 edition = "2021"
 
 [lib]
 bench = false
 
-# Wire protocol + client + transport for the SEV-SNP remote signer.
+# Wire protocol + client + transport for the SEV-SNP enclave signer.
 # Deliberately has NO dependency on monad-secp / monad-bls (deals only in raw
 # byte arrays) so those crates can depend on this one without a cycle.
 

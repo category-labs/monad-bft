@@ -21,11 +21,11 @@ use std::{io::Read, sync::Arc, thread};
 
 use clap::Parser;
 use monad_bls::BlsKeyPair;
-use monad_remote_signer::{serve_conn, SignerState};
+use monad_enclave_signer::{serve_conn, SignerState};
 use monad_secp::KeyPair;
 
 #[derive(Parser, Debug)]
-#[command(about = "SEV-SNP remote signer (enclave side)")]
+#[command(about = "SEV-SNP enclave signer (enclave side)")]
 struct Args {
     /// Listen on this AF_VSOCK port (any CID). Production transport.
     #[arg(long)]

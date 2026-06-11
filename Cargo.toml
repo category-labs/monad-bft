@@ -20,6 +20,7 @@ monad-consensus-types = { path = "./monad-consensus-types" }
 monad-control-panel = { path = "./monad-control-panel" }
 monad-crypto = { path = "./monad-crypto" }
 monad-dataplane = { path = "./monad-dataplane" }
+monad-enclave-signer-proto = { path = "./monad-enclave-signer-proto" }
 monad-eth-block-policy = { path = "./monad-eth-block-policy" }
 monad-eth-block-validator = { path = "./monad-eth-block-validator" }
 monad-eth-ledger = { path = "./monad-eth-ledger" }
@@ -48,7 +49,6 @@ monad-perf-util = { path = "./monad-perf-util" }
 monad-pprof = { path = "./monad-pprof" }
 monad-raptor = { path = "./monad-raptor" }
 monad-raptorcast = { path = "./monad-raptorcast" }
-monad-remote-signer-proto = { path = "./monad-remote-signer-proto" }
 monad-router-multi = { path = "./monad-router-multi" }
 monad-router-scheduler = { path = "./monad-router-scheduler" }
 monad-rpc-docs = { path = "./monad-rpc/monad-rpc-docs" }

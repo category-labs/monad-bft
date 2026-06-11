@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Demo + benchmark the remote signer over real AF_VSOCK loopback on a single
+# Demo + benchmark the enclave signer over real AF_VSOCK loopback on a single
 # Linux host (no confidential VM required). Run on swe-006 after copying the
 # binaries built by build-linux.sh into the current directory.
 #

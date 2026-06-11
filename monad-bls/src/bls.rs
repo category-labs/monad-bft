@@ -291,7 +291,7 @@ impl std::fmt::Display for BlsSecretKeyView {
 
 /// BLS keypair.
 ///
-/// Either holds the secret locally or proxies signing to a remote signer (e.g.
+/// Either holds the secret locally or proxies signing to an enclave signer (e.g.
 /// a SEV-SNP enclave). The remote variant carries only the public key and a
 /// connection; the secret never enters this process.
 pub struct BlsKeyPair(BlsKeyPairInner);
@@ -301,9 +301,9 @@ enum BlsKeyPairInner {
         pubkey: BlsPubKey,
         secretkey: BlsSecretKey,
     },
-    #[cfg(feature = "remote-signer")]
+    #[cfg(feature = "enclave-signer")]
     Remote {
-        client: std::sync::Arc<monad_remote_signer_proto::RemoteSigner>,
+        client: std::sync::Arc<monad_enclave_signer_proto::EnclaveSigner>,
         pubkey: BlsPubKey,
     },
 }
@@ -362,18 +362,18 @@ impl BlsKeyPair {
         Ok(keypair)
     }
 
-    /// Construct a keypair that proxies signing to a remote signer. The private
+    /// Construct a keypair that proxies signing to an enclave signer. The private
     /// key stays inside the signer; this fetches the public key and holds only
     /// that plus the shared client (which should also back the secp remote
     /// keypair so one enclave serves both).
-    #[cfg(feature = "remote-signer")]
+    #[cfg(feature = "enclave-signer")]
     pub fn remote(
-        client: std::sync::Arc<monad_remote_signer_proto::RemoteSigner>,
-    ) -> Result<Self, monad_remote_signer_proto::ProtoError> {
+        client: std::sync::Arc<monad_enclave_signer_proto::EnclaveSigner>,
+    ) -> Result<Self, monad_enclave_signer_proto::ProtoError> {
         let pubkeys = client.pubkeys()?;
         let pubkey = BlsPubKey::uncompress(&pubkeys.bls).map_err(|_| {
-            monad_remote_signer_proto::protocol::ProtoError::Malformed(
-                "remote signer returned an invalid bls pubkey",
+            monad_enclave_signer_proto::protocol::ProtoError::Malformed(
+                "enclave signer returned an invalid bls pubkey",
             )
         })?;
         Ok(Self(BlsKeyPairInner::Remote { client, pubkey }))
@@ -387,7 +387,7 @@ impl BlsKeyPair {
     /// re-applying the signing-domain prefix.
     ///
     /// This is the raw signing primitive shared by [`BlsKeyPair::sign`] and the
-    /// remote signer: the node concatenates the prefix host-side and the enclave
+    /// enclave signer: the node concatenates the prefix host-side and the enclave
     /// (or local key) signs the result with `DST`, needing no signing-domain
     /// knowledge.
     pub fn sign_prefixed(&self, prefixed_msg: &[u8]) -> BlsSignature {
@@ -395,13 +395,13 @@ impl BlsKeyPair {
             BlsKeyPairInner::Local { secretkey, .. } => {
                 secretkey.0.sign(prefixed_msg, DST, &[]).into()
             }
-            #[cfg(feature = "remote-signer")]
+            #[cfg(feature = "enclave-signer")]
             BlsKeyPairInner::Remote { client, .. } => {
                 let bytes = client
                     .sign_bls(prefixed_msg)
-                    .expect("remote signer bls sign failed");
+                    .expect("enclave signer bls sign failed");
                 BlsSignature::deserialize(&bytes)
-                    .expect("remote signer returned an invalid bls signature")
+                    .expect("enclave signer returned an invalid bls signature")
             }
         }
     }
@@ -409,8 +409,8 @@ impl BlsKeyPair {
     pub fn privkey_view(&self) -> BlsSecretKeyView {
         match &self.0 {
             BlsKeyPairInner::Local { secretkey, .. } => secretkey.sk_view(),
-            // The secret lives in the remote signer and is unavailable here.
-            #[cfg(feature = "remote-signer")]
+            // The secret lives in the enclave signer and is unavailable here.
+            #[cfg(feature = "enclave-signer")]
             BlsKeyPairInner::Remote { .. } => BlsSecretKeyView(Vec::new()),
         }
     }
@@ -418,7 +418,7 @@ impl BlsKeyPair {
     pub fn pubkey(&self) -> BlsPubKey {
         match &self.0 {
             BlsKeyPairInner::Local { pubkey, .. } => *pubkey,
-            #[cfg(feature = "remote-signer")]
+            #[cfg(feature = "enclave-signer")]
             BlsKeyPairInner::Remote { pubkey, .. } => *pubkey,
         }
     }

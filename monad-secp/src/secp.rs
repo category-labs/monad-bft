@@ -32,7 +32,7 @@ pub struct PubKey(secp256k1::PublicKey);
 
 /// secp256k1 keypair.
 ///
-/// Either holds the secret locally or proxies signing/ECDH to a remote signer
+/// Either holds the secret locally or proxies signing/ECDH to an enclave signer
 /// (e.g. a SEV-SNP enclave). The remote variant carries only the public key and
 /// a connection; the secret never enters this process. All callers use the same
 /// `sign`/`ecdh`/`pubkey` surface regardless of variant.
@@ -40,9 +40,9 @@ pub struct KeyPair(KeyPairInner);
 
 enum KeyPairInner {
     Local(secp256k1::Keypair),
-    #[cfg(feature = "remote-signer")]
+    #[cfg(feature = "enclave-signer")]
     Remote {
-        client: std::sync::Arc<monad_remote_signer_proto::RemoteSigner>,
+        client: std::sync::Arc<monad_enclave_signer_proto::EnclaveSigner>,
         pubkey: PubKey,
     },
 }
@@ -104,7 +104,7 @@ impl std::hash::Hash for PubKey {
 }
 
 /// The 32-byte message digest signed for signing domain `SD`: `Hash(PREFIX || msg)`.
-/// This is computed host-side; the remote signer receives only this digest.
+/// This is computed host-side; the enclave signer receives only this digest.
 fn msg_digest<SD: SigningDomain>(msg: &[u8]) -> [u8; 32] {
     let mut hasher = HasherType::new();
     hasher.update(SD::PREFIX);
@@ -133,20 +133,20 @@ impl KeyPair {
         Self(KeyPairInner::Local(keypair))
     }
 
-    /// Construct a keypair that proxies signing/ECDH to a remote signer.
+    /// Construct a keypair that proxies signing/ECDH to an enclave signer.
     ///
     /// The private key stays inside the signer (e.g. a SEV-SNP enclave); this
     /// fetches the public key over the connection and holds only that plus the
     /// shared client. The same `client` should back the BLS remote keypair so a
     /// single enclave serves both keys.
-    #[cfg(feature = "remote-signer")]
+    #[cfg(feature = "enclave-signer")]
     pub fn remote(
-        client: std::sync::Arc<monad_remote_signer_proto::RemoteSigner>,
-    ) -> Result<Self, monad_remote_signer_proto::ProtoError> {
+        client: std::sync::Arc<monad_enclave_signer_proto::EnclaveSigner>,
+    ) -> Result<Self, monad_enclave_signer_proto::ProtoError> {
         let pubkeys = client.pubkeys()?;
         let pubkey = PubKey::from_slice(&pubkeys.secp).map_err(|_| {
-            monad_remote_signer_proto::protocol::ProtoError::Malformed(
-                "remote signer returned an invalid secp pubkey",
+            monad_enclave_signer_proto::protocol::ProtoError::Malformed(
+                "enclave signer returned an invalid secp pubkey",
             )
         })?;
         Ok(Self(KeyPairInner::Remote { client, pubkey }))
@@ -185,7 +185,7 @@ impl KeyPair {
     /// Create a SecpSignature over a pre-computed 32-byte message digest.
     ///
     /// This is the raw signing primitive shared by [`KeyPair::sign`] and the
-    /// remote signer: the digest is computed host-side, so the enclave (or
+    /// enclave signer: the digest is computed host-side, so the enclave (or
     /// local key) only ever signs a bare digest and needs no signing-domain
     /// knowledge.
     pub fn sign_prehashed(&self, digest: &[u8; 32]) -> SecpSignature {
@@ -195,13 +195,13 @@ impl KeyPair {
                 secp256k1::Message::from_digest(*digest),
                 &keypair.secret_key(),
             )),
-            #[cfg(feature = "remote-signer")]
+            #[cfg(feature = "enclave-signer")]
             KeyPairInner::Remote { client, .. } => {
                 let bytes = client
                     .sign_secp(digest)
-                    .expect("remote signer secp sign failed");
+                    .expect("enclave signer secp sign failed");
                 SecpSignature::deserialize(&bytes)
-                    .expect("remote signer returned an invalid secp signature")
+                    .expect("enclave signer returned an invalid secp signature")
             }
         }
     }
@@ -209,8 +209,8 @@ impl KeyPair {
     pub fn privkey_view(&self) -> PrivKeyView {
         match &self.0 {
             KeyPairInner::Local(keypair) => PrivKeyView(keypair.secret_bytes().into()),
-            // The secret lives in the remote signer and is unavailable here.
-            #[cfg(feature = "remote-signer")]
+            // The secret lives in the enclave signer and is unavailable here.
+            #[cfg(feature = "enclave-signer")]
             KeyPairInner::Remote { .. } => PrivKeyView(Vec::new()),
         }
     }
@@ -219,7 +219,7 @@ impl KeyPair {
     pub fn pubkey(&self) -> PubKey {
         match &self.0 {
             KeyPairInner::Local(keypair) => PubKey(keypair.public_key()),
-            #[cfg(feature = "remote-signer")]
+            #[cfg(feature = "enclave-signer")]
             KeyPairInner::Remote { pubkey, .. } => *pubkey,
         }
     }
@@ -230,10 +230,10 @@ impl KeyPair {
                 secp256k1::ecdh::SharedSecret::new(&public_key.0, &keypair.secret_key())
                     .secret_bytes()
             }
-            #[cfg(feature = "remote-signer")]
+            #[cfg(feature = "enclave-signer")]
             KeyPairInner::Remote { client, .. } => client
                 .ecdh(&public_key.bytes_compressed())
-                .expect("remote signer ecdh failed"),
+                .expect("enclave signer ecdh failed"),
         }
     }
 }
@@ -352,7 +352,7 @@ impl Drop for KeyPair {
         match &mut self.0 {
             KeyPairInner::Local(keypair) => keypair.non_secure_erase(),
             // Nothing secret to erase; the connection is dropped with the Arc.
-            #[cfg(feature = "remote-signer")]
+            #[cfg(feature = "enclave-signer")]
             KeyPairInner::Remote { .. } => {}
         }
     }

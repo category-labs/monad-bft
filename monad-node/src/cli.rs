@@ -95,25 +95,25 @@ pub struct Cli {
     #[arg(long)]
     pub keystore_password: Option<String>,
 
-    /// Offload signing to a remote signer (e.g. a SEV-SNP enclave) over AF_VSOCK
-    /// at this guest CID. Requires --remote-signer-vsock-port. When set, the node
+    /// Offload signing to an enclave signer (e.g. a SEV-SNP enclave) over AF_VSOCK
+    /// at this guest CID. Requires --enclave-signer-vsock-port. When set, the node
     /// holds no private key material; keys must already be provisioned into the
     /// signer (see monad-keyloader).
-    #[arg(long, requires = "remote_signer_vsock_port")]
-    pub remote_signer_vsock_cid: Option<u32>,
+    #[arg(long, requires = "enclave_signer_vsock_port")]
+    pub enclave_signer_vsock_cid: Option<u32>,
 
-    /// AF_VSOCK port for the remote signer (with --remote-signer-vsock-cid).
-    #[arg(long, requires = "remote_signer_vsock_cid")]
-    pub remote_signer_vsock_port: Option<u32>,
+    /// AF_VSOCK port for the enclave signer (with --enclave-signer-vsock-cid).
+    #[arg(long, requires = "enclave_signer_vsock_cid")]
+    pub enclave_signer_vsock_port: Option<u32>,
 
-    /// Offload signing to a remote signer over this unix socket (development
+    /// Offload signing to an enclave signer over this unix socket (development
     /// transport; mutually exclusive with the vsock flags).
-    #[arg(long, conflicts_with_all = ["remote_signer_vsock_cid", "remote_signer_vsock_port"])]
-    pub remote_signer_unix: Option<PathBuf>,
+    #[arg(long, conflicts_with_all = ["enclave_signer_vsock_cid", "enclave_signer_vsock_port"])]
+    pub enclave_signer_unix: Option<PathBuf>,
 
-    /// Connection pool size for the remote signer (hot signing path).
+    /// Connection pool size for the enclave signer (hot signing path).
     #[arg(long, default_value_t = 8)]
-    pub remote_signer_pool: usize,
+    pub enclave_signer_pool: usize,
 
     /// Set the time interval for metrics collection
     #[arg(long, requires = "otel_endpoint")]

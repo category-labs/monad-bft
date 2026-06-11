@@ -24,12 +24,12 @@
 use std::{path::PathBuf, process::exit};
 
 use clap::Parser;
-use monad_remote_signer_proto::{
-    ProvisionBundle, ProvisionRequest, RemoteSigner, TransportConfig,
+use monad_enclave_signer_proto::{
+    ProvisionBundle, ProvisionRequest, EnclaveSigner, TransportConfig,
 };
 
 #[derive(Parser, Debug)]
-#[command(about = "Provision the SEV-SNP remote signer with keystore keys")]
+#[command(about = "Provision the SEV-SNP enclave signer with keystore keys")]
 struct Args {
     /// secp256k1 keystore JSON file to load into the enclave.
     #[arg(long)]
@@ -97,7 +97,7 @@ fn main() {
         bls: args.bls.as_ref().map(|p| read_bundle(p, &password)),
     };
 
-    let signer = RemoteSigner::connect(transport, 1).unwrap_or_else(|e| {
+    let signer = EnclaveSigner::connect(transport, 1).unwrap_or_else(|e| {
         eprintln!("error: cannot reach signer: {e}");
         exit(1);
     });

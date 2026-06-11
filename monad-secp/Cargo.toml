@@ -10,13 +10,13 @@ bench = false
 
 [features]
 # Enables the `KeyPair::Remote` variant, which offloads signing/ECDH to a
-# remote signer (e.g. a SEV-SNP enclave) over a vsock/unix transport.
-remote-signer = ["dep:monad-remote-signer-proto"]
+# enclave signer (e.g. a SEV-SNP enclave) over a vsock/unix transport.
+enclave-signer = ["dep:monad-enclave-signer-proto"]
 
 [dependencies]
 monad-crypto = { workspace = true }
 monad-eth-types = { workspace = true }
-monad-remote-signer-proto = { workspace = true, optional = true }
+monad-enclave-signer-proto = { workspace = true, optional = true }
 
 alloy-consensus = { workspace = true }
 alloy-primitives = { workspace = true, features = ["k256"] }

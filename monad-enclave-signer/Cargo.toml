@@ -1,22 +1,22 @@
 [package]
-name = "monad-remote-signer"
+name = "monad-enclave-signer"
 version = "0.1.0"
 edition = "2021"
 
 # The enclave-side signer service (`monad-signer`) and the one-time provisioning
 # client (`monad-keyloader`). Depends on the key crates + keystore; the wire
-# protocol lives in monad-remote-signer-proto.
+# protocol lives in monad-enclave-signer-proto.
 
 [lib]
 bench = false
 
 [dependencies]
-# remote-signer features enabled so tests can exercise the node-side
+# enclave-signer features enabled so tests can exercise the node-side
 # KeyPair::Remote / BlsKeyPair::Remote enum variants over the wire.
-monad-bls = { workspace = true, features = ["remote-signer"] }
+monad-bls = { workspace = true, features = ["enclave-signer"] }
 monad-keystore = { workspace = true }
-monad-remote-signer-proto = { workspace = true }
-monad-secp = { workspace = true, features = ["remote-signer"] }
+monad-enclave-signer-proto = { workspace = true }
+monad-secp = { workspace = true, features = ["enclave-signer"] }
 
 clap = { workspace = true, features = ["derive"] }
 hex = { workspace = true }

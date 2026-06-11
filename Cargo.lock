@@ -5013,7 +5013,7 @@ dependencies = [
  "criterion",
  "hex",
  "monad-crypto",
- "monad-remote-signer-proto",
+ "monad-enclave-signer-proto",
  "monad-testutil",
  "monad-types",
  "monad-validator",
@@ -5231,6 +5231,35 @@ dependencies = [
  "monad-validator",
  "serde_json",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "monad-enclave-signer"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "hex",
+ "monad-bls",
+ "monad-crypto",
+ "monad-enclave-signer-proto",
+ "monad-keystore",
+ "monad-secp",
+ "serde_json",
+ "sha2",
+ "tracing",
+ "tracing-subscriber",
+ "vsock",
+]
+
+[[package]]
+name = "monad-enclave-signer-proto"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-queue",
+ "hdrhistogram",
+ "thiserror 1.0.69",
+ "tracing",
+ "vsock",
 ]
 
 [[package]]
@@ -5751,6 +5780,7 @@ dependencies = [
  "monad-control-panel",
  "monad-crypto",
  "monad-dataplane",
+ "monad-enclave-signer-proto",
  "monad-eth-block-policy",
  "monad-eth-block-validator",
  "monad-eth-txpool-executor",
@@ -5765,7 +5795,6 @@ dependencies = [
  "monad-peer-score",
  "monad-pprof",
  "monad-raptorcast",
- "monad-remote-signer-proto",
  "monad-router-multi",
  "monad-secp",
  "monad-state",
@@ -5975,35 +6004,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "monad-remote-signer"
-version = "0.1.0"
-dependencies = [
- "clap",
- "hex",
- "monad-bls",
- "monad-crypto",
- "monad-keystore",
- "monad-remote-signer-proto",
- "monad-secp",
- "serde_json",
- "sha2",
- "tracing",
- "tracing-subscriber",
- "vsock",
-]
-
-[[package]]
-name = "monad-remote-signer-proto"
-version = "0.1.0"
-dependencies = [
- "crossbeam-queue",
- "hdrhistogram",
- "thiserror 1.0.69",
- "tracing",
- "vsock",
-]
-
-[[package]]
 name = "monad-router-multi"
 version = "0.1.0"
 dependencies = [
@@ -6143,8 +6143,8 @@ dependencies = [
  "insta",
  "k256",
  "monad-crypto",
+ "monad-enclave-signer-proto",
  "monad-eth-types",
- "monad-remote-signer-proto",
  "monad-testutil",
  "proptest",
  "rand 0.8.5",
