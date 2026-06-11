@@ -429,3 +429,48 @@ async fn indexed_query_cursor_completes_block_spanning_page_boundary() {
     assert!(page.logs.iter().all(|l| l.block_number == 1));
     assert_eq!(page.span.cursor_block.number, 1);
 }
+
+/// A block-metadata row missing INSIDE the resolved range is a broken store
+/// contract (both range bounds were verified present); the indexed path must
+/// fail loud like the block-scan path, not serve a wrongly-empty page.
+#[tokio::test(flavor = "current_thread")]
+async fn indexed_query_fails_loud_on_missing_mid_range_block_record() {
+    use monad_chain_data::{engine::tables::BlockTables, MonadChainDataError};
+
+    let addr = Address::repeat_byte(7);
+    let topic = B256::repeat_byte(9);
+    // `[4, 5]` exercises the forward id walk (empty blocks before the damaged
+    // record), `[1, 2]` the reverse walk (empty blocks after it).
+    for blocks_with_logs in [[4u64, 5], [1, 2]] {
+        let store = common::populate::populate_via_engine(chain_of_blocks(5, |number| {
+            if blocks_with_logs.contains(&number) {
+                vec![vec![log(addr, vec![topic])]]
+            } else {
+                vec![]
+            }
+        }))
+        .await;
+        // Simulate store damage below the published head: drop block 3's
+        // metadata row while the range bounds (1 and 5) stay present.
+        store.meta.clear_key(
+            BlockTables::<InMemoryMetaStore>::BLOCK_METADATA_TABLE,
+            &3u64.to_be_bytes(),
+        );
+
+        let err = store
+            .reader()
+            .query_logs(logs_request(
+                ascending_envelope(1, 5, 10),
+                log_filter(addr, topic),
+            ))
+            .await
+            .expect_err("missing mid-range record must not yield an empty page");
+        assert!(
+            matches!(
+                err,
+                MonadChainDataError::MissingData("missing block record inside resolved range")
+            ),
+            "got {err:?}"
+        );
+    }
+}

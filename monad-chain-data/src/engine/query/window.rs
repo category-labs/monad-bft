@@ -21,8 +21,12 @@ use crate::{
         family::Family,
         tables::BlockTables,
     },
-    error::Result,
-    primitives::{order::QueryOrder, range::ResolvedBlockWindow, records::PrimaryId},
+    error::{MonadChainDataError, Result},
+    primitives::{
+        order::QueryOrder,
+        range::ResolvedBlockWindow,
+        records::{BlockRecord, PrimaryId},
+    },
     store::MetaStore,
 };
 
@@ -103,9 +107,7 @@ async fn first_primary_id_in_range<M: MetaStore>(
     end_block: u64,
 ) -> Result<Option<PrimaryId>> {
     for block_number in start_block..=end_block {
-        let Some(record) = blocks.load_record(block_number).await? else {
-            return Ok(None);
-        };
+        let record = load_record_in_range(blocks, block_number).await?;
         let window = family.window_in(&record);
         if window.count > 0 {
             return Ok(Some(window.first_primary_id));
@@ -122,9 +124,7 @@ async fn end_primary_id_exclusive_in_range<M: MetaStore>(
     end_block: u64,
 ) -> Result<Option<PrimaryId>> {
     for block_number in (start_block..=end_block).rev() {
-        let Some(record) = blocks.load_record(block_number).await? else {
-            return Ok(None);
-        };
+        let record = load_record_in_range(blocks, block_number).await?;
         let window = family.window_in(&record);
         if window.count > 0 {
             return Ok(Some(window.next_primary_id_exclusive()?));
@@ -132,4 +132,19 @@ async fn end_primary_id_exclusive_in_range<M: MetaStore>(
     }
 
     Ok(None)
+}
+
+/// Loads one block record inside the resolved range. The range bounds were
+/// verified present by [`ResolvedBlockWindow`], so a missing record here is a
+/// broken store contract — fail loud rather than serve a wrongly-empty page.
+async fn load_record_in_range<M: MetaStore>(
+    blocks: &BlockTables<M>,
+    block_number: u64,
+) -> Result<BlockRecord> {
+    blocks
+        .load_record(block_number)
+        .await?
+        .ok_or(MonadChainDataError::MissingData(
+            "missing block record inside resolved range",
+        ))
 }
