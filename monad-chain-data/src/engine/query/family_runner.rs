@@ -37,7 +37,7 @@ use crate::{
             window::resolve_primary_id_window,
         },
         row_codec::RowDecompressor,
-        tables::{BlockTables, Tables},
+        tables::{BlockTables, QueryRuntimeConfig, Tables},
     },
     error::{MonadChainDataError, Result},
     primitives::{
@@ -232,24 +232,17 @@ pub(crate) trait IndexedFamilyQuery {
 
             // A dense selection collapses to one merged span covering the
             // whole family region: same fetch+decode loop, one range read.
-            let (region_start, region_end) = header.region_range();
-            let region_len = region_end.saturating_sub(region_start);
-            let query_config = self.tables().query_config();
-            if spans.len() > query_config.materialize_whole_region_span_threshold
-                && region_len <= query_config.materialize_whole_region_max_bytes
-            {
-                let frames = spans.into_iter().flat_map(|span| span.frames).collect();
-                spans = vec![ReadSpan {
-                    abs_start: region_start,
-                    abs_end: region_end,
-                    frames,
-                }];
-            }
+            let budget_bytes = merge_dense_selection_spans(
+                &mut spans,
+                selected_bytes,
+                header.region_range(),
+                self.tables().query_config(),
+            );
 
             // Byte-weighted decode budget: acquired only on a cache miss
             // (fully-cached blocks never touch the semaphore) and held across
             // the reads+decodes below.
-            let permits = materialize_permits_for_bytes(self.tables(), selected_bytes);
+            let permits = materialize_permits_for_bytes(self.tables(), budget_bytes);
             let _permit = self
                 .tables()
                 .materialize_budget()
@@ -512,6 +505,36 @@ where
         }
     }
     Ok(spans)
+}
+
+/// When the selection coalesced into more spans than the threshold and the
+/// family region is small enough, replaces `spans` with ONE span covering the
+/// whole region (one range read instead of per-span ranges). Returns the
+/// bytes to charge against the byte-weighted decode budget: the whole region
+/// length when merged — that is what the read buffers — otherwise the
+/// untouched selection's `selected_bytes`.
+fn merge_dense_selection_spans(
+    spans: &mut Vec<ReadSpan>,
+    selected_bytes: usize,
+    (region_start, region_end): (usize, usize),
+    query_config: &QueryRuntimeConfig,
+) -> usize {
+    let region_len = region_end.saturating_sub(region_start);
+    if spans.len() <= query_config.materialize_whole_region_span_threshold
+        || region_len > query_config.materialize_whole_region_max_bytes
+    {
+        return selected_bytes;
+    }
+    let frames = std::mem::take(spans)
+        .into_iter()
+        .flat_map(|span| span.frames)
+        .collect();
+    *spans = vec![ReadSpan {
+        abs_start: region_start,
+        abs_end: region_end,
+        frames,
+    }];
+    region_len
 }
 
 /// Dispatches a family query: the indexed runner when the filter emits at
@@ -996,4 +1019,75 @@ async fn family_frontier_id<M: MetaStore>(
         return Ok(PrimaryId::ZERO);
     };
     family.window_in(&record).next_primary_id_exclusive()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One single-frame span of `[abs_start, abs_end)`.
+    fn span(abs_start: usize, abs_end: usize) -> ReadSpan {
+        ReadSpan {
+            abs_start,
+            abs_end,
+            frames: vec![CoalescedFrame {
+                output_pos: 0,
+                idx_in_block: 0,
+                abs_start,
+                abs_end,
+            }],
+        }
+    }
+
+    /// `count` sparse ~200-byte spans spread across an 8 MiB region.
+    fn sparse_spans(count: usize) -> (Vec<ReadSpan>, usize) {
+        let spans: Vec<ReadSpan> = (0..count).map(|i| span(i << 19, (i << 19) + 200)).collect();
+        let selected_bytes = count * 200;
+        (spans, selected_bytes)
+    }
+
+    #[test]
+    fn dense_merge_charges_decode_budget_for_the_whole_region() {
+        let config = QueryRuntimeConfig::default();
+        let region = (0, config.materialize_whole_region_max_bytes);
+        let (mut spans, selected_bytes) =
+            sparse_spans(config.materialize_whole_region_span_threshold + 1);
+
+        let budget_bytes = merge_dense_selection_spans(&mut spans, selected_bytes, region, &config);
+
+        // The merged read buffers the whole region, so the budget must be
+        // charged for the region length, not the pre-merge selected bytes.
+        assert_eq!(budget_bytes, region.1 - region.0);
+        assert_eq!(spans.len(), 1);
+        assert_eq!((spans[0].abs_start, spans[0].abs_end), region);
+        assert_eq!(
+            spans[0].frames.len(),
+            config.materialize_whole_region_span_threshold + 1
+        );
+    }
+
+    #[test]
+    fn sparse_selection_keeps_spans_and_selected_byte_cost() {
+        let config = QueryRuntimeConfig::default();
+        let region = (0, config.materialize_whole_region_max_bytes);
+
+        // At (not above) the span threshold: untouched, selected-byte cost.
+        let (mut spans, selected_bytes) =
+            sparse_spans(config.materialize_whole_region_span_threshold);
+        let budget_bytes = merge_dense_selection_spans(&mut spans, selected_bytes, region, &config);
+        assert_eq!(budget_bytes, selected_bytes);
+        assert_eq!(spans.len(), config.materialize_whole_region_span_threshold);
+
+        // Above the threshold but the region exceeds the whole-region cap.
+        let (mut spans, selected_bytes) =
+            sparse_spans(config.materialize_whole_region_span_threshold + 1);
+        let too_large = (0, config.materialize_whole_region_max_bytes + 1);
+        let budget_bytes =
+            merge_dense_selection_spans(&mut spans, selected_bytes, too_large, &config);
+        assert_eq!(budget_bytes, selected_bytes);
+        assert_eq!(
+            spans.len(),
+            config.materialize_whole_region_span_threshold + 1
+        );
+    }
 }
