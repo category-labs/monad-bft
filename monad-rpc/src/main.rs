@@ -400,12 +400,31 @@ async fn main() -> std::io::Result<()> {
 
     let enable_websockets = event_server_client.is_some();
 
+    // queryX requests execute on a dedicated runtime so engine fan-out and
+    // response serialization scale with --chain-data-query-threads instead of
+    // the few single-threaded RPC workers. The runtime lives for the process
+    // lifetime (forgotten, never dropped inside an async context).
+    let chain_data_query = chain_data_reader.map(|reader| {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(args.chain_data_query_threads.max(1))
+            .thread_name("monad-qx")
+            .enable_all()
+            .build()
+            .expect("failed to build chain-data query runtime");
+        let handle = runtime.handle().clone();
+        std::mem::forget(runtime);
+        monad_rpc::handlers::chaindata::ChainDataQueryRuntime {
+            reader: std::sync::Arc::new(reader),
+            handle,
+        }
+    });
+
     let app_state = MonadRpcResources::new(
         txpool_bridge_client,
         eth_call_handler,
         node_config.chain_id,
         data_provider,
-        chain_data_reader,
+        chain_data_query,
         event_server_client.clone(),
         args.batch_request_limit,
         args.max_response_size,

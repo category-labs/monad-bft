@@ -525,14 +525,16 @@ async fn eth_queryBlocks(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let reader = app_state
-        .chain_data_reader
-        .as_ref()
-        .method_not_supported()?;
+    let query = app_state.chain_data_query.as_ref().method_not_supported()?;
     let request = chaindata::parse_query_request(params)?;
-    monad_eth_queryBlocks(reader, request)
+    let reader = query.reader.clone();
+    query
+        .run(async move {
+            monad_eth_queryBlocks(&reader, request)
+                .await
+                .map(serialize_result)?
+        })
         .await
-        .map(serialize_result)?
 }
 
 #[allow(non_snake_case)]
@@ -541,14 +543,16 @@ async fn eth_queryLogs(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let reader = app_state
-        .chain_data_reader
-        .as_ref()
-        .method_not_supported()?;
+    let query = app_state.chain_data_query.as_ref().method_not_supported()?;
     let request = chaindata::parse_query_request(params)?;
-    monad_eth_queryLogs(reader, request)
+    let reader = query.reader.clone();
+    query
+        .run(async move {
+            monad_eth_queryLogs(&reader, request)
+                .await
+                .map(serialize_result)?
+        })
         .await
-        .map(serialize_result)?
 }
 
 #[allow(non_snake_case)]
@@ -557,14 +561,16 @@ async fn eth_queryTransactions(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let reader = app_state
-        .chain_data_reader
-        .as_ref()
-        .method_not_supported()?;
+    let query = app_state.chain_data_query.as_ref().method_not_supported()?;
     let request = chaindata::parse_query_request(params)?;
-    monad_eth_queryTransactions(reader, request)
+    let reader = query.reader.clone();
+    query
+        .run(async move {
+            monad_eth_queryTransactions(&reader, request)
+                .await
+                .map(serialize_result)?
+        })
         .await
-        .map(serialize_result)?
 }
 
 #[allow(non_snake_case)]
@@ -573,14 +579,16 @@ async fn eth_queryTraces(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let reader = app_state
-        .chain_data_reader
-        .as_ref()
-        .method_not_supported()?;
+    let query = app_state.chain_data_query.as_ref().method_not_supported()?;
     let request = chaindata::parse_query_request(params)?;
-    monad_eth_queryTraces(reader, request)
+    let reader = query.reader.clone();
+    query
+        .run(async move {
+            monad_eth_queryTraces(&reader, request)
+                .await
+                .map(serialize_result)?
+        })
         .await
-        .map(serialize_result)?
 }
 
 #[allow(non_snake_case)]
@@ -589,14 +597,16 @@ async fn eth_queryTransfers(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let reader = app_state
-        .chain_data_reader
-        .as_ref()
-        .method_not_supported()?;
+    let query = app_state.chain_data_query.as_ref().method_not_supported()?;
     let request = chaindata::parse_query_request(params)?;
-    monad_eth_queryTransfers(reader, request)
+    let reader = query.reader.clone();
+    query
+        .run(async move {
+            monad_eth_queryTransfers(&reader, request)
+                .await
+                .map(serialize_result)?
+        })
         .await
-        .map(serialize_result)?
 }
 
 #[allow(non_snake_case)]

@@ -13,13 +13,17 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::{BTreeSet, HashMap},
+    sync::{Arc, Mutex},
+};
 
 use bytes::Bytes;
+use futures::{stream, StreamExt, TryStreamExt};
 use roaring::RoaringBitmap;
 
 use crate::{
-    engine::tables::scan_get_all,
+    engine::tables::{scan_get_all, FRAGMENT_GET_CONCURRENCY},
     error::{MonadChainDataError, Result},
     store::{
         blob::BlobStore, CachedKvTable, CachedScannableKvTable, MetaStore, ScannableTableId,
@@ -123,12 +127,26 @@ pub(crate) fn decode_open_streams_chunk(bytes: Bytes) -> Result<Arc<Vec<String>>
     decode_open_streams_delta(&bytes).map(Arc::new)
 }
 
+/// Bound on cached open-page folds per family. Entries exist only for
+/// streams queried while their page is open (the hot set), each holding one
+/// page bitmap (tens of KB at worst); crossing the cap clears the map, which
+/// merely costs the next request per stream one fresh fold.
+const OPEN_PAGE_FOLD_CAP: usize = 4096;
+
 #[derive(Clone)]
 pub struct BitmapTables<M: MetaStore> {
     fragments: CachedScannableKvTable<M, Arc<DecodedBitmapFragment>>,
     page_blobs: CachedKvTable<M, Arc<DecodedBitmapPage>>,
     page_counts: CachedKvTable<M, BitmapPageCounts>,
     open_streams: CachedScannableKvTable<M, Arc<Vec<String>>>,
+    /// Incremental folds of open-page fragments, keyed by `(stream, page)`
+    /// and tagged with the published head they are folded through. Fragments
+    /// key by flush block and heads publish only at flush boundaries, so
+    /// every fragment at or below a published head is durably visible: a
+    /// head-current fold is complete and serves with zero store reads, and a
+    /// stale one extends with only the fragments flushed since. `Arc`-shared
+    /// so table clones fold once per store, not once per handle.
+    open_page_folds: Arc<Mutex<HashMap<(String, u64), (u64, Arc<DecodedBitmapPage>)>>>,
 }
 
 impl<M: MetaStore> BitmapTables<M> {
@@ -143,6 +161,7 @@ impl<M: MetaStore> BitmapTables<M> {
             page_blobs,
             page_counts,
             open_streams,
+            open_page_folds: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -176,6 +195,91 @@ impl<M: MetaStore> BitmapTables<M> {
     ) -> Result<Vec<Arc<DecodedBitmapFragment>>> {
         let partition = stream_page_key(stream_id, page_start);
         scan_get_all(&self.fragments, &partition, "missing bitmap fragment").await
+    }
+
+    /// The open page's bitmap folded through `published_head`, served from
+    /// the shared incremental fold (see `open_page_folds`): a head-current
+    /// fold costs zero store reads; a stale one extends with only the
+    /// fragments flushed since (one keys-only scan plus cached point gets).
+    /// Fragments flushed beyond the published head are left for a later
+    /// fold — a published head proves completeness only at or below itself.
+    pub async fn load_open_page_fold(
+        &self,
+        stream_id: &str,
+        page_start: u64,
+        published_head: u64,
+    ) -> Result<Arc<DecodedBitmapPage>> {
+        let key = (stream_id.to_owned(), page_start);
+        let cached = {
+            let folds = self
+                .open_page_folds
+                .lock()
+                .expect("open fold mutex poisoned");
+            folds.get(&key).cloned()
+        };
+        if let Some((folded_head, page)) = &cached {
+            if *folded_head >= published_head {
+                return Ok(Arc::clone(page));
+            }
+        }
+
+        let folded_below = cached.as_ref().map(|(head, _)| *head).unwrap_or(0);
+        let partition = stream_page_key(stream_id, page_start);
+        let new_keys: Vec<Vec<u8>> = self
+            .fragments
+            .scan_keys(&partition)
+            .await?
+            .into_iter()
+            .filter(|key| {
+                clustering_block(key)
+                    .is_some_and(|block| block > folded_below && block <= published_head)
+            })
+            .collect();
+
+        let mut bitmap = cached
+            .as_ref()
+            .map(|(_, page)| page.bitmap.clone())
+            .unwrap_or_default();
+        let fragments: Vec<Arc<DecodedBitmapFragment>> = stream::iter(new_keys)
+            .map(|clustering| {
+                let partition = &partition;
+                async move {
+                    self.fragments
+                        .get(partition, &clustering)
+                        .await?
+                        .ok_or(MonadChainDataError::MissingData("missing bitmap fragment"))
+                }
+            })
+            .buffered(FRAGMENT_GET_CONCURRENCY)
+            .try_collect()
+            .await?;
+        for fragment in fragments {
+            bitmap |= &fragment.bitmap;
+        }
+        let page = Arc::new(DecodedBitmapPage {
+            meta: BitmapPageMeta {
+                min_offset: bitmap.min().unwrap_or(u32::MAX),
+                max_offset: bitmap.max().unwrap_or(0),
+                count: bitmap.len() as u32,
+            },
+            bitmap,
+        });
+
+        let mut folds = self
+            .open_page_folds
+            .lock()
+            .expect("open fold mutex poisoned");
+        if folds.len() >= OPEN_PAGE_FOLD_CAP {
+            folds.clear();
+        }
+        // A racing fold may have advanced further; never regress the entry.
+        match folds.get(&key) {
+            Some((head, _)) if *head >= published_head => {}
+            _ => {
+                folds.insert(key, (published_head, Arc::clone(&page)));
+            }
+        }
+        Ok(page)
     }
 
     /// Loads a compacted bitmap page, decoded and served from the read cache.
@@ -659,6 +763,12 @@ fn stream_scoped_key(stream_id: &str, start: u64) -> Vec<u8> {
     let mut key = format!("{stream_id}/").into_bytes();
     key.extend_from_slice(&start.to_be_bytes());
     key
+}
+
+/// Decodes a fragment clustering key back to its flush-block number (see
+/// [`BitmapTables::stage_page_fragment`]); `None` for malformed keys.
+fn clustering_block(key: &[u8]) -> Option<u64> {
+    key.try_into().ok().map(u64::from_be_bytes)
 }
 
 /// Target encoded size of one open-streams delta row; first-seen sets are

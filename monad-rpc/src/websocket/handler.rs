@@ -724,7 +724,7 @@ mod tests {
             eth_call_handler: None,
             chain_id: 1337,
             data_provider: None,
-            chain_data_reader: None,
+            chain_data_query: None,
             event_server_client: Some(event_server_client),
             batch_request_limit: 5,
             max_response_size: 25_000_000,

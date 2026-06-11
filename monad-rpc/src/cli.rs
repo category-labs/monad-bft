@@ -78,6 +78,12 @@ pub struct Cli {
     #[arg(long, default_value_t = 25_000_000)]
     pub max_response_size: u32,
 
+    /// Worker threads for the dedicated chain-data (queryX) runtime; queryX
+    /// requests execute there instead of on the RPC worker threads, so query
+    /// throughput scales independently of `--worker-threads`.
+    #[arg(long, default_value_t = 4)]
+    pub chain_data_query_threads: usize,
+
     /// Otel endpoint to collect metrics data
     #[arg(long)]
     pub otel_endpoint: Option<String>,

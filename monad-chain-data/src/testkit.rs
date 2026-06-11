@@ -158,6 +158,39 @@ pub async fn populate_via_engine_with_dict(
         .expect("backfill ingest")
 }
 
+/// Ingests `blocks` (parent-linked continuations of what `store` holds) into
+/// the SAME stores via a fresh engine run, advancing the published head to
+/// the new last block — the fixture for read paths that must observe a head
+/// advance (e.g. the open-region fold caches).
+pub async fn populate_more_via_engine(store: &PopulatedStore, blocks: Vec<FinalizedBlock>) {
+    let (start, end) = block_bounds(&blocks);
+    let meta = store.meta.clone();
+    let blob = store.blob.clone();
+    let snapshots = SnapshotStore::new(meta.clone(), blob.clone());
+    let tables = Arc::new(Tables::with_all_configs(
+        meta.clone(),
+        blob.clone(),
+        CacheConfig::default(),
+        DictConfig::default(),
+        QueryRuntimeConfig::default(),
+    ));
+    let resolver = TablesCodecResolver::new(tables.clone());
+    let publisher = Arc::new(PublicationTables::new(meta.clone()));
+    let source = VecSource::new(blocks, start);
+
+    run_ingest(
+        source,
+        tables,
+        publisher,
+        snapshots,
+        resolver,
+        populate_config(start, end),
+        TEST_PREFETCH,
+    )
+    .await
+    .expect("continuation ingest");
+}
+
 /// Wires tables/snapshots/resolver/publisher over fresh in-memory stores and
 /// drives the engine to completion, publishing head = last block.
 async fn run_engine(

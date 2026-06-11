@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::sync::{Arc, Mutex};
+
 use bytes::Bytes;
 
 use crate::{
@@ -119,6 +121,14 @@ pub(crate) fn decode_fragment(bytes: Bytes) -> Result<PrimaryDirFragment> {
 pub struct PrimaryDirTables<M: MetaStore> {
     fragments: CachedScannableKvTable<M, PrimaryDirFragment>,
     buckets: CachedKvTable<M, PrimaryDirBucket>,
+    /// Incremental fold of the one open bucket's fragments:
+    /// `(bucket_start, folded_through_head, block-ordered fragments)`.
+    /// Fragments key by block and heads publish only at flush boundaries, so
+    /// every fragment at or below a published head is durably visible: a
+    /// head-current fold is complete and serves with zero store reads, and a
+    /// stale one extends with only the blocks flushed since. `Arc`-shared so
+    /// table clones fold once per store, not once per handle.
+    open_bucket_fold: Arc<Mutex<Option<(u64, u64, Arc<Vec<PrimaryDirFragment>>)>>>,
 }
 
 impl<M: MetaStore> PrimaryDirTables<M> {
@@ -126,7 +136,11 @@ impl<M: MetaStore> PrimaryDirTables<M> {
         fragments: CachedScannableKvTable<M, PrimaryDirFragment>,
         buckets: CachedKvTable<M, PrimaryDirBucket>,
     ) -> Self {
-        Self { fragments, buckets }
+        Self {
+            fragments,
+            buckets,
+            open_bucket_fold: Arc::new(Mutex::new(None)),
+        }
     }
 
     pub(crate) fn fragments_cache(&self) -> &CachedScannableKvTable<M, PrimaryDirFragment> {
@@ -155,6 +169,71 @@ impl<M: MetaStore> PrimaryDirTables<M> {
             "missing primary directory fragment",
         )
         .await
+    }
+
+    /// The open bucket's fragments folded through `published_head`, served
+    /// from the shared incremental fold (see `open_bucket_fold`): a
+    /// head-current fold costs zero store reads; a stale one extends with
+    /// only the blocks flushed since (one keys-only scan plus cached point
+    /// gets). Fragments flushed beyond the published head are left for a
+    /// later fold. A different `bucket_start` (the previous bucket sealed)
+    /// replaces the slot outright.
+    pub async fn load_open_bucket_fold(
+        &self,
+        bucket_start: u64,
+        published_head: u64,
+    ) -> Result<Arc<Vec<PrimaryDirFragment>>> {
+        let cached = self
+            .open_bucket_fold
+            .lock()
+            .expect("open fold mutex poisoned")
+            .clone();
+        let cached = cached.filter(|(bucket, _, _)| *bucket == bucket_start);
+        if let Some((_, folded_head, fragments)) = &cached {
+            if *folded_head >= published_head {
+                return Ok(Arc::clone(fragments));
+            }
+        }
+
+        let folded_below = cached.as_ref().map(|(_, head, _)| *head).unwrap_or(0);
+        let partition = u64_key(bucket_start);
+        let new_keys: Vec<Vec<u8>> = self
+            .fragments
+            .scan_keys(&partition)
+            .await?
+            .into_iter()
+            .filter(|key| {
+                fragment_block(key)
+                    .is_some_and(|block| block > folded_below && block <= published_head)
+            })
+            .collect();
+
+        let mut fragments = cached
+            .as_ref()
+            .map(|(_, _, fragments)| fragments.as_ref().clone())
+            .unwrap_or_default();
+        let new_fragments: Vec<PrimaryDirFragment> =
+            futures::future::try_join_all(new_keys.iter().map(|clustering| async {
+                self.fragments.get(&partition, clustering).await?.ok_or(
+                    MonadChainDataError::MissingData("missing primary directory fragment"),
+                )
+            }))
+            .await?;
+        // Clustering keys scan in block order and ids assign in block order,
+        // so the extended vec stays sorted by `first_primary_id`.
+        fragments.extend(new_fragments);
+        let fragments = Arc::new(fragments);
+
+        let mut slot = self
+            .open_bucket_fold
+            .lock()
+            .expect("open fold mutex poisoned");
+        // A racing fold may have advanced further; never regress the slot.
+        match &*slot {
+            Some((bucket, head, _)) if *bucket == bucket_start && *head >= published_head => {}
+            _ => *slot = Some((bucket_start, published_head, Arc::clone(&fragments))),
+        }
+        Ok(fragments)
     }
 
     pub fn stage_bucket<B: BlobStore>(
@@ -215,4 +294,10 @@ pub(crate) fn fragment_bucket_starts(first_primary_id: u64, count: u32) -> Vec<u
 
 fn u64_key(value: u64) -> [u8; 8] {
     value.to_be_bytes()
+}
+
+/// Decodes a fragment clustering key back to its block number (see
+/// [`PrimaryDirTables::stage_block_fragment`]); `None` for malformed keys.
+fn fragment_block(key: &[u8]) -> Option<u64> {
+    key.try_into().ok().map(u64::from_be_bytes)
 }

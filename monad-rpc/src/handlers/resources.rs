@@ -18,7 +18,6 @@ use actix_web::{
     dev::{ServiceRequest, ServiceResponse},
     Error,
 };
-use monad_chain_data::ConfiguredChainDataReader;
 use monad_triedb_utils::triedb_env::TriedbEnv;
 use tracing_actix_web::RootSpanBuilder;
 
@@ -36,7 +35,7 @@ pub struct MonadRpcResources {
     pub eth_call_handler: Option<EthCallHandler>,
     pub chain_id: u64,
     pub data_provider: Option<DataProvider<TriedbEnv>>,
-    pub chain_data_reader: Option<ConfiguredChainDataReader>,
+    pub chain_data_query: Option<crate::handlers::chaindata::ChainDataQueryRuntime>,
     pub event_server_client: Option<EventServerClient>,
     pub batch_request_limit: u16,
     pub max_response_size: u32,
@@ -58,7 +57,7 @@ impl MonadRpcResources {
         eth_call_handler: Option<EthCallHandler>,
         chain_id: u64,
         data_provider: Option<DataProvider<TriedbEnv>>,
-        chain_data_reader: Option<ConfiguredChainDataReader>,
+        chain_data_query: Option<crate::handlers::chaindata::ChainDataQueryRuntime>,
         event_server_client: Option<EventServerClient>,
         batch_request_limit: u16,
         max_response_size: u32,
@@ -77,7 +76,7 @@ impl MonadRpcResources {
             eth_call_handler,
             chain_id,
             data_provider,
-            chain_data_reader,
+            chain_data_query,
             event_server_client,
             batch_request_limit,
             max_response_size,

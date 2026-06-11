@@ -39,7 +39,7 @@ fn test_resources() -> MonadRpcResources {
         eth_call_handler: None,
         chain_id: 1337,
         data_provider: None,
-        chain_data_reader: None,
+        chain_data_query: None,
         event_server_client: None,
         batch_request_limit: 5,
         max_response_size: 25_000_000,
@@ -309,7 +309,10 @@ async fn chain_data_test_reader() -> monad_chain_data::ConfiguredChainDataReader
 #[actix_web::test]
 async fn test_eth_query_logs_round_trip() {
     let mut resources = test_resources();
-    resources.chain_data_reader = Some(chain_data_test_reader().await);
+    resources.chain_data_query = Some(crate::handlers::chaindata::ChainDataQueryRuntime {
+        reader: std::sync::Arc::new(chain_data_test_reader().await),
+        handle: tokio::runtime::Handle::current(),
+    });
     let app = init_server_with_resources(resources).await;
 
     // Spec wire shape (monad-chain-data/queryX): flat camelCase request with

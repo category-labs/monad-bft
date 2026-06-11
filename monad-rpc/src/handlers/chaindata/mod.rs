@@ -21,6 +21,8 @@
 
 pub mod wire;
 
+use std::sync::Arc;
+
 use alloy_primitives::U64;
 use monad_chain_data::{
     ConfiguredChainDataReader, LogsRelations, MonadChainDataError, QueryBlocksRequest,
@@ -35,6 +37,31 @@ use wire::{
 };
 
 use crate::types::jsonrpc::{JsonRpcError, JsonRpcResult, JsonRpcResultExt, RequestParams};
+
+/// queryX execution context: the chain-data reader plus the dedicated
+/// runtime its queries run on. RPC workers are few and single-threaded
+/// (actix arbiters); queryX requests spawn onto this runtime so engine
+/// fan-out and response serialization scale with `--chain-data-query-threads`
+/// instead of `--worker-threads`.
+#[derive(Clone)]
+pub struct ChainDataQueryRuntime {
+    pub reader: Arc<ConfiguredChainDataReader>,
+    pub handle: tokio::runtime::Handle,
+}
+
+impl ChainDataQueryRuntime {
+    /// Runs one queryX adapter future to completion on the dedicated runtime.
+    pub async fn run<F, T>(&self, query: F) -> JsonRpcResult<T>
+    where
+        F: std::future::Future<Output = JsonRpcResult<T>> + Send + 'static,
+        T: Send + 'static,
+    {
+        self.handle
+            .spawn(query)
+            .await
+            .map_err(|e| JsonRpcError::internal_error(format!("chain-data query task: {e}")))?
+    }
+}
 
 /// queryX limit breaches surface with their own error code (see
 /// `monad_chain_data::QueryLimits`).

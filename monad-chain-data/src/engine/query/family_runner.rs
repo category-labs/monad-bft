@@ -660,7 +660,7 @@ where
     let sealed_below = bucket_start(frontier_id.as_u64());
 
     let family_tables = tables.family(family);
-    let resolver = PrimaryIdResolver::new(family_tables, sealed_below);
+    let resolver = PrimaryIdResolver::new(family_tables, sealed_below, published_head);
     IndexedQueryStats::add_us(&stats.plan_us, plan_started);
 
     // Stage 0 — per-group planning, streamed: plans build concurrently (a
@@ -679,7 +679,12 @@ where
                 let plan_started = Instant::now();
                 let (first_page, last_page) = window.page_bounds_in_group(group_start);
                 let Some(plan) = family_tables
-                    .build_page_group_plan(clauses, group_start, frontier_id.as_u64())
+                    .build_page_group_plan(
+                        clauses,
+                        group_start,
+                        frontier_id.as_u64(),
+                        published_head,
+                    )
                     .await?
                 else {
                     return Ok::<_, MonadChainDataError>(Vec::new());

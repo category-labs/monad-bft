@@ -1290,6 +1290,18 @@ impl<M: MetaStore> FamilyTables<M> {
         self.dir.load_bucket_fragments(bucket_start).await
     }
 
+    /// The open bucket's fragments folded through `published_head` via the
+    /// shared incremental fold (zero store reads while the head is unchanged).
+    pub(crate) async fn load_open_bucket_fold(
+        &self,
+        bucket_start: u64,
+        published_head: u64,
+    ) -> Result<Arc<Vec<PrimaryDirFragment>>> {
+        self.dir
+            .load_open_bucket_fold(bucket_start, published_head)
+            .await
+    }
+
     pub async fn load_bucket(&self, bucket_start: u64) -> Result<Option<PrimaryDirBucket>> {
         self.dir.load_bucket(bucket_start).await
     }
@@ -1300,6 +1312,19 @@ impl<M: MetaStore> FamilyTables<M> {
         page_start: u64,
     ) -> Result<Vec<Arc<DecodedBitmapFragment>>> {
         self.bitmap.load_fragments(stream_id, page_start).await
+    }
+
+    /// The open page's bitmap folded through `published_head` via the shared
+    /// incremental fold (zero store reads while the head is unchanged).
+    pub(crate) async fn load_open_bitmap_page_fold(
+        &self,
+        stream_id: &str,
+        page_start: u64,
+        published_head: u64,
+    ) -> Result<Arc<DecodedBitmapPage>> {
+        self.bitmap
+            .load_open_page_fold(stream_id, page_start, published_head)
+            .await
     }
 
     /// Loads a compacted bitmap page for one sealed stream page, decoded

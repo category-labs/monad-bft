@@ -62,6 +62,11 @@ impl PageBitmap {
 pub(crate) struct PageGroupPlan {
     /// The group this plan covers (manifest scope).
     group_start: u64,
+    /// The published head the query executes against; open-page fragment
+    /// folds are served (and tagged) through it. `u64::MAX` bypasses the
+    /// shared fold and re-folds fragments fresh — the serial reference and
+    /// fixture-driven tests use it to stay head-agnostic.
+    published_head: u64,
     /// Per-clause value-streams (the OR set the clause expands to).
     clause_streams: Vec<Vec<String>>,
     /// Per-clause page-count manifest; `None` means "unknown", never "empty".
@@ -91,6 +96,7 @@ impl<M: MetaStore> FamilyTables<M> {
         clauses: &[IndexedClause],
         group_start: u64,
         frontier_id: u64,
+        published_head: u64,
     ) -> Result<Option<PageGroupPlan>> {
         let clause_streams: Vec<Vec<String>> =
             clauses.iter().map(IndexedClause::stream_ids).collect();
@@ -122,6 +128,7 @@ impl<M: MetaStore> FamilyTables<M> {
 
         Ok(Some(PageGroupPlan {
             group_start,
+            published_head,
             clause_streams,
             clause_counts,
             group_sealed,
@@ -155,8 +162,10 @@ impl<M: MetaStore> FamilyTables<M> {
         let mut result = Vec::new();
         for group_idx in order.iterate(first_group..=last_group) {
             let group_start = group_idx * PAGE_GROUP_ID_SPAN;
+            // `u64::MAX` bypasses the shared open-page fold: the serial
+            // reference re-folds fragments fresh on every call.
             let Some(plan) = self
-                .build_page_group_plan(clauses, group_start, frontier_id)
+                .build_page_group_plan(clauses, group_start, frontier_id, u64::MAX)
                 .await?
             else {
                 return Ok(None);
@@ -230,6 +239,7 @@ impl<M: MetaStore> FamilyTables<M> {
                     from_offset,
                     to_offset,
                     plan.page_sealed(page),
+                    plan.published_head,
                 )
                 .await?;
             page_intersection = Some(match page_intersection {
@@ -317,9 +327,17 @@ impl<M: MetaStore> FamilyTables<M> {
         from_offset: u32,
         to_offset: u32,
         page_sealed: bool,
+        published_head: u64,
     ) -> Result<PageBitmap> {
         let mut pages = try_join_all(stream_ids.iter().map(|stream_id| {
-            self.load_bitmap_page(stream_id, page, from_offset, to_offset, page_sealed)
+            self.load_bitmap_page(
+                stream_id,
+                page,
+                from_offset,
+                to_offset,
+                page_sealed,
+                published_head,
+            )
         }))
         .await?
         .into_iter();
@@ -355,6 +373,7 @@ impl<M: MetaStore> FamilyTables<M> {
         from_offset: u32,
         to_offset: u32,
         page_sealed: bool,
+        published_head: u64,
     ) -> Result<PageBitmap> {
         if page_sealed {
             if let Some(page) = self
@@ -374,6 +393,27 @@ impl<M: MetaStore> FamilyTables<M> {
                 // intersection once per page. Share the cached page, don't clone.
                 return Ok(PageBitmap::Shared(page));
             }
+        }
+
+        // Open page: serve from the shared incremental fold (covering the
+        // whole page — the final intersection clips once per page). Sealed
+        // pages whose artifact is not yet visible fall through to the raw
+        // fragment fold below instead: their fragments are complete until
+        // the seal lands, and the head-tagged fold must not absorb a page
+        // crossing the seal boundary.
+        if !page_sealed && published_head != u64::MAX {
+            let page = self
+                .load_open_bitmap_page_fold(stream_id, page_start, published_head)
+                .await?;
+            if !overlaps(
+                page.meta.min_offset,
+                page.meta.max_offset,
+                from_offset,
+                to_offset,
+            ) {
+                return Ok(PageBitmap::Owned(RoaringBitmap::new()));
+            }
+            return Ok(PageBitmap::Shared(page));
         }
 
         let mut page_bitmap = RoaringBitmap::new();

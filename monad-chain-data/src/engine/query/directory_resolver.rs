@@ -43,14 +43,19 @@ pub(crate) struct PrimaryIdResolver<'a, M: MetaStore> {
     /// First bucket start that is *not* sealed — `bucket_start` of the family's
     /// frontier id at the publication head.
     sealed_below: u64,
+    /// The published head the query executes against; the open bucket's
+    /// fragment fold is served (and tagged) through it. `u64::MAX` bypasses
+    /// the shared fold and re-scans fragments fresh (head-agnostic tests).
+    published_head: u64,
     bucket_cache: Mutex<HashMap<u64, Arc<CachedBucket>>>,
 }
 
 impl<'a, M: MetaStore> PrimaryIdResolver<'a, M> {
-    pub(crate) fn new(family: &'a FamilyTables<M>, sealed_below: u64) -> Self {
+    pub(crate) fn new(family: &'a FamilyTables<M>, sealed_below: u64, published_head: u64) -> Self {
         Self {
             family,
             sealed_below,
+            published_head,
             bucket_cache: Mutex::new(HashMap::new()),
         }
     }
@@ -74,9 +79,17 @@ impl<'a, M: MetaStore> PrimaryIdResolver<'a, M> {
                 },
             )?;
             CachedBucket::Summary(summary)
-        } else {
+        } else if self.published_head == u64::MAX {
             // The open/frontier bucket has no summary yet; resolve from fragments.
-            CachedBucket::Fragments(self.family.load_bucket_fragments(bucket).await?)
+            CachedBucket::Fragments(Arc::new(self.family.load_bucket_fragments(bucket).await?))
+        } else {
+            // Open bucket on the production path: the cross-request
+            // incremental fold (zero store reads while the head is unchanged).
+            CachedBucket::Fragments(
+                self.family
+                    .load_open_bucket_fold(bucket, self.published_head)
+                    .await?,
+            )
         };
 
         let mut guard = self.bucket_cache.lock().expect("resolver mutex poisoned");
@@ -106,7 +119,7 @@ pub(crate) struct ResolvedPrimaryIdLocation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CachedBucket {
     Summary(PrimaryDirBucket),
-    Fragments(Vec<PrimaryDirFragment>),
+    Fragments(Arc<Vec<PrimaryDirFragment>>),
 }
 
 impl CachedBucket {
@@ -177,9 +190,15 @@ fn resolved_location_from_fragments(
     fragments: &[PrimaryDirFragment],
     id: PrimaryId,
 ) -> Result<Option<ResolvedPrimaryIdLocation>> {
-    let Some(fragment) = fragments.iter().find(|fragment| {
-        id.as_u64() >= fragment.first_primary_id && id.as_u64() < fragment.end_primary_id_exclusive
-    }) else {
+    // Fragments are disjoint id ranges ascending in `first_primary_id`
+    // (block-clustered rows, ids assigned in block order), so the candidate
+    // is the last fragment starting at or below `id`.
+    let upper = fragments.partition_point(|fragment| fragment.first_primary_id <= id.as_u64());
+    let Some(fragment) = upper
+        .checked_sub(1)
+        .map(|idx| &fragments[idx])
+        .filter(|fragment| id.as_u64() < fragment.end_primary_id_exclusive)
+    else {
         return Ok(None);
     };
     location_in_block(fragment.block_number, fragment.first_primary_id, id).map(Some)
@@ -187,6 +206,8 @@ fn resolved_location_from_fragments(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::{
         containing_bucket_entry, resolved_location_from_bucket, CachedBucket, PrimaryDirFragment,
         PrimaryIdResolver,
@@ -258,11 +279,11 @@ mod tests {
 
     #[test]
     fn fragment_lookup_errors_when_candidate_id_is_missing() {
-        let error = CachedBucket::Fragments(vec![PrimaryDirFragment {
+        let error = CachedBucket::Fragments(Arc::new(vec![PrimaryDirFragment {
             block_number: 7,
             first_primary_id: 100,
             end_primary_id_exclusive: 103,
-        }])
+        }]))
         .resolve(PrimaryId::new(104))
         .expect_err("missing fragment candidate should fail loud");
 
@@ -300,7 +321,7 @@ mod tests {
             .await;
 
         // sealed_below = DIRECTORY_BUCKET_SIZE => bucket 0 is sealed.
-        let resolver = PrimaryIdResolver::new(family, DIRECTORY_BUCKET_SIZE);
+        let resolver = PrimaryIdResolver::new(family, DIRECTORY_BUCKET_SIZE, u64::MAX);
         let location = resolver
             .resolve(PrimaryId::new(5))
             .await
@@ -319,7 +340,7 @@ mod tests {
         // on the broken commit contract, never silently fall back to fragments.
         tables.seed_dir_fragment(Family::Log, 7, 0, 8).await;
 
-        let resolver = PrimaryIdResolver::new(family, DIRECTORY_BUCKET_SIZE);
+        let resolver = PrimaryIdResolver::new(family, DIRECTORY_BUCKET_SIZE, u64::MAX);
         let error = resolver
             .resolve(PrimaryId::new(5))
             .await
@@ -340,7 +361,7 @@ mod tests {
         tables.seed_dir_fragment(Family::Log, 7, 0, 8).await;
 
         // sealed_below = 0 => no bucket is sealed; everything routes to scan.
-        let resolver = PrimaryIdResolver::new(family, 0);
+        let resolver = PrimaryIdResolver::new(family, 0, u64::MAX);
         let location = resolver
             .resolve(PrimaryId::new(5))
             .await

@@ -430,18 +430,18 @@ async fn indexed_query_cursor_completes_block_spanning_page_boundary() {
     assert_eq!(page.span.cursor_block.number, 1);
 }
 
-/// A block-metadata row missing INSIDE the resolved range is a broken store
-/// contract (both range bounds were verified present); the indexed path must
-/// fail loud like the block-scan path, not serve a wrongly-empty page.
+/// Window resolution reads only the range's endpoint records, so a damaged
+/// (missing) mid-range block-metadata row is observable only when that block
+/// holds candidate rows — then materialization must fail loud rather than
+/// serve a partial page. A damaged block holding NO matching rows is never
+/// read at all and the query answers completely.
 #[tokio::test(flavor = "current_thread")]
-async fn indexed_query_fails_loud_on_missing_mid_range_block_record() {
+async fn indexed_query_fails_loud_on_missing_candidate_block_record() {
     use monad_chain_data::{engine::tables::BlockTables, MonadChainDataError};
 
     let addr = Address::repeat_byte(7);
     let topic = B256::repeat_byte(9);
-    // `[4, 5]` exercises the forward id walk (empty blocks before the damaged
-    // record), `[1, 2]` the reverse walk (empty blocks after it).
-    for blocks_with_logs in [[4u64, 5], [1, 2]] {
+    let populate = |blocks_with_logs: [u64; 2]| async move {
         let store = common::populate::populate_via_engine(chain_of_blocks(5, |number| {
             if blocks_with_logs.contains(&number) {
                 vec![vec![log(addr, vec![topic])]]
@@ -456,21 +456,89 @@ async fn indexed_query_fails_loud_on_missing_mid_range_block_record() {
             BlockTables::<InMemoryMetaStore>::BLOCK_METADATA_TABLE,
             &3u64.to_be_bytes(),
         );
+        store
+    };
 
-        let err = store
-            .reader()
-            .query_logs(logs_request(
-                ascending_envelope(1, 5, 10),
-                log_filter(addr, topic),
-            ))
-            .await
-            .expect_err("missing mid-range record must not yield an empty page");
-        assert!(
-            matches!(
-                err,
-                MonadChainDataError::MissingData("missing block record inside resolved range")
-            ),
-            "got {err:?}"
-        );
-    }
+    // The damaged block carries a matching row: the query must error.
+    let store = populate([3, 5]).await;
+    let err = store
+        .reader()
+        .query_logs(logs_request(
+            ascending_envelope(1, 5, 10),
+            log_filter(addr, topic),
+        ))
+        .await
+        .expect_err("missing candidate block record must not yield a partial page");
+    assert!(
+        matches!(err, MonadChainDataError::MissingData(_)),
+        "got {err:?}"
+    );
+
+    // The damaged block carries no matching rows: it is never read, and the
+    // query answers completely.
+    let store = populate([2, 4]).await;
+    let page = store
+        .reader()
+        .query_logs(logs_request(
+            ascending_envelope(1, 5, 10),
+            log_filter(addr, topic),
+        ))
+        .await
+        .expect("damaged irrelevant block must not affect the page");
+    assert_eq!(
+        page.logs.iter().map(|l| l.block_number).collect::<Vec<_>>(),
+        vec![2, 4]
+    );
+}
+
+/// The open-region fold caches (dir bucket + bitmap page) are shared across
+/// requests and tagged with the published head they folded through. A reader
+/// that queried at one head must see rows from blocks published after it:
+/// the fold extends incrementally rather than serving stale state.
+#[tokio::test(flavor = "current_thread")]
+async fn open_region_folds_extend_when_the_head_advances() {
+    let addr = Address::repeat_byte(7);
+    let topic = B256::repeat_byte(9);
+    let mut blocks =
+        common::chain_of_blocks(8, |_| vec![vec![log(Address::repeat_byte(7), vec![topic])]]);
+    let rest = blocks.split_off(4);
+
+    let store = common::populate::populate_via_engine(blocks).await;
+    let service = store.reader();
+    let request = |to_block: u64| QueryLogsRequest {
+        envelope: ascending_envelope(1, to_block, 100),
+        filter: log_filter(addr, topic),
+        relations: LogsRelations::default(),
+    };
+
+    // Warms the open dir-bucket and bitmap-page folds at head 4.
+    let warm = service
+        .query_logs(request(4))
+        .await
+        .expect("query at head 4");
+    assert_eq!(warm.logs.len(), 4);
+
+    common::populate::populate_more_via_engine(&store, rest).await;
+
+    // Same service instance: the folds must extend through the new head.
+    let extended = service
+        .query_logs(request(8))
+        .await
+        .expect("query at head 8");
+    assert_eq!(
+        extended
+            .logs
+            .iter()
+            .map(|l| l.block_number)
+            .collect::<Vec<_>>(),
+        (1..=8).collect::<Vec<_>>()
+    );
+
+    // And agree exactly with a fold-cold reader over the same stores.
+    let fresh = store
+        .reader()
+        .query_logs(request(8))
+        .await
+        .expect("fresh query");
+    assert_eq!(extended.logs, fresh.logs);
 }
