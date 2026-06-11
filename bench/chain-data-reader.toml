@@ -1,0 +1,33 @@
+# queryX reader config for benchmarking against the live mainnet-1 store.
+# Generous caps: this is a bench host, we want single requests to be able to
+# span wide block ranges so `limit` (not range) governs pagination.
+max_limit = 10000
+max_block_range = 100000000
+
+[store.cache]
+# Experiment A: ~50% of host RAM. Default is 2048 MiB.
+total_mib = 61440
+
+[store.query]
+# Experiment A: defaults are materialize=8, page_intersect=32.
+materialize_concurrency = 64
+page_intersect_concurrency = 64
+
+[store.meta]
+type = "dynamo"
+table = "mainnet-1"
+endpoint_urls = ["http://100.81.221.102:8000"]
+region = "us-east-1"
+profile = "scylla-mainnet-1"
+scylla_profile = true
+scylla_concurrency = 1024
+
+[store.blob]
+type = "s3"
+bucket = "mainnet-1"
+endpoint_urls = ["http://100.94.21.51:9000"]
+region = "us-east-1"
+profile = "rustfs-mainnet-1"
+prefix = "dev"
+force_path_style = true
+max_concurrency = 256

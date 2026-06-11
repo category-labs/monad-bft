@@ -1,0 +1,249 @@
+[
+  {
+    "name": "dense-logs-scan-tip-1kpage",
+    "method": "eth_queryLogs",
+    "params": {
+      "fromBlock": "0x4CE2000", "toBlock": "0x4CE27CF",
+      "limit": 1000, "order": "asc"
+    },
+    "max_pages": 100,
+    "note": "dense unfiltered log scan, 2000 tip-era blocks (~186 logs/blk), full fields"
+  },
+  {
+    "name": "dense-logs-scan-tip-10kpage",
+    "method": "eth_queryLogs",
+    "params": {
+      "fromBlock": "0x4CE2000", "toBlock": "0x4CE27CF",
+      "limit": 10000, "order": "asc"
+    },
+    "max_pages": 40,
+    "note": "same range, big pages"
+  },
+  {
+    "name": "dense-logs-hot-contract",
+    "method": "eth_queryLogs",
+    "params": {
+      "filter": {"address": "0x34b6552d57a35a1d042ccae1951bd1c370112a6f"},
+      "fromBlock": "0x4CE2000", "toBlock": "0x4CE4000",
+      "limit": 1000, "order": "asc"
+    },
+    "max_pages": 100,
+    "note": "indexed but dense: hottest log emitter (~40/blk) over 16k blocks"
+  },
+  {
+    "name": "dense-txs-scan-tip",
+    "method": "eth_queryTransactions",
+    "params": {
+      "fromBlock": "0x4CE2000", "toBlock": "0x4CE27CF",
+      "limit": 1000, "order": "asc"
+    },
+    "max_pages": 100,
+    "note": "unfiltered tx scan, 2000 blocks, full fields incl input"
+  },
+  {
+    "name": "dense-traces-scan-tip",
+    "method": "eth_queryTraces",
+    "params": {
+      "fromBlock": "0x4CE2000", "toBlock": "0x4CE21F3",
+      "limit": 2000, "order": "asc",
+      "fields": {"traces": ["blockNumber", "transactionIndex", "from", "to", "value", "type"]}
+    },
+    "max_pages": 60,
+    "note": "unfiltered trace scan, 500 blocks, projected fields (traces are huge)"
+  },
+  {
+    "name": "dense-transfers-scan-tip",
+    "method": "eth_queryTransfers",
+    "params": {
+      "fromBlock": "0x4CE2000", "toBlock": "0x4CE27CF",
+      "limit": 1000, "order": "asc"
+    },
+    "max_pages": 60,
+    "note": "native transfer scan, 2000 blocks"
+  },
+  {
+    "name": "blocks-headers-wide",
+    "method": "eth_queryBlocks",
+    "params": {
+      "fromBlock": "0x4CD0000", "toBlock": "0x4CD9C3F",
+      "limit": 1000, "order": "asc",
+      "fields": {"blocks": ["number", "timestamp", "gasUsed", "hash"]}
+    },
+    "max_pages": 40,
+    "note": "block header scan, 40k blocks, projected"
+  },
+  {
+    "name": "erc20-top-token-analytic",
+    "method": "eth_queryLogs",
+    "params": {
+      "filter": {
+        "address": "0x754704bc059f8c67012fed69bc8a327a5aafb603",
+        "topics": ["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"]
+      },
+      "fromBlock": "0x4C92000", "toBlock": "0x4CE4000",
+      "limit": 5000, "order": "asc",
+      "fields": {"logs": ["blockNumber", "logIndex", "data", "topics"]}
+    },
+    "max_pages": 100,
+    "note": "analytic: top token Transfers over 344k blocks (~3/blk)"
+  },
+  {
+    "name": "erc20-quiet-token-wide",
+    "method": "eth_queryLogs",
+    "params": {
+      "filter": {
+        "address": "0x1111b3ded9f1fe1801ad4ebef8e2788183a24111",
+        "topics": ["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"]
+      },
+      "fromBlock": "0x44AA200", "toBlock": "0x4CE4000",
+      "limit": 1000, "order": "asc"
+    },
+    "max_pages": 100,
+    "note": "sparse: quiet token (~0.03/blk) over 8.6M blocks - bitmap skip test"
+  },
+  {
+    "name": "erc20-wallet-incoming-app",
+    "method": "eth_queryLogs",
+    "params": {
+      "filter": {
+        "topics": [
+          "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+          null,
+          "0x000000000000000000000000188d586ddcf52439676ca21a244753fa19f9ea8e"
+        ]
+      },
+      "fromBlock": "latest", "toBlock": "0x4C92000",
+      "limit": 25, "order": "desc",
+      "fields": {"logs": ["blockNumber", "logIndex", "address", "data", "topics"], "blocks": ["number", "timestamp"]}
+    },
+    "max_pages": 4,
+    "note": "app-style: wallet's recent incoming ERC20 transfers, desc, block join"
+  },
+  {
+    "name": "erc20-wallet-outgoing-analytic",
+    "method": "eth_queryLogs",
+    "params": {
+      "filter": {
+        "topics": [
+          "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+          "0x000000000000000000000000188d586ddcf52439676ca21a244753fa19f9ea8e"
+        ]
+      },
+      "fromBlock": "0x4C92000", "toBlock": "0x4CE4000",
+      "limit": 2000, "order": "asc",
+      "fields": {"logs": ["blockNumber", "logIndex", "address", "data", "topics"]}
+    },
+    "max_pages": 100,
+    "note": "analytic: all outgoing transfers of busiest wallet over 344k blocks"
+  },
+  {
+    "name": "wallet-tx-history-app",
+    "method": "eth_queryTransactions",
+    "params": {
+      "filter": {"from": "0x92fbce9a5f47a046fa07fbe0d716204be464dcdd"},
+      "fromBlock": "latest", "toBlock": "0x4C92000",
+      "limit": 25, "order": "desc",
+      "fields": {"transactions": ["hash", "blockNumber", "from", "to", "value", "nonce"], "blocks": ["number", "timestamp"]}
+    },
+    "max_pages": 4,
+    "note": "app-style: wallet recent tx history, desc, block join"
+  },
+  {
+    "name": "wallet-native-transfers-app",
+    "method": "eth_queryTransfers",
+    "params": {
+      "filter": {"to": "0x188d586ddcf52439676ca21a244753fa19f9ea8e"},
+      "fromBlock": "latest", "toBlock": "0x4C92000",
+      "limit": 25, "order": "desc",
+      "fields": {"transfers": ["blockNumber", "from", "to", "value", "type"], "blocks": ["number", "timestamp"]}
+    },
+    "max_pages": 4,
+    "note": "app-style: native transfers into a hot wallet, desc"
+  },
+  {
+    "name": "explorer-latest-blocks",
+    "method": "eth_queryBlocks",
+    "params": {
+      "fromBlock": "latest", "limit": 25, "order": "desc"
+    },
+    "max_pages": 1,
+    "note": "explorer home: latest 25 blocks, single page"
+  },
+  {
+    "name": "explorer-latest-txs",
+    "method": "eth_queryTransactions",
+    "params": {
+      "fromBlock": "latest", "limit": 25, "order": "desc",
+      "fields": {"transactions": ["hash", "blockNumber", "from", "to", "value"], "blocks": ["number", "timestamp"]}
+    },
+    "max_pages": 1,
+    "note": "explorer home: latest 25 txs, single page, block join"
+  },
+  {
+    "name": "explorer-contract-activity",
+    "method": "eth_queryTransactions",
+    "params": {
+      "filter": {"to": "0x5d8ffa5f7c6a42470b4ec61a8cdabb799fd3765a"},
+      "fromBlock": "latest", "toBlock": "0x4C92000",
+      "limit": 25, "order": "desc",
+      "fields": {"transactions": ["hash", "blockNumber", "from", "value"], "blocks": ["number", "timestamp"]}
+    },
+    "max_pages": 4,
+    "note": "explorer: contract page recent txs, desc paged"
+  },
+  {
+    "name": "explorer-contract-logs-joined",
+    "method": "eth_queryLogs",
+    "params": {
+      "filter": {"address": "0xd32edf6642d917dbbe7b8bf8e5d6f5df6a9fff58"},
+      "fromBlock": "latest", "toBlock": "0x4C92000",
+      "limit": 50, "order": "desc",
+      "fields": {"logs": true, "transactions": ["hash", "from"], "blocks": ["number", "timestamp"]}
+    },
+    "max_pages": 4,
+    "note": "explorer: contract events with tx + block joins, desc"
+  },
+  {
+    "name": "explorer-selector-scan",
+    "method": "eth_queryTransactions",
+    "params": {
+      "filter": {"selector": "0x39435dac"},
+      "fromBlock": "0x4CD0000", "toBlock": "0x4CE4000",
+      "limit": 1000, "order": "asc",
+      "fields": {"transactions": ["hash", "blockNumber", "from", "to", "input"]}
+    },
+    "max_pages": 30,
+    "note": "selector-indexed scan over 90k blocks"
+  },
+  {
+    "name": "explorer-toplevel-traces-contract",
+    "method": "eth_queryTraces",
+    "params": {
+      "filter": {"to": "0x69df8a43b52033b11b360f74e90f7861f2506292", "isTopLevel": true},
+      "fromBlock": "latest", "toBlock": "0x4CD0000",
+      "limit": 50, "order": "desc",
+      "fields": {"traces": ["blockNumber", "from", "to", "value", "type"], "transactions": ["hash"]}
+    },
+    "max_pages": 4,
+    "note": "explorer: top-level internal calls into hot contract, desc, tx join"
+  },
+  {
+    "name": "multi-token-or-filter",
+    "method": "eth_queryLogs",
+    "params": {
+      "filter": {
+        "address": [
+          "0x754704bc059f8c67012fed69bc8a327a5aafb603",
+          "0x3bd359c1119da7da1d913d1c4d2b7c461115433a",
+          "0xee8c0e9f1bffb4eb878d8f15f368a02a35481242"
+        ],
+        "topics": ["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"]
+      },
+      "fromBlock": "0x4CD0000", "toBlock": "0x4CE4000",
+      "limit": 2000, "order": "asc",
+      "fields": {"logs": ["blockNumber", "address", "data", "topics"]}
+    },
+    "max_pages": 40,
+    "note": "OR-clause: 3 tokens' transfers over 90k blocks"
+  }
+]
