@@ -13,17 +13,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-pub mod blob;
-pub mod common;
-#[cfg(feature = "fjall")]
-pub mod fjall;
-pub mod meta;
+mod store;
 
-pub use blob::{BlobStore, BlobTable, BlobTableId, InMemoryBlobStore};
-pub use common::Page;
-#[cfg(feature = "fjall")]
-pub use fjall::FjallStore;
-pub use meta::{
-    CasOutcome, CasVersion, InMemoryMetaStore, KvTable, MetaStore, MetaStoreCas, ScannableKvTable,
-    ScannableTableId, TableId,
-};
+pub use store::FjallStore;

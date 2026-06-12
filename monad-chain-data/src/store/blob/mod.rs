@@ -108,9 +108,17 @@ pub trait BlobStore: Clone + Send + Sync {
         let Some(blob) = self.get_blob(table, key).await? else {
             return Ok(None);
         };
-        if start > end_exclusive || start > blob.len() {
-            return Err(MonadChainDataError::Decode("invalid blob range"));
-        }
-        Ok(Some(blob.slice(start..end_exclusive.min(blob.len()))))
+        copy_blob_range(&blob, start, end_exclusive).map(Some)
     }
+}
+
+// Copying rather than slicing keeps a small range from pinning the full
+// blob allocation.
+pub(crate) fn copy_blob_range(blob: &[u8], start: usize, end_exclusive: usize) -> Result<Bytes> {
+    if start > end_exclusive || start > blob.len() {
+        return Err(MonadChainDataError::Decode("invalid blob range"));
+    }
+    Ok(Bytes::copy_from_slice(
+        &blob[start..end_exclusive.min(blob.len())],
+    ))
 }
