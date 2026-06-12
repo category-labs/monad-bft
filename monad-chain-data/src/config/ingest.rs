@@ -16,24 +16,26 @@
 //! The configured ingest entry point: backend dispatch, store assembly, and
 //! handoff to the branchless engine (`run_ingest`).
 
-#[cfg(feature = "dynamo")]
+#[cfg(any(feature = "dynamo", feature = "mongo"))]
 use std::sync::Arc;
 
 use eyre::{bail, Result};
-#[cfg(feature = "dynamo")]
+#[cfg(any(feature = "dynamo", feature = "mongo"))]
 use tracing::{info, warn};
 
+#[cfg(feature = "mongo")]
+use super::build_mongo_meta_store;
 #[cfg(all(feature = "s3", feature = "dynamo"))]
 use super::build_s3_blob_store;
 #[cfg(feature = "dynamo")]
 use super::{build_dynamo_blob_store, build_dynamo_meta_store};
+#[cfg(any(feature = "dynamo", feature = "mongo"))]
+use super::{resolve_cache_config, ChainDataCacheMode};
 #[cfg(feature = "dynamo")]
-use super::{
-    resolve_cache_config, ChainDataBlobBackendConfig, ChainDataCacheMode, SharedDynamoConnection,
-};
+use super::{ChainDataBlobBackendConfig, SharedDynamoConnection};
 use super::{ChainDataMetaBackendConfig, ChainDataStoreConfig};
 use crate::ingest::source::ChainDataIngestSource;
-#[cfg(feature = "dynamo")]
+#[cfg(any(feature = "dynamo", feature = "mongo"))]
 use crate::{
     engine::tables::{DictConfig, PublicationTables, QueryRuntimeConfig, Tables},
     ingest::{
@@ -220,7 +222,7 @@ where
     store_config.validate_ingest()?;
     engine_config.validate()?;
     validate_blobless_ingest(&store_config, &engine_config)?;
-    #[cfg(not(feature = "dynamo"))]
+    #[cfg(not(any(feature = "dynamo", feature = "mongo")))]
     let _ = source;
 
     match &store_config.meta {
@@ -230,9 +232,29 @@ where
             let shared = Some(meta_store.shared_connection());
             dispatch_blob_engine(&store_config, &engine_config, source, meta_store, shared).await
         }
-        #[cfg(not(feature = "dynamo"))]
+        // Mongo meta is blob-less only (validated), so it always runs the
+        // external-archive engine over the loud NullBlobStore: checkpoints
+        // are disabled and recovery rebuilds from fragments.
+        #[cfg(feature = "mongo")]
+        ChainDataMetaBackendConfig::Mongo(meta_config) => {
+            let meta_store = build_mongo_meta_store(meta_config).await?;
+            info!(
+                "chain-data mongo meta store is blob-less; checkpoints are disabled — \
+                 recovery rebuilds from fragments"
+            );
+            run_engine_with_store(
+                &store_config,
+                &engine_config,
+                source,
+                meta_store,
+                crate::store::NullBlobStore,
+                false,
+            )
+            .await
+        }
+        #[cfg(not(any(feature = "dynamo", feature = "mongo")))]
         ChainDataMetaBackendConfig::Unavailable => {
-            bail!("chain-data configured ingest requires the dynamo feature")
+            bail!("chain-data configured ingest requires the dynamo or mongo feature")
         }
     }
 }
@@ -301,7 +323,7 @@ where
     }
 }
 
-#[cfg(feature = "dynamo")]
+#[cfg(any(feature = "dynamo", feature = "mongo"))]
 async fn run_engine_with_store<M, B, S>(
     store_config: &ChainDataStoreConfig,
     engine_config: &ChainDataEngineConfig,

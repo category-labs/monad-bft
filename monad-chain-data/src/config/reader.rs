@@ -24,10 +24,10 @@ use eyre::Result;
 use super::build_s3_blob_store;
 #[cfg(feature = "dynamo")]
 use super::{build_dynamo_blob_store, build_dynamo_meta_store};
+#[cfg(any(feature = "dynamo", feature = "mongo"))]
+use super::{resolve_cache_config, ChainDataCacheMode};
 #[cfg(feature = "dynamo")]
-use super::{
-    resolve_cache_config, ChainDataBlobBackendConfig, ChainDataCacheMode, SharedDynamoConnection,
-};
+use super::{ChainDataBlobBackendConfig, SharedDynamoConnection};
 use super::{ChainDataMetaBackendConfig, ChainDataStoreConfig};
 use crate::{
     blocks::{QueryBlocksRequest, QueryBlocksResponse},
@@ -78,6 +78,16 @@ pub enum ConfiguredChainDataReader {
             >,
         >,
     ),
+    /// Mongo meta with NO blob store: the only supported mongo shape (the
+    /// backend is blob-less by validation). Row payloads are range-read from
+    /// `[store.archive]`; native block records error loudly like
+    /// [`DynamoNull`](Self::DynamoNull).
+    #[cfg(feature = "mongo")]
+    MongoNull(
+        Arc<
+            crate::MonadChainDataService<crate::store::MongoMetaStore, crate::store::NullBlobStore>,
+        >,
+    ),
 }
 
 macro_rules! with_reader {
@@ -90,6 +100,8 @@ macro_rules! with_reader {
             Self::DynamoDynamo($service) => $body,
             #[cfg(feature = "dynamo")]
             Self::DynamoNull($service) => $body,
+            #[cfg(feature = "mongo")]
+            Self::MongoNull($service) => $body,
         }
     };
 }
@@ -183,6 +195,8 @@ impl ConfiguredChainDataReader {
             Self::DynamoS3(service) => Some(service.tables().meta_store().take_read_stats()),
             Self::DynamoDynamo(service) => Some(service.tables().meta_store().take_read_stats()),
             Self::DynamoNull(service) => Some(service.tables().meta_store().take_read_stats()),
+            #[cfg(feature = "mongo")]
+            Self::MongoNull(_) => None,
         }
     }
 
@@ -196,6 +210,8 @@ impl ConfiguredChainDataReader {
             Self::DynamoDynamo(_) => None,
             #[cfg(feature = "dynamo")]
             Self::DynamoNull(_) => None,
+            #[cfg(feature = "mongo")]
+            Self::MongoNull(_) => None,
         }
     }
 }
@@ -205,7 +221,7 @@ pub async fn open_configured_chain_data_reader(
     limits: QueryLimits,
 ) -> Result<ConfiguredChainDataReader> {
     store_config.validate_reader()?;
-    #[cfg(not(feature = "dynamo"))]
+    #[cfg(not(any(feature = "dynamo", feature = "mongo")))]
     let _ = limits;
     match &store_config.meta {
         #[cfg(feature = "dynamo")]
@@ -214,9 +230,31 @@ pub async fn open_configured_chain_data_reader(
             let shared = Some(meta_store.shared_connection());
             dispatch_dynamo_reader_blob(&store_config, limits, meta_store, shared).await
         }
-        #[cfg(not(feature = "dynamo"))]
+        // Mongo meta is blob-less only (validated): always the MongoNull shape.
+        #[cfg(feature = "mongo")]
+        ChainDataMetaBackendConfig::Mongo(meta_config) => {
+            use crate::engine::tables::DictConfig;
+
+            let meta_store = super::build_mongo_meta_store(meta_config).await?;
+            let cache_config = resolve_cache_config(&store_config, ChainDataCacheMode::Reader);
+            let mut service = crate::MonadChainDataService::with_all_configs(
+                meta_store,
+                crate::store::NullBlobStore,
+                limits,
+                cache_config,
+                DictConfig::default(),
+                store_config.query.to_runtime(),
+            );
+            if let Some(reader) =
+                super::build_external_payload_reader(&store_config.archive).await?
+            {
+                service = service.with_external_payload_reader(reader);
+            }
+            Ok(ConfiguredChainDataReader::MongoNull(Arc::new(service)))
+        }
+        #[cfg(not(any(feature = "dynamo", feature = "mongo")))]
         ChainDataMetaBackendConfig::Unavailable => {
-            eyre::bail!("chain-data configured reader requires the dynamo feature")
+            eyre::bail!("chain-data configured reader requires the dynamo or mongo feature")
         }
     }
 }

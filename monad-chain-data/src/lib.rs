@@ -44,6 +44,8 @@ pub use config::{
     ChainDataMetaBackendConfig, ChainDataPayloadConfig, ChainDataStoreConfig,
     ConfiguredChainDataReader,
 };
+#[cfg(feature = "mongo")]
+pub use config::{ChainDataArchiveMongoConfig, ChainDataMongoMetaConfig};
 #[cfg(feature = "s3")]
 pub use config::{ChainDataArchiveS3Config, ChainDataS3BlobConfig};
 #[cfg(feature = "dynamo")]

@@ -16,6 +16,8 @@
 #[cfg(feature = "dynamo")]
 pub(crate) mod dynamo;
 mod in_memory;
+#[cfg(feature = "mongo")]
+pub(crate) mod mongo;
 
 use bytes::Bytes;
 #[cfg(feature = "dynamo")]
@@ -24,6 +26,8 @@ pub use dynamo::{
     DynamoTableLayout,
 };
 pub use in_memory::InMemoryMetaStore;
+#[cfg(feature = "mongo")]
+pub use mongo::{MongoMetaStore, MongoMetaStoreConfig};
 
 use crate::error::Result;
 

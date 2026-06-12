@@ -16,6 +16,8 @@
 #[cfg(feature = "dynamo")]
 mod dynamo;
 mod in_memory;
+#[cfg(feature = "mongo")]
+mod mongo;
 mod null;
 #[cfg(feature = "s3")]
 mod s3;
@@ -26,6 +28,8 @@ pub(crate) use dynamo::MAX_CHUNK_SIZE;
 #[cfg(feature = "dynamo")]
 pub use dynamo::{DynamoBlobStore, DynamoBlobStoreConfig};
 pub use in_memory::InMemoryBlobStore;
+#[cfg(feature = "mongo")]
+pub use mongo::{MongoExternalBlobReader, MongoExternalBlobReaderConfig};
 pub use null::NullBlobStore;
 #[cfg(feature = "s3")]
 pub use s3::{

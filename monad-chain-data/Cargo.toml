@@ -21,6 +21,10 @@ s3 = ["dep:aws-config", "dep:aws-sdk-s3"]
 # DynamoDB, DynamoDB Local, and ScyllaDB Alternator. Pulls in the AWS SDK +
 # tokio.
 dynamo = ["dep:aws-config", "dep:aws-sdk-dynamodb"]
+# Enables the MongoDB meta backend (MongoMetaStore) and the MongoDB external
+# archive reader (MongoExternalBlobReader), so chain-data indexes can live in
+# an operator's existing monad-archive MongoDB. Pulls in the MongoDB driver.
+mongo = ["dep:mongodb"]
 
 [dependencies]
 alloy-consensus = { workspace = true }
@@ -35,6 +39,7 @@ blake3 = { workspace = true }
 bytes = { workspace = true }
 eyre = { workspace = true }
 futures = { workspace = true }
+mongodb = { workspace = true, optional = true }
 quick_cache = { workspace = true }
 rayon = { workspace = true }
 roaring = "0.11"

@@ -17,13 +17,13 @@
 //! (S3 / DynamoDB-or-Scylla), cache and query-runtime budgets, and the store
 //! builders shared by the [`ingest`] entry point and the [`reader`].
 
-#[cfg(feature = "dynamo")]
+#[cfg(any(feature = "dynamo", feature = "mongo"))]
 use eyre::Context;
 use eyre::{bail, Result};
 #[cfg(feature = "dynamo")]
 use tracing::{info, warn};
 
-#[cfg(feature = "dynamo")]
+#[cfg(any(feature = "dynamo", feature = "mongo"))]
 use crate::{engine::tables::QueryRuntimeConfig, store::CacheConfig};
 
 pub mod ingest;
@@ -124,8 +124,8 @@ pub struct ChainDataQueryConfig {
 }
 
 impl ChainDataQueryConfig {
-    // Only consumed when assembling a configured (dynamo-backed) reader.
-    #[cfg(feature = "dynamo")]
+    // Only consumed when assembling a configured reader.
+    #[cfg(any(feature = "dynamo", feature = "mongo"))]
     pub(crate) fn to_runtime(&self) -> QueryRuntimeConfig {
         let d = QueryRuntimeConfig::default();
         let kib_to_bytes =
@@ -179,6 +179,16 @@ impl ChainDataStoreConfig {
         if let Some(blob) = &self.blob {
             blob.validate()?;
         }
+        // The mongo meta backend ships blob-less only: its migration story is
+        // "indexes next to an existing archive", where row payloads stay in
+        // the archive's own collections (external-archive payload mode).
+        #[cfg(feature = "mongo")]
+        if matches!(&self.meta, ChainDataMetaBackendConfig::Mongo(_)) && self.blob.is_some() {
+            bail!(
+                "chain-data mongo meta backend supports only blob-less stores: omit \
+                 [store.blob] and ingest with payload = \"external-archive\""
+            );
+        }
         if let Some(archive) = &self.archive {
             archive.validate()?;
         }
@@ -200,7 +210,9 @@ impl ChainDataStoreConfig {
 pub enum ChainDataArchiveBackendConfig {
     #[cfg(feature = "s3")]
     S3(ChainDataArchiveS3Config),
-    #[cfg(not(feature = "s3"))]
+    #[cfg(feature = "mongo")]
+    Mongo(ChainDataArchiveMongoConfig),
+    #[cfg(not(any(feature = "s3", feature = "mongo")))]
     Unavailable,
 }
 
@@ -209,9 +221,57 @@ impl ChainDataArchiveBackendConfig {
         match self {
             #[cfg(feature = "s3")]
             Self::S3(config) => config.validate(),
-            #[cfg(not(feature = "s3"))]
-            Self::Unavailable => bail!("chain-data archive access requires the s3 feature"),
+            #[cfg(feature = "mongo")]
+            Self::Mongo(config) => config.validate(),
+            #[cfg(not(any(feature = "s3", feature = "mongo")))]
+            Self::Unavailable => {
+                bail!("chain-data archive access requires the s3 or mongo feature")
+            }
         }
+    }
+}
+
+/// Read-only access to a monad-archive MongoDB block-data collection.
+#[cfg(feature = "mongo")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ChainDataArchiveMongoConfig {
+    /// MongoDB connection string; redacted because it may embed credentials.
+    pub url: Redacted,
+    pub database: Option<String>,
+    /// The archive's block-data collection.
+    pub collection: String,
+    pub max_pool_size: u32,
+}
+
+#[cfg(feature = "mongo")]
+impl Default for ChainDataArchiveMongoConfig {
+    fn default() -> Self {
+        Self {
+            url: Redacted(None),
+            database: None,
+            collection: "block_level".to_string(),
+            max_pool_size: 64,
+        }
+    }
+}
+
+#[cfg(feature = "mongo")]
+impl ChainDataArchiveMongoConfig {
+    fn validate(&self) -> Result<()> {
+        if self.url.0.is_none() {
+            bail!("chain-data archive mongo requires url");
+        }
+        if self.database.is_none() {
+            bail!("chain-data archive mongo requires database");
+        }
+        if self.collection.is_empty() {
+            bail!("chain-data archive mongo requires collection");
+        }
+        if self.max_pool_size == 0 {
+            bail!("chain-data archive mongo max_pool_size must be >= 1");
+        }
+        Ok(())
     }
 }
 
@@ -267,9 +327,9 @@ impl ChainDataArchiveS3Config {
 /// Builds the configured external archive reader, or `None` when no archive
 /// access is configured. Shared by the ingest assembly and the reader.
 ///
-/// Gated on `dynamo` because only the dynamo assembly paths construct readers
-/// today, not because the reader needs that backend (it is S3-only).
-#[cfg(feature = "dynamo")]
+/// Gated on the meta-backend features because only the configured assembly
+/// paths construct readers, not because the reader needs those backends.
+#[cfg(any(feature = "dynamo", feature = "mongo"))]
 pub(crate) async fn build_external_payload_reader(
     config: &Option<ChainDataArchiveBackendConfig>,
 ) -> Result<Option<std::sync::Arc<dyn crate::external::ExternalBlobReader>>> {
@@ -303,9 +363,27 @@ pub(crate) async fn build_external_payload_reader(
                 .context("building chain-data archive S3 reader")?;
             Ok(Some(std::sync::Arc::new(reader)))
         }
-        #[cfg(not(feature = "s3"))]
+        #[cfg(feature = "mongo")]
+        Some(ChainDataArchiveBackendConfig::Mongo(mongo)) => {
+            use crate::store::{MongoExternalBlobReader, MongoExternalBlobReaderConfig};
+
+            let reader_config = MongoExternalBlobReaderConfig {
+                connection_string: mongo.url.0.clone().expect("validated archive mongo url"),
+                database: mongo
+                    .database
+                    .clone()
+                    .expect("validated archive mongo database"),
+                collection: mongo.collection.clone(),
+                max_pool_size: mongo.max_pool_size,
+            };
+            let reader = MongoExternalBlobReader::new(reader_config)
+                .await
+                .context("building chain-data archive Mongo reader")?;
+            Ok(Some(std::sync::Arc::new(reader)))
+        }
+        #[cfg(not(any(feature = "s3", feature = "mongo")))]
         Some(ChainDataArchiveBackendConfig::Unavailable) => {
-            bail!("chain-data archive access requires the s3 feature")
+            bail!("chain-data archive access requires the s3 or mongo feature")
         }
     }
 }
@@ -315,7 +393,9 @@ pub(crate) async fn build_external_payload_reader(
 pub enum ChainDataMetaBackendConfig {
     #[cfg(feature = "dynamo")]
     Dynamo(ChainDataDynamoMetaConfig),
-    #[cfg(not(feature = "dynamo"))]
+    #[cfg(feature = "mongo")]
+    Mongo(ChainDataMongoMetaConfig),
+    #[cfg(not(any(feature = "dynamo", feature = "mongo")))]
     Unavailable,
 }
 
@@ -325,7 +405,11 @@ impl Default for ChainDataMetaBackendConfig {
         {
             Self::Dynamo(ChainDataDynamoMetaConfig::default())
         }
-        #[cfg(not(feature = "dynamo"))]
+        #[cfg(all(not(feature = "dynamo"), feature = "mongo"))]
+        {
+            Self::Mongo(ChainDataMongoMetaConfig::default())
+        }
+        #[cfg(not(any(feature = "dynamo", feature = "mongo")))]
         {
             Self::Unavailable
         }
@@ -337,9 +421,64 @@ impl ChainDataMetaBackendConfig {
         match self {
             #[cfg(feature = "dynamo")]
             Self::Dynamo(config) => config.validate(),
-            #[cfg(not(feature = "dynamo"))]
-            Self::Unavailable => bail!("chain-data configured storage requires the dynamo feature"),
+            #[cfg(feature = "mongo")]
+            Self::Mongo(config) => config.validate(),
+            #[cfg(not(any(feature = "dynamo", feature = "mongo")))]
+            Self::Unavailable => {
+                bail!("chain-data configured storage requires the dynamo or mongo feature")
+            }
         }
+    }
+}
+
+/// MongoDB meta backend: chain-data meta rows in one dedicated collection of
+/// an (operator's existing) MongoDB database. Blob-less only — pair with
+/// `payload = "external-archive"` ingest and `[store.archive]` so row
+/// payloads stay in the archive's own collections.
+#[cfg(feature = "mongo")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ChainDataMongoMetaConfig {
+    /// MongoDB connection string; redacted because it may embed credentials.
+    pub url: Redacted,
+    pub database: Option<String>,
+    /// Collection holding every chain-data meta row. Distinct from the
+    /// archive's `block_level`/`tx_index` collections, which stay untouched.
+    pub collection: String,
+    pub max_pool_size: u32,
+    /// Concurrent single-document writes per ingest commit batch.
+    pub write_concurrency: usize,
+}
+
+#[cfg(feature = "mongo")]
+impl Default for ChainDataMongoMetaConfig {
+    fn default() -> Self {
+        Self {
+            url: Redacted(None),
+            database: None,
+            collection: "chain_data_meta".to_string(),
+            max_pool_size: 64,
+            write_concurrency: 64,
+        }
+    }
+}
+
+#[cfg(feature = "mongo")]
+impl ChainDataMongoMetaConfig {
+    fn validate(&self) -> Result<()> {
+        if self.url.0.is_none() {
+            bail!("chain-data mongo meta requires url");
+        }
+        if self.database.is_none() {
+            bail!("chain-data mongo meta requires database");
+        }
+        if self.collection.is_empty() {
+            bail!("chain-data mongo meta requires collection");
+        }
+        if self.max_pool_size == 0 || self.write_concurrency == 0 {
+            bail!("chain-data mongo meta pool size and write concurrency must be >= 1");
+        }
+        Ok(())
     }
 }
 
@@ -647,17 +786,17 @@ impl ChainDataDynamoBlobConfig {
 
 /// Which side is opening the stores; selects the default cache budget
 /// (ingest runs cache-less, readers default to [`READER_DEFAULT_CACHE_MIB`]).
-#[cfg(feature = "dynamo")]
+#[cfg(any(feature = "dynamo", feature = "mongo"))]
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ChainDataCacheMode {
     Ingest,
     Reader,
 }
 
-#[cfg(feature = "dynamo")]
+#[cfg(any(feature = "dynamo", feature = "mongo"))]
 const READER_DEFAULT_CACHE_MIB: usize = 8192;
 
-#[cfg(feature = "dynamo")]
+#[cfg(any(feature = "dynamo", feature = "mongo"))]
 pub(crate) fn resolve_cache_config(
     store_config: &ChainDataStoreConfig,
     mode: ChainDataCacheMode,
@@ -673,7 +812,7 @@ pub(crate) fn resolve_cache_config(
     config
 }
 
-#[cfg(feature = "dynamo")]
+#[cfg(any(feature = "dynamo", feature = "mongo"))]
 fn apply_cache_table_overrides(config: &mut CacheConfig, overrides: &ChainDataCacheTableBudgets) {
     // One row per cache: (MiB override, target byte budget).
     #[rustfmt::skip]
@@ -793,6 +932,24 @@ pub(crate) async fn build_dynamo_meta_store(
         effective, "resolved dynamo BatchWriteItem item limit"
     );
     Ok(store)
+}
+
+#[cfg(feature = "mongo")]
+pub(crate) async fn build_mongo_meta_store(
+    config: &ChainDataMongoMetaConfig,
+) -> Result<crate::store::MongoMetaStore> {
+    use crate::store::{MongoMetaStore, MongoMetaStoreConfig};
+
+    let store_config = MongoMetaStoreConfig {
+        connection_string: config.url.0.clone().expect("validated mongo url"),
+        database: config.database.clone().expect("validated mongo database"),
+        collection: config.collection.clone(),
+        max_pool_size: config.max_pool_size,
+        write_concurrency: config.write_concurrency,
+    };
+    MongoMetaStore::new(store_config)
+        .await
+        .context("building chain-data Mongo meta store")
 }
 
 /// The meta store's connection state (client ring + probed batch-write limit)

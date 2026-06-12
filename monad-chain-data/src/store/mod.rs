@@ -25,6 +25,8 @@ pub mod session;
 pub use blob::{BlobStore, BlobTable, BlobTableId, BlobWriteOp, InMemoryBlobStore, NullBlobStore};
 #[cfg(feature = "dynamo")]
 pub use blob::{DynamoBlobStore, DynamoBlobStoreConfig};
+#[cfg(feature = "mongo")]
+pub use blob::{MongoExternalBlobReader, MongoExternalBlobReaderConfig};
 #[cfg(feature = "s3")]
 pub use blob::{
     S3BlobStore, S3BlobStoreConfig, S3Credentials, S3ExternalBlobReader, S3ReadStatsSnapshot,
@@ -38,4 +40,6 @@ pub use meta::{
 pub use meta::{
     InMemoryMetaStore, KvTable, MetaStore, MetaWriteOp, ScannableKvTable, ScannableTableId, TableId,
 };
+#[cfg(feature = "mongo")]
+pub use meta::{MongoMetaStore, MongoMetaStoreConfig};
 pub use session::{SessionFuture, WriteSession};

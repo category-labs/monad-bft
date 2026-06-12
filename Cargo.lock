@@ -5160,6 +5160,7 @@ dependencies = [
  "eyre",
  "futures",
  "hyper-util",
+ "mongodb",
  "quick_cache",
  "rayon",
  "roaring",
