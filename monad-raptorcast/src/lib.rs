@@ -64,9 +64,9 @@ use packet::regular;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::{debug, debug_span, error, info, trace, warn};
 use util::{
-    AutoRebroadcast, BroadcastGroup, BroadcastGroupError, BuildTarget, Collector, FullNodeGroupMap,
-    PeerAddrLookup, PrimaryBroadcastGroup, Recipient, Redundancy, SecondaryBroadcastGroup,
-    SecondaryGroupAssignment, UdpMessage,
+    budgeted, AutoRebroadcast, BroadcastGroup, BroadcastGroupError, BuildTarget, Collector,
+    FullNodeGroupMap, PeerAddrLookup, PrimaryBroadcastGroup, Recipient, Redundancy,
+    SecondaryBroadcastGroup, SecondaryGroupAssignment, UdpMessage,
 };
 
 use crate::{
@@ -1169,6 +1169,10 @@ fn iter_ips<'a, ST: CertificateSignatureRecoverable, PD: PeerDiscoveryAlgo<Signa
         .filter_map(|node_id| peer_discovery.get_ip(node_id))
 }
 
+const RAPTORCAST_POLL_QUOTA: usize = 256;
+const DIRECT_UDP_POLL_QUOTA: usize = 64;
+const TCP_POLL_QUOTA: usize = 16;
+
 impl<ST, M, OM, E, PD, AP, DS> Stream for RaptorCast<ST, M, OM, E, PD, AP, DS>
 where
     ST: CertificateSignatureRecoverable,
@@ -1197,9 +1201,10 @@ where
             return Poll::Ready(Some(event.into()));
         }
 
+        let mut poll_quota = RAPTORCAST_POLL_QUOTA;
         loop {
             let message = {
-                let mut sock = pin!(this.dual_socket.recv());
+                let mut sock = pin!(budgeted(this.dual_socket.recv(), &mut poll_quota));
 
                 match sock.poll_unpin(cx) {
                     Poll::Ready(Ok(msg)) => {
@@ -1340,8 +1345,9 @@ where
         }
 
         if let Some(socket) = this.direct_udp_transport.as_mut() {
+            let mut poll_quota = DIRECT_UDP_POLL_QUOTA;
             loop {
-                let mut recv_fut = pin!(socket.recv());
+                let mut recv_fut = pin!(budgeted(socket.recv(), &mut poll_quota));
                 match recv_fut.poll_unpin(cx) {
                     Poll::Ready(Ok(msg)) => {
                         let from = msg
@@ -1385,8 +1391,10 @@ where
             }
         }
 
+        let mut poll_quota = TCP_POLL_QUOTA;
         loop {
-            let Poll::Ready(msg) = pin!(this.tcp_reader.recv()).poll_unpin(cx) else {
+            let mut recv_fut = pin!(budgeted(this.tcp_reader.recv(), &mut poll_quota));
+            let Poll::Ready(msg) = recv_fut.poll_unpin(cx) else {
                 break;
             };
             let RecvTcpMsg { payload, src_addr } = msg;
