@@ -82,7 +82,7 @@ pub mod resources;
 mod txpool;
 
 use monad_chain_config::{
-    ETHEREUM_MAINNET_CHAIN_ID, MONAD_DEVNET_CHAIN_ID, MONAD_MAINNET_CHAIN_ID,
+    ETHEREUM_MAINNET_CHAIN_ID, HIVE_CHAIN_ID, MONAD_DEVNET_CHAIN_ID, MONAD_MAINNET_CHAIN_ID,
     MONAD_TESTNET_CHAIN_ID,
 };
 use monad_ethcall::ChainId;
@@ -93,6 +93,7 @@ pub(crate) fn parse_ethcall_chain_id(chain_id: u64) -> JsonRpcResult<ChainId> {
         MONAD_MAINNET_CHAIN_ID => Ok(ChainId::MonadMainnet),
         MONAD_TESTNET_CHAIN_ID => Ok(ChainId::MonadTestnet),
         MONAD_DEVNET_CHAIN_ID => Ok(ChainId::MonadDevnet),
+        HIVE_CHAIN_ID => Ok(ChainId::HiveNet),
         other => Err(JsonRpcError::eth_call_error(
             "unsupported chain id".to_string(),
             Some(other.to_string()),
@@ -987,4 +988,44 @@ pub async fn rpc_select(
         .call(request_id, app_state, params)
         .instrument(span)
         .await
+}
+
+#[cfg(test)]
+mod tests {
+    use monad_chain_config::{
+        ETHEREUM_MAINNET_CHAIN_ID, HIVE_CHAIN_ID, MONAD_DEVNET_CHAIN_ID, MONAD_MAINNET_CHAIN_ID,
+        MONAD_TESTNET_CHAIN_ID,
+    };
+    use monad_ethcall::ChainId;
+
+    use super::parse_ethcall_chain_id;
+
+    #[test]
+    fn parse_ethcall_chain_id_maps_supported_chains() {
+        assert_eq!(
+            parse_ethcall_chain_id(ETHEREUM_MAINNET_CHAIN_ID).unwrap(),
+            ChainId::EthereumMainnet
+        );
+        assert_eq!(
+            parse_ethcall_chain_id(MONAD_MAINNET_CHAIN_ID).unwrap(),
+            ChainId::MonadMainnet
+        );
+        assert_eq!(
+            parse_ethcall_chain_id(MONAD_TESTNET_CHAIN_ID).unwrap(),
+            ChainId::MonadTestnet
+        );
+        assert_eq!(
+            parse_ethcall_chain_id(MONAD_DEVNET_CHAIN_ID).unwrap(),
+            ChainId::MonadDevnet
+        );
+        assert_eq!(
+            parse_ethcall_chain_id(HIVE_CHAIN_ID).unwrap(),
+            ChainId::HiveNet
+        );
+    }
+
+    #[test]
+    fn parse_ethcall_chain_id_rejects_unknown_chain() {
+        assert!(parse_ethcall_chain_id(42).is_err());
+    }
 }
