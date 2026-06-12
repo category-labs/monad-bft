@@ -38,17 +38,15 @@ services:
     volumes:
       - ./node:/monad
     privileged: true
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - >
-        monad
-        --chain hive_net
-        --db /monad/triedb/test.db
-        --block_db /monad/ledger
-        --log_level ERROR
-        --nblocks ${NBLOCKS}
-        --chain-rlp /monad/chain.rlp
-        --as-eth-blocks
+    command: |
+      monad
+      --chain hive_net
+      --db /monad/triedb/test.db
+      --block_db /monad/ledger
+      --log_level ERROR
+      --nblocks ${NBLOCKS:?NBLOCKS is required}
+      --chain-rlp /monad/chain.rlp
+      --as-eth-blocks
     ulimits: *ulimits
 
   monad_rpc:
@@ -71,4 +69,3 @@ services:
       --triedb-path /monad/triedb
       --node-config /monad/config/node.toml
     ulimits: *ulimits
-

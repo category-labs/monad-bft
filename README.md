@@ -77,6 +77,10 @@ nets/run.sh --toolchain gcc-avx512
 
 This will start a single node with chain ID of `20143` and RPC at `localhost:8080`. The known [Foundry/Anvil accounts](https://getfoundry.sh/anvil/overview/) have each been loaded with [large initial balances](https://github.com/category-labs/monad/blob/ce4101b11701bf4ef3a9cd996a6144883735187f/category/execution/monad/chain/monad_devnet_alloc.hpp#L22). The easiest way to fund transactions is to import the private key from one of those pre-allocated accounts.
 
+For replaying Hive-generated chains through the local RPC harness used by
+`category-labs/hive-runner`, see
+[docker/single-node/hive/README.md](docker/single-node/hive/README.md).
+
 > [!TIP]
 > To avoid a lengthy rebuild after shutting down the docker containers, you can call `nets/run.sh` with the `--cached-build <full path to build dir>` arg, e.g.
 >
@@ -107,7 +111,7 @@ Please consult the [official RPC docs](https://docs.monad.xyz/reference/) as the
 ### Using Cargo
 
 To run a Monad consensus client, follow instructions [here](monad-node/README.md).
- 
+
 To run a JsonRpc server, follow instructions [here](monad-rpc/README.md).
 
 #### Cargo targets that link Monad execution

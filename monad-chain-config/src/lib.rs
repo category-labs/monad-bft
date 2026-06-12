@@ -109,6 +109,11 @@ impl MonadChainConfig {
 
             info!("Using override devnet chain config");
             Ok(override_config)
+        } else if chain_id == HIVE_CHAIN_ID {
+            if devnet_override.is_some() {
+                warn!("Ignoring chain config from file in hive");
+            }
+            Ok(MONAD_HIVE_CHAIN_CONFIG)
         } else {
             Err(ChainConfigError::UnsupportedChainId(chain_id))
         }
@@ -182,6 +187,11 @@ const MONAD_DEVNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     execution_v_one_activation: 0,
     execution_v_two_activation: 0,
     execution_v_four_activation: 0,
+};
+
+const MONAD_HIVE_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
+    chain_id: HIVE_CHAIN_ID,
+    ..MONAD_DEVNET_CHAIN_CONFIG
 };
 
 const MONAD_TESTNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
@@ -291,5 +301,63 @@ impl ChainConfig<MockChainRevision> for MockChainConfig {
 
     fn get_execution_chain_revision(&self, _execution_timestamp_s: u64) -> MonadExecutionRevision {
         MonadExecutionRevision::LATEST
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ChainConfigError, MonadChainConfig, HIVE_CHAIN_ID, MONAD_DEVNET_CHAIN_CONFIG,
+        MONAD_DEVNET_CHAIN_ID, MONAD_MAINNET_CHAIN_ID, MONAD_TESTNET_CHAIN_ID,
+    };
+
+    #[test]
+    fn new_accepts_supported_chain_ids() {
+        assert_eq!(
+            MonadChainConfig::new(MONAD_MAINNET_CHAIN_ID, None)
+                .unwrap()
+                .chain_id,
+            MONAD_MAINNET_CHAIN_ID
+        );
+        assert_eq!(
+            MonadChainConfig::new(MONAD_TESTNET_CHAIN_ID, None)
+                .unwrap()
+                .chain_id,
+            MONAD_TESTNET_CHAIN_ID
+        );
+        assert_eq!(
+            MonadChainConfig::new(MONAD_DEVNET_CHAIN_ID, None)
+                .unwrap()
+                .chain_id,
+            MONAD_DEVNET_CHAIN_ID
+        );
+        assert_eq!(
+            MonadChainConfig::new(HIVE_CHAIN_ID, None).unwrap().chain_id,
+            HIVE_CHAIN_ID
+        );
+    }
+
+    #[test]
+    fn hive_uses_devnet_params_with_hive_chain_id() {
+        let hive = MonadChainConfig::new(HIVE_CHAIN_ID, None).unwrap();
+
+        assert_eq!(hive.chain_id, HIVE_CHAIN_ID);
+        assert_eq!(hive.epoch_length, MONAD_DEVNET_CHAIN_CONFIG.epoch_length);
+        assert_eq!(
+            hive.epoch_start_delay,
+            MONAD_DEVNET_CHAIN_CONFIG.epoch_start_delay
+        );
+        assert_eq!(
+            hive.staking_config,
+            MONAD_DEVNET_CHAIN_CONFIG.staking_config
+        );
+    }
+
+    #[test]
+    fn new_rejects_unsupported_chain_id() {
+        assert!(matches!(
+            MonadChainConfig::new(12345, None),
+            Err(ChainConfigError::UnsupportedChainId(12345))
+        ));
     }
 }
