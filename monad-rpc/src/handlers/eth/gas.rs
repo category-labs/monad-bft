@@ -1130,7 +1130,7 @@ mod tests {
             make_block(latest_block, base_fee, vec![]),
         );
 
-        DataProvider::new(None, Arc::new(mock_triedb), None)
+        DataProvider::new(None, Arc::new(mock_triedb), None, None)
     }
 
     #[tokio::test]
@@ -1308,7 +1308,7 @@ mod tests {
         // Fetch fee history for an empty block.
         mock_triedb.set_finalized_block(SeqNum(1000), make_block(1000, 1_000, vec![]));
 
-        let data_provider = DataProvider::new(None, Arc::new(mock_triedb), None);
+        let data_provider = DataProvider::new(None, Arc::new(mock_triedb), None, None);
         let res = monad_eth_feeHistory(
             &data_provider,
             MonadEthHistoryParams {
@@ -1356,7 +1356,7 @@ mod tests {
         mock_triedb.set_receipts(SeqNum(1000), receipts.clone());
         mock_triedb.set_receipts(SeqNum(999), receipts);
 
-        let data_provider = DataProvider::new(None, Arc::new(mock_triedb), None);
+        let data_provider = DataProvider::new(None, Arc::new(mock_triedb), None, None);
         let res = monad_eth_feeHistory(
             &data_provider,
             MonadEthHistoryParams {

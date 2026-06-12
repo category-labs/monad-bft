@@ -340,6 +340,9 @@ impl<T> ChainStateResultExt for Result<T, ChainStateError> {
             Err(ChainStateError::Archive(e)) => {
                 Err(JsonRpcError::internal_error(format!("Archive error: {e}")))
             }
+            Err(ChainStateError::ChainData(e)) => Err(JsonRpcError::internal_error(format!(
+                "ChainData error: {e}"
+            ))),
             Err(ChainStateError::DataSource(e)) => Err(JsonRpcError::internal_error(format!(
                 "DataSource error: {e}"
             ))),
