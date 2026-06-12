@@ -16,10 +16,17 @@ alloy-rlp = { workspace = true, features = ["derive"] }
 alloy-rpc-types-eth = { workspace = true, optional = true }
 auto_impl = { workspace = true }
 bytes = { workspace = true }
+clap = { workspace = true, features = ["derive"], optional = true }
+eyre = { workspace = true, optional = true }
 fjall = { version = "3.1", optional = true }
+futures = { workspace = true, optional = true }
+monad-archive = { workspace = true, optional = true }
+monad-eth-types = { workspace = true, optional = true }
 roaring = "0.11"
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt"], optional = true }
+tracing = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"], optional = true }
 
 [features]
 default = []
@@ -30,6 +37,28 @@ alloy-rpc-types-eth = ["dep:alloy-rpc-types-eth"]
 # Enables the embedded fjall backend (FjallStore). Pulls in tokio because
 # fjall is sync and the trait impls wrap blocking work in spawn_blocking.
 fjall = ["dep:fjall", "dep:tokio"]
+# Enables the chain-data-ingest binary, which reads blocks + receipts from
+# a monad-archive backend (FS, S3, MongoDB, DynamoDB, TrieDB) and feeds
+# them into the chain-data ingest pipeline. Gated because monad-archive
+# pulls in heavy transitive deps (AWS SDK, MongoDB driver, etc.) that
+# don't build on every dev platform.
+archive-ingest = [
+    "fjall",
+    "dep:clap",
+    "dep:eyre",
+    "dep:futures",
+    "dep:monad-archive",
+    "dep:monad-eth-types",
+    "dep:tokio",
+    "tokio/rt-multi-thread",
+    "tokio/macros",
+    "dep:tracing",
+    "dep:tracing-subscriber",
+]
+
+[[bin]]
+name = "chain-data-ingest"
+required-features = ["archive-ingest"]
 
 [dev-dependencies]
 tempfile = "3"
