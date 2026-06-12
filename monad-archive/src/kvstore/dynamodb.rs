@@ -38,6 +38,30 @@ use crate::prelude::*;
 /// key attribute name and is reused verbatim for block-data tables.
 pub const PARTITION_KEY: &str = "tx_hash";
 
+/// Values above this many bytes are split into `{key}_chunk_{i}` items:
+/// DynamoDB and ScyllaDB Alternator cap items at 400 KB, and archive objects
+/// (blocks, receipts, traces) routinely exceed that. 350 KB leaves framing
+/// margin under the cap. The main item then carries a `chunks` count instead
+/// of `data`; readers branch on which attribute is present, so existing
+/// unchunked tables read unchanged.
+pub const CHUNK_SIZE: usize = 350 * 1024;
+
+/// Attribute holding the chunk count of a chunked value's main item.
+const CHUNKS_ATTR: &str = "chunks";
+
+/// Key of one chunk item (decimal index, mirroring the Mongo backend's
+/// `_chunk_{i}` document ids).
+fn chunk_key(key: &str, index: usize) -> String {
+    format!("{key}_chunk_{index}")
+}
+
+/// One stored item, before chunk resolution.
+enum RawItem {
+    Value(Bytes),
+    /// A chunked value's main item: the number of `{key}_chunk_{i}` items.
+    Chunked(usize),
+}
+
 #[derive(Clone)]
 pub struct DynamoDBArchive {
     pub client: Client,
@@ -97,10 +121,17 @@ impl KVStore for DynamoDBArchive {
         kvs: impl IntoIterator<Item = (String, Vec<u8>)>,
         _policy: WritePolicy,
     ) -> Result<PutResult> {
-        // Note: WritePolicy is ignored for DynamoDB - always overwrites
+        // Note: WritePolicy is ignored on the DynamoDB batch path — always
+        // overwrites (BatchWriteItem has no condition expressions).
+        // Chunk-threshold values are routed through `put`, which chunks them.
+        let mut oversized: Vec<(String, Vec<u8>)> = Vec::new();
         let requests = kvs
             .into_iter()
             .filter_map(|(key, data)| {
+                if data.len() > CHUNK_SIZE {
+                    oversized.push((key, data));
+                    return None;
+                }
                 let attribute_map: HashMap<String, AttributeValue> = HashMap::from_iter([
                     (PARTITION_KEY.to_owned(), AttributeValue::S(key)),
                     ("data".to_owned(), AttributeValue::B(data.into())),
@@ -116,6 +147,9 @@ impl KVStore for DynamoDBArchive {
                 }
             })
             .collect::<Vec<_>>();
+        for (key, data) in oversized {
+            self.put(key, data, WritePolicy::AllowOverwrite).await?;
+        }
 
         let batch_writes = requests
             .chunks(Self::WRITE_BATCH_SIZE)
@@ -140,29 +174,72 @@ impl KVStore for DynamoDBArchive {
         &self,
         key: impl AsRef<str>,
         data: Vec<u8>,
-        _policy: WritePolicy,
+        policy: WritePolicy,
     ) -> Result<PutResult> {
-        // Note: WritePolicy is ignored for DynamoDB - always overwrites
+        let key = key.as_ref();
+        let start = Instant::now();
+
+        if data.len() > CHUNK_SIZE {
+            // For chunked data with NoClobber, check the main item first so a
+            // skipped write does not leave orphaned (or worse, overwritten)
+            // chunks next to the existing value.
+            if policy == WritePolicy::NoClobber
+                && self
+                    .exists(key)
+                    .await
+                    .wrap_err("DynamoDB existence check failed")?
+            {
+                warn!(
+                    key,
+                    "DynamoDB put skipped: key already exists (NoClobber policy)"
+                );
+                return Ok(PutResult::Skipped);
+            }
+
+            // Chunks first, the manifest last: a reader never sees a manifest
+            // whose chunks are not yet written.
+            for (index, chunk) in data.chunks(CHUNK_SIZE).enumerate() {
+                let attribute_map: HashMap<String, AttributeValue> = HashMap::from_iter([
+                    (
+                        PARTITION_KEY.to_owned(),
+                        AttributeValue::S(chunk_key(key, index)),
+                    ),
+                    ("data".to_owned(), AttributeValue::B(chunk.to_vec().into())),
+                ]);
+                let put_request = PutRequest::builder()
+                    .set_item(Some(attribute_map))
+                    .build()
+                    .wrap_err_with(|| format!("Failed to build chunk put request, key: {key}"))?;
+                let request = WriteRequest::builder().put_request(put_request).build();
+                self.upload_to_db(vec![request])
+                    .await
+                    .write_put_metrics_on_err(
+                        start.elapsed(),
+                        KVStoreType::AwsDynamoDB,
+                        &self.metrics,
+                    )?;
+            }
+
+            let manifest: HashMap<String, AttributeValue> = HashMap::from_iter([
+                (PARTITION_KEY.to_owned(), AttributeValue::S(key.to_owned())),
+                (
+                    CHUNKS_ATTR.to_owned(),
+                    AttributeValue::N(data.len().div_ceil(CHUNK_SIZE).to_string()),
+                ),
+            ]);
+            return self
+                .put_item(key, manifest, policy)
+                .await
+                .write_put_metrics(start.elapsed(), KVStoreType::AwsDynamoDB, &self.metrics);
+        }
+
         let attribute_map: HashMap<String, AttributeValue> = HashMap::from_iter([
-            (
-                PARTITION_KEY.to_owned(),
-                AttributeValue::S(key.as_ref().to_owned()),
-            ),
+            (PARTITION_KEY.to_owned(), AttributeValue::S(key.to_owned())),
             ("data".to_owned(), AttributeValue::B(data.into())),
         ]);
-        let put_request = PutRequest::builder()
-            .set_item(Some(attribute_map))
-            .build()
-            .wrap_err_with(|| format!("Failed to build put request, key: {}", key.as_ref()))?;
-        let request = WriteRequest::builder().put_request(put_request).build();
-
-        let start = Instant::now();
-        self.upload_to_db(vec![request]).await.write_put_metrics(
-            start.elapsed(),
-            KVStoreType::AwsDynamoDB,
-            &self.metrics,
-        )?;
-        Ok(PutResult::Written)
+        self.put_item(key, attribute_map, policy)
+            .await
+            .write_put_metrics(start.elapsed(), KVStoreType::AwsDynamoDB, &self.metrics)
     }
 
     async fn delete(&self, _key: impl AsRef<str>) -> Result<()> {
@@ -234,8 +311,45 @@ impl DynamoDBArchive {
         Ok(())
     }
 
+    /// Fetches raw items, then resolves any chunked manifests with follow-up
+    /// fetches of their `{key}_chunk_{i}` items. A manifest with missing
+    /// chunks is corruption and errors loudly rather than omitting the key.
     async fn batch_get(&self, keys: &[String]) -> Result<HashMap<String, Bytes>> {
+        let raw = self.batch_get_raw(keys).await?;
         let mut results: HashMap<String, Bytes> = HashMap::new();
+        let mut manifests: Vec<(String, usize)> = Vec::new();
+        for (key, item) in raw {
+            match item {
+                RawItem::Value(bytes) => {
+                    results.insert(key, bytes);
+                }
+                RawItem::Chunked(count) => manifests.push((key, count)),
+            }
+        }
+        if manifests.is_empty() {
+            return Ok(results);
+        }
+
+        let chunk_keys: Vec<String> = manifests
+            .iter()
+            .flat_map(|(key, count)| (0..*count).map(move |i| chunk_key(key, i)))
+            .collect();
+        let mut chunks = self.batch_get_raw(&chunk_keys).await?;
+        for (key, count) in manifests {
+            let mut value = Vec::new();
+            for i in 0..count {
+                match chunks.remove(&chunk_key(&key, i)) {
+                    Some(RawItem::Value(bytes)) => value.extend_from_slice(&bytes),
+                    _ => bail!("chunk {i} of {key} is missing in table {}", self.table),
+                }
+            }
+            results.insert(key, Bytes::from(value));
+        }
+        Ok(results)
+    }
+
+    async fn batch_get_raw(&self, keys: &[String]) -> Result<HashMap<String, RawItem>> {
+        let mut results: HashMap<String, RawItem> = HashMap::new();
         let batches = keys.chunks(Self::READ_BATCH_SIZE);
 
         for batch in batches {
@@ -301,6 +415,45 @@ impl DynamoDBArchive {
         Ok(results)
     }
 
+    /// One direct PutItem; under NoClobber, conditioned on the key not
+    /// existing (`BatchWriteItem` cannot express conditions). Supported by
+    /// DynamoDB and ScyllaDB Alternator alike.
+    async fn put_item(
+        &self,
+        key: &str,
+        item: HashMap<String, AttributeValue>,
+        policy: WritePolicy,
+    ) -> Result<PutResult> {
+        let _permit = self.semaphore.acquire().await.expect("semaphore dropped");
+        let mut request = self
+            .client
+            .put_item()
+            .table_name(&self.table)
+            .set_item(Some(item));
+        if policy == WritePolicy::NoClobber {
+            request = request
+                .condition_expression("attribute_not_exists(#pk)")
+                .expression_attribute_names("#pk", PARTITION_KEY);
+        }
+        match request.send().await {
+            Ok(_) => Ok(PutResult::Written),
+            Err(err)
+                if policy == WritePolicy::NoClobber
+                    && err
+                        .as_service_error()
+                        .is_some_and(|e| e.is_conditional_check_failed_exception()) =>
+            {
+                warn!(
+                    key,
+                    "DynamoDB put skipped: key already exists (NoClobber policy)"
+                );
+                Ok(PutResult::Skipped)
+            }
+            Err(err) => Err(err)
+                .wrap_err_with(|| format!("Failed to put item {key} to table {}", self.table)),
+        }
+    }
+
     async fn upload_to_db(&self, values: Vec<WriteRequest>) -> Result<()> {
         if values.len() > Self::WRITE_BATCH_SIZE {
             panic!("Batch size larger than limit = {}", Self::WRITE_BATCH_SIZE)
@@ -333,20 +486,23 @@ impl DynamoDBArchive {
     }
 }
 
-fn extract_kv_from_map(mut item: HashMap<String, AttributeValue>) -> Option<(String, Bytes)> {
-    match (item.remove("key"), item.remove("data")) {
-        (Some(AttributeValue::S(key)), Some(AttributeValue::B(data))) => {
-            Some((key, Bytes::from(data.into_inner())))
-        }
-        (None, Some(AttributeValue::B(data))) => {
-            // fallback to reading 1st schema
-            let AttributeValue::S(key) = item.remove(PARTITION_KEY)? else {
-                return None;
-            };
-            Some((key, Bytes::from(data.into_inner())))
-        }
-        _ => None,
+fn extract_kv_from_map(mut item: HashMap<String, AttributeValue>) -> Option<(String, RawItem)> {
+    // Legacy items carried the key in a `key` attribute; fall back to the
+    // partition-key attribute (the current schema).
+    let key = match item.remove("key") {
+        Some(AttributeValue::S(key)) => key,
+        _ => match item.remove(PARTITION_KEY)? {
+            AttributeValue::S(key) => key,
+            _ => return None,
+        },
+    };
+    if let Some(AttributeValue::B(data)) = item.remove("data") {
+        return Some((key, RawItem::Value(Bytes::from(data.into_inner()))));
     }
+    if let Some(AttributeValue::N(count)) = item.remove(CHUNKS_ATTR) {
+        return Some((key, RawItem::Chunked(count.parse().ok()?)));
+    }
+    None
 }
 
 #[cfg(test)]
@@ -522,5 +678,139 @@ mod tests {
         assert_eq!(indexed.trace, traces[0]);
         assert_eq!(indexed.header_subset.block_number, 100);
         assert_eq!(indexed.header_subset.gas_used, 21000);
+    }
+
+    fn patterned(len: usize) -> Vec<u8> {
+        (0..len).map(|i| (i % 251) as u8).collect()
+    }
+
+    /// Values past the 350 KB chunk threshold split into `_chunk_{i}` items
+    /// plus a `chunks` manifest, and read back whole — through `get` and
+    /// `bulk_get`, mixed with unchunked keys.
+    #[tokio::test]
+    #[ignore = "requires a running ScyllaDB Alternator endpoint"]
+    async fn scylla_alternator_chunked_round_trip() {
+        let store = archive("archive_chunked").await.unwrap();
+
+        let big = patterned(CHUNK_SIZE * 2 + 12_345); // 3 chunks, short tail
+        let small = patterned(1_000);
+        store
+            .put(
+                "traces/000000000042",
+                big.clone(),
+                WritePolicy::AllowOverwrite,
+            )
+            .await
+            .unwrap();
+        store
+            .put(
+                "block/000000000042",
+                small.clone(),
+                WritePolicy::AllowOverwrite,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store.get("traces/000000000042").await.unwrap().as_deref(),
+            Some(big.as_slice())
+        );
+        assert!(store.exists("traces/000000000042").await.unwrap());
+
+        let got = store
+            .bulk_get(&[
+                "traces/000000000042".to_string(),
+                "block/000000000042".to_string(),
+                "missing/000000000001".to_string(),
+            ])
+            .await
+            .unwrap();
+        assert_eq!(got.len(), 2);
+        assert_eq!(got["traces/000000000042"], Bytes::from(big.clone()));
+        assert_eq!(got["block/000000000042"], Bytes::from(small));
+    }
+
+    /// NoClobber holds on both shapes: the first write wins and a repeat
+    /// write is skipped without touching the stored bytes (previously the
+    /// policy was silently ignored on this backend).
+    #[tokio::test]
+    #[ignore = "requires a running ScyllaDB Alternator endpoint"]
+    async fn scylla_alternator_noclobber_first_write_wins() {
+        let store = archive("archive_noclobber").await.unwrap();
+
+        let first = patterned(2_000);
+        assert_eq!(
+            store
+                .put("nc/small", first.clone(), WritePolicy::NoClobber)
+                .await
+                .unwrap(),
+            PutResult::Written
+        );
+        assert_eq!(
+            store
+                .put("nc/small", vec![0xff; 2_000], WritePolicy::NoClobber)
+                .await
+                .unwrap(),
+            PutResult::Skipped
+        );
+        assert_eq!(
+            store.get("nc/small").await.unwrap().as_deref(),
+            Some(first.as_slice())
+        );
+
+        let big_first = patterned(CHUNK_SIZE + 5);
+        assert_eq!(
+            store
+                .put("nc/big", big_first.clone(), WritePolicy::NoClobber)
+                .await
+                .unwrap(),
+            PutResult::Written
+        );
+        assert_eq!(
+            store
+                .put("nc/big", vec![0xee; CHUNK_SIZE + 5], WritePolicy::NoClobber)
+                .await
+                .unwrap(),
+            PutResult::Skipped
+        );
+        assert_eq!(
+            store.get("nc/big").await.unwrap().as_deref(),
+            Some(big_first.as_slice())
+        );
+
+        // AllowOverwrite still replaces.
+        let replacement = vec![0xaa; 1_000];
+        store
+            .put("nc/small", replacement.clone(), WritePolicy::AllowOverwrite)
+            .await
+            .unwrap();
+        assert_eq!(
+            store.get("nc/small").await.unwrap().as_deref(),
+            Some(replacement.as_slice())
+        );
+    }
+
+    /// The block-data writer path survives objects past the item cap: a
+    /// >400 KB traces object round-trips through `BlockDataArchive` on the
+    /// `scylla` backend.
+    #[tokio::test]
+    #[ignore = "requires a running ScyllaDB Alternator endpoint"]
+    async fn scylla_backend_large_traces_roundtrip() {
+        use crate::cli::ArchiveArgs;
+
+        let locator = format!("scylla {} e2ebig", alternator_endpoint());
+        let sink = ArchiveArgs::from_str(&locator).unwrap();
+        let archive = sink
+            .build_block_data_archive(&Metrics::none())
+            .await
+            .unwrap();
+
+        let traces: crate::model::block_data_archive::BlockTraces =
+            vec![patterned(CHUNK_SIZE + 100_000), patterned(64)];
+        archive
+            .archive_traces(traces.clone(), 77, WritePolicy::NoClobber)
+            .await
+            .unwrap();
+        assert_eq!(archive.get_block_traces(77).await.unwrap(), traces);
     }
 }
