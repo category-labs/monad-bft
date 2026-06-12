@@ -96,7 +96,11 @@ async fn archive_written_objects_range_read_through_chain_data() {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(got.as_ref(), &small[start..end], "small range {start}..{end}");
+        assert_eq!(
+            got.as_ref(),
+            &small[start..end],
+            "small range {start}..{end}"
+        );
     }
     let clamped = read(&reader, "block/000000000007", 99_000, 200_000)
         .await
@@ -126,14 +130,21 @@ async fn archive_written_objects_range_read_through_chain_data() {
             .unwrap();
         assert_eq!(got.as_ref(), &big[start..end], "big range {start}..{end}");
     }
-    let clamped = read(&reader, "traces/000000000007", big.len() - 5, big.len() + 100)
-        .await
-        .unwrap()
-        .unwrap();
+    let clamped = read(
+        &reader,
+        "traces/000000000007",
+        big.len() - 5,
+        big.len() + 100,
+    )
+    .await
+    .unwrap()
+    .unwrap();
     assert_eq!(clamped.as_ref(), &big[big.len() - 5..]);
-    assert!(read(&reader, "traces/000000000007", big.len() + 1, big.len() + 2)
-        .await
-        .is_err());
+    assert!(
+        read(&reader, "traces/000000000007", big.len() + 1, big.len() + 2)
+            .await
+            .is_err()
+    );
 
     // Whole-object reads agree with the archive's own reader.
     let whole = read(&reader, "traces/000000000007", 0, big.len())

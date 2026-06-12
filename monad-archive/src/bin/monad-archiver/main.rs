@@ -20,17 +20,16 @@ use monad_archive::{cli::set_source_and_sink_metrics, kvstore::WritePolicy, prel
 mod bft_archive_worker;
 mod block_archive_worker;
 #[cfg(feature = "chain-data-ingest")]
-mod chain_data_ingest_worker;
 mod file_checkpointer;
 mod generic_folder_archiver;
 
 use bft_archive_worker::bft_block_archive_worker;
 use block_archive_worker::{archive_worker, ArchiveWorkerOpts};
-#[cfg(feature = "chain-data-ingest")]
-use chain_data_ingest_worker::chain_data_ingest_worker;
 use cli::{Commands, ParsedCli};
 use file_checkpointer::file_checkpoint_worker;
 use generic_folder_archiver::recursive_dir_archiver;
+#[cfg(feature = "chain-data-ingest")]
+use monad_archive::chain_data_ingest::chain_data_ingest_worker;
 use tokio::task::JoinHandle;
 
 mod cli;

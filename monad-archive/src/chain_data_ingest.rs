@@ -13,18 +13,33 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-#![allow(async_fn_in_trait)]
+//! The chain-data ingest worker: feeds the `monad-chain-data` engine from a
+//! block-data source. Shared by `monad-archiver` and `monad-indexer`, whose
+//! TOML configs both carry a `[chain_data_ingest]` section.
 
 use eyre::{bail, Result};
-use monad_archive::{chain_data_source::ArchiverChainDataSource, model::BlockDataReaderErased};
-use monad_chain_data::{run_configured_chain_data_engine_ingest, ChainDataPayloadConfig};
+use serde::Deserialize;
 
-use super::cli::ArchiverChainDataIngestConfig;
+use crate::{chain_data_source::ArchiverChainDataSource, model::BlockDataReaderErased};
+
+/// The `[chain_data_ingest]` config section: worker switch plus the
+/// chain-data store/engine configs passed through verbatim.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct ChainDataIngestConfig {
+    pub enabled: bool,
+    /// Index the archive's existing objects instead of writing payload blobs
+    /// (requires an archive-backed `block_data_source`). Must agree with
+    /// `engine.payload = "external-archive"` — validated at startup.
+    pub index_archive_payload: bool,
+    pub store: monad_chain_data::ChainDataStoreConfig,
+    pub engine: monad_chain_data::ChainDataEngineConfig,
+}
 
 pub async fn chain_data_ingest_worker(
     block_data_source: BlockDataReaderErased,
     fallback_block_data_source: Option<BlockDataReaderErased>,
-    config: ArchiverChainDataIngestConfig,
+    config: ChainDataIngestConfig,
 ) -> Result<()> {
     if !config.enabled {
         return Ok(());
@@ -34,7 +49,8 @@ pub async fn chain_data_ingest_worker(
     // The worker flag and the engine's payload mode express the same intent
     // at two layers; require them to agree so a half-edited config cannot
     // silently ingest in the wrong mode.
-    let external_engine = config.engine.payload == ChainDataPayloadConfig::ExternalArchive;
+    let external_engine =
+        config.engine.payload == monad_chain_data::ChainDataPayloadConfig::ExternalArchive;
     if config.index_archive_payload != external_engine {
         bail!(
             "chain_data_ingest.index_archive_payload ({}) must match engine.payload ({:?})",
@@ -47,5 +63,6 @@ pub async fn chain_data_ingest_worker(
     } else {
         ArchiverChainDataSource::native(block_data_source, fallback_block_data_source)
     };
-    run_configured_chain_data_engine_ingest(config.store, config.engine, source).await
+    monad_chain_data::run_configured_chain_data_engine_ingest(config.store, config.engine, source)
+        .await
 }

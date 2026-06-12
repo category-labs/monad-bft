@@ -23,7 +23,6 @@ use clap::{ArgAction, Parser, Subcommand};
 use eyre::{eyre, Context, Result};
 use monad_archive::cli::{ArchiveArgs, BlockDataReaderArgs};
 #[cfg(feature = "chain-data-ingest")]
-use monad_chain_data::{ChainDataEngineConfig, ChainDataStoreConfig};
 use serde::Deserialize;
 
 /// Runtime configuration for the `monad-archiver` binary.
@@ -152,18 +151,10 @@ pub struct Cli {
     pub chain_data_ingest: Option<ArchiverChainDataIngestConfig>,
 }
 
+/// The shared `[chain_data_ingest]` section (see
+/// `monad_archive::chain_data_ingest`).
 #[cfg(feature = "chain-data-ingest")]
-#[derive(Debug, Default, Deserialize)]
-#[serde(default)]
-pub struct ArchiverChainDataIngestConfig {
-    pub enabled: bool,
-    /// Index the archive's existing objects instead of writing payload blobs
-    /// (requires an archive-backed `block_data_source`). Must agree with
-    /// `engine.payload = "external-archive"` — validated at startup.
-    pub index_archive_payload: bool,
-    pub store: ChainDataStoreConfig,
-    pub engine: ChainDataEngineConfig,
-}
+pub use monad_archive::chain_data_ingest::ChainDataIngestConfig as ArchiverChainDataIngestConfig;
 
 /// Result of parsing CLI arguments - either a subcommand or daemon config
 pub enum ParsedCli {
