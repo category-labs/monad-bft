@@ -34,7 +34,7 @@ use crate::{
 type RowKey = (u64, u32);
 
 /// One family's decoded-row cache. A thin typed wrapper over the shared
-/// weighted-LRU + single-flight core.
+/// byte-budgeted cache core (S3-FIFO replacement).
 pub struct RowCache<T> {
     inner: Arc<CachedInner<RowKey, Weighted<Arc<T>>>>,
 }
@@ -47,7 +47,7 @@ impl<T: Send + Sync + 'static> RowCache<T> {
         }
     }
 
-    /// Cache-only probe; promotes the row's LRU position on a hit.
+    /// Cache-only probe; a hit records the access with the replacement policy.
     pub fn probe(&self, block_number: u64, idx_in_block: usize) -> Option<Arc<T>> {
         let idx = u32::try_from(idx_in_block).ok()?;
         self.inner.probe(&(block_number, idx)).map(|w| w.value)

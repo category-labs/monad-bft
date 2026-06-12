@@ -156,6 +156,7 @@ jemalloc_pprof = "0.8"
 k256 = { version = "0.13", features = ["hash2curve"] }
 libc = "0.2.153"
 lru = "0.16"
+quick_cache = "0.6"
 lz4 = "1.28"
 mongodb = { version = "3.7.0", default-features = false, features = ["compat-3-0-0", "dns-resolver", "openssl-tls"] }
 monoio = { git = "https://github.com/category-labs/monoio.git", tag = "0.2.4-category", features = ["sync", "iouring"] }

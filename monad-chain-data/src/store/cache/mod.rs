@@ -25,7 +25,7 @@ use std::{
 
 use bytes::Bytes;
 use futures::future::{BoxFuture, FutureExt, Shared};
-use lru::LruCache;
+use quick_cache::{sync::Cache as SievedCache, OptionsBuilder, Weighter};
 
 use crate::{
     error::{MonadChainDataError, Result},
@@ -34,9 +34,9 @@ use crate::{
 
 const DEFAULT_CACHE_TOTAL_MIB: usize = 8192;
 
-/// Fixed per-entry bookkeeping charge (key, LRU node, `Arc`) added to a
-/// [`Weighted`] payload weight, so tiny decoded rows don't let a cache hold
-/// far more entries than its byte budget affords.
+/// Fixed per-entry bookkeeping charge (key, policy bookkeeping, `Arc`) added
+/// to a [`Weighted`] payload weight, so tiny decoded rows don't let a cache
+/// hold far more entries than its byte budget affords.
 pub const CACHE_ENTRY_OVERHEAD: usize = 64;
 
 /// A decoded cache value plus the byte weight to charge it at, stamped at
@@ -179,34 +179,47 @@ impl CacheConfig {
     }
 }
 
-/// LRU cache plus its running weighted size under one mutex, so the size
-/// counter can never drift from the map. The lock is never held across an
-/// `.await` (crate-wide invariant).
-struct WeightedLru<K, V>
-where
-    K: Hash + Eq,
-{
-    lru: LruCache<K, V>,
-    /// Sum of `weigher(value)` over resident entries, kept in lockstep with
-    /// `lru` on insert/replace/evict.
-    size: usize,
-    /// Maximum total weight in bytes.
-    budget: usize,
+/// Byte weigher adapting the per-value weigh fn to quick_cache's trait.
+struct ValueWeighter<V>(fn(&V) -> usize);
+
+impl<V> Clone for ValueWeighter<V> {
+    fn clone(&self) -> Self {
+        Self(self.0)
+    }
 }
 
-/// LRU + single-flight + hit/miss machinery shared by every cached wrapper,
-/// generic over key and value so all table flavors reuse it. Owners wrap it
-/// in `Arc`.
+impl<K, V> Weighter<K, V> for ValueWeighter<V> {
+    fn weight(&self, _key: &K, value: &V) -> u64 {
+        (self.0)(value) as u64
+    }
+}
+
+/// Sizing hint for quick_cache's internal structures (sharding and the ghost
+/// queue): the byte budget over a nominal per-entry footprint. Only an
+/// estimate — residency is governed by the byte budget, not this count.
+fn estimated_entries(budget: usize) -> usize {
+    (budget / 1024).clamp(64, 4_000_000)
+}
+
+/// Byte-budgeted store + single-flight + hit/miss machinery shared by every
+/// cached wrapper, generic over key and value so all table flavors reuse it.
+/// Owners wrap it in `Arc`.
+///
+/// Replacement policy is quick_cache's S3-FIFO: new entries enter a small
+/// probationary queue and graduate to the main region only when re-referenced
+/// (directly or via the ghost queue). One-touch traffic — a wide analytic
+/// iteration streaming rows it will never revisit — churns the probationary
+/// queue without displacing the re-referenced hot set, which plain LRU could
+/// not guarantee. Single-flight stays OURS (the `Shared`-future map below),
+/// preserving its audited semantics: one fetch per key under concurrency,
+/// errors never cached, every awaiter populates on a cancelled leader.
 pub(crate) struct CachedInner<K, V>
 where
     K: Hash + Eq,
 {
-    cache: Option<Mutex<WeightedLru<K, V>>>,
-    /// Per-value weight in bytes; [`weigh_weighted`] adds
-    /// [`CACHE_ENTRY_OVERHEAD`] to the stamped payload weight.
-    weigher: fn(&V) -> usize,
+    cache: Option<SievedCache<K, V, ValueWeighter<V>>>,
     /// Single-flight map: concurrent misses on a key share one in-flight
-    /// fetch. Separate from the LRU mutex; neither is held across an `.await`.
+    /// fetch. No lock is held across an `.await` (crate-wide invariant).
     in_flight: Mutex<HashMap<K, SharedFetch<V>>>,
     hits: AtomicU64,
     misses: AtomicU64,
@@ -217,39 +230,41 @@ where
     K: Hash + Eq,
     V: Clone,
 {
-    /// Byte-budgeted cache: evicts LRU entries until the summed `weigher`
-    /// weight is `<= budget` bytes. `budget == 0` disables the cache.
+    /// Byte-budgeted cache: admission/eviction keep the summed `weigher`
+    /// weight `<= budget` bytes. `budget == 0` disables the cache.
     pub(crate) fn with_weigher(budget: usize, weigher: fn(&V) -> usize) -> Arc<Self> {
-        // Unbounded: eviction is driven by the byte budget, not entry count;
-        // a count cap too would evict early.
         let cache = (budget > 0).then(|| {
-            Mutex::new(WeightedLru {
-                lru: LruCache::unbounded(),
-                size: 0,
-                budget,
-            })
+            let estimated = estimated_entries(budget);
+            // The weight budget splits across shards, so small caches get one
+            // shard (a tiny per-shard budget would over-evict); GiB-scale
+            // budgets shard for concurrency.
+            let options = OptionsBuilder::new()
+                .estimated_items_capacity(estimated)
+                .weight_capacity(budget as u64)
+                .shards((estimated / 4096).clamp(1, 64))
+                .build()
+                .expect("static cache options are valid");
+            SievedCache::with_options(
+                options,
+                ValueWeighter(weigher),
+                Default::default(),
+                Default::default(),
+            )
         });
         Arc::new(Self {
             cache,
-            weigher,
             in_flight: Mutex::new(HashMap::new()),
             hits: AtomicU64::new(0),
             misses: AtomicU64::new(0),
         })
     }
 
-    /// Cache-only lookup that PROMOTES the entry's LRU position and counts
-    /// hit/miss (unlike the non-promoting `peek` of the underlying lru crate);
-    /// never fetches. Batch readers probe with this, fetch misses themselves,
-    /// then [`Self::insert`] the results.
+    /// Cache-only lookup that records the access with the replacement policy
+    /// and counts hit/miss; never fetches. Batch readers probe with this,
+    /// fetch misses themselves, then [`Self::insert`] the results.
     pub(crate) fn probe(&self, key: &K) -> Option<V> {
         let c = self.cache.as_ref()?;
-        let hit = c
-            .lock()
-            .expect("cache mutex poisoned")
-            .lru
-            .get(key)
-            .cloned();
+        let hit = c.get(key);
         if hit.is_some() {
             self.hits.fetch_add(1, Ordering::Relaxed);
         } else {
@@ -259,27 +274,13 @@ where
     }
 
     /// Seeds the cache with a caller-fetched value; no-op when disabled.
+    /// Admission is the policy's call — a never-referenced key may be
+    /// dropped from probation without ever displacing the hot set.
     pub(crate) fn insert(&self, key: K, value: V) {
         let Some(c) = &self.cache else {
             return;
         };
-        let added = (self.weigher)(&value);
-        let mut guard = c.lock().expect("cache mutex poisoned");
-        // Refund a replaced value's weight so `size` tracks residency exactly.
-        if let Some(old) = guard.lru.put(key, value) {
-            let refund = (self.weigher)(&old);
-            guard.size = guard.size.saturating_sub(refund);
-        }
-        guard.size = guard.size.saturating_add(added);
-        // Evict LRU entries until within budget; terminates because
-        // `pop_lru` eventually empties even for one oversized value.
-        while guard.size > guard.budget {
-            let Some((_, evicted)) = guard.lru.pop_lru() else {
-                break;
-            };
-            let freed = (self.weigher)(&evicted);
-            guard.size = guard.size.saturating_sub(freed);
-        }
+        c.insert(key, value);
     }
 }
 
@@ -794,17 +795,22 @@ mod tests {
     }
 
     #[test]
-    fn byte_budget_evicts_lru_until_within_budget() {
+    fn byte_budget_bounds_residency() {
+        // Budget fits two weight-4 entries; inserting three must evict one.
+        // WHICH one is the replacement policy's call (S3-FIFO, not LRU), so
+        // only the residency bound is asserted.
         let cache = CachedInner::<u64, Bytes>::with_weigher(10, byte_weigher);
-        cache.insert(1, Bytes::from_static(b"aaaa")); // size 4
-        cache.insert(2, Bytes::from_static(b"bbbb")); // size 8
-                                                      // Touch key 1 so key 2 becomes the LRU victim.
-        assert_eq!(cache.probe(&1), Some(Bytes::from_static(b"aaaa")));
-        cache.insert(3, Bytes::from_static(b"cccc")); // size 12 -> evict LRU (key 2) -> size 8
-
-        assert_eq!(cache.probe(&1), Some(Bytes::from_static(b"aaaa")));
-        assert_eq!(cache.probe(&3), Some(Bytes::from_static(b"cccc")));
-        assert_eq!(cache.probe(&2), None, "LRU entry evicted to honor budget");
+        cache.insert(1, Bytes::from_static(b"aaaa"));
+        cache.insert(2, Bytes::from_static(b"bbbb"));
+        cache.insert(3, Bytes::from_static(b"cccc"));
+        let resident = [1u64, 2, 3]
+            .iter()
+            .filter(|k| cache.probe(k).is_some())
+            .count();
+        assert!(
+            (1..=2).contains(&resident),
+            "budget 10 fits at most two weight-4 entries, got {resident}"
+        );
     }
 
     #[test]
@@ -820,7 +826,10 @@ mod tests {
 
     #[test]
     fn byte_budget_handles_empty_value() {
-        let cache = CachedInner::<u64, Bytes>::with_weigher(8, byte_weigher);
+        // Zero-weight values must store and serve without upsetting the
+        // accounting. (Budget is roomy: the policy may refuse to admit any
+        // single entry weighing a large fraction of the whole budget.)
+        let cache = CachedInner::<u64, Bytes>::with_weigher(1024, byte_weigher);
         cache.insert(1, Bytes::new()); // weighs 0
         assert_eq!(cache.probe(&1), Some(Bytes::new()));
         cache.insert(2, Bytes::from_static(b"bbbbbbbb"));
@@ -835,37 +844,39 @@ mod tests {
         assert_eq!(cache.probe(&1), None);
     }
 
+    /// The reason for S3-FIFO over LRU: a stream of one-touch inserts (a wide
+    /// analytic scan caching rows it will never revisit) must not displace
+    /// the re-referenced hot set. Under LRU this exact sequence evicts every
+    /// hot key; under S3-FIFO the one-touch keys live and die in probation.
     #[test]
-    fn weighted_values_evict_by_stamped_weight() {
-        // Budget fits exactly two entries of payload weight 100.
-        let budget = 2 * (100 + CACHE_ENTRY_OVERHEAD);
-        let cache =
-            CachedInner::<u64, Weighted<&'static str>>::with_weigher(budget, weigh_weighted);
-        cache.insert(
-            1,
-            Weighted {
-                value: "a",
-                weight: 100,
-            },
+    fn one_touch_stream_does_not_displace_rereferenced_hot_set() {
+        // ~200 weight-64 entries fit; hot set is 8 of them.
+        let budget = 200 * (64 + CACHE_ENTRY_OVERHEAD);
+        let cache = CachedInner::<u64, Weighted<u64>>::with_weigher(budget, weigh_weighted);
+        let entry = |k: u64| Weighted {
+            value: k,
+            weight: 64,
+        };
+
+        for k in 0..8u64 {
+            cache.insert(k, entry(k));
+        }
+        // Re-reference the hot set so the policy sees real frequency.
+        for _ in 0..3 {
+            for k in 0..8u64 {
+                assert!(cache.probe(&k).is_some(), "hot key {k} resident on warm");
+            }
+        }
+
+        // One-touch flood: 4x the cache's entry capacity, never re-read.
+        for k in 1_000..1_800u64 {
+            cache.insert(k, entry(k));
+        }
+
+        let survivors = (0..8u64).filter(|k| cache.probe(k).is_some()).count();
+        assert!(
+            survivors >= 6,
+            "hot set should survive a one-touch flood, kept {survivors}/8"
         );
-        cache.insert(
-            2,
-            Weighted {
-                value: "b",
-                weight: 100,
-            },
-        );
-        assert_eq!(cache.probe(&1).map(|w| w.value), Some("a"));
-        // Key 1 was just touched, so inserting a third evicts key 2 (LRU).
-        cache.insert(
-            3,
-            Weighted {
-                value: "c",
-                weight: 100,
-            },
-        );
-        assert_eq!(cache.probe(&1).map(|w| w.value), Some("a"));
-        assert!(cache.probe(&2).is_none());
-        assert_eq!(cache.probe(&3).map(|w| w.value), Some("c"));
     }
 }

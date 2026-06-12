@@ -35,7 +35,7 @@ blake3 = { workspace = true }
 bytes = { workspace = true }
 eyre = { workspace = true }
 futures = { workspace = true }
-lru = { workspace = true }
+quick_cache = { workspace = true }
 rayon = { workspace = true }
 roaring = "0.11"
 serde = { workspace = true, features = ["derive"] }
