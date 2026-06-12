@@ -212,7 +212,9 @@ pub enum ChainDataArchiveBackendConfig {
     S3(ChainDataArchiveS3Config),
     #[cfg(feature = "mongo")]
     Mongo(ChainDataArchiveMongoConfig),
-    #[cfg(not(any(feature = "s3", feature = "mongo")))]
+    #[cfg(feature = "dynamo")]
+    Dynamo(ChainDataArchiveDynamoConfig),
+    #[cfg(not(any(feature = "s3", feature = "mongo", feature = "dynamo")))]
     Unavailable,
 }
 
@@ -223,11 +225,64 @@ impl ChainDataArchiveBackendConfig {
             Self::S3(config) => config.validate(),
             #[cfg(feature = "mongo")]
             Self::Mongo(config) => config.validate(),
-            #[cfg(not(any(feature = "s3", feature = "mongo")))]
+            #[cfg(feature = "dynamo")]
+            Self::Dynamo(config) => config.validate(),
+            #[cfg(not(any(feature = "s3", feature = "mongo", feature = "dynamo")))]
             Self::Unavailable => {
-                bail!("chain-data archive access requires the s3 or mongo feature")
+                bail!("chain-data archive access requires the s3, mongo, or dynamo feature")
             }
         }
+    }
+}
+
+/// Read-only access to a monad-archive block-data table on a
+/// DynamoDB-API-compatible backend (a Scylla Alternator archive replica).
+#[cfg(feature = "dynamo")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ChainDataArchiveDynamoConfig {
+    /// The archive's block-data table (e.g. `{namespace}_block_level`).
+    pub table: Option<String>,
+    pub endpoint_url: Option<String>,
+    pub region: Option<String>,
+    pub profile: Option<String>,
+    pub access_key_id: Redacted,
+    pub secret_access_key: Redacted,
+    pub session_token: Redacted,
+    pub max_concurrency: usize,
+}
+
+#[cfg(feature = "dynamo")]
+impl Default for ChainDataArchiveDynamoConfig {
+    fn default() -> Self {
+        Self {
+            table: None,
+            endpoint_url: None,
+            region: None,
+            profile: None,
+            access_key_id: Redacted(None),
+            secret_access_key: Redacted(None),
+            session_token: Redacted(None),
+            max_concurrency: 256,
+        }
+    }
+}
+
+#[cfg(feature = "dynamo")]
+impl ChainDataArchiveDynamoConfig {
+    fn validate(&self) -> Result<()> {
+        if self.table.is_none() {
+            bail!("chain-data archive dynamo requires table");
+        }
+        if self.max_concurrency == 0 {
+            bail!("chain-data archive dynamo max_concurrency must be >= 1");
+        }
+        validate_pair(
+            &self.access_key_id.0,
+            &self.secret_access_key.0,
+            "archive dynamo access_key_id",
+            "archive dynamo secret_access_key",
+        )
     }
 }
 
@@ -381,9 +436,33 @@ pub(crate) async fn build_external_payload_reader(
                 .context("building chain-data archive Mongo reader")?;
             Ok(Some(std::sync::Arc::new(reader)))
         }
-        #[cfg(not(any(feature = "s3", feature = "mongo")))]
+        #[cfg(feature = "dynamo")]
+        Some(ChainDataArchiveBackendConfig::Dynamo(dynamo)) => {
+            use crate::store::{DynamoExternalBlobReader, DynamoExternalBlobReaderConfig};
+
+            let reader_config = DynamoExternalBlobReaderConfig {
+                table: dynamo
+                    .table
+                    .clone()
+                    .expect("validated archive dynamo table"),
+                endpoint_url: dynamo.endpoint_url.clone(),
+                region: dynamo.region.clone(),
+                profile: dynamo.profile.clone(),
+                credentials: dynamo_credentials(
+                    &dynamo.access_key_id.0,
+                    &dynamo.secret_access_key.0,
+                    &dynamo.session_token.0,
+                ),
+                max_concurrency: dynamo.max_concurrency,
+            };
+            let reader = DynamoExternalBlobReader::new(reader_config)
+                .await
+                .context("building chain-data archive Dynamo reader")?;
+            Ok(Some(std::sync::Arc::new(reader)))
+        }
+        #[cfg(not(any(feature = "s3", feature = "mongo", feature = "dynamo")))]
         Some(ChainDataArchiveBackendConfig::Unavailable) => {
-            bail!("chain-data archive access requires the s3 or mongo feature")
+            bail!("chain-data archive access requires the s3, mongo, or dynamo feature")
         }
     }
 }

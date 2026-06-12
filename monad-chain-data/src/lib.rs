@@ -44,14 +44,15 @@ pub use config::{
     ChainDataMetaBackendConfig, ChainDataPayloadConfig, ChainDataStoreConfig,
     ConfiguredChainDataReader,
 };
+#[cfg(feature = "dynamo")]
+pub use config::{
+    ChainDataArchiveDynamoConfig, ChainDataDynamoBlobConfig, ChainDataDynamoMetaConfig,
+    ChainDataDynamoTableLayoutConfig,
+};
 #[cfg(feature = "mongo")]
 pub use config::{ChainDataArchiveMongoConfig, ChainDataMongoMetaConfig};
 #[cfg(feature = "s3")]
 pub use config::{ChainDataArchiveS3Config, ChainDataS3BlobConfig};
-#[cfg(feature = "dynamo")]
-pub use config::{
-    ChainDataDynamoBlobConfig, ChainDataDynamoMetaConfig, ChainDataDynamoTableLayoutConfig,
-};
 pub use engine::{
     family::Family,
     tables::{DictConfig, PublicationTables, QueryRuntimeConfig, Tables},

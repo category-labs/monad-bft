@@ -15,6 +15,8 @@
 
 #[cfg(feature = "dynamo")]
 mod dynamo;
+#[cfg(any(feature = "dynamo", feature = "mongo"))]
+pub(crate) mod external_chunks;
 mod in_memory;
 #[cfg(feature = "mongo")]
 mod mongo;
@@ -26,7 +28,10 @@ use bytes::Bytes;
 #[cfg(feature = "dynamo")]
 pub(crate) use dynamo::MAX_CHUNK_SIZE;
 #[cfg(feature = "dynamo")]
-pub use dynamo::{DynamoBlobStore, DynamoBlobStoreConfig};
+pub use dynamo::{
+    DynamoBlobStore, DynamoBlobStoreConfig, DynamoExternalBlobReader,
+    DynamoExternalBlobReaderConfig,
+};
 pub use in_memory::InMemoryBlobStore;
 #[cfg(feature = "mongo")]
 pub use mongo::{MongoExternalBlobReader, MongoExternalBlobReaderConfig};
