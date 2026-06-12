@@ -335,6 +335,7 @@ where
         let self_eth_address = node_id.pubkey().get_eth_address();
         let system_transactions = self.get_system_transactions(
             epoch,
+            round,
             proposed_seq_num,
             self_eth_address,
             &extending_blocks.iter().collect(),
@@ -566,6 +567,7 @@ where
     fn get_system_transactions(
         &self,
         proposed_epoch: Epoch,
+        proposed_round: Round,
         proposed_seq_num: SeqNum,
         block_author: Address,
         extending_blocks: &Vec<&EthValidatedBlock<ST, SCT>>,
@@ -597,6 +599,7 @@ where
         let sys_txns = SystemTransactionGenerator::generate_system_transactions(
             proposed_seq_num,
             proposed_epoch,
+            proposed_round,
             parent_block_epoch,
             block_author,
             next_system_txn_nonce,
