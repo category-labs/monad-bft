@@ -90,7 +90,7 @@ where
     M: MetaStore,
     B: BlobStore,
 {
-    match recover_checkpoint(snapshots).await? {
+    match recover_checkpoint(snapshots, head).await? {
         None if head == 0 => Ok(Recovered::Cold),
         Some((state, tail, frontier, checkpoint)) if checkpoint >= head => Ok(Recovered::Warm {
             state,

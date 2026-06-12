@@ -23,6 +23,7 @@ use super::cli::ArchiverChainDataIngestConfig;
 
 pub async fn chain_data_ingest_worker(
     block_data_source: BlockDataReaderErased,
+    fallback_block_data_source: Option<BlockDataReaderErased>,
     config: ArchiverChainDataIngestConfig,
 ) -> Result<()> {
     if !config.enabled {
@@ -42,9 +43,9 @@ pub async fn chain_data_ingest_worker(
         );
     }
     let source = if config.index_archive_payload {
-        ArchiverChainDataSource::external(block_data_source)?
+        ArchiverChainDataSource::external(block_data_source, fallback_block_data_source)?
     } else {
-        ArchiverChainDataSource::native(block_data_source)
+        ArchiverChainDataSource::native(block_data_source, fallback_block_data_source)
     };
     run_configured_chain_data_engine_ingest(config.store, config.engine, source).await
 }

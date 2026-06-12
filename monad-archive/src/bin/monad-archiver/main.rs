@@ -109,6 +109,7 @@ async fn main() -> Result<()> {
             info!("Spawning chain-data ingest worker...");
             worker_handles.push(tokio::spawn(chain_data_ingest_worker(
                 block_data_source.clone(),
+                fallback_block_data_source.clone(),
                 chain_data_config,
             )));
         }

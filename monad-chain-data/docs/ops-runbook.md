@@ -120,6 +120,14 @@ scylla_profile = true
 scylla_concurrency = 1024
 
 # Blob store: RustFS (or AWS S3 — then drop endpoint_urls/force_path_style).
+# OMITTABLE for `engine.payload = "external-archive"` stores: row locators
+# then point into the source archive's own objects (add a read-only
+# [chain_data_ingest.store.archive] block mirroring [block_data_source] —
+# required, readers fetch payload bytes through it), no pack blobs are
+# written, and checkpoints are auto-disabled (recovery rebuilds from the
+# fragments at the published head; resume granularity is bounded by the
+# checkpoint_every_blocks-clamped flush cadence). Live example:
+# /home/jhow/chain-data-mainnet-2/mainnet-2.toml on vin-020.
 [chain_data_ingest.store.blob]
 type = "s3"
 bucket = "<blob-bucket>"                        # e.g. mainnet-1

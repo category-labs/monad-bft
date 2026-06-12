@@ -31,7 +31,7 @@ use crate::{
     },
     ingest_types::FinalizedBlock,
     primitives::limits::QueryLimits,
-    store::{CacheConfig, InMemoryBlobStore, InMemoryMetaStore},
+    store::{BlobStore, CacheConfig, InMemoryBlobStore, InMemoryMetaStore, NullBlobStore},
 };
 
 /// A `Vec`-backed [`ChainDataIngestSource`] over blocks `[start, start + len)`.
@@ -70,17 +70,20 @@ impl ChainDataIngestSource for VecSource {
 
 /// In-memory stores populated by the engine. Hold onto this so the backing
 /// `Arc<RwLock>` maps stay alive; build readers from it via [`Self::reader`].
-pub struct PopulatedStore {
+/// `B` is [`InMemoryBlobStore`] except for blob-less external fixtures
+/// ([`populate_via_engine_external_no_blob`]), which run over
+/// [`NullBlobStore`].
+pub struct PopulatedStore<B: BlobStore = InMemoryBlobStore> {
     pub meta: InMemoryMetaStore,
-    pub blob: InMemoryBlobStore,
+    pub blob: B,
     /// External archive reader attached to every built service (population
     /// through [`populate_via_engine_external`]); `None` for native stores.
     pub external: Option<Arc<dyn ExternalBlobReader>>,
 }
 
-impl PopulatedStore {
+impl<B: BlobStore> PopulatedStore<B> {
     /// A read-only query service over the SAME stores the engine wrote to.
-    pub fn reader(&self) -> MonadChainDataService<InMemoryMetaStore, InMemoryBlobStore> {
+    pub fn reader(&self) -> MonadChainDataService<InMemoryMetaStore, B> {
         self.reader_with_limits(QueryLimits::UNLIMITED)
     }
 
@@ -88,7 +91,7 @@ impl PopulatedStore {
     pub fn reader_with_limits(
         &self,
         limits: QueryLimits,
-    ) -> MonadChainDataService<InMemoryMetaStore, InMemoryBlobStore> {
+    ) -> MonadChainDataService<InMemoryMetaStore, B> {
         let service = MonadChainDataService::new(self.meta.clone(), self.blob.clone(), limits);
         match &self.external {
             Some(reader) => service.with_external_payload_reader(Arc::clone(reader)),
@@ -120,6 +123,7 @@ fn populate_config(start: u64, end: u64, payload: PayloadMode) -> IngestRunConfi
         policy: SignalPolicy {
             tip_lag_divisor: 1,
             checkpoint_every_blocks: 4096,
+            checkpoints_enabled: true,
         },
         payload,
         track_buffer: 16,
@@ -157,6 +161,7 @@ pub async fn try_populate_via_engine(
         populate_config(start, end, PayloadMode::Native),
         DictConfig::default(),
         None,
+        InMemoryBlobStore::default(),
     )
     .await
 }
@@ -173,6 +178,7 @@ pub async fn populate_via_engine_with_dict(
         populate_config(start, end, PayloadMode::Native),
         dict,
         None,
+        InMemoryBlobStore::default(),
     )
     .await
     .expect("backfill ingest")
@@ -192,6 +198,7 @@ pub async fn try_populate_via_engine_external(
         populate_config(start, end, PayloadMode::ExternalArchive),
         DictConfig::default(),
         Some(external),
+        InMemoryBlobStore::default(),
     )
     .await
 }
@@ -206,25 +213,86 @@ pub async fn populate_via_engine_external(
         .expect("external backfill ingest")
 }
 
+/// Blob-less external-payload population: the engine runs over
+/// [`NullBlobStore`] with checkpoints disabled, mirroring an ingest assembly
+/// whose `[store.blob]` is omitted. Any blob access errors the run (see
+/// [`NullBlobStore`]), so a successful populate doubles as the proof that an
+/// external-archive ingest issues ZERO blob-store calls.
+pub async fn populate_via_engine_external_no_blob(
+    blocks: Vec<FinalizedBlock>,
+    external: Arc<dyn ExternalBlobReader>,
+) -> PopulatedStore<NullBlobStore> {
+    let (start, end) = block_bounds(&blocks);
+    let mut config = populate_config(start, end, PayloadMode::ExternalArchive);
+    config.policy.checkpoints_enabled = false;
+    run_engine(
+        blocks,
+        config,
+        DictConfig::default(),
+        Some(external),
+        NullBlobStore,
+    )
+    .await
+    .expect("blob-less external backfill ingest")
+}
+
 /// Ingests `blocks` (parent-linked continuations of what `store` holds) into
 /// the SAME stores via a fresh engine run, advancing the published head to
 /// the new last block — the fixture for read paths that must observe a head
 /// advance (e.g. the open-region fold caches).
 pub async fn populate_more_via_engine(store: &PopulatedStore, blocks: Vec<FinalizedBlock>) {
     let (start, end) = block_bounds(&blocks);
+    run_more_engine(
+        store,
+        blocks,
+        populate_config(start, end, PayloadMode::Native),
+    )
+    .await;
+}
+
+/// Blob-less external continuation: a SECOND engine run over the same meta
+/// store, with no checkpoint to resume from — the engine rebuilds its open
+/// state from the fragments at the published head, then ingests the
+/// continuation blocks (the restartability fixture for checkpoint-less
+/// stores).
+pub async fn populate_more_via_engine_external_no_blob(
+    store: &PopulatedStore<NullBlobStore>,
+    blocks: Vec<FinalizedBlock>,
+) {
+    let (start, end) = block_bounds(&blocks);
+    let mut config = populate_config(start, end, PayloadMode::ExternalArchive);
+    config.policy.checkpoints_enabled = false;
+    run_more_engine(store, blocks, config).await;
+}
+
+/// Shared continuation body: wires a fresh engine over `store`'s existing
+/// backing stores and drives it to completion.
+async fn run_more_engine<B: BlobStore>(
+    store: &PopulatedStore<B>,
+    blocks: Vec<FinalizedBlock>,
+    config: IngestRunConfig,
+) {
     let meta = store.meta.clone();
     let blob = store.blob.clone();
-    let snapshots = SnapshotStore::new(meta.clone(), blob.clone());
-    let tables = Arc::new(Tables::with_all_configs(
+    let snapshots = if config.policy.checkpoints_enabled {
+        SnapshotStore::new(meta.clone(), blob.clone())
+    } else {
+        SnapshotStore::without_payloads(meta.clone(), blob.clone())
+    };
+    let mut tables = Tables::with_all_configs(
         meta.clone(),
-        blob.clone(),
+        blob,
         CacheConfig::default(),
         DictConfig::default(),
         QueryRuntimeConfig::default(),
-    ));
+    );
+    if let Some(reader) = &store.external {
+        tables = tables.with_external_payload_reader(Arc::clone(reader));
+    }
+    let tables = Arc::new(tables);
     let resolver = TablesCodecResolver::new(tables.clone());
     let publisher = Arc::new(PublicationTables::new(meta.clone()));
-    let source = VecSource::new(blocks, start);
+    let source = VecSource::new(blocks, config.start);
 
     run_ingest(
         source,
@@ -232,24 +300,29 @@ pub async fn populate_more_via_engine(store: &PopulatedStore, blocks: Vec<Finali
         publisher,
         snapshots,
         resolver,
-        populate_config(start, end, PayloadMode::Native),
+        config,
         TEST_PREFETCH,
     )
     .await
     .expect("continuation ingest");
 }
 
-/// Wires tables/snapshots/resolver/publisher over fresh in-memory stores and
-/// drives the engine to completion, publishing head = last block.
-async fn run_engine(
+/// Wires tables/snapshots/resolver/publisher over a fresh in-memory meta
+/// store (and the given blob store) and drives the engine to completion,
+/// publishing head = last block.
+async fn run_engine<B: BlobStore>(
     blocks: Vec<FinalizedBlock>,
     config: IngestRunConfig,
     dict: DictConfig,
     external: Option<Arc<dyn ExternalBlobReader>>,
-) -> Result<PopulatedStore, MonadChainDataError> {
+    blob: B,
+) -> Result<PopulatedStore<B>, MonadChainDataError> {
     let meta = InMemoryMetaStore::default();
-    let blob = InMemoryBlobStore::default();
-    let snapshots = SnapshotStore::new(meta.clone(), blob.clone());
+    let snapshots = if config.policy.checkpoints_enabled {
+        SnapshotStore::new(meta.clone(), blob.clone())
+    } else {
+        SnapshotStore::without_payloads(meta.clone(), blob.clone())
+    };
     let mut tables = Tables::with_all_configs(
         meta.clone(),
         blob.clone(),

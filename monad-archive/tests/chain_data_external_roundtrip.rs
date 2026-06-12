@@ -360,7 +360,8 @@ async fn build_fixture() -> Fixture {
         }
     }
 
-    let source = ArchiverChainDataSource::external(BlockDataReaderErased::from(archive)).unwrap();
+    let source =
+        ArchiverChainDataSource::external(BlockDataReaderErased::from(archive), None).unwrap();
     let mut external_blocks = Vec::new();
     for number in 1..=last {
         external_blocks.push(source.fetch_finalized_block(number).await.unwrap());

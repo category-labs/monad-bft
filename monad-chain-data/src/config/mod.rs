@@ -54,7 +54,14 @@ impl std::fmt::Debug for Redacted {
 #[serde(default)]
 pub struct ChainDataStoreConfig {
     pub meta: ChainDataMetaBackendConfig,
-    pub blob: ChainDataBlobBackendConfig,
+    /// Blob backend for pack blobs and checkpoint-snapshot payloads. `None`
+    /// (the `[store.blob]` TOML section omitted) means NO blob store: only
+    /// valid for `payload = "external-archive"` stores, whose row payloads
+    /// live in the monad-archive objects. Ingest then auto-disables
+    /// checkpoints (snapshot payloads are blob objects) and recovers from
+    /// fragments; any blob access errors loudly (see
+    /// [`crate::store::NullBlobStore`]).
+    pub blob: Option<ChainDataBlobBackendConfig>,
     pub cache: ChainDataCacheConfig,
     /// Reader-side query-runtime limits (fan-out + decode budget).
     pub query: ChainDataQueryConfig,
@@ -167,9 +174,19 @@ impl ChainDataStoreConfig {
 
     pub fn validate_reader(&self) -> Result<()> {
         self.meta.validate()?;
-        self.blob.validate()?;
+        // A missing blob backend is valid for readers (external-archive
+        // stores); ingest-side payload/seed constraints live in `ingest`.
+        if let Some(blob) = &self.blob {
+            blob.validate()?;
+        }
         if let Some(archive) = &self.archive {
             archive.validate()?;
+        }
+        if self.blob.is_none() && self.archive.is_none() {
+            bail!(
+                "a store without [store.blob] keeps its row payloads in the monad-archive \
+                 objects and requires [store.archive] to read them"
+            );
         }
         Ok(())
     }
@@ -335,23 +352,6 @@ pub enum ChainDataBlobBackendConfig {
     Dynamo(ChainDataDynamoBlobConfig),
     #[cfg(not(any(feature = "s3", feature = "dynamo")))]
     Unavailable,
-}
-
-impl Default for ChainDataBlobBackendConfig {
-    fn default() -> Self {
-        #[cfg(feature = "s3")]
-        {
-            Self::S3(ChainDataS3BlobConfig::default())
-        }
-        #[cfg(all(not(feature = "s3"), feature = "dynamo"))]
-        {
-            Self::Dynamo(ChainDataDynamoBlobConfig::default())
-        }
-        #[cfg(not(any(feature = "s3", feature = "dynamo")))]
-        {
-            Self::Unavailable
-        }
-    }
 }
 
 impl ChainDataBlobBackendConfig {

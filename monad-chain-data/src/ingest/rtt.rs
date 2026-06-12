@@ -192,6 +192,7 @@ fn backfill_config(start: u64, end: u64) -> IngestRunConfig {
         policy: SignalPolicy {
             tip_lag_divisor: 1,
             checkpoint_every_blocks: 3,
+            checkpoints_enabled: true,
         },
         payload: PayloadMode::Native,
         track_buffer: 16,
@@ -236,14 +237,14 @@ async fn backfill_pipeline_runs_publishes_and_snapshots() {
     assert_eq!(state.head_row_chain, h.checksum_at(5).await);
     assert_ne!(state.head_row_chain, EMPTY_DIGEST);
 
-    let (_, _, _, last_block) = recover_checkpoint(&h.snapshots)
+    let (_, _, _, last_block) = recover_checkpoint(&h.snapshots, 0)
         .await
         .unwrap()
         .expect("snapshot persisted");
     assert_eq!(last_block, 5);
 
     let cold = empty_snapshots();
-    assert!(recover_checkpoint(&cold).await.unwrap().is_none());
+    assert!(recover_checkpoint(&cold, 0).await.unwrap().is_none());
 }
 
 // Plan invariant I7: a warm resume with nothing left to ingest still publishes the durable tail.
@@ -256,7 +257,7 @@ async fn warm_resume_past_end_publishes_durable_tail() {
         .await
         .expect("initial backfill");
     assert_eq!(h.publication.load_published_head().await.unwrap(), Some(5));
-    let (_, _, _, last_block) = recover_checkpoint(&h.snapshots)
+    let (_, _, _, last_block) = recover_checkpoint(&h.snapshots, 0)
         .await
         .unwrap()
         .expect("snapshot");
@@ -341,7 +342,7 @@ async fn rebuild_from_fragments_matches_checkpoint() {
     let head = h.publication.load_published_head().await.unwrap().unwrap();
     assert_eq!(head, n);
 
-    let (ck_state, _ck_tail, ck_frontier, ck_block) = recover_checkpoint(&h.snapshots)
+    let (ck_state, _ck_tail, ck_frontier, ck_block) = recover_checkpoint(&h.snapshots, 0)
         .await
         .unwrap()
         .expect("checkpoint");
@@ -390,7 +391,7 @@ async fn rebuild_matches_checkpoint_across_page_boundary() {
     .expect("backfill");
     let head = 1;
 
-    let (ck_state, _, ck_frontier, _) = recover_checkpoint(&h.snapshots)
+    let (ck_state, _, ck_frontier, _) = recover_checkpoint(&h.snapshots, 0)
         .await
         .unwrap()
         .expect("checkpoint");
@@ -452,7 +453,7 @@ async fn rebuild_clamps_fragments_above_head() {
 
     // Simulate the index track flushing ahead of the published head: inject a
     // fragment for the next block under a flush_block above the head.
-    let (_, _, frontier, _) = recover_checkpoint(&h.snapshots).await.unwrap().unwrap();
+    let (_, _, frontier, _) = recover_checkpoint(&h.snapshots, 0).await.unwrap().unwrap();
     let bound = frontier.log; // exclusive id frontier at head; sealed_id == 0
     let stream = h
         .tables
@@ -854,7 +855,7 @@ async fn seal_chains_are_cadence_independent_and_survive_restart() {
         expected_pairs.push((page_start as u32, artifact.meta.count));
     }
     // Checkpoint regime: the terminal checkpoint carries the accumulator.
-    let (ckpt_state, _, _, _) = recover_checkpoint(&a.snapshots)
+    let (ckpt_state, _, _, _) = recover_checkpoint(&a.snapshots, 0)
         .await
         .unwrap()
         .expect("terminal checkpoint");

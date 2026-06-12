@@ -45,6 +45,12 @@ pub struct SignalPolicy {
     pub tip_lag_divisor: u64,
     /// Emit `Checkpoint` every N blocks (bounds fragment-replay on recovery).
     pub checkpoint_every_blocks: u64,
+    /// Whether `Checkpoint` signals are emitted at all — both the periodic one
+    /// and the bounded-run terminal one. `false` for stores without a blob
+    /// backend: snapshot payloads are blob objects, so such a store must never
+    /// checkpoint; recovery rebuilds the open state from fragments at the
+    /// published head instead.
+    pub checkpoints_enabled: bool,
 }
 
 /// Producer fetch parallelism: `concurrency` caps active fetch+decode tasks;
@@ -152,12 +158,20 @@ impl Signaller {
     /// The active `BatchFlush` interval: `max(distance_to_tip / tip_lag_divisor,
     /// 1)` — 1 at the tip, so caught-up flushes every block with no separate
     /// drain-flush. Before the first tip poll the interval is effectively never,
-    /// but nothing has been fed yet either.
+    /// but nothing has been fed yet either. Without checkpoints the published
+    /// head is the ONLY resume point, so the interval is also clamped to the
+    /// checkpoint cadence — a deep backfill's distance/divisor would otherwise
+    /// put millions of blocks between resume points.
     fn flush_interval(&self) -> u64 {
         let distance = self
             .observed_tip
             .map_or(u64::MAX, |tip| tip.saturating_sub(self.last_block));
-        (distance / self.policy.tip_lag_divisor.max(1)).max(1)
+        let interval = (distance / self.policy.tip_lag_divisor.max(1)).max(1);
+        if self.policy.checkpoints_enabled {
+            interval
+        } else {
+            interval.min(self.policy.checkpoint_every_blocks.max(1))
+        }
     }
 
     /// Emit `BatchFlush` / `Checkpoint` if due. The cadences are independent, so
@@ -168,7 +182,8 @@ impl Signaller {
             open &= self.emit_batch_flush().await;
             self.since_flush = 0;
         }
-        if self.since_ckpt >= self.policy.checkpoint_every_blocks {
+        if self.policy.checkpoints_enabled && self.since_ckpt >= self.policy.checkpoint_every_blocks
+        {
             open &= self.emit_checkpoint().await;
             self.since_ckpt = 0;
         }
@@ -176,10 +191,13 @@ impl Signaller {
     }
 
     /// Bounded-run terminal: a final BatchFlush so the head reaches the last
-    /// block, then a Checkpoint so resume is cheap.
+    /// block, then (when checkpoints are enabled) a Checkpoint so resume is
+    /// cheap.
     async fn terminate(&mut self) {
         self.emit_batch_flush().await;
-        self.emit_checkpoint().await;
+        if self.policy.checkpoints_enabled {
+            self.emit_checkpoint().await;
+        }
     }
 }
 
@@ -357,6 +375,7 @@ mod tests {
             SignalPolicy {
                 tip_lag_divisor: 1,
                 checkpoint_every_blocks: u64::MAX,
+                checkpoints_enabled: true,
             },
             0,
             IngestProbe::new(),

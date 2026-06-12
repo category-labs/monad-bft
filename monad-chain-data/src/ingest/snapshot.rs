@@ -59,6 +59,12 @@ use crate::{
 pub struct SnapshotStore<M: MetaStore, B: BlobStore> {
     meta: M,
     blobs: BlobTable<B>,
+    /// `false` for a blob-less store: checkpoint payloads can be neither
+    /// written nor read. A manifest row left behind by a previous blob-backed
+    /// run is then ignored when the published head covers its generation, and
+    /// a hard, actionable error otherwise — never a blind blob read that
+    /// surfaces as an opaque backend failure.
+    payloads_enabled: bool,
 }
 
 /// The committed pointer to the latest snapshot generation. Loading verifies
@@ -136,7 +142,23 @@ impl<M: MetaStore, B: BlobStore> SnapshotStore<M, B> {
 
     pub fn new(meta: M, blob: B) -> Self {
         let blobs = blob.table(Self::BLOB_TABLE);
-        Self { meta, blobs }
+        Self {
+            meta,
+            blobs,
+            payloads_enabled: true,
+        }
+    }
+
+    /// Snapshot store for a blob-less run (`[store.blob]` omitted): the
+    /// producer never emits checkpoints, and recovery handles a leftover
+    /// manifest from a blob-backed past without touching the blob store.
+    pub fn without_payloads(meta: M, blob: B) -> Self {
+        let blobs = blob.table(Self::BLOB_TABLE);
+        Self {
+            meta,
+            blobs,
+            payloads_enabled: false,
+        }
     }
 
     /// True when a snapshot row exists. Used by the `unsafe_seed_begin` guard,
@@ -149,6 +171,26 @@ impl<M: MetaStore, B: BlobStore> SnapshotStore<M, B> {
             .get(Self::MANIFEST_TABLE, Self::MANIFEST_KEY)
             .await?
             .is_some())
+    }
+
+    /// Manifest row for RECOVERY decisions: a present row that fails to decode
+    /// is a HARD error (corruption deserves a loud failure, not a silent
+    /// rebuild); absence is a fresh/never-checkpointed store.
+    async fn load_manifest_strict(&self) -> Result<Option<SnapshotManifest>> {
+        match self
+            .meta
+            .get(Self::MANIFEST_TABLE, Self::MANIFEST_KEY)
+            .await?
+        {
+            None => Ok(None),
+            Some(row) => {
+                SnapshotManifest::decode(&row)
+                    .map(Some)
+                    .ok_or(MonadChainDataError::Decode(
+                        "ingest snapshot manifest row failed to decode",
+                    ))
+            }
+        }
     }
 
     // Non-manifest bytes decode to `None`; `store` then overwrites the row with
@@ -168,17 +210,8 @@ impl<M: MetaStore, B: BlobStore> SnapshotStore<M, B> {
     /// fails length/digest verification, is a HARD error: a corrupt snapshot
     /// store deserves a loud failure, not a silent rebuild.
     pub(crate) async fn load(&self) -> Result<Option<Bytes>> {
-        let Some(row) = self
-            .meta
-            .get(Self::MANIFEST_TABLE, Self::MANIFEST_KEY)
-            .await?
-        else {
+        let Some(manifest) = self.load_manifest_strict().await? else {
             return Ok(None);
-        };
-        let Some(manifest) = SnapshotManifest::decode(&row) else {
-            return Err(MonadChainDataError::Decode(
-                "ingest snapshot manifest row failed to decode",
-            ));
         };
         let key = generation_key(manifest.generation);
         let Some(payload) = self.blobs.get(&key).await? else {
@@ -314,9 +347,36 @@ pub(crate) async fn seed_snapshot_at<M: MetaStore, B: BlobStore>(
 /// A wrong version byte or any other decode failure is a HARD error: the
 /// manifest already verified the payload's digest, so a snapshot the current
 /// codec cannot read is corruption or a bug, never a tolerated rebuild path.
+///
+/// Blob-less stores cannot read payloads, so a manifest left behind by a
+/// blob-backed past is ignored when `head` already covers its generation
+/// (recovery would rebuild from fragments at `head` regardless) and is an
+/// actionable error otherwise — dropping `[store.blob]` from a config must
+/// not wedge recovery behind an opaque blob failure.
 pub(crate) async fn recover_checkpoint<M: MetaStore, B: BlobStore>(
     snapshots: &SnapshotStore<M, B>,
+    head: u64,
 ) -> Result<Option<(OpenState, OpenTail, FamilyFrontier, u64)>> {
+    if !snapshots.payloads_enabled {
+        return match snapshots.load_manifest_strict().await? {
+            None => Ok(None),
+            Some(manifest) if manifest.generation <= head => {
+                tracing::info!(
+                    generation = manifest.generation,
+                    head,
+                    "ignoring checkpoint from a previous blob-backed run; the published head \
+                     covers it"
+                );
+                Ok(None)
+            }
+            Some(manifest) => Err(MonadChainDataError::Backend(format!(
+                "checkpoint generation {} is ahead of the published head {head} but its payload \
+                 lives in a blob store this config no longer has; restore [store.blob] for one \
+                 run (or reset the store) before going blob-less",
+                manifest.generation
+            ))),
+        };
+    }
     let Some(payload) = snapshots.load().await? else {
         return Ok(None);
     };
@@ -574,7 +634,7 @@ mod tests {
 
         assert!(snapshots.is_initialized().await.unwrap());
         assert_eq!(snapshots.load().await.unwrap(), Some(bytes));
-        let (_, _, _, block) = recover_checkpoint(&snapshots)
+        let (_, _, _, block) = recover_checkpoint(&snapshots, 0)
             .await
             .unwrap()
             .expect("snapshot present");
@@ -672,7 +732,7 @@ mod tests {
         .unwrap();
 
         assert!(snapshots.load().await.is_err());
-        assert!(recover_checkpoint(&snapshots).await.is_err());
+        assert!(recover_checkpoint(&snapshots, 0).await.is_err());
         // The unsafe_seed_begin guard treats any present row as initialized.
         assert!(snapshots.is_initialized().await.unwrap());
     }
@@ -693,7 +753,7 @@ mod tests {
         wrong[0] = SNAPSHOT_VERSION.wrapping_add(1);
         snapshots.store(9, Bytes::from(wrong)).await.unwrap();
 
-        assert!(recover_checkpoint(&snapshots).await.is_err());
+        assert!(recover_checkpoint(&snapshots, 0).await.is_err());
         // Decode within the CURRENT version stays strict.
         let current = encode_snapshot(
             &OpenState::default(),
@@ -719,6 +779,35 @@ mod tests {
         snapshots.store(3, payload(0x33, 16)).await.unwrap();
         assert_eq!(snapshots.load().await.unwrap(), Some(committed));
         assert_eq!(blob_keys(&blob), vec![generation_key(5).to_vec()]);
+    }
+
+    /// Dropping `[store.blob]` from a previously blob-backed store leaves the
+    /// checkpoint manifest behind in meta. Recovery must not blindly chase its
+    /// payload into the (now absent) blob store: a head at/past the generation
+    /// supersedes it; a head behind it is an actionable error.
+    #[tokio::test]
+    async fn blobless_recovery_handles_leftover_manifest() {
+        let (meta, _, snapshots) = fixture();
+        snapshots.store(5, payload(0x11, 16)).await.unwrap();
+
+        let migrated =
+            SnapshotStore::without_payloads(meta.clone(), crate::store::NullBlobStore::default());
+        // Head covers the generation: ignored, fragments rebuild takes over.
+        assert!(recover_checkpoint(&migrated, 5).await.unwrap().is_none());
+        assert!(recover_checkpoint(&migrated, 9).await.unwrap().is_none());
+        // Head behind the generation: the payload would be required, and the
+        // error must say how to get unstuck rather than surface a blob miss.
+        let Err(err) = recover_checkpoint(&migrated, 3).await else {
+            panic!("head behind the leftover generation must error");
+        };
+        assert!(err.to_string().contains("[store.blob]"), "{err}");
+
+        // A fresh blob-less store (no manifest) recovers as before.
+        let fresh = SnapshotStore::without_payloads(
+            InMemoryMetaStore::default(),
+            crate::store::NullBlobStore::default(),
+        );
+        assert!(recover_checkpoint(&fresh, 0).await.unwrap().is_none());
     }
 
     #[test]

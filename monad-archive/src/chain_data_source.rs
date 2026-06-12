@@ -24,6 +24,8 @@
 //!   (sentinel/version prefix included) and attaches an
 //!   [`ExternalPayloadSpec`] so per-row locators point straight into them.
 
+use std::{sync::Arc, time::Duration};
+
 use alloy_eips::eip2718::Encodable2718;
 use alloy_rlp::Decodable;
 use monad_chain_data::{
@@ -32,6 +34,7 @@ use monad_chain_data::{
 };
 
 use crate::{
+    failover_circuit_breaker::{CircuitBreaker, FallbackExecutor},
     model::{
         block_data_archive::{
             decode_trace, Block, BlockDataArchive, BlockReceipts, BlockStorageRepr, BlockTraces,
@@ -47,18 +50,25 @@ use crate::{
 /// flight at once, so transient upstream blips (S3 5xx / throttling /
 /// connection resets) are likely. A failed fetch would otherwise abort the
 /// whole ingest pipeline; retrying inside the source keeps the engine
-/// transport-agnostic.
+/// transport-agnostic. The retry wraps the failover executor (retry
+/// outermost), so each attempt independently tries primary-then-fallback.
 const FETCH_RETRY_ATTEMPTS: u32 = 8;
 const FETCH_RETRY_BASE_MS: u64 = 50;
 const FETCH_RETRY_MAX_DELAY_MS: u64 = 5_000;
 
+/// Failover circuit-breaker policy, matching `ArchiveReader::with_fallback`'s
+/// defaults: open after 100 consecutive primary failures, retry the primary
+/// after 5 minutes.
+const FAILOVER_FAILURE_THRESHOLD: u32 = 100;
+const FAILOVER_RECOVERY_TIMEOUT: Duration = Duration::from_secs(300);
+
 #[derive(Clone)]
 enum SourceMode {
-    Native(BlockDataReaderErased),
-    /// External payloads require the archive-backed reader: the spec is
+    Native(Arc<FallbackExecutor<BlockDataReaderErased>>),
+    /// External payloads require archive-backed readers: the spec is
     /// built by scanning the RAW stored objects, which only
     /// [`BlockDataArchive`] exposes.
-    External(BlockDataArchive),
+    External(Arc<FallbackExecutor<BlockDataArchive>>),
 }
 
 /// [`ChainDataIngestSource`] over the archive.
@@ -67,42 +77,90 @@ pub struct ArchiverChainDataSource {
     mode: SourceMode,
 }
 
+fn failover<P>(primary: P, fallback: Option<P>) -> Arc<FallbackExecutor<P>> {
+    Arc::new(FallbackExecutor::new(
+        primary,
+        fallback,
+        CircuitBreaker::new(FAILOVER_FAILURE_THRESHOLD, FAILOVER_RECOVERY_TIMEOUT),
+    ))
+}
+
+fn require_archive(reader: BlockDataReaderErased, what: &str) -> Result<BlockDataArchive> {
+    match reader {
+        BlockDataReaderErased::BlockDataArchive(archive) => Ok(archive),
+        _ => bail!("external payload indexing requires an archive {what}"),
+    }
+}
+
 impl ArchiverChainDataSource {
-    /// Native-payload source over any block-data reader (archive or triedb).
-    pub fn native(reader: BlockDataReaderErased) -> Self {
+    /// Native-payload source over any block-data reader (archive or triedb),
+    /// with an optional fallback reader served behind a circuit breaker on
+    /// primary failures.
+    pub fn native(reader: BlockDataReaderErased, fallback: Option<BlockDataReaderErased>) -> Self {
         Self {
-            mode: SourceMode::Native(reader),
+            mode: SourceMode::Native(failover(reader, fallback)),
         }
     }
 
-    /// External-payload source; errors unless `reader` is archive-backed.
-    pub fn external(reader: BlockDataReaderErased) -> Result<Self> {
-        match reader {
-            BlockDataReaderErased::BlockDataArchive(archive) => Ok(Self {
-                mode: SourceMode::External(archive),
-            }),
-            _ => bail!("external payload indexing requires an archive block data source"),
-        }
+    /// External-payload source; errors unless `reader` — and `fallback`, when
+    /// given — is archive-backed.
+    ///
+    /// Byte-identity assumption: external-mode locators index into the archive
+    /// bucket the chain-data store's `[store.archive]` points at
+    /// (operationally the primary). A fallback-served block therefore assumes
+    /// the archive replicas hold byte-identical objects for that block —
+    /// guaranteed by the deterministic V1 object encoding and enforced by the
+    /// archive checker's replica-agreement checks. Object EXISTENCE cannot
+    /// skew past replication faults either: the tip never advances beyond the
+    /// PRIMARY's `latest` marker (see `get_latest_uploaded`), below which the
+    /// primary wrote all three objects before updating the marker, so
+    /// failover only ever covers transient errors and repaired faults.
+    pub fn external(
+        reader: BlockDataReaderErased,
+        fallback: Option<BlockDataReaderErased>,
+    ) -> Result<Self> {
+        let primary = require_archive(reader, "block data source")?;
+        let fallback = fallback
+            .map(|reader| require_archive(reader, "fallback block data source"))
+            .transpose()?;
+        Ok(Self {
+            mode: SourceMode::External(failover(primary, fallback)),
+        })
     }
 
-    /// One attempt: the three per-block objects fetched concurrently. Any one
-    /// failing fails the attempt.
+    /// One attempt: the whole per-block fetch (and, externally, the offset
+    /// scan + spec build) runs against ONE replica via the failover executor;
+    /// any error — including a missing object, which a not-yet-archived block
+    /// near the tip can legitimately produce on either replica — fails the
+    /// attempt over to the fallback. That is deliberate and simple: the
+    /// producer only requests blocks at/below `get_latest_uploaded` (which
+    /// fails over identically), and the outer retry re-runs the whole
+    /// primary-then-fallback sequence, so a transiently missing object is
+    /// retried rather than masked.
     async fn fetch_block_once(&self, block_number: u64) -> Result<FinalizedBlock> {
         match &self.mode {
-            SourceMode::Native(reader) => {
-                let (block, receipts, traces) = try_join!(
-                    reader.get_block_by_number(block_number),
-                    reader.get_block_receipts(block_number),
-                    async {
-                        reader
-                            .try_get_block_traces(block_number)
+            SourceMode::Native(executor) => {
+                // Strict traces first, so a fallback can cover a primary
+                // trace gap; missing traces EVERYWHERE then degrade to empty
+                // traces (the archiver's pre-fallback tolerance) via the
+                // lenient pass.
+                match executor
+                    .execute(|reader| fetch_native_block(reader, block_number, true))
+                    .await
+                {
+                    Ok(block) => Ok(block),
+                    Err(_) => {
+                        executor
+                            .execute(|reader| fetch_native_block(reader, block_number, false))
                             .await
-                            .map(|traces| traces.unwrap_or_default())
-                    },
-                )?;
-                into_finalized_block(block, receipts, traces)
+                    }
+                }
             }
-            SourceMode::External(archive) => fetch_external_block(archive, block_number).await,
+            SourceMode::External(executor) => {
+                executor
+                    .execute(|archive| fetch_external_block(archive, block_number))
+                    .await
+            }
         }
     }
 }
@@ -110,8 +168,20 @@ impl ArchiverChainDataSource {
 impl ChainDataIngestSource for ArchiverChainDataSource {
     async fn get_latest_uploaded(&self) -> Result<Option<u64>> {
         match &self.mode {
-            SourceMode::Native(reader) => reader.get_latest(LatestKind::Uploaded).await,
-            SourceMode::External(archive) => archive.get_latest(LatestKind::Uploaded).await,
+            SourceMode::Native(executor) => {
+                executor
+                    .execute(|reader| reader.get_latest(LatestKind::Uploaded))
+                    .await
+            }
+            // The primary's `latest` marker is AUTHORITATIVE in external mode:
+            // readers resolve published locators against `[store.archive]`
+            // (operationally the primary bucket), so following a fallback's
+            // marker would publish rows the readers' bucket does not hold.
+            // Fetch failover below the primary tip stays; a dead primary
+            // stalls tip ADVANCE, which is the safe direction.
+            SourceMode::External(executor) => {
+                executor.primary.get_latest(LatestKind::Uploaded).await
+            }
         }
     }
 
@@ -145,6 +215,32 @@ impl ChainDataIngestSource for ArchiverChainDataSource {
         }
         unreachable!("loop returns on the final attempt")
     }
+}
+
+/// Native-mode fetch: the three per-block objects fetched concurrently from
+/// one reader. Any one failing fails the attempt. `strict_traces` makes an
+/// ABSENT traces object an error too, so the failover executor consults the
+/// fallback before the block is indexed with zero traces forever (chain-data
+/// has no re-ingest); the lenient pass restores the historic tolerance.
+async fn fetch_native_block(
+    reader: &BlockDataReaderErased,
+    block_number: u64,
+    strict_traces: bool,
+) -> Result<FinalizedBlock> {
+    let (block, receipts, traces) = try_join!(
+        reader.get_block_by_number(block_number),
+        reader.get_block_receipts(block_number),
+        async {
+            match reader.try_get_block_traces(block_number).await? {
+                Some(traces) => Ok(traces),
+                None if strict_traces => Err(eyre::eyre!(
+                    "traces object missing for block {block_number}"
+                )),
+                None => Ok(Default::default()),
+            }
+        },
+    )?;
+    into_finalized_block(block, receipts, traces)
 }
 
 /// External-mode fetch: raw objects (offset scan needs the exact stored
@@ -593,6 +689,202 @@ mod tests {
         let (block_raw, receipts_raw, traces_raw, ..) = encoded_objects(0);
         let offsets = scan_archive_object_offsets(&block_raw, &receipts_raw, &traces_raw).unwrap();
         assert!(offsets.is_empty());
+    }
+
+    use crate::kvstore::{memory::MemoryStorage, WritePolicy};
+
+    /// An archive holding one `tx_count`-tx block `number` (per-tx trace
+    /// containers that decode to zero frames) with the uploaded marker at
+    /// `number`.
+    async fn populated_archive(number: u64, tx_count: usize) -> BlockDataArchive {
+        let traces: BlockTraces = (0..tx_count)
+            .map(|_| {
+                let mut blob = Vec::new();
+                Vec::<Vec<CallFrame>>::new().encode(&mut blob);
+                blob
+            })
+            .collect();
+        build_archive(number, tx_count, Some(traces)).await
+    }
+
+    /// Like [`populated_archive`] but each tx carries one real trace frame,
+    /// so a fallback-served trace fetch is observable in the result.
+    async fn traced_archive(number: u64, tx_count: usize) -> BlockDataArchive {
+        let frame = CallFrame {
+            typ: CallKind::Call,
+            flags: U64::ZERO,
+            from: Address::ZERO,
+            to: Some(Address::ZERO),
+            value: U256::ZERO,
+            gas: U64::from(21_000u64),
+            gas_used: U64::from(100u64),
+            input: alloy_primitives::Bytes::new(),
+            output: alloy_primitives::Bytes::new(),
+            status: alloy_primitives::U8::from(1u8),
+            depth: U64::ZERO,
+            logs: None,
+        };
+        let traces: BlockTraces = (0..tx_count)
+            .map(|_| {
+                let mut blob = Vec::new();
+                vec![vec![frame.clone()]].encode(&mut blob);
+                blob
+            })
+            .collect();
+        build_archive(number, tx_count, Some(traces)).await
+    }
+
+    /// Block + receipts archived but NO traces object (a replica trace gap).
+    async fn traceless_archive(number: u64, tx_count: usize) -> BlockDataArchive {
+        build_archive(number, tx_count, None).await
+    }
+
+    async fn build_archive(
+        number: u64,
+        tx_count: usize,
+        traces: Option<BlockTraces>,
+    ) -> BlockDataArchive {
+        let archive = BlockDataArchive::new(MemoryStorage::new("healthy-fallback"));
+        let txs: Vec<TxEnvelopeWithSender> = (0..tx_count as u64).map(signed_tx).collect();
+        let block = Block {
+            header: Header {
+                number,
+                ..Default::default()
+            },
+            body: BlockBody {
+                transactions: txs,
+                ommers: vec![],
+                withdrawals: None,
+            },
+        };
+        let receipts: BlockReceipts = (0..tx_count)
+            .map(|i| ReceiptWithLogIndex {
+                receipt: ReceiptEnvelope::Eip1559(make_receipt((i + 1) * 100)),
+                starting_log_index: 0,
+            })
+            .collect();
+        archive
+            .archive_block(block, WritePolicy::NoClobber)
+            .await
+            .unwrap();
+        archive
+            .archive_receipts(receipts, number, WritePolicy::NoClobber)
+            .await
+            .unwrap();
+        if let Some(traces) = traces {
+            archive
+                .archive_traces(traces, number, WritePolicy::NoClobber)
+                .await
+                .unwrap();
+        }
+        archive
+            .update_latest(number, LatestKind::Uploaded)
+            .await
+            .unwrap();
+        archive
+    }
+
+    /// An archive whose every storage op errors (`MemoryStorage` failure
+    /// injection) — a hard-down primary.
+    fn broken_archive() -> BlockDataArchive {
+        let storage = MemoryStorage::new("broken-primary");
+        storage
+            .should_fail
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        BlockDataArchive::new(storage)
+    }
+
+    /// A hard-down primary fails the attempt over to the fallback for native
+    /// (decoded) fetches.
+    #[tokio::test]
+    async fn native_fetch_fails_over_to_fallback() {
+        let fallback = populated_archive(7, 2).await;
+        let source =
+            ArchiverChainDataSource::native(broken_archive().into(), Some(fallback.into()));
+        let block = source.fetch_finalized_block(7).await.unwrap();
+        assert_eq!(block.header.number, 7);
+        assert_eq!(block.txs.len(), 2);
+        assert!(block.external.is_none(), "native mode attaches no spec");
+    }
+
+    /// A hard-down primary fails the whole external fetch unit (raw GETs +
+    /// offset scan + spec build) over to the fallback, which serves a complete
+    /// spec under the shared archive key layout.
+    #[tokio::test]
+    async fn external_fetch_fails_over_with_spec() {
+        let fallback = populated_archive(7, 2).await;
+        let expected_key = fallback.block_key(7).into_bytes();
+        let source =
+            ArchiverChainDataSource::external(broken_archive().into(), Some(fallback.into()))
+                .unwrap();
+        let block = source.fetch_finalized_block(7).await.unwrap();
+        assert_eq!(block.header.number, 7);
+        assert_eq!(block.txs.len(), 2);
+        let spec = block.external.expect("fallback-served external spec");
+        assert_eq!(spec.block_number, 7);
+        assert_eq!(spec.txs.key, expected_key);
+        // One offset partition entry per tx plus the leading zero.
+        assert_eq!(spec.txs.container_offsets.len(), 3);
+    }
+
+    /// A primary that is up but simply does not hold the object yet (missing
+    /// = an error inside the fetch unit) also fails over.
+    #[tokio::test]
+    async fn missing_primary_object_fails_over() {
+        let primary = BlockDataArchive::new(MemoryStorage::new("empty-primary"));
+        let fallback = populated_archive(7, 1).await;
+        let source =
+            ArchiverChainDataSource::external(primary.into(), Some(fallback.into())).unwrap();
+        let block = source.fetch_finalized_block(7).await.unwrap();
+        assert_eq!(block.header.number, 7);
+        assert!(block.external.is_some());
+    }
+
+    /// External tip authority: readers resolve locators against the primary
+    /// bucket, so the tip must NOT advance past it — a broken primary stalls
+    /// tip advance instead of following the fallback's marker.
+    #[tokio::test]
+    async fn external_get_latest_is_primary_authoritative() {
+        let fallback = populated_archive(9, 1).await;
+        let source =
+            ArchiverChainDataSource::external(broken_archive().into(), Some(fallback.into()))
+                .unwrap();
+        assert!(source.get_latest_uploaded().await.is_err());
+    }
+
+    /// Native locators are chain-data-owned (no reader binding to the source
+    /// bucket), so the tip may follow the fallback when the primary is down.
+    #[tokio::test]
+    async fn native_get_latest_fails_over() {
+        let fallback = populated_archive(9, 1).await;
+        let source =
+            ArchiverChainDataSource::native(broken_archive().into(), Some(fallback.into()));
+        assert_eq!(source.get_latest_uploaded().await.unwrap(), Some(9));
+    }
+
+    /// A primary trace gap is covered by the fallback (strict pass) instead
+    /// of being silently indexed as zero traces; absent everywhere it
+    /// degrades to empty traces (the archiver's historic tolerance).
+    #[tokio::test]
+    async fn native_trace_gap_fails_over_before_degrading() {
+        let primary = traceless_archive(7, 1).await;
+        let fallback = traced_archive(7, 1).await;
+        let source = ArchiverChainDataSource::native(primary.into(), Some(fallback.into()));
+        let block = source.fetch_finalized_block(7).await.unwrap();
+        assert!(!block.traces.is_empty(), "fallback's traces must serve");
+
+        let lenient = ArchiverChainDataSource::native(traceless_archive(7, 1).await.into(), None);
+        let block = lenient.fetch_finalized_block(7).await.unwrap();
+        assert!(block.traces.is_empty(), "no fallback: degrade to empty");
+    }
+
+    /// Without a fallback a primary failure surfaces (single attempt; the
+    /// outer retry loop is exercised through `fetch_finalized_block`).
+    #[tokio::test]
+    async fn no_fallback_surfaces_primary_error() {
+        let source = ArchiverChainDataSource::external(broken_archive().into(), None).unwrap();
+        assert!(source.fetch_block_once(7).await.is_err());
+        assert!(source.get_latest_uploaded().await.is_err());
     }
 
     #[test]

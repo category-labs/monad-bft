@@ -28,7 +28,11 @@ use alloy_primitives::Address;
 use alloy_rlp::Encodable;
 use common::{ingest_tx, test_header};
 use monad_chain_data::{
-    testkit::{populate_via_engine_external, try_populate_via_engine_external},
+    store::{MetaStore, NullBlobStore, TableId},
+    testkit::{
+        populate_more_via_engine_external_no_blob, populate_via_engine_external,
+        populate_via_engine_external_no_blob, try_populate_via_engine_external, PopulatedStore,
+    },
     ExternalFamilyRegion, ExternalPayloadSpec, FinalizedBlock, InMemoryExternalBlobReader,
     MonadChainDataError, QueryEnvelope, QueryOrder, QueryTransactionsRequest, TxFilter,
 };
@@ -50,16 +54,21 @@ fn tx_item(tx: &monad_chain_data::IngestTx) -> Vec<u8> {
 
 /// One-tx block (no logs, no traces) plus a consistent external spec; the
 /// receipt/trace regions point at placeholder objects that hold zero rows, so
-/// they are never read.
-fn fixture() -> (FinalizedBlock, Vec<u8>) {
-    let mut tx = ingest_tx(SENDER, Some(Address::repeat_byte(0x88)), vec![1, 2, 3, 4]);
+/// they are never read. The tx input varies with `number` so tx hashes are
+/// unique across a chain of these blocks.
+fn fixture_at(number: u64, parent_hash: alloy_primitives::B256) -> (FinalizedBlock, Vec<u8>) {
+    let mut tx = ingest_tx(
+        SENDER,
+        Some(Address::repeat_byte(0x88)),
+        vec![1, 2, 3, number as u8],
+    );
     // External reads derive `tx_hash` from the envelope; the source's
     // caller-authoritative hash must agree (as the archive worker's does).
     tx.tx_hash = *alloy_consensus::TxEnvelope::decode_2718(&mut tx.signed_tx_bytes.as_ref())
         .unwrap()
         .tx_hash();
     let mut block = FinalizedBlock {
-        header: test_header(1, alloy_primitives::B256::ZERO),
+        header: test_header(number, parent_hash),
         logs_by_tx: vec![vec![]],
         txs: vec![tx],
         traces: Vec::new(),
@@ -67,23 +76,23 @@ fn fixture() -> (FinalizedBlock, Vec<u8>) {
     };
     let item = tx_item(&block.txs[0]);
     let spec = ExternalPayloadSpec {
-        block_number: 1,
+        block_number: number,
         txs: ExternalFamilyRegion {
-            key: b"block/000000000001".to_vec(),
+            key: format!("block/{number:012}").into_bytes(),
             base_offset: 0,
             container_offsets: vec![0, item.len() as u32],
             container_rows: Vec::new(),
             container_status: Vec::new(),
         },
         logs: ExternalFamilyRegion {
-            key: b"receipts/000000000001".to_vec(),
+            key: format!("receipts/{number:012}").into_bytes(),
             base_offset: 0,
             container_offsets: vec![0, 4],
             container_rows: vec![0],
             container_status: Vec::new(),
         },
         traces: ExternalFamilyRegion {
-            key: b"traces/000000000001".to_vec(),
+            key: format!("traces/{number:012}").into_bytes(),
             base_offset: 0,
             container_offsets: vec![0, 4],
             container_rows: vec![0],
@@ -92,6 +101,37 @@ fn fixture() -> (FinalizedBlock, Vec<u8>) {
     };
     block.external = Some(spec);
     (block, item)
+}
+
+fn fixture() -> (FinalizedBlock, Vec<u8>) {
+    fixture_at(1, alloy_primitives::B256::ZERO)
+}
+
+/// Parent-linked one-tx external blocks for `numbers`, each archive object
+/// inserted into `reader`. Returns the blocks plus the last header hash (for
+/// chaining a continuation).
+fn external_chain(
+    numbers: std::ops::RangeInclusive<u64>,
+    mut parent_hash: alloy_primitives::B256,
+    reader: &InMemoryExternalBlobReader,
+) -> (Vec<FinalizedBlock>, alloy_primitives::B256) {
+    let mut blocks = Vec::new();
+    for number in numbers {
+        let (block, item) = fixture_at(number, parent_hash);
+        reader.insert(
+            block
+                .external
+                .as_ref()
+                .expect("fixture spec")
+                .txs
+                .key
+                .clone(),
+            item,
+        );
+        parent_hash = block.header.hash_slow();
+        blocks.push(block);
+    }
+    (blocks, parent_hash)
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -195,4 +235,160 @@ async fn external_ingest_rejects_specs_that_disagree_with_the_block() {
             "breakage {i}: expected InvalidBlock, got {err:?}"
         );
     }
+}
+
+/// End-to-end over a store with NO blob backend: external ingest over
+/// `NullBlobStore` (checkpoints disabled) completes and queries answer.
+/// `NullBlobStore` errors on EVERY access, so the successful populate and
+/// queries are themselves the assertion that an external-archive store issues
+/// zero blob-store calls.
+#[tokio::test(flavor = "multi_thread")]
+async fn no_blob_store_serves_external_queries() {
+    let reader = Arc::new(InMemoryExternalBlobReader::default());
+    let (blocks, _) = external_chain(1..=3, alloy_primitives::B256::ZERO, &reader);
+    let tx_hashes: Vec<_> = blocks.iter().map(|b| b.txs[0].tx_hash).collect();
+
+    let store = populate_via_engine_external_no_blob(blocks, reader).await;
+    let service = store.reader();
+
+    assert_eq!(
+        service.publication().load_published_head().await.unwrap(),
+        Some(3)
+    );
+
+    let envelope = QueryEnvelope {
+        from_block: Some(1),
+        to_block: Some(3),
+        order: QueryOrder::Ascending,
+        limit: 10,
+    };
+    // Indexed (from clause) and block-scan (no clause) paths both resolve rows
+    // through the external containers — never the (absent) blob store.
+    for filter in [
+        TxFilter {
+            from: Some(HashSet::from([SENDER])),
+            ..Default::default()
+        },
+        TxFilter::default(),
+    ] {
+        let response = service
+            .query_transactions(QueryTransactionsRequest {
+                envelope,
+                filter,
+                ..Default::default()
+            })
+            .await
+            .expect("blob-less external tx query");
+        assert_eq!(response.txs.len(), 3);
+    }
+
+    for (i, tx_hash) in tx_hashes.iter().enumerate() {
+        let (entry, _) = service
+            .get_transaction(*tx_hash)
+            .await
+            .expect("get_transaction")
+            .expect("indexed tx");
+        assert_eq!(entry.block_number, i as u64 + 1);
+    }
+}
+
+/// Restartability without checkpoints: with no blob store the engine never
+/// snapshots, so a SECOND engine over the same meta store must resume from
+/// the published head by rebuilding its open state from fragments — and the
+/// continuation blocks must land seamlessly after the originals.
+#[tokio::test(flavor = "multi_thread")]
+async fn no_blob_store_resumes_from_published_head_without_checkpoints() {
+    let reader = Arc::new(InMemoryExternalBlobReader::default());
+    let (first, last_hash) = external_chain(1..=3, alloy_primitives::B256::ZERO, &reader);
+
+    // First engine: blocks 1..=3, then dropped.
+    let store = populate_via_engine_external_no_blob(first, reader.clone()).await;
+
+    // Checkpoints disabled means NO snapshot manifest was ever committed; the
+    // resume below is forced through the fragments rebuild.
+    assert_eq!(
+        store
+            .meta
+            .get(TableId::new("ingest_snapshot"), b"latest")
+            .await
+            .unwrap(),
+        None,
+        "a blob-less ingest must never write a checkpoint snapshot"
+    );
+
+    // Second engine over the SAME meta store: continuation blocks 4..=6.
+    // The resume point is self-verifying: the VecSource only holds 4..=6, so
+    // an engine that cold-started (or resumed anywhere below 4) would fetch a
+    // block the source cannot serve and fail the populate outright.
+    let (more, _) = external_chain(4..=6, last_hash, &reader);
+    populate_more_via_engine_external_no_blob(&store, more).await;
+
+    let service = store.reader();
+    assert_eq!(
+        service.publication().load_published_head().await.unwrap(),
+        Some(6)
+    );
+    let response = service
+        .query_transactions(QueryTransactionsRequest {
+            envelope: QueryEnvelope {
+                from_block: Some(1),
+                to_block: Some(6),
+                order: QueryOrder::Ascending,
+                limit: 10,
+            },
+            filter: TxFilter {
+                from: Some(HashSet::from([SENDER])),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .await
+        .expect("post-resume tx query");
+    assert_eq!(response.txs.len(), 6);
+    assert_eq!(
+        response
+            .txs
+            .iter()
+            .map(|tx| tx.block_number)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3, 4, 5, 6]
+    );
+}
+
+/// Migration: a store ingested with a BLOB-backed config (which committed a
+/// checkpoint manifest) is continued after dropping `[store.blob]`. The
+/// leftover manifest must be ignored (head covers it) instead of wedging
+/// recovery on an unreadable blob payload.
+#[tokio::test(flavor = "multi_thread")]
+async fn dropping_the_blob_store_does_not_wedge_an_external_store() {
+    let reader = Arc::new(InMemoryExternalBlobReader::default());
+    let (first, last_hash) = external_chain(1..=3, alloy_primitives::B256::ZERO, &reader);
+
+    // Blob-backed external ingest: the bounded run's terminal checkpoint
+    // commits a snapshot manifest at the head.
+    let store = populate_via_engine_external(first, reader.clone()).await;
+    assert!(
+        store
+            .meta
+            .get(TableId::new("ingest_snapshot"), b"latest")
+            .await
+            .unwrap()
+            .is_some(),
+        "blob-backed populate must leave a checkpoint manifest behind"
+    );
+
+    // Same META store, blob store dropped.
+    let migrated = PopulatedStore {
+        meta: store.meta.clone(),
+        blob: NullBlobStore::default(),
+        external: store.external.clone(),
+    };
+    let (more, _) = external_chain(4..=6, last_hash, &reader);
+    populate_more_via_engine_external_no_blob(&migrated, more).await;
+
+    let service = migrated.reader();
+    assert_eq!(
+        service.publication().load_published_head().await.unwrap(),
+        Some(6)
+    );
 }

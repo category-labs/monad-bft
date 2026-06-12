@@ -76,7 +76,9 @@ pub enum PayloadMode {
     /// (`ENCODING_EXTERNAL_V1` headers). Every fetched block must carry an
     /// [`crate::external::ExternalPayloadSpec`]. Dictionaries are never
     /// trained (containers are uncompressed), and `row_chain` digests stay
-    /// byte-identical to a native ingest of the same blocks. Unlike native
+    /// byte-identical to a native ingest of the same blocks. The only mode
+    /// valid without a blob store — see `ChainDataStoreConfig::blob` for
+    /// blob-less operation (checkpoints auto-disabled). Unlike native
     /// ingest (which tolerates absent trace objects as zero trace rows), a
     /// missing locator cannot be represented, so every block in the ingested
     /// range must have all three archive objects present in V1+ framing.

@@ -174,6 +174,38 @@ impl ChainDataEngineConfig {
     }
 }
 
+/// Cross-checks the store/engine pair for a blob-less store (`[store.blob]`
+/// omitted). Such a store cannot hold pack blobs (so the payload must be
+/// external) or snapshot payloads (so the seed knob, which writes one, is
+/// rejected; the checkpoint cadence is auto-disabled rather than rejected).
+fn validate_blobless_ingest(
+    store_config: &ChainDataStoreConfig,
+    engine_config: &ChainDataEngineConfig,
+) -> Result<()> {
+    if store_config.blob.is_some() {
+        return Ok(());
+    }
+    if engine_config.payload != ChainDataPayloadConfig::ExternalArchive {
+        bail!(
+            "chain-data ingest without [store.blob] requires engine.payload = \
+             \"external-archive\": native-payload ingest writes pack blobs"
+        );
+    }
+    if engine_config.unsafe_seed_begin.is_some() {
+        bail!(
+            "chain-data unsafe_seed_begin writes a seed snapshot payload to the blob \
+             store and cannot be combined with an omitted [store.blob]"
+        );
+    }
+    if store_config.archive.is_none() {
+        bail!(
+            "a store without [store.blob] keeps its row payloads in the monad-archive \
+             objects and requires [store.archive] so readers can reach them"
+        );
+    }
+    Ok(())
+}
+
 /// Opens the configured stores and drives the branchless ingest engine
 /// (`run_ingest`) over them. A bounded range (`end`/`count`)
 /// selects backfill; otherwise it follows the tip.
@@ -187,6 +219,7 @@ where
 {
     store_config.validate_ingest()?;
     engine_config.validate()?;
+    validate_blobless_ingest(&store_config, &engine_config)?;
     #[cfg(not(feature = "dynamo"))]
     let _ = source;
 
@@ -218,17 +251,52 @@ where
 {
     match &store_config.blob {
         #[cfg(feature = "s3")]
-        ChainDataBlobBackendConfig::S3(blob_config) => {
+        Some(ChainDataBlobBackendConfig::S3(blob_config)) => {
             let blob_store = build_s3_blob_store(blob_config).await?;
-            run_engine_with_store(store_config, engine_config, source, meta_store, blob_store).await
+            run_engine_with_store(
+                store_config,
+                engine_config,
+                source,
+                meta_store,
+                blob_store,
+                true,
+            )
+            .await
         }
-        ChainDataBlobBackendConfig::Dynamo(blob_config) => {
+        Some(ChainDataBlobBackendConfig::Dynamo(blob_config)) => {
             let blob_store = build_dynamo_blob_store(blob_config, dynamo_connection).await?;
-            run_engine_with_store(store_config, engine_config, source, meta_store, blob_store).await
+            run_engine_with_store(
+                store_config,
+                engine_config,
+                source,
+                meta_store,
+                blob_store,
+                true,
+            )
+            .await
         }
         #[cfg(not(any(feature = "s3", feature = "dynamo")))]
-        ChainDataBlobBackendConfig::Unavailable => {
+        Some(ChainDataBlobBackendConfig::Unavailable) => {
             bail!("chain-data configured ingest requires s3 or dynamo blob storage")
+        }
+        // No blob store: external-archive payload (validated upstream) over the
+        // loud NullBlobStore. Checkpoints persist their snapshot payload as a
+        // blob object, so they are auto-disabled; recovery rebuilds the open
+        // state from fragments at the published head.
+        None => {
+            info!(
+                "chain-data blob store not configured ([store.blob] omitted); \
+                 checkpoints are disabled — recovery rebuilds from fragments"
+            );
+            run_engine_with_store(
+                store_config,
+                engine_config,
+                source,
+                meta_store,
+                crate::store::NullBlobStore,
+                false,
+            )
+            .await
         }
     }
 }
@@ -240,6 +308,7 @@ async fn run_engine_with_store<M, B, S>(
     source: S,
     meta_store: M,
     blob_store: B,
+    checkpoints_enabled: bool,
 ) -> Result<()>
 where
     M: MetaStore,
@@ -248,8 +317,14 @@ where
 {
     let cache_config = resolve_cache_config(store_config, ChainDataCacheMode::Ingest);
     // The snapshot store writes its payload blobs through the same blob backend
-    // the engine packs blocks into (under its own blob table).
-    let snapshots = SnapshotStore::new(meta_store.clone(), blob_store.clone());
+    // the engine packs blocks into (under its own blob table). A blob-less run
+    // gets the payload-less variant, which also unwedges recovery from any
+    // manifest a blob-backed past left behind.
+    let snapshots = if checkpoints_enabled {
+        SnapshotStore::new(meta_store.clone(), blob_store.clone())
+    } else {
+        SnapshotStore::without_payloads(meta_store.clone(), blob_store.clone())
+    };
     // One Arc<Tables> is shared by the engine (writes) and the resolver (dict
     // training reads back through the same caches).
     let mut tables = Tables::with_all_configs(
@@ -312,6 +387,7 @@ where
             policy: SignalPolicy {
                 tip_lag_divisor: engine_config.tip_lag_divisor,
                 checkpoint_every_blocks: engine_config.checkpoint_every_blocks,
+                checkpoints_enabled,
             },
             pack: PackConfig {
                 target_bytes: engine_config.pack_target_bytes,
@@ -325,4 +401,93 @@ where
     )
     .await
     .map_err(Into::into)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn blobless_store() -> ChainDataStoreConfig {
+        ChainDataStoreConfig {
+            blob: None,
+            #[cfg(feature = "s3")]
+            archive: Some(super::super::ChainDataArchiveBackendConfig::S3(
+                super::super::ChainDataArchiveS3Config::default(),
+            )),
+            ..ChainDataStoreConfig::default()
+        }
+    }
+
+    /// Blob-less stores cannot hold pack blobs, so a native payload must be
+    /// rejected at assembly with a clear message.
+    #[test]
+    fn blobless_ingest_rejects_native_payload() {
+        let engine = ChainDataEngineConfig {
+            payload: ChainDataPayloadConfig::Native,
+            ..ChainDataEngineConfig::default()
+        };
+        let err = validate_blobless_ingest(&blobless_store(), &engine).unwrap_err();
+        assert!(err.to_string().contains("external-archive"), "{err}");
+    }
+
+    /// `unsafe_seed_begin` writes a seed snapshot payload (a blob object), so
+    /// it must be rejected on a blob-less store.
+    #[test]
+    fn blobless_ingest_rejects_unsafe_seed_begin() {
+        let engine = ChainDataEngineConfig {
+            payload: ChainDataPayloadConfig::ExternalArchive,
+            unsafe_seed_begin: Some(7),
+            ..ChainDataEngineConfig::default()
+        };
+        let err = validate_blobless_ingest(&blobless_store(), &engine).unwrap_err();
+        assert!(err.to_string().contains("unsafe_seed_begin"), "{err}");
+    }
+
+    /// The supported blob-less shape: external-archive payload, no seed,
+    /// archive access configured.
+    #[cfg(feature = "s3")]
+    #[test]
+    fn blobless_ingest_accepts_external_payload() {
+        let engine = ChainDataEngineConfig {
+            payload: ChainDataPayloadConfig::ExternalArchive,
+            ..ChainDataEngineConfig::default()
+        };
+        assert!(validate_blobless_ingest(&blobless_store(), &engine).is_ok());
+    }
+
+    /// Without [store.archive] a blob-less store could not serve its own row
+    /// payloads; rejected at assembly rather than at first query.
+    #[test]
+    fn blobless_ingest_requires_archive_access() {
+        let engine = ChainDataEngineConfig {
+            payload: ChainDataPayloadConfig::ExternalArchive,
+            ..ChainDataEngineConfig::default()
+        };
+        let store = ChainDataStoreConfig {
+            blob: None,
+            archive: None,
+            ..ChainDataStoreConfig::default()
+        };
+        let err = validate_blobless_ingest(&store, &engine).unwrap_err();
+        assert!(err.to_string().contains("[store.archive]"), "{err}");
+    }
+
+    /// With a blob backend configured the cross-check imposes nothing (native
+    /// payload and the seed knob stay valid).
+    #[cfg(feature = "dynamo")]
+    #[test]
+    fn configured_blob_store_imposes_no_payload_constraint() {
+        let store = ChainDataStoreConfig {
+            blob: Some(ChainDataBlobBackendConfig::Dynamo(
+                super::super::ChainDataDynamoBlobConfig::default(),
+            )),
+            ..ChainDataStoreConfig::default()
+        };
+        let engine = ChainDataEngineConfig {
+            payload: ChainDataPayloadConfig::Native,
+            unsafe_seed_begin: Some(7),
+            ..ChainDataEngineConfig::default()
+        };
+        assert!(validate_blobless_ingest(&store, &engine).is_ok());
+    }
 }

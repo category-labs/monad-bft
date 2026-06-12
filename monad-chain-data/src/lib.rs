@@ -69,7 +69,7 @@ pub use primitives::{
     refs::{BlockRef, BlockSpan},
     EvmBlockHeader,
 };
-pub use store::{CacheConfig, InMemoryBlobStore, InMemoryMetaStore};
+pub use store::{CacheConfig, InMemoryBlobStore, InMemoryMetaStore, NullBlobStore};
 pub use traces::{
     compute_trace_addresses, QueryTracesRequest, QueryTracesResponse, TraceEntry, TraceFilter,
     TracesRelations,

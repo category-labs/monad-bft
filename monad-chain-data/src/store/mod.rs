@@ -22,7 +22,7 @@ pub mod meta;
 pub(crate) mod sdk;
 pub mod session;
 
-pub use blob::{BlobStore, BlobTable, BlobTableId, BlobWriteOp, InMemoryBlobStore};
+pub use blob::{BlobStore, BlobTable, BlobTableId, BlobWriteOp, InMemoryBlobStore, NullBlobStore};
 #[cfg(feature = "dynamo")]
 pub use blob::{DynamoBlobStore, DynamoBlobStoreConfig};
 #[cfg(feature = "s3")]

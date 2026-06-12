@@ -63,6 +63,21 @@ pub enum ConfiguredChainDataReader {
             >,
         >,
     ),
+    /// Dynamo meta with NO blob store (`[store.blob]` omitted): a reader of an
+    /// external-archive store, whose row payloads are range-read from
+    /// `[store.archive]` and never touch the blob backend. Reading a NATIVE
+    /// block record through this variant (a store that was actually ingested
+    /// with pack blobs) surfaces [`crate::store::NullBlobStore`]'s loud
+    /// `Backend` error rather than silently returning nothing.
+    #[cfg(feature = "dynamo")]
+    DynamoNull(
+        Arc<
+            crate::MonadChainDataService<
+                crate::store::DynamoMetaStore,
+                crate::store::NullBlobStore,
+            >,
+        >,
+    ),
 }
 
 macro_rules! with_reader {
@@ -73,6 +88,8 @@ macro_rules! with_reader {
             Self::DynamoS3($service) => $body,
             #[cfg(feature = "dynamo")]
             Self::DynamoDynamo($service) => $body,
+            #[cfg(feature = "dynamo")]
+            Self::DynamoNull($service) => $body,
         }
     };
 }
@@ -165,6 +182,7 @@ impl ConfiguredChainDataReader {
             #[cfg(feature = "s3")]
             Self::DynamoS3(service) => Some(service.tables().meta_store().take_read_stats()),
             Self::DynamoDynamo(service) => Some(service.tables().meta_store().take_read_stats()),
+            Self::DynamoNull(service) => Some(service.tables().meta_store().take_read_stats()),
         }
     }
 
@@ -176,6 +194,8 @@ impl ConfiguredChainDataReader {
             Self::DynamoS3(service) => Some(service.tables().blob_store().take_read_stats()),
             #[cfg(feature = "dynamo")]
             Self::DynamoDynamo(_) => None,
+            #[cfg(feature = "dynamo")]
+            Self::DynamoNull(_) => None,
         }
     }
 }
@@ -241,7 +261,7 @@ async fn dispatch_dynamo_reader_blob(
 
     match &store_config.blob {
         #[cfg(feature = "s3")]
-        ChainDataBlobBackendConfig::S3(blob_config) => {
+        Some(ChainDataBlobBackendConfig::S3(blob_config)) => {
             let blob_store = build_s3_blob_store(blob_config).await?;
             Ok(ConfiguredChainDataReader::DynamoS3(service(
                 meta_store,
@@ -252,7 +272,7 @@ async fn dispatch_dynamo_reader_blob(
                 external_reader,
             )))
         }
-        ChainDataBlobBackendConfig::Dynamo(blob_config) => {
+        Some(ChainDataBlobBackendConfig::Dynamo(blob_config)) => {
             let blob_store = build_dynamo_blob_store(blob_config, dynamo_connection).await?;
             Ok(ConfiguredChainDataReader::DynamoDynamo(service(
                 meta_store,
@@ -263,5 +283,15 @@ async fn dispatch_dynamo_reader_blob(
                 external_reader,
             )))
         }
+        // No blob store: valid for readers of external-archive stores (see the
+        // `DynamoNull` variant docs for what a native read does here).
+        None => Ok(ConfiguredChainDataReader::DynamoNull(service(
+            meta_store,
+            crate::store::NullBlobStore,
+            limits,
+            cache_config,
+            query_config,
+            external_reader,
+        ))),
     }
 }
