@@ -1,0 +1,54 @@
+# Example embedded chain-data ingest config for monad-archiver.
+# Copy to /home/monad/chain-data-archiver.toml, then set named AWS profiles in
+# /home/monad/.aws/credentials and /home/monad/.aws/config. Do not put access
+# keys directly in this file.
+unsafe_disable_normal_archiving = true
+skip_connectivity_check = false
+
+[block_data_source]
+type = "aws"
+bucket = "mainnet-deu-009-0"
+region = "us-east-2"
+profile = "archive-bdr"
+read_timeout_secs = 60
+operation_attempt_timeout_secs = 60
+operation_timeout_secs = 300
+
+# monad-archiver still requires an archive sink in the top-level config even
+# when normal archiving is disabled for chain-data-only ingest.
+[archive_sink]
+type = "fs"
+path = "/tmp/monad-chain-data-archive-sink-unused"
+
+[chain_data_ingest]
+enabled = true
+
+[chain_data_ingest.store]
+single_writer = true
+owner_id = 1
+
+[chain_data_ingest.store.meta]
+type = "dynamo"
+table = "mainnet-1"
+endpoint_urls = ["http://127.0.0.1:8000"]
+region = "us-east-1"
+profile = "scylla-mainnet-1"
+create_table = true
+scylla_profile = true
+scylla_concurrency = 1024
+
+[chain_data_ingest.store.blob]
+type = "s3"
+bucket = "mainnet-1"
+region = "us-east-1"
+profile = "rustfs-mainnet-1"
+endpoint_urls = ["http://127.0.0.1:9000"]
+prefix = "dev"
+force_path_style = true
+max_concurrency = 256
+create_bucket = true
+
+[chain_data_ingest.engine]
+pack_max_blocks = 10000
+fetch_concurrency = 100
+fetch_buffer = 5000

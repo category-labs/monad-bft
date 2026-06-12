@@ -21,6 +21,10 @@ use tracing::{debug, trace_span, Instrument, Span};
 use tracing_actix_web::RootSpan;
 
 use self::{
+    chaindata::{
+        monad_eth_queryBlocks, monad_eth_queryLogs, monad_eth_queryTraces,
+        monad_eth_queryTransactions, monad_eth_queryTransfers,
+    },
     debug::{
         monad_debug_getRawBlock, monad_debug_getRawHeader, monad_debug_getRawReceipts,
         monad_debug_getRawTransaction, monad_debug_traceBlockByHash,
@@ -72,6 +76,7 @@ use crate::{
     },
 };
 
+pub mod chaindata;
 mod debug;
 mod debug_replay;
 pub mod eth;
@@ -515,6 +520,96 @@ async fn eth_createAccessList(
 }
 
 #[allow(non_snake_case)]
+async fn eth_queryBlocks(
+    _: TimingRequestId,
+    app_state: &MonadRpcResources,
+    params: RequestParams<'_>,
+) -> Result<Box<RawValue>, JsonRpcError> {
+    let query = app_state.chain_data_query.as_ref().method_not_supported()?;
+    let request = chaindata::parse_query_request(params)?;
+    let reader = query.reader.clone();
+    query
+        .run(async move {
+            monad_eth_queryBlocks(&reader, request)
+                .await
+                .map(serialize_result)?
+        })
+        .await
+}
+
+#[allow(non_snake_case)]
+async fn eth_queryLogs(
+    _: TimingRequestId,
+    app_state: &MonadRpcResources,
+    params: RequestParams<'_>,
+) -> Result<Box<RawValue>, JsonRpcError> {
+    let query = app_state.chain_data_query.as_ref().method_not_supported()?;
+    let request = chaindata::parse_query_request(params)?;
+    let reader = query.reader.clone();
+    query
+        .run(async move {
+            monad_eth_queryLogs(&reader, request)
+                .await
+                .map(serialize_result)?
+        })
+        .await
+}
+
+#[allow(non_snake_case)]
+async fn eth_queryTransactions(
+    _: TimingRequestId,
+    app_state: &MonadRpcResources,
+    params: RequestParams<'_>,
+) -> Result<Box<RawValue>, JsonRpcError> {
+    let query = app_state.chain_data_query.as_ref().method_not_supported()?;
+    let request = chaindata::parse_query_request(params)?;
+    let reader = query.reader.clone();
+    query
+        .run(async move {
+            monad_eth_queryTransactions(&reader, request)
+                .await
+                .map(serialize_result)?
+        })
+        .await
+}
+
+#[allow(non_snake_case)]
+async fn eth_queryTraces(
+    _: TimingRequestId,
+    app_state: &MonadRpcResources,
+    params: RequestParams<'_>,
+) -> Result<Box<RawValue>, JsonRpcError> {
+    let query = app_state.chain_data_query.as_ref().method_not_supported()?;
+    let request = chaindata::parse_query_request(params)?;
+    let reader = query.reader.clone();
+    query
+        .run(async move {
+            monad_eth_queryTraces(&reader, request)
+                .await
+                .map(serialize_result)?
+        })
+        .await
+}
+
+#[allow(non_snake_case)]
+async fn eth_queryTransfers(
+    _: TimingRequestId,
+    app_state: &MonadRpcResources,
+    params: RequestParams<'_>,
+) -> Result<Box<RawValue>, JsonRpcError> {
+    let query = app_state.chain_data_query.as_ref().method_not_supported()?;
+    let request = chaindata::parse_query_request(params)?;
+    let reader = query.reader.clone();
+    query
+        .run(async move {
+            monad_eth_queryTransfers(&reader, request)
+                .await
+                .map(serialize_result)?
+        })
+        .await
+}
+
+#[allow(non_snake_case)]
 async fn eth_getLogs(
     _: TimingRequestId,
     app_state: &MonadRpcResources,
@@ -913,6 +1008,11 @@ enabled_methods!(
     eth_sendRawTransactionSync,
     eth_createAccessList,
     eth_getLogs,
+    eth_queryBlocks,
+    eth_queryLogs,
+    eth_queryTransactions,
+    eth_queryTraces,
+    eth_queryTransfers,
     eth_getTransactionByHash,
     eth_getBlockByHash,
     eth_getBlockByNumber,
