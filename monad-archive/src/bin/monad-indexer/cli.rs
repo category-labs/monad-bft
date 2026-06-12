@@ -17,6 +17,8 @@ use std::process;
 
 use clap::{error::ErrorKind, ArgAction, CommandFactory, Parser, Subcommand};
 use eyre::{eyre, Result};
+#[cfg(feature = "chain-data-ingest")]
+use monad_archive::chain_data_ingest::ChainDataIngestConfig;
 use monad_archive::cli::{ArchiveArgs, BlockDataReaderArgs};
 
 #[derive(Debug)]
@@ -34,6 +36,8 @@ pub struct Cli {
     pub max_inline_encoded_len: usize,
     pub skip_connectivity_check: bool,
     pub enable_logs_indexing: bool,
+    #[cfg(feature = "chain-data-ingest")]
+    pub chain_data_ingest: Option<ChainDataIngestConfig>,
 }
 
 pub enum ParsedCli {
@@ -133,6 +137,13 @@ pub struct CliArgs {
     /// Enable eth_getLogs indexing (disabled by default)
     #[arg(long, default_value_t = false)]
     pub enable_logs_indexing: bool,
+
+    /// TOML config for the embedded chain-data ingest worker: either the
+    /// archiver daemon shape (a [chain_data_ingest] table) or a bare config
+    /// (enabled/index_archive_payload/[store]/[engine] at top level)
+    #[cfg(feature = "chain-data-ingest")]
+    #[arg(long)]
+    pub chain_data_config: Option<std::path::PathBuf>,
 }
 
 impl CliArgs {
@@ -152,7 +163,14 @@ impl CliArgs {
             max_inline_encoded_len,
             skip_connectivity_check,
             enable_logs_indexing,
+            #[cfg(feature = "chain-data-ingest")]
+            chain_data_config,
         } = self;
+
+        #[cfg(feature = "chain-data-ingest")]
+        let chain_data_ingest = chain_data_config
+            .map(|path| load_chain_data_config(&path))
+            .transpose()?;
 
         Ok(Cli {
             block_data_source: block_data_source
@@ -169,6 +187,8 @@ impl CliArgs {
             max_inline_encoded_len,
             skip_connectivity_check,
             enable_logs_indexing,
+            #[cfg(feature = "chain-data-ingest")]
+            chain_data_ingest,
         })
     }
 
@@ -189,6 +209,35 @@ impl CliArgs {
             ErrorKind::MissingRequiredArgument,
             "The following required argument was not provided: --archive-sink <ARCHIVE_SINK>",
         )
+    }
+}
+
+/// Loads the chain-data ingest config, accepting either the archiver daemon
+/// shape (a `[chain_data_ingest]` table, so the archiver's own config file
+/// can be pointed at directly) or a bare `ChainDataIngestConfig`.
+#[cfg(feature = "chain-data-ingest")]
+fn load_chain_data_config(path: &std::path::Path) -> Result<ChainDataIngestConfig> {
+    use eyre::WrapErr;
+
+    #[derive(Default, serde::Deserialize)]
+    #[serde(default)]
+    struct DaemonShape {
+        chain_data_ingest: Option<ChainDataIngestConfig>,
+    }
+
+    let contents = std::fs::read_to_string(path)
+        .wrap_err_with(|| format!("failed to read chain-data config {}", path.display()))?;
+    let daemon: DaemonShape = toml::from_str(&contents)
+        .wrap_err_with(|| format!("failed to parse chain-data config {}", path.display()))?;
+    match daemon.chain_data_ingest {
+        Some(config) => Ok(config),
+        None => toml::from_str(&contents).wrap_err_with(|| {
+            format!(
+                "config {} has neither a [chain_data_ingest] table nor a bare chain-data \
+                 ingest config",
+                path.display()
+            )
+        }),
     }
 }
 
@@ -243,6 +292,7 @@ mod tests {
             bucket: "test-bucket".to_string(),
             region: None,
             endpoint: None,
+            index_endpoint: None,
             profile: None,
             access_key_id: None,
             secret_access_key: None,
@@ -258,6 +308,7 @@ mod tests {
             bucket: "sink-bucket".to_string(),
             region: None,
             endpoint: None,
+            index_endpoint: None,
             profile: None,
             access_key_id: None,
             secret_access_key: None,
@@ -284,6 +335,8 @@ mod tests {
             max_inline_encoded_len: 350 * 1024,
             skip_connectivity_check: false,
             enable_logs_indexing: false,
+            #[cfg(feature = "chain-data-ingest")]
+            chain_data_config: None,
         }
     }
 
@@ -478,5 +531,54 @@ mod tests {
             .validate_command(command)
             .expect_err("validation should fail without archive-sink");
         assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
+    }
+
+    #[cfg(feature = "chain-data-ingest")]
+    /// Both accepted TOML shapes parse to the same config: the archiver
+    /// daemon shape (a [chain_data_ingest] table) and the bare shape.
+    #[test]
+    fn chain_data_config_accepts_both_toml_shapes() {
+        let bare = r#"
+enabled = true
+index_archive_payload = true
+
+[store.meta]
+type = "mongo"
+url = "mongodb://127.0.0.1:27017"
+database = "archive"
+
+[store.archive]
+type = "mongo"
+url = "mongodb://127.0.0.1:27017"
+database = "archive"
+
+[engine]
+payload = "external-archive"
+"#;
+        let daemon = format!(
+            "[chain_data_ingest]\n{}",
+            bare.replace("[store", "[chain_data_ingest.store")
+                .replace("[engine]", "[chain_data_ingest.engine]")
+        );
+
+        for contents in [bare.to_string(), daemon] {
+            let dir = std::env::temp_dir().join(format!(
+                "chain-data-config-test-{}-{}",
+                std::process::id(),
+                contents.len()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("config.toml");
+            std::fs::write(&path, &contents).unwrap();
+            let config = load_chain_data_config(&path).expect("parse");
+            assert!(config.enabled);
+            assert!(config.index_archive_payload);
+            assert_eq!(
+                config.engine.payload,
+                monad_chain_data::ChainDataPayloadConfig::ExternalArchive
+            );
+            config.store.validate_ingest().expect("valid store");
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
     }
 }

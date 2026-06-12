@@ -1,0 +1,375 @@
+## Abstract
+
+Introduce five new JSON-RPC methods that enable efficient queries for raw chain history data.
+
+- `eth_queryBlocks`
+- `eth_queryTransactions`
+- `eth_queryLogs`
+- `eth_queryTraces`
+- `eth_queryTransfers`
+
+## Motivation
+
+The standard Ethereum JSON-RPC interface provides inadequate primitives for querying chain history. Many useful queries are simply not possible, and the queries that are supported suffer from overfetching and inefficient pagination.
+
+This proposal aims to address four specific shortcomings.
+
+1. **Filtering.** The `eth_getLogs` method supports log filtering, but there is no way to filter transactions or traces. To query all transactions sent to a specific address, the user must fetch entire blocks and filter client-side.
+2. **Relations.** There is no way to join related objects in a single request. To fetch a set of logs and related transaction inputs, the user must make N+1 RPC requests (one to fetch logs, then one per unique transaction).
+3. **Field selection.** Every RPC method returns a fixed object schema. Users that only need block `number` and `timestamp` have no choice but to fetch large unrelated fields like `logsBloom`, only to immediately discard them.
+4. **Pagination.** The `eth_getLogs` pagination design causes frequent timeouts and client-side workarounds. The RPC methods for blocks, transactions, and traces don't support range queries at all.
+
+These shortcomings impose unnecessary compute, memory, and bandwidth costs on both users and node operators.
+
+## Overview
+
+Each of the proposed JSON-RPC methods follow the same request and response shape.
+
+**Request.** Each request specifies a block range with `fromBlock` and `toBlock`, a traversal `order` (`"asc"` for oldest-first, `"desc"` for newest-first), and a `limit` on how many primary objects to return. Within that range, an optional `filter` narrows which objects are returned (for example, filtering logs by contract address and topic, or transactions by sender). An optional `fields` parameter controls which fields are returned for the primary objects and any related objects to join in the same response.
+
+**Response.** The `data` object contains the matched results, keyed by object type (e.g. `"logs"`, `"blocks"`). The response also includes three block references (`fromBlock`, `toBlock`, and `cursorBlock`) which record the exact blocks the server used when executing the query. These are used for pagination and reorg detection.
+
+**Pagination.** Because the server may stop before scanning the entire requested range (due to the `limit` or an internal constraint), `cursorBlock` records the last block scanned. To fetch the next page, submit a follow-up request starting one block past `cursorBlock`. Once `cursorBlock` equals `toBlock`, pagination is complete.
+
+### Example
+
+This request queries for ERC-20 Transfer events emitted by the USDC contract, including the timestamp of each log's parent block.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "eth_queryLogs",
+  "params": [{
+    "filter": {
+      "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+      "topics": ["0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"]
+    },
+    "fields": {
+      "logs": ["blockNumber", "logIndex", "address", "data", "topics"],
+      "blocks": ["number", "timestamp"]
+    },
+    "order": "asc",
+    "fromBlock": "0xF4240",
+    "toBlock": "0xF4E20",
+    "limit": "0x1F4"
+  }]
+}
+```
+
+The response includes the specified fields for each matched log and related block, and block reference information for pagination and reorg detection.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "data": {
+      "logs": [
+        {
+          "blockNumber": "0xF4290",
+          "logIndex": "0x3",
+          "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+          "data": "0x000000000000000000000000000000000000000000000000000000003b9aca00",
+          "topics": [
+            "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+            "0x000000000000000000000000d8da6bf26964af9d7eed9e03e53415d37aa96045",
+            "0x000000000000000000000000ab5801a7d398351b8be11c439e05c5b3259aec9b"
+          ]
+        },
+        {
+          "blockNumber": "0xF4290",
+          "logIndex": "0x7",
+          "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+          "data": "0x000000000000000000000000000000000000000000000000000000000ee6b280",
+          "topics": [
+            "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+            "0x000000000000000000000000ab5801a7d398351b8be11c439e05c5b3259aec9b",
+            "0x0000000000000000000000004838b106fce9647bdf1e7877bf73ce8b0bad5f97"
+          ]
+        }
+      ],
+      "blocks": [
+        {
+          "number": "0xF4290",
+          "timestamp": "0x679b8f20"
+        }
+      ]
+    },
+    "fromBlock": {
+      "number": "0xF4240",
+      "hash": "0x3d6122660cc824376f11ee842f83addc3525e2dd6756b9bcf0affa6aa88cf741",
+      "parentHash": "0xb4f81f27f56f5059b00e4b9041fbd76dad1d6dc3b7cb1d0a7c58d09f91a1c7e2"
+    },
+    "toBlock": {
+      "number": "0xF4E20",
+      "hash": "0xa9f2d63b518e4a55b5982e3c7b33e9f13286b0a4c638b06a1f2a9d0d87b591c4",
+      "parentHash": "0x1c7e4b5d09f281d7e3f19a6b7c8d2e5f7a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d"
+    },
+    "cursorBlock": {
+      "number": "0xF4E20",
+      "hash": "0xa9f2d63b518e4a55b5982e3c7b33e9f13286b0a4c638b06a1f2a9d0d87b591c4",
+      "parentHash": "0x1c7e4b5d09f281d7e3f19a6b7c8d2e5f7a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d"
+    }
+  }
+}
+```
+
+## Specification
+
+The following sections define each method in full detail.
+
+### Common definitions
+
+All five methods share a common request structure and response envelope. Method-specific fields are documented in each method's section below.
+
+### Request
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `filter` | `object` | No | Method-specific filter object. See each method's Filter section. |
+| `fields` | `object` | No | Method-specific fields to include for primary and related objects. See each method's Fields section. |
+| `order` | `string` | No | Traversal direction. `"asc"` (default): scan from `fromBlock` upward, returning results oldest-first; if `toBlock` is omitted, the scan runs to chain tip. `"desc"`: scan from `fromBlock` downward, returning results newest-first; if `toBlock` is omitted, the scan runs to genesis. |
+| `fromBlock` | `QUANTITY \| TAG` | No | Inclusive range start. In `"asc"` mode, the lower bound; in `"desc"` mode, the upper bound. Accepts a hex-encoded block number (e.g. `"0xF4240"`) or a tag: `"latest"`, `"earliest"`, `"safe"`, `"finalized"`. Tags are resolved server-side at query execution time. If omitted, defaults to `"earliest"` in `"asc"` mode or `"latest"` in `"desc"` mode. |
+| `toBlock` | `QUANTITY \| TAG` | No | Inclusive range end. In `"asc"` mode, the upper bound; in `"desc"` mode, the lower bound. Same value types as `fromBlock`. If omitted, defaults to `"latest"` in `"asc"` mode or `"earliest"` in `"desc"` mode. |
+| `limit` | `QUANTITY` | No | Target number of primary objects to return. The server may return fewer if an internal constraint (e.g. response size or execution time) is reached, or more when needed to complete the current block. Related objects do not count toward this limit. If omitted, defaults to `100`. |
+
+### Response
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `data` | `object` | Method-specific query result object, keyed by object name. Each value is an array of objects containing the requested fields. |
+| `fromBlock` | `{ number: QUANTITY, hash: DATA, parentHash: DATA }` | The resolved starting block at query execution time. If `fromBlock` in the request was a tag, this reflects the block that tag resolved to. |
+| `toBlock` | `{ number: QUANTITY, hash: DATA, parentHash: DATA }` | The resolved ending block at query execution time. If `toBlock` was `"latest"` or omitted in `"asc"` mode, this reflects the block the node considered latest at query execution time. |
+| `cursorBlock` | `{ number: QUANTITY, hash: DATA, parentHash: DATA }` | The last block the server scanned (inclusive). The server always completes the current block before stopping, so all matching objects from this block are included in the response. |
+
+### Errors
+
+The methods use standard JSON-RPC error codes plus the following application-specific codes:
+
+| Code | Message | Description |
+| --- | --- | --- |
+| `-32602` | Invalid params | Malformed request: unknown `fields` keys, invalid `filter` fields, `fields` references an unrecognized or unsuppoted relation for this method, etc. |
+| `-32005` | Limit exceeded | The requested block range or `limit` exceeds server-imposed maximums. The `data` field of the error object SHOULD contain the server's limits. |
+
+Example error response:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "error": {
+    "code": -32005,
+    "message": "Limit exceeded",
+    "data": {
+      "maxLimit": "0x2710",
+      "maxBlockRange": "0x186A0"
+    }
+  }
+}
+```
+
+### eth_queryBlocks
+
+Query for block headers.
+
+### Request
+
+`eth_queryBlocks` accepts all [common request parameters](https://www.notion.so/RPC-Query-Methods-Draft-MIP-30b75b0ba840806186b9f6b2df4ccc7a?pvs=21) (`order`, `fromBlock`, `toBlock`, and `limit`) and the following method-specific parameters.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `filter` | `{}` | No | Filter object. Not supported for this method. |
+| `fields` | `object` | No | Fields to include in the response. See [Fields](https://www.notion.so/RPC-Query-Methods-Draft-MIP-30b75b0ba840806186b9f6b2df4ccc7a?pvs=21) below. If omitted, all `blocks` fields are included and no relations are joined. |
+
+### Filter
+
+`eth_queryBlocks` does not support filtering. The `filter` field MUST be omitted or set to `{}`.
+
+### Fields
+
+The `fields` object accepts the following keys. The value is an array of field names to include, or `true` to include all fields.
+
+| Key | Type | Description |
+| --- | --- | --- |
+| `blocks` | `string[] \| true` | Fields to include from the `blocks` schema. |
+
+`eth_queryBlocks` does not support any relations.
+
+### eth_queryTransactions
+
+Query for transactions included in blocks.
+
+### Request
+
+`eth_queryTransactions` accepts all [common request parameters](https://www.notion.so/RPC-Query-Methods-Draft-MIP-30b75b0ba840806186b9f6b2df4ccc7a?pvs=21) (`order`, `fromBlock`, `toBlock`, and `limit`) and the following method-specific parameters.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `filter` | `object` | No | Filter object. See [Filter](https://www.notion.so/RPC-Query-Methods-Draft-MIP-30b75b0ba840806186b9f6b2df4ccc7a?pvs=21) below. If omitted, all transactions in the block range are returned. |
+| `fields` | `object` | No | Fields to include in the response. See [Fields](https://www.notion.so/RPC-Query-Methods-Draft-MIP-30b75b0ba840806186b9f6b2df4ccc7a?pvs=21) below. If omitted, all `transactions` fields are included and no relations are joined. |
+
+### Filter
+
+All conditions are combined with AND semantics. Each filter field accepts a single value or an array of values; an array matches if the value equals any element (OR within the field).
+
+| Field | Accepted Type | Description |
+| --- | --- | --- |
+| `from` | `DATA \| DATA[]` | Sender address. |
+| `to` | `DATA \| DATA[]` | Recipient address. |
+| `selector` | `DATA \| DATA[]` | 4-byte function selector (first 4 bytes of `input`). Transactions with `input` shorter than 4 bytes do not match a `selector` filter. |
+
+### Fields
+
+The `fields` object accepts the following keys. Each value is an array of field names to include from that schema, or `true` to include all fields.
+
+| Key | Type | Description |
+| --- | --- | --- |
+| `transactions` | `string[] \| true` | Fields to include from the `transactions` schema. |
+| `blocks` | `string[] \| true` | Fields to include from the `blocks` schema for related objects. |
+
+### eth_queryLogs
+
+Query for event logs emitted during transaction execution.
+
+### Request
+
+`eth_queryLogs` accepts all [common request parameters](https://www.notion.so/RPC-Query-Methods-Draft-MIP-30b75b0ba840806186b9f6b2df4ccc7a?pvs=21) (`order`, `fromBlock`, `toBlock`, and `limit`) and the following method-specific parameters.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `filter` | `object` | No | Filter object. See [Filter](https://www.notion.so/RPC-Query-Methods-Draft-MIP-30b75b0ba840806186b9f6b2df4ccc7a?pvs=21) below. If omitted, all logs in the block range are returned. |
+| `fields` | `object` | No | Fields to include in the response. See [Fields](https://www.notion.so/RPC-Query-Methods-Draft-MIP-30b75b0ba840806186b9f6b2df4ccc7a?pvs=21) below. If omitted, all `logs` fields are included and no relations are joined. |
+
+### Filter
+
+All conditions are combined with AND semantics.
+
+| Field | Accepted Type | Description |
+| --- | --- | --- |
+| `address` | `DATA \| DATA[]` | Contract address that emitted the log. Accepts a single address or an array (matches any). |
+| `topics` | see below | Positional topic filter. |
+
+The **`topics`** filter follows the same matching semantics as `eth_getLogs`. The value is an array of up to 4 positional entries. Each entry may be:
+
+- A single topic hash (`DATA`): matches logs where `topics[i]` equals that hash.
+- An array of topic hashes (`DATA[]`): matches logs where `topics[i]` equals any hash in the array.
+- `null`: wildcard — matches any value at position `i`.
+- Trailing `null` entries may be omitted.
+
+### Fields
+
+The `fields` object accepts the following keys. Each value is an array of field names to include from that schema, or `true` to include all fields.
+
+| Key | Type | Description |
+| --- | --- | --- |
+| `logs` | `string[] \| true` | Fields to include from the `logs` schema. |
+| `transactions` | `string[] \| true` | Fields to include from the `transactions` schema for related objects. |
+| `blocks` | `string[] \| true` | Fields to include from the `blocks` schema for related objects. |
+
+### eth_queryTraces
+
+Query for internal call traces.
+
+### Request
+
+`eth_queryTraces` accepts all [common request parameters](https://www.notion.so/RPC-Query-Methods-Draft-MIP-30b75b0ba840806186b9f6b2df4ccc7a?pvs=21) (`order`, `fromBlock`, `toBlock`, and `limit`) and the following method-specific parameters.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `filter` | `object` | No | Filter object. See [Filter](https://www.notion.so/RPC-Query-Methods-Draft-MIP-30b75b0ba840806186b9f6b2df4ccc7a?pvs=21) below. If omitted, all traces in the block range are returned. |
+| `fields` | `object` | No | Fields to include in the response. See [Fields](https://www.notion.so/RPC-Query-Methods-Draft-MIP-30b75b0ba840806186b9f6b2df4ccc7a?pvs=21) below. If omitted, all `traces` fields are included and no relations are joined. |
+
+### Filter
+
+All conditions are combined with AND semantics. Each filter field (except `isTopLevel`) accepts a single value or an array of values.
+
+| Field | Accepted Type | Description |
+| --- | --- | --- |
+| `from` | `DATA \| DATA[]` | Sender address. |
+| `to` | `DATA \| DATA[]` | Recipient address. |
+| `selector` | `DATA \| DATA[]` | 4-byte function selector (first 4 bytes of `input`). Traces with `input` shorter than 4 bytes do not match a `selector` filter. |
+| `isTopLevel` | `boolean` | If `true`, only top-level traces (those with an empty `traceAddress`) are returned. |
+
+### Fields
+
+The `fields` object accepts the following keys. Each value is an array of field names to include from that schema, or `true` to include all fields.
+
+| Key | Type | Description |
+| --- | --- | --- |
+| `traces` | `string[] \| true` | Fields to include from the `traces` schema. |
+| `transactions` | `string[] \| true` | Fields to include from the `transactions` schema for related objects. |
+| `blocks` | `string[] \| true` | Fields to include from the `blocks` schema for related objects. |
+
+### eth_queryTransfers
+
+Query for native token transfers.
+
+### Request
+
+`eth_queryTransfers` accepts all [common request parameters](https://www.notion.so/RPC-Query-Methods-Draft-MIP-30b75b0ba840806186b9f6b2df4ccc7a?pvs=21) (`order`, `fromBlock`, `toBlock`, and `limit`) and the following method-specific parameters.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `filter` | `object` | No | Filter object. See [Filter](https://www.notion.so/RPC-Query-Methods-Draft-MIP-30b75b0ba840806186b9f6b2df4ccc7a?pvs=21) below. If omitted, all transfers in the block range are returned. |
+| `fields` | `object` | No | Fields to include in the response. See [Fields](https://www.notion.so/RPC-Query-Methods-Draft-MIP-30b75b0ba840806186b9f6b2df4ccc7a?pvs=21) below. If omitted, all `transfers` fields are included and no relations are joined. |
+
+### Filter
+
+All conditions are combined with AND semantics. Each filter field (except `isTopLevel`) accepts a single value or an array of values.
+
+| Field | Accepted Type | Description |
+| --- | --- | --- |
+| `from` | `DATA \| DATA[]` | Sender address. |
+| `to` | `DATA \| DATA[]` | Recipient address. |
+| `isTopLevel` | `boolean` | If `true`, only top-level transfers (those initiated directly by a transaction, not by an internal call) are returned. |
+
+### Fields
+
+The `fields` object accepts the following keys. Each value is an array of field names to include from that schema, or `true` to include all fields.
+
+| Key | Type | Description |
+| --- | --- | --- |
+| `transfers` | `string[] \| true` | Fields to include from the `transfers` schema. |
+| `transactions` | `string[] \| true` | Fields to include from the `transactions` schema for related objects. |
+| `blocks` | `string[] \| true` | Fields to include from the `blocks` schema for related objects. |
+
+## Usage
+
+### Pagination
+
+Every response includes a `cursorBlock` identifying the last block the server scanned (inclusive). To paginate, submit a follow-up request using `cursorBlock.number + 1` (in `"asc"` mode) or `cursorBlock.number - 1` (in `"desc"` mode) as `fromBlock`.
+
+If a response has `cursorBlock.number == toBlock.number`, that is the final page for the specified block range.
+
+### Reorg detection
+
+The `fromBlock` and `toBlock` block references in the response include `hash` and `parentHash` fields to enable reorg detection.
+
+TODO: More specific treatment of reorg detection approach using `parentHash` etc.
+
+## Rationale
+
+**JSON-RPC as the message format.** These methods extend the existing JSON-RPC interface rather than introducing a new transport or query language. This keeps the implementation footprint small for both node operators and client library authors, and allows existing tooling (authentication, load balancing, retries) to work without modification.
+
+**Block range and traversal direction.** Scanning a contiguous block range is the natural primitive for chain history queries. Supporting both `"asc"` and `"desc"` traversal lets clients page through history in either direction — forward for event indexing, backward for "show me the most recent N events" patterns — without implementing custom range logic.
+
+**Block-aligned responses.** Splitting the objects from a single block across two pages would create ambiguity: a client receiving a partial block cannot tell whether it has seen all matching objects for that block. Always completing the current block before stopping eliminates this edge case and makes pagination deterministic.
+
+**Flexible limit.** Treating `limit` as a target rather than a hard upper bound allows the server to satisfy block alignment (which may require returning slightly more objects than requested) while still bounding response sizes. Servers may also return fewer objects than requested if an internal constraint such as a response size or time limit is reached.
+
+**Only many-to-one joins.** Allowing one-to-many joins (e.g. including all transactions for a block) would make response sizes unpredictable — a single block could contain thousands of transactions. Restricting joins to many-to-one relations (e.g. including the parent block for each log) guarantees that the number of related objects is bounded by the number of primary objects, which keeps response sizes proportional to `limit`.
+
+**Limit applies only to primary objects.** Counting related objects toward the limit would create confusing interactions between `limit`, `fields`, and the actual number of primary objects returned. Applying the limit only to the primary array makes behavior predictable regardless of which relations are requested.
+
+**Normalized vs. denormalized responses.** Results are returned in normalized form: primary objects and related objects in separate arrays, with shared objects (e.g. a block referenced by multiple logs) deduplicated. This avoids redundant data in the response payload and matches how clients typically store and index the data.
+
+**`fromBlock`, `toBlock`, and `cursorBlock`.** The response includes three block references rather than a simple cursor token. `fromBlock` and `toBlock` reflect the resolved block numbers at query execution time, which is necessary when tags like `"latest"` are used. `cursorBlock` identifies the last block scanned so clients can resume pagination and detect reorgs by comparing hashes across requests.
+
+## Backwards Compatibility
+
+TODO
+
+## Security Considerations
+
+TODO

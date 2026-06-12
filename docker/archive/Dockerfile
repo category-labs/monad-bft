@@ -1,4 +1,4 @@
-FROM ubuntu:26.04 AS base
+FROM ubuntu:25.04 AS base
 
 WORKDIR /usr/src/monad-bft
 
@@ -83,7 +83,7 @@ ENV GIT_MODIFIED=$GIT_MODIFIED
 # Builder
 COPY . .
 RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell" CXXFLAGS="-march=haswell" \
-    CC=gcc-15 CXX=g++-15 cargo build --release \
+    CC=gcc-15 CXX=g++-15 cargo build --release --package monad-archive --features chain-data-ingest \
     --bin monad-archiver \
     --bin monad-archive-checker \
     --bin monad-indexer && \

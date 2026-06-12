@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::collections::BTreeMap;
+
 use bytes::Bytes;
 use eyre::{Context, Result};
 use mongodb::{
@@ -26,7 +28,10 @@ use tracing::trace;
 
 use crate::{
     archive_reader::redact_mongo_url,
-    kvstore::{kvstore_put_metrics, KVStoreType, MetricsResultExt, PutResult, WritePolicy},
+    kvstore::{
+        chunked_range::{assemble_chunked_range, covering_chunks, slice_range},
+        kvstore_put_metrics, KVStoreType, MetricsResultExt, PutResult, WritePolicy,
+    },
     prelude::*,
 };
 
@@ -204,6 +209,100 @@ impl MongoDbStorage {
 
         info!("MongoDB storage initialized: {}", storage.name);
         Ok(storage)
+    }
+}
+
+impl MongoDbStorage {
+    /// A read-only handle: no collection provisioning (safe for read-only
+    /// credentials and replicas) and an explicit connection-pool size.
+    pub async fn new_reader(
+        connection_string: &str,
+        database: &str,
+        collection_name: &str,
+        max_pool_size: u32,
+        metrics: Metrics,
+    ) -> Result<Self> {
+        let mut client_options = ClientOptions::parse(connection_string).await?;
+        client_options.max_pool_size = Some(max_pool_size);
+        client_options.connect_timeout = Some(Duration::from_secs(1));
+        let client = Client::with_options(client_options)?;
+        let collection = client.database(database).collection(collection_name);
+        Ok(Self {
+            client,
+            collection,
+            db_name: database.to_string(),
+            name: format!("mongodb://{database}/{collection_name}"),
+            metrics,
+            max_time_get: Duration::from_secs(DEFAULT_MAX_TIME_SECS),
+        })
+    }
+
+    /// Reads `[start, end_exclusive)` of `key` without reassembling the whole
+    /// value: chunked documents fetch only the covering `_chunk_{i}` side
+    /// documents. `Ok(None)` when the key is absent; the end clamps to EOF; a
+    /// start strictly past EOF (or past the end bound) is an error.
+    pub async fn read_range(
+        &self,
+        key: &str,
+        start: usize,
+        end_exclusive: usize,
+    ) -> Result<Option<Bytes>> {
+        let Some(document) = self
+            .collection
+            .find_one(doc! { "_id": key })
+            .max_time(self.max_time_get)
+            .await
+            .wrap_err("MongoDB read_range lookup failed")?
+        else {
+            return Ok(None);
+        };
+        match (document.value, document.chunks) {
+            (Some(value), None) => Ok(Some(slice_range(
+                &Bytes::from(value.bytes),
+                start,
+                end_exclusive,
+            )?)),
+            (None, Some(chunks)) if chunks > 0 => {
+                let chunk_count = chunks as usize;
+                let Some(fetch) = covering_chunks(start, end_exclusive, chunk_count, CHUNK_SIZE)?
+                else {
+                    return Ok(Some(Bytes::new()));
+                };
+                let ids: Vec<String> = fetch.clone().map(|i| chunk_id(key, i as u32)).collect();
+                let mut fetched: BTreeMap<usize, Bytes> = BTreeMap::new();
+                let mut cursor = self
+                    .collection
+                    .find(doc! { "_id": { "$in": &ids } })
+                    .max_time(self.max_time_get)
+                    .await
+                    .wrap_err("MongoDB chunk fetch failed")?;
+                while let Some(chunk_doc) = cursor.try_next().await? {
+                    let index: usize = chunk_doc
+                        ._id
+                        .rsplit('_')
+                        .next()
+                        .and_then(|s| s.parse().ok())
+                        .ok_or_else(|| eyre!("malformed chunk id {}", chunk_doc._id))?;
+                    let value = chunk_doc
+                        .value
+                        .ok_or_else(|| eyre!("chunk {index} of {key} has no value"))?;
+                    fetched.insert(index, Bytes::from(value.bytes));
+                }
+                for index in fetch {
+                    if !fetched.contains_key(&index) {
+                        bail!("chunk {index} of {key} is missing");
+                    }
+                }
+                Ok(Some(assemble_chunked_range(
+                    &fetched,
+                    chunk_count,
+                    CHUNK_SIZE,
+                    start,
+                    end_exclusive,
+                )?))
+            }
+            _ => bail!("document {key} has neither value nor chunks"),
+        }
     }
 }
 
