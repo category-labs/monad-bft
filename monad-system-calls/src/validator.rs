@@ -222,6 +222,7 @@ impl SystemTransactionValidator {
         let expected_sys_calls = generate_system_calls(
             block_header.seq_num,
             block_header.epoch,
+            block_header.block_round,
             parent_block_epoch,
             block_header.author.pubkey().get_eth_address(),
             chain_config,
