@@ -24,6 +24,7 @@ use std::{
     cell::OnceCell,
     collections::{BTreeMap, BTreeSet, HashMap},
     fmt,
+    future::Future,
     net::SocketAddr,
     num::NonZero,
     ops::Range,
@@ -45,6 +46,19 @@ use monad_validator::{
 };
 
 use crate::udp::GroupId;
+
+/// Await a future, consuming one unit of shared quota; once depleted,
+/// yield to others and request executor to wake up the task
+/// again. Used to prevent starvation.
+pub async fn budgeted<F: Future>(fut: F, quota: &mut usize) -> F::Output {
+    if *quota == 0 {
+        tokio::task::yield_now().await;
+        *quota = 1; // each yielding restores one more unit
+    }
+    let out = fut.await;
+    *quota -= 1;
+    out
+}
 
 #[derive(Debug, Clone, Copy)]
 pub enum RaptorcastMode {
@@ -1588,5 +1602,62 @@ mod tests {
         .into_iter()
         .collect();
         assert_eq!(actual, expected);
+    }
+
+    mod budgeted {
+        use std::{
+            future::{pending, poll_fn, ready},
+            pin::pin,
+            task::Poll,
+            time::Duration,
+        };
+
+        use futures::{future::poll_immediate, FutureExt};
+        use tokio::time::timeout;
+
+        use crate::util::budgeted;
+
+        #[tokio::test]
+        async fn quota_bounds_drain_pass_and_self_wakes() {
+            let mut polled = 0;
+            let mut drained = 0;
+
+            // expect budgeted to wake the task after first quota
+            // exhaustion. return Ready on second poll.
+            let drain_two_passes = poll_fn(|cx| {
+                polled += 1;
+                let mut quota = 3;
+                while let Poll::Ready(()) = pin!(budgeted(ready(()), &mut quota)).poll_unpin(cx) {
+                    drained += 1;
+                }
+                if polled == 2 {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            });
+
+            timeout(Duration::from_secs(1), drain_two_passes)
+                .await
+                .expect("spent quota did not wake the task");
+
+            assert_eq!(drained, 6);
+        }
+
+        #[tokio::test]
+        async fn pending_inner_consumes_no_quota() {
+            let mut quota = 1;
+            let throttled = poll_immediate(budgeted(pending::<()>(), &mut quota)).await;
+            assert_eq!(throttled, None);
+            assert_eq!(quota, 1);
+        }
+
+        #[tokio::test]
+        async fn exhausted_budgeted_resumes_after_yield() {
+            let mut quota = 0;
+            let out = timeout(Duration::from_secs(1), budgeted(ready(7), &mut quota)).await;
+            assert_eq!(out, Ok(7));
+            assert_eq!(quota, 0);
+        }
     }
 }

@@ -40,7 +40,7 @@ lru = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["macros"] }
+tokio = { workspace = true, features = ["macros", "rt"] }
 tracing = { workspace = true }
 zerocopy = { workspace = true }
 
