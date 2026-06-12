@@ -124,6 +124,53 @@ async fn fjall_blob_roundtrips_value_above_kv_separation_threshold() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn fjall_blob_read_range_validates_and_clamps() {
+    const TEST_TABLE: BlobTableId = BlobTableId::new("read_range_smoke");
+
+    let dir = tempdir().expect("tempdir");
+    let store = FjallStore::open(dir.path()).expect("open fjall");
+    let table = store.table(TEST_TABLE);
+
+    let payload: Vec<u8> = (0..64 * 1024).map(|i| (i % 251) as u8).collect();
+    table
+        .put(b"big", Bytes::from(payload.clone()))
+        .await
+        .expect("put");
+
+    let interior = table
+        .read_range(b"big", 100, 132)
+        .await
+        .expect("read interior")
+        .expect("present");
+    assert_eq!(interior, payload[100..132]);
+
+    let clamped = table
+        .read_range(b"big", payload.len() - 16, payload.len() + 1000)
+        .await
+        .expect("read past end clamps")
+        .expect("present");
+    assert_eq!(clamped, payload[payload.len() - 16..]);
+
+    let empty_tail = table
+        .read_range(b"big", payload.len(), payload.len() + 1000)
+        .await
+        .expect("read at exact end clamps to empty")
+        .expect("present");
+    assert!(empty_tail.is_empty());
+
+    let err = table
+        .read_range(b"big", payload.len() + 1, payload.len() + 2)
+        .await;
+    assert!(matches!(err, Err(MonadChainDataError::Decode(_))));
+
+    let missing = table
+        .read_range(b"missing", 0, 8)
+        .await
+        .expect("read missing key");
+    assert!(missing.is_none());
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn fjall_cas_advance_with_stale_version_returns_fenced_out() {
     let dir = tempdir().expect("tempdir");
     let store = FjallStore::open(dir.path()).expect("open fjall");

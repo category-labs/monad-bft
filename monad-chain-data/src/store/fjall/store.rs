@@ -25,7 +25,7 @@ use fjall::{Config, Database, Keyspace, KeyspaceCreateOptions, KvSeparationOptio
 use crate::{
     error::{MonadChainDataError, Result},
     store::{
-        blob::{BlobStore, BlobTableId},
+        blob::{copy_blob_range, BlobStore, BlobTableId},
         common::Page,
         meta::{CasOutcome, CasVersion, MetaStore, MetaStoreCas, ScannableTableId, TableId},
     },
@@ -365,6 +365,30 @@ impl BlobStore for FjallStore {
                 .get(&key)
                 .map_err(|e| MonadChainDataError::Backend(format!("fjall get_blob: {e}")))?;
             Ok(value.map(|v| Bytes::copy_from_slice(&v)))
+        })
+        .await
+    }
+
+    // fjall has no positioned sub-value reads; this avoids the per-record
+    // full-blob copy, not the underlying I/O on a cache miss.
+    async fn read_range(
+        &self,
+        table: BlobTableId,
+        key: &[u8],
+        start: usize,
+        end_exclusive: usize,
+    ) -> Result<Option<Bytes>> {
+        let store = self.clone();
+        let key = key.to_vec();
+        let name = format!("{BLOB_PREFIX}{}", table.as_str());
+        blocking(move || {
+            let ks = store.keyspace(&name)?;
+            let value = ks
+                .get(&key)
+                .map_err(|e| MonadChainDataError::Backend(format!("fjall read_range: {e}")))?;
+            value
+                .map(|v| copy_blob_range(&v, start, end_exclusive))
+                .transpose()
         })
         .await
     }
