@@ -22,6 +22,7 @@ use std::{
 use clap::{ArgAction, Parser, Subcommand};
 use eyre::{eyre, Context, Result};
 use monad_archive::cli::{ArchiveArgs, BlockDataReaderArgs};
+#[cfg(feature = "chain-data-ingest")]
 use serde::Deserialize;
 
 /// Runtime configuration for the `monad-archiver` binary.
@@ -72,6 +73,10 @@ pub struct Cli {
     #[serde(default)]
     /// If set, archiver will only archive traces
     pub traces_only: bool,
+
+    #[serde(default)]
+    /// If set, archiver will skip traces entirely
+    pub skip_traces: bool,
 
     #[serde(default)]
     /// If set, archiver will perform an asynchronous backfill of the archive
@@ -140,7 +145,16 @@ pub struct Cli {
 
     #[serde(default)]
     pub skip_connectivity_check: bool,
+
+    #[cfg(feature = "chain-data-ingest")]
+    #[serde(default)]
+    pub chain_data_ingest: Option<ArchiverChainDataIngestConfig>,
 }
+
+/// The shared `[chain_data_ingest]` section (see
+/// `monad_archive::chain_data_ingest`).
+#[cfg(feature = "chain-data-ingest")]
+pub use monad_archive::chain_data_ingest::ChainDataIngestConfig as ArchiverChainDataIngestConfig;
 
 /// Result of parsing CLI arguments - either a subcommand or daemon config
 pub enum ParsedCli {
@@ -212,6 +226,7 @@ impl Cli {
             skip_connectivity_check,
             require_traces,
             traces_only,
+            skip_traces,
             async_backfill,
         } = overrides;
 
@@ -253,7 +268,10 @@ impl Cli {
             skip_connectivity_check: skip_connectivity_check.unwrap_or(false),
             require_traces: require_traces.unwrap_or(false),
             traces_only: traces_only.unwrap_or(false),
+            skip_traces: skip_traces.unwrap_or(false),
             async_backfill: async_backfill.unwrap_or(false),
+            #[cfg(feature = "chain-data-ingest")]
+            chain_data_ingest: None,
         })
     }
 
@@ -353,6 +371,21 @@ pub enum Commands {
         #[arg(long, action = ArgAction::SetTrue)]
         async_backfill: bool,
     },
+
+    /// Print the chain-data published head from the meta store and exit.
+    /// The published head is the reader-visible watermark; it advancing is the
+    /// ingest health signal.
+    #[cfg(feature = "chain-data-ingest")]
+    ChainDataHead {
+        /// The daemon's TOML config file; only [chain_data_ingest.store] is
+        /// read. Defaults match the deb's systemd unit.
+        #[arg(
+            long,
+            env = "CHAIN_DATA_ARCHIVER_CONFIG",
+            default_value = "/home/monad/chain-data-archiver.toml"
+        )]
+        config: PathBuf,
+    },
 }
 
 #[derive(Debug, Parser)]
@@ -404,6 +437,10 @@ struct CliArgs {
     /// If set, archiver will only archive traces
     #[arg(long, action = ArgAction::SetTrue)]
     traces_only: bool,
+
+    /// If set, archiver will skip traces entirely (no fetch, no write)
+    #[arg(long, action = ArgAction::SetTrue)]
+    skip_traces: bool,
 
     /// If set, archiver will perform an asynchronous backfill of the archive
     #[arg(long, action = ArgAction::SetTrue)]
@@ -518,6 +555,7 @@ impl CliArgs {
             unsafe_allow_traces_overwrite,
             require_traces,
             traces_only,
+            skip_traces,
             async_backfill,
         } = self;
 
@@ -549,6 +587,7 @@ impl CliArgs {
             unsafe_allow_traces_overwrite: bool_override(unsafe_allow_traces_overwrite),
             require_traces: bool_override(require_traces),
             traces_only: bool_override(traces_only),
+            skip_traces: bool_override(skip_traces),
             async_backfill: bool_override(async_backfill),
         };
 
@@ -567,6 +606,7 @@ struct CliOverrides {
     unsafe_skip_bad_blocks: Option<bool>,
     require_traces: Option<bool>,
     traces_only: Option<bool>,
+    skip_traces: Option<bool>,
     async_backfill: Option<bool>,
     bft_block_path: Option<PathBuf>,
     bft_block_poll_freq_secs: Option<u64>,
@@ -588,7 +628,7 @@ struct CliOverrides {
     unsafe_allow_traces_overwrite: Option<bool>,
 }
 
-fn load_config(path: &Path) -> Result<Cli> {
+pub(crate) fn load_config(path: &Path) -> Result<Cli> {
     let contents = fs::read_to_string(path)
         .wrap_err_with(|| format!("failed to read config file {}", path.display()))?;
     toml::from_str(&contents)
