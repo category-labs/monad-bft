@@ -13,6 +13,7 @@ monad-blocksync = { path = "./monad-blocksync" }
 monad-blocktree = { path = "./monad-blocktree" }
 monad-bls = { path = "./monad-bls" }
 monad-chain-config = { path = "./monad-chain-config" }
+monad-chain-data = { path = "./monad-chain-data" }
 monad-compress = { path = "./monad-compress" }
 monad-consensus = { path = "./monad-consensus" }
 monad-consensus-state = { path = "./monad-consensus-state" }
@@ -173,6 +174,7 @@ proc-macro2 = "1.0.86"
 prometheus = "0.14"
 proptest = "1.7"
 quanta = "0.12.5"
+quick_cache = "0.6"
 quote = "1.0.36"
 rand = "0.8"
 rand_chacha = "0.3"
