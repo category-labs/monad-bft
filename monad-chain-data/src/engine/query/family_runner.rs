@@ -205,16 +205,6 @@ pub(crate) trait IndexedFamilyQuery {
         Self::into_record_owned(stored, block_record, idx_in_block).map(Some)
     }
 
-    /// Decodes one decompressed row frame for the block-scan path; see
-    /// [`Self::scan_record_from_stored`] for the skip semantics.
-    fn decode_scan_record(
-        bytes: &[u8],
-        block_record: &BlockRecord,
-        idx_in_block: usize,
-    ) -> Result<Option<Self::Record>> {
-        Self::scan_record_from_stored(Self::decode_stored(bytes)?, block_record, idx_in_block)
-    }
-
     async fn load_block_ref(&self, block_number: u64) -> Result<BlockRef> {
         Ok(BlockRef::from(
             &load_block_record(self.tables().blocks(), block_number).await?,
@@ -374,9 +364,10 @@ pub(crate) trait IndexedFamilyQuery {
     /// External-encoding miss path: resolve missed rows to their containers,
     /// coalesce CONTAINER ranges (a container shared by several rows is read
     /// and decoded once), and pick each row by its ordinal. No zstd — archive
-    /// containers are uncompressed RLP. Only requested rows populate the
-    /// cache; sibling rows of a decoded container are discarded (a possible
-    /// future optimization).
+    /// containers are uncompressed RLP. EVERY decoded row of a fetched
+    /// container seeds the cache, not just the requested ones: the container
+    /// is already paid for (a cross-region archive GET), and a sibling row
+    /// is a likely next ask (another log of the same tx).
     async fn fetch_external_rows(
         &self,
         block_number: u64,
@@ -446,12 +437,19 @@ pub(crate) trait IndexedFamilyQuery {
                 // Charge each cached row its share of the container bytes.
                 let row_weight = (end - start) / decoded.len().max(1);
                 let row_base = header.container_row_base(container);
+                for (row_offset, stored) in decoded.iter().enumerate() {
+                    cache.insert(
+                        block_number,
+                        row_base + row_offset,
+                        Arc::clone(stored),
+                        row_weight,
+                    );
+                }
                 for &(output_pos, idx_in_block) in &by_container[&container] {
                     let stored = decoded
                         .get(idx_in_block - row_base)
                         .cloned()
                         .ok_or(MonadChainDataError::Decode(ERR_INDEX_OUT_OF_RANGE))?;
-                    cache.insert(block_number, idx_in_block, Arc::clone(&stored), row_weight);
                     rows[output_pos] = Some(stored);
                 }
                 IndexedQueryStats::add_us(&stats.materialize_entry_decode_us, started);
@@ -510,8 +508,33 @@ pub(crate) trait IndexedFamilyQuery {
 
         let block_record = load_block_record(self.tables().blocks(), block_number).await?;
         let block_ref = BlockRef::from(&block_record);
-        if family.window_in(&block_record).count == 0 {
+        let row_count = family.window_in(&block_record).count as usize;
+        if row_count == 0 {
             return Ok((block_ref, Vec::new()));
+        }
+
+        // A fully row-cached block stamps straight from cache, skipping the
+        // header and whole-region read entirely — on external payloads that
+        // read is a cross-region archive GET per request, which made "warm"
+        // scans cost the same as cold ones.
+        let cache = self.row_cache();
+        let cached: Vec<Option<Arc<Self::StoredRow>>> = (0..row_count)
+            .map(|idx| cache.probe(block_number, idx))
+            .collect();
+        if cached.iter().all(Option::is_some) {
+            let mut records = Vec::new();
+            for idx in order.iterate(0..row_count) {
+                let stored = cached[idx].as_ref().expect("probed all-present");
+                let Some(record) =
+                    Self::scan_record_from_stored(stored.as_ref().clone(), &block_record, idx)?
+                else {
+                    continue;
+                };
+                if filter.matches(&record) {
+                    records.push(record);
+                }
+            }
+            return Ok((block_ref, records));
         }
 
         let header = self
@@ -540,10 +563,10 @@ pub(crate) trait IndexedFamilyQuery {
             .ok_or(MonadChainDataError::MissingData(ERR_MISSING_BLOB))?;
 
         if header.is_external() {
-            // Decode every container once (ascending), then emit rows in
+            // Decode every container once (ascending) and seed the row cache
+            // with every row — the region is already paid for — then emit in
             // query order through the same scan-stamping hook as native.
-            let mut stored_rows: Vec<Option<Self::StoredRow>> =
-                Vec::with_capacity(header.row_count());
+            let mut stored_rows: Vec<Arc<Self::StoredRow>> = Vec::with_capacity(header.row_count());
             for container in 0..header.container_count() {
                 let start = header.offsets[container] as usize;
                 let end = header.offsets[container + 1] as usize;
@@ -551,11 +574,22 @@ pub(crate) trait IndexedFamilyQuery {
                     return Err(MonadChainDataError::Decode(ERR_INVALID_RANGE));
                 }
                 let decoded = decode_container_rows::<Self>(&header, container, &blob[start..end])?;
-                stored_rows.extend(decoded.into_iter().map(Some));
+                // Charge each row its share of the container bytes.
+                let row_weight = (end - start) / decoded.len().max(1);
+                for stored in decoded {
+                    let stored = Arc::new(stored);
+                    cache.insert(
+                        block_number,
+                        stored_rows.len(),
+                        Arc::clone(&stored),
+                        row_weight,
+                    );
+                    stored_rows.push(stored);
+                }
             }
             let mut records = Vec::new();
             for idx in order.iterate(0..stored_rows.len()) {
-                let stored = stored_rows[idx].take().expect("each row visited once");
+                let stored = stored_rows[idx].as_ref().clone();
                 let Some(record) = Self::scan_record_from_stored(stored, &block_record, idx)?
                 else {
                     continue;
@@ -583,7 +617,11 @@ pub(crate) trait IndexedFamilyQuery {
                 return Err(MonadChainDataError::Decode(ERR_INVALID_RANGE));
             }
             let bytes = decompressor.decompress(&blob[start..end])?;
-            let Some(record) = Self::decode_scan_record(&bytes, &block_record, idx)? else {
+            let stored = Arc::new(Self::decode_stored(&bytes)?);
+            cache.insert(block_number, idx, Arc::clone(&stored), bytes.len());
+            let Some(record) =
+                Self::scan_record_from_stored(stored.as_ref().clone(), &block_record, idx)?
+            else {
                 continue;
             };
             if filter.matches(&record) {
