@@ -216,19 +216,23 @@ impl ConfiguredChainDataReader {
     }
 }
 
+/// `external`: a pre-built external payload reader (monad-archive's
+/// archive-format readers); required for mongo/dynamo `[store.archive]`
+/// backends, `None` lets the S3 backend build from config.
 pub async fn open_configured_chain_data_reader(
     store_config: ChainDataStoreConfig,
     limits: QueryLimits,
+    external: Option<Arc<dyn crate::external::ExternalBlobReader>>,
 ) -> Result<ConfiguredChainDataReader> {
     store_config.validate_reader()?;
     #[cfg(not(any(feature = "dynamo", feature = "mongo")))]
-    let _ = limits;
+    let _ = (limits, external);
     match &store_config.meta {
         #[cfg(feature = "dynamo")]
         ChainDataMetaBackendConfig::Dynamo(meta_config) => {
             let meta_store = build_dynamo_meta_store(meta_config).await?;
             let shared = Some(meta_store.shared_connection());
-            dispatch_dynamo_reader_blob(&store_config, limits, meta_store, shared).await
+            dispatch_dynamo_reader_blob(&store_config, limits, meta_store, shared, external).await
         }
         // Mongo meta is blob-less only (validated): always the MongoNull shape.
         #[cfg(feature = "mongo")]
@@ -246,7 +250,7 @@ pub async fn open_configured_chain_data_reader(
                 store_config.query.to_runtime(),
             );
             if let Some(reader) =
-                super::build_external_payload_reader(&store_config.archive).await?
+                super::build_external_payload_reader(&store_config.archive, external).await?
             {
                 service = service.with_external_payload_reader(reader);
             }
@@ -265,6 +269,7 @@ async fn dispatch_dynamo_reader_blob(
     limits: QueryLimits,
     meta_store: crate::store::DynamoMetaStore,
     dynamo_connection: Option<SharedDynamoConnection>,
+    external: Option<Arc<dyn crate::external::ExternalBlobReader>>,
 ) -> Result<ConfiguredChainDataReader> {
     use crate::{
         engine::tables::{DictConfig, QueryRuntimeConfig},
@@ -273,7 +278,8 @@ async fn dispatch_dynamo_reader_blob(
 
     let cache_config = resolve_cache_config(store_config, ChainDataCacheMode::Reader);
     let query_config = store_config.query.to_runtime();
-    let external_reader = super::build_external_payload_reader(&store_config.archive).await?;
+    let external_reader =
+        super::build_external_payload_reader(&store_config.archive, external).await?;
 
     fn service<B: BlobStore>(
         meta_store: crate::store::DynamoMetaStore,

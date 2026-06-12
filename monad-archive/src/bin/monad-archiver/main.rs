@@ -286,9 +286,13 @@ async fn handle_command(cmd: Commands) -> Result<()> {
                 ),
             };
 
+            let external =
+                monad_archive::chain_data_external::build_archive_external_reader(&store.archive)
+                    .await?;
             let reader = monad_chain_data::open_configured_chain_data_reader(
                 store,
                 monad_chain_data::QueryLimits::UNLIMITED,
+                external,
             )
             .await?;
             match reader.load_published_head().await? {

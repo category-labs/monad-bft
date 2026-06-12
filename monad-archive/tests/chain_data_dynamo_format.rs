@@ -13,10 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! Cross-crate guard for the Dynamo item wire contract: objects written by
-//! THIS crate's `DynamoDBArchive` (the production archive writer, including
-//! its 350 KB chunking into `_chunk_{i}` items) must be byte-exactly
-//! range-readable through chain-data's `DynamoExternalBlobReader` mirror.
+//! Guard for the Dynamo external read path: objects written by the
+//! production `DynamoDBArchive` writer (including its 350 KB chunking into
+//! `_chunk_{i}` items) must be byte-exactly range-readable through the
+//! `ArchiveExternalReader` adapter chain-data consumes (covering-chunk
+//! fetches only, `ExternalBlobReader` range semantics).
 //!
 //! Run against a running Alternator (see `kvstore::dynamodb` tests), then
 //! `SCYLLA_ALTERNATOR_ENDPOINT=http://localhost:8000 \
@@ -24,14 +25,12 @@
 #![cfg(feature = "chain-data-ingest")]
 
 use monad_archive::{
+    chain_data_external::ArchiveExternalReader,
     cli::ScyllaCliArgs,
     kvstore::{dynamodb::CHUNK_SIZE, KVStore, WritePolicy},
     prelude::Metrics,
 };
-use monad_chain_data::{
-    store::{DynamoExternalBlobReader, DynamoExternalBlobReaderConfig},
-    ExternalBlobReader,
-};
+use monad_chain_data::ExternalBlobReader;
 
 fn alternator_endpoint() -> Option<String> {
     std::env::var("SCYLLA_ALTERNATOR_ENDPOINT").ok()
@@ -42,7 +41,7 @@ fn patterned(len: usize) -> Vec<u8> {
 }
 
 async fn read(
-    reader: &DynamoExternalBlobReader,
+    reader: &ArchiveExternalReader,
     key: &str,
     start: usize,
     end: usize,
@@ -77,16 +76,8 @@ async fn archive_written_items_range_read_through_chain_data() {
         .await
         .expect("put big");
 
-    let reader = DynamoExternalBlobReader::new(DynamoExternalBlobReaderConfig {
-        table: scylla.block_table(),
-        endpoint_url: Some(endpoint),
-        region: Some("us-east-1".to_string()),
-        profile: None,
-        credentials: None,
-        max_concurrency: 16,
-    })
-    .await
-    .expect("reader");
+    let reader =
+        ArchiveExternalReader::Dynamo(scylla.block_store(&Metrics::none()).await.expect("reader"));
 
     // Unchunked item: interior slices, EOF clamp, past-EOF error, missing.
     for (start, end) in [(0, 64), (99_990, 100_000), (1234, 56_789)] {

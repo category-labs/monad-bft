@@ -63,6 +63,15 @@ pub async fn chain_data_ingest_worker(
     } else {
         ArchiverChainDataSource::native(block_data_source, fallback_block_data_source)
     };
-    monad_chain_data::run_configured_chain_data_engine_ingest(config.store, config.engine, source)
-        .await
+    // Archive-format external readers (mongo/dynamo) are built here;
+    // chain-data builds the S3 one from config itself.
+    let external =
+        crate::chain_data_external::build_archive_external_reader(&config.store.archive).await?;
+    monad_chain_data::run_configured_chain_data_engine_ingest(
+        config.store,
+        config.engine,
+        source,
+        external,
+    )
+    .await
 }

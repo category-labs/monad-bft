@@ -18,6 +18,8 @@
 pub mod archive_reader;
 pub mod aws_cli;
 #[cfg(feature = "chain-data-ingest")]
+pub mod chain_data_external;
+#[cfg(feature = "chain-data-ingest")]
 pub mod chain_data_ingest;
 #[cfg(feature = "chain-data-ingest")]
 pub mod chain_data_source;

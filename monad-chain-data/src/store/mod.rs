@@ -24,12 +24,7 @@ pub mod session;
 
 pub use blob::{BlobStore, BlobTable, BlobTableId, BlobWriteOp, InMemoryBlobStore, NullBlobStore};
 #[cfg(feature = "dynamo")]
-pub use blob::{
-    DynamoBlobStore, DynamoBlobStoreConfig, DynamoExternalBlobReader,
-    DynamoExternalBlobReaderConfig,
-};
-#[cfg(feature = "mongo")]
-pub use blob::{MongoExternalBlobReader, MongoExternalBlobReaderConfig};
+pub use blob::{DynamoBlobStore, DynamoBlobStoreConfig};
 #[cfg(feature = "s3")]
 pub use blob::{
     S3BlobStore, S3BlobStoreConfig, S3Credentials, S3ExternalBlobReader, S3ReadStatsSnapshot,

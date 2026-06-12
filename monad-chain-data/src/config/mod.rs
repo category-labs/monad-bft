@@ -379,15 +379,23 @@ impl ChainDataArchiveS3Config {
     }
 }
 
-/// Builds the configured external archive reader, or `None` when no archive
-/// access is configured. Shared by the ingest assembly and the reader.
+/// Resolves the external archive reader: an injected reader (built by the
+/// embedding binary — monad-archive owns the mongo/dynamo archive formats
+/// and provides `build_archive_external_reader`) takes precedence; otherwise
+/// the S3 backend, whose objects have no archive-owned byte format, is built
+/// here from config. Mongo/dynamo archive configs WITHOUT an injected reader
+/// error loudly.
 ///
 /// Gated on the meta-backend features because only the configured assembly
 /// paths construct readers, not because the reader needs those backends.
 #[cfg(any(feature = "dynamo", feature = "mongo"))]
 pub(crate) async fn build_external_payload_reader(
     config: &Option<ChainDataArchiveBackendConfig>,
+    injected: Option<std::sync::Arc<dyn crate::external::ExternalBlobReader>>,
 ) -> Result<Option<std::sync::Arc<dyn crate::external::ExternalBlobReader>>> {
+    if injected.is_some() {
+        return Ok(injected);
+    }
     match config {
         None => Ok(None),
         #[cfg(feature = "s3")]
@@ -419,47 +427,17 @@ pub(crate) async fn build_external_payload_reader(
             Ok(Some(std::sync::Arc::new(reader)))
         }
         #[cfg(feature = "mongo")]
-        Some(ChainDataArchiveBackendConfig::Mongo(mongo)) => {
-            use crate::store::{MongoExternalBlobReader, MongoExternalBlobReaderConfig};
-
-            let reader_config = MongoExternalBlobReaderConfig {
-                connection_string: mongo.url.0.clone().expect("validated archive mongo url"),
-                database: mongo
-                    .database
-                    .clone()
-                    .expect("validated archive mongo database"),
-                collection: mongo.collection.clone(),
-                max_pool_size: mongo.max_pool_size,
-            };
-            let reader = MongoExternalBlobReader::new(reader_config)
-                .await
-                .context("building chain-data archive Mongo reader")?;
-            Ok(Some(std::sync::Arc::new(reader)))
-        }
+        Some(ChainDataArchiveBackendConfig::Mongo(_)) => bail!(
+            "the mongo archive format is owned by monad-archive: build the reader with \
+             monad_archive::chain_data_external::build_archive_external_reader and pass \
+             it to the chain-data entry point"
+        ),
         #[cfg(feature = "dynamo")]
-        Some(ChainDataArchiveBackendConfig::Dynamo(dynamo)) => {
-            use crate::store::{DynamoExternalBlobReader, DynamoExternalBlobReaderConfig};
-
-            let reader_config = DynamoExternalBlobReaderConfig {
-                table: dynamo
-                    .table
-                    .clone()
-                    .expect("validated archive dynamo table"),
-                endpoint_url: dynamo.endpoint_url.clone(),
-                region: dynamo.region.clone(),
-                profile: dynamo.profile.clone(),
-                credentials: dynamo_credentials(
-                    &dynamo.access_key_id.0,
-                    &dynamo.secret_access_key.0,
-                    &dynamo.session_token.0,
-                ),
-                max_concurrency: dynamo.max_concurrency,
-            };
-            let reader = DynamoExternalBlobReader::new(reader_config)
-                .await
-                .context("building chain-data archive Dynamo reader")?;
-            Ok(Some(std::sync::Arc::new(reader)))
-        }
+        Some(ChainDataArchiveBackendConfig::Dynamo(_)) => bail!(
+            "the dynamo archive format is owned by monad-archive: build the reader with \
+             monad_archive::chain_data_external::build_archive_external_reader and pass \
+             it to the chain-data entry point"
+        ),
         #[cfg(not(any(feature = "s3", feature = "mongo", feature = "dynamo")))]
         Some(ChainDataArchiveBackendConfig::Unavailable) => {
             bail!("chain-data archive access requires the s3, mongo, or dynamo feature")

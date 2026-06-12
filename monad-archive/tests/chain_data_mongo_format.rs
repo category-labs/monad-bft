@@ -13,10 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! Cross-crate guard for the Mongo document wire contract: objects written by
-//! THIS crate's `MongoDbStorage` (the production archive writer, including
-//! its 15 MiB chunking into `_chunk_{i}` side documents) must be byte-exactly
-//! range-readable through chain-data's `MongoExternalBlobReader` mirror.
+//! Guard for the Mongo external read path: objects written by the production
+//! `MongoDbStorage` writer (including its 15 MiB chunking into `_chunk_{i}`
+//! side documents) must be byte-exactly range-readable through the
+//! `ArchiveExternalReader` adapter chain-data consumes (covering-chunk
+//! fetches only, `ExternalBlobReader` range semantics).
 //!
 //! Run: `docker run -p 27017:27017 mongo`, then
 //! `CHAIN_DATA_MONGO_TEST_URL=mongodb://127.0.0.1:27017 \
@@ -24,13 +25,11 @@
 #![cfg(feature = "chain-data-ingest")]
 
 use monad_archive::{
+    chain_data_external::ArchiveExternalReader,
     kvstore::{mongo::MongoDbStorage, KVStore, WritePolicy},
     prelude::Metrics,
 };
-use monad_chain_data::{
-    store::{MongoExternalBlobReader, MongoExternalBlobReaderConfig},
-    ExternalBlobReader,
-};
+use monad_chain_data::ExternalBlobReader;
 
 /// monad-archive's Mongo chunk threshold (`mongo::CHUNK_SIZE`).
 const CHUNK_SIZE: usize = 15 * 1024 * 1024;
@@ -44,7 +43,7 @@ fn patterned(len: usize) -> Vec<u8> {
 }
 
 async fn read(
-    reader: &MongoExternalBlobReader,
+    reader: &ArchiveExternalReader,
     key: &str,
     start: usize,
     end: usize,
@@ -82,13 +81,11 @@ async fn archive_written_objects_range_read_through_chain_data() {
         .await
         .expect("put big");
 
-    let reader = MongoExternalBlobReader::new(MongoExternalBlobReaderConfig::new(
-        url.clone(),
-        database.clone(),
-        "block_level",
-    ))
-    .await
-    .expect("reader");
+    let reader = ArchiveExternalReader::Mongo(
+        MongoDbStorage::new_reader(&url, &database, "block_level", 16, Metrics::none())
+            .await
+            .expect("reader"),
+    );
 
     // Unchunked object: interior slice, EOF clamp, past-EOF error, missing.
     for (start, end) in [(0, 64), (99_990, 100_000), (1234, 56_789)] {

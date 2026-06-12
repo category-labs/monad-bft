@@ -30,7 +30,10 @@ use futures::future::try_join_all;
 use tokio::sync::Semaphore;
 use tracing::error;
 
-use super::{KVStoreType, MetricsResultExt, PutResult, WritePolicy};
+use super::{
+    chunked_range::{assemble_chunked_range, covering_chunks, slice_range},
+    KVStoreType, MetricsResultExt, PutResult, WritePolicy,
+};
 use crate::prelude::*;
 
 /// Name of the partition-key attribute. Kept as `tx_hash` for backwards
@@ -415,6 +418,47 @@ impl DynamoDBArchive {
         Ok(results)
     }
 
+    /// Reads `[start, end_exclusive)` of `key` without reassembling the whole
+    /// value: chunked values fetch only the covering `{key}_chunk_{i}` items.
+    /// `Ok(None)` when the key is absent; the end clamps to EOF; a start
+    /// strictly past EOF (or past the end bound) is an error.
+    pub async fn read_range(
+        &self,
+        key: &str,
+        start: usize,
+        end_exclusive: usize,
+    ) -> Result<Option<Bytes>> {
+        let mut raw = self.batch_get_raw(&[key.to_owned()]).await?;
+        match raw.remove(key) {
+            None => Ok(None),
+            Some(RawItem::Value(bytes)) => Ok(Some(slice_range(&bytes, start, end_exclusive)?)),
+            Some(RawItem::Chunked(chunk_count)) => {
+                let Some(fetch) = covering_chunks(start, end_exclusive, chunk_count, CHUNK_SIZE)?
+                else {
+                    return Ok(Some(Bytes::new()));
+                };
+                let chunk_keys: Vec<String> = fetch.clone().map(|i| chunk_key(key, i)).collect();
+                let mut raw_chunks = self.batch_get_raw(&chunk_keys).await?;
+                let mut fetched: std::collections::BTreeMap<usize, Bytes> = Default::default();
+                for index in fetch {
+                    match raw_chunks.remove(&chunk_key(key, index)) {
+                        Some(RawItem::Value(bytes)) => {
+                            fetched.insert(index, bytes);
+                        }
+                        _ => bail!("chunk {index} of {key} is missing in table {}", self.table),
+                    }
+                }
+                Ok(Some(assemble_chunked_range(
+                    &fetched,
+                    chunk_count,
+                    CHUNK_SIZE,
+                    start,
+                    end_exclusive,
+                )?))
+            }
+        }
+    }
+
     /// One direct PutItem; under NoClobber, conditioned on the key not
     /// existing (`BatchWriteItem` cannot express conditions). Supported by
     /// DynamoDB and ScyllaDB Alternator alike.
@@ -737,55 +781,71 @@ mod tests {
     #[ignore = "requires a running ScyllaDB Alternator endpoint"]
     async fn scylla_alternator_noclobber_first_write_wins() {
         let store = archive("archive_noclobber").await.unwrap();
+        // Unique keys per run: NoClobber against the persistent test table
+        // would otherwise skip the "first" write on a re-run.
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let small_key = format!("nc/small_{nanos}");
+        let big_key = format!("nc/big_{nanos}");
 
         let first = patterned(2_000);
         assert_eq!(
             store
-                .put("nc/small", first.clone(), WritePolicy::NoClobber)
+                .put(small_key.clone(), first.clone(), WritePolicy::NoClobber)
                 .await
                 .unwrap(),
             PutResult::Written
         );
         assert_eq!(
             store
-                .put("nc/small", vec![0xff; 2_000], WritePolicy::NoClobber)
+                .put(small_key.clone(), vec![0xff; 2_000], WritePolicy::NoClobber)
                 .await
                 .unwrap(),
             PutResult::Skipped
         );
         assert_eq!(
-            store.get("nc/small").await.unwrap().as_deref(),
+            store.get(&small_key).await.unwrap().as_deref(),
             Some(first.as_slice())
         );
 
         let big_first = patterned(CHUNK_SIZE + 5);
         assert_eq!(
             store
-                .put("nc/big", big_first.clone(), WritePolicy::NoClobber)
+                .put(big_key.clone(), big_first.clone(), WritePolicy::NoClobber)
                 .await
                 .unwrap(),
             PutResult::Written
         );
         assert_eq!(
             store
-                .put("nc/big", vec![0xee; CHUNK_SIZE + 5], WritePolicy::NoClobber)
+                .put(
+                    big_key.clone(),
+                    vec![0xee; CHUNK_SIZE + 5],
+                    WritePolicy::NoClobber
+                )
                 .await
                 .unwrap(),
             PutResult::Skipped
         );
         assert_eq!(
-            store.get("nc/big").await.unwrap().as_deref(),
+            store.get(&big_key).await.unwrap().as_deref(),
             Some(big_first.as_slice())
         );
 
         // AllowOverwrite still replaces.
         let replacement = vec![0xaa; 1_000];
         store
-            .put("nc/small", replacement.clone(), WritePolicy::AllowOverwrite)
+            .put(
+                small_key.clone(),
+                replacement.clone(),
+                WritePolicy::AllowOverwrite,
+            )
             .await
             .unwrap();
         assert_eq!(
-            store.get("nc/small").await.unwrap().as_deref(),
+            store.get(&small_key).await.unwrap().as_deref(),
             Some(replacement.as_slice())
         );
     }

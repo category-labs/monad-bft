@@ -269,9 +269,17 @@ async fn main() -> std::io::Result<()> {
                 let config: cli::ChainDataReaderConfig =
                     toml::from_str(&std::fs::read_to_string(path)?)
                         .map_err(|e| std::io::Error::other(e.to_string()))?;
+                // Archive-format external readers (mongo/dynamo) are built by
+                // monad-archive, which owns those byte formats.
+                let external = monad_archive::chain_data_external::build_archive_external_reader(
+                    &config.store.archive,
+                )
+                .await
+                .map_err(std::io::Error::other)?;
                 monad_chain_data::open_configured_chain_data_reader(
                     config.store,
                     monad_chain_data::QueryLimits::new(config.max_limit, config.max_block_range),
+                    external,
                 )
                 .await
                 .map_err(std::io::Error::other)

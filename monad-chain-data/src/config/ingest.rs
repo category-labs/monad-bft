@@ -211,10 +211,14 @@ fn validate_blobless_ingest(
 /// Opens the configured stores and drives the branchless ingest engine
 /// (`run_ingest`) over them. A bounded range (`end`/`count`)
 /// selects backfill; otherwise it follows the tip.
+/// `external`: a pre-built external payload reader (monad-archive's
+/// archive-format readers); required for mongo/dynamo `[store.archive]`
+/// backends, `None` lets the S3 backend build from config.
 pub async fn run_configured_chain_data_engine_ingest<S>(
     store_config: ChainDataStoreConfig,
     engine_config: ChainDataEngineConfig,
     source: S,
+    external: Option<std::sync::Arc<dyn crate::external::ExternalBlobReader>>,
 ) -> Result<()>
 where
     S: ChainDataIngestSource,
@@ -223,14 +227,22 @@ where
     engine_config.validate()?;
     validate_blobless_ingest(&store_config, &engine_config)?;
     #[cfg(not(any(feature = "dynamo", feature = "mongo")))]
-    let _ = source;
+    let _ = (source, external);
 
     match &store_config.meta {
         #[cfg(feature = "dynamo")]
         ChainDataMetaBackendConfig::Dynamo(meta_config) => {
             let meta_store = build_dynamo_meta_store(meta_config).await?;
             let shared = Some(meta_store.shared_connection());
-            dispatch_blob_engine(&store_config, &engine_config, source, meta_store, shared).await
+            dispatch_blob_engine(
+                &store_config,
+                &engine_config,
+                source,
+                meta_store,
+                shared,
+                external,
+            )
+            .await
         }
         // Mongo meta is blob-less only (validated), so it always runs the
         // external-archive engine over the loud NullBlobStore: checkpoints
@@ -249,6 +261,7 @@ where
                 meta_store,
                 crate::store::NullBlobStore,
                 false,
+                external,
             )
             .await
         }
@@ -266,6 +279,7 @@ async fn dispatch_blob_engine<M, S>(
     source: S,
     meta_store: M,
     dynamo_connection: Option<SharedDynamoConnection>,
+    external: Option<std::sync::Arc<dyn crate::external::ExternalBlobReader>>,
 ) -> Result<()>
 where
     M: MetaStore,
@@ -282,6 +296,7 @@ where
                 meta_store,
                 blob_store,
                 true,
+                external,
             )
             .await
         }
@@ -294,6 +309,7 @@ where
                 meta_store,
                 blob_store,
                 true,
+                external,
             )
             .await
         }
@@ -317,6 +333,7 @@ where
                 meta_store,
                 crate::store::NullBlobStore,
                 false,
+                external,
             )
             .await
         }
@@ -324,6 +341,7 @@ where
 }
 
 #[cfg(any(feature = "dynamo", feature = "mongo"))]
+#[allow(clippy::too_many_arguments)]
 async fn run_engine_with_store<M, B, S>(
     store_config: &ChainDataStoreConfig,
     engine_config: &ChainDataEngineConfig,
@@ -331,6 +349,7 @@ async fn run_engine_with_store<M, B, S>(
     meta_store: M,
     blob_store: B,
     checkpoints_enabled: bool,
+    external: Option<std::sync::Arc<dyn crate::external::ExternalBlobReader>>,
 ) -> Result<()>
 where
     M: MetaStore,
@@ -359,7 +378,9 @@ where
     // Ingest never reads external payloads itself (dict training is disabled
     // in external mode), but attaching configured archive access keeps the
     // shared `Tables` fully wired for any read path it serves.
-    if let Some(reader) = super::build_external_payload_reader(&store_config.archive).await? {
+    if let Some(reader) =
+        super::build_external_payload_reader(&store_config.archive, external).await?
+    {
         tables = tables.with_external_payload_reader(reader);
     }
     let tables = Arc::new(tables);

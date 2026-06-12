@@ -13,30 +13,28 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! Range math shared by the external archive readers over CHUNKED backends
-//! (Mongo documents, Dynamo items): monad-archive splits oversized values
-//! into `{key}_chunk_{i}` entries of a fixed per-backend chunk size, with a
-//! main entry carrying the chunk count. Range reads fetch only the covering
-//! chunks and slice.
+//! Range math shared by the byte-range read paths of the CHUNKING backends
+//! (Mongo documents, Dynamo items): both split oversized values into
+//! `{key}_chunk_{i}` entries of a fixed per-backend chunk size, with a main
+//! entry carrying the chunk count. A range read fetches only the covering
+//! chunks and slices.
+//!
+//! Range semantics (shared with `monad_chain_data::store::BlobStore`'s
+//! `read_range`): the end clamps to EOF; a start strictly past EOF, or past
+//! the end bound, is an error; a missing key is `None` at the caller.
 
 use std::collections::BTreeMap;
 
 use bytes::Bytes;
+use eyre::{bail, Result};
 
-use crate::error::{MonadChainDataError, Result};
-
-/// Key of one chunk entry: monad-archive's `_chunk_{i}` convention (decimal
-/// index), shared by its Mongo and Dynamo writers.
-pub(crate) fn archive_chunk_key(key: &str, index: usize) -> String {
-    format!("{key}_chunk_{index}")
-}
-
-/// Slices `[start, end_exclusive)` out of one whole object, with the
-/// [`crate::store::BlobStore::read_range`] contract: end clamps to EOF, a
-/// start strictly past EOF (or past the end bound) is an error.
+/// Slices `[start, end_exclusive)` out of one whole object.
 pub(crate) fn slice_range(object: &Bytes, start: usize, end_exclusive: usize) -> Result<Bytes> {
     if start > end_exclusive || start > object.len() {
-        return Err(MonadChainDataError::Decode("invalid blob range"));
+        bail!(
+            "invalid byte range {start}..{end_exclusive} for a {}-byte object",
+            object.len()
+        );
     }
     Ok(object.slice(start..end_exclusive.min(object.len())))
 }
@@ -53,7 +51,7 @@ pub(crate) fn covering_chunks(
     chunk_size: usize,
 ) -> Result<Option<std::ops::RangeInclusive<usize>>> {
     if start > end_exclusive {
-        return Err(MonadChainDataError::Decode("invalid blob range"));
+        bail!("invalid byte range {start}..{end_exclusive}");
     }
     let last = chunk_count - 1;
     let first_wanted = start / chunk_size;
@@ -70,9 +68,9 @@ pub(crate) fn covering_chunks(
 }
 
 /// Concatenates `[start, end_exclusive)` from the fetched covering chunks.
-/// Every non-last chunk must be exactly `chunk_size` bytes (the archive's
-/// writer invariant); the last chunk's length defines the object's total
-/// length for EOF clamping and the past-EOF start check.
+/// Every non-last chunk must be exactly `chunk_size` bytes (the writers'
+/// invariant); the last chunk's length defines the object's total length for
+/// EOF clamping and the past-EOF start check.
 pub(crate) fn assemble_chunked_range(
     fetched: &BTreeMap<usize, Bytes>,
     chunk_count: usize,
@@ -83,16 +81,16 @@ pub(crate) fn assemble_chunked_range(
     let last = chunk_count - 1;
     for (&index, chunk) in fetched {
         if index < last && chunk.len() != chunk_size {
-            return Err(MonadChainDataError::Backend(format!(
-                "archive chunk {index} has {} bytes, expected {chunk_size}",
+            bail!(
+                "chunk {index} has {} bytes, expected {chunk_size}",
                 chunk.len()
-            )));
+            );
         }
     }
     if let Some(last_chunk) = fetched.get(&last) {
         let total = last * chunk_size + last_chunk.len();
         if start > total {
-            return Err(MonadChainDataError::Decode("invalid blob range"));
+            bail!("invalid byte range {start}..{end_exclusive} for a {total}-byte object");
         }
     }
     let mut out = Vec::new();
@@ -113,7 +111,7 @@ mod tests {
 
     /// Reference implementation of the chunked range plan + assembly against
     /// a whole in-memory object, exercising the same code paths the live
-    /// readers use after their entry fetches.
+    /// read paths use after their entry fetches.
     fn read_via_chunks(
         object: &[u8],
         chunk_size: usize,
@@ -136,7 +134,7 @@ mod tests {
     }
 
     /// Every (start, end) pair over a 3.5-chunk object must agree with the
-    /// trivial whole-object slice under the read_range contract.
+    /// trivial whole-object slice under the range contract.
     #[test]
     fn chunked_reads_match_whole_object_slices() {
         const CS: usize = 8;
@@ -185,17 +183,5 @@ mod tests {
         let fetched: BTreeMap<usize, Bytes> =
             [(0usize, Bytes::from(vec![0u8; 5]))].into_iter().collect();
         assert!(assemble_chunked_range(&fetched, 3, 8, 0, 4).is_err());
-    }
-
-    #[test]
-    fn chunk_keys_match_archive_format() {
-        assert_eq!(
-            archive_chunk_key("block/000000000123", 0),
-            "block/000000000123_chunk_0"
-        );
-        assert_eq!(
-            archive_chunk_key("receipts/000000000123", 11),
-            "receipts/000000000123_chunk_11"
-        );
     }
 }
