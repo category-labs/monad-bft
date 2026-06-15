@@ -260,7 +260,7 @@ pub async fn monad_debug_trace_replay<T: Triedb>(
 
     // reject on the approximated encoded length before serialization
     if raw_payload.len() > max_response_size {
-        return Err(JsonRpcError::max_size_exceeded());
+        return Err(JsonRpcError::max_response_size_exceeded());
     }
 
     let v: serde_cbor::Value = serde_cbor::from_slice(&raw_payload)

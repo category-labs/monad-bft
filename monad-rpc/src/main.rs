@@ -369,6 +369,7 @@ async fn main() -> std::io::Result<()> {
         data_provider,
         event_server_client.clone(),
         args.batch_request_limit,
+        args.batch_concurrent_limit,
         args.max_response_size,
         args.allow_unprotected_txs,
         args.eth_get_logs_max_block_range,

@@ -14,6 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use actix_web::{web, HttpResponse};
+use futures::StreamExt;
 use monad_tracing_timing::TimingSpanExtension;
 use monad_triedb_utils::triedb_env::Triedb;
 use serde_json::value::RawValue;
@@ -65,6 +66,7 @@ use crate::{
     middleware::TimingRequestId,
     types::{
         eth_json::serialize_result,
+        json_serialized_len::JsonSerializedLen,
         jsonrpc::{
             serialize_with_size_limit, JsonRpcError, JsonRpcResult, JsonRpcResultExt, Request,
             RequestId, RequestParams, RequestWrapper, Response, ResponseWrapper,
@@ -147,12 +149,16 @@ pub async fn rpc_handler(
         }
         RequestWrapper::Batch(json_batch_request) => {
             root_span.record("json_method", "batch");
-            if json_batch_request.is_empty() {
+
+            let json_batch_request_len = json_batch_request.len();
+
+            if json_batch_request_len == 0 {
                 return HttpResponse::Ok().json(Response::from_error(JsonRpcError::custom(
                     "empty batch request".to_string(),
                 )));
             }
-            if json_batch_request.len() > app_state.batch_request_limit as usize {
+
+            if json_batch_request_len > app_state.batch_request_limit as usize {
                 return HttpResponse::Ok().json(Response::from_error(JsonRpcError::custom(
                     format!(
                         "number of requests in batch request exceeds limit of {}",
@@ -160,23 +166,47 @@ pub async fn rpc_handler(
                     ),
                 )));
             }
-            let batch_response =
-                futures::future::join_all(json_batch_request.into_iter().map(|json_request| {
-                    let app_state = app_state.clone(); // cheap copy
+
+            let mut batch_response_json_serialized_len = 0usize;
+
+            let batch_response = futures::stream::iter(json_batch_request)
+                .map(|json_request| {
+                    let app_state = app_state.clone();
 
                     async move {
                         let Ok(request) = Request::from_raw_value(json_request) else {
-                            return (RequestId::Null, Err(JsonRpcError::invalid_request()));
+                            return Response::from_result(
+                                RequestId::Null,
+                                Err(JsonRpcError::invalid_request()),
+                            );
                         };
+
                         let (state, id, method, params) =
                             (app_state, request.id, request.method, request.params);
-                        (id, rpc_select(&state, &method, params, request_id).await)
+
+                        let result = rpc_select(&state, &method, params, request_id).await;
+
+                        Response::from_result(id, result)
                     }
-                }))
-                .await
-                .into_iter()
-                .map(|(id, response)| Response::from_result(id, response))
-                .collect::<Vec<_>>();
+                })
+                .buffered(app_state.batch_concurrent_limit as usize)
+                .take_while(|response| {
+                    batch_response_json_serialized_len += response.json_serialized_len();
+
+                    let take =
+                        batch_response_json_serialized_len <= app_state.max_response_size as usize;
+
+                    async move { take }
+                })
+                .collect::<Vec<_>>()
+                .await;
+
+            if batch_response.len() < json_batch_request_len {
+                return HttpResponse::Ok().json(Response::from_error(
+                    JsonRpcError::max_response_size_exceeded(),
+                ));
+            }
+
             ResponseWrapper::Batch(batch_response)
         }
     };

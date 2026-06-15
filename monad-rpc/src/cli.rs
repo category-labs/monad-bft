@@ -69,6 +69,10 @@ pub struct Cli {
     #[arg(long, default_value_t = 1000)]
     pub batch_request_limit: u16,
 
+    /// Set the max number of requests that can execute concurrently in a batch request
+    #[arg(long, default_value_t = 32)]
+    pub batch_concurrent_limit: u16,
+
     /// Set the max request size in bytes (default 2MB)
     #[arg(long, default_value_t = 2_000_000)]
     pub max_request_size: usize,

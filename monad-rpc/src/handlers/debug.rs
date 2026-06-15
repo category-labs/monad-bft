@@ -79,7 +79,7 @@ pub async fn monad_debug_getRawBlock<T: Triedb>(
         txs_heuristic_response_size += 2 * tx.length();
 
         if txs_heuristic_response_size > max_response_size {
-            return Err(JsonRpcError::max_size_exceeded());
+            return Err(JsonRpcError::max_response_size_exceeded());
         }
     }
 
@@ -152,7 +152,7 @@ pub async fn monad_debug_getRawReceipts<T: Triedb>(
         heuristic_response_size += 2 + receipt.len();
 
         if heuristic_response_size > max_response_size {
-            return Err(JsonRpcError::max_size_exceeded());
+            return Err(JsonRpcError::max_response_size_exceeded());
         }
 
         receipts.push(receipt);
@@ -544,7 +544,7 @@ pub async fn monad_debug_traceTransaction<T: Triedb>(
     .await?;
 
     if traces.json_serialized_len() > max_response_size {
-        return Err(JsonRpcError::max_size_exceeded());
+        return Err(JsonRpcError::max_response_size_exceeded());
     }
 
     Ok(traces)
@@ -587,7 +587,7 @@ async fn decode_block_call_frames<T: Triedb>(
             heuristic_response_size.saturating_add(result.json_serialized_len());
 
         if heuristic_response_size > max_response_size {
-            return Err(JsonRpcError::max_size_exceeded());
+            return Err(JsonRpcError::max_response_size_exceeded());
         }
 
         resp.push(result);
@@ -1381,7 +1381,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn debug_raw_block_max_size_exceeded() {
+    async fn debug_raw_block_max_response_size_exceeded() {
         let mut mock_triedb = mock_triedb::MockTriedb::default();
         mock_triedb.set_latest_block(1);
 
@@ -1413,7 +1413,7 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert_eq!(error, JsonRpcError::max_size_exceeded());
+        assert_eq!(error, JsonRpcError::max_response_size_exceeded());
     }
 
     #[tokio::test]
