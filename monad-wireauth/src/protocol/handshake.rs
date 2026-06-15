@@ -285,51 +285,43 @@ pub fn send_handshake_response<R: secp256k1::rand::Rng + secp256k1::rand::Crypto
 
 pub fn accept_handshake_response(
     initiator_static_keypair: &monad_secp::KeyPair,
+    initiator_ephemeral_private: &monad_secp::KeyPair,
+    initiator_hash: &HashOutput,
+    initiator_chaining_key: &HashOutput,
     msg: &mut HandshakeResponse,
-    state: &mut HandshakeState,
     psk: &[u8; 32],
 ) -> Result<TransportKeys, HandshakeError> {
-    state.receiver_index = msg.sender_index.get();
     let remote_ephemeral = monad_secp::PubKey::from_slice(&msg.ephemeral_public)
         .map_err(|e| HandshakeError::StaticKeyDecryptionFailed(CryptoError::InvalidKey(e)))?;
-    state.remote_ephemeral = Some(remote_ephemeral);
-    state.hash = hash!(state.hash.as_ref(), &msg.ephemeral_public).into();
+    let mut handshake_hash = hash!(initiator_hash.as_ref(), &msg.ephemeral_public);
 
-    let temp = keyed_hash!(state.chaining_key.as_ref(), &msg.ephemeral_public);
-    state.chaining_key = keyed_hash!(temp.as_ref(), &[0x1]).into();
+    let temp = keyed_hash!(initiator_chaining_key.as_ref(), &msg.ephemeral_public);
+    let mut chaining_key: Zeroizing<HashOutput> = keyed_hash!(temp.as_ref(), &[0x1]).into();
 
-    let ecdh_ee = ecdh(
-        state
-            .ephemeral_private
-            .as_ref()
-            .expect("ephemeral private key must be set"),
-        &remote_ephemeral,
-    );
-    let temp = keyed_hash!(state.chaining_key.as_ref(), ecdh_ee.as_ref());
-    state.chaining_key = keyed_hash!(temp.as_ref(), &[0x1]).into();
+    let ecdh_ee = ecdh(initiator_ephemeral_private, &remote_ephemeral);
+    let temp = keyed_hash!(chaining_key.as_ref(), ecdh_ee.as_ref());
+    chaining_key = keyed_hash!(temp.as_ref(), &[0x1]).into();
 
     let ecdh_se = ecdh(initiator_static_keypair, &remote_ephemeral);
-    let temp = keyed_hash!(state.chaining_key.as_ref(), ecdh_se.as_ref());
-    state.chaining_key = keyed_hash!(temp.as_ref(), &[0x1]).into();
+    let temp = keyed_hash!(chaining_key.as_ref(), ecdh_se.as_ref());
+    chaining_key = keyed_hash!(temp.as_ref(), &[0x1]).into();
 
-    let temp = keyed_hash!(state.chaining_key.as_ref(), psk);
-    state.chaining_key = keyed_hash!(temp.as_ref(), &[0x1]).into();
-    let temp2 = keyed_hash!(temp.as_ref(), state.chaining_key.as_ref(), &[0x2]);
-    let key = keyed_hash!(temp.as_ref(), temp2.as_ref(), &[0x3]);
-    state.hash = hash!(state.hash.as_ref(), temp2.as_ref()).into();
+    let temp = keyed_hash!(chaining_key.as_ref(), psk);
+    chaining_key = keyed_hash!(temp.as_ref(), &[0x1]).into();
+    let temp2 = keyed_hash!(temp.as_ref(), chaining_key.as_ref(), &[0x2]);
+    let key: Zeroizing<HashOutput> = keyed_hash!(temp.as_ref(), temp2.as_ref(), &[0x3]).into();
+    handshake_hash = hash!(handshake_hash.as_ref(), temp2.as_ref());
 
-    let hash = state.hash.clone();
-    state.hash = hash!(state.hash.as_ref(), &msg.encrypted_nothing_tag).into();
     decrypt_in_place(
-        &(&key).into(),
+        &CipherKey::from(&*key),
         &(0u64).into(),
         &mut [],
         &msg.encrypted_nothing_tag,
-        hash.as_ref(),
+        handshake_hash.as_ref(),
     )
     .map_err(HandshakeError::EmptyMessageDecryptionFailed)?;
 
-    Ok(derive_transport_keys(&state.chaining_key, true))
+    Ok(derive_transport_keys(&chaining_key, true))
 }
 
 pub fn derive_transport_keys(chaining_key: &HashOutput, is_initiator: bool) -> TransportKeys {
@@ -512,11 +504,16 @@ mod tests {
         let response_trace = extract_response_trace(&resp_msg);
 
         let mut resp_msg_mut = resp_msg;
-        let mut init_state_mut = init_state;
+        let initiator_ephemeral_private = init_state
+            .ephemeral_private
+            .as_ref()
+            .expect("ephemeral private key must be set");
         let initiator_transport_keys = accept_handshake_response(
             &initiator_static_keypair,
+            initiator_ephemeral_private,
+            &init_state.hash,
+            &init_state.chaining_key,
             &mut resp_msg_mut,
-            &mut init_state_mut,
             &psk,
         )
         .unwrap();
@@ -680,11 +677,16 @@ mod tests {
         );
 
         let mut resp_msg_mut = resp_msg;
-        let mut init_state_mut = init_state;
+        let initiator_ephemeral_private = init_state
+            .ephemeral_private
+            .as_ref()
+            .expect("ephemeral private key must be set");
         let initiator_transport_keys = accept_handshake_response(
             &initiator_static_keypair,
+            initiator_ephemeral_private,
+            &init_state.hash,
+            &init_state.chaining_key,
             &mut resp_msg_mut,
-            &mut init_state_mut,
             &psk,
         )
         .unwrap();
@@ -799,11 +801,16 @@ mod tests {
             let response_trace = extract_response_trace(&resp_msg);
 
             let mut resp_msg_mut = resp_msg;
-            let mut init_state_mut = init_state;
+            let initiator_ephemeral_private = init_state
+                .ephemeral_private
+                .as_ref()
+                .expect("ephemeral private key must be set");
             let initiator_keys = accept_handshake_response(
                 &initiator_static_keypair,
+                initiator_ephemeral_private,
+                &init_state.hash,
+                &init_state.chaining_key,
                 &mut resp_msg_mut,
-                &mut init_state_mut,
                 &psk,
             )
             .unwrap();

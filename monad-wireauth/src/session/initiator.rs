@@ -111,17 +111,24 @@ impl InitiatorState {
         local_static_key: &monad_secp::KeyPair,
         msg: &mut HandshakeResponse,
     ) -> Result<ValidatedHandshakeResponse, SessionError> {
+        let initiator_ephemeral_private = self
+            .handshake_state
+            .ephemeral_private
+            .as_ref()
+            .expect("ephemeral private key must be set");
         let transport_keys = handshake::accept_handshake_response(
             local_static_key,
+            initiator_ephemeral_private,
+            &self.handshake_state.hash,
+            &self.handshake_state.chaining_key,
             msg,
-            &mut self.handshake_state,
             &config.psk,
         )
         .map_err(SessionError::HandshakeError)?;
 
         Ok(ValidatedHandshakeResponse {
             transport_keys,
-            remote_index: self.handshake_state.receiver_index.into(),
+            remote_index: msg.sender_index.into(),
         })
     }
 
