@@ -42,6 +42,7 @@ pub async fn init_server(
         data_provider: None,
         event_server_client: None,
         batch_request_limit: 5,
+        batch_concurrent_limit: 5,
         max_response_size: 25_000_000,
         allow_unprotected_txs: false,
         logs_max_block_range: 1000,

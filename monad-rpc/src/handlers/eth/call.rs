@@ -792,7 +792,7 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
             .await?;
 
             if frame.json_serialized_len() > max_response_size {
-                return Err(JsonRpcError::max_size_exceeded());
+                return Err(JsonRpcError::max_response_size_exceeded());
             }
             serde_json::value::to_raw_value(&frame).map_err(|e| {
                 JsonRpcError::internal_error(format!("json serialization error: {}", e))
@@ -802,7 +802,7 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
         MonadTracer::PreStateTracer | MonadTracer::StateDiffTracer => {
             // reject on the approximated encoded length before serialization
             if raw_payload.len() > max_response_size {
-                return Err(JsonRpcError::max_size_exceeded());
+                return Err(JsonRpcError::max_response_size_exceeded());
             }
             let v: serde_cbor::Value = serde_cbor::from_slice(&raw_payload)
                 .map_err(|e| JsonRpcError::internal_error(format!("cbor decode error: {}", e)))?;

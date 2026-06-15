@@ -1003,7 +1003,7 @@ async fn try_collect_logs_stream_with_heuristic_response_limit<E>(
                 }));
 
                 if heuristic_response_size > max_response_size as u64 {
-                    return Err(JsonRpcError::max_size_exceeded());
+                    return Err(JsonRpcError::max_response_size_exceeded());
                 }
 
                 if heuristic_response_size >= EXTRAPOLATION_CHECK_MIN_RESPONSE_SIZE
@@ -1019,7 +1019,7 @@ async fn try_collect_logs_stream_with_heuristic_response_limit<E>(
                             .saturating_div(num_blocks_total);
 
                     if extrapolated_heuristic_size > extrapolation_max_response_size {
-                        return Err(JsonRpcError::max_size_exceeded());
+                        return Err(JsonRpcError::max_response_size_exceeded());
                     }
                 }
             }

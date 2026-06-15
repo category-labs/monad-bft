@@ -500,7 +500,7 @@ impl JsonRpcError {
         Self::custom("overloaded, try again later".to_string())
     }
 
-    pub fn max_size_exceeded() -> Self {
+    pub fn max_response_size_exceeded() -> Self {
         Self::custom("response exceeds size limit".to_string())
     }
 }
