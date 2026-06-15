@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::collections::BTreeMap;
+
 use alloy_primitives::Address;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -52,6 +54,9 @@ pub struct NodeConfig<ST: CertificateSignatureRecoverable> {
     pub node_name: String,
     pub network_name: String,
 
+    #[serde(default)]
+    pub prometheus: Option<PrometheusConfig>,
+
     #[serde(deserialize_with = "deserialize_eth_address_from_str")]
     pub beneficiary: Address,
 
@@ -84,6 +89,14 @@ pub struct NodeConfig<ST: CertificateSignatureRecoverable> {
     // NETWORK-WIDE CONFIGURATION //
     ////////////////////////////////
     pub chain_id: u64,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct PrometheusConfig {
+    pub bind_addr: String,
+    #[serde(default)]
+    pub labels: BTreeMap<String, String>,
 }
 
 #[cfg(feature = "crypto")]

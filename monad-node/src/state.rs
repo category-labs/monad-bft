@@ -14,6 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
+    collections::BTreeMap,
     env,
     ffi::OsStr,
     path::{Path, PathBuf},
@@ -28,7 +29,7 @@ use monad_chain_config::MonadChainConfig;
 use monad_consensus_types::validator_data::ValidatorsConfigFile;
 use monad_control_panel::TracingReload;
 use monad_keystore::keystore::Keystore;
-use monad_node_config::{ForkpointConfig, MonadNodeConfig, ValidatorsConfigType};
+use monad_node_config::{ForkpointConfig, MonadNodeConfig, PrometheusConfig, ValidatorsConfigType};
 use monad_secp::KeyPair;
 use monad_types::Round;
 use reqwest::{blocking::Client, Url};
@@ -40,7 +41,7 @@ use tracing_subscriber::{
     Layer,
 };
 
-use crate::{cli::Cli, error::NodeSetupError, metrics::Label};
+use crate::{cli::Cli, error::NodeSetupError};
 
 const REMOTE_FORKPOINT_URL_ENV: &str = "REMOTE_FORKPOINT_URL";
 const REMOTE_VALIDATORS_URL_ENV: &str = "REMOTE_VALIDATORS_URL";
@@ -48,7 +49,7 @@ const REMOTE_VALIDATORS_URL_ENV: &str = "REMOTE_VALIDATORS_URL";
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MetricsConfig {
     pub addr: String,
-    pub labels: Vec<Label>,
+    pub labels: BTreeMap<String, String>,
 }
 
 pub struct NodeState {
@@ -105,14 +106,10 @@ impl NodeState {
             otel_endpoint,
             keystore_password,
             record_metrics_interval_seconds,
-            metrics,
-            metrics_labels,
             pprof,
             manytrace_socket,
             persisted_peers_path,
         } = Cli::from_arg_matches_mut(&mut cmd.get_matches_mut())?;
-
-        let metrics = parse_metrics_config(metrics, metrics_labels)?;
 
         let (reload_handle, agent) = NodeState::setup_tracing(manytrace_socket)?;
 
@@ -141,6 +138,7 @@ impl NodeState {
 
         let node_config: MonadNodeConfig =
             toml::from_str(&std::fs::read_to_string(&node_config_path)?)?;
+        let metrics = parse_metrics_config(node_config.prometheus.as_ref())?;
 
         if !matches!(
             forkpoint_config_path.extension().and_then(OsStr::to_str),
@@ -263,21 +261,37 @@ impl NodeState {
 }
 
 fn parse_metrics_config(
-    addr: String,
-    labels: Vec<Label>,
+    config: Option<&PrometheusConfig>,
 ) -> Result<Option<MetricsConfig>, NodeSetupError> {
-    if addr.is_empty() {
-        if labels.is_empty() {
-            Ok(None)
-        } else {
-            Err(NodeSetupError::Custom {
-                kind: ErrorKind::MissingRequiredArgument,
-                msg: "--metrics-labels requires --metrics".to_owned(),
-            })
+    let Some(config) = config else {
+        return Ok(None);
+    };
+
+    for key in config.labels.keys() {
+        if !is_valid_label_key(key) {
+            return Err(NodeSetupError::Custom {
+                kind: ErrorKind::InvalidValue,
+                msg: format!(
+                    "invalid prometheus label key {key:?}; expected [a-zA-Z_][a-zA-Z0-9_]*"
+                ),
+            });
         }
-    } else {
-        Ok(Some(MetricsConfig { addr, labels }))
     }
+
+    Ok(Some(MetricsConfig {
+        addr: config.bind_addr.clone(),
+        labels: config.labels.clone(),
+    }))
+}
+
+fn is_valid_label_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+
+    (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
 fn fetch_local_configs(
