@@ -464,12 +464,12 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         MONAD_NODE_VERSION,
     );
     if let Some(metrics_config) = &node_state.metrics {
-        for label in &metrics_config.labels {
+        for (key, value) in &metrics_config.labels {
             if prometheus_labels
-                .insert(label.key.clone(), label.value.clone())
+                .insert(key.clone(), value.clone())
                 .is_some()
             {
-                error!(label = %label.key, "duplicate prometheus label");
+                error!(label = %key, "duplicate prometheus label");
                 return Err(());
             }
         }

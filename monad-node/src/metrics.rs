@@ -25,43 +25,6 @@ use monad_consensus_types::metrics::Metrics as StateMetrics;
 use monad_executor::{metric_consts, ExecutorMetrics, ExecutorMetricsChain, Gauge};
 use prometheus::{Encoder, ProtobufEncoder, Registry, TextEncoder};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Label {
-    pub key: String,
-    pub value: String,
-}
-
-pub fn parse_label(label: &str) -> Result<Label, String> {
-    let Some((key, value)) = label.split_once('=') else {
-        return Err("expected key=value".to_owned());
-    };
-
-    if key.is_empty() {
-        return Err("label key must not be empty".to_owned());
-    }
-
-    if !is_valid_label_key(key) {
-        return Err(format!(
-            "invalid label key {key:?}; expected [a-zA-Z_][a-zA-Z0-9_]*"
-        ));
-    }
-
-    Ok(Label {
-        key: key.to_owned(),
-        value: value.to_owned(),
-    })
-}
-
-fn is_valid_label_key(key: &str) -> bool {
-    let mut chars = key.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-
-    (first.is_ascii_alphabetic() || first == '_')
-        && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-}
-
 pub fn default_prometheus_labels(
     service_name: String,
     network_name: String,
