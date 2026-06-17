@@ -206,7 +206,12 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
                     } else {
                         tx.chain_id = Some(U64::from(chain_id));
                     }
-                    tx.try_into().map_err(|_| JsonRpcError::invalid_params())
+                    match tx.try_into().map_err(|_| JsonRpcError::invalid_params()) {
+                        Ok(TxEnvelope::Legacy(_)) => Err(JsonRpcError::custom(String::from(
+                            "Legacy transactions are unsupported at this time",
+                        ))),
+                        x => x,
+                    }
                 })
                 .collect::<Result<Vec<_>, _>>()
         })
