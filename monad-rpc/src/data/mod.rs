@@ -49,7 +49,7 @@ use self::{
     },
 };
 use crate::{
-    data::source::{DataSourceError, TriedbDataSource},
+    data::source::{DataSourceError, HistoricalDataSourceExt, TriedbDataSource},
     handlers::eth::txn::FilterError,
     types::{
         eth_json::{BlockTagOrHash, BlockTags, MonadLog, MonadTransactionReceipt},
@@ -390,23 +390,16 @@ where
             }
         }
 
-        if let Some(block_pointer) = self
+        if let Some(header) = self
             .historical
-            .try_resolve(block)
+            .try_resolve_and_then(block, |source, pointer| source.get_block_header(pointer))
             .await
             .map_err(ChainStateError::DataSource)?
         {
-            if let Some(header) = self
-                .historical
-                .get_block_header(block_pointer)
-                .await
-                .map_err(ChainStateError::DataSource)?
-            {
-                return Ok(header);
-            }
+            Ok(header)
+        } else {
+            Err(ChainStateError::ResourceNotFound)
         }
-
-        Err(ChainStateError::ResourceNotFound)
     }
 
     pub async fn get_block(
@@ -425,28 +418,21 @@ where
             }
         }
 
-        if let Some(block_pointer) = self
+        if let Some((header, transactions)) = self
             .historical
-            .try_resolve(block)
+            .try_resolve_and_then(block, |source, pointer| source.get_block(pointer))
             .await
             .map_err(ChainStateError::DataSource)?
         {
-            if let Some((header, transactions)) = self
-                .historical
-                .get_block(block_pointer)
-                .await
-                .map_err(ChainStateError::DataSource)?
-            {
-                return Ok(parse_block_content(
-                    header.hash_slow(),
-                    header,
-                    transactions,
-                    return_full_txns,
-                ));
-            }
+            Ok(parse_block_content(
+                header.hash_slow(),
+                header,
+                transactions,
+                return_full_txns,
+            ))
+        } else {
+            Err(ChainStateError::ResourceNotFound)
         }
-
-        Err(ChainStateError::ResourceNotFound)
     }
 
     /// Returns raw transaction receipts for a block.
