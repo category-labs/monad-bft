@@ -173,7 +173,7 @@ const MONAD_DEVNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     v_0_8_0_activation: Round::MIN,
     v_0_10_0_activation: Round::MIN,
     v_0_11_0_activation: Round::MIN,
-    v_0_12_0_activation: Round::MAX,
+    v_0_12_0_activation: Round(36_403_232),
 
     staking_config: MONAD_DEVNET_STAKING_CONFIG,
 
