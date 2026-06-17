@@ -172,6 +172,7 @@ pub struct RaptorCastConfigSecondaryPublisher<PT: PubKey> {
     pub group_scheduling: GroupSchedulingConfig,
 }
 
+#[cfg(test)]
 impl<PT: PubKey> Default for RaptorCastConfigSecondaryPublisher<PT> {
     fn default() -> RaptorCastConfigSecondaryPublisher<PT> {
         RaptorCastConfigSecondaryPublisher {
@@ -191,6 +192,7 @@ pub struct GroupSchedulingConfig {
     pub init_empty_round_span: Round, // like round_span but for the case when we need an empty, locked group right now
 }
 
+#[cfg(test)]
 impl Default for GroupSchedulingConfig {
     fn default() -> GroupSchedulingConfig {
         // Note: by default a Round lasts 500ms. See config entry ChainParams::vote_pace

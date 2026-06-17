@@ -33,6 +33,10 @@ use crate::{
     util::{SecondaryGroup, SecondaryGroupAssignment},
 };
 
+// Default full_node_raptorcast.round_span is 240. Refuse to accept
+// invites that exceed 4x that.
+pub(crate) const MAX_ACCEPTED_ROUND_SPAN: Round = Round(960);
+
 monad_executor::metric_consts! {
     pub CLIENT_NUM_CURRENT_GROUPS {
         name: "monad.bft.raptorcast.secondary.client.num_current_groups",
@@ -179,11 +183,20 @@ where
         &self,
         invite_msg: &PrepareGroup<CertificateSignaturePubKey<ST>>,
     ) -> bool {
-        // Sanity check the message
+        // Round span sanity checks
         if invite_msg.start_round >= invite_msg.end_round {
             warn!(
-                "RaptorCastSecondary rejecting invite message due to \
-                        failed sanity check: {:?}",
+                "RaptorCastSecondary rejecting invite message with \
+                   empty/malformed round span, invite = {:?}",
+                invite_msg
+            );
+            return false;
+        }
+        let span_len = invite_msg.end_round - invite_msg.start_round;
+        if span_len > MAX_ACCEPTED_ROUND_SPAN {
+            warn!(
+                "RaptorCastSecondary rejecting invite message with \
+                     round span exceeding max accepted span, invite = {:?}",
                 invite_msg
             );
             return false;
@@ -572,12 +585,20 @@ mod tests {
                 start_round: Round(5),
                 end_round: Round(6),
             },
-            // invalid round span
+            // round span backwards
             PrepareGroup {
                 max_group_size: 1,
                 validator_id: nid(2),
                 start_round: Round(7),
                 end_round: Round(5),
+            },
+            // unreasonably long round span
+            PrepareGroup {
+                max_group_size: 1,
+                validator_id: nid(2),
+                start_round: Round(5),
+                // 5 + MAX_ACCEPTED_ROUND_SPAN + 1
+                end_round: Round(966),
             },
         ];
 

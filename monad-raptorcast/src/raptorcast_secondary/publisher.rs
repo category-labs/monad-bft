@@ -234,10 +234,16 @@ where
             scheduling_cfg.max_invite_wait +
             scheduling_cfg.deadline_round_dist;
         if scheduling_cfg.init_empty_round_span < min_allowed_init_span {
-            panic!("init_empty_round_span infeasibly short");
+            panic!("full_node_raptorcast.init_empty_round_span infeasibly short");
         }
         if scheduling_cfg.invite_lookahead < min_allowed_init_span {
-            panic!("invite_lookahead infeasibly short");
+            panic!("full_node_raptorcast.invite_lookahead infeasibly short");
+        }
+        if scheduling_cfg.round_span > super::client::MAX_ACCEPTED_ROUND_SPAN {
+            panic!(
+                "full_node_raptorcast.round_span exceeds MAX_ACCEPTED_ROUND_SPAN({})",
+                super::client::MAX_ACCEPTED_ROUND_SPAN.0
+            );
         }
 
         // Remove duplicate entries from always_ask_full_nodes, but making sure
