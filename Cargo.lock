@@ -2164,15 +2164,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "build-rs"
-version = "0.3.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe808acca98fccf920154ee7833e791bfb683299be4aae7ec222ddffad8cd4f8"
-dependencies = [
- "unicode-ident",
-]
-
-[[package]]
 name = "bumpalo"
 version = "3.19.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5501,7 +5492,6 @@ dependencies = [
 name = "monad-event-ring"
 version = "0.1.0"
 dependencies = [
- "build-rs",
  "libc",
  "monad-build",
 ]
