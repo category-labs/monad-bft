@@ -5214,6 +5214,7 @@ dependencies = [
  "futures",
  "getrandom 0.2.16",
  "hex",
+ "monad-blocksync",
  "monad-chain-config",
  "monad-consensus",
  "monad-consensus-types",

@@ -14,6 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
+    collections::BTreeMap,
     hash::{DefaultHasher, Hash, Hasher},
     ops::Deref,
     time::Duration,
@@ -21,7 +22,9 @@ use std::{
 
 use async_graphql::{Context, NewType, Object, Union};
 use bytes::Bytes;
-use monad_consensus_types::metrics::Metrics;
+use monad_consensus_types::{
+    block::ConsensusBlockHeader, metrics::Metrics, payload::ConsensusBlockBodyId,
+};
 use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
 use monad_executor_glue::{
     BlockSyncEvent, ConfigEvent, ConsensusEvent, ControlPanelEvent, MempoolEvent, MonadEvent,
@@ -32,9 +35,18 @@ use monad_mock_swarm::{
     swarm_relation::{DebugSwarmRelation, SwarmRelation},
 };
 use monad_transformer::ID;
-use monad_types::{NodeId, Round, SeqNum, Serializable, GENESIS_ROUND, GENESIS_SEQ_NUM};
+use monad_types::{
+    BlockId, NodeId, Round, SeqNum, Serializable, GENESIS_ROUND, GENESIS_SEQ_NUM,
+};
+use monad_updaters::ledger::MockableLedger;
 
-use crate::{graphql::message::GraphQLMonadMessage, simulation::Simulation};
+use crate::{
+    graphql::message::GraphQLMonadMessage,
+    network::{
+        EffectiveLinkRule, NetworkCommand, NetworkCommandAction, NetworkConfig, NetworkNodeState,
+    },
+    simulation::Simulation,
+};
 
 type SwarmRelationType = DebugSwarmRelation;
 type SignatureType = <SwarmRelationType as SwarmRelation>::SignatureType;
@@ -42,8 +54,117 @@ type SignatureCollectionType = <SwarmRelationType as SwarmRelation>::SignatureCo
 type ExecutionProtocolType = <SwarmRelationType as SwarmRelation>::ExecutionProtocolType;
 type TransportMessage = <SwarmRelationType as SwarmRelation>::TransportMessage;
 type MonadEventType = MonadEvent<SignatureType, SignatureCollectionType, ExecutionProtocolType>;
+type BlockHeaderType = ConsensusBlockHeader<SignatureType, SignatureCollectionType, ExecutionProtocolType>;
 
 mod message;
+
+pub(crate) fn block_id_string(block_id: &BlockId) -> String {
+    hex::encode(block_id.0.as_ref())
+}
+
+pub(crate) fn block_body_id_string(body_id: &ConsensusBlockBodyId) -> String {
+    hex::encode(body_id.0.as_ref())
+}
+
+pub(crate) struct GraphQLBlockRef {
+    id: BlockId,
+    parent_id: BlockId,
+    body_id: ConsensusBlockBodyId,
+    seq_num: SeqNum,
+    round: Round,
+    author: NodeId<CertificateSignaturePubKey<SignatureType>>,
+}
+
+impl GraphQLBlockRef {
+    pub(crate) fn from_header(header: &BlockHeaderType) -> Self {
+        Self {
+            id: header.get_id(),
+            parent_id: header.get_parent_id(),
+            body_id: header.block_body_id,
+            seq_num: header.seq_num,
+            round: header.block_round,
+            author: header.author,
+        }
+    }
+}
+
+#[Object]
+impl GraphQLBlockRef {
+    async fn id(&self) -> String {
+        block_id_string(&self.id)
+    }
+
+    async fn parent_id(&self) -> String {
+        block_id_string(&self.parent_id)
+    }
+
+    async fn body_id(&self) -> String {
+        block_body_id_string(&self.body_id)
+    }
+
+    async fn seq_num(&self) -> GraphQLSeqNum {
+        GraphQLSeqNum::new(self.seq_num)
+    }
+
+    async fn round(&self) -> GraphQLRound {
+        GraphQLRound::new(self.round)
+    }
+
+    async fn author_id(&self) -> GraphQLNodeId {
+        (&self.author).into()
+    }
+}
+
+struct GraphQLLedgerBlock {
+    id: BlockId,
+    parent_id: Option<BlockId>,
+    body_id: Option<ConsensusBlockBodyId>,
+    seq_num: SeqNum,
+    round: Round,
+    author: Option<NodeId<CertificateSignaturePubKey<SignatureType>>>,
+    coherent: bool,
+    finalized: bool,
+    children_ids: Vec<BlockId>,
+}
+
+#[Object]
+impl GraphQLLedgerBlock {
+    async fn id(&self) -> String {
+        block_id_string(&self.id)
+    }
+
+    async fn parent_id(&self) -> Option<String> {
+        self.parent_id.as_ref().map(block_id_string)
+    }
+
+    async fn body_id(&self) -> Option<String> {
+        self.body_id.as_ref().map(block_body_id_string)
+    }
+
+    async fn seq_num(&self) -> GraphQLSeqNum {
+        GraphQLSeqNum::new(self.seq_num)
+    }
+
+    async fn round(&self) -> GraphQLRound {
+        GraphQLRound::new(self.round)
+    }
+
+    async fn author_id(&self) -> Option<GraphQLNodeId> {
+        self.author.as_ref().map(Into::into)
+    }
+
+    async fn coherent(&self) -> bool {
+        self.coherent
+    }
+
+    async fn finalized(&self) -> bool {
+        self.finalized
+    }
+
+    async fn children_ids(&self) -> Vec<String> {
+        self.children_ids.iter().map(block_id_string).collect()
+    }
+}
 
 #[derive(NewType)]
 struct GraphQLNodeId(String);
@@ -221,6 +342,212 @@ impl GraphQLRoot {
             .map(|(tick, id, event)| GraphQLEventLogEntry { tick, id, event })
             .collect()
     }
+
+    async fn network_config<'ctx>(&self, ctx: &Context<'ctx>) -> GraphQLNetworkConfig<'ctx> {
+        let simulation = ctx.data_unchecked::<GraphQLSimulation>();
+        GraphQLNetworkConfig(&simulation.network_config)
+    }
+
+    async fn network_command_log<'ctx>(
+        &self,
+        ctx: &Context<'ctx>,
+    ) -> Vec<GraphQLNetworkCommand<'ctx>> {
+        let simulation = ctx.data_unchecked::<GraphQLSimulation>();
+        simulation
+            .network_command_log
+            .iter()
+            .map(GraphQLNetworkCommand)
+            .collect()
+    }
+}
+
+struct GraphQLNetworkConfig<'s>(&'s NetworkConfig);
+
+#[Object]
+impl GraphQLNetworkConfig<'_> {
+    async fn default_latency(&self) -> GraphQLTimestamp {
+        GraphQLTimestamp::new(self.0.default_latency())
+    }
+
+    async fn links(&self) -> Vec<GraphQLNetworkLink> {
+        self.0
+            .effective_link_rules()
+            .into_iter()
+            .map(GraphQLNetworkLink)
+            .collect()
+    }
+
+    async fn nodes(&self) -> Vec<GraphQLNetworkNode> {
+        self.0
+            .nodes()
+            .into_iter()
+            .map(GraphQLNetworkNode)
+            .collect()
+    }
+}
+
+struct GraphQLNetworkLink(EffectiveLinkRule);
+
+#[Object]
+impl GraphQLNetworkLink {
+    async fn from_id(&self) -> GraphQLNodeId {
+        (&self.0.from).into()
+    }
+
+    async fn to_id(&self) -> GraphQLNodeId {
+        (&self.0.to).into()
+    }
+
+    async fn latency(&self) -> GraphQLTimestamp {
+        GraphQLTimestamp::new(self.0.latency)
+    }
+
+    async fn dropped(&self) -> bool {
+        self.0.dropped
+    }
+
+    async fn offline(&self) -> bool {
+        self.0.offline
+    }
+
+    async fn overridden(&self) -> bool {
+        self.0.overridden
+    }
+}
+
+struct GraphQLNetworkNode(NetworkNodeState);
+
+#[Object]
+impl GraphQLNetworkNode {
+    async fn id(&self) -> GraphQLNodeId {
+        (&self.0.id).into()
+    }
+
+    async fn x(&self) -> i32 {
+        self.0.x
+    }
+
+    async fn y(&self) -> i32 {
+        self.0.y
+    }
+
+    async fn online(&self) -> bool {
+        self.0.online
+    }
+}
+
+struct GraphQLNetworkCommand<'s>(&'s NetworkCommand);
+
+#[Object]
+impl GraphQLNetworkCommand<'_> {
+    async fn tick(&self) -> GraphQLTimestamp {
+        GraphQLTimestamp::new(self.0.tick)
+    }
+
+    async fn sequence(&self) -> i64 {
+        self.0.sequence.try_into().unwrap()
+    }
+
+    async fn kind(&self) -> &'static str {
+        match &self.0.action {
+            NetworkCommandAction::SetDefaultLatency { .. } => "SET_DEFAULT_LATENCY",
+            NetworkCommandAction::SetLinkLatency { .. } => "SET_LINK_LATENCY",
+            NetworkCommandAction::SetLinkDropped { .. } => "SET_LINK_DROPPED",
+            NetworkCommandAction::ClearLinkRule { .. } => "CLEAR_LINK_RULE",
+            NetworkCommandAction::SetNodePosition { .. } => "SET_NODE_POSITION",
+            NetworkCommandAction::SetNodeOnline { .. } => "SET_NODE_ONLINE",
+        }
+    }
+
+    async fn from_id(&self) -> Option<GraphQLNodeId> {
+        match &self.0.action {
+            NetworkCommandAction::SetLinkLatency { from, .. }
+            | NetworkCommandAction::SetLinkDropped { from, .. }
+            | NetworkCommandAction::ClearLinkRule { from, .. } => Some(from.into()),
+            NetworkCommandAction::SetDefaultLatency { .. }
+            | NetworkCommandAction::SetNodePosition { .. }
+            | NetworkCommandAction::SetNodeOnline { .. } => None,
+        }
+    }
+
+    async fn to_id(&self) -> Option<GraphQLNodeId> {
+        match &self.0.action {
+            NetworkCommandAction::SetLinkLatency { to, .. }
+            | NetworkCommandAction::SetLinkDropped { to, .. }
+            | NetworkCommandAction::ClearLinkRule { to, .. } => Some(to.into()),
+            NetworkCommandAction::SetDefaultLatency { .. }
+            | NetworkCommandAction::SetNodePosition { .. }
+            | NetworkCommandAction::SetNodeOnline { .. } => None,
+        }
+    }
+
+    async fn node_id(&self) -> Option<GraphQLNodeId> {
+        match &self.0.action {
+            NetworkCommandAction::SetNodePosition { node, .. }
+            | NetworkCommandAction::SetNodeOnline { node, .. } => Some(node.into()),
+            NetworkCommandAction::SetDefaultLatency { .. }
+            | NetworkCommandAction::SetLinkLatency { .. }
+            | NetworkCommandAction::SetLinkDropped { .. }
+            | NetworkCommandAction::ClearLinkRule { .. } => None,
+        }
+    }
+
+    async fn latency(&self) -> Option<GraphQLTimestamp> {
+        match &self.0.action {
+            NetworkCommandAction::SetDefaultLatency { latency }
+            | NetworkCommandAction::SetLinkLatency { latency, .. } => {
+                Some(GraphQLTimestamp::new(*latency))
+            }
+            NetworkCommandAction::SetLinkDropped { .. }
+            | NetworkCommandAction::ClearLinkRule { .. }
+            | NetworkCommandAction::SetNodePosition { .. }
+            | NetworkCommandAction::SetNodeOnline { .. } => None,
+        }
+    }
+
+    async fn dropped(&self) -> Option<bool> {
+        match &self.0.action {
+            NetworkCommandAction::SetLinkDropped { dropped, .. } => Some(*dropped),
+            NetworkCommandAction::SetDefaultLatency { .. }
+            | NetworkCommandAction::SetLinkLatency { .. }
+            | NetworkCommandAction::ClearLinkRule { .. }
+            | NetworkCommandAction::SetNodePosition { .. }
+            | NetworkCommandAction::SetNodeOnline { .. } => None,
+        }
+    }
+
+    async fn x(&self) -> Option<i32> {
+        match &self.0.action {
+            NetworkCommandAction::SetNodePosition { x, .. } => Some(*x),
+            NetworkCommandAction::SetDefaultLatency { .. }
+            | NetworkCommandAction::SetLinkLatency { .. }
+            | NetworkCommandAction::SetLinkDropped { .. }
+            | NetworkCommandAction::ClearLinkRule { .. }
+            | NetworkCommandAction::SetNodeOnline { .. } => None,
+        }
+    }
+
+    async fn y(&self) -> Option<i32> {
+        match &self.0.action {
+            NetworkCommandAction::SetNodePosition { y, .. } => Some(*y),
+            NetworkCommandAction::SetDefaultLatency { .. }
+            | NetworkCommandAction::SetLinkLatency { .. }
+            | NetworkCommandAction::SetLinkDropped { .. }
+            | NetworkCommandAction::ClearLinkRule { .. }
+            | NetworkCommandAction::SetNodeOnline { .. } => None,
+        }
+    }
+
+    async fn online(&self) -> Option<bool> {
+        match &self.0.action {
+            NetworkCommandAction::SetNodeOnline { online, .. } => Some(*online),
+            NetworkCommandAction::SetDefaultLatency { .. }
+            | NetworkCommandAction::SetLinkLatency { .. }
+            | NetworkCommandAction::SetLinkDropped { .. }
+            | NetworkCommandAction::ClearLinkRule { .. }
+            | NetworkCommandAction::SetNodePosition { .. } => None,
+        }
+    }
 }
 
 struct GraphQLNode<'s>(&'s Node<DebugSwarmRelation>);
@@ -238,6 +565,120 @@ impl<'s> GraphQLNode<'s> {
         };
         let root = state.blocktree().root().seq_num;
         GraphQLSeqNum::new(root)
+    }
+
+    async fn ledger_blocks(&self, limit: Option<i32>) -> Vec<GraphQLLedgerBlock> {
+        let Some(state) = self.0.state.consensus() else {
+            return Vec::new();
+        };
+        let blocktree = state.blocktree();
+        let root = blocktree.root();
+        let mut blocks_by_id = BTreeMap::new();
+
+        for block in self.0.executor.ledger().get_finalized_blocks().values() {
+            blocks_by_id.insert(
+                block.get_id(),
+                GraphQLLedgerBlock {
+                    id: block.get_id(),
+                    parent_id: Some(block.get_parent_id()),
+                    body_id: Some(block.get_body_id()),
+                    seq_num: block.get_seq_num(),
+                    round: block.get_block_round(),
+                    author: Some(*block.get_author()),
+                    coherent: true,
+                    finalized: true,
+                    children_ids: Vec::new(),
+                },
+            );
+        }
+
+        for (block_id, entry) in blocktree.tree().iter() {
+            let block = &entry.validated_block;
+            if let Some(existing_block) = blocks_by_id.get_mut(block_id) {
+                existing_block.coherent |= entry.is_coherent;
+                continue;
+            }
+
+            blocks_by_id.insert(
+                *block_id,
+                GraphQLLedgerBlock {
+                    id: *block_id,
+                    parent_id: Some(block.get_parent_id()),
+                    body_id: Some(block.get_body_id()),
+                    seq_num: block.get_seq_num(),
+                    round: block.get_block_round(),
+                    author: Some(*block.get_author()),
+                    coherent: entry.is_coherent,
+                    finalized: false,
+                    children_ids: Vec::new(),
+                },
+            );
+        }
+
+        blocks_by_id
+            .entry(root.block_id)
+            .and_modify(|block| {
+                block.coherent = true;
+                block.finalized = true;
+            })
+            .or_insert(GraphQLLedgerBlock {
+                id: root.block_id,
+                parent_id: None,
+                body_id: None,
+                seq_num: root.seq_num,
+                round: root.round,
+                author: None,
+                coherent: true,
+                finalized: true,
+                children_ids: Vec::new(),
+            });
+
+        let mut children_by_parent: BTreeMap<BlockId, Vec<BlockId>> = BTreeMap::new();
+        for block in blocks_by_id.values() {
+            if let Some(parent_id) = block.parent_id {
+                if blocks_by_id.contains_key(&parent_id) {
+                    children_by_parent
+                        .entry(parent_id)
+                        .or_default()
+                        .push(block.id);
+                }
+            }
+        }
+
+        for children in children_by_parent.values_mut() {
+            children.sort_by_key(|child_id| {
+                blocks_by_id
+                    .get(child_id)
+                    .map(|block| (block.seq_num, block.round, block.id))
+            });
+        }
+
+        for (parent_id, children) in children_by_parent {
+            if let Some(parent) = blocks_by_id.get_mut(&parent_id) {
+                parent.children_ids = children;
+            }
+        }
+
+        let mut blocks: Vec<_> = blocks_by_id.into_values().collect();
+        blocks.sort_by_key(|block| (block.seq_num, block.round, block.id));
+        if let Some(limit) = limit.and_then(|limit| usize::try_from(limit).ok()) {
+            if limit == 0 {
+                return Vec::new();
+            }
+            let root_block = blocks
+                .iter()
+                .position(|block| block.id == root.block_id)
+                .map(|index| blocks.remove(index));
+            let non_root_limit = limit.saturating_sub(usize::from(root_block.is_some()));
+            if blocks.len() > non_root_limit {
+                blocks = blocks.split_off(blocks.len() - non_root_limit);
+            }
+            if let Some(root_block) = root_block {
+                blocks.push(root_block);
+            }
+        }
+        blocks.sort_by_key(|block| (block.seq_num, block.round, block.id));
+        blocks
     }
 
     async fn is_blocked<'ctx>(&self, ctx: &Context<'ctx>) -> bool {

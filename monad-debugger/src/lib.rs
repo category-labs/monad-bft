@@ -21,14 +21,11 @@ use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_execution_state_read::InMemoryStateInner;
 use monad_mock_swarm::{
     mock::TimestamperConfig, mock_swarm::SwarmBuilder, node::NodeBuilder,
-    swarm_relation::NoSerSwarm,
+    swarm_relation::{DebugSwarmRelation, NoSerSwarm},
 };
 use monad_router_scheduler::{NoSerRouterConfig, RouterSchedulerBuilder};
 use monad_testutil::swarm::make_state_configs;
-use monad_transformer::{
-    DropTransformer, GenericTransformer, LatencyTransformer, PeriodicTransformer,
-    RandLatencyTransformer, ID,
-};
+use monad_transformer::{GenericTransformer, LatencyTransformer, ID};
 use monad_types::{NodeId, SeqNum};
 use monad_updaters::{
     ledger::MockLedger, statesync::MockStateSyncExecutor, txpool::MockTxPoolExecutor,
@@ -39,6 +36,7 @@ use wasm_bindgen::prelude::*;
 
 mod graphql;
 pub use graphql::GraphQLRoot;
+mod network;
 mod simulation;
 use simulation::Simulation;
 
@@ -57,65 +55,52 @@ static CHAIN_PARAMS: ChainParams = ChainParams {
 
 #[wasm_bindgen]
 pub fn simulation_make() -> *mut Simulation {
-    let config = || {
-        let state_configs = make_state_configs::<NoSerSwarm>(
-            4, // num_nodes
-            ValidatorSetFactory::default,
-            SimpleRoundRobin::default,
-            || MockValidator,
-            || PassthruBlockPolicy,
-            || InMemoryStateInner::genesis(SeqNum(4)),
-            SeqNum(4),                           // execution_delay
-            Duration::from_millis(50),           // delta
-            MockChainConfig::new(&CHAIN_PARAMS), // chain config
-            SeqNum(100),                         // state_sync_threshold
-        );
-        let all_peers: BTreeSet<_> = state_configs
-            .iter()
-            .map(|state_config| NodeId::new(state_config.key.pubkey()))
-            .collect();
-        let swarm_config = SwarmBuilder::<NoSerSwarm>(
-            state_configs
-                .into_iter()
-                .enumerate()
-                .map(|(seed, state_builder)| {
-                    let state_read = state_builder.state_read.clone();
-                    let validators = state_builder.locked_epoch_validators[0].clone();
-                    NodeBuilder::<NoSerSwarm>::new(
-                        ID::new(NodeId::new(state_builder.key.pubkey())),
-                        state_builder,
-                        NoSerRouterConfig::new(all_peers.clone()).build(),
-                        MockValSetUpdaterNop::new(validators.validators, SeqNum(2000)),
-                        MockTxPoolExecutor::default().with_chain_params(&CHAIN_PARAMS),
-                        MockLedger::new(state_read.clone()),
-                        MockStateSyncExecutor::new(state_read),
-                        vec![
-                            GenericTransformer::Latency(LatencyTransformer::new(
-                                Duration::from_millis(25),
-                            )),
-                            GenericTransformer::RandLatency(RandLatencyTransformer::new(
-                                0,
-                                Duration::from_millis(25),
-                            )),
-                            GenericTransformer::Periodic(PeriodicTransformer::new(
-                                Duration::from_millis(1_000),
-                                Duration::MAX,
-                            )),
-                            GenericTransformer::Drop(
-                                DropTransformer::new().drop_only_from(*all_peers.last().unwrap()),
-                            ),
-                        ],
-                        vec![],
-                        TimestamperConfig::default(),
-                        seed.try_into().unwrap(),
-                    )
-                })
-                .collect(),
-        );
-        swarm_config.debug()
-    };
+    Box::into_raw(Box::new(Simulation::new(Box::new(default_swarm_config))))
+}
 
-    Box::into_raw(Box::new(Simulation::new(Box::new(config))))
+pub(crate) fn default_swarm_config() -> SwarmBuilder<DebugSwarmRelation> {
+    let state_configs = make_state_configs::<NoSerSwarm>(
+        4, // num_nodes
+        ValidatorSetFactory::default,
+        SimpleRoundRobin::default,
+        || MockValidator,
+        || PassthruBlockPolicy,
+        || InMemoryStateInner::genesis(SeqNum(4)),
+        SeqNum(4),                           // execution_delay
+        Duration::from_millis(50),           // delta
+        MockChainConfig::new(&CHAIN_PARAMS), // chain config
+        SeqNum(100),                         // state_sync_threshold
+    );
+    let all_peers: BTreeSet<_> = state_configs
+        .iter()
+        .map(|state_config| NodeId::new(state_config.key.pubkey()))
+        .collect();
+    let swarm_config = SwarmBuilder::<NoSerSwarm>(
+        state_configs
+            .into_iter()
+            .enumerate()
+            .map(|(seed, state_builder)| {
+                let state_read = state_builder.state_read.clone();
+                let validators = state_builder.locked_epoch_validators[0].clone();
+                NodeBuilder::<NoSerSwarm>::new(
+                    ID::new(NodeId::new(state_builder.key.pubkey())),
+                    state_builder,
+                    NoSerRouterConfig::new(all_peers.clone()).build(),
+                    MockValSetUpdaterNop::new(validators.validators, SeqNum(2000)),
+                    MockTxPoolExecutor::default().with_chain_params(&CHAIN_PARAMS),
+                    MockLedger::new(state_read.clone()),
+                    MockStateSyncExecutor::new(state_read),
+                    vec![GenericTransformer::Latency(LatencyTransformer::new(
+                        Duration::from_millis(network::DEFAULT_LINK_LATENCY_MS),
+                    ))],
+                    vec![],
+                    TimestamperConfig::default(),
+                    seed.try_into().unwrap(),
+                )
+            })
+            .collect(),
+    );
+    swarm_config.debug()
 }
 
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
@@ -152,8 +137,69 @@ pub fn simulation_step(ptr: *mut Simulation) {
 
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[wasm_bindgen]
+pub fn simulation_reset(ptr: *mut Simulation) {
+    unsafe { &mut *ptr }.reset()
+}
+
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[wasm_bindgen]
+pub fn simulation_set_default_latency(ptr: *mut Simulation, latency_ms: i32) -> String {
+    serialize_result(unsafe { &mut *ptr }.set_default_latency(latency_ms))
+}
+
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[wasm_bindgen]
+pub fn simulation_set_link_latency(
+    ptr: *mut Simulation,
+    from_id: &str,
+    to_id: &str,
+    latency_ms: i32,
+) -> String {
+    serialize_result(unsafe { &mut *ptr }.set_link_latency(from_id, to_id, latency_ms))
+}
+
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[wasm_bindgen]
+pub fn simulation_set_link_dropped(
+    ptr: *mut Simulation,
+    from_id: &str,
+    to_id: &str,
+    dropped: bool,
+) -> String {
+    serialize_result(unsafe { &mut *ptr }.set_link_dropped(from_id, to_id, dropped))
+}
+
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[wasm_bindgen]
+pub fn simulation_clear_link_rule(ptr: *mut Simulation, from_id: &str, to_id: &str) -> String {
+    serialize_result(unsafe { &mut *ptr }.clear_link_rule(from_id, to_id))
+}
+
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[wasm_bindgen]
+pub fn simulation_set_node_position(
+    ptr: *mut Simulation,
+    node_id: &str,
+    x: i32,
+    y: i32,
+) -> String {
+    serialize_result(unsafe { &mut *ptr }.set_node_position(node_id, x, y))
+}
+
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[wasm_bindgen]
+pub fn simulation_set_node_online(ptr: *mut Simulation, node_id: &str, online: bool) -> String {
+    serialize_result(unsafe { &mut *ptr }.set_node_online(node_id, online))
+}
+
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[wasm_bindgen]
 pub fn simulation_free(ptr: *mut Simulation) {
     unsafe {
         let _ = Box::from_raw(ptr);
     }
+}
+
+fn serialize_result(result: Result<(), String>) -> String {
+    serde_json::to_string(&result).unwrap()
 }
