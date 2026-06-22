@@ -58,4 +58,39 @@ export class Simulation {
     public step() {
         monad.simulation_step(this.simulation);
     }
+
+    public reset() {
+        monad.simulation_reset(this.simulation);
+    }
+
+    public setDefaultLatency(latencyMs: number) {
+        this.command(monad.simulation_set_default_latency(this.simulation, latencyMs));
+    }
+
+    public setLinkLatency(fromId: string, toId: string, latencyMs: number) {
+        this.command(monad.simulation_set_link_latency(this.simulation, fromId, toId, latencyMs));
+    }
+
+    public setLinkDropped(fromId: string, toId: string, dropped: boolean) {
+        this.command(monad.simulation_set_link_dropped(this.simulation, fromId, toId, dropped));
+    }
+
+    public clearLinkRule(fromId: string, toId: string) {
+        this.command(monad.simulation_clear_link_rule(this.simulation, fromId, toId));
+    }
+
+    public setNodePosition(nodeId: string, x: number, y: number) {
+        this.command(monad.simulation_set_node_position(this.simulation, nodeId, x, y));
+    }
+
+    public setNodeOnline(nodeId: string, online: boolean) {
+        this.command(monad.simulation_set_node_online(this.simulation, nodeId, online));
+    }
+
+    private command(resultJson: string) {
+        const result: Result<void, string> = JSON.parse(resultJson);
+        if (result.Err !== undefined) {
+            throw new Error(result.Err);
+        }
+    }
 }

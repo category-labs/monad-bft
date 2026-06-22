@@ -12,6 +12,11 @@ fragment Node on GraphQLNode {
   isBlocked
   currentRound
   root
+  metrics {
+    consensusCreatedQc
+    consensusLocalTimeout
+    consensusHandleProposal
+  }
   roundTimerStartedAt
   roundTimerEndsAt
   pendingMessages {

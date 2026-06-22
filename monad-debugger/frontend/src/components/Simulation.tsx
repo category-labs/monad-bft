@@ -2,13 +2,12 @@ import { Component, createEffect, createMemo, createSignal, onCleanup, Show } fr
 import { createStore, reconcile } from "solid-js/store"
 import { SimulationDocument } from '../generated/graphql';
 import { Simulation } from '../wasm'
-import EventLog from './EventLog';
-import Graph from './Graph'
-import QueryEditor from './QueryEditor';
+import NetworkCanvas, { BlockSample } from './NetworkCanvas';
+import NetworkMatrix from './NetworkMatrix';
 import { throttle } from '@solid-primitives/scheduled';
 
 const maxTick = 2000;
-const simThrottleMs = 10;
+const simThrottleMs = 16;
 const simTimeScale = 1/40;
 
 const Sim: Component = () => {
@@ -19,10 +18,15 @@ const Sim: Component = () => {
     const fetchSimulationData = () => simulation.fetchUnchecked(SimulationDocument);
 
     const [simData, setSimData] = createStore(fetchSimulationData())
+    const [simulationVersion, setSimulationVersion] = createSignal(0);
+    const refreshSimulationData = () => {
+        setSimData(reconcile(fetchSimulationData(), { merge: true, key: 'id' }));
+        setSimulationVersion(version => version + 1);
+    };
     const [vizTick, setVizTick] = createSignal(0);
     const throttledUpdateSimData = throttle((simTick: number) => {
         simulation.setTick(simTick);
-        setSimData(reconcile(fetchSimulationData(), { merge: true, key: 'id' }));
+        refreshSimulationData();
     }, simThrottleMs);
     createEffect(() => {
         const simTick = Math.round(vizTick());
@@ -31,8 +35,27 @@ const Sim: Component = () => {
 
     const simulationSignal = () => {
         const _ = simData.currentTick;
+        const __ = simulationVersion();
         return simulation;
     };
+
+    const [blockSamples, setBlockSamples] = createSignal<BlockSample[]>([]);
+    const finalizedRoot = createMemo(() => {
+        const roots = simData.nodes.map((node) => node.root);
+        return roots.length === 0 ? 0 : Math.max(...roots);
+    });
+    createEffect(() => {
+        const tick = simData.currentTick;
+        const root = finalizedRoot();
+        setBlockSamples((samples) => {
+            let next = samples.filter((sample) => sample.tick <= tick && sample.root <= root);
+            const last = next.at(-1);
+            if ((!last || root > last.root) && tick >= 0) {
+                next = [...next, { tick, root }];
+            }
+            return next.slice(-32);
+        });
+    });
 
     const [playing, setPlaying] = createSignal(false);
     let lastTimeMs = Date.now();
@@ -40,7 +63,7 @@ const Sim: Component = () => {
     const animate = (currentTimeMs: number) => {
         if (playing()) {
             const scaledDiff = (currentTimeMs - lastTimeMs) * simTimeScale;
-            setVizTick((vizTick() + scaledDiff) % maxTick);
+            setVizTick(Math.min(maxTick, vizTick() + scaledDiff));
         }
         lastTimeMs = currentTimeMs;
         animationId = requestAnimationFrame(animate);
@@ -48,44 +71,66 @@ const Sim: Component = () => {
     animationId = requestAnimationFrame(animate);
     onCleanup(() => cancelAnimationFrame(animationId));
 
-    const [showEventLog, setShowEventLog] = createSignal(false);
-    const toggleEventLog = () => setShowEventLog(!showEventLog())
+    const [showMatrix, setShowMatrix] = createSignal(false);
 
-    const [showQueryEditor, setShowQueryEditor] = createSignal(false);
-    const toggleQueryEditor = () => setShowQueryEditor(!showQueryEditor())
+    const resetSimulation = () => {
+        simulation.reset();
+        setPlaying(false);
+        setVizTick(0);
+        setBlockSamples([]);
+        refreshSimulationData();
+    };
 
     return (
-        <>
-            <input type="range" min="0" max={maxTick} value={vizTick()} onInput={e => setVizTick(parseInt(e.target.value))} />
-            <div class="flex justify-between">
-                <div class="min-w-40">
-                    <span class="ml-2 mr-2">Current Tick: {Math.round(vizTick())}</span>
+        <div class="flex h-full min-h-0 flex-col bg-neutral-100 text-neutral-950">
+            <header class="flex shrink-0 items-center gap-3 border-b border-neutral-300 bg-white px-3 py-2">
+                <div class="min-w-36 text-sm font-semibold">
+                    Tick {Math.round(vizTick())}
                 </div>
-                <div>
-                </div>
-                <div>
-                    {/* <button class="border ml-2 mr-2" onClick={toggleQueryEditor}>Toggle Query Editor</button>
-                    <button class="border ml-2 mr-2" onClick={toggleEventLog}>Toggle Event Log</button> */}
+                <input
+                    class="h-2 grow accent-indigo-600"
+                    type="range"
+                    min="0"
+                    max={maxTick}
+                    value={vizTick()}
+                    onInput={e => setVizTick(parseInt(e.currentTarget.value))}
+                />
+                <div class="flex items-center gap-2">
                     <Show
                         when={!playing()}
                         fallback={
-                            <button class="border ml-2 mr-2" onClick={() => setPlaying(false)}>Stop</button>
+                            <button class="h-8 rounded-md border border-neutral-400 px-3 text-sm font-medium hover:bg-neutral-100" onClick={() => setPlaying(false)}>Stop</button>
                         }
                         >
-                        <button class="border ml-2 mr-2" onClick={() => setPlaying(true)}>Play</button>
+                        <button class="h-8 rounded-md border border-neutral-400 px-3 text-sm font-medium hover:bg-neutral-100" onClick={() => setPlaying(true)}>Play</button>
                     </Show>
+                    <button class="h-8 rounded-md border border-neutral-400 px-3 text-sm font-medium hover:bg-neutral-100" onClick={resetSimulation}>Reset</button>
+                    <button
+                        class={`h-8 rounded-md border px-3 text-sm font-medium ${showMatrix() ? "border-indigo-500 bg-indigo-50 text-indigo-700" : "border-neutral-400 hover:bg-neutral-100"}`}
+                        onClick={() => setShowMatrix((show) => !show)}
+                    >
+                        Matrix
+                    </button>
                 </div>
+            </header>
+            <div class="flex min-h-0 grow flex-row">
+                <NetworkCanvas
+                    simulation={simulationSignal()}
+                    data={simData}
+                    vizTick={vizTick()}
+                    blockSamples={blockSamples()}
+                    onChange={refreshSimulationData}
+                />
+                <Show when={showMatrix()}>
+                    <NetworkMatrix
+                        simulation={simulation}
+                        data={simData}
+                        onChange={refreshSimulationData}
+                        onReset={resetSimulation}
+                    />
+                </Show>
             </div>
-            <div class="grow flex flex-row min-h-0">
-                {/* <Show when={showQueryEditor()}>
-                    <QueryEditor simulation={simulationSignal()} />
-                </Show> */}
-                <Graph vizTick={vizTick()} simulation={simulationSignal()} />
-                {/* <Show when={showEventLog()}>
-                    <EventLog simulation={simulationSignal()} />
-                </Show> */}
-            </div>
-        </>
+        </div>
     )
 };
 export default Sim;

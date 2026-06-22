@@ -1,4 +1,129 @@
 query Simulation {
   currentTick
   nextTick
+  currentLeader
+  nextLeader
+  nodes {
+    id
+    isBlocked
+    currentRound
+    root
+    roundTimerStartedAt
+    roundTimerEndsAt
+    ledgerBlocks {
+      ...LedgerBlock
+    }
+    metrics {
+      consensusCreatedQc
+      consensusLocalTimeout
+      consensusHandleProposal
+    }
+    pendingMessages {
+      id
+      fromId
+      fromTick
+      rxTick
+      size
+      message {
+        __typename
+        ... on GraphQLBlockSyncRequestMessage {
+          requestType
+          bodyId
+          blockRange {
+            lastBlockId
+            numBlocks
+          }
+        }
+        ... on GraphQLBlockSyncResponseMessage {
+          responseType
+          available
+          bodyId
+          blockRange {
+            lastBlockId
+            numBlocks
+          }
+          blocks {
+            ...BlockRef
+          }
+        }
+        ... on GraphQLConsensusMessage {
+          round
+          message {
+            __typename
+            ... on GraphQLProposal {
+              seqNum
+              block {
+                ...BlockRef
+              }
+            }
+            ... on GraphQLVote {
+              round
+            }
+            ... on GraphQLTimeout {
+              round
+              highExtendType
+            }
+            ... on GraphQLAdvanceRound {
+              round
+            }
+            ... on GraphQLRoundRecovery {
+              round
+              blockId
+            }
+          }
+        }
+      }
+    }
+  }
+  networkConfig {
+    defaultLatency
+    nodes {
+      id
+      x
+      y
+      online
+    }
+    links {
+      fromId
+      toId
+      latency
+      dropped
+      offline
+      overridden
+    }
+  }
+  networkCommandLog {
+    tick
+    sequence
+    kind
+    fromId
+    toId
+    nodeId
+    latency
+    dropped
+    x
+    y
+    online
+  }
+}
+
+fragment BlockRef on GraphQLBlockRef {
+  id
+  parentId
+  bodyId
+  seqNum
+  round
+  authorId
+}
+
+fragment LedgerBlock on GraphQLLedgerBlock {
+  id
+  parentId
+  bodyId
+  seqNum
+  round
+  authorId
+  coherent
+  finalized
+  childrenIds
 }
