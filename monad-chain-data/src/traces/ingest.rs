@@ -15,7 +15,7 @@
 
 use alloy_primitives::U256;
 
-use super::types::{selector_from_input, StoredTrace};
+use monad_query_types::traces::{selector_from_input, StoredTrace};
 use crate::{
     engine::{
         bitmap::{IndexKind, StreamKey},

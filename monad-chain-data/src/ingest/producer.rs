@@ -26,7 +26,8 @@ use tracing::Instrument;
 use super::{
     probe::{IngestProbe, TIMING_TARGET},
     source::ChainDataIngestSource,
-    task_join_err, AbortOnDrop, AssignedBlock, DataMsg, FamilyFrontier, IndexMsg, IngestMsg,
+    task_join_err, AbortOnDrop, AssignedBlock, DataMsg, FamilyFrontier, FamilyFrontierExt,
+    IndexMsg, IngestMsg,
 };
 use crate::{
     error::{MonadChainDataError, Result},
