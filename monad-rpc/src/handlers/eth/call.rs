@@ -734,7 +734,7 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
         CallResult::Success(monad_ethcall::SuccessCallResult { output_data, .. }) => {
             Ok(ethhex::encode_bytes(&output_data))
         }
-        CallResult::Failure(error) => Err(JsonRpcError::eth_call_error(error.message, error.data)),
+        CallResult::Failure(error) => Err(error.into()),
         _ => Err(JsonRpcError::internal_error(
             "Unexpected CallResult type".into(),
         )),
@@ -774,9 +774,7 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
     .await?;
     let raw_payload: Vec<u8> = match call_result {
         CallResult::Success(monad_ethcall::SuccessCallResult { output_data, .. }) => output_data,
-        CallResult::Failure(error) => {
-            return Err(JsonRpcError::eth_call_error(error.message, error.data))
-        }
+        CallResult::Failure(error) => return Err(error.into()),
         CallResult::Revert(result) => result.trace,
     };
 
@@ -892,7 +890,7 @@ fn access_list_from_trace_call_result(call_result: CallResult) -> Result<AccessL
         CallResult::Success(monad_ethcall::SuccessCallResult { output_data, .. }) => {
             decode_access_list_trace(&output_data)
         }
-        CallResult::Failure(error) => Err(JsonRpcError::eth_call_error(error.message, error.data)),
+        CallResult::Failure(error) => Err(error.into()),
         CallResult::Revert(result) => decode_access_list_trace(&result.trace),
     }
 }
