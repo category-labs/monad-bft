@@ -5151,24 +5151,21 @@ dependencies = [
  "alloy-eips",
  "alloy-primitives",
  "alloy-rlp",
- "alloy-rpc-types-eth",
- "aws-config",
- "aws-sdk-dynamodb",
- "aws-sdk-s3",
  "blake3",
  "bytes",
  "eyre",
  "futures",
  "hyper-util",
- "mongodb",
- "quick_cache",
- "rayon",
+ "monad-query-engine",
+ "monad-query-errors",
+ "monad-query-primitives",
+ "monad-query-store",
+ "monad-query-types",
  "roaring",
  "s3s",
  "s3s-fs",
  "serde",
  "tempfile",
- "thiserror 1.0.69",
  "tokio",
  "toml",
  "tracing",
@@ -6019,6 +6016,97 @@ dependencies = [
  "actix-web",
  "jemalloc_pprof",
  "serde",
+]
+
+[[package]]
+name = "monad-query-engine"
+version = "0.1.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-primitives",
+ "alloy-rlp",
+ "blake3",
+ "bytes",
+ "futures",
+ "monad-query-errors",
+ "monad-query-primitives",
+ "monad-query-store",
+ "monad-query-types",
+ "quick_cache",
+ "rayon",
+ "roaring",
+ "serde",
+ "tokio",
+ "tracing",
+ "zstd",
+]
+
+[[package]]
+name = "monad-query-errors"
+version = "0.1.0"
+dependencies = [
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "monad-query-primitives"
+version = "0.1.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-primitives",
+ "alloy-rlp",
+ "bytes",
+ "futures",
+ "monad-query-errors",
+]
+
+[[package]]
+name = "monad-query-store"
+version = "0.1.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-primitives",
+ "alloy-rlp",
+ "alloy-rpc-types-eth",
+ "aws-config",
+ "aws-sdk-dynamodb",
+ "aws-sdk-s3",
+ "blake3",
+ "bytes",
+ "eyre",
+ "futures",
+ "hyper-util",
+ "monad-query-errors",
+ "monad-query-primitives",
+ "mongodb",
+ "quick_cache",
+ "rayon",
+ "roaring",
+ "s3s",
+ "s3s-fs",
+ "serde",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "toml",
+ "tracing",
+ "zstd",
+]
+
+[[package]]
+name = "monad-query-types"
+version = "0.1.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-primitives",
+ "alloy-rlp",
+ "alloy-rpc-types-eth",
+ "bytes",
+ "monad-query-errors",
+ "monad-query-primitives",
 ]
 
 [[package]]
