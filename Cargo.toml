@@ -47,6 +47,11 @@ monad-peer-discovery = { path = "./monad-peer-discovery" }
 monad-peer-score = { path = "./monad-peer-score" }
 monad-perf-util = { path = "./monad-perf-util" }
 monad-pprof = { path = "./monad-pprof" }
+monad-query-engine = { path = "./monad-query-engine" }
+monad-query-errors = { path = "./monad-query-errors" }
+monad-query-primitives = { path = "./monad-query-primitives" }
+monad-query-store = { path = "./monad-query-store", default-features = false }
+monad-query-types = { path = "./monad-query-types" }
 monad-raptor = { path = "./monad-raptor" }
 monad-raptorcast = { path = "./monad-raptorcast" }
 monad-router-multi = { path = "./monad-router-multi" }

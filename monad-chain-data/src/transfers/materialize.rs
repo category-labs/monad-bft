@@ -17,7 +17,7 @@ use std::collections::HashSet;
 
 use alloy_primitives::{Address, U256};
 
-use super::types::TransferEntry;
+use super::TransferEntry;
 use crate::{
     blocks::Block,
     engine::{

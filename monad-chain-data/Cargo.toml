@@ -10,41 +10,29 @@ bench = false
 
 [features]
 default = ["s3", "dynamo"]
-# Enables `TxEntry::to_rpc_transaction`, converting a stored tx into an
-# `alloy_rpc_types_eth::Transaction`. Off by default so the crate stays
-# narrow; the consensus envelope is always accessible via `TxEntry::envelope`.
-alloy-rpc-types-eth = ["dep:alloy-rpc-types-eth"]
-# Enables the S3-API-compatible blob backend (S3BlobStore): AWS S3, MinIO,
-# Cloudflare R2, Ceph RGW, etc. Pulls in the AWS SDK + tokio.
-s3 = ["dep:aws-config", "dep:aws-sdk-s3"]
-# Enables the DynamoDB-API-compatible meta backend (DynamoMetaStore): AWS
-# DynamoDB, DynamoDB Local, and ScyllaDB Alternator. Pulls in the AWS SDK +
-# tokio.
-dynamo = ["dep:aws-config", "dep:aws-sdk-dynamodb"]
-# Enables the MongoDB meta backend (MongoMetaStore) and the MongoDB external
-# archive reader (MongoExternalBlobReader), so chain-data indexes can live in
-# an operator's existing monad-archive MongoDB. Pulls in the MongoDB driver.
-mongo = ["dep:mongodb"]
+# Forwarded to monad-query-types: enables `TxEntry::to_rpc_transaction`.
+alloy-rpc-types-eth = ["monad-query-types/alloy-rpc-types-eth"]
+# Storage backend features, forwarded to monad-query-store.
+s3 = ["monad-query-store/s3"]
+dynamo = ["monad-query-store/dynamo"]
+mongo = ["monad-query-store/mongo"]
 
 [dependencies]
+monad-query-engine = { workspace = true }
+monad-query-errors = { workspace = true }
+monad-query-primitives = { workspace = true }
+monad-query-store = { workspace = true, default-features = false }
+monad-query-types = { workspace = true }
 alloy-consensus = { workspace = true }
 alloy-eips = { workspace = true }
 alloy-primitives = { workspace = true, features = ["rlp"] }
 alloy-rlp = { workspace = true, features = ["derive"] }
-alloy-rpc-types-eth = { workspace = true, optional = true }
-aws-config = { workspace = true, optional = true }
-aws-sdk-dynamodb = { workspace = true, optional = true }
-aws-sdk-s3 = { workspace = true, optional = true }
 blake3 = { workspace = true }
 bytes = { workspace = true }
 eyre = { workspace = true }
 futures = { workspace = true }
-mongodb = { workspace = true, optional = true }
-quick_cache = { workspace = true }
-rayon = { workspace = true }
 roaring = "0.11"
 serde = { workspace = true, features = ["derive"] }
-thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tracing = { workspace = true }
 zstd = { workspace = true }

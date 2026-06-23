@@ -1,0 +1,23 @@
+[package]
+name = "monad-query-types"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+bench = false
+
+[features]
+# Enables `TxEntry::to_rpc_transaction`, converting a stored tx into an
+# `alloy_rpc_types_eth::Transaction`. Off by default so the crate stays
+# narrow; the consensus envelope is always accessible via `TxEntry::envelope`.
+alloy-rpc-types-eth = ["dep:alloy-rpc-types-eth"]
+
+[dependencies]
+monad-query-errors = { workspace = true }
+monad-query-primitives = { workspace = true }
+alloy-consensus = { workspace = true }
+alloy-eips = { workspace = true }
+alloy-primitives = { workspace = true, features = ["rlp"] }
+alloy-rlp = { workspace = true, features = ["derive"] }
+alloy-rpc-types-eth = { workspace = true, optional = true }
+bytes = { workspace = true }

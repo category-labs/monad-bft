@@ -13,18 +13,42 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+//! queryX ingest + RPC-facing layer: configuration, the ingest worker, query
+//! materialization into RPC shapes, and external-archive decode. Built on the
+//! split-out query crates (errors/primitives/types/store/engine).
+
+// The lower query crates are re-exported under their historical module paths so
+// this crate's own modules — and downstream consumers' `monad_chain_data::{...}`
+// imports — keep resolving after the split. Transition shims.
+pub use monad_query_errors as error;
+
+pub mod store {
+    pub use monad_query_engine::{SessionFuture, WriteSession};
+    pub use monad_query_store::*;
+}
+
+pub mod primitives {
+    pub use monad_query_engine::primitives::*;
+}
+
+pub mod ingest_types {
+    pub use monad_query_primitives::{CallKind, Hash32};
+    pub use monad_query_types::ingest_types::*;
+}
+
+pub mod engine {
+    pub use monad_query_engine::{
+        bitmap, clause, digest, family, primary_dir, query, row_codec, tables,
+    };
+}
+
 pub mod api;
 pub mod blocks;
 pub mod config;
-pub mod engine;
-pub mod error;
 pub mod external;
 pub mod ingest;
-pub mod ingest_types;
 pub mod logs;
 pub mod mem_scan;
-pub mod primitives;
-pub mod store;
 pub mod testkit;
 pub mod traces;
 pub mod transfers;
@@ -57,7 +81,7 @@ pub use engine::{
     family::Family,
     tables::{DictConfig, PublicationTables, QueryRuntimeConfig, Tables},
 };
-pub use error::MonadChainDataError;
+pub use error::{LimitExceededKind, MonadChainDataError};
 pub use external::{
     ExternalBlobReader, ExternalFamilyRegion, ExternalPayloadSpec, InMemoryExternalBlobReader,
 };
@@ -66,7 +90,7 @@ pub use ingest_types::{CallKind, FinalizedBlock, Hash32, IngestTrace, IngestTx};
 pub use logs::{LogEntry, LogFilter, LogsRelations, QueryLogsRequest, QueryLogsResponse};
 pub use mem_scan::{scan_block_logs, scan_block_txs, MemLogsBlock, MemTx};
 pub use primitives::{
-    limits::{LimitExceededKind, QueryEnvelope, QueryLimits},
+    limits::{QueryEnvelope, QueryLimits},
     order::QueryOrder,
     records::{BlockBlobHeader, BlockRecord, FamilyWindowRecord, PrimaryId},
     refs::{BlockRef, BlockSpan},
