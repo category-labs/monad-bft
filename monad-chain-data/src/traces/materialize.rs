@@ -17,7 +17,7 @@ use std::collections::HashSet;
 
 use alloy_primitives::Address;
 
-use super::types::{StoredTrace, TraceEntry};
+use super::{StoredTrace, TraceEntry};
 use crate::{
     blocks::Block,
     engine::{

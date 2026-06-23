@@ -15,10 +15,9 @@
 
 mod ingest;
 mod materialize;
-mod types;
 
 pub use ingest::{compute_trace_addresses, is_transfer_frame};
 pub(crate) use ingest::{digest_block_traces, encode_block_traces, stream_entries_for_trace};
 pub(crate) use materialize::TraceMaterializer;
 pub use materialize::{QueryTracesRequest, QueryTracesResponse, TraceFilter, TracesRelations};
-pub use types::{StoredTrace, TraceEntry};
+pub use monad_query_types::traces::{StoredTrace, TraceEntry};
