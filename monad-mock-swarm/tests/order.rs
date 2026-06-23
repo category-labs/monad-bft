@@ -27,11 +27,16 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_execution_state_read::InMemoryStateInner;
 use monad_mock_swarm::{
-    fetch_metric, mock::TimestamperConfig, mock_swarm::SwarmBuilder, node::NodeBuilder,
-    swarm_relation::NoSerSwarm, terminator::UntilTerminator, verifier::MockSwarmVerifier,
+    fetch_metric,
+    mock::TimestamperConfig,
+    mock_swarm::SwarmBuilder,
+    node::NodeBuilder,
+    swarm::{make_state_configs, swarm_ledger_verification},
+    swarm_relation::NoSerSwarm,
+    terminator::UntilTerminator,
+    verifier::MockSwarmVerifier,
 };
 use monad_router_scheduler::{NoSerRouterConfig, RouterSchedulerBuilder};
-use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
 use monad_transformer::{
     GenericTransformer, LatencyTransformer, PartitionTransformer, ReplayTransformer,
     TransformerReplayOrder, ID,

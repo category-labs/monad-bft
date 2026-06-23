@@ -27,10 +27,10 @@ mod test {
         make_eip7702_tx, make_legacy_tx, make_signed_authorization, secret_to_eth_address,
     };
     use monad_mock_swarm::{
+        swarm::swarm_ledger_verification,
         terminator::UntilTerminator,
         verifier::{happy_path_tick_by_block, MockSwarmVerifier},
     };
-    use monad_testutil::swarm::swarm_ledger_verification;
     use monad_transformer::{
         DropTransformer, GenericTransformer, LatencyTransformer, PartitionTransformer,
     };

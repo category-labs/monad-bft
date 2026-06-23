@@ -32,6 +32,7 @@ use monad_mock_swarm::{
     mock::TimestamperConfig,
     mock_swarm::SwarmBuilder,
     node::NodeBuilder,
+    swarm::{make_state_configs, swarm_ledger_verification},
     swarm_relation::SwarmRelation,
     terminator::UntilTerminator,
     verifier::{happy_path_tick_by_block, MockSwarmVerifier},
@@ -39,7 +40,6 @@ use monad_mock_swarm::{
 use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSchedulerBuilder};
 use monad_secp::SecpSignature;
 use monad_state::{MonadMessage, VerifiedMonadMessage};
-use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
 use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer, ID};
 use monad_types::{NodeId, SeqNum};
 use monad_updaters::{

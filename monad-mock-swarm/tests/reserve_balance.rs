@@ -28,10 +28,10 @@ mod test {
     };
     use monad_execution_state_read::AccountState;
     use monad_mock_swarm::{
+        swarm::swarm_ledger_verification,
         terminator::UntilTerminator,
         verifier::{happy_path_tick_by_block, MockSwarmVerifier},
     };
-    use monad_testutil::swarm::swarm_ledger_verification;
     use monad_types::Balance;
     use monad_updaters::txpool::ByzantineConfig;
     use rand::Rng;

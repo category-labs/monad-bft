@@ -31,12 +31,11 @@ use monad_eth_types::EthExecutionProtocol;
 use monad_execution_state_read::{InMemoryState, InMemoryStateInner};
 use monad_mock_swarm::{
     mock::TimestamperConfig, mock_swarm::SwarmBuilder, node::NodeBuilder,
-    swarm_relation::SwarmRelation, terminator::UntilTerminator,
+    swarm::make_state_configs, swarm_relation::SwarmRelation, terminator::UntilTerminator,
 };
 use monad_multi_sig::MultiSig;
 use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSchedulerBuilder};
 use monad_state::{MonadMessage, VerifiedMonadMessage};
-use monad_testutil::swarm::make_state_configs;
 use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer, ID};
 use monad_types::{NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 use monad_updaters::{

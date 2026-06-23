@@ -21,10 +21,9 @@ use monad_crypto::certificate_signature::CertificateKeyPair;
 use monad_execution_state_read::InMemoryStateInner;
 use monad_mock_swarm::{
     mock::TimestamperConfig, mock_swarm::SwarmBuilder, node::NodeBuilder,
-    swarm_relation::NoSerSwarm,
+    swarm::make_state_configs, swarm_relation::NoSerSwarm,
 };
 use monad_router_scheduler::{NoSerRouterConfig, RouterSchedulerBuilder};
-use monad_testutil::swarm::make_state_configs;
 use monad_transformer::{
     DropTransformer, GenericTransformer, LatencyTransformer, PeriodicTransformer,
     RandLatencyTransformer, ID,
