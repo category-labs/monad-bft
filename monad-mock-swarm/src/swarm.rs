@@ -23,13 +23,13 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_mock_swarm::{mock_swarm::Nodes, swarm_relation::SwarmRelation};
 use monad_state::{Forkpoint, MonadStateBuilder};
+use monad_testutil::validators::create_keys_w_validators;
 use monad_types::{ExecutionProtocol, SeqNum};
 use monad_updaters::ledger::MockableLedger;
 use monad_validator::{signature_collection::SignatureCollection, validator_set::ValidatorSetType};
 
-use crate::validators::create_keys_w_validators;
+use crate::{mock_swarm::Nodes, swarm_relation::SwarmRelation};
 
 pub fn make_state_configs<S: SwarmRelation>(
     num_nodes: u16,

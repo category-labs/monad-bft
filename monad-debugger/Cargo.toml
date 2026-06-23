@@ -26,7 +26,6 @@ monad-executor-glue = { workspace = true }
 monad-mock-swarm = { workspace = true }
 monad-router-scheduler = { workspace = true }
 monad-state = { workspace = true }
-monad-testutil = { workspace = true }
 monad-transformer = { workspace = true }
 monad-types = { workspace = true }
 monad-updaters = { workspace = true }

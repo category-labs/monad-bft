@@ -39,6 +39,7 @@ mod test {
         mock::TimestamperConfig,
         mock_swarm::SwarmBuilder,
         node::{Node, NodeBuilder},
+        swarm::{make_state_configs, swarm_ledger_verification},
         swarm_relation::{NoSerSwarm, SwarmRelation},
         terminator::UntilTerminator,
         verifier::{happy_path_tick_by_block, happy_path_tick_by_round, MockSwarmVerifier},
@@ -46,7 +47,6 @@ mod test {
     use monad_multi_sig::MultiSig;
     use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSchedulerBuilder};
     use monad_state::{MonadMessage, Role, VerifiedMonadMessage};
-    use monad_testutil::swarm::{make_state_configs, swarm_ledger_verification};
     use monad_transformer::{
         DropTransformer, GenericTransformer, GenericTransformerPipeline, LatencyTransformer,
         PartitionTransformer, ID,

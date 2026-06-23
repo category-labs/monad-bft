@@ -31,15 +31,13 @@ mod test {
         mock::TimestamperConfig,
         mock_swarm::{Nodes, SwarmBuilder},
         node::NodeBuilder,
+        swarm::{ledger_verification, make_state_configs, swarm_ledger_verification},
         swarm_relation::{MonadMessageNoSerSwarm, NoSerSwarm},
         terminator::{ProgressTerminator, UntilTerminator},
         transformer::{FilterTransformer, MonadMessageTransformer},
         verifier::MockSwarmVerifier,
     };
     use monad_router_scheduler::{NoSerRouterConfig, RouterSchedulerBuilder};
-    use monad_testutil::swarm::{
-        ledger_verification, make_state_configs, swarm_ledger_verification,
-    };
     use monad_transformer::{
         DropTransformer, GenericTransformer, LatencyTransformer, PartitionTransformer,
         PeriodicTransformer, ID,

@@ -39,12 +39,12 @@ use monad_mock_swarm::{
     mock::TimestamperConfig,
     mock_swarm::{Nodes, SwarmBuilder},
     node::NodeBuilder,
+    swarm::make_state_configs,
     swarm_relation::SwarmRelation,
 };
 use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSchedulerBuilder};
 use monad_secp::{PubKey, SecpSignature};
 use monad_state::{MonadMessage, VerifiedMonadMessage};
-use monad_testutil::swarm::make_state_configs;
 use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer, ID};
 use monad_types::{NodeId, SeqNum, GENESIS_SEQ_NUM};
 use monad_updaters::{
