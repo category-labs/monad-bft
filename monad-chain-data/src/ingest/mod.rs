@@ -105,8 +105,15 @@ impl FamilyRanges {
 /// Per-family next-primary-id frontier.
 pub type FamilyFrontier = PerFamily<u64>;
 
-impl FamilyFrontier {
-    pub(crate) fn assign(&mut self, block: &FinalizedBlock) -> FamilyRanges {
+/// `assign` is a local extension trait rather than an inherent impl: `PerFamily`
+/// is defined in monad-query-engine, and Rust forbids inherent impls on a type
+/// from another crate.
+pub(crate) trait FamilyFrontierExt {
+    fn assign(&mut self, block: &FinalizedBlock) -> FamilyRanges;
+}
+
+impl FamilyFrontierExt for FamilyFrontier {
+    fn assign(&mut self, block: &FinalizedBlock) -> FamilyRanges {
         let log_count: u32 = block.logs_by_tx.iter().map(|t| t.len() as u32).sum();
         let tx_count = block.txs.len() as u32;
         let trace_count = block.traces.len() as u32;

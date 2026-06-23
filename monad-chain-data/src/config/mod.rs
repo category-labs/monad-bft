@@ -939,6 +939,10 @@ pub(crate) async fn build_dynamo_meta_store(
                 .table_prefix
                 .clone()
                 .expect("validated dynamo table_prefix"),
+            logical_names: crate::engine::tables::ALL_LOGICAL_TABLE_NAMES
+                .iter()
+                .map(|name| name.to_string())
+                .collect(),
         },
     };
     let credentials = dynamo_credentials(

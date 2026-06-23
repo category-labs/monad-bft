@@ -1,0 +1,29 @@
+[package]
+name = "monad-query-engine"
+version = "0.1.0"
+edition = "2021"
+
+# this is necessary for criterion bench options
+# https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
+[lib]
+bench = false
+
+[dependencies]
+monad-query-errors = { workspace = true }
+monad-query-primitives = { workspace = true }
+monad-query-store = { workspace = true, default-features = false }
+monad-query-types = { workspace = true }
+alloy-consensus = { workspace = true }
+alloy-eips = { workspace = true }
+alloy-primitives = { workspace = true, features = ["rlp"] }
+alloy-rlp = { workspace = true, features = ["derive"] }
+blake3 = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+quick_cache = { workspace = true }
+rayon = { workspace = true }
+roaring = "0.11"
+serde = { workspace = true, features = ["derive"] }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+tracing = { workspace = true }
+zstd = { workspace = true }

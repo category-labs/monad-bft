@@ -18,10 +18,9 @@
 //! into trace queries and projects matches into `TransferEntry`s.
 
 mod materialize;
-mod types;
 
 pub(crate) use materialize::TransferMaterializer;
 pub use materialize::{
     QueryTransfersRequest, QueryTransfersResponse, TransferFilter, TransfersRelations,
 };
-pub use types::TransferEntry;
+pub use monad_query_types::transfers::TransferEntry;

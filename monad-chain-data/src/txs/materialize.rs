@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use alloy_primitives::Address;
 use futures::{stream, StreamExt, TryStreamExt};
 
-use super::types::{StoredTxEnvelope, TxEntry};
+use super::{StoredTxEnvelope, TxEntry};
 use crate::{
     blocks::Block,
     engine::{
