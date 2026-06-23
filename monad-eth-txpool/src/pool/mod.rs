@@ -13,12 +13,17 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::BTreeMap, time::Duration};
+use std::{
+    collections::{BTreeMap, HashSet, VecDeque},
+    time::Duration,
+};
 
 use alloy_consensus::{
-    constants::EMPTY_WITHDRAWALS, transaction::Recovered, EMPTY_OMMER_ROOT_HASH,
+    constants::EMPTY_WITHDRAWALS,
+    transaction::{Recovered, SignerRecoverable},
+    Transaction, EMPTY_OMMER_ROOT_HASH,
 };
-use alloy_primitives::Address;
+use alloy_primitives::{Address, U256};
 use alloy_rlp::Encodable;
 use itertools::{Either, Itertools};
 use monad_chain_config::{
@@ -31,7 +36,7 @@ use monad_consensus_types::{
     payload::RoundSignature,
 };
 use monad_crypto::certificate_signature::{
-    CertificateSignaturePubKey, CertificateSignatureRecoverable,
+    CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_eth_block_policy::{
     compute_txn_max_gas_cost, timestamp_ns_to_secs, EthBlockPolicy, EthBlockPolicyBlockValidator,
@@ -40,7 +45,7 @@ use monad_eth_block_policy::{
 use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason, EthTxPoolSnapshot};
 use monad_eth_types::{
     AccountKey, EthBlockBody, EthExecutionProtocol, EthTxEnvelope, ExtractEthAddress,
-    ProposedEthHeader,
+    NamespaceTransactionBatch, NamespacedTx, ProposedEthHeader,
 };
 use monad_execution_state_read::{ExecutionStateRead, ExecutionStateReadError};
 use monad_system_calls::{SystemTransactionGenerator, SYSTEM_SENDER_ETH_ADDRESS};
@@ -85,12 +90,21 @@ where
     CRT: ChainRevision,
 {
     tracked: TrackedTxMap<ST, SCT, ESRT, CCT, CRT>,
+    namespace_batches: VecDeque<PoolNamespaceBatch<CertificateSignaturePubKey<ST>>>,
 
     last_commit: Option<ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>>,
 
     chain_id: u64,
     chain_revision: CRT,
     execution_revision: MonadExecutionRevision,
+}
+
+#[derive(Clone, Debug)]
+struct PoolNamespaceBatch<PT: PubKey> {
+    batch: NamespaceTransactionBatch,
+    txs: Vec<PoolTx<PT>>,
+    total_gas: u64,
+    total_size: u64,
 }
 
 impl<ST, SCT, ESRT, CCT, CRT> EthTxPool<ST, SCT, ESRT, CCT, CRT>
@@ -114,6 +128,7 @@ where
 
         Self {
             tracked: TrackedTxMap::new(config_limits),
+            namespace_batches: VecDeque::new(),
 
             last_commit: None,
 
@@ -124,11 +139,16 @@ where
     }
 
     pub fn is_empty(&self) -> bool {
-        self.tracked.is_empty()
+        self.tracked.is_empty() && self.namespace_batches.is_empty()
     }
 
     pub fn num_txs(&self) -> usize {
         self.tracked.num_txs()
+            + self
+                .namespace_batches
+                .iter()
+                .map(|batch| batch.txs.len())
+                .sum::<usize>()
     }
 
     pub fn current_revision(&self) -> (&CRT, &MonadExecutionRevision) {
@@ -274,6 +294,189 @@ where
         self.update_aggregate_metrics(event_tracker);
     }
 
+    pub fn insert_namespace_batches(
+        &mut self,
+        event_tracker: &mut EthTxPoolEventTracker<'_>,
+        block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
+        state_read: &mut ESRT,
+        chain_config: &CCT,
+        batches: Vec<(NamespaceTransactionBatch, U256, Vec<u8>)>,
+        mut on_insert: impl FnMut(&PoolTx<CertificateSignaturePubKey<ST>>),
+    ) {
+        let Some(last_commit) = self.last_commit.as_ref() else {
+            for (batch, _, _) in batches {
+                for tx in batch.transactions.iter() {
+                    event_tracker.drop(*tx.tx_hash(), EthTxPoolDropReason::PoolNotReady);
+                }
+            }
+            return;
+        };
+
+        let chain_params = self.chain_revision.chain_params();
+        let execution_params = self.execution_revision.execution_chain_params();
+
+        'batch: for (batch, priority, extra_data) in batches {
+            if batch.transactions.is_empty() {
+                continue;
+            }
+
+            if batch.recover_signer().is_err() {
+                for tx in batch.transactions.iter() {
+                    event_tracker.drop(*tx.tx_hash(), EthTxPoolDropReason::InvalidSignature);
+                }
+                continue;
+            }
+
+            let mut namespace = None;
+            for tx in batch.transactions.iter() {
+                let tx_namespace = match tx.namespace(self.chain_id) {
+                    Ok(Some(namespace)) => namespace,
+                    Ok(None) => {
+                        for tx in batch.transactions.iter() {
+                            event_tracker.drop(
+                                *tx.tx_hash(),
+                                EthTxPoolDropReason::NotWellFormed(
+                                    monad_eth_block_policy::validation::StaticValidationError::InvalidChainId {
+                                        tx_chain_id: tx.chain_id().unwrap_or(self.chain_id),
+                                    },
+                                ),
+                            );
+                        }
+                        continue 'batch;
+                    }
+                    Err(monad_eth_types::WrongChainId::InvalidNamespaceSuffix {
+                        tx_chain_id,
+                        ..
+                    }) => {
+                        for tx in batch.transactions.iter() {
+                            event_tracker.drop(
+                                *tx.tx_hash(),
+                                EthTxPoolDropReason::NotWellFormed(
+                                    monad_eth_block_policy::validation::StaticValidationError::InvalidChainId {
+                                        tx_chain_id,
+                                    },
+                                ),
+                            );
+                        }
+                        continue 'batch;
+                    }
+                };
+
+                if namespace.is_some_and(|namespace| namespace != tx_namespace) {
+                    for tx in batch.transactions.iter() {
+                        event_tracker.drop(
+                            *tx.tx_hash(),
+                            EthTxPoolDropReason::NotWellFormed(
+                                monad_eth_block_policy::validation::StaticValidationError::InvalidChainId {
+                                    tx_chain_id: tx.chain_id().unwrap_or(self.chain_id),
+                                },
+                            ),
+                        );
+                    }
+                    continue 'batch;
+                }
+                namespace = Some(tx_namespace);
+            }
+
+            let mut pool_txs = Vec::with_capacity(batch.transactions.len());
+            let mut total_gas = 0_u64;
+            let mut total_size = 0_u64;
+
+            for tx in batch.transactions.iter().cloned() {
+                let recovered_tx = match tx.recover_signer() {
+                    Ok(signer) => Recovered::new_unchecked(tx, signer),
+                    Err(_) => {
+                        for tx in batch.transactions.iter() {
+                            event_tracker
+                                .drop(*tx.tx_hash(), EthTxPoolDropReason::InvalidSignature);
+                        }
+                        continue 'batch;
+                    }
+                };
+
+                let pool_tx = match PoolTx::validate(
+                    last_commit,
+                    self.chain_id,
+                    chain_params,
+                    execution_params,
+                    recovered_tx,
+                    PoolTxKind::Owned {
+                        priority,
+                        extra_data: extra_data.clone(),
+                    },
+                ) {
+                    Ok(pool_tx) => pool_tx,
+                    Err((_tx, drop_reason)) => {
+                        for tx in batch.transactions.iter() {
+                            event_tracker.drop(*tx.tx_hash(), drop_reason);
+                        }
+                        continue 'batch;
+                    }
+                };
+
+                total_gas = total_gas.saturating_add(pool_tx.gas_limit());
+                total_size = total_size.saturating_add(pool_tx.size());
+                pool_txs.push(pool_tx);
+            }
+
+            let block_seq_num = block_policy.get_last_commit() + SeqNum(1);
+            let account_balance_keys = pool_txs.iter().map(PoolTx::account_key).collect_vec();
+            let account_balances = match block_policy.compute_account_base_balances(
+                block_seq_num,
+                state_read,
+                chain_config,
+                None,
+                account_balance_keys.iter(),
+            ) {
+                Ok(account_balances) => account_balances,
+                Err(err) => {
+                    warn!(
+                        ?err,
+                        "failed to insert namespace batch at account_balance lookups"
+                    );
+                    for tx in batch.transactions.iter() {
+                        event_tracker.drop(
+                            *tx.tx_hash(),
+                            EthTxPoolDropReason::Internal(
+                                EthTxPoolInternalDropReason::ExecutionStateReadError,
+                            ),
+                        );
+                    }
+                    continue;
+                }
+            };
+
+            let last_commit_base_fee = last_commit.execution_inputs.base_fee_per_gas;
+            if pool_txs.iter().any(|tx| {
+                account_balances
+                    .get(&tx.account_key())
+                    .is_none_or(|account_balance_state| {
+                        account_balance_state.balance
+                            < compute_txn_max_gas_cost(tx.raw().inner(), last_commit_base_fee)
+                    })
+            }) {
+                for tx in batch.transactions.iter() {
+                    event_tracker.drop(*tx.tx_hash(), EthTxPoolDropReason::InsufficientBalance);
+                }
+                continue;
+            }
+
+            for tx in pool_txs.iter() {
+                on_insert(tx);
+                event_tracker.insert(tx.raw(), true);
+            }
+
+            self.namespace_batches.push_back(PoolNamespaceBatch {
+                batch,
+                txs: pool_txs,
+                total_gas,
+                total_size,
+            });
+        }
+
+        self.update_aggregate_metrics(event_tracker);
+    }
+
     pub fn create_proposal(
         &mut self,
         event_tracker: &mut EthTxPoolEventTracker<'_>,
@@ -335,13 +538,15 @@ where
             }
         }
 
+        let extending_block_refs = extending_blocks.iter().collect_vec();
+
         let self_eth_address = node_id.pubkey().get_eth_address();
         let system_transactions = self.get_system_transactions(
             epoch,
             round,
             proposed_seq_num,
             self_eth_address,
-            &extending_blocks.iter().collect(),
+            &extending_block_refs,
             block_policy,
             state_read,
             chain_config,
@@ -358,7 +563,7 @@ where
             tx_limit - system_transactions.len(),
             proposal_gas_limit,
             proposal_byte_limit - system_txs_size,
-            extending_blocks.iter().collect(),
+            extending_block_refs.clone(),
             block_policy,
             state_read,
             chain_config,
@@ -366,9 +571,19 @@ where
         let Proposal {
             sender_gas,
             txs: user_transactions,
-            total_gas: _,
-            total_size: _,
+            total_gas: user_total_gas,
+            total_size: user_total_size,
         } = user_proposal;
+
+        let namespace_transaction_batches = self.select_namespace_batches(
+            tx_limit,
+            proposal_gas_limit,
+            proposal_byte_limit,
+            system_transactions.len() + user_transactions.len(),
+            user_total_gas,
+            system_txs_size + user_total_size,
+            &extending_block_refs,
+        );
 
         let body = EthBlockBody {
             transactions: system_transactions
@@ -378,6 +593,7 @@ where
                 .collect(),
             ommers: Default::default(),
             withdrawals: Default::default(),
+            namespace_transaction_batches: namespace_transaction_batches.into(),
         };
 
         // Monad does not use request hashes yet
@@ -394,7 +610,7 @@ where
 
         let header = ProposedEthHeader {
             transactions_root: *alloy_consensus::proofs::calculate_transaction_root(
-                &body.transactions,
+                &body.flattened_transactions(),
             ),
             ommers_hash: {
                 assert_eq!(body.ommers.len(), 0);
@@ -483,8 +699,26 @@ where
             self.static_validate_all_txs(event_tracker);
         }
 
+        let committed_hashes = committed_block
+            .get_validated_txn_hashes()
+            .into_iter()
+            .collect::<HashSet<_>>();
+
         self.tracked
             .update_committed_nonce_usages(event_tracker, committed_block.nonce_usages);
+
+        self.namespace_batches.retain(|batch| {
+            if batch
+                .txs
+                .iter()
+                .any(|tx| committed_hashes.contains(tx.hash_ref()))
+            {
+                event_tracker.tracked_commit(false, batch.txs.iter().map(PoolTx::hash));
+                false
+            } else {
+                true
+            }
+        });
 
         self.tracked.evict_expired_txs(event_tracker);
 
@@ -517,6 +751,7 @@ where
         }
 
         self.tracked.reset();
+        self.namespace_batches.clear();
 
         self.update_aggregate_metrics(event_tracker);
     }
@@ -555,7 +790,16 @@ where
 
     pub fn generate_snapshot(&self) -> EthTxPoolSnapshot {
         EthTxPoolSnapshot {
-            txs: self.tracked.iter_txs().map(PoolTx::hash).collect(),
+            txs: self
+                .tracked
+                .iter_txs()
+                .map(PoolTx::hash)
+                .chain(
+                    self.namespace_batches
+                        .iter()
+                        .flat_map(|batch| batch.txs.iter().map(PoolTx::hash)),
+                )
+                .collect(),
         }
     }
 
@@ -737,6 +981,58 @@ where
         );
 
         Ok(proposal)
+    }
+
+    fn select_namespace_batches(
+        &self,
+        tx_limit: usize,
+        proposal_gas_limit: u64,
+        proposal_byte_limit: u64,
+        mut current_tx_count: usize,
+        mut current_gas: u64,
+        mut current_size: u64,
+        extending_blocks: &[&EthValidatedBlock<ST, SCT>],
+    ) -> Vec<NamespaceTransactionBatch> {
+        let mut selected = Vec::new();
+        let extending_hashes = extending_blocks
+            .iter()
+            .flat_map(|block| block.get_validated_txn_hashes())
+            .collect::<HashSet<_>>();
+
+        for batch in self.namespace_batches.iter() {
+            if batch
+                .txs
+                .iter()
+                .any(|tx| extending_hashes.contains(tx.hash_ref()))
+            {
+                continue;
+            }
+            if current_tx_count
+                .checked_add(batch.txs.len())
+                .is_none_or(|tx_count| tx_count > tx_limit)
+            {
+                continue;
+            }
+            if current_gas
+                .checked_add(batch.total_gas)
+                .is_none_or(|gas| gas > proposal_gas_limit)
+            {
+                continue;
+            }
+            if current_size
+                .checked_add(batch.total_size)
+                .is_none_or(|size| size > proposal_byte_limit)
+            {
+                continue;
+            }
+
+            current_tx_count += batch.txs.len();
+            current_gas += batch.total_gas;
+            current_size += batch.total_size;
+            selected.push(batch.batch.clone());
+        }
+
+        selected
     }
 }
 

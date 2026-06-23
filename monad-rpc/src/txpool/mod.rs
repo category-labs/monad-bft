@@ -23,12 +23,11 @@ use flume::Receiver;
 use futures::{SinkExt, StreamExt};
 use monad_eth_txpool_ipc::EthTxPoolIpcClient;
 use monad_eth_txpool_types::EthTxPoolIpcTx;
-use monad_eth_types::EthTxEnvelope;
-use state::TxStatusReceiverSender;
 use tracing::{debug, error, info, warn};
 
 pub use self::{client::EthTxPoolBridgeClient, handle::EthTxPoolBridgeHandle, types::TxStatus};
 use self::{
+    client::EthTxPoolBridgeSubmission,
     socket::SocketWatcher,
     state::{EthTxPoolBridgeEvictionQueue, EthTxPoolBridgeState},
 };
@@ -87,7 +86,7 @@ impl EthTxPoolBridge {
         Ok((client, handle))
     }
 
-    async fn run(mut self, tx_receiver: Receiver<(EthTxEnvelope, TxStatusReceiverSender)>) {
+    async fn run(mut self, tx_receiver: Receiver<EthTxPoolBridgeSubmission>) {
         let mut cleanup_timer = tokio::time::interval(Duration::from_secs(5));
 
         cleanup_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -129,16 +128,49 @@ impl EthTxPoolBridge {
                         },
                     };
 
-                    for (tx, tx_status_recv_send) in std::iter::once(tx_pair).chain(tx_receiver.drain()) {
-                        if !self.state.add_tx(&mut self.eviction_queue, &tx, tx_status_recv_send) {
-                            continue;
-                        }
+                    for submission in std::iter::once(tx_pair).chain(tx_receiver.drain()) {
+                        match submission {
+                            EthTxPoolBridgeSubmission::Transaction {
+                                tx,
+                                tx_status_recv_send,
+                            } => {
+                                if !self.state.add_tx(&mut self.eviction_queue, &tx, tx_status_recv_send) {
+                                    continue;
+                                }
 
-                        if let Err(e) = ipc_client.feed(EthTxPoolIpcTx::new_with_default_priority(
-                            tx,
-                            Vec::default(),
-                        )).await {
-                            warn!("TxPoolBridge IPC feed failed, monad-bft likely crashed: {}", e);
+                                if let Err(e) = ipc_client.feed(EthTxPoolIpcTx::new_with_default_priority(
+                                    tx,
+                                    Vec::default(),
+                                )).await {
+                                    warn!("TxPoolBridge IPC feed failed, monad-bft likely crashed: {}", e);
+                                }
+                            }
+                            EthTxPoolBridgeSubmission::NamespaceBatch {
+                                batch,
+                                tx_status_recv_sends,
+                            } => {
+                                let mut should_feed = false;
+                                for (tx, tx_status_recv_send) in
+                                    batch.transactions.iter().zip(tx_status_recv_sends)
+                                {
+                                    should_feed |= self.state.add_tx(
+                                        &mut self.eviction_queue,
+                                        tx,
+                                        tx_status_recv_send,
+                                    );
+                                }
+
+                                if !should_feed {
+                                    continue;
+                                }
+
+                                if let Err(e) = ipc_client.feed(EthTxPoolIpcTx::new_batch_with_default_priority(
+                                    batch,
+                                    Vec::default(),
+                                )).await {
+                                    warn!("TxPoolBridge IPC batch feed failed, monad-bft likely crashed: {}", e);
+                                }
+                            }
                         }
                     }
 
@@ -313,7 +345,13 @@ mod tests {
         let result = client.try_send(tx, status_sender);
         assert!(result.is_ok());
 
-        let (received_tx, _) = rx.try_recv().unwrap();
+        let received_submission = rx.try_recv().unwrap();
+        let received_tx = match received_submission {
+            EthTxPoolBridgeSubmission::Transaction { tx, .. } => tx,
+            EthTxPoolBridgeSubmission::NamespaceBatch { .. } => {
+                panic!("expected transaction submission")
+            }
+        };
         assert_eq!(*received_tx.tx_hash(), tx_hash);
     }
 
@@ -465,8 +503,11 @@ mod tests {
 
         let (received_tx, ipc_stream) = ipc_task.await.expect("IPC task should complete");
 
+        let (received_tx, _, _) = received_tx
+            .into_transaction()
+            .expect("IPC record should be a transaction");
         assert_eq!(
-            *received_tx.tx.tx_hash(),
+            *received_tx.tx_hash(),
             tx_hash,
             "Received transaction should match sent transaction"
         );

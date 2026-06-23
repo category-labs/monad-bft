@@ -234,7 +234,7 @@ where
             return Err(HeaderError::NonEmptyOmmersHash(ommers_hash.into()));
         }
         let expected_transactions_root =
-            calculate_transaction_root(&body.execution_body.transactions);
+            calculate_transaction_root(&body.execution_body.flattened_transactions());
         if transactions_root != expected_transactions_root {
             return Err(HeaderError::InvalidTransactionsRoot {
                 expected: expected_transactions_root,
@@ -345,9 +345,10 @@ where
         };
 
         let EthBlockBody {
-            transactions,
+            transactions: _,
             ommers,
             withdrawals,
+            namespace_transaction_batches,
         } = &body.execution_body;
 
         if !ommers.is_empty() {
@@ -358,15 +359,47 @@ where
             return Err(PayloadError::NonEmptyWithdrawals(withdrawals.to_vec()).into());
         }
 
+        for batch in namespace_transaction_batches.iter() {
+            if batch.transactions.is_empty() {
+                return Err(PayloadError::EmptyNamespaceTransactionBatch.into());
+            }
+
+            if !batch.signature.is_well_formed() {
+                return Err(PayloadError::InvalidNamespaceTransactionBatchSignature.into());
+            }
+
+            let Some(first_tx) = batch.transactions.first() else {
+                return Err(PayloadError::EmptyNamespaceTransactionBatch.into());
+            };
+            let first_namespace = namespace_for_chain_id(first_tx.chain_id(), chain_id)
+                .map_err(|_| PayloadError::InvalidNamespaceTransactionBatchNamespace)?;
+            let Some(first_namespace) = first_namespace else {
+                return Err(PayloadError::InvalidNamespaceTransactionBatchNamespace.into());
+            };
+
+            for tx in batch.transactions.iter().skip(1) {
+                let tx_namespace = namespace_for_chain_id(tx.chain_id(), chain_id)
+                    .map_err(|_| PayloadError::InvalidNamespaceTransactionBatchNamespace)?;
+                let Some(tx_namespace) = tx_namespace else {
+                    return Err(PayloadError::InvalidNamespaceTransactionBatchNamespace.into());
+                };
+                if tx_namespace != first_namespace {
+                    return Err(PayloadError::MixedNamespaceTransactionBatchChainIds.into());
+                }
+            }
+        }
+
+        let flattened_transactions = body.execution_body.flattened_transactions();
+
         // early return if number of transactions exceed limit
         // no need to individually validate transactions
-        let num_txs = transactions.len();
+        let num_txs = flattened_transactions.len();
         if num_txs > chain_params.tx_limit {
             return Err(PayloadError::ExceededNumTxnLimit { num_txs }.into());
         }
 
         // early return if sum of transaction gas limits exceed block gas limit
-        let total_gas: u64 = transactions
+        let total_gas: u64 = flattened_transactions
             .iter()
             .try_fold(0u64, |acc, tx| acc.checked_add(tx.gas_limit()))
             .ok_or(PayloadError::ExceededBlockGasLimit {
@@ -377,7 +410,7 @@ where
         }
 
         // recovering the signers verifies that these are valid signatures
-        let recovered_txns: VecDeque<Recovered<EthTxEnvelope>> = transactions
+        let recovered_txns: VecDeque<Recovered<EthTxEnvelope>> = flattened_transactions
             .par_iter()
             .map(|tx| {
                 let _span = trace_span!("validator: recover signer").entered();
@@ -657,10 +690,10 @@ mod test {
     use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair, NopSignature};
     use monad_eth_testutil::{
         compute_expected_nonce_usages, generate_consensus_test_block, make_eip7702_tx,
-        make_legacy_tx, make_signed_authorization, recover_tx, secret_to_eth_address,
-        ConsensusTestBlock,
+        make_legacy_tx, make_namespaced_legacy_tx, make_representable_namespace,
+        make_signed_authorization, recover_tx, secret_to_eth_address, ConsensusTestBlock,
     };
-    use monad_eth_types::AccountKey;
+    use monad_eth_types::{AccountKey, NamespaceBatchSignature, NamespaceTransactionBatch};
     use monad_execution_state_read::InMemoryStateInner;
     use monad_testutil::signing::MockSignatures;
     use monad_types::{Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
@@ -698,6 +731,259 @@ mod test {
         )
     }
 
+    fn namespace_batch_signature(y_parity: u8) -> NamespaceBatchSignature {
+        NamespaceBatchSignature {
+            y_parity,
+            r: U256::from(4),
+            s: U256::from(5),
+        }
+    }
+
+    fn namespace_batch(txs: Vec<EthTxEnvelope>) -> NamespaceTransactionBatch {
+        NamespaceTransactionBatch {
+            transactions: txs.into(),
+            signature: namespace_batch_signature(1),
+        }
+    }
+
+    fn namespace_batch_with_y_parity(
+        txs: Vec<EthTxEnvelope>,
+        y_parity: u8,
+    ) -> NamespaceTransactionBatch {
+        NamespaceTransactionBatch {
+            transactions: txs.into(),
+            signature: namespace_batch_signature(y_parity),
+        }
+    }
+
+    fn payload_with_namespace_batches(
+        transactions: Vec<EthTxEnvelope>,
+        namespace_transaction_batches: Vec<NamespaceTransactionBatch>,
+    ) -> ConsensusBlockBody<EthExecutionProtocol> {
+        ConsensusBlockBody::new(ConsensusBlockBodyInner {
+            execution_body: EthBlockBody {
+                transactions: transactions.into(),
+                ommers: Default::default(),
+                withdrawals: Default::default(),
+                namespace_transaction_batches: namespace_transaction_batches.into(),
+            },
+        })
+    }
+
+    #[test]
+    fn test_valid_namespace_batch_is_flattened_for_validation() {
+        let namespace = make_representable_namespace(1);
+        let direct_tx = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, 0, 10);
+        let namespace_sender = B256::repeat_byte(0xBu8);
+        let batch_tx_0 =
+            make_namespaced_legacy_tx(namespace, namespace_sender, BASE_FEE, 30_000, 0, 10);
+        let batch_tx_1 =
+            make_namespaced_legacy_tx(namespace, namespace_sender, BASE_FEE, 30_000, 1, 10);
+        let payload = payload_with_namespace_batches(
+            vec![direct_tx.clone()],
+            vec![namespace_batch(vec![
+                batch_tx_0.clone(),
+                batch_tx_1.clone(),
+            ])],
+        );
+        let header = get_header(payload.get_id());
+
+        let result =
+            EthBlockValidator::<NopSignature, MockSignatures<NopSignature>>::validate_block_body(
+                &header,
+                &payload,
+                &MockChainConfig::DEFAULT,
+            );
+
+        assert!(result.is_ok());
+        let (_, validated_txns, nonce_usages, txn_fees) = result.unwrap();
+        assert_eq!(validated_txns.len(), 3);
+        assert_eq!(
+            validated_txns
+                .iter()
+                .map(|tx| *tx.tx_hash())
+                .collect::<Vec<_>>(),
+            vec![
+                *direct_tx.tx_hash(),
+                *batch_tx_0.tx_hash(),
+                *batch_tx_1.tx_hash()
+            ]
+        );
+
+        let namespace_account =
+            AccountKey::namespaced(namespace, secret_to_eth_address(namespace_sender));
+        assert!(nonce_usages.get(&namespace_account).is_some());
+        assert!(txn_fees.contains_key(&namespace_account));
+    }
+
+    #[test]
+    fn test_namespace_batch_validation_rejects_empty_batch() {
+        let payload = payload_with_namespace_batches(vec![], vec![namespace_batch(vec![])]);
+        let header = get_header(payload.get_id());
+
+        let result =
+            EthBlockValidator::<NopSignature, MockSignatures<NopSignature>>::validate_block_body(
+                &header,
+                &payload,
+                &MockChainConfig::DEFAULT,
+            );
+
+        assert!(matches!(
+            result,
+            Err(EthBlockValidationError::PayloadError(
+                PayloadError::EmptyNamespaceTransactionBatch
+            ))
+        ));
+    }
+
+    #[test]
+    fn test_namespace_batch_validation_rejects_global_tx() {
+        let payload = payload_with_namespace_batches(
+            vec![],
+            vec![namespace_batch(vec![make_legacy_tx(
+                B256::repeat_byte(0xAu8),
+                BASE_FEE,
+                30_000,
+                0,
+                10,
+            )])],
+        );
+        let header = get_header(payload.get_id());
+
+        let result =
+            EthBlockValidator::<NopSignature, MockSignatures<NopSignature>>::validate_block_body(
+                &header,
+                &payload,
+                &MockChainConfig::DEFAULT,
+            );
+
+        assert!(matches!(
+            result,
+            Err(EthBlockValidationError::PayloadError(
+                PayloadError::InvalidNamespaceTransactionBatchNamespace
+            ))
+        ));
+    }
+
+    #[test]
+    fn test_namespace_batch_validation_rejects_mixed_namespace_chain_ids() {
+        let namespace_a = make_representable_namespace(1);
+        let namespace_b = make_representable_namespace(2);
+        let payload = payload_with_namespace_batches(
+            vec![],
+            vec![namespace_batch(vec![
+                make_namespaced_legacy_tx(
+                    namespace_a,
+                    B256::repeat_byte(0xAu8),
+                    BASE_FEE,
+                    30_000,
+                    0,
+                    10,
+                ),
+                make_namespaced_legacy_tx(
+                    namespace_b,
+                    B256::repeat_byte(0xBu8),
+                    BASE_FEE,
+                    30_000,
+                    0,
+                    10,
+                ),
+            ])],
+        );
+        let header = get_header(payload.get_id());
+
+        let result =
+            EthBlockValidator::<NopSignature, MockSignatures<NopSignature>>::validate_block_body(
+                &header,
+                &payload,
+                &MockChainConfig::DEFAULT,
+            );
+
+        assert!(matches!(
+            result,
+            Err(EthBlockValidationError::PayloadError(
+                PayloadError::MixedNamespaceTransactionBatchChainIds
+            ))
+        ));
+    }
+
+    #[test]
+    fn test_namespace_batch_validation_rejects_malformed_signature() {
+        let namespace = make_representable_namespace(1);
+        let payload = payload_with_namespace_batches(
+            vec![],
+            vec![namespace_batch_with_y_parity(
+                vec![make_namespaced_legacy_tx(
+                    namespace,
+                    B256::repeat_byte(0xAu8),
+                    BASE_FEE,
+                    30_000,
+                    0,
+                    10,
+                )],
+                2,
+            )],
+        );
+        let header = get_header(payload.get_id());
+
+        let result =
+            EthBlockValidator::<NopSignature, MockSignatures<NopSignature>>::validate_block_body(
+                &header,
+                &payload,
+                &MockChainConfig::DEFAULT,
+            );
+
+        assert!(matches!(
+            result,
+            Err(EthBlockValidationError::PayloadError(
+                PayloadError::InvalidNamespaceTransactionBatchSignature
+            ))
+        ));
+    }
+
+    #[test]
+    fn test_namespace_batch_validation_counts_flattened_tx_limit() {
+        let namespace = make_representable_namespace(1);
+        let payload = payload_with_namespace_batches(
+            vec![make_legacy_tx(
+                B256::repeat_byte(0xAu8),
+                BASE_FEE,
+                30_000,
+                0,
+                10,
+            )],
+            vec![namespace_batch(vec![make_namespaced_legacy_tx(
+                namespace,
+                B256::repeat_byte(0xBu8),
+                BASE_FEE,
+                30_000,
+                0,
+                10,
+            )])],
+        );
+        let header = get_header(payload.get_id());
+
+        let result =
+            EthBlockValidator::<NopSignature, MockSignatures<NopSignature>>::validate_block_body(
+                &header,
+                &payload,
+                &MockChainConfig::new(&ChainParams {
+                    tx_limit: 1,
+                    proposal_gas_limit: PROPOSAL_GAS_LIMIT,
+                    proposal_byte_limit: PROPOSAL_SIZE_LIMIT,
+                    max_reserve_balance: MAX_RESERVE_BALANCE,
+                    vote_pace: Duration::ZERO,
+                }),
+            );
+
+        assert!(matches!(
+            result,
+            Err(EthBlockValidationError::PayloadError(
+                PayloadError::ExceededNumTxnLimit { num_txs: 2 }
+            ))
+        ));
+    }
+
     #[test]
     fn test_validated_tx_extraction() {
         let txn1 = make_legacy_tx(B256::repeat_byte(0xAu8), BASE_FEE, 30_000, 1, 10);
@@ -731,6 +1017,7 @@ mod test {
                 transactions: txs.into(),
                 ommers: Default::default(),
                 withdrawals: Default::default(),
+                namespace_transaction_batches: Default::default(),
             },
         });
         let header = get_header(payload.get_id());
@@ -782,6 +1069,7 @@ mod test {
                 transactions: txs.into(),
                 ommers: Default::default(),
                 withdrawals: Default::default(),
+                namespace_transaction_batches: Default::default(),
             },
         });
         let header = get_header(payload.get_id());
@@ -823,6 +1111,7 @@ mod test {
                 transactions: txs.into(),
                 ommers: Default::default(),
                 withdrawals: Default::default(),
+                namespace_transaction_batches: Default::default(),
             },
         });
         let header = get_header(payload.get_id());
@@ -867,6 +1156,7 @@ mod test {
                 transactions: txs.into(),
                 ommers: Default::default(),
                 withdrawals: Default::default(),
+                namespace_transaction_batches: Default::default(),
             },
         });
         let header = get_header(payload.get_id());
@@ -915,6 +1205,7 @@ mod test {
                 transactions: txs.into(),
                 ommers: Default::default(),
                 withdrawals: Default::default(),
+                namespace_transaction_batches: Default::default(),
             },
         });
         let header = get_header(payload.get_id());
@@ -947,6 +1238,7 @@ mod test {
                 transactions: txs.into(),
                 ommers: Default::default(),
                 withdrawals: Default::default(),
+                namespace_transaction_batches: Default::default(),
             },
         });
         let header = get_header(payload.get_id());
@@ -990,6 +1282,7 @@ mod test {
                 transactions: txs.into(),
                 ommers: Default::default(),
                 withdrawals: Default::default(),
+                namespace_transaction_batches: Default::default(),
             },
         });
         let header = get_header(payload.get_id());
@@ -1020,6 +1313,7 @@ mod test {
                 transactions: txs.into(),
                 ommers: Default::default(),
                 withdrawals: Default::default(),
+                namespace_transaction_batches: Default::default(),
             },
         });
         let header = get_header(payload.get_id());
@@ -1066,6 +1360,7 @@ mod test {
                 transactions: txs.into(),
                 ommers: Default::default(),
                 withdrawals: Default::default(),
+                namespace_transaction_batches: Default::default(),
             },
         });
         let header = get_header(payload.get_id());
@@ -1120,6 +1415,7 @@ mod test {
                 transactions: txs.into(),
                 ommers: Default::default(),
                 withdrawals: Default::default(),
+                namespace_transaction_batches: Default::default(),
             },
         });
         let header = get_header(payload.get_id());
@@ -1166,6 +1462,7 @@ mod test {
                 transactions: txs.into(),
                 ommers: Default::default(),
                 withdrawals: Default::default(),
+                namespace_transaction_batches: Default::default(),
             },
         });
         let header = get_header(payload.get_id());
@@ -1212,6 +1509,7 @@ mod test {
                 transactions: txs.into(),
                 ommers: Default::default(),
                 withdrawals: Default::default(),
+                namespace_transaction_batches: Default::default(),
             },
         });
         let header = get_header(payload.get_id());
@@ -1260,6 +1558,7 @@ mod test {
                 transactions: txs.into(),
                 ommers: Default::default(),
                 withdrawals: Default::default(),
+                namespace_transaction_batches: Default::default(),
             },
         });
         let header = get_header(payload.get_id());
@@ -1313,6 +1612,7 @@ mod test {
                 transactions: txs.into(),
                 ommers: Default::default(),
                 withdrawals: Default::default(),
+                namespace_transaction_batches: Default::default(),
             },
         });
         let header = get_header(payload.get_id());
@@ -1398,6 +1698,7 @@ mod test {
                 transactions: Default::default(),
                 ommers: Default::default(),
                 withdrawals: Default::default(),
+                namespace_transaction_batches: Default::default(),
             },
         });
 

@@ -17,16 +17,27 @@ use std::{collections::HashMap, sync::Arc};
 
 use alloy_primitives::TxHash;
 use flume::{Sender, TrySendError};
-use monad_eth_types::{AccountKey, EthTxEnvelope};
+use monad_eth_types::{AccountKey, EthTxEnvelope, NamespaceTransactionBatch};
 
 use super::{
     state::{EthTxPoolBridgeStateView, TxStatusReceiverSender},
     TxStatus,
 };
 
+pub(crate) enum EthTxPoolBridgeSubmission {
+    Transaction {
+        tx: EthTxEnvelope,
+        tx_status_recv_send: TxStatusReceiverSender,
+    },
+    NamespaceBatch {
+        batch: NamespaceTransactionBatch,
+        tx_status_recv_sends: Vec<TxStatusReceiverSender>,
+    },
+}
+
 #[derive(Clone)]
 pub struct EthTxPoolBridgeClient {
-    tx_sender: Sender<(EthTxEnvelope, TxStatusReceiverSender)>,
+    tx_sender: Sender<EthTxPoolBridgeSubmission>,
     tx_sender_capacity: usize,
 
     tx_inflight: Arc<()>,
@@ -36,7 +47,7 @@ pub struct EthTxPoolBridgeClient {
 
 impl EthTxPoolBridgeClient {
     pub(super) fn new(
-        tx_sender: Sender<(EthTxEnvelope, TxStatusReceiverSender)>,
+        tx_sender: Sender<EthTxPoolBridgeSubmission>,
         state: EthTxPoolBridgeStateView,
     ) -> Self {
         let tx_sender_capacity = tx_sender
@@ -63,12 +74,28 @@ impl EthTxPoolBridgeClient {
         Some(tx_inflight_guard)
     }
 
-    pub fn try_send(
+    pub(crate) fn try_send(
         &self,
         tx: EthTxEnvelope,
         tx_status_recv_send: TxStatusReceiverSender,
-    ) -> Result<(), TrySendError<(EthTxEnvelope, TxStatusReceiverSender)>> {
-        self.tx_sender.try_send((tx, tx_status_recv_send))
+    ) -> Result<(), TrySendError<EthTxPoolBridgeSubmission>> {
+        self.tx_sender
+            .try_send(EthTxPoolBridgeSubmission::Transaction {
+                tx,
+                tx_status_recv_send,
+            })
+    }
+
+    pub(crate) fn try_send_batch(
+        &self,
+        batch: NamespaceTransactionBatch,
+        tx_status_recv_sends: Vec<TxStatusReceiverSender>,
+    ) -> Result<(), TrySendError<EthTxPoolBridgeSubmission>> {
+        self.tx_sender
+            .try_send(EthTxPoolBridgeSubmission::NamespaceBatch {
+                batch,
+                tx_status_recv_sends,
+            })
     }
 
     pub fn get_status_by_hash(&self, hash: &TxHash) -> Option<TxStatus> {

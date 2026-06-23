@@ -18,7 +18,9 @@ use std::sync::{Arc, Mutex};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_types::{AccountKey, EthAccount, EthHeader, EthTxEnvelope};
+use monad_eth_types::{
+    AccountKey, EthAccount, EthHeader, EthStorageKey, EthStorageSlot, EthTxEnvelope,
+};
 use monad_types::{BlockId, Epoch, Round, SeqNum, Stake};
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 
@@ -60,6 +62,15 @@ where
         seq_num: &SeqNum,
         is_finalized: bool,
     ) -> Result<EthHeader, ExecutionStateReadError>;
+
+    fn get_storage_at_by_key(
+        &mut self,
+        block_id: &BlockId,
+        seq_num: &SeqNum,
+        is_finalized: bool,
+        account_key: AccountKey,
+        storage_key: EthStorageKey,
+    ) -> Result<EthStorageSlot, ExecutionStateReadError>;
 
     /// Fetches earliest block from storage backend
     fn raw_read_earliest_finalized_block(&self) -> Option<SeqNum>;
@@ -117,6 +128,18 @@ where
     ) -> Result<EthHeader, ExecutionStateReadError> {
         let mut state = self.lock().unwrap();
         state.get_execution_result(block_id, seq_num, is_finalized)
+    }
+
+    fn get_storage_at_by_key(
+        &mut self,
+        block_id: &BlockId,
+        seq_num: &SeqNum,
+        is_finalized: bool,
+        account_key: AccountKey,
+        storage_key: EthStorageKey,
+    ) -> Result<EthStorageSlot, ExecutionStateReadError> {
+        let mut state = self.lock().unwrap();
+        state.get_storage_at_by_key(block_id, seq_num, is_finalized, account_key, storage_key)
     }
 
     fn raw_read_earliest_finalized_block(&self) -> Option<SeqNum> {

@@ -2650,6 +2650,7 @@ mod test {
             transactions: eth_tx_list.into(),
             ommers: Default::default(),
             withdrawals: Default::default(),
+            namespace_transaction_batches: Default::default(),
         }
     }
 

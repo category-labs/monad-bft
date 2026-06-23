@@ -20,7 +20,7 @@ use alloy_eips::Decodable2718;
 use alloy_primitives::{Address, FixedBytes};
 use alloy_rpc_types::Filter;
 use monad_exec_events::BlockCommitState;
-use monad_eth_types::{namespace_for_chain_id, EthTxEnvelope};
+use monad_eth_types::{namespace_for_chain_id, EthTxEnvelope, NamespaceTransactionBatch};
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::Triedb;
 use schemars::JsonSchema;
@@ -116,6 +116,11 @@ pub struct MonadEthSendRawTransactionParams {
     hex_tx: UnformattedData,
 }
 
+#[derive(Deserialize, Debug, schemars::JsonSchema)]
+pub struct MonadSendRawTransactionBatchParams {
+    hex_batch: UnformattedData,
+}
+
 // TODO: need to support EIP-4844 transactions
 #[rpc(
     method = "eth_sendRawTransaction",
@@ -149,6 +154,38 @@ pub async fn monad_eth_sendRawTransaction(
     submit_to_txpool(txpool_bridge_client, tx).await?;
 
     Ok(tx_hash.to_string())
+}
+
+#[rpc(
+    method = "monad_sendRawTransactionBatch",
+    ignore = "txpool_bridge_client,base_chain_id,route_chain_id,route_namespace"
+)]
+#[allow(non_snake_case)]
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn monad_sendRawTransactionBatch(
+    txpool_bridge_client: &EthTxPoolBridgeClient,
+    params: MonadSendRawTransactionBatchParams,
+    base_chain_id: u64,
+    route_chain_id: u64,
+    route_namespace: Option<Address>,
+) -> JsonRpcResult<Vec<String>> {
+    trace!("monad_sendRawTransactionBatch: {params:?}");
+
+    let batch = validate_and_decode_batch(
+        &params.hex_batch.0,
+        base_chain_id,
+        route_chain_id,
+        route_namespace,
+    )?;
+    let tx_hashes = batch
+        .transactions
+        .iter()
+        .map(|tx| tx.tx_hash().to_string())
+        .collect::<Vec<_>>();
+
+    submit_batch_to_txpool(txpool_bridge_client, batch).await?;
+
+    Ok(tx_hashes)
 }
 
 fn validate_and_decode_tx(
@@ -191,6 +228,62 @@ fn validate_and_decode_tx(
     }
 
     Ok(tx)
+}
+
+fn validate_and_decode_batch(
+    raw_batch: &[u8],
+    base_chain_id: u64,
+    route_chain_id: u64,
+    route_namespace: Option<Address>,
+) -> Result<NamespaceTransactionBatch, JsonRpcError> {
+    let batch = alloy_rlp::decode_exact::<NamespaceTransactionBatch>(raw_batch).map_err(|err| {
+        debug!(?err, "namespace batch decode failed");
+        JsonRpcError::txn_decode_error()
+    })?;
+
+    if batch.transactions.is_empty() {
+        return Err(JsonRpcError::custom(
+            "namespace transaction batch cannot be empty".to_string(),
+        ));
+    }
+
+    if batch.recover_signer().is_err() {
+        return Err(JsonRpcError::custom(
+            "invalid namespace transaction batch signature".to_string(),
+        ));
+    }
+
+    let mut batch_namespace = None;
+    for tx in batch.transactions.iter() {
+        let tx_namespace = match namespace_for_chain_id(tx.chain_id(), base_chain_id) {
+            Ok(Some(namespace)) => namespace,
+            Ok(None) => {
+                return Err(JsonRpcError::invalid_chain_id(
+                    route_chain_id,
+                    tx.chain_id().unwrap_or(base_chain_id),
+                ));
+            }
+            Err(monad_eth_types::WrongChainId::InvalidNamespaceSuffix { tx_chain_id, .. }) => {
+                return Err(JsonRpcError::invalid_chain_id(base_chain_id, tx_chain_id));
+            }
+        };
+
+        if route_namespace.is_some() && Some(tx_namespace) != route_namespace {
+            return Err(JsonRpcError::invalid_chain_id(
+                route_chain_id,
+                tx.chain_id().unwrap_or(base_chain_id),
+            ));
+        }
+
+        if batch_namespace.is_some_and(|namespace| namespace != tx_namespace) {
+            return Err(JsonRpcError::custom(
+                "namespace transaction batch contains mixed namespaces".to_string(),
+            ));
+        }
+        batch_namespace = Some(tx_namespace);
+    }
+
+    Ok(batch)
 }
 
 async fn submit_to_txpool(
@@ -239,6 +332,83 @@ async fn submit_to_txpool(
         Err(_) => {
             // If the changed future times out, RPC should still try returning whatever status it
             // currently has, even if it might be stale.
+            warn!("txpool bridge not responding, tx status has not changed");
+        }
+    }
+
+    let latest_tx_status = tx_status_recv.borrow_and_update().to_owned();
+
+    match latest_tx_status {
+        TxStatus::Evicted { reason: _ } => Err(JsonRpcError::custom("rejected".to_string())),
+        TxStatus::Dropped { reason } => Err(JsonRpcError::custom(reason.as_user_string())),
+        TxStatus::Tracked | TxStatus::Committed => Ok(()),
+        TxStatus::Unknown => {
+            warn!("txpool tx status last value was unknown");
+            Err(JsonRpcError::overloaded())
+        }
+    }
+}
+
+async fn submit_batch_to_txpool(
+    txpool_bridge_client: &EthTxPoolBridgeClient,
+    batch: NamespaceTransactionBatch,
+) -> Result<(), JsonRpcError> {
+    let Some(_tx_inflight_guard) = txpool_bridge_client.acquire_tx_inflight_guard() else {
+        warn!("txpool overloaded");
+        return Err(JsonRpcError::overloaded());
+    };
+
+    let mut tx_status_receivers = Vec::with_capacity(batch.transactions.len());
+    let tx_status_recv_sends = (0..batch.transactions.len())
+        .map(|_| {
+            let (tx_status_recv_send, tx_status_recv_recv) =
+                tokio::sync::oneshot::channel::<tokio::sync::watch::Receiver<TxStatus>>();
+            tx_status_receivers.push(tx_status_recv_recv);
+            tx_status_recv_send
+        })
+        .collect::<Vec<_>>();
+
+    if let Err(err) = txpool_bridge_client.try_send_batch(batch, tx_status_recv_sends) {
+        error!(
+            ?err,
+            "txpool bridge batch try_send error after acquiring tx_inflight_guard"
+        );
+        return Err(JsonRpcError::overloaded());
+    }
+
+    for tx_status_recv_recv in tx_status_receivers {
+        wait_for_txpool_status(tx_status_recv_recv).await?;
+    }
+
+    Ok(())
+}
+
+async fn wait_for_txpool_status(
+    tx_status_recv_recv: tokio::sync::oneshot::Receiver<tokio::sync::watch::Receiver<TxStatus>>,
+) -> Result<(), JsonRpcError> {
+    let mut tx_status_recv =
+        match tokio::time::timeout(Duration::from_secs(1), tx_status_recv_recv).await {
+            Ok(Ok(tx_status_recv)) => tx_status_recv,
+            Ok(Err(_)) | Err(_) => {
+                warn!("txpool bridge not responding, tx status receiver was not sent");
+                return Err(JsonRpcError::overloaded());
+            }
+        };
+
+    match tokio::time::timeout(Duration::from_secs(1), tx_status_recv.changed()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(_)) => {
+            return match tx_status_recv.borrow().to_owned() {
+                TxStatus::Unknown => Err(JsonRpcError::overloaded()),
+                TxStatus::Tracked
+                | TxStatus::Dropped { .. }
+                | TxStatus::Evicted { .. }
+                | TxStatus::Committed => Err(JsonRpcError::custom(
+                    "rpc no longer tracking tx".to_string(),
+                )),
+            };
+        }
+        Err(_) => {
             warn!("txpool bridge not responding, tx status has not changed");
         }
     }

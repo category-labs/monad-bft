@@ -27,7 +27,9 @@ use alloy_primitives::Address;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_types::{AccountKey, EthAccount, EthHeader, EthTxEnvelope, NamespacedTx};
+use monad_eth_types::{
+    AccountKey, EthAccount, EthHeader, EthStorageKey, EthStorageSlot, EthTxEnvelope, NamespacedTx,
+};
 use monad_types::{
     Balance, BlockId, Epoch, Nonce, Round, SeqNum, Stake, GENESIS_BLOCK_ID, GENESIS_ROUND,
     GENESIS_SEQ_NUM,
@@ -123,6 +125,8 @@ pub struct InMemoryBlockState {
     txns: Vec<EthTxEnvelope>,
     /// account states after executing this block seq_num
     accounts: BTreeMap<AccountKey, AccountState>,
+    /// storage slots after executing this block seq_num
+    storage: BTreeMap<(AccountKey, EthStorageKey), EthStorageSlot>,
     /// all transaction senders and authority addresses in this block
     /// used for reserve balance validation
     senders_and_authorities: HashSet<AccountKey>,
@@ -146,6 +150,23 @@ impl InMemoryBlockState {
             parent_id: GENESIS_BLOCK_ID,
             txns: Vec::new(),
             accounts,
+            storage: BTreeMap::new(),
+            senders_and_authorities: HashSet::new(),
+        }
+    }
+
+    pub fn genesis_with_account_keys_and_storage(
+        accounts: BTreeMap<AccountKey, AccountState>,
+        storage: BTreeMap<(AccountKey, EthStorageKey), EthStorageSlot>,
+    ) -> Self {
+        Self {
+            block_id: GENESIS_BLOCK_ID,
+            seq_num: GENESIS_SEQ_NUM,
+            round: GENESIS_ROUND,
+            parent_id: GENESIS_BLOCK_ID,
+            txns: Vec::new(),
+            accounts,
+            storage,
             senders_and_authorities: HashSet::new(),
         }
     }
@@ -246,6 +267,7 @@ where
             });
 
         let mut accounts = parent_state.accounts.clone();
+        let storage = parent_state.storage.clone();
 
         trace!(
             "block N={:?}, parent account state: {:?}",
@@ -419,6 +441,7 @@ where
                 parent_id,
                 txns,
                 accounts,
+                storage,
                 senders_and_authorities: block_senders_and_authorities,
             },
         );
@@ -556,6 +579,44 @@ where
             gas_limit: self.extra_data,
             ..Default::default()
         }))
+    }
+
+    fn get_storage_at_by_key(
+        &mut self,
+        block_id: &BlockId,
+        seq_num: &SeqNum,
+        is_finalized: bool,
+        account_key: AccountKey,
+        storage_key: EthStorageKey,
+    ) -> Result<EthStorageSlot, ExecutionStateReadError> {
+        let state = if is_finalized
+            && self
+                .raw_read_latest_finalized_block()
+                .is_some_and(|latest_seq_num| &latest_seq_num >= seq_num)
+        {
+            if self
+                .raw_read_earliest_finalized_block()
+                .is_some_and(|earliest_finalized| &earliest_finalized > seq_num)
+            {
+                return Err(ExecutionStateReadError::NeverAvailable);
+            }
+            let state = self.commits.get(seq_num).unwrap();
+            assert_eq!(&state.block_id, block_id);
+            state
+        } else {
+            let Some(proposal) = self.proposals.get(block_id) else {
+                trace!(?seq_num, ?block_id, ?is_finalized, "NotAvailableYet");
+                return Err(ExecutionStateReadError::NotAvailableYet);
+            };
+            proposal
+        };
+
+        self.total_mock_lookups.fetch_add(1, Ordering::SeqCst);
+        Ok(state
+            .storage
+            .get(&(account_key, storage_key))
+            .copied()
+            .unwrap_or_default())
     }
 
     fn raw_read_earliest_finalized_block(&self) -> Option<SeqNum> {

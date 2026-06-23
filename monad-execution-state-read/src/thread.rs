@@ -21,7 +21,7 @@ use std::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_types::{AccountKey, EthAccount, EthHeader};
+use monad_eth_types::{AccountKey, EthAccount, EthHeader, EthStorageKey, EthStorageSlot};
 use monad_types::{BlockId, Epoch, SeqNum, Stake};
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 use tracing::warn;
@@ -49,6 +49,14 @@ where
         seq_num: SeqNum,
         is_finalized: bool,
         tx: mpsc::SyncSender<Result<EthHeader, ExecutionStateReadError>>,
+    },
+    GetStorageAtByKey {
+        block_id: BlockId,
+        seq_num: SeqNum,
+        is_finalized: bool,
+        account_key: AccountKey,
+        storage_key: EthStorageKey,
+        tx: mpsc::SyncSender<Result<EthStorageSlot, ExecutionStateReadError>>,
     },
     RawReadEarliestFinalizedBlock {
         tx: mpsc::SyncSender<Option<SeqNum>>,
@@ -87,9 +95,9 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
-    pub fn new<SBT>(state_read: impl FnOnce() -> SBT + Send + 'static) -> Self
+    pub fn new<ESRT>(state_read: impl FnOnce() -> ESRT + Send + 'static) -> Self
     where
-        SBT: ExecutionStateRead<ST, SCT>,
+        ESRT: ExecutionStateRead<ST, SCT>,
     {
         let (request_tx, request_rx) = mpsc::sync_channel(MAX_INFLIGHT_REQUESTS);
 
@@ -153,6 +161,24 @@ where
         })
     }
 
+    fn get_storage_at_by_key(
+        &mut self,
+        block_id: &BlockId,
+        seq_num: &SeqNum,
+        is_finalized: bool,
+        account_key: AccountKey,
+        storage_key: EthStorageKey,
+    ) -> Result<EthStorageSlot, ExecutionStateReadError> {
+        self.send_and_recv_request(|tx| ExecutionStateReadThreadRequest::GetStorageAtByKey {
+            block_id: block_id.to_owned(),
+            seq_num: seq_num.to_owned(),
+            is_finalized,
+            account_key,
+            storage_key,
+            tx,
+        })
+    }
+
     fn raw_read_earliest_finalized_block(&self) -> Option<SeqNum> {
         self.send_and_recv_request(
             |tx| ExecutionStateReadThreadRequest::RawReadEarliestFinalizedBlock { tx },
@@ -182,26 +208,26 @@ where
     }
 }
 
-struct ExecutionStateReadThread<ST, SCT, SBT>
+struct ExecutionStateReadThread<ST, SCT, ESRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: ExecutionStateRead<ST, SCT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
 {
-    state_read: SBT,
+    state_read: ESRT,
     request_rx: mpsc::Receiver<ExecutionStateReadThreadRequest<ST, SCT>>,
 
     _phantom: PhantomData<(ST, SCT)>,
 }
 
-impl<ST, SCT, SBT> ExecutionStateReadThread<ST, SCT, SBT>
+impl<ST, SCT, ESRT> ExecutionStateReadThread<ST, SCT, ESRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: ExecutionStateRead<ST, SCT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
 {
     fn new(
-        state_read: impl FnOnce() -> SBT + Send + 'static,
+        state_read: impl FnOnce() -> ESRT + Send + 'static,
         request_rx: mpsc::Receiver<ExecutionStateReadThreadRequest<ST, SCT>>,
     ) -> Self {
         let state_read = state_read();
@@ -246,6 +272,23 @@ where
                 } => {
                     tx.send(state_read.get_execution_result(&block_id, &seq_num, is_finalized))
                         .expect("ExecutionStateReadThreadClient is alive");
+                }
+                ExecutionStateReadThreadRequest::GetStorageAtByKey {
+                    block_id,
+                    seq_num,
+                    is_finalized,
+                    account_key,
+                    storage_key,
+                    tx,
+                } => {
+                    tx.send(state_read.get_storage_at_by_key(
+                        &block_id,
+                        &seq_num,
+                        is_finalized,
+                        account_key,
+                        storage_key,
+                    ))
+                    .expect("ExecutionStateReadThreadClient is alive");
                 }
                 ExecutionStateReadThreadRequest::RawReadEarliestFinalizedBlock { tx } => {
                     tx.send(state_read.raw_read_earliest_finalized_block())

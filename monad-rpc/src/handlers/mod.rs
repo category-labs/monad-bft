@@ -49,6 +49,7 @@ use self::{
             monad_eth_getTransactionByBlockNumberAndIndex, monad_eth_getTransactionByHash,
             monad_eth_getTransactionReceipt, monad_eth_sendRawTransaction,
             monad_eth_sendRawTransactionSync,
+            monad_sendRawTransactionBatch as monad_sendRawTransactionBatch_impl,
         },
     },
     meta::{monad_net_version, monad_web3_client_version},
@@ -571,6 +572,28 @@ async fn eth_sendRawTransactionSync(
 }
 
 #[allow(non_snake_case)]
+async fn monad_sendRawTransactionBatch(
+    _: TimingRequestId,
+    app_state: &MonadRpcResources,
+    params: RequestParams<'_>,
+) -> Result<Box<RawValue>, JsonRpcError> {
+    let txpool_bridge_client = app_state
+        .txpool_bridge_client
+        .as_ref()
+        .method_not_supported()?;
+    let params = serde_json::from_str(params.get()).invalid_params()?;
+    monad_sendRawTransactionBatch_impl(
+        txpool_bridge_client,
+        params,
+        app_state.base_chain_id,
+        app_state.chain_id,
+        app_state.namespace,
+    )
+    .await
+    .map(serialize_result)?
+}
+
+#[allow(non_snake_case)]
 async fn eth_fillTransaction(
     request_id: TimingRequestId,
     app_state: &MonadRpcResources,
@@ -1023,6 +1046,7 @@ enabled_methods!(
     eth_simulateV1,
     eth_sendRawTransaction,
     eth_sendRawTransactionSync,
+    monad_sendRawTransactionBatch,
     eth_createAccessList,
     eth_getLogs,
     eth_getTransactionByHash,

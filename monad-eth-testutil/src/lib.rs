@@ -591,13 +591,15 @@ pub fn generate_consensus_test_block(
 ) -> ConsensusTestBlock<NopSignature, MockSignatures<NopSignature>> {
     let chain_params = chain_config.get_chain_revision(round).chain_params();
 
-    let body: ConsensusBlockBody<EthExecutionProtocol> = ConsensusBlockBody::new(ConsensusBlockBodyInner {
-        execution_body: EthBlockBody {
-            transactions: txs.iter().map(|tx| tx.inner().to_owned()).collect(),
-            ommers: Default::default(),
-            withdrawals: Default::default(),
-        },
-    });
+    let body: ConsensusBlockBody<EthExecutionProtocol> =
+        ConsensusBlockBody::new(ConsensusBlockBodyInner {
+            execution_body: EthBlockBody {
+                transactions: txs.iter().map(|tx| tx.inner().to_owned()).collect(),
+                ommers: Default::default(),
+                withdrawals: Default::default(),
+                namespace_transaction_batches: Default::default(),
+            },
+        });
 
     let keypair = NopKeyPair::from_bytes(rand::random::<[u8; 32]>().as_mut_slice()).unwrap();
 
@@ -611,7 +613,10 @@ pub fn generate_consensus_test_block(
         // execution_inputs
         ProposedEthHeader {
             ommers_hash: EMPTY_OMMER_ROOT_HASH.0,
-            transactions_root: calculate_transaction_root(&body.execution_body.transactions).0,
+            transactions_root: calculate_transaction_root(
+                &body.execution_body.flattened_transactions(),
+            )
+            .0,
             number: seq_num.0,
             gas_limit: chain_params.proposal_gas_limit,
             mix_hash: signature.get_hash().0,

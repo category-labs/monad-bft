@@ -21,7 +21,7 @@ use alloy_consensus::{
     Header, ReceiptEnvelope, TxEnvelope,
 };
 use alloy_eips::eip7702::RecoveredAuthorization;
-use alloy_primitives::{Address, FixedBytes};
+use alloy_primitives::{keccak256, Address, FixedBytes, Signature, SignatureError, B256, U256};
 use alloy_rlp::{
     encode_list, BytesMut, Decodable, Encodable, RlpDecodable, RlpDecodableWrapper, RlpEncodable,
     RlpEncodableWrapper,
@@ -36,6 +36,7 @@ pub const EMPTY_RLP_TX_LIST: u8 = 0xc0;
 pub const MAX_TRANSACTIONS_PER_BLOCK: usize = 10000;
 const MAX_OMMERS: usize = 0;
 const MAX_WITHDRAWALS: usize = 0;
+const MAX_NAMESPACE_TRANSACTION_BATCHES: usize = MAX_TRANSACTIONS_PER_BLOCK;
 
 pub type EthAddress = [u8; 20];
 pub type EthStorageKey = [u8; 32];
@@ -358,12 +359,161 @@ impl FinalizedHeader for EthHeader {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize, Deserialize, Default)]
+#[derive(Clone, Default, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize, Deserialize)]
+pub struct NamespaceBatchSignature {
+    pub y_parity: u8,
+    pub r: U256,
+    pub s: U256,
+}
+
+impl NamespaceBatchSignature {
+    pub fn is_well_formed(&self) -> bool {
+        self.y_parity <= 1
+    }
+
+    pub fn to_alloy_signature(&self) -> Option<Signature> {
+        self.is_well_formed().then(|| {
+            Signature::from_scalars_and_parity(
+                B256::from(self.r),
+                B256::from(self.s),
+                self.y_parity == 1,
+            )
+        })
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize, Deserialize)]
+pub struct NamespaceTransactionBatch {
+    pub transactions: LimitedVec<EthTxEnvelope, MAX_TRANSACTIONS_PER_BLOCK>,
+    pub signature: NamespaceBatchSignature,
+}
+
+impl NamespaceTransactionBatch {
+    pub fn signature_hash(&self) -> B256 {
+        keccak256(alloy_rlp::encode(&self.transactions))
+    }
+
+    pub fn recover_signer(&self) -> Result<Address, SignatureError> {
+        let Some(signature) = self.signature.to_alloy_signature() else {
+            return Err(SignatureError::InvalidParity(self.signature.y_parity.into()));
+        };
+        signature.recover_address_from_prehash(&self.signature_hash())
+    }
+}
+
+impl Debug for NamespaceTransactionBatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NamespaceTransactionBatch")
+            .field("num_txns", &self.transactions.len())
+            .field("signature", &self.signature)
+            .finish()
+    }
+}
+
+impl Debug for NamespaceBatchSignature {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NamespaceBatchSignature")
+            .field("y_parity", &self.y_parity)
+            .field("r", &self.r)
+            .field("s", &self.s)
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct EthBlockBody {
     // TODO consider storing recovered txs inline here
     pub transactions: LimitedVec<EthTxEnvelope, MAX_TRANSACTIONS_PER_BLOCK>,
     pub ommers: LimitedVec<Ommer, MAX_OMMERS>,
     pub withdrawals: LimitedVec<Withdrawal, MAX_WITHDRAWALS>,
+    pub namespace_transaction_batches:
+        LimitedVec<NamespaceTransactionBatch, MAX_NAMESPACE_TRANSACTION_BATCHES>,
+}
+
+impl EthBlockBody {
+    pub fn flattened_transactions(&self) -> Vec<EthTxEnvelope> {
+        let batch_tx_count: usize = self
+            .namespace_transaction_batches
+            .iter()
+            .map(|batch| batch.transactions.len())
+            .sum();
+
+        let mut transactions = Vec::with_capacity(self.transactions.len() + batch_tx_count);
+        transactions.extend(self.transactions.iter().cloned());
+        for batch in self.namespace_transaction_batches.iter() {
+            transactions.extend(batch.transactions.iter().cloned());
+        }
+        transactions
+    }
+}
+
+impl Encodable for EthBlockBody {
+    fn length(&self) -> usize {
+        let mut payload_length = 0;
+        payload_length += self.transactions.length();
+        payload_length += self.ommers.length();
+        payload_length += self.withdrawals.length();
+        if !self.namespace_transaction_batches.is_empty() {
+            payload_length += self.namespace_transaction_batches.length();
+        }
+
+        payload_length + alloy_rlp::length_of_length(payload_length)
+    }
+
+    fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
+        let mut payload_length = 0;
+        payload_length += self.transactions.length();
+        payload_length += self.ommers.length();
+        payload_length += self.withdrawals.length();
+        if !self.namespace_transaction_batches.is_empty() {
+            payload_length += self.namespace_transaction_batches.length();
+        }
+
+        alloy_rlp::Header {
+            list: true,
+            payload_length,
+        }
+        .encode(out);
+        self.transactions.encode(out);
+        self.ommers.encode(out);
+        self.withdrawals.encode(out);
+        if !self.namespace_transaction_batches.is_empty() {
+            self.namespace_transaction_batches.encode(out);
+        }
+    }
+}
+
+impl Decodable for EthBlockBody {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let payload = &mut alloy_rlp::Header::decode_bytes(buf, true)?;
+
+        let transactions = Decodable::decode(payload)?;
+        let ommers = Decodable::decode(payload)?;
+        let withdrawals = Decodable::decode(payload)?;
+        let namespace_transaction_batches = if payload.is_empty() {
+            Default::default()
+        } else {
+            let batches: LimitedVec<NamespaceTransactionBatch, MAX_NAMESPACE_TRANSACTION_BATCHES> =
+                Decodable::decode(payload)?;
+            if batches.is_empty() {
+                return Err(alloy_rlp::Error::Custom(
+                    "namespace transaction batches cannot be empty when present",
+                ));
+            }
+            batches
+        };
+
+        if !payload.is_empty() {
+            return Err(alloy_rlp::Error::Custom("unexpected trailing body fields"));
+        }
+
+        Ok(Self {
+            transactions,
+            ommers,
+            withdrawals,
+            namespace_transaction_batches,
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize, Deserialize)]
@@ -375,6 +525,10 @@ impl Debug for EthBlockBody {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EthBlockBody")
             .field("num_txns", &format!("{}", self.transactions.len()))
+            .field(
+                "num_namespace_transaction_batches",
+                &self.namespace_transaction_batches.len(),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -500,11 +654,10 @@ mod test {
         constants::{EMPTY_TRANSACTIONS, EMPTY_WITHDRAWALS},
         proofs::calculate_transaction_root,
         transaction::{SignerRecoverable, Transaction},
-        SignableTransaction, TxLegacy,
-        EMPTY_OMMER_ROOT_HASH,
+        SignableTransaction, TxEip1559, TxLegacy, EMPTY_OMMER_ROOT_HASH,
     };
     use alloy_eips::{Decodable2718, Encodable2718};
-    use alloy_primitives::{keccak256, TxKind, B256, U256};
+    use alloy_primitives::{keccak256, Signature, TxKind, B256, U256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
 
@@ -563,6 +716,29 @@ mod test {
         let signature = signer
             .sign_hash_sync(&transaction.signature_hash())
             .unwrap();
+
+        transaction.into_signed(signature).into()
+    }
+
+    fn scalar_b256(value: u8) -> B256 {
+        let mut bytes = [0u8; 32];
+        bytes[31] = value;
+        B256::from(bytes)
+    }
+
+    fn make_execution_fixture_eip1559_tx() -> EthTxEnvelope {
+        let transaction = TxEip1559 {
+            chain_id: 20143,
+            nonce: 7,
+            max_priority_fee_per_gas: 0,
+            max_fee_per_gas: 3,
+            gas_limit: 21_000,
+            to: TxKind::Call(Address::repeat_byte(0xaa)),
+            value: U256::ZERO,
+            input: Default::default(),
+            access_list: Default::default(),
+        };
+        let signature = Signature::from_scalars_and_parity(scalar_b256(1), scalar_b256(2), false);
 
         transaction.into_signed(signature).into()
     }
@@ -701,6 +877,99 @@ mod test {
         let re_encoded = toml::to_string_pretty(&decoded).unwrap();
         assert_eq!(re_encoded, encoded);
         assert_eq!(decoded, header);
+    }
+
+    #[test]
+    fn test_eth_block_body_rlp_omits_namespace_batches_when_empty() {
+        let body = EthBlockBody {
+            transactions: Default::default(),
+            ommers: Default::default(),
+            withdrawals: Default::default(),
+            namespace_transaction_batches: Default::default(),
+        };
+
+        let encoded = alloy_rlp::encode(&body);
+        assert_eq!(encoded, vec![0xc3, 0xc0, 0xc0, 0xc0]);
+
+        let decoded: EthBlockBody = alloy_rlp::decode_exact(&encoded).unwrap();
+        assert_eq!(decoded, body);
+        assert!(decoded.namespace_transaction_batches.is_empty());
+    }
+
+    #[test]
+    fn test_eth_block_body_rlp_includes_namespace_batches_when_present() {
+        let direct_tx = make_legacy_tx(B256::repeat_byte(0x11), 0);
+        let batch_tx =
+            make_namespaced_legacy_tx(make_representable_namespace(5), B256::repeat_byte(0x22), 0);
+        let body = EthBlockBody {
+            transactions: vec![direct_tx.clone()].into(),
+            ommers: Default::default(),
+            withdrawals: Default::default(),
+            namespace_transaction_batches: vec![NamespaceTransactionBatch {
+                transactions: vec![batch_tx.clone()].into(),
+                signature: NamespaceBatchSignature {
+                    y_parity: 1,
+                    r: U256::from(4),
+                    s: U256::from(5),
+                },
+            }]
+            .into(),
+        };
+
+        let encoded = alloy_rlp::encode(&body);
+        let decoded: EthBlockBody = alloy_rlp::decode_exact(&encoded).unwrap();
+        assert_eq!(decoded, body);
+        assert_eq!(
+            decoded.flattened_transactions(),
+            vec![direct_tx.clone(), batch_tx.clone()]
+        );
+        assert_eq!(
+            calculate_transaction_root(&decoded.flattened_transactions()),
+            calculate_transaction_root(&[direct_tx, batch_tx])
+        );
+    }
+
+    #[test]
+    fn test_eth_block_body_rlp_rejects_present_empty_namespace_batches() {
+        let encoded = vec![0xc4, 0xc0, 0xc0, 0xc0, 0xc0];
+        assert!(alloy_rlp::decode_exact::<EthBlockBody>(&encoded).is_err());
+    }
+
+    #[test]
+    fn test_namespace_transaction_batch_rlp_matches_execution_fixture() {
+        let batch = NamespaceTransactionBatch {
+            transactions: vec![make_execution_fixture_eip1559_tx()].into(),
+            signature: NamespaceBatchSignature {
+                y_parity: 1,
+                r: U256::from(4),
+                s: U256::from(5),
+            },
+        };
+        let body = EthBlockBody {
+            transactions: Default::default(),
+            ommers: Default::default(),
+            withdrawals: Default::default(),
+            namespace_transaction_batches: vec![batch.clone()].into(),
+        };
+        let expected_body = vec![
+            0xf1, 0xc0, 0xc0, 0xc0, 0xed, 0xec, 0xe7, 0xa6, 0x02, 0xe4, 0x82, 0x4e, 0xaf, 0x07,
+            0x80, 0x03, 0x82, 0x52, 0x08, 0x94, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa,
+            0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0x80, 0x80,
+            0xc0, 0x80, 0x01, 0x02, 0xc3, 0x01, 0x04, 0x05,
+        ];
+
+        assert_eq!(
+            alloy_rlp::encode(&batch.signature),
+            vec![0xc3, 0x01, 0x04, 0x05]
+        );
+        assert_eq!(alloy_rlp::encode(&body), expected_body);
+        assert_eq!(
+            batch.signature_hash(),
+            keccak256(alloy_rlp::encode(&batch.transactions))
+        );
+
+        let decoded: EthBlockBody = alloy_rlp::decode_exact(&expected_body).unwrap();
+        assert_eq!(decoded, body);
     }
 
     #[test]

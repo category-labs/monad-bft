@@ -29,6 +29,7 @@ const BLOCK_HEADER_NIBBLE: u8 = 4;
 const TRANSACTION_HASH_NIBBLE: u8 = 7;
 const BLOCK_HASH_NIBBLE: u8 = 8;
 const CALL_FRAME_NIBBLE: u8 = 9;
+const NAMESPACE_STATE_NIBBLE: u8 = 10;
 
 // table_key = concat(proposal nibble, little_endian(round - 8 bytes), table_nibble)
 const PROPOSAL_NIBBLE: u8 = 0;
@@ -79,8 +80,8 @@ pub fn create_triedb_key(version: Version, key: KeyInput) -> (Vec<u8>, KeyLenNib
             append_hashed_nibbles(&mut key_nibbles, addr);
         }
         KeyInput::NamespacedAddress(namespace, addr) => {
-            key_nibbles.push(STATE_NIBBLE);
-            append_hashed_nibbles(&mut key_nibbles, namespace);
+            key_nibbles.push(NAMESPACE_STATE_NIBBLE);
+            append_namespace_nibbles(&mut key_nibbles, namespace);
             append_hashed_nibbles(&mut key_nibbles, addr);
         }
         KeyInput::Storage(addr, at) => {
@@ -89,8 +90,8 @@ pub fn create_triedb_key(version: Version, key: KeyInput) -> (Vec<u8>, KeyLenNib
             append_hashed_nibbles(&mut key_nibbles, at);
         }
         KeyInput::NamespacedStorage(namespace, addr, at) => {
-            key_nibbles.push(STATE_NIBBLE);
-            append_hashed_nibbles(&mut key_nibbles, namespace);
+            key_nibbles.push(NAMESPACE_STATE_NIBBLE);
+            append_namespace_nibbles(&mut key_nibbles, namespace);
             append_hashed_nibbles(&mut key_nibbles, addr);
             append_hashed_nibbles(&mut key_nibbles, at);
         }
@@ -175,6 +176,14 @@ fn append_hashed_nibbles(key_nibbles: &mut Vec<u8>, input: &[u8]) {
     }
 }
 
+fn append_namespace_nibbles(key_nibbles: &mut Vec<u8>, namespace: &[u8; 20]) {
+    debug_assert!(namespace[..12].iter().all(|byte| *byte == 0));
+    for byte in &namespace[12..] {
+        key_nibbles.push(byte >> 4);
+        key_nibbles.push(byte & 0xF);
+    }
+}
+
 pub fn create_range_key(tx_index: u64) -> (Vec<u8>, KeyLenNibbles) {
     let mut key_nibbles: Vec<u8> = vec![];
     // call frame key takes tx index as 4 bytes
@@ -227,6 +236,15 @@ mod test {
         key
     }
 
+    fn finalized_namespace_state_key(namespace: &[u8; 20], parts: &[&[u8]]) -> Vec<u8> {
+        let mut key = vec![(FINALIZED_NIBBLE << 4) | NAMESPACE_STATE_NIBBLE];
+        key.extend_from_slice(&namespace[12..]);
+        for part in parts {
+            key.extend_from_slice(keccak256(part).as_slice());
+        }
+        key
+    }
+
     #[test]
     fn create_triedb_key_keeps_global_state_keys_unchanged() {
         let address = [0x11; 20];
@@ -245,8 +263,16 @@ mod test {
 
     #[test]
     fn create_triedb_key_separates_namespaces() {
-        let namespace_a = [0xaa; 20];
-        let namespace_b = [0xbb; 20];
+        let namespace_a = {
+            let mut namespace = [0_u8; 20];
+            namespace[12..].copy_from_slice(&0x114eafu64.to_be_bytes());
+            namespace
+        };
+        let namespace_b = {
+            let mut namespace = [0_u8; 20];
+            namespace[12..].copy_from_slice(&0x224eafu64.to_be_bytes());
+            namespace
+        };
         let address = [0x11; 20];
         let slot = [0x22; 32];
 
@@ -267,21 +293,25 @@ mod test {
 
         assert_eq!(
             namespaced_address_key,
-            finalized_state_key(&[&namespace_a, &address])
+            finalized_namespace_state_key(&namespace_a, &[&address])
         );
         assert_eq!(
             namespaced_storage_key,
-            finalized_state_key(&[&namespace_a, &address, &slot])
+            finalized_namespace_state_key(&namespace_a, &[&address, &slot])
         );
         assert_ne!(global_address_key, namespaced_address_key);
         assert_ne!(namespaced_address_key, other_namespace_address_key);
-        assert_eq!(namespaced_address_nibbles, 2 + 64 + 64);
-        assert_eq!(namespaced_storage_nibbles, 2 + 64 + 64 + 64);
+        assert_eq!(namespaced_address_nibbles, 2 + 16 + 64);
+        assert_eq!(namespaced_storage_nibbles, 2 + 16 + 64 + 64);
     }
 
     #[test]
     fn create_triedb_key_supports_proposal_namespaced_storage() {
-        let namespace = [0xaa; 20];
+        let namespace = {
+            let mut namespace = [0_u8; 20];
+            namespace[12..].copy_from_slice(&0x114eafu64.to_be_bytes());
+            namespace
+        };
         let address = [0x11; 20];
         let slot = [0x22; 32];
         let block_id = BlockId(Hash([0x33; 32]));
@@ -291,7 +321,7 @@ mod test {
             KeyInput::NamespacedStorage(&namespace, &address, &slot),
         );
 
-        assert_eq!(nibbles, 1 + 64 + 1 + 64 + 64 + 64);
+        assert_eq!(nibbles, 1 + 64 + 1 + 16 + 64 + 64);
         assert_eq!(key.len(), usize::from(nibbles).div_ceil(2));
     }
 }

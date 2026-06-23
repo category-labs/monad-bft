@@ -644,6 +644,7 @@ fn create_block_body_helper(
             transactions: txs.iter().map(|tx| tx.inner().to_owned()).collect(),
             ommers: Default::default(),
             withdrawals: Default::default(),
+            namespace_transaction_batches: Default::default(),
         },
     })
 }
@@ -706,7 +707,7 @@ fn create_test_block_helper(
 ) -> EthValidatedBlock<NopSignature, MockSignatures<NopSignature>> {
     let body = create_block_body_helper(txs);
     let body_id = body.get_id();
-    let txns_root = calculate_transaction_root(&body.execution_body.transactions).0;
+    let txns_root = calculate_transaction_root(&body.execution_body.flattened_transactions()).0;
 
     let timestamp = seq_num.0 as u128;
     let base_fees = block_policy

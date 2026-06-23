@@ -324,6 +324,10 @@ pub enum BlockPolicyBlockValidatorError {
     AccountBalanceMissing,
     InsufficientBalance,
     InsufficientReserveBalance,
+    NamespaceNotRegisteredAtBlockStart,
+    TransactionBatchNamespaceNotOwned,
+    InvalidTransactionBatchSignature,
+    TransactionBatchSignerMismatch,
 }
 
 #[derive(Debug, Default, Clone)]
