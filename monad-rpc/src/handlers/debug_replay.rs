@@ -253,7 +253,7 @@ pub async fn monad_debug_trace_replay<T: Triedb>(
     let raw_payload = match call_result {
         CallResult::Success(monad_ethcall::SuccessCallResult { output_data, .. }) => output_data,
         CallResult::Failure(error) => {
-            return Err(JsonRpcError::eth_call_error(error.message, error.data));
+            return Err(error.into());
         }
         CallResult::Revert(result) => result.trace,
     };

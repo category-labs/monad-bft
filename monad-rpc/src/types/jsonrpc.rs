@@ -477,6 +477,16 @@ impl JsonRpcError {
         }
     }
 
+    pub fn eth_call_execution_revert(message: String, data: Option<String>) -> Self {
+        Self {
+            code: 3,
+            message,
+            data: data.map(|data| {
+                serde_json::value::to_raw_value(&data).expect("RawValue can be built from String")
+            }),
+        }
+    }
+
     pub fn insufficient_funds() -> Self {
         Self {
             code: -32003,
@@ -537,6 +547,17 @@ impl From<monad_archive::prelude::Report> for JsonRpcError {
         // Log with debug to get more details, but return a generic error for response
         error!("Archive error: {e:?}");
         Self::internal_error(format!("Archive error: {}", e))
+    }
+}
+
+impl From<monad_ethcall::FailureCallResult> for JsonRpcError {
+    fn from(error: monad_ethcall::FailureCallResult) -> Self {
+        match error.error_code {
+            monad_ethcall::EthCallResult::ExecutionError => {
+                Self::eth_call_execution_revert(error.message, error.data)
+            }
+            _ => Self::eth_call_error(error.message, error.data),
+        }
     }
 }
 

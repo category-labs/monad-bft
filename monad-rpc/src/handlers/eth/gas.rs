@@ -104,7 +104,7 @@ async fn estimate_gas_with_builder(
                     error.data,
                 ));
             }
-            _ => return Err(JsonRpcError::eth_call_error(error.message, error.data)),
+            _ => return Err(error.into()),
         },
         _ => {
             return Err(JsonRpcError::internal_error(
