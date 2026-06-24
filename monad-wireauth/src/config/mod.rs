@@ -22,8 +22,10 @@ pub const DEFAULT_RETRY_ATTEMPTS: u64 = 3;
 
 #[derive(Clone)]
 pub struct Config {
-    /// idle time before session expires (reset on any packet exchange)
+    /// idle time before an established session expires (reset on any packet exchange)
     pub session_timeout: Duration,
+    /// time to wait for a handshake reply or the first authenticated packet on a pending session
+    pub pending_session_timeout: Duration,
     /// randomization to prevent thundering herd on timeout
     pub session_timeout_jitter: Duration,
     /// send empty packet after this idle time to maintain session
@@ -55,12 +57,14 @@ pub struct Config {
     pub ip_rate_limit_window: Duration,
     /// lru cache size for tracking recent cookie-valid handshake requests per ip
     pub ip_history_capacity: usize,
-    /// at this threshold, drop all incoming handshake requests
-    pub high_watermark_sessions: usize,
+    /// at this threshold of established transport sessions, drop all incoming handshake requests
+    pub total_transport_sessions: usize,
+    /// upper limit for concurrent pending sessions (initiated + accepted handshakes)
+    pub total_pending_sessions: usize,
+    /// limit concurrent established sessions from a single ip
+    pub max_sessions_per_ip: usize,
     /// optional pre-shared key mixed into handshake for additional auth
     pub psk: Zeroizing<[u8; 32]>,
-    /// max concurrent initiated sessions (handshakes in progress)
-    pub max_initiated_sessions: usize,
     /// max bytes of buffered messages per initiated session
     pub max_buffered_bytes_per_session: usize,
     /// idle time (without useful data) before session is garbage collected
@@ -73,6 +77,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             session_timeout: Duration::from_secs(10),
+            pending_session_timeout: Duration::from_secs(1),
             session_timeout_jitter: Duration::from_secs(1),
             keepalive_interval: Duration::from_secs(3),
             keepalive_jitter: Duration::from_millis(300),
@@ -87,9 +92,10 @@ impl Default for Config {
             cookie_refresh_duration: Duration::from_secs(120),
             ip_rate_limit_window: Duration::from_secs(10),
             ip_history_capacity: 1_000_000,
-            high_watermark_sessions: 40_000,
+            total_transport_sessions: 40_000,
+            total_pending_sessions: 20_000,
+            max_sessions_per_ip: 4,
             psk: Zeroizing::new([0u8; 32]),
-            max_initiated_sessions: 1000,
             max_buffered_bytes_per_session: 128 * 1024,
             gc_idle_timeout: Duration::from_secs(120),
             max_expired_timers_per_tick: 10_000,
