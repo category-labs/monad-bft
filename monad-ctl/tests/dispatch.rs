@@ -37,6 +37,27 @@ fn write_executable(path: &Path, contents: &str) {
     fs::set_permissions(path, permissions).unwrap();
 }
 
+fn write_fake_systemctl(bin_dir: &Path) {
+    write_executable(
+        &bin_dir.join("systemctl"),
+        r#"#!/bin/sh
+printf '%s %s\n' "$1" "$2" >> "$MONAD_SYSTEMCTL_LOG"
+if [ "$MONAD_SYSTEMCTL_FAIL_UNIT" = "$2" ]; then
+  exit 23
+fi
+exit 0
+"#,
+    );
+}
+
+fn read_log_lines(path: &Path) -> Vec<String> {
+    fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
 fn copy_wrapper(destination: &Path) -> PathBuf {
     let copied = destination.join("monad-ctl");
     fs::copy(monad_ctl(), &copied).unwrap();
@@ -57,6 +78,40 @@ fn top_level_help_lists_supported_tools() {
     assert!(stdout.contains("ledger-tail"));
     assert!(stdout.contains("mpt"));
     assert!(stdout.contains("sign-name-record"));
+    assert!(stdout.contains("stack"));
+}
+
+#[test]
+fn stack_help_lists_supported_actions() {
+    let output = Command::new(monad_ctl())
+        .arg("stack")
+        .arg("--help")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("start"));
+    assert!(stdout.contains("stop"));
+    assert!(stdout.contains("restart"));
+}
+
+#[test]
+fn stack_action_help_lists_supported_targets() {
+    let output = Command::new(monad_ctl())
+        .arg("stack")
+        .arg("start")
+        .arg("--help")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("bft"));
+    assert!(stdout.contains("execution"));
+    assert!(stdout.contains("rpc"));
+    assert!(stdout.contains("mpt"));
+    assert!(stdout.contains("all"));
 }
 
 #[test]
@@ -211,4 +266,115 @@ fn reports_missing_binary() {
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.contains("failed to execute monad-ledger-tail"));
     assert!(stderr.contains("monad-ledger-tail"));
+}
+
+#[test]
+fn stack_start_single_target_invokes_systemctl_from_path() {
+    let temp = tempdir().unwrap();
+    let bin_dir = temp.path().join("bin");
+    let tool_bin_dir = temp.path().join("tool-bin");
+    let log_path = temp.path().join("systemctl.log");
+    fs::create_dir(&bin_dir).unwrap();
+    fs::create_dir(&tool_bin_dir).unwrap();
+    write_fake_systemctl(&bin_dir);
+
+    let output = Command::new(monad_ctl())
+        .arg("stack")
+        .arg("start")
+        .arg("bft")
+        .env("PATH", &bin_dir)
+        .env("MONAD_SYSTEMCTL_LOG", &log_path)
+        .env(BIN_DIR_ENV, &tool_bin_dir)
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    assert_eq!(read_log_lines(&log_path), vec!["start monad-bft.service"]);
+}
+
+#[test]
+fn stack_stop_all_invokes_systemctl_in_reverse_order() {
+    let temp = tempdir().unwrap();
+    let bin_dir = temp.path().join("bin");
+    let log_path = temp.path().join("systemctl.log");
+    fs::create_dir(&bin_dir).unwrap();
+    write_fake_systemctl(&bin_dir);
+
+    let output = Command::new(monad_ctl())
+        .arg("stack")
+        .arg("stop")
+        .arg("all")
+        .env("PATH", &bin_dir)
+        .env("MONAD_SYSTEMCTL_LOG", &log_path)
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    assert_eq!(
+        read_log_lines(&log_path),
+        vec![
+            "stop monad-rpc.service",
+            "stop monad-bft.service",
+            "stop monad-execution.service",
+            "stop monad-mpt.service",
+        ]
+    );
+}
+
+#[test]
+fn stack_restart_all_stops_then_starts_in_stack_order() {
+    let temp = tempdir().unwrap();
+    let bin_dir = temp.path().join("bin");
+    let log_path = temp.path().join("systemctl.log");
+    fs::create_dir(&bin_dir).unwrap();
+    write_fake_systemctl(&bin_dir);
+
+    let output = Command::new(monad_ctl())
+        .arg("stack")
+        .arg("restart")
+        .arg("all")
+        .env("PATH", &bin_dir)
+        .env("MONAD_SYSTEMCTL_LOG", &log_path)
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    assert_eq!(
+        read_log_lines(&log_path),
+        vec![
+            "stop monad-rpc.service",
+            "stop monad-bft.service",
+            "stop monad-execution.service",
+            "stop monad-mpt.service",
+            "start monad-mpt.service",
+            "start monad-execution.service",
+            "start monad-bft.service",
+            "start monad-rpc.service",
+        ]
+    );
+}
+
+#[test]
+fn stack_all_stops_after_first_systemctl_failure() {
+    let temp = tempdir().unwrap();
+    let bin_dir = temp.path().join("bin");
+    let log_path = temp.path().join("systemctl.log");
+    fs::create_dir(&bin_dir).unwrap();
+    write_fake_systemctl(&bin_dir);
+
+    let status = Command::new(monad_ctl())
+        .arg("stack")
+        .arg("start")
+        .arg("all")
+        .env("PATH", &bin_dir)
+        .env("MONAD_SYSTEMCTL_LOG", &log_path)
+        .env("MONAD_SYSTEMCTL_FAIL_UNIT", "monad-execution.service")
+        .status()
+        .unwrap();
+
+    assert_eq!(status.code(), Some(23));
+    assert_eq!(
+        read_log_lines(&log_path),
+        vec!["start monad-mpt.service", "start monad-execution.service"]
+    );
 }

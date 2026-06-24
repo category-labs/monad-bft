@@ -19,9 +19,24 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use clap::Command;
+use clap::{Arg, Command};
 
 pub const BIN_DIR_ENV: &str = "MONAD_CTL_BIN_DIR";
+pub const STACK_COMMAND: &str = "stack";
+
+const STACK_TARGET_NAMES: [&str; 5] = ["bft", "execution", "rpc", "mpt", "all"];
+const STACK_START_UNITS: [&str; 4] = [
+    "monad-mpt.service",
+    "monad-execution.service",
+    "monad-bft.service",
+    "monad-rpc.service",
+];
+const STACK_STOP_UNITS: [&str; 4] = [
+    "monad-rpc.service",
+    "monad-bft.service",
+    "monad-execution.service",
+    "monad-mpt.service",
+];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Tool {
@@ -58,6 +73,78 @@ pub const TOOLS: &[Tool] = &[
     },
 ];
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StackAction {
+    Start,
+    Stop,
+    Restart,
+}
+
+impl StackAction {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "start" => Some(Self::Start),
+            "stop" => Some(Self::Stop),
+            "restart" => Some(Self::Restart),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::Stop => "stop",
+            Self::Restart => "restart",
+        }
+    }
+
+    pub fn about(self) -> &'static str {
+        match self {
+            Self::Start => "Start unit(s)",
+            Self::Stop => "Stop unit(s)",
+            Self::Restart => "Restart unit(s)",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StackTarget {
+    Bft,
+    Execution,
+    Rpc,
+    Mpt,
+    All,
+}
+
+impl StackTarget {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "bft" => Some(Self::Bft),
+            "execution" => Some(Self::Execution),
+            "rpc" => Some(Self::Rpc),
+            "mpt" => Some(Self::Mpt),
+            "all" => Some(Self::All),
+            _ => None,
+        }
+    }
+
+    pub fn unit(self) -> Option<&'static str> {
+        match self {
+            Self::Bft => Some("monad-bft.service"),
+            Self::Execution => Some("monad-execution.service"),
+            Self::Rpc => Some("monad-rpc.service"),
+            Self::Mpt => Some("monad-mpt.service"),
+            Self::All => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SystemctlInvocation {
+    pub action: &'static str,
+    pub unit: &'static str,
+}
+
 pub fn find_tool(subcommand: &str) -> Option<&'static Tool> {
     TOOLS.iter().find(|tool| tool.subcommand == subcommand)
 }
@@ -69,6 +156,8 @@ pub fn cli_command() -> Command {
         .disable_help_subcommand(true)
         .after_help("Run `monad-ctl <command> --help` to view help for an underlying tool.");
 
+    command = command.subcommand(stack_command());
+
     for tool in TOOLS {
         command = command.subcommand(
             Command::new(tool.subcommand)
@@ -79,6 +168,65 @@ pub fn cli_command() -> Command {
     }
 
     command
+}
+
+pub fn stack_command() -> Command {
+    Command::new(STACK_COMMAND)
+        .about("Control Monad systemd service units")
+        .subcommand_required(true)
+        .subcommand(stack_action_command(StackAction::Start))
+        .subcommand(stack_action_command(StackAction::Stop))
+        .subcommand(stack_action_command(StackAction::Restart))
+}
+
+pub fn stack_action_command(action: StackAction) -> Command {
+    Command::new(action.name()).about(action.about()).arg(
+        Arg::new("target")
+            .required(true)
+            .value_parser(STACK_TARGET_NAMES)
+            .help("Service target"),
+    )
+}
+
+pub fn stack_systemctl_invocations(
+    action: StackAction,
+    target: StackTarget,
+) -> Vec<SystemctlInvocation> {
+    match (action, target) {
+        (StackAction::Start, StackTarget::All) => systemctl_invocations("start", STACK_START_UNITS),
+        (StackAction::Stop, StackTarget::All) => systemctl_invocations("stop", STACK_STOP_UNITS),
+        (StackAction::Restart, StackTarget::All) => STACK_STOP_UNITS
+            .into_iter()
+            .map(|unit| SystemctlInvocation {
+                action: "stop",
+                unit,
+            })
+            .chain(
+                STACK_START_UNITS
+                    .into_iter()
+                    .map(|unit| SystemctlInvocation {
+                        action: "start",
+                        unit,
+                    }),
+            )
+            .collect(),
+        (action, target) => vec![SystemctlInvocation {
+            action: action.name(),
+            unit: target
+                .unit()
+                .expect("non-all stack targets must map to a systemd unit"),
+        }],
+    }
+}
+
+fn systemctl_invocations(
+    action: &'static str,
+    units: [&'static str; 4],
+) -> Vec<SystemctlInvocation> {
+    units
+        .into_iter()
+        .map(|unit| SystemctlInvocation { action, unit })
+        .collect()
 }
 
 pub fn runtime_binary_path(binary: &str) -> PathBuf {
@@ -110,7 +258,7 @@ pub fn resolve_binary_path(
 }
 
 pub fn known_subcommands() -> impl Iterator<Item = &'static str> {
-    TOOLS.iter().map(|tool| tool.subcommand)
+    std::iter::once(STACK_COMMAND).chain(TOOLS.iter().map(|tool| tool.subcommand))
 }
 
 pub fn args_after_subcommand(args: &[OsString]) -> &[OsString] {
@@ -136,6 +284,132 @@ mod tests {
             })
         );
         assert_eq!(find_tool("unknown"), None);
+    }
+
+    #[test]
+    fn parses_stack_actions_and_targets() {
+        assert_eq!(StackAction::parse("start"), Some(StackAction::Start));
+        assert_eq!(StackAction::parse("stop"), Some(StackAction::Stop));
+        assert_eq!(StackAction::parse("restart"), Some(StackAction::Restart));
+        assert_eq!(StackAction::parse("reload"), None);
+
+        assert_eq!(StackTarget::parse("bft"), Some(StackTarget::Bft));
+        assert_eq!(
+            StackTarget::parse("execution"),
+            Some(StackTarget::Execution)
+        );
+        assert_eq!(StackTarget::parse("rpc"), Some(StackTarget::Rpc));
+        assert_eq!(StackTarget::parse("mpt"), Some(StackTarget::Mpt));
+        assert_eq!(StackTarget::parse("all"), Some(StackTarget::All));
+        assert_eq!(StackTarget::parse("validator"), None);
+    }
+
+    #[test]
+    fn maps_stack_targets_to_systemd_units() {
+        assert_eq!(StackTarget::Bft.unit(), Some("monad-bft.service"));
+        assert_eq!(
+            StackTarget::Execution.unit(),
+            Some("monad-execution.service")
+        );
+        assert_eq!(StackTarget::Rpc.unit(), Some("monad-rpc.service"));
+        assert_eq!(StackTarget::Mpt.unit(), Some("monad-mpt.service"));
+        assert_eq!(StackTarget::All.unit(), None);
+    }
+
+    #[test]
+    fn expands_all_stack_target_in_deterministic_order() {
+        assert_eq!(
+            stack_systemctl_invocations(StackAction::Start, StackTarget::All),
+            vec![
+                SystemctlInvocation {
+                    action: "start",
+                    unit: "monad-mpt.service",
+                },
+                SystemctlInvocation {
+                    action: "start",
+                    unit: "monad-execution.service",
+                },
+                SystemctlInvocation {
+                    action: "start",
+                    unit: "monad-bft.service",
+                },
+                SystemctlInvocation {
+                    action: "start",
+                    unit: "monad-rpc.service",
+                },
+            ]
+        );
+
+        assert_eq!(
+            stack_systemctl_invocations(StackAction::Stop, StackTarget::All),
+            vec![
+                SystemctlInvocation {
+                    action: "stop",
+                    unit: "monad-rpc.service",
+                },
+                SystemctlInvocation {
+                    action: "stop",
+                    unit: "monad-bft.service",
+                },
+                SystemctlInvocation {
+                    action: "stop",
+                    unit: "monad-execution.service",
+                },
+                SystemctlInvocation {
+                    action: "stop",
+                    unit: "monad-mpt.service",
+                },
+            ]
+        );
+
+        assert_eq!(
+            stack_systemctl_invocations(StackAction::Restart, StackTarget::All),
+            vec![
+                SystemctlInvocation {
+                    action: "stop",
+                    unit: "monad-rpc.service",
+                },
+                SystemctlInvocation {
+                    action: "stop",
+                    unit: "monad-bft.service",
+                },
+                SystemctlInvocation {
+                    action: "stop",
+                    unit: "monad-execution.service",
+                },
+                SystemctlInvocation {
+                    action: "stop",
+                    unit: "monad-mpt.service",
+                },
+                SystemctlInvocation {
+                    action: "start",
+                    unit: "monad-mpt.service",
+                },
+                SystemctlInvocation {
+                    action: "start",
+                    unit: "monad-execution.service",
+                },
+                SystemctlInvocation {
+                    action: "start",
+                    unit: "monad-bft.service",
+                },
+                SystemctlInvocation {
+                    action: "start",
+                    unit: "monad-rpc.service",
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn expands_single_stack_target_to_one_systemctl_invocation() {
+        assert_eq!(
+            stack_systemctl_invocations(StackAction::Restart, StackTarget::Bft),
+            vec![SystemctlInvocation {
+                action: "restart",
+                unit: "monad-bft.service",
+            }]
+        );
     }
 
     #[test]
