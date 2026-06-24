@@ -693,6 +693,9 @@ where
     let direct_udp_bind_address = network_config
         .direct_udp_bind_address_port
         .map(|port| SocketAddr::new(IpAddr::V4(network_config.bind_address_host), port));
+    let authenticated_tcp_bind_address = network_config
+        .authenticated_tcp_bind_address_port
+        .map(|port| SocketAddr::new(IpAddr::V4(network_config.bind_address_host), port));
     let self_id = NodeId::new(identity.pubkey());
     let self_tcp_port = peer_discovery_config.tcp_port();
     let name_record_address = if let Some(ip) = peer_discovery_config.ip() {
@@ -713,6 +716,7 @@ where
         ?non_authenticated_bind_address,
         ?authenticated_bind_address,
         ?direct_udp_bind_address,
+        ?authenticated_tcp_bind_address,
         ?name_record_address,
         "Monad-node starting, pid: {}",
         process::id()
@@ -743,13 +747,22 @@ where
     if let Some(direct_addr) = direct_udp_bind_address {
         udp_sockets.push((UdpSocketId::DirectUdp, direct_addr));
     }
+    let mut tcp_sockets: Vec<(TcpSocketId, SocketAddr)> =
+        vec![(TcpSocketId::Raptorcast, tcp_bind_address)];
+    if let Some(address) = authenticated_tcp_bind_address {
+        tcp_sockets.push((TcpSocketId::AuthenticatedRaptorcast, address));
+    }
     dp_builder = dp_builder
         .with_udp_sockets(udp_sockets)
-        .with_tcp_sockets([(TcpSocketId::Raptorcast, tcp_bind_address)]);
+        .with_tcp_sockets(tcp_sockets);
 
     assert_eq!(
         peer_discovery_config.self_direct_udp_port.is_some(),
         network_config.direct_udp_bind_address_port.is_some()
+    );
+    assert_eq!(
+        peer_discovery_config.self_tcp_auth_port.is_some(),
+        network_config.authenticated_tcp_bind_address_port.is_some()
     );
 
     let self_record = NameRecord::new_with_ports(
@@ -759,6 +772,9 @@ where
         peer_discovery_config.self_auth_port.get(),
         peer_discovery_config
             .self_direct_udp_port
+            .map(NonZeroU16::get),
+        peer_discovery_config
+            .self_tcp_auth_port
             .map(NonZeroU16::get),
         peer_discovery_config.self_record_seq_num,
     );
@@ -857,6 +873,13 @@ where
             shared_key.clone(),
         )
     });
+    let tcp_auth_protocol = authenticated_tcp_bind_address.map(|_| {
+        WireAuthProtocol::new(
+            &monad_raptorcast::auth::metrics::TCP_METRICS,
+            wireauth_config.clone(),
+            shared_key.clone(),
+        )
+    });
 
     MultiRouter::new(
         self_id,
@@ -883,6 +906,7 @@ where
         direct_udp_auth_protocol,
         direct_udp_peer_score_reader,
         proposer_schedule,
+        tcp_auth_protocol,
     )
 }
 
@@ -934,6 +958,7 @@ fn bootstrap_peer_entry<ST: CertificateSignatureRecoverable>(
         record_seq_num: peer.record_seq_num,
         auth_port: peer.auth_port,
         direct_udp_port: peer.direct_udp_port,
+        tcp_auth_port: peer.tcp_auth_port,
     })
 }
 
