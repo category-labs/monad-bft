@@ -15,47 +15,64 @@
 
 mod helper;
 
-use std::{sync::Arc, time::Duration};
+use std::{num::NonZeroU64, sync::Arc};
 
 use chorus::{
     CadenceDriverMsg,
-    conductor::dummy::DummyConductor,
+    conductor::{ConductorConfig, MonadConductor, acs::nop::NopAcs},
     slot::dummy::{DummySlotConsensus, DummySlotConsensusConfig},
-    types::{NodeId, Timestamp, TimestampDelta},
+    types::{NodeId, SlotDeadline, TimestampDelta},
 };
 use helper::expect_finalized_at;
 use monad_mcp_chorus::stub as chorus;
 use monad_mcp_chorus_sim::CadenceSwarmBuilder;
 
-const DEADLINE_OFFSET: u64 = 10;
-const SLOTS_PER_WINDOW: u64 = 10;
-const SLOT_INTERVAL: u64 = 100;
+const SLOTS_PER_WINDOW: NonZeroU64 = NonZeroU64::new(10).unwrap();
+const SYNC_BOUNDARY_SLOTS: NonZeroU64 = NonZeroU64::new(8).unwrap();
+const SLOT_INTERVAL: TimestampDelta = TimestampDelta::from_millis(100);
+const GENESIS_DEADLINE: SlotDeadline = SlotDeadline::from_millis(100);
 
-type DummyMsg = CadenceDriverMsg<DummySlotConsensus, DummyConductor>;
+type Conductor = MonadConductor<NopAcs<SlotDeadline>>;
+
+type DummyMsg = CadenceDriverMsg<DummySlotConsensus, Conductor>;
+
+fn conductor() -> Conductor {
+    let config = ConductorConfig::new(
+        SLOTS_PER_WINDOW,
+        SYNC_BOUNDARY_SLOTS,
+        SLOT_INTERVAL,
+        GENESIS_DEADLINE,
+    )
+    .unwrap();
+    MonadConductor::genesis(config, ()).unwrap()
+}
 
 fn add_dummy_node(builder: &mut CadenceSwarmBuilder<DummyMsg>, id: NodeId, quorum: usize) {
     let config = DummySlotConsensusConfig { quorum };
-    let conductor = DummyConductor::new(TimestampDelta::new(SLOT_INTERVAL), SLOTS_PER_WINDOW)
-        .set_deadline_offset(TimestampDelta::new(DEADLINE_OFFSET));
     let key = Arc::new(id.keypair());
-    builder.add_node::<DummySlotConsensus, _>(id, conductor, config, key);
+    builder.add_node::<DummySlotConsensus, _>(id, conductor(), config, key);
 }
 
-#[allow(clippy::erasing_op, clippy::identity_op)] // keep *0, *1 expressions
 #[test]
 fn all_slots_finalize_on_schedule() {
     const NODES: usize = 3;
-    const LATENCY: u64 = 200;
+    const LATENCY: TimestampDelta = TimestampDelta::from_millis(200);
 
     let mut builder = CadenceSwarmBuilder::new();
-    builder.set_latency(Duration::from_millis(LATENCY));
+    builder.set_latency(LATENCY.as_duration());
 
     for i in 0..NODES {
         add_dummy_node(&mut builder, NodeId::dummy(i as u64), NODES);
     }
 
+    let deadline_of_slot = |s: u64| {
+        GENESIS_DEADLINE
+            .checked_add_deltas(SLOT_INTERVAL, s)
+            .unwrap()
+    };
+
     let mut swarm = builder.build();
-    swarm.run_until(Timestamp::new(SLOT_INTERVAL * 4 + LATENCY));
+    swarm.run_until(deadline_of_slot(3) + LATENCY);
 
     for i in 0..NODES {
         let node_id = NodeId::dummy(i as u64);
@@ -64,10 +81,10 @@ fn all_slots_finalize_on_schedule() {
             &swarm,
             node_id,
             [
-                SLOT_INTERVAL * 0 + DEADLINE_OFFSET + LATENCY,
-                SLOT_INTERVAL * 1 + DEADLINE_OFFSET + LATENCY,
-                SLOT_INTERVAL * 2 + DEADLINE_OFFSET + LATENCY,
-                SLOT_INTERVAL * 3 + DEADLINE_OFFSET + LATENCY,
+                deadline_of_slot(0) + LATENCY,
+                deadline_of_slot(1) + LATENCY,
+                deadline_of_slot(2) + LATENCY,
+                deadline_of_slot(3) + LATENCY,
             ],
         );
     }

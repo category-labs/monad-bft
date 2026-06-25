@@ -13,21 +13,18 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! Exercises the Cadence conductor (window management + ACS-driven window
-//! rollover) using a dummy ACS implementation. Two scenarios are tested: one
-//! with the production Chorus implementation and when with a dummay slot
-//! consensus implementation. Both cases run the same scenario logic
-//! (`run_full_window_rollover`).
+//! Exercises the Monad conductor (window management + deadline-agreement
+//! driven window rollover) using the no-op ACS, which decides on its own
+//! proposal without communicating. Two scenarios are tested: one with the
+//! production Chorus implementation and one with a dummy slot consensus
+//! implementation.
 
 mod helper;
 
-use std::{num::NonZeroU64, sync::Arc, time::Duration};
+use std::{num::NonZeroU64, sync::Arc};
 
 use chorus::{
-    conductor::{
-        acs::dummy::DummyAcs,
-        cadence::{CadenceConductor, CadenceConductorConfig},
-    },
+    conductor::{ConductorConfig, MonadConductor, acs::nop::NopAcs},
     slot::{
         chorus::{Chorus, ChorusConfig, ChorusContext},
         dummy::{DummySlotConsensus, DummySlotConsensusConfig},
@@ -39,25 +36,37 @@ use monad_mcp_chorus::{spec::KeyPair as _, stub as chorus};
 use monad_mcp_chorus_sim::CadenceSwarmBuilder;
 
 const NODES: u64 = 4;
-const SLOTS_PER_WINDOW: u64 = 4; // W
-const SYNC_BOUNDARY_SLOTS: u64 = 2; // p; must be < W
+const SLOTS_PER_WINDOW: NonZeroU64 = NonZeroU64::new(4).unwrap(); // W
+const SYNC_BOUNDARY_SLOTS: NonZeroU64 = NonZeroU64::new(2).unwrap(); // p; must be <= W
 const SLOT_INTERVAL: u64 = 100; // tau
-const DEADLINE_OFFSET: u64 = 100; // genesis -> first slot deadline
 const LATENCY: u64 = 50; // networking latency
 const DELTA: u64 = 100; // Chorus latency bound (Delta); Chorus variant only
+const GENESIS_DEADLINE: Timestamp = Timestamp::from_millis(100);
 
 // The conductor and ACS are the same across both cases; only the inner
-// slot consensus changes.
-type Cadence = CadenceConductor<DummyAcs<SlotDeadline>>;
+// slot consensus changes. The no-op ACS decides on the natural (genesis
+// anchored) deadline schedule, so slot k's deadline is
+// GENESIS_DEADLINE + k * tau = 100 + k * 100.
+type Conductor = MonadConductor<NopAcs<SlotDeadline>>;
 
-fn cadence_config() -> CadenceConductorConfig {
-    CadenceConductorConfig {
-        genesis: Timestamp::GENESIS,
-        deadline_offset: TimestampDelta::new(DEADLINE_OFFSET),
-        slot_interval: TimestampDelta::new(SLOT_INTERVAL),
-        slots_per_window: NonZeroU64::new(SLOTS_PER_WINDOW).unwrap(),
-        sync_boundary_slots: NonZeroU64::new(SYNC_BOUNDARY_SLOTS).unwrap(),
-    }
+fn conductor() -> Conductor {
+    let config = ConductorConfig::new(
+        SLOTS_PER_WINDOW,
+        SYNC_BOUNDARY_SLOTS,
+        TimestampDelta::from_millis(SLOT_INTERVAL),
+        GENESIS_DEADLINE,
+    )
+    .unwrap();
+    Conductor::genesis(config, ()).unwrap()
+}
+
+// Slot k's deadline under the natural genesis-anchored schedule:
+// deadline(k) = GENESIS_DEADLINE + k * tau. The no-op ACS decides this
+// schedule for every window, so it also holds across window rollovers.
+fn slot_deadline(slot: u64) -> Timestamp {
+    GENESIS_DEADLINE
+        .checked_add_deltas(TimestampDelta::from_millis(SLOT_INTERVAL), slot)
+        .unwrap()
 }
 
 fn gen_validator_data(n: u64) -> ValidatorData {
@@ -76,30 +85,35 @@ fn full_window_rolls_over_with_dummy_slot_consensus() {
     // Dummy: each node votes on its slot deadline and finalizes once the
     // quorum of votes arrives, i.e. one latency after the deadline.
     //   window 0 deadlines 100, 200, 300, 400 -> finalize 150, 250, 350, 450.
-    //   Sync boundary p=2 crossed when slot 1 finalizes (t=250); ACS decides
-    //   the next window start one latency later (t=300); window 1 opens with
-    //   deadlines 450, 550, ... so slots 4, 5 finalize at 500, 600.
+    //   Sync boundary p=2 crossed when slot 1 finalizes (t=250); the no-op
+    //   ACS immediately decides the natural window 1 deadline schedule, so
+    //   window 1 opens with deadlines 500, 600, ... and slots 4, 5 finalize
+    //   at 550, 650.
     let mut builder = CadenceSwarmBuilder::new();
-    builder.set_latency(Duration::from_millis(LATENCY));
+    builder.set_latency(TimestampDelta::from_millis(LATENCY).as_duration());
 
-    let val_data = Arc::new(gen_validator_data(NODES));
     for i in 0..NODES {
         let id = NodeId::dummy(i);
-        let conductor = Cadence::new(cadence_config(), val_data.clone());
         let slot_config = DummySlotConsensusConfig {
             quorum: NODES as usize,
         };
         let key = Arc::new(id.keypair());
-        builder.add_node::<DummySlotConsensus, _>(id, conductor, slot_config, key);
+        builder.add_node::<DummySlotConsensus, _>(id, conductor(), slot_config, key);
     }
 
     let mut swarm = builder.build();
-    swarm.run_until(Timestamp::new(650));
+    swarm.run_until(Timestamp::from_millis(700));
 
     for i in 0..NODES {
         let node_id = NodeId::dummy(i);
         expect_finalized(&swarm, node_id, [0, 1, 2, 3, 4, 5]);
-        expect_finalized_at(&swarm, node_id, [150, 250, 350, 450, 500, 600]);
+        // finalized(k) = deadline(k) + latency = 150, 250, 350, 450, 550, 650
+        expect_finalized_at(
+            &swarm,
+            node_id,
+            [0, 1, 2, 3, 4, 5]
+                .map(|slot| slot_deadline(slot) + TimestampDelta::from_millis(LATENCY)),
+        );
     }
 }
 
@@ -109,24 +123,18 @@ fn full_window_rolls_over_with_chorus() {
     // slot deadline (batch votes at +1 latency form the fast block, commit
     // votes at +2 latencies form the fast-commit QC).
     //   window 0 deadlines 100, 200, 300, 400 -> finalize 200, 300, 400, 500.
-    //   Sync boundary p=2 crossed when slot 1 finalizes (t=300); ACS decides
-    //   the next window start one latency later (t=350); window 1 opens with
-    //   deadlines 500, 600, ... so slots 4, 5 finalize at 600, 700.
-    // Dummy: each node votes on its slot deadline and finalizes once the
-    // quorum of votes arrives, i.e. one latency after the deadline.
-    //   window 0 deadlines 100, 200, 300, 400 -> finalize 150, 250, 350, 450.
-    //   Sync boundary p=2 crossed when slot 1 finalizes (t=250); ACS decides
-    //   the next window start one latency later (t=300); window 1 opens with
-    //   deadlines 450, 550, ... so slots 4, 5 finalize at 500, 600.
+    //   Sync boundary p=2 crossed when slot 1 finalizes (t=300); the no-op
+    //   ACS immediately decides the natural window 1 deadline schedule, so
+    //   window 1 opens with deadlines 500, 600, ... and slots 4, 5 finalize
+    //   at 600, 700.
     let mut builder = CadenceSwarmBuilder::new();
-    builder.set_latency(Duration::from_millis(LATENCY));
+    builder.set_latency(TimestampDelta::from_millis(LATENCY).as_duration());
 
     let val_data = Arc::new(gen_validator_data(NODES));
     for i in 0..NODES {
         let id = NodeId::dummy(i);
-        let conductor = Cadence::new(cadence_config(), val_data.clone());
         let slot_config = ChorusConfig {
-            delta: TimestampDelta::new(DELTA),
+            delta: TimestampDelta::from_millis(DELTA),
             num_proposals: 1,
         };
         let context = ChorusContext {
@@ -134,15 +142,21 @@ fn full_window_rolls_over_with_chorus() {
             validator_data: val_data.clone(),
             da_handle: Arc::new(DAHandle),
         };
-        builder.add_node::<Chorus, _>(id, conductor, slot_config, context);
+        builder.add_node::<Chorus, _>(id, conductor(), slot_config, context);
     }
 
     let mut swarm = builder.build();
-    swarm.run_until(Timestamp::new(750));
+    swarm.run_until(Timestamp::from_millis(750));
 
     for i in 0..NODES {
         let node_id = NodeId::dummy(i);
         expect_finalized(&swarm, node_id, [0, 1, 2, 3, 4, 5]);
-        expect_finalized_at(&swarm, node_id, [200, 300, 400, 500, 600, 700]);
+        // finalized(k) = deadline(k) + 2 * latency = 200, 300, 400, 500, 600, 700
+        expect_finalized_at(
+            &swarm,
+            node_id,
+            [0, 1, 2, 3, 4, 5]
+                .map(|slot| slot_deadline(slot) + TimestampDelta::from_millis(2 * LATENCY)),
+        );
     }
 }

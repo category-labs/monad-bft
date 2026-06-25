@@ -28,9 +28,9 @@ pub fn expect_finalized<M: Clone + 'static>(
 pub fn expect_finalized_at<M: Clone + 'static>(
     swarm: &CadenceSwarm<M>,
     node: NodeId,
-    timestamps: impl IntoIterator<Item = u64>,
+    timestamps: impl IntoIterator<Item = Timestamp>,
 ) {
-    let expected: Vec<Timestamp> = timestamps.into_iter().map(Timestamp::new).collect();
+    let expected: Vec<Timestamp> = timestamps.into_iter().collect();
     let finalized: Vec<Timestamp> = swarm.log().get_finalization_times(node);
     assert_eq!(finalized, expected);
 }

@@ -27,18 +27,19 @@ use monad_sim_swarm::{Net, SimClient};
 // using NodeId as Addr
 type SimNet<M> = Net<NodeId, M>;
 
-// 1 chorus tick = 1ms of monad-sim time; Timestamp::GENESIS = Time(0).
+// Both chorus and monad-sim store time in nanoseconds.
 pub(crate) fn time_of(at: Timestamp) -> Time {
-    Time(0) + Duration::from_millis(at.ticks())
+    Time(i128::try_from(at.as_nanos()).expect("chorus timestamp exceeds simulation time range"))
 }
 
 fn duration_of(delta: TimestampDelta) -> Duration {
-    Duration::from_millis(delta.ticks())
+    delta.as_duration()
 }
 
 pub(crate) fn to_timestamp(time: Time) -> Timestamp {
-    let nanos = time.0;
-    Timestamp::new((nanos / 1_000_000i128) as u64)
+    Timestamp::from_nanos(
+        u128::try_from(time.0).expect("simulation time cannot be converted to a timestamp"),
+    )
 }
 
 // A monad-sim process that contains a cadence runtime and
