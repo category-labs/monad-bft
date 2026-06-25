@@ -6130,6 +6130,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-sim"
+version = "0.1.0"
+dependencies = [
+ "rand 0.8.5",
+ "rand_distr",
+]
+
+[[package]]
 name = "monad-state"
 version = "0.1.0"
 dependencies = [
