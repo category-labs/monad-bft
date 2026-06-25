@@ -307,6 +307,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         .expect("uds bind failed"),
         loopback: LoopbackExecutor::default(),
         state_sync: StateSyncExecutor::<SignatureType, SignatureCollectionType>::new(
+            node_state.chain_config.chain_id(),
             vec![statesync_triedb_path.to_string_lossy().to_string()],
             node_state.statesync_sq_thread_cpu,
             state_sync_init_peers,
