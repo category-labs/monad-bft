@@ -227,7 +227,7 @@ struct Boot {
 /// Spawn the producer, data track, index engine, and publisher around a fetch
 /// source + run config. Recovery and the `count`→`end` resolution happen
 /// in here, before the single-writer pipeline starts.
-pub(crate) async fn run_ingest<S, M, B, R>(
+pub async fn run_ingest<S, M, B, R>(
     source: S,
     tables: Arc<Tables<M, B>>,
     publisher: Arc<PublicationTables<M>>,

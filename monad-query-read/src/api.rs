@@ -24,10 +24,10 @@ use crate::{
         query::family_runner::{
             run_family_query, IndexedFamilyQuery, IndexedQueryOutcome, IndexedQueryStats,
         },
+        seal::{last_sealed_span, seal_boundary},
         tables::{DictConfig, PublicationTables, QueryRuntimeConfig, Tables},
     },
     error::{MonadChainDataError, Result},
-    ingest::index::{last_sealed_span, seal_boundary},
     ingest_types::Hash32,
     logs::{LogMaterializer, QueryLogsRequest, QueryLogsResponse},
     primitives::{
@@ -67,7 +67,7 @@ pub struct StandbyDigests {
 }
 
 /// Read-only query layer over the chain-data store. The branchless ingest engine
-/// (`crate::ingest`) is the only write path; this service reads the published
+/// (`monad-query-write`) is the only write path; this service reads the published
 /// head observationally and never writes to the stores.
 pub struct MonadChainDataService<M: MetaStore, B: BlobStore> {
     tables: Tables<M, B>,

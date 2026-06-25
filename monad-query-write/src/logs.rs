@@ -15,7 +15,7 @@
 
 use alloy_primitives::B256;
 
-use super::StoredLog;
+use monad_query_types::logs::StoredLog;
 use crate::{
     engine::{
         bitmap::{IndexKind, StreamKey},

@@ -5159,8 +5159,10 @@ dependencies = [
  "monad-query-engine",
  "monad-query-errors",
  "monad-query-primitives",
+ "monad-query-read",
  "monad-query-store",
  "monad-query-types",
+ "monad-query-write",
  "roaring",
  "s3s",
  "s3s-fs",
@@ -6065,6 +6067,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-query-read"
+version = "0.1.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-primitives",
+ "alloy-rlp",
+ "bytes",
+ "futures",
+ "monad-query-engine",
+ "monad-query-errors",
+ "monad-query-primitives",
+ "monad-query-store",
+ "monad-query-types",
+]
+
+[[package]]
 name = "monad-query-store"
 version = "0.1.0"
 dependencies = [
@@ -6110,6 +6129,27 @@ dependencies = [
  "bytes",
  "monad-query-errors",
  "monad-query-primitives",
+]
+
+[[package]]
+name = "monad-query-write"
+version = "0.1.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-primitives",
+ "alloy-rlp",
+ "blake3",
+ "bytes",
+ "eyre",
+ "futures",
+ "monad-query-engine",
+ "monad-query-errors",
+ "monad-query-primitives",
+ "monad-query-store",
+ "monad-query-types",
+ "roaring",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

@@ -38,21 +38,15 @@ pub mod ingest_types {
 
 pub mod engine {
     pub use monad_query_engine::{
-        bitmap, clause, digest, family, primary_dir, query, row_codec, tables,
+        bitmap, clause, digest, family, primary_dir, query, row_codec, seal, tables,
     };
 }
 
-pub mod api;
-pub mod blocks;
 pub mod config;
-pub mod external;
-pub mod ingest;
-pub mod logs;
-pub mod mem_scan;
 pub mod testkit;
-pub mod traces;
-pub mod transfers;
-pub mod txs;
+
+pub use monad_query_read::{api, blocks, external, logs, mem_scan, traces, transfers, txs};
+pub use monad_query_write::ingest;
 
 // Root re-exports: the surface intended for external consumers (the transport
 // layer and binaries) — service/reader constructors and their config types,

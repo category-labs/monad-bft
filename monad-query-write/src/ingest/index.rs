@@ -43,6 +43,7 @@ use crate::{
         digest::{chain, ChainDigest, SealDigest},
         family::{Family, PerFamily},
         primary_dir::{PrimaryDirBucket, PrimaryDirEntry, DIRECTORY_BUCKET_SIZE},
+        seal::seal_boundary,
         tables::Tables,
     },
     error::{MonadChainDataError, Result},
@@ -57,23 +58,6 @@ pub(crate) const PAGE_SPAN: u64 = STREAM_PAGE_ID_SPAN as u64;
 pub(crate) const BUCKET_SPAN: u64 = DIRECTORY_BUCKET_SIZE;
 /// The branchless seal path requires pages and buckets to share one boundary.
 const _: () = assert!(PAGE_SPAN == BUCKET_SPAN);
-/// Unified per-family seal granule: a page and its bucket seal together.
-const SEAL_SPAN: u64 = PAGE_SPAN;
-
-/// Largest multiple of [`SEAL_SPAN`] at/below `frontier` — the start of the open
-/// granule. Shared by [`seal_family`] and recovery ([`super::recover`]) so the
-/// two can never compute a different open granule.
-pub(crate) fn seal_boundary(frontier: u64) -> u64 {
-    (frontier / SEAL_SPAN) * SEAL_SPAN
-}
-
-/// Start of the most recently sealed granule given the open-granule start
-/// `sealed_id` (`None` when nothing has sealed). The persisted seal-chain row
-/// for this span carries the family's current chain value — recovery and the
-/// verification accessor both key off it.
-pub(crate) fn last_sealed_span(sealed_id: u64) -> Option<u64> {
-    sealed_id.checked_sub(SEAL_SPAN)
-}
 
 /// A single index write. Sealing/flushing computes these synchronously, then
 /// [`IndexEngine::write_all`] issues them concurrently inline — no writer task;

@@ -16,6 +16,7 @@
 use alloy_consensus::Transaction;
 
 use monad_query_types::txs::{decode_envelope, selector_from_envelope, StoredTxEnvelope};
+pub use monad_query_types::txs::TxLocation;
 use crate::{
     engine::{
         bitmap::{IndexKind, StreamKey},
@@ -25,7 +26,6 @@ use crate::{
     error::{MonadChainDataError, Result},
     ingest_types::{FinalizedBlock, Hash32, IngestTx},
     primitives::records::BlockBlobHeader,
-    txs::TxLocation,
 };
 
 /// Derives the `(tx_hash, location)` pairs to write into `tx_hash_index` for
