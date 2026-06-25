@@ -109,6 +109,9 @@ pub struct StepInfo {
     pub seq: u64,
     pub process: ProcessId,
     pub label: StepLabel,
+    /// This step's critical-path depth (see [`SimMetrics::critical_path_len`]);
+    /// `0` if the step was skipped because its process had been despawned.
+    pub depth: u64,
 }
 
 /// Why a bounded run returned.
@@ -154,6 +157,24 @@ pub struct SimMetrics {
     /// Steps skipped because they were cancelled before being popped.
     pub steps_cancelled: u64,
     pub max_queue_len: usize,
+    /// Longest chain of causally-dependent steps, in steps. A step depends on
+    /// the step that scheduled it and on the previous step on its own process
+    /// (processes are serial). This is the run's critical path: the fewest
+    /// sequential steps any execution — parallel or not — must take. Together
+    /// with `steps_executed` (the total work) it bounds the available
+    /// parallelism (see [`parallelism`](Self::parallelism)). Deterministic for a
+    /// given `(config, seed)`, so it is usable as a regression metric.
+    pub critical_path_len: u64,
+}
+
+impl SimMetrics {
+    /// Average available parallelism: total steps over the critical path. `1.0`
+    /// for a fully sequential run; higher means more steps could, in principle,
+    /// run concurrently. An upper bound on achievable speedup, not a measurement
+    /// of any actual parallel run.
+    pub fn parallelism(&self) -> f64 {
+        self.steps_executed as f64 / self.critical_path_len.max(1) as f64
+    }
 }
 
 type Action = Box<dyn FnOnce(&mut dyn Any, &mut Ctx<'_>)>;
@@ -181,6 +202,9 @@ struct Entry {
     priority: u32,
     seq: u64,
     process: ProcessId,
+    /// Critical-path depth of the step that scheduled this one (`0` if scheduled
+    /// outside any step). See [`SimMetrics::critical_path_len`].
+    parent_depth: u64,
     label: StepLabel,
     cancel: CancelToken,
     action: Action,
@@ -247,6 +271,9 @@ pub struct Simulation {
     queue: BinaryHeap<Reverse<Entry>>,
     metrics: SimMetrics,
     observer: Option<Observer>,
+    /// Critical-path depth of the last executed step on each process; maintains
+    /// [`SimMetrics::critical_path_len`] incrementally.
+    proc_depth: HashMap<ProcessId, u64>,
 }
 
 impl Simulation {
@@ -266,6 +293,7 @@ impl Simulation {
             queue: BinaryHeap::new(),
             metrics: SimMetrics::default(),
             observer: None,
+            proc_depth: HashMap::new(),
         }
     }
 
@@ -347,6 +375,7 @@ impl Simulation {
             self.tie_break,
             &mut self.metrics,
             self.now,
+            0,
             who.id,
             at,
             label,
@@ -382,6 +411,7 @@ impl Simulation {
             self.tie_break,
             &mut self.metrics,
             self.now,
+            0,
             ROOT,
             at,
             label,
@@ -432,6 +462,7 @@ impl Simulation {
             .remove(&who.id)
             .expect("unknown process handle")
             .expect("process state unavailable (despawn during its own step?)");
+        self.proc_depth.remove(&who.id);
         *boxed.downcast::<S>().expect("handle/state type mismatch")
     }
 
@@ -456,14 +487,19 @@ impl Simulation {
                 self.metrics.steps_cancelled += 1;
                 continue;
             }
-            let info = StepInfo {
-                time: entry.time,
-                seq: entry.seq,
-                process: entry.process,
-                label: entry.label.clone(),
-            };
-            self.dispatch(entry);
+            let time = entry.time;
+            let seq = entry.seq;
+            let process = entry.process;
+            let label = entry.label.clone();
+            let depth = self.dispatch(entry);
             self.metrics.steps_executed += 1;
+            let info = StepInfo {
+                time,
+                seq,
+                process,
+                label,
+                depth,
+            };
             if let Some(observer) = self.observer.as_mut() {
                 observer(&info);
             }
@@ -544,14 +580,22 @@ impl Simulation {
         }
     }
 
-    fn dispatch(&mut self, entry: Entry) {
+    fn dispatch(&mut self, entry: Entry) -> u64 {
         let pid = entry.process;
         self.now = entry.time;
         // A step may be left over for a process that was despawned after it was
-        // scheduled; skip it.
+        // scheduled; skip it (it does no work, so it is off the critical path).
         if !self.processes.contains_key(&pid) {
-            return;
+            return 0;
         }
+        // Critical-path depth: one past the later of the step that scheduled this
+        // one and the previous step on this process.
+        let depth = entry
+            .parent_depth
+            .max(self.proc_depth.get(&pid).copied().unwrap_or(0))
+            + 1;
+        self.proc_depth.insert(pid, depth);
+        self.metrics.critical_path_len = self.metrics.critical_path_len.max(depth);
         // Take the process's state out so `Ctx` can borrow the rest of `self`
         // (including `processes`, for spawns) without aliasing it.
         let mut state = self
@@ -565,6 +609,7 @@ impl Simulation {
                 now: self.now,
                 seed: self.seed,
                 tie_break: self.tie_break,
+                current_depth: depth,
                 rng: &mut self.rng,
                 queue: &mut self.queue,
                 seq: &mut self.seq,
@@ -578,6 +623,7 @@ impl Simulation {
             .get_mut(&pid)
             .expect("process slot vanished during step")
             .replace(state);
+        depth
     }
 }
 
@@ -588,6 +634,8 @@ pub struct Ctx<'a> {
     now: Time,
     seed: u64,
     tie_break: TieBreak,
+    /// Critical-path depth of the running step; stamped onto steps it schedules.
+    current_depth: u64,
     rng: &'a mut StdRng,
     queue: &'a mut BinaryHeap<Reverse<Entry>>,
     seq: &'a mut u64,
@@ -623,6 +671,7 @@ impl<'a> Ctx<'a> {
             self.tie_break,
             &mut *self.metrics,
             self.now,
+            self.current_depth,
             who.id,
             at,
             label,
@@ -655,6 +704,7 @@ impl<'a> Ctx<'a> {
             self.tie_break,
             &mut *self.metrics,
             self.now,
+            self.current_depth,
             ROOT,
             at,
             label,
@@ -684,6 +734,7 @@ fn enqueue<S: 'static>(
     mode: TieBreak,
     metrics: &mut SimMetrics,
     now: Time,
+    parent_depth: u64,
     who: ProcessId,
     at: Time,
     label: StepLabel,
@@ -713,6 +764,7 @@ fn enqueue<S: 'static>(
         priority,
         seq: s,
         process: who,
+        parent_depth,
         label,
         cancel: cancel.clone(),
         action,
@@ -1073,5 +1125,93 @@ mod tests {
         sim.schedule(h, Time(10), StepLabel::default(), |_, _| {});
         sim.run_to_completion(); // now == Time(10)
         sim.schedule(h, Time(5), StepLabel::default(), |_, _| {});
+    }
+
+    #[test]
+    fn critical_path_of_serial_chain_equals_its_length() {
+        // A self-rescheduling chain on one process: every step depends on the
+        // previous, so the critical path is the whole run and parallelism is 1.
+        fn tick(s: &mut Counter, ctx: &mut Ctx<'_>, me: Handle<Counter>) {
+            s.0 += 1;
+            if s.0 < 5 {
+                ctx.schedule_after(me, millis(1), StepLabel::default(), move |s, ctx| {
+                    tick(s, ctx, me)
+                });
+            }
+        }
+        let mut sim = Simulation::new(0);
+        let h = sim.spawn(Counter::default());
+        sim.schedule(h, Time(0), StepLabel::default(), move |s, ctx| {
+            tick(s, ctx, h)
+        });
+        sim.run_to_completion();
+
+        assert_eq!(sim.metrics().steps_executed, 5);
+        assert_eq!(sim.metrics().critical_path_len, 5);
+        assert_eq!(sim.metrics().parallelism(), 1.0);
+    }
+
+    #[test]
+    fn critical_path_of_fan_out_is_two() {
+        // One step schedules N independent children, each on its own process.
+        // Depth: root = 1, every child = 2 (no child depends on another), so the
+        // critical path is 2 and parallelism is (N + 1) / 2.
+        let n = 5u64;
+        let mut sim = Simulation::new(0);
+        let handles: Vec<_> = (0..n).map(|_| sim.spawn(Counter::default())).collect();
+        sim.schedule_global(Time(0), StepLabel::default(), move |ctx| {
+            let now = ctx.now();
+            for h in handles {
+                ctx.schedule(h, now, StepLabel::default(), |s, _| s.0 += 1);
+            }
+        });
+        sim.run_to_completion();
+
+        assert_eq!(sim.metrics().steps_executed, n + 1);
+        assert_eq!(sim.metrics().critical_path_len, 2);
+        assert_eq!(sim.metrics().parallelism(), (n + 1) as f64 / 2.0);
+    }
+
+    #[test]
+    fn same_process_steps_serialize_in_critical_path() {
+        // Independent steps scheduled onto one process still serialize (shared
+        // state), so the critical path equals the step count.
+        let mut sim = Simulation::new(0);
+        let h = sim.spawn(Counter::default());
+        for t in 1..=4 {
+            sim.schedule(h, Time(t), StepLabel::default(), |s, _| s.0 += 1);
+        }
+        sim.run_to_completion();
+
+        assert_eq!(sim.metrics().steps_executed, 4);
+        assert_eq!(sim.metrics().critical_path_len, 4);
+    }
+
+    #[test]
+    fn cancelled_steps_are_off_the_critical_path() {
+        let mut sim = Simulation::new(0);
+        let h = sim.spawn(Counter::default());
+        sim.schedule(h, Time(10), StepLabel::default(), |s, _| s.0 += 1)
+            .cancel();
+        sim.schedule(h, Time(20), StepLabel::default(), |s, _| s.0 += 1);
+        sim.run_to_completion();
+
+        // only the one surviving step contributes
+        assert_eq!(sim.metrics().steps_executed, 1);
+        assert_eq!(sim.metrics().critical_path_len, 1);
+    }
+
+    #[test]
+    fn critical_path_is_deterministic() {
+        let run = || {
+            let mut sim = Simulation::new(0);
+            let h = sim.spawn(Counter::default());
+            for t in 1..=6 {
+                sim.schedule(h, Time(t), StepLabel::default(), |s, _| s.0 += 1);
+            }
+            sim.run_to_completion();
+            sim.metrics().critical_path_len
+        };
+        assert_eq!(run(), run());
     }
 }
