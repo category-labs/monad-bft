@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+// Legacy engine (per-component event queues). Retired once the simulation
+// framework below has been reviewed.
 pub mod mock;
 pub mod mock_swarm;
 pub mod node;
@@ -22,3 +24,8 @@ pub mod terminator;
 pub mod transformer;
 mod utils;
 pub mod verifier;
+
+// Simulation framework: a Monad-node harness over the generic `monad-sim`
+// discrete-event engine. See `sim` and the crate README / design doc.
+pub mod sim;
+pub mod sim_verify;
