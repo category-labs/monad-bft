@@ -13,16 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-mod ingest;
 mod materialize;
 
-pub use monad_query_engine::txs::TxHashIndexTable;
-pub(crate) use ingest::{
-    collect_hash_locations, digest_block_txs, encode_block_txs, stream_entries_for_tx,
-};
-pub(crate) use materialize::{load_txs_by_positions, TxMaterializer};
-pub use materialize::{
-    QueryTransactionsRequest, QueryTransactionsResponse, TxFilter, TxsRelations,
-};
-pub(crate) use monad_query_types::txs::TxLocation;
-pub use monad_query_types::txs::{StoredTxEnvelope, TxEntry};
+pub(crate) use materialize::TraceMaterializer;
+pub use materialize::{QueryTracesRequest, QueryTracesResponse, TraceFilter, TracesRelations};
+pub use monad_query_types::traces::{compute_trace_addresses, StoredTrace, TraceEntry};
