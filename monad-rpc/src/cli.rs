@@ -173,6 +173,10 @@ pub struct Cli {
     #[arg(long, default_value_t = 2)]
     pub eth_call_executor_queuing_timeout: u32,
 
+    /// Enable the eth_simulateV1 method
+    #[arg(long, default_value_t = false)]
+    pub enable_eth_simulate_v1: bool,
+
     /// Set the gas limit for `eth_simulateV1` (default is 8 times Monad's block gas limit)
     #[arg(long, default_value_t = 200_000_000 * 8)]
     pub eth_simulate_gas_limit: u64,

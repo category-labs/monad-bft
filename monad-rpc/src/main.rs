@@ -378,6 +378,7 @@ async fn main() -> std::io::Result<()> {
         args.dry_run_get_logs_index,
         args.use_eth_get_logs_index,
         args.max_finalized_block_cache_len,
+        args.enable_eth_simulate_v1,
         with_metrics.clone(),
         rpc_comparator.clone(),
     );
