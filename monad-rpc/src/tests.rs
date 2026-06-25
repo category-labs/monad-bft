@@ -51,6 +51,7 @@ pub async fn init_server(
         dry_run_get_logs_index: false,
         use_eth_get_logs_index: false,
         max_finalized_block_cache_len: 200,
+        enable_eth_simulate_v1: false,
         metrics: None,
         rpc_comparator: None,
     };
