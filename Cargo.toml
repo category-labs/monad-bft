@@ -53,6 +53,7 @@ monad-router-scheduler = { path = "./monad-router-scheduler" }
 monad-rpc-docs = { path = "./monad-rpc/monad-rpc-docs" }
 monad-rpc-docs-derive = { path = "./monad-rpc/monad-rpc-docs/monad-rpc-docs-derive" }
 monad-secp = { path = "./monad-secp" }
+monad-sim = { path = "./monad-sim" }
 monad-state = { path = "./monad-state" }
 monad-statesync-executor = { path = "./monad-statesync-executor" }
 monad-system-calls = { path = "./monad-system-calls" }
