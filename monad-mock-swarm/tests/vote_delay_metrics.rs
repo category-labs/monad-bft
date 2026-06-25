@@ -52,7 +52,10 @@ static LATE_CHAIN_PARAMS: ChainParams = ChainParams {
     vote_pace: Duration::from_millis(5),
 };
 
-fn build_two_node_swarm(chain_params: &'static ChainParams, delta: Duration) -> Nodes<NoSerSwarm> {
+fn build_two_node_config(
+    chain_params: &'static ChainParams,
+    delta: Duration,
+) -> SwarmBuilder<NoSerSwarm> {
     let chain_config = MockChainConfig::new(chain_params);
     let state_configs = make_state_configs::<NoSerSwarm>(
         2,
@@ -94,7 +97,10 @@ fn build_two_node_swarm(chain_params: &'static ChainParams, delta: Duration) -> 
             })
             .collect(),
     )
-    .build()
+}
+
+fn build_two_node_swarm(chain_params: &'static ChainParams, delta: Duration) -> Nodes<NoSerSwarm> {
+    build_two_node_config(chain_params, delta).build()
 }
 
 fn run_until_block(swarm: &mut Nodes<NoSerSwarm>, block: usize) {
