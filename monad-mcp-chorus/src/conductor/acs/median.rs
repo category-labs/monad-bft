@@ -24,15 +24,15 @@ use super::{
 };
 use crate::spec::validator::ValidatorData as _;
 
-/// A dummy, single-round ACS protocol that decides on median of all
+/// A single-round ACS protocol that decides on median of all
 /// received messages after receiving all proposals.
-pub struct DummyAcs<V> {
+pub struct MedianAcs<V> {
     proposals: BTreeMap<NodeId, Option<V>>,
     outbox: VecDeque<AcsOutput<V>>,
     decision: Option<V>,
 }
 
-impl<V> Acs<V> for DummyAcs<V>
+impl<V> Acs<V> for MedianAcs<V>
 where
     // Ord required for median calculation
     V: Ord,
@@ -89,5 +89,47 @@ where
 
     fn poll(&mut self) -> Option<AcsOutput<V>> {
         self.outbox.pop_front()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashMap, sync::Arc};
+
+    use super::{
+        super::types::{Stake, Timestamp},
+        *,
+    };
+    use crate::spec::vote::KeyPair as _;
+
+    fn context(validators: &[NodeId]) -> Arc<ValidatorData> {
+        let valset = validators
+            .iter()
+            .map(|validator| (*validator, Stake::from(1)))
+            .collect::<HashMap<_, _>>();
+        let mapping = validators
+            .iter()
+            .map(|validator| (*validator, validator.keypair().pubkey()))
+            .collect::<HashMap<_, _>>();
+        Arc::new(ValidatorData::new(valset, mapping))
+    }
+
+    #[test]
+    fn decides_median_proposal() {
+        let validators = [NodeId::dummy(1), NodeId::dummy(2), NodeId::dummy(3)];
+        let mut acs = MedianAcs::<Timestamp>::new(&context(&validators));
+
+        acs.propose(Timestamp::from_nanos(20));
+        assert_eq!(
+            acs.poll(),
+            Some(AcsOutput::Broadcast(Timestamp::from_nanos(20)))
+        );
+
+        acs.handle_message(validators[0], Timestamp::from_nanos(10));
+        acs.handle_message(validators[1], Timestamp::from_nanos(30));
+        assert_eq!(acs.decision(), None);
+        acs.handle_message(validators[2], Timestamp::from_nanos(20));
+
+        assert_eq!(acs.decision(), Some(&Timestamp::from_nanos(20)));
     }
 }

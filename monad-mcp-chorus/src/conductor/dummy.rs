@@ -39,7 +39,7 @@ pub struct DummyConductor {
 
 impl Default for DummyConductor {
     fn default() -> Self {
-        Self::new(TimestampDelta::new(1000), 5)
+        Self::new(TimestampDelta::from_millis(1000), 5)
     }
 }
 
@@ -68,11 +68,15 @@ impl DummyConductor {
     }
 
     pub fn window_duration(&self) -> TimestampDelta {
-        self.slot_interval * self.slots_per_window.get()
+        self.slot_interval
+            .checked_mul(self.slots_per_window.get())
+            .expect("no overflow")
     }
 
     pub fn window_start(&self, window_id: WindowId) -> Timestamp {
-        self.genesis + self.window_duration() * window_id
+        self.genesis
+            .checked_add_deltas(self.window_duration(), window_id)
+            .expect("no overflow")
     }
 }
 
@@ -102,7 +106,9 @@ impl Conductor for DummyConductor {
         let slots: BTreeMap<_, _> = (0..self.slots_per_window.get())
             .map(|i| {
                 let slot = Slot(window_id * self.slots_per_window.get() + i);
-                let deadline = window_start + self.slot_interval * i + self.deadline_offset;
+                let deadline = window_start
+                    + self.slot_interval.checked_mul(i).expect("no overflow")
+                    + self.deadline_offset;
                 (slot, deadline)
             })
             .collect();

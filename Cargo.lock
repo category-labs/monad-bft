@@ -5698,7 +5698,10 @@ dependencies = [
  "derive_more",
  "itertools 0.13.0",
  "proptest",
+ "rand 0.8.5",
+ "thiserror 1.0.69",
  "tracing",
+ "tracing-test",
 ]
 
 [[package]]

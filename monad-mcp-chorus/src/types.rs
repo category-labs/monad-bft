@@ -15,8 +15,9 @@
 
 use std::{
     collections::{HashMap, HashSet},
+    fmt,
     hash::Hash,
-    ops::Add,
+    time::Duration,
 };
 
 use bytes::Bytes;
@@ -33,47 +34,72 @@ use crate::spec::{
     vote::{KeyPair as _, Signature as _, SignatureCollection as _, VoteAggregation as _},
 };
 
-// slot number. starting from 0.
+// Slot number, starting from 0.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Slot(pub u64);
 
 impl Slot {
+    pub const FIRST: Self = Slot(0);
     // the first meaningful slot number
-    pub const MIN: Self = Slot(0);
+    pub const MIN: Self = Self::FIRST;
 
-    pub fn next(self) -> Self {
-        Slot(self.0 + 1)
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+
+    pub fn checked_add(self, slots: u64) -> Option<Self> {
+        self.0.checked_add(slots).map(Self)
+    }
+
+    pub fn checked_next(self) -> Option<Self> {
+        self.checked_add(1)
+    }
+
+    pub fn checked_sub(self, other: Self) -> Option<u64> {
+        self.0.checked_sub(other.0)
     }
 }
 
-impl Add<u64> for Slot {
-    type Output = Self;
-
-    fn add(self, rhs: u64) -> Self::Output {
-        Slot(self.0 + rhs)
-    }
-}
-
-/// An absolute point on the timeline. Stores some logical unix offset from genesis (e.g. ms)?
+/// An absolute point on the timeline, stored in nanoseconds.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct Timestamp(u64);
+pub struct Timestamp(u128);
 
 impl Timestamp {
     pub const GENESIS: Self = Timestamp(0);
 
-    pub const fn new(ts: u64) -> Self {
-        Timestamp(ts)
+    pub const fn from_millis(millis: u64) -> Self {
+        Self((millis as u128) * (TimestampDelta::NANOS_PER_MILLISECOND as u128))
     }
 
-    pub const fn ticks(self) -> u64 {
+    pub const fn from_micros(micros: u64) -> Self {
+        Self((micros as u128) * (TimestampDelta::NANOS_PER_MICROSECOND as u128))
+    }
+
+    pub const fn from_nanos(nanos: u128) -> Self {
+        Self(nanos)
+    }
+
+    pub const fn as_nanos(self) -> u128 {
         self.0
     }
 
-    pub const fn since(&self, other: Timestamp) -> Option<TimestampDelta> {
-        if self.0 < other.0 {
-            return None;
-        }
-        Some(TimestampDelta(self.0 - other.0))
+    pub fn duration_since(&self, earlier: Timestamp) -> Option<TimestampDelta> {
+        let delta = self.0.checked_sub(earlier.0)?;
+        let delta = u64::try_from(delta).ok()?;
+        Some(TimestampDelta::from_nanos(delta))
+    }
+
+    pub fn checked_add_delta(self, delta: TimestampDelta) -> Option<Self> {
+        self.0.checked_add(u128::from(delta.as_nanos())).map(Self)
+    }
+
+    pub fn checked_add_deltas(self, delta: TimestampDelta, count: u64) -> Option<Self> {
+        let delta = delta.as_nanos().checked_mul(count)?;
+        self.0.checked_add(u128::from(delta)).map(Self)
+    }
+
+    pub fn max(self, other: Self) -> Self {
+        Self(self.0.max(other.0))
     }
 }
 
@@ -82,35 +108,91 @@ impl Timestamp {
 )]
 pub struct TimestampDelta(u64);
 
-impl std::ops::Mul<u64> for TimestampDelta {
-    type Output = Self;
-
-    fn mul(self, rhs: u64) -> Self::Output {
-        TimestampDelta(self.0 * rhs)
-    }
-}
-
 impl std::ops::Add<TimestampDelta> for Timestamp {
     type Output = Self;
 
     fn add(self, rhs: TimestampDelta) -> Self::Output {
-        Timestamp(self.0 + rhs.0)
+        Timestamp(self.0 + u128::from(rhs.0))
     }
 }
 
 impl TimestampDelta {
     pub const ZERO: Self = TimestampDelta(0);
+    pub const NANOS_PER_MICROSECOND: u64 = 1_000;
+    pub const NANOS_PER_MILLISECOND: u64 = 1_000_000;
 
-    pub const fn new(ticks: u64) -> Self {
-        TimestampDelta(ticks)
+    pub const fn from_millis(millis: u64) -> Self {
+        match millis.checked_mul(Self::NANOS_PER_MILLISECOND) {
+            Some(nanos) => Self(nanos),
+            None => panic!("timestamp delta overflow"),
+        }
     }
 
-    pub const fn ticks(self) -> u64 {
+    pub const fn from_micros(micros: u64) -> Self {
+        match micros.checked_mul(Self::NANOS_PER_MICROSECOND) {
+            Some(nanos) => Self(nanos),
+            None => panic!("timestamp delta overflow"),
+        }
+    }
+
+    pub const fn from_nanos(nanos: u64) -> Self {
+        Self(nanos)
+    }
+
+    pub const fn as_millis(self) -> u64 {
+        self.0 / Self::NANOS_PER_MILLISECOND
+    }
+
+    pub const fn as_nanos(self) -> u64 {
         self.0
+    }
+
+    pub fn as_duration(self) -> Duration {
+        Duration::from_nanos(self.as_nanos())
+    }
+
+    pub fn checked_mul(self, rhs: u64) -> Option<Self> {
+        self.0.checked_mul(rhs).map(Self)
     }
 }
 
 pub type SlotDeadline = Timestamp;
+
+// Identifies a window of contiguous slots, starting from 0.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct WindowId(pub(crate) u64);
+
+impl WindowId {
+    pub const FIRST: Self = Self(0);
+
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+
+    pub fn checked_next(self) -> Option<Self> {
+        self.0.checked_add(1).map(Self)
+    }
+
+    pub fn checked_prev(self) -> Option<Self> {
+        self.0.checked_sub(1).map(Self)
+    }
+
+    pub fn to_index(self) -> Option<usize> {
+        usize::try_from(self.0).ok()
+    }
+}
+
+impl fmt::Debug for WindowId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("WindowId").field(&self.get()).finish()
+    }
+}
+
+impl Default for WindowId {
+    fn default() -> Self {
+        Self::FIRST
+    }
+}
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct ProposalMeta {
@@ -535,5 +617,37 @@ impl DAHandle {
         // current implementation follows the paper which doesn't
         // currently consider this case as equivocation.
         Err(FetchProposalError::Absent)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timestamp_arithmetic_is_checked() {
+        let timestamp = Timestamp::from_nanos(10);
+        let delta = TimestampDelta::from_nanos(5);
+
+        assert_eq!(
+            timestamp.checked_add_deltas(delta, 3),
+            Some(Timestamp::from_nanos(25))
+        );
+        assert_eq!(
+            Timestamp::from_nanos(u128::MAX).checked_add_delta(delta),
+            None
+        );
+        assert_eq!(Timestamp::from_millis(2).as_nanos(), 2_000_000);
+        assert_eq!(TimestampDelta::from_millis(3).as_millis(), 3);
+    }
+
+    #[test]
+    fn identities_are_zero_indexed() {
+        assert_eq!(Slot::FIRST, Slot(0));
+        assert_eq!(Slot::MIN, Slot(0));
+
+        assert_eq!(WindowId::FIRST, WindowId(0));
+        assert_eq!(WindowId::default(), WindowId(0));
+        assert_eq!(WindowId(0).to_index(), Some(0));
     }
 }

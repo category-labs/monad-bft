@@ -11,7 +11,10 @@ enable_stub = []
 bytes = { workspace = true }
 derive_more = { workspace = true, features = ["from", "sum", "add", "into"] }
 itertools = { workspace = true }
+thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+rand = { workspace = true }
+tracing-test = { workspace = true }

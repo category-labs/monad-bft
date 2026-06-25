@@ -13,7 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-pub mod dummy;
+pub mod median;
+pub mod nop;
 
 use super::types::{self, NodeId};
 
@@ -37,6 +38,7 @@ pub trait Acs<V> {
     fn poll(&mut self) -> Option<AcsOutput<Self::Message>>;
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AcsOutput<M> {
     /// A message that needs to be broadcasted to all peers, including
     /// self.
