@@ -165,7 +165,7 @@ impl<M: MetaStore, B: BlobStore> SnapshotStore<M, B> {
     /// which must treat an already-seeded store as initialized.
     // Only reached via the configured (dynamo-backed) ingest entry point.
     #[cfg(feature = "dynamo")]
-    pub(crate) async fn is_initialized(&self) -> Result<bool> {
+    pub async fn is_initialized(&self) -> Result<bool> {
         Ok(self
             .meta
             .get(Self::MANIFEST_TABLE, Self::MANIFEST_KEY)
@@ -323,7 +323,7 @@ pub(crate) async fn persist_snapshot<M: MetaStore, B: BlobStore>(
 /// `begin == 0` and stores that already have a snapshot.
 // Only reached via the configured (dynamo-backed) ingest entry point.
 #[cfg(feature = "dynamo")]
-pub(crate) async fn seed_snapshot_at<M: MetaStore, B: BlobStore>(
+pub async fn seed_snapshot_at<M: MetaStore, B: BlobStore>(
     snapshots: &SnapshotStore<M, B>,
     begin: u64,
 ) -> Result<()> {
