@@ -228,10 +228,10 @@ internal events through the scheduler:
 
 | nodes | legacy serial | new serial | new vs legacy |
 |------:|--------------:|-----------:|:-------------:|
-| 4     | 16.5 ms       | 14.6 ms    | 1.13×         |
-| 16    | 105.0 ms      | 90.1 ms    | 1.17×         |
-| 40    | 440.7 ms      | 363.0 ms   | 1.21×         |
-| 64    | 1001.7 ms     | 802.6 ms   | 1.25×         |
+| 4     | 17.0 ms       | 14.1 ms    | 1.21×         |
+| 16    | 112.8 ms      | 81.2 ms    | 1.39×         |
+| 40    | 488.9 ms      | 326.8 ms   | 1.50×         |
+| 64    | 1122.7 ms     | 723.0 ms   | 1.55×         |
 
 The new serial engine is faster than the legacy serial engine, the margin
 widening with node count — mostly from the `O(log E)` heap replacing the legacy's
@@ -242,6 +242,34 @@ favour of determinism + a single heap is deliberate. The step-metadata schema
 leaves room to parallelize the new queue later if large-swarm throughput ever
 matters (see [Future work](#future-work)). More detail in
 [Performance attribution](#performance-attribution).
+
+## Concurrency
+
+The engine maintains a deterministic **concurrency metric** in `SimMetrics`: the
+critical-path length `D` (`critical_path_len` — the longest chain of
+causally-dependent steps), the total step count `W` (`steps_executed`), and
+`parallelism() = W / D` (the average available parallelism). A step depends only
+on the step that scheduled it and the previous step on its own process, so the
+lent-state model makes this exact. It is an *upper bound*, in ticks, on the
+speedup any parallel execution of a run could reach.
+
+Measured on the happy-path `NoSerSwarm` (reliable 1 ms network, 100 committed
+blocks):
+
+| nodes | steps `W` | critical path `D` | parallelism `W/D` |
+|------:|----------:|------------------:|:-----------------:|
+| 2     | 2,836     | 1,470             | 1.93              |
+| 4     | 5,608     | 2,196             | 2.55              |
+| 16    | 22,710    | 7,951             | 2.86              |
+| 64    | 99,750    | 34,463            | 2.89              |
+
+Available parallelism rises then **plateaus around ~2.9× by 16 nodes** and does
+not grow with network size: both `W` and `D` scale ≈ linearly in N (each round the
+leader handles O(N) votes as a serial chain — the fan-in spine — so per-round
+depth ≈ O(N)). This is why *analyzing* the simulated system's concurrency is
+currently more valuable than parallelizing a single run; see
+[Concurrency, and why not to parallelize yet](#concurrency-and-why-not-to-parallelize-yet)
+and [Future work](#future-work).
 
 ## Test coverage
 
@@ -279,10 +307,25 @@ Coverage not yet ported is listed in [Future work](#future-work).
   cluster (and ideally that both orders of a same-instant internal-vs-external
   race are reached). This turns the same-tick-permutation capability into actual
   bug-finding leverage.
-- **Scheduler parallelism.** Parallelizing the top-level queue needs per-step
-  causal / minimum-latency metadata; the `StepLabel` schema reserves room for it
-  (`min_propagation`), but no parallel executor is built. Batching same-tick steps
-  is a cheaper intermediate win.
+- **Offline concurrency analyzer (higher priority).** Building on the shipped
+  critical-path metric, log per-step `{id, parent_id, process, time, cost}` and
+  analyze the run's dependency DAG: cost-weighted parallelism, the
+  parallelism-over-time profile, a `speedup(P)` curve, a conservative-window
+  replay (sweep lookahead `l`), and sub-process re-attribution (relabel processes
+  to test decomposition). This measures *whether* a protocol or scenario has
+  parallelism worth exploiting — and is the trigger for the next item. Its
+  per-source cost model is the same hook as the compute-cost model.
+- **Parallelize a single simulation run (lower priority for now).** Conservative
+  windowing (lookahead = min network latency); needs the per-step
+  `min_propagation` metadata (`StepLabel` reserves room) and per-process RNG. The
+  measured parallelism ceiling is only ~2.9× and **flat in N** (see
+  [Concurrency](#concurrency)), so real gains would be a fraction of that and
+  would not scale with network size — while independent simulations already
+  parallelize near-linearly. Revisit only if a future protocol lifts `W/D` (e.g.
+  pipelined / overlapping rounds — the analyzer will show it) or a single
+  un-shardable large run becomes a wall-clock bottleneck. Batching same-tick steps
+  is a cheaper, deterministic intermediate win. See
+  [Concurrency, and why not to parallelize yet](#concurrency-and-why-not-to-parallelize-yet).
 - **Compute-cost / backpressure model.** Today component executors emit at the
   current tick (zero local-processing latency) and buffers are unbounded. A
   per-operation cost hook would schedule internal reactions at `now + cost`
@@ -394,13 +437,42 @@ isolation (`Simulation::new` owns all its state; no shared `thread_local`) is wh
 makes that safe, which also unblocks the heavily-used independent-swarm
 parallelism in `forkpoint` / `randomized-tests`.
 
+### Concurrency, and why not to parallelize yet
+
+The [Concurrency](#concurrency) metric bounds what parallelizing a single run
+could buy, and for this protocol the bound is both small and non-scaling:
+
+- **`W/D` plateaus at ~2.9× and is flat in N.** Total work and critical path both
+  grow ≈ linearly with node count — `W` because per-node work is roughly constant,
+  `D` because each round the leader handles O(N) votes as a serial chain (the
+  fan-in spine). Their ratio stops rising once the fan-in dominates (~16 nodes
+  here), so more nodes or cores buy no more intra-run speedup.
+- **The achievable gain is a fraction of that ceiling.** Conservative windowing is
+  bounded by the lookahead (min network latency) plus barrier / load-imbalance
+  overhead, and is a net loss below ~8 nodes. The legacy rayon experiment (~3× at
+  large N) is the empirical anchor and matches the ~2.9 ceiling.
+- **The parallelism that scales is already exploited.** Independent simulations run
+  near-linearly across cores (seed sweeps, `forkpoint`, `randomized-tests`) — the
+  dominant workload. Intra-run parallelism only helps a single, un-shardable
+  simulation.
+- **It is also the wrong lever for larger networks.** A flat ~3× extends the
+  reachable node count by only ~2-3× (less under O(N²) messaging). Going
+  materially bigger means reducing `W` — cheaper per-event handling, same-tick
+  batching, abstracting all-to-all traffic — not a constant-factor parallel speedup.
+
+So the priority is to *analyze* the simulated system's concurrency (the metric,
+then the offline analyzer) rather than to parallelize the engine; the metric is
+the trigger to revisit. `W/D` here is unit-cost; the cost-weighted ceiling may be
+somewhat higher but, being flat in N, does not change the conclusion.
+
 ### Performance attribution
 
 The speedup has two sources, now measured separately. Converting the internal
 drain from synchronous calls to zero-delay scheduled steps (so internal events go
 through the heap in *both* engines, an apples-to-apples comparison) cost ~8% at
-N=4 rising to ~14% at N=64. Even after that, the new engine is 1.13×→1.25× faster
-than legacy serial, the margin widening with N. So the **data structure** (the
+N=4 rising to ~14% at N=64. Even after that, the new engine is still faster than
+legacy serial at every size (see [Performance](#performance)), the margin widening
+with N. So the **data structure** (the
 `O(log E)` heap replacing three nested `peek` scans) is the majority of the win
 and all of the scaling advantage; the drain conversion is a modest top-up. Batching
 same-tick steps could recover most of that ~14% later, alongside parallelization.
