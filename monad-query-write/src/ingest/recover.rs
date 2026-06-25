@@ -31,14 +31,12 @@ use crate::{
         bitmap::{page_group_start, page_start_in_group, StreamKey},
         digest::EMPTY_DIGEST,
         family::Family,
+        seal::{last_sealed_span, seal_boundary},
         tables::{FamilyTables, Tables},
     },
     error::{MonadChainDataError, Result},
     ingest::{
-        index::{
-            last_sealed_span, seal_boundary, FamilyState, OpenState, OpenTail, SealedPageCounts,
-            PAGE_SPAN,
-        },
+        index::{FamilyState, OpenState, OpenTail, SealedPageCounts, PAGE_SPAN},
         snapshot::{recover_checkpoint, SnapshotStore},
         FamilyFrontier,
     },

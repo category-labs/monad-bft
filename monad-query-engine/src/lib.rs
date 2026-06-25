@@ -74,6 +74,7 @@ pub mod family;
 pub mod primary_dir;
 pub mod query;
 pub mod row_codec;
+pub mod seal;
 pub mod session;
 pub mod tables;
 

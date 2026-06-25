@@ -194,3 +194,114 @@ impl From<&IngestTrace> for StoredTrace {
         }
     }
 }
+
+/// Computes the OpenEthereum-style `trace_address` for each frame in a
+/// pre-flattened DFS sequence belonging to a single tx. The depth of the
+/// first frame must be `0`; deeper frames must have `depth == parent.depth + 1`.
+///
+/// For a tx with the call tree `root -> A -> A1, A2; root -> B`, the
+/// emitted addresses are `[]`, `[0]`, `[0, 0]`, `[0, 1]`, `[1]`. Shared by the
+/// ingest write path and the external-payload decode read path, so they can
+/// never compute a different addressing.
+pub fn compute_trace_addresses<I>(frames: I) -> Result<Vec<Vec<u32>>>
+where
+    I: IntoIterator<Item = u32>,
+{
+    // Path components so far; `cursor.len()` == current depth.
+    let mut cursor: Vec<u32> = Vec::new();
+    // `next_child_slot[d]` is the next sibling index to assign at depth d + 1.
+    let mut next_child_slot: Vec<u32> = Vec::new();
+    let mut out: Vec<Vec<u32>> = Vec::new();
+    let mut seen_root = false;
+
+    for depth in frames {
+        let d = depth as usize;
+        if d == 0 {
+            cursor.clear();
+            next_child_slot.clear();
+            out.push(Vec::new());
+            seen_root = true;
+        } else {
+            if !seen_root {
+                return Err(MonadChainDataError::InvalidBlock(
+                    "trace_address: first frame must have depth 0",
+                ));
+            }
+            if d > cursor.len() + 1 {
+                return Err(MonadChainDataError::InvalidBlock(
+                    "trace_address: depth skipped a level",
+                ));
+            }
+            // Returning to a shallower depth closes deeper subtrees: drop
+            // their path components and sibling counters.
+            cursor.truncate(d - 1);
+            next_child_slot.resize(d, 0);
+            let slot_idx = d - 1;
+            let slot = next_child_slot[slot_idx];
+            next_child_slot[slot_idx] = slot + 1;
+            cursor.push(slot);
+            out.push(cursor.clone());
+        }
+    }
+
+    Ok(out)
+}
+
+#[cfg(test)]
+mod trace_address_tests {
+    use monad_query_errors::MonadChainDataError;
+
+    use super::compute_trace_addresses;
+
+    #[test]
+    fn trace_address_simple_tree() {
+        // root -> {A -> {A1, A2}, B -> B1}
+        let depths = [0u32, 1, 2, 2, 1, 2];
+        let addresses = compute_trace_addresses(depths).expect("compute");
+        assert_eq!(
+            addresses,
+            vec![vec![], vec![0], vec![0, 0], vec![0, 1], vec![1], vec![1, 0],]
+        );
+    }
+
+    #[test]
+    fn trace_address_three_deep() {
+        // root -> A -> A1 -> A1a, A1b; root -> B
+        let depths = [0u32, 1, 2, 3, 3, 1];
+        let addresses = compute_trace_addresses(depths).expect("compute");
+        assert_eq!(
+            addresses,
+            vec![
+                vec![],
+                vec![0],
+                vec![0, 0],
+                vec![0, 0, 0],
+                vec![0, 0, 1],
+                vec![1],
+            ]
+        );
+    }
+
+    #[test]
+    fn trace_address_multiple_txs() {
+        // Two top-level frames, each its own tx.
+        let depths = [0u32, 1, 1, 0, 1, 2];
+        let addresses = compute_trace_addresses(depths).expect("compute");
+        assert_eq!(
+            addresses,
+            vec![vec![], vec![0], vec![1], vec![], vec![0], vec![0, 0],]
+        );
+    }
+
+    #[test]
+    fn trace_address_rejects_orphan_depth() {
+        let err = compute_trace_addresses([1u32]).unwrap_err();
+        assert!(matches!(err, MonadChainDataError::InvalidBlock(_)));
+    }
+
+    #[test]
+    fn trace_address_rejects_depth_jump() {
+        let err = compute_trace_addresses([0u32, 2]).unwrap_err();
+        assert!(matches!(err, MonadChainDataError::InvalidBlock(_)));
+    }
+}
