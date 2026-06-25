@@ -24,6 +24,7 @@ monad-executor-glue = { workspace = true }
 monad-multi-sig = { workspace = true }
 monad-raptorcast = { workspace = true, optional = true }
 monad-router-scheduler = { workspace = true }
+monad-sim = { workspace = true }
 monad-state = { workspace = true }
 monad-testutil = { workspace = true }
 monad-tfm = { workspace = true }
