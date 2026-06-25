@@ -103,11 +103,39 @@ where
     _phantom: PhantomData<(ST, SCT)>,
 }
 
+/// Map a chain_id to the `enum monad_chain_config` value the statesync FFI
+/// expects, using the bindgen-generated constants (single source of truth from
+/// category/execution/ethereum/chain/chain_config.h). Panics on an unmapped
+/// chain_id — `MonadChainConfig::new` already rejects unknown chain_ids
+/// upstream, so this is a contract-violation tripwire, not a reachable branch.
+fn statesync_chain_config(chain_id: u64) -> u32 {
+    use monad_chain_config::{
+        ETHEREUM_MAINNET_CHAIN_ID, HIVE_CHAIN_ID, MONAD_DEVNET_CHAIN_ID, MONAD_MAINNET_CHAIN_ID,
+        MONAD_TESTNET_CHAIN_ID,
+    };
+    use monad_statesync::ffi::{
+        monad_chain_config_CHAIN_CONFIG_ETHEREUM_MAINNET, monad_chain_config_CHAIN_CONFIG_HIVE_NET,
+        monad_chain_config_CHAIN_CONFIG_MONAD_DEVNET,
+        monad_chain_config_CHAIN_CONFIG_MONAD_MAINNET,
+        monad_chain_config_CHAIN_CONFIG_MONAD_TESTNET,
+    };
+
+    match chain_id {
+        ETHEREUM_MAINNET_CHAIN_ID => monad_chain_config_CHAIN_CONFIG_ETHEREUM_MAINNET,
+        MONAD_DEVNET_CHAIN_ID => monad_chain_config_CHAIN_CONFIG_MONAD_DEVNET,
+        MONAD_TESTNET_CHAIN_ID => monad_chain_config_CHAIN_CONFIG_MONAD_TESTNET,
+        MONAD_MAINNET_CHAIN_ID => monad_chain_config_CHAIN_CONFIG_MONAD_MAINNET,
+        HIVE_CHAIN_ID => monad_chain_config_CHAIN_CONFIG_HIVE_NET,
+        other => panic!("no statesync chain_config mapping for chain_id {other}"),
+    }
+}
+
 impl<ST, SCT> StateSyncExecutor<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
 {
     pub fn new(
+        chain_id: u64,
         db_paths: Vec<String>,
         sq_thread_cpu: Option<u32>,
         state_sync_init_peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
@@ -123,6 +151,7 @@ where
             uds_path,
 
             mode: StateSyncMode::Sync(StateSyncClient::start(
+                statesync_chain_config(chain_id),
                 &db_paths,
                 sq_thread_cpu,
                 &state_sync_init_peers,

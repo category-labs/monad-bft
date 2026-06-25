@@ -6170,6 +6170,7 @@ dependencies = [
  "alloy-rlp",
  "criterion",
  "futures",
+ "monad-chain-config",
  "monad-crypto",
  "monad-cxx",
  "monad-eth-types",

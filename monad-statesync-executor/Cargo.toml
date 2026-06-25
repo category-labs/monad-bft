@@ -9,6 +9,7 @@ edition = "2021"
 bench = false
 
 [dependencies]
+monad-chain-config = { workspace = true }
 monad-crypto = { workspace = true }
 monad-cxx = { workspace = true }
 monad-eth-types = { workspace = true }
