@@ -224,22 +224,6 @@ pub struct Cli {
     pub max_voted_block_cache_len: u64,
 
     /* Archive Options */
-    /// Set the s3 bucket name to read archive data from
-    #[arg(long)]
-    pub s3_bucket: Option<String>,
-
-    /// Set the s3 region to read archive data from
-    #[arg(long)]
-    pub region: Option<String>,
-
-    /// Set the archive URL to read archive data from
-    #[arg(long)]
-    pub archive_url: Option<String>,
-
-    /// Set the API key to read archive data from
-    #[arg(long)]
-    pub archive_api_key: Option<String>,
-
     /// Set the mongo url to read archive data from
     #[arg(long)]
     pub mongo_url: Option<String>,
@@ -251,14 +235,6 @@ pub struct Cli {
     /// Set the max time to get from mongo
     #[arg(long)]
     pub mongo_max_time_get_millis: Option<u64>,
-
-    /// Set the mongo failure threshold
-    #[arg(long)]
-    pub mongo_failure_threshold: Option<u32>,
-
-    /// Set the mongo failure timeout
-    #[arg(long)]
-    pub mongo_failure_timeout_millis: Option<u64>,
 
     /// Use mongo index to serve eth_getLogs
     #[arg(long)]
