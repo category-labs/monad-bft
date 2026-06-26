@@ -229,6 +229,8 @@ pub enum CliGenMode {
     ERC4337_7702Bundled {
         #[clap(long, default_value = "4")]
         ops_per_bundle: usize,
+        #[clap(long, default_value = "false")]
+        use_paymaster: bool,
     },
 }
 
@@ -278,9 +280,13 @@ impl From<CliGenMode> for GenMode {
                 authorizations_per_tx,
             }),
             CliGenMode::NftSale => GenMode::NftSale,
-            CliGenMode::ERC4337_7702Bundled { ops_per_bundle } => {
-                GenMode::ERC4337_7702Bundled(ERC4337_7702Config { ops_per_bundle })
-            }
+            CliGenMode::ERC4337_7702Bundled {
+                ops_per_bundle,
+                use_paymaster,
+            } => GenMode::ERC4337_7702Bundled(ERC4337_7702Config {
+                ops_per_bundle,
+                use_paymaster,
+            }),
         }
     }
 }
