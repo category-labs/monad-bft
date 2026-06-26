@@ -30,6 +30,7 @@ use monad_crypto::certificate_signature::PubKey;
 pub use monad_crypto::hasher::Hash;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
+use serde_with::{DeserializeAs, SerializeAs};
 use zerocopy::IntoBytes;
 
 pub const GENESIS_SEQ_NUM: SeqNum = SeqNum(0);
@@ -37,6 +38,7 @@ pub const GENESIS_ROUND: Round = Round(0);
 
 pub const ETHERNET_MTU: u16 = 1500;
 pub const DEFAULT_MTU: u16 = ETHERNET_MTU;
+pub const MAX_FORWARDED_TXS_PER_MESSAGE: usize = 5_000;
 
 const PROTOCOL_VERSION: u32 = 1;
 
@@ -959,6 +961,33 @@ impl<T: Serialize, const N: usize> Serialize for LimitedVec<T, N> {
 impl<'de, T: Deserialize<'de>, const N: usize> Deserialize<'de> for LimitedVec<T, N> {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         Vec::<T>::deserialize(deserializer).map(Self)
+    }
+}
+
+impl<T, TAs, const N: usize> SerializeAs<LimitedVec<T, N>> for LimitedVec<TAs, N>
+where
+    TAs: SerializeAs<T>,
+{
+    fn serialize_as<S: Serializer>(
+        source: &LimitedVec<T, N>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        <Vec<TAs> as SerializeAs<Vec<T>>>::serialize_as(&source.0, serializer)
+    }
+}
+
+impl<'de, T, TAs, const N: usize> DeserializeAs<'de, LimitedVec<T, N>> for LimitedVec<TAs, N>
+where
+    TAs: DeserializeAs<'de, T>,
+{
+    fn deserialize_as<D: Deserializer<'de>>(deserializer: D) -> Result<LimitedVec<T, N>, D::Error> {
+        let vec = <Vec<TAs> as DeserializeAs<'de, Vec<T>>>::deserialize_as(deserializer)?;
+        if vec.len() > N {
+            return Err(<D::Error as serde::de::Error>::custom(
+                "list exceeds maximum length",
+            ));
+        }
+        Ok(LimitedVec(vec))
     }
 }
 

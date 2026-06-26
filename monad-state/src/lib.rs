@@ -62,8 +62,8 @@ use monad_executor_glue::{
     ValSetCommand, ValidatorEvent, WriteCommand,
 };
 use monad_types::{
-    Epoch, ExecutionProtocol, MonadVersion, NodeId, Round, RouterTarget, SeqNum, Stake,
-    GENESIS_BLOCK_ID, GENESIS_ROUND, GENESIS_SEQ_NUM,
+    Epoch, ExecutionProtocol, LimitedVec, MonadVersion, NodeId, Round, RouterTarget, SeqNum, Stake,
+    GENESIS_BLOCK_ID, GENESIS_ROUND, GENESIS_SEQ_NUM, MAX_FORWARDED_TXS_PER_MESSAGE,
 };
 use monad_validator::{
     epoch_manager::EpochManager,
@@ -574,7 +574,7 @@ where
     Consensus(Verified<ST, Validated<ConsensusMessage<ST, SCT, EPT>>>),
     BlockSyncRequest(BlockSyncRequestMessage),
     BlockSyncResponse(BlockSyncResponseMessage<ST, SCT, EPT>),
-    ForwardedTx(Vec<Bytes>),
+    ForwardedTx(LimitedVec<Bytes, MAX_FORWARDED_TXS_PER_MESSAGE>),
     StateSyncMessage(StateSyncNetworkMessage),
 }
 
@@ -674,7 +674,7 @@ where
     BlockSyncResponse(BlockSyncResponseMessage<ST, SCT, EPT>),
 
     /// Forwarded transactions
-    ForwardedTx(Vec<Bytes>),
+    ForwardedTx(LimitedVec<Bytes, MAX_FORWARDED_TXS_PER_MESSAGE>),
     /// State Sync msgs
     StateSyncMessage(StateSyncNetworkMessage),
 }
@@ -697,7 +697,9 @@ where
             ),
             2 => Self::BlockSyncRequest(BlockSyncRequestMessage::decode(&mut payload)?),
             3 => Self::BlockSyncResponse(BlockSyncResponseMessage::decode(&mut payload)?),
-            4 => Self::ForwardedTx(Vec::<Bytes>::decode(&mut payload)?),
+            4 => Self::ForwardedTx(LimitedVec::<Bytes, MAX_FORWARDED_TXS_PER_MESSAGE>::decode(
+                &mut payload,
+            )?),
             5 => Self::StateSyncMessage(StateSyncNetworkMessage::decode(&mut payload)?),
             _ => {
                 return Err(alloy_rlp::Error::Custom(
@@ -1663,6 +1665,7 @@ where
 
 #[cfg(test)]
 mod test {
+    use bytes::Bytes;
     use monad_bls::BlsSignatureCollection;
     use monad_consensus_types::{
         quorum_certificate::QuorumCertificate, validator_data::ValidatorSetData, voting::Vote,
@@ -1671,7 +1674,7 @@ mod test {
     use monad_eth_types::EthExecutionProtocol;
     use monad_secp::SecpSignature;
     use monad_testutil::validators::create_keys_w_validators;
-    use monad_types::{BlockId, Hash, NodeId, Round, Stake};
+    use monad_types::{BlockId, Hash, NodeId, Round, Stake, MAX_FORWARDED_TXS_PER_MESSAGE};
     use monad_validator::{
         signature_collection::SignatureCollection, validator_set::ValidatorSetFactory,
         weighted_round_robin::WeightedRoundRobin,
@@ -1881,6 +1884,21 @@ mod test {
         let decoded = alloy_rlp::decode_exact::<
             MonadMessage<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
         >(rlp_encoded_monad_message);
+
+        assert!(decoded.is_err());
+    }
+
+    #[test]
+    fn monad_message_forwarded_txs_decode_rejects_over_limit() {
+        let monad_version = MonadVersion::version();
+        let txs = vec![Bytes::from_static(&[0]); MAX_FORWARDED_TXS_PER_MESSAGE + 1];
+        let enc: [&dyn Encodable; 3] = [&monad_version, &4u8, &txs];
+        let mut encoded = Vec::new();
+        encode_list::<_, dyn Encodable>(&enc, &mut encoded);
+
+        let decoded = alloy_rlp::decode_exact::<
+            MonadMessage<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
+        >(&encoded);
 
         assert!(decoded.is_err());
     }
