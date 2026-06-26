@@ -5026,10 +5026,17 @@ dependencies = [
  "eyre",
  "futures",
  "hex",
- "monad-chain-data",
  "monad-compress",
  "monad-eth-testutil",
  "monad-eth-types",
+ "monad-query-config",
+ "monad-query-engine",
+ "monad-query-errors",
+ "monad-query-primitives",
+ "monad-query-read",
+ "monad-query-testkit",
+ "monad-query-types",
+ "monad-query-write",
  "monad-triedb-utils",
  "monad-types",
  "mongodb",
@@ -5141,37 +5148,6 @@ dependencies = [
  "serde",
  "thiserror 1.0.69",
  "tracing",
-]
-
-[[package]]
-name = "monad-chain-data"
-version = "0.1.0"
-dependencies = [
- "alloy-consensus",
- "alloy-eips",
- "alloy-primitives",
- "alloy-rlp",
- "blake3",
- "bytes",
- "eyre",
- "futures",
- "hyper-util",
- "monad-query-engine",
- "monad-query-errors",
- "monad-query-primitives",
- "monad-query-read",
- "monad-query-store",
- "monad-query-types",
- "monad-query-write",
- "roaring",
- "s3s",
- "s3s-fs",
- "serde",
- "tempfile",
- "tokio",
- "toml",
- "tracing",
- "zstd",
 ]
 
 [[package]]
@@ -6024,6 +6000,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-query-config"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "eyre",
+ "monad-query-engine",
+ "monad-query-errors",
+ "monad-query-primitives",
+ "monad-query-read",
+ "monad-query-store",
+ "monad-query-types",
+ "monad-query-write",
+ "serde",
+ "tokio",
+ "toml",
+ "tracing",
+]
+
+[[package]]
 name = "monad-query-engine"
 version = "0.1.0"
 dependencies = [
@@ -6118,6 +6113,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-query-testkit"
+version = "0.1.0"
+dependencies = [
+ "eyre",
+ "monad-query-engine",
+ "monad-query-errors",
+ "monad-query-primitives",
+ "monad-query-read",
+ "monad-query-store",
+ "monad-query-types",
+ "monad-query-write",
+]
+
+[[package]]
+name = "monad-query-tests"
+version = "0.1.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-primitives",
+ "alloy-rlp",
+ "bytes",
+ "eyre",
+ "futures",
+ "monad-query-engine",
+ "monad-query-errors",
+ "monad-query-primitives",
+ "monad-query-read",
+ "monad-query-store",
+ "monad-query-testkit",
+ "monad-query-types",
+ "monad-query-write",
+ "roaring",
+ "tokio",
+]
+
+[[package]]
 name = "monad-query-types"
 version = "0.1.0"
 dependencies = [
@@ -6145,6 +6177,7 @@ dependencies = [
  "monad-query-engine",
  "monad-query-errors",
  "monad-query-primitives",
+ "monad-query-read",
  "monad-query-store",
  "monad-query-types",
  "roaring",
@@ -6301,7 +6334,6 @@ dependencies = [
  "itertools 0.13.0",
  "monad-archive",
  "monad-chain-config",
- "monad-chain-data",
  "monad-eth-testutil",
  "monad-eth-txpool-ipc",
  "monad-eth-txpool-types",
@@ -6311,6 +6343,12 @@ dependencies = [
  "monad-exec-events",
  "monad-node-config",
  "monad-pprof",
+ "monad-query-config",
+ "monad-query-errors",
+ "monad-query-primitives",
+ "monad-query-read",
+ "monad-query-testkit",
+ "monad-query-types",
  "monad-rpc-docs",
  "monad-tracing-timing",
  "monad-triedb-utils",

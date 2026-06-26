@@ -82,9 +82,7 @@ pub mod tables;
 // (when this was a submodule of monad-chain-data). Keep that path resolving
 // without rewriting every `use`. Transition shim.
 pub(crate) mod engine {
-    pub(crate) use crate::{
-        bitmap, clause, digest, family, primary_dir, query, row_codec, tables,
-    };
+    pub(crate) use crate::{bitmap, clause, digest, family, primary_dir, query, row_codec, tables};
 }
 
 pub use session::{SessionFuture, WriteSession};

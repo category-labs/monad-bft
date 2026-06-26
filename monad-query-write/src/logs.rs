@@ -14,8 +14,8 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use alloy_primitives::B256;
-
 use monad_query_types::logs::StoredLog;
+
 use crate::{
     engine::{
         bitmap::{IndexKind, StreamKey},

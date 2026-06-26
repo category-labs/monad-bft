@@ -13,7 +13,6 @@ monad-blocksync = { path = "./monad-blocksync" }
 monad-blocktree = { path = "./monad-blocktree" }
 monad-bls = { path = "./monad-bls" }
 monad-chain-config = { path = "./monad-chain-config" }
-monad-chain-data = { path = "./monad-chain-data" }
 monad-compress = { path = "./monad-compress" }
 monad-consensus = { path = "./monad-consensus" }
 monad-consensus-state = { path = "./monad-consensus-state" }
@@ -47,11 +46,14 @@ monad-peer-discovery = { path = "./monad-peer-discovery" }
 monad-peer-score = { path = "./monad-peer-score" }
 monad-perf-util = { path = "./monad-perf-util" }
 monad-pprof = { path = "./monad-pprof" }
+monad-query-config = { path = "./monad-query-config", default-features = false }
 monad-query-engine = { path = "./monad-query-engine" }
 monad-query-errors = { path = "./monad-query-errors" }
 monad-query-primitives = { path = "./monad-query-primitives" }
 monad-query-read = { path = "./monad-query-read" }
 monad-query-store = { path = "./monad-query-store", default-features = false }
+monad-query-testkit = { path = "./monad-query-testkit" }
+monad-query-tests = { path = "./monad-query-tests" }
 monad-query-types = { path = "./monad-query-types" }
 monad-query-write = { path = "./monad-query-write" }
 monad-raptor = { path = "./monad-raptor" }

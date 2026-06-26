@@ -53,10 +53,7 @@ impl PrimaryDirBucket {
     /// enforcing the invariants: entries strictly increasing in both
     /// `first_primary_id` and `block_number`; sentinel strictly above the last
     /// entry's first id.
-    pub fn new(
-        entries: Vec<PrimaryDirEntry>,
-        end_primary_id_exclusive: u64,
-    ) -> Result<Self> {
+    pub fn new(entries: Vec<PrimaryDirEntry>, end_primary_id_exclusive: u64) -> Result<Self> {
         if entries.windows(2).any(|window| {
             window[0].first_primary_id >= window[1].first_primary_id
                 || window[0].block_number >= window[1].block_number

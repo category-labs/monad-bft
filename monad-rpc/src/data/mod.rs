@@ -34,7 +34,7 @@ use monad_archive::{
     model::{BlockDataReader, TxIndexedData},
     prelude::{ArchiveReader, Context, ContextCompat, IndexReader},
 };
-use monad_chain_data::ConfiguredChainDataReader;
+use monad_query_config::ConfiguredChainDataReader;
 use monad_eth_types::{
     BlockHeader, ReceiptWithLogIndex, TransactionLocation, TxEnvelopeWithSender,
 };
@@ -1726,9 +1726,9 @@ mod tests {
         use alloy_consensus::{SignableTransaction, TxLegacy};
         use alloy_eips::eip2718::Encodable2718;
         use alloy_primitives::{Address, Signature, TxKind, B256, U256};
-        use monad_chain_data::{
-            ConfiguredChainDataReader, EvmBlockHeader, FinalizedBlock, IngestTx,
-        };
+        use monad_query_config::ConfiguredChainDataReader;
+        use monad_query_primitives::EvmBlockHeader;
+        use monad_query_types::ingest_types::{FinalizedBlock, IngestTx};
 
         use crate::data::ChainStateError;
 
@@ -1765,7 +1765,7 @@ mod tests {
             external: None,
         };
         let block_hash = block.block_hash();
-        let store = monad_chain_data::testkit::populate_via_engine(vec![block]).await;
+        let store = monad_query_testkit::populate_via_engine(vec![block]).await;
         let reader = ConfiguredChainDataReader::in_memory(store.reader());
 
         let mut mock_triedb = MockTriedb::default();

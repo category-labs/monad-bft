@@ -19,7 +19,7 @@
 //! archive's own block-data storage. For the Mongo and Dynamo backends those
 //! formats (`KeyValueDocument` documents, `tx_hash`/`data`/`chunks` items,
 //! the `_chunk_{i}` convention) are owned here, so the
-//! [`monad_chain_data::ExternalBlobReader`] implementations live here too —
+//! [`monad_query_primitives::ExternalBlobReader`] implementations live here too —
 //! built from the same `[store.archive]` config section chain-data parses,
 //! and injected into chain-data's entry points by the embedding binary.
 //! (The S3 archive backend has no storage format of its own, so chain-data
@@ -32,7 +32,9 @@ use aws_sdk_s3::config::{Credentials, SharedCredentialsProvider};
 use bytes::Bytes;
 use eyre::OptionExt;
 use futures::future::BoxFuture;
-use monad_chain_data::{ChainDataArchiveBackendConfig, ExternalBlobReader, MonadChainDataError};
+use monad_query_config::ChainDataArchiveBackendConfig;
+use monad_query_errors::MonadChainDataError;
+use monad_query_primitives::ExternalBlobReader;
 
 use crate::{
     kvstore::{dynamodb::DynamoDBArchive, mongo::MongoDbStorage},
@@ -52,7 +54,7 @@ impl ExternalBlobReader for ArchiveExternalReader {
         key: &[u8],
         start: usize,
         end_exclusive: usize,
-    ) -> BoxFuture<'_, monad_chain_data::error::Result<Option<Bytes>>> {
+    ) -> BoxFuture<'_, monad_query_errors::Result<Option<Bytes>>> {
         let key = std::str::from_utf8(key).map(str::to_owned);
         Box::pin(async move {
             let key = key.map_err(|_| {
