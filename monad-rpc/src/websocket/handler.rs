@@ -33,6 +33,7 @@ use serde_json::value::RawValue;
 use tokio::sync::{broadcast, Semaphore, TryAcquireError};
 use tracing::{debug, error, warn};
 
+use super::session::Session;
 use crate::{
     event::{
         events::LogNotification, EventServerClientError, EventServerEvent, EventServerSubscription,
@@ -106,12 +107,14 @@ pub async fn ws_handler(
         actix_web::error::ErrorInternalServerError("WebSocketServer is currently unavailable, please try again later.")
     })?;
 
-    let (res, mut session, msg_stream) = actix_ws::handle(&req, stream)?;
+    let (res, session, msg_stream) = actix_ws::handle(&req, stream)?;
 
     let hostname = req.connection_info().host().to_string();
     let peer_addr = req.connection_info().peer_addr().map(ToString::to_string);
 
     actix_rt::spawn(async move {
+        let mut session = Session::new(session);
+
         if let Some(metrics) = &app_state.metrics {
             metrics.record_websocket_connection(1);
         }
@@ -150,7 +153,7 @@ pub async fn ws_handler(
 }
 
 async fn handler(
-    session: &mut actix_ws::Session,
+    session: &mut Session,
     msg_stream: actix_ws::MessageStream,
     hostname: &String,
     peer_addr: &Option<String>,
@@ -292,7 +295,7 @@ async fn handler(
 }
 
 async fn handle_notification(
-    session: &mut actix_ws::Session,
+    session: &mut Session,
     subscriptions: &HashMap<SubscriptionKind, Vec<(SubscriptionId, Option<Filter>)>>,
     msg: EventServerEvent,
     max_response_size: usize,
@@ -403,7 +406,7 @@ fn apply_logs_filter<'a>(
 }
 
 async fn handle_request(
-    ctx: &mut actix_ws::Session,
+    ctx: &mut Session,
     subscriptions: &mut HashMap<SubscriptionKind, Vec<(SubscriptionId, Option<Filter>)>>,
     subscription_limit: u16,
     app_state: &MonadRpcResources,
@@ -613,7 +616,7 @@ async fn handle_request(
 
 #[inline]
 async fn send_notification(
-    session: &mut actix_ws::Session,
+    session: &mut Session,
     id: &SubscriptionId,
     result: impl AsRef<RawValue>,
     max_response_size: usize,
