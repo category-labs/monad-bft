@@ -132,8 +132,9 @@ fn generation_key(generation: u64) -> [u8; 8] {
 }
 
 impl<M: MetaStore, B: BlobStore> SnapshotStore<M, B> {
-    /// Meta row holding the manifest.
-    pub(crate) const MANIFEST_TABLE: TableId = TableId::new("ingest_snapshot");
+    /// Meta row holding the manifest. `pub` so the cross-crate catalog ⇄
+    /// declared-`TableId` consistency test (monad-query-tests) can name it.
+    pub const MANIFEST_TABLE: TableId = TableId::new("ingest_snapshot");
     pub(crate) const MANIFEST_KEY: &'static [u8] = b"latest";
     /// Blob table holding the payload objects. Disjoint from the meta
     /// `ingest_snapshot` table: blob and meta tables live in separate

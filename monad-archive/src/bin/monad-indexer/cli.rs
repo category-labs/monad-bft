@@ -575,7 +575,7 @@ payload = "external-archive"
             assert!(config.index_archive_payload);
             assert_eq!(
                 config.engine.payload,
-                monad_chain_data::ChainDataPayloadConfig::ExternalArchive
+                monad_query_config::ChainDataPayloadConfig::ExternalArchive
             );
             config.store.validate_ingest().expect("valid store");
             std::fs::remove_dir_all(&dir).unwrap();

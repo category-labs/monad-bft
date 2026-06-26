@@ -28,10 +28,11 @@ use std::{sync::Arc, time::Duration};
 
 use alloy_eips::eip2718::Encodable2718;
 use alloy_rlp::Decodable;
-use monad_chain_data::{
-    ChainDataIngestSource, ExternalFamilyRegion, ExternalPayloadSpec, FinalizedBlock, IngestTrace,
-    IngestTx,
+use monad_query_types::{
+    ingest_types::{FinalizedBlock, IngestTrace, IngestTx},
+    ExternalFamilyRegion, ExternalPayloadSpec,
 };
+use monad_query_write::ingest::source::ChainDataIngestSource;
 
 use crate::{
     failover_circuit_breaker::{CircuitBreaker, FallbackExecutor},
@@ -502,15 +503,15 @@ pub fn into_finalized_block(
     })
 }
 
-fn map_call_kind(typ: &CallKind) -> monad_chain_data::CallKind {
+fn map_call_kind(typ: &CallKind) -> monad_query_primitives::CallKind {
     match typ {
-        CallKind::Call => monad_chain_data::CallKind::Call,
-        CallKind::DelegateCall => monad_chain_data::CallKind::DelegateCall,
-        CallKind::CallCode => monad_chain_data::CallKind::CallCode,
-        CallKind::Create => monad_chain_data::CallKind::Create,
-        CallKind::Create2 => monad_chain_data::CallKind::Create2,
-        CallKind::SelfDestruct => monad_chain_data::CallKind::SelfDestruct,
-        CallKind::StaticCall => monad_chain_data::CallKind::StaticCall,
+        CallKind::Call => monad_query_primitives::CallKind::Call,
+        CallKind::DelegateCall => monad_query_primitives::CallKind::DelegateCall,
+        CallKind::CallCode => monad_query_primitives::CallKind::CallCode,
+        CallKind::Create => monad_query_primitives::CallKind::Create,
+        CallKind::Create2 => monad_query_primitives::CallKind::Create2,
+        CallKind::SelfDestruct => monad_query_primitives::CallKind::SelfDestruct,
+        CallKind::StaticCall => monad_query_primitives::CallKind::StaticCall,
     }
 }
 
@@ -541,7 +542,7 @@ fn build_ingest_traces(
             continue;
         }
         let depths: Vec<u32> = frames.iter().map(|f| f.depth.to::<u32>()).collect();
-        let trace_addresses = monad_chain_data::compute_trace_addresses(depths)
+        let trace_addresses = monad_query_types::traces::compute_trace_addresses(depths)
             .map_err(|e| eyre!("block {block_number} tx {tx_idx}: trace_address: {e:?}"))?;
         let tx_status = *tx_statuses
             .get(tx_idx)
