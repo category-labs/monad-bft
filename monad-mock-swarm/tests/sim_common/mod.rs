@@ -264,7 +264,7 @@ impl NetworkModel<NoSerSwarm> for ReplayNetwork {
             self.held += 1;
             let offset = match self.order {
                 ReplayOrder::Forward => idx,
-                ReplayOrder::Reverse => 1_000_000 - idx,
+                ReplayOrder::Reverse => 999_999 - idx,
                 ReplayOrder::Random(_) => self.rng.gen_range(0..1_000_000),
             };
             vec![Duration::from_nanos(to_release + offset)]

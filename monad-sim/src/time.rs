@@ -17,9 +17,9 @@
 
 // `Duration::from_nanos_u128` is stable only since Rust 1.93, but this workspace
 // builds on 1.91.1, so it is provided locally by the `DurationFromNanosU128`
-// extension trait below. This allow silences the future-ambiguity lint raised by
+// extension trait below. This `allow` silences the future-ambiguity lint raised by
 // calling it through the trait while std's (still-unstable) inherent method
-// already exists. Remove the trait and this allow once the toolchain reaches 1.93.
+// already exists. Remove the trait and this `allow` once the toolchain reaches 1.93.
 #![allow(unstable_name_collisions)]
 
 use std::{

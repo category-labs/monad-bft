@@ -100,7 +100,7 @@ type Partition<S> = (Range<Time>, Vec<BTreeSet<NodeId<Pk<S>>>>);
 type NodeEntry<S> = (NodeId<Pk<S>>, Handle<SimNode<S>>);
 
 fn dur(t: Time) -> Duration {
-    Duration::from_nanos(t.0 as u64)
+    Duration::from_nanos(u64::try_from(t.0).expect("negative simulation time"))
 }
 
 /// Default wall-clock estimate period for a node.
