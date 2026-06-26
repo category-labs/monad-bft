@@ -343,7 +343,7 @@ impl<S: SwarmRelation> SimVerifier<S> {
             // votes from f peers after receiving 2f+1 votes as a leader; 2x
             // because votes are sent to the current and next leader
             .metric_max(
-                node_ids,
+                &[node_id],
                 sim_metric!(consensus_events.old_vote_received),
                 2 * (num_blocks_authored + 1) * max_byzantine_nodes,
             )
