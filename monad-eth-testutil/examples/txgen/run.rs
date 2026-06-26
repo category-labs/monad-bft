@@ -107,6 +107,7 @@ async fn run_workload_group(
 ) -> Result<()> {
     let workload_group = &config.workload_groups[workload_group_index];
     let read_client = clients[0].clone();
+    let ws_url = config.ws_url()?;
 
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_clone = Arc::clone(&shutdown);
@@ -124,7 +125,7 @@ async fn run_workload_group(
             RpcWorkflowConfig::Indexer(indexer_config) => {
                 let indexer = RpcRequestGenerator::new(
                     read_client.clone(),
-                    config.ws_url().expect("WS URL is not valid"),
+                    ws_url.clone(),
                     indexer_config.requests_per_block,
                     1, // num_ws_connections not used by indexer
                 );
@@ -142,7 +143,7 @@ async fn run_workload_group(
             RpcWorkflowConfig::SpamRpcWs(spam_config) => {
                 let spammer = RpcRequestGenerator::new(
                     read_client.clone(),
-                    config.ws_url().expect("WS URL is not valid"),
+                    ws_url.clone(),
                     spam_config.requests_per_block,
                     spam_config.num_ws_connections,
                 );
@@ -158,10 +159,7 @@ async fn run_workload_group(
                 );
             }
             RpcWorkflowConfig::CompareRpcWs(_) => {
-                let compare_rpc_ws = RpcWsCompare::new(
-                    read_client.clone(),
-                    config.ws_url().expect("WS URL is not valid"),
-                );
+                let compare_rpc_ws = RpcWsCompare::new(read_client.clone(), ws_url.clone());
                 let shutdown_clone = Arc::clone(&shutdown);
                 tasks.push(
                     critical_task(
@@ -273,6 +271,8 @@ fn run_traffic_gen(
     sent_txs: Arc<DashMap<TxHash, Instant>>,
 ) -> Result<impl Iterator<Item = Pin<Box<dyn Future<Output = Result<()>> + Send>>>> {
     let read_client = clients[0].clone();
+    let min_native_amount = config.min_native_amount_u256()?;
+    let seed_native_amount = config.seed_native_amount_u256()?;
 
     let (rpc_sender, gen_rx) = mpsc::channel(2);
     let (gen_sender, refresh_rx) = async_channel::bounded::<Accounts>(100);
@@ -305,8 +305,8 @@ fn run_traffic_gen(
         refresh_rx,
         rpc_sender,
         &read_client,
-        U256::from_str_radix(&config.min_native_amount, 10).unwrap(),
-        U256::from_str_radix(&config.seed_native_amount, 10).unwrap(),
+        min_native_amount,
+        seed_native_amount,
         &metrics,
         &base_fee,
         config.chain_id,
@@ -384,21 +384,31 @@ fn generate_sender_groups<'a>(
     traffic_gen: &'a TrafficGen,
 ) -> impl Iterator<Item = AccountsWithTime> + 'a {
     let mut rng = SmallRng::seed_from_u64(traffic_gen.sender_seed);
-    let num_groups = (traffic_gen.senders() / traffic_gen.sender_group_size()).max(1);
+    let total_senders = traffic_gen.senders();
+    let sender_group_size = traffic_gen.sender_group_size();
+    let num_groups = total_senders.div_ceil(sender_group_size);
     let mut key_iter = config.root_private_keys.iter();
 
-    (0..num_groups).map(move |_| AccountsWithTime {
-        accts: Accounts {
-            accts: (0..traffic_gen.sender_group_size())
-                .map(|_| PrivateKey::new_with_random(&mut rng))
-                .map(SimpleAccount::from)
-                .collect(),
-            root: key_iter
-                .next()
-                .map(PrivateKey::new)
-                .map(SimpleAccount::from),
-        },
-        sent: Instant::now() - Duration::from_secs_f64(config.refresh_delay_secs),
+    (0..num_groups).map(move |group_idx| {
+        let senders_in_group = if group_idx == num_groups - 1 {
+            total_senders - (group_idx * sender_group_size)
+        } else {
+            sender_group_size
+        };
+
+        AccountsWithTime {
+            accts: Accounts {
+                accts: (0..senders_in_group)
+                    .map(|_| PrivateKey::new_with_random(&mut rng))
+                    .map(SimpleAccount::from)
+                    .collect(),
+                root: key_iter
+                    .next()
+                    .map(PrivateKey::new)
+                    .map(SimpleAccount::from),
+            },
+            sent: Instant::now() - Duration::from_secs_f64(config.refresh_delay_secs),
+        }
     })
 }
 
@@ -407,7 +417,7 @@ async fn verify_contract_code(client: &ReqwestClient, addr: Address) -> Result<b
     Ok(code != "0x")
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Default, Deserialize, Serialize)]
 struct DeployedContractFile {
     erc20: Option<Vec<Address>>,
     ecmul: Option<Address>,
@@ -427,7 +437,11 @@ async fn load_or_deploy_contracts(
     let contract_to_ensure = traffic_gen.required_contract();
 
     const PATH: &str = "deployed_contracts.json";
-    let deployer = PrivateKey::new(&config.root_private_keys[0]);
+    let deployer_key = config
+        .root_private_keys
+        .first()
+        .ok_or_else(|| eyre::eyre!("root_private_keys must not be empty"))?;
+    let deployer = PrivateKey::new(deployer_key);
     let base_fee = client.get_base_fee().await?;
     let max_fee_per_gas = base_fee * 2;
     let chain_id = config.chain_id;
@@ -495,16 +509,14 @@ async fn load_or_deploy_contracts(
 
             // Save all contracts to file
             let addrs: Vec<Address> = all_contracts.iter().map(|c| c.addr).collect();
-            let deployed = DeployedContractFile {
+            let verified = DeployedContractFile {
                 erc20: Some(addrs),
-                ecmul: None,
-                uniswap: None,
-                eip7702: None,
-                nft_sale: None,
-                erc4337_7702: None,
+                ..Default::default()
             };
+            let mut persisted = load_deployed_contracts_file_or_default(PATH);
+            persisted.erc20 = verified.erc20.clone();
 
-            write_and_verify_deployed_contracts(client, PATH, &deployed).await?;
+            write_and_verify_deployed_contracts(client, PATH, &verified, &persisted).await?;
             info!("Using {} ERC20 contract(s)", all_contracts.len());
             Ok(DeployedContract::ERC20(all_contracts))
         }
@@ -535,16 +547,14 @@ async fn load_or_deploy_contracts(
             )
             .await?;
 
-            let deployed = DeployedContractFile {
-                erc20: None,
+            let verified = DeployedContractFile {
                 ecmul: Some(ecmul.addr),
-                uniswap: None,
-                eip7702: None,
-                nft_sale: None,
-                erc4337_7702: None,
+                ..Default::default()
             };
+            let mut persisted = load_deployed_contracts_file_or_default(PATH);
+            persisted.ecmul = verified.ecmul;
 
-            write_and_verify_deployed_contracts(client, PATH, &deployed).await?;
+            write_and_verify_deployed_contracts(client, PATH, &verified, &persisted).await?;
             Ok(DeployedContract::ECMUL(ecmul))
         }
         RequiredContract::Uniswap => {
@@ -576,16 +586,14 @@ async fn load_or_deploy_contracts(
             )
             .await?;
 
-            let deployed = DeployedContractFile {
-                erc20: None,
-                ecmul: None,
+            let verified = DeployedContractFile {
                 uniswap: Some(uniswap),
-                eip7702: None,
-                nft_sale: None,
-                erc4337_7702: None,
+                ..Default::default()
             };
+            let mut persisted = load_deployed_contracts_file_or_default(PATH);
+            persisted.uniswap = verified.uniswap;
 
-            write_and_verify_deployed_contracts(client, PATH, &deployed).await?;
+            write_and_verify_deployed_contracts(client, PATH, &verified, &persisted).await?;
             Ok(DeployedContract::Uniswap(uniswap))
         }
         RequiredContract::EIP7702 => {
@@ -616,16 +624,14 @@ async fn load_or_deploy_contracts(
             )
             .await?;
 
-            let deployed = DeployedContractFile {
-                erc20: None,
-                ecmul: None,
-                uniswap: None,
+            let verified = DeployedContractFile {
                 eip7702: Some(eip7702.addr),
-                nft_sale: None,
-                erc4337_7702: None,
+                ..Default::default()
             };
+            let mut persisted = load_deployed_contracts_file_or_default(PATH);
+            persisted.eip7702 = verified.eip7702;
 
-            write_and_verify_deployed_contracts(client, PATH, &deployed).await?;
+            write_and_verify_deployed_contracts(client, PATH, &verified, &persisted).await?;
             Ok(DeployedContract::EIP7702(eip7702))
         }
         RequiredContract::NftSale => {
@@ -661,16 +667,14 @@ async fn load_or_deploy_contracts(
             )
             .await?;
 
-            let deployed = DeployedContractFile {
-                erc20: None,
-                ecmul: None,
-                uniswap: None,
-                eip7702: None,
+            let verified = DeployedContractFile {
                 nft_sale: Some(nft_sale.addr),
-                erc4337_7702: None,
+                ..Default::default()
             };
+            let mut persisted = load_deployed_contracts_file_or_default(PATH);
+            persisted.nft_sale = verified.nft_sale;
 
-            write_and_verify_deployed_contracts(client, PATH, &deployed).await?;
+            write_and_verify_deployed_contracts(client, PATH, &verified, &persisted).await?;
             Ok(DeployedContract::NftSale(nft_sale))
         }
         RequiredContract::ERC4337_7702 => {
@@ -711,17 +715,25 @@ async fn load_or_deploy_contracts(
                 simple7702account: simple7702account.addr,
             };
 
-            let deployed = DeployedContractFile {
-                erc20: None,
-                ecmul: None,
-                uniswap: None,
-                eip7702: None,
-                nft_sale: None,
+            let verified = DeployedContractFile {
                 erc4337_7702: Some(erc4337_7702),
+                ..Default::default()
             };
+            let mut persisted = load_deployed_contracts_file_or_default(PATH);
+            persisted.erc4337_7702 = verified.erc4337_7702;
 
-            write_and_verify_deployed_contracts(client, PATH, &deployed).await?;
+            write_and_verify_deployed_contracts(client, PATH, &verified, &persisted).await?;
             Ok(DeployedContract::ERC4337_7702(erc4337_7702))
+        }
+    }
+}
+
+fn load_deployed_contracts_file_or_default(path: &str) -> DeployedContractFile {
+    match open_deployed_contracts_file(path) {
+        Ok(dc) => dc,
+        Err(e) => {
+            info!("Failed to load deployed contracts file for persistence, {e}");
+            DeployedContractFile::default()
         }
     }
 }
@@ -738,6 +750,15 @@ fn open_deployed_contracts_file(path: &str) -> Result<DeployedContractFile> {
 async fn write_and_verify_deployed_contracts(
     client: &ReqwestClient,
     path: &str,
+    verify_dc: &DeployedContractFile,
+    persist_dc: &DeployedContractFile,
+) -> Result<()> {
+    verify_deployed_contracts(client, verify_dc).await?;
+    write_deployed_contracts(path, persist_dc)
+}
+
+async fn verify_deployed_contracts(
+    client: &ReqwestClient,
     dc: &DeployedContractFile,
 ) -> Result<()> {
     if let Some(addrs) = &dc.erc20 {
@@ -778,12 +799,55 @@ async fn write_and_verify_deployed_contracts(
             bail!("Failed to verify freshly deployed EIP7702 contract");
         }
     }
+    if let Some(addr) = dc.nft_sale {
+        if !verify_contract_code(client, addr).await? {
+            bail!("Failed to verify freshly deployed NftSale contract");
+        }
+    }
+    if let Some(erc4337_7702) = dc.erc4337_7702 {
+        if !verify_contract_code(client, erc4337_7702.entrypoint).await?
+            || !verify_contract_code(client, erc4337_7702.simple7702account).await?
+        {
+            bail!("Failed to verify freshly deployed ERC4337_7702 contracts");
+        }
+    }
 
+    Ok(())
+}
+
+fn write_deployed_contracts(path: &str, dc: &DeployedContractFile) -> Result<()> {
     let mut file = std::fs::File::create(path)?;
-    serde_json::to_writer_pretty(&mut file, &dc)
+    serde_json::to_writer_pretty(&mut file, dc)
         .context("Failed to serialize deployed contracts")?;
     file.flush()?;
     info!("Wrote deployed contract addresses to {path}");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::generate_sender_groups;
+    use crate::config::{Config, TrafficGen, WorkloadGroup};
+
+    #[test]
+    fn generate_sender_groups_preserves_all_senders() {
+        let config = Config {
+            workload_groups: vec![WorkloadGroup::default()],
+            ..Default::default()
+        };
+        let traffic_gen = TrafficGen {
+            senders: Some(101),
+            sender_group_size: Some(100),
+            ..Default::default()
+        };
+
+        let groups: Vec<_> = generate_sender_groups(&config, &traffic_gen).collect();
+        let total_senders: usize = groups.iter().map(|g| g.accts.accts.len()).sum();
+
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].accts.accts.len(), 100);
+        assert_eq!(groups[1].accts.accts.len(), 1);
+        assert_eq!(total_senders, 101);
+    }
 }
