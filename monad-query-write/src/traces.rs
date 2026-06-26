@@ -14,8 +14,8 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use alloy_primitives::U256;
-
 use monad_query_types::traces::{selector_from_input, StoredTrace};
+
 use crate::{
     engine::{
         bitmap::{IndexKind, StreamKey},
@@ -87,4 +87,3 @@ pub fn is_transfer_frame(trace: &IngestTrace) -> bool {
     );
     trace.value > U256::ZERO && kind_moves_value && trace.status == 0 && trace.tx_status
 }
-

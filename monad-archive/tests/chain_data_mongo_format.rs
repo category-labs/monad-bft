@@ -29,7 +29,7 @@ use monad_archive::{
     kvstore::{mongo::MongoDbStorage, KVStore, WritePolicy},
     prelude::Metrics,
 };
-use monad_chain_data::ExternalBlobReader;
+use monad_query_primitives::ExternalBlobReader;
 
 /// monad-archive's Mongo chunk threshold (`mongo::CHUNK_SIZE`).
 const CHUNK_SIZE: usize = 15 * 1024 * 1024;
@@ -47,7 +47,7 @@ async fn read(
     key: &str,
     start: usize,
     end: usize,
-) -> monad_chain_data::error::Result<Option<bytes::Bytes>> {
+) -> monad_query_errors::Result<Option<bytes::Bytes>> {
     reader.read_range(key.as_bytes(), start, end).await
 }
 

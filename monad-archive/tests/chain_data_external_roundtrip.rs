@@ -39,13 +39,18 @@ use monad_archive::{
     },
     prelude::{KVReader, LatestKind},
 };
-use monad_chain_data::{
-    engine::family::BLOCK_BLOB_TABLE,
-    testkit::{populate_via_engine, populate_via_engine_external},
-    ChainDataIngestSource, FinalizedBlock, InMemoryExternalBlobReader, LogFilter,
-    MonadChainDataService, QueryEnvelope, QueryLogsRequest, QueryOrder, QueryTracesRequest,
-    QueryTransactionsRequest, QueryTransfersRequest, TraceFilter, TransferFilter, TxFilter,
+use monad_query_engine::family::BLOCK_BLOB_TABLE;
+use monad_query_primitives::{limits::QueryEnvelope, order::QueryOrder, InMemoryExternalBlobReader};
+use monad_query_read::{
+    api::MonadChainDataService,
+    logs::{LogFilter, QueryLogsRequest},
+    traces::{QueryTracesRequest, TraceFilter},
+    transfers::{QueryTransfersRequest, TransferFilter},
+    txs::{QueryTransactionsRequest, TxFilter},
 };
+use monad_query_testkit::{populate_via_engine, populate_via_engine_external};
+use monad_query_types::ingest_types::FinalizedBlock;
+use monad_query_write::ingest::source::ChainDataIngestSource;
 use monad_eth_types::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 
 const SENDER_A: Address = Address::repeat_byte(0xa1);
@@ -561,7 +566,7 @@ async fn external_store_without_archive_reader_errors() {
     let blind = MonadChainDataService::new(
         external_store.meta.clone(),
         external_store.blob.clone(),
-        monad_chain_data::QueryLimits::UNLIMITED,
+        monad_query_primitives::limits::QueryLimits::UNLIMITED,
     );
     let err = blind
         .query_transactions(QueryTransactionsRequest {
@@ -575,7 +580,7 @@ async fn external_store_without_archive_reader_errors() {
         .await
         .unwrap_err();
     assert!(
-        matches!(err, monad_chain_data::MonadChainDataError::MissingData(_)),
+        matches!(err, monad_query_errors::MonadChainDataError::MissingData(_)),
         "expected MissingData, got {err:?}"
     );
 }

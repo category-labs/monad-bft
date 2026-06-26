@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 //! queryX transport: JSON-RPC adapters over the chain-data reader. The
-//! `monad-chain-data/queryX` spec shapes live in [`wire`]; this layer parses
+//! `docs/queryX.md` spec shapes live in [`wire`]; this layer parses
 //! params, converts to the engine's request types, calls the service, and
 //! shapes the response (`data` keyed by object type, projected to the
 //! requested `fields`, plus the resolved block references).
@@ -24,10 +24,14 @@ pub mod wire;
 use std::sync::Arc;
 
 use alloy_primitives::U64;
-use monad_chain_data::{
-    ConfiguredChainDataReader, LogsRelations, MonadChainDataError, QueryBlocksRequest,
-    QueryLogsRequest, QueryTracesRequest, QueryTransactionsRequest, QueryTransfersRequest,
-    TracesRelations, TransfersRelations, TxsRelations,
+use monad_query_config::ConfiguredChainDataReader;
+use monad_query_errors::MonadChainDataError;
+use monad_query_read::{
+    blocks::QueryBlocksRequest,
+    logs::{LogsRelations, QueryLogsRequest},
+    traces::{QueryTracesRequest, TracesRelations},
+    transfers::{QueryTransfersRequest, TransfersRelations},
+    txs::{QueryTransactionsRequest, TxsRelations},
 };
 use serde_json::value::RawValue;
 use tracing::{debug, trace};
@@ -64,7 +68,7 @@ impl ChainDataQueryRuntime {
 }
 
 /// queryX limit breaches surface with their own error code (see
-/// `monad_chain_data::QueryLimits`).
+/// `monad_query_primitives::limits::QueryLimits`).
 const QUERYX_LIMIT_EXCEEDED_CODE: i32 = -32005;
 
 /// The spec says the `-32005` error's `data` SHOULD carry the server's limits.
@@ -287,7 +291,9 @@ pub async fn monad_eth_queryBlocks(
 
 #[cfg(test)]
 mod tests {
-    use monad_chain_data::{Address, LimitExceededKind, QueryOrder, B256};
+    use alloy_primitives::{Address, B256};
+    use monad_query_errors::LimitExceededKind;
+    use monad_query_primitives::order::QueryOrder;
     use serde_json::{json, Value};
 
     use super::{wire::OneOrMany, *};
@@ -352,7 +358,7 @@ mod tests {
             let request: QueryRequestWire<LogFilterWire> =
                 parse_query_request(p).expect("all-defaults parse");
             let envelope = request.envelope().expect("envelope");
-            assert_eq!(envelope, monad_chain_data::QueryEnvelope::default());
+            assert_eq!(envelope, monad_query_primitives::limits::QueryEnvelope::default());
         }
         // Omitted fields fall back per-field (limit keeps the spec default).
         let request = parse_logs_request(r#"[{"fromBlock": "0x3"}]"#).expect("parse");
@@ -360,7 +366,7 @@ mod tests {
         assert_eq!(envelope.from_block, Some(3));
         assert_eq!(
             envelope.limit,
-            monad_chain_data::QueryEnvelope::default().limit
+            monad_query_primitives::limits::QueryEnvelope::default().limit
         );
     }
 

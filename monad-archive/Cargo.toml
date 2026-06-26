@@ -28,10 +28,20 @@ bench = false
 [features]
 default = ["chain-data-ingest"]
 mongodb-integration-tests = []
-chain-data-ingest = ["dep:monad-chain-data"]
+chain-data-ingest = [
+    "dep:monad-query-config",
+    "dep:monad-query-errors",
+    "dep:monad-query-primitives",
+    "dep:monad-query-types",
+    "dep:monad-query-write",
+]
 
 [dependencies]
-monad-chain-data = { workspace = true, features = ["s3", "dynamo", "mongo"], optional = true }
+monad-query-config = { workspace = true, features = ["s3", "dynamo", "mongo"], optional = true }
+monad-query-errors = { workspace = true, optional = true }
+monad-query-primitives = { workspace = true, optional = true }
+monad-query-types = { workspace = true, optional = true }
+monad-query-write = { workspace = true, optional = true }
 monad-compress = { workspace = true }
 monad-eth-types = { workspace = true }
 monad-triedb-utils = { workspace = true }
@@ -83,3 +93,6 @@ url = { workspace = true }
 
 [dev-dependencies]
 monad-eth-testutil = { workspace = true }
+monad-query-engine = { workspace = true }
+monad-query-read = { workspace = true }
+monad-query-testkit = { workspace = true }
