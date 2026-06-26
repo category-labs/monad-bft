@@ -19,7 +19,7 @@
 //! entry carrying the chunk count. A range read fetches only the covering
 //! chunks and slices.
 //!
-//! Range semantics (shared with `monad_chain_data::store::BlobStore`'s
+//! Range semantics (shared with `monad_query_store::BlobStore`'s
 //! `read_range`): the end clamps to EOF; a start strictly past EOF, or past
 //! the end bound, is an error; a missing key is `None` at the caller.
 

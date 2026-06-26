@@ -277,13 +277,14 @@ async fn test_monad_eth_call() {
 
 /// Two parent-linked blocks of logs (block 1: addr 0xaa, block 2: addr 0xbb),
 /// ingested through the real chain-data engine into in-memory stores.
-async fn chain_data_test_reader() -> monad_chain_data::ConfiguredChainDataReader {
-    use monad_chain_data::{
-        Address, ConfiguredChainDataReader, EvmBlockHeader, FinalizedBlock, Log, LogData, B256,
-    };
+async fn chain_data_test_reader() -> monad_query_config::ConfiguredChainDataReader {
+    use alloy_primitives::{Address, Log, LogData, B256};
+    use monad_query_config::ConfiguredChainDataReader;
+    use monad_query_primitives::EvmBlockHeader;
+    use monad_query_types::ingest_types::FinalizedBlock;
 
     let mut blocks = Vec::new();
-    let mut parent = monad_chain_data::Hash32::ZERO;
+    let mut parent = monad_query_primitives::Hash32::ZERO;
     for (number, address_byte) in [(1u64, 0xaa_u8), (2, 0xbb)] {
         let block = FinalizedBlock {
             header: EvmBlockHeader {
@@ -295,7 +296,7 @@ async fn chain_data_test_reader() -> monad_chain_data::ConfiguredChainDataReader
                 address: Address::repeat_byte(address_byte),
                 data: LogData::new_unchecked(
                     vec![B256::repeat_byte(0x10)],
-                    monad_chain_data::Bytes::new(),
+                    alloy_primitives::Bytes::new(),
                 ),
             }]],
             txs: Vec::new(),
@@ -305,7 +306,7 @@ async fn chain_data_test_reader() -> monad_chain_data::ConfiguredChainDataReader
         parent = block.block_hash();
         blocks.push(block);
     }
-    let store = monad_chain_data::testkit::populate_via_engine(blocks).await;
+    let store = monad_query_testkit::populate_via_engine(blocks).await;
     ConfiguredChainDataReader::in_memory(store.reader())
 }
 
@@ -318,7 +319,7 @@ async fn test_eth_query_logs_round_trip() {
     });
     let app = init_server_with_resources(resources).await;
 
-    // Spec wire shape (monad-chain-data/queryX): flat camelCase request with
+    // Spec wire shape (docs/queryX.md): flat camelCase request with
     // QUANTITY bounds; `fields` both projects and opts into relations.
     let payload = json!({
         "jsonrpc": "2.0",

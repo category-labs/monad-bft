@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! queryX wire shapes per the `monad-chain-data/queryX` spec: flat camelCase
+//! queryX wire shapes per the `docs/queryX.md` spec: flat camelCase
 //! request objects with `QUANTITY | TAG` bounds, `"asc"`/`"desc"` order,
 //! `DATA | DATA[]` filter values, and a `fields` object that both selects the
 //! returned fields and opts into relations. Responses carry a `data` object
@@ -28,10 +28,19 @@ use std::{
 
 use alloy_eips::BlockNumberOrTag;
 use alloy_primitives::{FixedBytes, U256, U64};
-use monad_chain_data::{
-    Address, Block, BlockRef, BlockSpan, Bytes, CallKind, EvmBlockHeader, Hash32, LogEntry,
-    LogFilter, QueryEnvelope, QueryOrder, TraceEntry, TraceFilter, TransferEntry, TransferFilter,
-    TxEntry, TxFilter, B256,
+use alloy_primitives::{Address, Bytes, B256};
+use monad_query_primitives::{
+    limits::QueryEnvelope,
+    order::QueryOrder,
+    refs::{BlockRef, BlockSpan},
+    CallKind, EvmBlockHeader, Hash32,
+};
+use monad_query_read::{
+    blocks::Block,
+    logs::{LogEntry, LogFilter},
+    traces::{TraceEntry, TraceFilter},
+    transfers::{TransferEntry, TransferFilter},
+    txs::{TxEntry, TxFilter},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{

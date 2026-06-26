@@ -16,7 +16,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use monad_chain_data::ChainDataStoreConfig;
+use monad_query_config::ChainDataStoreConfig;
 
 #[derive(Debug, Parser)]
 #[command(name = "monad-rpc", about, long_about = None, version = monad_version::version!())]

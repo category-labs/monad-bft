@@ -1450,9 +1450,9 @@ mod tests {
     use crate::{engine::digest::EMPTY_DIGEST, store::InMemoryMetaStore};
 
     // NOTE: `all_logical_table_names_match_declared_table_ids` (the catalog ⇄
-    // declared-`TableId` consistency check) lives in monad-chain-data: it also
-    // references `ingest::snapshot::SnapshotStore`, which is a chain-data type,
-    // so the engine layer can't host it.
+    // declared-`TableId` consistency check) lives in monad-query-tests: it also
+    // references `monad_query_write::ingest::SnapshotStore`, which the engine
+    // layer can't depend on, so it can't host the test.
 
     #[tokio::test]
     async fn publication_tables_read_absent_and_publish_head() {

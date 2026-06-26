@@ -31,16 +31,22 @@ use std::collections::HashSet;
 use alloy_primitives::{Address, B256, U256};
 use alloy_rlp::Encodable;
 use monad_archive::chain_data_external::build_archive_external_reader;
-use monad_chain_data::{
-    config::{
-        ChainDataArchiveBackendConfig, ChainDataArchiveMongoConfig, ChainDataEngineConfig,
-        ChainDataMetaBackendConfig, ChainDataMongoMetaConfig, ChainDataPayloadConfig,
-        ChainDataStoreConfig, Redacted,
-    },
+use monad_query_config::{
     open_configured_chain_data_reader, run_configured_chain_data_engine_ingest,
-    testkit::VecSource,
-    EvmBlockHeader, ExternalFamilyRegion, ExternalPayloadSpec, FinalizedBlock, IngestTx,
-    QueryEnvelope, QueryLimits, QueryOrder, QueryTransactionsRequest, TxFilter,
+    ChainDataArchiveBackendConfig, ChainDataArchiveMongoConfig, ChainDataEngineConfig,
+    ChainDataMetaBackendConfig, ChainDataMongoMetaConfig, ChainDataPayloadConfig,
+    ChainDataStoreConfig, Redacted,
+};
+use monad_query_primitives::{
+    limits::{QueryEnvelope, QueryLimits},
+    order::QueryOrder,
+    EvmBlockHeader,
+};
+use monad_query_read::txs::{QueryTransactionsRequest, TxFilter};
+use monad_query_testkit::VecSource;
+use monad_query_types::{
+    ingest_types::{FinalizedBlock, IngestTx},
+    ExternalFamilyRegion, ExternalPayloadSpec,
 };
 
 const SENDER: Address = Address::repeat_byte(0x77);

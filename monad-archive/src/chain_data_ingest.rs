@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! The chain-data ingest worker: feeds the `monad-chain-data` engine from a
+//! The chain-data ingest worker: feeds the queryX ingest engine from a
 //! block-data source. Shared by `monad-archiver` and `monad-indexer`, whose
 //! TOML configs both carry a `[chain_data_ingest]` section.
 
@@ -32,8 +32,8 @@ pub struct ChainDataIngestConfig {
     /// (requires an archive-backed `block_data_source`). Must agree with
     /// `engine.payload = "external-archive"` — validated at startup.
     pub index_archive_payload: bool,
-    pub store: monad_chain_data::ChainDataStoreConfig,
-    pub engine: monad_chain_data::ChainDataEngineConfig,
+    pub store: monad_query_config::ChainDataStoreConfig,
+    pub engine: monad_query_config::ChainDataEngineConfig,
 }
 
 pub async fn chain_data_ingest_worker(
@@ -50,7 +50,7 @@ pub async fn chain_data_ingest_worker(
     // at two layers; require them to agree so a half-edited config cannot
     // silently ingest in the wrong mode.
     let external_engine =
-        config.engine.payload == monad_chain_data::ChainDataPayloadConfig::ExternalArchive;
+        config.engine.payload == monad_query_config::ChainDataPayloadConfig::ExternalArchive;
     if config.index_archive_payload != external_engine {
         bail!(
             "chain_data_ingest.index_archive_payload ({}) must match engine.payload ({:?})",
@@ -67,7 +67,7 @@ pub async fn chain_data_ingest_worker(
     // chain-data builds the S3 one from config itself.
     let external =
         crate::chain_data_external::build_archive_external_reader(&config.store.archive).await?;
-    monad_chain_data::run_configured_chain_data_engine_ingest(
+    monad_query_config::run_configured_chain_data_engine_ingest(
         config.store,
         config.engine,
         source,
