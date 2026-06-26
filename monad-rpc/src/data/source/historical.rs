@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::{future::Future, pin::Pin};
+
 use alloy_consensus::Header;
 use alloy_primitives::BlockHash;
 use async_trait::async_trait;
@@ -83,3 +85,21 @@ pub trait HistoricalDataSource: DynClone + Send + Sync {
 clone_trait_object!(HistoricalDataSource);
 
 pub type HistoricalDataSourceStack = DataSourceStack<Box<dyn HistoricalDataSource>>;
+
+pub trait HistoricalDataSourceExt: HistoricalDataSource + Sized {
+    async fn try_resolve_and_then<T>(
+        &self,
+        block_tag_or_hash: BlockTagOrHash,
+        f: impl for<'s> Fn(
+            &'s dyn HistoricalDataSource,
+            BlockPointer,
+        )
+            -> Pin<Box<dyn Future<Output = DataSourceResult<Option<T>>> + Send + 's>>,
+    ) -> DataSourceResult<Option<T>> {
+        let Some(pointer) = self.try_resolve(block_tag_or_hash).await? else {
+            return Ok(None);
+        };
+
+        f(self, pointer).await
+    }
+}
