@@ -34,7 +34,9 @@ use monad_eth_types::{
     BlockHeader, EthAccount, EthAddress, EthBlockHash, EthCode, EthCodeHash, EthStorageKey,
     EthStorageSlot, EthTxHash, ReceiptWithLogIndex, TransactionLocation, TxEnvelopeWithSender,
 };
-use monad_triedb::{TraverseEntry, TriedbHandle};
+use monad_triedb::{
+    compute_page_key, compute_slot_offset, decode_storage_page_slot, TraverseEntry, TriedbHandle,
+};
 use monad_types::{BlockId, Hash, SeqNum};
 use tracing::{error, warn};
 
@@ -521,6 +523,12 @@ pub struct TriedbEnv {
     mpsc_sender_traverse: mpsc::SyncSender<TriedbRequest>,
 
     meta: Arc<Mutex<TriedbEnvMeta>>,
+
+    // True if the primary timeline is page-encoded (Monad state machine). Read
+    // once at open; safe because the primary's encoding only changes via an
+    // offline promote (node stopped, then restarted), so a running RPC re-reads
+    // it on the next open.
+    page_encoded: bool,
 }
 
 struct TriedbEnvMeta {
@@ -618,6 +626,7 @@ impl TriedbEnv {
     ) -> Self {
         let triedb_handle: TriedbHandle = TriedbHandle::try_new(triedb_path, node_lru_max_mem)
             .expect("triedb should exist in path");
+        let page_encoded = triedb_handle.is_page_encoded();
         let latest_finalized = FinalizedBlockKey(SeqNum(
             triedb_handle.latest_finalized_block().unwrap_or_default(),
         ));
@@ -665,6 +674,7 @@ impl TriedbEnv {
             mpsc_sender: sender_read,
             mpsc_sender_traverse: sender_traverse,
             meta,
+            page_encoded,
         }
     }
 
@@ -930,11 +940,32 @@ impl Triedb for TriedbEnv {
         addr: EthAddress,
         at: EthStorageKey,
     ) -> Result<EthStorageSlot, String> {
-        self.handle_async_request(block_key, KeyInput::Storage(&addr, &at), |data| {
-            rlp_decode_storage_slot(data).ok_or_else(|| String::from("Decoding storage slot error"))
-        })
-        .await
-        .map(Option::unwrap_or_default)
+        if self.page_encoded {
+            // Page-encoded: storage is keyed by keccak(page_key) where
+            // page_key = slot >> 7, and the leaf is an encoded page. Look up the
+            // page key and extract the slot at its offset within the page. The
+            // page geometry (the >> 7 shift and the in-page offset) and the page
+            // decode all live in C++ so the format has one source of truth.
+            let page_key = compute_page_key(at);
+            let offset = compute_slot_offset(at);
+            self.handle_async_request(
+                block_key,
+                KeyInput::Storage(&addr, &page_key),
+                move |data| {
+                    decode_storage_page_slot(&data, offset)
+                        .ok_or_else(|| String::from("Decoding storage page error"))
+                },
+            )
+            .await
+            .map(Option::unwrap_or_default)
+        } else {
+            self.handle_async_request(block_key, KeyInput::Storage(&addr, &at), |data| {
+                rlp_decode_storage_slot(data)
+                    .ok_or_else(|| String::from("Decoding storage slot error"))
+            })
+            .await
+            .map(Option::unwrap_or_default)
+        }
     }
 
     #[tracing::instrument(level = "debug")]
