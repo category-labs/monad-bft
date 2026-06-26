@@ -1,0 +1,27 @@
+[Unit]
+Description="Service file for Monad Chain Data Archiver"
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/home/monad
+Type=simple
+ExecStart=/usr/local/bin/monad-archiver --config ${CHAIN_DATA_ARCHIVER_CONFIG}
+Environment="CHAIN_DATA_ARCHIVER_CONFIG=/home/monad/chain-data-archiver.toml"
+Environment="AWS_EC2_METADATA_DISABLED=true"
+Environment="RUST_LOG=info,monad_chain_data=info,ingest::timing=trace,aws_config=warn,aws_smithy_runtime=warn,h2=warn,tower=warn"
+EnvironmentFile=-/home/monad/.env
+Restart=always
+RestartSec=15
+User=monad
+Group=monad
+LimitNOFILE=1048576
+# Hugemem configs below
+LimitMEMLOCK=infinity
+MemoryDenyWriteExecute=false
+#SystemCallFilter=~@memlock
+ProtectKernelModules=no
+ProtectKernelLogs=no
+
+[Install]
+WantedBy=multi-user.target
