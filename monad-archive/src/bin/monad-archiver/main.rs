@@ -272,7 +272,7 @@ async fn handle_command(cmd: Commands) -> Result<()> {
             #[derive(serde::Deserialize)]
             struct HeadToml {
                 chain_data_ingest: Option<cli::ArchiverChainDataIngestConfig>,
-                store: Option<monad_chain_data::ChainDataStoreConfig>,
+                store: Option<monad_query_config::ChainDataStoreConfig>,
             }
             let contents = std::fs::read_to_string(&config)
                 .map_err(|e| eyre::eyre!("failed to read config {}: {e}", config.display()))?;
@@ -289,9 +289,9 @@ async fn handle_command(cmd: Commands) -> Result<()> {
             let external =
                 monad_archive::chain_data_external::build_archive_external_reader(&store.archive)
                     .await?;
-            let reader = monad_chain_data::open_configured_chain_data_reader(
+            let reader = monad_query_config::open_configured_chain_data_reader(
                 store,
-                monad_chain_data::QueryLimits::UNLIMITED,
+                monad_query_primitives::limits::QueryLimits::UNLIMITED,
                 external,
             )
             .await?;

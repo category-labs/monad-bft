@@ -30,7 +30,7 @@ use monad_archive::{
     kvstore::{dynamodb::CHUNK_SIZE, KVStore, WritePolicy},
     prelude::Metrics,
 };
-use monad_chain_data::ExternalBlobReader;
+use monad_query_primitives::ExternalBlobReader;
 
 fn alternator_endpoint() -> Option<String> {
     std::env::var("SCYLLA_ALTERNATOR_ENDPOINT").ok()
@@ -45,7 +45,7 @@ async fn read(
     key: &str,
     start: usize,
     end: usize,
-) -> monad_chain_data::error::Result<Option<bytes::Bytes>> {
+) -> monad_query_errors::Result<Option<bytes::Bytes>> {
     reader.read_range(key.as_bytes(), start, end).await
 }
 

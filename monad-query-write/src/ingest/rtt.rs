@@ -18,37 +18,78 @@
 use std::{collections::HashSet, sync::Arc};
 
 use alloy_primitives::{Address, Bytes, Log, LogData, B256};
+use monad_query_engine::{
+    bitmap::{
+        encode_bitmap_blob, render_stream_id, DecodedBitmapFragment, StreamKey, STREAM_PAGE_ID_SPAN,
+    },
+    digest::EMPTY_DIGEST,
+    family::Family,
+    tables::{PublicationTables, Tables},
+};
+use monad_query_errors::Result;
+use monad_query_primitives::{
+    limits::{QueryEnvelope, QueryLimits},
+    order::QueryOrder,
+    EvmBlockHeader, Hash32,
+};
+use monad_query_read::{
+    api::MonadChainDataService,
+    logs::{LogFilter, QueryLogsRequest},
+};
+use monad_query_store::{InMemoryBlobStore, InMemoryMetaStore};
+use monad_query_types::ingest_types::FinalizedBlock;
 use roaring::RoaringBitmap;
 
-use crate::{
-    api::MonadChainDataService,
-    engine::{
-        bitmap::{
-            encode_bitmap_blob, render_stream_id, DecodedBitmapFragment, StreamKey,
-            STREAM_PAGE_ID_SPAN,
-        },
-        digest::EMPTY_DIGEST,
-        family::Family,
-        tables::{PublicationTables, Tables},
-    },
-    error::Result,
-    ingest::{
-        index::{stage_artifact_write, ArtifactWrite, FamilyState, OpenState},
-        recover::{recover, Recovered},
-        resolver::TablesCodecResolver,
-        run_ingest,
-        snapshot::recover_checkpoint,
-        IngestRunConfig, PackConfig, PayloadMode, SignalPolicy, SnapshotStore,
-    },
-    ingest_types::{FinalizedBlock, Hash32},
-    logs::{LogFilter, QueryLogsRequest},
-    primitives::{
-        limits::{QueryEnvelope, QueryLimits},
-        order::QueryOrder,
-        EvmBlockHeader,
-    },
-    store::{InMemoryBlobStore, InMemoryMetaStore},
-    testkit::{VecSource, TEST_PREFETCH},
+use crate::ingest::{
+    index::{stage_artifact_write, ArtifactWrite, FamilyState, OpenState},
+    recover::{recover, Recovered},
+    resolver::TablesCodecResolver,
+    run_ingest,
+    snapshot::recover_checkpoint,
+    source::ChainDataIngestSource,
+    IngestRunConfig, PackConfig, PayloadMode, Prefetch, SignalPolicy, SnapshotStore,
+};
+
+/// Local `Vec`-backed [`ChainDataIngestSource`]: the read-layer `testkit`
+/// fixture can't be a dev-dependency of write without a dependency cycle, so
+/// this round-trip suite carries its own minimal source.
+#[derive(Clone)]
+struct VecSource {
+    blocks: Arc<Vec<FinalizedBlock>>,
+    start: u64,
+}
+
+impl VecSource {
+    fn new(blocks: Vec<FinalizedBlock>, start: u64) -> Self {
+        Self {
+            blocks: Arc::new(blocks),
+            start,
+        }
+    }
+}
+
+impl ChainDataIngestSource for VecSource {
+    fn get_latest_uploaded(
+        &self,
+    ) -> impl std::future::Future<Output = eyre::Result<Option<u64>>> + Send {
+        let latest = self.start + self.blocks.len() as u64 - 1;
+        async move { Ok(Some(latest)) }
+    }
+
+    fn fetch_finalized_block(
+        &self,
+        block_number: u64,
+    ) -> impl std::future::Future<Output = eyre::Result<FinalizedBlock>> + Send {
+        let block = block_number
+            .checked_sub(self.start)
+            .and_then(|idx| self.blocks.get(idx as usize).cloned());
+        async move { block.ok_or_else(|| eyre::eyre!("no block {block_number}")) }
+    }
+}
+
+const TEST_PREFETCH: Prefetch = Prefetch {
+    concurrency: 4,
+    buffer: 8,
 };
 
 fn addr(byte: u8) -> Address {

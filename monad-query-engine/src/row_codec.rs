@@ -183,10 +183,7 @@ pub fn encode_block_rows<T>(
 /// RLP without compressing or retaining anything. External-payload ingest uses
 /// this so its `row_chain` stays byte-identical to a native ingest of the same
 /// blocks.
-pub fn digest_block_rows<T>(
-    rows: &[T],
-    mut encode_row: impl FnMut(&T) -> Vec<u8>,
-) -> ChainDigest {
+pub fn digest_block_rows<T>(rows: &[T], mut encode_row: impl FnMut(&T) -> Vec<u8>) -> ChainDigest {
     let mut rows_digest = RowDigest::new();
     for row in rows {
         rows_digest.row(&encode_row(row));

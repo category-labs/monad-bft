@@ -276,9 +276,9 @@ async fn main() -> std::io::Result<()> {
                 )
                 .await
                 .map_err(std::io::Error::other)?;
-                monad_chain_data::open_configured_chain_data_reader(
+                monad_query_config::open_configured_chain_data_reader(
                     config.store,
-                    monad_chain_data::QueryLimits::new(config.max_limit, config.max_block_range),
+                    monad_query_primitives::limits::QueryLimits::new(config.max_limit, config.max_block_range),
                     external,
                 )
                 .await
