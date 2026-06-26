@@ -396,6 +396,10 @@ impl<ST: CertificateSignatureRecoverable> MonadNameRecord<ST> {
         self.name_record.direct_udp_socket()
     }
 
+    pub fn tcp_address(&self) -> SocketAddrV4 {
+        self.name_record.tcp_socket()
+    }
+
     pub fn all_udp_sockets(&self) -> impl Iterator<Item = SocketAddrV4> + '_ {
         [
             self.udp_address(),
@@ -644,6 +648,11 @@ pub enum PeerDiscoveryEvent<ST: CertificateSignatureRecoverable> {
         end_round: Round,
         peers: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>,
     },
+    ValidatorIpChanged {
+        node_id: NodeId<CertificateSignaturePubKey<ST>>,
+        old_name_record: Option<MonadNameRecord<ST>>,
+        new_name_record: MonadNameRecord<ST>,
+    },
     Refresh,
 }
 
@@ -682,6 +691,7 @@ pub enum PeerDiscoveryCommand<ST: CertificateSignatureRecoverable> {
         message: PeerDiscoveryMessage<ST>,
     },
     TimerCommand(PeerDiscoveryTimerCommand<PeerDiscoveryEvent<ST>, ST>),
+    Event(PeerDiscoveryEvent<ST>),
 }
 
 pub trait PeerDiscoveryAlgo {
