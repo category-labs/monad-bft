@@ -31,6 +31,13 @@ pub struct Metrics {
     pub total_rpc_calls: AtomicUsize,
     pub total_committed_txs: AtomicUsize,
 
+    // Send error counters by reason
+    pub total_send_errors: AtomicUsize,
+    pub send_errors_nonce_too_low: AtomicUsize,
+    pub send_errors_overloaded: AtomicUsize,
+    pub send_errors_replacement: AtomicUsize,
+    pub send_errors_other: AtomicUsize,
+
     pub receipts_rpc_calls: AtomicUsize,
     pub receipts_rpc_calls_error: AtomicUsize,
     pub receipts_tx_success: AtomicUsize,
@@ -66,6 +73,7 @@ impl Metrics {
         let mut txs_sent = Rate::new(&self.total_txs_sent);
         let mut rpc_calls = Rate::new(&self.total_rpc_calls);
         let mut committed_txs = Rate::new(&self.total_committed_txs);
+        let mut send_errors = Rate::new(&self.total_send_errors);
 
         // Receipt metrics
         let mut receipts_rpc_calls = Rate::new(&self.receipts_rpc_calls);
@@ -98,6 +106,7 @@ impl Metrics {
                 rps = rpc_calls.rate(elapsed),
                 tx_success_ps,
                 committed_tps = committed_txs.rate(elapsed),
+                send_errors_ps = send_errors.rate(elapsed),
                 tps = txs_sent.rate(elapsed),
                 "Metrics          (freq: {}m:{}s)",
                 report_interval.period().as_secs() / 60,
@@ -168,6 +177,11 @@ pub struct MetricsReporter {
 
     // Gauges
     committed_tps: Gauge<u64>,
+    send_errors_ps: Gauge<u64>,
+    send_errors_nonce_too_low_ps: Gauge<u64>,
+    send_errors_overloaded_ps: Gauge<u64>,
+    send_errors_replacement_ps: Gauge<u64>,
+    send_errors_other_ps: Gauge<u64>,
     sent_tps: Gauge<u64>,
     rpc_calls_ps: Gauge<u64>,
     rpc_calls_error_ps: Gauge<u64>,
@@ -184,6 +198,11 @@ struct Rates<'a> {
     txs_sent: Rate<'a>,
     rpc_calls: Rate<'a>,
     committed_txs: Rate<'a>,
+    send_errors: Rate<'a>,
+    send_errors_nonce_too_low: Rate<'a>,
+    send_errors_overloaded: Rate<'a>,
+    send_errors_replacement: Rate<'a>,
+    send_errors_other: Rate<'a>,
     rpc_calls_error: Rate<'a>,
     contracts_deployed: Rate<'a>,
 }
@@ -208,6 +227,11 @@ impl MetricsReporter {
             gen_mode,
 
             committed_tps: meter.u64_gauge("committed_tps").build(),
+            send_errors_ps: meter.u64_gauge("send_errors_ps").build(),
+            send_errors_nonce_too_low_ps: meter.u64_gauge("send_errors_nonce_too_low_ps").build(),
+            send_errors_overloaded_ps: meter.u64_gauge("send_errors_overloaded_ps").build(),
+            send_errors_replacement_ps: meter.u64_gauge("send_errors_replacement_ps").build(),
+            send_errors_other_ps: meter.u64_gauge("send_errors_other_ps").build(),
             sent_tps: meter.u64_gauge("sent_tps").build(),
             rpc_calls_ps: meter.u64_gauge("rpc_calls_ps").build(),
             rpc_calls_error_ps: meter.u64_gauge("rpc_calls_error_ps").build(),
@@ -227,12 +251,37 @@ impl MetricsReporter {
                 txs_sent: Rate::new(&metrics.total_txs_sent),
                 rpc_calls: Rate::new(&metrics.total_rpc_calls),
                 committed_txs: Rate::new(&metrics.total_committed_txs),
+                send_errors: Rate::new(&metrics.total_send_errors),
+                send_errors_nonce_too_low: Rate::new(&metrics.send_errors_nonce_too_low),
+                send_errors_overloaded: Rate::new(&metrics.send_errors_overloaded),
+                send_errors_replacement: Rate::new(&metrics.send_errors_replacement),
+                send_errors_other: Rate::new(&metrics.send_errors_other),
                 rpc_calls_error: Rate::new(&metrics.receipts_rpc_calls_error),
                 contracts_deployed: Rate::new(&metrics.receipts_contracts_deployed),
             },
         );
 
         Ok(reporter)
+    }
+
+    /// Emit zero values for all gauges. Called at phase start (so Grafana ramps
+    /// from 0) and on phase shutdown (so stale series are cleared).
+    pub fn emit_zeros(&self) {
+        let label = &[opentelemetry::KeyValue::new(
+            "Generator Mode",
+            self.gen_mode.clone(),
+        )];
+        self.committed_tps.record(0, label);
+        self.sent_tps.record(0, label);
+        self.send_errors_ps.record(0, label);
+        self.send_errors_nonce_too_low_ps.record(0, label);
+        self.send_errors_overloaded_ps.record(0, label);
+        self.send_errors_replacement_ps.record(0, label);
+        self.send_errors_other_ps.record(0, label);
+        self.rpc_calls_ps.record(0, &[]);
+        self.rpc_calls_error_ps.record(0, &[]);
+        self.contracts_deployed_ps.record(0, &[]);
+        info!(gen_mode = %self.gen_mode, "Emitted zero values for all gauges");
     }
 
     pub async fn run(self, shutdown: Arc<AtomicBool>) {
@@ -244,13 +293,20 @@ impl MetricsReporter {
             txs_sent: Rate::new(&self.metrics.total_txs_sent),
             rpc_calls: Rate::new(&self.metrics.total_rpc_calls),
             committed_txs: Rate::new(&self.metrics.total_committed_txs),
+            send_errors: Rate::new(&self.metrics.total_send_errors),
+            send_errors_nonce_too_low: Rate::new(&self.metrics.send_errors_nonce_too_low),
+            send_errors_overloaded: Rate::new(&self.metrics.send_errors_overloaded),
+            send_errors_replacement: Rate::new(&self.metrics.send_errors_replacement),
+            send_errors_other: Rate::new(&self.metrics.send_errors_other),
             rpc_calls_error: Rate::new(&self.metrics.receipts_rpc_calls_error),
             contracts_deployed: Rate::new(&self.metrics.receipts_contracts_deployed),
         };
 
         loop {
             if shutdown.load(Ordering::Relaxed) {
-                warn!("MetricsReporter shutting down");
+                self.emit_zeros();
+                // Allow the periodic OTEL reader to export the zero values before we drop
+                tokio::time::sleep(Duration::from_secs(3)).await;
                 break;
             }
 
@@ -265,20 +321,24 @@ impl MetricsReporter {
     fn report_metrics(&self, elapsed: f64, rates: &mut Rates) {
         debug!("Reporting Otel Metrics");
 
-        self.committed_tps.record(
-            rates.committed_txs.rate(elapsed) as u64,
-            &[opentelemetry::KeyValue::new(
-                "Generator Mode",
-                self.gen_mode.clone(),
-            )],
-        );
-        self.sent_tps.record(
-            rates.txs_sent.rate(elapsed) as u64,
-            &[opentelemetry::KeyValue::new(
-                "Generator Mode",
-                self.gen_mode.clone(),
-            )],
-        );
+        let label = &[opentelemetry::KeyValue::new(
+            "Generator Mode",
+            self.gen_mode.clone(),
+        )];
+        self.committed_tps
+            .record(rates.committed_txs.rate(elapsed) as u64, label);
+        self.send_errors_ps
+            .record(rates.send_errors.rate(elapsed) as u64, label);
+        self.send_errors_nonce_too_low_ps
+            .record(rates.send_errors_nonce_too_low.rate(elapsed) as u64, label);
+        self.send_errors_overloaded_ps
+            .record(rates.send_errors_overloaded.rate(elapsed) as u64, label);
+        self.send_errors_replacement_ps
+            .record(rates.send_errors_replacement.rate(elapsed) as u64, label);
+        self.send_errors_other_ps
+            .record(rates.send_errors_other.rate(elapsed) as u64, label);
+        self.sent_tps
+            .record(rates.txs_sent.rate(elapsed) as u64, label);
         self.rpc_calls_ps
             .record(rates.rpc_calls.rate(elapsed) as u64, &[]);
         self.rpc_calls_error_ps
