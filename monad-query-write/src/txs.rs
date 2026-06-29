@@ -15,7 +15,7 @@
 
 use alloy_consensus::Transaction;
 pub use monad_query_types::txs::TxLocation;
-use monad_query_types::txs::{decode_envelope, selector_from_envelope, StoredTxEnvelope};
+use monad_query_types::txs::{decode_envelope, selector_from_envelope};
 
 use crate::{
     engine::{
@@ -23,52 +23,22 @@ use crate::{
         digest::ChainDigest,
         row_codec::{digest_block_rows, encode_block_rows, RowCodec},
     },
-    error::{MonadChainDataError, Result},
-    ingest_types::{FinalizedBlock, Hash32, IngestTx},
+    error::Result,
+    ingest_types::IngestTx,
     primitives::records::BlockBlobHeader,
 };
-
-/// Derives the `(tx_hash, location)` pairs to write into `tx_hash_index` for
-/// one block. Caller-authoritative `tx_hash`; collisions last-write-win.
-pub(crate) fn collect_hash_locations(block: &FinalizedBlock) -> Result<Vec<(Hash32, TxLocation)>> {
-    block
-        .txs
-        .iter()
-        .enumerate()
-        .map(|(idx, tx)| {
-            let tx_index =
-                u32::try_from(idx).map_err(|_| MonadChainDataError::Decode("tx index overflow"))?;
-            Ok((
-                tx.tx_hash,
-                TxLocation {
-                    block_number: block.block_number(),
-                    tx_index,
-                },
-            ))
-        })
-        .collect()
-}
 
 /// Compresses a block's tx rows into the framed per-family blob.
 pub(crate) fn encode_block_txs(
     txs: &[IngestTx],
     codec: &RowCodec,
 ) -> Result<(BlockBlobHeader, Vec<u8>, ChainDigest)> {
-    encode_block_rows(txs, codec, "block tx blob too large", encode_tx_row)
+    encode_block_rows(txs, codec, "block tx blob too large", IngestTx::encode_row)
 }
 
 /// The [`encode_block_txs`] row digest alone (external-payload ingest).
 pub(crate) fn digest_block_txs(txs: &[IngestTx]) -> ChainDigest {
-    digest_block_rows(txs, encode_tx_row)
-}
-
-fn encode_tx_row(tx: &IngestTx) -> Vec<u8> {
-    StoredTxEnvelope {
-        tx_hash: tx.tx_hash,
-        sender: tx.sender,
-        signed_tx_bytes: tx.signed_tx_bytes.clone(),
-    }
-    .encode()
+    digest_block_rows(txs, IngestTx::encode_row)
 }
 
 /// Expands one tx into the indexed streams written at ingest;
