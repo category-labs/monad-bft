@@ -300,6 +300,17 @@ impl<S: SwarmRelation> SimNode<S> {
                 } => {
                     self.router.send_outbound(now, target, message);
                 }
+                RouterCommand::AddEpochValidatorSet {
+                    epoch,
+                    epoch_start,
+                    validator_set,
+                } => {
+                    self.router
+                        .add_epoch_validator_set(epoch, epoch_start, validator_set);
+                }
+                RouterCommand::UpdateCurrentRound(epoch, round) => {
+                    self.router.update_current_round(epoch, round);
+                }
                 _ => {}
             }
         }
