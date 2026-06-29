@@ -13,7 +13,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_primitives::U256;
 use monad_query_types::traces::{selector_from_input, StoredTrace};
 
 use crate::{
@@ -23,7 +22,7 @@ use crate::{
         row_codec::{digest_block_rows, encode_block_rows, RowCodec},
     },
     error::Result,
-    ingest_types::{CallKind, IngestTrace},
+    ingest_types::IngestTrace,
     primitives::records::BlockBlobHeader,
 };
 
@@ -62,28 +61,9 @@ pub(crate) fn stream_entries_for_trace(trace: &IngestTrace) -> Vec<StreamKey> {
         entries.push(StreamKey::new(IndexKind::TopLevel, &[]));
     }
 
-    if is_transfer_frame(trace) {
+    if trace.is_transfer_frame() {
         entries.push(StreamKey::new(IndexKind::HasTransfer, &[]));
     }
 
     entries
-}
-
-/// THE definition of the `has_transfer` index bit: every trace frame this
-/// predicate accepts gets the bit at ingest, and the transfers view is
-/// exactly the frames carrying it (no read-side mirror exists). A frame
-/// transfers value iff the call kind moves value (DelegateCall/StaticCall
-/// never do), value > 0, the frame succeeded (`status == 0`), and the
-/// containing tx committed. Both status checks are required: the tracer
-/// does not rewrite descendant statuses when a parent reverts.
-pub fn is_transfer_frame(trace: &IngestTrace) -> bool {
-    let kind_moves_value = matches!(
-        trace.typ,
-        CallKind::Call
-            | CallKind::CallCode
-            | CallKind::Create
-            | CallKind::Create2
-            | CallKind::SelfDestruct
-    );
-    trace.value > U256::ZERO && kind_moves_value && trace.status == 0 && trace.tx_status
 }

@@ -15,10 +15,8 @@
 
 mod materialize;
 
-pub use monad_query_engine::txs::TxHashIndexTable;
 pub(crate) use materialize::{load_txs_by_positions, TxMaterializer};
 pub use materialize::{
     QueryTransactionsRequest, QueryTransactionsResponse, TxFilter, TxsRelations,
 };
-pub(crate) use monad_query_types::txs::TxLocation;
 pub use monad_query_types::txs::{StoredTxEnvelope, TxEntry};
