@@ -254,18 +254,120 @@ fn test_cookie_reply_on_init() {
     let init2 = collect::<HandshakeInitiation>(&mut peer1);
     dispatch(&mut peer2, &init2, peer1_addr);
 
-    // 3. peer2 sends cookie reply, peer1 receives and stores it
+    // 3. peer2 sends cookie reply, peer1 receives and caches it
     let cookie = collect::<CookieReply>(&mut peer2);
     dispatch(&mut peer1, &cookie, peer2_addr);
 
-    // 4. advance time past session timeout, tick triggers retry with stored cookie
+    // 4. advance time past session timeout, tick triggers retry with cached cookie
     context1.advance_time(session_timeout);
     peer1.tick();
 
-    // 5. peer1 sends init with valid mac2 (using stored cookie)
+    // 5. peer1 sends init with valid mac2 (using cached cookie)
     let init3 = collect::<HandshakeInitiation>(&mut peer1);
     dispatch(&mut peer2, &init3, peer1_addr);
     let _resp2 = collect::<HandshakeResponse>(&mut peer2);
+}
+
+#[test]
+fn test_connect_reuses_cookie_from_cache_after_disconnect() {
+    init_tracing();
+    let config = Config {
+        handshake_cookie_unverified_rate_limit: 10,
+        handshake_cookie_verified_rate_limit: 10,
+        low_watermark_sessions: 0,
+        ..Config::default()
+    };
+
+    let mut rng = rng();
+    let keypair1 = monad_secp::KeyPair::generate(&mut rng);
+    let context1 = TestContext::new();
+    let mut peer1 = API::new(DEFAULT_METRICS, config.clone(), keypair1, context1);
+
+    let keypair2 = monad_secp::KeyPair::generate(&mut rng);
+    let peer2_pubkey = keypair2.pubkey();
+    let context2 = TestContext::new();
+    let mut peer2 = API::new(DEFAULT_METRICS, config, keypair2, context2);
+
+    let peer1_addr: SocketAddr = "192.0.0.1:8001".parse().unwrap();
+    let peer2_addr: SocketAddr = "192.0.0.2:8002".parse().unwrap();
+
+    peer1
+        .connect(peer2_pubkey, peer2_addr, DEFAULT_RETRY_ATTEMPTS)
+        .unwrap();
+    let init = collect::<HandshakeInitiation>(&mut peer1);
+    dispatch(&mut peer2, &init, peer1_addr);
+
+    let cookie = collect::<CookieReply>(&mut peer2);
+    dispatch(&mut peer1, &cookie, peer2_addr);
+
+    peer1.disconnect(&peer2_pubkey);
+
+    peer1
+        .connect(peer2_pubkey, peer2_addr, DEFAULT_RETRY_ATTEMPTS)
+        .unwrap();
+    let init = collect::<HandshakeInitiation>(&mut peer1);
+    dispatch(&mut peer2, &init, peer1_addr);
+
+    let _response = collect::<HandshakeResponse>(&mut peer2);
+}
+
+#[test]
+fn test_handshake_response_reuses_cached_cookie_without_session_state() {
+    init_tracing();
+    let config = Config {
+        handshake_cookie_unverified_rate_limit: 10,
+        handshake_cookie_verified_rate_limit: 10,
+        low_watermark_sessions: 0,
+        ..Config::default()
+    };
+
+    let mut rng = rng();
+    let keypair1 = monad_secp::KeyPair::generate(&mut rng);
+    let peer1_pubkey = keypair1.pubkey();
+    let context1 = TestContext::new();
+    let mut peer1 = API::new(DEFAULT_METRICS, config.clone(), keypair1, context1);
+
+    let keypair2 = monad_secp::KeyPair::generate(&mut rng);
+    let peer2_pubkey = keypair2.pubkey();
+    let context2 = TestContext::new();
+    let mut peer2 = API::new(DEFAULT_METRICS, config, keypair2, context2);
+
+    let peer1_addr: SocketAddr = "192.0.0.1:8001".parse().unwrap();
+    let peer2_addr: SocketAddr = "192.0.0.2:8002".parse().unwrap();
+
+    peer1
+        .connect(peer2_pubkey, peer2_addr, DEFAULT_RETRY_ATTEMPTS)
+        .unwrap();
+    let init = collect::<HandshakeInitiation>(&mut peer1);
+    dispatch(&mut peer2, &init, peer1_addr);
+    let cookie = collect::<CookieReply>(&mut peer2);
+    dispatch(&mut peer1, &cookie, peer2_addr);
+    peer1.disconnect(&peer2_pubkey);
+
+    peer2
+        .connect(peer1_pubkey, peer1_addr, DEFAULT_RETRY_ATTEMPTS)
+        .unwrap();
+    let init = collect::<HandshakeInitiation>(&mut peer2);
+    dispatch(&mut peer1, &init, peer2_addr);
+    let cookie = collect::<CookieReply>(&mut peer1);
+    dispatch(&mut peer2, &cookie, peer1_addr);
+    peer2.disconnect(&peer1_pubkey);
+
+    peer1
+        .connect(peer2_pubkey, peer2_addr, DEFAULT_RETRY_ATTEMPTS)
+        .unwrap();
+    let init = collect::<HandshakeInitiation>(&mut peer1);
+    dispatch(&mut peer2, &init, peer1_addr);
+    let response = collect::<HandshakeResponse>(&mut peer2);
+    dispatch(&mut peer1, &response, peer2_addr);
+
+    let confirm = collect::<DataPacketHeader>(&mut peer1);
+    dispatch(&mut peer2, &confirm, peer1_addr);
+
+    let mut plaintext = b"cached response cookie".to_vec();
+    let packet = encrypt(&mut peer1, &peer2_pubkey, &mut plaintext);
+    let decrypted = decrypt(&mut peer2, &packet, peer1_addr);
+    assert_eq!(decrypted, b"cached response cookie");
 }
 
 #[test]
