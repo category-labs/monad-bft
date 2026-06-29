@@ -39,7 +39,7 @@ use crate::{
     error::{MonadChainDataError, Result},
     external::ExternalFamilyRegion,
     ingest_types::Hash32,
-    logs::{digest_block_logs, encode_block_logs, flatten_logs},
+    logs::{digest_block_logs, encode_block_logs},
     primitives::{
         records::{
             BlockBlobHeader, BlockRecord, FamilyWindowRecord, PrimaryId, ENCODING_EXTERNAL_V1,
@@ -48,7 +48,7 @@ use crate::{
     },
     store::{BlobStore, MetaStore},
     traces::{digest_block_traces, encode_block_traces},
-    txs::{collect_hash_locations, digest_block_txs, encode_block_txs, TxLocation},
+    txs::{digest_block_txs, encode_block_txs, TxLocation},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -452,7 +452,7 @@ fn maybe_prewarm<R: CodecResolver>(
 /// stays on the serial drain. `record.row_chain` is stamped there, not
 /// here.
 pub(crate) fn encode_pack_entry(b: &AssignedBlock, codecs: &Codecs) -> Result<PackEntry> {
-    let logs = flatten_logs(&b.block)?;
+    let logs = b.block.flatten_logs()?;
     let (mut log_header, log_blob, log_rows_digest) = encode_block_logs(&logs, &codecs.log)?;
     let (mut tx_header, tx_blob, tx_rows_digest) = encode_block_txs(&b.block.txs, &codecs.tx)?;
     let (mut trace_header, trace_blob, trace_rows_digest) =
@@ -485,7 +485,7 @@ pub(crate) fn encode_pack_entry(b: &AssignedBlock, codecs: &Codecs) -> Result<Pa
         trace_header,
         record,
         evm_header: b.block.header.clone(),
-        hash_locations: collect_hash_locations(&b.block)?,
+        hash_locations: b.block.tx_hash_locations()?,
         content_digest,
     })
 }
@@ -506,7 +506,7 @@ pub(crate) fn encode_external_pack_entry(b: &AssignedBlock) -> Result<PackEntry>
         ))?;
     spec.validate(b.number, &b.block)?;
 
-    let logs = flatten_logs(&b.block)?;
+    let logs = b.block.flatten_logs()?;
     let (record, content_digest) = block_record_and_digest(
         b,
         digest_block_logs(&logs),
@@ -521,7 +521,7 @@ pub(crate) fn encode_external_pack_entry(b: &AssignedBlock) -> Result<PackEntry>
         trace_header: external_header(&spec.traces),
         record,
         evm_header: b.block.header.clone(),
-        hash_locations: collect_hash_locations(&b.block)?,
+        hash_locations: b.block.tx_hash_locations()?,
         content_digest,
     })
 }

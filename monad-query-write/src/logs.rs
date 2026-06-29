@@ -22,35 +22,9 @@ use crate::{
         digest::ChainDigest,
         row_codec::{digest_block_rows, encode_block_rows, RowCodec},
     },
-    error::{MonadChainDataError, Result},
-    ingest_types::FinalizedBlock,
+    error::Result,
     primitives::records::BlockBlobHeader,
 };
-
-/// Flattens a block's per-tx log lists into block-ordered raw row entries.
-pub(crate) fn flatten_logs(block: &FinalizedBlock) -> Result<Vec<StoredLog>> {
-    let total_logs: usize = block.logs_by_tx.iter().map(|tx| tx.len()).sum();
-    let mut logs = Vec::with_capacity(total_logs);
-
-    for (tx_index, tx_logs) in block.logs_by_tx.iter().enumerate() {
-        let tx_index = u32::try_from(tx_index)
-            .map_err(|_| MonadChainDataError::Decode("tx index overflow"))?;
-
-        for log in tx_logs {
-            let log_index = u32::try_from(logs.len())
-                .map_err(|_| MonadChainDataError::Decode("log index overflow"))?;
-            logs.push(StoredLog {
-                tx_index,
-                log_index,
-                address: log.address,
-                topics: log.data.topics().to_vec(),
-                data: log.data.data.clone(),
-            });
-        }
-    }
-
-    Ok(logs)
-}
 
 /// Compresses a block's log rows into the framed per-family blob.
 pub(crate) fn encode_block_logs(
