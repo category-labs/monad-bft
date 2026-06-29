@@ -13,13 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{
-    future::Future,
-    net::SocketAddr,
-    pin::Pin,
-    task::{Context, Poll},
-    time::Instant,
-};
+use std::{net::SocketAddr, pin::Pin, time::Instant};
 
 use bytes::{Bytes, BytesMut};
 use monad_crypto::certificate_signature::PubKey;
@@ -29,10 +23,11 @@ use monad_peer_discovery::NameRecord;
 use monad_types::{NodeId, UdpPriority};
 use thiserror::Error;
 use tokio::time::Sleep;
-use tracing::{debug, trace, warn};
+use tracing::{debug, warn};
 use zerocopy::IntoBytes;
 
 use super::{
+    common::{encrypt_packet, AuthenticatedTimerFuture},
     framing::AuthPacketFramer,
     metrics::{
         init_socket_executor_metrics, GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_READ,
@@ -320,10 +315,8 @@ where
 
     pub async fn recv(&mut self) -> Result<AuthRecvMsg<AP::PublicKey>, AP::Error> {
         loop {
-            let timer = AuthenticatedTimerFuture {
-                auth_protocol: &mut self.auth_protocol,
-                auth_timer: &mut self.auth_timer,
-            };
+            let timer =
+                AuthenticatedTimerFuture::new(&mut self.auth_protocol, &mut self.auth_timer);
 
             tokio::select! {
                 () = timer => {
@@ -496,10 +489,7 @@ where
     }
 
     pub fn timer(&mut self) -> AuthenticatedTimerFuture<'_, AP> {
-        AuthenticatedTimerFuture {
-            auth_protocol: &mut self.auth_protocol,
-            auth_timer: &mut self.auth_timer,
-        }
+        AuthenticatedTimerFuture::new(&mut self.auth_protocol, &mut self.auth_timer)
     }
 
     pub fn metrics(&self) -> ExecutorMetricsChain<'_> {
@@ -511,25 +501,7 @@ where
         addr: SocketAddr,
         plaintext: Bytes,
     ) -> Option<(SocketAddr, Bytes)> {
-        let header_size = AP::HEADER_SIZE as usize;
-        let mut packet = BytesMut::with_capacity(header_size + plaintext.len());
-        packet.resize(header_size, 0);
-        packet.extend_from_slice(&plaintext);
-
-        match self
-            .auth_protocol
-            .encrypt_by_socket(&addr, &mut packet[header_size..])
-        {
-            Ok(header) => {
-                let header_bytes = header.as_bytes();
-                packet[..header_size].copy_from_slice(header_bytes);
-                Some((addr, packet.freeze()))
-            }
-            Err(err) => {
-                warn!(addr=?addr, error=?err, "failed to encrypt message");
-                None
-            }
-        }
+        encrypt_packet(&mut self.auth_protocol, &addr, plaintext)
     }
 
     fn encrypt_packet_by_public_key(
@@ -718,59 +690,6 @@ where
     }
 }
 
-pub struct AuthenticatedTimerFuture<'a, AP: AuthenticationProtocol> {
-    auth_protocol: &'a mut AP,
-    auth_timer: &'a mut Option<(Pin<Box<Sleep>>, Instant)>,
-}
-
-impl<AP: AuthenticationProtocol> Future for AuthenticatedTimerFuture<'_, AP> {
-    type Output = ();
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        trace!("polling wireauth timer");
-
-        loop {
-            let Some(deadline) = self.auth_protocol.next_deadline() else {
-                return Poll::Pending;
-            };
-
-            let now = Instant::now();
-            if deadline <= now {
-                if let Some(d) = now.checked_duration_since(deadline) {
-                    if d > std::time::Duration::from_millis(100) {
-                        warn!(delta_ms = d.as_millis(), "slow polling wireauth timer");
-                    }
-                }
-
-                self.auth_protocol.tick();
-                return Poll::Ready(());
-            }
-
-            // wireauth internal timers are expected to be updated
-            // for example initially session with have long timer set to session_timeout
-            // after fully establishing session, keapalive_interval will be set to a shorter duration
-            let should_update_timer = self
-                .auth_timer
-                .as_ref()
-                .is_none_or(|(_, stored_deadline)| deadline < *stored_deadline);
-            if should_update_timer {
-                *self.auth_timer = Some((
-                    Box::pin(tokio::time::sleep_until(deadline.into())),
-                    deadline,
-                ));
-            }
-
-            match self.auth_timer.as_mut() {
-                Some((sleep, _)) => match sleep.as_mut().poll(cx) {
-                    Poll::Ready(()) => *self.auth_timer = None,
-                    Poll::Pending => return Poll::Pending,
-                },
-                None => return Poll::Pending,
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::{
@@ -797,7 +716,7 @@ mod tests {
     };
     use crate::auth::{
         framing::AuthPacketFramer,
-        metrics::GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_WRITTEN,
+        metrics::{GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_WRITTEN, UDP_METRICS},
         protocol::{NoopAuthProtocol, WireAuthProtocol},
     };
 
@@ -856,6 +775,7 @@ mod tests {
                 .with_udp_sockets(udp_sockets)
                 .build();
 
+            assert!(dp.block_until_ready(Duration::from_secs(1)));
             let tcp_socket = dp
                 .tcp_sockets
                 .take(monad_dataplane::TcpSocketId::Raptorcast)
@@ -877,11 +797,7 @@ mod tests {
             let keypair = keypair(seed);
             let public_key = keypair.pubkey();
             let config = Config::default();
-            let auth_protocol = WireAuthProtocol::new(
-                &crate::auth::metrics::UDP_METRICS,
-                config,
-                Arc::new(keypair),
-            );
+            let auth_protocol = WireAuthProtocol::new(&UDP_METRICS, config, Arc::new(keypair));
             let authenticated_handle =
                 AuthenticatedSocketHandle::new(authenticated_socket, auth_protocol);
             let socket = DualSocketHandle::new(authenticated_handle, non_authenticated_socket);
@@ -1028,6 +944,7 @@ mod tests {
             None,
             bob_auth_addr.port(),
             None,
+            None,
             1,
         );
         let payload = Bytes::from_static(b"authenticated path");
@@ -1072,6 +989,7 @@ mod tests {
             None,
             bob_auth_addr.port(),
             None,
+            None,
             1,
         );
 
@@ -1100,15 +1018,17 @@ mod tests {
     async fn test_timer_deadline() {
         init_tracing();
 
-        let bind_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let zero_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0));
 
         let mut dp = DataplaneBuilder::new(1000)
+            .with_tcp_sockets([(monad_dataplane::TcpSocketId::Raptorcast, zero_addr)])
             .with_udp_sockets([(
                 monad_dataplane::UdpSocketId::AuthenticatedRaptorcast,
-                bind_addr,
+                zero_addr,
             )])
             .build();
 
+        assert!(dp.block_until_ready(Duration::from_secs(1)));
         let authenticated_socket = dp
             .udp_sockets
             .take(monad_dataplane::UdpSocketId::AuthenticatedRaptorcast)
@@ -1122,11 +1042,7 @@ mod tests {
             ..Default::default()
         };
 
-        let auth_protocol = WireAuthProtocol::new(
-            &crate::auth::metrics::UDP_METRICS,
-            config,
-            Arc::new(local_keypair),
-        );
+        let auth_protocol = WireAuthProtocol::new(&UDP_METRICS, config, Arc::new(local_keypair));
         let mut handle = AuthenticatedSocketHandle::new(authenticated_socket, auth_protocol);
 
         assert_eq!(poll!(pin!(handle.timer())), Poll::Pending);
@@ -1136,9 +1052,8 @@ mod tests {
         assert_eq!(poll!(pin!(handle.timer())), Poll::Ready(()));
         assert_eq!(poll!(pin!(handle.timer())), Poll::Pending);
 
-        // this ensures that timer is updated with a shorter deadline
         let remote_keypair = keypair(2);
-        let remote_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 19004));
+        let remote_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 19999));
         handle
             .connect(&remote_keypair.pubkey(), remote_addr, 1)
             .expect("connect failed");
