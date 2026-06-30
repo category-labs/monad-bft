@@ -27,12 +27,14 @@ use crate::{
     data::{eth_call_handler::EthCallHandler, DataProvider},
     event::EventServerClient,
     middleware::Metrics,
+    preconfirmation::NamespacePreconfirmationService,
     txpool::EthTxPoolBridgeClient,
 };
 
 #[derive(Clone)]
 pub struct MonadRpcResources {
     pub txpool_bridge_client: Option<EthTxPoolBridgeClient>,
+    pub namespace_preconfirmation_service: Option<NamespacePreconfirmationService>,
     pub eth_call_handler: Option<EthCallHandler>,
     pub base_chain_id: u64,
     pub chain_id: u64,
@@ -58,6 +60,7 @@ impl MonadRpcResources {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         txpool_bridge_client: Option<EthTxPoolBridgeClient>,
+        namespace_preconfirmation_service: Option<NamespacePreconfirmationService>,
         eth_call_handler: Option<EthCallHandler>,
         chain_id: u64,
         data_provider: Option<DataProvider<TriedbEnv>>,
@@ -78,6 +81,7 @@ impl MonadRpcResources {
     ) -> Self {
         Self {
             txpool_bridge_client,
+            namespace_preconfirmation_service,
             eth_call_handler,
             base_chain_id: chain_id,
             chain_id,

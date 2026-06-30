@@ -30,6 +30,7 @@ use tracing::{debug, error, trace, warn};
 use crate::{
     data::DataProvider,
     event::{EventServerClient, EventServerEvent},
+    preconfirmation::{NamespacePreconfirmation, NamespacePreconfirmationService},
     txpool::{EthTxPoolBridgeClient, TxStatus},
     types::{
         eth_json::{
@@ -124,14 +125,15 @@ pub struct MonadSendRawTransactionBatchParams {
 // TODO: need to support EIP-4844 transactions
 #[rpc(
     method = "eth_sendRawTransaction",
-    ignore = "tx_pool,ipc,base_chain_id,route_chain_id,route_namespace,allow_unprotected_txs"
+    ignore = "tx_pool,ipc,txpool_bridge_client,namespace_preconfirmation_service,base_chain_id,route_chain_id,route_namespace,allow_unprotected_txs"
 )]
 #[allow(non_snake_case)]
 #[tracing::instrument(level = "debug", skip_all)]
 /// Submits a raw transaction. For EIP-4844 transactions, the raw form must be the network form.
 /// This means it includes the blobs, KZG commitments, and KZG proofs.
 pub async fn monad_eth_sendRawTransaction(
-    txpool_bridge_client: &EthTxPoolBridgeClient,
+    txpool_bridge_client: Option<&EthTxPoolBridgeClient>,
+    namespace_preconfirmation_service: Option<&NamespacePreconfirmationService>,
     params: MonadEthSendRawTransactionParams,
     base_chain_id: u64,
     route_chain_id: u64,
@@ -151,9 +153,76 @@ pub async fn monad_eth_sendRawTransaction(
 
     let tx_hash = *tx.tx_hash();
     debug!(name = "sendRawTransaction", txn_hash = ?tx_hash);
+
+    if let (Some(namespace_preconfirmation_service), Some(route_namespace)) =
+        (namespace_preconfirmation_service, route_namespace)
+    {
+        namespace_preconfirmation_service
+            .submit(tx, base_chain_id, route_chain_id, route_namespace)
+            .await?;
+        return Ok(tx_hash.to_string());
+    }
+
+    let txpool_bridge_client = txpool_bridge_client.ok_or_else(JsonRpcError::method_not_supported)?;
     submit_to_txpool(txpool_bridge_client, tx).await?;
 
     Ok(tx_hash.to_string())
+}
+
+#[rpc(
+    method = "monad_sendRawTransactionPreconfirmed",
+    ignore = "namespace_preconfirmation_service,base_chain_id,route_chain_id,route_namespace,allow_unprotected_txs"
+)]
+#[allow(non_snake_case)]
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn monad_sendRawTransactionPreconfirmed(
+    namespace_preconfirmation_service: &NamespacePreconfirmationService,
+    params: MonadEthSendRawTransactionParams,
+    base_chain_id: u64,
+    route_chain_id: u64,
+    route_namespace: Option<Address>,
+    allow_unprotected_txs: bool,
+) -> JsonRpcResult<NamespacePreconfirmation> {
+    trace!("monad_sendRawTransactionPreconfirmed: {params:?}");
+
+    let route_namespace = route_namespace.ok_or_else(|| {
+        JsonRpcError::custom(
+            "namespace preconfirmation requires a namespace RPC route".to_string(),
+        )
+    })?;
+
+    let tx = validate_and_decode_tx(
+        &params.hex_tx.0,
+        base_chain_id,
+        route_chain_id,
+        Some(route_namespace),
+        allow_unprotected_txs,
+        JsonRpcError::txn_decode_error,
+    )?;
+
+    namespace_preconfirmation_service
+        .submit(tx, base_chain_id, route_chain_id, route_namespace)
+        .await
+}
+
+#[derive(Deserialize, Debug, schemars::JsonSchema)]
+pub struct MonadGetTransactionPreconfirmationParams {
+    tx_hash: EthHash,
+}
+
+#[rpc(
+    method = "monad_getTransactionPreconfirmation",
+    ignore = "namespace_preconfirmation_service"
+)]
+#[allow(non_snake_case)]
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn monad_getTransactionPreconfirmation(
+    namespace_preconfirmation_service: &NamespacePreconfirmationService,
+    params: MonadGetTransactionPreconfirmationParams,
+) -> JsonRpcResult<Option<NamespacePreconfirmation>> {
+    trace!("monad_getTransactionPreconfirmation: {params:?}");
+
+    Ok(namespace_preconfirmation_service.get(&FixedBytes(params.tx_hash.0)))
 }
 
 #[rpc(
@@ -612,22 +681,28 @@ pub async fn monad_eth_getTransactionByBlockNumberAndIndex<T: Triedb>(
 
 #[cfg(test)]
 mod tests {
-    use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope};
+    use alloy_consensus::{SignableTransaction, Transaction as _, TxEip1559, TxEnvelope};
     use alloy_eips::eip2718::Encodable2718;
-    use alloy_primitives::{Address, FixedBytes, TxKind};
+    use alloy_primitives::{Address, FixedBytes, Signature, TxKind};
     use alloy_rlp::Encodable;
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
-    use monad_eth_types::EthAccount;
+    use monad_eth_testutil::{make_namespaced_legacy_tx, make_representable_namespace};
+    use monad_eth_types::{chain_id_for_namespace, EthAccount};
     use monad_event_ring::SnapshotEventRing;
     use monad_triedb_utils::mock_triedb::MockTriedb;
+    use std::time::Duration;
 
     use super::{
         monad_eth_sendRawTransaction, monad_eth_sendRawTransactionSync,
-        MonadEthSendRawTransactionParams, MonadEthSendRawTransactionSyncParams,
+        monad_sendRawTransactionPreconfirmed, MonadEthSendRawTransactionParams,
+        MonadEthSendRawTransactionSyncParams,
     };
     use crate::{
-        event::EventServer, txpool::EthTxPoolBridgeClient, types::eth_json::UnformattedData,
+        event::EventServer,
+        preconfirmation::NamespacePreconfirmationService,
+        txpool::EthTxPoolBridgeClient,
+        types::eth_json::UnformattedData,
     };
 
     fn serialize_tx(tx: impl Encodable + Encodable2718) -> UnformattedData {
@@ -698,7 +773,8 @@ mod tests {
         for (idx, case) in expected_failures.into_iter().enumerate() {
             assert!(
                 monad_eth_sendRawTransaction(
-                    &EthTxPoolBridgeClient::for_testing(),
+                    Some(&EthTxPoolBridgeClient::for_testing()),
+                    None,
                     case,
                     1,
                     1,
@@ -781,6 +857,199 @@ mod tests {
                 "Expected error for case: {:?}",
                 idx + 1
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn send_raw_transaction_preconfirmed_returns_signed_object() {
+        let operator = PrivateKeySigner::from_bytes(&FixedBytes::repeat_byte(0x44)).unwrap();
+        let service = NamespacePreconfirmationService::for_testing(
+            operator.clone(),
+            8,
+            8,
+            Duration::from_secs(60),
+        );
+        let namespace = make_representable_namespace(1);
+        let route_chain_id = chain_id_for_namespace(namespace, 1337).unwrap();
+        let tx = make_namespaced_legacy_tx(
+            namespace,
+            FixedBytes::repeat_byte(0x11),
+            1_000,
+            21_000,
+            0,
+            0,
+        );
+        let tx_hash = *tx.tx_hash();
+
+        let preconfirmation = monad_sendRawTransactionPreconfirmed(
+            &service,
+            MonadEthSendRawTransactionParams {
+                hex_tx: serialize_tx(tx),
+            },
+            1337,
+            route_chain_id,
+            Some(namespace),
+            true,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(preconfirmation.tx_hash.to_string(), tx_hash.to_string());
+        assert_eq!(preconfirmation.operator.to_string(), operator.address().to_string());
+        assert_eq!(
+            service.get(&tx_hash).unwrap().preconfirmation_id,
+            preconfirmation.preconfirmation_id
+        );
+
+        let signature = preconfirmation.signature.parse::<Signature>().unwrap();
+        assert_eq!(
+            signature
+                .recover_address_from_msg(preconfirmation.message.as_bytes())
+                .unwrap(),
+            operator.address()
+        );
+    }
+
+    #[tokio::test]
+    async fn eth_send_raw_transaction_preconfirmation_mode_returns_hash_only() {
+        let operator = PrivateKeySigner::from_bytes(&FixedBytes::repeat_byte(0x44)).unwrap();
+        let service =
+            NamespacePreconfirmationService::for_testing(operator, 8, 8, Duration::from_secs(60));
+        let namespace = make_representable_namespace(1);
+        let route_chain_id = chain_id_for_namespace(namespace, 1337).unwrap();
+        let tx = make_namespaced_legacy_tx(
+            namespace,
+            FixedBytes::repeat_byte(0x11),
+            1_000,
+            21_000,
+            0,
+            0,
+        );
+        let tx_hash = *tx.tx_hash();
+
+        let result = monad_eth_sendRawTransaction(
+            None,
+            Some(&service),
+            MonadEthSendRawTransactionParams {
+                hex_tx: serialize_tx(tx),
+            },
+            1337,
+            route_chain_id,
+            Some(namespace),
+            true,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result, tx_hash.to_string());
+        assert!(service.get(&tx_hash).is_some());
+    }
+
+    #[tokio::test]
+    async fn preconfirmation_rejects_wrong_namespace_route() {
+        let operator = PrivateKeySigner::from_bytes(&FixedBytes::repeat_byte(0x44)).unwrap();
+        let service =
+            NamespacePreconfirmationService::for_testing(operator, 8, 8, Duration::from_secs(60));
+        let tx_namespace = make_representable_namespace(1);
+        let route_namespace = make_representable_namespace(2);
+        let route_chain_id = chain_id_for_namespace(route_namespace, 1337).unwrap();
+        let tx = make_namespaced_legacy_tx(
+            tx_namespace,
+            FixedBytes::repeat_byte(0x11),
+            1_000,
+            21_000,
+            0,
+            0,
+        );
+
+        assert!(monad_sendRawTransactionPreconfirmed(
+            &service,
+            MonadEthSendRawTransactionParams {
+                hex_tx: serialize_tx(tx),
+            },
+            1337,
+            route_chain_id,
+            Some(route_namespace),
+            true,
+        )
+        .await
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn get_preconfirmation_returns_null_after_ttl() {
+        let operator = PrivateKeySigner::from_bytes(&FixedBytes::repeat_byte(0x44)).unwrap();
+        let service =
+            NamespacePreconfirmationService::for_testing(operator, 8, 8, Duration::from_millis(1));
+        let namespace = make_representable_namespace(1);
+        let route_chain_id = chain_id_for_namespace(namespace, 1337).unwrap();
+        let tx = make_namespaced_legacy_tx(
+            namespace,
+            FixedBytes::repeat_byte(0x11),
+            1_000,
+            21_000,
+            0,
+            0,
+        );
+        let tx_hash = *tx.tx_hash();
+
+        monad_sendRawTransactionPreconfirmed(
+            &service,
+            MonadEthSendRawTransactionParams {
+                hex_tx: serialize_tx(tx),
+            },
+            1337,
+            route_chain_id,
+            Some(namespace),
+            true,
+        )
+        .await
+        .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(2)).await;
+
+        assert!(service.get(&tx_hash).is_none());
+    }
+
+    #[tokio::test]
+    async fn preconfirmation_returns_overloaded_when_queue_full() {
+        let operator = PrivateKeySigner::from_bytes(&FixedBytes::repeat_byte(0x44)).unwrap();
+        let service = NamespacePreconfirmationService::for_testing(
+            operator,
+            1,
+            100,
+            Duration::from_secs(60),
+        );
+        let namespace = make_representable_namespace(1);
+        let route_chain_id = chain_id_for_namespace(namespace, 1337).unwrap();
+
+        for nonce in 0..2 {
+            let tx = make_namespaced_legacy_tx(
+                namespace,
+                FixedBytes::repeat_byte(0x11),
+                1_000,
+                21_000,
+                nonce,
+                0,
+            );
+
+            let result = monad_sendRawTransactionPreconfirmed(
+                &service,
+                MonadEthSendRawTransactionParams {
+                    hex_tx: serialize_tx(tx),
+                },
+                1337,
+                route_chain_id,
+                Some(namespace),
+                true,
+            )
+            .await;
+
+            if nonce == 0 {
+                assert!(result.is_ok());
+            } else {
+                assert!(result.is_err());
+            }
         }
     }
 }

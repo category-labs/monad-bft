@@ -49,6 +49,8 @@ use self::{
             monad_eth_getTransactionByBlockNumberAndIndex, monad_eth_getTransactionByHash,
             monad_eth_getTransactionReceipt, monad_eth_sendRawTransaction,
             monad_eth_sendRawTransactionSync,
+            monad_getTransactionPreconfirmation as monad_getTransactionPreconfirmation_impl,
+            monad_sendRawTransactionPreconfirmed as monad_sendRawTransactionPreconfirmed_impl,
             monad_sendRawTransactionBatch as monad_sendRawTransactionBatch_impl,
         },
     },
@@ -523,13 +525,17 @@ async fn eth_sendRawTransaction(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let txpool_bridge_client = app_state
-        .txpool_bridge_client
-        .as_ref()
-        .method_not_supported()?;
+    let txpool_bridge_client = app_state.txpool_bridge_client.as_ref();
+    if txpool_bridge_client.is_none()
+        && !(app_state.namespace_preconfirmation_service.is_some() && app_state.namespace.is_some())
+    {
+        return Err(JsonRpcError::method_not_supported());
+    }
+
     let params = serde_json::from_str(params.get()).invalid_params()?;
     monad_eth_sendRawTransaction(
         txpool_bridge_client,
+        app_state.namespace_preconfirmation_service.as_ref(),
         params,
         app_state.base_chain_id,
         app_state.chain_id,
@@ -538,6 +544,45 @@ async fn eth_sendRawTransaction(
     )
     .await
     .map(serialize_result)?
+}
+
+#[allow(non_snake_case)]
+async fn monad_sendRawTransactionPreconfirmed(
+    _: TimingRequestId,
+    app_state: &MonadRpcResources,
+    params: RequestParams<'_>,
+) -> Result<Box<RawValue>, JsonRpcError> {
+    let namespace_preconfirmation_service = app_state
+        .namespace_preconfirmation_service
+        .as_ref()
+        .method_not_supported()?;
+    let params = serde_json::from_str(params.get()).invalid_params()?;
+    monad_sendRawTransactionPreconfirmed_impl(
+        namespace_preconfirmation_service,
+        params,
+        app_state.base_chain_id,
+        app_state.chain_id,
+        app_state.namespace,
+        app_state.allow_unprotected_txs,
+    )
+    .await
+    .map(serialize_result)?
+}
+
+#[allow(non_snake_case)]
+async fn monad_getTransactionPreconfirmation(
+    _: TimingRequestId,
+    app_state: &MonadRpcResources,
+    params: RequestParams<'_>,
+) -> Result<Box<RawValue>, JsonRpcError> {
+    let namespace_preconfirmation_service = app_state
+        .namespace_preconfirmation_service
+        .as_ref()
+        .method_not_supported()?;
+    let params = serde_json::from_str(params.get()).invalid_params()?;
+    monad_getTransactionPreconfirmation_impl(namespace_preconfirmation_service, params)
+        .await
+        .map(serialize_result)?
 }
 
 #[allow(non_snake_case)]
@@ -1046,6 +1091,8 @@ enabled_methods!(
     eth_simulateV1,
     eth_sendRawTransaction,
     eth_sendRawTransactionSync,
+    monad_sendRawTransactionPreconfirmed,
+    monad_getTransactionPreconfirmation,
     monad_sendRawTransactionBatch,
     eth_createAccessList,
     eth_getLogs,

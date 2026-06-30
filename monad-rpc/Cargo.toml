@@ -49,6 +49,8 @@ alloy-eips = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 alloy-rpc-types = { workspace = true, features = ["eth"] }
+alloy-signer = { workspace = true }
+alloy-signer-local = { workspace = true }
 async-stream = { workspace = true }
 async-trait = { workspace = true }
 auto_impl = { workspace = true }
@@ -97,8 +99,6 @@ actix-test = { workspace = true }
 alloy-consensus = { workspace = true, features = ["arbitrary", "k256"] }
 alloy-rpc-client = { workspace = true }
 alloy-rpc-types = { workspace = true, features = ["arbitrary", "k256"] }
-alloy-signer = { workspace = true }
-alloy-signer-local = { workspace = true }
 arbitrary = { workspace = true }
 awc = { workspace = true }
 criterion = { workspace = true }
