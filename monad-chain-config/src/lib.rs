@@ -203,7 +203,7 @@ const MONAD_TESTNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     v_0_8_0_activation: Round::MIN,
     v_0_10_0_activation: Round::MIN,
     v_0_11_0_activation: Round::MIN,
-    v_0_12_0_activation: Round::MAX,
+    v_0_12_0_activation: Round(43_821_000),
 
     staking_config: MONAD_TESTNET_STAKING_CONFIG,
 

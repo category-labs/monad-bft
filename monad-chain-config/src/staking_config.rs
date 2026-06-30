@@ -95,7 +95,10 @@ pub const MONAD_TESTNET_STAKING_CONFIG: MonadStakingConfig = MonadStakingConfig 
         block_reward_activation: BlockRewardActivation::Epoch(Epoch(3)),
         block_reward_mon: 25,
     },
-    block_reward_v_two: BlockRewardConfig::unused(),
+    block_reward_v_two: BlockRewardConfig {
+        block_reward_activation: BlockRewardActivation::Round(Round(43_821_000)),
+        block_reward_mon: 18,
+    },
 };
 
 pub const MONAD_MAINNET_STAKING_CONFIG: MonadStakingConfig = MonadStakingConfig {
