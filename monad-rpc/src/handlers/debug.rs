@@ -213,6 +213,22 @@ struct CallFrame {
     logs: Option<Vec<CallFrameLog>>,
 }
 
+struct ReceiptLogFrame {
+    depth: usize,
+    logs: Vec<CallFrameLog>,
+    calls: Vec<Rc<RefCell<ReceiptLogFrame>>>,
+}
+
+impl From<CallFrame> for ReceiptLogFrame {
+    fn from(frame: CallFrame) -> Self {
+        Self {
+            depth: frame.depth.to(),
+            logs: frame.logs.unwrap_or_default(),
+            calls: Vec::new(),
+        }
+    }
+}
+
 impl Decodable for CallFrame {
     fn decode(rlp_buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let typ: U8 = U8::decode(rlp_buf)?;
@@ -270,6 +286,96 @@ impl Decodable for CallFrame {
             depth,
             logs,
         })
+    }
+}
+
+pub(crate) fn decode_receipt_logs_from_call_trace(
+    rlp_call_frame: &mut &[u8],
+) -> JsonRpcResult<Vec<Log>> {
+    let mut call_frames = Vec::<Vec<CallFrame>>::decode(rlp_call_frame)
+        .map_err(|e| JsonRpcError::custom(format!("Rlp Decode error: {e}")))?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+
+    for frame in call_frames.iter_mut() {
+        if frame.logs.is_none() {
+            if matches!(frame.typ, CallKind::SelfDestruct) {
+                frame.logs = Some(Vec::new());
+            } else {
+                return Err(JsonRpcError::internal_error(
+                    "logs not found in call frame".to_string(),
+                ));
+            }
+        }
+    }
+
+    let Some(root) = build_receipt_log_tree(call_frames)? else {
+        return Ok(Vec::new());
+    };
+
+    let mut logs = Vec::new();
+    collect_receipt_logs(&root, &mut logs);
+    Ok(logs)
+}
+
+fn build_receipt_log_tree(
+    nodes: Vec<CallFrame>,
+) -> JsonRpcResult<Option<Rc<RefCell<ReceiptLogFrame>>>> {
+    let mut nodes = nodes.into_iter();
+
+    let Some(root) = nodes.next() else {
+        return Ok(None);
+    };
+
+    let root = Rc::new(RefCell::new(ReceiptLogFrame::from(root)));
+    let mut stack = vec![Rc::clone(&root)];
+
+    for value in nodes {
+        let depth = value.depth.to::<usize>();
+        let new_node = Rc::new(RefCell::new(ReceiptLogFrame::from(value)));
+
+        loop {
+            let Some(mut last) = stack.last().map(|last| last.borrow_mut()) else {
+                error!("Call tree root node was removed from stack");
+
+                return Err(JsonRpcError::internal_error(
+                    "call tree inconsistent".to_string(),
+                ));
+            };
+
+            if last.depth < depth {
+                last.calls.push(Rc::clone(&new_node));
+                break;
+            }
+
+            drop(last);
+            stack.pop();
+        }
+
+        stack.push(new_node);
+    }
+
+    Ok(Some(root))
+}
+
+fn collect_receipt_logs(root: &Rc<RefCell<ReceiptLogFrame>>, out: &mut Vec<Log>) {
+    let mut stack: Vec<(Rc<RefCell<ReceiptLogFrame>>, usize)> = vec![(Rc::clone(root), 0)];
+
+    while let Some((node, position)) = stack.pop() {
+        {
+            let borrowed = node.borrow();
+            for log in borrowed.logs.iter() {
+                if log.position.to::<usize>() == position {
+                    out.push(log.log.clone());
+                }
+            }
+        }
+
+        if let Some(child) = node.borrow().calls.get(position) {
+            stack.push((Rc::clone(&node), position + 1));
+            stack.push((Rc::clone(child), 0));
+        }
     }
 }
 

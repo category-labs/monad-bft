@@ -17,10 +17,11 @@ use std::{pin::pin, time::Duration};
 
 use alloy_consensus::Transaction as _;
 use alloy_eips::Decodable2718;
-use alloy_primitives::{Address, FixedBytes};
-use alloy_rpc_types::Filter;
+use alloy_primitives::{Address, FixedBytes, TxHash};
+use alloy_rpc_types::{Filter, TransactionReceipt};
 use monad_exec_events::BlockCommitState;
 use monad_eth_types::{namespace_for_chain_id, EthTxEnvelope, NamespaceTransactionBatch};
+use monad_ethcall::EthCallExecutor;
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::Triedb;
 use schemars::JsonSchema;
@@ -28,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, error, trace, warn};
 
 use crate::{
-    data::DataProvider,
+    data::{eth_call_handler::EthCallHandlerConfig, DataProvider},
     event::{EventServerClient, EventServerEvent},
     preconfirmation::{NamespacePreconfirmation, NamespacePreconfirmationService},
     txpool::{EthTxPoolBridgeClient, TxStatus},
@@ -125,15 +126,14 @@ pub struct MonadSendRawTransactionBatchParams {
 // TODO: need to support EIP-4844 transactions
 #[rpc(
     method = "eth_sendRawTransaction",
-    ignore = "tx_pool,ipc,txpool_bridge_client,namespace_preconfirmation_service,base_chain_id,route_chain_id,route_namespace,allow_unprotected_txs"
+    ignore = "tx_pool,ipc,txpool_bridge_client,base_chain_id,route_chain_id,route_namespace,allow_unprotected_txs"
 )]
 #[allow(non_snake_case)]
 #[tracing::instrument(level = "debug", skip_all)]
 /// Submits a raw transaction. For EIP-4844 transactions, the raw form must be the network form.
 /// This means it includes the blobs, KZG commitments, and KZG proofs.
 pub async fn monad_eth_sendRawTransaction(
-    txpool_bridge_client: Option<&EthTxPoolBridgeClient>,
-    namespace_preconfirmation_service: Option<&NamespacePreconfirmationService>,
+    txpool_bridge_client: &EthTxPoolBridgeClient,
     params: MonadEthSendRawTransactionParams,
     base_chain_id: u64,
     route_chain_id: u64,
@@ -154,16 +154,6 @@ pub async fn monad_eth_sendRawTransaction(
     let tx_hash = *tx.tx_hash();
     debug!(name = "sendRawTransaction", txn_hash = ?tx_hash);
 
-    if let (Some(namespace_preconfirmation_service), Some(route_namespace)) =
-        (namespace_preconfirmation_service, route_namespace)
-    {
-        namespace_preconfirmation_service
-            .submit(tx, base_chain_id, route_chain_id, route_namespace)
-            .await?;
-        return Ok(tx_hash.to_string());
-    }
-
-    let txpool_bridge_client = txpool_bridge_client.ok_or_else(JsonRpcError::method_not_supported)?;
     submit_to_txpool(txpool_bridge_client, tx).await?;
 
     Ok(tx_hash.to_string())
@@ -186,9 +176,7 @@ pub async fn monad_sendRawTransactionPreconfirmed(
     trace!("monad_sendRawTransactionPreconfirmed: {params:?}");
 
     let route_namespace = route_namespace.ok_or_else(|| {
-        JsonRpcError::custom(
-            "namespace preconfirmation requires a namespace RPC route".to_string(),
-        )
+        JsonRpcError::custom("namespace preconfirmation requires a namespace RPC route".to_string())
     })?;
 
     let tx = validate_and_decode_tx(
@@ -223,6 +211,96 @@ pub async fn monad_getTransactionPreconfirmation(
     trace!("monad_getTransactionPreconfirmation: {params:?}");
 
     Ok(namespace_preconfirmation_service.get(&FixedBytes(params.tx_hash.0)))
+}
+
+#[rpc(
+    method = "monad_sendRawTransactionPreconfirmedSync",
+    ignore = "namespace_preconfirmation_service,data_provider,eth_call_handler_config,eth_call_executor,base_chain_id,route_chain_id,route_namespace,allow_unprotected_txs,eth_send_raw_transaction_sync_default_timeout_ms,eth_send_raw_transaction_sync_max_timeout_ms"
+)]
+#[allow(non_snake_case)]
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn monad_sendRawTransactionPreconfirmedSync<T: Triedb>(
+    namespace_preconfirmation_service: &NamespacePreconfirmationService,
+    data_provider: &DataProvider<T>,
+    _eth_call_handler_config: &EthCallHandlerConfig,
+    eth_call_executor: &EthCallExecutor,
+    params: MonadEthSendRawTransactionSyncParams,
+    base_chain_id: u64,
+    route_chain_id: u64,
+    route_namespace: Option<Address>,
+    allow_unprotected_txs: bool,
+    eth_send_raw_transaction_sync_default_timeout_ms: u64,
+    eth_send_raw_transaction_sync_max_timeout_ms: u64,
+) -> JsonRpcResult<MonadTransactionReceipt> {
+    trace!("monad_sendRawTransactionPreconfirmedSync: {params:?}");
+
+    let route_namespace = route_namespace.ok_or_else(|| {
+        JsonRpcError::custom("namespace preconfirmation requires a namespace RPC route".to_string())
+    })?;
+    let timeout_ms = params
+        .timeout_ms
+        .filter(|&t| t > 0 && t <= eth_send_raw_transaction_sync_max_timeout_ms)
+        .unwrap_or(eth_send_raw_transaction_sync_default_timeout_ms);
+
+    let tx = validate_and_decode_tx(
+        &params.hex_tx.0,
+        base_chain_id,
+        route_chain_id,
+        Some(route_namespace),
+        allow_unprotected_txs,
+        JsonRpcError::tx_sync_unready,
+    )?;
+
+    let tx_hash = *tx.tx_hash();
+    namespace_preconfirmation_service
+        .submit(tx, base_chain_id, route_chain_id, route_namespace)
+        .await?;
+
+    let receipt = poll_for_preconfirmed_receipt(
+        namespace_preconfirmation_service,
+        data_provider,
+        eth_call_executor,
+        base_chain_id,
+        route_namespace,
+        tx_hash,
+        timeout_ms,
+    )
+    .await?;
+
+    Ok(MonadTransactionReceipt(receipt))
+}
+
+#[rpc(
+    method = "monad_getTransactionPreconfirmationReceipt",
+    ignore = "namespace_preconfirmation_service,data_provider,eth_call_handler_config,eth_call_executor,base_chain_id,route_namespace"
+)]
+#[allow(non_snake_case)]
+#[tracing::instrument(level = "debug", skip_all)]
+pub async fn monad_getTransactionPreconfirmationReceipt<T: Triedb>(
+    namespace_preconfirmation_service: &NamespacePreconfirmationService,
+    data_provider: &DataProvider<T>,
+    _eth_call_handler_config: &EthCallHandlerConfig,
+    eth_call_executor: &EthCallExecutor,
+    base_chain_id: u64,
+    route_namespace: Option<Address>,
+    params: MonadGetTransactionPreconfirmationParams,
+) -> JsonRpcResult<Option<MonadTransactionReceipt>> {
+    trace!("monad_getTransactionPreconfirmationReceipt: {params:?}");
+
+    let route_namespace = route_namespace.ok_or_else(|| {
+        JsonRpcError::custom("namespace preconfirmation requires a namespace RPC route".to_string())
+    })?;
+    let tx_hash = FixedBytes(params.tx_hash.0);
+    namespace_preconfirmation_service
+        .simulate_receipt_until(
+            data_provider,
+            eth_call_executor,
+            base_chain_id,
+            route_namespace,
+            tx_hash,
+        )
+        .await
+        .map(|receipt| receipt.map(MonadTransactionReceipt))
 }
 
 #[rpc(
@@ -502,6 +580,47 @@ pub struct MonadEthSendRawTransactionSyncParams {
     timeout_ms: Option<u64>,
 }
 
+/// Poll interval in milliseconds for checking receipt availability
+const RECEIPT_POLL_INTERVAL_MS: u64 = 100;
+
+async fn poll_for_preconfirmed_receipt<T: Triedb>(
+    namespace_preconfirmation_service: &NamespacePreconfirmationService,
+    data_provider: &DataProvider<T>,
+    eth_call_executor: &EthCallExecutor,
+    base_chain_id: u64,
+    route_namespace: Address,
+    tx_hash: TxHash,
+    timeout_ms: u64,
+) -> Result<TransactionReceipt, JsonRpcError> {
+    let start_time = tokio::time::Instant::now();
+    let timeout = Duration::from_millis(timeout_ms);
+    let poll_interval = Duration::from_millis(RECEIPT_POLL_INTERVAL_MS);
+
+    loop {
+        if let Some(receipt) = namespace_preconfirmation_service
+            .simulate_receipt_until(
+                data_provider,
+                eth_call_executor,
+                base_chain_id,
+                route_namespace,
+                tx_hash,
+            )
+            .await?
+        {
+            return Ok(receipt);
+        }
+
+        if start_time.elapsed() >= timeout {
+            return Err(JsonRpcError::tx_sync_timeout(
+                tx_hash.to_string(),
+                timeout_ms,
+            ));
+        }
+
+        tokio::time::sleep(poll_interval).await;
+    }
+}
+
 #[rpc(
     method = "eth_sendRawTransactionSync",
     ignore = "txpool_bridge_client,event_server_client,base_chain_id,route_chain_id,route_namespace,allow_unprotected_txs,eth_send_raw_transaction_sync_default_timeout_ms,eth_send_raw_transaction_sync_max_timeout_ms"
@@ -702,7 +821,7 @@ mod tests {
         event::EventServer,
         preconfirmation::NamespacePreconfirmationService,
         txpool::EthTxPoolBridgeClient,
-        types::eth_json::UnformattedData,
+        types::{eth_json::UnformattedData, jsonrpc::JsonRpcError},
     };
 
     fn serialize_tx(tx: impl Encodable + Encodable2718) -> UnformattedData {
@@ -770,19 +889,12 @@ mod tests {
             },
         ];
 
+        let txpool_bridge_client = EthTxPoolBridgeClient::for_testing();
         for (idx, case) in expected_failures.into_iter().enumerate() {
             assert!(
-                monad_eth_sendRawTransaction(
-                    Some(&EthTxPoolBridgeClient::for_testing()),
-                    None,
-                    case,
-                    1,
-                    1,
-                    None,
-                    true,
-                )
-                .await
-                .is_err(),
+                monad_eth_sendRawTransaction(&txpool_bridge_client, case, 1, 1, None, true,)
+                    .await
+                    .is_err(),
                 "Expected error for case: {:?}",
                 idx + 1
             );
@@ -895,7 +1007,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(preconfirmation.tx_hash.to_string(), tx_hash.to_string());
-        assert_eq!(preconfirmation.operator.to_string(), operator.address().to_string());
+        assert_eq!(
+            preconfirmation.operator.to_string(),
+            operator.address().to_string()
+        );
         assert_eq!(
             service.get(&tx_hash).unwrap().preconfirmation_id,
             preconfirmation.preconfirmation_id
@@ -911,10 +1026,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn eth_send_raw_transaction_preconfirmation_mode_returns_hash_only() {
-        let operator = PrivateKeySigner::from_bytes(&FixedBytes::repeat_byte(0x44)).unwrap();
-        let service =
-            NamespacePreconfirmationService::for_testing(operator, 8, 8, Duration::from_secs(60));
+    async fn eth_send_raw_transaction_namespace_route_still_uses_txpool() {
         let namespace = make_representable_namespace(1);
         let route_chain_id = chain_id_for_namespace(namespace, 1337).unwrap();
         let tx = make_namespaced_legacy_tx(
@@ -925,11 +1037,10 @@ mod tests {
             0,
             0,
         );
-        let tx_hash = *tx.tx_hash();
+        let txpool_bridge_client = EthTxPoolBridgeClient::for_testing();
 
         let result = monad_eth_sendRawTransaction(
-            None,
-            Some(&service),
+            &txpool_bridge_client,
             MonadEthSendRawTransactionParams {
                 hex_tx: serialize_tx(tx),
             },
@@ -938,11 +1049,13 @@ mod tests {
             Some(namespace),
             true,
         )
-        .await
-        .unwrap();
+        .await;
 
-        assert_eq!(result, tx_hash.to_string());
-        assert!(service.get(&tx_hash).is_some());
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().message,
+            JsonRpcError::overloaded().message
+        );
     }
 
     #[tokio::test]
@@ -1014,12 +1127,8 @@ mod tests {
     #[tokio::test]
     async fn preconfirmation_returns_overloaded_when_queue_full() {
         let operator = PrivateKeySigner::from_bytes(&FixedBytes::repeat_byte(0x44)).unwrap();
-        let service = NamespacePreconfirmationService::for_testing(
-            operator,
-            1,
-            100,
-            Duration::from_secs(60),
-        );
+        let service =
+            NamespacePreconfirmationService::for_testing(operator, 1, 100, Duration::from_secs(60));
         let namespace = make_representable_namespace(1);
         let route_chain_id = chain_id_for_namespace(namespace, 1337).unwrap();
 

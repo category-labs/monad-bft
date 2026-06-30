@@ -26,7 +26,7 @@ use monad_chain_config::execution_revision::MonadExecutionRevision;
 use monad_eth_types::AccountKey;
 use monad_ethcall::{
     eth_call, CallResult, EthCallExecutor, EthCallRequest, EthCallResult, FailureCallResult,
-    MonadTracer, StateOverrideSet,
+    MonadTracer, StateOverrideObject, StateOverrideSet, StorageOverride,
 };
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{
@@ -590,6 +590,43 @@ async fn prepare_eth_call<T: Triedb + TriedbPath>(
     .await
 }
 
+#[tracing::instrument(level = "debug")]
+pub async fn prepare_eth_call_with_state_overrides<T: Triedb + TriedbPath>(
+    triedb_env: &T,
+    eth_call_handler_config: &EthCallHandlerConfig,
+    eth_call_executor: &EthCallExecutor,
+    route_chain_id: u64,
+    base_chain_id: u64,
+    namespace: Option<Address>,
+    params: CallParams,
+    preconfirmed_state_overrides: Option<&StateOverrideSet>,
+) -> Result<(BlockKey, CallResult), JsonRpcError> {
+    let (mut execution_params, block_tag) = params.into_execution_params();
+    execution_params.state_overrides = match preconfirmed_state_overrides {
+        Some(preconfirmed_state_overrides) => merge_state_overrides(
+            preconfirmed_state_overrides,
+            execution_params.state_overrides,
+        ),
+        None => execution_params.state_overrides,
+    };
+    let block_key = get_block_key_from_tag_or_hash(triedb_env, block_tag)
+        .await
+        .ok_or_else(JsonRpcError::block_not_found)?;
+
+    prepare_eth_call_at_block(
+        triedb_env,
+        eth_call_handler_config,
+        eth_call_executor,
+        route_chain_id,
+        base_chain_id,
+        namespace,
+        execution_params,
+        OutOfGasHandling::RpcError,
+        block_key,
+    )
+    .await
+}
+
 async fn prepare_eth_call_at_block<T: Triedb + TriedbPath>(
     triedb_env: &T,
     eth_call_handler_config: &EthCallHandlerConfig,
@@ -726,6 +763,47 @@ async fn prepare_eth_call_at_block<T: Triedb + TriedbPath>(
     }
 }
 
+fn merge_state_overrides(base: &StateOverrideSet, caller: StateOverrideSet) -> StateOverrideSet {
+    let mut merged = base.clone();
+
+    for (address, caller_override) in caller {
+        let merged_override = merged.entry(address).or_default();
+        merge_state_override_object(merged_override, caller_override);
+    }
+
+    merged
+}
+
+fn merge_state_override_object(base: &mut StateOverrideObject, caller: StateOverrideObject) {
+    if caller.balance.is_some() {
+        base.balance = caller.balance;
+    }
+    if caller.nonce.is_some() {
+        base.nonce = caller.nonce;
+    }
+    if caller.code.is_some() {
+        base.code = caller.code;
+    }
+
+    let Some(caller_storage) = caller.storage_override else {
+        return;
+    };
+
+    match (&mut base.storage_override, caller_storage) {
+        (_, StorageOverride::State(caller_state)) => {
+            base.storage_override = Some(StorageOverride::State(caller_state));
+        }
+        (Some(StorageOverride::State(base_state)), StorageOverride::StateDiff(caller_diff))
+        | (Some(StorageOverride::StateDiff(base_state)), StorageOverride::StateDiff(caller_diff)) =>
+        {
+            base_state.extend(caller_diff);
+        }
+        (None, StorageOverride::StateDiff(caller_diff)) => {
+            base.storage_override = Some(StorageOverride::StateDiff(caller_diff));
+        }
+    }
+}
+
 /// Executes a new message call immediately without creating a transaction on the block chain.
 #[tracing::instrument(level = "debug", skip(data_provider))]
 #[rpc(
@@ -763,6 +841,50 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
             Ok(ethhex::encode_bytes(&output_data))
         }
         CallResult::Failure(error) => Err(error.into()),
+        _ => Err(JsonRpcError::internal_error(
+            "Unexpected CallResult type".into(),
+        )),
+    }
+}
+
+#[rpc(
+    method = "monad_ethCallPreconfirmed",
+    ignore = "eth_call_handler_config",
+    ignore = "eth_call_executor",
+    ignore = "route_chain_id",
+    ignore = "base_chain_id",
+    ignore = "namespace",
+    ignore = "preconfirmed_state_overrides"
+)]
+#[allow(non_snake_case)]
+pub async fn monad_ethCallPreconfirmed<T: Triedb + TriedbPath>(
+    data_provider: &DataProvider<T>,
+    eth_call_handler_config: &EthCallHandlerConfig,
+    eth_call_executor: &EthCallExecutor,
+    route_chain_id: u64,
+    base_chain_id: u64,
+    namespace: Option<Address>,
+    preconfirmed_state_overrides: &StateOverrideSet,
+    params: MonadEthCallParams,
+) -> JsonRpcResult<String> {
+    trace!("monad_ethCallPreconfirmed: {params:?}");
+
+    let (_, result) = prepare_eth_call_with_state_overrides(
+        &data_provider.triedb_env,
+        eth_call_handler_config,
+        eth_call_executor,
+        route_chain_id,
+        base_chain_id,
+        namespace,
+        CallParams::Call(params),
+        Some(preconfirmed_state_overrides),
+    )
+    .await?;
+    match result {
+        CallResult::Success(monad_ethcall::SuccessCallResult { output_data, .. }) => {
+            Ok(ethhex::encode_bytes(&output_data))
+        }
+        CallResult::Failure(error) => Err(JsonRpcError::eth_call_error(error.message, error.data)),
         _ => Err(JsonRpcError::internal_error(
             "Unexpected CallResult type".into(),
         )),
