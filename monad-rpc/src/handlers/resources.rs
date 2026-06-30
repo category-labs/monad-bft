@@ -46,6 +46,7 @@ pub struct MonadRpcResources {
     pub dry_run_get_logs_index: bool,
     pub use_eth_get_logs_index: bool,
     pub max_finalized_block_cache_len: u64,
+    pub enable_eth_simulate_v1: bool,
     pub metrics: Option<Metrics>,
     pub rpc_comparator: Option<RpcComparator>,
 }
@@ -68,6 +69,7 @@ impl MonadRpcResources {
         dry_run_get_logs_index: bool,
         use_eth_get_logs_index: bool,
         max_finalized_block_cache_len: u64,
+        enable_eth_simulate_v1: bool,
         metrics: Option<Metrics>,
         rpc_comparator: Option<RpcComparator>,
     ) -> Self {
@@ -87,6 +89,7 @@ impl MonadRpcResources {
             dry_run_get_logs_index,
             use_eth_get_logs_index,
             max_finalized_block_cache_len,
+            enable_eth_simulate_v1,
             metrics,
             rpc_comparator,
         }
