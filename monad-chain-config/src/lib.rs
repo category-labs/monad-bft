@@ -37,6 +37,11 @@ pub const MONAD_TESTNET_CHAIN_ID: u64 = 10143;
 pub const MONAD_DEVNET_CHAIN_ID: u64 = 20143;
 // Chain id used by hive: https://github.com/ethereum/execution-apis/blob/main/tests/genesis.json
 pub const HIVE_CHAIN_ID: u64 = 3503995874084926;
+// Test-only forking devnet: same consensus config as devnet (so override is
+// honored), but a distinct chain_id so a test cluster can't be confused with a
+// regular devnet pool. Pairs with the C++ MonadDevnetFork class, which
+// crosses MONAD_NEXT at MONAD_DEVNETFORK_NEXT_AT.
+pub const MONAD_DEVNET_FORK_CHAIN_ID: u64 = 20144;
 
 pub trait ChainConfig<CR: ChainRevision>: Copy + Clone {
     fn chain_id(&self) -> u64;
@@ -114,6 +119,11 @@ impl MonadChainConfig {
                 warn!("Ignoring chain config from file in hive");
             }
             Ok(MONAD_HIVE_CHAIN_CONFIG)
+        } else if chain_id == MONAD_DEVNET_FORK_CHAIN_ID {
+            if devnet_override.is_some() {
+                warn!("Ignoring chain config from file for monad_devnet_fork");
+            }
+            Ok(MONAD_DEVNET_FORK_CHAIN_CONFIG)
         } else {
             Err(ChainConfigError::UnsupportedChainId(chain_id))
         }
@@ -191,6 +201,11 @@ const MONAD_DEVNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
 
 const MONAD_HIVE_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     chain_id: HIVE_CHAIN_ID,
+    ..MONAD_DEVNET_CHAIN_CONFIG
+};
+
+const MONAD_DEVNET_FORK_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
+    chain_id: MONAD_DEVNET_FORK_CHAIN_ID,
     ..MONAD_DEVNET_CHAIN_CONFIG
 };
 

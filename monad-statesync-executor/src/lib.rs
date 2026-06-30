@@ -110,12 +110,13 @@ where
 /// upstream, so this is a contract-violation tripwire, not a reachable branch.
 fn statesync_chain_config(chain_id: u64) -> u32 {
     use monad_chain_config::{
-        ETHEREUM_MAINNET_CHAIN_ID, HIVE_CHAIN_ID, MONAD_DEVNET_CHAIN_ID, MONAD_MAINNET_CHAIN_ID,
-        MONAD_TESTNET_CHAIN_ID,
+        ETHEREUM_MAINNET_CHAIN_ID, HIVE_CHAIN_ID, MONAD_DEVNET_CHAIN_ID,
+        MONAD_DEVNET_FORK_CHAIN_ID, MONAD_MAINNET_CHAIN_ID, MONAD_TESTNET_CHAIN_ID,
     };
     use monad_statesync::ffi::{
         monad_chain_config_CHAIN_CONFIG_ETHEREUM_MAINNET, monad_chain_config_CHAIN_CONFIG_HIVE_NET,
         monad_chain_config_CHAIN_CONFIG_MONAD_DEVNET,
+        monad_chain_config_CHAIN_CONFIG_MONAD_DEVNET_FORK,
         monad_chain_config_CHAIN_CONFIG_MONAD_MAINNET,
         monad_chain_config_CHAIN_CONFIG_MONAD_TESTNET,
     };
@@ -126,6 +127,7 @@ fn statesync_chain_config(chain_id: u64) -> u32 {
         MONAD_TESTNET_CHAIN_ID => monad_chain_config_CHAIN_CONFIG_MONAD_TESTNET,
         MONAD_MAINNET_CHAIN_ID => monad_chain_config_CHAIN_CONFIG_MONAD_MAINNET,
         HIVE_CHAIN_ID => monad_chain_config_CHAIN_CONFIG_HIVE_NET,
+        MONAD_DEVNET_FORK_CHAIN_ID => monad_chain_config_CHAIN_CONFIG_MONAD_DEVNET_FORK,
         other => panic!("no statesync chain_config mapping for chain_id {other}"),
     }
 }
