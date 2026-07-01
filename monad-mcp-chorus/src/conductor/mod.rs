@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-mod dummy;
+pub mod dummy;
 
 use std::collections::BTreeMap;
 
@@ -29,6 +29,7 @@ where
     fn poll(&mut self) -> Option<ConductorOutput<Self>>;
 }
 
+#[derive(Clone)]
 pub enum ConductorOutput<C>
 where
     C: Conductor,
@@ -43,11 +44,12 @@ where
     },
 }
 
+#[derive(Clone)]
 pub enum ConductorInput<C>
 where
     C: Conductor,
 {
     Alarm(C::Alarm),
     SlotOpened(Slot),
-    SlotFinalized(Slot),
+    SlotFinalized(Timestamp, Slot),
 }

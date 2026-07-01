@@ -17,34 +17,46 @@ use std::collections::VecDeque;
 
 use crate::{
     slot::{SlotConsensus, SlotOutput},
-    types::{NodeId, Slot, TimestampDelta},
+    types::{IsVote, NodeId, Slot, TimestampDelta, VoteMsg, VotePool},
 };
 
-/// A dummy one-slot, proposal-less algorithm that automatically
-/// decides at N*Delta after deadline.
+/// A dummy one-slot, proposal-less algorithm for testing
+///
+/// 1. On deadline, cast a vote.
+/// 2. On each received vote, finalize the slot once quorum is met.
 pub struct DummySlotConsensus {
     slot: Slot, // only used as FinalizationData
     outputs: VecDeque<SlotOutput<DummySlotConsensus>>,
-    delta: TimestampDelta,
+    config: DummySlotConsensusConfig,
+    votes: VotePool<DummyVote>,
 }
 
 #[derive(Clone)]
 pub struct DummySlotConsensusConfig {
-    pub num_ticks: usize,
-    pub delta: TimestampDelta,
+    pub quorum: usize,
 }
 
-#[derive(PartialEq, Eq, Clone, Hash)]
-pub struct FinalizeAfter(usize);
+impl Default for DummySlotConsensusConfig {
+    fn default() -> Self {
+        Self { quorum: 1 }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct DummyVote;
+
+impl IsVote for DummyVote {
+    type Scope = Slot;
+}
 
 impl SlotConsensus for DummySlotConsensus {
     type Config = DummySlotConsensusConfig;
     type Context = ();
 
-    type Message = ();
-    type Timer = FinalizeAfter;
-    type OptimisticCommitData = (); // unused
-    type FinalizationData = Slot;
+    type Message = VoteMsg<DummyVote>;
+    type Timer = ();
+    type OptimisticCommitData = ();
+    type FinalizationData = ();
 
     fn new(
         slot: Slot,
@@ -52,27 +64,28 @@ impl SlotConsensus for DummySlotConsensus {
         config: &Self::Config,
         _context: &Self::Context,
     ) -> Self {
-        let timer = SlotOutput::ScheduleTimer(deadline, FinalizeAfter(config.num_ticks));
+        let timer = SlotOutput::ScheduleTimer(deadline, ());
 
         Self {
             slot,
-            delta: config.delta,
+            config: config.clone(),
+            votes: VotePool::new(slot),
             outputs: VecDeque::from([timer]),
         }
     }
 
-    fn handle_message(&mut self, _sender: NodeId, _message: Self::Message) {
-        // no messages in this dummy algorithm
+    fn handle_message(&mut self, sender: NodeId, vote: VoteMsg<DummyVote>) {
+        self.votes.add_vote(sender, vote);
+        if self.votes.all_voters().count() == self.config.quorum {
+            self.outputs.push_back(SlotOutput::Finalize(()));
+        }
     }
 
-    fn handle_timer(&mut self, FinalizeAfter(ticks_left): Self::Timer) {
-        if ticks_left == 0 {
-            self.outputs.push_back(SlotOutput::Finalize(self.slot));
-            return;
-        }
-
-        let timer = SlotOutput::ScheduleTimer(self.delta, FinalizeAfter(ticks_left - 1));
-        self.outputs.push_back(timer);
+    fn handle_timer(&mut self, _deadline: ()) {
+        // change this to real signing
+        let fake_sig = crate::types::Signature;
+        let vote = VoteMsg::new(self.slot, DummyVote, fake_sig);
+        self.outputs.push_back(SlotOutput::Broadcast(vote));
     }
 
     fn poll(&mut self) -> Option<SlotOutput<Self>> {

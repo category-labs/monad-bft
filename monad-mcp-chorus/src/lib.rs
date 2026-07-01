@@ -13,12 +13,18 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+mod driver;
+mod runtime;
 mod slot_manager;
 
-pub mod conductor;
-pub mod slot;
 pub mod types;
+// indirectly exports Chorus, DummySlotConsensus
+pub mod slot;
+// indirectly exports DummyConductor
+pub mod conductor;
 
 pub use conductor::{Conductor, ConductorInput, ConductorOutput};
+pub use driver::{CadenceDriver, Driver, NodeEvent, SlotMsg, WakeId};
+pub use runtime::{CadenceRuntime, FinalizationObserver, Runtime};
 pub use slot::{SlotConsensus, SlotOutput};
 pub use slot_manager::SlotManager;
