@@ -89,16 +89,16 @@ impl HistoricalDataSource for ArchiveDataSource {
         &self,
         block_hash: BlockHash,
     ) -> DataSourceResult<Option<BlockPointer>> {
-        let Some(block_number) = self
+        let Some(block) = self
             .archive_reader
-            .try_get_block_number_by_hash(&block_hash)
+            .try_get_block_by_hash(&block_hash)
             .await
             .map_err(|e| DataSourceError::Internal(e.to_string()))?
         else {
             return Ok(None);
         };
 
-        Ok(Some(BlockPointer::Finalized(block_number)))
+        Ok(Some(BlockPointer::Finalized(block.header.number)))
     }
 
     async fn get_block(
