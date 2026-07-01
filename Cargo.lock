@@ -5696,6 +5696,7 @@ dependencies = [
  "monad-raptorcast",
  "monad-router-scheduler",
  "monad-secp",
+ "monad-sim",
  "monad-state",
  "monad-testutil",
  "monad-tfm",
@@ -6127,6 +6128,14 @@ dependencies = [
  "tiny-keccak",
  "wycheproof",
  "zeroize",
+]
+
+[[package]]
+name = "monad-sim"
+version = "0.1.0"
+dependencies = [
+ "rand 0.8.5",
+ "rand_distr",
 ]
 
 [[package]]
