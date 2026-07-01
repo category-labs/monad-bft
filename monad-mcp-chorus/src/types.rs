@@ -33,7 +33,7 @@ impl Slot {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct NodeId(pub u64);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -46,8 +46,12 @@ pub struct Timestamp(u64);
 impl Timestamp {
     pub const GENESIS: Self = Timestamp(0);
 
-    fn new(ts: u64) -> Self {
+    pub const fn new(ts: u64) -> Self {
         Timestamp(ts)
+    }
+
+    pub const fn ticks(self) -> u64 {
+        self.0
     }
 }
 
@@ -69,6 +73,16 @@ impl std::ops::Add<TimestampDelta> for Timestamp {
 
     fn add(self, rhs: TimestampDelta) -> Self::Output {
         Timestamp(self.0 + rhs.0)
+    }
+}
+
+impl TimestampDelta {
+    pub const fn new(ticks: u64) -> Self {
+        TimestampDelta(ticks)
+    }
+
+    pub const fn ticks(self) -> u64 {
+        self.0
     }
 }
 

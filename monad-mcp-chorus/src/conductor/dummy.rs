@@ -25,6 +25,7 @@ type WindowId = u64;
 
 // A simple conductor that just open windows at regular interval,
 // within each window the slots are scheduled at regular deadline.
+#[derive(Clone)]
 pub struct DummyConductor {
     genesis: Timestamp,
     slot_interval: TimestampDelta,
@@ -34,17 +35,24 @@ pub struct DummyConductor {
     outputs: VecDeque<ConductorOutput<Self>>,
 }
 
+impl Default for DummyConductor {
+    fn default() -> Self {
+        Self::new(TimestampDelta::new(1000), 5)
+    }
+}
+
 impl DummyConductor {
     pub fn new(slot_interval: TimestampDelta, slots_per_window: u64) -> Self {
         let slots_per_window =
             NonZeroU64::new(slots_per_window).expect("slots_per_window must be non-zero");
+        let init_alarm = ConductorOutput::ScheduleAlarm(Timestamp::GENESIS, 0);
 
         Self {
             genesis: Timestamp::GENESIS,
             slot_interval,
             deadline_offset: slot_interval,
             slots_per_window,
-            outputs: VecDeque::new(),
+            outputs: VecDeque::from([init_alarm]),
         }
     }
 
@@ -98,7 +106,7 @@ impl Conductor for DummyConductor {
             }
 
             ConductorInput::SlotOpened(_slot) => {}
-            ConductorInput::SlotFinalized(_slot) => {}
+            ConductorInput::SlotFinalized(_at, _slot) => {}
         }
     }
 
