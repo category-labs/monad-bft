@@ -124,6 +124,9 @@ where
 
     epoch_validators: BTreeMap<Epoch, ValidatorSet<CertificateSignaturePubKey<ST>>>,
     full_node_groups: FullNodeGroupMap<CertificateSignaturePubKey<ST>>,
+    // Far-future cull bound for full_node_groups, mirroring the
+    // secondary client's invite window (same config value).
+    invite_future_dist_max: Round,
     proposer_schedule: BoxedProposerSchedule<CertificateSignaturePubKey<ST>>,
 
     dedicated_full_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
@@ -286,6 +289,7 @@ where
             is_dynamic_fullnode,
             epoch_validators: Default::default(),
             full_node_groups: Default::default(),
+            invite_future_dist_max: config.secondary_instance.invite_future_dist_max,
             proposer_schedule,
 
             dedicated_full_nodes: config.primary_instance.fullnode_dedicated.clone(),
@@ -1000,6 +1004,8 @@ where
 
                     self.udp_state.update_current_round(round);
                     self.full_node_groups.delete_expired(round);
+                    self.full_node_groups
+                        .delete_far_future(round + self.invite_future_dist_max);
                     let proposer_cutoff = round.saturating_sub(round_info::CACHE_MAX_PAST_ROUNDS);
                     self.proposer_schedule.prune_below(proposer_cutoff);
                     self.peer_discovery_driver
@@ -1574,8 +1580,7 @@ where
                         let round_span = *group.round_span(); // for logging only
                         let publisher_id = *group.publisher_id();
                         if this.full_node_groups.try_insert(group).is_none() {
-                            // TODO: convert to an assertion?
-                            error!(
+                            warn!(
                                 round_span = ?round_span,
                                 publisher_id = ?publisher_id,
                                 "Accepted group assignment contains overlaps"
@@ -1658,13 +1663,17 @@ where
     ST: CertificateSignatureRecoverable,
 {
     match group_message {
-        // Prepare group message should originate from a validator
+        // Group formation messages should originate from a validator
         FullNodesGroupMessage::PrepareGroup(msg) => {
             &msg.validator_id == sender && validator_set.is_member(sender)
         }
+        FullNodesGroupMessage::ConfirmGroup(msg) => {
+            &msg.prepare.validator_id == sender && validator_set.is_member(sender)
+        }
+        FullNodesGroupMessage::NoConfirm(msg) => {
+            &msg.prepare.validator_id == sender && validator_set.is_member(sender)
+        }
         FullNodesGroupMessage::PrepareGroupResponse(msg) => &msg.node_id == sender,
-        FullNodesGroupMessage::ConfirmGroup(msg) => &msg.prepare.validator_id == sender,
-        FullNodesGroupMessage::NoConfirm(msg) => &msg.prepare.validator_id == sender,
         FullNodesGroupMessage::ParticipationReport(msg) => &msg.reporter == sender,
     }
 }
