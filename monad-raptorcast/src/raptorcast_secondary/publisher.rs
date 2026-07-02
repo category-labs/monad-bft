@@ -1662,20 +1662,20 @@ mod tests {
         assert_eq!(reply_msg.node_id, nid(10));
         assert_eq!(reply_msg.req, make_prep_data(50));
 
-        let is_valid = clt.handle_confirm_group_message(make_confirm_msg(50));
+        let is_valid = clt.handle_confirm_group_message(&make_confirm_msg(50));
         assert!(is_valid, "ConfirmGroup for rounds [50, 52) should be valid");
 
         // Receive invite for rounds [52, 54), from V0
         clt.handle_prepare_group_message(make_invite_msg(52));
-        assert!(clt.handle_confirm_group_message(make_confirm_msg(52)));
+        assert!(clt.handle_confirm_group_message(&make_confirm_msg(52)));
 
         // Receive invite for rounds [60, 62), from V0
         clt.handle_prepare_group_message(make_invite_msg(60));
-        assert!(clt.handle_confirm_group_message(make_confirm_msg(60)));
+        assert!(clt.handle_confirm_group_message(&make_confirm_msg(60)));
 
         // Receive invite for rounds [62, 64), from V0
         clt.handle_prepare_group_message(make_invite_msg(62));
-        assert!(clt.handle_confirm_group_message(make_confirm_msg(62)));
+        assert!(clt.handle_confirm_group_message(&make_confirm_msg(62)));
 
         // Receive raptorcast with proposal 50
         let rc_grp = &group_map.get_rc_group_peers(&clt, &nid(0));
@@ -1805,8 +1805,8 @@ mod tests {
         // This is the last opportunity to receive confirm for group 1.
         // Lets accept both here, out of order.
         assert_eq!(clt.num_pending_confirms(), 2);
-        assert!(clt.handle_confirm_group_message(make_confirm_msg(8)));
-        assert!(clt.handle_confirm_group_message(make_confirm_msg(5)));
+        assert!(clt.handle_confirm_group_message(&make_confirm_msg(8)));
+        assert!(clt.handle_confirm_group_message(&make_confirm_msg(5)));
 
         //-------------------------------------------------------------------[5]
         clt.enter_round(Round(5));
@@ -1923,8 +1923,8 @@ mod tests {
         // Note that make_confirm_msg() return node ids = start_round + 10,
         // so the first node in the second group is 45
         assert_eq!(clt.num_pending_confirms(), 2);
-        assert!(clt.handle_confirm_group_message(make_confirm_msg(38)));
-        assert!(clt.handle_confirm_group_message(make_confirm_msg(35)));
+        assert!(clt.handle_confirm_group_message(&make_confirm_msg(38)));
+        assert!(clt.handle_confirm_group_message(&make_confirm_msg(35)));
 
         //------------------------------------------------------------------[35]
         clt.enter_round(Round(35));
@@ -2027,7 +2027,7 @@ mod tests {
         assert_eq!(validator_id, nid(0));
         assert!(reply_msg.accept);
         assert_eq!(reply_msg.req, invite_data(8, 0));
-        assert!(clt.handle_confirm_group_message(make_confirm_msg(8, 0)));
+        assert!(clt.handle_confirm_group_message(&make_confirm_msg(8, 0)));
 
         // Invite v1.0
         let invite_msg = make_invite_msg(9, 1);
@@ -2037,7 +2037,7 @@ mod tests {
         assert_eq!(validator_id, nid(1));
         assert!(reply_msg.accept);
         assert_eq!(reply_msg.req, invite_data(9, 1));
-        assert!(clt.handle_confirm_group_message(make_confirm_msg(9, 1)));
+        assert!(clt.handle_confirm_group_message(&make_confirm_msg(9, 1)));
 
         //-------------------------------------------------------------------[2]
         clt.enter_round(Round(2));
@@ -2057,7 +2057,7 @@ mod tests {
         assert_eq!(validator_id, nid(2));
         assert!(reply_msg.accept);
         assert_eq!(reply_msg.req, invite_data(me, 2));
-        assert!(clt.handle_confirm_group_message(make_confirm_msg(me, 2)));
+        assert!(clt.handle_confirm_group_message(&make_confirm_msg(me, 2)));
 
         // Invite v0.1
         let invite_msg = make_invite_msg(11, 0);
@@ -2067,7 +2067,7 @@ mod tests {
         assert_eq!(validator_id, nid(0));
         assert!(reply_msg.accept);
         assert_eq!(reply_msg.req, invite_data(11, 0));
-        assert!(clt.handle_confirm_group_message(make_confirm_msg(11, 0)));
+        assert!(clt.handle_confirm_group_message(&make_confirm_msg(11, 0)));
 
         //-------------------------------------------------------------------[3]
         clt.enter_round(Round(3));
@@ -2087,7 +2087,7 @@ mod tests {
         assert_eq!(validator_id, nid(0));
         assert!(reply_msg.accept);
         assert_eq!(reply_msg.req, invite_data(14, 0));
-        assert!(clt.handle_confirm_group_message(make_confirm_msg(14, 0)));
+        assert!(clt.handle_confirm_group_message(&make_confirm_msg(14, 0)));
 
         // Invite v1.1
         let invite_msg = make_invite_msg(14, 1);
@@ -2097,7 +2097,7 @@ mod tests {
         assert_eq!(validator_id, nid(1));
         assert!(reply_msg.accept);
         assert_eq!(reply_msg.req, invite_data(14, 1));
-        assert!(clt.handle_confirm_group_message(make_confirm_msg(14, 1)));
+        assert!(clt.handle_confirm_group_message(&make_confirm_msg(14, 1)));
 
         // Invite v2.1
         let invite_msg = make_invite_msg(14, 2);
@@ -2106,7 +2106,7 @@ mod tests {
 
         assert_eq!(validator_id, nid(2));
         assert_eq!(reply_msg.req, invite_data(14, 2));
-        assert!(clt.handle_confirm_group_message(make_confirm_msg(14, 2)));
+        assert!(clt.handle_confirm_group_message(&make_confirm_msg(14, 2)));
 
         //-----------------------------------------------------------------[4-7]
         // Simulated gap - no receiving proposals

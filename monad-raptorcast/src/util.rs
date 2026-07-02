@@ -279,6 +279,13 @@ impl<PT: PubKey> SecondaryGroupAssignment<PT> {
     }
 }
 
+// Max number of live groups per publishing validator. The secondary
+// client enforces it at invite admission (freshest wins: an invite
+// outliving the stalest live entry evicts it, staler ones are
+// rejected). The primary's group map mirrors it as a backstop, since
+// client-side eviction does not revoke already-forwarded groups.
+pub(crate) const MAX_GROUPS_PER_VALIDATOR: usize = 16;
+
 // An interval map from RoundSpan to SecondaryGroup.
 //
 // Invariance: Each group's round span must be non-overlapping.
@@ -335,6 +342,26 @@ impl<PT: PubKey> SecondaryGroupMap<PT> {
         }
     }
 
+    // cull groups that start beyond max_start: far-future entries
+    // admitted while rounds were not advancing, which may otherwise
+    // never expire through delete_expired
+    pub fn delete_far_future(&mut self, max_start: Round) {
+        while let Some((range, _)) = self.group_map.largest() {
+            if range.start <= max_start {
+                break;
+            }
+            self.group_map.remove(range);
+        }
+    }
+
+    // Evict the stalest groups until holding at most `cap`. Spans are
+    // disjoint, so the smallest interval is the first one to expire.
+    pub fn evict_stalest_to_cap(&mut self, cap: usize) {
+        while self.group_map.len() > cap {
+            self.group_map.remove_smallest();
+        }
+    }
+
     fn is_empty(&self) -> bool {
         self.group_map.is_empty()
     }
@@ -370,13 +397,27 @@ impl<PT: PubKey> FullNodeGroupMap<PT> {
     #[must_use]
     pub fn try_insert(&mut self, assignment: SecondaryGroupAssignment<PT>) -> Option<()> {
         let group_map = self.map.entry(assignment.publisher_id).or_default();
-        group_map.try_insert(assignment.round_span, assignment.group)
+        let inserted = group_map.try_insert(assignment.round_span, assignment.group);
+        // Mirror the client's per-validator freshest-wins cap: without
+        // it a validator could grow this map without limit while
+        // rounds are not advancing, as client-side eviction does not
+        // revoke groups it already forwarded here.
+        group_map.evict_stalest_to_cap(MAX_GROUPS_PER_VALIDATOR);
+        inserted
     }
 
     // cull groups that ends before or at round_cap
     pub fn delete_expired(&mut self, round_cap: Round) {
         self.map.retain(|_publisher_id, group_map| {
             group_map.delete_expired(round_cap);
+            !group_map.is_empty()
+        });
+    }
+
+    // cull groups that start beyond max_start (see SecondaryGroupMap)
+    pub fn delete_far_future(&mut self, max_start: Round) {
+        self.map.retain(|_publisher_id, group_map| {
+            group_map.delete_far_future(max_start);
             !group_map.is_empty()
         });
     }
@@ -1057,6 +1098,47 @@ mod tests {
         assert!(!node_ids.is_empty());
         let members = node_ids.iter().map(|id| (*id, Stake::ONE)).collect();
         ValidatorSet::new_unchecked(members)
+    }
+
+    // The map bounds the groups held per publisher (keeping the
+    // freshest) and culls far-future entries, mirroring the secondary
+    // client's admission rules for the groups it forwards here.
+    #[test]
+    fn full_node_groups_bounded_per_publisher() {
+        let group = |start: u64, end: u64| {
+            SecondaryGroupAssignment::new(
+                nid(0),
+                RoundSpan::new(Round(start), Round(end)).unwrap(),
+                SecondaryGroup::new([nid(1), nid(2)].into_iter().collect()).unwrap(),
+            )
+        };
+        let mut map = FullNodeGroupMap::<PT>::default();
+
+        // Disjoint spans with increasing rounds: each insert past the
+        // cap evicts the stalest entry
+        let num_groups = 10 * MAX_GROUPS_PER_VALIDATOR as u64;
+        for k in 0..num_groups {
+            assert!(map
+                .try_insert(group(1_000 + 2 * k, 1_001 + 2 * k))
+                .is_some());
+        }
+        let group_map = map.get_group_map(&nid(0)).unwrap();
+        let held = (0..num_groups)
+            .filter(|k| group_map.get(Round(1_000 + 2 * k)).is_some())
+            .count();
+        assert_eq!(held, MAX_GROUPS_PER_VALIDATOR);
+        assert!(group_map.get(Round(1_000)).is_none());
+        assert!(group_map.get(Round(1_000 + 2 * (num_groups - 1))).is_some());
+
+        // The far-future cull drops entries starting beyond max_start
+        map.delete_far_future(Round(1_300));
+        let group_map = map.get_group_map(&nid(0)).unwrap();
+        assert!(group_map.get(Round(1_300)).is_some());
+        assert!(group_map.get(Round(1_302)).is_none());
+
+        // Culling every group removes the publisher's slot
+        map.delete_far_future(Round(0));
+        assert!(map.is_empty());
     }
 
     #[test]
