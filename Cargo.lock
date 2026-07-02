@@ -5697,6 +5697,7 @@ dependencies = [
  "monad-router-scheduler",
  "monad-secp",
  "monad-sim",
+ "monad-sim-swarm",
  "monad-state",
  "monad-testutil",
  "monad-tfm",
@@ -6136,6 +6137,15 @@ version = "0.1.0"
 dependencies = [
  "rand 0.8.5",
  "rand_distr",
+]
+
+[[package]]
+name = "monad-sim-swarm"
+version = "0.1.0"
+dependencies = [
+ "monad-sim",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
 ]
 
 [[package]]

@@ -1,0 +1,9 @@
+[package]
+name = "monad-sim-swarm"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+monad-sim = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
