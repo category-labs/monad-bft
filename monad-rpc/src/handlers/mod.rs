@@ -442,6 +442,7 @@ async fn eth_simulateV1(
                 config.provider_gas_limit_eth_simulate,
                 config.provider_max_calls_eth_simulate,
                 config.provider_max_blocks_eth_simulate,
+                app_state.max_response_size as usize,
                 params,
             )
         })
