@@ -36,7 +36,7 @@ impl InMemoryMetaStore {
         self.len() == 0
     }
 
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.kv_records
             .read()
             .map(|guard| guard.len())
