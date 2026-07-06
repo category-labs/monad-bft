@@ -55,12 +55,12 @@ use tokio::{
     task::JoinSet,
 };
 
-pub mod data_track;
-pub mod index;
+pub(crate) mod data_track;
+pub(crate) mod index;
 pub(crate) mod probe;
-pub mod producer;
-pub mod publisher;
-pub mod recover;
+pub(crate) mod producer;
+pub(crate) mod publisher;
+pub(crate) mod recover;
 pub mod resolver;
 #[cfg(test)]
 mod rtt;
@@ -75,16 +75,16 @@ use producer::{run_producer, Signaller};
 pub use producer::{Prefetch, SignalPolicy};
 use publisher::{run_publisher, Progress};
 pub use snapshot::SnapshotStore;
-pub use source::ChainDataIngestSource;
+use source::ChainDataIngestSource;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct FamilyRanges {
-    pub log_first: LogId,
-    pub log_count: u32,
-    pub tx_first: TxId,
-    pub tx_count: u32,
-    pub trace_first: TraceId,
-    pub trace_count: u32,
+    pub(crate) log_first: LogId,
+    pub(crate) log_count: u32,
+    pub(crate) tx_first: TxId,
+    pub(crate) tx_count: u32,
+    pub(crate) trace_first: TraceId,
+    pub(crate) trace_count: u32,
 }
 
 impl FamilyRanges {
@@ -131,9 +131,9 @@ impl FamilyFrontierExt for FamilyFrontier {
 }
 
 pub(crate) struct AssignedBlock {
-    pub number: u64,
-    pub ranges: FamilyRanges,
-    pub block: FinalizedBlock,
+    pub(crate) number: u64,
+    pub(crate) ranges: FamilyRanges,
+    pub(crate) block: FinalizedBlock,
 }
 
 /// Stream consumed by both the data track and the index engine. `C` is the

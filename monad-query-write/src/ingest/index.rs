@@ -123,8 +123,8 @@ pub(crate) enum ArtifactWrite {
 /// Current-batch delta (since the last `BatchFlush`).
 #[derive(Default)]
 pub(crate) struct FamilyTail {
-    pub pages: HashMap<(StreamKey, u64), RoaringBitmap>,
-    pub dir: Vec<(u64, u64, u64)>, // (block, first_id, end_id exclusive)
+    pub(crate) pages: HashMap<(StreamKey, u64), RoaringBitmap>,
+    pub(crate) dir: Vec<(u64, u64, u64)>, // (block, first_id, end_id exclusive)
 }
 
 /// Carry-over: bits fragmented in prior flushes but not yet sealed. `sealed_id`
@@ -132,21 +132,21 @@ pub(crate) struct FamilyTail {
 /// below it are sealed into artifacts and removed; at/above it is open.
 #[derive(Default)]
 pub(crate) struct FamilyState {
-    pub pages: HashMap<(StreamKey, u64), RoaringBitmap>,
-    pub dir: VecDeque<(u64, u64, u64)>,
-    pub sealed_id: u64,
+    pub(crate) pages: HashMap<(StreamKey, u64), RoaringBitmap>,
+    pub(crate) dir: VecDeque<(u64, u64, u64)>,
+    pub(crate) sealed_id: u64,
     /// Streams already inventoried for the current open page (recorded once per
     /// page, not per flush). Cleared when the page rolls in `seal_family`.
-    pub open_streams_seen: HashSet<StreamKey>,
+    pub(crate) open_streams_seen: HashSet<StreamKey>,
     /// Running standby seal chain through the last sealed span
     /// (`last_sealed_span(sealed_id)`); `EMPTY_DIGEST` before the first seal.
-    pub seal_chain: ChainDigest,
+    pub(crate) seal_chain: ChainDigest,
     /// Per-`(stream, group start)` accumulator of `(page_start_in_group,
     /// count)` pairs for pages already sealed in the OPEN page group. Drained
     /// into manifest rows by `seal_family` when the seal boundary leaves the
     /// group; carried by checkpoints, re-derived from sealed artifacts by the
     /// no-checkpoint rebuild ([`super::recover`]).
-    pub sealed_page_counts: SealedPageCounts,
+    pub(crate) sealed_page_counts: SealedPageCounts,
 }
 
 /// Sealed-page-count accumulator shape: `(stream, group start)` → ascending

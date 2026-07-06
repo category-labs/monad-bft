@@ -67,7 +67,7 @@ pub struct BlobTable<B> {
 }
 
 impl<B> BlobTable<B> {
-    pub fn new(store: B, table: BlobTableId) -> Self {
+    pub(crate) fn new(store: B, table: BlobTableId) -> Self {
         Self {
             store,
             table,

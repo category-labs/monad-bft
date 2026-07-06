@@ -29,13 +29,13 @@ use crate::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ResolvedPrimaryIdWindow {
-    pub start: PrimaryId,
-    pub end_inclusive: PrimaryId,
+    pub(crate) start: PrimaryId,
+    pub(crate) end_inclusive: PrimaryId,
 }
 
 impl ResolvedPrimaryIdWindow {
     /// The page groups this window touches, as group starts in query order.
-    pub fn group_iter(&self, order: QueryOrder) -> impl Iterator<Item = u64> {
+    pub(crate) fn group_iter(&self, order: QueryOrder) -> impl Iterator<Item = u64> {
         let first = page_group_start(self.start.as_u64()) / PAGE_GROUP_ID_SPAN;
         let last = page_group_start(self.end_inclusive.as_u64()) / PAGE_GROUP_ID_SPAN;
         order
@@ -46,7 +46,7 @@ impl ResolvedPrimaryIdWindow {
     /// First and last page starts the window covers within `group_start`'s
     /// group (inclusive). The caller only passes groups from
     /// [`Self::group_iter`], so the clamped range is never empty.
-    pub fn page_bounds_in_group(&self, group_start: u64) -> (u64, u64) {
+    pub(crate) fn page_bounds_in_group(&self, group_start: u64) -> (u64, u64) {
         let low = self.start.as_u64().max(group_start);
         let high = self
             .end_inclusive
@@ -57,7 +57,7 @@ impl ResolvedPrimaryIdWindow {
 
     /// Page-relative offset range of this window within one page: full-page
     /// `(0, span - 1)` except on the window's boundary pages.
-    pub fn offsets_in_page(&self, page: u64) -> (u32, u32) {
+    pub(crate) fn offsets_in_page(&self, page: u64) -> (u32, u32) {
         let from = if page_start(self.start.as_u64()) == page {
             page_offset(self.start.as_u64())
         } else {

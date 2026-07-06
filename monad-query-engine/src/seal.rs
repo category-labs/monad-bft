@@ -23,7 +23,7 @@ use crate::bitmap::STREAM_PAGE_ID_SPAN;
 
 /// Per-family seal granule: a page and its directory bucket seal together, so
 /// the seal span equals the page span.
-pub const SEAL_SPAN: u64 = STREAM_PAGE_ID_SPAN as u64;
+pub(crate) const SEAL_SPAN: u64 = STREAM_PAGE_ID_SPAN as u64;
 
 /// Largest multiple of [`SEAL_SPAN`] at/below `frontier` — the start of the open
 /// granule.

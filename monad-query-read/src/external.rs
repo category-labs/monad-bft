@@ -270,6 +270,7 @@ mod tests {
     use alloy_consensus::{Receipt, ReceiptWithBloom, SignableTransaction, TxEnvelope, TxLegacy};
     use alloy_primitives::{Log, LogData, Signature, TxKind, B256};
     use alloy_rlp::Encodable;
+    use monad_query_primitives::{ExternalBlobReader, InMemoryExternalBlobReader, RawBytes};
 
     use super::*;
 

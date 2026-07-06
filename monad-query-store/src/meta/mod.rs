@@ -83,7 +83,7 @@ pub struct KvTable<M> {
 }
 
 impl<M> KvTable<M> {
-    pub fn new(store: M, table: TableId) -> Self {
+    pub(crate) fn new(store: M, table: TableId) -> Self {
         Self { store, table }
     }
 }
@@ -105,7 +105,7 @@ pub struct ScannableKvTable<M> {
 }
 
 impl<M> ScannableKvTable<M> {
-    pub fn new(store: M, table: ScannableTableId) -> Self {
+    pub(crate) fn new(store: M, table: ScannableTableId) -> Self {
         Self { store, table }
     }
 }
@@ -122,7 +122,7 @@ impl<M: MetaStore> ScannableKvTable<M> {
     }
 
     /// Lists every clustering key in the partition, in clustering order.
-    pub async fn scan_keys(&self, partition: &[u8]) -> Result<Vec<Vec<u8>>> {
+    pub(crate) async fn scan_keys(&self, partition: &[u8]) -> Result<Vec<Vec<u8>>> {
         self.store.scan_keys(self.table, partition).await
     }
 }
