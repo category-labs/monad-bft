@@ -39,7 +39,7 @@ impl<'a, M: MetaStore, B: BlobStore> WriteSession<'a, M, B> {
         self.tables
     }
 
-    pub fn new(tables: &'a Tables<M, B>) -> Self {
+    pub(crate) fn new(tables: &'a Tables<M, B>) -> Self {
         Self {
             tables,
             meta_pending: Vec::new(),
@@ -50,7 +50,7 @@ impl<'a, M: MetaStore, B: BlobStore> WriteSession<'a, M, B> {
     /// Stages a durable metadata write. Read caches are read-populated only, so
     /// staging never touches them: an abandoned or failed session can never
     /// leave a phantom value resident, and there is nothing to evict on abort.
-    pub fn put<V>(&mut self, table: &CachedKvTable<M, V>, key: &[u8], value: Bytes) {
+    pub(crate) fn put<V>(&mut self, table: &CachedKvTable<M, V>, key: &[u8], value: Bytes) {
         self.meta_pending.push(MetaWriteOp::Put {
             table: table.table_id(),
             key: key.to_vec(),
@@ -73,7 +73,7 @@ impl<'a, M: MetaStore, B: BlobStore> WriteSession<'a, M, B> {
         });
     }
 
-    pub fn put_blob(&mut self, table: &BlobTable<B>, key: &[u8], value: Bytes) {
+    pub(crate) fn put_blob(&mut self, table: &BlobTable<B>, key: &[u8], value: Bytes) {
         self.blob_pending.push(BlobWriteOp {
             table: table.table,
             key: key.to_vec(),

@@ -31,8 +31,8 @@ const EARLIEST_QUERYABLE_BLOCK: u64 = 1;
 /// Iteration direction is the caller's choice via `QueryOrder`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResolvedBlockWindow {
-    pub low: BlockRef,
-    pub high: BlockRef,
+    pub(crate) low: BlockRef,
+    pub(crate) high: BlockRef,
 }
 
 impl ResolvedBlockWindow {

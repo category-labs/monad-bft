@@ -50,7 +50,7 @@ pub(crate) struct PrimaryIdResolver<'a, M: MetaStore> {
 }
 
 impl<'a, M: MetaStore> PrimaryIdResolver<'a, M> {
-    pub fn new(family: &'a FamilyTables<M>, sealed_below: u64, published_head: u64) -> Self {
+    pub(crate) fn new(family: &'a FamilyTables<M>, sealed_below: u64, published_head: u64) -> Self {
         Self {
             family,
             sealed_below,

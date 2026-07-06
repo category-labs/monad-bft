@@ -58,7 +58,7 @@ pub struct SealChainPoint {
 /// field — see the recipe in [`monad_query_engine::digest`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StandbyDigests {
-    pub block_number: u64,
+    pub(crate) block_number: u64,
     /// Chained per-block content digest through this block (row chain).
     pub row_chain: ChainDigest,
     /// Per-family seal chain at the last span sealed within this block's id

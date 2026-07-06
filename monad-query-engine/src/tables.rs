@@ -94,7 +94,7 @@ impl DictConfig {
 
     /// Clamped training sample range `[start, end)` for version `V >= 1`,
     /// drawn from the leading blocks of epoch `V - 1`.
-    pub fn training_range(&self, version: u32) -> (u64, u64) {
+    pub(crate) fn training_range(&self, version: u32) -> (u64, u64) {
         let prev_epoch = u64::from(version - 1);
         let start = prev_epoch * self.epoch_blocks;
         (start, start + self.clamped_sample_span())
@@ -203,7 +203,7 @@ impl DictManager {
     /// Installs the write-side codec for a published dictionary version.
     /// Empty `dict_bytes` is the plain-frames sentinel; non-empty bytes also
     /// seed the read-side decoder cache.
-    pub fn install_version(&self, family: Family, version: u32, dict_bytes: &[u8]) {
+    pub(crate) fn install_version(&self, family: Family, version: u32, dict_bytes: &[u8]) {
         let state = if dict_bytes.is_empty() {
             Arc::new(RowCodecState::plain(version))
         } else {
@@ -525,7 +525,7 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
     /// frames (version 0 or the empty-dict sentinel). Absent bytes for a
     /// version `>= 1` are a hard error: blocks are written only after their
     /// epoch dictionary is durably published.
-    pub async fn block_decoder(
+    pub(crate) async fn block_decoder(
         &self,
         family: Family,
         dict_version: u32,
@@ -554,7 +554,7 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
     }
 
     /// Decodes a single compressed row frame written under `dict_version`.
-    pub async fn decode_block_row(
+    pub(crate) async fn decode_block_row(
         &self,
         family: Family,
         dict_version: u32,
@@ -1325,7 +1325,7 @@ impl<M: MetaStore> FamilyTables<M> {
     }
 
     /// Stages a row-codec dictionary version into the durable write path.
-    pub fn stage_dict<B: BlobStore>(
+    pub(crate) fn stage_dict<B: BlobStore>(
         &self,
         w: &mut WriteSession<'_, M, B>,
         version: u32,

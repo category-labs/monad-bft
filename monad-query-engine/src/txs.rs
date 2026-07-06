@@ -32,7 +32,7 @@ fn decode_tx_location(bytes: Bytes) -> Result<TxLocation> {
 impl<M: MetaStore> TxHashIndexTable<M> {
     pub const TABLE: TableId = TableId::new("tx_hash_index");
 
-    pub fn new(meta_store: M, cache: CacheConfig) -> Self {
+    pub(crate) fn new(meta_store: M, cache: CacheConfig) -> Self {
         Self {
             table: CachedKvTable::new(
                 meta_store.table(Self::TABLE),

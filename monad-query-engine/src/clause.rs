@@ -50,7 +50,7 @@ impl IndexedClause {
     }
 
     /// The bitmap stream ids this clause's OR set expands to.
-    pub fn stream_ids(&self) -> Vec<String> {
+    pub(crate) fn stream_ids(&self) -> Vec<String> {
         self.values
             .iter()
             .map(|value| render_stream_id(self.kind.as_str(), value))
