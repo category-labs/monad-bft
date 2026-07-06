@@ -97,21 +97,21 @@ impl FieldHasher {
 /// that compresses them. Each row is length-prefixed, so row count and
 /// boundaries are captured implicitly.
 #[derive(Debug, Default)]
-pub struct RowDigest(FieldHasher);
+pub(crate) struct RowDigest(FieldHasher);
 
 impl RowDigest {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
     /// Folds one uncompressed (pre-compression) row payload.
-    pub fn row(&mut self, raw: &[u8]) {
+    pub(crate) fn row(&mut self, raw: &[u8]) {
         self.0.bytes(raw);
     }
 
     /// Finalizes the row digest. Equal results mean byte-identical row payloads
     /// in the same order.
-    pub fn finish(&self) -> ChainDigest {
+    pub(crate) fn finish(&self) -> ChainDigest {
         self.0.finish()
     }
 }

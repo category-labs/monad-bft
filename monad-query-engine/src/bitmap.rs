@@ -188,7 +188,7 @@ impl<M: MetaStore> BitmapTables<M> {
     /// Loads all retained fragments for one stream page: a keys-only scan plus
     /// concurrent point gets, which point-table caches make faster than a
     /// value-bearing scan.
-    pub async fn load_fragments(
+    pub(crate) async fn load_fragments(
         &self,
         stream_id: &str,
         page_start: u64,
@@ -203,7 +203,7 @@ impl<M: MetaStore> BitmapTables<M> {
     /// fragments flushed since (one keys-only scan plus cached point gets).
     /// Fragments flushed beyond the published head are left for a later
     /// fold — a published head proves completeness only at or below itself.
-    pub async fn load_open_page_fold(
+    pub(crate) async fn load_open_page_fold(
         &self,
         stream_id: &str,
         page_start: u64,
@@ -283,7 +283,7 @@ impl<M: MetaStore> BitmapTables<M> {
     }
 
     /// Loads a compacted bitmap page, decoded and served from the read cache.
-    pub async fn load_page_artifact(
+    pub(crate) async fn load_page_artifact(
         &self,
         stream_id: &str,
         page_start: u64,
@@ -326,7 +326,7 @@ impl<M: MetaStore> BitmapTables<M> {
     }
 
     /// Loads a stream's page-count manifest for one sealed page group.
-    pub async fn load_page_counts(
+    pub(crate) async fn load_page_counts(
         &self,
         stream_id: &str,
         group_start: u64,
@@ -360,7 +360,7 @@ impl<M: MetaStore> BitmapTables<M> {
     /// Deliberately not filtered by `published_head`: a row ahead of the head
     /// only adds stream ids whose own fragments are head-filtered to empty —
     /// wasteful, never wrong.
-    pub async fn load_open_streams(&self, page_start: u64) -> Result<Vec<String>> {
+    pub(crate) async fn load_open_streams(&self, page_start: u64) -> Result<Vec<String>> {
         let partition = page_start.to_be_bytes();
         let chunks = scan_get_all(
             &self.open_streams,
@@ -540,7 +540,7 @@ impl BitmapPageCounts {
 
     /// Per-page count for `page_start_in_group`. `Some(0)` is never returned;
     /// `None` means the stream contributes nothing in that page.
-    pub fn count_for_page(&self, page_start_in_group: u32) -> Option<u32> {
+    pub(crate) fn count_for_page(&self, page_start_in_group: u32) -> Option<u32> {
         self.pages
             .binary_search_by_key(&page_start_in_group, |(page, _)| *page)
             .ok()
@@ -560,7 +560,7 @@ impl BitmapPageCounts {
         Bytes::from(out)
     }
 
-    pub fn decode(bytes: &[u8]) -> Result<Self> {
+    pub(crate) fn decode(bytes: &[u8]) -> Result<Self> {
         let version = bytes
             .first()
             .copied()
@@ -744,7 +744,7 @@ impl StreamKey {
 
 /// Row key for one stream page (fragments partition / page artifact): the
 /// stream id, a `/` separator, then the big-endian global page start.
-pub fn stream_page_key(stream_id: &str, page_start: u64) -> Vec<u8> {
+pub(crate) fn stream_page_key(stream_id: &str, page_start: u64) -> Vec<u8> {
     stream_scoped_key(stream_id, page_start)
 }
 

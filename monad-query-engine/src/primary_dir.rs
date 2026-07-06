@@ -77,7 +77,7 @@ impl PrimaryDirBucket {
         alloy_rlp::encode(self)
     }
 
-    pub fn decode(bytes: &[u8]) -> Result<Self> {
+    pub(crate) fn decode(bytes: &[u8]) -> Result<Self> {
         let raw: Self = alloy_rlp::decode_exact(bytes)
             .map_err(|_| QueryError::Decode("invalid primary directory bucket rlp"))?;
         Self::new(raw.entries, raw.end_primary_id_exclusive)
@@ -96,7 +96,7 @@ impl PrimaryDirFragment {
         alloy_rlp::encode(self)
     }
 
-    pub fn decode(bytes: &[u8]) -> Result<Self> {
+    pub(crate) fn decode(bytes: &[u8]) -> Result<Self> {
         alloy_rlp::decode_exact(bytes)
             .map_err(|_| QueryError::Decode("invalid primary directory fragment rlp"))
     }
@@ -147,13 +147,13 @@ impl<M: MetaStore> PrimaryDirTables<M> {
     }
 
     /// Loads the compacted summary for one sealed bucket.
-    pub async fn load_bucket(&self, bucket_start: u64) -> Result<Option<PrimaryDirBucket>> {
+    pub(crate) async fn load_bucket(&self, bucket_start: u64) -> Result<Option<PrimaryDirBucket>> {
         let key = u64_key(bucket_start);
         self.buckets.get(&key).await
     }
 
     /// Loads all retained fragments for one bucket, block-ordered.
-    pub async fn load_bucket_fragments(
+    pub(crate) async fn load_bucket_fragments(
         &self,
         bucket_start: u64,
     ) -> Result<Vec<PrimaryDirFragment>> {
@@ -173,7 +173,7 @@ impl<M: MetaStore> PrimaryDirTables<M> {
     /// gets). Fragments flushed beyond the published head are left for a
     /// later fold. A different `bucket_start` (the previous bucket sealed)
     /// replaces the slot outright.
-    pub async fn load_open_bucket_fold(
+    pub(crate) async fn load_open_bucket_fold(
         &self,
         bucket_start: u64,
         published_head: u64,
@@ -271,7 +271,7 @@ impl<M: MetaStore> PrimaryDirTables<M> {
     }
 }
 
-pub fn bucket_start(primary_id: u64) -> u64 {
+pub(crate) fn bucket_start(primary_id: u64) -> u64 {
     primary_id - (primary_id % DIRECTORY_BUCKET_SIZE)
 }
 

@@ -44,7 +44,7 @@ pub const ROW_ZSTD_LEVEL: i32 = 3;
 
 /// Fallback decompressed-size bound, used only when a frame lacks a content
 /// size; frames written by [`BlockRowCompressor`] always record it.
-pub const ROW_DECODE_CAP: usize = 16 * 1024 * 1024;
+pub(crate) const ROW_DECODE_CAP: usize = 16 * 1024 * 1024;
 
 /// Cap on rows sampled per block for the dict-training corpus, so one huge
 /// block cannot dominate it.
@@ -65,7 +65,7 @@ pub fn should_sample_row(idx: usize, count: usize) -> bool {
 
 /// Immutable write-side codec state for one family. Shared behind an `Arc` and
 /// read once per ingest batch (off the per-row path).
-pub struct RowCodecState {
+pub(crate) struct RowCodecState {
     version: u32,
     /// Prepared encoder dictionary, `None` for [`DICT_VERSION_NONE`].
     encoder: Option<Arc<EncoderDictionary<'static>>>,
@@ -81,7 +81,7 @@ impl RowCodecState {
     /// A dict-less ("plain") state that still stamps `version` onto headers.
     /// Used for version 0 (bootstrap) and for the empty-dict sentinel of a
     /// version `V >= 1` whose epoch did not produce a useful dictionary.
-    pub fn plain(version: u32) -> Self {
+    pub(crate) fn plain(version: u32) -> Self {
         Self {
             version,
             encoder: None,
@@ -90,7 +90,7 @@ impl RowCodecState {
     }
 
     /// Builds a dictionary-backed state from raw dict bytes.
-    pub fn with_dictionary(version: u32, dict_bytes: &[u8], level: i32) -> Self {
+    pub(crate) fn with_dictionary(version: u32, dict_bytes: &[u8], level: i32) -> Self {
         Self {
             version,
             encoder: Some(Arc::new(EncoderDictionary::copy(dict_bytes, level))),
@@ -98,12 +98,8 @@ impl RowCodecState {
         }
     }
 
-    pub fn version(&self) -> u32 {
-        self.version
-    }
-
     /// Cheap snapshot for one ingest batch.
-    pub fn snapshot(self: &Arc<Self>) -> RowCodec {
+    pub(crate) fn snapshot(self: &Arc<Self>) -> RowCodec {
         RowCodec {
             state: Arc::clone(self),
         }
@@ -125,7 +121,7 @@ impl RowCodec {
 
     /// Builds one compressor for an entire block; reuse it across that block's
     /// rows via [`BlockRowCompressor::compress_row_into`].
-    pub fn block_compressor(&self) -> Result<BlockRowCompressor<'_>> {
+    pub(crate) fn block_compressor(&self) -> Result<BlockRowCompressor<'_>> {
         let compressor = match &self.state.encoder {
             Some(enc) => Compressor::with_prepared_dictionary(enc),
             None => Compressor::new(self.state.level),
@@ -190,14 +186,14 @@ pub fn digest_block_rows<T>(rows: &[T], mut encode_row: impl FnMut(&T) -> Vec<u8
 
 /// A zstd compressor bound to one block's dictionary, reused across its rows.
 /// The borrow keeps the prepared dictionary (owned by [`RowCodec`]) alive.
-pub struct BlockRowCompressor<'a> {
+pub(crate) struct BlockRowCompressor<'a> {
     compressor: Compressor<'a>,
 }
 
 impl BlockRowCompressor<'_> {
     /// Compresses one already-RLP-encoded row into its own zstd frame, appending
     /// the frame directly to `out`.
-    pub fn compress_row_into(&mut self, row: &[u8], out: &mut Vec<u8>) -> Result<()> {
+    pub(crate) fn compress_row_into(&mut self, row: &[u8], out: &mut Vec<u8>) -> Result<()> {
         let start = out.len();
         out.reserve(zstd::zstd_safe::compress_bound(row.len()));
         let mut cursor = Cursor::new(out);
@@ -213,12 +209,12 @@ impl BlockRowCompressor<'_> {
 /// once). The supplied decoder is authoritative: `Some` means dictionary
 /// frames, `None` means plain frames; mapping `(family, version)` to the right
 /// decoder is the read-side resolver's job before reaching here.
-pub struct RowDecompressor<'a> {
+pub(crate) struct RowDecompressor<'a> {
     inner: Decompressor<'a>,
 }
 
 impl<'a> RowDecompressor<'a> {
-    pub fn new(decoder: Option<&'a Arc<DecoderDictionary<'static>>>) -> Result<Self> {
+    pub(crate) fn new(decoder: Option<&'a Arc<DecoderDictionary<'static>>>) -> Result<Self> {
         let inner = match decoder {
             Some(dec) => Decompressor::with_prepared_dictionary(dec),
             None => Decompressor::new(),
@@ -229,7 +225,7 @@ impl<'a> RowDecompressor<'a> {
 
     /// Decompresses one row frame, sizing the buffer from the frame header's
     /// content size rather than a worst-case bound.
-    pub fn decompress(&mut self, frame: &[u8]) -> Result<Vec<u8>> {
+    pub(crate) fn decompress(&mut self, frame: &[u8]) -> Result<Vec<u8>> {
         let mut out = Vec::with_capacity(frame_decompressed_capacity(frame));
         self.inner
             .decompress_to_buffer(frame, &mut out)

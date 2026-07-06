@@ -37,17 +37,17 @@ pub(crate) struct ReadStats {
 }
 
 pub(crate) struct ReadStatsWindow {
-    pub started: u64,
+    pub(crate) started: u64,
     pub completed: u64,
     pub errors: u64,
     pub canceled: u64,
-    pub kinds: [u64; 2],
+    pub(crate) kinds: [u64; 2],
     /// Only the dynamo backend reports items; 0 elsewhere.
     #[cfg_attr(not(feature = "dynamo"), allow(dead_code))]
     pub items: u64,
-    pub bytes: u64,
-    pub in_flight: u64,
-    pub max_in_flight: u64,
+    pub(crate) bytes: u64,
+    pub(crate) in_flight: u64,
+    pub(crate) max_in_flight: u64,
 }
 
 impl ReadStats {

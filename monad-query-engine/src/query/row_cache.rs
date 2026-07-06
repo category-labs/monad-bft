@@ -44,14 +44,20 @@ impl<T: Send + Sync + 'static> RowCache<T> {
     }
 
     /// Cache-only probe; a hit records the access with the replacement policy.
-    pub fn probe(&self, block_number: u64, idx_in_block: usize) -> Option<Arc<T>> {
+    pub(crate) fn probe(&self, block_number: u64, idx_in_block: usize) -> Option<Arc<T>> {
         let idx = u32::try_from(idx_in_block).ok()?;
         self.inner.probe(&(block_number, idx)).map(|w| w.value)
     }
 
     /// Seeds a row the caller decoded itself. `weight` is the decompressed
     /// frame length the row was decoded from.
-    pub fn insert(&self, block_number: u64, idx_in_block: usize, value: Arc<T>, weight: usize) {
+    pub(crate) fn insert(
+        &self,
+        block_number: u64,
+        idx_in_block: usize,
+        value: Arc<T>,
+        weight: usize,
+    ) {
         let Ok(idx) = u32::try_from(idx_in_block) else {
             return;
         };
