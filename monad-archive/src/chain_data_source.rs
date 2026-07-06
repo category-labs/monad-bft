@@ -32,7 +32,7 @@ use monad_query_types::{
     ingest_types::{FinalizedBlock, IngestTrace, IngestTx},
     ExternalFamilyRegion, ExternalPayloadSpec,
 };
-use monad_query_write::ingest::source::ChainDataIngestSource;
+use monad_query_write::source::ChainDataIngestSource;
 
 use crate::{
     failover_circuit_breaker::{CircuitBreaker, FallbackExecutor},

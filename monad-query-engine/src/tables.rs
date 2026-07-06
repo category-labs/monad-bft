@@ -1452,7 +1452,7 @@ mod tests {
 
     // NOTE: `all_logical_table_names_match_declared_table_ids` (the catalog ⇄
     // declared-`TableId` consistency check) lives in monad-query-tests: it also
-    // references `monad_query_write::ingest::SnapshotStore`, which the engine
+    // references `monad_query_write::SnapshotStore`, which the engine
     // layer can't depend on, so it can't host the test.
 
     #[tokio::test]
