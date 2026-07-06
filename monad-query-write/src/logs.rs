@@ -14,17 +14,14 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use alloy_primitives::B256;
-use monad_query_types::logs::StoredLog;
-
-use crate::{
-    engine::{
-        bitmap::{IndexKind, StreamKey},
-        digest::ChainDigest,
-        row_codec::{digest_block_rows, encode_block_rows, RowCodec},
-    },
-    error::Result,
-    primitives::records::BlockBlobHeader,
+use monad_query_engine::{
+    bitmap::{IndexKind, StreamKey},
+    digest::ChainDigest,
+    row_codec::{digest_block_rows, encode_block_rows, RowCodec},
 };
+use monad_query_errors::Result;
+use monad_query_primitives::records::BlockBlobHeader;
+use monad_query_types::logs::StoredLog;
 
 /// Compresses a block's log rows into the framed per-family blob.
 pub(crate) fn encode_block_logs(

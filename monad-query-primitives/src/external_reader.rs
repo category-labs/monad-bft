@@ -16,7 +16,7 @@
 use std::{collections::BTreeMap, sync::RwLock};
 
 use futures::future::BoxFuture;
-use monad_query_errors::{MonadChainDataError, Result};
+use monad_query_errors::{QueryError, Result};
 
 /// Raw object bytes returned by an [`ExternalBlobReader`].
 pub type RawBytes = bytes::Bytes;
@@ -65,7 +65,7 @@ impl ExternalBlobReader for InMemoryExternalBlobReader {
                 return Ok(None);
             };
             if start > end_exclusive || start > object.len() {
-                return Err(MonadChainDataError::Decode("invalid blob range"));
+                return Err(QueryError::Decode("invalid blob range"));
             }
             Ok(Some(object.slice(start..end_exclusive.min(object.len()))))
         })();

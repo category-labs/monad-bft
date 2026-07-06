@@ -17,7 +17,7 @@ use std::{collections::HashSet, hash::Hash};
 
 use bytes::Bytes;
 
-use crate::engine::bitmap::{render_stream_id, IndexKind};
+use crate::bitmap::{render_stream_id, IndexKind};
 
 /// One AND-term of an indexed query. `kind` names the indexed field through
 /// the same [`IndexKind`] the ingest side writes streams under; `values` are

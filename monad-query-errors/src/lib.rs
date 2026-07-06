@@ -17,10 +17,10 @@
 
 use thiserror::Error;
 
-pub type Result<T> = std::result::Result<T, MonadChainDataError>;
+pub type Result<T> = std::result::Result<T, QueryError>;
 
 #[derive(Debug, Error)]
-pub enum MonadChainDataError {
+pub enum QueryError {
     #[error("backend error: {0}")]
     Backend(String),
     #[error("decode error: {0}")]

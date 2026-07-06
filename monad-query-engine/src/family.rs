@@ -13,12 +13,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use monad_query_primitives::records::{BlockRecord, FamilyWindowRecord};
+use monad_query_store::{BlobTableId, ScannableTableId, TableId};
 use serde::{Deserialize, Serialize};
-
-use crate::{
-    primitives::records::{BlockRecord, FamilyWindowRecord},
-    store::{BlobTableId, ScannableTableId, TableId},
-};
 
 pub const BLOCK_BLOB_TABLE: BlobTableId = BlobTableId::new("block_blob");
 
@@ -33,7 +30,7 @@ pub struct FamilyTableIds {
     pub bitmap_page_counts: TableId,
     pub open_bitmap_stream: ScannableTableId,
     /// Standby seal-chain rows: `span_start (u64 BE)` -> chained 32-byte seal
-    /// digest (see [`crate::engine::digest`]). Written in the same batch as
+    /// digest (see [`crate::digest`]). Written in the same batch as
     /// the span's sealed artifacts.
     pub seal_chain: TableId,
     /// Cache window-stats label for the per-family block-header cache, whose

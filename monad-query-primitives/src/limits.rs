@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use monad_query_errors::{LimitExceededKind, MonadChainDataError, Result};
+use monad_query_errors::{LimitExceededKind, QueryError, Result};
 
 use crate::order::QueryOrder;
 
@@ -48,7 +48,7 @@ impl Default for QueryEnvelope {
 /// Per-deployment caps on query shape: `max_limit` bounds `request.limit`,
 /// `max_block_range` bounds the resolved span (and thus the worst-case
 /// non-indexed scan). Breaches surface as
-/// [`monad_query_errors::MonadChainDataError::LimitExceeded`] (queryX `-32005`).
+/// [`monad_query_errors::QueryError::LimitExceeded`] (queryX `-32005`).
 /// Neither caps per-block results: the spec requires completing the current
 /// block, so counts can exceed `max_limit` for a hot block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,12 +73,10 @@ impl QueryLimits {
 
     pub fn check_limit(&self, limit: usize) -> Result<()> {
         if limit == 0 {
-            return Err(MonadChainDataError::InvalidRequest(
-                "limit must be at least 1",
-            ));
+            return Err(QueryError::InvalidRequest("limit must be at least 1"));
         }
         if limit > self.max_limit {
-            return Err(MonadChainDataError::LimitExceeded {
+            return Err(QueryError::LimitExceeded {
                 kind: LimitExceededKind::Limit,
                 max_limit: self.max_limit,
                 max_block_range: self.max_block_range,
@@ -90,7 +88,7 @@ impl QueryLimits {
 
 #[cfg(test)]
 mod tests {
-    use monad_query_errors::{LimitExceededKind, MonadChainDataError};
+    use monad_query_errors::{LimitExceededKind, QueryError};
 
     use super::QueryLimits;
 
@@ -100,15 +98,13 @@ mod tests {
 
         assert!(matches!(
             limits.check_limit(0),
-            Err(MonadChainDataError::InvalidRequest(
-                "limit must be at least 1",
-            ))
+            Err(QueryError::InvalidRequest("limit must be at least 1",))
         ));
         assert!(limits.check_limit(1).is_ok());
         assert!(limits.check_limit(5).is_ok());
         assert!(matches!(
             limits.check_limit(6),
-            Err(MonadChainDataError::LimitExceeded {
+            Err(QueryError::LimitExceeded {
                 kind: LimitExceededKind::Limit,
                 max_limit: 5,
                 max_block_range: 1_000,

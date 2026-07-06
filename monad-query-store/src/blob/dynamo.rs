@@ -55,6 +55,7 @@ use aws_sdk_dynamodb::{
     Client,
 };
 use bytes::Bytes;
+use monad_query_errors::{QueryError, Result};
 use tracing::debug;
 
 pub use crate::meta::DynamoCredentials;
@@ -66,7 +67,6 @@ use crate::{
         run_batch_write_chunks, split_batch_write_chunks, take_binary, validate_pk_sk_table,
         ClientRing, SharedDynamoConnection, ATTR_PK, ATTR_SK, ATTR_VAL, BATCH_WRITE_LIMIT,
     },
-    error::{MonadChainDataError, Result},
 };
 
 /// Key-kind discriminator folded into `pk`, disjoint from the metastore kinds.
@@ -243,10 +243,11 @@ impl DynamoBlobStore {
             return Ok(None);
         };
         match item.get(ATTR_LEN) {
-            Some(AttributeValue::N(n)) => n.parse::<usize>().map(Some).map_err(|_| {
-                MonadChainDataError::Backend(format!("dynamo blob len not a usize: {n}"))
-            }),
-            _ => Err(MonadChainDataError::Backend(
+            Some(AttributeValue::N(n)) => n
+                .parse::<usize>()
+                .map(Some)
+                .map_err(|_| QueryError::Backend(format!("dynamo blob len not a usize: {n}"))),
+            _ => Err(QueryError::Backend(
                 "dynamo blob chunk 0 missing numeric `len` attribute".to_string(),
             )),
         }
@@ -310,9 +311,7 @@ impl DynamoBlobStore {
             .enumerate()
             .map(|(i, chunk)| {
                 let idx = u32::try_from(i).map_err(|_| {
-                    MonadChainDataError::Backend(
-                        "dynamo blob chunk index overflows u32".to_string(),
-                    )
+                    QueryError::Backend("dynamo blob chunk index overflows u32".to_string())
                 })?;
                 let len = if idx == 0 { Some(total) } else { None };
                 self.build_chunk_put(&pk, idx, chunk, len)
@@ -338,7 +337,7 @@ impl DynamoBlobStore {
         }
         let put = put
             .build()
-            .map_err(|e| MonadChainDataError::Backend(format!("dynamo build put_request: {e}")))?;
+            .map_err(|e| QueryError::Backend(format!("dynamo build put_request: {e}")))?;
         Ok((
             self.table().to_string(),
             WriteRequest::builder().put_request(put).build(),
@@ -422,11 +421,9 @@ impl DynamoBlobStore {
         };
         match item.get(ATTR_VAL) {
             Some(AttributeValue::N(n)) => n.parse::<usize>().map(Some).map_err(|_| {
-                MonadChainDataError::Backend(format!(
-                    "dynamo blob chunk-size marker not a usize: {n}"
-                ))
+                QueryError::Backend(format!("dynamo blob chunk-size marker not a usize: {n}"))
             }),
-            _ => Err(MonadChainDataError::Backend(
+            _ => Err(QueryError::Backend(
                 "dynamo blob chunk-size marker missing numeric `val` attribute".to_string(),
             )),
         }
@@ -458,7 +455,7 @@ impl DynamoBlobStore {
             // response was lost): validate against whatever got stored.
             Err(e) if is_conditional_check_failed(&e) => match self.stored_chunk_size().await? {
                 Some(stored) => self.check_chunk_size(stored),
-                None => Err(MonadChainDataError::Backend(
+                None => Err(QueryError::Backend(
                     "dynamo blob chunk-size marker absent after conditional-put conflict"
                         .to_string(),
                 )),
@@ -471,7 +468,7 @@ impl DynamoBlobStore {
         if stored == self.inner.chunk_size {
             return Ok(());
         }
-        Err(MonadChainDataError::Backend(format!(
+        Err(QueryError::Backend(format!(
             "dynamo blob table {} chunk_size mismatch: configured {}, data written with {stored} \
              (the byte->chunk-index mapping is a wire contract; a mismatched size mis-slices \
              range reads)",
@@ -537,7 +534,7 @@ impl BlobStore for DynamoBlobStore {
                     .key(ATTR_SK, AttributeValue::B(Blob::new(sk)))
                     .build()
                     .map_err(|e| {
-                        MonadChainDataError::Backend(format!("dynamo build delete_request: {e}"))
+                        QueryError::Backend(format!("dynamo build delete_request: {e}"))
                     })?;
                 Ok((
                     table_name.clone(),
@@ -557,14 +554,14 @@ impl BlobStore for DynamoBlobStore {
         end_exclusive: usize,
     ) -> Result<Option<Bytes>> {
         if start > end_exclusive {
-            return Err(MonadChainDataError::Decode("invalid blob range"));
+            return Err(QueryError::Decode("invalid blob range"));
         }
         let pk = blob_pk(table, key);
         let Some(len) = self.blob_len(&pk).await? else {
             return Ok(None);
         };
         if start > len {
-            return Err(MonadChainDataError::Decode("invalid blob range"));
+            return Err(QueryError::Decode("invalid blob range"));
         }
         // Clamp the end past EOF, matching the trait default and S3 backend.
         let end = end_exclusive.min(len);
@@ -577,9 +574,7 @@ impl BlobStore for DynamoBlobStore {
         if offset + want > buf.len() {
             // `len` claims more bytes than the chunks hold: a torn write that
             // head publication should have kept invisible.
-            return Err(MonadChainDataError::Decode(
-                "blob range exceeds stored chunks",
-            ));
+            return Err(QueryError::Decode("blob range exceeds stored chunks"));
         }
         Ok(Some(Bytes::from(buf).slice(offset..offset + want)))
     }

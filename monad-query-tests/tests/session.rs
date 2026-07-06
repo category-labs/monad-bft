@@ -58,7 +58,7 @@ async fn closure_error_does_not_flush() {
         .with_writes(|w| {
             Box::pin(async move {
                 tables_ref.blocks().stage_hash_index(w, hash_ref, 7);
-                Err(MonadChainDataError::Backend("intentional".into()))
+                Err(QueryError::Backend("intentional".into()))
             })
         })
         .await;
@@ -75,7 +75,7 @@ async fn closure_error_evicts_populated_cache_entries() {
         .with_writes(|w| {
             Box::pin(async move {
                 stage_block_header(tables_ref, w, 1);
-                Err(MonadChainDataError::Backend("intentional".into()))
+                Err(QueryError::Backend("intentional".into()))
             })
         })
         .await;
@@ -120,7 +120,7 @@ async fn closure_error_then_retry_is_idempotent() {
         .with_writes(|w| {
             Box::pin(async move {
                 tables_ref.blocks().stage_hash_index(w, hash_ref, 42);
-                Err(MonadChainDataError::Backend("intentional".into()))
+                Err(QueryError::Backend("intentional".into()))
             })
         })
         .await;

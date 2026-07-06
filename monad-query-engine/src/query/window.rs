@@ -13,21 +13,18 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use monad_query_errors::{QueryError, Result};
+use monad_query_primitives::{
+    order::QueryOrder,
+    records::{BlockRecord, PrimaryId},
+};
+use monad_query_store::MetaStore;
+
 use crate::{
-    engine::{
-        bitmap::{
-            page_group_start, page_offset, page_start, PAGE_GROUP_ID_SPAN, STREAM_PAGE_ID_SPAN,
-        },
-        family::Family,
-        tables::BlockTables,
-    },
-    error::{MonadChainDataError, Result},
-    primitives::{
-        order::QueryOrder,
-        range::ResolvedBlockWindow,
-        records::{BlockRecord, PrimaryId},
-    },
-    store::MetaStore,
+    bitmap::{page_group_start, page_offset, page_start, PAGE_GROUP_ID_SPAN, STREAM_PAGE_ID_SPAN},
+    family::Family,
+    range::ResolvedBlockWindow,
+    tables::BlockTables,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,7 +121,7 @@ async fn load_record_in_range<M: MetaStore>(
     blocks
         .load_record(block_number)
         .await?
-        .ok_or(MonadChainDataError::MissingData(
+        .ok_or(QueryError::MissingData(
             "missing block record inside resolved range",
         ))
 }

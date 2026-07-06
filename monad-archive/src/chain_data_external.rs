@@ -33,7 +33,7 @@ use bytes::Bytes;
 use eyre::OptionExt;
 use futures::future::BoxFuture;
 use monad_query_config::ChainDataArchiveBackendConfig;
-use monad_query_errors::MonadChainDataError;
+use monad_query_errors::QueryError;
 use monad_query_primitives::ExternalBlobReader;
 
 use crate::{
@@ -58,14 +58,14 @@ impl ExternalBlobReader for ArchiveExternalReader {
         let key = std::str::from_utf8(key).map(str::to_owned);
         Box::pin(async move {
             let key = key.map_err(|_| {
-                MonadChainDataError::Decode("external archive key is not valid utf-8")
+                QueryError::Decode("external archive key is not valid utf-8")
             })?;
             let result = match self {
                 Self::Mongo(store) => store.read_range(&key, start, end_exclusive).await,
                 Self::Dynamo(store) => store.read_range(&key, start, end_exclusive).await,
             };
             result.map_err(|e| {
-                MonadChainDataError::Backend(format!("archive external read of {key}: {e:#}"))
+                QueryError::Backend(format!("archive external read of {key}: {e:#}"))
             })
         })
     }

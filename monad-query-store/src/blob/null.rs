@@ -14,18 +14,16 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use bytes::Bytes;
+use monad_query_errors::{QueryError, Result};
 
-use crate::{
-    blob::{BlobStore, BlobTableId, BlobWriteOp},
-    error::{MonadChainDataError, Result},
-};
+use crate::blob::{BlobStore, BlobTableId, BlobWriteOp};
 
 /// The blob backend of a store configured WITHOUT one (`[store.blob]`
 /// omitted): an external-archive store whose row payloads live in the
 /// monad-archive objects and whose checkpoints are disabled (snapshot payloads
 /// are blob objects), so no blob traffic is ever legitimate.
 ///
-/// Every access is a LOUD [`MonadChainDataError::Backend`] — never a silent
+/// Every access is a LOUD [`QueryError::Backend`] — never a silent
 /// `None` — so a path that does reach the blob store (a native block-record
 /// read, a checkpoint that slipped past the disable) surfaces as an error
 /// instead of quietly missing data. The one exception is an empty
@@ -34,8 +32,8 @@ use crate::{
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NullBlobStore;
 
-fn no_blob_store(op: &str) -> MonadChainDataError {
-    MonadChainDataError::Backend(format!(
+fn no_blob_store(op: &str) -> QueryError {
+    QueryError::Backend(format!(
         "no blob store configured ([store.blob] omitted), but {op} was called"
     ))
 }
@@ -69,7 +67,7 @@ mod tests {
 
     fn assert_loud<T: std::fmt::Debug>(result: Result<T>) {
         match result {
-            Err(MonadChainDataError::Backend(message)) => {
+            Err(QueryError::Backend(message)) => {
                 assert!(message.contains("no blob store configured"), "{message}");
             }
             other => panic!("expected a loud Backend error, got {other:?}"),

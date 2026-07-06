@@ -21,7 +21,7 @@ pub use alloy_primitives::{Address, Bytes, Log, LogData, B256};
 pub use monad_query_engine::{
     bitmap::*, clause::*, family::*, primary_dir::*, tables::*, SessionFuture, WriteSession,
 };
-pub use monad_query_errors::{LimitExceededKind, MonadChainDataError, Result};
+pub use monad_query_errors::{LimitExceededKind, QueryError, Result};
 pub use monad_query_primitives::{
     limits::{QueryEnvelope, QueryLimits},
     order::QueryOrder,

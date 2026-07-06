@@ -28,7 +28,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use monad_query_errors::{MonadChainDataError, Result};
+use monad_query_errors::{QueryError, Result};
 use monad_query_store::{
     BlobStore, BlobTableId, BlobWriteOp, InMemoryBlobStore, InMemoryMetaStore, MetaStore,
     MetaWriteOp, ScannableTableId, TableId,
@@ -233,7 +233,7 @@ impl MetaStore for ObservedMetaStore {
 
     async fn apply_writes(&self, writes: Vec<MetaWriteOp>) -> Result<()> {
         if self.mode.fail_next_apply.swap(false, Ordering::Relaxed) {
-            return Err(MonadChainDataError::Backend(
+            return Err(QueryError::Backend(
                 "ObservedMetaStore: injected meta failure".into(),
             ));
         }

@@ -14,18 +14,16 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use alloy_consensus::Transaction;
-pub use monad_query_types::txs::TxLocation;
-use monad_query_types::txs::{decode_envelope, selector_from_envelope};
-
-use crate::{
-    engine::{
-        bitmap::{IndexKind, StreamKey},
-        digest::ChainDigest,
-        row_codec::{digest_block_rows, encode_block_rows, RowCodec},
-    },
-    error::Result,
+use monad_query_engine::{
+    bitmap::{IndexKind, StreamKey},
+    digest::ChainDigest,
+    row_codec::{digest_block_rows, encode_block_rows, RowCodec},
+};
+use monad_query_errors::Result;
+use monad_query_primitives::records::BlockBlobHeader;
+use monad_query_types::{
     ingest_types::IngestTx,
-    primitives::records::BlockBlobHeader,
+    txs::{decode_envelope, selector_from_envelope},
 };
 
 /// Compresses a block's tx rows into the framed per-family blob.

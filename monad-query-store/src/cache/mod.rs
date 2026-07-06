@@ -25,12 +25,10 @@ use std::{
 
 use bytes::Bytes;
 use futures::future::{BoxFuture, FutureExt, Shared};
+use monad_query_errors::{QueryError, Result};
 use quick_cache::{sync::Cache as SievedCache, OptionsBuilder, Weighter};
 
-use crate::{
-    error::{MonadChainDataError, Result},
-    meta::{KvTable, MetaStore, ScannableKvTable, ScannableTableId, TableId},
-};
+use crate::meta::{KvTable, MetaStore, ScannableKvTable, ScannableTableId, TableId};
 
 const DEFAULT_CACHE_TOTAL_MIB: usize = 8192;
 
@@ -73,9 +71,9 @@ fn decode_weighted<V>(
 }
 
 /// Output stored in the single-flight map. [`Shared`] requires `Clone` output
-/// and [`MonadChainDataError`] is not `Clone`, so errors are `Arc`-wrapped;
+/// and [`QueryError`] is not `Clone`, so errors are `Arc`-wrapped;
 /// [`unshare`] converts back at the boundary.
-type SharedResult<V> = std::result::Result<Option<V>, Arc<MonadChainDataError>>;
+type SharedResult<V> = std::result::Result<Option<V>, Arc<QueryError>>;
 
 /// A boxed, `'static` backend-fetch future shared by every coalesced caller.
 type SharedFetch<V> = Shared<BoxFuture<'static, SharedResult<V>>>;
@@ -86,7 +84,7 @@ type SharedFetch<V> = Shared<BoxFuture<'static, SharedResult<V>>>;
 fn unshare<V>(shared: SharedResult<V>) -> Result<Option<V>> {
     shared.map_err(|e| match Arc::try_unwrap(e) {
         Ok(err) => err,
-        Err(shared) => MonadChainDataError::Backend(shared.to_string()),
+        Err(shared) => QueryError::Backend(shared.to_string()),
     })
 }
 
@@ -678,7 +676,7 @@ mod tests {
             async fn get(&self, _t: TableId, _k: &[u8]) -> Result<Option<Bytes>> {
                 self.calls.fetch_add(1, Ordering::SeqCst);
                 tokio::time::sleep(Duration::from_millis(20)).await;
-                Err(MonadChainDataError::Backend("boom".to_string()))
+                Err(QueryError::Backend("boom".to_string()))
             }
             async fn scan_get(&self, _t: ScanId, _p: &[u8], _c: &[u8]) -> Result<Option<Bytes>> {
                 unimplemented!()
@@ -725,7 +723,7 @@ mod tests {
         struct CorruptStore;
         impl MetaStore for CorruptStore {
             async fn get(&self, _t: TableId, _k: &[u8]) -> Result<Option<Bytes>> {
-                Err(MonadChainDataError::Decode("invalid block metadata rlp"))
+                Err(QueryError::Decode("invalid block metadata rlp"))
             }
             async fn scan_get(&self, _t: ScanId, _p: &[u8], _c: &[u8]) -> Result<Option<Bytes>> {
                 unimplemented!()
@@ -748,7 +746,7 @@ mod tests {
         let cached = CachedKvTable::new(table, 4096, Ok);
         let err = cached.get(b"k").await.expect_err("fetch fails");
         assert!(
-            matches!(err, MonadChainDataError::Decode(_)),
+            matches!(err, QueryError::Decode(_)),
             "sole caller must see the original variant, got {err:?}"
         );
     }

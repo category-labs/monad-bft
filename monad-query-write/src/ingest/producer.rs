@@ -20,6 +20,8 @@
 use std::sync::Arc;
 
 use futures::{stream, StreamExt};
+use monad_query_errors::{QueryError, Result};
+use monad_query_types::ingest_types::FinalizedBlock;
 use tokio::sync::{mpsc, oneshot, Semaphore};
 use tracing::Instrument;
 
@@ -28,10 +30,6 @@ use super::{
     source::ChainDataIngestSource,
     task_join_err, AbortOnDrop, AssignedBlock, DataMsg, FamilyFrontier, FamilyFrontierExt,
     IndexMsg, IngestMsg,
-};
-use crate::{
-    error::{MonadChainDataError, Result},
-    ingest_types::FinalizedBlock,
 };
 
 /// When the producer emits signals. The flush cadence is a smooth function of
@@ -202,8 +200,8 @@ impl Signaller {
     }
 }
 
-fn source_err(e: eyre::Report) -> MonadChainDataError {
-    MonadChainDataError::Backend(format!("ingest source: {e}"))
+fn source_err(e: eyre::Report) -> QueryError {
+    QueryError::Backend(format!("ingest source: {e}"))
 }
 
 /// Producer task: always follow the tip. On each poll it fetches the backlog

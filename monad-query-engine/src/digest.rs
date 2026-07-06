@@ -26,7 +26,7 @@
 //!    parent hash, EVM header bytes, per-family windows + uncompressed row
 //!    payloads) folds into [`block_content_digest`]; per-block digests chain
 //!    into the running value stored in every
-//!    [`BlockRecord`](crate::primitives::records::BlockRecord)
+//!    [`BlockRecord`](monad_query_primitives::records::BlockRecord)
 //!    `row_chain`, so one 32-byte value certifies the whole history.
 //!
 //! 2. **Seal chains** (index track), one per family. Open-page FRAGMENTS are
@@ -49,10 +49,9 @@
 //! canonical sorted order; fixed-width fields are little-endian.
 
 use blake3::Hasher;
+use monad_query_primitives::{records::FamilyWindowRecord, Hash32};
 
-use crate::{
-    engine::family::Family, ingest_types::Hash32, primitives::records::FamilyWindowRecord,
-};
+use crate::family::Family;
 
 /// A 32-byte chain digest, shared by the row chain and the per-family seal
 /// chains. Stored as [`Hash32`] (`B256`) so it round-trips through the existing
@@ -212,8 +211,9 @@ impl SealDigest {
 
 #[cfg(test)]
 mod tests {
+    use monad_query_primitives::records::PrimaryId;
+
     use super::*;
-    use crate::primitives::records::PrimaryId;
 
     fn window(first: u64, count: u32) -> FamilyWindowRecord {
         FamilyWindowRecord {
