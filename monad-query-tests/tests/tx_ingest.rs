@@ -83,10 +83,7 @@ async fn ingest_rejects_invalid_signed_tx_bytes() {
     };
 
     assert!(
-        matches!(
-            err,
-            MonadChainDataError::Decode("invalid signed tx envelope")
-        ),
+        matches!(err, QueryError::Decode("invalid signed tx envelope")),
         "expected invalid envelope decode error, got {err:?}"
     );
 }

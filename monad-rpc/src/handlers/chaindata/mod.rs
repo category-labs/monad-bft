@@ -25,7 +25,7 @@ use std::sync::Arc;
 
 use alloy_primitives::U64;
 use monad_query_config::ConfiguredChainDataReader;
-use monad_query_errors::MonadChainDataError;
+use monad_query_errors::QueryError;
 use monad_query_read::{
     blocks::QueryBlocksRequest,
     logs::{LogsRelations, QueryLogsRequest},
@@ -90,12 +90,12 @@ fn limit_data(max_limit: usize, max_block_range: u64) -> Option<Box<RawValue>> {
 /// invalid params (with the engine's message), limit breaches are the queryX
 /// `-32005` carrying the limits in `data`, and everything else (missing data,
 /// backend) is an internal error.
-pub(super) fn chain_data_error(e: MonadChainDataError) -> JsonRpcError {
+pub(super) fn chain_data_error(e: QueryError) -> JsonRpcError {
     match e {
-        MonadChainDataError::InvalidRequest(message) => {
+        QueryError::InvalidRequest(message) => {
             JsonRpcError::filter_error(message.to_string())
         }
-        e @ MonadChainDataError::LimitExceeded {
+        e @ QueryError::LimitExceeded {
             max_limit,
             max_block_range,
             ..
@@ -476,13 +476,13 @@ mod tests {
 
     #[test]
     fn chain_data_error_mapping() {
-        let invalid = chain_data_error(MonadChainDataError::InvalidRequest(
+        let invalid = chain_data_error(QueryError::InvalidRequest(
             "limit must be at least 1",
         ));
         assert_eq!(invalid.code, -32602);
         assert_eq!(invalid.message, "limit must be at least 1");
 
-        let limit = chain_data_error(MonadChainDataError::LimitExceeded {
+        let limit = chain_data_error(QueryError::LimitExceeded {
             kind: LimitExceededKind::Limit,
             max_limit: 5,
             max_block_range: 100,
@@ -493,8 +493,8 @@ mod tests {
         assert_eq!(data, json!({"maxLimit": "0x5", "maxBlockRange": "0x64"}));
 
         for internal in [
-            chain_data_error(MonadChainDataError::MissingData("no published blocks")),
-            chain_data_error(MonadChainDataError::Backend("boom".into())),
+            chain_data_error(QueryError::MissingData("no published blocks")),
+            chain_data_error(QueryError::Backend("boom".into())),
         ] {
             assert_eq!(internal.code, -32603);
         }

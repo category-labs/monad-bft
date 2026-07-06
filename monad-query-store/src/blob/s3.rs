@@ -42,14 +42,13 @@ use aws_sdk_s3::{
 };
 use bytes::Bytes;
 use futures::stream::{StreamExt, TryStreamExt};
-use tracing::{debug, info, warn};
-
+use monad_query_errors::{QueryError, Result};
 use monad_query_primitives::ExternalBlobReader;
+use tracing::{debug, info, warn};
 
 use crate::{
     aws::load_sdk_config,
     blob::{BlobStore, BlobTableId, BlobWriteOp},
-    error::{MonadChainDataError, Result},
     read_stats::{ReadGuard, ReadStats},
 };
 
@@ -280,7 +279,7 @@ impl S3BlobStore {
             Ok(collected) => collected,
             Err(e) => {
                 read_guard.finish(true, 0, 0);
-                return Err(MonadChainDataError::Backend(format!(
+                return Err(QueryError::Backend(format!(
                     "s3 get_object body {object_key}: {e}"
                 )));
             }
@@ -308,7 +307,7 @@ impl S3BlobStore {
         };
         let len = resp.content_length.unwrap_or(0);
         usize::try_from(len).map(Some).map_err(|_| {
-            MonadChainDataError::Backend(format!(
+            QueryError::Backend(format!(
                 "s3 head_object {object_key}: content length {len} out of range"
             ))
         })
@@ -323,7 +322,7 @@ impl S3BlobStore {
     async fn empty_range_at(&self, object_key: &str, start: usize) -> Result<Option<Bytes>> {
         match self.object_len_at(object_key).await? {
             None => Ok(None),
-            Some(len) if start > len => Err(MonadChainDataError::Decode("invalid blob range")),
+            Some(len) if start > len => Err(QueryError::Decode("invalid blob range")),
             Some(_) => Ok(Some(Bytes::new())),
         }
     }
@@ -337,7 +336,7 @@ impl S3BlobStore {
         end_exclusive: usize,
     ) -> Result<Option<Bytes>> {
         if start > end_exclusive {
-            return Err(MonadChainDataError::Decode("invalid blob range"));
+            return Err(QueryError::Decode("invalid blob range"));
         }
         // S3 cannot express a zero-length range: resolve it from the object
         // length alone, tracked as one range read.
@@ -502,7 +501,7 @@ impl BlobStore for S3BlobStore {
             // A GET without a `Range` header cannot 416.
             GetObjectOutcome::Unsatisfiable(read_guard) => {
                 read_guard.finish(true, 0, 0);
-                Err(MonadChainDataError::Decode("invalid blob range"))
+                Err(QueryError::Decode("invalid blob range"))
             }
         }
     }
@@ -577,7 +576,7 @@ impl S3ExternalBlobReader {
     /// error, not a debug assert.
     pub async fn new(config: S3BlobStoreConfig) -> Result<Self> {
         if !config.root_prefix.is_empty() || config.create_bucket {
-            return Err(MonadChainDataError::Backend(
+            return Err(QueryError::Backend(
                 "external archive reader requires an empty prefix and no bucket provisioning"
                     .to_string(),
             ));
@@ -597,9 +596,8 @@ impl ExternalBlobReader for S3ExternalBlobReader {
     ) -> futures::future::BoxFuture<'_, Result<Option<Bytes>>> {
         let key = std::str::from_utf8(key).map(str::to_owned);
         Box::pin(async move {
-            let key = key.map_err(|_| {
-                MonadChainDataError::Decode("external archive key is not valid utf-8")
-            })?;
+            let key =
+                key.map_err(|_| QueryError::Decode("external archive key is not valid utf-8"))?;
             self.store.read_range_at(&key, start, end_exclusive).await
         })
     }
@@ -633,7 +631,7 @@ fn push_hex(out: &mut String, bytes: &[u8]) {
     }
 }
 
-fn backend_err<E, R>(op: &str, object_key: &str, e: SdkError<E, R>) -> MonadChainDataError
+fn backend_err<E, R>(op: &str, object_key: &str, e: SdkError<E, R>) -> QueryError
 where
     E: ProvideErrorMetadata + std::error::Error + Send + Sync + 'static,
     R: std::fmt::Debug,
@@ -643,7 +641,7 @@ where
         Some(code) => format!("{code}: {}", e.message().unwrap_or("")),
         None => e.to_string(),
     };
-    MonadChainDataError::Backend(format!("s3 {op} {object_key}: {detail}"))
+    QueryError::Backend(format!("s3 {op} {object_key}: {detail}"))
 }
 
 fn is_no_such_key<R>(e: &SdkError<GetObjectError, R>) -> bool {

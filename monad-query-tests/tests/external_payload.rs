@@ -183,7 +183,7 @@ async fn external_ingest_requires_a_spec_on_every_block() {
         Err(err) => err,
     };
     assert!(
-        matches!(err, MonadChainDataError::InvalidBlock(_)),
+        matches!(err, QueryError::InvalidBlock(_)),
         "expected InvalidBlock, got {err:?}"
     );
 }
@@ -219,7 +219,7 @@ async fn external_ingest_rejects_specs_that_disagree_with_the_block() {
             Err(err) => err,
         };
         assert!(
-            matches!(err, MonadChainDataError::InvalidBlock(_)),
+            matches!(err, QueryError::InvalidBlock(_)),
             "breakage {i}: expected InvalidBlock, got {err:?}"
         );
     }

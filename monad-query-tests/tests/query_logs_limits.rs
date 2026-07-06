@@ -16,13 +16,13 @@
 use monad_query_tests::prelude::*;
 #[track_caller]
 fn assert_limit_exceeded(
-    err: MonadChainDataError,
+    err: QueryError,
     kind: LimitExceededKind,
     max_limit: usize,
     max_block_range: u64,
 ) {
     match err {
-        MonadChainDataError::LimitExceeded {
+        QueryError::LimitExceeded {
             kind: got_kind,
             max_limit: got_max_limit,
             max_block_range: got_max_block_range,
@@ -103,7 +103,7 @@ async fn defaulted_block_range_is_bounded_by_max_block_range() {
     assert!(
         matches!(
             err,
-            MonadChainDataError::LimitExceeded {
+            QueryError::LimitExceeded {
                 kind: LimitExceededKind::BlockRange,
                 ..
             }

@@ -21,6 +21,19 @@ use std::{future::Future, sync::Arc};
 
 use bytes::Bytes;
 use futures::{stream::FuturesOrdered, StreamExt};
+use monad_query_engine::{
+    digest::{block_content_digest, chain, family_content_digest, ChainDigest},
+    family::PerFamily,
+    row_codec::{RowCodec, DICT_VERSION_NONE},
+    tables::{DictConfig, Tables},
+};
+use monad_query_errors::{QueryError, Result};
+use monad_query_primitives::{
+    records::{BlockBlobHeader, BlockRecord, FamilyWindowRecord, PrimaryId, ENCODING_EXTERNAL_V1},
+    EvmBlockHeader, Hash32,
+};
+use monad_query_store::{BlobStore, MetaStore};
+use monad_query_types::{external::ExternalFamilyRegion, txs::TxLocation};
 use tokio::sync::mpsc;
 use tracing::Instrument;
 
@@ -30,25 +43,9 @@ use super::{
     task_join_err, AssignedBlock, DataMsg, IngestMsg,
 };
 use crate::{
-    engine::{
-        digest::{block_content_digest, chain, family_content_digest, ChainDigest},
-        family::PerFamily,
-        row_codec::{RowCodec, DICT_VERSION_NONE},
-        tables::{DictConfig, Tables},
-    },
-    error::{MonadChainDataError, Result},
-    external::ExternalFamilyRegion,
-    ingest_types::Hash32,
     logs::{digest_block_logs, encode_block_logs},
-    primitives::{
-        records::{
-            BlockBlobHeader, BlockRecord, FamilyWindowRecord, PrimaryId, ENCODING_EXTERNAL_V1,
-        },
-        EvmBlockHeader,
-    },
-    store::{BlobStore, MetaStore},
     traces::{digest_block_traces, encode_block_traces},
-    txs::{digest_block_txs, encode_block_txs, TxLocation},
+    txs::{digest_block_txs, encode_block_txs},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -74,7 +71,7 @@ pub enum PayloadMode {
     /// Rows stay in the monad-archive objects the source ingests FROM; ingest
     /// writes only metadata + indexes whose locators point into those objects
     /// (`ENCODING_EXTERNAL_V1` headers). Every fetched block must carry an
-    /// [`crate::external::ExternalPayloadSpec`]. Dictionaries are never
+    /// [`monad_query_types::external::ExternalPayloadSpec`]. Dictionaries are never
     /// trained (containers are uncompressed), and `row_chain` digests stay
     /// byte-identical to a native ingest of the same blocks. The only mode
     /// valid without a blob store — see `ChainDataStoreConfig::blob` for
@@ -237,7 +234,7 @@ where
                     DICT_VERSION_NONE
                 } else {
                     u32::try_from(b.number / epoch_blocks)
-                        .map_err(|_| MonadChainDataError::Decode("dict epoch/version overflow"))?
+                        .map_err(|_| QueryError::Decode("dict epoch/version overflow"))?
                 };
                 let block_codecs = match &codecs {
                     Some((v, c)) if *v == version => c.clone(),
@@ -459,14 +456,12 @@ pub(crate) fn encode_pack_entry(b: &AssignedBlock, codecs: &Codecs) -> Result<Pa
         encode_block_traces(&b.block.traces, &codecs.trace)?;
 
     let log_len = u32::try_from(log_blob.len())
-        .map_err(|_| MonadChainDataError::Decode("block log blob too large"))?;
-    let tx_len = u32::try_from(tx_blob.len())
-        .map_err(|_| MonadChainDataError::Decode("block tx blob too large"))?;
-    let trace_base = log_len
-        .checked_add(tx_len)
-        .ok_or(MonadChainDataError::Decode(
-            "combined block blob base offset overflow",
-        ))?;
+        .map_err(|_| QueryError::Decode("block log blob too large"))?;
+    let tx_len =
+        u32::try_from(tx_blob.len()).map_err(|_| QueryError::Decode("block tx blob too large"))?;
+    let trace_base = log_len.checked_add(tx_len).ok_or(QueryError::Decode(
+        "combined block blob base offset overflow",
+    ))?;
     log_header.base_offset = 0;
     tx_header.base_offset = log_len;
     trace_header.base_offset = trace_base;
@@ -497,13 +492,9 @@ pub(crate) fn encode_pack_entry(b: &AssignedBlock, codecs: &Codecs) -> Result<Pa
 /// row encoders over the decoded rows (encode, digest, discard), so
 /// `row_chain` is mode-independent.
 pub(crate) fn encode_external_pack_entry(b: &AssignedBlock) -> Result<PackEntry> {
-    let spec = b
-        .block
-        .external
-        .as_ref()
-        .ok_or(MonadChainDataError::InvalidBlock(
-            "external payload mode requires an external payload spec on every block",
-        ))?;
+    let spec = b.block.external.as_ref().ok_or(QueryError::InvalidBlock(
+        "external payload mode requires an external payload spec on every block",
+    ))?;
     spec.validate(b.number, &b.block)?;
 
     let logs = b.block.flatten_logs()?;
@@ -566,7 +557,7 @@ fn block_record_and_digest(
             count: b.ranges.trace_count,
         },
         // Placeholder until the serial drain folds the chain (pop_encode).
-        row_chain: crate::engine::digest::EMPTY_DIGEST,
+        row_chain: monad_query_engine::digest::EMPTY_DIGEST,
     };
 
     let content_digest = block_content_digest(
@@ -629,7 +620,7 @@ mod tests {
     struct Fake(Mutex<Vec<u32>>);
     impl CodecResolver for Fake {
         async fn ensure(&self, _v: u32) -> Result<Codecs> {
-            Err(MonadChainDataError::Backend("unused".into()))
+            Err(QueryError::Backend("unused".into()))
         }
         fn prewarm(&self, version: u32) {
             self.0.lock().unwrap().push(version);
