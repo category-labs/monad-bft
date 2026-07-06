@@ -50,7 +50,7 @@ use crate::meta::{MetaStore, MetaWriteOp, ScannableTableId, TableId};
 
 /// Hard per-value ceiling: MongoDB caps documents at 16 MiB; leave margin for
 /// the `_id` and BSON framing.
-pub const MAX_VALUE_LEN: usize = 15 * 1024 * 1024;
+pub(crate) const MAX_VALUE_LEN: usize = 15 * 1024 * 1024;
 
 /// Concurrent single-document writes per `apply_writes` batch (MongoDB's
 /// client-level `bulkWrite` command requires server 8.0+, so batches are

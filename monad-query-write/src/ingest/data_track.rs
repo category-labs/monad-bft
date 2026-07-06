@@ -105,17 +105,17 @@ pub trait CodecResolver: Send + Sync + 'static {
 /// One block's fully-encoded persistence artifacts, held until the pack flushes
 /// (the source block is long gone by flush time).
 pub(crate) struct PackEntry {
-    pub combined_blob: Vec<u8>,
-    pub log_header: BlockBlobHeader,
-    pub tx_header: BlockBlobHeader,
-    pub trace_header: BlockBlobHeader,
-    pub record: BlockRecord,
-    pub evm_header: EvmBlockHeader,
-    pub hash_locations: Vec<(Hash32, TxLocation)>,
+    pub(crate) combined_blob: Vec<u8>,
+    pub(crate) log_header: BlockBlobHeader,
+    pub(crate) tx_header: BlockBlobHeader,
+    pub(crate) trace_header: BlockBlobHeader,
+    pub(crate) record: BlockRecord,
+    pub(crate) evm_header: EvmBlockHeader,
+    pub(crate) hash_locations: Vec<(Hash32, TxLocation)>,
     /// The block's standalone content digest (computed in the parallel encode
     /// task); the serial pop_encode drain folds it into the running chain and
     /// stamps `record.row_chain`.
-    pub content_digest: ChainDigest,
+    pub(crate) content_digest: ChainDigest,
 }
 
 /// Floor on one entry's contribution toward `PackConfig::target_bytes`

@@ -32,18 +32,18 @@ use crate::{
 /// Mirrors the per-tx grouping (`FinalizedBlock`) used at ingest so
 /// `log_index` is assigned identically.
 pub struct MemLogsBlock<'a> {
-    pub block_number: u64,
-    pub block_hash: Hash32,
-    pub logs_by_tx: &'a [Vec<Log>],
+    pub(crate) block_number: u64,
+    pub(crate) block_hash: Hash32,
+    pub(crate) logs_by_tx: &'a [Vec<Log>],
 }
 
 /// One unfinalized transaction for in-memory scanning. `sender` is
 /// caller-authoritative (not recovered from `signed_tx_bytes`), matching
 /// the ingest contract; `to`/`selector` filters decode `signed_tx_bytes`.
 pub struct MemTx {
-    pub tx_hash: Hash32,
-    pub sender: Address,
-    pub signed_tx_bytes: Bytes,
+    pub(crate) tx_hash: Hash32,
+    pub(crate) sender: Address,
+    pub(crate) signed_tx_bytes: Bytes,
 }
 
 /// Builds the matching [`LogEntry`] rows for one in-memory block, in block
