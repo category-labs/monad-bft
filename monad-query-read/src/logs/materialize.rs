@@ -16,22 +16,19 @@
 use std::collections::HashSet;
 
 use alloy_primitives::{Address, B256};
+use monad_query_engine::{
+    bitmap::IndexKind,
+    clause::{set_allows, IndexedClause, IndexedFilter},
+    family::Family,
+    query::{family_runner::IndexedFamilyQuery, row_cache::RowCache},
+    tables::Tables,
+};
+use monad_query_errors::{QueryError, Result};
+use monad_query_primitives::{limits::QueryEnvelope, records::BlockRecord, refs::BlockSpan};
+use monad_query_store::{BlobStore, MetaStore};
 
 use super::{LogEntry, StoredLog};
-use crate::{
-    blocks::Block,
-    engine::{
-        bitmap::IndexKind,
-        clause::{set_allows, IndexedClause, IndexedFilter},
-        family::Family,
-        query::{family_runner::IndexedFamilyQuery, row_cache::RowCache},
-        tables::Tables,
-    },
-    error::{MonadChainDataError, Result},
-    primitives::{limits::QueryEnvelope, records::BlockRecord, refs::BlockSpan},
-    store::{BlobStore, MetaStore},
-    txs::TxEntry,
-};
+use crate::{blocks::Block, txs::TxEntry};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct LogFilter {
@@ -146,10 +143,10 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery for LogMaterializer<'a, 
         bytes: &[u8],
     ) -> Result<Vec<StoredLog>> {
         // One `ReceiptWithLogIndex` item per container (= per tx).
-        let tx_index = u32::try_from(container_idx)
-            .map_err(|_| MonadChainDataError::Decode("tx index overflow"))?;
-        let first_log_index = u32::try_from(row_base)
-            .map_err(|_| MonadChainDataError::Decode("log index overflow"))?;
+        let tx_index =
+            u32::try_from(container_idx).map_err(|_| QueryError::Decode("tx index overflow"))?;
+        let first_log_index =
+            u32::try_from(row_base).map_err(|_| QueryError::Decode("log index overflow"))?;
         crate::external::decode_external_receipt_logs(bytes, tx_index, first_log_index)
     }
 

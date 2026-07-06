@@ -19,12 +19,11 @@
 
 use std::{future::Future, sync::Arc};
 
-use crate::{
-    engine::{family::Family, tables::Tables},
-    error::{MonadChainDataError, Result},
-    ingest::{CodecResolver, Codecs},
-    store::{BlobStore, MetaStore},
-};
+use monad_query_engine::{family::Family, tables::Tables};
+use monad_query_errors::{QueryError, Result};
+use monad_query_store::{BlobStore, MetaStore};
+
+use crate::ingest::{CodecResolver, Codecs};
 
 /// Resolves per-epoch codecs through [`Tables::ensure_epoch_dicts`], which is
 /// single-flight: a `resolve` racing an in-flight `prewarm` coalesces onto it,
@@ -46,7 +45,7 @@ impl<M: MetaStore, B: BlobStore> TablesCodecResolver<M, B> {
         let codec = |family| {
             dicts
                 .write_codec(family, version)
-                .ok_or(MonadChainDataError::MissingData(
+                .ok_or(QueryError::MissingData(
                     "epoch codec not installed after ensure_epoch_dicts",
                 ))
         };

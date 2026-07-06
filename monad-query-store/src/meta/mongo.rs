@@ -38,6 +38,7 @@
 
 use bytes::Bytes;
 use futures::{StreamExt, TryStreamExt};
+use monad_query_errors::{QueryError, Result};
 use mongodb::{
     bson::{doc, spec::BinarySubtype, Binary},
     options::{ClientOptions, CollectionOptions, ReadConcern, WriteConcern},
@@ -45,10 +46,7 @@ use mongodb::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    error::{MonadChainDataError, Result},
-    meta::{MetaStore, MetaWriteOp, ScannableTableId, TableId},
-};
+use crate::meta::{MetaStore, MetaWriteOp, ScannableTableId, TableId};
 
 /// Hard per-value ceiling: MongoDB caps documents at 16 MiB; leave margin for
 /// the `_id` and BSON framing.
@@ -103,8 +101,8 @@ pub struct MongoMetaStore {
     write_concurrency: usize,
 }
 
-fn backend(context: &str, error: impl std::fmt::Display) -> MonadChainDataError {
-    MonadChainDataError::Backend(format!("mongo {context}: {error}"))
+fn backend(context: &str, error: impl std::fmt::Display) -> QueryError {
+    QueryError::Backend(format!("mongo {context}: {error}"))
 }
 
 fn kv_id(table: TableId, key: &[u8]) -> String {
@@ -147,12 +145,12 @@ fn scan_partition_upper_bound(prefix: &str) -> String {
 /// Decodes the hex clustering suffix of a scan-row `_id` back to bytes.
 fn clustering_from_id(id: &str, prefix_len: usize) -> Result<Vec<u8>> {
     alloy_primitives::hex::decode(&id[prefix_len..])
-        .map_err(|_| MonadChainDataError::Decode("malformed mongo scan-row id"))
+        .map_err(|_| QueryError::Decode("malformed mongo scan-row id"))
 }
 
 fn binary_value(value: &Bytes) -> Result<Binary> {
     if value.len() > MAX_VALUE_LEN {
-        return Err(MonadChainDataError::Backend(format!(
+        return Err(QueryError::Backend(format!(
             "mongo meta value of {} bytes exceeds the {MAX_VALUE_LEN}-byte document budget",
             value.len()
         )));
@@ -166,7 +164,7 @@ fn binary_value(value: &Bytes) -> Result<Binary> {
 impl MongoMetaStore {
     pub async fn new(config: MongoMetaStoreConfig) -> Result<Self> {
         if config.write_concurrency == 0 {
-            return Err(MonadChainDataError::Backend(
+            return Err(QueryError::Backend(
                 "mongo write_concurrency must be >= 1".to_string(),
             ));
         }
@@ -197,7 +195,7 @@ impl MongoMetaStore {
         match doc {
             None => Ok(None),
             Some(MetaDocument { v: Some(v), .. }) => Ok(Some(Bytes::from(v.bytes))),
-            Some(MetaDocument { v: None, .. }) => Err(MonadChainDataError::Backend(format!(
+            Some(MetaDocument { v: None, .. }) => Err(QueryError::Backend(format!(
                 "mongo meta row {id} has no value"
             ))),
         }

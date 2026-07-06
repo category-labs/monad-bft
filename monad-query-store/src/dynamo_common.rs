@@ -34,10 +34,9 @@ use aws_sdk_dynamodb::{
     Client,
 };
 use futures::stream::{StreamExt, TryStreamExt};
+use monad_query_errors::{QueryError, Result};
 use tokio::sync::Semaphore;
 use tracing::{debug, warn};
-
-use crate::error::{MonadChainDataError, Result};
 
 /// Attribute names. Short to keep item overhead low; these are a wire contract.
 pub(crate) const ATTR_PK: &str = "pk";
@@ -124,13 +123,13 @@ pub(crate) fn take_binary(
 ) -> Result<Vec<u8>> {
     match item.remove(attr) {
         Some(AttributeValue::B(blob)) => Ok(blob.into_inner()),
-        _ => Err(MonadChainDataError::Backend(format!(
+        _ => Err(QueryError::Backend(format!(
             "dynamo item missing binary attribute `{attr}`"
         ))),
     }
 }
 
-pub(crate) fn backend_err<E, R>(op: &str, e: SdkError<E, R>) -> MonadChainDataError
+pub(crate) fn backend_err<E, R>(op: &str, e: SdkError<E, R>) -> QueryError
 where
     E: ProvideErrorMetadata + std::error::Error + std::fmt::Debug + Send + Sync + 'static,
     R: std::fmt::Debug,
@@ -140,7 +139,7 @@ where
         Some(code) => format!("{code}: {}", e.message().unwrap_or("")),
         None => format!("{e}; debug={e:?}"),
     };
-    MonadChainDataError::Backend(format!("dynamo {op}: {detail}"))
+    QueryError::Backend(format!("dynamo {op}: {detail}"))
 }
 
 pub(crate) fn estimated_batch_write_item_bytes(
@@ -526,7 +525,7 @@ async fn write_batch_chunk(
         attempt += 1;
         if attempt > BATCH_WRITE_CHUNK_MAX_RETRIES {
             progress.mark_failed(chunk_idx);
-            return Err(MonadChainDataError::Backend(format!(
+            return Err(QueryError::Backend(format!(
                 "dynamo batch_write_item: {} items still unprocessed after {attempt} retries",
                 leftovers.len()
             )));
@@ -590,7 +589,7 @@ pub(crate) async fn create_pk_sk_table(ring: &ClientRing, table: &str) -> Result
         }
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     }
-    Err(MonadChainDataError::Backend(format!(
+    Err(QueryError::Backend(format!(
         "dynamo create_table: table {table} did not become ACTIVE in time"
     )))
 }
@@ -606,12 +605,12 @@ pub(crate) async fn validate_pk_sk_table(ring: &ClientRing, table: &str) -> Resu
         .await
         .map_err(|e| backend_err("describe_table", e))?;
     let Some(table_desc) = desc.table else {
-        return Err(MonadChainDataError::Backend(format!(
+        return Err(QueryError::Backend(format!(
             "dynamo describe_table: table {table} missing from response"
         )));
     };
     if table_desc.table_status != Some(TableStatus::Active) {
-        return Err(MonadChainDataError::Backend(format!(
+        return Err(QueryError::Backend(format!(
             "dynamo table {table} is not ACTIVE: {:?}",
             table_desc.table_status
         )));
@@ -636,7 +635,7 @@ pub(crate) async fn validate_pk_sk_table(ring: &ClientRing, table: &str) -> Resu
         || key_type(ATTR_PK) != Some(KeyType::Hash)
         || key_type(ATTR_SK) != Some(KeyType::Range)
     {
-        return Err(MonadChainDataError::Backend(format!(
+        return Err(QueryError::Backend(format!(
             "dynamo table {table} schema mismatch: expected binary pk HASH + binary sk RANGE"
         )));
     }

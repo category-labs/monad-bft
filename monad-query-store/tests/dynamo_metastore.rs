@@ -15,7 +15,7 @@
 
 //! Run: `docker run -p 8000:8000 amazon/dynamodb-local`, then
 //! `CHAIN_DATA_DYNAMO_TEST_ENDPOINT=http://localhost:8000 \
-//!   cargo test -p monad-chain-data --features dynamo --test dynamo_metastore -- --ignored`
+//!   cargo test -p monad-query-store --features dynamo --test dynamo_metastore -- --ignored`
 #![cfg(feature = "dynamo")]
 
 use bytes::Bytes;

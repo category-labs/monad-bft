@@ -17,24 +17,22 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use alloy_primitives::Address;
 use futures::{stream, StreamExt, TryStreamExt};
+use monad_query_engine::{
+    bitmap::IndexKind,
+    clause::{set_allows, IndexedClause, IndexedFilter},
+    family::Family,
+    query::{
+        family_runner::{IndexedFamilyQuery, IndexedQueryStats},
+        row_cache::RowCache,
+    },
+    tables::Tables,
+};
+use monad_query_errors::{QueryError, Result};
+use monad_query_primitives::{limits::QueryEnvelope, records::BlockRecord, refs::BlockSpan};
+use monad_query_store::{BlobStore, MetaStore};
 
 use super::{StoredTxEnvelope, TxEntry};
-use crate::{
-    blocks::Block,
-    engine::{
-        bitmap::IndexKind,
-        clause::{set_allows, IndexedClause, IndexedFilter},
-        family::Family,
-        query::{
-            family_runner::{IndexedFamilyQuery, IndexedQueryStats},
-            row_cache::RowCache,
-        },
-        tables::Tables,
-    },
-    error::{MonadChainDataError, Result},
-    primitives::{limits::QueryEnvelope, records::BlockRecord, refs::BlockSpan},
-    store::{BlobStore, MetaStore},
-};
+use crate::blocks::Block;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TxFilter {
@@ -153,8 +151,8 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery for TxMaterializer<'a, M
         block_record: &BlockRecord,
         idx_in_block: usize,
     ) -> Result<TxEntry> {
-        let tx_index = u32::try_from(idx_in_block)
-            .map_err(|_| MonadChainDataError::Decode("tx index overflow"))?;
+        let tx_index =
+            u32::try_from(idx_in_block).map_err(|_| QueryError::Decode("tx index overflow"))?;
         stored.into_tx_entry(block_record.block_number, block_record.block_hash, tx_index)
     }
 }

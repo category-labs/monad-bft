@@ -21,7 +21,7 @@
 use std::{future::Future, sync::Arc};
 
 use monad_query_engine::tables::{DictConfig, PublicationTables, QueryRuntimeConfig, Tables};
-use monad_query_errors::MonadChainDataError;
+use monad_query_errors::QueryError;
 use monad_query_primitives::{limits::QueryLimits, ExternalBlobReader};
 use monad_query_read::api::MonadChainDataService;
 use monad_query_store::{
@@ -153,7 +153,7 @@ pub async fn populate_via_engine(blocks: Vec<FinalizedBlock>) -> PopulatedStore 
 /// engine's error instead of panicking.
 pub async fn try_populate_via_engine(
     blocks: Vec<FinalizedBlock>,
-) -> Result<PopulatedStore, MonadChainDataError> {
+) -> Result<PopulatedStore, QueryError> {
     let (start, end) = block_bounds(&blocks);
     run_engine(
         blocks,
@@ -190,7 +190,7 @@ pub async fn populate_via_engine_with_dict(
 pub async fn try_populate_via_engine_external(
     blocks: Vec<FinalizedBlock>,
     external: Arc<dyn ExternalBlobReader>,
-) -> Result<PopulatedStore, MonadChainDataError> {
+) -> Result<PopulatedStore, QueryError> {
     let (start, end) = block_bounds(&blocks);
     run_engine(
         blocks,
@@ -315,7 +315,7 @@ async fn run_engine<B: BlobStore>(
     dict: DictConfig,
     external: Option<Arc<dyn ExternalBlobReader>>,
     blob: B,
-) -> Result<PopulatedStore<B>, MonadChainDataError> {
+) -> Result<PopulatedStore<B>, QueryError> {
     let meta = InMemoryMetaStore::default();
     let snapshots = if config.policy.checkpoints_enabled {
         SnapshotStore::new(meta.clone(), blob.clone())

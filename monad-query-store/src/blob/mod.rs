@@ -26,13 +26,12 @@ pub use dynamo::MAX_CHUNK_SIZE;
 #[cfg(feature = "dynamo")]
 pub use dynamo::{DynamoBlobStore, DynamoBlobStoreConfig};
 pub use in_memory::InMemoryBlobStore;
+use monad_query_errors::{QueryError, Result};
 pub use null::NullBlobStore;
 #[cfg(feature = "s3")]
 pub use s3::{
     S3BlobStore, S3BlobStoreConfig, S3Credentials, S3ExternalBlobReader, S3ReadStatsSnapshot,
 };
-
-use crate::error::{MonadChainDataError, Result};
 
 #[derive(Debug, Clone)]
 pub struct BlobWriteOp {
@@ -172,7 +171,7 @@ pub trait BlobStore: Clone + Send + Sync + 'static {
                 return Ok(None);
             };
             if start > end_exclusive || start > blob.len() {
-                return Err(MonadChainDataError::Decode("invalid blob range"));
+                return Err(QueryError::Decode("invalid blob range"));
             }
             Ok(Some(blob.slice(start..end_exclusive.min(blob.len()))))
         }

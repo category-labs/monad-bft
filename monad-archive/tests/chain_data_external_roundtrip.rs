@@ -580,7 +580,7 @@ async fn external_store_without_archive_reader_errors() {
         .await
         .unwrap_err();
     assert!(
-        matches!(err, monad_query_errors::MonadChainDataError::MissingData(_)),
+        matches!(err, monad_query_errors::QueryError::MissingData(_)),
         "expected MissingData, got {err:?}"
     );
 }

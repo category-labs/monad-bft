@@ -15,8 +15,7 @@
 
 use alloy_primitives::{Address, Bytes, U256};
 use alloy_rlp::{RlpDecodable, RlpEncodable};
-
-use monad_query_errors::{MonadChainDataError, Result};
+use monad_query_errors::{QueryError, Result};
 use monad_query_primitives::{CallKind, Hash32};
 
 use crate::ingest_types::IngestTrace;
@@ -125,17 +124,13 @@ impl StoredTrace {
 
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         let rlp: StoredTraceRlp = alloy_rlp::decode_exact(bytes)
-            .map_err(|_| MonadChainDataError::Decode("invalid trace entry rlp"))?;
+            .map_err(|_| QueryError::Decode("invalid trace entry rlp"))?;
         let typ = CallKind::from_u8(rlp.typ_byte)
-            .ok_or(MonadChainDataError::Decode("invalid trace call kind byte"))?;
+            .ok_or(QueryError::Decode("invalid trace call kind byte"))?;
         let to = match rlp.to_bytes.len() {
             0 => None,
             20 => Some(Address::from_slice(&rlp.to_bytes)),
-            _ => {
-                return Err(MonadChainDataError::Decode(
-                    "invalid trace `to` byte length",
-                ))
-            }
+            _ => return Err(QueryError::Decode("invalid trace `to` byte length")),
         };
         Ok(Self {
             typ,
@@ -223,12 +218,12 @@ where
             seen_root = true;
         } else {
             if !seen_root {
-                return Err(MonadChainDataError::InvalidBlock(
+                return Err(QueryError::InvalidBlock(
                     "trace_address: first frame must have depth 0",
                 ));
             }
             if d > cursor.len() + 1 {
-                return Err(MonadChainDataError::InvalidBlock(
+                return Err(QueryError::InvalidBlock(
                     "trace_address: depth skipped a level",
                 ));
             }
@@ -249,7 +244,7 @@ where
 
 #[cfg(test)]
 mod trace_address_tests {
-    use monad_query_errors::MonadChainDataError;
+    use monad_query_errors::QueryError;
 
     use super::compute_trace_addresses;
 
@@ -296,12 +291,12 @@ mod trace_address_tests {
     #[test]
     fn trace_address_rejects_orphan_depth() {
         let err = compute_trace_addresses([1u32]).unwrap_err();
-        assert!(matches!(err, MonadChainDataError::InvalidBlock(_)));
+        assert!(matches!(err, QueryError::InvalidBlock(_)));
     }
 
     #[test]
     fn trace_address_rejects_depth_jump() {
         let err = compute_trace_addresses([0u32, 2]).unwrap_err();
-        assert!(matches!(err, MonadChainDataError::InvalidBlock(_)));
+        assert!(matches!(err, QueryError::InvalidBlock(_)));
     }
 }

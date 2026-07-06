@@ -19,11 +19,9 @@ use std::{
 };
 
 use bytes::Bytes;
+use monad_query_errors::Result;
 
-use crate::{
-    error::Result,
-    meta::{MetaStore, MetaWriteOp, ScannableTableId, TableId},
-};
+use crate::meta::{MetaStore, MetaWriteOp, ScannableTableId, TableId};
 
 /// Test-only meta-store fixture. Holds records in memory behind sync
 /// `RwLock`s. Not intended as a deployable backend.
@@ -81,7 +79,7 @@ impl MetaStore for InMemoryMetaStore {
         let guard = self
             .kv_records
             .read()
-            .map_err(|_| crate::error::MonadChainDataError::Backend("poisoned lock".to_string()))?;
+            .map_err(|_| monad_query_errors::QueryError::Backend("poisoned lock".to_string()))?;
         Ok(guard.get(&(table, key.to_vec())).cloned())
     }
 
@@ -94,7 +92,7 @@ impl MetaStore for InMemoryMetaStore {
         let guard = self
             .scan_records
             .read()
-            .map_err(|_| crate::error::MonadChainDataError::Backend("poisoned lock".to_string()))?;
+            .map_err(|_| monad_query_errors::QueryError::Backend("poisoned lock".to_string()))?;
         Ok(guard
             .get(&(table, partition.to_vec(), clustering.to_vec()))
             .cloned())
@@ -104,7 +102,7 @@ impl MetaStore for InMemoryMetaStore {
         let mut guard = self
             .kv_records
             .write()
-            .map_err(|_| crate::error::MonadChainDataError::Backend("poisoned lock".to_string()))?;
+            .map_err(|_| monad_query_errors::QueryError::Backend("poisoned lock".to_string()))?;
         guard.insert((table, key.to_vec()), value);
         Ok(())
     }
@@ -119,7 +117,7 @@ impl MetaStore for InMemoryMetaStore {
         let mut guard = self
             .scan_records
             .write()
-            .map_err(|_| crate::error::MonadChainDataError::Backend("poisoned lock".to_string()))?;
+            .map_err(|_| monad_query_errors::QueryError::Backend("poisoned lock".to_string()))?;
         guard.insert((table, partition.to_vec(), clustering.to_vec()), value);
         Ok(())
     }
@@ -128,11 +126,11 @@ impl MetaStore for InMemoryMetaStore {
         let mut kv_guard = self
             .kv_records
             .write()
-            .map_err(|_| crate::error::MonadChainDataError::Backend("poisoned lock".to_string()))?;
+            .map_err(|_| monad_query_errors::QueryError::Backend("poisoned lock".to_string()))?;
         let mut scan_guard = self
             .scan_records
             .write()
-            .map_err(|_| crate::error::MonadChainDataError::Backend("poisoned lock".to_string()))?;
+            .map_err(|_| monad_query_errors::QueryError::Backend("poisoned lock".to_string()))?;
         for op in writes {
             match op {
                 MetaWriteOp::Put { table, key, value } => {
@@ -155,7 +153,7 @@ impl MetaStore for InMemoryMetaStore {
         let guard = self
             .scan_records
             .read()
-            .map_err(|_| crate::error::MonadChainDataError::Backend("poisoned lock".to_string()))?;
+            .map_err(|_| monad_query_errors::QueryError::Backend("poisoned lock".to_string()))?;
         // Seek straight to the partition's first possible key and stop once
         // past it, instead of walking the whole multi-table map.
         Ok(guard

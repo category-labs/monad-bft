@@ -19,9 +19,9 @@
 //!
 //! The byte-range reader trait ([`monad_query_primitives::ExternalBlobReader`])
 //! lives in `monad-query-primitives`; the decode mirrors that turn the located
-//! bytes back into rows live in `monad-chain-data`.
+//! bytes back into rows live in `monad-query-read`.
 
-use monad_query_errors::{MonadChainDataError, Result};
+use monad_query_errors::{QueryError, Result};
 
 use crate::ingest_types::FinalizedBlock;
 
@@ -68,42 +68,42 @@ impl ExternalFamilyRegion {
     fn validate(&self, rows_per_container: &[u32], identity: bool) -> Result<()> {
         let containers = rows_per_container.len();
         if self.key.is_empty() {
-            return Err(MonadChainDataError::InvalidBlock(
+            return Err(QueryError::InvalidBlock(
                 "external payload region missing archive key",
             ));
         }
         if self.container_offsets.len() != containers + 1 || self.container_offsets[0] != 0 {
-            return Err(MonadChainDataError::InvalidBlock(
+            return Err(QueryError::InvalidBlock(
                 "external payload container partition has the wrong shape",
             ));
         }
         if self.container_offsets.windows(2).any(|w| w[0] >= w[1]) {
-            return Err(MonadChainDataError::InvalidBlock(
+            return Err(QueryError::InvalidBlock(
                 "external payload containers must be non-empty and ascending",
             ));
         }
         if self.container_offsets.last().copied().unwrap_or(0) as u64 + u64::from(self.base_offset)
             > u32::MAX as u64
         {
-            return Err(MonadChainDataError::InvalidBlock(
+            return Err(QueryError::InvalidBlock(
                 "external payload region exceeds the u32 offset space",
             ));
         }
         if identity {
             if !self.container_rows.is_empty() {
-                return Err(MonadChainDataError::InvalidBlock(
+                return Err(QueryError::InvalidBlock(
                     "identity external region must omit container_rows",
                 ));
             }
             if rows_per_container.iter().any(|&rows| rows != 1) {
-                return Err(MonadChainDataError::InvalidBlock(
+                return Err(QueryError::InvalidBlock(
                     "identity external region requires one row per container",
                 ));
             }
             return Ok(());
         }
         if self.container_rows.len() != containers {
-            return Err(MonadChainDataError::InvalidBlock(
+            return Err(QueryError::InvalidBlock(
                 "external payload container_rows length mismatch",
             ));
         }
@@ -111,11 +111,11 @@ impl ExternalFamilyRegion {
         for (&rows, &cum) in rows_per_container.iter().zip(&self.container_rows) {
             cumulative = cumulative
                 .checked_add(rows)
-                .ok_or(MonadChainDataError::InvalidBlock(
+                .ok_or(QueryError::InvalidBlock(
                     "external payload row count overflow",
                 ))?;
             if cum != cumulative {
-                return Err(MonadChainDataError::InvalidBlock(
+                return Err(QueryError::InvalidBlock(
                     "external payload container_rows disagrees with the block's rows",
                 ));
             }
@@ -128,7 +128,7 @@ impl ExternalFamilyRegion {
     fn validate_status(&self, statuses: impl ExactSizeIterator<Item = bool>) -> Result<()> {
         let containers = statuses.len();
         if self.container_status.len() != containers.div_ceil(8) {
-            return Err(MonadChainDataError::InvalidBlock(
+            return Err(QueryError::InvalidBlock(
                 "external payload container_status length mismatch",
             ));
         }
@@ -139,7 +139,7 @@ impl ExternalFamilyRegion {
             }
         }
         if self.container_status != expected {
-            return Err(MonadChainDataError::InvalidBlock(
+            return Err(QueryError::InvalidBlock(
                 "external payload container_status disagrees with the block's receipts",
             ));
         }
@@ -156,13 +156,13 @@ impl ExternalPayloadSpec {
     /// bytes.
     pub fn validate(&self, block_number: u64, block: &FinalizedBlock) -> Result<()> {
         if self.block_number != block_number {
-            return Err(MonadChainDataError::InvalidBlock(
+            return Err(QueryError::InvalidBlock(
                 "external payload spec belongs to a different block",
             ));
         }
         let tx_count = block.txs.len();
         if block.logs_by_tx.len() != tx_count {
-            return Err(MonadChainDataError::InvalidBlock(
+            return Err(QueryError::InvalidBlock(
                 "external payload requires one receipt container per tx",
             ));
         }
@@ -175,20 +175,23 @@ impl ExternalPayloadSpec {
             .iter()
             .map(|logs| u32::try_from(logs.len()))
             .collect::<std::result::Result<_, _>>()
-            .map_err(|_| MonadChainDataError::Decode("log count overflow"))?;
+            .map_err(|_| QueryError::Decode("log count overflow"))?;
         self.logs.validate(&logs_per_tx, false)?;
         self.logs.validate_status(std::iter::empty())?;
 
         let mut frames_per_tx = vec![0u32; tx_count];
         let mut statuses: Vec<Option<bool>> = vec![None; tx_count];
         for trace in &block.traces {
-            let slot = frames_per_tx.get_mut(trace.tx_index as usize).ok_or(
-                MonadChainDataError::InvalidBlock("external payload trace tx_index out of range"),
-            )?;
+            let slot =
+                frames_per_tx
+                    .get_mut(trace.tx_index as usize)
+                    .ok_or(QueryError::InvalidBlock(
+                        "external payload trace tx_index out of range",
+                    ))?;
             *slot += 1;
             let status = &mut statuses[trace.tx_index as usize];
             if status.is_some_and(|s| s != trace.tx_status) {
-                return Err(MonadChainDataError::InvalidBlock(
+                return Err(QueryError::InvalidBlock(
                     "external payload trace tx_status inconsistent within a tx",
                 ));
             }

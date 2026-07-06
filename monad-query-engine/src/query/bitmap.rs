@@ -16,20 +16,18 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use futures::future::try_join_all;
+use monad_query_errors::Result;
+use monad_query_primitives::order::QueryOrder;
+use monad_query_store::MetaStore;
 use roaring::RoaringBitmap;
 
 use crate::{
-    engine::{
-        bitmap::{
-            page_group_start, page_start, page_start_in_group, BitmapPageCounts, DecodedBitmapPage,
-            PAGE_GROUP_ID_SPAN, STREAM_PAGE_ID_SPAN,
-        },
-        clause::IndexedClause,
-        tables::FamilyTables,
+    bitmap::{
+        page_group_start, page_start, page_start_in_group, BitmapPageCounts, DecodedBitmapPage,
+        PAGE_GROUP_ID_SPAN, STREAM_PAGE_ID_SPAN,
     },
-    error::Result,
-    primitives::order::QueryOrder,
-    store::MetaStore,
+    clause::IndexedClause,
+    tables::FamilyTables,
 };
 
 /// A page bitmap for intersection: a cached decoded page shared by refcount,

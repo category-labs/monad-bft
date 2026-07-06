@@ -14,12 +14,13 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use alloy_primitives::{Address, Bytes, Log, U256};
-use monad_query_errors::{MonadChainDataError, Result};
+use monad_query_errors::{QueryError, Result};
 use monad_query_primitives::{CallKind, EvmBlockHeader, Hash32};
 
 use crate::{
     external::ExternalPayloadSpec,
     logs::StoredLog,
+    traces::StoredTrace,
     txs::{StoredTxEnvelope, TxLocation},
 };
 
@@ -103,6 +104,11 @@ impl IngestTrace {
         );
         self.value > U256::ZERO && kind_moves_value && self.status == 0 && self.tx_status
     }
+
+    /// Encodes this frame as its [`StoredTrace`] storage row.
+    pub fn encode_row(&self) -> Vec<u8> {
+        StoredTrace::from(self).encode()
+    }
 }
 
 impl FinalizedBlock {
@@ -125,8 +131,8 @@ impl FinalizedBlock {
             .iter()
             .enumerate()
             .map(|(idx, tx)| {
-                let tx_index = u32::try_from(idx)
-                    .map_err(|_| MonadChainDataError::Decode("tx index overflow"))?;
+                let tx_index =
+                    u32::try_from(idx).map_err(|_| QueryError::Decode("tx index overflow"))?;
                 Ok((
                     tx.tx_hash,
                     TxLocation {
@@ -144,12 +150,12 @@ impl FinalizedBlock {
         let mut logs = Vec::with_capacity(total_logs);
 
         for (tx_index, tx_logs) in self.logs_by_tx.iter().enumerate() {
-            let tx_index = u32::try_from(tx_index)
-                .map_err(|_| MonadChainDataError::Decode("tx index overflow"))?;
+            let tx_index =
+                u32::try_from(tx_index).map_err(|_| QueryError::Decode("tx index overflow"))?;
 
             for log in tx_logs {
                 let log_index = u32::try_from(logs.len())
-                    .map_err(|_| MonadChainDataError::Decode("log index overflow"))?;
+                    .map_err(|_| QueryError::Decode("log index overflow"))?;
                 logs.push(StoredLog {
                     tx_index,
                     log_index,

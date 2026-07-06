@@ -16,15 +16,13 @@
 use std::{future::Future, pin::Pin};
 
 use bytes::Bytes;
-
-use crate::{
-    error::Result,
-    store::{
-        BlobStore, BlobTable, BlobWriteOp, CachedKvTable, CachedScannableKvTable, MetaStore,
-        MetaWriteOp,
-    },
-    tables::Tables,
+use monad_query_errors::Result;
+use monad_query_store::{
+    BlobStore, BlobTable, BlobWriteOp, CachedKvTable, CachedScannableKvTable, MetaStore,
+    MetaWriteOp,
 };
+
+use crate::tables::Tables;
 
 /// Boxed future for the `for<'s>` HRTB closures the `with_writes*` entry
 /// points take.
