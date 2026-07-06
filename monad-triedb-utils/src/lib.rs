@@ -32,7 +32,7 @@ use monad_crypto::certificate_signature::PubKey;
 use monad_eth_types::{AccountKey, EthAccount, EthHeader, EthStorageKey, EthStorageSlot};
 use monad_execution_state_read::{ExecutionStateRead, ExecutionStateReadError};
 use monad_secp::SecpSignature;
-use monad_triedb::TriedbHandle;
+use monad_triedb::{compute_page_key, compute_slot_offset, decode_storage_page_slot, TriedbHandle};
 use monad_types::{BlockId, Epoch, Hash, SeqNum, Stake};
 use tracing::{debug, trace, warn};
 
@@ -387,17 +387,38 @@ impl ExecutionStateRead<SecpSignature, BlsSignatureCollection<monad_secp::PubKey
             Version::Proposal(*block_id)
         };
 
-        let (triedb_key, key_len_nibbles) =
-            create_triedb_key(version, Self::key_input_for_storage(&account_key, &storage_key));
-        let Some(storage_rlp) = self.handle.read(&triedb_key, u16::from(key_len_nibbles), seq_num.0)
-        else {
-            return Ok([0_u8; 32]);
+        let storage = if self.handle.is_page_encoded() {
+            let page_key = compute_page_key(storage_key);
+            let offset = compute_slot_offset(storage_key);
+            let (triedb_key, key_len_nibbles) = create_triedb_key(
+                version,
+                Self::key_input_for_storage(&account_key, &page_key),
+            );
+            let Some(storage_page) =
+                self.handle
+                    .read(&triedb_key, u16::from(key_len_nibbles), seq_num.0)
+            else {
+                return Ok([0_u8; 32]);
+            };
+            decode_storage_page_slot(&storage_page, offset)
+        } else {
+            let (triedb_key, key_len_nibbles) = create_triedb_key(
+                version,
+                Self::key_input_for_storage(&account_key, &storage_key),
+            );
+            let Some(storage_rlp) =
+                self.handle
+                    .read(&triedb_key, u16::from(key_len_nibbles), seq_num.0)
+            else {
+                return Ok([0_u8; 32]);
+            };
+            rlp_decode_storage_slot(storage_rlp)
         };
 
         self.state_read_total_lookups
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
-        rlp_decode_storage_slot(storage_rlp).ok_or(ExecutionStateReadError::NotAvailableYet)
+        storage.ok_or(ExecutionStateReadError::NotAvailableYet)
     }
 
     fn raw_read_earliest_finalized_block(&self) -> Option<SeqNum> {
