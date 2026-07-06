@@ -23,7 +23,7 @@ use monad_query_engine::{family::Family, tables::Tables};
 use monad_query_errors::{QueryError, Result};
 use monad_query_store::{BlobStore, MetaStore};
 
-use crate::ingest::{CodecResolver, Codecs};
+use crate::{CodecResolver, Codecs};
 
 /// Resolves per-epoch codecs through [`Tables::ensure_epoch_dicts`], which is
 /// single-flight: a `resolve` racing an in-flight `prewarm` coalesces onto it,

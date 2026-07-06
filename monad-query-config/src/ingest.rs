@@ -24,9 +24,9 @@ use eyre::{bail, Result};
 use monad_query_engine::tables::{DictConfig, PublicationTables, QueryRuntimeConfig, Tables};
 #[cfg(any(feature = "dynamo", feature = "mongo"))]
 use monad_query_store::{BlobStore, MetaStore};
-use monad_query_write::ingest::source::ChainDataIngestSource;
+use monad_query_write::source::ChainDataIngestSource;
 #[cfg(any(feature = "dynamo", feature = "mongo"))]
-use monad_query_write::ingest::{
+use monad_query_write::{
     resolver::TablesCodecResolver, run_ingest, snapshot::seed_snapshot_at, IngestRunConfig,
     PackConfig, Prefetch, SignalPolicy, SnapshotStore,
 };
@@ -99,7 +99,7 @@ pub struct ChainDataEngineConfig {
     pub fetch_buffer: usize,
 }
 
-/// Serde face of [`monad_query_write::ingest::PayloadMode`].
+/// Serde face of [`monad_query_write::PayloadMode`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ChainDataPayloadConfig {
@@ -108,7 +108,7 @@ pub enum ChainDataPayloadConfig {
     ExternalArchive,
 }
 
-impl From<ChainDataPayloadConfig> for monad_query_write::ingest::PayloadMode {
+impl From<ChainDataPayloadConfig> for monad_query_write::PayloadMode {
     fn from(config: ChainDataPayloadConfig) -> Self {
         match config {
             ChainDataPayloadConfig::Native => Self::Native,
