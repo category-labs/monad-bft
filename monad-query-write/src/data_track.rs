@@ -24,7 +24,7 @@ use futures::{stream::FuturesOrdered, StreamExt};
 use monad_query_engine::{
     digest::{block_content_digest, chain, family_content_digest, ChainDigest},
     family::PerFamily,
-    row_codec::{RowCodec, DICT_VERSION_NONE},
+    row_codec::{digest_block_rows, encode_block_rows, RowCodec, DICT_VERSION_NONE},
     tables::{DictConfig, Tables},
 };
 use monad_query_errors::{QueryError, Result};
@@ -33,7 +33,12 @@ use monad_query_primitives::{
     EvmBlockHeader, Hash32,
 };
 use monad_query_store::{BlobStore, MetaStore};
-use monad_query_types::{external::ExternalFamilyRegion, txs::TxLocation};
+use monad_query_types::{
+    external::ExternalFamilyRegion,
+    ingest_types::{IngestTrace, IngestTx},
+    logs::StoredLog,
+    txs::TxLocation,
+};
 use tokio::sync::mpsc;
 use tracing::Instrument;
 
@@ -41,11 +46,6 @@ use super::{
     probe::{IngestProbe, TIMING_TARGET},
     publisher::Progress,
     task_join_err, AssignedBlock, DataMsg, IngestMsg,
-};
-use crate::{
-    logs::{digest_block_logs, encode_block_logs},
-    traces::{digest_block_traces, encode_block_traces},
-    txs::{digest_block_txs, encode_block_txs},
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -437,6 +437,51 @@ fn maybe_prewarm<R: CodecResolver>(
         *last_prewarmed = next;
         resolver.prewarm(next);
     }
+}
+
+/// Compresses a block's log rows into the framed per-family blob.
+fn encode_block_logs(
+    logs: &[StoredLog],
+    codec: &RowCodec,
+) -> Result<(BlockBlobHeader, Vec<u8>, ChainDigest)> {
+    encode_block_rows(logs, codec, "block log blob too large", |log| log.encode())
+}
+
+/// The [`encode_block_logs`] row digest alone (external-payload ingest).
+fn digest_block_logs(logs: &[StoredLog]) -> ChainDigest {
+    digest_block_rows(logs, |log| log.encode())
+}
+
+/// Compresses a block's tx rows into the framed per-family blob.
+fn encode_block_txs(
+    txs: &[IngestTx],
+    codec: &RowCodec,
+) -> Result<(BlockBlobHeader, Vec<u8>, ChainDigest)> {
+    encode_block_rows(txs, codec, "block tx blob too large", IngestTx::encode_row)
+}
+
+/// The [`encode_block_txs`] row digest alone (external-payload ingest).
+fn digest_block_txs(txs: &[IngestTx]) -> ChainDigest {
+    digest_block_rows(txs, IngestTx::encode_row)
+}
+
+/// Compresses a block's trace rows into the framed per-family blob. Frames
+/// must already be DFS-flattened with `trace_address` assigned.
+fn encode_block_traces(
+    traces: &[IngestTrace],
+    codec: &RowCodec,
+) -> Result<(BlockBlobHeader, Vec<u8>, ChainDigest)> {
+    encode_block_rows(
+        traces,
+        codec,
+        "block trace blob too large",
+        IngestTrace::encode_row,
+    )
+}
+
+/// The [`encode_block_traces`] row digest alone (external-payload ingest).
+fn digest_block_traces(traces: &[IngestTrace]) -> ChainDigest {
+    digest_block_rows(traces, IngestTrace::encode_row)
 }
 
 /// Compress one block's rows into its combined blob + per-family headers.

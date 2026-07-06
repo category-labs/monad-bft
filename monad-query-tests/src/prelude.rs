@@ -55,6 +55,6 @@ pub use monad_query_types::{
     ingest_types::{FinalizedBlock, IngestTrace, IngestTx},
     ExternalFamilyRegion, ExternalPayloadSpec,
 };
-pub use monad_query_write::ingest::{source::ChainDataIngestSource, PayloadMode};
+pub use monad_query_write::{source::ChainDataIngestSource, PayloadMode};
 
 pub use crate::common::{observed_store::*, *};

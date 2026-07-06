@@ -50,7 +50,7 @@ use monad_query_read::{
 };
 use monad_query_testkit::{populate_via_engine, populate_via_engine_external};
 use monad_query_types::ingest_types::FinalizedBlock;
-use monad_query_write::ingest::source::ChainDataIngestSource;
+use monad_query_write::source::ChainDataIngestSource;
 use monad_eth_types::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 
 const SENDER_A: Address = Address::repeat_byte(0xa1);
