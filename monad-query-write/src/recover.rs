@@ -36,7 +36,7 @@ use monad_query_primitives::records::FamilyWindowRecord;
 use monad_query_store::{BlobStore, MetaStore};
 use roaring::RoaringBitmap;
 
-use crate::ingest::{
+use crate::{
     index::{FamilyState, OpenState, OpenTail, SealedPageCounts, PAGE_SPAN},
     snapshot::{recover_checkpoint, SnapshotStore},
     FamilyFrontier,

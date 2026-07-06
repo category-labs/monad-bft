@@ -40,7 +40,7 @@ use monad_query_store::{InMemoryBlobStore, InMemoryMetaStore};
 use monad_query_types::ingest_types::FinalizedBlock;
 use roaring::RoaringBitmap;
 
-use crate::ingest::{
+use crate::{
     index::{stage_artifact_write, ArtifactWrite, FamilyState, OpenState},
     recover::{recover, Recovered},
     resolver::TablesCodecResolver,
