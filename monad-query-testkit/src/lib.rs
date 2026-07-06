@@ -28,7 +28,7 @@ use monad_query_store::{
     BlobStore, CacheConfig, InMemoryBlobStore, InMemoryMetaStore, NullBlobStore,
 };
 use monad_query_types::ingest_types::FinalizedBlock;
-use monad_query_write::ingest::{
+use monad_query_write::{
     resolver::TablesCodecResolver, run_ingest, source::ChainDataIngestSource, IngestRunConfig,
     PackConfig, PayloadMode, Prefetch, SignalPolicy, SnapshotStore,
 };

@@ -19,7 +19,7 @@
 
 use monad_query_engine::txs::TxHashIndexTable;
 use monad_query_tests::prelude::*;
-use monad_query_write::ingest::SnapshotStore;
+use monad_query_write::SnapshotStore;
 
 /// [`ALL_LOGICAL_TABLE_NAMES`] is the provisioning source of truth for
 /// per-logical-table backends; this pins it to the declared `TableId`s.

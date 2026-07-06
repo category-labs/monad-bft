@@ -22,12 +22,14 @@ use std::{
     sync::Arc,
 };
 
+use alloy_consensus::Transaction;
+use alloy_primitives::B256;
 use bytes::Bytes;
 use monad_query_engine::{
     bitmap::{
         encode_bitmap_blob, encode_bitmap_page_artifact, encode_open_streams_delta,
         page_group_start, page_offset, page_start, page_start_in_group, BitmapPageArtifact,
-        BitmapPageCounts, BitmapPageMeta, DecodedBitmapFragment, StreamKey,
+        BitmapPageCounts, BitmapPageMeta, DecodedBitmapFragment, IndexKind, StreamKey,
         OPEN_STREAMS_DELTA_TARGET_BYTES, STREAM_PAGE_ID_SPAN,
     },
     digest::{chain, ChainDigest, SealDigest},
@@ -40,6 +42,11 @@ use monad_query_engine::{
 use monad_query_errors::{QueryError, Result};
 use monad_query_primitives::records::PrimaryId;
 use monad_query_store::{BlobStore, MetaStore};
+use monad_query_types::{
+    ingest_types::{IngestTrace, IngestTx},
+    traces::selector_from_input,
+    txs::{decode_envelope, selector_from_envelope},
+};
 use roaring::RoaringBitmap;
 use tokio::sync::{mpsc, oneshot};
 
@@ -48,9 +55,6 @@ use super::{
     publisher::Progress,
     snapshot::{persist_snapshot, SnapshotStore},
     AssignedBlock, FamilyFrontier, IndexMsg, IngestMsg,
-};
-use crate::{
-    logs::stream_entries_for_log, traces::stream_entries_for_trace, txs::stream_entries_for_tx,
 };
 
 pub(crate) const PAGE_SPAN: u64 = STREAM_PAGE_ID_SPAN as u64;
@@ -692,6 +696,63 @@ fn drain_sealed_dir_entries(
             .partition_point(|&(_, _, end)| end <= open_bucket_start);
         tail.dir.drain(0..cut);
     }
+}
+
+/// Expands one log into the indexed streams written at ingest time
+/// ([`accumulate_family`] pairs each with the record's id).
+fn stream_entries_for_log(address: &[u8], topics: &[B256]) -> Vec<StreamKey> {
+    let mut entries = Vec::with_capacity(5);
+    entries.push(StreamKey::new(IndexKind::Addr, address));
+
+    for (topic, kind) in topics.iter().zip(IndexKind::TOPICS) {
+        entries.push(StreamKey::new(kind, topic.as_slice()));
+    }
+
+    entries
+}
+
+/// Expands one tx into the indexed streams written at ingest;
+/// `to`/`selector` skipped for contract creations and calldata < 4 bytes.
+fn stream_entries_for_tx(tx: &IngestTx) -> Result<Vec<StreamKey>> {
+    let envelope = decode_envelope(&tx.signed_tx_bytes)?;
+
+    let mut entries = Vec::with_capacity(3);
+    entries.push(StreamKey::new(IndexKind::From, tx.sender.as_slice()));
+
+    if let Some(to) = envelope.to() {
+        entries.push(StreamKey::new(IndexKind::To, to.as_slice()));
+    }
+    if let Some(selector) = selector_from_envelope(&envelope) {
+        entries.push(StreamKey::new(IndexKind::Selector, selector.as_slice()));
+    }
+
+    Ok(entries)
+}
+
+/// Expands one frame into the indexed streams written at ingest:
+/// `to`/`selector` skipped when absent, `top_level` only for root frames,
+/// `has_transfer` only when the transfer predicate holds.
+fn stream_entries_for_trace(trace: &IngestTrace) -> Vec<StreamKey> {
+    let mut entries = Vec::with_capacity(5);
+    entries.push(StreamKey::new(IndexKind::From, trace.from.as_slice()));
+
+    if let Some(to) = trace.to {
+        entries.push(StreamKey::new(IndexKind::To, to.as_slice()));
+    }
+
+    if let Some(selector) = selector_from_input(&trace.input) {
+        entries.push(StreamKey::new(IndexKind::Selector, &selector));
+    }
+
+    if trace.trace_address.is_empty() {
+        entries.push(StreamKey::new(IndexKind::TopLevel, &[]));
+    }
+
+    if trace.is_transfer_frame() {
+        entries.push(StreamKey::new(IndexKind::HasTransfer, &[]));
+    }
+
+    entries
 }
 
 /// Insert one block's records for a single family: each record gets the next
