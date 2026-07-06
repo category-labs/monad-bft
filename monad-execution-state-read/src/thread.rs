@@ -242,7 +242,7 @@ where
 
     fn run(self) {
         let Self {
-            state_read,
+            mut state_read,
             request_rx,
             ..
         } = self;

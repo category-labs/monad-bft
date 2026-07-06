@@ -143,7 +143,7 @@ where
     }
 
     fn raw_read_earliest_finalized_block(&self) -> Option<SeqNum> {
-        let mut state = self.lock().unwrap();
+        let state = self.lock().unwrap();
         state.raw_read_earliest_finalized_block()
     }
 
@@ -161,7 +161,7 @@ where
         SignatureCollectionPubKeyType<SCT>,
         Stake,
     )> {
-        let state = self.lock().unwrap();
+        let mut state = self.lock().unwrap();
         state.read_valset_at_block(block_num, requested_epoch)
     }
 
