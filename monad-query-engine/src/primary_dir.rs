@@ -16,12 +16,10 @@
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
+use monad_query_errors::{QueryError, Result};
+use monad_query_store::{blob::BlobStore, CachedKvTable, CachedScannableKvTable, MetaStore};
 
-use crate::{
-    engine::{bitmap::STREAM_PAGE_ID_SPAN, tables::scan_get_all},
-    error::{MonadChainDataError, Result},
-    store::{blob::BlobStore, CachedKvTable, CachedScannableKvTable, MetaStore, WriteSession},
-};
+use crate::{bitmap::STREAM_PAGE_ID_SPAN, session::WriteSession, tables::scan_get_all};
 
 /// Buckets are aligned to the bitmap page span so both indexes share one seal
 /// frontier: ingest tracks a single `sealed_id` per family and the open
@@ -58,13 +56,13 @@ impl PrimaryDirBucket {
             window[0].first_primary_id >= window[1].first_primary_id
                 || window[0].block_number >= window[1].block_number
         }) {
-            return Err(MonadChainDataError::Decode(
+            return Err(QueryError::Decode(
                 "primary directory bucket entries must be strictly increasing",
             ));
         }
         if let Some(last) = entries.last() {
             if last.first_primary_id >= end_primary_id_exclusive {
-                return Err(MonadChainDataError::Decode(
+                return Err(QueryError::Decode(
                     "primary directory bucket sentinel must exceed its last id",
                 ));
             }
@@ -81,7 +79,7 @@ impl PrimaryDirBucket {
 
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         let raw: Self = alloy_rlp::decode_exact(bytes)
-            .map_err(|_| MonadChainDataError::Decode("invalid primary directory bucket rlp"))?;
+            .map_err(|_| QueryError::Decode("invalid primary directory bucket rlp"))?;
         Self::new(raw.entries, raw.end_primary_id_exclusive)
     }
 }
@@ -100,7 +98,7 @@ impl PrimaryDirFragment {
 
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         alloy_rlp::decode_exact(bytes)
-            .map_err(|_| MonadChainDataError::Decode("invalid primary directory fragment rlp"))
+            .map_err(|_| QueryError::Decode("invalid primary directory fragment rlp"))
     }
 }
 
@@ -211,9 +209,12 @@ impl<M: MetaStore> PrimaryDirTables<M> {
             .unwrap_or_default();
         let new_fragments: Vec<PrimaryDirFragment> =
             futures::future::try_join_all(new_keys.iter().map(|clustering| async {
-                self.fragments.get(&partition, clustering).await?.ok_or(
-                    MonadChainDataError::MissingData("missing primary directory fragment"),
-                )
+                self.fragments
+                    .get(&partition, clustering)
+                    .await?
+                    .ok_or(QueryError::MissingData(
+                        "missing primary directory fragment",
+                    ))
             }))
             .await?;
         // Clustering keys scan in block order and ids assign in block order,

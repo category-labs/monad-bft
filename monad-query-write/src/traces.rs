@@ -13,18 +13,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use monad_query_types::traces::{selector_from_input, StoredTrace};
-
-use crate::{
-    engine::{
-        bitmap::{IndexKind, StreamKey},
-        digest::ChainDigest,
-        row_codec::{digest_block_rows, encode_block_rows, RowCodec},
-    },
-    error::Result,
-    ingest_types::IngestTrace,
-    primitives::records::BlockBlobHeader,
+use monad_query_engine::{
+    bitmap::{IndexKind, StreamKey},
+    digest::ChainDigest,
+    row_codec::{digest_block_rows, encode_block_rows, RowCodec},
 };
+use monad_query_errors::Result;
+use monad_query_primitives::records::BlockBlobHeader;
+use monad_query_types::{ingest_types::IngestTrace, traces::selector_from_input};
 
 /// Compresses a block's trace rows into the framed per-family blob. Frames
 /// must already be DFS-flattened with `trace_address` assigned.
@@ -32,14 +28,17 @@ pub(crate) fn encode_block_traces(
     traces: &[IngestTrace],
     codec: &RowCodec,
 ) -> Result<(BlockBlobHeader, Vec<u8>, ChainDigest)> {
-    encode_block_rows(traces, codec, "block trace blob too large", |trace| {
-        StoredTrace::from(trace).encode()
-    })
+    encode_block_rows(
+        traces,
+        codec,
+        "block trace blob too large",
+        IngestTrace::encode_row,
+    )
 }
 
 /// The [`encode_block_traces`] row digest alone (external-payload ingest).
 pub(crate) fn digest_block_traces(traces: &[IngestTrace]) -> ChainDigest {
-    digest_block_rows(traces, |trace| StoredTrace::from(trace).encode())
+    digest_block_rows(traces, IngestTrace::encode_row)
 }
 
 /// Expands one frame into the indexed streams written at ingest:

@@ -37,6 +37,7 @@ use aws_sdk_dynamodb::{
 };
 use bytes::Bytes;
 use futures::stream::{StreamExt, TryStreamExt};
+use monad_query_errors::{QueryError, Result};
 use tracing::{debug, info, warn};
 
 use crate::{
@@ -47,7 +48,6 @@ use crate::{
         validate_pk_sk_table, ClientRing, SharedDynamoConnection, ATTR_PK, ATTR_SK, ATTR_VAL,
         BATCH_WRITE_LIMIT, BATCH_WRITE_PAYLOAD_SOFT_LIMIT,
     },
-    error::{MonadChainDataError, Result},
     meta::{MetaStore, MetaWriteOp, ScannableTableId, TableId},
     read_stats::{ReadGuard, ReadStats},
 };
@@ -540,9 +540,7 @@ impl MetaStore for DynamoMetaStore {
                     // `Blob::new(value)` reclaims the Vec when uniquely owned.
                     .item(ATTR_VAL, AttributeValue::B(Blob::new(value)))
                     .build()
-                    .map_err(|e| {
-                        MonadChainDataError::Backend(format!("dynamo build put_request: {e}"))
-                    })?;
+                    .map_err(|e| QueryError::Backend(format!("dynamo build put_request: {e}")))?;
                 Ok((
                     physical_table,
                     WriteRequest::builder().put_request(put).build(),

@@ -15,8 +15,7 @@
 
 use alloy_primitives::{Address, Bytes, B256};
 use alloy_rlp::{RlpDecodable, RlpEncodable};
-
-use monad_query_errors::{MonadChainDataError, Result};
+use monad_query_errors::{QueryError, Result};
 use monad_query_primitives::Hash32;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,8 +46,7 @@ impl StoredLog {
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self> {
-        alloy_rlp::decode_exact(bytes)
-            .map_err(|_| MonadChainDataError::Decode("invalid log entry rlp"))
+        alloy_rlp::decode_exact(bytes).map_err(|_| QueryError::Decode("invalid log entry rlp"))
     }
 
     pub fn into_log_entry(self, block_number: u64, block_hash: Hash32) -> LogEntry {

@@ -24,37 +24,35 @@ use futures::{
     lock::Mutex,
     stream::{StreamExt, TryStreamExt},
 };
+use monad_query_errors::{QueryError, Result};
+use monad_query_primitives::{
+    records::{BlockBlobHeader, BlockRecord, PublicationState},
+    EvmBlockHeader, ExternalBlobReader, Hash32,
+};
+use monad_query_store::{
+    BlobStore, BlobTable, BlobWriteOp, CacheConfig, CachedKvTable, CachedScannableKvTable,
+    MetaStore, MetaWriteOp, TableId,
+};
+use monad_query_types::ingest_types::FinalizedBlock;
 use tokio::sync::Semaphore;
 use zstd::dict::DecoderDictionary;
 
 use crate::{
-    engine::{
-        bitmap::{
-            decode_fragment_blob, decode_open_streams_chunk, decode_page, decode_page_counts,
-            BitmapPageCounts, BitmapTables, DecodedBitmapFragment, DecodedBitmapPage,
-        },
-        digest::ChainDigest,
-        family::{Family, BLOCK_BLOB_TABLE},
-        primary_dir::{
-            decode_bucket, decode_fragment, PrimaryDirBucket, PrimaryDirFragment, PrimaryDirTables,
-        },
-        query::row_cache::RowCaches,
-        row_codec::{
-            decode_row_frame, should_sample_row, RowCodec, RowCodecState, DICT_VERSION_NONE,
-            ROW_ZSTD_LEVEL,
-        },
+    bitmap::{
+        decode_fragment_blob, decode_open_streams_chunk, decode_page, decode_page_counts,
+        BitmapPageCounts, BitmapTables, DecodedBitmapFragment, DecodedBitmapPage,
     },
-    error::{MonadChainDataError, Result},
-    external::ExternalBlobReader,
-    ingest_types::{FinalizedBlock, Hash32},
-    primitives::{
-        records::{BlockBlobHeader, BlockRecord, PublicationState},
-        EvmBlockHeader,
+    digest::ChainDigest,
+    family::{Family, BLOCK_BLOB_TABLE},
+    primary_dir::{
+        decode_bucket, decode_fragment, PrimaryDirBucket, PrimaryDirFragment, PrimaryDirTables,
     },
-    store::{
-        BlobStore, BlobTable, BlobWriteOp, CacheConfig, CachedKvTable, CachedScannableKvTable,
-        MetaStore, MetaWriteOp, SessionFuture, TableId, WriteSession,
+    query::row_cache::RowCaches,
+    row_codec::{
+        decode_row_frame, should_sample_row, RowCodec, RowCodecState, DICT_VERSION_NONE,
+        ROW_ZSTD_LEVEL,
     },
+    session::{SessionFuture, WriteSession},
     txs::TxHashIndexTable,
 };
 
@@ -271,7 +269,7 @@ pub struct Tables<M: MetaStore, B: BlobStore> {
     /// here so external archive reads obey the same process-global cap.
     blob_io: Arc<Semaphore>,
     families: BTreeMap<Family, FamilyTables<M>>,
-    /// Per-family decoded-row caches; see [`crate::engine::query::row_cache`].
+    /// Per-family decoded-row caches; see [`crate::query::row_cache`].
     row_caches: RowCaches,
     dicts: DictManager,
     /// Process-global, byte-weighted budget bounding concurrent stage-2 decode
@@ -457,14 +455,14 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
         end_exclusive: usize,
     ) -> Result<Option<Bytes>> {
         if header.is_external() {
-            let reader =
-                self.external_payload
-                    .as_deref()
-                    .ok_or(MonadChainDataError::MissingData(
-                        "external payload block but no archive reader configured",
-                    ))?;
+            let reader = self
+                .external_payload
+                .as_deref()
+                .ok_or(QueryError::MissingData(
+                    "external payload block but no archive reader configured",
+                ))?;
             if header.physical_key.is_empty() {
-                return Err(MonadChainDataError::Decode(
+                return Err(QueryError::Decode(
                     "external payload header missing its archive key",
                 ));
             }
@@ -538,9 +536,13 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
         if let Some(decoder) = self.dicts.cached_decoder(family, dict_version) {
             return Ok(Some(decoder));
         }
-        let bytes = self.family(family).load_dict(dict_version).await?.ok_or(
-            MonadChainDataError::MissingData("missing row-codec dictionary for block"),
-        )?;
+        let bytes =
+            self.family(family)
+                .load_dict(dict_version)
+                .await?
+                .ok_or(QueryError::MissingData(
+                    "missing row-codec dictionary for block",
+                ))?;
         if bytes.is_empty() {
             // Empty-dict sentinel: this epoch's frames are plain.
             return Ok(None);
@@ -598,7 +600,7 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
             });
             let trained = rx
                 .await
-                .map_err(|_| MonadChainDataError::Backend("dict training canceled".into()))?;
+                .map_err(|_| QueryError::Backend("dict training canceled".into()))?;
             match trained {
                 Ok(bytes) if !bytes.is_empty() => bytes,
                 // Failed or empty training falls back to the empty-dict (plain) sentinel.
@@ -678,7 +680,7 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
                 let frame_start = header.offsets[idx] as usize;
                 let frame_end = header.offsets[idx + 1] as usize;
                 if frame_start > frame_end || frame_end > region.len() {
-                    return Err(MonadChainDataError::Decode(
+                    return Err(QueryError::Decode(
                         "invalid row frame range while sampling for dict training",
                     ));
                 }
@@ -774,7 +776,7 @@ where
             table
                 .get(partition, &clustering)
                 .await?
-                .ok_or(MonadChainDataError::MissingData(missing))
+                .ok_or(QueryError::MissingData(missing))
         })
         .buffered(FRAGMENT_GET_CONCURRENCY)
         .try_collect()
@@ -906,7 +908,7 @@ fn rewrite_block_blob_header(
     // their metadata key to a locator; reaching here would clobber the
     // archive key with a chain-data physical key.
     if header.is_external() {
-        return Err(MonadChainDataError::Decode(
+        return Err(QueryError::Decode(
             "external payload header cannot be repointed by the blob coalescer",
         ));
     }
@@ -1057,8 +1059,7 @@ impl BlockMetadataRecord {
     }
 
     fn decode(bytes: &[u8]) -> Result<Self> {
-        alloy_rlp::decode_exact(bytes)
-            .map_err(|_| MonadChainDataError::Decode("invalid block metadata rlp"))
+        alloy_rlp::decode_exact(bytes).map_err(|_| QueryError::Decode("invalid block metadata rlp"))
     }
 }
 
@@ -1085,7 +1086,7 @@ fn decode_block_number(bytes: Bytes) -> Result<u64> {
     let be: [u8; 8] = bytes
         .as_ref()
         .try_into()
-        .map_err(|_| MonadChainDataError::Decode("invalid block_hash_to_number_index value"))?;
+        .map_err(|_| QueryError::Decode("invalid block_hash_to_number_index value"))?;
     Ok(u64::from_be_bytes(be))
 }
 
@@ -1152,7 +1153,7 @@ impl<M: MetaStore> BlockTables<M> {
             return Ok(None);
         };
         let header = EvmBlockHeader::decode(&mut bytes.as_ref())
-            .map_err(|_| MonadChainDataError::Decode("invalid block header rlp"))?;
+            .map_err(|_| QueryError::Decode("invalid block header rlp"))?;
         Ok(Some(header))
     }
 
@@ -1191,7 +1192,7 @@ impl<M: MetaStore> BlockTables<M> {
     ) -> Result<Option<BlockRecord>> {
         let Some(head) = current_head else {
             if block.block_number() != 1 {
-                return Err(MonadChainDataError::InvalidBlock(
+                return Err(QueryError::InvalidBlock(
                     "first ingested block must be block 1 in the first pass",
                 ));
             }
@@ -1199,7 +1200,7 @@ impl<M: MetaStore> BlockTables<M> {
         };
 
         if block.block_number() != head + 1 {
-            return Err(MonadChainDataError::InvalidBlock(
+            return Err(QueryError::InvalidBlock(
                 "block_number must extend the published head contiguously",
             ));
         }
@@ -1207,11 +1208,9 @@ impl<M: MetaStore> BlockTables<M> {
         let previous = self
             .load_record(head)
             .await?
-            .ok_or(MonadChainDataError::MissingData(
-                "missing previous block record",
-            ))?;
+            .ok_or(QueryError::MissingData("missing previous block record"))?;
         if previous.block_hash != block.parent_hash() {
-            return Err(MonadChainDataError::InvalidBlock(
+            return Err(QueryError::InvalidBlock(
                 "parent_hash must match the previous published block",
             ));
         }
@@ -1236,7 +1235,7 @@ fn decode_seal_chain(bytes: Bytes) -> Result<Hash32> {
     let raw: [u8; 32] = bytes
         .as_ref()
         .try_into()
-        .map_err(|_| MonadChainDataError::Decode("invalid seal chain value"))?;
+        .map_err(|_| QueryError::Decode("invalid seal chain value"))?;
     Ok(Hash32::from(raw))
 }
 
@@ -1446,8 +1445,10 @@ impl<M: MetaStore> FamilyTables<M> {
 
 #[cfg(test)]
 mod tests {
+    use monad_query_store::InMemoryMetaStore;
+
     use super::PublicationTables;
-    use crate::{engine::digest::EMPTY_DIGEST, store::InMemoryMetaStore};
+    use crate::digest::EMPTY_DIGEST;
 
     // NOTE: `all_logical_table_names_match_declared_table_ids` (the catalog ⇄
     // declared-`TableId` consistency check) lives in monad-query-tests: it also

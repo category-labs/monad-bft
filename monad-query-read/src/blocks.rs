@@ -16,20 +16,18 @@
 use std::collections::BTreeSet;
 
 use futures::{stream, try_join, StreamExt, TryStreamExt};
-
-use crate::{
-    engine::tables::{BlockTables, Tables},
-    error::{MonadChainDataError, Result},
-    ingest_types::Hash32,
-    primitives::{
-        limits::QueryEnvelope,
-        range::ResolvedBlockWindow,
-        records::BlockRecord,
-        refs::{BlockRef, BlockSpan},
-        EvmBlockHeader,
-    },
-    store::{BlobStore, MetaStore},
+use monad_query_engine::{
+    range::ResolvedBlockWindow,
+    tables::{BlockTables, Tables},
 };
+use monad_query_errors::{QueryError, Result};
+use monad_query_primitives::{
+    limits::QueryEnvelope,
+    records::BlockRecord,
+    refs::{BlockRef, BlockSpan},
+    EvmBlockHeader, Hash32,
+};
+use monad_query_store::{BlobStore, MetaStore};
 
 /// A block as returned by queries: the full header payload plus the block
 /// hash, which the header type itself does not carry.
@@ -118,8 +116,8 @@ async fn load_block_with_record<M: MetaStore>(
     number: u64,
 ) -> Result<(Block, BlockRecord)> {
     let (record, header) = try_join!(blocks.load_record(number), blocks.load_header(number))?;
-    let record = record.ok_or(MonadChainDataError::MissingData("missing block record"))?;
-    let header = header.ok_or(MonadChainDataError::MissingData("missing block header"))?;
+    let record = record.ok_or(QueryError::MissingData("missing block record"))?;
+    let header = header.ok_or(QueryError::MissingData("missing block header"))?;
     Ok((
         Block {
             hash: record.block_hash,

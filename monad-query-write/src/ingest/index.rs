@@ -23,6 +23,23 @@ use std::{
 };
 
 use bytes::Bytes;
+use monad_query_engine::{
+    bitmap::{
+        encode_bitmap_blob, encode_bitmap_page_artifact, encode_open_streams_delta,
+        page_group_start, page_offset, page_start, page_start_in_group, BitmapPageArtifact,
+        BitmapPageCounts, BitmapPageMeta, DecodedBitmapFragment, StreamKey,
+        OPEN_STREAMS_DELTA_TARGET_BYTES, STREAM_PAGE_ID_SPAN,
+    },
+    digest::{chain, ChainDigest, SealDigest},
+    family::{Family, PerFamily},
+    primary_dir::{PrimaryDirBucket, PrimaryDirEntry, DIRECTORY_BUCKET_SIZE},
+    seal::seal_boundary,
+    tables::Tables,
+    WriteSession,
+};
+use monad_query_errors::{QueryError, Result};
+use monad_query_primitives::records::PrimaryId;
+use monad_query_store::{BlobStore, MetaStore};
 use roaring::RoaringBitmap;
 use tokio::sync::{mpsc, oneshot};
 
@@ -33,25 +50,7 @@ use super::{
     AssignedBlock, FamilyFrontier, IndexMsg, IngestMsg,
 };
 use crate::{
-    engine::{
-        bitmap::{
-            encode_bitmap_blob, encode_bitmap_page_artifact, encode_open_streams_delta,
-            page_group_start, page_offset, page_start, page_start_in_group, BitmapPageArtifact,
-            BitmapPageCounts, BitmapPageMeta, DecodedBitmapFragment, StreamKey,
-            OPEN_STREAMS_DELTA_TARGET_BYTES, STREAM_PAGE_ID_SPAN,
-        },
-        digest::{chain, ChainDigest, SealDigest},
-        family::{Family, PerFamily},
-        primary_dir::{PrimaryDirBucket, PrimaryDirEntry, DIRECTORY_BUCKET_SIZE},
-        seal::seal_boundary,
-        tables::Tables,
-    },
-    error::{MonadChainDataError, Result},
-    logs::stream_entries_for_log,
-    primitives::records::PrimaryId,
-    store::{BlobStore, MetaStore, WriteSession},
-    traces::stream_entries_for_trace,
-    txs::stream_entries_for_tx,
+    logs::stream_entries_for_log, traces::stream_entries_for_trace, txs::stream_entries_for_tx,
 };
 
 pub(crate) const PAGE_SPAN: u64 = STREAM_PAGE_ID_SPAN as u64;
@@ -241,7 +240,7 @@ where
         let io_start = self.probe.start();
         let result = handle
             .await
-            .map_err(|e| MonadChainDataError::Backend(format!("index write task: {e}")))?;
+            .map_err(|e| QueryError::Backend(format!("index write task: {e}")))?;
         self.probe.record(&self.probe.index_write_ns, io_start);
         result
     }
@@ -342,9 +341,7 @@ where
         let awaited = data_durable.await;
         self.probe
             .record(&self.probe.index_ckpt_wait_ns, wait_start);
-        awaited.map_err(|_| {
-            MonadChainDataError::Backend("data track stopped before checkpoint".into())
-        })?;
+        awaited.map_err(|_| QueryError::Backend("data track stopped before checkpoint".into()))?;
         // Snapshot persist counts as index-side store I/O too.
         let io_start = self.probe.start();
         let result = persist_snapshot(
@@ -648,12 +645,12 @@ fn compact_dir_bucket(
         if let Some((prev_block, prev_end)) = prev {
             // Defensive: a break in the contiguous chain is an ingest bug.
             if block <= prev_block {
-                return Err(MonadChainDataError::Decode(
+                return Err(QueryError::Decode(
                     "inconsistent primary directory bucket block sequence",
                 ));
             }
             if prev_end != first {
-                return Err(MonadChainDataError::Decode(
+                return Err(QueryError::Decode(
                     "inconsistent primary directory bucket primary-id sequence",
                 ));
             }
@@ -667,7 +664,7 @@ fn compact_dir_bucket(
     }
     if entries.is_empty() {
         // A sealed 64K span always had its ids minted by some block.
-        return Err(MonadChainDataError::MissingData(
+        return Err(QueryError::MissingData(
             "sealed primary directory bucket has no overlapping entries",
         ));
     }
@@ -776,9 +773,8 @@ where
             first_id,
             end_id,
         } => {
-            let count = u32::try_from(end_id - first_id).map_err(|_| {
-                MonadChainDataError::Decode("primary directory fragment count exceeds u32")
-            })?;
+            let count = u32::try_from(end_id - first_id)
+                .map_err(|_| QueryError::Decode("primary directory fragment count exceeds u32"))?;
             tables
                 .family(family)
                 .dir()
@@ -856,8 +852,9 @@ fn stage_open_streams_chunks<M, B>(
 mod tests {
     use std::collections::VecDeque;
 
+    use monad_query_engine::bitmap::PAGE_GROUP_ID_SPAN;
+
     use super::*;
-    use crate::engine::bitmap::PAGE_GROUP_ID_SPAN;
 
     const GROUP: u64 = PAGE_GROUP_ID_SPAN; // ids per page group (2^24)
 
@@ -1130,7 +1127,7 @@ mod tests {
 
     /// An address-kind stream key from a repeated byte (test shorthand).
     fn skey(byte: u8) -> StreamKey {
-        StreamKey::new(crate::engine::bitmap::IndexKind::Addr, &[byte; 20])
+        StreamKey::new(monad_query_engine::bitmap::IndexKind::Addr, &[byte; 20])
     }
 
     #[test]
@@ -1194,7 +1191,7 @@ mod tests {
     fn accumulate_family_propagates_extractor_error() {
         let mut tail = FamilyTail::default();
         let err = accumulate_family(&mut tail, 0, 1, 1, 0..1u64, |_| {
-            Err(MonadChainDataError::Decode("boom"))
+            Err(QueryError::Decode("boom"))
         })
         .expect_err("extractor error propagates");
         assert!(err.to_string().contains("boom"));

@@ -20,8 +20,7 @@ use alloy_consensus::{
 use alloy_eips::eip2718::Decodable2718;
 use alloy_primitives::{Address, Bytes};
 use alloy_rlp::{RlpDecodable, RlpEncodable};
-
-use monad_query_errors::{MonadChainDataError, Result};
+use monad_query_errors::{QueryError, Result};
 use monad_query_primitives::Hash32;
 
 /// Public, owned per-transaction view returned by queries. Carries the
@@ -89,7 +88,7 @@ impl TxLocation {
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         let bytes: [u8; Self::ENCODED_LEN] = bytes
             .try_into()
-            .map_err(|_| MonadChainDataError::Decode("invalid tx_location length"))?;
+            .map_err(|_| QueryError::Decode("invalid tx_location length"))?;
         let block_number = u64::from_be_bytes(bytes[..8].try_into().expect("8-byte prefix"));
         let tx_index = u32::from_be_bytes(bytes[8..].try_into().expect("4-byte suffix"));
         Ok(Self {
@@ -115,8 +114,7 @@ impl StoredTxEnvelope {
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self> {
-        alloy_rlp::decode_exact(bytes)
-            .map_err(|_| MonadChainDataError::Decode("invalid tx envelope rlp"))
+        alloy_rlp::decode_exact(bytes).map_err(|_| QueryError::Decode("invalid tx envelope rlp"))
     }
 
     pub fn into_tx_entry(
@@ -139,7 +137,7 @@ impl StoredTxEnvelope {
 
 pub fn decode_envelope(signed_tx_bytes: &[u8]) -> Result<TxEnvelope> {
     TxEnvelope::decode_2718(&mut &signed_tx_bytes[..])
-        .map_err(|_| MonadChainDataError::Decode("invalid signed tx envelope"))
+        .map_err(|_| QueryError::Decode("invalid signed tx envelope"))
 }
 
 /// Decodes a signed-tx envelope, seeding the signed hash from the stored
@@ -150,7 +148,7 @@ pub fn decode_envelope(signed_tx_bytes: &[u8]) -> Result<TxEnvelope> {
 fn decode_envelope_with_hash(signed_tx_bytes: &[u8], tx_hash: Hash32) -> Result<TxEnvelope> {
     fn signed<T: RlpEcdsaDecodableTx>(buf: &mut &[u8], tx_hash: Hash32) -> Result<Signed<T>> {
         let (tx, signature) = T::rlp_decode_with_signature(buf)
-            .map_err(|_| MonadChainDataError::Decode("invalid signed tx envelope"))?;
+            .map_err(|_| QueryError::Decode("invalid signed tx envelope"))?;
         Ok(Signed::new_unchecked(tx, signature, tx_hash))
     }
 
@@ -176,7 +174,7 @@ fn decode_envelope_with_hash(signed_tx_bytes: &[u8], tx_hash: Hash32) -> Result<
         }
         // Legacy txs start with their RLP list header.
         Some(byte) if *byte >= 0xc0 => Ok(TxEnvelope::Legacy(signed::<TxLegacy>(buf, tx_hash)?)),
-        _ => Err(MonadChainDataError::Decode("invalid signed tx envelope")),
+        _ => Err(QueryError::Decode("invalid signed tx envelope")),
     }
 }
 
