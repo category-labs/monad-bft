@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Requires `CHAIN_DATA_DYNAMO_TEST_ENDPOINT` pointing at DynamoDB Local / Alternator; run with
-//! `cargo test -p monad-chain-data --features dynamo --test dynamo_blobstore -- --ignored`.
+//! `cargo test -p monad-query-store --features dynamo --test dynamo_blobstore -- --ignored`.
 #![cfg(feature = "dynamo")]
 
 use bytes::Bytes;

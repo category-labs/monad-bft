@@ -19,7 +19,7 @@
 //!
 //! Run: `docker run -p 27017:27017 mongo`, then
 //! `CHAIN_DATA_MONGO_TEST_URL=mongodb://127.0.0.1:27017 \
-//!   cargo test -p monad-chain-data --features mongo --test mongo_metastore -- --ignored`
+//!   cargo test -p monad-query-store --features mongo --test mongo_metastore -- --ignored`
 #![cfg(feature = "mongo")]
 
 use bytes::Bytes;

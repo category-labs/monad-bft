@@ -14,10 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use bytes::Bytes;
-use monad_query_store::{
-    BlobStore, BlobTableId,
-    InMemoryBlobStore,
-};
+use monad_query_store::{BlobStore, BlobTableId, InMemoryBlobStore};
 
 const TABLE: BlobTableId = BlobTableId::new("blob_store_test");
 const KEY: &[u8] = b"blob";

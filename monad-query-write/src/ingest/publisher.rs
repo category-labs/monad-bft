@@ -26,13 +26,10 @@ use std::{
     },
 };
 
+use monad_query_engine::tables::{PublicationTables, Tables};
+use monad_query_errors::{QueryError, Result};
+use monad_query_store::{BlobStore, MetaStore};
 use tokio::sync::{mpsc, Notify};
-
-use crate::{
-    engine::tables::{PublicationTables, Tables},
-    error::{MonadChainDataError, Result},
-    store::{BlobStore, MetaStore},
-};
 
 /// Publishable-head bookkeeping. Every candidate head must be safe to recover
 /// from AND complete for readers: an index flush boundary (recorded by
@@ -139,14 +136,13 @@ where
 {
     let head = progress.publishable_head();
     if head > *published {
-        let record =
-            tables
-                .blocks()
-                .load_record(head)
-                .await?
-                .ok_or(MonadChainDataError::MissingData(
-                    "missing block record for published head",
-                ))?;
+        let record = tables
+            .blocks()
+            .load_record(head)
+            .await?
+            .ok_or(QueryError::MissingData(
+                "missing block record for published head",
+            ))?;
         publisher.publish(head, record.row_chain).await?;
         *published = head;
     }

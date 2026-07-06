@@ -26,10 +26,9 @@ pub use dynamo::{
     DynamoTableLayout,
 };
 pub use in_memory::InMemoryMetaStore;
+use monad_query_errors::Result;
 #[cfg(feature = "mongo")]
 pub use mongo::{MongoMetaStore, MongoMetaStoreConfig};
-
-use crate::error::Result;
 
 #[derive(Debug, Clone)]
 pub enum MetaWriteOp {

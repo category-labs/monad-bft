@@ -16,32 +16,6 @@
 //! queryX read path: the `MonadChainDataService` query service, block/mem-scan
 //! helpers, per-family materialization into RPC-facing entry types, and the
 //! external-archive decode mirrors.
-//!
-//! Lower crates are re-exported under their historical module paths so this
-//! crate's modules keep their `crate::{engine, store, ...}` imports; these are
-//! transition shims to be flattened to direct `monad_query_*::` paths.
-
-use monad_query_errors as error;
-
-pub mod store {
-    pub use monad_query_engine::{SessionFuture, WriteSession};
-    pub use monad_query_store::*;
-}
-
-pub mod primitives {
-    pub use monad_query_engine::primitives::*;
-}
-
-pub mod ingest_types {
-    pub use monad_query_primitives::{CallKind, Hash32};
-    pub use monad_query_types::ingest_types::*;
-}
-
-pub mod engine {
-    pub use monad_query_engine::{
-        bitmap, clause, digest, family, primary_dir, query, row_codec, seal, tables,
-    };
-}
 
 pub mod api;
 pub mod blocks;
@@ -54,9 +28,6 @@ pub mod txs;
 
 pub use api::MonadChainDataService;
 pub use blocks::{Block, QueryBlocksRequest, QueryBlocksResponse};
-pub use external::{
-    ExternalBlobReader, ExternalFamilyRegion, ExternalPayloadSpec, InMemoryExternalBlobReader,
-};
 pub use logs::{LogEntry, LogFilter, LogsRelations, QueryLogsRequest, QueryLogsResponse};
 pub use mem_scan::{scan_block_logs, scan_block_txs, MemLogsBlock, MemTx};
 pub use traces::{

@@ -17,11 +17,14 @@
 //! own pack blobs, ingest can index byte ranges inside an EXISTING
 //! monad-archive object store ("BDR": per-block uncompressed RLP objects).
 //!
-//! The source supplies an [`ExternalPayloadSpec`] per block — per-family
-//! container byte ranges plus row/status manifests — which ingest validates
-//! against the decoded block and stamps into [`BlockBlobHeader`]s
-//! (`encoding = 1`). Queries then range-read the archive objects through an
-//! [`ExternalBlobReader`] and decode containers with the mirrors below.
+//! The source supplies an
+//! [`ExternalPayloadSpec`](monad_query_types::external::ExternalPayloadSpec)
+//! per block — per-family container byte ranges plus row/status manifests —
+//! which ingest validates against the decoded block and stamps into
+//! [`BlockBlobHeader`]s (`encoding = 1`). Queries then range-read the archive
+//! objects through an
+//! [`ExternalBlobReader`](monad_query_primitives::ExternalBlobReader) and
+//! decode containers with the mirrors below.
 //!
 //! The decode mirrors must produce rows byte-identical to what native ingest
 //! stores for the same block (the cross-crate round-trip test in
@@ -40,20 +43,14 @@ use alloy_consensus::ReceiptEnvelope;
 use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{Address, Bytes, U256, U64, U8};
 use alloy_rlp::Decodable;
-
-// The external-payload foundations moved to the lower crates; re-export them so
-// `crate::external::*` (and downstream `monad_chain_data::*`) keep resolving.
-pub use monad_query_primitives::{ExternalBlobReader, InMemoryExternalBlobReader, RawBytes};
-pub use monad_query_types::external::{ExternalFamilyRegion, ExternalPayloadSpec};
+use monad_query_errors::{QueryError, Result};
+use monad_query_primitives::CallKind;
 
 use crate::{
-    error::{MonadChainDataError, Result},
-    ingest_types::CallKind,
     logs::StoredLog,
     traces::{compute_trace_addresses, StoredTrace},
     txs::StoredTxEnvelope,
 };
-
 
 /// Decodes the RLP `Header` of one container item and bounds-checks it against
 /// the item slice, returning the payload. Item ranges are exact, so trailing
@@ -63,9 +60,9 @@ fn item_header(
     expect_list: bool,
     what: &'static str,
 ) -> Result<alloy_rlp::Header> {
-    let header = alloy_rlp::Header::decode(buf).map_err(|_| MonadChainDataError::Decode(what))?;
+    let header = alloy_rlp::Header::decode(buf).map_err(|_| QueryError::Decode(what))?;
     if header.list != expect_list {
-        return Err(MonadChainDataError::Decode(what));
+        return Err(QueryError::Decode(what));
     }
     Ok(header)
 }
@@ -74,7 +71,7 @@ fn expect_consumed(buf: &[u8], what: &'static str) -> Result<()> {
     if buf.is_empty() {
         Ok(())
     } else {
-        Err(MonadChainDataError::Decode(what))
+        Err(QueryError::Decode(what))
     }
 }
 
@@ -88,9 +85,8 @@ pub fn decode_external_tx(bytes: &[u8]) -> Result<StoredTxEnvelope> {
     item_header(buf, true, ERR)?;
     // The wrapper string around the tx's network encoding.
     item_header(buf, false, ERR)?;
-    let tx =
-        alloy_consensus::TxEnvelope::decode(buf).map_err(|_| MonadChainDataError::Decode(ERR))?;
-    let sender = Address::decode(buf).map_err(|_| MonadChainDataError::Decode(ERR))?;
+    let tx = alloy_consensus::TxEnvelope::decode(buf).map_err(|_| QueryError::Decode(ERR))?;
+    let sender = Address::decode(buf).map_err(|_| QueryError::Decode(ERR))?;
     expect_consumed(buf, ERR)?;
     Ok(StoredTxEnvelope {
         tx_hash: *tx.tx_hash(),
@@ -113,8 +109,8 @@ pub fn decode_external_receipt_logs(
     let buf = &mut &bytes[..];
     item_header(buf, true, ERR)?;
     item_header(buf, false, ERR)?;
-    let receipt = ReceiptEnvelope::decode(buf).map_err(|_| MonadChainDataError::Decode(ERR))?;
-    let _starting_log_index = u64::decode(buf).map_err(|_| MonadChainDataError::Decode(ERR))?;
+    let receipt = ReceiptEnvelope::decode(buf).map_err(|_| QueryError::Decode(ERR))?;
+    let _starting_log_index = u64::decode(buf).map_err(|_| QueryError::Decode(ERR))?;
     expect_consumed(buf, ERR)?;
     receipt
         .logs()
@@ -122,8 +118,8 @@ pub fn decode_external_receipt_logs(
         .enumerate()
         .map(|(i, log)| {
             let log_index = first_log_index
-                .checked_add(u32::try_from(i).map_err(|_| MonadChainDataError::Decode(ERR))?)
-                .ok_or(MonadChainDataError::Decode("log index overflow"))?;
+                .checked_add(u32::try_from(i).map_err(|_| QueryError::Decode(ERR))?)
+                .ok_or(QueryError::Decode("log index overflow"))?;
             Ok(StoredLog {
                 tx_index,
                 log_index,
@@ -163,7 +159,7 @@ struct ArchiveCallFrameLog {
 
 impl ArchiveCallFrame {
     fn decode(buf: &mut &[u8], err: &'static str) -> Result<Self> {
-        let decode_err = |_| MonadChainDataError::Decode(err);
+        let decode_err = |_| QueryError::Decode(err);
         let typ = U8::decode(buf).map_err(decode_err)?;
         let flags = U64::decode(buf).map_err(decode_err)?;
         let from = Address::decode(buf).map_err(decode_err)?;
@@ -173,7 +169,7 @@ impl ArchiveCallFrame {
                 None
             }
             Some(_) => Some(Address::decode(buf).map_err(decode_err)?),
-            None => return Err(MonadChainDataError::Decode(err)),
+            None => return Err(QueryError::Decode(err)),
         };
         let value = U256::decode(buf).map_err(decode_err)?;
         let gas = U64::decode(buf).map_err(decode_err)?;
@@ -193,7 +189,7 @@ impl ArchiveCallFrame {
             3 => CallKind::Create,
             4 => CallKind::Create2,
             5 => CallKind::SelfDestruct,
-            _ => return Err(MonadChainDataError::Decode(err)),
+            _ => return Err(QueryError::Decode(err)),
         };
         Ok(Self {
             typ,
@@ -205,8 +201,7 @@ impl ArchiveCallFrame {
             input,
             output,
             status: status.to::<u8>(),
-            depth: u32::try_from(depth.to::<u64>())
-                .map_err(|_| MonadChainDataError::Decode(err))?,
+            depth: u32::try_from(depth.to::<u64>()).map_err(|_| QueryError::Decode(err))?,
         })
     }
 }
@@ -223,7 +218,7 @@ pub fn decode_external_trace_container(
 ) -> Result<Vec<StoredTrace>> {
     const ERR: &str = "invalid archive trace container";
     let buf = &mut &bytes[..];
-    let blob = Vec::<u8>::decode(buf).map_err(|_| MonadChainDataError::Decode(ERR))?;
+    let blob = Vec::<u8>::decode(buf).map_err(|_| QueryError::Decode(ERR))?;
     expect_consumed(buf, ERR)?;
 
     // The blob is `Vec<Vec<CallFrame>>`: an outer list of inner lists, each
@@ -231,14 +226,14 @@ pub fn decode_external_trace_container(
     let outer = &mut blob.as_ref();
     let outer_header = item_header(outer, true, ERR)?;
     if outer.len() != outer_header.payload_length {
-        return Err(MonadChainDataError::Decode(ERR));
+        return Err(QueryError::Decode(ERR));
     }
     let mut frames: Vec<ArchiveCallFrame> = Vec::new();
     while !outer.is_empty() {
         let inner_header = item_header(outer, true, ERR)?;
         let (mut inner, rest) = outer
             .split_at_checked(inner_header.payload_length)
-            .ok_or(MonadChainDataError::Decode(ERR))?;
+            .ok_or(QueryError::Decode(ERR))?;
         *outer = rest;
         while !inner.is_empty() {
             frames.push(ArchiveCallFrame::decode(&mut inner, ERR)?);

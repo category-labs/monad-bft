@@ -25,30 +25,28 @@ use std::{
 };
 
 use futures::{stream, stream::FuturesOrdered, Stream, StreamExt, TryStreamExt};
+use monad_query_errors::{QueryError, Result};
+use monad_query_primitives::{
+    order::QueryOrder,
+    records::{BlockBlobHeader, BlockRecord, PrimaryId},
+    refs::{BlockRef, BlockSpan},
+};
+use monad_query_store::{BlobStore, MetaStore};
 use tracing::debug;
 
 use crate::{
-    engine::{
-        clause::IndexedFilter,
-        family::Family,
-        primary_dir::bucket_start,
-        query::{
-            bitmap::PageGroupPlan,
-            directory_resolver::{PrimaryIdResolver, ResolvedPrimaryIdLocation},
-            row_cache::RowCache,
-            window::resolve_primary_id_window,
-        },
-        row_codec::RowDecompressor,
-        tables::{BlockTables, QueryRuntimeConfig, Tables},
+    clause::IndexedFilter,
+    family::Family,
+    primary_dir::bucket_start,
+    query::{
+        bitmap::PageGroupPlan,
+        directory_resolver::{PrimaryIdResolver, ResolvedPrimaryIdLocation},
+        row_cache::RowCache,
+        window::resolve_primary_id_window,
     },
-    error::{MonadChainDataError, Result},
-    primitives::{
-        order::QueryOrder,
-        range::ResolvedBlockWindow,
-        records::{BlockBlobHeader, BlockRecord, PrimaryId},
-        refs::{BlockRef, BlockSpan},
-    },
-    store::{BlobStore, MetaStore},
+    range::ResolvedBlockWindow,
+    row_codec::RowDecompressor,
+    tables::{BlockTables, QueryRuntimeConfig, Tables},
 };
 
 // Stage-1/stage-2 fan-outs, the byte-weighted decode budget, and the
@@ -223,7 +221,7 @@ pub trait IndexedFamilyQuery {
         self.load_records_in_block(block_number, &[idx_in_block], stats)
             .await?
             .pop()
-            .ok_or(MonadChainDataError::MissingData(ERR_MISSING_RECORD))
+            .ok_or(QueryError::MissingData(ERR_MISSING_RECORD))
     }
 
     async fn load_records_in_block(
@@ -261,7 +259,7 @@ pub trait IndexedFamilyQuery {
                 .family(family)
                 .load_blob_header(block_number)
                 .await?
-                .ok_or(MonadChainDataError::MissingData(ERR_MISSING_HEADER))?;
+                .ok_or(QueryError::MissingData(ERR_MISSING_HEADER))?;
             IndexedQueryStats::add_us(&stats.materialize_header_us, started);
 
             if header.is_external() {
@@ -276,7 +274,7 @@ pub trait IndexedFamilyQuery {
         rows.into_iter()
             .zip(indices)
             .map(|(row, &idx)| {
-                let stored = row.ok_or(MonadChainDataError::MissingData(ERR_MISSING_RECORD))?;
+                let stored = row.ok_or(QueryError::MissingData(ERR_MISSING_RECORD))?;
                 Self::into_record(&stored, &block_record, idx)
             })
             .collect()
@@ -303,7 +301,7 @@ pub trait IndexedFamilyQuery {
             self.tables().query_config().materialize_span_max_bytes,
             |idx_in_block| {
                 if idx_in_block + 1 >= header.offsets.len() {
-                    return Err(MonadChainDataError::Decode(ERR_INDEX_OUT_OF_RANGE));
+                    return Err(QueryError::Decode(ERR_INDEX_OUT_OF_RANGE));
                 }
                 Ok(header.abs_range(idx_in_block))
             },
@@ -341,7 +339,7 @@ pub trait IndexedFamilyQuery {
                 let start = frame.abs_start.saturating_sub(span.abs_start);
                 let end = frame.abs_end.saturating_sub(span.abs_start);
                 if start > end || end > span_bytes.len() {
-                    return Err(MonadChainDataError::Decode(ERR_INVALID_RANGE));
+                    return Err(QueryError::Decode(ERR_INVALID_RANGE));
                 }
                 let started = Instant::now();
                 let bytes = decompressor.decompress(&span_bytes[start..end])?;
@@ -382,7 +380,7 @@ pub trait IndexedFamilyQuery {
         let mut by_container: BTreeMap<usize, Vec<(usize, usize)>> = BTreeMap::new();
         for &(output_pos, idx_in_block) in misses {
             if idx_in_block >= row_count {
-                return Err(MonadChainDataError::Decode(ERR_INDEX_OUT_OF_RANGE));
+                return Err(QueryError::Decode(ERR_INDEX_OUT_OF_RANGE));
             }
             let (container, _) = header.container_of_row(idx_in_block);
             by_container
@@ -397,7 +395,7 @@ pub trait IndexedFamilyQuery {
             self.tables().query_config().materialize_span_max_bytes,
             |container| {
                 if container + 1 >= header.offsets.len() {
-                    return Err(MonadChainDataError::Decode(ERR_INDEX_OUT_OF_RANGE));
+                    return Err(QueryError::Decode(ERR_INDEX_OUT_OF_RANGE));
                 }
                 Ok(header.abs_range(container))
             },
@@ -425,7 +423,7 @@ pub trait IndexedFamilyQuery {
                 let start = frame.abs_start.saturating_sub(span.abs_start);
                 let end = frame.abs_end.saturating_sub(span.abs_start);
                 if start > end || end > span_bytes.len() {
-                    return Err(MonadChainDataError::Decode(ERR_INVALID_RANGE));
+                    return Err(QueryError::Decode(ERR_INVALID_RANGE));
                 }
                 let container = frame.idx_in_block;
                 let started = Instant::now();
@@ -449,7 +447,7 @@ pub trait IndexedFamilyQuery {
                     let stored = decoded
                         .get(idx_in_block - row_base)
                         .cloned()
-                        .ok_or(MonadChainDataError::Decode(ERR_INDEX_OUT_OF_RANGE))?;
+                        .ok_or(QueryError::Decode(ERR_INDEX_OUT_OF_RANGE))?;
                     rows[output_pos] = Some(stored);
                 }
                 IndexedQueryStats::add_us(&stats.materialize_entry_decode_us, started);
@@ -490,7 +488,7 @@ pub trait IndexedFamilyQuery {
             .tables()
             .read_block_blob_header_range(block_number, header, span.abs_start, span.abs_end)
             .await?
-            .ok_or(MonadChainDataError::MissingData(ERR_MISSING_BLOB))?;
+            .ok_or(QueryError::MissingData(ERR_MISSING_BLOB))?;
         IndexedQueryStats::add_us(&stats.materialize_blob_frame_us, started);
         Ok(span_bytes)
     }
@@ -542,7 +540,7 @@ pub trait IndexedFamilyQuery {
             .family(family)
             .load_blob_header(block_number)
             .await?
-            .ok_or(MonadChainDataError::MissingData(ERR_MISSING_HEADER))?;
+            .ok_or(QueryError::MissingData(ERR_MISSING_HEADER))?;
 
         // Whole-region read+decode: weight the shared byte budget by the
         // region length and hold the permits across the read and the loop.
@@ -560,7 +558,7 @@ pub trait IndexedFamilyQuery {
             .tables()
             .read_block_blob_region(block_number, &header)
             .await?
-            .ok_or(MonadChainDataError::MissingData(ERR_MISSING_BLOB))?;
+            .ok_or(QueryError::MissingData(ERR_MISSING_BLOB))?;
 
         if header.is_external() {
             // Decode every container once (ascending) and seed the row cache
@@ -571,7 +569,7 @@ pub trait IndexedFamilyQuery {
                 let start = header.offsets[container] as usize;
                 let end = header.offsets[container + 1] as usize;
                 if start > end || end > blob.len() {
-                    return Err(MonadChainDataError::Decode(ERR_INVALID_RANGE));
+                    return Err(QueryError::Decode(ERR_INVALID_RANGE));
                 }
                 let decoded = decode_container_rows::<Self>(&header, container, &blob[start..end])?;
                 // Charge each row its share of the container bytes.
@@ -609,12 +607,12 @@ pub trait IndexedFamilyQuery {
         let mut records = Vec::new();
         for idx in order.iterate(0..header.row_count()) {
             if idx + 1 >= header.offsets.len() {
-                return Err(MonadChainDataError::Decode(ERR_INDEX_OUT_OF_RANGE));
+                return Err(QueryError::Decode(ERR_INDEX_OUT_OF_RANGE));
             }
             let start = header.offsets[idx] as usize;
             let end = header.offsets[idx + 1] as usize;
             if start > end || end > blob.len() {
-                return Err(MonadChainDataError::Decode(ERR_INVALID_RANGE));
+                return Err(QueryError::Decode(ERR_INVALID_RANGE));
             }
             let bytes = decompressor.decompress(&blob[start..end])?;
             let stored = Arc::new(Self::decode_stored(&bytes)?);
@@ -640,7 +638,7 @@ async fn load_block_record<M: MetaStore>(
     blocks
         .load_record(block_number)
         .await?
-        .ok_or(MonadChainDataError::MissingData("missing block record"))
+        .ok_or(QueryError::MissingData("missing block record"))
 }
 
 #[derive(Default)]
@@ -727,7 +725,7 @@ where
         bytes,
     )?;
     if decoded.len() != header.container_row_len(container) {
-        return Err(MonadChainDataError::Decode(
+        return Err(QueryError::Decode(
             "external container row count disagrees with the block header",
         ));
     }
@@ -752,7 +750,7 @@ where
     for (output_pos, idx_in_block) in indices {
         let (abs_start, abs_end) = range_for_index(idx_in_block)?;
         if abs_start > abs_end {
-            return Err(MonadChainDataError::Decode("invalid frame range"));
+            return Err(QueryError::Decode("invalid frame range"));
         }
         frames.push(CoalescedFrame {
             output_pos,
@@ -879,7 +877,7 @@ where
 
     let clauses = filter.indexed_clauses();
     if clauses.is_empty() {
-        return Err(MonadChainDataError::InvalidRequest(
+        return Err(QueryError::InvalidRequest(
             "indexed query requires at least one indexed clause",
         ));
     }
@@ -918,7 +916,7 @@ where
                     )
                     .await?
                 else {
-                    return Ok::<_, MonadChainDataError>(Vec::new());
+                    return Ok::<_, QueryError>(Vec::new());
                 };
                 let plan = Arc::new(plan);
                 let items: Vec<PageWorkItem> = order
@@ -967,7 +965,7 @@ where
                 )
                 .await?
             else {
-                return Ok::<_, MonadChainDataError>(None);
+                return Ok::<_, QueryError>(None);
             };
             let intersect_us = intersect_started.elapsed().as_micros() as u64;
             IndexedQueryStats::add_count(&stats.page_intersect_us, intersect_us);
@@ -1069,7 +1067,7 @@ where
                         let block_records =
                             materialize_indexed_block_batch(runner, block_number, &indices, &stats)
                                 .await?;
-                        Ok::<_, MonadChainDataError>((block_number, block_records))
+                        Ok::<_, QueryError>((block_number, block_records))
                     }
                 })
                 .buffered(tables.query_config().materialize_concurrency),

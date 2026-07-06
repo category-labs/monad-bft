@@ -22,12 +22,8 @@
 
 use std::sync::Arc;
 
-use crate::{
-    logs::StoredLog,
-    store::cache::{weigh_weighted, CachedInner, Weighted},
-    traces::StoredTrace,
-    txs::StoredTxEnvelope,
-};
+use monad_query_store::cache::{weigh_weighted, CachedInner, Weighted};
+use monad_query_types::{logs::StoredLog, traces::StoredTrace, txs::StoredTxEnvelope};
 
 /// `(block_number, idx_in_block)`. Row indices fit `u32` (the tx index is
 /// already stored as one); a wider index simply bypasses the cache.

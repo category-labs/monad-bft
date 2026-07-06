@@ -32,7 +32,7 @@ async fn from_block_above_head_returns_invalid_request() {
     assert!(
         matches!(
             err,
-            MonadChainDataError::InvalidRequest("block range starts above the published head")
+            QueryError::InvalidRequest("block range starts above the published head")
         ),
         "expected InvalidRequest(block range starts above the published head), got {err:?}"
     );
@@ -68,7 +68,7 @@ async fn inverted_range_returns_invalid_request() {
         .expect_err("from > to should error");
 
     assert!(
-        matches!(err, MonadChainDataError::InvalidRequest(_)),
+        matches!(err, QueryError::InvalidRequest(_)),
         "expected InvalidRequest, got {err:?}"
     );
 }
@@ -92,7 +92,7 @@ async fn descending_to_block_above_head_returns_invalid_request() {
         .expect_err("to_block above head in desc should not silently collapse");
 
     assert!(
-        matches!(err, MonadChainDataError::InvalidRequest(_)),
+        matches!(err, QueryError::InvalidRequest(_)),
         "expected InvalidRequest, got {err:?}"
     );
 }
@@ -145,7 +145,7 @@ async fn descending_inverted_range_returns_invalid_request() {
         .expect_err("descending from < to should error");
 
     assert!(
-        matches!(err, MonadChainDataError::InvalidRequest(_)),
+        matches!(err, QueryError::InvalidRequest(_)),
         "expected InvalidRequest, got {err:?}"
     );
 }
@@ -221,7 +221,7 @@ async fn head_zero_is_treated_as_no_published_blocks() {
         .expect_err("query against head 0 must report no published blocks");
 
     assert!(
-        matches!(err, MonadChainDataError::MissingData("no published blocks")),
+        matches!(err, QueryError::MissingData("no published blocks")),
         "expected MissingData(no published blocks), got {err:?}"
     );
 }

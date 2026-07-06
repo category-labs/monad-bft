@@ -18,14 +18,13 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use monad_query_errors::{QueryError, Result};
+use monad_query_primitives::records::PrimaryId;
+use monad_query_store::MetaStore;
+
 use crate::{
-    engine::{
-        primary_dir::{bucket_start, PrimaryDirBucket, PrimaryDirEntry, PrimaryDirFragment},
-        tables::FamilyTables,
-    },
-    error::{MonadChainDataError, Result},
-    primitives::records::PrimaryId,
-    store::MetaStore,
+    primary_dir::{bucket_start, PrimaryDirBucket, PrimaryDirEntry, PrimaryDirFragment},
+    tables::FamilyTables,
 };
 
 /// Resolves a primary id to its block number and position within that block.
@@ -74,7 +73,7 @@ impl<'a, M: MetaStore> PrimaryIdResolver<'a, M> {
             // published, so a missing summary breaks the commit contract — fail loud
             // instead of falling back to a fragment scan.
             let summary = self.family.load_bucket(bucket).await?.ok_or(
-                MonadChainDataError::SealedDirectoryBucketMissingSummary {
+                QueryError::SealedDirectoryBucketMissingSummary {
                     bucket_start: bucket,
                 },
             )?;
@@ -136,7 +135,7 @@ impl CachedBucket {
                 "fragments",
             ),
         };
-        located.ok_or(MonadChainDataError::PrimaryDirectoryMissingId {
+        located.ok_or(QueryError::PrimaryDirectoryMissingId {
             id: id.as_u64(),
             backing,
         })
@@ -208,18 +207,17 @@ fn resolved_location_from_fragments(
 mod tests {
     use std::sync::Arc;
 
+    use monad_query_primitives::records::PrimaryId;
+    use monad_query_store::{InMemoryBlobStore, InMemoryMetaStore};
+
     use super::{
         containing_bucket_entry, resolved_location_from_bucket, CachedBucket, PrimaryDirFragment,
         PrimaryIdResolver,
     };
     use crate::{
-        engine::{
-            family::Family,
-            primary_dir::{PrimaryDirBucket, PrimaryDirEntry, DIRECTORY_BUCKET_SIZE},
-            tables::Tables,
-        },
-        primitives::records::PrimaryId,
-        store::{InMemoryBlobStore, InMemoryMetaStore},
+        family::Family,
+        primary_dir::{PrimaryDirBucket, PrimaryDirEntry, DIRECTORY_BUCKET_SIZE},
+        tables::Tables,
     };
 
     fn tables() -> Tables<InMemoryMetaStore, InMemoryBlobStore> {

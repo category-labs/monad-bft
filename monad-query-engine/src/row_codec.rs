@@ -21,21 +21,19 @@
 //!
 //! [`RowCodec`] is an immutable per-batch snapshot of the write-side state,
 //! `Arc`-shared across ingest workers so a mid-batch dictionary hot-swap can
-//! never tear a batch. Read-side decode lives on [`crate::engine::tables::Tables`].
+//! never tear a batch. Read-side decode lives on [`crate::tables::Tables`].
 
 use std::{io::Cursor, sync::Arc};
 
 use bytes::Bytes;
+use monad_query_errors::{QueryError, Result};
+use monad_query_primitives::records::{BlockBlobHeader, ENCODING_NATIVE};
 use zstd::{
     bulk::{Compressor, Decompressor},
     dict::{DecoderDictionary, EncoderDictionary},
 };
 
-use crate::{
-    engine::digest::{ChainDigest, RowDigest},
-    error::{MonadChainDataError, Result},
-    primitives::records::{BlockBlobHeader, ENCODING_NATIVE},
-};
+use crate::digest::{ChainDigest, RowDigest};
 
 /// Bootstrap dictionary version: plain zstd frames, no dependency on any
 /// dictionary bytes existing in the dict table.
@@ -132,7 +130,7 @@ impl RowCodec {
             Some(enc) => Compressor::with_prepared_dictionary(enc),
             None => Compressor::new(self.state.level),
         }
-        .map_err(|e| MonadChainDataError::Backend(format!("zstd compressor: {e}")))?;
+        .map_err(|e| QueryError::Backend(format!("zstd compressor: {e}")))?;
         Ok(BlockRowCompressor { compressor })
     }
 }
@@ -151,8 +149,7 @@ pub fn encode_block_rows<T>(
     let mut blob = Vec::new();
     let mut rows_digest = RowDigest::new();
     let mut compressor = codec.block_compressor()?;
-    let offset =
-        |len: usize| u32::try_from(len).map_err(|_| MonadChainDataError::Decode(too_large));
+    let offset = |len: usize| u32::try_from(len).map_err(|_| QueryError::Decode(too_large));
 
     for row in rows {
         offsets.push(offset(blob.len())?);
@@ -208,7 +205,7 @@ impl BlockRowCompressor<'_> {
         self.compressor
             .compress_to_buffer(row, &mut cursor)
             .map(|_| ())
-            .map_err(|e| MonadChainDataError::Backend(format!("zstd compress row: {e}")))
+            .map_err(|e| QueryError::Backend(format!("zstd compress row: {e}")))
     }
 }
 
@@ -226,7 +223,7 @@ impl<'a> RowDecompressor<'a> {
             Some(dec) => Decompressor::with_prepared_dictionary(dec),
             None => Decompressor::new(),
         }
-        .map_err(|e| MonadChainDataError::Backend(format!("zstd decompressor: {e}")))?;
+        .map_err(|e| QueryError::Backend(format!("zstd decompressor: {e}")))?;
         Ok(Self { inner })
     }
 
@@ -236,7 +233,7 @@ impl<'a> RowDecompressor<'a> {
         let mut out = Vec::with_capacity(frame_decompressed_capacity(frame));
         self.inner
             .decompress_to_buffer(frame, &mut out)
-            .map_err(|e| MonadChainDataError::Backend(format!("zstd decompress row: {e}")))?;
+            .map_err(|e| QueryError::Backend(format!("zstd decompress row: {e}")))?;
         Ok(out)
     }
 }

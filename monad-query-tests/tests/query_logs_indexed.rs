@@ -455,10 +455,7 @@ async fn indexed_query_fails_loud_on_missing_candidate_block_record() {
         ))
         .await
         .expect_err("missing candidate block record must not yield a partial page");
-    assert!(
-        matches!(err, MonadChainDataError::MissingData(_)),
-        "got {err:?}"
-    );
+    assert!(matches!(err, QueryError::MissingData(_)), "got {err:?}");
 
     // The damaged block carries no matching rows: it is never read, and the
     // query answers completely.

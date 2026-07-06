@@ -13,16 +13,15 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use crate::{
-    error::{LimitExceededKind, MonadChainDataError, Result},
-    primitives::{
-        limits::{QueryEnvelope, QueryLimits},
-        order::QueryOrder,
-        refs::BlockRef,
-    },
-    store::MetaStore,
-    tables::BlockTables,
+use monad_query_errors::{LimitExceededKind, QueryError, Result};
+use monad_query_primitives::{
+    limits::{QueryEnvelope, QueryLimits},
+    order::QueryOrder,
+    refs::BlockRef,
 };
+use monad_query_store::MetaStore;
+
+use crate::tables::BlockTables;
 
 /// Floor for the lower numeric bound. The current ingest path requires the
 /// chain to start at block 1, so block 0 has no record to load.
@@ -55,7 +54,7 @@ impl ResolvedBlockWindow {
 
         let span = high_number - low_number + 1;
         if span > limits.max_block_range {
-            return Err(MonadChainDataError::LimitExceeded {
+            return Err(QueryError::LimitExceeded {
                 kind: LimitExceededKind::BlockRange,
                 max_limit: limits.max_limit,
                 max_block_range: limits.max_block_range,
@@ -66,7 +65,7 @@ impl ResolvedBlockWindow {
             blocks
                 .load_record(number)
                 .await?
-                .ok_or(MonadChainDataError::MissingData(msg))
+                .ok_or(QueryError::MissingData(msg))
         };
         let low_record = load(low_number, "missing block record at range low bound").await?;
         let high_record = load(high_number, "missing block record at range high bound").await?;
@@ -107,7 +106,7 @@ impl ResolvedBlockWindow {
                 QueryOrder::Descending => from < to,
             };
             if inverted {
-                return Err(MonadChainDataError::InvalidRequest(
+                return Err(QueryError::InvalidRequest(
                     "from_block and to_block do not form a valid range for the requested order",
                 ));
             }
@@ -127,7 +126,7 @@ impl ResolvedBlockWindow {
         // A lower bound above head is a caller bug and errors; the upper bound
         // means "up to head" and is clipped.
         if low > published_head {
-            return Err(MonadChainDataError::InvalidRequest(
+            return Err(QueryError::InvalidRequest(
                 "block range starts above the published head",
             ));
         }
@@ -138,7 +137,7 @@ impl ResolvedBlockWindow {
         let low = low.max(EARLIEST_QUERYABLE_BLOCK);
 
         if low > high {
-            return Err(MonadChainDataError::InvalidRequest(
+            return Err(QueryError::InvalidRequest(
                 "from_block and to_block do not form a valid range for the requested order",
             ));
         }
@@ -148,8 +147,10 @@ impl ResolvedBlockWindow {
 
 #[cfg(test)]
 mod tests {
+    use monad_query_errors::QueryError;
+    use monad_query_primitives::order::QueryOrder;
+
     use super::{ResolvedBlockWindow, EARLIEST_QUERYABLE_BLOCK};
-    use crate::{error::MonadChainDataError, primitives::order::QueryOrder};
 
     const HEAD: u64 = 100;
 
@@ -157,7 +158,7 @@ mod tests {
         from: Option<u64>,
         to: Option<u64>,
         order: QueryOrder,
-    ) -> Result<(u64, u64), MonadChainDataError> {
+    ) -> Result<(u64, u64), QueryError> {
         ResolvedBlockWindow::resolve_block_numbers(from, to, order, HEAD)
     }
 
@@ -190,7 +191,7 @@ mod tests {
         // The clamp must not silently serve block 1's data for a block-0 request.
         assert!(matches!(
             resolve(Some(0), Some(0), QueryOrder::Ascending),
-            Err(MonadChainDataError::InvalidRequest(_))
+            Err(QueryError::InvalidRequest(_))
         ));
     }
 
@@ -206,7 +207,7 @@ mod tests {
     fn lower_bound_above_head_is_rejected() {
         assert!(matches!(
             resolve(Some(HEAD + 1), Some(HEAD + 5), QueryOrder::Ascending),
-            Err(MonadChainDataError::InvalidRequest(_))
+            Err(QueryError::InvalidRequest(_))
         ));
     }
 
@@ -214,7 +215,7 @@ mod tests {
     fn ascending_inverted_range_is_rejected() {
         assert!(matches!(
             resolve(Some(5), Some(3), QueryOrder::Ascending),
-            Err(MonadChainDataError::InvalidRequest(_))
+            Err(QueryError::InvalidRequest(_))
         ));
     }
 
@@ -230,13 +231,13 @@ mod tests {
     fn descending_inverted_range_is_rejected() {
         assert!(matches!(
             resolve(Some(2), Some(5), QueryOrder::Descending),
-            Err(MonadChainDataError::InvalidRequest(_))
+            Err(QueryError::InvalidRequest(_))
         ));
     }
 
     #[test]
     fn iter_walks_inclusive_range_in_requested_direction() {
-        use crate::primitives::refs::BlockRef;
+        use monad_query_primitives::refs::BlockRef;
         let block_ref = |number| BlockRef {
             number,
             hash: Default::default(),

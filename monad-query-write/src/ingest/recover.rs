@@ -24,24 +24,22 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use futures::{stream, StreamExt};
+use monad_query_engine::{
+    bitmap::{page_group_start, page_start_in_group, StreamKey},
+    digest::EMPTY_DIGEST,
+    family::Family,
+    seal::{last_sealed_span, seal_boundary},
+    tables::{FamilyTables, Tables},
+};
+use monad_query_errors::{QueryError, Result};
+use monad_query_primitives::records::FamilyWindowRecord;
+use monad_query_store::{BlobStore, MetaStore};
 use roaring::RoaringBitmap;
 
-use crate::{
-    engine::{
-        bitmap::{page_group_start, page_start_in_group, StreamKey},
-        digest::EMPTY_DIGEST,
-        family::Family,
-        seal::{last_sealed_span, seal_boundary},
-        tables::{FamilyTables, Tables},
-    },
-    error::{MonadChainDataError, Result},
-    ingest::{
-        index::{FamilyState, OpenState, OpenTail, SealedPageCounts, PAGE_SPAN},
-        snapshot::{recover_checkpoint, SnapshotStore},
-        FamilyFrontier,
-    },
-    primitives::records::FamilyWindowRecord,
-    store::{BlobStore, MetaStore},
+use crate::ingest::{
+    index::{FamilyState, OpenState, OpenTail, SealedPageCounts, PAGE_SPAN},
+    snapshot::{recover_checkpoint, SnapshotStore},
+    FamilyFrontier,
 };
 
 /// Max concurrent per-stream fragment unions while rebuilding one family's
@@ -125,14 +123,13 @@ where
     M: MetaStore,
     B: BlobStore,
 {
-    let record =
-        tables
-            .blocks()
-            .load_record(head)
-            .await?
-            .ok_or(MonadChainDataError::MissingData(
-                "rebuild recovery: missing head block record",
-            ))?;
+    let record = tables
+        .blocks()
+        .load_record(head)
+        .await?
+        .ok_or(QueryError::MissingData(
+            "rebuild recovery: missing head block record",
+        ))?;
 
     // The three families touch disjoint tables — rebuild them concurrently.
     let ((log, log_next), (tx, tx_next), (trace, trace_next)) = futures::try_join!(
@@ -173,7 +170,7 @@ where
     // corruption (the row is written with the seal), so fail loudly.
     let seal_chain = match last_sealed_span(sealed_id) {
         Some(span) => fam.load_seal_chain(span).await?.ok_or_else(|| {
-            MonadChainDataError::Backend(format!(
+            QueryError::Backend(format!(
                 "seal-chain row missing for sealed span {span}; the store is corrupt"
             ))
         })?,
@@ -209,7 +206,7 @@ where
                 for fragment in fam.load_bitmap_fragments(&stream_id, sealed_id).await? {
                     bm |= &fragment.bitmap;
                 }
-                Ok::<_, MonadChainDataError>((StreamKey::parse(&stream_id)?, bm))
+                Ok::<_, QueryError>((StreamKey::parse(&stream_id)?, bm))
             })
             .buffer_unordered(STREAM_REBUILD_CONCURRENCY);
         while let Some(unioned) = unions.next().await {
@@ -281,13 +278,13 @@ where
                 let count = fam
                     .load_bitmap_page_artifact(&stream_id, page)
                     .await?
-                    .ok_or_else(|| MonadChainDataError::SealedPageMissingArtifact {
+                    .ok_or_else(|| QueryError::SealedPageMissingArtifact {
                         stream_id: stream_id.clone(),
                         page_start: page,
                     })?
                     .meta
                     .count;
-                Ok::<_, MonadChainDataError>((StreamKey::parse(&stream_id)?, count))
+                Ok::<_, QueryError>((StreamKey::parse(&stream_id)?, count))
             })
             .buffer_unordered(STREAM_REBUILD_CONCURRENCY);
         while let Some(loaded) = loads.next().await {

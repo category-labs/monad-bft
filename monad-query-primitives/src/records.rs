@@ -15,8 +15,7 @@
 
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use bytes::Bytes;
-
-use monad_query_errors::{MonadChainDataError, Result};
+use monad_query_errors::{QueryError, Result};
 
 use crate::Hash32;
 
@@ -38,16 +37,15 @@ impl PrimaryId {
         self.0
             .checked_add(rhs)
             .map(Self)
-            .ok_or(MonadChainDataError::Decode("primary id overflow"))
+            .ok_or(QueryError::Decode("primary id overflow"))
     }
 
     pub fn idx_in_block(self, first: PrimaryId) -> Result<usize> {
         let delta = self
             .0
             .checked_sub(first.0)
-            .ok_or(MonadChainDataError::Decode("primary id below block start"))?;
-        usize::try_from(delta)
-            .map_err(|_| MonadChainDataError::Decode("primary block index overflow"))
+            .ok_or(QueryError::Decode("primary id below block start"))?;
+        usize::try_from(delta).map_err(|_| QueryError::Decode("primary block index overflow"))
     }
 }
 
@@ -255,7 +253,7 @@ impl BlockBlobHeader {
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         let header: Self = decode_rlp(bytes, "invalid block blob header rlp")?;
         if !header.container_manifest_is_consistent() {
-            return Err(MonadChainDataError::Decode(
+            return Err(QueryError::Decode(
                 "block blob header container manifest is inconsistent",
             ));
         }
@@ -264,9 +262,9 @@ impl BlockBlobHeader {
 }
 
 /// Shared RLP decode body: `decode_exact` mapping any failure to a
-/// [`MonadChainDataError::Decode`] carrying the call site's message.
+/// [`QueryError::Decode`] carrying the call site's message.
 fn decode_rlp<T: alloy_rlp::Decodable>(bytes: &[u8], err: &'static str) -> Result<T> {
-    alloy_rlp::decode_exact(bytes).map_err(|_| MonadChainDataError::Decode(err))
+    alloy_rlp::decode_exact(bytes).map_err(|_| QueryError::Decode(err))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, RlpEncodable, RlpDecodable)]

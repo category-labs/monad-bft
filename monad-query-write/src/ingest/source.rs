@@ -20,8 +20,7 @@
 use std::future::Future;
 
 use eyre::Result;
-
-use crate::ingest_types::FinalizedBlock;
+use monad_query_types::ingest_types::FinalizedBlock;
 
 pub trait ChainDataIngestSource: Clone + Send + Sync + 'static {
     fn get_latest_uploaded(&self) -> impl Future<Output = Result<Option<u64>>> + Send;

@@ -19,10 +19,10 @@
 //! block-globally in transaction order, matching ingest (`logs::ingest`).
 
 use alloy_primitives::{Address, Bytes, Log};
+use monad_query_engine::clause::IndexedFilter;
+use monad_query_primitives::Hash32;
 
 use crate::{
-    engine::clause::IndexedFilter,
-    ingest_types::Hash32,
     logs::LogEntry,
     txs::{StoredTxEnvelope, TxEntry},
     LogFilter, TxFilter,

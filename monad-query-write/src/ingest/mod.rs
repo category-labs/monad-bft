@@ -41,21 +41,18 @@ use std::{
     task::{Context, Poll},
 };
 
+use monad_query_engine::{
+    digest::{ChainDigest, EMPTY_DIGEST},
+    family::PerFamily,
+    tables::{PublicationTables, Tables},
+};
+use monad_query_errors::{QueryError, Result};
+use monad_query_primitives::records::{LogId, PrimaryId, TraceId, TxId};
+use monad_query_store::{BlobStore, MetaStore};
+use monad_query_types::ingest_types::FinalizedBlock;
 use tokio::{
     sync::{mpsc, oneshot},
     task::JoinSet,
-};
-
-use crate::{
-    engine::{
-        digest::{ChainDigest, EMPTY_DIGEST},
-        family::PerFamily,
-        tables::{PublicationTables, Tables},
-    },
-    error::{MonadChainDataError, Result},
-    ingest_types::FinalizedBlock,
-    primitives::records::{LogId, PrimaryId, TraceId, TxId},
-    store::{BlobStore, MetaStore},
 };
 
 pub mod data_track;
@@ -158,8 +155,8 @@ pub(crate) type IndexMsg = IngestMsg<oneshot::Receiver<()>>;
 
 /// Surface a spawned task's panic/cancellation as a backend error so the
 /// pipeline aborts rather than silently dropping a block.
-pub(crate) fn task_join_err(e: tokio::task::JoinError) -> MonadChainDataError {
-    MonadChainDataError::Backend(format!("ingest spawned task: {e}"))
+pub(crate) fn task_join_err(e: tokio::task::JoinError) -> QueryError {
+    QueryError::Backend(format!("ingest spawned task: {e}"))
 }
 
 /// Aborts a spawned task when dropped, so it can't outlive its owner on any
@@ -453,8 +450,6 @@ fn join_to_result(
     match joined {
         Ok(result) => Some(result),
         Err(e) if e.is_cancelled() => None,
-        Err(e) => Some(Err(MonadChainDataError::Backend(format!(
-            "{what} panicked: {e}"
-        )))),
+        Err(e) => Some(Err(QueryError::Backend(format!("{what} panicked: {e}")))),
     }
 }

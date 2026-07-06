@@ -13,29 +13,29 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use monad_query_engine::{
+    digest::ChainDigest,
+    family::PerFamily,
+    query::family_runner::{
+        run_family_query, IndexedFamilyQuery, IndexedQueryOutcome, IndexedQueryStats,
+    },
+    range::ResolvedBlockWindow,
+    seal::{last_sealed_span, seal_boundary},
+    tables::{DictConfig, PublicationTables, QueryRuntimeConfig, Tables},
+};
+use monad_query_errors::{QueryError, Result};
+use monad_query_primitives::{
+    limits::{QueryEnvelope, QueryLimits},
+    EvmBlockHeader, Hash32,
+};
+use monad_query_store::{BlobStore, CacheConfig, MetaStore};
+
 use crate::{
     blocks::{
         execute_query_blocks, load_blocks_by_numbers, Block, QueryBlocksRequest,
         QueryBlocksResponse,
     },
-    engine::{
-        digest::ChainDigest,
-        family::PerFamily,
-        query::family_runner::{
-            run_family_query, IndexedFamilyQuery, IndexedQueryOutcome, IndexedQueryStats,
-        },
-        seal::{last_sealed_span, seal_boundary},
-        tables::{DictConfig, PublicationTables, QueryRuntimeConfig, Tables},
-    },
-    error::{MonadChainDataError, Result},
-    ingest_types::Hash32,
     logs::{LogMaterializer, QueryLogsRequest, QueryLogsResponse},
-    primitives::{
-        limits::{QueryEnvelope, QueryLimits},
-        range::ResolvedBlockWindow,
-        EvmBlockHeader,
-    },
-    store::{BlobStore, CacheConfig, MetaStore},
     traces::{QueryTracesRequest, QueryTracesResponse, TraceMaterializer},
     transfers::{QueryTransfersRequest, QueryTransfersResponse, TransferMaterializer},
     txs::{
@@ -55,7 +55,7 @@ pub struct SealChainPoint {
 /// The standby verification digests at one block height: the `row_chain`
 /// plus each family's last sealed span + seal chain.
 /// Two replicas that ingested the same finalized stream must agree on every
-/// field — see the recipe in [`crate::engine::digest`].
+/// field — see the recipe in [`monad_query_engine::digest`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StandbyDigests {
     pub block_number: u64,
@@ -112,7 +112,7 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
     /// ingested in external payload mode.
     pub fn with_external_payload_reader(
         mut self,
-        reader: std::sync::Arc<dyn crate::external::ExternalBlobReader>,
+        reader: std::sync::Arc<dyn monad_query_primitives::ExternalBlobReader>,
     ) -> Self {
         self.tables = self.tables.with_external_payload_reader(reader);
         self
@@ -286,7 +286,7 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
             .blocks()
             .load_header(location.block_number)
             .await?
-            .ok_or(MonadChainDataError::MissingData(
+            .ok_or(QueryError::MissingData(
                 "missing header for indexed transaction",
             ))?;
         Ok(Some((entry, header)))
@@ -396,6 +396,6 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
         self.publication
             .queryable_head()
             .await?
-            .ok_or(MonadChainDataError::MissingData("no published blocks"))
+            .ok_or(QueryError::MissingData("no published blocks"))
     }
 }

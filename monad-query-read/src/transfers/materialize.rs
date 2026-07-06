@@ -16,20 +16,20 @@
 use std::collections::HashSet;
 
 use alloy_primitives::{Address, U256};
+use monad_query_engine::{
+    bitmap::IndexKind,
+    clause::{set_allows, IndexedClause, IndexedFilter},
+    family::Family,
+    query::{family_runner::IndexedFamilyQuery, row_cache::RowCache},
+    tables::Tables,
+};
+use monad_query_errors::{QueryError, Result};
+use monad_query_primitives::{limits::QueryEnvelope, records::BlockRecord, refs::BlockSpan};
+use monad_query_store::{BlobStore, MetaStore};
 
 use super::TransferEntry;
 use crate::{
     blocks::Block,
-    engine::{
-        bitmap::IndexKind,
-        clause::{set_allows, IndexedClause, IndexedFilter},
-        family::Family,
-        query::{family_runner::IndexedFamilyQuery, row_cache::RowCache},
-        tables::Tables,
-    },
-    error::{MonadChainDataError, Result},
-    primitives::{limits::QueryEnvelope, records::BlockRecord, refs::BlockSpan},
-    store::{BlobStore, MetaStore},
     traces::{StoredTrace, TraceEntry},
     txs::TxEntry,
 };
@@ -119,7 +119,7 @@ fn trace_into_transfer(trace: TraceEntry) -> Result<TransferEntry> {
         value,
         ..
     } = trace;
-    let to = to.ok_or(MonadChainDataError::Decode(
+    let to = to.ok_or(QueryError::Decode(
         "transfer frame missing `to` address; tracer invariant violated",
     ))?;
     Ok(TransferEntry {
@@ -176,8 +176,8 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery for TransferMaterializer
         bytes: &[u8],
     ) -> Result<Vec<StoredTrace>> {
         // Shares the trace family's container format (and row cache).
-        let tx_index = u32::try_from(container_idx)
-            .map_err(|_| MonadChainDataError::Decode("tx index overflow"))?;
+        let tx_index =
+            u32::try_from(container_idx).map_err(|_| QueryError::Decode("tx index overflow"))?;
         crate::external::decode_external_trace_container(bytes, tx_index, tx_status)
     }
 
@@ -202,7 +202,7 @@ impl<'a, M: MetaStore, B: BlobStore> IndexedFamilyQuery for TransferMaterializer
         _block_record: &BlockRecord,
         _idx_in_block: usize,
     ) -> Result<Option<TransferEntry>> {
-        Err(MonadChainDataError::InvalidRequest(
+        Err(QueryError::InvalidRequest(
             "transfers cannot be served by the block-scan path",
         ))
     }

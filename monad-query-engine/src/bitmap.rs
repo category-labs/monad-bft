@@ -20,15 +20,15 @@ use std::{
 
 use bytes::Bytes;
 use futures::{stream, StreamExt, TryStreamExt};
+use monad_query_errors::{QueryError, Result};
+use monad_query_store::{
+    blob::BlobStore, CachedKvTable, CachedScannableKvTable, MetaStore, ScannableTableId,
+};
 use roaring::RoaringBitmap;
 
 use crate::{
-    engine::tables::{scan_get_all, FRAGMENT_GET_CONCURRENCY},
-    error::{MonadChainDataError, Result},
-    store::{
-        blob::BlobStore, CachedKvTable, CachedScannableKvTable, MetaStore, ScannableTableId,
-        WriteSession,
-    },
+    session::WriteSession,
+    tables::{scan_get_all, FRAGMENT_GET_CONCURRENCY},
 };
 
 /// Ids per bitmap page: the seal granule. A page covers the aligned id range
@@ -95,7 +95,7 @@ pub(crate) fn decode_fragment_blob(bytes: Bytes) -> Result<Arc<DecodedBitmapFrag
 /// the framing parse and the roaring deserialize.
 pub(crate) fn decode_page(bytes: Bytes) -> Result<Arc<DecodedBitmapPage>> {
     let artifact = decode_bitmap_page_artifact(bytes.as_ref())?
-        .ok_or(MonadChainDataError::Decode("invalid bitmap page artifact"))?;
+        .ok_or(QueryError::Decode("invalid bitmap page artifact"))?;
     let blob = decode_bitmap_blob(artifact.bitmap_blob.as_ref())?;
     // The writer duplicates the inner blob header into the outer artifact
     // header, and the query-time page skip reads the OUTER copy (see
@@ -109,7 +109,7 @@ pub(crate) fn decode_page(bytes: Bytes) -> Result<Arc<DecodedBitmapPage>> {
         count: blob.count,
     };
     if artifact.meta != expected {
-        return Err(MonadChainDataError::Decode(
+        return Err(QueryError::Decode(
             "bitmap page artifact header does not match blob header",
         ));
     }
@@ -247,7 +247,7 @@ impl<M: MetaStore> BitmapTables<M> {
                     self.fragments
                         .get(partition, &clustering)
                         .await?
-                        .ok_or(MonadChainDataError::MissingData("missing bitmap fragment"))
+                        .ok_or(QueryError::MissingData("missing bitmap fragment"))
                 }
             })
             .buffered(FRAGMENT_GET_CONCURRENCY)
@@ -399,7 +399,7 @@ pub fn encode_bitmap_blob(blob: &DecodedBitmapFragment) -> Result<Bytes> {
     let mut payload = Vec::new();
     blob.bitmap
         .serialize_into(&mut payload)
-        .map_err(|e| MonadChainDataError::Backend(format!("serialize bitmap blob: {e}")))?;
+        .map_err(|e| QueryError::Backend(format!("serialize bitmap blob: {e}")))?;
 
     let mut out = Vec::with_capacity(BITMAP_BLOB_HEADER_LEN + payload.len());
     out.push(BITMAP_BLOB_VERSION);
@@ -428,9 +428,9 @@ fn decode_bitmap_meta_header(
 ) -> Result<(u32, u32, u32)> {
     let header = bytes
         .get(..header_len)
-        .ok_or(MonadChainDataError::Decode(too_short))?;
+        .ok_or(QueryError::Decode(too_short))?;
     if header[0] != version {
-        return Err(MonadChainDataError::Decode(bad_version));
+        return Err(QueryError::Decode(bad_version));
     }
     Ok((be_u32(header, 1), be_u32(header, 5), be_u32(header, 9)))
 }
@@ -446,7 +446,7 @@ pub fn decode_bitmap_blob(bytes: &[u8]) -> Result<DecodedBitmapFragment> {
     )?;
 
     let bitmap = RoaringBitmap::deserialize_from(&bytes[BITMAP_BLOB_HEADER_LEN..])
-        .map_err(|e| MonadChainDataError::Backend(format!("deserialize bitmap blob: {e}")))?;
+        .map_err(|e| QueryError::Backend(format!("deserialize bitmap blob: {e}")))?;
 
     // Query-time skip decisions trust `min_offset`/`max_offset` (see
     // `engine::query::bitmap::overlaps`); a corrupt too-narrow header would
@@ -460,7 +460,7 @@ pub fn decode_bitmap_blob(bytes: &[u8]) -> Result<DecodedBitmapFragment> {
         None => count == 0,
     };
     if !header_matches_payload {
-        return Err(MonadChainDataError::Decode(
+        return Err(QueryError::Decode(
             "bitmap blob header does not match payload",
         ));
     }
@@ -564,21 +564,17 @@ impl BitmapPageCounts {
         let version = bytes
             .first()
             .copied()
-            .ok_or(MonadChainDataError::Decode("bitmap page counts too short"))?;
+            .ok_or(QueryError::Decode("bitmap page counts too short"))?;
         if version != BITMAP_PAGE_COUNTS_VERSION {
-            return Err(MonadChainDataError::Decode(
-                "unsupported bitmap page counts version",
-            ));
+            return Err(QueryError::Decode("unsupported bitmap page counts version"));
         }
         let len_bytes = bytes
             .get(1..5)
-            .ok_or(MonadChainDataError::Decode("bitmap page counts too short"))?;
+            .ok_or(QueryError::Decode("bitmap page counts too short"))?;
         let len = be_u32(len_bytes, 0) as usize;
         let body = &bytes[5..];
         if body.len() != len * 8 {
-            return Err(MonadChainDataError::Decode(
-                "bitmap page counts length mismatch",
-            ));
+            return Err(QueryError::Decode("bitmap page counts length mismatch"));
         }
         let mut pages = Vec::with_capacity(len);
         for chunk in body.chunks_exact(8) {
@@ -724,7 +720,7 @@ impl StreamKey {
     /// and snapshot decode read the rendered strings). Inverse of
     /// [`Self::render`] for every id this engine writes.
     pub fn parse(stream_id: &str) -> Result<Self> {
-        let err = || MonadChainDataError::Decode("malformed stream id");
+        let err = || QueryError::Decode("malformed stream id");
         let (kind_str, value_hex) = stream_id.split_once('/').ok_or_else(err)?;
         let kind = *IndexKind::ALL
             .iter()
@@ -803,9 +799,9 @@ pub fn decode_open_streams_delta(bytes: &[u8]) -> Result<Vec<String>> {
     let mut cur = bytes;
     let version = *cur
         .first()
-        .ok_or(MonadChainDataError::Decode("open_streams delta empty"))?;
+        .ok_or(QueryError::Decode("open_streams delta empty"))?;
     if version != OPEN_STREAMS_DELTA_VERSION {
-        return Err(MonadChainDataError::Decode("open_streams delta version"));
+        return Err(QueryError::Decode("open_streams delta version"));
     }
     cur = &cur[1..];
     let count = take_u32(&mut cur)? as usize;
@@ -813,19 +809,17 @@ pub fn decode_open_streams_delta(bytes: &[u8]) -> Result<Vec<String>> {
     // prefix, so a count the remaining bytes cannot hold is corruption —
     // reject it before allocating instead of aborting on a huge reservation.
     if count > cur.len() / 4 {
-        return Err(MonadChainDataError::Decode(
-            "open_streams delta count exceeds body",
-        ));
+        return Err(QueryError::Decode("open_streams delta count exceeds body"));
     }
     let mut out = Vec::with_capacity(count);
     for _ in 0..count {
         let len = take_u32(&mut cur)? as usize;
         let raw = cur
             .get(..len)
-            .ok_or(MonadChainDataError::Decode("open_streams delta truncated"))?;
+            .ok_or(QueryError::Decode("open_streams delta truncated"))?;
         out.push(
             String::from_utf8(raw.to_vec())
-                .map_err(|_| MonadChainDataError::Decode("open_streams delta utf8"))?,
+                .map_err(|_| QueryError::Decode("open_streams delta utf8"))?,
         );
         cur = &cur[len..];
     }
@@ -835,7 +829,7 @@ pub fn decode_open_streams_delta(bytes: &[u8]) -> Result<Vec<String>> {
 fn take_u32(cur: &mut &[u8]) -> Result<u32> {
     let bytes = cur
         .get(..4)
-        .ok_or(MonadChainDataError::Decode("open_streams delta truncated"))?;
+        .ok_or(QueryError::Decode("open_streams delta truncated"))?;
     let value = be_u32(bytes, 0);
     *cur = &cur[4..];
     Ok(value)
@@ -956,18 +950,14 @@ mod tests {
         bad.extend_from_slice(&u32::MAX.to_be_bytes());
         assert!(matches!(
             decode_open_streams_delta(&bad),
-            Err(MonadChainDataError::Decode(
-                "open_streams delta count exceeds body"
-            ))
+            Err(QueryError::Decode("open_streams delta count exceeds body"))
         ));
 
         // Same with a few body bytes that cannot hold the claimed count.
         bad.extend_from_slice(&[0u8; 8]);
         assert!(matches!(
             decode_open_streams_delta(&bad),
-            Err(MonadChainDataError::Decode(
-                "open_streams delta count exceeds body"
-            ))
+            Err(QueryError::Decode("open_streams delta count exceeds body"))
         ));
     }
 
@@ -994,7 +984,7 @@ mod tests {
         encoded[5..9].copy_from_slice(&10u32.to_be_bytes());
         assert!(matches!(
             decode_bitmap_blob(&encoded),
-            Err(MonadChainDataError::Decode(
+            Err(QueryError::Decode(
                 "bitmap blob header does not match payload"
             ))
         ));
@@ -1006,7 +996,7 @@ mod tests {
         encoded[9..13].copy_from_slice(&99u32.to_be_bytes());
         assert!(matches!(
             decode_bitmap_blob(&encoded),
-            Err(MonadChainDataError::Decode(
+            Err(QueryError::Decode(
                 "bitmap blob header does not match payload"
             ))
         ));
@@ -1020,9 +1010,7 @@ mod tests {
         encoded[0] = 2;
         assert!(matches!(
             decode_bitmap_blob(&encoded),
-            Err(MonadChainDataError::Decode(
-                "unsupported bitmap blob version"
-            ))
+            Err(QueryError::Decode("unsupported bitmap blob version"))
         ));
     }
 
@@ -1052,18 +1040,14 @@ mod tests {
         bad_version[0] = 0xff;
         assert!(matches!(
             BitmapPageCounts::decode(&bad_version),
-            Err(MonadChainDataError::Decode(
-                "unsupported bitmap page counts version"
-            ))
+            Err(QueryError::Decode("unsupported bitmap page counts version"))
         ));
 
         // Truncated body: header claims one page but no pair bytes follow.
         let truncated = &encoded[..5];
         assert!(matches!(
             BitmapPageCounts::decode(truncated),
-            Err(MonadChainDataError::Decode(
-                "bitmap page counts length mismatch"
-            ))
+            Err(QueryError::Decode("bitmap page counts length mismatch"))
         ));
     }
 
@@ -1125,7 +1109,7 @@ mod tests {
         corrupt[OUTER_MAX_OFFSET].copy_from_slice(&10u32.to_be_bytes());
         assert!(matches!(
             decode_page(Bytes::from(corrupt)),
-            Err(MonadChainDataError::Decode(
+            Err(QueryError::Decode(
                 "bitmap page artifact header does not match blob header"
             ))
         ));

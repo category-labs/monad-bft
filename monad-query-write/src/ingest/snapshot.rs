@@ -22,17 +22,15 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use bytes::Bytes;
+use monad_query_engine::{bitmap::StreamKey, digest::ChainDigest};
+use monad_query_errors::{QueryError, Result};
+use monad_query_store::{BlobStore, BlobTable, BlobTableId, MetaStore, TableId};
 use roaring::RoaringBitmap;
 use tracing::warn;
 
 use super::{
     index::{OpenState, OpenTail, SealedPageCounts},
     FamilyFrontier,
-};
-use crate::{
-    engine::{bitmap::StreamKey, digest::ChainDigest},
-    error::{MonadChainDataError, Result},
-    store::{BlobStore, BlobTable, BlobTableId, MetaStore, TableId},
 };
 
 /// Blob-centric checkpoint persistence (v2). The snapshot payload — which
@@ -184,13 +182,11 @@ impl<M: MetaStore, B: BlobStore> SnapshotStore<M, B> {
             .await?
         {
             None => Ok(None),
-            Some(row) => {
-                SnapshotManifest::decode(&row)
-                    .map(Some)
-                    .ok_or(MonadChainDataError::Decode(
-                        "ingest snapshot manifest row failed to decode",
-                    ))
-            }
+            Some(row) => SnapshotManifest::decode(&row)
+                .map(Some)
+                .ok_or(QueryError::Decode(
+                    "ingest snapshot manifest row failed to decode",
+                )),
         }
     }
 
@@ -216,13 +212,13 @@ impl<M: MetaStore, B: BlobStore> SnapshotStore<M, B> {
         };
         let key = generation_key(manifest.generation);
         let Some(payload) = self.blobs.get(&key).await? else {
-            return Err(MonadChainDataError::Backend(format!(
+            return Err(QueryError::Backend(format!(
                 "ingest snapshot manifest points at generation {} but its payload blob is missing",
                 manifest.generation
             )));
         };
         if payload.len() as u64 != manifest.payload_len {
-            return Err(MonadChainDataError::Backend(format!(
+            return Err(QueryError::Backend(format!(
                 "ingest snapshot generation {} payload length mismatch: manifest says {}, blob \
                  has {}",
                 manifest.generation,
@@ -231,7 +227,7 @@ impl<M: MetaStore, B: BlobStore> SnapshotStore<M, B> {
             )));
         }
         if *blake3::hash(&payload).as_bytes() != manifest.digest {
-            return Err(MonadChainDataError::Backend(format!(
+            return Err(QueryError::Backend(format!(
                 "ingest snapshot generation {} payload digest mismatch",
                 manifest.generation
             )));
@@ -370,7 +366,7 @@ pub(crate) async fn recover_checkpoint<M: MetaStore, B: BlobStore>(
                 );
                 Ok(None)
             }
-            Some(manifest) => Err(MonadChainDataError::Backend(format!(
+            Some(manifest) => Err(QueryError::Backend(format!(
                 "checkpoint generation {} is ahead of the published head {head} but its payload \
                  lives in a blob store this config no longer has; restore [store.blob] for one \
                  run (or reset the store) before going blob-less",
@@ -475,7 +471,7 @@ fn encode_snapshot(
 fn take<'a>(cur: &mut &'a [u8], n: usize) -> Result<&'a [u8]> {
     let bytes = cur
         .get(..n)
-        .ok_or(MonadChainDataError::Decode("snapshot truncated"))?;
+        .ok_or(QueryError::Decode("snapshot truncated"))?;
     *cur = &cur[n..];
     Ok(bytes)
 }
@@ -500,14 +496,13 @@ fn take_digest(cur: &mut &[u8]) -> Result<ChainDigest> {
 fn take_str(cur: &mut &[u8]) -> Result<String> {
     let len = take_u32(cur)? as usize;
     let bytes = take(cur, len)?;
-    String::from_utf8(bytes.to_vec()).map_err(|_| MonadChainDataError::Decode("snapshot utf8"))
+    String::from_utf8(bytes.to_vec()).map_err(|_| QueryError::Decode("snapshot utf8"))
 }
 
 fn take_bitmap(cur: &mut &[u8]) -> Result<RoaringBitmap> {
     let len = take_u32(cur)? as usize;
     let bytes = take(cur, len)?;
-    RoaringBitmap::deserialize_from(bytes)
-        .map_err(|_| MonadChainDataError::Decode("snapshot bitmap"))
+    RoaringBitmap::deserialize_from(bytes).map_err(|_| QueryError::Decode("snapshot bitmap"))
 }
 
 fn take_pages(cur: &mut &[u8]) -> Result<HashMap<(StreamKey, u64), RoaringBitmap>> {
@@ -550,7 +545,7 @@ fn take_page_counts(cur: &mut &[u8]) -> Result<SealedPageCounts> {
 fn decode_snapshot(bytes: &[u8]) -> Result<(OpenState, OpenTail, FamilyFrontier, u64)> {
     let mut cur = bytes;
     if take(&mut cur, 1)?[0] != SNAPSHOT_VERSION {
-        return Err(MonadChainDataError::Decode("snapshot version"));
+        return Err(QueryError::Decode("snapshot version"));
     }
     let block = take_u64(&mut cur)?;
     let frontier = FamilyFrontier {
@@ -577,8 +572,9 @@ fn decode_snapshot(bytes: &[u8]) -> Result<(OpenState, OpenTail, FamilyFrontier,
 
 #[cfg(test)]
 mod tests {
+    use monad_query_store::{InMemoryBlobStore, InMemoryMetaStore};
+
     use super::*;
-    use crate::store::{InMemoryBlobStore, InMemoryMetaStore};
 
     type TestSnapshots = SnapshotStore<InMemoryMetaStore, InMemoryBlobStore>;
 
@@ -791,8 +787,10 @@ mod tests {
         let (meta, _, snapshots) = fixture();
         snapshots.store(5, payload(0x11, 16)).await.unwrap();
 
-        let migrated =
-            SnapshotStore::without_payloads(meta.clone(), crate::store::NullBlobStore::default());
+        let migrated = SnapshotStore::without_payloads(
+            meta.clone(),
+            monad_query_store::NullBlobStore::default(),
+        );
         // Head covers the generation: ignored, fragments rebuild takes over.
         assert!(recover_checkpoint(&migrated, 5).await.unwrap().is_none());
         assert!(recover_checkpoint(&migrated, 9).await.unwrap().is_none());
@@ -806,7 +804,7 @@ mod tests {
         // A fresh blob-less store (no manifest) recovers as before.
         let fresh = SnapshotStore::without_payloads(
             InMemoryMetaStore::default(),
-            crate::store::NullBlobStore::default(),
+            monad_query_store::NullBlobStore::default(),
         );
         assert!(recover_checkpoint(&fresh, 0).await.unwrap().is_none());
     }

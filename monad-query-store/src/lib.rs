@@ -19,9 +19,6 @@ pub mod blob;
 pub mod cache;
 #[cfg(feature = "dynamo")]
 pub mod dynamo_common;
-// Re-exported under the crate-local name `error` so existing `crate::error::*`
-// paths keep resolving after the error type moved to its own crate.
-use monad_query_errors as error;
 pub mod meta;
 #[cfg(any(feature = "dynamo", feature = "s3"))]
 pub(crate) mod read_stats;
@@ -34,7 +31,6 @@ pub use blob::{
     S3BlobStore, S3BlobStoreConfig, S3Credentials, S3ExternalBlobReader, S3ReadStatsSnapshot,
 };
 pub use cache::{CacheConfig, CachedKvTable, CachedScannableKvTable};
-pub use error::MonadChainDataError;
 #[cfg(feature = "dynamo")]
 pub use meta::{
     DynamoCredentials, DynamoMetaReadStatsSnapshot, DynamoMetaStore, DynamoMetaStoreConfig,
@@ -45,3 +41,4 @@ pub use meta::{
 };
 #[cfg(feature = "mongo")]
 pub use meta::{MongoMetaStore, MongoMetaStoreConfig};
+pub use monad_query_errors::QueryError;

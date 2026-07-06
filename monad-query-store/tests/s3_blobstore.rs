@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! Run with: `cargo test -p monad-chain-data --features s3 --test s3_blobstore -- --ignored`
+//! Run with: `cargo test -p monad-query-store --features s3 --test s3_blobstore -- --ignored`
 //! (uses an in-process `s3s` + `s3s-fs` server; no external setup needed).
 #![cfg(feature = "s3")]
 

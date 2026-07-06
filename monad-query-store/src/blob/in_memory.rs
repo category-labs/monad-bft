@@ -22,11 +22,9 @@ use std::{
 };
 
 use bytes::Bytes;
+use monad_query_errors::Result;
 
-use crate::{
-    blob::{BlobStore, BlobTableId, BlobWriteOp},
-    error::Result,
-};
+use crate::blob::{BlobStore, BlobTableId, BlobWriteOp};
 
 /// Test-only in-memory blob fixture; not a deployable backend.
 #[derive(Debug, Clone, Default)]
