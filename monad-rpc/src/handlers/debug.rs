@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::{cell::RefCell, rc::Rc};
+
 use alloy_consensus::{Block, BlockBody, TxEnvelope};
 use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{

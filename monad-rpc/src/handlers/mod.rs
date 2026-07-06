@@ -513,6 +513,7 @@ async fn eth_simulateV1(
                 data_provider,
                 executor,
                 app_state.chain_id,
+                app_state.namespace,
                 // TODO(dhil): We use the eth call gas limit for individual calls within the simulation. We should consider adding more granular gas limits in the future.
                 config.provider_gas_limit_eth_call,
                 config.provider_gas_limit_eth_simulate,

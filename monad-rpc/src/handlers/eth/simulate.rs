@@ -16,7 +16,7 @@
 use std::ops::Add;
 
 use alloy_consensus::TxEnvelope;
-use alloy_primitives::{U256, U64};
+use alloy_primitives::{Address, U256, U64};
 use monad_ethcall::{
     eth_simulate_v1, BlockOverride, EthCallExecutor, SimulateResult, StateOverrideSet,
     SuccessSimulateResult,
@@ -73,12 +73,13 @@ pub struct MonadSimulateParams {
 
 #[rpc(
     method = "eth_simulateV1",
-    ignore = "chain_id,call_gas_limit,simulation_gas_limit,max_simulated_calls,max_simulated_blocks"
+    ignore = "chain_id,namespace,call_gas_limit,simulation_gas_limit,max_simulated_calls,max_simulated_blocks"
 )]
 pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
     data_provider: &DataProvider<T>,
     eth_call_executor: &EthCallExecutor,
     chain_id: u64,
+    namespace: Option<Address>,
     call_gas_limit: u64,
     simulation_gas_limit: u64,
     max_simulated_calls: usize,
@@ -177,6 +178,7 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
                 call,
                 &mut header,
                 state_override,
+                namespace,
                 U256::from(call_gas_limit),
             )
             .await?;
