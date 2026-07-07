@@ -38,10 +38,9 @@
 //!    persisted alongside the seal batch.
 //!
 //! Verification recipe: a standby comparison reads the primary's
-//! `row_chain` at height N (row data equality through N) plus each
-//! family's `(last sealed span, seal_chain)` row (index equality through the
-//! sealed frontier) and compares against its own — see
-//! `MonadChainDataService::standby_digests`.
+//! `row_chain` at height N (row data equality through N, stored on every
+//! `BlockRecord`) plus each family's `(last sealed span, seal_chain)` row
+//! (index equality through the sealed frontier) and compares against its own.
 //!
 //! Determinism: row bytes are hashed pre-compression (and frame offsets are
 //! excluded) so the checksum is independent of the zstd codec/version;
