@@ -49,7 +49,6 @@ use tracing::{debug, info, warn};
 use crate::{
     aws::load_sdk_config,
     blob::{BlobStore, BlobTableId, BlobWriteOp},
-    read_stats::{ReadGuard, ReadStats},
 };
 
 /// Explicit static credentials, required for most non-AWS compatibles
@@ -112,37 +111,15 @@ struct Inner {
     root_prefix: String,
     max_concurrency: usize,
     endpoint_urls: Vec<String>,
-    read_stats: Arc<ReadStats>,
 }
 
-/// `kinds` slot assignment for the shared [`ReadStats`].
-#[derive(Debug, Clone, Copy)]
-enum S3ReadKind {
-    RangeGet = 0,
-    FullGet = 1,
-}
-
-/// One GET's outcome. `Unsatisfiable` (HTTP 416) carries the still-open stats
-/// guard: a 416 alone does not decide the read's success — the caller resolves
-/// the EOF boundary against the object length and finishes the guard with the
-/// real outcome.
+/// One GET's outcome. `Unsatisfiable` (HTTP 416) alone does not decide the
+/// read's success — the caller resolves the EOF boundary against the object
+/// length.
 enum GetObjectOutcome {
     Found(Bytes),
     Missing,
-    Unsatisfiable(ReadGuard),
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct S3ReadStatsSnapshot {
-    pub started: u64,
-    pub completed: u64,
-    pub errors: u64,
-    pub canceled: u64,
-    pub range_gets: u64,
-    pub full_gets: u64,
-    pub bytes: u64,
-    pub in_flight: u64,
-    pub max_in_flight: u64,
+    Unsatisfiable,
 }
 
 /// S3-API-compatible [`BlobStore`]. Cheaply cloneable -- all state lives behind
@@ -219,7 +196,6 @@ impl S3BlobStore {
                 root_prefix: normalize_prefix(&root_prefix),
                 max_concurrency: max_concurrency.max(1),
                 endpoint_urls,
-                read_stats: Arc::new(ReadStats::default()),
             }),
         })
     }
@@ -250,7 +226,6 @@ impl S3BlobStore {
         range: Option<String>,
     ) -> Result<GetObjectOutcome> {
         let (client, _) = self.client_for_object_key(object_key);
-        let is_range = range.is_some();
         let mut req = client
             .get_object()
             .bucket(&self.inner.bucket)
@@ -259,18 +234,15 @@ impl S3BlobStore {
             req = req.range(range);
         }
 
-        let read_guard = self.read_started(is_range);
         let resp = match req.send().await {
             Ok(resp) => resp,
             Err(e) if is_no_such_key(&e) => {
-                read_guard.finish(false, 0, 0);
                 return Ok(GetObjectOutcome::Missing);
             }
             Err(e) if is_invalid_range(&e) => {
-                return Ok(GetObjectOutcome::Unsatisfiable(read_guard));
+                return Ok(GetObjectOutcome::Unsatisfiable);
             }
             Err(e) => {
-                read_guard.finish(true, 0, 0);
                 return Err(backend_err("get_object", object_key, e));
             }
         };
@@ -278,15 +250,12 @@ impl S3BlobStore {
         let collected = match resp.body.collect().await {
             Ok(collected) => collected,
             Err(e) => {
-                read_guard.finish(true, 0, 0);
                 return Err(QueryError::Backend(format!(
                     "s3 get_object body {object_key}: {e}"
                 )));
             }
         };
-        let bytes = collected.into_bytes();
-        read_guard.finish(false, 0, bytes.len() as u64);
-        Ok(GetObjectOutcome::Found(bytes))
+        Ok(GetObjectOutcome::Found(collected.into_bytes()))
     }
 
     /// `HeadObject` for the object's byte length; `Ok(None)` when absent. Only
@@ -317,8 +286,7 @@ impl S3BlobStore {
     /// carry no bytes (zero-length, or 416'd because `start` is at/after EOF):
     /// missing object -> `None`, `start` within `0..=len` -> empty bytes,
     /// `start` strictly past EOF -> error. Costs one extra HEAD, on these
-    /// boundary cases only; the HEAD is not a tracked read — callers account
-    /// the resolution under the originating range read's guard.
+    /// boundary cases only.
     async fn empty_range_at(&self, object_key: &str, start: usize) -> Result<Option<Bytes>> {
         match self.object_len_at(object_key).await? {
             None => Ok(None),
@@ -339,52 +307,21 @@ impl S3BlobStore {
             return Err(QueryError::Decode("invalid blob range"));
         }
         // S3 cannot express a zero-length range: resolve it from the object
-        // length alone, tracked as one range read.
+        // length alone.
         if start == end_exclusive {
-            let read_guard = self.read_started(true);
-            let result = self.empty_range_at(object_key, start).await;
-            read_guard.finish(result.is_err(), 0, 0);
-            return result;
+            return self.empty_range_at(object_key, start).await;
         }
         // HTTP byte ranges are inclusive; ours is end-exclusive. S3 clamps an
         // end past EOF (matching the trait default) but answers 416 whenever
         // `start` is at or after EOF (including any window on an empty
         // object), while the trait errors only for `start` strictly past EOF
         // and clamps `start == len` to an empty read. Resolve a 416 from the
-        // object length, finishing the read's stats with the real outcome.
+        // object length.
         let range = format!("bytes={}-{}", start, end_exclusive - 1);
         match self.get_object_at(object_key, Some(range)).await? {
             GetObjectOutcome::Found(bytes) => Ok(Some(bytes)),
             GetObjectOutcome::Missing => Ok(None),
-            GetObjectOutcome::Unsatisfiable(read_guard) => {
-                let result = self.empty_range_at(object_key, start).await;
-                read_guard.finish(result.is_err(), 0, 0);
-                result
-            }
-        }
-    }
-
-    fn read_started(&self, is_range: bool) -> ReadGuard {
-        let kind = if is_range {
-            S3ReadKind::RangeGet
-        } else {
-            S3ReadKind::FullGet
-        };
-        self.inner.read_stats.start(kind as usize)
-    }
-
-    pub fn take_read_stats(&self) -> S3ReadStatsSnapshot {
-        let window = self.inner.read_stats.take();
-        S3ReadStatsSnapshot {
-            started: window.started,
-            completed: window.completed,
-            errors: window.errors,
-            canceled: window.canceled,
-            range_gets: window.kinds[S3ReadKind::RangeGet as usize],
-            full_gets: window.kinds[S3ReadKind::FullGet as usize],
-            bytes: window.bytes,
-            in_flight: window.in_flight,
-            max_in_flight: window.max_in_flight,
+            GetObjectOutcome::Unsatisfiable => self.empty_range_at(object_key, start).await,
         }
     }
 }
@@ -499,10 +436,7 @@ impl BlobStore for S3BlobStore {
             GetObjectOutcome::Found(bytes) => Ok(Some(bytes)),
             GetObjectOutcome::Missing => Ok(None),
             // A GET without a `Range` header cannot 416.
-            GetObjectOutcome::Unsatisfiable(read_guard) => {
-                read_guard.finish(true, 0, 0);
-                Err(QueryError::Decode("invalid blob range"))
-            }
+            GetObjectOutcome::Unsatisfiable => Err(QueryError::Decode("invalid blob range")),
         }
     }
 

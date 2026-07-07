@@ -21,7 +21,6 @@ pub mod api;
 pub mod blocks;
 pub mod external;
 pub mod logs;
-pub mod mem_scan;
 pub mod traces;
 pub mod transfers;
 pub mod txs;
@@ -29,7 +28,6 @@ pub mod txs;
 pub use api::MonadChainDataService;
 pub use blocks::{Block, QueryBlocksRequest, QueryBlocksResponse};
 pub use logs::{LogEntry, LogFilter, LogsRelations, QueryLogsRequest, QueryLogsResponse};
-pub use mem_scan::{scan_block_logs, scan_block_txs, MemLogsBlock, MemTx};
 pub use traces::{
     compute_trace_addresses, QueryTracesRequest, QueryTracesResponse, TraceEntry, TraceFilter,
     TracesRelations,

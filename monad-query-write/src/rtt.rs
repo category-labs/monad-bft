@@ -931,22 +931,6 @@ async fn seal_chains_are_cadence_independent_and_survive_restart() {
     // The terminal checkpoint carries the running chain (== last sealed row).
     assert_eq!(ckpt_state.log.seal_chain, span1);
 
-    // Verification accessor: row chain + per-family (last sealed span, chain).
-    let digests = a
-        .reader()
-        .standby_digests(8)
-        .await
-        .unwrap()
-        .expect("standby digests");
-    assert_eq!(digests.row_chain, a.checksum_at(8).await);
-    let log_point = digests.seal_chains.log.expect("log seal chain point");
-    assert_eq!((log_point.span_start, log_point.value), (span, span1));
-    assert!(digests.seal_chains.tx.is_none(), "tx family never sealed");
-    assert!(
-        digests.seal_chains.trace.is_none(),
-        "trace family never sealed"
-    );
-
     // Sensitivity: one perturbed row inside span 0 changes a sealed page, so
     // the seal chain diverges at that span. Four blocks suffice to seal it.
     let e = Harness::new();
