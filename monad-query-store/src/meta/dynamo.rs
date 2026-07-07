@@ -49,7 +49,6 @@ use crate::{
         BATCH_WRITE_LIMIT, BATCH_WRITE_PAYLOAD_SOFT_LIMIT,
     },
     meta::{MetaStore, MetaWriteOp, ScannableTableId, TableId},
-    read_stats::{ReadGuard, ReadStats},
 };
 
 /// Explicit static credentials, for DynamoDB Local / Alternator deployments
@@ -144,31 +143,9 @@ struct Inner {
     /// [`DynamoMetaStore::discover_batch_write_limit`] can raise it. `Arc`d so
     /// a co-deployed dynamo blob store shares the probed value.
     batch_write_max_items: Arc<AtomicUsize>,
-    read_stats: Arc<ReadStats>,
     /// Configured endpoint URLs, retained so a co-deployed dynamo blob store can
     /// recognize when it shares this store's endpoint(s) and skip its warn.
     endpoint_urls: Arc<Vec<String>>,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub struct DynamoMetaReadStatsSnapshot {
-    pub started: u64,
-    pub completed: u64,
-    pub errors: u64,
-    pub canceled: u64,
-    pub get_items: u64,
-    pub queries: u64,
-    pub items: u64,
-    pub bytes: u64,
-    pub in_flight: u64,
-    pub max_in_flight: u64,
-}
-
-/// `kinds` slot assignment for the shared [`ReadStats`].
-#[derive(Debug, Clone, Copy)]
-enum DynamoMetaReadKind {
-    GetItem = 0,
-    Query = 1,
 }
 
 /// DynamoDB-API-compatible [`MetaStore`]. Cheaply cloneable (`Arc`-backed).
@@ -232,7 +209,6 @@ impl DynamoMetaStore {
                 batch_max_concurrency: batch_max_concurrency.max(1),
                 batch_table_max_concurrency: batch_table_max_concurrency.max(1),
                 batch_write_max_items: Arc::new(AtomicUsize::new(batch_write_max_items.max(1))),
-                read_stats: Arc::new(ReadStats::default()),
                 endpoint_urls: Arc::new(endpoint_urls),
             }),
         })
@@ -251,26 +227,6 @@ impl DynamoMetaStore {
             batch_write_max_items: self.inner.batch_write_max_items.clone(),
             endpoint_urls: self.inner.endpoint_urls.clone(),
         }
-    }
-
-    pub fn take_read_stats(&self) -> DynamoMetaReadStatsSnapshot {
-        let window = self.inner.read_stats.take();
-        DynamoMetaReadStatsSnapshot {
-            started: window.started,
-            completed: window.completed,
-            errors: window.errors,
-            canceled: window.canceled,
-            get_items: window.kinds[DynamoMetaReadKind::GetItem as usize],
-            queries: window.kinds[DynamoMetaReadKind::Query as usize],
-            items: window.items,
-            bytes: window.bytes,
-            in_flight: window.in_flight,
-            max_in_flight: window.max_in_flight,
-        }
-    }
-
-    fn read_started(&self, kind: DynamoMetaReadKind) -> ReadGuard {
-        self.inner.read_stats.start(kind as usize)
     }
 
     fn table_name_for_kv(&self, table: TableId) -> String {
@@ -311,8 +267,7 @@ impl DynamoMetaStore {
         pk: Vec<u8>,
         sk: Vec<u8>,
     ) -> Result<Option<Bytes>> {
-        let read_guard = self.read_started(DynamoMetaReadKind::GetItem);
-        let resp = match self
+        let resp = self
             .rr_client()
             .get_item()
             .table_name(physical_table)
@@ -321,24 +276,11 @@ impl DynamoMetaStore {
             .consistent_read(true)
             .send()
             .await
-        {
-            Ok(resp) => resp,
-            Err(e) => {
-                read_guard.finish(true, 0, 0);
-                return Err(backend_err("get_item", e));
-            }
-        };
+            .map_err(|e| backend_err("get_item", e))?;
 
         match resp.item {
-            None => {
-                read_guard.finish(false, 0, 0);
-                Ok(None)
-            }
-            Some(mut item) => {
-                let val = take_val(&mut item)?;
-                read_guard.finish(false, 1, val.len() as u64);
-                Ok(Some(val))
-            }
+            None => Ok(None),
+            Some(mut item) => take_val(&mut item).map(Some),
         }
     }
 
@@ -619,23 +561,10 @@ impl MetaStore for DynamoMetaStore {
                 .scan_index_forward(true)
                 .set_exclusive_start_key(start_key.take());
 
-            let read_guard = self.read_started(DynamoMetaReadKind::Query);
-            let resp = match req.send().await {
-                Ok(resp) => resp,
-                Err(e) => {
-                    read_guard.finish(true, 0, 0);
-                    return Err(backend_err("query", e));
-                }
-            };
-            let mut page_items = 0_u64;
-            let mut page_bytes = 0_u64;
+            let resp = req.send().await.map_err(|e| backend_err("query", e))?;
             for mut item in resp.items.unwrap_or_default() {
-                let key = take_binary(&mut item, ATTR_SK)?;
-                page_items = page_items.saturating_add(1);
-                page_bytes = page_bytes.saturating_add(key.len() as u64);
-                keys.push(key);
+                keys.push(take_binary(&mut item, ATTR_SK)?);
             }
-            read_guard.finish(false, page_items, page_bytes);
 
             // Follow the server's cursor (an empty page can still carry a
             // LastEvaluatedKey); absence means the range is exhausted.

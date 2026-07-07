@@ -33,7 +33,6 @@ pub use monad_query_read::{
     api::MonadChainDataService,
     blocks::{Block, QueryBlocksRequest, QueryBlocksResponse},
     logs::{LogEntry, LogFilter, LogsRelations, QueryLogsRequest, QueryLogsResponse},
-    mem_scan::{scan_block_logs, scan_block_txs, MemLogsBlock, MemTx},
     traces::{
         compute_trace_addresses, QueryTracesRequest, QueryTracesResponse, TraceEntry, TraceFilter,
         TracesRelations,

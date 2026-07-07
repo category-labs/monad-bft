@@ -14,13 +14,10 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use monad_query_engine::{
-    digest::ChainDigest,
-    family::PerFamily,
     query::family_runner::{
         run_family_query, IndexedFamilyQuery, IndexedQueryOutcome, IndexedQueryStats,
     },
     range::ResolvedBlockWindow,
-    seal::{last_sealed_span, seal_boundary},
     tables::{DictConfig, PublicationTables, QueryRuntimeConfig, Tables},
 };
 use monad_query_errors::{QueryError, Result};
@@ -43,28 +40,6 @@ use crate::{
         TxMaterializer,
     },
 };
-
-/// One family's seal-chain reading: the chained seal digest persisted when
-/// `span_start` (the family's most recently sealed 64K id span) sealed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SealChainPoint {
-    pub span_start: u64,
-    pub value: ChainDigest,
-}
-
-/// The standby verification digests at one block height: the `row_chain`
-/// plus each family's last sealed span + seal chain.
-/// Two replicas that ingested the same finalized stream must agree on every
-/// field — see the recipe in [`monad_query_engine::digest`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StandbyDigests {
-    pub(crate) block_number: u64,
-    /// Chained per-block content digest through this block (row chain).
-    pub row_chain: ChainDigest,
-    /// Per-family seal chain at the last span sealed within this block's id
-    /// frontier; `None` when nothing has sealed yet.
-    pub seal_chains: PerFamily<Option<SealChainPoint>>,
-}
 
 /// Read-only query layer over the chain-data store. The branchless ingest engine
 /// (`monad-query-write`) is the only write path; this service reads the published
@@ -357,37 +332,6 @@ impl<M: MetaStore, B: BlobStore> MonadChainDataService<M, B> {
         let (_head, window) = self.resolve_head_and_window(&request.envelope).await?;
 
         execute_query_blocks(&self.tables, &request, window).await
-    }
-
-    /// Standby verification probe: block `block_number`'s chained
-    /// `row_chain` plus each family's `(last sealed span, seal chain)`
-    /// derived from that block's id frontier. `None` when the block's record
-    /// is absent.
-    pub async fn standby_digests(&self, block_number: u64) -> Result<Option<StandbyDigests>> {
-        let Some(record) = self.tables.blocks().load_record(block_number).await? else {
-            return Ok(None);
-        };
-        let mut seal_chains = PerFamily::default();
-        for (family, slot) in seal_chains.iter_mut() {
-            let bound = family
-                .window_in(&record)
-                .next_primary_id_exclusive()?
-                .as_u64();
-            *slot = match last_sealed_span(seal_boundary(bound)) {
-                Some(span_start) => self
-                    .tables
-                    .family(family)
-                    .load_seal_chain(span_start)
-                    .await?
-                    .map(|value| SealChainPoint { span_start, value }),
-                None => None,
-            };
-        }
-        Ok(Some(StandbyDigests {
-            block_number,
-            row_chain: record.row_chain,
-            seal_chains,
-        }))
     }
 
     async fn require_published_head(&self) -> Result<u64> {

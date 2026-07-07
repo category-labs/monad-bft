@@ -29,9 +29,7 @@ pub use in_memory::InMemoryBlobStore;
 use monad_query_errors::{QueryError, Result};
 pub use null::NullBlobStore;
 #[cfg(feature = "s3")]
-pub use s3::{
-    S3BlobStore, S3BlobStoreConfig, S3Credentials, S3ExternalBlobReader, S3ReadStatsSnapshot,
-};
+pub use s3::{S3BlobStore, S3BlobStoreConfig, S3Credentials, S3ExternalBlobReader};
 
 #[derive(Debug, Clone)]
 pub struct BlobWriteOp {
@@ -175,5 +173,64 @@ pub trait BlobStore: Clone + Send + Sync + 'static {
             }
             Ok(Some(blob.slice(start..end_exclusive.min(blob.len()))))
         }
+    }
+}
+
+/// Runtime-selected [`BlobStore`]: composition roots configure one service
+/// instantiation over the backend product instead of one monomorphization per
+/// meta × blob pairing.
+#[derive(Clone)]
+pub enum BlobBackend {
+    InMemory(InMemoryBlobStore),
+    /// No blob backend (`[store.blob]` omitted): external-archive stores whose
+    /// row payloads never touch a blob store. Native reads error loudly (see
+    /// [`NullBlobStore`]).
+    Null(NullBlobStore),
+    #[cfg(feature = "s3")]
+    S3(S3BlobStore),
+    #[cfg(feature = "dynamo")]
+    Dynamo(DynamoBlobStore),
+}
+
+macro_rules! with_blob_backend {
+    ($self:expr, $store:ident => $body:expr) => {
+        match $self {
+            BlobBackend::InMemory($store) => $body,
+            BlobBackend::Null($store) => $body,
+            #[cfg(feature = "s3")]
+            BlobBackend::S3($store) => $body,
+            #[cfg(feature = "dynamo")]
+            BlobBackend::Dynamo($store) => $body,
+        }
+    };
+}
+
+impl BlobStore for BlobBackend {
+    async fn put_blob(&self, table: BlobTableId, key: &[u8], value: Bytes) -> Result<()> {
+        with_blob_backend!(self, s => s.put_blob(table, key, value).await)
+    }
+
+    async fn get_blob(&self, table: BlobTableId, key: &[u8]) -> Result<Option<Bytes>> {
+        with_blob_backend!(self, s => s.get_blob(table, key).await)
+    }
+
+    async fn delete_blob(&self, table: BlobTableId, key: &[u8]) -> Result<()> {
+        with_blob_backend!(self, s => s.delete_blob(table, key).await)
+    }
+
+    async fn apply_writes(&self, writes: Vec<BlobWriteOp>) -> Result<()> {
+        with_blob_backend!(self, s => s.apply_writes(writes).await)
+    }
+
+    // Forwarded so backends with a native ranged read (S3's server-side GET)
+    // keep it instead of falling back to the whole-blob default.
+    async fn read_range(
+        &self,
+        table: BlobTableId,
+        key: &[u8],
+        start: usize,
+        end_exclusive: usize,
+    ) -> Result<Option<Bytes>> {
+        with_blob_backend!(self, s => s.read_range(table, key, start, end_exclusive).await)
     }
 }

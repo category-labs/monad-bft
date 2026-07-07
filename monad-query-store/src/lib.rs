@@ -20,24 +20,20 @@ pub mod cache;
 #[cfg(feature = "dynamo")]
 pub mod dynamo_common;
 pub mod meta;
-#[cfg(any(feature = "dynamo", feature = "s3"))]
-pub(crate) mod read_stats;
 
-pub use blob::{BlobStore, BlobTable, BlobTableId, BlobWriteOp, InMemoryBlobStore, NullBlobStore};
+pub use blob::{
+    BlobBackend, BlobStore, BlobTable, BlobTableId, BlobWriteOp, InMemoryBlobStore, NullBlobStore,
+};
 #[cfg(feature = "dynamo")]
 pub use blob::{DynamoBlobStore, DynamoBlobStoreConfig};
 #[cfg(feature = "s3")]
-pub use blob::{
-    S3BlobStore, S3BlobStoreConfig, S3Credentials, S3ExternalBlobReader, S3ReadStatsSnapshot,
-};
+pub use blob::{S3BlobStore, S3BlobStoreConfig, S3Credentials, S3ExternalBlobReader};
 pub use cache::{CacheConfig, CachedKvTable, CachedScannableKvTable};
 #[cfg(feature = "dynamo")]
+pub use meta::{DynamoCredentials, DynamoMetaStore, DynamoMetaStoreConfig, DynamoTableLayout};
 pub use meta::{
-    DynamoCredentials, DynamoMetaReadStatsSnapshot, DynamoMetaStore, DynamoMetaStoreConfig,
-    DynamoTableLayout,
-};
-pub use meta::{
-    InMemoryMetaStore, KvTable, MetaStore, MetaWriteOp, ScannableKvTable, ScannableTableId, TableId,
+    InMemoryMetaStore, KvTable, MetaBackend, MetaStore, MetaWriteOp, ScannableKvTable,
+    ScannableTableId, TableId,
 };
 #[cfg(feature = "mongo")]
 pub use meta::{MongoMetaStore, MongoMetaStoreConfig};
