@@ -19,7 +19,8 @@ use alloy_consensus::TxEnvelope;
 use alloy_eips::BlockNumberOrTag;
 use alloy_primitives::{Address, FixedBytes, LogData, U256};
 use alloy_rpc_types::{
-    pubsub::Params, AccessList, Block, FeeHistory, Header, Log, Transaction, TransactionReceipt,
+    pubsub::Params, serde_helpers::JsonStorageKey, AccessList, Block, FeeHistory, Header, Log,
+    Transaction, TransactionReceipt,
 };
 use monad_exec_events::BlockCommitState;
 use monad_types::BlockId;
@@ -57,6 +58,20 @@ impl<'de> Deserialize<'de> for MonadU256 {
         let u = U256::from_str(&buf)
             .map_err(|e| serde::de::Error::custom(format!("U256 parse failed: {e:?}")))?;
         Ok(Self(u))
+    }
+}
+
+#[derive(Debug, JsonSchema)]
+pub struct StorageKey(#[schemars(with = "String")] pub [u8; 32]);
+
+impl<'de> Deserialize<'de> for StorageKey {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let buf = String::deserialize(deserializer)?;
+        let key: JsonStorageKey = buf.parse().map_err(serde::de::Error::custom)?;
+        Ok(Self(key.as_b256().0))
     }
 }
 
