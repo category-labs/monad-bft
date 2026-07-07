@@ -21,10 +21,7 @@ pub(crate) mod mongo;
 
 use bytes::Bytes;
 #[cfg(feature = "dynamo")]
-pub use dynamo::{
-    DynamoCredentials, DynamoMetaReadStatsSnapshot, DynamoMetaStore, DynamoMetaStoreConfig,
-    DynamoTableLayout,
-};
+pub use dynamo::{DynamoCredentials, DynamoMetaStore, DynamoMetaStoreConfig, DynamoTableLayout};
 pub use in_memory::InMemoryMetaStore;
 use monad_query_errors::Result;
 #[cfg(feature = "mongo")]
@@ -184,4 +181,65 @@ pub trait MetaStore: Clone + Send + Sync + 'static {
         &self,
         writes: Vec<MetaWriteOp>,
     ) -> impl std::future::Future<Output = Result<()>> + Send;
+}
+
+/// Runtime-selected [`MetaStore`]: composition roots configure one service
+/// instantiation over the backend product instead of one monomorphization per
+/// meta × blob pairing.
+#[derive(Clone)]
+pub enum MetaBackend {
+    InMemory(InMemoryMetaStore),
+    #[cfg(feature = "dynamo")]
+    Dynamo(DynamoMetaStore),
+    #[cfg(feature = "mongo")]
+    Mongo(MongoMetaStore),
+}
+
+macro_rules! with_meta_backend {
+    ($self:expr, $store:ident => $body:expr) => {
+        match $self {
+            MetaBackend::InMemory($store) => $body,
+            #[cfg(feature = "dynamo")]
+            MetaBackend::Dynamo($store) => $body,
+            #[cfg(feature = "mongo")]
+            MetaBackend::Mongo($store) => $body,
+        }
+    };
+}
+
+impl MetaStore for MetaBackend {
+    async fn get(&self, table: TableId, key: &[u8]) -> Result<Option<Bytes>> {
+        with_meta_backend!(self, s => s.get(table, key).await)
+    }
+
+    async fn scan_get(
+        &self,
+        table: ScannableTableId,
+        partition: &[u8],
+        clustering: &[u8],
+    ) -> Result<Option<Bytes>> {
+        with_meta_backend!(self, s => s.scan_get(table, partition, clustering).await)
+    }
+
+    async fn put(&self, table: TableId, key: &[u8], value: Bytes) -> Result<()> {
+        with_meta_backend!(self, s => s.put(table, key, value).await)
+    }
+
+    async fn scan_put(
+        &self,
+        table: ScannableTableId,
+        partition: &[u8],
+        clustering: &[u8],
+        value: Bytes,
+    ) -> Result<()> {
+        with_meta_backend!(self, s => s.scan_put(table, partition, clustering, value).await)
+    }
+
+    async fn scan_keys(&self, table: ScannableTableId, partition: &[u8]) -> Result<Vec<Vec<u8>>> {
+        with_meta_backend!(self, s => s.scan_keys(table, partition).await)
+    }
+
+    async fn apply_writes(&self, writes: Vec<MetaWriteOp>) -> Result<()> {
+        with_meta_backend!(self, s => s.apply_writes(writes).await)
+    }
 }

@@ -287,17 +287,6 @@ async fn read_range_eof_boundaries_match_trait_contract() {
 
     // Missing blobs stay `None` for zero-length windows at any offset.
     assert_eq!(store.read_range(BLOCKS, b"nope", 3, 3).await.unwrap(), None);
-
-    // Every boundary read above is tracked as one range read; only the four
-    // contract violations count as errors — HEAD-resolved successes complete
-    // normally instead of inheriting the 416's error verdict.
-    let stats = store.take_read_stats();
-    assert_eq!(stats.started, 9);
-    assert_eq!(stats.completed, 5);
-    assert_eq!(stats.errors, 4);
-    assert_eq!(stats.canceled, 0);
-    assert_eq!(stats.range_gets, 9);
-    assert_eq!(stats.full_gets, 0);
 }
 
 #[tokio::test(flavor = "multi_thread")]
