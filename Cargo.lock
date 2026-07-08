@@ -5700,6 +5700,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-mcp-chorus-sim"
+version = "0.1.0"
+dependencies = [
+ "monad-mcp-chorus",
+ "monad-sim",
+ "monad-sim-swarm",
+]
+
+[[package]]
 name = "monad-merkle"
 version = "0.1.0"
 dependencies = [
