@@ -45,6 +45,7 @@ pub struct EthCallHandlerConfig {
     pub provider_gas_limit_eth_simulate: u64,
     pub provider_max_calls_eth_simulate: usize,
     pub provider_max_blocks_eth_simulate: usize,
+    pub provider_max_response_size: usize,
 }
 
 #[derive(Clone)]
