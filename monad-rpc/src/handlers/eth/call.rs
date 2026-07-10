@@ -489,6 +489,9 @@ pub struct MonadCreateAccessListParams {
     pub transaction: CallRequest,
     #[serde(default)]
     pub block: BlockTagOrHash,
+    #[schemars(skip)]
+    #[serde(default)]
+    pub state_overrides: StateOverrideSet,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -521,7 +524,7 @@ impl CallParams {
             CallParams::AccessList(p) => {
                 let execution_params = EthCallExecutionParams {
                     transaction: p.transaction,
-                    state_overrides: StateOverrideSet::default(),
+                    state_overrides: p.state_overrides,
                     tracer: MonadTracer::AccessListTracer,
                 };
                 (execution_params, p.block)
@@ -837,6 +840,7 @@ pub async fn monad_createAccessList<T: Triedb + TriedbPath>(
 
     let mut follow_up_tx = params.transaction.clone();
     let original_access_list = params.transaction.access_list.clone();
+    let state_overrides = params.state_overrides.clone();
 
     let (block_key, call_result) = prepare_eth_call(
         &data_provider.triedb_env,
@@ -859,7 +863,7 @@ pub async fn monad_createAccessList<T: Triedb + TriedbPath>(
 
     let call_params = EthCallExecutionParams {
         transaction: follow_up_tx,
-        state_overrides: StateOverrideSet::default(),
+        state_overrides,
         tracer: MonadTracer::NoopTracer,
     };
 
