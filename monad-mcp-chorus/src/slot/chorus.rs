@@ -68,8 +68,6 @@ pub enum Message {
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum TimerEvent {
-    // emitted on D_s
-    Deadline,
     // emitted on D_s + Delta
     FallbackTransitionTimeout,
     // emitted on D_s + 2*Delta
@@ -132,12 +130,7 @@ impl SlotConsensus for Chorus {
     type OptimisticCommitData = FastBlock;
     type FinalizationData = SlotFinalization;
 
-    fn new(
-        slot: Slot,
-        deadline: TimestampDelta,
-        config: &Self::Config,
-        context: &Self::Context,
-    ) -> Self {
+    fn new(slot: Slot, config: &Self::Config, context: &Self::Context) -> Self {
         let ChorusConfig {
             delta,
             num_proposals,
@@ -156,7 +149,7 @@ impl SlotConsensus for Chorus {
             da_handle.clone(),
         );
 
-        let mut this = Self {
+        Self {
             slot,
             delta: *delta,
             key: key.clone(),
@@ -165,10 +158,7 @@ impl SlotConsensus for Chorus {
             buffer: FallbackMsgBuffer,
             outputs: Default::default(),
             decided: false,
-        };
-
-        this.schedule_timer(deadline, TimerEvent::Deadline);
-        this
+        }
     }
 
     fn poll(&mut self) -> Option<SlotOutput<Self>> {
@@ -222,19 +212,20 @@ impl SlotConsensus for Chorus {
         }
     }
 
-    fn handle_timer(&mut self, event: Self::Timer) {
+    fn handle_deadline(&mut self) {
         if self.decided {
             return;
         }
 
-        match event {
-            TimerEvent::Deadline => {
-                self.schedule_timer(self.delta, TimerEvent::FallbackTransitionTimeout);
+        self.schedule_timer(self.delta, TimerEvent::FallbackTransitionTimeout);
 
-                if let Some(batch_vote) = self.fast.on_propose_deadline() {
-                    self.broadcast(batch_vote);
-                }
-            }
+        if let Some(batch_vote) = self.fast.on_propose_deadline() {
+            self.broadcast(batch_vote);
+        }
+    }
+
+    fn handle_timer(&mut self, event: Self::Timer) {
+        match event {
             TimerEvent::FallbackTransitionTimeout => {
                 self.schedule_timer(self.delta, TimerEvent::FallbackDecisionDelayElapsed);
 

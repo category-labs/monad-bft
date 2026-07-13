@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     slot::{SlotConsensus, SlotOutput},
-    types::{Slot, TimestampDelta},
+    types::Slot,
 };
 
 pub struct SlotManager<S>
@@ -48,7 +48,7 @@ where
         }
     }
 
-    pub fn open(&mut self, slot: Slot, deadline: TimestampDelta) {
+    pub fn open(&mut self, slot: Slot) {
         if slot < self.cap {
             tracing::warn!("Refuse to open a slot below the cap: {:?}", slot);
             return;
@@ -60,7 +60,7 @@ where
             return;
         }
 
-        let instance = S::new(slot, deadline, &self.config, &self.context);
+        let instance = S::new(slot, &self.config, &self.context);
         self.slots.insert(slot, instance);
     }
 

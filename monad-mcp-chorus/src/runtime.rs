@@ -15,7 +15,7 @@
 
 use crate::{
     CadenceDriver,
-    conductor::{Conductor, ConductorInput, ConductorOutput},
+    conductor::{Conductor, ConductorOutput},
     driver::{CadenceEvent, Driver, NodeEvent, WakeId},
     slot::{SlotConsensus, SlotOutput},
     slot_manager::SlotManager,
@@ -113,7 +113,7 @@ where
                     self.driver.schedule_slot_timer(delta, slot, timer);
                 }
                 SlotOutput::Broadcast(message) => {
-                    self.driver.broadcast(slot, message);
+                    self.driver.broadcast_slot(slot, message);
                 }
                 SlotOutput::CommitOptimistic(data) => {
                     if let Some(observer) = &mut self.observer {
@@ -124,8 +124,7 @@ where
                     if let Some(observer) = &mut self.observer {
                         observer.handle_finalization(now, slot, &data);
                     }
-                    self.conductor
-                        .handle(ConductorInput::SlotFinalized(now, slot));
+                    self.conductor.handle_slot_finalization(now, slot);
                     self.slot_manager.close(slot);
                 }
                 SlotOutput::Fault { reason } => {
@@ -138,13 +137,19 @@ where
 
         if let Some(out) = self.conductor.poll() {
             match out {
+                ConductorOutput::Broadcast(msg) => {
+                    self.driver.broadcast_conductor(msg);
+                }
                 ConductorOutput::ScheduleAlarm(at, timer) => {
                     self.driver.schedule_alarm(at, timer);
                 }
-                ConductorOutput::OpenSlots { slots, cap } => {
+                ConductorOutput::CloseSlots { cap } => {
                     self.slot_manager.advance_cap(cap);
+                }
+                ConductorOutput::OpenSlots(slots) => {
                     for (slot, deadline) in slots {
-                        self.slot_manager.open(slot, deadline);
+                        self.slot_manager.open(slot);
+                        self.driver.schedule_slot_deadline(slot, deadline);
                     }
                 }
             }
@@ -154,14 +159,23 @@ where
         if let Some(event) = self.driver.poll_cadence_event() {
             match event {
                 CadenceEvent::Alarm(alarm) => {
-                    self.conductor.handle(ConductorInput::Alarm(alarm));
+                    self.conductor.handle_alarm(alarm);
+                }
+                CadenceEvent::ConductorMessage(message) => {
+                    let (message, author) = message.destructure();
+                    self.conductor.handle_message(author, message);
+                }
+                CadenceEvent::SlotDeadline(slot) => {
+                    if let Some(instance) = self.slot_manager.slot_instance(slot) {
+                        instance.handle_deadline();
+                    }
                 }
                 CadenceEvent::SlotTimer(slot, timer) => {
                     if let Some(instance) = self.slot_manager.slot_instance(slot) {
                         instance.handle_timer(timer);
                     }
                 }
-                CadenceEvent::Message(message) => {
+                CadenceEvent::SlotMessage(message) => {
                     let ((slot, message), author) = message.destructure();
                     if let Some(instance) = self.slot_manager.slot_instance(slot) {
                         instance.handle_message(author, message);

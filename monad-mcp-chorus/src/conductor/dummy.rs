@@ -18,7 +18,7 @@ use std::{
     num::NonZeroU64,
 };
 
-use super::{Conductor, ConductorInput, ConductorOutput};
+use super::{Conductor, ConductorOutput};
 use crate::types::{Slot, Timestamp, TimestampDelta};
 
 type WindowId = u64;
@@ -72,45 +72,47 @@ impl DummyConductor {
     pub fn window_start(&self, window_id: WindowId) -> Timestamp {
         self.genesis + self.window_duration() * window_id
     }
-
-    pub fn slot_deadline(&self, slot: Slot) -> TimestampDelta {
-        // The first slot in a window schedules at exactly the deadline_offset.
-        let slot_index = slot.0 % self.slots_per_window.get();
-        self.slot_interval * slot_index + self.deadline_offset
-    }
 }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Never {}
 
 impl Conductor for DummyConductor {
     type Alarm = WindowId;
-
-    fn handle(&mut self, input: ConductorInput<Self>) {
-        match input {
-            ConductorInput::Alarm(window_id) => {
-                let slots: BTreeMap<_, _> = (0..self.slots_per_window.get())
-                    .map(|i| {
-                        let slot = Slot(window_id * self.slots_per_window.get() + i);
-                        let deadline = self.slot_deadline(slot);
-                        (slot, deadline)
-                    })
-                    .collect();
-
-                let cap = Slot(window_id * self.slots_per_window.get());
-                let next_window = window_id + 1;
-
-                self.outputs.push_back(ConductorOutput::ScheduleAlarm(
-                    self.window_start(next_window),
-                    next_window,
-                ));
-                self.outputs
-                    .push_back(ConductorOutput::OpenSlots { slots, cap });
-            }
-
-            ConductorInput::SlotOpened(_slot) => {}
-            ConductorInput::SlotFinalized(_at, _slot) => {}
-        }
-    }
+    type Message = Never;
 
     fn poll(&mut self) -> Option<ConductorOutput<Self>> {
         self.outputs.pop_front()
+    }
+
+    fn handle_message(&mut self, _sender: crate::types::NodeId, never: Never) {
+        // guaranteed  from type level
+        match never {}
+    }
+
+    fn handle_slot_finalization(&mut self, _at: Timestamp, _slot: Slot) {
+        // ignored by the dummy implementation
+    }
+
+    fn handle_alarm(&mut self, window_id: WindowId) {
+        let window_start = self.window_start(window_id);
+
+        let slots: BTreeMap<_, _> = (0..self.slots_per_window.get())
+            .map(|i| {
+                let slot = Slot(window_id * self.slots_per_window.get() + i);
+                let deadline = window_start + self.slot_interval * i + self.deadline_offset;
+                (slot, deadline)
+            })
+            .collect();
+
+        let cap = Slot(window_id * self.slots_per_window.get());
+        let next_window = window_id + 1;
+
+        self.outputs.push_back(ConductorOutput::ScheduleAlarm(
+            self.window_start(next_window),
+            next_window,
+        ));
+        self.outputs.push_back(ConductorOutput::OpenSlots(slots));
+        self.outputs.push_back(ConductorOutput::CloseSlots { cap });
     }
 }

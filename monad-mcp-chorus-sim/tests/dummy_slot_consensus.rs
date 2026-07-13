@@ -19,10 +19,10 @@ use std::time::Duration;
 
 use helper::expect_finalized_at;
 use monad_mcp_chorus::{
-    SlotMsg,
+    CadenceDriverMsg,
     conductor::dummy::DummyConductor,
-    slot::dummy::{DummySlotConsensus, DummySlotConsensusConfig, DummyVote},
-    types::{NodeId, Timestamp, TimestampDelta, VoteMsg},
+    slot::dummy::{DummySlotConsensus, DummySlotConsensusConfig},
+    types::{NodeId, Timestamp, TimestampDelta},
 };
 use monad_mcp_chorus_sim::CadenceSwarmBuilder;
 
@@ -30,7 +30,7 @@ const DEADLINE_OFFSET: u64 = 10;
 const SLOTS_PER_WINDOW: u64 = 10;
 const SLOT_INTERVAL: u64 = 100;
 
-type DummyMsg = SlotMsg<VoteMsg<DummyVote>>;
+type DummyMsg = CadenceDriverMsg<DummySlotConsensus, DummyConductor>;
 
 fn add_dummy_node(builder: &mut CadenceSwarmBuilder<DummyMsg>, id: NodeId, quorum: usize) {
     let config = DummySlotConsensusConfig { quorum };
