@@ -17,15 +17,19 @@ pub mod dummy;
 
 use std::collections::BTreeMap;
 
-use crate::types::{Slot, SlotDeadline, Timestamp};
+use crate::types::{NodeId, Slot, SlotDeadline, Timestamp};
 
 pub trait Conductor
 where
     Self: Sized,
 {
     type Alarm;
+    type Message;
 
-    fn handle(&mut self, input: ConductorInput<Self>);
+    fn handle_message(&mut self, sender: NodeId, message: Self::Message);
+    fn handle_alarm(&mut self, alarm: Self::Alarm);
+    fn handle_slot_finalization(&mut self, at: Timestamp, slot: Slot);
+
     fn poll(&mut self) -> Option<ConductorOutput<Self>>;
 }
 
@@ -34,22 +38,13 @@ pub enum ConductorOutput<C>
 where
     C: Conductor,
 {
+    Broadcast(C::Message),
     ScheduleAlarm(Timestamp, C::Alarm),
 
-    // Open a batch of slots each with their deadline. Then close all
-    // slots strictly earlier than the cap.
-    OpenSlots {
-        slots: BTreeMap<Slot, SlotDeadline>,
-        cap: Slot,
-    },
-}
+    // Open a batch of slots each with their deadline.
+    // Invariant: must be contiguous.
+    OpenSlots(BTreeMap<Slot, SlotDeadline>),
 
-#[derive(Clone)]
-pub enum ConductorInput<C>
-where
-    C: Conductor,
-{
-    Alarm(C::Alarm),
-    SlotOpened(Slot),
-    SlotFinalized(Timestamp, Slot),
+    // Close all slots strictly earlier than the cap.
+    CloseSlots { cap: Slot },
 }

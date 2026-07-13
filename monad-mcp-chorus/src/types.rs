@@ -86,7 +86,7 @@ impl TimestampDelta {
     }
 }
 
-pub type SlotDeadline = TimestampDelta;
+pub type SlotDeadline = Timestamp;
 
 pub struct KeyPair;
 pub struct PubKey;

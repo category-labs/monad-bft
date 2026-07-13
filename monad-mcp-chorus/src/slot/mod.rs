@@ -30,12 +30,10 @@ pub trait SlotConsensus: Sized {
     type OptimisticCommitData: Clone;
     type FinalizationData: Clone;
 
-    fn new(
-        slot: Slot,
-        deadline: TimestampDelta,
-        config: &Self::Config,
-        context: &Self::Context,
-    ) -> Self;
+    fn new(slot: Slot, config: &Self::Config, context: &Self::Context) -> Self;
+
+    /// Called on the deadline of the slot
+    fn handle_deadline(&mut self);
 
     /// Handle a received message from a peer.
     fn handle_message(&mut self, sender: NodeId, message: Self::Message);

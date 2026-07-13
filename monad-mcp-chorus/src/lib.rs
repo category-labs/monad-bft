@@ -23,8 +23,8 @@ pub mod slot;
 // indirectly exports DummyConductor
 pub mod conductor;
 
-pub use conductor::{Conductor, ConductorInput, ConductorOutput};
-pub use driver::{CadenceDriver, Driver, NodeEvent, SlotMsg, WakeId};
+pub use conductor::{Conductor, ConductorOutput};
+pub use driver::{CadenceDriver, CadenceDriverMsg, CadenceMessage, Driver, NodeEvent, WakeId};
 pub use runtime::{CadenceRuntime, FinalizationObserver, Runtime};
 pub use slot::{SlotConsensus, SlotOutput};
 pub use slot_manager::SlotManager;
