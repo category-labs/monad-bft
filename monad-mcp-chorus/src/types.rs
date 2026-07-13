@@ -16,6 +16,7 @@
 use std::{
     collections::{HashMap, HashSet},
     hash::Hash,
+    ops::Add,
 };
 
 use itertools::Either;
@@ -30,6 +31,14 @@ impl Slot {
 
     pub fn next(self) -> Self {
         Slot(self.0 + 1)
+    }
+}
+
+impl Add<u64> for Slot {
+    type Output = Self;
+
+    fn add(self, rhs: u64) -> Self::Output {
+        Slot(self.0 + rhs)
     }
 }
 
@@ -52,6 +61,13 @@ impl Timestamp {
 
     pub const fn ticks(self) -> u64 {
         self.0
+    }
+
+    pub const fn since(&self, other: Timestamp) -> Option<TimestampDelta> {
+        if self.0 < other.0 {
+            return None;
+        }
+        Some(TimestampDelta(self.0 - other.0))
     }
 }
 
@@ -77,6 +93,8 @@ impl std::ops::Add<TimestampDelta> for Timestamp {
 }
 
 impl TimestampDelta {
+    pub const ZERO: Self = TimestampDelta(0);
+
     pub const fn new(ticks: u64) -> Self {
         TimestampDelta(ticks)
     }
@@ -419,6 +437,24 @@ pub struct ValidatorData {
 }
 
 impl ValidatorData {
+    pub fn new(valset: HashMap<NodeId, Stake>, mapping: HashMap<NodeId, PubKey>) -> Self {
+        assert_eq!(valset.len(), mapping.len());
+        assert!(!valset.is_empty());
+        assert!(valset.keys().all(|node_id| mapping.contains_key(node_id)));
+
+        Self { valset, mapping }
+    }
+
+    // The caller must ensure the invariants on the valset/mapping are
+    // satisfied, as seen in the assertions in new() method.
+    pub fn new_unchecked(valset: HashMap<NodeId, Stake>, mapping: HashMap<NodeId, PubKey>) -> Self {
+        Self { valset, mapping }
+    }
+
+    pub fn valset_unordered(&self) -> &HashMap<NodeId, Stake> {
+        &self.valset
+    }
+
     pub fn sum_stake<'a>(&self, nodes: impl IntoIterator<Item = &'a NodeId>) -> Stake {
         nodes.into_iter().map(|node_id| self.valset[node_id]).sum()
     }
