@@ -55,7 +55,7 @@ pub struct NodeConfig<ST: CertificateSignatureRecoverable> {
     pub network_name: String,
 
     #[serde(default)]
-    pub prometheus: Option<PrometheusConfig>,
+    pub metrics: MetricsConfig,
 
     #[serde(deserialize_with = "deserialize_eth_address_from_str")]
     pub beneficiary: Address,
@@ -92,11 +92,23 @@ pub struct NodeConfig<ST: CertificateSignatureRecoverable> {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
-pub struct PrometheusConfig {
-    pub bind_addr: String,
-    #[serde(default)]
+#[serde(default, deny_unknown_fields)]
+pub struct MetricsConfig {
+    pub enabled: bool,
+    pub listen_addr: String,
     pub labels: BTreeMap<String, String>,
+}
+
+impl Default for MetricsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            // listening on 0.0.0.0 is potentially unsafe because we do not monitor precise
+            // resource usage of the prometheus service; operators must secure it appropriately.
+            listen_addr: "0.0.0.0:9143".to_owned(),
+            labels: BTreeMap::new(),
+        }
+    }
 }
 
 #[cfg(feature = "crypto")]
@@ -116,3 +128,43 @@ pub type ValidatorsConfigType =
     monad_consensus_types::validator_data::ValidatorsConfig<SignatureCollectionType>;
 #[cfg(feature = "crypto")]
 pub type MonadNodeConfig = NodeConfig<SignatureType>;
+
+#[cfg(test)]
+mod tests {
+    use serde::Deserialize;
+
+    use super::MetricsConfig;
+
+    #[derive(Deserialize)]
+    struct TestNodeConfig {
+        #[serde(default)]
+        metrics: MetricsConfig,
+    }
+
+    #[test]
+    fn metrics_config_defaults_and_override() {
+        let config: MetricsConfig = toml::from_str("").unwrap();
+
+        assert!(config.enabled);
+        assert_eq!(config.listen_addr, "0.0.0.0:9143");
+        assert!(config.labels.is_empty());
+
+        let disabled: MetricsConfig = toml::from_str("enabled = false").unwrap();
+        assert!(!disabled.enabled);
+    }
+
+    #[test]
+    fn metrics_config_accepts_labels_only() {
+        let config: TestNodeConfig = toml::from_str(
+            r#"
+[metrics.labels]
+environment = "testnet"
+"#,
+        )
+        .unwrap();
+
+        assert!(config.metrics.enabled);
+        assert_eq!(config.metrics.listen_addr, "0.0.0.0:9143");
+        assert_eq!(config.metrics.labels["environment"], "testnet");
+    }
+}
