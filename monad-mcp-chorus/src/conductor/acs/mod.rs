@@ -13,40 +13,32 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-pub mod acs;
-mod cadence;
 pub mod dummy;
 
-use std::collections::BTreeMap;
+use crate::types::NodeId;
 
-use crate::types::{NodeId, Slot, SlotDeadline, Timestamp};
-
-pub trait Conductor
-where
-    Self: Sized,
-{
-    type Alarm;
+/// A protocol for Agreement on a Core Set
+pub trait Acs<V> {
     type Message;
+    type Context;
 
+    fn new(ctx: &Self::Context) -> Self;
+
+    /// Propose the data to be included in the core set. At most one
+    /// proposal is allowed for each Acs instance.
+    fn propose(&mut self, data: V);
+
+    /// Handle a message received over network
     fn handle_message(&mut self, sender: NodeId, message: Self::Message);
-    fn handle_alarm(&mut self, alarm: Self::Alarm);
-    fn handle_slot_finalization(&mut self, at: Timestamp, slot: Slot);
 
-    fn poll(&mut self) -> Option<ConductorOutput<Self>>;
+    /// Query whether the ACS has made an decision
+    fn decision(&self) -> Option<&V>;
+
+    fn poll(&mut self) -> Option<AcsOutput<Self::Message>>;
 }
 
-#[derive(Clone)]
-pub enum ConductorOutput<C>
-where
-    C: Conductor,
-{
-    Broadcast(C::Message),
-    ScheduleAlarm(Timestamp, C::Alarm),
-
-    // Open a batch of slots each with their deadline.
-    // Invariant: must be contiguous.
-    OpenSlots(BTreeMap<Slot, SlotDeadline>),
-
-    // Close all slots strictly earlier than the cap.
-    CloseSlots { cap: Slot },
+pub enum AcsOutput<M> {
+    /// A message that needs to be broadcasted to all peers, including
+    /// self.
+    Broadcast(M),
 }
