@@ -29,7 +29,9 @@ use monad_chain_config::MonadChainConfig;
 use monad_consensus_types::validator_data::ValidatorsConfigFile;
 use monad_control_panel::TracingReload;
 use monad_keystore::keystore::Keystore;
-use monad_node_config::{ForkpointConfig, MonadNodeConfig, PrometheusConfig, ValidatorsConfigType};
+use monad_node_config::{
+    ForkpointConfig, MetricsConfig as NodeMetricsConfig, MonadNodeConfig, ValidatorsConfigType,
+};
 use monad_secp::KeyPair;
 use monad_types::Round;
 use reqwest::{blocking::Client, Url};
@@ -138,7 +140,7 @@ impl NodeState {
 
         let node_config: MonadNodeConfig =
             toml::from_str(&std::fs::read_to_string(&node_config_path)?)?;
-        let metrics = parse_metrics_config(node_config.prometheus.as_ref())?;
+        let metrics = parse_metrics_config(&node_config.metrics)?;
 
         if !matches!(
             forkpoint_config_path.extension().and_then(OsStr::to_str),
@@ -261,12 +263,8 @@ impl NodeState {
 }
 
 fn parse_metrics_config(
-    config: Option<&PrometheusConfig>,
+    config: &NodeMetricsConfig,
 ) -> Result<Option<MetricsConfig>, NodeSetupError> {
-    let Some(config) = config else {
-        return Ok(None);
-    };
-
     for key in config.labels.keys() {
         if !is_valid_label_key(key) {
             return Err(NodeSetupError::Custom {
@@ -278,8 +276,12 @@ fn parse_metrics_config(
         }
     }
 
+    if !config.enabled {
+        return Ok(None);
+    }
+
     Ok(Some(MetricsConfig {
-        addr: config.bind_addr.clone(),
+        addr: config.listen_addr.clone(),
         labels: config.labels.clone(),
     }))
 }
