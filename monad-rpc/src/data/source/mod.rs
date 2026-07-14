@@ -17,7 +17,7 @@ use monad_types::BlockId;
 
 pub use self::{
     archive::ArchiveDataSource,
-    historical::{HistoricalDataSource, HistoricalDataSourceStack},
+    historical::{HistoricalDataSource, HistoricalDataSourceExt, HistoricalDataSourceStack},
     stack::DataSourceStack,
     triedb::TriedbDataSource,
 };
