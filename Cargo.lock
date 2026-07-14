@@ -5029,14 +5029,6 @@ dependencies = [
  "monad-compress",
  "monad-eth-testutil",
  "monad-eth-types",
- "monad-query-config",
- "monad-query-engine",
- "monad-query-errors",
- "monad-query-primitives",
- "monad-query-read",
- "monad-query-testkit",
- "monad-query-types",
- "monad-query-write",
  "monad-triedb-utils",
  "monad-types",
  "mongodb",
@@ -6003,17 +5995,14 @@ dependencies = [
 name = "monad-query-config"
 version = "0.1.0"
 dependencies = [
- "alloy-primitives",
  "eyre",
  "monad-query-engine",
  "monad-query-errors",
  "monad-query-primitives",
  "monad-query-read",
  "monad-query-store",
- "monad-query-types",
  "monad-query-write",
  "serde",
- "tokio",
  "toml",
  "tracing",
 ]
@@ -6022,8 +6011,6 @@ dependencies = [
 name = "monad-query-engine"
 version = "0.1.0"
 dependencies = [
- "alloy-consensus",
- "alloy-eips",
  "alloy-primitives",
  "alloy-rlp",
  "blake3",
@@ -6033,7 +6020,6 @@ dependencies = [
  "monad-query-primitives",
  "monad-query-store",
  "monad-query-types",
- "quick_cache",
  "rayon",
  "roaring",
  "serde",
@@ -6047,6 +6033,40 @@ name = "monad-query-errors"
 version = "0.1.0"
 dependencies = [
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "monad-query-indexer"
+version = "0.1.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-primitives",
+ "alloy-rlp",
+ "aws-config",
+ "aws-sdk-dynamodb",
+ "aws-sdk-s3",
+ "bytes",
+ "clap",
+ "eyre",
+ "futures",
+ "monad-archive",
+ "monad-eth-testutil",
+ "monad-eth-types",
+ "monad-query-config",
+ "monad-query-engine",
+ "monad-query-errors",
+ "monad-query-primitives",
+ "monad-query-read",
+ "monad-query-testkit",
+ "monad-query-types",
+ "monad-query-write",
+ "mongodb",
+ "rand 0.8.5",
+ "serde",
+ "tokio",
+ "toml",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -6069,7 +6089,6 @@ dependencies = [
  "alloy-eips",
  "alloy-primitives",
  "alloy-rlp",
- "bytes",
  "futures",
  "monad-query-engine",
  "monad-query-errors",
@@ -6082,34 +6101,24 @@ dependencies = [
 name = "monad-query-store"
 version = "0.1.0"
 dependencies = [
- "alloy-consensus",
- "alloy-eips",
  "alloy-primitives",
- "alloy-rlp",
  "alloy-rpc-types-eth",
  "aws-config",
  "aws-sdk-dynamodb",
  "aws-sdk-s3",
- "blake3",
  "bytes",
- "eyre",
  "futures",
  "hyper-util",
  "monad-query-errors",
  "monad-query-primitives",
  "mongodb",
  "quick_cache",
- "rayon",
- "roaring",
  "s3s",
  "s3s-fs",
  "serde",
  "tempfile",
- "thiserror 1.0.69",
  "tokio",
- "toml",
  "tracing",
- "zstd",
 ]
 
 [[package]]
@@ -6135,7 +6144,6 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "bytes",
- "eyre",
  "futures",
  "monad-query-engine",
  "monad-query-errors",
@@ -6158,7 +6166,6 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "alloy-rpc-types-eth",
- "bytes",
  "monad-query-errors",
  "monad-query-primitives",
 ]
@@ -6345,6 +6352,7 @@ dependencies = [
  "monad-pprof",
  "monad-query-config",
  "monad-query-errors",
+ "monad-query-indexer",
  "monad-query-primitives",
  "monad-query-read",
  "monad-query-testkit",

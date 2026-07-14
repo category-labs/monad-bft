@@ -37,8 +37,6 @@ pub struct ArchiveWorkerOpts {
     pub require_traces: bool,
     /// If set, archiver will only archive traces
     pub traces_only: bool,
-    /// If set, archiver will skip traces entirely (no fetch, no write)
-    pub skip_traces: bool,
     /// If set, archiver will perform an asynchronous backfill of the archive
     pub async_backfill: bool,
     /// WritePolicy for blocks archiving
@@ -65,7 +63,6 @@ pub async fn archive_worker(
         unsafe_skip_bad_blocks,
         require_traces,
         traces_only,
-        skip_traces,
         async_backfill,
         blocks_write_policy,
         receipts_write_policy,
@@ -133,7 +130,6 @@ pub async fn archive_worker(
             unsafe_skip_bad_blocks,
             require_traces,
             traces_only,
-            skip_traces,
             latest_kind,
             blocks_write_policy,
             receipts_write_policy,
@@ -159,7 +155,6 @@ async fn archive_blocks(
     unsafe_skip_bad_blocks: bool,
     require_traces: bool,
     traces_only: bool,
-    skip_traces: bool,
     latest_kind: LatestKind,
     blocks_write_policy: WritePolicy,
     receipts_write_policy: WritePolicy,
@@ -176,7 +171,6 @@ async fn archive_blocks(
                 archiver,
                 require_traces,
                 traces_only,
-                skip_traces,
                 metrics,
                 blocks_write_policy,
                 receipts_write_policy,
@@ -226,7 +220,6 @@ async fn archive_block(
     archiver: &BlockDataArchive,
     require_traces: bool,
     traces_only: bool,
-    skip_traces: bool,
     metrics: &Metrics,
     blocks_write_policy: WritePolicy,
     receipts_write_policy: WritePolicy,
@@ -280,9 +273,6 @@ async fn archive_block(
                 .await
         },
         async {
-            if skip_traces {
-                return Ok(());
-            }
             let traces = match reader.get_block_traces(block_num).await {
                 Ok(b) => b,
                 Err(e) => {
@@ -469,7 +459,6 @@ mod tests {
             &archiver,
             false,
             false,
-            false,
             &metrics::Metrics::none(),
             WritePolicy::NoClobber,
             WritePolicy::NoClobber,
@@ -504,7 +493,6 @@ mod tests {
             &None::<BlockDataReaderErased>,
             block_num,
             &archiver,
-            false,
             false,
             false,
             &metrics::Metrics::none(),
@@ -550,7 +538,6 @@ mod tests {
             &archiver,
             &metrics::Metrics::none(),
             3,
-            false,
             false,
             false,
             false,
@@ -604,7 +591,6 @@ mod tests {
             false,
             false,
             false,
-            false,
             LatestKind::Uploaded,
             WritePolicy::NoClobber,
             WritePolicy::NoClobber,
@@ -635,7 +621,6 @@ mod tests {
             &None::<BlockDataReaderErased>,
             block_num,
             &archiver,
-            false,
             false,
             false,
             &metrics::Metrics::none(),
@@ -674,7 +659,6 @@ mod tests {
             block_num,
             &archiver,
             true,
-            false,
             false,
             &metrics::Metrics::none(),
             WritePolicy::NoClobber,
@@ -715,7 +699,6 @@ mod tests {
             &archiver,
             false,
             true,
-            false,
             &metrics::Metrics::none(),
             WritePolicy::NoClobber,
             WritePolicy::NoClobber,
@@ -751,7 +734,6 @@ mod tests {
             false,
             false,
             true,
-            false,
             LatestKind::Uploaded,
             WritePolicy::NoClobber,
             WritePolicy::NoClobber,
@@ -809,7 +791,6 @@ mod tests {
             &archiver,
             &metrics::Metrics::none(),
             3,
-            false,
             false,
             false,
             false,

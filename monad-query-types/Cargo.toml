@@ -13,11 +13,10 @@ bench = false
 alloy-rpc-types-eth = ["dep:alloy-rpc-types-eth"]
 
 [dependencies]
-monad-query-errors = { workspace = true }
-monad-query-primitives = { workspace = true }
 alloy-consensus = { workspace = true }
 alloy-eips = { workspace = true }
 alloy-primitives = { workspace = true, features = ["rlp"] }
 alloy-rlp = { workspace = true, features = ["derive"] }
 alloy-rpc-types-eth = { workspace = true, optional = true }
-bytes = { workspace = true }
+monad-query-errors = { workspace = true }
+monad-query-primitives = { workspace = true }

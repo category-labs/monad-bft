@@ -118,6 +118,12 @@ pub struct ObservedMetaStore {
     pub timings: Arc<OpTimings>,
 }
 
+impl Default for ObservedMetaStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ObservedMetaStore {
     fn build(inner: InMemoryMetaStore, mode: ObserveMode) -> Self {
         Self {

@@ -49,11 +49,11 @@ monad-pprof = { path = "./monad-pprof" }
 monad-query-config = { path = "./monad-query-config", default-features = false }
 monad-query-engine = { path = "./monad-query-engine" }
 monad-query-errors = { path = "./monad-query-errors" }
+monad-query-indexer = { path = "./monad-query-indexer" }
 monad-query-primitives = { path = "./monad-query-primitives" }
 monad-query-read = { path = "./monad-query-read" }
 monad-query-store = { path = "./monad-query-store", default-features = false }
 monad-query-testkit = { path = "./monad-query-testkit" }
-monad-query-tests = { path = "./monad-query-tests" }
 monad-query-types = { path = "./monad-query-types" }
 monad-query-write = { path = "./monad-query-write" }
 monad-raptor = { path = "./monad-raptor" }

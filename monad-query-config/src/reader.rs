@@ -193,39 +193,9 @@ impl ConfiguredChainDataReader {
     pub fn take_cache_window_stats(&self) -> Vec<(&'static str, u64, u64)> {
         with_reader!(self, service => service.tables().take_cache_window_stats())
     }
-
-    #[cfg(feature = "dynamo")]
-    pub fn take_dynamo_meta_read_stats(
-        &self,
-    ) -> Option<monad_query_store::DynamoMetaReadStatsSnapshot> {
-        match self {
-            Self::InMemory(_) => None,
-            #[cfg(feature = "s3")]
-            Self::DynamoS3(service) => Some(service.tables().meta_store().take_read_stats()),
-            Self::DynamoDynamo(service) => Some(service.tables().meta_store().take_read_stats()),
-            Self::DynamoNull(service) => Some(service.tables().meta_store().take_read_stats()),
-            #[cfg(feature = "mongo")]
-            Self::MongoNull(_) => None,
-        }
-    }
-
-    #[cfg(feature = "s3")]
-    pub fn take_s3_read_stats(&self) -> Option<monad_query_store::S3ReadStatsSnapshot> {
-        match self {
-            Self::InMemory(_) => None,
-            #[cfg(feature = "dynamo")]
-            Self::DynamoS3(service) => Some(service.tables().blob_store().take_read_stats()),
-            #[cfg(feature = "dynamo")]
-            Self::DynamoDynamo(_) => None,
-            #[cfg(feature = "dynamo")]
-            Self::DynamoNull(_) => None,
-            #[cfg(feature = "mongo")]
-            Self::MongoNull(_) => None,
-        }
-    }
 }
 
-/// `external`: a pre-built external payload reader (monad-archive's
+/// `external`: a pre-built external payload reader (monad-query-indexer's
 /// archive-format readers); required for mongo/dynamo `[store.archive]`
 /// backends, `None` lets the S3 backend build from config.
 pub async fn open_configured_chain_data_reader(
