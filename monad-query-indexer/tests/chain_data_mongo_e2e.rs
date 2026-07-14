@@ -23,20 +23,18 @@
 //!
 //! Run: `docker run -p 27017:27017 mongo`, then
 //! `CHAIN_DATA_MONGO_TEST_URL=mongodb://127.0.0.1:27017 \
-//!   cargo test -p monad-archive --test chain_data_mongo_e2e -- --ignored`
-#![cfg(feature = "chain-data-ingest")]
-
+//!   cargo test -p monad-query-indexer --test chain_data_mongo_e2e -- --ignored`
 use std::collections::HashSet;
 
 use alloy_primitives::{Address, B256, U256};
 use alloy_rlp::Encodable;
-use monad_archive::chain_data_external::build_archive_external_reader;
 use monad_query_config::{
     open_configured_chain_data_reader, run_configured_chain_data_engine_ingest,
     ChainDataArchiveBackendConfig, ChainDataArchiveMongoConfig, ChainDataEngineConfig,
     ChainDataMetaBackendConfig, ChainDataMongoMetaConfig, ChainDataPayloadConfig,
     ChainDataStoreConfig, Redacted,
 };
+use monad_query_indexer::chain_data_external::build_archive_external_reader;
 use monad_query_primitives::{
     limits::{QueryEnvelope, QueryLimits},
     order::QueryOrder,

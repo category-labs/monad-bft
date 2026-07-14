@@ -7,9 +7,9 @@ edition = "2021"
 bench = false
 
 [dependencies]
-monad-query-errors = { workspace = true }
 alloy-consensus = { workspace = true }
 alloy-primitives = { workspace = true, features = ["rlp"] }
 alloy-rlp = { workspace = true, features = ["derive"] }
 bytes = { workspace = true }
 futures = { workspace = true }
+monad-query-errors = { workspace = true }

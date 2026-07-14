@@ -12,6 +12,7 @@
 //
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
 use monad_query_tests::prelude::*;
 #[tokio::test(flavor = "current_thread")]
 async fn query_blocks_ascending_returns_full_range() {

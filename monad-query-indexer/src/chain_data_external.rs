@@ -13,39 +13,30 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! chain-data external payload access over THIS crate's archive stores.
-//!
-//! External-archive chain-data stores range-read row payloads out of the
-//! archive's own block-data storage. For the Mongo and Dynamo backends those
-//! formats (`KeyValueDocument` documents, `tx_hash`/`data`/`chunks` items,
-//! the `_chunk_{i}` convention) are owned here, so the
-//! [`monad_query_primitives::ExternalBlobReader`] implementations live here too —
-//! built from the same `[store.archive]` config section chain-data parses,
-//! and injected into chain-data's entry points by the embedding binary.
-//! (The S3 archive backend has no storage format of its own, so chain-data
-//! builds that reader internally.)
+//! chain-data external payload access over archive block-data stores: this
+//! crate owns the Mongo/Dynamo byte formats, so the
+//! [`monad_query_primitives::ExternalBlobReader`] impls live here too.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use aws_config::{retry::RetryConfig, timeout::TimeoutConfig, BehaviorVersion, Region, SdkConfig};
+use aws_sdk_dynamodb::Client as DynamoClient;
 use aws_sdk_s3::config::{Credentials, SharedCredentialsProvider};
 use bytes::Bytes;
-use eyre::OptionExt;
+use eyre::{Context, OptionExt, Result};
 use futures::future::BoxFuture;
+use monad_archive::kvstore::mongo::KeyValueDocument;
 use monad_query_config::ChainDataArchiveBackendConfig;
 use monad_query_errors::QueryError;
 use monad_query_primitives::ExternalBlobReader;
-
-use crate::{
-    kvstore::{dynamodb::DynamoDBArchive, mongo::MongoDbStorage},
-    prelude::*,
-};
+use mongodb::Collection;
 
 /// [`ExternalBlobReader`] over an archive block-data store whose byte format
-/// this crate owns.
+/// this crate owns. Each variant holds its own storage client so it does not
+/// depend on monad-archive's (non-range-read-capable) storage structs.
 pub enum ArchiveExternalReader {
-    Mongo(MongoDbStorage),
-    Dynamo(DynamoDBArchive),
+    Mongo(Collection<KeyValueDocument>),
+    Dynamo { client: DynamoClient, table: String },
 }
 
 impl ExternalBlobReader for ArchiveExternalReader {
@@ -57,25 +48,38 @@ impl ExternalBlobReader for ArchiveExternalReader {
     ) -> BoxFuture<'_, monad_query_errors::Result<Option<Bytes>>> {
         let key = std::str::from_utf8(key).map(str::to_owned);
         Box::pin(async move {
-            let key = key.map_err(|_| {
-                QueryError::Decode("external archive key is not valid utf-8")
-            })?;
+            let key =
+                key.map_err(|_| QueryError::Decode("external archive key is not valid utf-8"))?;
             let result = match self {
-                Self::Mongo(store) => store.read_range(&key, start, end_exclusive).await,
-                Self::Dynamo(store) => store.read_range(&key, start, end_exclusive).await,
+                Self::Mongo(collection) => {
+                    crate::archive_range_read::mongo_read_range(
+                        collection,
+                        &key,
+                        start,
+                        end_exclusive,
+                    )
+                    .await
+                }
+                Self::Dynamo { client, table } => {
+                    crate::archive_range_read::dynamo_read_range(
+                        client,
+                        table,
+                        &key,
+                        start,
+                        end_exclusive,
+                    )
+                    .await
+                }
             };
-            result.map_err(|e| {
-                QueryError::Backend(format!("archive external read of {key}: {e:#}"))
-            })
+            result
+                .map_err(|e| QueryError::Backend(format!("archive external read of {key}: {e:#}")))
         })
     }
 }
 
 /// Builds the external payload reader for the archive-format backends of a
 /// `[store.archive]` config, or `Ok(None)` for backends chain-data builds
-/// itself (S3) and for absent config. Pass the result to
-/// `run_configured_chain_data_engine_ingest` /
-/// `open_configured_chain_data_reader`.
+/// itself (S3) and for absent config.
 pub async fn build_archive_external_reader(
     config: &Option<ChainDataArchiveBackendConfig>,
 ) -> Result<Option<Arc<dyn ExternalBlobReader>>> {
@@ -90,16 +94,15 @@ pub async fn build_archive_external_reader(
                 .database
                 .as_deref()
                 .ok_or_eyre("[store.archive] mongo requires database")?;
-            let store = MongoDbStorage::new_reader(
+            let collection = crate::archive_range_read::mongo_reader_collection(
                 url,
                 database,
                 &mongo.collection,
                 mongo.max_pool_size,
-                Metrics::none(),
             )
             .await
             .wrap_err("building archive mongo external reader")?;
-            Ok(Some(Arc::new(ArchiveExternalReader::Mongo(store))))
+            Ok(Some(Arc::new(ArchiveExternalReader::Mongo(collection))))
         }
         Some(ChainDataArchiveBackendConfig::Dynamo(dynamo)) => {
             let table = dynamo
@@ -115,18 +118,19 @@ pub async fn build_archive_external_reader(
                 dynamo.session_token.0.clone(),
             )
             .await;
-            let store =
-                DynamoDBArchive::new(table, &sdk_config, dynamo.max_concurrency, Metrics::none());
-            Ok(Some(Arc::new(ArchiveExternalReader::Dynamo(store))))
+            let client = DynamoClient::new(&sdk_config);
+            Ok(Some(Arc::new(ArchiveExternalReader::Dynamo {
+                client,
+                table,
+            })))
         }
         _ => Ok(None),
     }
 }
 
-/// SDK config for the dynamo archive reader. Mirrors `ScyllaCliArgs::config`:
-/// when an explicit endpoint is set with no credentials and no profile, fall
-/// back to placeholder static credentials (Alternator accepts any signature
-/// unless authorization is enabled, but the SDK requires *some* credentials).
+/// SDK config for the dynamo archive reader. With an explicit endpoint and no
+/// credentials/profile, fall back to placeholder static credentials — the SDK
+/// requires some, though Alternator accepts any signature by default.
 async fn dynamo_sdk_config(
     endpoint_url: Option<&str>,
     region: Option<&str>,

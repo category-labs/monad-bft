@@ -12,6 +12,7 @@
 //
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
 // These tests target the block-scan path (`LogFilter::default()`), so the
 // seeded address/topic bytes are arbitrary and never select.
 use monad_query_tests::prelude::*;

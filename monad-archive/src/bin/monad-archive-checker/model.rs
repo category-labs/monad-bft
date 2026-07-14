@@ -64,7 +64,6 @@ impl PartialEq for CheckerArchiveKey {
             }
             (ArchiveArgs::MongoDb(lhs), ArchiveArgs::MongoDb(rhs)) => lhs == rhs,
             (ArchiveArgs::Fs(lhs), ArchiveArgs::Fs(rhs)) => lhs == rhs,
-            (ArchiveArgs::Scylla(lhs), ArchiveArgs::Scylla(rhs)) => lhs == rhs,
             _ => false,
         }
     }
@@ -86,10 +85,6 @@ impl Hash for CheckerArchiveKey {
             }
             ArchiveArgs::Fs(args) => {
                 "fs".hash(state);
-                args.hash(state);
-            }
-            ArchiveArgs::Scylla(args) => {
-                "scylla".hash(state);
                 args.hash(state);
             }
         }
@@ -836,7 +831,6 @@ mod tests {
             bucket: "archive-a".to_string(),
             region: Some("us-east-1".to_string()),
             endpoint: Some("http://minio-a".to_string()),
-            index_endpoint: None,
             profile: Some("profile-a".to_string()),
             access_key_id: Some("key-a".to_string()),
             secret_access_key: Some("secret-a".to_string()),
@@ -849,7 +843,6 @@ mod tests {
             bucket: "archive-a".to_string(),
             region: Some("us-east-1".to_string()),
             endpoint: Some("http://minio-b".to_string()),
-            index_endpoint: None,
             profile: Some("profile-b".to_string()),
             access_key_id: Some("key-b".to_string()),
             secret_access_key: Some("secret-b".to_string()),

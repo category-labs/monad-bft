@@ -12,11 +12,6 @@ bench = false
 dynamo = []
 
 [dependencies]
-monad-query-engine = { workspace = true }
-monad-query-errors = { workspace = true }
-monad-query-primitives = { workspace = true }
-monad-query-store = { workspace = true, default-features = false }
-monad-query-types = { workspace = true }
 alloy-consensus = { workspace = true }
 alloy-primitives = { workspace = true, features = ["rlp"] }
 alloy-rlp = { workspace = true, features = ["derive"] }
@@ -24,6 +19,11 @@ blake3 = { workspace = true }
 bytes = { workspace = true }
 eyre = { workspace = true }
 futures = { workspace = true }
+monad-query-engine = { workspace = true }
+monad-query-errors = { workspace = true }
+monad-query-primitives = { workspace = true }
+monad-query-store = { workspace = true, default-features = false }
+monad-query-types = { workspace = true }
 roaring = "0.11"
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tracing = { workspace = true }

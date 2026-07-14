@@ -19,7 +19,6 @@ use monad_archive::{cli::set_source_and_sink_metrics, kvstore::WritePolicy, prel
 
 mod bft_archive_worker;
 mod block_archive_worker;
-#[cfg(feature = "chain-data-ingest")]
 mod file_checkpointer;
 mod generic_folder_archiver;
 
@@ -28,22 +27,14 @@ use block_archive_worker::{archive_worker, ArchiveWorkerOpts};
 use cli::{Commands, ParsedCli};
 use file_checkpointer::file_checkpoint_worker;
 use generic_folder_archiver::recursive_dir_archiver;
-#[cfg(feature = "chain-data-ingest")]
-use monad_archive::chain_data_ingest::chain_data_ingest_worker;
 use tokio::task::JoinHandle;
+use tracing::Level;
 
 mod cli;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
-    // Honor RUST_LOG (default `info`) so per-target directives work, e.g.
-    // `RUST_LOG=info,ingest::timing=trace` enables the chain-data timing probe.
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
+    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
     let parsed = cli::Cli::parse();
 
@@ -68,16 +59,7 @@ async fn main() -> Result<()> {
 
     set_source_and_sink_metrics(&args.archive_sink, &args.block_data_source, &metrics);
 
-    let uses_archive_sink = !args.unsafe_disable_normal_archiving
-        || args.bft_block_path.is_some()
-        || args.forkpoint_path.is_some()
-        || !args.additional_files_to_checkpoint.is_empty()
-        || !args.additional_dirs_to_archive.is_empty();
-    let mut archive_writer = if uses_archive_sink {
-        Some(args.archive_sink.build_block_data_archive(&metrics).await?)
-    } else {
-        None
-    };
+    let archive_writer = args.archive_sink.build_block_data_archive(&metrics).await?;
     let block_data_source = args.block_data_source.build(&metrics).await?;
 
     // Optional fallback
@@ -94,31 +76,14 @@ async fn main() -> Result<()> {
             .get_latest(LatestKind::Uploaded)
             .await
             .wrap_err("Cannot connect to block data source")?;
-        if let Some(archive_writer) = &archive_writer {
-            archive_writer
-                .get_latest(LatestKind::Uploaded)
-                .await
-                .wrap_err("Cannot connect to archive sink")?;
-        }
-    }
-
-    #[cfg(feature = "chain-data-ingest")]
-    if let Some(chain_data_config) = args.chain_data_ingest {
-        if chain_data_config.enabled {
-            info!("Spawning chain-data ingest worker...");
-            worker_handles.push(tokio::spawn(chain_data_ingest_worker(
-                block_data_source.clone(),
-                fallback_block_data_source.clone(),
-                chain_data_config,
-            )));
-        }
+        archive_writer
+            .get_latest(LatestKind::Uploaded)
+            .await
+            .wrap_err("Cannot connect to archive sink")?;
     }
 
     if let Some(path) = args.bft_block_path {
         info!("Spawning bft block archive worker...");
-        let archive_writer = archive_writer
-            .as_ref()
-            .expect("archive writer built for bft worker");
         let handle = tokio::spawn(bft_block_archive_worker(
             archive_writer.store.clone(),
             path,
@@ -131,9 +96,6 @@ async fn main() -> Result<()> {
 
     if let Some(path) = args.forkpoint_path {
         info!("Spawning forkpoint checkpoint worker...");
-        let archive_writer = archive_writer
-            .as_ref()
-            .expect("archive writer built for forkpoint worker");
         let handle = tokio::spawn(file_checkpoint_worker(
             archive_writer.store.clone(),
             path,
@@ -149,9 +111,6 @@ async fn main() -> Result<()> {
         };
         let file_name = file_name.to_owned();
         info!("Spawning {} checkpoint worker...", &file_name,);
-        let archive_writer = archive_writer
-            .as_ref()
-            .expect("archive writer built for checkpoint worker");
         worker_handles.push(tokio::spawn(file_checkpoint_worker(
             archive_writer.store.clone(),
             path,
@@ -166,11 +125,7 @@ async fn main() -> Result<()> {
             &path.file_name().unwrap().to_string_lossy()
         );
         let handle = tokio::spawn(recursive_dir_archiver(
-            archive_writer
-                .as_ref()
-                .expect("archive writer built for folder archive worker")
-                .store
-                .clone(),
+            archive_writer.store.clone(),
             path,
             Duration::from_millis((args.additional_dirs_archive_freq_secs * 1000.0) as u64),
             args.additional_dirs_exclude_prefix.clone(),
@@ -188,7 +143,6 @@ async fn main() -> Result<()> {
         unsafe_skip_bad_blocks: args.unsafe_skip_bad_blocks,
         require_traces: args.require_traces,
         traces_only: args.traces_only,
-        skip_traces: args.skip_traces,
         async_backfill: args.async_backfill,
         blocks_write_policy: if args.unsafe_allow_overwrite || args.unsafe_allow_blocks_overwrite {
             WritePolicy::AllowOverwrite
@@ -210,27 +164,20 @@ async fn main() -> Result<()> {
     };
 
     if !args.unsafe_disable_normal_archiving {
-        worker_handles.push(tokio::spawn(async move {
-            archive_worker(
-                block_data_source,
-                fallback_block_data_source,
-                archive_writer
-                    .take()
-                    .expect("archive writer built for normal archive worker"),
-                archive_worker_opts,
-                metrics,
-            )
-            .await;
-            Ok(())
-        }));
+        tokio::spawn(archive_worker(
+            block_data_source,
+            fallback_block_data_source,
+            archive_writer,
+            archive_worker_opts,
+            metrics,
+        ))
+        .await?;
     } else {
         info!("Normal archiving disabled, only running auxiliary workers");
     }
 
-    while !worker_handles.is_empty() {
-        let (result, _idx, remaining) = futures::future::select_all(worker_handles).await;
-        result??;
-        worker_handles = remaining;
+    for handle in worker_handles {
+        handle.await??;
     }
 
     Ok(())
@@ -261,44 +208,6 @@ async fn handle_command(cmd: Commands) -> Result<()> {
             };
 
             println!("Set latest marker: key=\"{key_name}\", block={block}");
-            Ok(())
-        }
-
-        #[cfg(feature = "chain-data-ingest")]
-        Commands::ChainDataHead { config } => {
-            // Accepts both deployed config shapes: the archiver daemon TOML
-            // ([chain_data_ingest.store]) and the monad-rpc reader TOML
-            // ([store], `--chain-data-config`).
-            #[derive(serde::Deserialize)]
-            struct HeadToml {
-                chain_data_ingest: Option<cli::ArchiverChainDataIngestConfig>,
-                store: Option<monad_query_config::ChainDataStoreConfig>,
-            }
-            let contents = std::fs::read_to_string(&config)
-                .map_err(|e| eyre::eyre!("failed to read config {}: {e}", config.display()))?;
-            let parsed: HeadToml = toml::from_str(&contents)?;
-            let store = match (parsed.chain_data_ingest, parsed.store) {
-                (Some(ingest), _) => ingest.store,
-                (None, Some(store)) => store,
-                (None, None) => eyre::bail!(
-                    "config {} has neither [chain_data_ingest.store] nor [store]",
-                    config.display()
-                ),
-            };
-
-            let external =
-                monad_archive::chain_data_external::build_archive_external_reader(&store.archive)
-                    .await?;
-            let reader = monad_query_config::open_configured_chain_data_reader(
-                store,
-                monad_query_primitives::limits::QueryLimits::UNLIMITED,
-                external,
-            )
-            .await?;
-            match reader.load_published_head().await? {
-                Some(head) => println!("published head: {head}"),
-                None => println!("published head: none (nothing published yet)"),
-            }
             Ok(())
         }
     }

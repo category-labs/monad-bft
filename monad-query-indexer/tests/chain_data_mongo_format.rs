@@ -13,27 +13,30 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! Guard for the Dynamo external read path: objects written by the
-//! production `DynamoDBArchive` writer (including its 350 KB chunking into
-//! `_chunk_{i}` items) must be byte-exactly range-readable through the
+//! Guard for the Mongo external read path: objects written by the production
+//! `MongoDbStorage` writer (including its 15 MiB chunking into `_chunk_{i}`
+//! side documents) must be byte-exactly range-readable through the
 //! `ArchiveExternalReader` adapter chain-data consumes (covering-chunk
 //! fetches only, `ExternalBlobReader` range semantics).
 //!
-//! Run against a running Alternator (see `kvstore::dynamodb` tests), then
-//! `SCYLLA_ALTERNATOR_ENDPOINT=http://localhost:8000 \
-//!   cargo test -p monad-archive --test chain_data_dynamo_format -- --ignored`
-#![cfg(feature = "chain-data-ingest")]
+//! Run: `docker run -p 27017:27017 mongo`, then
+//! `CHAIN_DATA_MONGO_TEST_URL=mongodb://127.0.0.1:27017 \
+//!   cargo test -p monad-query-indexer --test chain_data_mongo_format -- --ignored`
+use std::sync::Arc;
 
 use monad_archive::{
-    chain_data_external::ArchiveExternalReader,
-    cli::ScyllaCliArgs,
-    kvstore::{dynamodb::CHUNK_SIZE, KVStore, WritePolicy},
+    kvstore::{mongo::MongoDbStorage, KVStore, WritePolicy},
     prelude::Metrics,
 };
+use monad_query_config::{ChainDataArchiveBackendConfig, ChainDataArchiveMongoConfig, Redacted};
+use monad_query_indexer::chain_data_external::build_archive_external_reader;
 use monad_query_primitives::ExternalBlobReader;
 
-fn alternator_endpoint() -> Option<String> {
-    std::env::var("SCYLLA_ALTERNATOR_ENDPOINT").ok()
+/// monad-archive's Mongo chunk threshold (`mongo::CHUNK_SIZE`).
+const CHUNK_SIZE: usize = 15 * 1024 * 1024;
+
+fn test_url() -> Option<String> {
+    std::env::var("CHAIN_DATA_MONGO_TEST_URL").ok()
 }
 
 fn patterned(len: usize) -> Vec<u8> {
@@ -41,7 +44,7 @@ fn patterned(len: usize) -> Vec<u8> {
 }
 
 async fn read(
-    reader: &ArchiveExternalReader,
+    reader: &Arc<dyn ExternalBlobReader>,
     key: &str,
     start: usize,
     end: usize,
@@ -50,23 +53,26 @@ async fn read(
 }
 
 #[tokio::test]
-#[ignore = "requires SCYLLA_ALTERNATOR_ENDPOINT (a running ScyllaDB Alternator)"]
-async fn archive_written_items_range_read_through_chain_data() {
-    let Some(endpoint) = alternator_endpoint() else {
+#[ignore = "requires CHAIN_DATA_MONGO_TEST_URL (a running MongoDB)"]
+async fn archive_written_objects_range_read_through_chain_data() {
+    let Some(url) = test_url() else {
         return;
     };
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let database = format!("chain_data_fmt_{nanos}");
 
-    // The production archive writer over the scylla backend's block table.
-    let scylla = ScyllaCliArgs::parse(&format!("{endpoint} fmtguard")).expect("scylla args");
-    let store = scylla
-        .block_store(&Metrics::none())
+    // The production archive block-store writer (collection `block_level`).
+    let store = MongoDbStorage::new_block_store(&url, &database, Metrics::none())
         .await
         .expect("block store");
 
-    // One unchunked item and one that crosses the chunk threshold (three
-    // chunks: 350 KB + 350 KB + tail), patterned so any offset slip shows.
+    // One unchunked object and one that crosses the chunk threshold (two
+    // chunks: 15 MiB + 1 MiB), patterned so any offset slip is visible.
     let small = patterned(100_000);
-    let big = patterned(CHUNK_SIZE * 2 + 12_345);
+    let big = patterned(CHUNK_SIZE + (1 << 20));
     store
         .put("block/000000000007", small.clone(), WritePolicy::NoClobber)
         .await
@@ -76,10 +82,20 @@ async fn archive_written_items_range_read_through_chain_data() {
         .await
         .expect("put big");
 
-    let reader =
-        ArchiveExternalReader::Dynamo(scylla.block_store(&Metrics::none()).await.expect("reader"));
+    // Read through the crate's configured entry point (what production calls)
+    // so the test tracks whatever internal store shape backs it.
+    let reader = build_archive_external_reader(&Some(ChainDataArchiveBackendConfig::Mongo(
+        ChainDataArchiveMongoConfig {
+            url: Redacted(Some(url.clone())),
+            database: Some(database.clone()),
+            ..ChainDataArchiveMongoConfig::default()
+        },
+    )))
+    .await
+    .expect("build external reader")
+    .expect("mongo external reader");
 
-    // Unchunked item: interior slices, EOF clamp, past-EOF error, missing.
+    // Unchunked object: interior slice, EOF clamp, past-EOF error, missing.
     for (start, end) in [(0, 64), (99_990, 100_000), (1234, 56_789)] {
         let got = read(&reader, "block/000000000007", start, end)
             .await
@@ -104,12 +120,11 @@ async fn archive_written_items_range_read_through_chain_data() {
         .unwrap()
         .is_none());
 
-    // Chunked item: slices inside each chunk, straddling both chunk
-    // boundaries, EOF clamp into the short last chunk, past-EOF error.
+    // Chunked object: slices inside each chunk, one straddling the chunk
+    // boundary, EOF clamp into the short last chunk, past-EOF error.
     let ranges = [
         (0, 4096),
         (CHUNK_SIZE - 100, CHUNK_SIZE + 100),
-        (CHUNK_SIZE * 2 - 50, CHUNK_SIZE * 2 + 50),
         (CHUNK_SIZE + 1000, CHUNK_SIZE + 2000),
         (big.len() - 10, big.len()),
     ];
@@ -136,10 +151,18 @@ async fn archive_written_items_range_read_through_chain_data() {
             .is_err()
     );
 
-    // Whole-object read agrees with the archive's own reader.
+    // Whole-object reads agree with the archive's own reader.
     let whole = read(&reader, "traces/000000000007", 0, big.len())
         .await
         .unwrap()
         .unwrap();
     assert_eq!(whole.as_ref(), big.as_slice());
+
+    mongodb::Client::with_uri_str(&url)
+        .await
+        .expect("client")
+        .database(&database)
+        .drop()
+        .await
+        .expect("drop db");
 }
