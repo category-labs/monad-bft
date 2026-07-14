@@ -197,6 +197,7 @@ where
                 self.algo.update_peer_participation(end_round, peers)
             }
             PeerDiscoveryEvent::Refresh => self.algo.refresh(),
+            PeerDiscoveryEvent::ValidatorIpChanged { .. } => vec![],
         };
 
         self.filter_and_exec(cmds)
@@ -223,6 +224,9 @@ where
                 }),
                 PeerDiscoveryCommand::TimerCommand(peer_discovery_timer_command) => {
                     self.timer.exec(vec![peer_discovery_timer_command]);
+                }
+                PeerDiscoveryCommand::Event(_) => {
+                    // ignore event in swarm
                 }
             }
         }

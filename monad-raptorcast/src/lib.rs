@@ -977,18 +977,16 @@ where
 
                         {
                             let pd_driver = self.peer_discovery_driver.lock().unwrap();
-                            let added: Vec<_> = self
+                            let added = self
                                 .epoch_validators
                                 .get(&epoch)
-                                .into_iter()
-                                .flat_map(|val| iter_ips(val, &*pd_driver))
-                                .collect();
-                            let removed: Vec<_> = self
+                                .map(|val| iter_ips(val, &*pd_driver))
+                                .unwrap_or_default();
+                            let removed = self
                                 .epoch_validators
                                 .get(&self.current_epoch)
-                                .into_iter()
-                                .flat_map(|val| iter_ips(val, &*pd_driver))
-                                .collect();
+                                .map(|val| iter_ips(val, &*pd_driver))
+                                .unwrap_or_default();
                             drop(pd_driver);
                             self.dataplane_control.update_trusted(added, removed);
                         }
@@ -1189,14 +1187,17 @@ where
     }
 }
 
-fn iter_ips<'a, ST: CertificateSignatureRecoverable, PD: PeerDiscoveryAlgo<SignatureType = ST>>(
-    validators: &'a ValidatorSet<CertificateSignaturePubKey<ST>>,
-    peer_discovery: &'a PeerDiscoveryDriver<PD>,
-) -> impl Iterator<Item = IpAddr> + 'a {
+fn iter_ips<ST: CertificateSignatureRecoverable, PD: PeerDiscoveryAlgo<SignatureType = ST>>(
+    validators: &ValidatorSet<CertificateSignaturePubKey<ST>>,
+    peer_discovery: &PeerDiscoveryDriver<PD>,
+) -> Vec<IpAddr> {
+    let name_records = peer_discovery.get_name_records();
     validators
         .get_members()
         .keys()
-        .filter_map(|node_id| peer_discovery.get_ip(node_id))
+        .filter_map(|node_id| name_records.get(node_id))
+        .map(|record| IpAddr::V4(*record.tcp_address().ip()))
+        .collect()
 }
 
 const RAPTORCAST_POLL_QUOTA: usize = 256;
@@ -1560,6 +1561,28 @@ where
                         message,
                     } => {
                         send_peer_disc_msg(this, target, Some(name_record), message);
+                    }
+                    PeerDiscoveryEmit::Event(event) => {
+                        if let PeerDiscoveryEvent::ValidatorIpChanged {
+                            node_id,
+                            old_name_record,
+                            new_name_record,
+                        } = event
+                        {
+                            if let Some(validators) = this.epoch_validators.get(&this.current_epoch)
+                            {
+                                if validators.get_members().contains_key(&node_id) {
+                                    let old_ip = old_name_record
+                                        .as_ref()
+                                        .map(|record| IpAddr::V4(*record.tcp_address().ip()))
+                                        .into_iter()
+                                        .collect::<Vec<_>>();
+                                    let new_ip =
+                                        vec![IpAddr::V4(*new_name_record.tcp_address().ip())];
+                                    this.dataplane_control.update_trusted(new_ip, old_ip);
+                                }
+                            }
+                        }
                     }
                 }
             }

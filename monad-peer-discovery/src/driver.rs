@@ -42,6 +42,7 @@ pub enum PeerDiscoveryEmit<ST: CertificateSignatureRecoverable> {
         name_record: crate::NameRecord,
         message: PeerDiscoveryMessage<ST>,
     },
+    Event(PeerDiscoveryEvent<ST>),
 }
 
 struct PeerDiscTimers<ST: CertificateSignatureRecoverable> {
@@ -222,6 +223,7 @@ impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
                 self.pd.update_peer_participation(end_round, peers)
             }
             PeerDiscoveryEvent::Refresh => self.pd.refresh(),
+            PeerDiscoveryEvent::ValidatorIpChanged { .. } => vec![],
         };
 
         self.exec(cmds);
@@ -258,6 +260,14 @@ impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
                 }
                 PeerDiscoveryCommand::TimerCommand(timer_cmd) => {
                     timer_cmds.push(timer_cmd);
+                }
+                PeerDiscoveryCommand::Event(event) => {
+                    self.pending_emits
+                        .push_back(PeerDiscoveryEmit::Event(event));
+
+                    if let Some(waker) = self.waker.take() {
+                        waker.wake();
+                    }
                 }
             }
         }
