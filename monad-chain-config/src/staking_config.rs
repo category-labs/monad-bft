@@ -108,7 +108,10 @@ pub const MONAD_MAINNET_STAKING_CONFIG: MonadStakingConfig = MonadStakingConfig 
         block_reward_activation: BlockRewardActivation::Epoch(Epoch(747)),
         block_reward_mon: 25,
     },
-    block_reward_v_two: BlockRewardConfig::unused(),
+    block_reward_v_two: BlockRewardConfig {
+        block_reward_activation: BlockRewardActivation::Round(Round(89_758_000)),
+        block_reward_mon: 18,
+    },
 };
 
 #[cfg(test)]
