@@ -18,9 +18,10 @@
 //! TOML configs both carry a `[chain_data_ingest]` section.
 
 use eyre::{bail, Result};
+use monad_archive::model::BlockDataReaderErased;
 use serde::Deserialize;
 
-use crate::{chain_data_source::ArchiverChainDataSource, model::BlockDataReaderErased};
+use crate::chain_data_source::ArchiverChainDataSource;
 
 /// The `[chain_data_ingest]` config section: worker switch plus the
 /// chain-data store/engine configs passed through verbatim.

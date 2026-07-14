@@ -13,46 +13,34 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! The chain-data ingest source over this archive (the "BDR"): the canonical
-//! conversion from archive block/receipt/trace types into chain-data's
-//! [`FinalizedBlock`], in two payload modes:
-//!
-//! - **native**: chain-data re-encodes rows into its own pack blobs; the
-//!   source only decodes.
-//! - **external**: chain-data indexes the EXISTING archive objects; the
-//!   source additionally scans each raw object's per-tx RLP item ranges
-//!   (sentinel/version prefix included) and attaches an
-//!   [`ExternalPayloadSpec`] so per-row locators point straight into them.
+//! Chain-data ingest source over the archive: converts archive
+//! block/receipt/trace objects into chain-data's [`FinalizedBlock`], decoded
+//! (native) or with locators into the raw stored objects (external).
 
 use std::{sync::Arc, time::Duration};
 
 use alloy_eips::eip2718::Encodable2718;
 use alloy_rlp::Decodable;
-use monad_query_types::{
-    ingest_types::{FinalizedBlock, IngestTrace, IngestTx},
-    ExternalFamilyRegion, ExternalPayloadSpec,
-};
-use monad_query_write::source::ChainDataIngestSource;
-
-use crate::{
+use monad_archive::{
     failover_circuit_breaker::{CircuitBreaker, FallbackExecutor},
     model::{
         block_data_archive::{
-            decode_trace, Block, BlockDataArchive, BlockReceipts, BlockStorageRepr, BlockTraces,
-            CallFrame, ReceiptStorageRepr,
+            decode_trace, Block, BlockDataArchive, BlockReceipts, BlockTraces, CallFrame,
         },
         RangeRlp,
     },
     prelude::*,
     rlp_offset_scanner::get_all_tx_offsets,
 };
+use monad_query_types::{
+    ingest_types::{FinalizedBlock, IngestTrace, IngestTx},
+    ExternalFamilyRegion, ExternalPayloadSpec,
+};
+use monad_query_write::source::ChainDataIngestSource;
 
-/// Fetch retry policy: the engine's producer keeps many block fetches in
-/// flight at once, so transient upstream blips (S3 5xx / throttling /
-/// connection resets) are likely. A failed fetch would otherwise abort the
-/// whole ingest pipeline; retrying inside the source keeps the engine
-/// transport-agnostic. The retry wraps the failover executor (retry
-/// outermost), so each attempt independently tries primary-then-fallback.
+/// Retries wrap the failover executor (retry outermost) so each attempt tries
+/// primary-then-fallback; a transient upstream blip would otherwise abort the
+/// whole ingest pipeline.
 const FETCH_RETRY_ATTEMPTS: u32 = 8;
 const FETCH_RETRY_BASE_MS: u64 = 50;
 const FETCH_RETRY_MAX_DELAY_MS: u64 = 5_000;
@@ -104,18 +92,8 @@ impl ArchiverChainDataSource {
     }
 
     /// External-payload source; errors unless `reader` — and `fallback`, when
-    /// given — is archive-backed.
-    ///
-    /// Byte-identity assumption: external-mode locators index into the archive
-    /// bucket the chain-data store's `[store.archive]` points at
-    /// (operationally the primary). A fallback-served block therefore assumes
-    /// the archive replicas hold byte-identical objects for that block —
-    /// guaranteed by the deterministic V1 object encoding and enforced by the
-    /// archive checker's replica-agreement checks. Object EXISTENCE cannot
-    /// skew past replication faults either: the tip never advances beyond the
-    /// PRIMARY's `latest` marker (see `get_latest_uploaded`), below which the
-    /// primary wrote all three objects before updating the marker, so
-    /// failover only ever covers transient errors and repaired faults.
+    /// given — is archive-backed. Failover assumes replicas hold byte-identical
+    /// objects (deterministic encoding, enforced by the archive checker).
     pub fn external(
         reader: BlockDataReaderErased,
         fallback: Option<BlockDataReaderErased>,
@@ -129,21 +107,14 @@ impl ArchiverChainDataSource {
         })
     }
 
-    /// One attempt: the whole per-block fetch (and, externally, the offset
-    /// scan + spec build) runs against ONE replica via the failover executor;
-    /// any error — including a missing object, which a not-yet-archived block
-    /// near the tip can legitimately produce on either replica — fails the
-    /// attempt over to the fallback. That is deliberate and simple: the
-    /// producer only requests blocks at/below `get_latest_uploaded` (which
-    /// fails over identically), and the outer retry re-runs the whole
-    /// primary-then-fallback sequence, so a transiently missing object is
-    /// retried rather than masked.
+    /// One attempt: the whole per-block fetch runs against ONE replica; any
+    /// error (including a missing object near the tip) fails over, and the
+    /// outer retry re-runs the whole primary-then-fallback sequence.
     async fn fetch_block_once(&self, block_number: u64) -> Result<FinalizedBlock> {
         match &self.mode {
             SourceMode::Native(executor) => {
-                // Strict traces first, so a fallback can cover a primary
-                // trace gap; missing traces EVERYWHERE then degrade to empty
-                // traces (the archiver's pre-fallback tolerance) via the
+                // Strict traces first so a fallback can cover a primary trace
+                // gap; traces missing everywhere degrade to empty via the
                 // lenient pass.
                 match executor
                     .execute(|reader| fetch_native_block(reader, block_number, true))
@@ -174,12 +145,9 @@ impl ChainDataIngestSource for ArchiverChainDataSource {
                     .execute(|reader| reader.get_latest(LatestKind::Uploaded))
                     .await
             }
-            // The primary's `latest` marker is AUTHORITATIVE in external mode:
-            // readers resolve published locators against `[store.archive]`
-            // (operationally the primary bucket), so following a fallback's
-            // marker would publish rows the readers' bucket does not hold.
-            // Fetch failover below the primary tip stays; a dead primary
-            // stalls tip ADVANCE, which is the safe direction.
+            // The primary's `latest` marker is authoritative in external mode:
+            // readers resolve locators against the primary bucket, so a dead
+            // primary stalls tip advance (the safe direction).
             SourceMode::External(executor) => {
                 executor.primary.get_latest(LatestKind::Uploaded).await
             }
@@ -218,11 +186,9 @@ impl ChainDataIngestSource for ArchiverChainDataSource {
     }
 }
 
-/// Native-mode fetch: the three per-block objects fetched concurrently from
-/// one reader. Any one failing fails the attempt. `strict_traces` makes an
-/// ABSENT traces object an error too, so the failover executor consults the
-/// fallback before the block is indexed with zero traces forever (chain-data
-/// has no re-ingest); the lenient pass restores the historic tolerance.
+/// Native-mode fetch from one reader. `strict_traces` makes an absent traces
+/// object an error so failover consults the fallback before a block is
+/// indexed with zero traces forever (chain-data has no re-ingest).
 async fn fetch_native_block(
     reader: &BlockDataReaderErased,
     block_number: u64,
@@ -244,10 +210,9 @@ async fn fetch_native_block(
     into_finalized_block(block, receipts, traces)
 }
 
-/// External-mode fetch: raw objects (offset scan needs the exact stored
-/// bytes), then the same decode path as native plus the attached spec.
-/// Per-block scan failures are hard errors — a wrong locator would serve
-/// another tx's bytes.
+/// External-mode fetch: raw objects (the offset scan needs the exact stored
+/// bytes) plus the attached spec. Scan failures are hard errors — a wrong
+/// locator would serve another tx's bytes.
 async fn fetch_external_block(
     archive: &BlockDataArchive,
     block_number: u64,
@@ -268,11 +233,8 @@ async fn fetch_external_block(
     let offsets = scan_archive_object_offsets(&block_raw, &receipts_raw, &traces_raw)
         .wrap_err_with(|| format!("block {block_number}: archive offset scan failed"))?;
 
-    let block = BlockStorageRepr::decode_and_convert(&block_raw)
-        .await
-        .wrap_err("Failed to decode block")?;
-    let receipts = ReceiptStorageRepr::decode_and_convert(&receipts_raw)
-        .wrap_err("Failed to decode receipts")?;
+    let block = decode_stored_block(&block_raw).wrap_err("Failed to decode block")?;
+    let receipts = decode_stored_receipts(&receipts_raw).wrap_err("Failed to decode receipts")?;
     let traces: BlockTraces =
         Vec::decode(&mut traces_raw.as_ref()).wrap_err("Failed to decode traces")?;
 
@@ -288,11 +250,9 @@ async fn fetch_external_block(
     Ok(finalized)
 }
 
-/// Per-tx RLP item ranges of the three RAW archive objects, absolute within
-/// each stored object (the scanner works on the sentinel-stripped list
-/// payloads; the prefixes are added back here). Pre-sender (V0) framings are
-/// rejected: their tx/receipt items decode to different types than the
-/// external mirrors expect.
+/// Per-tx RLP item ranges of the three raw archive objects, absolute within
+/// each stored object. Pre-sender (V0) framings are rejected: their items
+/// decode to different types than the external mirrors expect.
 pub fn scan_archive_object_offsets(
     block_raw: &[u8],
     receipts_raw: &[u8],
@@ -346,10 +306,41 @@ fn receipts_items_offset(receipts_raw: &[u8]) -> Result<usize> {
     }
 }
 
+// Mirror of monad-archive's private `BlockStorageRepr::decode_and_convert` for
+// the versions external indexing accepts (V1/V2; V0/legacy are rejected
+// upstream by `block_items_offset`). Must stay in sync with that repr.
+fn decode_stored_block(buf: &[u8]) -> Result<Block> {
+    match buf {
+        // V1 predates mandatory withdrawals: a missing list normalizes to empty.
+        [55, 1, ..] => {
+            let mut block = Block::decode(&mut &buf[2..])?;
+            if block.body.withdrawals.is_none() {
+                block.body.withdrawals = Some(alloy_eips::eip4895::Withdrawals::default());
+            }
+            Ok(block)
+        }
+        // V2 is stored verbatim.
+        [55, 2, ..] => Ok(Block::decode(&mut &buf[2..])?),
+        _ => bail!("unsupported archive block framing for external indexing"),
+    }
+}
+
+// Mirror of monad-archive's private `ReceiptStorageRepr::decode_and_convert`
+// for the versions external indexing accepts (V1 plus the bare-empty-list
+// framing). Must stay in sync with that repr.
+fn decode_stored_receipts(buf: &[u8]) -> Result<BlockReceipts> {
+    if buf == [alloy_rlp::EMPTY_LIST_CODE] {
+        return Ok(vec![]);
+    }
+    match buf {
+        [88, 1, ..] => Ok(BlockReceipts::decode(&mut &buf[2..])?),
+        _ => bail!("unsupported archive receipts framing for external indexing"),
+    }
+}
+
 /// Builds the per-block [`ExternalPayloadSpec`] from the scanned item ranges
-/// and the decoded block: container partitions per family, cumulative row
-/// manifests (logs per receipt, DFS frames per tx), and the per-tx status
-/// bitvec. chain-data re-validates all of it against the block at ingest.
+/// and the decoded block; chain-data re-validates it against the block at
+/// ingest.
 fn build_external_spec(
     block_number: u64,
     (block_key, receipts_key, traces_key): (&str, &str, &str),
@@ -395,10 +386,9 @@ fn build_external_spec(
     })
 }
 
-/// One family's region: asserts the scanned item ranges are CONTIGUOUS
-/// (each item's end is the next item's start — they partition the list
-/// payload) and collapses them into the base-relative offset partition,
-/// guarding the u32 offset space.
+/// One family's region: asserts the scanned item ranges partition the list
+/// payload contiguously and collapses them into the base-relative offset
+/// partition, guarding the u32 offset space.
 fn family_region<'a>(
     key: &str,
     ranges: impl Iterator<Item = &'a RangeRlp>,
@@ -600,7 +590,7 @@ mod tests {
         }
     }
 
-    fn encoded_objects(tx_count: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>, Block, BlockReceipts) {
+    async fn encoded_objects(tx_count: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>, Block, BlockReceipts) {
         let txs: Vec<TxEnvelopeWithSender> = (0..tx_count as u64).map(signed_tx).collect();
         let block = Block {
             header: Header {
@@ -629,21 +619,42 @@ mod tests {
             })
             .collect();
 
-        let block_raw = BlockStorageRepr::V1(block.clone()).encode().unwrap();
-        let receipts_raw = ReceiptStorageRepr::V1(receipts.clone()).encode().unwrap();
+        // Produce the RAW stored bytes through the archive's public write path
+        // so fixtures match production framing without touching private reprs.
+        let archive = BlockDataArchive::new(MemoryStorage::new("encoded-objects"));
+        archive
+            .archive_block(block.clone(), WritePolicy::NoClobber)
+            .await
+            .unwrap();
+        archive
+            .archive_receipts(receipts.clone(), 7, WritePolicy::NoClobber)
+            .await
+            .unwrap();
+        let block_raw = archive
+            .store
+            .get(&archive.block_key(7))
+            .await
+            .unwrap()
+            .unwrap()
+            .to_vec();
+        let receipts_raw = archive
+            .store
+            .get(&archive.receipts_key(7))
+            .await
+            .unwrap()
+            .unwrap()
+            .to_vec();
         let mut traces_raw = Vec::new();
         traces.encode(&mut traces_raw);
         (block_raw, receipts_raw, traces_raw, block, receipts)
     }
 
-    /// The contiguity + decodability contract `family_region` relies on:
-    /// scanned item ranges (made absolute within the RAW objects, sentinel
-    /// prefix included) partition each list payload with no gaps, and slicing
-    /// the raw object at each range yields exactly one decodable item,
-    /// byte-identical to encoding that item alone.
-    #[test]
-    fn scanned_offsets_are_contiguous_and_slice_to_decodable_items() {
-        let (block_raw, receipts_raw, traces_raw, block, receipts) = encoded_objects(3);
+    /// The contract `family_region` relies on: scanned ranges partition each
+    /// list payload with no gaps, and slicing the raw object at each range
+    /// yields exactly one decodable item, byte-identical to a lone encode.
+    #[tokio::test]
+    async fn scanned_offsets_are_contiguous_and_slice_to_decodable_items() {
+        let (block_raw, receipts_raw, traces_raw, block, receipts) = encoded_objects(3).await;
         let offsets = scan_archive_object_offsets(&block_raw, &receipts_raw, &traces_raw).unwrap();
         assert_eq!(offsets.len(), 3);
 
@@ -685,14 +696,14 @@ mod tests {
         }
     }
 
-    #[test]
-    fn empty_block_scans_to_zero_items() {
-        let (block_raw, receipts_raw, traces_raw, ..) = encoded_objects(0);
+    #[tokio::test]
+    async fn empty_block_scans_to_zero_items() {
+        let (block_raw, receipts_raw, traces_raw, ..) = encoded_objects(0).await;
         let offsets = scan_archive_object_offsets(&block_raw, &receipts_raw, &traces_raw).unwrap();
         assert!(offsets.is_empty());
     }
 
-    use crate::kvstore::{memory::MemoryStorage, WritePolicy};
+    use monad_archive::kvstore::{memory::MemoryStorage, WritePolicy};
 
     /// An archive holding one `tx_count`-tx block `number` (per-tx trace
     /// containers that decode to zero frames) with the uploaded marker at
@@ -888,9 +899,9 @@ mod tests {
         assert!(source.get_latest_uploaded().await.is_err());
     }
 
-    #[test]
-    fn v0_objects_are_rejected() {
-        let (block_raw, receipts_raw, traces_raw, ..) = encoded_objects(1);
+    #[tokio::test]
+    async fn v0_objects_are_rejected() {
+        let (block_raw, receipts_raw, traces_raw, ..) = encoded_objects(1).await;
         let mut v0_block = block_raw.clone();
         v0_block[1] = 0;
         assert!(scan_archive_object_offsets(&v0_block, &receipts_raw, &traces_raw).is_err());

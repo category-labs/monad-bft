@@ -92,9 +92,7 @@ fn limit_data(max_limit: usize, max_block_range: u64) -> Option<Box<RawValue>> {
 /// backend) is an internal error.
 pub(super) fn chain_data_error(e: QueryError) -> JsonRpcError {
     match e {
-        QueryError::InvalidRequest(message) => {
-            JsonRpcError::filter_error(message.to_string())
-        }
+        QueryError::InvalidRequest(message) => JsonRpcError::filter_error(message.to_string()),
         e @ QueryError::LimitExceeded {
             max_limit,
             max_block_range,
@@ -358,7 +356,10 @@ mod tests {
             let request: QueryRequestWire<LogFilterWire> =
                 parse_query_request(p).expect("all-defaults parse");
             let envelope = request.envelope().expect("envelope");
-            assert_eq!(envelope, monad_query_primitives::limits::QueryEnvelope::default());
+            assert_eq!(
+                envelope,
+                monad_query_primitives::limits::QueryEnvelope::default()
+            );
         }
         // Omitted fields fall back per-field (limit keeps the spec default).
         let request = parse_logs_request(r#"[{"fromBlock": "0x3"}]"#).expect("parse");
@@ -476,9 +477,7 @@ mod tests {
 
     #[test]
     fn chain_data_error_mapping() {
-        let invalid = chain_data_error(QueryError::InvalidRequest(
-            "limit must be at least 1",
-        ));
+        let invalid = chain_data_error(QueryError::InvalidRequest("limit must be at least 1"));
         assert_eq!(invalid.code, -32602);
         assert_eq!(invalid.message, "limit must be at least 1");
 

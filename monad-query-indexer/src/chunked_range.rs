@@ -13,15 +13,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! Range math shared by the byte-range read paths of the CHUNKING backends
-//! (Mongo documents, Dynamo items): both split oversized values into
-//! `{key}_chunk_{i}` entries of a fixed per-backend chunk size, with a main
-//! entry carrying the chunk count. A range read fetches only the covering
-//! chunks and slices.
-//!
-//! Range semantics (shared with `monad_query_store::BlobStore`'s
-//! `read_range`): the end clamps to EOF; a start strictly past EOF, or past
-//! the end bound, is an error; a missing key is `None` at the caller.
+//! Range math shared by the chunking backends (Mongo, Dynamo): oversized
+//! values split into `{key}_chunk_{i}` entries; a range read fetches only the
+//! covering chunks. The end clamps to EOF; a start strictly past EOF errors.
 
 use std::collections::BTreeMap;
 
@@ -39,11 +33,9 @@ pub(crate) fn slice_range(object: &Bytes, start: usize, end_exclusive: usize) ->
     Ok(object.slice(start..end_exclusive.min(object.len())))
 }
 
-/// Chunk indices that must be fetched to serve `[start, end_exclusive)` of a
-/// `chunk_count`-chunk object, or `None` when the range is satisfiable as
-/// empty without any fetch. When `start` lands at/after the last chunk's
-/// nominal offset the last chunk is always included, so the assembler can
-/// learn the object's total length for its EOF check.
+/// Chunk indices needed to serve `[start, end_exclusive)`, or `None` for an
+/// empty no-fetch read. A start at/past the last chunk's nominal offset still
+/// includes the last chunk so the assembler can run its EOF check.
 pub(crate) fn covering_chunks(
     start: usize,
     end_exclusive: usize,
@@ -67,10 +59,9 @@ pub(crate) fn covering_chunks(
     Ok(Some(first_wanted.min(last)..=last_wanted.min(last)))
 }
 
-/// Concatenates `[start, end_exclusive)` from the fetched covering chunks.
-/// Every non-last chunk must be exactly `chunk_size` bytes (the writers'
-/// invariant); the last chunk's length defines the object's total length for
-/// EOF clamping and the past-EOF start check.
+/// Concatenates `[start, end_exclusive)` from the fetched covering chunks;
+/// non-last chunks must be exactly `chunk_size` (the writers' invariant) and
+/// the last chunk's length defines the total for the EOF checks.
 pub(crate) fn assemble_chunked_range(
     fetched: &BTreeMap<usize, Bytes>,
     chunk_count: usize,

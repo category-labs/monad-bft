@@ -34,10 +34,10 @@ use monad_archive::{
     model::{BlockDataReader, TxIndexedData},
     prelude::{ArchiveReader, Context, ContextCompat, IndexReader},
 };
-use monad_query_config::ConfiguredChainDataReader;
 use monad_eth_types::{
     BlockHeader, ReceiptWithLogIndex, TransactionLocation, TxEnvelopeWithSender,
 };
+use monad_query_config::ConfiguredChainDataReader;
 use monad_triedb_utils::triedb_env::{BlockKey, FinalizedBlockKey, ProposedBlockKey, Triedb};
 use monad_types::{BlockId, Hash, SeqNum};
 use tracing::{debug, error, trace, warn};

@@ -5029,14 +5029,6 @@ dependencies = [
  "monad-compress",
  "monad-eth-testutil",
  "monad-eth-types",
- "monad-query-config",
- "monad-query-engine",
- "monad-query-errors",
- "monad-query-primitives",
- "monad-query-read",
- "monad-query-testkit",
- "monad-query-types",
- "monad-query-write",
  "monad-triedb-utils",
  "monad-types",
  "mongodb",
@@ -6047,6 +6039,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-query-indexer"
+version = "0.1.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-primitives",
+ "alloy-rlp",
+ "aws-config",
+ "aws-sdk-dynamodb",
+ "aws-sdk-s3",
+ "bytes",
+ "clap",
+ "eyre",
+ "futures",
+ "monad-archive",
+ "monad-eth-testutil",
+ "monad-eth-types",
+ "monad-query-config",
+ "monad-query-engine",
+ "monad-query-errors",
+ "monad-query-primitives",
+ "monad-query-read",
+ "monad-query-testkit",
+ "monad-query-types",
+ "monad-query-write",
+ "mongodb",
+ "rand 0.8.5",
+ "serde",
+ "tokio",
+ "toml",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "monad-query-primitives"
 version = "0.1.0"
 dependencies = [
@@ -6343,6 +6369,7 @@ dependencies = [
  "monad-pprof",
  "monad-query-config",
  "monad-query-errors",
+ "monad-query-indexer",
  "monad-query-primitives",
  "monad-query-read",
  "monad-query-testkit",
