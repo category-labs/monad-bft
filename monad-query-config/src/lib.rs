@@ -381,7 +381,7 @@ impl ChainDataArchiveS3Config {
 }
 
 /// Resolves the external archive reader: an injected reader (built by the
-/// embedding binary — monad-archive owns the mongo/dynamo archive formats
+/// embedding binary — monad-query-indexer owns the mongo/dynamo archive formats
 /// and provides `build_archive_external_reader`) takes precedence; otherwise
 /// the S3 backend, whose objects have no archive-owned byte format, is built
 /// here from config. Mongo/dynamo archive configs WITHOUT an injected reader
@@ -429,14 +429,14 @@ pub(crate) async fn build_external_payload_reader(
         }
         #[cfg(feature = "mongo")]
         Some(ChainDataArchiveBackendConfig::Mongo(_)) => bail!(
-            "the mongo archive format is owned by monad-archive: build the reader with \
-             monad_archive::chain_data_external::build_archive_external_reader and pass \
+            "the mongo archive format is owned by monad-query-indexer: build the reader with \
+             monad_query_indexer::chain_data_external::build_archive_external_reader and pass \
              it to the chain-data entry point"
         ),
         #[cfg(feature = "dynamo")]
         Some(ChainDataArchiveBackendConfig::Dynamo(_)) => bail!(
-            "the dynamo archive format is owned by monad-archive: build the reader with \
-             monad_archive::chain_data_external::build_archive_external_reader and pass \
+            "the dynamo archive format is owned by monad-query-indexer: build the reader with \
+             monad_query_indexer::chain_data_external::build_archive_external_reader and pass \
              it to the chain-data entry point"
         ),
         #[cfg(not(any(feature = "s3", feature = "mongo", feature = "dynamo")))]

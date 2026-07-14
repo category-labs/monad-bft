@@ -26,6 +26,7 @@ monad-archive = { workspace = true }
 monad-chain-config = { workspace = true }
 monad-query-config = { workspace = true, features = ["s3", "dynamo"] }
 monad-query-errors = { workspace = true }
+monad-query-indexer = { workspace = true }
 monad-query-primitives = { workspace = true }
 monad-query-read = { workspace = true }
 # `alloy-rpc-types-eth` enables `TxEntry::to_rpc_transaction`, the standard

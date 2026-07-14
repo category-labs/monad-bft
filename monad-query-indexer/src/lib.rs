@@ -13,17 +13,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-#![allow(async_fn_in_trait, clippy::too_many_arguments)]
+//! Bridges monad-archive and the queryX chain-data engine: an ingest source
+//! over archive block data, external-payload readers for archive-format
+//! storage, and the standalone ingest binary.
 
-pub mod archive_reader;
-pub mod aws_cli;
-pub mod cli;
-pub mod failover_circuit_breaker;
-pub mod kvstore;
+pub mod archive_range_read;
+pub mod chain_data_external;
+pub mod chain_data_ingest;
+pub mod chain_data_source;
+pub(crate) mod chunked_range;
 pub mod metrics;
-pub mod model;
-pub mod prelude;
-pub mod rlp_offset_scanner;
-
-// not excluded via cfg(test) to enable import by binaries
-pub mod test_utils;
