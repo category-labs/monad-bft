@@ -173,7 +173,7 @@ const MONAD_DEVNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     v_0_8_0_activation: Round::MIN,
     v_0_10_0_activation: Round::MIN,
     v_0_11_0_activation: Round::MIN,
-    v_0_12_0_activation: Round::MAX,
+    v_0_12_0_activation: Round::MIN,
 
     staking_config: MONAD_DEVNET_STAKING_CONFIG,
 
@@ -210,7 +210,7 @@ const MONAD_MAINNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     v_0_8_0_activation: Round::MIN,
     v_0_10_0_activation: Round(15_643_179), // 2025-08-13T13:30:00.000Z
     v_0_11_0_activation: Round(33_493_399), // Approx 2025-11-04T14:00:00.000Z
-    v_0_12_0_activation: Round::MAX,
+    v_0_12_0_activation: Round(89_758_000), // Approx 2026-07-23T14:30:00.000Z
 
     staking_config: MONAD_MAINNET_STAKING_CONFIG,
 
