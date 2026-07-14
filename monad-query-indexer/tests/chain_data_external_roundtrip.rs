@@ -31,7 +31,6 @@ use alloy_primitives::{
 };
 use alloy_rlp::Encodable;
 use monad_archive::{
-    chain_data_source::ArchiverChainDataSource,
     kvstore::{memory::MemoryStorage, WritePolicy},
     model::{
         block_data_archive::{Block, BlockDataArchive, CallFrame, CallKind},
@@ -39,8 +38,12 @@ use monad_archive::{
     },
     prelude::{KVReader, LatestKind},
 };
+use monad_eth_types::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 use monad_query_engine::family::BLOCK_BLOB_TABLE;
-use monad_query_primitives::{limits::QueryEnvelope, order::QueryOrder, InMemoryExternalBlobReader};
+use monad_query_indexer::chain_data_source::ArchiverChainDataSource;
+use monad_query_primitives::{
+    limits::QueryEnvelope, order::QueryOrder, InMemoryExternalBlobReader,
+};
 use monad_query_read::{
     api::MonadChainDataService,
     logs::{LogFilter, QueryLogsRequest},
@@ -51,7 +54,6 @@ use monad_query_read::{
 use monad_query_testkit::{populate_via_engine, populate_via_engine_external};
 use monad_query_types::ingest_types::FinalizedBlock;
 use monad_query_write::source::ChainDataIngestSource;
-use monad_eth_types::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 
 const SENDER_A: Address = Address::repeat_byte(0xa1);
 const SENDER_B: Address = Address::repeat_byte(0xb2);

@@ -94,8 +94,7 @@ impl BlockDataReader for BlockDataArchive {
             .map(Some)
     }
 
-    #[doc = "Get a block by its number, or return None if not found"]
-    async fn try_get_block_by_hash(&self, block_hash: &BlockHash) -> Result<Option<Block>> {
+    async fn try_get_block_number_by_hash(&self, block_hash: &BlockHash) -> Result<Option<u64>> {
         let block_hash_key_suffix = hex::encode(block_hash);
         let block_hash_key = format!("{}/{}", self.block_hash_table_prefix, block_hash_key_suffix);
 
@@ -111,9 +110,21 @@ impl BlockDataReader for BlockDataArchive {
         let block_num_str =
             String::from_utf8(block_num_bytes.to_vec()).wrap_err("Invalid UTF-8 sequence")?;
 
-        let block_num = block_num_str.parse::<u64>().wrap_err_with(|| {
-            format!("Unable to convert block_number string to number (u64), value: {block_num_str}")
-        })?;
+        block_num_str
+            .parse::<u64>()
+            .wrap_err_with(|| {
+                format!(
+                    "Unable to convert block_number string to number (u64), value: {block_num_str}"
+                )
+            })
+            .map(Some)
+    }
+
+    #[doc = "Get a block by its hash, or return None if not found"]
+    async fn try_get_block_by_hash(&self, block_hash: &BlockHash) -> Result<Option<Block>> {
+        let Some(block_num) = self.try_get_block_number_by_hash(block_hash).await? else {
+            return Ok(None);
+        };
 
         self.try_get_block_by_number(block_num).await
     }

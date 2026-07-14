@@ -26,22 +26,10 @@ name = "monad-indexer"
 bench = false
 
 [features]
-default = ["chain-data-ingest"]
+default = []
 mongodb-integration-tests = []
-chain-data-ingest = [
-    "dep:monad-query-config",
-    "dep:monad-query-errors",
-    "dep:monad-query-primitives",
-    "dep:monad-query-types",
-    "dep:monad-query-write",
-]
 
 [dependencies]
-monad-query-config = { workspace = true, features = ["s3", "dynamo", "mongo"], optional = true }
-monad-query-errors = { workspace = true, optional = true }
-monad-query-primitives = { workspace = true, optional = true }
-monad-query-types = { workspace = true, optional = true }
-monad-query-write = { workspace = true, optional = true }
 monad-compress = { workspace = true }
 monad-eth-types = { workspace = true }
 monad-triedb-utils = { workspace = true }
@@ -60,7 +48,7 @@ aws-sdk-s3 = { workspace = true }
 base64 = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
-clap = { workspace = true, features = ["derive", "env"] }
+clap = { workspace = true, features = ["derive"] }
 dashmap = { workspace = true }
 enum_dispatch = { workspace = true }
 eyre = { workspace = true }
@@ -71,20 +59,13 @@ opentelemetry = { workspace = true }
 opentelemetry-otlp = { workspace = true, features = ["metrics", "grpc-tonic"] }
 opentelemetry-semantic-conventions = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
-rand = { workspace = true }
 rayon = { workspace = true }
 regex = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tempfile.workspace = true
-tokio = { workspace = true, features = [
-    "fs",
-    "macros",
-    "net",
-    "rt-multi-thread",
-    "sync",
-] }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["fs", "macros", "net", "rt-multi-thread", "sync"] }
 tokio-retry = { workspace = true }
 toml = { workspace = true }
 tracing = { workspace = true, features = ["log"] }
@@ -93,6 +74,5 @@ url = { workspace = true }
 
 [dev-dependencies]
 monad-eth-testutil = { workspace = true }
-monad-query-engine = { workspace = true }
-monad-query-read = { workspace = true }
-monad-query-testkit = { workspace = true }
+
+rand = { workspace = true }

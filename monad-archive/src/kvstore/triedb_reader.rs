@@ -50,6 +50,16 @@ impl BlockDataReader for TriedbReader {
         Ok(Some(seq_num.0))
     }
 
+    async fn get_block_number_by_hash(&self, block_hash: &BlockHash) -> Result<u64> {
+        let latest_finalized_block = self.db.get_latest_finalized_block_key();
+
+        self.db
+            .get_block_number_by_hash(BlockKey::Finalized(latest_finalized_block), block_hash.0)
+            .await
+            .map_err(|e| eyre!("{e:?}"))?
+            .ok_or_eyre("Block number for hash not found in triedb")
+    }
+
     async fn get_block_by_number(&self, block_num: u64) -> Result<Block> {
         let header = self
             .db
@@ -93,13 +103,8 @@ impl BlockDataReader for TriedbReader {
     }
 
     async fn get_block_by_hash(&self, block_hash: &BlockHash) -> Result<Block> {
-        let latest_finalized_block = self.db.get_latest_finalized_block_key();
-        let block_num = self
-            .db
-            .get_block_number_by_hash(BlockKey::Finalized(latest_finalized_block), block_hash.0)
-            .await
-            .map_err(|e| eyre!("{e:?}"))?
-            .ok_or_eyre("Block number for hash not found in triedb")?;
+        let block_num = self.get_block_number_by_hash(block_hash).await?;
+
         self.get_block_by_number(block_num).await
     }
 
@@ -118,6 +123,11 @@ impl BlockDataReader for TriedbReader {
             // do sectional reads from that store
             offsets: None,
         })
+    }
+
+    #[doc = " Get a block number by its hash, or return None if not found"]
+    async fn try_get_block_number_by_hash(&self, block_hash: &BlockHash) -> Result<Option<u64>> {
+        self.get_block_number_by_hash(block_hash).await.map(Some)
     }
 
     #[doc = " Get a block by its number, or return None if not found"]

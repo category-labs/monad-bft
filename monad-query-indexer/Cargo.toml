@@ -1,0 +1,45 @@
+[package]
+name = "monad-query-indexer"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+bench = false
+
+[[bin]]
+name = "monad-query-indexer"
+path = "src/main.rs"
+bench = false
+
+[dependencies]
+monad-archive = { workspace = true }
+monad-eth-types = { workspace = true }
+monad-query-config = { workspace = true, features = ["s3", "dynamo", "mongo"] }
+monad-query-errors = { workspace = true }
+monad-query-primitives = { workspace = true }
+monad-query-types = { workspace = true }
+monad-query-write = { workspace = true }
+
+alloy-consensus = { workspace = true }
+alloy-eips = { workspace = true }
+alloy-primitives = { workspace = true, features = ["rlp"] }
+alloy-rlp = { workspace = true }
+aws-config = { workspace = true }
+aws-sdk-dynamodb = { workspace = true }
+aws-sdk-s3 = { workspace = true }
+bytes = { workspace = true }
+clap = { workspace = true, features = ["derive", "env"] }
+eyre = { workspace = true }
+futures = { workspace = true }
+mongodb = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
+toml = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+monad-eth-testutil = { workspace = true }
+monad-query-engine = { workspace = true }
+monad-query-read = { workspace = true }
+monad-query-testkit = { workspace = true }

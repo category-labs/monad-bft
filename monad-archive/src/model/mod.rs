@@ -41,6 +41,16 @@ pub trait BlockDataReader: Clone {
     /// Get the latest block number for the given type (uploaded or indexed)
     async fn get_latest(&self, latest_kind: LatestKind) -> Result<Option<u64>>;
 
+    /// Get a block number by its hash, or return None if not found
+    async fn try_get_block_number_by_hash(&self, block_hash: &BlockHash) -> Result<Option<u64>>;
+
+    /// Get a block number by its hash
+    async fn get_block_number_by_hash(&self, block_hash: &BlockHash) -> Result<u64> {
+        self.try_get_block_number_by_hash(block_hash)
+            .await
+            .and_then(|opt| opt.ok_or_eyre("Block hash not found"))
+    }
+
     /// Get a block by its hash, or return None if not found
     async fn try_get_block_by_hash(&self, block_hash: &BlockHash) -> Result<Option<Block>>;
 

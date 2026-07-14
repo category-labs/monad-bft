@@ -24,13 +24,6 @@ jemallocator = ["tikv-jemallocator", "monad-pprof/jemallocator"]
 [dependencies]
 monad-archive = { workspace = true }
 monad-chain-config = { workspace = true }
-monad-query-config = { workspace = true, features = ["s3", "dynamo"] }
-monad-query-errors = { workspace = true }
-monad-query-primitives = { workspace = true }
-monad-query-read = { workspace = true }
-# `alloy-rpc-types-eth` enables `TxEntry::to_rpc_transaction`, the standard
-# RPC transaction shape the queryX `transactions` objects serialize as.
-monad-query-types = { workspace = true, features = ["alloy-rpc-types-eth"] }
 monad-eth-txpool-ipc = { workspace = true }
 monad-eth-txpool-types = { workspace = true }
 monad-eth-types = { workspace = true }
@@ -39,6 +32,14 @@ monad-event-ring = { workspace = true }
 monad-exec-events = { workspace = true, features = ["alloy"] }
 monad-node-config = { workspace = true, features = ["crypto"] }
 monad-pprof = { workspace = true }
+monad-query-config = { workspace = true, features = ["s3", "dynamo"] }
+monad-query-errors = { workspace = true }
+monad-query-indexer = { workspace = true }
+monad-query-primitives = { workspace = true }
+monad-query-read = { workspace = true }
+# `alloy-rpc-types-eth` enables `TxEntry::to_rpc_transaction`, the standard
+# RPC transaction shape the queryX `transactions` objects serialize as.
+monad-query-types = { workspace = true, features = ["alloy-rpc-types-eth"] }
 monad-rpc-docs = { workspace = true }
 monad-tracing-timing = { workspace = true }
 monad-triedb-utils = { workspace = true }
