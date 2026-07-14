@@ -18,7 +18,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use eyre::{Result, WrapErr};
+use eyre::Result;
 use tracing::{debug, info, warn};
 
 /// A circuit breaker that tracks failures and manages failover behavior
@@ -228,11 +228,8 @@ impl<P> FallbackExecutor<P> {
                 debug!(?e, "Primary source failed, recording failure");
                 self.circuit_breaker.record_failure();
 
-                // Try fallback; a double failure surfaces BOTH causes (the
-                // primary's root cause would otherwise be debug!-only).
-                f(fallback)
-                    .await
-                    .wrap_err_with(|| format!("fallback after primary failure: {e:#}"))
+                // Try fallback
+                f(fallback).await
             }
         }
     }

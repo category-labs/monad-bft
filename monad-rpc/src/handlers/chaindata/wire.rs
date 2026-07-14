@@ -27,8 +27,7 @@ use std::{
 };
 
 use alloy_eips::BlockNumberOrTag;
-use alloy_primitives::{FixedBytes, U256, U64};
-use alloy_primitives::{Address, Bytes, B256};
+use alloy_primitives::{Address, Bytes, FixedBytes, B256, U256, U64};
 use monad_query_primitives::{
     limits::QueryEnvelope,
     order::QueryOrder,

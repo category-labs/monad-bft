@@ -33,29 +33,10 @@ use aws_config::{
 use aws_sdk_s3::config::{Credentials, SharedCredentialsProvider};
 use eyre::bail;
 
-use crate::{
-    cli::{AwsCliArgs, ScyllaCliArgs},
-    prelude::*,
-};
+use crate::{cli::AwsCliArgs, prelude::*};
 
 impl AwsCliArgs {
-    /// SDK config for the block/blob (S3) store, honoring `--endpoint`.
     pub(crate) async fn config(&self) -> Result<SdkConfig> {
-        self.build_config(self.endpoint.as_deref()).await
-    }
-
-    /// SDK config for the index (DynamoDB) store.
-    ///
-    /// Uses `--index-endpoint` when set so the index can target a separate
-    /// DynamoDB-compatible service (e.g. ScyllaDB Alternator) while the bucket
-    /// keeps its own `--endpoint`. Falls back to `--endpoint` so existing
-    /// single-endpoint configurations are unchanged.
-    pub(crate) async fn index_config(&self) -> Result<SdkConfig> {
-        let endpoint = self.index_endpoint.as_deref().or(self.endpoint.as_deref());
-        self.build_config(endpoint).await
-    }
-
-    async fn build_config(&self, endpoint: Option<&str>) -> Result<SdkConfig> {
         self.validate_credentials_config()?;
 
         let mut config = aws_config::defaults(BehaviorVersion::latest());
@@ -84,7 +65,7 @@ impl AwsCliArgs {
             )
             .retry_config(RetryConfig::standard().with_max_attempts(3));
 
-        if let Some(endpoint) = endpoint {
+        if let Some(endpoint) = &self.endpoint {
             config = config.endpoint_url(endpoint);
         }
 
@@ -167,52 +148,6 @@ impl AwsCliArgs {
         }
 
         RegionProviderChain::default_provider().or_else(Region::new("us-east-2"))
-    }
-}
-
-impl ScyllaCliArgs {
-    /// Default region label sent to the SDK. ScyllaDB Alternator ignores the
-    /// region, but the AWS SDK requires one to sign requests.
-    const DEFAULT_REGION: &'static str = "us-east-1";
-
-    /// SDK config whose DynamoDB client targets the Alternator `endpoint`.
-    ///
-    /// Credentials are optional: Alternator accepts any signature unless
-    /// authorization is explicitly enabled, so we fall back to placeholder
-    /// static credentials (the SDK still requires *some* credentials to sign).
-    pub(crate) async fn config(&self) -> Result<SdkConfig> {
-        let region = self
-            .region
-            .clone()
-            .unwrap_or_else(|| Self::DEFAULT_REGION.to_string());
-
-        let access_key_id = self.access_key_id.as_deref().unwrap_or("scylla");
-        let secret_access_key = self.secret_access_key.as_deref().unwrap_or("scylla");
-        let credentials = Credentials::new(
-            access_key_id,
-            secret_access_key,
-            None,
-            None,
-            "scylla-alternator",
-        );
-
-        let config = aws_config::defaults(BehaviorVersion::latest())
-            .region(Region::new(region))
-            .credentials_provider(SharedCredentialsProvider::new(credentials))
-            .endpoint_url(&self.endpoint)
-            .timeout_config(
-                TimeoutConfig::builder()
-                    .operation_timeout(Duration::from_secs(40))
-                    .operation_attempt_timeout(Duration::from_secs(10))
-                    .read_timeout(Duration::from_secs(10))
-                    .build(),
-            )
-            .retry_config(RetryConfig::standard().with_max_attempts(3))
-            .load()
-            .await;
-
-        info!("ScyllaDB Alternator endpoint: {}", self.endpoint);
-        Ok(config)
     }
 }
 
