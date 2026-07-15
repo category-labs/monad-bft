@@ -105,7 +105,7 @@ impl StoredTrace {
             None => Bytes::new(),
         };
         let rlp = StoredTraceRlp {
-            typ_byte: self.typ.as_u8(),
+            typ_byte: self.typ.into(),
             from: self.from,
             to_bytes,
             value: self.value,
@@ -125,8 +125,8 @@ impl StoredTrace {
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         let rlp: StoredTraceRlp = alloy_rlp::decode_exact(bytes)
             .map_err(|_| QueryError::Decode("invalid trace entry rlp"))?;
-        let typ = CallKind::from_u8(rlp.typ_byte)
-            .ok_or(QueryError::Decode("invalid trace call kind byte"))?;
+        let typ = CallKind::try_from(rlp.typ_byte)
+            .map_err(|_| QueryError::Decode("invalid trace call kind byte"))?;
         let to = match rlp.to_bytes.len() {
             0 => None,
             20 => Some(Address::from_slice(&rlp.to_bytes)),

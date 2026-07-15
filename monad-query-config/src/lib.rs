@@ -101,10 +101,13 @@ impl ChainDataQueryConfig {
     #[cfg(any(feature = "dynamo", feature = "mongo"))]
     pub(crate) fn to_runtime(&self) -> QueryRuntimeConfig {
         let defaults = QueryRuntimeConfig::default();
-        let kib_to_bytes =
-            |kib: Option<usize>, default: usize| kib.map(|kib_value| kib_value * 1024).unwrap_or(default);
+        let kib_to_bytes = |kib: Option<usize>, default: usize| {
+            kib.map(|kib_value| kib_value * 1024).unwrap_or(default)
+        };
         QueryRuntimeConfig {
-            blob_io_concurrency: self.blob_io_concurrency.unwrap_or(defaults.blob_io_concurrency),
+            blob_io_concurrency: self
+                .blob_io_concurrency
+                .unwrap_or(defaults.blob_io_concurrency),
             materialize_concurrency: self
                 .materialize_concurrency
                 .unwrap_or(defaults.materialize_concurrency),
@@ -799,20 +802,22 @@ pub(crate) async fn build_dynamo_meta_store(
         .context("validating chain-data Dynamo meta table(s)")?;
     // Probe the effective BatchWriteItem limit (Alternator allows >25) with one
     // delete-batch of non-existent keys; fall back to 25 if rejected.
-    let batch_write_limit_candidate = config
-        .batch_write_max_items
-        .unwrap_or(if config.scylla_profile {
-            ALTERNATOR_DEFAULT_BATCH_WRITE_ITEMS
-        } else {
-            DYNAMO_BATCH_WRITE_ITEMS
-        });
+    let batch_write_limit_candidate =
+        config
+            .batch_write_max_items
+            .unwrap_or(if config.scylla_profile {
+                ALTERNATOR_DEFAULT_BATCH_WRITE_ITEMS
+            } else {
+                DYNAMO_BATCH_WRITE_ITEMS
+            });
     let effective_batch_write_limit = store
         .discover_batch_write_limit(batch_write_limit_candidate)
         .await
         .context("probing dynamo BatchWriteItem item limit")?;
     info!(
         candidate = batch_write_limit_candidate,
-        effective = effective_batch_write_limit, "resolved dynamo BatchWriteItem item limit"
+        effective = effective_batch_write_limit,
+        "resolved dynamo BatchWriteItem item limit"
     );
     Ok(store)
 }
