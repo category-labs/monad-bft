@@ -15,13 +15,14 @@
 
 use std::sync::Arc;
 
+use bytes::Bytes;
 use itertools::Either;
 
 use super::fallback::{FallbackPath, MVBAInputs};
 use crate::types::{
     DAHandle, EquivCert, FetchProposalError, IsVote, KeyPair, MerkleRoot, NodeId, ProposalIndex,
     ProposalMap, ProposalMeta, Signature, Slot, StrongQc, TotalProposalMap, ValidatorData, VoteMsg,
-    VotePool, WeakQc,
+    VotePool, WeakQc, dummy_serialize,
 };
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
@@ -360,6 +361,10 @@ pub(crate) enum Entry {
 
 impl IsVote for Entry {
     type Scope = (Slot, ProposalIndex);
+
+    fn serialize(&self, scope: &Self::Scope) -> Bytes {
+        dummy_serialize(self, scope)
+    }
 }
 
 pub(crate) type FastQc = StrongQc<Entry>;
@@ -407,6 +412,10 @@ impl From<&FastBlock> for FastCommitVote {
 
 impl IsVote for FastCommitVote {
     type Scope = Slot;
+
+    fn serialize(&self, scope: &Self::Scope) -> Bytes {
+        dummy_serialize(self, scope)
+    }
 }
 
 pub(crate) type FastCommitQc = StrongQc<FastCommitVote>;
@@ -419,6 +428,10 @@ pub(crate) struct FallbackEntry(pub Entry);
 
 impl IsVote for FallbackEntry {
     type Scope = (Slot, ProposalIndex);
+
+    fn serialize(&self, scope: &Self::Scope) -> Bytes {
+        dummy_serialize(self, scope)
+    }
 }
 
 pub(crate) type FallbackQc = WeakQc<FallbackEntry>;
@@ -470,7 +483,7 @@ impl CertifiedEntry {
             CertifiedEntry::EquivCert(EquivCert(a, b)) => {
                 a.root != b.root
                     && a.opaque_header.validate(&a.root, &a.sig)
-                    && b.opaque_header.validate(&a.root, &a.sig)
+                    && b.opaque_header.validate(&b.root, &b.sig)
             }
         }
     }
@@ -586,6 +599,10 @@ pub(crate) struct EnterFallbackVote;
 
 impl IsVote for EnterFallbackVote {
     type Scope = Slot;
+
+    fn serialize(&self, scope: &Self::Scope) -> Bytes {
+        dummy_serialize(self, scope)
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]

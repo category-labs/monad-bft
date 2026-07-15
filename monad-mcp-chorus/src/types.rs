@@ -19,7 +19,14 @@ use std::{
     ops::Add,
 };
 
+use bytes::Bytes;
 use itertools::Either;
+
+use crate::crypto::SignatureCollection as _;
+// TODO: guard this behind a feature
+pub use crate::crypto::test_helper::{KeyPair, NodeId, PubKey, Signature, SignatureCollection};
+// import the traits
+pub use crate::crypto::{KeyPair as _, Signature as _};
 
 // slot number. starting from 0.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -41,9 +48,6 @@ impl Add<u64> for Slot {
         Slot(self.0 + rhs)
     }
 }
-
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct NodeId(pub u64);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct MerkleRoot(pub u64);
@@ -106,13 +110,6 @@ impl TimestampDelta {
 
 pub type SlotDeadline = Timestamp;
 
-pub struct KeyPair;
-pub struct PubKey;
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct Signature;
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct SignatureCollection;
-
 // not the same as vote signature. at least ProposalSignature is not
 // supposed to be aggregatable.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -123,7 +120,8 @@ pub struct OpaqueChunkHeader;
 
 impl OpaqueChunkHeader {
     pub fn validate(&self, _root: &MerkleRoot, _sig: &ProposalSignature) -> bool {
-        todo!()
+        // stubbed to always return true for testing purpose
+        true
     }
 }
 
@@ -176,7 +174,14 @@ impl<T> Validated<T> {
 
 pub trait IsVote: Clone + Hash + Eq {
     type Scope: Clone + Hash + Eq + std::fmt::Debug;
+
     // type SigningDomain;
+    fn serialize(&self, scope: &Self::Scope) -> Bytes;
+}
+
+// placeholder serialization until we decide on real wire format
+pub(crate) fn dummy_serialize(vote: &impl std::fmt::Debug, scope: &impl std::fmt::Debug) -> Bytes {
+    Bytes::from(format!("{scope:?}/{vote:?}"))
 }
 
 #[derive(Clone)]
@@ -215,7 +220,7 @@ where
         self.votes.insert(node_id, (msg.vote, msg.signature));
     }
 
-    fn scope(&self) -> &<V as IsVote>::Scope {
+    pub fn scope(&self) -> &<V as IsVote>::Scope {
         &self.scope
     }
 
@@ -223,9 +228,24 @@ where
         self.votes.keys()
     }
 
-    // todo: make it fallible
-    pub fn try_form_strong_qc(&self, _validator_data: &ValidatorData) -> Option<StrongQc<V>> {
-        todo!()
+    pub fn try_form_strong_qc(&self, validator_data: &ValidatorData) -> Option<StrongQc<V>> {
+        let (vote, voters) = self.buckets.iter().find(|(_vote, voters)| {
+            let stake = validator_data.sum_stake(voters.iter());
+            validator_data.is_supermajority(stake)
+        })?;
+
+        let data = vote.serialize(&self.scope);
+        let votes = voters.iter().map(|node_id| {
+            let (_vote, sig) = &self.votes[node_id];
+            sig
+        });
+        let sigcol = SignatureCollection::aggregate(&data, votes)?;
+        let qc = StrongQc {
+            scope: self.scope.clone(),
+            verdict: vote.clone(),
+            sigcol,
+        };
+        Some(qc)
     }
 
     // todo: make it fallible
@@ -260,8 +280,10 @@ where
         }
     }
 
-    pub fn new_signed(_scope: <V as IsVote>::Scope, _vote: V, _key: &KeyPair) -> Self {
-        todo!()
+    pub fn new_signed(scope: <V as IsVote>::Scope, vote: V, key: &KeyPair) -> Self {
+        let serialized_vote = vote.serialize(&scope);
+        let sig = key.sign(&serialized_vote);
+        Self::new(scope, vote, sig)
     }
 }
 
@@ -415,7 +437,17 @@ impl<T> std::ops::IndexMut<ProposalIndex> for ProposalMap<T> {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, derive_more::Add, derive_more::Sum)]
+#[derive(
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    derive_more::Add,
+    derive_more::Sum,
+    derive_more::From,
+)]
 pub struct Stake(u64);
 
 impl Stake {
@@ -471,18 +503,32 @@ impl ValidatorData {
         stake > self.total_stake().majority_threshold()
     }
 
-    pub fn verify_strong_qc<V: IsVote>(&self, _qc: &StrongQc<V>) -> bool {
-        todo!()
+    pub fn verify_strong_qc<V: IsVote>(&self, qc: &StrongQc<V>) -> bool {
+        let data = qc.verdict.serialize(&qc.scope);
+        let Some(nodes) = qc.sigcol.verify(&data, &self.mapping) else {
+            return false;
+        };
+
+        let stake = self.sum_stake(nodes.iter());
+        self.is_supermajority(stake)
     }
 
-    pub fn verify_weak_qc<V: IsVote>(&self, _qc: &WeakQc<V>) -> bool {
-        todo!()
+    pub fn verify_weak_qc<V: IsVote>(&self, qc: &WeakQc<V>) -> bool {
+        let data = qc.verdict.serialize(&qc.scope);
+        let Some(nodes) = qc.sigcol.verify(&data, &self.mapping) else {
+            return false;
+        };
+
+        let stake = self.sum_stake(nodes.iter());
+        self.is_majority(stake)
     }
 }
 
 // A helper wrapper type for a type-erased implementation of a trait
 pub struct Erased<T>(pub T);
 
+// A stub implementation of DAHandle that never returns any
+// proposal. used for testing purposes.
 pub struct DAHandle;
 
 // invariant: .0.root != .1.root and both properly signed.
@@ -496,12 +542,12 @@ pub enum FetchProposalError {
 
 impl DAHandle {
     pub fn proposal_decoded(&self, _s: Slot, _j: ProposalIndex, _root: &MerkleRoot) -> bool {
-        todo!()
+        false
     }
 
     /// Info DA about proposals we received through consensus messages (e.g. FallbackSignedEntry)
     pub fn observe_proposal(&self, _s: Slot, _j: ProposalIndex, _meta: ProposalMeta) {
-        todo!()
+        // do nothing
     }
 
     pub fn fetch_proposal(
@@ -518,6 +564,6 @@ impl DAHandle {
         // it as equivocation? Or should we simply ignore that? Our
         // current implementation follows the paper which doesn't
         // currently consider this case as equivocation.
-        todo!()
+        Err(FetchProposalError::Absent)
     }
 }

@@ -49,14 +49,14 @@ fn all_slots_finalize_on_schedule() {
     builder.set_latency(Duration::from_millis(LATENCY));
 
     for i in 0..NODES {
-        add_dummy_node(&mut builder, NodeId(i as u64), NODES);
+        add_dummy_node(&mut builder, NodeId::dummy(i as u64), NODES);
     }
 
     let mut swarm = builder.build();
     swarm.run_until(Timestamp::new(SLOT_INTERVAL * 4 + LATENCY));
 
     for i in 0..NODES {
-        let node_id = NodeId(i as u64);
+        let node_id = NodeId::dummy(i as u64);
 
         expect_finalized_at(
             &swarm,

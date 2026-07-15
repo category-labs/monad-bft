@@ -15,9 +15,11 @@
 
 use std::collections::VecDeque;
 
+use bytes::Bytes;
+
 use crate::{
     slot::{SlotConsensus, SlotOutput},
-    types::{IsVote, NodeId, Slot, VoteMsg, VotePool},
+    types::{IsVote, KeyPair, NodeId, Slot, VoteMsg, VotePool, dummy_serialize},
 };
 
 /// A dummy one-slot, proposal-less algorithm for testing
@@ -42,11 +44,15 @@ impl Default for DummySlotConsensusConfig {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct DummyVote;
 
 impl IsVote for DummyVote {
     type Scope = Slot;
+
+    fn serialize(&self, scope: &Self::Scope) -> Bytes {
+        dummy_serialize(self, scope)
+    }
 }
 
 impl SlotConsensus for DummySlotConsensus {
@@ -68,9 +74,9 @@ impl SlotConsensus for DummySlotConsensus {
     }
 
     fn handle_deadline(&mut self) {
-        // change this to real signing
-        let fake_sig = crate::types::Signature;
-        let vote = VoteMsg::new(self.slot, DummyVote, fake_sig);
+        // dummy signing: no node identity is wired into this consensus
+        let key = KeyPair::dummy(0);
+        let vote = VoteMsg::new_signed(self.slot, DummyVote, &key);
         self.outputs.push_back(SlotOutput::Broadcast(vote));
     }
 
