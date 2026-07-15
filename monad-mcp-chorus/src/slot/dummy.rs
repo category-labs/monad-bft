@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::VecDeque;
+use std::{collections::VecDeque, sync::Arc};
 
 use bytes::Bytes;
 
@@ -27,6 +27,7 @@ use crate::{
 /// 1. On deadline, cast a vote.
 /// 2. On each received vote, finalize the slot once quorum is met.
 pub struct DummySlotConsensus {
+    key: Arc<KeyPair>,
     slot: Slot, // only used as FinalizationData
     outputs: VecDeque<SlotOutput<DummySlotConsensus>>,
     config: DummySlotConsensusConfig,
@@ -57,26 +58,25 @@ impl IsVote for DummyVote {
 
 impl SlotConsensus for DummySlotConsensus {
     type Config = DummySlotConsensusConfig;
-    type Context = ();
+    type Context = Arc<KeyPair>;
 
     type Message = VoteMsg<DummyVote>;
     type Timer = ();
     type OptimisticCommitData = ();
     type FinalizationData = ();
 
-    fn new(slot: Slot, config: &Self::Config, _context: &Self::Context) -> Self {
+    fn new(slot: Slot, config: &Self::Config, key: &Arc<KeyPair>) -> Self {
         Self {
             slot,
             config: config.clone(),
+            key: key.clone(),
             votes: VotePool::new(slot),
             outputs: VecDeque::new(),
         }
     }
 
     fn handle_deadline(&mut self) {
-        // dummy signing: no node identity is wired into this consensus
-        let key = KeyPair::dummy(0);
-        let vote = VoteMsg::new_signed(self.slot, DummyVote, &key);
+        let vote = VoteMsg::new_signed(self.slot, DummyVote, &self.key);
         self.outputs.push_back(SlotOutput::Broadcast(vote));
     }
 
