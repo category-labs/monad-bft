@@ -21,10 +21,10 @@ use monad_query_errors::{QueryError, Result};
 /// Raw object bytes returned by an [`ExternalBlobReader`].
 pub type RawBytes = bytes::Bytes;
 
-/// Read-only byte-range access to the external archive's objects. Keys are
-/// the RAW archive object keys (no chain-data prefix/table/hex mangling).
-/// Object-safe (boxed futures) so the engine's `Tables` can hold it without
-/// growing a third type parameter.
+type ObjectStore = BTreeMap<Vec<u8>, RawBytes>;
+
+/// Read-only byte-range access to external archive objects.
+/// Uses object-safe boxed futures for use in contexts with multiple implementors.
 pub trait ExternalBlobReader: Send + Sync + 'static {
     /// Reads `[start, end_exclusive)` of `key`; `Ok(None)` when the object is
     /// absent. Semantics match the store's `BlobStore::read_range`: the end
@@ -37,18 +37,16 @@ pub trait ExternalBlobReader: Send + Sync + 'static {
     ) -> BoxFuture<'_, Result<Option<RawBytes>>>;
 }
 
-/// In-memory [`ExternalBlobReader`] for tests: a key -> object map.
+/// In-memory [`ExternalBlobReader`] implementation for tests.
 #[derive(Debug, Default)]
 pub struct InMemoryExternalBlobReader {
-    objects: RwLock<BTreeMap<Vec<u8>, RawBytes>>,
+    objects: RwLock<ObjectStore>,
 }
 
 impl InMemoryExternalBlobReader {
     pub fn insert(&self, key: impl Into<Vec<u8>>, object: impl Into<RawBytes>) {
-        self.objects
-            .write()
-            .expect("poisoned lock")
-            .insert(key.into(), object.into());
+        let mut store = self.objects.write().expect("rwlock poisoned");
+        store.insert(key.into(), object.into());
     }
 }
 
@@ -59,16 +57,16 @@ impl ExternalBlobReader for InMemoryExternalBlobReader {
         start: usize,
         end_exclusive: usize,
     ) -> BoxFuture<'_, Result<Option<RawBytes>>> {
-        let result = (|| {
-            let objects = self.objects.read().expect("poisoned lock");
-            let Some(object) = objects.get(key) else {
+        let key_bytes = key.to_vec();
+        Box::pin(async move {
+            let objects = self.objects.read().expect("rwlock poisoned");
+            let Some(object) = objects.get(key_bytes.as_slice()) else {
                 return Ok(None);
             };
             if start > end_exclusive || start > object.len() {
-                return Err(QueryError::Decode("invalid blob range"));
+                return Err(QueryError::Decode("blob range out of bounds"));
             }
             Ok(Some(object.slice(start..end_exclusive.min(object.len()))))
-        })();
-        Box::pin(async move { result })
+        })
     }
 }
