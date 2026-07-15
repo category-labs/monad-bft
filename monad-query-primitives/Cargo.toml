@@ -12,4 +12,6 @@ alloy-primitives = { workspace = true, features = ["rlp"] }
 alloy-rlp = { workspace = true, features = ["derive"] }
 bytes = { workspace = true }
 futures = { workspace = true }
+itertools = { workspace = true }
 monad-query-errors = { workspace = true }
+num_enum = { workspace = true }
