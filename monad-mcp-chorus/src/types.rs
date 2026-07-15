@@ -191,7 +191,7 @@ where
 {
     scope: <V as IsVote>::Scope,
     buckets: HashMap<V, HashSet<NodeId>>,
-    votes: HashMap<NodeId, (V, Signature)>,
+    votes: HashMap<NodeId, Signature>,
 }
 
 impl<V> VotePool<V>
@@ -212,12 +212,8 @@ where
             return;
         }
 
-        self.buckets
-            .entry(msg.vote.clone())
-            .or_default()
-            .insert(node_id);
-
-        self.votes.insert(node_id, (msg.vote, msg.signature));
+        self.buckets.entry(msg.vote).or_default().insert(node_id);
+        self.votes.insert(node_id, msg.signature);
     }
 
     pub fn scope(&self) -> &<V as IsVote>::Scope {
@@ -235,10 +231,7 @@ where
         })?;
 
         let data = vote.serialize(&self.scope);
-        let votes = voters.iter().map(|node_id| {
-            let (_vote, sig) = &self.votes[node_id];
-            sig
-        });
+        let votes = voters.iter().map(|node_id| &self.votes[node_id]);
         let sigcol = SignatureCollection::aggregate(&data, votes)?;
         let qc = StrongQc {
             scope: self.scope.clone(),
