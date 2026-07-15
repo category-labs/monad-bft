@@ -22,6 +22,7 @@ pub mod types;
 pub mod slot;
 // indirectly exports DummyConductor
 pub mod conductor;
+pub mod crypto;
 
 pub use conductor::{Conductor, ConductorOutput};
 pub use driver::{CadenceDriver, CadenceDriverMsg, CadenceMessage, Driver, NodeEvent, WakeId};
