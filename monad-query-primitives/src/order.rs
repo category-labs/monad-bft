@@ -21,17 +21,20 @@ pub enum QueryOrder {
 }
 
 impl QueryOrder {
-    /// Walks `items` in this query order: forward when ascending, reversed
-    /// when descending.
     pub fn iterate<I>(self, items: I) -> impl Iterator<Item = I::Item>
     where
         I: IntoIterator,
         I::IntoIter: DoubleEndedIterator,
     {
-        let mut iter = items.into_iter();
-        std::iter::from_fn(move || match self {
-            Self::Ascending => iter.next(),
-            Self::Descending => iter.next_back(),
-        })
+        match self {
+            Self::Ascending => {
+                let iter = items.into_iter();
+                itertools::Either::Left(iter)
+            }
+            Self::Descending => {
+                let iter = items.into_iter().rev();
+                itertools::Either::Right(iter)
+            }
+        }
     }
 }

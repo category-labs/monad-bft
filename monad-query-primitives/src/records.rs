@@ -259,6 +259,34 @@ impl BlockBlobHeader {
         }
         Ok(header)
     }
+
+    #[cfg(test)]
+    fn native_test_header() -> Self {
+        Self {
+            offsets: vec![0, 10, 25, 25, 40],
+            dict_version: 3,
+            base_offset: 7,
+            physical_key: b"phys".to_vec(),
+            physical_base_offset: 100,
+            encoding: ENCODING_NATIVE,
+            container_rows: Vec::new(),
+            container_status: Bytes::new(),
+        }
+    }
+
+    #[cfg(test)]
+    fn external_test_header() -> Self {
+        Self {
+            offsets: vec![0, 30, 30, 75],
+            dict_version: 0,
+            base_offset: 5,
+            physical_key: b"receipts/000000000001".to_vec(),
+            physical_base_offset: 0,
+            encoding: ENCODING_EXTERNAL_V1,
+            container_rows: vec![2, 2, 5],
+            container_status: Bytes::from_static(&[0b101]),
+        }
+    }
 }
 
 /// Shared RLP decode body: `decode_exact` mapping any failure to a
@@ -328,40 +356,14 @@ impl PublicationState {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        BlockBlobHeader, Bytes, Hash32, PrimaryId, PublicationState, ENCODING_EXTERNAL_V1,
-        ENCODING_NATIVE,
-    };
-
-    fn native_header() -> BlockBlobHeader {
-        BlockBlobHeader {
-            offsets: vec![0, 10, 25, 25, 40],
-            dict_version: 3,
-            base_offset: 7,
-            physical_key: b"phys".to_vec(),
-            physical_base_offset: 100,
-            encoding: ENCODING_NATIVE,
-            container_rows: Vec::new(),
-            container_status: Bytes::new(),
-        }
-    }
-
-    fn external_header() -> BlockBlobHeader {
-        BlockBlobHeader {
-            offsets: vec![0, 30, 30, 75],
-            dict_version: 0,
-            base_offset: 5,
-            physical_key: b"receipts/000000000001".to_vec(),
-            physical_base_offset: 0,
-            encoding: ENCODING_EXTERNAL_V1,
-            container_rows: vec![2, 2, 5],
-            container_status: Bytes::from_static(&[0b101]),
-        }
-    }
+    use super::{BlockBlobHeader, Bytes, Hash32, PrimaryId, PublicationState, ENCODING_NATIVE};
 
     #[test]
     fn block_blob_header_round_trips_both_encodings() {
-        for header in [native_header(), external_header()] {
+        for header in [
+            BlockBlobHeader::native_test_header(),
+            BlockBlobHeader::external_test_header(),
+        ] {
             let decoded = BlockBlobHeader::decode(&header.encode()).expect("decode header");
             assert_eq!(decoded, header);
         }
@@ -369,7 +371,7 @@ mod tests {
 
     #[test]
     fn native_header_counts_rows_from_offsets() {
-        let header = native_header();
+        let header = BlockBlobHeader::native_test_header();
         assert!(!header.is_external());
         assert_eq!(header.row_count(), 4);
         assert_eq!(header.container_count(), 4);
@@ -381,7 +383,7 @@ mod tests {
 
     #[test]
     fn external_header_maps_rows_through_containers() {
-        let header = external_header();
+        let header = BlockBlobHeader::external_test_header();
         assert!(header.is_external());
         assert_eq!(header.row_count(), 5);
         assert_eq!(header.container_count(), 3);
@@ -403,24 +405,25 @@ mod tests {
 
     #[test]
     fn external_header_with_zero_containers_has_zero_rows() {
-        let header = BlockBlobHeader {
-            offsets: vec![0],
-            container_rows: Vec::new(),
-            container_status: Bytes::new(),
-            ..external_header()
-        };
+        let mut header = BlockBlobHeader::external_test_header();
+        header.offsets = vec![0];
+        header.container_rows = Vec::new();
+        header.container_status = Bytes::new();
         assert_eq!(header.row_count(), 0);
         assert_eq!(header.container_count(), 0);
     }
 
     #[test]
     fn external_header_container_row_len() {
-        let header = external_header();
+        let header = BlockBlobHeader::external_test_header();
         assert_eq!(header.container_row_len(0), 2);
         assert_eq!(header.container_row_len(1), 0);
         assert_eq!(header.container_row_len(2), 3);
         // Identity mapping: always one row per container.
-        assert_eq!(native_header().container_row_len(3), 1);
+        assert_eq!(
+            BlockBlobHeader::native_test_header().container_row_len(3),
+            1
+        );
     }
 
     /// The read paths index and preallocate from the container manifest, so a
@@ -449,7 +452,7 @@ mod tests {
             }),
         ];
         for (what, corrupt) in corruptions {
-            let mut header = external_header();
+            let mut header = BlockBlobHeader::external_test_header();
             corrupt(&mut header);
             assert!(
                 BlockBlobHeader::decode(&header.encode()).is_err(),

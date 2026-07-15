@@ -20,16 +20,17 @@ use crate::order::QueryOrder;
 /// Default for [`QueryEnvelope::limit`].
 pub const DEFAULT_QUERY_LIMIT: usize = 100;
 
-/// Common request envelope shared by query families. `from_block`/`to_block`
-/// are interpreted in queryX spec semantics, with lower/upper roles depending
-/// on `order`.
+/// Common request envelope for query operations.
+///
+/// Block range semantics depend on [`QueryOrder`]: with ascending order,
+/// `from_block` is the lower bound; with descending, `to_block` is the lower bound.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueryEnvelope {
     pub from_block: Option<u64>,
     pub to_block: Option<u64>,
     pub order: QueryOrder,
-    /// Target result count. The server completes the current block before
-    /// stopping, so the actual count may exceed this. Defaults to
+    /// Target result limit per request. The server completes the current block
+    /// before stopping, so actual results may exceed this. Defaults to
     /// [`DEFAULT_QUERY_LIMIT`].
     pub limit: usize,
 }
@@ -45,12 +46,13 @@ impl Default for QueryEnvelope {
     }
 }
 
-/// Per-deployment caps on query shape: `max_limit` bounds `request.limit`,
-/// `max_block_range` bounds the resolved span (and thus the worst-case
-/// non-indexed scan). Breaches surface as
-/// [`monad_query_errors::QueryError::LimitExceeded`] (queryX `-32005`).
-/// Neither caps per-block results: the spec requires completing the current
-/// block, so counts can exceed `max_limit` for a hot block.
+/// Per-deployment caps on query shape.
+///
+/// - `max_limit`: upper bound on [`QueryEnvelope::limit`]
+/// - `max_block_range`: upper bound on the resolved block span
+///
+/// Neither cap per-block result counts; implementations must complete the
+/// current block before stopping, so results may exceed `max_limit`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueryLimits {
     pub max_limit: usize,
@@ -58,7 +60,7 @@ pub struct QueryLimits {
 }
 
 impl QueryLimits {
-    /// Permissive limits for tests and trusted internal callers.
+    /// Effectively unlimited constraints; used in tests and internal contexts.
     pub const UNLIMITED: Self = Self {
         max_limit: usize::MAX,
         max_block_range: u64::MAX,
