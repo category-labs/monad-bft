@@ -16,7 +16,6 @@
 use monad_mcp_chorus::types::{NodeId, Slot, Timestamp};
 use monad_mcp_chorus_sim::CadenceSwarm;
 
-#[expect(unused)]
 pub fn expect_finalized<M: Clone + 'static>(
     swarm: &CadenceSwarm<M>,
     node: NodeId,

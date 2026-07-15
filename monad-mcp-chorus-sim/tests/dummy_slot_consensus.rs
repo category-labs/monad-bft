@@ -15,7 +15,7 @@
 
 mod helper;
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use helper::expect_finalized_at;
 use monad_mcp_chorus::{
@@ -36,7 +36,8 @@ fn add_dummy_node(builder: &mut CadenceSwarmBuilder<DummyMsg>, id: NodeId, quoru
     let config = DummySlotConsensusConfig { quorum };
     let conductor = DummyConductor::new(TimestampDelta::new(SLOT_INTERVAL), SLOTS_PER_WINDOW)
         .set_deadline_offset(TimestampDelta::new(DEADLINE_OFFSET));
-    builder.add_node::<DummySlotConsensus, _>(id, conductor, config, ());
+    let key = Arc::new(id.keypair());
+    builder.add_node::<DummySlotConsensus, _>(id, conductor, config, key);
 }
 
 #[allow(clippy::erasing_op, clippy::identity_op)] // keep *0, *1 expressions
