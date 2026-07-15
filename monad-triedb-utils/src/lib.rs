@@ -32,6 +32,7 @@ use monad_crypto::certificate_signature::PubKey;
 use monad_eth_types::{EthAccount, EthHeader};
 use monad_execution_state_read::{ExecutionStateRead, ExecutionStateReadError};
 use monad_secp::SecpSignature;
+pub use monad_triedb::MigrationPhase;
 use monad_triedb::TriedbHandle;
 use monad_types::{BlockId, Epoch, Hash, SeqNum, Stake};
 use tracing::{debug, trace, warn};
@@ -68,6 +69,12 @@ impl TriedbReader {
             handle,
             state_read_total_lookups: Default::default(),
         })
+    }
+
+    /// The on-disk dual-DB migration phase. Cheap and safe to call while
+    /// execution is writing.
+    pub fn migration_phase(&self) -> MigrationPhase {
+        self.handle.migration_phase()
     }
 
     pub fn get_latest_voted_block(&self) -> Option<SeqNum> {

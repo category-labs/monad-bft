@@ -41,7 +41,7 @@ use monad_eth_block_validator::EthBlockValidator;
 use monad_eth_txpool_executor::{EthTxPoolExecutor, EthTxPoolIpcConfig};
 use monad_execution_state_read::ExecutionStateReadThreadClient;
 use monad_execution_state_read_cache::ExecutionStateReadCache;
-use monad_executor::{Executor, ExecutorMetricsChain};
+use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEvent};
 use monad_ledger::MonadBlockFileLedger;
 use monad_node_config::{
@@ -85,7 +85,8 @@ use self::{
     cli::Cli,
     error::NodeSetupError,
     metrics::{
-        default_prometheus_labels, start_metrics_server, MetricsServerState, NodePrometheusMetrics,
+        default_prometheus_labels, init_triedb_phase_metrics, record_triedb_phase_metrics,
+        start_metrics_server, MetricsServerState, NodePrometheusMetrics,
     },
     state::NodeState,
 };
@@ -476,11 +477,25 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         }
     }
 
+    // Read the dual-DB migration phase once at startup and record it into a
+    // dedicated metrics set pushed alongside the executor's. The phase only
+    // changes via the offline monad-mpt tool, which requires a restart, so
+    // there is nothing to refresh. If triedb can't be opened, leave the metric
+    // unreported (empty set) rather than emitting a misleading default.
+    let mut triedb_phase_metrics = ExecutorMetrics::with_metric_defs(&[]);
+    match TriedbReader::try_new(node_state.triedb_path.as_path()) {
+        Some(reader) => {
+            triedb_phase_metrics = init_triedb_phase_metrics();
+            record_triedb_phase_metrics(&mut triedb_phase_metrics, reader.migration_phase());
+        }
+        None => warn!("triedb unavailable, migration-phase metric will not be reported"),
+    }
+
     let prometheus_metrics = Arc::new(
         NodePrometheusMetrics::new(
             prometheus_labels,
             state.metrics(),
-            executor.metrics(),
+            executor.metrics().push(&triedb_phase_metrics),
             process_start,
         )
         .map_err(|err| {
@@ -530,7 +545,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                 None => futures_util::future::pending().boxed(),
             } => {
                 let otel_meter = maybe_otel_meter.as_ref().expect("otel_endpoint must have been set");
-                let executor_metrics = executor.metrics();
+                let executor_metrics = executor.metrics().push(&triedb_phase_metrics);
                 send_metrics(
                     otel_meter,
                     &mut gauge_cache,
