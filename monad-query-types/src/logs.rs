@@ -29,8 +29,7 @@ pub struct LogEntry {
     pub data: Bytes,
 }
 
-/// Per-log fields stored in the block blob. Block-level fields (block_number,
-/// block_hash) are reconstructed from the BlockRecord at read time.
+/// Per-log fields stored in block blob (block-level fields reconstructed at read time).
 #[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct StoredLog {
     pub tx_index: u32,
@@ -41,14 +40,17 @@ pub struct StoredLog {
 }
 
 impl StoredLog {
+    /// RLP-encodes this log.
     pub fn encode(&self) -> Vec<u8> {
         alloy_rlp::encode(self)
     }
 
+    /// RLP-decodes a log from bytes.
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         alloy_rlp::decode_exact(bytes).map_err(|_| QueryError::Decode("invalid log entry rlp"))
     }
 
+    /// Expands this stored log with block metadata into a full `LogEntry`.
     pub fn into_log_entry(self, block_number: u64, block_hash: Hash32) -> LogEntry {
         LogEntry {
             block_number,
