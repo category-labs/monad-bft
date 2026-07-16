@@ -23,9 +23,7 @@ use alloy_rlp::{RlpDecodable, RlpEncodable};
 use monad_query_errors::{QueryError, Result};
 use monad_query_primitives::Hash32;
 
-/// Public, owned per-transaction view returned by queries. Carries the
-/// envelope already decoded (hash seeded from the stored `tx_hash`), so
-/// filter checks and RPC conversion never re-parse or re-hash the raw bytes.
+/// Public, owned per-transaction view with pre-decoded envelope (hash pre-seeded from stored value).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TxEntry {
     pub block_number: u64,
@@ -37,21 +35,18 @@ pub struct TxEntry {
 }
 
 impl TxEntry {
-    /// Recipient address; `None` for contract-creation transactions.
+    /// Recipient address (None for contract creation).
     pub fn to(&self) -> Option<Address> {
         self.envelope.to()
     }
 
-    /// 4-byte function selector; `None` for contract-creation transactions
-    /// or when the calldata is shorter than 4 bytes.
+    /// Extracts 4-byte function selector from tx calldata.
     pub fn selector(&self) -> Option<[u8; 4]> {
         selector_from_envelope(&self.envelope)
     }
 
-    /// Assembles the queryX-spec `alloy_rpc_types_eth::Transaction` shape.
-    /// `effective_gas_price` is left `None` (needs the block's base fee,
-    /// not carried here); RPC layers must populate it from the header via
-    /// `envelope.effective_gas_price(Some(base_fee))`.
+    /// Converts to RPC transaction format. `effective_gas_price` is None;
+    /// caller must populate from block base fee.
     #[cfg(feature = "alloy-rpc-types-eth")]
     pub fn to_rpc_transaction(&self) -> alloy_rpc_types_eth::Transaction {
         use alloy_consensus::transaction::Recovered;
@@ -67,8 +62,7 @@ impl TxEntry {
     }
 }
 
-/// Fixed 12-byte tx location: 8-byte BE `block_number` then 4-byte BE
-/// `tx_index`. Written at ingest into `tx_hash_index`, keyed by `tx_hash`.
+/// Fixed 12-byte tx location (8-byte BE block_number + 4-byte BE tx_index).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TxLocation {
     pub block_number: u64,
@@ -78,19 +72,22 @@ pub struct TxLocation {
 impl TxLocation {
     pub const ENCODED_LEN: usize = 12;
 
+    /// Encodes to 12 big-endian bytes.
     pub fn encode(&self) -> [u8; Self::ENCODED_LEN] {
-        let mut out = [0u8; Self::ENCODED_LEN];
-        out[..8].copy_from_slice(&self.block_number.to_be_bytes());
-        out[8..].copy_from_slice(&self.tx_index.to_be_bytes());
-        out
+        let mut encoded = [0u8; Self::ENCODED_LEN];
+        encoded[..8].copy_from_slice(&self.block_number.to_be_bytes());
+        encoded[8..].copy_from_slice(&self.tx_index.to_be_bytes());
+        encoded
     }
 
+    /// Decodes from 12 big-endian bytes.
     pub fn decode(bytes: &[u8]) -> Result<Self> {
-        let bytes: [u8; Self::ENCODED_LEN] = bytes
+        let encoded_bytes: [u8; Self::ENCODED_LEN] = bytes
             .try_into()
             .map_err(|_| QueryError::Decode("invalid tx_location length"))?;
-        let block_number = u64::from_be_bytes(bytes[..8].try_into().expect("8-byte prefix"));
-        let tx_index = u32::from_be_bytes(bytes[8..].try_into().expect("4-byte suffix"));
+        let block_number =
+            u64::from_be_bytes(encoded_bytes[..8].try_into().expect("8-byte prefix"));
+        let tx_index = u32::from_be_bytes(encoded_bytes[8..].try_into().expect("4-byte suffix"));
         Ok(Self {
             block_number,
             tx_index,
@@ -98,9 +95,7 @@ impl TxLocation {
     }
 }
 
-/// Per-tx fields stored in the block blob. Block-level fields
-/// (block_number, block_hash, tx_index) are reconstructed from the
-/// `BlockRecord` and `BlockBlobHeader` at read time.
+/// Per-tx fields stored in block blob (block-level fields reconstructed at read time).
 #[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct StoredTxEnvelope {
     pub tx_hash: Hash32,
@@ -109,10 +104,12 @@ pub struct StoredTxEnvelope {
 }
 
 impl StoredTxEnvelope {
+    /// RLP-encodes this tx envelope.
     pub fn encode(&self) -> Vec<u8> {
         alloy_rlp::encode(self)
     }
 
+    /// RLP-decodes a tx envelope from bytes.
     pub fn decode(bytes: &[u8]) -> Result<Self> {
         alloy_rlp::decode_exact(bytes).map_err(|_| QueryError::Decode("invalid tx envelope rlp"))
     }
@@ -140,44 +137,43 @@ pub fn decode_envelope(signed_tx_bytes: &[u8]) -> Result<TxEnvelope> {
         .map_err(|_| QueryError::Decode("invalid signed tx envelope"))
 }
 
-/// Decodes a signed-tx envelope, seeding the signed hash from the stored
-/// `tx_hash` (ingest-validated) instead of re-hashing the payload.
-/// `TxEnvelope::decode_2718` keccaks the full byte span to recover the hash
-/// we already carry — on dense queryTransactions pages that hashing alone
-/// was ~18% of process CPU.
+/// Decodes a signed-tx envelope using a pre-validated hash instead of re-hashing.
+/// Avoids expensive keccak computation on dense transaction pages.
 fn decode_envelope_with_hash(signed_tx_bytes: &[u8], tx_hash: Hash32) -> Result<TxEnvelope> {
-    fn signed<T: RlpEcdsaDecodableTx>(buf: &mut &[u8], tx_hash: Hash32) -> Result<Signed<T>> {
-        let (tx, signature) = T::rlp_decode_with_signature(buf)
-            .map_err(|_| QueryError::Decode("invalid signed tx envelope"))?;
-        Ok(Signed::new_unchecked(tx, signature, tx_hash))
-    }
+    let mut buf = signed_tx_bytes
+        .get(1..)
+        .ok_or(QueryError::Decode("invalid signed tx envelope"))?;
 
-    let buf = &mut &signed_tx_bytes[..];
-    match signed_tx_bytes.first() {
-        Some(0x01) => {
-            *buf = &buf[1..];
-            Ok(TxEnvelope::Eip2930(signed::<TxEip2930>(buf, tx_hash)?))
+    let tx_type = signed_tx_bytes[0];
+    let err = || QueryError::Decode("invalid signed tx envelope");
+
+    match tx_type {
+        0x01 => {
+            let (tx, sig) = TxEip2930::rlp_decode_with_signature(&mut buf).map_err(|_| err())?;
+            Ok(TxEnvelope::Eip2930(Signed::new_unchecked(tx, sig, tx_hash)))
         }
-        Some(0x02) => {
-            *buf = &buf[1..];
-            Ok(TxEnvelope::Eip1559(signed::<TxEip1559>(buf, tx_hash)?))
+        0x02 => {
+            let (tx, sig) = TxEip1559::rlp_decode_with_signature(&mut buf).map_err(|_| err())?;
+            Ok(TxEnvelope::Eip1559(Signed::new_unchecked(tx, sig, tx_hash)))
         }
-        Some(0x03) => {
-            *buf = &buf[1..];
-            Ok(TxEnvelope::Eip4844(signed::<TxEip4844Variant>(
-                buf, tx_hash,
-            )?))
+        0x03 => {
+            let (tx, sig) =
+                TxEip4844Variant::rlp_decode_with_signature(&mut buf).map_err(|_| err())?;
+            Ok(TxEnvelope::Eip4844(Signed::new_unchecked(tx, sig, tx_hash)))
         }
-        Some(0x04) => {
-            *buf = &buf[1..];
-            Ok(TxEnvelope::Eip7702(signed::<TxEip7702>(buf, tx_hash)?))
+        0x04 => {
+            let (tx, sig) = TxEip7702::rlp_decode_with_signature(&mut buf).map_err(|_| err())?;
+            Ok(TxEnvelope::Eip7702(Signed::new_unchecked(tx, sig, tx_hash)))
         }
-        // Legacy txs start with their RLP list header.
-        Some(byte) if *byte >= 0xc0 => Ok(TxEnvelope::Legacy(signed::<TxLegacy>(buf, tx_hash)?)),
-        _ => Err(QueryError::Decode("invalid signed tx envelope")),
+        b if b >= 0xc0 => {
+            let (tx, sig) = TxLegacy::rlp_decode_with_signature(&mut buf).map_err(|_| err())?;
+            Ok(TxEnvelope::Legacy(Signed::new_unchecked(tx, sig, tx_hash)))
+        }
+        _ => Err(err()),
     }
 }
 
+/// Extracts 4-byte function selector from transaction envelope.
 pub fn selector_from_envelope(envelope: &TxEnvelope) -> Option<[u8; 4]> {
-    envelope.function_selector().map(|s| s.0)
+    envelope.function_selector().map(|selector| selector.0)
 }

@@ -29,18 +29,14 @@ pub struct FinalizedBlock {
     pub header: EvmBlockHeader,
     pub logs_by_tx: Vec<Vec<Log>>,
     pub txs: Vec<IngestTx>,
-    /// DFS-flattened call frames across all txs in the block; the producer
-    /// assigns each frame its `tx_index` and `trace_address` before ingest.
+    /// DFS-flattened call frames; indexed by tx.
     pub traces: Vec<IngestTrace>,
-    /// Archive payload locators for external-payload ingest; `None` for
-    /// native ingest. Required (hard error) on every block when the engine
-    /// runs in external payload mode.
+    /// Archive payload locators for external-payload ingest.
     pub external: Option<ExternalPayloadSpec>,
 }
 
-/// Per-tx envelope in a finalized block. `sender` is caller-authoritative
-/// (never recovered from `signed_tx_bytes`); ingest validates
-/// `txs.len() == logs_by_tx.len()` when `txs` is non-empty.
+/// Per-tx envelope in a finalized block.
+/// Sender is caller-authoritative (never recovered from signed bytes).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct IngestTx {
     pub tx_hash: Hash32,
@@ -71,28 +67,19 @@ pub struct IngestTrace {
     pub gas_used: u64,
     pub input: Bytes,
     pub output: Bytes,
-    /// Frame-level status. `0 == EVMC_SUCCESS` per the tracer's encoding;
-    /// any non-zero value is some flavour of revert or VM error.
+    /// Frame-level status: 0 = success, non-zero = revert/VM error.
     pub status: u8,
     pub depth: u32,
     pub tx_index: u32,
-    /// OpenEthereum-style path-from-root within the tx's call tree;
-    /// empty for the top-level frame.
+    /// OpenEthereum-style path from root within tx's call tree; empty for top-level.
     pub trace_address: Vec<u32>,
-    /// Status of the containing top-level tx, from receipts at ingest
-    /// (`true == receipt succeeded`). `has_transfer` ANDs this with
-    /// `status == 0` to exclude successful sub-calls of reverted txs.
+    /// Top-level tx receipt status from ingest (`true` = succeeded).
     pub tx_status: bool,
 }
 
 impl IngestTrace {
-    /// THE definition of the `has_transfer` index bit: every trace frame this
-    /// predicate accepts gets the bit at ingest, and the transfers view is
-    /// exactly the frames carrying it (no read-side mirror exists). A frame
-    /// transfers value iff the call kind moves value (DelegateCall/StaticCall
-    /// never do), value > 0, the frame succeeded (`status == 0`), and the
-    /// containing tx committed. Both status checks are required: the tracer
-    /// does not rewrite descendant statuses when a parent reverts.
+    /// Returns true if this frame represents a value transfer: the call kind
+    /// moves value, value > 0, the frame succeeded, and the containing tx committed.
     pub fn is_transfer_frame(&self) -> bool {
         let kind_moves_value = matches!(
             self.typ,
@@ -144,28 +131,34 @@ impl FinalizedBlock {
             .collect()
     }
 
-    /// Flattens this block's per-tx log lists into block-ordered raw row entries.
+    /// Flattens per-tx log lists into block-ordered row entries.
     pub fn flatten_logs(&self) -> Result<Vec<StoredLog>> {
-        let total_logs: usize = self.logs_by_tx.iter().map(|tx| tx.len()).sum();
-        let mut logs = Vec::with_capacity(total_logs);
+        self.logs_by_tx
+            .iter()
+            .enumerate()
+            .try_fold(
+                (Vec::new(), 0u32),
+                |(mut logs, mut log_index), (tx_index, tx_logs)| {
+                    let tx_index_u32 = u32::try_from(tx_index)
+                        .map_err(|_| QueryError::Decode("tx index overflow"))?;
 
-        for (tx_index, tx_logs) in self.logs_by_tx.iter().enumerate() {
-            let tx_index =
-                u32::try_from(tx_index).map_err(|_| QueryError::Decode("tx index overflow"))?;
+                    for raw_log in tx_logs {
+                        logs.push(StoredLog {
+                            tx_index: tx_index_u32,
+                            log_index,
+                            address: raw_log.address,
+                            topics: raw_log.data.topics().to_vec(),
+                            data: raw_log.data.data.clone(),
+                        });
 
-            for log in tx_logs {
-                let log_index = u32::try_from(logs.len())
-                    .map_err(|_| QueryError::Decode("log index overflow"))?;
-                logs.push(StoredLog {
-                    tx_index,
-                    log_index,
-                    address: log.address,
-                    topics: log.data.topics().to_vec(),
-                    data: log.data.data.clone(),
-                });
-            }
-        }
+                        log_index = log_index
+                            .checked_add(1)
+                            .ok_or(QueryError::Decode("log index overflow"))?;
+                    }
 
-        Ok(logs)
+                    Ok((logs, log_index))
+                },
+            )
+            .map(|(logs, _)| logs)
     }
 }

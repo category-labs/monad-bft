@@ -22,43 +22,45 @@ use monad_query_types::StoredTxEnvelope;
 
 #[test]
 fn to_rpc_transaction_carries_envelope_sender_and_block_context() {
-    let recipient = Address::repeat_byte(0xaa);
+    let recipient_address = Address::repeat_byte(0xaa);
+    let stored_tx_hash = B256::repeat_byte(0xcc);
+    let sender_address = Address::repeat_byte(0xdd);
+    let block_hash = B256::repeat_byte(0xbb);
+    let block_number = 123u64;
+    let tx_index = 4u32;
 
-    let signed = TxLegacy {
+    let signed_legacy = TxLegacy {
         chain_id: Some(1),
         nonce: 7,
         gas_price: 10,
         gas_limit: 21_000,
-        to: TxKind::Call(recipient),
+        to: TxKind::Call(recipient_address),
         value: U256::from(42u64),
         input: Bytes::from_static(&[0x11, 0x22, 0x33, 0x44, 0x55]),
     }
     .into_signed(Signature::test_signature());
 
-    let mut signed_tx_bytes = Vec::new();
-    TxEnvelope::Legacy(signed).encode_2718(&mut signed_tx_bytes);
+    let mut encoded_bytes = Vec::new();
+    TxEnvelope::Legacy(signed_legacy).encode_2718(&mut encoded_bytes);
 
-    let tx = StoredTxEnvelope {
-        tx_hash: B256::repeat_byte(0xcc),
-        sender: Address::repeat_byte(0xdd),
-        signed_tx_bytes: signed_tx_bytes.into(),
+    let tx_entry = StoredTxEnvelope {
+        tx_hash: stored_tx_hash,
+        sender: sender_address,
+        signed_tx_bytes: encoded_bytes.into(),
     }
-    .into_tx_entry(123, B256::repeat_byte(0xbb), 4)
+    .into_tx_entry(block_number, block_hash, tx_index)
     .expect("decode entry");
 
-    let rpc = tx.to_rpc_transaction();
+    let rpc_tx = tx_entry.to_rpc_transaction();
 
-    // The rpc projection.
-    assert_eq!(rpc.block_number, Some(123));
-    assert_eq!(rpc.block_hash, Some(B256::repeat_byte(0xbb)));
-    assert_eq!(rpc.transaction_index, Some(4));
-    assert_eq!(rpc.effective_gas_price, None);
-    assert_eq!(rpc.inner.signer(), Address::repeat_byte(0xdd));
-    assert_eq!(rpc.inner.inner().tx_type() as u8, 0);
-    // The envelope hash is seeded from the stored tx_hash, never recomputed.
-    assert_eq!(*rpc.inner.inner().tx_hash(), B256::repeat_byte(0xcc));
+    assert_eq!(rpc_tx.block_number, Some(block_number));
+    assert_eq!(rpc_tx.block_hash, Some(block_hash));
+    assert_eq!(rpc_tx.transaction_index, Some(tx_index as u64));
+    assert_eq!(rpc_tx.effective_gas_price, None);
+    assert_eq!(rpc_tx.inner.signer(), sender_address);
+    assert_eq!(rpc_tx.inner.inner().tx_type() as u8, 0);
+    assert_eq!(*rpc_tx.inner.inner().tx_hash(), stored_tx_hash);
 
-    // TxEntry accessors over the same envelope.
-    assert_eq!(tx.to(), Some(recipient));
-    assert_eq!(tx.selector(), Some([0x11, 0x22, 0x33, 0x44]));
+    assert_eq!(tx_entry.to(), Some(recipient_address));
+    assert_eq!(tx_entry.selector(), Some([0x11, 0x22, 0x33, 0x44]));
 }
