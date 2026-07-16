@@ -35,15 +35,14 @@ pub struct ExternalFamilyRegion {
     pub key: Vec<u8>,
     /// Start byte of the first container within the object.
     pub base_offset: u32,
-    /// Container partition relative to `base_offset`: container `j` spans
-    /// `[container_offsets[j], container_offsets[j + 1])`; length is
-    /// `containers + 1` (`[0]` for an empty block).
+    /// Container byte offsets relative to `base_offset`.
+    /// Length is `containers + 1`, with `[0] = 0` for empty blocks.
     pub container_offsets: Vec<u32>,
-    /// Cumulative row counts per container; empty = identity (one row per
-    /// container, the tx family) — also empty when there are no containers.
+    /// Cumulative row counts per container.
+    /// Empty indicates identity mode (one row per container).
     pub container_rows: Vec<u32>,
-    /// Per-container tx-status bitvec, LSB-first (traces only; empty
-    /// otherwise). Trailing pad bits must be zero.
+    /// Per-container tx-status bitvec, LSB-first (traces only; empty otherwise).
+    /// Trailing pad bits must be zero.
     pub container_status: Vec<u8>,
 }
 
@@ -61,10 +60,8 @@ pub struct ExternalPayloadSpec {
 }
 
 impl ExternalFamilyRegion {
-    /// Structural invariants shared by every family: a non-empty key, a
-    /// well-formed container partition (each container non-empty, so item
-    /// ranges are exact), and a consistent cumulative row manifest whose
-    /// per-container counts match `rows_per_container`.
+    /// Validates structural invariants: non-empty key, well-formed partition
+    /// with non-empty containers, and consistent row counts.
     fn validate(&self, rows_per_container: &[u32], identity: bool) -> Result<()> {
         let containers = rows_per_container.len();
         if self.key.is_empty() {
@@ -77,7 +74,11 @@ impl ExternalFamilyRegion {
                 "external payload container partition has the wrong shape",
             ));
         }
-        if self.container_offsets.windows(2).any(|w| w[0] >= w[1]) {
+        if self
+            .container_offsets
+            .windows(2)
+            .any(|window| window[0] >= window[1])
+        {
             return Err(QueryError::InvalidBlock(
                 "external payload containers must be non-empty and ascending",
             ));
@@ -108,13 +109,14 @@ impl ExternalFamilyRegion {
             ));
         }
         let mut cumulative = 0u32;
-        for (&rows, &cum) in rows_per_container.iter().zip(&self.container_rows) {
-            cumulative = cumulative
-                .checked_add(rows)
-                .ok_or(QueryError::InvalidBlock(
-                    "external payload row count overflow",
-                ))?;
-            if cum != cumulative {
+        for i in 0..containers {
+            cumulative =
+                cumulative
+                    .checked_add(rows_per_container[i])
+                    .ok_or(QueryError::InvalidBlock(
+                        "external payload row count overflow",
+                    ))?;
+            if self.container_rows[i] != cumulative {
                 return Err(QueryError::InvalidBlock(
                     "external payload container_rows disagrees with the block's rows",
                 ));
@@ -123,37 +125,33 @@ impl ExternalFamilyRegion {
         Ok(())
     }
 
-    /// Status-bitvec invariants: exactly `containers.div_ceil(8)` bytes with
-    /// zero trailing pad bits, matching `statuses` bit for bit.
-    fn validate_status(&self, statuses: impl ExactSizeIterator<Item = bool>) -> Result<()> {
-        let containers = statuses.len();
-        if self.container_status.len() != containers.div_ceil(8) {
+    /// Validates bitvec length and content against expected statuses.
+    fn validate_status(&self, statuses: &[bool]) -> Result<()> {
+        let byte_count = statuses.len().div_ceil(8);
+
+        if self.container_status.len() != byte_count {
             return Err(QueryError::InvalidBlock(
                 "external payload container_status length mismatch",
             ));
         }
-        let mut expected = vec![0u8; containers.div_ceil(8)];
-        for (j, status) in statuses.enumerate() {
-            if status {
-                expected[j / 8] |= 1 << (j % 8);
+
+        for i in 0..statuses.len() {
+            let bit_index = i % 8;
+            let byte_index = i / 8;
+            let bit_set = (self.container_status[byte_index] >> bit_index) & 1 == 1;
+            if statuses[i] != bit_set {
+                return Err(QueryError::InvalidBlock(
+                    "external payload container_status disagrees with the block's receipts",
+                ));
             }
-        }
-        if self.container_status != expected {
-            return Err(QueryError::InvalidBlock(
-                "external payload container_status disagrees with the block's receipts",
-            ));
         }
         Ok(())
     }
 }
 
 impl ExternalPayloadSpec {
-    /// Validates the spec against the decoded block it locates: the spec was
-    /// scanned from this block number, container counts equal the tx count
-    /// for every family, row manifests match the block's logs/frames exactly,
-    /// and the trace status bits match every frame's `tx_status`. Hard error
-    /// on any mismatch — a bad locator would otherwise serve another tx's
-    /// bytes.
+    /// Validates the spec against a decoded block: matches block number,
+    /// container counts, row counts, and trace status bits.
     pub fn validate(&self, block_number: u64, block: &FinalizedBlock) -> Result<()> {
         if self.block_number != block_number {
             return Err(QueryError::InvalidBlock(
@@ -168,53 +166,59 @@ impl ExternalPayloadSpec {
         }
 
         self.txs.validate(&vec![1u32; tx_count], true)?;
-        self.txs.validate_status(std::iter::empty())?;
+        self.txs.validate_status(&[])?;
 
         let logs_per_tx: Vec<u32> = block
             .logs_by_tx
             .iter()
-            .map(|logs| u32::try_from(logs.len()))
-            .collect::<std::result::Result<_, _>>()
-            .map_err(|_| QueryError::Decode("log count overflow"))?;
+            .map(|tx_logs| {
+                u32::try_from(tx_logs.len()).map_err(|_| QueryError::Decode("log count overflow"))
+            })
+            .collect::<Result<Vec<_>>>()
+            .map_err(|e| e)?;
         self.logs.validate(&logs_per_tx, false)?;
-        self.logs.validate_status(std::iter::empty())?;
+        self.logs.validate_status(&[])?;
 
+        // Count frames per tx and collect trace statuses
         let mut frames_per_tx = vec![0u32; tx_count];
-        let mut statuses: Vec<Option<bool>> = vec![None; tx_count];
+        let mut trace_statuses: Vec<Option<bool>> = vec![None; tx_count];
+
         for trace in &block.traces {
-            let slot =
-                frames_per_tx
-                    .get_mut(trace.tx_index as usize)
-                    .ok_or(QueryError::InvalidBlock(
-                        "external payload trace tx_index out of range",
-                    ))?;
-            *slot += 1;
-            let status = &mut statuses[trace.tx_index as usize];
-            if status.is_some_and(|s| s != trace.tx_status) {
+            let tx_idx = trace.tx_index as usize;
+            if tx_idx >= tx_count {
                 return Err(QueryError::InvalidBlock(
-                    "external payload trace tx_status inconsistent within a tx",
+                    "external payload trace tx_index out of range",
                 ));
             }
-            *status = Some(trace.tx_status);
+            frames_per_tx[tx_idx] += 1;
+
+            match trace_statuses[tx_idx] {
+                None => trace_statuses[tx_idx] = Some(trace.tx_status),
+                Some(existing_status) if existing_status == trace.tx_status => {}
+                Some(_) => {
+                    return Err(QueryError::InvalidBlock(
+                        "external payload trace tx_status inconsistent within a tx",
+                    ))
+                }
+            }
         }
         self.traces.validate(&frames_per_tx, false)?;
-        // Containers without frames carry the receipt status the source read;
-        // rows only ever consult the bits of their own container, so bits of
-        // frameless containers are accepted as supplied.
-        let supplied_bit = |j: usize| {
-            self.traces
-                .container_status
-                .get(j / 8)
-                .is_some_and(|byte| byte >> (j % 8) & 1 == 1)
+
+        // Build final status array, falling back to stored bits for containers without frames
+        let get_status_bit = |container_idx: usize| {
+            let byte_idx = container_idx / 8;
+            let bit_idx = container_idx % 8;
+            byte_idx < self.traces.container_status.len()
+                && (self.traces.container_status[byte_idx] >> bit_idx) & 1 == 1
         };
-        self.traces.validate_status(
-            statuses
-                .iter()
-                .enumerate()
-                .map(|(j, status)| status.unwrap_or_else(|| supplied_bit(j)))
-                .collect::<Vec<_>>()
-                .into_iter(),
-        )?;
+
+        let final_statuses: Vec<bool> = trace_statuses
+            .iter()
+            .enumerate()
+            .map(|(idx, status)| status.unwrap_or_else(|| get_status_bit(idx)))
+            .collect();
+
+        self.traces.validate_status(&final_statuses)?;
         Ok(())
     }
 }
