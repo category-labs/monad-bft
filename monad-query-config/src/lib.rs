@@ -35,9 +35,6 @@ pub use ingest::{
 };
 pub use reader::{open_configured_chain_data_reader, ConfiguredChainDataReader};
 
-/// An optional secret (credential) that never renders its value via `Debug`, so
-/// config dumps cannot leak it. `#[serde(transparent)]` keeps the TOML wire
-/// shape identical to a plain `Option<String>`.
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
 pub struct Redacted(pub Option<String>);
@@ -55,32 +52,17 @@ impl std::fmt::Debug for Redacted {
 #[serde(default)]
 pub struct ChainDataStoreConfig {
     pub meta: ChainDataMetaBackendConfig,
-    /// Blob backend for pack blobs and checkpoint-snapshot payloads. `None`
-    /// (the `[store.blob]` TOML section omitted) means NO blob store: only
-    /// valid for `payload = "external-archive"` stores, whose row payloads
-    /// live in the monad-archive objects. Ingest then auto-disables
-    /// checkpoints (snapshot payloads are blob objects) and recovers from
-    /// fragments; any blob access errors loudly (see
-    /// [`monad_query_store::NullBlobStore`]).
     pub blob: Option<ChainDataBlobBackendConfig>,
     pub cache: ChainDataCacheConfig,
-    /// Reader-side query-runtime limits (fan-out + decode budget).
     pub query: ChainDataQueryConfig,
     pub reader_only: bool,
-    /// Read-only access to the monad-archive object store holding external
-    /// payloads (`payload = "external-archive"` ingest). Required on readers
-    /// of an externally-ingested store; ignored for fully native stores.
     pub archive: Option<ChainDataArchiveBackendConfig>,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct ChainDataCacheConfig {
-    /// Total cache budget in MiB. If absent, the caller's mode default applies:
-    /// ingest resolves to 0 MiB, reader resolves to 8192 MiB.
     pub total_mib: Option<usize>,
-    /// Per-table budget overrides in MiB. Unspecified tables get the default
-    /// ratio of the total budget.
     pub tables: ChainDataCacheTableBudgets,
 }
 
@@ -100,27 +82,17 @@ pub struct ChainDataCacheTableBudgets {
     pub row_cache_mib: Option<usize>,
 }
 
-/// Reader-side query-runtime limits; each set field overrides the matching
-/// [`QueryRuntimeConfig`] default. Raise the concurrency knobs for
-/// high-latency backends (S3/Dynamo); fast local backends suit the defaults.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct ChainDataQueryConfig {
     pub blob_io_concurrency: Option<usize>,
     pub materialize_concurrency: Option<usize>,
-    /// Concurrent page intersections (stage-1 bitmap fetches) per query.
     pub page_intersect_concurrency: Option<usize>,
     pub materialize_budget_permits: Option<usize>,
-    /// Decode-budget permit unit, in KiB.
     pub materialize_permit_kib: Option<usize>,
-    /// Maximum inter-frame gap (KiB) for span coalescing (wasted gap bytes vs
-    /// an extra range read). Raise for high-latency backends.
     pub materialize_span_max_gap_kib: Option<usize>,
-    /// Maximum length (KiB) of one coalesced read span.
     pub materialize_span_max_kib: Option<usize>,
-    /// Span count above which a dense batch reads the whole region.
     pub materialize_whole_region_span_threshold: Option<usize>,
-    /// Largest region (MiB) the dense-selection whole-region read will pull.
     pub materialize_whole_region_max_mib: Option<usize>,
 }
 
@@ -203,9 +175,6 @@ impl ChainDataStoreConfig {
     }
 }
 
-/// Backend selection for the external archive's object store. Keys are RAW
-/// archive object keys (e.g. `block/000000000123`) — no chain-data
-/// prefix/table/hex layout applies.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum ChainDataArchiveBackendConfig {
@@ -236,13 +205,10 @@ impl ChainDataArchiveBackendConfig {
     }
 }
 
-/// Read-only access to a monad-archive block-data table on a
-/// DynamoDB-API-compatible backend (a Scylla Alternator archive replica).
 #[cfg(feature = "dynamo")]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct ChainDataArchiveDynamoConfig {
-    /// The archive's block-data table (e.g. `{namespace}_block_level`).
     pub table: Option<String>,
     pub endpoint_url: Option<String>,
     pub region: Option<String>,
@@ -250,23 +216,8 @@ pub struct ChainDataArchiveDynamoConfig {
     pub access_key_id: Redacted,
     pub secret_access_key: Redacted,
     pub session_token: Redacted,
+    #[serde(default = "default_max_concurrency_256")]
     pub max_concurrency: usize,
-}
-
-#[cfg(feature = "dynamo")]
-impl Default for ChainDataArchiveDynamoConfig {
-    fn default() -> Self {
-        Self {
-            table: None,
-            endpoint_url: None,
-            region: None,
-            profile: None,
-            access_key_id: Redacted(None),
-            secret_access_key: Redacted(None),
-            session_token: Redacted(None),
-            max_concurrency: 256,
-        }
-    }
 }
 
 #[cfg(feature = "dynamo")]
@@ -287,29 +238,16 @@ impl ChainDataArchiveDynamoConfig {
     }
 }
 
-/// Read-only access to a monad-archive MongoDB block-data collection.
 #[cfg(feature = "mongo")]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct ChainDataArchiveMongoConfig {
-    /// MongoDB connection string; redacted because it may embed credentials.
     pub url: Redacted,
     pub database: Option<String>,
-    /// The archive's block-data collection.
+    #[serde(default = "default_collection_block_level")]
     pub collection: String,
+    #[serde(default = "default_max_pool_size_64")]
     pub max_pool_size: u32,
-}
-
-#[cfg(feature = "mongo")]
-impl Default for ChainDataArchiveMongoConfig {
-    fn default() -> Self {
-        Self {
-            url: Redacted(None),
-            database: None,
-            collection: "block_level".to_string(),
-            max_pool_size: 64,
-        }
-    }
 }
 
 #[cfg(feature = "mongo")]
@@ -331,9 +269,8 @@ impl ChainDataArchiveMongoConfig {
     }
 }
 
-/// Read-only S3 access to a monad-archive bucket.
 #[cfg(feature = "s3")]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct ChainDataArchiveS3Config {
     pub bucket: Option<String>,
@@ -341,25 +278,10 @@ pub struct ChainDataArchiveS3Config {
     pub profile: Option<String>,
     pub endpoint_urls: Vec<String>,
     pub force_path_style: bool,
+    #[serde(default = "default_max_concurrency_64")]
     pub max_concurrency: usize,
     pub access_key_id: Redacted,
     pub secret_access_key: Redacted,
-}
-
-#[cfg(feature = "s3")]
-impl Default for ChainDataArchiveS3Config {
-    fn default() -> Self {
-        Self {
-            bucket: None,
-            region: None,
-            profile: None,
-            endpoint_urls: Vec::new(),
-            force_path_style: false,
-            max_concurrency: 64,
-            access_key_id: Redacted(None),
-            secret_access_key: Redacted(None),
-        }
-    }
 }
 
 #[cfg(feature = "s3")]
@@ -489,36 +411,18 @@ impl ChainDataMetaBackendConfig {
     }
 }
 
-/// MongoDB meta backend: chain-data meta rows in one dedicated collection of
-/// an (operator's existing) MongoDB database. Blob-less only — pair with
-/// `payload = "external-archive"` ingest and `[store.archive]` so row
-/// payloads stay in the archive's own collections.
 #[cfg(feature = "mongo")]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct ChainDataMongoMetaConfig {
-    /// MongoDB connection string; redacted because it may embed credentials.
     pub url: Redacted,
     pub database: Option<String>,
-    /// Collection holding every chain-data meta row. Distinct from the
-    /// archive's `block_level`/`tx_index` collections, which stay untouched.
+    #[serde(default = "default_collection_chain_data_meta")]
     pub collection: String,
+    #[serde(default = "default_max_pool_size_64")]
     pub max_pool_size: u32,
-    /// Concurrent single-document writes per ingest commit batch.
+    #[serde(default = "default_write_concurrency_64")]
     pub write_concurrency: usize,
-}
-
-#[cfg(feature = "mongo")]
-impl Default for ChainDataMongoMetaConfig {
-    fn default() -> Self {
-        Self {
-            url: Redacted(None),
-            database: None,
-            collection: "chain_data_meta".to_string(),
-            max_pool_size: 64,
-            write_concurrency: 64,
-        }
-    }
 }
 
 #[cfg(feature = "mongo")]
@@ -565,7 +469,7 @@ impl ChainDataBlobBackendConfig {
 }
 
 #[cfg(feature = "s3")]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct ChainDataS3BlobConfig {
     pub bucket: Option<String>,
@@ -574,28 +478,11 @@ pub struct ChainDataS3BlobConfig {
     pub endpoint_urls: Vec<String>,
     pub prefix: String,
     pub force_path_style: bool,
+    #[serde(default = "default_max_concurrency_64")]
     pub max_concurrency: usize,
     pub create_bucket: bool,
     pub access_key_id: Redacted,
     pub secret_access_key: Redacted,
-}
-
-#[cfg(feature = "s3")]
-impl Default for ChainDataS3BlobConfig {
-    fn default() -> Self {
-        Self {
-            bucket: None,
-            region: None,
-            profile: None,
-            endpoint_urls: Vec::new(),
-            prefix: String::new(),
-            force_path_style: false,
-            max_concurrency: 64,
-            create_bucket: false,
-            access_key_id: Redacted(None),
-            secret_access_key: Redacted(None),
-        }
-    }
 }
 
 #[cfg(feature = "s3")]
@@ -626,18 +513,13 @@ pub enum ChainDataDynamoTableLayoutConfig {
 }
 
 #[cfg(feature = "dynamo")]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct ChainDataDynamoMetaConfig {
     pub table: Option<String>,
     pub table_prefix: Option<String>,
     pub table_layout: ChainDataDynamoTableLayoutConfig,
-    /// Single Alternator/DynamoDB endpoint. Use `endpoint_urls` to drive
-    /// multiple nodes.
     pub endpoint_url: Option<String>,
-    /// Multiple endpoints (e.g. all Alternator nodes); requests round-robin
-    /// across them to spread coordinator load. Takes precedence over
-    /// `endpoint_url` when non-empty.
     pub endpoint_urls: Vec<String>,
     pub region: Option<String>,
     pub profile: Option<String>,
@@ -645,55 +527,20 @@ pub struct ChainDataDynamoMetaConfig {
     pub secret_access_key: Redacted,
     pub session_token: Redacted,
     pub create_table: bool,
+    #[serde(default = "default_max_concurrency_256")]
     pub max_concurrency: usize,
+    #[serde(default = "default_max_concurrency_256")]
     pub table_max_concurrency: usize,
     pub scylla_profile: bool,
+    #[serde(default = "default_scylla_concurrency_1024")]
     pub scylla_concurrency: usize,
-    /// Desired max items per `BatchWriteItem`. Verified by a startup probe before
-    /// use; if the backend rejects it the store falls back to 25. Unset →
-    /// `ALTERNATOR_DEFAULT_BATCH_WRITE_ITEMS` (100) under `scylla_profile`, else
-    /// 25. DynamoDB caps at 25; Alternator defaults to 100. Must be within
-    /// 1..=1000: the probe materializes this many requests up front, so the
-    /// bound keeps a typo from ballooning into a giant allocation.
     pub batch_write_max_items: Option<usize>,
 }
 
 #[cfg(feature = "dynamo")]
-impl Default for ChainDataDynamoMetaConfig {
-    fn default() -> Self {
-        Self {
-            table: None,
-            table_prefix: None,
-            table_layout: ChainDataDynamoTableLayoutConfig::Single,
-            endpoint_url: None,
-            endpoint_urls: Vec::new(),
-            region: None,
-            profile: None,
-            access_key_id: Redacted(None),
-            secret_access_key: Redacted(None),
-            session_token: Redacted(None),
-            create_table: false,
-            max_concurrency: 256,
-            table_max_concurrency: 256,
-            scylla_profile: false,
-            scylla_concurrency: 1024,
-            batch_write_max_items: None,
-        }
-    }
-}
-
-/// Default `BatchWriteItem` item count to probe for under `scylla_profile` —
-/// ScyllaDB Alternator's default `alternator_max_items_in_batch_write`.
-#[cfg(feature = "dynamo")]
 const ALTERNATOR_DEFAULT_BATCH_WRITE_ITEMS: usize = 100;
-/// DynamoDB's fixed `BatchWriteItem` item cap (and the safe fallback).
 #[cfg(feature = "dynamo")]
 const DYNAMO_BATCH_WRITE_ITEMS: usize = 25;
-/// Upper bound on configured `batch_write_max_items`. The startup probe
-/// materializes candidate-many `WriteRequest`s before the backend can reject
-/// them, so an absurd value (an items/bytes mix-up, say) must fail validation
-/// instead of allocating at startup. 10x Alternator's default leaves ample
-/// headroom for raised `alternator_max_items_in_batch_write` deployments.
 #[cfg(feature = "dynamo")]
 const MAX_BATCH_WRITE_ITEMS: usize = 1000;
 
@@ -774,7 +621,7 @@ impl ChainDataDynamoMetaConfig {
 }
 
 #[cfg(feature = "dynamo")]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct ChainDataDynamoBlobConfig {
     pub table: Option<String>,
@@ -785,32 +632,9 @@ pub struct ChainDataDynamoBlobConfig {
     pub secret_access_key: Redacted,
     pub session_token: Redacted,
     pub create_table: bool,
+    #[serde(default = "default_max_concurrency_256")]
     pub max_concurrency: usize,
-    /// Bytes per blob chunk. A wire contract: it sets the byte->chunk-index
-    /// mapping, so it must match the size the table's existing data was
-    /// written with -- a mismatched reader silently returns wrong bytes.
-    /// Unset uses the store default (64 KiB). Must be within 1..=350 KiB
-    /// (DynamoDB's item ceiling with framing margin). Provisioning persists
-    /// the size as a table marker that startup validation checks.
     pub chunk_size: Option<usize>,
-}
-
-#[cfg(feature = "dynamo")]
-impl Default for ChainDataDynamoBlobConfig {
-    fn default() -> Self {
-        Self {
-            table: None,
-            endpoint_url: None,
-            region: None,
-            profile: None,
-            access_key_id: Redacted(None),
-            secret_access_key: Redacted(None),
-            session_token: Redacted(None),
-            create_table: false,
-            max_concurrency: 256,
-            chunk_size: None,
-        }
-    }
 }
 
 #[cfg(feature = "dynamo")]
@@ -1116,6 +940,34 @@ fn validate_pair(
         (Some(_), None) => bail!("{left_name} requires {right_name}"),
         (None, Some(_)) => bail!("{right_name} requires {left_name}"),
     }
+}
+
+fn default_max_concurrency_64() -> usize {
+    64
+}
+
+fn default_max_concurrency_256() -> usize {
+    256
+}
+
+fn default_scylla_concurrency_1024() -> usize {
+    1024
+}
+
+fn default_collection_block_level() -> String {
+    "block_level".to_string()
+}
+
+fn default_collection_chain_data_meta() -> String {
+    "chain_data_meta".to_string()
+}
+
+fn default_max_pool_size_64() -> u32 {
+    64
+}
+
+fn default_write_concurrency_64() -> usize {
+    64
 }
 
 #[cfg(test)]
