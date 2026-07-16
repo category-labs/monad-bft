@@ -16,9 +16,7 @@
 use alloy_primitives::{Address, U256};
 use monad_query_primitives::{CallKind, Hash32};
 
-/// Per-transfer view projected from a `TraceEntry` whose `has_transfer`
-/// bit was set at ingest; `to` is always present (Create* -> new
-/// contract, SelfDestruct -> beneficiary).
+/// Per-transfer view: always has a `to` address (Create* -> contract, SelfDestruct -> beneficiary).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransferEntry {
     pub block_number: u64,
