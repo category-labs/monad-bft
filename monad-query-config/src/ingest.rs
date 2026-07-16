@@ -45,61 +45,23 @@ use super::{resolve_cache_config, ChainDataCacheMode};
 use super::{ChainDataBlobBackendConfig, SharedDynamoConnection};
 use super::{ChainDataMetaBackendConfig, ChainDataStoreConfig};
 
-/// Cadence/range knobs for the branchless ingest engine. There is deliberately
-/// no `start` knob: the begin block is always derived from store state (resume
-/// snapshot's `last_block + 1`, or genesis on an empty store) because the query
-/// layer assumes a gap-free range up to the head; `end`/`count` only bound how
-/// far this run goes from there.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct ChainDataEngineConfig {
-    /// Where row payloads live: `"native"` re-encodes rows into chain-data
-    /// pack blobs; `"external-archive"` indexes the source's existing
-    /// monad-archive objects (every fetched block must carry an external
-    /// payload spec, and readers need `[store.archive]` access). A store must
-    /// keep one mode for its whole life.
     pub payload: ChainDataPayloadConfig,
-    /// Inclusive absolute end block for a bounded backfill: the engine catches
-    /// the resume point up to here, then stops. Absent → follow the tip (live).
-    /// Restart-safe: re-running with the same `end` resumes and finishes the gap.
     pub end: Option<u64>,
-    /// Bounded backfill of this many blocks from the resume point (mutually
-    /// exclusive with `end`). NOT restart-idempotent — a restart counts from
-    /// the *new* resume point — so prefer `end` for anything re-runnable.
     pub count: Option<u64>,
-    /// UNSAFE test/fixture knob: seed a *fresh* store's recovery snapshot so
-    /// ingest starts at this block instead of genesis. Rejected once the store
-    /// is initialized (a snapshot exists). Breaks the gap-free-up-to-head
-    /// invariant — queries below `begin` are invalid. Never use in production.
     pub unsafe_seed_begin: Option<u64>,
-    /// Target packed-blob size before a data-track flush.
     pub pack_target_bytes: usize,
-    /// Hard cap on blocks per packed blob.
     pub pack_max_blocks: usize,
-    /// Adaptive `BatchFlush` interval: `max(distance_to_tip / tip_lag_divisor, 1)`,
-    /// i.e. every block at the tip, coarser while catching up. Purely a
-    /// reader-freshness knob: `OpenTail` memory is bounded by `seal`, not flush
-    /// cadence, so there is no cap.
     pub tip_lag_divisor: u64,
-    /// Snapshot `OpenState` every this many blocks (recovery resume point /
-    /// fragment-replay bound).
     pub checkpoint_every_blocks: u64,
-    /// Inter-track channel buffer depth.
     pub track_buffer: usize,
-    /// Tip poll interval (ms) for re-checking `get_latest` once caught up.
-    /// Catch-up never polls mid-backlog.
     pub poll_ms: u64,
-    /// Concurrent block fetches in the producer. Each fetch is spawned, so this
-    /// also bounds parallel (CPU-bound) block decode. Only matters during
-    /// catch-up; at the steady tip the backlog is ~1 block.
     pub fetch_concurrency: usize,
-    /// Ordered look-ahead: max decoded-but-not-yet-ingested blocks queued ahead
-    /// of the engine, so fetchers keep running through flush/checkpoint stalls.
-    /// Memory scales with this × per-block size; shrink for constrained runs.
     pub fetch_buffer: usize,
 }
 
-/// Serde face of [`monad_query_write::PayloadMode`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ChainDataPayloadConfig {
@@ -126,16 +88,10 @@ impl Default for ChainDataEngineConfig {
             unsafe_seed_begin: None,
             pack_target_bytes: 8 * 1024 * 1024,
             pack_max_blocks: 10_000,
-            // max(distance/10, 1): every block at the tip, ~10% of the
-            // distance while catching up.
             tip_lag_divisor: 10,
             checkpoint_every_blocks: 10_000,
-            // Deep enough that a multi-second index seal burst doesn't convoy
-            // the producer and data track behind it.
             track_buffer: 2048,
             poll_ms: 50,
-            // Sized for high-latency per-object sources (3 GETs/block); the
-            // semaphore only fills during catch-up.
             fetch_concurrency: 2000,
             fetch_buffer: 5000,
         }
@@ -176,10 +132,6 @@ impl ChainDataEngineConfig {
     }
 }
 
-/// Cross-checks the store/engine pair for a blob-less store (`[store.blob]`
-/// omitted). Such a store cannot hold pack blobs (so the payload must be
-/// external) or snapshot payloads (so the seed knob, which writes one, is
-/// rejected; the checkpoint cadence is auto-disabled rather than rejected).
 fn validate_blobless_ingest(
     store_config: &ChainDataStoreConfig,
     engine_config: &ChainDataEngineConfig,
@@ -208,12 +160,6 @@ fn validate_blobless_ingest(
     Ok(())
 }
 
-/// Opens the configured stores and drives the branchless ingest engine
-/// (`run_ingest`) over them. A bounded range (`end`/`count`)
-/// selects backfill; otherwise it follows the tip.
-/// `external`: a pre-built external payload reader (monad-archive's
-/// archive-format readers); required for mongo/dynamo `[store.archive]`
-/// backends, `None` lets the S3 backend build from config.
 pub async fn run_configured_chain_data_engine_ingest<S>(
     store_config: ChainDataStoreConfig,
     engine_config: ChainDataEngineConfig,
@@ -244,16 +190,9 @@ where
             )
             .await
         }
-        // Mongo meta is blob-less only (validated), so it always runs the
-        // external-archive engine over the loud NullBlobStore: checkpoints
-        // are disabled and recovery rebuilds from fragments.
         #[cfg(feature = "mongo")]
         ChainDataMetaBackendConfig::Mongo(meta_config) => {
             let meta_store = build_mongo_meta_store(meta_config).await?;
-            info!(
-                "chain-data mongo meta store is blob-less; checkpoints are disabled — \
-                 recovery rebuilds from fragments"
-            );
             run_engine_with_store(
                 &store_config,
                 &engine_config,
@@ -317,15 +256,7 @@ where
         Some(ChainDataBlobBackendConfig::Unavailable) => {
             bail!("chain-data configured ingest requires s3 or dynamo blob storage")
         }
-        // No blob store: external-archive payload (validated upstream) over the
-        // loud NullBlobStore. Checkpoints persist their snapshot payload as a
-        // blob object, so they are auto-disabled; recovery rebuilds the open
-        // state from fragments at the published head.
         None => {
-            info!(
-                "chain-data blob store not configured ([store.blob] omitted); \
-                 checkpoints are disabled — recovery rebuilds from fragments"
-            );
             run_engine_with_store(
                 store_config,
                 engine_config,
@@ -357,17 +288,11 @@ where
     S: ChainDataIngestSource,
 {
     let cache_config = resolve_cache_config(store_config, ChainDataCacheMode::Ingest);
-    // The snapshot store writes its payload blobs through the same blob backend
-    // the engine packs blocks into (under its own blob table). A blob-less run
-    // gets the payload-less variant, which also unwedges recovery from any
-    // manifest a blob-backed past left behind.
     let snapshots = if checkpoints_enabled {
         SnapshotStore::new(meta_store.clone(), blob_store.clone())
     } else {
         SnapshotStore::without_payloads(meta_store.clone(), blob_store.clone())
     };
-    // One Arc<Tables> is shared by the engine (writes) and the resolver (dict
-    // training reads back through the same caches).
     let mut tables = Tables::with_all_configs(
         meta_store.clone(),
         blob_store,
@@ -375,9 +300,6 @@ where
         DictConfig::default(),
         QueryRuntimeConfig::default(),
     );
-    // Ingest never reads external payloads itself (dict training is disabled
-    // in external mode), but attaching configured archive access keeps the
-    // shared `Tables` fully wired for any read path it serves.
     if let Some(reader) =
         super::build_external_payload_reader(&store_config.archive, external).await?
     {
@@ -409,8 +331,6 @@ where
         buffer: engine_config.fetch_buffer,
     };
 
-    // `end`/`count` only bound how far this run goes (absent ⇒ follow forever);
-    // the engine derives the begin block from store state.
     info!(
         end = engine_config.end,
         count = engine_config.count,
@@ -424,7 +344,7 @@ where
         snapshots,
         resolver,
         IngestRunConfig {
-            start: 0, // genesis cold-start floor; a warm resume overrides it
+            start: 0,
             end: engine_config.end,
             count: engine_config.count,
             policy: SignalPolicy {
@@ -461,8 +381,6 @@ mod tests {
         }
     }
 
-    /// Blob-less stores cannot hold pack blobs, so a native payload must be
-    /// rejected at assembly with a clear message.
     #[test]
     fn blobless_ingest_rejects_native_payload() {
         let engine = ChainDataEngineConfig {
@@ -473,8 +391,6 @@ mod tests {
         assert!(err.to_string().contains("external-archive"), "{err}");
     }
 
-    /// `unsafe_seed_begin` writes a seed snapshot payload (a blob object), so
-    /// it must be rejected on a blob-less store.
     #[test]
     fn blobless_ingest_rejects_unsafe_seed_begin() {
         let engine = ChainDataEngineConfig {
@@ -486,8 +402,6 @@ mod tests {
         assert!(err.to_string().contains("unsafe_seed_begin"), "{err}");
     }
 
-    /// The supported blob-less shape: external-archive payload, no seed,
-    /// archive access configured.
     #[cfg(feature = "s3")]
     #[test]
     fn blobless_ingest_accepts_external_payload() {
@@ -498,8 +412,6 @@ mod tests {
         assert!(validate_blobless_ingest(&blobless_store(), &engine).is_ok());
     }
 
-    /// Without [store.archive] a blob-less store could not serve its own row
-    /// payloads; rejected at assembly rather than at first query.
     #[test]
     fn blobless_ingest_requires_archive_access() {
         let engine = ChainDataEngineConfig {
@@ -515,8 +427,6 @@ mod tests {
         assert!(err.to_string().contains("[store.archive]"), "{err}");
     }
 
-    /// With a blob backend configured the cross-check imposes nothing (native
-    /// payload and the seed knob stay valid).
     #[cfg(feature = "dynamo")]
     #[test]
     fn configured_blob_store_imposes_no_payload_constraint() {
