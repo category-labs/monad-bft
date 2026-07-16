@@ -40,7 +40,6 @@ use super::{ChainDataMetaBackendConfig, ChainDataStoreConfig};
 
 #[derive(Clone)]
 pub enum ConfiguredChainDataReader {
-    /// In-process in-memory stores: testkit fixtures and embedded harnesses.
     InMemory(
         Arc<
             monad_query_read::api::MonadChainDataService<
@@ -67,12 +66,6 @@ pub enum ConfiguredChainDataReader {
             >,
         >,
     ),
-    /// Dynamo meta with NO blob store (`[store.blob]` omitted): a reader of an
-    /// external-archive store, whose row payloads are range-read from
-    /// `[store.archive]` and never touch the blob backend. Reading a NATIVE
-    /// block record through this variant (a store that was actually ingested
-    /// with pack blobs) surfaces [`monad_query_store::NullBlobStore`]'s loud
-    /// `Backend` error rather than silently returning nothing.
     #[cfg(feature = "dynamo")]
     DynamoNull(
         Arc<
@@ -82,10 +75,6 @@ pub enum ConfiguredChainDataReader {
             >,
         >,
     ),
-    /// Mongo meta with NO blob store: the only supported mongo shape (the
-    /// backend is blob-less by validation). Row payloads are range-read from
-    /// `[store.archive]`; native block records error loudly like
-    /// [`DynamoNull`](Self::DynamoNull).
     #[cfg(feature = "mongo")]
     MongoNull(
         Arc<
@@ -114,9 +103,6 @@ macro_rules! with_reader {
 }
 
 impl ConfiguredChainDataReader {
-    /// Wraps an in-memory service (e.g. one over
-    /// [`monad_query_testkit::populate_via_engine`] stores) in the configured-reader
-    /// dispatch, so transport layers can be exercised without a backend.
     pub fn in_memory(
         service: monad_query_read::api::MonadChainDataService<
             monad_query_store::InMemoryMetaStore,
@@ -213,7 +199,6 @@ pub async fn open_configured_chain_data_reader(
             let shared = Some(meta_store.shared_connection());
             dispatch_dynamo_reader_blob(&store_config, limits, meta_store, shared, external).await
         }
-        // Mongo meta is blob-less only (validated): always the MongoNull shape.
         #[cfg(feature = "mongo")]
         ChainDataMetaBackendConfig::Mongo(meta_config) => {
             use monad_query_engine::tables::DictConfig;
@@ -305,8 +290,6 @@ async fn dispatch_dynamo_reader_blob(
                 external_reader,
             )))
         }
-        // No blob store: valid for readers of external-archive stores (see the
-        // `DynamoNull` variant docs for what a native read does here).
         None => Ok(ConfiguredChainDataReader::DynamoNull(service(
             meta_store,
             monad_query_store::NullBlobStore,
