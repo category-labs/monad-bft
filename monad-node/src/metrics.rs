@@ -23,7 +23,7 @@ use actix_server::Server;
 use actix_web::{http::header, web, App, HttpRequest, HttpResponse, HttpServer};
 use monad_consensus_types::metrics::Metrics as StateMetrics;
 use monad_executor::{metric_consts, ExecutorMetrics, ExecutorMetricsChain, Gauge};
-use monad_triedb_utils::MigrationPhase;
+use monad_triedb_utils::{MigrationPhase, StorageStats};
 use prometheus::{Encoder, ProtobufEncoder, Registry, TextEncoder};
 
 pub fn default_prometheus_labels(
@@ -86,6 +86,33 @@ pub fn record_triedb_phase_metrics(metrics: &mut ExecutorMetrics, phase: Migrati
         MigrationPhase::PageEncoded => 2,
     };
     metrics.gauge(GAUGE_TRIEDB_MIGRATION_PHASE).set(code);
+}
+
+metric_consts! {
+    pub GAUGE_TRIEDB_DISK_CAPACITY_BYTES {
+        name: "monad.triedb.disk_capacity_bytes",
+        help: "Total triedb storage-pool capacity in bytes: sum of file sizes (file pools) or raw device sizes (block-device pools).",
+    }
+    pub GAUGE_TRIEDB_DISK_USED_BYTES {
+        name: "monad.triedb.disk_used_bytes",
+        help: "triedb storage-pool bytes in use. Block-device pools sum appended bytes per chunk and under-report pool overhead by a few hundred MiB per device; file pools report filesystem-allocated blocks, a high-water mark that does not shrink as chunks are recycled. Treat the trend as the signal, not the absolute value.",
+    }
+}
+
+pub fn init_triedb_storage_metrics() -> ExecutorMetrics {
+    ExecutorMetrics::with_metric_defs(&[
+        GAUGE_TRIEDB_DISK_CAPACITY_BYTES,
+        GAUGE_TRIEDB_DISK_USED_BYTES,
+    ])
+}
+
+pub fn record_triedb_storage_metrics(metrics: &mut ExecutorMetrics, stats: StorageStats) {
+    metrics
+        .gauge(GAUGE_TRIEDB_DISK_CAPACITY_BYTES)
+        .set(stats.disk_capacity_bytes);
+    metrics
+        .gauge(GAUGE_TRIEDB_DISK_USED_BYTES)
+        .set(stats.disk_used_bytes);
 }
 
 fn duration_micros_u64(duration: &Duration) -> u64 {
@@ -262,5 +289,64 @@ mod migration_phase_tests {
             record_triedb_phase_metrics(&mut metrics, phase);
             assert_eq!(metrics.gauge(GAUGE_TRIEDB_MIGRATION_PHASE).get(), code);
         }
+    }
+}
+
+#[cfg(test)]
+mod storage_metrics_tests {
+    use monad_triedb_utils::StorageStats;
+    use prometheus::{Encoder, Registry, TextEncoder};
+
+    use super::{
+        init_triedb_storage_metrics, record_triedb_storage_metrics,
+        GAUGE_TRIEDB_DISK_CAPACITY_BYTES, GAUGE_TRIEDB_DISK_USED_BYTES,
+    };
+
+    #[test]
+    fn records_capacity_and_used() {
+        let mut metrics = init_triedb_storage_metrics();
+        record_triedb_storage_metrics(
+            &mut metrics,
+            StorageStats {
+                disk_capacity_bytes: 1_000,
+                disk_used_bytes: 600,
+            },
+        );
+        assert_eq!(metrics.gauge(GAUGE_TRIEDB_DISK_CAPACITY_BYTES).get(), 1_000);
+        assert_eq!(metrics.gauge(GAUGE_TRIEDB_DISK_USED_BYTES).get(), 600);
+    }
+
+    // A refresh reaches the scrape only if it writes the same gauges the
+    // registry holds, so assert through the encoded output rather than through
+    // the ExecutorMetrics the ticker writes to.
+    #[test]
+    fn refresh_after_registration_reaches_the_scrape() {
+        let mut metrics = init_triedb_storage_metrics();
+        let registry = Registry::new();
+        metrics.register(&registry).expect("gauges registered");
+
+        for used in [600, 700] {
+            record_triedb_storage_metrics(
+                &mut metrics,
+                StorageStats {
+                    disk_capacity_bytes: 1_000,
+                    disk_used_bytes: used,
+                },
+            );
+        }
+
+        let mut buffer = Vec::new();
+        TextEncoder::new()
+            .encode(&registry.gather(), &mut buffer)
+            .expect("encoded");
+        let scraped = String::from_utf8(buffer).expect("utf-8");
+        assert!(
+            scraped.contains("monad_triedb_disk_capacity_bytes 1000"),
+            "{scraped}"
+        );
+        assert!(
+            scraped.contains("monad_triedb_disk_used_bytes 700"),
+            "{scraped}"
+        );
     }
 }

@@ -32,8 +32,8 @@ use monad_crypto::certificate_signature::PubKey;
 use monad_eth_types::{EthAccount, EthHeader};
 use monad_execution_state_read::{ExecutionStateRead, ExecutionStateReadError};
 use monad_secp::SecpSignature;
-pub use monad_triedb::MigrationPhase;
 use monad_triedb::TriedbHandle;
+pub use monad_triedb::{MigrationPhase, StorageStats};
 use monad_types::{BlockId, Epoch, Hash, SeqNum, Stake};
 use tracing::{debug, trace, warn};
 
@@ -75,6 +75,12 @@ impl TriedbReader {
     /// execution is writing.
     pub fn migration_phase(&self) -> MigrationPhase {
         self.handle.migration_phase()
+    }
+
+    /// Storage-pool disk capacity and usage in bytes. Safe on a read-only
+    /// handle while execution writes.
+    pub fn storage_stats(&self) -> StorageStats {
+        self.handle.storage_stats()
     }
 
     pub fn get_latest_voted_block(&self) -> Option<SeqNum> {
