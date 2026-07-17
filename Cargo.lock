@@ -5174,6 +5174,7 @@ dependencies = [
  "futures-util",
  "governor",
  "libc",
+ "monad-executor",
  "monad-types",
  "monoio",
  "ntest",

@@ -9,6 +9,7 @@ edition = "2021"
 bench = false
 
 [dependencies]
+monad-executor = { workspace = true }
 monad-types = { workspace = true }
 
 bytes = { workspace = true }
