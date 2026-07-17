@@ -40,6 +40,7 @@ use super::{
 };
 use crate::{
     addrlist::{Addrlist, Status},
+    metrics::{ActiveConnectionGuard, DataplaneMetrics},
     tcp::RateLimiter,
 };
 
@@ -49,6 +50,7 @@ const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) struct RxState {
     inner: Rc<RefCell<RxStateInner>>,
     addrlist: Arc<Addrlist>,
+    metrics: DataplaneMetrics,
 }
 
 impl RxState {
@@ -56,6 +58,7 @@ impl RxState {
         addrlist: Arc<Addrlist>,
         tcp_connections_limit: usize,
         tcp_per_ip_connections_limit: usize,
+        metrics: DataplaneMetrics,
     ) -> RxState {
         let inner = Rc::new(RefCell::new(RxStateInner {
             tcp_connections_limit,
@@ -64,13 +67,18 @@ impl RxState {
             num_connections_per_ip: BTreeMap::new(),
         }));
 
-        RxState { addrlist, inner }
+        RxState {
+            addrlist,
+            inner,
+            metrics,
+        }
     }
 
     fn apply_limits(&self, ip: IpAddr) -> Result<ConnectionToken, ()> {
         let status = self.addrlist.status(&ip);
         match status {
             Status::Banned => {
+                self.metrics.tcp_inbound_connections_rejected.inc();
                 warn!(?ip, "banned address attempting connection, dropping");
                 Err(())
             }
@@ -82,11 +90,17 @@ impl RxState {
                     connection_limit = inner_ref.tcp_connections_limit,
                     "trusted peer connection accepted"
                 );
-                Ok(ConnectionToken::Trusted)
+                Ok(ConnectionToken::Trusted {
+                    _active_connection: ActiveConnectionGuard::new(
+                        &self.metrics.tcp_inbound_connections_accepted,
+                        &self.metrics.tcp_current_inbound_connections,
+                    ),
+                })
             }
             Status::Unknown => {
                 let mut inner_ref = self.inner.borrow_mut();
                 if inner_ref.num_connections >= inner_ref.tcp_connections_limit {
+                    self.metrics.tcp_inbound_connections_rejected.inc();
                     debug!(
                         ?ip,
                         total_connections = inner_ref.num_connections,
@@ -99,6 +113,7 @@ impl RxState {
                     let per_ip_limit = inner_ref.tcp_per_ip_connections_limit;
                     let count_ref = inner_ref.num_connections_per_ip.entry(ip).or_insert(0);
                     if *count_ref >= per_ip_limit {
+                        self.metrics.tcp_inbound_connections_rejected.inc();
                         debug!(
                             ?ip,
                             ip_connections = *count_ref,
@@ -123,6 +138,10 @@ impl RxState {
                 Ok(ConnectionToken::Unknown {
                     inner: self.inner.clone(),
                     ip,
+                    _active_connection: ActiveConnectionGuard::new(
+                        &self.metrics.tcp_inbound_connections_accepted,
+                        &self.metrics.tcp_current_inbound_connections,
+                    ),
                 })
             }
         }
@@ -130,20 +149,28 @@ impl RxState {
 }
 
 enum ConnectionToken {
-    Trusted,
+    Trusted {
+        _active_connection: ActiveConnectionGuard,
+    },
     Unknown {
         inner: Rc<RefCell<RxStateInner>>,
         ip: IpAddr,
+        _active_connection: ActiveConnectionGuard,
     },
+}
+
+struct ConnectionContext {
+    _token: ConnectionToken,
+    metrics: DataplaneMetrics,
 }
 
 impl Drop for ConnectionToken {
     fn drop(&mut self) {
         match self {
-            ConnectionToken::Trusted => {
+            ConnectionToken::Trusted { .. } => {
                 trace!("trusted connection dropped");
             }
-            ConnectionToken::Unknown { inner, ip } => {
+            ConnectionToken::Unknown { inner, ip, .. } => {
                 let mut inner_ref = inner.borrow_mut();
                 inner_ref.num_connections -= 1;
                 if let Some(count_ref) = inner_ref.num_connections_per_ip.get_mut(ip) {
@@ -182,7 +209,10 @@ pub(crate) async fn task(
                     spawn(task_connection(
                         rate_limit.new_rate_limiter(),
                         tcp_control_map.clone(),
-                        conn_state,
+                        ConnectionContext {
+                            _token: conn_state,
+                            metrics: rx_state.metrics.clone(),
+                        },
                         conn_id,
                         addr,
                         tcp_stream,
@@ -198,6 +228,7 @@ pub(crate) async fn task(
                 }
             },
             Err(err) => {
+                rx_state.metrics.tcp_receive_errors.inc();
                 warn!(conn_id, ?err, "error accepting tcp connection");
             }
         }
@@ -209,7 +240,7 @@ pub(crate) async fn task(
 async fn task_connection(
     rate_limiter: RateLimiter,
     tcp_control_map: TcpControl,
-    _rx_state: ConnectionToken,
+    connection: ConnectionContext,
     conn_id: u64,
     addr: SocketAddr,
     mut tcp_stream: TcpStream,
@@ -231,14 +262,15 @@ async fn task_connection(
                     }
                 }
             },
-            msg = read_message(conn_id, addr, message_id, &mut tcp_stream) => {
-                if rate_limiter.check().is_err() {
-                    warn!(conn_id, ?addr, "rate limit exceeded");
-                    break;
-                }
+            msg = read_message(conn_id, addr, message_id, &mut tcp_stream, &connection.metrics) => {
                 let Some(message) = msg else {
                     break;
                 };
+                if rate_limiter.check().is_err() {
+                    connection.metrics.tcp_connections_rate_limited.inc();
+                    warn!(conn_id, ?addr, "rate limit exceeded");
+                    break;
+                }
                 let recv_msg = RecvTcpMsg {
                     src_addr: addr,
                     payload: message,
@@ -270,6 +302,7 @@ async fn read_message(
     addr: SocketAddr,
     message_id: u64,
     tcp_stream: &mut TcpStream,
+    metrics: &DataplaneMetrics,
 ) -> Option<Bytes> {
     let start_time = if enabled!(Level::DEBUG) {
         Some(Instant::now())
@@ -284,6 +317,7 @@ async fn read_message(
             Ok(_len) => TcpMsgHdr::read_from_bytes(&header_bytes[..]).unwrap(),
             Err(err) => {
                 if message_id == 0 || err.kind() != ErrorKind::UnexpectedEof {
+                    metrics.tcp_receive_errors.inc();
                     debug!(
                         conn_id,
                         ?addr,
@@ -298,6 +332,7 @@ async fn read_message(
             }
         },
         Err(_) => {
+            metrics.tcp_receive_errors.inc();
             warn!(
                 conn_id,
                 ?addr,
@@ -315,6 +350,7 @@ async fn read_message(
     } = header;
 
     if header_magic.get() != HEADER_MAGIC {
+        metrics.tcp_receive_errors.inc();
         debug!(
             conn_id,
             ?addr,
@@ -325,6 +361,7 @@ async fn read_message(
         return None;
     }
     if header_version.get() != HEADER_VERSION {
+        metrics.tcp_receive_errors.inc();
         debug!(
             conn_id,
             ?addr,
@@ -338,6 +375,7 @@ async fn read_message(
     let message_length: usize = header_length.get() as usize;
 
     if message_length > TCP_MESSAGE_LENGTH_LIMIT {
+        metrics.tcp_receive_errors.inc();
         debug!(
             conn_id,
             ?addr,
@@ -367,6 +405,7 @@ async fn read_message(
         Ok((ret, message)) => match ret {
             Ok(_len) => message,
             Err(err) => {
+                metrics.tcp_receive_errors.inc();
                 debug!(
                     conn_id,
                     ?addr,
@@ -379,6 +418,7 @@ async fn read_message(
             }
         },
         Err(_) => {
+            metrics.tcp_receive_errors.inc();
             warn!(
                 conn_id,
                 ?addr,
@@ -417,5 +457,7 @@ async fn read_message(
         );
     }
 
+    metrics.tcp_messages_received.inc();
+    metrics.tcp_bytes_received.add(message_length as u64);
     Some(message.freeze())
 }
