@@ -28,7 +28,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_dataplane::{DataplaneBuilder, TcpSocketId, UdpSocketId};
-use monad_executor::{Executor, ExecutorMetricsChain};
+use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{Message, RouterCommand};
 use monad_node_config::{FullNodeConfig, FullNodeIdentityConfig};
 use monad_peer_discovery::{
@@ -74,6 +74,7 @@ where
     epoch_validators: BTreeMap<Epoch, BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>>,
 
     shared_pdd: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
+    dataplane_metrics: ExecutorMetrics,
 
     phantom: PhantomData<(OM, SE)>,
 }
@@ -109,6 +110,7 @@ where
 
         let mut dp = dataplane_builder.build();
         assert!(dp.block_until_ready(Duration::from_secs(1)));
+        let dataplane_metrics = dp.metrics().clone();
 
         let tcp_socket = dp.tcp_sockets.take(TcpSocketId::Raptorcast).unwrap();
         let authenticated_socket = dp
@@ -192,6 +194,7 @@ where
             epoch_validators,
             self_node_id,
             shared_pdd,
+            dataplane_metrics,
             phantom: PhantomData,
         }
     }
@@ -467,7 +470,7 @@ where
         } else {
             m1
         };
-        res
+        res.push(&self.dataplane_metrics)
     }
 }
 

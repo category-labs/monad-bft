@@ -29,6 +29,7 @@ use std::{
 use addrlist::Addrlist;
 use bytes::Bytes;
 use futures::channel::oneshot;
+use metrics::DataplaneMetrics;
 use monad_types::UdpPriority;
 use monoio::{spawn, time::Instant, IoUringDriver, RuntimeBuilder};
 use tcp::{TcpConfig, TcpControl, TcpRateLimit};
@@ -38,6 +39,7 @@ use tracing::{debug, warn};
 pub(crate) mod addrlist;
 pub(crate) mod ban_expiry;
 pub(crate) mod buffer_ext;
+mod metrics;
 pub mod tcp;
 pub mod udp;
 
@@ -183,6 +185,7 @@ impl DataplaneBuilder {
 
         let (tcp_egress_tx, tcp_egress_rx) = mpsc::channel(TCP_EGRESS_CHANNEL_SIZE);
         let (udp_egress_tx, udp_egress_rx) = mpsc::channel(UDP_EGRESS_CHANNEL_SIZE);
+        let metrics = DataplaneMetrics::new();
 
         let mut udp_socket_configs = Vec::new();
         let mut udp_pending_handles = Vec::new();
@@ -221,6 +224,7 @@ impl DataplaneBuilder {
             .spawn({
                 let tcp_control_map = tcp_control_map.clone();
                 let addrlist = addrlist.clone();
+                let metrics = metrics.clone();
                 move || {
                     RuntimeBuilder::<IoUringDriver>::new()
                         .enable_timer()
@@ -240,6 +244,7 @@ impl DataplaneBuilder {
                                 tcp_socket_configs,
                                 tcp_egress_rx,
                                 tcp_bound_addrs_tx,
+                                metrics.clone(),
                             );
                             udp::spawn_tasks(
                                 udp_socket_configs,
@@ -248,6 +253,7 @@ impl DataplaneBuilder {
                                 udp_buffer_size,
                                 udp_multishot,
                                 udp_bound_addrs_tx,
+                                metrics,
                             );
 
                             ready_clone.store(true, Ordering::Release);
@@ -286,6 +292,7 @@ impl DataplaneBuilder {
                     socket_addr,
                     egress_tx: udp_egress_tx.clone(),
                     msgs_dropped: Arc::new(AtomicUsize::new(0)),
+                    metrics: metrics.clone(),
                 },
             };
             udp_socket_handles.push(id, handle);
@@ -307,6 +314,7 @@ impl DataplaneBuilder {
                     socket_addr,
                     egress_tx: tcp_egress_tx.clone(),
                     msgs_dropped: Arc::new(AtomicUsize::new(0)),
+                    metrics: metrics.clone(),
                 },
             };
             tcp_socket_handles.push(id, handle);
@@ -319,6 +327,7 @@ impl DataplaneBuilder {
             udp_sockets: udp_socket_handles,
             control,
             ready,
+            metrics,
         }
     }
 }
@@ -328,6 +337,7 @@ pub struct Dataplane {
     pub udp_sockets: UdpSocketHandles,
     pub control: DataplaneControl,
     ready: Arc<AtomicBool>,
+    metrics: DataplaneMetrics,
 }
 
 pub struct UdpSocketReader {
@@ -350,6 +360,7 @@ pub struct UdpSocketWriter {
     socket_addr: SocketAddr,
     egress_tx: mpsc::Sender<UdpMsg>,
     msgs_dropped: Arc<AtomicUsize>,
+    metrics: DataplaneMetrics,
 }
 
 pub struct UdpSocketHandle {
@@ -413,6 +424,7 @@ impl UdpSocketWriter {
         match result {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
+                self.metrics.udp_egress_messages_dropped.inc();
                 let total = self.msgs_dropped.fetch_add(1, Ordering::Relaxed);
                 warn!(
                     socket_id = ?self.socket_id,
@@ -447,6 +459,9 @@ impl UdpSocketWriter {
         }
 
         if pending_count > 0 {
+            self.metrics
+                .udp_egress_messages_dropped
+                .add(pending_count as u64);
             let total = self
                 .msgs_dropped
                 .fetch_add(pending_count, Ordering::Relaxed);
@@ -479,6 +494,9 @@ impl UdpSocketWriter {
         }
 
         if pending_count > 0 {
+            self.metrics
+                .udp_egress_messages_dropped
+                .add(pending_count as u64);
             let total = self
                 .msgs_dropped
                 .fetch_add(pending_count, Ordering::Relaxed);
@@ -526,6 +544,7 @@ pub struct TcpSocketWriter {
     socket_addr: SocketAddr,
     egress_tx: mpsc::Sender<(SocketAddr, TcpMsg)>,
     msgs_dropped: Arc<AtomicUsize>,
+    metrics: DataplaneMetrics,
 }
 
 impl TcpSocketWriter {
@@ -535,6 +554,7 @@ impl TcpSocketWriter {
         match self.egress_tx.try_send((addr, msg)) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
+                self.metrics.tcp_egress_messages_dropped.inc();
                 let total = self.msgs_dropped.fetch_add(1, Ordering::Relaxed);
                 warn!(
                     socket_id = ?self.socket_id,
@@ -751,6 +771,11 @@ const UDP_INGRESS_CHANNEL_SIZE: usize = 12_800;
 const UDP_EGRESS_CHANNEL_SIZE: usize = 12_800;
 
 impl Dataplane {
+    /// Returns the live dataplane metrics for Prometheus or OTel registration.
+    pub fn metrics(&self) -> &monad_executor::ExecutorMetrics {
+        self.metrics.executor_metrics()
+    }
+
     pub fn add_trusted(&self, addr: IpAddr) {
         self.control.add_trusted(addr);
     }
