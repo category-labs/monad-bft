@@ -22,7 +22,7 @@ use std::{future::Future, sync::Arc};
 use bytes::Bytes;
 use futures::{stream::FuturesOrdered, StreamExt};
 use monad_query_engine::{
-    digest::{block_content_digest, chain, family_content_digest, ChainDigest},
+    digest::{BlockDigest, ChainDigest, FamilyDigest},
     family::PerFamily,
     row_codec::{digest_block_rows, encode_block_rows, RowCodec, DICT_VERSION_NONE},
     tables::{DictConfig, Tables},
@@ -389,7 +389,7 @@ where
             return Ok(false);
         };
         let mut entry = joined.map_err(task_join_err)??;
-        self.chain_head = chain(self.chain_head, entry.content_digest);
+        self.chain_head = BlockDigest::chain(self.chain_head, entry.content_digest);
         entry.record.row_chain = self.chain_head;
         self.packer.push(entry.record.block_number, entry);
         Ok(true)
@@ -605,14 +605,14 @@ fn block_record_and_digest(
         row_chain: monad_query_engine::digest::EMPTY_DIGEST,
     };
 
-    let content_digest = block_content_digest(
+    let content_digest = BlockDigest::content(
         b.number,
         &record.block_hash,
         &record.parent_hash,
         &alloy_rlp::encode(&b.block.header),
-        family_content_digest(record.logs, log_rows_digest),
-        family_content_digest(record.txs, tx_rows_digest),
-        family_content_digest(record.traces, trace_rows_digest),
+        FamilyDigest::content(record.logs, log_rows_digest),
+        FamilyDigest::content(record.txs, tx_rows_digest),
+        FamilyDigest::content(record.traces, trace_rows_digest),
     );
     (record, content_digest)
 }
