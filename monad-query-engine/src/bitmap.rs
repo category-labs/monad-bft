@@ -21,9 +21,7 @@ use std::{
 use bytes::Bytes;
 use futures::{stream, StreamExt, TryStreamExt};
 use monad_query_errors::{QueryError, Result};
-use monad_query_store::{
-    blob::BlobStore, CachedKvTable, CachedScannableKvTable, MetaStore, ScannableTableId,
-};
+use monad_query_store::{blob::BlobStore, CachedKvTable, CachedScannableKvTable, MetaStore};
 use roaring::RoaringBitmap;
 
 use crate::{
@@ -31,25 +29,14 @@ use crate::{
     tables::{scan_get_all, FRAGMENT_GET_CONCURRENCY},
 };
 
-/// Ids per bitmap page: the seal granule. A page covers the aligned id range
-/// `[page_start, page_start + STREAM_PAGE_ID_SPAN)`; bitmap bits are stored
-/// PAGE-RELATIVE (bit `v` in page `P` is id `P + v`, `v` in `[0, span)`).
 pub const STREAM_PAGE_ID_SPAN: u32 = 64 * 1024;
-/// Ids per page group (256 pages): purely the manifest's keying/completeness
-/// window — a stream's page-count manifest row covers exactly one group, and
-/// is written once the family frontier leaves that group.
 pub const PAGE_GROUP_ID_SPAN: u64 = 1 << 24;
 const BITMAP_BLOB_VERSION: u8 = 1;
 const BITMAP_PAGE_COUNTS_VERSION: u8 = 1;
 const BITMAP_BLOB_HEADER_LEN: usize = 1 + 4 * 3;
-// Must differ from `BITMAP_BLOB_VERSION`: a page artifact wraps a blob, and
-// `decode_bitmap_page_artifact` discriminates the two formats by leading byte.
 const BITMAP_PAGE_ARTIFACT_VERSION: u8 = 2;
 const BITMAP_PAGE_ARTIFACT_HEADER_LEN: usize = 1 + 4 * 3;
 
-/// A frontier-page bitmap fragment decoded from its stored bytes: the
-/// roaring bitmap plus its min/max/count header (see [`encode_bitmap_blob`]).
-/// Offsets are page-relative.
 #[derive(Debug, Clone)]
 pub struct DecodedBitmapFragment {
     pub min_offset: u32,
@@ -64,7 +51,6 @@ pub struct BitmapPageArtifact {
     pub bitmap_blob: Bytes,
 }
 
-/// Page-relative min/max/count of one sealed page's bitmap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BitmapPageMeta {
     pub min_offset: u32,
@@ -72,59 +58,10 @@ pub struct BitmapPageMeta {
     pub count: u32,
 }
 
-/// A sealed bitmap page decoded for the read cache, `Arc`-shared so a hit
-/// clones a refcount instead of re-deserializing. The on-disk
-/// [`BitmapPageArtifact`] remains the write-path type.
 #[derive(Debug, Clone)]
 pub struct DecodedBitmapPage {
     pub meta: BitmapPageMeta,
     pub bitmap: RoaringBitmap,
-}
-
-/// Cache decoder for a stream's per-group page-count manifest.
-pub(crate) fn decode_page_counts(bytes: Bytes) -> Result<BitmapPageCounts> {
-    BitmapPageCounts::decode(&bytes)
-}
-
-/// Cache decoder for one stored bitmap fragment (frontier-page delta).
-pub(crate) fn decode_fragment_blob(bytes: Bytes) -> Result<Arc<DecodedBitmapFragment>> {
-    Ok(Arc::new(decode_bitmap_blob(bytes.as_ref())?))
-}
-
-/// Cache decoder for one sealed bitmap page artifact; a cache hit skips both
-/// the framing parse and the roaring deserialize.
-pub(crate) fn decode_page(bytes: Bytes) -> Result<Arc<DecodedBitmapPage>> {
-    let artifact = decode_bitmap_page_artifact(bytes.as_ref())?
-        .ok_or(QueryError::Decode("invalid bitmap page artifact"))?;
-    let blob = decode_bitmap_blob(artifact.bitmap_blob.as_ref())?;
-    // The writer duplicates the inner blob header into the outer artifact
-    // header, and the query-time page skip reads the OUTER copy (see
-    // `engine::query::bitmap::overlaps`). `decode_bitmap_blob` validated the
-    // inner header against the payload; reject a divergent outer copy so a
-    // corrupt too-narrow header fails loud instead of silently dropping the
-    // page from results.
-    let expected = BitmapPageMeta {
-        min_offset: blob.min_offset,
-        max_offset: blob.max_offset,
-        count: blob.count,
-    };
-    if artifact.meta != expected {
-        return Err(QueryError::Decode(
-            "bitmap page artifact header does not match blob header",
-        ));
-    }
-    // Built from the payload-validated inner triple, not the outer copy, so
-    // downstream readers cannot depend on the unvalidated bytes.
-    Ok(Arc::new(DecodedBitmapPage {
-        meta: expected,
-        bitmap: blob.bitmap,
-    }))
-}
-
-/// Cache decoder for one open-stream inventory delta row (a chunk of stream
-/// ids: one flush's first-seen set, or a sealed page's complete inventory).
-pub(crate) fn decode_open_streams_chunk(bytes: Bytes) -> Result<Arc<Vec<String>>> {
-    decode_open_streams_delta(&bytes).map(Arc::new)
 }
 
 /// Bound on cached open-page folds per family. Entries exist only for
@@ -135,18 +72,11 @@ const OPEN_PAGE_FOLD_CAP: usize = 4096;
 
 #[derive(Clone)]
 pub struct BitmapTables<M: MetaStore> {
-    fragments: CachedScannableKvTable<M, Arc<DecodedBitmapFragment>>,
-    page_blobs: CachedKvTable<M, Arc<DecodedBitmapPage>>,
-    page_counts: CachedKvTable<M, BitmapPageCounts>,
-    open_streams: CachedScannableKvTable<M, Arc<Vec<String>>>,
-    /// Incremental folds of open-page fragments, keyed by `(stream, page)`
-    /// and tagged with the published head they are folded through. Fragments
-    /// key by flush block and heads publish only at flush boundaries, so
-    /// every fragment at or below a published head is durably visible: a
-    /// head-current fold is complete and serves with zero store reads, and a
-    /// stale one extends with only the fragments flushed since. `Arc`-shared
-    /// so table clones fold once per store, not once per handle.
-    open_page_folds: Arc<Mutex<HashMap<(String, u64), (u64, Arc<DecodedBitmapPage>)>>>,
+    pub fragments: CachedScannableKvTable<M, Arc<DecodedBitmapFragment>>,
+    pub page_blobs: CachedKvTable<M, Arc<DecodedBitmapPage>>,
+    pub page_counts: CachedKvTable<M, BitmapPageCounts>,
+    pub open_streams: CachedScannableKvTable<M, Arc<Vec<String>>>,
+    pub open_page_folds: Arc<Mutex<HashMap<(String, u64), (u64, Arc<DecodedBitmapPage>)>>>,
 }
 
 impl<M: MetaStore> BitmapTables<M> {
@@ -163,26 +93,6 @@ impl<M: MetaStore> BitmapTables<M> {
             open_streams,
             open_page_folds: Arc::new(Mutex::new(HashMap::new())),
         }
-    }
-
-    pub fn fragments_table(&self) -> ScannableTableId {
-        self.fragments.table_id()
-    }
-
-    pub(crate) fn fragments_cache(&self) -> &CachedScannableKvTable<M, Arc<DecodedBitmapFragment>> {
-        &self.fragments
-    }
-
-    pub(crate) fn page_blobs_cache(&self) -> &CachedKvTable<M, Arc<DecodedBitmapPage>> {
-        &self.page_blobs
-    }
-
-    pub(crate) fn page_counts_cache(&self) -> &CachedKvTable<M, BitmapPageCounts> {
-        &self.page_counts
-    }
-
-    pub(crate) fn open_streams_cache(&self) -> &CachedScannableKvTable<M, Arc<Vec<String>>> {
-        &self.open_streams
     }
 
     /// Loads all retained fragments for one stream page: a keys-only scan plus
@@ -410,15 +320,6 @@ pub fn encode_bitmap_blob(blob: &DecodedBitmapFragment) -> Result<Bytes> {
     Ok(Bytes::from(out))
 }
 
-/// Reads a big-endian `u32` from `b[off..off+4]`. The caller has length-checked
-/// the slice, so the `try_into` is infallible.
-fn be_u32(b: &[u8], off: usize) -> u32 {
-    u32::from_be_bytes(b[off..off + 4].try_into().expect("4 bytes"))
-}
-
-/// Parses the shared `[version u8][min u32][max u32][count u32]` framing header
-/// (used by both the fragment-blob and page-artifact formats), returning the
-/// `(min_offset, max_offset, count)` triple after checking the version byte.
 fn decode_bitmap_meta_header(
     bytes: &[u8],
     version: u8,
@@ -432,7 +333,11 @@ fn decode_bitmap_meta_header(
     if header[0] != version {
         return Err(QueryError::Decode(bad_version));
     }
-    Ok((be_u32(header, 1), be_u32(header, 5), be_u32(header, 9)))
+    Ok((
+        u32::from_be_bytes(header[1..5].try_into().unwrap()),
+        u32::from_be_bytes(header[5..9].try_into().unwrap()),
+        u32::from_be_bytes(header[9..13].try_into().unwrap()),
+    ))
 }
 
 /// Decodes one stored bitmap blob and validates its framing header.
@@ -571,14 +476,17 @@ impl BitmapPageCounts {
         let len_bytes = bytes
             .get(1..5)
             .ok_or(QueryError::Decode("bitmap page counts too short"))?;
-        let len = be_u32(len_bytes, 0) as usize;
+        let len = u32::from_be_bytes(len_bytes.try_into().unwrap()) as usize;
         let body = &bytes[5..];
         if body.len() != len * 8 {
             return Err(QueryError::Decode("bitmap page counts length mismatch"));
         }
         let mut pages = Vec::with_capacity(len);
         for chunk in body.chunks_exact(8) {
-            pages.push((be_u32(chunk, 0), be_u32(chunk, 4)));
+            pages.push((
+                u32::from_be_bytes(chunk[0..4].try_into().unwrap()),
+                u32::from_be_bytes(chunk[4..8].try_into().unwrap()),
+            ));
         }
         Ok(Self { pages })
     }
@@ -742,22 +650,15 @@ impl StreamKey {
     }
 }
 
-/// Row key for one stream page (fragments partition / page artifact): the
-/// stream id, a `/` separator, then the big-endian global page start.
 pub(crate) fn stream_page_key(stream_id: &str, page_start: u64) -> Vec<u8> {
-    stream_scoped_key(stream_id, page_start)
-}
-
-/// Row key for one stream's page-count manifest row: the stream id, a `/`
-/// separator, then the big-endian group start. Same shape as
-/// [`stream_page_key`]; the two live in different tables.
-fn stream_group_key(stream_id: &str, group_start: u64) -> Vec<u8> {
-    stream_scoped_key(stream_id, group_start)
-}
-
-fn stream_scoped_key(stream_id: &str, start: u64) -> Vec<u8> {
     let mut key = format!("{stream_id}/").into_bytes();
-    key.extend_from_slice(&start.to_be_bytes());
+    key.extend_from_slice(&page_start.to_be_bytes());
+    key
+}
+
+fn stream_group_key(stream_id: &str, group_start: u64) -> Vec<u8> {
+    let mut key = format!("{stream_id}/").into_bytes();
+    key.extend_from_slice(&group_start.to_be_bytes());
     key
 }
 
@@ -794,7 +695,6 @@ pub fn encode_open_streams_delta(streams: &[String]) -> Bytes {
     Bytes::from(out)
 }
 
-/// Decodes a row written by [`encode_open_streams_delta`].
 pub fn decode_open_streams_delta(bytes: &[u8]) -> Result<Vec<String>> {
     let mut cur = bytes;
     let version = *cur
@@ -804,16 +704,24 @@ pub fn decode_open_streams_delta(bytes: &[u8]) -> Result<Vec<String>> {
         return Err(QueryError::Decode("open_streams delta version"));
     }
     cur = &cur[1..];
-    let count = take_u32(&mut cur)? as usize;
-    // `count` is untrusted; each entry takes at least its 4-byte length
-    // prefix, so a count the remaining bytes cannot hold is corruption —
-    // reject it before allocating instead of aborting on a huge reservation.
+
+    let count_bytes = cur
+        .get(..4)
+        .ok_or(QueryError::Decode("open_streams delta truncated"))?;
+    let count = u32::from_be_bytes(count_bytes.try_into().unwrap()) as usize;
+    cur = &cur[4..];
+
     if count > cur.len() / 4 {
         return Err(QueryError::Decode("open_streams delta count exceeds body"));
     }
     let mut out = Vec::with_capacity(count);
     for _ in 0..count {
-        let len = take_u32(&mut cur)? as usize;
+        let len_bytes = cur
+            .get(..4)
+            .ok_or(QueryError::Decode("open_streams delta truncated"))?;
+        let len = u32::from_be_bytes(len_bytes.try_into().unwrap()) as usize;
+        cur = &cur[4..];
+
         let raw = cur
             .get(..len)
             .ok_or(QueryError::Decode("open_streams delta truncated"))?;
@@ -824,15 +732,6 @@ pub fn decode_open_streams_delta(bytes: &[u8]) -> Result<Vec<String>> {
         cur = &cur[len..];
     }
     Ok(out)
-}
-
-fn take_u32(cur: &mut &[u8]) -> Result<u32> {
-    let bytes = cur
-        .get(..4)
-        .ok_or(QueryError::Decode("open_streams delta truncated"))?;
-    let value = be_u32(bytes, 0);
-    *cur = &cur[4..];
-    Ok(value)
 }
 
 #[cfg(test)]

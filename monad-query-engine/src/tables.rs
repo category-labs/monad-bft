@@ -39,14 +39,12 @@ use zstd::dict::DecoderDictionary;
 
 use crate::{
     bitmap::{
-        decode_fragment_blob, decode_open_streams_chunk, decode_page, decode_page_counts,
+        decode_bitmap_blob, decode_bitmap_page_artifact, decode_open_streams_delta,
         BitmapPageCounts, BitmapTables, DecodedBitmapFragment, DecodedBitmapPage,
     },
     digest::ChainDigest,
     family::{Family, BLOCK_BLOB_TABLE},
-    primary_dir::{
-        decode_bucket, decode_fragment, PrimaryDirBucket, PrimaryDirFragment, PrimaryDirTables,
-    },
+    primary_dir::{PrimaryDirBucket, PrimaryDirFragment, PrimaryDirTables},
     query::row_cache::RowCaches,
     row_codec::{
         decode_row_frame, should_sample_row, RowCodec, RowCodecState, DICT_VERSION_NONE,
@@ -475,7 +473,7 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
                 .read_range(&header.physical_key, start, end_exclusive)
                 .await;
         }
-        let default_key = block_number_key(block_number);
+        let default_key = block_number.to_be_bytes();
         self.block_blobs
             .read_range(header.physical_key_or(&default_key), start, end_exclusive)
             .await
@@ -504,7 +502,7 @@ impl<M: MetaStore, B: BlobStore> Tables<M, B> {
             return;
         }
 
-        let key = block_number_key(block_number);
+        let key = block_number.to_be_bytes();
         w.put_blob(&self.block_blobs, &key, Bytes::from(combined));
     }
 
@@ -918,10 +916,6 @@ fn rewrite_block_blob_header(
     Ok(())
 }
 
-fn block_number_key(block_number: u64) -> [u8; 8] {
-    block_number.to_be_bytes()
-}
-
 #[cfg(test)]
 impl<M: MetaStore, B: BlobStore> Tables<M, B> {
     /// Test seed: durably write one sealed 10k directory bucket summary.
@@ -1064,31 +1058,6 @@ impl BlockMetadataRecord {
 }
 
 /// Cache decoder for the `BlockTables` view of the block-metadata row; runs
-/// once per miss, so cache hits skip both RLP decodes.
-fn decode_block_record(bytes: Bytes) -> Result<BlockRecord> {
-    let metadata = BlockMetadataRecord::decode(&bytes)?;
-    BlockRecord::decode(&metadata.block_record)
-}
-
-/// Per-family cache decoder yielding the decoded `BlockBlobHeader`, shared as
-/// an `Arc` so a hit clones a refcount rather than the offsets vector; `pick`
-/// selects which family's header field to decode.
-fn decode_family_header(
-    bytes: Bytes,
-    pick: fn(&BlockMetadataRecord) -> &Bytes,
-) -> Result<Arc<BlockBlobHeader>> {
-    let metadata = BlockMetadataRecord::decode(&bytes)?;
-    Ok(Arc::new(BlockBlobHeader::decode(pick(&metadata))?))
-}
-
-/// Decodes the hash-to-number index value: an 8-byte big-endian block number.
-fn decode_block_number(bytes: Bytes) -> Result<u64> {
-    let be: [u8; 8] = bytes
-        .as_ref()
-        .try_into()
-        .map_err(|_| QueryError::Decode("invalid block_hash_to_number_index value"))?;
-    Ok(u64::from_be_bytes(be))
-}
 
 impl<M: MetaStore> BlockTables<M> {
     pub const BLOCK_METADATA_TABLE: TableId = BLOCK_METADATA_TABLE_ID;
@@ -1101,7 +1070,10 @@ impl<M: MetaStore> BlockTables<M> {
             block_metadata: CachedKvTable::new(
                 meta_store.table(Self::BLOCK_METADATA_TABLE),
                 cache.block_header_cache_bytes,
-                decode_block_record,
+                |bytes: Bytes| {
+                    let metadata = BlockMetadataRecord::decode(&bytes)?;
+                    BlockRecord::decode(&metadata.block_record)
+                },
             ),
             // Cold path (only `load_block` reads it); identity decode.
             evm_header: CachedKvTable::new(
@@ -1112,13 +1084,18 @@ impl<M: MetaStore> BlockTables<M> {
             block_hash_to_number_index: CachedKvTable::new(
                 meta_store.table(Self::BLOCK_HASH_TO_NUMBER_INDEX_TABLE),
                 cache.block_hash_to_number_cache_bytes,
-                decode_block_number,
+                |bytes: Bytes| {
+                    let be: [u8; 8] = bytes.as_ref().try_into().map_err(|_| {
+                        QueryError::Decode("invalid block_hash_to_number_index value")
+                    })?;
+                    Ok(u64::from_be_bytes(be))
+                },
             ),
         }
     }
 
     pub async fn load_record(&self, block_number: u64) -> Result<Option<BlockRecord>> {
-        let key = block_number_key(block_number);
+        let key = block_number.to_be_bytes();
         self.block_metadata.get(&key).await
     }
 
@@ -1132,7 +1109,7 @@ impl<M: MetaStore> BlockTables<M> {
         tx_header: Bytes,
         trace_header: Bytes,
     ) {
-        let key = block_number_key(block_number);
+        let key = block_number.to_be_bytes();
         let metadata = BlockMetadataRecord {
             block_record: Bytes::from(block_record.encode()),
             log_header,
@@ -1148,7 +1125,7 @@ impl<M: MetaStore> BlockTables<M> {
     }
 
     pub async fn load_header(&self, block_number: u64) -> Result<Option<EvmBlockHeader>> {
-        let key = block_number_key(block_number);
+        let key = block_number.to_be_bytes();
         let Some(bytes) = self.evm_header.get(&key).await? else {
             return Ok(None);
         };
@@ -1230,22 +1207,22 @@ pub struct FamilyTables<M: MetaStore> {
     seal_chain: CachedKvTable<M, Hash32>,
 }
 
-/// Cache decoder for one seal-chain row: exactly 32 raw digest bytes.
-fn decode_seal_chain(bytes: Bytes) -> Result<Hash32> {
-    let raw: [u8; 32] = bytes
-        .as_ref()
-        .try_into()
-        .map_err(|_| QueryError::Decode("invalid seal chain value"))?;
-    Ok(Hash32::from(raw))
-}
-
 impl<M: MetaStore> FamilyTables<M> {
     fn new(meta_store: M, family: Family, cache: CacheConfig) -> Self {
         let ids = family.table_ids();
         let header_decoder: fn(Bytes) -> Result<Arc<BlockBlobHeader>> = match family {
-            Family::Log => |b| decode_family_header(b, |m| &m.log_header),
-            Family::Tx => |b| decode_family_header(b, |m| &m.tx_header),
-            Family::Trace => |b| decode_family_header(b, |m| &m.trace_header),
+            Family::Log => |b: Bytes| {
+                let metadata = BlockMetadataRecord::decode(&b)?;
+                Ok(Arc::new(BlockBlobHeader::decode(&metadata.log_header)?))
+            },
+            Family::Tx => |b: Bytes| {
+                let metadata = BlockMetadataRecord::decode(&b)?;
+                Ok(Arc::new(BlockBlobHeader::decode(&metadata.tx_header)?))
+            },
+            Family::Trace => |b: Bytes| {
+                let metadata = BlockMetadataRecord::decode(&b)?;
+                Ok(Arc::new(BlockBlobHeader::decode(&metadata.trace_header)?))
+            },
         };
         Self {
             family,
@@ -1262,37 +1239,62 @@ impl<M: MetaStore> FamilyTables<M> {
                 CachedScannableKvTable::new(
                     meta_store.scannable_table(ids.dir_by_block),
                     cache.dir_by_block_cache_bytes,
-                    decode_fragment,
+                    |b| PrimaryDirFragment::decode(&b),
                 ),
                 CachedKvTable::new(
                     meta_store.table(ids.dir_bucket),
                     cache.dir_bucket_cache_bytes,
-                    decode_bucket,
+                    |b| PrimaryDirBucket::decode(&b),
                 ),
             ),
             bitmap: BitmapTables::new(
                 CachedScannableKvTable::new(
                     meta_store.scannable_table(ids.bitmap_by_block),
                     cache.bitmap_by_block_cache_bytes,
-                    decode_fragment_blob,
+                    |b: bytes::Bytes| Ok(std::sync::Arc::new(decode_bitmap_blob(b.as_ref())?)),
                 ),
                 CachedKvTable::new(
                     meta_store.table(ids.bitmap_page_blob),
                     cache.bitmap_page_blob_cache_bytes,
-                    decode_page,
+                    |b: bytes::Bytes| {
+                        let artifact = decode_bitmap_page_artifact(b.as_ref())?.ok_or(
+                            monad_query_errors::QueryError::Decode("invalid bitmap page artifact"),
+                        )?;
+                        let blob = decode_bitmap_blob(artifact.bitmap_blob.as_ref())?;
+                        let expected = crate::bitmap::BitmapPageMeta {
+                            min_offset: blob.min_offset,
+                            max_offset: blob.max_offset,
+                            count: blob.count,
+                        };
+                        if artifact.meta != expected {
+                            return Err(monad_query_errors::QueryError::Decode(
+                                "bitmap page artifact header does not match blob header",
+                            ));
+                        }
+                        Ok(std::sync::Arc::new(DecodedBitmapPage {
+                            meta: expected,
+                            bitmap: blob.bitmap,
+                        }))
+                    },
                 ),
                 CachedKvTable::new(
                     meta_store.table(ids.bitmap_page_counts),
                     cache.bitmap_page_counts_cache_bytes,
-                    decode_page_counts,
+                    |b: bytes::Bytes| BitmapPageCounts::decode(&b),
                 ),
                 CachedScannableKvTable::new(
                     meta_store.scannable_table(ids.open_bitmap_stream),
                     cache.open_bitmap_stream_cache_bytes,
-                    decode_open_streams_chunk,
+                    |b: bytes::Bytes| decode_open_streams_delta(&b).map(std::sync::Arc::new),
                 ),
             ),
-            seal_chain: CachedKvTable::new(meta_store.table(ids.seal_chain), 0, decode_seal_chain),
+            seal_chain: CachedKvTable::new(meta_store.table(ids.seal_chain), 0, |bytes: Bytes| {
+                let raw: [u8; 32] = bytes
+                    .as_ref()
+                    .try_into()
+                    .map_err(|_| QueryError::Decode("invalid seal chain value"))?;
+                Ok(Hash32::from(raw))
+            }),
         }
     }
 
@@ -1314,7 +1316,7 @@ impl<M: MetaStore> FamilyTables<M> {
         &self,
         block_number: u64,
     ) -> Result<Option<Arc<BlockBlobHeader>>> {
-        let key = block_number_key(block_number);
+        let key = block_number.to_be_bytes();
         self.block_metadata.get(&key).await
     }
 
@@ -1433,12 +1435,12 @@ impl<M: MetaStore> FamilyTables<M> {
             self.block_metadata.take_window_stats(),
         );
         collect_kv_stats(out, &self.dict_by_version);
-        collect_scan_stats(out, self.dir.fragments_cache());
-        collect_kv_stats(out, self.dir.buckets_cache());
-        collect_scan_stats(out, self.bitmap.fragments_cache());
-        collect_kv_stats(out, self.bitmap.page_blobs_cache());
-        collect_kv_stats(out, self.bitmap.page_counts_cache());
-        collect_scan_stats(out, self.bitmap.open_streams_cache());
+        collect_scan_stats(out, &self.dir.fragments);
+        collect_kv_stats(out, &self.dir.buckets);
+        collect_scan_stats(out, &self.bitmap.fragments);
+        collect_kv_stats(out, &self.bitmap.page_blobs);
+        collect_kv_stats(out, &self.bitmap.page_counts);
+        collect_scan_stats(out, &self.bitmap.open_streams);
         collect_kv_stats(out, &self.seal_chain);
     }
 }

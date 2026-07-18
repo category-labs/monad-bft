@@ -21,36 +21,25 @@ use monad_query_store::{blob::BlobStore, CachedKvTable, CachedScannableKvTable, 
 
 use crate::{bitmap::STREAM_PAGE_ID_SPAN, session::WriteSession, tables::scan_get_all};
 
-/// Buckets are aligned to the bitmap page span so both indexes share one seal
-/// frontier: ingest tracks a single `sealed_id` per family and the open
-/// (unsealed) region is identical for pages and buckets.
 pub const DIRECTORY_BUCKET_SIZE: u64 = STREAM_PAGE_ID_SPAN as u64;
 
-/// One id-producing block within a compacted bucket. Blocks that mint no ids
-/// are omitted, so a bucket's encoded size is bounded by its id-producing
-/// blocks, not its full block span (sparse buckets stay under backend write
-/// limits).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
 pub struct PrimaryDirEntry {
     pub block_number: u64,
     pub first_primary_id: u64,
 }
 
+/// One id-producing block within a compacted bucket. Blocks that mint no ids are omitted,
+/// so a bucket's encoded size is bounded by its id-producing blocks, not its full block span.
 #[derive(Debug, Clone, PartialEq, Eq, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
 pub struct PrimaryDirBucket {
-    /// Id-producing blocks in the bucket, ordered by `first_primary_id` (which is
-    /// therefore strictly increasing, since each entry mints at least one id).
+    /// Id-producing blocks ordered by `first_primary_id`.
     pub entries: Vec<PrimaryDirEntry>,
-    /// Exclusive id frontier after the bucket's last block — the upper bound that
-    /// closes the final entry's id range.
+    /// Exclusive id frontier after the bucket's last block.
     pub end_primary_id_exclusive: u64,
 }
 
 impl PrimaryDirBucket {
-    /// Single constructor (RLP decode and compaction both funnel here)
-    /// enforcing the invariants: entries strictly increasing in both
-    /// `first_primary_id` and `block_number`; sentinel strictly above the last
-    /// entry's first id.
     pub fn new(entries: Vec<PrimaryDirEntry>, end_primary_id_exclusive: u64) -> Result<Self> {
         if entries.windows(2).any(|window| {
             window[0].first_primary_id >= window[1].first_primary_id
@@ -77,7 +66,7 @@ impl PrimaryDirBucket {
         alloy_rlp::encode(self)
     }
 
-    pub(crate) fn decode(bytes: &[u8]) -> Result<Self> {
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
         let raw: Self = alloy_rlp::decode_exact(bytes)
             .map_err(|_| QueryError::Decode("invalid primary directory bucket rlp"))?;
         Self::new(raw.entries, raw.end_primary_id_exclusive)
@@ -96,34 +85,17 @@ impl PrimaryDirFragment {
         alloy_rlp::encode(self)
     }
 
-    pub(crate) fn decode(bytes: &[u8]) -> Result<Self> {
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
         alloy_rlp::decode_exact(bytes)
             .map_err(|_| QueryError::Decode("invalid primary directory fragment rlp"))
     }
 }
 
-/// Cache decoder for a sealed-bucket summary.
-pub(crate) fn decode_bucket(bytes: Bytes) -> Result<PrimaryDirBucket> {
-    PrimaryDirBucket::decode(&bytes)
-}
-
-/// Cache decoder for a per-bucket directory fragment.
-pub(crate) fn decode_fragment(bytes: Bytes) -> Result<PrimaryDirFragment> {
-    PrimaryDirFragment::decode(&bytes)
-}
-
 #[derive(Clone)]
 pub struct PrimaryDirTables<M: MetaStore> {
-    fragments: CachedScannableKvTable<M, PrimaryDirFragment>,
-    buckets: CachedKvTable<M, PrimaryDirBucket>,
-    /// Incremental fold of the one open bucket's fragments:
-    /// `(bucket_start, folded_through_head, block-ordered fragments)`.
-    /// Fragments key by block and heads publish only at flush boundaries, so
-    /// every fragment at or below a published head is durably visible: a
-    /// head-current fold is complete and serves with zero store reads, and a
-    /// stale one extends with only the blocks flushed since. `Arc`-shared so
-    /// table clones fold once per store, not once per handle.
-    open_bucket_fold: Arc<Mutex<Option<(u64, u64, Arc<Vec<PrimaryDirFragment>>)>>>,
+    pub fragments: CachedScannableKvTable<M, PrimaryDirFragment>,
+    pub buckets: CachedKvTable<M, PrimaryDirBucket>,
+    pub open_bucket_fold: Arc<Mutex<Option<(u64, u64, Arc<Vec<PrimaryDirFragment>>)>>>,
 }
 
 impl<M: MetaStore> PrimaryDirTables<M> {
@@ -136,14 +108,6 @@ impl<M: MetaStore> PrimaryDirTables<M> {
             buckets,
             open_bucket_fold: Arc::new(Mutex::new(None)),
         }
-    }
-
-    pub(crate) fn fragments_cache(&self) -> &CachedScannableKvTable<M, PrimaryDirFragment> {
-        &self.fragments
-    }
-
-    pub(crate) fn buckets_cache(&self) -> &CachedKvTable<M, PrimaryDirBucket> {
-        &self.buckets
     }
 
     /// Loads the compacted summary for one sealed bucket.
@@ -166,13 +130,6 @@ impl<M: MetaStore> PrimaryDirTables<M> {
         .await
     }
 
-    /// The open bucket's fragments folded through `published_head`, served
-    /// from the shared incremental fold (see `open_bucket_fold`): a
-    /// head-current fold costs zero store reads; a stale one extends with
-    /// only the blocks flushed since (one keys-only scan plus cached point
-    /// gets). Fragments flushed beyond the published head are left for a
-    /// later fold. A different `bucket_start` (the previous bucket sealed)
-    /// replaces the slot outright.
     pub(crate) async fn load_open_bucket_fold(
         &self,
         bucket_start: u64,
@@ -244,11 +201,6 @@ impl<M: MetaStore> PrimaryDirTables<M> {
         w.put(&self.buckets, &key, Bytes::from(bucket.encode()));
     }
 
-    /// Stages every per-bucket fragment write the block contributes.
-    ///
-    /// Ingest never stages a `count == 0` fragment: empty blocks mint no ids
-    /// (`if count > 0` in `ingest/index.rs`), and compaction closes the id
-    /// range across them via the next id-producing block (or the sentinel).
     pub fn stage_block_fragment<B: BlobStore>(
         &self,
         w: &mut WriteSession<'_, M, B>,
@@ -276,9 +228,7 @@ pub(crate) fn bucket_start(primary_id: u64) -> u64 {
 }
 
 pub(crate) fn fragment_bucket_starts(first_primary_id: u64, count: u32) -> Vec<u64> {
-    // Ingest never stages a zero-count fragment (empty blocks mint no ids).
-    debug_assert!(count > 0, "fragment must cover at least one id");
-
+    debug_assert!(count > 0);
     let first = bucket_start(first_primary_id);
     let last = bucket_start(
         first_primary_id
@@ -294,8 +244,6 @@ fn u64_key(value: u64) -> [u8; 8] {
     value.to_be_bytes()
 }
 
-/// Decodes a fragment clustering key back to its block number (see
-/// [`PrimaryDirTables::stage_block_fragment`]); `None` for malformed keys.
 fn fragment_block(key: &[u8]) -> Option<u64> {
     key.try_into().ok().map(u64::from_be_bytes)
 }
