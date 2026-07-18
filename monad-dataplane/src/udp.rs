@@ -14,101 +14,54 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
     io::{Error, ErrorKind},
     net::SocketAddr,
+    num::{NonZeroU64, NonZeroUsize},
     os::fd::{AsRawFd, FromRawFd},
-    time::{Duration, Instant},
 };
 
 use bytes::{Bytes, BytesMut};
 use futures::future::join_all;
-use monad_types::UdpPriority;
 use monoio::{
     buf::{Ipv4RecvMsgParser, UserRecvMsgRingBuf},
     net::udp::UdpSocket,
-    spawn, time,
+    spawn,
 };
-use thiserror::Error;
-use tokio::sync::mpsc;
+use tokio::sync::mpsc::{self, error::TryRecvError};
 use tracing::{debug, error, trace, warn};
 
-use super::{RecvUdpMsg, UdpMsg, UdpSocketId};
-use crate::{buffer_ext::SocketBufferExt, metrics::DataplaneMetrics};
-
-const PRIORITY_QUEUE_BYTES_CAPACITY: usize = 100 * 1024 * 1024;
+use super::{RecvUdpMsg, UdpMsg, UdpPacingConfig, UdpSocketId};
+use crate::{
+    buffer_ext::SocketBufferExt,
+    metrics::DataplaneMetrics,
+    pacing::{BatchLimits, EnqueueError, PacingQueue, QueueCost},
+};
 
 const DEFAULT_RINGBUF_COUNT: u32 = 2048;
 const DEFAULT_RINGBUF_SIZE: u32 = ETHERNET_SEGMENT_SIZE as u32;
 
-#[derive(Error, Debug)]
-#[error("priority queue capacity exceeded: priority={priority:?} current={current_bytes} capacity={capacity_bytes}")]
-struct QueueCapacityError {
-    priority: UdpPriority,
-    current_bytes: usize,
-    capacity_bytes: usize,
-}
-
-struct PriorityQueues {
-    queues: [VecDeque<UdpMsg>; 2],
-    current_bytes: [usize; 2],
-    capacity_bytes: usize,
-}
-
-impl PriorityQueues {
-    fn new() -> Self {
-        Self::with_bytes_capacity(PRIORITY_QUEUE_BYTES_CAPACITY)
-    }
-
-    fn with_bytes_capacity(capacity_bytes: usize) -> Self {
-        Self {
-            queues: [VecDeque::new(), VecDeque::new()],
-            current_bytes: [0, 0],
-            capacity_bytes,
-        }
-    }
-
-    fn try_push(&mut self, msg: UdpMsg) -> Result<(), QueueCapacityError> {
-        let msg_bytes = msg.payload.len();
-        let priority_idx = msg.priority as usize;
-        if self.current_bytes[priority_idx] + msg_bytes > self.capacity_bytes {
-            return Err(QueueCapacityError {
-                priority: msg.priority,
-                current_bytes: self.current_bytes[priority_idx],
-                capacity_bytes: self.capacity_bytes,
-            });
-        }
-        self.current_bytes[priority_idx] += msg_bytes;
-        self.queues[priority_idx].push_back(msg);
-        Ok(())
-    }
-
-    fn pop_highest_priority(&mut self) -> Option<UdpMsg> {
-        for (priority_idx, queue) in self.queues.iter_mut().enumerate() {
-            if let Some(msg) = queue.pop_front() {
-                self.current_bytes[priority_idx] =
-                    self.current_bytes[priority_idx].saturating_sub(msg.payload.len());
-                return Some(msg);
-            }
-        }
-        None
-    }
-
-    fn is_empty(&self) -> bool {
-        self.queues.iter().all(|q| q.is_empty())
-    }
-}
-
 pub const DEFAULT_MTU: u16 = monad_types::DEFAULT_MTU;
 
 const IPV4_HDR_SIZE: u16 = 20;
+const IPV6_HDR_SIZE: u16 = 40;
 const UDP_HDR_SIZE: u16 = 8;
+const MAX_AGGREGATED_WRITE_SIZE: u16 = u16::MAX - IPV4_HDR_SIZE - UDP_HDR_SIZE;
+const MAX_AGGREGATED_SEGMENTS: u16 = 128;
+
 pub const fn segment_size_for_mtu(mtu: u16) -> u16 {
     mtu - IPV4_HDR_SIZE - UDP_HDR_SIZE
 }
 
 pub const DEFAULT_SEGMENT_SIZE: u16 = segment_size_for_mtu(DEFAULT_MTU);
 pub const ETHERNET_SEGMENT_SIZE: u16 = segment_size_for_mtu(monad_types::ETHERNET_MTU);
+
+pub(crate) struct UdpTaskConfig {
+    pub up_bandwidth_mbps: u64,
+    pub pacing: UdpPacingConfig,
+    pub buffer_size: Option<usize>,
+    pub use_multishot: bool,
+}
 
 fn configure_socket(socket: &UdpSocket, buffer_size: Option<usize>) {
     if let Some(size) = buffer_size {
@@ -166,12 +119,16 @@ fn set_mtu_discovery(socket: &UdpSocket) {
 pub(crate) fn spawn_tasks(
     socket_configs: Vec<(UdpSocketId, SocketAddr, mpsc::Sender<RecvUdpMsg>)>,
     udp_egress_rx: mpsc::Receiver<UdpMsg>,
-    up_bandwidth_mbps: u64,
-    buffer_size: Option<usize>,
-    use_multishot: bool,
+    config: UdpTaskConfig,
     bound_addrs_tx: std::sync::mpsc::SyncSender<Vec<(UdpSocketId, SocketAddr)>>,
     metrics: DataplaneMetrics,
 ) {
+    let UdpTaskConfig {
+        up_bandwidth_mbps,
+        pacing,
+        buffer_size,
+        use_multishot,
+    } = config;
     let mut tx_sockets = Vec::new();
     let mut bound_addrs = Vec::with_capacity(socket_configs.len());
 
@@ -207,7 +164,13 @@ pub(crate) fn spawn_tasks(
     }
 
     bound_addrs_tx.send(bound_addrs).unwrap();
-    spawn(tx(tx_sockets, udp_egress_rx, up_bandwidth_mbps, metrics));
+    spawn(tx(
+        tx_sockets,
+        udp_egress_rx,
+        up_bandwidth_mbps,
+        pacing,
+        metrics,
+    ));
 }
 
 async fn rx_single_socket(
@@ -326,99 +289,85 @@ async fn rx_multishot_socket(
     }
 }
 
-const PACING_SLEEP_OVERSHOOT_DETECTION_WINDOW: Duration = Duration::from_millis(100);
-
 async fn tx(
     tx_sockets: Vec<(UdpSocketId, UdpSocket)>,
     mut udp_egress_rx: mpsc::Receiver<UdpMsg>,
     up_bandwidth_mbps: u64,
+    pacing_config: UdpPacingConfig,
     metrics: DataplaneMetrics,
 ) {
     let tx_sockets: HashMap<UdpSocketId, UdpSocket> = tx_sockets.into_iter().collect();
-    let mut next_transmit = Instant::now();
-
-    let mut priority_queues = PriorityQueues::new();
-
-    let max_batch_bytes = max_write_size_for_segment_size(DEFAULT_SEGMENT_SIZE) as usize;
-    let mut send_futures = Vec::with_capacity(MAX_AGGREGATED_SEGMENTS as usize);
+    let global_bytes_per_second = mbps_to_bytes_per_second(up_bandwidth_mbps);
+    let peer_bytes_per_second = mbps_to_bytes_per_second(pacing_config.peer_bandwidth_mbps);
+    let mut queue = PacingQueue::new(
+        global_bytes_per_second,
+        peer_bytes_per_second,
+        pacing_config.max_queued_bytes,
+    );
+    let batch_limits = BatchLimits {
+        max_bytes: max_write_size_for_segment_size(DEFAULT_SEGMENT_SIZE) as usize,
+        max_items: MAX_AGGREGATED_SEGMENTS as usize,
+    };
+    let mut send_futures = Vec::with_capacity(batch_limits.max_items);
+    let mut channel_open = true;
 
     loop {
-        let now = Instant::now();
-        if next_transmit > now {
-            time::sleep(next_transmit - now).await;
-        } else {
-            let late = now - next_transmit;
-
-            if late > PACING_SLEEP_OVERSHOOT_DETECTION_WINDOW {
-                next_transmit = now;
-            }
-        }
-
-        if fill_message_queues(&mut udp_egress_rx, &mut priority_queues, &metrics)
-            .await
-            .is_err()
-        {
-            return;
-        }
-
-        let queue_len = priority_queues
-            .queues
-            .iter()
-            .map(|q| q.len())
-            .sum::<usize>();
-        let mut total_bytes = 0usize;
-        let mut batch_count = 0usize;
-        send_futures.clear();
-
-        while !priority_queues.is_empty()
-            && total_bytes < max_batch_bytes
-            && batch_count < MAX_AGGREGATED_SEGMENTS as usize
-        {
-            let mut msg = priority_queues.pop_highest_priority().unwrap();
-            let chunk_size = msg
-                .payload
-                .len()
-                .min(msg.stride as usize)
-                .min(max_batch_bytes);
-
-            if chunk_size + total_bytes > max_batch_bytes {
-                if let Err(err) = priority_queues.try_push(msg) {
-                    metrics.udp_egress_messages_dropped.inc();
-                    warn!(?err, "failed to re-queue message");
-                }
+        for _ in 0..256 {
+            if !channel_open {
                 break;
             }
-
-            let chunk = msg.payload.split_to(chunk_size);
-            total_bytes += chunk.len();
-
-            let socket_id = msg.socket_id;
-            let dst = msg.dst;
-
-            let socket = tx_sockets.get(&socket_id).expect("valid socket_id");
-
-            if !msg.payload.is_empty() {
-                if let Err(err) = priority_queues.try_push(msg) {
-                    metrics.udp_egress_messages_dropped.inc();
-                    warn!(?err, "failed to re-queue message with remaining payload");
+            match udp_egress_rx.try_recv() {
+                Ok(msg) => enqueue_udp_msg(&mut queue, &metrics, msg),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    channel_open = false;
+                    break;
                 }
             }
-
-            trace!(
-                ?socket_id,
-                dst_addr = ?dst,
-                chunk_len = chunk.len(),
-                "preparing udp send"
-            );
-
-            send_futures.push(socket.send_to(chunk, dst));
-            batch_count += 1;
         }
+
+        if queue.is_empty() {
+            if !channel_open {
+                return;
+            }
+            match udp_egress_rx.recv().await {
+                Some(msg) => enqueue_udp_msg(&mut queue, &metrics, msg),
+                None => channel_open = false,
+            }
+            continue;
+        }
+
+        let queue_len = queue.len();
+        send_futures.clear();
+        let (batch_count, total_bytes) = {
+            let mut batch = queue.batch(batch_limits);
+
+            while let Some(scheduled) = batch.next() {
+                let mut msg = scheduled.item;
+                let chunk = msg.payload.split_to(next_payload_bytes(&msg));
+                let socket_id = msg.socket_id;
+                let dst = msg.dst;
+                let socket = tx_sockets.get(&socket_id).expect("valid socket_id");
+
+                if !msg.payload.is_empty() {
+                    let cost = udp_queue_cost(&msg);
+                    if let Err(error) = batch.reenqueue(dst, msg.priority, msg, cost) {
+                        record_enqueue_error(&metrics, error);
+                    }
+                }
+
+                trace!(?socket_id, dst_addr = ?dst, chunk_len = chunk.len(), "preparing udp send");
+                send_futures.push(socket.send_to(chunk, dst));
+            }
+
+            batch.wait().await;
+            (batch.items(), batch.bytes())
+        };
 
         if batch_count > 1 {
             trace!(
                 batch_size = batch_count,
-                total_bytes = total_bytes,
+                total_bytes,
                 queue_size = queue_len,
                 "sending udp batch"
             );
@@ -430,59 +379,83 @@ async fn tx(
                     metrics.udp_messages_sent.inc();
                     metrics.udp_bytes_sent.add(payload_bytes_sent as u64);
                 }
-                Err(err) => {
-                    metrics.udp_send_errors.inc();
-                    match err.kind() {
-                        ErrorKind::NetworkUnreachable => {
-                            debug!("send address family mismatch. message is dropped")
-                        }
-                        ErrorKind::InvalidInput => {
-                            warn!(len = chunk.len(), "got EINVAL on send. message is dropped")
-                        }
-                        _ => {
-                            if is_eafnosupport(&err) {
-                                debug!("send address family mismatch. message is dropped");
-                            } else {
-                                error!(
-                                    len = chunk.len(),
-                                    ?err,
-                                    "unexpected send error. message is dropped"
-                                );
-                            }
-                        }
-                    }
-                }
+                Err(err) => record_send_error(&metrics, err, chunk.len()),
             }
-        }
-
-        if total_bytes > 0 {
-            next_transmit +=
-                Duration::from_nanos((total_bytes as u64) * 8 * 1000 / up_bandwidth_mbps);
         }
     }
 }
 
-async fn fill_message_queues(
-    udp_egress_rx: &mut mpsc::Receiver<UdpMsg>,
-    priority_queues: &mut PriorityQueues,
-    metrics: &DataplaneMetrics,
-) -> Result<(), ()> {
-    while priority_queues.is_empty() || !udp_egress_rx.is_empty() {
-        match udp_egress_rx.recv().await {
-            Some(udp_msg) => {
-                if let Err(err) = priority_queues.try_push(udp_msg) {
-                    metrics.udp_egress_messages_dropped.inc();
-                    warn!(?err, "priority queue capacity exceeded, dropping message");
-                }
-            }
-            None => return Err(()),
-        }
-    }
-    Ok(())
+fn mbps_to_bytes_per_second(mbps: u64) -> NonZeroU64 {
+    NonZeroU64::new(
+        mbps.checked_mul(125_000)
+            .expect("UDP bandwidth overflows bytes per second"),
+    )
+    .expect("UDP bandwidth must be non-zero")
 }
 
-const MAX_AGGREGATED_WRITE_SIZE: u16 = 65535 - IPV4_HDR_SIZE - UDP_HDR_SIZE;
-const MAX_AGGREGATED_SEGMENTS: u16 = 128;
+fn next_payload_bytes(msg: &UdpMsg) -> usize {
+    let ip_header = if msg.dst.is_ipv4() {
+        IPV4_HDR_SIZE
+    } else {
+        IPV6_HDR_SIZE
+    };
+    let max_payload = usize::from(u16::MAX - ip_header - UDP_HDR_SIZE);
+
+    msg.payload
+        .len()
+        .min(msg.stride.max(1) as usize)
+        .min(max_payload)
+        .min(max_write_size_for_segment_size(DEFAULT_SEGMENT_SIZE) as usize)
+}
+
+fn udp_wire_bytes(destination: SocketAddr, payload_bytes: usize) -> NonZeroUsize {
+    let ip_header_bytes = if destination.is_ipv4() {
+        IPV4_HDR_SIZE
+    } else {
+        IPV6_HDR_SIZE
+    };
+    NonZeroUsize::new(payload_bytes + usize::from(UDP_HDR_SIZE + ip_header_bytes))
+        .expect("UDP headers make wire cost non-zero")
+}
+
+fn udp_queue_cost(msg: &UdpMsg) -> QueueCost {
+    let batch_bytes = next_payload_bytes(msg);
+    QueueCost {
+        wire_bytes: udp_wire_bytes(msg.dst, batch_bytes),
+        batch_bytes,
+        memory_bytes: msg.payload.len(),
+    }
+}
+
+fn enqueue_udp_msg(queue: &mut PacingQueue<UdpMsg>, metrics: &DataplaneMetrics, msg: UdpMsg) {
+    let destination = msg.dst;
+    let cost = udp_queue_cost(&msg);
+    if let Err(error) = queue.enqueue(destination, msg.priority, msg, cost) {
+        record_enqueue_error(metrics, error);
+    }
+}
+
+fn record_enqueue_error<T>(metrics: &DataplaneMetrics, error: EnqueueError<T>) {
+    metrics.udp_egress_messages_dropped.inc();
+    match error {
+        EnqueueError::MemoryLimit(_) => metrics.udp_pacing_memory_limit_drops.inc(),
+        EnqueueError::PeerLimit(_) => metrics.udp_pacing_peer_limit_drops.inc(),
+    }
+}
+
+fn record_send_error(metrics: &DataplaneMetrics, err: Error, len: usize) {
+    metrics.udp_send_errors.inc();
+    match err.kind() {
+        ErrorKind::NetworkUnreachable => {
+            debug!("send address family mismatch. message is dropped")
+        }
+        ErrorKind::InvalidInput => warn!(len, "got EINVAL on send. message is dropped"),
+        _ if is_eafnosupport(&err) => {
+            debug!("send address family mismatch. message is dropped")
+        }
+        _ => error!(len, ?err, "unexpected send error. message is dropped"),
+    }
+}
 
 fn max_write_size_for_segment_size(segment_size: u16) -> u16 {
     (MAX_AGGREGATED_WRITE_SIZE / segment_size).min(MAX_AGGREGATED_SEGMENTS) * segment_size
@@ -519,10 +492,10 @@ mod tests {
 
     use super::*;
 
-    fn create_test_msg(priority: UdpPriority, payload_size: usize) -> UdpMsg {
+    fn create_test_msg(dst: SocketAddr, priority: UdpPriority, payload_size: usize) -> UdpMsg {
         UdpMsg {
             socket_id: UdpSocketId::Raptorcast,
-            dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080),
+            dst,
             payload: Bytes::from(vec![0u8; payload_size]),
             stride: 1024,
             priority,
@@ -530,32 +503,46 @@ mod tests {
     }
 
     #[test]
-    fn test_priority_queue_capacity() {
-        let mut queue = PriorityQueues::with_bytes_capacity(1000);
+    fn udp_adapter_records_memory_limit_metric() {
+        let mut queue = PacingQueue::new(
+            mbps_to_bytes_per_second(1_000),
+            mbps_to_bytes_per_second(1_000),
+            1_000,
+        );
+        let metrics = DataplaneMetrics::new();
+        let destination = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080);
+        enqueue_udp_msg(
+            &mut queue,
+            &metrics,
+            create_test_msg(destination, UdpPriority::Regular, 800),
+        );
+        enqueue_udp_msg(
+            &mut queue,
+            &metrics,
+            create_test_msg(destination, UdpPriority::High, 800),
+        );
 
-        assert!(queue
-            .try_push(create_test_msg(UdpPriority::High, 800))
-            .is_ok());
-        assert!(queue
-            .try_push(create_test_msg(UdpPriority::Regular, 800))
-            .is_ok());
+        assert_eq!(metrics.udp_pacing_memory_limit_drops.get(), 1);
+        assert_eq!(metrics.udp_egress_messages_dropped.get(), 1);
+    }
 
-        assert!(queue
-            .try_push(create_test_msg(UdpPriority::High, 300))
-            .is_err());
-        assert!(queue
-            .try_push(create_test_msg(UdpPriority::Regular, 300))
-            .is_err());
+    #[test]
+    fn udp_adapter_records_peer_limit_metric() {
+        let metrics = DataplaneMetrics::new();
+        record_enqueue_error(&metrics, EnqueueError::PeerLimit(()));
 
-        let popped = queue.pop_highest_priority();
-        assert_eq!(popped.unwrap().priority, UdpPriority::High);
+        assert_eq!(metrics.udp_pacing_peer_limit_drops.get(), 1);
+        assert_eq!(metrics.udp_pacing_memory_limit_drops.get(), 0);
+        assert_eq!(metrics.udp_egress_messages_dropped.get(), 1);
+    }
 
-        assert!(queue
-            .try_push(create_test_msg(UdpPriority::High, 500))
-            .is_ok());
-        assert!(queue
-            .try_push(create_test_msg(UdpPriority::Regular, 300))
-            .is_err());
+    #[test]
+    fn udp_wire_cost_includes_ip_version_headers() {
+        let ipv4: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+        let ipv6: SocketAddr = "[::1]:8080".parse().unwrap();
+        let payload_bytes = 1_024;
+        assert_eq!(udp_wire_bytes(ipv4, payload_bytes).get(), 1_024 + 20 + 8);
+        assert_eq!(udp_wire_bytes(ipv6, payload_bytes).get(), 1_024 + 40 + 8);
     }
 
     #[monoio::test]

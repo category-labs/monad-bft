@@ -73,6 +73,10 @@ harness = false
 name = "encode_bench"
 harness = false
 
+[[bench]]
+name = "rebroadcast_bench"
+harness = false
+
 [[example]]
 name = "service"
 

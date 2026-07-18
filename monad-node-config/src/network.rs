@@ -28,7 +28,14 @@ pub struct NodeNetworkConfig {
     pub direct_udp_bind_address_port: Option<u16>,
 
     pub max_rtt_ms: u64,
+
+    /// Global UDP egress bandwidth limit in megabits per second.
+    #[serde(default = "default_max_mbps")]
     pub max_mbps: u16,
+
+    /// Per-peer UDP egress bandwidth limit in megabits per second.
+    #[serde(default = "default_max_mbps")]
+    pub peer_max_mbps: u16,
 
     #[serde(default = "default_buffer_size")]
     pub buffer_size: Option<usize>,
@@ -62,6 +69,10 @@ fn default_mtu() -> u16 {
     DEFAULT_MTU
 }
 
+fn default_max_mbps() -> u16 {
+    1_000
+}
+
 fn default_buffer_size() -> Option<usize> {
     // recommended value at the time of the commit
     Some(62_500_000)
@@ -93,4 +104,33 @@ fn default_signature_verifications_per_second() -> u32 {
 
 fn default_enable_udp_mutishot() -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(rates: &str) -> NodeNetworkConfig {
+        toml::from_str(&format!(
+            r#"
+            bind_address_host = "0.0.0.0"
+            authenticated_bind_address_port = 8001
+            max_rtt_ms = 300
+            {rates}
+            "#
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn udp_bandwidth_defaults_to_one_gbps() {
+        let config = parse("");
+        assert_eq!((config.max_mbps, config.peer_max_mbps), (1_000, 1_000));
+    }
+
+    #[test]
+    fn udp_bandwidth_is_configurable() {
+        let config = parse("max_mbps = 2000\npeer_max_mbps = 500");
+        assert_eq!((config.max_mbps, config.peer_max_mbps), (2_000, 500));
+    }
 }
