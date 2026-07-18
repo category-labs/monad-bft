@@ -65,8 +65,6 @@ fn to_checksum(hash: blake3::Hash) -> ChainDigest {
     Hash32::from(*hash.as_bytes())
 }
 
-/// Length-prefixing field hasher. Domain-separates variable-length inputs so
-/// concatenation is unambiguous, and writes fixed-width scalars little-endian.
 #[derive(Debug, Default)]
 struct FieldHasher(Hasher);
 
@@ -92,9 +90,6 @@ impl FieldHasher {
     }
 }
 
-/// Incrementally folds a family's uncompressed row payloads in the same pass
-/// that compresses them. Each row is length-prefixed, so row count and
-/// boundaries are captured implicitly.
 #[derive(Debug, Default)]
 pub(crate) struct RowDigest(FieldHasher);
 
@@ -103,60 +98,63 @@ impl RowDigest {
         Self::default()
     }
 
-    /// Folds one uncompressed (pre-compression) row payload.
     pub(crate) fn row(&mut self, raw: &[u8]) {
         self.0.bytes(raw);
     }
 
-    /// Finalizes the row digest. Equal results mean byte-identical row payloads
-    /// in the same order.
     pub(crate) fn finish(&self) -> ChainDigest {
         self.0.finish()
     }
 }
 
-/// Combines one family's window (id position + row count) and sealed
-/// [`RowDigest`] into a content digest. Deliberately excludes dict versions,
-/// fragments, and anything else cadence- or compression-dependent.
-pub fn family_content_digest(window: FamilyWindowRecord, rows: ChainDigest) -> ChainDigest {
-    let mut h = FieldHasher::default();
-    h.u64(window.first_primary_id.as_u64())
-        .u32(window.count)
-        .bytes(rows.as_slice());
-    h.finish()
+pub struct BlockDigest;
+
+impl BlockDigest {
+    /// Combines the block-level artifacts (identity + EVM header) with the three
+    /// per-family content digests into the block's standalone content digest. The
+    /// family order is fixed: log, tx, trace.
+    pub fn content(
+        block_number: u64,
+        block_hash: &Hash32,
+        parent_hash: &Hash32,
+        evm_header_rlp: &[u8],
+        log_family: ChainDigest,
+        tx_family: ChainDigest,
+        trace_family: ChainDigest,
+    ) -> ChainDigest {
+        let mut h = FieldHasher::default();
+        h.u64(block_number)
+            .bytes(block_hash.as_slice())
+            .bytes(parent_hash.as_slice())
+            .bytes(evm_header_rlp)
+            .bytes(log_family.as_slice())
+            .bytes(tx_family.as_slice())
+            .bytes(trace_family.as_slice());
+        h.finish()
+    }
+
+    /// Folds a block's content digest into the running chain.
+    pub fn chain(previous: ChainDigest, block_content: ChainDigest) -> ChainDigest {
+        let mut hasher = Hasher::new();
+        hasher.update(previous.as_slice());
+        hasher.update(block_content.as_slice());
+        to_checksum(hasher.finalize())
+    }
 }
 
-/// Combines the block-level artifacts (identity + EVM header) with the three
-/// per-family content digests into the block's standalone content digest. The
-/// family order is fixed: log, tx, trace.
-pub fn block_content_digest(
-    block_number: u64,
-    block_hash: &Hash32,
-    parent_hash: &Hash32,
-    evm_header_rlp: &[u8],
-    log_family: ChainDigest,
-    tx_family: ChainDigest,
-    trace_family: ChainDigest,
-) -> ChainDigest {
-    let mut h = FieldHasher::default();
-    h.u64(block_number)
-        .bytes(block_hash.as_slice())
-        .bytes(parent_hash.as_slice())
-        .bytes(evm_header_rlp)
-        .bytes(log_family.as_slice())
-        .bytes(tx_family.as_slice())
-        .bytes(trace_family.as_slice());
-    h.finish()
-}
+pub struct FamilyDigest;
 
-/// Folds a block's content digest into the running chain:
-/// `chain(prev, block) = H(prev ‖ block)`. Both inputs are fixed 32-byte
-/// values, so no length prefixing is needed.
-pub fn chain(previous: ChainDigest, block_content: ChainDigest) -> ChainDigest {
-    let mut hasher = Hasher::new();
-    hasher.update(previous.as_slice());
-    hasher.update(block_content.as_slice());
-    to_checksum(hasher.finalize())
+impl FamilyDigest {
+    /// Combines one family's window (id position + row count) and sealed
+    /// [`RowDigest`] into a content digest. Deliberately excludes dict versions,
+    /// fragments, and anything else cadence- or compression-dependent.
+    pub fn content(window: FamilyWindowRecord, rows: ChainDigest) -> ChainDigest {
+        let mut h = FieldHasher::default();
+        h.u64(window.first_primary_id.as_u64())
+            .u32(window.count)
+            .bytes(rows.as_slice());
+        h.finish()
+    }
 }
 
 /// Digest over the canonical FINAL sealed content of one 64K id span of one
@@ -245,10 +243,10 @@ mod tests {
         let rows = RowDigest::new().finish();
         let mut other = RowDigest::new();
         other.row(b"r");
-        let base = family_content_digest(window(10, 2), rows);
-        assert_ne!(base, family_content_digest(window(11, 2), rows));
-        assert_ne!(base, family_content_digest(window(10, 3), rows));
-        assert_ne!(base, family_content_digest(window(10, 2), other.finish()));
+        let base = FamilyDigest::content(window(10, 2), rows);
+        assert_ne!(base, FamilyDigest::content(window(11, 2), rows));
+        assert_ne!(base, FamilyDigest::content(window(10, 3), rows));
+        assert_ne!(base, FamilyDigest::content(window(10, 2), other.finish()));
     }
 
     #[test]
@@ -273,7 +271,7 @@ mod tests {
 
     #[test]
     fn chain_depends_on_history_and_order() {
-        let b1 = block_content_digest(
+        let b1 = BlockDigest::content(
             1,
             &Hash32::ZERO,
             &Hash32::ZERO,
@@ -282,7 +280,7 @@ mod tests {
             EMPTY_DIGEST,
             EMPTY_DIGEST,
         );
-        let b2 = block_content_digest(
+        let b2 = BlockDigest::content(
             2,
             &Hash32::repeat_byte(7),
             &Hash32::ZERO,
@@ -292,10 +290,13 @@ mod tests {
             EMPTY_DIGEST,
         );
 
-        let forward = chain(chain(EMPTY_DIGEST, b1), b2);
-        let swapped = chain(chain(EMPTY_DIGEST, b2), b1);
+        let forward = BlockDigest::chain(BlockDigest::chain(EMPTY_DIGEST, b1), b2);
+        let swapped = BlockDigest::chain(BlockDigest::chain(EMPTY_DIGEST, b2), b1);
         assert_ne!(forward, swapped);
 
-        assert_ne!(forward, chain(chain(Hash32::repeat_byte(1), b1), b2));
+        assert_ne!(
+            forward,
+            BlockDigest::chain(BlockDigest::chain(Hash32::repeat_byte(1), b1), b2)
+        );
     }
 }

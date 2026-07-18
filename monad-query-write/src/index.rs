@@ -32,7 +32,7 @@ use monad_query_engine::{
         BitmapPageCounts, BitmapPageMeta, DecodedBitmapFragment, IndexKind, StreamKey,
         OPEN_STREAMS_DELTA_TARGET_BYTES, STREAM_PAGE_ID_SPAN,
     },
-    digest::{chain, ChainDigest, SealDigest},
+    digest::{BlockDigest, ChainDigest, SealDigest},
     family::{Family, PerFamily},
     primary_dir::{PrimaryDirBucket, PrimaryDirEntry, DIRECTORY_BUCKET_SIZE},
     seal::seal_boundary,
@@ -472,7 +472,7 @@ fn seal_family(
         for (stream_id, artifact_bytes) in &pages {
             digest.page(stream_id, artifact_bytes);
         }
-        state.seal_chain = chain(state.seal_chain, digest.finish(&bucket_bytes));
+        state.seal_chain = BlockDigest::chain(state.seal_chain, digest.finish(&bucket_bytes));
         writes.push(ArtifactWrite::SealChain {
             family,
             span_start,

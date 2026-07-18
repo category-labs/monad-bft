@@ -25,10 +25,6 @@ pub struct TxHashIndexTable<M: MetaStore> {
     table: CachedKvTable<M, TxLocation>,
 }
 
-fn decode_tx_location(bytes: Bytes) -> Result<TxLocation> {
-    TxLocation::decode(bytes.as_ref())
-}
-
 impl<M: MetaStore> TxHashIndexTable<M> {
     pub const TABLE: TableId = TableId::new("tx_hash_index");
 
@@ -37,7 +33,7 @@ impl<M: MetaStore> TxHashIndexTable<M> {
             table: CachedKvTable::new(
                 meta_store.table(Self::TABLE),
                 cache.tx_hash_index_cache_bytes,
-                decode_tx_location,
+                |bytes: Bytes| TxLocation::decode(bytes.as_ref()),
             ),
         }
     }
