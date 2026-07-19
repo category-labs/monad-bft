@@ -409,6 +409,7 @@ fn test_name_record(keypair: &KeyPair, addr: SocketAddrV4) -> MonadNameRecord<Si
         Some(addr.port()),
         addr.port(),
         None,
+        None,
         1,
     );
     MonadNameRecord::new(name_record, keypair)
