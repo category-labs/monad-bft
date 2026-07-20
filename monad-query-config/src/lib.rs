@@ -100,39 +100,39 @@ impl ChainDataQueryConfig {
     // Only consumed when assembling a configured reader.
     #[cfg(any(feature = "dynamo", feature = "mongo"))]
     pub(crate) fn to_runtime(&self) -> QueryRuntimeConfig {
-        let d = QueryRuntimeConfig::default();
+        let defaults = QueryRuntimeConfig::default();
         let kib_to_bytes =
-            |kib: Option<usize>, default: usize| kib.map(|k| k * 1024).unwrap_or(default);
+            |kib: Option<usize>, default: usize| kib.map(|kib_value| kib_value * 1024).unwrap_or(default);
         QueryRuntimeConfig {
-            blob_io_concurrency: self.blob_io_concurrency.unwrap_or(d.blob_io_concurrency),
+            blob_io_concurrency: self.blob_io_concurrency.unwrap_or(defaults.blob_io_concurrency),
             materialize_concurrency: self
                 .materialize_concurrency
-                .unwrap_or(d.materialize_concurrency),
+                .unwrap_or(defaults.materialize_concurrency),
             page_intersect_concurrency: self
                 .page_intersect_concurrency
-                .unwrap_or(d.page_intersect_concurrency),
+                .unwrap_or(defaults.page_intersect_concurrency),
             materialize_budget_permits: self
                 .materialize_budget_permits
-                .unwrap_or(d.materialize_budget_permits),
+                .unwrap_or(defaults.materialize_budget_permits),
             materialize_permit_bytes: kib_to_bytes(
                 self.materialize_permit_kib,
-                d.materialize_permit_bytes,
+                defaults.materialize_permit_bytes,
             ),
             materialize_span_max_gap_bytes: kib_to_bytes(
                 self.materialize_span_max_gap_kib,
-                d.materialize_span_max_gap_bytes,
+                defaults.materialize_span_max_gap_bytes,
             ),
             materialize_span_max_bytes: kib_to_bytes(
                 self.materialize_span_max_kib,
-                d.materialize_span_max_bytes,
+                defaults.materialize_span_max_bytes,
             ),
             materialize_whole_region_span_threshold: self
                 .materialize_whole_region_span_threshold
-                .unwrap_or(d.materialize_whole_region_span_threshold),
+                .unwrap_or(defaults.materialize_whole_region_span_threshold),
             materialize_whole_region_max_bytes: self
                 .materialize_whole_region_max_mib
                 .map(CacheConfig::budget_mib_to_bytes)
-                .unwrap_or(d.materialize_whole_region_max_bytes),
+                .unwrap_or(defaults.materialize_whole_region_max_bytes),
         }
     }
 }
@@ -333,7 +333,7 @@ pub(crate) async fn build_external_payload_reader(
                 }),
                 _ => None,
             };
-            let store_config = S3BlobStoreConfig {
+            let s3_external_blob_reader_config = S3BlobStoreConfig {
                 bucket: s3.bucket.clone().expect("validated archive s3 bucket"),
                 root_prefix: String::new(),
                 endpoint_urls: s3.endpoint_urls.clone(),
@@ -344,7 +344,7 @@ pub(crate) async fn build_external_payload_reader(
                 create_bucket: false,
                 credentials,
             };
-            let reader = S3ExternalBlobReader::new(store_config)
+            let reader = S3ExternalBlobReader::new(s3_external_blob_reader_config)
                 .await
                 .context("building chain-data archive S3 reader")?;
             Ok(Some(std::sync::Arc::new(reader)))
@@ -683,22 +683,21 @@ pub(crate) fn resolve_cache_config(
     store_config: &ChainDataStoreConfig,
     mode: ChainDataCacheMode,
 ) -> CacheConfig {
-    let mode_default_mib = match mode {
+    let default_cache_mib = match mode {
         ChainDataCacheMode::Ingest => 0,
         ChainDataCacheMode::Reader => READER_DEFAULT_CACHE_MIB,
     };
-    let total_mib = store_config.cache.total_mib.unwrap_or(mode_default_mib);
+    let effective_total_cache_mib = store_config.cache.total_mib.unwrap_or(default_cache_mib);
 
-    let mut config = CacheConfig::from_total_mib(total_mib);
+    let mut config = CacheConfig::from_total_mib(effective_total_cache_mib);
     apply_cache_table_overrides(&mut config, &store_config.cache.tables);
     config
 }
 
 #[cfg(any(feature = "dynamo", feature = "mongo"))]
 fn apply_cache_table_overrides(config: &mut CacheConfig, overrides: &ChainDataCacheTableBudgets) {
-    // One row per cache: (MiB override, target byte budget).
     #[rustfmt::skip]
-    let slots = [
+    let table_cache_mappings = [
         (overrides.dir_by_block_mib, &mut config.dir_by_block_cache_bytes),
         (overrides.dir_bucket_mib, &mut config.dir_bucket_cache_bytes),
         (overrides.bitmap_by_block_mib, &mut config.bitmap_by_block_cache_bytes),
@@ -710,7 +709,7 @@ fn apply_cache_table_overrides(config: &mut CacheConfig, overrides: &ChainDataCa
         (overrides.tx_hash_index_mib, &mut config.tx_hash_index_cache_bytes),
         (overrides.row_cache_mib, &mut config.row_cache_bytes),
     ];
-    for (override_mib, target_bytes) in slots {
+    for (override_mib, target_bytes) in table_cache_mappings {
         if let Some(mib) = override_mib {
             *target_bytes = CacheConfig::budget_mib_to_bytes(mib);
         }
@@ -733,7 +732,7 @@ pub(crate) async fn build_s3_blob_store(
         }),
         _ => None,
     };
-    let store_config = S3BlobStoreConfig {
+    let s3_blob_store_config = S3BlobStoreConfig {
         bucket: config.bucket.clone().expect("validated s3 bucket"),
         root_prefix: config.prefix.clone(),
         endpoint_urls: config.endpoint_urls.clone(),
@@ -744,7 +743,7 @@ pub(crate) async fn build_s3_blob_store(
         create_bucket: config.create_bucket,
         credentials,
     };
-    S3BlobStore::new(store_config)
+    S3BlobStore::new(s3_blob_store_config)
         .await
         .context("building chain-data S3 blob store")
 }
@@ -775,19 +774,17 @@ pub(crate) async fn build_dynamo_meta_store(
         &config.secret_access_key.0,
         &config.session_token.0,
     );
-    let store_config = DynamoMetaStoreConfig {
+    let dynamo_meta_store_config = DynamoMetaStoreConfig {
         table_layout,
         endpoint_urls: config.effective_endpoint_urls(),
         region: config.region.clone(),
         profile: config.profile.clone(),
         batch_max_concurrency: config.effective_max_concurrency(),
         batch_table_max_concurrency: config.effective_table_max_concurrency(),
-        // Start at the DynamoDB-safe limit; a startup probe raises it if the
-        // backend (Alternator) accepts larger batches.
         batch_write_max_items: DYNAMO_BATCH_WRITE_ITEMS,
         credentials,
     };
-    let store = DynamoMetaStore::new(store_config)
+    let store = DynamoMetaStore::new(dynamo_meta_store_config)
         .await
         .context("building chain-data Dynamo meta store")?;
     if config.create_table {
@@ -802,20 +799,20 @@ pub(crate) async fn build_dynamo_meta_store(
         .context("validating chain-data Dynamo meta table(s)")?;
     // Probe the effective BatchWriteItem limit (Alternator allows >25) with one
     // delete-batch of non-existent keys; fall back to 25 if rejected.
-    let batch_candidate = config
+    let batch_write_limit_candidate = config
         .batch_write_max_items
         .unwrap_or(if config.scylla_profile {
             ALTERNATOR_DEFAULT_BATCH_WRITE_ITEMS
         } else {
             DYNAMO_BATCH_WRITE_ITEMS
         });
-    let effective = store
-        .discover_batch_write_limit(batch_candidate)
+    let effective_batch_write_limit = store
+        .discover_batch_write_limit(batch_write_limit_candidate)
         .await
         .context("probing dynamo BatchWriteItem item limit")?;
     info!(
-        candidate = batch_candidate,
-        effective, "resolved dynamo BatchWriteItem item limit"
+        candidate = batch_write_limit_candidate,
+        effective = effective_batch_write_limit, "resolved dynamo BatchWriteItem item limit"
     );
     Ok(store)
 }
@@ -826,14 +823,14 @@ pub(crate) async fn build_mongo_meta_store(
 ) -> Result<monad_query_store::MongoMetaStore> {
     use monad_query_store::{MongoMetaStore, MongoMetaStoreConfig};
 
-    let store_config = MongoMetaStoreConfig {
+    let mongo_meta_store_config = MongoMetaStoreConfig {
         connection_string: config.url.0.clone().expect("validated mongo url"),
         database: config.database.clone().expect("validated mongo database"),
         collection: config.collection.clone(),
         max_pool_size: config.max_pool_size,
         write_concurrency: config.write_concurrency,
     };
-    MongoMetaStore::new(store_config)
+    MongoMetaStore::new(mongo_meta_store_config)
         .await
         .context("building chain-data Mongo meta store")
 }
@@ -850,8 +847,8 @@ pub(crate) async fn build_dynamo_blob_store(
 ) -> Result<monad_query_store::DynamoBlobStore> {
     use monad_query_store::{DynamoBlobStore, DynamoBlobStoreConfig};
 
-    let defaults = DynamoBlobStoreConfig::new(config.table.clone().expect("validated table"));
-    let store_config = DynamoBlobStoreConfig {
+    let base_config = DynamoBlobStoreConfig::new(config.table.clone().expect("validated table"));
+    let dynamo_blob_store_config = DynamoBlobStoreConfig {
         endpoint_url: config.endpoint_url.clone(),
         region: config.region.clone(),
         profile: config.profile.clone(),
@@ -861,24 +858,19 @@ pub(crate) async fn build_dynamo_blob_store(
             &config.secret_access_key.0,
             &config.session_token.0,
         ),
-        chunk_size: config.chunk_size.unwrap_or(defaults.chunk_size),
-        ..defaults
+        chunk_size: config.chunk_size.unwrap_or(base_config.chunk_size),
+        ..base_config
     };
-    let chunk_size = store_config.chunk_size;
+    let chunk_size = dynamo_blob_store_config.chunk_size;
     let store = match shared {
         Some(shared) => {
-            // The blob store reuses the meta store's client ring, so any of these
-            // settings is silently overridden. Suppress the warn in the common
-            // DynamoDynamo case where the blob endpoint already matches the meta
-            // store's (and nothing else diverges) to avoid a spurious startup
-            // warn on every co-deployed instance.
-            let endpoint_matches_meta = match &store_config.endpoint_url {
+            let endpoint_matches_meta = match &dynamo_blob_store_config.endpoint_url {
                 Some(endpoint) => shared.endpoint_urls.iter().any(|e| e == endpoint),
                 None => true,
             };
-            let other_overrides = store_config.region.is_some()
-                || store_config.profile.is_some()
-                || store_config.credentials.is_some();
+            let other_overrides = dynamo_blob_store_config.region.is_some()
+                || dynamo_blob_store_config.profile.is_some()
+                || dynamo_blob_store_config.credentials.is_some();
             if !endpoint_matches_meta || other_overrides {
                 warn!(
                     "chain-data dynamo blob endpoint/region/profile/credential settings are \
@@ -887,12 +879,12 @@ pub(crate) async fn build_dynamo_blob_store(
             }
             DynamoBlobStore::with_connection(
                 shared,
-                store_config.table_name.clone(),
-                store_config.batch_max_concurrency,
-                store_config.chunk_size,
+                dynamo_blob_store_config.table_name.clone(),
+                dynamo_blob_store_config.batch_max_concurrency,
+                dynamo_blob_store_config.chunk_size,
             )
         }
-        None => DynamoBlobStore::new(store_config)
+        None => DynamoBlobStore::new(dynamo_blob_store_config)
             .await
             .context("building chain-data Dynamo blob store")?,
     };
