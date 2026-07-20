@@ -91,12 +91,12 @@ impl EstablishedSessions {
     }
 }
 
-pub(crate) struct SessionIndexReservation<'a> {
-    state: &'a mut State,
+pub(crate) struct SessionIndexReservation<'a, M> {
+    state: &'a mut State<M>,
     index: SessionIndex,
 }
 
-impl<'a> SessionIndexReservation<'a> {
+impl<M> SessionIndexReservation<'_, M> {
     pub(crate) fn index(&self) -> SessionIndex {
         self.index
     }
@@ -112,8 +112,8 @@ impl<'a> SessionIndexReservation<'a> {
     }
 }
 
-pub struct State {
-    initiating_sessions: HashMap<SessionIndex, InitiatorState>,
+pub struct State<M = ()> {
+    initiating_sessions: HashMap<SessionIndex, InitiatorState<M>>,
     responding_sessions: HashMap<SessionIndex, ResponderState>,
     transport_sessions: HashMap<SessionIndex, TransportState>,
     last_established_session_by_public_key: HashMap<monad_secp::PubKey, EstablishedSessions>,
@@ -128,8 +128,8 @@ pub struct State {
     metric_names: &'static MetricNames,
 }
 
-impl State {
-    pub fn new(metric_names: &'static MetricNames) -> Self {
+impl<M> State<M> {
+    pub fn new_with_metadata(metric_names: &'static MetricNames) -> Self {
         Self {
             initiating_sessions: HashMap::new(),
             responding_sessions: HashMap::new(),
@@ -255,7 +255,7 @@ impl State {
         self.transport_sessions.get_mut(&session_id)
     }
 
-    pub(crate) fn reserve_session_index(&mut self) -> Option<SessionIndexReservation<'_>> {
+    pub(crate) fn reserve_session_index(&mut self) -> Option<SessionIndexReservation<'_, M>> {
         let start_index = self.next_session_index;
         let mut candidate = self.next_session_index;
 
@@ -451,21 +451,21 @@ impl State {
     }
 
     #[cfg(test)]
-    pub fn get_initiator(&self, session_index: &SessionIndex) -> Option<&InitiatorState> {
+    pub fn get_initiator(&self, session_index: &SessionIndex) -> Option<&InitiatorState<M>> {
         self.initiating_sessions.get(session_index)
     }
 
     pub fn get_initiator_mut(
         &mut self,
         session_index: &SessionIndex,
-    ) -> Option<&mut InitiatorState> {
+    ) -> Option<&mut InitiatorState<M>> {
         self.initiating_sessions.get_mut(session_index)
     }
 
     pub fn get_initiator_by_public_key_mut(
         &mut self,
         public_key: &monad_secp::PubKey,
-    ) -> Option<&mut InitiatorState> {
+    ) -> Option<&mut InitiatorState<M>> {
         let session_id = self.initiated_session_by_peer.get(public_key)?;
         self.initiating_sessions.get_mut(session_id)
     }
@@ -482,7 +482,7 @@ impl State {
         self.responding_sessions.get_mut(session_index)
     }
 
-    pub fn remove_initiator(&mut self, session_index: &SessionIndex) -> Option<InitiatorState> {
+    pub fn remove_initiator(&mut self, session_index: &SessionIndex) -> Option<InitiatorState<M>> {
         let session = self.initiating_sessions.remove(session_index)?;
         self.metrics
             .gauge(self.metric_names.state_initiating_sessions)
@@ -517,7 +517,7 @@ impl State {
     pub fn insert_initiator(
         &mut self,
         session_index: SessionIndex,
-        session: InitiatorState,
+        session: InitiatorState<M>,
         remote_key: monad_secp::PubKey,
     ) {
         let remote_addr = session.remote_addr;
@@ -681,6 +681,13 @@ impl State {
 
     pub fn initiated_sessions_count(&self) -> usize {
         self.initiating_sessions.len()
+    }
+}
+
+#[cfg(test)]
+impl State {
+    pub fn new(metric_names: &'static MetricNames) -> Self {
+        Self::new_with_metadata(metric_names)
     }
 }
 
