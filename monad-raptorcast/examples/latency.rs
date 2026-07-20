@@ -622,6 +622,7 @@ fn setup_node(
             ),
         ])
         .build();
+    assert!(dataplane.block_until_ready(Duration::from_secs(2)));
 
     let tcp_socket = dataplane
         .tcp_sockets
@@ -652,7 +653,7 @@ fn setup_node(
 
     let keypair_arc = Arc::new(keypair);
     let wireauth_config = monad_wireauth::Config::default();
-    let auth_protocol = monad_raptorcast::auth::WireAuthProtocol::new(
+    let udp_auth_protocol = monad_raptorcast::auth::WireAuthProtocol::new(
         &monad_raptorcast::auth::metrics::UDP_METRICS,
         wireauth_config,
         keypair_arc.clone(),
@@ -670,7 +671,8 @@ fn setup_node(
         create_raptorcast_config(keypair_arc),
         SecondaryRaptorCastModeConfig::None,
         tcp_socket,
-        (authenticated_socket, auth_protocol),
+        None,
+        (authenticated_socket, udp_auth_protocol),
         None,
         Some(non_authenticated_socket),
         dataplane_control,
