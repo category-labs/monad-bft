@@ -54,7 +54,10 @@ use monad_peer_discovery::{
     MonadNameRecord, NameRecord, PeerDiscoveryAlgo, PeerDiscoveryEvent,
 };
 use monad_peer_score::IdentityScore;
-use monad_types::{DropTimer, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, UdpPriority};
+use monad_types::{
+    DropTimer, Epoch, ExecutionProtocol, FullnodeBroadcastMode, NodeId, Round, RouterTarget,
+    UdpPriority,
+};
 use monad_validator::{
     proposer_schedule::BoxedProposerSchedule,
     signature_collection::SignatureCollection,
@@ -455,6 +458,7 @@ where
                 msg_bytes,
                 epoch,
                 round,
+                broadcast_mode,
                 group,
             } => {
                 // SAFETY: the SecondaryRaptorcast publisher instance
@@ -462,8 +466,14 @@ where
                 // consistent with the round.
                 let broadcast_group =
                     SecondaryBroadcastGroup::as_publisher(&self.self_id, round, &group);
-                let build_target =
-                    v1_rollout::secondary_build_target(self.v1_rollout, epoch, broadcast_group);
+                let build_target = match broadcast_mode {
+                    FullnodeBroadcastMode::SecondaryRaptorcast => {
+                        v1_rollout::secondary_build_target(self.v1_rollout, epoch, broadcast_group)
+                    }
+                    FullnodeBroadcastMode::Broadcast => {
+                        BuildTarget::FullNodeBroadcast(broadcast_group)
+                    }
+                };
                 builder
                     .build_into(&msg_bytes, &build_target, &mut sink)
                     .unwrap_log_on_error(&msg_bytes, &build_target)
@@ -1061,6 +1071,8 @@ where
                 RouterCommand::PublishToFullNodes {
                     epoch,
                     round: _,
+                    // we always broadcast to dedicated-fullnodes
+                    broadcast_mode: _,
                     message,
                 } => {
                     if self.is_dynamic_fullnode {

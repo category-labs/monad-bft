@@ -654,6 +654,8 @@ async fn raptorcast_forwards_fullnodes_group_invite_at_cold_start() {
 #[cfg(test)]
 #[tokio::test]
 async fn publish_to_full_nodes() {
+    use monad_types::FullnodeBroadcastMode;
+
     ONCE_SETUP.call_once(|| {
         tracing_subscriber::fmt::fmt()
             .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -752,6 +754,7 @@ async fn publish_to_full_nodes() {
     let command = RouterCommand::PublishToFullNodes {
         epoch: Epoch(0),
         round: Round(0),
+        broadcast_mode: FullnodeBroadcastMode::SecondaryRaptorcast,
         message,
     };
     validator_rc.exec(vec![command]);

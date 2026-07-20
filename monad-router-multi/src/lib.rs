@@ -375,11 +375,13 @@ where
                 RouterCommand::PublishToFullNodes {
                     epoch,
                     round,
+                    broadcast_mode,
                     ref message,
                 } => {
                     let cmd_cpy = RouterCommand::PublishToFullNodes {
                         epoch,
                         round,
+                        broadcast_mode,
                         message: message.clone(),
                     };
                     validator_cmds.push(cmd_cpy);

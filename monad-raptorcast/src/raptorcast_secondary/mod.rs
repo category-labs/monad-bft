@@ -35,7 +35,7 @@ use monad_crypto::certificate_signature::{
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{Message, PeerEntry, RouterCommand};
 use monad_peer_discovery::{driver::PeerDiscoveryDriver, PeerDiscoveryAlgo, PeerDiscoveryEvent};
-use monad_types::{Epoch, NodeId, Round};
+use monad_types::{Epoch, FullnodeBroadcastMode, NodeId, Round};
 use publisher::Publisher;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
@@ -66,6 +66,7 @@ pub enum SecondaryOutboundMessage<PT: PubKey> {
         msg_bytes: bytes::Bytes,
         epoch: Epoch,
         round: Round,
+        broadcast_mode: FullnodeBroadcastMode,
         group: SecondaryGroup<PT>,
     },
 }
@@ -344,6 +345,7 @@ where
                 Self::Command::PublishToFullNodes {
                     epoch,
                     round,
+                    broadcast_mode,
                     message,
                 } => {
                     let group = match &mut self.role {
@@ -381,6 +383,7 @@ where
                         msg_bytes: outbound_message,
                         epoch,
                         round,
+                        broadcast_mode,
                         group,
                     };
                     if let Err(err) = self.channel_to_primary_outbound.send(outbound) {
