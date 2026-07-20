@@ -796,10 +796,11 @@ pub fn create_dataplane_for_tests(with_direct_udp: bool) -> DataplaneHandles {
     }
 }
 
-// used where the proposer schedule is irrelevant (e.g. v0): every round
-// resolves to an unknown proposer.
+// used where the proposer schedule is irrelevant: every proposer and epoch
+
+// checks out, so v1 chunks are accepted regardless of round.
 pub fn dummy_proposer_schedule<PT: PubKey>() -> BoxedProposerSchedule<PT> {
-    Box::new(crate::util::StubProposerSchedule::default())
+    Box::new(crate::util::StubProposerSchedule::VALID)
 }
 
 pub fn new_defaulted_raptorcast_for_tests<ST, M, OM, SE>(

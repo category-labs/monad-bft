@@ -1465,7 +1465,7 @@ mod tests {
 #[cfg(test)]
 mod tests_deterministic {
     use std::{
-        collections::{BTreeMap, HashMap, HashSet},
+        collections::{BTreeMap, BTreeSet, HashMap, HashSet},
         net::{IpAddr, Ipv4Addr, SocketAddr},
     };
 
@@ -1477,13 +1477,16 @@ mod tests_deterministic {
     };
     use monad_secp::{KeyPair, SecpSignature};
     use monad_types::{Epoch, NodeId, Round, Stake};
-    use monad_validator::validator_set::{ValidatorSet, ValidatorSetType as _};
+    use monad_validator::validator_set::{
+        ValidatorSet, ValidatorSetType as _, MAX_VALIDATOR_SET_SIZE,
+    };
     use rstest::*;
 
     use super::{ChunkSignatureVerifier, InvalidChunk, UdpState, ValidatedChunk};
     use crate::{
         auth::AuthRecvMsg,
         packet::{
+            assigner::{even_partition_num_chunks, stake_partition_num_chunks_hint},
             deterministic::{self, build_with_given_header},
             MessageBuilder,
         },
@@ -1494,7 +1497,8 @@ mod tests_deterministic {
         udp::SIGNATURE_CACHE_SIZE,
         util::{
             BroadcastMode, BuildTarget, EncodingScheme, FullNodeGroupMap, PrimaryBroadcastGroup,
-            StubProposerSchedule, UdpMessage, ValidatorGroupMap,
+            SecondaryBroadcastGroup, SecondaryGroup, StubProposerSchedule, UdpMessage,
+            ValidatorGroupMap,
         },
         v1_rollout::DeterministicProtocolRolloutStage,
     };
@@ -2049,6 +2053,101 @@ mod tests_deterministic {
         assert_eq!(decoded.len(), 1, "should decode from 2/3 of chunks");
         assert_eq!(decoded[0].0, sender_id);
         assert_eq!(decoded[0].1, app_message);
+    }
+
+    // The parser bounds chunk ids by the deterministic partition size
+    // (plus rounding slack for primary). Ids past the bound must be
+    // rejected as InvalidChunkId, before any decoding state is touched.
+    #[rstest]
+    #[case::primary(true)]
+    #[case::secondary(false)]
+    fn test_chunk_id_validation(#[case] primary: bool) {
+        let app_message: Bytes = vec![0x5A_u8; 64 * 1024].into();
+
+        let (packets, layout, chunk_id_cap) = if primary {
+            let (key, validators, _) = validator_set();
+            let self_id = NodeId::new(key.pubkey());
+            let group_map = make_group_map(&validators);
+            let group = PrimaryBroadcastGroup::of_epoch(EPOCH, &self_id, &group_map).unwrap();
+            let packets = build_packets(&key, &app_message, group);
+
+            let group = PrimaryBroadcastGroup::of_epoch(EPOCH, &self_id, &group_map).unwrap();
+            let encoding = deterministic::PrimaryEncoding::new(
+                EncodingScheme::Deterministic25(ROUND),
+                &group,
+                app_message.len(),
+                UNIX_TS_MS,
+            )
+            .unwrap();
+            let layout = encoding.layout();
+            let num_source = app_message.len().div_ceil(layout.symbol_len());
+            let cap = stake_partition_num_chunks_hint(
+                num_source,
+                deterministic::DEFAULT_REDUNDANCY,
+                MAX_VALIDATOR_SET_SIZE,
+            )
+            .unwrap();
+            (packets, layout, cap)
+        } else {
+            let publisher_key = make_key_pair(0);
+            let publisher_id = NodeId::new(publisher_key.pubkey());
+            let full_nodes: BTreeSet<_> = (1_u8..=20)
+                .map(|n| NodeId::new(make_key_pair(n).pubkey()))
+                .collect();
+            let group = SecondaryGroup::new(full_nodes).unwrap();
+
+            let bg = SecondaryBroadcastGroup::as_publisher(&publisher_id, ROUND, &group);
+            let build_target = BuildTarget::deterministic_fullnode_raptorcast(bg, EPOCH);
+            let packets = MessageBuilder::<SignatureType>::new(&publisher_key)
+                .unix_ts_ms(UNIX_TS_MS)
+                .build_vec(&app_message, &build_target)
+                .expect("build should succeed");
+
+            let bg = SecondaryBroadcastGroup::as_publisher(&publisher_id, ROUND, &group);
+            let encoding = deterministic::SecondaryEncoding::new(
+                EncodingScheme::Deterministic25(ROUND),
+                &bg,
+                app_message.len(),
+                UNIX_TS_MS,
+            )
+            .unwrap();
+            let layout = encoding.layout();
+            let num_source = app_message.len().div_ceil(layout.symbol_len());
+            let cap =
+                even_partition_num_chunks(num_source, deterministic::DEFAULT_REDUNDANCY).unwrap();
+            (packets, layout, cap)
+        };
+
+        // All built chunks are in range, and the parser derives the
+        // same bound as this test.
+        let mut parser = ChunkParser::new();
+        for msg in &packets {
+            let parsed = parser.parse(&msg.payload).expect("valid packet");
+            assert!((parsed.chunk_id as usize) < chunk_id_cap);
+            assert_eq!(parsed.encoded_symbol_capacity, chunk_id_cap);
+        }
+
+        let forge = |chunk_id: u16| {
+            let mut payload = BytesMut::from(&packets[0].payload[..]);
+            let chunk_header = &mut payload[layout.chunk_header_range()];
+            chunk_header[2..4].copy_from_slice(&chunk_id.to_le_bytes());
+            ChunkParser::new().parse(&payload.freeze())
+        };
+
+        // An in-range forged id invalidates the merkle proof or the
+        // signature, but must not be rejected as InvalidChunkId.
+        let last_valid = u16::try_from(chunk_id_cap - 1).unwrap();
+        assert!(matches!(
+            forge(last_valid),
+            Ok(_) | Err(InvalidChunk::InvalidMerkleProof) | Err(InvalidChunk::InvalidSignature)
+        ));
+
+        let first_invalid = u16::try_from(chunk_id_cap).unwrap();
+        assert!(matches!(
+            forge(first_invalid),
+            Err(InvalidChunk::InvalidChunkId)
+        ));
+        assert!(matches!(forge(u16::MAX), Err(InvalidChunk::InvalidChunkId)));
     }
 
     #[rstest]
