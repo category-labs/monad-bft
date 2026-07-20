@@ -88,8 +88,8 @@ mod tests {
             store
                 .apply_writes(vec![BlobWriteOp {
                     table: TABLE,
-                    key: b"k".to_vec(),
-                    value: Bytes::from_static(b"v"),
+                    blob_key: b"k".to_vec(),
+                    blob_data: Bytes::from_static(b"v"),
                 }])
                 .await,
         );

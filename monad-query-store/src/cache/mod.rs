@@ -58,16 +58,15 @@ fn decode_weighted<V>(
     bytes: Option<Bytes>,
     decode: fn(Bytes) -> Result<V>,
 ) -> Result<Option<Weighted<V>>> {
-    match bytes {
-        Some(bytes) => {
+    bytes
+        .map(|bytes| {
             let weight = bytes.len();
-            Ok(Some(Weighted {
+            Ok(Weighted {
                 value: decode(bytes)?,
                 weight,
-            }))
-        }
-        None => Ok(None),
-    }
+            })
+        })
+        .transpose()
 }
 
 /// Output stored in the single-flight map. [`Shared`] requires `Clone` output
@@ -77,6 +76,8 @@ type SharedResult<V> = std::result::Result<Option<V>, Arc<QueryError>>;
 
 /// A boxed, `'static` backend-fetch future shared by every coalesced caller.
 type SharedFetch<V> = Shared<BoxFuture<'static, SharedResult<V>>>;
+type ScannableCacheKey = (Vec<u8>, Vec<u8>);
+type ScannableValueCache<V> = Arc<CachedInner<ScannableCacheKey, Weighted<V>>>;
 
 /// Maps a shared fetch result back to the crate `Result`: the sole `Arc` owner
 /// gets the original error; under contention any awaiter gets a re-wrapped
@@ -173,22 +174,19 @@ impl CacheConfig {
             self.row_cache_bytes,
         ]
         .into_iter()
-        .fold(0usize, |acc, b| acc.saturating_add(b))
+        .fold(0, usize::saturating_add)
     }
 }
 
 /// Byte weigher adapting the per-value weigh fn to quick_cache's trait.
-struct ValueWeighter<V>(fn(&V) -> usize);
-
-impl<V> Clone for ValueWeighter<V> {
-    fn clone(&self) -> Self {
-        Self(self.0)
-    }
+#[derive(Clone, Copy)]
+struct ValueWeighter<V> {
+    weigh: fn(&V) -> usize,
 }
 
 impl<K, V> Weighter<K, V> for ValueWeighter<V> {
     fn weight(&self, _key: &K, value: &V) -> u64 {
-        (self.0)(value) as u64
+        (self.weigh)(value) as u64
     }
 }
 
@@ -244,7 +242,7 @@ where
                 .expect("static cache options are valid");
             SievedCache::with_options(
                 options,
-                ValueWeighter(weigher),
+                ValueWeighter { weigh: weigher },
                 Default::default(),
                 Default::default(),
             )
@@ -261,8 +259,8 @@ where
     /// and counts hit/miss; never fetches. Batch readers probe with this,
     /// fetch misses themselves, then [`Self::insert`] the results.
     pub fn probe(&self, key: &K) -> Option<V> {
-        let c = self.cache.as_ref()?;
-        let hit = c.get(key);
+        let cache = self.cache.as_ref()?;
+        let hit = cache.get(key);
         if hit.is_some() {
             self.hits.fetch_add(1, Ordering::Relaxed);
         } else {
@@ -275,10 +273,10 @@ where
     /// Admission is the policy's call — a never-referenced key may be
     /// dropped from probation without ever displacing the hot set.
     pub fn insert(&self, key: K, value: V) {
-        let Some(c) = &self.cache else {
+        let Some(cache) = &self.cache else {
             return;
         };
-        c.insert(key, value);
+        cache.insert(key, value);
     }
 }
 
@@ -457,7 +455,7 @@ impl<M: MetaStore, V> CachedKvTable<M, V> {
 #[derive(Clone)]
 pub struct CachedScannableKvTable<M: MetaStore, V> {
     inner: ScannableKvTable<M>,
-    cache: Arc<CachedInner<(Vec<u8>, Vec<u8>), Weighted<V>>>,
+    cache: ScannableValueCache<V>,
     decode: fn(Bytes) -> Result<V>,
 }
 
@@ -533,9 +531,13 @@ mod tests {
 
     impl CountingStore {
         fn with_value(key: &[u8], value: Bytes) -> Self {
-            let s = Self::default();
-            s.data.lock().unwrap().insert(key.to_vec(), value);
-            s
+            let store = Self::default();
+            store
+                .data
+                .lock()
+                .expect("counting store data lock is not poisoned")
+                .insert(key.to_vec(), value);
+            store
         }
 
         fn get_calls(&self) -> u64 {
@@ -545,7 +547,12 @@ mod tests {
         async fn lookup(&self, key: &[u8]) -> Result<Option<Bytes>> {
             self.get_calls.fetch_add(1, Ordering::SeqCst);
             tokio::time::sleep(Duration::from_millis(50)).await;
-            Ok(self.data.lock().unwrap().get(key).cloned())
+            Ok(self
+                .data
+                .lock()
+                .expect("counting store data lock is not poisoned")
+                .get(key)
+                .cloned())
         }
     }
 
@@ -583,21 +590,24 @@ mod tests {
         }
     }
 
-    const N: usize = 16;
+    const CONCURRENT_CALLER_COUNT: usize = 16;
 
     #[tokio::test]
     async fn kv_get_coalesces_concurrent_misses() {
         let store = CountingStore::with_value(b"k", Bytes::from_static(b"v"));
-        let table = KvTable::new(store.clone(), TableId::new("t"));
+        let table = store.clone().table(TableId::new("t"));
         let cached = Arc::new(CachedKvTable::new(table, 4096, Ok));
 
         let mut handles = Vec::new();
-        for _ in 0..N {
-            let c = cached.clone();
-            handles.push(tokio::spawn(async move { c.get(b"k").await }));
+        for _ in 0..CONCURRENT_CALLER_COUNT {
+            let cached_table = cached.clone();
+            handles.push(tokio::spawn(async move { cached_table.get(b"k").await }));
         }
         for h in handles {
-            let got = h.await.unwrap().unwrap();
+            let got = h
+                .await
+                .expect("cache reader task should not panic")
+                .expect("cached read should succeed");
             assert_eq!(got, Some(Bytes::from_static(b"v")));
         }
 
@@ -612,16 +622,23 @@ mod tests {
     #[tokio::test]
     async fn kv_get_coalesces_absent_key_without_caching_the_miss() {
         let store = CountingStore::default();
-        let table = KvTable::new(store.clone(), TableId::new("t"));
+        let table = store.clone().table(TableId::new("t"));
         let cached = Arc::new(CachedKvTable::new(table, 4096, Ok));
 
         let mut handles = Vec::new();
-        for _ in 0..N {
-            let c = cached.clone();
-            handles.push(tokio::spawn(async move { c.get(b"missing").await }));
+        for _ in 0..CONCURRENT_CALLER_COUNT {
+            let cached_table = cached.clone();
+            handles.push(tokio::spawn(
+                async move { cached_table.get(b"missing").await },
+            ));
         }
         for h in handles {
-            assert_eq!(h.await.unwrap().unwrap(), None);
+            assert_eq!(
+                h.await
+                    .expect("cache reader task should not panic")
+                    .expect("cached read should succeed"),
+                None
+            );
         }
         assert_eq!(store.get_calls(), 1, "concurrent misses share one fetch");
 
@@ -634,7 +651,7 @@ mod tests {
         store
             .data
             .lock()
-            .unwrap()
+            .expect("counting store data lock is not poisoned")
             .insert(b"missing".to_vec(), Bytes::from_static(b"v"));
         assert_eq!(
             cached.get(b"missing").await.unwrap(),
@@ -652,16 +669,23 @@ mod tests {
     #[tokio::test]
     async fn scannable_get_coalesces_concurrent_misses() {
         let store = CountingStore::with_value(b"pc", Bytes::from_static(b"v"));
-        let table = ScannableKvTable::new(store.clone(), ScanId::new("t"));
+        let table = store.clone().scannable_table(ScanId::new("t"));
         let cached = Arc::new(CachedScannableKvTable::new(table, 4096, Ok));
 
         let mut handles = Vec::new();
-        for _ in 0..N {
-            let c = cached.clone();
-            handles.push(tokio::spawn(async move { c.get(b"p", b"c").await }));
+        for _ in 0..CONCURRENT_CALLER_COUNT {
+            let cached_table = cached.clone();
+            handles.push(tokio::spawn(
+                async move { cached_table.get(b"p", b"c").await },
+            ));
         }
         for h in handles {
-            assert_eq!(h.await.unwrap().unwrap(), Some(Bytes::from_static(b"v")));
+            assert_eq!(
+                h.await
+                    .expect("cache reader task should not panic")
+                    .expect("cached read should succeed"),
+                Some(Bytes::from_static(b"v"))
+            );
         }
         assert_eq!(store.get_calls(), 1);
     }
@@ -697,16 +721,19 @@ mod tests {
 
         let store = ErrStore::default();
         let calls = store.calls.clone();
-        let table = KvTable::new(store, TableId::new("t"));
+        let table = store.table(TableId::new("t"));
         let cached = Arc::new(CachedKvTable::new(table, 4096, Ok));
 
         let mut handles = Vec::new();
-        for _ in 0..N {
-            let c = cached.clone();
-            handles.push(tokio::spawn(async move { c.get(b"k").await }));
+        for _ in 0..CONCURRENT_CALLER_COUNT {
+            let cached_table = cached.clone();
+            handles.push(tokio::spawn(async move { cached_table.get(b"k").await }));
         }
         for h in handles {
-            assert!(h.await.unwrap().is_err());
+            assert!(h
+                .await
+                .expect("cache reader task should not panic")
+                .is_err());
         }
         assert_eq!(calls.load(Ordering::SeqCst), 1);
 
@@ -742,7 +769,7 @@ mod tests {
             }
         }
 
-        let table = KvTable::new(CorruptStore, TableId::new("t"));
+        let table = CorruptStore.table(TableId::new("t"));
         let cached = CachedKvTable::new(table, 4096, Ok);
         let err = cached.get(b"k").await.expect_err("fetch fails");
         assert!(
@@ -755,16 +782,16 @@ mod tests {
     #[tokio::test]
     async fn follower_populates_cache_when_leader_is_cancelled() {
         let store = CountingStore::with_value(b"k", Bytes::from_static(b"v"));
-        let table = KvTable::new(store.clone(), TableId::new("t"));
+        let table = store.clone().table(TableId::new("t"));
         let cached = Arc::new(CachedKvTable::new(table, 4096, Ok));
 
         let leader = {
-            let c = cached.clone();
-            tokio::spawn(async move { c.get(b"k").await })
+            let cached_table = cached.clone();
+            tokio::spawn(async move { cached_table.get(b"k").await })
         };
         let follower = {
-            let c = cached.clone();
-            tokio::spawn(async move { c.get(b"k").await })
+            let cached_table = cached.clone();
+            tokio::spawn(async move { cached_table.get(b"k").await })
         };
 
         // Let both reach the single-flight join point, then cancel the leader mid-fetch.

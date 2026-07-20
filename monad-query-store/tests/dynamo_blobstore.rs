@@ -46,7 +46,7 @@ async fn connect_store(table_name: &str, chunk_size: usize) -> Option<DynamoBlob
 fn unique_table_name(test: &str) -> String {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .expect("system clock should be after the Unix epoch")
         .as_nanos();
     format!("chain-data-blob-it-{test}-{nanos}")
 }
@@ -92,14 +92,14 @@ async fn put_get_round_trip_many_chunks() {
     let Some(store) = fresh_store("manychunks", 16).await else {
         return;
     };
-    let value: Vec<u8> = (0..1000u32).map(|i| i as u8).collect();
+    let blob_data: Vec<u8> = (0..1000u32).map(|i| i as u8).collect();
     store
-        .put_blob(TABLE, b"big", Bytes::from(value.clone()))
+        .put_blob(TABLE, b"big", Bytes::from(blob_data.clone()))
         .await
         .unwrap();
     assert_eq!(
         store.get_blob(TABLE, b"big").await.unwrap(),
-        Some(Bytes::from(value))
+        Some(Bytes::from(blob_data))
     );
 }
 
@@ -245,8 +245,8 @@ async fn apply_writes_multiple_blobs() {
     let ops: Vec<BlobWriteOp> = (0u32..20)
         .map(|i| BlobWriteOp {
             table: TABLE,
-            key: i.to_be_bytes().to_vec(),
-            value: Bytes::from(blob_value(i)),
+            blob_key: i.to_be_bytes().to_vec(),
+            blob_data: Bytes::from(blob_value(i)),
         })
         .collect();
     store.apply_writes(ops).await.unwrap();
@@ -268,9 +268,9 @@ async fn delete_blob_removes_every_chunk_and_is_idempotent() {
     let Some(store) = fresh_store("delete", 16).await else {
         return;
     };
-    let value: Vec<u8> = (0..200u8).collect();
+    let blob_data: Vec<u8> = (0..200u8).collect();
     store
-        .put_blob(TABLE, b"k", Bytes::from(value))
+        .put_blob(TABLE, b"k", Bytes::from(blob_data))
         .await
         .unwrap();
 

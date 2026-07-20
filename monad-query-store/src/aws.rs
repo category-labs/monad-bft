@@ -87,11 +87,11 @@ pub(crate) async fn load_sdk_config(
     if let Some(profile) = profile {
         loader = loader.profile_name(profile);
     }
-    if let Some(creds) = credentials {
+    if let Some(credentials) = credentials {
         loader = loader.credentials_provider(Credentials::new(
-            creds.access_key_id,
-            creds.secret_access_key,
-            creds.session_token,
+            credentials.access_key_id,
+            credentials.secret_access_key,
+            credentials.session_token,
             None,
             provider_name,
         ));

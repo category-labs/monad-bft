@@ -38,7 +38,7 @@ fn test_url() -> Option<String> {
 fn unique_database(test: &str) -> String {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .expect("system clock should be after the Unix epoch")
         .as_nanos();
     format!("chain_data_it_{test}_{nanos}")
 }
@@ -58,9 +58,11 @@ async fn fresh_store(test: &str) -> Option<(MongoMetaStore, String)> {
 }
 
 async fn drop_database(database: &str) {
-    let client = mongodb::Client::with_uri_str(&test_url().unwrap())
-        .await
-        .expect("client");
+    let client = mongodb::Client::with_uri_str(
+        &test_url().expect("Mongo test URL should be set while dropping a database"),
+    )
+    .await
+    .expect("client");
     client.database(database).drop().await.expect("drop db");
 }
 
@@ -109,17 +111,17 @@ async fn scan_keys_drains_whole_partition_in_clustering_order() {
         return;
     };
 
-    let part = 7u64.to_be_bytes();
-    let value = Bytes::from(vec![0u8; 4096]);
+    let partition = 7u64.to_be_bytes();
+    let row_data = Bytes::from(vec![0u8; 4096]);
     // Insert in shuffled order so the returned order is the index's, not
     // insertion's. Crosses the write-concurrency batch size (400 > 64).
     let mut ops: Vec<MetaWriteOp> = (0u16..400)
         .rev()
         .map(|i| MetaWriteOp::ScanPut {
             table: SCAN,
-            partition: part.to_vec(),
-            clustering: i.to_be_bytes().to_vec(),
-            value: value.clone(),
+            partition: partition.to_vec(),
+            clustering_key: i.to_be_bytes().to_vec(),
+            row_data: row_data.clone(),
         })
         .collect();
     // Neighboring partitions of the same table, and the same partition of
@@ -127,24 +129,24 @@ async fn scan_keys_drains_whole_partition_in_clustering_order() {
     ops.push(MetaWriteOp::ScanPut {
         table: SCAN,
         partition: 6u64.to_be_bytes().to_vec(),
-        clustering: vec![0xff, 0xff],
-        value: Bytes::from_static(b"x"),
+        clustering_key: vec![0xff, 0xff],
+        row_data: Bytes::from_static(b"x"),
     });
     ops.push(MetaWriteOp::ScanPut {
         table: SCAN,
         partition: 8u64.to_be_bytes().to_vec(),
-        clustering: vec![0, 0],
-        value: Bytes::from_static(b"x"),
+        clustering_key: vec![0, 0],
+        row_data: Bytes::from_static(b"x"),
     });
     ops.push(MetaWriteOp::ScanPut {
         table: OTHER_SCAN,
-        partition: part.to_vec(),
-        clustering: vec![0, 1],
-        value: Bytes::from_static(b"x"),
+        partition: partition.to_vec(),
+        clustering_key: vec![0, 1],
+        row_data: Bytes::from_static(b"x"),
     });
     store.apply_writes(ops).await.unwrap();
 
-    let keys = store.scan_keys(SCAN, &part).await.unwrap();
+    let keys = store.scan_keys(SCAN, &partition).await.unwrap();
     let expected: Vec<Vec<u8>> = (0u16..400).map(|i| i.to_be_bytes().to_vec()).collect();
     assert_eq!(keys, expected, "whole partition in clustering byte order");
 
