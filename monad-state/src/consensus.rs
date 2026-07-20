@@ -44,7 +44,7 @@ use monad_executor_glue::{
     MempoolEvent, MonadEvent, RouterCommand, StateSyncEvent, TimeoutVariant, TimerCommand,
     TimestampCommand, TxPoolCommand, ValSetCommand,
 };
-use monad_types::{ExecutionProtocol, NodeId, Round, RouterTarget};
+use monad_types::{ExecutionProtocol, FullnodeBroadcastMode, NodeId, Round, RouterTarget};
 use monad_validator::{
     epoch_manager::EpochManager,
     leader_election::LeaderElection,
@@ -271,6 +271,7 @@ where
                                 proposal_cmds.push(ConsensusCommand::PublishToFullNodes {
                                     epoch: proposal_epoch,
                                     round: proposal_round,
+                                    broadcast_mode: FullnodeBroadcastMode::SecondaryRaptorcast,
                                     message: verified_message,
                                 });
                                 proposal_cmds
@@ -707,10 +708,12 @@ where
             ConsensusCommand::PublishToFullNodes {
                 epoch,
                 round,
+                broadcast_mode,
                 message,
             } => parent_cmds.push(Command::RouterCommand(RouterCommand::PublishToFullNodes {
                 epoch,
                 round,
+                broadcast_mode,
                 message: VerifiedMonadMessage::Consensus(message),
             })),
             ConsensusCommand::Schedule { round, duration } => {
