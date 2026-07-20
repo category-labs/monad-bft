@@ -172,6 +172,7 @@ impl ValidatorInfo {
             non_auth_addr.map(|addr| addr.port()),
             auth_addr.port(),
             direct_udp_addr.map(|addr| addr.port()),
+            None,
             1,
         );
         MonadNameRecord::new(name_record, &*self.keypair)
@@ -250,6 +251,9 @@ fn spawn_noop_validator(
 
     tokio::task::spawn_local(async move {
         let config = create_raptorcast_config(keypair, DEFAULT_SIG_VERIFICATION_RATE_LIMIT);
+        let authenticated_tcp = dataplane
+            .authenticated_tcp_socket
+            .map(|socket| (socket, monad_raptorcast::auth::NoopAuthProtocol::new()));
 
         let mut validator_rc = monad_raptorcast::RaptorCast::<
             SecpSignature,
@@ -263,6 +267,7 @@ fn spawn_noop_validator(
             config,
             monad_raptorcast::raptorcast_secondary::SecondaryRaptorCastModeConfig::None,
             dataplane.tcp_socket,
+            authenticated_tcp,
             (
                 dataplane.authenticated_socket,
                 monad_raptorcast::auth::NoopAuthProtocol::new(),
@@ -344,6 +349,14 @@ fn spawn_wireauth_validator(
                 >::new(),
             )
         });
+        let authenticated_tcp = dataplane.authenticated_tcp_socket.map(|socket| {
+            let protocol = monad_raptorcast::auth::WireAuthProtocol::new(
+                &monad_raptorcast::auth::metrics::TCP_METRICS,
+                wireauth_config,
+                keypair.clone(),
+            );
+            (socket, protocol)
+        });
         let non_authenticated_socket = if with_non_authenticated_socket {
             Some(dataplane.non_authenticated_socket)
         } else {
@@ -362,6 +375,7 @@ fn spawn_wireauth_validator(
             config,
             monad_raptorcast::raptorcast_secondary::SecondaryRaptorCastModeConfig::None,
             dataplane.tcp_socket,
+            authenticated_tcp,
             authenticated,
             direct_udp,
             non_authenticated_socket,

@@ -36,6 +36,26 @@ monad_executor::metric_consts! {
 
 monad_wireauth::define_metric_names!(UDP_METRICS, "udp");
 monad_wireauth::define_metric_names!(DIRECT_UDP_METRICS, "direct_udp");
+monad_wireauth::define_metric_names!(TCP_METRICS, "tcp");
+
+monad_executor::metric_consts! {
+    pub GAUGE_RAPTORCAST_AUTH_WIREAUTH_TCP_BYTES_WRITTEN {
+        name: "monad.raptorcast.auth.wireauth_tcp_bytes_written",
+        help: "Bytes written via wireauth TCP",
+    }
+    pub GAUGE_RAPTORCAST_AUTH_SIGAUTH_TCP_BYTES_WRITTEN {
+        name: "monad.raptorcast.auth.sigauth_tcp_bytes_written",
+        help: "Bytes written via signature-authenticated TCP",
+    }
+    pub GAUGE_RAPTORCAST_AUTH_WIREAUTH_TCP_BYTES_READ {
+        name: "monad.raptorcast.auth.wireauth_tcp_bytes_read",
+        help: "Bytes read via wireauth TCP",
+    }
+    pub GAUGE_RAPTORCAST_AUTH_SIGAUTH_TCP_BYTES_READ {
+        name: "monad.raptorcast.auth.sigauth_tcp_bytes_read",
+        help: "Bytes read via signature-authenticated TCP",
+    }
+}
 
 pub(crate) fn init_socket_executor_metrics() -> ExecutorMetrics {
     ExecutorMetrics::with_metric_defs(&[
@@ -43,5 +63,9 @@ pub(crate) fn init_socket_executor_metrics() -> ExecutorMetrics {
         GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_WRITTEN,
         GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_READ,
         GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_READ,
+        GAUGE_RAPTORCAST_AUTH_WIREAUTH_TCP_BYTES_WRITTEN,
+        GAUGE_RAPTORCAST_AUTH_SIGAUTH_TCP_BYTES_WRITTEN,
+        GAUGE_RAPTORCAST_AUTH_WIREAUTH_TCP_BYTES_READ,
+        GAUGE_RAPTORCAST_AUTH_SIGAUTH_TCP_BYTES_READ,
     ])
 }
