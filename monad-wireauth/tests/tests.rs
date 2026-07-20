@@ -825,6 +825,82 @@ fn test_message_buffering_during_handshake() {
 }
 
 #[test]
+fn test_buffered_message_metadata() {
+    use std::sync::mpsc::{self, TryRecvError};
+
+    init_tracing();
+    let mut rng = rng();
+    let keypair = monad_secp::KeyPair::generate(&mut rng);
+    let context = TestContext::new();
+    let mut peer1: API<TestContext, _, mpsc::Sender<()>> = API::new_with_metadata(
+        DEFAULT_METRICS,
+        Config {
+            max_buffered_bytes_per_session: 3,
+            ..Config::default()
+        },
+        keypair,
+        context.clone(),
+    );
+    let (mut peer2, peer2_pubkey, _, _) = create_manager();
+    let peer1_addr: SocketAddr = "127.0.0.1:8001".parse().unwrap();
+    let peer2_addr: SocketAddr = "127.0.0.1:8002".parse().unwrap();
+
+    peer1
+        .connect(peer2_pubkey, peer2_addr, DEFAULT_RETRY_ATTEMPTS)
+        .unwrap();
+    let mut completions = Vec::new();
+    for value in 0..3u8 {
+        let (sender, receiver) = mpsc::channel();
+        peer1
+            .buffer_message_with_metadata(&peer2_pubkey, bytes::Bytes::from(vec![value]), sender)
+            .unwrap();
+        assert_eq!(receiver.try_recv(), Err(TryRecvError::Empty));
+        completions.push(receiver);
+    }
+    let (sender, receiver) = mpsc::channel();
+    assert!(matches!(
+        peer1.buffer_message_with_metadata(&peer2_pubkey, bytes::Bytes::from_static(b"x"), sender),
+        Err(monad_wireauth::Error::BufferLimitExceeded { .. })
+    ));
+    assert_eq!(receiver.try_recv(), Err(TryRecvError::Disconnected));
+
+    let (_, init, metadata) = peer1.next_packet_with_metadata().unwrap();
+    assert!(metadata.is_none());
+    dispatch(&mut peer2, &init, peer1_addr);
+
+    let mut response = collect::<HandshakeResponse>(&mut peer2);
+    let Packet::Control(response) = Packet::try_from(response.as_mut_slice()).unwrap() else {
+        panic!("expected handshake response");
+    };
+    peer1.dispatch_control(response, peer2_addr).unwrap();
+
+    for (value, receiver) in completions.into_iter().enumerate() {
+        assert_eq!(receiver.try_recv(), Err(TryRecvError::Empty));
+        let (_, packet, metadata) = peer1.next_packet_with_metadata().unwrap();
+        assert_eq!(decrypt(&mut peer2, &packet, peer1_addr), [value as u8]);
+        metadata.unwrap().send(()).unwrap();
+        assert_eq!(receiver.try_recv(), Ok(()));
+    }
+    assert!(peer1.next_packet_with_metadata().is_none());
+
+    peer1.disconnect(&peer2_pubkey);
+    for expire in [false, true] {
+        peer1.connect(peer2_pubkey, peer2_addr, 0).unwrap();
+        let (sender, receiver) = mpsc::channel();
+        peer1
+            .buffer_message_with_metadata(&peer2_pubkey, bytes::Bytes::from_static(b"x"), sender)
+            .unwrap();
+        if expire {
+            context.advance_time(std::time::Duration::from_secs(12));
+            peer1.tick();
+        } else {
+            peer1.disconnect(&peer2_pubkey);
+        }
+        assert_eq!(receiver.try_recv(), Err(TryRecvError::Disconnected));
+    }
+}
+
+#[test]
 fn test_handshake_response_address_mismatch_rejected() {
     init_tracing();
     let (mut peer1, _, _, _) = create_manager();
