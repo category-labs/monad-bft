@@ -116,9 +116,9 @@ impl Filter {
         self.last_reset + self.handshake_rate_reset_interval
     }
 
-    pub fn apply(
+    pub fn apply<M>(
         &mut self,
-        state: &State,
+        state: &State<M>,
         remote_addr: SocketAddr,
         duration_since_start: Duration,
         cookie_valid: bool,
@@ -235,7 +235,7 @@ impl Filter {
         }
     }
 
-    fn check_max_sessions_per_ip(&self, state: &State, ip: IpAddr) -> Option<FilterAction> {
+    fn check_max_sessions_per_ip<M>(&self, state: &State<M>, ip: IpAddr) -> Option<FilterAction> {
         (state.ip_session_count(&ip) >= self.max_sessions_per_ip).then(|| {
             debug!(
                 ip = %ip,
