@@ -139,14 +139,14 @@ async fn put_then_get_roundtrip_and_missing_key() {
     let (store, _server) = setup().await;
 
     let key = b"block-0001";
-    let value = Bytes::from_static(b"hello s3 blob world");
+    let blob_data = Bytes::from_static(b"hello s3 blob world");
 
     store
-        .put_blob(BLOCKS, key, value.clone())
+        .put_blob(BLOCKS, key, blob_data.clone())
         .await
         .expect("put_blob");
     let got = store.get_blob(BLOCKS, key).await.expect("get_blob");
-    assert_eq!(got.as_deref(), Some(value.as_ref()));
+    assert_eq!(got.as_deref(), Some(blob_data.as_ref()));
 
     let missing = store
         .get_blob(BLOCKS, b"does-not-exist")
@@ -161,10 +161,10 @@ async fn read_range_server_side_slice_and_edges() {
     let (store, _server) = setup().await;
 
     let key = b"ranged-blob";
-    let value: Vec<u8> = (0..=255u8).cycle().take(1024).collect();
-    let value = Bytes::from(value);
+    let blob_data: Vec<u8> = (0..=255u8).cycle().take(1024).collect();
+    let blob_data = Bytes::from(blob_data);
     store
-        .put_blob(BLOCKS, key, value.clone())
+        .put_blob(BLOCKS, key, blob_data.clone())
         .await
         .expect("put_blob");
 
@@ -173,14 +173,14 @@ async fn read_range_server_side_slice_and_edges() {
         .await
         .expect("read_range mid")
         .expect("present");
-    assert_eq!(mid.as_ref(), &value[100..200]);
+    assert_eq!(mid.as_ref(), &blob_data[100..200]);
 
     let tail = store
         .read_range(BLOCKS, key, 1000, 5000)
         .await
         .expect("read_range tail")
         .expect("present");
-    assert_eq!(tail.as_ref(), &value[1000..1024]);
+    assert_eq!(tail.as_ref(), &blob_data[1000..1024]);
 
     let empty = store
         .read_range(BLOCKS, key, 50, 50)
@@ -297,23 +297,23 @@ async fn apply_writes_across_tables() {
     let writes = vec![
         BlobWriteOp {
             table: BLOCKS,
-            key: b"b1".to_vec(),
-            value: Bytes::from_static(b"block-one"),
+            blob_key: b"b1".to_vec(),
+            blob_data: Bytes::from_static(b"block-one"),
         },
         BlobWriteOp {
             table: BLOCKS,
-            key: b"b2".to_vec(),
-            value: Bytes::from_static(b"block-two"),
+            blob_key: b"b2".to_vec(),
+            blob_data: Bytes::from_static(b"block-two"),
         },
         BlobWriteOp {
             table: RECEIPTS,
-            key: b"r1".to_vec(),
-            value: Bytes::from_static(b"receipt-one"),
+            blob_key: b"r1".to_vec(),
+            blob_data: Bytes::from_static(b"receipt-one"),
         },
         BlobWriteOp {
             table: RECEIPTS,
-            key: vec![0x00, 0xab, 0xff, 0x10],
-            value: Bytes::from_static(b"receipt-binary-key"),
+            blob_key: vec![0x00, 0xab, 0xff, 0x10],
+            blob_data: Bytes::from_static(b"receipt-binary-key"),
         },
     ];
 
@@ -324,15 +324,15 @@ async fn apply_writes_across_tables() {
 
     for op in &writes {
         let got = store
-            .get_blob(op.table, &op.key)
+            .get_blob(op.table, &op.blob_key)
             .await
             .expect("get_blob after apply_writes");
         assert_eq!(
             got.as_deref(),
-            Some(op.value.as_ref()),
+            Some(op.blob_data.as_ref()),
             "mismatch for table {:?} key {:?}",
             op.table,
-            op.key
+            op.blob_key
         );
     }
 

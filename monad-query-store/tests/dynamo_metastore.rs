@@ -32,7 +32,7 @@ async fn fresh_store(test: &str) -> Option<DynamoMetaStore> {
     let endpoint = std::env::var("CHAIN_DATA_DYNAMO_TEST_ENDPOINT").ok()?;
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .expect("system clock should be after the Unix epoch")
         .as_nanos();
     let table_name = format!("chain-data-it-{test}-{nanos}");
     let config = DynamoMetaStoreConfig {
@@ -95,20 +95,20 @@ async fn scan_keys_drains_whole_partition() {
     };
 
     let part = b"part";
-    let value = Bytes::from(vec![0u8; 4096]);
+    let row_data = Bytes::from(vec![0u8; 4096]);
     let mut ops: Vec<MetaWriteOp> = (0u16..400)
         .map(|i| MetaWriteOp::ScanPut {
             table: SCAN,
             partition: part.to_vec(),
-            clustering: i.to_be_bytes().to_vec(),
-            value: value.clone(),
+            clustering_key: i.to_be_bytes().to_vec(),
+            row_data: row_data.clone(),
         })
         .collect();
     ops.push(MetaWriteOp::ScanPut {
         table: SCAN,
         partition: b"other".to_vec(),
-        clustering: vec![0, 0],
-        value: Bytes::from_static(b"x"),
+        clustering_key: vec![0, 0],
+        row_data: Bytes::from_static(b"x"),
     });
     store.apply_writes(ops).await.unwrap();
 
@@ -131,8 +131,8 @@ async fn apply_writes_crosses_batch_boundary() {
     let ops: Vec<MetaWriteOp> = (0u32..60)
         .map(|i| MetaWriteOp::Put {
             table: KV,
-            key: i.to_be_bytes().to_vec(),
-            value: Bytes::from(vec![i as u8]),
+            row_key: i.to_be_bytes().to_vec(),
+            row_data: Bytes::from(vec![i as u8]),
         })
         .collect();
     store.apply_writes(ops).await.unwrap();

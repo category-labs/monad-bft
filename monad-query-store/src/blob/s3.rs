@@ -205,7 +205,7 @@ impl S3BlobStore {
     }
 
     fn client_for_object_key(&self, object_key: &str) -> (&Client, Option<&str>) {
-        let idx = if self.inner.clients.len() == 1 {
+        let client_index = if self.inner.clients.len() == 1 {
             0
         } else {
             let mut hasher = DefaultHasher::new();
@@ -213,8 +213,11 @@ impl S3BlobStore {
             (hasher.finish() as usize) % self.inner.clients.len()
         };
         (
-            &self.inner.clients[idx],
-            self.inner.endpoint_urls.get(idx).map(String::as_str),
+            &self.inner.clients[client_index],
+            self.inner
+                .endpoint_urls
+                .get(client_index)
+                .map(String::as_str),
         )
     }
 
@@ -381,16 +384,16 @@ async fn validate_bucket_access(client: &Client, bucket: &str) -> Result<()> {
 }
 
 impl BlobStore for S3BlobStore {
-    async fn put_blob(&self, table: BlobTableId, key: &[u8], value: Bytes) -> Result<()> {
+    async fn put_blob(&self, table: BlobTableId, key: &[u8], blob_data: Bytes) -> Result<()> {
         let object_key = self.object_key(table, key);
         let (client, endpoint_url) = self.client_for_object_key(&object_key);
-        let value_len = value.len();
+        let blob_data_length = blob_data.len();
         let started = std::time::Instant::now();
         let put = client
             .put_object()
             .bucket(&self.inner.bucket)
             .key(&object_key)
-            .body(ByteStream::from(value))
+            .body(ByteStream::from(blob_data))
             .send();
         tokio::pin!(put);
 
@@ -405,7 +408,7 @@ impl BlobStore for S3BlobStore {
                         table = %table.as_str(),
                         object_key = %object_key,
                         endpoint_url,
-                        value_len,
+                        blob_data_length,
                         elapsed_ms = started.elapsed().as_millis() as u64,
                         "s3 put_object still in flight"
                     );
@@ -420,7 +423,7 @@ impl BlobStore for S3BlobStore {
                 table = %table.as_str(),
                 object_key = %object_key,
                 endpoint_url,
-                value_len,
+                blob_data_length,
                 elapsed_ms = started.elapsed().as_millis() as u64,
                 "s3 put_object completed slowly"
             );
@@ -461,15 +464,19 @@ impl BlobStore for S3BlobStore {
         }
         let started = std::time::Instant::now();
         let write_count = writes.len();
-        let total_bytes = writes.iter().map(|op| op.value.len()).sum::<usize>();
+        let total_bytes = writes.iter().map(|op| op.blob_data.len()).sum::<usize>();
         let concurrency = self.inner.max_concurrency;
         info!(
             write_count,
             total_bytes, concurrency, "s3 apply_writes starting PUT batch"
         );
         futures::stream::iter(writes.into_iter().map(|op| {
-            let store = self.clone();
-            async move { store.put_blob(op.table, &op.key, op.value).await }
+            let blob_store = self.clone();
+            async move {
+                blob_store
+                    .put_blob(op.table, &op.blob_key, op.blob_data)
+                    .await
+            }
         }))
         .buffer_unordered(concurrency)
         .try_collect::<()>()
