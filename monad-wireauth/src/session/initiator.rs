@@ -41,14 +41,14 @@ pub struct ValidatedHandshakeResponse {
     remote_index: SessionIndex,
 }
 
-pub struct InitiatorState {
+pub struct InitiatorState<M = ()> {
     handshake_state: handshake::HandshakeState,
     common: SessionState,
-    buffered_messages: VecDeque<Bytes>,
+    buffered_messages: VecDeque<(Bytes, M)>,
     buffered_bytes: usize,
 }
 
-impl InitiatorState {
+impl<M> InitiatorState<M> {
     #[allow(clippy::too_many_arguments)]
     pub fn new<R: secp256k1::rand::Rng + secp256k1::rand::CryptoRng>(
         rng: &mut R,
@@ -138,7 +138,7 @@ impl InitiatorState {
         config: &Config,
         duration_since_start: Duration,
         validated_response: ValidatedHandshakeResponse,
-    ) -> (TransportState, MessagesToSend) {
+    ) -> (TransportState, MessagesToSend<M>) {
         self.common.reset_session_timeout(
             duration_since_start,
             add_jitter(rng, config.session_timeout, config.session_timeout_jitter),
@@ -185,9 +185,9 @@ impl InitiatorState {
         Some((timer, SessionTimeoutResult { terminated, rekey }))
     }
 
-    pub fn buffer_message(&mut self, message: Bytes) {
+    pub fn buffer_message(&mut self, message: Bytes, metadata: M) {
         self.buffered_bytes = self.buffered_bytes.saturating_add(message.len());
-        self.buffered_messages.push_back(message);
+        self.buffered_messages.push_back((message, metadata));
     }
 
     pub fn buffered_message_count(&self) -> usize {
@@ -199,17 +199,17 @@ impl InitiatorState {
     }
 }
 
-pub struct MessagesToSend {
-    inner: MessagesToSendInner,
+pub struct MessagesToSend<M> {
+    inner: MessagesToSendInner<M>,
 }
 
-enum MessagesToSendInner {
-    Buffered(vec_deque::IntoIter<Bytes>),
+enum MessagesToSendInner<M> {
+    Buffered(vec_deque::IntoIter<(Bytes, M)>),
     Keepalive(iter::Once<Bytes>),
 }
 
-impl MessagesToSend {
-    fn new(messages: VecDeque<Bytes>) -> Self {
+impl<M> MessagesToSend<M> {
+    fn new(messages: VecDeque<(Bytes, M)>) -> Self {
         let inner = if messages.is_empty() {
             MessagesToSendInner::Keepalive(iter::once(Bytes::new()))
         } else {
@@ -223,13 +223,15 @@ impl MessagesToSend {
     }
 }
 
-impl Iterator for MessagesToSend {
-    type Item = Bytes;
+impl<M> Iterator for MessagesToSend<M> {
+    type Item = (Bytes, Option<M>);
 
     fn next(&mut self) -> Option<Self::Item> {
         match &mut self.inner {
-            MessagesToSendInner::Buffered(iter) => iter.next(),
-            MessagesToSendInner::Keepalive(iter) => iter.next(),
+            MessagesToSendInner::Buffered(iter) => iter
+                .next()
+                .map(|(message, metadata)| (message, Some(metadata))),
+            MessagesToSendInner::Keepalive(iter) => iter.next().map(|message| (message, None)),
         }
     }
 
@@ -241,7 +243,7 @@ impl Iterator for MessagesToSend {
     }
 }
 
-impl ExactSizeIterator for MessagesToSend {
+impl<M> ExactSizeIterator for MessagesToSend<M> {
     fn len(&self) -> usize {
         match &self.inner {
             MessagesToSendInner::Buffered(iter) => iter.len(),
@@ -250,7 +252,7 @@ impl ExactSizeIterator for MessagesToSend {
     }
 }
 
-impl Deref for InitiatorState {
+impl<M> Deref for InitiatorState<M> {
     type Target = SessionState;
 
     fn deref(&self) -> &Self::Target {
@@ -258,7 +260,7 @@ impl Deref for InitiatorState {
     }
 }
 
-impl DerefMut for InitiatorState {
+impl<M> DerefMut for InitiatorState<M> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.common
     }
