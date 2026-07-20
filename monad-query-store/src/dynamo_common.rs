@@ -74,7 +74,7 @@ impl ClientRing {
     }
 
     /// Round-robin one of the per-endpoint clients.
-    pub(crate) fn get(&self) -> &Client {
+    pub(crate) fn next_client(&self) -> &Client {
         if self.clients.len() == 1 {
             return &self.clients[0];
         }
@@ -103,17 +103,14 @@ pub struct SharedDynamoConnection {
 /// or the scan partition appended raw.
 pub(crate) fn encode_pk(kind: &[u8], table: &str, tail: &[u8]) -> Vec<u8> {
     let table = table.as_bytes();
-    let mut out = Vec::with_capacity(2 + kind.len() + 2 + table.len() + tail.len());
-    push_len_prefixed(&mut out, kind);
-    push_len_prefixed(&mut out, table);
+    let mut out = Vec::with_capacity(4 + kind.len() + table.len() + tail.len());
+    for segment in [kind, table] {
+        let segment_length = u16::try_from(segment.len()).expect("pk segment length fits in u16");
+        out.extend_from_slice(&segment_length.to_be_bytes());
+        out.extend_from_slice(segment);
+    }
     out.extend_from_slice(tail);
     out
-}
-
-fn push_len_prefixed(out: &mut Vec<u8>, bytes: &[u8]) {
-    let len = u16::try_from(bytes.len()).expect("pk segment length fits in u16");
-    out.extend_from_slice(&len.to_be_bytes());
-    out.extend_from_slice(bytes);
 }
 
 /// Removes and returns a Binary attribute, erroring if absent or wrong type.
@@ -147,14 +144,9 @@ pub(crate) fn estimated_batch_write_item_bytes(
     sk_len: usize,
     value_len: usize,
 ) -> usize {
-    BATCH_WRITE_ITEM_OVERHEAD
-        + base64_encoded_len(pk_len)
-        + base64_encoded_len(sk_len)
-        + base64_encoded_len(value_len)
-}
-
-fn base64_encoded_len(raw_len: usize) -> usize {
-    raw_len.div_ceil(3).saturating_mul(4)
+    // Each binary field is base64-encoded in the JSON payload
+    let base64_len = |raw_len: usize| raw_len.div_ceil(3).saturating_mul(4);
+    BATCH_WRITE_ITEM_OVERHEAD + base64_len(pk_len) + base64_len(sk_len) + base64_len(value_len)
 }
 
 pub(crate) fn split_batch_write_chunks<T>(
@@ -213,34 +205,6 @@ pub(crate) fn split_batch_write_chunks<T>(
     chunks
 }
 
-fn batch_write_retry_backoff(chunk_idx: usize, table: &str, attempt: u32) -> std::time::Duration {
-    let exp = attempt.saturating_sub(1).min(30);
-    let cap_ms = BATCH_WRITE_CHUNK_BASE_BACKOFF_MS
-        .saturating_mul(1_u64 << exp)
-        .min(BATCH_WRITE_CHUNK_MAX_BACKOFF_MS);
-    let jitter_ms = deterministic_jitter_ms(chunk_idx, table, attempt, cap_ms);
-    std::time::Duration::from_millis(jitter_ms.max(1))
-}
-
-fn deterministic_jitter_ms(chunk_idx: usize, table: &str, attempt: u32, cap_ms: u64) -> u64 {
-    if cap_ms == 0 {
-        return 0;
-    }
-    let mut x = 0xcbf29ce484222325_u64;
-    for byte in table.as_bytes() {
-        x ^= u64::from(*byte);
-        x = x.wrapping_mul(0x100000001b3);
-    }
-    x ^= chunk_idx as u64;
-    x = x.wrapping_mul(0x9e3779b97f4a7c15);
-    x ^= u64::from(attempt);
-    x ^= x >> 12;
-    x ^= x << 25;
-    x ^= x >> 27;
-    x = x.wrapping_mul(0x2545f4914f6cdd1d);
-    x % (cap_ms + 1)
-}
-
 /// Counts duplicates in `names` and formats the top `limit` as
 /// `name:count,...`, most frequent first (ties by name). Log-friendly summary
 /// of e.g. the per-table chunk distribution and the in-flight chunk tables.
@@ -261,76 +225,107 @@ pub(crate) fn summarize_names<'a>(names: impl Iterator<Item = &'a str>, limit: u
 
 #[derive(Default)]
 struct BatchWriteProgress {
-    started: AtomicUsize,
-    completed: AtomicUsize,
-    failed: AtomicUsize,
-    retries: AtomicUsize,
-    unprocessed_items: AtomicUsize,
-    /// Physical table of each chunk with an attempt in flight, by chunk index.
-    active: Mutex<HashMap<usize, String>>,
+    chunks_started: AtomicUsize,
+    chunks_completed: AtomicUsize,
+    chunks_failed: AtomicUsize,
+    total_retries: AtomicUsize,
+    total_unprocessed_items: AtomicUsize,
+    /// Maps chunk index to the table being processed for this chunk
+    in_flight_chunks: Mutex<HashMap<usize, String>>,
 }
 
 impl BatchWriteProgress {
     fn mark_started(&self, chunk_idx: usize, table: &str, attempt: u32) {
         if attempt == 0 {
-            self.started.fetch_add(1, Ordering::Relaxed);
+            self.chunks_started.fetch_add(1, Ordering::Relaxed);
         } else {
-            self.retries.fetch_add(1, Ordering::Relaxed);
+            self.total_retries.fetch_add(1, Ordering::Relaxed);
         }
-        self.active
+        self.in_flight_chunks
             .lock()
             .expect("batch progress poisoned")
             .insert(chunk_idx, table.to_string());
     }
 
     fn mark_completed(&self, chunk_idx: usize) {
-        self.completed.fetch_add(1, Ordering::Relaxed);
-        self.remove_active(chunk_idx);
+        self.chunks_completed.fetch_add(1, Ordering::Relaxed);
+        self.in_flight_chunks
+            .lock()
+            .expect("batch progress poisoned")
+            .remove(&chunk_idx);
     }
 
     fn mark_attempt_finished(&self, chunk_idx: usize) {
-        self.remove_active(chunk_idx);
+        self.in_flight_chunks
+            .lock()
+            .expect("batch progress poisoned")
+            .remove(&chunk_idx);
     }
 
     fn mark_failed(&self, chunk_idx: usize) {
-        self.failed.fetch_add(1, Ordering::Relaxed);
-        self.remove_active(chunk_idx);
-    }
-
-    fn remove_active(&self, chunk_idx: usize) {
-        self.active
+        self.chunks_failed.fetch_add(1, Ordering::Relaxed);
+        self.in_flight_chunks
             .lock()
             .expect("batch progress poisoned")
             .remove(&chunk_idx);
     }
 
     fn mark_unprocessed(&self, count: usize) {
-        self.unprocessed_items.fetch_add(count, Ordering::Relaxed);
+        self.total_unprocessed_items
+            .fetch_add(count, Ordering::Relaxed);
+    }
+
+    /// Calculates exponential backoff with deterministic jitter for retry delays.
+    fn retry_backoff(chunk_idx: usize, table: &str, attempt: u32) -> std::time::Duration {
+        let exponent = attempt.saturating_sub(1).min(30);
+        let cap_ms = BATCH_WRITE_CHUNK_BASE_BACKOFF_MS
+            .saturating_mul(1_u64 << exponent)
+            .min(BATCH_WRITE_CHUNK_MAX_BACKOFF_MS);
+
+        // Deterministic hash-based jitter using chunk index and table name
+        let mut hash = 0xcbf29ce484222325_u64;
+        for byte in table.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        hash ^= chunk_idx as u64;
+        hash = hash.wrapping_mul(0x9e3779b97f4a7c15);
+        hash ^= u64::from(attempt);
+        hash ^= hash >> 12;
+        hash ^= hash << 25;
+        hash ^= hash >> 27;
+        hash = hash.wrapping_mul(0x2545f4914f6cdd1d);
+
+        let jitter_ms = if cap_ms == 0 { 0 } else { hash % (cap_ms + 1) };
+        std::time::Duration::from_millis(jitter_ms.max(1))
     }
 
     fn snapshot(&self) -> BatchWriteProgressSnapshot {
-        let active = self.active.lock().expect("batch progress poisoned");
+        let in_flight = self
+            .in_flight_chunks
+            .lock()
+            .expect("batch progress poisoned");
         BatchWriteProgressSnapshot {
-            started: self.started.load(Ordering::Relaxed),
-            completed: self.completed.load(Ordering::Relaxed),
-            failed: self.failed.load(Ordering::Relaxed),
-            retries: self.retries.load(Ordering::Relaxed),
-            unprocessed_items: self.unprocessed_items.load(Ordering::Relaxed),
-            active: active.len(),
-            active_by_table: summarize_names(active.values().map(String::as_str), 8),
+            chunks_started: self.chunks_started.load(Ordering::Relaxed),
+            chunks_completed: self.chunks_completed.load(Ordering::Relaxed),
+            chunks_failed: self.chunks_failed.load(Ordering::Relaxed),
+            total_retries: self.total_retries.load(Ordering::Relaxed),
+            total_unprocessed_items: self.total_unprocessed_items.load(Ordering::Relaxed),
+            in_flight_chunk_count: in_flight.len(),
+            in_flight_table_summary: summarize_names(in_flight.values().map(String::as_str), 8),
         }
     }
 }
 
 struct BatchWriteProgressSnapshot {
-    started: usize,
-    completed: usize,
-    failed: usize,
-    retries: usize,
-    unprocessed_items: usize,
-    active: usize,
-    /// Top tables by active chunk count, formatted `name:count,...`.
-    active_by_table: String,
+    chunks_started: usize,
+    chunks_completed: usize,
+    chunks_failed: usize,
+    total_retries: usize,
+    total_unprocessed_items: usize,
+    in_flight_chunk_count: usize,
+    /// Top tables by in-flight chunk count, formatted `name:count,...`.
+    in_flight_table_summary: String,
 }
 
 /// Runs pre-split `BatchWriteItem` chunks concurrently (bounded globally by
@@ -379,13 +374,13 @@ pub(crate) async fn run_batch_write_chunks(
             %error,
             request_count,
             chunks = chunk_count,
-            started_chunks = snapshot.started,
-            completed_chunks = snapshot.completed,
-            failed_chunks = snapshot.failed,
-            active_chunks = snapshot.active,
-            retry_attempts = snapshot.retries,
-            unprocessed_items = snapshot.unprocessed_items,
-            active_by_table = %snapshot.active_by_table,
+            chunks_started = snapshot.chunks_started,
+            chunks_completed = snapshot.chunks_completed,
+            chunks_failed = snapshot.chunks_failed,
+            in_flight_chunks = snapshot.in_flight_chunk_count,
+            total_retries = snapshot.total_retries,
+            total_unprocessed_items = snapshot.total_unprocessed_items,
+            in_flight_tables = %snapshot.in_flight_table_summary,
             "dynamo {backend} BatchWriteItem stream failed"
         );
     }
@@ -394,11 +389,11 @@ pub(crate) async fn run_batch_write_chunks(
     debug!(
         request_count,
         chunks = chunk_count,
-        started_chunks = snapshot.started,
-        completed_chunks = snapshot.completed,
-        failed_chunks = snapshot.failed,
-        retry_attempts = snapshot.retries,
-        unprocessed_items = snapshot.unprocessed_items,
+        chunks_started = snapshot.chunks_started,
+        chunks_completed = snapshot.chunks_completed,
+        chunks_failed = snapshot.chunks_failed,
+        total_retries = snapshot.total_retries,
+        total_unprocessed_items = snapshot.total_unprocessed_items,
         send_ms = send_started.elapsed().as_millis() as u64,
         "dynamo {backend} completed BatchWriteItem requests"
     );
@@ -428,7 +423,7 @@ async fn write_batch_chunk(
     let mut attempt = 0u32;
     loop {
         let pending_count = pending.len();
-        let log_sample = chunk_idx < 8 || chunk_idx % 100 == 0 || attempt > 0;
+        let log_sample = chunk_idx < 8 || chunk_idx.is_multiple_of(100) || attempt > 0;
         if log_sample {
             debug!(
                 chunk_idx,
@@ -443,7 +438,7 @@ async fn write_batch_chunk(
         let send_started = std::time::Instant::now();
         // The SDK consumes the requests, and a retry may need them again.
         let send = ring
-            .get()
+            .next_client()
             .batch_write_item()
             .set_request_items(Some(HashMap::from([(table.clone(), pending.clone())])))
             .send();
@@ -477,7 +472,7 @@ async fn write_batch_chunk(
                     progress.mark_failed(chunk_idx);
                     return Err(error);
                 }
-                let backoff = batch_write_retry_backoff(chunk_idx, &table, attempt);
+                let backoff = BatchWriteProgress::retry_backoff(chunk_idx, &table, attempt);
                 warn!(
                     chunk_idx,
                     table = %table,
@@ -530,7 +525,7 @@ async fn write_batch_chunk(
                 leftovers.len()
             )));
         }
-        let backoff = batch_write_retry_backoff(chunk_idx, &table, attempt);
+        let backoff = BatchWriteProgress::retry_backoff(chunk_idx, &table, attempt);
         tokio::time::sleep(backoff).await;
         pending = leftovers;
     }
@@ -555,7 +550,7 @@ pub(crate) async fn create_pk_sk_table(ring: &ClientRing, table: &str) -> Result
     };
 
     let create = ring
-        .get()
+        .next_client()
         .create_table()
         .table_name(table)
         .attribute_definitions(attr(ATTR_PK))
@@ -577,7 +572,7 @@ pub(crate) async fn create_pk_sk_table(ring: &ClientRing, table: &str) -> Result
     // describe-and-sleep until ACTIVE.
     for _ in 0..60 {
         let desc = ring
-            .get()
+            .next_client()
             .describe_table()
             .table_name(table)
             .send()
@@ -598,7 +593,7 @@ pub(crate) async fn create_pk_sk_table(ring: &ClientRing, table: &str) -> Result
 /// the expected binary `pk` HASH + binary `sk` RANGE key schema.
 pub(crate) async fn validate_pk_sk_table(ring: &ClientRing, table: &str) -> Result<()> {
     let desc = ring
-        .get()
+        .next_client()
         .describe_table()
         .table_name(table)
         .send()

@@ -31,14 +31,14 @@ pub use mongo::{MongoMetaStore, MongoMetaStoreConfig};
 pub enum MetaWriteOp {
     Put {
         table: TableId,
-        key: Vec<u8>,
-        value: Bytes,
+        row_key: Vec<u8>,
+        row_data: Bytes,
     },
     ScanPut {
         table: ScannableTableId,
         partition: Vec<u8>,
-        clustering: Vec<u8>,
-        value: Bytes,
+        clustering_key: Vec<u8>,
+        row_data: Bytes,
     },
 }
 
@@ -75,52 +75,42 @@ impl ScannableTableId {
 
 #[derive(Debug, Clone)]
 pub struct KvTable<M> {
-    store: M,
+    meta_store: M,
     pub table: TableId,
-}
-
-impl<M> KvTable<M> {
-    pub(crate) fn new(store: M, table: TableId) -> Self {
-        Self { store, table }
-    }
 }
 
 impl<M: MetaStore> KvTable<M> {
     pub async fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
-        self.store.get(self.table, key).await
+        self.meta_store.get(self.table, key).await
     }
 
     pub async fn put(&self, key: &[u8], value: Bytes) -> Result<()> {
-        self.store.put(self.table, key, value).await
+        self.meta_store.put(self.table, key, value).await
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct ScannableKvTable<M> {
-    store: M,
+    meta_store: M,
     pub table: ScannableTableId,
-}
-
-impl<M> ScannableKvTable<M> {
-    pub(crate) fn new(store: M, table: ScannableTableId) -> Self {
-        Self { store, table }
-    }
 }
 
 impl<M: MetaStore> ScannableKvTable<M> {
     pub async fn get(&self, partition: &[u8], clustering: &[u8]) -> Result<Option<Bytes>> {
-        self.store.scan_get(self.table, partition, clustering).await
+        self.meta_store
+            .scan_get(self.table, partition, clustering)
+            .await
     }
 
     pub async fn put(&self, partition: &[u8], clustering: &[u8], value: Bytes) -> Result<()> {
-        self.store
+        self.meta_store
             .scan_put(self.table, partition, clustering, value)
             .await
     }
 
     /// Lists every clustering key in the partition, in clustering order.
     pub(crate) async fn scan_keys(&self, partition: &[u8]) -> Result<Vec<Vec<u8>>> {
-        self.store.scan_keys(self.table, partition).await
+        self.meta_store.scan_keys(self.table, partition).await
     }
 }
 
@@ -132,11 +122,17 @@ impl<M: MetaStore> ScannableKvTable<M> {
 #[allow(async_fn_in_trait)]
 pub trait MetaStore: Clone + Send + Sync + 'static {
     fn table(&self, table: TableId) -> KvTable<Self> {
-        KvTable::new(self.clone(), table)
+        KvTable {
+            meta_store: self.clone(),
+            table,
+        }
     }
 
     fn scannable_table(&self, table: ScannableTableId) -> ScannableKvTable<Self> {
-        ScannableKvTable::new(self.clone(), table)
+        ScannableKvTable {
+            meta_store: self.clone(),
+            table,
+        }
     }
 
     // Every method returns a `Send` future (hence `impl Future + Send`, not
@@ -196,20 +192,20 @@ pub enum MetaBackend {
 }
 
 macro_rules! with_meta_backend {
-    ($self:expr, $store:ident => $body:expr) => {
-        match $self {
-            MetaBackend::InMemory($store) => $body,
+    ($backend:expr, $store:ident => $operation:expr) => {
+        match $backend {
+            MetaBackend::InMemory($store) => $operation,
             #[cfg(feature = "dynamo")]
-            MetaBackend::Dynamo($store) => $body,
+            MetaBackend::Dynamo($store) => $operation,
             #[cfg(feature = "mongo")]
-            MetaBackend::Mongo($store) => $body,
+            MetaBackend::Mongo($store) => $operation,
         }
     };
 }
 
 impl MetaStore for MetaBackend {
     async fn get(&self, table: TableId, key: &[u8]) -> Result<Option<Bytes>> {
-        with_meta_backend!(self, s => s.get(table, key).await)
+        with_meta_backend!(self, backend => backend.get(table, key).await)
     }
 
     async fn scan_get(
@@ -218,11 +214,13 @@ impl MetaStore for MetaBackend {
         partition: &[u8],
         clustering: &[u8],
     ) -> Result<Option<Bytes>> {
-        with_meta_backend!(self, s => s.scan_get(table, partition, clustering).await)
+        with_meta_backend!(self, backend => {
+            backend.scan_get(table, partition, clustering).await
+        })
     }
 
     async fn put(&self, table: TableId, key: &[u8], value: Bytes) -> Result<()> {
-        with_meta_backend!(self, s => s.put(table, key, value).await)
+        with_meta_backend!(self, backend => backend.put(table, key, value).await)
     }
 
     async fn scan_put(
@@ -232,14 +230,16 @@ impl MetaStore for MetaBackend {
         clustering: &[u8],
         value: Bytes,
     ) -> Result<()> {
-        with_meta_backend!(self, s => s.scan_put(table, partition, clustering, value).await)
+        with_meta_backend!(self, backend => {
+            backend.scan_put(table, partition, clustering, value).await
+        })
     }
 
     async fn scan_keys(&self, table: ScannableTableId, partition: &[u8]) -> Result<Vec<Vec<u8>>> {
-        with_meta_backend!(self, s => s.scan_keys(table, partition).await)
+        with_meta_backend!(self, backend => backend.scan_keys(table, partition).await)
     }
 
     async fn apply_writes(&self, writes: Vec<MetaWriteOp>) -> Result<()> {
-        with_meta_backend!(self, s => s.apply_writes(writes).await)
+        with_meta_backend!(self, backend => backend.apply_writes(writes).await)
     }
 }

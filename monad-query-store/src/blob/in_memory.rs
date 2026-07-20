@@ -26,51 +26,74 @@ use monad_query_errors::Result;
 
 use crate::blob::{BlobStore, BlobTableId, BlobWriteOp};
 
+type BlobMap = BTreeMap<(BlobTableId, Vec<u8>), Bytes>;
+type SharedBlobMap = Arc<RwLock<BlobMap>>;
+
 /// Test-only in-memory blob fixture; not a deployable backend.
 #[derive(Debug, Clone, Default)]
 pub struct InMemoryBlobStore {
-    blobs: Arc<RwLock<BTreeMap<(BlobTableId, Vec<u8>), Bytes>>>,
+    blob_store_map: SharedBlobMap,
     /// Backend object accesses (`get_blob`, which also backs the default
     /// `read_range`); lets cache tests assert fetch collapsing.
-    get_blob_calls: Arc<AtomicU64>,
+    read_call_count: Arc<AtomicU64>,
 }
 
 impl InMemoryBlobStore {
     /// Object-level reads served so far; a range read counts as one access.
     pub fn get_blob_calls(&self) -> u64 {
-        self.get_blob_calls.load(Ordering::SeqCst)
+        self.read_call_count.load(Ordering::SeqCst)
     }
 
     /// Clones the entire blob map for cross-fixture equality assertions.
     pub fn blob_snapshot(&self) -> BTreeMap<(BlobTableId, Vec<u8>), Bytes> {
-        self.blobs.read().expect("poisoned lock").clone()
+        self.blob_store_map
+            .read()
+            .expect("in-memory blob store lock is not poisoned")
+            .clone()
     }
 }
 
 impl BlobStore for InMemoryBlobStore {
     async fn put_blob(&self, table: BlobTableId, key: &[u8], value: Bytes) -> Result<()> {
-        let mut guard = self.blobs.write().expect("poisoned lock");
-        guard.insert((table, key.to_vec()), value);
+        let mut blob_store = self
+            .blob_store_map
+            .write()
+            .expect("in-memory blob store lock is not poisoned");
+        blob_store.insert((table, key.to_vec()), value);
         Ok(())
     }
 
     async fn apply_writes(&self, writes: Vec<BlobWriteOp>) -> Result<()> {
-        let mut guard = self.blobs.write().expect("poisoned lock");
-        for BlobWriteOp { table, key, value } in writes {
-            guard.insert((table, key), value);
+        let mut blob_store = self
+            .blob_store_map
+            .write()
+            .expect("in-memory blob store lock is not poisoned");
+        for BlobWriteOp {
+            table,
+            blob_key,
+            blob_data,
+        } in writes
+        {
+            blob_store.insert((table, blob_key), blob_data);
         }
         Ok(())
     }
 
     async fn delete_blob(&self, table: BlobTableId, key: &[u8]) -> Result<()> {
-        let mut guard = self.blobs.write().expect("poisoned lock");
-        guard.remove(&(table, key.to_vec()));
+        let mut blob_store = self
+            .blob_store_map
+            .write()
+            .expect("in-memory blob store lock is not poisoned");
+        blob_store.remove(&(table, key.to_vec()));
         Ok(())
     }
 
     async fn get_blob(&self, table: BlobTableId, key: &[u8]) -> Result<Option<Bytes>> {
-        self.get_blob_calls.fetch_add(1, Ordering::SeqCst);
-        let guard = self.blobs.read().expect("poisoned lock");
-        Ok(guard.get(&(table, key.to_vec())).cloned())
+        self.read_call_count.fetch_add(1, Ordering::SeqCst);
+        let blob_store = self
+            .blob_store_map
+            .read()
+            .expect("in-memory blob store lock is not poisoned");
+        Ok(blob_store.get(&(table, key.to_vec())).cloned())
     }
 }

@@ -254,32 +254,36 @@ impl MetaStore for MongoMetaStore {
             .sort(doc! { "_id": 1 })
             .await
             .map_err(|e| backend("scan_keys", e))?;
-        let mut keys = Vec::new();
-        while let Some(row) = cursor
+        let mut clustering_keys = Vec::new();
+        while let Some(document) = cursor
             .try_next()
             .await
             .map_err(|e| backend("scan_keys cursor", e))?
         {
-            keys.push(clustering_from_id(&row.id, prefix.len())?);
+            clustering_keys.push(clustering_from_id(&document.id, prefix.len())?);
         }
-        Ok(keys)
+        Ok(clustering_keys)
     }
 
     async fn apply_writes(&self, writes: Vec<MetaWriteOp>) -> Result<()> {
         let rows: Vec<(String, Bytes)> = writes
             .into_iter()
             .map(|op| match op {
-                MetaWriteOp::Put { table, key, value } => (kv_id(table, &key), value),
+                MetaWriteOp::Put {
+                    table,
+                    row_key,
+                    row_data,
+                } => (kv_id(table, &row_key), row_data),
                 MetaWriteOp::ScanPut {
                     table,
                     partition,
-                    clustering,
-                    value,
-                } => (scan_id(table, &partition, &clustering), value),
+                    clustering_key,
+                    row_data,
+                } => (scan_id(table, &partition, &clustering_key), row_data),
             })
             .collect();
         futures::stream::iter(rows)
-            .map(|(id, value)| self.put_by_id(id, value))
+            .map(|(id, row_data)| self.put_by_id(id, row_data))
             .buffer_unordered(self.write_concurrency)
             .try_collect::<()>()
             .await
@@ -350,14 +354,15 @@ mod tests {
         ];
         let mut ids: Vec<String> = clusterings
             .iter()
-            .map(|c| scan_id(SCAN_TABLE, &[0x01], c))
+            .map(|clustering_key| scan_id(SCAN_TABLE, &[0x01], clustering_key))
             .collect();
         clusterings.sort();
         ids.sort();
         let decoded: Vec<Vec<u8>> = ids
             .iter()
             .map(|id| {
-                clustering_from_id(id, scan_partition_prefix(SCAN_TABLE, &[0x01]).len()).unwrap()
+                clustering_from_id(id, scan_partition_prefix(SCAN_TABLE, &[0x01]).len())
+                    .expect("generated Mongo scan-row id should decode")
             })
             .collect();
         assert_eq!(decoded, clusterings);

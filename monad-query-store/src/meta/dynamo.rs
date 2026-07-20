@@ -215,8 +215,8 @@ impl DynamoMetaStore {
     }
 
     /// Round-robin one of the per-endpoint clients.
-    fn rr_client(&self) -> &Client {
-        self.inner.ring.get()
+    fn round_robin_client(&self) -> &Client {
+        self.inner.ring.next_client()
     }
 
     /// Connection state (client ring + probed batch-write limit) for sharing
@@ -261,18 +261,18 @@ impl DynamoMetaStore {
 
     /// Single strongly-consistent `GetItem` returning the `val` bytes, or
     /// `Ok(None)` when the item is absent.
-    async fn get_val(
+    async fn get_row_data(
         &self,
         physical_table: String,
-        pk: Vec<u8>,
-        sk: Vec<u8>,
+        partition_key: Vec<u8>,
+        sort_key: Vec<u8>,
     ) -> Result<Option<Bytes>> {
         let resp = self
-            .rr_client()
+            .round_robin_client()
             .get_item()
             .table_name(physical_table)
-            .key(ATTR_PK, AttributeValue::B(Blob::new(pk)))
-            .key(ATTR_SK, AttributeValue::B(Blob::new(sk)))
+            .key(ATTR_PK, AttributeValue::B(Blob::new(partition_key)))
+            .key(ATTR_SK, AttributeValue::B(Blob::new(sort_key)))
             .consistent_read(true)
             .send()
             .await
@@ -280,25 +280,25 @@ impl DynamoMetaStore {
 
         match resp.item {
             None => Ok(None),
-            Some(mut item) => take_val(&mut item).map(Some),
+            Some(mut item) => take_binary(&mut item, ATTR_VAL).map(Bytes::from).map(Some),
         }
     }
 
     /// Single `PutItem` of `(pk, sk, val)`.
-    async fn put_val(
+    async fn put_row_data(
         &self,
         physical_table: String,
-        pk: Vec<u8>,
-        sk: Vec<u8>,
-        value: Bytes,
+        partition_key: Vec<u8>,
+        sort_key: Vec<u8>,
+        row_data: Bytes,
     ) -> Result<()> {
-        self.rr_client()
+        self.round_robin_client()
             .put_item()
             .table_name(physical_table)
-            .item(ATTR_PK, AttributeValue::B(Blob::new(pk)))
-            .item(ATTR_SK, AttributeValue::B(Blob::new(sk)))
-            // `Blob::new(value)` reclaims the backing Vec when uniquely owned.
-            .item(ATTR_VAL, AttributeValue::B(Blob::new(value)))
+            .item(ATTR_PK, AttributeValue::B(Blob::new(partition_key)))
+            .item(ATTR_SK, AttributeValue::B(Blob::new(sort_key)))
+            // `Blob::new(row_data)` reclaims the backing Vec when uniquely owned.
+            .item(ATTR_VAL, AttributeValue::B(Blob::new(row_data)))
             .send()
             .await
             .map_err(|e| backend_err("put_item", e))?;
@@ -362,7 +362,7 @@ impl DynamoMetaStore {
             })
             .collect();
         let effective = match self
-            .rr_client()
+            .round_robin_client()
             .batch_write_item()
             .request_items(table.clone(), probe)
             .send()
@@ -398,7 +398,7 @@ impl DynamoMetaStore {
 
 impl MetaStore for DynamoMetaStore {
     async fn get(&self, table: TableId, key: &[u8]) -> Result<Option<Bytes>> {
-        self.get_val(
+        self.get_row_data(
             self.table_name_for_kv(table),
             kv_pk(table, key),
             SK_SENTINEL.to_vec(),
@@ -412,7 +412,7 @@ impl MetaStore for DynamoMetaStore {
         partition: &[u8],
         clustering: &[u8],
     ) -> Result<Option<Bytes>> {
-        self.get_val(
+        self.get_row_data(
             self.table_name_for_scan(table),
             scan_pk(table, partition),
             clustering.to_vec(),
@@ -421,7 +421,7 @@ impl MetaStore for DynamoMetaStore {
     }
 
     async fn put(&self, table: TableId, key: &[u8], value: Bytes) -> Result<()> {
-        self.put_val(
+        self.put_row_data(
             self.table_name_for_kv(table),
             kv_pk(table, key),
             SK_SENTINEL.to_vec(),
@@ -437,7 +437,7 @@ impl MetaStore for DynamoMetaStore {
         clustering: &[u8],
         value: Bytes,
     ) -> Result<()> {
-        self.put_val(
+        self.put_row_data(
             self.table_name_for_scan(table),
             scan_pk(table, partition),
             clustering.to_vec(),
@@ -455,32 +455,39 @@ impl MetaStore for DynamoMetaStore {
         let requests: Vec<(String, WriteRequest, usize)> = writes
             .into_iter()
             .map(|op| {
-                let (physical_table, pk, sk, value) = match op {
-                    MetaWriteOp::Put { table, key, value } => (
+                let (physical_table, partition_key, sort_key, row_data) = match op {
+                    MetaWriteOp::Put {
+                        table,
+                        row_key,
+                        row_data,
+                    } => (
                         self.table_name_for_kv(table),
-                        kv_pk(table, &key),
+                        kv_pk(table, &row_key),
                         SK_SENTINEL.to_vec(),
-                        value,
+                        row_data,
                     ),
                     MetaWriteOp::ScanPut {
                         table,
                         partition,
-                        clustering,
-                        value,
+                        clustering_key,
+                        row_data,
                     } => (
                         self.table_name_for_scan(table),
                         scan_pk(table, &partition),
-                        clustering,
-                        value,
+                        clustering_key,
+                        row_data,
                     ),
                 };
-                let estimated_wire_bytes =
-                    estimated_batch_write_item_bytes(pk.len(), sk.len(), value.len());
+                let estimated_wire_bytes = estimated_batch_write_item_bytes(
+                    partition_key.len(),
+                    sort_key.len(),
+                    row_data.len(),
+                );
                 let put = PutRequest::builder()
-                    .item(ATTR_PK, AttributeValue::B(Blob::new(pk)))
-                    .item(ATTR_SK, AttributeValue::B(Blob::new(sk)))
-                    // `Blob::new(value)` reclaims the Vec when uniquely owned.
-                    .item(ATTR_VAL, AttributeValue::B(Blob::new(value)))
+                    .item(ATTR_PK, AttributeValue::B(Blob::new(partition_key)))
+                    .item(ATTR_SK, AttributeValue::B(Blob::new(sort_key)))
+                    // `Blob::new(row_data)` reclaims the Vec when uniquely owned.
+                    .item(ATTR_VAL, AttributeValue::B(Blob::new(row_data)))
                     .build()
                     .map_err(|e| QueryError::Backend(format!("dynamo build put_request: {e}")))?;
                 Ok((
@@ -546,11 +553,11 @@ impl MetaStore for DynamoMetaStore {
         // A `Query` response is capped at 1 MB, but the trait contract is the
         // whole partition in one call, so follow `LastEvaluatedKey` until the
         // server stops handing one back.
-        let mut start_key: Option<HashMap<String, AttributeValue>> = None;
-        let mut keys: Vec<Vec<u8>> = Vec::new();
+        let mut pagination_key: Option<HashMap<String, AttributeValue>> = None;
+        let mut clustering_keys: Vec<Vec<u8>> = Vec::new();
         loop {
             let req = self
-                .rr_client()
+                .round_robin_client()
                 .query()
                 .table_name(physical_table.clone())
                 .key_condition_expression("pk = :p")
@@ -559,22 +566,22 @@ impl MetaStore for DynamoMetaStore {
                 .projection_expression(ATTR_SK)
                 .consistent_read(true)
                 .scan_index_forward(true)
-                .set_exclusive_start_key(start_key.take());
+                .set_exclusive_start_key(pagination_key.take());
 
             let resp = req.send().await.map_err(|e| backend_err("query", e))?;
             for mut item in resp.items.unwrap_or_default() {
-                keys.push(take_binary(&mut item, ATTR_SK)?);
+                clustering_keys.push(take_binary(&mut item, ATTR_SK)?);
             }
 
             // Follow the server's cursor (an empty page can still carry a
             // LastEvaluatedKey); absence means the range is exhausted.
-            start_key = resp.last_evaluated_key;
-            if start_key.is_none() {
+            pagination_key = resp.last_evaluated_key;
+            if pagination_key.is_none() {
                 break;
             }
         }
 
-        Ok(keys)
+        Ok(clustering_keys)
     }
 }
 
@@ -588,10 +595,6 @@ fn scan_pk(table: ScannableTableId, partition: &[u8]) -> Vec<u8> {
 
 fn dynamo_safe_name(logical_table: &str) -> String {
     logical_table.replace('_', "-")
-}
-
-fn take_val(item: &mut HashMap<String, AttributeValue>) -> Result<Bytes> {
-    take_binary(item, ATTR_VAL).map(Bytes::from)
 }
 
 #[cfg(test)]
