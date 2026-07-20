@@ -34,8 +34,8 @@ pub use s3::{S3BlobStore, S3BlobStoreConfig, S3Credentials, S3ExternalBlobReader
 #[derive(Debug, Clone)]
 pub struct BlobWriteOp {
     pub table: BlobTableId,
-    pub key: Vec<u8>,
-    pub value: Bytes,
+    pub blob_key: Vec<u8>,
+    pub blob_data: Bytes,
 }
 
 /// Logical identifier for a blob table. Names are opaque; backends own any
@@ -56,44 +56,39 @@ impl BlobTableId {
 
 #[derive(Debug, Clone)]
 pub struct BlobTable<B> {
-    store: B,
+    blob_store: B,
     pub table: BlobTableId,
     /// Optional process-global cap on concurrent backend reads, shared across
     /// every query so collective fan-out cannot overwhelm the backend. `None`
     /// leaves reads unbounded; writes (the ingest path) are never gated.
-    io_limit: Option<std::sync::Arc<tokio::sync::Semaphore>>,
+    read_concurrency_limit: Option<std::sync::Arc<tokio::sync::Semaphore>>,
 }
 
 impl<B> BlobTable<B> {
-    pub(crate) fn new(store: B, table: BlobTableId) -> Self {
-        Self {
-            store,
-            table,
-            io_limit: None,
-        }
-    }
-
     /// Attaches a shared read-concurrency limiter; all clones share the same
     /// semaphore, so the cap is global across the tables that hold it.
-    pub fn with_io_limit(mut self, io_limit: std::sync::Arc<tokio::sync::Semaphore>) -> Self {
-        self.io_limit = Some(io_limit);
+    pub fn with_io_limit(
+        mut self,
+        read_concurrency_limit: std::sync::Arc<tokio::sync::Semaphore>,
+    ) -> Self {
+        self.read_concurrency_limit = Some(read_concurrency_limit);
         self
     }
 }
 
 impl<B: BlobStore> BlobTable<B> {
     pub async fn put(&self, key: &[u8], value: Bytes) -> Result<()> {
-        self.store.put_blob(self.table, key, value).await
+        self.blob_store.put_blob(self.table, key, value).await
     }
 
     pub async fn get(&self, key: &[u8]) -> Result<Option<Bytes>> {
         let _permit = self.acquire_read().await;
-        self.store.get_blob(self.table, key).await
+        self.blob_store.get_blob(self.table, key).await
     }
 
     /// Like writes, deletes (GC paths) are never gated by the read limiter.
     pub async fn delete(&self, key: &[u8]) -> Result<()> {
-        self.store.delete_blob(self.table, key).await
+        self.blob_store.delete_blob(self.table, key).await
     }
 
     pub async fn read_range(
@@ -103,14 +98,14 @@ impl<B: BlobStore> BlobTable<B> {
         end_exclusive: usize,
     ) -> Result<Option<Bytes>> {
         let _permit = self.acquire_read().await;
-        self.store
+        self.blob_store
             .read_range(self.table, key, start, end_exclusive)
             .await
     }
 
     /// Acquires one global read permit; `None` when no limiter is attached.
     async fn acquire_read(&self) -> Option<tokio::sync::SemaphorePermit<'_>> {
-        match &self.io_limit {
+        match &self.read_concurrency_limit {
             Some(sem) => Some(
                 sem.acquire()
                     .await
@@ -130,7 +125,11 @@ pub trait BlobStore: Clone + Send + Sync + 'static {
     where
         Self: Sized,
     {
-        BlobTable::new(self.clone(), table)
+        BlobTable {
+            blob_store: self.clone(),
+            table,
+            read_concurrency_limit: None,
+        }
     }
 
     // All methods return `Send` futures: callers drive them from spawned tasks,
@@ -193,33 +192,33 @@ pub enum BlobBackend {
 }
 
 macro_rules! with_blob_backend {
-    ($self:expr, $store:ident => $body:expr) => {
-        match $self {
-            BlobBackend::InMemory($store) => $body,
-            BlobBackend::Null($store) => $body,
+    ($backend:expr, $store:ident => $operation:expr) => {
+        match $backend {
+            BlobBackend::InMemory($store) => $operation,
+            BlobBackend::Null($store) => $operation,
             #[cfg(feature = "s3")]
-            BlobBackend::S3($store) => $body,
+            BlobBackend::S3($store) => $operation,
             #[cfg(feature = "dynamo")]
-            BlobBackend::Dynamo($store) => $body,
+            BlobBackend::Dynamo($store) => $operation,
         }
     };
 }
 
 impl BlobStore for BlobBackend {
     async fn put_blob(&self, table: BlobTableId, key: &[u8], value: Bytes) -> Result<()> {
-        with_blob_backend!(self, s => s.put_blob(table, key, value).await)
+        with_blob_backend!(self, backend => backend.put_blob(table, key, value).await)
     }
 
     async fn get_blob(&self, table: BlobTableId, key: &[u8]) -> Result<Option<Bytes>> {
-        with_blob_backend!(self, s => s.get_blob(table, key).await)
+        with_blob_backend!(self, backend => backend.get_blob(table, key).await)
     }
 
     async fn delete_blob(&self, table: BlobTableId, key: &[u8]) -> Result<()> {
-        with_blob_backend!(self, s => s.delete_blob(table, key).await)
+        with_blob_backend!(self, backend => backend.delete_blob(table, key).await)
     }
 
     async fn apply_writes(&self, writes: Vec<BlobWriteOp>) -> Result<()> {
-        with_blob_backend!(self, s => s.apply_writes(writes).await)
+        with_blob_backend!(self, backend => backend.apply_writes(writes).await)
     }
 
     // Forwarded so backends with a native ranged read (S3's server-side GET)
@@ -231,6 +230,8 @@ impl BlobStore for BlobBackend {
         start: usize,
         end_exclusive: usize,
     ) -> Result<Option<Bytes>> {
-        with_blob_backend!(self, s => s.read_range(table, key, start, end_exclusive).await)
+        with_blob_backend!(self, backend => {
+            backend.read_range(table, key, start, end_exclusive).await
+        })
     }
 }

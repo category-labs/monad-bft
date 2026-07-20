@@ -220,15 +220,15 @@ impl DynamoBlobStore {
     }
 
     /// Round-robin one of the per-endpoint clients.
-    fn rr_client(&self) -> &Client {
-        self.inner.ring.get()
+    fn round_robin_client(&self) -> &Client {
+        self.inner.ring.next_client()
     }
 
     /// Strongly-consistent read of chunk 0's `len` attribute (the blob's total
     /// length), projecting only `len`. `Ok(None)` means the blob does not exist.
     async fn blob_len(&self, pk: &[u8]) -> Result<Option<usize>> {
         let resp = self
-            .rr_client()
+            .round_robin_client()
             .get_item()
             .table_name(self.table())
             .key(ATTR_PK, AttributeValue::B(Blob::new(pk.to_vec())))
@@ -261,22 +261,22 @@ impl DynamoBlobStore {
         configure: impl Fn(QueryFluentBuilder) -> QueryFluentBuilder,
     ) -> Result<Vec<HashMap<String, AttributeValue>>> {
         let mut items = Vec::new();
-        let mut start_key: Option<HashMap<String, AttributeValue>> = None;
+        let mut pagination_key: Option<HashMap<String, AttributeValue>> = None;
         loop {
             let base = self
-                .rr_client()
+                .round_robin_client()
                 .query()
                 .table_name(self.table())
                 .consistent_read(true)
                 .scan_index_forward(true)
-                .set_exclusive_start_key(start_key.take());
+                .set_exclusive_start_key(pagination_key.take());
             let resp = configure(base)
                 .send()
                 .await
                 .map_err(|e| backend_err("query", e))?;
             items.extend(resp.items.unwrap_or_default());
             match resp.last_evaluated_key {
-                Some(lek) => start_key = Some(lek),
+                Some(next_key) => pagination_key = Some(next_key),
                 None => return Ok(items),
             }
         }
@@ -301,20 +301,29 @@ impl DynamoBlobStore {
 
     /// Builds one put request per `chunk_size` piece (`len` on chunk 0). An empty
     /// value still writes an empty chunk 0 so the blob reads back as present.
-    fn chunk_puts(&self, pk: Vec<u8>, value: &[u8]) -> Result<Vec<(String, WriteRequest, usize)>> {
-        let total = value.len();
-        if value.is_empty() {
-            return Ok(vec![self.build_chunk_put(&pk, 0, &[], Some(total))?]);
+    fn chunk_puts(
+        &self,
+        blob_partition_key: Vec<u8>,
+        blob_data: &[u8],
+    ) -> Result<Vec<(String, WriteRequest, usize)>> {
+        let total_length = blob_data.len();
+        if blob_data.is_empty() {
+            return Ok(vec![self.build_chunk_put(
+                &blob_partition_key,
+                0,
+                &[],
+                Some(total_length),
+            )?]);
         }
-        value
+        blob_data
             .chunks(self.inner.chunk_size)
             .enumerate()
-            .map(|(i, chunk)| {
-                let idx = u32::try_from(i).map_err(|_| {
+            .map(|(chunk_index, chunk)| {
+                let chunk_index = u32::try_from(chunk_index).map_err(|_| {
                     QueryError::Backend("dynamo blob chunk index overflows u32".to_string())
                 })?;
-                let len = if idx == 0 { Some(total) } else { None };
-                self.build_chunk_put(&pk, idx, chunk, len)
+                let first_chunk_length = (chunk_index == 0).then_some(total_length);
+                self.build_chunk_put(&blob_partition_key, chunk_index, chunk, first_chunk_length)
             })
             .collect()
     }
@@ -322,18 +331,18 @@ impl DynamoBlobStore {
     fn build_chunk_put(
         &self,
         pk: &[u8],
-        idx: u32,
+        chunk_index: u32,
         chunk: &[u8],
-        len: Option<usize>,
+        total_length: Option<usize>,
     ) -> Result<(String, WriteRequest, usize)> {
-        let sk = chunk_sk(idx);
-        let estimated = estimated_batch_write_item_bytes(pk.len(), sk.len(), chunk.len());
+        let sort_key = chunk_sk(chunk_index);
+        let estimated = estimated_batch_write_item_bytes(pk.len(), sort_key.len(), chunk.len());
         let mut put = PutRequest::builder()
             .item(ATTR_PK, AttributeValue::B(Blob::new(pk.to_vec())))
-            .item(ATTR_SK, AttributeValue::B(Blob::new(sk)))
+            .item(ATTR_SK, AttributeValue::B(Blob::new(sort_key)))
             .item(ATTR_VAL, AttributeValue::B(Blob::new(chunk.to_vec())));
-        if let Some(len) = len {
-            put = put.item(ATTR_LEN, AttributeValue::N(len.to_string()));
+        if let Some(total_length) = total_length {
+            put = put.item(ATTR_LEN, AttributeValue::N(total_length.to_string()));
         }
         let put = put
             .build()
@@ -404,7 +413,7 @@ impl DynamoBlobStore {
     /// before the marker existed.
     async fn stored_chunk_size(&self) -> Result<Option<usize>> {
         let resp = self
-            .rr_client()
+            .round_robin_client()
             .get_item()
             .table_name(self.table())
             .key(
@@ -434,7 +443,7 @@ impl DynamoBlobStore {
     /// the value that won.
     async fn write_chunk_size_marker(&self) -> Result<()> {
         let result = self
-            .rr_client()
+            .round_robin_client()
             .put_item()
             .table_name(self.table())
             .item(
@@ -489,8 +498,13 @@ impl BlobStore for DynamoBlobStore {
             return Ok(());
         }
         let mut requests = Vec::new();
-        for BlobWriteOp { table, key, value } in writes {
-            requests.extend(self.chunk_puts(blob_pk(table, &key), &value)?);
+        for BlobWriteOp {
+            table,
+            blob_key,
+            blob_data,
+        } in writes
+        {
+            requests.extend(self.chunk_puts(blob_pk(table, &blob_key), &blob_data)?);
         }
         self.run_batch_writes(requests).await
     }

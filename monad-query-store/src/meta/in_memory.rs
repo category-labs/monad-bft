@@ -23,31 +23,20 @@ use monad_query_errors::Result;
 
 use crate::meta::{MetaStore, MetaWriteOp, ScannableTableId, TableId};
 
+type KeyValueRecordMap = BTreeMap<(TableId, Vec<u8>), Bytes>;
+type ScannableRecordMap = BTreeMap<(ScannableTableId, Vec<u8>, Vec<u8>), Bytes>;
+type SharedKeyValueRecordMap = Arc<RwLock<KeyValueRecordMap>>;
+type SharedScannableRecordMap = Arc<RwLock<ScannableRecordMap>>;
+
 /// Test-only meta-store fixture. Holds records in memory behind sync
 /// `RwLock`s. Not intended as a deployable backend.
 #[derive(Debug, Clone, Default)]
 pub struct InMemoryMetaStore {
-    kv_records: Arc<RwLock<BTreeMap<(TableId, Vec<u8>), Bytes>>>,
-    scan_records: Arc<RwLock<BTreeMap<(ScannableTableId, Vec<u8>, Vec<u8>), Bytes>>>,
+    kv_records: SharedKeyValueRecordMap,
+    scan_records: SharedScannableRecordMap,
 }
 
 impl InMemoryMetaStore {
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    pub(crate) fn len(&self) -> usize {
-        self.kv_records
-            .read()
-            .map(|guard| guard.len())
-            .unwrap_or_default()
-            + self
-                .scan_records
-                .read()
-                .map(|guard| guard.len())
-                .unwrap_or_default()
-    }
-
     /// Test-only: remove a kv row from the fixture to simulate missing data.
     /// Not exposed on the [`MetaStore`] trait — real backends are append-only.
     pub fn clear_key(&self, table: TableId, key: &[u8]) {
@@ -76,11 +65,11 @@ impl InMemoryMetaStore {
 
 impl MetaStore for InMemoryMetaStore {
     async fn get(&self, table: TableId, key: &[u8]) -> Result<Option<Bytes>> {
-        let guard = self
+        let records = self
             .kv_records
             .read()
             .map_err(|_| monad_query_errors::QueryError::Backend("poisoned lock".to_string()))?;
-        Ok(guard.get(&(table, key.to_vec())).cloned())
+        Ok(records.get(&(table, key.to_vec())).cloned())
     }
 
     async fn scan_get(
@@ -89,21 +78,21 @@ impl MetaStore for InMemoryMetaStore {
         partition: &[u8],
         clustering: &[u8],
     ) -> Result<Option<Bytes>> {
-        let guard = self
+        let records = self
             .scan_records
             .read()
             .map_err(|_| monad_query_errors::QueryError::Backend("poisoned lock".to_string()))?;
-        Ok(guard
+        Ok(records
             .get(&(table, partition.to_vec(), clustering.to_vec()))
             .cloned())
     }
 
     async fn put(&self, table: TableId, key: &[u8], value: Bytes) -> Result<()> {
-        let mut guard = self
+        let mut records = self
             .kv_records
             .write()
             .map_err(|_| monad_query_errors::QueryError::Backend("poisoned lock".to_string()))?;
-        guard.insert((table, key.to_vec()), value);
+        records.insert((table, key.to_vec()), value);
         Ok(())
     }
 
@@ -114,35 +103,39 @@ impl MetaStore for InMemoryMetaStore {
         clustering: &[u8],
         value: Bytes,
     ) -> Result<()> {
-        let mut guard = self
+        let mut records = self
             .scan_records
             .write()
             .map_err(|_| monad_query_errors::QueryError::Backend("poisoned lock".to_string()))?;
-        guard.insert((table, partition.to_vec(), clustering.to_vec()), value);
+        records.insert((table, partition.to_vec(), clustering.to_vec()), value);
         Ok(())
     }
 
     async fn apply_writes(&self, writes: Vec<MetaWriteOp>) -> Result<()> {
-        let mut kv_guard = self
+        let mut kv_records = self
             .kv_records
             .write()
             .map_err(|_| monad_query_errors::QueryError::Backend("poisoned lock".to_string()))?;
-        let mut scan_guard = self
+        let mut scan_records = self
             .scan_records
             .write()
             .map_err(|_| monad_query_errors::QueryError::Backend("poisoned lock".to_string()))?;
         for op in writes {
             match op {
-                MetaWriteOp::Put { table, key, value } => {
-                    kv_guard.insert((table, key), value);
+                MetaWriteOp::Put {
+                    table,
+                    row_key,
+                    row_data,
+                } => {
+                    kv_records.insert((table, row_key), row_data);
                 }
                 MetaWriteOp::ScanPut {
                     table,
                     partition,
-                    clustering,
-                    value,
+                    clustering_key,
+                    row_data,
                 } => {
-                    scan_guard.insert((table, partition, clustering), value);
+                    scan_records.insert((table, partition, clustering_key), row_data);
                 }
             }
         }
@@ -150,13 +143,13 @@ impl MetaStore for InMemoryMetaStore {
     }
 
     async fn scan_keys(&self, table: ScannableTableId, partition: &[u8]) -> Result<Vec<Vec<u8>>> {
-        let guard = self
+        let records = self
             .scan_records
             .read()
             .map_err(|_| monad_query_errors::QueryError::Backend("poisoned lock".to_string()))?;
         // Seek straight to the partition's first possible key and stop once
         // past it, instead of walking the whole multi-table map.
-        Ok(guard
+        Ok(records
             .range((table, partition.to_vec(), Vec::new())..)
             .take_while(|((record_table, record_partition, _), _)| {
                 *record_table == table && record_partition.as_slice() == partition
