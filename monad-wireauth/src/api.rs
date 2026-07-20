@@ -41,10 +41,10 @@ use crate::{
     state::State,
 };
 
-pub struct API<C: Context, K: AsRef<monad_secp::KeyPair> = monad_secp::KeyPair> {
-    state: State,
+pub struct API<C: Context, K: AsRef<monad_secp::KeyPair> = monad_secp::KeyPair, M = ()> {
+    state: State<M>,
     timers: BTreeSet<(Duration, SessionIndex)>,
-    packet_queue: VecDeque<(SocketAddr, Bytes)>,
+    packet_queue: VecDeque<(SocketAddr, Bytes, Option<M>)>,
     config: Config,
     local_static_key: K,
     // Cached compressed public key to avoid recomputing when logging
@@ -59,9 +59,9 @@ pub struct API<C: Context, K: AsRef<monad_secp::KeyPair> = monad_secp::KeyPair> 
     connect_rate_last_reset: Duration,
 }
 
-impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
+impl<C: Context, K: AsRef<monad_secp::KeyPair>, M> API<C, K, M> {
     /// Creates a new API instance, it should be created for an individual socket.
-    pub fn new(
+    pub fn new_with_metadata(
         metric_names: &'static MetricNames,
         config: Config,
         local_static_key: K,
@@ -88,7 +88,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
         let local_serialized_public = CompressedPublicKey::from(&local_static_public);
         debug!(local_public_key=?local_serialized_public, "initialized manager");
         Self {
-            state: State::new(metric_names),
+            state: State::new_with_metadata(metric_names),
             timers: BTreeSet::new(),
             packet_queue: VecDeque::new(),
             config,
@@ -117,7 +117,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
     /// Note: There are no limits for the internal queue, so it is better to use a separate
     /// queue for pacing.
     #[instrument(level = Level::TRACE, skip(self), fields(local_public_key = ?self.local_serialized_public))]
-    pub fn next_packet(&mut self) -> Option<(SocketAddr, Bytes)> {
+    pub fn next_packet_with_metadata(&mut self) -> Option<(SocketAddr, Bytes, Option<M>)> {
         self.metrics.gauge(self.metric_names.api_next_packet).inc();
         let result = self.packet_queue.pop_front();
         self.metrics
@@ -126,8 +126,8 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
         result
     }
 
-    fn enqueue_packet(&mut self, addr: SocketAddr, pkt: impl Into<Bytes>) {
-        self.packet_queue.push_back((addr, pkt.into()));
+    fn enqueue_packet(&mut self, addr: SocketAddr, pkt: impl Into<Bytes>, metadata: Option<M>) {
+        self.packet_queue.push_back((addr, pkt.into(), metadata));
         self.metrics
             .gauge(self.metric_names.state_packet_queue_size)
             .set(self.packet_queue.len() as u64);
@@ -253,7 +253,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
                 self.metrics
                     .gauge(self.metric_names.enqueued_keepalive)
                     .inc();
-                self.enqueue_packet(message.remote_addr, message.header);
+                self.enqueue_packet(message.remote_addr, message.header, None);
             }
 
             if let Some(rekey) = rekey {
@@ -266,7 +266,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
                     self.metrics
                         .gauge(self.metric_names.enqueued_handshake_init)
                         .inc();
-                    self.enqueue_packet(rekey.remote_addr, message);
+                    self.enqueue_packet(rekey.remote_addr, message, None);
                     self.insert_timer(timer, new_session_index);
                 }
             }
@@ -331,7 +331,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
         self.metrics
             .gauge(self.metric_names.enqueued_handshake_init)
             .inc();
-        self.enqueue_packet(remote_addr, message);
+        self.enqueue_packet(remote_addr, message, None);
         self.insert_timer(timer, local_index);
 
         Ok(())
@@ -429,7 +429,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
                 self.metrics
                     .gauge(self.metric_names.enqueued_cookie_reply)
                     .inc();
-                self.enqueue_packet(remote_addr, reply);
+                self.enqueue_packet(remote_addr, reply, None);
                 false
             }
             FilterAction::Drop => {
@@ -518,7 +518,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
         self.metrics
             .gauge(self.metric_names.enqueued_handshake_response)
             .inc();
-        self.enqueue_packet(remote_addr, message);
+        self.enqueue_packet(remote_addr, message, None);
         self.insert_timer(timer, local_index);
 
         Ok(())
@@ -732,7 +732,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
         self.state
             .insert_transport(receiver_session_index, transport);
 
-        for msg in messages {
+        for (msg, metadata) in messages {
             let mut packet = BytesMut::with_capacity(DataPacketHeader::SIZE + msg.len());
             packet.resize(DataPacketHeader::SIZE, 0);
             packet.extend_from_slice(&msg);
@@ -750,7 +750,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
             packet[..DataPacketHeader::SIZE].copy_from_slice(header.as_bytes());
 
             self.replace_timer(timer, receiver_session_index);
-            self.enqueue_packet(remote_addr, packet.freeze());
+            self.enqueue_packet(remote_addr, packet.freeze(), metadata);
             if is_buffered {
                 self.metrics
                     .gauge(self.metric_names.initiator_messages_sent_from_buffer)
@@ -829,11 +829,12 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
     /// Buffers a message for a peer that has an initiator session (handshake in progress).
     /// Returns Ok(()) if the message was buffered, or Err if no initiator session exists
     /// or the buffer limit would be exceeded.
-    #[instrument(level = Level::TRACE, skip(self, public_key, message), fields(local_public_key = ?self.local_serialized_public))]
-    pub fn buffer_message(
+    #[instrument(level = Level::TRACE, skip(self, public_key, message, metadata), fields(local_public_key = ?self.local_serialized_public))]
+    pub fn buffer_message_with_metadata(
         &mut self,
         public_key: &monad_secp::PubKey,
         message: Bytes,
+        metadata: M,
     ) -> Result<()> {
         let initiator = self
             .state
@@ -852,7 +853,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
                 limit: self.config.max_buffered_bytes_per_session,
             });
         }
-        initiator.buffer_message(message);
+        initiator.buffer_message(message, metadata);
         self.metrics
             .gauge(self.metric_names.initiator_buffered_messages)
             .inc();
@@ -916,6 +917,30 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
     /// Returns the socket address of the latest initiated session with the given public key.
     pub fn get_socket_by_public_key(&self, public_key: &monad_secp::PubKey) -> Option<SocketAddr> {
         self.state.get_socket_by_public_key(public_key)
+    }
+}
+
+impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
+    pub fn new(
+        metric_names: &'static MetricNames,
+        config: Config,
+        local_static_key: K,
+        context: C,
+    ) -> Self {
+        Self::new_with_metadata(metric_names, config, local_static_key, context)
+    }
+
+    pub fn next_packet(&mut self) -> Option<(SocketAddr, Bytes)> {
+        self.next_packet_with_metadata()
+            .map(|(addr, packet, _)| (addr, packet))
+    }
+
+    pub fn buffer_message(
+        &mut self,
+        public_key: &monad_secp::PubKey,
+        message: Bytes,
+    ) -> Result<()> {
+        self.buffer_message_with_metadata(public_key, message, ())
     }
 }
 

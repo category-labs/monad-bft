@@ -825,6 +825,44 @@ fn test_message_buffering_during_handshake() {
 }
 
 #[test]
+fn test_buffered_message_metadata() {
+    init_tracing();
+    let mut rng = rng();
+    let keypair = monad_secp::KeyPair::generate(&mut rng);
+    let mut peer1: API<TestContext, _, u8> = API::new_with_metadata(
+        DEFAULT_METRICS,
+        Config::default(),
+        keypair,
+        TestContext::new(),
+    );
+    let (mut peer2, peer2_pubkey, _, _) = create_manager();
+    let peer1_addr: SocketAddr = "127.0.0.1:8001".parse().unwrap();
+    let peer2_addr: SocketAddr = "127.0.0.1:8002".parse().unwrap();
+
+    peer1
+        .connect(peer2_pubkey, peer2_addr, DEFAULT_RETRY_ATTEMPTS)
+        .unwrap();
+    peer1
+        .buffer_message_with_metadata(&peer2_pubkey, bytes::Bytes::from_static(b"buffered"), 7)
+        .unwrap();
+
+    let (_, init, metadata) = peer1.next_packet_with_metadata().unwrap();
+    assert_eq!(metadata, None);
+    dispatch(&mut peer2, &init, peer1_addr);
+
+    let response = collect::<HandshakeResponse>(&mut peer2);
+    let mut response = response;
+    let Packet::Control(response) = Packet::try_from(response.as_mut_slice()).unwrap() else {
+        panic!("expected handshake response");
+    };
+    peer1.dispatch_control(response, peer2_addr).unwrap();
+
+    let (_, packet, metadata) = peer1.next_packet_with_metadata().unwrap();
+    assert_eq!(metadata, Some(7));
+    assert_eq!(decrypt(&mut peer2, &packet, peer1_addr), b"buffered");
+}
+
+#[test]
 fn test_handshake_response_address_mismatch_rejected() {
     init_tracing();
     let (mut peer1, _, _, _) = create_manager();
