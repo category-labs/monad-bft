@@ -262,18 +262,30 @@ where
                             ProtocolMessage::Proposal(msg) => {
                                 let proposal_epoch = msg.proposal_epoch;
                                 let proposal_round = msg.proposal_round;
+                                let first_proposal_for_round =
+                                    !consensus.has_handled_proposal(proposal_round);
                                 let mut proposal_cmds =
                                     consensus.handle_proposal_message(author, msg);
                                 // TODO:Maybe we could skip the below command if we could somehow determine that
                                 // the peer isn't publishing to full nodes at the moment?
                                 //
                                 // send verified_message carrying author signature
-                                proposal_cmds.push(ConsensusCommand::PublishToFullNodes {
-                                    epoch: proposal_epoch,
-                                    round: proposal_round,
-                                    broadcast_mode: FullnodeBroadcastMode::SecondaryRaptorcast,
-                                    message: verified_message,
-                                });
+                                //
+                                // only publish the first accepted proposal per round to full nodes:
+                                // secondary raptorcast receivers commit to a single message
+                                // per (publisher, round), so republishing a second (e.g.
+                                // equivocating) proposal would conflict at full nodes and
+                                // flag this node as the equivocator
+                                if first_proposal_for_round
+                                    && consensus.has_handled_proposal(proposal_round)
+                                {
+                                    proposal_cmds.push(ConsensusCommand::PublishToFullNodes {
+                                        epoch: proposal_epoch,
+                                        round: proposal_round,
+                                        broadcast_mode: FullnodeBroadcastMode::SecondaryRaptorcast,
+                                        message: verified_message,
+                                    });
+                                }
                                 proposal_cmds
                             }
                             ProtocolMessage::Vote(msg) => {
