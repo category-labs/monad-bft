@@ -35,6 +35,7 @@ use crate::{
         ethhex,
         json_serialized_len::JsonSerializedLen,
         jsonrpc::{ChainStateResultExt, JsonRpcError, JsonRpcResult},
+        CallKind,
     },
 };
 
@@ -424,19 +425,6 @@ impl From<CallFrame> for MonadCallFrame {
                 .collect(),
         }
     }
-}
-
-#[derive(Serialize, Debug, Clone, schemars::JsonSchema, strum::AsRefStr, strum::VariantArray)]
-#[serde(rename_all = "UPPERCASE")]
-#[strum(serialize_all = "UPPERCASE")]
-pub enum CallKind {
-    Call,
-    DelegateCall,
-    CallCode,
-    Create,
-    Create2,
-    SelfDestruct,
-    StaticCall,
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
