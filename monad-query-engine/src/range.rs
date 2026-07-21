@@ -37,20 +37,53 @@ pub struct ResolvedBlockWindow {
 
 impl ResolvedBlockWindow {
     /// Resolves a query's inclusive block range against the published head,
-    /// short-circuits if the resolved span exceeds `limits.max_block_range`,
-    /// then loads the per-bound block records.
+    /// bounds omitted endpoints to the first pagination window, rejects an
+    /// explicit span above `limits.max_block_range`, then loads the bounds.
     pub async fn resolve<M: MetaStore>(
         envelope: &QueryEnvelope,
         published_head: u64,
         limits: &QueryLimits,
         blocks: &BlockTables<M>,
     ) -> Result<Self> {
-        let (low_number, high_number) = Self::resolve_block_numbers(
+        let (mut low_number, mut high_number) = Self::resolve_block_numbers(
             envelope.from_block,
             envelope.to_block,
             envelope.order,
             published_head,
         )?;
+
+        // An omitted traversal endpoint is an open-ended pagination request.
+        // Bound its first scan window, while retaining rejection for explicit
+        // ranges that exceed the deployment cap.
+        if limits.max_block_range > 0 {
+            let span = high_number - low_number + 1;
+            if span > limits.max_block_range {
+                match envelope.order {
+                    QueryOrder::Ascending if envelope.to_block.is_none() => {
+                        high_number = low_number
+                            .saturating_add(limits.max_block_range - 1)
+                            .min(high_number);
+                    }
+                    QueryOrder::Ascending if envelope.from_block.is_none() => {
+                        low_number = high_number
+                            .saturating_add(1)
+                            .saturating_sub(limits.max_block_range);
+                    }
+                    QueryOrder::Descending if envelope.to_block.is_none() => {
+                        low_number = high_number
+                            .saturating_add(1)
+                            .saturating_sub(limits.max_block_range)
+                            .max(low_number);
+                    }
+                    QueryOrder::Descending if envelope.from_block.is_none() => {
+                        high_number = low_number
+                            .saturating_add(limits.max_block_range - 1)
+                            .min(high_number);
+                    }
+                    _ => {}
+                }
+            }
+        }
 
         let span = high_number - low_number + 1;
         if span > limits.max_block_range {
