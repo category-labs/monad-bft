@@ -13,8 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+mod call_kind;
 pub mod eth_json;
 pub mod ethhex;
 pub mod json_serialized_len;
 pub mod jsonrpc;
 pub mod serialize;
+
+pub use call_kind::CallKind;
