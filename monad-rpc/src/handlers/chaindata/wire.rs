@@ -32,7 +32,7 @@ use monad_query_primitives::{
     limits::QueryEnvelope,
     order::QueryOrder,
     refs::{BlockRef, BlockSpan},
-    CallKind, EvmBlockHeader, Hash32,
+    EvmBlockHeader, Hash32,
 };
 use monad_query_read::{
     blocks::Block,
@@ -47,7 +47,10 @@ use serde_json::{
     Value,
 };
 
-use crate::types::jsonrpc::{JsonRpcError, JsonRpcResult};
+use crate::types::{
+    jsonrpc::{JsonRpcError, JsonRpcResult},
+    CallKind,
+};
 
 /// `DATA | DATA[]`: a spec filter field accepts a single value or an array
 /// (an array matches if the value equals any element).
@@ -446,19 +449,6 @@ impl From<Block> for BlockWire {
     }
 }
 
-/// The wire `type` of a trace/transfer frame (the `trace_*` API names).
-fn call_kind_str(kind: CallKind) -> &'static str {
-    match kind {
-        CallKind::Call => "call",
-        CallKind::DelegateCall => "delegatecall",
-        CallKind::CallCode => "callcode",
-        CallKind::Create => "create",
-        CallKind::Create2 => "create2",
-        CallKind::SelfDestruct => "selfdestruct",
-        CallKind::StaticCall => "staticcall",
-    }
-}
-
 /// A `traces` object. `traceAddress` entries are plain integers (the
 /// `trace_*` API convention); `to` is `null` for `create`/`create2` frames.
 #[derive(Debug, Serialize)]
@@ -469,7 +459,7 @@ pub struct TraceWire {
     pub transaction_index: U64,
     pub trace_address: Vec<u32>,
     #[serde(rename = "type")]
-    pub typ: &'static str,
+    pub typ: CallKind,
     pub from: Address,
     pub to: Option<Address>,
     pub value: U256,
@@ -490,7 +480,7 @@ impl From<TraceEntry> for TraceWire {
             block_hash: value.block_hash,
             transaction_index: U64::from(value.tx_index),
             trace_address: value.trace_address,
-            typ: call_kind_str(value.typ),
+            typ: value.typ.into(),
             from: value.from,
             to: value.to,
             value: value.value,
@@ -515,7 +505,7 @@ pub struct TransferWire {
     pub transaction_index: U64,
     pub trace_address: Vec<u32>,
     #[serde(rename = "type")]
-    pub typ: &'static str,
+    pub typ: CallKind,
     pub from: Address,
     pub to: Address,
     pub value: U256,
@@ -528,7 +518,7 @@ impl From<TransferEntry> for TransferWire {
             block_hash: value.block_hash,
             transaction_index: U64::from(value.tx_index),
             trace_address: value.trace_address,
-            typ: call_kind_str(value.typ),
+            typ: value.typ.into(),
             from: value.from,
             to: value.to,
             value: value.value,
@@ -538,12 +528,13 @@ impl From<TransferEntry> for TransferWire {
 
 #[cfg(test)]
 mod tests {
+    use monad_query_primitives::CallKind as EngineCallKind;
     use serde_json::json;
 
     use super::*;
 
-    /// Pins the frozen trace/transfer wire JSON: camelCase keys, `type` as a
-    /// lowercase string, QUANTITY hex scalars, plain-integer `traceAddress`.
+    /// Pins the frozen trace/transfer wire JSON: camelCase keys, `type` as an
+    /// UPPERCASE string, QUANTITY hex scalars, plain-integer `traceAddress`.
     #[test]
     fn trace_and_transfer_wire_shapes() {
         let trace = TraceWire::from(TraceEntry {
@@ -551,7 +542,7 @@ mod tests {
             block_hash: Hash32::repeat_byte(0x01),
             tx_index: 2,
             trace_address: vec![0, 1],
-            typ: CallKind::DelegateCall,
+            typ: EngineCallKind::DelegateCall,
             from: Address::repeat_byte(0xaa),
             to: None,
             value: U256::from(255),
@@ -570,7 +561,7 @@ mod tests {
                 "blockHash": format!("0x{}", "01".repeat(32)),
                 "transactionIndex": "0x2",
                 "traceAddress": [0, 1],
-                "type": "delegatecall",
+                "type": "DELEGATECALL",
                 "from": format!("0x{}", "aa".repeat(20)),
                 "to": null,
                 "value": "0xff",
@@ -589,7 +580,7 @@ mod tests {
             block_hash: Hash32::repeat_byte(0x01),
             tx_index: 2,
             trace_address: Vec::new(),
-            typ: CallKind::Call,
+            typ: EngineCallKind::Call,
             from: Address::repeat_byte(0xaa),
             to: Address::repeat_byte(0xbb),
             value: U256::from(16),
@@ -601,7 +592,7 @@ mod tests {
                 "blockHash": format!("0x{}", "01".repeat(32)),
                 "transactionIndex": "0x2",
                 "traceAddress": [],
-                "type": "call",
+                "type": "CALL",
                 "from": format!("0x{}", "aa".repeat(20)),
                 "to": format!("0x{}", "bb".repeat(20)),
                 "value": "0x10",
