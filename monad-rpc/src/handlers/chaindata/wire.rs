@@ -285,16 +285,128 @@ impl TransferFilterWire {
 #[serde(deny_unknown_fields)]
 pub struct EmptyFilterWire {}
 
+/// [`LogWire`]'s serialized field names.
+const LOG_FIELDS: &[&str] = &[
+    "blockNumber",
+    "blockHash",
+    "transactionIndex",
+    "logIndex",
+    "address",
+    "topics",
+    "data",
+];
+
+/// [`BlockWire`]'s serialized field names: `hash` plus the flattened
+/// [`EvmBlockHeader`] (alloy's camelCase RPC names, optional fields included).
+const BLOCK_FIELDS: &[&str] = &[
+    "hash",
+    "parentHash",
+    "sha3Uncles",
+    "miner",
+    "stateRoot",
+    "transactionsRoot",
+    "receiptsRoot",
+    "logsBloom",
+    "difficulty",
+    "number",
+    "gasLimit",
+    "gasUsed",
+    "timestamp",
+    "extraData",
+    "mixHash",
+    "nonce",
+    "baseFeePerGas",
+    "withdrawalsRoot",
+    "blobGasUsed",
+    "excessBlobGas",
+    "parentBeaconBlockRoot",
+    "requestsHash",
+    "blockAccessListHash",
+    "slotNumber",
+];
+
+/// The `transactions` schema: every field name
+/// [`alloy_rpc_types::Transaction`] can serialize across the supported
+/// transaction types (see [`rpc_transactions`]).
+const TX_FIELDS: &[&str] = &[
+    "accessList",
+    "authorizationList",
+    "blobVersionedHashes",
+    "blockHash",
+    "blockNumber",
+    "chainId",
+    "from",
+    "gas",
+    "gasPrice",
+    "hash",
+    "input",
+    "maxFeePerBlobGas",
+    "maxFeePerGas",
+    "maxPriorityFeePerGas",
+    "nonce",
+    "r",
+    "s",
+    "to",
+    "transactionIndex",
+    "type",
+    "v",
+    "value",
+    "yParity",
+];
+
+/// [`TraceWire`]'s serialized field names.
+const TRACE_FIELDS: &[&str] = &[
+    "blockNumber",
+    "blockHash",
+    "transactionIndex",
+    "traceAddress",
+    "type",
+    "from",
+    "to",
+    "value",
+    "gas",
+    "gasUsed",
+    "input",
+    "output",
+    "status",
+    "depth",
+    "transactionStatus",
+];
+
+/// [`TransferWire`]'s serialized field names.
+const TRANSFER_FIELDS: &[&str] = &[
+    "blockNumber",
+    "blockHash",
+    "transactionIndex",
+    "traceAddress",
+    "type",
+    "from",
+    "to",
+    "value",
+];
+
+/// The field names of the schema a `fields` key selects from.
+fn schema_fields(key: &str) -> &'static [&'static str] {
+    match key {
+        "logs" => LOG_FIELDS,
+        "blocks" => BLOCK_FIELDS,
+        "transactions" => TX_FIELDS,
+        "traces" => TRACE_FIELDS,
+        "transfers" => TRANSFER_FIELDS,
+        _ => &[],
+    }
+}
+
 /// The validated `fields` object of one request. A present key opts the
 /// object into the response (relations join only when named); its selection
-/// projects the returned fields. Field NAMES are not validated — an unknown
-/// name simply selects nothing.
+/// projects the returned fields.
 #[derive(Debug)]
 pub struct FieldsPlan(BTreeMap<String, FieldSelection>);
 
 impl FieldsPlan {
     /// Validates the `fields` keys against the method's object names
-    /// (primary first, then its supported relations).
+    /// (primary first, then its supported relations), and each selection's
+    /// field names against that object's schema.
     pub fn new(
         fields: Option<BTreeMap<String, FieldSelection>>,
         allowed: &[&str],
@@ -307,10 +419,23 @@ impl FieldsPlan {
                     allowed.join(", ")
                 )));
             }
-            if matches!(selection, FieldSelection::All(false)) {
-                return Err(JsonRpcError::filter_error(format!(
-                    "fields[{key:?}] must be true or an array of field names"
-                )));
+            match selection {
+                FieldSelection::All(false) => {
+                    return Err(JsonRpcError::filter_error(format!(
+                        "fields[{key:?}] must be true or an array of field names"
+                    )));
+                }
+                FieldSelection::All(true) => {}
+                FieldSelection::Fields(names) => {
+                    let known = schema_fields(key);
+                    if let Some(unknown) = names.iter().find(|name| !known.contains(&name.as_str()))
+                    {
+                        return Err(JsonRpcError::filter_error(format!(
+                            "unknown field {unknown:?} in fields[{key:?}] (expected one of: {})",
+                            known.join(", ")
+                        )));
+                    }
+                }
             }
         }
         Ok(Self(map))
@@ -528,6 +653,14 @@ impl From<TransferEntry> for TransferWire {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
+    use alloy_consensus::{
+        transaction::Recovered, SignableTransaction, TxEip1559, TxEip2930, TxEip4844, TxEip7702,
+        TxEnvelope, TxLegacy,
+    };
+    use alloy_eips::eip7702::{Authorization, SignedAuthorization};
+    use alloy_primitives::{Bloom, Signature, TxKind, B64};
     use monad_query_primitives::CallKind as EngineCallKind;
     use serde_json::json;
 
@@ -598,6 +731,202 @@ mod tests {
                 "value": "0x10",
             })
         );
+    }
+
+    /// Pins the schema field-name consts to what the wire shapes actually
+    /// serialize, so `fields` validation can never reject a real field or
+    /// accept a stale one.
+    #[test]
+    fn field_name_consts_match_wire_shapes() {
+        let keys = |value: Value| -> BTreeSet<String> {
+            match value {
+                Value::Object(map) => map.keys().cloned().collect(),
+                other => panic!("expected object, got {other}"),
+            }
+        };
+        let const_set = |fields: &[&str]| -> BTreeSet<String> {
+            fields.iter().map(|s| s.to_string()).collect()
+        };
+
+        let log = LogWire::from(LogEntry {
+            block_number: 1,
+            block_hash: Hash32::repeat_byte(0x01),
+            tx_index: 0,
+            log_index: 0,
+            address: Address::ZERO,
+            topics: Vec::new(),
+            data: Bytes::new(),
+        });
+        assert_eq!(
+            keys(serde_json::to_value(log).unwrap()),
+            const_set(LOG_FIELDS)
+        );
+
+        let trace = TraceWire::from(TraceEntry {
+            block_number: 1,
+            block_hash: Hash32::repeat_byte(0x01),
+            tx_index: 0,
+            trace_address: Vec::new(),
+            typ: EngineCallKind::Call,
+            from: Address::ZERO,
+            to: None,
+            value: U256::ZERO,
+            gas: 0,
+            gas_used: 0,
+            input: Bytes::new(),
+            output: Bytes::new(),
+            status: 1,
+            depth: 0,
+            tx_status: true,
+        });
+        assert_eq!(
+            keys(serde_json::to_value(trace).unwrap()),
+            const_set(TRACE_FIELDS)
+        );
+
+        let transfer = TransferWire::from(TransferEntry {
+            block_number: 1,
+            block_hash: Hash32::repeat_byte(0x01),
+            tx_index: 0,
+            trace_address: Vec::new(),
+            typ: EngineCallKind::Call,
+            from: Address::ZERO,
+            to: Address::ZERO,
+            value: U256::ZERO,
+        });
+        assert_eq!(
+            keys(serde_json::to_value(transfer).unwrap()),
+            const_set(TRANSFER_FIELDS)
+        );
+
+        // Every optional header field set, so the serialization emits the
+        // complete key set.
+        let block = BlockWire {
+            hash: Hash32::repeat_byte(0x01),
+            header: EvmBlockHeader {
+                parent_hash: B256::ZERO,
+                ommers_hash: B256::ZERO,
+                beneficiary: Address::ZERO,
+                state_root: B256::ZERO,
+                transactions_root: B256::ZERO,
+                receipts_root: B256::ZERO,
+                logs_bloom: Bloom::ZERO,
+                difficulty: U256::ZERO,
+                number: 1,
+                gas_limit: 0,
+                gas_used: 0,
+                timestamp: 0,
+                extra_data: Bytes::new(),
+                mix_hash: B256::ZERO,
+                nonce: B64::ZERO,
+                base_fee_per_gas: Some(0),
+                withdrawals_root: Some(B256::ZERO),
+                blob_gas_used: Some(0),
+                excess_blob_gas: Some(0),
+                parent_beacon_block_root: Some(B256::ZERO),
+                requests_hash: Some(B256::ZERO),
+                block_access_list_hash: Some(B256::ZERO),
+                slot_number: Some(0),
+            },
+        };
+        assert_eq!(
+            keys(serde_json::to_value(block).unwrap()),
+            const_set(BLOCK_FIELDS)
+        );
+
+        // The `transactions` schema is the union of keys across all supported
+        // transaction types.
+        let signature = Signature::test_signature();
+        let to = TxKind::Call(Address::ZERO);
+        let envelopes: Vec<TxEnvelope> = vec![
+            TxLegacy {
+                chain_id: Some(1),
+                nonce: 0,
+                gas_price: 0,
+                gas_limit: 0,
+                to,
+                value: U256::ZERO,
+                input: Bytes::new(),
+            }
+            .into_signed(signature)
+            .into(),
+            TxEip2930 {
+                chain_id: 1,
+                nonce: 0,
+                gas_price: 0,
+                gas_limit: 0,
+                to,
+                value: U256::ZERO,
+                access_list: Default::default(),
+                input: Bytes::new(),
+            }
+            .into_signed(signature)
+            .into(),
+            TxEip1559 {
+                chain_id: 1,
+                nonce: 0,
+                gas_limit: 0,
+                max_fee_per_gas: 0,
+                max_priority_fee_per_gas: 0,
+                to,
+                value: U256::ZERO,
+                access_list: Default::default(),
+                input: Bytes::new(),
+            }
+            .into_signed(signature)
+            .into(),
+            TxEip4844 {
+                chain_id: 1,
+                nonce: 0,
+                gas_limit: 0,
+                max_fee_per_gas: 0,
+                max_priority_fee_per_gas: 0,
+                to: Address::ZERO,
+                value: U256::ZERO,
+                access_list: Default::default(),
+                blob_versioned_hashes: Vec::new(),
+                max_fee_per_blob_gas: 0,
+                input: Bytes::new(),
+            }
+            .into_signed(signature)
+            .into(),
+            TxEip7702 {
+                chain_id: 1,
+                nonce: 0,
+                gas_limit: 0,
+                max_fee_per_gas: 0,
+                max_priority_fee_per_gas: 0,
+                to: Address::ZERO,
+                value: U256::ZERO,
+                access_list: Default::default(),
+                authorization_list: vec![SignedAuthorization::new_unchecked(
+                    Authorization {
+                        chain_id: U256::from(1u64),
+                        address: Address::ZERO,
+                        nonce: 0,
+                    },
+                    0,
+                    U256::from(1u64),
+                    U256::from(1u64),
+                )],
+                input: Bytes::new(),
+            }
+            .into_signed(signature)
+            .into(),
+        ];
+        let mut union = BTreeSet::new();
+        for envelope in envelopes {
+            let tx = alloy_rpc_types::Transaction {
+                inner: Recovered::new_unchecked(envelope, Address::ZERO),
+                block_hash: Some(B256::ZERO),
+                block_number: Some(1),
+                transaction_index: Some(0),
+                effective_gas_price: None,
+                block_timestamp: None,
+            };
+            union.extend(keys(serde_json::to_value(&tx).unwrap()));
+        }
+        assert_eq!(union, const_set(TX_FIELDS));
     }
 
     /// Pins the frozen log and block-reference wire JSON.
