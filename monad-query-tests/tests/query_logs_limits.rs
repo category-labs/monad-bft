@@ -83,13 +83,12 @@ async fn block_range_at_max_block_range_succeeds() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn defaulted_block_range_is_bounded_by_max_block_range() {
-    // Defaults expand to the full 3-block chain, exceeding the 2-block window.
+async fn defaulted_block_range_is_clamped_to_max_block_range() {
+    // Open-ended defaults use a bounded first page instead of failing.
     let service = ingest_three_block_chain(QueryLimits::new(100, 2)).await;
 
-    let err = service
+    let page = service
         .query_logs(QueryLogsRequest {
-            // The defaulted (None) endpoints are the property under test.
             envelope: QueryEnvelope {
                 from_block: None,
                 to_block: None,
@@ -99,18 +98,10 @@ async fn defaulted_block_range_is_bounded_by_max_block_range() {
             ..QueryLogsRequest::default()
         })
         .await
-        .expect_err("defaulted full-chain range should be bounded");
+        .expect("defaulted open-ended range should be clamped");
 
-    assert!(
-        matches!(
-            err,
-            QueryError::LimitExceeded {
-                kind: LimitExceededKind::BlockRange,
-                ..
-            }
-        ),
-        "expected BlockRange LimitExceeded, got {err:?}"
-    );
+    assert_eq!(page.span.from_block.number, 1);
+    assert_eq!(page.span.to_block.number, 2);
 }
 
 async fn ingest_three_block_chain(

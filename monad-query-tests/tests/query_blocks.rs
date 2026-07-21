@@ -119,6 +119,61 @@ async fn query_blocks_paginates_from_cursor_minus_one_descending() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn query_blocks_descending_open_ended_range_uses_limit_and_cursor() {
+    let service = ingest_three_block_chain(QueryLimits::new(2, 2)).await;
+
+    let page = service
+        .query_blocks(QueryBlocksRequest {
+            envelope: QueryEnvelope {
+                order: QueryOrder::Descending,
+                limit: 1,
+                ..QueryEnvelope::default()
+            },
+        })
+        .await
+        .expect("latest block query");
+
+    assert_eq!(
+        page.blocks
+            .iter()
+            .map(|block| block.header.number)
+            .collect::<Vec<_>>(),
+        vec![3]
+    );
+    assert_eq!(page.span.from_block.number, 3);
+    assert_eq!(page.span.to_block.number, 2);
+    assert_eq!(page.span.cursor_block.number, 3);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn query_blocks_ascending_open_ended_range_uses_limit_and_cursor() {
+    let service = ingest_three_block_chain(QueryLimits::new(2, 2)).await;
+
+    let page = service
+        .query_blocks(QueryBlocksRequest {
+            envelope: QueryEnvelope {
+                order: QueryOrder::Ascending,
+                from_block: Some(2),
+                limit: 1,
+                ..QueryEnvelope::default()
+            },
+        })
+        .await
+        .expect("open-ended ascending block query");
+
+    assert_eq!(
+        page.blocks
+            .iter()
+            .map(|block| block.header.number)
+            .collect::<Vec<_>>(),
+        vec![2]
+    );
+    assert_eq!(page.span.from_block.number, 2);
+    assert_eq!(page.span.to_block.number, 3);
+    assert_eq!(page.span.cursor_block.number, 2);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn query_blocks_header_fields_round_trip() {
     let (service, hashes) = ingest_three_block_chain_with_hashes(QueryLimits::UNLIMITED).await;
 
