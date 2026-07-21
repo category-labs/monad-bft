@@ -202,7 +202,7 @@ where
         self.highest_recovery_request = round;
     }
 
-    pub fn is_safe_to_handle_proposal(&mut self, round: Round) -> bool {
+    pub fn is_safe_to_handle_proposal(&self, round: Round) -> bool {
         !self.handled_proposals.contains(&round)
     }
 

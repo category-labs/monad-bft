@@ -457,6 +457,10 @@ where
         cmds
     }
 
+    pub fn has_handled_proposal(&self, round: Round) -> bool {
+        !self.consensus.safety.is_safe_to_handle_proposal(round)
+    }
+
     /// handles proposal messages from other nodes
     /// validators and election are required as part of verifying the proposal certificates
     /// as well as determining the next leader
@@ -3702,6 +3706,62 @@ mod test {
         assert_eq!(p3_votes[0].vote, p3_votes[1].vote);
         let p3_vote = p3_votes[0].vote;
         assert_eq!(p3_vote.round, Round(3));
+    }
+
+    // has_handled_proposal gates the full-node publishing in monad-state: only
+    // the proposal that first marks its round handled may be published, so a
+    // rejected proposal must not consume the round and an equivocating second
+    // proposal must not look like a fresh round
+    #[test]
+    fn test_has_handled_proposal_gating() {
+        let num_state = 4;
+        let execution_delay = SeqNum::MAX;
+        let (mut env, mut ctx) = setup::<
+            SignatureType,
+            SignatureCollectionType,
+            BlockPolicyType,
+            ExecutionStateReadType,
+            BlockValidatorType,
+            _,
+            _,
+        >(
+            num_state,
+            ValidatorSetFactory::default(),
+            SimpleRoundRobin::default(),
+            || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0),
+            || InMemoryStateInner::genesis(execution_delay),
+            EthBlockValidator::default,
+            execution_delay,
+        );
+        let mut wrapped_state = ctx[0].wrapped_state();
+
+        let cp1 = env.next_proposal_empty();
+        let mp1 = env.branch_proposal(Vec::new());
+
+        let (author, _, proposal) = cp1.destructure();
+        let round = proposal.proposal_round;
+        assert!(!wrapped_state.has_handled_proposal(round));
+
+        // a proposal rejected before the dedup (wrong author) must not consume the round
+        let wrong_author = env
+            .keys
+            .iter()
+            .map(|k| NodeId::new(k.pubkey()))
+            .find(|id| *id != author)
+            .unwrap();
+        let _ = wrapped_state.handle_proposal_message(wrong_author, proposal.clone());
+        assert!(!wrapped_state.has_handled_proposal(round));
+
+        // the first accepted proposal marks the round handled
+        let _ = wrapped_state.handle_proposal_message(author, proposal);
+        assert!(wrapped_state.has_handled_proposal(round));
+
+        // an equivocating proposal for the same round is dropped and the round stays handled
+        let (mal_author, _, mal_proposal) = mp1.destructure();
+        assert_eq!(mal_author, author);
+        assert_eq!(mal_proposal.proposal_round, round);
+        let _ = wrapped_state.handle_proposal_message(mal_author, mal_proposal);
+        assert!(wrapped_state.has_handled_proposal(round));
     }
 
     // this test checks that a malicious proposal sent only to the next leader is
