@@ -476,6 +476,25 @@ mod tests {
     }
 
     #[test]
+    fn fields_plan_rejects_unknown_field_names() {
+        let fields = |v: Value| serde_json::from_value(v).unwrap();
+        for (key, valid, unknown) in [
+            ("logs", "address", "removed"),
+            ("transactions", "hash", "gasLimit"),
+            ("blocks", "number", "size"),
+            ("traces", "traceAddress", "error"),
+            ("transfers", "value", "logIndex"),
+        ] {
+            let allowed = &[key];
+            let err =
+                FieldsPlan::new(fields(json!({key: [valid, unknown]})), allowed).expect_err("name");
+            assert_eq!(err.code, -32602, "{key}: {unknown}");
+            assert!(err.message.contains(unknown), "{}", err.message);
+            FieldsPlan::new(fields(json!({key: [valid]})), allowed).expect("valid name");
+        }
+    }
+
+    #[test]
     fn chain_data_error_mapping() {
         let invalid = chain_data_error(QueryError::InvalidRequest("limit must be at least 1"));
         assert_eq!(invalid.code, -32602);
