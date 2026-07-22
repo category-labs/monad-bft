@@ -165,8 +165,10 @@ fn decode_envelope_with_hash(signed_tx_bytes: &[u8], tx_hash: Hash32) -> Result<
             let (tx, sig) = TxEip7702::rlp_decode_with_signature(&mut buf).map_err(|_| err())?;
             Ok(TxEnvelope::Eip7702(Signed::new_unchecked(tx, sig, tx_hash)))
         }
+        // Legacy txs have no type-prefix byte — decode from the full bytes.
         b if b >= 0xc0 => {
-            let (tx, sig) = TxLegacy::rlp_decode_with_signature(&mut buf).map_err(|_| err())?;
+            let (tx, sig) = TxLegacy::rlp_decode_with_signature(&mut &signed_tx_bytes[..])
+                .map_err(|_| err())?;
             Ok(TxEnvelope::Legacy(Signed::new_unchecked(tx, sig, tx_hash)))
         }
         _ => Err(err()),

@@ -39,8 +39,8 @@ use zstd::dict::DecoderDictionary;
 
 use crate::{
     bitmap::{
-        decode_bitmap_blob, decode_bitmap_page_artifact, decode_open_streams_delta,
-        BitmapPageCounts, BitmapTables, DecodedBitmapFragment, DecodedBitmapPage,
+        decode_bitmap_blob, decode_bitmap_page, decode_open_streams_delta, BitmapPageCounts,
+        BitmapTables, DecodedBitmapFragment, DecodedBitmapPage,
     },
     digest::ChainDigest,
     family::{Family, BLOCK_BLOB_TABLE},
@@ -810,8 +810,8 @@ impl Coalescer {
             0 => {}
             1 => self.out.push(self.group.pop().expect("group has one item")),
             _ => {
-                let first_key = &self.group.first().expect("non-empty group").key;
-                let last_key = &self.group.last().expect("non-empty group").key;
+                let first_key = &self.group.first().expect("non-empty group").blob_key;
+                let last_key = &self.group.last().expect("non-empty group").blob_key;
                 let mut physical_key = Vec::with_capacity(1 + first_key.len() + last_key.len());
                 physical_key.push(b'c');
                 physical_key.extend_from_slice(first_key);
@@ -821,13 +821,14 @@ impl Coalescer {
                 for op in self.group.drain(..) {
                     // usize -> u64 is infallible on every supported target.
                     let offset = combined.len() as u64;
-                    self.locators.insert(op.key, (physical_key.clone(), offset));
-                    combined.extend_from_slice(&op.value);
+                    self.locators
+                        .insert(op.blob_key, (physical_key.clone(), offset));
+                    combined.extend_from_slice(&op.blob_data);
                 }
                 self.out.push(BlobWriteOp {
                     table: BLOCK_BLOB_TABLE,
-                    key: physical_key,
-                    value: Bytes::from(combined),
+                    blob_key: physical_key,
+                    blob_data: Bytes::from(combined),
                 });
             }
         }
@@ -839,11 +840,11 @@ impl Coalescer {
     fn push(&mut self, op: BlobWriteOp) {
         debug_assert_eq!(op.table, BLOCK_BLOB_TABLE);
         if !self.group.is_empty()
-            && self.group_len.saturating_add(op.value.len()) > BLOCK_BLOB_COALESCE_TARGET_BYTES
+            && self.group_len.saturating_add(op.blob_data.len()) > BLOCK_BLOB_COALESCE_TARGET_BYTES
         {
             self.flush();
         }
-        self.group_len = self.group_len.saturating_add(op.value.len());
+        self.group_len = self.group_len.saturating_add(op.blob_data.len());
         self.group.push(op);
     }
 }
@@ -872,7 +873,12 @@ fn coalesce_block_blob_writes(
     coalescer.flush();
 
     for op in meta_ops {
-        let MetaWriteOp::Put { table, key, value } = op else {
+        let MetaWriteOp::Put {
+            table,
+            row_key: key,
+            row_data: value,
+        } = op
+        else {
             continue;
         };
         if *table != BLOCK_METADATA_TABLE_ID {
@@ -1056,8 +1062,6 @@ impl BlockMetadataRecord {
         alloy_rlp::decode_exact(bytes).map_err(|_| QueryError::Decode("invalid block metadata rlp"))
     }
 }
-
-/// Cache decoder for the `BlockTables` view of the block-metadata row; runs
 
 impl<M: MetaStore> BlockTables<M> {
     pub const BLOCK_METADATA_TABLE: TableId = BLOCK_METADATA_TABLE_ID;
@@ -1256,26 +1260,7 @@ impl<M: MetaStore> FamilyTables<M> {
                 CachedKvTable::new(
                     meta_store.table(ids.bitmap_page_blob),
                     cache.bitmap_page_blob_cache_bytes,
-                    |b: bytes::Bytes| {
-                        let artifact = decode_bitmap_page_artifact(b.as_ref())?.ok_or(
-                            monad_query_errors::QueryError::Decode("invalid bitmap page artifact"),
-                        )?;
-                        let blob = decode_bitmap_blob(artifact.bitmap_blob.as_ref())?;
-                        let expected = crate::bitmap::BitmapPageMeta {
-                            min_offset: blob.min_offset,
-                            max_offset: blob.max_offset,
-                            count: blob.count,
-                        };
-                        if artifact.meta != expected {
-                            return Err(monad_query_errors::QueryError::Decode(
-                                "bitmap page artifact header does not match blob header",
-                            ));
-                        }
-                        Ok(std::sync::Arc::new(DecodedBitmapPage {
-                            meta: expected,
-                            bitmap: blob.bitmap,
-                        }))
-                    },
+                    |b: bytes::Bytes| decode_bitmap_page(b),
                 ),
                 CachedKvTable::new(
                     meta_store.table(ids.bitmap_page_counts),

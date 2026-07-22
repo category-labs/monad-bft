@@ -243,7 +243,8 @@ pub fn decode_external_trace_container(
         return Ok(Vec::new());
     }
 
-    let trace_addresses = compute_trace_addresses(frames.iter().map(|f| f.depth))?;
+    let depths: Vec<u32> = frames.iter().map(|f| f.depth).collect();
+    let trace_addresses = compute_trace_addresses(&depths)?;
     Ok(frames
         .into_iter()
         .zip(trace_addresses)

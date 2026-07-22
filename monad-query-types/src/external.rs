@@ -109,13 +109,12 @@ impl ExternalFamilyRegion {
             ));
         }
         let mut cumulative = 0u32;
-        for i in 0..containers {
-            cumulative =
-                cumulative
-                    .checked_add(rows_per_container[i])
-                    .ok_or(QueryError::InvalidBlock(
-                        "external payload row count overflow",
-                    ))?;
+        for (i, &rows) in rows_per_container.iter().enumerate() {
+            cumulative = cumulative
+                .checked_add(rows)
+                .ok_or(QueryError::InvalidBlock(
+                    "external payload row count overflow",
+                ))?;
             if self.container_rows[i] != cumulative {
                 return Err(QueryError::InvalidBlock(
                     "external payload container_rows disagrees with the block's rows",
@@ -125,7 +124,8 @@ impl ExternalFamilyRegion {
         Ok(())
     }
 
-    /// Validates bitvec length and content against expected statuses.
+    /// Validates the status bitvec: exactly `statuses.len().div_ceil(8)` bytes,
+    /// matching `statuses` bit for bit, with zero trailing pad bits.
     fn validate_status(&self, statuses: &[bool]) -> Result<()> {
         let byte_count = statuses.len().div_ceil(8);
 
@@ -135,15 +135,23 @@ impl ExternalFamilyRegion {
             ));
         }
 
-        for i in 0..statuses.len() {
+        for (i, &status) in statuses.iter().enumerate() {
             let bit_index = i % 8;
             let byte_index = i / 8;
             let bit_set = (self.container_status[byte_index] >> bit_index) & 1 == 1;
-            if statuses[i] != bit_set {
+            if status != bit_set {
                 return Err(QueryError::InvalidBlock(
                     "external payload container_status disagrees with the block's receipts",
                 ));
             }
+        }
+
+        // Trailing pad bits in the final byte must be zero.
+        let pad_bits = statuses.len() % 8;
+        if pad_bits != 0 && self.container_status[byte_count - 1] >> pad_bits != 0 {
+            return Err(QueryError::InvalidBlock(
+                "external payload container_status disagrees with the block's receipts",
+            ));
         }
         Ok(())
     }
@@ -174,8 +182,7 @@ impl ExternalPayloadSpec {
             .map(|tx_logs| {
                 u32::try_from(tx_logs.len()).map_err(|_| QueryError::Decode("log count overflow"))
             })
-            .collect::<Result<Vec<_>>>()
-            .map_err(|e| e)?;
+            .collect::<Result<Vec<_>>>()?;
         self.logs.validate(&logs_per_tx, false)?;
         self.logs.validate_status(&[])?;
 

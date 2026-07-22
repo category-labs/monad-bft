@@ -266,7 +266,7 @@ async fn backfill_pipeline_runs_publishes_and_snapshots() {
 
     assert_eq!(h.publication.load_published_head().await.unwrap(), Some(5));
     assert!(h.tables.blocks().load_record(5).await.unwrap().is_some());
-    assert!(!h.meta.is_empty());
+    assert!(!h.meta.kv_snapshot().is_empty() || !h.meta.scan_snapshot().is_empty());
 
     // The publisher carries the head block's row chain into the publication row.
     let state = h
