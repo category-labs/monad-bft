@@ -16,6 +16,7 @@
 use std::path::PathBuf;
 
 use clap::Parser;
+use monad_chain_data::ChainDataStoreConfig;
 
 #[derive(Debug, Parser)]
 #[command(name = "monad-rpc", about, long_about = None, version = monad_version::version!())]
@@ -80,6 +81,12 @@ pub struct Cli {
     /// Set the max response size in bytes
     #[arg(long, default_value_t = 25_000_000)]
     pub max_response_size: u32,
+
+    /// Worker threads for the dedicated chain-data (queryX) runtime; queryX
+    /// requests execute there instead of on the RPC worker threads, so query
+    /// throughput scales independently of `--worker-threads`.
+    #[arg(long, default_value_t = 4)]
+    pub chain_data_query_threads: usize,
 
     /// Otel endpoint to collect metrics data
     #[arg(long)]
@@ -260,6 +267,12 @@ pub struct Cli {
     #[arg(long)]
     pub mongo_failure_timeout_millis: Option<u64>,
 
+    /// Set the chain-data (queryX) reader config path: a TOML file with the
+    /// store backends and query limits (`ChainDataReaderConfig`). If not set,
+    /// the eth_query* methods answer "method not supported".
+    #[arg(long)]
+    pub chain_data_config: Option<PathBuf>,
+
     /// Use mongo index to serve eth_getLogs
     #[arg(long)]
     pub use_eth_get_logs_index: bool,
@@ -281,4 +294,26 @@ pub struct Cli {
 
     #[arg(long)]
     pub manytrace_socket: Option<String>,
+}
+
+/// On-disk TOML behind `--chain-data-config`: the chain-data store backends
+/// plus the per-deployment queryX limits.
+#[derive(Debug, serde::Deserialize)]
+#[serde(default)]
+pub struct ChainDataReaderConfig {
+    pub store: ChainDataStoreConfig,
+    /// Cap on a queryX request's `limit` (queryX error -32005 when exceeded).
+    pub max_limit: usize,
+    /// Cap on a queryX request's resolved block range (queryX error -32005).
+    pub max_block_range: u64,
+}
+
+impl Default for ChainDataReaderConfig {
+    fn default() -> Self {
+        Self {
+            store: ChainDataStoreConfig::default(),
+            max_limit: 1000,
+            max_block_range: 10_000,
+        }
+    }
 }
