@@ -18,8 +18,10 @@ use std::{
     sync::Arc,
 };
 
-use super::{Acs, AcsOutput};
-use crate::types::{NodeId, ValidatorData};
+use super::{
+    Acs, AcsOutput,
+    types::{NodeId, ValidatorData},
+};
 
 /// A dummy, single-round ACS protocol that decides on median of all
 /// received messages after receiving all proposals.

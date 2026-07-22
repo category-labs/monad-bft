@@ -15,10 +15,12 @@
 
 use std::time::Duration;
 
-use monad_mcp_chorus::{
+use chorus::{
     NodeEvent, Runtime, WakeId,
     types::{NodeId, Timestamp, TimestampDelta, Validated},
 };
+// choose stub chorus for implementation
+use monad_mcp_chorus::stub as chorus;
 use monad_sim::{Ctx, Handle, StepLabel, Time};
 use monad_sim_swarm::{Net, SimClient};
 

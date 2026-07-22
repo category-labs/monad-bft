@@ -17,8 +17,8 @@ use std::{collections::VecDeque, sync::Arc};
 
 use bytes::Bytes;
 
-use crate::{
-    slot::{SlotConsensus, SlotOutput},
+use super::{
+    SlotConsensus, SlotOutput,
     types::{IsVote, KeyPair, NodeId, Slot, VoteMsg, VotePool, dummy_serialize},
 };
 

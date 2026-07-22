@@ -22,8 +22,8 @@ use std::{
 use super::{
     Conductor, ConductorOutput,
     acs::{Acs, AcsOutput},
+    types::{NodeId, Slot, SlotDeadline, Timestamp, TimestampDelta},
 };
-use crate::types::{NodeId, Slot, SlotDeadline, Timestamp, TimestampDelta};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct CadenceConductorConfig {

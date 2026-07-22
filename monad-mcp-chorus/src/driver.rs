@@ -15,14 +15,18 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use crate::types::{Slot, Timestamp, TimestampDelta, Validated};
+use super::{
+    conductor::Conductor,
+    slot::SlotConsensus,
+    types::{Slot, Timestamp, TimestampDelta, Validated},
+};
 
 // A driver translates consensus effects into concrete node effects
 // that are agnostic of the consensus protocol.
 pub trait Driver<S, C>
 where
-    S: crate::slot::SlotConsensus,
-    C: crate::conductor::Conductor,
+    S: SlotConsensus,
+    C: Conductor,
 {
     type WireMsg;
 
@@ -73,8 +77,8 @@ pub type CadenceDriverMsg<S, C> = <CadenceDriver<S, C> as Driver<S, C>>::WireMsg
 // A canonical driver implementation for Cadence.
 pub struct CadenceDriver<S, C>
 where
-    S: crate::slot::SlotConsensus,
-    C: crate::conductor::Conductor,
+    S: SlotConsensus,
+    C: Conductor,
 {
     inbox: VecDeque<CadenceEvent<S::Timer, C::Alarm, S::Message, C::Message>>,
     outbox: VecDeque<NodeEvent<CadenceMessage<S::Message, C::Message>>>,
@@ -91,8 +95,8 @@ enum PendingWake<Timer, Alarm> {
 
 impl<S, C> Default for CadenceDriver<S, C>
 where
-    S: crate::slot::SlotConsensus,
-    C: crate::conductor::Conductor,
+    S: SlotConsensus,
+    C: Conductor,
 {
     fn default() -> Self {
         Self {
@@ -106,8 +110,8 @@ where
 
 impl<S, C> CadenceDriver<S, C>
 where
-    S: crate::slot::SlotConsensus,
-    C: crate::conductor::Conductor,
+    S: SlotConsensus,
+    C: Conductor,
 {
     fn fresh_wake(&mut self) -> WakeId {
         let id = self.next_wake;
@@ -118,8 +122,8 @@ where
 
 impl<S, C> Driver<S, C> for CadenceDriver<S, C>
 where
-    S: crate::slot::SlotConsensus,
-    C: crate::conductor::Conductor,
+    S: SlotConsensus,
+    C: Conductor,
 {
     type WireMsg = CadenceMessage<S::Message, C::Message>;
 

@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use monad_mcp_chorus::types::{NodeId, Slot, Timestamp};
+use monad_mcp_chorus::stub::types::{NodeId, Slot, Timestamp};
 use monad_mcp_chorus_sim::CadenceSwarm;
 
 pub fn expect_finalized<M: Clone + 'static>(

@@ -13,19 +13,35 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-mod driver;
-mod runtime;
-mod slot_manager;
+//! Top level exports are available under the specific implementation
+//! variants at crate::{stub,prod}::*. For the module system
+//! mechanism, refer to the moduledoc at env/mod.rs.
 
-pub mod types;
-// indirectly exports Chorus, DummySlotConsensus
-pub mod slot;
-// indirectly exports DummyConductor
-pub mod conductor;
-pub mod crypto;
+#![allow(clippy::duplicate_mod)]
 
-pub use conductor::{Conductor, ConductorOutput};
-pub use driver::{CadenceDriver, CadenceDriverMsg, CadenceMessage, Driver, NodeEvent, WakeId};
-pub use runtime::{CadenceRuntime, FinalizationObserver, Runtime};
-pub use slot::{SlotConsensus, SlotOutput};
-pub use slot_manager::SlotManager;
+mod env;
+
+// the specification for types used in cadence.
+pub mod spec;
+
+// override to top-level path
+#[path = ""]
+pub mod stub {
+    // cadence implementation with all stub types, intended for testing
+    pub use crate::env::stub as env;
+
+    #[path = "top_level.rs"]
+    mod top_level;
+    pub use top_level::*;
+}
+
+// override to top-level path
+#[path = ""]
+pub mod prod {
+    // cadence implementation with production types
+    pub use crate::env::prod as env;
+
+    #[path = "top_level.rs"]
+    mod top_level;
+    pub use top_level::*;
+}

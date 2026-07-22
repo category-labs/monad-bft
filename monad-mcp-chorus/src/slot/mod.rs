@@ -18,7 +18,7 @@ pub mod dummy;
 mod fallback;
 mod fast;
 
-use crate::types::{NodeId, Slot, TimestampDelta};
+use super::types::{self, NodeId, Slot, TimestampDelta};
 
 /// A single-slot consensus algorithm
 pub trait SlotConsensus: Sized {

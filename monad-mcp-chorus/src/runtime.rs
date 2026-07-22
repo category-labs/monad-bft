@@ -13,10 +13,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use crate::{
-    CadenceDriver,
+use super::{
     conductor::{Conductor, ConductorOutput},
-    driver::{CadenceEvent, Driver, NodeEvent, WakeId},
+    driver::{CadenceDriver, CadenceEvent, Driver, NodeEvent, WakeId},
     slot::{SlotConsensus, SlotOutput},
     slot_manager::SlotManager,
     types::{Slot, Timestamp, Validated},

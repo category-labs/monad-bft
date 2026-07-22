@@ -17,14 +17,14 @@ mod helper;
 
 use std::{sync::Arc, time::Duration};
 
-use helper::expect_finalized_at;
-use monad_mcp_chorus::{
+use chorus::{
     CadenceDriverMsg,
     conductor::dummy::DummyConductor,
-    crypto::KeyPair as _,
     slot::chorus::{Chorus, ChorusConfig, ChorusContext},
     types::{DAHandle, NodeId, Stake, Timestamp, TimestampDelta, ValidatorData},
 };
+use helper::expect_finalized_at;
+use monad_mcp_chorus::{spec::KeyPair as _, stub as chorus};
 use monad_mcp_chorus_sim::CadenceSwarmBuilder;
 
 const DEADLINE_OFFSET: u64 = 100; // should be >= Delta
