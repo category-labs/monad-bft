@@ -1,0 +1,1216 @@
+// Copyright (C) 2025 Category Labs, Inc.
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+//! Operator-facing configuration for the chain-data stores: backend selection
+//! (S3 / DynamoDB-or-Scylla), cache and query-runtime budgets, and the store
+//! builders shared by the [`ingest`] entry point and the [`reader`].
+
+#[cfg(any(feature = "dynamo", feature = "mongo"))]
+use eyre::Context;
+use eyre::{bail, Result};
+#[cfg(any(feature = "dynamo", feature = "mongo"))]
+use monad_query_engine::tables::QueryRuntimeConfig;
+#[cfg(any(feature = "dynamo", feature = "mongo"))]
+use monad_query_store::CacheConfig;
+#[cfg(feature = "dynamo")]
+use tracing::{info, warn};
+
+pub mod ingest;
+pub mod reader;
+
+pub use ingest::{
+    run_configured_chain_data_engine_ingest, ChainDataEngineConfig, ChainDataPayloadConfig,
+};
+pub use reader::{open_configured_chain_data_reader, ConfiguredChainDataReader};
+
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct Redacted(pub Option<String>);
+
+impl std::fmt::Debug for Redacted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.0 {
+            Some(_) => f.write_str("[REDACTED]"),
+            None => f.write_str("None"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ChainDataStoreConfig {
+    pub meta: ChainDataMetaBackendConfig,
+    pub blob: Option<ChainDataBlobBackendConfig>,
+    pub cache: ChainDataCacheConfig,
+    pub query: ChainDataQueryConfig,
+    pub reader_only: bool,
+    pub archive: Option<ChainDataArchiveBackendConfig>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ChainDataCacheConfig {
+    pub total_mib: Option<usize>,
+    pub tables: ChainDataCacheTableBudgets,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ChainDataCacheTableBudgets {
+    pub dir_by_block_mib: Option<usize>,
+    pub dir_bucket_mib: Option<usize>,
+    pub bitmap_by_block_mib: Option<usize>,
+    pub bitmap_page_blob_mib: Option<usize>,
+    pub bitmap_page_counts_mib: Option<usize>,
+    pub open_bitmap_stream_mib: Option<usize>,
+    pub block_header_mib: Option<usize>,
+    pub block_hash_to_number_mib: Option<usize>,
+    pub tx_hash_index_mib: Option<usize>,
+    /// Decoded-row cache byte budget (split across the three families).
+    pub row_cache_mib: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ChainDataQueryConfig {
+    pub blob_io_concurrency: Option<usize>,
+    pub materialize_concurrency: Option<usize>,
+    pub page_intersect_concurrency: Option<usize>,
+    pub materialize_budget_permits: Option<usize>,
+    pub materialize_permit_kib: Option<usize>,
+    pub materialize_span_max_gap_kib: Option<usize>,
+    pub materialize_span_max_kib: Option<usize>,
+    pub materialize_whole_region_span_threshold: Option<usize>,
+    pub materialize_whole_region_max_mib: Option<usize>,
+}
+
+impl ChainDataQueryConfig {
+    // Only consumed when assembling a configured reader.
+    #[cfg(any(feature = "dynamo", feature = "mongo"))]
+    pub(crate) fn to_runtime(&self) -> QueryRuntimeConfig {
+        let defaults = QueryRuntimeConfig::default();
+        let kib_to_bytes = |kib: Option<usize>, default: usize| {
+            kib.map(|kib_value| kib_value * 1024).unwrap_or(default)
+        };
+        QueryRuntimeConfig {
+            blob_io_concurrency: self
+                .blob_io_concurrency
+                .unwrap_or(defaults.blob_io_concurrency),
+            materialize_concurrency: self
+                .materialize_concurrency
+                .unwrap_or(defaults.materialize_concurrency),
+            page_intersect_concurrency: self
+                .page_intersect_concurrency
+                .unwrap_or(defaults.page_intersect_concurrency),
+            materialize_budget_permits: self
+                .materialize_budget_permits
+                .unwrap_or(defaults.materialize_budget_permits),
+            materialize_permit_bytes: kib_to_bytes(
+                self.materialize_permit_kib,
+                defaults.materialize_permit_bytes,
+            ),
+            materialize_span_max_gap_bytes: kib_to_bytes(
+                self.materialize_span_max_gap_kib,
+                defaults.materialize_span_max_gap_bytes,
+            ),
+            materialize_span_max_bytes: kib_to_bytes(
+                self.materialize_span_max_kib,
+                defaults.materialize_span_max_bytes,
+            ),
+            materialize_whole_region_span_threshold: self
+                .materialize_whole_region_span_threshold
+                .unwrap_or(defaults.materialize_whole_region_span_threshold),
+            materialize_whole_region_max_bytes: self
+                .materialize_whole_region_max_mib
+                .map(CacheConfig::budget_mib_to_bytes)
+                .unwrap_or(defaults.materialize_whole_region_max_bytes),
+        }
+    }
+}
+
+impl ChainDataStoreConfig {
+    pub fn validate_ingest(&self) -> Result<()> {
+        if self.reader_only {
+            bail!("chain-data embedded ingest cannot run with reader_only=true");
+        }
+        self.validate_reader()
+    }
+
+    pub fn validate_reader(&self) -> Result<()> {
+        self.meta.validate()?;
+        // A missing blob backend is valid for readers (external-archive
+        // stores); ingest-side payload/seed constraints live in `ingest`.
+        if let Some(blob) = &self.blob {
+            blob.validate()?;
+        }
+        // The mongo meta backend ships blob-less only: its migration story is
+        // "indexes next to an existing archive", where row payloads stay in
+        // the archive's own collections (external-archive payload mode).
+        #[cfg(feature = "mongo")]
+        if matches!(&self.meta, ChainDataMetaBackendConfig::Mongo(_)) && self.blob.is_some() {
+            bail!(
+                "chain-data mongo meta backend supports only blob-less stores: omit \
+                 [store.blob] and ingest with payload = \"external-archive\""
+            );
+        }
+        if let Some(archive) = &self.archive {
+            archive.validate()?;
+        }
+        if self.blob.is_none() && self.archive.is_none() {
+            bail!(
+                "a store without [store.blob] keeps its row payloads in the monad-archive \
+                 objects and requires [store.archive] to read them"
+            );
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum ChainDataArchiveBackendConfig {
+    #[cfg(feature = "s3")]
+    S3(ChainDataArchiveS3Config),
+    #[cfg(feature = "mongo")]
+    Mongo(ChainDataArchiveMongoConfig),
+    #[cfg(feature = "dynamo")]
+    Dynamo(ChainDataArchiveDynamoConfig),
+    #[cfg(not(any(feature = "s3", feature = "mongo", feature = "dynamo")))]
+    Unavailable,
+}
+
+impl ChainDataArchiveBackendConfig {
+    fn validate(&self) -> Result<()> {
+        match self {
+            #[cfg(feature = "s3")]
+            Self::S3(config) => config.validate(),
+            #[cfg(feature = "mongo")]
+            Self::Mongo(config) => config.validate(),
+            #[cfg(feature = "dynamo")]
+            Self::Dynamo(config) => config.validate(),
+            #[cfg(not(any(feature = "s3", feature = "mongo", feature = "dynamo")))]
+            Self::Unavailable => {
+                bail!("chain-data archive access requires the s3, mongo, or dynamo feature")
+            }
+        }
+    }
+}
+
+#[cfg(feature = "dynamo")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ChainDataArchiveDynamoConfig {
+    pub table: Option<String>,
+    pub endpoint_url: Option<String>,
+    pub region: Option<String>,
+    pub profile: Option<String>,
+    pub access_key_id: Redacted,
+    pub secret_access_key: Redacted,
+    pub session_token: Redacted,
+    #[serde(default = "default_max_concurrency_256")]
+    pub max_concurrency: usize,
+}
+
+#[cfg(feature = "dynamo")]
+impl Default for ChainDataArchiveDynamoConfig {
+    fn default() -> Self {
+        Self {
+            table: None,
+            endpoint_url: None,
+            region: None,
+            profile: None,
+            access_key_id: Redacted::default(),
+            secret_access_key: Redacted::default(),
+            session_token: Redacted::default(),
+            max_concurrency: default_max_concurrency_256(),
+        }
+    }
+}
+
+#[cfg(feature = "dynamo")]
+impl ChainDataArchiveDynamoConfig {
+    fn validate(&self) -> Result<()> {
+        if self.table.is_none() {
+            bail!("chain-data archive dynamo requires table");
+        }
+        if self.max_concurrency == 0 {
+            bail!("chain-data archive dynamo max_concurrency must be >= 1");
+        }
+        validate_pair(
+            &self.access_key_id.0,
+            &self.secret_access_key.0,
+            "archive dynamo access_key_id",
+            "archive dynamo secret_access_key",
+        )
+    }
+}
+
+#[cfg(feature = "mongo")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ChainDataArchiveMongoConfig {
+    pub url: Redacted,
+    pub database: Option<String>,
+    #[serde(default = "default_collection_block_level")]
+    pub collection: String,
+    #[serde(default = "default_max_pool_size_64")]
+    pub max_pool_size: u32,
+}
+
+#[cfg(feature = "mongo")]
+impl Default for ChainDataArchiveMongoConfig {
+    fn default() -> Self {
+        Self {
+            url: Redacted::default(),
+            database: None,
+            collection: default_collection_block_level(),
+            max_pool_size: default_max_pool_size_64(),
+        }
+    }
+}
+
+#[cfg(feature = "mongo")]
+impl ChainDataArchiveMongoConfig {
+    fn validate(&self) -> Result<()> {
+        if self.url.0.is_none() {
+            bail!("chain-data archive mongo requires url");
+        }
+        if self.database.is_none() {
+            bail!("chain-data archive mongo requires database");
+        }
+        if self.collection.is_empty() {
+            bail!("chain-data archive mongo requires collection");
+        }
+        if self.max_pool_size == 0 {
+            bail!("chain-data archive mongo max_pool_size must be >= 1");
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "s3")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ChainDataArchiveS3Config {
+    pub bucket: Option<String>,
+    pub region: Option<String>,
+    pub profile: Option<String>,
+    pub endpoint_urls: Vec<String>,
+    pub force_path_style: bool,
+    #[serde(default = "default_max_concurrency_64")]
+    pub max_concurrency: usize,
+    pub access_key_id: Redacted,
+    pub secret_access_key: Redacted,
+}
+
+#[cfg(feature = "s3")]
+impl Default for ChainDataArchiveS3Config {
+    fn default() -> Self {
+        Self {
+            bucket: None,
+            region: None,
+            profile: None,
+            endpoint_urls: Vec::new(),
+            force_path_style: false,
+            max_concurrency: default_max_concurrency_64(),
+            access_key_id: Redacted::default(),
+            secret_access_key: Redacted::default(),
+        }
+    }
+}
+
+#[cfg(feature = "s3")]
+impl ChainDataArchiveS3Config {
+    fn validate(&self) -> Result<()> {
+        if self.bucket.is_none() {
+            bail!("chain-data archive s3 requires bucket");
+        }
+        if self.max_concurrency == 0 {
+            bail!("chain-data archive s3 max_concurrency must be >= 1");
+        }
+        validate_pair(
+            &self.access_key_id.0,
+            &self.secret_access_key.0,
+            "archive s3 access_key_id",
+            "archive s3 secret_access_key",
+        )
+    }
+}
+
+/// Resolves the external archive reader: an injected reader (built by the
+/// embedding binary — monad-query-indexer owns the mongo/dynamo archive formats
+/// and provides `build_archive_external_reader`) takes precedence; otherwise
+/// the S3 backend, whose objects have no archive-owned byte format, is built
+/// here from config. Mongo/dynamo archive configs WITHOUT an injected reader
+/// error loudly.
+///
+/// Gated on the meta-backend features because only the configured assembly
+/// paths construct readers, not because the reader needs those backends.
+#[cfg(any(feature = "dynamo", feature = "mongo"))]
+pub(crate) async fn build_external_payload_reader(
+    config: &Option<ChainDataArchiveBackendConfig>,
+    injected: Option<std::sync::Arc<dyn monad_query_primitives::ExternalBlobReader>>,
+) -> Result<Option<std::sync::Arc<dyn monad_query_primitives::ExternalBlobReader>>> {
+    if injected.is_some() {
+        return Ok(injected);
+    }
+    match config {
+        None => Ok(None),
+        #[cfg(feature = "s3")]
+        Some(ChainDataArchiveBackendConfig::S3(s3)) => {
+            use monad_query_store::{S3BlobStoreConfig, S3Credentials, S3ExternalBlobReader};
+
+            let credentials = match (&s3.access_key_id.0, &s3.secret_access_key.0) {
+                (Some(access_key_id), Some(secret_access_key)) => Some(S3Credentials {
+                    access_key_id: access_key_id.clone(),
+                    secret_access_key: secret_access_key.clone(),
+                    session_token: None,
+                }),
+                _ => None,
+            };
+            let s3_external_blob_reader_config = S3BlobStoreConfig {
+                bucket: s3.bucket.clone().expect("validated archive s3 bucket"),
+                root_prefix: String::new(),
+                endpoint_urls: s3.endpoint_urls.clone(),
+                region: s3.region.clone(),
+                profile: s3.profile.clone(),
+                force_path_style: s3.force_path_style,
+                max_concurrency: s3.max_concurrency,
+                create_bucket: false,
+                credentials,
+            };
+            let reader = S3ExternalBlobReader::new(s3_external_blob_reader_config)
+                .await
+                .context("building chain-data archive S3 reader")?;
+            Ok(Some(std::sync::Arc::new(reader)))
+        }
+        #[cfg(feature = "mongo")]
+        Some(ChainDataArchiveBackendConfig::Mongo(_)) => bail!(
+            "the mongo archive format is owned by monad-query-indexer: build the reader with \
+             monad_query_indexer::chain_data_external::build_archive_external_reader and pass \
+             it to the chain-data entry point"
+        ),
+        #[cfg(feature = "dynamo")]
+        Some(ChainDataArchiveBackendConfig::Dynamo(_)) => bail!(
+            "the dynamo archive format is owned by monad-query-indexer: build the reader with \
+             monad_query_indexer::chain_data_external::build_archive_external_reader and pass \
+             it to the chain-data entry point"
+        ),
+        #[cfg(not(any(feature = "s3", feature = "mongo", feature = "dynamo")))]
+        Some(ChainDataArchiveBackendConfig::Unavailable) => {
+            bail!("chain-data archive access requires the s3, mongo, or dynamo feature")
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum ChainDataMetaBackendConfig {
+    #[cfg(feature = "dynamo")]
+    Dynamo(ChainDataDynamoMetaConfig),
+    #[cfg(feature = "mongo")]
+    Mongo(ChainDataMongoMetaConfig),
+    #[cfg(not(any(feature = "dynamo", feature = "mongo")))]
+    Unavailable,
+}
+
+impl Default for ChainDataMetaBackendConfig {
+    fn default() -> Self {
+        #[cfg(feature = "dynamo")]
+        {
+            Self::Dynamo(ChainDataDynamoMetaConfig::default())
+        }
+        #[cfg(all(not(feature = "dynamo"), feature = "mongo"))]
+        {
+            Self::Mongo(ChainDataMongoMetaConfig::default())
+        }
+        #[cfg(not(any(feature = "dynamo", feature = "mongo")))]
+        {
+            Self::Unavailable
+        }
+    }
+}
+
+impl ChainDataMetaBackendConfig {
+    fn validate(&self) -> Result<()> {
+        match self {
+            #[cfg(feature = "dynamo")]
+            Self::Dynamo(config) => config.validate(),
+            #[cfg(feature = "mongo")]
+            Self::Mongo(config) => config.validate(),
+            #[cfg(not(any(feature = "dynamo", feature = "mongo")))]
+            Self::Unavailable => {
+                bail!("chain-data configured storage requires the dynamo or mongo feature")
+            }
+        }
+    }
+}
+
+#[cfg(feature = "mongo")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ChainDataMongoMetaConfig {
+    pub url: Redacted,
+    pub database: Option<String>,
+    #[serde(default = "default_collection_chain_data_meta")]
+    pub collection: String,
+    #[serde(default = "default_max_pool_size_64")]
+    pub max_pool_size: u32,
+    #[serde(default = "default_write_concurrency_64")]
+    pub write_concurrency: usize,
+}
+
+#[cfg(feature = "mongo")]
+impl Default for ChainDataMongoMetaConfig {
+    fn default() -> Self {
+        Self {
+            url: Redacted::default(),
+            database: None,
+            collection: default_collection_chain_data_meta(),
+            max_pool_size: default_max_pool_size_64(),
+            write_concurrency: default_write_concurrency_64(),
+        }
+    }
+}
+
+#[cfg(feature = "mongo")]
+impl ChainDataMongoMetaConfig {
+    fn validate(&self) -> Result<()> {
+        if self.url.0.is_none() {
+            bail!("chain-data mongo meta requires url");
+        }
+        if self.database.is_none() {
+            bail!("chain-data mongo meta requires database");
+        }
+        if self.collection.is_empty() {
+            bail!("chain-data mongo meta requires collection");
+        }
+        if self.max_pool_size == 0 || self.write_concurrency == 0 {
+            bail!("chain-data mongo meta pool size and write concurrency must be >= 1");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum ChainDataBlobBackendConfig {
+    #[cfg(feature = "s3")]
+    S3(ChainDataS3BlobConfig),
+    #[cfg(feature = "dynamo")]
+    Dynamo(ChainDataDynamoBlobConfig),
+    #[cfg(not(any(feature = "s3", feature = "dynamo")))]
+    Unavailable,
+}
+
+impl ChainDataBlobBackendConfig {
+    fn validate(&self) -> Result<()> {
+        match self {
+            #[cfg(feature = "s3")]
+            Self::S3(config) => config.validate(),
+            #[cfg(feature = "dynamo")]
+            Self::Dynamo(config) => config.validate(),
+            #[cfg(not(any(feature = "s3", feature = "dynamo")))]
+            Self::Unavailable => bail!("chain-data configured blob storage requires s3 or dynamo"),
+        }
+    }
+}
+
+#[cfg(feature = "s3")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ChainDataS3BlobConfig {
+    pub bucket: Option<String>,
+    pub region: Option<String>,
+    pub profile: Option<String>,
+    pub endpoint_urls: Vec<String>,
+    pub prefix: String,
+    pub force_path_style: bool,
+    #[serde(default = "default_max_concurrency_64")]
+    pub max_concurrency: usize,
+    pub create_bucket: bool,
+    pub access_key_id: Redacted,
+    pub secret_access_key: Redacted,
+}
+
+#[cfg(feature = "s3")]
+impl Default for ChainDataS3BlobConfig {
+    fn default() -> Self {
+        Self {
+            bucket: None,
+            region: None,
+            profile: None,
+            endpoint_urls: Vec::new(),
+            prefix: String::new(),
+            force_path_style: false,
+            max_concurrency: default_max_concurrency_64(),
+            create_bucket: false,
+            access_key_id: Redacted::default(),
+            secret_access_key: Redacted::default(),
+        }
+    }
+}
+
+#[cfg(feature = "s3")]
+impl ChainDataS3BlobConfig {
+    fn validate(&self) -> Result<()> {
+        if self.bucket.is_none() {
+            bail!("chain-data s3 blob requires bucket");
+        }
+        if self.max_concurrency == 0 {
+            bail!("chain-data s3 max_concurrency must be >= 1");
+        }
+        validate_pair(
+            &self.access_key_id.0,
+            &self.secret_access_key.0,
+            "s3 access_key_id",
+            "s3 secret_access_key",
+        )
+    }
+}
+
+#[cfg(feature = "dynamo")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ChainDataDynamoTableLayoutConfig {
+    #[default]
+    Single,
+    PerLogicalTable,
+}
+
+#[cfg(feature = "dynamo")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ChainDataDynamoMetaConfig {
+    pub table: Option<String>,
+    pub table_prefix: Option<String>,
+    pub table_layout: ChainDataDynamoTableLayoutConfig,
+    pub endpoint_url: Option<String>,
+    pub endpoint_urls: Vec<String>,
+    pub region: Option<String>,
+    pub profile: Option<String>,
+    pub access_key_id: Redacted,
+    pub secret_access_key: Redacted,
+    pub session_token: Redacted,
+    pub create_table: bool,
+    #[serde(default = "default_max_concurrency_256")]
+    pub max_concurrency: usize,
+    #[serde(default = "default_max_concurrency_256")]
+    pub table_max_concurrency: usize,
+    pub scylla_profile: bool,
+    #[serde(default = "default_scylla_concurrency_1024")]
+    pub scylla_concurrency: usize,
+    pub batch_write_max_items: Option<usize>,
+}
+
+#[cfg(feature = "dynamo")]
+impl Default for ChainDataDynamoMetaConfig {
+    fn default() -> Self {
+        Self {
+            table: None,
+            table_prefix: None,
+            table_layout: ChainDataDynamoTableLayoutConfig::default(),
+            endpoint_url: None,
+            endpoint_urls: Vec::new(),
+            region: None,
+            profile: None,
+            access_key_id: Redacted::default(),
+            secret_access_key: Redacted::default(),
+            session_token: Redacted::default(),
+            create_table: false,
+            max_concurrency: default_max_concurrency_256(),
+            table_max_concurrency: default_max_concurrency_256(),
+            scylla_profile: false,
+            scylla_concurrency: default_scylla_concurrency_1024(),
+            batch_write_max_items: None,
+        }
+    }
+}
+
+#[cfg(feature = "dynamo")]
+const ALTERNATOR_DEFAULT_BATCH_WRITE_ITEMS: usize = 100;
+#[cfg(feature = "dynamo")]
+const DYNAMO_BATCH_WRITE_ITEMS: usize = 25;
+#[cfg(feature = "dynamo")]
+const MAX_BATCH_WRITE_ITEMS: usize = 1000;
+
+#[cfg(feature = "dynamo")]
+impl ChainDataDynamoMetaConfig {
+    fn validate(&self) -> Result<()> {
+        if self.effective_max_concurrency() == 0 || self.effective_table_max_concurrency() == 0 {
+            bail!("chain-data dynamo concurrency must be >= 1");
+        }
+        if let Some(items) = self.batch_write_max_items {
+            if items == 0 || items > MAX_BATCH_WRITE_ITEMS {
+                bail!(
+                    "chain-data dynamo batch_write_max_items must be within \
+                     1..={MAX_BATCH_WRITE_ITEMS} (items per BatchWriteItem, not bytes)"
+                );
+            }
+        }
+        validate_pair(
+            &self.access_key_id.0,
+            &self.secret_access_key.0,
+            "dynamo access_key_id",
+            "dynamo secret_access_key",
+        )?;
+        match self.effective_table_layout() {
+            ChainDataDynamoTableLayoutConfig::Single => {
+                if self.table_prefix.is_some() {
+                    bail!("chain-data dynamo table_prefix requires per-logical-table layout and cannot be combined with scylla_profile");
+                }
+                if self.table.is_none() {
+                    bail!("chain-data dynamo single table layout requires table");
+                }
+            }
+            ChainDataDynamoTableLayoutConfig::PerLogicalTable => {
+                if self.table.is_some() {
+                    bail!("chain-data dynamo per-logical-table layout cannot use table");
+                }
+                if self.table_prefix.is_none() {
+                    bail!("chain-data dynamo per-logical-table layout requires table_prefix");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Endpoints to use: `endpoint_urls` if set, else the single `endpoint_url`,
+    /// else empty (default AWS resolver).
+    fn effective_endpoint_urls(&self) -> Vec<String> {
+        if !self.endpoint_urls.is_empty() {
+            self.endpoint_urls.clone()
+        } else {
+            self.endpoint_url.clone().into_iter().collect()
+        }
+    }
+
+    fn effective_table_layout(&self) -> ChainDataDynamoTableLayoutConfig {
+        if self.scylla_profile {
+            ChainDataDynamoTableLayoutConfig::Single
+        } else {
+            self.table_layout
+        }
+    }
+
+    fn effective_max_concurrency(&self) -> usize {
+        if self.scylla_profile {
+            self.scylla_concurrency
+        } else {
+            self.max_concurrency
+        }
+    }
+
+    fn effective_table_max_concurrency(&self) -> usize {
+        if self.scylla_profile {
+            self.scylla_concurrency
+        } else {
+            self.table_max_concurrency
+        }
+    }
+}
+
+#[cfg(feature = "dynamo")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ChainDataDynamoBlobConfig {
+    pub table: Option<String>,
+    pub endpoint_url: Option<String>,
+    pub region: Option<String>,
+    pub profile: Option<String>,
+    pub access_key_id: Redacted,
+    pub secret_access_key: Redacted,
+    pub session_token: Redacted,
+    pub create_table: bool,
+    #[serde(default = "default_max_concurrency_256")]
+    pub max_concurrency: usize,
+    pub chunk_size: Option<usize>,
+}
+
+#[cfg(feature = "dynamo")]
+impl Default for ChainDataDynamoBlobConfig {
+    fn default() -> Self {
+        Self {
+            table: None,
+            endpoint_url: None,
+            region: None,
+            profile: None,
+            access_key_id: Redacted::default(),
+            secret_access_key: Redacted::default(),
+            session_token: Redacted::default(),
+            create_table: false,
+            max_concurrency: default_max_concurrency_256(),
+            chunk_size: None,
+        }
+    }
+}
+
+#[cfg(feature = "dynamo")]
+impl ChainDataDynamoBlobConfig {
+    fn validate(&self) -> Result<()> {
+        if self.table.is_none() {
+            bail!("chain-data dynamo blob requires table");
+        }
+        if self.max_concurrency == 0 {
+            bail!("chain-data dynamo blob max_concurrency must be >= 1");
+        }
+        // Reject loudly rather than clamp: the configured number must be the
+        // number used, or the byte->chunk-index wire contract drifts.
+        if let Some(chunk_size) = self.chunk_size {
+            if chunk_size == 0 || chunk_size > monad_query_store::blob::MAX_CHUNK_SIZE {
+                bail!(
+                    "chain-data dynamo blob chunk_size must be within 1..={} bytes \
+                     (and must match the size existing table data was written with)",
+                    monad_query_store::blob::MAX_CHUNK_SIZE
+                );
+            }
+        }
+        validate_pair(
+            &self.access_key_id.0,
+            &self.secret_access_key.0,
+            "dynamo access_key_id",
+            "dynamo secret_access_key",
+        )
+    }
+}
+
+/// Which side is opening the stores; selects the default cache budget
+/// (ingest runs cache-less, readers default to [`READER_DEFAULT_CACHE_MIB`]).
+#[cfg(any(feature = "dynamo", feature = "mongo"))]
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ChainDataCacheMode {
+    Ingest,
+    Reader,
+}
+
+#[cfg(any(feature = "dynamo", feature = "mongo"))]
+const READER_DEFAULT_CACHE_MIB: usize = 8192;
+
+#[cfg(any(feature = "dynamo", feature = "mongo"))]
+pub(crate) fn resolve_cache_config(
+    store_config: &ChainDataStoreConfig,
+    mode: ChainDataCacheMode,
+) -> CacheConfig {
+    let default_cache_mib = match mode {
+        ChainDataCacheMode::Ingest => 0,
+        ChainDataCacheMode::Reader => READER_DEFAULT_CACHE_MIB,
+    };
+    let effective_total_cache_mib = store_config.cache.total_mib.unwrap_or(default_cache_mib);
+
+    let mut config = CacheConfig::from_total_mib(effective_total_cache_mib);
+    apply_cache_table_overrides(&mut config, &store_config.cache.tables);
+    config
+}
+
+#[cfg(any(feature = "dynamo", feature = "mongo"))]
+fn apply_cache_table_overrides(config: &mut CacheConfig, overrides: &ChainDataCacheTableBudgets) {
+    #[rustfmt::skip]
+    let table_cache_mappings = [
+        (overrides.dir_by_block_mib, &mut config.dir_by_block_cache_bytes),
+        (overrides.dir_bucket_mib, &mut config.dir_bucket_cache_bytes),
+        (overrides.bitmap_by_block_mib, &mut config.bitmap_by_block_cache_bytes),
+        (overrides.bitmap_page_blob_mib, &mut config.bitmap_page_blob_cache_bytes),
+        (overrides.bitmap_page_counts_mib, &mut config.bitmap_page_counts_cache_bytes),
+        (overrides.open_bitmap_stream_mib, &mut config.open_bitmap_stream_cache_bytes),
+        (overrides.block_header_mib, &mut config.block_header_cache_bytes),
+        (overrides.block_hash_to_number_mib, &mut config.block_hash_to_number_cache_bytes),
+        (overrides.tx_hash_index_mib, &mut config.tx_hash_index_cache_bytes),
+        (overrides.row_cache_mib, &mut config.row_cache_bytes),
+    ];
+    for (override_mib, target_bytes) in table_cache_mappings {
+        if let Some(mib) = override_mib {
+            *target_bytes = CacheConfig::budget_mib_to_bytes(mib);
+        }
+    }
+}
+
+// Configured store assembly only happens behind a dynamo meta backend, so the
+// S3 blob builder is dead unless both features are on.
+#[cfg(all(feature = "s3", feature = "dynamo"))]
+pub(crate) async fn build_s3_blob_store(
+    config: &ChainDataS3BlobConfig,
+) -> Result<monad_query_store::S3BlobStore> {
+    use monad_query_store::{S3BlobStore, S3BlobStoreConfig, S3Credentials};
+
+    let credentials = match (&config.access_key_id.0, &config.secret_access_key.0) {
+        (Some(access_key_id), Some(secret_access_key)) => Some(S3Credentials {
+            access_key_id: access_key_id.clone(),
+            secret_access_key: secret_access_key.clone(),
+            session_token: None,
+        }),
+        _ => None,
+    };
+    let s3_blob_store_config = S3BlobStoreConfig {
+        bucket: config.bucket.clone().expect("validated s3 bucket"),
+        root_prefix: config.prefix.clone(),
+        endpoint_urls: config.endpoint_urls.clone(),
+        region: config.region.clone(),
+        profile: config.profile.clone(),
+        force_path_style: config.force_path_style,
+        max_concurrency: config.max_concurrency,
+        create_bucket: config.create_bucket,
+        credentials,
+    };
+    S3BlobStore::new(s3_blob_store_config)
+        .await
+        .context("building chain-data S3 blob store")
+}
+
+#[cfg(feature = "dynamo")]
+pub(crate) async fn build_dynamo_meta_store(
+    config: &ChainDataDynamoMetaConfig,
+) -> Result<monad_query_store::DynamoMetaStore> {
+    use monad_query_store::{DynamoMetaStore, DynamoMetaStoreConfig, DynamoTableLayout};
+
+    let table_layout = match config.effective_table_layout() {
+        ChainDataDynamoTableLayoutConfig::Single => {
+            DynamoTableLayout::single(config.table.clone().expect("validated dynamo table"))
+        }
+        ChainDataDynamoTableLayoutConfig::PerLogicalTable => DynamoTableLayout::PerLogicalTable {
+            prefix: config
+                .table_prefix
+                .clone()
+                .expect("validated dynamo table_prefix"),
+            logical_names: monad_query_engine::tables::ALL_LOGICAL_TABLE_NAMES
+                .iter()
+                .map(|name| name.to_string())
+                .collect(),
+        },
+    };
+    let credentials = dynamo_credentials(
+        &config.access_key_id.0,
+        &config.secret_access_key.0,
+        &config.session_token.0,
+    );
+    let dynamo_meta_store_config = DynamoMetaStoreConfig {
+        table_layout,
+        endpoint_urls: config.effective_endpoint_urls(),
+        region: config.region.clone(),
+        profile: config.profile.clone(),
+        batch_max_concurrency: config.effective_max_concurrency(),
+        batch_table_max_concurrency: config.effective_table_max_concurrency(),
+        batch_write_max_items: DYNAMO_BATCH_WRITE_ITEMS,
+        credentials,
+    };
+    let store = DynamoMetaStore::new(dynamo_meta_store_config)
+        .await
+        .context("building chain-data Dynamo meta store")?;
+    if config.create_table {
+        store
+            .create_table()
+            .await
+            .context("creating chain-data Dynamo meta table(s)")?;
+    }
+    store
+        .validate_table()
+        .await
+        .context("validating chain-data Dynamo meta table(s)")?;
+    // Probe the effective BatchWriteItem limit (Alternator allows >25) with one
+    // delete-batch of non-existent keys; fall back to 25 if rejected.
+    let batch_write_limit_candidate =
+        config
+            .batch_write_max_items
+            .unwrap_or(if config.scylla_profile {
+                ALTERNATOR_DEFAULT_BATCH_WRITE_ITEMS
+            } else {
+                DYNAMO_BATCH_WRITE_ITEMS
+            });
+    let effective_batch_write_limit = store
+        .discover_batch_write_limit(batch_write_limit_candidate)
+        .await
+        .context("probing dynamo BatchWriteItem item limit")?;
+    info!(
+        candidate = batch_write_limit_candidate,
+        effective = effective_batch_write_limit,
+        "resolved dynamo BatchWriteItem item limit"
+    );
+    Ok(store)
+}
+
+#[cfg(feature = "mongo")]
+pub(crate) async fn build_mongo_meta_store(
+    config: &ChainDataMongoMetaConfig,
+) -> Result<monad_query_store::MongoMetaStore> {
+    use monad_query_store::{MongoMetaStore, MongoMetaStoreConfig};
+
+    let mongo_meta_store_config = MongoMetaStoreConfig {
+        connection_string: config.url.0.clone().expect("validated mongo url"),
+        database: config.database.clone().expect("validated mongo database"),
+        collection: config.collection.clone(),
+        max_pool_size: config.max_pool_size,
+        write_concurrency: config.write_concurrency,
+    };
+    MongoMetaStore::new(mongo_meta_store_config)
+        .await
+        .context("building chain-data Mongo meta store")
+}
+
+/// The meta store's connection state (client ring + probed batch-write limit)
+/// handed to a co-deployed dynamo blob store.
+#[cfg(feature = "dynamo")]
+pub(crate) type SharedDynamoConnection = monad_query_store::dynamo_common::SharedDynamoConnection;
+
+#[cfg(feature = "dynamo")]
+pub(crate) async fn build_dynamo_blob_store(
+    config: &ChainDataDynamoBlobConfig,
+    shared: Option<SharedDynamoConnection>,
+) -> Result<monad_query_store::DynamoBlobStore> {
+    use monad_query_store::{DynamoBlobStore, DynamoBlobStoreConfig};
+
+    let base_config = DynamoBlobStoreConfig::new(config.table.clone().expect("validated table"));
+    let dynamo_blob_store_config = DynamoBlobStoreConfig {
+        endpoint_url: config.endpoint_url.clone(),
+        region: config.region.clone(),
+        profile: config.profile.clone(),
+        batch_max_concurrency: config.max_concurrency,
+        credentials: dynamo_credentials(
+            &config.access_key_id.0,
+            &config.secret_access_key.0,
+            &config.session_token.0,
+        ),
+        chunk_size: config.chunk_size.unwrap_or(base_config.chunk_size),
+        ..base_config
+    };
+    let chunk_size = dynamo_blob_store_config.chunk_size;
+    let store = match shared {
+        Some(shared) => {
+            let endpoint_matches_meta = match &dynamo_blob_store_config.endpoint_url {
+                Some(endpoint) => shared.endpoint_urls.iter().any(|e| e == endpoint),
+                None => true,
+            };
+            let other_overrides = dynamo_blob_store_config.region.is_some()
+                || dynamo_blob_store_config.profile.is_some()
+                || dynamo_blob_store_config.credentials.is_some();
+            if !endpoint_matches_meta || other_overrides {
+                warn!(
+                    "chain-data dynamo blob endpoint/region/profile/credential settings are \
+                     ignored: the blob store shares the meta store's client(s)"
+                );
+            }
+            DynamoBlobStore::with_connection(
+                shared,
+                dynamo_blob_store_config.table_name.clone(),
+                dynamo_blob_store_config.batch_max_concurrency,
+                dynamo_blob_store_config.chunk_size,
+            )
+        }
+        None => DynamoBlobStore::new(dynamo_blob_store_config)
+            .await
+            .context("building chain-data Dynamo blob store")?,
+    };
+    if config.create_table {
+        store
+            .create_table()
+            .await
+            .context("creating chain-data Dynamo blob table")?;
+    }
+    store
+        .validate_table()
+        .await
+        .context("validating chain-data Dynamo blob table")?;
+    info!(chunk_size, "resolved dynamo blob chunk size");
+    Ok(store)
+}
+
+#[cfg(feature = "dynamo")]
+fn dynamo_credentials(
+    access_key_id: &Option<String>,
+    secret_access_key: &Option<String>,
+    session_token: &Option<String>,
+) -> Option<monad_query_store::DynamoCredentials> {
+    match (access_key_id, secret_access_key) {
+        (Some(access_key_id), Some(secret_access_key)) => {
+            Some(monad_query_store::DynamoCredentials {
+                access_key_id: access_key_id.clone(),
+                secret_access_key: secret_access_key.clone(),
+                session_token: session_token.clone(),
+            })
+        }
+        _ => None,
+    }
+}
+
+#[cfg(any(feature = "s3", feature = "dynamo"))]
+fn validate_pair(
+    left: &Option<String>,
+    right: &Option<String>,
+    left_name: &'static str,
+    right_name: &'static str,
+) -> Result<()> {
+    match (left, right) {
+        (Some(_), Some(_)) | (None, None) => Ok(()),
+        (Some(_), None) => bail!("{left_name} requires {right_name}"),
+        (None, Some(_)) => bail!("{right_name} requires {left_name}"),
+    }
+}
+
+fn default_max_concurrency_64() -> usize {
+    64
+}
+
+fn default_max_concurrency_256() -> usize {
+    256
+}
+
+fn default_scylla_concurrency_1024() -> usize {
+    1024
+}
+
+fn default_collection_block_level() -> String {
+    "block_level".to_string()
+}
+
+fn default_collection_chain_data_meta() -> String {
+    "chain_data_meta".to_string()
+}
+
+fn default_max_pool_size_64() -> u32 {
+    64
+}
+
+fn default_write_concurrency_64() -> usize {
+    64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redacted_debug_hides_value_but_marks_presence() {
+        // Some(_) renders the marker, never the secret; None renders None.
+        assert_eq!(
+            format!("{:?}", Redacted(Some("super-secret".to_string()))),
+            "[REDACTED]"
+        );
+        assert_eq!(format!("{:?}", Redacted(None)), "None");
+    }
+
+    /// `#[serde(transparent)]` keeps the TOML wire shape identical to the
+    /// plain `Option<String>` fields this replaced: a present key parses into
+    /// `Some`, an absent key falls back to the container default (`None`).
+    #[cfg(feature = "s3")]
+    #[test]
+    fn redacted_serde_is_transparent_to_option_string() {
+        let parsed: ChainDataS3BlobConfig = toml::from_str(
+            "bucket = \"b\"\naccess_key_id = \"ak-123\"\nsecret_access_key = \"sk-456\"\n",
+        )
+        .unwrap();
+        assert_eq!(parsed.access_key_id.0.as_deref(), Some("ak-123"));
+        assert_eq!(parsed.secret_access_key.0.as_deref(), Some("sk-456"));
+        // The secret never reaches a debug rendering of the config.
+        let dump = format!("{parsed:?}");
+        assert!(!dump.contains("sk-456"));
+        assert!(dump.contains("[REDACTED]"));
+
+        let absent: ChainDataS3BlobConfig = toml::from_str("bucket = \"b\"\n").unwrap();
+        assert!(absent.access_key_id.0.is_none());
+        assert!(absent.secret_access_key.0.is_none());
+    }
+
+    /// chunk_size is a wire contract (byte->chunk-index mapping); out-of-range
+    /// values must fail validation loudly rather than be silently clamped into
+    /// a different mapping than the operator configured.
+    #[cfg(feature = "dynamo")]
+    #[test]
+    fn dynamo_blob_chunk_size_must_be_within_wire_bounds() {
+        use monad_query_store::blob::MAX_CHUNK_SIZE;
+
+        let with_chunk_size = |chunk_size| ChainDataDynamoBlobConfig {
+            table: Some("t".to_string()),
+            chunk_size,
+            ..ChainDataDynamoBlobConfig::default()
+        };
+        assert!(with_chunk_size(None).validate().is_ok());
+        assert!(with_chunk_size(Some(64 * 1024)).validate().is_ok());
+        assert!(with_chunk_size(Some(MAX_CHUNK_SIZE)).validate().is_ok());
+        assert!(with_chunk_size(Some(0)).validate().is_err());
+        assert!(with_chunk_size(Some(MAX_CHUNK_SIZE + 1))
+            .validate()
+            .is_err());
+    }
+
+    /// The startup probe materializes batch_write_max_items-many WriteRequests
+    /// before the backend can reject them, so an absurd configured value must
+    /// fail validation instead of allocating (or OOMing) at startup.
+    #[cfg(feature = "dynamo")]
+    #[test]
+    fn dynamo_meta_batch_write_max_items_is_bounded() {
+        let with_items = |items| ChainDataDynamoMetaConfig {
+            table: Some("t".to_string()),
+            batch_write_max_items: items,
+            ..ChainDataDynamoMetaConfig::default()
+        };
+        assert!(with_items(None).validate().is_ok());
+        assert!(with_items(Some(25)).validate().is_ok());
+        assert!(with_items(Some(MAX_BATCH_WRITE_ITEMS)).validate().is_ok());
+        assert!(with_items(Some(0)).validate().is_err());
+        assert!(with_items(Some(100_000_000)).validate().is_err());
+    }
+
+    #[test]
+    fn ingest_cache_default_is_disabled() {
+        let config =
+            resolve_cache_config(&ChainDataStoreConfig::default(), ChainDataCacheMode::Ingest);
+        assert_eq!(config.total_bytes(), 0);
+        assert_eq!(config.row_cache_bytes, 0);
+    }
+
+    #[test]
+    fn reader_cache_default_is_eight_gib_ratio_based() {
+        let config =
+            resolve_cache_config(&ChainDataStoreConfig::default(), ChainDataCacheMode::Reader);
+        // 464/1024 of 8192 MiB, as a byte budget.
+        assert_eq!(config.row_cache_bytes, 3712 * 1024 * 1024);
+        // 256/1024 of 8192 MiB.
+        assert_eq!(config.bitmap_by_block_cache_bytes, 2048 * 1024 * 1024);
+        // 64/1024 of 8192 MiB: block metadata sits on every materialization
+        // path, so it must not be starved (see `CacheConfig` ratios).
+        assert_eq!(config.block_header_cache_bytes, 512 * 1024 * 1024);
+    }
+
+    #[test]
+    fn nested_zero_total_disables_reader_cache() {
+        let store_config = ChainDataStoreConfig {
+            cache: ChainDataCacheConfig {
+                total_mib: Some(0),
+                ..ChainDataCacheConfig::default()
+            },
+            ..ChainDataStoreConfig::default()
+        };
+        let config = resolve_cache_config(&store_config, ChainDataCacheMode::Reader);
+        assert_eq!(config.total_bytes(), 0);
+        assert_eq!(config.row_cache_bytes, 0);
+    }
+
+    #[test]
+    fn per_table_budget_overrides_ratio_budget() {
+        let store_config = ChainDataStoreConfig {
+            cache: ChainDataCacheConfig {
+                total_mib: Some(2048),
+                tables: ChainDataCacheTableBudgets {
+                    row_cache_mib: Some(64),
+                    bitmap_page_blob_mib: Some(32),
+                    ..ChainDataCacheTableBudgets::default()
+                },
+                ..ChainDataCacheConfig::default()
+            },
+            ..ChainDataStoreConfig::default()
+        };
+        let config = resolve_cache_config(&store_config, ChainDataCacheMode::Reader);
+        assert_eq!(config.row_cache_bytes, 64 * 1024 * 1024);
+        assert_eq!(config.bitmap_page_blob_cache_bytes, 32 * 1024 * 1024);
+    }
+}

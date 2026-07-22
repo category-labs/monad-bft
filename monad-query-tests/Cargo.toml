@@ -1,0 +1,28 @@
+[package]
+name = "monad-query-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+bench = false
+
+[dependencies]
+alloy-consensus = { workspace = true }
+alloy-eips = { workspace = true }
+alloy-primitives = { workspace = true, features = ["rlp"] }
+bytes = { workspace = true }
+monad-query-engine = { workspace = true }
+monad-query-errors = { workspace = true }
+monad-query-primitives = { workspace = true }
+monad-query-read = { workspace = true }
+monad-query-store = { workspace = true, default-features = false }
+monad-query-testkit = { workspace = true }
+monad-query-types = { workspace = true }
+monad-query-write = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
+
+[dev-dependencies]
+alloy-rlp = { workspace = true, features = ["derive"] }
+futures = { workspace = true }
+roaring = "0.11"

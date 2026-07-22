@@ -32,6 +32,14 @@ monad-event-ring = { workspace = true }
 monad-exec-events = { workspace = true, features = ["alloy"] }
 monad-node-config = { workspace = true, features = ["crypto"] }
 monad-pprof = { workspace = true }
+monad-query-config = { workspace = true, features = ["s3", "dynamo"] }
+monad-query-errors = { workspace = true }
+monad-query-indexer = { workspace = true }
+monad-query-primitives = { workspace = true }
+monad-query-read = { workspace = true }
+# `alloy-rpc-types-eth` enables `TxEntry::to_rpc_transaction`, the standard
+# RPC transaction shape the queryX `transactions` objects serialize as.
+monad-query-types = { workspace = true, features = ["alloy-rpc-types-eth"] }
 monad-rpc-docs = { workspace = true }
 monad-tracing-timing = { workspace = true }
 monad-triedb-utils = { workspace = true }
@@ -92,6 +100,7 @@ monad-version = { workspace = true }
 
 [dev-dependencies]
 monad-eth-testutil = { workspace = true }
+monad-query-testkit = { workspace = true }
 
 actix-test = { workspace = true }
 alloy-consensus = { workspace = true, features = ["arbitrary", "k256"] }

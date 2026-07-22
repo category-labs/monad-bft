@@ -1,0 +1,34 @@
+[package]
+name = "monad-query-write"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+bench = false
+
+[features]
+# Gates the dynamo-deployment-only snapshot seeding helpers (generic over the
+# stores, but only reached via the configured dynamo ingest entry point).
+dynamo = []
+
+[dependencies]
+alloy-consensus = { workspace = true }
+alloy-primitives = { workspace = true, features = ["rlp"] }
+alloy-rlp = { workspace = true, features = ["derive"] }
+blake3 = { workspace = true }
+bytes = { workspace = true }
+eyre = { workspace = true }
+futures = { workspace = true }
+monad-query-engine = { workspace = true }
+monad-query-errors = { workspace = true }
+monad-query-primitives = { workspace = true }
+monad-query-store = { workspace = true, default-features = false }
+monad-query-types = { workspace = true }
+roaring = "0.11"
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+# Read layer, dev-only, for the ingest→query round-trip tests in `ingest::rtt`.
+# read does not depend on write, so this is acyclic.
+monad-query-read = { workspace = true }

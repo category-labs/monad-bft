@@ -1,0 +1,17 @@
+[package]
+name = "monad-query-testkit"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+bench = false
+
+[dependencies]
+eyre = { workspace = true }
+monad-query-engine = { workspace = true }
+monad-query-errors = { workspace = true }
+monad-query-primitives = { workspace = true }
+monad-query-read = { workspace = true }
+monad-query-store = { workspace = true, default-features = false }
+monad-query-types = { workspace = true }
+monad-query-write = { workspace = true }

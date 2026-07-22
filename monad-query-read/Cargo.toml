@@ -1,0 +1,23 @@
+[package]
+name = "monad-query-read"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+bench = false
+
+[features]
+# Forwarded to monad-query-types: enables `TxEntry::to_rpc_transaction`.
+alloy-rpc-types-eth = ["monad-query-types/alloy-rpc-types-eth"]
+
+[dependencies]
+alloy-consensus = { workspace = true }
+alloy-eips = { workspace = true }
+alloy-primitives = { workspace = true, features = ["rlp"] }
+alloy-rlp = { workspace = true, features = ["derive"] }
+futures = { workspace = true }
+monad-query-engine = { workspace = true }
+monad-query-errors = { workspace = true }
+monad-query-primitives = { workspace = true }
+monad-query-store = { workspace = true, default-features = false }
+monad-query-types = { workspace = true }
