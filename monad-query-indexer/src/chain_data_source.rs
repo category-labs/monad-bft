@@ -532,7 +532,7 @@ fn build_ingest_traces(
             continue;
         }
         let depths: Vec<u32> = frames.iter().map(|f| f.depth.to::<u32>()).collect();
-        let trace_addresses = monad_query_types::traces::compute_trace_addresses(depths)
+        let trace_addresses = monad_query_types::traces::compute_trace_addresses(&depths)
             .map_err(|e| eyre!("block {block_number} tx {tx_idx}: trace_address: {e:?}"))?;
         let tx_status = *tx_statuses
             .get(tx_idx)

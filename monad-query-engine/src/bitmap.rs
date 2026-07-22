@@ -415,6 +415,28 @@ pub fn decode_bitmap_page_artifact(bytes: &[u8]) -> Result<Option<BitmapPageArti
     }))
 }
 
+/// Decodes a bitmap-page-blob cache entry, rejecting an outer artifact header
+/// that disagrees with the inner blob header (page skips read the outer copy).
+pub(crate) fn decode_bitmap_page(bytes: Bytes) -> Result<Arc<DecodedBitmapPage>> {
+    let artifact = decode_bitmap_page_artifact(bytes.as_ref())?
+        .ok_or(QueryError::Decode("invalid bitmap page artifact"))?;
+    let blob = decode_bitmap_blob(artifact.bitmap_blob.as_ref())?;
+    let expected = BitmapPageMeta {
+        min_offset: blob.min_offset,
+        max_offset: blob.max_offset,
+        count: blob.count,
+    };
+    if artifact.meta != expected {
+        return Err(QueryError::Decode(
+            "bitmap page artifact header does not match blob header",
+        ));
+    }
+    Ok(Arc::new(DecodedBitmapPage {
+        meta: expected,
+        bitmap: blob.bitmap,
+    }))
+}
+
 /// Sparse per-stream roll-up of compacted per-page `count`s for one sealed
 /// page group; immutable once built. Lets query time answer page emptiness and
 /// clause selectivity without fetching bitmaps. Only non-empty pages are
@@ -996,7 +1018,7 @@ mod tests {
             bitmap_blob: encode_bitmap_blob(&blob).unwrap(),
         };
         // The pristine artifact decodes with the (matching) outer meta.
-        let decoded = decode_page(encode_bitmap_page_artifact(&artifact)).unwrap();
+        let decoded = decode_bitmap_page(encode_bitmap_page_artifact(&artifact)).unwrap();
         assert_eq!(decoded.meta, artifact.meta);
 
         // Corrupt the OUTER `max_offset` to a too-narrow value; the inner blob
@@ -1007,7 +1029,7 @@ mod tests {
         let mut corrupt = encode_bitmap_page_artifact(&artifact).to_vec();
         corrupt[OUTER_MAX_OFFSET].copy_from_slice(&10u32.to_be_bytes());
         assert!(matches!(
-            decode_page(Bytes::from(corrupt)),
+            decode_bitmap_page(Bytes::from(corrupt)),
             Err(QueryError::Decode(
                 "bitmap page artifact header does not match blob header"
             ))
