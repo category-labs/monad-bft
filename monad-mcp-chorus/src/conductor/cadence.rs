@@ -40,7 +40,7 @@ pub struct CadenceConductorConfig {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-struct Window {
+pub struct Window {
     id: WindowId,
     start: SlotDeadline, // the deadline of the first slot of the window
     proposed_next_start: Option<SlotDeadline>,
