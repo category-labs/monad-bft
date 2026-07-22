@@ -18,8 +18,10 @@ use std::{
     num::NonZeroU64,
 };
 
-use super::{Conductor, ConductorOutput};
-use crate::types::{Slot, Timestamp, TimestampDelta};
+use super::{
+    Conductor, ConductorOutput,
+    types::{NodeId, Slot, Timestamp, TimestampDelta},
+};
 
 type WindowId = u64;
 
@@ -85,7 +87,7 @@ impl Conductor for DummyConductor {
         self.outputs.pop_front()
     }
 
-    fn handle_message(&mut self, _sender: crate::types::NodeId, never: Never) {
+    fn handle_message(&mut self, _sender: NodeId, never: Never) {
         // guaranteed  from type level
         match never {}
     }

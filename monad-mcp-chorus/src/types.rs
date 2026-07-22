@@ -22,11 +22,15 @@ use std::{
 use bytes::Bytes;
 use itertools::Either;
 
-use crate::crypto::SignatureCollection as _;
-// TODO: guard this behind a feature
-pub use crate::crypto::test_helper::{KeyPair, NodeId, PubKey, Signature, SignatureCollection};
-// import the traits
-pub use crate::crypto::{KeyPair as _, Signature as _};
+// the environment this module subtree is instantiated.
+pub use super::env::{
+    KeyPair, MerkleRoot, NodeId, OpaqueChunkHeader, ProposalSignature, PubKey, Signature,
+    SignatureCollection, Stake,
+};
+use crate::spec::{
+    Stake as _,
+    vote::{KeyPair as _, SignatureCollection as _},
+};
 
 // slot number. starting from 0.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -48,9 +52,6 @@ impl Add<u64> for Slot {
         Slot(self.0 + rhs)
     }
 }
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct MerkleRoot(pub u64);
 
 /// An absolute point on the timeline. Stores some logical unix offset from genesis (e.g. ms)?
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -109,21 +110,6 @@ impl TimestampDelta {
 }
 
 pub type SlotDeadline = Timestamp;
-
-// not the same as vote signature. at least ProposalSignature is not
-// supposed to be aggregatable.
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct ProposalSignature;
-
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct OpaqueChunkHeader;
-
-impl OpaqueChunkHeader {
-    pub fn validate(&self, _root: &MerkleRoot, _sig: &ProposalSignature) -> bool {
-        // stubbed to always return true for testing purpose
-        true
-    }
-}
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct ProposalMeta {
@@ -427,32 +413,6 @@ impl<T> std::ops::Index<ProposalIndex> for ProposalMap<T> {
 impl<T> std::ops::IndexMut<ProposalIndex> for ProposalMap<T> {
     fn index_mut(&mut self, index: ProposalIndex) -> &mut T {
         &mut self.values[index]
-    }
-}
-
-#[derive(
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    derive_more::Add,
-    derive_more::Sum,
-    derive_more::From,
-)]
-pub struct Stake(u64);
-
-impl Stake {
-    // 2f
-    fn supermajority_threshold(&self) -> Self {
-        // handle overflow
-        Self((self.0 * 2) / 3)
-    }
-
-    // f
-    fn majority_threshold(&self) -> Self {
-        Self(self.0 / 3)
     }
 }
 

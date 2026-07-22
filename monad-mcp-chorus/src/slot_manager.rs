@@ -15,7 +15,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::{
+use super::{
     slot::{SlotConsensus, SlotOutput},
     types::Slot,
 };

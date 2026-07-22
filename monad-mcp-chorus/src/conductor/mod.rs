@@ -19,7 +19,7 @@ pub mod dummy;
 
 use std::collections::BTreeMap;
 
-use crate::types::{NodeId, Slot, SlotDeadline, Timestamp};
+use super::types::{self, NodeId, Slot, SlotDeadline, Timestamp};
 
 pub trait Conductor
 where

@@ -18,12 +18,15 @@ use std::sync::Arc;
 use bytes::Bytes;
 use itertools::Either;
 
-use super::fallback::{FallbackPath, MVBAInputs};
-use crate::types::{
-    DAHandle, EquivCert, FetchProposalError, IsVote, KeyPair, MerkleRoot, NodeId, ProposalIndex,
-    ProposalMap, ProposalMeta, Signature, Slot, StrongQc, TotalProposalMap, ValidatorData, VoteMsg,
-    VotePool, WeakQc, dummy_serialize,
+use super::{
+    fallback::{FallbackPath, MVBAInputs},
+    types::{
+        DAHandle, EquivCert, FetchProposalError, IsVote, KeyPair, MerkleRoot, NodeId,
+        ProposalIndex, ProposalMap, ProposalMeta, Signature, Slot, StrongQc, TotalProposalMap,
+        ValidatorData, VoteMsg, VotePool, WeakQc, dummy_serialize,
+    },
 };
+use crate::spec::proposal::ChunkHeader as _;
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 enum Phase {

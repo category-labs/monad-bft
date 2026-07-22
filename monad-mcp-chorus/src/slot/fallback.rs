@@ -15,8 +15,10 @@
 
 use std::sync::Arc;
 
-use super::fast::{CertifiedEntry, EnterFallbackCert};
-use crate::types::{KeyPair, Slot, TotalProposalMap, ValidatorData};
+use super::{
+    fast::{CertifiedEntry, EnterFallbackCert},
+    types::{KeyPair, Slot, TotalProposalMap, ValidatorData},
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct FallbackRound(u64);

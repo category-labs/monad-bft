@@ -23,9 +23,9 @@ use super::{
         BatchVoteMsg, CommitVoteDeadlineOutcome, EnterFallbackCert, FallbackVoteMsg, FastBlock,
         FastCommitQc, FastCommitVoteMsg, FastPath,
     },
-};
-use crate::types::{
-    DAHandle, KeyPair, NodeId, ProposalIndex, ProposalMeta, Slot, TimestampDelta, ValidatorData,
+    types::{
+        DAHandle, KeyPair, NodeId, ProposalIndex, ProposalMeta, Slot, TimestampDelta, ValidatorData,
+    },
 };
 
 // emitted from the DA layer upon validating a proposal

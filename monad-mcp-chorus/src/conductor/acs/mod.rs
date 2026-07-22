@@ -15,7 +15,7 @@
 
 pub mod dummy;
 
-use crate::types::NodeId;
+use super::types::{self, NodeId};
 
 /// A protocol for Agreement on a Core Set
 pub trait Acs<V> {

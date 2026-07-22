@@ -13,71 +13,95 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::{HashMap, HashSet};
+pub use self::{proposal::*, validator::*, vote::*};
 
-use bytes::Bytes;
+mod validator {
+    // Into implemented for testing purpose only.
+    use derive_more::Into;
 
-// A simple, pure identifier to a node. The NodeId type
-// is not involved in any sort of crypto operation *in this module*.
-pub trait NodeId: Copy + Eq + std::hash::Hash {}
+    use super::vote::KeyPair;
+    use crate::spec;
 
-// Only used to verify a Signature signed using KeyPair.
-pub trait PubKey: Clone + Eq {}
+    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Into)]
+    pub struct NodeId(u64);
 
-// Used to sign a piece of data to get a Signature. Clone deliberately
-// not required - the programmer should carefully evaluate any need
-// for cloning the KeyPair for security purpose.
-pub trait KeyPair {
-    type PubKey: PubKey;
-    type Signature: Signature<PubKey = Self::PubKey>;
-    fn pubkey(&self) -> Self::PubKey;
-    fn sign(&self, data: &Bytes) -> Self::Signature;
+    impl spec::validator::NodeId for NodeId {}
+
+    impl NodeId {
+        pub fn dummy(id: u64) -> Self {
+            NodeId(id)
+        }
+
+        // allows quickly deriving the KeyPair from a NodeId for
+        // testing purpose.
+        pub fn keypair(&self) -> KeyPair {
+            KeyPair::dummy(self.0)
+        }
+    }
+
+    #[derive(
+        Default,
+        Clone,
+        Copy,
+        PartialEq,
+        Eq,
+        PartialOrd,
+        Ord,
+        derive_more::Add,
+        derive_more::Sum,
+        derive_more::From,
+    )]
+    pub struct Stake(u64);
+
+    impl spec::validator::Stake for Stake {
+        // 2f
+        fn supermajority_threshold(&self) -> Self {
+            // handle overflow
+            Self((self.0 * 2) / 3)
+        }
+
+        // f
+        fn majority_threshold(&self) -> Self {
+            Self(self.0 / 3)
+        }
+    }
 }
 
-// A signature on a message by a KeyPair. Once presented the message &
-// PubKey it can verify the authenticity of the message & the
-// signer. Note: no pubkey-recovery capability assumed.
-pub trait Signature: Clone + Eq {
-    type PubKey: PubKey;
-    fn verify(&self, data: &[u8], pubkey: Self::PubKey) -> bool;
+mod proposal {
+    use crate::spec;
+
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+    pub struct MerkleRoot(pub u64);
+
+    impl spec::proposal::MerkleRoot for MerkleRoot {}
+
+    #[derive(Clone, PartialEq, Eq, Hash, Debug)]
+    pub struct ProposalSignature;
+
+    impl spec::proposal::ProposalSignature for ProposalSignature {}
+
+    #[derive(Clone, PartialEq, Eq, Hash, Debug)]
+    pub struct OpaqueChunkHeader;
+
+    impl spec::proposal::ChunkHeader for OpaqueChunkHeader {
+        type Root = MerkleRoot;
+        type Sig = ProposalSignature;
+
+        fn validate(&self, _root: &MerkleRoot, _sig: &ProposalSignature) -> bool {
+            // stubbed to always return true for testing purpose
+            true
+        }
+    }
 }
 
-// A collection of signatures on a common message.
-pub trait SignatureCollection: Clone + Eq {
-    type Signature: Signature;
-
-    // Returns None if there is any issue with the signatures.
-    // Q: is validator mapping necessary for aggregation? or just the signatures would be enough?
-    fn aggregate<'a>(data: &Bytes, sigs: impl Iterator<Item = &'a Self::Signature>) -> Option<Self>
-    where
-        Self: 'static;
-
-    // Returns None if the SignatureCollection is invalid or
-    // inconsistent with the provided mapping. Otherwise return the
-    // set of signers.
-    fn verify<N>(
-        &self,
-        data: &[u8],
-        // this allows passing &validator_data.mapping directly without cloning.
-        mapping: &HashMap<N, <Self::Signature as Signature>::PubKey>,
-    ) -> Option<HashSet<N>>
-    where
-        N: NodeId;
-}
-
-pub(crate) mod test_helper {
+mod vote {
     use std::collections::{HashMap, HashSet};
 
     use bytes::Bytes;
     // Into implemented on these types for testing purpose only.
     use derive_more::Into;
 
-    use super::Signature as _;
-
-    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Into)]
-    pub struct NodeId(u64);
-
-    impl super::NodeId for NodeId {}
+    use crate::spec::{self, vote::Signature as _};
 
     #[derive(PartialEq, Eq, Hash, Debug, Into)]
     pub struct KeyPair(u64);
@@ -97,19 +121,7 @@ pub(crate) mod test_helper {
         sigs: Vec<Signature>,
     }
 
-    impl NodeId {
-        pub fn dummy(id: u64) -> Self {
-            NodeId(id)
-        }
-
-        // allows quickly deriving the KeyPair from a NodeId for
-        // testing purpose.
-        pub fn keypair(&self) -> KeyPair {
-            KeyPair(self.0)
-        }
-    }
-
-    impl super::PubKey for PubKey {}
+    impl spec::vote::PubKey for PubKey {}
 
     impl KeyPair {
         pub fn dummy(id: u64) -> Self {
@@ -117,7 +129,7 @@ pub(crate) mod test_helper {
         }
     }
 
-    impl super::KeyPair for KeyPair {
+    impl spec::vote::KeyPair for KeyPair {
         type PubKey = PubKey;
         type Signature = Signature;
 
@@ -133,7 +145,7 @@ pub(crate) mod test_helper {
         }
     }
 
-    impl super::Signature for Signature {
+    impl spec::vote::Signature for Signature {
         type PubKey = PubKey;
 
         fn verify(&self, data: &[u8], pubkey: Self::PubKey) -> bool {
@@ -141,7 +153,7 @@ pub(crate) mod test_helper {
         }
     }
 
-    impl super::SignatureCollection for SignatureCollection {
+    impl spec::vote::SignatureCollection for SignatureCollection {
         type Signature = Signature;
 
         fn aggregate<'a>(data: &Bytes, sigs: impl Iterator<Item = &'a Signature>) -> Option<Self> {
@@ -155,8 +167,6 @@ pub(crate) mod test_helper {
             }
 
             if sigs_vec.is_empty() {
-                // reject empty signature collection
-                // Q: is this necessary?
                 return None;
             }
 
@@ -168,7 +178,7 @@ pub(crate) mod test_helper {
 
         fn verify<N>(&self, data: &[u8], mapping: &HashMap<N, PubKey>) -> Option<HashSet<N>>
         where
-            N: super::NodeId,
+            N: spec::validator::NodeId,
         {
             if self.data != data {
                 // data mismatch
@@ -200,3 +210,15 @@ pub(crate) mod test_helper {
         }
     }
 }
+
+const _: () = crate::spec::assert_env::<
+    NodeId,
+    Stake,
+    PubKey,
+    KeyPair,
+    Signature,
+    SignatureCollection,
+    MerkleRoot,
+    ProposalSignature,
+    OpaqueChunkHeader,
+>();

@@ -23,19 +23,19 @@ mod helper;
 
 use std::{num::NonZeroU64, sync::Arc, time::Duration};
 
-use helper::{expect_finalized, expect_finalized_at};
-use monad_mcp_chorus::{
+use chorus::{
     conductor::{
         acs::dummy::DummyAcs,
         cadence::{CadenceConductor, CadenceConductorConfig},
     },
-    crypto::KeyPair as _,
     slot::{
         chorus::{Chorus, ChorusConfig, ChorusContext},
         dummy::{DummySlotConsensus, DummySlotConsensusConfig},
     },
     types::{DAHandle, NodeId, SlotDeadline, Stake, Timestamp, TimestampDelta, ValidatorData},
 };
+use helper::{expect_finalized, expect_finalized_at};
+use monad_mcp_chorus::{spec::KeyPair as _, stub as chorus};
 use monad_mcp_chorus_sim::CadenceSwarmBuilder;
 
 const NODES: u64 = 4;

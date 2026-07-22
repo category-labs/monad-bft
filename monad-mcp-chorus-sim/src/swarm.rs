@@ -15,10 +15,11 @@
 
 use std::{cell::RefCell, collections::HashMap, rc::Rc, time::Duration};
 
-use monad_mcp_chorus::{
+use chorus::{
     CadenceRuntime, Conductor, FinalizationObserver, Runtime, SlotConsensus, SlotManager,
     types::{NodeId, Slot, Timestamp},
 };
+use monad_mcp_chorus::stub as chorus;
 use monad_sim::{RunOutcome, StepLabel};
 use monad_sim_swarm::{Network, Swarm};
 
