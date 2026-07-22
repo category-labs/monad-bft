@@ -140,10 +140,8 @@ impl CallRequest {
                     })?;
 
                 let max_fee_per_gas = match max_fee_per_gas {
-                    Some(mut max_fee_per_gas) => {
-                        if max_fee_per_gas == U256::ZERO {
-                            max_fee_per_gas = base_fee;
-                        } else if max_fee_per_gas < base_fee {
+                    Some(max_fee_per_gas) => {
+                        if max_fee_per_gas < base_fee {
                             return Err(JsonRpcError::eth_call_error(
                                 "max fee per gas less than block base fee".to_string(),
                                 None,
@@ -381,15 +379,18 @@ pub async fn fill_gas_params<T: Triedb>(
     state_overrides: &StateOverrideSet,
     eth_call_provider_gas_limit: U256,
 ) -> Result<(), JsonRpcError> {
-    // Geth checks that the sender can pay for gas if gas price is populated.
-    // Set the base fee to zero if gas price is not populated.
+    // Geth checks that the sender can pay for gas if a nonzero gas price is populated.
+    // Set the base fee to zero if gas price is missing or explicitly zero, preserving
+    // the zero-fee call mode.
     // https://github.com/ethereum/go-ethereum/pull/20783
     match tx.gas_price_details {
-        GasPriceDetails::Legacy { gas_price: _ }
+        GasPriceDetails::Legacy {
+            gas_price: fee_per_gas,
+        }
         | GasPriceDetails::Eip1559 {
-            max_fee_per_gas: Some(_),
+            max_fee_per_gas: Some(fee_per_gas),
             ..
-        } => {
+        } if !fee_per_gas.is_zero() => {
             tx.fill_gas_prices(U256::from(header.base_fee_per_gas.unwrap_or_default()))?;
 
             if tx.gas.is_none() {
@@ -1423,6 +1424,119 @@ mod tests {
         assert_eq!(call_request.gas, Some(U256::from(100)));
     }
 
+    #[tokio::test]
+    async fn test_fill_gas_params_zero_fee_cap() {
+        let mock_triedb = MockTriedb::default();
+        let state_overrides = StateOverrideSet::default();
+
+        // explicit maxFeePerGas of zero is preserved as a zero-fee call:
+        // (1) header base fee is set to zero, (2) max fee stays zero,
+        // (3) tx gas limit is set to block gas limit
+        let mut call_request = CallRequest {
+            gas_price_details: GasPriceDetails::Eip1559 {
+                max_fee_per_gas: Some(U256::ZERO),
+                max_priority_fee_per_gas: None,
+            },
+            ..Default::default()
+        };
+        let mut header = Header {
+            base_fee_per_gas: Some(10_000_000_000),
+            gas_limit: 300_000_000,
+            ..Default::default()
+        };
+        let block_key = BlockKey::Finalized(FinalizedBlockKey(SeqNum(header.number)));
+
+        let result = fill_gas_params(
+            &mock_triedb,
+            block_key,
+            &mut call_request,
+            &mut header,
+            &state_overrides,
+            U256::MAX,
+        )
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(header.base_fee_per_gas, Some(0));
+        assert_eq!(call_request.max_fee_per_gas(), Some(U256::ZERO));
+        assert_eq!(call_request.gas, Some(U256::from(300_000_000)));
+
+        // a zero-balance sender is not balance-checked when the fee cap is zero
+        let mut call_request = CallRequest {
+            from: Some(Address::default()),
+            gas_price_details: GasPriceDetails::Eip1559 {
+                max_fee_per_gas: Some(U256::ZERO),
+                max_priority_fee_per_gas: None,
+            },
+            ..Default::default()
+        };
+        let mut header = Header {
+            base_fee_per_gas: Some(10_000_000_000),
+            gas_limit: 300_000_000,
+            ..Default::default()
+        };
+        let result = fill_gas_params(
+            &mock_triedb,
+            block_key,
+            &mut call_request,
+            &mut header,
+            &state_overrides,
+            U256::MAX,
+        )
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(header.base_fee_per_gas, Some(0));
+        assert_eq!(call_request.max_fee_per_gas(), Some(U256::ZERO));
+
+        // explicit legacy gasPrice of zero is preserved as a zero-fee call
+        let mut call_request = CallRequest {
+            gas_price_details: GasPriceDetails::Legacy {
+                gas_price: U256::ZERO,
+            },
+            ..Default::default()
+        };
+        let mut header = Header {
+            base_fee_per_gas: Some(10_000_000_000),
+            gas_limit: 300_000_000,
+            ..Default::default()
+        };
+        let result = fill_gas_params(
+            &mock_triedb,
+            block_key,
+            &mut call_request,
+            &mut header,
+            &state_overrides,
+            U256::MAX,
+        )
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(header.base_fee_per_gas, Some(0));
+        assert_eq!(call_request.max_fee_per_gas(), Some(U256::ZERO));
+
+        // zero max fee with a nonzero priority fee is rejected
+        let mut call_request = CallRequest {
+            gas_price_details: GasPriceDetails::Eip1559 {
+                max_fee_per_gas: Some(U256::ZERO),
+                max_priority_fee_per_gas: Some(U256::from(5)),
+            },
+            ..Default::default()
+        };
+        let mut header = Header {
+            base_fee_per_gas: Some(10_000_000_000),
+            gas_limit: 300_000_000,
+            ..Default::default()
+        };
+        let result = fill_gas_params(
+            &mock_triedb,
+            block_key,
+            &mut call_request,
+            &mut header,
+            &state_overrides,
+            U256::MAX,
+        )
+        .await;
+        assert!(result.is_err());
+    }
+
     #[test]
     fn test_fill_gas_prices() {
         // when gas price is specified, returns error if gas price is less than block base fee
@@ -1434,6 +1548,27 @@ mod tests {
             ..Default::default()
         };
         assert!(call_request.fill_gas_prices(U256::from(100)).is_err());
+
+        // an explicit zero maxFeePerGas is rejected against a nonzero base fee
+        let mut call_request = CallRequest {
+            gas_price_details: GasPriceDetails::Eip1559 {
+                max_fee_per_gas: Some(U256::ZERO),
+                max_priority_fee_per_gas: None,
+            },
+            ..Default::default()
+        };
+        assert!(call_request.fill_gas_prices(U256::from(100)).is_err());
+
+        // an explicit zero maxFeePerGas is preserved in the zero-fee path
+        let mut call_request = CallRequest {
+            gas_price_details: GasPriceDetails::Eip1559 {
+                max_fee_per_gas: Some(U256::ZERO),
+                max_priority_fee_per_gas: None,
+            },
+            ..Default::default()
+        };
+        assert!(call_request.fill_gas_prices(U256::ZERO).is_ok());
+        assert_eq!(call_request.max_fee_per_gas(), Some(U256::ZERO));
 
         // when gas price is not specified, do not return error, set maxFeePerGas to block base fee
         let mut call_request = CallRequest {
