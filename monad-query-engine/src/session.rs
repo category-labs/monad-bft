@@ -53,8 +53,8 @@ impl<'a, M: MetaStore, B: BlobStore> WriteSession<'a, M, B> {
     pub(crate) fn put<V>(&mut self, table: &CachedKvTable<M, V>, key: &[u8], value: Bytes) {
         self.meta_pending.push(MetaWriteOp::Put {
             table: table.table_id(),
-            key: key.to_vec(),
-            value,
+            row_key: key.to_vec(),
+            row_data: value,
         });
     }
 
@@ -68,16 +68,16 @@ impl<'a, M: MetaStore, B: BlobStore> WriteSession<'a, M, B> {
         self.meta_pending.push(MetaWriteOp::ScanPut {
             table: table.table_id(),
             partition: partition.to_vec(),
-            clustering: clustering.to_vec(),
-            value,
+            clustering_key: clustering.to_vec(),
+            row_data: value,
         });
     }
 
     pub(crate) fn put_blob(&mut self, table: &BlobTable<B>, key: &[u8], value: Bytes) {
         self.blob_pending.push(BlobWriteOp {
             table: table.table,
-            key: key.to_vec(),
-            value,
+            blob_key: key.to_vec(),
+            blob_data: value,
         });
     }
 

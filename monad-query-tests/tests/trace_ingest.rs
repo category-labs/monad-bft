@@ -103,7 +103,7 @@ async fn ingest_handles_empty_traces() {
 fn trace_address_unit_root_chain() {
     // root -> A -> A1, A2; root -> B; root -> C -> C1 -> C1a
     let depths = [0u32, 1, 2, 2, 1, 1, 2, 3];
-    let addresses = compute_trace_addresses(depths).expect("compute");
+    let addresses = compute_trace_addresses(&depths).expect("compute");
     assert_eq!(
         addresses,
         vec![

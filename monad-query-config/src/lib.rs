@@ -209,7 +209,7 @@ impl ChainDataArchiveBackendConfig {
 }
 
 #[cfg(feature = "dynamo")]
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct ChainDataArchiveDynamoConfig {
     pub table: Option<String>,
@@ -221,6 +221,22 @@ pub struct ChainDataArchiveDynamoConfig {
     pub session_token: Redacted,
     #[serde(default = "default_max_concurrency_256")]
     pub max_concurrency: usize,
+}
+
+#[cfg(feature = "dynamo")]
+impl Default for ChainDataArchiveDynamoConfig {
+    fn default() -> Self {
+        Self {
+            table: None,
+            endpoint_url: None,
+            region: None,
+            profile: None,
+            access_key_id: Redacted::default(),
+            secret_access_key: Redacted::default(),
+            session_token: Redacted::default(),
+            max_concurrency: default_max_concurrency_256(),
+        }
+    }
 }
 
 #[cfg(feature = "dynamo")]
@@ -242,7 +258,7 @@ impl ChainDataArchiveDynamoConfig {
 }
 
 #[cfg(feature = "mongo")]
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct ChainDataArchiveMongoConfig {
     pub url: Redacted,
@@ -251,6 +267,18 @@ pub struct ChainDataArchiveMongoConfig {
     pub collection: String,
     #[serde(default = "default_max_pool_size_64")]
     pub max_pool_size: u32,
+}
+
+#[cfg(feature = "mongo")]
+impl Default for ChainDataArchiveMongoConfig {
+    fn default() -> Self {
+        Self {
+            url: Redacted::default(),
+            database: None,
+            collection: default_collection_block_level(),
+            max_pool_size: default_max_pool_size_64(),
+        }
+    }
 }
 
 #[cfg(feature = "mongo")]
@@ -273,7 +301,7 @@ impl ChainDataArchiveMongoConfig {
 }
 
 #[cfg(feature = "s3")]
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct ChainDataArchiveS3Config {
     pub bucket: Option<String>,
@@ -285,6 +313,22 @@ pub struct ChainDataArchiveS3Config {
     pub max_concurrency: usize,
     pub access_key_id: Redacted,
     pub secret_access_key: Redacted,
+}
+
+#[cfg(feature = "s3")]
+impl Default for ChainDataArchiveS3Config {
+    fn default() -> Self {
+        Self {
+            bucket: None,
+            region: None,
+            profile: None,
+            endpoint_urls: Vec::new(),
+            force_path_style: false,
+            max_concurrency: default_max_concurrency_64(),
+            access_key_id: Redacted::default(),
+            secret_access_key: Redacted::default(),
+        }
+    }
 }
 
 #[cfg(feature = "s3")]
@@ -415,7 +459,7 @@ impl ChainDataMetaBackendConfig {
 }
 
 #[cfg(feature = "mongo")]
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct ChainDataMongoMetaConfig {
     pub url: Redacted,
@@ -426,6 +470,19 @@ pub struct ChainDataMongoMetaConfig {
     pub max_pool_size: u32,
     #[serde(default = "default_write_concurrency_64")]
     pub write_concurrency: usize,
+}
+
+#[cfg(feature = "mongo")]
+impl Default for ChainDataMongoMetaConfig {
+    fn default() -> Self {
+        Self {
+            url: Redacted::default(),
+            database: None,
+            collection: default_collection_chain_data_meta(),
+            max_pool_size: default_max_pool_size_64(),
+            write_concurrency: default_write_concurrency_64(),
+        }
+    }
 }
 
 #[cfg(feature = "mongo")]
@@ -472,7 +529,7 @@ impl ChainDataBlobBackendConfig {
 }
 
 #[cfg(feature = "s3")]
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct ChainDataS3BlobConfig {
     pub bucket: Option<String>,
@@ -486,6 +543,24 @@ pub struct ChainDataS3BlobConfig {
     pub create_bucket: bool,
     pub access_key_id: Redacted,
     pub secret_access_key: Redacted,
+}
+
+#[cfg(feature = "s3")]
+impl Default for ChainDataS3BlobConfig {
+    fn default() -> Self {
+        Self {
+            bucket: None,
+            region: None,
+            profile: None,
+            endpoint_urls: Vec::new(),
+            prefix: String::new(),
+            force_path_style: false,
+            max_concurrency: default_max_concurrency_64(),
+            create_bucket: false,
+            access_key_id: Redacted::default(),
+            secret_access_key: Redacted::default(),
+        }
+    }
 }
 
 #[cfg(feature = "s3")]
@@ -516,7 +591,7 @@ pub enum ChainDataDynamoTableLayoutConfig {
 }
 
 #[cfg(feature = "dynamo")]
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct ChainDataDynamoMetaConfig {
     pub table: Option<String>,
@@ -538,6 +613,30 @@ pub struct ChainDataDynamoMetaConfig {
     #[serde(default = "default_scylla_concurrency_1024")]
     pub scylla_concurrency: usize,
     pub batch_write_max_items: Option<usize>,
+}
+
+#[cfg(feature = "dynamo")]
+impl Default for ChainDataDynamoMetaConfig {
+    fn default() -> Self {
+        Self {
+            table: None,
+            table_prefix: None,
+            table_layout: ChainDataDynamoTableLayoutConfig::default(),
+            endpoint_url: None,
+            endpoint_urls: Vec::new(),
+            region: None,
+            profile: None,
+            access_key_id: Redacted::default(),
+            secret_access_key: Redacted::default(),
+            session_token: Redacted::default(),
+            create_table: false,
+            max_concurrency: default_max_concurrency_256(),
+            table_max_concurrency: default_max_concurrency_256(),
+            scylla_profile: false,
+            scylla_concurrency: default_scylla_concurrency_1024(),
+            batch_write_max_items: None,
+        }
+    }
 }
 
 #[cfg(feature = "dynamo")]
@@ -624,7 +723,7 @@ impl ChainDataDynamoMetaConfig {
 }
 
 #[cfg(feature = "dynamo")]
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct ChainDataDynamoBlobConfig {
     pub table: Option<String>,
@@ -638,6 +737,24 @@ pub struct ChainDataDynamoBlobConfig {
     #[serde(default = "default_max_concurrency_256")]
     pub max_concurrency: usize,
     pub chunk_size: Option<usize>,
+}
+
+#[cfg(feature = "dynamo")]
+impl Default for ChainDataDynamoBlobConfig {
+    fn default() -> Self {
+        Self {
+            table: None,
+            endpoint_url: None,
+            region: None,
+            profile: None,
+            access_key_id: Redacted::default(),
+            secret_access_key: Redacted::default(),
+            session_token: Redacted::default(),
+            create_table: false,
+            max_concurrency: default_max_concurrency_256(),
+            chunk_size: None,
+        }
+    }
 }
 
 #[cfg(feature = "dynamo")]
