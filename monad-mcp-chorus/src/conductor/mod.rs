@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 pub mod acs;
-mod cadence;
+pub mod cadence;
 pub mod dummy;
 
 use std::collections::BTreeMap;

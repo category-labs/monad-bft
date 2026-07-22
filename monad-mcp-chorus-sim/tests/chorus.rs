@@ -65,7 +65,7 @@ fn gen_validator_data(n: u64) -> ValidatorData {
 
 #[test]
 fn all_slots_finalize_on_schedule() {
-    const NODES: u64 = 3;
+    const NODES: u64 = 4;
 
     let mut builder = CadenceSwarmBuilder::new();
     builder.set_latency(Duration::from_millis(LATENCY));
