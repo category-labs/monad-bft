@@ -343,7 +343,7 @@ pub(crate) async fn task_connection(
 ) {
     let conn_id = peer_handle.conn_id;
     let connection = TcpConnection::new();
-    let tcp_id = (addr.ip(), addr.port(), conn_id);
+    let tcp_id = (addr.ip(), addr.port(), context.socket_id, conn_id);
     context.tcp_control_map.register(tcp_id, connection.clone());
     let metrics = &context.metrics;
     trace!(conn_id, ?addr, "starting tcp connection task");
@@ -394,6 +394,17 @@ pub(crate) async fn task_connection(
     }
     drop_queued_messages(&mut msg_receiver, metrics);
     context.tcp_control_map.unregister(&tcp_id);
+    match context.tcp_disconnect_tx.try_send(addr) {
+        Ok(()) => {}
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            warn!(
+                conn_id,
+                ?addr,
+                "tcp disconnect channel full, dropping event"
+            );
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => {}
+    }
     trace!(conn_id, ?addr, "exiting tcp connection task");
 }
 
@@ -690,6 +701,7 @@ mod tests {
             )
             .is_none());
         let (ingress, _messages) = mpsc::channel(1);
+        let (disconnect_tx, mut disconnect_rx) = mpsc::channel(1);
         let control = TcpControl::new();
         let context = RxContext {
             socket_id: key.0,
@@ -699,6 +711,7 @@ mod tests {
             },
             tcp_control_map: control.clone(),
             tcp_ingress_tx: ingress,
+            tcp_disconnect_tx: disconnect_tx,
             metrics: metrics.clone(),
         };
         spawn(task_connection(
@@ -727,6 +740,7 @@ mod tests {
         assert_eq!(state.inner.borrow().outgoing_connections, 0);
         assert_eq!(metrics.tcp_send_errors.get(), 1);
         assert_eq!(metrics.tcp_receive_errors.get(), 0);
+        assert_eq!(disconnect_rx.try_recv().unwrap(), addr);
         drop(peer);
     }
 }

@@ -57,6 +57,12 @@ pub enum Error {
         actual: SocketAddr,
     },
 
+    #[error("packet source address mismatch: expected {expected}, got {actual}")]
+    PacketAddressMismatch {
+        expected: SocketAddr,
+        actual: SocketAddr,
+    },
+
     #[error("timestamp replay detected: received timestamp is not newer than expected")]
     TimestampReplay,
 

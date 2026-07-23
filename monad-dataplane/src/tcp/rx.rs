@@ -55,6 +55,7 @@ pub(crate) struct RxContext {
     pub(crate) rate_limit: TcpRateLimit,
     pub(crate) tcp_control_map: TcpControl,
     pub(crate) tcp_ingress_tx: mpsc::Sender<RecvTcpMsg>,
+    pub(crate) tcp_disconnect_tx: mpsc::Sender<SocketAddr>,
     pub(crate) metrics: DataplaneMetrics,
 }
 

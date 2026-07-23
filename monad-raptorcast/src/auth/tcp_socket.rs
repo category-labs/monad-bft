@@ -37,7 +37,7 @@ use tracing::{debug, warn};
 use super::{
     common::{encrypt_packet, AuthenticatedTimerFuture},
     metrics::{
-        init_socket_executor_metrics, GAUGE_RAPTORCAST_AUTH_SIGAUTH_TCP_BYTES_READ,
+        init_tcp_socket_executor_metrics, GAUGE_RAPTORCAST_AUTH_SIGAUTH_TCP_BYTES_READ,
         GAUGE_RAPTORCAST_AUTH_SIGAUTH_TCP_BYTES_WRITTEN,
         GAUGE_RAPTORCAST_AUTH_WIREAUTH_TCP_BYTES_READ,
         GAUGE_RAPTORCAST_AUTH_WIREAUTH_TCP_BYTES_WRITTEN,
@@ -175,7 +175,7 @@ where
             authenticated,
             signature_based,
             peer_discovery,
-            metrics: init_socket_executor_metrics(),
+            metrics: init_tcp_socket_executor_metrics(),
         }
     }
 
@@ -208,6 +208,7 @@ where
                 );
                 return;
             };
+            authenticated.process_disconnects();
             let payload_len = payload.len() as u64;
             let written = if let Some(session_addr) = authenticated
                 .auth_protocol
@@ -313,7 +314,14 @@ where
                     self.flush();
                     continue;
                 }
-                message = self.reader.recv() => {
+                result = self.reader.recv_with_disconnect() => {
+                    let message = match result {
+                        Ok(message) => message,
+                        Err(addr) => {
+                            self.auth_protocol.disconnect_addr(&addr);
+                            continue;
+                        }
+                    };
                     let mut packet_buf = message.payload.to_vec();
                     match self.auth_protocol.dispatch(&mut packet_buf, message.src_addr) {
                         Ok(Some((plaintext, Some(from)))) => {
@@ -400,6 +408,12 @@ where
         true
     }
 
+    fn process_disconnects(&mut self) {
+        while let Some(addr) = self.reader.try_recv_disconnect() {
+            self.auth_protocol.disconnect_addr(&addr);
+        }
+    }
+
     fn encrypt_packet(
         &mut self,
         addr: SocketAddr,
@@ -442,8 +456,14 @@ mod tests {
     use monad_wireauth::Config;
     use tracing_subscriber::EnvFilter;
 
-    use super::{AuthenticatedTcpSocketHandle, DualTcpSocketHandle, SigAuthTcpSocket};
-    use crate::auth::{metrics::TCP_METRICS, protocol::WireAuthProtocol, DataplaneCompletion};
+    use super::{
+        AuthRecvTcpMsg, AuthenticatedTcpSocketHandle, DualTcpSocketHandle, SigAuthTcpSocket,
+    };
+    use crate::auth::{
+        metrics::TCP_METRICS,
+        protocol::{AuthenticationProtocol, WireAuthProtocol},
+        DataplaneCompletion,
+    };
 
     fn keypair(seed: u8) -> KeyPair {
         KeyPair::from_bytes(&mut [seed; 32]).unwrap()
@@ -569,6 +589,7 @@ mod tests {
     struct TestPair {
         sender_id: NodeId<PublicKey>,
         receiver_id: NodeId<PublicKey>,
+        receiver_wireauth_addr: SocketAddr,
         sender: TestSocket,
         receiver: TestSocket,
         _controls: [DataplaneControl; 2],
@@ -586,6 +607,7 @@ mod tests {
         ) -> Self {
             let mut sender = NodeInfo::new(1);
             let mut receiver = NodeInfo::new(2);
+            let receiver_wireauth_addr = SocketAddr::V4(receiver.wireauth_tcp_addr);
             let mut name_records =
                 HashMap::from([(sender.node_id, sender.create_name_record(with_wireauth_tcp))]);
             let receiver_record = receiver_tcp_port.map_or_else(
@@ -607,6 +629,7 @@ mod tests {
             Self {
                 sender_id: sender.node_id,
                 receiver_id: receiver.node_id,
+                receiver_wireauth_addr,
                 sender: sender_socket,
                 receiver: receiver_socket,
                 _controls: [sender_control, receiver_control],
@@ -665,6 +688,29 @@ mod tests {
         })
         .await
         .expect("timed out receiving tcp messages")
+    }
+
+    async fn recv_message(socket: &mut TestSocket) -> AuthRecvTcpMsg<PublicKey> {
+        loop {
+            match socket.recv().await {
+                Ok(message) => return message,
+                Err(err) => tracing::warn!(?err, "tcp recv error"),
+            }
+        }
+    }
+
+    async fn exchange_messages(
+        socket_a: &mut TestSocket,
+        node_a_id: &NodeId<PublicKey>,
+        socket_b: &mut TestSocket,
+        node_b_id: &NodeId<PublicKey>,
+    ) -> (AuthRecvTcpMsg<PublicKey>, AuthRecvTcpMsg<PublicKey>) {
+        socket_a.write_to_peer(node_b_id, Bytes::from_static(b"from_a"), None);
+        tokio::join!(recv_message(socket_a), async {
+            let message = recv_message(socket_b).await;
+            socket_b.write_to_peer(node_a_id, Bytes::from_static(b"from_b"), None);
+            message
+        })
     }
 
     fn init_tracing() {
@@ -728,6 +774,7 @@ mod tests {
                 sender: mut socket_a,
                 receiver: mut socket_b,
                 _controls,
+                ..
             } = TestPair::new(true);
             let exchange = async {
                 let node_a = async {
@@ -817,6 +864,59 @@ mod tests {
                     .await
                     .is_err(),
                 "buffer failure must not send via sigauth"
+            );
+        });
+    }
+
+    #[test]
+    fn test_wireauth_disconnect_reauthenticates_on_new_connection() {
+        run_test(async {
+            let TestPair {
+                sender_id: node_a_id,
+                receiver_id: node_b_id,
+                receiver_wireauth_addr,
+                sender: mut socket_a,
+                receiver: mut socket_b,
+                _controls,
+            } = TestPair::new(true);
+
+            let (_, first_at_b) = tokio::time::timeout(
+                Duration::from_secs(10),
+                exchange_messages(&mut socket_a, &node_a_id, &mut socket_b, &node_b_id),
+            )
+            .await
+            .expect("initial exchange timed out");
+
+            _controls[0].disconnect(receiver_wireauth_addr);
+
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let authenticated = socket_a.authenticated.as_mut().unwrap();
+                    authenticated.process_disconnects();
+                    if !authenticated
+                        .auth_protocol
+                        .has_any_session_by_public_key(&node_b_id.pubkey())
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("wireauth sessions were not removed after tcp disconnect");
+
+            let (second_at_a, second_at_b) = tokio::time::timeout(
+                Duration::from_secs(10),
+                exchange_messages(&mut socket_a, &node_a_id, &mut socket_b, &node_b_id),
+            )
+            .await
+            .expect("reconnect exchange timed out");
+
+            assert_eq!(second_at_a.payload, Bytes::from_static(b"from_b"));
+            assert_eq!(second_at_b.payload, Bytes::from_static(b"from_a"));
+            assert_ne!(
+                first_at_b.src_addr, second_at_b.src_addr,
+                "the second exchange should use a new tcp connection"
             );
         });
     }
