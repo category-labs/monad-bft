@@ -44,7 +44,7 @@ use monad_query_primitives::records::PrimaryId;
 use monad_query_store::{BlobStore, MetaStore};
 use monad_query_types::{
     ingest_types::{IngestTrace, IngestTx},
-    traces::selector_from_input,
+    traces::{compute_ancestor_reverted, selector_from_input},
     txs::{decode_envelope, selector_from_envelope},
 };
 use roaring::RoaringBitmap;
@@ -273,13 +273,15 @@ where
             b.block.txs.iter(),
             stream_entries_for_tx,
         )?;
+        // moves under a caught revert are rolled back on chain: not transfers
+        let ancestor_reverted = compute_ancestor_reverted(&b.block.traces);
         accumulate_family(
             self.tail.get_mut(Family::Trace),
             PrimaryId::from(b.ranges.trace_first).as_u64(),
             b.ranges.trace_count,
             b.number,
-            b.block.traces.iter(),
-            |trace| Ok(stream_entries_for_trace(trace)),
+            b.block.traces.iter().zip(ancestor_reverted),
+            |(trace, reverted)| Ok(stream_entries_for_trace(trace, reverted)),
         )?;
         self.frontier.log = b.ranges.log_end();
         self.frontier.tx = b.ranges.tx_end();
@@ -732,7 +734,7 @@ fn stream_entries_for_tx(tx: &IngestTx) -> Result<Vec<StreamKey>> {
 /// Expands one frame into the indexed streams written at ingest:
 /// `to`/`selector` skipped when absent, `top_level` only for root frames,
 /// `has_transfer` only when the transfer predicate holds.
-fn stream_entries_for_trace(trace: &IngestTrace) -> Vec<StreamKey> {
+fn stream_entries_for_trace(trace: &IngestTrace, ancestor_reverted: bool) -> Vec<StreamKey> {
     let mut entries = Vec::with_capacity(5);
     entries.push(StreamKey::new(IndexKind::From, trace.from.as_slice()));
 
@@ -748,7 +750,7 @@ fn stream_entries_for_trace(trace: &IngestTrace) -> Vec<StreamKey> {
         entries.push(StreamKey::new(IndexKind::TopLevel, &[]));
     }
 
-    if trace.is_transfer_frame() {
+    if trace.is_transfer_frame(ancestor_reverted) {
         entries.push(StreamKey::new(IndexKind::HasTransfer, &[]));
     }
 

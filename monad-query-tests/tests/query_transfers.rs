@@ -85,6 +85,50 @@ async fn transfers_excludes_zero_value_delegate_and_failed_frames() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn transfers_exclude_frames_under_caught_revert() {
+    let caller = addr(0xaa);
+    let callee = addr(0xbb);
+    let other = addr(0xcc);
+
+    let traces = vec![
+        // root CALL [], value > 0, success — a legitimate transfer
+        top_level_call(0, caller, callee, U256::from(100u64), vec![]),
+        // child CALL [0], caught revert (status 2) — its subtree is rolled back
+        IngestTrace {
+            status: 2,
+            ..nested_call(0, caller, callee, U256::ZERO, vec![])
+        },
+        // grandchild CALL [0,0], value > 0, own frame succeeded — the phantom
+        IngestTrace {
+            depth: 2,
+            trace_address: vec![0, 0],
+            ..top_level_call(0, callee, other, U256::from(5u64), vec![])
+        },
+    ];
+
+    let blocks = vec![block_with_traces(test_header(1, B256::ZERO), traces)];
+    let store = populate::populate_via_engine(blocks).await;
+    let service = store.reader();
+
+    let resp = service
+        .query_transfers(QueryTransfersRequest {
+            envelope: ascending_envelope(1, 1, 100),
+            filter: TransferFilter::default(),
+            relations: TransfersRelations::default(),
+        })
+        .await
+        .expect("query");
+
+    let got: Vec<(Vec<u32>, U256)> = resp
+        .transfers
+        .iter()
+        .map(|t| (t.trace_address.clone(), t.value))
+        .collect();
+    // Only the root survives; the grandchild under the caught revert is excluded.
+    assert_eq!(got, vec![(vec![], U256::from(100u64))]);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn transfers_filter_is_top_level_true_drops_nested() {
     let caller = addr(1);
     let callee = addr(2);
