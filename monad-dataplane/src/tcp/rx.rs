@@ -56,6 +56,7 @@ pub(crate) struct RxContext {
     pub(crate) rate_limit: TcpRateLimit,
     pub(crate) tcp_control_map: TcpControl,
     pub(crate) tcp_ingress_tx: mpsc::Sender<RecvTcpMsg>,
+    pub(crate) tcp_disconnect_tx: mpsc::Sender<SocketAddr>,
     pub(crate) metrics: DataplaneMetrics,
 }
 
@@ -250,7 +251,7 @@ async fn task_accepted_connection(
     _rx_state: ConnectionToken,
 ) {
     let conn_id = peer_handle.conn_id;
-    let connection = TcpConnectionGuard::new(context.tcp_control_map.clone(), addr, conn_id);
+    let connection = TcpConnectionGuard::new(&context, addr, conn_id);
     if let Err(err) = task_connection(&context, addr, stream, &mut msg_receiver, &connection).await
     {
         warn!(conn_id, ?addr, ?err, "error in tcp connection task");

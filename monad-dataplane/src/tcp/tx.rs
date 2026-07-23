@@ -333,7 +333,7 @@ async fn task_connect(
     peer_handle: TxStatePeerHandle,
 ) {
     let conn_id = peer_handle.conn_id;
-    let connection = TcpConnectionGuard::new(context.tcp_control_map.clone(), addr, conn_id);
+    let connection = TcpConnectionGuard::new(&context, addr, conn_id);
     let metrics = &context.metrics;
     let result = select! {
         biased;
@@ -654,6 +654,7 @@ mod tests {
             },
             tcp_control_map: control.clone(),
             tcp_ingress_tx: ingress,
+            tcp_disconnect_tx: mpsc::channel(1).0,
             metrics: metrics.clone(),
         };
         spawn(task_connect(context, addr, receiver, handle));
@@ -734,6 +735,7 @@ mod tests {
             )
             .is_none());
         let (ingress, _messages) = mpsc::channel(1);
+        let (disconnect_tx, mut disconnect_rx) = mpsc::channel(1);
         let control = TcpControl::new();
         let context = RxContext {
             socket_id: key.0,
@@ -743,15 +745,12 @@ mod tests {
             },
             tcp_control_map: control.clone(),
             tcp_ingress_tx: ingress,
+            tcp_disconnect_tx: disconnect_tx,
             metrics: metrics.clone(),
         };
         spawn(async move {
             let _peer_handle = handle;
-            let connection = TcpConnectionGuard::new(
-                context.tcp_control_map.clone(),
-                addr,
-                _peer_handle.conn_id,
-            );
+            let connection = TcpConnectionGuard::new(&context, addr, _peer_handle.conn_id);
             let mut receiver = receiver;
             assert!(
                 task_connection(&context, addr, stream, &mut receiver, &connection)
@@ -778,6 +777,7 @@ mod tests {
         assert_eq!(state.inner.borrow().outgoing_connections, 0);
         assert_eq!(metrics.tcp_send_errors.get(), 1);
         assert_eq!(metrics.tcp_receive_errors.get(), 0);
+        assert_eq!(disconnect_rx.try_recv().unwrap(), addr);
         drop(peer);
     }
 }

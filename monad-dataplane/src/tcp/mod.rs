@@ -206,11 +206,13 @@ pub(crate) struct TcpConnectionGuard {
     control: TcpControl,
     id: TcpIdentifier,
     connection: TcpConnection,
+    disconnect_tx: mpsc::Sender<SocketAddr>,
 }
 
 impl TcpConnectionGuard {
-    fn new(control: TcpControl, addr: SocketAddr, conn_id: u64) -> Self {
-        let id = (addr.ip(), addr.port(), conn_id);
+    fn new(context: &rx::RxContext, addr: SocketAddr, conn_id: u64) -> Self {
+        let control = context.tcp_control_map.clone();
+        let id = (addr.ip(), addr.port(), context.socket_id, conn_id);
         let connection = TcpConnection::new();
         control.register(id, connection.clone());
         trace!(conn_id, ?addr, "starting tcp connection task");
@@ -218,6 +220,7 @@ impl TcpConnectionGuard {
             control,
             id,
             connection,
+            disconnect_tx: context.tcp_disconnect_tx.clone(),
         }
     }
 }
@@ -225,8 +228,19 @@ impl TcpConnectionGuard {
 impl Drop for TcpConnectionGuard {
     fn drop(&mut self) {
         self.control.unregister(&self.id);
-        let conn_id = self.id.2;
+        let conn_id = self.id.3;
         let addr = SocketAddr::new(self.id.0, self.id.1);
+        match self.disconnect_tx.try_send(addr) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                warn!(
+                    conn_id,
+                    ?addr,
+                    "tcp disconnect channel full, dropping event"
+                );
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {}
+        }
         trace!(conn_id, ?addr, "exiting tcp connection task");
     }
 }
@@ -238,7 +252,7 @@ pub(crate) async fn task_connection(
     msg_receiver: &mut tx::BoundedQueueReceiver,
     connection: &TcpConnectionGuard,
 ) -> Result<(), Error> {
-    let conn_id = connection.id.2;
+    let conn_id = connection.id.3;
     let metrics = &context.metrics;
 
     // 1. every 10 seconds, keep the connection open if either side did work
@@ -270,7 +284,12 @@ pub(crate) fn spawn_tasks(
     cfg: TcpConfig,
     tcp_control_map: TcpControl,
     addrlist: Arc<Addrlist>,
-    socket_configs: Vec<(TcpSocketId, SocketAddr, mpsc::Sender<RecvTcpMsg>)>,
+    socket_configs: Vec<(
+        TcpSocketId,
+        SocketAddr,
+        mpsc::Sender<RecvTcpMsg>,
+        mpsc::Sender<SocketAddr>,
+    )>,
     tcp_egress_rx: mpsc::Receiver<(TcpSocketId, SocketAddr, TcpMsg)>,
     bound_addrs_tx: std::sync::mpsc::SyncSender<Vec<(TcpSocketId, SocketAddr)>>,
     metrics: DataplaneMetrics,
@@ -286,7 +305,7 @@ pub(crate) fn spawn_tasks(
         metrics.clone(),
     );
 
-    for (socket_id, socket_addr, ingress_tx) in socket_configs {
+    for (socket_id, socket_addr, ingress_tx, disconnect_tx) in socket_configs {
         let opts = ListenerOpts::new().reuse_addr(true);
         let tcp_listener = TcpListener::bind_with_config(socket_addr, &opts).unwrap();
         let actual_addr = tcp_listener.local_addr().unwrap();
@@ -297,6 +316,7 @@ pub(crate) fn spawn_tasks(
             rate_limit: cfg.rate_limit,
             tcp_control_map: tcp_control_map.clone(),
             tcp_ingress_tx: ingress_tx,
+            tcp_disconnect_tx: disconnect_tx,
             metrics: metrics.clone(),
         };
         contexts.insert(socket_id, context.clone());
@@ -357,7 +377,7 @@ impl TcpRateLimit {
     }
 }
 
-pub(crate) type TcpIdentifier = (IpAddr, u16, u64);
+pub(crate) type TcpIdentifier = (IpAddr, u16, TcpSocketId, u64);
 
 #[derive(Debug, Clone)]
 pub(crate) struct TcpControl(Arc<Mutex<BTreeMap<TcpIdentifier, TcpConnection>>>);
@@ -379,7 +399,10 @@ impl TcpControl {
     pub(crate) fn disconnect_ip(&self, ip: IpAddr) {
         let map = self.0.lock().unwrap();
         let mut count = 0;
-        for (id, connection) in map.range((ip, u16::MIN, u64::MIN)..(ip, u16::MAX, u64::MAX)) {
+        for (_, connection) in map.range(
+            (ip, u16::MIN, TcpSocketId::Raptorcast, u64::MIN)
+                ..=(ip, u16::MAX, TcpSocketId::AuthenticatedRaptorcast, u64::MAX),
+        ) {
             connection.disconnect();
             count += 1;
         }
@@ -394,7 +417,10 @@ impl TcpControl {
     pub(crate) fn disconnect_socket(&self, ip: IpAddr, port: u16) {
         let map = self.0.lock().unwrap();
         let mut count = 0;
-        for (_, connection) in map.range((ip, port, u64::MIN)..(ip, port, u64::MAX)) {
+        for (_, connection) in map.range(
+            (ip, port, TcpSocketId::Raptorcast, u64::MIN)
+                ..=(ip, port, TcpSocketId::AuthenticatedRaptorcast, u64::MAX),
+        ) {
             connection.disconnect();
             count += 1;
         }
@@ -431,7 +457,12 @@ mod tests {
 
     #[fixture]
     fn tcp_id() -> TcpIdentifier {
-        (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 8080, 12345)
+        (
+            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
+            8080,
+            TcpSocketId::Raptorcast,
+            12345,
+        )
     }
 
     #[rstest]
@@ -456,29 +487,49 @@ mod tests {
     }
 
     #[rstest]
+    fn test_same_counter_isolated_by_socket_id(tcp_control: TcpControl, tcp_id: TcpIdentifier) {
+        let legacy_connection = TcpConnection::new();
+        let authenticated_connection = TcpConnection::new();
+        let authenticated_id = (
+            tcp_id.0,
+            tcp_id.1,
+            TcpSocketId::AuthenticatedRaptorcast,
+            tcp_id.3,
+        );
+
+        tcp_control.register(tcp_id, legacy_connection.clone());
+        tcp_control.register(authenticated_id, authenticated_connection.clone());
+        tcp_control.unregister(&tcp_id);
+        tcp_control.disconnect_socket(tcp_id.0, tcp_id.1);
+
+        assert!(!legacy_connection.is_disconnected());
+        assert!(authenticated_connection.is_disconnected());
+    }
+
+    #[rstest]
     #[case::same_ip_different_ports(
         vec![
-            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 8080, 1),
-            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 9090, 2),
-            (IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 8080, 3),
+            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 8080, TcpSocketId::Raptorcast, 1),
+            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 9090, TcpSocketId::AuthenticatedRaptorcast, 2),
+            (IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 8080, TcpSocketId::Raptorcast, 3),
         ],
         IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
         vec![0, 1]
     )]
     #[case::edge_ports(
         vec![
-            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), u16::MIN, 1),
-            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), u16::MAX, 2),
-            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 8080, 3),
-            (IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 8080, 4),
+            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), u16::MIN, TcpSocketId::Raptorcast, 1),
+            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), u16::MAX, TcpSocketId::Raptorcast, 2),
+            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 8080, TcpSocketId::Raptorcast, 3),
+            (IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 8080, TcpSocketId::Raptorcast, 4),
         ],
         IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
         vec![0, 1, 2]
     )]
     #[case::no_matching_ip(
         vec![
-            (IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 8080, 1),
-            (IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1)), 9090, 2),
+            (IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 8080, TcpSocketId::Raptorcast, 1),
+            (IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1)), 9090, TcpSocketId::Raptorcast, 2),
         ],
         IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
         vec![]
@@ -510,10 +561,10 @@ mod tests {
     #[rstest]
     #[case::same_ip_port_different_connections(
         vec![
-            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 8080, 1),
-            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 8080, 2),
-            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 9090, 3),
-            (IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 8080, 4),
+            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 8080, TcpSocketId::Raptorcast, 1),
+            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 8080, TcpSocketId::AuthenticatedRaptorcast, 2),
+            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 9090, TcpSocketId::Raptorcast, 3),
+            (IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 8080, TcpSocketId::Raptorcast, 4),
         ],
         IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
         8080,
@@ -521,10 +572,10 @@ mod tests {
     )]
     #[case::edge_port_numbers(
         vec![
-            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), u16::MIN, 1),
-            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), u16::MAX, 2),
-            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 8080, 3),
-            (IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), u16::MIN, 4),
+            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), u16::MIN, TcpSocketId::Raptorcast, 1),
+            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), u16::MAX, TcpSocketId::Raptorcast, 2),
+            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 8080, TcpSocketId::Raptorcast, 3),
+            (IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), u16::MIN, TcpSocketId::Raptorcast, 4),
         ],
         IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
         u16::MIN,
@@ -532,8 +583,8 @@ mod tests {
     )]
     #[case::no_matching_socket(
         vec![
-            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 8080, 1),
-            (IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 9090, 2),
+            (IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 8080, TcpSocketId::Raptorcast, 1),
+            (IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 9090, TcpSocketId::Raptorcast, 2),
         ],
         IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
         9090,
@@ -638,8 +689,9 @@ mod tests {
                 .iter()
                 .map(|&id| {
                     let (sender, receiver) = mpsc::channel(16);
+                    let (disconnect_tx, _) = mpsc::channel(16);
                     ingress.insert(id, receiver);
-                    (id, "127.0.0.1:0".parse().unwrap(), sender)
+                    (id, "127.0.0.1:0".parse().unwrap(), sender, disconnect_tx)
                 })
                 .collect();
             let cfg = TcpConfig {

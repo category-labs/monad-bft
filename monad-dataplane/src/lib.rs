@@ -28,7 +28,7 @@ use std::{
 
 use addrlist::Addrlist;
 use bytes::Bytes;
-use futures::channel::oneshot;
+use futures::{channel::oneshot, future::Either};
 use metrics::DataplaneMetrics;
 use monad_types::UdpPriority;
 use monoio::{spawn, time::Instant, IoUringDriver, RuntimeBuilder};
@@ -199,8 +199,9 @@ impl DataplaneBuilder {
         let mut tcp_pending_handles = Vec::new();
         for (id, addr) in tcp_sockets {
             let (ingress_tx, ingress_rx) = mpsc::channel(TCP_INGRESS_CHANNEL_SIZE);
-            tcp_socket_configs.push((id, addr, ingress_tx));
-            tcp_pending_handles.push((id, ingress_rx));
+            let (disconnect_tx, disconnect_rx) = mpsc::channel(TCP_INGRESS_CHANNEL_SIZE);
+            tcp_socket_configs.push((id, addr, ingress_tx, disconnect_tx));
+            tcp_pending_handles.push((id, ingress_rx, disconnect_rx));
         }
 
         let ready = Arc::new(AtomicBool::new(false));
@@ -299,7 +300,7 @@ impl DataplaneBuilder {
         }
 
         let mut tcp_socket_handles = TcpSocketHandles::default();
-        for (id, ingress_rx) in tcp_pending_handles {
+        for (id, ingress_rx, disconnect_rx) in tcp_pending_handles {
             let socket_addr = *tcp_bound_addrs
                 .get(&id)
                 .unwrap_or_else(|| panic!("missing bound address for tcp socket {:?}", id));
@@ -308,6 +309,7 @@ impl DataplaneBuilder {
                 reader: TcpSocketReader {
                     socket_id: id,
                     ingress_rx,
+                    disconnect_rx,
                 },
                 writer: TcpSocketWriter {
                     socket_id: id,
@@ -527,6 +529,7 @@ impl Debug for UdpSocketHandle {
 pub struct TcpSocketReader {
     socket_id: TcpSocketId,
     ingress_rx: mpsc::Receiver<RecvTcpMsg>,
+    disconnect_rx: mpsc::Receiver<SocketAddr>,
 }
 
 impl TcpSocketReader {
@@ -535,6 +538,24 @@ impl TcpSocketReader {
             .recv()
             .await
             .unwrap_or_else(|| panic!("socket {:?} tcp ingress channel closed", self.socket_id))
+    }
+
+    pub async fn recv_with_disconnect(&mut self) -> Result<RecvTcpMsg, SocketAddr> {
+        let socket_id = self.socket_id;
+        let message = self.ingress_rx.recv();
+        let disconnect = self.disconnect_rx.recv();
+        futures::pin_mut!(message, disconnect);
+
+        match futures::future::select(message, disconnect).await {
+            Either::Left((message, _)) => Ok(message
+                .unwrap_or_else(|| panic!("socket {:?} tcp ingress channel closed", socket_id))),
+            Either::Right((remote_addr, _)) => Err(remote_addr
+                .unwrap_or_else(|| panic!("socket {:?} tcp disconnect channel closed", socket_id))),
+        }
+    }
+
+    pub fn try_recv_disconnect(&mut self) -> Option<SocketAddr> {
+        self.disconnect_rx.try_recv().ok()
     }
 }
 

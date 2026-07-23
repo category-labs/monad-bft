@@ -39,6 +39,8 @@ pub trait AuthenticationProtocol {
 
     fn disconnect(&mut self, remote_public_key: &Self::PublicKey);
 
+    fn disconnect_addr(&mut self, remote_addr: &SocketAddr);
+
     fn dispatch(
         &mut self,
         packet: &mut [u8],
@@ -135,6 +137,10 @@ impl AuthenticationProtocol for WireAuthProtocol {
 
     fn disconnect(&mut self, remote_public_key: &Self::PublicKey) {
         self.api.disconnect(remote_public_key)
+    }
+
+    fn disconnect_addr(&mut self, remote_addr: &SocketAddr) {
+        self.api.disconnect_addr(remote_addr)
     }
 
     fn dispatch(
@@ -279,6 +285,8 @@ impl<P: PubKey> AuthenticationProtocol for NoopAuthProtocol<P> {
     }
 
     fn disconnect(&mut self, _remote_public_key: &Self::PublicKey) {}
+
+    fn disconnect_addr(&mut self, _remote_addr: &SocketAddr) {}
 
     fn dispatch(
         &mut self,
