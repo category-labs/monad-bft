@@ -79,8 +79,9 @@ pub struct IngestTrace {
 
 impl IngestTrace {
     /// Returns true if this frame represents a value transfer: the call kind
-    /// moves value, value > 0, the frame succeeded, and the containing tx committed.
-    pub fn is_transfer_frame(&self) -> bool {
+    /// moves value, value > 0, the frame and its ancestors succeeded, and the
+    /// containing tx committed.
+    pub fn is_transfer_frame(&self, ancestor_reverted: bool) -> bool {
         let kind_moves_value = matches!(
             self.typ,
             CallKind::Call
@@ -89,7 +90,11 @@ impl IngestTrace {
                 | CallKind::Create2
                 | CallKind::SelfDestruct
         );
-        self.value > U256::ZERO && kind_moves_value && self.status == 0 && self.tx_status
+        self.value > U256::ZERO
+            && kind_moves_value
+            && self.status == 0
+            && !ancestor_reverted
+            && self.tx_status
     }
 
     /// Encodes this frame as its [`StoredTrace`] storage row.
