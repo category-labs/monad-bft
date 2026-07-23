@@ -717,6 +717,15 @@ pub enum RouterTarget<P: PubKey> {
     },
 }
 
+/// How a validator disseminates a message to its full-node group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FullnodeBroadcastMode {
+    // use peer-to-peer two-hop raptorcast
+    SecondaryRaptorcast,
+    // broadcast to all full-nodes directly
+    Broadcast,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(usize)]
 pub enum UdpPriority {

@@ -50,8 +50,9 @@ use monad_crypto::certificate_signature::{
 };
 use monad_execution_state_read::ExecutionStateRead;
 use monad_types::{
-    deserialize_pubkey, serialize_pubkey, Epoch, ExecutionProtocol, LimitedVec, NodeId, Round,
-    RouterTarget, SeqNum, Stake, UdpPriority, MAX_FORWARDED_TXS_PER_MESSAGE,
+    deserialize_pubkey, serialize_pubkey, Epoch, ExecutionProtocol, FullnodeBroadcastMode,
+    LimitedVec, NodeId, Round, RouterTarget, SeqNum, Stake, UdpPriority,
+    MAX_FORWARDED_TXS_PER_MESSAGE,
 };
 use monad_validator::signature_collection::SignatureCollection;
 use serde::{Deserialize, Serialize};
@@ -81,6 +82,7 @@ pub enum RouterCommand<ST: CertificateSignatureRecoverable, OM> {
     PublishToFullNodes {
         epoch: Epoch,
         round: Round,
+        broadcast_mode: FullnodeBroadcastMode,
         message: OM,
     },
     AddEpochValidatorSet {
@@ -120,11 +122,13 @@ impl<ST: CertificateSignatureRecoverable, OM> Debug for RouterCommand<ST, OM> {
             Self::PublishToFullNodes {
                 epoch,
                 round,
+                broadcast_mode,
                 message: _,
             } => f
                 .debug_struct("PublishToFullNodes")
                 .field("epoch", epoch)
                 .field("round", round)
+                .field("broadcast_mode", broadcast_mode)
                 .finish(),
             Self::AddEpochValidatorSet {
                 epoch,
