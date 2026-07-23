@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::collections::HashMap;
+
 use alloy_primitives::{Address, Bytes, U256};
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use monad_query_errors::{QueryError, Result};
@@ -250,11 +252,55 @@ pub fn compute_trace_addresses(depths: &[u32]) -> Result<Vec<Vec<u32>>> {
         .map(|state| state.addresses)
 }
 
+/// For each frame, true iff an ancestor frame (same tx, strict `trace_address`
+/// prefix) did not succeed. Requires parent-before-child order within a tx.
+pub fn compute_ancestor_reverted(traces: &[IngestTrace]) -> Vec<bool> {
+    // Per-tx depth stack: stack[d] = frame at depth d, or an ancestor of it, failed.
+    let mut stacks: HashMap<u32, Vec<bool>> = HashMap::new();
+    let mut out = Vec::with_capacity(traces.len());
+    for trace in traces {
+        let stack = stacks.entry(trace.tx_index).or_default();
+        let depth = trace.trace_address.len();
+        let ancestor_reverted = depth
+            .checked_sub(1)
+            .and_then(|d| stack.get(d).copied())
+            .unwrap_or(false);
+        out.push(ancestor_reverted);
+        stack.truncate(depth);
+        if stack.len() < depth {
+            stack.resize(depth, false); // defensive: upstream rejects depth skips
+        }
+        stack.push(ancestor_reverted || trace.status != 0);
+    }
+    out
+}
+
 #[cfg(test)]
 mod trace_address_tests {
     use monad_query_errors::QueryError;
 
-    use super::compute_trace_addresses;
+    use super::{
+        compute_ancestor_reverted, compute_trace_addresses, Address, Bytes, CallKind, IngestTrace,
+        U256,
+    };
+
+    fn frame(tx_index: u32, trace_address: Vec<u32>, status: u8) -> IngestTrace {
+        IngestTrace {
+            typ: CallKind::Call,
+            from: Address::ZERO,
+            to: None,
+            value: U256::ZERO,
+            gas: 0,
+            gas_used: 0,
+            input: Bytes::new(),
+            output: Bytes::new(),
+            status,
+            depth: trace_address.len() as u32,
+            tx_index,
+            trace_address,
+            tx_status: true,
+        }
+    }
 
     #[test]
     fn trace_address_simple_tree() {
@@ -305,5 +351,75 @@ mod trace_address_tests {
         let depths = [0u32, 2];
         let err = compute_trace_addresses(&depths).unwrap_err();
         assert!(matches!(err, QueryError::InvalidBlock(_)));
+    }
+
+    #[test]
+    fn ancestor_reverted_flags_frame_under_reverted_parent() {
+        // Chain []→[0]→[0,0]; [0] reverted, so only its descendant is flagged.
+        let traces = [
+            frame(0, vec![], 0),
+            frame(0, vec![0], 2),
+            frame(0, vec![0, 0], 0),
+        ];
+        assert_eq!(compute_ancestor_reverted(&traces), vec![false, false, true]);
+    }
+
+    #[test]
+    fn ancestor_reverted_clean_chain_all_false() {
+        let traces = [
+            frame(0, vec![], 0),
+            frame(0, vec![0], 0),
+            frame(0, vec![0, 0], 0),
+        ];
+        assert_eq!(
+            compute_ancestor_reverted(&traces),
+            vec![false, false, false]
+        );
+    }
+
+    #[test]
+    fn ancestor_reverted_no_cross_tx_bleed() {
+        // Two interleaved txs; tx 0's root reverted, tx 1's is clean. tx 1's
+        // child must not inherit tx 0's revert despite the shared prefix.
+        let traces = [
+            frame(0, vec![], 2),
+            frame(1, vec![], 0),
+            frame(0, vec![0], 0),
+            frame(1, vec![0], 0),
+        ];
+        assert_eq!(
+            compute_ancestor_reverted(&traces),
+            vec![false, false, true, false]
+        );
+    }
+
+    #[test]
+    fn ancestor_reverted_clean_sibling_of_reverted_leaf() {
+        // Under a clean root, one child reverts; its sibling is unaffected.
+        let traces = [
+            frame(0, vec![], 0),
+            frame(0, vec![0], 2),
+            frame(0, vec![1], 0),
+        ];
+        assert_eq!(
+            compute_ancestor_reverted(&traces),
+            vec![false, false, false]
+        );
+    }
+
+    #[test]
+    fn ancestor_reverted_propagates_past_clean_parent() {
+        // [0] reverted, [0,0] itself succeeded: [0,0,0] is still flagged
+        // because revert state carries down through clean intermediates.
+        let traces = [
+            frame(0, vec![], 0),
+            frame(0, vec![0], 2),
+            frame(0, vec![0, 0], 0),
+            frame(0, vec![0, 0, 0], 0),
+        ];
+        assert_eq!(
+            compute_ancestor_reverted(&traces),
+            vec![false, false, true, true]
+        );
     }
 }
