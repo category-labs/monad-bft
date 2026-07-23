@@ -85,6 +85,7 @@ use crate::{
         group_message::FullNodesGroupMessage, SecondaryOutboundMessage,
         SecondaryRaptorCastModeConfig,
     },
+    round_info::PublishedRounds,
 };
 
 pub mod auth;
@@ -138,6 +139,11 @@ where
     v1_rollout: v1_rollout::DeterministicProtocolRolloutStage,
     message_builder: OwnedMessageBuilder<ST>,
     secondary_message_builder: Option<OwnedMessageBuilder<ST>>,
+
+    // Guards against building two raptorcast messages for the same commitment key
+    // which would flag this node as an equivocator to receivers
+    published_primary_rounds: PublishedRounds,
+    published_secondary_rounds: PublishedRounds,
 
     tcp_reader: TcpSocketReader,
     tcp_writer: TcpSocketWriter,
@@ -305,6 +311,9 @@ where
             udp_state,
             v1_rollout: config.deterministic_protocol_rollout,
 
+            published_primary_rounds: PublishedRounds::new(),
+            published_secondary_rounds: PublishedRounds::new(),
+
             tcp_reader,
             tcp_writer,
             dual_socket,
@@ -461,6 +470,17 @@ where
                 broadcast_mode,
                 group,
             } => {
+                // Invariant: commit to a single secondary raptorcast message per (publisher, round)
+                if matches!(broadcast_mode, FullnodeBroadcastMode::SecondaryRaptorcast)
+                    && !self.published_secondary_rounds.try_claim(round)
+                {
+                    error!(
+                        ?round,
+                        "dropping duplicate secondary raptorcast publish for round"
+                    );
+                    return;
+                }
+
                 // SAFETY: the SecondaryRaptorcast publisher instance
                 // is responsible for ensuring the group is valid and
                 // consistent with the round.
@@ -514,6 +534,17 @@ where
                         return;
                     }
                 };
+
+                // Invariant: commit to a single raptorcast message per round
+                if let RouterTarget::Raptorcast { round, .. } = &target {
+                    if !self.published_primary_rounds.try_claim(*round) {
+                        error!(
+                            ?round,
+                            "dropping duplicate primary raptorcast publish for round"
+                        );
+                        return;
+                    }
+                }
 
                 // A publisher must be a validator to publish
                 // raptorcast/broadcast to validator set. Therefore

@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     io::ErrorKind,
     net::{SocketAddr, SocketAddrV4, UdpSocket},
     num::ParseIntError,
@@ -431,6 +431,17 @@ fn test_peer_maps<const N: usize>(
     (known_addresses, name_records)
 }
 
+// Drains all packets currently reaching the socket, until its read
+// timeout expires. The socket must have a read timeout set.
+fn recv_packet_count(socket: &UdpSocket) -> usize {
+    let mut buf = [0u8; 65536];
+    let mut count = 0;
+    while socket.recv_from(&mut buf).is_ok() {
+        count += 1;
+    }
+    count
+}
+
 #[derive(Clone, Copy, RlpEncodable, RlpDecodable)]
 struct MockMessage {
     id: u32,
@@ -776,6 +787,211 @@ async fn publish_to_full_nodes() {
     let MockEvent((from, id)) = event2;
     assert_eq!(from, validator_nodeid);
     assert_eq!(id, 42);
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn primary_raptorcast_builds_once_per_round() {
+    async fn drain_self_events(rc: &mut MockRaptorCast) -> Vec<u32> {
+        let mut ids = Vec::new();
+        loop {
+            tokio::select! {
+                biased;
+                event = rc.next() => {
+                    if let Some(MockEvent((_, id))) = event {
+                        ids.push(id);
+                    }
+                }
+                _ = std::future::ready(()) => break,
+            }
+        }
+        ids
+    }
+
+    let validator1_keypair = keypair(1);
+    let validator1_nodeid = NodeId::new(validator1_keypair.pubkey());
+    let validator2_keypair = keypair(2);
+    let validator2_nodeid = NodeId::new(validator2_keypair.pubkey());
+
+    // validator2 is a bare socket counting the chunks validator1 sends it
+    let validator2_socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+    validator2_socket
+        .set_read_timeout(Some(Duration::from_millis(300)))
+        .unwrap();
+    let SocketAddr::V4(validator2_addr) = validator2_socket.local_addr().unwrap() else {
+        panic!("expected ipv4 addr");
+    };
+
+    let validator1_dp = create_dataplane_for_tests(false);
+    let (known_addresses, name_records) = test_peer_maps([
+        (
+            validator1_nodeid,
+            &validator1_keypair,
+            validator1_dp.non_auth_addr,
+        ),
+        (validator2_nodeid, &validator2_keypair, validator2_addr),
+    ]);
+
+    let mut validator1_rc = setup_raptorcast_service(
+        validator1_keypair,
+        validator1_dp,
+        known_addresses,
+        name_records,
+    );
+    validator1_rc.exec(vec![RouterCommand::AddEpochValidatorSet {
+        epoch: Epoch(0),
+        epoch_start: Round(0),
+        validator_set: vec![
+            (validator1_nodeid, Stake::ONE),
+            (validator2_nodeid, Stake::ONE),
+        ],
+    }]);
+    let _ = drain_self_events(&mut validator1_rc).await;
+
+    let publish = |round: u64, id: u32| {
+        vec![RouterCommand::Publish {
+            target: monad_types::RouterTarget::Raptorcast {
+                epoch: Epoch(0),
+                round: Round(round),
+            },
+            message: MockMessage::new(id, 10_000),
+        }]
+    };
+
+    // the first publish for a round reaches the wire and loops back to self
+    validator1_rc.exec(publish(5, 1));
+    assert_eq!(drain_self_events(&mut validator1_rc).await, vec![1]);
+    assert!(recv_packet_count(&validator2_socket) > 0);
+
+    // a second publish for the same round is dropped entirely
+    validator1_rc.exec(publish(5, 2));
+    assert_eq!(
+        drain_self_events(&mut validator1_rc).await,
+        Vec::<u32>::new()
+    );
+    assert_eq!(recv_packet_count(&validator2_socket), 0);
+
+    // a new round is unaffected
+    validator1_rc.exec(publish(6, 3));
+    assert_eq!(drain_self_events(&mut validator1_rc).await, vec![3]);
+    assert!(recv_packet_count(&validator2_socket) > 0);
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn secondary_raptorcast_builds_once_per_round() {
+    use monad_types::FullnodeBroadcastMode;
+
+    async fn poll_event_loop(rc: &mut MockRaptorCast) {
+        let _ = tokio::time::timeout(Duration::from_millis(50), rc.next()).await;
+    }
+
+    let validator_keypair = keypair(1);
+    let validator_nodeid = NodeId::new(validator_keypair.pubkey());
+    let full_node_keypair = keypair(2);
+    let full_node_id = NodeId::new(full_node_keypair.pubkey());
+
+    // the full node is a bare socket counting the chunks the validator sends it
+    let full_node_socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+    full_node_socket
+        .set_read_timeout(Some(Duration::from_millis(300)))
+        .unwrap();
+    let SocketAddr::V4(full_node_addr) = full_node_socket.local_addr().unwrap() else {
+        panic!("expected ipv4 addr");
+    };
+
+    let validator_dp = create_dataplane_for_tests(false);
+    let (known_addresses, name_records) = test_peer_maps([
+        (
+            validator_nodeid,
+            &validator_keypair,
+            validator_dp.non_auth_addr,
+        ),
+        (full_node_id, &full_node_keypair, full_node_addr),
+    ]);
+
+    let mut validator_rc = setup_raptorcast_service(
+        validator_keypair,
+        validator_dp,
+        known_addresses,
+        name_records,
+    );
+    validator_rc.exec(vec![RouterCommand::AddEpochValidatorSet {
+        epoch: Epoch(0),
+        epoch_start: Round(0),
+        validator_set: vec![(validator_nodeid, Stake::ONE)],
+    }]);
+
+    // wire up the outbound channel the secondary instance publishes through
+    let (channel_to_secondary_tx, _channel_to_secondary_rx) =
+        unbounded_channel::<FullNodesGroupMessage<SignatureType>>();
+    let (_assignment_tx, assignment_rx) =
+        unbounded_channel::<SecondaryGroupAssignment<PubKeyType>>();
+    let (outbound_tx, outbound_rx) = unbounded_channel::<SecondaryOutboundMessage<PubKeyType>>();
+    validator_rc.bind_channel_to_secondary_raptorcast(
+        SecondaryRaptorCastModeConfig::Publisher,
+        channel_to_secondary_tx,
+        assignment_rx,
+        outbound_rx,
+    );
+
+    let group = SecondaryGroup::new_unchecked(BTreeSet::from([full_node_id]));
+    let send_to_group = |id: u32, round: u64, broadcast_mode: FullnodeBroadcastMode| {
+        let msg_bytes = monad_raptorcast::message::OutboundRouterMessage::<
+            MockMessage,
+            SignatureType,
+        >::AppMessage(MockMessage::new(id, 10_000))
+        .try_serialize()
+        .expect("serialize app message");
+        SecondaryOutboundMessage::SendToGroup {
+            msg_bytes,
+            epoch: Epoch(0),
+            round: Round(round),
+            broadcast_mode,
+            group: group.clone(),
+        }
+    };
+
+    // the first secondary publish for a round reaches the group
+    outbound_tx
+        .send(send_to_group(
+            1,
+            5,
+            FullnodeBroadcastMode::SecondaryRaptorcast,
+        ))
+        .unwrap();
+    poll_event_loop(&mut validator_rc).await;
+    assert!(recv_packet_count(&full_node_socket) > 0);
+
+    // a second publish for the same round is dropped
+    outbound_tx
+        .send(send_to_group(
+            2,
+            5,
+            FullnodeBroadcastMode::SecondaryRaptorcast,
+        ))
+        .unwrap();
+    poll_event_loop(&mut validator_rc).await;
+    assert_eq!(recv_packet_count(&full_node_socket), 0);
+
+    // a new round is unaffected
+    outbound_tx
+        .send(send_to_group(
+            3,
+            6,
+            FullnodeBroadcastMode::SecondaryRaptorcast,
+        ))
+        .unwrap();
+    poll_event_loop(&mut validator_rc).await;
+    assert!(recv_packet_count(&full_node_socket) > 0);
+
+    // full-node broadcast mode mints no commitment and is exempt, even
+    // for an already-published round
+    outbound_tx
+        .send(send_to_group(4, 6, FullnodeBroadcastMode::Broadcast))
+        .unwrap();
+    poll_event_loop(&mut validator_rc).await;
+    assert!(recv_packet_count(&full_node_socket) > 0);
 }
 
 #[cfg(test)]
