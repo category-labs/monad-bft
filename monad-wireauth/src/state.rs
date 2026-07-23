@@ -619,6 +619,26 @@ impl<M> State<M> {
         }
     }
 
+    pub fn terminate_by_addr(&mut self, remote_addr: &SocketAddr) {
+        let sessions = self
+            .initiating_sessions
+            .iter()
+            .filter_map(|(id, session)| {
+                (session.remote_addr == *remote_addr).then_some((*id, session.remote_public_key))
+            })
+            .chain(self.responding_sessions.iter().filter_map(|(id, session)| {
+                (session.remote_addr == *remote_addr).then_some((*id, session.remote_public_key))
+            }))
+            .chain(self.transport_sessions.iter().filter_map(|(id, session)| {
+                (session.remote_addr == *remote_addr).then_some((*id, session.remote_public_key))
+            }))
+            .collect::<Vec<_>>();
+
+        for (session_id, remote_public_key) in sessions {
+            self.terminate_session(session_id, &remote_public_key, *remote_addr);
+        }
+    }
+
     pub fn terminate_by_public_key(&mut self, public_key: &monad_secp::PubKey) -> Vec<SocketAddr> {
         let mut session_ids = HashSet::new();
 

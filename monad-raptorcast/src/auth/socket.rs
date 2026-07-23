@@ -30,7 +30,7 @@ use super::{
     common::{encrypt_packet, AuthenticatedTimerFuture},
     framing::AuthPacketFramer,
     metrics::{
-        init_socket_executor_metrics, GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_READ,
+        init_udp_socket_executor_metrics, GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_READ,
         GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_WRITTEN,
         GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_READ,
         GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_WRITTEN,
@@ -75,7 +75,7 @@ where
         Self {
             authenticated,
             non_authenticated,
-            metrics: init_socket_executor_metrics(),
+            metrics: init_udp_socket_executor_metrics(),
         }
     }
 

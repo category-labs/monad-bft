@@ -59,6 +59,14 @@ pub struct API<C: Context, K: AsRef<monad_secp::KeyPair> = monad_secp::KeyPair, 
     connect_rate_last_reset: Duration,
 }
 
+fn validate_packet_address(expected: SocketAddr, actual: SocketAddr) -> Result<()> {
+    if expected == actual {
+        Ok(())
+    } else {
+        Err(Error::PacketAddressMismatch { expected, actual })
+    }
+}
+
 impl<C: Context, K: AsRef<monad_secp::KeyPair>, M> API<C, K, M> {
     /// Creates a new API instance, it should be created for an individual socket.
     pub fn new_with_metadata(
@@ -524,16 +532,22 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>, M> API<C, K, M> {
         Ok(())
     }
 
-    fn accept_cookie(&mut self, cookie_reply: &mut CookieReply) -> Result<()> {
+    fn accept_cookie(
+        &mut self,
+        cookie_reply: &mut CookieReply,
+        remote_addr: SocketAddr,
+    ) -> Result<()> {
         let receiver_session_index = cookie_reply.receiver_index.into();
 
         if let Some(session) = self.state.get_initiator_mut(&receiver_session_index) {
+            validate_packet_address(session.remote_addr, remote_addr)?;
             session.handle_cookie(cookie_reply).inspect_err(|_| {
                 self.metrics
                     .gauge(self.metric_names.error_cookie_reply)
                     .inc();
             })?;
         } else if let Some(session) = self.state.get_responder_mut(&receiver_session_index) {
+            validate_packet_address(session.remote_addr, remote_addr)?;
             session.handle_cookie(cookie_reply).inspect_err(|_| {
                 self.metrics
                     .gauge(self.metric_names.error_cookie_reply)
@@ -576,7 +590,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>, M> API<C, K, M> {
                 self.metrics
                     .gauge(self.metric_names.dispatch_cookie_reply)
                     .inc();
-                self.accept_cookie(cookie_reply)
+                self.accept_cookie(cookie_reply, remote_addr)
             }
             ControlPacket::Keepalive(data_packet) => {
                 trace!("processing keepalive packet");
@@ -610,6 +624,10 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>, M> API<C, K, M> {
         let (remote_public_key, plaintext) = if let Some(transport) =
             self.state.get_transport_mut(&receiver_index)
         {
+            if let Err(error) = validate_packet_address(transport.remote_addr, remote_addr) {
+                self.metrics.gauge(self.metric_names.error_decrypt).inc();
+                return Err(error);
+            }
             let duration_since_start = self.context.duration_since_start();
             let (timer, plaintext) = transport
                 .decrypt(&self.config, duration_since_start, data_packet)
@@ -620,6 +638,10 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>, M> API<C, K, M> {
             self.replace_timer(timer, receiver_index);
             (remote_public_key, plaintext)
         } else if let Some(responder) = self.state.get_responder_mut(&receiver_index) {
+            if let Err(error) = validate_packet_address(responder.remote_addr, remote_addr) {
+                self.metrics.gauge(self.metric_names.error_decrypt).inc();
+                return Err(error);
+            }
             // The session responder needs to receive at least one packet from the originator
             // to prove private key ownership. We implement this by storing the
             // responder separately until it has received that packet.
@@ -870,6 +892,18 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>, M> API<C, K, M> {
     pub fn disconnect(&mut self, public_key: &monad_secp::PubKey) {
         self.metrics.gauge(self.metric_names.api_disconnect).inc();
         self.state.terminate_by_public_key(public_key);
+    }
+
+    /// Disconnects and removes all sessions associated with the given remote address.
+    #[instrument(level = Level::TRACE, skip(self), fields(local_public_key = ?self.local_serialized_public, remote_addr = ?remote_addr))]
+    pub fn disconnect_addr(&mut self, remote_addr: &SocketAddr) {
+        self.metrics.gauge(self.metric_names.api_disconnect).inc();
+        self.state.terminate_by_addr(remote_addr);
+        self.packet_queue
+            .retain(|(queued_addr, _, _)| queued_addr != remote_addr);
+        self.metrics
+            .gauge(self.metric_names.state_packet_queue_size)
+            .set(self.packet_queue.len() as u64);
     }
 
     /// Checks if there is a session for the given socket.

@@ -57,12 +57,17 @@ monad_executor::metric_consts! {
     }
 }
 
-pub(crate) fn init_socket_executor_metrics() -> ExecutorMetrics {
+pub(crate) fn init_udp_socket_executor_metrics() -> ExecutorMetrics {
     ExecutorMetrics::with_metric_defs(&[
         GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_WRITTEN,
         GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_WRITTEN,
         GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_READ,
         GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_READ,
+    ])
+}
+
+pub(crate) fn init_tcp_socket_executor_metrics() -> ExecutorMetrics {
+    ExecutorMetrics::with_metric_defs(&[
         GAUGE_RAPTORCAST_AUTH_WIREAUTH_TCP_BYTES_WRITTEN,
         GAUGE_RAPTORCAST_AUTH_SIGAUTH_TCP_BYTES_WRITTEN,
         GAUGE_RAPTORCAST_AUTH_WIREAUTH_TCP_BYTES_READ,

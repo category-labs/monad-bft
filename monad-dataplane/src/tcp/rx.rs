@@ -57,6 +57,7 @@ pub(crate) struct RxContext {
     pub(crate) rate_limit: TcpRateLimit,
     pub(crate) tcp_control_map: TcpControl,
     pub(crate) tcp_ingress_tx: mpsc::Sender<RecvTcpMsg>,
+    pub(crate) tcp_disconnect_tx: mpsc::Sender<SocketAddr>,
     pub(crate) write_half_tx: WriteHalfSender,
     pub(crate) metrics: DataplaneMetrics,
 }
@@ -299,7 +300,7 @@ async fn task_read(
     connection: TcpConnection,
 ) {
     let rate_limiter = context.rate_limit.new_rate_limiter();
-    let tcp_id = (addr.ip(), addr.port(), conn_id);
+    let tcp_id = (addr.ip(), addr.port(), context.socket_id, conn_id);
     context.tcp_control_map.register(tcp_id, connection.clone());
     let mut message_id: u64 = 0;
     loop {
@@ -335,6 +336,17 @@ async fn task_read(
     }
     connection.disconnect();
     context.tcp_control_map.unregister(&tcp_id);
+    match context.tcp_disconnect_tx.try_send(addr) {
+        Ok(()) => {}
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            warn!(
+                conn_id,
+                ?addr,
+                "tcp disconnect channel full, dropping event"
+            );
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => {}
+    }
     trace!(
         conn_id,
         ?addr,

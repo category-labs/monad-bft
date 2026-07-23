@@ -906,6 +906,74 @@ fn test_handshake_response_address_mismatch_rejected() {
 }
 
 #[test]
+fn test_data_packet_address_mismatch_rejected() {
+    init_tracing();
+    let (mut peer1, _, _, _) = create_manager();
+    let (mut peer2, peer2_pubkey, _, _) = create_manager();
+    let peer1_addr: SocketAddr = "127.0.0.1:8001".parse().unwrap();
+    let peer2_addr: SocketAddr = "127.0.0.1:8002".parse().unwrap();
+    let different_addr: SocketAddr = "127.0.0.1:9009".parse().unwrap();
+
+    peer1
+        .connect(peer2_pubkey, peer2_addr, DEFAULT_RETRY_ATTEMPTS)
+        .unwrap();
+    let init = collect::<HandshakeInitiation>(&mut peer1);
+    dispatch(&mut peer2, &init, peer1_addr);
+    let response = collect::<HandshakeResponse>(&mut peer2);
+    dispatch(&mut peer1, &response, peer2_addr);
+
+    let mut plaintext = b"address-bound data".to_vec();
+    let packet = encrypt(&mut peer1, &peer2_pubkey, &mut plaintext);
+    let mut mismatched_packet = packet.clone();
+    let Packet::Data(data_packet) = Packet::try_from(mismatched_packet.as_mut_slice()).unwrap()
+    else {
+        panic!("expected data packet");
+    };
+    let err = match peer2.decrypt(data_packet, different_addr) {
+        Ok(_) => panic!("packet from a different address was accepted"),
+        Err(err) => err,
+    };
+    assert!(matches!(
+        err,
+        monad_wireauth::Error::PacketAddressMismatch { expected, actual }
+        if expected == peer1_addr && actual == different_addr
+    ));
+
+    // Address rejection happens before replay state is changed.
+    assert_eq!(
+        decrypt(&mut peer2, &packet, peer1_addr),
+        b"address-bound data"
+    );
+}
+
+#[test]
+fn test_disconnect_addr_removes_only_matching_sessions_and_packets() {
+    init_tracing();
+    let (mut peer1, _, _, _) = create_manager();
+    let (_, peer2_pubkey, _, _) = create_manager();
+    let (_, peer3_pubkey, _, _) = create_manager();
+    let peer2_addr: SocketAddr = "127.0.0.1:8002".parse().unwrap();
+    let peer3_addr: SocketAddr = "127.0.0.1:8003".parse().unwrap();
+
+    peer1
+        .connect(peer2_pubkey, peer2_addr, DEFAULT_RETRY_ATTEMPTS)
+        .unwrap();
+    peer1
+        .connect(peer3_pubkey, peer3_addr, DEFAULT_RETRY_ATTEMPTS)
+        .unwrap();
+
+    peer1.disconnect_addr(&peer2_addr);
+
+    assert!(!peer1.has_any_session_by_public_key(&peer2_pubkey));
+    assert!(peer1.has_any_session_by_public_key(&peer3_pubkey));
+    let (queued_addr, _) = peer1
+        .next_packet()
+        .expect("peer 3 initiation remains queued");
+    assert_eq!(queued_addr, peer3_addr);
+    assert!(peer1.next_packet().is_none());
+}
+
+#[test]
 fn test_stale_handshake_response_does_not_poison_pending_initiator() {
     init_tracing();
     let config = Config::default();
