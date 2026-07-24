@@ -63,6 +63,10 @@ pub struct NodeNetworkConfig {
 
     #[serde(default = "default_enable_udp_mutishot")]
     pub enable_udp_multishot: bool,
+
+    /// Number of independent UDP egress threads.
+    #[serde(default = "default_udp_tx_workers")]
+    pub udp_tx_workers: usize,
 }
 
 fn default_mtu() -> u16 {
@@ -106,6 +110,10 @@ fn default_enable_udp_mutishot() -> bool {
     true
 }
 
+fn default_udp_tx_workers() -> usize {
+    4
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,11 +134,13 @@ mod tests {
     fn udp_bandwidth_defaults_to_one_gbps() {
         let config = parse("");
         assert_eq!((config.max_mbps, config.peer_max_mbps), (1_000, 1_000));
+        assert_eq!(config.udp_tx_workers, 4);
     }
 
     #[test]
     fn udp_bandwidth_is_configurable() {
-        let config = parse("max_mbps = 2000\npeer_max_mbps = 500");
+        let config = parse("max_mbps = 2000\npeer_max_mbps = 500\nudp_tx_workers = 8");
         assert_eq!((config.max_mbps, config.peer_max_mbps), (2_000, 500));
+        assert_eq!(config.udp_tx_workers, 8);
     }
 }

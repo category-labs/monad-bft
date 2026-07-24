@@ -18,15 +18,20 @@ use std::{
     io::{Error, ErrorKind},
     net::SocketAddr,
     num::{NonZeroU64, NonZeroUsize},
-    os::fd::{AsRawFd, FromRawFd},
+    os::fd::AsRawFd,
+    sync::Arc,
+    thread,
 };
+
+#[cfg(test)]
+use std::os::fd::FromRawFd;
 
 use bytes::{Bytes, BytesMut};
 use futures::future::join_all;
 use monoio::{
     buf::{Ipv4RecvMsgParser, UserRecvMsgRingBuf},
     net::udp::UdpSocket,
-    spawn,
+    spawn, IoUringDriver, RuntimeBuilder,
 };
 use tokio::sync::mpsc::{self, error::TryRecvError};
 use tracing::{debug, error, trace, warn};
@@ -35,7 +40,7 @@ use super::{RecvUdpMsg, UdpMsg, UdpPacingConfig, UdpSocketId};
 use crate::{
     buffer_ext::SocketBufferExt,
     metrics::DataplaneMetrics,
-    pacing::{BatchLimits, EnqueueError, PacingQueue, QueueCost},
+    pacing::{BatchLimits, EnqueueError, GlobalPacer, PacingQueue, QueueCost},
 };
 
 const DEFAULT_RINGBUF_COUNT: u32 = 2048;
@@ -118,7 +123,7 @@ fn set_mtu_discovery(socket: &UdpSocket) {
 
 pub(crate) fn spawn_tasks(
     socket_configs: Vec<(UdpSocketId, SocketAddr, mpsc::Sender<RecvUdpMsg>)>,
-    udp_egress_rx: mpsc::Receiver<UdpMsg>,
+    udp_egress_rxs: Vec<mpsc::Receiver<UdpMsg>>,
     config: UdpTaskConfig,
     bound_addrs_tx: std::sync::mpsc::SyncSender<Vec<(UdpSocketId, SocketAddr)>>,
     metrics: DataplaneMetrics,
@@ -129,19 +134,25 @@ pub(crate) fn spawn_tasks(
         buffer_size,
         use_multishot,
     } = config;
-    let mut tx_sockets = Vec::new();
+    let worker_count = udp_egress_rxs.len();
+    let mut tx_sockets: Vec<Vec<_>> = (0..worker_count).map(|_| Vec::new()).collect();
     let mut bound_addrs = Vec::with_capacity(socket_configs.len());
 
     for (socket_id, socket_addr, ingress_tx) in socket_configs {
         let socket = std::net::UdpSocket::bind(socket_addr).unwrap();
-        let tx = UdpSocket::from_std(socket).unwrap();
-        configure_socket(&tx, buffer_size);
-        let actual_addr = tx.local_addr().unwrap();
+        for worker_sockets in &mut tx_sockets {
+            worker_sockets.push((
+                socket_id,
+                socket.try_clone().expect("failed to clone UDP TX socket"),
+            ));
+        }
+        let rx = UdpSocket::from_std(socket).unwrap();
+        configure_socket(&rx, buffer_size);
+        let actual_addr = rx.local_addr().unwrap();
         bound_addrs.push((socket_id, actual_addr));
 
         let group_id = socket_id as u16;
         if use_multishot {
-            let rx = tx.dup().expect("failed to dup socket");
             spawn(rx_multishot_socket(
                 rx,
                 ingress_tx.clone(),
@@ -155,22 +166,40 @@ pub(crate) fn spawn_tasks(
                 "created multishot socket"
             );
         } else {
-            let rx = tx.dup().expect("failed to dup socket");
             spawn(rx_single_socket(rx, ingress_tx.clone(), metrics.clone()));
             trace!(?socket_id, ?socket_addr, ?actual_addr, "created socket");
         }
-
-        tx_sockets.push((socket_id, tx));
     }
 
     bound_addrs_tx.send(bound_addrs).unwrap();
-    spawn(tx(
-        tx_sockets,
-        udp_egress_rx,
+    let global = Arc::new(GlobalPacer::new(mbps_to_bytes_per_second(
         up_bandwidth_mbps,
-        pacing,
-        metrics,
-    ));
+    )));
+    for (worker, (tx_sockets, udp_egress_rx)) in
+        tx_sockets.into_iter().zip(udp_egress_rxs).enumerate()
+    {
+        let global = Arc::clone(&global);
+        let metrics = metrics.clone();
+        let memory_limit = pacing.max_queued_bytes / worker_count
+            + usize::from(worker < pacing.max_queued_bytes % worker_count);
+        thread::Builder::new()
+            .name(format!("monad-udp-tx-{worker}"))
+            .spawn(move || {
+                RuntimeBuilder::<IoUringDriver>::new()
+                    .enable_timer()
+                    .build()
+                    .expect("failed building UDP TX runtime")
+                    .block_on(tx(
+                        tx_sockets,
+                        udp_egress_rx,
+                        global,
+                        pacing.peer_bandwidth_mbps,
+                        memory_limit,
+                        metrics,
+                    ));
+            })
+            .expect("failed to spawn UDP TX thread");
+    }
 }
 
 async fn rx_single_socket(
@@ -290,19 +319,21 @@ async fn rx_multishot_socket(
 }
 
 async fn tx(
-    tx_sockets: Vec<(UdpSocketId, UdpSocket)>,
+    tx_sockets: Vec<(UdpSocketId, std::net::UdpSocket)>,
     mut udp_egress_rx: mpsc::Receiver<UdpMsg>,
-    up_bandwidth_mbps: u64,
-    pacing_config: UdpPacingConfig,
+    global: Arc<GlobalPacer>,
+    peer_bandwidth_mbps: u64,
+    memory_limit: usize,
     metrics: DataplaneMetrics,
 ) {
-    let tx_sockets: HashMap<UdpSocketId, UdpSocket> = tx_sockets.into_iter().collect();
-    let global_bytes_per_second = mbps_to_bytes_per_second(up_bandwidth_mbps);
-    let peer_bytes_per_second = mbps_to_bytes_per_second(pacing_config.peer_bandwidth_mbps);
-    let mut queue = PacingQueue::new(
-        global_bytes_per_second,
-        peer_bytes_per_second,
-        pacing_config.max_queued_bytes,
+    let tx_sockets: HashMap<UdpSocketId, UdpSocket> = tx_sockets
+        .into_iter()
+        .map(|(id, socket)| (id, UdpSocket::from_std(socket).unwrap()))
+        .collect();
+    let mut queue = PacingQueue::with_global_pacer(
+        global,
+        mbps_to_bytes_per_second(peer_bandwidth_mbps),
+        memory_limit,
     );
     let batch_limits = BatchLimits {
         max_bytes: max_write_size_for_segment_size(DEFAULT_SEGMENT_SIZE) as usize,
@@ -469,6 +500,7 @@ fn is_eafnosupport(err: &Error) -> bool {
     err.len() >= EAFNOSUPPORT.len() && &err[0..EAFNOSUPPORT.len()] == EAFNOSUPPORT
 }
 
+#[cfg(test)]
 pub trait UdpSocketExt: AsRawFd {
     fn dup(&self) -> std::io::Result<UdpSocket> {
         let fd = self.as_raw_fd();
@@ -481,6 +513,7 @@ pub trait UdpSocketExt: AsRawFd {
     }
 }
 
+#[cfg(test)]
 impl UdpSocketExt for UdpSocket {}
 
 #[cfg(test)]
