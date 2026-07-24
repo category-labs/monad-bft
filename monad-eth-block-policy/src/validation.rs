@@ -80,7 +80,7 @@ pub fn static_validate_transaction(
     EthShanghaiForkValidation::validate(tx, execution_chain_params)?;
 
     // Ethereum Yellow paper intrinsic gas validation
-    YellowPaperValidation::validate(tx)?;
+    YellowPaperValidation::validate(tx, execution_chain_params)?;
 
     // post Ethereum Prague fork validation
     // includes EIP-7623 validation
@@ -115,13 +115,19 @@ impl TfmValidator {
 
 struct YellowPaperValidation;
 impl YellowPaperValidation {
-    fn validate(tx: &TxEnvelope) -> Result<(), StaticValidationError> {
-        Self::intrinsic_gas_validation(tx)
+    fn validate(
+        tx: &TxEnvelope,
+        execution_chain_params: &ExecutionChainParams,
+    ) -> Result<(), StaticValidationError> {
+        Self::intrinsic_gas_validation(tx, execution_chain_params)
     }
 
-    fn intrinsic_gas_validation(tx: &TxEnvelope) -> Result<(), StaticValidationError> {
+    fn intrinsic_gas_validation(
+        tx: &TxEnvelope,
+        execution_chain_params: &ExecutionChainParams,
+    ) -> Result<(), StaticValidationError> {
         // YP eq. 62 - intrinsic gas validation
-        let intrinsic_gas = compute_intrinsic_gas(tx);
+        let intrinsic_gas = compute_intrinsic_gas(tx, execution_chain_params);
         if tx.gas_limit() < intrinsic_gas {
             return Err(StaticValidationError::GasLimitUnderIntrinsicGas {
                 tx_gas_limit: tx.gas_limit(),
@@ -209,15 +215,18 @@ impl EthPragueForkValidation {
         execution_chain_params: &ExecutionChainParams,
     ) -> Result<(), StaticValidationError> {
         if execution_chain_params.prague_enabled {
-            Self::eip_7623(tx)?;
+            Self::eip_7623(tx, execution_chain_params)?;
         }
         Self::eip_7702(tx, execution_chain_params)?;
 
         Ok(())
     }
 
-    fn eip_7623(tx: &TxEnvelope) -> Result<(), StaticValidationError> {
-        let floor_data_gas = compute_floor_data_gas(tx);
+    fn eip_7623(
+        tx: &TxEnvelope,
+        execution_chain_params: &ExecutionChainParams,
+    ) -> Result<(), StaticValidationError> {
+        let floor_data_gas = compute_floor_data_gas(tx, execution_chain_params);
         if tx.gas_limit() < floor_data_gas {
             return Err(StaticValidationError::GasLimitUnderFloorDataGas {
                 tx_gas_limit: tx.gas_limit(),
@@ -252,7 +261,7 @@ impl EthPragueForkValidation {
     }
 }
 
-fn compute_intrinsic_gas(tx: &TxEnvelope) -> u64 {
+fn compute_intrinsic_gas(tx: &TxEnvelope, execution_chain_params: &ExecutionChainParams) -> u64 {
     // base stipend
     let mut intrinsic_gas = 21000;
 
@@ -290,14 +299,37 @@ fn compute_intrinsic_gas(tx: &TxEnvelope) -> u64 {
             );
         }
     }
+
+    if execution_chain_params.amsterdam_enabled {
+        intrinsic_gas = intrinsic_gas.saturating_add(compute_access_list_data_gas(tx));
+    }
     intrinsic_gas
 }
 
-fn compute_floor_data_gas(tx: &TxEnvelope) -> u64 {
+fn compute_floor_data_gas(tx: &TxEnvelope, execution_chain_params: &ExecutionChainParams) -> u64 {
     // EIP-7623
     let zero_data_len = tx.input().iter().filter(|v| **v == 0).count() as u64;
     let non_zero_data_len = tx.input().len() as u64 - zero_data_len;
-    21_000 + (zero_data_len * 10 + non_zero_data_len * 40)
+    let mut floor_data_gas = 21_000 + (zero_data_len * 10 + non_zero_data_len * 40);
+
+    if execution_chain_params.amsterdam_enabled {
+        floor_data_gas = floor_data_gas.saturating_add(compute_access_list_data_gas(tx));
+    }
+    floor_data_gas
+}
+
+// EIP-7981: access-list data cost
+fn compute_access_list_data_gas(tx: &TxEnvelope) -> u64 {
+    let access_list = tx
+        .access_list()
+        .map(|list| list.0.as_slice())
+        .unwrap_or(&[]);
+    let access_list_bytes = access_list.iter().fold(0u64, |bytes, item| {
+        bytes
+            .saturating_add(20)
+            .saturating_add((item.storage_keys.len() as u64).saturating_mul(32))
+    });
+    access_list_bytes.saturating_mul(40)
 }
 
 #[cfg(test)]
@@ -305,6 +337,7 @@ mod test {
     use std::str::FromStr;
 
     use alloy_consensus::{SignableTransaction, TxEip1559, TxLegacy};
+    use alloy_eips::eip2930::{AccessList, AccessListItem};
     use alloy_primitives::{Address, Bytes, FixedBytes, Signature, TxKind, B256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
@@ -560,7 +593,10 @@ mod test {
         let signature = sign_tx(&tx.signature_hash());
         let tx = tx.into_signed(signature);
 
-        let result = compute_floor_data_gas(&tx.into());
+        let result = compute_floor_data_gas(
+            &tx.into(),
+            MonadExecutionRevision::LATEST.execution_chain_params(),
+        );
         assert_eq!(result, 21000 + (3 * 10) + (4 * 40));
     }
 
@@ -580,7 +616,10 @@ mod test {
         let signature = sign_tx(&tx.signature_hash());
         let tx = tx.into_signed(signature);
 
-        let result = compute_intrinsic_gas(&tx.into());
+        let result = compute_intrinsic_gas(
+            &tx.into(),
+            MonadExecutionRevision::LATEST.execution_chain_params(),
+        );
         assert_eq!(result, 53166);
     }
 
@@ -596,7 +635,10 @@ mod test {
             0,
         );
 
-        let result_1_auth = compute_intrinsic_gas(&tx_1_auth);
+        let result_1_auth = compute_intrinsic_gas(
+            &tx_1_auth,
+            MonadExecutionRevision::LATEST.execution_chain_params(),
+        );
         assert_eq!(result_1_auth, 46000);
 
         let tx_2_auth = make_eip7702_tx(
@@ -612,7 +654,149 @@ mod test {
             0,
         );
 
-        let result_2_auth = compute_intrinsic_gas(&tx_2_auth);
+        let result_2_auth = compute_intrinsic_gas(
+            &tx_2_auth,
+            MonadExecutionRevision::LATEST.execution_chain_params(),
+        );
         assert_eq!(result_2_auth, 71000);
+    }
+
+    fn make_access_list_tx(
+        gas_limit: u64,
+        storage_keys_per_address: &[usize],
+        input: Bytes,
+    ) -> TxEnvelope {
+        let access_list = AccessList(
+            storage_keys_per_address
+                .iter()
+                .enumerate()
+                .map(|(i, num_keys)| AccessListItem {
+                    address: Address(FixedBytes([i as u8 + 1; 20])),
+                    storage_keys: (0..*num_keys).map(|k| B256::repeat_byte(k as u8)).collect(),
+                })
+                .collect(),
+        );
+        let tx = TxEip1559 {
+            chain_id: MockChainConfig::DEFAULT.chain_id(),
+            nonce: 0,
+            to: TxKind::Call(Address(FixedBytes([0x11; 20]))),
+            max_fee_per_gas: 1000,
+            max_priority_fee_per_gas: 10,
+            gas_limit,
+            access_list,
+            input,
+            ..Default::default()
+        };
+        let signature = sign_tx(&tx.signature_hash());
+        tx.into_signed(signature).into()
+    }
+
+    fn validate_with_revision(
+        tx: &TxEnvelope,
+        revision: MonadExecutionRevision,
+    ) -> Result<(), StaticValidationError> {
+        static_validate_transaction(
+            tx,
+            MockChainConfig::DEFAULT.chain_id(),
+            MockChainRevision::DEFAULT.chain_params,
+            revision.execution_chain_params(),
+        )
+    }
+
+    #[test]
+    fn test_eip7981_access_list_intrinsic_gas_boundary() {
+        // 21000 + 2400 (EIP-2930 address)
+        const PRE_AMSTERDAM_INTRINSIC_GAS: u64 = 23_400;
+        // + 20 address bytes * 40 (EIP-7981)
+        const AMSTERDAM_INTRINSIC_GAS: u64 = 24_200;
+
+        let tx = make_access_list_tx(PRE_AMSTERDAM_INTRINSIC_GAS, &[0], Bytes::new());
+        assert_eq!(
+            validate_with_revision(&tx, MonadExecutionRevision::V_FOUR),
+            Ok(())
+        );
+        assert_eq!(
+            validate_with_revision(&tx, MonadExecutionRevision::V_NEXT),
+            Err(StaticValidationError::GasLimitUnderIntrinsicGas {
+                tx_gas_limit: PRE_AMSTERDAM_INTRINSIC_GAS,
+                intrinsic_gas: AMSTERDAM_INTRINSIC_GAS,
+            })
+        );
+
+        let tx = make_access_list_tx(AMSTERDAM_INTRINSIC_GAS - 1, &[0], Bytes::new());
+        assert!(matches!(
+            validate_with_revision(&tx, MonadExecutionRevision::V_NEXT),
+            Err(StaticValidationError::GasLimitUnderIntrinsicGas { .. })
+        ));
+
+        let tx = make_access_list_tx(AMSTERDAM_INTRINSIC_GAS, &[0], Bytes::new());
+        assert_eq!(
+            validate_with_revision(&tx, MonadExecutionRevision::V_NEXT),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn test_eip7981_access_list_floor_data_gas_boundary() {
+        const PRE_AMSTERDAM_FLOOR_DATA_GAS: u64 = 61_000;
+        // 1000 non-zero bytes and one address with no keys:
+        // floor = 21000 + 1000 * 40 + 20 * 40 = 61_800
+        const AMSTERDAM_FLOOR_DATA_GAS: u64 = 61_800;
+        let input: Bytes = vec![0xaa; 1000].into();
+
+        let tx = make_access_list_tx(PRE_AMSTERDAM_FLOOR_DATA_GAS, &[0], input.clone());
+        assert_eq!(
+            validate_with_revision(&tx, MonadExecutionRevision::V_FOUR),
+            Ok(())
+        );
+        assert_eq!(
+            validate_with_revision(&tx, MonadExecutionRevision::V_NEXT),
+            Err(StaticValidationError::GasLimitUnderFloorDataGas {
+                tx_gas_limit: PRE_AMSTERDAM_FLOOR_DATA_GAS,
+                floor_data_gas: AMSTERDAM_FLOOR_DATA_GAS,
+            })
+        );
+
+        let tx = make_access_list_tx(AMSTERDAM_FLOOR_DATA_GAS, &[0], input);
+        assert_eq!(
+            validate_with_revision(&tx, MonadExecutionRevision::V_NEXT),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn test_compute_access_list_data_gas() {
+        let pre_amsterdam = MonadExecutionRevision::V_FOUR.execution_chain_params();
+        let amsterdam = MonadExecutionRevision::V_NEXT.execution_chain_params();
+
+        let tx = make_access_list_tx(1_000_000, &[], Bytes::new());
+        assert_eq!(compute_access_list_data_gas(&tx), 0);
+
+        // 2 addresses, 3 storage keys: (2 * 20 + 3 * 32) * 40
+        let tx = make_access_list_tx(1_000_000, &[1, 2], Bytes::new());
+        assert_eq!(compute_access_list_data_gas(&tx), 5_440);
+        assert_eq!(
+            compute_intrinsic_gas(&tx, pre_amsterdam),
+            21_000 + 2 * 2_400 + 3 * 1_900
+        );
+        assert_eq!(
+            compute_intrinsic_gas(&tx, amsterdam),
+            21_000 + 2 * 2_400 + 3 * 1_900 + 5_440
+        );
+        assert_eq!(compute_floor_data_gas(&tx, pre_amsterdam), 21_000);
+        assert_eq!(compute_floor_data_gas(&tx, amsterdam), 21_000 + 5_440);
+
+        // legacy transactions have no access list
+        let legacy = TxLegacy {
+            chain_id: None,
+            nonce: 0,
+            to: TxKind::Call(Address(FixedBytes([0x11; 20]))),
+            gas_price: 1000,
+            gas_limit: 21_000,
+            ..Default::default()
+        };
+        let signature = sign_tx(&legacy.signature_hash());
+        let legacy: TxEnvelope = legacy.into_signed(signature).into();
+        assert_eq!(compute_intrinsic_gas(&legacy, amsterdam), 21_000);
     }
 }
