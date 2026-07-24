@@ -113,6 +113,9 @@ enum Command {
         )]
         peer_bandwidth_mbps: Option<u64>,
 
+        #[arg(long, default_value = "4", help = "number of UDP TX workers")]
+        tx_workers: usize,
+
         #[arg(
             long,
             default_value = "128",
@@ -165,6 +168,7 @@ fn main() {
             writer_bandwidth_mbps,
             dataplane_bandwidth_mbps,
             peer_bandwidth_mbps,
+            tx_workers,
             batch_size,
         } => {
             let target_addrs: Vec<SocketAddr> = target
@@ -177,6 +181,7 @@ fn main() {
                 writer_bandwidth_mbps,
                 dataplane_bandwidth_mbps,
                 peer_bandwidth_mbps,
+                tx_workers,
                 batch_size,
             );
         }
@@ -317,6 +322,7 @@ fn run_native_writer(
     writer_bandwidth_mbps: u64,
     dataplane_bandwidth_mbps: u64,
     peer_bandwidth_mbps: Option<u64>,
+    tx_workers: usize,
     batch_size: usize,
 ) {
     assert!(
@@ -346,11 +352,13 @@ fn run_native_writer(
         writer_bandwidth_mbps = writer_bandwidth_mbps,
         dataplane_bandwidth_mbps = dataplane_bandwidth_mbps,
         peer_bandwidth_mbps = peer_bandwidth_mbps.unwrap_or(dataplane_bandwidth_mbps),
+        tx_workers,
         batch_size = batch_size,
         "starting native dataplane writer"
     );
 
-    let mut builder = DataplaneBuilder::new(dataplane_bandwidth_mbps);
+    let mut builder =
+        DataplaneBuilder::new(dataplane_bandwidth_mbps).with_udp_tx_workers(tx_workers);
     if let Some(peer_bandwidth_mbps) = peer_bandwidth_mbps {
         builder = builder.with_udp_peer_bandwidth_mbps(peer_bandwidth_mbps);
     }
