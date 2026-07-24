@@ -119,6 +119,7 @@ where
         create_execution_inputs: impl FnOnce(
             SeqNum,
             u128,
+            Round,
             RoundSignature<SCT::SignatureType>,
         ) -> EPT::ProposedHeader,
         delayed_execution_results: Vec<EPT::FinalizedHeader>,
@@ -188,7 +189,7 @@ where
             self.epoch,
             self.round,
             delayed_execution_results,
-            create_execution_inputs(seq_num, self.timestamp, round_signature.clone()),
+            create_execution_inputs(seq_num, self.timestamp, self.round, round_signature.clone()),
             block_body.get_id(),
             qc.clone(),
             seq_num,

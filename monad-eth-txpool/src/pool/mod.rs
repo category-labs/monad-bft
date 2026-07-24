@@ -389,6 +389,18 @@ where
             None
         };
 
+        // Monad does not use block access list hashes
+        // It is hardcoded to zero hash for amsterdam compatibility
+        let (maybe_block_access_list_hash, maybe_slot_number) = if self
+            .execution_revision
+            .execution_chain_params()
+            .amsterdam_enabled
+        {
+            (Some([0_u8; 32]), Some(round.as_u64()))
+        } else {
+            (None, None)
+        };
+
         let header = ProposedEthHeader {
             transactions_root: *alloy_consensus::proofs::calculate_transaction_root(
                 &body.transactions,
@@ -415,6 +427,8 @@ where
             excess_blob_gas: 0,
             parent_beacon_block_root: [0_u8; 32],
             requests_hash: maybe_request_hash,
+            block_access_list_hash: maybe_block_access_list_hash,
+            slot_number: maybe_slot_number,
         };
 
         self.update_aggregate_metrics(event_tracker);
