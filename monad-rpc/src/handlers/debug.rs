@@ -969,7 +969,7 @@ mod tests {
             frame,
         );
 
-        let data_provider = DataProvider::new(None, Arc::new(mock_triedb), None);
+        let data_provider = DataProvider::new(None, Arc::new(mock_triedb), None, None);
         let err = monad_debug_traceTransaction(
             &data_provider,
             1,
