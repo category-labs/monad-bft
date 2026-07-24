@@ -20,10 +20,11 @@ pub enum MonadExecutionRevision {
     V_ONE,
     V_TWO,
     V_FOUR,
+    V_NEXT,
 }
 
 impl MonadExecutionRevision {
-    pub const LATEST: Self = Self::V_FOUR;
+    pub const LATEST: Self = Self::V_NEXT;
 }
 
 impl MonadExecutionRevision {
@@ -33,6 +34,7 @@ impl MonadExecutionRevision {
             Self::V_ONE => &EXECUTION_CHAIN_PARAMS_V_ONE,
             Self::V_TWO => &EXECUTION_CHAIN_PARAMS_V_TWO,
             Self::V_FOUR => &EXECUTION_CHAIN_PARAMS_V_FOUR,
+            Self::V_NEXT => &EXECUTION_CHAIN_PARAMS_V_NEXT,
         }
     }
 }
@@ -41,29 +43,41 @@ impl MonadExecutionRevision {
 pub struct ExecutionChainParams {
     pub max_code_size: usize,
     pub prague_enabled: bool,
+    pub amsterdam_enabled: bool,
     pub validate_system_txs: bool,
 }
 
 const EXECUTION_CHAIN_PARAMS_V_ZERO: ExecutionChainParams = ExecutionChainParams {
     max_code_size: 24 * 1024,
     prague_enabled: false,
+    amsterdam_enabled: false,
     validate_system_txs: false,
 };
 
 const EXECUTION_CHAIN_PARAMS_V_ONE: ExecutionChainParams = ExecutionChainParams {
     max_code_size: 24 * 1024,
     prague_enabled: false,
+    amsterdam_enabled: false,
     validate_system_txs: false,
 };
 
 const EXECUTION_CHAIN_PARAMS_V_TWO: ExecutionChainParams = ExecutionChainParams {
     max_code_size: 128 * 1024,
     prague_enabled: false,
+    amsterdam_enabled: false,
     validate_system_txs: false,
 };
 
 const EXECUTION_CHAIN_PARAMS_V_FOUR: ExecutionChainParams = ExecutionChainParams {
     max_code_size: 128 * 1024,
     prague_enabled: true,
+    amsterdam_enabled: false,
+    validate_system_txs: true,
+};
+
+const EXECUTION_CHAIN_PARAMS_V_NEXT: ExecutionChainParams = ExecutionChainParams {
+    max_code_size: 128 * 1024,
+    prague_enabled: true,
+    amsterdam_enabled: true,
     validate_system_txs: true,
 };
