@@ -50,6 +50,7 @@ RUN apt update && apt install -y \
   libgmp-dev \
   libgtest-dev \
   libmimalloc-dev \
+  libsecp256k1-dev \
   libtbb-dev \
   liburing-dev \
   libzstd-dev
