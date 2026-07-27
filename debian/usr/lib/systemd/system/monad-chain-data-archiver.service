@@ -6,10 +6,11 @@ Wants=network-online.target
 [Service]
 WorkingDirectory=/home/monad
 Type=simple
-ExecStart=/usr/local/bin/monad-archiver --config ${CHAIN_DATA_ARCHIVER_CONFIG}
+ExecStart=/usr/local/bin/monad-query-indexer --chain-data-config ${CHAIN_DATA_ARCHIVER_CONFIG} --block-data-source ${BLOCK_DATA_SOURCE}
 Environment="CHAIN_DATA_ARCHIVER_CONFIG=/home/monad/chain-data-archiver.toml"
+Environment="BLOCK_DATA_SOURCE="
 Environment="AWS_EC2_METADATA_DISABLED=true"
-Environment="RUST_LOG=info,monad_chain_data=info,ingest::timing=trace,aws_config=warn,aws_smithy_runtime=warn,h2=warn,tower=warn"
+Environment="RUST_LOG=info,monad_query_indexer=info,monad_query_write=info,ingest::timing=trace,aws_config=warn,aws_smithy_runtime=warn,h2=warn,tower=warn"
 EnvironmentFile=-/home/monad/.env
 Restart=always
 RestartSec=15
