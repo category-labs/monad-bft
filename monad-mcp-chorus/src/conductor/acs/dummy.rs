@@ -22,6 +22,7 @@ use super::{
     Acs, AcsOutput,
     types::{NodeId, ValidatorData},
 };
+use crate::spec::validator::ValidatorData as _;
 
 /// A dummy, single-round ACS protocol that decides on median of all
 /// received messages after receiving all proposals.
@@ -40,11 +41,7 @@ where
     type Context = Arc<ValidatorData>;
 
     fn new(val_data: &Arc<ValidatorData>) -> Self {
-        let proposals: BTreeMap<NodeId, _> = val_data
-            .valset_unordered()
-            .keys()
-            .map(|id| (*id, None))
-            .collect();
+        let proposals: BTreeMap<NodeId, _> = val_data.nodes().map(|id| (*id, None)).collect();
         assert!(!proposals.is_empty());
 
         Self {

@@ -25,11 +25,12 @@ use itertools::Either;
 // the environment this module subtree is instantiated.
 pub use super::env::{
     KeyPair, MerkleRoot, NodeId, OpaqueChunkHeader, ProposalSignature, PubKey, Signature,
-    SignatureCollection, Stake,
+    SignatureCollection, Stake, ValidatorData, VoteAggregation,
 };
 use crate::spec::{
     Stake as _,
-    vote::{KeyPair as _, SignatureCollection as _},
+    validator::ValidatorData as _,
+    vote::{KeyPair as _, Signature as _, SignatureCollection as _, VoteAggregation as _},
 };
 
 // slot number. starting from 0.
@@ -192,8 +193,15 @@ where
         }
     }
 
+    // the caller should ensure that the node_id is in the validator
+    // set.
     pub fn add_vote(&mut self, node_id: NodeId, msg: VoteMsg<V>) {
         assert!(msg.scope == self.scope);
+
+        if !msg.signature.is_well_formed() {
+            return;
+        }
+
         if self.votes.contains_key(&node_id) {
             return;
         }
@@ -210,15 +218,42 @@ where
         self.votes.keys()
     }
 
-    pub fn try_form_strong_qc(&self, validator_data: &ValidatorData) -> Option<StrongQc<V>> {
-        let (vote, voters) = self.buckets.iter().find(|(_vote, voters)| {
-            let stake = validator_data.sum_stake(voters.iter());
-            validator_data.is_supermajority(stake)
-        })?;
+    pub fn try_aggregate(
+        &self,
+        target_stake: Stake,
+        validator_data: &ValidatorData,
+    ) -> Vec<(&V, SignatureCollection)> {
+        let mut aggs = vec![];
 
-        let data = vote.serialize(&self.scope);
-        let votes = voters.iter().map(|node_id| &self.votes[node_id]);
-        let sigcol = SignatureCollection::aggregate(&data, votes)?;
+        for (vote, voters) in &self.buckets {
+            let stake = validator_data.sum_stake(voters.iter());
+            // pre-filter to only keep buckets with enough stake
+            if stake <= target_stake {
+                continue;
+            }
+
+            let data = vote.serialize(&self.scope);
+            let votes = voters
+                .iter()
+                .map(|node_id| (node_id, &self.votes[node_id]))
+                .collect();
+
+            let mut vote_agg = VoteAggregation::from_validator_data(validator_data);
+
+            if let Some(sigcol) = vote_agg.try_aggregate(&data, votes, target_stake) {
+                aggs.push((vote, sigcol));
+            }
+        }
+
+        aggs
+    }
+
+    pub fn try_form_strong_qc(&self, validator_data: &ValidatorData) -> Option<StrongQc<V>> {
+        let target_stake = validator_data.total_stake().supermajority_threshold();
+        let aggs = self.try_aggregate(target_stake, validator_data);
+        debug_assert!(aggs.len() <= 1, "at most one strong qc can be formed");
+
+        let (vote, sigcol) = aggs.into_iter().next()?;
         let qc = StrongQc {
             scope: self.scope.clone(),
             verdict: vote.clone(),
@@ -227,13 +262,26 @@ where
         Some(qc)
     }
 
-    // todo: make it fallible
     // there are at most two weak qcs.
     pub fn try_form_weak_qc(
         &self,
-        _validator_data: &ValidatorData,
+        validator_data: &ValidatorData,
     ) -> Option<Either<WeakQc<V>, (WeakQc<V>, WeakQc<V>)>> {
-        todo!()
+        let target_stake = validator_data.total_stake().honest_threshold();
+        let aggs = self.try_aggregate(target_stake, validator_data);
+        debug_assert!(aggs.len() <= 2, "at most two weak qc can be formed");
+
+        let mut qcs = aggs.into_iter().map(|(vote, sigcol)| WeakQc {
+            scope: self.scope.clone(),
+            verdict: vote.clone(),
+            sigcol,
+        });
+
+        match (qcs.next(), qcs.next()) {
+            (None, _) => None,
+            (Some(qc), None) => Some(Either::Left(qc)),
+            (Some(qc1), Some(qc2)) => Some(Either::Right((qc1, qc2))),
+        }
     }
 }
 
@@ -277,6 +325,21 @@ where
     pub sigcol: SignatureCollection,
 }
 
+impl<V> StrongQc<V>
+where
+    V: IsVote,
+{
+    pub fn verify(&self, validator_data: &ValidatorData) -> bool {
+        let data = self.verdict.serialize(&self.scope);
+        let Some(nodes) = self.sigcol.verify(&data, validator_data) else {
+            return false;
+        };
+
+        let stake = validator_data.sum_stake(nodes);
+        stake > validator_data.total_stake().supermajority_threshold()
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct WeakQc<V>
 where
@@ -286,6 +349,21 @@ where
     pub verdict: V,
     // f+1 votes
     pub sigcol: SignatureCollection,
+}
+
+impl<V> WeakQc<V>
+where
+    V: IsVote,
+{
+    pub fn verify(&self, validator_data: &ValidatorData) -> bool {
+        let data = self.verdict.serialize(&self.scope);
+        let Some(nodes) = self.sigcol.verify(&data, validator_data) else {
+            return false;
+        };
+
+        let stake = validator_data.sum_stake(nodes);
+        stake > validator_data.total_stake().honest_threshold()
+    }
 }
 
 pub type ProposalIndex = usize;
@@ -315,7 +393,7 @@ impl<T> ProposalMap<T> {
         }
     }
 
-    const fn size(&self) -> usize {
+    pub const fn size(&self) -> usize {
         self.values.len()
     }
 
@@ -413,67 +491,6 @@ impl<T> std::ops::Index<ProposalIndex> for ProposalMap<T> {
 impl<T> std::ops::IndexMut<ProposalIndex> for ProposalMap<T> {
     fn index_mut(&mut self, index: ProposalIndex) -> &mut T {
         &mut self.values[index]
-    }
-}
-
-pub struct ValidatorData {
-    valset: HashMap<NodeId, Stake>,
-    mapping: HashMap<NodeId, PubKey>,
-}
-
-impl ValidatorData {
-    pub fn new(valset: HashMap<NodeId, Stake>, mapping: HashMap<NodeId, PubKey>) -> Self {
-        assert_eq!(valset.len(), mapping.len());
-        assert!(!valset.is_empty());
-        assert!(valset.keys().all(|node_id| mapping.contains_key(node_id)));
-
-        Self { valset, mapping }
-    }
-
-    // The caller must ensure the invariants on the valset/mapping are
-    // satisfied, as seen in the assertions in new() method.
-    pub fn new_unchecked(valset: HashMap<NodeId, Stake>, mapping: HashMap<NodeId, PubKey>) -> Self {
-        Self { valset, mapping }
-    }
-
-    pub fn valset_unordered(&self) -> &HashMap<NodeId, Stake> {
-        &self.valset
-    }
-
-    pub fn sum_stake<'a>(&self, nodes: impl IntoIterator<Item = &'a NodeId>) -> Stake {
-        nodes.into_iter().map(|node_id| self.valset[node_id]).sum()
-    }
-
-    fn total_stake(&self) -> Stake {
-        self.valset.values().copied().sum()
-    }
-
-    pub fn is_supermajority(&self, stake: Stake) -> bool {
-        stake > self.total_stake().supermajority_threshold()
-    }
-
-    fn is_majority(&self, stake: Stake) -> bool {
-        stake > self.total_stake().majority_threshold()
-    }
-
-    pub fn verify_strong_qc<V: IsVote>(&self, qc: &StrongQc<V>) -> bool {
-        let data = qc.verdict.serialize(&qc.scope);
-        let Some(nodes) = qc.sigcol.verify(&data, &self.mapping) else {
-            return false;
-        };
-
-        let stake = self.sum_stake(nodes.iter());
-        self.is_supermajority(stake)
-    }
-
-    pub fn verify_weak_qc<V: IsVote>(&self, qc: &WeakQc<V>) -> bool {
-        let data = qc.verdict.serialize(&qc.scope);
-        let Some(nodes) = qc.sigcol.verify(&data, &self.mapping) else {
-            return false;
-        };
-
-        let stake = self.sum_stake(nodes.iter());
-        self.is_majority(stake)
     }
 }
 
