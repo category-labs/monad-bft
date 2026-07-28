@@ -15,7 +15,7 @@
 
 pub use crate::env::stub::{
     KeyPair, MerkleRoot, NodeId, OpaqueChunkHeader, ProposalSignature, PubKey, Signature,
-    SignatureCollection, Stake,
+    SignatureCollection, Stake, ValidatorData, VoteAggregation,
 };
 
 // TODO: fill in the actual production implementation for above types
@@ -26,7 +26,9 @@ const _: () = crate::spec::assert_env::<
     PubKey,
     KeyPair,
     Signature,
+    ValidatorData,
     SignatureCollection,
+    VoteAggregation<'_>,
     MerkleRoot,
     ProposalSignature,
     OpaqueChunkHeader,

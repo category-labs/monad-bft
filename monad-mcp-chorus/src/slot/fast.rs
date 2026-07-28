@@ -26,7 +26,7 @@ use super::{
         ValidatorData, VoteMsg, VotePool, WeakQc, dummy_serialize,
     },
 };
-use crate::spec::proposal::ChunkHeader as _;
+use crate::spec::{Stake as _, proposal::ChunkHeader as _, validator::ValidatorData as _};
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 enum Phase {
@@ -115,6 +115,8 @@ impl FastPath {
     }
 
     fn handle_vote(&mut self, node_id: NodeId, vote_msg: VoteMsg<Entry>) {
+        debug_assert!(self.validator_data.contains(&node_id));
+
         let (_s, j) = vote_msg.scope;
         self.votes[j].add_vote(node_id, vote_msg);
         self.try_form_fast_qc(j);
@@ -126,6 +128,8 @@ impl FastPath {
         node_id: NodeId,
         vote_msg: FastCommitVoteMsg,
     ) -> Option<FastCommitQc> {
+        debug_assert!(self.validator_data.contains(&node_id));
+
         // no phase guard on purpose
         self.commit_votes.add_vote(node_id, vote_msg);
         self.commit_votes.try_form_strong_qc(&self.validator_data)
@@ -133,7 +137,7 @@ impl FastPath {
 
     pub(crate) fn handle_fast_block(&mut self, fast_block: FastBlock) -> Option<FastBlock> {
         for (j, qc) in fast_block.0.into_indexed_iter() {
-            debug_assert!(self.validator_data.verify_strong_qc(&qc));
+            debug_assert!(qc.verify(&self.validator_data));
             self.certs[j].try_upgrade(qc);
         }
 
@@ -141,6 +145,8 @@ impl FastPath {
     }
 
     pub(crate) fn handle_fallback_vote(&mut self, node_id: NodeId, vote_msg: FallbackVoteMsg) {
+        debug_assert!(self.validator_data.contains(&node_id));
+
         self.enter_fallback_votes
             .add_vote(node_id, vote_msg.enter_fallback_vote);
 
@@ -204,9 +210,11 @@ impl FastPath {
         }
 
         // do we have at least 2f+1 valid vote messages?
+        //
+        // todo: handle invalid signatures
         let has_enough_votes = self.votes.as_ref().into_iter().all(|pool| {
             let voter_stake = self.validator_data.sum_stake(pool.all_voters());
-            self.validator_data.is_supermajority(voter_stake)
+            voter_stake > self.validator_data.total_stake().supermajority_threshold()
         });
         if !has_enough_votes {
             // wait for more votes to arrive.
@@ -481,8 +489,8 @@ impl CertifiedEntry {
     /// boundary explicit and catch protocol-logic bugs.
     fn verify(&self, validator_data: &ValidatorData) -> bool {
         match self {
-            CertifiedEntry::FastQc(qc) => validator_data.verify_strong_qc(qc),
-            CertifiedEntry::FallbackQc(qc) => validator_data.verify_weak_qc(qc),
+            CertifiedEntry::FastQc(qc) => qc.verify(validator_data),
+            CertifiedEntry::FallbackQc(qc) => qc.verify(validator_data),
             CertifiedEntry::EquivCert(EquivCert(a, b)) => {
                 a.root != b.root
                     && a.opaque_header.validate(&a.root, &a.sig)

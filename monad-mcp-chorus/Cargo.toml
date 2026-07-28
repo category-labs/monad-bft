@@ -8,3 +8,6 @@ bytes = { workspace = true }
 derive_more = { workspace = true, features = ["from", "sum", "add", "into"] }
 itertools = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
