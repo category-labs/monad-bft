@@ -74,7 +74,8 @@ jobs:
             gcc-15 \
             g++-15 \
             libhugetlbfs-dev \
-            libmagicenum-dev
+            libmagicenum-dev \
+            libsecp256k1-dev
 
       - run: rustup toolchain install nightly-2025-12-09 --profile minimal --component rustfmt
       - run: rustup toolchain install 1.91.1-x86_64-unknown-linux-gnu --profile minimal --component clippy
