@@ -18,7 +18,7 @@
 use std::collections::HashSet;
 
 use alloy_primitives::U256;
-use monad_query_tests::prelude::*;
+use super::prelude::*;
 fn row_cache_only_config() -> CacheConfig {
     CacheConfig {
         row_cache_bytes: 3 * 1024 * 1024,

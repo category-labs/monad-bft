@@ -13,13 +13,23 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! The former `monad_chain_data` public surface, re-exported from the origin
-//! crates so integration tests import the layered crates directly. Glob-import
-//! as `use monad_query_tests::prelude::*;`.
+//! Import surface for the round-trip submodules, mirroring the layered
+//! crates' public API plus the local fixture DSL.
+
+#![allow(unused_imports)]
 
 pub use alloy_primitives::{Address, Bytes, Log, LogData, B256};
 pub use monad_query_engine::{
-    bitmap::*, clause::*, family::*, primary_dir::*, tables::*, SessionFuture, WriteSession,
+    bitmap::*,
+    clause::*,
+    family::*,
+    primary_dir::*,
+    tables::*,
+    test_util::{
+        block_record, seed_bitmap_page_artifact, seed_bitmap_page_counts,
+        seed_bitmap_page_fragment, stage_block, stage_block_header, test_cache_config,
+    },
+    txs::TxHashIndexTable,
 };
 pub use monad_query_errors::{LimitExceededKind, QueryError, Result};
 pub use monad_query_primitives::{
@@ -47,13 +57,13 @@ pub use monad_query_read::{
     },
 };
 pub use monad_query_store::{
-    BlobStore, CacheConfig, InMemoryBlobStore, InMemoryMetaStore, MetaStore, NullBlobStore, TableId,
+    test_util::*, BlobStore, CacheConfig, InMemoryBlobStore, InMemoryMetaStore, MetaStore,
+    NullBlobStore, TableId,
 };
-pub use monad_query_testkit::*;
 pub use monad_query_types::{
     ingest_types::{FinalizedBlock, IngestTrace, IngestTx},
     ExternalFamilyRegion, ExternalPayloadSpec,
 };
-pub use monad_query_write::{source::ChainDataIngestSource, PayloadMode};
 
-pub use crate::common::{observed_store::*, *};
+pub use super::fixtures::*;
+pub use crate::testing::{self as populate, *};

@@ -17,7 +17,7 @@
 //! including the per-page short-circuit on later clauses' fetches.
 
 use bytes::Bytes as RawBytes;
-use monad_query_tests::prelude::*;
+use super::prelude::*;
 /// Lossless `usize` view of the compile-time page span.
 const PAGE_SPAN: usize = STREAM_PAGE_ID_SPAN as usize;
 
@@ -51,7 +51,7 @@ async fn intersection_is_empty_when_clauses_match_in_disjoint_pages() {
         vec![logs],
     )])
     .await;
-    let service = store.reader();
+    let service = reader(&store);
 
     let clauses = vec![addr_clause(addr_a), addr_clause(addr_b)];
     let family = service.tables().family(Family::Log);
@@ -87,7 +87,7 @@ async fn intersection_keeps_only_ids_present_in_every_clause_per_page() {
         vec![logs],
     )])
     .await;
-    let service = store.reader();
+    let service = reader(&store);
 
     let clauses = vec![addr_clause(addr), topic0_clause(topic_shared)];
     let family = service.tables().family(Family::Log);

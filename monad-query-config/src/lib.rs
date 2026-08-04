@@ -76,7 +76,6 @@ pub struct ChainDataCacheTableBudgets {
     pub bitmap_page_counts_mib: Option<usize>,
     pub open_bitmap_stream_mib: Option<usize>,
     pub block_header_mib: Option<usize>,
-    pub block_hash_to_number_mib: Option<usize>,
     pub tx_hash_index_mib: Option<usize>,
     /// Decoded-row cache byte budget (split across the three families).
     pub row_cache_mib: Option<usize>,
@@ -825,7 +824,6 @@ fn apply_cache_table_overrides(config: &mut CacheConfig, overrides: &ChainDataCa
         (overrides.bitmap_page_counts_mib, &mut config.bitmap_page_counts_cache_bytes),
         (overrides.open_bitmap_stream_mib, &mut config.open_bitmap_stream_cache_bytes),
         (overrides.block_header_mib, &mut config.block_header_cache_bytes),
-        (overrides.block_hash_to_number_mib, &mut config.block_hash_to_number_cache_bytes),
         (overrides.tx_hash_index_mib, &mut config.tx_hash_index_cache_bytes),
         (overrides.row_cache_mib, &mut config.row_cache_bytes),
     ];

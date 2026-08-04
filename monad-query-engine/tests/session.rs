@@ -16,16 +16,15 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use monad_query_tests::prelude::*;
-
-use crate::{
-    observed_store::{ObservedBlobStore, ObservedMetaStore},
-    stage_block_header, test_cache_config,
+use monad_query_engine::{
+    tables::{BlockTables, DictConfig, QueryRuntimeConfig, Tables},
+    test_util::{stage_block_header, test_cache_config},
 };
-
-fn test_hash(byte: u8) -> Hash32 {
-    Hash32::from([byte; 32])
-}
+use monad_query_errors::QueryError;
+use monad_query_store::{
+    test_util::{ObservedBlobStore, ObservedMetaStore},
+    BlobStore, InMemoryBlobStore, MetaStore,
+};
 
 fn session_tables<B: BlobStore>(meta: ObservedMetaStore, blob: B) -> Tables<ObservedMetaStore, B> {
     Tables::with_all_configs(
@@ -37,11 +36,11 @@ fn session_tables<B: BlobStore>(meta: ObservedMetaStore, blob: B) -> Tables<Obse
     )
 }
 
-// Hash-index entries act as a write-reached-backend probe, readable via plain `MetaStore::get`.
-async fn stored_hash_index(meta: &ObservedMetaStore, hash: &Hash32) -> Option<Bytes> {
+// Block-metadata rows act as a write-reached-backend probe, readable via plain `MetaStore::get`.
+async fn stored_metadata(meta: &ObservedMetaStore, number: u64) -> Option<Bytes> {
     meta.get(
-        BlockTables::<ObservedMetaStore>::BLOCK_HASH_TO_NUMBER_INDEX_TABLE,
-        hash.as_slice(),
+        BlockTables::<ObservedMetaStore>::BLOCK_METADATA_TABLE,
+        &number.to_be_bytes(),
     )
     .await
     .unwrap()
@@ -52,19 +51,17 @@ async fn closure_error_does_not_flush() {
     let meta = ObservedMetaStore::new();
     let tables = session_tables(meta.clone(), InMemoryBlobStore::default());
     let tables_ref = &tables;
-    let hash = test_hash(0xAB);
-    let hash_ref = &hash;
 
     let result = tables
         .with_writes(|w| {
             Box::pin(async move {
-                tables_ref.blocks().stage_hash_index(w, hash_ref, 7);
+                stage_block_header(tables_ref, w, 7);
                 Err(QueryError::Backend("intentional".into()))
             })
         })
         .await;
     assert!(result.is_err());
-    assert!(stored_hash_index(&meta, &hash).await.is_none());
+    assert!(stored_metadata(&meta, 7).await.is_none());
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -114,13 +111,11 @@ async fn closure_error_then_retry_is_idempotent() {
     let meta = ObservedMetaStore::new();
     let tables = session_tables(meta.clone(), InMemoryBlobStore::default());
     let tables_ref = &tables;
-    let hash = test_hash(0xCD);
-    let hash_ref = &hash;
 
     let _ = tables
         .with_writes(|w| {
             Box::pin(async move {
-                tables_ref.blocks().stage_hash_index(w, hash_ref, 42);
+                stage_block_header(tables_ref, w, 42);
                 Err(QueryError::Backend("intentional".into()))
             })
         })
@@ -129,15 +124,16 @@ async fn closure_error_then_retry_is_idempotent() {
     tables
         .with_writes(|w| {
             Box::pin(async move {
-                tables_ref.blocks().stage_hash_index(w, hash_ref, 42);
+                stage_block_header(tables_ref, w, 42);
                 Ok(())
             })
         })
         .await
         .expect("retry succeeds");
 
-    let stored = stored_hash_index(&meta, &hash).await;
-    assert_eq!(stored.as_deref(), Some(&42u64.to_be_bytes()[..]));
+    assert!(stored_metadata(&meta, 42).await.is_some());
+    let record = tables.blocks().load_record(42).await.unwrap();
+    assert_eq!(record.expect("record readable").block_number, 42);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -145,14 +141,12 @@ async fn panic_in_closure_drops_pending() {
     let meta = ObservedMetaStore::new();
     let tables = session_tables(meta.clone(), InMemoryBlobStore::default());
     let tables_ref = &tables;
-    let hash = test_hash(0x11);
-    let hash_ref = &hash;
 
     let panicked = std::panic::AssertUnwindSafe(async {
         tables
             .with_writes(|w| {
                 Box::pin(async move {
-                    tables_ref.blocks().stage_hash_index(w, hash_ref, 1);
+                    stage_block_header(tables_ref, w, 1);
                     panic!("intentional panic");
                     #[allow(unreachable_code)]
                     Ok(())
@@ -164,7 +158,7 @@ async fn panic_in_closure_drops_pending() {
     let r = futures::FutureExt::catch_unwind(panicked).await;
     assert!(r.is_err(), "panic must propagate");
     assert!(
-        stored_hash_index(&meta, &hash).await.is_none(),
+        stored_metadata(&meta, 1).await.is_none(),
         "pending writes dropped on panic"
     );
 }

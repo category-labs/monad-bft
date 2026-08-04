@@ -51,9 +51,24 @@ use monad_query_read::{
     transfers::{QueryTransfersRequest, TransferFilter},
     txs::{QueryTransactionsRequest, TxFilter},
 };
-use monad_query_testkit::{populate_via_engine, populate_via_engine_external};
+use monad_query_write::testing::{populate_via_engine, populate_via_engine_external, PopulatedStore};
 use monad_query_types::ingest_types::FinalizedBlock;
 use monad_query_write::source::ChainDataIngestSource;
+
+fn service_over(
+    store: &PopulatedStore,
+) -> MonadChainDataService<monad_query_store::InMemoryMetaStore, monad_query_store::InMemoryBlobStore>
+{
+    let service = MonadChainDataService::new(
+        store.meta.clone(),
+        store.blob.clone(),
+        monad_query_primitives::limits::QueryLimits::UNLIMITED,
+    );
+    match &store.external {
+        Some(reader) => service.with_external_payload_reader(std::sync::Arc::clone(reader)),
+        None => service,
+    }
+}
 
 const SENDER_A: Address = Address::repeat_byte(0xa1);
 const SENDER_B: Address = Address::repeat_byte(0xb2);
@@ -436,8 +451,8 @@ async fn external_ingest_answers_identically_to_native() {
         "external mode must stage no pack blobs"
     );
 
-    let native = native_store.reader();
-    let external = external_store.reader();
+    let native = service_over(&native_store);
+    let external = service_over(&external_store);
 
     // (b) BlockRecord equality, including the chained row digest.
     for number in 1..=4u64 {

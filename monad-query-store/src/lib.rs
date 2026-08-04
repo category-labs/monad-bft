@@ -20,6 +20,8 @@ pub mod cache;
 #[cfg(feature = "dynamo")]
 pub mod dynamo_common;
 pub mod meta;
+#[cfg(any(test, feature = "test-util"))]
+pub mod test_util;
 
 pub use blob::{
     BlobBackend, BlobStore, BlobTable, BlobTableId, BlobWriteOp, InMemoryBlobStore, NullBlobStore,

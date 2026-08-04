@@ -21,3 +21,6 @@ monad-query-errors = { workspace = true }
 monad-query-primitives = { workspace = true }
 monad-query-store = { workspace = true, default-features = false }
 monad-query-types = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }

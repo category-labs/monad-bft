@@ -41,7 +41,7 @@ use monad_query_primitives::{
     EvmBlockHeader,
 };
 use monad_query_read::txs::{QueryTransactionsRequest, TxFilter};
-use monad_query_testkit::VecSource;
+use monad_query_write::testing::VecSource;
 use monad_query_types::{
     ingest_types::{FinalizedBlock, IngestTx},
     ExternalFamilyRegion, ExternalPayloadSpec,

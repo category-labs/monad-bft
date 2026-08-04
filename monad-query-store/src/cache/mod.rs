@@ -101,7 +101,6 @@ pub struct CacheConfig {
     pub bitmap_page_counts_cache_bytes: usize,
     pub open_bitmap_stream_cache_bytes: usize,
     pub block_header_cache_bytes: usize,
-    pub block_hash_to_number_cache_bytes: usize,
     pub tx_hash_index_cache_bytes: usize,
     /// Budget for the per-(family, block, row) decoded-row caches, split
     /// evenly across the three families. Only rows queries actually
@@ -117,7 +116,7 @@ impl Default for CacheConfig {
 
 impl CacheConfig {
     const RATIO_DENOMINATOR: usize = 1024;
-    const RATIO_ROW_CACHE: usize = 464;
+    const RATIO_ROW_CACHE: usize = 480;
     const RATIO_BITMAP_BY_BLOCK: usize = 256;
     const RATIO_BITMAP_PAGE_BLOB: usize = 128;
     const RATIO_DIR_BY_BLOCK: usize = 32;
@@ -129,7 +128,6 @@ impl CacheConfig {
     // 16/1024 made warm analytic queries re-fetch a block record per block
     // (mainnet-1 bench).
     const RATIO_BLOCK_HEADER: usize = 64;
-    const RATIO_BLOCK_HASH_TO_NUMBER: usize = 16;
     const RATIO_TX_HASH_INDEX: usize = 8;
 
     /// Splits a total MiB budget into per-cache byte budgets via the default
@@ -145,7 +143,6 @@ impl CacheConfig {
             bitmap_page_counts_cache_bytes: ratio_bytes(Self::RATIO_BITMAP_PAGE_COUNTS),
             open_bitmap_stream_cache_bytes: ratio_bytes(Self::RATIO_OPEN_BITMAP_STREAM),
             block_header_cache_bytes: ratio_bytes(Self::RATIO_BLOCK_HEADER),
-            block_hash_to_number_cache_bytes: ratio_bytes(Self::RATIO_BLOCK_HASH_TO_NUMBER),
             tx_hash_index_cache_bytes: ratio_bytes(Self::RATIO_TX_HASH_INDEX),
             row_cache_bytes: ratio_bytes(Self::RATIO_ROW_CACHE),
         }
@@ -169,7 +166,6 @@ impl CacheConfig {
             self.bitmap_page_counts_cache_bytes,
             self.open_bitmap_stream_cache_bytes,
             self.block_header_cache_bytes,
-            self.block_hash_to_number_cache_bytes,
             self.tx_hash_index_cache_bytes,
             self.row_cache_bytes,
         ]

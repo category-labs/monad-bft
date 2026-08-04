@@ -15,11 +15,14 @@
 
 use std::sync::Arc;
 
-use monad_query_tests::prelude::*;
-
-use crate::{
-    observed_store::{ObservedMetaStore, OpCounters},
-    stage_block, stage_block_header, test_cache_config,
+use monad_query_engine::{
+    family::Family,
+    tables::{DictConfig, QueryRuntimeConfig, Tables},
+    test_util::{stage_block, stage_block_header, test_cache_config},
+};
+use monad_query_store::{
+    test_util::{ObservedMetaStore, OpCounters},
+    CacheConfig, InMemoryBlobStore,
 };
 
 fn make_tables(
@@ -220,72 +223,4 @@ async fn populate_keys_match_scan_get_keys() {
         after.scan_get, before.scan_get,
         "per-clustering scan_gets must observe ZERO backend calls once cached"
     );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn cache_hit_ratio_metric_resets_between_windows() {
-    let (tables, _counters) = make_tables(test_cache_config());
-    stage_block(&tables, 1).await;
-
-    // Prime the cache, then drain stats so the counted window sees only hits.
-    let _ = tables.blocks().load_header(1).await;
-    let _ = tables.take_cache_window_stats();
-
-    for _ in 0..3 {
-        let _ = tables.blocks().load_header(1).await;
-    }
-    let first = tables.take_cache_window_stats();
-    let hits: u64 = first.iter().map(|(_, h, _)| *h).sum();
-    assert!(hits >= 3, "first window must record at least 3 hits");
-
-    let second = tables.take_cache_window_stats();
-    assert!(
-        second.is_empty(),
-        "second take after no activity must be empty (counters reset)"
-    );
-
-    let _ = tables.blocks().load_header(1).await;
-    let third = tables.take_cache_window_stats();
-    let third_hits: u64 = third.iter().map(|(_, h, _)| *h).sum();
-    assert_eq!(third_hits, 1, "third window observes exactly the new hit");
-}
-
-/// The per-family block-header caches must show up in the window stats under
-/// a family-prefixed label (their `TableId` is the shared "block_metadata"
-/// table, whose unprefixed row belongs to `BlockTables`' record cache).
-#[tokio::test(flavor = "current_thread")]
-async fn family_header_cache_stats_report_under_family_label() {
-    let store = populate::populate_via_engine(vec![block_with_logs(
-        test_header(1, B256::ZERO),
-        vec![vec![log(
-            Address::repeat_byte(1),
-            vec![B256::repeat_byte(9)],
-        )]],
-    )])
-    .await;
-    let service = store.reader();
-    let tables = service.tables();
-    // Drain any counters accrued during setup so the window below observes
-    // exactly the two reads this test issues.
-    let _ = tables.take_cache_window_stats();
-
-    // One miss then one hit on the Log family's header cache.
-    for _ in 0..2 {
-        tables
-            .family(Family::Log)
-            .load_blob_header(1)
-            .await
-            .expect("load header")
-            .expect("header present");
-    }
-
-    let stats = tables.take_cache_window_stats();
-    let (_, hits, misses) = stats
-        .iter()
-        .find(|(name, _, _)| *name == "log_block_metadata")
-        .expect("family header cache must report window stats");
-    assert_eq!((*hits, *misses), (1, 1));
-    // BlockTables' own record cache saw no reads; its unprefixed row must not
-    // have absorbed the family header loads.
-    assert!(!stats.iter().any(|(name, _, _)| *name == "block_metadata"));
 }

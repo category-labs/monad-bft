@@ -422,4 +422,24 @@ mod trace_address_tests {
             vec![false, false, true, true]
         );
     }
+
+    #[test]
+    fn trace_address_unit_root_chain() {
+        // root -> A -> A1, A2; root -> B; root -> C -> C1 -> C1a
+        let depths = [0u32, 1, 2, 2, 1, 1, 2, 3];
+        let addresses = super::compute_trace_addresses(&depths).expect("compute");
+        assert_eq!(
+            addresses,
+            vec![
+                vec![],
+                vec![0],
+                vec![0, 0],
+                vec![0, 1],
+                vec![1],
+                vec![2],
+                vec![2, 0],
+                vec![2, 0, 0],
+            ]
+        );
+    }
 }

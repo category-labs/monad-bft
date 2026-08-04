@@ -1750,8 +1750,13 @@ mod tests {
             external: None,
         };
         let block_hash = block.block_hash();
-        let store = monad_query_testkit::populate_via_engine(vec![block]).await;
-        let reader = ConfiguredChainDataReader::in_memory(store.reader());
+        let store = monad_query_write::testing::populate_via_engine(vec![block]).await;
+        let service = monad_query_read::api::MonadChainDataService::new(
+            store.meta,
+            store.blob,
+            monad_query_primitives::limits::QueryLimits::UNLIMITED,
+        );
+        let reader = ConfiguredChainDataReader::in_memory(service);
 
         let mut mock_triedb = MockTriedb::default();
         mock_triedb.set_latest_block(1000);

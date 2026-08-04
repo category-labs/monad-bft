@@ -8,6 +8,10 @@ edition = "2021"
 [lib]
 bench = false
 
+[features]
+# Staged-write and bitmap-seeding helpers for downstream dev-dependents.
+test-util = []
+
 [dependencies]
 alloy-primitives = { workspace = true, features = ["rlp"] }
 alloy-rlp = { workspace = true, features = ["derive"] }
@@ -24,3 +28,9 @@ serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tracing = { workspace = true }
 zstd = { workspace = true }
+
+[dev-dependencies]
+futures = { workspace = true }
+monad-query-engine = { workspace = true, features = ["test-util"] }
+monad-query-store = { workspace = true, default-features = false, features = ["test-util"] }
+roaring = "0.11"

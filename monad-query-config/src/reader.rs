@@ -120,13 +120,6 @@ impl ConfiguredChainDataReader {
         with_reader!(self, service => service.publication().load_published_head().await)
     }
 
-    pub async fn block_number_by_hash(
-        &self,
-        block_hash: &Hash32,
-    ) -> monad_query_errors::Result<Option<u64>> {
-        with_reader!(self, service => service.tables().blocks().block_number_by_hash(block_hash).await)
-    }
-
     pub async fn load_block_record(
         &self,
         block_number: u64,

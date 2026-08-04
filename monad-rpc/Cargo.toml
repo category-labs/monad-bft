@@ -100,7 +100,7 @@ monad-version = { workspace = true }
 
 [dev-dependencies]
 monad-eth-testutil = { workspace = true }
-monad-query-testkit = { workspace = true }
+monad-query-write = { workspace = true, features = ["testing"] }
 
 actix-test = { workspace = true }
 alloy-consensus = { workspace = true, features = ["arbitrary", "k256"] }

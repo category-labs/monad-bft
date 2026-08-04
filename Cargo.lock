@@ -6043,6 +6043,7 @@ dependencies = [
  "blake3",
  "bytes",
  "futures",
+ "monad-query-engine",
  "monad-query-errors",
  "monad-query-primitives",
  "monad-query-store",
@@ -6085,7 +6086,7 @@ dependencies = [
  "monad-query-errors",
  "monad-query-primitives",
  "monad-query-read",
- "monad-query-testkit",
+ "monad-query-store",
  "monad-query-types",
  "monad-query-write",
  "mongodb",
@@ -6124,6 +6125,7 @@ dependencies = [
  "monad-query-primitives",
  "monad-query-store",
  "monad-query-types",
+ "tokio",
 ]
 
 [[package]]
@@ -6151,42 +6153,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "monad-query-testkit"
-version = "0.1.0"
-dependencies = [
- "eyre",
- "monad-query-engine",
- "monad-query-errors",
- "monad-query-primitives",
- "monad-query-read",
- "monad-query-store",
- "monad-query-types",
- "monad-query-write",
-]
-
-[[package]]
-name = "monad-query-tests"
-version = "0.1.0"
-dependencies = [
- "alloy-consensus",
- "alloy-eips",
- "alloy-primitives",
- "alloy-rlp",
- "bytes",
- "futures",
- "monad-query-engine",
- "monad-query-errors",
- "monad-query-primitives",
- "monad-query-read",
- "monad-query-store",
- "monad-query-testkit",
- "monad-query-types",
- "monad-query-write",
- "roaring",
- "tokio",
-]
-
-[[package]]
 name = "monad-query-types"
 version = "0.1.0"
 dependencies = [
@@ -6204,6 +6170,7 @@ name = "monad-query-write"
 version = "0.1.0"
 dependencies = [
  "alloy-consensus",
+ "alloy-eips",
  "alloy-primitives",
  "alloy-rlp",
  "blake3",
@@ -6383,8 +6350,8 @@ dependencies = [
  "monad-query-indexer",
  "monad-query-primitives",
  "monad-query-read",
- "monad-query-testkit",
  "monad-query-types",
+ "monad-query-write",
  "monad-rpc-docs",
  "monad-tracing-timing",
  "monad-triedb-utils",

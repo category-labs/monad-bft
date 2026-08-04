@@ -13,22 +13,17 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+//! Shared fixture DSL for the ingest→query round-trip suites.
+
 #![allow(dead_code)]
 
-pub mod observed_store;
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::Arc};
 
 use alloy_primitives::{Address, Bytes, Log, LogData, B256, U256};
-use monad_query_engine::{
-    bitmap::{BitmapPageArtifact, BitmapPageCounts},
-    family::Family,
-    tables::Tables,
-    WriteSession,
-};
 use monad_query_primitives::{
-    limits::QueryEnvelope,
+    limits::{QueryEnvelope, QueryLimits},
     order::QueryOrder,
-    records::{BlockRecord, FamilyWindowRecord, PrimaryId},
+    records::BlockRecord,
     CallKind, EvmBlockHeader,
 };
 use monad_query_read::{
@@ -37,13 +32,30 @@ use monad_query_read::{
     traces::{QueryTracesRequest, TraceFilter, TracesRelations},
     txs::{QueryTransactionsRequest, TxFilter, TxsRelations},
 };
-use monad_query_store::{BlobStore, CacheConfig, MetaStore};
-/// Canonical population helpers, aliased so tests read `populate::*`.
-#[allow(unused_imports)]
-pub use monad_query_testkit as populate;
+use monad_query_store::{BlobStore, InMemoryMetaStore, MetaStore};
 use monad_query_types::ingest_types::{FinalizedBlock, IngestTrace, IngestTx};
 
+use crate::testing::PopulatedStore;
+
 pub type Topic = B256;
+
+/// A read-only query service over the SAME stores the engine wrote to; the
+/// populate fixture lives below the read layer, so readers are built here.
+pub fn reader<B: BlobStore>(store: &PopulatedStore<B>) -> MonadChainDataService<InMemoryMetaStore, B> {
+    reader_with_limits(store, QueryLimits::UNLIMITED)
+}
+
+/// A read-only query service with explicit [`QueryLimits`].
+pub fn reader_with_limits<B: BlobStore>(
+    store: &PopulatedStore<B>,
+    limits: QueryLimits,
+) -> MonadChainDataService<InMemoryMetaStore, B> {
+    let service = MonadChainDataService::new(store.meta.clone(), store.blob.clone(), limits);
+    match &store.external {
+        Some(external) => service.with_external_payload_reader(Arc::clone(external)),
+        None => service,
+    }
+}
 
 pub fn test_header(number: u64, parent_hash: B256) -> EvmBlockHeader {
     EvmBlockHeader {
@@ -198,23 +210,6 @@ pub fn with_hash(mut tx: IngestTx, tx_hash: B256) -> IngestTx {
     tx
 }
 
-/// Empty-window block record for header-staging tests.
-pub fn block_record(number: u64) -> BlockRecord {
-    let window = FamilyWindowRecord {
-        first_primary_id: PrimaryId::ZERO,
-        count: 0,
-    };
-    BlockRecord {
-        block_number: number,
-        block_hash: Default::default(),
-        parent_hash: Default::default(),
-        logs: window,
-        txs: window,
-        traces: window,
-        row_chain: Default::default(),
-    }
-}
-
 /// Loads block `n`'s [`BlockRecord`], panicking if it is absent.
 pub async fn load_record<M, B>(service: &MonadChainDataService<M, B>, n: u64) -> BlockRecord
 where
@@ -228,55 +223,6 @@ where
         .await
         .unwrap_or_else(|e| panic!("load record {n}: {e:?}"))
         .unwrap_or_else(|| panic!("record {n} missing"))
-}
-
-/// Cache config for the table-level suites: defaults with the decoded-row
-/// cache off, so backend read counters see every materialization.
-pub fn test_cache_config() -> CacheConfig {
-    CacheConfig {
-        row_cache_bytes: 0,
-        ..CacheConfig::default()
-    }
-}
-
-/// Stages block `number`'s header metadata (empty family payloads) inside an
-/// open write session.
-pub fn stage_block_header<M, B>(tables: &Tables<M, B>, w: &mut WriteSession<'_, M, B>, number: u64)
-where
-    M: MetaStore,
-    B: BlobStore,
-{
-    let header = EvmBlockHeader {
-        number,
-        ..Default::default()
-    };
-    tables.blocks().stage_metadata(
-        w,
-        number,
-        &block_record(number),
-        &header,
-        bytes::Bytes::new(),
-        bytes::Bytes::new(),
-        bytes::Bytes::new(),
-    );
-}
-
-/// Stages and commits block `number`'s header metadata via the production
-/// staged-write path.
-pub async fn stage_block<M, B>(tables: &Tables<M, B>, number: u64)
-where
-    M: MetaStore,
-    B: BlobStore,
-{
-    tables
-        .with_writes(|w| {
-            Box::pin(async move {
-                stage_block_header(tables, w, number);
-                Ok(())
-            })
-        })
-        .await
-        .expect("stage block header");
 }
 
 pub fn minimal_ingest_tx() -> IngestTx {
@@ -358,82 +304,4 @@ pub fn nested_call(
         trace_address: vec![0],
         ..top_level_call(tx_index, from, to, value, input)
     }
-}
-
-/// Durably writes one bitmap page artifact via the staged (production) write path.
-pub async fn seed_bitmap_page_artifact<M, B>(
-    tables: &Tables<M, B>,
-    family: Family,
-    stream_id: &str,
-    page_start: u64,
-    artifact: &BitmapPageArtifact,
-) where
-    M: MetaStore,
-    B: BlobStore,
-{
-    tables
-        .with_writes(|w| {
-            Box::pin(async move {
-                tables
-                    .family(family)
-                    .bitmap()
-                    .stage_page_artifact(w, stream_id, page_start, artifact);
-                Ok(())
-            })
-        })
-        .await
-        .expect("seed bitmap page artifact");
-}
-
-/// Durably writes one open-page bitmap fragment via the staged write path.
-pub async fn seed_bitmap_page_fragment<M, B>(
-    tables: &Tables<M, B>,
-    family: Family,
-    stream_id: &str,
-    page_start: u64,
-    flush_block: u64,
-    blob: bytes::Bytes,
-) where
-    M: MetaStore,
-    B: BlobStore,
-{
-    tables
-        .with_writes(|w| {
-            Box::pin(async move {
-                tables.family(family).bitmap().stage_page_fragment(
-                    w,
-                    stream_id,
-                    page_start,
-                    flush_block,
-                    blob,
-                );
-                Ok(())
-            })
-        })
-        .await
-        .expect("seed bitmap page fragment");
-}
-
-pub async fn seed_bitmap_page_counts<M, B>(
-    tables: &Tables<M, B>,
-    family: Family,
-    stream_id: &str,
-    group_start: u64,
-    counts: &BitmapPageCounts,
-) where
-    M: MetaStore,
-    B: BlobStore,
-{
-    tables
-        .with_writes(|w| {
-            Box::pin(async move {
-                tables
-                    .family(family)
-                    .bitmap()
-                    .stage_page_counts(w, stream_id, group_start, counts);
-                Ok(())
-            })
-        })
-        .await
-        .expect("seed bitmap page counts");
 }

@@ -619,6 +619,7 @@ mod tests {
     async fn blob_manifest_round_trip() {
         let (_, blob, snapshots) = fixture();
         assert_eq!(snapshots.load().await.unwrap(), None);
+        #[cfg(feature = "dynamo")]
         assert!(!snapshots.is_initialized().await.unwrap());
 
         let bytes = encode_snapshot(
@@ -629,6 +630,7 @@ mod tests {
         );
         snapshots.store(7, bytes.clone()).await.unwrap();
 
+        #[cfg(feature = "dynamo")]
         assert!(snapshots.is_initialized().await.unwrap());
         assert_eq!(snapshots.load().await.unwrap(), Some(bytes));
         let (_, _, _, block) = recover_checkpoint(&snapshots, 0)
@@ -731,6 +733,7 @@ mod tests {
         assert!(snapshots.load().await.is_err());
         assert!(recover_checkpoint(&snapshots, 0).await.is_err());
         // The unsafe_seed_begin guard treats any present row as initialized.
+        #[cfg(feature = "dynamo")]
         assert!(snapshots.is_initialized().await.unwrap());
     }
 

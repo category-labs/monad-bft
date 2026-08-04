@@ -306,8 +306,13 @@ async fn chain_data_test_reader() -> monad_query_config::ConfiguredChainDataRead
         parent = block.block_hash();
         blocks.push(block);
     }
-    let store = monad_query_testkit::populate_via_engine(blocks).await;
-    ConfiguredChainDataReader::in_memory(store.reader())
+    let store = monad_query_write::testing::populate_via_engine(blocks).await;
+    let service = monad_query_read::api::MonadChainDataService::new(
+        store.meta,
+        store.blob,
+        monad_query_primitives::limits::QueryLimits::UNLIMITED,
+    );
+    ConfiguredChainDataReader::in_memory(service)
 }
 
 #[actix_web::test]

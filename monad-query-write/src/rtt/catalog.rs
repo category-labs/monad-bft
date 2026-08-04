@@ -17,9 +17,8 @@
 //! (`ALL_LOGICAL_TABLE_NAMES`) and the write layer (`SnapshotStore`), so it
 //! lives here rather than in either single crate.
 
-use monad_query_engine::txs::TxHashIndexTable;
-use monad_query_tests::prelude::*;
-use monad_query_write::SnapshotStore;
+use super::prelude::*;
+use crate::SnapshotStore;
 
 /// [`ALL_LOGICAL_TABLE_NAMES`] is the provisioning source of truth for
 /// per-logical-table backends; this pins it to the declared `TableId`s.
@@ -31,7 +30,6 @@ fn all_logical_table_names_match_declared_table_ids() {
         SnapshotStore::<Meta, InMemoryBlobStore>::MANIFEST_TABLE.as_str(),
         BlockTables::<Meta>::BLOCK_METADATA_TABLE.as_str(),
         BlockTables::<Meta>::BLOCK_EVM_HEADER_TABLE.as_str(),
-        BlockTables::<Meta>::BLOCK_HASH_TO_NUMBER_INDEX_TABLE.as_str(),
         TxHashIndexTable::<Meta>::TABLE.as_str(),
     ];
     for family in Family::ALL {

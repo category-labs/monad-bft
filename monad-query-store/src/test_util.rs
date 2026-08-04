@@ -15,8 +15,6 @@
 
 //! Observable in-memory meta/blob store proxies: counting, failure injection, delays.
 
-#![allow(dead_code)]
-
 use std::{
     collections::HashMap,
     future::Future,
@@ -29,7 +27,8 @@ use std::{
 
 use bytes::Bytes;
 use monad_query_errors::{QueryError, Result};
-use monad_query_store::{
+
+use crate::{
     BlobStore, BlobTableId, BlobWriteOp, InMemoryBlobStore, InMemoryMetaStore, MetaStore,
     MetaWriteOp, ScannableTableId, TableId,
 };

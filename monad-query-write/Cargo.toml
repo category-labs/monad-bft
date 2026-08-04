@@ -10,6 +10,9 @@ bench = false
 # Gates the dynamo-deployment-only snapshot seeding helpers (generic over the
 # stores, but only reached via the configured dynamo ingest entry point).
 dynamo = []
+# In-memory populate-through-the-real-engine fixtures (`testing` module) for
+# this crate's round-trip tests and downstream dev-dependents.
+testing = []
 
 [dependencies]
 alloy-consensus = { workspace = true }
@@ -29,6 +32,10 @@ tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
-# Read layer, dev-only, for the ingest→query round-trip tests in `ingest::rtt`.
+alloy-eips = { workspace = true }
+monad-query-engine = { workspace = true, features = ["test-util"] }
+# Read layer, dev-only, for the ingest→query round-trip tests in `rtt`.
 # read does not depend on write, so this is acyclic.
 monad-query-read = { workspace = true }
+monad-query-store = { workspace = true, default-features = false, features = ["test-util"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }

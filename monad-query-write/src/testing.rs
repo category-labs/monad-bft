@@ -13,22 +13,25 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! Test utilities: populate a store through the real branchless ingest engine,
-//! then read it back via [`MonadChainDataService`]. The in-memory stores
-//! clone-share their `Arc<RwLock>` backing, so readers built from clones
-//! observe the engine's writes with no extra plumbing.
+//! Test utilities: populate a store through the real branchless ingest
+//! engine. The in-memory stores clone-share their `Arc<RwLock>` backing, so
+//! readers built over clones of [`PopulatedStore::meta`] and
+//! [`PopulatedStore::blob`] observe the engine's writes with no extra
+//! plumbing. This module sits in the write crate (gated behind the `testing`
+//! feature) so both the crate's own round-trip tests and downstream
+//! dev-dependents share one fixture instead of each carrying a copy.
 
 use std::{future::Future, sync::Arc};
 
 use monad_query_engine::tables::{DictConfig, PublicationTables, QueryRuntimeConfig, Tables};
 use monad_query_errors::QueryError;
-use monad_query_primitives::{limits::QueryLimits, ExternalBlobReader};
-use monad_query_read::api::MonadChainDataService;
+use monad_query_primitives::ExternalBlobReader;
 use monad_query_store::{
     BlobStore, CacheConfig, InMemoryBlobStore, InMemoryMetaStore, NullBlobStore,
 };
 use monad_query_types::ingest_types::FinalizedBlock;
-use monad_query_write::{
+
+use crate::{
     resolver::TablesCodecResolver, run_ingest, source::ChainDataIngestSource, IngestRunConfig,
     PackConfig, PayloadMode, Prefetch, SignalPolicy, SnapshotStore,
 };
@@ -68,35 +71,17 @@ impl ChainDataIngestSource for VecSource {
 }
 
 /// In-memory stores populated by the engine. Hold onto this so the backing
-/// `Arc<RwLock>` maps stay alive; build readers from it via [`Self::reader`].
+/// `Arc<RwLock>` maps stay alive; build readers over clones of the fields.
 /// `B` is [`InMemoryBlobStore`] except for blob-less external fixtures
 /// ([`populate_via_engine_external_no_blob`]), which run over
 /// [`NullBlobStore`].
 pub struct PopulatedStore<B: BlobStore = InMemoryBlobStore> {
     pub meta: InMemoryMetaStore,
     pub blob: B,
-    /// External archive reader attached to every built service (population
-    /// through [`populate_via_engine_external`]); `None` for native stores.
+    /// External archive reader for stores populated through
+    /// [`populate_via_engine_external`]; `None` for native stores. Attach it
+    /// to any reader built over these stores.
     pub external: Option<Arc<dyn ExternalBlobReader>>,
-}
-
-impl<B: BlobStore> PopulatedStore<B> {
-    /// A read-only query service over the SAME stores the engine wrote to.
-    pub fn reader(&self) -> MonadChainDataService<InMemoryMetaStore, B> {
-        self.reader_with_limits(QueryLimits::UNLIMITED)
-    }
-
-    /// A read-only query service with explicit [`QueryLimits`].
-    pub fn reader_with_limits(
-        &self,
-        limits: QueryLimits,
-    ) -> MonadChainDataService<InMemoryMetaStore, B> {
-        let service = MonadChainDataService::new(self.meta.clone(), self.blob.clone(), limits);
-        match &self.external {
-            Some(reader) => service.with_external_payload_reader(Arc::clone(reader)),
-            None => service,
-        }
-    }
 }
 
 /// Fetch parallelism for tests: >1 so fixtures exercise the ordered-prefetch
@@ -185,8 +170,8 @@ pub async fn populate_via_engine_with_dict(
 
 /// External-payload variant of [`populate_via_engine`]: every block must
 /// carry an [`monad_query_types::ExternalPayloadSpec`], and `external` must
-/// serve the archive objects the specs point into. The reader is attached to
-/// every service built from the returned store.
+/// serve the archive objects the specs point into. Attach the reader to every
+/// service built over the returned store.
 pub async fn try_populate_via_engine_external(
     blocks: Vec<FinalizedBlock>,
     external: Arc<dyn ExternalBlobReader>,

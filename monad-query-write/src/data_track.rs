@@ -645,7 +645,6 @@ where
                         Bytes::from(entry.trace_header.encode()),
                     );
                     tables.stage_block_blob(w, number, entry.combined_blob);
-                    blocks.stage_hash_index(w, &entry.record.block_hash, number);
                     for (tx_hash, location) in &entry.hash_locations {
                         tables.tx_hash_index().stage_put(w, tx_hash, *location);
                     }

@@ -29,6 +29,8 @@ pub mod row_codec;
 pub mod seal;
 pub mod session;
 pub mod tables;
+#[cfg(any(test, feature = "test-util"))]
+pub mod test_util;
 pub mod txs;
 
 pub use session::{SessionFuture, WriteSession};

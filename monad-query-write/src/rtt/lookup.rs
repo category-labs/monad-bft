@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use monad_query_tests::prelude::*;
+use super::prelude::*;
 #[tokio::test(flavor = "current_thread")]
 async fn get_transaction_returns_entry_for_ingested_hash() {
     let alice = Address::repeat_byte(0xaa);
@@ -30,7 +30,7 @@ async fn get_transaction_returns_entry_for_ingested_hash() {
         ],
     )])
     .await;
-    let service = store.reader();
+    let service = reader(&store);
 
     let (entry, header) = service
         .get_transaction(hash_bob)
@@ -59,7 +59,7 @@ async fn get_transaction_returns_none_for_unknown_hash() {
         )],
     )])
     .await;
-    let service = store.reader();
+    let service = reader(&store);
 
     assert!(service
         .get_transaction(unknown)
@@ -78,7 +78,7 @@ async fn get_transaction_resolves_contract_creation_tx() {
         vec![with_hash(ingest_tx(sender, None, Vec::new()), hash)],
     )])
     .await;
-    let service = store.reader();
+    let service = reader(&store);
 
     let (entry, _) = service
         .get_transaction(hash)
@@ -115,7 +115,7 @@ async fn get_transaction_resolves_across_multiple_blocks() {
         ),
     ])
     .await;
-    let service = store.reader();
+    let service = reader(&store);
 
     let (e1, header1) = service
         .get_transaction(hash_b1)
@@ -169,7 +169,7 @@ async fn get_transaction_ignores_index_hits_without_published_head() {
         PublicationTables::<InMemoryMetaStore>::PUBLICATION_STATE_TABLE,
         PublicationTables::<InMemoryMetaStore>::PUBLICATION_STATE_KEY,
     );
-    let service = store.reader();
+    let service = reader(&store);
 
     assert!(service
         .get_transaction(tx_hash)

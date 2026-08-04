@@ -68,6 +68,8 @@ pub mod resolver;
 mod rtt;
 pub mod snapshot;
 pub mod source;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 
 use data_track::run_data_track;
 pub use data_track::{CodecResolver, Codecs, PackConfig, PayloadMode};

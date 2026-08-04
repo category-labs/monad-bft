@@ -16,7 +16,7 @@
 use std::collections::HashSet;
 
 use alloy_primitives::{Log, LogData, U256};
-use monad_query_tests::prelude::*;
+use super::prelude::*;
 const LOG_A: Address = Address::repeat_byte(0xa1);
 const LOG_B: Address = Address::repeat_byte(0xb2);
 const TX_SENDER_A: Address = Address::repeat_byte(0xc3);
@@ -72,7 +72,7 @@ fn fixture_block() -> FinalizedBlock {
 #[tokio::test(flavor = "current_thread")]
 async fn blob_layout_one_object_with_contiguous_family_regions() {
     let store = populate::populate_via_engine(vec![fixture_block()]).await;
-    let service = store.reader();
+    let service = reader(&store);
     let blob_store = store.blob.clone();
 
     let snapshot = blob_store.blob_snapshot();
@@ -124,7 +124,7 @@ async fn blob_layout_one_object_with_contiguous_family_regions() {
 #[tokio::test(flavor = "current_thread")]
 async fn indexed_and_scan_queries_read_through_shared_blob() {
     let store = populate::populate_via_engine(vec![fixture_block()]).await;
-    let service = store.reader();
+    let service = reader(&store);
 
     let indexed_logs = service
         .query_logs(logs_request(

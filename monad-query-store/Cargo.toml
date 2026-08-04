@@ -10,6 +10,9 @@ bench = false
 
 [features]
 default = ["s3", "dynamo"]
+# Observable in-memory store proxies (counting, failure injection, delays)
+# for downstream dev-dependents.
+test-util = []
 # Enables `TxEntry::to_rpc_transaction`, converting a stored tx into an
 # `alloy_rpc_types_eth::Transaction`. Off by default so the crate stays
 # narrow; the consensus envelope is always accessible via `TxEntry::envelope`.

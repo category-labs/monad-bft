@@ -16,8 +16,22 @@
 //! Page-count manifests skip zero-count pages in sealed page groups only,
 //! including across a group boundary into the frontier group.
 
+use alloy_primitives::Address;
 use bytes::Bytes as RawBytes;
-use monad_query_tests::prelude::*;
+use monad_query_engine::{
+    bitmap::{
+        encode_bitmap_blob, render_stream_id, BitmapPageArtifact, BitmapPageCounts,
+        BitmapPageMeta, DecodedBitmapFragment, IndexKind, PAGE_GROUP_ID_SPAN,
+        STREAM_PAGE_ID_SPAN,
+    },
+    clause::IndexedClause,
+    family::Family,
+    tables::{DictConfig, QueryRuntimeConfig, Tables},
+    test_util::{seed_bitmap_page_artifact, seed_bitmap_page_counts, seed_bitmap_page_fragment},
+};
+use monad_query_primitives::order::QueryOrder;
+use monad_query_store::{test_util::ObservedMetaStore, CacheConfig, InMemoryBlobStore};
+
 const PAGE_SPAN: u64 = STREAM_PAGE_ID_SPAN as u64;
 
 fn addr_clause(address: Address) -> IndexedClause {
@@ -56,14 +70,13 @@ fn page_start(page_idx: u32) -> u64 {
 /// Seeds two clauses in page group 0: addr_a in pages 0 and 2, addr_b in page
 /// 1, so every page has a zero-count clause and the intersection is empty.
 async fn seed_disjoint_clauses(
-    service: &MonadChainDataService<ObservedMetaStore, InMemoryBlobStore>,
+    t: &Tables<ObservedMetaStore, InMemoryBlobStore>,
     addr_a: Address,
     addr_b: Address,
 ) {
     let s_a = render_stream_id("addr", addr_a.as_slice());
     let s_b = render_stream_id("addr", addr_b.as_slice());
 
-    let t = service.tables();
     seed_bitmap_page_artifact(t, Family::Log, &s_a, page_start(0), &page_artifact(&[1])).await;
     seed_bitmap_page_artifact(t, Family::Log, &s_a, page_start(2), &page_artifact(&[1])).await;
     seed_bitmap_page_artifact(t, Family::Log, &s_b, page_start(1), &page_artifact(&[1])).await;
@@ -85,13 +98,12 @@ async fn seed_disjoint_clauses(
     .await;
 }
 
-fn service_without_page_cache(
+fn tables_without_page_cache(
     counting: ObservedMetaStore,
-) -> MonadChainDataService<ObservedMetaStore, InMemoryBlobStore> {
-    MonadChainDataService::with_all_configs(
+) -> Tables<ObservedMetaStore, InMemoryBlobStore> {
+    Tables::with_all_configs(
         counting,
         InMemoryBlobStore::default(),
-        QueryLimits::UNLIMITED,
         CacheConfig {
             bitmap_page_blob_cache_bytes: 0,
             ..CacheConfig::default()
@@ -104,12 +116,12 @@ fn service_without_page_cache(
 #[tokio::test(flavor = "current_thread")]
 async fn sealed_group_skips_zero_count_pages_without_fetching() {
     let counting = ObservedMetaStore::new();
-    let service = service_without_page_cache(counting.clone());
-    let family = service.tables().family(Family::Log);
+    let tables = tables_without_page_cache(counting.clone());
+    let family = tables.family(Family::Log);
 
     let addr_a = Address::repeat_byte(0xAA);
     let addr_b = Address::repeat_byte(0xBB);
-    seed_disjoint_clauses(&service, addr_a, addr_b).await;
+    seed_disjoint_clauses(&tables, addr_a, addr_b).await;
 
     let page_blob_table = Family::Log.table_ids().bitmap_page_blob;
     let clauses = vec![addr_clause(addr_a), addr_clause(addr_b)];
@@ -138,14 +150,14 @@ async fn sealed_group_skips_zero_count_pages_without_fetching() {
 #[tokio::test(flavor = "current_thread")]
 async fn frontier_group_never_skips_a_non_empty_page() {
     let counting = ObservedMetaStore::new();
-    let service = service_without_page_cache(counting.clone());
-    let family = service.tables().family(Family::Log);
+    let tables = tables_without_page_cache(counting.clone());
+    let family = tables.family(Family::Log);
 
     let addr_a = Address::repeat_byte(0xAA);
     let addr_b = Address::repeat_byte(0xBB);
     // Same data shape as the sealed test, manifests included, so the contrast
     // pins skipping to seal state rather than data shape.
-    seed_disjoint_clauses(&service, addr_a, addr_b).await;
+    seed_disjoint_clauses(&tables, addr_a, addr_b).await;
 
     let page_blob_table = Family::Log.table_ids().bitmap_page_blob;
     let clauses = vec![addr_clause(addr_a), addr_clause(addr_b)];
@@ -183,12 +195,12 @@ async fn frontier_group_never_skips_a_non_empty_page() {
 #[tokio::test(flavor = "current_thread")]
 async fn query_crossing_group_boundary_returns_exact_ids_in_both_orders() {
     let counting = ObservedMetaStore::new();
-    let service = service_without_page_cache(counting.clone());
-    let family = service.tables().family(Family::Log);
+    let tables = tables_without_page_cache(counting.clone());
+    let family = tables.family(Family::Log);
 
     let addr = Address::repeat_byte(0xAA);
     let stream = render_stream_id("addr", addr.as_slice());
-    let t = service.tables();
+    let t = &tables;
 
     // Sealed group 0: its LAST page holds offsets {1, 5}; the page before it
     // is empty (absent from the manifest).

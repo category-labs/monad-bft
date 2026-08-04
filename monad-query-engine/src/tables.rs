@@ -111,7 +111,6 @@ pub const ALL_LOGICAL_TABLE_NAMES: &[&str] = &[
     "ingest_snapshot",
     "block_metadata",
     "block_evm_header",
-    "block_hash_to_number_index",
     "tx_hash_index",
     "log_dict_by_version",
     "log_dir_by_block",
@@ -1039,7 +1038,6 @@ impl<M: MetaStore> PublicationTables<M> {
 pub struct BlockTables<M: MetaStore> {
     block_metadata: CachedKvTable<M, BlockRecord>,
     evm_header: CachedKvTable<M>,
-    block_hash_to_number_index: CachedKvTable<M, u64>,
 }
 
 /// Per-block metadata row: the `block_record` plus the three per-family blob
@@ -1066,8 +1064,6 @@ impl BlockMetadataRecord {
 impl<M: MetaStore> BlockTables<M> {
     pub const BLOCK_METADATA_TABLE: TableId = BLOCK_METADATA_TABLE_ID;
     pub const BLOCK_EVM_HEADER_TABLE: TableId = TableId::new("block_evm_header");
-    pub const BLOCK_HASH_TO_NUMBER_INDEX_TABLE: TableId =
-        TableId::new("block_hash_to_number_index");
 
     fn new(meta_store: M, cache: CacheConfig) -> Self {
         Self {
@@ -1084,16 +1080,6 @@ impl<M: MetaStore> BlockTables<M> {
                 meta_store.table(Self::BLOCK_EVM_HEADER_TABLE),
                 cache.block_header_cache_bytes,
                 Ok,
-            ),
-            block_hash_to_number_index: CachedKvTable::new(
-                meta_store.table(Self::BLOCK_HASH_TO_NUMBER_INDEX_TABLE),
-                cache.block_hash_to_number_cache_bytes,
-                |bytes: Bytes| {
-                    let be: [u8; 8] = bytes.as_ref().try_into().map_err(|_| {
-                        QueryError::Decode("invalid block_hash_to_number_index value")
-                    })?;
-                    Ok(u64::from_be_bytes(be))
-                },
             ),
         }
     }
@@ -1138,32 +1124,9 @@ impl<M: MetaStore> BlockTables<M> {
         Ok(Some(header))
     }
 
-    /// Resolves a block hash to its block number. `Some(n)` does not guarantee
-    /// block `n` is fully published — the index entry lands before the
-    /// publication head advances, so follow-up loads may hit `MissingData`.
-    pub async fn block_number_by_hash(&self, block_hash: &Hash32) -> Result<Option<u64>> {
-        self.block_hash_to_number_index
-            .get(block_hash.as_slice())
-            .await
-    }
-
-    pub fn stage_hash_index<B: BlobStore>(
-        &self,
-        w: &mut WriteSession<'_, M, B>,
-        block_hash: &Hash32,
-        block_number: u64,
-    ) {
-        w.put(
-            &self.block_hash_to_number_index,
-            block_hash.as_slice(),
-            Bytes::copy_from_slice(&block_number.to_be_bytes()),
-        );
-    }
-
     pub(crate) fn collect_window_stats(&self, out: &mut Vec<(&'static str, u64, u64)>) {
         collect_kv_stats(out, &self.block_metadata);
         collect_kv_stats(out, &self.evm_header);
-        collect_kv_stats(out, &self.block_hash_to_number_index);
     }
 
     pub async fn validate_continuity(

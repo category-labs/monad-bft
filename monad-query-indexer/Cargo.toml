@@ -42,4 +42,5 @@ tracing-subscriber = { workspace = true }
 monad-eth-testutil = { workspace = true }
 monad-query-engine = { workspace = true }
 monad-query-read = { workspace = true }
-monad-query-testkit = { workspace = true }
+monad-query-store = { workspace = true, default-features = false }
+monad-query-write = { workspace = true, features = ["testing"] }

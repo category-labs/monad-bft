@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Epoch-based row-dictionary lifecycle, end-to-end with a small epoch.
-use monad_query_tests::prelude::*;
+use super::prelude::*;
 const EPOCH_BLOCKS: u64 = 8;
 
 fn small_dict_config() -> DictConfig {
@@ -63,7 +63,7 @@ async fn epochs_stamp_versions_and_round_trip_across_boundaries() {
     let topic = B256::repeat_byte(9);
 
     let store = populate_run(24, addr, topic).await;
-    let service = store.reader();
+    let service = reader(&store);
 
     for n in 1..=24u64 {
         let header = service
@@ -102,7 +102,7 @@ async fn full_scan_decodes_epoch_dictionary_frames() {
 
     // Reach epoch 1 so block 8+ is dictionary-backed (or sentinel-plain).
     let store = populate_run(9, addr, topic).await;
-    let service = store.reader();
+    let service = reader(&store);
 
     // No indexed clause => block-scan path.
     let page = service
@@ -163,7 +163,7 @@ async fn low_data_family_publishes_empty_sentinel_and_round_trips() {
     let topic = B256::repeat_byte(6);
 
     let store = populate_run(9, addr, topic).await;
-    let service = store.reader();
+    let service = reader(&store);
 
     let tx_dict = service
         .tables()
