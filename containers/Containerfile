@@ -1,0 +1,44 @@
+# syntax=docker/dockerfile:1
+FROM ubuntu:26.04 AS package
+
+ARG PACKAGE_VERSION
+ARG GIT_COMMIT_HASH
+ENV DEBIAN_FRONTEND=noninteractive \
+    CARGO_NET_GIT_FETCH_WITH_CLI=true \
+    RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:${PATH} \
+    LIBCLANG_PATH=/usr/lib/llvm-19/lib
+
+# The same toolchain and libraries as docker/builder/Dockerfile, which is what
+# Jenkins builds with, minus the debug/test-only tooling.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      binutils build-essential ca-certificates clang-19 cmake curl g++-15 gcc-15 git \
+      libboost1.83-dev libboost-fiber1.83-dev libboost-graph1.83-dev \
+      libboost-json1.83-dev libboost-stacktrace1.83-dev \
+      libabsl-dev libarchive-dev libbenchmark-dev libbrotli-dev libcap-dev \
+      libcgroup-dev libclang-19-dev libcli11-dev libcrypto++-dev libgmock-dev \
+      libgmp-dev libgtest-dev libhugetlbfs-dev libmagicenum-dev libmimalloc-dev \
+      libsecp256k1-dev libssl-dev libstdc++-15-dev libtbb-dev liburing-dev \
+      libzstd-dev ninja-build pkg-config python-is-python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+      | sh -s -- -y --profile minimal --default-toolchain 1.91.1
+
+WORKDIR /src
+COPY . .
+
+# A real release checkout must include the pinned execution repository.  This is
+# deliberately verified here instead of cloning an unpinned dependency at build time.
+RUN test -f monad-execution/CMakeLists.txt
+
+RUN --mount=type=cache,id=monad-bft-cargo-registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=monad-bft-cargo-git,target=/usr/local/cargo/git \
+    --mount=type=cache,id=monad-bft-target,target=/src/target \
+    --mount=type=cache,id=monad-bft-execution-build,target=/src/monad-execution/build \
+    PACKAGE_VERSION="${PACKAGE_VERSION}" GIT_COMMIT_HASH="${GIT_COMMIT_HASH}" \
+    DEB_OUTPUT_DIR=/out ./scripts/build-deb
+
+FROM scratch
+COPY --from=package /out /out
