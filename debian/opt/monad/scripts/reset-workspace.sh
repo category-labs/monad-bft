@@ -6,7 +6,9 @@ systemctl stop monad-bft monad-execution monad-rpc monad-mpt monad-execution-gen
 
 DB_MODE="slot"
 MPT_OUTPUT=$(monad-mpt --storage /dev/triedb 2>/dev/null || true)
-if echo "$MPT_OUTPUT" | grep -q "Secondary:"; then
+if [ -z "$MPT_OUTPUT" ]; then
+  echo "WARNING: monad-mpt returned no output; defaulting to slot mode"
+elif echo "$MPT_OUTPUT" | grep -q "Secondary:"; then
   DB_MODE="dual"
 elif echo "$MPT_OUTPUT" | grep -q "State machine kind: monad"; then
   DB_MODE="page"
