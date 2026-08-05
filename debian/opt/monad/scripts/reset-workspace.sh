@@ -2,6 +2,8 @@
 
 set -ex
 
+systemctl stop monad-bft monad-execution monad-rpc monad-mpt monad-execution-genesis || true
+
 DB_MODE="slot"
 MPT_OUTPUT=$(monad-mpt --storage /dev/triedb 2>/dev/null || true)
 if echo "$MPT_OUTPUT" | grep -q "Secondary:"; then
@@ -10,8 +12,6 @@ elif echo "$MPT_OUTPUT" | grep -q "State machine kind: monad"; then
   DB_MODE="page"
 fi
 echo "Detected DB mode: $DB_MODE"
-
-systemctl stop monad-bft monad-execution monad-rpc monad-mpt monad-execution-genesis || true
 mkdir /home/monad/monad-bft/empty-dir
 rsync -r --delete /home/monad/monad-bft/empty-dir/ /home/monad/monad-bft/ledger/
 rsync -r --delete /home/monad/monad-bft/empty-dir/ /home/monad/monad-bft/config/forkpoint/
