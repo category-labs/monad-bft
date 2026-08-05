@@ -156,7 +156,7 @@ impl ConductorConfig {
         }
 
         let offset = slot
-            .checked_sub(slot_start)
+            .slots_since(slot_start)
             .ok_or(ConductorError::ArithmeticOverflow)?;
         first_deadline
             .checked_add_deltas(self.slot_interval, offset)
@@ -201,7 +201,7 @@ impl CompletionTracker {
     // Number of slots in `[cap, open_slot_cap)` not yet completed.
     fn open_slot_count(&self, open_slot_cap: Slot) -> Result<u64, ConductorError> {
         open_slot_cap
-            .checked_sub(self.cap)
+            .slots_since(self.cap)
             .and_then(|tracked| tracked.checked_sub(self.completed.len() as u64))
             .ok_or(ConductorError::ArithmeticOverflow)
     }

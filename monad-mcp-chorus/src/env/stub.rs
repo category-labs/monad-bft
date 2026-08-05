@@ -66,6 +66,12 @@ mod validator {
         fn honest_threshold(&self) -> Self {
             Self(self.0 / 3)
         }
+
+        fn obligation(&self, total: &Self, shares: usize) -> (usize, usize) {
+            let prod = self.0 as u128 * shares as u128;
+            let total = total.0 as u128;
+            ((prod / total) as usize, (prod % total) as usize)
+        }
     }
 
     // invariant: valset/mapping have exactly the same key set, and
@@ -116,11 +122,11 @@ mod validator {
             }
         }
 
-        pub(super) fn indices(&self) -> &HashMap<NodeId, usize> {
+        pub(crate) fn indices(&self) -> &HashMap<NodeId, usize> {
             &self.indices
         }
 
-        pub(super) fn get_node(&self, index: usize) -> Option<&NodeId> {
+        pub(crate) fn get_node(&self, index: usize) -> Option<&NodeId> {
             self.sorted.get(index)
         }
     }
@@ -181,27 +187,66 @@ mod validator {
 }
 
 mod proposal {
-    use crate::spec;
+    use crate::{spec, stub::types::{ProposalIndex, Slot}};
 
     #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-    pub struct MerkleRoot(pub u64);
+    pub struct MerkleHash(pub [u8; 20]);
 
-    impl spec::proposal::MerkleRoot for MerkleRoot {}
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+    pub struct MerkleRoot(pub MerkleHash);
+    impl spec::MerkleRoot for MerkleRoot {}
+
+    // stub proposal signature, opaque to consensus
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+    pub struct ProposalSignature(pub u64);
+
+    // tag for encoding scheme, opaque to consensus. selects the
+    // instance of raptorcast codec.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+    pub struct EncodingScheme(pub u8);
+
+    // opaque to consensus. defined here rather than in DA because we
+    // don't want chorus to depend on DA. todo: we may extract a
+    // monad-mcp-da-types crate and dependent on it from
+    // monad-mcp-chorus and monad-mcp-da.
+    //
+    // note: this header is currently strongly coupled to the current
+    // prod raptorcast codec (deterministic rc). we may abstract this
+    // type as assoc type of RaptorcastCodec.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+    pub struct DaFields {
+        pub sig: ProposalSignature,
+        pub scheme: EncodingScheme,
+        pub unix_ts: u64,
+        pub msg_len: usize,
+    }
 
     #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-    pub struct ProposalSignature;
+    pub struct ProposalHeader {
+        pub slot: Slot,
+        pub root: MerkleRoot,
+        pub da: DaFields,
+    }
 
-    impl spec::proposal::ProposalSignature for ProposalSignature {}
-
-    #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-    pub struct OpaqueChunkHeader;
-
-    impl spec::proposal::ChunkHeader for OpaqueChunkHeader {
+    impl spec::ProposalHeader for ProposalHeader {
         type Root = MerkleRoot;
-        type Sig = ProposalSignature;
 
-        fn validate(&self, _root: &MerkleRoot, _sig: &ProposalSignature) -> bool {
-            // stubbed to always return true for testing purpose
+        fn slot(&self) -> u64 {
+            self.slot.0
+        }
+
+        fn root(&self) -> &MerkleRoot {
+            &self.root
+        }
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+    pub struct HeaderAuth;
+
+    impl spec::proposal::HeaderAuth for HeaderAuth {
+        type Header = ProposalHeader;
+
+        fn validate(&self, _header: &ProposalHeader, _slot: u64, _j: ProposalIndex) -> bool {
             true
         }
     }
@@ -452,6 +497,6 @@ const _: () = crate::spec::assert_env::<
     SignatureCollection,
     VoteAggregation<'_>,
     MerkleRoot,
-    ProposalSignature,
-    OpaqueChunkHeader,
+    ProposalHeader,
+    HeaderAuth,
 >();
