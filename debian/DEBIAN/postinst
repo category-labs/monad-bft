@@ -11,7 +11,6 @@ case "$1" in
         systemctl enable set-hugepages.service
         systemctl enable monad-cruft.timer
         systemctl start monad-cruft.timer
-        sysctl -p
     else
       echo "Skipping systemd setup: systemd not found or not running as init"
     fi
