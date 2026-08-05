@@ -24,6 +24,7 @@ mod env;
 // the specification for types used in cadence.
 pub mod spec;
 
+#[cfg(feature = "enable_stub")]
 // override to top-level path
 #[path = ""]
 pub mod stub {
