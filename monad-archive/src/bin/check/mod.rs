@@ -37,8 +37,7 @@ mod rechecker_v2;
 /// A chunk is the smallest unit of blocks that can be rechecked or have faults cleared.
 pub const CHUNK_SIZE: u64 = 1000;
 
-#[tokio::main]
-async fn main() -> Result<()> {
+pub async fn run(args: cli::ArchiveCheckCli) -> Result<()> {
     // Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -49,7 +48,6 @@ async fn main() -> Result<()> {
         .init();
 
     // Parse command line arguments
-    let args = cli::Cli::parse();
     info!("Starting monad-archive-checker with mode: {:?}", args.mode);
 
     if let Some(max_compute_threads) = args.max_compute_threads.as_ref() {

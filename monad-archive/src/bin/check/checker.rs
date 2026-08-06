@@ -20,7 +20,7 @@ use eyre::Result;
 use futures::stream;
 use monad_archive::prelude::*;
 
-use crate::{
+use crate::check::{
     model::{CheckerModel, Fault, FaultKind, GoodBlocks, InconsistentBlockReason},
     CHUNK_SIZE,
 };

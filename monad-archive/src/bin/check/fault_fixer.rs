@@ -21,7 +21,7 @@ use monad_archive::{kvstore::WritePolicy, prelude::*};
 use opentelemetry::KeyValue;
 use tracing::{debug, error, info, warn};
 
-use crate::{
+use crate::check::{
     model::{CheckerModel, Fault, FaultKind},
     rechecker_v2::recheck_chunk_from_scratch,
 };
