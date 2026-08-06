@@ -15,11 +15,9 @@ ExecStart=/usr/local/bin/monad-txgen \
       --tps 2000 \
       --erc20-balance-of
 EnvironmentFile=-/home/monad/.env
-Environment="RUST_LOG=info"
 Restart=no
 User=monad
 Group=monad
-AllowedCPUs=15
 LimitNOFILE=1048576
 # Hugemem configs below
 LimitMEMLOCK=infinity

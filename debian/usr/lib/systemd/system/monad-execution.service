@@ -17,8 +17,6 @@ User=monad
 Group=monad
 DeviceAllow=/dev/triedb rw
 LimitNOFILE=1048576
-AllowedCPUs=1-7
-CPUAffinity=1,2,3,4,5,6,7
 # Hugemem configs below
 LimitMEMLOCK=infinity
 MemoryDenyWriteExecute=false

@@ -90,7 +90,9 @@ pub struct Cli {
 
     /// Set the password for decrypting keystore file
     /// Default to empty string
-    #[arg(long)]
+    /// Prefer the KEYSTORE_PASSWORD environment variable over the flag:
+    /// command-line arguments are world-readable via /proc/*/cmdline
+    #[arg(long, env = "KEYSTORE_PASSWORD", hide_env_values = true)]
     pub keystore_password: Option<String>,
 
     /// Set the time interval for metrics collection
