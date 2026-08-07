@@ -15,7 +15,7 @@ name: Build and publish builder Docker image
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}/builder
+  IMAGE_NAME: category-labs/builder
 
 jobs:
   build-builder:

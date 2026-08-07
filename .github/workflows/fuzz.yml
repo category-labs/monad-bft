@@ -40,7 +40,7 @@ jobs:
       packages: read
 
     container:
-      image: ghcr.io/${{ github.repository }}/builder
+      image: ghcr.io/category-labs/builder:latest
       options: --privileged --security-opt seccomp=unconfined
       credentials:
         username: ${{ github.actor }}

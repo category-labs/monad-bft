@@ -59,7 +59,7 @@ jobs:
     needs: check-command
     runs-on: self-hosted
     container:
-      image: ghcr.io/${{ github.repository }}/builder
+      image: ghcr.io/category-labs/builder:latest
       options: --privileged -u 1000:1000
       credentials:
         username: ${{ github.actor }}
