@@ -14,8 +14,8 @@ name: Build and publish builder Docker image
       - 'docker/builder/**'
 
 env:
-  REGISTRY: peach10.devcore4.com
-  IMAGE_NAME: category-labs/builder
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/builder
 
 jobs:
   build-builder:
@@ -32,12 +32,12 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Log in to the Peach10 Container registry
+      - name: Log in to the GitHub Container registry
         uses: docker/login-action@v3.1.0
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.PRIVATE_REGISTRY_USERNAME }}
-          password: ${{ secrets.PRIVATE_REGISTRY_PASSWORD }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata (tags, labels) for Docker
         id: meta
