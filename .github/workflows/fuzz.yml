@@ -35,13 +35,16 @@ env:
 jobs:
   fuzz:
     runs-on: ubuntu-24.04-32
+    permissions:
+      contents: read
+      packages: read
 
     container:
-      image: peach10.devcore4.com/category-labs/builder
+      image: ghcr.io/${{ github.repository }}/builder
       options: --privileged --security-opt seccomp=unconfined
       credentials:
-        username: ${{ secrets.PRIVATE_REGISTRY_USERNAME }}
-        password: ${{ secrets.PRIVATE_REGISTRY_PASSWORD }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
       - name: Checkout repository

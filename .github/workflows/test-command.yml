@@ -16,6 +16,7 @@ env:
 
 permissions:
   contents: read
+  packages: read
   pull-requests: write
   issues: write
 
@@ -58,8 +59,11 @@ jobs:
     needs: check-command
     runs-on: self-hosted
     container:
-      image: peach10.devcore4.com/category-labs/builder
+      image: ghcr.io/${{ github.repository }}/builder
       options: --privileged -u 1000:1000
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Get PR info
         id: pr-info
