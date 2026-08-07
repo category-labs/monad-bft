@@ -27,6 +27,7 @@ use chrono::Utc;
 use eyre::bail;
 use futures::{future::try_join_all, stream::FuturesUnordered, FutureExt};
 use serde::{Deserialize, Serialize};
+use tokio::task::AbortHandle;
 
 use crate::{
     config::{Config, DeployedContract, RpcWorkflowConfig, TrafficGen},
@@ -43,6 +44,8 @@ use crate::{
     },
     workers::transform::TransformOptions,
 };
+
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
 
 /// Runs the txgen for the given config
 ///
@@ -109,157 +112,190 @@ async fn run_workload_group(
     let read_client = clients[0].clone();
 
     let shutdown = Arc::new(AtomicBool::new(false));
-    let shutdown_clone = Arc::clone(&shutdown);
 
     // shared state for monitoring
     let sent_txs = Arc::new(DashMap::with_capacity(100_000));
 
-    // Shared tasks for all workers in the workload group
-    let mut tasks = FuturesUnordered::new();
+    let mut abort_handles = Vec::new();
 
-    let rpc_config = &workload_group.rpc_generator;
+    let result = async {
+        // Shared tasks for all workers in the workload group
+        let mut tasks = FuturesUnordered::new();
 
-    for workflow in &rpc_config.workflows {
-        match workflow {
-            RpcWorkflowConfig::Indexer(indexer_config) => {
-                let indexer = RpcRequestGenerator::new(
-                    read_client.clone(),
-                    config.ws_url().expect("WS URL is not valid"),
-                    indexer_config.requests_per_block,
-                    1, // num_ws_connections not used by indexer
-                );
-                let shutdown_clone = Arc::clone(&shutdown);
-                tasks.push(
-                    critical_task(
-                        "Indexer",
-                        tokio::spawn(
-                            async move { indexer.run_indexer_workflow(shutdown_clone).await },
-                        ),
-                    )
-                    .boxed(),
-                );
+        let rpc_config = &workload_group.rpc_generator;
+
+        for workflow in &rpc_config.workflows {
+            match workflow {
+                RpcWorkflowConfig::Indexer(indexer_config) => {
+                    let indexer = RpcRequestGenerator::new(
+                        read_client.clone(),
+                        config.ws_url().expect("WS URL is not valid"),
+                        indexer_config.requests_per_block,
+                        1, // num_ws_connections not used by indexer
+                    );
+                    let shutdown_clone = Arc::clone(&shutdown);
+                    tasks.push(
+                        critical_task(
+                            "Indexer",
+                            spawn_tracked(&mut abort_handles, async move {
+                                indexer.run_indexer_workflow(shutdown_clone).await
+                            }),
+                        )
+                        .boxed(),
+                    );
+                }
+                RpcWorkflowConfig::SpamRpcWs(spam_config) => {
+                    let spammer = RpcRequestGenerator::new(
+                        read_client.clone(),
+                        config.ws_url().expect("WS URL is not valid"),
+                        spam_config.requests_per_block,
+                        spam_config.num_ws_connections,
+                    );
+                    let shutdown_clone = Arc::clone(&shutdown);
+                    tasks.push(
+                        critical_task(
+                            "Spammer",
+                            spawn_tracked(&mut abort_handles, async move {
+                                spammer.run_wallet_workflow(shutdown_clone).await
+                            }),
+                        )
+                        .boxed(),
+                    );
+                }
+                RpcWorkflowConfig::CompareRpcWs(_) => {
+                    let compare_rpc_ws = RpcWsCompare::new(
+                        read_client.clone(),
+                        config.ws_url().expect("WS URL is not valid"),
+                    );
+                    let shutdown_clone = Arc::clone(&shutdown);
+                    tasks.push(
+                        critical_task(
+                            "Compare RPC WS",
+                            spawn_tracked(&mut abort_handles, async move {
+                                compare_rpc_ws.run(shutdown_clone).await
+                            }),
+                        )
+                        .boxed(),
+                    );
+                }
             }
-            RpcWorkflowConfig::SpamRpcWs(spam_config) => {
-                let spammer = RpcRequestGenerator::new(
-                    read_client.clone(),
-                    config.ws_url().expect("WS URL is not valid"),
-                    spam_config.requests_per_block,
-                    spam_config.num_ws_connections,
-                );
-                let shutdown_clone = Arc::clone(&shutdown);
-                tasks.push(
-                    critical_task(
-                        "Spammer",
-                        tokio::spawn(
-                            async move { spammer.run_wallet_workflow(shutdown_clone).await },
-                        ),
-                    )
-                    .boxed(),
-                );
+        }
+
+        // Deployed contract for each traffic gen
+        let mut deployed_contracts = Vec::new();
+        for traffic_gen in &workload_group.traffic_gens {
+            // deploy contracts for each traffic gen in the workload group
+            let deployed_contract =
+                load_or_deploy_contracts(config, traffic_gen, &read_client).await?;
+            deployed_contracts.push(deployed_contract.clone());
+
+            tasks.extend(run_traffic_gen(
+                clients,
+                config,
+                workload_group,
+                traffic_gen,
+                &shutdown,
+                metrics.clone(),
+                deployed_contract,
+                sent_txs.clone(),
+                &mut abort_handles,
+            )?);
+        }
+
+        // setup metrics and monitoring
+        let committed_tx_watcher = CommittedTxWatcher::new(
+            &read_client,
+            &sent_txs,
+            &metrics,
+            Duration::from_secs_f64(config.refresh_delay_secs * 2.),
+            config,
+        )
+        .await;
+
+        let metrics_reporter = MetricsReporter::new(
+            metrics.clone(),
+            config.otel_endpoint.clone(),
+            config.otel_replica_name.clone(),
+            workload_group.name.clone(),
+        )?;
+
+        // continue working if helper task stops
+        tasks.push(
+            helper_task(
+                "Metrics",
+                spawn_tracked(
+                    &mut abort_handles,
+                    metrics.clone().run(Arc::clone(&shutdown)),
+                ),
+                Arc::clone(&shutdown),
+            )
+            .boxed(),
+        );
+        tasks.push(
+            helper_task(
+                "Otel Reporter",
+                spawn_tracked(
+                    &mut abort_handles,
+                    metrics_reporter.run(Arc::clone(&shutdown)),
+                ),
+                Arc::clone(&shutdown),
+            )
+            .boxed(),
+        );
+        tasks.push(
+            helper_task(
+                "CommittedTx Watcher",
+                spawn_tracked(
+                    &mut abort_handles,
+                    committed_tx_watcher.run(Arc::clone(&shutdown)),
+                ),
+                Arc::clone(&shutdown),
+            )
+            .boxed(),
+        );
+
+        let runtime_seconds = (workload_group.runtime_minutes * 60.) as u64;
+        let timeout = tokio::time::sleep(Duration::from_secs(runtime_seconds));
+
+        // Wait for all tasks to complete or timeout
+        tokio::select! {
+            _ = timeout => {
+                info!("Traffic phase completed after {} minutes", workload_group.runtime_minutes);
+                Ok(())
             }
-            RpcWorkflowConfig::CompareRpcWs(_) => {
-                let compare_rpc_ws = RpcWsCompare::new(
-                    read_client.clone(),
-                    config.ws_url().expect("WS URL is not valid"),
-                );
-                let shutdown_clone = Arc::clone(&shutdown);
-                tasks.push(
-                    critical_task(
-                        "Compare RPC WS",
-                        tokio::spawn(async move { compare_rpc_ws.run(shutdown_clone).await }),
-                    )
-                    .boxed(),
-                );
+            result = try_join_all(tasks) => {
+                match result {
+                    Ok(_) => {
+                        info!("Task completed successfully");
+                        Ok(())
+                    }
+                    Err(e) => {
+                        info!("Task failed: {e:?}");
+                        Err(e)
+                    }
+                }
             }
         }
     }
-
-    // Deployed contract for each traffic gen
-    let mut deployed_contracts = Vec::new();
-    for traffic_gen in &workload_group.traffic_gens {
-        // deploy contracts for each traffic gen in the workload group
-        let deployed_contract = load_or_deploy_contracts(config, traffic_gen, &read_client).await?;
-        deployed_contracts.push(deployed_contract.clone());
-
-        tasks.extend(run_traffic_gen(
-            clients,
-            config,
-            workload_group,
-            traffic_gen,
-            &shutdown,
-            metrics.clone(),
-            deployed_contract,
-            sent_txs.clone(),
-        )?);
-    }
-
-    // setup metrics and monitoring
-    let committed_tx_watcher = CommittedTxWatcher::new(
-        &read_client,
-        &sent_txs,
-        &metrics,
-        Duration::from_secs_f64(config.refresh_delay_secs * 2.),
-        config,
-    )
     .await;
 
-    let metrics_reporter = MetricsReporter::new(
-        metrics.clone(),
-        config.otel_endpoint.clone(),
-        config.otel_replica_name.clone(),
-        workload_group.name.clone(),
-    )?;
-
-    // continue working if helper task stops
-    tasks.push(
-        helper_task(
-            "Metrics",
-            tokio::spawn(metrics.clone().run(Arc::clone(&shutdown))),
-            Arc::clone(&shutdown),
-        )
-        .boxed(),
-    );
-    tasks.push(
-        helper_task(
-            "Otel Reporter",
-            tokio::spawn(metrics_reporter.run(Arc::clone(&shutdown))),
-            Arc::clone(&shutdown),
-        )
-        .boxed(),
-    );
-    tasks.push(
-        helper_task(
-            "CommittedTx Watcher",
-            tokio::spawn(committed_tx_watcher.run(Arc::clone(&shutdown))),
-            Arc::clone(&shutdown),
-        )
-        .boxed(),
-    );
-
-    let runtime_seconds = (workload_group.runtime_minutes * 60.) as u64;
-    let timeout = tokio::time::sleep(Duration::from_secs(runtime_seconds));
-
-    // Wait for all tasks to complete or timeout
-    tokio::select! {
-        _ = timeout => {
-            info!("Traffic phase completed after {} minutes", workload_group.runtime_minutes);
-            shutdown_clone.store(true, Ordering::Relaxed);
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            Ok(())
-        }
-        result = try_join_all(tasks) => {
-            match result {
-                Ok(_) => {
-                    info!("Task completed successfully");
-                    Ok(())
-                }
-                Err(e) => {
-                    info!("Task failed: {e:?}");
-                    Err(e)
-                }
-            }
-        }
+    // dropping the join handles only detaches, so abort whatever ignored the flag
+    shutdown.store(true, Ordering::Relaxed);
+    tokio::time::sleep(SHUTDOWN_GRACE).await;
+    for handle in abort_handles {
+        handle.abort();
     }
+
+    result
+}
+
+fn spawn_tracked(
+    abort_handles: &mut Vec<AbortHandle>,
+    fut: impl Future<Output = ()> + Send + 'static,
+) -> tokio::task::JoinHandle<()> {
+    let task = tokio::spawn(fut);
+    abort_handles.push(task.abort_handle());
+    task
 }
 
 fn run_traffic_gen(
@@ -271,6 +307,7 @@ fn run_traffic_gen(
     metrics: Arc<Metrics>,
     deployed_contract: DeployedContract,
     sent_txs: Arc<DashMap<TxHash, Instant>>,
+    abort_handles: &mut Vec<AbortHandle>,
 ) -> Result<impl Iterator<Item = Pin<Box<dyn Future<Output = Result<()>> + Send>>>> {
     let read_client = clients[0].clone();
 
@@ -344,9 +381,9 @@ fn run_traffic_gen(
     )?;
 
     Ok([
-        critical_task("Refresher", tokio::spawn(refresher.run())).boxed(),
-        critical_task("Rpc Sender", tokio::spawn(rpc_sender.run())).boxed(),
-        critical_task("Generator Harness", tokio::spawn(gen.run())).boxed(),
+        critical_task("Refresher", spawn_tracked(abort_handles, refresher.run())).boxed(),
+        critical_task("Rpc Sender", spawn_tracked(abort_handles, rpc_sender.run())).boxed(),
+        critical_task("Generator Harness", spawn_tracked(abort_handles, gen.run())).boxed(),
     ]
     .into_iter())
 }
