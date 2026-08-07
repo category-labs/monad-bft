@@ -33,7 +33,7 @@ use zerocopy::{
 };
 
 use super::{RecvTcpMsg, TcpMsg, TcpSocketId};
-use crate::Addrlist;
+use crate::{metrics::DataplaneMetrics, Addrlist};
 
 pub mod rx;
 pub mod tx;
@@ -68,6 +68,7 @@ pub(crate) fn spawn_tasks(
     socket_configs: Vec<(TcpSocketId, SocketAddr, mpsc::Sender<RecvTcpMsg>)>,
     tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>,
     bound_addrs_tx: std::sync::mpsc::SyncSender<Vec<(TcpSocketId, SocketAddr)>>,
+    metrics: DataplaneMetrics,
 ) {
     let mut bound_addrs = Vec::with_capacity(socket_configs.len());
 
@@ -75,6 +76,7 @@ pub(crate) fn spawn_tasks(
         addrlist.clone(),
         cfg.connections_limit,
         cfg.per_ip_connections_limit,
+        metrics.clone(),
     );
 
     for (socket_id, socket_addr, ingress_tx) in socket_configs {
@@ -94,7 +96,7 @@ pub(crate) fn spawn_tasks(
     }
 
     bound_addrs_tx.send(bound_addrs).unwrap();
-    spawn(tx::task(cfg, addrlist, tcp_egress_rx));
+    spawn(tx::task(cfg, addrlist, tcp_egress_rx, metrics));
 }
 
 // Minimum message receive/transmit speed in bytes per second.  Messages that are

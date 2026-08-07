@@ -24,6 +24,7 @@ use monad_eth_types::TxEnvelopeWithSender;
 
 use super::{
     BlockCommitState, BlockPointer, DataSourceError, DataSourceResult, HistoricalDataSource,
+    HistoricalDataSourceExt,
 };
 
 #[derive(Clone)]
@@ -116,3 +117,5 @@ impl HistoricalDataSource for ArchiveDataSource {
         Ok(block.map(|b| b.header))
     }
 }
+
+impl HistoricalDataSourceExt for ArchiveDataSource {}

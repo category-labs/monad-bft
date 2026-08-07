@@ -24,6 +24,7 @@ use monad_types::SeqNum;
 
 use super::{
     BlockCommitState, BlockPointer, DataSourceError, DataSourceResult, HistoricalDataSource,
+    HistoricalDataSourceExt,
 };
 
 #[derive(Debug)]
@@ -151,3 +152,5 @@ where
         Ok(header.map(|h| h.header))
     }
 }
+
+impl<T> HistoricalDataSourceExt for TriedbDataSource<T> where T: Triedb + Send + Sync {}

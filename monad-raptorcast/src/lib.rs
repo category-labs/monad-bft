@@ -85,6 +85,7 @@ use crate::{
         group_message::FullNodesGroupMessage, SecondaryOutboundMessage,
         SecondaryRaptorCastModeConfig,
     },
+    round_info::PublishedRounds,
 };
 
 pub mod auth;
@@ -127,6 +128,9 @@ where
 
     epoch_validators: BTreeMap<Epoch, ValidatorSet<CertificateSignaturePubKey<ST>>>,
     full_node_groups: FullNodeGroupMap<CertificateSignaturePubKey<ST>>,
+    // Far-future cull bound for full_node_groups, mirroring the
+    // secondary client's invite window (same config value).
+    invite_future_dist_max: Round,
     proposer_schedule: BoxedProposerSchedule<CertificateSignaturePubKey<ST>>,
 
     dedicated_full_nodes: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
@@ -138,6 +142,11 @@ where
     v1_rollout: v1_rollout::DeterministicProtocolRolloutStage,
     message_builder: OwnedMessageBuilder<ST>,
     secondary_message_builder: Option<OwnedMessageBuilder<ST>>,
+
+    // Guards against building two raptorcast messages for the same commitment key
+    // which would flag this node as an equivocator to receivers
+    published_primary_rounds: PublishedRounds,
+    published_secondary_rounds: PublishedRounds,
 
     tcp_reader: TcpSocketReader,
     tcp_writer: TcpSocketWriter,
@@ -289,6 +298,7 @@ where
             is_dynamic_fullnode,
             epoch_validators: Default::default(),
             full_node_groups: Default::default(),
+            invite_future_dist_max: config.secondary_instance.invite_future_dist_max,
             proposer_schedule,
 
             dedicated_full_nodes: config.primary_instance.fullnode_dedicated.clone(),
@@ -304,6 +314,9 @@ where
 
             udp_state,
             v1_rollout: config.deterministic_protocol_rollout,
+
+            published_primary_rounds: PublishedRounds::new(),
+            published_secondary_rounds: PublishedRounds::new(),
 
             tcp_reader,
             tcp_writer,
@@ -461,6 +474,17 @@ where
                 broadcast_mode,
                 group,
             } => {
+                // Invariant: commit to a single secondary raptorcast message per (publisher, round)
+                if matches!(broadcast_mode, FullnodeBroadcastMode::SecondaryRaptorcast)
+                    && !self.published_secondary_rounds.try_claim(round)
+                {
+                    error!(
+                        ?round,
+                        "dropping duplicate secondary raptorcast publish for round"
+                    );
+                    return;
+                }
+
                 // SAFETY: the SecondaryRaptorcast publisher instance
                 // is responsible for ensuring the group is valid and
                 // consistent with the round.
@@ -514,6 +538,17 @@ where
                         return;
                     }
                 };
+
+                // Invariant: commit to a single raptorcast message per round
+                if let RouterTarget::Raptorcast { round, .. } = &target {
+                    if !self.published_primary_rounds.try_claim(*round) {
+                        error!(
+                            ?round,
+                            "dropping duplicate primary raptorcast publish for round"
+                        );
+                        return;
+                    }
+                }
 
                 // A publisher must be a validator to publish
                 // raptorcast/broadcast to validator set. Therefore
@@ -796,10 +831,11 @@ pub fn create_dataplane_for_tests(with_direct_udp: bool) -> DataplaneHandles {
     }
 }
 
-// used where the proposer schedule is irrelevant (e.g. v0): every round
-// resolves to an unknown proposer.
+// used where the proposer schedule is irrelevant: every proposer and epoch
+
+// checks out, so v1 chunks are accepted regardless of round.
 pub fn dummy_proposer_schedule<PT: PubKey>() -> BoxedProposerSchedule<PT> {
-    Box::new(crate::util::StubProposerSchedule::default())
+    Box::new(crate::util::StubProposerSchedule::VALID)
 }
 
 pub fn new_defaulted_raptorcast_for_tests<ST, M, OM, SE>(
@@ -1010,6 +1046,8 @@ where
 
                     self.udp_state.update_current_round(round);
                     self.full_node_groups.delete_expired(round);
+                    self.full_node_groups
+                        .delete_far_future(round + self.invite_future_dist_max);
                     let proposer_cutoff = round.saturating_sub(round_info::CACHE_MAX_PAST_ROUNDS);
                     self.proposer_schedule.prune_below(proposer_cutoff);
                     self.peer_discovery_driver
@@ -1586,8 +1624,7 @@ where
                         let round_span = *group.round_span(); // for logging only
                         let publisher_id = *group.publisher_id();
                         if this.full_node_groups.try_insert(group).is_none() {
-                            // TODO: convert to an assertion?
-                            error!(
+                            warn!(
                                 round_span = ?round_span,
                                 publisher_id = ?publisher_id,
                                 "Accepted group assignment contains overlaps"
@@ -1670,13 +1707,17 @@ where
     ST: CertificateSignatureRecoverable,
 {
     match group_message {
-        // Prepare group message should originate from a validator
+        // Group formation messages should originate from a validator
         FullNodesGroupMessage::PrepareGroup(msg) => {
             &msg.validator_id == sender && validator_set.is_member(sender)
         }
+        FullNodesGroupMessage::ConfirmGroup(msg) => {
+            &msg.prepare.validator_id == sender && validator_set.is_member(sender)
+        }
+        FullNodesGroupMessage::NoConfirm(msg) => {
+            &msg.prepare.validator_id == sender && validator_set.is_member(sender)
+        }
         FullNodesGroupMessage::PrepareGroupResponse(msg) => &msg.node_id == sender,
-        FullNodesGroupMessage::ConfirmGroup(msg) => &msg.prepare.validator_id == sender,
-        FullNodesGroupMessage::NoConfirm(msg) => &msg.prepare.validator_id == sender,
         FullNodesGroupMessage::ParticipationReport(msg) => &msg.reporter == sender,
     }
 }
