@@ -611,6 +611,27 @@ impl<ST: CertificateSignatureRecoverable, C: governor::clock::Clock> PeerDiscove
         let mut cmds = Vec::new();
 
         let old_name_record = self.routing_info.insert(peer, name_record.clone());
+        if self.check_validator_membership(&peer) {
+            match &old_name_record {
+                Some(current_name_record) if current_name_record.seq() != name_record.seq() => {
+                    debug!(?peer, "validator name record updated");
+                    cmds.push(Self::validator_ip_changed_event(
+                        peer,
+                        Some(current_name_record.clone()),
+                        name_record.clone(),
+                    ));
+                }
+                None => {
+                    debug!(?peer, addr = ?name_record.udp_address(), "new validator added");
+                    cmds.push(Self::validator_ip_changed_event(
+                        peer,
+                        None,
+                        name_record.clone(),
+                    ));
+                }
+                _ => {}
+            }
+        }
         self.participation_info
             .entry(peer)
             .and_modify(|info| {
@@ -881,6 +902,18 @@ impl<ST: CertificateSignatureRecoverable, C: governor::clock::Clock> PeerDiscove
             return false;
         }
         true
+    }
+
+    fn validator_ip_changed_event(
+        node_id: NodeId<CertificateSignaturePubKey<ST>>,
+        old_name_record: Option<MonadNameRecord<ST>>,
+        new_name_record: MonadNameRecord<ST>,
+    ) -> PeerDiscoveryCommand<ST> {
+        PeerDiscoveryCommand::Event(PeerDiscoveryEvent::ValidatorIpChanged {
+            node_id,
+            old_name_record,
+            new_name_record,
+        })
     }
 }
 
