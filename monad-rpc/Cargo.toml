@@ -53,6 +53,7 @@ async-stream = { workspace = true }
 async-trait = { workspace = true }
 auto_impl = { workspace = true }
 bytes = { workspace = true }
+bytestring = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 dashmap = { workspace = true }
 dyn-clone = { workspace = true }
