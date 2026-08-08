@@ -84,7 +84,8 @@ ENV GIT_MODIFIED=$GIT_MODIFIED
 
 # Builder
 COPY . .
-RUN cargo build --release --example txgen && \
+RUN CFLAGS="-fstack-protector-strong -fPIC -D_FORTIFY_SOURCE=1" CXXFLAGS="-fstack-protector-strong -fPIC -D_FORTIFY_SOURCE=1" \
+    RUSTFLAGS="-C link-args=-Wl,-z,relro,-z,now,-z,noexecstack,-z,separate-code" CC=gcc-15 CXX=g++-15 cargo build --release --example txgen && \
     mv target/release/examples/txgen txgen
 
 # Runner
