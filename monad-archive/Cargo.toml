@@ -10,19 +10,8 @@ edition = "2021"
 bench = false
 
 [[bin]]
-name = "monad-archive-checker"
-bench = false
-
-[[bin]]
-name = "monad-archiver"
-bench = false
-
-[[bin]]
-name = "monad-block-writer"
-bench = false
-
-[[bin]]
-name = "monad-indexer"
+name = "monad-archive"
+path = "src/bin/main.rs"
 bench = false
 
 [features]

@@ -75,11 +75,7 @@ async fn process_block(
     Ok(())
 }
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<()> {
-    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
-
-    let args = cli::Cli::parse();
+pub async fn run(args: cli::ArchiveBlockWriterCli) -> Result<()> {
     info!(?args, "Cli Arguments: ");
 
     // Handle SetStartBlock separately since it doesn't need shared args

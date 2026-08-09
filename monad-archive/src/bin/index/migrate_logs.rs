@@ -17,7 +17,7 @@ use futures::TryStreamExt;
 use monad_archive::{model::logs_index::LogsIndexArchiver, prelude::*};
 
 pub async fn run_migrate_logs(
-    args: crate::cli::Cli,
+    args: crate::index::cli::ArchiveIndexCli,
     start_block: u64,
     stop_block_override: Option<u64>,
 ) -> Result<()> {

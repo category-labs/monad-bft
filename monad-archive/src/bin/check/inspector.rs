@@ -21,7 +21,7 @@ use std::{
 use eyre::Result;
 use monad_archive::prelude::*;
 
-use crate::{
+use crate::check::{
     checker::fetch_block_data,
     model::{CheckerModel, Fault},
     CHUNK_SIZE,
@@ -65,7 +65,7 @@ pub async fn status(model: &CheckerModel) -> Result<()> {
     println!("\nFault Chunks:");
     let fault_keys = model
         .store
-        .scan_prefix(crate::model::FAULTS_CHUNK_PREFIX)
+        .scan_prefix(crate::check::model::FAULTS_CHUNK_PREFIX)
         .await?;
 
     // Group by replica
@@ -270,7 +270,7 @@ fn format_ranges(ranges: &[(u64, u64)]) -> String {
 }
 
 // Re-export the OutputFormat from cli module to avoid duplication
-pub use crate::cli::InspectorOutputFormat as OutputFormat;
+pub use crate::check::cli::InspectorOutputFormat as OutputFormat;
 
 /// Inspects a single block across all replicas
 pub async fn inspect_block(

@@ -20,7 +20,7 @@ use monad_archive::cli::BlockDataReaderArgs;
 
 #[derive(Debug, Parser)]
 #[command(name = "monad-archive", about, long_about = None)]
-pub struct Cli {
+pub struct ArchiveBlockWriterCli {
     #[command(subcommand)]
     pub mode: Mode,
 }

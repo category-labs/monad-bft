@@ -18,7 +18,7 @@ use monad_archive::{kvstore::WritePolicy, prelude::*};
 use opentelemetry::KeyValue;
 use tokio::time::interval;
 
-use crate::{
+use crate::check::{
     checker::{fetch_block_data, process_blocks, store_checking_results},
     model::{CheckerModel, Fault, FaultKind, GoodBlocks},
     CHUNK_SIZE,

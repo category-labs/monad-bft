@@ -282,7 +282,7 @@ impl CheckerModel {
             .filter(|chunk_start| {
                 // A chunk starting at position X contains blocks from X to X+CHUNK_SIZE-1
                 // Include the chunk if it could contain any blocks in the range [start, end]
-                use crate::CHUNK_SIZE;
+                use crate::check::CHUNK_SIZE;
 
                 if let Some(end) = end {
                     // Chunk should start before or at the end block
@@ -309,7 +309,7 @@ impl CheckerModel {
     /// Find a common prefix for chunk starts in a given range
     /// Returns empty string if no useful prefix exists
     fn find_chunk_range_prefix(start: Option<u64>, end: Option<u64>) -> String {
-        use crate::CHUNK_SIZE;
+        use crate::check::CHUNK_SIZE;
 
         match (start, end) {
             (Some(start), Some(end)) => {

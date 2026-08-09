@@ -35,8 +35,8 @@ use serde::Deserialize;
 ///
 /// will load every field from `config.toml` and then replace the
 /// `max_blocks_per_iteration` value with `50` before execution.
-#[derive(Debug, Deserialize)]
-pub struct Cli {
+#[derive(Debug, Deserialize, Parser)]
+pub struct ArchiveRunCli {
     /// Where blocks, receipts and traces are read from
     /// For triedb: 'triedb <triedb_path> <concurrent_requests>'
     pub block_data_source: BlockDataReaderArgs,
@@ -143,37 +143,37 @@ pub struct Cli {
 }
 
 /// Result of parsing CLI arguments - either a subcommand or daemon config
-pub enum ParsedCli {
+pub enum ArchiveRunParsedCli {
     /// A subcommand was provided - handle and exit
     Command(Commands),
     /// No subcommand - run as daemon with this config
     Daemon(Cli),
 }
 
-impl Cli {
-    pub fn parse() -> ParsedCli {
+impl ArchiveRunCli {
+    pub fn parse() -> ArchiveRunParsedCli {
         Self::try_parse().unwrap_or_else(|err| {
             eprintln!("failed to load monad-archiver configuration: {err:?}");
             process::exit(2);
         })
     }
 
-    pub fn try_parse() -> Result<ParsedCli> {
-        let args = CliArgs::parse();
+    pub fn try_parse() -> Result<ArchiveRunParsedCli> {
+        let args = ArchiveRunCliArgs::parse();
         // If a subcommand is provided, return it without requiring daemon args
         if let Some(command) = args.command {
-            return Ok(ParsedCli::Command(command));
+            return Ok(ArchiveRunParsedCli::Command(command));
         }
         // No subcommand - parse full daemon config (this requires block_data_source, archive_sink, etc.)
-        let (_, cli) = CliArgs {
+        let (_, cli) = ArchiveRunCliArgs {
             command: None,
             ..args
         }
         .into_cli()?;
-        Ok(ParsedCli::Daemon(cli))
+        Ok(ArchiveRunParsedCli::Daemon(cli))
     }
 
-    fn from_sources(config: Option<Cli>, overrides: CliOverrides) -> Result<Self> {
+    fn from_sources(config: Option<ArchiveRunCli>, overrides: CliOverrides) -> Result<Self> {
         match config {
             Some(mut cli) => {
                 cli.apply_overrides(overrides);
@@ -357,7 +357,7 @@ pub enum Commands {
 
 #[derive(Debug, Parser)]
 #[command(name = "monad-archive", about, long_about = None)]
-struct CliArgs {
+struct ArchiveRunCliArgs {
     #[command(subcommand)]
     pub command: Option<Commands>,
 
@@ -477,7 +477,7 @@ struct CliArgs {
     skip_connectivity_check: bool,
 }
 
-impl CliArgs {
+impl ArchiveRunCliArgs {
     fn into_cli(self) -> Result<(Option<Commands>, Cli)> {
         let (command, config_path, overrides) = self.into_parts();
         let config = match config_path {
@@ -588,7 +588,7 @@ struct CliOverrides {
     unsafe_allow_traces_overwrite: Option<bool>,
 }
 
-fn load_config(path: &Path) -> Result<Cli> {
+fn load_config(path: &Path) -> Result<ArchiveRunCli> {
     let contents = fs::read_to_string(path)
         .wrap_err_with(|| format!("failed to read config file {}", path.display()))?;
     toml::from_str(&contents)
@@ -802,10 +802,13 @@ mod tests {
         )
         .unwrap();
 
-        let (_, cli) =
-            CliArgs::parse_from(["monad-archiver", "--config", file.path().to_str().unwrap()])
-                .into_cli()
-                .expect("config file should load");
+        let (_, cli) = ArchiveRunCliArgs::parse_from([
+            "monad-archiver",
+            "--config",
+            file.path().to_str().unwrap(),
+        ])
+        .into_cli()
+        .expect("config file should load");
 
         assert_eq!(cli.max_blocks_per_iteration, 222);
         assert_eq!(cli.max_concurrent_blocks, 16);
@@ -843,7 +846,7 @@ mod tests {
         )
         .unwrap();
 
-        let (_, cli) = CliArgs::parse_from([
+        let (_, cli) = ArchiveRunCliArgs::parse_from([
             "monad-archiver",
             "--config",
             file.path().to_str().unwrap(),

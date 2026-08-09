@@ -43,7 +43,7 @@ EXAMPLES:\n\n\
     --start-block 0 --end-block 10000 --force-recheck --dry-run\n\n\
 "
 )]
-pub struct Cli {
+pub struct ArchiveCheckCli {
     #[command(subcommand)]
     pub mode: Mode,
 

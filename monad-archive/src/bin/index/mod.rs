@@ -29,11 +29,8 @@ mod cli;
 mod migrate_capped;
 mod migrate_logs;
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
-
-    match cli::Cli::parse() {
+pub async fn run(args: cli::ArchiveIndexCli) -> Result<()> {
+    match cli::ArchiveIndexParsedCli::from_args(args) {
         cli::ParsedCli::Command { command, args } => match command {
             cli::Commands::MigrateLogs {
                 start_block,
