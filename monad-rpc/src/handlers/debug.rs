@@ -35,6 +35,7 @@ use crate::{
         ethhex,
         json_serialized_len::JsonSerializedLen,
         jsonrpc::{ChainStateResultExt, JsonRpcError, JsonRpcResult},
+        CallKind,
     },
 };
 
@@ -424,19 +425,6 @@ impl From<CallFrame> for MonadCallFrame {
                 .collect(),
         }
     }
-}
-
-#[derive(Serialize, Debug, Clone, schemars::JsonSchema, strum::AsRefStr, strum::VariantArray)]
-#[serde(rename_all = "UPPERCASE")]
-#[strum(serialize_all = "UPPERCASE")]
-pub enum CallKind {
-    Call,
-    DelegateCall,
-    CallCode,
-    Create,
-    Create2,
-    SelfDestruct,
-    StaticCall,
 }
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
@@ -915,7 +903,7 @@ mod tests {
             frame,
         );
 
-        let data_provider = DataProvider::new(None, Arc::new(mock_triedb), None);
+        let data_provider = DataProvider::new(None, Arc::new(mock_triedb), None, None);
         let resp = monad_debug_traceTransaction(
             &data_provider,
             usize::MAX,
@@ -969,7 +957,7 @@ mod tests {
             frame,
         );
 
-        let data_provider = DataProvider::new(None, Arc::new(mock_triedb), None);
+        let data_provider = DataProvider::new(None, Arc::new(mock_triedb), None, None);
         let err = monad_debug_traceTransaction(
             &data_provider,
             1,
@@ -1061,7 +1049,7 @@ mod tests {
 
         mock_triedb.set_code(hex::decode("608060405260043610603f5760003560e01c80635c60da1b146044575b600080fd5b605060048036036020811015605857600080fd5b5035606e565b005b6000548156fea2646970667358221220a0f2af6f9a7d2b0c8c3c32bd2d8a4f3d856c7f8a8888a1e0dc8b9a8a2a47e2ea64736f6c634300080000330000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000").unwrap());
 
-        let data_provider = DataProvider::new(None, Arc::new(mock_triedb), None);
+        let data_provider = DataProvider::new(None, Arc::new(mock_triedb), None, None);
         let resp: Option<MonadCallFrame> = monad_debug_traceTransaction(
             &data_provider,
             usize::MAX,
@@ -1115,7 +1103,7 @@ mod tests {
             frame,
         );
 
-        let data_provider = DataProvider::new(None, Arc::new(mock_triedb), None);
+        let data_provider = DataProvider::new(None, Arc::new(mock_triedb), None, None);
         let resp: Option<MonadCallFrame> = monad_debug_traceTransaction(
             &data_provider,
             usize::MAX,
@@ -1222,7 +1210,7 @@ mod tests {
             frame,
         );
 
-        let data_provider = DataProvider::new(None, Arc::new(mock_triedb), None);
+        let data_provider = DataProvider::new(None, Arc::new(mock_triedb), None, None);
         let resp: Option<MonadCallFrame> = monad_debug_traceTransaction(
             &data_provider,
             usize::MAX,
@@ -1276,7 +1264,7 @@ mod tests {
             frame,
         );
 
-        let data_provider = DataProvider::new(None, Arc::new(mock_triedb), None);
+        let data_provider = DataProvider::new(None, Arc::new(mock_triedb), None, None);
         let with_logs_resp = monad_debug_traceTransaction(
             &data_provider,
             usize::MAX,
@@ -1364,7 +1352,7 @@ mod tests {
             }],
         );
 
-        let data_provider = DataProvider::new(None, Arc::new(mock_triedb), None);
+        let data_provider = DataProvider::new(None, Arc::new(mock_triedb), None, None);
         let result = monad_debug_getRawReceipts(
             &data_provider,
             25_000_000,
@@ -1402,7 +1390,7 @@ mod tests {
 
         mock_triedb.set_finalized_block(SeqNum(1), block.clone());
 
-        let data_provider = DataProvider::new(None, Arc::new(mock_triedb), None);
+        let data_provider = DataProvider::new(None, Arc::new(mock_triedb), None, None);
         let error = monad_debug_getRawBlock(
             &data_provider,
             txs_payload_limit,

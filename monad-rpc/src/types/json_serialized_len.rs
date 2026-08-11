@@ -465,16 +465,16 @@ proptest_json_serialized_len!(crate::types::eth_json::FixedData<32>, fixed_data_
     any::<[u8; 32]>().prop_map(crate::types::eth_json::FixedData::<32>)
 });
 
-impl JsonSerializedLen for crate::handlers::debug::CallKind {
+impl JsonSerializedLen for crate::types::CallKind {
     fn json_serialized_len(&self) -> usize {
         // serialized as an UPPERCASE string (via the strum derive) with enclosing double quotes
         2 + self.as_ref().len()
     }
 }
-proptest_json_serialized_len!(crate::handlers::debug::CallKind, call_kind, {
+proptest_json_serialized_len!(crate::types::CallKind, call_kind, {
     use strum::VariantArray;
 
-    proptest::sample::select(crate::handlers::debug::CallKind::VARIANTS)
+    proptest::sample::select(crate::types::CallKind::VARIANTS)
 });
 
 impl JsonSerializedLen for crate::handlers::debug::MonadCallFrameLog {
