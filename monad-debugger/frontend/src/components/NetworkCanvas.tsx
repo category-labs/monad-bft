@@ -31,6 +31,7 @@ type MergedLedgerBlock = LedgerBlock & {
     coherentBy: string[],
 };
 type LinkMode = "both" | "forward" | "reverse" | "neither";
+type MessageTone = "proposal" | "vote" | "timeout" | "blocksync" | "advance" | "tx" | "state" | "neutral";
 type MessageFilterKey =
     | "proposal"
     | "vote"
@@ -45,6 +46,10 @@ type MessageFilterKey =
     | "other";
 type Position = { x: number, y: number };
 type PixelOffset = { x: number, y: number };
+type InFlightDestination = {
+    toId: string,
+    messages: Array<{ fromId: string, message: PendingMessage }>,
+};
 type TimeoutState = {
     progress: number,
     remainingMs: number,
@@ -132,6 +137,93 @@ const messageFilterKey = (message: PendingMessage["message"]): MessageFilterKey 
     }
 };
 
+const messageTone = (message: PendingMessage["message"]): MessageTone => {
+    if (message.__typename !== "GraphQLConsensusMessage") {
+        switch (message.__typename) {
+            case "GraphQLBlockSyncRequestMessage":
+            case "GraphQLBlockSyncResponseMessage":
+                return "blocksync";
+            case "GraphQLForwardedTxMessage":
+                return "tx";
+            case "GraphQLStateSyncMessage":
+                return "state";
+            default:
+                return "neutral";
+        }
+    }
+
+    switch (message.message.__typename) {
+        case "GraphQLProposal":
+            return "proposal";
+        case "GraphQLVote":
+            return "vote";
+        case "GraphQLTimeout":
+            return "timeout";
+        case "GraphQLAdvanceRound":
+        case "GraphQLRoundRecovery":
+            return "advance";
+        default:
+            return "neutral";
+    }
+};
+
+const messageSummary = (message: PendingMessage["message"]): string => {
+    if (message.__typename !== "GraphQLConsensusMessage") {
+        switch (message.__typename) {
+            case "GraphQLBlockSyncRequestMessage":
+                return message.requestType === "HEADERS"
+                    ? `Block sync · headers ×${message.blockRange?.numBlocks ?? "?"}`
+                    : "Block sync · payload";
+            case "GraphQLBlockSyncResponseMessage":
+                return `Block sync · ${message.responseType.toLowerCase()} · ${message.available ? "found" : "missing"}`;
+            case "GraphQLForwardedTxMessage":
+                return "Forwarded tx";
+            case "GraphQLStateSyncMessage":
+                return "State sync";
+            default:
+                return "Message";
+        }
+    }
+
+    switch (message.message.__typename) {
+        case "GraphQLProposal":
+            return `Proposal · r${message.round} · P${message.message.seqNum}`;
+        case "GraphQLVote":
+            return `Vote · r${message.message.round}`;
+        case "GraphQLTimeout":
+            return `Timeout · r${message.message.round} · ${message.message.highExtendType.toLowerCase()}`;
+        case "GraphQLAdvanceRound":
+            return `Advance · r${message.message.round}`;
+        case "GraphQLRoundRecovery":
+            return `Round recovery · r${message.message.round}`;
+        case "GraphQLNoEndorsement":
+            return `No endorsement · r${message.round}`;
+        default:
+            return `Consensus · r${message.round}`;
+    }
+};
+
+const packetToneClass = (tone: MessageTone) => {
+    switch (tone) {
+        case "proposal":
+            return "border-indigo-950 bg-indigo-500";
+        case "vote":
+            return "border-sky-950 bg-sky-500";
+        case "timeout":
+            return "border-red-950 bg-red-500";
+        case "blocksync":
+            return "border-amber-950 bg-amber-500";
+        case "advance":
+            return "border-violet-950 bg-violet-500";
+        case "tx":
+            return "border-emerald-950 bg-emerald-500";
+        case "state":
+            return "border-teal-950 bg-teal-500";
+        default:
+            return "border-neutral-950 bg-neutral-400";
+    }
+};
+
 const hashString = (value: string) => {
     let hash = 2166136261;
     for (let index = 0; index < value.length; index += 1) {
@@ -153,7 +245,7 @@ const blockVisual = (id: string) => {
     };
 };
 
-const messageToneClass = (tone: "proposal" | "vote" | "timeout" | "blocksync" | "advance" | "tx" | "state" | "neutral") => {
+const messageToneClass = (tone: MessageTone) => {
     switch (tone) {
         case "proposal":
             return "border-indigo-700 bg-indigo-50 text-indigo-950";
@@ -349,6 +441,29 @@ const NetworkCanvas: Component<{
             pairs[key].links.push(link);
         }
         return Object.values(pairs);
+    });
+
+    const inFlightDestinations = createMemo(() => {
+        const destinations = new Map<string, InFlightDestination>();
+        for (const node of simNodes()) {
+            for (const message of node.pendingMessages) {
+                if (node.id === message.fromId || !visibleMessage(message)) {
+                    continue;
+                }
+                const destination = destinations.get(node.id) ?? {
+                    toId: node.id,
+                    messages: [],
+                };
+                destination.messages.push({ fromId: message.fromId, message });
+                destinations.set(node.id, destination);
+            }
+        }
+        for (const destination of destinations.values()) {
+            destination.messages.sort((left, right) => (
+                left.message.rxTick - right.message.rxTick || left.message.id - right.message.id
+            ));
+        }
+        return [...destinations.values()];
     });
 
     const applyLinkMode = (pair: LinkPair, mode: LinkMode) => {
@@ -617,17 +732,44 @@ const NetworkCanvas: Component<{
         });
     };
 
-    const messagePosition = (toNodeId: string, message: PendingMessage) => {
-        const from = positionsById()[message.fromId];
+    const directedLinkPoint = (
+        fromNodeId: string,
+        toNodeId: string,
+        progress: number,
+        laneOffset: number,
+    ) => {
+        const from = positionsById()[fromNodeId];
         const to = positionsById()[toNodeId];
         if (!from || !to) {
             return undefined;
         }
+        const dx = to.x - from.x;
+        const dy = to.y - from.y;
+        const length = Math.max(1, Math.hypot(dx, dy));
+        return {
+            x: from.x + progress * dx - (dy / length) * laneOffset,
+            y: from.y + progress * dy + (dx / length) * laneOffset,
+        };
+    };
+
+    const messagePosition = (toNodeId: string, message: PendingMessage) => {
         const duration = Math.max(1, message.rxTick - message.fromTick);
         const progress = clamp((props.vizTick - message.fromTick) / duration, 0, 1);
+        const packetOffset = ((message.id % 3) - 1) * 5;
+        return directedLinkPoint(message.fromId, toNodeId, progress, 10 + packetOffset);
+    };
+
+    const destinationPanelPosition = (toNodeId: string) => {
+        const destination = positionsById()[toNodeId];
+        if (!destination) {
+            return undefined;
+        }
+        const dx = 500 - destination.x;
+        const dy = 500 - destination.y;
+        const length = Math.max(1, Math.hypot(dx, dy));
         return {
-            x: from.x + progress * (to.x - from.x),
-            y: from.y + progress * (to.y - from.y),
+            x: destination.x + (dx / length) * 170,
+            y: destination.y + (dy / length) * 145,
         };
     };
 
@@ -827,19 +969,51 @@ const NetworkCanvas: Component<{
                     const position = () => messagePosition(node.id, message);
                     return (
                         <Show when={node.id !== message.fromId && visibleMessage(message) && position()}>
-                            <div
-                                class="pointer-events-none absolute z-20 -translate-x-1/2 -translate-y-1/2"
+                            <span
+                                class={`pointer-events-none absolute z-20 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rotate-45 rounded-[2px] border-2 shadow-md ${packetToneClass(messageTone(message.message))}`}
                                 style={{
                                     left: `${(position()?.x ?? 0) / 10}%`,
                                     top: `${(position()?.y ?? 0) / 10}%`,
                                 }}
-                            >
-                                <MessageBadge message={message.message} />
-                            </div>
+                                title={messageSummary(message.message)}
+                                aria-hidden="true"
+                            />
                         </Show>
                     );
                 }}</For>
             )}</For>
+
+            <For each={inFlightDestinations()}>{(destination) => {
+                const position = () => destinationPanelPosition(destination.toId);
+                const visibleMessages = () => destination.messages.slice(0, 4);
+                const overflow = () => Math.max(0, destination.messages.length - visibleMessages().length);
+                return (
+                    <Show when={position()}>
+                        <div
+                            class="pointer-events-none absolute z-20 w-52 -translate-x-1/2 -translate-y-1/2 rounded-lg border border-neutral-300 bg-white/90 p-1.5 shadow-md backdrop-blur-sm"
+                            style={{
+                                left: `${(position()?.x ?? 0) / 10}%`,
+                                top: `${(position()?.y ?? 0) / 10}%`,
+                            }}
+                        >
+                            <div class="mb-1 flex items-center justify-between gap-2 px-0.5 text-[10px] font-bold uppercase tracking-wide text-neutral-500">
+                                <span>Incoming to {nodeLabel(destination.toId)}</span>
+                                <Show when={overflow() > 0}>
+                                    <span>+{overflow()}</span>
+                                </Show>
+                            </div>
+                            <div class="grid gap-1">
+                                <For each={visibleMessages()}>{(entry) => (
+                                    <MessageSummaryChip
+                                        message={entry.message.message}
+                                        sourceLabel={nodeLabel(entry.fromId)}
+                                    />
+                                )}</For>
+                            </div>
+                        </div>
+                    </Show>
+                );
+            }}</For>
 
             <For each={networkNodes()}>{(networkNode) => {
                 const position = () => positionsById()[networkNode.id] ?? { x: networkNode.x, y: networkNode.y };
@@ -951,102 +1125,19 @@ const BlockChip: Component<{
     );
 };
 
-const MessageShell: Component<{
-    tone: "proposal" | "vote" | "timeout" | "blocksync" | "advance" | "tx" | "state" | "neutral",
-    title: string,
-    meta?: string,
-    compact?: boolean,
-    children?: unknown,
+const MessageSummaryChip: Component<{
+    message: PendingMessage["message"],
+    sourceLabel: string,
 }> = (props) => (
-    <div class={`${props.compact ? "min-w-0 max-w-40" : "min-w-36 max-w-56"} rounded-lg border-2 px-2 py-1.5 text-xs font-semibold shadow-lg ${messageToneClass(props.tone)}`}>
-        <div class="flex items-start justify-between gap-2">
-            <div class="leading-4">{props.title}</div>
-            <Show when={props.meta}>
-                <div class="shrink-0 rounded bg-white/70 px-1 text-[10px] leading-4 text-current">{props.meta}</div>
-            </Show>
-        </div>
-        <Show when={props.children}>
-            <div class="mt-1 flex flex-wrap gap-1">{props.children}</div>
-        </Show>
+    <div
+        class={`flex min-w-0 items-center gap-2 rounded-md border px-2 py-1 text-[11px] font-semibold leading-4 shadow-sm ${messageToneClass(messageTone(props.message))}`}
+        title={messageSummary(props.message)}
+    >
+        <span class={`h-2 w-2 shrink-0 rotate-45 rounded-[1px] border ${packetToneClass(messageTone(props.message))}`} />
+        <span class="shrink-0 rounded bg-white/75 px-1 text-[9px] font-bold leading-4">{props.sourceLabel}</span>
+        <span class="truncate">{messageSummary(props.message)}</span>
     </div>
 );
-
-const MessageBadge: Component<{ message: PendingMessage["message"] }> = (props) => {
-    const message = props.message;
-
-    if (message.__typename !== "GraphQLConsensusMessage") {
-        switch (message.__typename) {
-            case "GraphQLBlockSyncRequestMessage":
-                return (
-                    <MessageShell
-                        tone="blocksync"
-                        title="Block sync request"
-                        meta={message.requestType === "HEADERS" ? `headers x${message.blockRange?.numBlocks ?? "?"}` : "payload"}
-                    />
-                );
-            case "GraphQLBlockSyncResponseMessage":
-                return (
-                    <MessageShell
-                        tone="blocksync"
-                        title="Block sync response"
-                        meta={`${message.responseType === "HEADERS" ? "headers" : "payload"} ${message.available ? "found" : "missing"}`}
-                    >
-                        <For each={message.blocks.slice(0, 4)}>{(block) => (
-                            <BlockChip block={block} />
-                        )}</For>
-                        <Show when={message.blocks.length > 4}>
-                            <span class="rounded border border-amber-700 bg-white/75 px-1.5 py-1 text-[11px] font-semibold">
-                                +{message.blocks.length - 4}
-                            </span>
-                        </Show>
-                        <Show when={message.bodyId && message.blocks.length === 0}>
-                            {(bodyId) => (
-                                <span class="rounded border border-dashed border-amber-700 bg-white/75 px-1.5 py-1 text-[11px] font-semibold">
-                                    body {shortBlockId(bodyId())}
-                                </span>
-                            )}
-                        </Show>
-                    </MessageShell>
-                );
-            case "GraphQLForwardedTxMessage":
-                return <MessageShell tone="tx" title="Forwarded tx" />;
-            case "GraphQLStateSyncMessage":
-                return <MessageShell tone="state" title="State sync" />;
-            default:
-                return <MessageShell tone="neutral" title="Message" />;
-        }
-    }
-
-    const messageType = message.message;
-    switch (messageType.__typename) {
-        case "GraphQLProposal":
-            return (
-                <MessageShell tone="proposal" title="Proposal" meta={`r${message.round} seq ${messageType.seqNum}`}>
-                    <BlockChip block={messageType.block} label={`P${messageType.block.seqNum}`} />
-                </MessageShell>
-            );
-        case "GraphQLVote":
-            return (
-                <MessageShell compact tone="vote" title="Vote" meta={`r${messageType.round}`} />
-            );
-        case "GraphQLTimeout":
-            return (
-                <MessageShell compact tone="timeout" title="Timeout" meta={`r${messageType.round} ${messageType.highExtendType.toLowerCase()}`} />
-            );
-        case "GraphQLAdvanceRound":
-            return (
-                <MessageShell compact tone="advance" title="Advance" meta={`r${messageType.round}`} />
-            );
-        case "GraphQLRoundRecovery":
-            return (
-                <MessageShell tone="advance" title="Round recovery" meta={`r${messageType.round} ${shortBlockId(messageType.blockId)}`} />
-            );
-        case "GraphQLNoEndorsement":
-            return <MessageShell tone="neutral" title="No endorsement" meta={`r${message.round}`} />;
-        default:
-            return <MessageShell tone="neutral" title="Consensus" meta={`r${message.round}`} />;
-    }
-};
 
 const BlockViewPanel: Component<{
     blocks: MergedLedgerBlock[],
