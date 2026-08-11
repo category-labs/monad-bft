@@ -125,5 +125,6 @@ fragment LedgerBlock on GraphQLLedgerBlock {
   authorId
   coherent
   finalized
+  voted
   childrenIds
 }

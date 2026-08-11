@@ -29,6 +29,7 @@ type MergedLedgerBlock = LedgerBlock & {
     seenBy: string[],
     finalizedBy: string[],
     coherentBy: string[],
+    votedBy: string[],
 };
 type LinkMode = "both" | "forward" | "reverse" | "neither";
 type MessageTone = "proposal" | "vote" | "timeout" | "blocksync" | "advance" | "tx" | "state" | "neutral";
@@ -498,6 +499,7 @@ const NetworkCanvas: Component<{
                         seenBy: [],
                         finalizedBy: [],
                         coherentBy: [],
+                        votedBy: [],
                     };
                     byId.set(block.id, merged);
                 }
@@ -509,6 +511,10 @@ const NetworkCanvas: Component<{
                 if (block.coherent) {
                     merged.coherent = true;
                     merged.coherentBy.push(node.id);
+                }
+                if (block.voted) {
+                    merged.voted = true;
+                    merged.votedBy.push(node.id);
                 }
             }
         }
@@ -1194,7 +1200,7 @@ const BlockViewPanel: Component<{
     });
 
     const status = (block: MergedLedgerBlock) => (
-        block.finalized ? "ledger" : block.coherent ? "blocktree" : "pending"
+        block.finalized ? "finalized" : block.voted ? "voted" : "proposed"
     );
 
     createEffect(() => {
@@ -1279,7 +1285,7 @@ const BlockViewPanel: Component<{
                         const seenBy = () => block.seenBy.map(props.nodeLabel).join(" ");
                         return (
                             <div
-                                class={`absolute rounded-md border bg-white p-2 shadow-sm ${block.finalized ? "border-neutral-900" : block.coherent ? "border-indigo-300" : "border-neutral-300 opacity-70"}`}
+                                class={`absolute rounded-md border bg-white p-2 shadow-sm ${block.finalized ? "border-neutral-900" : block.voted ? "border-indigo-300" : "border-neutral-300 opacity-70"}`}
                                 style={{
                                     height: `${layout().cardHeight}px`,
                                     left: `${position()?.x ?? 0}px`,
@@ -1289,8 +1295,8 @@ const BlockViewPanel: Component<{
                                 title={`${block.id}\nseen by ${seenBy()}`}
                             >
                                 <div class="flex items-center justify-between gap-1">
-                                    <BlockChip block={block} label={block.finalized ? `F${block.seqNum}` : `P${block.seqNum}`} compact muted={!block.coherent} />
-                                    <span class={`rounded px-1 py-0.5 text-[10px] font-semibold ${block.finalized ? "bg-neutral-900 text-white" : block.coherent ? "bg-indigo-100 text-indigo-800" : "bg-neutral-100 text-neutral-600"}`}>
+                                    <BlockChip block={block} label={block.finalized ? `F${block.seqNum}` : `P${block.seqNum}`} compact muted={!block.voted} />
+                                    <span class={`rounded px-1 py-0.5 text-[10px] font-semibold ${block.finalized ? "bg-neutral-900 text-white" : block.voted ? "bg-indigo-100 text-indigo-800" : "bg-neutral-100 text-neutral-600"}`}>
                                         {status(block)}
                                     </span>
                                 </div>

@@ -468,4 +468,28 @@ mod tests {
             simulation.execute_query(query).unwrap();
         }
     }
+
+    #[test]
+    fn block_query_distinguishes_finalized_voted_and_proposed() {
+        let mut simulation = Simulation::new(Box::new(default_swarm_config));
+        simulation.set_tick(std::time::Duration::from_millis(500));
+
+        let data = simulation
+            .execute_query("{ nodes { ledgerBlocks { finalized voted } } }")
+            .unwrap();
+        let blocks: Vec<_> = data["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|node| node["ledgerBlocks"].as_array().unwrap())
+            .collect();
+
+        assert!(blocks.iter().any(|block| block["finalized"] == true));
+        assert!(blocks
+            .iter()
+            .any(|block| block["finalized"] == false && block["voted"] == true));
+        assert!(blocks
+            .iter()
+            .any(|block| block["finalized"] == false && block["voted"] == false));
+    }
 }

@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     hash::{DefaultHasher, Hash, Hasher},
     ops::Deref,
     time::Duration,
@@ -123,6 +123,7 @@ struct GraphQLLedgerBlock {
     author: Option<NodeId<CertificateSignaturePubKey<SignatureType>>>,
     coherent: bool,
     finalized: bool,
+    voted: bool,
     children_ids: Vec<BlockId>,
 }
 
@@ -158,6 +159,10 @@ impl GraphQLLedgerBlock {
 
     async fn finalized(&self) -> bool {
         self.finalized
+    }
+
+    async fn voted(&self) -> bool {
+        self.voted
     }
 
     async fn children_ids(&self) -> Vec<String> {
@@ -569,6 +574,14 @@ impl<'s> GraphQLNode<'s> {
         let blocktree = state.blocktree();
         let root = blocktree.root();
         let mut blocks_by_id = BTreeMap::new();
+        let voted_block_ids: BTreeSet<_> = blocktree
+            .tree()
+            .iter()
+            .map(|(_, entry)| entry.validated_block.get_qc().get_block_id())
+            .chain(std::iter::once(
+                state.get_high_certificate().qc().get_block_id(),
+            ))
+            .collect();
 
         for block in self.0.executor.ledger().get_finalized_blocks().values() {
             blocks_by_id.insert(
@@ -582,6 +595,7 @@ impl<'s> GraphQLNode<'s> {
                     author: Some(*block.get_author()),
                     coherent: true,
                     finalized: true,
+                    voted: true,
                     children_ids: Vec::new(),
                 },
             );
@@ -591,6 +605,7 @@ impl<'s> GraphQLNode<'s> {
             let block = &entry.validated_block;
             if let Some(existing_block) = blocks_by_id.get_mut(block_id) {
                 existing_block.coherent |= entry.is_coherent;
+                existing_block.voted |= voted_block_ids.contains(block_id);
                 continue;
             }
 
@@ -605,6 +620,7 @@ impl<'s> GraphQLNode<'s> {
                     author: Some(*block.get_author()),
                     coherent: entry.is_coherent,
                     finalized: false,
+                    voted: voted_block_ids.contains(block_id),
                     children_ids: Vec::new(),
                 },
             );
@@ -615,6 +631,7 @@ impl<'s> GraphQLNode<'s> {
             .and_modify(|block| {
                 block.coherent = true;
                 block.finalized = true;
+                block.voted = true;
             })
             .or_insert(GraphQLLedgerBlock {
                 id: root.block_id,
@@ -625,6 +642,7 @@ impl<'s> GraphQLNode<'s> {
                 author: None,
                 coherent: true,
                 finalized: true,
+                voted: true,
                 children_ids: Vec::new(),
             });
 
