@@ -45,15 +45,23 @@ monad-execution/build/cmd/monad-cli monad-cli
 EOF
 
 # --- stage libraries ---
-# Ship libtriedb_driver.so plus its link closure of build-script-produced
-# shared objects (the patched Boost.Fiber and friends), same as the Docker
-# images. A blanket copy of target/release/build would also pick up stale
-# libraries left behind in cached/incremental target directories.
+# Ship libtriedb_driver.so plus the link closure of shared objects produced by
+# this source tree (the patched Boost.Fiber, monad-execution, and friends);
+# system libraries come from Depends. Copy to a fixpoint: staged copies win
+# over build-tree RUNPATHs via LD_LIBRARY_PATH, so anything still resolving
+# into the source tree is a build-produced dependency not yet bundled.
 triedb=$(find target/release -name 'libtriedb_driver.so' -exec ls -Lt {} + | head -n 1)
 test -n "$triedb" || { echo "libtriedb_driver.so not found under target/release" >&2; exit 2; }
 cp "$triedb" "$stage_dir/usr/local/lib/"
-ldd "$triedb" | scripts/filter-dependent-shared-objects.py | sort -u \
-  | xargs -I {} cp {} "$stage_dir/usr/local/lib/"
+
+while :; do
+  unbundled=$(for obj in "$stage_dir"/usr/local/bin/* "$stage_dir"/usr/local/lib/*; do
+      LD_LIBRARY_PATH="$stage_dir/usr/local/lib" ldd "$obj"
+    done | awk -v root="$root_dir/" -v stage="$stage_dir/" \
+      '$2 == "=>" && index($3, root) == 1 && index($3, stage) != 1 { print $3 }' | sort -u)
+  [ -n "$unbundled" ] || break
+  echo "$unbundled" | xargs -I {} cp {} "$stage_dir/usr/local/lib/"
+done
 
 if [ "$strip_symbols" = 1 ]; then
   find "$stage_dir/usr/local/bin" -type f -exec strip --strip-all {} \;
@@ -61,12 +69,16 @@ if [ "$strip_symbols" = 1 ]; then
 fi
 
 # --- check linkage ---
-# Refuse to ship a package whose binaries cannot start; anything not bundled is
-# expected from the declared Depends, which the build image also has installed.
-for binary in "$stage_dir"/usr/local/bin/*; do
-  if unresolved=$(LD_LIBRARY_PATH="$stage_dir/usr/local/lib" ldd "$binary" | grep 'not found'); then
-    echo "Unresolved shared libraries for $binary:" >&2
-    echo "$unresolved" >&2
+# Refuse to ship a package whose objects cannot start on a clean host: every
+# dependency must come from the stage dir or the declared Depends (which the
+# build image also has installed) — never unresolved, and never satisfied out
+# of this source tree, which RUNPATHs make possible here but no target has.
+for obj in "$stage_dir"/usr/local/bin/* "$stage_dir"/usr/local/lib/*; do
+  bad=$(LD_LIBRARY_PATH="$stage_dir/usr/local/lib" ldd "$obj" \
+    | grep -e 'not found' -e "=> $root_dir" | grep -v "=> $stage_dir" || true)
+  if [ -n "$bad" ]; then
+    echo "Unshippable linkage in $obj:" >&2
+    echo "$bad" >&2
     exit 2
   fi
 done
