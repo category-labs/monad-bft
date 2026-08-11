@@ -90,7 +90,7 @@ RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell -fno-omit-frame-pointer" CX
     RUSTFLAGS="-C target-cpu=haswell -C force-frame-pointers=yes" CC=gcc-15 CXX=g++-15 cargo build --release --bin monad-rpc && \
     mv target/release/monad-rpc rpc && \
     cp `ls -Lt $(find target/release | grep -e "libtriedb_driver.so")` . && \
-    ldd $(ls -Lt $(find target/release | grep -e "libtriedb_driver.so")) | docker/filter-dependent-shared-objects.py | xargs -I {} cp {} .
+    ldd $(ls -Lt $(find target/release | grep -e "libtriedb_driver.so")) | scripts/filter-dependent-shared-objects.py | xargs -I {} cp {} .
 
 # Runner
 FROM base AS runner

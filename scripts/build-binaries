@@ -3,37 +3,31 @@ set -eu
 
 root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 
+# --- pinned monad-execution submodule ---
 if [ ! -f "$root_dir/monad-execution/CMakeLists.txt" ]; then
   echo "Initializing the pinned monad-execution submodule..." >&2
   git -C "$root_dir" submodule update --init --recursive monad-execution
 fi
 
-if [ ! -f "$root_dir/monad-execution/CMakeLists.txt" ]; then
-  echo "monad-execution was not initialized successfully" >&2
-  exit 2
-fi
-
-# Same compiler set and tuning the Jenkins builder image uses.
+# --- toolchain (matches .github/workflows/rust.yml and docker/builder) ---
 export CC="${CC:-gcc-15}"
 export CXX="${CXX:-g++-15}"
 export ASMFLAGS="${ASMFLAGS:--march=haswell}"
 export CFLAGS="${CFLAGS:--march=haswell}"
 export RUSTFLAGS="${RUSTFLAGS:--C force-frame-pointers=yes -C target-cpu=haswell}"
 export TRIEDB_TARGET="${TRIEDB_TARGET:-triedb_driver}"
+# Not exported: each build below sets CXXFLAGS itself.
 cxxflags="${CXXFLAGS:--march=haswell}"
 
-if [ -z "${GIT_COMMIT_HASH:-}" ]; then
-  GIT_COMMIT_HASH=$(git -C "$root_dir" rev-parse --short=7 HEAD 2>/dev/null || true)
+# --- version stamping ---
+# monad-node and monad-rpc read MONAD_VERSION at compile time via option_env!.
+if [ -z "${MONAD_VERSION:-}" ] && [ -n "${PACKAGE_VERSION:-}" ]; then
+  export MONAD_VERSION="$PACKAGE_VERSION"
 fi
-export GIT_COMMIT_HASH
-export MONAD_VERSION="${MONAD_VERSION:-}"
-export GIT_TAG_VERSION="${GIT_TAG_VERSION:-$MONAD_VERSION}"
 
 cd "$root_dir"
 
-# The QUILL define compiles quill logging out of the execution library that is
-# embedded in the node binaries; the standalone execution binaries built by
-# CMake below deliberately keep their logging.
+# --- rust binaries ---
 CXXFLAGS="$cxxflags -DQUILL_ACTIVE_LOG_LEVEL=QUILL_LOG_LEVEL_CRITICAL" \
 cargo build --locked --release \
   --bin monad-node \
@@ -50,10 +44,12 @@ cargo build --locked --release \
   --example sign-name-record \
   --example txgen
 
+# --- standalone execution binaries (cmake) ---
 CXXFLAGS="$cxxflags" \
 cmake -S monad-execution -B monad-execution/build \
   -G "${CMAKE_GENERATOR:-Ninja}" \
   -DCMAKE_TOOLCHAIN_FILE:STRING="$root_dir/monad-execution/category/core/toolchains/gcc-avx2.cmake" \
   -DCMAKE_BUILD_TYPE:STRING="${CMAKE_BUILD_TYPE:-RelWithDebInfo}" \
   -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE
+
 cmake --build monad-execution/build --target all

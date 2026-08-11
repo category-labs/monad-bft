@@ -97,7 +97,7 @@ RUN ASMFLAGS="-march=haswell" CFLAGS="-march=haswell -fno-omit-frame-pointer" CX
     mv target/release/examples/triedb-bench triedb-bench && \
     mv target/release/examples/sign-name-record sign-name-record && \
     cp `ls -Lt $(find target/release | grep -e "libtriedb_driver.so")` . && \
-    ldd $(ls -Lt $(find target/release | grep -e "libtriedb_driver.so")) | docker/filter-dependent-shared-objects.py | xargs -I {} cp {} .
+    ldd $(ls -Lt $(find target/release | grep -e "libtriedb_driver.so")) | scripts/filter-dependent-shared-objects.py | xargs -I {} cp {} .
 
 # Runner
 FROM base AS runner

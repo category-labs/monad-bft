@@ -2,31 +2,28 @@
 set -eu
 
 root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-version=${PACKAGE_VERSION:-}
 output_dir=${DEB_OUTPUT_DIR:-"$root_dir/dist"}
 strip_symbols=${STRIP_SYMBOLS:-0}
 stage_dir="$root_dir/target/debian/monad"
 
-if [ -z "$version" ]; then
-  sha=$(git -C "$root_dir" rev-parse --short=12 HEAD)
-  timestamp=$(git -C "$root_dir" log -1 --format=%cd --date=format:%Y%m%d%H%M)
-  version="0.0-${timestamp}-${sha}"
-fi
-
+# --- version ---
+version=${PACKAGE_VERSION:-$("$root_dir/scripts/package-version")}
 case "$version" in
   *[!0-9A-Za-z.+:~\-]*) echo "Invalid Debian version: $version" >&2; exit 2 ;;
 esac
 
-MONAD_VERSION="$version" GIT_TAG_VERSION="$version" "$root_dir/scripts/build-binaries"
-
 cd "$root_dir"
+
+# --- build ---
+PACKAGE_VERSION="$version" "$root_dir/scripts/build-binaries"
+
+# --- stage binaries ---
 rm -rf "$stage_dir"
 mkdir -p "$stage_dir/DEBIAN" "$stage_dir/usr/local/bin" "$stage_dir/usr/local/lib"
 
 # Install binaries under the names the fleet expects: the ledger-tail,
 # sign-name-record, and txgen examples gain a monad- prefix.
 while read -r source name; do
-  [ -n "$source" ] || continue
   install -m 0755 "$source" "$stage_dir/usr/local/bin/$name"
 done <<EOF
 target/release/monad-node monad-node
@@ -47,35 +44,38 @@ monad-execution/build/cmd/monad monad
 monad-execution/build/cmd/monad-cli monad-cli
 EOF
 
-# Shared objects produced by the Cargo build scripts. The patterns can match
-# more than one build directory when target/ carries older builds; take the
-# most recently modified match.
-for pattern in \
-  'target/release/build/monad-cxx-*/out/build/libmonad_execution.so' \
-  'target/release/build/monad-triedb-*/out/build/libtriedb_driver.so' \
-  'target/release/build/monad-triedb-*/out/build/monad-execution-build/third_party/ethash/lib/keccak/libkeccak.so' \
-  'target/release/build/monad-cxx-*/out/build/third_party/silkpre/libsecp256k1.so' \
-  'target/release/build/monad-cxx-*/out/build/third_party/BLAKE3/c/libblake3.so.0' \
-  'target/release/build/monad-cxx-*/out/build/third_party/c-kzg-4844-builder/libc-kzg-4844.so' \
-  'target/release/build/monad-cxx-*/out/build/third_party/silkpre/lib/libsilkpre.so'
-do
-  library=$(ls -1t $pattern 2>/dev/null | head -n 1)
-  if [ -z "$library" ]; then
-    echo "No files matching: $pattern" >&2
-    exit 2
-  fi
-  cp "$library" "$stage_dir/usr/local/lib/"
-done
+# --- stage libraries ---
+# Ship libtriedb_driver.so plus its link closure of build-script-produced
+# shared objects (the patched Boost.Fiber and friends), same as the Docker
+# images. A blanket copy of target/release/build would also pick up stale
+# libraries left behind in cached/incremental target directories.
+triedb=$(find target/release -name 'libtriedb_driver.so' -exec ls -Lt {} + | head -n 1)
+test -n "$triedb" || { echo "libtriedb_driver.so not found under target/release" >&2; exit 2; }
+cp "$triedb" "$stage_dir/usr/local/lib/"
+ldd "$triedb" | scripts/filter-dependent-shared-objects.py | sort -u \
+  | xargs -I {} cp {} "$stage_dir/usr/local/lib/"
 
 if [ "$strip_symbols" = 1 ]; then
   find "$stage_dir/usr/local/bin" -type f -exec strip --strip-all {} \;
   find "$stage_dir/usr/local/lib" -type f -name '*.so*' -exec strip --strip-unneeded {} \;
 fi
 
-cp -a debian/. "$stage_dir/"
+# --- check linkage ---
+# Refuse to ship a package whose binaries cannot start; anything not bundled is
+# expected from the declared Depends, which the build image also has installed.
+for binary in "$stage_dir"/usr/local/bin/*; do
+  if unresolved=$(LD_LIBRARY_PATH="$stage_dir/usr/local/lib" ldd "$binary" | grep 'not found'); then
+    echo "Unresolved shared libraries for $binary:" >&2
+    echo "$unresolved" >&2
+    exit 2
+  fi
+done
 
+# --- debian metadata ---
+cp -a debian/. "$stage_dir/"
 sed -e "s/@PACKAGE_VERSION@/$version/" debian/DEBIAN/control.in > "$stage_dir/DEBIAN/control"
 rm "$stage_dir/DEBIAN/control.in"
-chmod 0755 "$stage_dir"/DEBIAN/preinst "$stage_dir"/DEBIAN/postinst "$stage_dir"/DEBIAN/prerm "$stage_dir"/DEBIAN/postrm
+
+# --- package ---
 mkdir -p "$output_dir"
 dpkg-deb --root-owner-group --build "$stage_dir" "$output_dir/monad_${version}_amd64.deb"
