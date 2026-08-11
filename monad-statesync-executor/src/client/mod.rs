@@ -198,6 +198,9 @@ impl<PT: PubKey> StateSyncClient<PT> {
                                             StateSyncUpsertType::Header => {
                                                 ffi::monad_sync_type_SYNC_TYPE_UPSERT_HEADER
                                             }
+                                            StateSyncUpsertType::StoragePage => {
+                                                ffi::monad_sync_type_SYNC_TYPE_UPSERT_STORAGE_PAGE
+                                            }
                                         },
                                         upsert.data.as_ptr(),
                                         upsert.data.len() as u64,

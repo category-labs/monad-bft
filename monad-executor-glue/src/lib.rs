@@ -49,7 +49,9 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_execution_state_read::ExecutionStateRead;
-use monad_statesync_version::{MONAD_STATESYNC_MAJOR, MONAD_STATESYNC_MINOR_2};
+use monad_statesync_version::{
+    MONAD_STATESYNC_MAJOR, MONAD_STATESYNC_MINOR_2, MONAD_STATESYNC_MINOR_3,
+};
 use monad_types::{
     deserialize_pubkey, serialize_pubkey, Epoch, ExecutionProtocol, FullnodeBroadcastMode,
     LimitedVec, NodeId, Round, RouterTarget, SeqNum, Stake, UdpPriority,
@@ -1493,7 +1495,12 @@ pub const STATESYNC_VERSION_1_2: StateSyncVersion = StateSyncVersion {
     major: MONAD_STATESYNC_MAJOR,
     minor: MONAD_STATESYNC_MINOR_2,
 };
-pub const SELF_STATESYNC_VERSION: StateSyncVersion = STATESYNC_VERSION_1_2;
+// Server sends page-encoded storage leaves verbatim since this version
+pub const STATESYNC_VERSION_1_3: StateSyncVersion = StateSyncVersion {
+    major: MONAD_STATESYNC_MAJOR,
+    minor: MONAD_STATESYNC_MINOR_3,
+};
+pub const SELF_STATESYNC_VERSION: StateSyncVersion = STATESYNC_VERSION_1_3;
 pub const STATESYNC_VERSION_MIN: StateSyncVersion = STATESYNC_VERSION_1_2;
 
 #[derive(
@@ -1582,6 +1589,7 @@ pub enum StateSyncUpsertType {
     AccountDelete,
     StorageDelete,
     Header,
+    StoragePage,
 }
 
 #[serde_as]
@@ -1625,6 +1633,10 @@ impl Encodable for StateSyncUpsertType {
                 let enc: [&dyn Encodable; 1] = [&6u8];
                 encode_list::<_, dyn Encodable>(&enc, out);
             }
+            Self::StoragePage => {
+                let enc: [&dyn Encodable; 1] = [&7u8];
+                encode_list::<_, dyn Encodable>(&enc, out);
+            }
         }
     }
 
@@ -1647,6 +1659,7 @@ impl Decodable for StateSyncUpsertType {
             4 => Self::AccountDelete,
             5 => Self::StorageDelete,
             6 => Self::Header,
+            7 => Self::StoragePage,
             _ => {
                 return Err(alloy_rlp::Error::Custom(
                     "failed to decode unknown StateSyncUpsertType",
@@ -2443,7 +2456,7 @@ where
 mod tests {
     use std::{net::Ipv4Addr, num::NonZeroU16};
 
-    use alloy_rlp::{encode_list, Encodable};
+    use alloy_rlp::{encode_list, Decodable, Encodable};
     use bytes::Bytes;
     use monad_blocksync::messages::message::BlockSyncRequestMessage;
     use monad_consensus_types::block::BlockRange;
@@ -2462,7 +2475,7 @@ mod tests {
         BlockSyncEvent, MempoolEvent, MonadEvent, PeerEntry, PeerEntryAddress, StateSyncEvent,
         StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse, StateSyncUpsertType,
         StateSyncUpsertV1, StateSyncVersion, SELF_STATESYNC_VERSION, STATESYNC_VERSION_1_2,
-        STATESYNC_VERSION_MIN,
+        STATESYNC_VERSION_1_3, STATESYNC_VERSION_MIN,
     };
 
     type TestSignature = NopSignature;
@@ -2516,6 +2529,22 @@ mod tests {
     fn statesync_version_ord() {
         assert!(StateSyncVersion { major: 1, minor: 1 } < STATESYNC_VERSION_1_2);
         assert!(STATESYNC_VERSION_1_2 < StateSyncVersion { major: 2, minor: 0 });
+    }
+
+    #[test]
+    fn storage_page_upsert_type_roundtrips() {
+        let encoded = alloy_rlp::encode(StateSyncUpsertType::StoragePage);
+        let decoded = StateSyncUpsertType::decode(&mut encoded.as_slice()).unwrap();
+        assert!(decoded == StateSyncUpsertType::StoragePage);
+    }
+
+    #[test]
+    fn page_passthrough_version_is_self() {
+        assert!(STATESYNC_VERSION_1_2 < STATESYNC_VERSION_1_3);
+        assert!(SELF_STATESYNC_VERSION == STATESYNC_VERSION_1_3);
+        assert!(STATESYNC_VERSION_1_3.is_compatible());
+        // Adding v3 must not raise MIN: deployed peers still speak v2.
+        assert!(STATESYNC_VERSION_MIN == STATESYNC_VERSION_1_2);
     }
 
     fn make_response(
