@@ -22,7 +22,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use monad_leanudp::{
     Clock, Config, Decoder, Encoder, FragmentPolicy, IdentityScore, PacketHeader,
-    MAX_CONCURRENT_MESSAGES_PER_IDENTITY,
+    MAX_CONCURRENT_MESSAGES_PER_DEDICATED_IDENTITY, MAX_CONCURRENT_MESSAGES_PER_IDENTITY,
 };
 
 #[derive(Clone, Copy)]
@@ -56,6 +56,7 @@ fn make_config(max_regular_messages: usize) -> Config {
         max_priority_messages: 100,
         max_regular_messages,
         max_messages_per_identity: MAX_CONCURRENT_MESSAGES_PER_IDENTITY,
+        max_messages_per_dedicated_identity: MAX_CONCURRENT_MESSAGES_PER_DEDICATED_IDENTITY,
         message_timeout: Duration::from_secs(60),
         max_fragment_payload: 1440,
     }

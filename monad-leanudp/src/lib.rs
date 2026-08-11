@@ -28,6 +28,8 @@ pub const LEANUDP_HEADER_SIZE: usize = PacketHeader::SIZE;
 pub(crate) const LEANUDP_PROTOCOL_VERSION: u8 = 1;
 /// Default in-flight messages per identity.
 pub const MAX_CONCURRENT_MESSAGES_PER_IDENTITY: usize = 100;
+/// Default in-flight messages reserved for each dedicated identity.
+pub const MAX_CONCURRENT_MESSAGES_PER_DEDICATED_IDENTITY: usize = 10;
 
 const DEFAULT_MESSAGE_TIMEOUT: Duration = Duration::from_millis(100);
 
@@ -111,6 +113,7 @@ pub struct Config {
     pub max_priority_messages: usize,
     pub max_regular_messages: usize,
     pub max_messages_per_identity: usize,
+    pub max_messages_per_dedicated_identity: usize,
     pub message_timeout: Duration,
     /// Max fragment size on wire (including LeanUDP header). Defaults to 1440.
     pub max_fragment_payload: usize,
@@ -122,6 +125,10 @@ impl Config {
         assert!(
             self.max_messages_per_identity > 0,
             "max_messages_per_identity must be > 0"
+        );
+        assert!(
+            self.max_messages_per_dedicated_identity > 0,
+            "max_messages_per_dedicated_identity must be > 0"
         );
         assert!(
             !self.message_timeout.is_zero(),
@@ -166,6 +173,7 @@ impl Default for Config {
             max_priority_messages: 2_048,
             max_regular_messages: 1_024,
             max_messages_per_identity: MAX_CONCURRENT_MESSAGES_PER_IDENTITY,
+            max_messages_per_dedicated_identity: MAX_CONCURRENT_MESSAGES_PER_DEDICATED_IDENTITY,
             message_timeout: DEFAULT_MESSAGE_TIMEOUT,
             max_fragment_payload: 1440, // MTU(1500) - IP(20) - UDP(8) - WireAuth(32)
         }
