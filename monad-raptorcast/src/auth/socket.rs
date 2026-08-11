@@ -26,6 +26,7 @@ use monad_crypto::certificate_signature::PubKey;
 use monad_dataplane::{UdpSocketHandle, UnicastMsg};
 use monad_executor::{ExecutorMetrics, ExecutorMetricsChain};
 use monad_peer_discovery::NameRecord;
+use monad_peer_score::IdentityScore;
 use monad_types::{NodeId, UdpPriority};
 use thiserror::Error;
 use tokio::time::Sleep;
@@ -33,7 +34,7 @@ use tracing::{debug, trace, warn};
 use zerocopy::IntoBytes;
 
 use super::{
-    framing::AuthPacketFramer,
+    framing::{AuthPacketFramer, LeanUdpFramer},
     metrics::{
         init_socket_executor_metrics, GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_READ,
         GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_WRITTEN,
@@ -715,6 +716,19 @@ where
 
     pub fn metrics(&self) -> ExecutorMetricsChain<'_> {
         self.socket.metrics().chain(self.framer.metrics())
+    }
+}
+
+impl<AP, S> FramedAuthenticatedSocketHandle<AP, LeanUdpFramer<NodeId<AP::PublicKey>, S>>
+where
+    AP: AuthenticationProtocol,
+    S: IdentityScore<Identity = NodeId<AP::PublicKey>>,
+{
+    pub fn set_dedicated_identities(
+        &mut self,
+        identities: impl IntoIterator<Item = NodeId<AP::PublicKey>>,
+    ) {
+        self.framer.set_dedicated_identities(identities);
     }
 }
 

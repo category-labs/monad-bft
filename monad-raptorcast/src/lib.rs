@@ -379,6 +379,17 @@ where
         self.dedicated_full_nodes = nodes;
     }
 
+    fn update_direct_udp_validator_pools(&mut self) {
+        let validators = [self.current_epoch, self.current_epoch + Epoch(1)]
+            .into_iter()
+            .filter_map(|epoch| self.epoch_validators.get(&epoch))
+            .flat_map(|validator_set| validator_set.get_members().keys().copied());
+
+        if let Some(transport) = self.direct_udp_transport.as_mut() {
+            transport.set_dedicated_identities(validators);
+        }
+    }
+
     // Used only in tests
     pub fn get_full_node_groups(&self) -> &FullNodeGroupMap<CertificateSignaturePubKey<ST>> {
         &self.full_node_groups
@@ -1042,6 +1053,7 @@ where
                         self.current_epoch = epoch;
 
                         self.epoch_validators.retain(|e, _| *e + Epoch(1) >= epoch);
+                        self.update_direct_udp_validator_pools();
                     }
 
                     self.udp_state.update_current_round(round);
@@ -1086,6 +1098,7 @@ where
                         let removed = self.epoch_validators.insert(epoch, validators.clone());
                         assert!(removed.is_none());
                     }
+                    self.update_direct_udp_validator_pools();
 
                     self.proposer_schedule
                         .insert_epoch(epoch, epoch_start, validators);

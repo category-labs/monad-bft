@@ -21,7 +21,7 @@ use std::{
 
 use bytes::{Bytes, BytesMut};
 use indexmap::IndexMap;
-use monad_executor::MetricDef;
+use monad_executor::{Gauge, MetricDef};
 use rand::{CryptoRng, Rng as _, RngCore};
 
 use crate::{
@@ -79,6 +79,7 @@ impl MessageState {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct PoolConfig {
     max_messages: usize,
     max_message_size: usize,
@@ -130,9 +131,13 @@ where
     I: Eq + Hash + Clone + Ord,
 {
     pub(crate) fn new(config: &Config) -> Self {
+        Self::with_limit(config.max_messages_per_identity)
+    }
+
+    pub(crate) fn with_limit(max_messages_per_identity: usize) -> Self {
         Self {
             message_counts: HashMap::new(),
-            max_messages_per_identity: config.max_messages_per_identity,
+            max_messages_per_identity,
         }
     }
 
@@ -186,10 +191,16 @@ where
     cfg: PoolConfig,
     rng: R,
     identity_usage: IdentityUsage<I>,
+    messages_gauge: Gauge,
 }
 
 impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
-    pub(crate) fn new(cfg: PoolConfig, rng: R, identity_usage: IdentityUsage<I>) -> Self {
+    pub(crate) fn new(
+        cfg: PoolConfig,
+        rng: R,
+        identity_usage: IdentityUsage<I>,
+        messages_gauge: Gauge,
+    ) -> Self {
         Self {
             messages: IndexMap::new(),
             eviction_index: BTreeSet::new(),
@@ -197,6 +208,7 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
             cfg,
             rng,
             identity_usage,
+            messages_gauge,
         }
     }
 
@@ -262,6 +274,7 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
         let deadline = now + self.cfg.message_timeout;
         self.messages
             .insert(key.clone(), MessageState::new(deadline));
+        self.messages_gauge.inc();
         self.eviction_index.insert((deadline, key.clone()));
         self.eviction_index_by_identity
             .entry(key.0.clone())
@@ -409,6 +422,7 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
 
     fn remove_message(&mut self, key: &(I, u16)) -> Option<MessageState> {
         let state = self.messages.swap_remove(key)?;
+        self.messages_gauge.dec();
         let deadline = state.eviction_deadline;
         let _ = self.eviction_index.remove(&(deadline, key.clone()));
         let mut should_remove_identity = false;
@@ -424,9 +438,15 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
         self.identity_usage.decrement_identity_count(&key.0);
         Some(state)
     }
+}
 
-    pub(crate) fn message_count(&self) -> usize {
-        self.messages.len()
+impl<I, R> Drop for MessagePool<I, R>
+where
+    I: Eq + Hash + Clone + Ord,
+    R: CryptoRng + RngCore,
+{
+    fn drop(&mut self) {
+        self.messages_gauge.sub(self.messages.len() as u64);
     }
 }
 
@@ -443,6 +463,9 @@ mod tests {
             PoolConfig::from_config(&config, config.max_regular_messages),
             StdRng::seed_from_u64(1),
             IdentityUsage::new(&config),
+            init_decoder_metrics()
+                .gauge(GAUGE_LEANUDP_POOL_REGULAR_MESSAGES)
+                .clone(),
         );
         let identity = 7u64;
         let msg_id = 11u16;
