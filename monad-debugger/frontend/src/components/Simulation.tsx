@@ -9,6 +9,7 @@ import { throttle } from '@solid-primitives/scheduled';
 const maxTick = 2000;
 const simThrottleMs = 16;
 const simTimeScale = 1/40;
+const playbackSpeeds = [0.25, 0.5, 1, 2];
 
 const Sim: Component = () => {
     const simulation = new Simulation();
@@ -58,11 +59,12 @@ const Sim: Component = () => {
     });
 
     const [playing, setPlaying] = createSignal(false);
+    const [playbackSpeed, setPlaybackSpeed] = createSignal(1);
     let lastTimeMs = Date.now();
     let animationId;
     const animate = (currentTimeMs: number) => {
         if (playing()) {
-            const scaledDiff = (currentTimeMs - lastTimeMs) * simTimeScale;
+            const scaledDiff = (currentTimeMs - lastTimeMs) * simTimeScale * playbackSpeed();
             setVizTick(Math.min(maxTick, vizTick() + scaledDiff));
         }
         lastTimeMs = currentTimeMs;
@@ -75,6 +77,14 @@ const Sim: Component = () => {
 
     const resetSimulation = () => {
         simulation.reset();
+        setPlaying(false);
+        setVizTick(0);
+        setBlockSamples([]);
+        refreshSimulationData();
+    };
+
+    const restartSimulation = () => {
+        simulation.restart();
         setPlaying(false);
         setVizTick(0);
         setBlockSamples([]);
@@ -96,6 +106,17 @@ const Sim: Component = () => {
                     onInput={e => setVizTick(parseInt(e.currentTarget.value))}
                 />
                 <div class="flex items-center gap-2">
+                    <label class="flex h-8 items-center gap-1 rounded-md border border-neutral-400 px-2 text-sm" title="Playback speed">
+                        <span class="sr-only">Playback speed</span>
+                        <select
+                            class="bg-transparent font-medium outline-none"
+                            value={playbackSpeed()}
+                            onChange={(e) => setPlaybackSpeed(Number(e.currentTarget.value))}
+                            aria-label="Playback speed"
+                        >
+                            {playbackSpeeds.map((speed) => <option value={speed}>{speed}×</option>)}
+                        </select>
+                    </label>
                     <Show
                         when={!playing()}
                         fallback={
@@ -104,7 +125,8 @@ const Sim: Component = () => {
                         >
                         <button class="h-8 rounded-md border border-neutral-400 px-3 text-sm font-medium hover:bg-neutral-100" onClick={() => setPlaying(true)}>Play</button>
                     </Show>
-                    <button class="h-8 rounded-md border border-neutral-400 px-3 text-sm font-medium hover:bg-neutral-100" onClick={resetSimulation}>Reset</button>
+                    <button class="h-8 rounded-md border border-neutral-400 px-3 text-sm font-medium hover:bg-neutral-100" onClick={restartSimulation} title="Restart from the beginning with the current network configuration">Restart</button>
+                    <button class="h-8 rounded-md border border-neutral-400 px-3 text-sm font-medium hover:bg-neutral-100" onClick={resetSimulation} title="Reset the simulation and network configuration">Reset</button>
                     <button
                         class={`h-8 rounded-md border px-3 text-sm font-medium ${showMatrix() ? "border-indigo-500 bg-indigo-50 text-indigo-700" : "border-neutral-400 hover:bg-neutral-100"}`}
                         onClick={() => setShowMatrix((show) => !show)}

@@ -63,6 +63,10 @@ export class Simulation {
         monad.simulation_reset(this.simulation);
     }
 
+    public restart() {
+        monad.simulation_restart(this.simulation);
+    }
+
     public setDefaultLatency(latencyMs: number) {
         this.command(monad.simulation_set_default_latency(this.simulation, latencyMs));
     }

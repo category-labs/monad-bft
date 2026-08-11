@@ -145,6 +145,12 @@ pub fn simulation_reset(ptr: *mut Simulation) {
 
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[wasm_bindgen]
+pub fn simulation_restart(ptr: *mut Simulation) {
+    unsafe { &mut *ptr }.restart()
+}
+
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[wasm_bindgen]
 pub fn simulation_set_default_latency(ptr: *mut Simulation, latency_ms: i32) -> String {
     serialize_result(unsafe { &mut *ptr }.set_default_latency(latency_ms))
 }

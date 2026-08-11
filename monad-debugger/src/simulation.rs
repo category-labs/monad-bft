@@ -51,6 +51,7 @@ pub struct Simulation {
     )>,
     event_cache_size: usize,
     pub(crate) network_config: NetworkConfig,
+    network_baseline: NetworkConfig,
     pub(crate) network_command_log: Vec<NetworkCommand>,
     applied_network_commands: BTreeSet<u64>,
     next_network_command_sequence: u64,
@@ -62,6 +63,7 @@ impl Simulation {
     pub fn new(config: Box<dyn Fn() -> SwarmBuilder<DebugSwarmRelation>>) -> Self {
         let mut swarm = config().build();
         let network_config = Self::default_network_config(&swarm);
+        let network_baseline = network_config.clone();
         Self::install_network_pipeline(&mut swarm, &network_config);
 
         Self {
@@ -70,6 +72,7 @@ impl Simulation {
             event_log: Default::default(),
             event_cache_size: 100,
             network_config,
+            network_baseline,
             network_command_log: Vec::new(),
             applied_network_commands: BTreeSet::new(),
             next_network_command_sequence: 0,
@@ -99,6 +102,19 @@ impl Simulation {
     }
 
     pub fn reset(&mut self) {
+        self.network_command_log.clear();
+        self.applied_network_commands.clear();
+        self.next_network_command_sequence = 0;
+        self.swarm = (self.config)().build();
+        self.network_baseline = Self::default_network_config(&self.swarm);
+        self.network_config = self.network_baseline.clone();
+        Self::install_network_pipeline(&mut self.swarm, &self.network_config);
+        self.event_log.clear();
+        self.current_tick = Duration::ZERO;
+    }
+
+    pub fn restart(&mut self) {
+        self.network_baseline = self.network_config.clone();
         self.network_command_log.clear();
         self.applied_network_commands.clear();
         self.next_network_command_sequence = 0;
@@ -197,7 +213,7 @@ impl Simulation {
     fn rebuild_swarm(&mut self) {
         self.event_log.clear();
         self.swarm = (self.config)().build();
-        self.network_config = Self::default_network_config(&self.swarm);
+        self.network_config = self.network_baseline.clone();
         self.applied_network_commands.clear();
         Self::install_network_pipeline(&mut self.swarm, &self.network_config);
         self.current_tick = Duration::ZERO;
@@ -282,7 +298,7 @@ mod tests {
     use monad_crypto::certificate_signature::PubKey;
 
     use super::{parse_node_id, Simulation};
-    use crate::default_swarm_config;
+    use crate::{default_swarm_config, network::DEFAULT_LINK_LATENCY_MS};
 
     fn node_ids(simulation: &Simulation) -> Vec<String> {
         simulation
@@ -336,6 +352,40 @@ mod tests {
         assert_eq!(
             simulation.network_config.default_latency(),
             std::time::Duration::from_millis(40)
+        );
+    }
+
+    #[test]
+    fn restart_preserves_current_network_config_as_baseline() {
+        let mut simulation = Simulation::new(Box::new(default_swarm_config));
+        let ids = node_ids(&simulation);
+
+        simulation.set_tick(std::time::Duration::from_millis(100));
+        simulation.set_default_latency(40).unwrap();
+        simulation.set_link_latency(&ids[0], &ids[1], 11).unwrap();
+        simulation.set_node_online(&ids[2], false).unwrap();
+        let configured = simulation.network_config.clone();
+
+        simulation.restart();
+        assert_eq!(simulation.current_tick, std::time::Duration::ZERO);
+        assert_eq!(simulation.network_config, configured);
+        assert!(simulation.network_command_log.is_empty());
+
+        simulation.set_tick(std::time::Duration::from_millis(200));
+        simulation.set_tick(std::time::Duration::ZERO);
+        assert_eq!(simulation.network_config, configured);
+    }
+
+    #[test]
+    fn reset_clears_restarted_network_baseline() {
+        let mut simulation = Simulation::new(Box::new(default_swarm_config));
+        simulation.set_default_latency(40).unwrap();
+        simulation.restart();
+
+        simulation.reset();
+        assert_eq!(
+            simulation.network_config.default_latency(),
+            std::time::Duration::from_millis(DEFAULT_LINK_LATENCY_MS)
         );
     }
 
