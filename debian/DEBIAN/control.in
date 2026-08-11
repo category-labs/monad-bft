@@ -4,7 +4,7 @@ Section: net
 Priority: optional
 Architecture: amd64
 Maintainer: Category Labs <engineering@category.xyz>
-Depends: libboost-context1.83.0, libboost-fiber1.83.0, libboost-fiber1.83-dev, libboost-stacktrace1.83.0, libtbb12, liburing2, libarchive-dev, libbrotli-dev, libcrypto++-dev, libhugetlbfs-dev, libhugetlbfs-bin, libmagicenum-dev, whiptail
+Depends: libarchive13t64, libboost-context1.83.0, libboost-stacktrace1.83.0, libbrotli1, libcrypto++8t64, libgmp10, libhugetlbfs-bin, libssl3t64, libtbb12, liburing2, libzstd1
 Description: Monad BFT stack
  Consensus, execution, RPC, and archive binaries with their bundled native
  libraries, systemd units, and operational scripts.
