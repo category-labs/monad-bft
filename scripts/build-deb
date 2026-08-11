@@ -70,9 +70,11 @@ fi
 
 # --- check linkage ---
 # Refuse to ship a package whose objects cannot start on a clean host: every
-# dependency must come from the stage dir or the declared Depends (which the
-# build image also has installed) — never unresolved, and never satisfied out
-# of this source tree, which RUNPATHs make possible here but no target has.
+# dependency must be bundled in the stage dir or owned by a package named in
+# Depends — never unresolved, never satisfied out of this source tree (which
+# RUNPATHs make possible here but no target has), and never provided by a
+# builder-image package the target was not told to install.
+depends=$(sed -n 's/^Depends: *//p' debian/DEBIAN/control.in | tr ',' '\n' | awk '{print $1}')
 for obj in "$stage_dir"/usr/local/bin/* "$stage_dir"/usr/local/lib/*; do
   bad=$(LD_LIBRARY_PATH="$stage_dir/usr/local/lib" ldd "$obj" \
     | grep -e 'not found' -e "=> $root_dir" | grep -v "=> $stage_dir" || true)
@@ -81,6 +83,18 @@ for obj in "$stage_dir"/usr/local/bin/* "$stage_dir"/usr/local/lib/*; do
     echo "$bad" >&2
     exit 2
   fi
+  # Only the object's direct NEEDED entries must be declared; dependencies of
+  # the declared packages themselves (e.g. libarchive's zlib) come with apt.
+  for lib in $(objdump -p "$obj" | awk '/NEEDED/ { print $2 }'); do
+    path=$(LD_LIBRARY_PATH="$stage_dir/usr/local/lib" ldd "$obj" \
+      | awk -v s="$lib" '$1 == s && $2 == "=>" { print $3 }')
+    case "$path" in ''|"$stage_dir"/*) continue ;; esac
+    owner=$(dpkg -S "$(readlink -f "$path")" 2>/dev/null | cut -d: -f1)
+    if [ -z "$owner" ] || ! printf '%s\n' "$depends" | grep -qxF "$owner"; then
+      echo "$obj needs $lib from '${owner:-no package}', which is not in Depends" >&2
+      exit 2
+    fi
+  done
 done
 
 # --- debian metadata ---
