@@ -724,6 +724,7 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
             from: request.request.from,
             until: request.request.until,
             old_target: request.request.old_target,
+            version: request.request.version.to_u32(),
         })
         .await?;
 
@@ -765,6 +766,10 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
             }
             ffi::monad_sync_type_SYNC_TYPE_UPSERT_HEADER => {
                 self.read_sync_upsert(StateSyncUpsertType::Header).await?
+            }
+            ffi::monad_sync_type_SYNC_TYPE_UPSERT_STORAGE_PAGE => {
+                self.read_sync_upsert(StateSyncUpsertType::StoragePage)
+                    .await?
             }
             ffi::monad_sync_type_SYNC_TYPE_DONE => {
                 let mut buf = [0_u8; std::mem::size_of::<ffi::monad_sync_done>()];
