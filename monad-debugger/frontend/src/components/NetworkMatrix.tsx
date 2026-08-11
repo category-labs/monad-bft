@@ -93,7 +93,7 @@ const NetworkMatrix: Component<{
             <div class="sticky top-0 z-20 border-b border-neutral-300 bg-white p-3">
                 <div class="flex items-center justify-between gap-3">
                     <div>
-                        <h2 class="text-base font-semibold leading-tight">Network Matrix</h2>
+                        <h2 class="text-base font-semibold leading-tight">Network Configuration</h2>
                         <div class="text-xs text-neutral-600">{props.data.networkCommandLog.length} commands</div>
                     </div>
                     <button

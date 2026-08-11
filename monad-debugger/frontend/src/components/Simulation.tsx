@@ -109,7 +109,7 @@ const Sim: Component = () => {
                         class={`h-8 rounded-md border px-3 text-sm font-medium ${showMatrix() ? "border-indigo-500 bg-indigo-50 text-indigo-700" : "border-neutral-400 hover:bg-neutral-100"}`}
                         onClick={() => setShowMatrix((show) => !show)}
                     >
-                        Matrix
+                        Network Config
                     </button>
                 </div>
             </header>
