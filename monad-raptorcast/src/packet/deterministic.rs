@@ -686,7 +686,6 @@ mod tests {
         MAX_MERKLE_TREE_DEPTH, MAX_SYMBOL_LEN, MIN_MERKLE_TREE_DEPTH, MIN_SYMBOL_LEN,
     };
     use crate::{
-        message::MAX_MESSAGE_SIZE,
         packet::assigner::stake_partition_num_chunks_hint,
         parser::packet_parser::RaptorcastHeaderV1,
         udp::{GroupId, MAX_NUM_PACKETS},
@@ -698,6 +697,8 @@ mod tests {
 
     type PubKeyType = CertificateSignaturePubKey<ST>;
     type ST = SecpSignature;
+
+    const MAX_DETERMINISTIC_TEST_MESSAGE_SIZE: usize = 3 * 1024 * 1024;
 
     // Statically asserted properties
     const _: () = assert!(
@@ -759,7 +760,7 @@ mod tests {
 
     #[test]
     fn test_no_panic_on_valid_ranges() {
-        for app_msg_len in 1..=MAX_MESSAGE_SIZE {
+        for app_msg_len in 1..=MAX_DETERMINISTIC_TEST_MESSAGE_SIZE {
             for val_set_size in [1, 100, MAX_VALIDATOR_SET_SIZE] {
                 validate_d25_layout(app_msg_len, val_set_size);
             }
@@ -769,7 +770,7 @@ mod tests {
     #[test]
     #[ignore]
     fn test_no_panic_on_valid_ranges_slow() {
-        for app_msg_len in 1..=MAX_MESSAGE_SIZE {
+        for app_msg_len in 1..=MAX_DETERMINISTIC_TEST_MESSAGE_SIZE {
             for val_set_size in 1..=MAX_VALIDATOR_SET_SIZE {
                 validate_d25_layout(app_msg_len, val_set_size);
             }
@@ -958,7 +959,12 @@ mod tests {
 
     #[test]
     fn test_calc_tree_depth_secondary_in_range() {
-        for app_msg_len in [1_usize, 1024, 64 * 1024, MAX_MESSAGE_SIZE] {
+        for app_msg_len in [
+            1_usize,
+            1024,
+            64 * 1024,
+            MAX_DETERMINISTIC_TEST_MESSAGE_SIZE,
+        ] {
             let depth =
                 calc_tree_depth_secondary(EncodingScheme::Deterministic25(Round(0)), app_msg_len)
                     .expect("should find a valid depth");
