@@ -129,7 +129,7 @@ const CHAIN_PARAMS_V_0_11_0: ChainParams = chain_params! {
 const CHAIN_PARAMS_V_0_12_0: ChainParams = chain_params! {
     tx_limit: 3_750,
     proposal_gas_limit: 150_000_000,
-    proposal_byte_limit: 1_500_000,
+    proposal_byte_limit: 3 * 1024 * 1024,
     max_reserve_balance: 10_000_000_000_000_000_000, // 10 MON
     vote_pace: Duration::from_millis(300),
 };
@@ -138,7 +138,12 @@ const CHAIN_PARAMS_V_0_12_0: ChainParams = chain_params! {
 
 #[cfg(test)]
 mod test {
-    use crate::revision::MonadChainRevision;
+    use crate::revision::{MonadChainRevision, CHAIN_PARAMS_LATEST};
+
+    #[test]
+    fn latest_proposal_byte_limit_is_3_mib() {
+        assert_eq!(CHAIN_PARAMS_LATEST.proposal_byte_limit, 3 * 1024 * 1024);
+    }
 
     #[test]
     fn chain_revision_ord() {
