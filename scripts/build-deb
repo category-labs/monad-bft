@@ -45,12 +45,12 @@ monad-execution/build/cmd/monad-cli monad-cli
 EOF
 
 # --- stage libraries ---
-# Bundle libtriedb_driver.so — dlopen()ed at runtime, so no dependency walk
-# finds it — plus everything the binaries or the driver resolve from inside
-# this source tree: those are build products no target host has. ldd reports
-# the transitive closure, so one pass suffices; dpkg-shlibdeps below fails
-# the build if anything is neither bundled nor owned by a package, so a miss
-# here cannot ship.
+# Bundle libtriedb_driver.so, which is loaded with dlopen at runtime and so
+# never appears as a declared dependency, plus every library that the staged
+# binaries or the driver resolve from inside this source tree. Those are
+# build products the target host does not have. ldd lists dependencies
+# transitively, so one pass is enough, and dpkg-shlibdeps below fails the
+# build if anything is missed here.
 triedb=$(find target/release -name 'libtriedb_driver.so' -exec ls -Lt {} + | head -n 1)
 test -n "$triedb" || { echo "libtriedb_driver.so not found under target/release" >&2; exit 2; }
 cp "$triedb" "$stage_dir/usr/local/lib/"
@@ -64,12 +64,17 @@ if [ "$strip_symbols" = 1 ]; then
 fi
 
 # --- check linkage & compute library dependencies ---
-# dpkg-shlibdeps resolves every NEEDED entry of the staged objects: bundled
-# libraries are recognized as ours via the debian/monad stage layout, system
-# libraries become versioned Depends entries, and anything unresolvable or
-# owned by no package fails the build. Build-tree RUNPATHs would let it (and
-# the dynamic loader here) resolve libraries no target has, and are dead
-# weight on targets that use ldconfig anyway, so drop them first.
+# Strip build-tree runpaths, then run dpkg-shlibdeps to generate Depends.
+#
+# For every library our binaries need, dpkg-shlibdeps locates the file and
+# maps it to a package: our own libraries (such as libtriedb_driver.so)
+# resolve inside the debian/monad staging tree and need no Depends entry;
+# system libraries become versioned Depends. Anything it can't attribute to
+# a package fails the build.
+#
+# Runpaths into the build tree have to go first, or a library that's absent
+# on the target host still resolves here and the check passes wrongly.
+# Installed binaries find their libraries through ldconfig instead.
 find "$stage_dir/usr/local/bin" "$stage_dir/usr/local/lib" -type f \
   -exec patchelf --remove-rpath {} \;
 printf 'Source: monad\n\nPackage: monad\nArchitecture: amd64\nDescription: stub\n' \
