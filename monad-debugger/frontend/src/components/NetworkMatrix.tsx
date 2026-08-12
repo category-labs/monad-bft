@@ -6,8 +6,6 @@ type NetworkLink = SimulationQuery["networkConfig"]["links"][number];
 
 const pairKey = (fromId: string, toId: string) => `${fromId}:${toId}`;
 
-const shortNodeId = (id: string) => `${id.slice(0, 6)}...${id.slice(-4)}`;
-
 const parseLatency = (value: string): number | undefined => {
     const latency = Number.parseInt(value, 10);
     if (!Number.isFinite(latency) || latency <= 0) {
@@ -137,8 +135,8 @@ const NetworkMatrix: Component<{
                         <th class="border-b border-r border-neutral-300 bg-white p-2 text-left font-medium">
                             from / to
                         </th>
-                        <For each={nodes()}>{(node, idx) => (
-                            <th class="border-b border-neutral-300 bg-white p-2 text-center font-medium" title={node.id}>
+                        <For each={nodes()}>{(_, idx) => (
+                            <th class="border-b border-neutral-300 bg-white p-2 text-center font-medium">
                                 N{idx() + 1}
                             </th>
                         )}</For>
@@ -147,9 +145,8 @@ const NetworkMatrix: Component<{
                 <tbody>
                     <For each={nodes()}>{(fromNode, rowIdx) => (
                         <tr>
-                            <th class="border-b border-r border-neutral-300 bg-white p-2 text-left font-medium" title={fromNode.id}>
-                                <div>N{rowIdx() + 1}</div>
-                                <div class="text-xs font-normal text-neutral-500">{shortNodeId(fromNode.id)}</div>
+                            <th class="border-b border-r border-neutral-300 bg-white p-2 text-left font-medium">
+                                N{rowIdx() + 1}
                             </th>
                             <For each={nodes()}>{(toNode) => (
                                 <Show

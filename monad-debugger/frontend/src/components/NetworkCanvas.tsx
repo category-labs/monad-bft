@@ -319,19 +319,6 @@ const linkMode = (pair: LinkPair): LinkMode => {
     return "neither";
 };
 
-const nextLinkMode = (mode: LinkMode): LinkMode => {
-    switch (mode) {
-        case "both":
-            return "forward";
-        case "forward":
-            return "reverse";
-        case "reverse":
-            return "neither";
-        case "neither":
-            return "both";
-    }
-};
-
 const NetworkCanvas: Component<{
     simulation: Simulation,
     data: SimulationQuery,
@@ -348,7 +335,16 @@ const NetworkCanvas: Component<{
     const [showBlockView, setShowBlockView] = createSignal(true);
     const [showMessageFilters, setShowMessageFilters] = createSignal(false);
     const [messageFilters, setMessageFilters] = createSignal<Record<MessageFilterKey, boolean>>(defaultMessageFilters);
+    const [hoveredLinkKey, setHoveredLinkKey] = createSignal<string>();
+    const [draggingNodeId, setDraggingNodeId] = createSignal<string>();
     const lastCommittedPosition = new Map<string, Position>();
+    let linkHoverClearTimer: number | undefined;
+
+    onCleanup(() => {
+        if (linkHoverClearTimer !== undefined) {
+            window.clearTimeout(linkHoverClearTimer);
+        }
+    });
 
     const networkNodes = () => props.data.networkConfig.nodes;
     const simNodes = () => props.data.nodes;
@@ -479,10 +475,31 @@ const NetworkCanvas: Component<{
         }
     };
 
-    const cycleLinkMode = (event: Event, pair: LinkPair) => {
+    const togglePairConnection = (event: Event, pair: LinkPair) => {
         event.preventDefault();
         event.stopPropagation();
-        applyLinkMode(pair, nextLinkMode(linkMode(pair)));
+        applyLinkMode(pair, linkMode(pair) === "neither" ? "both" : "neither");
+    };
+
+    const showLinkAction = (pair: LinkPair) => {
+        if (linkHoverClearTimer !== undefined) {
+            window.clearTimeout(linkHoverClearTimer);
+            linkHoverClearTimer = undefined;
+        }
+        setHoveredLinkKey(pairKey(pair.fromId, pair.toId));
+    };
+
+    const hideLinkAction = (pair: LinkPair) => {
+        if (linkHoverClearTimer !== undefined) {
+            window.clearTimeout(linkHoverClearTimer);
+        }
+        const key = pairKey(pair.fromId, pair.toId);
+        linkHoverClearTimer = window.setTimeout(() => {
+            if (hoveredLinkKey() === key) {
+                setHoveredLinkKey(undefined);
+            }
+            linkHoverClearTimer = undefined;
+        }, 100);
     };
 
     const mergedLedger = createMemo(() => {
@@ -693,6 +710,7 @@ const NetworkCanvas: Component<{
             return;
         }
         dragState.dragging = true;
+        setDraggingNodeId(dragState.nodeId);
         const point = canvasPoint(event.clientX, event.clientY);
         const position = {
             x: clamp(point.x - dragState.offset.x, topologyMin, topologyMax),
@@ -714,6 +732,7 @@ const NetworkCanvas: Component<{
         }
         const state = dragState;
         dragState = undefined;
+        setDraggingNodeId(undefined);
         try {
             (event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
         } catch {
@@ -736,6 +755,17 @@ const NetworkCanvas: Component<{
             delete next[state.nodeId];
             return next;
         });
+    };
+
+    const cancelNodePointer = (event: PointerEvent) => {
+        event.stopPropagation();
+        dragState = undefined;
+        setDraggingNodeId(undefined);
+        try {
+            (event.currentTarget as HTMLElement).releasePointerCapture(event.pointerId);
+        } catch {
+            // Pointer capture may already be released by the browser.
+        }
     };
 
     const directedLinkPoint = (
@@ -903,7 +933,8 @@ const NetworkCanvas: Component<{
                                     stroke="transparent"
                                     strokeWidth={28}
                                     onPointerDown={(event) => event.stopPropagation()}
-                                    onClick={(event) => cycleLinkMode(event, pair)}
+                                    onPointerEnter={() => showLinkAction(pair)}
+                                    onPointerLeave={() => hideLinkAction(pair)}
                                 />
                             </>
                         </Show>
@@ -919,6 +950,8 @@ const NetworkCanvas: Component<{
                     y: ((from()?.y ?? 0) + (to()?.y ?? 0)) / 2,
                 });
                 const mode = () => linkMode(pair);
+                const linkKey = () => pairKey(pair.fromId, pair.toId);
+                const connected = () => mode() !== "neither";
                 const forward = () => linkForDirection(pair, pair.fromId, pair.toId);
                 const reverse = () => linkForDirection(pair, pair.toId, pair.fromId);
                 const label = () => {
@@ -941,31 +974,41 @@ const NetworkCanvas: Component<{
                 const labelClass = () => {
                     switch (mode()) {
                         case "both":
-                            return "border-neutral-300 bg-white/95 text-neutral-800 hover:bg-neutral-100";
+                            return "border-neutral-300 bg-white/95 text-neutral-800";
                         case "forward":
                         case "reverse":
-                            return "border-amber-400 bg-amber-50 text-amber-800 hover:bg-amber-100";
+                            return "border-amber-400 bg-amber-50 text-amber-800";
                         case "neither":
-                            return "border-red-300 bg-red-50 text-red-700 hover:bg-red-100";
+                            return "border-red-300 bg-red-50 text-red-700";
                     }
                 };
                 return (
                     <Show
                         when={from() && to()}
                     >
-                        <button
-                            type="button"
-                            class={`absolute z-10 -translate-x-1/2 -translate-y-1/2 rounded-md border px-2 py-1 text-center text-[13px] font-semibold shadow-sm ${labelClass()}`}
+                        <div
+                            class="absolute z-10 -translate-x-1/2 -translate-y-1/2"
                             style={{
                                 left: `${mid().x / 10}%`,
                                 top: `${mid().y / 10}%`,
                             }}
-                            title="Click to cycle link direction"
-                            onPointerDown={(event) => event.stopPropagation()}
-                            onClick={(event) => cycleLinkMode(event, pair)}
+                            onPointerEnter={() => showLinkAction(pair)}
+                            onPointerLeave={() => hideLinkAction(pair)}
                         >
-                            {label()}
-                        </button>
+                            <div class={`pointer-events-none rounded-md border px-2 py-1 text-center text-[13px] font-semibold shadow-sm ${labelClass()}`}>
+                                {label()}
+                            </div>
+                            <button
+                                type="button"
+                                class={`absolute left-full top-1/2 ml-1 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full border text-lg shadow-md transition focus:pointer-events-auto focus:scale-100 focus:opacity-100 ${hoveredLinkKey() === linkKey() ? "pointer-events-auto scale-100 opacity-100" : "pointer-events-none scale-75 opacity-0"} ${connected() ? "border-red-300 bg-red-50 hover:bg-red-100" : "border-emerald-300 bg-emerald-50 hover:bg-emerald-100"}`}
+                                aria-label={`${connected() ? "Cut" : "Repair"} connection between ${nodeLabel(pair.fromId)} and ${nodeLabel(pair.toId)}`}
+                                title={`${connected() ? "Cut" : "Repair"} connection between ${nodeLabel(pair.fromId)} and ${nodeLabel(pair.toId)}`}
+                                onPointerDown={(event) => event.stopPropagation()}
+                                onClick={(event) => togglePairConnection(event, pair)}
+                            >
+                                <span aria-hidden="true">{connected() ? "✂️" : "🔧"}</span>
+                            </button>
+                        </div>
                     </Show>
                 );
             }}</For>
@@ -1040,15 +1083,16 @@ const NetworkCanvas: Component<{
                 return (
                     <button
                         type="button"
-                        class={`absolute z-30 w-40 -translate-x-1/2 -translate-y-1/2 cursor-grab select-none rounded-lg text-left shadow-lg transition active:cursor-grabbing ${networkNode.online ? "" : "opacity-70"} ${isCurrentLeader() ? "ring-4 ring-indigo-400" : isNextLeader() ? "ring-2 ring-indigo-200" : ""}`}
+                        class={`group absolute z-30 w-40 -translate-x-1/2 -translate-y-1/2 cursor-grab select-none rounded-lg text-left shadow-lg transition active:cursor-grabbing ${networkNode.online ? "" : "opacity-70"} ${isCurrentLeader() ? "ring-4 ring-indigo-400" : isNextLeader() ? "ring-2 ring-indigo-200" : ""}`}
                         style={nodeStyle()}
-                        title={`${nodeLabel(networkNode.id)} ${shortNodeId(networkNode.id)}`}
+                        aria-label={`${nodeLabel(networkNode.id)} ${networkNode.online ? "live; click to take down" : "down; click to bring up"}; drag to move`}
+                        title={`${networkNode.online ? "Click to take down" : "Click to bring up"}; drag to move`}
                         onPointerDown={(event) => startNodePointer(event, networkNode)}
                         onPointerMove={moveNodePointer}
                         onPointerUp={endNodePointer}
-                        onPointerCancel={endNodePointer}
+                        onPointerCancel={cancelNodePointer}
                     >
-                        <div class={`rounded-lg border px-3 py-2 ${networkNode.online ? "border-neutral-900 bg-white" : "border-red-500 bg-red-50"}`}>
+                        <div class={`relative overflow-hidden rounded-lg border px-3 py-2 ${networkNode.online ? "border-neutral-900 bg-white" : "border-red-500 bg-red-50"}`}>
                             <div class="flex items-center justify-between gap-2">
                                 <div class="text-lg font-semibold leading-6">{nodeLabel(networkNode.id)}</div>
                                 <div class={`rounded px-1.5 py-0.5 text-xs font-semibold ${networkNode.online ? "bg-emerald-100 text-emerald-800" : "bg-red-100 text-red-800"}`}>
@@ -1073,10 +1117,16 @@ const NetworkCanvas: Component<{
                                                 </div>
                                             )}
                                         </Show>
-                                        <div class="mt-1 truncate text-xs text-neutral-500">{shortNodeId(networkNode.id)}</div>
                                     </>
                                 )}
                             </Show>
+                            <div
+                                class={`pointer-events-none absolute inset-0 flex flex-col items-center justify-center rounded-lg bg-white/90 text-center backdrop-blur-sm transition-opacity ${draggingNodeId() === networkNode.id ? "opacity-0" : "opacity-0 group-hover:opacity-100"}`}
+                                aria-hidden="true"
+                            >
+                                <span class="text-3xl leading-none">{networkNode.online ? "🔨" : "🔧"}</span>
+                                <span class="mt-1 text-xs font-bold text-neutral-800">{networkNode.online ? "Take down" : "Bring up"}</span>
+                            </div>
                         </div>
                     </button>
                 );
