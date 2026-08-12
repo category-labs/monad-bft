@@ -68,38 +68,26 @@ if [ "$strip_symbols" = 1 ]; then
   find "$stage_dir/usr/local/lib" -type f -name '*.so*' -exec strip --strip-unneeded {} \;
 fi
 
-# --- check linkage ---
-# Refuse to ship a package whose objects cannot start on a clean host: every
-# dependency must be bundled in the stage dir or owned by a package named in
-# Depends — never unresolved, never satisfied out of this source tree (which
-# RUNPATHs make possible here but no target has), and never provided by a
-# builder-image package the target was not told to install.
-depends=$(sed -n 's/^Depends: *//p' debian/DEBIAN/control.in | tr ',' '\n' | awk '{print $1}')
-for obj in "$stage_dir"/usr/local/bin/* "$stage_dir"/usr/local/lib/*; do
-  bad=$(LD_LIBRARY_PATH="$stage_dir/usr/local/lib" ldd "$obj" \
-    | grep -e 'not found' -e "=> $root_dir" | grep -v "=> $stage_dir" || true)
-  if [ -n "$bad" ]; then
-    echo "Unshippable linkage in $obj:" >&2
-    echo "$bad" >&2
-    exit 2
-  fi
-  # Only the object's direct NEEDED entries must be declared; dependencies of
-  # the declared packages themselves (e.g. libarchive's zlib) come with apt.
-  for lib in $(objdump -p "$obj" | awk '/NEEDED/ { print $2 }'); do
-    path=$(LD_LIBRARY_PATH="$stage_dir/usr/local/lib" ldd "$obj" \
-      | awk -v s="$lib" '$1 == s && $2 == "=>" { print $3 }')
-    case "$path" in ''|"$stage_dir"/*) continue ;; esac
-    owner=$(dpkg -S "$(readlink -f "$path")" 2>/dev/null | cut -d: -f1)
-    if [ -z "$owner" ] || ! printf '%s\n' "$depends" | grep -qxF "$owner"; then
-      echo "$obj needs $lib from '${owner:-no package}', which is not in Depends" >&2
-      exit 2
-    fi
-  done
-done
+# --- check linkage & compute library dependencies ---
+# dpkg-shlibdeps resolves every NEEDED entry of the staged objects: bundled
+# libraries are recognized as ours via the debian/monad stage layout, system
+# libraries become versioned Depends entries, and anything unresolvable or
+# owned by no package fails the build. Build-tree RUNPATHs would let it (and
+# the dynamic loader here) resolve libraries no target has, and are dead
+# weight on targets that use ldconfig anyway, so drop them first.
+find "$stage_dir/usr/local/bin" "$stage_dir/usr/local/lib" -type f \
+  -exec patchelf --remove-rpath {} \;
+printf 'Source: monad\n\nPackage: monad\nArchitecture: amd64\nDescription: stub\n' \
+  > "$root_dir/target/debian/control"
+lib_deps=$(cd "$root_dir/target" && dpkg-shlibdeps -O \
+  debian/monad/usr/local/bin/* debian/monad/usr/local/lib/*.so*)
+rm "$root_dir/target/debian/control"
+lib_deps=${lib_deps#shlibs:Depends=}
 
 # --- debian metadata ---
 cp -a debian/. "$stage_dir/"
-sed -e "s/@PACKAGE_VERSION@/$version/" debian/DEBIAN/control.in > "$stage_dir/DEBIAN/control"
+sed -e "s/@PACKAGE_VERSION@/$version/" -e "s%@DEPENDS@%$lib_deps%" \
+  debian/DEBIAN/control.in > "$stage_dir/DEBIAN/control"
 rm "$stage_dir/DEBIAN/control.in"
 
 # --- package ---

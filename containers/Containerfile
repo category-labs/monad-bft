@@ -10,10 +10,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
     CARGO_NET_GIT_FETCH_WITH_CLI=true \
     LIBCLANG_PATH=/usr/lib/llvm-19/lib
 
-# Only what docker/builder does not already carry: libclang for bindgen, and
-# build-essential for the packaging tools.
+# Only what docker/builder does not already carry: libclang for bindgen,
+# build-essential for the packaging tools (including dpkg-shlibdeps), and
+# patchelf to strip build-tree RUNPATHs before dependency analysis.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      build-essential libclang-19-dev \
+      build-essential libclang-19-dev patchelf \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
