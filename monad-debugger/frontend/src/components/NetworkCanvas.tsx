@@ -68,7 +68,7 @@ const zoomButtonStep = 0.1;
 const wheelZoomSensitivity = 0.004;
 const pinchZoomSensitivity = 0.007;
 const wheelIgnoreSelector = "[data-canvas-wheel-ignore]";
-const linkHitAreaWidth = 64;
+const linkHitAreaWidth = 32;
 const cutCableGap = 42;
 const cutCableStrands = [-22, -14, -7, 0, 8, 15, 22];
 
