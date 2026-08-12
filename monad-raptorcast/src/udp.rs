@@ -1942,7 +1942,7 @@ mod tests_deterministic {
     #[case::one_symbol(900)]
     #[case::medium(64 * 1024)]
     #[case::large(1024 * 1024)]
-    #[case::max(crate::message::MAX_MESSAGE_SIZE)]
+    #[case::proposal_limit(3 * 1024 * 1024)]
     fn test_deterministic_roundtrip_various_sizes(#[case] msg_size: usize) {
         let (key, validators, _) = validator_set();
         let self_id = NodeId::new(key.pubkey());

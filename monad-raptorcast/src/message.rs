@@ -23,7 +23,9 @@ use thiserror::Error;
 use super::raptorcast_secondary::group_message::FullNodesGroupMessage;
 
 const SERIALIZE_VERSION: u32 = 1;
-pub const MAX_MESSAGE_SIZE: usize = 3 * 1024 * 1024;
+/// Maximum size of a serialized router message, including TCP point-to-point
+/// messages such as BlockSync responses.
+pub const MAX_MESSAGE_SIZE: usize = 10 * 1024 * 1024;
 
 enum CompressionVersion {
     UncompressedVersion,
@@ -443,7 +445,16 @@ mod tests {
     }
 
     #[test]
-    fn test_serialize_exceeds_3mb_limit() {
+    fn test_serialize_above_3_mib() {
+        let large_data = vec![0u8; 4 * 1024 * 1024];
+        let large_msg = SliceMessage { data: large_data };
+        let msg = OutboundRouterMessage::<_, SecpSignature>::AppMessage(large_msg);
+
+        assert!(msg.try_serialize().is_ok());
+    }
+
+    #[test]
+    fn test_serialize_exceeds_message_size_limit() {
         let large_data = vec![0u8; MAX_MESSAGE_SIZE];
         let large_msg = SliceMessage { data: large_data };
         let msg = OutboundRouterMessage::<_, SecpSignature>::AppMessage(large_msg);
