@@ -27,7 +27,8 @@ pub const TOPOLOGY_MIN_COORD: i32 = -500;
 pub const TOPOLOGY_MAX_COORD: i32 = 1500;
 const TOPOLOGY_CENTER: f64 = 500.0;
 const TOPOLOGY_RADIUS: f64 = 330.0;
-const FOUR_NODE_TOPOLOGY_INSET: i32 = 180;
+const FOUR_NODE_TOPOLOGY_POSITIONS: [(i32, i32); 4] =
+    [(160, 160), (840, 200), (760, 840), (220, 640)];
 const POSITION_LATENCY_BASE_MS: u64 = 5;
 const POSITION_LATENCY_SCALE: f64 = 0.08;
 const POSITION_LATENCY_MIN_MS: u64 = 1;
@@ -410,18 +411,9 @@ fn default_topology_nodes(
     peers: &BTreeSet<NodeId<NopPubKey>>,
 ) -> BTreeMap<NodeId<NopPubKey>, NetworkNodeState> {
     if peers.len() == 4 {
-        let positions = [
-            (FOUR_NODE_TOPOLOGY_INSET, FOUR_NODE_TOPOLOGY_INSET),
-            (1000 - FOUR_NODE_TOPOLOGY_INSET, FOUR_NODE_TOPOLOGY_INSET),
-            (
-                1000 - FOUR_NODE_TOPOLOGY_INSET,
-                1000 - FOUR_NODE_TOPOLOGY_INSET,
-            ),
-            (FOUR_NODE_TOPOLOGY_INSET, 1000 - FOUR_NODE_TOPOLOGY_INSET),
-        ];
         return peers
             .iter()
-            .zip(positions)
+            .zip(FOUR_NODE_TOPOLOGY_POSITIONS)
             .map(|(peer, (x, y))| {
                 (
                     *peer,
@@ -475,7 +467,7 @@ mod tests {
 
     use super::{
         default_topology_nodes, latency_from_positions, NetworkConfig, NetworkPipeline,
-        FOUR_NODE_TOPOLOGY_INSET,
+        FOUR_NODE_TOPOLOGY_POSITIONS,
     };
 
     fn test_peers() -> (
@@ -507,7 +499,7 @@ mod tests {
     }
 
     #[test]
-    fn four_node_topology_uses_spacious_corners() {
+    fn four_node_topology_separates_nodes_and_link_midpoints() {
         let peers = BTreeSet::from_iter(test_peer_vec(4));
         let nodes = default_topology_nodes(&peers);
         let positions = nodes
@@ -515,18 +507,25 @@ mod tests {
             .map(|node| (node.x, node.y))
             .collect::<BTreeSet<_>>();
 
-        assert_eq!(
-            positions,
-            BTreeSet::from([
-                (FOUR_NODE_TOPOLOGY_INSET, FOUR_NODE_TOPOLOGY_INSET),
-                (1000 - FOUR_NODE_TOPOLOGY_INSET, FOUR_NODE_TOPOLOGY_INSET),
-                (
-                    1000 - FOUR_NODE_TOPOLOGY_INSET,
-                    1000 - FOUR_NODE_TOPOLOGY_INSET
-                ),
-                (FOUR_NODE_TOPOLOGY_INSET, 1000 - FOUR_NODE_TOPOLOGY_INSET),
-            ])
-        );
+        assert_eq!(positions, BTreeSet::from(FOUR_NODE_TOPOLOGY_POSITIONS));
+
+        let positions = FOUR_NODE_TOPOLOGY_POSITIONS;
+        let mut midpoints = Vec::new();
+        for left in 0..positions.len() {
+            for right in (left + 1)..positions.len() {
+                midpoints.push((
+                    (positions[left].0 + positions[right].0) / 2,
+                    (positions[left].1 + positions[right].1) / 2,
+                ));
+            }
+        }
+        for left in 0..midpoints.len() {
+            for right in (left + 1)..midpoints.len() {
+                let dx = midpoints[left].0 - midpoints[right].0;
+                let dy = midpoints[left].1 - midpoints[right].1;
+                assert!(dx * dx + dy * dy >= 80 * 80);
+            }
+        }
     }
 
     #[test]

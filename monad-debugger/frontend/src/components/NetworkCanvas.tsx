@@ -69,8 +69,6 @@ const pinchZoomSensitivity = 0.007;
 const wheelIgnoreSelector = "[data-canvas-wheel-ignore]";
 const cutCableGap = 42;
 const cutCableStrands = [-22, -14, -7, 0, 8, 15, 22];
-const linkLabelCollisionDistance = 12;
-const linkLabelCollisionRadius = 64;
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 
@@ -453,41 +451,6 @@ const NetworkCanvas: Component<{
         }
         return Object.values(pairs);
     });
-
-    const linkLabelCollisionOffset = (pair: LinkPair): PixelOffset => {
-        const positions = positionsById();
-        const from = positions[pair.fromId];
-        const to = positions[pair.toId];
-        if (!from || !to) {
-            return { x: 0, y: 0 };
-        }
-        const midpoint = {
-            x: (from.x + to.x) / 2,
-            y: (from.y + to.y) / 2,
-        };
-        const collisions = linkPairs()
-            .filter((other) => {
-                const otherFrom = positions[other.fromId];
-                const otherTo = positions[other.toId];
-                if (!otherFrom || !otherTo) {
-                    return false;
-                }
-                return Math.hypot(
-                    midpoint.x - (otherFrom.x + otherTo.x) / 2,
-                    midpoint.y - (otherFrom.y + otherTo.y) / 2,
-                ) < linkLabelCollisionDistance;
-            })
-            .sort((left, right) => pairKey(left.fromId, left.toId).localeCompare(pairKey(right.fromId, right.toId)));
-        if (collisions.length < 2) {
-            return { x: 0, y: 0 };
-        }
-        const index = collisions.findIndex((other) => pairKey(other.fromId, other.toId) === pairKey(pair.fromId, pair.toId));
-        const angle = (index / collisions.length) * 2 * Math.PI - Math.PI / 2;
-        return {
-            x: Math.cos(angle) * linkLabelCollisionRadius,
-            y: Math.sin(angle) * linkLabelCollisionRadius,
-        };
-    };
 
     const inFlightDestinations = createMemo(() => {
         const destinations = new Map<string, InFlightDestination>();
@@ -1036,13 +999,6 @@ const NetworkCanvas: Component<{
                 });
                 const mode = () => linkMode(pair);
                 const labelPosition = () => {
-                    const collisionOffset = linkLabelCollisionOffset(pair);
-                    if (collisionOffset.x !== 0 || collisionOffset.y !== 0) {
-                        return {
-                            x: mid().x + collisionOffset.x,
-                            y: mid().y + collisionOffset.y,
-                        };
-                    }
                     if (mode() !== "neither") {
                         return mid();
                     }
