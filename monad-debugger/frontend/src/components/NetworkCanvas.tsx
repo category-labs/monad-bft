@@ -979,9 +979,11 @@ const NetworkCanvas: Component<{
                                     x2={to()?.x ?? 0}
                                     y2={to()?.y ?? 0}
                                     stroke="rgba(0, 0, 0, 0.001)"
-                                    strokeWidth={linkHitAreaWidth}
-                                    strokeLinecap="round"
-                                    style={{ "pointer-events": "stroke" }}
+                                    style={{
+                                        "pointer-events": "stroke",
+                                        "stroke-linecap": "round",
+                                        "stroke-width": `${linkHitAreaWidth}px`,
+                                    }}
                                     role="button"
                                     tabIndex={0}
                                     aria-label={`${cut() ? "Repair" : "Cut"} connection between ${nodeLabel(pair.fromId)} and ${nodeLabel(pair.toId)}`}
