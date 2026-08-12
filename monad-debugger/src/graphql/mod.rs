@@ -576,8 +576,8 @@ impl<'s> GraphQLNode<'s> {
         let mut blocks_by_id = BTreeMap::new();
         let voted_block_ids: BTreeSet<_> = blocktree
             .tree()
-            .iter()
-            .map(|(_, entry)| entry.validated_block.get_qc().get_block_id())
+            .values()
+            .map(|entry| entry.validated_block.get_qc().get_block_id())
             .chain(std::iter::once(
                 state.get_high_certificate().qc().get_block_id(),
             ))
