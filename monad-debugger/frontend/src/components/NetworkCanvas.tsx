@@ -47,6 +47,7 @@ type MessageFilterKey =
     | "other";
 type Position = { x: number, y: number };
 type PixelOffset = { x: number, y: number };
+type HoveredLinkAction = { key: string, position: Position };
 type InFlightDestination = {
     toId: string,
     messages: Array<{ fromId: string, message: PendingMessage }>,
@@ -347,16 +348,9 @@ const NetworkCanvas: Component<{
     const [showBlockView, setShowBlockView] = createSignal(true);
     const [showMessageFilters, setShowMessageFilters] = createSignal(false);
     const [messageFilters, setMessageFilters] = createSignal<Record<MessageFilterKey, boolean>>(defaultMessageFilters);
-    const [hoveredLinkKey, setHoveredLinkKey] = createSignal<string>();
+    const [hoveredLinkAction, setHoveredLinkAction] = createSignal<HoveredLinkAction>();
     const [draggingNodeId, setDraggingNodeId] = createSignal<string>();
     const lastCommittedPosition = new Map<string, Position>();
-    let linkHoverClearTimer: number | undefined;
-
-    onCleanup(() => {
-        if (linkHoverClearTimer !== undefined) {
-            window.clearTimeout(linkHoverClearTimer);
-        }
-    });
 
     const networkNodes = () => props.data.networkConfig.nodes;
     const simNodes = () => props.data.nodes;
@@ -451,6 +445,12 @@ const NetworkCanvas: Component<{
         }
         return Object.values(pairs);
     });
+    const hoveredLinkPair = createMemo(() => {
+        const hovered = hoveredLinkAction();
+        return hovered
+            ? linkPairs().find((pair) => pairKey(pair.fromId, pair.toId) === hovered.key)
+            : undefined;
+    });
 
     const inFlightDestinations = createMemo(() => {
         const destinations = new Map<string, InFlightDestination>();
@@ -493,25 +493,24 @@ const NetworkCanvas: Component<{
         applyLinkMode(pair, linkMode(pair) === "neither" ? "both" : "neither");
     };
 
-    const showLinkAction = (pair: LinkPair) => {
-        if (linkHoverClearTimer !== undefined) {
-            window.clearTimeout(linkHoverClearTimer);
-            linkHoverClearTimer = undefined;
-        }
-        setHoveredLinkKey(pairKey(pair.fromId, pair.toId));
+    const showLinkAction = (event: PointerEvent, pair: LinkPair) => {
+        setHoveredLinkAction({
+            key: pairKey(pair.fromId, pair.toId),
+            position: canvasPoint(event.clientX, event.clientY),
+        });
     };
 
     const hideLinkAction = (pair: LinkPair) => {
-        if (linkHoverClearTimer !== undefined) {
-            window.clearTimeout(linkHoverClearTimer);
-        }
         const key = pairKey(pair.fromId, pair.toId);
-        linkHoverClearTimer = window.setTimeout(() => {
-            if (hoveredLinkKey() === key) {
-                setHoveredLinkKey(undefined);
-            }
-            linkHoverClearTimer = undefined;
-        }, 100);
+        if (hoveredLinkAction()?.key === key) {
+            setHoveredLinkAction(undefined);
+        }
+    };
+
+    const handleLinkKeyDown = (event: KeyboardEvent, pair: LinkPair) => {
+        if (event.key === "Enter" || event.key === " ") {
+            togglePairConnection(event, pair);
+        }
     };
 
     const mergedLedger = createMemo(() => {
@@ -980,15 +979,41 @@ const NetworkCanvas: Component<{
                                     y2={to()?.y ?? 0}
                                     stroke="transparent"
                                     strokeWidth={28}
+                                    role="button"
+                                    tabIndex={0}
+                                    aria-label={`${cut() ? "Repair" : "Cut"} connection between ${nodeLabel(pair.fromId)} and ${nodeLabel(pair.toId)}`}
                                     onPointerDown={(event) => event.stopPropagation()}
-                                    onPointerEnter={() => showLinkAction(pair)}
+                                    onPointerEnter={(event) => showLinkAction(event, pair)}
+                                    onPointerMove={(event) => showLinkAction(event, pair)}
                                     onPointerLeave={() => hideLinkAction(pair)}
+                                    onClick={(event) => togglePairConnection(event, pair)}
+                                    onKeyDown={(event) => handleLinkKeyDown(event, pair)}
                                 />
                             </>
                         </Show>
                     );
                 }}</For>
             </svg>
+
+            <Show when={hoveredLinkAction() && hoveredLinkPair()}>
+                {() => {
+                    const action = () => hoveredLinkAction()!;
+                    const pair = () => hoveredLinkPair()!;
+                    const connected = () => linkMode(pair()) !== "neither";
+                    return (
+                        <div
+                            class={`pointer-events-none absolute z-40 flex h-9 w-9 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border text-lg shadow-md ${connected() ? "border-red-300 bg-red-50" : "border-emerald-300 bg-emerald-50"}`}
+                            style={{
+                                left: `${action().position.x / 10}%`,
+                                top: `${action().position.y / 10}%`,
+                            }}
+                            aria-hidden="true"
+                        >
+                            {connected() ? "✂️" : "🔧"}
+                        </div>
+                    );
+                }}
+            </Show>
 
             <For each={linkPairs()}>{(pair) => {
                 const from = () => positionsById()[pair.fromId];
@@ -1012,8 +1037,6 @@ const NetworkCanvas: Component<{
                         y: mid().y + (dx / length) * 62,
                     };
                 };
-                const linkKey = () => pairKey(pair.fromId, pair.toId);
-                const connected = () => mode() !== "neither";
                 const forward = () => linkForDirection(pair, pair.fromId, pair.toId);
                 const reverse = () => linkForDirection(pair, pair.toId, pair.fromId);
                 const label = () => {
@@ -1049,27 +1072,15 @@ const NetworkCanvas: Component<{
                         when={from() && to()}
                     >
                         <div
-                            class="absolute z-10 -translate-x-1/2 -translate-y-1/2"
+                            class="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-1/2"
                             style={{
                                 left: `${labelPosition().x / 10}%`,
                                 top: `${labelPosition().y / 10}%`,
                             }}
-                            onPointerEnter={() => showLinkAction(pair)}
-                            onPointerLeave={() => hideLinkAction(pair)}
                         >
                             <div class={`pointer-events-none rounded-md border px-2 py-1 text-center text-[13px] font-semibold shadow-sm ${labelClass()}`}>
                                 {label()}
                             </div>
-                            <button
-                                type="button"
-                                class={`absolute left-full top-1/2 ml-1 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full border text-lg shadow-md transition focus:pointer-events-auto focus:scale-100 focus:opacity-100 ${hoveredLinkKey() === linkKey() ? "pointer-events-auto scale-100 opacity-100" : "pointer-events-none scale-75 opacity-0"} ${connected() ? "border-red-300 bg-red-50 hover:bg-red-100" : "border-emerald-300 bg-emerald-50 hover:bg-emerald-100"}`}
-                                aria-label={`${connected() ? "Cut" : "Repair"} connection between ${nodeLabel(pair.fromId)} and ${nodeLabel(pair.toId)}`}
-                                title={`${connected() ? "Cut" : "Repair"} connection between ${nodeLabel(pair.fromId)} and ${nodeLabel(pair.toId)}`}
-                                onPointerDown={(event) => event.stopPropagation()}
-                                onClick={(event) => togglePairConnection(event, pair)}
-                            >
-                                <span aria-hidden="true">{connected() ? "✂️" : "🔧"}</span>
-                            </button>
                         </div>
                     </Show>
                 );
