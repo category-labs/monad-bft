@@ -67,8 +67,20 @@ const zoomButtonStep = 0.1;
 const wheelZoomSensitivity = 0.004;
 const pinchZoomSensitivity = 0.007;
 const wheelIgnoreSelector = "[data-canvas-wheel-ignore]";
+const cutCableGap = 42;
+const cutCableStrands = [-22, -14, -7, 0, 8, 15, 22];
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+
+const pointAlongLine = (from: Position, to: Position, distanceFromMidpoint: number) => {
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const length = Math.max(1, Math.hypot(dx, dy));
+    return {
+        x: (from.x + to.x) / 2 + (dx / length) * distanceFromMidpoint,
+        y: (from.y + to.y) / 2 + (dy / length) * distanceFromMidpoint,
+    };
+};
 
 const pairKey = (fromId: string, toId: string) => [fromId, toId].sort().join(":");
 
@@ -908,22 +920,58 @@ const NetworkCanvas: Component<{
                     const from = () => positionsById()[pair.fromId];
                     const to = () => positionsById()[pair.toId];
                     const mode = () => linkMode(pair);
+                    const cut = () => mode() === "neither";
                     const anyDropped = () => mode() !== "both";
                     const anyOffline = () => pair.links.some((link) => link.offline);
                     const anyOverridden = () => pair.links.some((link) => link.overridden);
+                    const leftCut = () => pointAlongLine(from()!, to()!, -cutCableGap);
+                    const rightCut = () => pointAlongLine(from()!, to()!, cutCableGap);
+                    const strandEnd = (cutEnd: Position, toward: Position, offset: number) => {
+                        const dx = toward.x - cutEnd.x;
+                        const dy = toward.y - cutEnd.y;
+                        const length = Math.max(1, Math.hypot(dx, dy));
+                        const tangentX = dx / length;
+                        const tangentY = dy / length;
+                        const normalX = -tangentY;
+                        const normalY = tangentX;
+                        const spread = Math.abs(offset) * 0.45;
+                        return {
+                            x: cutEnd.x + tangentX * (18 + spread) + normalX * offset,
+                            y: cutEnd.y + tangentY * (18 + spread) + normalY * offset,
+                        };
+                    };
                     return (
                         <Show when={from() && to()}>
                             <>
-                                <line
-                                    x1={from()?.x ?? 0}
-                                    y1={from()?.y ?? 0}
-                                    x2={to()?.x ?? 0}
-                                    y2={to()?.y ?? 0}
-                                    stroke={mode() === "neither" ? "#ef4444" : anyDropped() ? "#d97706" : anyOverridden() ? "#d97706" : "#4b5563"}
-                                    strokeWidth={anyOverridden() || anyDropped() ? 4 : 3}
-                                    strokeDasharray={mode() === "neither" ? "10 10" : "none"}
-                                    opacity={anyOffline() ? 0.45 : 0.82}
-                                />
+                                <Show
+                                    when={!cut()}
+                                    fallback={
+                                        <>
+                                            <line x1={from()?.x ?? 0} y1={from()?.y ?? 0} x2={leftCut().x} y2={leftCut().y} stroke="#dc2626" strokeWidth="10" opacity={anyOffline() ? 0.4 : 0.9} />
+                                            <line x1={to()?.x ?? 0} y1={to()?.y ?? 0} x2={rightCut().x} y2={rightCut().y} stroke="#dc2626" strokeWidth="10" opacity={anyOffline() ? 0.4 : 0.9} />
+                                            <For each={cutCableStrands}>{(offset) => {
+                                                const leftEnd = () => strandEnd(leftCut(), rightCut(), offset);
+                                                const rightEnd = () => strandEnd(rightCut(), leftCut(), -offset);
+                                                return (
+                                                    <>
+                                                        <line x1={leftCut().x} y1={leftCut().y} x2={leftEnd().x} y2={leftEnd().y} stroke={offset % 2 === 0 ? "#f97316" : "#9a3412"} strokeWidth="2" />
+                                                        <line x1={rightCut().x} y1={rightCut().y} x2={rightEnd().x} y2={rightEnd().y} stroke={offset % 2 === 0 ? "#f97316" : "#9a3412"} strokeWidth="2" />
+                                                    </>
+                                                );
+                                            }}</For>
+                                        </>
+                                    }
+                                >
+                                    <line
+                                        x1={from()?.x ?? 0}
+                                        y1={from()?.y ?? 0}
+                                        x2={to()?.x ?? 0}
+                                        y2={to()?.y ?? 0}
+                                        stroke={anyDropped() || anyOverridden() ? "#d97706" : "#4b5563"}
+                                        strokeWidth={anyOverridden() || anyDropped() ? 4 : 3}
+                                        opacity={anyOffline() ? 0.45 : 0.82}
+                                    />
+                                </Show>
                                 <line
                                     class="cursor-pointer"
                                     x1={from()?.x ?? 0}
@@ -950,6 +998,20 @@ const NetworkCanvas: Component<{
                     y: ((from()?.y ?? 0) + (to()?.y ?? 0)) / 2,
                 });
                 const mode = () => linkMode(pair);
+                const labelPosition = () => {
+                    if (mode() !== "neither") {
+                        return mid();
+                    }
+                    const fromPosition = from()!;
+                    const toPosition = to()!;
+                    const dx = toPosition.x - fromPosition.x;
+                    const dy = toPosition.y - fromPosition.y;
+                    const length = Math.max(1, Math.hypot(dx, dy));
+                    return {
+                        x: mid().x - (dy / length) * 62,
+                        y: mid().y + (dx / length) * 62,
+                    };
+                };
                 const linkKey = () => pairKey(pair.fromId, pair.toId);
                 const connected = () => mode() !== "neither";
                 const forward = () => linkForDirection(pair, pair.fromId, pair.toId);
@@ -989,8 +1051,8 @@ const NetworkCanvas: Component<{
                         <div
                             class="absolute z-10 -translate-x-1/2 -translate-y-1/2"
                             style={{
-                                left: `${mid().x / 10}%`,
-                                top: `${mid().y / 10}%`,
+                                left: `${labelPosition().x / 10}%`,
+                                top: `${labelPosition().y / 10}%`,
                             }}
                             onPointerEnter={() => showLinkAction(pair)}
                             onPointerLeave={() => hideLinkAction(pair)}

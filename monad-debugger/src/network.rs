@@ -27,6 +27,7 @@ pub const TOPOLOGY_MIN_COORD: i32 = -500;
 pub const TOPOLOGY_MAX_COORD: i32 = 1500;
 const TOPOLOGY_CENTER: f64 = 500.0;
 const TOPOLOGY_RADIUS: f64 = 330.0;
+const FOUR_NODE_TOPOLOGY_INSET: i32 = 180;
 const POSITION_LATENCY_BASE_MS: u64 = 5;
 const POSITION_LATENCY_SCALE: f64 = 0.08;
 const POSITION_LATENCY_MIN_MS: u64 = 1;
@@ -408,6 +409,33 @@ fn latency_from_positions(from_x: i32, from_y: i32, to_x: i32, to_y: i32) -> Dur
 fn default_topology_nodes(
     peers: &BTreeSet<NodeId<NopPubKey>>,
 ) -> BTreeMap<NodeId<NopPubKey>, NetworkNodeState> {
+    if peers.len() == 4 {
+        let positions = [
+            (FOUR_NODE_TOPOLOGY_INSET, FOUR_NODE_TOPOLOGY_INSET),
+            (1000 - FOUR_NODE_TOPOLOGY_INSET, FOUR_NODE_TOPOLOGY_INSET),
+            (
+                1000 - FOUR_NODE_TOPOLOGY_INSET,
+                1000 - FOUR_NODE_TOPOLOGY_INSET,
+            ),
+            (FOUR_NODE_TOPOLOGY_INSET, 1000 - FOUR_NODE_TOPOLOGY_INSET),
+        ];
+        return peers
+            .iter()
+            .zip(positions)
+            .map(|(peer, (x, y))| {
+                (
+                    *peer,
+                    NetworkNodeState {
+                        id: *peer,
+                        x,
+                        y,
+                        online: true,
+                    },
+                )
+            })
+            .collect();
+    }
+
     let total = peers.len().max(1) as f64;
     peers
         .iter()
@@ -445,7 +473,10 @@ mod tests {
     use monad_transformer::{LinkMessage, Pipeline, ID};
     use monad_types::NodeId;
 
-    use super::{latency_from_positions, NetworkConfig, NetworkPipeline};
+    use super::{
+        default_topology_nodes, latency_from_positions, NetworkConfig, NetworkPipeline,
+        FOUR_NODE_TOPOLOGY_INSET,
+    };
 
     fn test_peers() -> (
         NodeId<monad_crypto::NopPubKey>,
@@ -473,6 +504,29 @@ mod tests {
             from_tick: Duration::ZERO,
             nonce: 0,
         }
+    }
+
+    #[test]
+    fn four_node_topology_uses_spacious_corners() {
+        let peers = BTreeSet::from_iter(test_peer_vec(4));
+        let nodes = default_topology_nodes(&peers);
+        let positions = nodes
+            .values()
+            .map(|node| (node.x, node.y))
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(
+            positions,
+            BTreeSet::from([
+                (FOUR_NODE_TOPOLOGY_INSET, FOUR_NODE_TOPOLOGY_INSET),
+                (1000 - FOUR_NODE_TOPOLOGY_INSET, FOUR_NODE_TOPOLOGY_INSET),
+                (
+                    1000 - FOUR_NODE_TOPOLOGY_INSET,
+                    1000 - FOUR_NODE_TOPOLOGY_INSET
+                ),
+                (FOUR_NODE_TOPOLOGY_INSET, 1000 - FOUR_NODE_TOPOLOGY_INSET),
+            ])
+        );
     }
 
     #[test]
