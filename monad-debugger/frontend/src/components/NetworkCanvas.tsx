@@ -68,6 +68,7 @@ const zoomButtonStep = 0.1;
 const wheelZoomSensitivity = 0.004;
 const pinchZoomSensitivity = 0.007;
 const wheelIgnoreSelector = "[data-canvas-wheel-ignore]";
+const linkHitAreaWidth = 64;
 const cutCableGap = 42;
 const cutCableStrands = [-22, -14, -7, 0, 8, 15, 22];
 
@@ -978,7 +979,9 @@ const NetworkCanvas: Component<{
                                     x2={to()?.x ?? 0}
                                     y2={to()?.y ?? 0}
                                     stroke="transparent"
-                                    strokeWidth={28}
+                                    strokeWidth={linkHitAreaWidth}
+                                    strokeLinecap="round"
+                                    pointerEvents="stroke"
                                     role="button"
                                     tabIndex={0}
                                     aria-label={`${cut() ? "Repair" : "Cut"} connection between ${nodeLabel(pair.fromId)} and ${nodeLabel(pair.toId)}`}
