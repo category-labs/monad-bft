@@ -45,23 +45,18 @@ monad-execution/build/cmd/monad-cli monad-cli
 EOF
 
 # --- stage libraries ---
-# Ship libtriedb_driver.so plus the link closure of shared objects produced by
-# this source tree (the patched Boost.Fiber, monad-execution, and friends);
-# system libraries come from Depends. Copy to a fixpoint: staged copies win
-# over build-tree RUNPATHs via LD_LIBRARY_PATH, so anything still resolving
-# into the source tree is a build-produced dependency not yet bundled.
+# Bundle libtriedb_driver.so — dlopen()ed at runtime, so no dependency walk
+# finds it — plus everything the binaries or the driver resolve from inside
+# this source tree: those are build products no target host has. ldd reports
+# the transitive closure, so one pass suffices; dpkg-shlibdeps below fails
+# the build if anything is neither bundled nor owned by a package, so a miss
+# here cannot ship.
 triedb=$(find target/release -name 'libtriedb_driver.so' -exec ls -Lt {} + | head -n 1)
 test -n "$triedb" || { echo "libtriedb_driver.so not found under target/release" >&2; exit 2; }
 cp "$triedb" "$stage_dir/usr/local/lib/"
-
-while :; do
-  unbundled=$(for obj in "$stage_dir"/usr/local/bin/* "$stage_dir"/usr/local/lib/*; do
-      LD_LIBRARY_PATH="$stage_dir/usr/local/lib" ldd "$obj"
-    done | awk -v root="$root_dir/" -v stage="$stage_dir/" \
-      '$2 == "=>" && index($3, root) == 1 && index($3, stage) != 1 { print $3 }' | sort -u)
-  [ -n "$unbundled" ] || break
-  echo "$unbundled" | xargs -I {} cp {} "$stage_dir/usr/local/lib/"
-done
+ldd "$stage_dir"/usr/local/bin/* "$triedb" \
+  | awk -v root="$root_dir/" '$2 == "=>" && index($3, root) == 1 { print $3 }' \
+  | sort -u | xargs -I {} cp {} "$stage_dir/usr/local/lib/"
 
 if [ "$strip_symbols" = 1 ]; then
   find "$stage_dir/usr/local/bin" -type f -exec strip --strip-all {} \;
