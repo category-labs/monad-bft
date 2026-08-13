@@ -284,6 +284,7 @@ impl Chorus {
             // already in the fallback path.
             return;
         }
+        // FIXME: MVBA should be responsible for scheduling its own timer
         self.schedule_timer(self.delta, TimerEvent::FallbackTick);
         self.fallback = Some(self.fast.spawn_fallback(inputs));
     }

@@ -13,20 +13,21 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+mod monad_mvba;
 use std::sync::Arc;
 
 use super::{
     fast::{CertifiedEntry, EnterFallbackCert},
-    types::{KeyPair, Slot, TotalProposalMap, ValidatorData},
+    types::{KeyPair, NodeId, Slot, TimestampDelta, TotalProposalMap, ValidatorData},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub struct FallbackRound(u64);
+struct FallbackView(u64);
 
 #[derive(Clone)]
 pub(crate) struct FallbackPath {
     slot: Slot,
-    round: FallbackRound,
+    round: FallbackView,
 
     input: MVBAInputs,
 
@@ -44,7 +45,7 @@ impl FallbackPath {
     ) -> Self {
         Self {
             slot,
-            round: FallbackRound(0),
+            round: FallbackView(0),
             key,
             validator_data,
             input,
@@ -56,10 +57,51 @@ impl FallbackPath {
     }
 }
 
+// FIXME: rename it. partialblock concept was deleted
 pub(crate) type PartialBlock = TotalProposalMap<CertifiedEntry>;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) struct MVBAInputs {
     pub enter_fallback_cert: EnterFallbackCert,
     pub block: PartialBlock,
+}
+
+pub trait Validate {
+    type Context;
+    fn validate(&self, context: &Self::Context) -> bool;
+}
+
+/// A protocol for Agreement on a Core Set
+pub trait Mvba<V: Validate> {
+    type Message;
+    type Context;
+    type TimerEvent;
+
+    fn new(ctx: &Self::Context) -> Self;
+
+    /// Propose the data to be included in the core set. At most one
+    /// proposal is allowed for each Acs instance.
+    fn propose(&mut self, data: V);
+
+    /// Handle a message received over network
+    fn handle_message(&mut self, sender: NodeId, message: Self::Message);
+
+    fn handle_timer(&mut self, timer_event: Self::TimerEvent);
+
+    // Q: can abandon be implicit via destruction? or do we need it to inform
+    // persistence
+    fn abandon(&mut self);
+
+    /// Query whether the ACS has made an decision
+    fn decision(&self) -> Option<&V>;
+
+    fn poll(&mut self) -> Option<MVBAOutput<Self::Message, Self::TimerEvent>>;
+}
+
+pub enum MVBAOutput<M, T> {
+    Broadcast(M),
+    ScheduleTimer {
+        duration: TimestampDelta,
+        timer_event: T,
+    },
 }
