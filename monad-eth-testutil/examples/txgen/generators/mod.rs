@@ -192,7 +192,8 @@ pub fn make_generator(
                 erc4337_7702.simple7702account,
                 config.ops_per_bundle,
                 tx_per_sender,
-                None,
+                erc4337_7702.paymaster,
+                config.use_paymaster,
                 recipient_keys,
             ))
         }
