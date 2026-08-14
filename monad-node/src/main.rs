@@ -422,6 +422,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         },
         whitelisted_statesync_nodes,
         statesync_expand_to_group: node_state.node_config.statesync.expand_to_group,
+        serve_statesync: node_state.node_config.statesync.serve_statesync,
         _phantom: PhantomData,
     };
 
