@@ -14,6 +14,8 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use eyre::bail;
+#[cfg(feature = "chain-data-ingest")]
+use monad_archive::chain_data_ingest::chain_data_ingest_worker;
 use monad_archive::{
     cli::set_source_and_sink_metrics, model::logs_index::LogsIndexArchiver, prelude::*,
 };
@@ -121,21 +123,44 @@ async fn run_indexer(args: cli::Cli) -> Result<()> {
         tx_index_archiver.update_latest_indexed(0, false).await?;
     }
 
-    // tokio main should not await futures directly, so we spawn a worker
-    tokio::spawn(index_worker(
-        block_data_reader,
-        fallback_block_data_source,
-        tx_index_archiver,
-        log_index_archiver,
-        args.max_blocks_per_iteration,
-        args.max_concurrent_blocks,
-        metrics,
-        args.stop_block,
-        Duration::from_millis(500),
-        args.async_backfill,
-    ))
-    .await
-    .map_err(Into::into)
+    let mut worker_handles: Vec<tokio::task::JoinHandle<Result<()>>> = Vec::new();
+
+    #[cfg(feature = "chain-data-ingest")]
+    if let Some(chain_data_config) = args.chain_data_ingest {
+        if chain_data_config.enabled {
+            info!("Spawning chain-data ingest worker...");
+            worker_handles.push(tokio::spawn(chain_data_ingest_worker(
+                block_data_reader.clone(),
+                fallback_block_data_source.clone(),
+                chain_data_config,
+            )));
+        }
+    }
+
+    // tokio main should not await futures directly, so we spawn the workers
+    worker_handles.push(tokio::spawn(async move {
+        index_worker(
+            block_data_reader,
+            fallback_block_data_source,
+            tx_index_archiver,
+            log_index_archiver,
+            args.max_blocks_per_iteration,
+            args.max_concurrent_blocks,
+            metrics,
+            args.stop_block,
+            Duration::from_millis(500),
+            args.async_backfill,
+        )
+        .await;
+        Ok(())
+    }));
+
+    while !worker_handles.is_empty() {
+        let (result, _idx, remaining) = futures::future::select_all(worker_handles).await;
+        result??;
+        worker_handles = remaining;
+    }
+    Ok(())
 }
 
 async fn run_migrate_capped(
