@@ -180,10 +180,8 @@ fn extract_attrs(attrs: &[NestedMeta]) -> Args {
                     }
                 }
             }
-            NestedMeta::Meta(Meta::Path(path)) => {
-                if path.is_ident("experimental") {
-                    args.experimental = true;
-                }
+            NestedMeta::Meta(Meta::Path(path)) if path.is_ident("experimental") => {
+                args.experimental = true;
             }
             _ => {}
         }
@@ -239,10 +237,7 @@ fn extract_output_info(output: ReturnType) -> Option<(String, Type, TokenStream2
 
                 match args.next() {
                     Some(GenericArgument::Type(inner_ty)) => {
-                        let type_ident = match &type_path.path.segments.last() {
-                            Some(segment) => &segment.ident,
-                            None => return None,
-                        };
+                        let type_ident = &type_path.path.segments.last()?.ident;
 
                         let name = type_ident.to_string();
 

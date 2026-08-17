@@ -79,7 +79,7 @@ jobs:
             libsecp256k1-dev
 
       - run: rustup toolchain install nightly-2025-12-09 --profile minimal --component rustfmt
-      - run: rustup toolchain install 1.91.1-x86_64-unknown-linux-gnu --profile minimal --component clippy
+      - run: rustup toolchain install 1.97.1-x86_64-unknown-linux-gnu --profile minimal --component clippy
 
       - name: Install cargo-binstall
         uses: cargo-bins/cargo-binstall@v1.15.7

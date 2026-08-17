@@ -415,7 +415,7 @@ where
         trace!(?time_point, ?schedule_end, "RaptorCastSecondary step_until");
 
         // Check if scheduled groups need servicing: time-outs, invites, confirm
-        for (_, group) in self.group_schedule.iter_mut() {
+        for group in self.group_schedule.values_mut() {
             if let Some(out_msg) =
                 group.advance_invites(time_point, &self.scheduling_cfg, self.validator_node_id)
             {
