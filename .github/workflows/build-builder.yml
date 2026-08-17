@@ -5,6 +5,7 @@ name: Build and publish builder Docker image
   push:
     paths:
       - 'docker/builder/**'
+      - '.github/workflows/build-builder.yml'
     branches:
       - 'master'
       - 'release**'
@@ -12,10 +13,7 @@ name: Build and publish builder Docker image
   pull_request:
     paths:
       - 'docker/builder/**'
-
-env:
-  REGISTRY: peach10.devcore4.com
-  IMAGE_NAME: category-labs/builder
+      - '.github/workflows/build-builder.yml'
 
 jobs:
   build-builder:
@@ -24,7 +22,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-      id-token: write
 
     steps:
       - name: Checkout repository
@@ -32,19 +29,19 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Log in to the Peach10 Container registry
+      - name: Log in to the GitHub Container registry
         uses: docker/login-action@v3.1.0
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.PRIVATE_REGISTRY_USERNAME }}
-          password: ${{ secrets.PRIVATE_REGISTRY_PASSWORD }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata (tags, labels) for Docker
         id: meta
         uses: docker/metadata-action@v5.5.1
         with:
           images: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+            ghcr.io/${{ github.repository }}/builder
           tags: |
             type=ref,event=branch
             type=ref,event=pr

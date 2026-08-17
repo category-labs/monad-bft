@@ -54,7 +54,10 @@ use monad_peer_discovery::{
     MonadNameRecord, NameRecord, PeerDiscoveryAlgo, PeerDiscoveryEvent,
 };
 use monad_peer_score::IdentityScore;
-use monad_types::{DropTimer, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, UdpPriority};
+use monad_types::{
+    DropTimer, Epoch, ExecutionProtocol, FullnodeBroadcastMode, NodeId, Round, RouterTarget,
+    UdpPriority,
+};
 use monad_validator::{
     proposer_schedule::BoxedProposerSchedule,
     signature_collection::SignatureCollection,
@@ -82,6 +85,7 @@ use crate::{
         group_message::FullNodesGroupMessage, SecondaryOutboundMessage,
         SecondaryRaptorCastModeConfig,
     },
+    round_info::PublishedRounds,
 };
 
 pub mod auth;
@@ -138,6 +142,11 @@ where
     v1_rollout: v1_rollout::DeterministicProtocolRolloutStage,
     message_builder: OwnedMessageBuilder<ST>,
     secondary_message_builder: Option<OwnedMessageBuilder<ST>>,
+
+    // Guards against building two raptorcast messages for the same commitment key
+    // which would flag this node as an equivocator to receivers
+    published_primary_rounds: PublishedRounds,
+    published_secondary_rounds: PublishedRounds,
 
     tcp_reader: TcpSocketReader,
     tcp_writer: TcpSocketWriter,
@@ -306,6 +315,9 @@ where
             udp_state,
             v1_rollout: config.deterministic_protocol_rollout,
 
+            published_primary_rounds: PublishedRounds::new(),
+            published_secondary_rounds: PublishedRounds::new(),
+
             tcp_reader,
             tcp_writer,
             dual_socket,
@@ -459,15 +471,33 @@ where
                 msg_bytes,
                 epoch,
                 round,
+                broadcast_mode,
                 group,
             } => {
+                // Invariant: commit to a single secondary raptorcast message per (publisher, round)
+                if matches!(broadcast_mode, FullnodeBroadcastMode::SecondaryRaptorcast)
+                    && !self.published_secondary_rounds.try_claim(round)
+                {
+                    error!(
+                        ?round,
+                        "dropping duplicate secondary raptorcast publish for round"
+                    );
+                    return;
+                }
+
                 // SAFETY: the SecondaryRaptorcast publisher instance
                 // is responsible for ensuring the group is valid and
                 // consistent with the round.
                 let broadcast_group =
                     SecondaryBroadcastGroup::as_publisher(&self.self_id, round, &group);
-                let build_target =
-                    v1_rollout::secondary_build_target(self.v1_rollout, epoch, broadcast_group);
+                let build_target = match broadcast_mode {
+                    FullnodeBroadcastMode::SecondaryRaptorcast => {
+                        v1_rollout::secondary_build_target(self.v1_rollout, epoch, broadcast_group)
+                    }
+                    FullnodeBroadcastMode::Broadcast => {
+                        BuildTarget::FullNodeBroadcast(broadcast_group)
+                    }
+                };
                 builder
                     .build_into(&msg_bytes, &build_target, &mut sink)
                     .unwrap_log_on_error(&msg_bytes, &build_target)
@@ -508,6 +538,17 @@ where
                         return;
                     }
                 };
+
+                // Invariant: commit to a single raptorcast message per round
+                if let RouterTarget::Raptorcast { round, .. } = &target {
+                    if !self.published_primary_rounds.try_claim(*round) {
+                        error!(
+                            ?round,
+                            "dropping duplicate primary raptorcast publish for round"
+                        );
+                        return;
+                    }
+                }
 
                 // A publisher must be a validator to publish
                 // raptorcast/broadcast to validator set. Therefore
@@ -790,10 +831,11 @@ pub fn create_dataplane_for_tests(with_direct_udp: bool) -> DataplaneHandles {
     }
 }
 
-// used where the proposer schedule is irrelevant (e.g. v0): every round
-// resolves to an unknown proposer.
+// used where the proposer schedule is irrelevant: every proposer and epoch
+
+// checks out, so v1 chunks are accepted regardless of round.
 pub fn dummy_proposer_schedule<PT: PubKey>() -> BoxedProposerSchedule<PT> {
-    Box::new(crate::util::StubProposerSchedule::default())
+    Box::new(crate::util::StubProposerSchedule::VALID)
 }
 
 pub fn new_defaulted_raptorcast_for_tests<ST, M, OM, SE>(
@@ -1067,6 +1109,8 @@ where
                 RouterCommand::PublishToFullNodes {
                     epoch,
                     round: _,
+                    // we always broadcast to dedicated-fullnodes
+                    broadcast_mode: _,
                     message,
                 } => {
                     if self.is_dynamic_fullnode {

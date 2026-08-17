@@ -78,15 +78,19 @@ use monad_wal::wal::{WALLog, WALoggerConfig};
 use opentelemetry::metrics::{Gauge, Meter, MeterProvider};
 use opentelemetry_otlp::{MetricExporter, WithExportConfig};
 use rand_chacha::{rand_core::SeedableRng, ChaCha8Rng};
-use tokio::signal::unix::{signal, SignalKind};
+use tokio::{
+    signal::unix::{signal, SignalKind},
+    time::{interval, MissedTickBehavior},
+};
 use tracing::{error, event, info, warn, Instrument, Level};
 
 use self::{
     cli::Cli,
     error::NodeSetupError,
     metrics::{
-        default_prometheus_labels, init_triedb_phase_metrics, record_triedb_phase_metrics,
-        start_metrics_server, MetricsServerState, NodePrometheusMetrics,
+        default_prometheus_labels, init_triedb_phase_metrics, init_triedb_storage_metrics,
+        record_triedb_phase_metrics, record_triedb_storage_metrics, start_metrics_server,
+        MetricsServerState, NodePrometheusMetrics,
     },
     state::NodeState,
 };
@@ -110,6 +114,7 @@ const STATESYNC_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 const EXECUTION_DELAY: u64 = 3;
 const WALTRACE_CHANNEL_CAPACITY: usize = 1024;
+const TRIEDB_STORAGE_METRICS_INTERVAL: Duration = Duration::from_secs(30);
 
 fn main() {
     let mut cmd = Cli::command();
@@ -443,8 +448,8 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             )
             .expect("failed to build otel monad-node");
 
-            let mut timer = tokio::time::interval(record_metrics_interval);
-            timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let mut timer = interval(record_metrics_interval);
+            timer.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
             (provider, timer)
         })
@@ -477,25 +482,35 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         }
     }
 
-    // Read the dual-DB migration phase once at startup and record it into a
-    // dedicated metrics set pushed alongside the executor's. The phase only
-    // changes via the offline monad-mpt tool, which requires a restart, so
-    // there is nothing to refresh. If triedb can't be opened, leave the metric
-    // unreported (empty set) rather than emitting a misleading default.
+    // Migration phase is read once (it only changes via the offline monad-mpt
+    // tool, which requires a restart). Disk usage is dynamic, so we keep a
+    // long-lived read-only reader on this task (TriedbReader is !Send) and
+    // refresh it on a ticker in the loop below. If triedb can't be opened,
+    // leave both metrics unreported (empty sets) rather than emitting a
+    // misleading default.
     let mut triedb_phase_metrics = ExecutorMetrics::with_metric_defs(&[]);
-    match TriedbReader::try_new(node_state.triedb_path.as_path()) {
+    let mut triedb_storage_metrics = ExecutorMetrics::with_metric_defs(&[]);
+    let triedb_metrics_reader = TriedbReader::try_new(node_state.triedb_path.as_path());
+    match &triedb_metrics_reader {
         Some(reader) => {
             triedb_phase_metrics = init_triedb_phase_metrics();
             record_triedb_phase_metrics(&mut triedb_phase_metrics, reader.migration_phase());
+            triedb_storage_metrics = init_triedb_storage_metrics();
+            record_triedb_storage_metrics(&mut triedb_storage_metrics, reader.storage_stats());
         }
-        None => warn!("triedb unavailable, migration-phase metric will not be reported"),
+        None => {
+            warn!("triedb unavailable, migration-phase and disk-usage metrics will not be reported")
+        }
     }
 
     let prometheus_metrics = Arc::new(
         NodePrometheusMetrics::new(
             prometheus_labels,
             state.metrics(),
-            executor.metrics().push(&triedb_phase_metrics),
+            executor
+                .metrics()
+                .push(&triedb_phase_metrics)
+                .push(&triedb_storage_metrics),
             process_start,
         )
         .map_err(|err| {
@@ -528,6 +543,9 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
     let mut sigterm = signal(SignalKind::terminate()).expect("in tokio rt");
     let mut sigint = signal(SignalKind::interrupt()).expect("in tokio rt");
 
+    let mut triedb_storage_ticker = interval(TRIEDB_STORAGE_METRICS_INTERVAL);
+    triedb_storage_ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
     loop {
         tokio::select! {
             biased; // events are in order of priority
@@ -545,13 +563,21 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                 None => futures_util::future::pending().boxed(),
             } => {
                 let otel_meter = maybe_otel_meter.as_ref().expect("otel_endpoint must have been set");
-                let executor_metrics = executor.metrics().push(&triedb_phase_metrics);
+                let executor_metrics = executor.metrics().push(&triedb_phase_metrics).push(&triedb_storage_metrics);
                 send_metrics(
                     otel_meter,
                     &mut gauge_cache,
                     prometheus_metrics.as_ref(),
                     executor_metrics,
                 );
+            }
+            _ = triedb_storage_ticker.tick() => {
+                if let Some(reader) = &triedb_metrics_reader {
+                    record_triedb_storage_metrics(
+                        &mut triedb_storage_metrics,
+                        reader.storage_stats(),
+                    );
+                }
             }
             event = executor.next().instrument(ledger_span.clone()) => {
                 let Some(event) = event else {

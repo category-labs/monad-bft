@@ -78,17 +78,20 @@ pub enum BuildTarget<'a, PT: PubKey> {
         group: PrimaryBroadcastGroup<'a, PT>,
         mode: RaptorcastMode,
     },
-    // unicast message as raptor-coded chunks to a single recipient
-    PointToPoint {
-        group_id: GroupId,
-        recipient: &'a NodeId<PT>,
-    },
+    // broadcast a message to a set of full nodes where each full node
+    // gets the full chunks of the raptor-coded message.
+    FullNodeBroadcast(SecondaryBroadcastGroup<'a, PT>),
     // raptorcast to a set of full nodes. In regular mode, chunks are
     // assigned round-robin; in deterministic mode, chunks are
     // assigned by the seeded shuffle of the full-node group.
     FullNodeRaptorCast {
         group: SecondaryBroadcastGroup<'a, PT>,
         mode: RaptorcastMode,
+    },
+    // unicast message as raptor-coded chunks to a single recipient
+    PointToPoint {
+        group_id: GroupId,
+        recipient: &'a NodeId<PT>,
     },
 }
 
@@ -139,7 +142,8 @@ impl<'a, PT: PubKey> BuildTarget<'a, PT> {
                 Box::new(group.iter().map(|(n, _)| n))
             }
             BuildTarget::PointToPoint { recipient, .. } => Box::new(std::iter::once(*recipient)),
-            BuildTarget::FullNodeRaptorCast { group, .. } => Box::new(group.iter()),
+            BuildTarget::FullNodeRaptorCast { group, .. }
+            | BuildTarget::FullNodeBroadcast(group) => Box::new(group.iter()),
         }
     }
 
@@ -148,7 +152,8 @@ impl<'a, PT: PubKey> BuildTarget<'a, PT> {
             BuildTarget::Broadcast(group) | BuildTarget::Raptorcast { group, .. } => {
                 group.group_id()
             }
-            BuildTarget::FullNodeRaptorCast { group, .. } => group.group_id(),
+            BuildTarget::FullNodeRaptorCast { group, .. }
+            | BuildTarget::FullNodeBroadcast(group) => group.group_id(),
             BuildTarget::PointToPoint { group_id, .. } => *group_id,
         }
     }

@@ -68,6 +68,7 @@ jobs:
             libcli11-dev \
             libcrypto++-dev \
             libgmp-dev \
+            libsecp256k1-dev \
             libzstd-dev \
             clang-19 \
             libclang-19-dev \
