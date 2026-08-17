@@ -876,14 +876,11 @@ pub async fn monad_eth_feeHistory<T: Triedb>(
         Ok::<_, JsonRpcError>((blk_num, block, receipts))
     });
 
-    let block_data: Vec<_> = futures::stream::iter(block_data_futures)
-        .buffered(20)
-        .collect::<Vec<_>>()
-        .await
-        .into_iter()
-        .collect::<Result<Vec<_>, JsonRpcError>>()?;
+    let mut block_data_stream = futures::stream::iter(block_data_futures).buffered(20);
 
-    for (_blk_num, block, receipts) in block_data.into_iter() {
+    while let Some(result) = block_data_stream.next().await {
+        let (_blk_num, block, receipts) = result?;
+
         let header = block.header;
         let base_fee = header.base_fee_per_gas.unwrap_or_default();
         base_fee_per_gas_history.push(header.base_fee_per_gas.unwrap_or_default().into());
