@@ -5616,6 +5616,7 @@ dependencies = [
  "monad-eth-types",
  "monad-execution-state-read",
  "monad-multi-sig",
+ "monad-statesync-version",
  "monad-types",
  "monad-validator",
  "monad-wal",
@@ -6259,6 +6260,13 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "monad-statesync-version"
+version = "0.1.0"
+dependencies = [
+ "monad-build",
 ]
 
 [[package]]
