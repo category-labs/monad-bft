@@ -78,6 +78,7 @@ monad-ethcall = { path = "./monad-execution/rust/crates/monad-ethcall" }
 monad-event-ring = { path = "./monad-execution/rust/crates/monad-event-ring" }
 monad-exec-events = { path = "./monad-execution/rust/crates/monad-exec-events" }
 monad-statesync = { path = "./monad-execution/rust/crates/monad-statesync" }
+monad-statesync-version = { path = "./monad-execution/rust/crates/monad-statesync-version" }
 monad-triedb = { path = "./monad-execution/rust/crates/monad-triedb" }
 
 actix = "0.13"
