@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#![recursion_limit = "256"]
+
 use std::{sync::Arc, time::Duration};
 
 use actix_web::{web, App, HttpServer};

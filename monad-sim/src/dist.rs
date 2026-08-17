@@ -19,16 +19,12 @@
 //! [`crate::Simulation::sample`] or [`crate::Ctx::sample`] so that all randomness
 //! is driven by the simulation's seeded generator.
 
-// See `crate::time::DurationFromNanosU128`: local shim for the 1.93-only
-// `Duration::from_nanos_u128` while the workspace builds on 1.91.1.
-#![allow(unstable_name_collisions)]
-
 use std::time::Duration;
 
 use rand::{distributions::Distribution, Rng};
 use rand_distr::{LogNormal, Normal};
 
-use crate::time::{ClockDiff, DurationFromNanosU128};
+use crate::time::ClockDiff;
 
 /// The pair of two independent distributions, sampled jointly.
 #[derive(Clone)]

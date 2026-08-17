@@ -543,7 +543,7 @@ where
             return Some(payload);
         }
 
-        for (_, completed_header) in self.block_sync.self_completed_headers_requests.iter() {
+        for completed_header in self.block_sync.self_completed_headers_requests.values() {
             if let Some(payload) = completed_header.payload_cache.get(&payload_id) {
                 return Some(payload.clone());
             }
@@ -590,8 +590,7 @@ where
                     }
                 }
 
-                for (_, completed_header) in
-                    self.block_sync.self_completed_headers_requests.iter_mut()
+                for completed_header in self.block_sync.self_completed_headers_requests.values_mut()
                 {
                     for (block, maybe_payload) in &mut completed_header.blocks {
                         if block.block_body_id == payload_id && maybe_payload.is_none() {
@@ -868,8 +867,7 @@ where
                 // remove entry and update existing requests
                 entry.remove();
 
-                for (_, completed_header) in
-                    self.block_sync.self_completed_headers_requests.iter_mut()
+                for completed_header in self.block_sync.self_completed_headers_requests.values_mut()
                 {
                     for (block, maybe_payload) in &mut completed_header.blocks {
                         if block.block_body_id == payload_id && maybe_payload.is_none() {

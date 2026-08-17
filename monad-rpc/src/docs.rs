@@ -25,7 +25,7 @@ pub fn as_openrpc() -> OpenRpc {
     };
 
     // Register components from all RPC methods
-    for (_, info) in method_map.iter() {
+    for info in method_map.values() {
         (info.register_components)(&mut components);
     }
 

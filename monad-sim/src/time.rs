@@ -15,41 +15,10 @@
 
 //! Simulation time and clock differences.
 
-// `Duration::from_nanos_u128` is stable only since Rust 1.93, but this workspace
-// builds on 1.91.1, so it is provided locally by the `DurationFromNanosU128`
-// extension trait below. This `allow` silences the future-ambiguity lint raised by
-// calling it through the trait while std's (still-unstable) inherent method
-// already exists. Remove the trait and this `allow` once the toolchain reaches 1.93.
-#![allow(unstable_name_collisions)]
-
 use std::{
     ops::{Add, AddAssign, Sub, SubAssign},
     time::Duration,
 };
-
-/// Local stand-in for [`Duration::from_nanos_u128`] (stable since Rust 1.93; the
-/// workspace toolchain is 1.91.1). Behaviour matches std, including the panic
-/// when the nanosecond count exceeds [`Duration::MAX`].
-///
-/// Remove once the toolchain reaches 1.93: std's inherent method then shadows
-/// this, and the `use crate::time::DurationFromNanosU128;` imports in sibling
-/// modules surface as `unused_imports` warnings pointing back here.
-pub(crate) trait DurationFromNanosU128 {
-    fn from_nanos_u128(nanos: u128) -> Duration;
-}
-
-impl DurationFromNanosU128 for Duration {
-    #[inline]
-    #[track_caller]
-    fn from_nanos_u128(nanos: u128) -> Duration {
-        const NANOS_PER_SEC: u128 = 1_000_000_000;
-        let secs =
-            u64::try_from(nanos / NANOS_PER_SEC).expect("overflow in `Duration::from_nanos_u128`");
-        // `nanos % NANOS_PER_SEC < 1_000_000_000`, so `Duration::new` takes its
-        // no-carry fast path and the result equals std's `new_unchecked` form.
-        Duration::new(secs, (nanos % NANOS_PER_SEC) as u32)
-    }
-}
 
 /// Discrete simulation time: the affine line over clock differences measured in
 /// nanoseconds. It has no defined epoch; time `0` is the conventional origin of
