@@ -18,8 +18,8 @@ use std::ops::Add;
 use alloy_consensus::TxEnvelope;
 use alloy_primitives::{U256, U64};
 use monad_ethcall::{
-    eth_simulate_v1, BlockOverride, EthCallExecutor, SimulateResult, StateOverrideSet,
-    SuccessSimulateResult,
+    overrides::{BlockOverride, StateOverrideSet},
+    MonadExecutor, SimulateResult, SuccessSimulateResult,
 };
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{Triedb, TriedbPath};
@@ -77,7 +77,7 @@ pub struct MonadSimulateParams {
 )]
 pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
     data_provider: &DataProvider<T>,
-    eth_call_executor: &EthCallExecutor,
+    eth_call_executor: &MonadExecutor,
     chain_id: u64,
     call_gas_limit: u64,
     simulation_gas_limit: u64,
@@ -226,21 +226,21 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
         None
     };
 
-    let result = eth_simulate_v1(
-        parse_ethcall_chain_id(chain_id)?,
-        &senders,
-        &calls,
-        header.header,
-        block_number,
-        block_id,
-        grandparent_block_id,
-        simulation_gas_limit,
-        max_simulated_blocks,
-        params.simulation.trace_transfers,
-        eth_call_executor,
-        &overrides,
-    )
-    .await;
+    let result = eth_call_executor
+        .eth_simulate_v1(
+            parse_ethcall_chain_id(chain_id)?,
+            &senders,
+            &calls,
+            header.header,
+            block_number,
+            block_id,
+            grandparent_block_id,
+            simulation_gas_limit,
+            max_simulated_blocks,
+            params.simulation.trace_transfers,
+            &overrides,
+        )
+        .await;
 
     match result {
         SimulateResult::Success(SuccessSimulateResult { output_data, .. }) => {
