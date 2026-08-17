@@ -27,7 +27,8 @@ use alloy_rpc_types::{FeeHistory, TransactionReceipt};
 use futures::stream::StreamExt;
 use itertools::Itertools;
 use monad_ethcall::{
-    CallResult, EthCallExecutor, EthCallRequest, MonadTracer, StateOverrideObject, StateOverrideSet,
+    overrides::{StateOverrideObject, StateOverrideSet},
+    CallResult, EthCallRequest, MonadExecutor, MonadTracer,
 };
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{BlockKey, Triedb};
@@ -274,7 +275,7 @@ pub struct MonadEthEstimateGasParams {
 pub async fn monad_eth_estimateGas<T: Triedb>(
     data_provider: &DataProvider<T>,
     eth_call_handler_config: &EthCallHandlerConfig,
-    eth_call_executor: &EthCallExecutor,
+    eth_call_executor: &MonadExecutor,
     chain_id: u64,
     params: MonadEthEstimateGasParams,
 ) -> JsonRpcResult<Quantity> {
@@ -354,8 +355,8 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
     let (block_number, block_id) = block_key_to_parts(block_key);
 
     let eth_call_fn = async |transaction: &TxEnvelope| {
-        monad_ethcall::eth_call(
-            EthCallRequest {
+        eth_call_executor
+            .eth_call(EthCallRequest {
                 chain_id: ethcall_chain_id,
                 transaction,
                 block_header: &header.header,
@@ -365,10 +366,8 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
                 state_override_set: &state_override_set,
                 tracer: MonadTracer::NoopTracer,
                 gas_specified,
-            },
-            eth_call_executor,
-        )
-        .await
+            })
+            .await
     };
 
     // If the transaction is a regular value transfer, execute the transaction with a 21000 gas limit and return that gas limit if executes successfully.
@@ -420,7 +419,7 @@ pub struct MonadEthFillTransactionParams {
 pub async fn monad_eth_fillTransaction<T: Triedb>(
     data_provider: &DataProvider<T>,
     eth_call_handler_config: &EthCallHandlerConfig,
-    eth_call_executor: &EthCallExecutor,
+    eth_call_executor: &MonadExecutor,
     chain_id: u64,
     params: MonadEthFillTransactionParams,
 ) -> JsonRpcResult<FillTransactionResult> {
@@ -431,8 +430,8 @@ pub async fn monad_eth_fillTransaction<T: Triedb>(
     let eth_call_fn =
         async |header: &Header, from: Address, block_key: BlockKey, transaction: &TxEnvelope| {
             let (block_number, block_id) = block_key_to_parts(block_key);
-            monad_ethcall::eth_call(
-                EthCallRequest {
+            eth_call_executor
+                .eth_call(EthCallRequest {
                     chain_id: ethcall_chain_id,
                     transaction,
                     block_header: header,
@@ -442,10 +441,8 @@ pub async fn monad_eth_fillTransaction<T: Triedb>(
                     state_override_set: &state_override,
                     tracer: MonadTracer::NoopTracer,
                     gas_specified: true,
-                },
-                eth_call_executor,
-            )
-            .await
+                })
+                .await
         };
 
     fill_transaction_with_provider(

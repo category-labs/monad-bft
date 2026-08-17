@@ -24,8 +24,8 @@ use alloy_primitives::{Address, Bytes, Signature, TxKind, Uint, B256, U256, U64,
 use alloy_rpc_types::{AccessList, AccessListItem};
 use monad_chain_config::execution_revision::MonadExecutionRevision;
 use monad_ethcall::{
-    eth_call, CallResult, EthCallExecutor, EthCallRequest, EthCallResult, FailureCallResult,
-    MonadTracer, StateOverrideSet,
+    overrides::StateOverrideSet, CallResult, EthCallRequest, EthCallResult, FailureCallResult,
+    MonadExecutor, MonadTracer,
 };
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{
@@ -552,7 +552,7 @@ enum OutOfGasHandling {
 async fn prepare_eth_call<T: Triedb + TriedbPath>(
     triedb_env: &T,
     eth_call_handler_config: &EthCallHandlerConfig,
-    eth_call_executor: &EthCallExecutor,
+    eth_call_executor: &MonadExecutor,
     chain_id: u64,
     params: CallParams,
     out_of_gas_handling: OutOfGasHandling,
@@ -577,7 +577,7 @@ async fn prepare_eth_call<T: Triedb + TriedbPath>(
 async fn prepare_eth_call_at_block<T: Triedb + TriedbPath>(
     triedb_env: &T,
     eth_call_handler_config: &EthCallHandlerConfig,
-    eth_call_executor: &EthCallExecutor,
+    eth_call_executor: &MonadExecutor,
     chain_id: u64,
     params: EthCallExecutionParams,
     out_of_gas_handling: OutOfGasHandling,
@@ -664,8 +664,8 @@ async fn prepare_eth_call_at_block<T: Triedb + TriedbPath>(
 
     let header_gas_limit = header.header.gas_limit;
 
-    match eth_call(
-        EthCallRequest {
+    match eth_call_executor
+        .eth_call(EthCallRequest {
             chain_id: ethcall_chain_id,
             transaction: &txn,
             block_header: &header.header,
@@ -675,10 +675,8 @@ async fn prepare_eth_call_at_block<T: Triedb + TriedbPath>(
             state_override_set: &state_overrides,
             tracer,
             gas_specified,
-        },
-        eth_call_executor,
-    )
-    .await
+        })
+        .await
     {
         CallResult::Failure(error) if matches!(error.error_code, EthCallResult::OutOfGas) => {
             match out_of_gas_handling {
@@ -719,7 +717,7 @@ async fn prepare_eth_call_at_block<T: Triedb + TriedbPath>(
 pub async fn monad_eth_call<T: Triedb + TriedbPath>(
     data_provider: &DataProvider<T>,
     eth_call_handler_config: &EthCallHandlerConfig,
-    eth_call_executor: &EthCallExecutor,
+    eth_call_executor: &MonadExecutor,
     chain_id: u64,
     params: MonadEthCallParams,
 ) -> JsonRpcResult<String> {
@@ -757,7 +755,7 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
 pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
     data_provider: &DataProvider<T>,
     eth_call_handler_config: &EthCallHandlerConfig,
-    eth_call_executor: &EthCallExecutor,
+    eth_call_executor: &MonadExecutor,
     chain_id: u64,
     max_response_size: usize,
     params: MonadDebugTraceCallParams,
@@ -833,7 +831,7 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
 pub async fn monad_createAccessList<T: Triedb + TriedbPath>(
     data_provider: &DataProvider<T>,
     eth_call_handler_config: &EthCallHandlerConfig,
-    eth_call_executor: &EthCallExecutor,
+    eth_call_executor: &MonadExecutor,
     chain_id: u64,
     params: MonadCreateAccessListParams,
 ) -> JsonRpcResult<MonadCreateAccessListResult> {
@@ -1002,8 +1000,8 @@ mod tests {
     use alloy_rpc_types::{AccessList, AccessListItem};
     use monad_chain_config::execution_revision::MonadExecutionRevision;
     use monad_ethcall::{
-        CallResult, EthCallResult, FailureCallResult, RevertCallResult, StateOverrideObject,
-        StateOverrideSet, SuccessCallResult,
+        overrides::{StateOverrideObject, StateOverrideSet},
+        CallResult, EthCallResult, FailureCallResult, RevertCallResult, SuccessCallResult,
     };
     use monad_triedb_utils::{
         mock_triedb::MockTriedb,
