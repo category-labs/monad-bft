@@ -19,7 +19,7 @@ use alloy_consensus::TxEnvelope;
 use alloy_primitives::{U256, U64};
 use monad_ethcall::{
     overrides::{BlockOverride, StateOverrideSet},
-    MonadExecutor, SimulateResult, SuccessSimulateResult,
+    MonadExecutor,
 };
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{Triedb, TriedbPath};
@@ -243,17 +243,15 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
         .await;
 
     match result {
-        SimulateResult::Success(SuccessSimulateResult { output_data, .. }) => {
+        Ok(result) => {
+            let output_data = result.output_data;
             let v: serde_cbor::Value = serde_cbor::from_slice(&output_data)
                 .map_err(|e| JsonRpcError::internal_error(format!("CBOR decode error: {}", e)))?;
             serde_json::value::to_raw_value(&v).map_err(|e| {
                 JsonRpcError::internal_error(format!("json serialization error: {}", e))
             })
         }
-
-        SimulateResult::Failure(error) => {
-            Err(JsonRpcError::eth_call_error(error.message, error.data))
-        }
+        Err(e) => Err(e.into()),
     }
 }
 
