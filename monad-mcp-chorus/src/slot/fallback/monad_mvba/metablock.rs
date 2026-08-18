@@ -25,7 +25,7 @@ use super::super::{
         fast::{CertifiedEntry, Entry},
         types::{ProposalIndex, ProposalMap, Slot, ValidatorData},
     },
-    MVBAInputs,
+    MVBAInputs, PartialBlock,
 };
 
 impl MVBAInputs {
@@ -37,7 +37,7 @@ impl MVBAInputs {
     /// the metablock, so a fallback decision is comparable with a fast-path
     /// commitment carrying the same entries.
     pub(crate) fn entries(&self) -> ProposalMap<Entry> {
-        self.block.as_ref().map(CertifiedEntry::entry)
+        entries_of(&self.block)
     }
 
     /// `Metablock.is_valid()`: the metablock has one entry per proposer, its
@@ -75,6 +75,12 @@ impl MVBAInputs {
             .enumerate()
             .all(|(j, cert)| certified_entry_is_valid(cert, slot, j, validator_data))
     }
+}
+
+/// `entries(x)` of a partial block on its own, for the places a certificate
+/// carries the certified entries without the metablock around them.
+pub(crate) fn entries_of(block: &PartialBlock) -> ProposalMap<Entry> {
+    block.as_ref().map(CertifiedEntry::entry)
 }
 
 /// `CE.verify(slot, j)`: the certificate is bound to this slot and proposer

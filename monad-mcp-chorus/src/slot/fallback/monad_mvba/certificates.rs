@@ -23,9 +23,10 @@ use super::{
             fast::Entry,
             types::{IsVote, ProposalMap, SignatureCollection, Slot, StrongQc, ValidatorData},
         },
-        FallbackView, MVBAInputs,
+        FallbackView, PartialBlock,
     },
     messages::{CommitVote, PrepareVote, TimeoutVote},
+    metablock::entries_of,
 };
 use crate::spec::{Stake as _, validator::ValidatorData as _, vote::SignatureCollection as _};
 
@@ -81,11 +82,37 @@ pub(crate) struct TimeoutCertificate {
 ///
 /// // FIXME: only hold partial block. in higher views, proof to enter fallback
 /// is not used
+///
+/// Response: done -- `block` is a [`PartialBlock`] now. The fallback
+/// certificate is dropped from what travels, and a locked leader pairs the
+/// certified entries with its own, which it necessarily holds since an
+/// instance only exists once its input carried one, and which certifies the
+/// same statement `⟨fallback, slot⟩`. Nothing in agreement notices: `entries(x)`
+/// never included the fallback certificate, so the lock, the lock check and
+/// this certificate's own consistency check are unchanged.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct HighPrepare {
     pub qc: PrepareQc,
     // FIXME: Q: when would we have prepareQC but not block?
-    pub block: Option<MVBAInputs>,
+    //
+    // Response: never among honest validators -- only when a sender announces
+    // a certificate whose block it does not forward. A prepare certificate is
+    // formed in exactly one place, `prepare_qc_formed`, and that runs only at
+    // a validator already in `Preparing`, i.e. one that accepted the view's
+    // pre-prepare, so it always pairs the certificate with the block it just
+    // voted on. The only other way to hold one is to adopt it out of a timeout
+    // certificate, and there the block travels alongside. So `None` means the
+    // sender signed `high_prep_view = v` in its timeout digest while omitting
+    // the block riding with it -- either a Byzantine validator, or a leader
+    // stripping the block out of the timeouts it aggregates. Neither is
+    // preventable by the types, since the block is unsigned by the timeout.
+    //
+    // It stays an `Option` rather than being rejected because dropping the
+    // certificate along with the absent block would understate `lock(J)`,
+    // which is a safety bug. Keeping it costs liveness only: a leader bound by
+    // that lock has nothing it is allowed to propose, so the view times out
+    // until some honest timeout carries the block.
+    pub block: Option<PartialBlock>,
 }
 
 impl TimeoutCertificate {
@@ -134,7 +161,7 @@ impl TimeoutCertificate {
                     && high
                         .block
                         .as_ref()
-                        .is_none_or(|block| block.entries() == high.qc.verdict.0)
+                        .is_none_or(|block| entries_of(block) == high.qc.verdict.0)
             }
             // a claimed certificate that is not carried, or one carried
             // without any timeout claiming it.
@@ -155,10 +182,10 @@ impl TimeoutCertificate {
         self.high_prep_qc().map(|qc| &qc.verdict.0)
     }
 
-    /// The metablock matching `lock`, when a timeout carried it. Without it a
-    /// leader bound by the lock has nothing valid to propose, since this
-    /// implementation has no way to fetch the block from a signer.
-    pub(crate) fn high_block(&self) -> Option<&MVBAInputs> {
+    /// The certified entries matching `lock`, when a timeout carried them.
+    /// Without them a leader bound by the lock has nothing valid to propose,
+    /// since this implementation has no way to fetch the block from a signer.
+    pub(crate) fn high_block(&self) -> Option<&PartialBlock> {
         self.high_prepare
             .as_ref()
             .and_then(|high| high.block.as_ref())

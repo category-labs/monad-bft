@@ -45,7 +45,8 @@ use super::{
         },
         FallbackView, MVBAInputs,
     },
-    certificates::{CommitQc, PrepareQc, TimeoutCertificate},
+    certificates::{CommitQc, HighPrepare, TimeoutCertificate},
+    metablock::entries_of,
 };
 use crate::spec::vote::{KeyPair as _, Signature as _};
 
@@ -58,17 +59,16 @@ pub(crate) enum Message {
     /// A vote for the entries of the view's accepted proposal.
     #[from]
     Prepare(PrepareVoteMsg),
-    /// A vote to commit entries that gathered a prepare certificate, with the
-    /// metablock those entries come from.
+    /// A vote to commit entries that gathered a prepare certificate.
     #[from]
-    Commit(CommitMsg),
+    Commit(CommitVoteMsg),
     /// Give up on the view, carrying the sender's highest prepare certificate.
     #[from]
     Timeout(TimeoutMsg),
-    /// A commit certificate and the metablock it decides, so a validator that
-    /// missed the votes it aggregates can still decide.
+    /// A commit certificate, so a validator that missed the votes it
+    /// aggregates can still decide.
     #[from]
-    CommitQc(CommitQcMsg),
+    CommitQc(CommitQc),
 }
 
 /// `⟨Prepare, slot, v, entries(x)⟩`: a vote for the entries of the proposal
@@ -100,65 +100,6 @@ impl IsVote for CommitVote {
 }
 
 pub(crate) type CommitVoteMsg = VoteMsg<CommitVote>;
-
-/// A commit vote together with the metablock it commits.
-///
-/// The block rides unsigned, as it does on a timeout: the sender signs only
-/// `⟨Commit, slot, v, entries(x)⟩`, so commit votes still aggregate into a
-/// single certificate. What authenticates the block is its own certificates
-/// plus the requirement that its entries are exactly the ones voted for.
-///
-/// Every commit vote carries it so that a validator which never saw the view's
-/// pre-prepare can still decide the moment the certificate forms. The paper
-/// answers that case by fetching the block from a signer; this implementation
-/// has no fetch protocol, so the block travels with the messages that are sent
-/// anyway. It is the largest bandwidth item in the protocol -- one metablock
-/// per commit vote, so n per view.
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub(crate) struct CommitMsg {
-    pub vote: CommitVoteMsg,
-    pub block: MVBAInputs,
-}
-
-impl CommitMsg {
-    pub(crate) fn new_signed(
-        slot: Slot,
-        view: FallbackView,
-        block: MVBAInputs,
-        key: &KeyPair,
-    ) -> Self {
-        let vote = VoteMsg::new_signed((slot, view), CommitVote(block.entries()), key);
-
-        Self { vote, block }
-    }
-
-    pub(crate) fn scope(&self) -> (Slot, FallbackView) {
-        self.vote.scope
-    }
-
-    /// Whether the carried block is the one voted for. A sender that pairs an
-    /// unrelated metablock with its vote is discarded rather than trusted.
-    pub(crate) fn is_valid(&self) -> bool {
-        self.block.entries() == self.vote.vote.0
-    }
-}
-
-/// A commit certificate and the metablock it decides.
-///
-/// Same arrangement as [`CommitMsg`]: the certificate is over `entries(x)`
-/// alone and the block rides alongside, so a receiver holding neither the
-/// proposal nor the votes can decide from this message by itself.
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub(crate) struct CommitQcMsg {
-    pub qc: CommitQc,
-    pub block: MVBAInputs,
-}
-
-impl CommitQcMsg {
-    pub(crate) fn is_valid(&self) -> bool {
-        self.block.entries() == self.qc.verdict.0
-    }
-}
 
 /// The signed part of a timeout: which prepare certificate the sender carries,
 /// identified by its view alone.
@@ -196,30 +137,33 @@ impl IsVote for TimeoutVote {
 pub(crate) struct TimeoutMsg {
     pub vote: VoteMsg<TimeoutVote>,
     // FIXME: these should be coupled too, similar to that in TC
-    pub high_prepare_qc: Option<PrepareQc>,
-    /// The metablock the carried certificate locks, so a later leader can
-    /// propose it without fetching it from a signer.
-    pub high_block: Option<MVBAInputs>,
+    //
+    // Response: done -- the certificate and the block it locks are now the one
+    // `HighPrepare` that `TimeoutCertificate` already carries, so a block
+    // without the certificate authenticating it is unrepresentable here too,
+    // and `is_valid` no longer has to reject that pairing by hand.
+    /// `PrepQC_i`: the sender's highest prepare certificate, with the
+    /// metablock it locks when the sender holds that as well, so a later
+    /// leader can propose it without fetching it from a signer.
+    pub high_prepare: Option<HighPrepare>,
 }
 
 impl TimeoutMsg {
     pub(crate) fn new_signed(
         slot: Slot,
         view: FallbackView,
-        high_prepare_qc: Option<PrepareQc>,
-        high_block: Option<MVBAInputs>,
+        high_prepare: Option<HighPrepare>,
         key: &KeyPair,
     ) -> Self {
         let vote = TimeoutVote {
-            high_prep_view: high_prepare_qc
+            high_prep_view: high_prepare
                 .as_ref()
-                .map_or(FallbackView::GENESIS, |qc| qc.scope.1),
+                .map_or(FallbackView::GENESIS, |high| high.qc.scope.1),
         };
 
         Self {
             vote: VoteMsg::new_signed((slot, view), vote, key),
-            high_prepare_qc,
-            high_block,
+            high_prepare,
         }
     }
 
@@ -241,11 +185,11 @@ impl TimeoutMsg {
     pub(crate) fn is_valid(&self, validator_data: &ValidatorData) -> bool {
         let high_prep_view = self.vote.vote.high_prep_view;
 
-        match &self.high_prepare_qc {
+        match &self.high_prepare {
             // no certificate claimed and none carried.
-            None => high_prep_view == FallbackView::GENESIS && self.high_block.is_none(),
-            Some(qc) => {
-                let (qc_slot, qc_view) = qc.scope;
+            None => high_prep_view == FallbackView::GENESIS,
+            Some(high) => {
+                let (qc_slot, qc_view) = high.qc.scope;
                 qc_slot == self.slot()
                     // a certificate of view 0 does not exist, so this also
                     // rejects a certificate carried without being claimed.
@@ -253,11 +197,11 @@ impl TimeoutMsg {
                     // a validator may hold a prepare certificate of the very
                     // view it is abandoning, but never of a later one.
                     && qc_view <= self.view()
-                    && qc.verify(validator_data)
-                    && self
-                        .high_block
+                    && high.qc.verify(validator_data)
+                    && high
+                        .block
                         .as_ref()
-                        .is_none_or(|block| block.entries() == qc.verdict.0)
+                        .is_none_or(|block| entries_of(block) == high.qc.verdict.0)
             }
         }
     }

@@ -51,7 +51,7 @@ fn decides_along_the_happy_path() {
     feed_commit_votes(&mut instance, view(1), &block, &quorum());
     let outputs = drain(&mut instance);
 
-    assert_eq!(instance.decision(), Some(&block));
+    assert_eq!(instance.decision(), Some(&block.entries()));
     let decision_qc = instance
         .decision_qc()
         .expect("a decision comes with its certificate");
@@ -97,11 +97,11 @@ fn a_quorum_that_arrives_before_the_proposal_fires_on_arrival() {
 
     feed_commit_votes(&mut instance, view(1), &block, &quorum());
     drain(&mut instance);
-    assert_eq!(instance.decision(), Some(&block));
+    assert_eq!(instance.decision(), Some(&block.entries()));
 }
 
 #[test]
-fn commit_votes_carry_the_block_so_a_validator_can_decide_without_the_proposal() {
+fn commit_votes_alone_decide_without_the_proposal() {
     let validator_data = validator_data();
     let block = metablock(1, &validator_data);
     let own = metablock(2, &validator_data);
@@ -111,11 +111,12 @@ fn commit_votes_carry_the_block_so_a_validator_can_decide_without_the_proposal()
     drain(&mut instance);
 
     // it never saw the pre-prepare and its own input is a different metablock,
-    // so the only source for the decided block is the commit votes themselves.
+    // so the certificate the commit votes form is the whole of what it decides
+    // on.
     feed_commit_votes(&mut instance, view(1), &block, &quorum());
     drain(&mut instance);
 
-    assert_eq!(instance.decision(), Some(&block));
+    assert_eq!(instance.decision(), Some(&block.entries()));
     assert_eq!(
         instance
             .decision_qc()
@@ -338,7 +339,7 @@ fn a_received_certificate_decides_the_metablock_it_carries() {
     );
     drain(&mut instance);
 
-    assert_eq!(instance.decision(), Some(&block));
+    assert_eq!(instance.decision(), Some(&block.entries()));
     assert!(instance.decision_qc().is_some());
 }
 
@@ -365,7 +366,11 @@ fn a_decided_instance_ignores_everything_after() {
     instance.handle_timer(TimerEvent::ViewTimeout(view(1)));
 
     assert!(drain(&mut instance).is_empty(), "a decision is terminal");
-    assert_eq!(instance.decision(), Some(&block), "and it never changes");
+    assert_eq!(
+        instance.decision(),
+        Some(&block.entries()),
+        "and it never changes"
+    );
 }
 
 #[test]

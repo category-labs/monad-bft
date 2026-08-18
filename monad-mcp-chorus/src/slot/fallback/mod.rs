@@ -133,8 +133,15 @@ pub trait Mvba<V: Validate + Votable> {
     // persistence
     fn abandon(&mut self);
 
-    /// Query whether the ACS has made an decision
-    fn decision(&self) -> Option<&V>;
+    /// Query whether the ACS has made an decision.
+    ///
+    /// The decision is the projection votes ranged over, not the value that
+    /// carried it: [`Mvba::decision_qc`] certifies `entries(x)`, so a
+    /// supermajority has attested to exactly this much and nothing in the
+    /// value around it adds evidence. Returning the projection is also what
+    /// lets a validator decide without ever holding the value -- the
+    /// certificate alone is enough.
+    fn decision(&self) -> Option<&V::Entries>;
 
     /// The certificate proving the decision: a supermajority of commit votes
     /// over `entries(x)` of the decided value. It is the transferable

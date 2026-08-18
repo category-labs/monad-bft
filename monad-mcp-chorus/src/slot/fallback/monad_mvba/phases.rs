@@ -75,7 +75,7 @@ pub(crate) struct Committing {
 /// Decided, with the certificate that proves it.
 #[derive(Clone)]
 pub(crate) struct Decided {
-    block: MVBAInputs,
+    entries: ProposalMap<Entry>,
     commit_qc: CommitQc,
 }
 
@@ -112,17 +112,6 @@ impl Phase {
         matches!(self, Phase::TimedOut(_))
     }
 
-    /// The metablock accepted in this view, if one was.
-    pub(crate) fn block(&self) -> Option<&MVBAInputs> {
-        match self {
-            Phase::AwaitingProposal(_) => None,
-            Phase::Preparing(p) => Some(&p.block),
-            Phase::Committing(p) => Some(&p.block),
-            Phase::TimedOut(p) => p.inner.block(),
-            Phase::Decided(p) => Some(&p.block),
-        }
-    }
-
     /// `entries(x_v)` of the accepted proposal, if one was accepted.
     pub(crate) fn entries(&self) -> Option<&ProposalMap<Entry>> {
         match self {
@@ -130,7 +119,7 @@ impl Phase {
             Phase::Preparing(p) => Some(&p.entries),
             Phase::Committing(p) => Some(&p.entries),
             Phase::TimedOut(p) => p.inner.entries(),
-            Phase::Decided(_) => None,
+            Phase::Decided(p) => Some(&p.entries),
         }
     }
 
@@ -191,14 +180,6 @@ impl InnerPhase {
         }
     }
 
-    fn block(&self) -> Option<&MVBAInputs> {
-        match self {
-            InnerPhase::AwaitingProposal(_) => None,
-            InnerPhase::Preparing(p) => Some(&p.block),
-            InnerPhase::Committing(p) => Some(&p.block),
-        }
-    }
-
     fn entries(&self) -> Option<&ProposalMap<Entry>> {
         match self {
             InnerPhase::AwaitingProposal(_) => None,
@@ -253,7 +234,7 @@ impl Preparing {
         debug_assert_eq!(commit_qc.verdict.0, self.entries);
 
         Decided {
-            block: self.block,
+            entries: self.entries,
             commit_qc,
         }
     }
@@ -272,28 +253,29 @@ impl Committing {
         debug_assert_eq!(commit_qc.verdict.0, self.entries);
 
         Decided {
-            block: self.block,
+            entries: self.entries,
             commit_qc,
         }
     }
 }
 
 impl Decided {
-    pub(crate) fn block(&self) -> &MVBAInputs {
-        &self.block
+    pub(crate) fn entries(&self) -> &ProposalMap<Entry> {
+        &self.entries
     }
 
     pub(crate) fn commit_qc(&self) -> &CommitQc {
         &self.commit_qc
     }
 
-    /// A metablock held from elsewhere -- this validator's own input, or one
-    /// carried by a timeout certificate -- decided by a commit certificate it
-    /// received rather than formed.
-    pub(crate) fn from_foreign_qc(block: MVBAInputs, commit_qc: CommitQc) -> Self {
-        debug_assert_eq!(commit_qc.verdict.0, block.entries());
-
-        Decided { block, commit_qc }
+    /// Decided by a certificate this validator received rather than formed, in
+    /// a view whose phase never accepted the entries it certifies. The
+    /// certificate's verdict is the decision, so nothing else is needed.
+    pub(crate) fn from_foreign_qc(commit_qc: CommitQc) -> Self {
+        Decided {
+            entries: commit_qc.verdict.0.clone(),
+            commit_qc,
+        }
     }
 }
 

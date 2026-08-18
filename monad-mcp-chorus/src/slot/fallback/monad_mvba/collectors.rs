@@ -31,7 +31,7 @@ use super::{
         },
         FallbackView,
     },
-    certificates::{HighPrepare, TimeoutCertificate},
+    certificates::TimeoutCertificate,
     messages::{TimeoutMsg, TimeoutVote},
 };
 use crate::spec::{
@@ -178,19 +178,13 @@ impl TimeoutCollector {
             })
             .collect();
 
-        // the highest prepare certificate carried, and the block that goes
-        // with it. `is_valid` at ingress guarantees the two agree.
-        let highest = timeouts
+        // the highest prepare certificate carried, together with the block
+        // that goes with it. `is_valid` at ingress guarantees the two agree.
+        let high_prepare = timeouts
             .values()
-            .filter(|msg| msg.high_prepare_qc.is_some())
-            .max_by_key(|msg| msg.high_prepare_qc.as_ref().map(|qc| qc.scope.1));
-
-        let high_prepare = highest.and_then(|msg| {
-            msg.high_prepare_qc.clone().map(|qc| HighPrepare {
-                qc,
-                block: msg.high_block.clone(),
-            })
-        });
+            .filter_map(|msg| msg.high_prepare.as_ref())
+            .max_by_key(|high| high.qc.scope.1)
+            .cloned();
 
         Some(TimeoutCertificate {
             slot: self.slot,

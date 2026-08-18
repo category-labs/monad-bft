@@ -34,11 +34,9 @@ use super::{
         FallbackView, MVBAInputs, MVBAOutput, Mvba,
     },
     Context, MonadMvba, TimerEvent,
-    certificates::{PrepareQc, TimeoutCertificate},
+    certificates::{HighPrepare, PrepareQc, TimeoutCertificate},
     collectors::TimeoutCollector,
-    messages::{
-        CommitMsg, CommitQcMsg, CommitVote, Message, PrePrepareMsg, PrepareVote, TimeoutMsg,
-    },
+    messages::{CommitVote, Message, PrePrepareMsg, PrepareVote, TimeoutMsg},
 };
 
 pub(super) const NUM_NODES: u64 = 4;
@@ -156,8 +154,17 @@ pub(super) fn pre_prepare(
     (leader, Message::PrePrepare(msg))
 }
 
+/// The `HighPrepare` a test's `(certificate, block)` pair stands for: tests
+/// that pin a lock always hold the block that goes with it.
+fn high_prepare(high: &Option<(PrepareQc, MVBAInputs)>) -> Option<HighPrepare> {
+    high.as_ref().map(|(qc, block)| HighPrepare {
+        qc: qc.clone(),
+        block: Some(block.block.clone()),
+    })
+}
+
 /// A timeout certificate for `v`, aggregated from timeouts carrying
-/// `high_prepare_qc` and the block it locks.
+/// `high_prepare` and the block it locks.
 pub(super) fn timeout_certificate(
     v: FallbackView,
     high: Option<(PrepareQc, MVBAInputs)>,
@@ -165,13 +172,9 @@ pub(super) fn timeout_certificate(
 ) -> TimeoutCertificate {
     let mut collector = TimeoutCollector::new(SLOT);
     for node in quorum() {
-        let (qc, block) = match &high {
-            Some((qc, block)) => (Some(qc.clone()), Some(block.clone())),
-            None => (None, None),
-        };
         collector.add(
             node,
-            TimeoutMsg::new_signed(SLOT, v, qc, block, &node.keypair()),
+            TimeoutMsg::new_signed(SLOT, v, high_prepare(&high), &node.keypair()),
         );
     }
 
@@ -201,13 +204,13 @@ pub(super) fn feed_commit_votes(
     signers: &[NodeId],
 ) {
     for node in signers {
-        let msg = CommitMsg::new_signed(SLOT, v, block.clone(), &node.keypair());
+        let msg = VoteMsg::new_signed((SLOT, v), CommitVote(block.entries()), &node.keypair());
         instance.handle_message(*node, Message::Commit(msg));
     }
 }
 
-/// A commit certificate for `block`, with the block attached as the wire
-/// message carries it.
+/// A commit certificate over the entries of `block`, as the wire message
+/// carries it: the certificate alone.
 pub(super) fn commit_qc_message(
     v: FallbackView,
     block: &MVBAInputs,
@@ -220,10 +223,7 @@ pub(super) fn commit_qc_message(
         validator_data,
     );
 
-    Message::CommitQc(CommitQcMsg {
-        qc,
-        block: block.clone(),
-    })
+    Message::CommitQc(qc)
 }
 
 pub(super) fn feed_timeouts(
@@ -233,11 +233,7 @@ pub(super) fn feed_timeouts(
     signers: &[NodeId],
 ) {
     for node in signers {
-        let (qc, block) = match &high {
-            Some((qc, block)) => (Some(qc.clone()), Some(block.clone())),
-            None => (None, None),
-        };
-        let msg = TimeoutMsg::new_signed(SLOT, v, qc, block, &node.keypair());
+        let msg = TimeoutMsg::new_signed(SLOT, v, high_prepare(&high), &node.keypair());
         instance.handle_message(*node, Message::Timeout(msg));
     }
 }
@@ -280,7 +276,7 @@ pub(super) fn committed_entries(outputs: &[Output]) -> Option<ProposalMap<Entry>
     broadcasts(outputs)
         .into_iter()
         .find_map(|message| match message {
-            Message::Commit(commit) => Some(commit.vote.vote.0.clone()),
+            Message::Commit(commit) => Some(commit.vote.0.clone()),
             _ => None,
         })
 }
