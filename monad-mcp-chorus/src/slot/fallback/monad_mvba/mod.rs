@@ -50,14 +50,15 @@ mod test_helpers;
 mod tests;
 
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, HashMap, VecDeque},
     sync::Arc,
 };
 
 use certificates::{CommitQc, PrepareQc, TimeoutCertificate};
 use collectors::{TimeoutCollector, VoteCollector};
 use messages::{
-    CommitVote, CommitVoteMsg, Message, PrePrepareMsg, PrepareVote, PrepareVoteMsg, TimeoutMsg,
+    CommitMsg, CommitQcMsg, CommitVote, Message, PrePrepareMsg, PrepareVote, PrepareVoteMsg,
+    TimeoutMsg,
 };
 use phases::{Decided, InnerPhase, Phase, TimedOut, Transition};
 
@@ -131,12 +132,6 @@ pub(crate) enum TimerEvent {
     ViewTimeout(FallbackView),
 }
 
-/// Value proposed into the MVBA: a metablock for this slot.
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub(crate) struct Input {
-    pub inputs: MVBAInputs,
-}
-
 /// What checking a metablock needs: it is only valid relative to a slot and a
 /// validator set.
 pub(crate) struct ValidationContext {
@@ -145,20 +140,19 @@ pub(crate) struct ValidationContext {
     pub validator_data: Arc<ValidatorData>,
 }
 
-impl Validate for Input {
+impl Validate for MVBAInputs {
     type Context = ValidationContext;
 
     fn validate(&self, context: &Self::Context) -> bool {
-        self.inputs
-            .is_valid(context.slot, context.num_proposals, &context.validator_data)
+        self.is_valid(context.slot, context.num_proposals, &context.validator_data)
     }
 }
 
-impl Votable for Input {
+impl Votable for MVBAInputs {
     type Entries = ProposalMap<Entry>;
 
     fn entries(&self) -> Self::Entries {
-        self.inputs.entries()
+        MVBAInputs::entries(self)
     }
 }
 
@@ -171,7 +165,7 @@ pub(crate) struct MonadMvba {
 
     /// This validator's input metablock, set by [`Mvba::propose`]. It also
     /// gates participation: nothing is sent before it is set.
-    input: Option<Input>,
+    input: Option<MVBAInputs>,
 
     /// `lastVotedView_i`: this validator votes in a view only if the view is
     /// above it.
@@ -183,12 +177,24 @@ pub(crate) struct MonadMvba {
     /// `DecidedQC_i`: known as soon as a commit certificate is, which may be
     /// before the matching metablock is held.
     decided_qc: Option<CommitQc>,
-    decision: Option<Input>,
+    decision: Option<MVBAInputs>,
 
     /// The first pre-prepare seen per view, for the current view or a nearby
     /// future one. First write wins, so a Byzantine leader cannot displace the
     /// proposal a validator is already working on with a second one.
     pre_prepares: BTreeMap<FallbackView, Validated<PrePrepareMsg>>,
+
+    /// Metablocks other validators voted to commit, keyed by their entries.
+    ///
+    /// This is what makes a decision reachable without the paper's fetch
+    /// protocol: a validator that never saw a view's pre-prepare still learns
+    /// the block from any commit vote for it, and can decide as soon as the
+    /// certificate exists. It is bounded by the entry vectors that can be
+    /// certified at all for this slot, since a metablock is only stored once
+    /// checked valid, and a slot's certificates are finite.
+    ///
+    /// FIXME: you don't need to fetch the original preprepare/mvba input, proposalmap<entry> is enough
+    known_blocks: HashMap<ProposalMap<Entry>, MVBAInputs>,
 
     prepare_votes: VoteCollector<PrepareVote>,
     commit_votes: VoteCollector<CommitVote>,
@@ -202,7 +208,7 @@ pub(crate) struct MonadMvba {
     abandoned: bool,
 }
 
-impl Mvba<Input> for MonadMvba {
+impl Mvba<MVBAInputs> for MonadMvba {
     type Message = Message;
     type Context = Context;
     type TimerEvent = TimerEvent;
@@ -221,6 +227,7 @@ impl Mvba<Input> for MonadMvba {
             decided_qc: None,
             decision: None,
             pre_prepares: BTreeMap::new(),
+            known_blocks: HashMap::new(),
             prepare_votes: VoteCollector::new(slot),
             commit_votes: VoteCollector::new(slot),
             timeouts: TimeoutCollector::new(slot),
@@ -230,7 +237,7 @@ impl Mvba<Input> for MonadMvba {
         }
     }
 
-    fn propose(&mut self, data: Input) {
+    fn propose(&mut self, data: MVBAInputs) {
         if self.abandoned || self.input.is_some() {
             // at most one proposal per instance.
             return;
@@ -285,7 +292,7 @@ impl Mvba<Input> for MonadMvba {
         self.outputs.clear();
     }
 
-    fn decision(&self) -> Option<&Input> {
+    fn decision(&self) -> Option<&MVBAInputs> {
         self.decision.as_ref()
     }
 
@@ -336,13 +343,21 @@ impl MonadMvba {
         self.prepare_votes.add(sender, msg);
     }
 
-    fn store_commit_vote(&mut self, sender: NodeId, msg: CommitVoteMsg) {
-        let (slot, view) = msg.scope;
+    fn store_commit_vote(&mut self, sender: NodeId, msg: CommitMsg) {
+        let (slot, view) = msg.scope();
         if slot != self.context.slot || !self.in_window(view) {
             return;
         }
 
-        self.commit_votes.add(sender, msg);
+        // the block riding along is unsigned, so it is worth only what it can
+        // be checked against: it must be the block that was voted for, and it
+        // must be a valid metablock in its own right.
+        if !msg.is_valid() || !self.is_valid_metablock(&msg.block) {
+            return;
+        }
+
+        self.remember_block(msg.block);
+        self.commit_votes.add(sender, msg.vote);
     }
 
     fn store_timeout(&mut self, sender: NodeId, msg: TimeoutMsg) {
@@ -360,16 +375,23 @@ impl MonadMvba {
         self.timeouts.add(sender, msg);
     }
 
-    fn store_commit_qc(&mut self, qc: CommitQc) {
-        if self.decided_qc.is_some() {
-            return;
-        }
-        if qc.scope.0 != self.context.slot || !qc.verify(&self.context.validator_data) {
+    fn store_commit_qc(&mut self, msg: CommitQcMsg) {
+        if msg.qc.scope.0 != self.context.slot
+            || !msg.is_valid()
+            || !msg.qc.verify(&self.context.validator_data)
+            || !self.is_valid_metablock(&msg.block)
+        {
             return;
         }
 
-        // persist-before-send: DecidedQC.
-        self.decided_qc = Some(qc);
+        // the block first: a decision needs both, and this message carries
+        // them together precisely so the decision cannot be left pending.
+        self.remember_block(msg.block);
+
+        if self.decided_qc.is_none() {
+            // persist-before-send: DecidedQC.
+            self.decided_qc = Some(msg.qc);
+        }
     }
 
     /// Whether messages for `view` are worth keeping: not from a view already
@@ -466,8 +488,11 @@ impl MonadMvba {
                 .try_form_qc(self.view, &self.context.validator_data)?,
         };
 
-        // a validator decides only a metablock it holds; without one it waits,
-        // since there is no fetch protocol here.
+        // a validator decides only a metablock it holds. Commit messages carry
+        // the block with them, so this normally holds as soon as the
+        // certificate does; it fails only for a certificate learned from votes
+        // whose blocks never arrived, and the decision then completes as soon
+        // as one does.
         self.block_with_entries(&qc.verdict.0)?;
 
         Some(qc)
@@ -595,10 +620,9 @@ impl MonadMvba {
         self.last_voted_view = self.view;
 
         let vote = self.sign_vote(PrepareVote(preparing.entries().clone()));
-        (
-            Phase::Preparing(preparing),
-            vec![MVBAOutput::Broadcast(Message::Prepare(vote))],
-        )
+        (Phase::Preparing(preparing), vec![MVBAOutput::Broadcast(
+            Message::Prepare(vote),
+        )])
     }
 
     /// `TryFormPrepQC`: adopt the certificate as this validator's lock and
@@ -628,10 +652,11 @@ impl MonadMvba {
         };
 
         // persist-before-send: PrepQC.
-        self.update_prep_qc(qc, Some(block));
+        self.update_prep_qc(qc, Some(block.clone()));
 
-        let vote = self.sign_vote(CommitVote(entries));
-        let outputs = vec![MVBAOutput::Broadcast(Message::Commit(vote))];
+        debug_assert_eq!(block.entries(), entries);
+        let commit = CommitMsg::new_signed(self.context.slot, self.view, block, &self.context.key);
+        let outputs = vec![MVBAOutput::Broadcast(Message::Commit(commit))];
 
         match committing {
             Ok(p) => (Phase::Committing(p), outputs),
@@ -663,14 +688,16 @@ impl MonadMvba {
 
         // persist-before-send: DecidedQC.
         self.decided_qc = Some(commit_qc.clone());
-        self.decision = Some(Input {
-            inputs: decided.block().clone(),
-        });
+        self.decision = Some(decided.block().clone());
 
-        (
-            Phase::Decided(decided),
-            vec![MVBAOutput::Broadcast(Message::CommitQc(commit_qc))],
-        )
+        let announcement = CommitQcMsg {
+            qc: commit_qc,
+            block: decided.block().clone(),
+        };
+
+        (Phase::Decided(decided), vec![MVBAOutput::Broadcast(
+            Message::CommitQc(announcement),
+        )])
     }
 
     /// Decide on a metablock held outside the current view's phase -- this
@@ -724,10 +751,9 @@ impl MonadMvba {
             .time_out()
             .expect("a timeout transition is only found for a view that has not timed out");
 
-        (
-            phase,
-            vec![MVBAOutput::Broadcast(Message::Timeout(timeout))],
-        )
+        (phase, vec![MVBAOutput::Broadcast(Message::Timeout(
+            timeout,
+        ))])
     }
 
     /// Enter `view`: restart the view timer and, if this validator leads the
@@ -766,7 +792,7 @@ impl MonadMvba {
             return None;
         }
 
-        let own_input = || self.input.as_ref().map(|input| input.inputs.clone());
+        let own_input = || self.input.clone();
 
         let metablock = match justification.as_ref() {
             None => own_input()?,
@@ -815,18 +841,35 @@ impl MonadMvba {
     }
 
     /// A metablock this validator holds whose entries are `entries`: the one
-    /// accepted in this view, the one its lock carries, or its own input.
+    /// accepted in this view, the one its lock carries, its own input, or one
+    /// learned from a commit message.
     fn block_with_entries(&self, entries: &ProposalMap<Entry>) -> Option<&MVBAInputs> {
         let candidates = [
             self.phase.block(),
             self.prep_qc.as_ref().and_then(|(_, block)| block.as_ref()),
-            self.input.as_ref().map(|input| &input.inputs),
+            self.input.as_ref(),
         ];
 
         candidates
             .into_iter()
             .flatten()
             .find(|block| block.entries() == *entries)
+            .or_else(|| self.known_blocks.get(entries))
+    }
+
+    /// Keep a metablock learned from a commit message. First write wins: any
+    /// valid metablock with these entries decides the same thing, so a later
+    /// one has nothing to add.
+    fn remember_block(&mut self, block: MVBAInputs) {
+        self.known_blocks.entry(block.entries()).or_insert(block);
+    }
+
+    fn is_valid_metablock(&self, block: &MVBAInputs) -> bool {
+        block.is_valid(
+            self.context.slot,
+            self.context.num_proposals,
+            &self.context.validator_data,
+        )
     }
 
     fn sign_vote<V>(&self, vote: V) -> VoteMsg<V>

@@ -84,6 +84,7 @@ pub(crate) type PartialBlock = TotalProposalMap<CertifiedEntry>;
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct MVBAInputs {
+    // TODO: reasonably split out fallback cert from input.
     pub enter_fallback_cert: EnterFallbackCert,
     pub block: PartialBlock,
 }

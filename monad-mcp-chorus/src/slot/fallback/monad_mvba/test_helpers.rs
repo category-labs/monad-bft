@@ -33,10 +33,12 @@ use super::{
         },
         FallbackView, MVBAInputs, MVBAOutput, Mvba,
     },
-    Context, Input, MonadMvba, TimerEvent,
+    Context, MonadMvba, TimerEvent,
     certificates::{PrepareQc, TimeoutCertificate},
     collectors::TimeoutCollector,
-    messages::{CommitVote, Message, PrePrepareMsg, PrepareVote, TimeoutMsg},
+    messages::{
+        CommitMsg, CommitQcMsg, CommitVote, Message, PrePrepareMsg, PrepareVote, TimeoutMsg,
+    },
 };
 
 pub(super) const NUM_NODES: u64 = 4;
@@ -190,16 +192,38 @@ pub(super) fn feed_prepare_votes(
     }
 }
 
+/// Commit votes carry the metablock they commit, so feeding them hands the
+/// receiver the block as well as the vote.
 pub(super) fn feed_commit_votes(
     instance: &mut MonadMvba,
     v: FallbackView,
-    entries: &ProposalMap<Entry>,
+    block: &MVBAInputs,
     signers: &[NodeId],
 ) {
     for node in signers {
-        let msg = VoteMsg::new_signed((SLOT, v), CommitVote(entries.clone()), &node.keypair());
+        let msg = CommitMsg::new_signed(SLOT, v, block.clone(), &node.keypair());
         instance.handle_message(*node, Message::Commit(msg));
     }
+}
+
+/// A commit certificate for `block`, with the block attached as the wire
+/// message carries it.
+pub(super) fn commit_qc_message(
+    v: FallbackView,
+    block: &MVBAInputs,
+    validator_data: &ValidatorData,
+) -> Message {
+    let qc = strong_qc(
+        (SLOT, v),
+        CommitVote(block.entries()),
+        &quorum(),
+        validator_data,
+    );
+
+    Message::CommitQc(CommitQcMsg {
+        qc,
+        block: block.clone(),
+    })
 }
 
 pub(super) fn feed_timeouts(
@@ -256,7 +280,7 @@ pub(super) fn committed_entries(outputs: &[Output]) -> Option<ProposalMap<Entry>
     broadcasts(outputs)
         .into_iter()
         .find_map(|message| match message {
-            Message::Commit(vote) => Some(vote.vote.0.clone()),
+            Message::Commit(commit) => Some(commit.vote.vote.0.clone()),
             _ => None,
         })
 }
@@ -287,8 +311,6 @@ pub(super) fn started(
     validator_data: &Arc<ValidatorData>,
 ) -> MonadMvba {
     let mut instance = mvba(node, validator_data);
-    instance.propose(Input {
-        inputs: block.clone(),
-    });
+    instance.propose(block.clone());
     instance
 }

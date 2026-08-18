@@ -19,6 +19,19 @@
 //! every one is scoped by `(slot, view)`: no signature can be replayed across
 //! views, nor across the fast and fallback paths.
 
+// FIXME: mvba structs should be over generic MVBA input and not the concrete
+// type
+//
+// Response: agreed, and the trait side is already generic -- `Mvba<V: Validate
+// + Votable>` names the value type and `Votable::Entries` the projection votes
+// range over. What is still concrete is this module: votes wrap
+// `ProposalMap<Entry>` and pre-prepares carry `MVBAInputs` directly, so the
+// messages, the certificates over them, the collectors and the phases would all
+// have to become generic in `V` together, and `MonadMvba` would need the vote
+// newtypes it signs under to come from the value type rather than be declared
+// here. That is a module-wide parameterisation rather than a local edit, so it
+// is left for you to schedule -- say the word and it is a self-contained pass.
+
 use bytes::Bytes;
 
 use super::{
@@ -45,16 +58,17 @@ pub(crate) enum Message {
     /// A vote for the entries of the view's accepted proposal.
     #[from]
     Prepare(PrepareVoteMsg),
-    /// A vote to commit entries that gathered a prepare certificate.
+    /// A vote to commit entries that gathered a prepare certificate, with the
+    /// metablock those entries come from.
     #[from]
-    Commit(CommitVoteMsg),
+    Commit(CommitMsg),
     /// Give up on the view, carrying the sender's highest prepare certificate.
     #[from]
     Timeout(TimeoutMsg),
-    /// A commit certificate, so a validator that missed the votes it
-    /// aggregates can still learn the decision.
+    /// A commit certificate and the metablock it decides, so a validator that
+    /// missed the votes it aggregates can still decide.
     #[from]
-    CommitQc(CommitQc),
+    CommitQc(CommitQcMsg),
 }
 
 /// `⟨Prepare, slot, v, entries(x)⟩`: a vote for the entries of the proposal
@@ -87,6 +101,65 @@ impl IsVote for CommitVote {
 
 pub(crate) type CommitVoteMsg = VoteMsg<CommitVote>;
 
+/// A commit vote together with the metablock it commits.
+///
+/// The block rides unsigned, as it does on a timeout: the sender signs only
+/// `⟨Commit, slot, v, entries(x)⟩`, so commit votes still aggregate into a
+/// single certificate. What authenticates the block is its own certificates
+/// plus the requirement that its entries are exactly the ones voted for.
+///
+/// Every commit vote carries it so that a validator which never saw the view's
+/// pre-prepare can still decide the moment the certificate forms. The paper
+/// answers that case by fetching the block from a signer; this implementation
+/// has no fetch protocol, so the block travels with the messages that are sent
+/// anyway. It is the largest bandwidth item in the protocol -- one metablock
+/// per commit vote, so n per view.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub(crate) struct CommitMsg {
+    pub vote: CommitVoteMsg,
+    pub block: MVBAInputs,
+}
+
+impl CommitMsg {
+    pub(crate) fn new_signed(
+        slot: Slot,
+        view: FallbackView,
+        block: MVBAInputs,
+        key: &KeyPair,
+    ) -> Self {
+        let vote = VoteMsg::new_signed((slot, view), CommitVote(block.entries()), key);
+
+        Self { vote, block }
+    }
+
+    pub(crate) fn scope(&self) -> (Slot, FallbackView) {
+        self.vote.scope
+    }
+
+    /// Whether the carried block is the one voted for. A sender that pairs an
+    /// unrelated metablock with its vote is discarded rather than trusted.
+    pub(crate) fn is_valid(&self) -> bool {
+        self.block.entries() == self.vote.vote.0
+    }
+}
+
+/// A commit certificate and the metablock it decides.
+///
+/// Same arrangement as [`CommitMsg`]: the certificate is over `entries(x)`
+/// alone and the block rides alongside, so a receiver holding neither the
+/// proposal nor the votes can decide from this message by itself.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub(crate) struct CommitQcMsg {
+    pub qc: CommitQc,
+    pub block: MVBAInputs,
+}
+
+impl CommitQcMsg {
+    pub(crate) fn is_valid(&self) -> bool {
+        self.block.entries() == self.qc.verdict.0
+    }
+}
+
 /// The signed part of a timeout: which prepare certificate the sender carries,
 /// identified by its view alone.
 ///
@@ -96,9 +169,12 @@ pub(crate) type CommitVoteMsg = VoteMsg<CommitVote>;
 /// distinct `high_prep_view` instead of one signature per sender.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct TimeoutVote {
-    /// View of the sender's highest prepare certificate, `None` if it holds
-    /// none.
-    pub high_prep_view: Option<FallbackView>,
+    /// View of the sender's highest prepare certificate, or    
+    /// [`FallbackView::GENESIS`] if it holds none: views are 1-indexed, so view
+    /// 0 is not a view any certificate can come from and carries the "no lock"
+    /// case without a separate `None`.
+    ///
+    pub high_prep_view: FallbackView,
 }
 
 impl IsVote for TimeoutVote {
@@ -119,6 +195,7 @@ impl IsVote for TimeoutVote {
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct TimeoutMsg {
     pub vote: VoteMsg<TimeoutVote>,
+    // FIXME: these should be coupled too, similar to that in TC
     pub high_prepare_qc: Option<PrepareQc>,
     /// The metablock the carried certificate locks, so a later leader can
     /// propose it without fetching it from a signer.
@@ -134,7 +211,9 @@ impl TimeoutMsg {
         key: &KeyPair,
     ) -> Self {
         let vote = TimeoutVote {
-            high_prep_view: high_prepare_qc.as_ref().map(|qc| qc.scope.1),
+            high_prep_view: high_prepare_qc
+                .as_ref()
+                .map_or(FallbackView::GENESIS, |qc| qc.scope.1),
         };
 
         Self {
@@ -160,12 +239,17 @@ impl TimeoutMsg {
     /// Checking this at ingress is what lets a timeout certificate trust the
     /// claimed `high_prep_view` of each group it aggregates.
     pub(crate) fn is_valid(&self, validator_data: &ValidatorData) -> bool {
-        match (&self.vote.vote.high_prep_view, &self.high_prepare_qc) {
-            (None, None) => self.high_block.is_none(),
-            (Some(high_prep_view), Some(qc)) => {
+        let high_prep_view = self.vote.vote.high_prep_view;
+
+        match &self.high_prepare_qc {
+            // no certificate claimed and none carried.
+            None => high_prep_view == FallbackView::GENESIS && self.high_block.is_none(),
+            Some(qc) => {
                 let (qc_slot, qc_view) = qc.scope;
                 qc_slot == self.slot()
-                    && qc_view == *high_prep_view
+                    // a certificate of view 0 does not exist, so this also
+                    // rejects a certificate carried without being claimed.
+                    && qc_view == high_prep_view
                     // a validator may hold a prepare certificate of the very
                     // view it is abandoning, but never of a later one.
                     && qc_view <= self.view()
@@ -175,8 +259,6 @@ impl TimeoutMsg {
                         .as_ref()
                         .is_none_or(|block| block.entries() == qc.verdict.0)
             }
-            // a claim without its certificate, or a certificate not claimed.
-            _ => false,
         }
     }
 }

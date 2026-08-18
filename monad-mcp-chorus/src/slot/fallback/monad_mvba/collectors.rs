@@ -31,7 +31,7 @@ use super::{
         },
         FallbackView,
     },
-    certificates::TimeoutCertificate,
+    certificates::{HighPrepare, TimeoutCertificate},
     messages::{TimeoutMsg, TimeoutVote},
 };
 use crate::spec::{
@@ -162,8 +162,7 @@ impl TimeoutCollector {
             return None;
         }
 
-        let mut sig_groups: BTreeMap<Option<FallbackView>, HashMap<&NodeId, &Signature>> =
-            BTreeMap::new();
+        let mut sig_groups: BTreeMap<FallbackView, HashMap<&NodeId, &Signature>> = BTreeMap::new();
         for (sender, msg) in timeouts {
             sig_groups
                 .entry(msg.vote.vote.high_prep_view)
@@ -186,12 +185,18 @@ impl TimeoutCollector {
             .filter(|msg| msg.high_prepare_qc.is_some())
             .max_by_key(|msg| msg.high_prepare_qc.as_ref().map(|qc| qc.scope.1));
 
+        let high_prepare = highest.and_then(|msg| {
+            msg.high_prepare_qc.clone().map(|qc| HighPrepare {
+                qc,
+                block: msg.high_block.clone(),
+            })
+        });
+
         Some(TimeoutCertificate {
             slot: self.slot,
             view,
             groups,
-            high_prepare_qc: highest.and_then(|msg| msg.high_prepare_qc.clone()),
-            high_block: highest.and_then(|msg| msg.high_block.clone()),
+            high_prepare,
         })
     }
 

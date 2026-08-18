@@ -52,8 +52,40 @@ pub(crate) struct TimeoutCertificate {
     pub slot: Slot,
     pub view: FallbackView,
     pub groups: Vec<(TimeoutVote, SignatureCollection)>,
-    pub high_prepare_qc: Option<PrepareQc>,
-    pub high_block: Option<MVBAInputs>,
+
+    pub high_prepare: Option<HighPrepare>,
+}
+
+/// The highest prepare certificate the aggregated timeouts carried, with the
+/// metablock it locks if one of them carried that too.
+///
+/// The block hangs off the certificate rather than sitting beside it, so a
+/// block without the certificate that authenticates it cannot be represented.
+/// The other way round is normal: a certificate with no block still pins the
+/// lock, it just leaves the next leader with nothing it is allowed to propose.
+///
+/// FIXME: Q: does high_block need to carry full MVBAInputs or only
+/// partial_block
+///
+/// Response: only the partial block is needed. `entries(x)` is read off the
+/// certified entries alone -- the fallback certificate is explicitly not part
+/// of it -- so the lock, the lock check and this certificate's own consistency
+/// check would all be unchanged. The one thing the full metablock buys is that
+/// a leader bound by the lock can broadcast it verbatim; with a partial block
+/// it would pair the entries with its own `enter_fallback_cert`, which it
+/// always holds, since an instance only exists once its input carried one, and
+/// which certifies the same statement `⟨fallback, slot⟩`. So this could carry
+/// `PartialBlock` and save a supermajority aggregate per timeout and per
+/// timeout certificate; it is a wire-format change across `TimeoutMsg`,
+/// `TimeoutCertificate` and the leader path, so it is left for you to call.
+///
+/// // FIXME: only hold partial block. in higher views, proof to enter fallback
+/// is not used
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub(crate) struct HighPrepare {
+    pub qc: PrepareQc,
+    // FIXME: Q: when would we have prepareQC but not block?
+    pub block: Option<MVBAInputs>,
 }
 
 impl TimeoutCertificate {
@@ -86,21 +118,23 @@ impl TimeoutCertificate {
         let highest_claim = self
             .groups
             .iter()
-            .filter_map(|(vote, _)| vote.high_prep_view)
-            .max();
+            .map(|(vote, _)| vote.high_prep_view)
+            .max()
+            // view 0 is the "no lock" claim.
+            .filter(|view| *view != FallbackView::GENESIS);
 
-        match (highest_claim, &self.high_prepare_qc) {
-            (None, None) => self.high_block.is_none(),
-            (Some(claimed_view), Some(qc)) => {
-                qc.scope == (self.slot, claimed_view)
+        match (highest_claim, &self.high_prepare) {
+            (None, None) => true,
+            (Some(claimed_view), Some(high)) => {
+                high.qc.scope == (self.slot, claimed_view)
                     // no validator can hold a prepare certificate from a view
                     // later than the one it is abandoning.
                     && claimed_view <= self.view
-                    && qc.verify(validator_data)
-                    && self
-                        .high_block
+                    && high.qc.verify(validator_data)
+                    && high
+                        .block
                         .as_ref()
-                        .is_none_or(|block| block.entries() == qc.verdict.0)
+                        .is_none_or(|block| block.entries() == high.qc.verdict.0)
             }
             // a claimed certificate that is not carried, or one carried
             // without any timeout claiming it.
@@ -111,7 +145,7 @@ impl TimeoutCertificate {
     /// `highPrepQC(J)`: the prepare certificate of highest view among those
     /// carried by the timeouts in this certificate, `None` if none carried one.
     pub(crate) fn high_prep_qc(&self) -> Option<&PrepareQc> {
-        self.high_prepare_qc.as_ref()
+        self.high_prepare.as_ref().map(|high| &high.qc)
     }
 
     /// `lock(J) = entries(highPrepQC(J))`: the entries view `self.view` may
@@ -125,6 +159,8 @@ impl TimeoutCertificate {
     /// leader bound by the lock has nothing valid to propose, since this
     /// implementation has no way to fetch the block from a signer.
     pub(crate) fn high_block(&self) -> Option<&MVBAInputs> {
-        self.high_block.as_ref()
+        self.high_prepare
+            .as_ref()
+            .and_then(|high| high.block.as_ref())
     }
 }

@@ -15,7 +15,7 @@
 
 use super::{
     super::{FallbackView, Mvba},
-    Input, TimerEvent,
+    TimerEvent,
     messages::Message,
     test_helpers::*,
 };
@@ -48,15 +48,10 @@ fn decides_along_the_happy_path() {
     assert_eq!(committed_entries(&outputs), Some(block.entries()));
     assert!(instance.decision().is_none());
 
-    feed_commit_votes(&mut instance, view(1), &block.entries(), &quorum());
+    feed_commit_votes(&mut instance, view(1), &block, &quorum());
     let outputs = drain(&mut instance);
 
-    assert_eq!(
-        instance.decision(),
-        Some(&Input {
-            inputs: block.clone()
-        })
-    );
+    assert_eq!(instance.decision(), Some(&block));
     let decision_qc = instance
         .decision_qc()
         .expect("a decision comes with its certificate");
@@ -70,36 +65,64 @@ fn decides_along_the_happy_path() {
 }
 
 #[test]
-fn quorums_that_arrive_before_the_proposal_cascade_on_arrival() {
+fn a_quorum_that_arrives_before_the_proposal_fires_on_arrival() {
     let validator_data = validator_data();
     let block = metablock(1, &validator_data);
-    // a different input, so this validator holds no metablock with the decided
-    // entries until the proposal reaches it.
+    // a different input, so this validator holds no metablock with the voted
+    // entries until something carries one to it.
     let own = metablock(2, &validator_data);
     let follower = nodes()[0];
 
     let mut instance = started(follower, &own, &validator_data);
     drain(&mut instance);
 
-    // both quorums complete while this validator has no proposal to attach
-    // them to: nothing can fire yet.
+    // prepare votes carry no block, so the quorum completes with nothing this
+    // validator can act on.
     feed_prepare_votes(&mut instance, view(1), &block.entries(), &quorum());
-    feed_commit_votes(&mut instance, view(1), &block.entries(), &quorum());
     let outputs = drain(&mut instance);
     assert!(broadcasts(&outputs).is_empty());
-    assert!(instance.decision().is_none());
 
-    // the proposal lands and the whole view completes in one call.
+    // the proposal lands: accepting it and the waiting prepare quorum both
+    // fire in the one call.
     let (leader, proposal) = pre_prepare(view(1), &block, None);
     instance.handle_message(leader, proposal);
     let outputs = drain(&mut instance);
 
     assert_eq!(prepared_entries(&outputs), Some(block.entries()));
     assert_eq!(
-        instance.decision(),
-        Some(&Input {
-            inputs: block.clone()
-        })
+        committed_entries(&outputs),
+        Some(block.entries()),
+        "the prepare certificate forms in the same call"
+    );
+
+    feed_commit_votes(&mut instance, view(1), &block, &quorum());
+    drain(&mut instance);
+    assert_eq!(instance.decision(), Some(&block));
+}
+
+#[test]
+fn commit_votes_carry_the_block_so_a_validator_can_decide_without_the_proposal() {
+    let validator_data = validator_data();
+    let block = metablock(1, &validator_data);
+    let own = metablock(2, &validator_data);
+    let follower = nodes()[0];
+
+    let mut instance = started(follower, &own, &validator_data);
+    drain(&mut instance);
+
+    // it never saw the pre-prepare and its own input is a different metablock,
+    // so the only source for the decided block is the commit votes themselves.
+    feed_commit_votes(&mut instance, view(1), &block, &quorum());
+    drain(&mut instance);
+
+    assert_eq!(instance.decision(), Some(&block));
+    assert_eq!(
+        instance
+            .decision_qc()
+            .expect("a decision comes with its certificate")
+            .verdict
+            .0,
+        block.entries()
     );
 }
 
@@ -298,31 +321,24 @@ fn a_proposal_from_the_wrong_sender_is_discarded() {
 }
 
 #[test]
-fn a_received_certificate_decides_a_metablock_already_held() {
+fn a_received_certificate_decides_the_metablock_it_carries() {
     let validator_data = validator_data();
     let block = metablock(1, &validator_data);
+    let own = metablock(2, &validator_data);
     let follower = nodes()[0];
 
-    let mut instance = started(follower, &block, &validator_data);
+    let mut instance = started(follower, &own, &validator_data);
     drain(&mut instance);
 
-    // this validator never saw the proposal or the votes, only the result --
-    // but it holds a metablock with the decided entries: its own input.
-    let commit_qc = strong_qc(
-        (SLOT, view(1)),
-        super::messages::CommitVote(block.entries()),
-        &quorum(),
-        &validator_data,
+    // this validator saw neither the proposal nor the votes, and holds no
+    // metablock with these entries: the message carries both halves.
+    instance.handle_message(
+        nodes()[1],
+        commit_qc_message(view(1), &block, &validator_data),
     );
-    instance.handle_message(nodes()[1], Message::CommitQc(commit_qc));
     drain(&mut instance);
 
-    assert_eq!(
-        instance.decision(),
-        Some(&Input {
-            inputs: block.clone()
-        })
-    );
+    assert_eq!(instance.decision(), Some(&block));
     assert!(instance.decision_qc().is_some());
 }
 
@@ -337,7 +353,7 @@ fn a_decided_instance_ignores_everything_after() {
     let (leader, proposal) = pre_prepare(view(1), &block, None);
     instance.handle_message(leader, proposal);
     feed_prepare_votes(&mut instance, view(1), &block.entries(), &quorum());
-    feed_commit_votes(&mut instance, view(1), &block.entries(), &quorum());
+    feed_commit_votes(&mut instance, view(1), &block, &quorum());
     drain(&mut instance);
     assert!(instance.decision().is_some());
 
@@ -349,13 +365,7 @@ fn a_decided_instance_ignores_everything_after() {
     instance.handle_timer(TimerEvent::ViewTimeout(view(1)));
 
     assert!(drain(&mut instance).is_empty(), "a decision is terminal");
-    assert_eq!(
-        instance.decision(),
-        Some(&Input {
-            inputs: block.clone()
-        }),
-        "and it never changes"
-    );
+    assert_eq!(instance.decision(), Some(&block), "and it never changes");
 }
 
 #[test]
@@ -389,9 +399,7 @@ fn nothing_is_sent_before_propose() {
 
     // proposing starts participation, and the stored messages take effect at
     // once.
-    instance.propose(Input {
-        inputs: block.clone(),
-    });
+    instance.propose(block.clone());
     let outputs = drain(&mut instance);
     assert_eq!(prepared_entries(&outputs), Some(block.entries()));
 }
