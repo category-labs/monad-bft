@@ -24,7 +24,7 @@ use monad_eth_types::{EthAccount, EthHeader};
 use monad_types::{Balance, BlockId, Nonce, SeqNum, Stake};
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 
-use crate::{ExecutionStateRead, ExecutionStateReadError};
+use crate::{ExecutionStateRead, ExecutionStateReadError, NodeCacheStats};
 
 #[derive(Debug, Default, Clone)]
 pub struct NopExecutionStateRead {
@@ -89,5 +89,9 @@ where
 
     fn total_db_lookups(&self) -> u64 {
         0
+    }
+
+    fn node_cache_stats(&self) -> Option<NodeCacheStats> {
+        None
     }
 }

@@ -36,7 +36,7 @@ use monad_validator::signature_collection::{SignatureCollection, SignatureCollec
 use serde::{Deserialize, Serialize};
 use tracing::trace;
 
-use crate::{ExecutionStateRead, ExecutionStateReadError, MockExecution};
+use crate::{ExecutionStateRead, ExecutionStateReadError, MockExecution, NodeCacheStats};
 
 pub type InMemoryState<ST, SCT> = Arc<Mutex<InMemoryStateInner<ST, SCT>>>;
 
@@ -564,5 +564,9 @@ where
 
     fn total_db_lookups(&self) -> u64 {
         self.total_mock_lookups.load(Ordering::SeqCst)
+    }
+
+    fn node_cache_stats(&self) -> Option<NodeCacheStats> {
+        None
     }
 }

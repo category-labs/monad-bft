@@ -42,6 +42,19 @@ pub enum ExecutionStateReadError {
     NeverAvailable,
 }
 
+/// Trie-node cache counters for a state-read backend, cumulative since it was
+/// opened. Declared here rather than reusing the triedb type so this crate does
+/// not take a dependency on the FFI, matching how `total_db_lookups` returns a
+/// plain integer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NodeCacheStats {
+    pub hits: u64,
+    pub misses: u64,
+    pub evictions: u64,
+    pub used_bytes: u64,
+    pub entries: u64,
+}
+
 /// A read-only view of block state.
 pub trait ExecutionStateRead<ST, SCT>
 where
@@ -75,6 +88,9 @@ where
     ) -> Vec<(SCT::NodeIdPubKey, SignatureCollectionPubKeyType<SCT>, Stake)>;
 
     fn total_db_lookups(&self) -> u64;
+
+    /// Trie-node cache counters, or None for a backend with no such cache.
+    fn node_cache_stats(&self) -> Option<NodeCacheStats>;
 }
 
 pub trait MockExecution<ST, SCT>
@@ -146,6 +162,10 @@ where
 
     fn total_db_lookups(&self) -> u64 {
         self.lock().unwrap().total_db_lookups()
+    }
+
+    fn node_cache_stats(&self) -> Option<NodeCacheStats> {
+        self.lock().unwrap().node_cache_stats()
     }
 }
 

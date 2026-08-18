@@ -30,7 +30,7 @@ use key::Version;
 use monad_bls::{BlsPubKey, BlsSignatureCollection};
 use monad_crypto::certificate_signature::PubKey;
 use monad_eth_types::{EthAccount, EthHeader};
-use monad_execution_state_read::{ExecutionStateRead, ExecutionStateReadError};
+use monad_execution_state_read::{ExecutionStateRead, ExecutionStateReadError, NodeCacheStats};
 use monad_secp::SecpSignature;
 use monad_triedb::TriedbHandle;
 pub use monad_triedb::{MigrationPhase, StorageStats};
@@ -392,6 +392,19 @@ impl ExecutionStateRead<SecpSignature, BlsSignatureCollection<monad_secp::PubKey
         }
 
         validator_set
+    }
+
+    /// Only `get_accounts_async` consults the node cache; `get_account` is a
+    /// blocking uncached read, so a reader used only for the latter reports
+    /// zeros rather than an absent cache.
+    fn node_cache_stats(&self) -> Option<NodeCacheStats> {
+        self.handle.node_cache_stats().map(|s| NodeCacheStats {
+            hits: s.hits,
+            misses: s.misses,
+            evictions: s.evictions,
+            used_bytes: s.used_bytes,
+            entries: s.entries,
+        })
     }
 
     fn total_db_lookups(&self) -> u64 {

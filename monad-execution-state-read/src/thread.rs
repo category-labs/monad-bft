@@ -27,7 +27,7 @@ use monad_types::{BlockId, Epoch, SeqNum, Stake};
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 use tracing::warn;
 
-use crate::{ExecutionStateRead, ExecutionStateReadError};
+use crate::{ExecutionStateRead, ExecutionStateReadError, NodeCacheStats};
 
 // Since the ExecutionStateReadThreadClient is synchronous, it will only allow one inflight request
 // per sync context so a value of 16 allows 16 threads to simulatneously make execution state read
@@ -71,6 +71,9 @@ where
     },
     TotalDbLookups {
         tx: mpsc::SyncSender<u64>,
+    },
+    GetNodeCacheStats {
+        tx: mpsc::SyncSender<Option<NodeCacheStats>>,
     },
 }
 
@@ -184,6 +187,10 @@ where
     fn total_db_lookups(&self) -> u64 {
         self.send_and_recv_request(|tx| ExecutionStateReadThreadRequest::TotalDbLookups { tx })
     }
+
+    fn node_cache_stats(&self) -> Option<NodeCacheStats> {
+        self.send_and_recv_request(|tx| ExecutionStateReadThreadRequest::GetNodeCacheStats { tx })
+    }
 }
 
 struct ExecutionStateReadThread<ST, SCT, ESRT>
@@ -269,6 +276,10 @@ where
                 }
                 ExecutionStateReadThreadRequest::TotalDbLookups { tx } => {
                     tx.send(state_read.total_db_lookups())
+                        .expect("ExecutionStateReadThreadClient is alive");
+                }
+                ExecutionStateReadThreadRequest::GetNodeCacheStats { tx } => {
+                    tx.send(state_read.node_cache_stats())
                         .expect("ExecutionStateReadThreadClient is alive");
                 }
             }

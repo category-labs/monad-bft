@@ -22,6 +22,7 @@ use std::{
 use actix_server::Server;
 use actix_web::{http::header, web, App, HttpRequest, HttpResponse, HttpServer};
 use monad_consensus_types::metrics::Metrics as StateMetrics;
+use monad_execution_state_read::NodeCacheStats;
 use monad_executor::{metric_consts, ExecutorMetrics, ExecutorMetricsChain, Gauge};
 use monad_triedb_utils::{MigrationPhase, StorageStats};
 use prometheus::{Encoder, ProtobufEncoder, Registry, TextEncoder};
@@ -113,6 +114,55 @@ pub fn record_triedb_storage_metrics(metrics: &mut ExecutorMetrics, stats: Stora
     metrics
         .gauge(GAUGE_TRIEDB_DISK_USED_BYTES)
         .set(stats.disk_used_bytes);
+}
+
+metric_consts! {
+    pub GAUGE_TRIEDB_NODE_CACHE_HITS {
+        name: "monad.triedb.node_cache.hits",
+        help: "Trie-node LRU lookups served from cache, cumulative since node start. Only the state-read path's cache is reported; RPC runs its own separate cache in another process.",
+    }
+    pub GAUGE_TRIEDB_NODE_CACHE_MISSES {
+        name: "monad.triedb.node_cache.misses",
+        help: "Trie-node LRU lookups that fell through to disk, cumulative since node start. Hit rate is hits/(hits+misses); derive it in the query, not here.",
+    }
+    pub GAUGE_TRIEDB_NODE_CACHE_EVICTIONS {
+        name: "monad.triedb.node_cache.evictions",
+        help: "Trie nodes dropped to stay within the cache's bounds, cumulative since node start. A rising rate against a flat hit rate means the cache is thrashing and undersized.",
+    }
+    pub GAUGE_TRIEDB_NODE_CACHE_USED_BYTES {
+        name: "monad.triedb.node_cache.used_bytes",
+        help: "Bytes of cached trie nodes, against the configured node LRU byte budget.",
+    }
+    pub GAUGE_TRIEDB_NODE_CACHE_ENTRIES {
+        name: "monad.triedb.node_cache.entries",
+        help: "Cached trie nodes, against the slot count derived from the byte budget. Compare with used_bytes to see which of the two bounds is binding.",
+    }
+}
+
+pub fn init_triedb_node_cache_metrics() -> ExecutorMetrics {
+    ExecutorMetrics::with_metric_defs(&[
+        GAUGE_TRIEDB_NODE_CACHE_HITS,
+        GAUGE_TRIEDB_NODE_CACHE_MISSES,
+        GAUGE_TRIEDB_NODE_CACHE_EVICTIONS,
+        GAUGE_TRIEDB_NODE_CACHE_USED_BYTES,
+        GAUGE_TRIEDB_NODE_CACHE_ENTRIES,
+    ])
+}
+
+pub fn record_triedb_node_cache_metrics(metrics: &mut ExecutorMetrics, stats: NodeCacheStats) {
+    metrics.gauge(GAUGE_TRIEDB_NODE_CACHE_HITS).set(stats.hits);
+    metrics
+        .gauge(GAUGE_TRIEDB_NODE_CACHE_MISSES)
+        .set(stats.misses);
+    metrics
+        .gauge(GAUGE_TRIEDB_NODE_CACHE_EVICTIONS)
+        .set(stats.evictions);
+    metrics
+        .gauge(GAUGE_TRIEDB_NODE_CACHE_USED_BYTES)
+        .set(stats.used_bytes);
+    metrics
+        .gauge(GAUGE_TRIEDB_NODE_CACHE_ENTRIES)
+        .set(stats.entries);
 }
 
 fn duration_micros_u64(duration: &Duration) -> u64 {
@@ -346,6 +396,71 @@ mod storage_metrics_tests {
         );
         assert!(
             scraped.contains("monad_triedb_disk_used_bytes 700"),
+            "{scraped}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod node_cache_metrics_tests {
+    use monad_execution_state_read::NodeCacheStats;
+    use prometheus::{Encoder, Registry, TextEncoder};
+
+    use super::{
+        init_triedb_node_cache_metrics, record_triedb_node_cache_metrics,
+        GAUGE_TRIEDB_NODE_CACHE_ENTRIES, GAUGE_TRIEDB_NODE_CACHE_EVICTIONS,
+        GAUGE_TRIEDB_NODE_CACHE_HITS, GAUGE_TRIEDB_NODE_CACHE_MISSES,
+        GAUGE_TRIEDB_NODE_CACHE_USED_BYTES,
+    };
+
+    fn stats(hits: u64, misses: u64) -> NodeCacheStats {
+        NodeCacheStats {
+            hits,
+            misses,
+            evictions: 7,
+            used_bytes: 4_096,
+            entries: 12,
+        }
+    }
+
+    #[test]
+    fn records_all_five_counters() {
+        let mut metrics = init_triedb_node_cache_metrics();
+        record_triedb_node_cache_metrics(&mut metrics, stats(100, 25));
+
+        assert_eq!(metrics.gauge(GAUGE_TRIEDB_NODE_CACHE_HITS).get(), 100);
+        assert_eq!(metrics.gauge(GAUGE_TRIEDB_NODE_CACHE_MISSES).get(), 25);
+        assert_eq!(metrics.gauge(GAUGE_TRIEDB_NODE_CACHE_EVICTIONS).get(), 7);
+        assert_eq!(
+            metrics.gauge(GAUGE_TRIEDB_NODE_CACHE_USED_BYTES).get(),
+            4_096
+        );
+        assert_eq!(metrics.gauge(GAUGE_TRIEDB_NODE_CACHE_ENTRIES).get(), 12);
+    }
+
+    // The counters are cumulative, so a refresh must overwrite rather than
+    // accumulate, and it only reaches a scrape if it writes the same gauges the
+    // registry holds — assert through the encoded output, not the ExecutorMetrics.
+    #[test]
+    fn refresh_overwrites_and_reaches_the_scrape() {
+        let mut metrics = init_triedb_node_cache_metrics();
+        let registry = Registry::new();
+        metrics.register(&registry).expect("gauges registered");
+
+        record_triedb_node_cache_metrics(&mut metrics, stats(100, 25));
+        record_triedb_node_cache_metrics(&mut metrics, stats(180, 30));
+
+        let mut buffer = Vec::new();
+        TextEncoder::new()
+            .encode(&registry.gather(), &mut buffer)
+            .expect("encoded");
+        let scraped = String::from_utf8(buffer).expect("utf-8");
+        assert!(
+            scraped.contains("monad_triedb_node_cache_hits 180"),
+            "{scraped}"
+        );
+        assert!(
+            scraped.contains("monad_triedb_node_cache_misses 30"),
             "{scraped}"
         );
     }

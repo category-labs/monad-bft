@@ -25,7 +25,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_types::{EthAccount, EthHeader};
-use monad_execution_state_read::{ExecutionStateRead, ExecutionStateReadError};
+use monad_execution_state_read::{ExecutionStateRead, ExecutionStateReadError, NodeCacheStats};
 use monad_types::{BlockId, DropTimer, Epoch, SeqNum, Stake};
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 use tracing::warn;
@@ -203,5 +203,9 @@ where
 
     fn total_db_lookups(&self) -> u64 {
         self.state_read.total_db_lookups()
+    }
+
+    fn node_cache_stats(&self) -> Option<NodeCacheStats> {
+        self.state_read.node_cache_stats()
     }
 }

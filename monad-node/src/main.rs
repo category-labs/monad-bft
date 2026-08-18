@@ -39,7 +39,7 @@ use monad_dataplane::{DataplaneBuilder, TcpSocketId, UdpSocketId};
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthBlockValidator;
 use monad_eth_txpool_executor::{EthTxPoolExecutor, EthTxPoolIpcConfig};
-use monad_execution_state_read::ExecutionStateReadThreadClient;
+use monad_execution_state_read::{ExecutionStateRead, ExecutionStateReadThreadClient};
 use monad_execution_state_read_cache::ExecutionStateReadCache;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEvent};
@@ -88,9 +88,10 @@ use self::{
     cli::Cli,
     error::NodeSetupError,
     metrics::{
-        default_prometheus_labels, init_triedb_phase_metrics, init_triedb_storage_metrics,
-        record_triedb_phase_metrics, record_triedb_storage_metrics, start_metrics_server,
-        MetricsServerState, NodePrometheusMetrics,
+        default_prometheus_labels, init_triedb_node_cache_metrics, init_triedb_phase_metrics,
+        init_triedb_storage_metrics, record_triedb_node_cache_metrics, record_triedb_phase_metrics,
+        record_triedb_storage_metrics, start_metrics_server, MetricsServerState,
+        NodePrometheusMetrics,
     },
     state::NodeState,
 };
@@ -262,6 +263,9 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             ExecutionStateReadCache::new(triedb_handle, SeqNum(EXECUTION_DELAY))
         }
     });
+    // The client is a channel handle; keep one for the metrics ticker since the
+    // original is moved into the executor below.
+    let state_read_metrics = state_read.clone();
 
     let mut executor = ParentExecutor {
         metrics: Default::default(),
@@ -491,6 +495,9 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
     // misleading default.
     let mut triedb_phase_metrics = ExecutorMetrics::with_metric_defs(&[]);
     let mut triedb_storage_metrics = ExecutorMetrics::with_metric_defs(&[]);
+    // Always registered: the state-read thread's cache is live regardless of
+    // whether the metrics-only triedb reader could be opened.
+    let mut triedb_node_cache_metrics = init_triedb_node_cache_metrics();
     let triedb_metrics_reader = TriedbReader::try_new(node_state.triedb_path.as_path());
     match &triedb_metrics_reader {
         Some(reader) => {
@@ -511,7 +518,8 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             executor
                 .metrics()
                 .push(&triedb_phase_metrics)
-                .push(&triedb_storage_metrics),
+                .push(&triedb_storage_metrics)
+                .push(&triedb_node_cache_metrics),
             process_start,
         )
         .map_err(|err| {
@@ -564,7 +572,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                 None => futures_util::future::pending().boxed(),
             } => {
                 let otel_meter = maybe_otel_meter.as_ref().expect("otel_endpoint must have been set");
-                let executor_metrics = executor.metrics().push(&triedb_phase_metrics).push(&triedb_storage_metrics);
+                let executor_metrics = executor.metrics().push(&triedb_phase_metrics).push(&triedb_storage_metrics).push(&triedb_node_cache_metrics);
                 send_metrics(
                     otel_meter,
                     &mut gauge_cache,
@@ -578,6 +586,12 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                         &mut triedb_storage_metrics,
                         reader.storage_stats(),
                     );
+                }
+                // Sourced from the state-read thread's reader, not the metrics
+                // reader: each reader opens its own cache and only that one
+                // serves reads.
+                if let Some(stats) = state_read_metrics.node_cache_stats() {
+                    record_triedb_node_cache_metrics(&mut triedb_node_cache_metrics, stats);
                 }
             }
             event = executor.next().instrument(ledger_span.clone()) => {
