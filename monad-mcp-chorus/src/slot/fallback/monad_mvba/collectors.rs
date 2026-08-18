@@ -97,9 +97,9 @@ where
 /// Per-view timeouts.
 ///
 /// A [`VotePool`] cannot hold these: every timeout carries its own prepare
-/// certificate and metablock, which the pool has no room for, and forming a
-/// timeout certificate needs a supermajority across *all* buckets rather than
-/// within one.
+/// certificate, which the pool has no room for, and forming a timeout
+/// certificate needs a supermajority across *all* buckets rather than within
+/// one.
 #[derive(Clone)]
 pub(crate) struct TimeoutCollector {
     slot: Slot,
@@ -147,9 +147,9 @@ impl TimeoutCollector {
     ///
     /// Senders are grouped by the digest they signed -- the view of the
     /// prepare certificate each carries -- since only identical digests
-    /// aggregate. The highest certificate any of them carried is attached,
-    /// together with the metablock it locks, so the next leader can honour the
-    /// lock without fetching the block from a signer.
+    /// aggregate. The highest certificate any of them carried is attached, so
+    /// the next leader learns the lock it is bound to; the block behind it is
+    /// not here and is fetched separately.
     pub(crate) fn try_form_tc(
         &self,
         view: FallbackView,
@@ -178,19 +178,20 @@ impl TimeoutCollector {
             })
             .collect();
 
-        // the highest prepare certificate carried, together with the block
-        // that goes with it. `is_valid` at ingress guarantees the two agree.
-        let high_prepare = timeouts
+        // the highest prepare certificate carried. `is_valid` at ingress
+        // guarantees each one matches the view its sender signed, so this is
+        // also the highest view any of the aggregated timeouts claims.
+        let high_prep_qc = timeouts
             .values()
-            .filter_map(|msg| msg.high_prepare.as_ref())
-            .max_by_key(|high| high.qc.scope.1)
+            .filter_map(|msg| msg.high_prep_qc.as_ref())
+            .max_by_key(|qc| qc.scope.1)
             .cloned();
 
         Some(TimeoutCertificate {
             slot: self.slot,
             view,
             groups,
-            high_prepare,
+            high_prep_qc,
         })
     }
 

@@ -14,9 +14,15 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use super::{
-    super::{FallbackView, Mvba},
+    super::{
+        super::{
+            fast::CertifiedEntry,
+            types::{ProposalMap, Slot},
+        },
+        FallbackView, Mvba,
+    },
     TimerEvent,
-    messages::Message,
+    metablock::entries_of,
     test_helpers::*,
 };
 
@@ -56,11 +62,18 @@ fn decides_along_the_happy_path() {
         .decision_qc()
         .expect("a decision comes with its certificate");
     assert_eq!(decision_qc.verdict.0, block.entries());
+    assert_eq!(
+        instance.decision_block(),
+        Some(&block.block),
+        "the block came with the proposal this validator accepted"
+    );
     assert!(
-        broadcasts(&outputs)
-            .iter()
-            .any(|message| matches!(message, Message::CommitQc(_))),
+        decided_commit_qc(&outputs),
         "the certificate is passed on so others can decide"
+    );
+    assert!(
+        requested_entries(&outputs).is_empty(),
+        "nothing to fetch: the accepted proposal carried the block"
     );
 }
 
@@ -101,7 +114,7 @@ fn a_quorum_that_arrives_before_the_proposal_fires_on_arrival() {
 }
 
 #[test]
-fn commit_votes_alone_decide_without_the_proposal() {
+fn commit_votes_decide_once_the_block_is_fetched() {
     let validator_data = validator_data();
     let block = metablock(1, &validator_data);
     let own = metablock(2, &validator_data);
@@ -111,12 +124,24 @@ fn commit_votes_alone_decide_without_the_proposal() {
     drain(&mut instance);
 
     // it never saw the pre-prepare and its own input is a different metablock,
-    // so the certificate the commit votes form is the whole of what it decides
-    // on.
+    // so the certificate the commit votes form settles entries whose block it
+    // does not hold.
     feed_commit_votes(&mut instance, view(1), &block, &quorum());
-    drain(&mut instance);
+    let outputs = drain(&mut instance);
+
+    assert_eq!(
+        requested_entries(&outputs),
+        vec![block.entries()],
+        "agreement is done; the block behind the entries is not here yet"
+    );
+    assert!(instance.decision().is_none());
+    assert!(instance.decision_qc().is_none());
+
+    instance.handle_message(nodes()[1], block_response(block.block.clone()));
+    let outputs = drain(&mut instance);
 
     assert_eq!(instance.decision(), Some(&block.entries()));
+    assert_eq!(instance.decision_block(), Some(&block.block));
     assert_eq!(
         instance
             .decision_qc()
@@ -124,6 +149,10 @@ fn commit_votes_alone_decide_without_the_proposal() {
             .verdict
             .0,
         block.entries()
+    );
+    assert!(
+        decided_commit_qc(&outputs),
+        "the echo goes out with the decision, after retrieval"
     );
 }
 
@@ -139,7 +168,7 @@ fn a_proposal_that_breaks_the_lock_is_ignored() {
 
     // view 1 may have locked `locked`, and the certificate says so.
     let qc = prepare_qc(view(1), &locked.entries(), &validator_data);
-    let tc = timeout_certificate(view(1), Some((qc, locked.clone())), &validator_data);
+    let tc = timeout_certificate(view(1), Some(qc), &validator_data);
 
     let (leader, proposal) = pre_prepare(view(2), &other, Some(tc.clone()));
     instance.handle_message(leader, proposal);
@@ -227,7 +256,7 @@ fn a_timeout_quorum_advances_the_view_and_the_new_leader_proposes() {
 }
 
 #[test]
-fn a_locked_leader_reproposes_the_locked_metablock() {
+fn a_locked_leader_fetches_the_block_before_reproposing_it() {
     let validator_data = validator_data();
     let own = metablock(1, &validator_data);
     let locked = metablock(2, &validator_data);
@@ -237,18 +266,36 @@ fn a_locked_leader_reproposes_the_locked_metablock() {
     drain(&mut instance);
 
     let qc = prepare_qc(view(1), &locked.entries(), &validator_data);
-    feed_timeouts(
-        &mut instance,
-        view(1),
-        Some((qc, locked.clone())),
-        &quorum(),
-    );
+    feed_timeouts(&mut instance, view(1), Some(qc), &quorum());
     let outputs = drain(&mut instance);
 
-    let proposal = proposed(&outputs).expect("the leader of view 2 proposes on entering it");
+    assert!(
+        scheduled_timers(&outputs).contains(&TimerEvent::ViewTimeout(view(2))),
+        "the view is entered either way"
+    );
     assert_eq!(
-        proposal.metablock, locked,
+        requested_entries(&outputs),
+        vec![locked.entries()],
+        "the lock names entries whose block the leader does not hold"
+    );
+    assert!(
+        proposed(&outputs).is_none(),
+        "it may only propose the locked value, and does not have it yet"
+    );
+
+    instance.handle_message(nodes()[1], block_response(locked.block.clone()));
+    let outputs = drain(&mut instance);
+
+    let proposal = proposed(&outputs).expect("the block landed, so the leader can propose");
+    assert_eq!(proposal.view, view(2));
+    assert_eq!(
+        proposal.metablock.entries(),
+        locked.entries(),
         "the leader is bound to the value the previous view may have locked"
+    );
+    assert_eq!(
+        proposal.metablock.block, locked.block,
+        "and it proposes the retrieved block verbatim"
     );
 }
 
@@ -322,7 +369,7 @@ fn a_proposal_from_the_wrong_sender_is_discarded() {
 }
 
 #[test]
-fn a_received_certificate_decides_the_metablock_it_carries() {
+fn a_received_certificate_decides_once_its_block_is_retrieved() {
     let validator_data = validator_data();
     let block = metablock(1, &validator_data);
     let own = metablock(2, &validator_data);
@@ -331,16 +378,200 @@ fn a_received_certificate_decides_the_metablock_it_carries() {
     let mut instance = started(follower, &own, &validator_data);
     drain(&mut instance);
 
-    // this validator saw neither the proposal nor the votes, and holds no
-    // metablock with these entries: the message carries both halves.
+    // this validator saw neither the proposal nor the votes: the certificate
+    // settles the entries, and block sync has to supply the rest.
     instance.handle_message(
         nodes()[1],
         commit_qc_message(view(1), &block, &validator_data),
     );
-    drain(&mut instance);
+    let outputs = drain(&mut instance);
+
+    assert_eq!(requested_entries(&outputs), vec![block.entries()]);
+    assert!(instance.decision().is_none());
+    assert!(
+        !decided_commit_qc(&outputs),
+        "a certificate this validator cannot complete is not echoed"
+    );
+
+    instance.handle_message(nodes()[2], block_response(block.block.clone()));
+    let outputs = drain(&mut instance);
 
     assert_eq!(instance.decision(), Some(&block.entries()));
+    assert_eq!(instance.decision_block(), Some(&block.block));
     assert!(instance.decision_qc().is_some());
+    assert!(decided_commit_qc(&outputs));
+}
+
+#[test]
+fn a_bogus_block_response_is_ignored() {
+    let validator_data = validator_data();
+    let block = metablock(1, &validator_data);
+    let other = metablock(3, &validator_data);
+    let own = metablock(2, &validator_data);
+    let follower = nodes()[0];
+
+    let mut instance = started(follower, &own, &validator_data);
+    drain(&mut instance);
+
+    instance.handle_message(
+        nodes()[1],
+        commit_qc_message(view(1), &block, &validator_data),
+    );
+    assert_eq!(
+        requested_entries(&drain(&mut instance)),
+        vec![block.entries()]
+    );
+
+    // a well-formed block, but not the one asked for.
+    instance.handle_message(nodes()[1], block_response(other.block.clone()));
+    assert!(drain(&mut instance).is_empty());
+    assert!(instance.decision().is_none());
+
+    // the entries asked for, carried by certificates bound to another slot:
+    // the entries a `FastQc` certifies are its verdict, so tampering with its
+    // scope leaves the identity of the block intact.
+    let forged = ProposalMap::new(NUM_PROPOSALS, |j| {
+        let entry = block.block.as_ref().into_iter().nth(j).unwrap().entry();
+        CertifiedEntry::FastQc(strong_qc(
+            (Slot(SLOT.get() + 1), j),
+            entry,
+            &quorum(),
+            &validator_data,
+        ))
+    });
+    assert_eq!(
+        entries_of(&forged),
+        block.entries(),
+        "the test needs a response that matches the request"
+    );
+
+    instance.handle_message(nodes()[1], block_response(forged));
+    assert!(drain(&mut instance).is_empty());
+    assert!(
+        instance.decision().is_none(),
+        "a certified entry that is not bound to this slot is no proof"
+    );
+
+    // and the real block still decides afterwards.
+    instance.handle_message(nodes()[1], block_response(block.block.clone()));
+    drain(&mut instance);
+    assert_eq!(instance.decision(), Some(&block.entries()));
+}
+
+#[test]
+fn an_unsolicited_block_response_is_ignored() {
+    let validator_data = validator_data();
+    let block = metablock(1, &validator_data);
+    let own = metablock(2, &validator_data);
+    let follower = nodes()[0];
+
+    let mut instance = started(follower, &own, &validator_data);
+    drain(&mut instance);
+
+    // valid in every way, but nothing asked for it: taking it in would be a
+    // way to fill this instance's store.
+    instance.handle_message(nodes()[1], block_response(block.block.clone()));
+    assert!(drain(&mut instance).is_empty());
+
+    // so the certificate that arrives afterwards still has to fetch it.
+    instance.handle_message(
+        nodes()[1],
+        commit_qc_message(view(1), &block, &validator_data),
+    );
+    let outputs = drain(&mut instance);
+
+    assert_eq!(requested_entries(&outputs), vec![block.entries()]);
+    assert!(instance.decision().is_none());
+}
+
+#[test]
+fn a_holder_answers_a_block_request_with_a_unicast() {
+    let validator_data = validator_data();
+    let block = metablock(1, &validator_data);
+    let follower = nodes()[0];
+
+    let mut instance = started(follower, &block, &validator_data);
+    drain(&mut instance);
+
+    let asker = nodes()[1];
+    instance.handle_message(asker, block_request(&block.entries()));
+    let outputs = drain(&mut instance);
+
+    assert_eq!(
+        unicasts(&outputs),
+        vec![(asker, &block_response(block.block.clone()))],
+        "the block goes back to the sender alone"
+    );
+    assert!(broadcasts(&outputs).is_empty());
+
+    // and a request for entries it holds no block for is answered with nothing.
+    let other = metablock(2, &validator_data);
+    instance.handle_message(asker, block_request(&other.entries()));
+    assert!(drain(&mut instance).is_empty());
+}
+
+#[test]
+fn a_block_is_only_requested_once() {
+    let validator_data = validator_data();
+    let block = metablock(1, &validator_data);
+    let own = metablock(2, &validator_data);
+    let follower = nodes()[0];
+
+    let mut instance = started(follower, &own, &validator_data);
+    drain(&mut instance);
+
+    instance.handle_message(
+        nodes()[1],
+        commit_qc_message(view(1), &block, &validator_data),
+    );
+    assert_eq!(
+        requested_entries(&drain(&mut instance)),
+        vec![block.entries()]
+    );
+
+    // the same certificate again, and the commit votes it aggregates on top.
+    instance.handle_message(
+        nodes()[2],
+        commit_qc_message(view(1), &block, &validator_data),
+    );
+    feed_commit_votes(&mut instance, view(1), &block, &quorum());
+    let outputs = drain(&mut instance);
+
+    assert!(
+        requested_entries(&outputs).is_empty(),
+        "one request is outstanding; repeating it would flood the network"
+    );
+}
+
+#[test]
+fn the_view_timing_out_asks_again_for_a_pending_block() {
+    let validator_data = validator_data();
+    let block = metablock(1, &validator_data);
+    let own = metablock(2, &validator_data);
+    let follower = nodes()[0];
+
+    let mut instance = started(follower, &own, &validator_data);
+    drain(&mut instance);
+
+    instance.handle_message(
+        nodes()[1],
+        commit_qc_message(view(1), &block, &validator_data),
+    );
+    assert_eq!(
+        requested_entries(&drain(&mut instance)),
+        vec![block.entries()]
+    );
+
+    // the request, or the response to it, went missing.
+    instance.handle_timer(TimerEvent::ViewTimeout(view(1)));
+    let outputs = drain(&mut instance);
+
+    assert_eq!(timed_out_view(&outputs), Some(view(1)));
+    assert_eq!(
+        requested_entries(&outputs),
+        vec![block.entries()],
+        "the timer is what makes this instance ask a second time"
+    );
 }
 
 #[test]
@@ -390,6 +621,75 @@ fn abandon_stops_this_instance_sending() {
 }
 
 #[test]
+fn a_certificate_arriving_before_propose_is_fetched_once_it_does() {
+    let validator_data = validator_data();
+    let block = metablock(1, &validator_data);
+    let own = metablock(2, &validator_data);
+    let follower = nodes()[0];
+    assert_ne!(leader_of(view(1)), follower, "test assumes a follower");
+
+    let mut instance = mvba(follower, &validator_data);
+
+    // the certificate is recorded -- it is valid evidence whenever it arrives --
+    // but an instance with no input does not participate, so it sends nothing:
+    // not a request, and not the echo.
+    instance.handle_message(
+        nodes()[1],
+        commit_qc_message(view(1), &block, &validator_data),
+    );
+    assert!(drain(&mut instance).is_empty());
+    assert!(instance.decision().is_none());
+
+    // proposing starts participation, and the stored certificate is the first
+    // thing it finds it needs a block for.
+    instance.propose(own.clone());
+    let outputs = drain(&mut instance);
+
+    assert_eq!(
+        requested_entries(&outputs),
+        vec![block.entries()],
+        "the fetch waits for participation, not for a fresh certificate"
+    );
+    assert!(
+        instance.decision().is_none(),
+        "the block is not here yet, so there is nothing to hand on"
+    );
+
+    instance.handle_message(nodes()[1], block_response(block.block.clone()));
+    let outputs = drain(&mut instance);
+
+    assert_eq!(instance.decision(), Some(&block.entries()));
+    assert_eq!(instance.decision_block(), Some(&block.block));
+    assert!(decided_commit_qc(&outputs));
+}
+
+#[test]
+fn a_certificate_over_this_validators_own_input_decides_on_propose() {
+    let validator_data = validator_data();
+    let own = metablock(1, &validator_data);
+    let follower = nodes()[0];
+
+    let mut instance = mvba(follower, &validator_data);
+
+    instance.handle_message(
+        nodes()[1],
+        commit_qc_message(view(1), &own, &validator_data),
+    );
+    assert!(drain(&mut instance).is_empty());
+
+    // the certificate settled the entries of this validator's own input, so
+    // proposing hands the block to the store and the decision falls out of the
+    // same call: nothing is fetched.
+    instance.propose(own.clone());
+    let outputs = drain(&mut instance);
+
+    assert_eq!(instance.decision(), Some(&own.entries()));
+    assert_eq!(instance.decision_block(), Some(&own.block));
+    assert!(decided_commit_qc(&outputs));
+    assert!(requested_entries(&outputs).is_empty());
+}
+
+#[test]
 fn nothing_is_sent_before_propose() {
     let validator_data = validator_data();
     let block = metablock(1, &validator_data);
@@ -414,3 +714,4 @@ fn views_are_one_indexed() {
     assert_eq!(FallbackView::FIRST, view(1));
     assert!(FallbackView::GENESIS < FallbackView::FIRST);
 }
+

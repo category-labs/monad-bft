@@ -31,10 +31,11 @@ use super::{
                 ValidatorData, VoteMsg, VotePool,
             },
         },
-        FallbackView, MVBAInputs, MVBAOutput, Mvba,
+        FallbackView, MVBAInputs, MVBAOutput, Mvba, PartialBlock,
+        block_sync::{BlockRequestMsg, BlockResponseMsg},
     },
     Context, MonadMvba, TimerEvent,
-    certificates::{HighPrepare, PrepareQc, TimeoutCertificate},
+    certificates::{PrepareQc, TimeoutCertificate},
     collectors::TimeoutCollector,
     messages::{CommitVote, Message, PrePrepareMsg, PrepareVote, TimeoutMsg},
 };
@@ -154,27 +155,19 @@ pub(super) fn pre_prepare(
     (leader, Message::PrePrepare(msg))
 }
 
-/// The `HighPrepare` a test's `(certificate, block)` pair stands for: tests
-/// that pin a lock always hold the block that goes with it.
-fn high_prepare(high: &Option<(PrepareQc, MVBAInputs)>) -> Option<HighPrepare> {
-    high.as_ref().map(|(qc, block)| HighPrepare {
-        qc: qc.clone(),
-        block: Some(block.block.clone()),
-    })
-}
-
 /// A timeout certificate for `v`, aggregated from timeouts carrying
-/// `high_prepare` and the block it locks.
+/// `high_prep_qc`. No block travels with it: a leader bound by the lock fetches
+/// the block behind the entries the certificate names.
 pub(super) fn timeout_certificate(
     v: FallbackView,
-    high: Option<(PrepareQc, MVBAInputs)>,
+    high_prep_qc: Option<PrepareQc>,
     validator_data: &ValidatorData,
 ) -> TimeoutCertificate {
     let mut collector = TimeoutCollector::new(SLOT);
     for node in quorum() {
         collector.add(
             node,
-            TimeoutMsg::new_signed(SLOT, v, high_prepare(&high), &node.keypair()),
+            TimeoutMsg::new_signed(SLOT, v, high_prep_qc.clone(), &node.keypair()),
         );
     }
 
@@ -195,8 +188,8 @@ pub(super) fn feed_prepare_votes(
     }
 }
 
-/// Commit votes carry the metablock they commit, so feeding them hands the
-/// receiver the block as well as the vote.
+/// Commit votes range over entries alone; feeding them hands the receiver no
+/// block.
 pub(super) fn feed_commit_votes(
     instance: &mut MonadMvba,
     v: FallbackView,
@@ -229,13 +222,25 @@ pub(super) fn commit_qc_message(
 pub(super) fn feed_timeouts(
     instance: &mut MonadMvba,
     v: FallbackView,
-    high: Option<(PrepareQc, MVBAInputs)>,
+    high_prep_qc: Option<PrepareQc>,
     signers: &[NodeId],
 ) {
     for node in signers {
-        let msg = TimeoutMsg::new_signed(SLOT, v, high_prepare(&high), &node.keypair());
+        let msg = TimeoutMsg::new_signed(SLOT, v, high_prep_qc.clone(), &node.keypair());
         instance.handle_message(*node, Message::Timeout(msg));
     }
+}
+
+/// A block response as it arrives on the wire, carrying `block` verbatim.
+pub(super) fn block_response(block: PartialBlock) -> Message {
+    Message::BlockResponse(BlockResponseMsg { slot: SLOT, block })
+}
+
+pub(super) fn block_request(entries: &ProposalMap<Entry>) -> Message {
+    Message::BlockRequest(BlockRequestMsg {
+        slot: SLOT,
+        entries: entries.clone(),
+    })
 }
 
 pub(super) fn drain(instance: &mut MonadMvba) -> Vec<Output> {
@@ -247,7 +252,17 @@ pub(super) fn broadcasts(outputs: &[Output]) -> Vec<&Message> {
         .iter()
         .filter_map(|output| match output {
             MVBAOutput::Broadcast(message) => Some(message),
-            MVBAOutput::ScheduleTimer { .. } => None,
+            MVBAOutput::Unicast { .. } | MVBAOutput::ScheduleTimer { .. } => None,
+        })
+        .collect()
+}
+
+pub(super) fn unicasts(outputs: &[Output]) -> Vec<(NodeId, &Message)> {
+    outputs
+        .iter()
+        .filter_map(|output| match output {
+            MVBAOutput::Unicast { to, message } => Some((*to, message)),
+            MVBAOutput::Broadcast(_) | MVBAOutput::ScheduleTimer { .. } => None,
         })
         .collect()
 }
@@ -257,7 +272,18 @@ pub(super) fn scheduled_timers(outputs: &[Output]) -> Vec<TimerEvent> {
         .iter()
         .filter_map(|output| match output {
             MVBAOutput::ScheduleTimer { timer_event, .. } => Some(*timer_event),
-            MVBAOutput::Broadcast(_) => None,
+            MVBAOutput::Broadcast(_) | MVBAOutput::Unicast { .. } => None,
+        })
+        .collect()
+}
+
+/// The entries of every block request broadcast in `outputs`.
+pub(super) fn requested_entries(outputs: &[Output]) -> Vec<ProposalMap<Entry>> {
+    broadcasts(outputs)
+        .into_iter()
+        .filter_map(|message| match message {
+            Message::BlockRequest(request) => Some(request.entries.clone()),
+            _ => None,
         })
         .collect()
 }
@@ -279,6 +305,12 @@ pub(super) fn committed_entries(outputs: &[Output]) -> Option<ProposalMap<Entry>
             Message::Commit(commit) => Some(commit.vote.0.clone()),
             _ => None,
         })
+}
+
+pub(super) fn decided_commit_qc(outputs: &[Output]) -> bool {
+    broadcasts(outputs)
+        .iter()
+        .any(|message| matches!(message, Message::CommitQc(_)))
 }
 
 pub(super) fn timed_out_view(outputs: &[Output]) -> Option<FallbackView> {

@@ -16,6 +16,8 @@
 // Not wired into `FallbackPath` yet: routing chorus messages into the MVBA is
 // a follow-up, so nothing outside its own tests constructs it.
 #[allow(dead_code)]
+mod block_sync;
+#[allow(dead_code)]
 mod monad_mvba;
 use std::{fmt::Debug, hash::Hash, sync::Arc};
 
@@ -84,7 +86,7 @@ pub(crate) type PartialBlock = TotalProposalMap<CertifiedEntry>;
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct MVBAInputs {
-    // TODO: reasonably split out fallback cert from input.
+    // TODO: reasonably split out fallback cert from input. Note it can be empty
     pub enter_fallback_cert: EnterFallbackCert,
     pub block: PartialBlock,
 }
@@ -138,9 +140,15 @@ pub trait Mvba<V: Validate + Votable> {
     /// The decision is the projection votes ranged over, not the value that
     /// carried it: [`Mvba::decision_qc`] certifies `entries(x)`, so a
     /// supermajority has attested to exactly this much and nothing in the
-    /// value around it adds evidence. Returning the projection is also what
-    /// lets a validator decide without ever holding the value -- the
-    /// certificate alone is enough.
+    /// value around it adds evidence.
+    ///
+    /// Agreement therefore completes without the value, but this returns
+    /// `Some` only once the block behind the entries is held as well: what
+    /// consumes a decided slot needs the certified entries themselves, so
+    /// reporting a decision the caller cannot act on would only move the wait
+    /// somewhere with less context. The certificate is durable evidence the
+    /// moment it arrives and is kept regardless; retrieval is what this waits
+    /// on, and it is bounded by an honest holder answering a request.
     fn decision(&self) -> Option<&V::Entries>;
 
     /// The certificate proving the decision: a supermajority of commit votes
@@ -151,11 +159,24 @@ pub trait Mvba<V: Validate + Votable> {
     /// Returns `Some` whenever [`Mvba::decision`] does.
     fn decision_qc(&self) -> Option<&StrongQc<Self::CommitVote>>;
 
+    /// The decided block: the certified entries [`Mvba::decision`] projects,
+    /// as retrieved from the proposal that carried them or from a peer that
+    /// held them.
+    ///
+    /// Returns `Some` exactly when the other two do. Typed concretely because
+    /// [`PartialBlock`] is; it becomes `V` itself in the generics pass.
+    fn decision_block(&self) -> Option<&PartialBlock>;
+
     fn poll(&mut self) -> Option<MVBAOutput<Self::Message, Self::TimerEvent>>;
 }
 
 pub enum MVBAOutput<M, T> {
     Broadcast(M),
+    /// A reply to one validator, for a message that only the sender needs back.
+    Unicast {
+        to: NodeId,
+        message: M,
+    },
     ScheduleTimer {
         duration: TimestampDelta,
         timer_event: T,

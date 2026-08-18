@@ -59,22 +59,40 @@ impl MVBAInputs {
         num_proposals: usize,
         validator_data: &ValidatorData,
     ) -> bool {
-        if self.block.size() != num_proposals {
-            return false;
-        }
-
         if self.enter_fallback_cert.scope != slot
             || !self.enter_fallback_cert.verify(validator_data)
         {
             return false;
         }
 
-        self.block
-            .as_ref()
-            .into_iter()
-            .enumerate()
-            .all(|(j, cert)| certified_entry_is_valid(cert, slot, j, validator_data))
+        partial_block_is_valid(&self.block, slot, num_proposals, validator_data)
     }
+}
+
+/// The part of [`MVBAInputs::is_valid`] that a partial block on its own can be
+/// held to: one entry per proposer, and every certified entry bound to this
+/// slot and its own proposer index with valid signatures.
+///
+/// This is what a block retrieved by block sync is checked against. No
+/// fallback certificate is involved: the entries are the identity a
+/// certificate over them already fixed, and the requester holds a fallback
+/// certificate of its own -- an instance only exists once its input carried
+/// one -- so a sender forwarding another would add nothing.
+pub(crate) fn partial_block_is_valid(
+    block: &PartialBlock,
+    slot: Slot,
+    num_proposals: usize,
+    validator_data: &ValidatorData,
+) -> bool {
+    if block.size() != num_proposals {
+        return false;
+    }
+
+    block
+        .as_ref()
+        .into_iter()
+        .enumerate()
+        .all(|(j, cert)| certified_entry_is_valid(cert, slot, j, validator_data))
 }
 
 /// `entries(x)` of a partial block on its own, for the places a certificate

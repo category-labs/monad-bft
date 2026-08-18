@@ -44,9 +44,9 @@ use super::{
             },
         },
         FallbackView, MVBAInputs,
+        block_sync::{BlockRequestMsg, BlockResponseMsg},
     },
-    certificates::{CommitQc, HighPrepare, TimeoutCertificate},
-    metablock::entries_of,
+    certificates::{CommitQc, PrepareQc, TimeoutCertificate},
 };
 use crate::spec::vote::{KeyPair as _, Signature as _};
 
@@ -69,6 +69,12 @@ pub(crate) enum Message {
     /// aggregates can still decide.
     #[from]
     CommitQc(CommitQc),
+    /// Broadcast ask for the block behind entries a certificate has settled.
+    #[from]
+    BlockRequest(BlockRequestMsg),
+    /// Unicast answer to a [`Message::BlockRequest`], carrying the block.
+    #[from]
+    BlockResponse(BlockResponseMsg),
 }
 
 /// `⟨Prepare, slot, v, entries(x)⟩`: a vote for the entries of the proposal
@@ -129,41 +135,31 @@ impl IsVote for TimeoutVote {
 /// `⟨Timeout, slot, v, PrepQC_i, σ_i⟩`: no value was decided within the view
 /// timeout.
 ///
-/// The timeout carries no free proposal: the value it forwards is read out of
-/// the prepare certificate, so a faulty validator cannot pair an unrelated
-/// value with a certificate. The certificate rides along unsigned by the
-/// timeout, authenticated by its own aggregated signatures.
+/// The timeout carries no value at all, free or otherwise: only the prepare
+/// certificate, which names the entries it locks. A leader bound by that lock
+/// fetches the block behind it through block sync.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct TimeoutMsg {
     pub vote: VoteMsg<TimeoutVote>,
-    // FIXME: these should be coupled too, similar to that in TC
-    //
-    // Response: done -- the certificate and the block it locks are now the one
-    // `HighPrepare` that `TimeoutCertificate` already carries, so a block
-    // without the certificate authenticating it is unrepresentable here too,
-    // and `is_valid` no longer has to reject that pairing by hand.
-    /// `PrepQC_i`: the sender's highest prepare certificate, with the
-    /// metablock it locks when the sender holds that as well, so a later
-    /// leader can propose it without fetching it from a signer.
-    pub high_prepare: Option<HighPrepare>,
+    pub high_prep_qc: Option<PrepareQc>,
 }
 
 impl TimeoutMsg {
     pub(crate) fn new_signed(
         slot: Slot,
         view: FallbackView,
-        high_prepare: Option<HighPrepare>,
+        high_prep_qc: Option<PrepareQc>,
         key: &KeyPair,
     ) -> Self {
         let vote = TimeoutVote {
-            high_prep_view: high_prepare
+            high_prep_view: high_prep_qc
                 .as_ref()
-                .map_or(FallbackView::GENESIS, |high| high.qc.scope.1),
+                .map_or(FallbackView::GENESIS, |qc| qc.scope.1),
         };
 
         Self {
             vote: VoteMsg::new_signed((slot, view), vote, key),
-            high_prepare,
+            high_prep_qc,
         }
     }
 
@@ -178,18 +174,18 @@ impl TimeoutMsg {
     /// Whether the claim in the signed digest is backed by what rides along:
     /// the carried certificate is for this slot, is of exactly the claimed
     /// view, that view is not in the future of the view being abandoned, and
-    /// its signatures verify. A carried block must match the certificate.
+    /// its signatures verify.
     ///
     /// Checking this at ingress is what lets a timeout certificate trust the
     /// claimed `high_prep_view` of each group it aggregates.
     pub(crate) fn is_valid(&self, validator_data: &ValidatorData) -> bool {
         let high_prep_view = self.vote.vote.high_prep_view;
 
-        match &self.high_prepare {
+        match &self.high_prep_qc {
             // no certificate claimed and none carried.
             None => high_prep_view == FallbackView::GENESIS,
-            Some(high) => {
-                let (qc_slot, qc_view) = high.qc.scope;
+            Some(qc) => {
+                let (qc_slot, qc_view) = qc.scope;
                 qc_slot == self.slot()
                     // a certificate of view 0 does not exist, so this also
                     // rejects a certificate carried without being claimed.
@@ -197,11 +193,7 @@ impl TimeoutMsg {
                     // a validator may hold a prepare certificate of the very
                     // view it is abandoning, but never of a later one.
                     && qc_view <= self.view()
-                    && high.qc.verify(validator_data)
-                    && high
-                        .block
-                        .as_ref()
-                        .is_none_or(|block| entries_of(block) == high.qc.verdict.0)
+                    && qc.verify(validator_data)
             }
         }
     }
@@ -209,10 +201,11 @@ impl TimeoutMsg {
 
 /// `⟨Pre-Prepare, slot, v, x, J, σ_l⟩`: the leader's proposal for view `v`.
 ///
-/// The metablock is carried in full rather than by hash: this implementation
-/// has no block-fetch protocol, so a proposal is always self-contained. That
-/// trades bandwidth for the absence of a fetch round-trip and is a deliberate
-/// deviation from the paper, which leaves the fetch to the implementation.
+/// The metablock is carried in full rather than by hash, even though block
+/// sync could fetch it: a validator must check a proposal valid before voting
+/// to prepare it, so a hash would put a fetch round-trip in front of every
+/// vote. Recovering a block whose entries a certificate has already settled is
+/// a different problem, and the one block sync solves.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct PrePrepareMsg {
     pub slot: Slot,

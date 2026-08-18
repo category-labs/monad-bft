@@ -29,7 +29,7 @@ use super::{
             fast::Entry,
             types::{ProposalMap, Validated},
         },
-        MVBAInputs,
+        PartialBlock,
     },
     certificates::{CommitQc, PrepareQc, TimeoutCertificate},
     messages::PrePrepareMsg,
@@ -57,9 +57,11 @@ pub(crate) struct AwaitingProposal {
 }
 
 /// The view's proposal is accepted and a prepare vote for it has been sent.
+///
+/// Only the entries are kept: the block the proposal carried went into the
+/// block store, which is where every consumer of it now looks.
 #[derive(Clone)]
 pub(crate) struct Preparing {
-    block: MVBAInputs,
     entries: ProposalMap<Entry>,
 }
 
@@ -67,16 +69,19 @@ pub(crate) struct Preparing {
 /// has been sent.
 #[derive(Clone)]
 pub(crate) struct Committing {
-    block: MVBAInputs,
     entries: ProposalMap<Entry>,
     prepare_qc: PrepareQc,
 }
 
-/// Decided, with the certificate that proves it.
+/// Decided, with the certificate that proves it and the block it settled.
+///
+/// The block is here because a decision is only reached once it is held: this
+/// phase is the evidence that both halves of the decision are in hand.
 #[derive(Clone)]
 pub(crate) struct Decided {
-    entries: ProposalMap<Entry>,
+    entries: ProposalMap<Entry>, // FIXME: this field seems redundant with commit_qc
     commit_qc: CommitQc,
+    block: PartialBlock,
 }
 
 /// A timed-out view, remembering what it was doing when the timeout was sent.
@@ -106,6 +111,14 @@ impl Phase {
 
     pub(crate) fn is_decided(&self) -> bool {
         matches!(self, Phase::Decided(_))
+    }
+
+    /// The decision, once this view reached one.
+    pub(crate) fn decided(&self) -> Option<&Decided> {
+        match self {
+            Phase::Decided(p) => Some(p),
+            _ => None,
+        }
     }
 
     pub(crate) fn has_timed_out(&self) -> bool {
@@ -204,10 +217,10 @@ impl TimedOut {
 impl AwaitingProposal {
     /// Accept the view's proposal. The caller must have run every check in the
     /// paper's pre-prepare handler first; [`Transition::Proposal`] is the
-    /// witness that it did.
-    pub(crate) fn accept(self, block: MVBAInputs) -> Preparing {
-        let entries = block.entries();
-        Preparing { block, entries }
+    /// witness that it did, and it is also responsible for handing the block
+    /// the proposal carried to the block store.
+    pub(crate) fn accept(self, entries: ProposalMap<Entry>) -> Preparing {
+        Preparing { entries }
     }
 }
 
@@ -221,7 +234,6 @@ impl Preparing {
         debug_assert_eq!(prepare_qc.verdict.0, self.entries);
 
         Committing {
-            block: self.block,
             entries: self.entries,
             prepare_qc,
         }
@@ -230,31 +242,29 @@ impl Preparing {
     /// A commit certificate can arrive before this validator has seen the
     /// prepare certificate for the same entries; the decision does not wait
     /// for it.
-    pub(crate) fn decide(self, commit_qc: CommitQc) -> Decided {
+    pub(crate) fn decide(self, commit_qc: CommitQc, block: PartialBlock) -> Decided {
         debug_assert_eq!(commit_qc.verdict.0, self.entries);
 
         Decided {
             entries: self.entries,
             commit_qc,
+            block,
         }
     }
 }
 
 impl Committing {
-    pub(crate) fn block(&self) -> &MVBAInputs {
-        &self.block
-    }
-
     pub(crate) fn entries(&self) -> &ProposalMap<Entry> {
         &self.entries
     }
 
-    pub(crate) fn decide(self, commit_qc: CommitQc) -> Decided {
+    pub(crate) fn decide(self, commit_qc: CommitQc, block: PartialBlock) -> Decided {
         debug_assert_eq!(commit_qc.verdict.0, self.entries);
 
         Decided {
             entries: self.entries,
             commit_qc,
+            block,
         }
     }
 }
@@ -268,13 +278,19 @@ impl Decided {
         &self.commit_qc
     }
 
+    pub(crate) fn block(&self) -> &PartialBlock {
+        &self.block
+    }
+
     /// Decided by a certificate this validator received rather than formed, in
     /// a view whose phase never accepted the entries it certifies. The
-    /// certificate's verdict is the decision, so nothing else is needed.
-    pub(crate) fn from_foreign_qc(commit_qc: CommitQc) -> Self {
+    /// certificate's verdict fixes the entries; the block is whatever was
+    /// retrieved for them.
+    pub(crate) fn from_foreign_qc(commit_qc: CommitQc, block: PartialBlock) -> Self {
         Decided {
             entries: commit_qc.verdict.0.clone(),
             commit_qc,
+            block,
         }
     }
 }
@@ -292,9 +308,13 @@ pub(crate) enum Transition {
     Proposal(Validated<PrePrepareMsg>),
     /// A prepare certificate over the entries accepted in this view.
     PrepareQc(PrepareQc),
-    /// A commit certificate over the entries this validator holds a metablock
-    /// for.
-    CommitQc(CommitQc),
+    /// A commit certificate over entries this validator holds the block for.
+    /// Both halves travel here: the certificate settles the entries, the block
+    /// is what the decision hands on.
+    CommitQc { qc: CommitQc, block: PartialBlock },
+    /// This validator leads the current view and has a proposal it is allowed
+    /// to make: either nothing is locked, or the locked block is in hand.
+    OwnProposal(PrePrepareMsg),
     /// A timeout certificate for this view or a later one: advance to the view
     /// after it.
     Tc(TimeoutCertificate),
