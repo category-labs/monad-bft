@@ -487,7 +487,7 @@ impl CertifiedEntry {
     /// signatures. Authenticity is enforced at message ingress (see the
     /// crate header); we restate it at adoption points to make the trust
     /// boundary explicit and catch protocol-logic bugs.
-    fn verify(&self, validator_data: &ValidatorData) -> bool {
+    pub(crate) fn verify(&self, validator_data: &ValidatorData) -> bool {
         match self {
             CertifiedEntry::FastQc(qc) => qc.verify(validator_data),
             CertifiedEntry::FallbackQc(qc) => qc.verify(validator_data),

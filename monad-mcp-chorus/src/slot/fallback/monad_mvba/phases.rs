@@ -1,0 +1,322 @@
+// Copyright (C) 2025 Category Labs, Inc.
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+//! What a validator's view can be in, and how it may move between those
+//! states.
+//!
+//! Each phase carries the evidence that justifies it, and the only way to
+//! reach a phase is a consuming method that demands that evidence: there is no
+//! `Committing` without a prepare certificate and no `Decided` without a
+//! commit certificate. Together with [`Transition`], whose variants carry the
+//! certificate that fired them, this keeps "checked" and "applied" from
+//! drifting apart -- nothing is re-looked-up between the two.
+
+use super::{
+    super::{
+        super::{
+            fast::Entry,
+            types::{ProposalMap, Validated},
+        },
+        MVBAInputs,
+    },
+    certificates::{CommitQc, PrepareQc, TimeoutCertificate},
+    messages::PrePrepareMsg,
+};
+
+/// The state of the current view.
+#[derive(Clone)]
+pub(crate) enum Phase {
+    AwaitingProposal(AwaitingProposal),
+    Preparing(Preparing),
+    Committing(Committing),
+    /// This validator has sent its timeout for the view. It no longer votes
+    /// there, but certificates whose votes it already cast may still complete.
+    TimedOut(TimedOut),
+    /// Terminal.
+    Decided(Decided),
+}
+
+/// No proposal accepted in this view yet.
+#[derive(Clone)]
+pub(crate) struct AwaitingProposal {
+    // deliberately empty: what a validator knows before a proposal arrives is
+    // instance state, not view state.
+    _private: (),
+}
+
+/// The view's proposal is accepted and a prepare vote for it has been sent.
+#[derive(Clone)]
+pub(crate) struct Preparing {
+    block: MVBAInputs,
+    entries: ProposalMap<Entry>,
+}
+
+/// A prepare certificate formed for the accepted proposal and a commit vote
+/// has been sent.
+#[derive(Clone)]
+pub(crate) struct Committing {
+    block: MVBAInputs,
+    entries: ProposalMap<Entry>,
+    prepare_qc: PrepareQc,
+}
+
+/// Decided, with the certificate that proves it.
+#[derive(Clone)]
+pub(crate) struct Decided {
+    block: MVBAInputs,
+    commit_qc: CommitQc,
+}
+
+/// A timed-out view, remembering what it was doing when the timeout was sent.
+///
+/// The inner phase is kept rather than collapsed because the votes this
+/// validator already cast are still out there: a prepare or commit certificate
+/// can still form for this view, and it must still be able to act on it.
+#[derive(Clone)]
+pub(crate) struct TimedOut {
+    inner: InnerPhase,
+}
+
+/// The phases a view can be in when it times out. `Decided` is terminal and
+/// never times out.
+#[derive(Clone)]
+pub(crate) enum InnerPhase {
+    AwaitingProposal(AwaitingProposal),
+    Preparing(Preparing),
+    Committing(Committing),
+}
+
+impl Phase {
+    /// A fresh view: nothing accepted, nothing certified.
+    pub(crate) fn new() -> Self {
+        Phase::AwaitingProposal(AwaitingProposal { _private: () })
+    }
+
+    pub(crate) fn is_decided(&self) -> bool {
+        matches!(self, Phase::Decided(_))
+    }
+
+    pub(crate) fn has_timed_out(&self) -> bool {
+        matches!(self, Phase::TimedOut(_))
+    }
+
+    /// The metablock accepted in this view, if one was.
+    pub(crate) fn block(&self) -> Option<&MVBAInputs> {
+        match self {
+            Phase::AwaitingProposal(_) => None,
+            Phase::Preparing(p) => Some(&p.block),
+            Phase::Committing(p) => Some(&p.block),
+            Phase::TimedOut(p) => p.inner.block(),
+            Phase::Decided(p) => Some(&p.block),
+        }
+    }
+
+    /// `entries(x_v)` of the accepted proposal, if one was accepted.
+    pub(crate) fn entries(&self) -> Option<&ProposalMap<Entry>> {
+        match self {
+            Phase::AwaitingProposal(_) => None,
+            Phase::Preparing(p) => Some(&p.entries),
+            Phase::Committing(p) => Some(&p.entries),
+            Phase::TimedOut(p) => p.inner.entries(),
+            Phase::Decided(_) => None,
+        }
+    }
+
+    /// The entries this validator voted to prepare but holds no prepare
+    /// certificate for yet.
+    pub(crate) fn preparing_entries(&self) -> Option<&ProposalMap<Entry>> {
+        match self {
+            Phase::Preparing(p) => Some(&p.entries),
+            Phase::TimedOut(TimedOut {
+                inner: InnerPhase::Preparing(p),
+            }) => Some(&p.entries),
+            _ => None,
+        }
+    }
+
+    /// The prepare certificate formed in this view, if one was.
+    pub(crate) fn prepare_qc(&self) -> Option<&PrepareQc> {
+        match self {
+            Phase::Committing(p) => Some(&p.prepare_qc),
+            Phase::TimedOut(TimedOut {
+                inner: InnerPhase::Committing(p),
+            }) => Some(&p.prepare_qc),
+            _ => None,
+        }
+    }
+
+    /// Name of the phase, for assertion messages.
+    pub(crate) fn name(&self) -> &'static str {
+        match self {
+            Phase::AwaitingProposal(_) => "awaiting proposal",
+            Phase::Preparing(_) => "preparing",
+            Phase::Committing(_) => "committing",
+            Phase::TimedOut(p) => p.inner.name(),
+            Phase::Decided(_) => "decided",
+        }
+    }
+
+    /// Move into the timed-out wrapper, keeping the inner phase. `None` for a
+    /// phase that cannot time out: already timed out, or decided.
+    pub(crate) fn time_out(self) -> Option<Phase> {
+        let inner = match self {
+            Phase::AwaitingProposal(p) => InnerPhase::AwaitingProposal(p),
+            Phase::Preparing(p) => InnerPhase::Preparing(p),
+            Phase::Committing(p) => InnerPhase::Committing(p),
+            Phase::TimedOut(_) | Phase::Decided(_) => return None,
+        };
+
+        Some(Phase::TimedOut(TimedOut { inner }))
+    }
+}
+
+impl InnerPhase {
+    pub(crate) fn name(&self) -> &'static str {
+        match self {
+            InnerPhase::AwaitingProposal(_) => "timed out, awaiting proposal",
+            InnerPhase::Preparing(_) => "timed out, preparing",
+            InnerPhase::Committing(_) => "timed out, committing",
+        }
+    }
+
+    fn block(&self) -> Option<&MVBAInputs> {
+        match self {
+            InnerPhase::AwaitingProposal(_) => None,
+            InnerPhase::Preparing(p) => Some(&p.block),
+            InnerPhase::Committing(p) => Some(&p.block),
+        }
+    }
+
+    fn entries(&self) -> Option<&ProposalMap<Entry>> {
+        match self {
+            InnerPhase::AwaitingProposal(_) => None,
+            InnerPhase::Preparing(p) => Some(&p.entries),
+            InnerPhase::Committing(p) => Some(&p.entries),
+        }
+    }
+}
+
+impl TimedOut {
+    pub(crate) fn into_inner(self) -> InnerPhase {
+        self.inner
+    }
+
+    /// Re-wrap an inner phase that advanced while timed out. The view stays
+    /// timed out: a certificate completing does not un-send the timeout.
+    pub(crate) fn wrap(inner: InnerPhase) -> Phase {
+        Phase::TimedOut(TimedOut { inner })
+    }
+}
+
+impl AwaitingProposal {
+    /// Accept the view's proposal. The caller must have run every check in the
+    /// paper's pre-prepare handler first; [`Transition::Proposal`] is the
+    /// witness that it did.
+    pub(crate) fn accept(self, block: MVBAInputs) -> Preparing {
+        let entries = block.entries();
+        Preparing { block, entries }
+    }
+}
+
+impl Preparing {
+    pub(crate) fn entries(&self) -> &ProposalMap<Entry> {
+        &self.entries
+    }
+
+    /// A prepare certificate formed for the accepted entries.
+    pub(crate) fn commit(self, prepare_qc: PrepareQc) -> Committing {
+        debug_assert_eq!(prepare_qc.verdict.0, self.entries);
+
+        Committing {
+            block: self.block,
+            entries: self.entries,
+            prepare_qc,
+        }
+    }
+
+    /// A commit certificate can arrive before this validator has seen the
+    /// prepare certificate for the same entries; the decision does not wait
+    /// for it.
+    pub(crate) fn decide(self, commit_qc: CommitQc) -> Decided {
+        debug_assert_eq!(commit_qc.verdict.0, self.entries);
+
+        Decided {
+            block: self.block,
+            commit_qc,
+        }
+    }
+}
+
+impl Committing {
+    pub(crate) fn block(&self) -> &MVBAInputs {
+        &self.block
+    }
+
+    pub(crate) fn entries(&self) -> &ProposalMap<Entry> {
+        &self.entries
+    }
+
+    pub(crate) fn decide(self, commit_qc: CommitQc) -> Decided {
+        debug_assert_eq!(commit_qc.verdict.0, self.entries);
+
+        Decided {
+            block: self.block,
+            commit_qc,
+        }
+    }
+}
+
+impl Decided {
+    pub(crate) fn block(&self) -> &MVBAInputs {
+        &self.block
+    }
+
+    pub(crate) fn commit_qc(&self) -> &CommitQc {
+        &self.commit_qc
+    }
+
+    /// A metablock held from elsewhere -- this validator's own input, or one
+    /// carried by a timeout certificate -- decided by a commit certificate it
+    /// received rather than formed.
+    pub(crate) fn from_foreign_qc(block: MVBAInputs, commit_qc: CommitQc) -> Self {
+        debug_assert_eq!(commit_qc.verdict.0, block.entries());
+
+        Decided { block, commit_qc }
+    }
+}
+
+/// What the state machine found it can do, carrying the evidence that lets it.
+///
+/// Every guard in the protocol lives in `find_pending_transition`, and it
+/// *constructs* these: by the time a transition exists, the certificate is
+/// formed and every check has passed, so applying it cannot fail and cannot
+/// race with a store that changed in between.
+pub(crate) enum Transition {
+    /// A pre-prepare for the current view that passed every check: right
+    /// leader, valid signature, valid metablock, justified, lock respected,
+    /// and not already voted in this view.
+    Proposal(Validated<PrePrepareMsg>),
+    /// A prepare certificate over the entries accepted in this view.
+    PrepareQc(PrepareQc),
+    /// A commit certificate over the entries this validator holds a metablock
+    /// for.
+    CommitQc(CommitQc),
+    /// A timeout certificate for this view or a later one: advance to the view
+    /// after it.
+    Tc(TimeoutCertificate),
+    /// Send this validator's own timeout for the current view, because its
+    /// timer fired or because f+1 stake already timed out there.
+    Timeout,
+}

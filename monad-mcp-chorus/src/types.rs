@@ -222,6 +222,10 @@ impl<T> Validated<T> {
         &self.author
     }
 
+    pub fn message(&self) -> &T {
+        &self.message
+    }
+
     pub fn into(self) -> T {
         self.message
     }
