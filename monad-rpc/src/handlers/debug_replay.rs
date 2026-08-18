@@ -15,7 +15,7 @@
 
 use std::num::TryFromIntError;
 
-use monad_ethcall::{CallResult, ChainId, MonadExecutor, MonadTracer};
+use monad_ethcall::{ChainId, MonadExecutor, MonadTracer};
 use monad_triedb_utils::triedb_env::{BlockKey, Triedb};
 use monad_types::SeqNum;
 use serde_json::value::RawValue;
@@ -249,11 +249,10 @@ pub async fn monad_debug_trace_replay<T: Triedb>(
         )
         .await;
     let raw_payload = match call_result {
-        CallResult::Success(monad_ethcall::SuccessCallResult { output_data, .. }) => output_data,
-        CallResult::Failure(error) => {
-            return Err(error.into());
+        Ok(result) => result.output_data.into_vec(),
+        Err(e) => {
+            return Err(e.into());
         }
-        CallResult::Revert(result) => result.trace,
     };
 
     // reject on the approximated encoded length before serialization
