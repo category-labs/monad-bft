@@ -35,7 +35,8 @@ use monad_eth_types::{
     EthStorageSlot, EthTxHash, ReceiptWithLogIndex, TransactionLocation, TxEnvelopeWithSender,
 };
 use monad_triedb::{
-    compute_page_key, compute_slot_offset, decode_storage_page_slot, TraverseEntry, TriedbHandle,
+    compute_page_key, compute_slot_offset, decode_storage_page_slot, NodeCacheStats, TraverseEntry,
+    TriedbHandle,
 };
 use monad_types::{BlockId, Hash, SeqNum};
 use tracing::{error, warn};
@@ -172,6 +173,11 @@ fn polling_thread(
             }
 
             last_meta_updated = Instant::now();
+
+            {
+                let mut meta = meta.lock().expect("triedb poller mutex poisoned");
+                meta.node_cache_stats = triedb_handle.node_cache_stats();
+            }
 
             let finalized_is_updated = last_finalized != latest_finalized;
             let voted_is_updated = last_voted != latest_voted;
@@ -538,6 +544,8 @@ struct TriedbEnvMeta {
     voted_proposals: BTreeMap<SeqNum, BlockId>,
 
     cache_manager: CacheManager,
+    /// Refreshed by the polling thread, which owns the only handle that reads.
+    node_cache_stats: Option<NodeCacheStats>,
 }
 
 #[derive(Clone)]
@@ -636,6 +644,7 @@ impl TriedbEnv {
             latest_voted: BlockKey::Finalized(latest_finalized),
             latest_proposed: BlockKey::Finalized(latest_finalized),
             voted_proposals: Default::default(),
+            node_cache_stats: None,
             cache_manager: CacheManager::new(
                 max_finalized_block_cache_len,
                 max_voted_block_cache_len,
@@ -676,6 +685,12 @@ impl TriedbEnv {
             meta,
             page_encoded,
         }
+    }
+
+    /// Trie-node LRU counters for the handle that serves this env's reads,
+    /// refreshed by the polling thread. None until the first refresh.
+    pub fn node_cache_stats(&self) -> Option<NodeCacheStats> {
+        self.meta.lock().expect("mutex poisoned").node_cache_stats
     }
 
     fn get_block_cache(&self, key: &BlockKey) -> Option<BlockCache> {

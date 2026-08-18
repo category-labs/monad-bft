@@ -13,13 +13,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use actix_web::{
     body::MessageBody,
     dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform},
 };
 use futures_util::future::{FutureExt as _, LocalBoxFuture};
+use monad_triedb_utils::triedb_env::TriedbEnv;
 use opentelemetry::{
     metrics::{Histogram, MeterProvider, UpDownCounter},
     KeyValue,
@@ -150,6 +151,59 @@ impl Metrics {
             .build();
 
         Self::new_with_otel_provider(provider)
+    }
+
+    /// Registers the triedb node-cache counters as observable gauges, sampled
+    /// by the SDK at export time. Values come from the polling thread's handle,
+    /// the only one in this process that serves cached reads.
+    ///
+    /// Each gauge reads the counters independently. They are refreshed only on
+    /// the triedb meta tick, so the five readings within one export are
+    /// normally the same snapshot; a skew would at worst shift one export of a
+    /// rate, which these are consumed as.
+    pub fn register_triedb_node_cache_gauges(&self, triedb: Arc<TriedbEnv>) {
+        let meter = self.provider.meter("opentelemetry");
+
+        macro_rules! gauge {
+            ($name:literal, $desc:literal, $field:ident) => {{
+                let triedb = triedb.clone();
+                let _ = meter
+                    .u64_observable_gauge($name)
+                    .with_description($desc)
+                    .with_callback(move |observer| {
+                        if let Some(stats) = triedb.node_cache_stats() {
+                            observer.observe(stats.$field, &[]);
+                        }
+                    })
+                    .build();
+            }};
+        }
+
+        gauge!(
+            "monad.rpc.triedb.node_cache.hits",
+            "Trie-node LRU lookups served from cache, cumulative since rpc start",
+            hits
+        );
+        gauge!(
+            "monad.rpc.triedb.node_cache.misses",
+            "Trie-node LRU lookups that fell through to disk, cumulative since rpc start",
+            misses
+        );
+        gauge!(
+            "monad.rpc.triedb.node_cache.evictions",
+            "Trie nodes dropped to stay within the cache's bounds, cumulative since rpc start",
+            evictions
+        );
+        gauge!(
+            "monad.rpc.triedb.node_cache.used_bytes",
+            "Bytes of cached trie nodes, against --triedb-node-lru-max-mem",
+            used_bytes
+        );
+        gauge!(
+            "monad.rpc.triedb.node_cache.entries",
+            "Cached trie nodes, against the slot count derived from the byte budget",
+            entries
+        );
     }
 
     pub fn new_with_otel_provider(provider: SdkMeterProvider) -> Self {
