@@ -550,14 +550,55 @@ impl From<monad_archive::prelude::Report> for JsonRpcError {
     }
 }
 
-impl From<monad_ethcall::FailureCallResult> for JsonRpcError {
-    fn from(error: monad_ethcall::FailureCallResult) -> Self {
-        match error.error_code {
-            monad_ethcall::EthCallResult::ExecutionError => {
-                Self::eth_call_execution_revert(error.message, error.data)
+impl From<monad_ethcall::EthCallError> for JsonRpcError {
+    fn from(error: monad_ethcall::EthCallError) -> Self {
+        use monad_ethcall::EthCallError::*;
+        match error {
+            Failure {
+                error_code,
+                message,
+                data,
+                ..
+            } => {
+                if matches!(error_code, monad_ethcall::EthCallResult::ExecutionError) {
+                    Self::eth_call_execution_revert(message, data)
+                } else {
+                    Self::eth_call_error(message, data)
+                }
             }
-            _ => Self::eth_call_error(error.message, error.data),
+            GasLimitTooHigh => Self::eth_call_error(String::from("gas limit too high"), None),
+            InternalError => Self::eth_call_error(String::from("internal eth_call error"), None),
+            Other { message } => Self::eth_call_error(message, None),
+            ReserveBalanceViolation { .. } => {
+                Self::eth_call_error(String::from("reserve balance violation"), None)
+            }
+            Trace { .. } => Self::eth_call_error(String::from("trace error"), None),
         }
+    }
+}
+
+impl From<monad_ethcall::EthTraceError> for JsonRpcError {
+    fn from(error: monad_ethcall::EthTraceError) -> Self {
+        use monad_ethcall::EthTraceError::*;
+        let message = match error {
+            InternalError => String::from("internal error"),
+            Other(message) => message,
+        };
+        Self::eth_call_error(message, None)
+    }
+}
+
+impl From<monad_ethcall::EthSimulateError> for JsonRpcError {
+    fn from(error: monad_ethcall::EthSimulateError) -> Self {
+        use monad_ethcall::EthSimulateError::*;
+        let message = match error {
+            BlockOverrideFailure => String::from("block override failure"),
+            InternalError => String::from("internal error"),
+            InputSizeMismatch => String::from("input size mismatch"),
+            StateOverrideFailure => String::from("state override failure"),
+            Other(message) => message,
+        };
+        Self::eth_call_error(message, None)
     }
 }
 
