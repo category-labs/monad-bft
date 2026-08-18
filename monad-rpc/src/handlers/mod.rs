@@ -801,6 +801,9 @@ async fn eth_feeHistory(
 ) -> Result<Box<RawValue>, JsonRpcError> {
     let data_provider = app_state.data_provider.as_ref().method_not_supported()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
+    let _permit = app_state.feehistory_limiter.try_acquire().map_err(|_| {
+        JsonRpcError::internal_error("exceed feehistory max concurrent requests".into())
+    })?;
     monad_eth_feeHistory(data_provider, params)
         .await
         .map(serialize_result)?

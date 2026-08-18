@@ -54,6 +54,7 @@ pub async fn init_server(
         enable_eth_simulate_v1: false,
         metrics: None,
         rpc_comparator: None,
+        feehistory_limiter: std::sync::Arc::new(tokio::sync::Semaphore::new(100)),
     };
 
     test::init_service(

@@ -381,6 +381,7 @@ async fn main() -> std::io::Result<()> {
         args.enable_eth_simulate_v1,
         with_metrics.clone(),
         rpc_comparator.clone(),
+        args.feehistory_max_concurrent_requests,
     );
 
     // Configure the websocket server if enabled
