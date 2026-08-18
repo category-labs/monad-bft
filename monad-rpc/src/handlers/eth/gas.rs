@@ -28,7 +28,7 @@ use futures::stream::StreamExt;
 use itertools::Itertools;
 use monad_ethcall::{
     overrides::{StateOverrideObject, StateOverrideSet},
-    CallResult, EthCallRequest, MonadExecutor, MonadTracer,
+    EthCallRequest, MonadExecutor, MonadTracer,
 };
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{BlockKey, Triedb};
@@ -41,7 +41,10 @@ use crate::{
         get_block_key_from_tag_or_hash, DataProvider,
     },
     handlers::{
-        eth::call::{check_contract_creation_size, fill_gas_params, CallRequest, GasPriceDetails},
+        eth::{
+            call::{check_contract_creation_size, fill_gas_params, CallRequest, GasPriceDetails},
+            CallResult, SuccessCallResult,
+        },
         parse_ethcall_chain_id,
     },
     types::{
@@ -55,6 +58,15 @@ use crate::{
 
 /// Additional gas added during a CALL.
 const CALL_STIPEND: u64 = 2_300;
+
+fn into_call_result(
+    result: Result<monad_ethcall::EthCallSuccess, monad_ethcall::EthCallError>,
+) -> CallResult {
+    match result {
+        Ok(success) => success.into(),
+        Err(error) => error.into(),
+    }
+}
 
 async fn estimate_gas(
     eth_call_fn: impl AsyncFn(&TxEnvelope) -> CallResult,
@@ -85,12 +97,12 @@ async fn estimate_gas_with_builder(
     let mut txn = build_tx(call_request)?;
 
     let (gas_used, gas_refund) = match eth_call_fn(&txn).await {
-        monad_ethcall::CallResult::Success(monad_ethcall::SuccessCallResult {
+        CallResult::Success(SuccessCallResult {
             gas_used,
             gas_refund,
             ..
         }) => (gas_used, gas_refund),
-        monad_ethcall::CallResult::Failure(error) => match error.error_code {
+        CallResult::Failure(error) => match error.error_code {
             monad_ethcall::EthCallResult::OutOfGas => {
                 if provider_gas_limit < protocol_gas_limit
                     && U256::from(provider_gas_limit) < original_tx_gas
@@ -122,11 +134,10 @@ async fn estimate_gas_with_builder(
     let (mut lower_bound_gas_limit, mut upper_bound_gas_limit) =
         if txn.gas_limit() < upper_bound_gas_limit {
             match eth_call_fn(&txn).await {
-                monad_ethcall::CallResult::Success(monad_ethcall::SuccessCallResult {
-                    gas_used,
-                    ..
-                }) => (gas_used.sub(1), txn.gas_limit()),
-                monad_ethcall::CallResult::Failure(_) => (txn.gas_limit(), upper_bound_gas_limit),
+                CallResult::Success(SuccessCallResult { gas_used, .. }) => {
+                    (gas_used.sub(1), txn.gas_limit())
+                }
+                CallResult::Failure(_) => (txn.gas_limit(), upper_bound_gas_limit),
                 _ => {
                     return Err(JsonRpcError::internal_error(
                         "Unexpected CallResult type".into(),
@@ -152,10 +163,10 @@ async fn estimate_gas_with_builder(
         txn = build_tx(call_request)?;
 
         match eth_call_fn(&txn).await {
-            monad_ethcall::CallResult::Success(monad_ethcall::SuccessCallResult { .. }) => {
+            CallResult::Success(SuccessCallResult { .. }) => {
                 upper_bound_gas_limit = mid;
             }
-            monad_ethcall::CallResult::Failure(_) => {
+            CallResult::Failure(_) => {
                 lower_bound_gas_limit = mid;
             }
             _ => {
@@ -355,19 +366,21 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
     let (block_number, block_id) = block_key_to_parts(block_key);
 
     let eth_call_fn = async |transaction: &TxEnvelope| {
-        eth_call_executor
-            .eth_call(EthCallRequest {
-                chain_id: ethcall_chain_id,
-                transaction,
-                block_header: &header.header,
-                sender,
-                block_number,
-                block_id,
-                state_override_set: &state_override_set,
-                tracer: MonadTracer::NoopTracer,
-                gas_specified,
-            })
-            .await
+        into_call_result(
+            eth_call_executor
+                .eth_call(EthCallRequest {
+                    chain_id: ethcall_chain_id,
+                    transaction,
+                    block_header: &header.header,
+                    sender,
+                    block_number,
+                    block_id,
+                    state_override_set: &state_override_set,
+                    tracer: MonadTracer::NoopTracer,
+                    gas_specified,
+                })
+                .await,
+        )
     };
 
     // If the transaction is a regular value transfer, execute the transaction with a 21000 gas limit and return that gas limit if executes successfully.
@@ -385,10 +398,7 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
             let txn: TxEnvelope = tx.clone().try_into()?;
             tx.gas = saved_gas;
 
-            if matches!(
-                eth_call_fn(&txn).await,
-                monad_ethcall::CallResult::Success(_)
-            ) {
+            if matches!(eth_call_fn(&txn).await, CallResult::Success(_)) {
                 return Ok(Quantity(21_000));
             }
         }
@@ -430,19 +440,21 @@ pub async fn monad_eth_fillTransaction<T: Triedb>(
     let eth_call_fn =
         async |header: &Header, from: Address, block_key: BlockKey, transaction: &TxEnvelope| {
             let (block_number, block_id) = block_key_to_parts(block_key);
-            eth_call_executor
-                .eth_call(EthCallRequest {
-                    chain_id: ethcall_chain_id,
-                    transaction,
-                    block_header: header,
-                    sender: from,
-                    block_number,
-                    block_id,
-                    state_override_set: &state_override,
-                    tracer: MonadTracer::NoopTracer,
-                    gas_specified: true,
-                })
-                .await
+            into_call_result(
+                eth_call_executor
+                    .eth_call(EthCallRequest {
+                        chain_id: ethcall_chain_id,
+                        transaction,
+                        block_header: header,
+                        sender: from,
+                        block_number,
+                        block_id,
+                        state_override_set: &state_override,
+                        tracer: MonadTracer::NoopTracer,
+                        gas_specified: true,
+                    })
+                    .await,
+            )
         };
 
     fill_transaction_with_provider(
@@ -1023,13 +1035,16 @@ mod tests {
     use alloy_signer_local::PrivateKeySigner;
     use monad_chain_config::execution_revision::MonadExecutionRevision;
     use monad_eth_types::{EthAccount, ReceiptWithLogIndex};
-    use monad_ethcall::{EthCallResult, FailureCallResult, SuccessCallResult};
+    use monad_ethcall::EthCallResult;
     use monad_triedb_utils::mock_triedb::MockTriedb;
 
     use super::*;
     use crate::{
         data::eth_call_handler::EthCallHandlerConfig,
-        handlers::eth::call::{CallInput, CallRequest, GasPriceDetails},
+        handlers::eth::{
+            call::{CallInput, CallRequest, GasPriceDetails},
+            FailureCallResult, SuccessCallResult,
+        },
     };
 
     #[derive(Clone, Copy)]
