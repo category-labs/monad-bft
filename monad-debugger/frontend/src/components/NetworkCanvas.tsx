@@ -1,4 +1,4 @@
-import { Component, createEffect, createMemo, createSignal, For, onCleanup, Show, untrack } from "solid-js";
+import { Component, createEffect, createMemo, createSignal, For, onCleanup, onMount, Show, untrack } from "solid-js";
 import { SimulationQuery } from "../generated/graphql";
 import { Simulation } from "../wasm";
 
@@ -47,7 +47,19 @@ type MessageFilterKey =
     | "other";
 type Position = { x: number, y: number };
 type PixelOffset = { x: number, y: number };
+type ViewScale = { x: number, y: number };
 type HoveredLinkAction = { key: string, position: Position };
+type WireLaneTone = "neutral" | "amber";
+type WireLane = {
+    key: string,
+    latency: number,
+    // +1 travels fromId -> toId, -1 travels toId -> fromId
+    travel: 1 | -1,
+    // perpendicular lane: 0 keeps the label on the wire, ±1 straddles it
+    side: number,
+    arrow: boolean,
+    tone: WireLaneTone,
+};
 type InFlightDestination = {
     toId: string,
     messages: Array<{ fromId: string, message: PendingMessage }>,
@@ -71,8 +83,40 @@ const wheelIgnoreSelector = "[data-canvas-wheel-ignore]";
 const linkHitAreaWidth = 32;
 const cutCableGap = 42;
 const cutCableStrands = [-22, -14, -7, 0, 8, 15, 22];
+// Wire label geometry, in unzoomed screen pixels
+const wireArrowLength = 52;
+const wireArrowHeight = 12;
+const wireArrowAlong = 26;
+const wireChipAlong = 32;
+const wireLaneOffset = 15;
+// Wires shorter than this shrink their labels so the pair stays readable
+const wireLabelFitLength = 150;
+const wireChipClass = "rounded-md border px-2 py-0.5 text-center text-[12px] font-semibold tabular-nums shadow-sm";
+// Packets ride beside their wire, offset in screen pixels
+const packetLane = 10;
+const packetLaneStagger = 3.5;
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+
+// The topology svg is stretched to the canvas (preserveAspectRatio="none"), so
+// view units are not square on screen. Work out the wire's on-screen frame and
+// convert pixel offsets back into view units, otherwise "perpendicular" and
+// arrow angles drift as the canvas aspect changes.
+const screenFrame = (from: Position, to: Position, scale: ViewScale) => {
+    const dx = (to.x - from.x) * scale.x;
+    const dy = (to.y - from.y) * scale.y;
+    const length = Math.max(1, Math.hypot(dx, dy));
+    const tangent = { x: dx / length, y: dy / length };
+    const normal = { x: -tangent.y, y: tangent.x };
+    return {
+        angle: Math.atan2(dy, dx),
+        length,
+        offset: (base: Position, along: number, out: number): Position => ({
+            x: base.x + (tangent.x * along + normal.x * out) / scale.x,
+            y: base.y + (tangent.y * along + normal.y * out) / scale.y,
+        }),
+    };
+};
 
 const pointAlongLine = (from: Position, to: Position, distanceFromMidpoint: number) => {
     const dx = to.x - from.x;
@@ -350,8 +394,28 @@ const NetworkCanvas: Component<{
     const [showMessageFilters, setShowMessageFilters] = createSignal(false);
     const [messageFilters, setMessageFilters] = createSignal<Record<MessageFilterKey, boolean>>(defaultMessageFilters);
     const [hoveredLinkAction, setHoveredLinkAction] = createSignal<HoveredLinkAction>();
+    const [canvasSize, setCanvasSize] = createSignal({ width: topologyViewSize, height: topologyViewSize });
     const [draggingNodeId, setDraggingNodeId] = createSignal<string>();
     const lastCommittedPosition = new Map<string, Position>();
+
+    onMount(() => {
+        if (!canvasRef) {
+            return;
+        }
+        const observer = new ResizeObserver(([entry]) => {
+            const { width, height } = entry.contentRect;
+            if (width > 0 && height > 0) {
+                setCanvasSize({ width, height });
+            }
+        });
+        observer.observe(canvasRef);
+        onCleanup(() => observer.disconnect());
+    });
+
+    const viewScale = (): ViewScale => {
+        const size = canvasSize();
+        return { x: size.width / topologyViewSize, y: size.height / topologyViewSize };
+    };
 
     const networkNodes = () => props.data.networkConfig.nodes;
     const simNodes = () => props.data.nodes;
@@ -780,6 +844,10 @@ const NetworkCanvas: Component<{
         }
     };
 
+    // laneOffset is in screen pixels: measuring it in view units would let the
+    // stretched viewBox render the same lane twice as wide on a steep wire as on
+    // a shallow one, which reads as packets riding the wire in some cases and
+    // floating away from it in others.
     const directedLinkPoint = (
         fromNodeId: string,
         toNodeId: string,
@@ -791,20 +859,19 @@ const NetworkCanvas: Component<{
         if (!from || !to) {
             return undefined;
         }
-        const dx = to.x - from.x;
-        const dy = to.y - from.y;
-        const length = Math.max(1, Math.hypot(dx, dy));
-        return {
-            x: from.x + progress * dx - (dy / length) * laneOffset,
-            y: from.y + progress * dy + (dx / length) * laneOffset,
+        const travelled = {
+            x: from.x + progress * (to.x - from.x),
+            y: from.y + progress * (to.y - from.y),
         };
+        return screenFrame(from, to, viewScale()).offset(travelled, 0, laneOffset);
     };
 
     const messagePosition = (toNodeId: string, message: PendingMessage) => {
         const duration = Math.max(1, message.rxTick - message.fromTick);
         const progress = clamp((props.vizTick - message.fromTick) / duration, 0, 1);
-        const packetOffset = ((message.id % 3) - 1) * 5;
-        return directedLinkPoint(message.fromId, toNodeId, progress, 10 + packetOffset);
+        // Stagger concurrent packets so a burst on one wire stays countable
+        const packetOffset = ((message.id % 3) - 1) * packetLaneStagger;
+        return directedLinkPoint(message.fromId, toNodeId, progress, packetLane + packetOffset);
     };
 
     const destinationPanelPosition = (toNodeId: string) => {
@@ -1028,65 +1095,107 @@ const NetworkCanvas: Component<{
                     y: ((from()?.y ?? 0) + (to()?.y ?? 0)) / 2,
                 });
                 const mode = () => linkMode(pair);
-                const labelPosition = () => {
-                    if (mode() !== "neither") {
-                        return mid();
-                    }
-                    const fromPosition = from()!;
-                    const toPosition = to()!;
-                    const dx = toPosition.x - fromPosition.x;
-                    const dy = toPosition.y - fromPosition.y;
-                    const length = Math.max(1, Math.hypot(dx, dy));
-                    return {
-                        x: mid().x - (dy / length) * 62,
-                        y: mid().y + (dx / length) * 62,
-                    };
-                };
+                const frame = () => screenFrame(from() ?? mid(), to() ?? mid(), viewScale());
+                const fit = () => clamp(frame().length / wireLabelFitLength, 0.5, 1);
                 const forward = () => linkForDirection(pair, pair.fromId, pair.toId);
                 const reverse = () => linkForDirection(pair, pair.toId, pair.fromId);
-                const label = () => {
+                // A severed wire has no latency to report, so its label steps
+                // aside to keep the frayed cable ends legible.
+                const severedPosition = () => frame().offset(mid(), 0, 78);
+                const lanes = (): WireLane[] => {
                     const forwardLink = forward();
                     const reverseLink = reverse();
                     switch (mode()) {
                         case "both":
                             if (forwardLink && reverseLink && forwardLink.latency !== reverseLink.latency) {
-                                return `${nodeLabel(pair.fromId)} ${forwardLink.latency}ms / ${nodeLabel(pair.toId)} ${reverseLink.latency}ms`;
+                                return [
+                                    { key: "forward", latency: forwardLink.latency, travel: 1, side: 1, arrow: true, tone: "neutral" },
+                                    { key: "reverse", latency: reverseLink.latency, travel: -1, side: -1, arrow: true, tone: "neutral" },
+                                ];
                             }
-                            return `Both ${forwardLink?.latency ?? reverseLink?.latency ?? 0}ms`;
+                            return [{
+                                key: "symmetric",
+                                latency: forwardLink?.latency ?? reverseLink?.latency ?? 0,
+                                travel: 1,
+                                side: 0,
+                                arrow: false,
+                                tone: "neutral",
+                            }];
                         case "forward":
-                            return `${nodeLabel(pair.fromId)} -> ${nodeLabel(pair.toId)} ${forwardLink?.latency ?? 0}ms`;
+                            return [{ key: "forward", latency: forwardLink?.latency ?? 0, travel: 1, side: 0, arrow: true, tone: "amber" }];
                         case "reverse":
-                            return `${nodeLabel(pair.toId)} -> ${nodeLabel(pair.fromId)} ${reverseLink?.latency ?? 0}ms`;
+                            return [{ key: "reverse", latency: reverseLink?.latency ?? 0, travel: -1, side: 0, arrow: true, tone: "amber" }];
                         case "neither":
-                            return "Neither direction";
-                    }
-                };
-                const labelClass = () => {
-                    switch (mode()) {
-                        case "both":
-                            return "border-neutral-300 bg-white/95 text-neutral-800";
-                        case "forward":
-                        case "reverse":
-                            return "border-amber-400 bg-amber-50 text-amber-800";
-                        case "neither":
-                            return "border-red-300 bg-red-50 text-red-700";
+                            return [];
                     }
                 };
                 return (
-                    <Show
-                        when={from() && to()}
-                    >
-                        <div
-                            class="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-1/2"
-                            style={{
-                                left: `${labelPosition().x / 10}%`,
-                                top: `${labelPosition().y / 10}%`,
-                            }}
-                        >
-                            <div class={`pointer-events-none rounded-md border px-2 py-1 text-center text-[13px] font-semibold shadow-sm ${labelClass()}`}>
-                                {label()}
+                    <Show when={from() && to()}>
+                        <Show when={mode() === "neither"}>
+                            <div
+                                class="pointer-events-none absolute z-10"
+                                style={{
+                                    left: `${severedPosition().x / 10}%`,
+                                    top: `${severedPosition().y / 10}%`,
+                                    transform: "translate(-50%, -50%)",
+                                }}
+                            >
+                                <div class={`${wireChipClass} border-red-300 bg-red-50 text-red-700`}>Severed</div>
                             </div>
-                        </div>
+                        </Show>
+                        <For each={lanes()}>{(lane) => {
+                            const arrowCenter = () => frame().offset(
+                                mid(),
+                                -wireArrowAlong * fit() * lane.travel,
+                                wireLaneOffset * fit() * lane.side,
+                            );
+                            const chipCenter = () => frame().offset(
+                                mid(),
+                                wireChipAlong * fit() * lane.travel,
+                                wireLaneOffset * fit() * lane.side,
+                            );
+                            // The arrow is html, not canvas svg, so it rotates by the
+                            // wire's on-screen angle and keeps its shape undistorted.
+                            const rotation = () => frame().angle + (lane.travel === 1 ? 0 : Math.PI);
+                            const arrowColor = () => lane.tone === "amber" ? "#b45309" : "#334155";
+                            return (
+                                <>
+                                    <Show when={lane.arrow}>
+                                        <div
+                                            class="pointer-events-none absolute z-10"
+                                            style={{
+                                                left: `${arrowCenter().x / 10}%`,
+                                                top: `${arrowCenter().y / 10}%`,
+                                                transform: `translate(-50%, -50%) rotate(${rotation()}rad)`,
+                                            }}
+                                            aria-hidden="true"
+                                        >
+                                            <svg
+                                                width={wireArrowLength * fit()}
+                                                height={wireArrowHeight * fit()}
+                                                viewBox={`0 0 ${wireArrowLength} ${wireArrowHeight}`}
+                                                fill="none"
+                                            >
+                                                <path d="M2 6 L38 6" stroke={arrowColor()} stroke-width="2.5" stroke-linecap="round" />
+                                                <path d="M36 1.2 L50 6 L36 10.8 Z" fill={arrowColor()} />
+                                            </svg>
+                                        </div>
+                                    </Show>
+                                    <div
+                                        class="pointer-events-none absolute z-10"
+                                        style={{
+                                            left: `${chipCenter().x / 10}%`,
+                                            top: `${chipCenter().y / 10}%`,
+                                            transform: "translate(-50%, -50%)",
+                                        }}
+                                    >
+                                        <div class={`${wireChipClass} ${lane.tone === "amber" ? "border-amber-400 bg-amber-50 text-amber-800" : "border-neutral-300 bg-white/95 text-neutral-800"}`}>
+                                            {lane.latency}ms
+                                        </div>
+                                    </div>
+                                </>
+                            );
+                        }}</For>
                     </Show>
                 );
             }}</For>
