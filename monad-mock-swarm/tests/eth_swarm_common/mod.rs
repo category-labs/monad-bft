@@ -243,7 +243,7 @@ pub fn verify_transactions_in_ledger(
         let state = swarm.states().get(&node_id).unwrap();
         let mut txns_to_see = txns.clone();
         for (round, block) in state.executor.ledger().get_finalized_blocks() {
-            for txn in block.body().execution_body.flattened_transactions() {
+            for txn in block.body().execution_body.transactions.iter() {
                 let txn_hash = txn.tx_hash();
                 if txns_to_see.contains(txn_hash) {
                     txns_to_see.remove(txn_hash);

@@ -17,7 +17,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use alloy_primitives::TxHash;
 use flume::{Sender, TrySendError};
-use monad_eth_types::{AccountKey, EthTxEnvelope, NamespaceTransactionBatch};
+use monad_eth_types::{AccountKey, EthTxEnvelope};
 
 use super::{
     state::{EthTxPoolBridgeStateView, TxStatusReceiverSender},
@@ -28,10 +28,6 @@ pub(crate) enum EthTxPoolBridgeSubmission {
     Transaction {
         tx: EthTxEnvelope,
         tx_status_recv_send: TxStatusReceiverSender,
-    },
-    NamespaceBatch {
-        batch: NamespaceTransactionBatch,
-        tx_status_recv_sends: Vec<TxStatusReceiverSender>,
     },
 }
 
@@ -83,18 +79,6 @@ impl EthTxPoolBridgeClient {
             .try_send(EthTxPoolBridgeSubmission::Transaction {
                 tx,
                 tx_status_recv_send,
-            })
-    }
-
-    pub(crate) fn try_send_batch(
-        &self,
-        batch: NamespaceTransactionBatch,
-        tx_status_recv_sends: Vec<TxStatusReceiverSender>,
-    ) -> Result<(), TrySendError<EthTxPoolBridgeSubmission>> {
-        self.tx_sender
-            .try_send(EthTxPoolBridgeSubmission::NamespaceBatch {
-                batch,
-                tx_status_recv_sends,
             })
     }
 

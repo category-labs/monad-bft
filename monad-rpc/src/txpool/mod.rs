@@ -145,32 +145,6 @@ impl EthTxPoolBridge {
                                     warn!("TxPoolBridge IPC feed failed, monad-bft likely crashed: {}", e);
                                 }
                             }
-                            EthTxPoolBridgeSubmission::NamespaceBatch {
-                                batch,
-                                tx_status_recv_sends,
-                            } => {
-                                let mut should_feed = false;
-                                for (tx, tx_status_recv_send) in
-                                    batch.transactions.iter().zip(tx_status_recv_sends)
-                                {
-                                    should_feed |= self.state.add_tx(
-                                        &mut self.eviction_queue,
-                                        tx,
-                                        tx_status_recv_send,
-                                    );
-                                }
-
-                                if !should_feed {
-                                    continue;
-                                }
-
-                                if let Err(e) = ipc_client.feed(EthTxPoolIpcTx::new_batch_with_default_priority(
-                                    batch,
-                                    Vec::default(),
-                                )).await {
-                                    warn!("TxPoolBridge IPC batch feed failed, monad-bft likely crashed: {}", e);
-                                }
-                            }
                         }
                     }
 
@@ -346,12 +320,9 @@ mod tests {
         assert!(result.is_ok());
 
         let received_submission = rx.try_recv().unwrap();
-        let received_tx = match received_submission {
-            EthTxPoolBridgeSubmission::Transaction { tx, .. } => tx,
-            EthTxPoolBridgeSubmission::NamespaceBatch { .. } => {
-                panic!("expected transaction submission")
-            }
-        };
+        let EthTxPoolBridgeSubmission::Transaction {
+            tx: received_tx, ..
+        } = received_submission;
         assert_eq!(*received_tx.tx_hash(), tx_hash);
     }
 

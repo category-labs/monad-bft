@@ -85,10 +85,6 @@ pub enum PayloadError {
     ExceededNumTxnLimit { num_txs: usize },
     ExceededBlockGasLimit { total_gas: u64 },
     ExceededBlockSizeLimit { txs_size: usize },
-    EmptyNamespaceTransactionBatch,
-    InvalidNamespaceTransactionBatchNamespace,
-    MixedNamespaceTransactionBatchChainIds,
-    InvalidNamespaceTransactionBatchSignature,
 }
 
 impl From<PayloadError> for EthBlockValidationError {

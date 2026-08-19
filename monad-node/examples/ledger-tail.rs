@@ -208,7 +208,7 @@ async fn main() {
                 parent_round =? block.get_qc().get_round().0,
                 epoch =? block.header().epoch.0,
                 seq_num =? block.header().seq_num.0,
-                num_tx =? block.body().execution_body.flattened_transactions().len(),
+                num_tx =? block.body().execution_body.transactions.len(),
                 author =? block.header().author,
                 block_ts_ms =? block.header().timestamp_ns / 1_000_000,
                 now_ts_ms =? now_ts.as_millis(),

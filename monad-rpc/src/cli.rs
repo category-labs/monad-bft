@@ -157,30 +157,6 @@ pub struct Cli {
     #[arg(long, default_value_t = 10_000)]
     pub eth_send_raw_transaction_sync_max_timeout_ms: u64,
 
-    /// Enable namespace preconfirmation for namespace-routed eth_sendRawTransaction
-    #[arg(long, default_value_t = false)]
-    pub namespace_preconfirmation_enabled: bool,
-
-    /// Set the hex-encoded namespace operator private key path for preconfirmation
-    #[arg(long)]
-    pub namespace_preconfirmation_operator_key_path: Option<PathBuf>,
-
-    /// Set the maximum number of queued namespace preconfirmation transactions
-    #[arg(long, default_value_t = 8192)]
-    pub namespace_preconfirmation_max_queued_txs: usize,
-
-    /// Set the maximum number of transactions in a namespace preconfirmation batch
-    #[arg(long, default_value_t = 128)]
-    pub namespace_preconfirmation_max_batch_txs: usize,
-
-    /// Set the namespace preconfirmation batch flush interval in milliseconds
-    #[arg(long, default_value_t = 8)]
-    pub namespace_preconfirmation_flush_interval_ms: u64,
-
-    /// Set the namespace preconfirmation cache TTL in seconds
-    #[arg(long, default_value_t = 900)]
-    pub namespace_preconfirmation_ttl_secs: u64,
-
     /// Enable admin_ethCallStatistics method
     #[arg(long, default_value_t = false)]
     pub enable_admin_eth_call_statistics: bool,

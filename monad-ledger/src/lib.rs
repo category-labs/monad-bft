@@ -298,7 +298,7 @@ where
                     self.metrics.gauge(GAUGE_EXECUTION_LEDGER_NUM_COMMITS).inc();
 
                     let block_id = block.get_id();
-                    let num_tx = block.body().execution_body.flattened_transactions().len() as u64;
+                    let num_tx = block.body().execution_body.transactions.len() as u64;
                     let block_num = block.get_seq_num().0;
                     info!(num_tx, block_num, "committed block");
                     self.metrics

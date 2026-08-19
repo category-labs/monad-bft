@@ -13,6 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use alloy_primitives::Address;
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::Triedb;
 use serde::{Deserialize, Serialize};
@@ -157,18 +158,20 @@ pub struct MonadEthGetBlockReceiptsParams {
 #[derive(Serialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetBlockReceiptsResult(Vec<MonadTransactionReceipt>);
 
-#[rpc(method = "eth_getBlockReceipts")]
+#[rpc(method = "eth_getBlockReceipts", ignore = "base_chain_id,namespace")]
 #[allow(non_snake_case)]
 #[tracing::instrument(level = "debug", skip_all)]
 /// Returns the receipts of a block by number or hash.
 pub async fn monad_eth_getBlockReceipts<T: Triedb>(
     data_provider: &DataProvider<T>,
+    base_chain_id: u64,
+    namespace: Option<Address>,
     params: MonadEthGetBlockReceiptsParams,
 ) -> JsonRpcResult<Option<MonadEthGetBlockReceiptsResult>> {
     trace!("monad_eth_getBlockReceipts: {params:?}");
 
     data_provider
-        .get_block_receipts(params.block)
+        .get_block_receipts_for_namespace(params.block, base_chain_id, namespace)
         .await
         .map_present_and_no_err(MonadEthGetBlockReceiptsResult)
 }

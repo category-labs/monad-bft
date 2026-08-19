@@ -20,7 +20,7 @@ use std::{
 };
 
 use alloy_consensus::{transaction::Transaction, TxEnvelope};
-use alloy_primitives::{Address, TxHash, U256};
+use alloy_primitives::{TxHash, U256};
 use itertools::Itertools;
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_types::{
@@ -34,8 +34,8 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_types::{
-    chain_id_for_namespace, AccountKey, EthAccount, EthExecutionProtocol, EthHeader,
-    EthStorageKey, ExtractEthAddress, NamespaceTransactionBatch, NamespacedTx, ValidatedTx,
+    AccountKey, EthAccount, EthExecutionProtocol, EthHeader, ExtractEthAddress, NamespacedTx,
+    ValidatedTx,
 };
 use monad_execution_state_read::{ExecutionStateRead, ExecutionStateReadError};
 use monad_system_calls::validator::{SystemTransactionValidationError, SystemTransactionValidator};
@@ -80,43 +80,6 @@ pub fn compute_txn_max_gas_cost(txn: &TxEnvelope, base_fee: u64) -> U256 {
     let base_fee = U256::from(base_fee);
     let gas_bid = max_fee.min(base_fee.saturating_add(priority_fee));
     gas_limit.checked_mul(gas_bid).expect("no overflow")
-}
-
-const NAMESPACE_BRIDGE_OWNER_SELECTOR: u64 = 2;
-const NAMESPACE_BRIDGE_MODE_SELECTOR: u64 = 0;
-
-fn namespace_bridge_address() -> Address {
-    let mut bytes = [0_u8; 20];
-    bytes[18..].copy_from_slice(&0x1002_u16.to_be_bytes());
-    Address::from(bytes)
-}
-
-pub fn namespace_bridge_storage_key(
-    namespace_chain_id: u64,
-    selector: u64,
-    index: u64,
-) -> EthStorageKey {
-    let mut key = [0_u8; 32];
-    key[0..8].copy_from_slice(&namespace_chain_id.to_be_bytes());
-    key[8..16].copy_from_slice(&selector.to_be_bytes());
-    key[24..32].copy_from_slice(&index.to_be_bytes());
-    key
-}
-
-pub fn namespace_owner_storage_value(owner: Address) -> [u8; 32] {
-    let mut value = [0_u8; 32];
-    value[12..].copy_from_slice(owner.as_slice());
-    value
-}
-
-fn namespace_mode_native_storage_value() -> [u8; 32] {
-    let mut value = [0_u8; 32];
-    value[31] = 1;
-    value
-}
-
-fn namespace_owner_from_storage_value(value: [u8; 32]) -> Option<Address> {
-    (value != [0_u8; 32]).then(|| Address::from_slice(&value[12..]))
 }
 
 struct BlockLookupIndex {
@@ -816,112 +779,6 @@ where
         )
     }
 
-    fn get_base_storage_at_by_key(
-        &self,
-        consensus_block_seq_num: SeqNum,
-        state_read: &mut impl ExecutionStateRead<ST, SCT>,
-        extending_blocks: Option<&Vec<&EthValidatedBlock<ST, SCT>>>,
-        account_key: AccountKey,
-        storage_key: EthStorageKey,
-    ) -> Result<[u8; 32], ExecutionStateReadError> {
-        let base_seq_num = consensus_block_seq_num.max(self.execution_delay) - self.execution_delay;
-        let block_index = self.get_block_index(&extending_blocks, &base_seq_num)?;
-
-        state_read.get_storage_at_by_key(
-            &block_index.block_id,
-            &base_seq_num,
-            block_index.is_finalized,
-            account_key,
-            storage_key,
-        )
-    }
-
-    fn validate_namespace_transaction_batches(
-        &self,
-        block: &EthValidatedBlock<ST, SCT>,
-        extending_blocks: &Vec<&EthValidatedBlock<ST, SCT>>,
-        state_read: &mut impl ExecutionStateRead<ST, SCT>,
-        chain_id: u64,
-    ) -> Result<(), BlockPolicyError> {
-        for batch in block
-            .body()
-            .execution_body
-            .namespace_transaction_batches
-            .iter()
-        {
-            self.validate_namespace_transaction_batch(
-                block.get_seq_num(),
-                extending_blocks,
-                state_read,
-                chain_id,
-                batch,
-            )?;
-        }
-
-        Ok(())
-    }
-
-    fn validate_namespace_transaction_batch(
-        &self,
-        consensus_block_seq_num: SeqNum,
-        extending_blocks: &Vec<&EthValidatedBlock<ST, SCT>>,
-        state_read: &mut impl ExecutionStateRead<ST, SCT>,
-        chain_id: u64,
-        batch: &NamespaceTransactionBatch,
-    ) -> Result<(), BlockPolicyError> {
-        let namespace = batch
-            .transactions
-            .first()
-            .ok_or(BlockPolicyError::BlockNotCoherent)?
-            .namespace(chain_id)
-            .map_err(|_| BlockPolicyError::BlockNotCoherent)?
-            .ok_or(BlockPolicyError::BlockNotCoherent)?;
-
-        let namespace_chain_id = chain_id_for_namespace(namespace, chain_id)
-            .map_err(|_| BlockPolicyError::BlockNotCoherent)?;
-        let bridge_account = AccountKey::global(namespace_bridge_address());
-
-        let mode = self.get_base_storage_at_by_key(
-            consensus_block_seq_num,
-            state_read,
-            Some(extending_blocks),
-            bridge_account,
-            namespace_bridge_storage_key(namespace_chain_id, NAMESPACE_BRIDGE_MODE_SELECTOR, 0),
-        )?;
-        if mode != namespace_mode_native_storage_value() {
-            return Err(BlockPolicyError::BlockPolicyBlockValidatorError(
-                BlockPolicyBlockValidatorError::NamespaceNotRegisteredAtBlockStart,
-            ));
-        }
-
-        let owner_value = self.get_base_storage_at_by_key(
-            consensus_block_seq_num,
-            state_read,
-            Some(extending_blocks),
-            bridge_account,
-            namespace_bridge_storage_key(namespace_chain_id, NAMESPACE_BRIDGE_OWNER_SELECTOR, 0),
-        )?;
-        let Some(owner) = namespace_owner_from_storage_value(owner_value) else {
-            return Err(BlockPolicyError::BlockPolicyBlockValidatorError(
-                BlockPolicyBlockValidatorError::TransactionBatchNamespaceNotOwned,
-            ));
-        };
-
-        let signer = batch.recover_signer().map_err(|_| {
-            BlockPolicyError::BlockPolicyBlockValidatorError(
-                BlockPolicyBlockValidatorError::InvalidTransactionBatchSignature,
-            )
-        })?;
-
-        if signer != owner {
-            return Err(BlockPolicyError::BlockPolicyBlockValidatorError(
-                BlockPolicyBlockValidatorError::TransactionBatchSignerMismatch,
-            ));
-        }
-
-        Ok(())
-    }
-
     // Computes account balance available for the account
     pub fn compute_account_base_balances<'a>(
         &self,
@@ -975,82 +832,81 @@ where
             BTreeMap<&'a AccountKey, AccountBalanceState>,
             BlockPolicyError,
         > = account_keys
-                .into_iter()
-                .zip_eq(account_balances)
-                .map(|(account_key, mut balance_state)| {
-                    // N - k + 1
-                    let reserve_balance_check_start = base_seq_num + SeqNum(1);
-                    // N - 2k + 2
-                    let mut emptying_txn_check_start = (reserve_balance_check_start + SeqNum(1))
-                        .max(self.execution_delay)
-                        - self.execution_delay;
+            .into_iter()
+            .zip_eq(account_balances)
+            .map(|(account_key, mut balance_state)| {
+                // N - k + 1
+                let reserve_balance_check_start = base_seq_num + SeqNum(1);
+                // N - 2k + 2
+                let mut emptying_txn_check_start = (reserve_balance_check_start + SeqNum(1))
+                    .max(self.execution_delay)
+                    - self.execution_delay;
 
-                    if emptying_txn_check_start == GENESIS_SEQ_NUM {
-                        emptying_txn_check_start += SeqNum(1);
-                    }
+                if emptying_txn_check_start == GENESIS_SEQ_NUM {
+                    emptying_txn_check_start += SeqNum(1);
+                }
 
-                    // N - 2k + 2 (inclusive) to N - k + 1 (non inclusive)
-                    let emptying_txn_check_block_range =
-                        emptying_txn_check_start..reserve_balance_check_start;
-                    // N - k + 1 (inclusive) to N (non inclusive)
-                    let reserve_balance_check_block_range = reserve_balance_check_start..;
+                // N - 2k + 2 (inclusive) to N - k + 1 (non inclusive)
+                let emptying_txn_check_block_range =
+                    emptying_txn_check_start..reserve_balance_check_start;
+                // N - k + 1 (inclusive) to N (non inclusive)
+                let reserve_balance_check_block_range = reserve_balance_check_start..;
 
-                    if emptying_txn_check_start > GENESIS_SEQ_NUM {
-                        balance_state.block_seqnum_of_latest_txn =
-                            emptying_txn_check_start - SeqNum(1);
-                    }
+                if emptying_txn_check_start > GENESIS_SEQ_NUM {
+                    balance_state.block_seqnum_of_latest_txn = emptying_txn_check_start - SeqNum(1);
+                }
 
-                    // check for emptying txs and reserve balance in committed blocks
-                    let mut next_validate = self.committed_cache.update_account_balance(
-                        &mut balance_state,
-                        account_key,
-                        self.execution_delay,
-                        emptying_txn_check_block_range,
-                        reserve_balance_check_block_range,
-                        chain_config,
-                    )?;
+                // check for emptying txs and reserve balance in committed blocks
+                let mut next_validate = self.committed_cache.update_account_balance(
+                    &mut balance_state,
+                    account_key,
+                    self.execution_delay,
+                    emptying_txn_check_block_range,
+                    reserve_balance_check_block_range,
+                    chain_config,
+                )?;
 
-                    // check for emptying txs and reserve balance in extending blocks
-                    if let Some(blocks) = extending_blocks {
-                        // handle the case where base_seq_num is a pending block
-                        let next_blocks = blocks
-                            .iter()
-                            .skip_while(move |block| block.get_seq_num() < next_validate);
+                // check for emptying txs and reserve balance in extending blocks
+                if let Some(blocks) = extending_blocks {
+                    // handle the case where base_seq_num is a pending block
+                    let next_blocks = blocks
+                        .iter()
+                        .skip_while(move |block| block.get_seq_num() < next_validate);
 
-                        for extending_block in next_blocks {
-                            assert_eq!(next_validate, extending_block.get_seq_num());
+                    for extending_block in next_blocks {
+                        assert_eq!(next_validate, extending_block.get_seq_num());
 
-                            if let Some(txn_fee) = extending_block.txn_fees.get(account_key) {
-                                // if still within check emptying range, update latest tx seq num
-                                // otherwise check for reserve balance
-                                if next_validate < reserve_balance_check_start {
-                                    if balance_state.block_seqnum_of_latest_txn < next_validate {
-                                        balance_state.block_seqnum_of_latest_txn =
-                                            extending_block.get_seq_num();
-                                    }
-                                } else {
-                                    let validator = EthBlockPolicyBlockValidator::new(
-                                        extending_block.get_seq_num(),
-                                        self.execution_delay,
-                                        extending_block.get_base_fee(),
-                                        &chain_config
-                                            .get_chain_revision(extending_block.get_block_round()),
-                                    )?;
-
-                                    validator.try_apply_block_fees(
-                                        &mut balance_state,
-                                        txn_fee,
-                                        account_key,
-                                    )?;
+                        if let Some(txn_fee) = extending_block.txn_fees.get(account_key) {
+                            // if still within check emptying range, update latest tx seq num
+                            // otherwise check for reserve balance
+                            if next_validate < reserve_balance_check_start {
+                                if balance_state.block_seqnum_of_latest_txn < next_validate {
+                                    balance_state.block_seqnum_of_latest_txn =
+                                        extending_block.get_seq_num();
                                 }
-                            }
-                            next_validate += SeqNum(1);
-                        }
-                    }
+                            } else {
+                                let validator = EthBlockPolicyBlockValidator::new(
+                                    extending_block.get_seq_num(),
+                                    self.execution_delay,
+                                    extending_block.get_base_fee(),
+                                    &chain_config
+                                        .get_chain_revision(extending_block.get_block_round()),
+                                )?;
 
-                    Ok((account_key, balance_state))
-                })
-                .collect();
+                                validator.try_apply_block_fees(
+                                    &mut balance_state,
+                                    txn_fee,
+                                    account_key,
+                                )?;
+                            }
+                        }
+                        next_validate += SeqNum(1);
+                    }
+                }
+
+                Ok((account_key, balance_state))
+            })
+            .collect();
         account_balances
     }
 
@@ -1383,15 +1239,7 @@ where
             return Err(BlockPolicyError::BaseFeeError);
         }
 
-        self.validate_namespace_transaction_batches(
-            block,
-            &extending_blocks,
-            state_read,
-            chain_id,
-        )?;
-
-        let tx_signers =
-            self.extract_signers(&block.validated_txns, &block.system_txns, chain_id);
+        let tx_signers = self.extract_signers(&block.validated_txns, &block.system_txns, chain_id);
 
         // these must be updated as we go through txs in the block
         let mut account_nonces = self.get_account_base_nonces(
@@ -1495,11 +1343,11 @@ mod test {
     use monad_crypto::NopSignature;
     use monad_eth_testutil::{
         generate_consensus_test_block, make_eip1559_tx, make_eip1559_tx_with_value,
-        make_eip7702_tx, make_eip7702_tx_with_value, make_legacy_tx,
-        make_namespaced_eip1559_tx, make_representable_namespace, make_signed_authorization,
-        recover_tx, secret_to_eth_address, sign_authorization, S1, S2,
+        make_eip7702_tx, make_eip7702_tx_with_value, make_legacy_tx, make_namespaced_eip1559_tx,
+        make_representable_namespace, make_signed_authorization, recover_tx, secret_to_eth_address,
+        sign_authorization, S1, S2,
     };
-    use monad_eth_types::{EthTxEnvelope, NamespaceBatchSignature};
+    use monad_eth_types::EthTxEnvelope;
     use monad_execution_state_read::{
         AccountState, InMemoryBlockState, InMemoryStateInner, NopExecutionStateRead,
     };
@@ -1603,53 +1451,6 @@ mod test {
                 authorizations_7702: Vec::new(),
             }
         }
-    }
-
-    fn make_namespace_batch(
-        txs: Vec<EthTxEnvelope>,
-        signer_secret: FixedBytes<32>,
-    ) -> NamespaceTransactionBatch {
-        let mut batch = NamespaceTransactionBatch {
-            transactions: txs.into(),
-            signature: NamespaceBatchSignature::default(),
-        };
-        let signer = PrivateKeySigner::from_bytes(&signer_secret).unwrap();
-        let signature = signer.sign_hash_sync(&batch.signature_hash()).unwrap();
-        batch.signature = NamespaceBatchSignature {
-            y_parity: signature.v() as u8,
-            r: signature.r(),
-            s: signature.s(),
-        };
-        batch
-    }
-
-    fn namespace_registered_state(namespace: Address, owner: Address) -> NopExecutionStateRead {
-        let namespace_chain_id = chain_id_for_namespace(namespace, CHAIN_ID).unwrap();
-        let bridge_account = AccountKey::global(namespace_bridge_address());
-        let mut state_read = NopExecutionStateRead::default();
-        state_read.storage.insert(
-            (
-                bridge_account,
-                namespace_bridge_storage_key(
-                    namespace_chain_id,
-                    NAMESPACE_BRIDGE_MODE_SELECTOR,
-                    0,
-                ),
-            ),
-            namespace_mode_native_storage_value(),
-        );
-        state_read.storage.insert(
-            (
-                bridge_account,
-                namespace_bridge_storage_key(
-                    namespace_chain_id,
-                    NAMESPACE_BRIDGE_OWNER_SELECTOR,
-                    0,
-                ),
-            ),
-            namespace_owner_storage_value(owner),
-        );
-        state_read
     }
 
     fn global_account_keys(addresses: &[Address]) -> Vec<AccountKey> {
@@ -4011,71 +3812,6 @@ mod test {
     }
 
     #[test]
-    fn test_namespace_batch_operator_signature_must_match_registered_owner() {
-        let namespace = make_representable_namespace(4);
-        let owner = secret_to_eth_address(S2);
-        let block_policy = EthBlockPolicy::<
-            SignatureType,
-            SignatureCollectionType,
-            ChainConfigType,
-            ChainRevisionType,
-        >::new(GENESIS_SEQ_NUM, EXEC_DELAY.0);
-        let extending_blocks: Vec<&EthValidatedBlock<SignatureType, SignatureCollectionType>> =
-            Vec::new();
-
-        let tx = make_namespaced_eip1559_tx(
-            namespace,
-            S1,
-            BASE_FEE as u128,
-            0,
-            50_000,
-            0,
-            0,
-        );
-        let mut state_read = namespace_registered_state(namespace, owner);
-
-        let owner_signed_batch = make_namespace_batch(vec![tx.clone()], S2);
-        assert_eq!(
-            block_policy.validate_namespace_transaction_batch(
-                SeqNum(1),
-                &extending_blocks,
-                &mut state_read,
-                CHAIN_ID,
-                &owner_signed_batch,
-            ),
-            Ok(())
-        );
-
-        let wrong_signer_batch = make_namespace_batch(vec![tx.clone()], S1);
-        assert_eq!(
-            block_policy.validate_namespace_transaction_batch(
-                SeqNum(1),
-                &extending_blocks,
-                &mut state_read,
-                CHAIN_ID,
-                &wrong_signer_batch,
-            ),
-            Err(BlockPolicyError::BlockPolicyBlockValidatorError(
-                BlockPolicyBlockValidatorError::TransactionBatchSignerMismatch,
-            ))
-        );
-
-        let mut unregistered_state = NopExecutionStateRead::default();
-        assert_eq!(
-            block_policy.validate_namespace_transaction_batch(
-                SeqNum(1),
-                &extending_blocks,
-                &mut unregistered_state,
-                CHAIN_ID,
-                &owner_signed_batch,
-            ),
-            Err(BlockPolicyError::BlockPolicyBlockValidatorError(
-                BlockPolicyBlockValidatorError::NamespaceNotRegisteredAtBlockStart,
-            ))
-        );
-    }
-
-    #[test]
     fn test_namespaced_balance_lookup_is_scoped_to_namespace() {
         let namespace = make_representable_namespace(5);
         let tx = make_validated_tx(recover_tx(make_namespaced_eip1559_tx(
@@ -4105,17 +3841,18 @@ mod test {
         )
         .unwrap();
 
-        let funded_state = InMemoryStateInner::<NopSignature, MockSignatures<NopSignature>>::new(
-            EXEC_DELAY,
-            InMemoryBlockState::genesis_with_account_keys(BTreeMap::from([(
-                signer_key,
-                AccountState::max_balance(),
-            )])),
-        );
+        let mut funded_state =
+            InMemoryStateInner::<NopSignature, MockSignatures<NopSignature>>::new(
+                EXEC_DELAY,
+                InMemoryBlockState::genesis_with_account_keys(BTreeMap::from([(
+                    signer_key,
+                    AccountState::max_balance(),
+                )])),
+            );
         let mut funded_balances = block_policy
             .compute_account_base_balances(
                 block_seq_num,
-                &funded_state,
+                &mut funded_state,
                 &MockChainConfig::DEFAULT,
                 None,
                 [&signer_key].into_iter(),
@@ -4125,7 +3862,7 @@ mod test {
             .try_add_transaction(&mut funded_balances, &tx, CHAIN_ID)
             .is_ok());
 
-        let global_only_state =
+        let mut global_only_state =
             InMemoryStateInner::<NopSignature, MockSignatures<NopSignature>>::new(
                 EXEC_DELAY,
                 InMemoryBlockState::genesis_with_account_keys(BTreeMap::from([(
@@ -4136,7 +3873,7 @@ mod test {
         let mut global_only_balances = block_policy
             .compute_account_base_balances(
                 block_seq_num,
-                &global_only_state,
+                &mut global_only_state,
                 &MockChainConfig::DEFAULT,
                 None,
                 [&signer_key].into_iter(),

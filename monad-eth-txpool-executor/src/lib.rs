@@ -43,9 +43,7 @@ use monad_eth_txpool::{
     EthTxPool, EthTxPoolConfig, EthTxPoolEventTracker, PoolTxKind, ProposalWithSenderGas,
     TrackedTxLimitsConfig,
 };
-use monad_eth_txpool_types::{
-    EthTxPoolDropReason, EthTxPoolEventType, EthTxPoolTxInputStream,
-};
+use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolEventType, EthTxPoolTxInputStream};
 use monad_eth_types::{AccountKey, EthExecutionProtocol, EthTxEnvelope, ExtractEthAddress};
 use monad_execution_state_read::ExecutionStateRead;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
@@ -635,51 +633,32 @@ where
 
             let mut ipc_events = BTreeMap::default();
 
-            let mut unvalidated_owned_txs = Vec::new();
-            let mut unvalidated_batches = Vec::new();
-            for ipc_tx in unvalidated_txs {
-                if ipc_tx.is_transaction() {
-                    let (tx, priority, extra_data) =
-                        ipc_tx.into_transaction().expect("kind checked");
-                    unvalidated_owned_txs.push((tx, priority, extra_data));
-                } else if ipc_tx.is_namespace_batch() {
-                    if let Some(batch) = ipc_tx.into_namespace_batch() {
-                        unvalidated_batches.push(batch);
-                    }
-                } else {
-                    for tx in ipc_tx.transactions {
-                        ipc_events.insert(
-                            *tx.tx_hash(),
-                            EthTxPoolEventType::Drop {
-                                reason: EthTxPoolDropReason::InvalidSignature,
-                            },
-                        );
-                    }
-                }
-            }
+            let unvalidated_owned_txs = unvalidated_txs
+                .into_iter()
+                .map(|ipc_tx| (ipc_tx.tx, ipc_tx.priority, ipc_tx.extra_data))
+                .collect::<Vec<_>>();
 
             let recovered_txs = {
-                let (recovered_txs, dropped_txs): (Vec<_>, BTreeMap<_, _>) =
-                    unvalidated_owned_txs.into_par_iter().partition_map(
-                        |(tx, priority, extra_data)| {
-                            let _span = trace_span!("txpool: ipc tx recover signer").entered();
-                            match tx.secp256k1_recover() {
-                                Ok(signer) => rayon::iter::Either::Left((
-                                    Recovered::new_unchecked(tx, signer),
-                                    PoolTxKind::Owned {
-                                        priority,
-                                        extra_data,
-                                    },
-                                )),
-                                Err(_) => rayon::iter::Either::Right((
-                                    *tx.tx_hash(),
-                                    EthTxPoolEventType::Drop {
-                                        reason: EthTxPoolDropReason::InvalidSignature,
-                                    },
-                                )),
-                            }
-                        },
-                    );
+                let (recovered_txs, dropped_txs): (Vec<_>, BTreeMap<_, _>) = unvalidated_owned_txs
+                    .into_par_iter()
+                    .partition_map(|(tx, priority, extra_data)| {
+                        let _span = trace_span!("txpool: ipc tx recover signer").entered();
+                        match tx.secp256k1_recover() {
+                            Ok(signer) => rayon::iter::Either::Left((
+                                Recovered::new_unchecked(tx, signer),
+                                PoolTxKind::Owned {
+                                    priority,
+                                    extra_data,
+                                },
+                            )),
+                            Err(_) => rayon::iter::Either::Right((
+                                *tx.tx_hash(),
+                                EthTxPoolEventType::Drop {
+                                    reason: EthTxPoolDropReason::InvalidSignature,
+                                },
+                            )),
+                        }
+                    });
                 ipc_events.extend(dropped_txs);
                 recovered_txs
             };
@@ -699,17 +678,6 @@ where
                     if tx.is_owned_and_forwardable() {
                         immediately_forwardable_txs.push(tx.raw().clone_inner());
                     }
-                },
-            );
-
-            pool.insert_namespace_batches(
-                &mut EthTxPoolEventTracker::new(&metrics.pool, &mut ipc_events),
-                block_policy,
-                state_read,
-                chain_config,
-                unvalidated_batches,
-                |tx| {
-                    inserted_addresses.insert(tx.account_key());
                 },
             );
 

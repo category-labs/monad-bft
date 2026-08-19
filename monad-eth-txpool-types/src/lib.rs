@@ -22,7 +22,7 @@ use std::{
 use alloy_primitives::{Address, TxHash, U256};
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use monad_eth_block_policy::validation::StaticValidationError;
-use monad_eth_types::{EthTxEnvelope, NamespaceBatchSignature, NamespaceTransactionBatch};
+use monad_eth_types::EthTxEnvelope;
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_TX_PRIORITY: U256 = U256::from_limbs([0xFFFFu64, 0, 0, 0]);
@@ -157,14 +157,9 @@ pub struct EthTxPoolSnapshot {
     pub txs: HashSet<TxHash>,
 }
 
-const IPC_KIND_TRANSACTION: u8 = 0;
-const IPC_KIND_NAMESPACE_BATCH: u8 = 1;
-
 #[derive(RlpEncodable, RlpDecodable)]
 pub struct EthTxPoolIpcTx {
-    pub kind: u8,
-    pub transactions: Vec<EthTxEnvelope>,
-    pub signature: NamespaceBatchSignature,
+    pub tx: EthTxEnvelope,
     pub priority: U256,
 
     // TODO(andr-dev): Pass extra_data to custom sequencers
@@ -172,58 +167,11 @@ pub struct EthTxPoolIpcTx {
 }
 
 impl EthTxPoolIpcTx {
-    pub fn is_transaction(&self) -> bool {
-        self.kind == IPC_KIND_TRANSACTION && self.transactions.len() == 1
-    }
-
-    pub fn is_namespace_batch(&self) -> bool {
-        self.kind == IPC_KIND_NAMESPACE_BATCH
-    }
-
     pub fn new_with_default_priority(tx: EthTxEnvelope, extra_data: Vec<u8>) -> Self {
         Self {
-            kind: IPC_KIND_TRANSACTION,
-            transactions: vec![tx],
-            signature: NamespaceBatchSignature::default(),
+            tx,
             priority: DEFAULT_TX_PRIORITY,
             extra_data,
-        }
-    }
-
-    pub fn new_batch_with_default_priority(
-        batch: NamespaceTransactionBatch,
-        extra_data: Vec<u8>,
-    ) -> Self {
-        Self {
-            kind: IPC_KIND_NAMESPACE_BATCH,
-            transactions: batch.transactions.into_inner(),
-            signature: batch.signature,
-            priority: DEFAULT_TX_PRIORITY,
-            extra_data,
-        }
-    }
-
-    pub fn into_transaction(self) -> Option<(EthTxEnvelope, U256, Vec<u8>)> {
-        if self.kind == IPC_KIND_TRANSACTION && self.transactions.len() == 1 {
-            let mut txs = self.transactions;
-            Some((txs.pop().expect("len checked"), self.priority, self.extra_data))
-        } else {
-            None
-        }
-    }
-
-    pub fn into_namespace_batch(self) -> Option<(NamespaceTransactionBatch, U256, Vec<u8>)> {
-        if self.kind == IPC_KIND_NAMESPACE_BATCH {
-            Some((
-                NamespaceTransactionBatch {
-                    transactions: self.transactions.into(),
-                    signature: self.signature,
-                },
-                self.priority,
-                self.extra_data,
-            ))
-        } else {
-            None
         }
     }
 }

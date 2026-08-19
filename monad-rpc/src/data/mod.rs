@@ -22,7 +22,7 @@ use alloy_consensus::{
     transaction::Recovered, Header as RlpHeader, ReceiptEnvelope, ReceiptWithBloom,
     Transaction as _,
 };
-use alloy_primitives::{Bloom, FixedBytes, TxHash, TxKind, U256};
+use alloy_primitives::{Address, Bloom, FixedBytes, TxHash, TxKind, U256};
 use alloy_rlp::Encodable;
 use alloy_rpc_types::{
     Block, BlockTransactions, Filter, FilterBlockOption, FilteredParams, Header, Log, Receipt,
@@ -35,7 +35,8 @@ use monad_archive::{
     prelude::{ArchiveReader, Context, ContextCompat, IndexReader},
 };
 use monad_eth_types::{
-    BlockHeader, ReceiptWithLogIndex, TransactionLocation, TxEnvelopeWithSender,
+    namespace_for_chain_id, BlockHeader, EthTxEnvelope, ReceiptWithLogIndex, TransactionLocation,
+    TxEnvelopeWithSender,
 };
 use monad_triedb_utils::triedb_env::{BlockKey, FinalizedBlockKey, ProposedBlockKey, Triedb};
 use monad_types::{BlockId, Hash, SeqNum};
@@ -77,6 +78,24 @@ pub enum ChainStateError {
     Archive(String),
     DataSource(DataSourceError),
     ResourceNotFound,
+}
+
+#[derive(Clone, Copy)]
+struct NamespaceFilter {
+    base_chain_id: u64,
+    namespace: Option<Address>,
+}
+
+fn transaction_matches_namespace_filter(
+    tx: &EthTxEnvelope,
+    namespace_filter: Option<NamespaceFilter>,
+) -> bool {
+    let Some(namespace_filter) = namespace_filter else {
+        return true;
+    };
+
+    namespace_for_chain_id(tx.chain_id(), namespace_filter.base_chain_id)
+        .is_ok_and(|namespace| namespace == namespace_filter.namespace)
 }
 
 impl From<monad_archive::prelude::Report> for ChainStateError {
@@ -247,6 +266,26 @@ where
         }
 
         Err(ChainStateError::ResourceNotFound)
+    }
+
+    pub async fn get_transaction_receipt_for_namespace(
+        &self,
+        tx_hash: &TxHash,
+        base_chain_id: u64,
+        namespace: Option<Address>,
+    ) -> Result<TransactionReceipt, ChainStateError> {
+        let transaction = self.get_transaction(tx_hash).await?;
+        let namespace_filter = NamespaceFilter {
+            base_chain_id,
+            namespace,
+        };
+
+        if !transaction_matches_namespace_filter(transaction.inner.inner(), Some(namespace_filter))
+        {
+            return Err(ChainStateError::ResourceNotFound);
+        }
+
+        self.get_transaction_receipt(tx_hash).await
     }
 
     pub async fn get_transaction_with_block_and_index(
@@ -494,10 +533,49 @@ where
         &self,
         block: BlockTagOrHash,
     ) -> Result<Vec<MonadTransactionReceipt>, ChainStateError> {
+        self.get_block_receipts_inner(block, None).await
+    }
+
+    pub async fn get_block_receipts_for_namespace(
+        &self,
+        block: BlockTagOrHash,
+        base_chain_id: u64,
+        namespace: Option<Address>,
+    ) -> Result<Vec<MonadTransactionReceipt>, ChainStateError> {
+        self.get_block_receipts_inner(
+            block,
+            Some(NamespaceFilter {
+                base_chain_id,
+                namespace,
+            }),
+        )
+        .await
+    }
+
+    async fn get_block_receipts_inner(
+        &self,
+        block: BlockTagOrHash,
+        namespace_filter: Option<NamespaceFilter>,
+    ) -> Result<Vec<MonadTransactionReceipt>, ChainStateError> {
         if let Some(buffer) = &self.buffer {
             if let Some(height) = resolve_block_height_from_buffer(buffer, &block) {
-                if let Some(receipts) = buffer.get_receipts_by_block_height(height) {
-                    return Ok(receipts.into_iter().map(MonadTransactionReceipt).collect());
+                if namespace_filter.is_none() {
+                    if let Some(receipts) = buffer.get_receipts_by_block_height(height) {
+                        return Ok(receipts.into_iter().map(MonadTransactionReceipt).collect());
+                    }
+                } else if let Some((header, transactions, receipts)) =
+                    buffer.get_bloom_filtered_header_transactions_receipts(height, |_| true)
+                {
+                    let block_receipts = map_block_receipts_inner(
+                        transactions,
+                        receipts,
+                        &header.header,
+                        header.hash,
+                        namespace_filter,
+                        MonadTransactionReceipt,
+                    )
+                    .map_err(|_| ChainStateError::ResourceNotFound)?;
+                    return Ok(block_receipts);
                 }
             }
         }
@@ -514,11 +592,12 @@ where
                 // if block header is present but transactions are not, the block is statesynced
                 if let Ok(transactions) = self.triedb_env.get_transactions(block_key).await {
                     if let Ok(receipts) = self.triedb_env.get_receipts(block_key).await {
-                        let block_receipts = map_block_receipts(
+                        let block_receipts = map_block_receipts_inner(
                             transactions,
                             receipts,
                             &header.header,
                             header.hash,
+                            namespace_filter,
                             MonadTransactionReceipt,
                         )
                         .map_err(|_| ChainStateError::ResourceNotFound)?;
@@ -550,11 +629,12 @@ where
                     .try_get_block_receipts(block.header.number)
                     .await?
                 {
-                    let block_receipts = map_block_receipts(
+                    let block_receipts = map_block_receipts_inner(
                         block.body.transactions,
                         receipts_with_log_index,
                         &block.header,
                         block.header.hash_slow(),
+                        namespace_filter,
                         MonadTransactionReceipt,
                     )
                     .map_err(|_| ChainStateError::ResourceNotFound)?;
@@ -574,6 +654,55 @@ where
         use_eth_get_logs_index: bool,
         dry_run_get_logs_index: bool,
         max_finalized_block_cache_len: u64,
+    ) -> JsonRpcResult<Vec<MonadLog>> {
+        self.get_logs_inner(
+            filter,
+            max_response_size,
+            max_block_range,
+            use_eth_get_logs_index,
+            dry_run_get_logs_index,
+            max_finalized_block_cache_len,
+            None,
+        )
+        .await
+    }
+
+    pub async fn get_logs_for_namespace(
+        &self,
+        filter: Filter,
+        max_response_size: u32,
+        max_block_range: u64,
+        use_eth_get_logs_index: bool,
+        dry_run_get_logs_index: bool,
+        max_finalized_block_cache_len: u64,
+        base_chain_id: u64,
+        namespace: Option<Address>,
+    ) -> JsonRpcResult<Vec<MonadLog>> {
+        self.get_logs_inner(
+            filter,
+            max_response_size,
+            max_block_range,
+            use_eth_get_logs_index,
+            dry_run_get_logs_index,
+            max_finalized_block_cache_len,
+            Some(NamespaceFilter {
+                base_chain_id,
+                namespace,
+            }),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn get_logs_inner(
+        &self,
+        filter: Filter,
+        max_response_size: u32,
+        max_block_range: u64,
+        use_eth_get_logs_index: bool,
+        dry_run_get_logs_index: bool,
+        max_finalized_block_cache_len: u64,
+        namespace_filter: Option<NamespaceFilter>,
     ) -> JsonRpcResult<Vec<MonadLog>> {
         let latest_block_number = self.get_latest_block_number();
 
@@ -674,6 +803,7 @@ where
                 to_block,
                 &filter,
                 &filtered_params,
+                namespace_filter,
             )
             .await
             {
@@ -802,6 +932,7 @@ where
                         transactions,
                         receipts,
                         filtered_params,
+                        namespace_filter,
                     )
                 })
             }
@@ -828,6 +959,7 @@ where
                         filter,
                         filtered_params,
                         non_indexed,
+                        namespace_filter,
                     )
                     .await
                     {
@@ -1096,6 +1228,7 @@ async fn check_dry_run_get_logs_index(
     filter: Filter,
     filtered_params: FilteredParams,
     non_indexed: HashSet<Log>,
+    namespace_filter: Option<NamespaceFilter>,
 ) -> monad_archive::prelude::Result<()> {
     let indexed = HashSet::from_iter(
         try_create_logs_stream_using_index(
@@ -1104,6 +1237,7 @@ async fn check_dry_run_get_logs_index(
             to_block,
             &filter,
             &filtered_params,
+            namespace_filter,
         )
         .await
         .wrap_err("Error getting logs with index")?
@@ -1154,6 +1288,7 @@ async fn get_receipts_stream_using_index<'a>(
     from_block: u64,
     to_block: u64,
     filter: &'a Filter,
+    namespace_filter: Option<NamespaceFilter>,
 ) -> monad_archive::prelude::Result<
     impl Stream<Item = monad_archive::prelude::Result<(u64, Vec<ReceiptEnvelope<Log>>)>> + 'a,
 > {
@@ -1175,32 +1310,40 @@ async fn get_receipts_stream_using_index<'a>(
         );
     }
 
-    let mut stream = log_index
+    let stream = log_index
         .query_logs(from_block, to_block, filter.address.iter(), &filter.topics)
         .await?
-        .map_ok(
-            |TxIndexedData {
-                 tx,
-                 trace: _,
-                 receipt,
-                 header_subset,
-             }| {
-                (
+        .filter_map(move |result| async move {
+            let TxIndexedData {
+                tx,
+                trace: _,
+                receipt,
+                header_subset,
+            } = match result {
+                Ok(data) => data,
+                Err(err) => return Some(Err(err)),
+            };
+
+            if !transaction_matches_namespace_filter(&tx.tx, namespace_filter) {
+                return None;
+            }
+
+            Some(Ok((
+                header_subset.block_number,
+                header_subset.tx_index,
+                parse_receipt_envelope(
+                    header_subset.block_hash,
                     header_subset.block_number,
+                    header_subset.block_timestamp,
                     header_subset.tx_index,
-                    parse_receipt_envelope(
-                        header_subset.block_hash,
-                        header_subset.block_number,
-                        header_subset.block_timestamp,
-                        header_subset.tx_index,
-                        *tx.tx.tx_hash(),
-                        receipt,
-                    ),
-                )
-            },
-        );
+                    *tx.tx.tx_hash(),
+                    receipt,
+                ),
+            )))
+        });
 
     Ok(async_stream::stream! {
+        let mut stream = std::pin::pin!(stream);
         let mut block_number = None;
         let mut block_receipts = BTreeMap::<u64, ReceiptEnvelope<Log>>::default();
 
@@ -1249,11 +1392,12 @@ async fn try_create_logs_stream_using_index<'a>(
     to_block: u64,
     filter: &'a Filter,
     filtered_params: &'a FilteredParams,
+    namespace_filter: Option<NamespaceFilter>,
 ) -> monad_archive::prelude::Result<
     impl Stream<Item = monad_archive::prelude::Result<(u64, impl Iterator<Item = Log> + 'a)>> + 'a,
 > {
     Ok(
-        get_receipts_stream_using_index(reader, from_block, to_block, filter)
+        get_receipts_stream_using_index(reader, from_block, to_block, filter, namespace_filter)
             .await?
             .map_ok(move |(block_number, receipts)| {
                 (
@@ -1453,6 +1597,17 @@ pub fn map_block_receipts<R>(
     block_hash: FixedBytes<32>,
     f: impl Fn(TransactionReceipt) -> R,
 ) -> Result<Vec<R>, JsonRpcError> {
+    map_block_receipts_inner(transactions, receipts, block_header, block_hash, None, f)
+}
+
+fn map_block_receipts_inner<R>(
+    transactions: Vec<TxEnvelopeWithSender>,
+    receipts: Vec<ReceiptWithLogIndex>,
+    block_header: &RlpHeader,
+    block_hash: FixedBytes<32>,
+    namespace_filter: Option<NamespaceFilter>,
+    f: impl Fn(TransactionReceipt) -> R,
+) -> Result<Vec<R>, JsonRpcError> {
     let block_num: u64 = block_header.number;
 
     if transactions.len() != receipts.len() {
@@ -1467,11 +1622,15 @@ pub fn map_block_receipts<R>(
         .into_iter()
         .zip(receipts)
         .enumerate()
-        .map(|(tx_index, (tx, receipt))| {
+        .filter_map(|(tx_index, (tx, receipt))| {
             let new_cumulative_gas_used = receipt.receipt.cumulative_gas_used();
 
             let tx_gas_used = new_cumulative_gas_used - cumulative_gas_used;
             cumulative_gas_used = new_cumulative_gas_used;
+
+            if !transaction_matches_namespace_filter(&tx.tx, namespace_filter) {
+                return None;
+            }
 
             let parsed_receipt = parse_tx_receipt(
                 block_hash,
@@ -1484,7 +1643,7 @@ pub fn map_block_receipts<R>(
                 tx_gas_used,
             );
 
-            f(parsed_receipt)
+            Some(f(parsed_receipt))
         })
         .collect())
 }
@@ -1494,6 +1653,7 @@ fn header_transactions_receipts_to_block_number_logs<'a>(
     transactions: Vec<TxEnvelopeWithSender>,
     receipts: Vec<ReceiptWithLogIndex>,
     filtered_params: &'a FilteredParams,
+    namespace_filter: Option<NamespaceFilter>,
 ) -> JsonRpcResult<(u64, impl Iterator<Item = Log> + 'a)> {
     if transactions.len() != receipts.len() {
         return Err(JsonRpcError::internal_error(
@@ -1505,7 +1665,11 @@ fn header_transactions_receipts_to_block_number_logs<'a>(
         header.header.number,
         transactions.into_iter().zip(receipts).enumerate().flat_map(
             move |(tx_index, (transaction, receipt))| {
-                receipt_envelope_to_logs_iter(
+                if !transaction_matches_namespace_filter(&transaction.tx, namespace_filter) {
+                    return Either::Left(std::iter::empty());
+                }
+
+                Either::Right(receipt_envelope_to_logs_iter(
                     parse_receipt_envelope(
                         header.hash,
                         header.header.number,
@@ -1515,7 +1679,7 @@ fn header_transactions_receipts_to_block_number_logs<'a>(
                         receipt,
                     ),
                     filtered_params,
-                )
+                ))
             },
         ),
     ))
@@ -1623,6 +1787,7 @@ mod tests {
 
     use alloy_consensus::{Block as ConsensusBlock, BlockBody, Header, TxEnvelope};
     use alloy_eips::BlockNumberOrTag;
+    use alloy_primitives::{Address, FixedBytes};
     use alloy_rlp::Encodable;
     use alloy_rpc_types::{Filter, FilterBlockOption};
     use monad_archive::{
@@ -1630,13 +1795,102 @@ mod tests {
         prelude::{ArchiveReader, BlockDataArchive, IndexReaderImpl, TxIndexArchiver},
         test_utils::{mock_block, mock_rx, mock_tx, MemoryStorage},
     };
+    use monad_eth_testutil::{
+        make_legacy_tx, make_namespaced_legacy_tx, make_representable_namespace, S1,
+    };
     use monad_eth_types::TxEnvelopeWithSender;
     use monad_triedb_utils::mock_triedb::MockTriedb;
 
     use crate::{
-        data::{calculate_block_size, DataProvider},
+        data::{
+            calculate_block_size, map_block_receipts_inner, transaction_matches_namespace_filter,
+            DataProvider, NamespaceFilter,
+        },
         types::eth_json::{BlockTagOrHash, BlockTags, FixedData, Quantity},
     };
+
+    const BASE_CHAIN_ID: u64 = 1337;
+
+    #[test]
+    fn namespace_filter_matches_transaction_chain_id() {
+        let namespace = make_representable_namespace(1);
+        let other_namespace = make_representable_namespace(2);
+        let global_tx = make_legacy_tx(S1, 1, 21_000, 0, 0);
+        let namespaced_tx = make_namespaced_legacy_tx(namespace, S1, 1, 21_000, 0, 0);
+
+        let global_filter = Some(NamespaceFilter {
+            base_chain_id: BASE_CHAIN_ID,
+            namespace: None,
+        });
+        let namespace_filter = Some(NamespaceFilter {
+            base_chain_id: BASE_CHAIN_ID,
+            namespace: Some(namespace),
+        });
+        let other_namespace_filter = Some(NamespaceFilter {
+            base_chain_id: BASE_CHAIN_ID,
+            namespace: Some(other_namespace),
+        });
+
+        assert!(transaction_matches_namespace_filter(
+            &global_tx,
+            global_filter
+        ));
+        assert!(!transaction_matches_namespace_filter(
+            &namespaced_tx,
+            global_filter
+        ));
+        assert!(transaction_matches_namespace_filter(
+            &namespaced_tx,
+            namespace_filter
+        ));
+        assert!(!transaction_matches_namespace_filter(
+            &namespaced_tx,
+            other_namespace_filter
+        ));
+    }
+
+    #[test]
+    fn namespace_block_receipts_keep_canonical_indices() {
+        let namespace = make_representable_namespace(1);
+        let global_tx = make_legacy_tx(S1, 1, 21_000, 0, 0);
+        let namespaced_tx = make_namespaced_legacy_tx(namespace, S1, 1, 21_000, 0, 0);
+        let transactions = vec![
+            TxEnvelopeWithSender {
+                tx: global_tx,
+                sender: Address::ZERO,
+            },
+            TxEnvelopeWithSender {
+                tx: namespaced_tx,
+                sender: Address::ZERO,
+            },
+        ];
+        let mut second_receipt = mock_rx(1, 30);
+        second_receipt.starting_log_index = 1;
+        let receipts = vec![mock_rx(1, 10), second_receipt];
+        let header = Header {
+            number: 7,
+            timestamp: 11,
+            ..Default::default()
+        };
+
+        let filtered = map_block_receipts_inner(
+            transactions,
+            receipts,
+            &header,
+            FixedBytes::ZERO,
+            Some(NamespaceFilter {
+                base_chain_id: BASE_CHAIN_ID,
+                namespace: Some(namespace),
+            }),
+            |receipt| receipt,
+        )
+        .unwrap();
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].transaction_index, Some(1));
+        assert_eq!(filtered[0].gas_used, 20);
+        assert_eq!(filtered[0].logs()[0].log_index, Some(1));
+    }
 
     #[test]
     fn test_calculate_block_size_empty_block() {

@@ -153,7 +153,9 @@ pub fn make_namespaced_legacy_tx(
     nonce: u64,
     input_len: usize,
 ) -> EthTxEnvelope {
-    make_namespaced_legacy_tx_with_value(namespace, sender, 0, gas_price, gas_limit, nonce, input_len)
+    make_namespaced_legacy_tx_with_value(
+        namespace, sender, 0, gas_price, gas_limit, nonce, input_len,
+    )
 }
 
 pub fn make_namespaced_legacy_tx_with_value(
@@ -522,7 +524,11 @@ fn compute_expected_txn_fees_and_nonce_usages(
         }
 
         txn_fees
-            .entry(eth_txn.account_key(TEST_CHAIN_ID, eth_txn.signer()).unwrap())
+            .entry(
+                eth_txn
+                    .account_key(TEST_CHAIN_ID, eth_txn.signer())
+                    .unwrap(),
+            )
             .and_modify(|e| {
                 e.max_gas_cost = e
                     .max_gas_cost
@@ -597,7 +603,6 @@ pub fn generate_consensus_test_block(
                 transactions: txs.iter().map(|tx| tx.inner().to_owned()).collect(),
                 ommers: Default::default(),
                 withdrawals: Default::default(),
-                namespace_transaction_batches: Default::default(),
             },
         });
 
@@ -613,10 +618,7 @@ pub fn generate_consensus_test_block(
         // execution_inputs
         ProposedEthHeader {
             ommers_hash: EMPTY_OMMER_ROOT_HASH.0,
-            transactions_root: calculate_transaction_root(
-                &body.execution_body.flattened_transactions(),
-            )
-            .0,
+            transactions_root: calculate_transaction_root(&body.execution_body.transactions).0,
             number: seq_num.0,
             gas_limit: chain_params.proposal_gas_limit,
             mix_hash: signature.get_hash().0,

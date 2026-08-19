@@ -19,7 +19,6 @@ pub mod docs;
 pub mod event;
 pub mod handlers;
 pub mod middleware;
-pub mod preconfirmation;
 pub mod txpool;
 pub mod types;
 pub mod websocket;

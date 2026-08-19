@@ -36,7 +36,6 @@ use monad_rpc::{
         rpc_handler,
     },
     middleware::{DecompressionGuard, Metrics, TimingMiddleware},
-    preconfirmation::{NamespacePreconfirmationConfig, NamespacePreconfirmationService},
     txpool::EthTxPoolBridge,
     websocket, MONAD_RPC_VERSION,
 };
@@ -362,49 +361,10 @@ async fn main() -> std::io::Result<()> {
         .as_ref()
         .map(|endpoint| RpcComparator::new(endpoint.to_string(), node_config.node_name));
 
-    let namespace_preconfirmation_service = if args.namespace_preconfirmation_enabled {
-        let txpool_bridge_client = txpool_bridge_client.clone().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "namespace preconfirmation requires --ipc-path",
-            )
-        })?;
-        let operator_key_path =
-            args.namespace_preconfirmation_operator_key_path
-                .clone()
-                .ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "namespace preconfirmation requires --namespace-preconfirmation-operator-key-path",
-                    )
-                })?;
-
-        Some(
-            NamespacePreconfirmationService::start(
-                NamespacePreconfirmationConfig {
-                    operator_key_path,
-                    max_queued_txs: args.namespace_preconfirmation_max_queued_txs,
-                    max_batch_txs: args.namespace_preconfirmation_max_batch_txs,
-                    flush_interval: Duration::from_millis(
-                        args.namespace_preconfirmation_flush_interval_ms,
-                    ),
-                    preconfirmation_ttl: Duration::from_secs(
-                        args.namespace_preconfirmation_ttl_secs,
-                    ),
-                },
-                txpool_bridge_client,
-            )
-            .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err.to_string()))?,
-        )
-    } else {
-        None
-    };
-
     let enable_websockets = event_server_client.is_some();
 
     let app_state = MonadRpcResources::new(
         txpool_bridge_client,
-        namespace_preconfirmation_service,
         eth_call_handler,
         node_config.chain_id,
         data_provider,
