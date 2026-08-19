@@ -81,7 +81,7 @@ const pinchZoomSensitivity = 0.007;
 const wheelIgnoreSelector = "[data-canvas-wheel-ignore]";
 const linkHitAreaWidth = 32;
 const cutCableGap = 42;
-const cutCableStrands = [-22, -14, -7, 0, 8, 15, 22];
+const cutCableStrands = [-13, -8, -4, 0, 5, 9, 13];
 // Wire label geometry, in unzoomed screen pixels
 const wireArrowLength = 52;
 const wireArrowHeight = 12;
@@ -990,9 +990,11 @@ const NetworkCanvas: Component<{
                     const to = () => positionsById()[pair.toId];
                     const mode = () => linkMode(pair);
                     const cut = () => mode() === "neither";
+                    // Wire styling tracks transport health only. A link that carries an
+                    // explicit rule (repaired, or re-latencied by a node drag) is not
+                    // degraded, and the latency chip already reports its number.
                     const anyDropped = () => mode() !== "both";
                     const anyOffline = () => pair.links.some((link) => link.offline);
-                    const anyOverridden = () => pair.links.some((link) => link.overridden);
                     const leftCut = () => pointAlongLine(from()!, to()!, -cutCableGap);
                     const rightCut = () => pointAlongLine(from()!, to()!, cutCableGap);
                     const strandEnd = (cutEnd: Position, toward: Position, offset: number) => {
@@ -1003,10 +1005,10 @@ const NetworkCanvas: Component<{
                         const tangentY = dy / length;
                         const normalX = -tangentY;
                         const normalY = tangentX;
-                        const spread = Math.abs(offset) * 0.45;
+                        const spread = Math.abs(offset) * 0.4;
                         return {
-                            x: cutEnd.x + tangentX * (18 + spread) + normalX * offset,
-                            y: cutEnd.y + tangentY * (18 + spread) + normalY * offset,
+                            x: cutEnd.x + tangentX * (12 + spread) + normalX * offset,
+                            y: cutEnd.y + tangentY * (12 + spread) + normalY * offset,
                         };
                     };
                     return (
@@ -1016,15 +1018,15 @@ const NetworkCanvas: Component<{
                                     when={!cut()}
                                     fallback={
                                         <>
-                                            <line x1={from()?.x ?? 0} y1={from()?.y ?? 0} x2={leftCut().x} y2={leftCut().y} stroke="#dc2626" stroke-width="10" opacity={anyOffline() ? 0.4 : 0.9} />
-                                            <line x1={to()?.x ?? 0} y1={to()?.y ?? 0} x2={rightCut().x} y2={rightCut().y} stroke="#dc2626" stroke-width="10" opacity={anyOffline() ? 0.4 : 0.9} />
+                                            <line x1={from()?.x ?? 0} y1={from()?.y ?? 0} x2={leftCut().x} y2={leftCut().y} stroke="#dc2626" stroke-width="3" opacity={anyOffline() ? 0.4 : 0.9} />
+                                            <line x1={to()?.x ?? 0} y1={to()?.y ?? 0} x2={rightCut().x} y2={rightCut().y} stroke="#dc2626" stroke-width="3" opacity={anyOffline() ? 0.4 : 0.9} />
                                             <For each={cutCableStrands}>{(offset) => {
                                                 const leftEnd = () => strandEnd(leftCut(), rightCut(), offset);
                                                 const rightEnd = () => strandEnd(rightCut(), leftCut(), -offset);
                                                 return (
                                                     <>
-                                                        <line x1={leftCut().x} y1={leftCut().y} x2={leftEnd().x} y2={leftEnd().y} stroke={offset % 2 === 0 ? "#f97316" : "#9a3412"} stroke-width="2" />
-                                                        <line x1={rightCut().x} y1={rightCut().y} x2={rightEnd().x} y2={rightEnd().y} stroke={offset % 2 === 0 ? "#f97316" : "#9a3412"} stroke-width="2" />
+                                                        <line x1={leftCut().x} y1={leftCut().y} x2={leftEnd().x} y2={leftEnd().y} stroke={offset % 2 === 0 ? "#f97316" : "#9a3412"} stroke-width="1.5" />
+                                                        <line x1={rightCut().x} y1={rightCut().y} x2={rightEnd().x} y2={rightEnd().y} stroke={offset % 2 === 0 ? "#f97316" : "#9a3412"} stroke-width="1.5" />
                                                     </>
                                                 );
                                             }}</For>
@@ -1036,8 +1038,8 @@ const NetworkCanvas: Component<{
                                         y1={from()?.y ?? 0}
                                         x2={to()?.x ?? 0}
                                         y2={to()?.y ?? 0}
-                                        stroke={anyDropped() || anyOverridden() ? "#d97706" : "#4b5563"}
-                                        stroke-width={anyOverridden() || anyDropped() ? 4 : 3}
+                                        stroke={anyDropped() ? "#d97706" : "#4b5563"}
+                                        stroke-width={anyDropped() ? 4 : 3}
                                         opacity={anyOffline() ? 0.45 : 0.82}
                                     />
                                 </Show>
@@ -1055,7 +1057,7 @@ const NetworkCanvas: Component<{
                                     }}
                                     role="button"
                                     tabIndex={0}
-                                    aria-label={`${cut() ? "Repair" : "Cut"} connection between ${nodeLabel(pair.fromId)} and ${nodeLabel(pair.toId)}`}
+                                    aria-label={`${cut() ? "Reconnect" : "Disconnect"} the link between ${nodeLabel(pair.fromId)} and ${nodeLabel(pair.toId)}`}
                                     onPointerDown={(event) => event.stopPropagation()}
                                     onClick={(event) => togglePairConnection(event, pair)}
                                     onKeyDown={(event) => handleLinkKeyDown(event, pair)}
@@ -1119,7 +1121,7 @@ const NetworkCanvas: Component<{
                                     transform: "translate(-50%, -50%)",
                                 }}
                             >
-                                <div class={`${wireChipClass} border-red-300 bg-red-50 text-red-700`}>Severed</div>
+                                <div class={`${wireChipClass} border-red-300 bg-red-50 text-red-700`}>Disconnected</div>
                             </div>
                         </Show>
                         <For each={lanes()}>{(lane) => {
@@ -1254,8 +1256,8 @@ const NetworkCanvas: Component<{
                         type="button"
                         class={`absolute z-30 w-40 -translate-x-1/2 -translate-y-1/2 select-none rounded-lg text-left shadow-lg transition ${networkNode.online ? "" : "opacity-70"} ${isCurrentLeader() ? "ring-4 ring-indigo-400" : isNextLeader() ? "ring-2 ring-indigo-200" : ""}`}
                         style={nodeStyle()}
-                        aria-label={`${nodeLabel(networkNode.id)} ${networkNode.online ? "live; click to take down" : "down; click to bring up"}; drag to move`}
-                        title={`${networkNode.online ? "Click to take down" : "Click to bring up"}; drag to move`}
+                        aria-label={`${nodeLabel(networkNode.id)} ${networkNode.online ? "connected; click to disconnect" : "disconnected; click to reconnect"}; drag to move`}
+                        title={`${networkNode.online ? "Click to disconnect" : "Click to reconnect"}; drag to move`}
                         onPointerDown={(event) => startNodePointer(event, networkNode)}
                         onPointerMove={moveNodePointer}
                         onPointerUp={endNodePointer}
@@ -1265,7 +1267,7 @@ const NetworkCanvas: Component<{
                             <div class="flex items-center justify-between gap-2">
                                 <div class="text-lg font-semibold leading-6">{nodeLabel(networkNode.id)}</div>
                                 <div class={`rounded px-1.5 py-0.5 text-xs font-semibold ${networkNode.online ? "bg-emerald-100 text-emerald-800" : "bg-red-100 text-red-800"}`}>
-                                    {networkNode.online ? "Live" : "Down"}
+                                    {networkNode.online ? "Live" : "Disconnected"}
                                 </div>
                             </div>
                             <Show when={node()}>
