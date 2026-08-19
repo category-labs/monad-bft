@@ -1044,6 +1044,7 @@ const NetworkCanvas: Component<{
                                     />
                                 </Show>
                                 <line
+                                    class="outline-none focus-visible:stroke-sky-400/40"
                                     x1={from()?.x ?? 0}
                                     y1={from()?.y ?? 0}
                                     x2={to()?.x ?? 0}
@@ -1207,7 +1208,7 @@ const NetworkCanvas: Component<{
                 return (
                     <Show when={position()}>
                         <div
-                            class="pointer-events-none absolute z-20 w-52 -translate-x-1/2 -translate-y-1/2 rounded-lg border border-neutral-300 bg-white/90 p-1.5 shadow-md backdrop-blur-sm"
+                            class="absolute z-20 w-52 -translate-x-1/2 -translate-y-1/2 cursor-default rounded-lg border border-neutral-300 bg-white/90 p-1.5 shadow-md backdrop-blur-sm"
                             style={{
                                 left: `${(position()?.x ?? 0) / 10}%`,
                                 top: `${(position()?.y ?? 0) / 10}%`,
@@ -1434,7 +1435,7 @@ const BlockViewPanel: Component<{
 
     return (
         <aside
-            class="absolute bottom-4 right-4 z-40 max-h-[48%] w-[38rem] max-w-[calc(100%-2rem)] overflow-hidden rounded-lg border border-neutral-300 bg-white/95 p-3 text-sm shadow-lg backdrop-blur"
+            class="absolute bottom-4 right-4 z-40 flex max-h-[48%] w-[38rem] max-w-[calc(100%-2rem)] flex-col overflow-hidden rounded-lg border border-neutral-300 bg-white/95 p-3 text-sm shadow-lg backdrop-blur"
             data-canvas-wheel-ignore="true"
         >
             <div class="flex items-center justify-between gap-3">
@@ -1443,7 +1444,7 @@ const BlockViewPanel: Component<{
                     {props.blocks.length} blocks
                 </span>
             </div>
-            <div ref={scrollContainer} class="mt-2 max-h-80 overflow-auto rounded border border-neutral-200 bg-neutral-50" onScroll={updateRightPin}>
+            <div ref={scrollContainer} class="mt-2 min-h-0 flex-1 overflow-auto rounded border border-neutral-200 bg-neutral-50" onScroll={updateRightPin}>
             <Show
                 when={props.blocks.length > 0}
                 fallback={<div class="p-3 text-xs text-neutral-500">No blocks yet</div>}
