@@ -947,15 +947,15 @@ const NetworkCanvas: Component<{
                                     when={!cut()}
                                     fallback={
                                         <>
-                                            <line x1={from()?.x ?? 0} y1={from()?.y ?? 0} x2={leftCut().x} y2={leftCut().y} stroke="#dc2626" strokeWidth="10" opacity={anyOffline() ? 0.4 : 0.9} />
-                                            <line x1={to()?.x ?? 0} y1={to()?.y ?? 0} x2={rightCut().x} y2={rightCut().y} stroke="#dc2626" strokeWidth="10" opacity={anyOffline() ? 0.4 : 0.9} />
+                                            <line x1={from()?.x ?? 0} y1={from()?.y ?? 0} x2={leftCut().x} y2={leftCut().y} stroke="#dc2626" stroke-width="10" opacity={anyOffline() ? 0.4 : 0.9} />
+                                            <line x1={to()?.x ?? 0} y1={to()?.y ?? 0} x2={rightCut().x} y2={rightCut().y} stroke="#dc2626" stroke-width="10" opacity={anyOffline() ? 0.4 : 0.9} />
                                             <For each={cutCableStrands}>{(offset) => {
                                                 const leftEnd = () => strandEnd(leftCut(), rightCut(), offset);
                                                 const rightEnd = () => strandEnd(rightCut(), leftCut(), -offset);
                                                 return (
                                                     <>
-                                                        <line x1={leftCut().x} y1={leftCut().y} x2={leftEnd().x} y2={leftEnd().y} stroke={offset % 2 === 0 ? "#f97316" : "#9a3412"} strokeWidth="2" />
-                                                        <line x1={rightCut().x} y1={rightCut().y} x2={rightEnd().x} y2={rightEnd().y} stroke={offset % 2 === 0 ? "#f97316" : "#9a3412"} strokeWidth="2" />
+                                                        <line x1={leftCut().x} y1={leftCut().y} x2={leftEnd().x} y2={leftEnd().y} stroke={offset % 2 === 0 ? "#f97316" : "#9a3412"} stroke-width="2" />
+                                                        <line x1={rightCut().x} y1={rightCut().y} x2={rightEnd().x} y2={rightEnd().y} stroke={offset % 2 === 0 ? "#f97316" : "#9a3412"} stroke-width="2" />
                                                     </>
                                                 );
                                             }}</For>
@@ -968,7 +968,7 @@ const NetworkCanvas: Component<{
                                         x2={to()?.x ?? 0}
                                         y2={to()?.y ?? 0}
                                         stroke={anyDropped() || anyOverridden() ? "#d97706" : "#4b5563"}
-                                        strokeWidth={anyOverridden() || anyDropped() ? 4 : 3}
+                                        stroke-width={anyOverridden() || anyDropped() ? 4 : 3}
                                         opacity={anyOffline() ? 0.45 : 0.82}
                                     />
                                 </Show>
@@ -1400,9 +1400,9 @@ const BlockViewPanel: Component<{
                                     <path
                                         d={path()}
                                         fill="none"
-                                        markerEnd="url(#block-view-arrow)"
+                                        marker-end="url(#block-view-arrow)"
                                         stroke="#6b7280"
-                                        strokeWidth="2"
+                                        stroke-width="2"
                                     />
                                 </Show>
                             );
