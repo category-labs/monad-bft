@@ -48,7 +48,6 @@ type MessageFilterKey =
 type Position = { x: number, y: number };
 type PixelOffset = { x: number, y: number };
 type ViewScale = { x: number, y: number };
-type HoveredLinkAction = { key: string, position: Position };
 type WireLaneTone = "neutral" | "amber";
 type WireLane = {
     key: string,
@@ -97,6 +96,31 @@ const packetLane = 10;
 const packetLaneStagger = 3.5;
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+
+// Hovering a wire swaps the pointer for the action it will perform, so the
+// native cursor never sits on top of a separate badge.
+const actionCursorSize = 40;
+const actionCursor = (color: string, shapes: string, viewBox = 24, stroke = 2.4, halo = 5) => {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${actionCursorSize}" height="${actionCursorSize}" viewBox="0 0 ${viewBox} ${viewBox}" fill="none" stroke-linecap="round" stroke-linejoin="round"><g stroke="#ffffff" stroke-width="${halo}" opacity="0.85">${shapes}</g><g stroke="${color}" stroke-width="${stroke}">${shapes}</g></svg>`;
+    const hotspot = actionCursorSize / 2;
+    return `url("data:image/svg+xml,${encodeURIComponent(svg)}") ${hotspot} ${hotspot}, pointer`;
+};
+
+const scissorsShapes = '<circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.12 15.88"/><path d="M14.47 14.48 20 20"/><path d="M8.12 8.12 12 12"/>';
+const wrenchShapes = '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>';
+const cutCursor = actionCursor("#dc2626", scissorsShapes);
+const repairCursor = actionCursor("#16a34a", wrenchShapes);
+
+// Taking a node down is the node-level analogue of severing a wire, so it gets
+// the same cursor treatment: one cable, pulled apart or mated. Laid out on the
+// diagonal so the cable spans the cursor box corner to corner rather than
+// leaving the top and bottom thirds empty.
+const cableCursorBox = 32;
+const onDiagonal = (shapes: string) => `<g transform="rotate(-45 16 16)">${shapes}</g>`;
+const unplugShapes = onDiagonal('<path d="M2 16h5"/><rect x="7" y="11" width="9" height="10" rx="2"/><path d="M16 13.5h3"/><path d="M16 18.5h3"/><rect x="22.5" y="11" width="6.5" height="10" rx="2.5"/><path d="M29 16h1.5"/>');
+const plugShapes = onDiagonal('<path d="M2 16h6.25"/><rect x="8.25" y="11" width="9" height="10" rx="2"/><rect x="17.25" y="11" width="6.5" height="10" rx="2.5"/><path d="M23.75 16h6.75"/>');
+const takeDownCursor = actionCursor("#dc2626", unplugShapes, cableCursorBox, 2.6, 5.5);
+const bringUpCursor = actionCursor("#16a34a", plugShapes, cableCursorBox, 2.6, 5.5);
 
 // The topology svg is stretched to the canvas (preserveAspectRatio="none"), so
 // view units are not square on screen. Work out the wire's on-screen frame and
@@ -393,7 +417,6 @@ const NetworkCanvas: Component<{
     const [showBlockView, setShowBlockView] = createSignal(true);
     const [showMessageFilters, setShowMessageFilters] = createSignal(false);
     const [messageFilters, setMessageFilters] = createSignal<Record<MessageFilterKey, boolean>>(defaultMessageFilters);
-    const [hoveredLinkAction, setHoveredLinkAction] = createSignal<HoveredLinkAction>();
     const [canvasSize, setCanvasSize] = createSignal({ width: topologyViewSize, height: topologyViewSize });
     const [draggingNodeId, setDraggingNodeId] = createSignal<string>();
     const lastCommittedPosition = new Map<string, Position>();
@@ -510,13 +533,6 @@ const NetworkCanvas: Component<{
         }
         return Object.values(pairs);
     });
-    const hoveredLinkPair = createMemo(() => {
-        const hovered = hoveredLinkAction();
-        return hovered
-            ? linkPairs().find((pair) => pairKey(pair.fromId, pair.toId) === hovered.key)
-            : undefined;
-    });
-
     const inFlightDestinations = createMemo(() => {
         const destinations = new Map<string, InFlightDestination>();
         for (const node of simNodes()) {
@@ -556,20 +572,6 @@ const NetworkCanvas: Component<{
         event.preventDefault();
         event.stopPropagation();
         applyLinkMode(pair, linkMode(pair) === "neither" ? "both" : "neither");
-    };
-
-    const showLinkAction = (event: PointerEvent, pair: LinkPair) => {
-        setHoveredLinkAction({
-            key: pairKey(pair.fromId, pair.toId),
-            position: canvasPoint(event.clientX, event.clientY),
-        });
-    };
-
-    const hideLinkAction = (pair: LinkPair) => {
-        const key = pairKey(pair.fromId, pair.toId);
-        if (hoveredLinkAction()?.key === key) {
-            setHoveredLinkAction(undefined);
-        }
     };
 
     const handleLinkKeyDown = (event: KeyboardEvent, pair: LinkPair) => {
@@ -1040,7 +1042,6 @@ const NetworkCanvas: Component<{
                                     />
                                 </Show>
                                 <line
-                                    class="cursor-pointer"
                                     x1={from()?.x ?? 0}
                                     y1={from()?.y ?? 0}
                                     x2={to()?.x ?? 0}
@@ -1050,14 +1051,12 @@ const NetworkCanvas: Component<{
                                         "pointer-events": "stroke",
                                         "stroke-linecap": "round",
                                         "stroke-width": `${linkHitAreaWidth}px`,
+                                        cursor: cut() ? repairCursor : cutCursor,
                                     }}
                                     role="button"
                                     tabIndex={0}
                                     aria-label={`${cut() ? "Repair" : "Cut"} connection between ${nodeLabel(pair.fromId)} and ${nodeLabel(pair.toId)}`}
                                     onPointerDown={(event) => event.stopPropagation()}
-                                    onPointerEnter={(event) => showLinkAction(event, pair)}
-                                    onPointerMove={(event) => showLinkAction(event, pair)}
-                                    onPointerLeave={() => hideLinkAction(pair)}
                                     onClick={(event) => togglePairConnection(event, pair)}
                                     onKeyDown={(event) => handleLinkKeyDown(event, pair)}
                                 />
@@ -1066,26 +1065,6 @@ const NetworkCanvas: Component<{
                     );
                 }}</For>
             </svg>
-
-            <Show when={hoveredLinkAction() && hoveredLinkPair()}>
-                {() => {
-                    const action = () => hoveredLinkAction()!;
-                    const pair = () => hoveredLinkPair()!;
-                    const connected = () => linkMode(pair()) !== "neither";
-                    return (
-                        <div
-                            class={`pointer-events-none absolute z-40 flex h-9 w-9 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border text-lg shadow-md ${connected() ? "border-red-300 bg-red-50" : "border-emerald-300 bg-emerald-50"}`}
-                            style={{
-                                left: `${action().position.x / 10}%`,
-                                top: `${action().position.y / 10}%`,
-                            }}
-                            aria-hidden="true"
-                        >
-                            {connected() ? "✂️" : "🔧"}
-                        </div>
-                    );
-                }}
-            </Show>
 
             <For each={linkPairs()}>{(pair) => {
                 const from = () => positionsById()[pair.fromId];
@@ -1266,11 +1245,14 @@ const NetworkCanvas: Component<{
                 const nodeStyle = () => ({
                     left: `${position().x / 10}%`,
                     top: `${position().y / 10}%`,
+                    cursor: draggingNodeId() === networkNode.id
+                        ? "grabbing"
+                        : networkNode.online ? takeDownCursor : bringUpCursor,
                 });
                 return (
                     <button
                         type="button"
-                        class={`group absolute z-30 w-40 -translate-x-1/2 -translate-y-1/2 cursor-grab select-none rounded-lg text-left shadow-lg transition active:cursor-grabbing ${networkNode.online ? "" : "opacity-70"} ${isCurrentLeader() ? "ring-4 ring-indigo-400" : isNextLeader() ? "ring-2 ring-indigo-200" : ""}`}
+                        class={`absolute z-30 w-40 -translate-x-1/2 -translate-y-1/2 select-none rounded-lg text-left shadow-lg transition ${networkNode.online ? "" : "opacity-70"} ${isCurrentLeader() ? "ring-4 ring-indigo-400" : isNextLeader() ? "ring-2 ring-indigo-200" : ""}`}
                         style={nodeStyle()}
                         aria-label={`${nodeLabel(networkNode.id)} ${networkNode.online ? "live; click to take down" : "down; click to bring up"}; drag to move`}
                         title={`${networkNode.online ? "Click to take down" : "Click to bring up"}; drag to move`}
@@ -1307,13 +1289,6 @@ const NetworkCanvas: Component<{
                                     </>
                                 )}
                             </Show>
-                            <div
-                                class={`pointer-events-none absolute inset-0 flex flex-col items-center justify-center rounded-lg bg-white/90 text-center backdrop-blur-sm transition-opacity ${draggingNodeId() === networkNode.id ? "opacity-0" : "opacity-0 group-hover:opacity-100"}`}
-                                aria-hidden="true"
-                            >
-                                <span class="text-3xl leading-none">{networkNode.online ? "🔨" : "🔧"}</span>
-                                <span class="mt-1 text-xs font-bold text-neutral-800">{networkNode.online ? "Take down" : "Bring up"}</span>
-                            </div>
                         </div>
                     </button>
                 );
