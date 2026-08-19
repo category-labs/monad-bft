@@ -17,14 +17,6 @@ type LinkPair = {
 type SimNode = SimulationQuery["nodes"][number];
 type PendingMessage = SimNode["pendingMessages"][number];
 type LedgerBlock = SimNode["ledgerBlocks"][number];
-type Blockish = {
-    id: string,
-    parentId?: string | null,
-    bodyId?: string | null,
-    seqNum?: number,
-    round?: number,
-    authorId?: string | null,
-};
 type MergedLedgerBlock = LedgerBlock & {
     seenBy: string[],
     finalizedBy: string[],
@@ -155,8 +147,6 @@ const pointAlongLine = (from: Position, to: Position, distanceFromMidpoint: numb
 const pairKey = (fromId: string, toId: string) => [fromId, toId].sort().join(":");
 
 const shortNodeId = (id: string) => `${id.slice(0, 6)}...${id.slice(-4)}`;
-
-const shortBlockId = (id: string) => `${id.slice(0, 4)}..${id.slice(-4)}`;
 
 const messageFilterOptions: { key: MessageFilterKey, label: string }[] = [
     { key: "proposal", label: "Proposals" },
@@ -305,27 +295,6 @@ const packetToneClass = (tone: MessageTone) => {
         default:
             return "border-neutral-950 bg-neutral-400";
     }
-};
-
-const hashString = (value: string) => {
-    let hash = 2166136261;
-    for (let index = 0; index < value.length; index += 1) {
-        hash ^= value.charCodeAt(index);
-        hash = Math.imul(hash, 16777619);
-    }
-    return hash >>> 0;
-};
-
-const blockVisual = (id: string) => {
-    const hash = hashString(id);
-    const hue = hash % 360;
-    const shape = hash % 3;
-    return {
-        fill: `hsl(${hue} 78% 72%)`,
-        stroke: `hsl(${hue} 78% 32%)`,
-        text: `hsl(${hue} 78% 22%)`,
-        shapeClass: shape === 0 ? "rounded-sm" : shape === 1 ? "rounded-full" : "rotate-45 rounded-[3px]",
-    };
 };
 
 const messageToneClass = (tone: MessageTone) => {
@@ -891,11 +860,15 @@ const NetworkCanvas: Component<{
     };
 
     return (
+        <div class="flex h-full min-h-0 grow flex-row">
         <div ref={canvasRef} class="relative h-full min-h-0 grow overflow-hidden bg-neutral-100" onWheel={handleWheel}>
+            {/* Canvas manipulators stay welded to the canvas: they act on this
+                surface, and must keep working while the rail is collapsed. */}
             <div
-                class="absolute left-4 top-4 z-50 flex items-center overflow-hidden rounded-lg border border-neutral-300 bg-white/95 text-sm font-semibold shadow-lg backdrop-blur"
+                class="absolute bottom-4 left-4 z-50 flex items-center gap-2"
                 data-canvas-wheel-ignore="true"
             >
+            <div class="flex items-center overflow-hidden rounded-lg border border-neutral-300 bg-white/95 text-sm font-semibold shadow-lg backdrop-blur">
                 <button
                     type="button"
                     class="h-8 w-9 border-r border-neutral-300 text-lg leading-none hover:bg-neutral-100 disabled:text-neutral-300 disabled:hover:bg-white"
@@ -926,25 +899,28 @@ const NetworkCanvas: Component<{
                     +
                 </button>
             </div>
-            <button
-                type="button"
-                class={`absolute left-4 top-14 z-50 rounded-lg border px-3 py-1.5 text-sm font-semibold shadow-lg backdrop-blur ${showBlockView() ? "border-indigo-500 bg-indigo-50 text-indigo-700" : "border-neutral-300 bg-white/95 text-neutral-800 hover:bg-neutral-100"}`}
-                data-canvas-wheel-ignore="true"
-                onClick={() => setShowBlockView((show) => !show)}
-            >
-                Block View
-            </button>
-            <button
-                type="button"
-                class={`absolute left-4 top-24 z-50 rounded-lg border px-3 py-1.5 text-sm font-semibold shadow-lg backdrop-blur ${showMessageFilters() ? "border-indigo-500 bg-indigo-50 text-indigo-700" : "border-neutral-300 bg-white/95 text-neutral-800 hover:bg-neutral-100"}`}
-                data-canvas-wheel-ignore="true"
-                onClick={() => setShowMessageFilters((show) => !show)}
-            >
-                Messages
-            </button>
+            <div class="flex items-center overflow-hidden rounded-lg border border-neutral-300 bg-white/95 text-sm font-semibold shadow-lg backdrop-blur">
+                <button
+                    type="button"
+                    class={`h-8 border-r border-neutral-300 px-3 ${showBlockView() ? "bg-indigo-50 text-indigo-700" : "text-neutral-800 hover:bg-neutral-100"}`}
+                    title="Show the block view in the side panel"
+                    onClick={() => setShowBlockView((show) => !show)}
+                >
+                    Block View
+                </button>
+                <button
+                    type="button"
+                    class={`h-8 px-3 ${showMessageFilters() ? "bg-indigo-50 text-indigo-700" : "text-neutral-800 hover:bg-neutral-100"}`}
+                    title="Choose which message types appear on the canvas"
+                    onClick={() => setShowMessageFilters((show) => !show)}
+                >
+                    Messages
+                </button>
+            </div>
+            </div>
             <Show when={showMessageFilters()}>
                 <div
-                    class="absolute left-4 top-36 z-50 w-56 rounded-lg border border-neutral-300 bg-white/95 p-3 text-sm shadow-lg backdrop-blur"
+                    class="absolute bottom-16 left-4 z-50 w-56 rounded-lg border border-neutral-300 bg-white/95 p-3 text-sm shadow-lg backdrop-blur"
                     data-canvas-wheel-ignore="true"
                 >
                     <div class="mb-2 flex items-center justify-between gap-3">
@@ -1299,50 +1275,15 @@ const NetworkCanvas: Component<{
 
             </div>
 
-            <MetricsPanel data={props.data} blockSamples={props.blockSamples} nodeLabel={nodeLabel} />
-            <Show when={showBlockView()}>
-                <BlockViewPanel blocks={mergedLedger()} nodeLabel={nodeLabel} />
-            </Show>
         </div>
-    );
-};
-
-const BlockGlyph: Component<{ id: string, compact?: boolean }> = (props) => {
-    const visual = () => blockVisual(props.id);
-    return (
-        <span
-            class={`inline-block shrink-0 border-2 ${props.compact ? "h-2.5 w-2.5" : "h-3.5 w-3.5"} ${visual().shapeClass}`}
-            style={{
-                "background-color": visual().fill,
-                "border-color": visual().stroke,
-            }}
-        />
-    );
-};
-
-const BlockChip: Component<{
-    block?: Blockish,
-    blockId?: string,
-    label?: string,
-    compact?: boolean,
-    muted?: boolean,
-}> = (props) => {
-    const id = () => props.block?.id ?? props.blockId ?? "";
-    const visual = () => blockVisual(id());
-    const label = () => props.label ?? (props.block?.seqNum !== undefined ? `P${props.block.seqNum}` : shortBlockId(id()));
-    const finalized = () => Boolean((props.block as LedgerBlock | undefined)?.finalized);
-    return (
-        <span
-            class={`inline-flex max-w-full items-center gap-1 rounded border bg-white/85 font-semibold shadow-sm ${props.compact ? "px-1 py-0.5 text-[10px] leading-3" : "px-1.5 py-1 text-[11px] leading-4"} ${props.muted ? "opacity-45" : ""} ${finalized() ? "ring-1 ring-neutral-950" : ""}`}
-            style={{
-                color: visual().text,
-                "border-color": visual().stroke,
-            }}
-            title={id()}
-        >
-            <BlockGlyph id={id()} compact={props.compact} />
-            <span class="truncate tabular-nums">{label()}</span>
-        </span>
+            <SideRail
+                data={props.data}
+                blockSamples={props.blockSamples}
+                blocks={mergedLedger()}
+                showBlockViewSection={showBlockView()}
+                nodeLabel={nodeLabel}
+            />
+        </div>
     );
 };
 
@@ -1360,246 +1301,448 @@ const MessageSummaryChip: Component<{
     </div>
 );
 
-const BlockViewPanel: Component<{
+// ---------------------------------------------------------------------------
+// Side rail: everything that reports on the simulation, gathered off the canvas
+// so the topology keeps the full width. Readouts live here; canvas
+// manipulators (zoom, message filters) stay on the canvas itself.
+// ---------------------------------------------------------------------------
+
+const blockViewCardWidth = 132;
+const blockViewCardHeight = 64;
+const blockViewRowHeight = 86;
+const blockViewColumnWidth = 148;
+const blockViewMargin = 16;
+const blockViewArrivalStep = 22;
+
+// One hue at three ink weights, so proposed -> voted -> finalized reads as
+// progress at a glance and still separates in grayscale.
+const blockViewCardClass = (block: MergedLedgerBlock) => {
+    if (block.finalized) {
+        return "border-indigo-700 bg-indigo-100 text-neutral-900";
+    }
+    if (block.voted) {
+        return "border-indigo-400 bg-indigo-50 text-neutral-800";
+    }
+    return "border-neutral-300 bg-white text-neutral-500";
+};
+
+// The status word repeats the card's ink weight in text, so state never rests
+// on colour alone, and "P" stops having to mean both proposed and voted.
+const blockViewStatus = (block: MergedLedgerBlock) => {
+    if (block.finalized) {
+        return { label: "finalized", chip: "bg-indigo-700 text-white" };
+    }
+    if (block.voted) {
+        return { label: "voted", chip: "bg-indigo-200 text-indigo-900" };
+    }
+    return { label: "proposed", chip: "bg-neutral-200 text-neutral-700" };
+};
+
+const blockViewDotClass = (block: MergedLedgerBlock, nodeId: string) => {
+    if (block.votedBy.includes(nodeId)) {
+        return "bg-indigo-600";
+    }
+    if (block.seenBy.includes(nodeId)) {
+        return "bg-indigo-200";
+    }
+    return "border border-neutral-300 bg-white";
+};
+
+// Canonical chain first, so the trunk holds column 0 and the eye keeps a
+// straight vertical reading line as forks appear and resolve.
+const canonicalFirst = (a: MergedLedgerBlock, b: MergedLedgerBlock) => {
+    if (a.finalized !== b.finalized) {
+        return a.finalized ? -1 : 1;
+    }
+    if (a.votedBy.length !== b.votedBy.length) {
+        return b.votedBy.length - a.votedBy.length;
+    }
+    if (a.seenBy.length !== b.seenBy.length) {
+        return b.seenBy.length - a.seenBy.length;
+    }
+    return a.id.localeCompare(b.id);
+};
+
+const BlockView: Component<{
     blocks: MergedLedgerBlock[],
+    nodeIds: string[],
     nodeLabel: (nodeId?: string | null) => string,
 }> = (props) => {
-    let scrollContainer: HTMLDivElement | undefined;
-    const [isPinnedRight, setIsPinnedRight] = createSignal(true);
-    const scrolledToRight = (element: HTMLDivElement) => (
-        element.scrollWidth - element.clientWidth - element.scrollLeft <= 8
+    let scroller: HTMLDivElement | undefined;
+    const [pinnedToTip, setPinnedToTip] = createSignal(true);
+    const atBottom = (element: HTMLDivElement) => (
+        element.scrollHeight - element.clientHeight - element.scrollTop <= 12
     );
-    const updateRightPin = () => {
-        if (scrollContainer) {
-            setIsPinnedRight(scrolledToRight(scrollContainer));
+    const updatePin = () => {
+        if (scroller) {
+            setPinnedToTip(atBottom(scroller));
         }
     };
 
+    // Sequence runs down the column; forks branch sideways off the trunk.
     const layout = createMemo(() => {
         const blocks = sortBlocks(props.blocks);
-        const blocksBySeq = new Map<number, MergedLedgerBlock[]>();
+        const bySeq = new Map<number, MergedLedgerBlock[]>();
         for (const block of blocks) {
-            const seqBlocks = blocksBySeq.get(block.seqNum) ?? [];
-            seqBlocks.push(block);
-            blocksBySeq.set(block.seqNum, seqBlocks);
+            const group = bySeq.get(block.seqNum) ?? [];
+            group.push(block);
+            bySeq.set(block.seqNum, group);
         }
-
-        const seqNums = [...blocksBySeq.keys()].sort((a, b) => a - b);
-        const cardWidth = 116;
-        const cardHeight = 54;
-        const columnWidth = 154;
-        const rowHeight = 76;
-        const margin = 28;
-        const positions: Record<string, { x: number, y: number }> = {};
-        let maxRows = 1;
-
-        for (const [seqIndex, seqNum] of seqNums.entries()) {
-            const seqBlocks = sortBlocks(blocksBySeq.get(seqNum) ?? []);
-            maxRows = Math.max(maxRows, seqBlocks.length);
-            for (const [rowIndex, block] of seqBlocks.entries()) {
+        const seqNums = [...bySeq.keys()].sort((a, b) => a - b);
+        const positions: Record<string, Position> = {};
+        let columns = 1;
+        for (const [row, seqNum] of seqNums.entries()) {
+            const group = [...(bySeq.get(seqNum) ?? [])].sort(canonicalFirst);
+            columns = Math.max(columns, group.length);
+            for (const [column, block] of group.entries()) {
                 positions[block.id] = {
-                    x: margin + seqIndex * columnWidth,
-                    y: margin + rowIndex * rowHeight,
+                    x: blockViewMargin + column * blockViewColumnWidth,
+                    y: blockViewMargin + row * blockViewRowHeight,
                 };
             }
         }
-
+        // Siblings land on different points along the parent's edge, otherwise
+        // a fork stacks two arrowheads on the same pixel.
+        const childrenByParent = new Map<string, MergedLedgerBlock[]>();
+        for (const block of blocks) {
+            if (!block.parentId || !positions[block.parentId]) {
+                continue;
+            }
+            const siblings = childrenByParent.get(block.parentId) ?? [];
+            siblings.push(block);
+            childrenByParent.set(block.parentId, siblings);
+        }
+        const arrivals: Record<string, number> = {};
+        for (const [parentId, siblings] of childrenByParent) {
+            const centre = positions[parentId].x + blockViewCardWidth / 2;
+            // The trunk child keeps the centre so the spine stays a straight
+            // vertical line; only extra siblings step aside.
+            [...siblings].sort(canonicalFirst).forEach((block, index) => {
+                arrivals[block.id] = clamp(
+                    centre + index * blockViewArrivalStep,
+                    positions[parentId].x + 10,
+                    positions[parentId].x + blockViewCardWidth - 10,
+                );
+            });
+        }
         return {
+            arrivals,
             blocks,
-            cardHeight,
-            cardWidth,
-            height: Math.max(170, margin * 2 + maxRows * rowHeight),
             positions,
-            width: Math.max(480, margin * 2 + Math.max(1, seqNums.length) * columnWidth),
+            height: blockViewMargin * 2 + Math.max(1, seqNums.length) * blockViewRowHeight,
+            width: blockViewMargin * 2 + blockViewCardWidth + (columns - 1) * blockViewColumnWidth,
         };
     });
 
-    const status = (block: MergedLedgerBlock) => (
-        block.finalized ? "finalized" : block.voted ? "voted" : "proposed"
-    );
+    const jumpToTip = () => {
+        if (scroller) {
+            scroller.scrollTop = scroller.scrollHeight;
+            setPinnedToTip(true);
+        }
+    };
 
+    // Tail-follow, the way a log does: stay pinned to the newest block unless
+    // the reader has scrolled back into history.
     createEffect(() => {
-        const _blockCount = props.blocks.length;
-        const _layoutWidth = layout().width;
-        const shouldFollowRight = untrack(isPinnedRight);
+        const _count = props.blocks.length;
+        const _height = layout().height;
+        const follow = untrack(pinnedToTip);
         const frame = requestAnimationFrame(() => {
-            if (scrollContainer && shouldFollowRight) {
-                scrollContainer.scrollLeft = scrollContainer.scrollWidth;
-                setIsPinnedRight(true);
-            } else if (scrollContainer) {
-                setIsPinnedRight(scrolledToRight(scrollContainer));
+            if (!scroller) {
+                return;
+            }
+            if (follow) {
+                scroller.scrollTop = scroller.scrollHeight;
+                setPinnedToTip(true);
+            } else {
+                setPinnedToTip(atBottom(scroller));
             }
         });
         onCleanup(() => cancelAnimationFrame(frame));
     });
 
     return (
-        <aside
-            class="absolute bottom-4 right-4 z-40 flex max-h-[48%] w-[38rem] max-w-[calc(100%-2rem)] flex-col overflow-hidden rounded-lg border border-neutral-300 bg-white/95 p-3 text-sm shadow-lg backdrop-blur"
-            data-canvas-wheel-ignore="true"
-        >
-            <div class="flex items-center justify-between gap-3">
-                <h2 class="text-base font-semibold">Block View</h2>
-                <span class="rounded bg-neutral-100 px-2 py-1 text-xs font-medium text-neutral-700">
-                    {props.blocks.length} blocks
-                </span>
-            </div>
-            <div ref={scrollContainer} class="mt-2 min-h-0 flex-1 overflow-auto rounded border border-neutral-200 bg-neutral-50" onScroll={updateRightPin}>
-            <Show
-                when={props.blocks.length > 0}
-                fallback={<div class="p-3 text-xs text-neutral-500">No blocks yet</div>}
-            >
-                <div
-                    class="relative"
-                    style={{
-                        height: `${layout().height}px`,
-                        width: `${layout().width}px`,
-                    }}
+        <div class="flex min-h-0 flex-1 flex-col">
+            <div class="flex shrink-0 items-baseline justify-between gap-2 px-3 pt-2">
+                <h2 class="text-[10px] font-bold uppercase tracking-wide text-neutral-500">Block View</h2>
+                <Show
+                    when={!pinnedToTip()}
+                    fallback={
+                        <span class="text-[10px] font-medium tabular-nums text-neutral-400">
+                            {props.blocks.length} blocks
+                        </span>
+                    }
                 >
-                    <svg
-                        class="pointer-events-none absolute inset-0"
-                        viewBox={`0 0 ${layout().width} ${layout().height}`}
-                        preserveAspectRatio="none"
+                    <button
+                        type="button"
+                        class="rounded border border-neutral-300 px-1.5 py-0.5 text-[10px] font-semibold text-neutral-600 hover:bg-neutral-100"
+                        onClick={jumpToTip}
                     >
-                        <defs>
-                            <marker id="block-view-arrow" markerHeight="7" markerWidth="7" orient="auto" refX="6" refY="3.5">
-                                <path d="M0,0 L7,3.5 L0,7 z" fill="#6b7280" />
-                            </marker>
-                        </defs>
+                        Jump to tip
+                    </button>
+                </Show>
+            </div>
+            <div
+                ref={scroller}
+                class="mx-3 mb-3 mt-1 min-h-0 flex-1 overflow-auto rounded border border-neutral-200 bg-neutral-50"
+                onScroll={updatePin}
+            >
+                <Show
+                    when={layout().blocks.length > 0}
+                    fallback={<div class="p-3 text-xs text-neutral-500">No blocks yet</div>}
+                >
+                    <div class="relative" style={{ height: `${layout().height}px`, width: `${layout().width}px` }}>
+                        <svg
+                            class="pointer-events-none absolute left-0 top-0"
+                            width={layout().width}
+                            height={layout().height}
+                        >
+                            <defs>
+                                <marker id="block-view-arrow" markerHeight="6" markerWidth="6" orient="auto" refX="5" refY="3">
+                                    <path d="M0,0 L6,3 L0,6 z" fill="#6b7280" />
+                                </marker>
+                            </defs>
+                            <For each={layout().blocks}>{(block) => {
+                                const child = () => layout().positions[block.id];
+                                const parent = () => block.parentId ? layout().positions[block.parentId] : undefined;
+                                // The child sits below and the arrow points up: a block's
+                                // pointer goes to the block it extends.
+                                const path = () => {
+                                    const from = child();
+                                    const to = parent();
+                                    if (!from || !to) {
+                                        return "";
+                                    }
+                                    const x1 = from.x + blockViewCardWidth / 2;
+                                    const y1 = from.y;
+                                    const x2 = layout().arrivals[block.id] ?? to.x + blockViewCardWidth / 2;
+                                    const y2 = to.y + blockViewCardHeight;
+                                    const midY = (y1 + y2) / 2;
+                                    return `M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}`;
+                                };
+                                return (
+                                    <Show when={parent()}>
+                                        <path
+                                            d={path()}
+                                            fill="none"
+                                            marker-end="url(#block-view-arrow)"
+                                            stroke="#6b7280"
+                                            stroke-width="1.5"
+                                        />
+                                    </Show>
+                                );
+                            }}</For>
+                        </svg>
                         <For each={layout().blocks}>{(block) => {
-                            const child = () => layout().positions[block.id];
-                            const parent = () => block.parentId ? layout().positions[block.parentId] : undefined;
-                            const path = () => {
-                                const childPos = child();
-                                const parentPos = parent();
-                                if (!childPos || !parentPos) {
-                                    return "";
-                                }
-                                const y1 = childPos.y + layout().cardHeight / 2;
-                                const y2 = parentPos.y + layout().cardHeight / 2;
-                                const x1 = childPos.x;
-                                const x2 = parentPos.x + layout().cardWidth;
-                                const midX = (x1 + x2) / 2;
-                                return `M ${x1} ${y1} C ${midX} ${y1}, ${midX} ${y2}, ${x2} ${y2}`;
-                            };
+                            const position = () => layout().positions[block.id];
+                            const seenBy = () => block.seenBy.map(props.nodeLabel).join(" ");
                             return (
-                                <Show when={parent()}>
-                                    <path
-                                        d={path()}
-                                        fill="none"
-                                        marker-end="url(#block-view-arrow)"
-                                        stroke="#6b7280"
-                                        stroke-width="2"
-                                    />
-                                </Show>
+                                <div
+                                    class={`absolute flex flex-col justify-between rounded-md border px-2 py-1 shadow-sm ${blockViewCardClass(block)}`}
+                                    style={{
+                                        height: `${blockViewCardHeight}px`,
+                                        left: `${position()?.x ?? 0}px`,
+                                        top: `${position()?.y ?? 0}px`,
+                                        width: `${blockViewCardWidth}px`,
+                                    }}
+                                    title={`${block.id}\nround ${block.round}\nseen by ${seenBy()}`}
+                                >
+                                    <div class="flex items-center justify-between gap-1">
+                                        <span class="text-[11px] font-bold tabular-nums">
+                                            {block.finalized ? "F" : "P"}{block.seqNum}
+                                        </span>
+                                        {/* one dot per node: voted, merely seen, or missing */}
+                                        <div class="flex items-center gap-0.5" aria-hidden="true">
+                                            <For each={props.nodeIds}>{(nodeId) => (
+                                                <span class={`h-1.5 w-1.5 rounded-full ${blockViewDotClass(block, nodeId)}`} />
+                                            )}</For>
+                                        </div>
+                                    </div>
+                                    <div class="flex items-center justify-between gap-1">
+                                        <span class={`rounded px-1 py-0.5 text-[10px] font-semibold ${blockViewStatus(block).chip}`}>
+                                            {blockViewStatus(block).label}
+                                        </span>
+                                        <span class="shrink-0 text-[10px] tabular-nums opacity-70">r{block.round}</span>
+                                    </div>
+                                </div>
                             );
                         }}</For>
-                    </svg>
-                    <For each={layout().blocks}>{(block) => {
-                        const position = () => layout().positions[block.id];
-                        const seenBy = () => block.seenBy.map(props.nodeLabel).join(" ");
-                        return (
-                            <div
-                                class={`absolute rounded-md border bg-white p-2 shadow-sm ${block.finalized ? "border-neutral-900" : block.voted ? "border-indigo-300" : "border-neutral-300 opacity-70"}`}
-                                style={{
-                                    height: `${layout().cardHeight}px`,
-                                    left: `${position()?.x ?? 0}px`,
-                                    top: `${position()?.y ?? 0}px`,
-                                    width: `${layout().cardWidth}px`,
-                                }}
-                                title={`${block.id}\nseen by ${seenBy()}`}
-                            >
-                                <div class="flex items-center justify-between gap-1">
-                                    <BlockChip block={block} label={block.finalized ? `F${block.seqNum}` : `P${block.seqNum}`} compact muted={!block.voted} />
-                                    <span class={`rounded px-1 py-0.5 text-[10px] font-semibold ${block.finalized ? "bg-neutral-900 text-white" : block.voted ? "bg-indigo-100 text-indigo-800" : "bg-neutral-100 text-neutral-600"}`}>
-                                        {status(block)}
-                                    </span>
-                                </div>
-                                <div class="mt-1 truncate text-[10px] text-neutral-500">
-                                    r{block.round} {seenBy()}
-                                </div>
-                            </div>
-                        );
-                    }}</For>
-                </div>
-            </Show>
+                    </div>
+                </Show>
             </div>
-        </aside>
+        </div>
     );
 };
 
-const MetricsPanel: Component<{
+const Sparkline: Component<{ values: number[] }> = (props) => {
+    const geometry = createMemo(() => {
+        const values = props.values.slice(-24);
+        if (values.length < 2) {
+            return undefined;
+        }
+        const width = 104;
+        const height = 26;
+        const low = Math.min(...values);
+        const span = Math.max(1, Math.max(...values) - low);
+        const points = values.map((value, index) => ({
+            x: (index / (values.length - 1)) * width,
+            y: height - 3 - ((value - low) / span) * (height - 6),
+        }));
+        const trace = points
+            .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`)
+            .join(" ");
+        return {
+            width,
+            height,
+            trace,
+            area: `M 0 ${height} ${points.map((point) => `L ${point.x.toFixed(1)} ${point.y.toFixed(1)}`).join(" ")} L ${width} ${height} Z`,
+            last: points[points.length - 1],
+        };
+    });
+    return (
+        <Show when={geometry()} fallback={<span class="text-[10px] text-neutral-400">not enough data</span>}>
+            {(shape) => (
+                <svg width={shape().width} height={shape().height} aria-hidden="true">
+                    <path d={shape().area} fill="#4f46e5" opacity="0.1" />
+                    <path
+                        d={shape().trace}
+                        fill="none"
+                        stroke="#4f46e5"
+                        stroke-width="1.5"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                    />
+                    <circle cx={shape().last.x} cy={shape().last.y} r="2.5" fill="#4f46e5" />
+                </svg>
+            )}
+        </Show>
+    );
+};
+
+const SideRail: Component<{
     data: SimulationQuery,
     blockSamples: BlockSample[],
+    blocks: MergedLedgerBlock[],
+    showBlockViewSection: boolean,
     nodeLabel: (nodeId?: string | null) => string,
 }> = (props) => {
+    const [open, setOpen] = createSignal(true);
+
     const metric = createMemo(() => {
         const roots = props.data.nodes.map((node) => node.root);
+        const rounds = props.data.nodes.map((node) => node.currentRound);
         const finalized = roots.length === 0 ? 0 : Math.max(...roots);
-        const pendingMessages = props.data.nodes.reduce(
-            (sum, node) => sum + node.pendingMessages.length,
+        const round = rounds.length === 0 ? 0 : Math.max(...rounds);
+        const sum = (pick: (node: SimNode) => number) => props.data.nodes.reduce(
+            (total, node) => total + pick(node),
             0,
         );
-        const createdQc = props.data.nodes.reduce(
-            (sum, node) => sum + node.metrics.consensusCreatedQc,
-            0,
-        );
-        const localTimeout = props.data.nodes.reduce(
-            (sum, node) => sum + node.metrics.consensusLocalTimeout,
-            0,
-        );
-        const handledProposal = props.data.nodes.reduce(
-            (sum, node) => sum + node.metrics.consensusHandleProposal,
-            0,
-        );
-        const liveNodes = props.data.networkConfig.nodes.filter((node) => node.online).length;
-
         const samples = props.blockSamples;
-        const last = samples.at(-1);
-        const previous = samples.length >= 2 ? samples.at(-2) : undefined;
-        const recentMsPerBlock = last && previous && last.root > previous.root
-            ? Math.round((last.tick - previous.tick) / (last.root - previous.root))
-            : undefined;
+        const intervals: number[] = [];
+        for (let index = 1; index < samples.length; index += 1) {
+            const previous = samples[index - 1];
+            const current = samples[index];
+            if (current.root > previous.root) {
+                intervals.push(Math.round((current.tick - previous.tick) / (current.root - previous.root)));
+            }
+        }
         const first = samples[0];
-        const rollingMsPerBlock = first && last && last.root > first.root
-            ? Math.round((last.tick - first.tick) / (last.root - first.root))
-            : undefined;
-
+        const last = samples.at(-1);
         return {
+            round,
             finalized,
-            pendingMessages,
-            createdQc,
-            localTimeout,
-            handledProposal,
-            liveNodes,
-            recentMsPerBlock,
-            rollingMsPerBlock,
+            intervals,
+            recentMsPerBlock: intervals.at(-1),
+            rollingMsPerBlock: first && last && last.root > first.root
+                ? Math.round((last.tick - first.tick) / (last.root - first.root))
+                : undefined,
+            pendingMessages: sum((node) => node.pendingMessages.length),
+            createdQc: sum((node) => node.metrics.consensusCreatedQc),
+            localTimeout: sum((node) => node.metrics.consensusLocalTimeout),
+            handledProposal: sum((node) => node.metrics.consensusHandleProposal),
+            liveNodes: props.data.networkConfig.nodes.filter((node) => node.online).length,
         };
     });
 
     const displayMs = (value: number | undefined) => value === undefined ? "n/a" : `${value}ms`;
+    const nodeIds = () => props.data.networkConfig.nodes.map((node) => node.id);
 
     return (
         <aside
-            class="absolute right-4 top-4 z-40 w-64 rounded-lg border border-neutral-300 bg-white/95 p-3 text-sm shadow-lg backdrop-blur"
+            class={`z-40 flex h-full min-h-0 shrink-0 flex-col border-l border-neutral-300 bg-white ${open() ? "w-[22rem]" : "w-12"}`}
             data-canvas-wheel-ignore="true"
         >
-            <div class="mb-2 flex items-center justify-between gap-3">
-                <h2 class="text-base font-semibold">Live Metrics</h2>
-                <span class="rounded bg-neutral-100 px-2 py-1 text-xs font-medium text-neutral-700">
-                    {metric().liveNodes}/{props.data.networkConfig.nodes.length} live
-                </span>
+            <div class={`flex shrink-0 border-b border-neutral-200 ${open() ? "items-center gap-3 px-3 py-2" : "flex-col items-center gap-2 px-1 py-2"}`}>
+                <button
+                    type="button"
+                    class="flex h-7 w-7 shrink-0 items-center justify-center rounded border border-neutral-300 text-sm font-bold leading-none text-neutral-600 hover:bg-neutral-100"
+                    aria-label={open() ? "Collapse side panel" : "Expand side panel"}
+                    title={open() ? "Collapse side panel" : "Expand side panel"}
+                    onClick={() => setOpen((value) => !value)}
+                >
+                    {open() ? "›" : "‹"}
+                </button>
+                {/* Collapsed is not blind: the two numbers you always watch stay put. */}
+                <Show
+                    when={open()}
+                    fallback={
+                        <div class="flex flex-col items-center gap-2">
+                            <div class="flex flex-col items-center" title={`Round ${metric().round}`}>
+                                <span class="text-[9px] font-bold uppercase text-neutral-400">R</span>
+                                <span class="text-xs font-semibold tabular-nums">{metric().round}</span>
+                            </div>
+                            <div class="flex flex-col items-center" title={`Finalized ${metric().finalized}`}>
+                                <span class="text-[9px] font-bold uppercase text-neutral-400">F</span>
+                                <span class="text-xs font-semibold tabular-nums">{metric().finalized}</span>
+                            </div>
+                        </div>
+                    }
+                >
+                    <div class="flex grow items-baseline gap-4">
+                        <div>
+                            <span class="text-[10px] font-bold uppercase tracking-wide text-neutral-500">Round </span>
+                            <span class="text-base font-semibold tabular-nums">{metric().round}</span>
+                        </div>
+                        <div>
+                            <span class="text-[10px] font-bold uppercase tracking-wide text-neutral-500">Final </span>
+                            <span class="text-base font-semibold tabular-nums">{metric().finalized}</span>
+                        </div>
+                    </div>
+                    <span class="shrink-0 rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-neutral-700">
+                        {metric().liveNodes}/{props.data.networkConfig.nodes.length} up
+                    </span>
+                </Show>
             </div>
-            <dl class="grid grid-cols-2 gap-x-3 gap-y-2">
-                <Metric label="Finalized" value={metric().finalized} />
-                <Metric label="Leader" value={props.nodeLabel(props.data.currentLeader)} />
-                <Metric label="Recent block" value={displayMs(metric().recentMsPerBlock)} />
-                <Metric label="Rolling block" value={displayMs(metric().rollingMsPerBlock)} />
-                <Metric label="Pending msgs" value={metric().pendingMessages} />
-                <Metric label="Created QC" value={metric().createdQc} />
-                <Metric label="Timeouts" value={metric().localTimeout} />
-                <Metric label="Proposals" value={metric().handledProposal} />
-            </dl>
+
+            <Show when={open()}>
+                <div class="shrink-0 border-b border-neutral-200 px-3 py-2">
+                    <div class="mb-2 flex items-end justify-between gap-2">
+                        <div>
+                            <div class="text-[10px] font-bold uppercase tracking-wide text-neutral-500">ms / block</div>
+                            <div class="text-lg font-semibold leading-6 tabular-nums">{displayMs(metric().recentMsPerBlock)}</div>
+                        </div>
+                        <Sparkline values={metric().intervals} />
+                    </div>
+                    <dl class="grid grid-cols-2 gap-x-3 gap-y-2">
+                        <Metric label="Leader" value={props.nodeLabel(props.data.currentLeader)} />
+                        <Metric label="Rolling" value={displayMs(metric().rollingMsPerBlock)} />
+                        <Metric label="Pending msgs" value={metric().pendingMessages} />
+                        <Metric label="Created QC" value={metric().createdQc} />
+                        <Metric label="Timeouts" value={metric().localTimeout} />
+                        <Metric label="Proposals" value={metric().handledProposal} />
+                    </dl>
+                </div>
+                <Show
+                    when={props.showBlockViewSection}
+                    fallback={
+                        <div class="px-3 py-2 text-xs text-neutral-500">
+                            Block view hidden. Turn it back on from the canvas toolbar.
+                        </div>
+                    }
+                >
+                    <BlockView blocks={props.blocks} nodeIds={nodeIds()} nodeLabel={props.nodeLabel} />
+                </Show>
+            </Show>
         </aside>
     );
 };
@@ -1607,8 +1750,9 @@ const MetricsPanel: Component<{
 const Metric: Component<{ label: string, value: string | number }> = (props) => (
     <div>
         <dt class="text-xs text-neutral-500">{props.label}</dt>
-        <dd class="text-base font-semibold leading-5 text-neutral-900">{props.value}</dd>
+        <dd class="text-base font-semibold leading-5 tabular-nums text-neutral-900">{props.value}</dd>
     </div>
 );
+
 
 export default NetworkCanvas;
