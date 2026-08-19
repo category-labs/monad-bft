@@ -1545,11 +1545,11 @@ const BlockView: Component<{
                                         top: `${position()?.y ?? 0}px`,
                                         width: `${blockViewCardWidth}px`,
                                     }}
-                                    title={`${block.id}\nround ${block.round}\nseen by ${seenBy()}`}
+                                    title={`Block ${block.seqNum} · round ${block.round}\n${block.id}\nseen by ${seenBy()}`}
                                 >
                                     <div class="flex items-center justify-between gap-1">
-                                        <span class="text-[11px] font-bold tabular-nums">
-                                            {block.finalized ? "F" : "P"}{block.seqNum}
+                                        <span class="truncate text-[11px] font-bold">
+                                            Block <span class="tabular-nums">{block.seqNum}</span>
                                         </span>
                                         {/* one dot per node: voted, merely seen, or missing */}
                                         <div class="flex items-center gap-0.5" aria-hidden="true">
@@ -1559,10 +1559,12 @@ const BlockView: Component<{
                                         </div>
                                     </div>
                                     <div class="flex items-center justify-between gap-1">
-                                        <span class={`rounded px-1 py-0.5 text-[10px] font-semibold ${blockViewStatus(block).chip}`}>
+                                        <span class={`min-w-0 truncate rounded px-1 py-0.5 text-[10px] font-semibold ${blockViewStatus(block).chip}`}>
                                             {blockViewStatus(block).label}
                                         </span>
-                                        <span class="shrink-0 text-[10px] tabular-nums opacity-70">r{block.round}</span>
+                                        <span class="shrink-0 text-[10px] opacity-70">
+                                            Round <span class="tabular-nums">{block.round}</span>
+                                        </span>
                                     </div>
                                 </div>
                             );
