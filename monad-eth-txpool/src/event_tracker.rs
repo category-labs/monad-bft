@@ -13,13 +13,17 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::BTreeMap, time::Instant};
+use std::{
+    collections::{btree_map::Entry as BTreeMapEntry, BTreeMap},
+    time::Instant,
+};
 
 use alloy_consensus::{transaction::Recovered, TxEnvelope};
 use alloy_primitives::TxHash;
 use monad_eth_txpool_types::{
     EthTxPoolDropReason, EthTxPoolEventType, EthTxPoolEvictReason, EthTxPoolInternalDropReason,
 };
+use tracing::error;
 
 use crate::EthTxPoolMetrics;
 
@@ -113,8 +117,46 @@ impl<'a> EthTxPoolEventTracker<'a> {
             }
         }
 
-        self.events
-            .insert(tx_hash, EthTxPoolEventType::Drop { reason });
+        match self.events.entry(tx_hash) {
+            BTreeMapEntry::Vacant(v) => {
+                v.insert(EthTxPoolEventType::Drop { reason });
+            }
+            BTreeMapEntry::Occupied(mut o) => match &reason {
+                EthTxPoolDropReason::NotWellFormed(_)
+                | EthTxPoolDropReason::InvalidSignature
+                | EthTxPoolDropReason::NonceTooLow
+                | EthTxPoolDropReason::FeeTooLow
+                | EthTxPoolDropReason::InsufficientBalance
+                | EthTxPoolDropReason::ReplacedByHigherPriority { .. }
+                | EthTxPoolDropReason::PoolFull
+                | EthTxPoolDropReason::PoolNotReady
+                | EthTxPoolDropReason::Internal(
+                    EthTxPoolInternalDropReason::ExecutionStateReadError,
+                )
+                | EthTxPoolDropReason::Internal(EthTxPoolInternalDropReason::NotReady) => {
+                    o.insert(EthTxPoolEventType::Drop { reason });
+                }
+                EthTxPoolDropReason::ExistingHigherPriority => match o.get() {
+                    EthTxPoolEventType::Insert { .. } => {}
+                    EthTxPoolEventType::Commit => {
+                        error!(%tx_hash, ?reason, "duplicate transaction already has a commit event");
+                    }
+                    EthTxPoolEventType::Drop { .. } => {
+                        // A higher-fee replacement may drop A before a reordered retry of A arrives.
+                    }
+                    EthTxPoolEventType::Evict {
+                        reason: existing_reason,
+                    } => {
+                        error!(
+                            %tx_hash,
+                            ?existing_reason,
+                            ?reason,
+                            "duplicate transaction already has an evict event"
+                        );
+                    }
+                },
+            },
+        }
     }
 
     pub fn drop_all(
@@ -183,5 +225,77 @@ impl<'a> EthTxPoolEventTracker<'a> {
         self.metrics
             .create_proposal_backend_lookups
             .add(backend_lookups);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use monad_eth_testutil::{make_legacy_tx, recover_tx, S1};
+
+    use super::*;
+
+    #[test]
+    fn preserves_existing_event_on_duplicate_drop() {
+        #[derive(Clone, Copy)]
+        enum Setup {
+            Insert,
+            Drop,
+            Commit,
+        }
+
+        let tx = recover_tx(make_legacy_tx(S1, 100, 30_000, 0, 10));
+
+        for setup in [Setup::Insert, Setup::Drop, Setup::Commit] {
+            let metrics = EthTxPoolMetrics::default();
+            let mut events = BTreeMap::default();
+            let mut tracker = EthTxPoolEventTracker::new(&metrics, &mut events);
+
+            match setup {
+                Setup::Insert => tracker.insert(&tx, false),
+                Setup::Drop => tracker.drop(*tx.tx_hash(), EthTxPoolDropReason::FeeTooLow),
+                Setup::Commit => tracker.tracked_commit(false, [*tx.tx_hash()].into_iter()),
+            }
+            tracker.drop(*tx.tx_hash(), EthTxPoolDropReason::ExistingHigherPriority);
+
+            assert_eq!(
+                events.get(tx.tx_hash()),
+                Some(&match setup {
+                    Setup::Insert => EthTxPoolEventType::Insert {
+                        address: tx.signer(),
+                        owned: false,
+                        tx: tx.clone_inner(),
+                    },
+                    Setup::Drop => EthTxPoolEventType::Drop {
+                        reason: EthTxPoolDropReason::FeeTooLow,
+                    },
+                    Setup::Commit => EthTxPoolEventType::Commit,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn replaces_insert_event_on_non_duplicate_drop() {
+        let tx = recover_tx(make_legacy_tx(S1, 100, 30_000, 0, 10));
+        let metrics = EthTxPoolMetrics::default();
+        let mut events = BTreeMap::default();
+        let mut tracker = EthTxPoolEventTracker::new(&metrics, &mut events);
+
+        tracker.insert(&tx, false);
+        tracker.drop(
+            *tx.tx_hash(),
+            EthTxPoolDropReason::ReplacedByHigherPriority {
+                replacement: TxHash::ZERO,
+            },
+        );
+
+        assert_eq!(
+            events.get(tx.tx_hash()),
+            Some(&EthTxPoolEventType::Drop {
+                reason: EthTxPoolDropReason::ReplacedByHigherPriority {
+                    replacement: TxHash::ZERO,
+                },
+            })
+        );
     }
 }
