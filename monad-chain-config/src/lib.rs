@@ -66,6 +66,7 @@ pub struct MonadChainConfig {
     pub execution_v_one_activation: u64,
     pub execution_v_two_activation: u64,
     pub execution_v_four_activation: u64,
+    pub execution_v_next_activation: u64,
 }
 
 #[derive(Debug, Error)]
@@ -159,7 +160,9 @@ impl ChainConfig<MonadChainRevision> for MonadChainConfig {
     }
 
     fn get_execution_chain_revision(&self, execution_timestamp_s: u64) -> MonadExecutionRevision {
-        if execution_timestamp_s >= self.execution_v_four_activation {
+        if execution_timestamp_s >= self.execution_v_next_activation {
+            MonadExecutionRevision::V_NEXT
+        } else if execution_timestamp_s >= self.execution_v_four_activation {
             MonadExecutionRevision::V_FOUR
         } else if execution_timestamp_s >= self.execution_v_two_activation {
             MonadExecutionRevision::V_TWO
@@ -187,6 +190,7 @@ const MONAD_DEVNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     execution_v_one_activation: 0,
     execution_v_two_activation: 0,
     execution_v_four_activation: 0,
+    execution_v_next_activation: 0,
 };
 
 const MONAD_HIVE_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
@@ -210,6 +214,8 @@ const MONAD_TESTNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     execution_v_one_activation: 0,
     execution_v_two_activation: 0,
     execution_v_four_activation: 0,
+    // amsterdam not yet on testnet
+    execution_v_next_activation: u64::MAX,
 };
 
 // Mainnet uses latest version of testnet from genesis
@@ -229,6 +235,8 @@ const MONAD_MAINNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     execution_v_one_activation: 0,
     execution_v_two_activation: 0,
     execution_v_four_activation: 1762266600, // 2025-11-04T14:30:00.000Z
+    // amsterdam not yet on mainnet
+    execution_v_next_activation: u64::MAX,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
