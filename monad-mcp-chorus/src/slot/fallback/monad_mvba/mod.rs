@@ -364,6 +364,7 @@ impl Mvba<MVBAInputs> for MonadMvba {
 // ---------------- message ingress: validate cheaply, store ----------------
 
 impl MonadMvba {
+    // FIXME: remove the use of Validated. It's confusing
     fn store_pre_prepare(&mut self, sender: NodeId, msg: PrePrepareMsg) {
         let view = msg.view;
         if msg.slot != self.context.slot || !self.in_window(view) {
@@ -876,6 +877,7 @@ impl MonadMvba {
     /// `⟨fallback, slot⟩`, and available because an instance only exists once
     /// its input carried one.
     fn pending_own_proposal(&self) -> Option<PrePrepareMsg> {
+        // FIXME: We should gate this by an explicit state in the state machine, so there can be a new phase named "new view". Only in that view, we will check if we are the proposer, and if so, we will try to send out a proposal. We will only enter that view via a TC, and after the TC is handled, after we've done the proposal check, we immediately leave that state and go into a waiting proposal. We should never check in any other phase whether we should try to propose.
         if self.proposed || self.phase.has_timed_out() {
             return None;
         }
