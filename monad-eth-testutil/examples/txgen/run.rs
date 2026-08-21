@@ -93,6 +93,11 @@ pub async fn run(clients: Vec<ReqwestClient>, config: Config) -> Result<()> {
         };
 
         workload_group_index = (workload_group_index + 1) % config.workload_groups.len();
+
+        // Allow in-flight transactions to land before starting next phase.
+        // This prevents nonce collisions when sender seeds are reused across phases.
+        info!("Phase transition: waiting 5s for in-flight transactions to settle...");
+        tokio::time::sleep(Duration::from_secs(5)).await;
     }
 }
 
@@ -176,8 +181,10 @@ async fn run_workload_group(
 
     // Deployed contract for each traffic gen
     let mut deployed_contracts = Vec::new();
+    // NOTE: Contract deployments are sequential here. The deployed_contracts.json
+    // read-modify-write in load_or_deploy_contracts relies on this ordering —
+    // do not parallelize without adding file locking.
     for traffic_gen in &workload_group.traffic_gens {
-        // deploy contracts for each traffic gen in the workload group
         let deployed_contract = load_or_deploy_contracts(config, traffic_gen, &read_client).await?;
         deployed_contracts.push(deployed_contract.clone());
 
@@ -209,6 +216,9 @@ async fn run_workload_group(
         config.otel_replica_name.clone(),
         workload_group.name.clone(),
     )?;
+
+    // Emit initial zero values so Grafana shows a ramp from 0 for this phase
+    metrics_reporter.emit_zeros();
 
     // continue working if helper task stops
     tasks.push(
@@ -403,8 +413,22 @@ fn generate_sender_groups<'a>(
 }
 
 async fn verify_contract_code(client: &ReqwestClient, addr: Address) -> Result<bool> {
-    let code = client.get_code(&addr).await?;
-    Ok(code != "0x")
+    for attempt in 0..15 {
+        let code = client.get_code(&addr).await?;
+        if code != "0x" {
+            return Ok(true);
+        }
+        if attempt < 14 {
+            warn!(
+                addr = %addr,
+                attempt = attempt + 1,
+                "Contract code not yet available, retrying in 5s..."
+            );
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    }
+    warn!(addr = %addr, "Contract code not available after 15 attempts");
+    Ok(false)
 }
 
 #[derive(Deserialize, Serialize)]
@@ -495,16 +519,10 @@ async fn load_or_deploy_contracts(
 
             // Save all contracts to file
             let addrs: Vec<Address> = all_contracts.iter().map(|c| c.addr).collect();
-            let deployed = DeployedContractFile {
-                erc20: Some(addrs),
-                ecmul: None,
-                uniswap: None,
-                eip7702: None,
-                nft_sale: None,
-                erc4337_7702: None,
-            };
+            let mut deployed = load_or_default_deployed_contracts(PATH);
+            deployed.erc20 = Some(addrs);
 
-            write_and_verify_deployed_contracts(client, PATH, &deployed).await?;
+            write_deployed_contracts(PATH, &deployed)?;
             info!("Using {} ERC20 contract(s)", all_contracts.len());
             Ok(DeployedContract::ERC20(all_contracts))
         }
@@ -535,16 +553,10 @@ async fn load_or_deploy_contracts(
             )
             .await?;
 
-            let deployed = DeployedContractFile {
-                erc20: None,
-                ecmul: Some(ecmul.addr),
-                uniswap: None,
-                eip7702: None,
-                nft_sale: None,
-                erc4337_7702: None,
-            };
+            let mut deployed = load_or_default_deployed_contracts(PATH);
+            deployed.ecmul = Some(ecmul.addr);
 
-            write_and_verify_deployed_contracts(client, PATH, &deployed).await?;
+            write_deployed_contracts(PATH, &deployed)?;
             Ok(DeployedContract::ECMUL(ecmul))
         }
         RequiredContract::Uniswap => {
@@ -576,16 +588,10 @@ async fn load_or_deploy_contracts(
             )
             .await?;
 
-            let deployed = DeployedContractFile {
-                erc20: None,
-                ecmul: None,
-                uniswap: Some(uniswap),
-                eip7702: None,
-                nft_sale: None,
-                erc4337_7702: None,
-            };
+            let mut deployed = load_or_default_deployed_contracts(PATH);
+            deployed.uniswap = Some(uniswap);
 
-            write_and_verify_deployed_contracts(client, PATH, &deployed).await?;
+            write_deployed_contracts(PATH, &deployed)?;
             Ok(DeployedContract::Uniswap(uniswap))
         }
         RequiredContract::EIP7702 => {
@@ -616,16 +622,10 @@ async fn load_or_deploy_contracts(
             )
             .await?;
 
-            let deployed = DeployedContractFile {
-                erc20: None,
-                ecmul: None,
-                uniswap: None,
-                eip7702: Some(eip7702.addr),
-                nft_sale: None,
-                erc4337_7702: None,
-            };
+            let mut deployed = load_or_default_deployed_contracts(PATH);
+            deployed.eip7702 = Some(eip7702.addr);
 
-            write_and_verify_deployed_contracts(client, PATH, &deployed).await?;
+            write_deployed_contracts(PATH, &deployed)?;
             Ok(DeployedContract::EIP7702(eip7702))
         }
         RequiredContract::NftSale => {
@@ -661,16 +661,10 @@ async fn load_or_deploy_contracts(
             )
             .await?;
 
-            let deployed = DeployedContractFile {
-                erc20: None,
-                ecmul: None,
-                uniswap: None,
-                eip7702: None,
-                nft_sale: Some(nft_sale.addr),
-                erc4337_7702: None,
-            };
+            let mut deployed = load_or_default_deployed_contracts(PATH);
+            deployed.nft_sale = Some(nft_sale.addr);
 
-            write_and_verify_deployed_contracts(client, PATH, &deployed).await?;
+            write_deployed_contracts(PATH, &deployed)?;
             Ok(DeployedContract::NftSale(nft_sale))
         }
         RequiredContract::ERC4337_7702 => {
@@ -711,16 +705,10 @@ async fn load_or_deploy_contracts(
                 simple7702account: simple7702account.addr,
             };
 
-            let deployed = DeployedContractFile {
-                erc20: None,
-                ecmul: None,
-                uniswap: None,
-                eip7702: None,
-                nft_sale: None,
-                erc4337_7702: Some(erc4337_7702),
-            };
+            let mut deployed = load_or_default_deployed_contracts(PATH);
+            deployed.erc4337_7702 = Some(erc4337_7702);
 
-            write_and_verify_deployed_contracts(client, PATH, &deployed).await?;
+            write_deployed_contracts(PATH, &deployed)?;
             Ok(DeployedContract::ERC4337_7702(erc4337_7702))
         }
     }
@@ -735,50 +723,32 @@ fn open_deployed_contracts_file(path: &str) -> Result<DeployedContractFile> {
         })
 }
 
-async fn write_and_verify_deployed_contracts(
-    client: &ReqwestClient,
-    path: &str,
-    dc: &DeployedContractFile,
-) -> Result<()> {
-    if let Some(addrs) = &dc.erc20 {
-        for addr in addrs {
-            if !verify_contract_code(client, *addr).await? {
-                bail!("Failed to verify freshly deployed contract: {}", addr);
+/// Load existing deployed contracts file or return a default empty one.
+/// Used to preserve other contract types when updating a single type.
+fn load_or_default_deployed_contracts(path: &str) -> DeployedContractFile {
+    match open_deployed_contracts_file(path) {
+        Ok(dc) => dc,
+        Err(e) => {
+            // NotFound is expected on first run; other errors (parse, permissions) are logged
+            if !e.to_string().contains("No such file") {
+                warn!("Failed to load deployed contracts file, starting fresh: {e}");
+            }
+            DeployedContractFile {
+                erc20: None,
+                ecmul: None,
+                uniswap: None,
+                eip7702: None,
+                nft_sale: None,
+                erc4337_7702: None,
             }
         }
     }
-    if let Some(addr) = dc.ecmul {
-        if !verify_contract_code(client, addr).await? {
-            bail!("Failed to verify freshly deployed ECMul contract");
-        }
-    }
-    if let Some(ref uniswap) = dc.uniswap {
-        // Verify all Uniswap contract addresses
-        if !verify_contract_code(client, uniswap.factory_addr).await? {
-            bail!("Failed to verify freshly deployed Uniswap Factory contract");
-        }
-        if !verify_contract_code(client, uniswap.nonfungible_position_manager_addr).await? {
-            bail!("Failed to verify freshly deployed Uniswap Position Manager contract");
-        }
-        if !verify_contract_code(client, uniswap.weth_addr).await? {
-            bail!("Failed to verify freshly deployed WETH contract");
-        }
-        if !verify_contract_code(client, uniswap.token_a_addr).await? {
-            bail!("Failed to verify freshly deployed Token A contract");
-        }
-        if !verify_contract_code(client, uniswap.token_b_addr).await? {
-            bail!("Failed to verify freshly deployed Token B contract");
-        }
-        if !verify_contract_code(client, uniswap.pool_addr).await? {
-            bail!("Failed to verify freshly deployed Uniswap Pool contract");
-        }
-    }
-    if let Some(addr) = dc.eip7702 {
-        if !verify_contract_code(client, addr).await? {
-            bail!("Failed to verify freshly deployed EIP7702 contract");
-        }
-    }
+}
 
+fn write_deployed_contracts(path: &str, dc: &DeployedContractFile) -> Result<()> {
+    // Persist contract addresses immediately after deployment. Verification
+    // (eth_getCode) is only done when loading from file on subsequent startups,
+    // not here — deployment receipts already confirm the contracts exist on-chain.
     let mut file = std::fs::File::create(path)?;
     serde_json::to_writer_pretty(&mut file, &dc)
         .context("Failed to serialize deployed contracts")?;
