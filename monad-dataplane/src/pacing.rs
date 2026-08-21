@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! Single-owner global and per-peer packet pacing.
+//! Shared-global and single-owner per-peer packet pacing.
 //!
 //! Peer state is keyed directly by [`SocketAddrV4`]. Each peer has exactly one
 //! scheduler entry: a time-ordered entry while waiting or cooling down, or a
@@ -26,6 +26,10 @@ use std::{
     net::SocketAddrV4,
     num::NonZeroU64,
     rc::Rc,
+    sync::{
+        atomic::{AtomicU64, Ordering as AtomicOrdering},
+        Arc,
+    },
     time::{Duration, Instant},
 };
 
@@ -58,6 +62,84 @@ impl PacingItem for Bytes {
 impl PacingItem for Vec<u8> {
     fn next_payload_bytes(&self) -> usize {
         self.len()
+    }
+}
+
+/// Global byte timeline shared by otherwise independent pacing queues.
+pub(crate) struct GlobalPacer<A = AtomicU64, C = Instant> {
+    bytes_per_second: NonZeroU64,
+    next_byte: A,
+    clock: C,
+}
+
+#[doc(hidden)]
+pub trait AtomicCounter {
+    fn load_relaxed(&self) -> u64;
+    fn compare_exchange_weak_relaxed(&self, current: u64, new: u64) -> Result<u64, u64>;
+}
+
+#[doc(hidden)]
+pub trait PacerClock {
+    fn elapsed(&self) -> Duration;
+}
+
+impl PacerClock for Instant {
+    fn elapsed(&self) -> Duration {
+        Instant::elapsed(self)
+    }
+}
+
+impl AtomicCounter for AtomicU64 {
+    fn load_relaxed(&self) -> u64 {
+        self.load(AtomicOrdering::Relaxed)
+    }
+
+    fn compare_exchange_weak_relaxed(&self, current: u64, new: u64) -> Result<u64, u64> {
+        self.compare_exchange_weak(
+            current,
+            new,
+            AtomicOrdering::Relaxed,
+            AtomicOrdering::Relaxed,
+        )
+    }
+}
+
+impl GlobalPacer {
+    pub(crate) fn new(bytes_per_second: NonZeroU64) -> Self {
+        Self::with_components(bytes_per_second, AtomicU64::new(0), Instant::now())
+    }
+}
+
+impl<A: AtomicCounter, C: PacerClock> GlobalPacer<A, C> {
+    pub(crate) fn with_components(bytes_per_second: NonZeroU64, next_byte: A, clock: C) -> Self {
+        Self {
+            bytes_per_second,
+            next_byte,
+            clock,
+        }
+    }
+
+    fn reserve_at(&self, bytes: usize, now: Duration) -> Duration {
+        let now_byte = (now
+            .as_nanos()
+            .saturating_mul(self.bytes_per_second.get() as u128)
+            / Duration::from_secs(1).as_nanos())
+        .min(u64::MAX as u128) as u64;
+        let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
+        let mut next = self.next_byte.load_relaxed();
+        let start = loop {
+            let start = next.max(now_byte);
+            match self
+                .next_byte
+                .compare_exchange_weak_relaxed(next, start.saturating_add(bytes))
+            {
+                Ok(_) => break start,
+                Err(current) => next = current,
+            }
+        };
+        let nanos = (start as u128 * Duration::from_secs(1).as_nanos())
+            .div_ceil(self.bytes_per_second.get() as u128);
+        Duration::from_nanos(nanos.min(u64::MAX as u128) as u64)
     }
 }
 
@@ -158,20 +240,18 @@ struct ReadyRank {
 type WaitingEntry<T> = SchedulerEntry<Duration, T>;
 type ReadyEntry<T> = SchedulerEntry<ReadyRank, T>;
 
-/// Socket-address keyed queue with global and uniform per-peer pacing.
-pub struct PacingQueue<T> {
+/// Socket-address keyed queue with uniform per-peer and shared global pacing.
+pub struct PacingQueue<T, A = AtomicU64, C = Instant> {
     peers: HashMap<SocketAddrV4, Peer<T>>,
     // separate indexes are required: waiting peers use time ordering, while ready peers use priority and fifo ordering.
     waiting: BinaryHeap<Reverse<WaitingEntry<T>>>,
     ready: BTreeSet<ReadyEntry<T>>,
-    global_bytes_per_second: NonZeroU64,
+    global: Arc<GlobalPacer<A, C>>,
     peer_bytes_per_second: NonZeroU64,
-    global_next_at: Duration,
     memory_limit: usize,
     memory_used: usize,
     pending: usize,
     next_order: u64,
-    epoch: Instant,
     metrics: DataplaneMetrics,
 }
 
@@ -187,18 +267,32 @@ impl<T: PacingItem> PacingQueue<T> {
         metrics
             .udp_pacing_memory_limit_bytes
             .set(u64::try_from(memory_limit).unwrap_or(u64::MAX));
+        Self::with_global_pacer(
+            Arc::new(GlobalPacer::new(global_bytes_per_second)),
+            peer_bytes_per_second,
+            memory_limit,
+            metrics,
+        )
+    }
+}
+
+impl<T: PacingItem, A: AtomicCounter, C: PacerClock> PacingQueue<T, A, C> {
+    pub(crate) fn with_global_pacer(
+        global: Arc<GlobalPacer<A, C>>,
+        peer_bytes_per_second: NonZeroU64,
+        memory_limit: usize,
+        metrics: DataplaneMetrics,
+    ) -> Self {
         Self {
             peers: HashMap::new(),
             waiting: BinaryHeap::new(),
             ready: BTreeSet::new(),
-            global_bytes_per_second,
+            global,
             peer_bytes_per_second,
-            global_next_at: Duration::ZERO,
             memory_limit,
             memory_used: 0,
             pending: 0,
             next_order: 0,
-            epoch: Instant::now(),
             metrics,
         }
     }
@@ -212,7 +306,7 @@ impl<T: PacingItem> PacingQueue<T> {
     }
 
     pub(crate) fn elapsed(&self) -> Duration {
-        self.epoch.elapsed()
+        self.global.clock.elapsed()
     }
 
     pub fn enqueue(
@@ -264,6 +358,7 @@ impl<T: PacingItem> PacingQueue<T> {
                 ready_rank: None,
             }));
             self.peers.insert(key, Rc::clone(&peer));
+            self.metrics.udp_pacing_peers.inc();
             self.waiting.push(Reverse(WaitingEntry {
                 rank: Duration::ZERO,
                 key,
@@ -274,16 +369,18 @@ impl<T: PacingItem> PacingQueue<T> {
         self.next_order = self.next_order.wrapping_add(1);
         self.memory_used += queued_bytes;
         self.pending += 1;
-        self.update_metrics();
+        self.metrics
+            .udp_pacing_queued_bytes
+            .add(u64::try_from(queued_bytes).unwrap_or(u64::MAX));
         Ok(())
     }
 
-    pub fn batch(&mut self, limits: BatchLimits) -> Batch<'_, T> {
-        let now = self.epoch.elapsed();
+    pub fn batch(&mut self, limits: BatchLimits) -> Batch<'_, T, A, C> {
+        let now = self.global.clock.elapsed();
         self.batch_at(now, limits)
     }
 
-    fn batch_at(&mut self, now: Duration, limits: BatchLimits) -> Batch<'_, T> {
+    fn batch_at(&mut self, now: Duration, limits: BatchLimits) -> Batch<'_, T, A, C> {
         Batch {
             queue: self,
             now,
@@ -296,7 +393,7 @@ impl<T: PacingItem> PacingQueue<T> {
 
     fn dequeue(&mut self, now: Duration, max_batch_bytes: usize) -> Option<Scheduled<T>> {
         let reclaim_before = now;
-        let mut slot = now.max(self.global_next_at);
+        let mut slot = now;
 
         loop {
             let next_at = self.promote_ready(slot, reclaim_before);
@@ -323,7 +420,6 @@ impl<T: PacingItem> PacingQueue<T> {
         peer.next_at = Self::advance(launch, wire_bytes, self.peer_bytes_per_second);
         let next_at = peer.next_at;
         drop(peer);
-        self.global_next_at = Self::advance(launch, wire_bytes, self.global_bytes_per_second);
         self.waiting.push(Reverse(WaitingEntry {
             rank: next_at,
             key: entry.key,
@@ -332,7 +428,9 @@ impl<T: PacingItem> PacingQueue<T> {
 
         self.memory_used -= queued.queued_bytes;
         self.pending -= 1;
-        self.update_metrics();
+        self.metrics
+            .udp_pacing_queued_bytes
+            .sub(u64::try_from(queued.queued_bytes).unwrap_or(u64::MAX));
         Some(Scheduled {
             at: launch,
             item: queued.item,
@@ -342,7 +440,7 @@ impl<T: PacingItem> PacingQueue<T> {
 
     fn promote_ready(&mut self, slot: Duration, reclaim_before: Duration) -> Option<Duration> {
         let mut cooling = Vec::new();
-        let mut reclaimed = false;
+        let mut reclaimed = 0_u64;
         let next_at = loop {
             let Some(entry) = self.waiting.peek() else {
                 break None;
@@ -359,7 +457,7 @@ impl<T: PacingItem> PacingQueue<T> {
             if empty {
                 if entry.rank <= reclaim_before {
                     self.peers.remove(&entry.key);
-                    reclaimed = true;
+                    reclaimed += 1;
                 } else {
                     cooling.push(entry);
                 }
@@ -383,8 +481,8 @@ impl<T: PacingItem> PacingQueue<T> {
             }
         };
         self.waiting.extend(cooling.into_iter().map(Reverse));
-        if reclaimed {
-            self.update_metrics();
+        if reclaimed != 0 {
+            self.metrics.udp_pacing_peers.sub(reclaimed);
         }
         next_at
     }
@@ -401,19 +499,10 @@ impl<T: PacingItem> PacingQueue<T> {
             u64::try_from(nanos).unwrap_or(u64::MAX),
         ))
     }
-
-    fn update_metrics(&self) {
-        self.metrics
-            .udp_pacing_peers
-            .set(u64::try_from(self.peers.len()).unwrap_or(u64::MAX));
-        self.metrics
-            .udp_pacing_queued_bytes
-            .set(u64::try_from(self.memory_used).unwrap_or(u64::MAX));
-    }
 }
 
-pub struct Batch<'a, T> {
-    queue: &'a mut PacingQueue<T>,
+pub struct Batch<'a, T, A = AtomicU64, C = Instant> {
+    queue: &'a mut PacingQueue<T, A, C>,
     now: Duration,
     limits: BatchLimits,
     bytes: usize,
@@ -421,7 +510,7 @@ pub struct Batch<'a, T> {
     deadline: Duration,
 }
 
-impl<T: PacingItem> Iterator for Batch<'_, T> {
+impl<T: PacingItem, A: AtomicCounter, C: PacerClock> Iterator for Batch<'_, T, A, C> {
     type Item = Scheduled<T>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -440,7 +529,7 @@ impl<T: PacingItem> Iterator for Batch<'_, T> {
     }
 }
 
-impl<T: PacingItem> Batch<'_, T> {
+impl<T: PacingItem, A: AtomicCounter, C: PacerClock> Batch<'_, T, A, C> {
     pub fn reenqueue(
         &mut self,
         key: SocketAddrV4,
@@ -459,8 +548,15 @@ impl<T: PacingItem> Batch<'_, T> {
         self.bytes
     }
 
-    pub(crate) const fn deadline(&self) -> Duration {
-        self.deadline
+    pub(crate) fn schedule(self) -> Duration {
+        if self.items == 0 {
+            return self.deadline;
+        }
+        let wire_bytes = self.bytes.saturating_add(
+            self.items
+                .saturating_mul(usize::from(IPV4_HDR_SIZE + UDP_HDR_SIZE)),
+        );
+        self.queue.global.reserve_at(wire_bytes, self.deadline)
     }
 }
 
@@ -526,16 +622,10 @@ mod tests {
     }
 
     #[test]
-    fn all_peers_share_the_global_rate() {
-        let mut queue = queue(1_000, UNLIMITED);
-        for id in 0..3 {
-            queue
-                .enqueue(key(id as u16), UdpPriority::Regular, item(id, 100), 100)
-                .unwrap();
-        }
-
+    fn all_queues_share_the_global_rate() {
+        let global = GlobalPacer::new(rate(1_000));
         let launches: Vec<_> = (0..3)
-            .map(|_| queue.dequeue(Duration::ZERO, usize::MAX).unwrap().at)
+            .map(|_| global.reserve_at(128, Duration::ZERO))
             .collect();
         assert_eq!(
             launches,
@@ -548,7 +638,20 @@ mod tests {
     }
 
     #[test]
-    fn priority_is_global_and_updates_in_place() {
+    fn idle_global_reservation_starts_at_current_time() {
+        let global = GlobalPacer::new(rate(1_000));
+        assert_eq!(
+            global.reserve_at(128, Duration::from_secs(1)),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            global.reserve_at(128, Duration::ZERO),
+            Duration::from_millis(1_128)
+        );
+    }
+
+    #[test]
+    fn priority_is_global_within_queue_and_updates_in_place() {
         let mut queue = queue(UNLIMITED, UNLIMITED);
         queue
             .enqueue(key(1), UdpPriority::Regular, item(1, 1), 1)
@@ -636,7 +739,7 @@ mod tests {
     }
 
     #[test]
-    fn variable_payload_sizes_advance_both_clocks() {
+    fn variable_wire_costs_advance_peer_clock() {
         let mut queue = queue(1_000, 1_000);
         for (id, bytes) in [(1, 100), (2, 200), (3, 50)] {
             queue
@@ -656,6 +759,50 @@ mod tests {
                 (2, Duration::from_millis(128)),
                 (3, Duration::from_millis(356)),
             ]
+        );
+    }
+
+    #[test]
+    fn fractional_time_does_not_accumulate_rounding_drift() {
+        const SENDS: usize = 100_000;
+        let bytes_per_second = rate(375_000);
+        let global = GlobalPacer::new(bytes_per_second);
+
+        for _ in 0..SENDS {
+            global.reserve_at(100, Duration::ZERO);
+        }
+
+        assert_eq!(
+            global.next_byte.load(AtomicOrdering::Relaxed),
+            100 * SENDS as u64
+        );
+        let expected = Duration::from_nanos(
+            (100_u128 * Duration::from_secs(1).as_nanos() * SENDS as u128)
+                .div_ceil(bytes_per_second.get() as u128) as u64,
+        );
+        assert_eq!(global.reserve_at(0, Duration::ZERO), expected);
+    }
+
+    #[test]
+    fn concurrent_queues_reserve_disjoint_global_slots() {
+        let global = Arc::new(GlobalPacer::new(rate(1_000)));
+        let mut launches = std::thread::scope(|scope| {
+            (0..8)
+                .map(|_| {
+                    let global = Arc::clone(&global);
+                    scope.spawn(move || global.reserve_at(100, Duration::ZERO))
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|thread| thread.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        launches.sort_unstable();
+        assert_eq!(
+            launches,
+            (0..8)
+                .map(|slot| Duration::from_millis(slot * 100))
+                .collect::<Vec<_>>()
         );
     }
 
@@ -681,7 +828,7 @@ mod tests {
                 u64::from(port)
             );
         }
-        let now = queue.epoch.elapsed();
+        let now = queue.elapsed();
         assert!(queue.promote_ready(now, now).is_none());
         assert!(queue.peers.len() <= 2);
     }
@@ -772,5 +919,233 @@ mod tests {
             (scheduled.item.id, scheduled.at),
             (1, Duration::from_millis(128))
         );
+    }
+}
+
+#[cfg(test)]
+mod loom_tests {
+    use std::{
+        net::{Ipv4Addr, SocketAddrV4},
+        num::NonZeroU64,
+        sync::Arc as StdArc,
+        time::Duration,
+    };
+
+    use loom::{
+        sync::{
+            atomic::{AtomicU64, Ordering},
+            mpsc, Arc,
+        },
+        thread,
+    };
+    use monad_types::UdpPriority;
+
+    use super::{
+        AtomicCounter, BatchLimits, GlobalPacer, PacerClock, PacingQueue, IPV4_HDR_SIZE,
+        UDP_HDR_SIZE,
+    };
+    use crate::DataplaneMetrics;
+
+    const GLOBAL_MBPS: u64 = 1_000;
+    const BITS_PER_BYTE: u64 = 8;
+    const TICK: Duration = Duration::from_micros(100);
+    const TICKS: u32 = 3;
+    const MAX_DATAGRAM_WIRE_BYTES: usize = 1_250;
+
+    #[derive(Clone)]
+    struct ModelClock {
+        nanos: Arc<AtomicU64>,
+    }
+
+    impl ModelClock {
+        fn new() -> Self {
+            Self {
+                nanos: Arc::new(AtomicU64::new(0)),
+            }
+        }
+
+        fn set(&self, now: Duration) {
+            self.nanos.store(now.as_nanos() as u64, Ordering::SeqCst);
+        }
+    }
+
+    impl PacerClock for ModelClock {
+        fn elapsed(&self) -> Duration {
+            Duration::from_nanos(self.nanos.load(Ordering::SeqCst))
+        }
+    }
+
+    impl AtomicCounter for AtomicU64 {
+        fn load_relaxed(&self) -> u64 {
+            self.load(Ordering::Relaxed)
+        }
+
+        fn compare_exchange_weak_relaxed(&self, current: u64, new: u64) -> Result<u64, u64> {
+            self.compare_exchange_weak(current, new, Ordering::Relaxed, Ordering::Relaxed)
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    struct Transmission {
+        at: Duration,
+        wire_bytes: usize,
+    }
+
+    fn rate(bytes_per_second: u64) -> NonZeroU64 {
+        NonZeroU64::new(bytes_per_second).unwrap()
+    }
+
+    fn pacer(clock: ModelClock) -> StdArc<GlobalPacer<AtomicU64, ModelClock>> {
+        let bytes_per_second = NonZeroU64::new(GLOBAL_MBPS * 1_000_000 / BITS_PER_BYTE).unwrap();
+        StdArc::new(GlobalPacer::with_components(
+            bytes_per_second,
+            AtomicU64::new(0),
+            clock,
+        ))
+    }
+
+    fn wire_bytes_per_tick(mbps: u64) -> usize {
+        (u128::from(mbps) * 1_000_000 * TICK.as_nanos()
+            / u128::from(BITS_PER_BYTE)
+            / Duration::from_secs(1).as_nanos()) as usize
+    }
+
+    fn transmission_time(wire_bytes: usize) -> Duration {
+        let bytes_per_second = u128::from(GLOBAL_MBPS * 1_000_000 / BITS_PER_BYTE);
+        let nanos =
+            (wire_bytes as u128 * Duration::from_secs(1).as_nanos()).div_ceil(bytes_per_second);
+        Duration::from_nanos(nanos as u64)
+    }
+
+    fn observed_mbps(wire_bytes: usize, elapsed: Duration) -> u64 {
+        let bits = wire_bytes as u128 * u128::from(BITS_PER_BYTE);
+        (bits * Duration::from_secs(1).as_nanos() / elapsed.as_nanos() / 1_000_000) as u64
+    }
+
+    fn enqueue_work(
+        queue: &mut PacingQueue<Vec<u8>, AtomicU64, ModelClock>,
+        peer: SocketAddrV4,
+        mut wire_bytes: usize,
+    ) -> (usize, usize) {
+        let header_bytes = usize::from(IPV4_HDR_SIZE + UDP_HDR_SIZE);
+        let mut items = 0;
+        let mut payload_bytes = 0;
+        while wire_bytes != 0 {
+            let datagram_wire_bytes = wire_bytes.min(MAX_DATAGRAM_WIRE_BYTES);
+            let datagram_payload_bytes = datagram_wire_bytes - header_bytes;
+            queue
+                .enqueue(
+                    peer,
+                    UdpPriority::Regular,
+                    vec![0; datagram_payload_bytes],
+                    datagram_payload_bytes,
+                )
+                .unwrap();
+            items += 1;
+            payload_bytes += datagram_payload_bytes;
+            wire_bytes -= datagram_wire_bytes;
+        }
+        (items, payload_bytes)
+    }
+
+    fn run_worker(
+        worker: u16,
+        global: StdArc<GlobalPacer<AtomicU64, ModelClock>>,
+        work_rx: mpsc::Receiver<Option<usize>>,
+        transmission_tx: mpsc::Sender<Transmission>,
+    ) {
+        let mut queue = PacingQueue::with_global_pacer(
+            global,
+            rate(u64::MAX),
+            usize::MAX,
+            DataplaneMetrics::new(),
+        );
+        let peer = SocketAddrV4::new(Ipv4Addr::LOCALHOST, worker);
+        while let Some(wire_bytes) = work_rx.recv().unwrap() {
+            let (expected_items, expected_payload_bytes) =
+                enqueue_work(&mut queue, peer, wire_bytes);
+            let deadline = {
+                let mut batch = queue.batch(BatchLimits {
+                    max_bytes: usize::MAX,
+                    max_items: usize::MAX,
+                });
+                while batch.next().is_some() {}
+                assert_eq!(batch.items(), expected_items);
+                assert_eq!(batch.bytes(), expected_payload_bytes);
+                batch.schedule()
+            };
+            transmission_tx
+                .send(Transmission {
+                    at: deadline,
+                    wire_bytes,
+                })
+                .unwrap();
+        }
+    }
+
+    fn model_worker_rates(worker_mbps: [u64; 2], expected_mbps: u64) {
+        loom::model(move || {
+            let clock = ModelClock::new();
+            let global = pacer(clock.clone());
+            let (transmission_tx, transmission_rx) = mpsc::channel();
+            let mut work_txs = Vec::new();
+            let mut workers = Vec::new();
+            for worker in 0..2 {
+                let (work_tx, work_rx) = mpsc::channel();
+                work_txs.push(work_tx);
+                let global = StdArc::clone(&global);
+                let transmission_tx = transmission_tx.clone();
+                workers.push(thread::spawn(move || {
+                    run_worker(worker + 1, global, work_rx, transmission_tx)
+                }));
+            }
+            drop(transmission_tx);
+
+            let mut transmissions = Vec::new();
+            for tick in 0..TICKS {
+                clock.set(TICK * tick);
+                for (work_tx, mbps) in work_txs.iter().zip(worker_mbps) {
+                    work_tx.send(Some(wire_bytes_per_tick(mbps))).unwrap();
+                }
+                for _ in 0..workers.len() {
+                    transmissions.push(transmission_rx.recv().unwrap());
+                }
+            }
+            for work_tx in work_txs {
+                work_tx.send(None).unwrap();
+            }
+            for worker in workers {
+                worker.join().unwrap();
+            }
+
+            transmissions.sort_unstable_by_key(|transmission| transmission.at);
+            let observation = TICK * TICKS;
+            let mut previous_end = Duration::ZERO;
+            let mut drained_wire_bytes = 0;
+            for transmission in transmissions {
+                assert!(transmission.at >= previous_end);
+                let end = transmission.at + transmission_time(transmission.wire_bytes);
+                previous_end = end;
+                let elapsed = end.min(observation).saturating_sub(transmission.at);
+                drained_wire_bytes +=
+                    GLOBAL_MBPS as usize * 1_000_000 * elapsed.as_nanos() as usize
+                        / BITS_PER_BYTE as usize
+                        / Duration::from_secs(1).as_nanos() as usize;
+            }
+            assert_eq!(
+                observed_mbps(drained_wire_bytes, observation),
+                expected_mbps
+            );
+        });
+    }
+
+    #[test]
+    fn saturated_uneven_worker_load_reaches_global_rate() {
+        model_worker_rates([400, 700], GLOBAL_MBPS);
+    }
+
+    #[test]
+    fn unsaturated_uneven_worker_load_stays_below_global_rate() {
+        model_worker_rates([400, 550], 950);
     }
 }

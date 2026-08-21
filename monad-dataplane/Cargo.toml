@@ -27,6 +27,7 @@ clap = { workspace = true, features = ["derive"] }
 criterion = { workspace = true }
 env_logger = { workspace = true }
 futures-util = { workspace = true }
+loom = { workspace = true }
 ntest = { workspace = true }
 rand = { workspace = true }
 rstest = { workspace = true }
