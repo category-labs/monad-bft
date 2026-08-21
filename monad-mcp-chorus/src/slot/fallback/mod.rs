@@ -53,7 +53,14 @@ pub(crate) struct FallbackPath {
     slot: Slot,
     round: FallbackView,
 
-    input: MVBAInputs,
+    /// The fallback certificate that admitted this slot to the fallback path.
+    /// Concrete here because both entry paths into `Chorus::enter_fallback`
+    /// hold one; the `Option` only appears at the [`Mvba::propose`] boundary,
+    /// where the paper's `fbcert = ⊥` fast metablock is also representable.
+    cert: EnterFallbackCert,
+    /// This validator's MVBA input value: the block alone. Agreement ranges
+    /// over its entries, and the certificate travels beside it.
+    block: Metablock,
 
     // using Arc to avoid lifetime issues.
     key: Arc<KeyPair>,
@@ -65,14 +72,16 @@ impl FallbackPath {
         slot: Slot,
         key: Arc<KeyPair>,
         validator_data: Arc<ValidatorData>,
-        input: MVBAInputs,
+        cert: EnterFallbackCert,
+        block: Metablock,
     ) -> Self {
         Self {
             slot,
             round: FallbackView(0),
             key,
             validator_data,
-            input,
+            cert,
+            block,
         }
     }
 
@@ -81,19 +90,29 @@ impl FallbackPath {
     }
 }
 
-// FIXME: rename it. partialblock concept was deleted
-pub(crate) type PartialBlock = TotalProposalMap<CertifiedEntry>;
+/// The value the MVBA agrees on: one certified entry per proposer.
+///
+/// The fallback certificate is deliberately *not* part of it. Agreement ranges
+/// over `entries(x)` only, so the certificate plays no part past admission,
+/// and two correct validators may hold different, equally valid aggregates of
+/// it -- nothing consensus can agree on. It travels beside the value instead:
+/// on [`Mvba::propose`], and on the view-1 pre-prepare that needs it as its
+/// justification.
+pub(crate) type Metablock = TotalProposalMap<CertifiedEntry>;
 
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub(crate) struct MVBAInputs {
-    // TODO: reasonably split out fallback cert from input. Note it can be empty
-    pub enter_fallback_cert: EnterFallbackCert,
-    pub block: PartialBlock,
-}
-
+/// Whether a value is acceptable, given the certificate carried beside it.
+///
+/// The certificate is `Option` because it can be absent -- the paper's
+/// `fbcert = ⊥` *fast metablock*, whose entries are all `FastQC`. Whether a
+/// value is acceptable without one is the value's own business, not the
+/// carrier's, so it is decided here and nowhere else: the generic pre-prepare
+/// handler passes on whatever the message carried and does not interpret it.
 pub trait Validate {
     type Context;
-    fn validate(&self, context: &Self::Context) -> bool;
+    /// The certificate that may accompany the value; [`Mvba::FallbackCert`].
+    type Cert;
+
+    fn validate(&self, context: &Self::Context, cert: Option<&Self::Cert>) -> bool;
 }
 
 /// The votable projection of an MVBA value: `entries(x)` in the paper.
@@ -110,10 +129,19 @@ pub trait Votable {
 }
 
 /// A protocol for Agreement on a Core Set
-pub trait Mvba<V: Validate + Votable> {
+pub trait Mvba<V: Votable>
+where
+    V: Validate<Cert = Self::FallbackCert>,
+{
     type Message;
     type Context;
     type TimerEvent;
+
+    /// The certificate admitting the slot to the fallback path, carried beside
+    /// the value rather than inside it. An associated type, not a parameter:
+    /// which certificate admits a value is fixed by the protocol, not chosen
+    /// by the caller.
+    type FallbackCert;
 
     /// The commit vote the decision certificate aggregates. A distinct type
     /// per protocol gives commit votes their own signing domain; it wraps the
@@ -124,7 +152,11 @@ pub trait Mvba<V: Validate + Votable> {
 
     /// Propose the data to be included in the core set. At most one
     /// proposal is allowed for each Acs instance.
-    fn propose(&mut self, data: V);
+    ///
+    /// `cert` is the certificate that admits `data`; it is kept beside the
+    /// value and carried on this validator's view-1 proposal, where it is the
+    /// justification. `None` is the paper's `fbcert = ⊥` case.
+    fn propose(&mut self, data: V, cert: Option<Self::FallbackCert>);
 
     /// Handle a message received over network
     fn handle_message(&mut self, sender: NodeId, message: Self::Message);
@@ -164,8 +196,8 @@ pub trait Mvba<V: Validate + Votable> {
     /// held them.
     ///
     /// Returns `Some` exactly when the other two do. Typed concretely because
-    /// [`PartialBlock`] is; it becomes `V` itself in the generics pass.
-    fn decision_block(&self) -> Option<&PartialBlock>;
+    /// [`Metablock`] is; it becomes `V` itself in the generics pass.
+    fn decision_block(&self) -> Option<&Metablock>;
 
     fn poll(&mut self) -> Option<MVBAOutput<Self::Message, Self::TimerEvent>>;
 }

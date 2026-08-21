@@ -16,10 +16,10 @@
 use super::{
     super::{
         super::{
-            fast::CertifiedEntry,
+            fast::{CertifiedEntry, EnterFallbackVote},
             types::{ProposalMap, Slot},
         },
-        FallbackView, Mvba,
+        FallbackView, Mvba, Votable,
     },
     TimerEvent,
     metablock::entries_of,
@@ -64,7 +64,7 @@ fn decides_along_the_happy_path() {
     assert_eq!(decision_qc.verdict.0, block.entries());
     assert_eq!(
         instance.decision_block(),
-        Some(&block.block),
+        Some(&block),
         "the block came with the proposal this validator accepted"
     );
     assert!(
@@ -137,11 +137,11 @@ fn commit_votes_decide_once_the_block_is_fetched() {
     assert!(instance.decision().is_none());
     assert!(instance.decision_qc().is_none());
 
-    instance.handle_message(nodes()[1], block_response(block.block.clone()));
+    instance.handle_message(nodes()[1], block_response(block.clone()));
     let outputs = drain(&mut instance);
 
     assert_eq!(instance.decision(), Some(&block.entries()));
-    assert_eq!(instance.decision_block(), Some(&block.block));
+    assert_eq!(instance.decision_block(), Some(&block));
     assert_eq!(
         instance
             .decision_qc()
@@ -253,6 +253,89 @@ fn a_timeout_quorum_advances_the_view_and_the_new_leader_proposes() {
         proposal.metablock, block,
         "nothing is locked, so the leader proposes its own input"
     );
+    assert_eq!(
+        proposal.fallback_cert, None,
+        "the timeout certificate justifies this view; the fallback \
+         certificate would be weight on the wire nothing checks"
+    );
+}
+
+#[test]
+fn the_view_1_leader_carries_the_fallback_certificate_beside_its_input() {
+    let validator_data = validator_data();
+    let block = metablock(1, &validator_data);
+    let cert = enter_fallback_cert(&validator_data);
+
+    let leader = leader_of(view(1));
+    let mut instance = mvba(leader, &validator_data);
+    instance.propose(block.clone(), Some(cert.clone()));
+    let outputs = drain(&mut instance);
+
+    let proposal = proposed(&outputs).expect("the leader of view 1 proposes as soon as it can");
+    assert_eq!(proposal.view, view(1));
+    assert_eq!(proposal.metablock, block);
+    assert_eq!(
+        proposal.justification, None,
+        "view 1 has no timeout certificate to be justified by"
+    );
+    assert_eq!(
+        proposal.fallback_cert,
+        Some(cert),
+        "so it carries the certificate that admitted the path instead"
+    );
+}
+
+#[test]
+fn a_proposal_carrying_a_certificate_for_another_slot_is_rejected() {
+    let validator_data = validator_data();
+    let block = metablock(1, &validator_data);
+    let follower = nodes()[0];
+
+    let mut instance = started(follower, &block, &validator_data);
+    drain(&mut instance);
+
+    // genuinely aggregated, and genuinely irrelevant: it admits another slot
+    // to the fallback path, not this one.
+    let foreign = strong_qc(
+        Slot(SLOT.get() + 1),
+        EnterFallbackVote,
+        &quorum(),
+        &validator_data,
+    );
+    let (leader, proposal) = pre_prepare_with_cert(view(1), &block, Some(foreign), None);
+
+    instance.handle_message(leader, proposal);
+    let outputs = drain(&mut instance);
+
+    assert_eq!(
+        prepared_entries(&outputs),
+        None,
+        "a carried certificate is checked, so an out-of-scope one is not voted on"
+    );
+}
+
+#[test]
+fn a_view_1_proposal_without_a_certificate_is_the_paper_s_fast_metablock() {
+    let validator_data = validator_data();
+    let block = metablock(1, &validator_data);
+    let follower = nodes()[0];
+
+    let mut instance = started(follower, &block, &validator_data);
+    drain(&mut instance);
+
+    // `fbcert = ⊥`: admission rests on the entries rather than on a
+    // certificate. See the FIXME on `proposed_metablock_is_valid` -- the arm
+    // is under-constrained until something claims a fast metablock.
+    let (leader, proposal) = pre_prepare_with_cert(view(1), &block, None, None);
+
+    instance.handle_message(leader, proposal);
+    let outputs = drain(&mut instance);
+
+    assert_eq!(
+        prepared_entries(&outputs),
+        Some(block.entries()),
+        "an absent certificate is legal: the value decides, not the carrier"
+    );
 }
 
 #[test]
@@ -283,7 +366,7 @@ fn a_locked_leader_fetches_the_block_before_reproposing_it() {
         "it may only propose the locked value, and does not have it yet"
     );
 
-    instance.handle_message(nodes()[1], block_response(locked.block.clone()));
+    instance.handle_message(nodes()[1], block_response(locked.clone()));
     let outputs = drain(&mut instance);
 
     let proposal = proposed(&outputs).expect("the block landed, so the leader can propose");
@@ -294,7 +377,7 @@ fn a_locked_leader_fetches_the_block_before_reproposing_it() {
         "the leader is bound to the value the previous view may have locked"
     );
     assert_eq!(
-        proposal.metablock.block, locked.block,
+        proposal.metablock, locked,
         "and it proposes the retrieved block verbatim"
     );
 }
@@ -393,11 +476,11 @@ fn a_received_certificate_decides_once_its_block_is_retrieved() {
         "a certificate this validator cannot complete is not echoed"
     );
 
-    instance.handle_message(nodes()[2], block_response(block.block.clone()));
+    instance.handle_message(nodes()[2], block_response(block.clone()));
     let outputs = drain(&mut instance);
 
     assert_eq!(instance.decision(), Some(&block.entries()));
-    assert_eq!(instance.decision_block(), Some(&block.block));
+    assert_eq!(instance.decision_block(), Some(&block));
     assert!(instance.decision_qc().is_some());
     assert!(decided_commit_qc(&outputs));
 }
@@ -423,7 +506,7 @@ fn a_bogus_block_response_is_ignored() {
     );
 
     // a well-formed block, but not the one asked for.
-    instance.handle_message(nodes()[1], block_response(other.block.clone()));
+    instance.handle_message(nodes()[1], block_response(other.clone()));
     assert!(drain(&mut instance).is_empty());
     assert!(instance.decision().is_none());
 
@@ -431,7 +514,7 @@ fn a_bogus_block_response_is_ignored() {
     // the entries a `FastQc` certifies are its verdict, so tampering with its
     // scope leaves the identity of the block intact.
     let forged = ProposalMap::new(NUM_PROPOSALS, |j| {
-        let entry = block.block.as_ref().into_iter().nth(j).unwrap().entry();
+        let entry = block.as_ref().into_iter().nth(j).unwrap().entry();
         CertifiedEntry::FastQc(strong_qc(
             (Slot(SLOT.get() + 1), j),
             entry,
@@ -453,7 +536,7 @@ fn a_bogus_block_response_is_ignored() {
     );
 
     // and the real block still decides afterwards.
-    instance.handle_message(nodes()[1], block_response(block.block.clone()));
+    instance.handle_message(nodes()[1], block_response(block.clone()));
     drain(&mut instance);
     assert_eq!(instance.decision(), Some(&block.entries()));
 }
@@ -470,7 +553,7 @@ fn an_unsolicited_block_response_is_ignored() {
 
     // valid in every way, but nothing asked for it: taking it in would be a
     // way to fill this instance's store.
-    instance.handle_message(nodes()[1], block_response(block.block.clone()));
+    instance.handle_message(nodes()[1], block_response(block.clone()));
     assert!(drain(&mut instance).is_empty());
 
     // so the certificate that arrives afterwards still has to fetch it.
@@ -499,7 +582,7 @@ fn a_holder_answers_a_block_request_with_a_unicast() {
 
     assert_eq!(
         unicasts(&outputs),
-        vec![(asker, &block_response(block.block.clone()))],
+        vec![(asker, &block_response(block.clone()))],
         "the block goes back to the sender alone"
     );
     assert!(broadcasts(&outputs).is_empty());
@@ -642,7 +725,7 @@ fn a_certificate_arriving_before_propose_is_fetched_once_it_does() {
 
     // proposing starts participation, and the stored certificate is the first
     // thing it finds it needs a block for.
-    instance.propose(own.clone());
+    instance.propose(own.clone(), Some(enter_fallback_cert(&validator_data)));
     let outputs = drain(&mut instance);
 
     assert_eq!(
@@ -655,11 +738,11 @@ fn a_certificate_arriving_before_propose_is_fetched_once_it_does() {
         "the block is not here yet, so there is nothing to hand on"
     );
 
-    instance.handle_message(nodes()[1], block_response(block.block.clone()));
+    instance.handle_message(nodes()[1], block_response(block.clone()));
     let outputs = drain(&mut instance);
 
     assert_eq!(instance.decision(), Some(&block.entries()));
-    assert_eq!(instance.decision_block(), Some(&block.block));
+    assert_eq!(instance.decision_block(), Some(&block));
     assert!(decided_commit_qc(&outputs));
 }
 
@@ -680,11 +763,11 @@ fn a_certificate_over_this_validators_own_input_decides_on_propose() {
     // the certificate settled the entries of this validator's own input, so
     // proposing hands the block to the store and the decision falls out of the
     // same call: nothing is fetched.
-    instance.propose(own.clone());
+    instance.propose(own.clone(), Some(enter_fallback_cert(&validator_data)));
     let outputs = drain(&mut instance);
 
     assert_eq!(instance.decision(), Some(&own.entries()));
-    assert_eq!(instance.decision_block(), Some(&own.block));
+    assert_eq!(instance.decision_block(), Some(&own));
     assert!(decided_commit_qc(&outputs));
     assert!(requested_entries(&outputs).is_empty());
 }
@@ -704,7 +787,7 @@ fn nothing_is_sent_before_propose() {
 
     // proposing starts participation, and the stored messages take effect at
     // once.
-    instance.propose(block.clone());
+    instance.propose(block.clone(), Some(enter_fallback_cert(&validator_data)));
     let outputs = drain(&mut instance);
     assert_eq!(prepared_entries(&outputs), Some(block.entries()));
 }
@@ -714,4 +797,3 @@ fn views_are_one_indexed() {
     assert_eq!(FallbackView::FIRST, view(1));
     assert!(FallbackView::GENESIS < FallbackView::FIRST);
 }
-

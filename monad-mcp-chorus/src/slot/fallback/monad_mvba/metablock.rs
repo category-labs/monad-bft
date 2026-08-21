@@ -14,72 +14,41 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 //! The value the MVBA agrees on: a *metablock*, a vector of certified
-//! per-proposer entries plus the fallback certificate that admits it.
+//! per-proposer entries.
 //!
-//! Agreement is over the metablock's entries; the certificates are carried
-//! only so that a proposed metablock can be checked valid before it is
-//! decided, and play no part in the agreement beyond that check.
+//! Agreement is over the metablock's entries; the per-entry certificates are
+//! carried only so that a proposed metablock can be checked valid before it is
+//! decided, and play no part in the agreement beyond that check. The fallback
+//! certificate is not part of the value at all -- it travels beside it, and is
+//! checked here only where a proposal claims one.
 
 use super::super::{
     super::{
-        fast::{CertifiedEntry, Entry},
+        fast::{CertifiedEntry, EnterFallbackCert, Entry},
         types::{ProposalIndex, ProposalMap, Slot, ValidatorData},
     },
-    MVBAInputs, PartialBlock,
+    Metablock,
 };
 
-impl MVBAInputs {
-    /// `entries(B)`: the embedded entry of each certified entry, in increasing
-    /// order of proposer index. The fallback certificate is not part of it.
-    ///
-    /// Fixing the order makes this a single value that all validators sign
-    /// identically; prepare and commit votes range over it rather than over
-    /// the metablock, so a fallback decision is comparable with a fast-path
-    /// commitment carrying the same entries.
-    pub(crate) fn entries(&self) -> ProposalMap<Entry> {
-        entries_of(&self.block)
-    }
-
-    /// `Metablock.is_valid()`: the metablock has one entry per proposer, its
-    /// fallback certificate verifies for `slot`, and every certified entry
-    /// verifies under `slot` and its own proposer index.
-    ///
-    /// Two deviations from the paper's definition, both forced by the types:
-    /// the "one entry per proposer, none missing, extra or duplicated"
-    /// requirement is structural here -- `block` is a `TotalProposalMap`
-    /// indexed by proposer, so only its size is left to check -- and the fast
-    /// metablock case (`fbcert = ⊥`, all entries `FastQC`) is unrepresentable,
-    /// since [`MVBAInputs`] always carries a fallback certificate.
-    ///
-    /// Availability of the proposal behind a positive root follows from a
-    /// `FastQc` or `FallbackQc` and is deliberately not checked.
-    pub(crate) fn is_valid(
-        &self,
-        slot: Slot,
-        num_proposals: usize,
-        validator_data: &ValidatorData,
-    ) -> bool {
-        if self.enter_fallback_cert.scope != slot
-            || !self.enter_fallback_cert.verify(validator_data)
-        {
-            return false;
-        }
-
-        partial_block_is_valid(&self.block, slot, num_proposals, validator_data)
-    }
-}
-
-/// The part of [`MVBAInputs::is_valid`] that a partial block on its own can be
-/// held to: one entry per proposer, and every certified entry bound to this
-/// slot and its own proposer index with valid signatures.
+/// `Metablock.is_valid()` minus anything a fallback certificate could say: one
+/// entry per proposer, and every certified entry bound to this slot and its
+/// own proposer index with valid signatures.
 ///
-/// This is what a block retrieved by block sync is checked against. No
-/// fallback certificate is involved: the entries are the identity a
+/// One deviation from the paper's definition, forced by the types: the "one
+/// entry per proposer, none missing, extra or duplicated" requirement is
+/// structural here -- a [`Metablock`] is a `TotalProposalMap` indexed by
+/// proposer, so only its size is left to check.
+///
+/// Availability of the proposal behind a positive root follows from a `FastQc`
+/// or `FallbackQc` and is deliberately not checked.
+///
+/// This is also what a block retrieved by block sync is checked against, with
+/// no fallback certificate involved: the entries are the identity a
 /// certificate over them already fixed, and the requester holds a fallback
 /// certificate of its own -- an instance only exists once its input carried
 /// one -- so a sender forwarding another would add nothing.
-pub(crate) fn partial_block_is_valid(
-    block: &PartialBlock,
+pub(crate) fn metablock_is_valid(
+    block: &Metablock,
     slot: Slot,
     num_proposals: usize,
     validator_data: &ValidatorData,
@@ -95,9 +64,44 @@ pub(crate) fn partial_block_is_valid(
         .all(|(j, cert)| certified_entry_is_valid(cert, slot, j, validator_data))
 }
 
-/// `entries(x)` of a partial block on its own, for the places a certificate
-/// carries the certified entries without the metablock around them.
-pub(crate) fn entries_of(block: &PartialBlock) -> ProposalMap<Entry> {
+/// Whether a *proposed* metablock is acceptable, given the fallback
+/// certificate carried beside it -- the whole of the paper's
+/// `Metablock.is_valid()`, including the `fbcert` arm.
+///
+/// The certificate is `Option` because `fbcert` can be `⊥`, and this is the
+/// only place that decides what that means. A carried certificate must be for
+/// this slot and verify; an absent one is the paper's *fast metablock*, whose
+/// admission rests on its entries instead of on a certificate.
+///
+/// FIXME: the fast metablock arm is under-constrained: the paper additionally
+/// requires every entry of a `fbcert = ⊥` metablock to be a `FastQC`. Nothing
+/// claims a fast metablock yet -- `Chorus` always enters the fallback path
+/// with a certificate in hand -- and the check belongs here, on this arm, the
+/// day something does.
+pub(crate) fn proposed_metablock_is_valid(
+    block: &Metablock,
+    cert: Option<&EnterFallbackCert>,
+    slot: Slot,
+    num_proposals: usize,
+    validator_data: &ValidatorData,
+) -> bool {
+    if let Some(cert) = cert
+        && (cert.scope != slot || !cert.verify(validator_data))
+    {
+        return false;
+    }
+
+    metablock_is_valid(block, slot, num_proposals, validator_data)
+}
+
+/// `entries(B)`: the embedded entry of each certified entry, in increasing
+/// order of proposer index. The fallback certificate is not part of it.
+///
+/// Fixing the order makes this a single value that all validators sign
+/// identically; prepare and commit votes range over it rather than over the
+/// metablock, so a fallback decision is comparable with a fast-path commitment
+/// carrying the same entries.
+pub(crate) fn entries_of(block: &Metablock) -> ProposalMap<Entry> {
     block.as_ref().map(CertifiedEntry::entry)
 }
 

@@ -76,13 +76,13 @@ use phases::{Decided, InnerPhase, Phase, TimedOut, Transition};
 
 use super::{
     super::{
-        fast::Entry,
+        fast::{EnterFallbackCert, Entry},
         types::{
             IsVote, KeyPair, NodeId, ProposalMap, Slot, TimestampDelta, Validated, ValidatorData,
             VoteMsg,
         },
     },
-    FallbackView, MVBAInputs, MVBAOutput, Mvba, PartialBlock, Validate, Votable,
+    FallbackView, MVBAOutput, Metablock, Mvba, Validate, Votable,
     block_sync::{BlockRequestMsg, BlockResponseMsg, BlockSync},
 };
 use crate::spec::validator::ValidatorData as _;
@@ -153,19 +153,26 @@ pub(crate) struct ValidationContext {
     pub validator_data: Arc<ValidatorData>,
 }
 
-impl Validate for MVBAInputs {
+impl Validate for Metablock {
     type Context = ValidationContext;
+    type Cert = EnterFallbackCert;
 
-    fn validate(&self, context: &Self::Context) -> bool {
-        self.is_valid(context.slot, context.num_proposals, &context.validator_data)
+    fn validate(&self, context: &Self::Context, cert: Option<&Self::Cert>) -> bool {
+        metablock::proposed_metablock_is_valid(
+            self,
+            cert,
+            context.slot,
+            context.num_proposals,
+            &context.validator_data,
+        )
     }
 }
 
-impl Votable for MVBAInputs {
+impl Votable for Metablock {
     type Entries = ProposalMap<Entry>;
 
     fn entries(&self) -> Self::Entries {
-        MVBAInputs::entries(self)
+        metablock::entries_of(self)
     }
 }
 
@@ -178,7 +185,12 @@ pub(crate) struct MonadMvba {
 
     /// This validator's input metablock, set by [`Mvba::propose`]. It also
     /// gates participation: nothing is sent before it is set.
-    input: Option<MVBAInputs>,
+    input: Option<Metablock>,
+    /// The fallback certificate handed in beside the input, if any. It is not
+    /// part of the value and takes no part in agreement; it is kept only to
+    /// justify this validator's own view-1 proposal, where it is what admits
+    /// the path. `None` is the paper's `fbcert = ⊥`.
+    input_cert: Option<EnterFallbackCert>,
 
     /// `lastVotedView_i`: this validator votes in a view only if the view is
     /// above it.
@@ -190,31 +202,6 @@ pub(crate) struct MonadMvba {
     /// `DecidedQC_i`: recorded as soon as a commit certificate is seen, before
     /// the block it settles is necessarily in hand. The certificate is durable
     /// evidence on its own and nothing about it improves by waiting.
-    ///
-    /// FIXME: you don't need to fetch the original preprepare/mvba input, proposalmap<entry> is enough
-    ///
-    /// Response: agreed, and this is now the whole of the decision. The commit
-    /// certificate's verdict *is* the entries, so a validator that never saw
-    /// the view's pre-prepare decides from the certificate alone; there is
-    /// nothing left to fetch and nothing left to remember. The metablock the
-    /// entries came from added no evidence a supermajority of commit votes did
-    /// not already carry, so it no longer rides on commit votes or on the
-    /// commit-certificate message, and the `known_blocks` map that held the
-    /// ones learned that way is gone. `Mvba::decision` returns
-    /// `Votable::Entries` to match.
-    ///
-    /// The block is still carried where it is genuinely needed: on the
-    /// pre-prepare, which a validator must check valid before voting, and on
-    /// timeouts, so a locked leader has something it is allowed to propose.
-    ///
-    /// Response, once more, on that last sentence: nothing rides on a timeout
-    /// any more. *Agreement* still needs nothing fetched -- the certificate's
-    /// verdict is the decision -- but what consumes a decided slot needs the
-    /// certified entries themselves, so `block_sync` fetches the partial block
-    /// behind entries a certificate has settled, keyed by those same entries,
-    /// and never the pre-prepare or the `MVBAInputs` around it. The decision is
-    /// unchanged: `ProposalMap<Entry>` plus a certificate over it, now reported
-    /// once the block beside it is in hand.
     decided_qc: Option<FallbackCommitQc>,
 
     // TODO: group the collectors by view
@@ -247,10 +234,11 @@ pub(crate) struct MonadMvba {
     abandoned: bool,
 }
 
-impl Mvba<MVBAInputs> for MonadMvba {
+impl Mvba<Metablock> for MonadMvba {
     type Message = Message;
     type Context = Context;
     type TimerEvent = TimerEvent;
+    type FallbackCert = EnterFallbackCert;
     type CommitVote = FallbackCommitVote;
 
     fn new(context: Context) -> Self {
@@ -261,6 +249,7 @@ impl Mvba<MVBAInputs> for MonadMvba {
             view: FallbackView::FIRST,
             phase: Phase::new(),
             input: None,
+            input_cert: None,
             last_voted_view: FallbackView::GENESIS,
             high_prep_qc: None,
             decided_qc: None,
@@ -277,7 +266,7 @@ impl Mvba<MVBAInputs> for MonadMvba {
         }
     }
 
-    fn propose(&mut self, data: MVBAInputs) {
+    fn propose(&mut self, data: Metablock, cert: Option<Self::FallbackCert>) {
         if self.abandoned || self.input.is_some() {
             // at most one proposal per instance.
             return;
@@ -285,8 +274,9 @@ impl Mvba<MVBAInputs> for MonadMvba {
 
         // its own input is the first block it holds, and the one it proposes
         // when it leads a view nothing is locked in.
-        self.block_sync.remember(data.block.clone());
+        self.block_sync.remember(data.clone());
         self.input = Some(data);
+        self.input_cert = cert;
 
         // entering view 1 starts the view timer; leading it is a transition,
         // found on the pass below.
@@ -353,7 +343,7 @@ impl Mvba<MVBAInputs> for MonadMvba {
     }
 
     // FIXME: delete this function. decision should be the metablock
-    fn decision_block(&self) -> Option<&PartialBlock> {
+    fn decision_block(&self) -> Option<&Metablock> {
         self.decided().map(Decided::block)
     }
 
@@ -476,6 +466,16 @@ impl MonadMvba {
         self.input.is_some() && !self.abandoned && !self.phase.is_decided()
     }
 
+    /// What [`Validate`] needs to judge a value: this instance's slot and
+    /// validator set.
+    fn validation_context(&self) -> ValidationContext {
+        ValidationContext {
+            slot: self.context.slot,
+            num_proposals: self.context.num_proposals,
+            validator_data: self.context.validator_data.clone(),
+        }
+    }
+
     /// Apply transitions until none is possible.
     ///
     /// Each iteration takes the phase by value and gets a new one back, so no
@@ -573,7 +573,7 @@ impl MonadMvba {
     /// with the proposal that carried it, or fetched from a peer. Waiting is
     /// safe: the certificate is already recorded, so this can only be delayed,
     /// never changed.
-    fn pending_commit_qc(&self) -> Option<(FallbackCommitQc, PartialBlock)> {
+    fn pending_commit_qc(&self) -> Option<(FallbackCommitQc, Metablock)> {
         let qc = self.known_commit_qc()?;
         let block = self.block_sync.get(&qc.verdict.0)?.clone();
 
@@ -637,16 +637,17 @@ impl MonadMvba {
         let pre_prepare = self.pre_prepares.get(&self.view)?;
         let msg = pre_prepare.message();
 
-        if !msg.metablock.is_valid(
-            self.context.slot,
-            self.context.num_proposals,
-            &self.context.validator_data,
-        ) {
+        // the value decides what it needs; this hands over what the message
+        // carried and interprets none of it.
+        if !msg
+            .metablock
+            .validate(&self.validation_context(), msg.fallback_cert.as_ref())
+        {
             return None;
         }
 
         match (self.view == FallbackView::FIRST, &msg.justification) {
-            // view 1 needs no justification: the metablock carries the
+            // view 1 needs no justification: the proposal carries the
             // fallback certificate that admits the whole path.
             (true, None) => {}
             (false, Some(tc)) => {
@@ -657,7 +658,7 @@ impl MonadMvba {
                 // the lock rule: a leader may not replace a value that the
                 // previous view may already have supported.
                 if let Some(lock) = tc.lock()
-                    && msg.metablock.entries() != *lock
+                    && metablock::entries_of(&msg.metablock) != *lock
                 {
                     return None;
                 }
@@ -700,16 +701,17 @@ impl MonadMvba {
         // the proposal carried the block in full, so accepting it is one of the
         // points this instance legitimately comes by one.
         let entries = msg.metablock.entries();
-        self.block_sync.remember(msg.metablock.block);
+        self.block_sync.remember(msg.metablock);
         let preparing = awaiting.accept(entries);
 
         // persist-before-send: lastVotedView.
         self.last_voted_view = self.view;
 
         let vote = self.sign_vote(PrepareVote(preparing.entries().clone()));
-        (Phase::Preparing(preparing), vec![MVBAOutput::Broadcast(
-            Message::Prepare(vote),
-        )])
+        (
+            Phase::Preparing(preparing),
+            vec![MVBAOutput::Broadcast(Message::Prepare(vote))],
+        )
     }
 
     /// `TryFormPrepQC`: adopt the certificate as this validator's lock and
@@ -758,7 +760,7 @@ impl MonadMvba {
         &mut self,
         phase: Phase,
         commit_qc: FallbackCommitQc,
-        block: PartialBlock,
+        block: Metablock,
     ) -> (Phase, Vec<MVBAOutput<Message, TimerEvent>>) {
         let entries = commit_qc.verdict.0.clone();
         debug_assert_eq!(metablock::entries_of(&block), entries);
@@ -784,9 +786,10 @@ impl MonadMvba {
         // the echo goes out here, after retrieval, rather than when the
         // certificate arrived: relaying one this instance could not complete
         // adds nothing, since whoever sent it broadcast it already.
-        (Phase::Decided(decided), vec![MVBAOutput::Broadcast(
-            Message::CommitQc(commit_qc),
-        )])
+        (
+            Phase::Decided(decided),
+            vec![MVBAOutput::Broadcast(Message::CommitQc(commit_qc))],
+        )
     }
 
     /// `SyncView`: adopt the certificate's lock if it is higher than the one
@@ -872,11 +875,10 @@ impl MonadMvba {
     /// the answer lands. The view can still time out first; that costs a view,
     /// not the ability to propose.
     ///
-    /// Only the entries are locked, so the locked proposal is rebuilt around
-    /// this validator's own fallback certificate. That is sound because every
-    /// fallback certificate for the slot certifies the same statement
-    /// `⟨fallback, slot⟩`, and available because an instance only exists once
-    /// its input carried one.
+    /// Only the entries are locked, so a locked leader proposes the block it
+    /// fetched and nothing else: the fallback certificate is not part of the
+    /// value, and a view above 1 is justified by its entry timeout certificate
+    /// rather than by one.
     fn pending_own_proposal(&self) -> Option<PrePrepareMsg> {
         // FIXME: We should gate this by an explicit state in the state machine, so there can be a new phase named "new view". Only in that view, we will check if we are the proposer, and if so, we will try to send out a proposal. We will only enter that view via a TC, and after the TC is handled, after we've done the proposal check, we immediately leave that state and go into a waiting proposal. We should never check in any other phase whether we should try to propose.
         if self.proposed || self.phase.has_timed_out() {
@@ -889,19 +891,24 @@ impl MonadMvba {
         // no input means this instance does not participate at all.
         let own_input = self.input.as_ref()?;
 
-        let metablock = match self.locked_entries() {
+        let block = match self.locked_entries() {
             // nothing locked: free to propose its own input, as in view 1.
             None => own_input.clone(),
-            Some(lock) => MVBAInputs {
-                enter_fallback_cert: own_input.enter_fallback_cert.clone(),
-                block: self.block_sync.get(lock)?.clone(),
-            },
+            Some(lock) => self.block_sync.get(lock)?.clone(),
         };
+
+        // only view 1 needs the fallback certificate as its justification;
+        // every later view is justified by the entry timeout certificate, so
+        // carrying one there would be weight on the wire nothing checks.
+        let fallback_cert = (self.view == FallbackView::FIRST)
+            .then(|| self.input_cert.clone())
+            .flatten();
 
         Some(PrePrepareMsg::new_signed(
             self.context.slot,
             self.view,
-            metablock,
+            block,
+            fallback_cert,
             self.entry_tc.clone(),
             &self.context.key,
         ))
@@ -918,9 +925,10 @@ impl MonadMvba {
         // persist-before-send: v, and the certificate that justified the view.
         self.proposed = true;
 
-        (phase, vec![MVBAOutput::Broadcast(Message::PrePrepare(
-            pre_prepare,
-        ))])
+        (
+            phase,
+            vec![MVBAOutput::Broadcast(Message::PrePrepare(pre_prepare))],
+        )
     }
 
     /// `lock(J)` for the view this validator is in: what its leader is bound to
@@ -993,7 +1001,7 @@ impl MonadMvba {
 
         let mut keep = HashSet::new();
         if let Some(input) = &self.input {
-            keep.insert(input.entries());
+            keep.insert(metablock::entries_of(input));
         }
         if let Some(entries) = self.phase.entries() {
             keep.insert(entries.clone());

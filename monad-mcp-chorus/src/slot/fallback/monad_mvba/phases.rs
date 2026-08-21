@@ -29,7 +29,7 @@ use super::{
             fast::Entry,
             types::{ProposalMap, Validated},
         },
-        PartialBlock,
+        Metablock,
     },
     certificates::{FallbackCommitQc, PrepareQc, TimeoutCertificate},
     messages::PrePrepareMsg,
@@ -81,7 +81,7 @@ pub(crate) struct Committing {
 pub(crate) struct Decided {
     entries: ProposalMap<Entry>, // FIXME: this field seems redundant with commit_qc
     commit_qc: FallbackCommitQc,
-    block: PartialBlock,
+    block: Metablock,
 }
 
 /// A timed-out view, remembering what it was doing when the timeout was sent.
@@ -242,7 +242,7 @@ impl Preparing {
     /// A commit certificate can arrive before this validator has seen the
     /// prepare certificate for the same entries; the decision does not wait
     /// for it.
-    pub(crate) fn decide(self, commit_qc: FallbackCommitQc, block: PartialBlock) -> Decided {
+    pub(crate) fn decide(self, commit_qc: FallbackCommitQc, block: Metablock) -> Decided {
         debug_assert_eq!(commit_qc.verdict.0, self.entries);
 
         Decided {
@@ -258,7 +258,7 @@ impl Committing {
         &self.entries
     }
 
-    pub(crate) fn decide(self, commit_qc: FallbackCommitQc, block: PartialBlock) -> Decided {
+    pub(crate) fn decide(self, commit_qc: FallbackCommitQc, block: Metablock) -> Decided {
         debug_assert_eq!(commit_qc.verdict.0, self.entries);
 
         Decided {
@@ -278,7 +278,7 @@ impl Decided {
         &self.commit_qc
     }
 
-    pub(crate) fn block(&self) -> &PartialBlock {
+    pub(crate) fn block(&self) -> &Metablock {
         &self.block
     }
 
@@ -286,7 +286,7 @@ impl Decided {
     /// a view whose phase never accepted the entries it certifies. The
     /// certificate's verdict fixes the entries; the block is whatever was
     /// retrieved for them.
-    pub(crate) fn from_foreign_qc(commit_qc: FallbackCommitQc, block: PartialBlock) -> Self {
+    pub(crate) fn from_foreign_qc(commit_qc: FallbackCommitQc, block: Metablock) -> Self {
         Decided {
             entries: commit_qc.verdict.0.clone(),
             commit_qc,
@@ -313,7 +313,7 @@ pub(crate) enum Transition {
     /// is what the decision hands on.
     CommitQc {
         qc: FallbackCommitQc,
-        block: PartialBlock,
+        block: Metablock,
     },
     /// This validator leads the current view and has a proposal it is allowed
     /// to make: either nothing is locked, or the locked block is in hand.

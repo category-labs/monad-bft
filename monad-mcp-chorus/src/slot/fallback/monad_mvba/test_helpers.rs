@@ -25,13 +25,13 @@ use std::{collections::HashMap, sync::Arc};
 use super::{
     super::{
         super::{
-            fast::{CertifiedEntry, EnterFallbackVote, Entry},
+            fast::{CertifiedEntry, EnterFallbackCert, EnterFallbackVote, Entry},
             types::{
                 IsVote, MerkleRoot, NodeId, ProposalMap, Slot, StrongQc, TimestampDelta,
                 ValidatorData, VoteMsg, VotePool,
             },
         },
-        FallbackView, MVBAInputs, MVBAOutput, Mvba, PartialBlock,
+        FallbackView, MVBAOutput, Metablock, Mvba, Votable,
         block_sync::{BlockRequestMsg, BlockResponseMsg},
     },
     Context, MonadMvba, TimerEvent,
@@ -97,21 +97,20 @@ pub(super) fn mvba(node: NodeId, validator_data: &Arc<ValidatorData>) -> MonadMv
 
 /// A valid metablock whose entries are determined by `seed`, so two seeds give
 /// two metablocks that cannot be confused for one another.
-pub(super) fn metablock(seed: u64, validator_data: &ValidatorData) -> MVBAInputs {
-    let enter_fallback_cert = strong_qc(SLOT, EnterFallbackVote, &quorum(), validator_data);
-
-    let block = ProposalMap::new(NUM_PROPOSALS, |j| {
+pub(super) fn metablock(seed: u64, validator_data: &ValidatorData) -> Metablock {
+    ProposalMap::new(NUM_PROPOSALS, |j| {
         let entry = Entry::Positive {
             root: MerkleRoot(seed * 100 + j as u64),
         };
         let fast_qc = strong_qc((SLOT, j), entry, &quorum(), validator_data);
         CertifiedEntry::FastQc(fast_qc)
-    });
+    })
+}
 
-    MVBAInputs {
-        enter_fallback_cert,
-        block,
-    }
+/// A genuine fallback certificate for this slot: what admits the path, and
+/// what a view-1 proposal carries beside its block.
+pub(super) fn enter_fallback_cert(validator_data: &ValidatorData) -> EnterFallbackCert {
+    strong_qc(SLOT, EnterFallbackVote, &quorum(), validator_data)
 }
 
 /// Aggregate a genuine supermajority certificate over `vote`.
@@ -144,13 +143,35 @@ pub(super) fn prepare_qc(
     )
 }
 
+/// A pre-prepare as an honest leader would send it: the fallback certificate
+/// rides along in view 1, where it is the justification, and nowhere else.
 pub(super) fn pre_prepare(
     v: FallbackView,
-    block: &MVBAInputs,
+    block: &Metablock,
+    justification: Option<TimeoutCertificate>,
+) -> (NodeId, Message) {
+    let cert = (v == view(1)).then(|| enter_fallback_cert(&validator_data()));
+
+    pre_prepare_with_cert(v, block, cert, justification)
+}
+
+/// A pre-prepare carrying exactly the certificate given, for the cases the
+/// certificate itself is under test.
+pub(super) fn pre_prepare_with_cert(
+    v: FallbackView,
+    block: &Metablock,
+    cert: Option<EnterFallbackCert>,
     justification: Option<TimeoutCertificate>,
 ) -> (NodeId, Message) {
     let leader = leader_of(v);
-    let msg = PrePrepareMsg::new_signed(SLOT, v, block.clone(), justification, &leader.keypair());
+    let msg = PrePrepareMsg::new_signed(
+        SLOT,
+        v,
+        block.clone(),
+        cert,
+        justification,
+        &leader.keypair(),
+    );
 
     (leader, Message::PrePrepare(msg))
 }
@@ -193,7 +214,7 @@ pub(super) fn feed_prepare_votes(
 pub(super) fn feed_commit_votes(
     instance: &mut MonadMvba,
     v: FallbackView,
-    block: &MVBAInputs,
+    block: &Metablock,
     signers: &[NodeId],
 ) {
     for node in signers {
@@ -210,7 +231,7 @@ pub(super) fn feed_commit_votes(
 /// carries it: the certificate alone.
 pub(super) fn commit_qc_message(
     v: FallbackView,
-    block: &MVBAInputs,
+    block: &Metablock,
     validator_data: &ValidatorData,
 ) -> Message {
     let qc = strong_qc(
@@ -236,7 +257,7 @@ pub(super) fn feed_timeouts(
 }
 
 /// A block response as it arrives on the wire, carrying `block` verbatim.
-pub(super) fn block_response(block: PartialBlock) -> Message {
+pub(super) fn block_response(block: Metablock) -> Message {
     Message::BlockResponse(BlockResponseMsg { slot: SLOT, block })
 }
 
@@ -339,10 +360,10 @@ pub(super) fn proposed(outputs: &[Output]) -> Option<&PrePrepareMsg> {
 /// outputs.
 pub(super) fn started(
     node: NodeId,
-    block: &MVBAInputs,
+    block: &Metablock,
     validator_data: &Arc<ValidatorData>,
 ) -> MonadMvba {
     let mut instance = mvba(node, validator_data);
-    instance.propose(block.clone());
+    instance.propose(block.clone(), Some(enter_fallback_cert(validator_data)));
     instance
 }

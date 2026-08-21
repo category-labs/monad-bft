@@ -25,7 +25,7 @@
 // Response: agreed, and the trait side is already generic -- `Mvba<V: Validate
 // + Votable>` names the value type and `Votable::Entries` the projection votes
 // range over. What is still concrete is this module: votes wrap
-// `ProposalMap<Entry>` and pre-prepares carry `MVBAInputs` directly, so the
+// `ProposalMap<Entry>` and pre-prepares carry a `Metablock` directly, so the
 // messages, the certificates over them, the collectors and the phases would all
 // have to become generic in `V` together, and `MonadMvba` would need the vote
 // newtypes it signs under to come from the value type rather than be declared
@@ -37,16 +37,17 @@ use bytes::Bytes;
 use super::{
     super::{
         super::{
-            fast::Entry,
+            fast::{EnterFallbackCert, Entry},
             types::{
                 IsVote, KeyPair, ProposalMap, PubKey, Signature, Slot, ValidatorData, VoteMsg,
                 dummy_serialize,
             },
         },
-        FallbackView, MVBAInputs,
+        FallbackView, Metablock,
         block_sync::{BlockRequestMsg, BlockResponseMsg},
     },
     certificates::{FallbackCommitQc, PrepareQc, TimeoutCertificate},
+    metablock::entries_of,
 };
 use crate::spec::vote::{KeyPair as _, Signature as _};
 
@@ -210,9 +211,15 @@ impl TimeoutMsg {
 pub(crate) struct PrePrepareMsg {
     pub slot: Slot,
     pub view: FallbackView,
-    pub metablock: MVBAInputs,
-    /// `J`: `None` in view 1 -- the metablock carries its own fallback
-    /// certificate -- and `TC_{slot, v-1}` in any later view.
+    pub metablock: Metablock,
+    /// The fallback certificate admitting the slot to the fallback path, which
+    /// is what justifies a view-1 proposal. `None` in any later view -- those
+    /// are justified by `justification` instead -- and, in view 1, also the
+    /// paper's `fbcert = ⊥`. It is not part of the value and not signed over:
+    /// the certificate carries its own signatures.
+    pub fallback_cert: Option<EnterFallbackCert>,
+    /// `J`: `None` in view 1 -- the proposal carries the fallback certificate
+    /// instead -- and `TC_{slot, v-1}` in any later view.
     pub justification: Option<TimeoutCertificate>,
     /// The leader's signature over
     /// `⟨Pre-Prepare, slot, v, H(entries(x)), J⟩`.
@@ -227,7 +234,8 @@ impl PrePrepareMsg {
     pub(crate) fn new_signed(
         slot: Slot,
         view: FallbackView,
-        metablock: MVBAInputs,
+        metablock: Metablock,
+        fallback_cert: Option<EnterFallbackCert>,
         justification: Option<TimeoutCertificate>,
         key: &KeyPair,
     ) -> Self {
@@ -237,6 +245,7 @@ impl PrePrepareMsg {
             slot,
             view,
             metablock,
+            fallback_cert,
             justification,
             signature,
         }
@@ -252,14 +261,19 @@ impl PrePrepareMsg {
 /// The bytes a pre-prepare's signature covers. `H(entries(x))` stands in as
 /// the entries themselves under the crate-wide placeholder wire format; the
 /// real format hashes them.
+///
+/// The fallback certificate is deliberately outside the signature: the paper
+/// signs `⟨Pre-Prepare, slot, v, H(entries(x)), J⟩`, and a certificate is
+/// self-certifying, so covering it would only bind the leader to one of the
+/// several aggregates that all say the same thing.
 fn signed_bytes(
     slot: Slot,
     view: FallbackView,
-    metablock: &MVBAInputs,
+    metablock: &Metablock,
     justification: &Option<TimeoutCertificate>,
 ) -> Bytes {
     dummy_serialize(
-        &(metablock.entries(), justification),
+        &(entries_of(metablock), justification),
         &(PrePrepareDomain, slot, view),
     )
 }

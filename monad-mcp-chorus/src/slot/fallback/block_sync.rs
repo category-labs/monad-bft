@@ -43,8 +43,8 @@ use super::{
         fast::Entry,
         types::{ProposalMap, Slot, ValidatorData},
     },
-    PartialBlock,
-    monad_mvba::metablock::{entries_of, partial_block_is_valid},
+    Metablock,
+    monad_mvba::metablock::{entries_of, metablock_is_valid},
 };
 
 /// `⟨BlockRequest, slot, entries(x)⟩`: broadcast ask for the block behind
@@ -67,14 +67,14 @@ pub(crate) struct BlockRequestMsg {
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct BlockResponseMsg {
     pub slot: Slot,
-    pub block: PartialBlock,
+    pub block: Metablock,
 }
 
 /// The blocks this instance holds, and the ones it is waiting for.
 pub(crate) struct BlockSync {
     slot: Slot,
     /// Blocks held, keyed by the entries that identify them.
-    known: HashMap<ProposalMap<Entry>, PartialBlock>,
+    known: HashMap<ProposalMap<Entry>, Metablock>,
     /// Entries a request has gone out for and no valid response has come back
     /// for yet.
     pending: HashSet<ProposalMap<Entry>>,
@@ -93,13 +93,13 @@ impl BlockSync {
     /// proposal it accepted, or a response it validated. Keyed by the entries,
     /// so storing the same block twice is a no-op and any request for it is
     /// satisfied.
-    pub(crate) fn remember(&mut self, block: PartialBlock) {
+    pub(crate) fn remember(&mut self, block: Metablock) {
         let entries = entries_of(&block);
         self.pending.remove(&entries);
         self.known.insert(entries, block);
     }
 
-    pub(crate) fn get(&self, entries: &ProposalMap<Entry>) -> Option<&PartialBlock> {
+    pub(crate) fn get(&self, entries: &ProposalMap<Entry>) -> Option<&Metablock> {
         self.known.get(entries)
     }
 
@@ -164,7 +164,7 @@ impl BlockSync {
             return false;
         }
 
-        if !partial_block_is_valid(&response.block, self.slot, num_proposals, validator_data) {
+        if !metablock_is_valid(&response.block, self.slot, num_proposals, validator_data) {
             return false;
         }
 

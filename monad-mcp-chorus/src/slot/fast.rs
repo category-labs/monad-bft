@@ -19,7 +19,7 @@ use bytes::Bytes;
 use itertools::Either;
 
 use super::{
-    fallback::{FallbackPath, MVBAInputs},
+    fallback::{FallbackPath, Metablock},
     types::{
         DAHandle, EquivCert, FetchProposalError, IsVote, KeyPair, MerkleRoot, NodeId,
         ProposalIndex, ProposalMap, ProposalMeta, Signature, Slot, StrongQc, TotalProposalMap,
@@ -93,12 +93,21 @@ impl FastPath {
         }
     }
 
-    pub(crate) fn spawn_fallback(&self, input: MVBAInputs) -> FallbackPath {
+    /// Whether a fallback certificate received from a peer admits this slot
+    /// to the fallback path: it is scoped to this slot and its signatures
+    /// verify. Checked here because the certificate no longer rides inside the
+    /// MVBA input, where admission used to be re-checked on every proposal.
+    pub(crate) fn enter_fallback_cert_is_valid(&self, cert: &EnterFallbackCert) -> bool {
+        cert.scope == self.slot && cert.verify(&self.validator_data)
+    }
+
+    pub(crate) fn spawn_fallback(&self, cert: EnterFallbackCert, block: Metablock) -> FallbackPath {
         FallbackPath::new(
             self.slot,
             self.key.clone(),
             self.validator_data.clone(),
-            input,
+            cert,
+            block,
         )
     }
 
@@ -236,7 +245,11 @@ impl FastPath {
 
     // D_s + 2Delta
     #[must_use]
-    pub(crate) fn on_fallback_deadline(&self) -> Option<MVBAInputs> {
+    /// The certificate this validator just formed, and the block it can enter
+    /// the fallback path with. The certificate is returned alongside rather
+    /// than folded into the block: it admits the path, it is not part of the
+    /// value the MVBA agrees on, and the caller has to disseminate it.
+    pub(crate) fn on_fallback_deadline(&self) -> Option<(EnterFallbackCert, Metablock)> {
         // Note: fast commit qc is impossible at this point because
         // the possible fast commit qc must have been formed
         // reactively when handling fast commit votes.
@@ -244,27 +257,22 @@ impl FastPath {
         let enter_fallback_cert = self
             .enter_fallback_votes
             .try_form_strong_qc(&self.validator_data)?;
-        self.try_build_mvba_inputs(enter_fallback_cert)
+        let block = self.try_build_fallback_block()?;
+
+        Some((enter_fallback_cert, block))
     }
 
-    pub(crate) fn try_build_mvba_inputs(
-        &self,
-        enter_fallback_cert: EnterFallbackCert,
-    ) -> Option<MVBAInputs> {
-        let block = self
-            .certs
+    /// This validator's MVBA input: one certified entry per proposer, built
+    /// from local evidence. `None` until it holds evidence for every proposer.
+    pub(crate) fn try_build_fallback_block(&self) -> Option<Metablock> {
+        self.certs
             .as_ref()
             .map(|cert| match cert {
                 LocalCertifiedEntry::Absent => None,
                 LocalCertifiedEntry::Certified(cert) => Some(cert),
             })
-            .try_into_total()?
-            .into_owned();
-
-        Some(MVBAInputs {
-            enter_fallback_cert,
-            block,
-        })
+            .try_into_total()
+            .map(|block| block.into_owned())
     }
 
     // ------- internal helper methods ---------
