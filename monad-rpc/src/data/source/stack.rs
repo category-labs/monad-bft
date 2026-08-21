@@ -18,8 +18,8 @@ use std::{future::Future, pin::Pin};
 use async_trait::async_trait;
 
 use super::{
-    BlockCommitState, BlockPointer, DataSourceError, DataSourceResult, HistoricalDataSource,
-    HistoricalDataSourceExt,
+    BlockCommitState, BlockPointer, DataSourceError, DataSourceResult, HistoricalBlockData,
+    HistoricalDataSource, HistoricalDataSourceExt,
 };
 use crate::types::eth_json::BlockTagOrHash;
 
@@ -95,12 +95,7 @@ where
     async fn get_block(
         &self,
         pointer: BlockPointer,
-    ) -> DataSourceResult<
-        Option<(
-            alloy_consensus::Header,
-            Vec<monad_eth_types::TxEnvelopeWithSender>,
-        )>,
-    > {
+    ) -> DataSourceResult<Option<HistoricalBlockData>> {
         execute_on_sources(&self.sources, move |source| source.get_block(pointer)).await
     }
 

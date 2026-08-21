@@ -20,9 +20,10 @@ use alloy_primitives::BlockHash;
 use async_trait::async_trait;
 use auto_impl::auto_impl;
 use dyn_clone::{clone_trait_object, DynClone};
-use monad_eth_types::TxEnvelopeWithSender;
 
-use super::{BlockCommitState, BlockPointer, DataSourceResult, DataSourceStack};
+use super::{
+    BlockCommitState, BlockPointer, DataSourceResult, DataSourceStack, HistoricalBlockData,
+};
 use crate::types::eth_json::{BlockTagOrHash, BlockTags};
 
 /// Trait for read-only queries against historical chain data.
@@ -76,7 +77,7 @@ pub trait HistoricalDataSource: DynClone + Send + Sync {
     async fn get_block(
         &self,
         pointer: BlockPointer,
-    ) -> DataSourceResult<Option<(Header, Vec<TxEnvelopeWithSender>)>>;
+    ) -> DataSourceResult<Option<HistoricalBlockData>>;
 
     /// Fetch a block header.
     async fn get_block_header(&self, pointer: BlockPointer) -> DataSourceResult<Option<Header>>;
