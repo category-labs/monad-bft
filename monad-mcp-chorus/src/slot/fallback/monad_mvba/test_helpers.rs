@@ -37,7 +37,7 @@ use super::{
     Context, MonadMvba, TimerEvent,
     certificates::{PrepareQc, TimeoutCertificate},
     collectors::TimeoutCollector,
-    messages::{CommitVote, Message, PrePrepareMsg, PrepareVote, TimeoutMsg},
+    messages::{FallbackCommitVote, Message, PrePrepareMsg, PrepareVote, TimeoutMsg},
 };
 
 pub(super) const NUM_NODES: u64 = 4;
@@ -197,7 +197,11 @@ pub(super) fn feed_commit_votes(
     signers: &[NodeId],
 ) {
     for node in signers {
-        let msg = VoteMsg::new_signed((SLOT, v), CommitVote(block.entries()), &node.keypair());
+        let msg = VoteMsg::new_signed(
+            (SLOT, v),
+            FallbackCommitVote(block.entries()),
+            &node.keypair(),
+        );
         instance.handle_message(*node, Message::Commit(msg));
     }
 }
@@ -211,7 +215,7 @@ pub(super) fn commit_qc_message(
 ) -> Message {
     let qc = strong_qc(
         (SLOT, v),
-        CommitVote(block.entries()),
+        FallbackCommitVote(block.entries()),
         &quorum(),
         validator_data,
     );

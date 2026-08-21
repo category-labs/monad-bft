@@ -46,7 +46,7 @@ use super::{
         FallbackView, MVBAInputs,
         block_sync::{BlockRequestMsg, BlockResponseMsg},
     },
-    certificates::{CommitQc, PrepareQc, TimeoutCertificate},
+    certificates::{FallbackCommitQc, PrepareQc, TimeoutCertificate},
 };
 use crate::spec::vote::{KeyPair as _, Signature as _};
 
@@ -68,7 +68,7 @@ pub(crate) enum Message {
     /// A commit certificate, so a validator that missed the votes it
     /// aggregates can still decide.
     #[from]
-    CommitQc(CommitQc),
+    CommitQc(FallbackCommitQc),
     /// Broadcast ask for the block behind entries a certificate has settled.
     #[from]
     BlockRequest(BlockRequestMsg),
@@ -95,9 +95,9 @@ pub(crate) type PrepareVoteMsg = VoteMsg<PrepareVote>;
 /// `⟨Commit, slot, v, entries(x)⟩`: a vote to commit entries that gathered a
 /// prepare certificate in view `v`.
 #[derive(Clone, PartialEq, Eq, Hash, Debug, derive_more::From)]
-pub(crate) struct CommitVote(pub ProposalMap<Entry>);
+pub(crate) struct FallbackCommitVote(pub ProposalMap<Entry>);
 
-impl IsVote for CommitVote {
+impl IsVote for FallbackCommitVote {
     type Scope = (Slot, FallbackView);
 
     fn serialize(&self, scope: &Self::Scope) -> Bytes {
@@ -105,7 +105,7 @@ impl IsVote for CommitVote {
     }
 }
 
-pub(crate) type CommitVoteMsg = VoteMsg<CommitVote>;
+pub(crate) type CommitVoteMsg = VoteMsg<FallbackCommitVote>;
 
 /// The signed part of a timeout: which prepare certificate the sender carries,
 /// identified by its view alone.

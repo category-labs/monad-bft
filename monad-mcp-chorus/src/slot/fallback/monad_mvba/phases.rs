@@ -31,7 +31,7 @@ use super::{
         },
         PartialBlock,
     },
-    certificates::{CommitQc, PrepareQc, TimeoutCertificate},
+    certificates::{FallbackCommitQc, PrepareQc, TimeoutCertificate},
     messages::PrePrepareMsg,
 };
 
@@ -80,7 +80,7 @@ pub(crate) struct Committing {
 #[derive(Clone)]
 pub(crate) struct Decided {
     entries: ProposalMap<Entry>, // FIXME: this field seems redundant with commit_qc
-    commit_qc: CommitQc,
+    commit_qc: FallbackCommitQc,
     block: PartialBlock,
 }
 
@@ -242,7 +242,7 @@ impl Preparing {
     /// A commit certificate can arrive before this validator has seen the
     /// prepare certificate for the same entries; the decision does not wait
     /// for it.
-    pub(crate) fn decide(self, commit_qc: CommitQc, block: PartialBlock) -> Decided {
+    pub(crate) fn decide(self, commit_qc: FallbackCommitQc, block: PartialBlock) -> Decided {
         debug_assert_eq!(commit_qc.verdict.0, self.entries);
 
         Decided {
@@ -258,7 +258,7 @@ impl Committing {
         &self.entries
     }
 
-    pub(crate) fn decide(self, commit_qc: CommitQc, block: PartialBlock) -> Decided {
+    pub(crate) fn decide(self, commit_qc: FallbackCommitQc, block: PartialBlock) -> Decided {
         debug_assert_eq!(commit_qc.verdict.0, self.entries);
 
         Decided {
@@ -274,7 +274,7 @@ impl Decided {
         &self.entries
     }
 
-    pub(crate) fn commit_qc(&self) -> &CommitQc {
+    pub(crate) fn commit_qc(&self) -> &FallbackCommitQc {
         &self.commit_qc
     }
 
@@ -286,7 +286,7 @@ impl Decided {
     /// a view whose phase never accepted the entries it certifies. The
     /// certificate's verdict fixes the entries; the block is whatever was
     /// retrieved for them.
-    pub(crate) fn from_foreign_qc(commit_qc: CommitQc, block: PartialBlock) -> Self {
+    pub(crate) fn from_foreign_qc(commit_qc: FallbackCommitQc, block: PartialBlock) -> Self {
         Decided {
             entries: commit_qc.verdict.0.clone(),
             commit_qc,
@@ -311,7 +311,10 @@ pub(crate) enum Transition {
     /// A commit certificate over entries this validator holds the block for.
     /// Both halves travel here: the certificate settles the entries, the block
     /// is what the decision hands on.
-    CommitQc { qc: CommitQc, block: PartialBlock },
+    CommitQc {
+        qc: FallbackCommitQc,
+        block: PartialBlock,
+    },
     /// This validator leads the current view and has a proposal it is allowed
     /// to make: either nothing is locked, or the locked block is in hand.
     OwnProposal(PrePrepareMsg),

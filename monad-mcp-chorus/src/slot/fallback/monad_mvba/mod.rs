@@ -66,10 +66,11 @@ use std::{
     sync::Arc,
 };
 
-use certificates::{CommitQc, PrepareQc, TimeoutCertificate};
+use certificates::{FallbackCommitQc, PrepareQc, TimeoutCertificate};
 use collectors::{TimeoutCollector, VoteCollector};
 use messages::{
-    CommitVote, CommitVoteMsg, Message, PrePrepareMsg, PrepareVote, PrepareVoteMsg, TimeoutMsg,
+    CommitVoteMsg, FallbackCommitVote, Message, PrePrepareMsg, PrepareVote, PrepareVoteMsg,
+    TimeoutMsg,
 };
 use phases::{Decided, InnerPhase, Phase, TimedOut, Transition};
 
@@ -214,15 +215,16 @@ pub(crate) struct MonadMvba {
     /// and never the pre-prepare or the `MVBAInputs` around it. The decision is
     /// unchanged: `ProposalMap<Entry>` plus a certificate over it, now reported
     /// once the block beside it is in hand.
-    decided_qc: Option<CommitQc>,
+    decided_qc: Option<FallbackCommitQc>,
 
+    // TODO: group the collectors by view
     /// The first pre-prepare seen per view, for the current view or a nearby
     /// future one. First write wins, so a Byzantine leader cannot displace the
     /// proposal a validator is already working on with a second one.
     pre_prepares: BTreeMap<FallbackView, Validated<PrePrepareMsg>>,
 
     prepare_votes: VoteCollector<PrepareVote>,
-    commit_votes: VoteCollector<CommitVote>,
+    commit_votes: VoteCollector<FallbackCommitVote>,
     timeouts: TimeoutCollector,
     /// The blocks behind entries this instance has seen certified, and the
     /// requests outstanding for the ones it is missing.
@@ -249,7 +251,7 @@ impl Mvba<MVBAInputs> for MonadMvba {
     type Message = Message;
     type Context = Context;
     type TimerEvent = TimerEvent;
-    type CommitVote = CommitVote;
+    type CommitVote = FallbackCommitVote;
 
     fn new(context: Context) -> Self {
         let slot = context.slot;
@@ -341,7 +343,7 @@ impl Mvba<MVBAInputs> for MonadMvba {
     }
 
     // FIXME: rename it decision_proof
-    fn decision_qc(&self) -> Option<&CommitQc> {
+    fn decision_qc(&self) -> Option<&FallbackCommitQc> {
         // reading all three off the decided phase is what makes them agree:
         // the phase is only reached with both certificate and block in hand.
         // An instance with no input, or an abandoned one, may hold a
@@ -419,7 +421,7 @@ impl MonadMvba {
         self.timeouts.add(sender, msg);
     }
 
-    fn store_commit_qc(&mut self, qc: CommitQc) {
+    fn store_commit_qc(&mut self, qc: FallbackCommitQc) {
         if qc.scope.0 != self.context.slot || !qc.verify(&self.context.validator_data) {
             return;
         }
@@ -553,7 +555,7 @@ impl MonadMvba {
     /// This settles *what* was decided all by itself; whether this instance can
     /// report the decision is a separate question, asked in
     /// [`MonadMvba::pending_commit_qc`].
-    fn known_commit_qc(&self) -> Option<CommitQc> {
+    fn known_commit_qc(&self) -> Option<FallbackCommitQc> {
         match &self.decided_qc {
             Some(qc) => Some(qc.clone()),
             None => self
@@ -569,7 +571,7 @@ impl MonadMvba {
     /// with the proposal that carried it, or fetched from a peer. Waiting is
     /// safe: the certificate is already recorded, so this can only be delayed,
     /// never changed.
-    fn pending_commit_qc(&self) -> Option<(CommitQc, PartialBlock)> {
+    fn pending_commit_qc(&self) -> Option<(FallbackCommitQc, PartialBlock)> {
         let qc = self.known_commit_qc()?;
         let block = self.block_sync.get(&qc.verdict.0)?.clone();
 
@@ -703,10 +705,9 @@ impl MonadMvba {
         self.last_voted_view = self.view;
 
         let vote = self.sign_vote(PrepareVote(preparing.entries().clone()));
-        (
-            Phase::Preparing(preparing),
-            vec![MVBAOutput::Broadcast(Message::Prepare(vote))],
-        )
+        (Phase::Preparing(preparing), vec![MVBAOutput::Broadcast(
+            Message::Prepare(vote),
+        )])
     }
 
     /// `TryFormPrepQC`: adopt the certificate as this validator's lock and
@@ -738,7 +739,7 @@ impl MonadMvba {
         // persist-before-send: PrepQC.
         self.update_prep_qc(qc);
 
-        let vote = self.sign_vote(CommitVote(entries));
+        let vote = self.sign_vote(FallbackCommitVote(entries));
         let outputs = vec![MVBAOutput::Broadcast(Message::Commit(vote))];
 
         match committing {
@@ -754,7 +755,7 @@ impl MonadMvba {
     fn decide(
         &mut self,
         phase: Phase,
-        commit_qc: CommitQc,
+        commit_qc: FallbackCommitQc,
         block: PartialBlock,
     ) -> (Phase, Vec<MVBAOutput<Message, TimerEvent>>) {
         let entries = commit_qc.verdict.0.clone();
@@ -781,10 +782,9 @@ impl MonadMvba {
         // the echo goes out here, after retrieval, rather than when the
         // certificate arrived: relaying one this instance could not complete
         // adds nothing, since whoever sent it broadcast it already.
-        (
-            Phase::Decided(decided),
-            vec![MVBAOutput::Broadcast(Message::CommitQc(commit_qc))],
-        )
+        (Phase::Decided(decided), vec![MVBAOutput::Broadcast(
+            Message::CommitQc(commit_qc),
+        )])
     }
 
     /// `SyncView`: adopt the certificate's lock if it is higher than the one
@@ -915,10 +915,9 @@ impl MonadMvba {
         // persist-before-send: v, and the certificate that justified the view.
         self.proposed = true;
 
-        (
-            phase,
-            vec![MVBAOutput::Broadcast(Message::PrePrepare(pre_prepare))],
-        )
+        (phase, vec![MVBAOutput::Broadcast(Message::PrePrepare(
+            pre_prepare,
+        ))])
     }
 
     /// `lock(J)` for the view this validator is in: what its leader is bound to

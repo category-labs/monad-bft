@@ -25,7 +25,7 @@ use super::{
         },
         FallbackView,
     },
-    messages::{CommitVote, PrepareVote, TimeoutVote},
+    messages::{FallbackCommitVote, PrepareVote, TimeoutVote},
 };
 use crate::spec::{Stake as _, validator::ValidatorData as _, vote::SignatureCollection as _};
 
@@ -34,7 +34,7 @@ pub(crate) type PrepareQc = StrongQc<PrepareVote>;
 
 /// `CommitQC`: 2f+1 commit votes on the same entries. This is the transferable
 /// commitment proof the fallback path finalizes on.
-pub(crate) type CommitQc = StrongQc<CommitVote>;
+pub(crate) type FallbackCommitQc = StrongQc<FallbackCommitVote>;
 
 /// `TC_{slot, v}`: 2f+1 timeouts for view `v` from distinct senders.
 ///
