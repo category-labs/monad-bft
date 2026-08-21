@@ -31,7 +31,7 @@ use monad_crypto::certificate_signature::PubKey;
 use monad_executor_glue::{
     SessionId, StateSyncBadVersion, StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse,
     StateSyncUpsertType, StateSyncUpsertV1, MAX_UPSERTS_PER_RESPONSE, SELF_STATESYNC_VERSION,
-    STATESYNC_VERSION_MIN, STATESYNC_VERSION_V2,
+    STATESYNC_VERSION_MIN,
 };
 use monad_statesync::ffi;
 use monad_types::NodeId;
@@ -282,8 +282,7 @@ impl<PT: PubKey> WipResponse<PT> {
     pub fn can_send(&self) -> bool {
         self.pending_response_completions.as_ref().is_none_or(|r| {
             r.len() < MAX_PENDING_RESPONSES
-                && (self.response.version < STATESYNC_VERSION_V2
-                    || self.unacknowledged_responses < MAX_UNACKNOWLEDGED_RESPONSES)
+                && self.unacknowledged_responses < MAX_UNACKNOWLEDGED_RESPONSES
         })
     }
 
@@ -361,10 +360,9 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
                 futures.push(fut.boxed());
             }
 
-            // If we have a pending response, schedule a timeout for the client that supports completions
+            // If we have a pending response, schedule a timeout for the client
             if wip_response.unacknowledged_responses > 0
                 && wip_response.pending_response_completions.is_some()
-                && wip_response.response.version >= STATESYNC_VERSION_V2
             {
                 let fut = async {
                     tokio::time::sleep_until(

@@ -49,6 +49,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_execution_state_read::ExecutionStateRead;
+use monad_statesync_version::{MONAD_STATESYNC_MAJOR, MONAD_STATESYNC_MINOR_V2};
 use monad_types::{
     deserialize_pubkey, serialize_pubkey, Epoch, ExecutionProtocol, FullnodeBroadcastMode,
     LimitedVec, NodeId, Round, RouterTarget, SeqNum, Stake, UdpPriority,
@@ -1460,12 +1461,14 @@ where
     }
 }
 
-const STATESYNC_VERSION_V0: StateSyncVersion = StateSyncVersion { major: 1, minor: 0 };
-const STATESYNC_VERSION_V1: StateSyncVersion = StateSyncVersion { major: 1, minor: 1 };
-// Client is required to send completions since this version
-pub const STATESYNC_VERSION_V2: StateSyncVersion = StateSyncVersion { major: 1, minor: 2 };
+// Client is required to send completions since this version. Minors 0 and 1
+// predate that and are no longer spoken; nothing deployed still runs them.
+pub const STATESYNC_VERSION_V2: StateSyncVersion = StateSyncVersion {
+    major: MONAD_STATESYNC_MAJOR,
+    minor: MONAD_STATESYNC_MINOR_V2,
+};
 pub const SELF_STATESYNC_VERSION: StateSyncVersion = STATESYNC_VERSION_V2;
-pub const STATESYNC_VERSION_MIN: StateSyncVersion = STATESYNC_VERSION_V0;
+pub const STATESYNC_VERSION_MIN: StateSyncVersion = STATESYNC_VERSION_V2;
 
 #[derive(
     Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, RlpEncodable, RlpDecodable, Serialize,
@@ -1557,39 +1560,15 @@ pub enum StateSyncUpsertType {
 
 #[serde_as]
 #[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize)]
-pub struct StateSyncUpsertV0 {
-    pub upsert_type: StateSyncUpsertType,
-    #[serde_as(as = "serde_with::hex::Hex")]
-    pub data: Vec<u8>,
-}
-
-#[serde_as]
-#[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize)]
 pub struct StateSyncUpsertV1 {
     pub upsert_type: StateSyncUpsertType,
     #[serde_as(as = "serde_with::hex::Hex")]
     pub data: Bytes,
 }
 
-impl StateSyncUpsertV0 {
-    fn as_v1(&self) -> StateSyncUpsertV1 {
-        StateSyncUpsertV1 {
-            upsert_type: self.upsert_type,
-            data: Bytes::copy_from_slice(&self.data),
-        }
-    }
-}
-
 impl StateSyncUpsertV1 {
     pub fn new(upsert_type: StateSyncUpsertType, data: Bytes) -> Self {
         Self { upsert_type, data }
-    }
-
-    fn as_v0(&self) -> StateSyncUpsertV0 {
-        StateSyncUpsertV0 {
-            upsert_type: self.upsert_type,
-            data: self.data.to_vec(),
-        }
     }
 }
 
@@ -1675,57 +1654,27 @@ pub struct StateSyncResponse {
 
 impl Encodable for StateSyncResponse {
     fn encode(&self, out: &mut dyn BufMut) {
-        // check if client version is past V1: upsert fork
-        if self.request.version >= STATESYNC_VERSION_V1 {
-            let enc: [&dyn Encodable; 6] = [
-                &self.version,
-                &self.nonce,
-                &self.response_index,
-                &self.request,
-                &self.response,
-                &self.response_n,
-            ];
-            encode_list::<_, dyn Encodable>(&enc, out);
-        } else {
-            let v0_response: Vec<StateSyncUpsertV0> =
-                self.response.iter().map(StateSyncUpsertV1::as_v0).collect();
-            let enc: [&dyn Encodable; 6] = [
-                &self.version,
-                &self.nonce,
-                &self.response_index,
-                &self.request,
-                &v0_response,
-                &self.response_n,
-            ];
-            encode_list::<_, dyn Encodable>(&enc, out);
-        }
+        let enc: [&dyn Encodable; 6] = [
+            &self.version,
+            &self.nonce,
+            &self.response_index,
+            &self.request,
+            &self.response,
+            &self.response_n,
+        ];
+        encode_list::<_, dyn Encodable>(&enc, out);
     }
 
     fn length(&self) -> usize {
-        // check if client version is past V1: upsert fork
-        if self.request.version >= STATESYNC_VERSION_V1 {
-            let enc: Vec<&dyn Encodable> = vec![
-                &self.version,
-                &self.nonce,
-                &self.response_index,
-                &self.request,
-                &self.response,
-                &self.response_n,
-            ];
-            Encodable::length(&enc)
-        } else {
-            let v0_response: Vec<StateSyncUpsertV0> =
-                self.response.iter().map(StateSyncUpsertV1::as_v0).collect();
-            let enc: Vec<&dyn Encodable> = vec![
-                &self.version,
-                &self.nonce,
-                &self.response_index,
-                &self.request,
-                &v0_response,
-                &self.response_n,
-            ];
-            Encodable::length(&enc)
-        }
+        let enc: Vec<&dyn Encodable> = vec![
+            &self.version,
+            &self.nonce,
+            &self.response_index,
+            &self.request,
+            &self.response,
+            &self.response_n,
+        ];
+        Encodable::length(&enc)
     }
 }
 
@@ -1737,16 +1686,9 @@ impl Decodable for StateSyncResponse {
         let nonce = u64::decode(&mut payload)?;
         let response_index = u32::decode(&mut payload)?;
         let request = StateSyncRequest::decode(&mut payload)?;
-        // check if server version is past V1: upsert fork
-        let response: Vec<StateSyncUpsertV1> = if version >= STATESYNC_VERSION_V1 {
+        let response =
             LimitedVec::<StateSyncUpsertV1, MAX_UPSERTS_PER_RESPONSE>::decode(&mut payload)?
-                .into_inner()
-        } else {
-            let v0_response =
-                LimitedVec::<StateSyncUpsertV0, MAX_UPSERTS_PER_RESPONSE>::decode(&mut payload)?
-                    .into_inner();
-            v0_response.iter().map(StateSyncUpsertV0::as_v1).collect()
-        };
+                .into_inner();
         let response_n = u64::decode(&mut payload)?;
 
         if !payload.is_empty() {
@@ -2493,8 +2435,8 @@ mod tests {
     use crate::{
         BlockSyncEvent, MempoolEvent, MonadEvent, PeerEntry, PeerEntryAddress, StateSyncEvent,
         StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse, StateSyncUpsertType,
-        StateSyncUpsertV1, StateSyncVersion, SELF_STATESYNC_VERSION, STATESYNC_VERSION_V0,
-        STATESYNC_VERSION_V1,
+        StateSyncUpsertV1, StateSyncVersion, SELF_STATESYNC_VERSION, STATESYNC_VERSION_MIN,
+        STATESYNC_VERSION_V2,
     };
 
     type TestSignature = NopSignature;
@@ -2525,13 +2467,29 @@ mod tests {
 
     #[test]
     fn statesync_version_is_compatible() {
-        assert!(STATESYNC_VERSION_V0.is_compatible());
-        assert!(STATESYNC_VERSION_V1.is_compatible());
+        assert!(STATESYNC_VERSION_V2.is_compatible());
+        assert!(SELF_STATESYNC_VERSION.is_compatible());
+        assert!(STATESYNC_VERSION_MIN == STATESYNC_VERSION_V2);
+        // Retired: a peer still speaking either one gets BadVersion.
+        assert!(!StateSyncVersion { major: 1, minor: 0 }.is_compatible());
+        assert!(!StateSyncVersion { major: 1, minor: 1 }.is_compatible());
+    }
+
+    /// The rung values come from execution's statesync_version.h, but which rung
+    /// is current and which is the floor is picked independently on each side,
+    /// so a bump here has to be matched there.
+    #[test]
+    fn statesync_version_aliases_match_execution() {
+        use monad_statesync_version::{MONAD_STATESYNC_VERSION, MONAD_STATESYNC_VERSION_MIN};
+
+        assert_eq!(SELF_STATESYNC_VERSION.to_u32(), MONAD_STATESYNC_VERSION);
+        assert_eq!(STATESYNC_VERSION_MIN.to_u32(), MONAD_STATESYNC_VERSION_MIN);
     }
 
     #[test]
     fn statesync_version_ord() {
-        assert!(STATESYNC_VERSION_V0 < STATESYNC_VERSION_V1);
+        assert!(StateSyncVersion { major: 1, minor: 1 } < STATESYNC_VERSION_V2);
+        assert!(STATESYNC_VERSION_V2 < StateSyncVersion { major: 2, minor: 0 });
     }
 
     fn make_response(
@@ -2560,53 +2518,14 @@ mod tests {
     }
 
     #[test]
-    fn statesync_version_v0_roundtrip() {
-        let response = make_response(STATESYNC_VERSION_V0, STATESYNC_VERSION_V0);
+    fn statesync_response_roundtrip() {
+        let response = make_response(STATESYNC_VERSION_V2, STATESYNC_VERSION_V2);
         let serialized_response = alloy_rlp::encode(&response);
+        assert_eq!(serialized_response.len(), Encodable::length(&response));
         let deserialized_response = alloy_rlp::decode_exact(&serialized_response).unwrap();
         if response != deserialized_response {
-            panic!("failed to roundtrip v0 statesync response")
+            panic!("failed to roundtrip statesync response")
         }
-    }
-
-    #[test]
-    fn statesync_version_v1_roundtrip() {
-        let response = make_response(STATESYNC_VERSION_V1, STATESYNC_VERSION_V1);
-        let serialized_response = alloy_rlp::encode(&response);
-        let deserialized_response = alloy_rlp::decode_exact(&serialized_response).unwrap();
-        if response != deserialized_response {
-            panic!("failed to roundtrip v1 statesync response")
-        }
-    }
-
-    #[test]
-    fn statesync_version_v1_to_v0() {
-        // v0 client, v1 server
-        let response = alloy_rlp::encode(make_response(STATESYNC_VERSION_V0, STATESYNC_VERSION_V1));
-
-        // v0 format
-        let v0_response =
-            alloy_rlp::encode(make_response(STATESYNC_VERSION_V0, STATESYNC_VERSION_V0));
-        // v1 format
-        let v1_response =
-            alloy_rlp::encode(make_response(STATESYNC_VERSION_V1, STATESYNC_VERSION_V1));
-        assert!(
-            v0_response.len() > v1_response.len(),
-            "v1 serializes smaller messages"
-        );
-
-        // use len as a proxy for format
-        // can't check pure equality, because the versions won't match in the serialized messages
-        assert_eq!(
-            response.len(),
-            v0_response.len(),
-            "v0 client can't understand v1 server"
-        );
-        assert_ne!(
-            response.len(),
-            v1_response.len(),
-            "v1 server sent v1 response to v0 client"
-        );
     }
 
     #[test]
