@@ -1098,36 +1098,44 @@ fn udp_priority_delivery() {
 
     let num_msgs_per_mb = message_size.div_ceil(DEFAULT_SEGMENT_SIZE as usize);
 
-    for (i, message) in messages.iter().enumerate().take(num_msgs_per_mb) {
+    let mut high_count = 0;
+    let mut regular_count = 0;
+    for message in &messages {
         assert_eq!(message.src_addr, tx_addr);
-        let expected_size = if i == num_msgs_per_mb - 1 {
-            message_size - (i * DEFAULT_SEGMENT_SIZE as usize)
+        let class_index = match message.payload[0] {
+            0xAA => {
+                let index = high_count;
+                high_count += 1;
+                index
+            }
+            0xBB => {
+                let index = regular_count;
+                regular_count += 1;
+                index
+            }
+            byte => panic!("unexpected priority test payload byte {byte:#x}"),
+        };
+        let expected_size = if class_index == num_msgs_per_mb - 1 {
+            message_size - (class_index * DEFAULT_SEGMENT_SIZE as usize)
         } else {
             DEFAULT_SEGMENT_SIZE as usize
         };
         assert_eq!(message.payload.len(), expected_size);
-        assert_eq!(
-            message.payload[0], 0xAA,
-            "Expected high priority message at index {}",
-            i
-        );
     }
+    assert_eq!(high_count, num_msgs_per_mb);
+    assert_eq!(regular_count, num_msgs_per_mb);
 
-    for i in 0..num_msgs_per_mb {
-        let idx = num_msgs_per_mb + i;
-        assert_eq!(messages[idx].src_addr, tx_addr);
-        let expected_size = if i == num_msgs_per_mb - 1 {
-            message_size - (i * DEFAULT_SEGMENT_SIZE as usize)
-        } else {
-            DEFAULT_SEGMENT_SIZE as usize
-        };
-        assert_eq!(messages[idx].payload.len(), expected_size);
-        assert_eq!(
-            messages[idx].payload[0], 0xBB,
-            "Expected regular priority message at index {}",
-            i
-        );
-    }
+    // Ready peers are ordered by priority, so regular traffic waits until the
+    // high-priority stream drains.
+    let last_high = messages
+        .iter()
+        .rposition(|message| message.payload[0] == 0xAA)
+        .unwrap();
+    let regular_before_high_drained = messages[..last_high]
+        .iter()
+        .filter(|message| message.payload[0] == 0xBB)
+        .count();
+    assert_eq!(regular_before_high_drained, 0);
 }
 
 #[test]
