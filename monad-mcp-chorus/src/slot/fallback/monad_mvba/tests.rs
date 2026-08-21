@@ -57,16 +57,15 @@ fn decides_along_the_happy_path() {
     feed_commit_votes(&mut instance, view(1), &block, &quorum());
     let outputs = drain(&mut instance);
 
-    assert_eq!(instance.decision(), Some(&block.entries()));
-    let decision_qc = instance
-        .decision_qc()
-        .expect("a decision comes with its certificate");
-    assert_eq!(decision_qc.verdict.0, block.entries());
     assert_eq!(
-        instance.decision_block(),
+        instance.decision(),
         Some(&block),
         "the block came with the proposal this validator accepted"
     );
+    let decision_proof = instance
+        .decision_proof()
+        .expect("a decision comes with its certificate");
+    assert_eq!(decision_proof.verdict.0, block.entries());
     assert!(
         decided_commit_qc(&outputs),
         "the certificate is passed on so others can decide"
@@ -110,7 +109,7 @@ fn a_quorum_that_arrives_before_the_proposal_fires_on_arrival() {
 
     feed_commit_votes(&mut instance, view(1), &block, &quorum());
     drain(&mut instance);
-    assert_eq!(instance.decision(), Some(&block.entries()));
+    assert_eq!(instance.decision(), Some(&block));
 }
 
 #[test]
@@ -135,16 +134,15 @@ fn commit_votes_decide_once_the_block_is_fetched() {
         "agreement is done; the block behind the entries is not here yet"
     );
     assert!(instance.decision().is_none());
-    assert!(instance.decision_qc().is_none());
+    assert!(instance.decision_proof().is_none());
 
     instance.handle_message(nodes()[1], block_response(block.clone()));
     let outputs = drain(&mut instance);
 
-    assert_eq!(instance.decision(), Some(&block.entries()));
-    assert_eq!(instance.decision_block(), Some(&block));
+    assert_eq!(instance.decision(), Some(&block));
     assert_eq!(
         instance
-            .decision_qc()
+            .decision_proof()
             .expect("a decision comes with its certificate")
             .verdict
             .0,
@@ -479,9 +477,8 @@ fn a_received_certificate_decides_once_its_block_is_retrieved() {
     instance.handle_message(nodes()[2], block_response(block.clone()));
     let outputs = drain(&mut instance);
 
-    assert_eq!(instance.decision(), Some(&block.entries()));
-    assert_eq!(instance.decision_block(), Some(&block));
-    assert!(instance.decision_qc().is_some());
+    assert_eq!(instance.decision(), Some(&block));
+    assert!(instance.decision_proof().is_some());
     assert!(decided_commit_qc(&outputs));
 }
 
@@ -538,7 +535,7 @@ fn a_bogus_block_response_is_ignored() {
     // and the real block still decides afterwards.
     instance.handle_message(nodes()[1], block_response(block.clone()));
     drain(&mut instance);
-    assert_eq!(instance.decision(), Some(&block.entries()));
+    assert_eq!(instance.decision(), Some(&block));
 }
 
 #[test]
@@ -680,11 +677,7 @@ fn a_decided_instance_ignores_everything_after() {
     instance.handle_timer(TimerEvent::ViewTimeout(view(1)));
 
     assert!(drain(&mut instance).is_empty(), "a decision is terminal");
-    assert_eq!(
-        instance.decision(),
-        Some(&block.entries()),
-        "and it never changes"
-    );
+    assert_eq!(instance.decision(), Some(&block), "and it never changes");
 }
 
 #[test]
@@ -741,8 +734,7 @@ fn a_certificate_arriving_before_propose_is_fetched_once_it_does() {
     instance.handle_message(nodes()[1], block_response(block.clone()));
     let outputs = drain(&mut instance);
 
-    assert_eq!(instance.decision(), Some(&block.entries()));
-    assert_eq!(instance.decision_block(), Some(&block));
+    assert_eq!(instance.decision(), Some(&block));
     assert!(decided_commit_qc(&outputs));
 }
 
@@ -766,8 +758,7 @@ fn a_certificate_over_this_validators_own_input_decides_on_propose() {
     instance.propose(own.clone(), Some(enter_fallback_cert(&validator_data)));
     let outputs = drain(&mut instance);
 
-    assert_eq!(instance.decision(), Some(&own.entries()));
-    assert_eq!(instance.decision_block(), Some(&own));
+    assert_eq!(instance.decision(), Some(&own));
     assert!(decided_commit_qc(&outputs));
     assert!(requested_entries(&outputs).is_empty());
 }

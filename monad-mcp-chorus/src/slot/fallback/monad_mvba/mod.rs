@@ -329,22 +329,29 @@ impl Mvba<Metablock> for MonadMvba {
     }
 
     // FIXME: decided block should be a ProposalMap<CertifiedEntry>, i.e. the full metablock
-    fn decision(&self) -> Option<&ProposalMap<Entry>> {
-        self.decided().map(Decided::entries)
+    //
+    // FIXME: delete this function. decision should be the metablock
+    //
+    // Response: both done, and they were the same change: the decision *is*
+    // the metablock now, `decision_block` is gone, and there is one accessor
+    // where there were two. What votes ranged over is still `entries(x)` --
+    // that is what `decision_proof` certifies -- but the entries are readable
+    // off the block, so reporting the projection separately only handed the
+    // caller less than the phase already held.
+    fn decision(&self) -> Option<&Metablock> {
+        self.decided().map(Decided::block)
     }
 
     // FIXME: rename it decision_proof
-    fn decision_qc(&self) -> Option<&FallbackCommitQc> {
-        // reading all three off the decided phase is what makes them agree:
-        // the phase is only reached with both certificate and block in hand.
-        // An instance with no input, or an abandoned one, may hold a
-        // certificate it never acted on; that is not a decision.
+    //
+    // Response: renamed. It is the proof of the decision, not a second
+    // decision alongside it, and the name now says so.
+    fn decision_proof(&self) -> Option<&FallbackCommitQc> {
+        // reading both off the decided phase is what makes them agree: the
+        // phase is only reached with both certificate and block in hand. An
+        // instance with no input, or an abandoned one, may hold a certificate
+        // it never acted on; that is not a decision.
         self.decided().map(Decided::commit_qc)
-    }
-
-    // FIXME: delete this function. decision should be the metablock
-    fn decision_block(&self) -> Option<&Metablock> {
-        self.decided().map(Decided::block)
     }
 
     fn poll(&mut self) -> Option<MVBAOutput<Self::Message, Self::TimerEvent>> {

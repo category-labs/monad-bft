@@ -79,7 +79,11 @@ pub(crate) struct Committing {
 /// phase is the evidence that both halves of the decision are in hand.
 #[derive(Clone)]
 pub(crate) struct Decided {
-    entries: ProposalMap<Entry>, // FIXME: this field seems redundant with commit_qc
+    // FIXME: this field seems redundant with commit_qc
+    //
+    // Response: it was, and it is gone. The certificate's verdict *is* the
+    // entries -- every path into this phase asserted as much -- so `entries()`
+    // now reads through it and there is one copy where there were two.
     commit_qc: FallbackCommitQc,
     block: Metablock,
 }
@@ -132,7 +136,7 @@ impl Phase {
             Phase::Preparing(p) => Some(&p.entries),
             Phase::Committing(p) => Some(&p.entries),
             Phase::TimedOut(p) => p.inner.entries(),
-            Phase::Decided(p) => Some(&p.entries),
+            Phase::Decided(p) => Some(p.entries()),
         }
     }
 
@@ -245,11 +249,7 @@ impl Preparing {
     pub(crate) fn decide(self, commit_qc: FallbackCommitQc, block: Metablock) -> Decided {
         debug_assert_eq!(commit_qc.verdict.0, self.entries);
 
-        Decided {
-            entries: self.entries,
-            commit_qc,
-            block,
-        }
+        Decided { commit_qc, block }
     }
 }
 
@@ -261,17 +261,15 @@ impl Committing {
     pub(crate) fn decide(self, commit_qc: FallbackCommitQc, block: Metablock) -> Decided {
         debug_assert_eq!(commit_qc.verdict.0, self.entries);
 
-        Decided {
-            entries: self.entries,
-            commit_qc,
-            block,
-        }
+        Decided { commit_qc, block }
     }
 }
 
 impl Decided {
+    /// `entries(x)` of the decided value: the certificate's verdict, which is
+    /// what the commit votes ranged over.
     pub(crate) fn entries(&self) -> &ProposalMap<Entry> {
-        &self.entries
+        &self.commit_qc.verdict.0
     }
 
     pub(crate) fn commit_qc(&self) -> &FallbackCommitQc {
@@ -287,11 +285,7 @@ impl Decided {
     /// certificate's verdict fixes the entries; the block is whatever was
     /// retrieved for them.
     pub(crate) fn from_foreign_qc(commit_qc: FallbackCommitQc, block: Metablock) -> Self {
-        Decided {
-            entries: commit_qc.verdict.0.clone(),
-            commit_qc,
-            block,
-        }
+        Decided { commit_qc, block }
     }
 }
 

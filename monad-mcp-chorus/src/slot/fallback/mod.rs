@@ -169,19 +169,21 @@ where
 
     /// Query whether the ACS has made an decision.
     ///
-    /// The decision is the projection votes ranged over, not the value that
-    /// carried it: [`Mvba::decision_qc`] certifies `entries(x)`, so a
-    /// supermajority has attested to exactly this much and nothing in the
-    /// value around it adds evidence.
+    /// What a supermajority attested to is the projection votes ranged over,
+    /// not the value that carried it: [`Mvba::decision_proof`] certifies
+    /// `entries(x)` and nothing in the value around it adds evidence. What is
+    /// returned here is the block behind that verdict, as retrieved from the
+    /// proposal that carried it or from a peer that held it. Typed concretely
+    /// because [`Metablock`] is; it becomes `V` itself in the generics pass.
     ///
-    /// Agreement therefore completes without the value, but this returns
-    /// `Some` only once the block behind the entries is held as well: what
-    /// consumes a decided slot needs the certified entries themselves, so
-    /// reporting a decision the caller cannot act on would only move the wait
-    /// somewhere with less context. The certificate is durable evidence the
-    /// moment it arrives and is kept regardless; retrieval is what this waits
-    /// on, and it is bounded by an honest holder answering a request.
-    fn decision(&self) -> Option<&V::Entries>;
+    /// Agreement therefore completes without the block, but this returns
+    /// `Some` only once it is held: what consumes a decided slot needs the
+    /// certified entries themselves, so reporting a decision the caller cannot
+    /// act on would only move the wait somewhere with less context. The
+    /// certificate is durable evidence the moment it arrives and is kept
+    /// regardless; retrieval is what this waits on, and it is bounded by an
+    /// honest holder answering a request.
+    fn decision(&self) -> Option<&Metablock>;
 
     /// The certificate proving the decision: a supermajority of commit votes
     /// over `entries(x)` of the decided value. It is the transferable
@@ -189,15 +191,7 @@ where
     /// round is needed after agreement.
     ///
     /// Returns `Some` whenever [`Mvba::decision`] does.
-    fn decision_qc(&self) -> Option<&StrongQc<Self::CommitVote>>;
-
-    /// The decided block: the certified entries [`Mvba::decision`] projects,
-    /// as retrieved from the proposal that carried them or from a peer that
-    /// held them.
-    ///
-    /// Returns `Some` exactly when the other two do. Typed concretely because
-    /// [`Metablock`] is; it becomes `V` itself in the generics pass.
-    fn decision_block(&self) -> Option<&Metablock>;
+    fn decision_proof(&self) -> Option<&StrongQc<Self::CommitVote>>;
 
     fn poll(&mut self) -> Option<MVBAOutput<Self::Message, Self::TimerEvent>>;
 }
