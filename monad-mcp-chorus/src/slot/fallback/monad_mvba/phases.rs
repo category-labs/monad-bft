@@ -25,10 +25,7 @@
 
 use super::{
     super::{
-        super::{
-            fast::Entry,
-            types::{ProposalMap, Validated},
-        },
+        super::{fast::Entry, types::ProposalMap},
         Metablock,
     },
     certificates::{FallbackCommitQc, PrepareQc, TimeoutCertificate},
@@ -299,7 +296,7 @@ pub(crate) enum Transition {
     /// A pre-prepare for the current view that passed every check: right
     /// leader, valid signature, valid metablock, justified, lock respected,
     /// and not already voted in this view.
-    Proposal(Validated<PrePrepareMsg>),
+    Proposal(PrePrepareMsg),
     /// A prepare certificate over the entries accepted in this view.
     PrepareQc(PrepareQc),
     /// A commit certificate over entries this validator holds the block for.

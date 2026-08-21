@@ -18,9 +18,9 @@
 //!
 //! # Shape of the implementation
 //!
-//! Handlers do not decide anything. Receiving a message validates it cheaply
-//! and stores it -- in a collector or the proposal buffer -- and then calls
-//! [`MonadMvba::try_advance`], which repeatedly asks
+//! Handlers do not decide anything. Receiving a message validates everything
+//! it says for itself, stores it in the collectors for the view it is for, and
+//! then calls [`MonadMvba::try_advance`], which repeatedly asks
 //! [`MonadMvba::find_pending_transition`] what is now possible and applies it,
 //! until nothing more is. Every guard in the protocol lives in that one
 //! function, and it hands back the certificate it found, so applying a
@@ -67,7 +67,7 @@ use std::{
 };
 
 use certificates::{FallbackCommitQc, PrepareQc, TimeoutCertificate};
-use collectors::{TimeoutCollector, VoteCollector};
+use collectors::ViewCollectors;
 use messages::{
     CommitVoteMsg, FallbackCommitVote, Message, PrePrepareMsg, PrepareVote, PrepareVoteMsg,
     TimeoutMsg,
@@ -78,8 +78,7 @@ use super::{
     super::{
         fast::{EnterFallbackCert, Entry},
         types::{
-            IsVote, KeyPair, NodeId, ProposalMap, Slot, TimestampDelta, Validated, ValidatorData,
-            VoteMsg,
+            IsVote, KeyPair, NodeId, ProposalMap, Slot, TimestampDelta, ValidatorData, VoteMsg,
         },
     },
     FallbackView, MVBAOutput, Metablock, Mvba, Validate, Votable,
@@ -205,14 +204,14 @@ pub(crate) struct MonadMvba {
     decided_qc: Option<FallbackCommitQc>,
 
     // TODO: group the collectors by view
-    /// The first pre-prepare seen per view, for the current view or a nearby
-    /// future one. First write wins, so a Byzantine leader cannot displace the
-    /// proposal a validator is already working on with a second one.
-    pre_prepares: BTreeMap<FallbackView, Validated<PrePrepareMsg>>,
-
-    prepare_votes: VoteCollector<PrepareVote>,
-    commit_votes: VoteCollector<FallbackCommitVote>,
-    timeouts: TimeoutCollector,
+    //
+    // Response: done. Everything buffered for a view -- its proposal, both
+    // rounds of votes, its timeouts -- now sits in one [`ViewCollectors`], so
+    // the four buffers cannot drift out of step and dropping a view this
+    // instance has left is a single truncation.
+    /// What has arrived for the current view and nearby future ones. An entry
+    /// appears the first time a message for an `in_window` view is stored.
+    views: BTreeMap<FallbackView, ViewCollectors>,
     /// The blocks behind entries this instance has seen certified, and the
     /// requests outstanding for the ones it is missing.
     block_sync: BlockSync,
@@ -253,10 +252,7 @@ impl Mvba<Metablock> for MonadMvba {
             last_voted_view: FallbackView::GENESIS,
             high_prep_qc: None,
             decided_qc: None,
-            pre_prepares: BTreeMap::new(),
-            prepare_votes: VoteCollector::new(slot),
-            commit_votes: VoteCollector::new(slot),
-            timeouts: TimeoutCollector::new(slot),
+            views: BTreeMap::new(),
             block_sync: BlockSync::new(slot),
             entry_tc: None,
             proposed: false,
@@ -293,6 +289,12 @@ impl Mvba<Metablock> for MonadMvba {
         debug_assert!(self.context.validator_data.contains(&sender));
 
         // FIXME: We must be very explicit here about what kind of validation we're doing. When the message comes in, we should perform any kind of stateless validation on the message. Then we will store them in the buffer and wait for find_transition to find that transition. During the `find_pending_transition` function, we should do the stateful validation of that input. Stateful validation is usually very cheap, so it's either just doing a state counting or checking whether a proposal belongs to this current view, for example. Then, if that validation passes, we will move on, and if it doesn't, we will ignore the message for now and not remove it from the buffer.
+        //
+        // Response: split, and the rule is written down at the head of the
+        // ingress section below. Everything a message says for itself is
+        // checked here, before it is buffered; what is left for
+        // `find_pending_transition` is the state, and failing it leaves the
+        // message where it is.
         match message {
             Message::PrePrepare(msg) => self.store_pre_prepare(sender, msg),
             Message::Prepare(msg) => self.store_prepare_vote(sender, msg),
@@ -359,10 +361,37 @@ impl Mvba<Metablock> for MonadMvba {
     }
 }
 
-// ---------------- message ingress: validate cheaply, store ----------------
+// ---------------- message ingress: validate statelessly, store ----------------
+
+// Which of three tiers a check belongs to follows from what it has to look at.
+//
+//  1. Ingress, stateless -- everything here. Slot, the view window, leader
+//     authentication, message signatures, the crypto of any certificate
+//     carried, metablock validity, and the agreement a message owes itself: a
+//     justification for the view it justifies, the lock rule over the value
+//     proposed. A message failing any of it is dropped and never buffered, so
+//     nothing downstream has to ask again.
+//
+//  2. Quorum formation, deferred deliberately. An individual vote's signature
+//     is not verified on arrival: `VotePool::add_vote` checks only that it is
+//     well formed and keeps the first one per sender, and the signatures are
+//     verified in aggregate once enough stake to form a certificate has
+//     accumulated. That is the vote pipeline's own rule, shared with the fast
+//     path, and it is why a vote is the one thing buffered unverified.
+//
+//  3. `find_pending_transition`, stateful and cheap. Phase, the current view,
+//     `lastVotedView`, stake counting. A guard that fails there returns `None`
+//     and leaves the message in its buffer: state may still change into
+//     something that accepts it, so nothing is discarded on account of state.
 
 impl MonadMvba {
     // FIXME: remove the use of Validated. It's confusing
+    //
+    // Response: gone. It wrapped the message with the sender that passed
+    // validation, which asserted nothing here: ingress admits a pre-prepare
+    // only from `leader(view)`, so the author of a buffered one is that leader
+    // by construction, and the message alone says everything the transition
+    // needs.
     fn store_pre_prepare(&mut self, sender: NodeId, msg: PrePrepareMsg) {
         let view = msg.view;
         if msg.slot != self.context.slot || !self.in_window(view) {
@@ -378,13 +407,44 @@ impl MonadMvba {
             return;
         }
 
-        // the remaining checks -- metablock validity, justification, the lock
-        // rule, last_voted_view -- depend on state that may still change, so
-        // they live in `find_pending_transition` instead.
-        self.pre_prepares
-            .entry(view)
-            // first write wins.
-            .or_insert_with(|| Validated::new_unchecked(msg, sender));
+        // `J`: a proposal must justify the view it is for. View 1 needs no
+        // justification -- it carries the fallback certificate that admits the
+        // whole path instead -- and every later view is entered through a
+        // timeout certificate for the view before it.
+        match (view == FallbackView::FIRST, &msg.justification) {
+            (true, None) => {}
+            (false, Some(tc)) => {
+                if tc.view.next() != view {
+                    return;
+                }
+
+                // the lock rule: a leader may not replace a value that the
+                // previous view may already have supported.
+                if let Some(lock) = tc.lock()
+                    && metablock::entries_of(&msg.metablock) != *lock
+                {
+                    return;
+                }
+
+                if !tc.verify(&self.context.validator_data) {
+                    return;
+                }
+            }
+            _ => return,
+        }
+
+        // the value decides what it needs; this hands over what the message
+        // carried and interprets none of it. Last, because it is the most
+        // expensive check here and the cheap ones have already bounded who can
+        // reach it: the view's leader, on a signed message, inside the window.
+        if !msg
+            .metablock
+            .validate(&self.validation_context(), msg.fallback_cert.as_ref())
+        {
+            return;
+        }
+
+        self.collectors_mut(view).store_pre_prepare(msg);
     }
 
     fn store_prepare_vote(&mut self, sender: NodeId, msg: PrepareVoteMsg) {
@@ -393,7 +453,7 @@ impl MonadMvba {
             return;
         }
 
-        self.prepare_votes.add(sender, msg);
+        self.collectors_mut(view).add_prepare_vote(sender, msg);
     }
 
     fn store_commit_vote(&mut self, sender: NodeId, msg: CommitVoteMsg) {
@@ -402,11 +462,12 @@ impl MonadMvba {
             return;
         }
 
-        self.commit_votes.add(sender, msg);
+        self.collectors_mut(view).add_commit_vote(sender, msg);
     }
 
     fn store_timeout(&mut self, sender: NodeId, msg: TimeoutMsg) {
-        if msg.slot() != self.context.slot || !self.in_window(msg.view()) {
+        let view = msg.view();
+        if msg.slot() != self.context.slot || !self.in_window(view) {
             return;
         }
 
@@ -417,7 +478,7 @@ impl MonadMvba {
             return;
         }
 
-        self.timeouts.add(sender, msg);
+        self.collectors_mut(view).add_timeout(sender, msg);
     }
 
     fn store_commit_qc(&mut self, qc: FallbackCommitQc) {
@@ -461,6 +522,16 @@ impl MonadMvba {
     /// left, not further ahead than this instance will buffer.
     fn in_window(&self, view: FallbackView) -> bool {
         view >= self.view && view.get() <= self.view.get() + MAX_FUTURE_VIEWS
+    }
+
+    /// The buffers for `view`, opened on first use. Only ever called for a view
+    /// that has passed [`MonadMvba::in_window`], so what the window bounds is
+    /// also what this can allocate.
+    fn collectors_mut(&mut self, view: FallbackView) -> &mut ViewCollectors {
+        let slot = self.context.slot;
+        self.views
+            .entry(view)
+            .or_insert_with(|| ViewCollectors::new(slot, view))
     }
 }
 
@@ -545,8 +616,8 @@ impl MonadMvba {
         // timeout even though its timer has not fired.
         let owes_timeout = self.timer_fired
             || self
-                .timeouts
-                .has_echo(self.view, &self.context.validator_data);
+                .current_view_collectors()
+                .is_some_and(|collectors| collectors.has_echo(&self.context.validator_data));
         if owes_timeout && !self.phase.has_timed_out() {
             return Some(Transition::Timeout);
         }
@@ -568,8 +639,8 @@ impl MonadMvba {
         match &self.decided_qc {
             Some(qc) => Some(qc.clone()),
             None => self
-                .commit_votes
-                .try_form_qc(self.view, &self.context.validator_data),
+                .current_view_collectors()?
+                .try_form_commit_qc(&self.context.validator_data),
         }
     }
 
@@ -593,8 +664,8 @@ impl MonadMvba {
     fn pending_prepare_qc(&self) -> Option<PrepareQc> {
         let entries = self.phase.preparing_entries()?;
         let qc = self
-            .prepare_votes
-            .try_form_qc(self.view, &self.context.validator_data)?;
+            .current_view_collectors()?
+            .try_form_prepare_qc(&self.context.validator_data)?;
 
         // a validator commits only the vector it prepared.
         (qc.verdict.0 == *entries).then_some(qc)
@@ -608,15 +679,16 @@ impl MonadMvba {
     /// one step instead of one view at a time.
     fn pending_tc(&self) -> Option<TimeoutCertificate> {
         let organic = self
-            .timeouts
-            .try_form_tc(self.view, &self.context.validator_data);
+            .current_view_collectors()
+            .and_then(|collectors| collectors.try_form_tc(&self.context.validator_data));
 
         let carried = self
-            .pre_prepares
+            .views
             .range(self.view..)
-            .filter_map(|(_, pre_prepare)| pre_prepare.message().justification.as_ref())
+            .filter_map(|(_, collectors)| collectors.pre_prepare())
+            .filter_map(|pre_prepare| pre_prepare.justification.as_ref())
+            // buffered means ingress verified it; only the view is state.
             .filter(|tc| tc.view >= self.view)
-            .filter(|tc| tc.verify(&self.context.validator_data))
             .max_by_key(|tc| tc.view)
             .cloned();
 
@@ -626,10 +698,10 @@ impl MonadMvba {
         }
     }
 
-    /// The pre-prepare handler's acceptance test. The sender being the leader
-    /// and its signature verifying were checked at ingress; what is left
-    /// depends on state that may have changed since.
-    fn pending_proposal(&self) -> Option<Validated<PrePrepareMsg>> {
+    /// `HandleProposal`'s guard. A buffered pre-prepare is already known to be
+    /// a valid proposal for the view it names -- ingress admits nothing else --
+    /// so all that is left is whether this validator may act on it now.
+    fn pending_proposal(&self) -> Option<PrePrepareMsg> {
         if !matches!(self.phase, Phase::AwaitingProposal(_)) {
             // a view accepts one proposal, and a timed-out view accepts none:
             // last_voted_view has already been raised to it.
@@ -641,39 +713,7 @@ impl MonadMvba {
             return None;
         }
 
-        let pre_prepare = self.pre_prepares.get(&self.view)?;
-        let msg = pre_prepare.message();
-
-        // the value decides what it needs; this hands over what the message
-        // carried and interprets none of it.
-        if !msg
-            .metablock
-            .validate(&self.validation_context(), msg.fallback_cert.as_ref())
-        {
-            return None;
-        }
-
-        match (self.view == FallbackView::FIRST, &msg.justification) {
-            // view 1 needs no justification: the proposal carries the
-            // fallback certificate that admits the whole path.
-            (true, None) => {}
-            (false, Some(tc)) => {
-                if tc.view.next() != self.view || !tc.verify(&self.context.validator_data) {
-                    return None;
-                }
-
-                // the lock rule: a leader may not replace a value that the
-                // previous view may already have supported.
-                if let Some(lock) = tc.lock()
-                    && metablock::entries_of(&msg.metablock) != *lock
-                {
-                    return None;
-                }
-            }
-            _ => return None,
-        }
-
-        Some(pre_prepare.clone())
+        self.current_view_collectors()?.pre_prepare().cloned()
     }
 
     /// The one exhaustive transition table. Takes the phase by value and
@@ -698,13 +738,12 @@ impl MonadMvba {
     fn accept_proposal(
         &mut self,
         phase: Phase,
-        pre_prepare: Validated<PrePrepareMsg>,
+        msg: PrePrepareMsg,
     ) -> (Phase, Vec<MVBAOutput<Message, TimerEvent>>) {
         let Phase::AwaitingProposal(awaiting) = phase else {
             unreachable!("a proposal transition is only found while awaiting one");
         };
 
-        let (msg, _leader) = pre_prepare.destructure();
         // the proposal carried the block in full, so accepting it is one of the
         // points this instance legitimately comes by one.
         let entries = msg.metablock.entries();
@@ -1001,10 +1040,7 @@ impl MonadMvba {
     /// certificate this instance would act on. Blocks are not per-view, so they
     /// go by reachability instead -- what is still keeping one alive.
     fn gc(&mut self) {
-        self.prepare_votes.gc_below(self.view);
-        self.commit_votes.gc_below(self.view);
-        self.timeouts.gc_below(self.view);
-        self.pre_prepares = self.pre_prepares.split_off(&self.view);
+        self.views = self.views.split_off(&self.view);
 
         let mut keep = HashSet::new();
         if let Some(input) = &self.input {
@@ -1026,6 +1062,13 @@ impl MonadMvba {
     }
 
     // ---------------- small helpers ----------------
+
+    /// What has been buffered for the view this instance is in, if anything
+    /// has: an empty entry is indistinguishable from a missing one, so every
+    /// caller treats `None` as "nothing has arrived yet".
+    fn current_view_collectors(&self) -> Option<&ViewCollectors> {
+        self.views.get(&self.view)
+    }
 
     /// Keep the highest prepare certificate seen: it is the lock this validator
     /// announces on timing out, and understating it would be a safety bug.

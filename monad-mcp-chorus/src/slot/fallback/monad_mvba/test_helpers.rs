@@ -16,7 +16,7 @@
 //! A four-validator cluster (f = 1) built on the stub environment.
 //!
 //! Certificates here are aggregated the same way production does it -- through
-//! [`VotePool`] and [`TimeoutCollector`] -- over a signature scheme that does
+//! [`VotePool`] and [`ViewCollectors`] -- over a signature scheme that does
 //! no real cryptography. The tests therefore exercise the quorum arithmetic
 //! and the signing domains, not the primitives underneath.
 
@@ -36,7 +36,7 @@ use super::{
     },
     Context, MonadMvba, TimerEvent,
     certificates::{PrepareQc, TimeoutCertificate},
-    collectors::TimeoutCollector,
+    collectors::ViewCollectors,
     messages::{FallbackCommitVote, Message, PrePrepareMsg, PrepareVote, TimeoutMsg},
 };
 
@@ -184,16 +184,16 @@ pub(super) fn timeout_certificate(
     high_prep_qc: Option<PrepareQc>,
     validator_data: &ValidatorData,
 ) -> TimeoutCertificate {
-    let mut collector = TimeoutCollector::new(SLOT);
+    let mut collectors = ViewCollectors::new(SLOT, v);
     for node in quorum() {
-        collector.add(
+        collectors.add_timeout(
             node,
             TimeoutMsg::new_signed(SLOT, v, high_prep_qc.clone(), &node.keypair()),
         );
     }
 
-    collector
-        .try_form_tc(v, validator_data)
+    collectors
+        .try_form_tc(validator_data)
         .expect("a supermajority of timeouts forms a certificate")
 }
 
