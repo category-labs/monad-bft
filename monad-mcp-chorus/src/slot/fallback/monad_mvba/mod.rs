@@ -302,6 +302,7 @@ impl Mvba<MVBAInputs> for MonadMvba {
         }
         debug_assert!(self.context.validator_data.contains(&sender));
 
+        // FIXME: We must be very explicit here about what kind of validation we're doing. When the message comes in, we should perform any kind of stateless validation on the message. Then we will store them in the buffer and wait for find_transition to find that transition. During the `find_pending_transition` function, we should do the stateful validation of that input. Stateful validation is usually very cheap, so it's either just doing a state counting or checking whether a proposal belongs to this current view, for example. Then, if that validation passes, we will move on, and if it doesn't, we will ignore the message for now and not remove it from the buffer.
         match message {
             Message::PrePrepare(msg) => self.store_pre_prepare(sender, msg),
             Message::Prepare(msg) => self.store_prepare_vote(sender, msg),
