@@ -20,7 +20,13 @@ const NetworkMatrix: Component<{
     onChange: () => void,
     onReset: () => void,
 }> = (props) => {
-    const nodes = () => props.data.nodes;
+    const nodes = () => {
+        const nodesById = new Map(props.data.networkConfig.nodes.map((node) => [node.id, node]));
+        return props.data.validatorConfig.flatMap((validator) => {
+            const node = nodesById.get(validator.nodeId);
+            return node ? [node] : [];
+        });
+    };
     const linkByPair = createMemo(() => {
         const links: Record<string, NetworkLink> = {};
         for (const link of props.data.networkConfig.links) {

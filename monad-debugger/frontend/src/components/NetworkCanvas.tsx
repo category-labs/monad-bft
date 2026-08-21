@@ -409,7 +409,13 @@ const NetworkCanvas: Component<{
         return { x: size.width / topologyViewSize, y: size.height / topologyViewSize };
     };
 
-    const networkNodes = () => props.data.networkConfig.nodes;
+    const networkNodes = () => {
+        const nodesById = new Map(props.data.networkConfig.nodes.map((node) => [node.id, node]));
+        return props.data.validatorConfig.flatMap((validator) => {
+            const node = nodesById.get(validator.nodeId);
+            return node ? [node] : [];
+        });
+    };
     const simNodes = () => props.data.nodes;
     const visibleMessage = (message: PendingMessage) => messageFilters()[messageFilterKey(message.message)];
     const setMessageFilter = (key: MessageFilterKey, visible: boolean) => {
@@ -418,8 +424,8 @@ const NetworkCanvas: Component<{
 
     const nodeIndexById = createMemo(() => {
         const indexes: Record<string, number> = {};
-        for (const [index, node] of networkNodes().entries()) {
-            indexes[node.id] = index;
+        for (const [index, validator] of props.data.validatorConfig.entries()) {
+            indexes[validator.nodeId] = index;
         }
         return indexes;
     });
@@ -438,6 +444,14 @@ const NetworkCanvas: Component<{
             nodes[node.id] = node;
         }
         return nodes;
+    });
+
+    const validatorById = createMemo(() => {
+        const validators: Record<string, SimulationQuery["validatorConfig"][number]> = {};
+        for (const validator of props.data.validatorConfig) {
+            validators[validator.nodeId] = validator;
+        }
+        return validators;
     });
 
     const simNodeById = createMemo(() => {
@@ -1247,6 +1261,7 @@ const NetworkCanvas: Component<{
                                     {networkNode.online ? "Live" : "Disconnected"}
                                 </div>
                             </div>
+                            <div class="text-xs font-medium text-neutral-500">Stake {validatorById()[networkNode.id]?.stake ?? "–"}</div>
                             <Show when={node()}>
                                 {(simNode) => (
                                     <>

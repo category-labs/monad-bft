@@ -67,6 +67,10 @@ export class Simulation {
         monad.simulation_restart(this.simulation);
     }
 
+    public applyValidatorConfig(stakes: number[]) {
+        this.command(monad.simulation_apply_validator_config(this.simulation, JSON.stringify(stakes)));
+    }
+
     public setDefaultLatency(latencyMs: number) {
         this.command(monad.simulation_set_default_latency(this.simulation, latencyMs));
     }

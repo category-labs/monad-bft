@@ -4,6 +4,7 @@ import { SimulationDocument } from '../generated/graphql';
 import { Simulation } from '../wasm'
 import NetworkCanvas, { BlockSample } from './NetworkCanvas';
 import NetworkMatrix from './NetworkMatrix';
+import ValidatorConfig from './ValidatorConfig';
 import { throttle } from '@solid-primitives/scheduled';
 
 const maxTick = 2000;
@@ -73,7 +74,7 @@ const Sim: Component = () => {
     animationId = requestAnimationFrame(animate);
     onCleanup(() => cancelAnimationFrame(animationId));
 
-    const [showMatrix, setShowMatrix] = createSignal(false);
+    const [openPanel, setOpenPanel] = createSignal<"network" | "validators">();
 
     const resetSimulation = () => {
         simulation.reset();
@@ -85,6 +86,14 @@ const Sim: Component = () => {
 
     const restartSimulation = () => {
         simulation.restart();
+        setPlaying(false);
+        setVizTick(0);
+        setBlockSamples([]);
+        refreshSimulationData();
+    };
+
+    const applyValidatorConfig = (stakes: number[]) => {
+        simulation.applyValidatorConfig(stakes);
         setPlaying(false);
         setVizTick(0);
         setBlockSamples([]);
@@ -128,8 +137,14 @@ const Sim: Component = () => {
                     <button class="h-8 rounded-md border border-neutral-400 px-3 text-sm font-medium hover:bg-neutral-100" onClick={restartSimulation} title="Restart from the beginning with the current network configuration">Restart</button>
                     <button class="h-8 rounded-md border border-neutral-400 px-3 text-sm font-medium hover:bg-neutral-100" onClick={resetSimulation} title="Reset the simulation and network configuration">Reset</button>
                     <button
-                        class={`h-8 rounded-md border px-3 text-sm font-medium ${showMatrix() ? "border-indigo-500 bg-indigo-50 text-indigo-700" : "border-neutral-400 hover:bg-neutral-100"}`}
-                        onClick={() => setShowMatrix((show) => !show)}
+                        class={`h-8 rounded-md border px-3 text-sm font-medium ${openPanel() === "validators" ? "border-indigo-500 bg-indigo-50 text-indigo-700" : "border-neutral-400 hover:bg-neutral-100"}`}
+                        onClick={() => setOpenPanel((panel) => panel === "validators" ? undefined : "validators")}
+                    >
+                        Validators
+                    </button>
+                    <button
+                        class={`h-8 rounded-md border px-3 text-sm font-medium ${openPanel() === "network" ? "border-indigo-500 bg-indigo-50 text-indigo-700" : "border-neutral-400 hover:bg-neutral-100"}`}
+                        onClick={() => setOpenPanel((panel) => panel === "network" ? undefined : "network")}
                     >
                         Network Config
                     </button>
@@ -143,7 +158,10 @@ const Sim: Component = () => {
                     blockSamples={blockSamples()}
                     onChange={refreshSimulationData}
                 />
-                <Show when={showMatrix()}>
+                <Show when={openPanel() === "validators"}>
+                    <ValidatorConfig data={simData} onApply={applyValidatorConfig} />
+                </Show>
+                <Show when={openPanel() === "network"}>
                     <NetworkMatrix
                         simulation={simulation}
                         data={simData}

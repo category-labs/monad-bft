@@ -37,6 +37,52 @@ use crate::{
     },
 };
 
+pub const MIN_VALIDATORS: usize = 1;
+pub const MAX_VALIDATORS: usize = 8;
+pub const MIN_STAKE: u64 = 1;
+pub const MAX_STAKE: u64 = 1_000_000;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ValidatorConfig {
+    stakes: Vec<u64>,
+}
+
+impl Default for ValidatorConfig {
+    fn default() -> Self {
+        Self { stakes: vec![1; 4] }
+    }
+}
+
+impl ValidatorConfig {
+    pub fn new(stakes: Vec<u64>) -> Result<Self, String> {
+        if !(MIN_VALIDATORS..=MAX_VALIDATORS).contains(&stakes.len()) {
+            return Err(format!(
+                "validator count must be between {MIN_VALIDATORS} and {MAX_VALIDATORS}"
+            ));
+        }
+        if let Some((index, _)) = stakes
+            .iter()
+            .enumerate()
+            .find(|(_, stake)| !(MIN_STAKE..=MAX_STAKE).contains(stake))
+        {
+            return Err(format!(
+                "stake for N{} must be between {MIN_STAKE} and {MAX_STAKE}",
+                index + 1
+            ));
+        }
+        Ok(Self { stakes })
+    }
+
+    pub fn stakes(&self) -> &[u64] {
+        &self.stakes
+    }
+}
+
+pub struct ConfiguredSwarm {
+    pub builder: SwarmBuilder<DebugSwarmRelation>,
+    pub validator_ids: Vec<NodeId<NopPubKey>>,
+}
+
 pub struct Simulation {
     pub(crate) current_tick: Duration,
     pub(crate) swarm: Nodes<DebugSwarmRelation>,
@@ -55,13 +101,18 @@ pub struct Simulation {
     pub(crate) network_command_log: Vec<NetworkCommand>,
     applied_network_commands: BTreeSet<u64>,
     next_network_command_sequence: u64,
-    config: Box<dyn Fn() -> SwarmBuilder<DebugSwarmRelation>>,
+    pub(crate) validator_config: ValidatorConfig,
+    pub(crate) validator_ids: Vec<NodeId<NopPubKey>>,
+    config: Box<dyn Fn(&ValidatorConfig) -> ConfiguredSwarm>,
     schema: Schema<GraphQLRoot, EmptyMutation, EmptySubscription>,
 }
 
 impl Simulation {
-    pub fn new(config: Box<dyn Fn() -> SwarmBuilder<DebugSwarmRelation>>) -> Self {
-        let mut swarm = config().build();
+    pub fn new(config: Box<dyn Fn(&ValidatorConfig) -> ConfiguredSwarm>) -> Self {
+        let validator_config = ValidatorConfig::default();
+        let configured_swarm = config(&validator_config);
+        let validator_ids = configured_swarm.validator_ids;
+        let mut swarm = configured_swarm.builder.build();
         let network_config = Self::default_network_config(&swarm);
         let network_baseline = network_config.clone();
         Self::install_network_pipeline(&mut swarm, &network_config);
@@ -76,6 +127,8 @@ impl Simulation {
             network_command_log: Vec::new(),
             applied_network_commands: BTreeSet::new(),
             next_network_command_sequence: 0,
+            validator_config,
+            validator_ids,
             config,
             schema: Schema::new(GraphQLRoot, EmptyMutation, EmptySubscription),
         }
@@ -105,7 +158,9 @@ impl Simulation {
         self.network_command_log.clear();
         self.applied_network_commands.clear();
         self.next_network_command_sequence = 0;
-        self.swarm = (self.config)().build();
+        let configured_swarm = (self.config)(&self.validator_config);
+        self.validator_ids = configured_swarm.validator_ids;
+        self.swarm = configured_swarm.builder.build();
         self.network_baseline = Self::default_network_config(&self.swarm);
         self.network_config = self.network_baseline.clone();
         Self::install_network_pipeline(&mut self.swarm, &self.network_config);
@@ -119,6 +174,13 @@ impl Simulation {
         self.applied_network_commands.clear();
         self.next_network_command_sequence = 0;
         self.rebuild_swarm();
+    }
+
+    pub fn apply_validator_config(&mut self, stakes: Vec<u64>) -> Result<(), String> {
+        let validator_config = ValidatorConfig::new(stakes)?;
+        self.validator_config = validator_config;
+        self.reset();
+        Ok(())
     }
 
     pub fn set_default_latency(&mut self, latency_ms: i32) -> Result<(), String> {
@@ -212,7 +274,9 @@ impl Simulation {
 
     fn rebuild_swarm(&mut self) {
         self.event_log.clear();
-        self.swarm = (self.config)().build();
+        let configured_swarm = (self.config)(&self.validator_config);
+        self.validator_ids = configured_swarm.validator_ids;
+        self.swarm = configured_swarm.builder.build();
         self.network_config = self.network_baseline.clone();
         self.applied_network_commands.clear();
         Self::install_network_pipeline(&mut self.swarm, &self.network_config);
@@ -297,7 +361,7 @@ fn parse_node_id(node_id: &str) -> Result<NodeId<NopPubKey>, String> {
 mod tests {
     use monad_crypto::certificate_signature::PubKey;
 
-    use super::{parse_node_id, Simulation};
+    use super::{parse_node_id, Simulation, ValidatorConfig, MAX_STAKE};
     use crate::{default_swarm_config, network::DEFAULT_LINK_LATENCY_MS};
 
     fn node_ids(simulation: &Simulation) -> Vec<String> {
@@ -318,6 +382,27 @@ mod tests {
             .set_link_latency("not hex", &ids[1], 10)
             .unwrap_err();
         assert!(err.contains("hex"));
+    }
+
+    #[test]
+    fn validator_config_validates_count_and_stake_bounds() {
+        assert!(ValidatorConfig::new(vec![1]).is_ok());
+        assert!(ValidatorConfig::new(vec![1; 8]).is_ok());
+        assert!(ValidatorConfig::new(vec![]).is_err());
+        assert!(ValidatorConfig::new(vec![1; 9]).is_err());
+        assert!(ValidatorConfig::new(vec![0]).is_err());
+        assert!(ValidatorConfig::new(vec![MAX_STAKE + 1]).is_err());
+    }
+
+    #[test]
+    fn simulation_builds_minimum_and_maximum_validator_counts() {
+        let mut simulation = Simulation::new(Box::new(default_swarm_config));
+
+        simulation.apply_validator_config(vec![1]).unwrap();
+        assert_eq!(simulation.swarm.states().len(), 1);
+
+        simulation.apply_validator_config(vec![1; 8]).unwrap();
+        assert_eq!(simulation.swarm.states().len(), 8);
     }
 
     #[test]
@@ -387,6 +472,71 @@ mod tests {
             simulation.network_config.default_latency(),
             std::time::Duration::from_millis(DEFAULT_LINK_LATENCY_MS)
         );
+    }
+
+    #[test]
+    fn validator_config_is_atomic_and_resets_runtime_and_network() {
+        let mut simulation = Simulation::new(Box::new(default_swarm_config));
+        let original_ids = simulation.validator_ids.clone();
+        simulation.set_tick(std::time::Duration::from_millis(100));
+        simulation.set_default_latency(40).unwrap();
+
+        assert!(simulation.apply_validator_config(vec![]).is_err());
+        assert_eq!(simulation.validator_config.stakes(), &[1, 1, 1, 1]);
+        assert_eq!(
+            simulation.current_tick,
+            std::time::Duration::from_millis(100)
+        );
+
+        simulation
+            .apply_validator_config(vec![3, 2, 1, 4, 5])
+            .unwrap();
+        assert_eq!(simulation.validator_config.stakes(), &[3, 2, 1, 4, 5]);
+        assert_eq!(simulation.validator_ids.len(), 5);
+        assert_eq!(&simulation.validator_ids[..4], original_ids.as_slice());
+        assert_eq!(simulation.current_tick, std::time::Duration::ZERO);
+        assert!(simulation.event_log.is_empty());
+        assert!(simulation.network_command_log.is_empty());
+        assert_eq!(
+            simulation.network_config.default_latency(),
+            std::time::Duration::from_millis(DEFAULT_LINK_LATENCY_MS)
+        );
+    }
+
+    #[test]
+    fn reset_retains_applied_validator_config() {
+        let mut simulation = Simulation::new(Box::new(default_swarm_config));
+        simulation.apply_validator_config(vec![4, 2]).unwrap();
+        let validator_ids = simulation.validator_ids.clone();
+        simulation.set_default_latency(40).unwrap();
+
+        simulation.reset();
+
+        assert_eq!(simulation.validator_config.stakes(), &[4, 2]);
+        assert_eq!(simulation.validator_ids, validator_ids);
+        assert_eq!(simulation.swarm.states().len(), 2);
+        assert_eq!(
+            simulation.network_config.default_latency(),
+            std::time::Duration::from_millis(DEFAULT_LINK_LATENCY_MS)
+        );
+    }
+
+    #[test]
+    fn validator_config_query_preserves_generation_order() {
+        let mut simulation = Simulation::new(Box::new(default_swarm_config));
+        simulation.apply_validator_config(vec![8, 3, 5]).unwrap();
+
+        let data = simulation
+            .execute_query("{ validatorConfig { nodeId stake } }")
+            .unwrap();
+        let validators = data["validatorConfig"].as_array().unwrap();
+        assert_eq!(validators.len(), 3);
+        assert_eq!(validators[0]["stake"], 8);
+        assert_eq!(validators[1]["stake"], 3);
+        assert_eq!(validators[2]["stake"], 5);
+        for (validator, node_id) in validators.iter().zip(&simulation.validator_ids) {
+            assert_eq!(validator["nodeId"], hex::encode(node_id.pubkey().bytes()));
+        }
     }
 
     #[test]

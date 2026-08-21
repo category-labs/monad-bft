@@ -3,6 +3,10 @@ query Simulation {
   nextTick
   currentLeader
   nextLeader
+  validatorConfig {
+    nodeId
+    stake
+  }
   nodes {
     id
     isBlocked

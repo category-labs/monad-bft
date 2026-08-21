@@ -352,6 +352,19 @@ impl GraphQLRoot {
         GraphQLNetworkConfig(&simulation.network_config)
     }
 
+    async fn validator_config<'ctx>(&self, ctx: &Context<'ctx>) -> Vec<GraphQLValidatorConfig> {
+        let simulation = ctx.data_unchecked::<GraphQLSimulation>();
+        simulation
+            .validator_ids
+            .iter()
+            .zip(simulation.validator_config.stakes())
+            .map(|(node_id, stake)| GraphQLValidatorConfig {
+                node_id: *node_id,
+                stake: (*stake).try_into().unwrap(),
+            })
+            .collect()
+    }
+
     async fn network_command_log<'ctx>(
         &self,
         ctx: &Context<'ctx>,
@@ -362,6 +375,22 @@ impl GraphQLRoot {
             .iter()
             .map(GraphQLNetworkCommand)
             .collect()
+    }
+}
+
+struct GraphQLValidatorConfig {
+    node_id: NodeId<CertificateSignaturePubKey<SignatureType>>,
+    stake: i32,
+}
+
+#[Object]
+impl GraphQLValidatorConfig {
+    async fn node_id(&self) -> GraphQLNodeId {
+        (&self.node_id).into()
+    }
+
+    async fn stake(&self) -> i32 {
+        self.stake
     }
 }
 
