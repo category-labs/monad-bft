@@ -90,21 +90,30 @@ impl<M> CadenceSwarmBuilder<M> {
     where
         M: Clone + 'static,
     {
-        let mut swarm = Swarm::build(self.seed, self.network, self.nodes);
-        for id in swarm.node_ids() {
-            let handle = swarm.handle(&id).expect("node just built");
-            swarm.sim().schedule(
-                handle,
-                time_of(Timestamp::GENESIS),
-                StepLabel::source("init"),
-                |node, ctx| node.init(ctx),
-            );
-        }
         CadenceSwarm {
-            swarm,
+            swarm: build_sim_swarm(self.seed, self.network, self.nodes),
             log: self.log,
         }
     }
+}
+
+/// Wire nodes into a simulated network and schedule each node's init step
+pub(crate) fn build_sim_swarm<M: Clone + 'static>(
+    seed: u64,
+    network: Network<NodeId, M>,
+    nodes: Vec<(NodeId, SimNode<M>)>,
+) -> Swarm<SimNode<M>> {
+    let mut swarm = Swarm::build(seed, network, nodes);
+    for id in swarm.node_ids() {
+        let handle = swarm.handle(&id).expect("node just built");
+        swarm.sim().schedule(
+            handle,
+            time_of(Timestamp::GENESIS),
+            StepLabel::source("init"),
+            |node, ctx| node.init(ctx),
+        );
+    }
+    swarm
 }
 
 impl<M> Default for CadenceSwarmBuilder<M> {
