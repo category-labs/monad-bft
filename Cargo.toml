@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["monad-*"]
-exclude = ["monad-execution", "monad-fuzz", "monad-scripts"]
+exclude = ["monad-cxx", "monad-execution", "monad-fuzz", "monad-scripts"]
 
 [workspace.metadata.cargo-shear]
 ignored = ["alloy-transport-http", "getrandom", "monad-peer-disc-swarm"]
