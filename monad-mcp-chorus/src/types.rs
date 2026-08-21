@@ -25,7 +25,7 @@ use itertools::Either;
 
 // the environment this module subtree is instantiated.
 pub use super::env::{
-    KeyPair, MerkleRoot, NodeId, OpaqueChunkHeader, ProposalSignature, PubKey, Signature,
+    HeaderAuth, KeyPair, MerkleRoot, NodeId, ProposalHeader, PubKey, Signature,
     SignatureCollection, Stake, ValidatorData, VoteAggregation,
 };
 use crate::spec::{
@@ -40,8 +40,13 @@ pub struct Slot(pub u64);
 
 impl Slot {
     pub const FIRST: Self = Slot(0);
-    // the first meaningful slot number
+
+    // the first and last meaningful slot numbers
     pub const MIN: Self = Self::FIRST;
+    pub const MAX: Self = Slot(u64::MAX - 1);
+
+    // the max meaningful slot number used as cap
+    pub const MAX_CAP: Self = Slot(u64::MAX);
 
     pub const fn get(self) -> u64 {
         self.0
@@ -51,12 +56,16 @@ impl Slot {
         self.0.checked_add(slots).map(Self)
     }
 
+    pub fn checked_sub(self, slots: u64) -> Option<Self> {
+        self.0.checked_sub(slots).map(Self)
+    }
+
     pub fn checked_next(self) -> Option<Self> {
         self.checked_add(1)
     }
 
-    pub fn checked_sub(self, other: Self) -> Option<u64> {
-        self.0.checked_sub(other.0)
+    pub fn slots_since(self, earlier: Self) -> Option<u64> {
+        self.0.checked_sub(earlier.0)
     }
 }
 
@@ -192,13 +201,6 @@ impl Default for WindowId {
     fn default() -> Self {
         Self::FIRST
     }
-}
-
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct ProposalMeta {
-    pub root: MerkleRoot,
-    pub sig: ProposalSignature,
-    pub opaque_header: OpaqueChunkHeader,
 }
 
 // A message with author signature validated.
@@ -367,6 +369,114 @@ where
     }
 }
 
+pub trait GatingRoot {
+    fn gating_root(&self) -> Option<MerkleRoot>;
+}
+
+// Admission state for one voter
+#[derive(Clone)]
+struct Gate<V>
+where
+    V: IsVote,
+{
+    open_roots: HashSet<MerkleRoot>,
+    held: Option<VoteMsg<V>>,
+}
+
+impl<V> Default for Gate<V>
+where
+    V: IsVote,
+{
+    fn default() -> Self {
+        Self {
+            open_roots: HashSet::new(),
+            held: None,
+        }
+    }
+}
+
+impl<V> Gate<V>
+where
+    V: IsVote + GatingRoot,
+{
+    fn release(&mut self, root: MerkleRoot) -> Option<VoteMsg<V>> {
+        let claim_open = self
+            .held
+            .as_ref()
+            .is_some_and(|msg| msg.vote.gating_root() == Some(root));
+        if !claim_open {
+            return None;
+        }
+        self.held.take()
+    }
+}
+
+// VotePool with admission control
+#[derive(Clone)]
+pub struct GatedVotePool<V>
+where
+    V: IsVote + GatingRoot,
+{
+    pool: VotePool<V>,
+    gates: HashMap<NodeId, Gate<V>>,
+    open_roots: HashSet<MerkleRoot>,
+}
+
+impl<V> GatedVotePool<V>
+where
+    V: IsVote + GatingRoot,
+{
+    pub fn new(pool: VotePool<V>) -> Self {
+        Self {
+            pool,
+            gates: HashMap::new(),
+            open_roots: HashSet::new(),
+        }
+    }
+
+    pub fn add_vote(&mut self, node_id: NodeId, msg: VoteMsg<V>) {
+        let gate = self.gates.entry(node_id).or_default();
+        if gate.held.is_some() {
+            // already holding a vote, ignore new ones
+            return;
+        }
+
+        let admissible = match msg.vote.gating_root() {
+            None => true, // e.g. negative vote; always admitted
+            Some(root) => self.open_roots.contains(&root) || gate.open_roots.contains(&root),
+        };
+
+        if !admissible {
+            gate.held = Some(msg);
+            return;
+        }
+        self.pool.add_vote(node_id, msg);
+    }
+
+    pub fn open(&mut self, node_id: NodeId, root: MerkleRoot) {
+        let gate = self.gates.entry(node_id).or_default();
+        gate.open_roots.insert(root);
+
+        if let Some(msg) = gate.release(root) {
+            self.pool.add_vote(node_id, msg);
+        }
+    }
+
+    pub fn open_all(&mut self, root: MerkleRoot) {
+        self.open_roots.insert(root);
+
+        for (node_id, gate) in &mut self.gates {
+            if let Some(msg) = gate.release(root) {
+                self.pool.add_vote(*node_id, msg);
+            }
+        }
+    }
+
+    pub fn pool(&self) -> &VotePool<V> {
+        &self.pool
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct VoteMsg<V>
 where
@@ -466,7 +576,7 @@ impl<T> ProposalMap<T> {
         }
     }
 
-    pub(crate) fn new_default(size: usize) -> Self
+    pub fn new_default(size: usize) -> Self
     where
         T: Default,
     {
@@ -479,12 +589,12 @@ impl<T> ProposalMap<T> {
         self.values.len()
     }
 
-    pub(crate) fn as_ref(&self) -> ProposalMap<&T> {
+    pub fn as_ref(&self) -> ProposalMap<&T> {
         let values = self.values.iter().collect();
         ProposalMap { values }
     }
 
-    pub(crate) fn map<F, U>(self, f: F) -> ProposalMap<U>
+    pub fn map<F, U>(self, f: F) -> ProposalMap<U>
     where
         F: FnMut(T) -> U,
     {
@@ -492,7 +602,7 @@ impl<T> ProposalMap<T> {
         ProposalMap { values }
     }
 
-    pub(crate) fn map_indexed<F, U>(self, mut f: F) -> ProposalMap<U>
+    pub fn map_indexed<F, U>(self, mut f: F) -> ProposalMap<U>
     where
         F: FnMut(ProposalIndex, T) -> U,
     {
@@ -521,11 +631,11 @@ impl<T> IntoIterator for ProposalMap<T> {
 
 impl<T> ProposalMap<Option<T>> {
     /// Panics if index out of bounds. The caller must ensure the index is valid.
-    fn set(&mut self, index: ProposalIndex, value: T) {
+    pub fn set(&mut self, index: ProposalIndex, value: T) {
         self.values[index] = Some(value);
     }
 
-    pub(crate) fn try_into_total<S>(self) -> Option<TotalProposalMap<S>>
+    pub fn try_into_total<S>(self) -> Option<TotalProposalMap<S>>
     where
         S: From<T>,
     {
@@ -544,7 +654,7 @@ impl<T> ProposalMap<Option<T>> {
         Some(ProposalMap { values })
     }
 
-    fn into_total<S>(self) -> TotalProposalMap<S>
+    pub fn into_total<S>(self) -> TotalProposalMap<S>
     where
         S: From<Option<T>>,
     {
@@ -553,11 +663,21 @@ impl<T> ProposalMap<Option<T>> {
 }
 
 impl<T> ProposalMap<&T> {
-    pub(crate) fn into_owned(self) -> ProposalMap<T>
+    pub fn into_owned(self) -> ProposalMap<T>
     where
         T: Clone,
     {
         self.map(|v| v.clone())
+    }
+}
+
+impl<I, T> From<I> for ProposalMap<T>
+where
+    I: ExactSizeIterator<Item = T>,
+{
+    fn from(iter: I) -> Self {
+        let values = iter.collect();
+        ProposalMap { values }
     }
 }
 
@@ -579,46 +699,9 @@ impl<T> std::ops::IndexMut<ProposalIndex> for ProposalMap<T> {
 // A helper wrapper type for a type-erased implementation of a trait
 pub struct Erased<T>(pub T);
 
-// A stub implementation of DAHandle that never returns any
-// proposal. used for testing purposes.
-pub struct DAHandle;
-
 // invariant: .0.root != .1.root and both properly signed.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct EquivCert(pub ProposalMeta, pub ProposalMeta);
-
-pub enum FetchProposalError {
-    Absent,
-    Equivocation(EquivCert),
-}
-
-impl DAHandle {
-    pub fn proposal_decoded(&self, _s: Slot, _j: ProposalIndex, _root: &MerkleRoot) -> bool {
-        false
-    }
-
-    /// Info DA about proposals we received through consensus messages (e.g. FallbackSignedEntry)
-    pub fn observe_proposal(&self, _s: Slot, _j: ProposalIndex, _meta: ProposalMeta) {
-        // do nothing
-    }
-
-    pub fn fetch_proposal(
-        &self,
-        _s: Slot,
-        _j: ProposalIndex,
-    ) -> Result<ProposalMeta, FetchProposalError> {
-        // Please do note that there is an potential to have more than
-        // one proposal meta for the same root. This can occur if the
-        // proposer sign the same root with different chunk header
-        // fields (e.g. varying unix_ts_ms).
-        //
-        // Q: How should we deal with this situation? Should we count
-        // it as equivocation? Or should we simply ignore that? Our
-        // current implementation follows the paper which doesn't
-        // currently consider this case as equivocation.
-        Err(FetchProposalError::Absent)
-    }
-}
+pub struct EquivCert(pub ProposalHeader, pub ProposalHeader);
 
 #[cfg(test)]
 mod tests {
@@ -649,5 +732,118 @@ mod tests {
         assert_eq!(WindowId::FIRST, WindowId(0));
         assert_eq!(WindowId::default(), WindowId(0));
         assert_eq!(WindowId(0).to_index(), Some(0));
+    }
+
+    #[derive(Clone, PartialEq, Eq, Hash, Debug)]
+    enum ClaimVote {
+        Claiming(MerkleRoot),
+        Free,
+    }
+
+    impl IsVote for ClaimVote {
+        type Scope = Slot;
+
+        fn serialize(&self, scope: &Self::Scope) -> bytes::Bytes {
+            dummy_serialize(self, scope)
+        }
+    }
+
+    impl GatingRoot for ClaimVote {
+        fn gating_root(&self) -> Option<MerkleRoot> {
+            match self {
+                ClaimVote::Claiming(root) => Some(*root),
+                ClaimVote::Free => None,
+            }
+        }
+    }
+
+    fn gated_pool() -> GatedVotePool<ClaimVote> {
+        GatedVotePool::new(VotePool::new(Slot(1)))
+    }
+
+    fn root(byte: u8) -> MerkleRoot {
+        crate::env::stub::MerkleRoot(crate::env::stub::MerkleHash([byte; 20]))
+    }
+
+    fn signed(id: u64, vote: ClaimVote) -> (NodeId, VoteMsg<ClaimVote>) {
+        let node = crate::env::stub::NodeId::dummy(id);
+        let msg = VoteMsg::new_signed(Slot(1), vote, &node.keypair());
+        (node, msg)
+    }
+
+    fn admitted(pool: &GatedVotePool<ClaimVote>) -> usize {
+        pool.pool().all_voters().count()
+    }
+
+    #[test]
+    fn free_votes_admit_immediately() {
+        let mut pool = gated_pool();
+        let (node, msg) = signed(1, ClaimVote::Free);
+
+        pool.add_vote(node, msg);
+        assert_eq!(admitted(&pool), 1);
+    }
+
+    #[test]
+    fn claiming_vote_suspends_until_matching_evidence() {
+        let mut pool = gated_pool();
+        let (node, msg) = signed(1, ClaimVote::Claiming(root(1)));
+
+        pool.add_vote(node, msg);
+        assert_eq!(admitted(&pool), 0);
+
+        // evidence for a different root does not release the vote
+        pool.open(node, root(2));
+        assert_eq!(admitted(&pool), 0);
+
+        pool.open(node, root(1));
+        assert_eq!(admitted(&pool), 1);
+    }
+
+    #[test]
+    fn evidence_before_vote_admits_on_arrival() {
+        let mut pool = gated_pool();
+        let (node, msg) = signed(1, ClaimVote::Claiming(root(1)));
+
+        pool.open(node, root(1));
+        pool.add_vote(node, msg);
+        assert_eq!(admitted(&pool), 1);
+    }
+
+    #[test]
+    fn open_all_is_pool_wide_and_root_scoped() {
+        let mut pool = gated_pool();
+        let (n1, m1) = signed(1, ClaimVote::Claiming(root(1)));
+        let (n2, m2) = signed(2, ClaimVote::Claiming(root(1)));
+        let (n3, m3) = signed(3, ClaimVote::Claiming(root(2)));
+
+        pool.add_vote(n1, m1);
+        pool.add_vote(n2, m2);
+        pool.add_vote(n3, m3);
+        assert_eq!(admitted(&pool), 0);
+
+        pool.open_all(root(1));
+        assert_eq!(admitted(&pool), 2);
+
+        // future votes on the opened root admit immediately
+        let (n4, m4) = signed(4, ClaimVote::Claiming(root(1)));
+        pool.add_vote(n4, m4);
+        assert_eq!(admitted(&pool), 3);
+    }
+
+    #[test]
+    fn first_held_vote_wins() {
+        let mut pool = gated_pool();
+        let (node, held) = signed(1, ClaimVote::Claiming(root(1)));
+        pool.add_vote(node, held);
+
+        // a later vote is dropped while one is suspended, even an
+        // immediately admissible one
+        let (_, second) = signed(1, ClaimVote::Free);
+        pool.add_vote(node, second);
+        assert_eq!(admitted(&pool), 0);
+
+        pool.open(node, root(1));
+        assert_eq!(admitted(&pool), 1);
     }
 }

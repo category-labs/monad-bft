@@ -13,23 +13,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-pub use crate::env::stub::{
-    HeaderAuth, KeyPair, MerkleRoot, NodeId, ProposalHeader, PubKey, Signature,
-    SignatureCollection, Stake, ValidatorData, VoteAggregation,
-};
+mod env;
 
-// TODO: fill in the actual production implementation for above types
+#[cfg(feature = "enable_stub")]
+#[path = ""]
+pub mod stub {
+    use crate::env::stub as env;
 
-const _: () = crate::spec::assert_env::<
-    NodeId,
-    Stake,
-    PubKey,
-    KeyPair,
-    Signature,
-    ValidatorData,
-    SignatureCollection,
-    VoteAggregation<'_>,
-    MerkleRoot,
-    ProposalHeader,
-    HeaderAuth,
->();
+    #[path = "top_level.rs"]
+    mod top_level;
+    pub use top_level::*;
+}

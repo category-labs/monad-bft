@@ -13,20 +13,22 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::sync::Arc;
+use std::{collections::VecDeque, sync::Arc};
 
 use bytes::Bytes;
 use itertools::Either;
 
 use super::{
+    availability::ProposalAvailability,
+    chorus::{ChorusDACommand, ChorusDAEvent, ProposalDAEvent},
     fallback::{FallbackPath, MVBAInputs},
     types::{
-        DAHandle, EquivCert, FetchProposalError, IsVote, KeyPair, MerkleRoot, NodeId,
-        ProposalIndex, ProposalMap, ProposalMeta, Signature, Slot, StrongQc, TotalProposalMap,
+        EquivCert, GatedVotePool, GatingRoot, HeaderAuth, IsVote, KeyPair, MerkleRoot, NodeId,
+        ProposalHeader, ProposalIndex, ProposalMap, Signature, Slot, StrongQc, TotalProposalMap,
         ValidatorData, VoteMsg, VotePool, WeakQc, dummy_serialize,
     },
 };
-use crate::spec::{Stake as _, proposal::ChunkHeader as _, validator::ValidatorData as _};
+use crate::spec::{Stake as _, proposal::HeaderAuth as _, validator::ValidatorData as _};
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 enum Phase {
@@ -49,21 +51,25 @@ pub struct FastPath {
     certs: ProposalMap<LocalCertifiedEntry>,
     phase: Phase,
 
-    votes: ProposalMap<VotePool<Entry>>,
+    votes: ProposalMap<GatedVotePool<Entry>>,
     commit_votes: VotePool<FastCommitVote>,
 
     enter_fallback_votes: VotePool<EnterFallbackVote>,
-    fallback_entry_votes: ProposalMap<VotePool<FallbackEntry>>,
+    fallback_entry_votes: ProposalMap<GatedVotePool<FallbackEntry>>,
 
     // helper field to construct per-proposal values
     proposals: ProposalMap<ProposalIndex>,
 
+    // what we know about each proposal's DA
+    availability: ProposalMap<ProposalAvailability>,
+
+    // effects for the DA layer, drained by the slot consensus wrapper
+    commands: VecDeque<ChorusDACommand>,
+
     // using Arc to avoid lifetime issues.
     key: Arc<KeyPair>,
     validator_data: Arc<ValidatorData>,
-
-    // data availability layer handle
-    da: Arc<DAHandle>,
+    header_auth: Arc<HeaderAuth>,
 }
 
 impl FastPath {
@@ -72,25 +78,69 @@ impl FastPath {
         num_proposals: usize,
         key: Arc<KeyPair>,
         validator_data: Arc<ValidatorData>,
-        da_handle: Arc<DAHandle>,
+        header_auth: Arc<HeaderAuth>,
     ) -> Self {
         Self {
             slot: s,
 
-            votes: ProposalMap::new(num_proposals, |j| VotePool::new((s, j))),
+            votes: ProposalMap::new(num_proposals, |j| GatedVotePool::new(VotePool::new((s, j)))),
             certs: ProposalMap::new_default(num_proposals),
             commit_votes: VotePool::new(s),
 
             enter_fallback_votes: VotePool::new(s),
-            fallback_entry_votes: ProposalMap::new(num_proposals, |j| VotePool::new((s, j))),
+            fallback_entry_votes: ProposalMap::new(num_proposals, |j| {
+                GatedVotePool::new(VotePool::new((s, j)))
+            }),
 
             phase: Phase::Propose,
             proposals: ProposalMap::new(num_proposals, |j| j),
+            availability: ProposalMap::new_default(num_proposals),
+            commands: VecDeque::new(),
 
             key,
             validator_data,
-            da: da_handle,
+            header_auth,
         }
+    }
+
+    pub(crate) fn next_da_command(&mut self) -> Option<ChorusDACommand> {
+        self.commands.pop_front()
+    }
+
+    fn emit(&mut self, command: ChorusDACommand) {
+        self.commands.push_back(command);
+    }
+
+    // admission of gated votes can complete the fast block
+    #[must_use]
+    pub(crate) fn handle_da_event(&mut self, event: ChorusDAEvent) -> Option<FastBlock> {
+        let ChorusDAEvent { j, event } = event;
+
+        match &event {
+            ProposalDAEvent::OwnerObligationFulfilled { owner, root } => {
+                self.votes[j].open(*owner, *root);
+            }
+            ProposalDAEvent::Decoded(root) => {
+                // decode implies possession of every chunk, so it
+                // satisfies both admission gates
+                self.votes[j].open_all(*root);
+                self.fallback_entry_votes[j].open_all(*root);
+            }
+            ProposalDAEvent::ProposerObligationFulfilled(root) => {
+                self.fallback_entry_votes[j].open_all(*root);
+            }
+            _ => {}
+        }
+
+        let avail = &mut self.availability[j];
+        avail.ingest(event);
+        if let Some(cert) = avail.equiv_cert() {
+            self.certs[j].try_upgrade(cert);
+        }
+
+        self.try_form_fast_qc(j);
+        self.try_form_fallback_qc(j);
+        self.try_cast_fast_commit_vote()
     }
 
     pub(crate) fn spawn_fallback(&self, input: MVBAInputs) -> FallbackPath {
@@ -107,6 +157,12 @@ impl FastPath {
         node_id: NodeId,
         vote_msg: BatchVoteMsg,
     ) -> Option<FastBlock> {
+        let shape_valid =
+            vote_msg.slot == self.slot && vote_msg.votes.size() == self.proposals.size();
+        if !shape_valid {
+            return None;
+        }
+
         for vote_msg in vote_msg.split() {
             self.handle_vote(node_id, vote_msg);
         }
@@ -130,14 +186,26 @@ impl FastPath {
     ) -> Option<FastCommitQc> {
         debug_assert!(self.validator_data.contains(&node_id));
 
+        if vote_msg.scope != self.slot {
+            return None;
+        }
+
         // no phase guard on purpose
         self.commit_votes.add_vote(node_id, vote_msg);
         self.commit_votes.try_form_strong_qc(&self.validator_data)
     }
 
     pub(crate) fn handle_fast_block(&mut self, fast_block: FastBlock) -> Option<FastBlock> {
+        let all_qcs_valid = fast_block
+            .0
+            .as_ref()
+            .into_iter()
+            .all(|qc| qc.verify(&self.validator_data));
+        if !all_qcs_valid {
+            return None;
+        }
+
         for (j, qc) in fast_block.0.into_indexed_iter() {
-            debug_assert!(qc.verify(&self.validator_data));
             self.certs[j].try_upgrade(qc);
         }
 
@@ -147,25 +215,70 @@ impl FastPath {
     pub(crate) fn handle_fallback_vote(&mut self, node_id: NodeId, vote_msg: FallbackVoteMsg) {
         debug_assert!(self.validator_data.contains(&node_id));
 
+        let shape_valid = vote_msg.enter_fallback_vote.scope == self.slot
+            && vote_msg.evidences.size() == self.proposals.size();
+        if !shape_valid {
+            return;
+        }
+
+        // admission is all-or-nothing: any invalid evidence rejects the
+        // whole vote, including its enter-fallback part.
+        let all_evidences_valid = vote_msg
+            .evidences
+            .as_ref()
+            .into_indexed_iter()
+            .all(|(j, evidence)| self.evidence_valid(j, evidence));
+        if !all_evidences_valid {
+            return;
+        }
+
         self.enter_fallback_votes
             .add_vote(node_id, vote_msg.enter_fallback_vote);
 
         for (j, evidence) in vote_msg.evidences.into_indexed_iter() {
             match evidence {
                 ProposalEvidence::FallbackSignedEntry(entry) => {
-                    debug_assert!(entry.well_formed());
-                    if let Some(meta) = entry.meta() {
-                        self.da.observe_proposal(self.slot, j, meta.clone());
+                    if let Some(header) = entry.header() {
+                        // positive fallback entry
+                        if self.availability[j].header_for(&header.root).is_none() {
+                            // header never seen. report this to
+                            // DA. q: this may not be necessary.
+                            self.emit(ChorusDACommand::ObserveProposal {
+                                j,
+                                header: header.clone(),
+                            });
+                        }
+
+                        let avail = &mut self.availability[j];
+                        avail.record_header(header.clone());
+                        if let Some(equiv_cert) = avail.equiv_cert() {
+                            self.certs[j].try_upgrade(equiv_cert);
+                        }
                     }
+
                     let vote = entry.into_vote_msg(self.slot, j);
                     self.fallback_entry_votes[j].add_vote(node_id, vote);
                     self.try_form_fallback_qc(j);
                 }
 
                 ProposalEvidence::Certified(cert) => {
-                    debug_assert!(cert.verify(&self.validator_data));
                     self.certs[j].try_upgrade(cert);
                 }
+            }
+        }
+    }
+
+    fn evidence_valid(&self, j: ProposalIndex, evidence: &ProposalEvidence) -> bool {
+        match evidence {
+            ProposalEvidence::FallbackSignedEntry(entry) => {
+                let header_valid = match entry.header() {
+                    Some(header) => self.header_auth.validate(header, self.slot.get(), j),
+                    None => true,
+                };
+                entry.well_formed() && header_valid
+            }
+            ProposalEvidence::Certified(cert) => {
+                cert.verify((self.slot, j), &self.header_auth, &self.validator_data)
             }
         }
     }
@@ -179,22 +292,21 @@ impl FastPath {
 
         self.phase = Phase::Vote;
 
+        let mut positive = Vec::new();
         let votes = self.proposals.as_ref().map(|j| {
-            let entry = match self.da.fetch_proposal(self.slot, *j) {
-                Ok(proposal) => Entry::Positive {
-                    root: proposal.root,
-                },
-                Err(FetchProposalError::Absent) => Entry::Negative,
-                Err(FetchProposalError::Equivocation(equiv_cert)) => {
-                    self.certs[*j].try_upgrade(equiv_cert);
-                    // upgrade on the equivocation certificate?
-                    todo!()
+            let entry = match self.availability[*j].fetch_proposal() {
+                Some(proposal) => {
+                    positive.push((*j, proposal.root));
+                    Entry::Positive(proposal.root)
                 }
+                None => Entry::Negative,
             };
 
             let vote_msg = VoteMsg::new_signed((self.slot, *j), entry.clone(), &self.key);
             (entry, vote_msg.signature)
         });
+
+        self.emit(ChorusDACommand::SlotVoted { positive });
 
         Some(BatchVoteMsg {
             slot: self.slot,
@@ -212,8 +324,8 @@ impl FastPath {
         // do we have at least 2f+1 valid vote messages?
         //
         // todo: handle invalid signatures
-        let has_enough_votes = self.votes.as_ref().into_iter().all(|pool| {
-            let voter_stake = self.validator_data.sum_stake(pool.all_voters());
+        let has_enough_votes = self.votes.as_ref().into_iter().all(|votes| {
+            let voter_stake = self.validator_data.sum_stake(votes.pool().all_voters());
             voter_stake > self.validator_data.total_stake().supermajority_threshold()
         });
         if !has_enough_votes {
@@ -226,6 +338,17 @@ impl FastPath {
         let enter_fallback_vote = VoteMsg::new_signed(self.slot, EnterFallbackVote, &self.key);
 
         let evidences = self.proposals.as_ref().map(|j| self.proposal_evidence(*j));
+
+        // a fresh positive fallback entry obliges us to re-disseminate
+        // the (decoded) proposal
+        for (j, evidence) in evidences.as_ref().into_indexed_iter() {
+            if let ProposalEvidence::FallbackSignedEntry(entry) = evidence
+                && let Some(header) = entry.header()
+            {
+                let root = header.root;
+                self.emit(ChorusDACommand::FallbackEntryCast { j, root });
+            }
+        }
 
         let fallback_vote = FallbackVoteMsg {
             enter_fallback_vote,
@@ -278,10 +401,10 @@ impl FastPath {
         // if there are f+1 positive votes on a root and it's decoded,
         // vote positive.
         if let Some(root) = self.weak_available_root(j)
-            && let Ok(meta) = self.da.fetch_proposal(self.slot, j)
-            && meta.root == root
+            && let Some(header) = self.availability[j].header_for(&root)
         {
-            let fse = FallbackSignedEntry::new_signed_positive(scope, root, &self.key, meta);
+            let fse =
+                FallbackSignedEntry::new_signed_positive(scope, root, &self.key, header.clone());
             return ProposalEvidence::FallbackSignedEntry(fse);
         }
 
@@ -293,7 +416,10 @@ impl FastPath {
     // find a merkle root for proposer j with f+1 positive votes that is
     // locally decoded, so we can cast a positive fallback entry
     fn weak_available_root(&self, j: ProposalIndex) -> Option<MerkleRoot> {
-        let candidates = match self.votes[j].try_form_weak_qc(&self.validator_data)? {
+        let candidates = match self.votes[j]
+            .pool()
+            .try_form_weak_qc(&self.validator_data)?
+        {
             Either::Left(qc) => [Some(qc), None],
             Either::Right((qc1, qc2)) => [Some(qc1), Some(qc2)],
         };
@@ -302,10 +428,10 @@ impl FastPath {
             .into_iter()
             .flatten()
             .filter_map(|qc| match qc.verdict {
-                Entry::Positive { root } => Some(root),
+                Entry::Positive(root) => Some(root),
                 Entry::Negative => None,
             })
-            .find(|root| self.da.proposal_decoded(self.slot, j, root))
+            .find(|root| self.availability[j].decoded(root))
     }
 
     fn try_form_fallback_qc(&mut self, j: ProposalIndex) {
@@ -314,7 +440,10 @@ impl FastPath {
             return;
         }
 
-        let weak_qc = match self.fallback_entry_votes[j].try_form_weak_qc(&self.validator_data) {
+        let weak_qc = match self.fallback_entry_votes[j]
+            .pool()
+            .try_form_weak_qc(&self.validator_data)
+        {
             None => return,
             Some(Either::Left(qc)) => qc,
             Some(Either::Right((qc1, qc2))) => {
@@ -358,7 +487,10 @@ impl FastPath {
             return;
         }
 
-        if let Some(fast_qc) = self.votes[j].try_form_strong_qc(&self.validator_data) {
+        if let Some(fast_qc) = self.votes[j]
+            .pool()
+            .try_form_strong_qc(&self.validator_data)
+        {
             self.certs[j].try_upgrade(fast_qc);
         }
     }
@@ -366,7 +498,7 @@ impl FastPath {
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) enum Entry {
-    Positive { root: MerkleRoot },
+    Positive(MerkleRoot),
     Negative,
 }
 
@@ -375,6 +507,15 @@ impl IsVote for Entry {
 
     fn serialize(&self, scope: &Self::Scope) -> Bytes {
         dummy_serialize(self, scope)
+    }
+}
+
+impl GatingRoot for Entry {
+    fn gating_root(&self) -> Option<MerkleRoot> {
+        match self {
+            Entry::Positive(root) => Some(*root),
+            Entry::Negative => None,
+        }
     }
 }
 
@@ -445,6 +586,12 @@ impl IsVote for FallbackEntry {
     }
 }
 
+impl GatingRoot for FallbackEntry {
+    fn gating_root(&self) -> Option<MerkleRoot> {
+        self.0.gating_root()
+    }
+}
+
 pub(crate) type FallbackQc = WeakQc<FallbackEntry>;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -487,14 +634,20 @@ impl CertifiedEntry {
     /// signatures. Authenticity is enforced at message ingress (see the
     /// crate header); we restate it at adoption points to make the trust
     /// boundary explicit and catch protocol-logic bugs.
-    fn verify(&self, validator_data: &ValidatorData) -> bool {
+    fn verify(
+        &self,
+        scope: (Slot, ProposalIndex),
+        header_auth: &HeaderAuth,
+        validator_data: &ValidatorData,
+    ) -> bool {
         match self {
             CertifiedEntry::FastQc(qc) => qc.verify(validator_data),
             CertifiedEntry::FallbackQc(qc) => qc.verify(validator_data),
             CertifiedEntry::EquivCert(EquivCert(a, b)) => {
+                let (s, j) = scope;
                 a.root != b.root
-                    && a.opaque_header.validate(&a.root, &a.sig)
-                    && b.opaque_header.validate(&b.root, &b.sig)
+                    && header_auth.validate(a, s.get(), j)
+                    && header_auth.validate(b, s.get(), j)
             }
         }
     }
@@ -505,9 +658,9 @@ struct FallbackSignedEntry {
     entry: FallbackEntry,
     // over (slot, j, self.entry)
     signature: Signature,
-    // invariant: meta.is_some() iff entry is positive
-    // invariant: meta.root == entry.root
-    meta: Option<ProposalMeta>,
+    // invariant: header.is_some() iff entry is positive
+    // invariant: header.root == entry.root
+    header: Option<ProposalHeader>,
 }
 
 impl FallbackSignedEntry {
@@ -515,14 +668,14 @@ impl FallbackSignedEntry {
         scope: (Slot, ProposalIndex),
         root: MerkleRoot,
         key: &KeyPair,
-        meta: ProposalMeta,
+        header: ProposalHeader,
     ) -> Self {
-        let entry = FallbackEntry(Entry::Positive { root });
+        let entry = FallbackEntry(Entry::Positive(root));
         let signature = VoteMsg::new_signed(scope, entry.clone(), key).signature;
         Self {
             entry,
             signature,
-            meta: Some(meta),
+            header: Some(header),
         }
     }
 
@@ -532,21 +685,22 @@ impl FallbackSignedEntry {
         Self {
             entry,
             signature,
-            meta: None,
+            header: None,
         }
     }
 
     fn well_formed(&self) -> bool {
         match &self.entry.0 {
-            Entry::Positive { root } => self.meta.as_ref().is_some_and(|meta| {
-                meta.root == *root && meta.opaque_header.validate(&meta.root, &meta.sig)
-            }),
-            Entry::Negative => self.meta.is_none(),
+            Entry::Positive(root) => self
+                .header
+                .as_ref()
+                .is_some_and(|header| header.root == *root),
+            Entry::Negative => self.header.is_none(),
         }
     }
 
-    fn meta(&self) -> Option<&ProposalMeta> {
-        self.meta.as_ref()
+    fn header(&self) -> Option<&ProposalHeader> {
+        self.header.as_ref()
     }
 
     fn into_vote_msg(self, slot: Slot, j: ProposalIndex) -> VoteMsg<FallbackEntry> {

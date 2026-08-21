@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-pub use proposal::{ChunkHeader, MerkleRoot, ProposalSignature};
+pub use proposal::{MerkleRoot, ProposalHeader};
 pub use validator::{NodeId, Stake};
 pub use vote::{KeyPair, PubKey, Signature, SignatureCollection};
 
@@ -32,6 +32,11 @@ pub mod validator {
 
         // floor(1/3 * self)
         fn honest_threshold(&self) -> Self;
+
+        // Proportional claim on shares discrete shares, as the
+        // quotient and remainder of shares * (self / total). The
+        // caller must guarantee that total is non-zero.
+        fn obligation(&self, total: &Self, shares: usize) -> (usize, usize);
     }
 
     pub trait ValidatorData {
@@ -39,13 +44,15 @@ pub mod validator {
         type PubKey: super::vote::PubKey;
         type Stake: Stake;
 
+        // iterate through the validators in a stable order across
+        // all nodes.
         fn nodes(&self) -> impl Iterator<Item = &Self::NodeId>;
         fn contains(&self, node_id: &Self::NodeId) -> bool;
 
-        // the caller must gurantee that the node_id is in the valset.
+        // the caller must guarantee that the node_id is in the valset.
         fn get_pubkey(&self, node_id: &Self::NodeId) -> &Self::PubKey;
 
-        // the caller must gurantee that the node_id is in the valset.
+        // the caller must guarantee that the node_id is in the valset.
         fn get_stake(&self, node_id: &Self::NodeId) -> &Self::Stake;
 
         // the caller must guarantee that the nodes are all in the valset.
@@ -200,19 +207,31 @@ pub mod vote {
 }
 
 pub mod proposal {
+    use crate::prod::types::ProposalIndex;
+
     // A commitment to a proposal's payload.
     pub trait MerkleRoot: Copy + Eq + std::hash::Hash + std::fmt::Debug {}
 
-    // not the same as vote signature. at least ProposalSignature is not
-    // supposed to be aggregatable.
-    pub trait ProposalSignature: Clone + Eq + std::hash::Hash + std::fmt::Debug {}
-
-    // The DA chunk header, opaque to consensus except for validation
-    // against the proposal commitment and signature.
-    pub trait ChunkHeader: Clone + Eq + std::hash::Hash + std::fmt::Debug {
+    pub trait ProposalHeader: Clone + Eq + std::hash::Hash + std::fmt::Debug {
         type Root: MerkleRoot;
-        type Sig: ProposalSignature;
-        fn validate(&self, root: &Self::Root, sig: &Self::Sig) -> bool;
+
+        // todo: change to Slot when we move it to a shared mcp-types
+        // crate.
+        fn slot(&self) -> u64;
+
+        fn root(&self) -> &Self::Root;
+    }
+
+    pub trait HeaderAuth {
+        type Header: ProposalHeader;
+
+        // Validates:
+        // - header is scoped by (slot, j)
+        // - header's signer is legitimate proposer at index j
+        // - (root, other header fields) is correctly signed
+        //
+        // todo: change to Slot
+        fn validate(&self, header: &Self::Header, slot: u64, j: ProposalIndex) -> bool;
     }
 }
 
@@ -228,8 +247,8 @@ pub const fn assert_env<
     SignatureCollection,
     VoteAggregation,
     MerkleRoot,
-    ProposalSignature,
-    ChunkHeader,
+    ProposalHeader,
+    HeaderAuth,
 >()
 where
     NodeId: validator::NodeId,
@@ -242,7 +261,7 @@ where
         vote::SignatureCollection<Signature = Signature, ValidatorData = ValidatorData>,
     VoteAggregation: vote::VoteAggregation<'a, Stake, SignatureCollection = SignatureCollection>,
     MerkleRoot: proposal::MerkleRoot,
-    ProposalSignature: proposal::ProposalSignature,
-    ChunkHeader: proposal::ChunkHeader<Root = MerkleRoot, Sig = ProposalSignature>,
+    ProposalHeader: proposal::ProposalHeader,
+    HeaderAuth: proposal::HeaderAuth<Header = ProposalHeader>,
 {
 }
