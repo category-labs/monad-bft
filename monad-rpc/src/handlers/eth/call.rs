@@ -937,6 +937,7 @@ impl MonadCreateAccessListResult {
                         error: Some(message),
                     })
                 }
+                EthCallResult::InsufficientBalance => Err(JsonRpcError::insufficient_funds()),
                 EthCallResult::OtherError => {
                     Err(JsonRpcError::eth_call_error(error.message, error.data))
                 }

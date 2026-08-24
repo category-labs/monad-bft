@@ -131,7 +131,53 @@ impl From<FailureCallResult> for crate::types::jsonrpc::JsonRpcError {
             EthCallResult::ExecutionError => {
                 Self::eth_call_execution_revert(error.message, error.data)
             }
+            EthCallResult::InsufficientBalance => Self::insufficient_funds(),
             _ => Self::eth_call_error(error.message, error.data),
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use monad_ethcall::{EthCallError, EthCallResult};
+
+    use super::{CallResult, FailureCallResult};
+    use crate::types::jsonrpc::JsonRpcError;
+
+    #[test]
+    fn test_insufficient_balance_rejection_maps_to_insufficient_funds() {
+        let rejection = EthCallError::Failure {
+            error_code: EthCallResult::InsufficientBalance,
+            gas_used: 0,
+            gas_refund: 0,
+            message: "insufficient balance".to_string(),
+            data: None,
+        };
+
+        let CallResult::Failure(failure) = CallResult::from(rejection.clone()) else {
+            panic!("validation rejection must convert to CallResult::Failure");
+        };
+        let err: JsonRpcError = failure.into();
+        assert_eq!(err, JsonRpcError::insufficient_funds());
+        assert_eq!(err.code, -32000);
+
+        let err: JsonRpcError = rejection.into();
+        assert_eq!(err, JsonRpcError::insufficient_funds());
+
+        let err: JsonRpcError = FailureCallResult {
+            error_code: EthCallResult::OtherError,
+            message: "bad nonce".to_string(),
+            ..Default::default()
+        }
+        .into();
+        assert_eq!(err.code, -32603);
+
+        let err: JsonRpcError = FailureCallResult {
+            error_code: EthCallResult::ExecutionError,
+            message: "execution reverted".to_string(),
+            ..Default::default()
+        }
+        .into();
+        assert_eq!(err.code, 3);
     }
 }
