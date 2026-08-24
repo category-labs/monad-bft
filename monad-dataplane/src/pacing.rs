@@ -25,6 +25,10 @@ use std::{
     net::SocketAddrV4,
     num::NonZeroU64,
     rc::Rc,
+    sync::{
+        atomic::{AtomicU64, Ordering as AtomicOrdering},
+        Arc,
+    },
     time::{Duration, Instant},
 };
 
@@ -53,6 +57,93 @@ impl PacingItem for Bytes {
 impl PacingItem for Vec<u8> {
     fn next_payload_bytes(&self) -> usize {
         self.len()
+    }
+}
+
+/// Global byte timeline shared by otherwise independent pacing queues.
+pub(crate) struct GlobalPacer {
+    bytes_per_second: NonZeroU64,
+    next_byte: AtomicU64,
+    epoch: Instant,
+}
+
+struct Reservation {
+    end_byte: u64,
+    end_at: Duration,
+}
+
+impl GlobalPacer {
+    pub(crate) fn new(bytes_per_second: NonZeroU64) -> Self {
+        Self {
+            bytes_per_second,
+            next_byte: AtomicU64::new(0),
+            epoch: Instant::now(),
+        }
+    }
+
+    fn elapsed(&self) -> Duration {
+        self.epoch.elapsed()
+    }
+
+    fn byte_at(&self, at: Duration) -> u64 {
+        (at.as_nanos()
+            .saturating_mul(self.bytes_per_second.get() as u128)
+            / Duration::from_secs(1).as_nanos())
+        .min(u64::MAX as u128) as u64
+    }
+
+    fn duration_at(&self, byte: u64) -> Duration {
+        let nanos = (byte as u128)
+            .saturating_mul(Duration::from_secs(1).as_nanos())
+            .div_ceil(self.bytes_per_second.get() as u128);
+        Duration::from_nanos(nanos.min(u64::MAX as u128) as u64)
+    }
+
+    fn start_byte(&self, next_byte: u64, now: Duration, reset: bool) -> u64 {
+        let next_at = self.duration_at(next_byte);
+        if reset || now.saturating_sub(next_at) > PACER_MAX_CATCH_UP {
+            next_byte.max(self.byte_at(now))
+        } else {
+            next_byte
+        }
+    }
+
+    fn next_at(&self, now: Duration, reset: bool) -> Duration {
+        let next_byte = self.next_byte.load(AtomicOrdering::Relaxed);
+        self.duration_at(self.start_byte(next_byte, now, reset))
+    }
+
+    fn reserve(
+        &self,
+        bytes: usize,
+        now: Duration,
+        reset: bool,
+        owner: Option<u64>,
+    ) -> Result<Reservation, Duration> {
+        let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
+        let mut next_byte = self.next_byte.load(AtomicOrdering::Relaxed);
+        loop {
+            let start_byte = self.start_byte(next_byte, now, reset);
+            let start_at = self.duration_at(start_byte);
+            if start_at > now && owner != Some(next_byte) {
+                return Err(start_at);
+            }
+            let end_byte = start_byte.saturating_add(bytes);
+            match self.next_byte.compare_exchange_weak(
+                next_byte,
+                end_byte,
+                AtomicOrdering::Relaxed,
+                AtomicOrdering::Relaxed,
+            ) {
+                Ok(_) => {
+                    return Ok(Reservation {
+                        end_byte,
+                        end_at: self.duration_at(end_byte),
+                    });
+                }
+                Err(current) => next_byte = current,
+            }
+        }
     }
 }
 
@@ -131,14 +222,14 @@ pub struct PacingQueue<T> {
     peers: HashMap<SocketAddrV4, Peer<T>>,
     next_peers: BinaryHeap<Reverse<PeerDeadline<T>>>,
     ready: BinaryHeap<Queued<T>>,
-    global_bytes_per_second: NonZeroU64,
+    global: Arc<GlobalPacer>,
     peer_bytes_per_second: NonZeroU64,
     service_at: Duration,
+    global_reservation: Option<u64>,
     memory_limit: usize,
     memory_used: usize,
     pending: usize,
     next_order: u64,
-    epoch: Instant,
     metrics: DataplaneMetrics,
 }
 
@@ -154,18 +245,32 @@ impl<T: PacingItem> PacingQueue<T> {
         metrics
             .udp_pacing_memory_limit_bytes
             .set(u64::try_from(memory_limit).unwrap_or(u64::MAX));
+        Self::with_global_pacer(
+            Arc::new(GlobalPacer::new(global_bytes_per_second)),
+            peer_bytes_per_second,
+            memory_limit,
+            metrics,
+        )
+    }
+
+    pub(crate) fn with_global_pacer(
+        global: Arc<GlobalPacer>,
+        peer_bytes_per_second: NonZeroU64,
+        memory_limit: usize,
+        metrics: DataplaneMetrics,
+    ) -> Self {
         Self {
             peers: HashMap::new(),
             next_peers: BinaryHeap::new(),
             ready: BinaryHeap::new(),
-            global_bytes_per_second,
+            global,
             peer_bytes_per_second,
             service_at: Duration::ZERO,
+            global_reservation: None,
             memory_limit,
             memory_used: 0,
             pending: 0,
             next_order: 0,
-            epoch: Instant::now(),
             metrics,
         }
     }
@@ -179,16 +284,21 @@ impl<T: PacingItem> PacingQueue<T> {
     }
 
     pub fn elapsed(&self) -> Duration {
-        self.epoch.elapsed()
+        self.global.elapsed()
     }
 
     pub fn next_wakeup(&self, now: Duration) -> Option<Duration> {
-        let scheduled_at = if self.ready.is_empty() {
+        let reset_global = self.ready.is_empty();
+        let scheduled_at = if reset_global {
             self.service_at.max(self.next_peers.peek()?.0.next_at)
         } else {
             self.service_at
         };
-        Some(scheduled_at.max(now))
+        Some(
+            scheduled_at
+                .max(self.global.next_at(now, reset_global))
+                .max(now),
+        )
     }
 
     pub fn enqueue(
@@ -222,12 +332,15 @@ impl<T: PacingItem> PacingQueue<T> {
                 key,
                 peer,
             }));
+            self.metrics.udp_pacing_peers.inc();
         }
 
         self.next_order = self.next_order.wrapping_add(1);
         self.memory_used += queued_bytes;
         self.pending += 1;
-        self.update_metrics();
+        self.metrics
+            .udp_pacing_queued_bytes
+            .add(u64::try_from(queued_bytes).unwrap_or(u64::MAX));
         Ok(())
     }
 
@@ -235,7 +348,8 @@ impl<T: PacingItem> PacingQueue<T> {
         // account for time spent on cpu work or while this thread was scheduled off-cpu.
         // if the ready queue is empty, catch up to now because no global work remains scheduled.
         // after a long pause, reset to now instead of accumulating unbounded catch-up allowance.
-        if self.ready.is_empty() || now.saturating_sub(self.service_at) > PACER_MAX_CATCH_UP {
+        let reset_global = self.ready.is_empty();
+        if reset_global || now.saturating_sub(self.service_at) > PACER_MAX_CATCH_UP {
             self.service_at = self.service_at.max(now);
         }
 
@@ -283,17 +397,21 @@ impl<T: PacingItem> PacingQueue<T> {
         if next_bytes > max_bytes {
             return None;
         }
+        let wire_bytes = Self::wire_bytes(next_bytes);
+        let local_end = Self::advance(self.service_at, wire_bytes, self.global.bytes_per_second);
+        let reservation = self
+            .global
+            .reserve(wire_bytes, now, reset_global, self.global_reservation)
+            .ok()?;
+        self.service_at = local_end.max(reservation.end_at);
+        self.global_reservation = Some(reservation.end_byte);
         let queued = self.ready.pop().expect("peeked ready message");
-        let launch = self.service_at;
-        self.service_at = Self::advance(
-            launch,
-            Self::wire_bytes(next_bytes),
-            self.global_bytes_per_second,
-        );
 
         self.memory_used -= queued.queued_bytes;
         self.pending -= 1;
-        self.update_metrics();
+        self.metrics
+            .udp_pacing_queued_bytes
+            .sub(u64::try_from(queued.queued_bytes).unwrap_or(u64::MAX));
         Some(Scheduled {
             item: queued.item,
             batch_bytes: next_bytes,
@@ -311,15 +429,6 @@ impl<T: PacingItem> PacingQueue<T> {
         at.saturating_add(Duration::from_nanos(
             u64::try_from(nanos).unwrap_or(u64::MAX),
         ))
-    }
-
-    fn update_metrics(&self) {
-        self.metrics
-            .udp_pacing_peers
-            .set(u64::try_from(self.peers.len()).unwrap_or(u64::MAX));
-        self.metrics
-            .udp_pacing_queued_bytes
-            .set(u64::try_from(self.memory_used).unwrap_or(u64::MAX));
     }
 }
 
@@ -422,6 +531,41 @@ mod tests {
                 Duration::from_millis(384),
             ]
         );
+    }
+
+    #[test]
+    fn all_queues_share_the_global_rate() {
+        let global = Arc::new(GlobalPacer::new(rate(1_000)));
+        let mut first = PacingQueue::with_global_pacer(
+            Arc::clone(&global),
+            rate(UNLIMITED),
+            usize::MAX,
+            DataplaneMetrics::new(),
+        );
+        let mut second = PacingQueue::with_global_pacer(
+            global,
+            rate(UNLIMITED),
+            usize::MAX,
+            DataplaneMetrics::new(),
+        );
+        first
+            .enqueue(key(1), UdpPriority::Regular, item(1, 100), 100)
+            .unwrap();
+        second
+            .enqueue(key(2), UdpPriority::Regular, item(2, 100), 100)
+            .unwrap();
+
+        first.dequeue(Duration::ZERO, usize::MAX).unwrap();
+        assert_eq!(first.service_at, Duration::from_millis(128));
+        assert_eq!(
+            second.next_wakeup(Duration::ZERO),
+            Some(Duration::from_millis(128))
+        );
+        assert!(second.dequeue(Duration::ZERO, usize::MAX).is_none());
+        second
+            .dequeue(Duration::from_millis(128), usize::MAX)
+            .unwrap();
+        assert_eq!(second.service_at, Duration::from_millis(256));
     }
 
     #[test]
@@ -751,7 +895,7 @@ mod tests {
                 u64::from(port)
             );
         }
-        let now = queue.epoch.elapsed();
+        let now = queue.elapsed();
         assert!(queue.dequeue(now, usize::MAX).is_none());
         assert!(queue.peers.len() <= 2);
     }
