@@ -489,8 +489,8 @@ impl JsonRpcError {
 
     pub fn insufficient_funds() -> Self {
         Self {
-            code: -32003,
-            message: "Insufficient funds for gas * price + value".into(),
+            code: -32000,
+            message: "insufficient funds for gas * price + value".into(),
             data: None,
         }
     }
@@ -555,6 +555,14 @@ impl From<monad_ethcall::FailureCallResult> for JsonRpcError {
         match error.error_code {
             monad_ethcall::EthCallResult::ExecutionError => {
                 Self::eth_call_execution_revert(error.message, error.data)
+            }
+            monad_ethcall::EthCallResult::OtherError
+                if matches!(
+                    error.message.as_str(),
+                    "insufficient balance" | "insufficient balance for fee"
+                ) =>
+            {
+                Self::insufficient_funds()
             }
             _ => Self::eth_call_error(error.message, error.data),
         }

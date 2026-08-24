@@ -932,9 +932,7 @@ impl MonadCreateAccessListResult {
                         error: Some(message),
                     })
                 }
-                EthCallResult::OtherError => {
-                    Err(JsonRpcError::eth_call_error(error.message, error.data))
-                }
+                EthCallResult::OtherError => Err(error.into()),
                 EthCallResult::Success => Err(JsonRpcError::internal_error(
                     "unexpected successful eth_call failure".into(),
                 )),
