@@ -302,7 +302,7 @@ async fn rx_multishot_socket(
                 ?err,
                 "failed to create multishot buffer ring, falling back to single-shot UDP receiver"
             );
-            return rx_single_socket(socket, udp_ingress_tx, metrics).await;
+            return rx_single_socket(socket, udp_ingress_tx).await;
         }
     };
 
