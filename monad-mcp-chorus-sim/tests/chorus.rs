@@ -21,7 +21,10 @@ use chorus::{
     CadenceDriverMsg,
     conductor::{ConductorConfig, MonadConductor, acs::nop::NopAcs},
     slot::chorus::{Chorus, ChorusConfig, ChorusContext},
-    types::{HeaderAuth, NodeId, SlotDeadline, Stake, TimestampDelta, ValidatorData},
+    types::{
+        CreditLotterySchedule, HeaderAuth, NodeId, ProposerConfig, RotatingProposerSchedule,
+        SlotDeadline, Stake, TimestampDelta, ValidatorData,
+    },
 };
 use helper::expect_finalized_at;
 use monad_mcp_chorus::{spec::KeyPair as _, stub as chorus};
@@ -48,6 +51,19 @@ fn conductor() -> Conductor {
     MonadConductor::genesis(config, ()).unwrap()
 }
 
+fn proposer_schedule(
+    val_data: &Arc<ValidatorData>,
+) -> Arc<RotatingProposerSchedule<CreditLotterySchedule>> {
+    let config = ProposerConfig {
+        concurrent_proposers: 1,
+        blind_window: 0,
+        rotation_slack: 1,
+        slots_per_epoch: 1_000, // never crossed in this test
+    };
+    let algorithm = CreditLotterySchedule::recommended(&config, 0xC0FFEE);
+    Arc::new(RotatingProposerSchedule::new(config, algorithm, val_data.clone()).unwrap())
+}
+
 fn add_node(builder: &mut CadenceSwarmBuilder<DummyMsg>, id: u64, val_data: &Arc<ValidatorData>) {
     let node_id = NodeId::dummy(id);
     let context = ChorusContext {
@@ -55,11 +71,9 @@ fn add_node(builder: &mut CadenceSwarmBuilder<DummyMsg>, id: u64, val_data: &Arc
         key: Arc::new(node_id.keypair()),
         validator_data: val_data.clone(),
         header_auth: Arc::new(HeaderAuth::new(|_, _| None)),
+        proposers: proposer_schedule(val_data),
     };
-    let config = ChorusConfig {
-        delta: DELTA,
-        num_proposals: 1,
-    };
+    let config = ChorusConfig { delta: DELTA };
 
     builder.add_node::<Chorus, _>(node_id, conductor(), config, context);
 }

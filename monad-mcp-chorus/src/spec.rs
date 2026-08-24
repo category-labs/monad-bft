@@ -65,6 +65,10 @@ pub mod validator {
         // quotient and remainder of shares * (self / total). The
         // caller must guarantee that total is non-zero.
         fn obligation(&self, total: &Self, shares: usize) -> (usize, usize);
+
+        // the raw integer stake amount, as consumed by stake-weighted
+        // proposer scheduling
+        fn amount(&self) -> u64;
     }
 
     #[expect(clippy::len_without_is_empty)]
