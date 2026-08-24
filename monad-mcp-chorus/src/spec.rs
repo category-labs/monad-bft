@@ -32,6 +32,10 @@ pub mod validator {
 
         // floor(1/3 * self)
         fn honest_threshold(&self) -> Self;
+
+        // the raw integer stake amount, as consumed by stake-weighted
+        // proposer scheduling
+        fn amount(&self) -> u64;
     }
 
     pub trait ValidatorData {
