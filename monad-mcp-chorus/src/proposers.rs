@@ -48,6 +48,21 @@
 //!   concurrency drops to the validator count: indices fill from 0 and the
 //!   remaining ones stay vacant for the whole epoch.
 //!
+//! # Minimum validators (protocol contract)
+//!
+//! Scheduling requires **one positively staked validator** per epoch; zero
+//! is unschedulable and surfaces as
+//! [`ScheduleError::NotEnoughValidators`], never as a stall or panic. There
+//! is no other minimum: the effective window `min(K, staked)` shrinks with
+//! the validator set, so a shrinking set degrades concurrency — higher
+//! indices go vacant — instead of stalling election. (Stakes only change at
+//! epoch boundaries, so shrinkage happens at seams; today the window is
+//! computed from the static snapshot and becomes per-epoch together with a
+//! per-epoch stake source.) Mind the blind-window caveat above: a single
+//! effective proposer under a nonzero blind window leaves rotation-start
+//! slots entirely vacant — they finalize empty, costing throughput but not
+//! consensus progress.
+//!
 //! The only state chained across an epoch seam is the *boundary tail* — the
 //! last `window − 1` leaders before it — captured as an [`EpochAnchor`]. An
 //! anchor plus an epoch's stake snapshot fully determines that epoch, with
@@ -111,8 +126,13 @@ impl ProposerConfig {
         self.blind_window.saturating_add(self.rotation_slack)
     }
 
+    /// Zero for a zero rotation length — a configuration [`Self::validate`]
+    /// rejects; guarded here so it cannot divide by zero first.
     pub const fn rotations_per_epoch(&self) -> u64 {
-        self.slots_per_epoch / self.slots_per_rotation()
+        match self.slots_per_rotation() {
+            0 => 0,
+            rotation => self.slots_per_epoch / rotation,
+        }
     }
 
     /// Static checks only; the epoch-length requirement depends on the
@@ -248,13 +268,20 @@ impl LeaderSchedule for RoundRobinLeaderSchedule {
             .filter(|(_, weight)| *weight > 0)
             .map(|(id, _)| *id)
             .collect();
+        validators.sort_unstable();
+        // Duplicates would let `recent` cover every candidate and hang the
+        // selection loop below; reject them like the lottery does. (Not
+        // reachable via RotatingProposerSchedule: ValidatorData is
+        // map-backed, so its ids are unique.)
+        if validators.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(ScheduleError::DuplicateValidator);
+        }
         if validators.is_empty() || validators.len() < window {
             return Err(ScheduleError::NotEnoughValidators {
                 staked: validators.len(),
                 required: window.max(1),
             });
         }
-        validators.sort_unstable();
         let len = validators.len() as u64;
 
         // The last `window − 1` selections, seeded with the previous
@@ -1012,6 +1039,29 @@ mod tests {
     }
 
     #[test]
+    fn round_robin_rejects_duplicate_ids() {
+        // Without the duplicate check this input hangs the selection loop:
+        // three entries pass the length check, but the two distinct ids can
+        // both be recent at once, leaving no eligible candidate.
+        let cfg = ProposerConfig {
+            concurrent_proposers: 3,
+            blind_window: 0,
+            rotation_slack: 1,
+            slots_per_epoch: 3,
+        };
+        let algorithm = RoundRobinLeaderSchedule::new(&cfg);
+        let stakes = vec![
+            (NodeId::dummy(0), 1),
+            (NodeId::dummy(0), 1),
+            (NodeId::dummy(1), 1),
+        ];
+        assert!(matches!(
+            algorithm.epoch_leaders(0, 3, &stakes, &[]).unwrap_err(),
+            ScheduleError::DuplicateValidator
+        ));
+    }
+
+    #[test]
     fn anchored_schedule_matches_the_genesis_chain() {
         let cfg = ProposerConfig {
             concurrent_proposers: 3,
@@ -1178,6 +1228,18 @@ mod tests {
             slots_per_epoch: 4,
         });
         assert!(matches!(empty_rotation, ScheduleError::InvalidConfig(_)));
+
+        // The round-robin stub reads rotations_per_epoch before validation
+        // can run: a zero rotation length must reject, not divide by zero.
+        let cfg = ProposerConfig {
+            concurrent_proposers: 2,
+            blind_window: 0,
+            rotation_slack: 0,
+            slots_per_epoch: 4,
+        };
+        let algorithm = RoundRobinLeaderSchedule::new(&cfg);
+        let err = RotatingProposerSchedule::new(cfg, algorithm, uniform(8)).unwrap_err();
+        assert!(matches!(err, ScheduleError::InvalidConfig(_)));
 
         let ragged_epoch = build(ProposerConfig {
             concurrent_proposers: 2,
