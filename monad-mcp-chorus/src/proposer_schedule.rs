@@ -181,6 +181,12 @@ pub enum ScheduleError {
     },
     /// The same validator id was supplied twice.
     DuplicateValidator,
+    /// The queried epoch predates the schedule's anchor and cannot be
+    /// derived from it.
+    BeforeAnchor {
+        queried: u64,
+        anchor: u64,
+    },
 }
 
 impl std::fmt::Display for ScheduleError {
@@ -192,6 +198,10 @@ impl std::fmt::Display for ScheduleError {
                 "{staked} positively-staked validators, but {required} concurrent proposers required"
             ),
             ScheduleError::DuplicateValidator => write!(f, "duplicate validator id in stake set"),
+            ScheduleError::BeforeAnchor { queried, anchor } => write!(
+                f,
+                "epoch {queried} predates the schedule anchor at epoch {anchor}"
+            ),
         }
     }
 }

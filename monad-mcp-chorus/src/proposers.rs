@@ -48,6 +48,16 @@
 //!   concurrency drops to the validator count: indices fill from 0 and the
 //!   remaining ones stay vacant for the whole epoch.
 //!
+//! The only state chained across an epoch seam is the *boundary tail* — the
+//! last `window − 1` leaders before it — captured as an [`EpochAnchor`]. An
+//! anchor plus an epoch's stake snapshot fully determines that epoch, with
+//! no dependency on anything older. A node can therefore persist (or the
+//! protocol commit) the anchor at every boundary and re-anchor a fresh
+//! schedule near the tip on restart or join
+//! ([`RotatingProposerSchedule::anchored`]) — nothing replays from genesis.
+//! Queries behind the anchor are refused; for finalized slots the quorum
+//! certificates already witness the assignments.
+//!
 //! Two seams are abstracted for tests: the per-epoch scheduling algorithm
 //! ([`LeaderSchedule`], stub: [`RoundRobinLeaderSchedule`]) and the
 //! slot-level API itself ([`ProposerSchedule`], stub:
@@ -344,14 +354,61 @@ pub trait ProposerSchedule {
     }
 }
 
+/// The cross-seam state of a [`RotatingProposerSchedule`]: the last
+/// `window − 1` leaders before `epoch` (fewer at genesis, or wherever the
+/// protocol drains all proposer phases across a boundary). Together with the
+/// epoch's stake snapshot it fully determines that epoch's leader sequence.
+///
+/// The anchor is tiny and deterministic, so it can be persisted locally — or
+/// committed to consensus state — at every epoch boundary
+/// ([`RotatingProposerSchedule::anchor_for_epoch`] produces it): a
+/// restarting or newly joining node then anchors its schedule near the tip
+/// instead of replaying every seam since genesis. Epoch management does not
+/// exist yet, so that wiring is still to come; the API supports it already
+/// so the design can settle early.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct EpochAnchor {
+    epoch: u64,
+    tail: Vec<NodeId>,
+}
+
+impl EpochAnchor {
+    /// The genesis anchor: epoch 0, seeded by an empty tail.
+    pub const fn genesis() -> Self {
+        Self {
+            epoch: 0,
+            tail: Vec::new(),
+        }
+    }
+
+    /// Anchor at `epoch`, seeded by `tail`: the leaders of the last
+    /// `window − 1` rotations before that epoch, oldest first.
+    pub fn new(epoch: u64, tail: Vec<NodeId>) -> Self {
+        Self { epoch, tail }
+    }
+
+    /// First epoch an anchored schedule can answer queries for.
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    /// The leaders of the last rotations before [`Self::epoch`], oldest
+    /// first.
+    pub fn tail(&self) -> &[NodeId] {
+        &self.tail
+    }
+}
+
 /// The production [`ProposerSchedule`]: rotates the leader sequence of a
 /// [`LeaderSchedule`] through the proposal indices, one epoch at a time.
 ///
 /// Epochs are fixed slot spans (`epoch = slot / slots_per_epoch`). Schedules
 /// are built per epoch on demand and cached; building always proceeds in
-/// epoch order so the no-repeat window chains correctly across seams. Only
-/// the newest [`CACHED_EPOCHS`] epochs stay cached — queries behind the
-/// retained range replay the deterministic chain from genesis instead.
+/// epoch order so the no-repeat window chains correctly across seams.
+/// Derivation starts at the [`EpochAnchor`] handed to [`Self::anchored`] —
+/// earlier epochs return [`ScheduleError::BeforeAnchor`]. Only the newest
+/// [`CACHED_EPOCHS`] epochs stay cached; a query behind the retained range
+/// replays the chain from the anchor instead.
 ///
 /// The effective concurrency is `min(K, positively staked validators)`:
 /// rotations cycle through indices `0..effective` and any higher index stays
@@ -366,24 +423,42 @@ pub struct RotatingProposerSchedule<A> {
     stakes: Vec<(NodeId, u64)>,
     /// Effective concurrency: `min(K, positively staked validators)`.
     window: usize,
+    /// Where derivation starts; epochs before it cannot be answered.
+    anchor: EpochAnchor,
     /// The newest built epochs, contiguous, at most [`CACHED_EPOCHS`] of
     /// them. The newest entry is never evicted: extending forward chains
     /// from its boundary tail.
     cache: Mutex<BTreeMap<u64, Arc<Vec<NodeId>>>>,
 }
 
-/// Epochs retained by the schedule cache: enough that consensus queries —
-/// open slots plus a little history — always hit, while memory stays bounded
-/// for the lifetime of the node.
-const CACHED_EPOCHS: usize = 8;
+/// Epochs retained by the schedule cache. Purely a performance knob: the
+/// hot consensus working set is the epochs around the open slots (previous,
+/// current, next); anything older is rebuilt by replaying from the anchor.
+const CACHED_EPOCHS: usize = 4;
 
 impl<A: LeaderSchedule> RotatingProposerSchedule<A> {
-    /// Eagerly builds epoch 0, so configuration and validator-set errors
-    /// surface at construction rather than mid-run.
+    /// Anchors the schedule at genesis: the whole chain is derivable, at
+    /// the cost of replaying every seam since epoch 0 on a cache miss. For
+    /// long-running production nodes prefer [`Self::anchored`] with a
+    /// persisted anchor.
     pub fn new(
         cfg: ProposerConfig,
         algorithm: A,
         validator_data: Arc<ValidatorData>,
+    ) -> Result<Self, ScheduleError> {
+        Self::anchored(cfg, algorithm, validator_data, EpochAnchor::genesis())
+    }
+
+    /// Anchors the schedule at `anchor`: derivation starts there and
+    /// queries about earlier epochs return
+    /// [`ScheduleError::BeforeAnchor`]. Eagerly builds the anchor epoch, so
+    /// configuration and validator-set errors surface at construction
+    /// rather than mid-run.
+    pub fn anchored(
+        cfg: ProposerConfig,
+        algorithm: A,
+        validator_data: Arc<ValidatorData>,
+        anchor: EpochAnchor,
     ) -> Result<Self, ScheduleError> {
         use crate::spec::{Stake as _, validator::ValidatorData as _};
 
@@ -415,14 +490,40 @@ impl<A: LeaderSchedule> RotatingProposerSchedule<A> {
             cfg,
             algorithm,
             stakes,
+            anchor,
             cache: Mutex::new(BTreeMap::new()),
         };
-        schedule.leaders_of_epoch(0)?;
+        schedule.leaders_of_epoch(schedule.anchor.epoch())?;
         Ok(schedule)
     }
 
     pub fn config(&self) -> &ProposerConfig {
         &self.cfg
+    }
+
+    /// The anchor this schedule derives from.
+    pub fn anchor(&self) -> &EpochAnchor {
+        &self.anchor
+    }
+
+    /// The anchor seeding `epoch`, for persisting at the epoch boundary:
+    /// a fresh schedule [`Self::anchored`] on it yields the same
+    /// assignments from `epoch` onward, without anything older.
+    pub fn anchor_for_epoch(&self, epoch: u64) -> Result<EpochAnchor, ScheduleError> {
+        if epoch < self.anchor.epoch() {
+            return Err(ScheduleError::BeforeAnchor {
+                queried: epoch,
+                anchor: self.anchor.epoch(),
+            });
+        }
+        if epoch == self.anchor.epoch() {
+            return Ok(self.anchor.clone());
+        }
+        let leaders = self.leaders_of_epoch(epoch - 1)?;
+        Ok(EpochAnchor::new(
+            epoch,
+            boundary_tail(&leaders, self.window - 1),
+        ))
     }
 
     pub fn epoch_of_slot(&self, slot: Slot) -> u64 {
@@ -441,6 +542,13 @@ impl<A: LeaderSchedule> RotatingProposerSchedule<A> {
     }
 
     fn leaders_of_epoch(&self, epoch: u64) -> Result<Arc<Vec<NodeId>>, ScheduleError> {
+        if epoch < self.anchor.epoch() {
+            return Err(ScheduleError::BeforeAnchor {
+                queried: epoch,
+                anchor: self.anchor.epoch(),
+            });
+        }
+
         let mut cache = self.cache.lock().expect("proposer schedule cache poisoned");
         if let Some(leaders) = cache.get(&epoch) {
             return Ok(leaders.clone());
@@ -453,11 +561,11 @@ impl<A: LeaderSchedule> RotatingProposerSchedule<A> {
             && epoch < newest
         {
             // Behind the retained range: replay the deterministic chain
-            // from genesis without touching the cache. Costs one algorithm
-            // run per epoch, but only queries about slots older than the
-            // retained window get here.
-            let mut leaders = self.build_epoch(0, &[])?;
-            for next in 1..=epoch {
+            // from the anchor without touching the cache. Costs one
+            // algorithm run per epoch since the anchor, but only queries
+            // about slots older than the retained window get here.
+            let mut leaders = self.build_epoch(self.anchor.epoch(), self.anchor.tail())?;
+            for next in self.anchor.epoch() + 1..=epoch {
                 let tail = boundary_tail(&leaders, tail_len);
                 leaders = self.build_epoch(next, &tail)?;
             }
@@ -469,7 +577,7 @@ impl<A: LeaderSchedule> RotatingProposerSchedule<A> {
         // beyond the retention bound.
         let (mut next, mut tail) = match cache.iter().next_back() {
             Some((&newest, leaders)) => (newest + 1, boundary_tail(leaders, tail_len)),
-            None => (0, Vec::new()),
+            None => (self.anchor.epoch(), self.anchor.tail().to_vec()),
         };
         while next <= epoch {
             let leaders = self.build_epoch(next, &tail)?;
@@ -515,10 +623,21 @@ impl<A: LeaderSchedule> ProposerSchedule for RotatingProposerSchedule<A> {
     }
 
     fn proposers_at(&self, slot: Slot) -> Result<ProposerSet, ScheduleError> {
+        let epoch = self.epoch_of_slot(slot);
+        if epoch < self.anchor.epoch() {
+            return Err(ScheduleError::BeforeAnchor {
+                queried: epoch,
+                anchor: self.anchor.epoch(),
+            });
+        }
+
         let window = self.window as u64;
         let rotation = self.global_rotation_of_slot(slot);
         // Exact because slots_per_epoch is a multiple of the rotation length.
         let slot_in_rotation = slot.0 % self.cfg.slots_per_rotation();
+        // First rotation derived by this schedule; the up-to-`window − 1`
+        // rotations before it resolve from the anchor tail.
+        let anchor_rotation = self.anchor.epoch() * self.cfg.rotations_per_epoch();
 
         // Indices at or above the effective concurrency stay vacant.
         let mut proposers = vec![None; self.cfg.concurrent_proposers];
@@ -539,7 +658,17 @@ impl<A: LeaderSchedule> ProposerSchedule for RotatingProposerSchedule<A> {
             {
                 continue;
             }
-            proposers[index as usize] = Some(self.leader_of_global_rotation(serving)?);
+            proposers[index as usize] = if serving >= anchor_rotation {
+                Some(self.leader_of_global_rotation(serving)?)
+            } else {
+                // Pre-anchor rotation: the anchor tail holds the leaders of
+                // the last `window − 1` rotations before the anchor, oldest
+                // first. A rotation beyond the tail is vacant — the
+                // anchored counterpart of the genesis ramp-up.
+                let back = (anchor_rotation - serving) as usize;
+                let tail = self.anchor.tail();
+                tail.len().checked_sub(back).map(|position| tail[position])
+            };
         }
 
         Ok(ProposerSet {
@@ -878,6 +1007,86 @@ mod tests {
             assert_eq!(
                 jumped.proposers_at(Slot(slot)).unwrap(),
                 in_order.proposers_at(Slot(slot)).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn anchored_schedule_matches_the_genesis_chain() {
+        let cfg = ProposerConfig {
+            concurrent_proposers: 3,
+            blind_window: 0,
+            rotation_slack: 1,
+            slots_per_epoch: 6,
+        };
+        let stakes: Vec<(u64, u64)> = (0..8).map(|id| (id, 10 + id)).collect();
+        let genesis = lottery(cfg.clone(), validator_data(&stakes));
+
+        // Persist the anchor at the epoch-2 boundary, as a node would, and
+        // bring up a fresh schedule from it.
+        let anchor = genesis.anchor_for_epoch(2).unwrap();
+        let algorithm = CreditLotterySchedule::recommended(&cfg, 0xC0FFEE);
+        let anchored =
+            RotatingProposerSchedule::anchored(cfg, algorithm, validator_data(&stakes), anchor)
+                .unwrap();
+
+        // Identical assignments from the anchor onward, including the seam
+        // lookback into pre-anchor rotations resolved from the tail.
+        for slot in 12..36 {
+            assert_eq!(
+                anchored.proposers_at(Slot(slot)).unwrap(),
+                genesis.proposers_at(Slot(slot)).unwrap(),
+                "slot {slot}"
+            );
+        }
+
+        // Anchors derived later agree as well.
+        assert_eq!(
+            anchored.anchor_for_epoch(4).unwrap(),
+            genesis.anchor_for_epoch(4).unwrap()
+        );
+
+        // Epochs behind the anchor are not derivable.
+        assert!(matches!(
+            anchored.proposers_at(Slot(11)).unwrap_err(),
+            ScheduleError::BeforeAnchor {
+                queried: 1,
+                anchor: 2
+            }
+        ));
+        assert!(matches!(
+            anchored.leader_of_global_rotation(11).unwrap_err(),
+            ScheduleError::BeforeAnchor { .. }
+        ));
+        assert!(matches!(
+            anchored.anchor_for_epoch(1).unwrap_err(),
+            ScheduleError::BeforeAnchor { .. }
+        ));
+    }
+
+    #[test]
+    fn anchored_schedule_matches_under_a_blind_window() {
+        let cfg = ProposerConfig {
+            concurrent_proposers: 3,
+            blind_window: 2,
+            rotation_slack: 1,
+            slots_per_epoch: 9,
+        };
+        let genesis = round_robin(cfg.clone(), 5);
+
+        let anchor = genesis.anchor_for_epoch(1).unwrap();
+        let algorithm = RoundRobinLeaderSchedule::new(&cfg);
+        let anchored =
+            RotatingProposerSchedule::anchored(cfg, algorithm, uniform(5), anchor).unwrap();
+
+        // Blind-window vacancies and the seam lookback come out the same as
+        // on the genesis-anchored chain; the first-rotation exemption does
+        // not resurface at the anchor.
+        for slot in 9..27 {
+            assert_eq!(
+                anchored.proposers_at(Slot(slot)).unwrap(),
+                genesis.proposers_at(Slot(slot)).unwrap(),
+                "slot {slot}"
             );
         }
     }
