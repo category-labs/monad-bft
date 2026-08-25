@@ -31,8 +31,8 @@ pub use super::env::{
 pub use super::{
     proposer_schedule::ScheduleError,
     proposers::{
-        CreditLotterySchedule, FixedProposerSchedule, ProposerConfig, ProposerSchedule,
-        ProposerSet, RotatingProposerSchedule,
+        CreditLotterySchedule, EpochAnchor, FixedProposerSchedule, ProposerConfig,
+        ProposerSchedule, ProposerSet, RotatingProposerSchedule,
     },
 };
 use crate::spec::{
