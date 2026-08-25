@@ -34,7 +34,7 @@
 //! * **Blind window (rotating).** Cadence pipelines slots: a proposer may
 //!   propose for slot `i` only once slot `i − c` has committed, for the
 //!   protocol-wide pipelining depth `c` = [`ProposerConfig::blind_window`]
-//!   (handed down from the conductor configuration; independent of MCP). A
+//!   (a Cadence deployment parameter, independent of MCP). A
 //!   proposer entering a rotation therefore waits for the pipeline behind it
 //!   to drain — its index is vacant for the first `c` slots of the rotation.
 //!   At most one index at a time is vacant for this reason, so at least two
@@ -58,7 +58,7 @@
 //! monad-bft protocol and is unrelated to MCP.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     sync::{Arc, Mutex},
 };
 
@@ -76,9 +76,15 @@ pub struct ProposerConfig {
     pub concurrent_proposers: usize,
     /// `c`: the slot-pipelining depth of the surrounding Cadence protocol —
     /// a proposer may propose for slot `i` only once slot `i − c` committed.
-    /// Determined by the conductor configuration and handed to the schedule.
     /// The index of a proposer entering a rotation is vacant for the first
     /// `c` slots of that rotation.
+    ///
+    /// Must match the pipelining depth of the surrounding Cadence
+    /// deployment. The conductor configuration does not model `c` yet, so
+    /// the two configurations cannot be validated against each other: the
+    /// node wiring is responsible for handing the same value to both sides.
+    /// TODO: derive this from the conductor configuration once it carries
+    /// the parameter.
     pub blind_window: u64,
     /// Slots between the end of a rotation's blind window and the next
     /// rotation. May be 0: then the newest index is always vacant and
@@ -89,18 +95,27 @@ pub struct ProposerConfig {
 }
 
 impl ProposerConfig {
+    /// Saturating so that a nonsensical configuration cannot panic before
+    /// [`Self::validate`] rejects it.
     pub const fn slots_per_rotation(&self) -> u64 {
-        self.blind_window + self.rotation_slack
+        self.blind_window.saturating_add(self.rotation_slack)
     }
 
     pub const fn rotations_per_epoch(&self) -> u64 {
         self.slots_per_epoch / self.slots_per_rotation()
     }
 
+    /// Static checks only; the epoch-length requirement depends on the
+    /// effective window and lives in [`RotatingProposerSchedule::new`].
     fn validate(&self) -> Result<(), ScheduleError> {
         if self.concurrent_proposers == 0 {
             return Err(ScheduleError::InvalidConfig(
                 "concurrent_proposers must be > 0",
+            ));
+        }
+        if self.blind_window.checked_add(self.rotation_slack).is_none() {
+            return Err(ScheduleError::InvalidConfig(
+                "blind_window + rotation_slack overflows",
             ));
         }
         if self.slots_per_rotation() == 0 {
@@ -114,11 +129,6 @@ impl ProposerConfig {
         {
             return Err(ScheduleError::InvalidConfig(
                 "slots_per_epoch must be a multiple of the rotation length",
-            ));
-        }
-        if self.rotations_per_epoch() < self.concurrent_proposers as u64 {
-            return Err(ScheduleError::InvalidConfig(
-                "epoch must cover at least concurrent_proposers rotations",
             ));
         }
         Ok(())
@@ -197,9 +207,11 @@ impl LeaderSchedule for CreditLotterySchedule {
 }
 
 /// Test stub: ignores stake weights and cycles through the validator set in
-/// canonical order, continuing the cycle across epochs. Satisfies the window
-/// contract whenever the set has at least `window` members, and makes every
-/// assignment predictable.
+/// canonical order, continuing the cycle across epochs. Any id among the
+/// last `window − 1` leaders (seeded from `prev_tail`) is skipped, so the
+/// no-repeat window holds across epoch seams even when the validator set
+/// changed in between; with a static set the skip never fires. Every
+/// assignment stays predictable.
 #[derive(Debug)]
 pub struct RoundRobinLeaderSchedule {
     rotations_per_epoch: u64,
@@ -219,26 +231,52 @@ impl LeaderSchedule for RoundRobinLeaderSchedule {
         epoch: u64,
         window: usize,
         stakes: &[(NodeId, u64)],
-        _prev_tail: &[NodeId],
+        prev_tail: &[NodeId],
     ) -> Result<Vec<NodeId>, ScheduleError> {
         let mut validators: Vec<NodeId> = stakes
             .iter()
             .filter(|(_, weight)| *weight > 0)
             .map(|(id, _)| *id)
             .collect();
-        if validators.is_empty() {
+        if validators.is_empty() || validators.len() < window {
             return Err(ScheduleError::NotEnoughValidators {
-                staked: 0,
-                required: 1,
+                staked: validators.len(),
+                required: window.max(1),
             });
         }
-        debug_assert!(validators.len() >= window);
         validators.sort_unstable();
+        let len = validators.len() as u64;
 
-        let base = epoch.wrapping_mul(self.rotations_per_epoch);
-        Ok((0..self.rotations_per_epoch)
-            .map(|i| validators[(base.wrapping_add(i) % validators.len() as u64) as usize])
-            .collect())
+        // The last `window − 1` selections, seeded with the previous
+        // epoch's tail so the no-repeat window also holds across the seam.
+        let tail_len = window.saturating_sub(1);
+        let mut recent: VecDeque<NodeId> = prev_tail[prev_tail.len().saturating_sub(tail_len)..]
+            .iter()
+            .copied()
+            .collect();
+
+        // With a static validator set this continues the canonical cycle
+        // across epochs and the skip below never fires.
+        let mut cursor = epoch.wrapping_mul(self.rotations_per_epoch) % len;
+        let mut leaders = Vec::with_capacity(self.rotations_per_epoch as usize);
+        for _ in 0..self.rotations_per_epoch {
+            // The next validator in cyclic order outside the window; found
+            // within `window` steps because at most `window − 1` of the at
+            // least `window` members are recent.
+            let leader = loop {
+                let candidate = validators[cursor as usize];
+                cursor = (cursor + 1) % len;
+                if !recent.contains(&candidate) {
+                    break candidate;
+                }
+            };
+            recent.push_back(leader);
+            if recent.len() > tail_len {
+                recent.pop_front();
+            }
+            leaders.push(leader);
+        }
+        Ok(leaders)
     }
 }
 
@@ -311,7 +349,9 @@ pub trait ProposerSchedule {
 ///
 /// Epochs are fixed slot spans (`epoch = slot / slots_per_epoch`). Schedules
 /// are built per epoch on demand and cached; building always proceeds in
-/// epoch order so the no-repeat window chains correctly across seams.
+/// epoch order so the no-repeat window chains correctly across seams. Only
+/// the newest [`CACHED_EPOCHS`] epochs stay cached — queries behind the
+/// retained range replay the deterministic chain from genesis instead.
 ///
 /// The effective concurrency is `min(K, positively staked validators)`:
 /// rotations cycle through indices `0..effective` and any higher index stays
@@ -326,9 +366,16 @@ pub struct RotatingProposerSchedule<A> {
     stakes: Vec<(NodeId, u64)>,
     /// Effective concurrency: `min(K, positively staked validators)`.
     window: usize,
-    /// Epoch to that epoch's leaders, contiguous from epoch 0.
+    /// The newest built epochs, contiguous, at most [`CACHED_EPOCHS`] of
+    /// them. The newest entry is never evicted: extending forward chains
+    /// from its boundary tail.
     cache: Mutex<BTreeMap<u64, Arc<Vec<NodeId>>>>,
 }
+
+/// Epochs retained by the schedule cache: enough that consensus queries —
+/// open slots plus a little history — always hit, while memory stays bounded
+/// for the lifetime of the node.
+const CACHED_EPOCHS: usize = 8;
 
 impl<A: LeaderSchedule> RotatingProposerSchedule<A> {
     /// Eagerly builds epoch 0, so configuration and validator-set errors
@@ -352,8 +399,19 @@ impl<A: LeaderSchedule> RotatingProposerSchedule<A> {
                 required: 1,
             });
         }
+        // boundary_tail() takes the last window − 1 leaders; an epoch with
+        // fewer rotations cannot seed the next epoch's window. Checked here
+        // rather than in ProposerConfig::validate because the effective
+        // window depends on the stake snapshot: with fewer staked validators
+        // than K, an epoch needs only the shorter window's rotations.
+        let window = cfg.concurrent_proposers.min(staked);
+        if cfg.rotations_per_epoch() < window as u64 {
+            return Err(ScheduleError::InvalidConfig(
+                "epoch must cover at least one rotation per effective proposer phase",
+            ));
+        }
         let schedule = Self {
-            window: cfg.concurrent_proposers.min(staked),
+            window,
             cfg,
             algorithm,
             stakes,
@@ -388,24 +446,38 @@ impl<A: LeaderSchedule> RotatingProposerSchedule<A> {
             return Ok(leaders.clone());
         }
 
-        // The cache is contiguous from epoch 0, so a miss means building
-        // forward from the newest cached epoch, chaining each boundary tail.
+        // The retained epochs are contiguous, so a miss lies either behind
+        // the oldest retained epoch or ahead of the newest.
         let tail_len = self.window - 1;
+        if let Some((&newest, _)) = cache.iter().next_back()
+            && epoch < newest
+        {
+            // Behind the retained range: replay the deterministic chain
+            // from genesis without touching the cache. Costs one algorithm
+            // run per epoch, but only queries about slots older than the
+            // retained window get here.
+            let mut leaders = self.build_epoch(0, &[])?;
+            for next in 1..=epoch {
+                let tail = boundary_tail(&leaders, tail_len);
+                leaders = self.build_epoch(next, &tail)?;
+            }
+            return Ok(Arc::new(leaders));
+        }
+
+        // Ahead of the newest cached epoch (or the first build): extend
+        // forward, chaining each boundary tail, then evict the oldest epochs
+        // beyond the retention bound.
         let (mut next, mut tail) = match cache.iter().next_back() {
             Some((&newest, leaders)) => (newest + 1, boundary_tail(leaders, tail_len)),
             None => (0, Vec::new()),
         };
         while next <= epoch {
-            let leaders = self
-                .algorithm
-                .epoch_leaders(next, self.window, &self.stakes, &tail)?;
-            if leaders.len() as u64 != self.cfg.rotations_per_epoch() {
-                return Err(ScheduleError::InvalidConfig(
-                    "leader schedule returned the wrong number of rotations",
-                ));
-            }
+            let leaders = self.build_epoch(next, &tail)?;
             tail = boundary_tail(&leaders, tail_len);
             cache.insert(next, Arc::new(leaders));
+            if cache.len() > CACHED_EPOCHS {
+                cache.pop_first();
+            }
             next += 1;
         }
 
@@ -413,6 +485,23 @@ impl<A: LeaderSchedule> RotatingProposerSchedule<A> {
             .get(&epoch)
             .expect("epoch was built by the loop above")
             .clone())
+    }
+
+    fn build_epoch(&self, epoch: u64, prev_tail: &[NodeId]) -> Result<Vec<NodeId>, ScheduleError> {
+        let leaders = self
+            .algorithm
+            .epoch_leaders(epoch, self.window, &self.stakes, prev_tail)?;
+        if leaders.len() as u64 != self.cfg.rotations_per_epoch() {
+            return Err(ScheduleError::InvalidConfig(
+                "leader schedule returned the wrong number of rotations",
+            ));
+        }
+        Ok(leaders)
+    }
+
+    #[cfg(test)]
+    fn cached_epoch_count(&self) -> usize {
+        self.cache.lock().unwrap().len()
     }
 }
 
@@ -469,8 +558,18 @@ pub struct FixedProposerSchedule {
 }
 
 impl FixedProposerSchedule {
+    /// The proposers must be distinct: one node holding two indices would
+    /// make the reverse membership lookup ([`ProposerSet::index_of`])
+    /// ambiguous.
     pub fn new(proposers: Vec<NodeId>) -> Self {
         assert!(!proposers.is_empty(), "at least one proposer required");
+        let mut distinct = proposers.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert!(
+            distinct.len() == proposers.len(),
+            "proposers must be distinct"
+        );
         Self { proposers }
     }
 }
@@ -733,6 +832,78 @@ mod tests {
     }
 
     #[test]
+    fn round_robin_honors_the_previous_tail() {
+        // A seam where continuing the canonical cycle blindly would repeat:
+        // the previous epoch ended ... 1, 2 and the cycle restarts at 1.
+        let cfg = ProposerConfig {
+            concurrent_proposers: 3,
+            blind_window: 0,
+            rotation_slack: 1,
+            slots_per_epoch: 3,
+        };
+        let algorithm = RoundRobinLeaderSchedule::new(&cfg);
+        let stakes: Vec<(NodeId, u64)> = (1..=3).map(|id| (NodeId::dummy(id), 1)).collect();
+        let prev_tail = [NodeId::dummy(1), NodeId::dummy(2)];
+
+        let leaders = algorithm.epoch_leaders(1, 3, &stakes, &prev_tail).unwrap();
+
+        let mut seam: Vec<NodeId> = prev_tail.to_vec();
+        seam.extend(&leaders);
+        for window in seam.windows(3) {
+            let mut seen = window.to_vec();
+            seen.sort_unstable();
+            seen.dedup();
+            assert_eq!(seen.len(), 3, "repeat within the window: {window:?}");
+        }
+    }
+
+    #[test]
+    fn epoch_cache_is_bounded_and_evicted_epochs_rebuild_identically() {
+        let cfg = ProposerConfig {
+            concurrent_proposers: 3,
+            blind_window: 0,
+            rotation_slack: 1,
+            slots_per_epoch: 6,
+        };
+        let stakes: Vec<(u64, u64)> = (0..8).map(|id| (id, 10 + id)).collect();
+        let in_order = lottery(cfg.clone(), validator_data(&stakes));
+        let jumped = lottery(cfg, validator_data(&stakes));
+
+        // Jump far past the retention bound, evicting the early epochs.
+        jumped.proposers_at(Slot(30 * 6)).unwrap();
+        assert!(jumped.cached_epoch_count() <= CACHED_EPOCHS);
+
+        // Evicted epochs are replayed from genesis, identically.
+        for slot in 0..24 {
+            assert_eq!(
+                jumped.proposers_at(Slot(slot)).unwrap(),
+                in_order.proposers_at(Slot(slot)).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn capped_window_allows_short_epochs() {
+        // Two staked validators under K = 4 need only two rotations per
+        // epoch — one per effective phase — even though K itself would not
+        // fit. Indices 2 and 3 stay vacant.
+        let cfg = ProposerConfig {
+            concurrent_proposers: 4,
+            blind_window: 0,
+            rotation_slack: 1,
+            slots_per_epoch: 2,
+        };
+        let schedule = lottery(cfg, validator_data(&[(0, 10), (1, 20)]));
+
+        for slot in 1..8u64 {
+            let set = schedule.proposers_at(Slot(slot)).unwrap();
+            assert_eq!(occupied(&set), 2);
+            assert_eq!(set.proposer(2), None);
+            assert_eq!(set.proposer(3), None);
+        }
+    }
+
+    #[test]
     fn query_order_does_not_change_the_schedule() {
         let cfg = ProposerConfig {
             concurrent_proposers: 3,
@@ -807,6 +978,8 @@ mod tests {
         });
         assert!(matches!(ragged_epoch, ScheduleError::InvalidConfig(_)));
 
+        // Eight staked validators leave the effective window at K = 3: two
+        // rotations per epoch cannot seed the next epoch's window.
         let short_epoch = build(ProposerConfig {
             concurrent_proposers: 3,
             blind_window: 0,
@@ -814,6 +987,17 @@ mod tests {
             slots_per_epoch: 2,
         });
         assert!(matches!(short_epoch, ScheduleError::InvalidConfig(_)));
+
+        let overflowing_rotation = build(ProposerConfig {
+            concurrent_proposers: 2,
+            blind_window: u64::MAX,
+            rotation_slack: 1,
+            slots_per_epoch: 4,
+        });
+        assert!(matches!(
+            overflowing_rotation,
+            ScheduleError::InvalidConfig(_)
+        ));
     }
 
     #[test]
@@ -866,6 +1050,12 @@ mod tests {
         };
         let err = RotatingProposerSchedule::new(cfg, OneLeader, uniform(2)).unwrap_err();
         assert!(matches!(err, ScheduleError::InvalidConfig(_)));
+    }
+
+    #[test]
+    #[should_panic(expected = "proposers must be distinct")]
+    fn fixed_schedule_rejects_duplicates() {
+        FixedProposerSchedule::new(vec![NodeId::dummy(0), NodeId::dummy(1), NodeId::dummy(0)]);
     }
 
     #[test]
