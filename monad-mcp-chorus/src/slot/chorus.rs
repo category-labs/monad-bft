@@ -142,11 +142,14 @@ impl SlotConsensus for Chorus {
             proposers,
         } = context;
 
-        // The schedule validated its configuration and the epoch-0 stake
-        // snapshot at construction, and stakes are static per epoch for now,
-        // so a failure here is a programming error.
-        // TODO(dynamic stakes): construct a decided-dead instance emitting a
-        // fault instead of panicking.
+        // The schedule validated its configuration and its anchor epoch's
+        // stake snapshot at construction, and stakes are static per epoch
+        // for now, so a failure here is a wiring error — in particular the
+        // conductor must not open slots before the schedule's anchor (a
+        // mid-chain conductor start does not exist yet; align the two when
+        // it does).
+        // TODO(dynamic stakes / mid-chain start): construct a decided-dead
+        // instance emitting a fault instead of panicking.
         let proposers = proposers
             .proposers_at(slot)
             .expect("proposer schedule unavailable for open slot");
