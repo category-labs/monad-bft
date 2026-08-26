@@ -34,7 +34,7 @@ use crate::{
         },
         ethhex,
         json_serialized_len::JsonSerializedLen,
-        jsonrpc::{ChainStateResultExt, JsonRpcError, JsonRpcResult},
+        jsonrpc::{ChainStateResultExt, ErrorCode, JsonRpcError, JsonRpcResult},
     },
 };
 
@@ -460,7 +460,7 @@ pub async fn monad_debug_traceBlockByHash<T: Triedb>(
         .get_block_call_frames(BlockTagOrHash::Hash(params.block_hash))
         .await
         .to_jsonrpc_result()?
-        .ok_or(JsonRpcError::internal_error("block not found".into()))?;
+        .ok_or(JsonRpcError::block_not_found())?;
 
     decode_block_call_frames(
         &data_provider.triedb_env,
@@ -603,7 +603,9 @@ pub async fn decode_call_frame<T: Triedb>(
     tracer: &TracerObject,
 ) -> JsonRpcResult<Option<MonadCallFrame>> {
     let mut call_frames = Vec::<Vec<CallFrame>>::decode(rlp_call_frame)
-        .map_err(|e| JsonRpcError::custom(format!("Rlp Decode error: {e}")))?
+        .map_err(|e| {
+            JsonRpcError::with_message(ErrorCode::ServerError, format!("Rlp Decode error: {e}"))
+        })?
         .into_iter()
         .flatten()
         .collect::<Vec<_>>();
@@ -639,7 +641,7 @@ pub async fn decode_call_frame<T: Triedb>(
         Tracer::CallTracer => {
             // Diff mode is supported only by the prestate tracer
             if tracer.config.diff_mode {
-                return Err(JsonRpcError::method_not_supported());
+                return Err(JsonRpcError::new(ErrorCode::MethodNotSupported));
             }
 
             if tracer.config.only_top_call {
@@ -675,7 +677,7 @@ pub async fn decode_call_frame<T: Triedb>(
 
             Ok(build_call_tree(call_frames))
         }
-        _ => Err(JsonRpcError::method_not_supported()),
+        _ => Err(JsonRpcError::new(ErrorCode::MethodNotSupported)),
     }
 }
 

@@ -49,7 +49,7 @@ use crate::{
         eth_json::{BlockTagOrHash, MonadCreateAccessListResult},
         ethhex,
         json_serialized_len::JsonSerializedLen,
-        jsonrpc::{JsonRpcError, JsonRpcResult},
+        jsonrpc::{msg, ErrorCode, JsonRpcError, JsonRpcResult},
     },
 };
 
@@ -150,9 +150,9 @@ impl CallRequest {
 
                         if let Some(max_priority_fee_per_gas) = max_priority_fee_per_gas {
                             if max_fee_per_gas < max_priority_fee_per_gas {
-                                return Err(JsonRpcError::eth_call_error(
+                                return Err(JsonRpcError::with_message(
+                                    ErrorCode::InvalidParams,
                                     "priority fee greater than max".to_string(),
-                                    None,
                                 ));
                             }
                         }
@@ -427,19 +427,7 @@ pub async fn sender_gas_allowance<T: Triedb>(
         return Ok(header.gas_limit);
     }
 
-    let balance = match state_overrides
-        .get(&sender)
-        .and_then(|override_state| override_state.balance)
-    {
-        Some(balance) => balance,
-        None => {
-            let account = triedb_env
-                .get_account(block_key, sender.into())
-                .await
-                .map_err(JsonRpcError::internal_error)?;
-            U256::from(account.balance)
-        }
-    };
+    let balance = resolve_sender_balance(triedb_env, block_key, sender, state_overrides).await?;
 
     if balance == U256::ZERO {
         return Err(JsonRpcError::insufficient_funds());
@@ -455,6 +443,48 @@ pub async fn sender_gas_allowance<T: Triedb>(
         gas_limit.try_into().unwrap_or(header.gas_limit),
         header.gas_limit,
     ))
+}
+
+async fn resolve_sender_balance<T: Triedb>(
+    triedb_env: &T,
+    block_key: BlockKey,
+    sender: Address,
+    state_overrides: &StateOverrideSet,
+) -> Result<U256, JsonRpcError> {
+    match state_overrides
+        .get(&sender)
+        .and_then(|override_state| override_state.balance)
+    {
+        Some(balance) => Ok(balance),
+        None => {
+            let account = triedb_env
+                .get_account(block_key, sender.into())
+                .await
+                .map_err(JsonRpcError::internal_error)?;
+            Ok(U256::from(account.balance))
+        }
+    }
+}
+
+pub async fn check_value_transfer_balance<T: Triedb>(
+    triedb_env: &T,
+    block_key: BlockKey,
+    request: &CallRequest,
+    state_overrides: &StateOverrideSet,
+) -> Result<(), JsonRpcError> {
+    let value = request.value.unwrap_or_default();
+    if value.is_zero() {
+        return Ok(());
+    }
+
+    let sender = request.from.unwrap_or_default();
+    let balance = resolve_sender_balance(triedb_env, block_key, sender, state_overrides).await?;
+
+    if balance < value {
+        return Err(JsonRpcError::insufficient_funds());
+    }
+
+    Ok(())
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -653,6 +683,8 @@ async fn prepare_eth_call_at_block<T: Triedb + TriedbPath>(
         tx.chain_id = Some(U64::from(chain_id));
     }
 
+    check_value_transfer_balance(triedb_env, block_key, &tx, &state_overrides).await?;
+
     let sender = tx.from.unwrap_or_default();
     let tx_chain_id = tx.chain_id.expect("chain_id was set above").to::<u64>();
     let ethcall_chain_id = parse_ethcall_chain_id(tx_chain_id)?;
@@ -686,22 +718,22 @@ async fn prepare_eth_call_at_block<T: Triedb + TriedbPath>(
             ..
         }) if matches!(error_code, EthCallResult::OutOfGas) => match out_of_gas_handling {
             OutOfGasHandling::RpcError => {
-                return Err(JsonRpcError::eth_call_error(
+                return Err(JsonRpcError::with_message(
+                    ErrorCode::InternalError,
                     if eth_call_provider_gas_limit < header_gas_limit
                         && U256::from(eth_call_provider_gas_limit) < original_tx_gas
                     {
                         "provider-specified max eth_call gas limit exceeded".to_string()
                     } else {
-                        "out of gas".to_string()
+                        msg::OUT_OF_GAS.to_string()
                     },
-                    None,
                 ));
             }
             OutOfGasHandling::ReturnAsCallFailure => CallResult::Failure(FailureCallResult {
                 error_code,
                 gas_used,
                 gas_refund,
-                message: "out of gas".to_string(),
+                message: msg::OUT_OF_GAS.to_string(),
                 data: None,
             }),
         },
@@ -1015,7 +1047,7 @@ mod tests {
     use monad_types::SeqNum;
     use serde_json::{from_str, json};
 
-    use super::{fill_gas_params, CallRequest, GasPriceDetails};
+    use super::{check_value_transfer_balance, fill_gas_params, CallRequest, GasPriceDetails};
     use crate::{
         handlers::{
             debug::Tracer,
@@ -1633,6 +1665,59 @@ mod tests {
             sender_gas_allowance(&mock_triedb, block_key, &header, &call_request, &overrides).await;
         let gas_limit = result.unwrap();
         assert_eq!(U256::from(gas_limit), balance_override / gas_price);
+    }
+
+    #[tokio::test]
+    async fn test_check_value_transfer_balance() {
+        let mock_triedb = MockTriedb::default();
+        let block_key = BlockKey::Finalized(FinalizedBlockKey(SeqNum(0)));
+        let no_overrides = StateOverrideSet::default();
+
+        // zero value transfers are not balance checked
+        let call_request = CallRequest::default();
+        let result =
+            check_value_transfer_balance(&mock_triedb, block_key, &call_request, &no_overrides)
+                .await;
+        assert!(result.is_ok());
+
+        // a transfer above the sender balance is rejected before execution
+        let call_request = CallRequest {
+            from: Some(Address::ZERO),
+            value: Some(U256::from(1)),
+            ..Default::default()
+        };
+        let result =
+            check_value_transfer_balance(&mock_triedb, block_key, &call_request, &no_overrides)
+                .await;
+        assert_eq!(result, Err(JsonRpcError::insufficient_funds()));
+
+        // an unspecified sender defaults to the zero address and is checked too
+        let call_request = CallRequest {
+            value: Some(U256::from(1)),
+            ..Default::default()
+        };
+        let result =
+            check_value_transfer_balance(&mock_triedb, block_key, &call_request, &no_overrides)
+                .await;
+        assert_eq!(result, Err(JsonRpcError::insufficient_funds()));
+
+        // a balance override covering the value passes the check
+        let mut overrides: StateOverrideSet = HashMap::new();
+        overrides.insert(
+            Address::ZERO,
+            StateOverrideObject {
+                balance: Some(U256::from(2)),
+                ..Default::default()
+            },
+        );
+        let call_request = CallRequest {
+            from: Some(Address::ZERO),
+            value: Some(U256::from(1)),
+            ..Default::default()
+        };
+        let result =
+            check_value_transfer_balance(&mock_triedb, block_key, &call_request, &overrides).await;
+        assert!(result.is_ok());
     }
 
     #[test]
