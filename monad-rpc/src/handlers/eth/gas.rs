@@ -52,7 +52,7 @@ use crate::{
             BlockTagOrHash, BlockTags, FillTransactionResult, MonadFeeHistory, Quantity,
             UnformattedData,
         },
-        jsonrpc::{JsonRpcError, JsonRpcResult},
+        jsonrpc::{msg, ErrorCode, JsonRpcError, JsonRpcResult},
     },
 };
 
@@ -107,13 +107,15 @@ async fn estimate_gas_with_builder(
                 if provider_gas_limit < protocol_gas_limit
                     && U256::from(provider_gas_limit) < original_tx_gas
                 {
-                    return Err(JsonRpcError::eth_call_error(
-                        "provider-specified eth_estimateGas gas limit exceeded".to_string(),
+                    return Err(JsonRpcError::with_message_and_data(
+                        ErrorCode::TransactionRejected,
+                        "provider-specified eth_estimateGas gas limit exceeded",
                         error.data,
                     ));
                 }
-                return Err(JsonRpcError::eth_call_error(
-                    "out of gas".to_string(),
+                return Err(JsonRpcError::with_message_and_data(
+                    ErrorCode::TransactionRejected,
+                    msg::OUT_OF_GAS_ALLOWANCE,
                     error.data,
                 ));
             }
@@ -820,7 +822,8 @@ pub async fn monad_eth_feeHistory<T: Triedb>(
         0 => return Ok(MonadFeeHistory(FeeHistory::default())),
         1..=1024 => (),
         _ => {
-            return Err(JsonRpcError::custom(
+            return Err(JsonRpcError::with_message(
+                ErrorCode::ServerError,
                 "block count must be between 1 and 1024".to_string(),
             ));
         }

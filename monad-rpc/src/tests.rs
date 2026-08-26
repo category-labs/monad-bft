@@ -30,7 +30,7 @@ use crate::{
     },
     middleware::DecompressionGuard,
     txpool::EthTxPoolBridgeClient,
-    types::jsonrpc::{JsonRpcError, RequestId, Response, ResponseWrapper},
+    types::jsonrpc::{ErrorCode, JsonRpcError, RequestId, Response, ResponseWrapper},
 };
 
 pub async fn init_server(
@@ -154,8 +154,8 @@ async fn test_rpc_method_not_found() {
 }
 
 #[allow(non_snake_case)]
-#[test_case(json!([]), ResponseWrapper::Single(Response::new(None, Some(JsonRpcError::custom("empty batch request".to_string())), RequestId::Null)); "empty batch")]
-#[test_case(json!([1]), ResponseWrapper::Batch(vec![Response::new(None, Some(JsonRpcError::invalid_request()), RequestId::Null)]); "invalid batch but not empty")]
+#[test_case(json!([]), ResponseWrapper::Single(Response::new(None, Some(JsonRpcError::new(ErrorCode::InvalidRequest)), RequestId::Null)); "empty batch")]
+#[test_case(json!([1]), ResponseWrapper::Batch(vec![Response::new(None, Some(JsonRpcError::new(ErrorCode::InvalidRequest)), RequestId::Null)]); "invalid batch but not empty")]
 #[test_case(json!([
         {"jsonrpc": "2.0", "method": "eth_chainId", "params": [], "id": 1}
     ]),
@@ -164,10 +164,10 @@ async fn test_rpc_method_not_found() {
     ); "valid batch request")]
 #[test_case(json!([1, 2, 3, 4]),
     ResponseWrapper::Batch(vec![
-        Response::new(None, Some(JsonRpcError::invalid_request()), RequestId::Null),
-        Response::new(None, Some(JsonRpcError::invalid_request()), RequestId::Null),
-        Response::new(None, Some(JsonRpcError::invalid_request()), RequestId::Null),
-        Response::new(None, Some(JsonRpcError::invalid_request()), RequestId::Null),
+        Response::new(None, Some(JsonRpcError::new(ErrorCode::InvalidRequest)), RequestId::Null),
+        Response::new(None, Some(JsonRpcError::new(ErrorCode::InvalidRequest)), RequestId::Null),
+        Response::new(None, Some(JsonRpcError::new(ErrorCode::InvalidRequest)), RequestId::Null),
+        Response::new(None, Some(JsonRpcError::new(ErrorCode::InvalidRequest)), RequestId::Null),
     ]); "multiple invalid batch")]
 #[test_case(json!([
         {"jsonrpc": "2.0", "method": "subtract", "params": [42, 43], "id": 1},
@@ -176,9 +176,9 @@ async fn test_rpc_method_not_found() {
     ]),
     ResponseWrapper::Batch(
         vec![
-            Response::new(None, Some(JsonRpcError::method_not_found()), RequestId::Number(1)),
-            Response::new(None, Some(JsonRpcError::invalid_request()), RequestId::Null),
-            Response::new(None, Some(JsonRpcError::method_not_found()), RequestId::Number(1)),
+            Response::new(None, Some(JsonRpcError::new(ErrorCode::MethodNotFound)), RequestId::Number(1)),
+            Response::new(None, Some(JsonRpcError::new(ErrorCode::InvalidRequest)), RequestId::Null),
+            Response::new(None, Some(JsonRpcError::new(ErrorCode::MethodNotFound)), RequestId::Number(1)),
         ],
     ); "partial success")]
 #[test_case(json!([
@@ -190,7 +190,7 @@ async fn test_rpc_method_not_found() {
         {"jsonrpc": "2.0", "method": "eth_chainId", "params": [], "id": 1}
     ]),
     ResponseWrapper::Single(
-        Response::new(None, Some(JsonRpcError::custom("number of requests in batch request exceeds limit of 5".to_string())), RequestId::Null)
+        Response::new(None, Some(JsonRpcError::with_message(ErrorCode::ServerError, "number of requests in batch request exceeds limit of 5".to_string())), RequestId::Null)
     ); "exceed batch request limit")]
 #[actix_web::test]
 async fn json_rpc_specification_batch_compliance(

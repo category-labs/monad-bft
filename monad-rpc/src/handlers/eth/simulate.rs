@@ -34,7 +34,7 @@ use crate::{
     },
     types::{
         eth_json::{BlockTagOrHash, BlockTags, Quantity},
-        jsonrpc::{JsonRpcError, JsonRpcResult},
+        jsonrpc::{ErrorCode, JsonRpcError, JsonRpcResult},
     },
 };
 
@@ -87,15 +87,18 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
 ) -> JsonRpcResult<Box<RawValue>> {
     if !params.simulation.validation {
         let msg = String::from("`\"validation\": false` is not supported yet");
-        return Err(JsonRpcError::custom(msg));
+        return Err(JsonRpcError::with_message(ErrorCode::ServerError, msg));
     }
 
     let total_simulated_blocks = params.simulation.block_state_calls.len();
     if total_simulated_blocks > max_simulated_blocks {
-        return Err(JsonRpcError::custom(format!(
-            "Too many block simulations: {}, maximum allowed is {}",
-            total_simulated_blocks, max_simulated_blocks
-        )));
+        return Err(JsonRpcError::with_message(
+            ErrorCode::ServerError,
+            format!(
+                "Too many block simulations: {}, maximum allowed is {}",
+                total_simulated_blocks, max_simulated_blocks
+            ),
+        ));
     }
 
     let total_simulated_calls = params
@@ -105,10 +108,13 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
         .map(|bsc| bsc.calls.len())
         .sum::<usize>();
     if total_simulated_calls > max_simulated_calls {
-        return Err(JsonRpcError::custom(format!(
-            "Too many calls to simulate: {}, maximum allowed is {}",
-            total_simulated_calls, max_simulated_calls
-        )));
+        return Err(JsonRpcError::with_message(
+            ErrorCode::ServerError,
+            format!(
+                "Too many calls to simulate: {}, maximum allowed is {}",
+                total_simulated_calls, max_simulated_calls
+            ),
+        ));
     }
 
     let block_key = get_block_key_from_tag_or_hash(&data_provider.triedb_env, params.block)
@@ -182,7 +188,7 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
             .await?;
             accumulated_gas = accumulated_gas.add(U256::from(call.gas.unwrap_or_default()));
             if accumulated_gas > U256::from(simulation_gas_limit) {
-                return Err(JsonRpcError::custom(format!(
+                return Err(JsonRpcError::with_message(ErrorCode::ServerError, format!(
                     "Gas limit for simulation exceeded: the simulation requires minimum {} gas which exceeds the maximum allowed {}",
                     accumulated_gas, simulation_gas_limit
                 )));

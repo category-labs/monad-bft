@@ -22,7 +22,9 @@ use criterion::{
 };
 use monad_rpc::{
     handlers::eth::call::MonadEthCallParams,
-    types::jsonrpc::{JsonRpcError, JsonRpcResultExt, Request, RequestWrapper, ResponseWrapper},
+    types::jsonrpc::{
+        ErrorCode, JsonRpcError, JsonRpcResultExt, Request, RequestWrapper, ResponseWrapper,
+    },
 };
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -37,8 +39,8 @@ where
 
     match request {
         RequestWrapper::Single(json_request) => {
-            let request =
-                Request::from_raw_value(json_request).map_err(|_| JsonRpcError::parse_error())?;
+            let request = Request::from_raw_value(json_request)
+                .map_err(|_| JsonRpcError::new(ErrorCode::ParseError))?;
 
             let id = request.id.clone();
 
@@ -164,7 +166,7 @@ fn bench(c: &mut Criterion) {
             }))
             .unwrap(),
         ),
-        Err(JsonRpcError::parse_error()),
+        Err(JsonRpcError::new(ErrorCode::ParseError)),
     );
 
     bench_deserialize::<false, (), _>(
@@ -179,7 +181,7 @@ fn bench(c: &mut Criterion) {
             }))
             .unwrap(),
         ),
-        Err(JsonRpcError::parse_error()),
+        Err(JsonRpcError::new(ErrorCode::ParseError)),
     );
 
     bench_deserialize::<false, (), _>(

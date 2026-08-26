@@ -45,8 +45,8 @@ use crate::{
             FixedData, SubscriptionKind,
         },
         jsonrpc::{
-            serialize_with_size_limit, JsonRpcError, Notification, Request, RequestWrapper,
-            Response,
+            serialize_with_size_limit, ErrorCode, JsonRpcError, Notification, Request,
+            RequestWrapper, Response,
         },
     },
 };
@@ -470,7 +470,8 @@ async fn handle_request(
                 if let Err(err) = ctx
                     .text(to_response(&crate::types::jsonrpc::Response::new(
                         None,
-                        Some(JsonRpcError::custom(
+                        Some(JsonRpcError::with_message(
+                            ErrorCode::ServerError,
                             "WebSocket subscription limit reached".to_string(),
                         )),
                         request.id,
