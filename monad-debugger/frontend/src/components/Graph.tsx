@@ -8,10 +8,12 @@ import { createStore, reconcile } from "solid-js/store";
 const Graph: Component<{
     vizTick: number,
     simulation: Simulation,
+    version: number,
 }> = (props) => {
     const fetchGraph = () => props.simulation.fetchUnchecked(GraphDocument);
     const [graph, setGraph] = createStore(fetchGraph())
     createEffect(() => {
+        const _ = props.version;
         setGraph(reconcile(fetchGraph(), { merge: true }));
     });
 
