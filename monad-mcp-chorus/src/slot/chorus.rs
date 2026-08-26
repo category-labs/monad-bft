@@ -18,7 +18,7 @@ use std::{collections::VecDeque, sync::Arc};
 
 use super::{
     SlotConsensus, SlotOutput,
-    fallback::{FallbackPath, MVBAInputs},
+    fallback::{FallbackPath, Metablock},
     fast::{
         BatchVoteMsg, CommitVoteDeadlineOutcome, EnterFallbackCert, FallbackVoteMsg, FastBlock,
         FastCommitQc, FastCommitVoteMsg, FastPath,
@@ -62,7 +62,7 @@ pub enum Message {
     #[from]
     EnterFallbackCert(EnterFallbackCert),
     // messages for the fallback path (todo)
-    // ProposeBlock(PartialBlock),
+    // ProposeBlock(Metablock),
     // FallbackCommitQc(...)
 }
 
@@ -72,9 +72,6 @@ pub enum TimerEvent {
     FallbackTransitionTimeout,
     // emitted on D_s + 2*Delta
     FallbackDecisionDelayElapsed,
-
-    // ticks every Delta after FallbackDeadline
-    FallbackTick,
 }
 
 /// Static per-slot configuration.
@@ -205,8 +202,17 @@ impl SlotConsensus for Chorus {
                 // fallback. enter too, building our block from local
                 // evidence. if we don't have enough evidence, we will
                 // resort to retry mechanism in FallbackDeadline.
-                if let Some(inputs) = self.fast.try_build_mvba_inputs(cert) {
-                    self.enter_fallback(inputs);
+                // an unsolicited certificate is checked before it is acted
+                // on: entering the fallback path on a forged one would leave
+                // this validator alone in an MVBA nobody else runs.
+
+                // TODO: the retry re-derives the cert from our own vote pool
+                // and this one is dropped; if the votes never arrive we hold a
+                // valid cert yet never enter. Keep it for the deadline path.
+                if self.fast.enter_fallback_cert_is_valid(&cert)
+                    && let Some(block) = self.fast.try_build_fallback_block()
+                {
+                    self.enter_fallback(cert, block);
                 }
             }
         }
@@ -246,18 +252,13 @@ impl SlotConsensus for Chorus {
                     self.schedule_timer(self.delta, TimerEvent::FallbackDecisionDelayElapsed);
                     // todo: maybe rebroadcast fallback vote?
                 }
-                Some(inputs) => {
+                Some((cert, block)) => {
                     // we formed the fallback certificate locally; disseminate
                     // it so lagging validators can enter without re-deriving it.
-                    self.broadcast(inputs.enter_fallback_cert.clone());
-                    self.enter_fallback(inputs);
+                    self.broadcast(cert.clone());
+                    self.enter_fallback(cert, block);
                 }
             },
-            TimerEvent::FallbackTick => {
-                assert!(self.fallback.is_some());
-                self.schedule_timer(self.delta, TimerEvent::FallbackTick);
-                self.fallback.as_mut().unwrap().on_tick();
-            }
         }
     }
 }
@@ -279,13 +280,17 @@ impl Chorus {
         self.decided = true;
         self.push(SlotOutput::Finalize(cert.into()));
     }
-    fn enter_fallback(&mut self, inputs: MVBAInputs) {
+    fn enter_fallback(&mut self, cert: EnterFallbackCert, block: Metablock) {
         if self.fallback.is_some() {
             // already in the fallback path.
             return;
         }
-        self.schedule_timer(self.delta, TimerEvent::FallbackTick);
-        self.fallback = Some(self.fast.spawn_fallback(inputs));
+        // the MVBA arms its own view timer and emits it as an
+        // MVBAOutput::ScheduleTimer; once messages are routed into the MVBA
+        // (see fallback/mod.rs), this layer only converts those outputs to
+        // SlotOutput::ScheduleTimer and feeds the events back -- it schedules
+        // nothing on the fallback's behalf.
+        self.fallback = Some(self.fast.spawn_fallback(cert, block));
     }
     fn push(&mut self, out: SlotOutput<Chorus>) {
         self.outputs.push_back(out);
