@@ -35,7 +35,7 @@ use crate::{
             BlockTagOrHash, BlockTags, EthHash, MonadLog, MonadTransaction,
             MonadTransactionReceipt, Quantity, UnformattedData,
         },
-        jsonrpc::{ChainStateResultMap, JsonRpcError, JsonRpcResult},
+        jsonrpc::{ChainStateResultMap, ErrorCode, JsonRpcError, JsonRpcResult},
     },
 };
 
@@ -48,10 +48,10 @@ impl From<FilterError> for JsonRpcError {
     fn from(e: FilterError) -> Self {
         match e {
             FilterError::InvalidBlockRange => {
-                JsonRpcError::filter_error("invalid block range".into())
+                JsonRpcError::with_message(ErrorCode::ServerError, "invalid block range")
             }
             FilterError::RangeTooLarge => {
-                JsonRpcError::filter_error("block range too large".into())
+                JsonRpcError::with_message(ErrorCode::ServerError, "block range too large")
             }
         }
     }
@@ -159,7 +159,8 @@ fn validate_and_decode_tx(
 
     // drop pre EIP-155 transactions if disallowed by the rpc (for user protection purposes)
     if !allow_unprotected_txs && tx.chain_id().is_none() {
-        return Err(JsonRpcError::custom(
+        return Err(JsonRpcError::with_message(
+            ErrorCode::ServerError,
             "Unprotected transactions (pre-EIP155) are not allowed over RPC".to_string(),
         ));
     }
@@ -211,7 +212,8 @@ async fn submit_to_txpool(
                 TxStatus::Tracked
                 | TxStatus::Dropped { .. }
                 | TxStatus::Evicted { .. }
-                | TxStatus::Committed => Err(JsonRpcError::custom(
+                | TxStatus::Committed => Err(JsonRpcError::with_message(
+                    ErrorCode::ServerError,
                     "rpc no longer tracking tx".to_string(),
                 )),
             };
@@ -226,8 +228,14 @@ async fn submit_to_txpool(
     let latest_tx_status = tx_status_recv.borrow_and_update().to_owned();
 
     match latest_tx_status {
-        TxStatus::Evicted { reason: _ } => Err(JsonRpcError::custom("rejected".to_string())),
-        TxStatus::Dropped { reason } => Err(JsonRpcError::custom(reason.as_user_string())),
+        TxStatus::Evicted { reason: _ } => Err(JsonRpcError::with_message(
+            ErrorCode::ServerError,
+            "rejected".to_string(),
+        )),
+        TxStatus::Dropped { reason } => Err(JsonRpcError::with_message(
+            ErrorCode::ServerError,
+            reason.as_user_string(),
+        )),
         TxStatus::Tracked | TxStatus::Committed => Ok(()),
         TxStatus::Unknown => {
             warn!("txpool tx status last value was unknown");
@@ -265,12 +273,9 @@ pub async fn monad_eth_sendRawTransactionSync(
         .filter(|&t| t > 0 && t <= eth_send_raw_transaction_sync_max_timeout_ms)
         .unwrap_or(eth_send_raw_transaction_sync_default_timeout_ms);
 
-    let tx = validate_and_decode_tx(
-        &params.hex_tx.0,
-        chain_id,
-        allow_unprotected_txs,
-        JsonRpcError::tx_sync_unready,
-    )?;
+    let tx = validate_and_decode_tx(&params.hex_tx.0, chain_id, allow_unprotected_txs, || {
+        JsonRpcError::new(ErrorCode::TransactionUnready)
+    })?;
 
     let Ok(mut event_server_subscription) = event_server_client.subscribe() else {
         return Err(JsonRpcError::overloaded());

@@ -234,9 +234,7 @@ pub fn serialize_with_size_limit<T: Serialize>(
         .map_err(|e| JsonRpcError::internal_error(format!("serialization error: {}", e)))?;
 
     if raw.get().as_bytes().len() > max_size {
-        return Err(JsonRpcError::custom(
-            "response exceeds size limit".to_string(),
-        ));
+        return Err(JsonRpcError::max_response_size_exceeded());
     }
 
     Ok(raw)
@@ -264,7 +262,7 @@ pub type JsonRpcResult<T> = Result<T, JsonRpcError>;
 pub trait JsonRpcResultExt: Sized {
     type Result;
     fn invalid_params(self) -> Self::Result;
-    fn method_not_supported(self) -> Self::Result;
+    fn method_not_found(self) -> Self::Result;
     fn block_not_found(self) -> Self::Result;
 }
 
@@ -278,12 +276,12 @@ where
         self.map_err(|_| JsonRpcError::invalid_params())
     }
 
-    fn method_not_supported(self) -> JsonRpcResult<T> {
-        self.map_err(|_| JsonRpcError::method_not_supported())
+    fn method_not_found(self) -> JsonRpcResult<T> {
+        self.map_err(|_| JsonRpcError::new(ErrorCode::MethodNotFound))
     }
 
     fn block_not_found(self) -> JsonRpcResult<T> {
-        self.map_err(|_| JsonRpcError::internal_error("block not found".into()))
+        self.map_err(|_| JsonRpcError::block_not_found())
     }
 }
 
@@ -294,12 +292,12 @@ impl<T> JsonRpcResultExt for Option<T> {
         self.ok_or(JsonRpcError::invalid_params())
     }
 
-    fn method_not_supported(self) -> JsonRpcResult<T> {
-        self.ok_or(JsonRpcError::method_not_supported())
+    fn method_not_found(self) -> JsonRpcResult<T> {
+        self.ok_or(JsonRpcError::new(ErrorCode::MethodNotFound))
     }
 
     fn block_not_found(self) -> JsonRpcResult<T> {
-        self.ok_or(JsonRpcError::internal_error("block not found".into()))
+        self.ok_or(JsonRpcError::block_not_found())
     }
 }
 
@@ -347,105 +345,121 @@ impl<T> ChainStateResultExt for Result<T, ChainStateError> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(i32)]
+pub enum ErrorCode {
+    ExecutionReverted = 3,
+    TransactionTimeout = 4,
+    TransactionUnready = 5,
+    ServerError = -32000,
+    TransactionRejected = -32003,
+    ParseError = -32700,
+    InvalidRequest = -32600,
+    MethodNotFound = -32601,
+    InvalidParams = -32602,
+    InternalError = -32603,
+    MethodNotSupported = -32004,
+}
+
+impl ErrorCode {
+    pub const fn code(self) -> i32 {
+        self as i32
+    }
+
+    pub const fn default_message(self) -> &'static str {
+        match self {
+            Self::ExecutionReverted => "execution reverted",
+            Self::TransactionTimeout => "Transaction confirmation timed out",
+            Self::TransactionUnready => "The transaction is not ready to be processed",
+            Self::ServerError => "Server error",
+            Self::TransactionRejected => "Transaction rejected",
+            Self::ParseError => "Parse error",
+            Self::InvalidRequest => "Invalid request",
+            Self::MethodNotFound => "Method not found",
+            Self::InvalidParams => "Invalid params",
+            Self::InternalError => "Internal error",
+            Self::MethodNotSupported => "Method not supported",
+        }
+    }
+}
+
+pub mod msg {
+    pub const INSUFFICIENT_FUNDS: &str = "Insufficient funds for gas * price + value";
+    pub const OUT_OF_GAS: &str = "out of gas";
+    pub const OUT_OF_GAS_ALLOWANCE: &str = "out of gas: gas required exceeds allowance";
+    pub const GAS_LIMIT_TOO_HIGH: &str = "gas limit too high";
+    pub const INTERNAL_ETH_CALL_ERROR: &str = "internal eth_call error";
+    pub const RESERVE_BALANCE_VIOLATION: &str = "reserve balance violation";
+    pub const RESPONSE_SIZE_EXCEEDED: &str = "response exceeds size limit";
+    pub const TXN_DECODE_ERROR: &str = "Transaction decoding error";
+}
+
 impl JsonRpcError {
-    // reserved pre-defined errors
-    //
-    pub fn parse_error() -> Self {
+    pub fn new(code: ErrorCode) -> Self {
         Self {
-            code: -32601,
-            message: "Parse error".into(),
+            code: code.code(),
+            message: code.default_message().into(),
             data: None,
         }
     }
 
-    pub fn invalid_request() -> Self {
+    pub fn with_message(code: ErrorCode, message: impl Into<String>) -> Self {
         Self {
-            code: -32601,
-            message: "Invalid request".into(),
+            code: code.code(),
+            message: message.into(),
             data: None,
         }
     }
 
-    pub fn method_not_found() -> Self {
+    pub fn with_message_and_data(
+        code: ErrorCode,
+        message: impl Into<String>,
+        data: Option<String>,
+    ) -> Self {
         Self {
-            code: -32601,
-            message: "Method not found".into(),
-            data: None,
-        }
-    }
-
-    pub fn method_not_supported() -> Self {
-        Self {
-            code: -32601,
-            message: "Method not supported".into(),
-            data: None,
-        }
-    }
-
-    pub fn filter_error(message: String) -> Self {
-        Self {
-            code: -32602,
-            message,
-            data: None,
+            code: code.code(),
+            message: message.into(),
+            data: data.map(|data| {
+                serde_json::value::to_raw_value(&data).expect("RawValue can be built from String")
+            }),
         }
     }
 
     pub fn invalid_params() -> Self {
-        Self {
-            code: -32602,
-            message: "Invalid params".into(),
-            data: None,
-        }
+        Self::new(ErrorCode::InvalidParams)
     }
 
     pub fn invalid_chain_id(expected: u64, got: u64) -> Self {
-        Self {
-            code: -32000,
-            message: format!("Invalid chain ID: expected {}, got {}", expected, got),
-            data: None,
-        }
-    }
-
-    // application errors
-    pub fn custom(message: String) -> Self {
-        Self {
-            code: -32603,
-            message,
-            data: None,
-        }
+        Self::with_message(
+            ErrorCode::TransactionRejected,
+            format!("Invalid chain ID: expected {}, got {}", expected, got),
+        )
     }
 
     pub fn block_not_found() -> Self {
-        Self {
-            code: -32602,
-            message: "Block requested not found. Request might be querying \
-                      historical state that is not available. If possible, \
-                      reformulate query to point to more recent blocks"
-                .into(),
-            data: None,
-        }
+        Self::with_message(
+            ErrorCode::InvalidParams,
+            "Block requested not found. Request might be querying \
+             historical state that is not available. If possible, \
+             reformulate query to point to more recent blocks",
+        )
     }
 
     pub fn internal_error(message: String) -> Self {
-        Self {
-            code: -32603,
-            message: format!("Internal error: {}", message),
-            data: None,
-        }
+        Self::with_message(
+            ErrorCode::InternalError,
+            format!("Internal error: {}", message),
+        )
     }
 
     pub fn txn_decode_error() -> Self {
-        Self {
-            code: -32603,
-            message: "Transaction decoding error".into(),
-            data: None,
-        }
+        Self::with_message(ErrorCode::InvalidParams, msg::TXN_DECODE_ERROR)
     }
 
     /// EIP-7966 errors
     pub fn tx_sync_timeout(tx_hash: String, timeout_ms: u64) -> Self {
         Self {
-            code: 4,
+            code: ErrorCode::TransactionTimeout.code(),
             message: format!(
                 "Transaction receipt not available within {}ms timeout",
                 timeout_ms
@@ -459,17 +473,9 @@ impl JsonRpcError {
         }
     }
 
-    pub fn tx_sync_unready() -> Self {
-        Self {
-            code: 5,
-            message: "The transaction is not ready to be processed".into(),
-            data: None,
-        }
-    }
-
     pub fn eth_call_error(message: String, data: Option<String>) -> Self {
         Self {
-            code: -32603,
+            code: ErrorCode::ServerError.code(),
             message,
             data: data.map(|data| {
                 serde_json::value::to_raw_value(&data).expect("RawValue can be built from String")
@@ -479,7 +485,7 @@ impl JsonRpcError {
 
     pub fn eth_call_execution_revert(message: String, data: Option<String>) -> Self {
         Self {
-            code: 3,
+            code: ErrorCode::ExecutionReverted.code(),
             message,
             data: data.map(|data| {
                 serde_json::value::to_raw_value(&data).expect("RawValue can be built from String")
@@ -488,30 +494,25 @@ impl JsonRpcError {
     }
 
     pub fn insufficient_funds() -> Self {
-        Self {
-            code: -32003,
-            message: "Insufficient funds for gas * price + value".into(),
-            data: None,
-        }
+        Self::with_message(ErrorCode::TransactionRejected, msg::INSUFFICIENT_FUNDS)
     }
 
     pub fn code_size_too_large(size: usize) -> Self {
-        Self {
-            code: -32603,
-            message: format!(
+        Self::with_message(
+            ErrorCode::TransactionRejected,
+            format!(
                 "Contract code size is {} bytes and exceeds code size limit",
                 size
             ),
-            data: None,
-        }
+        )
     }
 
     pub fn overloaded() -> Self {
-        Self::custom("overloaded, try again later".to_string())
+        Self::with_message(ErrorCode::ServerError, "overloaded, try again later")
     }
 
     pub fn max_response_size_exceeded() -> Self {
-        Self::custom("response exceeds size limit".to_string())
+        Self::with_message(ErrorCode::ServerError, msg::RESPONSE_SIZE_EXCEEDED)
     }
 }
 
@@ -547,33 +548,6 @@ impl From<monad_archive::prelude::Report> for JsonRpcError {
         // Log with debug to get more details, but return a generic error for response
         error!("Archive error: {e:?}");
         Self::internal_error(format!("Archive error: {}", e))
-    }
-}
-
-impl From<monad_ethcall::EthCallError> for JsonRpcError {
-    fn from(error: monad_ethcall::EthCallError) -> Self {
-        use monad_ethcall::EthCallError::*;
-        match error {
-            Failure {
-                error_code,
-                message,
-                data,
-                ..
-            } => {
-                if matches!(error_code, monad_ethcall::EthCallResult::ExecutionError) {
-                    Self::eth_call_execution_revert(message, data)
-                } else {
-                    Self::eth_call_error(message, data)
-                }
-            }
-            GasLimitTooHigh => Self::eth_call_error(String::from("gas limit too high"), None),
-            InternalError => Self::eth_call_error(String::from("internal eth_call error"), None),
-            Other { message } => Self::eth_call_error(message, None),
-            ReserveBalanceViolation { .. } => {
-                Self::eth_call_error(String::from("reserve balance violation"), None)
-            }
-            Trace { .. } => Self::eth_call_error(String::from("trace error"), None),
-        }
     }
 }
 
@@ -762,7 +736,7 @@ mod test {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.message, "response exceeds size limit");
-        assert_eq!(err.code, -32603);
+        assert_eq!(err.code, -32000);
 
         // Exact boundary: serialized form is `{"key":"value"}` = 15 bytes
         let result = serialize_with_size_limit(&small_value, 15);
