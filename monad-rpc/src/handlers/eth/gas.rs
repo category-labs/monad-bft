@@ -335,7 +335,6 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
         None => return Err(JsonRpcError::block_not_found()),
     };
 
-    let gas_specified = tx.gas.is_some();
     let provider_gas_limit = eth_call_handler_config
         .provider_gas_limit_eth_estimate_gas
         .min(header.header.gas_limit);
@@ -380,7 +379,6 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
                     state_override_set: &state_override_set,
                     tracer: MonadTracer::NoopTracer,
                     call_tracer_max_size: 0,
-                    gas_specified,
                 })
                 .await,
         )
@@ -455,7 +453,6 @@ pub async fn monad_eth_fillTransaction<T: Triedb>(
                         state_override_set: &state_override,
                         tracer: MonadTracer::NoopTracer,
                         call_tracer_max_size: 0,
-                        gas_specified: true,
                     })
                     .await,
             )
@@ -1093,22 +1090,25 @@ mod tests {
     fn mock_eth_call_handler_config() -> EthCallHandlerConfig {
         EthCallHandlerConfig {
             enable_stats: false,
-            pool_low: monad_ethcall::ffi::PoolConfig {
+            pool_short_tx: monad_ethcall::ffi::PoolConfig {
                 num_threads: 0,
                 num_fibers: 0,
-                timeout_sec: 0,
+                queue_timeout_ms: 0,
+                execution_timeout_ms: 0,
                 queue_limit: 0,
             },
-            pool_high: monad_ethcall::ffi::PoolConfig {
+            pool_long_tx: monad_ethcall::ffi::PoolConfig {
                 num_threads: 0,
                 num_fibers: 0,
-                timeout_sec: 0,
+                queue_timeout_ms: 0,
+                execution_timeout_ms: 0,
                 queue_limit: 0,
             },
             pool_block: monad_ethcall::ffi::PoolConfig {
                 num_threads: 0,
                 num_fibers: 0,
-                timeout_sec: 0,
+                queue_timeout_ms: 0,
+                execution_timeout_ms: 0,
                 queue_limit: 0,
             },
             tx_exec_num_fibers: 0,
