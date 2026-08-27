@@ -58,7 +58,7 @@ use monad_system_calls::{validator::SystemTransactionValidator, SYSTEM_SENDER_ET
 use monad_types::Balance;
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
 use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
-use tracing::{debug, trace, trace_span, warn};
+use tracing::{debug, instrument, trace, trace_span, warn};
 
 pub mod error;
 
@@ -96,7 +96,7 @@ where
 {
     type BlockValidationError = EthBlockValidationError;
 
-    #[tracing::instrument(
+    #[instrument(
         level = "debug",
         skip_all,
         fields(seq_num = header.seq_num.as_u64())
@@ -310,6 +310,24 @@ where
         Ok(())
     }
 
+    #[instrument(
+        level = "debug",
+        skip_all,
+        fields(transactions = transactions.len())
+    )]
+    fn recover_transaction_signers(
+        transactions: &[TxEnvelope],
+    ) -> Result<VecDeque<Recovered<TxEnvelope>>, monad_secp::Error> {
+        transactions
+            .par_iter()
+            .map(|tx| {
+                let _span = trace_span!("validator: recover signer").entered();
+                let signer = tx.secp256k1_recover()?;
+                Ok(Recovered::new_unchecked(tx.clone(), signer))
+            })
+            .collect()
+    }
+
     /// Validates the individual transactions in the block body, and block limits such as block gas limits and transaction limits
     /// For each transaction, validate that there is no nonce gap within this block
     /// Actual nonce and balance validation against account state and preceding blocks is done in check_coherency in monad-eth-block-policy
@@ -376,14 +394,7 @@ where
         }
 
         // recovering the signers verifies that these are valid signatures
-        let recovered_txns: VecDeque<Recovered<TxEnvelope>> = transactions
-            .par_iter()
-            .map(|tx| {
-                let _span = trace_span!("validator: recover signer").entered();
-                let signer = tx.secp256k1_recover()?;
-                Ok(Recovered::new_unchecked(tx.clone(), signer))
-            })
-            .collect::<Result<_, monad_secp::Error>>()
+        let recovered_txns = Self::recover_transaction_signers(transactions)
             .map_err(TxnError::SignerRecoveryError)?;
 
         let (system_txns, eth_txns) = match SystemTransactionValidator::extract_system_transactions(

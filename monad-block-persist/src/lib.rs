@@ -30,6 +30,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_types::{BlockId, ExecutionProtocol, Hash};
 use monad_validator::signature_collection::SignatureCollection;
+use tracing::instrument;
 
 pub const BLOCKDB_HEADERS_PATH: &str = "headers";
 const BLOCKDB_BODIES_PATH: &str = "bodies";
@@ -151,6 +152,7 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
+    #[instrument(name = "ledger_write_header", level = "debug", skip_all)]
     fn write_bft_header(&mut self, block: &ConsensusBlockHeader<ST, SCT, EPT>) -> io::Result<()> {
         let file_path = self.header_path(&block.get_id());
 
@@ -166,6 +168,7 @@ where
         Ok(())
     }
 
+    #[instrument(name = "ledger_write_body", level = "debug", skip_all)]
     fn write_bft_body(&mut self, body: &ConsensusBlockBody<EPT>) -> io::Result<()> {
         let file_path = self.body_path(&body.get_id());
 
@@ -181,14 +184,17 @@ where
         Ok(())
     }
 
+    #[instrument(name = "ledger_write_proposed_head", level = "debug", skip_all)]
     fn update_proposed_head(&mut self, block_id: &BlockId) -> io::Result<()> {
         atomic_symlink_update(&self.header_path(block_id), &self.proposed_head_path)
     }
 
+    #[instrument(name = "ledger_write_voted_head", level = "debug", skip_all)]
     fn update_voted_head(&mut self, block_id: &BlockId) -> io::Result<()> {
         atomic_symlink_update(&self.header_path(block_id), &self.voted_head_path)
     }
 
+    #[instrument(name = "ledger_write_finalized_head", level = "debug", skip_all)]
     fn update_finalized_head(&mut self, block_id: &BlockId) -> io::Result<()> {
         atomic_symlink_update(&self.header_path(block_id), &self.finalized_head_path)
     }

@@ -30,7 +30,7 @@ use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::ConfigFileCommand;
 use monad_types::{Epoch, ExecutionProtocol, Round, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
-use tracing::warn;
+use tracing::{instrument, warn};
 
 pub struct MockConfigFile<ST, SCT, EPT>
 where
@@ -125,6 +125,12 @@ where
         }
     }
 
+    #[instrument(
+        name = "config_write_checkpoint",
+        level = "debug",
+        skip_all,
+        fields(root_seq_num = root_seq_num.as_u64())
+    )]
     fn write_checkpoint(&self, root_seq_num: SeqNum, checkpoint: Checkpoint<ST, SCT, EPT>) {
         // write forkpoint.rlp or panic
         Self::write_checkpoint_bytes_to_path(
@@ -180,6 +186,12 @@ where
         std::fs::rename(&temp_path, path).expect("failed to rename checkpoint");
     }
 
+    #[instrument(
+        name = "config_write_validator_set",
+        level = "debug",
+        skip_all,
+        fields(epoch = new_validator_set.epoch.0)
+    )]
     fn write_validator_set(&mut self, new_validator_set: ValidatorSetDataWithEpoch<SCT>) {
         let epoch = new_validator_set.epoch;
         let validator_sets = if let Some(last_validator_set) =

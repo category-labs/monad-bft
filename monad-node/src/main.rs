@@ -629,8 +629,12 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                     let _event_span = tracing::trace_span!("event_span", ?event).entered();
                     let start = Instant::now();
                     let cmds = state.update(event);
-                    total_state_update_elapsed += start.elapsed();
-                    prometheus_metrics.record_state_update_elapsed(&total_state_update_elapsed);
+                    let state_update_elapsed = start.elapsed();
+                    total_state_update_elapsed += state_update_elapsed;
+                    prometheus_metrics.record_state_update_elapsed(
+                        &state_update_elapsed,
+                        &total_state_update_elapsed,
+                    );
                     cmds
                 };
 
