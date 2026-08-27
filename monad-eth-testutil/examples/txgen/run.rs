@@ -96,8 +96,9 @@ pub async fn run(clients: Vec<ReqwestClient>, config: Config) -> Result<()> {
 
         // Allow in-flight transactions to land before starting next phase.
         // This prevents nonce collisions when sender seeds are reused across phases.
-        info!("Phase transition: waiting 5s for in-flight transactions to settle...");
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        let settle_secs = config.refresh_delay_secs.max(1.0);
+        info!("Phase transition: waiting {settle_secs}s for in-flight transactions to settle...");
+        tokio::time::sleep(Duration::from_secs_f64(settle_secs)).await;
     }
 }
 
