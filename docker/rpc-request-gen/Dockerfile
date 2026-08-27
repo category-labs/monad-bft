@@ -1,5 +1,5 @@
 # Builder
-FROM ubuntu:25.04 AS base
+FROM ubuntu:26.04 AS base
 
 RUN apt update && apt upgrade -y
 RUN apt update && apt install -y binutils ca-certificates curl iproute2 pkg-config gnupg software-properties-common wget cgroup-tools
@@ -68,7 +68,7 @@ RUN apt-get install -y \
 ARG CARGO_ROOT="/root/.cargo"
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | bash -s -- -y
 ENV PATH="${CARGO_ROOT}/bin:$PATH"
-RUN rustup toolchain install 1.91.1-x86_64-unknown-linux-gnu
+RUN rustup toolchain install 1.97.1-x86_64-unknown-linux-gnu
 
 WORKDIR /usr/src/monad-bft
 
@@ -88,7 +88,7 @@ RUN cargo build --release --example rpc-request-generator && \
     mv target/release/examples/rpc-request-generator rpc-request-generator
 
 # Runner
-FROM ubuntu:25.04 as runner
+FROM ubuntu:26.04 AS runner
 WORKDIR /usr/src/monad-bft
 
 COPY --from=builder /usr/src/monad-bft/rpc-request-generator /usr/local/bin/rpc-request-generator

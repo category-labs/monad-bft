@@ -20,11 +20,11 @@ macro_rules! ensure {
         }
     };
 }
-
 use std::{
     cell::OnceCell,
     collections::{BTreeMap, BTreeSet, HashMap},
     fmt,
+    future::Future,
     net::SocketAddr,
     num::NonZero,
     ops::Range,
@@ -40,9 +40,31 @@ use monad_crypto::{
     hasher::{Hasher, HasherType},
 };
 use monad_types::{Epoch, NodeId, Round, RoundSpan, Stake};
-use monad_validator::validator_set::{ValidatorSet, ValidatorSetType as _};
+use monad_validator::{
+    proposer_schedule::ProposerSchedule,
+    validator_set::{ValidatorSet, ValidatorSetType as _},
+};
 
 use crate::udp::GroupId;
+
+/// Await a future, consuming one unit of shared quota; once depleted,
+/// yield to others and request executor to wake up the task
+/// again. Used to prevent starvation.
+pub async fn budgeted<F: Future>(fut: F, quota: &mut usize) -> F::Output {
+    if *quota == 0 {
+        tokio::task::yield_now().await;
+        *quota = 1; // each yielding restores one more unit
+    }
+    let out = fut.await;
+    *quota -= 1;
+    out
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum RaptorcastMode {
+    Regular,
+    Deterministic { round: Round, epoch: Epoch },
+}
 
 // Argument for raptorcast send
 #[derive(Debug, Clone, Copy)]
@@ -52,18 +74,61 @@ pub enum BuildTarget<'a, PT: PubKey> {
     Broadcast(PrimaryBroadcastGroup<'a, PT>),
     // raptorcast to the validators, chunks distributed by their
     // proportion of stakes.
-    Raptorcast(PrimaryBroadcastGroup<'a, PT>),
+    Raptorcast {
+        group: PrimaryBroadcastGroup<'a, PT>,
+        mode: RaptorcastMode,
+    },
+    // broadcast a message to a set of full nodes where each full node
+    // gets the full chunks of the raptor-coded message.
+    FullNodeBroadcast(SecondaryBroadcastGroup<'a, PT>),
+    // raptorcast to a set of full nodes. In regular mode, chunks are
+    // assigned round-robin; in deterministic mode, chunks are
+    // assigned by the seeded shuffle of the full-node group.
+    FullNodeRaptorCast {
+        group: SecondaryBroadcastGroup<'a, PT>,
+        mode: RaptorcastMode,
+    },
     // unicast message as raptor-coded chunks to a single recipient
     PointToPoint {
         group_id: GroupId,
         recipient: &'a NodeId<PT>,
     },
-    // raptorcast to a set of full nodes, assuming equal stake
-    // distribution
-    FullNodeRaptorCast(SecondaryBroadcastGroup<'a, PT>),
 }
 
 impl<'a, PT: PubKey> BuildTarget<'a, PT> {
+    pub fn raptorcast(group: PrimaryBroadcastGroup<'a, PT>) -> Self {
+        BuildTarget::Raptorcast {
+            group,
+            mode: RaptorcastMode::Regular,
+        }
+    }
+
+    pub fn deterministic_raptorcast(group: PrimaryBroadcastGroup<'a, PT>, round: Round) -> Self {
+        let epoch = group.epoch();
+        BuildTarget::Raptorcast {
+            group,
+            mode: RaptorcastMode::Deterministic { round, epoch },
+        }
+    }
+
+    pub fn fullnode_raptorcast(group: SecondaryBroadcastGroup<'a, PT>) -> Self {
+        BuildTarget::FullNodeRaptorCast {
+            group,
+            mode: RaptorcastMode::Regular,
+        }
+    }
+
+    pub fn deterministic_fullnode_raptorcast(
+        group: SecondaryBroadcastGroup<'a, PT>,
+        epoch: Epoch,
+    ) -> Self {
+        let round = group.round();
+        BuildTarget::FullNodeRaptorCast {
+            group,
+            mode: RaptorcastMode::Deterministic { round, epoch },
+        }
+    }
+
     pub fn point_to_point(epoch: Epoch, recipient: &'a NodeId<PT>) -> Self {
         BuildTarget::PointToPoint {
             group_id: GroupId::Primary(epoch),
@@ -73,18 +138,22 @@ impl<'a, PT: PubKey> BuildTarget<'a, PT> {
 
     pub fn iter(&self) -> Box<dyn Iterator<Item = &NodeId<PT>> + '_> {
         match self {
-            BuildTarget::Broadcast(group) | BuildTarget::Raptorcast(group) => {
+            BuildTarget::Broadcast(group) | BuildTarget::Raptorcast { group, .. } => {
                 Box::new(group.iter().map(|(n, _)| n))
             }
             BuildTarget::PointToPoint { recipient, .. } => Box::new(std::iter::once(*recipient)),
-            BuildTarget::FullNodeRaptorCast(group) => Box::new(group.iter()),
+            BuildTarget::FullNodeRaptorCast { group, .. }
+            | BuildTarget::FullNodeBroadcast(group) => Box::new(group.iter()),
         }
     }
 
     pub fn group_id(&self) -> GroupId {
         match self {
-            BuildTarget::Broadcast(group) | BuildTarget::Raptorcast(group) => group.group_id(),
-            BuildTarget::FullNodeRaptorCast(group) => group.group_id(),
+            BuildTarget::Broadcast(group) | BuildTarget::Raptorcast { group, .. } => {
+                group.group_id()
+            }
+            BuildTarget::FullNodeRaptorCast { group, .. }
+            | BuildTarget::FullNodeBroadcast(group) => group.group_id(),
             BuildTarget::PointToPoint { group_id, .. } => *group_id,
         }
     }
@@ -129,6 +198,19 @@ impl<const N: usize> HexBytes<N> {
 
 pub type NodeIdHash = HexBytes<20>;
 pub type AppMessageHash = HexBytes<20>;
+pub type MerkleRoot = HexBytes<20>;
+pub type GlobalMerkleRoot = MerkleRoot;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EncodingScheme {
+    Unspecified,
+
+    // Deterministic RaptorCast (encoding_scheme_variant=0x1)
+    // - redundancy: 2.5
+    // - seed: (round, unix_ts_ms//2048, author_pk[1:17])
+    // - assignment: round-robin
+    Deterministic25(Round),
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BroadcastMode {
@@ -202,6 +284,13 @@ impl<PT: PubKey> SecondaryGroupAssignment<PT> {
     }
 }
 
+// Max number of live groups per publishing validator. The secondary
+// client enforces it at invite admission (freshest wins: an invite
+// outliving the stalest live entry evicts it, staler ones are
+// rejected). The primary's group map mirrors it as a backstop, since
+// client-side eviction does not revoke already-forwarded groups.
+pub(crate) const MAX_GROUPS_PER_VALIDATOR: usize = 16;
+
 // An interval map from RoundSpan to SecondaryGroup.
 //
 // Invariance: Each group's round span must be non-overlapping.
@@ -258,6 +347,26 @@ impl<PT: PubKey> SecondaryGroupMap<PT> {
         }
     }
 
+    // cull groups that start beyond max_start: far-future entries
+    // admitted while rounds were not advancing, which may otherwise
+    // never expire through delete_expired
+    pub fn delete_far_future(&mut self, max_start: Round) {
+        while let Some((range, _)) = self.group_map.largest() {
+            if range.start <= max_start {
+                break;
+            }
+            self.group_map.remove(range);
+        }
+    }
+
+    // Evict the stalest groups until holding at most `cap`. Spans are
+    // disjoint, so the smallest interval is the first one to expire.
+    pub fn evict_stalest_to_cap(&mut self, cap: usize) {
+        while self.group_map.len() > cap {
+            self.group_map.remove_smallest();
+        }
+    }
+
     fn is_empty(&self) -> bool {
         self.group_map.is_empty()
     }
@@ -293,13 +402,27 @@ impl<PT: PubKey> FullNodeGroupMap<PT> {
     #[must_use]
     pub fn try_insert(&mut self, assignment: SecondaryGroupAssignment<PT>) -> Option<()> {
         let group_map = self.map.entry(assignment.publisher_id).or_default();
-        group_map.try_insert(assignment.round_span, assignment.group)
+        let inserted = group_map.try_insert(assignment.round_span, assignment.group);
+        // Mirror the client's per-validator freshest-wins cap: without
+        // it a validator could grow this map without limit while
+        // rounds are not advancing, as client-side eviction does not
+        // revoke groups it already forwarded here.
+        group_map.evict_stalest_to_cap(MAX_GROUPS_PER_VALIDATOR);
+        inserted
     }
 
     // cull groups that ends before or at round_cap
     pub fn delete_expired(&mut self, round_cap: Round) {
         self.map.retain(|_publisher_id, group_map| {
             group_map.delete_expired(round_cap);
+            !group_map.is_empty()
+        });
+    }
+
+    // cull groups that start beyond max_start (see SecondaryGroupMap)
+    pub fn delete_far_future(&mut self, max_start: Round) {
+        self.map.retain(|_publisher_id, group_map| {
+            group_map.delete_far_future(max_start);
             !group_map.is_empty()
         });
     }
@@ -350,16 +473,29 @@ impl<'a, PT: PubKey> PrimaryBroadcastGroup<'a, PT> {
         })
     }
 
+    // only used in mock-swarm
+    pub fn new_unchecked(
+        epoch: Epoch,
+        author: &'a NodeId<PT>,
+        group: &'a ValidatorSet<PT>,
+    ) -> Self {
+        Self {
+            epoch,
+            author,
+            group,
+        }
+    }
+
+    pub fn author(&self) -> &NodeId<PT> {
+        self.author
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = (&NodeId<PT>, &Stake)> + '_ {
         self.group.get_members().iter()
     }
 
     pub fn is_member(&self, node_id: &NodeId<PT>) -> bool {
         self.group.is_member(node_id)
-    }
-
-    pub fn author(&self) -> &NodeId<PT> {
-        self.author
     }
 
     pub fn len(&self) -> NonZero<usize> {
@@ -388,8 +524,16 @@ impl<'a, PT: PubKey> PrimaryBroadcastGroup<'a, PT> {
         })
     }
 
+    pub fn validator_set(&self) -> &ValidatorSet<PT> {
+        self.group
+    }
+
     pub fn group_id(&self) -> GroupId {
         GroupId::Primary(self.epoch)
+    }
+
+    pub fn epoch(&self) -> Epoch {
+        self.epoch
     }
 }
 
@@ -465,6 +609,18 @@ impl<'a, PT: PubKey> SecondaryBroadcastGroup<'a, PT> {
 
     pub fn group_id(&self) -> GroupId {
         GroupId::Secondary(self.round)
+    }
+
+    pub fn publisher(&self) -> &NodeId<PT> {
+        self.publisher
+    }
+
+    pub fn round(&self) -> Round {
+        self.round
+    }
+
+    pub fn len(&self) -> NonZero<usize> {
+        self.group.len()
     }
 }
 
@@ -698,7 +854,7 @@ where
     PD: monad_peer_discovery::PeerDiscoveryAlgo<SignatureType = ST>,
 {
     fn lookup(&self, node_id: &NodeId<CertificateSignaturePubKey<ST>>) -> Option<SocketAddr> {
-        self.get_addr(node_id)
+        self.get_udp_addr(node_id)
     }
 }
 
@@ -845,6 +1001,18 @@ impl Redundancy {
         Redundancy(FixedU16::from_bits((num as u16) << Self::FRAC_BITS))
     }
 
+    pub const fn from_fract(
+        int_part: u8,
+        fract_part_hundredth: u8, // out of 100
+    ) -> Self {
+        assert!((int_part as u16) < u16::MAX >> Self::FRAC_BITS);
+        assert!(fract_part_hundredth < 100);
+
+        let int_bits = (int_part as u16) << Self::FRAC_BITS;
+        let decimal_bits = ((fract_part_hundredth as u32) << Self::FRAC_BITS) / 100;
+        Redundancy(FixedU16::from_bits(int_bits + decimal_bits as u16))
+    }
+
     // may round to the nearest representable number when needed
     pub fn from_f32(num: f32) -> Option<Self> {
         FixedU16::checked_from_num(num).map(Redundancy)
@@ -880,6 +1048,35 @@ pub fn unix_ts_ms_now() -> u64 {
         .expect("unix epoch doesn't fit in u64")
 }
 
+// A proposer schedule with a constant verdict for check_*. Only used in testing.
+#[derive(Default)]
+pub struct StubProposerSchedule {
+    pub check_proposer: Option<bool>,
+    pub check_epoch: Option<bool>,
+}
+
+impl StubProposerSchedule {
+    // A schedule that accepts every proposer and epoch. For deterministic
+    // raptorcast tests where the proposer schedule itself is irrelevant.
+    pub const VALID: Self = Self {
+        check_proposer: Some(true),
+        check_epoch: Some(true),
+    };
+}
+
+impl<PT: PubKey> ProposerSchedule<PT> for StubProposerSchedule {
+    fn check_proposer(&self, _node: &NodeId<PT>, _round: Round) -> Option<bool> {
+        self.check_proposer
+    }
+
+    fn check_epoch(&self, _epoch: Epoch, _round: Round) -> Option<bool> {
+        self.check_epoch
+    }
+
+    fn insert_epoch(&mut self, _epoch: Epoch, _epoch_start: Round, _val_set: ValidatorSet<PT>) {}
+    fn prune_below(&mut self, _cutoff: Round) {}
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
@@ -906,6 +1103,47 @@ mod tests {
         assert!(!node_ids.is_empty());
         let members = node_ids.iter().map(|id| (*id, Stake::ONE)).collect();
         ValidatorSet::new_unchecked(members)
+    }
+
+    // The map bounds the groups held per publisher (keeping the
+    // freshest) and culls far-future entries, mirroring the secondary
+    // client's admission rules for the groups it forwards here.
+    #[test]
+    fn full_node_groups_bounded_per_publisher() {
+        let group = |start: u64, end: u64| {
+            SecondaryGroupAssignment::new(
+                nid(0),
+                RoundSpan::new(Round(start), Round(end)).unwrap(),
+                SecondaryGroup::new([nid(1), nid(2)].into_iter().collect()).unwrap(),
+            )
+        };
+        let mut map = FullNodeGroupMap::<PT>::default();
+
+        // Disjoint spans with increasing rounds: each insert past the
+        // cap evicts the stalest entry
+        let num_groups = 10 * MAX_GROUPS_PER_VALIDATOR as u64;
+        for k in 0..num_groups {
+            assert!(map
+                .try_insert(group(1_000 + 2 * k, 1_001 + 2 * k))
+                .is_some());
+        }
+        let group_map = map.get_group_map(&nid(0)).unwrap();
+        let held = (0..num_groups)
+            .filter(|k| group_map.get(Round(1_000 + 2 * k)).is_some())
+            .count();
+        assert_eq!(held, MAX_GROUPS_PER_VALIDATOR);
+        assert!(group_map.get(Round(1_000)).is_none());
+        assert!(group_map.get(Round(1_000 + 2 * (num_groups - 1))).is_some());
+
+        // The far-future cull drops entries starting beyond max_start
+        map.delete_far_future(Round(1_300));
+        let group_map = map.get_group_map(&nid(0)).unwrap();
+        assert!(group_map.get(Round(1_300)).is_some());
+        assert!(group_map.get(Round(1_302)).is_none());
+
+        // Culling every group removes the publisher's slot
+        map.delete_far_future(Round(0));
+        assert!(map.is_empty());
     }
 
     #[test]
@@ -1464,5 +1702,62 @@ mod tests {
         .into_iter()
         .collect();
         assert_eq!(actual, expected);
+    }
+
+    mod budgeted {
+        use std::{
+            future::{pending, poll_fn, ready},
+            pin::pin,
+            task::Poll,
+            time::Duration,
+        };
+
+        use futures::{future::poll_immediate, FutureExt};
+        use tokio::time::timeout;
+
+        use crate::util::budgeted;
+
+        #[tokio::test]
+        async fn quota_bounds_drain_pass_and_self_wakes() {
+            let mut polled = 0;
+            let mut drained = 0;
+
+            // expect budgeted to wake the task after first quota
+            // exhaustion. return Ready on second poll.
+            let drain_two_passes = poll_fn(|cx| {
+                polled += 1;
+                let mut quota = 3;
+                while let Poll::Ready(()) = pin!(budgeted(ready(()), &mut quota)).poll_unpin(cx) {
+                    drained += 1;
+                }
+                if polled == 2 {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            });
+
+            timeout(Duration::from_secs(1), drain_two_passes)
+                .await
+                .expect("spent quota did not wake the task");
+
+            assert_eq!(drained, 6);
+        }
+
+        #[tokio::test]
+        async fn pending_inner_consumes_no_quota() {
+            let mut quota = 1;
+            let throttled = poll_immediate(budgeted(pending::<()>(), &mut quota)).await;
+            assert_eq!(throttled, None);
+            assert_eq!(quota, 1);
+        }
+
+        #[tokio::test]
+        async fn exhausted_budgeted_resumes_after_yield() {
+            let mut quota = 0;
+            let out = timeout(Duration::from_secs(1), budgeted(ready(7), &mut quota)).await;
+            assert_eq!(out, Ok(7));
+            assert_eq!(quota, 0);
+        }
     }
 }

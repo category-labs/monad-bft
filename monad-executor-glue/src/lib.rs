@@ -15,7 +15,7 @@
 
 use std::{
     fmt::Debug,
-    net::{SocketAddr, SocketAddrV4},
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     num::NonZeroU16,
 };
 
@@ -48,10 +48,11 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
-use monad_state_backend::StateBackend;
+use monad_execution_state_read::ExecutionStateRead;
 use monad_types::{
-    deserialize_pubkey, serialize_pubkey, Epoch, ExecutionProtocol, LimitedVec, NodeId, Round,
-    RouterTarget, SeqNum, Stake, UdpPriority,
+    deserialize_pubkey, serialize_pubkey, Epoch, ExecutionProtocol, FullnodeBroadcastMode,
+    LimitedVec, NodeId, Round, RouterTarget, SeqNum, Stake, UdpPriority,
+    MAX_FORWARDED_TXS_PER_MESSAGE,
 };
 use monad_validator::signature_collection::SignatureCollection;
 use serde::{Deserialize, Serialize};
@@ -81,10 +82,12 @@ pub enum RouterCommand<ST: CertificateSignatureRecoverable, OM> {
     PublishToFullNodes {
         epoch: Epoch,
         round: Round,
+        broadcast_mode: FullnodeBroadcastMode,
         message: OM,
     },
     AddEpochValidatorSet {
         epoch: Epoch,
+        epoch_start: Round,
         validator_set: Vec<(NodeId<CertificateSignaturePubKey<ST>>, Stake)>,
     },
     UpdateCurrentRound(Epoch, Round),
@@ -119,18 +122,22 @@ impl<ST: CertificateSignatureRecoverable, OM> Debug for RouterCommand<ST, OM> {
             Self::PublishToFullNodes {
                 epoch,
                 round,
+                broadcast_mode,
                 message: _,
             } => f
                 .debug_struct("PublishToFullNodes")
                 .field("epoch", epoch)
                 .field("round", round)
+                .field("broadcast_mode", broadcast_mode)
                 .finish(),
             Self::AddEpochValidatorSet {
                 epoch,
+                epoch_start,
                 validator_set,
             } => f
                 .debug_struct("AddEpochValidatorSet")
                 .field("epoch", epoch)
+                .field("epoch_start", epoch_start)
                 .field("validator_set", validator_set)
                 .finish(),
             Self::UpdateCurrentRound(arg0, arg1) => f
@@ -276,13 +283,14 @@ pub enum GetMetrics {
     Response(Metrics),
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(bound = "ST: CertificateSignatureRecoverable")]
 pub struct PeerEntry<ST: CertificateSignatureRecoverable> {
     #[serde(serialize_with = "serialize_pubkey::<_, CertificateSignaturePubKey<ST>>")]
     #[serde(deserialize_with = "deserialize_pubkey::<_, CertificateSignaturePubKey<ST>>")]
     pub pubkey: CertificateSignaturePubKey<ST>,
-    pub addr: SocketAddrV4,
+    #[serde(flatten)]
+    pub address: PeerEntryAddress,
 
     pub signature: ST,
     pub record_seq_num: u64,
@@ -294,34 +302,113 @@ pub struct PeerEntry<ST: CertificateSignatureRecoverable> {
         skip_serializing_if = "Option::is_none"
     )]
     pub direct_udp_port: Option<NonZeroU16>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encrypted_tcp_port: Option<NonZeroU16>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum PeerEntryAddress {
+    Split(PeerEntrySplitEndpoint),
+    SocketAddr(PeerEntrySocketAddrEndpoint),
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PeerEntrySocketAddrEndpoint {
+    address: SocketAddrV4,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PeerEntrySplitEndpoint {
+    address: Ipv4Addr,
+    tcp_port: NonZeroU16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    udp_port: Option<NonZeroU16>,
+}
+
+impl PeerEntryAddress {
+    pub fn new(address: Ipv4Addr, tcp_port: NonZeroU16, udp_port: Option<NonZeroU16>) -> Self {
+        Self::Split(PeerEntrySplitEndpoint {
+            address,
+            tcp_port,
+            udp_port,
+        })
+    }
+
+    pub fn ip(&self) -> Ipv4Addr {
+        match self {
+            Self::Split(endpoint) => endpoint.address,
+            Self::SocketAddr(endpoint) => *endpoint.address.ip(),
+        }
+    }
+
+    pub fn tcp_port(&self) -> NonZeroU16 {
+        match self {
+            Self::Split(endpoint) => Ok(endpoint.tcp_port),
+            Self::SocketAddr(endpoint) => NonZeroU16::new(endpoint.address.port())
+                .ok_or("socket address port must be non-zero"),
+        }
+        .expect("peer entry TCP port must be non-zero")
+    }
+
+    pub fn udp_port(&self) -> Option<NonZeroU16> {
+        match self {
+            Self::Split(endpoint) => endpoint.udp_port,
+            Self::SocketAddr(_) => Some(self.tcp_port()),
+        }
+    }
+}
+
+impl<ST: CertificateSignatureRecoverable> PeerEntry<ST> {
+    pub fn ip(&self) -> Ipv4Addr {
+        self.address.ip()
+    }
+
+    pub fn tcp_port(&self) -> NonZeroU16 {
+        self.address.tcp_port()
+    }
+
+    pub fn udp_port(&self) -> Option<NonZeroU16> {
+        self.address.udp_port()
+    }
 }
 
 impl<ST: CertificateSignatureRecoverable> Encodable for PeerEntry<ST> {
     fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
-        let addr = self.addr.to_string();
+        let address = self.ip().to_string();
         let auth_port = self.auth_port.get();
-        let base = [
-            &self.pubkey as &dyn Encodable,
-            &addr as &dyn Encodable,
-            &self.signature as &dyn Encodable,
-            &self.record_seq_num as &dyn Encodable,
-            &auth_port as &dyn Encodable,
-        ];
-
-        match self.direct_udp_port {
-            None => encode_list::<_, dyn Encodable>(&base, out),
-            Some(direct_udp_port) => {
-                let direct_udp_port = direct_udp_port.get();
-                let enc = [
-                    base[0],
-                    base[1],
-                    base[2],
-                    base[3],
-                    base[4],
-                    &direct_udp_port as &dyn Encodable,
-                ];
-                encode_list::<_, dyn Encodable>(&enc, out);
-            }
+        let direct_udp_port = self.direct_udp_port.map_or(0, NonZeroU16::get);
+        let tcp_port = self.tcp_port().get();
+        let udp_port = self.udp_port().map_or(0, NonZeroU16::get);
+        if let Some(encrypted_tcp_port) = self.encrypted_tcp_port {
+            let encrypted_tcp_port = encrypted_tcp_port.get();
+            let enc = [
+                &self.pubkey as &dyn Encodable,
+                &address as &dyn Encodable,
+                &self.signature as &dyn Encodable,
+                &self.record_seq_num as &dyn Encodable,
+                &auth_port as &dyn Encodable,
+                &direct_udp_port as &dyn Encodable,
+                &tcp_port as &dyn Encodable,
+                &udp_port as &dyn Encodable,
+                &encrypted_tcp_port as &dyn Encodable,
+            ];
+            encode_list::<_, dyn Encodable>(&enc, out);
+        } else {
+            let enc = [
+                &self.pubkey as &dyn Encodable,
+                &address as &dyn Encodable,
+                &self.signature as &dyn Encodable,
+                &self.record_seq_num as &dyn Encodable,
+                &auth_port as &dyn Encodable,
+                &direct_udp_port as &dyn Encodable,
+                &tcp_port as &dyn Encodable,
+                &udp_port as &dyn Encodable,
+            ];
+            encode_list::<_, dyn Encodable>(&enc, out);
         }
     }
 }
@@ -331,24 +418,41 @@ impl<ST: CertificateSignatureRecoverable> Decodable for PeerEntry<ST> {
         let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
 
         let pubkey = CertificateSignaturePubKey::<ST>::decode(&mut payload)?;
-        let s = <String as Decodable>::decode(&mut payload)?;
-        let addr = s
-            .parse::<SocketAddrV4>()
-            .map_err(|_| alloy_rlp::Error::Custom("invalid SocketAddrV4"))?;
+        let address = <String as Decodable>::decode(&mut payload)?;
+        let (address, legacy_port) = if let Ok(address) = address.parse::<Ipv4Addr>() {
+            (address, None)
+        } else {
+            let address = address
+                .parse::<SocketAddrV4>()
+                .map_err(|_| alloy_rlp::Error::Custom("invalid peer entry address"))?;
+            let port = NonZeroU16::new(address.port())
+                .ok_or(alloy_rlp::Error::Custom("invalid SocketAddrV4"))?;
+            (*address.ip(), Some(port))
+        };
         let signature = ST::decode(&mut payload)?;
         let record_seq_num = u64::decode(&mut payload)?;
-
-        if payload.is_empty() {
-            return Err(alloy_rlp::Error::Custom("missing auth port"));
-        }
-
         let auth_port = NonZeroU16::new(u16::decode(&mut payload)?)
             .ok_or(alloy_rlp::Error::Custom("invalid auth port"))?;
-
-        let direct_udp_port = if !payload.is_empty() {
-            NonZeroU16::new(u16::decode(&mut payload)?)
-        } else {
+        let direct_udp_port = if payload.is_empty() {
             None
+        } else {
+            decode_optional_non_zero_u16(&mut payload)?
+        };
+        let (tcp_port, udp_port) = if payload.is_empty() {
+            let port = legacy_port.ok_or(alloy_rlp::Error::Custom(
+                "missing tcp/udp ports for peer entry",
+            ))?;
+            (port, Some(port))
+        } else {
+            let tcp_port = decode_non_zero_u16(&mut payload, "invalid tcp port")?;
+            let udp_port = decode_optional_non_zero_u16(&mut payload)?;
+            (tcp_port, udp_port)
+        };
+
+        let encrypted_tcp_port = if payload.is_empty() {
+            None
+        } else {
+            decode_optional_non_zero_u16(&mut payload)?
         };
 
         if !payload.is_empty() {
@@ -357,13 +461,22 @@ impl<ST: CertificateSignatureRecoverable> Decodable for PeerEntry<ST> {
 
         Ok(Self {
             pubkey,
-            addr,
+            address: PeerEntryAddress::new(address, tcp_port, udp_port),
             signature,
             record_seq_num,
             auth_port,
             direct_udp_port,
+            encrypted_tcp_port,
         })
     }
+}
+
+fn decode_non_zero_u16(payload: &mut &[u8], error: &'static str) -> alloy_rlp::Result<NonZeroU16> {
+    NonZeroU16::new(u16::decode(payload)?).ok_or(alloy_rlp::Error::Custom(error))
+}
+
+fn decode_optional_non_zero_u16(payload: &mut &[u8]) -> alloy_rlp::Result<Option<NonZeroU16>> {
+    Ok(NonZeroU16::new(u16::decode(payload)?))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -546,13 +659,13 @@ pub enum ConfigReloadCommand {
     ReloadConfig,
 }
 
-pub enum TxPoolCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>
+pub enum TxPoolCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -581,7 +694,7 @@ where
 
     InsertForwardedTxs {
         sender: NodeId<SCT::NodeIdPubKey>,
-        txs: Vec<Bytes>,
+        txs: LimitedVec<Bytes, MAX_FORWARDED_TXS_PER_MESSAGE>,
     },
 
     EnterRound {
@@ -596,13 +709,13 @@ where
     },
 }
 
-impl<ST, SCT, EPT, BPT, SBT, CCT, CRT> Debug for TxPoolCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>
+impl<ST, SCT, EPT, BPT, ESRT, CCT, CRT> Debug for TxPoolCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -668,13 +781,13 @@ where
     }
 }
 
-pub enum Command<E, OM, ST, SCT, EPT, BPT, SBT, CCT, CRT>
+pub enum Command<E, OM, ST, SCT, EPT, BPT, ESRT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -685,21 +798,21 @@ where
     ValSetCommand(ValSetCommand),
     TimestampCommand(TimestampCommand),
 
-    TxPoolCommand(TxPoolCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>),
+    TxPoolCommand(TxPoolCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>),
     ControlPanelCommand(ControlPanelCommand<ST>),
     LoopbackCommand(LoopbackCommand<E>),
     StateSyncCommand(StateSyncCommand<ST, EPT>),
     ConfigReloadCommand(ConfigReloadCommand),
 }
 
-impl<E, OM, ST, SCT, EPT, BPT, SBT, CCT, CRT> Debug
-    for Command<E, OM, ST, SCT, EPT, BPT, SBT, CCT, CRT>
+impl<E, OM, ST, SCT, EPT, BPT, ESRT, CCT, CRT> Debug
+    for Command<E, OM, ST, SCT, EPT, BPT, ESRT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -726,13 +839,13 @@ where
     }
 }
 
-impl<E, OM, ST, SCT, EPT, BPT, SBT, CCT, CRT> Command<E, OM, ST, SCT, EPT, BPT, SBT, CCT, CRT>
+impl<E, OM, ST, SCT, EPT, BPT, ESRT, CCT, CRT> Command<E, OM, ST, SCT, EPT, BPT, ESRT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
@@ -745,7 +858,7 @@ where
         Vec<ConfigFileCommand<ST, SCT, EPT>>,
         Vec<ValSetCommand>,
         Vec<TimestampCommand>,
-        Vec<TxPoolCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>>,
+        Vec<TxPoolCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>>,
         Vec<ControlPanelCommand<ST>>,
         Vec<LoopbackCommand<E>>,
         Vec<StateSyncCommand<ST, EPT>>,
@@ -1165,12 +1278,15 @@ where
     /// Txs that are incoming via other nodes
     ForwardedTxs {
         sender: NodeId<SCT::NodeIdPubKey>,
-        #[serde_as(as = "Vec<serde_with::hex::Hex>")]
-        txs: Vec<Bytes>,
+        #[serde_as(as = "LimitedVec<serde_with::hex::Hex, MAX_FORWARDED_TXS_PER_MESSAGE>")]
+        txs: LimitedVec<Bytes, MAX_FORWARDED_TXS_PER_MESSAGE>,
     },
 
     /// Txs that should be forwarded to upcoming leaders
-    ForwardTxs(#[serde_as(as = "Vec<serde_with::hex::Hex>")] Vec<Bytes>),
+    ForwardTxs(
+        #[serde_as(as = "LimitedVec<serde_with::hex::Hex, MAX_FORWARDED_TXS_PER_MESSAGE>")]
+        LimitedVec<Bytes, MAX_FORWARDED_TXS_PER_MESSAGE>,
+    ),
 }
 
 impl<ST, SCT, EPT> Encodable for MempoolEvent<ST, SCT, EPT>
@@ -1305,11 +1421,11 @@ where
             }
             2 => {
                 let sender = NodeId::<SCT::NodeIdPubKey>::decode(&mut payload)?;
-                let txs = Vec::<Bytes>::decode(&mut payload)?;
+                let txs = LimitedVec::<Bytes, MAX_FORWARDED_TXS_PER_MESSAGE>::decode(&mut payload)?;
                 Ok(Self::ForwardedTxs { sender, txs })
             }
             3 => {
-                let txs = Vec::<Bytes>::decode(&mut payload)?;
+                let txs = LimitedVec::<Bytes, MAX_FORWARDED_TXS_PER_MESSAGE>::decode(&mut payload)?;
                 Ok(Self::ForwardTxs(txs))
             }
             _ => Err(alloy_rlp::Error::Custom(
@@ -2383,9 +2499,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{net::SocketAddrV4, num::NonZeroU16};
+    use std::{net::Ipv4Addr, num::NonZeroU16};
 
     use alloy_rlp::{encode_list, Encodable};
+    use bytes::Bytes;
     use monad_blocksync::messages::message::BlockSyncRequestMessage;
     use monad_consensus_types::block::BlockRange;
     use monad_crypto::{
@@ -2394,11 +2511,13 @@ mod tests {
     };
     use monad_eth_types::EthExecutionProtocol;
     use monad_multi_sig::MultiSig;
-    use monad_types::{NodeId, SeqNum, GENESIS_BLOCK_ID};
+    use monad_types::{
+        LimitedVec, NodeId, SeqNum, GENESIS_BLOCK_ID, MAX_FORWARDED_TXS_PER_MESSAGE,
+    };
     use monad_wal::wal::WALLog;
 
     use crate::{
-        BlockSyncEvent, MempoolEvent, MonadEvent, PeerEntry, StateSyncEvent,
+        BlockSyncEvent, MempoolEvent, MonadEvent, PeerEntry, PeerEntryAddress, StateSyncEvent,
         StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse, StateSyncUpsertType,
         StateSyncUpsertV1, StateSyncVersion, SELF_STATESYNC_VERSION, STATESYNC_VERSION_V0,
         STATESYNC_VERSION_V1,
@@ -2573,19 +2692,77 @@ mod tests {
         assert_eq!(deserialized_request.old_target, 0);
     }
 
+    fn peer_entry_toml(address_fields: &str) -> String {
+        let pubkey = "01".repeat(32);
+        let signature_pubkey = ["1"; 32].join(", ");
+
+        format!(
+            r#"{address_fields}
+pubkey = "0x{pubkey}"
+signature = {{ pubkey = [{signature_pubkey}], id = 1234 }}
+record_seq_num = 42
+auth_port = 9000
+direct_udp_port = 9001
+"#
+        )
+    }
+
+    #[test]
+    fn peer_entry_decodes_legacy_socket_addr_toml() {
+        let peer: PeerEntry<NopSignature> =
+            toml::from_str(&peer_entry_toml(r#"address = "127.0.0.1:8000""#)).unwrap();
+
+        assert_eq!(peer.ip(), "127.0.0.1".parse::<Ipv4Addr>().unwrap());
+        assert_eq!(peer.tcp_port().get(), 8000);
+        assert_eq!(peer.udp_port().map(NonZeroU16::get), Some(8000));
+        assert_eq!(peer.direct_udp_port.map(NonZeroU16::get), Some(9001));
+    }
+
+    #[test]
+    fn peer_entry_decodes_split_port_toml() {
+        let peer: PeerEntry<NopSignature> = toml::from_str(&peer_entry_toml(
+            r#"address = "127.0.0.2"
+tcp_port = 8001
+udp_port = 8002"#,
+        ))
+        .unwrap();
+
+        assert_eq!(peer.ip(), "127.0.0.2".parse::<Ipv4Addr>().unwrap());
+        assert_eq!(peer.tcp_port().get(), 8001);
+        assert_eq!(peer.udp_port().map(NonZeroU16::get), Some(8002));
+    }
+
+    #[test]
+    fn peer_entry_decodes_split_port_toml_without_udp_port() {
+        let peer: PeerEntry<NopSignature> = toml::from_str(&peer_entry_toml(
+            r#"address = "127.0.0.3"
+tcp_port = 8003"#,
+        ))
+        .unwrap();
+
+        assert_eq!(peer.ip(), "127.0.0.3".parse::<Ipv4Addr>().unwrap());
+        assert_eq!(peer.tcp_port().get(), 8003);
+        assert_eq!(peer.udp_port(), None);
+    }
+
     #[test]
     fn peer_entry_rlp_encode_decode() {
         let pubkey = CertificateSignaturePubKey::<NopSignature>::from_bytes(&[1u8; 32]).unwrap();
-        let addr: SocketAddrV4 = "127.0.0.1:8000".parse().unwrap();
+        let address: Ipv4Addr = "127.0.0.1".parse().unwrap();
         let signature = NopSignature { pubkey, id: 1234 };
         let record_seq_num = 0;
         let entry = PeerEntry {
             pubkey,
-            addr,
+            address: PeerEntryAddress::new(
+                address,
+                NonZeroU16::new(8000).unwrap(),
+                Some(NonZeroU16::new(8000).unwrap()),
+            ),
             signature,
             record_seq_num,
-            auth_port: NonZeroU16::new(addr.port()).unwrap(),
+            auth_port: NonZeroU16::new(8000).unwrap(),
             direct_udp_port: None,
+            encrypted_tcp_port: None,
         };
         let encoded = alloy_rlp::encode(&entry);
         let decoded: PeerEntry<NopSignature> = alloy_rlp::decode_exact(&encoded).unwrap();
@@ -2595,15 +2772,66 @@ mod tests {
     #[test]
     fn peer_entry_rlp_encode_decode_with_direct_udp() {
         let pubkey = CertificateSignaturePubKey::<NopSignature>::from_bytes(&[2u8; 32]).unwrap();
-        let addr: SocketAddrV4 = "127.0.0.1:8001".parse().unwrap();
+        let address: Ipv4Addr = "127.0.0.1".parse().unwrap();
         let signature = NopSignature { pubkey, id: 4321 };
         let entry = PeerEntry {
             pubkey,
-            addr,
+            address: PeerEntryAddress::new(
+                address,
+                NonZeroU16::new(8001).unwrap(),
+                Some(NonZeroU16::new(8001).unwrap()),
+            ),
             signature,
             record_seq_num: 7,
             auth_port: NonZeroU16::new(9000).unwrap(),
             direct_udp_port: Some(NonZeroU16::new(9001).unwrap()),
+            encrypted_tcp_port: None,
+        };
+
+        let encoded = alloy_rlp::encode(&entry);
+        let decoded: PeerEntry<NopSignature> = alloy_rlp::decode_exact(&encoded).unwrap();
+        assert_eq!(entry, decoded);
+    }
+
+    #[test]
+    fn peer_entry_rlp_encode_decode_ip_form() {
+        let pubkey = CertificateSignaturePubKey::<NopSignature>::from_bytes(&[3u8; 32]).unwrap();
+        let ip: Ipv4Addr = "127.0.0.2".parse().unwrap();
+        let signature = NopSignature { pubkey, id: 99 };
+        let record_seq_num = 11u64;
+        let auth_port = 9002u16;
+        let entry = PeerEntry {
+            pubkey,
+            address: PeerEntryAddress::new(ip, NonZeroU16::new(8002).unwrap(), None),
+            signature,
+            record_seq_num,
+            auth_port: NonZeroU16::new(auth_port).unwrap(),
+            direct_udp_port: None,
+            encrypted_tcp_port: None,
+        };
+
+        let encoded = alloy_rlp::encode(&entry);
+        let decoded: PeerEntry<NopSignature> = alloy_rlp::decode_exact(&encoded).unwrap();
+        assert_eq!(entry, decoded);
+    }
+
+    #[test]
+    fn peer_entry_rlp_encode_decode_with_encrypted_tcp() {
+        let pubkey = CertificateSignaturePubKey::<NopSignature>::from_bytes(&[4u8; 32]).unwrap();
+        let address: Ipv4Addr = "127.0.0.1".parse().unwrap();
+        let signature = NopSignature { pubkey, id: 77 };
+        let entry = PeerEntry {
+            pubkey,
+            address: PeerEntryAddress::new(
+                address,
+                NonZeroU16::new(8003).unwrap(),
+                Some(NonZeroU16::new(8003).unwrap()),
+            ),
+            signature,
+            record_seq_num: 12,
+            auth_port: NonZeroU16::new(9003).unwrap(),
+            direct_udp_port: None,
+            encrypted_tcp_port: Some(NonZeroU16::new(9004).unwrap()),
         };
 
         let encoded = alloy_rlp::encode(&entry);
@@ -2613,14 +2841,13 @@ mod tests {
 
     #[test]
     fn peer_entry_rlp_decode_legacy_auth_only_form() {
-        let pubkey = CertificateSignaturePubKey::<NopSignature>::from_bytes(&[3u8; 32]).unwrap();
-        let addr: SocketAddrV4 = "127.0.0.1:8002".parse().unwrap();
-        let signature = NopSignature { pubkey, id: 99 };
-        let record_seq_num = 11u64;
-        let auth_port = 9002u16;
+        let pubkey = CertificateSignaturePubKey::<NopSignature>::from_bytes(&[7u8; 32]).unwrap();
+        let signature = NopSignature { pubkey, id: 10 };
+        let record_seq_num = 15u64;
+        let auth_port = 9006u16;
         let enc: [&dyn Encodable; 5] = [
             &pubkey,
-            &addr.to_string(),
+            &"127.0.0.3:8006".to_string(),
             &signature,
             &record_seq_num,
             &auth_port,
@@ -2629,17 +2856,60 @@ mod tests {
         encode_list::<_, dyn Encodable>(&enc, &mut encoded);
 
         let decoded: PeerEntry<NopSignature> = alloy_rlp::decode_exact(&encoded).unwrap();
-        assert_eq!(decoded.auth_port, NonZeroU16::new(auth_port).unwrap());
+        assert_eq!(decoded.ip(), "127.0.0.3".parse::<Ipv4Addr>().unwrap());
+        assert_eq!(decoded.tcp_port().get(), 8006);
+        assert_eq!(decoded.udp_port().map(NonZeroU16::get), Some(8006));
+        assert_eq!(decoded.auth_port.get(), auth_port);
         assert_eq!(decoded.direct_udp_port, None);
+        assert_eq!(decoded.encrypted_tcp_port, None);
     }
 
     #[test]
-    fn peer_entry_rlp_decode_rejects_missing_auth_port() {
+    fn peer_entry_rlp_decode_legacy_direct_udp_form() {
+        let pubkey = CertificateSignaturePubKey::<NopSignature>::from_bytes(&[8u8; 32]).unwrap();
+        let signature = NopSignature { pubkey, id: 11 };
+        let record_seq_num = 16u64;
+        let auth_port = 9007u16;
+        let direct_udp_port = 9008u16;
+        let enc: [&dyn Encodable; 6] = [
+            &pubkey,
+            &"127.0.0.4:8007".to_string(),
+            &signature,
+            &record_seq_num,
+            &auth_port,
+            &direct_udp_port,
+        ];
+        let mut encoded = Vec::new();
+        encode_list::<_, dyn Encodable>(&enc, &mut encoded);
+
+        let decoded: PeerEntry<NopSignature> = alloy_rlp::decode_exact(&encoded).unwrap();
+        assert_eq!(decoded.ip(), "127.0.0.4".parse::<Ipv4Addr>().unwrap());
+        assert_eq!(decoded.tcp_port().get(), 8007);
+        assert_eq!(decoded.udp_port().map(NonZeroU16::get), Some(8007));
+        assert_eq!(decoded.auth_port.get(), auth_port);
+        assert_eq!(
+            decoded.direct_udp_port.map(NonZeroU16::get),
+            Some(direct_udp_port)
+        );
+    }
+
+    #[test]
+    fn peer_entry_rlp_decode_rejects_zero_auth_port() {
         let pubkey = CertificateSignaturePubKey::<NopSignature>::from_bytes(&[5u8; 32]).unwrap();
-        let addr: SocketAddrV4 = "127.0.0.1:8004".parse().unwrap();
+        let address = "127.0.0.1".to_string();
         let signature = NopSignature { pubkey, id: 8 };
         let record_seq_num = 13u64;
-        let enc: [&dyn Encodable; 4] = [&pubkey, &addr.to_string(), &signature, &record_seq_num];
+        let auth_port = 0u16;
+        let enc: [&dyn Encodable; 8] = [
+            &pubkey,
+            &address,
+            &signature,
+            &record_seq_num,
+            &auth_port,
+            &0u16,
+            &8004u16,
+            &8004u16,
+        ];
         let mut encoded = Vec::new();
         encode_list::<_, dyn Encodable>(&enc, &mut encoded);
 
@@ -2648,18 +2918,21 @@ mod tests {
     }
 
     #[test]
-    fn peer_entry_rlp_decode_rejects_zero_auth_port() {
+    fn peer_entry_rlp_decode_rejects_zero_tcp_port() {
         let pubkey = CertificateSignaturePubKey::<NopSignature>::from_bytes(&[6u8; 32]).unwrap();
-        let addr: SocketAddrV4 = "127.0.0.1:8005".parse().unwrap();
         let signature = NopSignature { pubkey, id: 9 };
         let record_seq_num = 14u64;
-        let auth_port = 0u16;
-        let enc: [&dyn Encodable; 5] = [
+        let auth_port = 9005u16;
+        let tcp_port = 0u16;
+        let enc: [&dyn Encodable; 8] = [
             &pubkey,
-            &addr.to_string(),
+            &"127.0.0.1".to_string(),
             &signature,
             &record_seq_num,
             &auth_port,
+            &0u16,
+            &tcp_port,
+            &0u16,
         ];
         let mut encoded = Vec::new();
         encode_list::<_, dyn Encodable>(&enc, &mut encoded);
@@ -2671,19 +2944,23 @@ mod tests {
     #[test]
     fn peer_entry_rlp_decode_rejects_extra_fields() {
         let pubkey = CertificateSignaturePubKey::<NopSignature>::from_bytes(&[4u8; 32]).unwrap();
-        let addr: SocketAddrV4 = "127.0.0.1:8003".parse().unwrap();
         let signature = NopSignature { pubkey, id: 7 };
         let record_seq_num = 12u64;
         let auth_port = 9003u16;
         let direct_udp_port = 9004u16;
-        let extra_port = 9005u16;
-        let enc: [&dyn Encodable; 7] = [
+        let tcp_port = 8003u16;
+        let encrypted_tcp_port = 9005u16;
+        let extra_port = 9006u16;
+        let enc: [&dyn Encodable; 10] = [
             &pubkey,
-            &addr.to_string(),
+            &"127.0.0.1".to_string(),
             &signature,
             &record_seq_num,
             &auth_port,
             &direct_udp_port,
+            &tcp_port,
+            &0u16,
+            &encrypted_tcp_port,
             &extra_port,
         ];
         let mut encoded = Vec::new();
@@ -2720,7 +2997,7 @@ mod tests {
             TestSignature,
             TestSignatureCollection,
             TestExecutionProtocol,
-        >::MempoolEvent(MempoolEvent::ForwardTxs(Vec::new()));
+        >::MempoolEvent(MempoolEvent::ForwardTxs(LimitedVec::default()));
         assert!(!mempool_event.is_wal_logged());
 
         let timestamp_event = MonadEvent::<
@@ -2749,5 +3026,19 @@ mod tests {
             StateSyncNetworkMessage::NotWhitelisted,
         ));
         assert!(!inbound_statesync.is_wal_logged());
+    }
+
+    #[test]
+    fn forwarded_tx_mempool_event_json_matches_original_snapshot() {
+        let txs: LimitedVec<Bytes, MAX_FORWARDED_TXS_PER_MESSAGE> =
+            vec![Bytes::from_static(&[0x12, 0x34]), Bytes::new()].into();
+        let event = MempoolEvent::<
+            TestSignature,
+            TestSignatureCollection,
+            TestExecutionProtocol,
+        >::ForwardTxs(txs);
+
+        let json = serde_json::to_string(&event).unwrap();
+        insta::assert_snapshot!("forwarded_tx_mempool_event_original_json", json);
     }
 }

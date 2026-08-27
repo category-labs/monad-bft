@@ -27,10 +27,10 @@ mod test {
         make_eip7702_tx, make_legacy_tx, make_signed_authorization, secret_to_eth_address,
     };
     use monad_mock_swarm::{
+        swarm::swarm_ledger_verification,
         terminator::UntilTerminator,
         verifier::{happy_path_tick_by_block, MockSwarmVerifier},
     };
-    use monad_testutil::swarm::swarm_ledger_verification;
     use monad_transformer::{
         DropTransformer, GenericTransformer, LatencyTransformer, PartitionTransformer,
     };
@@ -310,8 +310,8 @@ mod test {
 
         {
             let (_id, node) = swarm.states().iter().nth(bad_node_idx).unwrap();
-            let sbt = node.state.state_backend();
-            sbt.lock().unwrap().extra_data = 1;
+            let state_read = node.state.state_read();
+            state_read.lock().unwrap().extra_data = 1;
         }
 
         let mut seen_tc_with_tip = false;
@@ -362,8 +362,8 @@ mod test {
 
         {
             let (_id, node) = swarm.states().iter().nth(bad_node_idx).unwrap();
-            let sbt = node.state.state_backend();
-            sbt.lock().unwrap().extra_data = 1;
+            let state_read = node.state.state_read();
+            state_read.lock().unwrap().extra_data = 1;
         }
 
         while swarm
@@ -377,7 +377,7 @@ mod test {
             swarm
                 .states()
                 .values()
-                .map(|state| state.state.metrics().consensus_events.created_nec)
+                .map(|state| state.state.metrics().consensus_events.created_nec.get())
                 .max()
                 .unwrap(),
             1

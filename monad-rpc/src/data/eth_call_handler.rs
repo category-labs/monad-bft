@@ -24,7 +24,7 @@ use std::{
 };
 
 use dashmap::DashMap;
-use monad_ethcall::{ffi::PoolConfig, EthCallExecutor};
+use monad_ethcall::{ffi::PoolConfig, MonadExecutor};
 use tokio::sync::{Semaphore, SemaphorePermit, TryAcquireError};
 use tracing::error;
 
@@ -42,20 +42,23 @@ pub struct EthCallHandlerConfig {
 
     pub provider_gas_limit_eth_call: u64,
     pub provider_gas_limit_eth_estimate_gas: u64,
+    pub provider_gas_limit_eth_simulate: u64,
+    pub provider_max_calls_eth_simulate: usize,
+    pub provider_max_blocks_eth_simulate: usize,
 }
 
 #[derive(Clone)]
 pub struct EthCallHandler {
     config: EthCallHandlerConfig,
 
-    executor: Arc<EthCallExecutor>,
+    executor: Arc<MonadExecutor>,
     rate_limiter: Arc<Semaphore>,
     stats_tracker: Option<Arc<EthCallStatsTracker>>,
 }
 
 impl EthCallHandler {
     pub fn new(config: EthCallHandlerConfig, triedb_path: &Path) -> Self {
-        let executor = Arc::new(EthCallExecutor::new(
+        let executor = Arc::new(MonadExecutor::new(
             config.pool_low,
             config.pool_high,
             config.pool_block,
@@ -136,7 +139,7 @@ pub struct EthCallPermit<'a> {
     request_id: TimingRequestId,
 
     config: &'a EthCallHandlerConfig,
-    executor: &'a EthCallExecutor,
+    executor: &'a MonadExecutor,
     stats_tracker: Option<&'a EthCallStatsTracker>,
 
     execute_success: Option<bool>,
@@ -145,7 +148,7 @@ pub struct EthCallPermit<'a> {
 impl<'a> EthCallPermit<'a> {
     pub async fn execute<T, E, F>(
         mut self,
-        f: impl FnOnce(&'a EthCallHandlerConfig, &'a EthCallExecutor) -> F,
+        f: impl FnOnce(&'a EthCallHandlerConfig, &'a MonadExecutor) -> F,
     ) -> Result<T, E>
     where
         F: Future<Output = Result<T, E>>,

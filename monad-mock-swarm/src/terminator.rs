@@ -17,7 +17,7 @@ use std::{collections::BTreeMap, time::Duration};
 
 use monad_crypto::certificate_signature::{CertificateSignaturePubKey, PubKey};
 use monad_transformer::ID;
-use monad_types::{Round, SeqNum, GENESIS_SEQ_NUM};
+use monad_types::{Epoch, Round, SeqNum, GENESIS_SEQ_NUM};
 use monad_updaters::ledger::MockableLedger;
 
 use crate::{mock_swarm::Nodes, swarm_relation::SwarmRelation};
@@ -33,6 +33,7 @@ where
 pub struct UntilTerminator {
     until_tick: Duration,
     until_block: usize,
+    until_epoch: Epoch,
     until_round: Round,
     until_step: usize,
 }
@@ -48,6 +49,7 @@ impl UntilTerminator {
         UntilTerminator {
             until_tick: Duration::MAX,
             until_block: usize::MAX,
+            until_epoch: Epoch::MAX,
             until_round: Round(u64::MAX),
             until_step: usize::MAX,
         }
@@ -66,6 +68,11 @@ impl UntilTerminator {
 
     pub fn until_round(mut self, round: Round) -> Self {
         self.until_round = round;
+        self
+    }
+
+    pub fn until_epoch(mut self, epoch: Epoch) -> Self {
+        self.until_epoch = epoch;
         self
     }
 
@@ -90,6 +97,11 @@ where
                 .states
                 .values()
                 .any(|node| node.executor.ledger().get_finalized_blocks().len() > self.until_block)
+            || (nodes.states.values().all(|node| {
+                node.state
+                    .consensus()
+                    .is_some_and(|consensus| consensus.get_current_epoch() >= self.until_epoch)
+            }))
             || nodes.states.values().any(|node| {
                 node.state
                     .consensus()
@@ -131,7 +143,7 @@ where
     fn should_terminate(&mut self, nodes: &Nodes<S>, _next_tick: Duration) -> bool {
         if nodes.tick > self.timeout {
             panic!(
-                "ProgressTerminator timed-out, expecting nodes 
+                "ProgressTerminator timed-out, expecting nodes
                 to reach following progress before timeout: {:?},
                 but the actual progress is: {:?}",
                 self.nodes_monitor,

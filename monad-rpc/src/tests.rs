@@ -40,7 +40,9 @@ pub async fn init_server(
         eth_call_handler: None,
         chain_id: 1337,
         data_provider: None,
+        event_server_client: None,
         batch_request_limit: 5,
+        batch_concurrent_limit: 5,
         max_response_size: 25_000_000,
         allow_unprotected_txs: false,
         logs_max_block_range: 1000,
@@ -49,13 +51,15 @@ pub async fn init_server(
         dry_run_get_logs_index: false,
         use_eth_get_logs_index: false,
         max_finalized_block_cache_len: 200,
+        enable_eth_simulate_v1: false,
         metrics: None,
         rpc_comparator: None,
+        feehistory_limiter: std::sync::Arc::new(tokio::sync::Semaphore::new(100)),
     };
 
     test::init_service(
         App::new()
-            .wrap(DecompressionGuard::new(2_000_000))
+            .wrap(DecompressionGuard::default())
             .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
             .app_data(web::PayloadConfig::default().limit(2_000_000))
             .app_data(web::Data::new(app_state.clone()))

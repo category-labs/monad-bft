@@ -20,6 +20,7 @@ use std::{collections::BTreeMap, time::Duration};
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
+use monad_execution_state_read::InMemoryState;
 use monad_mock_swarm::{
     mock::TimestamperConfig,
     mock_swarm::SwarmBuilder,
@@ -29,7 +30,6 @@ use monad_mock_swarm::{
 };
 use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSchedulerBuilder};
 use monad_state::{MonadMessage, VerifiedMonadMessage};
-use monad_state_backend::InMemoryState;
 use monad_transformer::RandLatencyTransformer;
 use monad_types::{ExecutionProtocol, NodeId, SeqNum};
 use monad_updaters::{
@@ -50,7 +50,7 @@ where
     S: SwarmRelation<
         SignatureType = ST,
         SignatureCollectionType = SCT,
-        StateBackendType = InMemoryState<ST, SCT>,
+        ExecutionStateReadType = InMemoryState<ST, SCT>,
         Pipeline = MonadMessageTransformerPipeline<CertificateSignaturePubKey<ST>>,
         RouterScheduler = NoSerRouterScheduler<
             CertificateSignaturePubKey<ST>,
@@ -98,7 +98,7 @@ where
                 Duration::from_millis(delta),
             )),
         ];
-        let state_backend = state_builder.state_backend.clone();
+        let state_read = state_builder.state_read.clone();
         let validators = state_builder.locked_epoch_validators[0].clone();
         swarm.add_state(NodeBuilder::<S>::new(
             id,
@@ -114,8 +114,8 @@ where
                 SeqNum(TWINS_STATE_ROOT_DELAY), // ?? val_set_interval?
             ),
             S::TxPoolExecutor::default(),
-            MockLedger::new(state_backend.clone()),
-            MockStateSyncExecutor::new(state_backend),
+            MockLedger::new(state_read.clone()),
+            MockStateSyncExecutor::new(state_read),
             outbound_pipeline,
             vec![],
             TimestamperConfig::default(),

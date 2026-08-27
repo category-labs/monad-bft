@@ -23,8 +23,9 @@ use bytes::{BufMut, Bytes, BytesMut};
 use monad_leanudp::{
     metrics::{
         COUNTER_LEANUDP_DECODE_EVICTED_RANDOM, COUNTER_LEANUDP_DECODE_EVICTED_TIMEOUT,
-        COUNTER_LEANUDP_DECODE_FRAGMENTS_PRIORITY, COUNTER_LEANUDP_DECODE_FRAGMENTS_REGULAR,
-        COUNTER_LEANUDP_ERROR_INVALID_HEADER, COUNTER_LEANUDP_ERROR_UNSUPPORTED_VERSION,
+        COUNTER_LEANUDP_DECODE_FRAGMENTS_DEDICATED, COUNTER_LEANUDP_DECODE_FRAGMENTS_PRIORITY,
+        COUNTER_LEANUDP_DECODE_FRAGMENTS_REGULAR, COUNTER_LEANUDP_ERROR_INVALID_HEADER,
+        COUNTER_LEANUDP_ERROR_UNSUPPORTED_VERSION, GAUGE_LEANUDP_POOL_DEDICATED_MESSAGES,
         GAUGE_LEANUDP_POOL_PRIORITY_MESSAGES, GAUGE_LEANUDP_POOL_REGULAR_MESSAGES,
     },
     Clock, Config, DecodeError, DecodeOutcome, Decoder, EncodeError, Encoder, FragmentPolicy,
@@ -165,6 +166,13 @@ fn test_invalid_config_panics() {
                 ..Config::default()
             },
             "max_messages_per_identity must be > 0",
+        ),
+        (
+            Config {
+                max_messages_per_dedicated_identity: 0,
+                ..Config::default()
+            },
+            "max_messages_per_dedicated_identity must be > 0",
         ),
         (
             Config {
@@ -347,7 +355,13 @@ fn test_header_errors() {
             required: LEANUDP_HEADER_SIZE,
         })
     );
-    assert_eq!(decoder.metrics()[COUNTER_LEANUDP_ERROR_INVALID_HEADER], 1);
+    assert_eq!(
+        decoder
+            .metrics()
+            .gauge(COUNTER_LEANUDP_ERROR_INVALID_HEADER)
+            .get(),
+        1
+    );
 
     let mut packet = first_packet(&mut encoder, Bytes::from_static(b"ok")).to_vec();
     packet[0] = 99;
@@ -359,7 +373,10 @@ fn test_header_errors() {
         })
     );
     assert_eq!(
-        decoder.metrics()[COUNTER_LEANUDP_ERROR_UNSUPPORTED_VERSION],
+        decoder
+            .metrics()
+            .gauge(COUNTER_LEANUDP_ERROR_UNSUPPORTED_VERSION)
+            .get(),
         1
     );
 
@@ -373,7 +390,13 @@ fn test_header_errors() {
         ),
         Err(DecodeError::InvalidHeader)
     );
-    assert_eq!(decoder.metrics()[COUNTER_LEANUDP_ERROR_INVALID_HEADER], 2);
+    assert_eq!(
+        decoder
+            .metrics()
+            .gauge(COUNTER_LEANUDP_ERROR_INVALID_HEADER)
+            .get(),
+        2
+    );
 
     let packet = first_packet(&mut encoder, Bytes::from_static(b"layout"));
     let inferred_start = packet_with_flags(&packet, 0);
@@ -381,7 +404,13 @@ fn test_header_errors() {
         decoder.decode(3, inferred_start),
         Ok(DecodeOutcome::Pending)
     );
-    assert_eq!(decoder.metrics()[COUNTER_LEANUDP_ERROR_INVALID_HEADER], 2);
+    assert_eq!(
+        decoder
+            .metrics()
+            .gauge(COUNTER_LEANUDP_ERROR_INVALID_HEADER)
+            .get(),
+        2
+    );
 }
 
 #[test]
@@ -433,12 +462,106 @@ fn test_identity_limit_is_independent_per_pool() {
     assert_pending!(decoder, 1000, p2);
 
     assert_eq!(
-        decoder.metrics()[COUNTER_LEANUDP_DECODE_FRAGMENTS_PRIORITY],
+        decoder
+            .metrics()
+            .gauge(COUNTER_LEANUDP_DECODE_FRAGMENTS_PRIORITY)
+            .get(),
         1
     );
     assert_eq!(
-        decoder.metrics()[COUNTER_LEANUDP_DECODE_FRAGMENTS_REGULAR],
+        decoder
+            .metrics()
+            .gauge(COUNTER_LEANUDP_DECODE_FRAGMENTS_REGULAR)
+            .get(),
         2
+    );
+}
+
+#[test]
+fn test_dedicated_identity_limits_are_independent() {
+    let config = Config {
+        max_messages_per_dedicated_identity: 1,
+        ..Config::default()
+    };
+    let (mut encoder, mut decoder, _clock) = build_regular(config);
+    decoder.set_dedicated_identities([1000, 2000]);
+
+    let first = first_packet(&mut encoder, Bytes::from(vec![1u8; 3000]));
+    let over_limit = first_packet(&mut encoder, Bytes::from(vec![2u8; 3000]));
+    let other_identity = first_packet(&mut encoder, Bytes::from(vec![3u8; 3000]));
+
+    assert_pending!(decoder, 1000, first);
+    assert_eq!(
+        decoder.decode(1000, over_limit),
+        Err(DecodeError::IdentityLimitExceeded { max: 1 })
+    );
+    assert_pending!(decoder, 2000, other_identity);
+
+    assert_eq!(
+        decoder
+            .metrics()
+            .gauge(GAUGE_LEANUDP_POOL_DEDICATED_MESSAGES)
+            .get(),
+        2
+    );
+    assert_eq!(
+        decoder
+            .metrics()
+            .gauge(COUNTER_LEANUDP_DECODE_FRAGMENTS_DEDICATED)
+            .get(),
+        3
+    );
+    assert_eq!(
+        decoder
+            .metrics()
+            .gauge(GAUGE_LEANUDP_POOL_REGULAR_MESSAGES)
+            .get(),
+        0
+    );
+}
+
+#[test]
+fn test_dedicated_message_gauge_tracks_pool_mutations() {
+    let config = Config {
+        message_timeout: Duration::from_millis(100),
+        ..Config::default()
+    };
+    let (mut encoder, mut decoder, clock) = build_regular(config);
+    decoder.set_dedicated_identities([1000, 2000]);
+
+    let stale = fragment_packets(&mut encoder, Bytes::from(vec![1u8; 3000]));
+    assert_pending!(decoder, 1000, stale[0].clone());
+    clock.advance_ms(200);
+    assert_pending!(decoder, 1000, stale[1].clone());
+
+    let complete = fragment_packets(&mut encoder, Bytes::from(vec![2u8; 3000]));
+    assert_pending!(decoder, 2000, complete[0].clone());
+    assert_eq!(
+        decoder
+            .metrics()
+            .gauge(GAUGE_LEANUDP_POOL_DEDICATED_MESSAGES)
+            .get(),
+        2
+    );
+
+    decoder.set_dedicated_identities([2000]);
+    assert_eq!(
+        decoder
+            .metrics()
+            .gauge(GAUGE_LEANUDP_POOL_DEDICATED_MESSAGES)
+            .get(),
+        1
+    );
+
+    for packet in complete.into_iter().skip(1) {
+        let _ = decoder.decode(2000, packet).unwrap();
+    }
+    assert_eq!(
+        decoder
+            .metrics()
+            .gauge(GAUGE_LEANUDP_POOL_DEDICATED_MESSAGES)
+            .get(),
+        0
     );
 }
 
@@ -487,8 +610,20 @@ fn test_identity_stale_messages_are_evicted_first() {
     clock.advance_ms(200);
     assert_pending!(decoder, 1, p1);
 
-    assert_eq!(decoder.metrics()[COUNTER_LEANUDP_DECODE_EVICTED_TIMEOUT], 1);
-    assert_eq!(decoder.metrics()[COUNTER_LEANUDP_DECODE_EVICTED_RANDOM], 0);
+    assert_eq!(
+        decoder
+            .metrics()
+            .gauge(COUNTER_LEANUDP_DECODE_EVICTED_TIMEOUT)
+            .get(),
+        1
+    );
+    assert_eq!(
+        decoder
+            .metrics()
+            .gauge(COUNTER_LEANUDP_DECODE_EVICTED_RANDOM)
+            .get(),
+        0
+    );
 }
 
 #[test]
@@ -509,7 +644,13 @@ fn test_late_fragment_after_timeout_does_not_complete_message() {
         decoder.decode(9, packets[1].clone()),
         Ok(DecodeOutcome::Pending)
     );
-    assert_eq!(decoder.metrics()[COUNTER_LEANUDP_DECODE_EVICTED_TIMEOUT], 1);
+    assert_eq!(
+        decoder
+            .metrics()
+            .gauge(COUNTER_LEANUDP_DECODE_EVICTED_TIMEOUT)
+            .get(),
+        1
+    );
 }
 
 #[test]
@@ -526,7 +667,13 @@ fn test_same_key_retry_evicts_timed_out_message_immediately() {
     clock.advance_ms(5_000);
 
     assert_eq!(decoder.decode(7, first), Ok(DecodeOutcome::Pending));
-    assert_eq!(decoder.metrics()[COUNTER_LEANUDP_DECODE_EVICTED_TIMEOUT], 1);
+    assert_eq!(
+        decoder
+            .metrics()
+            .gauge(COUNTER_LEANUDP_DECODE_EVICTED_TIMEOUT)
+            .get(),
+        1
+    );
 }
 
 #[test]
@@ -543,9 +690,27 @@ fn test_pool_full_eviction_prefers_random_then_timeout() {
 
     assert_pending!(decoder, 10, p0);
     assert_pending!(decoder, 20, p1);
-    assert_eq!(decoder.metrics()[COUNTER_LEANUDP_DECODE_EVICTED_RANDOM], 1);
-    assert_eq!(decoder.metrics()[COUNTER_LEANUDP_DECODE_EVICTED_TIMEOUT], 0);
-    assert_eq!(decoder.metrics()[GAUGE_LEANUDP_POOL_REGULAR_MESSAGES], 1);
+    assert_eq!(
+        decoder
+            .metrics()
+            .gauge(COUNTER_LEANUDP_DECODE_EVICTED_RANDOM)
+            .get(),
+        1
+    );
+    assert_eq!(
+        decoder
+            .metrics()
+            .gauge(COUNTER_LEANUDP_DECODE_EVICTED_TIMEOUT)
+            .get(),
+        0
+    );
+    assert_eq!(
+        decoder
+            .metrics()
+            .gauge(GAUGE_LEANUDP_POOL_REGULAR_MESSAGES)
+            .get(),
+        1
+    );
 
     let timeout_config = Config {
         max_regular_messages: 1,
@@ -559,8 +724,20 @@ fn test_pool_full_eviction_prefers_random_then_timeout() {
     assert_pending!(decoder, 10, p0);
     clock.advance_ms(200);
     assert_pending!(decoder, 20, p1);
-    assert_eq!(decoder.metrics()[COUNTER_LEANUDP_DECODE_EVICTED_TIMEOUT], 1);
-    assert_eq!(decoder.metrics()[COUNTER_LEANUDP_DECODE_EVICTED_RANDOM], 0);
+    assert_eq!(
+        decoder
+            .metrics()
+            .gauge(COUNTER_LEANUDP_DECODE_EVICTED_TIMEOUT)
+            .get(),
+        1
+    );
+    assert_eq!(
+        decoder
+            .metrics()
+            .gauge(COUNTER_LEANUDP_DECODE_EVICTED_RANDOM)
+            .get(),
+        0
+    );
 }
 
 #[test]
@@ -589,6 +766,18 @@ fn test_accepts_large_inflight_data_bounded_by_message_count_only() {
         }
     }
 
-    assert_eq!(decoder.metrics()[GAUGE_LEANUDP_POOL_PRIORITY_MESSAGES], 0);
-    assert_eq!(decoder.metrics()[GAUGE_LEANUDP_POOL_REGULAR_MESSAGES], 3);
+    assert_eq!(
+        decoder
+            .metrics()
+            .gauge(GAUGE_LEANUDP_POOL_PRIORITY_MESSAGES)
+            .get(),
+        0
+    );
+    assert_eq!(
+        decoder
+            .metrics()
+            .gauge(GAUGE_LEANUDP_POOL_REGULAR_MESSAGES)
+            .get(),
+        3
+    );
 }

@@ -28,7 +28,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_dataplane::{DataplaneBuilder, TcpSocketId, UdpSocketId};
-use monad_executor::{Executor, ExecutorMetricsChain};
+use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{Message, RouterCommand};
 use monad_node_config::{FullNodeConfig, FullNodeIdentityConfig};
 use monad_peer_discovery::{
@@ -50,6 +50,7 @@ use monad_raptorcast::{
     RaptorCast, RaptorCastEvent,
 };
 use monad_types::{Epoch, NodeId};
+use monad_validator::proposer_schedule::BoxedProposerSchedule;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 pub use tracing::{debug, error, info, warn, Level};
 
@@ -73,6 +74,7 @@ where
     epoch_validators: BTreeMap<Epoch, BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>>,
 
     shared_pdd: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
+    dataplane_metrics: ExecutorMetrics,
 
     phantom: PhantomData<(OM, SE)>,
 }
@@ -86,6 +88,7 @@ where
     AP: AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
     DS: IdentityScore<Identity = NodeId<CertificateSignaturePubKey<ST>>>,
 {
+    #[allow(clippy::too_many_arguments)]
     pub fn new<B>(
         self_node_id: NodeId<CertificateSignaturePubKey<ST>>,
         cfg: RaptorCastConfig<ST>,
@@ -96,6 +99,7 @@ where
         auth_protocol: AP,
         direct_udp_auth_protocol: Option<AP>,
         direct_udp_peer_score: DS,
+        proposer_schedule: BoxedProposerSchedule<CertificateSignaturePubKey<ST>>,
     ) -> Self
     where
         B: PeerDiscoveryAlgoBuilder<PeerDiscoveryAlgoType = PD>,
@@ -106,6 +110,7 @@ where
 
         let mut dp = dataplane_builder.build();
         assert!(dp.block_until_ready(Duration::from_secs(1)));
+        let dataplane_metrics = dp.metrics().clone();
 
         let tcp_socket = dp.tcp_sockets.take(TcpSocketId::Raptorcast).unwrap();
         let authenticated_socket = dp
@@ -122,10 +127,7 @@ where
                 panic!("direct udp socket and auth protocol must be set or unset together");
             }
         };
-        let non_authenticated_socket = dp
-            .udp_sockets
-            .take(UdpSocketId::Raptorcast)
-            .expect("raptorcast socket");
+        let non_authenticated_socket = dp.udp_sockets.take(UdpSocketId::Raptorcast);
         let control = dp.control;
 
         // Create channels between primary and secondary raptorcast instances.
@@ -163,7 +165,6 @@ where
             recv_group_messages,
             send_group_infos,
             send_outbound_to_primary,
-            current_epoch,
         );
 
         let mut rc_primary = RaptorCast::new(
@@ -176,6 +177,7 @@ where
             control,
             shared_pdd.clone(),
             current_epoch,
+            proposer_schedule,
         );
         rc_primary.bind_channel_to_secondary_raptorcast(
             secondary_mode,
@@ -192,6 +194,7 @@ where
             epoch_validators,
             self_node_id,
             shared_pdd,
+            dataplane_metrics,
             phantom: PhantomData,
         }
     }
@@ -222,7 +225,6 @@ where
             recv_group_messages,
             send_group_infos,
             send_outbound_to_primary,
-            current_epoch,
         );
         self.rc_secondary = rc_secondary;
     }
@@ -236,7 +238,6 @@ where
         channel_to_primary_outbound: UnboundedSender<
             SecondaryOutboundMessage<CertificateSignaturePubKey<ST>>,
         >,
-        current_epoch: Epoch,
     ) -> Option<RaptorCastSecondary<ST, M, OM, SE, PD>> {
         let secondary_instance: RaptorCastConfigSecondary<CertificateSignaturePubKey<ST>> =
             match mode {
@@ -303,7 +304,6 @@ where
                 recv_group_messages,
                 send_group_infos,
                 channel_to_primary_outbound,
-                current_epoch,
             )),
         }
     }
@@ -331,10 +331,12 @@ where
                 RouterCommand::PublishWithPriority { .. } => validator_cmds.push(cmd),
                 RouterCommand::AddEpochValidatorSet {
                     epoch,
+                    epoch_start,
                     validator_set,
                 } => {
                     let cmd_cpy = RouterCommand::AddEpochValidatorSet {
                         epoch,
+                        epoch_start,
                         validator_set: validator_set.clone(),
                     };
                     debug!(?validator_set, "Updating validator set in multi router");
@@ -376,11 +378,13 @@ where
                 RouterCommand::PublishToFullNodes {
                     epoch,
                     round,
+                    broadcast_mode,
                     ref message,
                 } => {
                     let cmd_cpy = RouterCommand::PublishToFullNodes {
                         epoch,
                         round,
+                        broadcast_mode,
                         message: message.clone(),
                     };
                     validator_cmds.push(cmd_cpy);
@@ -468,7 +472,7 @@ where
         } else {
             m1
         };
-        res
+        res.push(&self.dataplane_metrics)
     }
 }
 

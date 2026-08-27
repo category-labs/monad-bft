@@ -22,8 +22,9 @@ use monad_peer_discovery::MonadNameRecord;
 use monad_types::{BoundedU64, LimitedVec, NodeId, Round, RoundSpan};
 
 /// Maximum number of peers/name records allowed in a secondary raptorcast message.
-/// This is to set an upper bound on RLP deserialization memory usage.
-const MAX_PEERS_IN_GROUP: usize = 500;
+/// This is to set an upper bound on RLP deserialization memory usage, and the upper
+/// bound on full-node group size used by deterministic secondary raptorcast.
+pub(crate) const MAX_PEERS_IN_GROUP: usize = 500;
 
 #[derive(RlpEncodable, RlpDecodable, Debug, Eq, PartialEq, Clone)]
 pub struct PrepareGroup<PT: PubKey> {
@@ -215,7 +216,7 @@ mod tests {
                 let port = (seed + 16) as u16;
 
                 MonadNameRecord::<ST>::new(
-                    NameRecord::new(ip, port, port, port, 0, (seed + 200) as u64),
+                    NameRecord::new(ip, port, Some(port), port, 0, (seed + 200) as u64),
                     &key,
                 )
             })

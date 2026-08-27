@@ -18,7 +18,7 @@ use monad_crypto::certificate_signature::PubKey;
 
 use crate::util::{Recipient, UdpMessage};
 
-pub(crate) struct Chunk<PT: PubKey> {
+pub struct Chunk<PT: PubKey> {
     chunk_id: usize,
     recipient: Recipient<PT>,
     payload: BytesMut,

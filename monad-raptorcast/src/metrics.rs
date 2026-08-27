@@ -48,6 +48,34 @@ monad_executor::metric_consts! {
         name: "monad.raptorcast.direct_udp.forward_oversize",
         help: "Direct UDP forwards rejected due to oversize payload",
     }
+    pub COUNTER_RAPTORCAST_CHUNKS_DROPPED_INCOMPATIBLE_VERSION {
+        name: "monad.raptorcast.chunks_dropped_incompatible_version",
+        help: "Chunks dropped due to incompatible raptorcast version",
+    }
+    pub COUNTER_RAPTORCAST_V0_PRIMARY_CHUNKS_ACCEPTED {
+        name: "monad.raptorcast.v0_primary_chunks_accepted",
+        help: "V0 (regular) primary raptorcast chunks accepted",
+    }
+    pub COUNTER_RAPTORCAST_V1_PRIMARY_CHUNKS_ACCEPTED {
+        name: "monad.raptorcast.v1_primary_chunks_accepted",
+        help: "V1 (deterministic) primary raptorcast chunks accepted",
+    }
+    pub COUNTER_RAPTORCAST_SECONDARY_CHUNKS_DROPPED_INCOMPATIBLE_VERSION {
+        name: "monad.raptorcast.secondary_chunks_dropped_incompatible_version",
+        help: "Secondary raptorcast chunks dropped due to incompatible version",
+    }
+    pub COUNTER_RAPTORCAST_V0_SECONDARY_CHUNKS_ACCEPTED {
+        name: "monad.raptorcast.v0_secondary_chunks_accepted",
+        help: "V0 (regular) secondary raptorcast chunks accepted",
+    }
+    pub COUNTER_RAPTORCAST_V1_SECONDARY_CHUNKS_ACCEPTED {
+        name: "monad.raptorcast.v1_secondary_chunks_accepted",
+        help: "V1 (deterministic) secondary raptorcast chunks accepted",
+    }
+    pub GAUGE_RAPTORCAST_DETERMINISTIC_ROLLOUT_STAGE {
+        name: "monad.raptorcast.deterministic_rollout_stage",
+        help: "Current deterministic raptorcast rollout stage (0=always_v0, 1=accept_both_publish_v0, 2=accept_both_publish_v1, 3=always_v1)",
+    }
     pub PRIMARY_BROADCAST_LATENCY_P99_MS {
         name: "monad.bft.raptorcast.udp.primary_broadcast_latency_p99_ms",
         help: "P99 primary UDP broadcast latency in ms (30s rolling window)",
@@ -67,6 +95,34 @@ monad_executor::metric_consts! {
 }
 
 const HISTOGRAM_CLEAR_INTERVAL: Duration = Duration::from_secs(30);
+
+pub(crate) fn init_router_executor_metrics() -> ExecutorMetrics {
+    ExecutorMetrics::with_metric_defs(&[
+        GAUGE_RAPTORCAST_TOTAL_MESSAGES_RECEIVED,
+        GAUGE_RAPTORCAST_TOTAL_RECV_ERRORS,
+        GAUGE_RAPTORCAST_TOTAL_DESERIALIZE_ERRORS,
+        COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_SENT,
+        COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_FALLBACK,
+        COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_OVERSIZE,
+    ])
+}
+
+pub(crate) fn init_udp_state_executor_metrics() -> ExecutorMetrics {
+    ExecutorMetrics::with_metric_defs(&[
+        GAUGE_RAPTORCAST_DECODING_CACHE_SIGNATURE_VERIFICATIONS_RATE_LIMITED,
+        COUNTER_RAPTORCAST_CHUNKS_DROPPED_INCOMPATIBLE_VERSION,
+        COUNTER_RAPTORCAST_V0_PRIMARY_CHUNKS_ACCEPTED,
+        COUNTER_RAPTORCAST_V1_PRIMARY_CHUNKS_ACCEPTED,
+        COUNTER_RAPTORCAST_SECONDARY_CHUNKS_DROPPED_INCOMPATIBLE_VERSION,
+        COUNTER_RAPTORCAST_V0_SECONDARY_CHUNKS_ACCEPTED,
+        COUNTER_RAPTORCAST_V1_SECONDARY_CHUNKS_ACCEPTED,
+        GAUGE_RAPTORCAST_DETERMINISTIC_ROLLOUT_STAGE,
+        PRIMARY_BROADCAST_LATENCY_P99_MS,
+        PRIMARY_BROADCAST_LATENCY_COUNT,
+        SECONDARY_BROADCAST_LATENCY_P99_MS,
+        SECONDARY_BROADCAST_LATENCY_COUNT,
+    ])
+}
 
 pub(crate) struct LatencyHistogram {
     histogram: Histogram,
@@ -97,8 +153,8 @@ impl LatencyHistogram {
             tracing::warn!("failed to record latency: {}", e);
         }
 
-        metrics[self.p99_metric] = self.histogram.p99();
-        metrics[self.count_metric] = self.histogram.count();
+        metrics.gauge(self.p99_metric).set(self.histogram.p99());
+        metrics.gauge(self.count_metric).set(self.histogram.count());
     }
 }
 
@@ -121,7 +177,7 @@ impl UdpStateMetrics {
                 SECONDARY_BROADCAST_LATENCY_P99_MS,
                 SECONDARY_BROADCAST_LATENCY_COUNT,
             ),
-            executor_metrics: ExecutorMetrics::default(),
+            executor_metrics: init_udp_state_executor_metrics(),
         }
     }
 

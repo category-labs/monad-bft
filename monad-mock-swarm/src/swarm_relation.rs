@@ -26,13 +26,13 @@ use monad_crypto::{
     certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable},
     NopSignature,
 };
+use monad_execution_state_read::{ExecutionStateRead, InMemoryState};
 use monad_executor_glue::{
     LedgerCommand, MonadEvent, StateSyncCommand, TxPoolCommand, ValSetCommand,
 };
 use monad_multi_sig::MultiSig;
 use monad_router_scheduler::{BytesRouterScheduler, NoSerRouterScheduler, RouterScheduler};
 use monad_state::{MonadMessage, MonadState, VerifiedMonadMessage};
-use monad_state_backend::{InMemoryState, StateBackend};
 use monad_transformer::{GenericTransformerPipeline, Pipeline};
 use monad_types::ExecutionProtocol;
 use monad_updaters::{
@@ -54,7 +54,7 @@ pub type SwarmRelationStateType<S> = MonadState<
     <S as SwarmRelation>::SignatureCollectionType,
     <S as SwarmRelation>::ExecutionProtocolType,
     <S as SwarmRelation>::BlockPolicyType,
-    <S as SwarmRelation>::StateBackendType,
+    <S as SwarmRelation>::ExecutionStateReadType,
     <S as SwarmRelation>::ValidatorSetTypeFactory,
     <S as SwarmRelation>::LeaderElection,
     <S as SwarmRelation>::BlockValidator,
@@ -76,13 +76,13 @@ where
             Self::SignatureType,
             Self::SignatureCollectionType,
             Self::ExecutionProtocolType,
-            Self::StateBackendType,
+            Self::ExecutionStateReadType,
             Self::ChainConfigType,
             Self::ChainRevisionType,
         > + Send
         + Sync
         + Unpin;
-    type StateBackendType: StateBackend<Self::SignatureType, Self::SignatureCollectionType>
+    type ExecutionStateReadType: ExecutionStateRead<Self::SignatureType, Self::SignatureCollectionType>
         + Send
         + Sync
         + Unpin;
@@ -96,7 +96,7 @@ where
             Self::SignatureCollectionType,
             Self::ExecutionProtocolType,
             Self::BlockPolicyType,
-            Self::StateBackendType,
+            Self::ExecutionStateReadType,
             Self::ChainConfigType,
             Self::ChainRevisionType,
         > + Send
@@ -159,7 +159,7 @@ where
             SignatureCollection = Self::SignatureCollectionType,
             ExecutionProtocol = Self::ExecutionProtocolType,
             BlockPolicy = Self::BlockPolicyType,
-            StateBackend = Self::StateBackendType,
+            ExecutionStateRead = Self::ExecutionStateReadType,
             Event = MonadEvent<
                 Self::SignatureType,
                 Self::SignatureCollectionType,
@@ -184,7 +184,7 @@ impl SwarmRelation for DebugSwarmRelation {
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
     type ExecutionProtocolType = MockExecutionProtocol;
     type BlockPolicyType = PassthruBlockPolicy;
-    type StateBackendType = InMemoryState<Self::SignatureType, Self::SignatureCollectionType>;
+    type ExecutionStateReadType = InMemoryState<Self::SignatureType, Self::SignatureCollectionType>;
     type ChainConfigType = MockChainConfig;
     type ChainRevisionType = MockChainRevision;
 
@@ -273,7 +273,7 @@ impl SwarmRelation for DebugSwarmRelation {
                 SignatureCollection = Self::SignatureCollectionType,
                 ExecutionProtocol = Self::ExecutionProtocolType,
                 BlockPolicy = Self::BlockPolicyType,
-                StateBackend = Self::StateBackendType,
+                ExecutionStateRead = Self::ExecutionStateReadType,
                 ChainConfig = Self::ChainConfigType,
                 ChainRevision = Self::ChainRevisionType,
                 Event = MonadEvent<
@@ -286,7 +286,7 @@ impl SwarmRelation for DebugSwarmRelation {
                     Self::SignatureCollectionType,
                     Self::ExecutionProtocolType,
                     Self::BlockPolicyType,
-                    Self::StateBackendType,
+                    Self::ExecutionStateReadType,
                     Self::ChainConfigType,
                     Self::ChainRevisionType,
                 >,
@@ -315,7 +315,7 @@ impl SwarmRelation for NoSerSwarm {
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
     type ExecutionProtocolType = MockExecutionProtocol;
     type BlockPolicyType = PassthruBlockPolicy;
-    type StateBackendType = InMemoryState<Self::SignatureType, Self::SignatureCollectionType>;
+    type ExecutionStateReadType = InMemoryState<Self::SignatureType, Self::SignatureCollectionType>;
     type ChainConfigType = MockChainConfig;
     type ChainRevisionType = MockChainRevision;
 
@@ -361,7 +361,7 @@ impl SwarmRelation for NoSerSwarm {
         Self::SignatureCollectionType,
         Self::ExecutionProtocolType,
         Self::BlockPolicyType,
-        Self::StateBackendType,
+        Self::ExecutionStateReadType,
         Self::ChainConfigType,
         Self::ChainRevisionType,
     >;
@@ -378,7 +378,7 @@ impl SwarmRelation for BytesSwarm {
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
     type ExecutionProtocolType = MockExecutionProtocol;
     type BlockPolicyType = PassthruBlockPolicy;
-    type StateBackendType = InMemoryState<Self::SignatureType, Self::SignatureCollectionType>;
+    type ExecutionStateReadType = InMemoryState<Self::SignatureType, Self::SignatureCollectionType>;
     type ChainConfigType = MockChainConfig;
     type ChainRevisionType = MockChainRevision;
 
@@ -419,7 +419,7 @@ impl SwarmRelation for BytesSwarm {
         Self::SignatureCollectionType,
         Self::ExecutionProtocolType,
         Self::BlockPolicyType,
-        Self::StateBackendType,
+        Self::ExecutionStateReadType,
         Self::ChainConfigType,
         Self::ChainRevisionType,
     >;
@@ -436,7 +436,7 @@ impl SwarmRelation for MonadMessageNoSerSwarm {
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
     type ExecutionProtocolType = MockExecutionProtocol;
     type BlockPolicyType = PassthruBlockPolicy;
-    type StateBackendType = InMemoryState<Self::SignatureType, Self::SignatureCollectionType>;
+    type ExecutionStateReadType = InMemoryState<Self::SignatureType, Self::SignatureCollectionType>;
     type ChainConfigType = MockChainConfig;
     type ChainRevisionType = MockChainRevision;
 
@@ -480,7 +480,7 @@ impl SwarmRelation for MonadMessageNoSerSwarm {
         Self::SignatureCollectionType,
         Self::ExecutionProtocolType,
         Self::BlockPolicyType,
-        Self::StateBackendType,
+        Self::ExecutionStateReadType,
         Self::ChainConfigType,
         Self::ChainRevisionType,
     >;

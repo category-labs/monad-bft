@@ -22,7 +22,7 @@ use std::{
 use auto_impl::auto_impl;
 use bytes::Bytes;
 use monad_crypto::certificate_signature::PubKey;
-use monad_types::{Deserializable, NodeId, RouterTarget, Serializable};
+use monad_types::{Deserializable, Epoch, NodeId, Round, RouterTarget, Serializable, Stake};
 
 #[derive(Debug)]
 pub enum RouterEvent<PT: PubKey, InboundMessage, TransportMessage> {
@@ -59,6 +59,14 @@ pub trait RouterScheduler {
         to: RouterTarget<Self::NodeIdPublicKey>,
         message: Self::OutboundMessage,
     );
+    fn add_epoch_validator_set(
+        &mut self,
+        _epoch: Epoch,
+        _epoch_start: Round,
+        _validator_set: Vec<(NodeId<Self::NodeIdPublicKey>, Stake)>,
+    ) {
+    }
+    fn update_current_round(&mut self, _epoch: Epoch, _round: Round) {}
 
     fn peek_tick(&self) -> Option<Duration>;
     fn step_until(
@@ -143,7 +151,7 @@ where
                 .unwrap_or(Duration::ZERO)
         );
         match to {
-            RouterTarget::Broadcast(_) | RouterTarget::Raptorcast(_) => {
+            RouterTarget::Broadcast(_) | RouterTarget::Raptorcast { .. } => {
                 self.events.extend(
                     self.all_peers
                         .iter()
@@ -260,7 +268,7 @@ where
         );
         let message = message.serialize();
         match to {
-            RouterTarget::Broadcast(_) | RouterTarget::Raptorcast(_) => {
+            RouterTarget::Broadcast(_) | RouterTarget::Raptorcast { .. } => {
                 self.events.extend(
                     self.all_peers
                         .iter()

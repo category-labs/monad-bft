@@ -33,9 +33,9 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_types::EthExecutionProtocol;
+use monad_execution_state_read::{InMemoryState, MockExecution};
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{BlockSyncEvent, LedgerCommand, MonadEvent};
-use monad_state_backend::{InMemoryState, MockExecution};
 use monad_types::{BlockId, SeqNum};
 use monad_updaters::ledger::MockableLedger;
 use monad_validator::signature_collection::SignatureCollection;

@@ -28,7 +28,7 @@ use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
 use monad_chain_config::{ChainConfig, revision::ChainRevision};
 use monad_eth_types::ValidatedTx;
-use monad_types::{Epoch, GENESIS_SEQ_NUM, SeqNum};
+use monad_types::{Epoch, GENESIS_SEQ_NUM, Round, SeqNum};
 use staking_contract::{StakingContractCall, StakingContractTransaction};
 use validator::SystemTransactionError;
 
@@ -134,6 +134,7 @@ impl From<SystemTransaction> for Recovered<TxEnvelope> {
 fn generate_system_calls<CCT, CRT>(
     proposed_seq_num: SeqNum,
     proposed_epoch: Epoch,
+    proposed_round: Round,
     parent_block_epoch: Epoch,
     block_author_address: Address,
     chain_config: &CCT,
@@ -178,7 +179,7 @@ where
     // starting at the first block in Epoch N
     let generate_reward_txn = proposed_epoch >= staking_activation;
     if generate_reward_txn {
-        let block_reward_mon = chain_config.get_block_reward_mon(proposed_epoch);
+        let block_reward_mon = chain_config.get_block_reward_mon(proposed_epoch, proposed_round);
         let block_reward = U256::from(StakingContractCall::MON) * U256::from(block_reward_mon);
 
         system_calls.push(SystemCall::StakingContractCall(
@@ -200,6 +201,7 @@ impl SystemTransactionGenerator {
     pub fn generate_system_transactions<CCT, CRT>(
         proposed_seq_num: SeqNum,
         proposed_epoch: Epoch,
+        proposed_round: Round,
         parent_block_epoch: Epoch,
         block_author: Address,
         mut next_system_txn_nonce: u64,
@@ -212,6 +214,7 @@ impl SystemTransactionGenerator {
         let system_calls = generate_system_calls(
             proposed_seq_num,
             proposed_epoch,
+            proposed_round,
             parent_block_epoch,
             block_author,
             chain_config,

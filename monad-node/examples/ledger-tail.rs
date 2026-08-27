@@ -117,7 +117,17 @@ async fn main() {
             config
                 .peers
                 .into_iter()
-                .map(|peer| (peer.secp256k1_pubkey, peer.address))
+                .map(|peer| {
+                    (
+                        peer.secp256k1_pubkey,
+                        format!(
+                            "{}:{}",
+                            peer.ip()
+                                .expect("ledger tail bootstrap peer address must be an IP address"),
+                            peer.tcp_port()
+                        ),
+                    )
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -147,6 +157,7 @@ async fn main() {
                             .unwrap_or_else(|err| panic!("failed to read validators.toml, or validators.toml corrupt. was this edited manually? err={:?}", err));
                     validators
                         .get_validator_set(&tc.epoch)
+                        .expect("validator set should exist for current epoch")
                         .get_stakes()
                         .into_iter()
                         .collect()

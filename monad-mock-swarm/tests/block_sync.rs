@@ -25,21 +25,19 @@ mod test {
         block::PassthruBlockPolicy, block_validator::MockValidator, metrics::Metrics,
     };
     use monad_crypto::certificate_signature::CertificateKeyPair;
+    use monad_execution_state_read::InMemoryStateInner;
     use monad_mock_swarm::{
         fetch_metric,
         mock::TimestamperConfig,
         mock_swarm::{Nodes, SwarmBuilder},
         node::NodeBuilder,
+        swarm::{ledger_verification, make_state_configs, swarm_ledger_verification},
         swarm_relation::{MonadMessageNoSerSwarm, NoSerSwarm},
         terminator::{ProgressTerminator, UntilTerminator},
         transformer::{FilterTransformer, MonadMessageTransformer},
         verifier::MockSwarmVerifier,
     };
     use monad_router_scheduler::{NoSerRouterConfig, RouterSchedulerBuilder};
-    use monad_state_backend::InMemoryStateInner;
-    use monad_testutil::swarm::{
-        ledger_verification, make_state_configs, swarm_ledger_verification,
-    };
     use monad_transformer::{
         DropTransformer, GenericTransformer, LatencyTransformer, PartitionTransformer,
         PeriodicTransformer, ID,
@@ -101,7 +99,7 @@ mod test {
                 .into_iter()
                 .enumerate()
                 .map(|(seed, state_builder)| {
-                    let state_backend = state_builder.state_backend.clone();
+                    let state_read = state_builder.state_read.clone();
                     let validators = state_builder.locked_epoch_validators[0].clone();
                     NodeBuilder::<MonadMessageNoSerSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
@@ -109,8 +107,8 @@ mod test {
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockValSetUpdaterNop::new(validators.validators, SeqNum(2000)),
                         MockTxPoolExecutor::default().with_chain_params(&CHAIN_PARAMS),
-                        MockLedger::new(state_backend.clone()),
-                        MockStateSyncExecutor::new(state_backend),
+                        MockLedger::new(state_read.clone()),
+                        MockStateSyncExecutor::new(state_read),
                         outbound_pipeline.clone(),
                         vec![],
                         TimestamperConfig::default(),
@@ -208,7 +206,7 @@ mod test {
                 .into_iter()
                 .enumerate()
                 .map(|(seed, state_builder)| {
-                    let state_backend = state_builder.state_backend.clone();
+                    let state_read = state_builder.state_read.clone();
                     let validators = state_builder.locked_epoch_validators[0].clone();
                     NodeBuilder::<NoSerSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
@@ -216,8 +214,8 @@ mod test {
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockValSetUpdaterNop::new(validators.validators, SeqNum(2000)),
                         MockTxPoolExecutor::default().with_chain_params(&CHAIN_PARAMS),
-                        MockLedger::new(state_backend.clone()),
-                        MockStateSyncExecutor::new(state_backend),
+                        MockLedger::new(state_read.clone()),
+                        MockStateSyncExecutor::new(state_read),
                         vec![
                             GenericTransformer::Latency(LatencyTransformer::new(delta)),
                             GenericTransformer::Partition(PartitionTransformer(
@@ -283,7 +281,7 @@ mod test {
                 .into_iter()
                 .enumerate()
                 .map(|(seed, state_builder)| {
-                    let state_backend = state_builder.state_backend.clone();
+                    let state_read = state_builder.state_read.clone();
                     let validators = state_builder.locked_epoch_validators[0].clone();
                     NodeBuilder::<NoSerSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
@@ -291,8 +289,8 @@ mod test {
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockValSetUpdaterNop::new(validators.validators, SeqNum(2000)),
                         MockTxPoolExecutor::default().with_chain_params(&CHAIN_PARAMS),
-                        MockLedger::new(state_backend.clone()),
-                        MockStateSyncExecutor::new(state_backend),
+                        MockLedger::new(state_read.clone()),
+                        MockStateSyncExecutor::new(state_read),
                         vec![
                             GenericTransformer::Latency(LatencyTransformer::new(delta)),
                             GenericTransformer::Partition(PartitionTransformer(
@@ -415,7 +413,7 @@ mod test {
                 .into_iter()
                 .enumerate()
                 .map(|(seed, state_builder)| {
-                    let state_backend = state_builder.state_backend.clone();
+                    let state_read = state_builder.state_read.clone();
                     let validators = state_builder.locked_epoch_validators[0].clone();
                     NodeBuilder::<NoSerSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
@@ -423,8 +421,8 @@ mod test {
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockValSetUpdaterNop::new(validators.validators, SeqNum(2000)),
                         MockTxPoolExecutor::default().with_chain_params(&CHAIN_PARAMS),
-                        MockLedger::new(state_backend.clone()),
-                        MockStateSyncExecutor::new(state_backend),
+                        MockLedger::new(state_read.clone()),
+                        MockStateSyncExecutor::new(state_read),
                         vec![
                             GenericTransformer::Latency(LatencyTransformer::new(delta)),
                             GenericTransformer::Partition(PartitionTransformer(

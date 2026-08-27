@@ -19,7 +19,8 @@ use alloy_consensus::TxEnvelope;
 use alloy_eips::BlockNumberOrTag;
 use alloy_primitives::{Address, FixedBytes, LogData, U256};
 use alloy_rpc_types::{
-    pubsub::Params, AccessList, Block, FeeHistory, Header, Log, Transaction, TransactionReceipt,
+    pubsub::Params, serde_helpers::JsonStorageKey, AccessList, Block, FeeHistory, Header, Log,
+    Transaction, TransactionReceipt,
 };
 use monad_exec_events::BlockCommitState;
 use monad_types::BlockId;
@@ -57,6 +58,20 @@ impl<'de> Deserialize<'de> for MonadU256 {
         let u = U256::from_str(&buf)
             .map_err(|e| serde::de::Error::custom(format!("U256 parse failed: {e:?}")))?;
         Ok(Self(u))
+    }
+}
+
+#[derive(Debug, JsonSchema)]
+pub struct StorageKey(#[schemars(with = "String")] pub [u8; 32]);
+
+impl<'de> Deserialize<'de> for StorageKey {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let buf = String::deserialize(deserializer)?;
+        let key: JsonStorageKey = buf.parse().map_err(serde::de::Error::custom)?;
+        Ok(Self(key.as_b256().0))
     }
 }
 
@@ -401,15 +416,12 @@ pub enum BlockTagOrHash {
 enum BlockTagOrHashHelper {
     BlockTags(BlockTags),
     Hash(EthHash),
-    WithBlockTags {
+    Object {
         #[serde(rename = "blockNumber")]
-        tags: BlockTags,
-    },
-
-    WithHash {
+        tags: Option<BlockTags>,
         #[serde(rename = "blockHash")]
-        hash: EthHash,
-        #[serde(default, rename = "camelCase")]
+        hash: Option<EthHash>,
+        #[serde(default, rename = "requireCanonical")]
         #[allow(dead_code)]
         require_canonical: bool,
     },
@@ -423,8 +435,16 @@ impl<'de> Deserialize<'de> for BlockTagOrHash {
         match BlockTagOrHashHelper::deserialize(deserializer)? {
             BlockTagOrHashHelper::BlockTags(tags) => Ok(BlockTagOrHash::BlockTags(tags)),
             BlockTagOrHashHelper::Hash(hash) => Ok(BlockTagOrHash::Hash(hash)),
-            BlockTagOrHashHelper::WithBlockTags { tags } => Ok(BlockTagOrHash::BlockTags(tags)),
-            BlockTagOrHashHelper::WithHash { hash, .. } => Ok(BlockTagOrHash::Hash(hash)),
+            BlockTagOrHashHelper::Object { tags, hash, .. } => match (tags, hash) {
+                (Some(tags), None) => Ok(BlockTagOrHash::BlockTags(tags)),
+                (None, Some(hash)) => Ok(BlockTagOrHash::Hash(hash)),
+                (Some(_), Some(_)) => Err(serde::de::Error::custom(
+                    "cannot specify both blockNumber and blockHash",
+                )),
+                (None, None) => Err(serde::de::Error::custom(
+                    "expected blockNumber or blockHash",
+                )),
+            },
         }
     }
 }
@@ -530,7 +550,7 @@ mod tests {
     use serde::Deserialize;
     use serde_json::json;
 
-    use super::{BlockTags, FixedData, Quantity, UnformattedData};
+    use super::{BlockTagOrHash, BlockTags, FixedData, Quantity, UnformattedData};
 
     #[derive(Deserialize, Debug)]
     struct OneDataParam {
@@ -619,6 +639,39 @@ mod tests {
 
         let x: OneBlockParam = serde_json::from_value(json!(["0xffacb0"])).unwrap();
         assert_eq!(BlockTags::Number(Quantity(16755888)), x.a);
+    }
+
+    #[test]
+    fn test_block_tag_or_hash() {
+        let hash = "0xb903239f8543d04b5dc1ba6579132b143087c68db1b2168786408fcbce568238";
+
+        let x: BlockTagOrHash = serde_json::from_value(json!("latest")).unwrap();
+        assert_eq!(BlockTagOrHash::BlockTags(BlockTags::Latest), x);
+
+        let x: BlockTagOrHash = serde_json::from_value(json!("0x1")).unwrap();
+        assert_eq!(BlockTagOrHash::BlockTags(BlockTags::Number(Quantity(1))), x);
+
+        let from_hash_string: BlockTagOrHash = serde_json::from_value(json!(hash)).unwrap();
+        assert!(matches!(from_hash_string, BlockTagOrHash::Hash(_)));
+
+        let x: BlockTagOrHash = serde_json::from_value(json!({"blockNumber": "0x1"})).unwrap();
+        assert_eq!(BlockTagOrHash::BlockTags(BlockTags::Number(Quantity(1))), x);
+
+        let x: BlockTagOrHash = serde_json::from_value(json!({"blockHash": hash})).unwrap();
+        assert_eq!(from_hash_string, x);
+
+        let x: BlockTagOrHash =
+            serde_json::from_value(json!({"blockHash": hash, "requireCanonical": true})).unwrap();
+        assert_eq!(from_hash_string, x);
+
+        serde_json::from_value::<BlockTagOrHash>(json!({"blockNumber": "0x1", "blockHash": hash}))
+            .expect_err("object with both blockNumber and blockHash should be rejected");
+
+        serde_json::from_value::<BlockTagOrHash>(json!({}))
+            .expect_err("object with neither blockNumber nor blockHash should be rejected");
+
+        serde_json::from_value::<BlockTagOrHash>(json!({"requireCanonical": true}))
+            .expect_err("object with only requireCanonical should be rejected");
     }
 
     #[test]

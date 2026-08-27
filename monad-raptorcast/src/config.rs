@@ -21,6 +21,8 @@ use monad_crypto::certificate_signature::{
 use monad_node_config::FullNodeRaptorCastConfig;
 use monad_types::{NodeId, Round};
 
+use crate::v1_rollout::DeterministicProtocolRolloutStage;
+
 pub struct RaptorCastConfig<ST>
 where
     ST: CertificateSignatureRecoverable,
@@ -51,6 +53,8 @@ where
     // Validators and full-nodes who do not want to participate in validator-
     // to-full-node raptor-casting may opt out of this.
     pub secondary_instance: FullNodeRaptorCastConfig<CertificateSignaturePubKey<ST>>,
+
+    pub deterministic_protocol_rollout: DeterministicProtocolRolloutStage,
 }
 
 impl<ST> Clone for RaptorCastConfig<ST>
@@ -65,6 +69,7 @@ where
             sig_verification_rate_limit: self.sig_verification_rate_limit,
             primary_instance: self.primary_instance.clone(),
             secondary_instance: self.secondary_instance.clone(),
+            deterministic_protocol_rollout: self.deterministic_protocol_rollout,
         }
     }
 }
@@ -167,6 +172,7 @@ pub struct RaptorCastConfigSecondaryPublisher<PT: PubKey> {
     pub group_scheduling: GroupSchedulingConfig,
 }
 
+#[cfg(test)]
 impl<PT: PubKey> Default for RaptorCastConfigSecondaryPublisher<PT> {
     fn default() -> RaptorCastConfigSecondaryPublisher<PT> {
         RaptorCastConfigSecondaryPublisher {
@@ -186,6 +192,7 @@ pub struct GroupSchedulingConfig {
     pub init_empty_round_span: Round, // like round_span but for the case when we need an empty, locked group right now
 }
 
+#[cfg(test)]
 impl Default for GroupSchedulingConfig {
     fn default() -> GroupSchedulingConfig {
         // Note: by default a Round lasts 500ms. See config entry ChainParams::vote_pace

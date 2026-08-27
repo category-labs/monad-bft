@@ -10,14 +10,16 @@ on:
     paths-ignore:
       - 'debian/**'
   pull_request:
-    branches: ["master"]
     types: [ opened, synchronize, reopened, edited ]
     paths-ignore:
       - 'debian/**'
 
+permissions:
+  contents: read
+
 jobs:
   check-license:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository

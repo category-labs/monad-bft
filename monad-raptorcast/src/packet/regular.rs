@@ -32,7 +32,7 @@ use monad_types::NodeId;
 use rand::Rng;
 
 use super::{
-    assigner::{ChunkAssignment, EvenPartition, OrderedNodes as _, StakePartition},
+    assigner::{ChunkAssignment, EvenPartition, Partition as _, StakePartition},
     chunk::Chunk,
     BuildError, Result,
 };
@@ -610,8 +610,8 @@ fn generate_chunks<PT: PubKey>(
                 .scale(num_base_symbols)
                 .ok_or(BuildError::TooManyChunks)?;
             ensure!(num_symbols <= MAX_TRIPLES, BuildError::TooManyChunks);
-            let assignment = ChunkAssignment::unicast(num_symbols);
-            assignment.materialize(segment_len, *recipient)?
+            let assignment = ChunkAssignment::unicast(**recipient, num_symbols);
+            assignment.materialize(segment_len)?
         }
 
         BuildTarget::Broadcast(primary_group) => {
@@ -625,27 +625,51 @@ fn generate_chunks<PT: PubKey>(
                 .filter(|node_id| *node_id != self_node_id)
                 .cloned()
                 .collect();
-            let assignment = ChunkAssignment::unicast(num_symbols);
-            let mut chunks = Vec::with_capacity(assignment.num_chunks() * recipients.len());
+            let mut chunks = Vec::with_capacity(num_symbols * recipients.len());
             for recipient in &recipients {
-                chunks.extend(assignment.materialize(segment_len, recipient)?);
+                let assignment = ChunkAssignment::unicast(*recipient, num_symbols);
+                chunks.extend(assignment.materialize(segment_len)?);
             }
             chunks
         }
 
-        BuildTarget::Raptorcast(primary_group) => {
+        BuildTarget::FullNodeBroadcast(secondary_group) => {
+            let num_symbols = redundancy
+                .scale(num_base_symbols)
+                .ok_or(BuildError::TooManyChunks)?;
+            ensure!(num_symbols <= MAX_TRIPLES, BuildError::TooManyChunks);
+            let recipients: Vec<_> = secondary_group
+                .iter()
+                .filter(|node_id| *node_id != self_node_id)
+                .cloned()
+                .collect();
+            let mut chunks = Vec::with_capacity(num_symbols * recipients.len());
+            for recipient in &recipients {
+                let assignment = ChunkAssignment::unicast(*recipient, num_symbols);
+                chunks.extend(assignment.materialize(segment_len)?);
+            }
+            chunks
+        }
+
+        BuildTarget::Raptorcast {
+            group: primary_group,
+            ..
+        } => {
             let mut partition = StakePartition::from_group(primary_group);
             partition.shuffle(derive_seed(app_message_hash));
             let assignment = partition.assign(num_base_symbols, redundancy)?;
-            assignment.materialize(segment_len, &partition)?
+            assignment.materialize(segment_len)?
         }
 
-        BuildTarget::FullNodeRaptorCast(secondary_group) => {
+        BuildTarget::FullNodeRaptorCast {
+            group: secondary_group,
+            ..
+        } => {
             let seed = rand::thread_rng().gen::<[u8; 32]>();
             let mut partition = EvenPartition::from_group(secondary_group);
             partition.shuffle(seed);
             let assignment = partition.assign(num_base_symbols, redundancy)?;
-            assignment.materialize(segment_len, &partition)?
+            assignment.materialize(segment_len)?
         }
     };
 
@@ -660,6 +684,8 @@ fn broadcast_mode_from_build_target<PT: PubKey>(
     match build_target {
         BuildTarget::Raptorcast { .. } => BroadcastMode::Primary,
         BuildTarget::FullNodeRaptorCast { .. } => BroadcastMode::Secondary,
-        BuildTarget::Broadcast(_) | BuildTarget::PointToPoint { .. } => BroadcastMode::Unspecified,
+        BuildTarget::Broadcast(_)
+        | BuildTarget::FullNodeBroadcast(_)
+        | BuildTarget::PointToPoint { .. } => BroadcastMode::Unspecified,
     }
 }

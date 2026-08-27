@@ -42,18 +42,18 @@ fn criterion_benchmark(c: &mut Criterion) {
         |_, _, txs| {
             let pool = EthTxPool::default_testing();
 
-            let state_backend = BenchController::generate_state_backend_for_txs(&txs);
+            let state_read = BenchController::generate_state_read_for_txs(&txs);
 
-            (pool, txs, state_backend)
+            (pool, txs, state_read)
         },
-        |(pool, txs, state_backend)| {
+        |(pool, txs, state_read)| {
             pool.insert_txs(
                 &mut EthTxPoolEventTracker::new(
                     &EthTxPoolMetrics::default(),
                     &mut BTreeMap::default(),
                 ),
                 &block_policy,
-                state_backend,
+                state_read,
                 &MockChainConfig::DEFAULT,
                 txs.iter()
                     .map(|tx| (tx.clone(), PoolTxKind::owned_default()))

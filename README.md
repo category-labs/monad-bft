@@ -107,7 +107,7 @@ Please consult the [official RPC docs](https://docs.monad.xyz/reference/) as the
 ### Using Cargo
 
 To run a Monad consensus client, follow instructions [here](monad-node/README.md).
- 
+
 To run a JsonRpc server, follow instructions [here](monad-rpc/README.md).
 
 #### Cargo targets that link Monad execution

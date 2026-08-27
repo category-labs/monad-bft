@@ -16,7 +16,7 @@
 #![allow(clippy::manual_range_contains)]
 #![allow(clippy::identity_op)]
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     hash::Hash,
     num::NonZero,
     sync::Arc,
@@ -36,13 +36,8 @@ use rand::Rng as _;
 
 use crate::{
     udp::ValidatedChunk,
-    util::{compute_hash, AppMessageHash, BroadcastMode, NodeIdHash},
+    util::{compute_hash, AppMessageHash, BroadcastMode, GlobalMerkleRoot, NodeIdHash},
 };
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-enum MessageIdentifier {
-    AppMessageHash(AppMessageHash),
-}
 
 pub const DECODING_CACHE_METRIC_PREFIX: &str = "monad.raptorcast.decoding_cache";
 monad_executor::metric_consts! {
@@ -62,6 +57,15 @@ monad_executor::metric_consts! {
         name: "monad.raptorcast.decoding_cache.decoded",
         help: "Messages successfully decoded",
     }
+}
+
+fn init_executor_metrics() -> ExecutorMetrics {
+    ExecutorMetrics::with_metric_defs(&[
+        METRIC_RECENTLY_DECODED_HIT,
+        METRIC_PENDING_HIT,
+        METRIC_NEW_ENTRY,
+        METRIC_DECODED,
+    ])
 }
 
 pub(crate) const RECENTLY_DECODED_CACHE_SIZE: usize = 10000;
@@ -101,6 +105,12 @@ pub const MAX_TOTAL_SIZE_LIMIT: usize = 20 * 1024 * 1024 * 1024; // 20 GB
 //
 // Required properties: (Copy, Add, Sub, Eq, Ord)
 type MessageSize = usize;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum MessageIdentifier {
+    AppMessageHash(AppMessageHash),
+    GlobalMerkleRoot(GlobalMerkleRoot),
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct DecoderCacheConfig {
@@ -171,7 +181,7 @@ where
         Self {
             recently_decoded: LruCache::new(recently_decoded_cache_size),
             pending_messages: TieredCache::new(config),
-            metrics: ExecutorMetrics::default(),
+            metrics: init_executor_metrics(),
         }
     }
 
@@ -189,7 +199,7 @@ where
             Some(MessageCacheEntry::RecentlyDecoded(recently_decoded)) => {
                 // the app message was recently decoded
                 recently_decoded.handle_message(message)?;
-                self.metrics[METRIC_RECENTLY_DECODED_HIT] += 1;
+                self.metrics.gauge(METRIC_RECENTLY_DECODED_HIT).inc();
                 return Ok(TryDecodeStatus::RecentlyDecoded);
             }
 
@@ -211,7 +221,7 @@ where
                     self.insert_decoder_state(&cache_key, message, decoder_state, context)
                 else {
                     // the cache rejected the new entry
-                    self.metrics[METRIC_NEW_ENTRY] += 1;
+                    self.metrics.gauge(METRIC_NEW_ENTRY).inc();
                     return Ok(TryDecodeStatus::RejectedByCache);
                 };
                 cache_hit_metric = METRIC_NEW_ENTRY;
@@ -220,16 +230,16 @@ where
         };
 
         if !decoder_state.decoder.try_decode() {
-            self.metrics[cache_hit_metric] += 1;
+            self.metrics.gauge(cache_hit_metric).inc();
             return Ok(TryDecodeStatus::NeedsMoreSymbols);
         }
 
         let Some(mut decoded) = decoder_state.decoder.reconstruct_source_data() else {
-            self.metrics[cache_hit_metric] += 1;
+            self.metrics.gauge(cache_hit_metric).inc();
             return Err(TryDecodeError::UnableToReconstructSourceData);
         };
 
-        self.metrics[cache_hit_metric] += 1;
+        self.metrics.gauge(cache_hit_metric).inc();
 
         // decoding succeeds at this point.
         let app_message_len = message
@@ -245,7 +255,7 @@ where
 
         self.recently_decoded
             .put(cache_key, RecentlyDecodedState::from(decoder_state));
-        self.metrics[METRIC_DECODED] += 1;
+        self.metrics.gauge(METRIC_DECODED).inc();
 
         Ok(TryDecodeStatus::Decoded {
             author: message.author,
@@ -436,9 +446,19 @@ struct CacheKey {
 
 impl CacheKey {
     fn from_message<PT: PubKey>(message: &ValidatedChunk<PT>) -> Self {
+        let message_id = if let Some(root) = message.global_merkle_root() {
+            MessageIdentifier::GlobalMerkleRoot(*root)
+        } else {
+            MessageIdentifier::AppMessageHash(
+                message
+                    .app_message_hash()
+                    .copied()
+                    .expect("V0 chunks must have app_message_hash"),
+            )
+        };
         let inner = CacheKeyInner {
             author_hash: compute_hash(&message.author),
-            message_id: MessageIdentifier::AppMessageHash(message.app_message_hash),
+            message_id,
             unix_ts_ms: message.unix_ts_ms,
         };
         Self {
@@ -524,30 +544,40 @@ impl SoftQuotaCacheMetrics {
             )))
         };
 
+        let total_insertions = full_def("total_insertions", "Total cache insertions");
+        let total_evictions_from_overquota_author = full_def(
+            "total_evictions_from_overquota_author",
+            "Evictions due to per-author quota being exceeded",
+        );
+        let total_evictions_from_overquota_others = full_def(
+            "total_evictions_from_overquota_others",
+            "Evictions due to global quota for non-author entries",
+        );
+        let total_evictions_from_expiry = full_def(
+            "total_evictions_from_expiry",
+            "Evictions due to message expiry",
+        );
+        let total_random_evictions =
+            full_def("total_random_evictions", "Random evictions to free space");
+
         Self {
-            total_insertions: full_def("total_insertions", "Total cache insertions"),
-            total_evictions_from_overquota_author: full_def(
-                "total_evictions_from_overquota_author",
-                "Evictions due to per-author quota being exceeded",
-            ),
-            total_evictions_from_overquota_others: full_def(
-                "total_evictions_from_overquota_others",
-                "Evictions due to global quota for non-author entries",
-            ),
-            total_evictions_from_expiry: full_def(
-                "total_evictions_from_expiry",
-                "Evictions due to message expiry",
-            ),
-            total_random_evictions: full_def(
-                "total_random_evictions",
-                "Random evictions to free space",
-            ),
-            metrics: ExecutorMetrics::default(),
+            total_insertions,
+            total_evictions_from_overquota_author,
+            total_evictions_from_overquota_others,
+            total_evictions_from_expiry,
+            total_random_evictions,
+            metrics: ExecutorMetrics::with_metric_defs(&[
+                total_insertions,
+                total_evictions_from_overquota_author,
+                total_evictions_from_overquota_others,
+                total_evictions_from_expiry,
+                total_random_evictions,
+            ]),
         }
     }
 
     pub fn incr(&mut self, key: &'static monad_executor::MetricDef, value: usize) {
-        self.metrics[key] += value as u64;
+        self.metrics.gauge(key).add(value as u64);
     }
 
     pub fn metrics(&self) -> &ExecutorMetrics {
@@ -818,8 +848,8 @@ impl<PT: PubKey> SoftQuotaCache<PT> {
         let key_set_2 = self
             .author_index
             .per_author_index
-            .iter()
-            .flat_map(|(_, index)| index.reverse_index.keys().cloned())
+            .values()
+            .flat_map(|index| index.reverse_index.keys().cloned())
             .collect::<HashSet<_>>();
 
         if key_set_1 != key_set_2 {
@@ -1505,7 +1535,6 @@ impl InvalidSymbol {
 
 struct DecoderState {
     decoder: ManagedDecoder,
-    recipient_chunks: BTreeMap<NodeIdHash, usize>,
     app_message_len: usize,
     seen_esis: BitVec<usize, Lsb0>,
 }
@@ -1522,13 +1551,11 @@ impl DecoderState {
             .expect("usize smaller than u32");
         let num_source_symbols = message.num_source_symbols;
         let encoded_symbol_capacity = message.encoded_symbol_capacity;
-
         let decoder = ManagedDecoder::new(num_source_symbols, encoded_symbol_capacity, symbol_len)
             .map_err(InvalidSymbol::InvalidDecoderParameter)?;
 
         let mut decoder_state = DecoderState {
             decoder,
-            recipient_chunks: BTreeMap::new(),
             app_message_len,
             seen_esis: bitvec![usize, Lsb0; 0; encoded_symbol_capacity],
         };
@@ -1548,10 +1575,6 @@ impl DecoderState {
         self.seen_esis.set(symbol_id, true);
         self.decoder
             .received_encoded_symbol(&message.chunk, symbol_id);
-        *self
-            .recipient_chunks
-            .entry(message.recipient_hash)
-            .or_insert(0) += 1;
 
         Ok(())
     }
@@ -1694,6 +1717,8 @@ fn quota_policy_from_config<PT: PubKey>(config: &SoftQuotaCacheConfig) -> Box<dy
 
 #[cfg(test)]
 mod test {
+    use std::collections::BTreeMap;
+
     use bytes::BytesMut;
     use itertools::Itertools;
     use monad_types::{Epoch, Stake};
@@ -1701,8 +1726,8 @@ mod test {
 
     use super::*;
     use crate::{
-        udp::GroupId,
-        util::{compute_app_message_hash, BroadcastMode, HexBytes},
+        udp::{ChunkVersion, GroupId},
+        util::{compute_app_message_hash, BroadcastMode, EncodingScheme, HexBytes},
     };
     type PT = monad_crypto::NopPubKey;
 
@@ -1762,12 +1787,16 @@ mod test {
             let chunk = ValidatedChunk {
                 chunk_id: symbol_id as u16,
                 author,
-                app_message_hash,
+                app_message_hash: Some(app_message_hash),
+                merkle_root: HexBytes([0; 20]),
                 app_message_len: app_message.len() as u32,
+                version: ChunkVersion::V0,
+                encoding_scheme: EncodingScheme::Unspecified,
                 broadcast_mode: BroadcastMode::Unspecified,
                 chunk: chunk.freeze(),
                 // these fields are never touched in this module
-                recipient_hash: HexBytes([0; 20]),
+                signature: Bytes::new(),
+                recipient_hash: None,
                 message: Bytes::new(),
                 group_id: GroupId::Primary(EPOCH),
                 unix_ts_ms,
@@ -2440,7 +2469,7 @@ mod test {
 
         let wrong_hash = HexBytes([0xAA; 20]);
         for symbol in &mut symbols {
-            symbol.app_message_hash = wrong_hash;
+            symbol.app_message_hash = Some(wrong_hash);
         }
 
         let context = DecodingContext::new(None, UNIX_TS_MS);

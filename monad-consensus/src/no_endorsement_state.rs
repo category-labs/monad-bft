@@ -31,6 +31,8 @@ use crate::messages::message::NoEndorsementMessage;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct NoEndorsementState<SCT: SignatureCollection> {
+    /// We technically only care about pending_no_endorsements for the current round
+    /// However, we keep this approach to more closely match vote_state.rs
     pending_no_endorsements: BTreeMap<Round, RoundNoEndorsementState<SCT>>,
     /// The earliest round that we'll accept no-endorsements for
     /// We use this to not build the same NEC twice, and to know which no-endorsements are stale
@@ -73,6 +75,7 @@ where
         }
     }
 
+    // caller should ensure NE.round == current_round
     #[must_use]
     pub fn process_no_endorsement<VT>(
         &mut self,
@@ -209,7 +212,9 @@ where
     }
 
     pub fn start_new_round(&mut self, new_round: Round) {
-        self.earliest_round = new_round;
+        // enforce that earliest_round monotonically increases
+        // this is a safety in case the caller doesn't filter out NE.round != current_round
+        self.earliest_round = new_round.max(self.earliest_round);
         self.pending_no_endorsements.retain(|k, _| *k >= new_round);
     }
 

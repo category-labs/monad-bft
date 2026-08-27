@@ -14,6 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use actix_web::{web, HttpResponse};
+use futures::StreamExt;
 use monad_tracing_timing::TimingSpanExtension;
 use monad_triedb_utils::triedb_env::Triedb;
 use serde_json::value::RawValue;
@@ -42,6 +43,7 @@ use self::{
             monad_eth_estimateGas, monad_eth_feeHistory, monad_eth_fillTransaction,
             monad_eth_gasPrice, monad_eth_maxPriorityFeePerGas,
         },
+        simulate::monad_simulate_v1,
         txn::{
             monad_eth_getLogs, monad_eth_getTransactionByBlockHashAndIndex,
             monad_eth_getTransactionByBlockNumberAndIndex, monad_eth_getTransactionByHash,
@@ -64,6 +66,7 @@ use crate::{
     middleware::TimingRequestId,
     types::{
         eth_json::serialize_result,
+        json_serialized_len::JsonSerializedLen,
         jsonrpc::{
             serialize_with_size_limit, JsonRpcError, JsonRpcResult, JsonRpcResultExt, Request,
             RequestId, RequestParams, RequestWrapper, Response, ResponseWrapper,
@@ -71,7 +74,7 @@ use crate::{
     },
 };
 
-mod debug;
+pub mod debug;
 mod debug_replay;
 pub mod eth;
 mod meta;
@@ -79,7 +82,7 @@ pub mod resources;
 mod txpool;
 
 use monad_chain_config::{
-    ETHEREUM_MAINNET_CHAIN_ID, MONAD_DEVNET_CHAIN_ID, MONAD_MAINNET_CHAIN_ID,
+    ETHEREUM_MAINNET_CHAIN_ID, HIVE_CHAIN_ID, MONAD_DEVNET_CHAIN_ID, MONAD_MAINNET_CHAIN_ID,
     MONAD_TESTNET_CHAIN_ID,
 };
 use monad_ethcall::ChainId;
@@ -90,6 +93,7 @@ pub(crate) fn parse_ethcall_chain_id(chain_id: u64) -> JsonRpcResult<ChainId> {
         MONAD_MAINNET_CHAIN_ID => Ok(ChainId::MonadMainnet),
         MONAD_TESTNET_CHAIN_ID => Ok(ChainId::MonadTestnet),
         MONAD_DEVNET_CHAIN_ID => Ok(ChainId::MonadDevnet),
+        HIVE_CHAIN_ID => Ok(ChainId::HiveNet),
         other => Err(JsonRpcError::eth_call_error(
             "unsupported chain id".to_string(),
             Some(other.to_string()),
@@ -146,12 +150,16 @@ pub async fn rpc_handler(
         }
         RequestWrapper::Batch(json_batch_request) => {
             root_span.record("json_method", "batch");
-            if json_batch_request.is_empty() {
+
+            let json_batch_request_len = json_batch_request.len();
+
+            if json_batch_request_len == 0 {
                 return HttpResponse::Ok().json(Response::from_error(JsonRpcError::custom(
                     "empty batch request".to_string(),
                 )));
             }
-            if json_batch_request.len() > app_state.batch_request_limit as usize {
+
+            if json_batch_request_len > app_state.batch_request_limit as usize {
                 return HttpResponse::Ok().json(Response::from_error(JsonRpcError::custom(
                     format!(
                         "number of requests in batch request exceeds limit of {}",
@@ -159,23 +167,47 @@ pub async fn rpc_handler(
                     ),
                 )));
             }
-            let batch_response =
-                futures::future::join_all(json_batch_request.into_iter().map(|json_request| {
-                    let app_state = app_state.clone(); // cheap copy
+
+            let mut batch_response_json_serialized_len = 0usize;
+
+            let batch_response = futures::stream::iter(json_batch_request)
+                .map(|json_request| {
+                    let app_state = app_state.clone();
 
                     async move {
                         let Ok(request) = Request::from_raw_value(json_request) else {
-                            return (RequestId::Null, Err(JsonRpcError::invalid_request()));
+                            return Response::from_result(
+                                RequestId::Null,
+                                Err(JsonRpcError::invalid_request()),
+                            );
                         };
+
                         let (state, id, method, params) =
                             (app_state, request.id, request.method, request.params);
-                        (id, rpc_select(&state, &method, params, request_id).await)
+
+                        let result = rpc_select(&state, &method, params, request_id).await;
+
+                        Response::from_result(id, result)
                     }
-                }))
-                .await
-                .into_iter()
-                .map(|(id, response)| Response::from_result(id, response))
-                .collect::<Vec<_>>();
+                })
+                .buffered(app_state.batch_concurrent_limit as usize)
+                .take_while(|response| {
+                    batch_response_json_serialized_len += response.json_serialized_len();
+
+                    let take =
+                        batch_response_json_serialized_len <= app_state.max_response_size as usize;
+
+                    async move { take }
+                })
+                .collect::<Vec<_>>()
+                .await;
+
+            if batch_response.len() < json_batch_request_len {
+                return HttpResponse::Ok().json(Response::from_error(
+                    JsonRpcError::max_response_size_exceeded(),
+                ));
+            }
+
             ResponseWrapper::Batch(batch_response)
         }
     };
@@ -289,7 +321,7 @@ async fn debug_traceBlockByHash(
             .await
             .map(serialize_result)?;
     }
-    monad_debug_traceBlockByHash(data_provider, params)
+    monad_debug_traceBlockByHash(data_provider, app_state.max_response_size as usize, params)
         .await
         .map(serialize_result)?
 }
@@ -309,7 +341,7 @@ async fn debug_traceBlockByNumber(
             .map(serialize_result)?;
     }
 
-    monad_debug_traceBlockByNumber(data_provider, params)
+    monad_debug_traceBlockByNumber(data_provider, app_state.max_response_size as usize, params)
         .await
         .map(serialize_result)?
 }
@@ -332,6 +364,7 @@ async fn debug_traceCall(
                 eth_call_handler_config,
                 executor,
                 app_state.chain_id,
+                app_state.max_response_size as usize,
                 params,
             )
         })
@@ -354,7 +387,7 @@ async fn debug_traceTransaction(
             .map(serialize_result)?;
     }
 
-    monad_debug_traceTransaction(data_provider, params)
+    monad_debug_traceTransaction(data_provider, app_state.max_response_size as usize, params)
         .await
         .map(serialize_result)?
 }
@@ -377,6 +410,38 @@ async fn eth_call(
                 eth_call_handler_config,
                 executor,
                 app_state.chain_id,
+                params,
+            )
+        })
+        .await
+        .map(serialize_result)?
+}
+
+#[allow(non_snake_case)]
+async fn eth_simulateV1(
+    request_id: TimingRequestId,
+    app_state: &MonadRpcResources,
+    params: RequestParams<'_>,
+) -> Result<Box<RawValue>, JsonRpcError> {
+    if !app_state.enable_eth_simulate_v1 {
+        return Err(JsonRpcError::method_not_supported());
+    }
+    let data_provider = app_state.data_provider.as_ref().method_not_supported()?;
+    let eth_call_handler = app_state.eth_call_handler.as_ref().method_not_supported()?;
+    let params = serde_json::from_str(params.get()).invalid_params()?;
+    let permit = eth_call_handler.acquire(request_id).await?;
+
+    permit
+        .execute(|config, executor| {
+            monad_simulate_v1(
+                data_provider,
+                executor,
+                app_state.chain_id,
+                // TODO(dhil): We use the eth call gas limit for individual calls within the simulation. We should consider adding more granular gas limits in the future.
+                config.provider_gas_limit_eth_call,
+                config.provider_gas_limit_eth_simulate,
+                config.provider_max_calls_eth_simulate,
+                config.provider_max_blocks_eth_simulate,
                 params,
             )
         })
@@ -411,17 +476,19 @@ async fn eth_sendRawTransactionSync(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    // Require both data_provider and txpool_bridge_client
     let txpool_bridge_client = app_state
         .txpool_bridge_client
         .as_ref()
         .method_not_supported()?;
-    let data_provider = app_state.data_provider.as_ref().method_not_supported()?;
+    let event_server_client = app_state
+        .event_server_client
+        .as_ref()
+        .method_not_supported()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
 
     monad_eth_sendRawTransactionSync(
         txpool_bridge_client,
-        data_provider,
+        event_server_client,
         params,
         app_state.chain_id,
         app_state.allow_unprotected_txs,
@@ -734,6 +801,9 @@ async fn eth_feeHistory(
 ) -> Result<Box<RawValue>, JsonRpcError> {
     let data_provider = app_state.data_provider.as_ref().method_not_supported()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
+    let _permit = app_state.feehistory_limiter.try_acquire().map_err(|_| {
+        JsonRpcError::internal_error("exceed feehistory max concurrent requests".into())
+    })?;
     monad_eth_feeHistory(data_provider, params)
         .await
         .map(serialize_result)?
@@ -876,6 +946,7 @@ enabled_methods!(
     debug_traceCall,
     debug_traceTransaction,
     eth_call,
+    eth_simulateV1,
     eth_sendRawTransaction,
     eth_sendRawTransactionSync,
     eth_createAccessList,
@@ -923,4 +994,44 @@ pub async fn rpc_select(
         .call(request_id, app_state, params)
         .instrument(span)
         .await
+}
+
+#[cfg(test)]
+mod tests {
+    use monad_chain_config::{
+        ETHEREUM_MAINNET_CHAIN_ID, HIVE_CHAIN_ID, MONAD_DEVNET_CHAIN_ID, MONAD_MAINNET_CHAIN_ID,
+        MONAD_TESTNET_CHAIN_ID,
+    };
+    use monad_ethcall::ChainId;
+
+    use super::parse_ethcall_chain_id;
+
+    #[test]
+    fn parse_ethcall_chain_id_maps_supported_chains() {
+        assert_eq!(
+            parse_ethcall_chain_id(ETHEREUM_MAINNET_CHAIN_ID).unwrap(),
+            ChainId::EthereumMainnet
+        );
+        assert_eq!(
+            parse_ethcall_chain_id(MONAD_MAINNET_CHAIN_ID).unwrap(),
+            ChainId::MonadMainnet
+        );
+        assert_eq!(
+            parse_ethcall_chain_id(MONAD_TESTNET_CHAIN_ID).unwrap(),
+            ChainId::MonadTestnet
+        );
+        assert_eq!(
+            parse_ethcall_chain_id(MONAD_DEVNET_CHAIN_ID).unwrap(),
+            ChainId::MonadDevnet
+        );
+        assert_eq!(
+            parse_ethcall_chain_id(HIVE_CHAIN_ID).unwrap(),
+            ChainId::HiveNet
+        );
+    }
+
+    #[test]
+    fn parse_ethcall_chain_id_rejects_unknown_chain() {
+        assert!(parse_ethcall_chain_id(42).is_err());
+    }
 }

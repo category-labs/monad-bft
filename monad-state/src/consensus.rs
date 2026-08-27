@@ -38,13 +38,13 @@ use monad_consensus_types::{
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
+use monad_execution_state_read::ExecutionStateRead;
 use monad_executor_glue::{
     BlockSyncEvent, Command, ConfigFileCommand, ConsensusEvent, LedgerCommand, LoopbackCommand,
     MempoolEvent, MonadEvent, RouterCommand, StateSyncEvent, TimeoutVariant, TimerCommand,
     TimestampCommand, TxPoolCommand, ValSetCommand,
 };
-use monad_state_backend::StateBackend;
-use monad_types::{ExecutionProtocol, NodeId, Round, RouterTarget};
+use monad_types::{ExecutionProtocol, FullnodeBroadcastMode, NodeId, Round, RouterTarget};
 use monad_validator::{
     epoch_manager::EpochManager,
     leader_election::LeaderElection,
@@ -63,43 +63,43 @@ fn record_prefilter_error(metrics: &mut Metrics, prefilter_error: PrefilterError
     match prefilter_error {
         PrefilterError::OutdatedProposal | PrefilterError::OutdatedRoundRecovery => {}
         PrefilterError::OutdatedVote => {
-            metrics.consensus_events.old_vote_received += 1;
+            metrics.consensus_events.old_vote_received.inc();
         }
         PrefilterError::OutdatedTimeout => {
-            metrics.consensus_events.old_remote_timeout += 1;
+            metrics.consensus_events.old_remote_timeout.inc();
         }
         PrefilterError::OutdatedNoEndorsement => {
-            metrics.consensus_events.old_no_endorsement_received += 1;
+            metrics.consensus_events.old_no_endorsement_received.inc();
         }
         PrefilterError::OutdatedAdvanceRoundQc => {
-            metrics.consensus_events.process_old_qc += 1;
+            metrics.consensus_events.process_old_qc.inc();
         }
         PrefilterError::OutdatedAdvanceRoundTc => {
-            metrics.consensus_events.process_old_tc += 1;
+            metrics.consensus_events.process_old_tc.inc();
         }
     }
 }
 
-pub(super) struct ConsensusChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+pub(super) struct ConsensusChildState<'a, ST, SCT, EPT, BPT, ESRT, VTF, LT, BVT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, ESRT, CCT, CRT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
-    consensus: &'a mut ConsensusMode<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
+    consensus: &'a mut ConsensusMode<ST, SCT, EPT, BPT, ESRT, CCT, CRT>,
     certificate_cache: &'a mut CertificateCache<ST, SCT, EPT>,
 
     metrics: &'a mut Metrics,
     epoch_manager: &'a mut EpochManager,
     block_policy: &'a mut BPT,
-    state_backend: &'a SBT,
+    state_read: &'a mut ESRT,
 
     val_epoch_map: &'a ValidatorsEpochMapping<VTF, SCT>,
     leader_election: &'a LT,
@@ -115,22 +115,22 @@ where
     cert_keypair: &'a SignatureCollectionKeyPairType<SCT>,
 }
 
-impl<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
-    ConsensusChildState<'a, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>
+impl<'a, ST, SCT, EPT, BPT, ESRT, VTF, LT, BVT, CCT, CRT>
+    ConsensusChildState<'a, ST, SCT, EPT, BPT, ESRT, VTF, LT, BVT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    SBT: StateBackend<ST, SCT>,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
     LT: LeaderElection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     VTF: ValidatorSetTypeFactory<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    BVT: BlockValidator<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
+    BVT: BlockValidator<ST, SCT, EPT, BPT, ESRT, CCT, CRT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
     pub(super) fn new(
-        monad_state: &'a mut MonadState<ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>,
+        monad_state: &'a mut MonadState<ST, SCT, EPT, BPT, ESRT, VTF, LT, BVT, CCT, CRT>,
     ) -> Self {
         Self {
             consensus: &mut monad_state.consensus,
@@ -139,7 +139,7 @@ where
             metrics: &mut monad_state.metrics,
             epoch_manager: &mut monad_state.epoch_manager,
             block_policy: &mut monad_state.block_policy,
-            state_backend: &monad_state.state_backend,
+            state_read: &mut monad_state.state_read,
 
             val_epoch_map: &monad_state.val_epoch_map,
             leader_election: &monad_state.leader_election,
@@ -159,7 +159,7 @@ where
     pub(super) fn update(
         &mut self,
         event: ConsensusEvent<ST, SCT, EPT>,
-    ) -> Vec<WrappedConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
+    ) -> Vec<WrappedConsensusCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>> {
         let live = match self.consensus {
             ConsensusMode::Live(live) => live,
             ConsensusMode::Sync {
@@ -201,7 +201,7 @@ where
                                         consensus_tip =? new_root.seq_num,
                                         "setting new statesync target",
                                     );
-                                    self.metrics.consensus_events.trigger_state_sync += 1;
+                                    self.metrics.consensus_events.trigger_state_sync.inc();
                                     cmds.push(self.wrap(ConsensusCommand::RequestStateSync {
                                         root: new_root,
                                         high_qc: new_high_qc,
@@ -222,7 +222,7 @@ where
             metrics: self.metrics,
             epoch_manager: self.epoch_manager,
             block_policy: self.block_policy,
-            state_backend: self.state_backend,
+            state_read: self.state_read,
 
             val_epoch_map: self.val_epoch_map,
             election: self.leader_election,
@@ -262,17 +262,30 @@ where
                             ProtocolMessage::Proposal(msg) => {
                                 let proposal_epoch = msg.proposal_epoch;
                                 let proposal_round = msg.proposal_round;
+                                let first_proposal_for_round =
+                                    !consensus.has_handled_proposal(proposal_round);
                                 let mut proposal_cmds =
                                     consensus.handle_proposal_message(author, msg);
                                 // TODO:Maybe we could skip the below command if we could somehow determine that
                                 // the peer isn't publishing to full nodes at the moment?
                                 //
                                 // send verified_message carrying author signature
-                                proposal_cmds.push(ConsensusCommand::PublishToFullNodes {
-                                    epoch: proposal_epoch,
-                                    round: proposal_round,
-                                    message: verified_message,
-                                });
+                                //
+                                // only publish the first accepted proposal per round to full nodes:
+                                // secondary raptorcast receivers commit to a single message
+                                // per (publisher, round), so republishing a second (e.g.
+                                // equivocating) proposal would conflict at full nodes and
+                                // flag this node as the equivocator
+                                if first_proposal_for_round
+                                    && consensus.has_handled_proposal(proposal_round)
+                                {
+                                    proposal_cmds.push(ConsensusCommand::PublishToFullNodes {
+                                        epoch: proposal_epoch,
+                                        round: proposal_round,
+                                        broadcast_mode: FullnodeBroadcastMode::SecondaryRaptorcast,
+                                        message: verified_message,
+                                    });
+                                }
                                 proposal_cmds
                             }
                             ProtocolMessage::Vote(msg) => {
@@ -312,7 +325,7 @@ where
 
     fn try_build_state_wrapper<'b>(
         &'b mut self,
-    ) -> Option<ConsensusStateWrapper<'b, ST, SCT, EPT, BPT, SBT, VTF, LT, BVT, CCT, CRT>> {
+    ) -> Option<ConsensusStateWrapper<'b, ST, SCT, EPT, BPT, ESRT, VTF, LT, BVT, CCT, CRT>> {
         match self.consensus {
             ConsensusMode::Sync { .. } => None,
             ConsensusMode::Live(consensus) => Some(ConsensusStateWrapper {
@@ -321,7 +334,7 @@ where
                 metrics: self.metrics,
                 epoch_manager: self.epoch_manager,
                 block_policy: self.block_policy,
-                state_backend: self.state_backend,
+                state_read: self.state_read,
 
                 val_epoch_map: self.val_epoch_map,
                 election: self.leader_election,
@@ -350,7 +363,7 @@ where
             SCT,
             EPT,
             BPT,
-            SBT,
+            ESRT,
             CCT,
             CRT,
         >,
@@ -383,7 +396,7 @@ where
                 fresh_proposal_certificate,
             } => {
                 let _span = debug_span!("mempool proposal").entered();
-                consensus.metrics.consensus_events.creating_proposal += 1;
+                consensus.metrics.consensus_events.creating_proposal.inc();
                 let block_body = ConsensusBlockBody::new(ConsensusBlockBodyInner {
                     execution_body: proposed_execution_inputs.body,
                 });
@@ -422,7 +435,7 @@ where
                 .sign(self.keypair);
 
                 vec![Command::RouterCommand(RouterCommand::Publish {
-                    target: RouterTarget::Raptorcast(epoch),
+                    target: RouterTarget::Raptorcast { round, epoch },
                     message: VerifiedMonadMessage::Consensus(msg),
                 })]
             }
@@ -457,7 +470,7 @@ where
         &mut self,
         author: NodeId<CertificateSignaturePubKey<ST>>,
         validated_proposal: ProposalMessage<ST, SCT, EPT>,
-    ) -> Vec<WrappedConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
+    ) -> Vec<WrappedConsensusCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>> {
         let ConsensusMode::Live(mode) = self.consensus else {
             unreachable!("handle_validated_proposal when not live")
         };
@@ -468,7 +481,7 @@ where
             metrics: self.metrics,
             epoch_manager: self.epoch_manager,
             block_policy: self.block_policy,
-            state_backend: self.state_backend,
+            state_read: self.state_read,
 
             val_epoch_map: self.val_epoch_map,
             election: self.leader_election,
@@ -501,7 +514,7 @@ where
             metrics: self.metrics,
             epoch_manager: self.epoch_manager,
             block_policy: self.block_policy,
-            state_backend: self.state_backend,
+            state_read: self.state_read,
 
             val_epoch_map: self.val_epoch_map,
             election: self.leader_election,
@@ -538,7 +551,7 @@ where
         message: Unverified<ST, Unvalidated<ConsensusMessage<ST, SCT, EPT>>>,
     ) -> Result<
         Verified<ST, Validated<ConsensusMessage<ST, SCT, EPT>>>,
-        Vec<ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>>,
+        Vec<ConsensusCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>>,
     > {
         let verified_message = message
             .verify(epoch_manager, val_epoch_map, &sender.pubkey())
@@ -603,8 +616,8 @@ where
 
     fn filter_cmds(
         &self,
-        consensus_cmds: impl Iterator<Item = ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>>,
-    ) -> impl Iterator<Item = ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>> {
+        consensus_cmds: impl Iterator<Item = ConsensusCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>>,
+    ) -> impl Iterator<Item = ConsensusCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>> {
         let role = self.get_role();
 
         consensus_cmds.filter(move |cmd| {
@@ -628,8 +641,8 @@ where
 
     pub(super) fn wrap(
         &mut self,
-        command: ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
-    ) -> WrappedConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT> {
+        command: ConsensusCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>,
+    ) -> WrappedConsensusCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT> {
         WrappedConsensusCommand {
             upcoming_leader_rounds: self
                 .try_build_state_wrapper()
@@ -640,22 +653,22 @@ where
     }
 }
 
-pub(super) struct WrappedConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>
+pub(super) struct WrappedConsensusCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
     upcoming_leader_rounds: Vec<Round>,
-    pub command: ConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>,
+    pub command: ConsensusCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>,
 }
 
-impl<ST, SCT, EPT, BPT, SBT, CCT, CRT>
-    From<WrappedConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>>
+impl<ST, SCT, EPT, BPT, ESRT, CCT, CRT>
+    From<WrappedConsensusCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>>
     for Vec<
         Command<
             MonadEvent<ST, SCT, EPT>,
@@ -664,7 +677,7 @@ impl<ST, SCT, EPT, BPT, SBT, CCT, CRT>
             SCT,
             EPT,
             BPT,
-            SBT,
+            ESRT,
             CCT,
             CRT,
         >,
@@ -673,12 +686,12 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
-    fn from(wrapped: WrappedConsensusCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>) -> Self {
+    fn from(wrapped: WrappedConsensusCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>) -> Self {
         let WrappedConsensusCommand {
             upcoming_leader_rounds,
             command,
@@ -707,10 +720,12 @@ where
             ConsensusCommand::PublishToFullNodes {
                 epoch,
                 round,
+                broadcast_mode,
                 message,
             } => parent_cmds.push(Command::RouterCommand(RouterCommand::PublishToFullNodes {
                 epoch,
                 round,
+                broadcast_mode,
                 message: VerifiedMonadMessage::Consensus(message),
             })),
             ConsensusCommand::Schedule { round, duration } => {

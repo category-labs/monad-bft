@@ -28,14 +28,14 @@ mod publisher;
 use alloy_rlp::{Decodable, Encodable};
 use client::Client;
 use futures::{Future, Stream};
-use group_message::FullNodesGroupMessage;
+use group_message::{ConfirmGroup, FullNodesGroupMessage};
 use monad_crypto::certificate_signature::{
     CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{Message, PeerEntry, RouterCommand};
 use monad_peer_discovery::{driver::PeerDiscoveryDriver, PeerDiscoveryAlgo, PeerDiscoveryEvent};
-use monad_types::{Epoch, NodeId, Round};
+use monad_types::{Epoch, FullnodeBroadcastMode, NodeId, Round};
 use publisher::Publisher;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
@@ -45,7 +45,7 @@ use tracing::{debug, error, trace, warn};
 use crate::{
     config::{RaptorCastConfig, SecondaryRaptorCastMode},
     message::OutboundRouterMessage,
-    util::{SecondaryGroup, SecondaryGroupAssignment},
+    util::{budgeted, SecondaryGroup, SecondaryGroupAssignment},
     RaptorCastEvent,
 };
 
@@ -61,11 +61,12 @@ pub enum SecondaryOutboundMessage<PT: PubKey> {
     SendSingle {
         msg_bytes: bytes::Bytes,
         dest: NodeId<PT>,
-        epoch: Epoch,
     },
     SendToGroup {
         msg_bytes: bytes::Bytes,
+        epoch: Epoch,
         round: Round,
+        broadcast_mode: FullnodeBroadcastMode,
         group: SecondaryGroup<PT>,
     },
 }
@@ -90,8 +91,6 @@ where
     // (i.e. we are a validator) or a client role (full-node raptor-casted to)
     // Represents only the group logic, excluding everything network related.
     role: Role<ST>,
-
-    curr_epoch: Epoch,
 
     peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
 
@@ -122,7 +121,6 @@ where
         channel_to_primary_outbound: UnboundedSender<
             SecondaryOutboundMessage<CertificateSignaturePubKey<ST>>,
         >,
-        current_epoch: Epoch,
     ) -> Self {
         let node_id = NodeId::new(config.shared_key.pubkey());
 
@@ -147,7 +145,6 @@ where
 
         Self {
             role,
-            curr_epoch: current_epoch,
             peer_discovery_driver,
             channel_from_primary,
             channel_to_primary_outbound,
@@ -179,7 +176,6 @@ where
         let outbound = SecondaryOutboundMessage::SendSingle {
             msg_bytes,
             dest: dest_node,
-            epoch: self.curr_epoch,
         };
         if let Err(err) = self.channel_to_primary_outbound.send(outbound) {
             error!(?err, "failed to send message to primary");
@@ -218,7 +214,20 @@ where
             filled_confirm_msg.name_records = Default::default();
             for node_id in dest_node_ids.iter() {
                 if let Some(name_record) = name_records.get(node_id) {
-                    filled_confirm_msg.name_records.push(name_record.clone());
+                    if let Err(err) = filled_confirm_msg
+                        .name_records
+                        .try_push(name_record.clone())
+                    {
+                        warn!(
+                            ?node_id,
+                            ?group_msg,
+                            capacity = err.capacity,
+                            "RaptorCastSecondary: ConfirmGroup.name_records at capacity; \
+                             dropping remaining records. Should be unreachable given \
+                             boot-time max_group_size validation.",
+                        );
+                        break;
+                    }
                 } else {
                     // Maybe can happen if peer discovery gets pruned just
                     // before sending a ConfirmGroup message.
@@ -230,6 +239,112 @@ where
             return FullNodesGroupMessage::ConfirmGroup(filled_confirm_msg);
         }
         group_msg
+    }
+
+    // Handles one group message forwarded by the primary instance,
+    // returning the event to yield from the stream, if any.
+    fn handle_group_message(
+        &mut self,
+        inbound_grp_msg: FullNodesGroupMessage<ST>,
+    ) -> Option<RaptorCastEvent<M::Event, ST>> {
+        match &mut self.role {
+            Role::Publisher(publisher) => {
+                if let Some((msg, node_id)) = publisher.on_candidate_response(inbound_grp_msg) {
+                    self.send_single_msg(msg, node_id);
+                }
+                None
+            }
+
+            Role::Client(client) => {
+                trace!("RaptorCastSecondary received group message");
+                // Received group message from validator
+                match inbound_grp_msg {
+                    FullNodesGroupMessage::PrepareGroup(invite_msg) => {
+                        let dest_node_id = invite_msg.validator_id;
+                        let resp = client.handle_prepare_group_message(invite_msg);
+
+                        // Send back a response to the validator
+                        trace!("RaptorCastSecondary sending back response for group message");
+                        self.send_single_msg(
+                            FullNodesGroupMessage::PrepareGroupResponse(resp),
+                            dest_node_id,
+                        );
+                        None
+                    }
+                    FullNodesGroupMessage::ConfirmGroup(confirm_msg) => {
+                        if !client.handle_confirm_group_message(&confirm_msg) {
+                            return None;
+                        }
+                        self.on_group_confirmed(confirm_msg)
+                    }
+                    FullNodesGroupMessage::NoConfirm(no_confirm) => {
+                        client.handle_no_confirm_message(no_confirm);
+                        None
+                    }
+                    FullNodesGroupMessage::PrepareGroupResponse(_) => {
+                        error!(
+                            "RaptorCastSecondary client received a PrepareGroupResponse message"
+                        );
+                        None
+                    }
+                    FullNodesGroupMessage::ParticipationReport(_) => {
+                        error!("RaptorCastSecondary client received a ParticipationReport message");
+                        None
+                    }
+                }
+            }
+        }
+    }
+
+    // Reacts to a group we just confirmed as client: feeds the
+    // group's peers to peer discovery and produces the corresponding
+    // peers-update event. Returns None if the message carries no
+    // usable name records.
+    fn on_group_confirmed(
+        &self,
+        confirm_msg: ConfirmGroup<ST>,
+    ) -> Option<RaptorCastEvent<M::Event, ST>> {
+        let num_mappings = confirm_msg.name_records.len();
+        if num_mappings == 0 {
+            return None;
+        }
+        if num_mappings != confirm_msg.peers.len() {
+            warn!(?confirm_msg, num_peers =? confirm_msg.peers.len(), num_name_recs =? confirm_msg.name_records.len(),
+                "Number of peers does not match the number \
+                of name records in ConfirmGroup message. \
+                Skipping PeerDiscovery update"
+            );
+            return None;
+        }
+
+        // Update peer discovery with peers from confirm group message
+        let peers: Vec<PeerEntry<ST>> = confirm_msg
+            .name_records
+            .iter()
+            .zip(confirm_msg.peers.iter())
+            .map(|(rec, peer)| rec.with_pubkey(peer.pubkey()).into())
+            .collect();
+        self.peer_discovery_driver
+            .lock()
+            .unwrap()
+            .update(PeerDiscoveryEvent::UpdatePeers { peers });
+
+        // participated_nodes contains the validator and all full nodes in the group
+        let mut participated_nodes: BTreeSet<NodeId<CertificateSignaturePubKey<ST>>> =
+            confirm_msg.peers.clone().into_iter().collect();
+        participated_nodes.insert(confirm_msg.prepare.validator_id);
+        self.peer_discovery_driver
+            .lock()
+            .unwrap()
+            .update(PeerDiscoveryEvent::UpdateConfirmGroup {
+                end_round: confirm_msg.prepare.end_round,
+                peers: participated_nodes.clone(),
+            });
+
+        Some(RaptorCastEvent::SecondaryRaptorcastPeersUpdate(
+            confirm_msg.prepare.end_round,
+            participated_nodes.into_iter().collect(),
+        ))
     }
 }
 
@@ -298,7 +413,6 @@ where
                             ?round,
                             "RaptorCastSecondary UpdateCurrentRound (Publisher)"
                         );
-                        self.curr_epoch = epoch;
                         // The publisher needs to be periodically informed about new nodes out there,
                         // so that it can randomize when creating new groups.
                         let full_nodes = self
@@ -335,8 +449,9 @@ where
                 },
 
                 Self::Command::PublishToFullNodes {
-                    epoch: _,
+                    epoch,
                     round,
+                    broadcast_mode,
                     message,
                 } => {
                     let group = match &mut self.role {
@@ -372,7 +487,9 @@ where
 
                     let outbound = SecondaryOutboundMessage::SendToGroup {
                         msg_bytes: outbound_message,
+                        epoch,
                         round,
+                        broadcast_mode,
                         group,
                     };
                     if let Err(err) = self.channel_to_primary_outbound.send(outbound) {
@@ -391,6 +508,8 @@ where
     }
 }
 
+const GROUP_MESSAGE_POLL_QUOTA: usize = 64;
+
 impl<ST, M, OM, E, PD> Stream for RaptorCastSecondary<ST, M, OM, E, PD>
 where
     ST: CertificateSignatureRecoverable,
@@ -402,109 +521,34 @@ where
 {
     type Item = E;
 
-    // Since we are sending to full-nodes only, and not receiving anything from them,
-    // we don't need to handle any receive here and this is just to satisfy traits
+    // Drives the group formation protocol from messages forwarded by
+    // the primary instance. All network receiving happens in the
+    // primary; this stream only consumes the forwarding channel.
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
 
-        let inbound_grp_msg = match pin!(this.channel_from_primary.recv()).poll(cx) {
-            Poll::Ready(Some(inbound_grp_msg)) => inbound_grp_msg,
-            Poll::Ready(None) => {
-                tracing::error!("RaptorCastSecondary channel disconnected.");
-                // TODO: should we return Poll::Ready(None) here?
-                return Poll::Pending;
-            }
-            Poll::Pending => {
-                // No group message received, so we are not ready to process anything
-                return Poll::Pending;
-            }
-        };
-
-        let mut ret = Poll::Pending;
-
-        match &mut this.role {
-            Role::Publisher(publisher) => {
-                if let Some((msg, node_id)) = publisher.on_candidate_response(inbound_grp_msg) {
-                    this.send_single_msg(msg, node_id);
+        // Keep draining group messages until the channel is empty to
+        // ensure the waker is registered, within a quota preventing a
+        // continuously non-empty channel from starving other tasks.
+        let mut poll_quota = GROUP_MESSAGE_POLL_QUOTA;
+        loop {
+            let recv = budgeted(this.channel_from_primary.recv(), &mut poll_quota);
+            let inbound_grp_msg = match pin!(recv).poll(cx) {
+                Poll::Ready(Some(inbound_grp_msg)) => inbound_grp_msg,
+                Poll::Ready(None) => {
+                    tracing::error!("RaptorCastSecondary channel disconnected.");
+                    // TODO: should we return Poll::Ready(None) here?
+                    return Poll::Pending;
                 }
-            }
-
-            Role::Client(client) => {
-                trace!("RaptorCastSecondary received group message");
-                // Received group message from validator
-                match inbound_grp_msg {
-                    FullNodesGroupMessage::PrepareGroup(invite_msg) => {
-                        let dest_node_id = invite_msg.validator_id;
-                        let resp = client.handle_prepare_group_message(invite_msg);
-
-                        // Send back a response to the validator
-                        trace!("RaptorCastSecondary sending back response for group message");
-                        this.send_single_msg(
-                            FullNodesGroupMessage::PrepareGroupResponse(resp),
-                            dest_node_id,
-                        );
-                    }
-                    FullNodesGroupMessage::PrepareGroupResponse(_) => {
-                        error!(
-                            "RaptorCastSecondary client received a PrepareGroupResponse message"
-                        );
-                    }
-                    FullNodesGroupMessage::ParticipationReport(_) => {
-                        error!("RaptorCastSecondary client received a ParticipationReport message");
-                    }
-                    FullNodesGroupMessage::ConfirmGroup(confirm_msg) => {
-                        let is_valid = client.handle_confirm_group_message(confirm_msg.clone());
-                        if is_valid {
-                            // Update peer discovery with peers from confirm group message
-                            let num_mappings = confirm_msg.name_records.len();
-                            if num_mappings > 0 && num_mappings == confirm_msg.peers.len() {
-                                let peers: Vec<PeerEntry<ST>> = confirm_msg
-                                    .name_records
-                                    .iter()
-                                    .zip(confirm_msg.peers.iter())
-                                    .map(|(rec, peer)| rec.with_pubkey(peer.pubkey()).into())
-                                    .collect();
-
-                                this.peer_discovery_driver
-                                    .lock()
-                                    .unwrap()
-                                    .update(PeerDiscoveryEvent::UpdatePeers { peers });
-
-                                // participated_nodes contains the validator and all full nodes in the group
-                                let mut participated_nodes: BTreeSet<
-                                    NodeId<CertificateSignaturePubKey<ST>>,
-                                > = confirm_msg.peers.clone().into_iter().collect();
-                                participated_nodes.insert(confirm_msg.prepare.validator_id);
-                                this.peer_discovery_driver.lock().unwrap().update(
-                                    PeerDiscoveryEvent::UpdateConfirmGroup {
-                                        end_round: confirm_msg.prepare.end_round,
-                                        peers: participated_nodes.clone(),
-                                    },
-                                );
-
-                                ret = Poll::Ready(Some(
-                                    RaptorCastEvent::SecondaryRaptorcastPeersUpdate(
-                                        confirm_msg.prepare.end_round,
-                                        participated_nodes.into_iter().collect(),
-                                    )
-                                    .into(),
-                                ));
-                            } else if num_mappings > 0 {
-                                warn!(?confirm_msg, num_peers =? confirm_msg.peers.len(), num_name_recs =? confirm_msg.name_records.len(),
-                                    "Number of peers does not match the number \
-                                    of name records in ConfirmGroup message. \
-                                    Skipping PeerDiscovery update"
-                                );
-                            }
-                        }
-                    }
-                    FullNodesGroupMessage::NoConfirm(no_confirm) => {
-                        client.handle_no_confirm_message(no_confirm);
-                    }
+                Poll::Pending => {
+                    // No group message received, so we are not ready to process anything
+                    return Poll::Pending;
                 }
+            };
+
+            if let Some(event) = this.handle_group_message(inbound_grp_msg) {
+                return Poll::Ready(Some(event.into()));
             }
         }
-
-        ret
     }
 }

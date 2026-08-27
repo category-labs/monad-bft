@@ -50,6 +50,10 @@ monad_executor::metric_consts! {
     }
 }
 
+fn init_executor_metrics() -> ExecutorMetrics {
+    ExecutorMetrics::with_metric_defs(&[PUBLISHER_CURRENT_GROUP_SIZE, PUBLISHER_SENT_INVITES])
+}
+
 type FullNodesST<ST> = Vec<NodeId<CertificateSignaturePubKey<ST>>>;
 type TimePoint = Round;
 
@@ -230,10 +234,16 @@ where
             scheduling_cfg.max_invite_wait +
             scheduling_cfg.deadline_round_dist;
         if scheduling_cfg.init_empty_round_span < min_allowed_init_span {
-            panic!("init_empty_round_span infeasibly short");
+            panic!("full_node_raptorcast.init_empty_round_span infeasibly short");
         }
         if scheduling_cfg.invite_lookahead < min_allowed_init_span {
-            panic!("invite_lookahead infeasibly short");
+            panic!("full_node_raptorcast.invite_lookahead infeasibly short");
+        }
+        if scheduling_cfg.round_span > super::client::MAX_ACCEPTED_ROUND_SPAN {
+            panic!(
+                "full_node_raptorcast.round_span exceeds MAX_ACCEPTED_ROUND_SPAN({})",
+                super::client::MAX_ACCEPTED_ROUND_SPAN.0
+            );
         }
 
         // Remove duplicate entries from always_ask_full_nodes, but making sure
@@ -266,7 +276,7 @@ where
             curr_round: Round::MIN,
             curr_group: CurrentGroup::Init,
             pending_scores: BTreeMap::new(),
-            metrics: ExecutorMetrics::default(),
+            metrics: init_executor_metrics(),
         }
     }
 
@@ -328,7 +338,7 @@ where
             // Not serving any full nodes in current round
             self.curr_group =
                 CurrentGroup::inactive(new_round, self.scheduling_cfg.init_empty_round_span);
-            self.metrics[PUBLISHER_CURRENT_GROUP_SIZE] = 0;
+            self.metrics.gauge(PUBLISHER_CURRENT_GROUP_SIZE).set(0);
             return;
         };
 
@@ -356,7 +366,7 @@ where
                     round, next group is",
             );
             // Not serving any full nodes in current round
-            self.metrics[PUBLISHER_CURRENT_GROUP_SIZE] = 0;
+            self.metrics.gauge(PUBLISHER_CURRENT_GROUP_SIZE).set(0);
             self.curr_group =
                 CurrentGroup::inactive(new_round, self.scheduling_cfg.init_empty_round_span);
             return;
@@ -366,13 +376,15 @@ where
         self.curr_group = next_group.remove().to_finalized_group();
         match &self.curr_group {
             CurrentGroup::Inactive { .. } => {
-                self.metrics[PUBLISHER_CURRENT_GROUP_SIZE] = 0;
+                self.metrics.gauge(PUBLISHER_CURRENT_GROUP_SIZE).set(0);
             }
             CurrentGroup::Active {
                 members,
                 round_span,
             } => {
-                self.metrics[PUBLISHER_CURRENT_GROUP_SIZE] = members.len().get() as u64;
+                self.metrics
+                    .gauge(PUBLISHER_CURRENT_GROUP_SIZE)
+                    .set(members.len().get() as u64);
 
                 // Register this group for participation report collection
                 self.pending_scores
@@ -403,7 +415,7 @@ where
         trace!(?time_point, ?schedule_end, "RaptorCastSecondary step_until");
 
         // Check if scheduled groups need servicing: time-outs, invites, confirm
-        for (_, group) in self.group_schedule.iter_mut() {
+        for group in self.group_schedule.values_mut() {
             if let Some(out_msg) =
                 group.advance_invites(time_point, &self.scheduling_cfg, self.validator_node_id)
             {
@@ -414,7 +426,9 @@ where
 
                 // record number of invites
                 if let FullNodesGroupMessage::PrepareGroup(_) = &out_msg.0 {
-                    self.metrics[PUBLISHER_SENT_INVITES] += out_msg.1.len() as u64;
+                    self.metrics
+                        .gauge(PUBLISHER_SENT_INVITES)
+                        .add(out_msg.1.len() as u64);
                 }
 
                 return Some(out_msg);
@@ -439,9 +453,11 @@ where
             self.group_schedule.insert(new_group.start_round, new_group);
 
             // record number of invites for new group
-            self.metrics[PUBLISHER_SENT_INVITES] += maybe_invites
-                .as_ref()
-                .map_or(0, |(_, full_nodes)| full_nodes.len() as u64);
+            self.metrics.gauge(PUBLISHER_SENT_INVITES).add(
+                maybe_invites
+                    .as_ref()
+                    .map_or(0, |(_, full_nodes)| full_nodes.len() as u64),
+            );
 
             return maybe_invites;
         }
@@ -1646,20 +1662,20 @@ mod tests {
         assert_eq!(reply_msg.node_id, nid(10));
         assert_eq!(reply_msg.req, make_prep_data(50));
 
-        let is_valid = clt.handle_confirm_group_message(make_confirm_msg(50));
+        let is_valid = clt.handle_confirm_group_message(&make_confirm_msg(50));
         assert!(is_valid, "ConfirmGroup for rounds [50, 52) should be valid");
 
         // Receive invite for rounds [52, 54), from V0
         clt.handle_prepare_group_message(make_invite_msg(52));
-        assert!(clt.handle_confirm_group_message(make_confirm_msg(52)));
+        assert!(clt.handle_confirm_group_message(&make_confirm_msg(52)));
 
         // Receive invite for rounds [60, 62), from V0
         clt.handle_prepare_group_message(make_invite_msg(60));
-        assert!(clt.handle_confirm_group_message(make_confirm_msg(60)));
+        assert!(clt.handle_confirm_group_message(&make_confirm_msg(60)));
 
         // Receive invite for rounds [62, 64), from V0
         clt.handle_prepare_group_message(make_invite_msg(62));
-        assert!(clt.handle_confirm_group_message(make_confirm_msg(62)));
+        assert!(clt.handle_confirm_group_message(&make_confirm_msg(62)));
 
         // Receive raptorcast with proposal 50
         let rc_grp = &group_map.get_rc_group_peers(&clt, &nid(0));
@@ -1789,8 +1805,8 @@ mod tests {
         // This is the last opportunity to receive confirm for group 1.
         // Lets accept both here, out of order.
         assert_eq!(clt.num_pending_confirms(), 2);
-        assert!(clt.handle_confirm_group_message(make_confirm_msg(8)));
-        assert!(clt.handle_confirm_group_message(make_confirm_msg(5)));
+        assert!(clt.handle_confirm_group_message(&make_confirm_msg(8)));
+        assert!(clt.handle_confirm_group_message(&make_confirm_msg(5)));
 
         //-------------------------------------------------------------------[5]
         clt.enter_round(Round(5));
@@ -1907,8 +1923,8 @@ mod tests {
         // Note that make_confirm_msg() return node ids = start_round + 10,
         // so the first node in the second group is 45
         assert_eq!(clt.num_pending_confirms(), 2);
-        assert!(clt.handle_confirm_group_message(make_confirm_msg(38)));
-        assert!(clt.handle_confirm_group_message(make_confirm_msg(35)));
+        assert!(clt.handle_confirm_group_message(&make_confirm_msg(38)));
+        assert!(clt.handle_confirm_group_message(&make_confirm_msg(35)));
 
         //------------------------------------------------------------------[35]
         clt.enter_round(Round(35));
@@ -2011,7 +2027,7 @@ mod tests {
         assert_eq!(validator_id, nid(0));
         assert!(reply_msg.accept);
         assert_eq!(reply_msg.req, invite_data(8, 0));
-        assert!(clt.handle_confirm_group_message(make_confirm_msg(8, 0)));
+        assert!(clt.handle_confirm_group_message(&make_confirm_msg(8, 0)));
 
         // Invite v1.0
         let invite_msg = make_invite_msg(9, 1);
@@ -2021,7 +2037,7 @@ mod tests {
         assert_eq!(validator_id, nid(1));
         assert!(reply_msg.accept);
         assert_eq!(reply_msg.req, invite_data(9, 1));
-        assert!(clt.handle_confirm_group_message(make_confirm_msg(9, 1)));
+        assert!(clt.handle_confirm_group_message(&make_confirm_msg(9, 1)));
 
         //-------------------------------------------------------------------[2]
         clt.enter_round(Round(2));
@@ -2041,7 +2057,7 @@ mod tests {
         assert_eq!(validator_id, nid(2));
         assert!(reply_msg.accept);
         assert_eq!(reply_msg.req, invite_data(me, 2));
-        assert!(clt.handle_confirm_group_message(make_confirm_msg(me, 2)));
+        assert!(clt.handle_confirm_group_message(&make_confirm_msg(me, 2)));
 
         // Invite v0.1
         let invite_msg = make_invite_msg(11, 0);
@@ -2051,7 +2067,7 @@ mod tests {
         assert_eq!(validator_id, nid(0));
         assert!(reply_msg.accept);
         assert_eq!(reply_msg.req, invite_data(11, 0));
-        assert!(clt.handle_confirm_group_message(make_confirm_msg(11, 0)));
+        assert!(clt.handle_confirm_group_message(&make_confirm_msg(11, 0)));
 
         //-------------------------------------------------------------------[3]
         clt.enter_round(Round(3));
@@ -2071,7 +2087,7 @@ mod tests {
         assert_eq!(validator_id, nid(0));
         assert!(reply_msg.accept);
         assert_eq!(reply_msg.req, invite_data(14, 0));
-        assert!(clt.handle_confirm_group_message(make_confirm_msg(14, 0)));
+        assert!(clt.handle_confirm_group_message(&make_confirm_msg(14, 0)));
 
         // Invite v1.1
         let invite_msg = make_invite_msg(14, 1);
@@ -2081,7 +2097,7 @@ mod tests {
         assert_eq!(validator_id, nid(1));
         assert!(reply_msg.accept);
         assert_eq!(reply_msg.req, invite_data(14, 1));
-        assert!(clt.handle_confirm_group_message(make_confirm_msg(14, 1)));
+        assert!(clt.handle_confirm_group_message(&make_confirm_msg(14, 1)));
 
         // Invite v2.1
         let invite_msg = make_invite_msg(14, 2);
@@ -2090,7 +2106,7 @@ mod tests {
 
         assert_eq!(validator_id, nid(2));
         assert_eq!(reply_msg.req, invite_data(14, 2));
-        assert!(clt.handle_confirm_group_message(make_confirm_msg(14, 2)));
+        assert!(clt.handle_confirm_group_message(&make_confirm_msg(14, 2)));
 
         //-----------------------------------------------------------------[4-7]
         // Simulated gap - no receiving proposals

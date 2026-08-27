@@ -326,7 +326,9 @@ impl BlsKeyPair {
 
     /// Import an already-derived secret scalar bytes.
     #[cfg(test)]
-    fn from_secret_key_bytes(mut secret_key: impl AsMut<[u8]>) -> Result<Self, BlsError> {
+    pub(crate) fn from_secret_key_bytes(
+        mut secret_key: impl AsMut<[u8]>,
+    ) -> Result<Self, BlsError> {
         let b = secret_key.as_mut();
         // blst validates the scalar (non-zero, < r).
         let sk = BlsSecretKey(blst_core::SecretKey::from_bytes(b).map_err(BlsError)?);

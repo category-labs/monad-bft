@@ -13,6 +13,7 @@ monad-peer-discovery = { workspace = true }
 monad-peer-score = { workspace = true }
 monad-raptorcast = { workspace = true }
 monad-types = { workspace = true }
+monad-validator = { workspace = true }
 
 alloy-rlp = { workspace = true }
 futures = { workspace = true }

@@ -34,7 +34,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, trace, warn};
 
 use super::{RecvUdpMsg, UdpMsg, UdpSocketId};
-use crate::buffer_ext::SocketBufferExt;
+use crate::{buffer_ext::SocketBufferExt, metrics::DataplaneMetrics};
 
 const PRIORITY_QUEUE_BYTES_CAPACITY: usize = 100 * 1024 * 1024;
 
@@ -170,6 +170,7 @@ pub(crate) fn spawn_tasks(
     buffer_size: Option<usize>,
     use_multishot: bool,
     bound_addrs_tx: std::sync::mpsc::SyncSender<Vec<(UdpSocketId, SocketAddr)>>,
+    metrics: DataplaneMetrics,
 ) {
     let mut tx_sockets = Vec::new();
     let mut bound_addrs = Vec::with_capacity(socket_configs.len());
@@ -184,7 +185,12 @@ pub(crate) fn spawn_tasks(
         let group_id = socket_id as u16;
         if use_multishot {
             let rx = tx.dup().expect("failed to dup socket");
-            spawn(rx_multishot_socket(rx, ingress_tx.clone(), group_id));
+            spawn(rx_multishot_socket(
+                rx,
+                ingress_tx.clone(),
+                group_id,
+                metrics.clone(),
+            ));
             trace!(
                 ?socket_id,
                 ?socket_addr,
@@ -193,7 +199,7 @@ pub(crate) fn spawn_tasks(
             );
         } else {
             let rx = tx.dup().expect("failed to dup socket");
-            spawn(rx_single_socket(rx, ingress_tx.clone()));
+            spawn(rx_single_socket(rx, ingress_tx.clone(), metrics.clone()));
             trace!(?socket_id, ?socket_addr, ?actual_addr, "created socket");
         }
 
@@ -201,16 +207,22 @@ pub(crate) fn spawn_tasks(
     }
 
     bound_addrs_tx.send(bound_addrs).unwrap();
-    spawn(tx(tx_sockets, udp_egress_rx, up_bandwidth_mbps));
+    spawn(tx(tx_sockets, udp_egress_rx, up_bandwidth_mbps, metrics));
 }
 
-async fn rx_single_socket(socket: UdpSocket, udp_ingress_tx: mpsc::Sender<RecvUdpMsg>) {
+async fn rx_single_socket(
+    socket: UdpSocket,
+    udp_ingress_tx: mpsc::Sender<RecvUdpMsg>,
+    metrics: DataplaneMetrics,
+) {
     loop {
         let buf = BytesMut::with_capacity(ETHERNET_SEGMENT_SIZE.into());
 
         match socket.recv_from(buf).await {
             (Ok((len, src_addr)), buf) => {
                 let payload = buf.freeze();
+                metrics.udp_messages_received.inc();
+                metrics.udp_bytes_received.add(len as u64);
 
                 let msg = RecvUdpMsg {
                     src_addr,
@@ -224,6 +236,7 @@ async fn rx_single_socket(socket: UdpSocket, udp_ingress_tx: mpsc::Sender<RecvUd
                 }
             }
             (Err(err), _buf) => {
+                metrics.udp_receive_errors.inc();
                 warn!("socket.recv_from() error {}", err);
             }
         }
@@ -240,6 +253,7 @@ async fn run_multishot_stream(
     socket: &UdpSocket,
     udp_ingress_tx: &mpsc::Sender<RecvUdpMsg>,
     ring: UserRecvMsgRingBuf<Ipv4RecvMsgParser>,
+    metrics: &DataplaneMetrics,
 ) -> MultishotResult<UserRecvMsgRingBuf<Ipv4RecvMsgParser>> {
     let mut multishot = socket
         .recvmsg_multishot(ring)
@@ -251,6 +265,8 @@ async fn run_multishot_stream(
             Ok((src_addr, buf)) => {
                 let payload = Bytes::copy_from_slice(&buf);
                 let len = payload.len();
+                metrics.udp_messages_received.inc();
+                metrics.udp_bytes_received.add(len as u64);
 
                 let msg = RecvUdpMsg {
                     src_addr: src_addr.into(),
@@ -264,9 +280,11 @@ async fn run_multishot_stream(
                 }
             }
             Err(e) if e.raw_os_error() == Some(libc::ENOBUFS) => {
+                metrics.udp_receive_errors.inc();
                 debug!("ringbuf exhausted, recreating stream");
             }
             Err(e) => {
+                metrics.udp_receive_errors.inc();
                 warn!("multishot recv error: {:?}", e);
             }
         }
@@ -286,6 +304,7 @@ async fn rx_multishot_socket(
     socket: UdpSocket,
     udp_ingress_tx: mpsc::Sender<RecvUdpMsg>,
     group_id: u16,
+    metrics: DataplaneMetrics,
 ) {
     let create_ring = || {
         UserRecvMsgRingBuf::<Ipv4RecvMsgParser>::new(
@@ -293,15 +312,25 @@ async fn rx_multishot_socket(
             DEFAULT_RINGBUF_SIZE as usize,
             group_id,
         )
-        .expect("failed to create buffer ring")
     };
 
-    let mut ring = create_ring();
+    let mut ring = match create_ring() {
+        Ok(ring) => ring,
+        Err(err) => {
+            warn!(
+                ?err,
+                "failed to create multishot buffer ring, falling back to single-shot UDP receiver"
+            );
+            return rx_single_socket(socket, udp_ingress_tx, metrics).await;
+        }
+    };
 
     loop {
-        match run_multishot_stream(&socket, &udp_ingress_tx, ring).await {
+        match run_multishot_stream(&socket, &udp_ingress_tx, ring, &metrics).await {
             MultishotResult::ReuseRing(r) => ring = r,
-            MultishotResult::RecreateRing => ring = create_ring(),
+            MultishotResult::RecreateRing => {
+                ring = create_ring().expect("failed to recreate multishot buffer ring")
+            }
             MultishotResult::ChannelClosed => return,
         }
     }
@@ -313,6 +342,7 @@ async fn tx(
     tx_sockets: Vec<(UdpSocketId, UdpSocket)>,
     mut udp_egress_rx: mpsc::Receiver<UdpMsg>,
     up_bandwidth_mbps: u64,
+    metrics: DataplaneMetrics,
 ) {
     let tx_sockets: HashMap<UdpSocketId, UdpSocket> = tx_sockets.into_iter().collect();
     let mut next_transmit = Instant::now();
@@ -334,7 +364,7 @@ async fn tx(
             }
         }
 
-        if fill_message_queues(&mut udp_egress_rx, &mut priority_queues)
+        if fill_message_queues(&mut udp_egress_rx, &mut priority_queues, &metrics)
             .await
             .is_err()
         {
@@ -363,6 +393,7 @@ async fn tx(
 
             if chunk_size + total_bytes > max_batch_bytes {
                 if let Err(err) = priority_queues.try_push(msg) {
+                    metrics.udp_egress_messages_dropped.inc();
                     warn!(?err, "failed to re-queue message");
                 }
                 break;
@@ -378,6 +409,7 @@ async fn tx(
 
             if !msg.payload.is_empty() {
                 if let Err(err) = priority_queues.try_push(msg) {
+                    metrics.udp_egress_messages_dropped.inc();
                     warn!(?err, "failed to re-queue message with remaining payload");
                 }
             }
@@ -403,23 +435,30 @@ async fn tx(
         }
 
         for (ret, chunk) in join_all(send_futures.drain(..)).await {
-            if let Err(err) = &ret {
-                match err.kind() {
-                    ErrorKind::NetworkUnreachable => {
-                        debug!("send address family mismatch. message is dropped")
-                    }
-                    ErrorKind::InvalidInput => {
-                        warn!(len = chunk.len(), "got EINVAL on send. message is dropped")
-                    }
-                    _ => {
-                        if is_eafnosupport(err) {
-                            debug!("send address family mismatch. message is dropped");
-                        } else {
-                            error!(
-                                len = chunk.len(),
-                                ?err,
-                                "unexpected send error. message is dropped"
-                            );
+            match ret {
+                Ok(payload_bytes_sent) => {
+                    metrics.udp_messages_sent.inc();
+                    metrics.udp_bytes_sent.add(payload_bytes_sent as u64);
+                }
+                Err(err) => {
+                    metrics.udp_send_errors.inc();
+                    match err.kind() {
+                        ErrorKind::NetworkUnreachable => {
+                            debug!("send address family mismatch. message is dropped")
+                        }
+                        ErrorKind::InvalidInput => {
+                            warn!(len = chunk.len(), "got EINVAL on send. message is dropped")
+                        }
+                        _ => {
+                            if is_eafnosupport(&err) {
+                                debug!("send address family mismatch. message is dropped");
+                            } else {
+                                error!(
+                                    len = chunk.len(),
+                                    ?err,
+                                    "unexpected send error. message is dropped"
+                                );
+                            }
                         }
                     }
                 }
@@ -436,11 +475,13 @@ async fn tx(
 async fn fill_message_queues(
     udp_egress_rx: &mut mpsc::Receiver<UdpMsg>,
     priority_queues: &mut PriorityQueues,
+    metrics: &DataplaneMetrics,
 ) -> Result<(), ()> {
     while priority_queues.is_empty() || !udp_egress_rx.is_empty() {
         match udp_egress_rx.recv().await {
             Some(udp_msg) => {
                 if let Err(err) = priority_queues.try_push(udp_msg) {
+                    metrics.udp_egress_messages_dropped.inc();
                     warn!(?err, "priority queue capacity exceeded, dropping message");
                 }
             }
@@ -550,5 +591,45 @@ mod tests {
             result.is_ok(),
             "main socket should still work after dup1 dropped"
         );
+    }
+
+    #[monoio::test(timer_enabled = true)]
+    async fn test_multishot_falls_back_when_ring_creation_fails() {
+        const GROUP_ID: u16 = 42;
+
+        let existing_ring = match UserRecvMsgRingBuf::<Ipv4RecvMsgParser>::new(
+            DEFAULT_RINGBUF_COUNT as u16,
+            DEFAULT_RINGBUF_SIZE as usize,
+            GROUP_ID,
+        ) {
+            Ok(ring) => Some(ring),
+            Err(err) if err.raw_os_error() == Some(libc::EINVAL) => None,
+            Err(err) => panic!("unexpected buffer ring creation error: {err}"),
+        };
+
+        let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let rx_socket = UdpSocket::bind(addr).unwrap();
+        let rx_addr = rx_socket.local_addr().unwrap();
+        let tx_socket = UdpSocket::bind(addr).unwrap();
+        let (ingress_tx, mut ingress_rx) = mpsc::channel(1);
+
+        spawn(rx_multishot_socket(
+            rx_socket,
+            ingress_tx,
+            GROUP_ID,
+            DataplaneMetrics::new(),
+        ));
+
+        let payload = b"fallback";
+        let bytes_sent = tx_socket.send_to(payload, rx_addr).await.0.unwrap();
+        assert_eq!(bytes_sent, payload.len());
+
+        let msg = time::timeout(Duration::from_secs(1), ingress_rx.recv())
+            .await
+            .expect("timed out waiting for UDP message")
+            .expect("UDP ingress channel closed");
+        assert_eq!(msg.payload.as_ref(), payload);
+
+        drop(existing_ring);
     }
 }

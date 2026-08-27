@@ -13,9 +13,9 @@ monad-blocksync = { workspace = true }
 monad-consensus-types = { workspace = true }
 monad-crypto = { workspace = true }
 monad-eth-types = { workspace = true }
+monad-execution-state-read = { workspace = true }
 monad-executor = { workspace = true }
 monad-executor-glue = { workspace = true }
-monad-state-backend = { workspace = true }
 monad-types = { workspace = true }
 monad-updaters = { workspace = true }
 monad-validator = { workspace = true }

@@ -17,13 +17,15 @@ use monad_types::BlockId;
 
 pub use self::{
     archive::ArchiveDataSource,
-    historical::{HistoricalDataSource, HistoricalDataSourceStack},
+    historical::{HistoricalDataSource, HistoricalDataSourceExt, HistoricalDataSourceStack},
     stack::DataSourceStack,
+    triedb::TriedbDataSource,
 };
 
 mod archive;
 mod historical;
 mod stack;
+mod triedb;
 
 pub type DataSourceResult<T> = Result<T, DataSourceError>;
 
@@ -45,4 +47,13 @@ pub enum BlockCommitState {
 pub enum BlockPointer {
     Finalized(u64),
     NonFinalized(u64, BlockId),
+}
+
+/// Canonical block representation shared by historical data sources.
+#[derive(Clone, Debug)]
+pub struct HistoricalBlockData {
+    pub header: alloy_consensus::Header,
+    pub header_hash_precomputed: Option<alloy_primitives::BlockHash>,
+
+    pub transactions: Vec<monad_eth_types::TxEnvelopeWithSender>,
 }

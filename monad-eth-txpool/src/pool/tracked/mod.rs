@@ -27,7 +27,7 @@ use monad_crypto::certificate_signature::{
 };
 use monad_eth_block_policy::nonce_usage::NonceUsageMap;
 use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress};
-use monad_state_backend::StateBackend;
+use monad_execution_state_read::ExecutionStateRead;
 use monad_validator::signature_collection::SignatureCollection;
 use tracing::error;
 
@@ -45,11 +45,11 @@ mod priority;
 /// account_nonce stored in the TrackedTxList which is guaranteed to be the correct
 /// account_nonce for the seqnum stored in last_commit_seq_num.
 #[derive(Clone, Debug)]
-pub struct TrackedTxMap<ST, SCT, SBT, CCT, CRT>
+pub struct TrackedTxMap<ST, SCT, ESRT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend<ST, SCT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
 {
     // By using IndexMap, we can iterate through the map with Vec-like performance and are able to
     // evict expired txs through the entry API.
@@ -57,14 +57,14 @@ where
     priority: PriorityMap,
     limits: TrackedTxLimits,
 
-    _phantom: PhantomData<(ST, SCT, SBT, CCT, CRT)>,
+    _phantom: PhantomData<(ST, SCT, ESRT, CCT, CRT)>,
 }
 
-impl<ST, SCT, SBT, CCT, CRT> TrackedTxMap<ST, SCT, SBT, CCT, CRT>
+impl<ST, SCT, ESRT, CCT, CRT> TrackedTxMap<ST, SCT, ESRT, CCT, CRT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend<ST, SCT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CertificateSignaturePubKey<ST>: ExtractEthAddress,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,

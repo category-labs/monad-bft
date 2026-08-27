@@ -12,14 +12,15 @@ bench = false
 monad-bls = { workspace = true }
 monad-crypto = { workspace = true }
 monad-eth-types = { workspace = true }
+monad-execution-state-read = { workspace = true }
 monad-secp = { workspace = true }
-monad-state-backend = { workspace = true }
 monad-triedb = { workspace = true }
 monad-types = { workspace = true }
 
 alloy-consensus = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
+auto_impl = { workspace = true }
 futures = { workspace = true }
 tokio = { workspace = true, features = ["rt"] }
 tracing = { workspace = true, features = ["log"] }

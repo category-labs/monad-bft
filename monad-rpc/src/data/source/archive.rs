@@ -23,7 +23,8 @@ use monad_archive::{
 use monad_eth_types::TxEnvelopeWithSender;
 
 use super::{
-    BlockCommitState, BlockPointer, DataSourceError, DataSourceResult, HistoricalDataSource,
+    BlockCommitState, BlockPointer, DataSourceError, DataSourceResult, HistoricalBlockData,
+    HistoricalDataSource, HistoricalDataSourceExt,
 };
 
 #[derive(Clone)]
@@ -104,15 +105,26 @@ impl HistoricalDataSource for ArchiveDataSource {
     async fn get_block(
         &self,
         pointer: BlockPointer,
-    ) -> DataSourceResult<Option<(Header, Vec<TxEnvelopeWithSender>)>> {
-        let block = get_block_from_archive(&self.archive_reader, pointer).await?;
+    ) -> DataSourceResult<Option<HistoricalBlockData>> {
+        let Some(block) = get_block_from_archive(&self.archive_reader, pointer).await? else {
+            return Ok(None);
+        };
 
-        Ok(block.map(|b| (b.header, b.body.transactions)))
+        Ok(Some(HistoricalBlockData {
+            header: block.header,
+            header_hash_precomputed: None,
+
+            transactions: block.body.transactions,
+        }))
     }
 
     async fn get_block_header(&self, pointer: BlockPointer) -> DataSourceResult<Option<Header>> {
-        let block = get_block_from_archive(&self.archive_reader, pointer).await?;
+        let Some(block) = get_block_from_archive(&self.archive_reader, pointer).await? else {
+            return Ok(None);
+        };
 
-        Ok(block.map(|b| b.header))
+        Ok(Some(block.header))
     }
 }
+
+impl HistoricalDataSourceExt for ArchiveDataSource {}

@@ -33,6 +33,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignature, CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_dataplane::{DataplaneBuilder, TcpSocketId, UdpSocketId};
+use monad_execution_state_read::InMemoryState;
 use monad_executor_glue::{Command, MonadEvent, RouterCommand, ValSetCommand};
 use monad_peer_discovery::{
     driver::PeerDiscoveryDriver,
@@ -45,7 +46,6 @@ use monad_raptorcast::{
     RaptorCast,
 };
 use monad_state::{Forkpoint, MonadMessage, MonadState, MonadStateBuilder, VerifiedMonadMessage};
-use monad_state_backend::InMemoryState;
 use monad_types::{Epoch, ExecutionProtocol, NodeId, Round, SeqNum};
 use monad_updaters::{
     config_file::MockConfigFile, config_loader::MockConfigLoader, ledger::MockLedger,
@@ -102,7 +102,7 @@ where
 
 pub fn make_monad_executor<ST, SCT>(
     index: usize,
-    state_backend: InMemoryState<ST, SCT>,
+    state_read: InMemoryState<ST, SCT>,
     config: ExecutorConfig<ST, SCT, MockExecutionProtocol>,
 ) -> ParentExecutor<
     BoxUpdater<
@@ -199,17 +199,18 @@ where
                     tcp_socket,
                     authenticated,
                     None,
-                    non_authenticated_socket,
+                    Some(non_authenticated_socket),
                     control,
                     shared_peer_discovery_driver,
                     Epoch(0),
+                    monad_raptorcast::dummy_proposer_schedule(),
                 ))
             }
         },
 
         timer: TokioTimer::default(),
         ledger: match config.ledger_config {
-            LedgerConfig::Mock => MockLedger::new(state_backend.clone()),
+            LedgerConfig::Mock => MockLedger::new(state_read.clone()),
         },
         config_file: MockConfigFile::default(),
         val_set: match config.val_set_config {
@@ -230,7 +231,7 @@ where
         )
         .expect("uds bind failed"),
         loopback: LoopbackExecutor::default(),
-        state_sync: MockStateSyncExecutor::new(state_backend),
+        state_sync: MockStateSyncExecutor::new(state_read),
         config_loader: MockConfigLoader::default(),
     }
 }
@@ -265,7 +266,7 @@ where
 }
 
 pub fn make_monad_state<ST, SCT>(
-    state_backend: InMemoryState<ST, SCT>,
+    state_read: InMemoryState<ST, SCT>,
     config: StateConfig<ST, SCT>,
 ) -> (
     MonadStateType<ST, SCT>,
@@ -301,7 +302,7 @@ where
         leader_election: SimpleRoundRobin::default(),
         block_validator: MockValidator {},
         block_policy: PassthruBlockPolicy {},
-        state_backend,
+        state_read,
         key: config.key,
         certkey: config.cert_key,
         beneficiary: Default::default(),
@@ -312,6 +313,7 @@ where
         consensus_config: config.consensus_config,
         whitelisted_statesync_nodes: Default::default(),
         statesync_expand_to_group: true,
+        serve_statesync: true,
 
         _phantom: PhantomData,
     }

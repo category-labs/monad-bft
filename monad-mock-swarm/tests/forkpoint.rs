@@ -28,15 +28,14 @@ use monad_crypto::{
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthBlockValidator;
 use monad_eth_types::EthExecutionProtocol;
+use monad_execution_state_read::{InMemoryState, InMemoryStateInner};
 use monad_mock_swarm::{
     mock::TimestamperConfig, mock_swarm::SwarmBuilder, node::NodeBuilder,
-    swarm_relation::SwarmRelation, terminator::UntilTerminator,
+    swarm::make_state_configs, swarm_relation::SwarmRelation, terminator::UntilTerminator,
 };
 use monad_multi_sig::MultiSig;
 use monad_router_scheduler::{NoSerRouterConfig, NoSerRouterScheduler, RouterSchedulerBuilder};
 use monad_state::{MonadMessage, VerifiedMonadMessage};
-use monad_state_backend::{InMemoryState, InMemoryStateInner};
-use monad_testutil::swarm::make_state_configs;
 use monad_transformer::{GenericTransformer, GenericTransformerPipeline, LatencyTransformer, ID};
 use monad_types::{NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 use monad_updaters::{
@@ -53,7 +52,7 @@ impl SwarmRelation for ForkpointSwarm {
     type SignatureType = NopSignature;
     type SignatureCollectionType = MultiSig<Self::SignatureType>;
     type ExecutionProtocolType = EthExecutionProtocol;
-    type StateBackendType = InMemoryState<Self::SignatureType, Self::SignatureCollectionType>;
+    type ExecutionStateReadType = InMemoryState<Self::SignatureType, Self::SignatureCollectionType>;
     type BlockPolicyType = EthBlockPolicy<
         Self::SignatureType,
         Self::SignatureCollectionType,
@@ -105,7 +104,7 @@ impl SwarmRelation for ForkpointSwarm {
         Self::SignatureCollectionType,
         Self::ExecutionProtocolType,
         Self::BlockPolicyType,
-        Self::StateBackendType,
+        Self::ExecutionStateReadType,
         Self::ChainConfigType,
         Self::ChainRevisionType,
     >;
@@ -386,17 +385,17 @@ fn forkpoint_restart_one(
                 .into_iter()
                 .enumerate()
                 .map(|(seed, state_builder)| {
-                    let state_backend = state_builder.state_backend.clone();
+                    let state_read = state_builder.state_read.clone();
                     NodeBuilder::<ForkpointSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockValSetUpdaterNop::new(validators.clone(), epoch_length),
-                        MockTxPoolExecutor::new(create_block_policy(), state_backend.clone())
+                        MockTxPoolExecutor::new(create_block_policy(), state_read.clone())
                             .with_chain_params(&CHAIN_PARAMS),
-                        MockLedger::new(state_backend.clone())
+                        MockLedger::new(state_read.clone())
                             .with_finalization_delay(finalization_delay),
-                        MockStateSyncExecutor::new(state_backend)
+                        MockStateSyncExecutor::new(state_read)
                             .with_max_service_window(statesync_service_window),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                         vec![],
@@ -482,18 +481,18 @@ fn forkpoint_restart_one(
             })
             .collect();
         restart_builder.forkpoint = forkpoint.clone();
-        restart_builder.state_backend = failed_node.state.state_backend().clone();
-        let restart_builder_state_backend = restart_builder.state_backend.clone();
+        restart_builder.state_read = failed_node.state.state_read().clone();
+        let restart_builder_state_read = restart_builder.state_read.clone();
         swarm.add_state(NodeBuilder::new(
             ID::new(restart_node_id),
             restart_builder,
             NoSerRouterConfig::new(all_peers.clone()).build(),
             MockValSetUpdaterNop::new(validators.clone(), epoch_length),
-            MockTxPoolExecutor::new(create_block_policy(), restart_builder_state_backend.clone()),
-            MockLedger::new(restart_builder_state_backend.clone())
+            MockTxPoolExecutor::new(create_block_policy(), restart_builder_state_read.clone()),
+            MockLedger::new(restart_builder_state_read.clone())
                 .with_finalization_delay(finalization_delay)
                 .with_blocks(failed_node.executor.ledger()),
-            MockStateSyncExecutor::new(restart_builder_state_backend),
+            MockStateSyncExecutor::new(restart_builder_state_read),
             vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
             vec![],
             TimestamperConfig::default(),
@@ -524,12 +523,14 @@ fn forkpoint_restart_one(
             .metrics()
             .consensus_events
             .trigger_state_sync
+            .get()
             > 0;
         let state_sync_reset_target = restarted_node
             .state
             .metrics()
             .consensus_events
             .trigger_state_sync
+            .get()
             > 1;
         let should_reset_statesync_target =
             (recovery_time - time_before_new_forkpoint) >= statesync_service_window;
@@ -538,9 +539,15 @@ fn forkpoint_restart_one(
             .metrics()
             .validation_errors
             .invalid_epoch
+            .get()
             > 0;
-        let restarted_node_is_voting =
-            restarted_node.state.metrics().consensus_events.created_vote > 0;
+        let restarted_node_is_voting = restarted_node
+            .state
+            .metrics()
+            .consensus_events
+            .created_vote
+            .get()
+            > 0;
         let close_to_threshold =
             SeqNum(statesync_threshold.0.saturating_sub(recovery_time.0)) < SeqNum(5);
         // epoch_cross_over means that the restarting node doesn't have the
@@ -701,15 +708,15 @@ fn forkpoint_restart_below_all(
                 .into_iter()
                 .enumerate()
                 .map(|(seed, state_builder)| {
-                    let state_backend = state_builder.state_backend.clone();
+                    let state_read = state_builder.state_read.clone();
                     NodeBuilder::<ForkpointSwarm>::new(
                         ID::new(NodeId::new(state_builder.key.pubkey())),
                         state_builder,
                         NoSerRouterConfig::new(all_peers.clone()).build(),
                         MockValSetUpdaterNop::new(validators.clone(), epoch_length),
-                        MockTxPoolExecutor::new(create_block_policy(), state_backend.clone()),
-                        MockLedger::new(state_backend.clone()),
-                        MockStateSyncExecutor::new(state_backend),
+                        MockTxPoolExecutor::new(create_block_policy(), state_read.clone()),
+                        MockLedger::new(state_read.clone()),
+                        MockStateSyncExecutor::new(state_read),
                         vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                         vec![],
                         TimestamperConfig::default(),
@@ -805,15 +812,15 @@ fn forkpoint_restart_below_all(
                 })
                 .collect();
             builder.forkpoint = forkpoint;
-            let state_backend = builder.state_backend.clone();
+            let state_read = builder.state_read.clone();
             swarm.add_state(NodeBuilder::new(
                 ID::new(node_id),
                 builder,
                 NoSerRouterConfig::new(all_peers.clone()).build(),
                 MockValSetUpdaterNop::new(validators.clone(), epoch_length),
-                MockTxPoolExecutor::new(create_block_policy(), state_backend.clone()),
-                MockLedger::new(state_backend.clone()),
-                MockStateSyncExecutor::new(state_backend),
+                MockTxPoolExecutor::new(create_block_policy(), state_read.clone()),
+                MockLedger::new(state_read.clone()),
+                MockStateSyncExecutor::new(state_read),
                 vec![GenericTransformer::Latency(LatencyTransformer::new(delta))],
                 vec![],
                 TimestamperConfig::default(),

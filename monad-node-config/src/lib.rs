@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::collections::BTreeMap;
+
 use alloy_primitives::Address;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -37,6 +39,9 @@ mod peers;
 pub mod fullnode_raptorcast;
 pub use fullnode_raptorcast::FullNodeRaptorCastConfig;
 
+pub mod raptorcast;
+pub use raptorcast::DeterministicProtocolRolloutStage;
+
 mod sync_peers;
 
 #[derive(Debug, Deserialize, Clone)]
@@ -48,6 +53,9 @@ pub struct NodeConfig<ST: CertificateSignatureRecoverable> {
     /////////////////////////////////
     pub node_name: String,
     pub network_name: String,
+
+    #[serde(default)]
+    pub metrics: MetricsConfig,
 
     #[serde(deserialize_with = "deserialize_eth_address_from_str")]
     pub beneficiary: Address,
@@ -66,17 +74,41 @@ pub struct NodeConfig<ST: CertificateSignatureRecoverable> {
     pub statesync: StateSyncPeersConfig<CertificateSignaturePubKey<ST>>,
     pub network: NodeNetworkConfig,
 
+    #[serde(deserialize_with = "peers::deserialize_peer_discovery_config")]
     pub peer_discovery: PeerDiscoveryConfig<ST>,
     #[serde(default)]
     pub txpool_peer_score: ema::ScoreConfig,
 
     pub fullnode_raptorcast: FullNodeRaptorCastConfig<CertificateSignaturePubKey<ST>>,
 
+    #[serde(default)]
+    pub deterministic_raptorcast_rollout: DeterministicProtocolRolloutStage,
+
     // TODO split network-wide configuration into separate file
     ////////////////////////////////
     // NETWORK-WIDE CONFIGURATION //
     ////////////////////////////////
     pub chain_id: u64,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default, deny_unknown_fields)]
+pub struct MetricsConfig {
+    pub enabled: bool,
+    pub listen_addr: String,
+    pub labels: BTreeMap<String, String>,
+}
+
+impl Default for MetricsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            // listening on 0.0.0.0 is potentially unsafe because we do not monitor precise
+            // resource usage of the prometheus service; operators must secure it appropriately.
+            listen_addr: "0.0.0.0:9143".to_owned(),
+            labels: BTreeMap::new(),
+        }
+    }
 }
 
 #[cfg(feature = "crypto")]
@@ -96,3 +128,43 @@ pub type ValidatorsConfigType =
     monad_consensus_types::validator_data::ValidatorsConfig<SignatureCollectionType>;
 #[cfg(feature = "crypto")]
 pub type MonadNodeConfig = NodeConfig<SignatureType>;
+
+#[cfg(test)]
+mod tests {
+    use serde::Deserialize;
+
+    use super::MetricsConfig;
+
+    #[derive(Deserialize)]
+    struct TestNodeConfig {
+        #[serde(default)]
+        metrics: MetricsConfig,
+    }
+
+    #[test]
+    fn metrics_config_defaults_and_override() {
+        let config: MetricsConfig = toml::from_str("").unwrap();
+
+        assert!(config.enabled);
+        assert_eq!(config.listen_addr, "0.0.0.0:9143");
+        assert!(config.labels.is_empty());
+
+        let disabled: MetricsConfig = toml::from_str("enabled = false").unwrap();
+        assert!(!disabled.enabled);
+    }
+
+    #[test]
+    fn metrics_config_accepts_labels_only() {
+        let config: TestNodeConfig = toml::from_str(
+            r#"
+[metrics.labels]
+environment = "testnet"
+"#,
+        )
+        .unwrap();
+
+        assert!(config.metrics.enabled);
+        assert_eq!(config.metrics.listen_addr, "0.0.0.0:9143");
+        assert_eq!(config.metrics.labels["environment"], "testnet");
+    }
+}

@@ -33,7 +33,7 @@ use monad_executor::Executor;
 use monad_executor_glue::{Message, RouterCommand};
 use monad_raptorcast::{new_defaulted_raptorcast_for_tests, RaptorCastEvent};
 use monad_secp::SecpSignature;
-use monad_types::{Deserializable, Epoch, NodeId, RouterTarget, Serializable, Stake};
+use monad_types::{Deserializable, Epoch, NodeId, Round, RouterTarget, Serializable, Stake};
 use tracing_subscriber::fmt::format::FmtSpan;
 
 #[derive(Parser, Debug)]
@@ -128,15 +128,17 @@ fn service(
             let dataplane = monad_raptorcast::create_dataplane_for_tests(false);
 
             rt.spawn(async move {
-                let mut service = new_defaulted_raptorcast_for_tests::<
-                    SignatureType,
-                    MockMessage,
-                    MockMessage,
-                    <MockMessage as Message>::Event,
-                >(dataplane, known_addresses, Arc::new(key));
+                let mut service =
+                    new_defaulted_raptorcast_for_tests::<
+                        SignatureType,
+                        MockMessage,
+                        MockMessage,
+                        <MockMessage as Message>::Event,
+                    >(dataplane, known_addresses, Arc::new(key), Epoch(0));
 
                 service.exec(vec![RouterCommand::AddEpochValidatorSet {
                     epoch: Epoch(0),
+                    epoch_start: monad_types::Round(0),
                     validator_set: all_peers.iter().map(|peer| (*peer, Stake::ONE)).collect(),
                 }]);
 
@@ -168,7 +170,10 @@ fn service(
     for broadcast_id in 0..num_broadcast {
         let message = MockMessage::new(broadcast_id, message_len);
         let command = RouterCommand::Publish {
-            target: RouterTarget::Raptorcast(Epoch(0)),
+            target: RouterTarget::Raptorcast {
+                round: Round(0),
+                epoch: Epoch(0),
+            },
             message,
         };
         tx_router

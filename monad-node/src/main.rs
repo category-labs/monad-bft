@@ -16,7 +16,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     marker::PhantomData,
-    net::{IpAddr, SocketAddr, ToSocketAddrs},
+    net::{IpAddr, SocketAddr, SocketAddrV4, ToSocketAddrs},
     num::NonZeroU16,
     path::PathBuf,
     process,
@@ -30,7 +30,7 @@ use clap::CommandFactory;
 use futures_util::{FutureExt, StreamExt};
 use monad_chain_config::ChainConfig;
 use monad_consensus_state::ConsensusConfig;
-use monad_consensus_types::{metrics::Metrics, validator_data::ValidatorSetDataWithEpoch};
+use monad_consensus_types::validator_data::ValidatorSetDataWithEpoch;
 use monad_control_panel::ipc::ControlPanelIpcReceiver;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
@@ -39,12 +39,14 @@ use monad_dataplane::{DataplaneBuilder, TcpSocketId, UdpSocketId};
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthBlockValidator;
 use monad_eth_txpool_executor::{EthTxPoolExecutor, EthTxPoolIpcConfig};
-use monad_executor::{Executor, ExecutorMetricsChain};
+use monad_execution_state_read::ExecutionStateReadThreadClient;
+use monad_execution_state_read_cache::ExecutionStateReadCache;
+use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEvent};
 use monad_ledger::MonadBlockFileLedger;
 use monad_node_config::{
-    ExecutionProtocolType, FullNodeIdentityConfig, NodeBootstrapConfig, NodeConfig,
-    PeerDiscoveryConfig, SignatureCollectionType, SignatureType,
+    ExecutionProtocolType, FullNodeIdentityConfig, NodeBootstrapConfig, NodeBootstrapPeerConfig,
+    NodeConfig, PeerDiscoveryConfig, SignatureCollectionType, SignatureType,
 };
 use monad_peer_discovery::{
     discovery::{PeerDiscovery, PeerDiscoveryBuilder},
@@ -58,9 +60,7 @@ use monad_raptorcast::{
 };
 use monad_router_multi::MultiRouter;
 use monad_state::{MonadMessage, MonadStateBuilder, VerifiedMonadMessage};
-use monad_state_backend::StateBackendThreadClient;
-use monad_state_backend_cache::StateBackendCache;
-use monad_statesync::StateSyncExecutor;
+use monad_statesync_executor::StateSyncExecutor;
 use monad_triedb_utils::TriedbReader;
 use monad_types::{DropTimer, Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 use monad_updaters::{
@@ -69,20 +69,35 @@ use monad_updaters::{
     triedb_val_set::ValSetUpdater,
 };
 use monad_validator::{
-    signature_collection::SignatureCollection, validator_set::ValidatorSetFactory,
+    proposer_schedule::{BoxedProposerSchedule, ElectedProposerSchedule},
+    signature_collection::SignatureCollection,
+    validator_set::ValidatorSetFactory,
     weighted_round_robin::WeightedRoundRobin,
 };
 use monad_wal::wal::{WALLog, WALoggerConfig};
-use opentelemetry::metrics::MeterProvider;
+use opentelemetry::metrics::{Gauge, Meter, MeterProvider};
 use opentelemetry_otlp::{MetricExporter, WithExportConfig};
 use rand_chacha::{rand_core::SeedableRng, ChaCha8Rng};
-use tokio::signal::unix::{signal, SignalKind};
+use tokio::{
+    signal::unix::{signal, SignalKind},
+    time::{interval, MissedTickBehavior},
+};
 use tracing::{error, event, info, warn, Instrument, Level};
 
-use self::{cli::Cli, error::NodeSetupError, state::NodeState};
+use self::{
+    cli::Cli,
+    error::NodeSetupError,
+    metrics::{
+        default_prometheus_labels, init_triedb_phase_metrics, init_triedb_storage_metrics,
+        record_triedb_phase_metrics, record_triedb_storage_metrics, start_metrics_server,
+        MetricsServerState, NodePrometheusMetrics,
+    },
+    state::NodeState,
+};
 
 mod cli;
 mod error;
+mod metrics;
 mod state;
 
 #[cfg(all(not(target_env = "msvc"), feature = "jemallocator"))]
@@ -99,6 +114,7 @@ const STATESYNC_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 const EXECUTION_DELAY: u64 = 3;
 const WALTRACE_CHANNEL_CAPACITY: usize = 1024;
+const TRIEDB_STORAGE_METRICS_INTERVAL: Duration = Duration::from_secs(30);
 
 fn main() {
     let mut cmd = Cli::command();
@@ -148,7 +164,13 @@ fn main() {
 async fn run(node_state: NodeState) -> Result<(), ()> {
     let locked_epoch_validators = node_state
         .validators_config
-        .get_locked_validator_sets(&node_state.forkpoint_config);
+        .get_locked_validator_sets(&node_state.forkpoint_config)
+        .unwrap_or_else(|epoch| {
+            panic!(
+                "validators config missing validator set for epoch {}",
+                epoch
+            )
+        });
 
     let current_epoch = node_state
         .forkpoint_config
@@ -166,6 +188,10 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             node_state.node_config.txpool_peer_score.clone(),
             StdClock,
         );
+    let leader_election: WeightedRoundRobin<_> = WeightedRoundRobin::default();
+    let proposer_schedule: BoxedProposerSchedule<_> =
+        Box::new(ElectedProposerSchedule::new(leader_election.clone()));
+
     let router = build_raptorcast_router::<
         SignatureType,
         SignatureCollectionType,
@@ -181,6 +207,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         locked_epoch_validators.clone(),
         current_epoch,
         current_round,
+        proposer_schedule,
         node_state.persisted_peers_path,
         score_reader.clone(),
     );
@@ -217,7 +244,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         .map(|p| NodeId::new(p.secp256k1_pubkey))
         .collect();
 
-    // TODO: use PassThruBlockPolicy and NopStateBackend for consensus only mode
+    // TODO: use PassThruBlockPolicy and NopExecutionStateRead for consensus only mode
     let create_block_policy = || {
         EthBlockPolicy::new(
             GENESIS_SEQ_NUM, // FIXME: MonadStateBuilder is responsible for updating this to forkpoint root if necessary
@@ -225,14 +252,14 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         )
     };
 
-    let state_backend = StateBackendThreadClient::new({
+    let state_read = ExecutionStateReadThreadClient::new({
         let triedb_path = node_state.triedb_path.clone();
 
         move || {
             let triedb_handle =
                 TriedbReader::try_new(triedb_path.as_path()).expect("triedb should exist in path");
 
-            StateBackendCache::new(triedb_handle, SeqNum(EXECUTION_DELAY))
+            ExecutionStateReadCache::new(triedb_handle, SeqNum(EXECUTION_DELAY))
         }
     });
 
@@ -250,12 +277,12 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             node_state.validators_path,
             node_state.chain_config.get_epoch_length(),
             node_state.chain_config.get_staking_activation(),
-            state_backend.clone(),
+            state_read.clone(),
         ),
         timestamp: TokioTimestamp::new(Duration::from_millis(5), 100, 10001),
         txpool: EthTxPoolExecutor::start(
             create_block_policy(),
-            state_backend.clone(),
+            state_read.clone(),
             EthTxPoolIpcConfig {
                 bind_path: node_state.mempool_ipc_path,
                 tx_batch_size: node_state.node_config.ipc_tx_batch_size as usize,
@@ -286,6 +313,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         .expect("uds bind failed"),
         loopback: LoopbackExecutor::default(),
         state_sync: StateSyncExecutor::<SignatureType, SignatureCollectionType>::new(
+            node_state.chain_config.chain_id(),
             vec![statesync_triedb_path.to_string_lossy().to_string()],
             node_state.statesync_sq_thread_cpu,
             state_sync_init_peers,
@@ -368,10 +396,10 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
 
     let builder = MonadStateBuilder {
         validator_set_factory: ValidatorSetFactory::default(),
-        leader_election: WeightedRoundRobin::default(),
+        leader_election,
         block_validator: EthBlockValidator::default(),
         block_policy: create_block_policy(),
-        state_backend,
+        state_read,
         key: node_state.secp256k1_identity,
         certkey: node_state.bls12_381_identity,
         beneficiary: node_state.node_config.beneficiary.into(),
@@ -394,6 +422,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         },
         whitelisted_statesync_nodes,
         statesync_expand_to_group: node_state.node_config.statesync.expand_to_group,
+        serve_statesync: node_state.node_config.statesync.serve_statesync,
         _phantom: PhantomData,
     };
 
@@ -412,32 +441,111 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                 &otel_endpoint,
                 format!(
                     "{network_name}_{node_name}",
-                    network_name = node_state.node_config.network_name,
-                    node_name = node_state.node_config.node_name
+                    network_name = &node_state.node_config.network_name,
+                    node_name = &node_state.node_config.node_name
                 ),
                 node_state.node_config.network_name.clone(),
                 record_metrics_interval,
             )
             .expect("failed to build otel monad-node");
 
-            let mut timer = tokio::time::interval(record_metrics_interval);
-
-            timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let mut timer = interval(record_metrics_interval);
+            timer.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
             (provider, timer)
         })
         .unzip();
-
     let maybe_otel_meter = maybe_otel_meter_provider
         .as_ref()
         .map(|provider| provider.meter("opentelemetry"));
-
     let mut gauge_cache = HashMap::new();
     let process_start = Instant::now();
     let mut total_state_update_elapsed = Duration::ZERO;
 
+    let mut prometheus_labels = default_prometheus_labels(
+        format!(
+            "{network_name}_{node_name}",
+            network_name = &node_state.node_config.network_name,
+            node_name = &node_state.node_config.node_name
+        ),
+        node_state.node_config.network_name.clone(),
+        MONAD_NODE_VERSION,
+    );
+    if let Some(metrics_config) = &node_state.metrics {
+        for (key, value) in &metrics_config.labels {
+            if prometheus_labels
+                .insert(key.clone(), value.clone())
+                .is_some()
+            {
+                error!(label = %key, "duplicate prometheus label");
+                return Err(());
+            }
+        }
+    }
+
+    // Migration phase is read once (it only changes via the offline monad-mpt
+    // tool, which requires a restart). Disk usage is dynamic, so we keep a
+    // long-lived read-only reader on this task (TriedbReader is !Send) and
+    // refresh it on a ticker in the loop below. If triedb can't be opened,
+    // leave both metrics unreported (empty sets) rather than emitting a
+    // misleading default.
+    let mut triedb_phase_metrics = ExecutorMetrics::with_metric_defs(&[]);
+    let mut triedb_storage_metrics = ExecutorMetrics::with_metric_defs(&[]);
+    let triedb_metrics_reader = TriedbReader::try_new(node_state.triedb_path.as_path());
+    match &triedb_metrics_reader {
+        Some(reader) => {
+            triedb_phase_metrics = init_triedb_phase_metrics();
+            record_triedb_phase_metrics(&mut triedb_phase_metrics, reader.migration_phase());
+            triedb_storage_metrics = init_triedb_storage_metrics();
+            record_triedb_storage_metrics(&mut triedb_storage_metrics, reader.storage_stats());
+        }
+        None => {
+            warn!("triedb unavailable, migration-phase and disk-usage metrics will not be reported")
+        }
+    }
+
+    let prometheus_metrics = Arc::new(
+        NodePrometheusMetrics::new(
+            prometheus_labels,
+            state.metrics(),
+            executor
+                .metrics()
+                .push(&triedb_phase_metrics)
+                .push(&triedb_storage_metrics),
+            process_start,
+        )
+        .map_err(|err| {
+            error!(?err, "failed to initialize prometheus metrics");
+        })?,
+    );
+
+    if let Some(metrics_config) = &node_state.metrics {
+        let server_state = MetricsServerState::new(
+            prometheus_metrics.registry(),
+            Some(Arc::new({
+                let metrics = Arc::clone(&prometheus_metrics);
+                move || metrics.refresh_dynamic_metrics()
+            })),
+        );
+        let server =
+            start_metrics_server(metrics_config.addr.clone(), server_state).map_err(|err| {
+                error!("failed to start metrics server: {}", err);
+            })?;
+
+        tokio::spawn({
+            async move {
+                if let Err(err) = server.await {
+                    error!("metrics server failed: {}", err);
+                }
+            }
+        });
+    }
+
     let mut sigterm = signal(SignalKind::terminate()).expect("in tokio rt");
     let mut sigint = signal(SignalKind::interrupt()).expect("in tokio rt");
+
+    let mut triedb_storage_ticker = interval(TRIEDB_STORAGE_METRICS_INTERVAL);
+    triedb_storage_ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     loop {
         tokio::select! {
@@ -456,9 +564,21 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                 None => futures_util::future::pending().boxed(),
             } => {
                 let otel_meter = maybe_otel_meter.as_ref().expect("otel_endpoint must have been set");
-                let state_metrics = state.metrics();
-                let executor_metrics = executor.metrics();
-                send_metrics(otel_meter, &mut gauge_cache, state_metrics, executor_metrics, &process_start, &total_state_update_elapsed);
+                let executor_metrics = executor.metrics().push(&triedb_phase_metrics).push(&triedb_storage_metrics);
+                send_metrics(
+                    otel_meter,
+                    &mut gauge_cache,
+                    prometheus_metrics.as_ref(),
+                    executor_metrics,
+                );
+            }
+            _ = triedb_storage_ticker.tick() => {
+                if let Some(reader) = &triedb_metrics_reader {
+                    record_triedb_storage_metrics(
+                        &mut triedb_storage_metrics,
+                        reader.storage_stats(),
+                    );
+                }
             }
             event = executor.next().instrument(ledger_span.clone()) => {
                 let Some(event) = event else {
@@ -510,6 +630,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                     let start = Instant::now();
                     let cmds = state.update(event);
                     total_state_update_elapsed += start.elapsed();
+                    prometheus_metrics.record_state_update_elapsed(&total_state_update_elapsed);
                     cmds
                 };
 
@@ -541,6 +662,23 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
     Ok(())
 }
 
+enum NonAuthRaptorcastBind {
+    Shared { port: u16 },
+    TcpOnly { tcp_port: u16 },
+}
+
+impl NonAuthRaptorcastBind {
+    fn bind_addresses(self, host: IpAddr) -> (SocketAddr, Option<SocketAddr>) {
+        match self {
+            Self::Shared { port } => {
+                let bind_address = SocketAddr::new(host, port);
+                (bind_address, Some(bind_address))
+            }
+            Self::TcpOnly { tcp_port } => (SocketAddr::new(host, tcp_port), None),
+        }
+    }
+}
+
 fn build_raptorcast_router<ST, SCT, M, OM, DS>(
     node_config: NodeConfig<ST>,
     peer_discovery_config: PeerDiscoveryConfig<ST>,
@@ -550,6 +688,7 @@ fn build_raptorcast_router<ST, SCT, M, OM, DS>(
     locked_epoch_validators: Vec<ValidatorSetDataWithEpoch<SCT>>,
     current_epoch: Epoch,
     current_round: Round,
+    proposer_schedule: BoxedProposerSchedule<CertificateSignaturePubKey<ST>>,
     persisted_peers_path: PathBuf,
     direct_udp_peer_score_reader: DS,
 ) -> MultiRouter<
@@ -573,38 +712,54 @@ where
     OM: Encodable + Clone + Send + Sync + 'static,
     DS: IdentityScore<Identity = NodeId<CertificateSignaturePubKey<ST>>>,
 {
-    let bind_address = SocketAddr::new(
-        IpAddr::V4(node_config.network.bind_address_host),
-        node_config.network.bind_address_port,
-    );
+    let network_config = node_config.network;
+    let self_udp_port = peer_discovery_config.udp_port();
+    let non_auth_raptorcast_bind = if self_udp_port.is_some() {
+        NonAuthRaptorcastBind::Shared {
+            port: network_config
+                .bind_address_port
+                .expect("network.bind_address_port must be set when peer discovery UDP is enabled"),
+        }
+    } else {
+        NonAuthRaptorcastBind::TcpOnly {
+            tcp_port: network_config.bind_address_tcp_port.expect(
+                "network.bind_address_tcp_port must be set when peer discovery UDP is disabled",
+            ),
+        }
+    };
+    let (tcp_bind_address, non_authenticated_bind_address) =
+        non_auth_raptorcast_bind.bind_addresses(IpAddr::V4(network_config.bind_address_host));
     let authenticated_bind_address = SocketAddr::new(
-        IpAddr::V4(node_config.network.bind_address_host),
-        node_config.network.authenticated_bind_address_port,
+        IpAddr::V4(network_config.bind_address_host),
+        network_config.authenticated_bind_address_port,
     );
-    let direct_udp_bind_address = node_config
-        .network
+    let direct_udp_bind_address = network_config
         .direct_udp_bind_address_port
-        .map(|port| SocketAddr::new(IpAddr::V4(node_config.network.bind_address_host), port));
-    let Some(SocketAddr::V4(name_record_address)) = resolve_domain_v4(
-        &NodeId::new(identity.pubkey()),
-        &peer_discovery_config.self_address,
-    ) else {
-        panic!(
-            "Unable to resolve self address: {:?}",
-            peer_discovery_config.self_address
-        );
+        .map(|port| SocketAddr::new(IpAddr::V4(network_config.bind_address_host), port));
+    let self_id = NodeId::new(identity.pubkey());
+    let self_tcp_port = peer_discovery_config.tcp_port();
+    let name_record_address = if let Some(ip) = peer_discovery_config.ip() {
+        SocketAddrV4::new(ip, self_tcp_port.get())
+    } else {
+        let domain = peer_discovery_config
+            .domain()
+            .expect("self endpoint must be an IP address or domain");
+        let Some(name_record_address) = resolve_domain_v4(&self_id, (domain, self_tcp_port.get()))
+        else {
+            panic!("Unable to resolve self address: {domain}:{self_tcp_port}");
+        };
+        name_record_address
     };
 
     tracing::debug!(
-        ?bind_address,
+        ?tcp_bind_address,
+        ?non_authenticated_bind_address,
         ?authenticated_bind_address,
         ?direct_udp_bind_address,
         ?name_record_address,
         "Monad-node starting, pid: {}",
         process::id()
     );
-
-    let network_config = node_config.network;
 
     let mut dp_builder = DataplaneBuilder::new(network_config.max_mbps.into())
         .with_udp_multishot(network_config.enable_udp_multishot);
@@ -621,33 +776,39 @@ where
             network_config.tcp_rate_limit_burst,
         );
 
-    let mut udp_sockets: Vec<(UdpSocketId, std::net::SocketAddr)> = vec![
-        (UdpSocketId::Raptorcast, bind_address),
-        (
-            UdpSocketId::AuthenticatedRaptorcast,
-            authenticated_bind_address,
-        ),
-    ];
+    let mut udp_sockets: Vec<(UdpSocketId, SocketAddr)> = vec![(
+        UdpSocketId::AuthenticatedRaptorcast,
+        authenticated_bind_address,
+    )];
+    if let Some(address) = non_authenticated_bind_address {
+        udp_sockets.push((UdpSocketId::Raptorcast, address));
+    }
     if let Some(direct_addr) = direct_udp_bind_address {
         udp_sockets.push((UdpSocketId::DirectUdp, direct_addr));
     }
     dp_builder = dp_builder
         .with_udp_sockets(udp_sockets)
-        .with_tcp_sockets([(TcpSocketId::Raptorcast, bind_address)]);
+        .with_tcp_sockets([(TcpSocketId::Raptorcast, tcp_bind_address)]);
 
     assert_eq!(
         peer_discovery_config.self_direct_udp_port.is_some(),
         network_config.direct_udp_bind_address_port.is_some()
     );
+    assert_eq!(
+        peer_discovery_config.self_encrypted_tcp_port.is_some(),
+        network_config.encrypted_tcp_bind_address_port.is_some()
+    );
 
-    let self_id = NodeId::new(identity.pubkey());
     let self_record = NameRecord::new_with_ports(
         *name_record_address.ip(),
-        name_record_address.port(),
-        name_record_address.port(),
+        self_tcp_port.get(),
+        self_udp_port.map(NonZeroU16::get),
         peer_discovery_config.self_auth_port.get(),
         peer_discovery_config
             .self_direct_udp_port
+            .map(NonZeroU16::get),
+        peer_discovery_config
+            .self_encrypted_tcp_port
             .map(NonZeroU16::get),
         peer_discovery_config.self_record_seq_num,
     );
@@ -667,22 +828,7 @@ where
             if node_id == self_id {
                 return None;
             }
-            let address = match resolve_domain_v4(&node_id, &peer.address) {
-                Some(SocketAddr::V4(addr)) => addr,
-                _ => {
-                    warn!(?node_id, ?peer.address, "Unable to resolve");
-                    return None;
-                }
-            };
-
-            let peer_entry = monad_executor_glue::PeerEntry {
-                pubkey: peer.secp256k1_pubkey,
-                addr: address,
-                signature: peer.name_record_sig,
-                record_seq_num: peer.record_seq_num,
-                auth_port: peer.auth_port,
-                direct_udp_port: peer.direct_udp_port,
-            };
+            let peer_entry = bootstrap_peer_entry(&node_id, peer)?;
 
             match MonadNameRecord::try_from(&peer_entry) {
                 Ok(monad_name_record) => Some((node_id, monad_name_record)),
@@ -777,6 +923,7 @@ where
                     .collect(),
             },
             secondary_instance: node_config.fullnode_raptorcast,
+            deterministic_protocol_rollout: node_config.deterministic_raptorcast_rollout,
         },
         dp_builder,
         peer_discovery_builder,
@@ -785,74 +932,75 @@ where
         auth_protocol,
         direct_udp_auth_protocol,
         direct_udp_peer_score_reader,
+        proposer_schedule,
     )
 }
 
-fn resolve_domain_v4<P: PubKey>(node_id: &NodeId<P>, domain: &String) -> Option<SocketAddr> {
-    let resolved = match domain.to_socket_addrs() {
+fn resolve_domain_v4<P, T>(node_id: &NodeId<P>, address: T) -> Option<SocketAddrV4>
+where
+    P: PubKey,
+    T: ToSocketAddrs + std::fmt::Debug,
+{
+    let resolved = match address.to_socket_addrs() {
         Ok(resolved) => resolved,
         Err(err) => {
-            warn!(?node_id, ?domain, ?err, "Unable to resolve");
+            warn!(?node_id, ?address, ?err, "Unable to resolve");
             return None;
         }
     };
 
     for entry in resolved {
         match entry {
-            SocketAddr::V4(_) => return Some(entry),
+            SocketAddr::V4(addr) => return Some(addr),
             SocketAddr::V6(_) => continue,
         }
     }
 
-    warn!(?node_id, ?domain, "No IPv4 DNS record");
+    warn!(?node_id, ?address, "No IPv4 DNS record");
     None
 }
 
-monad_executor::metric_consts! {
-    GAUGE_TOTAL_UPTIME_US {
-        name: "monad.total_uptime_us",
-        help: "Total node uptime in microseconds",
-    }
-    GAUGE_STATE_TOTAL_UPDATE_US {
-        name: "monad.state.total_update_us",
-        help: "Total time spent updating state in microseconds",
-    }
-    GAUGE_NODE_INFO {
-        name: "monad_node_info",
-        help: "Node info indicator (always 1)",
-    }
+fn bootstrap_peer_entry<ST: CertificateSignatureRecoverable>(
+    node_id: &NodeId<CertificateSignaturePubKey<ST>>,
+    peer: &NodeBootstrapPeerConfig<ST>,
+) -> Option<monad_executor_glue::PeerEntry<ST>> {
+    let address = if let Some(address) = peer.ip() {
+        address
+    } else {
+        let domain = peer
+            .domain()
+            .expect("bootstrap peer address must be an IP address or domain");
+        *resolve_domain_v4(node_id, (domain, peer.tcp_port().get()))?.ip()
+    };
+
+    Some(monad_executor_glue::PeerEntry {
+        pubkey: peer.secp256k1_pubkey,
+        address: monad_executor_glue::PeerEntryAddress::new(
+            address,
+            peer.tcp_port(),
+            peer.udp_port(),
+        ),
+        signature: peer.name_record_sig,
+        record_seq_num: peer.record_seq_num,
+        auth_port: peer.auth_port,
+        direct_udp_port: peer.direct_udp_port,
+        encrypted_tcp_port: peer.encrypted_tcp_port,
+    })
 }
 
 fn send_metrics(
-    meter: &opentelemetry::metrics::Meter,
-    gauge_cache: &mut HashMap<&'static str, opentelemetry::metrics::Gauge<u64>>,
-    state_metrics: &Metrics,
+    meter: &Meter,
+    gauge_cache: &mut HashMap<&'static str, Gauge<u64>>,
+    node_metrics: &NodePrometheusMetrics,
     executor_metrics: ExecutorMetricsChain,
-    process_start: &Instant,
-    total_state_update_elapsed: &Duration,
 ) {
-    let node_info_gauge = gauge_cache.entry(GAUGE_NODE_INFO.name).or_insert_with(|| {
-        meter
-            .u64_gauge(GAUGE_NODE_INFO.name)
-            .with_description(GAUGE_NODE_INFO.help)
-            .build()
-    });
-    node_info_gauge.record(1, &[]);
+    node_metrics.refresh_dynamic_metrics();
 
-    for (k, v, desc) in state_metrics
-        .metrics()
+    for (k, v, desc) in node_metrics
+        .metric_handles()
         .into_iter()
+        .map(|(name, gauge, help)| (name, gauge.get(), help))
         .chain(executor_metrics.into_inner())
-        .chain(std::iter::once((
-            GAUGE_TOTAL_UPTIME_US.name,
-            process_start.elapsed().as_micros() as u64,
-            GAUGE_TOTAL_UPTIME_US.help,
-        )))
-        .chain(std::iter::once((
-            GAUGE_STATE_TOTAL_UPDATE_US.name,
-            total_state_update_elapsed.as_micros() as u64,
-            GAUGE_STATE_TOTAL_UPDATE_US.help,
-        )))
     {
         let gauge = gauge_cache.entry(k).or_insert_with(|| {
             if desc.is_empty() {

@@ -25,6 +25,7 @@ monad-types = { workspace = true }
 monad-validator = { workspace = true }
 monad-wireauth = { workspace = true }
 
+alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 bitvec = { workspace = true }
 bytes = { workspace = true }
@@ -39,15 +40,13 @@ lru = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["macros"] }
+tokio = { workspace = true, features = ["macros", "rt"] }
 tracing = { workspace = true }
 zerocopy = { workspace = true }
 
 [dev-dependencies]
 monad-testutil = { workspace = true }
 
-alloy-primitives = { workspace = true }
-byte-unit = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 criterion = { workspace = true }
 eyre = { workspace = true }

@@ -17,6 +17,7 @@ use std::{
     error::Error,
     fmt::{Debug, Display},
     io,
+    marker::PhantomData,
     ops::{Add, AddAssign, Div, Rem, Sub, SubAssign},
     str::FromStr,
     time::{Duration, Instant},
@@ -28,8 +29,12 @@ use alloy_rlp::{
 };
 use monad_crypto::certificate_signature::PubKey;
 pub use monad_crypto::hasher::Hash;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{
+    de::{IgnoredAny, SeqAccess, Visitor},
+    Deserialize, Deserializer, Serialize, Serializer,
+};
 use serde_json::Value;
+use serde_with::{de::DeserializeAsWrap, DeserializeAs, SerializeAs};
 use zerocopy::IntoBytes;
 
 pub const GENESIS_SEQ_NUM: SeqNum = SeqNum(0);
@@ -37,6 +42,7 @@ pub const GENESIS_ROUND: Round = Round(0);
 
 pub const ETHERNET_MTU: u16 = 1500;
 pub const DEFAULT_MTU: u16 = ETHERNET_MTU;
+pub const MAX_FORWARDED_TXS_PER_MESSAGE: usize = 5_000;
 
 const PROTOCOL_VERSION: u32 = 1;
 
@@ -77,6 +83,22 @@ impl Round {
             .as_u64()
             .checked_add(1)
             .is_some_and(|next_round| next_round == self.as_u64())
+    }
+
+    pub fn saturating_sub(self, count: Round) -> Self {
+        Round(self.0.saturating_sub(count.0))
+    }
+
+    pub fn checked_sub(self, count: Round) -> Option<Self> {
+        self.0.checked_sub(count.0).map(Round)
+    }
+
+    pub fn saturating_add(self, count: Round) -> Self {
+        Round(self.0.saturating_add(count.0))
+    }
+
+    pub fn checked_add(self, count: Round) -> Option<Self> {
+        self.0.checked_add(count.0).map(Round)
     }
 }
 
@@ -180,6 +202,7 @@ impl RoundSpan {
     pub fn contains(&self, round: Round) -> bool {
         self.start <= round && round < self.end
     }
+
     pub fn overlaps(&self, other: &RoundSpan) -> bool {
         self.start < other.end && other.start < self.end
     }
@@ -682,13 +705,25 @@ impl<S: Clone> Deserializable<S> for S {
 #[derive(Debug)]
 pub enum RouterTarget<P: PubKey> {
     Broadcast(Epoch),
-    Raptorcast(Epoch), // sharded raptor-aware broadcast
+    Raptorcast {
+        round: Round,
+        epoch: Epoch,
+    },
     PointToPoint(NodeId<P>),
     DirectPointToPoint(NodeId<P>),
     TcpPointToPoint {
         to: NodeId<P>,
         completion: Option<futures::channel::oneshot::Sender<()>>,
     },
+}
+
+/// How a validator disseminates a message to its full-node group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FullnodeBroadcastMode {
+    // use peer-to-peer two-hop raptorcast
+    SecondaryRaptorcast,
+    // broadcast to all full-nodes directly
+    Broadcast,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -842,7 +877,35 @@ impl<T, const N: usize> LimitedVec<T, N> {
     pub fn into_inner(self) -> Vec<T> {
         self.0
     }
+
+    /// Append `item` if the vector has not reached the capacity bound `N`.
+    /// Returns the rejected item on overflow so the caller can decide how to recover.
+    pub fn try_push(&mut self, item: T) -> Result<(), LimitedVecCapacityError<T>> {
+        if self.0.len() >= N {
+            return Err(LimitedVecCapacityError {
+                rejected: item,
+                capacity: N,
+            });
+        }
+        self.0.push(item);
+        Ok(())
+    }
 }
+
+/// Error returned by [`LimitedVec::try_push`] when the vector is already at capacity.
+#[derive(Debug, PartialEq, Eq)]
+pub struct LimitedVecCapacityError<T> {
+    pub rejected: T,
+    pub capacity: usize,
+}
+
+impl<T> std::fmt::Display for LimitedVecCapacityError<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "LimitedVec at capacity {}", self.capacity)
+    }
+}
+
+impl<T: std::fmt::Debug> std::error::Error for LimitedVecCapacityError<T> {}
 
 impl<T: Encodable, const N: usize> Encodable for LimitedVec<T, N> {
     fn length(&self) -> usize {
@@ -876,9 +939,23 @@ impl<T, const N: usize> std::ops::Deref for LimitedVec<T, N> {
     }
 }
 
-impl<T, const N: usize> std::ops::DerefMut for LimitedVec<T, N> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
+impl<T, I, const N: usize> std::ops::Index<I> for LimitedVec<T, N>
+where
+    Vec<T>: std::ops::Index<I>,
+{
+    type Output = <Vec<T> as std::ops::Index<I>>::Output;
+
+    fn index(&self, index: I) -> &Self::Output {
+        &self.0[index]
+    }
+}
+
+impl<T, I, const N: usize> std::ops::IndexMut<I> for LimitedVec<T, N>
+where
+    Vec<T>: std::ops::IndexMut<I>,
+{
+    fn index_mut(&mut self, index: I) -> &mut Self::Output {
+        &mut self.0[index]
     }
 }
 
@@ -894,9 +971,85 @@ impl<T: Serialize, const N: usize> Serialize for LimitedVec<T, N> {
     }
 }
 
+struct LimitedVecVisitor<T, const N: usize> {
+    marker: PhantomData<T>,
+}
+
+impl<T, const N: usize> LimitedVecVisitor<T, N> {
+    fn new() -> Self {
+        Self {
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<'de, T: Deserialize<'de>, const N: usize> Visitor<'de> for LimitedVecVisitor<T, N> {
+    type Value = LimitedVec<T, N>;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "a sequence with at most {N} elements")
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        let capacity = match seq.size_hint() {
+            Some(len) if len > N => {
+                return Err(<A::Error as serde::de::Error>::custom(
+                    "list exceeds maximum length",
+                ));
+            }
+            Some(len) => len,
+            None => 0,
+        };
+        let mut vec = Vec::with_capacity(capacity);
+
+        while vec.len() < N {
+            let Some(item) = seq.next_element()? else {
+                return Ok(LimitedVec(vec));
+            };
+            vec.push(item);
+        }
+
+        if seq.next_element::<IgnoredAny>()?.is_some() {
+            return Err(<A::Error as serde::de::Error>::custom(
+                "list exceeds maximum length",
+            ));
+        }
+
+        Ok(LimitedVec(vec))
+    }
+}
+
 impl<'de, T: Deserialize<'de>, const N: usize> Deserialize<'de> for LimitedVec<T, N> {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Vec::<T>::deserialize(deserializer).map(Self)
+        deserializer.deserialize_seq(LimitedVecVisitor::<T, N>::new())
+    }
+}
+
+impl<T, TAs, const N: usize> SerializeAs<LimitedVec<T, N>> for LimitedVec<TAs, N>
+where
+    TAs: SerializeAs<T>,
+{
+    fn serialize_as<S: Serializer>(
+        source: &LimitedVec<T, N>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        <Vec<TAs> as SerializeAs<Vec<T>>>::serialize_as(&source.0, serializer)
+    }
+}
+
+impl<'de, T, TAs, const N: usize> DeserializeAs<'de, LimitedVec<T, N>> for LimitedVec<TAs, N>
+where
+    TAs: DeserializeAs<'de, T>,
+{
+    fn deserialize_as<D: Deserializer<'de>>(deserializer: D) -> Result<LimitedVec<T, N>, D::Error> {
+        LimitedVec::<DeserializeAsWrap<T, TAs>, N>::deserialize(deserializer).map(|vec| {
+            LimitedVec(
+                vec.0
+                    .into_iter()
+                    .map(DeserializeAsWrap::into_inner)
+                    .collect(),
+            )
+        })
     }
 }
 
@@ -960,12 +1113,13 @@ impl<const MAX: u64> Decodable for BoundedU64<MAX> {
 
 #[cfg(test)]
 mod test {
-    use alloy_rlp::{Decodable, Encodable};
+    use alloy_rlp::{bytes::Bytes, Decodable, Encodable};
     use serde::de::{
         value::{Error as SerdeError, StrDeserializer, U64Deserializer},
         IntoDeserializer,
     };
     use serde_test::{assert_ser_tokens, Token};
+    use serde_with::serde_as;
     use test_case::test_case;
 
     use super::*;
@@ -1089,6 +1243,55 @@ mod test {
 
         let decoded = LimitedVec::<u32, 0>::decode(&mut buf.as_slice()).unwrap();
         assert!(decoded.is_empty());
+    }
+
+    #[test]
+    fn test_limited_vec_try_push_within_capacity() {
+        let mut v: LimitedVec<u32, 3> = LimitedVec::default();
+        assert!(v.try_push(1).is_ok());
+        assert!(v.try_push(2).is_ok());
+        assert!(v.try_push(3).is_ok());
+        assert_eq!(v.len(), 3);
+        assert_eq!(v.0, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn test_limited_vec_try_push_rejects_at_capacity() {
+        let mut v: LimitedVec<u32, 2> = LimitedVec::default();
+        v.try_push(1).unwrap();
+        v.try_push(2).unwrap();
+        let err = v.try_push(99).unwrap_err();
+        assert_eq!(err.rejected, 99);
+        assert_eq!(err.capacity, 2);
+        assert_eq!(v.len(), 2);
+    }
+
+    #[test]
+    fn test_limited_vec_try_push_zero_capacity() {
+        let mut v: LimitedVec<u32, 0> = LimitedVec::default();
+        let err = v.try_push(7).unwrap_err();
+        assert_eq!(err.rejected, 7);
+        assert_eq!(err.capacity, 0);
+    }
+
+    #[test]
+    fn test_limited_vec_serde_deserialize_rejects_overflow() {
+        let err = serde_json::from_str::<LimitedVec<u32, 3>>("[1,2,3,4]").unwrap_err();
+        assert!(err.to_string().contains("list exceeds maximum length"));
+    }
+
+    #[test]
+    fn test_limited_vec_serde_as_deserialize_rejects_overflow() {
+        #[serde_as]
+        #[derive(Debug, serde::Deserialize)]
+        #[allow(dead_code)]
+        struct HexTxs {
+            #[serde_as(as = "LimitedVec<serde_with::hex::Hex, 1>")]
+            txs: LimitedVec<Bytes, 1>,
+        }
+
+        let err = serde_json::from_str::<HexTxs>(r#"{"txs":["00","01"]}"#).unwrap_err();
+        assert!(err.to_string().contains("list exceeds maximum length"));
     }
 
     #[test]

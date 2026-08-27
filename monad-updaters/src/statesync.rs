@@ -23,12 +23,12 @@ use futures::Stream;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
+use monad_execution_state_read::{ExecutionStateRead, InMemoryState};
 use monad_executor::{Executor, ExecutorMetricsChain};
 use monad_executor_glue::{
     MonadEvent, StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest,
     StateSyncResponse, StateSyncUpsertType, StateSyncUpsertV1, SELF_STATESYNC_VERSION,
 };
-use monad_state_backend::{InMemoryState, StateBackend};
 use monad_types::{ExecutionProtocol, FinalizedHeader, NodeId, SeqNum, GENESIS_SEQ_NUM};
 use monad_validator::signature_collection::SignatureCollection;
 
@@ -71,7 +71,7 @@ where
 {
     events: VecDeque<MonadEvent<ST, SCT, EPT>>,
 
-    state_backend: InMemoryState<ST, SCT>,
+    state_read: InMemoryState<ST, SCT>,
     peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
     max_service_window: SeqNum,
 
@@ -137,7 +137,7 @@ where
                         if !self.started_execution {
                             return;
                         }
-                        let state = self.state_backend.lock().unwrap();
+                        let state = self.state_read.lock().unwrap();
                         let latest_finalized = state.raw_read_latest_finalized_block();
                         if latest_finalized.is_some_and(|latest_finalized| {
                             request.target.saturating_add(self.max_service_window.0)
@@ -179,7 +179,7 @@ where
                             self.request = None;
                             let deserialized =
                                 serde_json::from_slice(&response.response[0].data).unwrap();
-                            let mut old_state = self.state_backend.lock().unwrap();
+                            let mut old_state = self.state_read.lock().unwrap();
                             old_state.reset_state(deserialized);
                             self.events.push_back(MonadEvent::StateSyncEvent(
                                 StateSyncEvent::DoneSync(SeqNum(response.request.target)),
@@ -211,10 +211,10 @@ where
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
 {
-    pub fn new(state_backend: InMemoryState<ST, SCT>) -> Self {
+    pub fn new(state_read: InMemoryState<ST, SCT>) -> Self {
         Self {
             events: Default::default(),
-            state_backend,
+            state_read,
             // no peers on initialization
             // these get populated via StateSyncCommand::ExpandUpstreamPeers
             peers: Default::default(),

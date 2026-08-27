@@ -52,8 +52,8 @@ use monad_eth_block_policy::{
 use monad_eth_types::{
     EthBlockBody, EthExecutionProtocol, ExtractEthAddress, ProposedEthHeader, ValidatedTx,
 };
+use monad_execution_state_read::ExecutionStateRead;
 use monad_secp::RecoverableAddress;
-use monad_state_backend::StateBackend;
 use monad_system_calls::{validator::SystemTransactionValidator, SYSTEM_SENDER_ETH_ADDRESS};
 use monad_types::Balance;
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
@@ -83,13 +83,13 @@ where
 }
 
 // FIXME: add specific error returns for the different failures
-impl<ST, SCT, SBT, CCT, CRT>
-    BlockValidator<ST, SCT, EthExecutionProtocol, EthBlockPolicy<ST, SCT, CCT, CRT>, SBT, CCT, CRT>
+impl<ST, SCT, ESRT, CCT, CRT>
+    BlockValidator<ST, SCT, EthExecutionProtocol, EthBlockPolicy<ST, SCT, CCT, CRT>, ESRT, CCT, CRT>
     for EthBlockValidator<ST, SCT>
 where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
-    SBT: StateBackend<ST, SCT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CertificateSignaturePubKey<ST>: ExtractEthAddress,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
@@ -113,7 +113,7 @@ where
             ST,
             SCT,
             EthExecutionProtocol,
-            SBT,
+            ESRT,
             CCT,
             CRT,
         >>::ValidatedBlock,
@@ -135,7 +135,10 @@ where
         ) {
             debug!(?header_error, ?header, "failed block header validation");
             if matches!(header_error, HeaderError::RandaoError) {
-                metrics.consensus_events.failed_verify_randao_reveal_sig += 1;
+                metrics
+                    .consensus_events
+                    .failed_verify_randao_reveal_sig
+                    .inc();
             }
 
             return Err(EthBlockValidationError::HeaderError(header_error));
@@ -159,11 +162,11 @@ where
                         debug!(?payload_err, "EthBlockValidator payload validation failed");
                     }
                     EthBlockValidationError::SystemTxnError(sys_txn_err) => {
-                        metrics.consensus_events.failed_txn_validation += 1;
+                        metrics.consensus_events.failed_txn_validation.inc();
                         debug!(?sys_txn_err, "EthBlockValidator sys txn validation failed");
                     }
                     EthBlockValidationError::TxnError(txn_err) => {
-                        metrics.consensus_events.failed_txn_validation += 1;
+                        metrics.consensus_events.failed_txn_validation.inc();
                         debug!(?txn_err, "EthBlockValidator txn validation failed");
                     }
                     _ => {}
@@ -494,7 +497,7 @@ where
         let mut txn_fees: TxnFees = TxnFees::default();
         for eth_txn in validated_txns.iter() {
             let block_base_fee = header.base_fee;
-            if eth_txn.max_fee_per_gas() < block_base_fee.into() {
+            if eth_txn.max_fee_per_gas() < u128::from(block_base_fee) {
                 debug!(
                     ?eth_txn,
                     block_base_fee, "transaction max fee less than base fee"
@@ -639,7 +642,7 @@ mod test {
         make_legacy_tx, make_signed_authorization, recover_tx, secret_to_eth_address,
         ConsensusTestBlock,
     };
-    use monad_state_backend::InMemoryStateInner;
+    use monad_execution_state_read::InMemoryStateInner;
     use monad_testutil::signing::MockSignatures;
     use monad_types::{Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
     use proptest::prelude::*;

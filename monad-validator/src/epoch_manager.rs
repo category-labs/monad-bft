@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::BTreeMap;
+use std::collections::{btree_map, BTreeMap};
 
 use monad_types::{Epoch, Round, SeqNum};
 use tracing::info;
@@ -57,10 +57,10 @@ impl EpochManager {
         // when we commit the same boundary block again. Assert that value is
         // the same if entry exists
         match self.epoch_starts.entry(epoch) {
-            std::collections::btree_map::Entry::Vacant(entry) => {
+            btree_map::Entry::Vacant(entry) => {
                 entry.insert(round);
             }
-            std::collections::btree_map::Entry::Occupied(entry) => {
+            btree_map::Entry::Occupied(entry) => {
                 assert_eq!(*entry.get(), round, "Conflicting epoch start round");
             }
         }
@@ -68,17 +68,24 @@ impl EpochManager {
 
     /// Schedule next epoch start if the committed block is the last one in the current epoch
     pub fn schedule_epoch_start(&mut self, block_num: SeqNum, block_round: Round) {
-        if block_num.is_boundary_block(self.epoch_length) {
-            let next_epoch = block_num.to_epoch(self.epoch_length) + Epoch(1);
-            let epoch_start_round = block_round + self.epoch_start_delay;
-            self.insert_epoch_start(next_epoch, epoch_start_round);
-            info!(
-                ?next_epoch,
-                ?epoch_start_round,
-                ?block_round,
-                "schedule epoch start epoch",
-            );
+        if !block_num.is_boundary_block(self.epoch_length) {
+            return;
         }
+
+        let next_epoch = block_num.to_epoch(self.epoch_length) + Epoch(1);
+        let epoch_start_round = block_round + self.epoch_start_delay;
+        self.insert_epoch_start(next_epoch, epoch_start_round);
+        info!(
+            ?next_epoch,
+            ?epoch_start_round,
+            ?block_round,
+            "schedule epoch start epoch",
+        );
+    }
+
+    /// Get the start round of the given epoch, if known.
+    pub fn get_epoch_start(&self, epoch: Epoch) -> Option<Round> {
+        self.epoch_starts.get(&epoch).copied()
     }
 
     /// Get the epoch of the given round. Returns None if round is from an older

@@ -29,6 +29,7 @@ use monad_crypto::{
     hasher::{Hasher, HasherType},
     signing_domain,
 };
+use monad_executor::{ExecutorMetrics, MetricDef};
 use monad_peer_disc_swarm::{
     NodeBuilder, PeerDiscSwarmRelation, SwarmPubKeyType, SwarmSignatureType,
     builder::PeerDiscSwarmBuilder,
@@ -52,6 +53,16 @@ use monad_types::{Epoch, NodeId, Round};
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use tracing_test::traced_test;
+
+fn metric(metrics: &ExecutorMetrics, metric: &'static MetricDef) -> u64 {
+    metrics
+        .metric_handles()
+        .into_iter()
+        .find(|(name, _, _)| *name == metric.name)
+        .map(|(_, gauge, _)| gauge.get())
+        .unwrap_or_default()
+}
+
 struct PeerDiscSwarm {}
 
 impl PeerDiscSwarmRelation for PeerDiscSwarm {
@@ -134,7 +145,7 @@ fn generate_name_record(keypair: &KeyPairType) -> MonadNameRecord<SignatureType>
     let ipaddr_v4 = Ipv4Addr::from_bits(u32::from_be_bytes(hash.0[28..32].try_into().unwrap()));
     assert_ne!(ipaddr_v4, Ipv4Addr::UNSPECIFIED);
 
-    let name_record = NameRecord::new(ipaddr_v4, 8000, 8000, 8000, 0, 0);
+    let name_record = NameRecord::new(ipaddr_v4, 8000, Some(8000), 8000, 0, 0);
     let mut encoded = Vec::new();
     name_record.encode(&mut encoded);
     let signature = SignatureType::sign::<signing_domain::NameRecord>(&encoded, keypair);
@@ -202,7 +213,9 @@ fn setup_keys_and_swarm_builder(
                         .collect::<BTreeSet<_>>();
                     NodeBuilder {
                         id: NodeId::new(key.pubkey()),
-                        addr: generate_name_record(key).udp_address(),
+                        addr: generate_name_record(key)
+                            .udp_address()
+                            .expect("generated record must have udp address"),
                         algo_builder: PeerDiscoveryBuilder {
                             self_id,
                             self_record: generate_name_record(key),
@@ -280,10 +293,10 @@ fn test_ping_pong() {
     for state in nodes.states().values() {
         let state = state.peer_disc_driver.get_peer_disc_state();
         let metrics = state.metrics();
-        assert_eq!(metrics[GAUGE_PEER_DISC_SEND_PING], 1);
-        assert_eq!(metrics[GAUGE_PEER_DISC_SEND_PONG], 1);
-        assert_eq!(metrics[GAUGE_PEER_DISC_RECV_PING], 1);
-        assert_eq!(metrics[GAUGE_PEER_DISC_RECV_PONG], 1);
+        assert_eq!(metric(metrics, GAUGE_PEER_DISC_SEND_PING), 1);
+        assert_eq!(metric(metrics, GAUGE_PEER_DISC_SEND_PONG), 1);
+        assert_eq!(metric(metrics, GAUGE_PEER_DISC_RECV_PING), 1);
+        assert_eq!(metric(metrics, GAUGE_PEER_DISC_RECV_PONG), 1);
 
         for node_id in node_ids.iter() {
             if node_id == &state.self_id {
@@ -374,7 +387,7 @@ fn test_update_name_record() {
     let new_name_record = NameRecord::new(
         *SocketAddrV4::from_str("2.2.2.2:8000").unwrap().ip(),
         8000,
-        8000,
+        Some(8000),
         8000,
         0,
         1,
@@ -389,7 +402,9 @@ fn test_update_name_record() {
 
     let new_node_0_builder = NodeBuilder {
         id: node_0,
-        addr: new_name_record.udp_address(),
+        addr: new_name_record
+            .udp_address()
+            .expect("new name record must have udp address"),
         algo_builder: PeerDiscoveryBuilder {
             self_id: node_0,
             self_record: new_name_record.clone(),
@@ -460,8 +475,8 @@ fn test_unresponsive_pings() {
         let state = state.peer_disc_driver.get_peer_disc_state();
         let metrics = state.metrics();
 
-        assert_eq!(metrics[GAUGE_PEER_DISC_SEND_PING], 3);
-        assert_eq!(metrics[GAUGE_PEER_DISC_PING_TIMEOUT], 3);
+        assert_eq!(metric(metrics, GAUGE_PEER_DISC_SEND_PING), 3);
+        assert_eq!(metric(metrics, GAUGE_PEER_DISC_PING_TIMEOUT), 3);
         assert!(state.routing_info.is_empty());
     }
 }
@@ -511,7 +526,7 @@ fn test_peer_lookup_open_discovery() {
 
     // check that Node1 sends pings to new nodes
     let metrics = node_1_state.metrics();
-    assert_eq!(metrics[GAUGE_PEER_DISC_SEND_PING], 3);
+    assert_eq!(metric(metrics, GAUGE_PEER_DISC_SEND_PING), 3);
 
     // check that Node2 and Node3 now has name record of Node1
     for (node_id, state) in nodes.states() {
@@ -556,7 +571,6 @@ fn test_peer_lookup_targeted_nodes() {
     // Node1 should send targeted lookup request to Node0 asking for Node2
     for state in nodes.states().values() {
         let state = state.peer_disc_driver.get_peer_disc_state();
-        let metrics = state.metrics();
         for node_id in node_ids.iter() {
             if node_id == &state.self_id {
                 continue;
@@ -566,8 +580,12 @@ fn test_peer_lookup_targeted_nodes() {
 
         if state.self_id == node_ids[0] {
             // Both Node1 and Node2 sends targeted peer lookup request to Node0
-            assert_eq!(metrics[GAUGE_PEER_DISC_RECV_LOOKUP_REQUEST], 2);
-            assert_eq!(metrics[GAUGE_PEER_DISC_RECV_TARGETED_LOOKUP_REQUEST], 2);
+            let metrics = state.metrics();
+            assert_eq!(metric(metrics, GAUGE_PEER_DISC_RECV_LOOKUP_REQUEST), 2);
+            assert_eq!(
+                metric(metrics, GAUGE_PEER_DISC_RECV_TARGETED_LOOKUP_REQUEST),
+                2
+            );
         }
     }
 }
@@ -621,8 +639,8 @@ fn test_peer_lookup_retry() {
         let metrics = state.metrics();
 
         // Node1 and Node2 should send targeted peer lookup request to Node0
-        assert_eq!(metrics[GAUGE_PEER_DISC_SEND_LOOKUP_REQUEST], 4);
-        assert_eq!(metrics[GAUGE_PEER_DISC_LOOKUP_TIMEOUT], 4);
+        assert_eq!(metric(metrics, GAUGE_PEER_DISC_SEND_LOOKUP_REQUEST), 4);
+        assert_eq!(metric(metrics, GAUGE_PEER_DISC_LOOKUP_TIMEOUT), 4);
 
         // Node1 and Node2 does not contain each other in routing info
         if node == &node_ids[1] {
@@ -661,10 +679,10 @@ fn test_ping_timeout() {
         let state = state.peer_disc_driver.get_peer_disc_state();
         let metrics = state.metrics();
         // prune threshold is three, so it's pruned after 3 unresponsive pings
-        assert_eq!(metrics[GAUGE_PEER_DISC_SEND_PING], 5);
-        assert_eq!(metrics[GAUGE_PEER_DISC_PING_TIMEOUT], 4);
-        assert_eq!(metrics[GAUGE_PEER_DISC_RECV_PONG], 1);
-        assert_eq!(metrics[GAUGE_PEER_DISC_DROP_PONG], 1);
+        assert_eq!(metric(metrics, GAUGE_PEER_DISC_SEND_PING), 5);
+        assert_eq!(metric(metrics, GAUGE_PEER_DISC_PING_TIMEOUT), 4);
+        assert_eq!(metric(metrics, GAUGE_PEER_DISC_RECV_PONG), 1);
+        assert_eq!(metric(metrics, GAUGE_PEER_DISC_DROP_PONG), 1);
 
         // name record not added to routing info
         assert!(state.routing_info.is_empty());
@@ -701,7 +719,6 @@ fn test_min_watermark() {
 
     for (node_id, state) in nodes.states() {
         let state = state.peer_disc_driver.get_peer_disc_state();
-        let metrics = state.metrics();
 
         // Node1, Node2, and Node3 should send lookup request during refresh to Node0 and discover each other
         for peer_id in node_ids.iter() {
@@ -711,10 +728,11 @@ fn test_min_watermark() {
             assert!(state.routing_info.contains_key(peer_id));
         }
 
+        let metrics = state.metrics();
         if node_id == &node_ids[0] {
-            assert_eq!(metrics[GAUGE_PEER_DISC_RECV_LOOKUP_REQUEST], 3);
+            assert_eq!(metric(metrics, GAUGE_PEER_DISC_RECV_LOOKUP_REQUEST), 3);
         } else {
-            assert_eq!(metrics[GAUGE_PEER_DISC_SEND_LOOKUP_REQUEST], 1);
+            assert_eq!(metric(metrics, GAUGE_PEER_DISC_SEND_LOOKUP_REQUEST), 1);
         }
     }
 }
@@ -906,19 +924,20 @@ fn test_full_nodes_connections() {
     while nodes.step_until(Duration::from_secs(30)) {}
     for state in nodes.states().values() {
         let state = state.peer_disc_driver.get_peer_disc_state();
-        let metrics = state.metrics();
 
         if state.self_id == node_ids[0] {
-            assert_eq!(metrics[GAUGE_PEER_DISC_NUM_UPSTREAM_VALIDATORS], 0);
-            assert_eq!(metrics[GAUGE_PEER_DISC_NUM_DOWNSTREAM_FULLNODES], 0);
+            let metrics = state.metrics();
+            assert_eq!(metric(metrics, GAUGE_PEER_DISC_NUM_UPSTREAM_VALIDATORS), 0);
+            assert_eq!(metric(metrics, GAUGE_PEER_DISC_NUM_DOWNSTREAM_FULLNODES), 0);
         } else if state.self_id == node_ids[1] {
             assert!(state.routing_info.contains_key(&node_ids[2]));
             assert_eq!(
                 state.participation_info.get(&node_ids[2]).unwrap().status,
                 SecondaryRaptorcastConnectionStatus::Connected
             );
-            assert_eq!(metrics[GAUGE_PEER_DISC_NUM_UPSTREAM_VALIDATORS], 0);
-            assert_eq!(metrics[GAUGE_PEER_DISC_NUM_DOWNSTREAM_FULLNODES], 1);
+            let metrics = state.metrics();
+            assert_eq!(metric(metrics, GAUGE_PEER_DISC_NUM_UPSTREAM_VALIDATORS), 0);
+            assert_eq!(metric(metrics, GAUGE_PEER_DISC_NUM_DOWNSTREAM_FULLNODES), 1);
         } else if state.self_id == node_ids[2] {
             assert!(state.routing_info.contains_key(&node_ids[0]));
             assert_eq!(
@@ -930,8 +949,9 @@ fn test_full_nodes_connections() {
                 state.participation_info.get(&node_ids[1]).unwrap().status,
                 SecondaryRaptorcastConnectionStatus::Connected
             );
-            assert_eq!(metrics[GAUGE_PEER_DISC_NUM_UPSTREAM_VALIDATORS], 1);
-            assert_eq!(metrics[GAUGE_PEER_DISC_NUM_DOWNSTREAM_FULLNODES], 0);
+            let metrics = state.metrics();
+            assert_eq!(metric(metrics, GAUGE_PEER_DISC_NUM_UPSTREAM_VALIDATORS), 1);
+            assert_eq!(metric(metrics, GAUGE_PEER_DISC_NUM_DOWNSTREAM_FULLNODES), 0);
         }
     }
 }
@@ -1248,7 +1268,7 @@ fn test_validator_name_record_change_propagation_to_full_node() {
     let new_name_record = NameRecord::new(
         *SocketAddrV4::from_str("8.8.8.8:8000").unwrap().ip(),
         8000,
-        8000,
+        Some(8000),
         8000,
         0,
         1,
@@ -1263,7 +1283,9 @@ fn test_validator_name_record_change_propagation_to_full_node() {
 
     let new_node_1_builder = NodeBuilder {
         id: node_1,
-        addr: new_node_1_name_record.udp_address(),
+        addr: new_node_1_name_record
+            .udp_address()
+            .expect("new node 1 name record must have udp address"),
         algo_builder: PeerDiscoveryBuilder {
             self_id: node_1,
             self_record: new_node_1_name_record.clone(),

@@ -26,12 +26,12 @@ mod test {
         make_eip1559_tx_with_value, make_eip7702_tx_with_value, make_legacy_tx_with_value,
         make_signed_authorization, secret_to_eth_address,
     };
+    use monad_execution_state_read::AccountState;
     use monad_mock_swarm::{
+        swarm::swarm_ledger_verification,
         terminator::UntilTerminator,
         verifier::{happy_path_tick_by_block, MockSwarmVerifier},
     };
-    use monad_state_backend::AccountState;
-    use monad_testutil::swarm::swarm_ledger_verification;
     use monad_types::Balance;
     use monad_updaters::txpool::ByzantineConfig;
     use rand::Rng;

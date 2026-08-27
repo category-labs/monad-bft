@@ -106,7 +106,7 @@ fn setup_raptorcast() -> (
     let author_id = Box::leak(Box::new(author_id));
     let group = PrimaryBroadcastGroup::of_epoch(Epoch(0), author_id, group_map).unwrap();
 
-    (author, BuildTarget::Raptorcast(group), known_addresses)
+    (author, BuildTarget::raptorcast(group), known_addresses)
 }
 
 fn setup_broadcast() -> (

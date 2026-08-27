@@ -1,4 +1,4 @@
-FROM ubuntu:25.04 AS base
+FROM ubuntu:26.04 AS base
 
 WORKDIR /usr/src/monad-bft
 
@@ -45,6 +45,7 @@ RUN apt update && apt install -y \
   libhugetlbfs-dev \
   libmagicenum-dev \
   libmimalloc-dev \
+  libsecp256k1-dev \
   libtbb-dev \
   liburing-dev \
   libzstd-dev
@@ -67,7 +68,7 @@ RUN apt update && apt install -y \
 ARG CARGO_ROOT="/root/.cargo"
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | bash -s -- -y
 ENV PATH="${CARGO_ROOT}/bin:$PATH"
-RUN rustup toolchain install 1.91.1-x86_64-unknown-linux-gnu
+RUN rustup toolchain install 1.97.1-x86_64-unknown-linux-gnu
 ARG TRIEDB_TARGET=triedb_driver
 
 ARG GIT_COMMIT=""

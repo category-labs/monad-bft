@@ -25,6 +25,8 @@ use bytes::{Bytes, BytesMut};
 use monad_crypto::certificate_signature::PubKey;
 use monad_dataplane::{UdpSocketHandle, UnicastMsg};
 use monad_executor::{ExecutorMetrics, ExecutorMetricsChain};
+use monad_peer_discovery::NameRecord;
+use monad_peer_score::IdentityScore;
 use monad_types::{NodeId, UdpPriority};
 use thiserror::Error;
 use tokio::time::Sleep;
@@ -32,15 +34,19 @@ use tracing::{debug, trace, warn};
 use zerocopy::IntoBytes;
 
 use super::{
-    framing::AuthPacketFramer,
+    framing::{AuthPacketFramer, LeanUdpFramer},
     metrics::{
-        GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_READ,
+        init_socket_executor_metrics, GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_READ,
         GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_WRITTEN,
         GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_READ,
         GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_WRITTEN,
     },
     protocol::AuthenticationProtocol,
 };
+
+// Wireauth always sends the initial connect packet. This disables additional
+// timer retries because later sends can initiate another connection attempt.
+pub(crate) const AUTH_SESSION_CONNECT_RETRY_ATTEMPTS: u64 = 0;
 
 #[derive(Clone)]
 pub struct AuthRecvMsg<P: PubKey> {
@@ -55,8 +61,13 @@ where
     AP: AuthenticationProtocol,
 {
     authenticated: AuthenticatedSocketHandle<AP>,
-    non_authenticated: UdpSocketHandle,
+    non_authenticated: Option<UdpSocketHandle>,
     metrics: ExecutorMetrics,
+}
+
+enum NameRecordDeliveryMethod {
+    Authenticated,
+    NonAuthenticatedFallback { udp_addr: SocketAddr },
 }
 
 impl<AP> DualSocketHandle<AP>
@@ -65,12 +76,12 @@ where
 {
     pub fn new(
         authenticated: AuthenticatedSocketHandle<AP>,
-        non_authenticated: UdpSocketHandle,
+        non_authenticated: Option<UdpSocketHandle>,
     ) -> Self {
         Self {
             authenticated,
             non_authenticated,
-            metrics: ExecutorMetrics::default(),
+            metrics: init_socket_executor_metrics(),
         }
     }
 
@@ -91,7 +102,9 @@ where
         }
 
         if !auth_msgs.is_empty() {
-            self.metrics[GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_WRITTEN] += auth_bytes;
+            self.metrics
+                .gauge(GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_WRITTEN)
+                .add(auth_bytes);
             self.authenticated.write_unicast_with_priority(
                 UnicastMsg {
                     msgs: auth_msgs,
@@ -102,18 +115,112 @@ where
         }
 
         if !non_auth_msgs.is_empty() {
-            self.metrics[GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_WRITTEN] +=
-                non_auth_bytes;
-            self.non_authenticated.write_unicast_with_priority(
-                UnicastMsg {
-                    msgs: non_auth_msgs,
-                    stride: msg.stride,
-                },
-                priority,
-            );
+            if let Some(non_authenticated) = &self.non_authenticated {
+                self.metrics
+                    .gauge(GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_WRITTEN)
+                    .add(non_auth_bytes);
+                non_authenticated.write_unicast_with_priority(
+                    UnicastMsg {
+                        msgs: non_auth_msgs,
+                        stride: msg.stride,
+                    },
+                    priority,
+                );
+            } else {
+                debug!(
+                    dropped = non_auth_msgs.len(),
+                    "dropping UDP messages without a non-authenticated socket"
+                );
+            }
         }
     }
 
+    pub fn write_to_name_record(
+        &mut self,
+        public_key: &AP::PublicKey,
+        name_record: &NameRecord,
+        msg: Bytes,
+        stride: u16,
+        priority: UdpPriority,
+    ) {
+        let auth_addr = SocketAddr::V4(name_record.authenticated_udp_socket());
+        let has_authenticated_socket =
+            self.is_connected_socket_and_public_key(&auth_addr, public_key);
+        let has_initiator_session = self
+            .authenticated
+            .auth_protocol
+            .has_initiator_session_by_socket_and_public_key(&auth_addr, public_key);
+        let non_authenticated_addr = self
+            .non_authenticated
+            .is_some()
+            .then(|| name_record.udp_socket().map(SocketAddr::V4))
+            .flatten();
+        let needs_connect = !has_authenticated_socket && !has_initiator_session;
+        let delivery_method = match non_authenticated_addr.filter(|_| !has_authenticated_socket) {
+            Some(udp_addr) => NameRecordDeliveryMethod::NonAuthenticatedFallback { udp_addr },
+            None => NameRecordDeliveryMethod::Authenticated,
+        };
+
+        match delivery_method {
+            NameRecordDeliveryMethod::NonAuthenticatedFallback { udp_addr } => {
+                self.write_unicast_with_priority(
+                    UnicastMsg {
+                        stride,
+                        msgs: vec![(udp_addr, msg)],
+                    },
+                    priority,
+                );
+
+                if needs_connect {
+                    if let Err(error) =
+                        self.connect(public_key, auth_addr, AUTH_SESSION_CONNECT_RETRY_ATTEMPTS)
+                    {
+                        warn!(
+                            ?public_key,
+                            auth_addr = ?auth_addr,
+                            ?error,
+                            "failed to initiate authenticated UDP session"
+                        );
+                    }
+                    self.flush();
+                }
+            }
+            NameRecordDeliveryMethod::Authenticated => {
+                if needs_connect {
+                    if let Err(error) =
+                        self.connect(public_key, auth_addr, AUTH_SESSION_CONNECT_RETRY_ATTEMPTS)
+                    {
+                        warn!(
+                            ?public_key,
+                            auth_addr = ?auth_addr,
+                            ?error,
+                            "failed to initiate authenticated UDP session"
+                        );
+                    }
+                    self.flush();
+                }
+
+                let msg_len = msg.len() as u64;
+                let result = if has_authenticated_socket {
+                    self.authenticated
+                        .write_connected_socket_with_priority(auth_addr, msg, stride, priority)
+                } else {
+                    self.authenticated
+                        .write_with_buffering(public_key, msg, stride, priority)
+                };
+                if result.is_err() {
+                    warn!(
+                        ?public_key,
+                        "failed to write or buffer authenticated UDP packet"
+                    );
+                } else {
+                    self.metrics
+                        .gauge(GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_WRITTEN)
+                        .add(msg_len);
+                }
+            }
+        }
+    }
     pub fn connect(
         &mut self,
         remote_public_key: &AP::PublicKey,
@@ -133,22 +240,36 @@ where
     }
 
     pub async fn recv(&mut self) -> Result<AuthRecvMsg<AP::PublicKey>, AP::Error> {
-        tokio::select! {
-            result = self.authenticated.recv() => {
-                if let Ok(ref msg) = result {
-                    self.metrics[GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_READ] += msg.payload.len() as u64;
+        if let Some(non_authenticated) = &mut self.non_authenticated {
+            tokio::select! {
+                result = self.authenticated.recv() => {
+                    if let Ok(ref msg) = result {
+                        self.metrics
+                            .gauge(GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_READ)
+                            .add(msg.payload.len() as u64);
+                    }
+                    result
                 }
-                result
+                msg = non_authenticated.recv() => {
+                    self.metrics
+                        .gauge(GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_READ)
+                        .add(msg.payload.len() as u64);
+                    Ok(AuthRecvMsg {
+                        src_addr: msg.src_addr,
+                        payload: msg.payload,
+                        stride: msg.stride,
+                        sender: None,
+                    })
+                }
             }
-            msg = self.non_authenticated.recv() => {
-                self.metrics[GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_READ] += msg.payload.len() as u64;
-                Ok(AuthRecvMsg {
-                src_addr: msg.src_addr,
-                payload: msg.payload,
-                stride: msg.stride,
-                sender: None,
-            })
+        } else {
+            let result = self.authenticated.recv().await;
+            if let Ok(ref msg) = result {
+                self.metrics
+                    .gauge(GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_READ)
+                    .add(msg.payload.len() as u64);
             }
+            result
         }
     }
 
@@ -239,22 +360,34 @@ where
     }
 
     pub fn write_unicast_with_priority(&mut self, msg: UnicastMsg, priority: UdpPriority) {
-        let stride = msg.stride as usize;
-        for (addr, mut chunk) in msg.msgs {
-            while !chunk.is_empty() {
-                let piece = chunk.split_to(chunk.len().min(stride));
-                let piece_len = piece.len() as u16;
-                if let Some(encrypted) = self.encrypt_packet(addr, piece) {
-                    self.socket.write_unicast_with_priority(
-                        UnicastMsg {
-                            msgs: vec![encrypted],
-                            stride: piece_len + AP::HEADER_SIZE,
-                        },
-                        priority,
-                    );
-                }
-            }
+        for (addr, chunk) in msg.msgs {
+            let _ = self.write_connected_socket_with_priority(addr, chunk, msg.stride, priority);
         }
+    }
+
+    fn write_connected_socket_with_priority(
+        &mut self,
+        addr: SocketAddr,
+        mut plaintext: Bytes,
+        stride: u16,
+        priority: UdpPriority,
+    ) -> Result<(), ()> {
+        let stride = usize::from(stride);
+        while !plaintext.is_empty() {
+            let piece = plaintext.split_to(plaintext.len().min(stride));
+            let piece_len = piece.len() as u16;
+            let Some(encrypted) = self.encrypt_packet(addr, piece) else {
+                return Err(());
+            };
+            self.socket.write_unicast_with_priority(
+                UnicastMsg {
+                    msgs: vec![encrypted],
+                    stride: piece_len + AP::HEADER_SIZE,
+                },
+                priority,
+            );
+        }
+        Ok(())
     }
 
     /// Returns `Err(())` if the message was not written.
@@ -269,6 +402,15 @@ where
             return Err(());
         }
 
+        self.write_by_connected_public_key_with_priority(public_key, plaintext, priority)
+    }
+
+    fn write_by_connected_public_key_with_priority(
+        &mut self,
+        public_key: &AP::PublicKey,
+        plaintext: Bytes,
+        priority: UdpPriority,
+    ) -> Result<(), ()> {
         let Some(addr) = self.auth_protocol.get_socket_by_public_key(public_key) else {
             warn!("failed to find socket for connected public key");
             return Err(());
@@ -302,24 +444,39 @@ where
     pub fn write_with_buffering(
         &mut self,
         public_key: &AP::PublicKey,
-        plaintext: Bytes,
+        mut plaintext: Bytes,
+        stride: u16,
         priority: UdpPriority,
     ) -> Result<(), ()> {
-        if self.auth_protocol.is_connected_public_key(public_key) {
-            return self.write_by_public_key_with_priority(public_key, plaintext, priority);
-        }
-
-        if !self.auth_protocol.has_any_session_by_public_key(public_key) {
+        let has_authenticated_socket = self.auth_protocol.is_connected_public_key(public_key);
+        if !has_authenticated_socket
+            && !self
+                .auth_protocol
+                .has_initiator_session_by_public_key(public_key)
+        {
             return Err(());
         }
 
-        match self.auth_protocol.buffer_message(public_key, plaintext) {
-            Ok(()) => Ok(()),
-            Err(err) => {
+        if plaintext.is_empty() {
+            return Ok(());
+        }
+
+        let stride = usize::from(stride);
+        while !plaintext.is_empty() {
+            let piece = plaintext.split_to(plaintext.len().min(stride));
+
+            if has_authenticated_socket {
+                self.write_by_connected_public_key_with_priority(public_key, piece, priority)?;
+                continue;
+            }
+
+            if let Err(err) = self.auth_protocol.buffer_message(public_key, piece) {
                 warn!(error=?err, "failed to buffer message");
-                Err(())
+                return Err(());
             }
         }
+
+        Ok(())
     }
 
     pub fn is_connected_socket(&self, socket_addr: &SocketAddr) -> bool {
@@ -530,8 +687,9 @@ where
         };
 
         for packet in packets {
+            let stride = packet.len() as u16;
             self.socket
-                .write_with_buffering(public_key, packet, priority)?;
+                .write_with_buffering(public_key, packet, stride, priority)?;
         }
 
         Ok(())
@@ -582,6 +740,19 @@ where
 
     pub fn metrics(&self) -> ExecutorMetricsChain<'_> {
         self.socket.metrics().chain(self.framer.metrics())
+    }
+}
+
+impl<AP, S> FramedAuthenticatedSocketHandle<AP, LeanUdpFramer<NodeId<AP::PublicKey>, S>>
+where
+    AP: AuthenticationProtocol,
+    S: IdentityScore<Identity = NodeId<AP::PublicKey>>,
+{
+    pub fn set_dedicated_identities(
+        &mut self,
+        identities: impl IntoIterator<Item = NodeId<AP::PublicKey>>,
+    ) {
+        self.framer.set_dedicated_identities(identities);
     }
 }
 
@@ -652,6 +823,7 @@ mod tests {
     use bytes::Bytes;
     use futures::poll;
     use monad_dataplane::{DataplaneBuilder, UnicastMsg};
+    use monad_peer_discovery::NameRecord;
     use monad_secp::KeyPair;
     use monad_types::UdpPriority;
     use monad_wireauth::{Config, DEFAULT_RETRY_ATTEMPTS};
@@ -663,6 +835,7 @@ mod tests {
     };
     use crate::auth::{
         framing::AuthPacketFramer,
+        metrics::GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_WRITTEN,
         protocol::{NoopAuthProtocol, WireAuthProtocol},
     };
 
@@ -698,24 +871,27 @@ mod tests {
     struct PeerNode {
         socket: DualSocketHandle<WireAuthProtocol>,
         auth_addr: SocketAddr,
+        non_auth_addr: Option<SocketAddr>,
         public_key: monad_secp::PubKey,
         _tcp_socket: monad_dataplane::TcpSocketHandle,
         _control: monad_dataplane::DataplaneControl,
     }
 
     impl PeerNode {
-        fn new(seed: u8) -> Self {
+        fn new(seed: u8, with_non_authenticated: bool) -> Self {
             let bind_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+
+            let mut udp_sockets = vec![(
+                monad_dataplane::UdpSocketId::AuthenticatedRaptorcast,
+                bind_addr,
+            )];
+            if with_non_authenticated {
+                udp_sockets.push((monad_dataplane::UdpSocketId::Raptorcast, bind_addr));
+            }
 
             let mut dp = DataplaneBuilder::new(1000)
                 .with_tcp_sockets([(monad_dataplane::TcpSocketId::Raptorcast, bind_addr)])
-                .with_udp_sockets([
-                    (
-                        monad_dataplane::UdpSocketId::AuthenticatedRaptorcast,
-                        bind_addr,
-                    ),
-                    (monad_dataplane::UdpSocketId::Raptorcast, bind_addr),
-                ])
+                .with_udp_sockets(udp_sockets)
                 .build();
 
             let tcp_socket = dp
@@ -728,11 +904,13 @@ mod tests {
                 .expect("authenticated socket");
             let non_authenticated_socket = dp
                 .udp_sockets
-                .take(monad_dataplane::UdpSocketId::Raptorcast)
-                .expect("non-authenticated socket");
+                .take(monad_dataplane::UdpSocketId::Raptorcast);
             let control = dp.control.clone();
 
             let auth_addr = authenticated_socket.local_addr();
+            let non_auth_addr = non_authenticated_socket
+                .as_ref()
+                .map(monad_dataplane::UdpSocketHandle::local_addr);
 
             let keypair = keypair(seed);
             let public_key = keypair.pubkey();
@@ -749,6 +927,7 @@ mod tests {
             Self {
                 socket,
                 auth_addr,
+                non_auth_addr,
                 public_key,
                 _tcp_socket: tcp_socket,
                 _control: control,
@@ -803,8 +982,8 @@ mod tests {
     async fn test_e2e_bidirectional() {
         init_tracing();
 
-        let mut alice = PeerNode::new(1);
-        let mut bob = PeerNode::new(2);
+        let mut alice = PeerNode::new(1, true);
+        let mut bob = PeerNode::new(2, true);
 
         let bob_addr = bob.auth_addr;
         let alice_addr = alice.auth_addr;
@@ -830,6 +1009,131 @@ mod tests {
             .expect("alice received");
         assert_eq!(&received_alice.payload[..], b"hello from bob");
         assert_eq!(received_alice.src_addr, bob_addr);
+    }
+
+    #[tokio::test]
+    async fn test_e2e_bidirectional_without_non_authenticated_socket() {
+        init_tracing();
+
+        let mut alice = PeerNode::new(1, false);
+        let mut bob = PeerNode::new(2, false);
+
+        assert!(alice.non_auth_addr.is_none());
+        assert!(bob.non_auth_addr.is_none());
+
+        let bob_addr = bob.auth_addr;
+        let alice_addr = alice.auth_addr;
+
+        alice.connect(&bob.public_key, bob_addr);
+
+        exchange_handshake(&mut alice, &mut bob).await;
+
+        alice.write_message(bob_addr, b"hello from alice");
+
+        let received_bob = tokio::time::timeout(Duration::from_secs(2), bob.socket.recv())
+            .await
+            .expect("timeout waiting for bob")
+            .expect("bob received");
+        assert_eq!(&received_bob.payload[..], b"hello from alice");
+        assert_eq!(received_bob.src_addr, alice_addr);
+
+        bob.write_message(alice_addr, b"hello from bob");
+
+        let received_alice = tokio::time::timeout(Duration::from_secs(2), alice.socket.recv())
+            .await
+            .expect("timeout waiting for alice")
+            .expect("alice received");
+        assert_eq!(&received_alice.payload[..], b"hello from bob");
+        assert_eq!(received_alice.src_addr, bob_addr);
+    }
+
+    #[tokio::test]
+    async fn test_write_to_name_record_tracks_authenticated_bytes() {
+        init_tracing();
+
+        let mut alice = PeerNode::new(1, false);
+        let mut bob = PeerNode::new(2, false);
+
+        alice.connect(&bob.public_key, bob.auth_addr);
+        exchange_handshake(&mut alice, &mut bob).await;
+
+        let SocketAddr::V4(bob_auth_addr) = bob.auth_addr else {
+            panic!("test uses IPv4 addresses");
+        };
+        let bob_name_record = NameRecord::new_with_ports(
+            *bob_auth_addr.ip(),
+            bob_auth_addr.port(),
+            None,
+            bob_auth_addr.port(),
+            None,
+            None,
+            1,
+        );
+        let payload = Bytes::from_static(b"authenticated path");
+
+        alice.socket.write_to_name_record(
+            &bob.public_key,
+            &bob_name_record,
+            payload.clone(),
+            payload.len() as u16,
+            UdpPriority::Regular,
+        );
+
+        let authenticated_bytes = alice
+            .socket
+            .metrics()
+            .into_inner()
+            .into_iter()
+            .find_map(|(name, value, _)| {
+                (name == GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_WRITTEN.name)
+                    .then_some(value)
+            })
+            .unwrap_or_default();
+        assert_eq!(authenticated_bytes, payload.len() as u64);
+    }
+
+    #[tokio::test]
+    async fn test_write_to_name_record_segments_authenticated_payload_by_stride() {
+        init_tracing();
+
+        let mut alice = PeerNode::new(1, false);
+        let mut bob = PeerNode::new(2, false);
+
+        alice.connect(&bob.public_key, bob.auth_addr);
+        exchange_handshake(&mut alice, &mut bob).await;
+
+        let SocketAddr::V4(bob_auth_addr) = bob.auth_addr else {
+            panic!("test uses IPv4 addresses");
+        };
+        let bob_name_record = NameRecord::new_with_ports(
+            *bob_auth_addr.ip(),
+            bob_auth_addr.port(),
+            None,
+            bob_auth_addr.port(),
+            None,
+            None,
+            1,
+        );
+
+        alice.socket.write_to_name_record(
+            &bob.public_key,
+            &bob_name_record,
+            Bytes::from_static(b"helloworld"),
+            5,
+            UdpPriority::Regular,
+        );
+
+        let first = tokio::time::timeout(Duration::from_secs(2), bob.socket.recv())
+            .await
+            .expect("timeout waiting for first chunk")
+            .expect("bob received first chunk");
+        let second = tokio::time::timeout(Duration::from_secs(2), bob.socket.recv())
+            .await
+            .expect("timeout waiting for second chunk")
+            .expect("bob received second chunk");
+
+        assert_eq!(&first.payload[..], b"hello");
+        assert_eq!(&second.payload[..], b"world");
     }
 
     #[tokio::test(flavor = "current_thread")]

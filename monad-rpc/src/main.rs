@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#![recursion_limit = "256"]
+
 use std::{sync::Arc, time::Duration};
 
 use actix_web::{web, App, HttpServer};
@@ -25,7 +27,7 @@ use monad_pprof::start_pprof_server;
 use monad_rpc::{
     comparator::RpcComparator,
     data::{
-        buffer::ExecEventsBuffer,
+        buffer::BlockBuffer,
         eth_call_handler::{EthCallHandler, EthCallHandlerConfig},
         DataProvider,
     },
@@ -288,6 +290,9 @@ async fn main() -> std::io::Result<()> {
                 max_concurrent_permits: args.eth_call_max_concurrent_requests as usize,
                 provider_gas_limit_eth_call: args.eth_call_provider_gas_limit,
                 provider_gas_limit_eth_estimate_gas: args.eth_estimate_gas_provider_gas_limit,
+                provider_gas_limit_eth_simulate: args.eth_simulate_gas_limit,
+                provider_max_calls_eth_simulate: args.eth_simulate_max_calls,
+                provider_max_blocks_eth_simulate: args.eth_simulate_max_blocks,
             },
             triedb_path,
         )
@@ -301,39 +306,35 @@ async fn main() -> std::io::Result<()> {
         )
     });
 
-    let decompression_guard = DecompressionGuard::new(args.max_request_size);
-
     // Configure event ring, websocket server and event cache.
-    let (events_client, events_for_cache) = if let Some(exec_event_path) = args.exec_event_path {
+    let event_server_client = if let Some(exec_event_path) = args.exec_event_path {
         let event_ring_path =
             EventRingPath::resolve(exec_event_path).expect("Execution event ring path resolves");
 
         let event_ring = EventRing::new(event_ring_path).expect("Execution event ring is ready");
 
-        let events_client = EventServer::start(event_ring);
-
-        // Subscribe to the event server to populate the event cache.
-        let events_for_cache = events_client
-            .subscribe()
-            .expect("Failed to subscribe to event server");
-
-        (Some(events_client), Some(events_for_cache))
+        Some(EventServer::start(event_ring))
     } else {
         if args.ws_enabled {
             panic!("exec-event-path is not set but is required for websockets");
         }
 
-        (None, None)
+        None
     };
 
-    let event_buffer = if let Some(mut events_for_cache) = events_for_cache {
-        let event_buffer = Arc::new(ExecEventsBuffer::new(1024));
+    let block_buffer_view = if let Some(event_server_client) = event_server_client.as_ref() {
+        let mut event_server_subscription = event_server_client
+            .subscribe()
+            .expect("Failed to subscribe to event server");
 
-        let event_buffer2 = event_buffer.clone();
+        let mut block_buffer = BlockBuffer::new(1024);
+
+        let block_buffer_view = block_buffer.create_view();
+
         tokio::spawn(async move {
             loop {
-                match events_for_cache.recv().await {
-                    Ok(event) => event_buffer2.insert(event).await,
+                match event_server_subscription.recv().await {
+                    Ok(event) => block_buffer.insert(event),
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(lag_count)) => {
                         warn!(
                             ?lag_count,
@@ -348,24 +349,29 @@ async fn main() -> std::io::Result<()> {
             }
         });
 
-        Some(event_buffer)
+        Some(block_buffer_view)
     } else {
         None
     };
 
-    let data_provider = triedb_env.map(|t| DataProvider::new(event_buffer, t, archive_reader));
+    let data_provider =
+        triedb_env.map(|t| DataProvider::new(block_buffer_view, Arc::new(t), archive_reader));
 
     let rpc_comparator: Option<RpcComparator> = args
         .rpc_comparison_endpoint
         .as_ref()
         .map(|endpoint| RpcComparator::new(endpoint.to_string(), node_config.node_name));
 
+    let enable_websockets = event_server_client.is_some();
+
     let app_state = MonadRpcResources::new(
         txpool_bridge_client,
         eth_call_handler,
         node_config.chain_id,
         data_provider,
+        event_server_client.clone(),
         args.batch_request_limit,
+        args.batch_concurrent_limit,
         args.max_response_size,
         args.allow_unprotected_txs,
         args.eth_get_logs_max_block_range,
@@ -374,42 +380,37 @@ async fn main() -> std::io::Result<()> {
         args.dry_run_get_logs_index,
         args.use_eth_get_logs_index,
         args.max_finalized_block_cache_len,
+        args.enable_eth_simulate_v1,
         with_metrics.clone(),
         rpc_comparator.clone(),
+        args.feehistory_max_concurrent_requests,
     );
 
     // Configure the websocket server if enabled
-    let ws_server_handle = if let Some(events_client) = events_client {
+    let ws_server_handle = (args.ws_enabled && enable_websockets).then(|| {
         let ws_app_data = app_state.clone();
         let conn_limit = websocket::handler::ConnectionLimit::new(args.ws_conn_limit);
         let sub_limit = websocket::handler::SubscriptionLimit(args.ws_sub_per_conn_limit);
 
-        args.ws_enabled.then(|| {
-            HttpServer::new(move || {
-                App::new()
-                    .app_data(web::Data::new(conn_limit.clone()))
-                    .app_data(web::Data::new(events_client.clone()))
-                    .app_data(web::Data::new(ws_app_data.clone()))
-                    .app_data(web::Data::new(sub_limit.clone()))
-                    .service(
-                        web::resource("/").route(web::get().to(websocket::handler::ws_handler)),
-                    )
-            })
-            .bind((args.rpc_addr.clone(), args.ws_port))
-            .expect("Failed to bind WebSocket server")
-            .shutdown_timeout(1)
-            .workers(args.ws_worker_threads)
+        HttpServer::new(move || {
+            App::new()
+                .app_data(web::Data::new(conn_limit.clone()))
+                .app_data(web::Data::new(ws_app_data.clone()))
+                .app_data(web::Data::new(sub_limit.clone()))
+                .service(web::resource("/").route(web::get().to(websocket::handler::ws_handler)))
         })
-    } else {
-        None
-    };
+        .bind((args.rpc_addr.clone(), args.ws_port))
+        .expect("Failed to bind WebSocket server")
+        .shutdown_timeout(1)
+        .workers(args.ws_worker_threads)
+    });
 
     // Configure the rpc server with or without metrics
     let app = match with_metrics {
         Some(metrics) => HttpServer::new(move || {
             App::new()
-                .wrap(decompression_guard.clone())
                 .wrap(metrics.clone())
+                .wrap(DecompressionGuard::default())
                 .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
                 .wrap(TimingMiddleware)
                 .app_data(web::PayloadConfig::default().limit(args.max_request_size))
@@ -422,7 +423,7 @@ async fn main() -> std::io::Result<()> {
         .run(),
         None => HttpServer::new(move || {
             App::new()
-                .wrap(decompression_guard.clone())
+                .wrap(DecompressionGuard::default())
                 .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
                 .wrap(TimingMiddleware)
                 .app_data(web::PayloadConfig::default().limit(args.max_request_size))

@@ -28,7 +28,6 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use byte_unit::Byte;
 use clap::{Parser, Subcommand};
 use eyre::Result;
 use futures_util::{FutureExt, StreamExt};
@@ -51,7 +50,7 @@ use monad_raptorcast::{
     RaptorCast, RaptorCastEvent,
 };
 use monad_secp::{KeyPair, SecpSignature};
-use monad_types::{Deserializable, Epoch, NodeId, RouterTarget, Serializable, Stake};
+use monad_types::{Deserializable, Epoch, NodeId, Round, RouterTarget, Serializable, Stake};
 use opentelemetry::metrics::MeterProvider;
 use opentelemetry_otlp::{MetricExporter, WithExportConfig};
 use rand::{thread_rng, Rng};
@@ -66,8 +65,46 @@ fn parse_duration(s: &str) -> Result<Duration, String> {
 }
 
 fn parse_size(s: &str) -> Result<usize, String> {
-    let byte = Byte::parse_str(s, true).map_err(|e| e.to_string())?;
-    Ok(byte.as_u64() as usize)
+    let s = s.trim();
+    let unit_at = s
+        .find(|c: char| !c.is_ascii_digit() && c != '.')
+        .unwrap_or(s.len());
+    let (num, unit) = s.split_at(unit_at);
+    let mult: u128 = match unit.trim_start_matches(' ').to_ascii_lowercase().as_str() {
+        "" | "b" => 1,
+        "k" | "kb" => 1000,
+        "ki" | "kib" => 1 << 10,
+        "m" | "mb" => 1000u128.pow(2),
+        "mi" | "mib" => 1 << 20,
+        "g" | "gb" => 1000u128.pow(3),
+        "gi" | "gib" => 1 << 30,
+        _ => return Err(format!("invalid size unit in {s:?}")),
+    };
+    let invalid = || format!("invalid size {s:?}");
+    let too_large = || format!("size {s:?} is too large");
+    let (int, extra) = match num.split_once('.') {
+        Some((int, frac)) => {
+            let scale = 10u128.checked_pow(frac.len() as u32).ok_or_else(invalid)?;
+            let frac = frac.parse::<u128>().map_err(|_| invalid())?;
+            let extra = frac
+                .checked_mul(mult)
+                .ok_or_else(too_large)?
+                .div_ceil(scale);
+            (int, extra)
+        }
+        None => (num, 0),
+    };
+    if int.is_empty() {
+        return Err(invalid());
+    }
+    let bytes = int
+        .parse::<u128>()
+        .map_err(|_| too_large())?
+        .checked_mul(mult)
+        .ok_or_else(too_large)?
+        .checked_add(extra)
+        .ok_or_else(too_large)?;
+    usize::try_from(bytes).map_err(|_| too_large())
 }
 
 #[derive(Parser)]
@@ -117,7 +154,11 @@ enum Commands {
         index: Option<usize>,
         #[arg(long, value_parser = parse_duration)]
         interval: Duration,
-        #[arg(long, value_parser = parse_size)]
+        #[arg(
+            long,
+            value_parser = parse_size,
+            help = "message size in bytes, e.g. 1500, 64KiB, 2MB"
+        )]
         size: usize,
         #[arg(long, help = "opentelemetry otlp endpoint for metrics export")]
         otel_endpoint: Option<String>,
@@ -291,6 +332,7 @@ fn create_raptorcast_config(keypair: Arc<KeyPair>) -> RaptorCastConfig<Signature
             invite_future_dist_max: monad_types::Round(5),
             invite_accept_heartbeat_ms: 100,
         },
+        deterministic_protocol_rollout: monad_raptorcast::v1_rollout::CURRENT_STAGE,
     }
 }
 
@@ -586,7 +628,7 @@ fn setup_node(
         let name_record = NameRecord::new(
             *participant.tcp_addr.ip(),
             participant.tcp_addr.port(),
-            participant.udp_addr.port(),
+            Some(participant.udp_addr.port()),
             participant.authenticated_udp_addr.port(),
             0,
             0,
@@ -638,7 +680,7 @@ fn setup_node(
 
     let mut known_addresses = std::collections::HashMap::new();
     for (node_id, record) in &routing_info {
-        known_addresses.insert(*node_id, record.name_record.udp_socket());
+        known_addresses.insert(*node_id, record.name_record.authenticated_udp_socket());
     }
 
     let noop_builder = NopDiscoveryBuilder {
@@ -671,14 +713,16 @@ fn setup_node(
         tcp_socket,
         (authenticated_socket, auth_protocol),
         None,
-        non_authenticated_socket,
+        Some(non_authenticated_socket),
         dataplane_control,
         Arc::new(std::sync::Mutex::new(pd)),
         Epoch(0),
+        monad_raptorcast::dummy_proposer_schedule(),
     );
 
     raptorcast.exec(vec![RouterCommand::AddEpochValidatorSet {
         epoch: Epoch(0),
+        epoch_start: monad_types::Round(0),
         validator_set: epoch_validators
             .iter()
             .map(|(id, stake)| (*id, *stake))
@@ -769,7 +813,7 @@ async fn run_producer(
             _ = interval_timer.tick() => {
                 let message = MockMessage::new_with_timestamp(size);
                 raptorcast.exec(vec![RouterCommand::Publish {
-                    target: RouterTarget::Raptorcast(Epoch(0)),
+                    target: RouterTarget::Raptorcast { round: Round(0), epoch: Epoch(0) },
                     message,
                 }]);
 
@@ -919,4 +963,34 @@ fn generate_config(output_path: String, count: usize, base_ip: String, port: u16
     );
     println!("Port: {}", port);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_size_units() {
+        assert_eq!(parse_size("4096"), Ok(4096));
+        assert_eq!(parse_size("1kb"), Ok(1000));
+        assert_eq!(parse_size("1kib"), Ok(1024));
+        assert_eq!(parse_size("1K"), Ok(1000));
+        assert_eq!(parse_size("1Ki"), Ok(1024));
+        assert_eq!(parse_size("1.5MB"), Ok(1_500_000));
+        assert_eq!(parse_size("1.5 GiB"), Ok(1_610_612_736));
+    }
+
+    #[test]
+    fn parse_size_rounds_up() {
+        assert_eq!(parse_size("1.4"), Ok(2));
+        assert_eq!(parse_size("0.1KiB"), Ok(103));
+        assert_eq!(parse_size("0.500000000000000000000GiB"), Ok(536_870_912));
+    }
+
+    #[test]
+    fn parse_size_rejects() {
+        for s in ["", "1Mbit", ".5", "1.", "abc", "1X", "1TB", "16EiB"] {
+            assert!(parse_size(s).is_err(), "{s:?} should be rejected");
+        }
+    }
 }

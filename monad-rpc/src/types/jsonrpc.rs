@@ -16,7 +16,7 @@
 //! reference: https://www.jsonrpc.org/specification
 
 use serde::{Deserialize, Deserializer, Serialize};
-use serde_json::{value::RawValue, Value};
+use serde_json::value::RawValue;
 use tracing::error;
 
 use crate::data::ChainStateError;
@@ -242,12 +242,21 @@ pub fn serialize_with_size_limit<T: Serialize>(
     Ok(raw)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct JsonRpcError {
     pub code: i32,
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub data: Option<Value>,
+    pub data: Option<Box<RawValue>>,
+}
+
+impl PartialEq for JsonRpcError {
+    fn eq(&self, other: &Self) -> bool {
+        self.code == other.code
+            && self.message == other.message
+            && self.data.as_ref().map(|data| data.get())
+                == other.data.as_ref().map(|data| data.get())
+    }
 }
 
 pub type JsonRpcResult<T> = Result<T, JsonRpcError>;
@@ -325,12 +334,15 @@ impl<T> ChainStateResultExt for Result<T, ChainStateError> {
         match self {
             Ok(x) => Ok(Some(x)),
             Err(ChainStateError::ResourceNotFound) => Ok(None),
-            Err(ChainStateError::Archive(e)) => {
-                Err(JsonRpcError::internal_error(format!("Archive error: {e}")))
-            }
             Err(ChainStateError::Triedb(e)) => {
                 Err(JsonRpcError::internal_error(format!("Triedb error: {e}")))
             }
+            Err(ChainStateError::Archive(e)) => {
+                Err(JsonRpcError::internal_error(format!("Archive error: {e}")))
+            }
+            Err(ChainStateError::DataSource(e)) => Err(JsonRpcError::internal_error(format!(
+                "DataSource error: {e}"
+            ))),
         }
     }
 }
@@ -438,9 +450,12 @@ impl JsonRpcError {
                 "Transaction receipt not available within {}ms timeout",
                 timeout_ms
             ),
-            data: Some(serde_json::json!({
-                "hash": tx_hash
-            })),
+            data: Some(
+                serde_json::value::to_raw_value(&serde_json::json!({
+                    "hash": tx_hash
+                }))
+                .expect("RawValue can be built from Value"),
+            ),
         }
     }
 
@@ -456,7 +471,19 @@ impl JsonRpcError {
         Self {
             code: -32603,
             message,
-            data: data.map(Value::String),
+            data: data.map(|data| {
+                serde_json::value::to_raw_value(&data).expect("RawValue can be built from String")
+            }),
+        }
+    }
+
+    pub fn eth_call_execution_revert(message: String, data: Option<String>) -> Self {
+        Self {
+            code: 3,
+            message,
+            data: data.map(|data| {
+                serde_json::value::to_raw_value(&data).expect("RawValue can be built from String")
+            }),
         }
     }
 
@@ -483,7 +510,7 @@ impl JsonRpcError {
         Self::custom("overloaded, try again later".to_string())
     }
 
-    pub fn max_size_exceeded() -> Self {
+    pub fn max_response_size_exceeded() -> Self {
         Self::custom("response exceeds size limit".to_string())
     }
 }
@@ -520,6 +547,58 @@ impl From<monad_archive::prelude::Report> for JsonRpcError {
         // Log with debug to get more details, but return a generic error for response
         error!("Archive error: {e:?}");
         Self::internal_error(format!("Archive error: {}", e))
+    }
+}
+
+impl From<monad_ethcall::EthCallError> for JsonRpcError {
+    fn from(error: monad_ethcall::EthCallError) -> Self {
+        use monad_ethcall::EthCallError::*;
+        match error {
+            Failure {
+                error_code,
+                message,
+                data,
+                ..
+            } => {
+                if matches!(error_code, monad_ethcall::EthCallResult::ExecutionError) {
+                    Self::eth_call_execution_revert(message, data)
+                } else {
+                    Self::eth_call_error(message, data)
+                }
+            }
+            GasLimitTooHigh => Self::eth_call_error(String::from("gas limit too high"), None),
+            InternalError => Self::eth_call_error(String::from("internal eth_call error"), None),
+            Other { message } => Self::eth_call_error(message, None),
+            ReserveBalanceViolation { .. } => {
+                Self::eth_call_error(String::from("reserve balance violation"), None)
+            }
+            Trace { .. } => Self::eth_call_error(String::from("trace error"), None),
+        }
+    }
+}
+
+impl From<monad_ethcall::EthTraceError> for JsonRpcError {
+    fn from(error: monad_ethcall::EthTraceError) -> Self {
+        use monad_ethcall::EthTraceError::*;
+        let message = match error {
+            InternalError => String::from("internal error"),
+            Other(message) => message,
+        };
+        Self::eth_call_error(message, None)
+    }
+}
+
+impl From<monad_ethcall::EthSimulateError> for JsonRpcError {
+    fn from(error: monad_ethcall::EthSimulateError) -> Self {
+        use monad_ethcall::EthSimulateError::*;
+        let message = match error {
+            BlockOverrideFailure => String::from("block override failure"),
+            InternalError => String::from("internal error"),
+            InputSizeMismatch => String::from("input size mismatch"),
+            StateOverrideFailure => String::from("state override failure"),
+            Other(message) => message,
+        };
+        Self::eth_call_error(message, None)
     }
 }
 

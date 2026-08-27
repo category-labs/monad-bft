@@ -15,9 +15,7 @@
 
 use std::num::TryFromIntError;
 
-use monad_ethcall::{
-    eth_trace_block_or_transaction, CallResult, ChainId, EthCallExecutor, MonadTracer,
-};
+use monad_ethcall::{ChainId, MonadExecutor, MonadTracer};
 use monad_triedb_utils::triedb_env::{BlockKey, Triedb};
 use monad_types::SeqNum;
 use serde_json::value::RawValue;
@@ -136,8 +134,9 @@ impl TryFrom<BlockTagOrHash> for EthHash {
 /// A generic handler for debug trace requests that requires transaction replay (e.g., PreStateTracer).
 pub async fn monad_debug_trace_replay<T: Triedb>(
     data_provider: &DataProvider<T>,
-    eth_call_executor: &EthCallExecutor,
+    eth_call_executor: &MonadExecutor,
     chain_id: ChainId,
+    max_response_size: usize,
     params: &impl DebugTraceParams,
 ) -> JsonRpcResult<Box<RawValue>> {
     let block_key =
@@ -237,25 +236,30 @@ pub async fn monad_debug_trace_replay<T: Triedb>(
     } else {
         None
     };
-    let call_result = eth_trace_block_or_transaction(
-        chain_id,
-        header.header,
-        block_number,
-        block_key.into(),
-        parent_key.into(),
-        grandparent_key.and_then(|key: BlockKey| key.into()),
-        transaction_index,
-        eth_call_executor,
-        tracer,
-    )
-    .await;
+    let call_result = eth_call_executor
+        .eth_trace_block_or_transaction(
+            chain_id,
+            header.header,
+            block_number,
+            block_key.into(),
+            parent_key.into(),
+            grandparent_key.and_then(|key: BlockKey| key.into()),
+            transaction_index,
+            tracer,
+        )
+        .await;
     let raw_payload = match call_result {
-        CallResult::Success(monad_ethcall::SuccessCallResult { output_data, .. }) => output_data,
-        CallResult::Failure(error) => {
-            return Err(JsonRpcError::eth_call_error(error.message, error.data));
+        Ok(result) => result.output_data.into_vec(),
+        Err(e) => {
+            return Err(e.into());
         }
-        CallResult::Revert(result) => result.trace,
     };
+
+    // reject on the approximated encoded length before serialization
+    if raw_payload.len() > max_response_size {
+        return Err(JsonRpcError::max_response_size_exceeded());
+    }
+
     let v: serde_cbor::Value = serde_cbor::from_slice(&raw_payload)
         .map_err(|e| JsonRpcError::internal_error(format!("cbor decode error: {}", e)))?;
     serde_json::value::to_raw_value(&v)
@@ -271,8 +275,11 @@ pub async fn collect_debug_trace_via_replay(
     let eth_call_handler = app_state.eth_call_handler.as_ref().method_not_supported()?;
     let permit = eth_call_handler.acquire(request_id).await?;
     let chain_id = parse_ethcall_chain_id(app_state.chain_id)?;
+    let max_response_size = app_state.max_response_size as usize;
 
     permit
-        .execute(|_, executor| monad_debug_trace_replay(data_provider, executor, chain_id, params))
+        .execute(|_, executor| {
+            monad_debug_trace_replay(data_provider, executor, chain_id, max_response_size, params)
+        })
         .await
 }

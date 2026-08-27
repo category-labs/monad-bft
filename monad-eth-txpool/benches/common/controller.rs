@@ -26,7 +26,9 @@ use monad_crypto::NopSignature;
 use monad_eth_block_policy::{EthBlockPolicy, EthValidatedBlock};
 use monad_eth_testutil::generate_block_with_txs;
 use monad_eth_txpool::{EthTxPool, EthTxPoolEventTracker, EthTxPoolMetrics};
-use monad_state_backend::{AccountState, InMemoryBlockState, InMemoryState, InMemoryStateInner};
+use monad_execution_state_read::{
+    AccountState, InMemoryBlockState, InMemoryState, InMemoryStateInner,
+};
 use monad_testutil::signing::MockSignatures;
 use monad_tfm::base_fee::MIN_BASE_FEE;
 use monad_types::{Round, SeqNum};
@@ -35,11 +37,11 @@ pub type SignatureType = NopSignature;
 pub type SignatureCollectionType = MockSignatures<NopSignature>;
 pub type BlockPolicyType =
     EthBlockPolicy<SignatureType, SignatureCollectionType, MockChainConfig, MockChainRevision>;
-pub type StateBackendType = InMemoryState<SignatureType, SignatureCollectionType>;
+pub type ExecutionStateReadType = InMemoryState<SignatureType, SignatureCollectionType>;
 pub type Pool = EthTxPool<
     SignatureType,
     SignatureCollectionType,
-    StateBackendType,
+    ExecutionStateReadType,
     MockChainConfig,
     MockChainRevision,
 >;
@@ -53,7 +55,7 @@ pub struct BenchControllerConfig {
 pub struct BenchController<'a> {
     pub chain_config: MockChainConfig,
     pub block_policy: &'a BlockPolicyType,
-    pub state_backend: StateBackendType,
+    pub state_read: ExecutionStateReadType,
     pub pool: Pool,
     pub pending_blocks: Vec<EthValidatedBlock<SignatureType, SignatureCollectionType>>,
     pub metrics: EthTxPoolMetrics,
@@ -85,7 +87,7 @@ impl<'a> BenchController<'a> {
             .sum::<u64>()
             .saturating_add(1);
 
-        let state_backend = Self::generate_state_backend_for_txs(&pool_txs);
+        let state_read = Self::generate_state_read_for_txs(&pool_txs);
 
         let metrics = EthTxPoolMetrics::default();
         let pool = Self::create_pool(block_policy, &chain_config, pool_txs, &metrics);
@@ -93,7 +95,7 @@ impl<'a> BenchController<'a> {
         Self {
             chain_config,
             block_policy,
-            state_backend,
+            state_read,
             pool,
             pending_blocks: pending_block_txs
                 .into_iter()
@@ -138,7 +140,7 @@ impl<'a> BenchController<'a> {
         pool
     }
 
-    pub fn generate_state_backend_for_txs(txs: &[Recovered<TxEnvelope>]) -> StateBackendType {
+    pub fn generate_state_read_for_txs(txs: &[Recovered<TxEnvelope>]) -> ExecutionStateReadType {
         InMemoryStateInner::new(
             SeqNum(4),
             InMemoryBlockState::genesis(

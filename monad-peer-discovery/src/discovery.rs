@@ -15,7 +15,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    net::{IpAddr, SocketAddrV4},
+    net::{IpAddr, Ipv4Addr, SocketAddrV4},
     num::NonZeroU32,
     path::PathBuf,
     time::Duration,
@@ -35,8 +35,8 @@ use tracing::{debug, info, trace, warn};
 use crate::{
     MonadNameRecord, MonadNameRecordWithPubkey, NameRecord, PeerDiscoveryAlgo,
     PeerDiscoveryAlgoBuilder, PeerDiscoveryCommand, PeerDiscoveryEvent, PeerDiscoveryMessage,
-    PeerDiscoveryMetricsCommand, PeerDiscoveryTimerCommand, PeerLookupRequest, PeerLookupResponse,
-    PeerSource, Ping, Pong, TimerKind,
+    PeerDiscoveryTimerCommand, PeerLookupRequest, PeerLookupResponse, PeerSource, Ping, Pong,
+    TimerKind,
     ipv4_validation::{IpCheckError, validate_socket_ipv4_address},
     message::MAX_PEER_IN_RESPONSE,
 };
@@ -166,6 +166,38 @@ monad_executor::metric_consts! {
         name: "monad.peer_disc.socket_collisions",
         help: "Socket address collisions",
     }
+}
+
+fn init_executor_metrics() -> ExecutorMetrics {
+    ExecutorMetrics::with_metric_defs(&[
+        GAUGE_PEER_DISC_SEND_PING,
+        GAUGE_PEER_DISC_RECV_PING,
+        GAUGE_PEER_DISC_DROP_PING,
+        GAUGE_PEER_DISC_PING_TIMEOUT,
+        GAUGE_PEER_DISC_SEND_PONG,
+        GAUGE_PEER_DISC_RECV_PONG,
+        GAUGE_PEER_DISC_DROP_PONG,
+        GAUGE_PEER_DISC_RATE_LIMITED,
+        GAUGE_PEER_DISC_SEND_LOOKUP_REQUEST,
+        GAUGE_PEER_DISC_RECV_LOOKUP_REQUEST,
+        GAUGE_PEER_DISC_RECV_OPEN_LOOKUP_REQUEST,
+        GAUGE_PEER_DISC_RECV_TARGETED_LOOKUP_REQUEST,
+        GAUGE_PEER_DISC_RETRY_LOOKUP_REQUEST,
+        GAUGE_PEER_DISC_SEND_LOOKUP_RESPONSE,
+        GAUGE_PEER_DISC_RECV_LOOKUP_RESPONSE,
+        GAUGE_PEER_DISC_DROP_LOOKUP_RESPONSE,
+        GAUGE_PEER_DISC_LOOKUP_TIMEOUT,
+        GAUGE_PEER_DISC_SEND_RAPTORCAST_REQUEST,
+        GAUGE_PEER_DISC_RECV_RAPTORCAST_REQUEST,
+        GAUGE_PEER_DISC_SEND_RAPTORCAST_RESPONSE,
+        GAUGE_PEER_DISC_RECV_RAPTORCAST_RESPONSE,
+        GAUGE_PEER_DISC_REFRESH,
+        GAUGE_PEER_DISC_NUM_PEERS,
+        GAUGE_PEER_DISC_NUM_PENDING_PEERS,
+        GAUGE_PEER_DISC_NUM_UPSTREAM_VALIDATORS,
+        GAUGE_PEER_DISC_NUM_DOWNSTREAM_FULLNODES,
+        GAUGE_PEER_DISC_SOCKET_COLLISIONS,
+    ])
 }
 
 /// validator role is given if the node is a validator in the current or next epoch.
@@ -353,7 +385,7 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
             pending_queue: Default::default(),
             socket_to_id: Default::default(),
             outstanding_lookup_requests: Default::default(),
-            metrics: Default::default(),
+            metrics: init_executor_metrics(),
             refresh_period: self.refresh_period,
             request_timeout: self.request_timeout,
             unresponsive_prune_threshold: self.unresponsive_prune_threshold,
@@ -500,8 +532,8 @@ impl<ST: CertificateSignatureRecoverable, C: governor::clock::Clock> PeerDiscove
 
         // check if the peer ip address is valid
         if let Err(err) = validate_socket_ipv4_address(
-            &name_record.udp_address(),
-            &self.self_record.udp_address(),
+            &name_record.authenticated_udp_address(),
+            &self.self_record.authenticated_udp_address(),
         ) {
             warn!(
                 ?peer_id,
@@ -546,7 +578,9 @@ impl<ST: CertificateSignatureRecoverable, C: governor::clock::Clock> PeerDiscove
                 name_record: name_record.clone(),
             },
         );
-        self.metrics[GAUGE_PEER_DISC_NUM_PENDING_PEERS] = self.pending_queue.len() as u64;
+        self.metrics
+            .gauge(GAUGE_PEER_DISC_NUM_PENDING_PEERS)
+            .set(self.pending_queue.len() as u64);
 
         // send ping to the peer, which will also insert the peer into pending queue
         Ok(self.send_ping(peer_id, name_record.name_record, ping_msg))
@@ -562,7 +596,9 @@ impl<ST: CertificateSignatureRecoverable, C: governor::clock::Clock> PeerDiscove
         self.pending_queue.remove(&peer_id);
         cmds.extend(self.clear_ping_timeout(peer_id));
 
-        self.metrics[GAUGE_PEER_DISC_NUM_PENDING_PEERS] = self.pending_queue.len() as u64;
+        self.metrics
+            .gauge(GAUGE_PEER_DISC_NUM_PENDING_PEERS)
+            .set(self.pending_queue.len() as u64);
 
         cmds
     }
@@ -588,7 +624,9 @@ impl<ST: CertificateSignatureRecoverable, C: governor::clock::Clock> PeerDiscove
                 last_active: self.current_round,
             });
         cmds.extend(self.remove_peer_from_pending(peer));
-        self.metrics[GAUGE_PEER_DISC_NUM_PEERS] = self.routing_info.len() as u64;
+        self.metrics
+            .gauge(GAUGE_PEER_DISC_NUM_PEERS)
+            .set(self.routing_info.len() as u64);
 
         if let Some(record) = old_name_record {
             record.all_udp_sockets().for_each(|socket| {
@@ -634,7 +672,9 @@ impl<ST: CertificateSignatureRecoverable, C: governor::clock::Clock> PeerDiscove
             .map(|(id, _)| id)
             .collect::<HashSet<_>>();
 
-        self.metrics[GAUGE_PEER_DISC_NUM_UPSTREAM_VALIDATORS] = connected_validators.len() as u64;
+        self.metrics
+            .gauge(GAUGE_PEER_DISC_NUM_UPSTREAM_VALIDATORS)
+            .set(connected_validators.len() as u64);
 
         let slots_to_fill = NUM_UPSTREAM_VALIDATORS.saturating_sub(connected_validators.len());
         if slots_to_fill > 0 {
@@ -837,7 +877,7 @@ impl<ST: CertificateSignatureRecoverable, C: governor::clock::Clock> PeerDiscove
                 ?expected_node_id,
                 "socket address already bound to another node ID"
             );
-            self.metrics[GAUGE_PEER_DISC_SOCKET_COLLISIONS] += 1;
+            self.metrics.gauge(GAUGE_PEER_DISC_SOCKET_COLLISIONS).inc();
             return false;
         }
         true
@@ -869,7 +909,7 @@ where
             message: PeerDiscoveryMessage::Ping(ping),
         });
 
-        self.metrics[GAUGE_PEER_DISC_SEND_PING] += 1;
+        self.metrics.gauge(GAUGE_PEER_DISC_SEND_PING).inc();
         cmds
     }
 
@@ -879,7 +919,7 @@ where
         ping_msg: Ping<Self::SignatureType>,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
         debug!(?from.id, ?from.addr, ?ping_msg, "handling ping request");
-        self.metrics[GAUGE_PEER_DISC_RECV_PING] += 1;
+        self.metrics.gauge(GAUGE_PEER_DISC_RECV_PING).inc();
 
         let expected_ip = IpAddr::V4(ping_msg.local_name_record.name_record.ip());
         if from.addr.ip() != expected_ip {
@@ -889,7 +929,7 @@ where
                 %expected_ip,
                 "dropping ping: source address does not match name record IP"
             );
-            self.metrics[GAUGE_PEER_DISC_DROP_PING] += 1;
+            self.metrics.gauge(GAUGE_PEER_DISC_DROP_PING).inc();
             return Vec::new();
         }
 
@@ -899,7 +939,7 @@ where
         // check rate limit for incoming pings
         if self.ping_rate_limiter.check().is_err() {
             debug!(?from, "ping rate limit exceeded, dropping ping");
-            self.metrics[GAUGE_PEER_DISC_RATE_LIMITED] += 1;
+            self.metrics.gauge(GAUGE_PEER_DISC_RATE_LIMITED).inc();
             return cmds;
         }
 
@@ -935,7 +975,7 @@ where
                 ?from,
                 "peer list is full, not inserting name record from non-validator and non-pinned-full-node peer"
             );
-            self.metrics[GAUGE_PEER_DISC_DROP_PING] += 1;
+            self.metrics.gauge(GAUGE_PEER_DISC_DROP_PING).inc();
             peer_list_full = true;
         }
 
@@ -980,7 +1020,7 @@ where
             name_record: ping_msg.local_name_record.name_record,
             message: PeerDiscoveryMessage::Pong(pong_msg),
         });
-        self.metrics[GAUGE_PEER_DISC_SEND_PONG] += 1;
+        self.metrics.gauge(GAUGE_PEER_DISC_SEND_PONG).inc();
 
         cmds
     }
@@ -993,7 +1033,7 @@ where
         let src_addr = from.addr;
         let from = from.id;
         debug!(?from, ?src_addr, ?pong_msg, "handling pong response");
-        self.metrics[GAUGE_PEER_DISC_RECV_PONG] += 1;
+        self.metrics.gauge(GAUGE_PEER_DISC_RECV_PONG).inc();
 
         let mut cmds = Vec::new();
 
@@ -1006,7 +1046,7 @@ where
                     %expected_ip,
                     "dropping pong: source address does not match name record IP"
                 );
-                self.metrics[GAUGE_PEER_DISC_DROP_PONG] += 1;
+                self.metrics.gauge(GAUGE_PEER_DISC_DROP_PONG).inc();
                 return cmds;
             }
             if info.last_ping.id == pong_msg.ping_id {
@@ -1015,14 +1055,14 @@ where
                 cmds.extend(self.promote_peer_to_routing_info(from, info.name_record.clone()));
             } else {
                 debug!(?from, "dropping pong, ping id does not match");
-                self.metrics[GAUGE_PEER_DISC_DROP_PONG] += 1;
+                self.metrics.gauge(GAUGE_PEER_DISC_DROP_PONG).inc();
             }
         } else {
             debug!(
                 ?from,
                 "dropping pong, ping sender does not exist in pending queue"
             );
-            self.metrics[GAUGE_PEER_DISC_DROP_PONG] += 1;
+            self.metrics.gauge(GAUGE_PEER_DISC_DROP_PONG).inc();
         }
 
         cmds
@@ -1047,7 +1087,7 @@ where
         // record timeout
         if info.last_ping.id == ping_id {
             debug!(?to, ?ping_id, "handling ping timeout");
-            self.metrics[GAUGE_PEER_DISC_PING_TIMEOUT] += 1;
+            self.metrics.gauge(GAUGE_PEER_DISC_PING_TIMEOUT).inc();
             info.unresponsive_pings += 1;
 
             // if unresponsive pings exceeds threshold, remove from pending queue
@@ -1110,7 +1150,9 @@ where
             message: PeerDiscoveryMessage::PeerLookupRequest(peer_lookup_request),
         });
 
-        self.metrics[GAUGE_PEER_DISC_SEND_LOOKUP_REQUEST] += 1;
+        self.metrics
+            .gauge(GAUGE_PEER_DISC_SEND_LOOKUP_REQUEST)
+            .inc();
         cmds
     }
 
@@ -1121,14 +1163,16 @@ where
     ) -> Vec<PeerDiscoveryCommand<ST>> {
         let from = from.id;
         debug!(?from, ?request, "handling peer lookup request");
-        self.metrics[GAUGE_PEER_DISC_RECV_LOOKUP_REQUEST] += 1;
+        self.metrics
+            .gauge(GAUGE_PEER_DISC_RECV_LOOKUP_REQUEST)
+            .inc();
 
         let mut cmds = Vec::new();
 
         // check rate limit for incoming peer lookup requests
         if self.peer_lookup_rate_limiter.check().is_err() {
             debug!(?from, "peer lookup rate limit exceeded, dropping request");
-            self.metrics[GAUGE_PEER_DISC_RATE_LIMITED] += 1;
+            self.metrics.gauge(GAUGE_PEER_DISC_RATE_LIMITED).inc();
             return cmds;
         }
 
@@ -1145,7 +1189,9 @@ where
 
         // if open discovery, return more nodes other than requested nodes
         if request.open_discovery {
-            self.metrics[GAUGE_PEER_DISC_RECV_OPEN_LOOKUP_REQUEST] += 1;
+            self.metrics
+                .gauge(GAUGE_PEER_DISC_RECV_OPEN_LOOKUP_REQUEST)
+                .inc();
             // return random subset of validators (current and next epoch) up to MAX_PEER_IN_RESPONSE
             let validators: BTreeMap<_, _> = self
                 .routing_info
@@ -1163,7 +1209,9 @@ where
                     .map(|(_, name_record)| (*name_record).clone()),
             );
         } else {
-            self.metrics[GAUGE_PEER_DISC_RECV_TARGETED_LOOKUP_REQUEST] += 1;
+            self.metrics
+                .gauge(GAUGE_PEER_DISC_RECV_TARGETED_LOOKUP_REQUEST)
+                .inc();
         }
 
         let peer_lookup_response = PeerLookupResponse {
@@ -1177,7 +1225,9 @@ where
             message: PeerDiscoveryMessage::PeerLookupResponse(peer_lookup_response),
         });
 
-        self.metrics[GAUGE_PEER_DISC_SEND_LOOKUP_RESPONSE] += 1;
+        self.metrics
+            .gauge(GAUGE_PEER_DISC_SEND_LOOKUP_RESPONSE)
+            .inc();
         cmds
     }
 
@@ -1188,7 +1238,9 @@ where
     ) -> Vec<PeerDiscoveryCommand<ST>> {
         let from = from.id;
         debug!(?from, ?response, "handling peer lookup response");
-        self.metrics[GAUGE_PEER_DISC_RECV_LOOKUP_RESPONSE] += 1;
+        self.metrics
+            .gauge(GAUGE_PEER_DISC_RECV_LOOKUP_RESPONSE)
+            .inc();
 
         let mut cmds = Vec::new();
 
@@ -1202,7 +1254,9 @@ where
                 ?response,
                 "peer lookup response not in outstanding requests, dropping response..."
             );
-            self.metrics[GAUGE_PEER_DISC_DROP_LOOKUP_RESPONSE] += 1;
+            self.metrics
+                .gauge(GAUGE_PEER_DISC_DROP_LOOKUP_RESPONSE)
+                .inc();
             return cmds;
         }
 
@@ -1211,7 +1265,9 @@ where
                 ?response,
                 "response includes number of peers larger than max, dropping response..."
             );
-            self.metrics[GAUGE_PEER_DISC_DROP_LOOKUP_RESPONSE] += 1;
+            self.metrics
+                .gauge(GAUGE_PEER_DISC_DROP_LOOKUP_RESPONSE)
+                .inc();
             return cmds;
         }
 
@@ -1258,7 +1314,7 @@ where
             ?lookup_id,
             "handling peer lookup request timeout"
         );
-        self.metrics[GAUGE_PEER_DISC_LOOKUP_TIMEOUT] += 1;
+        self.metrics.gauge(GAUGE_PEER_DISC_LOOKUP_TIMEOUT).inc();
         if lookup_info.num_retries >= self.unresponsive_prune_threshold {
             debug!(
                 ?lookup_id,
@@ -1299,7 +1355,9 @@ where
         // schedule for next peer lookup retry
         cmds.extend(self.schedule_lookup_timeout(to, target, new_lookup_id));
 
-        self.metrics[GAUGE_PEER_DISC_SEND_LOOKUP_REQUEST] += 1;
+        self.metrics
+            .gauge(GAUGE_PEER_DISC_SEND_LOOKUP_REQUEST)
+            .inc();
         cmds.push(PeerDiscoveryCommand::RouterCommand {
             target: to,
             message: PeerDiscoveryMessage::PeerLookupRequest(peer_lookup_request),
@@ -1311,7 +1369,9 @@ where
             ?new_lookup_id,
             "rescheduling peer lookup request"
         );
-        self.metrics[GAUGE_PEER_DISC_RETRY_LOOKUP_REQUEST] += 1;
+        self.metrics
+            .gauge(GAUGE_PEER_DISC_RETRY_LOOKUP_REQUEST)
+            .inc();
 
         cmds
     }
@@ -1361,7 +1421,9 @@ where
             return cmds;
         }
 
-        self.metrics[GAUGE_PEER_DISC_SEND_RAPTORCAST_REQUEST] += 1;
+        self.metrics
+            .gauge(GAUGE_PEER_DISC_SEND_RAPTORCAST_REQUEST)
+            .inc();
         cmds.push(PeerDiscoveryCommand::RouterCommand {
             target: to,
             message: PeerDiscoveryMessage::FullNodeRaptorcastRequest,
@@ -1379,7 +1441,9 @@ where
         debug!(?from, "handling full node raptorcast request");
 
         let mut cmds = Vec::new();
-        self.metrics[GAUGE_PEER_DISC_RECV_RAPTORCAST_REQUEST] += 1;
+        self.metrics
+            .gauge(GAUGE_PEER_DISC_RECV_RAPTORCAST_REQUEST)
+            .inc();
 
         // drop request if not running as Publisher
         if self.self_role != PeerDiscoveryRole::ValidatorPublisher {
@@ -1420,7 +1484,9 @@ where
         }
 
         // respond to full node raptorcast request
-        self.metrics[GAUGE_PEER_DISC_SEND_RAPTORCAST_RESPONSE] += 1;
+        self.metrics
+            .gauge(GAUGE_PEER_DISC_SEND_RAPTORCAST_RESPONSE)
+            .inc();
         cmds.push(PeerDiscoveryCommand::RouterCommand {
             target: from,
             message: PeerDiscoveryMessage::FullNodeRaptorcastResponse,
@@ -1443,7 +1509,9 @@ where
             return cmds;
         }
 
-        self.metrics[GAUGE_PEER_DISC_RECV_RAPTORCAST_RESPONSE] += 1;
+        self.metrics
+            .gauge(GAUGE_PEER_DISC_RECV_RAPTORCAST_RESPONSE)
+            .inc();
 
         // update secondary raptorcast node status
         if let Some(info) = self.participation_info.get_mut(&from) {
@@ -1467,7 +1535,7 @@ where
     fn refresh(&mut self) -> Vec<PeerDiscoveryCommand<ST>> {
         debug!("refreshing peer discovery");
 
-        self.metrics[GAUGE_PEER_DISC_REFRESH] += 1;
+        self.metrics.gauge(GAUGE_PEER_DISC_REFRESH).inc();
         let mut cmds = Vec::new();
 
         // remove nodes that have not participated in secondary raptorcast beyond last_participation_prune_threshold
@@ -1601,22 +1669,22 @@ where
                 .filter(|(_, info)| info.status == SecondaryRaptorcastConnectionStatus::Connected)
                 .map(|(id, _)| id)
                 .collect::<Vec<_>>();
-            self.metrics[GAUGE_PEER_DISC_NUM_DOWNSTREAM_FULLNODES] =
-                connected_public_full_nodes.len() as u64;
+            self.metrics
+                .gauge(GAUGE_PEER_DISC_NUM_DOWNSTREAM_FULLNODES)
+                .set(connected_public_full_nodes.len() as u64);
         }
 
-        self.metrics[GAUGE_PEER_DISC_NUM_PEERS] = self.routing_info.len() as u64;
-        self.metrics[GAUGE_PEER_DISC_NUM_PENDING_PEERS] = self.pending_queue.len() as u64;
+        self.metrics
+            .gauge(GAUGE_PEER_DISC_NUM_PEERS)
+            .set(self.routing_info.len() as u64);
+        self.metrics
+            .gauge(GAUGE_PEER_DISC_NUM_PENDING_PEERS)
+            .set(self.pending_queue.len() as u64);
 
         self.write_peers_to_file();
 
         // reset timer to schedule for the next refresh
         cmds.extend(self.reset_refresh_timer());
-
-        // export metrics
-        cmds.push(PeerDiscoveryCommand::MetricsCommand(
-            PeerDiscoveryMetricsCommand(self.metrics.clone()),
-        ));
 
         cmds
     }
@@ -1813,25 +1881,45 @@ where
         &self.metrics
     }
 
-    fn get_pending_addr_by_id(
+    fn get_pending_udp_addr_by_id(
         &self,
         id: &NodeId<CertificateSignaturePubKey<ST>>,
     ) -> Option<SocketAddrV4> {
         self.pending_queue
             .get(id)
-            .map(|info| info.name_record.udp_address())
+            .and_then(|info| info.name_record.udp_address())
     }
 
-    fn get_addr_by_id(&self, id: &NodeId<CertificateSignaturePubKey<ST>>) -> Option<SocketAddrV4> {
+    fn get_udp_addr_by_id(
+        &self,
+        id: &NodeId<CertificateSignaturePubKey<ST>>,
+    ) -> Option<SocketAddrV4> {
         self.routing_info
             .get(id)
-            .map(|name_record| name_record.udp_address())
+            .and_then(|name_record| name_record.udp_address())
     }
 
-    fn get_known_addrs(&self) -> HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4> {
+    fn get_tcp_addr_by_id(
+        &self,
+        id: &NodeId<CertificateSignaturePubKey<ST>>,
+    ) -> Option<SocketAddrV4> {
+        self.routing_info
+            .get(id)
+            .map(|name_record| name_record.name_record.tcp_socket())
+    }
+
+    fn get_ip_by_id(&self, id: &NodeId<CertificateSignaturePubKey<ST>>) -> Option<Ipv4Addr> {
+        self.routing_info
+            .get(id)
+            .map(|name_record| name_record.name_record.ip())
+    }
+
+    fn get_known_auth_udp_addrs(
+        &self,
+    ) -> HashMap<NodeId<CertificateSignaturePubKey<ST>>, SocketAddrV4> {
         self.routing_info
             .iter()
-            .map(|(id, name_record)| (*id, name_record.udp_address()))
+            .map(|(id, name_record)| (*id, name_record.authenticated_udp_address()))
             .collect()
     }
 
@@ -1892,7 +1980,7 @@ mod tests {
     const DUMMY_ADDR: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(1, 1, 1, 1), 8000);
 
     fn name_record_addr(record: &MonadNameRecord<SignatureType>) -> SocketAddr {
-        SocketAddr::V4(record.udp_address())
+        SocketAddr::V4(record.authenticated_udp_address())
     }
 
     fn peer_source(
@@ -1908,7 +1996,7 @@ mod tests {
     fn peer_source_from_record(
         keypair: &KeyPairType,
     ) -> PeerSource<CertificateSignaturePubKey<SignatureType>> {
-        let addr = SocketAddr::V4(generate_name_record(keypair, 0).udp_address());
+        let addr = SocketAddr::V4(generate_name_record(keypair, 0).authenticated_udp_address());
         peer_source(keypair, addr)
     }
 
@@ -1918,7 +2006,7 @@ mod tests {
         let hash = hasher.hash();
         let ipaddr_v4 = Ipv4Addr::from_bits(u32::from_be_bytes(hash.0[28..32].try_into().unwrap()));
         let port = 8000 + seq_num as u16;
-        let name_record = NameRecord::new(ipaddr_v4, port, port, port + 1000, 0, seq_num);
+        let name_record = NameRecord::new(ipaddr_v4, port, Some(port), port + 1000, 0, seq_num);
         let mut encoded = Vec::new();
         name_record.encode(&mut encoded);
         let signature = SignatureType::sign::<signing_domain::NameRecord>(&encoded, keypair);
@@ -1932,7 +2020,7 @@ mod tests {
         let name_record = NameRecord::new(
             *DUMMY_ADDR.ip(),
             DUMMY_ADDR.port(),
-            DUMMY_ADDR.port(),
+            Some(DUMMY_ADDR.port()),
             DUMMY_ADDR.port() + 1000,
             0,
             0,
@@ -1983,7 +2071,7 @@ mod tests {
             .map(|key| {
                 let node_id = NodeId::new(key.pubkey());
                 let name_record = generate_name_record(key, 0);
-                (name_record.udp_address(), node_id)
+                (name_record.authenticated_udp_address(), node_id)
             })
             .collect::<BTreeMap<_, _>>();
 
@@ -2003,7 +2091,7 @@ mod tests {
             pending_queue: BTreeMap::new(),
             socket_to_id,
             outstanding_lookup_requests: HashMap::new(),
-            metrics: ExecutorMetrics::default(),
+            metrics: init_executor_metrics(),
             refresh_period: Duration::from_secs(120),
             request_timeout: Duration::from_secs(5),
             unresponsive_prune_threshold: 10,
@@ -2179,7 +2267,7 @@ mod tests {
         // next request should be rate limited and dropped
         let cmds = send_request(state, rate_limit + 1);
         assert_eq!(cmds.len(), 0, "request should be rate limited and dropped");
-        assert_eq!(state.metrics[GAUGE_PEER_DISC_RATE_LIMITED], 1);
+        assert_eq!(state.metrics.gauge(GAUGE_PEER_DISC_RATE_LIMITED).get(), 1);
 
         // advance time by 1 second
         clock.advance(Duration::from_secs(1));
@@ -2392,6 +2480,69 @@ mod tests {
     }
 
     #[test]
+    fn test_tcp_lookup_uses_name_record_tcp_socket() {
+        let keys = create_keys::<SignatureType>(2);
+        let peer0 = &keys[0];
+        let peer1 = &keys[1];
+        let peer1_pubkey = NodeId::new(peer1.pubkey());
+        let ip = Ipv4Addr::new(8, 8, 8, 8);
+        let tcp_port = 8100;
+        let udp_port = 8101;
+        let auth_port = 9100;
+
+        let (mut state, _clock) = generate_test_state(peer0, vec![]);
+        let peer1_record = MonadNameRecord::new(
+            NameRecord::new(ip, tcp_port, Some(udp_port), auth_port, 0, 1),
+            peer1,
+        );
+        state
+            .routing_info
+            .insert(peer1_pubkey, peer1_record.clone());
+
+        assert_eq!(
+            state.get_udp_addr_by_id(&peer1_pubkey),
+            peer1_record.udp_address()
+        );
+        assert_eq!(
+            state.get_tcp_addr_by_id(&peer1_pubkey),
+            Some(peer1_record.name_record.tcp_socket())
+        );
+        assert_ne!(
+            state.get_udp_addr_by_id(&peer1_pubkey),
+            state.get_tcp_addr_by_id(&peer1_pubkey)
+        );
+        assert_eq!(state.get_ip_by_id(&peer1_pubkey), Some(ip));
+    }
+
+    #[test]
+    fn test_auth_only_record_has_no_unauthenticated_udp_lookup() {
+        let keys = create_keys::<SignatureType>(2);
+        let peer0 = &keys[0];
+        let peer1 = &keys[1];
+        let peer1_pubkey = NodeId::new(peer1.pubkey());
+        let ip = Ipv4Addr::new(8, 8, 4, 4);
+        let tcp_port = 8100;
+        let auth_port = 9100;
+
+        let (mut state, _clock) = generate_test_state(peer0, vec![]);
+        let name_record =
+            MonadNameRecord::new(NameRecord::new(ip, tcp_port, None, auth_port, 0, 1), peer1);
+        state.routing_info.insert(peer1_pubkey, name_record.clone());
+
+        assert_eq!(name_record.udp_address(), None);
+        assert_eq!(state.get_udp_addr_by_id(&peer1_pubkey), None);
+        assert_eq!(state.get_ip_by_id(&peer1_pubkey), Some(ip));
+        assert_eq!(
+            state.get_tcp_addr_by_id(&peer1_pubkey),
+            Some(name_record.name_record.tcp_socket())
+        );
+        assert_eq!(
+            name_record.authenticated_udp_address(),
+            SocketAddrV4::new(ip, auth_port)
+        );
+    }
+
+    #[test]
     fn test_peer_lookup_target_not_found() {
         let keys = create_keys::<SignatureType>(4);
         let peer0 = &keys[0];
@@ -2489,10 +2640,16 @@ mod tests {
 
         // insert into routing info after ping pong round trip
         assert_eq!(
-            state.socket_to_id.get(&original_name_record.udp_address()),
+            state
+                .socket_to_id
+                .get(&original_name_record.authenticated_udp_address()),
             Some(&peer1_pubkey)
         );
-        assert!(!state.socket_to_id.contains_key(&record.udp_address()));
+        assert!(
+            !state
+                .socket_to_id
+                .contains_key(&record.authenticated_udp_address())
+        );
         state.handle_pong(
             peer_source_from_record(peer1),
             Pong {
@@ -2506,10 +2663,10 @@ mod tests {
         assert!(
             !state
                 .socket_to_id
-                .contains_key(&original_name_record.udp_address())
+                .contains_key(&original_name_record.authenticated_udp_address())
         );
         assert_eq!(
-            state.socket_to_id.get(&record.udp_address()),
+            state.socket_to_id.get(&record.authenticated_udp_address()),
             Some(&peer1_pubkey)
         );
 
@@ -2788,41 +2945,41 @@ mod tests {
 
     #[test_case(
         None,
-        NameRecord::new(*NEW_ADDR.ip(), NEW_ADDR.port(), NEW_ADDR.port(), 9001, 0, 1),
+        NameRecord::new(*NEW_ADDR.ip(), NEW_ADDR.port(), Some(NEW_ADDR.port()), 9001, 0, 1),
         true,
-        NameRecord::new(*NEW_ADDR.ip(), NEW_ADDR.port(), NEW_ADDR.port(), 9001, 0, 1),
+        NameRecord::new(*NEW_ADDR.ip(), NEW_ADDR.port(), Some(NEW_ADDR.port()), 9001, 0, 1),
         true;
         "first record"
     )]
     #[test_case(
-        Some(NameRecord::new(*OLD_ADDR.ip(), OLD_ADDR.port(), OLD_ADDR.port(), 9000, 0, 1)),
-        NameRecord::new(*NEW_ADDR.ip(), NEW_ADDR.port(), NEW_ADDR.port(), 9001, 0, 2),
+        Some(NameRecord::new(*OLD_ADDR.ip(), OLD_ADDR.port(), Some(OLD_ADDR.port()), 9000, 0, 1)),
+        NameRecord::new(*NEW_ADDR.ip(), NEW_ADDR.port(), Some(NEW_ADDR.port()), 9001, 0, 2),
         true,
-        NameRecord::new(*NEW_ADDR.ip(), NEW_ADDR.port(), NEW_ADDR.port(), 9001, 0, 2),
+        NameRecord::new(*NEW_ADDR.ip(), NEW_ADDR.port(), Some(NEW_ADDR.port()), 9001, 0, 2),
         true;
         "newer record"
     )]
     #[test_case(
-        Some(NameRecord::new(*OLD_ADDR.ip(), OLD_ADDR.port(), OLD_ADDR.port(), 9000, 0, 1)),
-        NameRecord::new(*OLD_ADDR.ip(), OLD_ADDR.port(), OLD_ADDR.port(), 9000, 0, 1),
+        Some(NameRecord::new(*OLD_ADDR.ip(), OLD_ADDR.port(), Some(OLD_ADDR.port()), 9000, 0, 1)),
+        NameRecord::new(*OLD_ADDR.ip(), OLD_ADDR.port(), Some(OLD_ADDR.port()), 9000, 0, 1),
         true,
-        NameRecord::new(*OLD_ADDR.ip(), OLD_ADDR.port(), OLD_ADDR.port(), 9000, 0, 1),
+        NameRecord::new(*OLD_ADDR.ip(), OLD_ADDR.port(), Some(OLD_ADDR.port()), 9000, 0, 1),
         false;
         "same record"
     )]
     #[test_case(
-        Some(NameRecord::new(*NEW_ADDR.ip(), NEW_ADDR.port(), NEW_ADDR.port(), 9001, 0, 2)),
-        NameRecord::new(*OLD_ADDR.ip(), OLD_ADDR.port(), OLD_ADDR.port(), 9000, 0, 1),
+        Some(NameRecord::new(*NEW_ADDR.ip(), NEW_ADDR.port(), Some(NEW_ADDR.port()), 9001, 0, 2)),
+        NameRecord::new(*OLD_ADDR.ip(), OLD_ADDR.port(), Some(OLD_ADDR.port()), 9000, 0, 1),
         false,
-        NameRecord::new(*NEW_ADDR.ip(), NEW_ADDR.port(), NEW_ADDR.port(), 9001, 0, 2),
+        NameRecord::new(*NEW_ADDR.ip(), NEW_ADDR.port(), Some(NEW_ADDR.port()), 9001, 0, 2),
         false;
         "older record"
     )]
     #[test_case(
-        Some(NameRecord::new(*OLD_ADDR.ip(), OLD_ADDR.port(), OLD_ADDR.port(), 9000, 0, 1)),
-        NameRecord::new(*NEW_ADDR.ip(), NEW_ADDR.port(), NEW_ADDR.port(), 9001, 0, 1),
+        Some(NameRecord::new(*OLD_ADDR.ip(), OLD_ADDR.port(), Some(OLD_ADDR.port()), 9000, 0, 1)),
+        NameRecord::new(*NEW_ADDR.ip(), NEW_ADDR.port(), Some(NEW_ADDR.port()), 9001, 0, 1),
         false,
-        NameRecord::new(*OLD_ADDR.ip(), OLD_ADDR.port(), OLD_ADDR.port(), 9000, 0, 1),
+        NameRecord::new(*OLD_ADDR.ip(), OLD_ADDR.port(), Some(OLD_ADDR.port()), 9000, 0, 1),
         false;
         "conflicting record"
     )]
@@ -2934,7 +3091,10 @@ mod tests {
         assert_eq!(cmds.len(), 0); // dropped due to address conflict with no pings and pongs sent
         assert!(!state.pending_queue.contains_key(&peer2_pubkey));
         assert_eq!(state.socket_to_id.get(&DUMMY_ADDR), Some(&peer1_pubkey));
-        assert_eq!(state.metrics[GAUGE_PEER_DISC_SOCKET_COLLISIONS], 1);
+        assert_eq!(
+            state.metrics.gauge(GAUGE_PEER_DISC_SOCKET_COLLISIONS).get(),
+            1
+        );
     }
 
     #[test]
@@ -2950,7 +3110,9 @@ mod tests {
         let peer1_record = generate_name_record(peer1, 0);
         assert!(state.routing_info.contains_key(&peer1_pubkey));
         assert_eq!(
-            state.socket_to_id.get(&peer1_record.udp_address()),
+            state
+                .socket_to_id
+                .get(&peer1_record.authenticated_udp_address()),
             Some(&peer1_pubkey)
         );
 
@@ -2966,7 +3128,11 @@ mod tests {
         assert!(!state.participation_info.contains_key(&peer1_pubkey));
 
         // verify socket_to_id is also cleaned up
-        assert!(!state.socket_to_id.contains_key(&peer1_record.udp_address()));
+        assert!(
+            !state
+                .socket_to_id
+                .contains_key(&peer1_record.authenticated_udp_address())
+        );
     }
 
     #[test]
@@ -2981,7 +3147,15 @@ mod tests {
         let (mut state, _clock) = generate_test_state(peer0, vec![]);
 
         let peer1_record = MonadNameRecord::new(
-            NameRecord::new_with_ports(Ipv4Addr::new(8, 8, 8, 8), 8000, 8000, 9100, Some(9000), 1),
+            NameRecord::new_with_ports(
+                Ipv4Addr::new(8, 8, 8, 8),
+                8000,
+                Some(8000),
+                9100,
+                Some(9000),
+                None,
+                1,
+            ),
             peer1,
         );
         let peer1_entry = PeerEntry::from(peer1_record.with_pubkey(peer1.pubkey()));
@@ -2991,8 +3165,8 @@ mod tests {
         assert_eq!(first_pings.len(), 1);
         assert_eq!(first_pings[0].0, peer1_pubkey);
         assert_eq!(
-            state.get_pending_addr_by_id(&peer1_pubkey),
-            Some(peer1_record.udp_address())
+            state.get_pending_udp_addr_by_id(&peer1_pubkey),
+            peer1_record.udp_address()
         );
 
         state.handle_pong(
@@ -3006,7 +3180,15 @@ mod tests {
         assert_eq!(state.get_name_record(&peer1_pubkey), Some(&peer1_record));
 
         let peer2_record = MonadNameRecord::new(
-            NameRecord::new_with_ports(Ipv4Addr::new(8, 8, 8, 8), 8001, 8001, 9101, Some(9000), 1),
+            NameRecord::new_with_ports(
+                Ipv4Addr::new(8, 8, 8, 8),
+                8001,
+                Some(8001),
+                9101,
+                Some(9000),
+                None,
+                1,
+            ),
             peer2,
         );
         let peer_entry = PeerEntry::from(peer2_record.with_pubkey(peer2.pubkey()));
@@ -3014,9 +3196,12 @@ mod tests {
         let second_cmds = state.update_peers(vec![peer_entry]);
 
         assert!(second_cmds.is_empty());
-        assert_eq!(state.get_pending_addr_by_id(&peer2_pubkey), None);
+        assert_eq!(state.get_pending_udp_addr_by_id(&peer2_pubkey), None);
         assert_eq!(state.get_name_record(&peer2_pubkey), None);
-        assert_eq!(state.metrics()[GAUGE_PEER_DISC_SOCKET_COLLISIONS], 1);
+        assert_eq!(
+            state.metrics.gauge(GAUGE_PEER_DISC_SOCKET_COLLISIONS).get(),
+            1
+        );
         assert_eq!(state.get_name_record(&peer1_pubkey), Some(&peer1_record));
     }
 
@@ -3038,7 +3223,7 @@ mod tests {
             .map(|key| {
                 let node_id = NodeId::new(key.pubkey());
                 let record = generate_name_record(key, 0);
-                (node_id, record.udp_address())
+                (node_id, record.authenticated_udp_address())
             })
             .collect();
 
@@ -3168,7 +3353,7 @@ mod tests {
         // do not look for upstream validator if running as None in secondary raptorcast
         state.self_role = PeerDiscoveryRole::FullNodeNone;
         let cmds = state.refresh();
-        assert_eq!(cmds.len(), 5); // 2 peer look commands (unrelated to test case), 2 timer commands and 1 metrics command
+        assert_eq!(cmds.len(), 4); // 2 peer lookup commands and 2 timer commands, unrelated to test case
 
         // look for upstream validator if running as a Client in secondary raptorcast
         state.self_role = PeerDiscoveryRole::FullNodeClient;
@@ -3243,16 +3428,19 @@ mod tests {
         use monad_secp::SecpSignature;
         use monad_testutil::signing::create_keys as create_secp_keys;
 
-        let keys = create_secp_keys::<SecpSignature>(3);
+        let keys = create_secp_keys::<SecpSignature>(4);
         let peer0 = &keys[0];
         let peer1 = &keys[1];
         let peer1_pubkey = NodeId::new(peer1.pubkey());
         let peer2 = &keys[2];
         let peer2_pubkey = NodeId::new(peer2.pubkey());
+        let peer3 = &keys[3];
+        let peer3_pubkey = NodeId::new(peer3.pubkey());
 
         // peer1 has an authenticated UDP port
         let peer1_name_record = {
-            let name_record = NameRecord::new(Ipv4Addr::new(8, 8, 8, 8), 8000, 8000, 9000, 0, 1);
+            let name_record =
+                NameRecord::new(Ipv4Addr::new(8, 8, 8, 8), 8000, Some(8000), 9000, 0, 1);
             let mut encoded = Vec::new();
             name_record.encode(&mut encoded);
             let signature = SecpSignature::sign::<signing_domain::NameRecord>(&encoded, peer1);
@@ -3267,9 +3455,10 @@ mod tests {
             let name_record = NameRecord::new_with_ports(
                 Ipv4Addr::new(8, 8, 4, 4),
                 8001,
-                8001,
+                Some(8001),
                 9001,
                 Some(9002),
+                None,
                 2,
             );
             let mut encoded = Vec::new();
@@ -3281,7 +3470,26 @@ mod tests {
             }
         };
 
-        // initial state: peer1 in routing_info and peer2 in pending_queue
+        let peer3_name_record = {
+            let name_record = NameRecord::new_with_ports(
+                Ipv4Addr::new(8, 8, 2, 2),
+                8002,
+                Some(8002),
+                9003,
+                None,
+                Some(9004),
+                3,
+            );
+            let mut encoded = Vec::new();
+            name_record.encode(&mut encoded);
+            let signature = SecpSignature::sign::<signing_domain::NameRecord>(&encoded, peer3);
+            MonadNameRecord {
+                name_record,
+                signature,
+            }
+        };
+
+        // initial state: peer1 in routing_info and peer2, peer3 in pending_queue
         let mut routing_info = BTreeMap::new();
         routing_info.insert(peer1_pubkey, peer1_name_record);
         let mut pending_queue = BTreeMap::new();
@@ -3296,6 +3504,17 @@ mod tests {
                 name_record: peer2_name_record,
             },
         );
+        pending_queue.insert(
+            peer3_pubkey,
+            ConnectionInfo {
+                last_ping: Ping {
+                    id: 0,
+                    local_name_record: peer3_name_record.clone(),
+                },
+                unresponsive_pings: 0,
+                name_record: peer3_name_record,
+            },
+        );
 
         let mut state = PeerDiscovery {
             self_id: NodeId::new(peer0.pubkey()),
@@ -3303,7 +3522,7 @@ mod tests {
                 let name_record = NameRecord::new(
                     *DUMMY_ADDR.ip(),
                     DUMMY_ADDR.port(),
-                    DUMMY_ADDR.port(),
+                    Some(DUMMY_ADDR.port()),
                     DUMMY_ADDR.port(),
                     0,
                     0,
@@ -3328,7 +3547,7 @@ mod tests {
             pending_queue,
             socket_to_id: BTreeMap::new(),
             outstanding_lookup_requests: HashMap::new(),
-            metrics: ExecutorMetrics::default(),
+            metrics: init_executor_metrics(),
             refresh_period: Duration::from_secs(120),
             request_timeout: Duration::from_secs(5),
             unresponsive_prune_threshold: 10,
@@ -3358,10 +3577,12 @@ mod tests {
         // clean up any existing file
         let _ = std::fs::remove_file(&temp_file);
 
-        // verify initial state has peer1 in routing_info and peer2 in pending_queue
+        // verify initial state has peer1 in routing_info and peer2, peer3 in pending_queue
         assert!(state.routing_info.contains_key(&peer1_pubkey));
         assert!(!state.routing_info.contains_key(&peer2_pubkey));
+        assert!(!state.routing_info.contains_key(&peer3_pubkey));
         assert!(state.pending_queue.contains_key(&peer2_pubkey));
+        assert!(state.pending_queue.contains_key(&peer3_pubkey));
         assert!(!state.pending_queue.contains_key(&peer1_pubkey));
 
         // write peers to file
@@ -3386,9 +3607,10 @@ mod tests {
 
         state.read_peers_from_file();
 
-        // verify that peer1 and peer2 are restored from file and now in pending_queue
+        // verify that peer1, peer2, and peer3 are restored from file and now in pending_queue
         assert!(state.pending_queue.contains_key(&peer1_pubkey));
         assert!(state.pending_queue.contains_key(&peer2_pubkey));
+        assert!(state.pending_queue.contains_key(&peer3_pubkey));
         assert!(
             state.routing_info.is_empty(),
             "routing_info should still be empty before ping pong"
@@ -3398,7 +3620,7 @@ mod tests {
         let loaded_peer1 = &state.pending_queue.get(&peer1_pubkey).unwrap().name_record;
         assert_eq!(
             loaded_peer1.udp_address(),
-            SocketAddrV4::new(Ipv4Addr::new(8, 8, 8, 8), 8000),
+            Some(SocketAddrV4::new(Ipv4Addr::new(8, 8, 8, 8), 8000)),
             "peer1 address should match"
         );
         assert_eq!(loaded_peer1.seq(), 1, "peer1 seq should match");
@@ -3412,7 +3634,7 @@ mod tests {
         let loaded_peer2 = &state.pending_queue.get(&peer2_pubkey).unwrap().name_record;
         assert_eq!(
             loaded_peer2.udp_address(),
-            SocketAddrV4::new(Ipv4Addr::new(8, 8, 4, 4), 8001),
+            Some(SocketAddrV4::new(Ipv4Addr::new(8, 8, 4, 4), 8001)),
             "peer2 address should match"
         );
         assert_eq!(loaded_peer2.seq(), 2, "peer2 seq should match");
@@ -3425,6 +3647,29 @@ mod tests {
             loaded_peer2.name_record.direct_udp_port(),
             Some(9002),
             "peer2 direct UDP port should match"
+        );
+
+        let loaded_peer3 = &state.pending_queue.get(&peer3_pubkey).unwrap().name_record;
+        assert_eq!(
+            loaded_peer3.udp_address(),
+            Some(SocketAddrV4::new(Ipv4Addr::new(8, 8, 2, 2), 8002)),
+            "peer3 address should match"
+        );
+        assert_eq!(loaded_peer3.seq(), 3, "peer3 seq should match");
+        assert_eq!(
+            loaded_peer3.name_record.authenticated_udp_port(),
+            9003,
+            "peer3 auth port should match"
+        );
+        assert_eq!(
+            loaded_peer3.name_record.direct_udp_port(),
+            None,
+            "peer3 direct UDP port should be empty"
+        );
+        assert_eq!(
+            loaded_peer3.name_record.encrypted_tcp_port(),
+            Some(9004),
+            "peer3 encrypted TCP port should match"
         );
 
         let _ = std::fs::remove_file(&temp_file);

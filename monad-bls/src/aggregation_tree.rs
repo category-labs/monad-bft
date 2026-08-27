@@ -60,10 +60,13 @@ fn verify_aggregate_sig<PT: PubKey, SD: SigningDomain>(
         }
     }
 
-    // infinity signature is invalid unless validator set is empty (signers
-    // bitmap length is zero) and signers are empty
-    if signers.is_empty() && signers_map.0.is_empty() && *sig == BlsAggregateSignature::infinity() {
-        return Ok(signers);
+    if *sig == BlsAggregateSignature::infinity() {
+        // infinity signature is invalid unless validator set is empty
+        // (signers bitmap length is zero) and signers are empty
+        if signers.is_empty() && signers_map.0.is_empty() {
+            return Ok(signers);
+        }
+        return Err(SignatureCollectionError::InvalidSignaturesVerify);
     }
 
     if sig.fast_verify::<SD>(msg, &aggpk).is_err() {
@@ -91,6 +94,10 @@ impl<PT: PubKey> AggregationTreeNode<PT> {
 
     fn num_signatures(&self) -> usize {
         self.signers.0.count_ones()
+    }
+
+    fn is_non_empty_infinity(&self) -> bool {
+        self.sig == BlsAggregateSignature::infinity() && self.num_signatures() > 0
     }
 
     fn verify<SD: SigningDomain>(
@@ -171,22 +178,17 @@ impl<PT: PubKey> AggregationTree<PT> {
         while !unverified_certs.is_empty() {
             let cert_idx = unverified_certs.pop_front().unwrap();
             let cert = &self.nodes[cert_idx];
+
+            if cert.is_non_empty_infinity() {
+                self.collect_leaf_signatures(cert_idx, validator_mapping, &mut invalid_sig);
+                continue;
+            }
+
             match cert.verify::<SD>(validator_mapping, msg) {
                 Ok(_) => {}
                 Err(_) => {
-                    if 2 * cert_idx + 1 >= self.nodes.len() {
-                        let signer_idx = cert
-                            .signers
-                            .0
-                            .first_one()
-                            .expect("signer should be one-hot encoded");
-                        let (node_id, _) = validator_mapping
-                            .map
-                            .iter()
-                            .nth(signer_idx)
-                            .expect("signer idx in range");
-
-                        invalid_sig.push((*node_id, cert.sig.as_signature()));
+                    if self.is_leaf(cert_idx) {
+                        invalid_sig.push(self.leaf_signature(cert_idx, validator_mapping));
                     } else {
                         unverified_certs.push_back(cert_idx * 2 + 1);
                         unverified_certs.push_back(cert_idx * 2 + 2);
@@ -200,6 +202,48 @@ impl<PT: PubKey> AggregationTree<PT> {
         } else {
             Err(invalid_sig)
         }
+    }
+
+    fn is_leaf(&self, cert_idx: usize) -> bool {
+        2 * cert_idx + 1 >= self.nodes.len()
+    }
+
+    fn collect_leaf_signatures(
+        &self,
+        cert_idx: usize,
+        validator_mapping: &ValidatorMapping<PT, BlsKeyPair>,
+        invalid_sig: &mut Vec<(NodeId<PT>, BlsSignature)>,
+    ) {
+        if self.is_leaf(cert_idx) {
+            invalid_sig.push(self.leaf_signature(cert_idx, validator_mapping));
+        } else {
+            self.collect_leaf_signatures(cert_idx * 2 + 1, validator_mapping, invalid_sig);
+            self.collect_leaf_signatures(cert_idx * 2 + 2, validator_mapping, invalid_sig);
+        }
+    }
+
+    fn leaf_signature(
+        &self,
+        cert_idx: usize,
+        validator_mapping: &ValidatorMapping<PT, BlsKeyPair>,
+    ) -> (NodeId<PT>, BlsSignature) {
+        debug_assert!(self.is_leaf(cert_idx));
+
+        let cert = &self.nodes[cert_idx];
+        let signer_idx = cert
+            .signers
+            .0
+            .first_one()
+            .expect("signer should be one-hot encoded");
+        debug_assert_eq!(cert.num_signatures(), 1);
+
+        let (node_id, _) = validator_mapping
+            .map
+            .iter()
+            .nth(signer_idx)
+            .expect("signer idx in range");
+
+        (*node_id, cert.sig.as_signature())
     }
 }
 
@@ -426,13 +470,14 @@ mod test {
         signature_collection::{
             SignatureCollection, SignatureCollectionError, SignatureCollectionKeyPairType,
         },
+        validator_mapping::ValidatorMapping,
         validator_set::ValidatorSetFactory,
     };
     use rand::{rngs::StdRng, seq::SliceRandom, SeedableRng};
     use test_case::test_case;
 
     use super::{merge_nodes, AggregationTree, BlsSignatureCollection, SignerMap};
-    use crate::{BlsAggregateSignature, LazyBlsSignature};
+    use crate::{BlsAggregateSignature, BlsKeyPair, LazyBlsSignature};
 
     type SigningDomainType = signing_domain::Vote;
     type SignatureType = NopSignature;
@@ -533,6 +578,46 @@ mod test {
                 assert_eq!(expected_set, test_set);
             }
             _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn test_creation_rejects_infinity_aggregate_with_valid_leaf_signatures() {
+        let mut sk_one = [0_u8; 32];
+        sk_one[31] = 1;
+        let mut sk_minus_one = [
+            0x73, 0xed, 0xa7, 0x53, 0x29, 0x9d, 0x7d, 0x48, 0x33, 0x39, 0xd8, 0x08, 0x09, 0xa1,
+            0xd8, 0x05, 0x53, 0xbd, 0xa4, 0x02, 0xff, 0xfe, 0x5b, 0xfe, 0xff, 0xff, 0xff, 0xff,
+            0x00, 0x00, 0x00, 0x00,
+        ];
+
+        let keypair_one = BlsKeyPair::from_secret_key_bytes(&mut sk_one).unwrap();
+        let keypair_minus_one = BlsKeyPair::from_secret_key_bytes(&mut sk_minus_one).unwrap();
+
+        let node_id_one = NodeId::new(get_key::<SignatureType>(1).pubkey());
+        let node_id_minus_one = NodeId::new(get_key::<SignatureType>(2).pubkey());
+        let valmap = ValidatorMapping::new([
+            (node_id_one, keypair_one.pubkey()),
+            (node_id_minus_one, keypair_minus_one.pubkey()),
+        ]);
+
+        let msg = b"timeout infinity cancellation";
+        let sig_one = keypair_one.sign::<signing_domain::Timeout>(msg);
+        let sig_minus_one = keypair_minus_one.sign::<signing_domain::Timeout>(msg);
+        let sigs = vec![(node_id_one, sig_one), (node_id_minus_one, sig_minus_one)];
+
+        let sigcol_err =
+            SignatureCollectionType::new::<signing_domain::Timeout>(sigs.clone(), &valmap, msg)
+                .unwrap_err();
+
+        match sigcol_err {
+            SignatureCollectionError::InvalidSignaturesCreate(invalid_sigs) => {
+                let expected_set = sigs.into_iter().collect::<HashSet<_>>();
+                let actual_set = invalid_sigs.into_iter().collect::<HashSet<_>>();
+
+                assert_eq!(actual_set, expected_set);
+            }
+            err => panic!("expected InvalidSignaturesCreate, got {err:?}"),
         }
     }
 

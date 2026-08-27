@@ -317,7 +317,7 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
         S::SignatureCollectionType,
         S::ExecutionProtocolType,
         S::BlockPolicyType,
-        S::StateBackendType,
+        S::ExecutionStateReadType,
         S::ChainConfigType,
         S::ChainRevisionType,
     >;
@@ -379,11 +379,16 @@ impl<S: SwarmRelation> Executor for MockExecutor<S> {
                 RouterCommand::Publish { target, message } => {
                     self.router.send_outbound(self.tick, target, message);
                 }
-                RouterCommand::AddEpochValidatorSet { .. } => {
-                    // TODO
+                RouterCommand::AddEpochValidatorSet {
+                    epoch,
+                    epoch_start,
+                    validator_set,
+                } => {
+                    self.router
+                        .add_epoch_validator_set(epoch, epoch_start, validator_set);
                 }
-                RouterCommand::UpdateCurrentRound(_, _) => {
-                    // TODO
+                RouterCommand::UpdateCurrentRound(epoch, round) => {
+                    self.router.update_current_round(epoch, round);
                 }
                 RouterCommand::GetPeers => {
                     // TODO

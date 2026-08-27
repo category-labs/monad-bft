@@ -116,7 +116,7 @@ impl FairQueueBuilder {
             scorer,
             regular_bandwidth_pct: self.regular_bandwidth_pct,
             pop_counter: 0,
-            metrics: ExecutorMetrics::default(),
+            metrics: init_executor_metrics(),
         }
     }
 }
@@ -138,17 +138,21 @@ where
         let result = self.push_inner(id, item);
         match &result {
             Ok(pool_kind) => {
-                self.metrics[COUNTER_FAIR_QUEUE_PUSH_TOTAL] += 1;
+                self.metrics.gauge(COUNTER_FAIR_QUEUE_PUSH_TOTAL).inc();
                 match pool_kind {
-                    PoolKind::Priority => self.metrics[COUNTER_FAIR_QUEUE_PUSH_PRIORITY] += 1,
-                    PoolKind::Regular => self.metrics[COUNTER_FAIR_QUEUE_PUSH_REGULAR] += 1,
+                    PoolKind::Priority => {
+                        self.metrics.gauge(COUNTER_FAIR_QUEUE_PUSH_PRIORITY).inc()
+                    }
+                    PoolKind::Regular => self.metrics.gauge(COUNTER_FAIR_QUEUE_PUSH_REGULAR).inc(),
                 }
             }
             Err(PushError::PerIdLimitExceeded { .. }) => {
-                self.metrics[COUNTER_FAIR_QUEUE_PUSH_ERROR_PER_ID_LIMIT] += 1;
+                self.metrics
+                    .gauge(COUNTER_FAIR_QUEUE_PUSH_ERROR_PER_ID_LIMIT)
+                    .inc();
             }
             Err(PushError::Full { .. }) => {
-                self.metrics[COUNTER_FAIR_QUEUE_PUSH_ERROR_FULL] += 1;
+                self.metrics.gauge(COUNTER_FAIR_QUEUE_PUSH_ERROR_FULL).inc();
             }
         }
         self.update_len_metrics();
@@ -169,7 +173,7 @@ where
             self.record_successful_pop(second_pool, false);
             Some(item)
         } else {
-            self.metrics[COUNTER_FAIR_QUEUE_POP_EMPTY] += 1;
+            self.metrics.gauge(COUNTER_FAIR_QUEUE_POP_EMPTY).inc();
             None
         };
 
@@ -214,8 +218,12 @@ where
     }
 
     fn update_len_metrics(&mut self) {
-        self.metrics[GAUGE_FAIR_QUEUE_PRIORITY_ITEMS] = self.priority_pool.len() as u64;
-        self.metrics[GAUGE_FAIR_QUEUE_REGULAR_ITEMS] = self.regular_pool.len() as u64;
+        self.metrics
+            .gauge(GAUGE_FAIR_QUEUE_PRIORITY_ITEMS)
+            .set(self.priority_pool.len() as u64);
+        self.metrics
+            .gauge(GAUGE_FAIR_QUEUE_REGULAR_ITEMS)
+            .set(self.regular_pool.len() as u64);
     }
 
     fn pop_from_pool(&mut self, pool_kind: PoolKind) -> Option<(S::Identity, T)> {
@@ -234,8 +242,8 @@ where
     }
 
     fn record_successful_pop(&mut self, pool_kind: PoolKind, first_attempt: bool) {
-        self.metrics[COUNTER_FAIR_QUEUE_POP_TOTAL] += 1;
-        self.metrics[pool_kind.pop_from_counter()] += 1;
+        self.metrics.gauge(COUNTER_FAIR_QUEUE_POP_TOTAL).inc();
+        self.metrics.gauge(pool_kind.pop_from_counter()).inc();
         if first_attempt || matches!(pool_kind, PoolKind::Regular) {
             self.pop_counter = (self.pop_counter + 1) % POP_COUNTER_WINDOW;
         }

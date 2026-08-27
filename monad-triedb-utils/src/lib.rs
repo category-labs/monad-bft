@@ -30,9 +30,10 @@ use key::Version;
 use monad_bls::{BlsPubKey, BlsSignatureCollection};
 use monad_crypto::certificate_signature::PubKey;
 use monad_eth_types::{EthAccount, EthHeader};
+use monad_execution_state_read::{ExecutionStateRead, ExecutionStateReadError};
 use monad_secp::SecpSignature;
-use monad_state_backend::{StateBackend, StateBackendError};
 use monad_triedb::TriedbHandle;
+pub use monad_triedb::{MigrationPhase, StorageStats};
 use monad_types::{BlockId, Epoch, Hash, SeqNum, Stake};
 use tracing::{debug, trace, warn};
 
@@ -50,8 +51,10 @@ const MAX_TRIEDB_ASYNC_POLLS: usize = 640_000;
 const RODB_NODE_LRU_MAX_MEM: u64 = 50 << 20; // 50 MB
 
 pub struct TriedbReader {
+    /// This handle is accessed mutably because TriedbHandle wraps both a db object which is
+    /// read-only and an async executor which is mutated to submit async tasks.
     handle: TriedbHandle,
-    state_backend_total_lookups: Arc<AtomicU64>,
+    state_read_total_lookups: Arc<AtomicU64>,
 }
 
 impl TriedbReader {
@@ -64,8 +67,20 @@ impl TriedbReader {
     pub fn try_new(triedb_path: &Path) -> Option<Self> {
         TriedbHandle::try_new(triedb_path, RODB_NODE_LRU_MAX_MEM).map(|handle| Self {
             handle,
-            state_backend_total_lookups: Default::default(),
+            state_read_total_lookups: Default::default(),
         })
+    }
+
+    /// The on-disk dual-DB migration phase. Cheap and safe to call while
+    /// execution is writing.
+    pub fn migration_phase(&self) -> MigrationPhase {
+        self.handle.migration_phase()
+    }
+
+    /// Storage-pool disk capacity and usage in bytes. Safe on a read-only
+    /// handle while execution writes.
+    pub fn storage_stats(&self) -> StorageStats {
+        self.handle.storage_stats()
     }
 
     pub fn get_latest_voted_block(&self) -> Option<SeqNum> {
@@ -240,14 +255,16 @@ impl TriedbReader {
     }
 }
 
-impl StateBackend<SecpSignature, BlsSignatureCollection<monad_secp::PubKey>> for TriedbReader {
+impl ExecutionStateRead<SecpSignature, BlsSignatureCollection<monad_secp::PubKey>>
+    for TriedbReader
+{
     fn get_account_statuses<'a>(
-        &self,
+        &mut self,
         block_id: &BlockId,
         seq_num: &SeqNum,
         is_finalized: bool,
         eth_addresses: impl Iterator<Item = &'a Address>,
-    ) -> Result<Vec<Option<EthAccount>>, StateBackendError> {
+    ) -> Result<Vec<Option<EthAccount>>, ExecutionStateReadError> {
         let statuses = if is_finalized
             && self
                 .raw_read_latest_finalized_block()
@@ -260,7 +277,7 @@ impl StateBackend<SecpSignature, BlsSignatureCollection<monad_secp::PubKey>> for
             let Some(statuses) =
                 self.get_accounts_async(seq_num, Version::Finalized, eth_addresses)
             else {
-                return Err(StateBackendError::NotAvailableYet);
+                return Err(ExecutionStateReadError::NotAvailableYet);
             };
 
             let earliest = self
@@ -268,7 +285,7 @@ impl StateBackend<SecpSignature, BlsSignatureCollection<monad_secp::PubKey>> for
                 .expect("earliest must exist if latest does");
             if seq_num < &earliest {
                 // block < earliest
-                return Err(StateBackendError::NeverAvailable);
+                return Err(ExecutionStateReadError::NeverAvailable);
             }
             // block >= earliest
             statuses
@@ -277,29 +294,29 @@ impl StateBackend<SecpSignature, BlsSignatureCollection<monad_secp::PubKey>> for
 
             // make sure the block is committed before reading accounts
             let Some(_header) = self.get_proposed_eth_header(block_id, seq_num) else {
-                return Err(StateBackendError::NotAvailableYet);
+                return Err(ExecutionStateReadError::NotAvailableYet);
             };
 
             let Some(statuses) =
                 self.get_accounts_async(seq_num, Version::Proposal(*block_id), eth_addresses)
             else {
-                return Err(StateBackendError::NotAvailableYet);
+                return Err(ExecutionStateReadError::NotAvailableYet);
             };
             statuses
         };
 
-        self.state_backend_total_lookups
+        self.state_read_total_lookups
             .fetch_add(statuses.len() as u64, std::sync::atomic::Ordering::SeqCst);
 
         Ok(statuses)
     }
 
     fn get_execution_result(
-        &self,
+        &mut self,
         block_id: &BlockId,
         seq_num: &SeqNum,
         is_finalized: bool,
-    ) -> Result<EthHeader, StateBackendError> {
+    ) -> Result<EthHeader, ExecutionStateReadError> {
         if is_finalized
             && self
                 .raw_read_latest_finalized_block()
@@ -310,7 +327,7 @@ impl StateBackend<SecpSignature, BlsSignatureCollection<monad_secp::PubKey>> for
 
             // block <= latest
             let Some(header) = self.get_finalized_eth_header(seq_num) else {
-                return Err(StateBackendError::NotAvailableYet);
+                return Err(ExecutionStateReadError::NotAvailableYet);
             };
             Ok(header)
         } else {
@@ -318,7 +335,7 @@ impl StateBackend<SecpSignature, BlsSignatureCollection<monad_secp::PubKey>> for
             trace!(?seq_num, ?block_id, "triedb read eth header proposed");
 
             let Some(header) = self.get_proposed_eth_header(block_id, seq_num) else {
-                return Err(StateBackendError::NotAvailableYet);
+                return Err(ExecutionStateReadError::NotAvailableYet);
             };
             Ok(header)
         }
@@ -333,7 +350,7 @@ impl StateBackend<SecpSignature, BlsSignatureCollection<monad_secp::PubKey>> for
     }
 
     fn read_valset_at_block(
-        &self,
+        &mut self,
         block_num: SeqNum,
         requested_epoch: Epoch,
     ) -> Vec<(monad_secp::PubKey, BlsPubKey, Stake)> {
@@ -378,7 +395,7 @@ impl StateBackend<SecpSignature, BlsSignatureCollection<monad_secp::PubKey>> for
     }
 
     fn total_db_lookups(&self) -> u64 {
-        self.state_backend_total_lookups
+        self.state_read_total_lookups
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 }

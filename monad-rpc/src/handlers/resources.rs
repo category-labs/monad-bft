@@ -13,17 +13,21 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::sync::Arc;
+
 use actix::{Actor, Context};
 use actix_web::{
     dev::{ServiceRequest, ServiceResponse},
     Error,
 };
 use monad_triedb_utils::triedb_env::TriedbEnv;
+use tokio::sync::Semaphore;
 use tracing_actix_web::RootSpanBuilder;
 
 use crate::{
     comparator::RpcComparator,
     data::{eth_call_handler::EthCallHandler, DataProvider},
+    event::EventServerClient,
     middleware::Metrics,
     txpool::EthTxPoolBridgeClient,
 };
@@ -34,7 +38,9 @@ pub struct MonadRpcResources {
     pub eth_call_handler: Option<EthCallHandler>,
     pub chain_id: u64,
     pub data_provider: Option<DataProvider<TriedbEnv>>,
+    pub event_server_client: Option<EventServerClient>,
     pub batch_request_limit: u16,
+    pub batch_concurrent_limit: u16,
     pub max_response_size: u32,
     pub allow_unprotected_txs: bool,
     pub logs_max_block_range: u64,
@@ -43,8 +49,10 @@ pub struct MonadRpcResources {
     pub dry_run_get_logs_index: bool,
     pub use_eth_get_logs_index: bool,
     pub max_finalized_block_cache_len: u64,
+    pub enable_eth_simulate_v1: bool,
     pub metrics: Option<Metrics>,
     pub rpc_comparator: Option<RpcComparator>,
+    pub feehistory_limiter: Arc<Semaphore>,
 }
 
 impl MonadRpcResources {
@@ -54,7 +62,9 @@ impl MonadRpcResources {
         eth_call_handler: Option<EthCallHandler>,
         chain_id: u64,
         data_provider: Option<DataProvider<TriedbEnv>>,
+        event_server_client: Option<EventServerClient>,
         batch_request_limit: u16,
+        batch_concurrent_limit: u16,
         max_response_size: u32,
         allow_unprotected_txs: bool,
         logs_max_block_range: u64,
@@ -63,15 +73,19 @@ impl MonadRpcResources {
         dry_run_get_logs_index: bool,
         use_eth_get_logs_index: bool,
         max_finalized_block_cache_len: u64,
+        enable_eth_simulate_v1: bool,
         metrics: Option<Metrics>,
         rpc_comparator: Option<RpcComparator>,
+        feehistory_max_concurrent_requests: u32,
     ) -> Self {
         Self {
             txpool_bridge_client,
             eth_call_handler,
             chain_id,
             data_provider,
+            event_server_client,
             batch_request_limit,
+            batch_concurrent_limit,
             max_response_size,
             allow_unprotected_txs,
             logs_max_block_range,
@@ -80,8 +94,12 @@ impl MonadRpcResources {
             dry_run_get_logs_index,
             use_eth_get_logs_index,
             max_finalized_block_cache_len,
+            enable_eth_simulate_v1,
             metrics,
             rpc_comparator,
+            feehistory_limiter: Arc::new(Semaphore::new(
+                feehistory_max_concurrent_requests as usize,
+            )),
         }
     }
 }

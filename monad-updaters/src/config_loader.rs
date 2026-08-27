@@ -13,7 +13,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{marker::PhantomData, net::SocketAddr, ops::DerefMut, path::PathBuf, task::Poll};
+use std::{
+    marker::PhantomData,
+    net::{SocketAddr, SocketAddrV4},
+    ops::DerefMut,
+    path::PathBuf,
+    task::Poll,
+};
 
 use futures::Stream;
 use monad_crypto::certificate_signature::{
@@ -22,6 +28,7 @@ use monad_crypto::certificate_signature::{
 use monad_executor::Executor;
 use monad_executor_glue::{
     ConfigEvent, ConfigReloadCommand, ConfigUpdate, KnownPeersUpdate, MonadEvent, PeerEntry,
+    PeerEntryAddress,
 };
 use monad_node_config::{NodeBootstrapPeerConfig, NodeConfig};
 use monad_types::{ExecutionProtocol, NodeId};
@@ -205,20 +212,34 @@ where
     ) -> Vec<PeerEntry<ST>> {
         let mut peer_entries = Vec::new();
         for peer in bootstrap_peers {
-            let addr = match resolve_domain_v4(&peer.address).await {
-                Ok(Some(SocketAddr::V4(addr))) => addr,
-                _ => {
-                    warn!("config loader: cannot resolve: {:?}", &peer.address);
-                    continue;
+            let address = if let Some(address) = peer.ip() {
+                address
+            } else {
+                let domain = peer
+                    .domain()
+                    .expect("bootstrap peer address must be an IP address or domain");
+                match resolve_domain_v4((domain, peer.tcp_port().get())).await {
+                    Ok(Some(addr)) => *addr.ip(),
+                    _ => {
+                        warn!(
+                            domain = %domain,
+                            tcp_port = %peer.tcp_port(),
+                            udp_port = ?peer.udp_port(),
+                            "config loader: cannot resolve bootstrap peer",
+                        );
+                        continue;
+                    }
                 }
             };
+
             peer_entries.push(PeerEntry {
                 pubkey: peer.secp256k1_pubkey,
-                addr,
+                address: PeerEntryAddress::new(address, peer.tcp_port(), peer.udp_port()),
                 signature: peer.name_record_sig,
                 record_seq_num: peer.record_seq_num,
                 auth_port: peer.auth_port,
                 direct_udp_port: peer.direct_udp_port,
+                encrypted_tcp_port: peer.encrypted_tcp_port,
             });
         }
         peer_entries
@@ -267,12 +288,15 @@ where
     }
 }
 
-async fn resolve_domain_v4(domain: &String) -> Result<Option<SocketAddr>, std::io::Error> {
-    let dns_response = lookup_host(domain).await?;
+async fn resolve_domain_v4<T>(address: T) -> Result<Option<SocketAddrV4>, std::io::Error>
+where
+    T: tokio::net::ToSocketAddrs,
+{
+    let dns_response = lookup_host(address).await?;
 
     for entry in dns_response {
         match entry {
-            SocketAddr::V4(_) => return Ok(Some(entry)),
+            SocketAddr::V4(addr) => return Ok(Some(addr)),
             SocketAddr::V6(_) => continue,
         }
     }

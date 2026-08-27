@@ -6,7 +6,6 @@ on:
   push:
     branches: ["master"]
   pull_request:
-    branches: "*"
     types: [ opened, synchronize, reopened, edited ]
 
 concurrency:

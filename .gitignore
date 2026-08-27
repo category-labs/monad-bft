@@ -1,6 +1,7 @@
 *target
 /docker/single-node/.venv
 /docker/single-node/logs
+/docker/single-node/hive/logs
 /docker/devnet/monad/bft-ledger
 /docker/devnet/monad/block-payload
 /docker/devnet/monad/ledger

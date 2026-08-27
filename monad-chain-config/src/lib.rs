@@ -35,13 +35,15 @@ pub const ETHEREUM_MAINNET_CHAIN_ID: u64 = 1;
 pub const MONAD_MAINNET_CHAIN_ID: u64 = 143;
 pub const MONAD_TESTNET_CHAIN_ID: u64 = 10143;
 pub const MONAD_DEVNET_CHAIN_ID: u64 = 20143;
+// Chain id used by hive: https://github.com/ethereum/execution-apis/blob/main/tests/genesis.json
+pub const HIVE_CHAIN_ID: u64 = 3503995874084926;
 
 pub trait ChainConfig<CR: ChainRevision>: Copy + Clone {
     fn chain_id(&self) -> u64;
     fn get_epoch_length(&self) -> SeqNum;
     fn get_epoch_start_delay(&self) -> Round;
     fn get_staking_activation(&self) -> Epoch;
-    fn get_block_reward_mon(&self, epoch: Epoch) -> u64;
+    fn get_block_reward_mon(&self, epoch: Epoch, round: Round) -> u64;
     fn get_chain_revision(&self, round: Round) -> CR;
     fn get_execution_chain_revision(&self, execution_timestamp_s: u64) -> MonadExecutionRevision;
 }
@@ -57,6 +59,7 @@ pub struct MonadChainConfig {
     pub v_0_8_0_activation: Round,
     pub v_0_10_0_activation: Round,
     pub v_0_11_0_activation: Round,
+    pub v_0_12_0_activation: Round,
 
     pub staking_config: MonadStakingConfig,
 
@@ -106,6 +109,11 @@ impl MonadChainConfig {
 
             info!("Using override devnet chain config");
             Ok(override_config)
+        } else if chain_id == HIVE_CHAIN_ID {
+            if devnet_override.is_some() {
+                warn!("Ignoring chain config from file in hive");
+            }
+            Ok(MONAD_HIVE_CHAIN_CONFIG)
         } else {
             Err(ChainConfigError::UnsupportedChainId(chain_id))
         }
@@ -129,13 +137,15 @@ impl ChainConfig<MonadChainRevision> for MonadChainConfig {
         self.staking_config.get_staking_activation()
     }
 
-    fn get_block_reward_mon(&self, epoch: Epoch) -> u64 {
-        self.staking_config.get_block_reward_mon(epoch)
+    fn get_block_reward_mon(&self, epoch: Epoch, round: Round) -> u64 {
+        self.staking_config.get_block_reward_mon(epoch, round)
     }
 
     #[allow(clippy::if_same_then_else)]
     fn get_chain_revision(&self, round: Round) -> MonadChainRevision {
-        if round >= self.v_0_11_0_activation {
+        if round >= self.v_0_12_0_activation {
+            MonadChainRevision::V_0_12_0
+        } else if round >= self.v_0_11_0_activation {
             MonadChainRevision::V_0_11_0
         } else if round >= self.v_0_10_0_activation {
             MonadChainRevision::V_0_10_0
@@ -170,12 +180,18 @@ const MONAD_DEVNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     v_0_8_0_activation: Round::MIN,
     v_0_10_0_activation: Round::MIN,
     v_0_11_0_activation: Round::MIN,
+    v_0_12_0_activation: Round::MIN,
 
     staking_config: MONAD_DEVNET_STAKING_CONFIG,
 
     execution_v_one_activation: 0,
     execution_v_two_activation: 0,
     execution_v_four_activation: 0,
+};
+
+const MONAD_HIVE_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
+    chain_id: HIVE_CHAIN_ID,
+    ..MONAD_DEVNET_CHAIN_CONFIG
 };
 
 const MONAD_TESTNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
@@ -187,6 +203,7 @@ const MONAD_TESTNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     v_0_8_0_activation: Round::MIN,
     v_0_10_0_activation: Round::MIN,
     v_0_11_0_activation: Round::MIN,
+    v_0_12_0_activation: Round(43_821_000),
 
     staking_config: MONAD_TESTNET_STAKING_CONFIG,
 
@@ -205,6 +222,7 @@ const MONAD_MAINNET_CHAIN_CONFIG: MonadChainConfig = MonadChainConfig {
     v_0_8_0_activation: Round::MIN,
     v_0_10_0_activation: Round(15_643_179), // 2025-08-13T13:30:00.000Z
     v_0_11_0_activation: Round(33_493_399), // Approx 2025-11-04T14:00:00.000Z
+    v_0_12_0_activation: Round(89_758_000), // Approx 2026-07-23T14:30:00.000Z
 
     staking_config: MONAD_MAINNET_STAKING_CONFIG,
 
@@ -271,7 +289,7 @@ impl ChainConfig<MockChainRevision> for MockChainConfig {
         Epoch::MAX
     }
 
-    fn get_block_reward_mon(&self, _epoch: Epoch) -> u64 {
+    fn get_block_reward_mon(&self, _epoch: Epoch, _round: Round) -> u64 {
         0
     }
 
@@ -283,5 +301,63 @@ impl ChainConfig<MockChainRevision> for MockChainConfig {
 
     fn get_execution_chain_revision(&self, _execution_timestamp_s: u64) -> MonadExecutionRevision {
         MonadExecutionRevision::LATEST
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ChainConfigError, MonadChainConfig, HIVE_CHAIN_ID, MONAD_DEVNET_CHAIN_CONFIG,
+        MONAD_DEVNET_CHAIN_ID, MONAD_MAINNET_CHAIN_ID, MONAD_TESTNET_CHAIN_ID,
+    };
+
+    #[test]
+    fn new_accepts_supported_chain_ids() {
+        assert_eq!(
+            MonadChainConfig::new(MONAD_MAINNET_CHAIN_ID, None)
+                .unwrap()
+                .chain_id,
+            MONAD_MAINNET_CHAIN_ID
+        );
+        assert_eq!(
+            MonadChainConfig::new(MONAD_TESTNET_CHAIN_ID, None)
+                .unwrap()
+                .chain_id,
+            MONAD_TESTNET_CHAIN_ID
+        );
+        assert_eq!(
+            MonadChainConfig::new(MONAD_DEVNET_CHAIN_ID, None)
+                .unwrap()
+                .chain_id,
+            MONAD_DEVNET_CHAIN_ID
+        );
+        assert_eq!(
+            MonadChainConfig::new(HIVE_CHAIN_ID, None).unwrap().chain_id,
+            HIVE_CHAIN_ID
+        );
+    }
+
+    #[test]
+    fn hive_uses_devnet_params_with_hive_chain_id() {
+        let hive = MonadChainConfig::new(HIVE_CHAIN_ID, None).unwrap();
+
+        assert_eq!(hive.chain_id, HIVE_CHAIN_ID);
+        assert_eq!(hive.epoch_length, MONAD_DEVNET_CHAIN_CONFIG.epoch_length);
+        assert_eq!(
+            hive.epoch_start_delay,
+            MONAD_DEVNET_CHAIN_CONFIG.epoch_start_delay
+        );
+        assert_eq!(
+            hive.staking_config,
+            MONAD_DEVNET_CHAIN_CONFIG.staking_config
+        );
+    }
+
+    #[test]
+    fn new_rejects_unsupported_chain_id() {
+        assert!(matches!(
+            MonadChainConfig::new(12345, None),
+            Err(ChainConfigError::UnsupportedChainId(12345))
+        ));
     }
 }

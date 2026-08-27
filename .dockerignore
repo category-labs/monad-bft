@@ -10,6 +10,7 @@
 /docker/devnet/monad/wal
 /docker/devnet/monad/mempool.sock
 /docker/single-node/logs
+/docker/single-node/hive/logs
 
 **/.git
 

@@ -49,7 +49,7 @@ pub struct NodeBuilder<S: SwarmRelation> {
         S::SignatureCollectionType,
         S::ExecutionProtocolType,
         S::BlockPolicyType,
-        S::StateBackendType,
+        S::ExecutionStateReadType,
         S::ValidatorSetTypeFactory,
         S::LeaderElection,
         S::BlockValidator,
@@ -74,7 +74,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
             S::SignatureCollectionType,
             S::ExecutionProtocolType,
             S::BlockPolicyType,
-            S::StateBackendType,
+            S::ExecutionStateReadType,
             S::ValidatorSetTypeFactory,
             S::LeaderElection,
             S::BlockValidator,
@@ -115,7 +115,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
             TransportMessage = <DebugSwarmRelation as SwarmRelation>::TransportMessage,
             BlockPolicyType = <DebugSwarmRelation as SwarmRelation>::BlockPolicyType,
             BlockValidator = <DebugSwarmRelation as SwarmRelation>::BlockValidator,
-            StateBackendType = <DebugSwarmRelation as SwarmRelation>::StateBackendType,
+            ExecutionStateReadType = <DebugSwarmRelation as SwarmRelation>::ExecutionStateReadType,
             ChainConfigType = <DebugSwarmRelation as SwarmRelation>::ChainConfigType,
             ChainRevisionType = <DebugSwarmRelation as SwarmRelation>::ChainRevisionType,
         >,
@@ -132,7 +132,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
                 leader_election: Box::new(self.state_builder.leader_election),
                 block_validator: self.state_builder.block_validator,
                 block_policy: self.state_builder.block_policy,
-                state_backend: self.state_builder.state_backend,
+                state_read: self.state_builder.state_read,
                 key: self.state_builder.key,
                 certkey: self.state_builder.certkey,
                 beneficiary: self.state_builder.beneficiary,
@@ -143,6 +143,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
                 consensus_config: self.state_builder.consensus_config,
                 whitelisted_statesync_nodes: self.state_builder.whitelisted_statesync_nodes,
                 statesync_expand_to_group: self.state_builder.statesync_expand_to_group,
+                serve_statesync: self.state_builder.serve_statesync,
 
                 _phantom: PhantomData,
             },
@@ -338,6 +339,7 @@ impl<S: SwarmRelation> Node<S> {
         None
     }
 
+    #[expect(unused)]
     fn build_validator_set_data(
         validator_set: &<S::ValidatorSetTypeFactory as ValidatorSetTypeFactory>::ValidatorSetType,
         validator_mapping: &ValidatorMapping<<<S::SignatureType as CertificateSignature>::KeyPairType as CertificateKeyPair>::PubKeyType, <<S::SignatureCollectionType as SignatureCollection>::SignatureType as CertificateSignature>::KeyPairType>,

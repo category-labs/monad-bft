@@ -168,19 +168,20 @@ fn main() -> Result<(), Error> {
             if let ControlPanelCommand::Read(ReadCommand::GetPeers(GetPeers::Response(peers))) =
                 response
             {
-                // build toml config from peer list
-                let mut peer_configs = Vec::new();
-                for peer in peers {
-                    let peer_config = NodeBootstrapPeerConfig {
-                        address: peer.addr.to_string(),
+                let peer_configs = peers
+                    .into_iter()
+                    .map(|peer| NodeBootstrapPeerConfig {
+                        address: peer.ip().to_string(),
+                        tcp_port: Some(peer.tcp_port()),
+                        udp_port: peer.udp_port(),
                         secp256k1_pubkey: peer.pubkey,
                         name_record_sig: peer.signature,
                         record_seq_num: peer.record_seq_num,
                         auth_port: peer.auth_port,
                         direct_udp_port: peer.direct_udp_port,
-                    };
-                    peer_configs.push(peer_config);
-                }
+                        encrypted_tcp_port: peer.encrypted_tcp_port,
+                    })
+                    .collect();
                 let bootstrap_config = NodeBootstrapConfig {
                     peers: peer_configs,
                 };

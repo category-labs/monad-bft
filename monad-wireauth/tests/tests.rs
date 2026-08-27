@@ -868,6 +868,66 @@ fn test_handshake_response_address_mismatch_rejected() {
 }
 
 #[test]
+fn test_stale_handshake_response_does_not_poison_pending_initiator() {
+    init_tracing();
+    let config = Config::default();
+    let stale_peer1_keypair = monad_secp::KeyPair::from_ikm(b"initiator key").unwrap();
+    let peer1_keypair = monad_secp::KeyPair::from_ikm(b"initiator key").unwrap();
+    let peer1_context = TestContext::new();
+    peer1_context.advance_time(Duration::from_secs(1));
+
+    let mut stale_peer1 = API::new(
+        DEFAULT_METRICS,
+        config.clone(),
+        stale_peer1_keypair,
+        TestContext::new(),
+    );
+    let mut peer1 = API::new(DEFAULT_METRICS, config, peer1_keypair, peer1_context);
+    let (mut peer2, peer2_pubkey, _, _) = create_manager();
+    let peer1_addr: SocketAddr = "127.0.0.1:8001".parse().unwrap();
+    let peer2_addr: SocketAddr = "127.0.0.1:8002".parse().unwrap();
+
+    // stale_peer1 creates a valid but obsolete initiation from the same static key.
+    stale_peer1
+        .connect(peer2_pubkey, peer2_addr, DEFAULT_RETRY_ATTEMPTS)
+        .unwrap();
+    let stale_init = collect::<HandshakeInitiation>(&mut stale_peer1);
+    dispatch(&mut peer2, &stale_init, peer1_addr);
+    let stale_response = collect::<HandshakeResponse>(&mut peer2);
+
+    // peer1 creates the real pending initiation with the same receiver index and a newer timestamp.
+    peer1
+        .connect(peer2_pubkey, peer2_addr, DEFAULT_RETRY_ATTEMPTS)
+        .unwrap();
+    let init = collect::<HandshakeInitiation>(&mut peer1);
+    dispatch(&mut peer2, &init, peer1_addr);
+    let response = collect::<HandshakeResponse>(&mut peer2);
+
+    // the stale response passes source address, receiver index, and mac1 checks before auth fails.
+    let mut stale_response_packet = stale_response;
+    let parsed_packet = Packet::try_from(&mut stale_response_packet[..]).unwrap();
+    let err = match parsed_packet {
+        Packet::Control(control) => peer1.dispatch_control(control, peer2_addr).unwrap_err(),
+        Packet::Data(_) => panic!("expected control packet"),
+    };
+    assert!(matches!(err, monad_wireauth::Error::Session(_)));
+
+    // the authentic response still succeeds because the stale response did not mutate state.
+    let mut response_packet = response;
+    let parsed_packet = Packet::try_from(&mut response_packet[..]).unwrap();
+    match parsed_packet {
+        Packet::Control(control) => peer1.dispatch_control(control, peer2_addr).unwrap(),
+        Packet::Data(_) => panic!("expected control packet"),
+    }
+
+    // data can flow on the session established by the authentic response.
+    let mut plaintext = b"handshake survives stale response".to_vec();
+    let packet = encrypt(&mut peer1, &peer2_pubkey, &mut plaintext);
+    let decrypted = decrypt(&mut peer2, &packet, peer1_addr);
+    assert_eq!(decrypted, b"handshake survives stale response");
+}
+
+#[test]
 fn test_max_initiated_sessions_limit() {
     init_tracing();
     let config = Config {

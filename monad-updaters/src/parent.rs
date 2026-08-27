@@ -18,7 +18,7 @@ use std::{
     ops::DerefMut,
     pin::Pin,
     task::{Context, Poll},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use futures::{FutureExt, Stream, StreamExt};
@@ -27,13 +27,13 @@ use monad_consensus_types::block::BlockPolicy;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
+use monad_execution_state_read::ExecutionStateRead;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
     Command, ConfigFileCommand, ConfigReloadCommand, ControlPanelCommand, LedgerCommand,
     LoopbackCommand, RouterCommand, StateSyncCommand, TimerCommand, TimestampCommand,
     TxPoolCommand, ValSetCommand,
 };
-use monad_state_backend::StateBackend;
 use monad_types::ExecutionProtocol;
 use monad_validator::signature_collection::SignatureCollection;
 
@@ -84,6 +84,22 @@ monad_executor::metric_consts! {
     }
 }
 
+fn init_executor_metrics() -> ExecutorMetrics {
+    ExecutorMetrics::with_metric_defs(&[
+        GAUGE_PARENT_TOTAL_EXEC_US,
+        GAUGE_LEDGER_TOTAL_EXEC_US,
+        GAUGE_CONFIG_FILE_TOTAL_EXEC_US,
+        GAUGE_TXPOOL_TOTAL_EXEC_US,
+        GAUGE_ROUTER_TOTAL_EXEC_US,
+        GAUGE_STATESYNC_TOTAL_EXEC_US,
+        GAUGE_PARENT_TOTAL_POLL_US,
+        GAUGE_LEDGER_TOTAL_POLL_US,
+        GAUGE_TXPOOL_TOTAL_POLL_US,
+        GAUGE_ROUTER_TOTAL_POLL_US,
+        GAUGE_STATESYNC_TOTAL_POLL_US,
+    ])
+}
+
 /// Single top-level executor for all other required by a node.
 /// This executor will distribute commands to the appropriate sub-executor
 /// and will poll them for events
@@ -104,8 +120,28 @@ pub struct ParentExecutor<R, T, L, C, V, TS, TP, CP, LO, SS, CL> {
     // if you add an executor here, you must add it to BOTH exec AND poll_next !
 }
 
-impl<RE, TE, LE, CE, SE, TSE, TPE, CPE, LOE, SSE, CLE, E, OM, ST, SCT, EPT, BPT, SBT, CCT, CRT>
-    Executor for ParentExecutor<RE, TE, LE, CE, SE, TSE, TPE, CPE, LOE, SSE, CLE>
+impl<
+        RE,
+        TE,
+        LE,
+        CE,
+        SE,
+        TSE,
+        TPE,
+        CPE,
+        LOE,
+        SSE,
+        CLE,
+        E,
+        OM,
+        ST,
+        SCT,
+        EPT,
+        BPT,
+        ESRT,
+        CCT,
+        CRT,
+    > Executor for ParentExecutor<RE, TE, LE, CE, SE, TSE, TPE, CPE, LOE, SSE, CLE>
 where
     RE: Executor<Command = RouterCommand<ST, OM>>,
     TE: Executor<Command = TimerCommand<E>>,
@@ -114,7 +150,7 @@ where
     SE: Executor<Command = ValSetCommand>,
     TSE: Executor<Command = TimestampCommand>,
 
-    TPE: Executor<Command = TxPoolCommand<ST, SCT, EPT, BPT, SBT, CCT, CRT>>,
+    TPE: Executor<Command = TxPoolCommand<ST, SCT, EPT, BPT, ESRT, CCT, CRT>>,
     CPE: Executor<Command = ControlPanelCommand<ST>>,
     LOE: Executor<Command = LoopbackCommand<E>>,
     SSE: Executor<Command = StateSyncCommand<ST, EPT>>,
@@ -123,14 +159,14 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
     EPT: ExecutionProtocol,
-    BPT: BlockPolicy<ST, SCT, EPT, SBT, CCT, CRT>,
-    SBT: StateBackend<ST, SCT>,
+    BPT: BlockPolicy<ST, SCT, EPT, ESRT, CCT, CRT>,
+    ESRT: ExecutionStateRead<ST, SCT>,
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
-    type Command = Command<E, OM, ST, SCT, EPT, BPT, SBT, CCT, CRT>;
+    type Command = Command<E, OM, ST, SCT, EPT, BPT, ESRT, CCT, CRT>;
 
-    fn exec(&mut self, commands: Vec<Command<E, OM, ST, SCT, EPT, BPT, SBT, CCT, CRT>>) {
+    fn exec(&mut self, commands: Vec<Command<E, OM, ST, SCT, EPT, BPT, ESRT, CCT, CRT>>) {
         let _exec_span = tracing::trace_span!("exec_span", num_cmds = commands.len()).entered();
         let guard = ParentExecutorMetricsGuard::new(&mut self.metrics, GAUGE_PARENT_TOTAL_EXEC_US);
         let (
@@ -262,8 +298,17 @@ impl<R, T, L, C, S, TS, TP, CP, LO, SS, CL> ParentExecutor<R, T, L, C, S, TS, TP
     }
 }
 
-#[derive(Default)]
 pub struct ParentExecutorMetrics(ExecutorMetrics);
+
+impl Default for ParentExecutorMetrics {
+    fn default() -> Self {
+        Self(init_executor_metrics())
+    }
+}
+
+fn duration_micros_u64(duration: Duration) -> u64 {
+    duration.as_micros().try_into().unwrap_or(u64::MAX)
+}
 
 impl ParentExecutorMetrics {
     fn record<T>(
@@ -273,7 +318,9 @@ impl ParentExecutorMetrics {
     ) -> T {
         let start = Instant::now();
         let e = f();
-        self.0[metric] += start.elapsed().as_micros() as u64;
+        self.0
+            .gauge(metric)
+            .add(duration_micros_u64(start.elapsed()));
         e
     }
 }
@@ -299,6 +346,9 @@ impl<'a> ParentExecutorMetricsGuard<'a> {
 
 impl<'a> Drop for ParentExecutorMetricsGuard<'a> {
     fn drop(&mut self) {
-        self.metrics.0[self.guard_metric] += self.start.elapsed().as_micros() as u64;
+        self.metrics
+            .0
+            .gauge(self.guard_metric)
+            .add(duration_micros_u64(self.start.elapsed()));
     }
 }

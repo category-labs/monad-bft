@@ -73,6 +73,7 @@ schemars = { workspace = true, features = ["preserve_order", "raw_value"] }
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_cbor = { workspace = true }
 serde_json = { workspace = true, features = ["raw_value"] }
+strum = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["net", "macros", "rt-multi-thread", "fs"] }
 toml = { workspace = true }
@@ -100,15 +101,13 @@ alloy-signer = { workspace = true }
 alloy-signer-local = { workspace = true }
 arbitrary = { workspace = true }
 awc = { workspace = true }
-brotli = { workspace = true }
 criterion = { workspace = true }
-flate2 = { workspace = true }
+paste = { workspace = true }
 proptest = { workspace = true }
 reqwest = { workspace = true }
 tempfile = { workspace = true }
 test-case = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
-zstd = { workspace = true }
 
 [[bench]]
 name = "serialize"

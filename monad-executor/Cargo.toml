@@ -9,7 +9,9 @@ edition = "2021"
 bench = false
 
 [dependencies]
-monad-types = { workspace = true }
 
 bytes = { workspace = true }
 hdrhistogram = { workspace = true }
+monad-types = { workspace = true }
+prometheus = { workspace = true }
+tracing = { workspace = true }

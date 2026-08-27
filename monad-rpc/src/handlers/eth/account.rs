@@ -13,7 +13,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_primitives::B256;
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::Triedb;
 use serde::Deserialize;
@@ -22,7 +21,7 @@ use tracing::trace;
 use crate::{
     data::{get_block_key_from_tag_or_hash, DataProvider},
     types::{
-        eth_json::{BlockTagOrHash, EthAddress, MonadU256},
+        eth_json::{BlockTagOrHash, EthAddress, StorageKey},
         jsonrpc::{JsonRpcError, JsonRpcResult},
     },
 };
@@ -110,7 +109,7 @@ pub async fn monad_eth_getCode<T: Triedb>(
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetStorageAtParams {
     account: EthAddress,
-    position: MonadU256,
+    position: StorageKey,
     block: BlockTagOrHash,
 }
 
@@ -128,7 +127,7 @@ pub async fn monad_eth_getStorageAt<T: Triedb>(
         .ok_or_else(JsonRpcError::block_not_found)?;
     let storage_value = data_provider
         .triedb_env
-        .get_storage_at(block_key, params.account.0, B256::from(params.position.0).0)
+        .get_storage_at(block_key, params.account.0, params.position.0)
         .await
         .map_err(JsonRpcError::internal_error)?;
 
@@ -239,5 +238,39 @@ mod tests {
             res.block,
             super::BlockTagOrHash::BlockTags(BlockTags::Latest)
         ));
+    }
+
+    #[test]
+    fn storage_key_valid_and_right_aligned() {
+        let mut expected = [0u8; 32];
+        expected[31] = 1;
+
+        let res: MonadEthGetStorageAtParams = serde_json::from_str(
+            r#"["0xDeaDbeefdEAdbeefdEadbEEFdeadbeEFdEaDbeeF", "0x0000000000000000000000000000000000000000000000000000000000000001", "latest"]"#,
+        )
+        .unwrap();
+        assert_eq!(res.position.0, expected);
+
+        let res: MonadEthGetStorageAtParams = serde_json::from_str(
+            r#"["0xDeaDbeefdEAdbeefdEadbEEFdeadbeEFdEaDbeeF", "0x1", "latest"]"#,
+        )
+        .unwrap();
+        assert_eq!(res.position.0, expected);
+    }
+
+    #[test]
+    fn storage_key_too_many_hex_digits_rejected() {
+        assert!(serde_json::from_str::<MonadEthGetStorageAtParams>(
+            r#"["0xaa00000000000000000000000000000000000000", "0x00000000000000000000000000000000000000000000000000000000000000000", "latest"]"#,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn storage_key_invalid_hex_rejected() {
+        assert!(serde_json::from_str::<MonadEthGetStorageAtParams>(
+            r#"["0xaa00000000000000000000000000000000000000", "0xasdf", "latest"]"#,
+        )
+        .is_err());
     }
 }

@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::Arc,
 };
 
@@ -22,7 +22,7 @@ use alloy_consensus::{
     transaction::Recovered, Header as RlpHeader, ReceiptEnvelope, ReceiptWithBloom,
     Transaction as _,
 };
-use alloy_primitives::{BlockHash, Bloom, FixedBytes, TxHash, TxKind, U256};
+use alloy_primitives::{Bloom, FixedBytes, TxHash, TxKind, U256};
 use alloy_rlp::Encodable;
 use alloy_rpc_types::{
     Block, BlockTransactions, Filter, FilterBlockOption, FilteredParams, Header, Log, Receipt,
@@ -37,22 +37,23 @@ use monad_archive::{
 use monad_eth_types::{
     BlockHeader, ReceiptWithLogIndex, TransactionLocation, TxEnvelopeWithSender,
 };
-use monad_triedb_utils::triedb_env::{BlockKey, FinalizedBlockKey, Triedb};
-use monad_types::SeqNum;
+use monad_triedb_utils::triedb_env::{BlockKey, FinalizedBlockKey, ProposedBlockKey, Triedb};
+use monad_types::{BlockId, Hash, SeqNum};
 use tracing::{debug, error, trace, warn};
 
 use self::{
-    buffer::{block_height_from_tag, ExecEventsBuffer},
+    buffer::BlockBufferView,
     source::{
-        ArchiveDataSource, BlockCommitState, BlockPointer, DataSourceResult, DataSourceStack,
+        ArchiveDataSource, BlockPointer, DataSourceStack, HistoricalBlockData,
         HistoricalDataSource, HistoricalDataSourceStack,
     },
 };
 use crate::{
+    data::source::{DataSourceError, HistoricalDataSourceExt, TriedbDataSource},
     handlers::eth::txn::FilterError,
     types::{
-        eth_json::{BlockTagOrHash, BlockTags, MonadLog, MonadTransactionReceipt, Quantity},
-        heuristic_size::HeuristicSize,
+        eth_json::{BlockTagOrHash, BlockTags, MonadLog, MonadTransactionReceipt},
+        json_serialized_len::JsonSerializedLen,
         jsonrpc::{ArchiveErrorExt, JsonRpcError, JsonRpcResult},
     },
 };
@@ -63,8 +64,8 @@ mod source;
 
 #[derive(Clone)]
 pub struct DataProvider<T> {
-    buffer: Option<Arc<ExecEventsBuffer>>,
-    pub triedb_env: T,
+    buffer: Option<BlockBufferView>,
+    pub triedb_env: Arc<T>,
     archive_reader: Option<ArchiveReader>,
 
     historical: HistoricalDataSourceStack,
@@ -74,6 +75,7 @@ pub struct DataProvider<T> {
 pub enum ChainStateError {
     Triedb(String),
     Archive(String),
+    DataSource(DataSourceError),
     ResourceNotFound,
 }
 
@@ -88,6 +90,13 @@ impl From<monad_archive::prelude::Report> for ChainStateError {
 // BlockTags::Latest
 pub fn get_latest_block_key(triedb_env: &impl Triedb) -> BlockKey {
     triedb_env.get_latest_proposed_block_key()
+}
+
+pub fn block_key_to_parts(block_key: BlockKey) -> (u64, Option<[u8; 32]>) {
+    match block_key {
+        BlockKey::Finalized(FinalizedBlockKey(SeqNum(n))) => (n, None),
+        BlockKey::Proposed(ProposedBlockKey(SeqNum(n), BlockId(Hash(id)))) => (n, Some(id)),
+    }
 }
 
 pub fn get_block_key_from_tag(triedb_env: &impl Triedb, tag: BlockTags) -> Option<BlockKey> {
@@ -137,72 +146,45 @@ pub async fn get_block_key_from_tag_or_hash(
         .flatten()
 }
 
-fn resolve_block_height_from_buffer(
-    buffer: &ExecEventsBuffer,
-    block: &BlockTagOrHash,
-) -> Option<u64> {
+fn resolve_block_height_from_buffer(view: &BlockBufferView, block: &BlockTagOrHash) -> Option<u64> {
     match block {
-        BlockTagOrHash::BlockTags(tag) => Some(block_height_from_tag(buffer, tag)),
-        BlockTagOrHash::Hash(hash) => buffer
+        BlockTagOrHash::BlockTags(tag) => Some(view.resolve_block_height_from_tag(tag)),
+        BlockTagOrHash::Hash(hash) => view
             .get_block_by_hash(&FixedBytes(hash.0))
             .map(|block| block.header.number),
     }
 }
 
-async fn resolve_block_tag_or_hash(
-    data_source: &impl HistoricalDataSource,
-    block_tag_or_hash: BlockTagOrHash,
-) -> DataSourceResult<Option<BlockPointer>> {
-    match block_tag_or_hash {
-        BlockTagOrHash::BlockTags(BlockTags::Number(Quantity(block_num))) => {
-            data_source.try_resolve_block_number(block_num).await
-        }
-        BlockTagOrHash::BlockTags(BlockTags::Latest) => {
-            data_source
-                .try_resolve_block_commit_state(BlockCommitState::Proposed)
-                .await
-        }
-        BlockTagOrHash::BlockTags(BlockTags::Safe) => {
-            data_source
-                .try_resolve_block_commit_state(BlockCommitState::Voted)
-                .await
-        }
-        BlockTagOrHash::BlockTags(BlockTags::Finalized) => {
-            data_source
-                .try_resolve_block_commit_state(BlockCommitState::Finalized)
-                .await
-        }
-        BlockTagOrHash::Hash(block_hash) => {
-            data_source
-                .try_resolve_block_hash(BlockHash::from(block_hash.0))
-                .await
-        }
-    }
-}
-
-impl<T: Triedb> DataProvider<T> {
+impl<T> DataProvider<T>
+where
+    T: Triedb + Send + Sync + 'static,
+{
     pub fn new(
-        buffer: Option<Arc<ExecEventsBuffer>>,
-        triedb_env: T,
+        buffer: Option<BlockBufferView>,
+        triedb_env: Arc<T>,
         archive_reader: Option<ArchiveReader>,
     ) -> Self {
         DataProvider {
             buffer,
-            triedb_env,
+            triedb_env: triedb_env.clone(),
             archive_reader: archive_reader.clone(),
 
             historical: DataSourceStack::new(
-                archive_reader
-                    .into_iter()
-                    .map(|archive_reader| {
+                std::iter::once(Box::new(TriedbDataSource::new(triedb_env)) as Box<_>)
+                    .chain(archive_reader.into_iter().map(|archive_reader| {
                         Box::new(ArchiveDataSource::new(archive_reader)) as Box<_>
-                    })
+                    }))
                     .collect::<Vec<_>>()
                     .into_boxed_slice(),
             ),
         }
     }
+}
 
+impl<T> DataProvider<T>
+where
+    T: Triedb,
+{
     pub fn get_latest_block_number(&self) -> u64 {
         // Return triedb's latest block number.
         // There is a race condition between buffer and triedb for common wallet workflows.
@@ -408,34 +390,16 @@ impl<T: Triedb> DataProvider<T> {
             }
         }
 
-        if let Some(block_key) =
-            try_get_block_key_from_tag_or_hash(&self.triedb_env, block.clone()).await?
-        {
-            if let Some(header) = self
-                .triedb_env
-                .get_block_header(block_key)
-                .await
-                .map_err(ChainStateError::Triedb)?
-            {
-                return Ok(header.header);
-            }
-        }
-
-        if let Some(block_pointer) = resolve_block_tag_or_hash(&self.historical, block)
+        if let Some(header) = self
+            .historical
+            .try_resolve_and_then(block, |source, pointer| source.get_block_header(pointer))
             .await
-            .map_err(|e| ChainStateError::Archive(e.to_string()))?
+            .map_err(ChainStateError::DataSource)?
         {
-            if let Some(header) = self
-                .historical
-                .get_block_header(block_pointer)
-                .await
-                .map_err(|e| ChainStateError::Archive(e.to_string()))?
-            {
-                return Ok(header);
-            }
+            Ok(header)
+        } else {
+            Err(ChainStateError::ResourceNotFound)
         }
-
-        Err(ChainStateError::ResourceNotFound)
     }
 
     pub async fn get_block(
@@ -454,46 +418,14 @@ impl<T: Triedb> DataProvider<T> {
             }
         }
 
-        if let Some(block_key) =
-            try_get_block_key_from_tag_or_hash(&self.triedb_env, block.clone()).await?
-        {
-            if let Some(header) = self
-                .triedb_env
-                .get_block_header(block_key)
-                .await
-                .map_err(ChainStateError::Triedb)?
-            {
-                if let Ok(transactions) = self.triedb_env.get_transactions(block_key).await {
-                    return Ok(parse_block_content(
-                        header.hash,
-                        header.header,
-                        transactions,
-                        return_full_txns,
-                    ));
-                }
-            }
-        }
-
-        if let Some(block_pointer) = resolve_block_tag_or_hash(&self.historical, block)
+        let result = self
+            .historical
+            .try_resolve_and_then(block, |source, pointer| source.get_block(pointer))
             .await
-            .map_err(|e| ChainStateError::Archive(e.to_string()))?
-        {
-            if let Some((header, transactions)) = self
-                .historical
-                .get_block(block_pointer)
-                .await
-                .map_err(|e| ChainStateError::Archive(e.to_string()))?
-            {
-                return Ok(parse_block_content(
-                    header.hash_slow(),
-                    header,
-                    transactions,
-                    return_full_txns,
-                ));
-            }
-        }
+            .map_err(ChainStateError::DataSource)?
+            .ok_or(ChainStateError::ResourceNotFound)?;
 
-        Err(ChainStateError::ResourceNotFound)
+        Ok(parse_block_content(result, return_full_txns))
     }
 
     /// Returns raw transaction receipts for a block.
@@ -502,7 +434,7 @@ impl<T: Triedb> DataProvider<T> {
         block: BlockTags,
     ) -> Result<Vec<ReceiptEnvelope>, ChainStateError> {
         if let Some(buffer) = &self.buffer {
-            let height = block_height_from_tag(buffer, &block);
+            let height = buffer.resolve_block_height_from_tag(&block);
             if let Some(receipts) = buffer.get_receipts_by_block_height(height) {
                 return Ok(receipts
                     .into_iter()
@@ -1045,12 +977,12 @@ async fn try_collect_logs_stream_with_heuristic_response_limit<E>(
                 }
 
                 response_logs.extend(logs.into_iter().map(|log| {
-                    heuristic_response_size += HeuristicSize::heuristic_json_len(&log) as u64;
+                    heuristic_response_size += JsonSerializedLen::json_serialized_len(&log) as u64;
                     MonadLog(log)
                 }));
 
                 if heuristic_response_size > max_response_size as u64 {
-                    return Err(JsonRpcError::max_size_exceeded());
+                    return Err(JsonRpcError::max_response_size_exceeded());
                 }
 
                 if heuristic_response_size >= EXTRAPOLATION_CHECK_MIN_RESPONSE_SIZE
@@ -1066,7 +998,7 @@ async fn try_collect_logs_stream_with_heuristic_response_limit<E>(
                             .saturating_div(num_blocks_total);
 
                     if extrapolated_heuristic_size > extrapolation_max_response_size {
-                        return Err(JsonRpcError::max_size_exceeded());
+                        return Err(JsonRpcError::max_response_size_exceeded());
                     }
                 }
             }
@@ -1109,7 +1041,13 @@ async fn fetch_bloom_filtered_header_transactions_receipts_from_archive(
     Vec<ReceiptWithLogIndex>,
 )> {
     let block_pointer = BlockPointer::Finalized(block_number);
-    let Some((header, transactions)) = data_source
+
+    let Some(HistoricalBlockData {
+        header,
+        header_hash_precomputed,
+
+        transactions,
+    }) = data_source
         .get_block(block_pointer)
         .await
         .map_err(|e| JsonRpcError::internal_error(e.to_string()))?
@@ -1120,7 +1058,7 @@ async fn fetch_bloom_filtered_header_transactions_receipts_from_archive(
     };
 
     let header = BlockHeader {
-        hash: header.hash_slow(),
+        hash: header_hash_precomputed.unwrap_or_else(|| header.hash_slow()),
         header,
     };
 
@@ -1234,6 +1172,7 @@ async fn get_receipts_stream_using_index<'a>(
              }| {
                 (
                     header_subset.block_number,
+                    header_subset.tx_index,
                     parse_receipt_envelope(
                         header_subset.block_hash,
                         header_subset.block_number,
@@ -1248,41 +1187,43 @@ async fn get_receipts_stream_using_index<'a>(
 
     Ok(async_stream::stream! {
         let mut block_number = None;
-        let mut block_receipts = Vec::new();
+        let mut block_receipts = BTreeMap::<u64, ReceiptEnvelope<Log>>::default();
 
         while let Some(result) = stream.next().await {
-            match result {
+            let (receipt_block_number, receipt_tx_index, receipt) = match result {
+                Ok(value) => value,
                 Err(err) => {
                     yield Err(err);
 
                     block_number = None;
                     break;
                 }
-                Ok((next_block_number, receipt)) => match block_number {
-                    None => {
-                        block_number = Some(next_block_number);
-                        block_receipts.push(receipt);
-                    }
-                    Some(current_block_number) if current_block_number == next_block_number => {
-                        block_receipts.push(receipt);
-                    }
-                    Some(current_block_number) => {
-                        assert!(current_block_number < next_block_number);
-                        assert!(!block_receipts.is_empty());
+            };
 
-                        yield Ok((current_block_number, std::mem::take(&mut block_receipts)));
+            if let Some(block_number) = block_number {
+                assert!(block_number <= receipt_block_number);
+                assert!(!block_receipts.is_empty());
 
-                        block_number = Some(next_block_number);
-                        block_receipts.push(receipt);
-                    }
+                if block_number != receipt_block_number {
+                    yield Ok((
+                        block_number,
+                        std::mem::take(&mut block_receipts)
+                            .into_values()
+                            .collect::<Vec<_>>()
+                    ));
                 }
             }
+
+            block_number = Some(receipt_block_number);
+
+            let existing_receipt = block_receipts.insert(receipt_tx_index, receipt);
+            assert!(existing_receipt.is_none());
         }
 
         if let Some(block_number) = block_number {
             assert!(!block_receipts.is_empty());
 
-            yield Ok((block_number, block_receipts));
+            yield Ok((block_number, block_receipts.into_values().collect::<Vec<_>>()));
         }
     })
 }
@@ -1325,12 +1266,15 @@ fn calculate_block_size(header: &RlpHeader, transactions: &[TxEnvelopeWithSender
     alloy_rlp::length_of_length(block_payload_len) + block_payload_len
 }
 
-fn parse_block_content(
-    block_hash: FixedBytes<32>,
-    header: RlpHeader,
-    transactions: Vec<TxEnvelopeWithSender>,
-    return_full_txns: bool,
-) -> Block {
+fn parse_block_content(block_data: HistoricalBlockData, return_full_txns: bool) -> Block {
+    let HistoricalBlockData {
+        header,
+        header_hash_precomputed,
+
+        transactions,
+    } = block_data;
+
+    let block_hash = header_hash_precomputed.unwrap_or_else(|| header.hash_slow());
     let block_size = U256::from(calculate_block_size(&header, &transactions));
 
     // parse transactions
@@ -1663,6 +1607,8 @@ async fn get_receipt_from_triedb<T: Triedb>(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use alloy_consensus::{Block as ConsensusBlock, BlockBody, Header, TxEnvelope};
     use alloy_eips::BlockNumberOrTag;
     use alloy_rlp::Encodable;
@@ -1776,7 +1722,7 @@ mod tests {
                 None,
             );
 
-        let data_provider = DataProvider::new(None, mock_triedb, Some(reader));
+        let data_provider = DataProvider::new(None, Arc::new(mock_triedb), Some(reader));
 
         let block_hash = block.header.hash_slow().0;
 

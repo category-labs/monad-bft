@@ -24,8 +24,7 @@ use alloy_primitives::{Address, Bytes, Signature, TxKind, Uint, B256, U256, U64,
 use alloy_rpc_types::{AccessList, AccessListItem};
 use monad_chain_config::execution_revision::MonadExecutionRevision;
 use monad_ethcall::{
-    eth_call, CallResult, EthCallExecutor, EthCallRequest, EthCallResult, FailureCallResult,
-    MonadTracer, StateOverrideSet,
+    overrides::StateOverrideSet, EthCallRequest, EthCallResult, MonadExecutor, MonadTracer,
 };
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{
@@ -43,11 +42,13 @@ use crate::{
     },
     handlers::{
         debug::{decode_call_frame, TracerObject},
+        eth::{CallResult, FailureCallResult, SuccessCallResult},
         parse_ethcall_chain_id,
     },
     types::{
         eth_json::{BlockTagOrHash, MonadCreateAccessListResult},
         ethhex,
+        json_serialized_len::JsonSerializedLen,
         jsonrpc::{JsonRpcError, JsonRpcResult},
     },
 };
@@ -139,10 +140,8 @@ impl CallRequest {
                     })?;
 
                 let max_fee_per_gas = match max_fee_per_gas {
-                    Some(mut max_fee_per_gas) => {
-                        if max_fee_per_gas == U256::ZERO {
-                            max_fee_per_gas = base_fee;
-                        } else if max_fee_per_gas < base_fee {
+                    Some(max_fee_per_gas) => {
+                        if max_fee_per_gas < base_fee {
                             return Err(JsonRpcError::eth_call_error(
                                 "max fee per gas less than block base fee".to_string(),
                                 None,
@@ -380,15 +379,18 @@ pub async fn fill_gas_params<T: Triedb>(
     state_overrides: &StateOverrideSet,
     eth_call_provider_gas_limit: U256,
 ) -> Result<(), JsonRpcError> {
-    // Geth checks that the sender can pay for gas if gas price is populated.
-    // Set the base fee to zero if gas price is not populated.
+    // Geth checks that the sender can pay for gas if a nonzero gas price is populated.
+    // Set the base fee to zero if gas price is missing or explicitly zero, preserving
+    // the zero-fee call mode.
     // https://github.com/ethereum/go-ethereum/pull/20783
     match tx.gas_price_details {
-        GasPriceDetails::Legacy { gas_price: _ }
+        GasPriceDetails::Legacy {
+            gas_price: fee_per_gas,
+        }
         | GasPriceDetails::Eip1559 {
-            max_fee_per_gas: Some(_),
+            max_fee_per_gas: Some(fee_per_gas),
             ..
-        } => {
+        } if !fee_per_gas.is_zero() => {
             tx.fill_gas_prices(U256::from(header.base_fee_per_gas.unwrap_or_default()))?;
 
             if tx.gas.is_none() {
@@ -478,8 +480,8 @@ pub struct EnrichedTracerObject {
 #[derive(Debug, Deserialize, schemars::JsonSchema, Clone)]
 pub struct MonadDebugTraceCallParams {
     transaction: CallRequest,
-    #[serde(default)]
     block: BlockTagOrHash,
+    #[serde(default)]
     tracer: EnrichedTracerObject,
 }
 
@@ -488,6 +490,9 @@ pub struct MonadCreateAccessListParams {
     pub transaction: CallRequest,
     #[serde(default)]
     pub block: BlockTagOrHash,
+    #[schemars(skip)]
+    #[serde(default)]
+    pub state_overrides: StateOverrideSet,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -520,7 +525,7 @@ impl CallParams {
             CallParams::AccessList(p) => {
                 let execution_params = EthCallExecutionParams {
                     transaction: p.transaction,
-                    state_overrides: StateOverrideSet::default(),
+                    state_overrides: p.state_overrides,
                     tracer: MonadTracer::AccessListTracer,
                 };
                 (execution_params, p.block)
@@ -547,7 +552,7 @@ enum OutOfGasHandling {
 async fn prepare_eth_call<T: Triedb + TriedbPath>(
     triedb_env: &T,
     eth_call_handler_config: &EthCallHandlerConfig,
-    eth_call_executor: &EthCallExecutor,
+    eth_call_executor: &MonadExecutor,
     chain_id: u64,
     params: CallParams,
     out_of_gas_handling: OutOfGasHandling,
@@ -572,7 +577,7 @@ async fn prepare_eth_call<T: Triedb + TriedbPath>(
 async fn prepare_eth_call_at_block<T: Triedb + TriedbPath>(
     triedb_env: &T,
     eth_call_handler_config: &EthCallHandlerConfig,
-    eth_call_executor: &EthCallExecutor,
+    eth_call_executor: &MonadExecutor,
     chain_id: u64,
     params: EthCallExecutionParams,
     out_of_gas_handling: OutOfGasHandling,
@@ -659,8 +664,8 @@ async fn prepare_eth_call_at_block<T: Triedb + TriedbPath>(
 
     let header_gas_limit = header.header.gas_limit;
 
-    match eth_call(
-        EthCallRequest {
+    let call_result = match eth_call_executor
+        .eth_call(EthCallRequest {
             chain_id: ethcall_chain_id,
             transaction: &txn,
             block_header: &header.header,
@@ -670,14 +675,18 @@ async fn prepare_eth_call_at_block<T: Triedb + TriedbPath>(
             state_override_set: &state_overrides,
             tracer,
             gas_specified,
-        },
-        eth_call_executor,
-    )
-    .await
+        })
+        .await
     {
-        CallResult::Failure(error) if matches!(error.error_code, EthCallResult::OutOfGas) => {
-            match out_of_gas_handling {
-                OutOfGasHandling::RpcError => Err(JsonRpcError::eth_call_error(
+        Ok(result) => result.into(),
+        Err(monad_ethcall::EthCallError::Failure {
+            error_code,
+            gas_used,
+            gas_refund,
+            ..
+        }) if matches!(error_code, EthCallResult::OutOfGas) => match out_of_gas_handling {
+            OutOfGasHandling::RpcError => {
+                return Err(JsonRpcError::eth_call_error(
                     if eth_call_provider_gas_limit < header_gas_limit
                         && U256::from(eth_call_provider_gas_limit) < original_tx_gas
                     {
@@ -686,21 +695,20 @@ async fn prepare_eth_call_at_block<T: Triedb + TriedbPath>(
                         "out of gas".to_string()
                     },
                     None,
-                )),
-                OutOfGasHandling::ReturnAsCallFailure => Ok((
-                    block_key,
-                    CallResult::Failure(FailureCallResult {
-                        error_code: error.error_code,
-                        gas_used: error.gas_used,
-                        gas_refund: error.gas_refund,
-                        message: "out of gas".to_string(),
-                        data: None,
-                    }),
-                )),
+                ));
             }
-        }
-        result => Ok((block_key, result)),
-    }
+            OutOfGasHandling::ReturnAsCallFailure => CallResult::Failure(FailureCallResult {
+                error_code,
+                gas_used,
+                gas_refund,
+                message: "out of gas".to_string(),
+                data: None,
+            }),
+        },
+        Err(error) => error.into(),
+    };
+
+    Ok((block_key, call_result))
 }
 
 /// Executes a new message call immediately without creating a transaction on the block chain.
@@ -714,7 +722,7 @@ async fn prepare_eth_call_at_block<T: Triedb + TriedbPath>(
 pub async fn monad_eth_call<T: Triedb + TriedbPath>(
     data_provider: &DataProvider<T>,
     eth_call_handler_config: &EthCallHandlerConfig,
-    eth_call_executor: &EthCallExecutor,
+    eth_call_executor: &MonadExecutor,
     chain_id: u64,
     params: MonadEthCallParams,
 ) -> JsonRpcResult<String> {
@@ -730,10 +738,10 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
     )
     .await?;
     match result {
-        CallResult::Success(monad_ethcall::SuccessCallResult { output_data, .. }) => {
+        CallResult::Success(SuccessCallResult { output_data, .. }) => {
             Ok(ethhex::encode_bytes(&output_data))
         }
-        CallResult::Failure(error) => Err(JsonRpcError::eth_call_error(error.message, error.data)),
+        CallResult::Failure(error) => Err(error.into()),
         _ => Err(JsonRpcError::internal_error(
             "Unexpected CallResult type".into(),
         )),
@@ -745,14 +753,16 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
     method = "debug_traceCall",
     ignore = "eth_call_handler_config",
     ignore = "eth_call_executor",
-    ignore = "chain_id"
+    ignore = "chain_id",
+    ignore = "max_response_size"
 )]
 #[allow(non_snake_case)]
 pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
     data_provider: &DataProvider<T>,
     eth_call_handler_config: &EthCallHandlerConfig,
-    eth_call_executor: &EthCallExecutor,
+    eth_call_executor: &MonadExecutor,
     chain_id: u64,
+    max_response_size: usize,
     params: MonadDebugTraceCallParams,
 ) -> JsonRpcResult<Box<RawValue>> {
     debug!(?params, "monad_debug_traceCall");
@@ -769,17 +779,15 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
         OutOfGasHandling::RpcError,
     )
     .await?;
-    let raw_payload: Vec<u8> = match call_result {
-        CallResult::Success(monad_ethcall::SuccessCallResult { output_data, .. }) => output_data,
-        CallResult::Failure(error) => {
-            return Err(JsonRpcError::eth_call_error(error.message, error.data))
-        }
+    let raw_payload: Box<[u8]> = match call_result {
+        CallResult::Success(SuccessCallResult { output_data, .. }) => output_data,
+        CallResult::Failure(error) => return Err(error.into()),
         CallResult::Revert(result) => result.trace,
     };
 
     match tracer {
         MonadTracer::CallTracer => {
-            let mut slice: &[u8] = raw_payload.as_slice();
+            let mut slice: &[u8] = raw_payload.as_ref();
             let frame = decode_call_frame(
                 &data_provider.triedb_env,
                 &mut slice,
@@ -787,12 +795,20 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
                 &tracer_params,
             )
             .await?;
+
+            if frame.json_serialized_len() > max_response_size {
+                return Err(JsonRpcError::max_response_size_exceeded());
+            }
             serde_json::value::to_raw_value(&frame).map_err(|e| {
                 JsonRpcError::internal_error(format!("json serialization error: {}", e))
             })
         }
 
         MonadTracer::PreStateTracer | MonadTracer::StateDiffTracer => {
+            // reject on the approximated encoded length before serialization
+            if raw_payload.len() > max_response_size {
+                return Err(JsonRpcError::max_response_size_exceeded());
+            }
             let v: serde_cbor::Value = serde_cbor::from_slice(&raw_payload)
                 .map_err(|e| JsonRpcError::internal_error(format!("cbor decode error: {}", e)))?;
             serde_json::value::to_raw_value(&v).map_err(|e| {
@@ -820,7 +836,7 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
 pub async fn monad_createAccessList<T: Triedb + TriedbPath>(
     data_provider: &DataProvider<T>,
     eth_call_handler_config: &EthCallHandlerConfig,
-    eth_call_executor: &EthCallExecutor,
+    eth_call_executor: &MonadExecutor,
     chain_id: u64,
     params: MonadCreateAccessListParams,
 ) -> JsonRpcResult<MonadCreateAccessListResult> {
@@ -828,6 +844,7 @@ pub async fn monad_createAccessList<T: Triedb + TriedbPath>(
 
     let mut follow_up_tx = params.transaction.clone();
     let original_access_list = params.transaction.access_list.clone();
+    let state_overrides = params.state_overrides.clone();
 
     let (block_key, call_result) = prepare_eth_call(
         &data_provider.triedb_env,
@@ -850,7 +867,7 @@ pub async fn monad_createAccessList<T: Triedb + TriedbPath>(
 
     let call_params = EthCallExecutionParams {
         transaction: follow_up_tx,
-        state_overrides: StateOverrideSet::default(),
+        state_overrides,
         tracer: MonadTracer::NoopTracer,
     };
 
@@ -878,10 +895,10 @@ fn decode_access_list_trace(raw_payload: &[u8]) -> Result<AccessList, JsonRpcErr
 
 fn access_list_from_trace_call_result(call_result: CallResult) -> Result<AccessList, JsonRpcError> {
     match call_result {
-        CallResult::Success(monad_ethcall::SuccessCallResult { output_data, .. }) => {
+        CallResult::Success(SuccessCallResult { output_data, .. }) => {
             decode_access_list_trace(&output_data)
         }
-        CallResult::Failure(error) => Err(JsonRpcError::eth_call_error(error.message, error.data)),
+        CallResult::Failure(error) => Err(error.into()),
         CallResult::Revert(result) => decode_access_list_trace(&result.trace),
     }
 }
@@ -896,7 +913,7 @@ impl MonadCreateAccessListResult {
         call_result: CallResult,
     ) -> Result<Self, JsonRpcError> {
         match call_result {
-            CallResult::Success(monad_ethcall::SuccessCallResult { gas_used, .. }) => Ok(Self {
+            CallResult::Success(SuccessCallResult { gas_used, .. }) => Ok(Self {
                 access_list,
                 gas_used: U256::from(gas_used),
                 error: None,
@@ -988,8 +1005,8 @@ mod tests {
     use alloy_rpc_types::{AccessList, AccessListItem};
     use monad_chain_config::execution_revision::MonadExecutionRevision;
     use monad_ethcall::{
-        CallResult, EthCallResult, FailureCallResult, RevertCallResult, StateOverrideObject,
-        StateOverrideSet, SuccessCallResult,
+        overrides::{StateOverrideObject, StateOverrideSet},
+        EthCallResult,
     };
     use monad_triedb_utils::{
         mock_triedb::MockTriedb,
@@ -1002,9 +1019,12 @@ mod tests {
     use crate::{
         handlers::{
             debug::Tracer,
-            eth::call::{
-                access_list_from_trace_call_result, decode_access_list_trace, sender_gas_allowance,
-                CallInput, MonadDebugTraceCallParams,
+            eth::{
+                call::{
+                    access_list_from_trace_call_result, decode_access_list_trace,
+                    sender_gas_allowance, CallInput, MonadDebugTraceCallParams,
+                },
+                CallResult, FailureCallResult, RevertCallResult, SuccessCallResult,
             },
         },
         types::{eth_json::MonadCreateAccessListResult, jsonrpc::JsonRpcError},
@@ -1054,7 +1074,7 @@ mod tests {
 
         let access_list =
             access_list_from_trace_call_result(CallResult::Success(SuccessCallResult {
-                output_data: payload,
+                output_data: payload.into_boxed_slice(),
                 ..Default::default()
             }))
             .expect("successful tracer result decodes");
@@ -1069,7 +1089,7 @@ mod tests {
 
         let access_list =
             access_list_from_trace_call_result(CallResult::Revert(RevertCallResult {
-                trace: payload,
+                trace: payload.into_boxed_slice(),
             }))
             .expect("reverted tracer result decodes");
 
@@ -1174,7 +1194,7 @@ mod tests {
 
         let access_list =
             access_list_from_trace_call_result(CallResult::Revert(RevertCallResult {
-                trace: trace_payload,
+                trace: trace_payload.into_boxed_slice(),
             }))
             .expect("reverted access-list trace still decodes");
 
@@ -1226,6 +1246,43 @@ mod tests {
         let params: MonadDebugTraceCallParams = from_str(raw).unwrap();
 
         assert_eq!(params.tracer.tracer_params.tracer, Tracer::PreStateTracer);
+    }
+
+    #[test]
+    fn parse_trace_call_request_with_default_tracer() {
+        let raw = r#"
+        [
+          {
+            "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+            "to": "0x0000000000a39bb272e79075ade125fd351887ac",
+            "gas": "0x1E9EF",
+            "gasPrice": "0xBD32B2ABC",
+            "data": "0xd0e30db0"
+          },
+          "latest"
+        ]
+        "#;
+
+        let params: MonadDebugTraceCallParams = from_str(raw).unwrap();
+
+        assert_eq!(params.tracer.tracer_params.tracer, Tracer::CallTracer);
+    }
+
+    #[test]
+    fn parse_trace_call_request_requires_block() {
+        let raw = r#"
+        [
+          {
+            "from": "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+            "to": "0x0000000000a39bb272e79075ade125fd351887ac",
+            "gas": "0x1E9EF",
+            "gasPrice": "0xBD32B2ABC",
+            "data": "0xd0e30db0"
+          }
+        ]
+        "#;
+
+        assert!(from_str::<MonadDebugTraceCallParams>(raw).is_err());
     }
 
     #[test]
@@ -1377,6 +1434,119 @@ mod tests {
         assert_eq!(call_request.gas, Some(U256::from(100)));
     }
 
+    #[tokio::test]
+    async fn test_fill_gas_params_zero_fee_cap() {
+        let mock_triedb = MockTriedb::default();
+        let state_overrides = StateOverrideSet::default();
+
+        // explicit maxFeePerGas of zero is preserved as a zero-fee call:
+        // (1) header base fee is set to zero, (2) max fee stays zero,
+        // (3) tx gas limit is set to block gas limit
+        let mut call_request = CallRequest {
+            gas_price_details: GasPriceDetails::Eip1559 {
+                max_fee_per_gas: Some(U256::ZERO),
+                max_priority_fee_per_gas: None,
+            },
+            ..Default::default()
+        };
+        let mut header = Header {
+            base_fee_per_gas: Some(10_000_000_000),
+            gas_limit: 300_000_000,
+            ..Default::default()
+        };
+        let block_key = BlockKey::Finalized(FinalizedBlockKey(SeqNum(header.number)));
+
+        let result = fill_gas_params(
+            &mock_triedb,
+            block_key,
+            &mut call_request,
+            &mut header,
+            &state_overrides,
+            U256::MAX,
+        )
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(header.base_fee_per_gas, Some(0));
+        assert_eq!(call_request.max_fee_per_gas(), Some(U256::ZERO));
+        assert_eq!(call_request.gas, Some(U256::from(300_000_000)));
+
+        // a zero-balance sender is not balance-checked when the fee cap is zero
+        let mut call_request = CallRequest {
+            from: Some(Address::default()),
+            gas_price_details: GasPriceDetails::Eip1559 {
+                max_fee_per_gas: Some(U256::ZERO),
+                max_priority_fee_per_gas: None,
+            },
+            ..Default::default()
+        };
+        let mut header = Header {
+            base_fee_per_gas: Some(10_000_000_000),
+            gas_limit: 300_000_000,
+            ..Default::default()
+        };
+        let result = fill_gas_params(
+            &mock_triedb,
+            block_key,
+            &mut call_request,
+            &mut header,
+            &state_overrides,
+            U256::MAX,
+        )
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(header.base_fee_per_gas, Some(0));
+        assert_eq!(call_request.max_fee_per_gas(), Some(U256::ZERO));
+
+        // explicit legacy gasPrice of zero is preserved as a zero-fee call
+        let mut call_request = CallRequest {
+            gas_price_details: GasPriceDetails::Legacy {
+                gas_price: U256::ZERO,
+            },
+            ..Default::default()
+        };
+        let mut header = Header {
+            base_fee_per_gas: Some(10_000_000_000),
+            gas_limit: 300_000_000,
+            ..Default::default()
+        };
+        let result = fill_gas_params(
+            &mock_triedb,
+            block_key,
+            &mut call_request,
+            &mut header,
+            &state_overrides,
+            U256::MAX,
+        )
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(header.base_fee_per_gas, Some(0));
+        assert_eq!(call_request.max_fee_per_gas(), Some(U256::ZERO));
+
+        // zero max fee with a nonzero priority fee is rejected
+        let mut call_request = CallRequest {
+            gas_price_details: GasPriceDetails::Eip1559 {
+                max_fee_per_gas: Some(U256::ZERO),
+                max_priority_fee_per_gas: Some(U256::from(5)),
+            },
+            ..Default::default()
+        };
+        let mut header = Header {
+            base_fee_per_gas: Some(10_000_000_000),
+            gas_limit: 300_000_000,
+            ..Default::default()
+        };
+        let result = fill_gas_params(
+            &mock_triedb,
+            block_key,
+            &mut call_request,
+            &mut header,
+            &state_overrides,
+            U256::MAX,
+        )
+        .await;
+        assert!(result.is_err());
+    }
+
     #[test]
     fn test_fill_gas_prices() {
         // when gas price is specified, returns error if gas price is less than block base fee
@@ -1388,6 +1558,27 @@ mod tests {
             ..Default::default()
         };
         assert!(call_request.fill_gas_prices(U256::from(100)).is_err());
+
+        // an explicit zero maxFeePerGas is rejected against a nonzero base fee
+        let mut call_request = CallRequest {
+            gas_price_details: GasPriceDetails::Eip1559 {
+                max_fee_per_gas: Some(U256::ZERO),
+                max_priority_fee_per_gas: None,
+            },
+            ..Default::default()
+        };
+        assert!(call_request.fill_gas_prices(U256::from(100)).is_err());
+
+        // an explicit zero maxFeePerGas is preserved in the zero-fee path
+        let mut call_request = CallRequest {
+            gas_price_details: GasPriceDetails::Eip1559 {
+                max_fee_per_gas: Some(U256::ZERO),
+                max_priority_fee_per_gas: None,
+            },
+            ..Default::default()
+        };
+        assert!(call_request.fill_gas_prices(U256::ZERO).is_ok());
+        assert_eq!(call_request.max_fee_per_gas(), Some(U256::ZERO));
 
         // when gas price is not specified, do not return error, set maxFeePerGas to block base fee
         let mut call_request = CallRequest {

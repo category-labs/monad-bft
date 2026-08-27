@@ -13,14 +13,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-pub(super) use self::events::EventServerEvent;
+pub(crate) use self::events::EventServerEvent;
 pub use self::{
-    client::{EventServerClient, EventServerClientError},
+    client::{EventServerClient, EventServerClientError, EventServerSubscription},
     server::EventServer,
 };
 
 const BROADCAST_CHANNEL_SIZE: usize = 32;
 
 mod client;
-mod events;
+pub(crate) mod events;
 mod server;
