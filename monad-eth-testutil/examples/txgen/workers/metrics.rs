@@ -278,9 +278,9 @@ impl MetricsReporter {
         self.send_errors_overloaded_ps.record(0, label);
         self.send_errors_replacement_ps.record(0, label);
         self.send_errors_other_ps.record(0, label);
-        self.rpc_calls_ps.record(0, &[]);
-        self.rpc_calls_error_ps.record(0, &[]);
-        self.contracts_deployed_ps.record(0, &[]);
+        self.rpc_calls_ps.record(0, label);
+        self.rpc_calls_error_ps.record(0, label);
+        self.contracts_deployed_ps.record(0, label);
         info!(gen_mode = %self.gen_mode, "Emitted zero values for all gauges");
     }
 
@@ -340,11 +340,11 @@ impl MetricsReporter {
         self.sent_tps
             .record(rates.txs_sent.rate(elapsed) as u64, label);
         self.rpc_calls_ps
-            .record(rates.rpc_calls.rate(elapsed) as u64, &[]);
+            .record(rates.rpc_calls.rate(elapsed) as u64, label);
         self.rpc_calls_error_ps
-            .record(rates.rpc_calls_error.rate(elapsed) as u64, &[]);
+            .record(rates.rpc_calls_error.rate(elapsed) as u64, label);
         self.contracts_deployed_ps
-            .record(rates.contracts_deployed.rate(elapsed) as u64, &[]);
+            .record(rates.contracts_deployed.rate(elapsed) as u64, label);
 
         self.total_transactions
             .record(rates.txs_sent.val() as u64, &[]);

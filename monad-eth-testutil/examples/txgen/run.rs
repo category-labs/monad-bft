@@ -726,13 +726,17 @@ fn open_deployed_contracts_file(path: &str) -> Result<DeployedContractFile> {
 /// Load existing deployed contracts file or return a default empty one.
 /// Used to preserve other contract types when updating a single type.
 fn load_or_default_deployed_contracts(path: &str) -> DeployedContractFile {
-    match open_deployed_contracts_file(path) {
-        Ok(dc) => dc,
+    match std::fs::File::open(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => DeployedContractFile {
+            erc20: None,
+            ecmul: None,
+            uniswap: None,
+            eip7702: None,
+            nft_sale: None,
+            erc4337_7702: None,
+        },
         Err(e) => {
-            // NotFound is expected on first run; other errors (parse, permissions) are logged
-            if !e.to_string().contains("No such file") {
-                warn!("Failed to load deployed contracts file, starting fresh: {e}");
-            }
+            warn!("Failed to open deployed contracts file, starting fresh: {e}");
             DeployedContractFile {
                 erc20: None,
                 ecmul: None,
@@ -742,6 +746,20 @@ fn load_or_default_deployed_contracts(path: &str) -> DeployedContractFile {
                 erc4337_7702: None,
             }
         }
+        Ok(file) => match serde_json::from_reader::<_, DeployedContractFile>(file) {
+            Ok(dc) => dc,
+            Err(e) => {
+                warn!("Failed to parse deployed contracts file, starting fresh: {e}");
+                DeployedContractFile {
+                    erc20: None,
+                    ecmul: None,
+                    uniswap: None,
+                    eip7702: None,
+                    nft_sale: None,
+                    erc4337_7702: None,
+                }
+            }
+        },
     }
 }
 
