@@ -414,17 +414,28 @@ fn generate_sender_groups<'a>(
 
 async fn verify_contract_code(client: &ReqwestClient, addr: Address) -> Result<bool> {
     for attempt in 0..15 {
-        let code = client.get_code(&addr).await?;
-        if code != "0x" {
-            return Ok(true);
-        }
-        if attempt < 14 {
-            warn!(
-                addr = %addr,
-                attempt = attempt + 1,
-                "Contract code not yet available, retrying in 5s..."
-            );
-            tokio::time::sleep(Duration::from_secs(5)).await;
+        match client.get_code(&addr).await {
+            Ok(code) if code != "0x" => return Ok(true),
+            Ok(_) => {
+                if attempt < 14 {
+                    warn!(
+                        addr = %addr,
+                        attempt = attempt + 1,
+                        "Contract code not yet available, retrying in 5s..."
+                    );
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                }
+            }
+            Err(e) => {
+                if attempt < 14 {
+                    warn!(
+                        addr = %addr,
+                        attempt = attempt + 1,
+                        "get_code RPC error, retrying in 5s: {e}"
+                    );
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                }
+            }
         }
     }
     warn!(addr = %addr, "Contract code not available after 15 attempts");
