@@ -113,17 +113,19 @@ pub struct Cli {
     #[arg(long, default_value_t = 64)]
     pub eth_call_executor_fibers: u32,
 
-    /// Set the max concurrent requests for eth_call and eth_estimateGas with high gas cost
+    /// Set the max concurrent requests for the long transaction pool, which
+    /// re-runs eth_call and eth_estimateGas requests that exceeded the short
+    /// pool's execution timeout
     #[arg(long, default_value_t = 20)]
-    pub eth_call_high_max_concurrent_requests: u32,
+    pub eth_call_long_tx_max_concurrent_requests: u32,
 
-    /// Set the number of threads used for executing eth_call and eth_estimateGas with high gas cost
+    /// Set the number of threads used for the long transaction pool
     #[arg(long, default_value_t = 1)]
-    pub eth_call_high_executor_threads: u32,
+    pub eth_call_long_tx_executor_threads: u32,
 
-    /// Set the number of fibers used for executing eth_call and eth_estimateGas with high gas cost
+    /// Set the number of fibers used for the long transaction pool
     #[arg(long, default_value_t = 2)]
-    pub eth_call_high_executor_fibers: u32,
+    pub eth_call_long_tx_executor_fibers: u32,
 
     /// Set the max concurrent requests for block tracing methods (e.g. `debug_traceTransaction`, `debug_traceBlockByNumber`, etc.)
     #[arg(long, default_value_t = 20)]
@@ -165,17 +167,33 @@ pub struct Cli {
     #[arg(long, default_value_t = false)]
     pub enable_admin_eth_call_statistics: bool,
 
-    /// Set the maximum timeout (in seconds) for queuing when executing block tracing methods (e.g. `debug_traceTransaction`, `debug_traceBlockByNumber`, etc.)
-    #[arg(long, default_value_t = 30)]
-    pub eth_trace_block_executor_queuing_timeout: u32,
+    /// Set the maximum timeout (in milliseconds) for queuing when executing block tracing methods (e.g. `debug_traceTransaction`, `debug_traceBlockByNumber`, etc.)
+    #[arg(long, default_value_t = 30_000)]
+    pub eth_trace_block_executor_queuing_timeout_ms: u32,
 
-    /// Set the maximum timeout (in seconds) for queuing when executing eth_call with high gas cost
-    #[arg(long, default_value_t = 30)]
-    pub eth_call_high_executor_queuing_timeout: u32,
+    /// Set the maximum time (in milliseconds) a call may wait in the long
+    /// transaction pool's queue; a call picked up later than this is
+    /// rejected without executing
+    #[arg(long, default_value_t = 20_000)]
+    pub eth_call_long_tx_executor_queue_timeout_ms: u32,
 
-    /// Set the maximum timeout (in seconds) for queuing when executing eth_call and eth_estimateGas
-    #[arg(long, default_value_t = 2)]
-    pub eth_call_executor_queuing_timeout: u32,
+    /// Set the execution time budget (in milliseconds) for a call in the
+    /// long transaction pool; expiry cancels the running call and reports a
+    /// timeout to the client
+    #[arg(long, default_value_t = 20_000)]
+    pub eth_call_long_tx_executor_execution_timeout_ms: u32,
+
+    /// Set the maximum time (in milliseconds) an eth_call or eth_estimateGas
+    /// may wait in the short transaction pool's queue; a call picked up
+    /// later than this is rejected without executing
+    #[arg(long, default_value_t = 1_000)]
+    pub eth_call_executor_queue_timeout_ms: u32,
+
+    /// Set the execution time budget (in milliseconds) for an eth_call or
+    /// eth_estimateGas in the short transaction pool; expiry cancels the
+    /// running call and escalates it to the long transaction pool
+    #[arg(long, default_value_t = 200)]
+    pub eth_call_executor_execution_timeout_ms: u32,
 
     /// Enable the eth_simulateV1 method
     #[arg(long, default_value_t = false)]

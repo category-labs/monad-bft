@@ -627,7 +627,6 @@ async fn prepare_eth_call_at_block<T: Triedb + TriedbPath>(
         None => return Err(JsonRpcError::block_not_found()),
     };
 
-    let gas_specified = tx.gas.is_some();
     let original_tx_gas = tx.gas.unwrap_or(U256::from(header.header.gas_limit));
     let eth_call_provider_gas_limit = eth_call_handler_config
         .provider_gas_limit_eth_call
@@ -674,7 +673,6 @@ async fn prepare_eth_call_at_block<T: Triedb + TriedbPath>(
             block_id,
             state_override_set: &state_overrides,
             tracer,
-            gas_specified,
         })
         .await
     {
@@ -977,7 +975,7 @@ pub async fn monad_admin_ethCallStatistics(
     stats_tracker: &EthCallStatsTracker,
 ) -> JsonRpcResult<EthCallCapacityStats> {
     let active_requests = config.max_concurrent_permits - available_permits;
-    let executor_fibers = config.pool_low.num_fibers as usize;
+    let executor_fibers = config.pool_short_tx.num_fibers as usize;
 
     let inactive_executors = executor_fibers.saturating_sub(active_requests);
 

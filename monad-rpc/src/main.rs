@@ -267,22 +267,27 @@ async fn main() -> std::io::Result<()> {
         EthCallHandler::new(
             EthCallHandlerConfig {
                 enable_stats: args.enable_admin_eth_call_statistics,
-                pool_low: monad_ethcall::ffi::PoolConfig {
+                pool_short_tx: monad_ethcall::ffi::PoolConfig {
                     num_threads: args.eth_call_executor_threads,
                     num_fibers: args.eth_call_executor_fibers,
-                    timeout_sec: args.eth_call_executor_queuing_timeout,
+                    queue_timeout_ms: args.eth_call_executor_queue_timeout_ms,
+                    execution_timeout_ms: args.eth_call_executor_execution_timeout_ms,
                     queue_limit: args.eth_call_max_concurrent_requests,
                 },
-                pool_high: monad_ethcall::ffi::PoolConfig {
-                    num_threads: args.eth_call_high_executor_threads,
-                    num_fibers: args.eth_call_high_executor_fibers,
-                    timeout_sec: args.eth_call_high_executor_queuing_timeout,
-                    queue_limit: args.eth_call_high_max_concurrent_requests,
+                pool_long_tx: monad_ethcall::ffi::PoolConfig {
+                    num_threads: args.eth_call_long_tx_executor_threads,
+                    num_fibers: args.eth_call_long_tx_executor_fibers,
+                    queue_timeout_ms: args.eth_call_long_tx_executor_queue_timeout_ms,
+                    execution_timeout_ms: args.eth_call_long_tx_executor_execution_timeout_ms,
+                    queue_limit: args.eth_call_long_tx_max_concurrent_requests,
                 },
                 pool_block: monad_ethcall::ffi::PoolConfig {
                     num_threads: args.eth_trace_block_executor_threads,
                     num_fibers: args.eth_trace_block_executor_fibers,
-                    timeout_sec: args.eth_trace_block_executor_queuing_timeout,
+                    queue_timeout_ms: args.eth_trace_block_executor_queuing_timeout_ms,
+                    // The trace pool enforces only the queue timeout; there
+                    // is no execution deadline for traces.
+                    execution_timeout_ms: 0,
                     queue_limit: args.eth_trace_block_max_concurrent_requests,
                 },
                 tx_exec_num_fibers: args.eth_trace_tx_executor_fibers,

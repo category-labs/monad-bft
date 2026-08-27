@@ -33,8 +33,8 @@ use crate::{middleware::TimingRequestId, types::jsonrpc::JsonRpcError};
 #[derive(Clone, Debug)]
 pub struct EthCallHandlerConfig {
     pub enable_stats: bool,
-    pub pool_low: PoolConfig,
-    pub pool_high: PoolConfig,
+    pub pool_short_tx: PoolConfig,
+    pub pool_long_tx: PoolConfig,
     pub pool_block: PoolConfig,
     pub tx_exec_num_fibers: u32,
     pub node_cache_max_mem: u64,
@@ -59,8 +59,8 @@ pub struct EthCallHandler {
 impl EthCallHandler {
     pub fn new(config: EthCallHandlerConfig, triedb_path: &Path) -> Self {
         let executor = Arc::new(MonadExecutor::new(
-            config.pool_low,
-            config.pool_high,
+            config.pool_short_tx,
+            config.pool_long_tx,
             config.pool_block,
             config.tx_exec_num_fibers,
             config.node_cache_max_mem,
