@@ -1,0 +1,10 @@
+Package: monad
+Version: @PACKAGE_VERSION@
+Section: net
+Priority: optional
+Architecture: amd64
+Maintainer: Category Labs <engineering@category.xyz>
+Depends: @DEPENDS@, libhugetlbfs-bin
+Description: Monad BFT stack
+ Consensus, execution, RPC, and archive binaries with their bundled native
+ libraries, systemd units, and operational scripts.
