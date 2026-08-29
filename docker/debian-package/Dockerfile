@@ -27,11 +27,14 @@ ARG GIT_COMMIT=""
 ARG GIT_BRANCH=""
 ARG GIT_TAG=""
 ARG GIT_MODIFIED="false"
+# Stamps monad / monad-cli / monad-mpt via monad-execution's cmake.
+ARG GIT_COMMIT_HASH=""
 
 ENV GIT_COMMIT=$GIT_COMMIT \
     GIT_BRANCH=$GIT_BRANCH \
     GIT_TAG=$GIT_TAG \
-    GIT_MODIFIED=$GIT_MODIFIED
+    GIT_MODIFIED=$GIT_MODIFIED \
+    GIT_COMMIT_HASH=$GIT_COMMIT_HASH
 
 WORKDIR /src
 COPY . .
@@ -43,7 +46,7 @@ RUN test -f monad-execution/CMakeLists.txt
 RUN --mount=type=cache,id=monad-bft-cargo-registry,target=/usr/local/cargo/registry \
     --mount=type=cache,id=monad-bft-cargo-git,target=/usr/local/cargo/git \
     --mount=type=cache,id=monad-bft-target,target=/src/target \
-    --mount=type=cache,id=monad-bft-execution-build,target=/src/monad-execution/build \
+    --mount=type=cache,id=monad-bft-execution-build,target=/src/monad-execution/build,sharing=locked \
     PACKAGE_VERSION="${PACKAGE_VERSION}" DEB_OUTPUT_DIR=/out ./scripts/build-deb
 
 FROM scratch

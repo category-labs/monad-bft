@@ -33,6 +33,7 @@ deb-container: builder
 		--build-arg GIT_BRANCH=$(GIT_BRANCH) \
 		--build-arg GIT_TAG=$(GIT_TAG) \
 		--build-arg GIT_MODIFIED=$(GIT_MODIFIED) \
+		--build-arg GIT_COMMIT_HASH=$(GIT_COMMIT) \
 		-t monad-bft-package:$(PACKAGE_VERSION) -f docker/debian-package/Dockerfile .
 	@mkdir -p $(DEB_OUTPUT_DIR); container_id=$$($(CONTAINER_ENGINE) create monad-bft-package:$(PACKAGE_VERSION) true); trap '$(CONTAINER_ENGINE) rm -f $$container_id >/dev/null' EXIT; $(CONTAINER_ENGINE) cp $$container_id:/out/. $(DEB_OUTPUT_DIR)
 

@@ -12,11 +12,11 @@ fi
 # --- toolchain (matches .github/workflows/rust.yml and docker/builder) ---
 export CC="${CC:-gcc-15}"
 export CXX="${CXX:-g++-15}"
-export ASMFLAGS="${ASMFLAGS:--march=haswell}"
-export CFLAGS="${CFLAGS:--march=haswell}"
 export RUSTFLAGS="${RUSTFLAGS:--C force-frame-pointers=yes -C target-cpu=haswell}"
 export TRIEDB_TARGET="${TRIEDB_TARGET:-triedb_driver}"
-# Not exported: each build below sets CXXFLAGS itself.
+# Arch flags reach the cargo build only; the cmake toolchain file owns its own.
+asmflags="${ASMFLAGS:--march=haswell}"
+cflags="${CFLAGS:--march=haswell}"
 cxxflags="${CXXFLAGS:--march=haswell}"
 
 # --- version stamping ---
@@ -28,6 +28,7 @@ fi
 cd "$root_dir"
 
 # --- rust binaries ---
+ASMFLAGS="$asmflags" CFLAGS="$cflags" \
 CXXFLAGS="$cxxflags -DQUILL_ACTIVE_LOG_LEVEL=QUILL_LOG_LEVEL_CRITICAL" \
 cargo build --locked --release \
   --bin monad-node \
@@ -45,7 +46,6 @@ cargo build --locked --release \
   --example txgen
 
 # --- standalone execution binaries (cmake) ---
-CXXFLAGS="$cxxflags" \
 cmake -S monad-execution -B monad-execution/build \
   -G "${CMAKE_GENERATOR:-Ninja}" \
   -DCMAKE_TOOLCHAIN_FILE:STRING="$root_dir/monad-execution/category/core/toolchains/gcc-avx2.cmake" \
