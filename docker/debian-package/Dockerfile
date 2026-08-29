@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # Toolchain comes from docker/builder/Dockerfile, the image Jenkins builds with.
-# `make deb-container` builds it locally; override to reuse a prebuilt copy.
+# `make deb` builds it locally; override to reuse a prebuilt copy.
 ARG BUILDER_IMAGE=monad-bft-builder:local
 FROM ${BUILDER_IMAGE} AS package
 

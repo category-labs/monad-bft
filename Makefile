@@ -13,19 +13,20 @@ GIT_BRANCH ?= $(shell git branch --show-current 2>/dev/null)
 GIT_TAG ?= $(shell git describe --tags --exact-match HEAD 2>/dev/null)
 GIT_MODIFIED ?= $(shell test -n "$$(git status --porcelain 2>/dev/null)" && echo true || echo false)
 
-.PHONY: build builder deb deb-container clean
+.PHONY: build builder deb deb-host clean
 
 build:
 	PACKAGE_VERSION=$(PACKAGE_VERSION) ./scripts/build-binaries
 
-deb:
+# Needs the docker/builder toolchain on the host; `make deb` needs only a container engine.
+deb-host:
 	PACKAGE_VERSION=$(PACKAGE_VERSION) DEB_OUTPUT_DIR=$(DEB_OUTPUT_DIR) ./scripts/build-deb
 
 builder:
 	@test -n "$(CONTAINER_ENGINE)" || { echo "Install Docker or Podman, or set CONTAINER_ENGINE."; exit 1; }
 	$(CONTAINER_ENGINE) build -t $(BUILDER_IMAGE) docker/builder
 
-deb-container: builder
+deb: builder
 	$(CONTAINER_ENGINE) build \
 		--build-arg BUILDER_IMAGE=$(BUILDER_IMAGE) \
 		--build-arg PACKAGE_VERSION=$(PACKAGE_VERSION) \
