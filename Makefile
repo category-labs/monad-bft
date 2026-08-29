@@ -27,7 +27,10 @@ builder:
 	$(CONTAINER_ENGINE) build -t $(BUILDER_IMAGE) docker/builder
 
 deb: builder
+	@mkdir -p $(DEB_OUTPUT_DIR); iidfile=$$(mktemp); \
+	trap 'rm -f "$$iidfile"' EXIT; \
 	$(CONTAINER_ENGINE) build \
+		--iidfile "$$iidfile" \
 		--build-arg BUILDER_IMAGE=$(BUILDER_IMAGE) \
 		--build-arg PACKAGE_VERSION=$(PACKAGE_VERSION) \
 		--build-arg GIT_COMMIT=$(GIT_COMMIT) \
@@ -35,8 +38,10 @@ deb: builder
 		--build-arg GIT_TAG=$(GIT_TAG) \
 		--build-arg GIT_MODIFIED=$(GIT_MODIFIED) \
 		--build-arg GIT_COMMIT_HASH=$(GIT_COMMIT) \
-		-t monad-bft-package:$(PACKAGE_VERSION) -f docker/debian-package/Dockerfile .
-	@mkdir -p $(DEB_OUTPUT_DIR); container_id=$$($(CONTAINER_ENGINE) create monad-bft-package:$(PACKAGE_VERSION) true); trap '$(CONTAINER_ENGINE) rm -f $$container_id >/dev/null' EXIT; $(CONTAINER_ENGINE) cp $$container_id:/out/. $(DEB_OUTPUT_DIR)
+		-f docker/debian-package/Dockerfile . && \
+	container_id=$$($(CONTAINER_ENGINE) create "$$(cat "$$iidfile")" true) && \
+	trap '$(CONTAINER_ENGINE) rm -f $$container_id >/dev/null; rm -f "$$iidfile"' EXIT && \
+	$(CONTAINER_ENGINE) cp "$$container_id":/out/. $(DEB_OUTPUT_DIR)
 
 clean:
 	rm -rf $(DEB_OUTPUT_DIR)
