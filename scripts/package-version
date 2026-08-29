@@ -1,0 +1,10 @@
+#!/usr/bin/env sh
+# Single source of truth for the Debian package version, used by the Makefile
+# and as scripts/build-deb's fallback. Requires a git checkout; container
+# builds have no .git and must receive PACKAGE_VERSION explicitly.
+set -eu
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+timestamp=$(git -C "$root_dir" log -1 --format=%cd --date=format:%Y%m%d-%H%M)
+sha=$(git -C "$root_dir" rev-parse --short=7 HEAD)
+printf '0.0-%s-%s\n' "$timestamp" "$sha"
