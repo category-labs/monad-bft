@@ -9,7 +9,7 @@ if [ ! -f "$root_dir/monad-execution/CMakeLists.txt" ]; then
   git -C "$root_dir" submodule update --init --recursive monad-execution
 fi
 
-# --- toolchain (matches .github/workflows/rust.yml and docker/builder) ---
+# --- toolchain (matches the Jenkins release build, in the docker/builder image) ---
 export CC="${CC:-gcc-15}"
 export CXX="${CXX:-g++-15}"
 export RUSTFLAGS="${RUSTFLAGS:--C force-frame-pointers=yes -C target-cpu=haswell}"
