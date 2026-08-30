@@ -169,7 +169,7 @@ impl EthTxPoolBridge {
             }
         };
 
-        warn!(?err, "TxPoolBridge shutting down")
+        warn!(?err, "EthTxPoolBridge shutting down")
     }
 
     async fn try_create_ipc_client(&mut self) -> Result<(), Option<io::Error>> {
