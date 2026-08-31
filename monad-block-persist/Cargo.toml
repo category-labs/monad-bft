@@ -16,6 +16,7 @@ monad-validator = { workspace = true }
 
 alloy-rlp = { workspace = true }
 hex = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 inotify = { workspace = true }

@@ -186,6 +186,12 @@ impl ExecutorMetrics {
         }
     }
 
+    pub fn gauge_handle(&self, metric: &'static MetricDef) -> &Gauge {
+        self.gauges
+            .get(metric)
+            .expect("executor metric must be initialized before access")
+    }
+
     pub fn metric_handles(&self) -> Vec<(&'static str, Gauge, &'static str)> {
         self.gauges
             .iter()

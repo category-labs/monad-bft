@@ -50,6 +50,18 @@ metric_consts! {
         name: "monad.state.total_update_us",
         help: "Total time spent updating state in microseconds",
     }
+    pub GAUGE_STATE_LAST_UPDATE_US {
+        name: "monad.state.last_update_us",
+        help: "Time spent on the most recent state update in microseconds",
+    }
+    pub GAUGE_STATE_MAX_UPDATE_US {
+        name: "monad.state.max_update_us",
+        help: "Maximum time spent on a single state update in microseconds",
+    }
+    pub GAUGE_STATE_UPDATE_COUNT {
+        name: "monad.state.update_count",
+        help: "Number of state updates",
+    }
     // Keep this already sanitized so Prometheus and OTel export the same info metric name.
     pub GAUGE_NODE_INFO {
         name: "monad_node_info",
@@ -68,6 +80,9 @@ fn init_node_executor_metrics() -> ExecutorMetrics {
     ExecutorMetrics::with_metric_defs(&[
         GAUGE_TOTAL_UPTIME_US,
         GAUGE_STATE_TOTAL_UPDATE_US,
+        GAUGE_STATE_LAST_UPDATE_US,
+        GAUGE_STATE_MAX_UPDATE_US,
+        GAUGE_STATE_UPDATE_COUNT,
         GAUGE_NODE_INFO,
     ])
 }
@@ -122,9 +137,7 @@ fn duration_micros_u64(duration: &Duration) -> u64 {
 pub struct NodePrometheusMetrics {
     registry: Registry,
     state_metrics: Vec<(&'static str, Gauge, &'static str)>,
-    total_uptime: Gauge,
-    total_state_update: Gauge,
-    node_info: Gauge,
+    node_metrics: ExecutorMetrics,
     process_start: Instant,
 }
 
@@ -145,22 +158,14 @@ impl NodePrometheusMetrics {
             registry.register(Box::new(gauge))?;
         }
 
-        let mut node_executor_metrics = init_node_executor_metrics();
-        node_executor_metrics.gauge(GAUGE_NODE_INFO).set(1);
-        node_executor_metrics.gauge(GAUGE_TOTAL_UPTIME_US).set(0);
-        node_executor_metrics
-            .gauge(GAUGE_STATE_TOTAL_UPDATE_US)
-            .set(0);
-        node_executor_metrics.register(&registry)?;
+        let mut node_metrics = init_node_executor_metrics();
+        node_metrics.gauge(GAUGE_NODE_INFO).set(1);
+        node_metrics.register(&registry)?;
 
         Ok(Self {
             registry,
             state_metrics: state_metric_handles,
-            total_uptime: node_executor_metrics.gauge(GAUGE_TOTAL_UPTIME_US).clone(),
-            total_state_update: node_executor_metrics
-                .gauge(GAUGE_STATE_TOTAL_UPDATE_US)
-                .clone(),
-            node_info: node_executor_metrics.gauge(GAUGE_NODE_INFO).clone(),
+            node_metrics,
             process_start,
         })
     }
@@ -173,33 +178,32 @@ impl NodePrometheusMetrics {
         self.state_metrics
             .iter()
             .map(|(name, gauge, help)| (*name, gauge.clone(), *help))
-            .chain([
-                (
-                    GAUGE_TOTAL_UPTIME_US.name,
-                    self.total_uptime.clone(),
-                    GAUGE_TOTAL_UPTIME_US.help,
-                ),
-                (
-                    GAUGE_STATE_TOTAL_UPDATE_US.name,
-                    self.total_state_update.clone(),
-                    GAUGE_STATE_TOTAL_UPDATE_US.help,
-                ),
-                (
-                    GAUGE_NODE_INFO.name,
-                    self.node_info.clone(),
-                    GAUGE_NODE_INFO.help,
-                ),
-            ])
+            .chain(self.node_metrics.metric_handles())
             .collect()
     }
 
-    pub fn record_state_update_elapsed(&self, total_state_update_elapsed: &Duration) {
-        self.total_state_update
+    pub fn record_state_update_elapsed(
+        &self,
+        state_update_elapsed: &Duration,
+        total_state_update_elapsed: &Duration,
+    ) {
+        let elapsed_us = duration_micros_u64(state_update_elapsed);
+        self.node_metrics
+            .gauge_handle(GAUGE_STATE_LAST_UPDATE_US)
+            .set(elapsed_us);
+        let max_state_update = self.node_metrics.gauge_handle(GAUGE_STATE_MAX_UPDATE_US);
+        max_state_update.set(max_state_update.get().max(elapsed_us));
+        self.node_metrics
+            .gauge_handle(GAUGE_STATE_UPDATE_COUNT)
+            .inc();
+        self.node_metrics
+            .gauge_handle(GAUGE_STATE_TOTAL_UPDATE_US)
             .set(duration_micros_u64(total_state_update_elapsed));
     }
 
     pub fn refresh_dynamic_metrics(&self) {
-        self.total_uptime
+        self.node_metrics
+            .gauge_handle(GAUGE_TOTAL_UPTIME_US)
             .set(duration_micros_u64(&self.process_start.elapsed()));
     }
 }
