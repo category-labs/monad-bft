@@ -104,6 +104,7 @@ impl MvbaContext {
     /// Placeholder leader election
     ///
     /// `Leader(slot, view)`: placeholder round-robin, ignoring stake
+    /// TODO: replace with prod leader election
     pub(crate) fn leader(&self, view: FallbackView) -> NodeId {
         let num_nodes = self.validator_data.nodes().count() as u64;
         assert!(num_nodes > 0);
