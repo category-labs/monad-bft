@@ -568,6 +568,7 @@ impl From<monad_ethcall::EthCallError> for JsonRpcError {
             }
             GasLimitTooHigh => Self::eth_call_error(String::from("gas limit too high"), None),
             InternalError => Self::eth_call_error(String::from("internal eth_call error"), None),
+            InsufficientBalance { .. } => Self::insufficient_funds(),
             Other { message } => Self::eth_call_error(message, None),
             ReserveBalanceViolation { .. } => {
                 Self::eth_call_error(String::from("reserve balance violation"), None)

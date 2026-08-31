@@ -103,6 +103,13 @@ impl From<EthCallError> for CallResult {
                 message: String::from("internal eth_call error"),
                 data: None,
             }),
+            EthCallError::InsufficientBalance { .. } => Self::Failure(FailureCallResult {
+                error_code: EthCallResult::OtherError,
+                gas_used: 0,
+                gas_refund: 0,
+                message: String::from("insufficient balance"),
+                data: None,
+            }),
             EthCallError::Other { message } => Self::Failure(FailureCallResult {
                 error_code: EthCallResult::OtherError,
                 gas_used: 0,
