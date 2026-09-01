@@ -18,6 +18,7 @@ use std::{collections::VecDeque, sync::Arc};
 
 use alloy_rlp::{Decodable, Encodable, Header, encode_list, list_length};
 
+pub use super::fast::Entry;
 use super::{
     SlotConsensus, SlotOutput,
     fallback::{

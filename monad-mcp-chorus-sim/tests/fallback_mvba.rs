@@ -21,7 +21,7 @@ use std::{cell::Cell, collections::BTreeMap, rc::Rc, time::Duration};
 
 use chorus::{slot::fallback::Metablock, types::NodeId};
 use monad_mcp_chorus::stub as chorus;
-use monad_mcp_chorus_sim::{Message, MvbaSwarm, MvbaSwarmBuilder};
+use monad_mcp_chorus_sim::{Message, MvbaSwarm, MvbaSwarmBuilder, SimMessage};
 use monad_sim::{RunOutcome, Time, dist::uniform_duration};
 use monad_sim_swarm::Network;
 
@@ -204,7 +204,7 @@ fn views(n: u32) -> Time {
 /// Four validators, each with the fallback input `block_of` gives it
 fn swarm(
     seed: u64,
-    network: Network<NodeId, Message>,
+    network: Network<NodeId, SimMessage<Message>>,
     block_of: impl Fn(NodeId) -> Metablock,
 ) -> MvbaSwarm {
     let validator_data = fixtures::validator_data();

@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+bytes = { workspace = true }
 monad-mcp-chorus = { workspace = true, features = ["enable_stub"] }
 monad-sim = { workspace = true }
 monad-sim-swarm = { workspace = true }
+tracing = { workspace = true }
