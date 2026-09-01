@@ -15,6 +15,8 @@
 
 use monad_ethcall::{EthCallError, EthCallResult, EthCallSuccess};
 
+use crate::types::jsonrpc::{msg, ErrorCode, JsonRpcError};
+
 pub mod account;
 pub mod block;
 pub mod call;
@@ -93,14 +95,14 @@ impl From<EthCallError> for CallResult {
                 error_code: EthCallResult::OtherError,
                 gas_used: 0,
                 gas_refund: 0,
-                message: String::from("gas limit too high"),
+                message: String::from(msg::GAS_LIMIT_TOO_HIGH),
                 data: None,
             }),
             EthCallError::InternalError => Self::Failure(FailureCallResult {
                 error_code: EthCallResult::OtherError,
                 gas_used: 0,
                 gas_refund: 0,
-                message: String::from("internal eth_call error"),
+                message: String::from(msg::INTERNAL_ETH_CALL_ERROR),
                 data: None,
             }),
             EthCallError::Other { message } => Self::Failure(FailureCallResult {
@@ -117,7 +119,7 @@ impl From<EthCallError> for CallResult {
                 error_code: EthCallResult::ReserveBalanceViolation,
                 gas_used,
                 gas_refund,
-                message: String::from("reserve balance violation"),
+                message: String::from(msg::RESERVE_BALANCE_VIOLATION),
                 data: None,
             }),
             EthCallError::Trace { trace } => Self::Revert(RevertCallResult { trace }),
@@ -125,13 +127,31 @@ impl From<EthCallError> for CallResult {
     }
 }
 
-impl From<FailureCallResult> for crate::types::jsonrpc::JsonRpcError {
+impl From<FailureCallResult> for JsonRpcError {
     fn from(error: FailureCallResult) -> Self {
         match error.error_code {
             EthCallResult::ExecutionError => {
                 Self::eth_call_execution_revert(error.message, error.data)
             }
+            EthCallResult::OutOfGas => {
+                Self::with_message_and_data(ErrorCode::InternalError, error.message, error.data)
+            }
             _ => Self::eth_call_error(error.message, error.data),
+        }
+    }
+}
+
+impl From<EthCallError> for JsonRpcError {
+    fn from(error: EthCallError) -> Self {
+        match CallResult::from(error) {
+            CallResult::Success(_) => {
+                JsonRpcError::internal_error("unexpected successful eth_call failure".into())
+            }
+            CallResult::Failure(failure) => failure.into(),
+            // Revert carries tracer output, not an execution revert; unreachable for untraced calls.
+            CallResult::Revert(_) => {
+                JsonRpcError::eth_call_error(String::from("trace error"), None)
+            }
         }
     }
 }

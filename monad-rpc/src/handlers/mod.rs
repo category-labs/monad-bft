@@ -68,8 +68,8 @@ use crate::{
         eth_json::serialize_result,
         json_serialized_len::JsonSerializedLen,
         jsonrpc::{
-            serialize_with_size_limit, JsonRpcError, JsonRpcResult, JsonRpcResultExt, Request,
-            RequestId, RequestParams, RequestWrapper, Response, ResponseWrapper,
+            serialize_with_size_limit, ErrorCode, JsonRpcError, JsonRpcResult, JsonRpcResultExt,
+            Request, RequestId, RequestParams, RequestWrapper, Response, ResponseWrapper,
         },
     },
 };
@@ -111,14 +111,18 @@ pub async fn rpc_handler(
         Ok(req) => req,
         Err(e) => {
             debug!("parse error: {e} {body:?}");
-            return HttpResponse::Ok().json(Response::from_error(JsonRpcError::parse_error()));
+            return HttpResponse::Ok().json(Response::from_error(JsonRpcError::new(
+                ErrorCode::ParseError,
+            )));
         }
     };
 
     let response = match request {
         RequestWrapper::Single(json_request) => {
             let Ok(request) = Request::from_raw_value(json_request) else {
-                return HttpResponse::Ok().json(Response::from_error(JsonRpcError::parse_error()));
+                return HttpResponse::Ok().json(Response::from_error(JsonRpcError::new(
+                    ErrorCode::InvalidRequest,
+                )));
             };
             root_span.record("json_method", &request.method);
             let result = rpc_select(&app_state, &request.method, request.params, request_id).await;
@@ -154,13 +158,14 @@ pub async fn rpc_handler(
             let json_batch_request_len = json_batch_request.len();
 
             if json_batch_request_len == 0 {
-                return HttpResponse::Ok().json(Response::from_error(JsonRpcError::custom(
-                    "empty batch request".to_string(),
+                return HttpResponse::Ok().json(Response::from_error(JsonRpcError::new(
+                    ErrorCode::InvalidRequest,
                 )));
             }
 
             if json_batch_request_len > app_state.batch_request_limit as usize {
-                return HttpResponse::Ok().json(Response::from_error(JsonRpcError::custom(
+                return HttpResponse::Ok().json(Response::from_error(JsonRpcError::with_message(
+                    ErrorCode::ServerError,
                     format!(
                         "number of requests in batch request exceeds limit of {}",
                         app_state.batch_request_limit
@@ -178,7 +183,7 @@ pub async fn rpc_handler(
                         let Ok(request) = Request::from_raw_value(json_request) else {
                             return Response::from_result(
                                 RequestId::Null,
-                                Err(JsonRpcError::invalid_request()),
+                                Err(JsonRpcError::new(ErrorCode::InvalidRequest)),
                             );
                         };
 
@@ -244,8 +249,8 @@ async fn admin_ethCallStatistics(
     app_state: &MonadRpcResources,
     _params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let eth_call_handler = app_state.eth_call_handler.as_ref().method_not_supported()?;
-    let tracker = eth_call_handler.stats_tracker().method_not_supported()?;
+    let eth_call_handler = app_state.eth_call_handler.as_ref().method_not_found()?;
+    let tracker = eth_call_handler.stats_tracker().method_not_found()?;
     monad_admin_ethCallStatistics(
         eth_call_handler.config(),
         eth_call_handler.available_permits(),
@@ -261,7 +266,7 @@ async fn debug_getRawBlock(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let data_provider = app_state.data_provider.as_ref().method_not_supported()?;
+    let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
     monad_debug_getRawBlock(data_provider, app_state.max_response_size as usize, params)
         .await
@@ -274,7 +279,7 @@ async fn debug_getRawHeader(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let data_provider = app_state.data_provider.as_ref().method_not_supported()?;
+    let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
     monad_debug_getRawHeader(data_provider, params)
         .await
@@ -287,7 +292,7 @@ async fn debug_getRawReceipts(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let data_provider = app_state.data_provider.as_ref().method_not_supported()?;
+    let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
     monad_debug_getRawReceipts(data_provider, app_state.max_response_size as usize, params)
         .await
@@ -300,7 +305,7 @@ async fn debug_getRawTransaction(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let data_provider = app_state.data_provider.as_ref().method_not_supported()?;
+    let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
     monad_debug_getRawTransaction(data_provider, params)
         .await
@@ -313,7 +318,7 @@ async fn debug_traceBlockByHash(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let data_provider = app_state.data_provider.as_ref().method_not_supported()?;
+    let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     let params: MonadDebugTraceBlockByHashParams =
         serde_json::from_str(params.get()).invalid_params()?;
     if params.requires_replay() {
@@ -332,7 +337,7 @@ async fn debug_traceBlockByNumber(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let data_provider = app_state.data_provider.as_ref().method_not_supported()?;
+    let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     let params: MonadDebugTraceBlockByNumberParams =
         serde_json::from_str(params.get()).invalid_params()?;
     if params.requires_replay() {
@@ -352,8 +357,8 @@ async fn debug_traceCall(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let data_provider = app_state.data_provider.as_ref().method_not_supported()?;
-    let eth_call_handler = app_state.eth_call_handler.as_ref().method_not_supported()?;
+    let data_provider = app_state.data_provider.as_ref().method_not_found()?;
+    let eth_call_handler = app_state.eth_call_handler.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
     let permit = eth_call_handler.acquire(request_id).await?;
 
@@ -378,7 +383,7 @@ async fn debug_traceTransaction(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let data_provider = app_state.data_provider.as_ref().method_not_supported()?;
+    let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     let params: MonadDebugTraceTransactionParams =
         serde_json::from_str(params.get()).invalid_params()?;
     if params.requires_replay() {
@@ -398,8 +403,8 @@ async fn eth_call(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let data_provider = app_state.data_provider.as_ref().method_not_supported()?;
-    let eth_call_handler = app_state.eth_call_handler.as_ref().method_not_supported()?;
+    let data_provider = app_state.data_provider.as_ref().method_not_found()?;
+    let eth_call_handler = app_state.eth_call_handler.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
     let permit = eth_call_handler.acquire(request_id).await?;
 
@@ -424,10 +429,10 @@ async fn eth_simulateV1(
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
     if !app_state.enable_eth_simulate_v1 {
-        return Err(JsonRpcError::method_not_supported());
+        return Err(JsonRpcError::new(ErrorCode::MethodNotFound));
     }
-    let data_provider = app_state.data_provider.as_ref().method_not_supported()?;
-    let eth_call_handler = app_state.eth_call_handler.as_ref().method_not_supported()?;
+    let data_provider = app_state.data_provider.as_ref().method_not_found()?;
+    let eth_call_handler = app_state.eth_call_handler.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
     let permit = eth_call_handler.acquire(request_id).await?;
 
@@ -455,10 +460,7 @@ async fn eth_sendRawTransaction(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let txpool_bridge_client = app_state
-        .txpool_bridge_client
-        .as_ref()
-        .method_not_supported()?;
+    let txpool_bridge_client = app_state.txpool_bridge_client.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
     monad_eth_sendRawTransaction(
         txpool_bridge_client,
@@ -476,14 +478,8 @@ async fn eth_sendRawTransactionSync(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let txpool_bridge_client = app_state
-        .txpool_bridge_client
-        .as_ref()
-        .method_not_supported()?;
-    let event_server_client = app_state
-        .event_server_client
-        .as_ref()
-        .method_not_supported()?;
+    let txpool_bridge_client = app_state.txpool_bridge_client.as_ref().method_not_found()?;
+    let event_server_client = app_state.event_server_client.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
 
     monad_eth_sendRawTransactionSync(
@@ -505,8 +501,8 @@ async fn eth_fillTransaction(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let data_provider = app_state.data_provider.as_ref().method_not_supported()?;
-    let eth_call_handler = app_state.eth_call_handler.as_ref().method_not_supported()?;
+    let data_provider = app_state.data_provider.as_ref().method_not_found()?;
+    let eth_call_handler = app_state.eth_call_handler.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
     let permit = eth_call_handler.acquire(request_id).await?;
 
@@ -530,8 +526,8 @@ async fn eth_createAccessList(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let data_provider = app_state.data_provider.as_ref().method_not_supported()?;
-    let eth_call_handler = app_state.eth_call_handler.as_ref().method_not_supported()?;
+    let data_provider = app_state.data_provider.as_ref().method_not_found()?;
+    let eth_call_handler = app_state.eth_call_handler.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
     let permit = eth_call_handler.acquire(request_id).await?;
 
@@ -555,7 +551,7 @@ async fn eth_getLogs(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let data_provider = app_state.data_provider.as_ref().method_not_supported()?;
+    let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
     monad_eth_getLogs(
         data_provider,
@@ -576,7 +572,7 @@ async fn eth_getTransactionByHash(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let data_provider = app_state.data_provider.as_ref().method_not_supported()?;
+    let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
     monad_eth_getTransactionByHash(data_provider, params)
         .await
@@ -589,7 +585,7 @@ async fn eth_getBlockByHash(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let data_provider = app_state.data_provider.as_ref().method_not_supported()?;
+    let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
     monad_eth_getBlockByHash(data_provider, params)
         .await
@@ -602,7 +598,7 @@ async fn eth_getBlockByNumber(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let data_provider = app_state.data_provider.as_ref().method_not_supported()?;
+    let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
     monad_eth_getBlockByNumber(data_provider, params)
         .await
@@ -615,7 +611,7 @@ async fn eth_getTransactionByBlockHashAndIndex(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let data_provider = app_state.data_provider.as_ref().method_not_supported()?;
+    let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
     monad_eth_getTransactionByBlockHashAndIndex(data_provider, params)
         .await
@@ -628,7 +624,7 @@ async fn eth_getTransactionByBlockNumberAndIndex(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let data_provider = app_state.data_provider.as_ref().method_not_supported()?;
+    let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
     monad_eth_getTransactionByBlockNumberAndIndex(data_provider, params)
         .await
@@ -641,7 +637,7 @@ async fn eth_getBlockTransactionCountByHash(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let data_provider = app_state.data_provider.as_ref().method_not_supported()?;
+    let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
     monad_eth_getBlockTransactionCountByHash(data_provider, params)
         .await
@@ -654,7 +650,7 @@ async fn eth_getBlockTransactionCountByNumber(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let data_provider = app_state.data_provider.as_ref().method_not_supported()?;
+    let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
     monad_eth_getBlockTransactionCountByNumber(data_provider, params)
         .await
@@ -667,7 +663,7 @@ async fn eth_getBalance(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let data_provider = app_state.data_provider.as_ref().method_not_supported()?;
+    let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
     monad_eth_getBalance(data_provider, params)
         .await
@@ -680,7 +676,7 @@ async fn eth_getCode(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let data_provider = app_state.data_provider.as_ref().method_not_supported()?;
+    let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
     monad_eth_getCode(data_provider, params)
         .await
@@ -693,7 +689,7 @@ async fn eth_getStorageAt(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let data_provider = app_state.data_provider.as_ref().method_not_supported()?;
+    let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
     monad_eth_getStorageAt(data_provider, params)
         .await
@@ -706,7 +702,7 @@ async fn eth_getTransactionCount(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let data_provider = app_state.data_provider.as_ref().method_not_supported()?;
+    let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
     monad_eth_getTransactionCount(data_provider, params)
         .await
@@ -719,7 +715,7 @@ async fn eth_blockNumber(
     app_state: &MonadRpcResources,
     _params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let data_provider = app_state.data_provider.as_ref().method_not_supported()?;
+    let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     monad_eth_blockNumber(data_provider)
         .await
         .map(serialize_result)?
@@ -751,8 +747,8 @@ async fn eth_estimateGas(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let data_provider = app_state.data_provider.as_ref().method_not_supported()?;
-    let eth_call_handler = app_state.eth_call_handler.as_ref().method_not_supported()?;
+    let data_provider = app_state.data_provider.as_ref().method_not_found()?;
+    let eth_call_handler = app_state.eth_call_handler.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
     let permit = eth_call_handler.acquire(request_id).await?;
 
@@ -776,7 +772,7 @@ async fn eth_gasPrice(
     app_state: &MonadRpcResources,
     _params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let data_provider = app_state.data_provider.as_ref().method_not_supported()?;
+    let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     monad_eth_gasPrice(data_provider)
         .await
         .map(serialize_result)?
@@ -799,7 +795,7 @@ async fn eth_feeHistory(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let data_provider = app_state.data_provider.as_ref().method_not_supported()?;
+    let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
     let _permit = app_state.feehistory_limiter.try_acquire().map_err(|_| {
         JsonRpcError::internal_error("exceed feehistory max concurrent requests".into())
@@ -815,7 +811,7 @@ async fn eth_getTransactionReceipt(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let data_provider = app_state.data_provider.as_ref().method_not_supported()?;
+    let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
     monad_eth_getTransactionReceipt(data_provider, params)
         .await
@@ -828,7 +824,7 @@ async fn eth_getBlockReceipts(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let data_provider = app_state.data_provider.as_ref().method_not_supported()?;
+    let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
     monad_eth_getBlockReceipts(data_provider, params)
         .await
@@ -850,10 +846,7 @@ async fn txpool_statusByHash(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let txpool_bridge_client = app_state
-        .txpool_bridge_client
-        .as_ref()
-        .method_not_supported()?;
+    let txpool_bridge_client = app_state.txpool_bridge_client.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
     monad_txpool_statusByHash(txpool_bridge_client, params)
         .await
@@ -866,10 +859,7 @@ async fn txpool_statusByAddress(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let txpool_bridge_client = app_state
-        .txpool_bridge_client
-        .as_ref()
-        .method_not_supported()?;
+    let txpool_bridge_client = app_state.txpool_bridge_client.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
     monad_txpool_statusByAddress(txpool_bridge_client, params)
         .await
@@ -905,7 +895,7 @@ macro_rules! enabled_methods {
                     $(
                         stringify!($method) => Ok(EnabledMethod::$method),
                     )*
-                    _ => Err(JsonRpcError::method_not_found()),
+                    _ => Err(JsonRpcError::new(ErrorCode::MethodNotFound)),
                 }
             }
         }
