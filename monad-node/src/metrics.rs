@@ -60,7 +60,7 @@ metric_consts! {
 metric_consts! {
     pub GAUGE_TRIEDB_MIGRATION_PHASE {
         name: "monad.triedb.migration_phase",
-        help: "Dual-DB migration phase: 0=legacy (not started), 1=dual-timeline (migrating), 2=page-encoded (complete)",
+        help: "Dual-DB migration phase: 0=legacy (not started), 1=dual-timeline (migrating), 2=page-encoded (complete), 3=promoted (primary is page-encoded)",
     }
 }
 
@@ -77,13 +77,14 @@ pub fn init_triedb_phase_metrics() -> ExecutorMetrics {
 }
 
 pub fn record_triedb_phase_metrics(metrics: &mut ExecutorMetrics, phase: MigrationPhase) {
-    // Map to the published 0/1/2 codes explicitly so the metric's wire contract
-    // stays fixed even if the MigrationPhase discriminants change upstream (the
-    // enum is defined in monad-triedb).
+    // Map to the published 0/1/2/3 codes explicitly so the metric's wire
+    // contract stays fixed even if the MigrationPhase discriminants change
+    // upstream (the enum is defined in monad-triedb).
     let code: u64 = match phase {
         MigrationPhase::Legacy => 0,
         MigrationPhase::DualTimeline => 1,
         MigrationPhase::PageEncoded => 2,
+        MigrationPhase::Promoted => 3,
     };
     metrics.gauge(GAUGE_TRIEDB_MIGRATION_PHASE).set(code);
 }
@@ -284,6 +285,7 @@ mod migration_phase_tests {
             (MigrationPhase::Legacy, 0u64),
             (MigrationPhase::DualTimeline, 1),
             (MigrationPhase::PageEncoded, 2),
+            (MigrationPhase::Promoted, 3),
         ] {
             let mut metrics = init_triedb_phase_metrics();
             record_triedb_phase_metrics(&mut metrics, phase);
