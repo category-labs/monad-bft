@@ -145,6 +145,7 @@ pub fn make_generator(
         GenMode::ReserveBalanceFail(config) => Box::new(ReserveBalanceFailGenerator {
             recipient_keys,
             num_fail_txs: config.num_fail_txs,
+            delegate_sender: config.delegate_sender,
         }),
         GenMode::SystemSpam(config) => Box::new(SystemTransactionSpamGenerator {
             recipient_keys,
