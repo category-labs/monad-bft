@@ -76,6 +76,7 @@ pub struct NodeState {
     pub statesync_ipc_path: PathBuf,
     pub statesync_sq_thread_cpu: Option<u32>,
     pub triedb_path: PathBuf,
+    pub triedb_stats_path: Option<PathBuf>,
     pub persisted_peers_path: PathBuf,
 
     pub metrics: Option<MetricsConfig>,
@@ -102,6 +103,7 @@ impl NodeState {
             ledger_path,
             mempool_ipc_path,
             triedb_path,
+            triedb_stats_path,
             control_panel_ipc_path,
             statesync_ipc_path,
             statesync_sq_thread_cpu,
@@ -196,6 +198,7 @@ impl NodeState {
             wal_chunk_size_bytes,
             ledger_path,
             triedb_path,
+            triedb_stats_path,
             mempool_ipc_path,
             control_panel_ipc_path,
             statesync_ipc_path,

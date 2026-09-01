@@ -33,7 +33,7 @@ use monad_eth_types::{EthAccount, EthHeader};
 use monad_execution_state_read::{ExecutionStateRead, ExecutionStateReadError};
 use monad_secp::SecpSignature;
 use monad_triedb::TriedbHandle;
-pub use monad_triedb::{MigrationPhase, StorageStats};
+pub use monad_triedb::{MigrationPhase, StorageStats, TriedbStatsReader, UpdateStats};
 use monad_types::{BlockId, Epoch, Hash, SeqNum, Stake};
 use tracing::{debug, trace, warn};
 

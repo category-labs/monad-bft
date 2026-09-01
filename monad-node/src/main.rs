@@ -61,7 +61,7 @@ use monad_raptorcast::{
 use monad_router_multi::MultiRouter;
 use monad_state::{MonadMessage, MonadStateBuilder, VerifiedMonadMessage};
 use monad_statesync_executor::StateSyncExecutor;
-use monad_triedb_utils::TriedbReader;
+use monad_triedb_utils::{TriedbReader, TriedbStatsReader};
 use monad_types::{DropTimer, Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 use monad_updaters::{
     config_file::ConfigFile, config_loader::ConfigLoader, loopback::LoopbackExecutor,
@@ -89,8 +89,9 @@ use self::{
     error::NodeSetupError,
     metrics::{
         default_prometheus_labels, init_triedb_phase_metrics, init_triedb_storage_metrics,
-        record_triedb_phase_metrics, record_triedb_storage_metrics, start_metrics_server,
-        MetricsServerState, NodePrometheusMetrics,
+        init_triedb_update_stats, record_triedb_phase_metrics, record_triedb_storage_metrics,
+        record_triedb_update_stats_metrics, start_metrics_server, MetricsServerState,
+        NodePrometheusMetrics,
     },
     state::NodeState,
 };
@@ -504,6 +505,13 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         }
     }
 
+    // The update counters come from execution's own memory by way of the
+    // sidecar it publishes, not from the read-only handle above, which never
+    // upserts and so has nothing to report.
+    let triedb_stats_path = node_state.triedb_stats_path.clone();
+    let (mut triedb_update_stats_metrics, mut triedb_update_stats_reader) =
+        init_triedb_update_stats(triedb_stats_path.as_deref());
+
     let prometheus_metrics = Arc::new(
         NodePrometheusMetrics::new(
             prometheus_labels,
@@ -511,7 +519,8 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             executor
                 .metrics()
                 .push(&triedb_phase_metrics)
-                .push(&triedb_storage_metrics),
+                .push(&triedb_storage_metrics)
+                .push(&triedb_update_stats_metrics),
             process_start,
         )
         .map_err(|err| {
@@ -564,7 +573,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                 None => futures_util::future::pending().boxed(),
             } => {
                 let otel_meter = maybe_otel_meter.as_ref().expect("otel_endpoint must have been set");
-                let executor_metrics = executor.metrics().push(&triedb_phase_metrics).push(&triedb_storage_metrics);
+                let executor_metrics = executor.metrics().push(&triedb_phase_metrics).push(&triedb_storage_metrics).push(&triedb_update_stats_metrics);
                 send_metrics(
                     otel_meter,
                     &mut gauge_cache,
@@ -578,6 +587,22 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                         &mut triedb_storage_metrics,
                         reader.storage_stats(),
                     );
+                }
+                if let Some(path) = triedb_stats_path.as_deref() {
+                    // Execution creates the sidecar when it opens the db, which
+                    // can be after this node started.
+                    if triedb_update_stats_reader.is_none() {
+                        triedb_update_stats_reader = TriedbStatsReader::try_new(path);
+                    }
+                    if let Some(stats) = triedb_update_stats_reader
+                        .as_ref()
+                        .and_then(TriedbStatsReader::update_stats)
+                    {
+                        record_triedb_update_stats_metrics(
+                            &mut triedb_update_stats_metrics,
+                            stats,
+                        );
+                    }
                 }
             }
             event = executor.next().instrument(ledger_span.clone()) => {
