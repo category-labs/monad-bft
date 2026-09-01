@@ -29,10 +29,11 @@ pub use super::env::{
     SignatureCollection, Stake, ValidatorData, VoteAggregation,
 };
 pub use super::{
+    da::{DaHandle, DataAvailability, FetchProposalError, NullDa},
     proposer_schedule::ScheduleError,
     proposers::{
         CreditLotterySchedule, EpochAnchor, FixedProposerSchedule, ProposerConfig,
-        ProposerSchedule, ProposerSet, RotatingProposerSchedule,
+        ProposerSchedule, ProposerSet, RotatingProposerSchedule, RoundRobinLeaderSchedule,
     },
 };
 use crate::spec::{
@@ -103,6 +104,10 @@ impl Timestamp {
     pub fn checked_add_deltas(self, delta: TimestampDelta, count: u64) -> Option<Self> {
         let delta = delta.as_nanos().checked_mul(count)?;
         self.0.checked_add(u128::from(delta)).map(Self)
+    }
+
+    pub fn saturating_sub_delta(self, delta: TimestampDelta) -> Self {
+        Self(self.0.saturating_sub(u128::from(delta.as_nanos())))
     }
 
     pub fn max(self, other: Self) -> Self {
@@ -586,46 +591,9 @@ impl<T> std::ops::IndexMut<ProposalIndex> for ProposalMap<T> {
 // A helper wrapper type for a type-erased implementation of a trait
 pub struct Erased<T>(pub T);
 
-// A stub implementation of DAHandle that never returns any
-// proposal. used for testing purposes.
-pub struct DAHandle;
-
 // invariant: .0.root != .1.root and both properly signed.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct EquivCert(pub ProposalMeta, pub ProposalMeta);
-
-pub enum FetchProposalError {
-    Absent,
-    Equivocation(EquivCert),
-}
-
-impl DAHandle {
-    pub fn proposal_decoded(&self, _s: Slot, _j: ProposalIndex, _root: &MerkleRoot) -> bool {
-        false
-    }
-
-    /// Info DA about proposals we received through consensus messages (e.g. FallbackSignedEntry)
-    pub fn observe_proposal(&self, _s: Slot, _j: ProposalIndex, _meta: ProposalMeta) {
-        // do nothing
-    }
-
-    pub fn fetch_proposal(
-        &self,
-        _s: Slot,
-        _j: ProposalIndex,
-    ) -> Result<ProposalMeta, FetchProposalError> {
-        // Please do note that there is an potential to have more than
-        // one proposal meta for the same root. This can occur if the
-        // proposer sign the same root with different chunk header
-        // fields (e.g. varying unix_ts_ms).
-        //
-        // Q: How should we deal with this situation? Should we count
-        // it as equivocation? Or should we simply ignore that? Our
-        // current implementation follows the paper which doesn't
-        // currently consider this case as equivocation.
-        Err(FetchProposalError::Absent)
-    }
-}
 
 #[cfg(test)]
 mod tests {

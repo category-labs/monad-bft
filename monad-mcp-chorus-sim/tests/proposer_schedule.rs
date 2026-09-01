@@ -26,7 +26,7 @@ use chorus::{
     conductor::{ConductorConfig, MonadConductor, acs::nop::NopAcs},
     slot::chorus::{Chorus, ChorusConfig, ChorusContext},
     types::{
-        CreditLotterySchedule, DAHandle, NodeId, ProposerConfig, ProposerSchedule,
+        CreditLotterySchedule, NodeId, NullDa, ProposerConfig, ProposerSchedule,
         RotatingProposerSchedule, Slot, SlotDeadline, Stake, Timestamp, TimestampDelta,
         ValidatorData,
     },
@@ -116,7 +116,7 @@ fn weighted_schedule_drives_the_swarm_across_epochs() {
         let context = ChorusContext {
             key: Arc::new(node_id.keypair()),
             validator_data: val_data.clone(),
-            da_handle: Arc::new(DAHandle),
+            da_handle: Arc::new(NullDa),
             proposers: schedule,
         };
         builder.add_node::<Chorus, _>(node_id, conductor(), config, context);
@@ -238,7 +238,7 @@ fn vacant_indices_do_not_delay_the_fast_path() {
         let context = ChorusContext {
             key: Arc::new(node_id.keypair()),
             validator_data: val_data.clone(),
-            da_handle: Arc::new(DAHandle),
+            da_handle: Arc::new(NullDa),
             proposers: schedule.clone(),
         };
         builder.add_node::<Chorus, _>(node_id, conductor(), chorus_config, context);

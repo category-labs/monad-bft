@@ -22,7 +22,7 @@ use chorus::{
     conductor::{ConductorConfig, MonadConductor, acs::nop::NopAcs},
     slot::chorus::{Chorus, ChorusConfig, ChorusContext},
     types::{
-        CreditLotterySchedule, DAHandle, NodeId, ProposerConfig, RotatingProposerSchedule,
+        CreditLotterySchedule, NodeId, NullDa, ProposerConfig, RotatingProposerSchedule,
         SlotDeadline, Stake, TimestampDelta, ValidatorData,
     },
 };
@@ -69,7 +69,7 @@ fn add_node(builder: &mut CadenceSwarmBuilder<DummyMsg>, id: u64, val_data: &Arc
     let context = ChorusContext {
         key: Arc::new(node_id.keypair()),
         validator_data: val_data.clone(),
-        da_handle: Arc::new(DAHandle),
+        da_handle: Arc::new(NullDa),
         proposers: proposer_schedule(val_data),
     };
     let config = ChorusConfig { delta: DELTA };

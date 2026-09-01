@@ -30,7 +30,7 @@ use chorus::{
         dummy::{DummySlotConsensus, DummySlotConsensusConfig},
     },
     types::{
-        CreditLotterySchedule, DAHandle, NodeId, ProposerConfig, RotatingProposerSchedule,
+        CreditLotterySchedule, NodeId, NullDa, ProposerConfig, RotatingProposerSchedule,
         SlotDeadline, Stake, Timestamp, TimestampDelta, ValidatorData,
     },
 };
@@ -155,7 +155,7 @@ fn full_window_rolls_over_with_chorus() {
         let context = ChorusContext {
             key: Arc::new(id.keypair()),
             validator_data: val_data.clone(),
-            da_handle: Arc::new(DAHandle),
+            da_handle: Arc::new(NullDa),
             proposers: proposer_schedule(&val_data),
         };
         builder.add_node::<Chorus, _>(id, conductor(), slot_config, context);
