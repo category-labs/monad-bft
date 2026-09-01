@@ -19,9 +19,8 @@ use monad_eth_types::{ReceiptWithLogIndex, TxEnvelopeWithSender};
 use tracing::trace;
 
 use crate::{
-    cli::AwsCliArgs,
     failover_circuit_breaker::{CircuitBreaker, FallbackExecutor},
-    kvstore::{cloud_proxy::CloudProxyReader, mongo::MongoDbStorage},
+    kvstore::mongo::MongoDbStorage,
     model::logs_index::LogsIndexArchiver,
     prelude::*,
 };
@@ -142,76 +141,31 @@ impl ArchiveReader {
         ))
     }
 
-    pub async fn init_aws_reader(
-        bucket: String,
-        region: Option<String>,
-        url: &str,
-        api_key: &str,
-        concurrency: usize,
-    ) -> Result<ArchiveReader> {
-        info!(
-            cloud_proxy_url = url,
-            bucket, region, "Initializing AWS ArchiveReader"
-        );
-        let url = url::Url::parse(url)?;
-
-        trace!("Creating AWS block data reader");
-        let args = AwsCliArgs {
-            bucket: bucket.clone(),
-            region,
-            concurrency,
-            // TODO: these should be configurable
-            operation_timeout_secs: 5,
-            operation_attempt_timeout_secs: 2,
-            read_timeout_secs: 2,
-            ..Default::default()
-        };
-        let config = args.config().await?;
-        let block_data_reader =
-            BlockDataArchive::new(Bucket::new(bucket.clone(), &config, Metrics::none()));
-
-        trace!("Creating cloud proxy reader");
-        let cloud_proxy_reader = CloudProxyReader::new(api_key, url, bucket)?;
-        let tx_index_reader = IndexReaderImpl::new(cloud_proxy_reader, block_data_reader.clone());
-
-        debug!("AWS ArchiveReader initialization complete");
-        Ok(ArchiveReader::new(
-            block_data_reader,
-            tx_index_reader,
-            None,
-            None,
-        ))
-    }
-
     pub fn with_fallback(
         self,
-        fallback: Option<ArchiveReader>,
+        fallback: ArchiveReader,
         failure_threshold: Option<u32>,
         failure_timeout: Option<Duration>,
     ) -> Self {
-        if let Some(fallback) = fallback {
-            let failure_threshold = failure_threshold.unwrap_or(100);
-            let failure_timeout = failure_timeout.unwrap_or(Duration::from_secs(60 * 5));
+        let failure_threshold = failure_threshold.unwrap_or(100);
+        let failure_timeout = failure_timeout.unwrap_or(Duration::from_secs(60 * 5));
 
-            // Create new executors with the fallback readers
-            let block_circuit_breaker = CircuitBreaker::new(failure_threshold, failure_timeout);
-            let index_circuit_breaker = CircuitBreaker::new(failure_threshold, failure_timeout);
+        // Create new executors with the fallback readers
+        let block_circuit_breaker = CircuitBreaker::new(failure_threshold, failure_timeout);
+        let index_circuit_breaker = CircuitBreaker::new(failure_threshold, failure_timeout);
 
-            ArchiveReader {
-                block_data_executor: Arc::new(FallbackExecutor::new(
-                    self.block_data_executor.primary.clone(),
-                    Some(fallback.block_data_executor.primary.clone()),
-                    block_circuit_breaker,
-                )),
-                index_executor: Arc::new(FallbackExecutor::new(
-                    self.index_executor.primary.clone(),
-                    Some(fallback.index_executor.primary.clone()),
-                    index_circuit_breaker,
-                )),
-                log_index: self.log_index,
-            }
-        } else {
-            self
+        ArchiveReader {
+            block_data_executor: Arc::new(FallbackExecutor::new(
+                self.block_data_executor.primary.clone(),
+                Some(fallback.block_data_executor.primary.clone()),
+                block_circuit_breaker,
+            )),
+            index_executor: Arc::new(FallbackExecutor::new(
+                self.index_executor.primary.clone(),
+                Some(fallback.index_executor.primary.clone()),
+                index_circuit_breaker,
+            )),
+            log_index: self.log_index,
         }
     }
 }
@@ -665,7 +619,7 @@ mod tests {
             None,
         );
 
-        let reader = primary_reader.with_fallback(Some(fallback_reader), Some(10), None);
+        let reader = primary_reader.with_fallback(fallback_reader, Some(10), None);
 
         // First 10 requests should fail and use fallback
         for i in 0..10 {
@@ -758,12 +712,12 @@ mod tests {
             None,
         )
         .with_fallback(
-            Some(ArchiveReader::new(
+            ArchiveReader::new(
                 fallback_bdr.clone(),
                 IndexReaderImpl::new(fallback.clone(), fallback_bdr.clone()),
                 None,
                 None,
-            )),
+            ),
             Some(10),
             None,
         );
@@ -828,12 +782,12 @@ mod tests {
             None,
         )
         .with_fallback(
-            Some(ArchiveReader::new(
+            ArchiveReader::new(
                 BlockDataArchive::new(fallback.clone()),
                 IndexReaderImpl::new(fallback.clone(), BlockDataArchive::new(fallback)),
                 None,
                 None,
-            )),
+            ),
             None,
             None,
         );
@@ -864,12 +818,12 @@ mod tests {
             None,
         )
         .with_fallback(
-            Some(ArchiveReader::new(
+            ArchiveReader::new(
                 fallback2_bdr.clone(),
                 IndexReaderImpl::new(fallback2.clone(), fallback2_bdr),
                 None,
                 None,
-            )),
+            ),
             None,
             None,
         );
@@ -925,12 +879,12 @@ mod tests {
             None,
         )
         .with_fallback(
-            Some(ArchiveReader::new(
+            ArchiveReader::new(
                 fallback_bdr.clone(),
                 IndexReaderImpl::new(fallback.clone(), fallback_bdr),
                 None,
                 None,
-            )),
+            ),
             Some(10),
             None,
         );
