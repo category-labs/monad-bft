@@ -5,9 +5,12 @@ case "$1" in
     ldconfig
     if command -v systemctl >/dev/null 2>&1 && [ "$(ps -p 1 -o comm=)" = "systemd" ]; then
         echo "Detected systemd, enabling service..."
-        systemctl daemon-reexec
         systemctl daemon-reload
-        systemctl start set-hugepages.service
+        # Hugepage allocation can fail on fragmented or unsupported hosts;
+        # warn instead of leaving the package half-configured.
+        if ! systemctl start set-hugepages.service; then
+            echo "WARN: set-hugepages.service failed to start; check hugepage support and start it manually." >&2
+        fi
         systemctl enable set-hugepages.service
         systemctl enable monad-cruft.timer
         systemctl start monad-cruft.timer
