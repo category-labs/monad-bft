@@ -47,7 +47,7 @@ const LATENCY: TimestampDelta = TimestampDelta::from_millis(50); // networking l
 const DELTA: TimestampDelta = TimestampDelta::from_millis(100); // Chorus latency bound (Delta)
 // Seal lead: must cover the announcement's dissemination (one latency) with
 // margin; small enough that the chaining gate is really exercised (see the
-// blind-window test).
+// staggered-rotation test).
 const LEAD: TimestampDelta = TimestampDelta::from_millis(60);
 
 type Conductor = MonadConductor<NopAcs<SlotDeadline>>;
@@ -118,7 +118,7 @@ fn build_swarm(
             schedule.clone(),
             PlannerConfig {
                 lead: LEAD,
-                blind_window: proposer_config.observation_cutoff,
+                observation_cutoff: proposer_config.observation_cutoff,
             },
         );
         let log = entries.clone();
@@ -177,7 +177,7 @@ fn expect_entries(
 
 #[test]
 fn scheduled_proposals_finalize_positive() {
-    // K = 1, no blind window: every slot has exactly one proposer, rotating
+    // K = 1, observation cutoff 0: every slot has exactly one proposer, rotating
     // every slot. All entries finalize Positive with the scheduled
     // proposer's payload root, on the same schedule as the proposal-less
     // runs (finalization at deadline + 2 latencies).
@@ -224,16 +224,17 @@ fn scheduled_proposals_finalize_positive() {
 }
 
 #[test]
-fn staggered_proposers_with_blind_window() {
-    // K = 2 staggered proposer phases with pipelining depth c = 2 and
-    // rotation length 4. Exercises, across a window rollover:
-    //  * the genesis exemption (slots 0, 1 sealed without a predecessor),
-    //  * blind-window vacancies (the entering proposer's index is vacant
-    //    for the first 2 slots of every rotation after the first),
-    //  * the planner's dynamic chaining gate: sealing slot i at
-    //    deadline − lead requires slot i − 2 chained, which happens 40ms
-    //    before the seal alarm — late enough that early sealing would vote
-    //    Negative.
+fn staggered_proposers_with_rotation_vacancy() {
+    // K = 2 staggered proposer phases with observation cutoff y = 2 and
+    // rotation slack z = 2 (rotations y + z = 4 slots apart). Exercises,
+    // across a window rollover:
+    //  * the genesis exemption (slots 0, 1 sealed without a chained prefix
+    //    to wait for),
+    //  * rotation vacancies (a handed-over index is vacant for y slots, so
+    //    the incoming proposer knows all in-flight proposals at its index),
+    //  * the planner's chaining gate: sealing slot r at deadline − lead
+    //    requires slot r − y chained, which happens 40ms before the seal
+    //    alarm — late enough that early sealing would vote Negative.
     let proposer_config = ProposerConfig {
         concurrent_proposers: 2,
         observation_cutoff: 2,
@@ -252,9 +253,9 @@ fn staggered_proposers_with_blind_window() {
     let v = |i: u64| Some(NodeId::dummy(i));
     assert_eq!(proposers_of(0), [v(0), None]); // genesis ramp-up at index 1
     assert_eq!(proposers_of(3), [v(0), None]);
-    assert_eq!(proposers_of(4), [v(0), None]); // rotation 1 enters blind
+    assert_eq!(proposers_of(4), [v(0), None]); // index 1 handed over: vacant
     assert_eq!(proposers_of(6), [v(0), v(1)]); // ... and starts proposing
-    assert_eq!(proposers_of(8), [None, v(1)]); // rotation 2 enters blind
+    assert_eq!(proposers_of(8), [None, v(1)]); // index 0 handed over: vacant
     assert_eq!(proposers_of(10), [v(2), v(1)]);
     assert_eq!(proposers_of(11), [v(2), v(1)]);
 
