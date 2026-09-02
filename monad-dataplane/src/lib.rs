@@ -14,11 +14,9 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::hash_map::DefaultHasher,
     fmt::Debug,
-    hash::{Hash, Hasher},
     net::{IpAddr, SocketAddr},
-    num::NonZeroU32,
+    num::{NonZeroU32, NonZeroU64},
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc::SyncSender,
@@ -34,7 +32,7 @@ use futures::channel::oneshot;
 use monad_types::UdpPriority;
 use monoio::{spawn, time::Instant, IoUringDriver, RuntimeBuilder};
 use tcp::{TcpConfig, TcpControl, TcpRateLimit};
-use tokio::sync::mpsc::{self, error::TrySendError};
+use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 pub(crate) mod addrlist;
@@ -134,7 +132,7 @@ impl UdpPacingConfig {
 pub struct DataplaneBuilder {
     trusted_addresses: Vec<IpAddr>,
     /// 1_000 = 1 Gbps, 10_000 = 10 Gbps
-    udp_up_bandwidth_mbps: u64,
+    up_bandwidth_mbps: u64,
     udp_pacing_config: UdpPacingConfig,
     udp_buffer_size: Option<usize>,
     tcp_config: TcpConfig,
@@ -149,10 +147,10 @@ impl DataplaneBuilder {
     pub fn new(up_bandwidth_mbps: u64) -> Self {
         assert!(
             up_bandwidth_mbps > 0,
-            "UDP global bandwidth must be non-zero"
+            "global egress bandwidth must be non-zero"
         );
         Self {
-            udp_up_bandwidth_mbps: up_bandwidth_mbps,
+            up_bandwidth_mbps,
             udp_pacing_config: UdpPacingConfig::for_global_bandwidth(up_bandwidth_mbps),
             udp_buffer_size: None,
             trusted_addresses: vec![],
@@ -230,8 +228,7 @@ impl DataplaneBuilder {
 
     /// sets the number of independent udp transmit workers.
     ///
-    /// each destination is assigned to one worker. values above one preserve priority within a worker,
-    /// but not globally across workers.
+    /// each destination is assigned to one worker after global pacing.
     pub fn with_udp_tx_workers(mut self, workers: usize) -> Self {
         assert!(
             (1..=MAX_UDP_TX_WORKERS).contains(&workers),
@@ -243,7 +240,7 @@ impl DataplaneBuilder {
 
     pub fn build(self) -> Dataplane {
         let DataplaneBuilder {
-            udp_up_bandwidth_mbps: up_bandwidth_mbps,
+            up_bandwidth_mbps,
             udp_pacing_config,
             udp_buffer_size,
             trusted_addresses: trusted,
@@ -256,26 +253,33 @@ impl DataplaneBuilder {
         } = self;
 
         udp_pacing_config.validate();
-        assert!(
-            udp_pacing_config.max_queued_bytes >= udp_tx_workers,
-            "UDP pacing memory must provide at least one byte per TX worker"
-        );
-
         validate_sockets(udp_sockets.iter(), "udp");
         validate_sockets(tcp_sockets.iter(), "tcp");
 
-        let (tcp_egress_tx, tcp_egress_rx) = mpsc::channel(TCP_EGRESS_CHANNEL_SIZE);
-        let (udp_egress_txs, udp_egress_rxs): (Vec<_>, Vec<_>) = (0..udp_tx_workers)
-            .map(|worker| {
-                mpsc::channel(worker_share(
-                    UDP_EGRESS_CHANNEL_SIZE,
-                    worker,
-                    udp_tx_workers,
-                ))
-            })
-            .unzip();
-        let udp_egress_txs: Arc<[_]> = udp_egress_txs.into();
         let metrics = DataplaneMetrics::new();
+        let bandwidth_bytes_per_second = NonZeroU64::new(
+            u64::try_from(u128::from(up_bandwidth_mbps) * 1_000_000 / 8)
+                .expect("egress bandwidth overflows bytes per second"),
+        )
+        .expect("egress bandwidth must be non-zero");
+        let (pacing, pacing_task, pacing_outputs) = pacing::PacingHandle::new(
+            pacing::PacingTaskConfig {
+                global_bytes_per_second: bandwidth_bytes_per_second,
+                udp: udp_pacing_config,
+                udp_workers: udp_tx_workers,
+            },
+            metrics.clone(),
+        );
+        thread::Builder::new()
+            .name("monad-pacing".into())
+            .spawn(move || {
+                RuntimeBuilder::<IoUringDriver>::new()
+                    .enable_timer()
+                    .build()
+                    .expect("failed building pacing runtime")
+                    .block_on(pacing_task.run());
+            })
+            .expect("failed to spawn pacing thread");
 
         let mut udp_socket_configs = Vec::new();
         let mut udp_pending_handles = Vec::new();
@@ -321,6 +325,10 @@ impl DataplaneBuilder {
                         .build()
                         .expect("Failed building the Runtime")
                         .block_on(async move {
+                            let pacing::PacingOutputs {
+                                tcp: tcp_egress_rx,
+                                udp: udp_worker_rxs,
+                            } = pacing_outputs;
                             spawn(ban_expiry::task(
                                 addrlist.clone(),
                                 banned_ips_rx,
@@ -338,13 +346,12 @@ impl DataplaneBuilder {
                             );
                             udp::spawn_tasks(
                                 udp_socket_configs,
-                                udp_egress_rxs,
                                 udp::UdpTaskConfig {
-                                    up_bandwidth_mbps,
-                                    pacing: udp_pacing_config,
                                     buffer_size: udp_buffer_size,
                                     use_multishot: udp_multishot,
+                                    workers: udp_tx_workers,
                                 },
+                                udp_worker_rxs,
                                 udp_bound_addrs_tx,
                                 metrics,
                             );
@@ -383,7 +390,7 @@ impl DataplaneBuilder {
                 writer: UdpSocketWriter {
                     socket_id: id,
                     socket_addr,
-                    egress_txs: Arc::clone(&udp_egress_txs),
+                    pacing: pacing.clone(),
                     msgs_dropped: Arc::new(AtomicUsize::new(0)),
                     metrics: metrics.clone(),
                 },
@@ -405,7 +412,7 @@ impl DataplaneBuilder {
                 writer: TcpSocketWriter {
                     socket_id: id,
                     socket_addr,
-                    egress_tx: tcp_egress_tx.clone(),
+                    pacing: pacing.clone(),
                     msgs_dropped: Arc::new(AtomicUsize::new(0)),
                     metrics: metrics.clone(),
                 },
@@ -451,7 +458,7 @@ impl UdpSocketReader {
 pub struct UdpSocketWriter {
     socket_id: UdpSocketId,
     socket_addr: SocketAddr,
-    egress_txs: Arc<[mpsc::Sender<UdpMsg>]>,
+    pacing: pacing::PacingHandle,
     msgs_dropped: Arc<AtomicUsize>,
     metrics: DataplaneMetrics,
 }
@@ -504,8 +511,8 @@ impl UdpSocketHandle {
 }
 
 impl UdpSocketWriter {
-    fn try_send(&self, msg: UdpMsg) -> Result<(), TrySendError<UdpMsg>> {
-        self.egress_txs[udp_tx_worker(msg.dst, self.egress_txs.len())].try_send(msg)
+    fn try_send(&self, msg: UdpMsg) -> Result<(), UdpMsg> {
+        self.pacing.enqueue_udp(msg)
     }
 
     pub fn write(&self, dst: SocketAddr, payload: Bytes, stride: u16) {
@@ -520,7 +527,7 @@ impl UdpSocketWriter {
 
         match result {
             Ok(()) => {}
-            Err(TrySendError::Full(_)) => {
+            Err(_) => {
                 self.metrics.udp_egress_messages_dropped.inc();
                 let total = self.msgs_dropped.fetch_add(1, Ordering::Relaxed);
                 warn!(
@@ -528,11 +535,8 @@ impl UdpSocketWriter {
                     ?dst,
                     msg_length,
                     total_msgs_dropped = total,
-                    "udp egress channel full, dropping message"
+                    "udp pacing queue full, dropping message"
                 );
-            }
-            Err(TrySendError::Closed(_)) => {
-                panic!("socket {:?} egress channel closed", self.socket_id)
             }
         }
     }
@@ -546,12 +550,8 @@ impl UdpSocketWriter {
         let mut pending_count = msg.msg_count();
 
         for udp_msg in msg.into_iter_with_priority(self.socket_id, priority) {
-            match self.try_send(udp_msg) {
-                Ok(()) => pending_count -= 1,
-                Err(TrySendError::Full(_)) => {}
-                Err(TrySendError::Closed(_)) => {
-                    panic!("socket {:?} egress channel closed", self.socket_id)
-                }
+            if self.try_send(udp_msg).is_ok() {
+                pending_count -= 1;
             }
         }
 
@@ -568,7 +568,7 @@ impl UdpSocketWriter {
                 total_msgs_dropped = total,
                 msg_length = msg_len,
                 ?priority,
-                "udp egress channel full, dropping broadcast messages"
+                "udp pacing queue full, dropping broadcast messages"
             );
         }
     }
@@ -581,12 +581,8 @@ impl UdpSocketWriter {
         let mut pending_count = msg.msg_count();
 
         for udp_msg in msg.into_iter_with_priority(self.socket_id, priority) {
-            match self.try_send(udp_msg) {
-                Ok(()) => pending_count -= 1,
-                Err(TrySendError::Full(_)) => {}
-                Err(TrySendError::Closed(_)) => {
-                    panic!("socket {:?} egress channel closed", self.socket_id)
-                }
+            if self.try_send(udp_msg).is_ok() {
+                pending_count -= 1;
             }
         }
 
@@ -602,7 +598,7 @@ impl UdpSocketWriter {
                 num_msgs_dropped = pending_count,
                 total_msgs_dropped = total,
                 ?priority,
-                "udp egress channel full, dropping unicast messages"
+                "udp pacing queue full, dropping unicast messages"
             );
         }
     }
@@ -639,7 +635,7 @@ impl TcpSocketReader {
 pub struct TcpSocketWriter {
     socket_id: TcpSocketId,
     socket_addr: SocketAddr,
-    egress_tx: mpsc::Sender<(SocketAddr, TcpMsg)>,
+    pacing: pacing::PacingHandle,
     msgs_dropped: Arc<AtomicUsize>,
     metrics: DataplaneMetrics,
 }
@@ -648,9 +644,9 @@ impl TcpSocketWriter {
     pub fn write(&self, addr: SocketAddr, msg: TcpMsg) {
         let msg_length = msg.msg.len();
 
-        match self.egress_tx.try_send((addr, msg)) {
+        match self.pacing.enqueue_tcp(addr, msg) {
             Ok(()) => {}
-            Err(TrySendError::Full(_)) => {
+            Err(_) => {
                 self.metrics.tcp_egress_messages_dropped.inc();
                 let total = self.msgs_dropped.fetch_add(1, Ordering::Relaxed);
                 warn!(
@@ -658,11 +654,8 @@ impl TcpSocketWriter {
                     ?addr,
                     msg_length,
                     total_msgs_dropped = total,
-                    "tcp egress channel full, dropping message"
+                    "tcp pacing queue full, dropping message"
                 );
-            }
-            Err(TrySendError::Closed(_)) => {
-                panic!("socket {:?} tcp egress channel closed", self.socket_id)
             }
         }
     }
@@ -863,21 +856,7 @@ pub(crate) struct UdpMsg {
 }
 
 const TCP_INGRESS_CHANNEL_SIZE: usize = 1024;
-const TCP_EGRESS_CHANNEL_SIZE: usize = 256;
 const UDP_INGRESS_CHANNEL_SIZE: usize = 12_800;
-const UDP_EGRESS_CHANNEL_SIZE: usize = 12_800;
-
-fn worker_share(total: usize, worker: usize, workers: usize) -> usize {
-    debug_assert!(worker < workers);
-    total / workers + usize::from(worker < total % workers)
-}
-
-fn udp_tx_worker(peer: SocketAddr, workers: usize) -> usize {
-    debug_assert!(workers != 0);
-    let mut hasher = DefaultHasher::new();
-    peer.hash(&mut hasher);
-    hasher.finish() as usize % workers
-}
 
 impl Dataplane {
     /// Returns the live dataplane metrics for Prometheus or OTel registration.
@@ -940,35 +919,6 @@ fn validate_sockets<'a, I: Eq + std::hash::Hash + std::fmt::Debug + 'a>(
                 "duplicate {kind} port {} for socket {id:?}",
                 addr.port()
             );
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn peer_routing_is_balanced() {
-        let peers = (0..10_000).map(|port| SocketAddr::from(([127, 0, 0, 1], port)));
-        let mut counts = [0; 4];
-        for peer in peers {
-            let worker = udp_tx_worker(peer, counts.len());
-            counts[worker] += 1;
-        }
-        assert!(counts
-            .into_iter()
-            .all(|count| (2_300..2_700).contains(&count)));
-    }
-
-    #[test]
-    fn worker_shares_preserve_the_total() {
-        for workers in 1..=MAX_UDP_TX_WORKERS {
-            let shares = (0..workers)
-                .map(|worker| worker_share(UDP_EGRESS_CHANNEL_SIZE, worker, workers))
-                .collect::<Vec<_>>();
-            assert_eq!(shares.iter().sum::<usize>(), UDP_EGRESS_CHANNEL_SIZE);
-            assert!(shares.iter().max().unwrap() - shares.iter().min().unwrap() <= 1);
         }
     }
 }
