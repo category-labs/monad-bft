@@ -16,7 +16,7 @@
 use std::{
     fmt::Debug,
     net::{IpAddr, SocketAddr},
-    num::NonZeroU32,
+    num::{NonZeroU32, NonZeroU64},
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc::SyncSender,
@@ -97,6 +97,8 @@ pub type TcpSocketHandles = SocketHandles<TcpSocketId, TcpSocketHandle>;
 pub type UdpSocketHandles = SocketHandles<UdpSocketId, UdpSocketHandle>;
 
 pub const DEFAULT_UDP_MAX_QUEUED_BYTES: usize = 100 * 1024 * 1024;
+pub const DEFAULT_UDP_TX_WORKERS: usize = 1;
+pub const MAX_UDP_TX_WORKERS: usize = 64;
 
 /// Configuration for the UDP pacing queue.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -130,7 +132,7 @@ impl UdpPacingConfig {
 pub struct DataplaneBuilder {
     trusted_addresses: Vec<IpAddr>,
     /// 1_000 = 1 Gbps, 10_000 = 10 Gbps
-    udp_up_bandwidth_mbps: u64,
+    up_bandwidth_mbps: u64,
     udp_pacing_config: UdpPacingConfig,
     udp_buffer_size: Option<usize>,
     tcp_config: TcpConfig,
@@ -138,16 +140,17 @@ pub struct DataplaneBuilder {
     udp_sockets: Vec<(UdpSocketId, SocketAddr)>,
     tcp_sockets: Vec<(TcpSocketId, SocketAddr)>,
     udp_multishot: bool,
+    udp_tx_workers: usize,
 }
 
 impl DataplaneBuilder {
     pub fn new(up_bandwidth_mbps: u64) -> Self {
         assert!(
             up_bandwidth_mbps > 0,
-            "UDP global bandwidth must be non-zero"
+            "global egress bandwidth must be non-zero"
         );
         Self {
-            udp_up_bandwidth_mbps: up_bandwidth_mbps,
+            up_bandwidth_mbps,
             udp_pacing_config: UdpPacingConfig::for_global_bandwidth(up_bandwidth_mbps),
             udp_buffer_size: None,
             trusted_addresses: vec![],
@@ -163,6 +166,7 @@ impl DataplaneBuilder {
             udp_sockets: Vec::new(),
             tcp_sockets: Vec::new(),
             udp_multishot: true,
+            udp_tx_workers: DEFAULT_UDP_TX_WORKERS,
         }
     }
 
@@ -222,9 +226,21 @@ impl DataplaneBuilder {
         self
     }
 
+    /// sets the number of independent udp transmit workers.
+    ///
+    /// each destination is assigned to one worker after global pacing.
+    pub fn with_udp_tx_workers(mut self, workers: usize) -> Self {
+        assert!(
+            (1..=MAX_UDP_TX_WORKERS).contains(&workers),
+            "UDP TX workers must be between 1 and {MAX_UDP_TX_WORKERS}"
+        );
+        self.udp_tx_workers = workers;
+        self
+    }
+
     pub fn build(self) -> Dataplane {
         let DataplaneBuilder {
-            udp_up_bandwidth_mbps: up_bandwidth_mbps,
+            up_bandwidth_mbps,
             udp_pacing_config,
             udp_buffer_size,
             trusted_addresses: trusted,
@@ -233,16 +249,38 @@ impl DataplaneBuilder {
             udp_sockets,
             tcp_sockets,
             udp_multishot,
+            udp_tx_workers,
         } = self;
 
         udp_pacing_config.validate();
-
         validate_sockets(udp_sockets.iter(), "udp");
         validate_sockets(tcp_sockets.iter(), "tcp");
 
         let (tcp_egress_tx, tcp_egress_rx) = mpsc::channel(TCP_EGRESS_CHANNEL_SIZE);
-        let (udp_egress_tx, udp_egress_rx) = mpsc::channel(UDP_EGRESS_CHANNEL_SIZE);
         let metrics = DataplaneMetrics::new();
+        let bandwidth_bytes_per_second = NonZeroU64::new(
+            u64::try_from(u128::from(up_bandwidth_mbps) * 1_000_000 / 8)
+                .expect("egress bandwidth overflows bytes per second"),
+        )
+        .expect("egress bandwidth must be non-zero");
+        let (pacing, pacing_task, pacing_outputs) = pacing::PacingHandle::new(
+            pacing::PacingTaskConfig {
+                global_bytes_per_second: bandwidth_bytes_per_second,
+                udp: udp_pacing_config,
+                udp_workers: udp_tx_workers,
+            },
+            metrics.clone(),
+        );
+        thread::Builder::new()
+            .name("monad-pacing".into())
+            .spawn(move || {
+                RuntimeBuilder::<IoUringDriver>::new()
+                    .enable_timer()
+                    .build()
+                    .expect("failed building pacing runtime")
+                    .block_on(pacing_task.run());
+            })
+            .expect("failed to spawn pacing thread");
 
         let mut udp_socket_configs = Vec::new();
         let mut udp_pending_handles = Vec::new();
@@ -288,6 +326,9 @@ impl DataplaneBuilder {
                         .build()
                         .expect("Failed building the Runtime")
                         .block_on(async move {
+                            let pacing::PacingOutputs {
+                                udp: udp_worker_rxs,
+                            } = pacing_outputs;
                             spawn(ban_expiry::task(
                                 addrlist.clone(),
                                 banned_ips_rx,
@@ -305,13 +346,12 @@ impl DataplaneBuilder {
                             );
                             udp::spawn_tasks(
                                 udp_socket_configs,
-                                udp_egress_rx,
                                 udp::UdpTaskConfig {
-                                    up_bandwidth_mbps,
-                                    pacing: udp_pacing_config,
                                     buffer_size: udp_buffer_size,
                                     use_multishot: udp_multishot,
+                                    workers: udp_tx_workers,
                                 },
+                                udp_worker_rxs,
                                 udp_bound_addrs_tx,
                                 metrics,
                             );
@@ -350,7 +390,7 @@ impl DataplaneBuilder {
                 writer: UdpSocketWriter {
                     socket_id: id,
                     socket_addr,
-                    egress_tx: udp_egress_tx.clone(),
+                    pacing: pacing.clone(),
                     msgs_dropped: Arc::new(AtomicUsize::new(0)),
                     metrics: metrics.clone(),
                 },
@@ -412,13 +452,24 @@ impl UdpSocketReader {
             .await
             .unwrap_or_else(|| panic!("socket {:?} ingress channel closed", self.socket_id))
     }
+
+    pub async fn recv_many(&mut self, messages: &mut Vec<RecvUdpMsg>, limit: usize) -> usize {
+        assert!(limit != 0, "UDP receive batch limit must be non-zero");
+        let received = self.ingress_rx.recv_many(messages, limit).await;
+        assert!(
+            received != 0,
+            "socket {:?} ingress channel closed",
+            self.socket_id
+        );
+        received
+    }
 }
 
 #[derive(Clone)]
 pub struct UdpSocketWriter {
     socket_id: UdpSocketId,
     socket_addr: SocketAddr,
-    egress_tx: mpsc::Sender<UdpMsg>,
+    pacing: pacing::PacingHandle,
     msgs_dropped: Arc<AtomicUsize>,
     metrics: DataplaneMetrics,
 }
@@ -435,6 +486,10 @@ impl UdpSocketHandle {
 
     pub async fn recv(&mut self) -> RecvUdpMsg {
         self.reader.recv().await
+    }
+
+    pub async fn recv_many(&mut self, messages: &mut Vec<RecvUdpMsg>, limit: usize) -> usize {
+        self.reader.recv_many(messages, limit).await
     }
 
     pub fn write(&self, dst: SocketAddr, payload: Bytes, stride: u16) {
@@ -471,9 +526,13 @@ impl UdpSocketHandle {
 }
 
 impl UdpSocketWriter {
+    fn try_send(&self, msg: UdpMsg) -> Result<(), UdpMsg> {
+        self.pacing.enqueue_udp(msg)
+    }
+
     pub fn write(&self, dst: SocketAddr, payload: Bytes, stride: u16) {
         let msg_length = payload.len();
-        let result = self.egress_tx.try_send(UdpMsg {
+        let result = self.try_send(UdpMsg {
             socket_id: self.socket_id,
             dst,
             payload,
@@ -483,7 +542,7 @@ impl UdpSocketWriter {
 
         match result {
             Ok(()) => {}
-            Err(TrySendError::Full(_)) => {
+            Err(_) => {
                 self.metrics.udp_egress_messages_dropped.inc();
                 let total = self.msgs_dropped.fetch_add(1, Ordering::Relaxed);
                 warn!(
@@ -491,11 +550,8 @@ impl UdpSocketWriter {
                     ?dst,
                     msg_length,
                     total_msgs_dropped = total,
-                    "udp egress channel full, dropping message"
+                    "udp pacing queue full, dropping message"
                 );
-            }
-            Err(TrySendError::Closed(_)) => {
-                panic!("socket {:?} egress channel closed", self.socket_id)
             }
         }
     }
@@ -509,12 +565,8 @@ impl UdpSocketWriter {
         let mut pending_count = msg.msg_count();
 
         for udp_msg in msg.into_iter_with_priority(self.socket_id, priority) {
-            match self.egress_tx.try_send(udp_msg) {
-                Ok(()) => pending_count -= 1,
-                Err(TrySendError::Full(_)) => break,
-                Err(TrySendError::Closed(_)) => {
-                    panic!("socket {:?} egress channel closed", self.socket_id)
-                }
+            if self.try_send(udp_msg).is_ok() {
+                pending_count -= 1;
             }
         }
 
@@ -531,7 +583,7 @@ impl UdpSocketWriter {
                 total_msgs_dropped = total,
                 msg_length = msg_len,
                 ?priority,
-                "udp egress channel full, dropping broadcast messages"
+                "udp pacing queue full, dropping broadcast messages"
             );
         }
     }
@@ -544,12 +596,8 @@ impl UdpSocketWriter {
         let mut pending_count = msg.msg_count();
 
         for udp_msg in msg.into_iter_with_priority(self.socket_id, priority) {
-            match self.egress_tx.try_send(udp_msg) {
-                Ok(()) => pending_count -= 1,
-                Err(TrySendError::Full(_)) => break,
-                Err(TrySendError::Closed(_)) => {
-                    panic!("socket {:?} egress channel closed", self.socket_id)
-                }
+            if self.try_send(udp_msg).is_ok() {
+                pending_count -= 1;
             }
         }
 
@@ -565,7 +613,7 @@ impl UdpSocketWriter {
                 num_msgs_dropped = pending_count,
                 total_msgs_dropped = total,
                 ?priority,
-                "udp egress channel full, dropping unicast messages"
+                "udp pacing queue full, dropping unicast messages"
             );
         }
     }
@@ -828,7 +876,6 @@ pub(crate) struct UdpMsg {
 const TCP_INGRESS_CHANNEL_SIZE: usize = 1024;
 const TCP_EGRESS_CHANNEL_SIZE: usize = 256;
 const UDP_INGRESS_CHANNEL_SIZE: usize = 12_800;
-const UDP_EGRESS_CHANNEL_SIZE: usize = 12_800;
 
 impl Dataplane {
     /// Returns the live dataplane metrics for Prometheus or OTel registration.
