@@ -56,7 +56,7 @@ fn proposer_schedule(
 ) -> Arc<RotatingProposerSchedule<CreditLotterySchedule>> {
     let config = ProposerConfig {
         concurrent_proposers: 1,
-        blind_window: 0,
+        observation_cutoff: 0,
         rotation_slack: 1,
         slots_per_epoch: 1_000, // never crossed in this test
     };

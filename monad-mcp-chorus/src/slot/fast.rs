@@ -358,9 +358,9 @@ impl FastPath {
 
         let votes = self.proposals.as_ref().map(|j| {
             let entry = match self.proposers.proposer(*j) {
-                // A vacant index has no proposer (blind-window handoff,
-                // genesis ramp-up, or fewer staked validators than indices):
-                // its proposal is empty by definition.
+                // A vacant index has no proposer (rotation vacancy at a
+                // handoff, genesis ramp-up, or fewer staked validators than
+                // indices): its proposal is empty by definition.
                 None => Entry::Negative,
                 Some(_) => match self.availability[*j].fetch_proposal() {
                     Some(proposal) => Entry::Positive(proposal.root),
