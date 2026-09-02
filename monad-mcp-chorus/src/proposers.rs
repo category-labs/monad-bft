@@ -31,16 +31,20 @@
 //! An index with no proposer is *vacant*: nothing may be proposed for it and
 //! its proposals are empty. Vacancy has three causes:
 //!
-//! * **Blind window (rotating).** Cadence pipelines slots: a proposer may
-//!   propose for slot `i` only once slot `i − c` has committed, for the
-//!   protocol-wide pipelining depth `c` = [`ProposerConfig::blind_window`]
-//!   (a Cadence deployment parameter, independent of MCP). A
-//!   proposer entering a rotation therefore waits for the pipeline behind it
-//!   to drain — its index is vacant for the first `c` slots of the rotation.
-//!   At most one index at a time is vacant for this reason, so at least two
-//!   concurrent proposers are needed to guarantee a proposer in every slot.
-//!   The chain's first `c` slots have no predecessor to wait for, which
-//!   exempts exactly the first rotation.
+//! * **Rotation vacancy.** A handed-over index stays vacant for the `y`
+//!   slots between the outgoing and the incoming proposer, where `y` =
+//!   [`ProposerConfig::observation_cutoff`] is the duration of one *blind
+//!   window* — the sliding window of the last `y` slots, whose proposals a
+//!   party may not know yet (MCP spec, `main.tex`). The vacancy guarantees
+//!   the incoming proposer knows every in-flight proposal at its index:
+//!   the vacant slots are empty by definition, everything older is
+//!   observable. At most one index at a time is vacant for this reason, so
+//!   at least two concurrent proposers are needed to guarantee a proposer
+//!   in every slot. The chain's first `y` slots have no handoff, which
+//!   exempts exactly the first rotation. The spec mandates the full
+//!   constant-`y` vacancy; in principle an incoming proposer whose
+//!   chaining has caught up further could start earlier — a possible
+//!   future optimization, deliberately not implemented.
 //! * **Genesis ramp-up.** An index whose first rotation has not started yet
 //!   is vacant.
 //! * **Too few validators (per-epoch).** With fewer positively staked
@@ -58,10 +62,10 @@
 //! indices go vacant — instead of stalling election. (Stakes only change at
 //! epoch boundaries, so shrinkage happens at seams; today the window is
 //! computed from the static snapshot and becomes per-epoch together with a
-//! per-epoch stake source.) Mind the blind-window caveat above: a single
-//! effective proposer under a nonzero blind window leaves rotation-start
-//! slots entirely vacant — they finalize empty, costing throughput but not
-//! consensus progress.
+//! per-epoch stake source.) Mind the rotation-vacancy caveat above: a
+//! single effective proposer under a nonzero observation cutoff leaves
+//! rotation-start slots entirely vacant — they finalize empty, costing
+//! throughput but not consensus progress.
 //!
 //! The only state chained across an epoch seam is the *boundary tail* — the
 //! last `window − 1` leaders before it — captured as an [`EpochAnchor`]. An
@@ -99,21 +103,24 @@ pub struct ProposerConfig {
     /// `K`: number of concurrently active (staggered) proposer phases, and
     /// thereby the number of proposal indices per slot.
     pub concurrent_proposers: usize,
-    /// `c`: the slot-pipelining depth of the surrounding Cadence protocol —
-    /// a proposer may propose for slot `i` only once slot `i − c` committed.
-    /// The index of a proposer entering a rotation is vacant for the first
-    /// `c` slots of that rotation.
+    /// `y`: the observation cutoff of the surrounding Cadence protocol —
+    /// proposals of slot `r` build against the chained block of slot
+    /// `r − y`, and the last `y` slots form the blind window whose
+    /// proposals may not be known yet. Here it sets the rotation vacancy:
+    /// a handed-over index stays vacant for `y` slots.
     ///
-    /// Must match the pipelining depth of the surrounding Cadence
-    /// deployment. The conductor configuration does not model `c` yet, so
-    /// the two configurations cannot be validated against each other: the
-    /// node wiring is responsible for handing the same value to both sides.
+    /// A protocol constant of the surrounding Cadence deployment,
+    /// independent of MCP. The conductor configuration does not model it
+    /// yet, so the two configurations cannot be validated against each
+    /// other: the node wiring is responsible for handing the same value to
+    /// every consumer (this schedule, the proposal planner).
     /// TODO: derive this from the conductor configuration once it carries
     /// the parameter.
-    pub blind_window: u64,
-    /// Slots between the end of a rotation's blind window and the next
-    /// rotation. May be 0: then the newest index is always vacant and
-    /// exactly `K − 1` indices carry a proposer in every slot.
+    pub observation_cutoff: u64,
+    /// `z`: slots between the end of a rotation's vacancy and the next
+    /// rotation — successive rotations are `y + z` slots apart. May be 0:
+    /// then the newest index is always vacant and exactly `K − 1` indices
+    /// carry a proposer in every slot.
     pub rotation_slack: u64,
     /// Slots per stake epoch; must be a multiple of the rotation length.
     pub slots_per_epoch: u64,
@@ -123,7 +130,7 @@ impl ProposerConfig {
     /// Saturating so that a nonsensical configuration cannot panic before
     /// [`Self::validate`] rejects it.
     pub const fn slots_per_rotation(&self) -> u64 {
-        self.blind_window.saturating_add(self.rotation_slack)
+        self.observation_cutoff.saturating_add(self.rotation_slack)
     }
 
     /// Zero for a zero rotation length — a configuration [`Self::validate`]
@@ -143,14 +150,18 @@ impl ProposerConfig {
                 "concurrent_proposers must be > 0",
             ));
         }
-        if self.blind_window.checked_add(self.rotation_slack).is_none() {
+        if self
+            .observation_cutoff
+            .checked_add(self.rotation_slack)
+            .is_none()
+        {
             return Err(ScheduleError::InvalidConfig(
-                "blind_window + rotation_slack overflows",
+                "observation_cutoff + rotation_slack overflows",
             ));
         }
         if self.slots_per_rotation() == 0 {
             return Err(ScheduleError::InvalidConfig(
-                "blind_window + rotation_slack must be > 0",
+                "observation_cutoff + rotation_slack must be > 0",
             ));
         }
         if !self
@@ -675,13 +686,14 @@ impl<A: LeaderSchedule> ProposerSchedule for RotatingProposerSchedule<A> {
                 // The rotation would predate genesis: still vacant.
                 continue;
             };
-            // Blind window: the proposer entering a rotation waits for the
-            // slot pipeline behind it to drain. The chain's first
-            // `blind_window` slots have no predecessor to wait for, which
-            // exempts exactly the first rotation.
+            // Rotation vacancy: a handed-over index stays vacant for one
+            // blind window (`y` slots) so the incoming proposer knows all
+            // in-flight proposals at its index. The chain's first `y`
+            // slots have no handoff, which exempts exactly the first
+            // rotation.
             if serving == rotation
-                && slot_in_rotation < self.cfg.blind_window
-                && slot.0 >= self.cfg.blind_window
+                && slot_in_rotation < self.cfg.observation_cutoff
+                && slot.0 >= self.cfg.observation_cutoff
             {
                 continue;
             }
@@ -707,7 +719,7 @@ impl<A: LeaderSchedule> ProposerSchedule for RotatingProposerSchedule<A> {
 }
 
 /// Test stub: a fixed assignment of proposers to proposal indices, identical
-/// for every slot. No rotation, no blind window, no vacancies.
+/// for every slot. No rotation, no vacancies.
 #[derive(Debug)]
 pub struct FixedProposerSchedule {
     proposers: Vec<NodeId>,
@@ -796,7 +808,7 @@ mod tests {
     fn slot_and_rotation_math() {
         let cfg = ProposerConfig {
             concurrent_proposers: 2,
-            blind_window: 0,
+            observation_cutoff: 0,
             rotation_slack: 2,
             slots_per_epoch: 6, // 3 rotations of 2 slots
         };
@@ -816,7 +828,7 @@ mod tests {
     fn genesis_ramp_up() {
         let cfg = ProposerConfig {
             concurrent_proposers: 3,
-            blind_window: 0,
+            observation_cutoff: 0,
             rotation_slack: 1,
             slots_per_epoch: 6,
         };
@@ -834,7 +846,7 @@ mod tests {
     fn phase_is_stable_for_the_whole_rotation() {
         let cfg = ProposerConfig {
             concurrent_proposers: 3,
-            blind_window: 0,
+            observation_cutoff: 0,
             rotation_slack: 3,
             slots_per_epoch: 9,
         };
@@ -852,17 +864,17 @@ mod tests {
     }
 
     #[test]
-    fn blind_window_vacates_the_incoming_index() {
+    fn rotation_handover_vacates_the_incoming_index() {
         let cfg = ProposerConfig {
             concurrent_proposers: 3,
-            blind_window: 2,
+            observation_cutoff: 2,
             rotation_slack: 1,
             slots_per_epoch: 9,
         };
         let schedule = round_robin(cfg, 5);
 
-        // The chain's first slots have no pipeline behind them: rotation 0
-        // is exempt from the blind window.
+        // The chain's first slots have no handoff: rotation 0 is exempt
+        // from the rotation vacancy.
         for offset in 0..3 {
             assert!(
                 schedule
@@ -879,7 +891,11 @@ mod tests {
             for offset in 0..3u64 {
                 let set = schedule.proposers_at(Slot(rotation * 3 + offset)).unwrap();
                 if offset < 2 {
-                    assert_eq!(set.proposer(index), None, "vacant during the blind window");
+                    assert_eq!(
+                        set.proposer(index),
+                        None,
+                        "vacant during the rotation vacancy"
+                    );
                 } else {
                     assert_eq!(set.proposer(index), Some(leader));
                 }
@@ -891,7 +907,7 @@ mod tests {
     fn zero_slack_keeps_k_minus_one_indices_occupied() {
         let cfg = ProposerConfig {
             concurrent_proposers: 3,
-            blind_window: 2,
+            observation_cutoff: 2,
             rotation_slack: 0,
             slots_per_epoch: 12,
         };
@@ -907,14 +923,14 @@ mod tests {
     }
 
     #[test]
-    fn single_proposer_goes_vacant_during_the_blind_window() {
+    fn single_proposer_goes_vacant_during_the_rotation_vacancy() {
         // K = 1 is not special: with a blind window the only index is
         // vacant at every rotation start (except the chain's first), which
         // is why at least two concurrent proposers are needed to guarantee
         // a proposer in every slot.
         let cfg = ProposerConfig {
             concurrent_proposers: 1,
-            blind_window: 1,
+            observation_cutoff: 1,
             rotation_slack: 1,
             slots_per_epoch: 4,
         };
@@ -937,7 +953,7 @@ mod tests {
     fn membership_inverts_the_proposer_set() {
         let cfg = ProposerConfig {
             concurrent_proposers: 3,
-            blind_window: 0,
+            observation_cutoff: 0,
             rotation_slack: 1,
             slots_per_epoch: 6,
         };
@@ -968,7 +984,7 @@ mod tests {
     fn no_repeat_window_holds_across_epoch_seams() {
         let cfg = ProposerConfig {
             concurrent_proposers: 3,
-            blind_window: 0,
+            observation_cutoff: 0,
             rotation_slack: 1,
             slots_per_epoch: 6,
         };
@@ -993,7 +1009,7 @@ mod tests {
         // the previous epoch ended ... 1, 2 and the cycle restarts at 1.
         let cfg = ProposerConfig {
             concurrent_proposers: 3,
-            blind_window: 0,
+            observation_cutoff: 0,
             rotation_slack: 1,
             slots_per_epoch: 3,
         };
@@ -1017,7 +1033,7 @@ mod tests {
     fn epoch_cache_is_bounded_and_evicted_epochs_rebuild_identically() {
         let cfg = ProposerConfig {
             concurrent_proposers: 3,
-            blind_window: 0,
+            observation_cutoff: 0,
             rotation_slack: 1,
             slots_per_epoch: 6,
         };
@@ -1045,7 +1061,7 @@ mod tests {
         // both be recent at once, leaving no eligible candidate.
         let cfg = ProposerConfig {
             concurrent_proposers: 3,
-            blind_window: 0,
+            observation_cutoff: 0,
             rotation_slack: 1,
             slots_per_epoch: 3,
         };
@@ -1065,7 +1081,7 @@ mod tests {
     fn anchored_schedule_matches_the_genesis_chain() {
         let cfg = ProposerConfig {
             concurrent_proposers: 3,
-            blind_window: 0,
+            observation_cutoff: 0,
             rotation_slack: 1,
             slots_per_epoch: 6,
         };
@@ -1115,10 +1131,10 @@ mod tests {
     }
 
     #[test]
-    fn anchored_schedule_matches_under_a_blind_window() {
+    fn anchored_schedule_matches_under_a_rotation_vacancy() {
         let cfg = ProposerConfig {
             concurrent_proposers: 3,
-            blind_window: 2,
+            observation_cutoff: 2,
             rotation_slack: 1,
             slots_per_epoch: 9,
         };
@@ -1148,7 +1164,7 @@ mod tests {
         // fit. Indices 2 and 3 stay vacant.
         let cfg = ProposerConfig {
             concurrent_proposers: 4,
-            blind_window: 0,
+            observation_cutoff: 0,
             rotation_slack: 1,
             slots_per_epoch: 2,
         };
@@ -1166,7 +1182,7 @@ mod tests {
     fn query_order_does_not_change_the_schedule() {
         let cfg = ProposerConfig {
             concurrent_proposers: 3,
-            blind_window: 0,
+            observation_cutoff: 0,
             rotation_slack: 1,
             slots_per_epoch: 6,
         };
@@ -1192,7 +1208,7 @@ mod tests {
         // whole epoch.
         let cfg = ProposerConfig {
             concurrent_proposers: 4,
-            blind_window: 0,
+            observation_cutoff: 0,
             rotation_slack: 1,
             slots_per_epoch: 4,
         };
@@ -1223,7 +1239,7 @@ mod tests {
 
         let empty_rotation = build(ProposerConfig {
             concurrent_proposers: 2,
-            blind_window: 0,
+            observation_cutoff: 0,
             rotation_slack: 0,
             slots_per_epoch: 4,
         });
@@ -1233,7 +1249,7 @@ mod tests {
         // can run: a zero rotation length must reject, not divide by zero.
         let cfg = ProposerConfig {
             concurrent_proposers: 2,
-            blind_window: 0,
+            observation_cutoff: 0,
             rotation_slack: 0,
             slots_per_epoch: 4,
         };
@@ -1243,7 +1259,7 @@ mod tests {
 
         let ragged_epoch = build(ProposerConfig {
             concurrent_proposers: 2,
-            blind_window: 0,
+            observation_cutoff: 0,
             rotation_slack: 2,
             slots_per_epoch: 7,
         });
@@ -1253,7 +1269,7 @@ mod tests {
         // rotations per epoch cannot seed the next epoch's window.
         let short_epoch = build(ProposerConfig {
             concurrent_proposers: 3,
-            blind_window: 0,
+            observation_cutoff: 0,
             rotation_slack: 1,
             slots_per_epoch: 2,
         });
@@ -1261,7 +1277,7 @@ mod tests {
 
         let overflowing_rotation = build(ProposerConfig {
             concurrent_proposers: 2,
-            blind_window: u64::MAX,
+            observation_cutoff: u64::MAX,
             rotation_slack: 1,
             slots_per_epoch: 4,
         });
@@ -1278,7 +1294,7 @@ mod tests {
         // that rounds everything down): both algorithms reject.
         let cfg = ProposerConfig {
             concurrent_proposers: 3,
-            blind_window: 0,
+            observation_cutoff: 0,
             rotation_slack: 1,
             slots_per_epoch: 6,
         };
@@ -1315,7 +1331,7 @@ mod tests {
 
         let cfg = ProposerConfig {
             concurrent_proposers: 1,
-            blind_window: 0,
+            observation_cutoff: 0,
             rotation_slack: 1,
             slots_per_epoch: 4,
         };

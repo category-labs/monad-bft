@@ -111,7 +111,8 @@ pub struct ScheduleConfig {
     /// `K`: number of concurrently active (staggered) proposer phases, and
     /// thereby the size of the no-repeat window.
     pub concurrent_proposers: usize,
-    /// Slots per proposer rotation, `r = BLIND_WINDOW + ROTATION_SLACK`.
+    /// Slots per proposer rotation, `y + z` (observation cutoff plus
+    /// rotation slack).
     pub slots_per_rotation: u64,
     /// Slots per stake epoch. Stakes are constant within an epoch; the
     /// scheduler restarts at each epoch boundary.

@@ -88,7 +88,7 @@ fn proposer_schedule(
 ) -> Arc<RotatingProposerSchedule<CreditLotterySchedule>> {
     let config = ProposerConfig {
         concurrent_proposers: CONCURRENT_PROPOSERS,
-        blind_window: 0,
+        observation_cutoff: 0,
         rotation_slack: 1, // one rotation per slot
         slots_per_epoch: 4,
     };
@@ -165,7 +165,7 @@ fn weighted_schedule_drives_the_swarm_across_epochs() {
         let set = schedule.proposers_at(Slot(slot)).unwrap();
 
         // With one rotation per slot, slot s is rotation s: indices fill one
-        // per rotation at genesis (blind_window is 0, so no rotating
+        // per rotation at genesis (observation_cutoff is 0, so no rotating
         // vacancy), and rotation s's leader holds the stable index s mod K.
         assert_eq!(set.rotation(), slot);
         let occupied = set
@@ -201,7 +201,7 @@ fn vacant_indices_do_not_delay_the_fast_path() {
 
     let config = ProposerConfig {
         concurrent_proposers: 2,
-        blind_window: 1,
+        observation_cutoff: 1,
         rotation_slack: 1, // two slots per rotation
         slots_per_epoch: 4,
     };
