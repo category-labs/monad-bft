@@ -38,7 +38,11 @@ impl Report {
         let txs_sent = metrics.total_txs_sent.load(Ordering::Relaxed);
         let txs_committed = metrics.total_committed_txs.load(Ordering::Relaxed);
         let txs_dropped = txs_sent - txs_committed;
-        let target_tps = config.workload_groups[workload_idx].traffic_gens[0].tps as usize;
+        let target_tps = config.workload_groups[workload_idx]
+            .traffic_gens
+            .first()
+            .map(|tg| tg.tps as usize)
+            .unwrap_or(0);
         let end_time = Utc::now();
 
         // Grab client version from node
