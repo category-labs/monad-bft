@@ -15,29 +15,91 @@
 
 //! Single-owner global and per-peer packet pacing.
 //!
-//! Peer state is keyed directly by [`SocketAddrV4`] and ordered by its next
-//! eligible send time. Eligible messages move through one global priority queue.
+//! Flow state is ordered by its next eligible send time. Eligible UDP and TCP
+//! messages move through one global priority queue.
 
 use std::{
     cell::RefCell,
     cmp::{Ordering, Reverse},
-    collections::{BinaryHeap, HashMap},
-    net::SocketAddrV4,
+    collections::{hash_map::DefaultHasher, BinaryHeap, HashMap},
+    hash::{Hash, Hasher},
+    net::{SocketAddr, SocketAddrV4},
     num::NonZeroU64,
     rc::Rc,
     sync::{
-        atomic::{AtomicU64, Ordering as AtomicOrdering},
+        atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering},
         Arc,
     },
     time::{Duration, Instant},
 };
 
 use bytes::Bytes;
+use futures::{channel::oneshot, future::join_all};
 use monad_types::UdpPriority;
+use monoio::{select, time::sleep};
+use tokio::sync::mpsc;
+use zerocopy::IntoBytes;
 
-use crate::{metrics::DataplaneMetrics, IPV4_HDR_SIZE, UDP_HDR_SIZE};
+use crate::{
+    metrics::DataplaneMetrics,
+    tcp::{
+        tx::{QUEUED_MESSAGE_BYTE_LIMIT, QUEUED_MESSAGE_LIMIT},
+        TcpMsgHdr, TCP_MESSAGE_LENGTH_LIMIT,
+    },
+    TcpMsg, UdpMsg, UdpPacingConfig, UdpSocketId, IPV4_HDR_SIZE, UDP_HDR_SIZE,
+};
 
-const PACER_MAX_CATCH_UP: Duration = Duration::from_millis(50);
+const PACER_MAX_CATCH_UP: Duration = Duration::from_millis(5);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum PacingPriority {
+    High,
+    Regular,
+    Background,
+}
+
+impl From<UdpPriority> for PacingPriority {
+    fn from(priority: UdpPriority) -> Self {
+        match priority {
+            UdpPriority::High => Self::High,
+            UdpPriority::Regular => Self::Regular,
+        }
+    }
+}
+
+impl PacingPriority {
+    pub(crate) fn queued_requests(self, metrics: &DataplaneMetrics) -> &monad_executor::Gauge {
+        match self {
+            Self::High => &metrics.egress_pacing_high_queued_requests,
+            Self::Regular => &metrics.egress_pacing_regular_queued_requests,
+            Self::Background => &metrics.egress_pacing_background_queued_requests,
+        }
+    }
+
+    pub(crate) fn record_grant(self, metrics: &DataplaneMetrics, bytes: usize, wait: Duration) {
+        let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
+        let wait_micros = u64::try_from(wait.as_micros()).unwrap_or(u64::MAX);
+        match self {
+            Self::High => {
+                metrics.egress_pacing_high_grants.inc();
+                metrics.egress_pacing_high_granted_bytes.add(bytes);
+                metrics.egress_pacing_high_wait_micros.add(wait_micros);
+            }
+            Self::Regular => {
+                metrics.egress_pacing_regular_grants.inc();
+                metrics.egress_pacing_regular_granted_bytes.add(bytes);
+                metrics.egress_pacing_regular_wait_micros.add(wait_micros);
+            }
+            Self::Background => {
+                metrics.egress_pacing_background_grants.inc();
+                metrics.egress_pacing_background_granted_bytes.add(bytes);
+                metrics
+                    .egress_pacing_background_wait_micros
+                    .add(wait_micros);
+            }
+        }
+    }
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum EnqueueError<T> {
@@ -46,6 +108,19 @@ pub enum EnqueueError<T> {
 
 pub trait PacingItem {
     fn next_payload_bytes(&self) -> usize;
+
+    fn next_pacing_bytes(&self) -> usize {
+        self.next_payload_bytes()
+            .saturating_add(usize::from(IPV4_HDR_SIZE + UDP_HDR_SIZE))
+    }
+
+    fn peer_bytes_per_second(&self, configured: NonZeroU64) -> NonZeroU64 {
+        configured
+    }
+
+    fn uses_udp_memory(&self) -> bool {
+        true
+    }
 }
 
 impl PacingItem for Bytes {
@@ -67,7 +142,7 @@ pub(crate) struct GlobalPacer {
     epoch: Instant,
 }
 
-struct Reservation {
+pub(crate) struct Reservation {
     end_byte: u64,
     end_at: Duration,
 }
@@ -81,7 +156,7 @@ impl GlobalPacer {
         }
     }
 
-    fn elapsed(&self) -> Duration {
+    pub(crate) fn elapsed(&self) -> Duration {
         self.epoch.elapsed()
     }
 
@@ -108,12 +183,12 @@ impl GlobalPacer {
         }
     }
 
-    fn next_at(&self, now: Duration, reset: bool) -> Duration {
+    pub(crate) fn next_at(&self, now: Duration, reset: bool) -> Duration {
         let next_byte = self.next_byte.load(AtomicOrdering::Relaxed);
         self.duration_at(self.start_byte(next_byte, now, reset))
     }
 
-    fn reserve(
+    pub(crate) fn reserve(
         &self,
         bytes: usize,
         now: Duration,
@@ -152,10 +227,19 @@ impl GlobalPacer {
 pub struct Scheduled<T> {
     pub item: T,
     pub(crate) batch_bytes: usize,
+    pub(crate) pacing_bytes: usize,
+    pub(crate) priority: PacingPriority,
+    pub(crate) order: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum PacingKey {
+    Udp(SocketAddrV4),
+    Tcp(SocketAddr),
 }
 
 struct Queued<T> {
-    priority: UdpPriority,
+    priority: PacingPriority,
     order: u64,
     item: T,
     queued_bytes: usize,
@@ -185,13 +269,14 @@ impl<T> Ord for Queued<T> {
 
 struct PeerState<T> {
     messages: BinaryHeap<Queued<T>>,
+    udp: bool,
 }
 
 type Peer<T> = Rc<RefCell<PeerState<T>>>;
 
 struct PeerDeadline<T> {
     next_at: Duration,
-    key: SocketAddrV4,
+    key: PacingKey,
     peer: Peer<T>,
 }
 
@@ -219,7 +304,7 @@ impl<T> Ord for PeerDeadline<T> {
 
 /// Socket-address keyed queue with global and uniform per-peer pacing.
 pub struct PacingQueue<T> {
-    peers: HashMap<SocketAddrV4, Peer<T>>,
+    peers: HashMap<PacingKey, Peer<T>>,
     next_peers: BinaryHeap<Reverse<PeerDeadline<T>>>,
     ready: BinaryHeap<Queued<T>>,
     global: Arc<GlobalPacer>,
@@ -288,17 +373,23 @@ impl<T: PacingItem> PacingQueue<T> {
     }
 
     pub fn next_wakeup(&self, now: Duration) -> Option<Duration> {
-        let reset_global = self.ready.is_empty();
-        let scheduled_at = if reset_global {
+        let scheduled_at = if self.ready.is_empty() {
             self.service_at.max(self.next_peers.peek()?.0.next_at)
         } else {
             self.service_at
         };
-        Some(
-            scheduled_at
-                .max(self.global.next_at(now, reset_global))
-                .max(now),
-        )
+        Some(scheduled_at.max(self.global.next_at(now, false)).max(now))
+    }
+
+    pub(crate) fn ready_pacing_bytes(&mut self, now: Duration) -> Option<usize> {
+        self.prepare(now);
+        self.ready
+            .peek()
+            .map(|queued| queued.item.next_pacing_bytes())
+    }
+
+    pub(crate) const fn reserved_until(&self) -> Duration {
+        self.service_at
     }
 
     pub fn enqueue(
@@ -308,23 +399,65 @@ impl<T: PacingItem> PacingQueue<T> {
         item: T,
         queued_bytes: usize,
     ) -> Result<(), EnqueueError<T>> {
-        if queued_bytes > self.memory_limit.saturating_sub(self.memory_used) {
+        self.enqueue_inner(
+            PacingKey::Udp(key),
+            priority.into(),
+            item,
+            queued_bytes,
+            None,
+        )
+    }
+
+    pub(crate) fn enqueue_egress(
+        &mut self,
+        key: PacingKey,
+        priority: PacingPriority,
+        item: T,
+        queued_bytes: usize,
+    ) -> Result<(), EnqueueError<T>> {
+        self.enqueue_inner(key, priority, item, queued_bytes, None)
+    }
+
+    pub(crate) fn requeue(
+        &mut self,
+        key: PacingKey,
+        priority: PacingPriority,
+        item: T,
+        queued_bytes: usize,
+        order: u64,
+    ) -> Result<(), EnqueueError<T>> {
+        self.enqueue_inner(key, priority, item, queued_bytes, Some(order))
+    }
+
+    fn enqueue_inner(
+        &mut self,
+        key: PacingKey,
+        priority: PacingPriority,
+        item: T,
+        queued_bytes: usize,
+        order: Option<u64>,
+    ) -> Result<(), EnqueueError<T>> {
+        let udp = item.uses_udp_memory();
+        let memory_bytes = if udp { queued_bytes } else { 0 };
+        if memory_bytes > self.memory_limit.saturating_sub(self.memory_used) {
             self.metrics.udp_egress_messages_dropped.inc();
             self.metrics.udp_pacing_memory_limit_drops.inc();
             return Err(EnqueueError::MemoryLimit(item));
         }
         let queued = Queued {
             priority,
-            order: self.next_order,
+            order: order.unwrap_or(self.next_order),
             item,
-            queued_bytes,
+            queued_bytes: memory_bytes,
         };
 
         if let Some(peer) = self.peers.get(&key) {
+            debug_assert_eq!(peer.borrow().udp, udp);
             peer.borrow_mut().messages.push(queued);
         } else {
             let peer = Rc::new(RefCell::new(PeerState {
                 messages: BinaryHeap::from([queued]),
+                udp,
             }));
             self.peers.insert(key, Rc::clone(&peer));
             self.next_peers.push(Reverse(PeerDeadline {
@@ -332,25 +465,68 @@ impl<T: PacingItem> PacingQueue<T> {
                 key,
                 peer,
             }));
-            self.metrics.udp_pacing_peers.inc();
+            if udp {
+                self.metrics.udp_pacing_peers.inc();
+            }
         }
 
-        self.next_order = self.next_order.wrapping_add(1);
-        self.memory_used += queued_bytes;
+        if order.is_none() {
+            self.next_order = self.next_order.wrapping_add(1);
+        }
+        self.memory_used += memory_bytes;
         self.pending += 1;
         self.metrics
             .udp_pacing_queued_bytes
-            .add(u64::try_from(queued_bytes).unwrap_or(u64::MAX));
+            .add(u64::try_from(memory_bytes).unwrap_or(u64::MAX));
         Ok(())
     }
 
     pub fn dequeue(&mut self, now: Duration, max_bytes: usize) -> Option<Scheduled<T>> {
+        self.prepare(now);
+
+        let queued = self.ready.peek()?;
+        let next_bytes = queued.item.next_payload_bytes();
+        if next_bytes > max_bytes {
+            return None;
+        }
+        let pacing_bytes = queued.item.next_pacing_bytes();
+        let local_end = Self::advance(self.service_at, pacing_bytes, self.global.bytes_per_second);
+        let reservation = self
+            .global
+            .reserve(pacing_bytes, now, false, self.global_reservation)
+            .ok()?;
+        self.service_at = local_end.max(reservation.end_at);
+        self.global_reservation = Some(reservation.end_byte);
+        let queued = self.ready.pop().expect("peeked ready message");
+
+        self.memory_used -= queued.queued_bytes;
+        self.pending -= 1;
+        self.metrics
+            .udp_pacing_queued_bytes
+            .sub(u64::try_from(queued.queued_bytes).unwrap_or(u64::MAX));
+        Some(Scheduled {
+            item: queued.item,
+            batch_bytes: next_bytes,
+            pacing_bytes,
+            priority: queued.priority,
+            order: queued.order,
+        })
+    }
+
+    fn prepare(&mut self, now: Duration) {
         // account for time spent on cpu work or while this thread was scheduled off-cpu.
-        // if the ready queue is empty, catch up to now because no global work remains scheduled.
-        // after a long pause, reset to now instead of accumulating unbounded catch-up allowance.
-        let reset_global = self.ready.is_empty();
-        if reset_global || now.saturating_sub(self.service_at) > PACER_MAX_CATCH_UP {
+        // A temporarily empty ready heap can still have queued peers waiting on deadlines. Advance
+        // to that deadline without discarding bounded catch-up time; the shared scheduler owns the
+        // wall-clock global limit. After a long pause, reset instead of accumulating an unbounded
+        // catch-up allowance.
+        if now.saturating_sub(self.service_at) > PACER_MAX_CATCH_UP {
             self.service_at = self.service_at.max(now);
+        } else if self.ready.is_empty() {
+            self.service_at = self.service_at.max(
+                self.next_peers
+                    .peek()
+                    .map_or(now, |entry| entry.0.next_at.min(now)),
+            );
         }
 
         // promote every eligible peer before selection so the final heap can enforce priority across peers.
@@ -370,7 +546,9 @@ impl<T: PacingItem> PacingQueue<T> {
                     .remove(&deadline.key)
                     .expect("scheduled peer must exist");
                 debug_assert!(Rc::ptr_eq(&peer, &deadline.peer));
-                self.metrics.udp_pacing_peers.dec();
+                if peer.borrow().udp {
+                    self.metrics.udp_pacing_peers.dec();
+                }
                 continue;
             };
             let pace_from = if self.service_at.saturating_sub(deadline.next_at) > PACER_MAX_CATCH_UP
@@ -381,8 +559,10 @@ impl<T: PacingItem> PacingQueue<T> {
             };
             let next_at = Self::advance(
                 pace_from,
-                Self::wire_bytes(message.item.next_payload_bytes()),
-                self.peer_bytes_per_second,
+                message.item.next_pacing_bytes(),
+                message
+                    .item
+                    .peer_bytes_per_second(self.peer_bytes_per_second),
             );
             self.next_peers.push(Reverse(PeerDeadline {
                 next_at,
@@ -391,35 +571,6 @@ impl<T: PacingItem> PacingQueue<T> {
             }));
             self.ready.push(message);
         }
-
-        let queued = self.ready.peek()?;
-        let next_bytes = queued.item.next_payload_bytes();
-        if next_bytes > max_bytes {
-            return None;
-        }
-        let wire_bytes = Self::wire_bytes(next_bytes);
-        let local_end = Self::advance(self.service_at, wire_bytes, self.global.bytes_per_second);
-        let reservation = self
-            .global
-            .reserve(wire_bytes, now, reset_global, self.global_reservation)
-            .ok()?;
-        self.service_at = local_end.max(reservation.end_at);
-        self.global_reservation = Some(reservation.end_byte);
-        let queued = self.ready.pop().expect("peeked ready message");
-
-        self.memory_used -= queued.queued_bytes;
-        self.pending -= 1;
-        self.metrics
-            .udp_pacing_queued_bytes
-            .sub(u64::try_from(queued.queued_bytes).unwrap_or(u64::MAX));
-        Some(Scheduled {
-            item: queued.item,
-            batch_bytes: next_bytes,
-        })
-    }
-
-    fn wire_bytes(payload_bytes: usize) -> usize {
-        payload_bytes.saturating_add(usize::from(IPV4_HDR_SIZE + UDP_HDR_SIZE))
     }
 
     fn advance(at: Duration, bytes: usize, bytes_per_second: NonZeroU64) -> Duration {
@@ -429,6 +580,547 @@ impl<T: PacingItem> PacingQueue<T> {
         at.saturating_add(Duration::from_nanos(
             u64::try_from(nanos).unwrap_or(u64::MAX),
         ))
+    }
+}
+
+pub(crate) const TCP_DISPATCH_PAYLOAD_BYTES: usize = 256 * 1024;
+const UDP_DISPATCH_PACING_BYTES: usize = 64 * 1024;
+const UDP_WORKER_DISPATCH_CHANNEL_SIZE: usize = 8;
+const PACING_COMMAND_CHANNEL_SIZE: usize = 12_800 + 256;
+const MAX_COMMAND_DRAIN: usize = 256;
+
+pub(crate) struct TcpDispatchEnd {
+    pub(crate) message_len: usize,
+    pub(crate) completion: Option<oneshot::Sender<()>>,
+}
+
+pub(crate) struct TcpDispatch {
+    pub(crate) header: Option<Bytes>,
+    pub(crate) payload: Bytes,
+    pub(crate) end: Option<TcpDispatchEnd>,
+}
+
+pub(crate) struct UdpSend {
+    pub(crate) socket_id: UdpSocketId,
+    pub(crate) dst: SocketAddr,
+    pub(crate) payload: Bytes,
+}
+
+pub(crate) struct UdpDispatch {
+    pub(crate) sends: Vec<UdpSend>,
+}
+
+pub(crate) struct PacingTaskConfig {
+    pub(crate) global_bytes_per_second: NonZeroU64,
+    pub(crate) udp: UdpPacingConfig,
+    pub(crate) udp_workers: usize,
+}
+
+#[derive(Clone)]
+pub(crate) struct PacingHandle {
+    commands: mpsc::Sender<Command>,
+    udp_queued_bytes: Arc<AtomicUsize>,
+    udp_memory_limit: usize,
+    metrics: DataplaneMetrics,
+}
+
+pub(crate) struct PacingTask {
+    config: PacingTaskConfig,
+    commands: mpsc::Receiver<Command>,
+    outputs: OutputSenders,
+    metrics: DataplaneMetrics,
+    udp_queued_bytes: Arc<AtomicUsize>,
+}
+
+pub(crate) struct PacingOutputs {
+    pub(crate) tcp: mpsc::UnboundedReceiver<(SocketAddr, TcpDispatch)>,
+    pub(crate) udp: Vec<mpsc::Receiver<UdpDispatch>>,
+}
+
+struct OutputSenders {
+    tcp: mpsc::UnboundedSender<(SocketAddr, TcpDispatch)>,
+    udp: Vec<mpsc::Sender<UdpDispatch>>,
+}
+
+enum Command {
+    Tcp { addr: SocketAddr, message: TcpMsg },
+    Udp { message: UdpMsg },
+}
+
+impl PacingHandle {
+    pub(crate) fn new(
+        config: PacingTaskConfig,
+        metrics: DataplaneMetrics,
+    ) -> (Self, PacingTask, PacingOutputs) {
+        assert!(
+            config.udp_workers != 0,
+            "at least one UDP TX worker is required"
+        );
+        let (commands, command_rx) = mpsc::channel(PACING_COMMAND_CHANNEL_SIZE);
+        let (tcp, tcp_rx) = mpsc::unbounded_channel();
+        let mut udp = Vec::with_capacity(config.udp_workers);
+        let mut udp_rx = Vec::with_capacity(config.udp_workers);
+        for _ in 0..config.udp_workers {
+            let (worker_tx, worker_rx) = mpsc::channel(UDP_WORKER_DISPATCH_CHANNEL_SIZE);
+            udp.push(worker_tx);
+            udp_rx.push(worker_rx);
+        }
+        let udp_queued_bytes = Arc::new(AtomicUsize::new(0));
+        metrics
+            .egress_pacing_bandwidth_limit_bytes_per_second
+            .set(config.global_bytes_per_second.get());
+        metrics
+            .udp_pacing_memory_limit_bytes
+            .set(u64::try_from(config.udp.max_queued_bytes).unwrap_or(u64::MAX));
+        (
+            Self {
+                commands,
+                udp_queued_bytes: udp_queued_bytes.clone(),
+                udp_memory_limit: config.udp.max_queued_bytes,
+                metrics: metrics.clone(),
+            },
+            PacingTask {
+                config,
+                commands: command_rx,
+                outputs: OutputSenders { tcp, udp },
+                metrics,
+                udp_queued_bytes,
+            },
+            PacingOutputs {
+                tcp: tcp_rx,
+                udp: udp_rx,
+            },
+        )
+    }
+
+    pub(crate) fn enqueue_tcp(&self, addr: SocketAddr, message: TcpMsg) -> Result<(), TcpMsg> {
+        match self.commands.try_send(Command::Tcp { addr, message }) {
+            Ok(()) => Ok(()),
+            Err(err) => match err.into_inner() {
+                Command::Tcp { message, .. } => Err(message),
+                Command::Udp { .. } => unreachable!("sent TCP pacing command"),
+            },
+        }
+    }
+
+    pub(crate) fn enqueue_udp(&self, message: UdpMsg) -> Result<(), UdpMsg> {
+        let bytes = message.payload.len();
+        if !reserve_bytes(&self.udp_queued_bytes, self.udp_memory_limit, bytes) {
+            self.metrics.udp_pacing_memory_limit_drops.inc();
+            return Err(message);
+        }
+        match self.commands.try_send(Command::Udp { message }) {
+            Ok(()) => Ok(()),
+            Err(err) => match err.into_inner() {
+                Command::Udp { message } => {
+                    self.udp_queued_bytes
+                        .fetch_sub(bytes, AtomicOrdering::Relaxed);
+                    Err(message)
+                }
+                Command::Tcp { .. } => unreachable!("sent UDP pacing command"),
+            },
+        }
+    }
+}
+
+fn reserve_bytes(used: &AtomicUsize, limit: usize, bytes: usize) -> bool {
+    let mut current = used.load(AtomicOrdering::Relaxed);
+    loop {
+        if bytes > limit.saturating_sub(current) {
+            return false;
+        }
+        match used.compare_exchange_weak(
+            current,
+            current + bytes,
+            AtomicOrdering::Relaxed,
+            AtomicOrdering::Relaxed,
+        ) {
+            Ok(_) => return true,
+            Err(actual) => current = actual,
+        }
+    }
+}
+
+fn udp_tx_worker(peer: SocketAddr, workers: usize) -> usize {
+    debug_assert!(workers != 0);
+    let mut hasher = DefaultHasher::new();
+    peer.hash(&mut hasher);
+    hasher.finish() as usize % workers
+}
+
+struct UdpWork {
+    message: UdpMsg,
+    requested_at: Instant,
+}
+
+struct TcpWork {
+    addr: SocketAddr,
+    header: Option<Bytes>,
+    payload: Bytes,
+    message_len: usize,
+    completion: Option<oneshot::Sender<()>>,
+    requested_at: Instant,
+}
+
+enum PacedMessage {
+    Udp(UdpWork),
+    Tcp(TcpWork),
+}
+
+impl PacedMessage {
+    fn batch_limit(&self) -> usize {
+        match self {
+            Self::Udp(_) => UDP_DISPATCH_PACING_BYTES,
+            Self::Tcp(_) => TCP_DISPATCH_PAYLOAD_BYTES,
+        }
+    }
+}
+
+impl PacingItem for PacedMessage {
+    fn next_payload_bytes(&self) -> usize {
+        match self {
+            Self::Udp(work) => work.message.next_payload_bytes(),
+            Self::Tcp(work) => work.payload.len().min(TCP_DISPATCH_PAYLOAD_BYTES),
+        }
+    }
+
+    fn next_pacing_bytes(&self) -> usize {
+        match self {
+            Self::Udp(work) => work.message.next_pacing_bytes(),
+            Self::Tcp(work) => work
+                .header
+                .as_ref()
+                .map_or(0, Bytes::len)
+                .saturating_add(work.payload.len().min(TCP_DISPATCH_PAYLOAD_BYTES)),
+        }
+    }
+
+    fn peer_bytes_per_second(&self, configured: NonZeroU64) -> NonZeroU64 {
+        match self {
+            Self::Udp(_) => configured,
+            Self::Tcp(_) => NonZeroU64::new(u64::MAX).unwrap(),
+        }
+    }
+
+    fn uses_udp_memory(&self) -> bool {
+        matches!(self, Self::Udp(_))
+    }
+}
+
+#[derive(Default)]
+struct TcpQueueUsage {
+    bytes: usize,
+    messages: usize,
+}
+
+struct PacingState {
+    queue: PacingQueue<PacedMessage>,
+    outputs: OutputSenders,
+    tcp_usage: HashMap<SocketAddr, TcpQueueUsage>,
+    metrics: DataplaneMetrics,
+    udp_queued_bytes: Arc<AtomicUsize>,
+}
+
+impl PacingTask {
+    pub(crate) async fn run(mut self) {
+        let peer_bytes_per_second = NonZeroU64::new(
+            u64::try_from(u128::from(self.config.udp.peer_bandwidth_mbps) * 1_000_000 / 8)
+                .expect("UDP peer bandwidth overflows bytes per second"),
+        )
+        .expect("UDP peer bandwidth must be non-zero");
+        let mut state = PacingState {
+            queue: PacingQueue::new(
+                self.config.global_bytes_per_second,
+                peer_bytes_per_second,
+                self.config.udp.max_queued_bytes,
+                self.metrics.clone(),
+            ),
+            outputs: self.outputs,
+            tcp_usage: HashMap::new(),
+            metrics: self.metrics,
+            udp_queued_bytes: self.udp_queued_bytes,
+        };
+
+        while let Some(first) = self.commands.recv().await {
+            state.enqueue(first);
+            for _ in 1..MAX_COMMAND_DRAIN {
+                match self.commands.try_recv() {
+                    Ok(command) => state.enqueue(command),
+                    Err(mpsc::error::TryRecvError::Empty) => break,
+                    Err(mpsc::error::TryRecvError::Disconnected) => return,
+                }
+            }
+
+            loop {
+                for _ in 0..MAX_COMMAND_DRAIN {
+                    match self.commands.try_recv() {
+                        Ok(command) => state.enqueue(command),
+                        Err(mpsc::error::TryRecvError::Empty) => break,
+                        Err(mpsc::error::TryRecvError::Disconnected) => return,
+                    }
+                }
+
+                let now = state.queue.elapsed();
+                match state.dispatch_batch(now).await {
+                    Ok(true) => continue,
+                    Err(()) => return,
+                    Ok(false) => {}
+                }
+
+                let Some(wake_at) = state.queue.next_wakeup(now) else {
+                    break;
+                };
+                select! {
+                    command = self.commands.recv() => {
+                        let Some(command) = command else { return };
+                        state.enqueue(command);
+                    }
+                    _ = sleep(wake_at.saturating_sub(now)) => {}
+                }
+            }
+        }
+    }
+}
+
+impl PacingState {
+    fn enqueue(&mut self, command: Command) {
+        match command {
+            Command::Tcp { addr, message } => self.enqueue_tcp(addr, message),
+            Command::Udp { message } => self.enqueue_udp(message),
+        }
+    }
+
+    fn enqueue_tcp(&mut self, addr: SocketAddr, message: TcpMsg) {
+        let message_len = message.msg.len();
+        if message_len > TCP_MESSAGE_LENGTH_LIMIT {
+            self.metrics.tcp_egress_messages_dropped.inc();
+            return;
+        }
+        let usage = self.tcp_usage.entry(addr).or_default();
+        if usage.messages >= QUEUED_MESSAGE_LIMIT
+            || message_len > QUEUED_MESSAGE_BYTE_LIMIT.saturating_sub(usage.bytes)
+        {
+            self.metrics.tcp_egress_messages_dropped.inc();
+            return;
+        }
+        usage.messages += 1;
+        usage.bytes += message_len;
+
+        let header = TcpMsgHdr::new(u64::try_from(message_len).unwrap_or(u64::MAX));
+        let work = PacedMessage::Tcp(TcpWork {
+            addr,
+            header: Some(Bytes::copy_from_slice(header.as_bytes())),
+            payload: message.msg,
+            message_len,
+            completion: message.completion,
+            requested_at: Instant::now(),
+        });
+        PacingPriority::Background
+            .queued_requests(&self.metrics)
+            .inc();
+        assert!(
+            self.queue
+                .enqueue_egress(
+                    PacingKey::Tcp(addr),
+                    PacingPriority::Background,
+                    work,
+                    message_len,
+                )
+                .is_ok(),
+            "TCP messages do not consume UDP queue memory"
+        );
+    }
+
+    fn enqueue_udp(&mut self, message: UdpMsg) {
+        let bytes = message.payload.len();
+        let priority = PacingPriority::from(message.priority);
+        let SocketAddr::V4(destination) = message.dst else {
+            self.udp_queued_bytes
+                .fetch_sub(bytes, AtomicOrdering::Relaxed);
+            self.metrics.udp_egress_messages_dropped.inc();
+            return;
+        };
+        let work = PacedMessage::Udp(UdpWork {
+            message,
+            requested_at: Instant::now(),
+        });
+        if self
+            .queue
+            .enqueue_egress(PacingKey::Udp(destination), priority, work, bytes)
+            .is_ok()
+        {
+            priority.queued_requests(&self.metrics).inc();
+        } else {
+            self.udp_queued_bytes
+                .fetch_sub(bytes, AtomicOrdering::Relaxed);
+        }
+    }
+
+    async fn dispatch_batch(&mut self, now: Duration) -> Result<bool, ()> {
+        if self.queue.next_wakeup(now).is_none_or(|at| at > now) {
+            return Ok(false);
+        }
+        let mut schedule_at = now;
+        let mut pacing_bytes = 0_usize;
+        let mut batch_limit = None;
+        let mut udp_sends: Vec<Vec<UdpSend>> =
+            (0..self.outputs.udp.len()).map(|_| Vec::new()).collect();
+
+        loop {
+            let Some(next_bytes) = self.queue.ready_pacing_bytes(schedule_at) else {
+                break;
+            };
+            if pacing_bytes > 0
+                && pacing_bytes.saturating_add(next_bytes) > batch_limit.expect("set by first item")
+            {
+                break;
+            }
+            let Some(scheduled) = self.queue.dequeue(schedule_at, usize::MAX) else {
+                break;
+            };
+            if batch_limit.is_none() {
+                batch_limit = Some(scheduled.item.batch_limit());
+            }
+            pacing_bytes = pacing_bytes.saturating_add(scheduled.pacing_bytes);
+            self.dispatch(scheduled, &mut udp_sends)?;
+            schedule_at = self.queue.reserved_until();
+            if pacing_bytes >= batch_limit.expect("set by first item") {
+                break;
+            }
+        }
+
+        let sends = self
+            .outputs
+            .udp
+            .iter()
+            .zip(udp_sends)
+            .filter_map(|(worker_tx, sends)| {
+                (!sends.is_empty()).then(|| worker_tx.send(UdpDispatch { sends }))
+            });
+        for result in join_all(sends).await {
+            if let Err(err) = result {
+                self.metrics
+                    .udp_egress_messages_dropped
+                    .add(u64::try_from(err.0.sends.len()).unwrap_or(u64::MAX));
+            }
+        }
+        Ok(pacing_bytes > 0)
+    }
+
+    fn dispatch(
+        &mut self,
+        scheduled: Scheduled<PacedMessage>,
+        udp_sends: &mut [Vec<UdpSend>],
+    ) -> Result<(), ()> {
+        let Scheduled {
+            item,
+            batch_bytes,
+            pacing_bytes,
+            priority,
+            order,
+        } = scheduled;
+        match item {
+            PacedMessage::Udp(mut work) => {
+                let requested_at = work.requested_at;
+                let chunk = work.message.payload.split_to(batch_bytes);
+                self.udp_queued_bytes
+                    .fetch_sub(chunk.len(), AtomicOrdering::Relaxed);
+                let worker = udp_tx_worker(work.message.dst, udp_sends.len());
+                udp_sends[worker].push(UdpSend {
+                    socket_id: work.message.socket_id,
+                    dst: work.message.dst,
+                    payload: chunk,
+                });
+                if work.message.payload.is_empty() {
+                    priority.queued_requests(&self.metrics).dec();
+                } else {
+                    let SocketAddr::V4(destination) = work.message.dst else {
+                        unreachable!("only IPv4 messages enter the pacing queue")
+                    };
+                    let remaining = work.message.payload.len();
+                    assert!(
+                        self.queue
+                            .requeue(
+                                PacingKey::Udp(destination),
+                                priority,
+                                PacedMessage::Udp(work),
+                                remaining,
+                                order,
+                            )
+                            .is_ok(),
+                        "requeueing admitted UDP bytes cannot exceed memory"
+                    );
+                }
+                priority.record_grant(&self.metrics, pacing_bytes, requested_at.elapsed());
+            }
+            PacedMessage::Tcp(mut work) => {
+                let payload = work.payload.split_to(batch_bytes);
+                let header = work.header.take();
+                let complete = work.payload.is_empty();
+                let end = complete.then(|| TcpDispatchEnd {
+                    message_len: work.message_len,
+                    completion: work.completion.take(),
+                });
+                let addr = work.addr;
+                let requested_at = work.requested_at;
+                if complete {
+                    self.release_tcp(addr, work.message_len);
+                    priority.queued_requests(&self.metrics).dec();
+                } else {
+                    let remaining = work.payload.len();
+                    assert!(
+                        self.queue
+                            .requeue(
+                                PacingKey::Tcp(addr),
+                                priority,
+                                PacedMessage::Tcp(work),
+                                remaining,
+                                order,
+                            )
+                            .is_ok(),
+                        "TCP messages do not consume UDP queue memory"
+                    );
+                }
+                let payload_bytes = payload.len();
+                if self
+                    .outputs
+                    .tcp
+                    .send((
+                        addr,
+                        TcpDispatch {
+                            header,
+                            payload,
+                            end,
+                        },
+                    ))
+                    .is_err()
+                {
+                    self.metrics.tcp_egress_messages_dropped.inc();
+                    return Err(());
+                }
+                if payload_bytes > 0 {
+                    self.metrics.tcp_pacing_chunks.inc();
+                    self.metrics
+                        .tcp_pacing_bytes
+                        .add(u64::try_from(payload_bytes).unwrap_or(u64::MAX));
+                }
+                priority.record_grant(&self.metrics, pacing_bytes, requested_at.elapsed());
+            }
+        }
+        Ok(())
+    }
+
+    fn release_tcp(&mut self, addr: SocketAddr, bytes: usize) {
+        let remove = if let Some(usage) = self.tcp_usage.get_mut(&addr) {
+            usage.bytes -= bytes;
+            usage.messages -= 1;
+            usage.messages == 0
+        } else {
+            false
+        };
+        if remove {
+            self.tcp_usage.remove(&addr);
+        }
     }
 }
 
@@ -581,11 +1273,11 @@ mod tests {
         queue.dequeue(Duration::ZERO, usize::MAX).unwrap();
         assert_eq!(queue.service_at, Duration::from_millis(128));
         assert_eq!(
-            queue.next_wakeup(Duration::from_millis(178)),
-            Some(Duration::from_millis(178))
+            queue.next_wakeup(Duration::from_millis(133)),
+            Some(Duration::from_millis(133))
         );
         queue
-            .dequeue(Duration::from_millis(178), usize::MAX)
+            .dequeue(Duration::from_millis(133), usize::MAX)
             .unwrap();
         assert_eq!(queue.service_at, Duration::from_millis(256));
     }
@@ -603,13 +1295,13 @@ mod tests {
         queue.dequeue(Duration::ZERO, usize::MAX).unwrap();
         assert_eq!(queue.service_at, Duration::from_millis(128));
         assert_eq!(
-            queue.next_wakeup(Duration::from_millis(179)),
-            Some(Duration::from_millis(179))
+            queue.next_wakeup(Duration::from_millis(134)),
+            Some(Duration::from_millis(134))
         );
         queue
-            .dequeue(Duration::from_millis(179), usize::MAX)
+            .dequeue(Duration::from_millis(134), usize::MAX)
             .unwrap();
-        assert_eq!(queue.service_at, Duration::from_millis(307));
+        assert_eq!(queue.service_at, Duration::from_millis(262));
     }
 
     #[test]
@@ -623,12 +1315,29 @@ mod tests {
 
         queue.dequeue(Duration::ZERO, usize::MAX).unwrap();
         queue
-            .dequeue(Duration::from_millis(178), usize::MAX)
+            .dequeue(Duration::from_millis(133), usize::MAX)
             .unwrap();
         assert_eq!(
             queue.next_peers.peek().unwrap().0.next_at,
             Duration::from_millis(256)
         );
+    }
+
+    #[test]
+    fn cooling_peer_preserves_global_catch_up_within_window() {
+        let mut queue = queue(1_000, 1_000);
+        for id in 0..2 {
+            queue
+                .enqueue(key(1), UdpPriority::Regular, item(id, 100), 100)
+                .unwrap();
+        }
+
+        queue.dequeue(Duration::ZERO, usize::MAX).unwrap();
+        assert!(queue.ready.is_empty());
+        queue
+            .dequeue(Duration::from_millis(133), usize::MAX)
+            .unwrap();
+        assert_eq!(queue.service_at, Duration::from_millis(256));
     }
 
     #[test]
@@ -642,11 +1351,11 @@ mod tests {
 
         queue.dequeue(Duration::ZERO, usize::MAX).unwrap();
         queue
-            .dequeue(Duration::from_millis(179), usize::MAX)
+            .dequeue(Duration::from_millis(134), usize::MAX)
             .unwrap();
         assert_eq!(
             queue.next_peers.peek().unwrap().0.next_at,
-            Duration::from_millis(307)
+            Duration::from_millis(262)
         );
     }
 
@@ -967,5 +1676,99 @@ mod tests {
         let scheduled = queue.dequeue(Duration::ZERO, usize::MAX).unwrap();
         assert_eq!(scheduled.item.id, 1);
         assert_eq!(queue.service_at, Duration::from_millis(256));
+    }
+
+    fn task_config(bytes_per_second: u64) -> PacingTaskConfig {
+        PacingTaskConfig {
+            global_bytes_per_second: NonZeroU64::new(bytes_per_second).unwrap(),
+            udp: UdpPacingConfig {
+                peer_bandwidth_mbps: 1_000,
+                max_queued_bytes: 1024 * 1024,
+            },
+            udp_workers: 1,
+        }
+    }
+
+    #[test]
+    fn udp_peer_routing_is_balanced() {
+        let peers = (0..10_000).map(|port| SocketAddr::from(([127, 0, 0, 1], port)));
+        let mut counts = [0; 4];
+        for peer in peers {
+            let worker = udp_tx_worker(peer, counts.len());
+            counts[worker] += 1;
+        }
+        assert!(counts
+            .into_iter()
+            .all(|count| (2_300..2_700).contains(&count)));
+    }
+
+    #[monoio::test(timer_enabled = true)]
+    async fn udp_preempts_queued_tcp() {
+        let (handle, task, mut outputs) =
+            PacingHandle::new(task_config(1_000), DataplaneMetrics::new());
+        let addr = SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 1).into();
+        assert!(handle
+            .enqueue_tcp(
+                addr,
+                TcpMsg {
+                    msg: Bytes::from(vec![0_u8; UDP_DISPATCH_PACING_BYTES]),
+                    completion: None,
+                },
+            )
+            .is_ok());
+        assert!(handle
+            .enqueue_udp(UdpMsg {
+                socket_id: UdpSocketId::Raptorcast,
+                dst: addr,
+                payload: Bytes::from(vec![0_u8; 100]),
+                stride: 100,
+                priority: UdpPriority::High,
+            })
+            .is_ok());
+        monoio::spawn(task.run());
+
+        let udp = monoio::time::timeout(Duration::from_millis(10), outputs.udp[0].recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(udp.sends.len(), 1);
+        assert!(matches!(
+            outputs.tcp.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[monoio::test(timer_enabled = true)]
+    async fn tcp_message_is_dispatched_in_ordered_chunks() {
+        let (handle, task, mut outputs) =
+            PacingHandle::new(task_config(1_000_000_000_000), DataplaneMetrics::new());
+        let addr = SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 1).into();
+        let message_len = TCP_DISPATCH_PAYLOAD_BYTES + 7;
+        assert!(handle
+            .enqueue_tcp(
+                addr,
+                TcpMsg {
+                    msg: Bytes::from(vec![0_u8; message_len]),
+                    completion: None,
+                },
+            )
+            .is_ok());
+        monoio::spawn(task.run());
+
+        let (_, first) = monoio::time::timeout(Duration::from_millis(10), outputs.tcp.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(first.header.is_some());
+        assert_eq!(first.payload.len(), TCP_DISPATCH_PAYLOAD_BYTES);
+        assert!(first.end.is_none());
+
+        let (_, second) = monoio::time::timeout(Duration::from_millis(10), outputs.tcp.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(second.header.is_none());
+        assert_eq!(second.payload.len(), 7);
+        assert_eq!(second.end.unwrap().message_len, message_len);
     }
 }

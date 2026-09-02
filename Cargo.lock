@@ -5211,6 +5211,7 @@ dependencies = [
  "monad-types",
  "monoio",
  "ntest",
+ "prometheus",
  "rand 0.8.5",
  "rstest",
  "socket2 0.5.10",

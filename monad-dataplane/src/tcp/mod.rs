@@ -32,27 +32,27 @@ use zerocopy::{
     FromBytes, Immutable, IntoBytes,
 };
 
-use super::{RecvTcpMsg, TcpMsg, TcpSocketId};
-use crate::{metrics::DataplaneMetrics, Addrlist};
+use super::{RecvTcpMsg, TcpSocketId};
+use crate::{metrics::DataplaneMetrics, pacing::TcpDispatch, Addrlist};
 
 pub mod rx;
 pub mod tx;
 
-const TCP_MESSAGE_LENGTH_LIMIT: usize = 3 * 1024 * 1024;
+pub(crate) const TCP_MESSAGE_LENGTH_LIMIT: usize = 3 * 1024 * 1024;
 
 const HEADER_MAGIC: u32 = 0x434e5353; // "SSNC"
 const HEADER_VERSION: u32 = 1;
 
 #[derive(IntoBytes, Debug, FromBytes, Immutable)]
 #[repr(C)]
-struct TcpMsgHdr {
+pub(crate) struct TcpMsgHdr {
     magic: U32,
     version: U32,
     length: U64,
 }
 
 impl TcpMsgHdr {
-    fn new(length: u64) -> TcpMsgHdr {
+    pub(crate) fn new(length: u64) -> TcpMsgHdr {
         TcpMsgHdr {
             magic: U32::new(HEADER_MAGIC),
             version: U32::new(HEADER_VERSION),
@@ -66,7 +66,7 @@ pub(crate) fn spawn_tasks(
     tcp_control_map: TcpControl,
     addrlist: Arc<Addrlist>,
     socket_configs: Vec<(TcpSocketId, SocketAddr, mpsc::Sender<RecvTcpMsg>)>,
-    tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>,
+    tcp_egress_rx: mpsc::UnboundedReceiver<(SocketAddr, TcpDispatch)>,
     bound_addrs_tx: std::sync::mpsc::SyncSender<Vec<(TcpSocketId, SocketAddr)>>,
     metrics: DataplaneMetrics,
 ) {
