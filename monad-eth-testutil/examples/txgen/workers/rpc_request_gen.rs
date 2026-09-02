@@ -816,11 +816,16 @@ impl RpcRequestGenerator {
 pub struct RpcWsCompare {
     rpc_client: ReqwestClient,
     ws_url: Url,
+    metrics: Arc<super::metrics::Metrics>,
 }
 
 impl RpcWsCompare {
-    pub fn new(rpc_client: ReqwestClient, ws_url: Url) -> Self {
-        Self { rpc_client, ws_url }
+    pub fn new(rpc_client: ReqwestClient, ws_url: Url, metrics: Arc<super::metrics::Metrics>) -> Self {
+        Self {
+            rpc_client,
+            ws_url,
+            metrics,
+        }
     }
 
     pub async fn run(&self, shutdown: Arc<AtomicBool>) {
@@ -904,7 +909,13 @@ impl RpcWsCompare {
                 None => break,
             };
 
+            self.metrics
+                .ws_compares_total
+                .fetch_add(1, Ordering::Relaxed);
             if ws_header != rpc_header {
+                self.metrics
+                    .ws_compare_mismatches
+                    .fetch_add(1, Ordering::Relaxed);
                 error!(
                     "block header mismatch websocket {:?} rpc {:?}",
                     ws_header, rpc_header

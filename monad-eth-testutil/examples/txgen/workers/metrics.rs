@@ -48,6 +48,10 @@ pub struct Metrics {
     pub logs_rpc_calls: AtomicUsize,
     pub logs_rpc_calls_error: AtomicUsize,
     pub logs_total: AtomicUsize,
+
+    // compare_rpc_ws: newHeads (events websocket) vs eth_getBlockByNumber (rpc)
+    pub ws_compares_total: AtomicUsize,
+    pub ws_compare_mismatches: AtomicUsize,
     // pub logs_erc20_transfers: AtomicUsize,
     // pub logs_erc20_total_value_transfered: Arc<RwLock<U256>>,
 
@@ -189,6 +193,9 @@ pub struct MetricsReporter {
     total_transactions: Gauge<u64>,
     total_contracts_created: Gauge<u64>,
 
+    ws_compares_total: Gauge<u64>,
+    ws_compare_mismatches: Gauge<u64>,
+
     // Keeping these so they don't get dropped
     _provider: SdkMeterProvider,
     _meter: opentelemetry::metrics::Meter,
@@ -239,6 +246,9 @@ impl MetricsReporter {
             total_transactions: meter.u64_gauge("total_transactions").build(),
             total_contracts_created: meter.u64_gauge("total_contracts_created").build(),
 
+            ws_compares_total: meter.u64_gauge("ws_compares_total").build(),
+            ws_compare_mismatches: meter.u64_gauge("ws_compare_mismatches").build(),
+
             _provider: provider,
             _meter: meter,
         };
@@ -283,6 +293,8 @@ impl MetricsReporter {
         self.contracts_deployed_ps.record(0, label);
         self.total_transactions.record(0, &[]);
         self.total_contracts_created.record(0, &[]);
+        self.ws_compares_total.record(0, &[]);
+        self.ws_compare_mismatches.record(0, &[]);
         info!(gen_mode = %self.gen_mode, "Emitted zero values for all gauges");
     }
 
@@ -352,6 +364,16 @@ impl MetricsReporter {
             .record(rates.txs_sent.val() as u64, &[]);
         self.total_contracts_created
             .record(rates.contracts_deployed.val() as u64, &[]);
+
+        // Cumulative counters read straight off the shared atomics (not rates).
+        self.ws_compares_total.record(
+            self.metrics.ws_compares_total.load(Ordering::Relaxed) as u64,
+            &[],
+        );
+        self.ws_compare_mismatches.record(
+            self.metrics.ws_compare_mismatches.load(Ordering::Relaxed) as u64,
+            &[],
+        );
 
         info!("Otel Metrics Reported");
     }

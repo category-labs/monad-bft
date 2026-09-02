@@ -167,6 +167,7 @@ async fn run_workload_group(
                 let compare_rpc_ws = RpcWsCompare::new(
                     read_client.clone(),
                     config.ws_url().expect("WS URL is not valid"),
+                    metrics.clone(),
                 );
                 let shutdown_clone = Arc::clone(&shutdown);
                 tasks.push(
