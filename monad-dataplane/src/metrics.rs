@@ -91,6 +91,8 @@ define_metrics! {
     tcp_receive_errors => TCP_RECEIVE_ERRORS("monad.dataplane.tcp.total_receive_errors", "Total TCP accept, framing, or payload receive errors"),
     tcp_send_errors => TCP_SEND_ERRORS("monad.dataplane.tcp.total_send_errors", "Total TCP payload send errors or timeouts"),
     tcp_egress_messages_dropped => TCP_EGRESS_MESSAGES_DROPPED("monad.dataplane.tcp.total_egress_messages_dropped", "Total TCP egress messages dropped by dataplane limits, full queues, or failed connections"),
+    tcp_pacing_chunks => TCP_PACING_CHUNKS("monad.dataplane.tcp.pacing.total_chunks", "Total TCP payload chunks admitted by shared egress pacing"),
+    tcp_pacing_bytes => TCP_PACING_BYTES("monad.dataplane.tcp.pacing.total_payload_bytes", "Total TCP payload bytes admitted by shared egress pacing"),
     tcp_connections_rate_limited => TCP_CONNECTIONS_RATE_LIMITED("monad.dataplane.tcp.total_connections_rate_limited", "Total inbound TCP connections closed after exceeding the per-connection message rate limit"),
 }
 

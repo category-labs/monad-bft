@@ -32,7 +32,7 @@ use futures::channel::oneshot;
 use monad_types::UdpPriority;
 use monoio::{spawn, time::Instant, IoUringDriver, RuntimeBuilder};
 use tcp::{TcpConfig, TcpControl, TcpRateLimit};
-use tokio::sync::mpsc::{self, error::TrySendError};
+use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 pub(crate) mod addrlist;
@@ -256,7 +256,6 @@ impl DataplaneBuilder {
         validate_sockets(udp_sockets.iter(), "udp");
         validate_sockets(tcp_sockets.iter(), "tcp");
 
-        let (tcp_egress_tx, tcp_egress_rx) = mpsc::channel(TCP_EGRESS_CHANNEL_SIZE);
         let metrics = DataplaneMetrics::new();
         let bandwidth_bytes_per_second = NonZeroU64::new(
             u64::try_from(u128::from(up_bandwidth_mbps) * 1_000_000 / 8)
@@ -327,6 +326,7 @@ impl DataplaneBuilder {
                         .expect("Failed building the Runtime")
                         .block_on(async move {
                             let pacing::PacingOutputs {
+                                tcp: tcp_egress_rx,
                                 udp: udp_worker_rxs,
                             } = pacing_outputs;
                             spawn(ban_expiry::task(
@@ -412,7 +412,7 @@ impl DataplaneBuilder {
                 writer: TcpSocketWriter {
                     socket_id: id,
                     socket_addr,
-                    egress_tx: tcp_egress_tx.clone(),
+                    pacing: pacing.clone(),
                     msgs_dropped: Arc::new(AtomicUsize::new(0)),
                     metrics: metrics.clone(),
                 },
@@ -650,7 +650,7 @@ impl TcpSocketReader {
 pub struct TcpSocketWriter {
     socket_id: TcpSocketId,
     socket_addr: SocketAddr,
-    egress_tx: mpsc::Sender<(SocketAddr, TcpMsg)>,
+    pacing: pacing::PacingHandle,
     msgs_dropped: Arc<AtomicUsize>,
     metrics: DataplaneMetrics,
 }
@@ -659,9 +659,9 @@ impl TcpSocketWriter {
     pub fn write(&self, addr: SocketAddr, msg: TcpMsg) {
         let msg_length = msg.msg.len();
 
-        match self.egress_tx.try_send((addr, msg)) {
+        match self.pacing.enqueue_tcp(addr, msg) {
             Ok(()) => {}
-            Err(TrySendError::Full(_)) => {
+            Err(_) => {
                 self.metrics.tcp_egress_messages_dropped.inc();
                 let total = self.msgs_dropped.fetch_add(1, Ordering::Relaxed);
                 warn!(
@@ -669,11 +669,8 @@ impl TcpSocketWriter {
                     ?addr,
                     msg_length,
                     total_msgs_dropped = total,
-                    "tcp egress channel full, dropping message"
+                    "tcp pacing queue full, dropping message"
                 );
-            }
-            Err(TrySendError::Closed(_)) => {
-                panic!("socket {:?} tcp egress channel closed", self.socket_id)
             }
         }
     }
@@ -874,7 +871,6 @@ pub(crate) struct UdpMsg {
 }
 
 const TCP_INGRESS_CHANNEL_SIZE: usize = 1024;
-const TCP_EGRESS_CHANNEL_SIZE: usize = 256;
 const UDP_INGRESS_CHANNEL_SIZE: usize = 12_800;
 
 impl Dataplane {
