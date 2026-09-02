@@ -29,7 +29,6 @@ use std::{
 use addrlist::Addrlist;
 use bytes::Bytes;
 use futures::channel::oneshot;
-use metrics::DataplaneMetrics;
 use monad_types::UdpPriority;
 use monoio::{spawn, time::Instant, IoUringDriver, RuntimeBuilder};
 use tcp::{TcpConfig, TcpControl, TcpRateLimit};
@@ -40,8 +39,14 @@ pub(crate) mod addrlist;
 pub(crate) mod ban_expiry;
 pub(crate) mod buffer_ext;
 mod metrics;
+pub mod pacing;
 pub mod tcp;
 pub mod udp;
+
+pub use metrics::DataplaneMetrics;
+
+pub(crate) const IPV4_HDR_SIZE: u16 = 20;
+pub(crate) const UDP_HDR_SIZE: u16 = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TcpSocketId {
@@ -91,10 +96,42 @@ impl<I: PartialEq + Copy, H> SocketHandles<I, H> {
 pub type TcpSocketHandles = SocketHandles<TcpSocketId, TcpSocketHandle>;
 pub type UdpSocketHandles = SocketHandles<UdpSocketId, UdpSocketHandle>;
 
+pub const DEFAULT_UDP_MAX_QUEUED_BYTES: usize = 100 * 1024 * 1024;
+
+/// Configuration for the UDP pacing queue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UdpPacingConfig {
+    /// Uniform per-destination bandwidth cap.
+    pub peer_bandwidth_mbps: u64,
+    /// Total payload byte budget shared by all queued UDP messages.
+    pub max_queued_bytes: usize,
+}
+
+impl UdpPacingConfig {
+    fn for_global_bandwidth(global_bandwidth_mbps: u64) -> Self {
+        Self {
+            peer_bandwidth_mbps: global_bandwidth_mbps,
+            max_queued_bytes: DEFAULT_UDP_MAX_QUEUED_BYTES,
+        }
+    }
+
+    fn validate(self) {
+        assert!(
+            self.peer_bandwidth_mbps > 0,
+            "UDP peer bandwidth must be non-zero"
+        );
+        assert!(
+            self.max_queued_bytes > 0,
+            "UDP pacing queue byte limit must be non-zero"
+        );
+    }
+}
+
 pub struct DataplaneBuilder {
     trusted_addresses: Vec<IpAddr>,
     /// 1_000 = 1 Gbps, 10_000 = 10 Gbps
     udp_up_bandwidth_mbps: u64,
+    udp_pacing_config: UdpPacingConfig,
     udp_buffer_size: Option<usize>,
     tcp_config: TcpConfig,
     ban_duration: Duration,
@@ -105,8 +142,13 @@ pub struct DataplaneBuilder {
 
 impl DataplaneBuilder {
     pub fn new(up_bandwidth_mbps: u64) -> Self {
+        assert!(
+            up_bandwidth_mbps > 0,
+            "UDP global bandwidth must be non-zero"
+        );
         Self {
             udp_up_bandwidth_mbps: up_bandwidth_mbps,
+            udp_pacing_config: UdpPacingConfig::for_global_bandwidth(up_bandwidth_mbps),
             udp_buffer_size: None,
             trusted_addresses: vec![],
             tcp_config: TcpConfig {
@@ -126,6 +168,18 @@ impl DataplaneBuilder {
 
     pub fn with_udp_buffer_size(mut self, buffer_size: usize) -> Self {
         self.udp_buffer_size = Some(buffer_size);
+        self
+    }
+
+    pub fn with_udp_pacing_config(mut self, config: UdpPacingConfig) -> Self {
+        config.validate();
+        self.udp_pacing_config = config;
+        self
+    }
+
+    pub fn with_udp_peer_bandwidth_mbps(mut self, peer_bandwidth_mbps: u64) -> Self {
+        self.udp_pacing_config.peer_bandwidth_mbps = peer_bandwidth_mbps;
+        self.udp_pacing_config.validate();
         self
     }
 
@@ -171,6 +225,7 @@ impl DataplaneBuilder {
     pub fn build(self) -> Dataplane {
         let DataplaneBuilder {
             udp_up_bandwidth_mbps: up_bandwidth_mbps,
+            udp_pacing_config,
             udp_buffer_size,
             trusted_addresses: trusted,
             tcp_config,
@@ -179,6 +234,8 @@ impl DataplaneBuilder {
             tcp_sockets,
             udp_multishot,
         } = self;
+
+        udp_pacing_config.validate();
 
         validate_sockets(udp_sockets.iter(), "udp");
         validate_sockets(tcp_sockets.iter(), "tcp");
@@ -249,9 +306,12 @@ impl DataplaneBuilder {
                             udp::spawn_tasks(
                                 udp_socket_configs,
                                 udp_egress_rx,
-                                up_bandwidth_mbps,
-                                udp_buffer_size,
-                                udp_multishot,
+                                udp::UdpTaskConfig {
+                                    up_bandwidth_mbps,
+                                    pacing: udp_pacing_config,
+                                    buffer_size: udp_buffer_size,
+                                    use_multishot: udp_multishot,
+                                },
                                 udp_bound_addrs_tx,
                                 metrics,
                             );
