@@ -20,19 +20,33 @@
 //! only counts if it is disseminated and decoded by a supermajority before
 //! the slot's deadline `D_s`, and a proposer benefits from sealing as late
 //! as viable (payload economics). Everything else is a *constraint*, never
-//! the trigger:
+//! the trigger.
 //!
-//! * **Chaining (blind window).** With pipelining depth `c`, the proposal
-//!   for slot `i` may only be sealed once slot `i − c` is *chained* — part
-//!   of the contiguous finalized prefix reported by the conductor. The
-//!   proposer schedule leaves an index vacant for the first `c` slots of a
-//!   rotation (the static mirror of this rule); the planner additionally
-//!   enforces it dynamically, so a lagging chain holds proposals back. The
-//!   chain's first `c` slots have no predecessor to wait for and are
-//!   exempt.
-//! * Further constraints arrive with the components that own them (e.g.
-//!   delayed-execution results once proposals commit to them); they slot in
-//!   as additional prerequisites next to the chaining gate.
+//! The constraints come from the MCP specification (`main.tex`), which
+//! builds the proposal of round `r` against the translated block `B_{r−y}`
+//! and the executed state `state^{r−x}`, and requires that *"a party that
+//! does not yet have `B_{r−y}` and `state^{r−x}` does not propose in round
+//! `r`. This is what keeps consensus from running ahead of execution."*
+//! Here `x` (the execution delay window) and `y ≤ x` (the observation
+//! cutoff) are protocol constants — hard upper bounds on the actual lags,
+//! enforced as back-pressure: a node whose chaining or execution lags the
+//! bound stops proposing, costing throughput but never consensus progress.
+//! The *blind window* of round `r` is the sliding window of rounds
+//! `r−y+1 ..= r`, whose proposals may not be known in round `r`.
+//!
+//! The planner enforces the `B_{r−y}` half as a seal prerequisite — the
+//! *chaining gate*: the proposal for slot `r` is sealed only once slot
+//! `r − y` is *chained*, part of the contiguous finalized prefix reported
+//! by the conductor (the stand-in for the translated `B_{r−y}` until
+//! sequencing/translation exists as a component). The chain's first `y`
+//! slots have no prefix to wait for and are exempt. The rest of the
+//! blind-window knowledge a proposer needs — the in-flight proposals at
+//! its own index — it has by construction: mid-phase they are its own
+//! proposals, and at a phase handoff the schedule's rotation vacancy of
+//! `y` slots guarantees there are none (see [`super::proposers`]); the
+//! planner sees vacancy simply as "not scheduled". The `state^{r−x}` half
+//! arrives with the component that owns execution progress; it slots in as
+//! an additional prerequisite next to the chaining gate.
 //!
 //! The timing policy itself is deliberately simple for now: a fixed,
 //! configurable [`PlannerConfig::lead`] before the deadline, covering
@@ -64,11 +78,11 @@ pub struct PlannerConfig {
     /// to the DA layer. Must cover dissemination-plus-decode latency at a
     /// supermajority, plus clock skew; a conservative constant for now.
     pub lead: TimestampDelta,
-    /// `c`: the slot-pipelining depth — the proposal for slot `i` may only
-    /// be sealed once slot `i − c` is chained. Must match
-    /// `ProposerConfig::blind_window` of the proposer schedule (both mirror
-    /// the same Cadence deployment parameter).
-    pub blind_window: u64,
+    /// `y`: the observation cutoff — the proposal for slot `r` may only be
+    /// sealed once slot `r − y` is chained. A protocol constant; must equal
+    /// the proposer schedule's value (it also sets the rotation vacancy
+    /// there), both mirroring the same Cadence deployment parameter.
+    pub observation_cutoff: u64,
 }
 
 /// An effect requested by the planner, executed by the node wiring.
@@ -216,16 +230,16 @@ impl ProposalPlanner {
         self.outputs.pop_front()
     }
 
-    /// Whether slot `i − c` is chained, for `slot = i` and the pipelining
-    /// depth `c`. The chain's first `c` slots are exempt — with `cap ≥ 0`
+    /// Whether slot `r − y` is chained, for `slot = r` and the observation
+    /// cutoff `y`. The chain's first `y` slots are exempt — with `cap ≥ 0`
     /// the inequality holds for them unconditionally.
     fn chained(&self, slot: Slot) -> bool {
-        self.config.blind_window == 0
+        self.config.observation_cutoff == 0
             || slot.get()
                 < self
                     .chained_cap
                     .get()
-                    .saturating_add(self.config.blind_window)
+                    .saturating_add(self.config.observation_cutoff)
     }
 
     fn seal(&mut self, slot: Slot) {
@@ -250,7 +264,7 @@ mod tests {
     const LEAD: TimestampDelta = TimestampDelta::from_millis(60);
     const INTERVAL: u64 = 100;
 
-    fn planner(blind_window: u64) -> ProposalPlanner {
+    fn planner(observation_cutoff: u64) -> ProposalPlanner {
         let me = NodeId::dummy(0);
         let other = NodeId::dummy(1);
         let schedule = Arc::new(FixedProposerSchedule::new(vec![other, me]));
@@ -259,7 +273,7 @@ mod tests {
             schedule,
             PlannerConfig {
                 lead: LEAD,
-                blind_window,
+                observation_cutoff,
             },
         )
     }
@@ -318,7 +332,7 @@ mod tests {
     }
 
     #[test]
-    fn wake_seals_without_a_blind_window() {
+    fn wake_seals_with_a_zero_observation_cutoff() {
         let mut planner = planner(0);
         open(&mut planner, [0]);
         let _ = drain(&mut planner);
@@ -347,7 +361,7 @@ mod tests {
             schedule,
             PlannerConfig {
                 lead: LEAD,
-                blind_window: 0,
+                observation_cutoff: 0,
             },
         );
 
