@@ -35,6 +35,7 @@ where
     fn schedule_slot_deadline(&mut self, slot: Slot, deadline: Timestamp);
     fn schedule_slot_timer(&mut self, delta: TimestampDelta, slot: Slot, timer: S::Timer);
     fn broadcast_slot(&mut self, slot: Slot, message: S::Message);
+    fn unicast_slot(&mut self, slot: Slot, to: NodeId, message: S::Message);
     fn broadcast_conductor(&mut self, message: C::Message);
     fn poll_node_event(&mut self) -> Option<NodeEvent<Self::WireMsg>>;
 
@@ -157,6 +158,13 @@ where
     fn broadcast_slot(&mut self, slot: Slot, message: S::Message) {
         self.outbox
             .push_back(NodeEvent::Broadcast(CadenceMessage::Slot(slot, message)));
+    }
+
+    fn unicast_slot(&mut self, slot: Slot, to: NodeId, message: S::Message) {
+        self.outbox.push_back(NodeEvent::Unicast {
+            to,
+            message: CadenceMessage::Slot(slot, message),
+        });
     }
 
     fn broadcast_conductor(&mut self, message: C::Message) {
