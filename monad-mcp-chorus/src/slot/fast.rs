@@ -22,8 +22,8 @@ use super::{
     fallback::{FallbackPath, MVBAInputs},
     types::{
         DAHandle, EquivCert, FetchProposalError, IsVote, KeyPair, MerkleRoot, NodeId,
-        ProposalIndex, ProposalMap, ProposalMeta, Signature, Slot, StrongQc, TotalProposalMap,
-        ValidatorData, VoteMsg, VotePool, WeakQc, dummy_serialize,
+        ProposalIndex, ProposalMap, ProposalMeta, ProposerSet, Signature, Slot, StrongQc,
+        TotalProposalMap, ValidatorData, VoteMsg, VotePool, WeakQc, dummy_serialize,
     },
 };
 use crate::spec::{Stake as _, proposal::ChunkHeader as _, validator::ValidatorData as _};
@@ -58,6 +58,9 @@ pub struct FastPath {
     // helper field to construct per-proposal values
     proposals: ProposalMap<ProposalIndex>,
 
+    // who occupies each proposal index in this slot
+    proposers: ProposerSet,
+
     // using Arc to avoid lifetime issues.
     key: Arc<KeyPair>,
     validator_data: Arc<ValidatorData>,
@@ -69,11 +72,12 @@ pub struct FastPath {
 impl FastPath {
     pub(crate) fn new(
         s: Slot,
-        num_proposals: usize,
+        proposers: ProposerSet,
         key: Arc<KeyPair>,
         validator_data: Arc<ValidatorData>,
         da_handle: Arc<DAHandle>,
     ) -> Self {
+        let num_proposals = proposers.num_indices();
         Self {
             slot: s,
 
@@ -86,11 +90,18 @@ impl FastPath {
 
             phase: Phase::Propose,
             proposals: ProposalMap::new(num_proposals, |j| j),
+            proposers,
 
             key,
             validator_data,
             da: da_handle,
         }
+    }
+
+    /// The proposers of this slot, by proposal index. Seam for the DA layer
+    /// and proposal validation once proposer identity is checked there.
+    pub(crate) fn proposers(&self) -> &ProposerSet {
+        &self.proposers
     }
 
     pub(crate) fn spawn_fallback(&self, input: MVBAInputs) -> FallbackPath {
@@ -180,16 +191,22 @@ impl FastPath {
         self.phase = Phase::Vote;
 
         let votes = self.proposals.as_ref().map(|j| {
-            let entry = match self.da.fetch_proposal(self.slot, *j) {
-                Ok(proposal) => Entry::Positive {
-                    root: proposal.root,
+            let entry = match self.proposers.proposer(*j) {
+                // A vacant index has no proposer (rotation vacancy at a
+                // handoff, genesis ramp-up, or fewer staked validators than
+                // indices): its proposal is empty by definition.
+                None => Entry::Negative,
+                Some(_) => match self.da.fetch_proposal(self.slot, *j) {
+                    Ok(proposal) => Entry::Positive {
+                        root: proposal.root,
+                    },
+                    Err(FetchProposalError::Absent) => Entry::Negative,
+                    Err(FetchProposalError::Equivocation(equiv_cert)) => {
+                        self.certs[*j].try_upgrade(equiv_cert);
+                        // upgrade on the equivocation certificate?
+                        todo!()
+                    }
                 },
-                Err(FetchProposalError::Absent) => Entry::Negative,
-                Err(FetchProposalError::Equivocation(equiv_cert)) => {
-                    self.certs[*j].try_upgrade(equiv_cert);
-                    // upgrade on the equivocation certificate?
-                    todo!()
-                }
             };
 
             let vote_msg = VoteMsg::new_signed((self.slot, *j), entry.clone(), &self.key);

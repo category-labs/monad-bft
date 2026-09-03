@@ -24,7 +24,8 @@ use super::{
         FastCommitQc, FastCommitVoteMsg, FastPath,
     },
     types::{
-        DAHandle, KeyPair, NodeId, ProposalIndex, ProposalMeta, Slot, TimestampDelta, ValidatorData,
+        DAHandle, KeyPair, NodeId, ProposalIndex, ProposalMeta, ProposerSchedule, Slot,
+        TimestampDelta, ValidatorData,
     },
 };
 
@@ -81,7 +82,6 @@ pub enum TimerEvent {
 #[derive(Clone)]
 pub struct ChorusConfig {
     pub delta: TimestampDelta,
-    pub num_proposals: usize,
 }
 
 /// Shared resources needed to spawn a slot instance.
@@ -89,6 +89,9 @@ pub struct ChorusContext {
     pub key: Arc<KeyPair>,
     pub validator_data: Arc<ValidatorData>,
     pub da_handle: Arc<DAHandle>,
+    /// Single source of truth for the number of proposals per slot (`K`) and
+    /// for who may propose at which proposal index.
+    pub proposers: Arc<dyn ProposerSchedule + Send + Sync>,
 }
 
 #[derive(derive_more::From, Clone, PartialEq, Eq, Hash, Debug)]
@@ -131,19 +134,29 @@ impl SlotConsensus for Chorus {
     type FinalizationData = SlotFinalization;
 
     fn new(slot: Slot, config: &Self::Config, context: &Self::Context) -> Self {
-        let ChorusConfig {
-            delta,
-            num_proposals,
-        } = config;
+        let ChorusConfig { delta } = config;
         let ChorusContext {
             key,
             validator_data,
             da_handle,
+            proposers,
         } = context;
+
+        // The schedule validated its configuration and its anchor epoch's
+        // stake snapshot at construction, and stakes are static per epoch
+        // for now, so a failure here is a wiring error — in particular the
+        // conductor must not open slots before the schedule's anchor (a
+        // mid-chain conductor start does not exist yet; align the two when
+        // it does).
+        // TODO(dynamic stakes / mid-chain start): construct a decided-dead
+        // instance emitting a fault instead of panicking.
+        let proposers = proposers
+            .proposers_at(slot)
+            .expect("proposer schedule unavailable for open slot");
 
         let fast = FastPath::new(
             slot,
-            *num_proposals,
+            proposers,
             key.clone(),
             validator_data.clone(),
             da_handle.clone(),

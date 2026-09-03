@@ -66,6 +66,10 @@ mod validator {
         fn honest_threshold(&self) -> Self {
             Self(self.0 / 3)
         }
+
+        fn amount(&self) -> u64 {
+            self.0
+        }
     }
 
     // invariant: valset/mapping have exactly the same key set, and
