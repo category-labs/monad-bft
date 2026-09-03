@@ -48,10 +48,10 @@ impl From<FilterError> for JsonRpcError {
     fn from(e: FilterError) -> Self {
         match e {
             FilterError::InvalidBlockRange => {
-                JsonRpcError::with_message(ErrorCode::ServerError, "invalid block range")
+                JsonRpcError::with_message(ErrorCode::InvalidParams, "invalid block range")
             }
             FilterError::RangeTooLarge => {
-                JsonRpcError::with_message(ErrorCode::ServerError, "block range too large")
+                JsonRpcError::with_message(ErrorCode::InvalidParams, "block range too large")
             }
         }
     }
