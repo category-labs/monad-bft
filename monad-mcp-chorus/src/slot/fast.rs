@@ -19,7 +19,7 @@ use bytes::Bytes;
 use itertools::Either;
 
 use super::{
-    fallback::{FallbackPath, Metablock},
+    fallback::Metablock,
     types::{
         DAHandle, EquivCert, FetchProposalError, IsVote, KeyPair, MerkleRoot, NodeId,
         ProposalIndex, ProposalMap, ProposalMeta, Signature, Slot, StrongQc, TotalProposalMap,
@@ -99,16 +99,6 @@ impl FastPath {
     /// MVBA input, where admission used to be re-checked on every proposal.
     pub(crate) fn enter_fallback_cert_is_valid(&self, cert: &EnterFallbackCert) -> bool {
         cert.scope == self.slot && cert.verify(&self.validator_data)
-    }
-
-    pub(crate) fn spawn_fallback(&self, cert: EnterFallbackCert, block: Metablock) -> FallbackPath {
-        FallbackPath::new(
-            self.slot,
-            self.key.clone(),
-            self.validator_data.clone(),
-            cert,
-            block,
-        )
     }
 
     pub(crate) fn handle_batch_vote(
