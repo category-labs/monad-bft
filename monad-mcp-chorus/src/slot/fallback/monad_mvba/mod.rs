@@ -61,9 +61,10 @@ use std::{
 use block_store::{BlockRequestMsg, BlockResponseMsg, BlockStore};
 use certificates::{FallbackCommitQc, PrepareQc, TimeoutCertificate};
 use collectors::ViewCollectors;
+pub use messages::MvbaMessage;
 use messages::{
-    CommitVoteMsg, FallbackCommitVote, Justification, Message, PrePrepareMsg, PrepareVote,
-    PrepareVoteMsg, TimeoutMsg,
+    CommitVoteMsg, FallbackCommitVote, Justification, PrePrepareMsg, PrepareVote, PrepareVoteMsg,
+    TimeoutMsg,
 };
 use phases::{Decided, Phase, Transition};
 
@@ -89,7 +90,7 @@ const VIEW_TIMEOUT_DELTAS: u64 = 3;
 /// How often a decided instance re-broadcasts its commit certificate
 const DECIDED_ECHO_DELTAS: u64 = 3;
 
-pub(crate) struct Context {
+pub struct MvbaContext {
     pub slot: Slot,
     pub num_proposals: usize,
     pub delta: TimestampDelta,
@@ -99,10 +100,11 @@ pub(crate) struct Context {
     pub validator_data: Arc<ValidatorData>,
 }
 
-impl Context {
+impl MvbaContext {
     /// Placeholder leader election
     ///
     /// `Leader(slot, view)`: placeholder round-robin, ignoring stake
+    /// TODO: replace with prod leader election
     pub(crate) fn leader(&self, view: FallbackView) -> NodeId {
         let num_nodes = self.validator_data.nodes().count() as u64;
         assert!(num_nodes > 0);
@@ -130,7 +132,7 @@ impl Context {
 
 /// Timers driven by the MVBA state machine
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub(crate) enum TimerEvent<V: Votable> {
+pub enum TimerEvent<V: Votable> {
     /// View change timeout. Timeouts are periodically re-sent every view change
     /// timeout
     ViewTimeout(FallbackView),
@@ -143,18 +145,18 @@ pub(crate) enum TimerEvent<V: Votable> {
 }
 
 /// Validation context for MetaBlock and FallbackCert
-pub(crate) struct ValidationContext {
+pub struct ValidationContext {
     pub slot: Slot,
     pub num_proposals: usize,
     pub validator_data: Arc<ValidatorData>,
 }
 
 /// Transforms protocol context to Input/Cert validation context
-pub(crate) trait MakesValidationContext<V: ValidateInput> {
+pub trait MakesValidationContext<V: ValidateInput> {
     fn make_validation_context(&self) -> V::Context;
 }
 
-impl MakesValidationContext<Metablock> for Context {
+impl MakesValidationContext<Metablock> for MvbaContext {
     fn make_validation_context(&self) -> ValidationContext {
         ValidationContext {
             slot: self.slot,
@@ -180,8 +182,8 @@ struct ProposedInput<V, C> {
     fbcert: Option<C>,
 }
 
-pub(crate) struct MonadMvba<V: ValidateInput + Votable, C: ValidateCert> {
-    context: Context,
+pub struct MonadMvba<V: ValidateInput + Votable, C: ValidateCert> {
+    context: MvbaContext,
     validation_context: V::Context,
     input: Option<ProposedInput<V, C>>,
 
@@ -207,7 +209,7 @@ pub(crate) struct MonadMvba<V: ValidateInput + Votable, C: ValidateCert> {
     /// a view and timer fire
     timer_fired: bool,
 
-    outputs: VecDeque<MVBAOutput<Message<V, C>, TimerEvent<V>>>,
+    outputs: VecDeque<MVBAOutput<MvbaMessage<V, C>, TimerEvent<V>>>,
     abandoned: bool,
 }
 
@@ -215,15 +217,15 @@ impl<V, C> Mvba<V> for MonadMvba<V, C>
 where
     V: ValidateInput + Votable,
     C: ValidateCert<Context = V::Context>,
-    Context: MakesValidationContext<V>,
+    MvbaContext: MakesValidationContext<V>,
 {
-    type Message = Message<V, C>;
-    type Context = Context;
+    type Message = MvbaMessage<V, C>;
+    type Context = MvbaContext;
     type TimerEvent = TimerEvent<V>;
     type FallbackCert = C;
     type CommitVote = FallbackCommitVote<V>;
 
-    fn new(context: Context) -> Self {
+    fn new(context: MvbaContext) -> Self {
         let slot = context.slot;
         let validation_context = context.make_validation_context();
         let delta = context.delta;
@@ -271,13 +273,13 @@ where
         assert!(self.context.validator_data.contains(&sender));
 
         match message {
-            Message::PrePrepare(msg) => self.handle_pre_prepare(sender, msg),
-            Message::Prepare(msg) => self.handle_prepare_vote(sender, msg),
-            Message::Commit(msg) => self.handle_commit_vote(sender, msg),
-            Message::Timeout(msg) => self.handle_timeout(sender, msg),
-            Message::CommitQc(qc) => self.handle_commit_qc(qc),
-            Message::BlockRequest(msg) => self.answer_block_request(sender, &msg),
-            Message::BlockResponse(msg) => self.handle_block_response(msg),
+            MvbaMessage::PrePrepare(msg) => self.handle_pre_prepare(sender, msg),
+            MvbaMessage::Prepare(msg) => self.handle_prepare_vote(sender, msg),
+            MvbaMessage::Commit(msg) => self.handle_commit_vote(sender, msg),
+            MvbaMessage::Timeout(msg) => self.handle_timeout(sender, msg),
+            MvbaMessage::CommitQc(qc) => self.handle_commit_qc(qc),
+            MvbaMessage::BlockRequest(msg) => self.answer_block_request(sender, &msg),
+            MvbaMessage::BlockResponse(msg) => self.handle_block_response(msg),
         }
 
         self.try_advance();
@@ -335,7 +337,7 @@ impl<V, C> MonadMvba<V, C>
 where
     V: ValidateInput + Votable,
     C: ValidateCert<Context = V::Context>,
-    Context: MakesValidationContext<V>,
+    MvbaContext: MakesValidationContext<V>,
 {
     fn handle_pre_prepare(&mut self, sender: NodeId, msg: PrePrepareMsg<V, C>) {
         // catching up is allowed past the window: only the TC arm below can
@@ -449,7 +451,7 @@ where
         if let Some(response) = self.block_store.handle_request(request) {
             self.outputs.push_back(MVBAOutput::Unicast {
                 to: sender,
-                message: Message::BlockResponse(response),
+                message: MvbaMessage::BlockResponse(response),
             });
         }
     }
@@ -495,7 +497,7 @@ impl<V, C> MonadMvba<V, C>
 where
     V: ValidateInput + Votable,
     C: ValidateCert<Context = V::Context>,
-    Context: MakesValidationContext<V>,
+    MvbaContext: MakesValidationContext<V>,
 {
     fn is_running(&self) -> bool {
         self.input.is_some() && !self.abandoned && !self.phase.is_decided()
@@ -663,7 +665,7 @@ where
         &mut self,
         phase: Phase<V>,
         transition: Transition<V, C>,
-    ) -> (Phase<V>, Vec<MVBAOutput<Message<V, C>, TimerEvent<V>>>) {
+    ) -> (Phase<V>, Vec<MVBAOutput<MvbaMessage<V, C>, TimerEvent<V>>>) {
         match transition {
             Transition::Proposal(pre_prepare) => self.accept_proposal(phase, pre_prepare),
             Transition::OwnProposalReady(pre_prepare) => self.propose_as_leader(phase, pre_prepare),
@@ -680,7 +682,7 @@ where
         &mut self,
         phase: Phase<V>,
         msg: PrePrepareMsg<V, C>,
-    ) -> (Phase<V>, Vec<MVBAOutput<Message<V, C>, TimerEvent<V>>>) {
+    ) -> (Phase<V>, Vec<MVBAOutput<MvbaMessage<V, C>, TimerEvent<V>>>) {
         let Phase::AwaitingProposal(awaiting) = phase else {
             unreachable!("a proposal transition is only found while awaiting one");
         };
@@ -695,7 +697,7 @@ where
         let vote = self.sign_vote(PrepareVote::<V>(preparing.entries().clone()));
         (
             Phase::Preparing(preparing),
-            vec![MVBAOutput::Broadcast(Message::Prepare(vote))],
+            vec![MVBAOutput::Broadcast(MvbaMessage::Prepare(vote))],
         )
     }
 
@@ -705,7 +707,7 @@ where
         &mut self,
         phase: Phase<V>,
         qc: PrepareQc<V>,
-    ) -> (Phase<V>, Vec<MVBAOutput<Message<V, C>, TimerEvent<V>>>) {
+    ) -> (Phase<V>, Vec<MVBAOutput<MvbaMessage<V, C>, TimerEvent<V>>>) {
         let committing = match phase {
             Phase::Preparing(p) => p.commit(qc.clone()),
             // `preparing_entries` stops looking once the timeout is sent
@@ -722,7 +724,7 @@ where
 
         (
             Phase::Committing(committing),
-            vec![MVBAOutput::Broadcast(Message::Commit(vote))],
+            vec![MVBAOutput::Broadcast(MvbaMessage::Commit(vote))],
         )
     }
 
@@ -732,7 +734,7 @@ where
         phase: Phase<V>,
         commit_qc: FallbackCommitQc<V>,
         block: V,
-    ) -> (Phase<V>, Vec<MVBAOutput<Message<V, C>, TimerEvent<V>>>) {
+    ) -> (Phase<V>, Vec<MVBAOutput<MvbaMessage<V, C>, TimerEvent<V>>>) {
         // `pending_decide` fetched the block by the certificate's entries
         debug_assert_eq!(block.entries(), commit_qc.verdict.0);
         // a decided instance finds no further transitions
@@ -744,7 +746,7 @@ where
         (
             Phase::Decided(Decided::new(commit_qc.clone(), block)),
             vec![
-                MVBAOutput::Broadcast(Message::CommitQc(commit_qc)),
+                MVBAOutput::Broadcast(MvbaMessage::CommitQc(commit_qc)),
                 MVBAOutput::ScheduleTimer {
                     duration: self.context.decided_echo_timeout(),
                     timer_event: TimerEvent::DecidedEcho,
@@ -761,7 +763,7 @@ where
         };
 
         self.outputs
-            .push_back(MVBAOutput::Broadcast(Message::CommitQc(
+            .push_back(MVBAOutput::Broadcast(MvbaMessage::CommitQc(
                 decided.commit_qc().clone(),
             )));
         self.outputs.push_back(MVBAOutput::ScheduleTimer {
@@ -774,7 +776,7 @@ where
     fn advance_view(
         &mut self,
         tc: TimeoutCertificate<V>,
-    ) -> (Phase<V>, Vec<MVBAOutput<Message<V, C>, TimerEvent<V>>>) {
+    ) -> (Phase<V>, Vec<MVBAOutput<MvbaMessage<V, C>, TimerEvent<V>>>) {
         debug_assert!(tc.view >= self.view());
 
         if let Some(qc) = &tc.high_prep_qc {
@@ -793,7 +795,7 @@ where
     fn local_time_out(
         &mut self,
         phase: Phase<V>,
-    ) -> (Phase<V>, Vec<MVBAOutput<Message<V, C>, TimerEvent<V>>>) {
+    ) -> (Phase<V>, Vec<MVBAOutput<MvbaMessage<V, C>, TimerEvent<V>>>) {
         self.timer_fired = false;
         let view = self.view();
 
@@ -821,7 +823,7 @@ where
                 duration: self.context.view_timeout(),
                 timer_event: TimerEvent::ViewTimeout(view),
             },
-            MVBAOutput::Broadcast(Message::Timeout(timeout)),
+            MVBAOutput::Broadcast(MvbaMessage::Timeout(timeout)),
         ];
 
         (phase, outputs)
@@ -834,7 +836,7 @@ where
     fn enter_view(
         &mut self,
         justification: Option<TimeoutCertificate<V>>,
-    ) -> Vec<MVBAOutput<Message<V, C>, TimerEvent<V>>> {
+    ) -> Vec<MVBAOutput<MvbaMessage<V, C>, TimerEvent<V>>> {
         self.timer_fired = false;
         self.entry_tc = justification;
 
@@ -879,10 +881,10 @@ where
         &mut self,
         phase: Phase<V>,
         pre_prepare: PrePrepareMsg<V, C>,
-    ) -> (Phase<V>, Vec<MVBAOutput<Message<V, C>, TimerEvent<V>>>) {
+    ) -> (Phase<V>, Vec<MVBAOutput<MvbaMessage<V, C>, TimerEvent<V>>>) {
         (
             Self::leave_new_view(phase),
-            vec![MVBAOutput::Broadcast(Message::PrePrepare(pre_prepare))],
+            vec![MVBAOutput::Broadcast(MvbaMessage::PrePrepare(pre_prepare))],
         )
     }
 
