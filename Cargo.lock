@@ -5711,9 +5711,11 @@ dependencies = [
 name = "monad-mcp-chorus-sim"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "monad-mcp-chorus",
  "monad-sim",
  "monad-sim-swarm",
+ "tracing",
 ]
 
 [[package]]

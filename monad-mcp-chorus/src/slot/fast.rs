@@ -21,7 +21,7 @@ use itertools::Either;
 use super::{
     fallback::{FallbackPath, MVBAInputs},
     types::{
-        DAHandle, EquivCert, FetchProposalError, IsVote, KeyPair, MerkleRoot, NodeId,
+        DaHandle, EquivCert, FetchProposalError, IsVote, KeyPair, MerkleRoot, NodeId,
         ProposalIndex, ProposalMap, ProposalMeta, ProposerSet, Signature, Slot, StrongQc,
         TotalProposalMap, ValidatorData, VoteMsg, VotePool, WeakQc, dummy_serialize,
     },
@@ -66,7 +66,7 @@ pub struct FastPath {
     validator_data: Arc<ValidatorData>,
 
     // data availability layer handle
-    da: Arc<DAHandle>,
+    da: DaHandle,
 }
 
 impl FastPath {
@@ -75,7 +75,7 @@ impl FastPath {
         proposers: ProposerSet,
         key: Arc<KeyPair>,
         validator_data: Arc<ValidatorData>,
-        da_handle: Arc<DAHandle>,
+        da_handle: DaHandle,
     ) -> Self {
         let num_proposals = proposers.num_indices();
         Self {
@@ -381,8 +381,11 @@ impl FastPath {
     }
 }
 
+/// The verdict on one proposal index: `Positive` carries the merkle root of
+/// the included proposal, `Negative` finalizes the index empty. Part of the
+/// finalization data — downstream consumers (ledger sequencing) read it.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub(crate) enum Entry {
+pub enum Entry {
     Positive { root: MerkleRoot },
     Negative,
 }
@@ -415,7 +418,7 @@ impl BatchVoteMsg {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub(crate) struct FastCommitVote {
+pub struct FastCommitVote {
     pub entries: ProposalMap<Entry>,
 }
 
@@ -446,7 +449,7 @@ impl IsVote for FastCommitVote {
     }
 }
 
-pub(crate) type FastCommitQc = StrongQc<FastCommitVote>;
+pub type FastCommitQc = StrongQc<FastCommitVote>;
 
 // ============ Fallback ===============
 

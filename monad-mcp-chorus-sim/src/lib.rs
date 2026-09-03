@@ -13,8 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+mod da;
 mod node;
 mod swarm;
 
-pub use node::SimNode;
+pub use da::{DaAnnouncement, MockDa, mock_payload, mock_root};
+pub use node::{SimMessage, SimNode};
 pub use swarm::{CadenceSwarm, CadenceSwarmBuilder, FinalizationLog};

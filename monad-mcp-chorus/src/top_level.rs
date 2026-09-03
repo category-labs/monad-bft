@@ -20,9 +20,11 @@
 use super::env;
 
 pub mod conductor;
+pub mod da;
 pub mod driver;
 pub mod proposer_schedule;
 pub mod proposers;
+pub mod proposing;
 pub mod runtime;
 pub mod slot;
 pub mod slot_manager;

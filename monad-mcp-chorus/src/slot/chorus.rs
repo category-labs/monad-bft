@@ -16,6 +16,7 @@
 /// Chorus module for managing single-slot consensus state and logic.
 use std::{collections::VecDeque, sync::Arc};
 
+pub use super::fast::Entry;
 use super::{
     SlotConsensus, SlotOutput,
     fallback::{FallbackPath, MVBAInputs},
@@ -24,7 +25,7 @@ use super::{
         FastCommitQc, FastCommitVoteMsg, FastPath,
     },
     types::{
-        DAHandle, KeyPair, NodeId, ProposalIndex, ProposalMeta, ProposerSchedule, Slot,
+        DaHandle, KeyPair, NodeId, ProposalIndex, ProposalMeta, ProposerSchedule, Slot,
         TimestampDelta, ValidatorData,
     },
 };
@@ -88,7 +89,7 @@ pub struct ChorusConfig {
 pub struct ChorusContext {
     pub key: Arc<KeyPair>,
     pub validator_data: Arc<ValidatorData>,
-    pub da_handle: Arc<DAHandle>,
+    pub da_handle: DaHandle,
     /// Single source of truth for the number of proposals per slot (`K`) and
     /// for who may propose at which proposal index.
     pub proposers: Arc<dyn ProposerSchedule + Send + Sync>,
