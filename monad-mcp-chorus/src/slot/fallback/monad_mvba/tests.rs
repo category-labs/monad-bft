@@ -1902,7 +1902,7 @@ mod toy_value {
 
     use super::super::{
         super::{
-            super::types::{NodeId, ValidatorData, VoteMsg},
+            super::types::{HeaderAuth, NodeId, ValidatorData, VoteMsg},
             MVBAOutput, Mvba, ValidateCert, ValidateInput, Votable,
         },
         MakesValidationContext, MonadMvba, MvbaContext, TimerEvent,
@@ -1963,6 +1963,7 @@ mod toy_value {
             node_id: node,
             key: Arc::new(node.keypair()),
             validator_data: validator_data.clone(),
+            header_auth: Arc::new(HeaderAuth::new(|_, _| None)),
             delta: DELTA,
         })
     }

@@ -21,7 +21,7 @@ use chorus::{
     CadenceDriverMsg,
     conductor::{ConductorConfig, MonadConductor, acs::nop::NopAcs},
     slot::chorus::{Chorus, ChorusConfig, ChorusContext},
-    types::{DAHandle, NodeId, SlotDeadline, Stake, TimestampDelta, ValidatorData},
+    types::{HeaderAuth, NodeId, SlotDeadline, Stake, TimestampDelta, ValidatorData},
 };
 use helper::expect_finalized_at;
 use monad_mcp_chorus::{spec::KeyPair as _, stub as chorus};
@@ -54,7 +54,7 @@ fn add_node(builder: &mut CadenceSwarmBuilder<DummyMsg>, id: u64, val_data: &Arc
         node_id,
         key: Arc::new(node_id.keypair()),
         validator_data: val_data.clone(),
-        da_handle: Arc::new(DAHandle),
+        header_auth: Arc::new(HeaderAuth::new(|_, _| None)),
     };
     let config = ChorusConfig {
         delta: DELTA,

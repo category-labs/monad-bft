@@ -1,0 +1,12 @@
+[package]
+name = "monad-mcp-da"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+enable_stub = ["monad-mcp-chorus/enable_stub"]
+
+[dependencies]
+bytes = { workspace = true }
+
+monad-mcp-chorus = { workspace = true }

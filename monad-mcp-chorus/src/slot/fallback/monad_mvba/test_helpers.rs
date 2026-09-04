@@ -27,8 +27,8 @@ use super::{
         super::{
             fast::{CertifiedEntry, EnterFallbackCert, EnterFallbackVote, Entry, FallbackEntry},
             types::{
-                IsVote, MerkleRoot, NodeId, ProposalMap, Slot, StrongQc, TimestampDelta,
-                ValidatorData, VoteMsg, VotePool, WeakQc,
+                HeaderAuth, IsVote, MerkleRoot, NodeId, ProposalMap, Slot, StrongQc,
+                TimestampDelta, ValidatorData, VoteMsg, VotePool, WeakQc,
             },
         },
         FallbackView, MVBAOutput, Metablock, Mvba,
@@ -37,6 +37,14 @@ use super::{
     block_store::{BlockRequestMsg, BlockResponseMsg},
     messages::{FallbackCommitVote, PrepareVote},
 };
+use crate::env::stub::MerkleHash;
+
+/// A root whose hash spells out `n`, so distinct seeds give distinct roots
+fn root(n: u64) -> MerkleRoot {
+    let mut hash = [0u8; 20];
+    hash[..8].copy_from_slice(&n.to_le_bytes());
+    MerkleRoot(MerkleHash(hash))
+}
 
 // The `V = Metablock` instantiation the existing suite runs on; the toy-value
 // test in `tests` is what pins genericity
@@ -101,6 +109,7 @@ pub(super) fn mvba(node: NodeId, validator_data: &Arc<ValidatorData>) -> MonadMv
         node_id: node,
         key: Arc::new(node.keypair()),
         validator_data: validator_data.clone(),
+        header_auth: Arc::new(HeaderAuth::new(|_, _| None)),
         delta: DELTA,
     })
 }
@@ -109,7 +118,7 @@ pub(super) fn mvba(node: NodeId, validator_data: &Arc<ValidatorData>) -> MonadMv
 /// two metablocks that cannot be confused for one another
 pub(super) fn metablock(seed: u64, validator_data: &ValidatorData) -> Metablock {
     Metablock::new(ProposalMap::new(NUM_PROPOSALS, |j| {
-        let entry = Entry::Positive(MerkleRoot(seed * 100 + j as u64));
+        let entry = Entry::Positive(root(seed * 100 + j as u64));
         let fast_qc = strong_qc((SLOT, j), entry, &quorum(), validator_data);
         CertifiedEntry::FastQc(fast_qc)
     }))
@@ -120,7 +129,7 @@ pub(super) fn metablock(seed: u64, validator_data: &ValidatorData) -> Metablock 
 /// differ only in their evidence
 pub(super) fn mixed_evidence_metablock(seed: u64, validator_data: &ValidatorData) -> Metablock {
     Metablock::new(ProposalMap::new(NUM_PROPOSALS, |j| {
-        let entry = Entry::Positive(MerkleRoot(seed * 100 + j as u64));
+        let entry = Entry::Positive(root(seed * 100 + j as u64));
         if j == 0 {
             let qc = weak_qc((SLOT, j), FallbackEntry(entry), &quorum(), validator_data);
             CertifiedEntry::FallbackQc(qc)

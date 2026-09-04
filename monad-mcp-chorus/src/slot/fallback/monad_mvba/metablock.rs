@@ -17,7 +17,7 @@ use super::{
     super::{
         super::{
             fast::{CertifiedEntry, Entry},
-            types::{ProposalIndex, ProposalMap, Slot, ValidatorData},
+            types::{HeaderAuth, ProposalIndex, ProposalMap, Slot, ValidatorData},
         },
         Metablock, ValidateInput, Votable,
     },
@@ -31,6 +31,7 @@ impl Metablock {
         &self,
         slot: Slot,
         num_proposals: usize,
+        header_auth: &HeaderAuth,
         validator_data: &ValidatorData,
     ) -> bool {
         if self.0.size() != num_proposals {
@@ -41,7 +42,7 @@ impl Metablock {
             .as_ref()
             .into_iter()
             .enumerate()
-            .all(|(j, cert)| certified_entry_is_valid(cert, slot, j, validator_data))
+            .all(|(j, cert)| certified_entry_is_valid(cert, slot, j, header_auth, validator_data))
     }
 
     /// The paper's *fast metablock*: every entry a `FastQc`
@@ -62,7 +63,12 @@ impl ValidateInput for Metablock {
     type Context = ValidationContext;
 
     fn validate(&self, context: &Self::Context) -> bool {
-        self.is_valid(context.slot, context.num_proposals, &context.validator_data)
+        self.is_valid(
+            context.slot,
+            context.num_proposals,
+            &context.header_auth,
+            &context.validator_data,
+        )
     }
 
     fn fbcert_optional(&self) -> bool {
@@ -83,15 +89,16 @@ fn certified_entry_is_valid(
     cert: &CertifiedEntry,
     slot: Slot,
     j: ProposalIndex,
+    header_auth: &HeaderAuth,
     validator_data: &ValidatorData,
 ) -> bool {
     let bound_to_proposer = match cert {
         CertifiedEntry::FastQc(qc) => qc.scope == (slot, j),
         CertifiedEntry::FallbackQc(qc) => qc.scope == (slot, j),
-        // an EquivCert's binding to (slot, j) sits inside the opaque chunk
-        // header, which only `CertifiedEntry::verify` can check
+        // an EquivCert's binding to (slot, j) is checked by `verify`, which
+        // authenticates both headers against the scope
         CertifiedEntry::EquivCert(_) => true,
     };
 
-    bound_to_proposer && cert.verify(validator_data)
+    bound_to_proposer && cert.verify((slot, j), header_auth, validator_data)
 }

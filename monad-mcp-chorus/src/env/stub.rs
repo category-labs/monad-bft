@@ -181,28 +181,87 @@ mod validator {
 }
 
 mod proposal {
-    use crate::spec;
+    use super::NodeId;
+    use crate::{
+        spec,
+        stub::types::{ProposalIndex, Slot},
+    };
 
     #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-    pub struct MerkleRoot(pub u64);
+    pub struct MerkleHash(pub [u8; 20]);
 
-    impl spec::proposal::MerkleRoot for MerkleRoot {}
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+    pub struct MerkleRoot(pub MerkleHash);
+    impl spec::MerkleRoot for MerkleRoot {}
+
+    // stub proposal signature, opaque to consensus
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+    pub struct ProposalSignature(pub u64);
+
+    // the encoding scheme descriptor used by DA. opaque to consensus.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+    pub enum EncodingScheme {
+        D25(D25),
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+    pub struct D25 {
+        pub msg_len: usize,
+        pub unix_ts: u64,
+    }
 
     #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-    pub struct ProposalSignature;
+    pub struct ProposalHeader {
+        pub slot: Slot,
+        pub root: MerkleRoot,
 
-    impl spec::proposal::ProposalSignature for ProposalSignature {}
+        // DA-owned fields. defined here rather than in DA because we
+        // don't want chorus to depend on DA.
+        // todo: we may extract a monad-mcp-da-types crate and depend
+        // on it from monad-mcp-chorus and monad-mcp-da.
+        pub sig: ProposalSignature,
+        pub scheme: EncodingScheme,
+    }
 
-    #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-    pub struct OpaqueChunkHeader;
-
-    impl spec::proposal::ChunkHeader for OpaqueChunkHeader {
+    impl spec::ProposalHeader for ProposalHeader {
         type Root = MerkleRoot;
-        type Sig = ProposalSignature;
 
-        fn validate(&self, _root: &MerkleRoot, _sig: &ProposalSignature) -> bool {
-            // stubbed to always return true for testing purpose
-            true
+        fn slot(&self) -> u64 {
+            self.slot.0
+        }
+
+        fn root(&self) -> &MerkleRoot {
+            &self.root
+        }
+    }
+
+    type ProposerElection = dyn Fn(u64, &NodeId) -> Option<ProposalIndex> + Send + Sync;
+
+    pub struct HeaderAuth {
+        // todo: change to Box<dyn ProposerElection> after moving this to shared types crate.
+        proposer_election: Box<ProposerElection>,
+    }
+
+    impl HeaderAuth {
+        pub fn new<F>(proposer_index: F) -> Self
+        where
+            F: Fn(u64, &NodeId) -> Option<ProposalIndex> + Send + Sync + 'static,
+        {
+            Self {
+                proposer_election: Box::new(proposer_index),
+            }
+        }
+    }
+
+    impl spec::proposal::HeaderAuth for HeaderAuth {
+        type Header = ProposalHeader;
+
+        fn authenticate(&self, header: &ProposalHeader, slot: u64) -> Option<ProposalIndex> {
+            if header.slot.get() != slot {
+                return None;
+            }
+            let signer = NodeId::dummy(header.sig.0);
+            (self.proposer_election)(slot, &signer)
         }
     }
 }
@@ -452,6 +511,6 @@ const _: () = crate::spec::assert_env::<
     SignatureCollection,
     VoteAggregation<'_>,
     MerkleRoot,
-    ProposalSignature,
-    OpaqueChunkHeader,
+    ProposalHeader,
+    HeaderAuth,
 >();

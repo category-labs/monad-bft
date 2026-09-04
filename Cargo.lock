@@ -5717,6 +5717,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-mcp-da"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "monad-mcp-chorus",
+]
+
+[[package]]
 name = "monad-merkle"
 version = "0.1.0"
 dependencies = [

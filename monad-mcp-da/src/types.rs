@@ -13,23 +13,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-pub use crate::env::stub::{
-    HeaderAuth, KeyPair, MerkleRoot, NodeId, ProposalHeader, PubKey, Signature,
-    SignatureCollection, Stake, ValidatorData, VoteAggregation,
+// re-export chorus types
+pub use super::{
+    chorus::{
+        SlotLifecycle,
+        env::MerkleHash,
+        slot::chorus::{ChorusDACommand, ChorusDAEvent},
+        types::{HeaderAuth, NodeId, ProposalHeader, ProposalIndex, Slot, ValidatorData},
+    },
+    env::ProposalKeyPair,
 };
-
-// TODO: fill in the actual production implementation for above types
-
-const _: () = crate::spec::assert_env::<
-    NodeId,
-    Stake,
-    PubKey,
-    KeyPair,
-    Signature,
-    ValidatorData,
-    SignatureCollection,
-    VoteAggregation<'_>,
-    MerkleRoot,
-    ProposalHeader,
-    HeaderAuth,
->();

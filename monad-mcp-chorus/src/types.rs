@@ -25,7 +25,7 @@ use itertools::Either;
 
 // the environment this module subtree is instantiated.
 pub use super::env::{
-    KeyPair, MerkleRoot, NodeId, OpaqueChunkHeader, ProposalSignature, PubKey, Signature,
+    HeaderAuth, KeyPair, MerkleRoot, NodeId, ProposalHeader, PubKey, Signature,
     SignatureCollection, Stake, ValidatorData, VoteAggregation,
 };
 use crate::spec::{
@@ -40,8 +40,13 @@ pub struct Slot(pub u64);
 
 impl Slot {
     pub const FIRST: Self = Slot(0);
-    // the first meaningful slot number
+
+    // the first and last meaningful slot numbers
     pub const MIN: Self = Self::FIRST;
+    pub const MAX: Self = Slot(u64::MAX - 1);
+
+    // the max meaningful slot number used as cap
+    pub const MAX_CAP: Self = Slot(u64::MAX);
 
     pub const fn get(self) -> u64 {
         self.0
@@ -49,6 +54,10 @@ impl Slot {
 
     pub fn checked_add(self, slots: u64) -> Option<Self> {
         self.0.checked_add(slots).map(Self)
+    }
+
+    pub fn checked_sub(self, slots: u64) -> Option<Self> {
+        self.0.checked_sub(slots).map(Self)
     }
 
     pub fn checked_next(self) -> Option<Self> {
@@ -192,13 +201,6 @@ impl Default for WindowId {
     fn default() -> Self {
         Self::FIRST
     }
-}
-
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct ProposalMeta {
-    pub root: MerkleRoot,
-    pub sig: ProposalSignature,
-    pub opaque_header: OpaqueChunkHeader,
 }
 
 // A message with author signature validated.
@@ -573,6 +575,10 @@ impl<T> ProposalMap<T> {
         ProposalMap { values }
     }
 
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
+        self.values.iter_mut()
+    }
+
     pub fn map<F, U>(self, f: F) -> ProposalMap<U>
     where
         F: FnMut(T) -> U,
@@ -668,46 +674,9 @@ impl<T> std::ops::IndexMut<ProposalIndex> for ProposalMap<T> {
 // A helper wrapper type for a type-erased implementation of a trait
 pub struct Erased<T>(pub T);
 
-// A stub implementation of DAHandle that never returns any
-// proposal. used for testing purposes.
-pub struct DAHandle;
-
 // invariant: .0.root != .1.root and both properly signed.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct EquivCert(pub ProposalMeta, pub ProposalMeta);
-
-pub enum FetchProposalError {
-    Absent,
-    Equivocation(EquivCert),
-}
-
-impl DAHandle {
-    pub fn proposal_decoded(&self, _s: Slot, _j: ProposalIndex, _root: &MerkleRoot) -> bool {
-        false
-    }
-
-    /// Info DA about proposals we received through consensus messages (e.g. FallbackSignedEntry)
-    pub fn observe_proposal(&self, _s: Slot, _j: ProposalIndex, _meta: ProposalMeta) {
-        // do nothing
-    }
-
-    pub fn fetch_proposal(
-        &self,
-        _s: Slot,
-        _j: ProposalIndex,
-    ) -> Result<ProposalMeta, FetchProposalError> {
-        // Please do note that there is an potential to have more than
-        // one proposal meta for the same root. This can occur if the
-        // proposer sign the same root with different chunk header
-        // fields (e.g. varying unix_ts_ms).
-        //
-        // Q: How should we deal with this situation? Should we count
-        // it as equivocation? Or should we simply ignore that? Our
-        // current implementation follows the paper which doesn't
-        // currently consider this case as equivocation.
-        Err(FetchProposalError::Absent)
-    }
-}
+pub struct EquivCert(pub ProposalHeader, pub ProposalHeader);
 
 #[cfg(test)]
 mod tests {

@@ -13,23 +13,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-pub use crate::env::stub::{
-    HeaderAuth, KeyPair, MerkleRoot, NodeId, ProposalHeader, PubKey, Signature,
-    SignatureCollection, Stake, ValidatorData, VoteAggregation,
-};
-
-// TODO: fill in the actual production implementation for above types
-
-const _: () = crate::spec::assert_env::<
-    NodeId,
-    Stake,
-    PubKey,
-    KeyPair,
-    Signature,
-    ValidatorData,
-    SignatureCollection,
-    VoteAggregation<'_>,
-    MerkleRoot,
-    ProposalHeader,
-    HeaderAuth,
->();
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InvalidProposalHeader {
+    SlotOutOfRange,
+    // not signed by a proposer of the slot
+    Unauthenticated,
+}

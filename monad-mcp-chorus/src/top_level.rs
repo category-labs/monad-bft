@@ -28,6 +28,6 @@ pub mod types;
 
 pub use conductor::{Conductor, ConductorOutput};
 pub use driver::{CadenceDriver, CadenceDriverMsg, CadenceMessage, Driver, NodeEvent, WakeId};
-pub use runtime::{CadenceRuntime, FinalizationObserver, Runtime};
+pub use runtime::{CadenceRuntime, DASink, FinalizationObserver, Runtime, SlotLifecycle};
 pub use slot::{SlotConsensus, SlotOutput};
 pub use slot_manager::SlotManager;
