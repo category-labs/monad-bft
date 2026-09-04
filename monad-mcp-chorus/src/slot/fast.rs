@@ -180,9 +180,7 @@ impl FastPath {
 
         let votes = self.proposals.as_ref().map(|j| {
             let entry = match self.da.fetch_proposal(self.slot, *j) {
-                Ok(proposal) => Entry::Positive {
-                    root: proposal.root,
-                },
+                Ok(proposal) => Entry::Positive(proposal.root),
                 Err(FetchProposalError::Absent) => Entry::Negative,
                 Err(FetchProposalError::Equivocation(equiv_cert)) => {
                     self.certs[*j].try_upgrade(equiv_cert);
@@ -300,7 +298,7 @@ impl FastPath {
             .into_iter()
             .flatten()
             .filter_map(|qc| match qc.verdict {
-                Entry::Positive { root } => Some(root),
+                Entry::Positive(root) => Some(root),
                 Entry::Negative => None,
             })
             .find(|root| self.da.proposal_decoded(self.slot, j, root))
@@ -364,7 +362,7 @@ impl FastPath {
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Entry {
-    Positive { root: MerkleRoot },
+    Positive(MerkleRoot),
     Negative,
 }
 
@@ -515,7 +513,7 @@ impl FallbackSignedEntry {
         key: &KeyPair,
         meta: ProposalMeta,
     ) -> Self {
-        let entry = FallbackEntry(Entry::Positive { root });
+        let entry = FallbackEntry(Entry::Positive(root));
         let signature = VoteMsg::new_signed(scope, entry.clone(), key).signature;
         Self {
             entry,
@@ -536,7 +534,7 @@ impl FallbackSignedEntry {
 
     fn well_formed(&self) -> bool {
         match &self.entry.0 {
-            Entry::Positive { root } => self.meta.as_ref().is_some_and(|meta| {
+            Entry::Positive(root) => self.meta.as_ref().is_some_and(|meta| {
                 meta.root == *root && meta.opaque_header.validate(&meta.root, &meta.sig)
             }),
             Entry::Negative => self.meta.is_none(),

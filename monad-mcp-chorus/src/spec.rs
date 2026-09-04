@@ -42,10 +42,10 @@ pub mod validator {
         fn nodes(&self) -> impl Iterator<Item = &Self::NodeId>;
         fn contains(&self, node_id: &Self::NodeId) -> bool;
 
-        // the caller must gurantee that the node_id is in the valset.
+        // the caller must guarantee that the node_id is in the valset.
         fn get_pubkey(&self, node_id: &Self::NodeId) -> &Self::PubKey;
 
-        // the caller must gurantee that the node_id is in the valset.
+        // the caller must guarantee that the node_id is in the valset.
         fn get_stake(&self, node_id: &Self::NodeId) -> &Self::Stake;
 
         // the caller must guarantee that the nodes are all in the valset.

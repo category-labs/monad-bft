@@ -92,9 +92,7 @@ mod fixtures {
     /// give two metablocks that cannot be confused for one another
     pub fn fast_metablock(seed: u64, validator_data: &ValidatorData) -> Metablock {
         Metablock::new(ProposalMap::new(NUM_PROPOSALS, |j| {
-            let entry = Entry::Positive {
-                root: MerkleRoot(seed * 100 + j as u64),
-            };
+            let entry = Entry::Positive(MerkleRoot(seed * 100 + j as u64));
             CertifiedEntry::FastQc(strong_qc((SLOT, j), entry, &quorum(), validator_data))
         }))
     }
@@ -104,9 +102,7 @@ mod fixtures {
     /// differ only in their evidence
     pub fn mixed_evidence_metablock(seed: u64, validator_data: &ValidatorData) -> Metablock {
         Metablock::new(ProposalMap::new(NUM_PROPOSALS, |j| {
-            let entry = Entry::Positive {
-                root: MerkleRoot(seed * 100 + j as u64),
-            };
+            let entry = Entry::Positive(MerkleRoot(seed * 100 + j as u64));
             if j == 0 {
                 CertifiedEntry::FallbackQc(weak_qc(
                     (SLOT, j),

@@ -55,8 +55,8 @@ impl Slot {
         self.checked_add(1)
     }
 
-    pub fn checked_sub(self, other: Self) -> Option<u64> {
-        self.0.checked_sub(other.0)
+    pub fn slots_since(self, earlier: Self) -> Option<u64> {
+        self.0.checked_sub(earlier.0)
     }
 }
 
@@ -555,7 +555,7 @@ impl<T> ProposalMap<T> {
         }
     }
 
-    pub(crate) fn new_default(size: usize) -> Self
+    pub fn new_default(size: usize) -> Self
     where
         T: Default,
     {
@@ -568,12 +568,12 @@ impl<T> ProposalMap<T> {
         self.values.len()
     }
 
-    pub(crate) fn as_ref(&self) -> ProposalMap<&T> {
+    pub fn as_ref(&self) -> ProposalMap<&T> {
         let values = self.values.iter().collect();
         ProposalMap { values }
     }
 
-    pub(crate) fn map<F, U>(self, f: F) -> ProposalMap<U>
+    pub fn map<F, U>(self, f: F) -> ProposalMap<U>
     where
         F: FnMut(T) -> U,
     {
@@ -581,7 +581,7 @@ impl<T> ProposalMap<T> {
         ProposalMap { values }
     }
 
-    pub(crate) fn map_indexed<F, U>(self, mut f: F) -> ProposalMap<U>
+    pub fn map_indexed<F, U>(self, mut f: F) -> ProposalMap<U>
     where
         F: FnMut(ProposalIndex, T) -> U,
     {
@@ -610,11 +610,11 @@ impl<T> IntoIterator for ProposalMap<T> {
 
 impl<T> ProposalMap<Option<T>> {
     /// Panics if index out of bounds. The caller must ensure the index is valid.
-    fn set(&mut self, index: ProposalIndex, value: T) {
+    pub fn set(&mut self, index: ProposalIndex, value: T) {
         self.values[index] = Some(value);
     }
 
-    pub(crate) fn try_into_total<S>(self) -> Option<TotalProposalMap<S>>
+    pub fn try_into_total<S>(self) -> Option<TotalProposalMap<S>>
     where
         S: From<T>,
     {
@@ -633,7 +633,7 @@ impl<T> ProposalMap<Option<T>> {
         Some(ProposalMap { values })
     }
 
-    fn into_total<S>(self) -> TotalProposalMap<S>
+    pub fn into_total<S>(self) -> TotalProposalMap<S>
     where
         S: From<Option<T>>,
     {
@@ -642,7 +642,7 @@ impl<T> ProposalMap<Option<T>> {
 }
 
 impl<T> ProposalMap<&T> {
-    pub(crate) fn into_owned(self) -> ProposalMap<T>
+    pub fn into_owned(self) -> ProposalMap<T>
     where
         T: Clone,
     {

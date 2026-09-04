@@ -116,11 +116,11 @@ mod validator {
             }
         }
 
-        pub(super) fn indices(&self) -> &HashMap<NodeId, usize> {
+        pub(crate) fn indices(&self) -> &HashMap<NodeId, usize> {
             &self.indices
         }
 
-        pub(super) fn get_node(&self, index: usize) -> Option<&NodeId> {
+        pub(crate) fn get_node(&self, index: usize) -> Option<&NodeId> {
             self.sorted.get(index)
         }
     }
