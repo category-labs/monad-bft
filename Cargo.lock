@@ -5720,8 +5720,13 @@ dependencies = [
 name = "monad-mcp-da"
 version = "0.1.0"
 dependencies = [
+ "bitvec",
  "bytes",
+ "derive_more",
+ "monad-crypto",
  "monad-mcp-chorus",
+ "monad-merkle",
+ "tracing",
 ]
 
 [[package]]

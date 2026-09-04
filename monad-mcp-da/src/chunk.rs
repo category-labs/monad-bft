@@ -123,3 +123,24 @@ impl ProposalEnvelope {
         (self.header, self.chunks)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        super::test_util::{epoch_handle, proposal_chunks},
+        *,
+    };
+
+    #[test]
+    fn grouping_collects_each_proposal_once() {
+        let epoch_handle = epoch_handle();
+        let (header_a, a) = proposal_chunks(&epoch_handle, 1);
+        let (header_b, b) = proposal_chunks(&epoch_handle, 2);
+
+        let mixed = [a[0].clone(), b[0].clone(), a[1].clone()];
+        let groups: HashMap<_, _> = ProposalEnvelope::group(mixed).collect();
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[&header_a].len(), 2);
+        assert_eq!(groups[&header_b].len(), 1);
+    }
+}

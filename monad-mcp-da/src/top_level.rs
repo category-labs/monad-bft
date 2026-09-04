@@ -15,12 +15,23 @@
 
 use super::{env, env::chorus};
 
+mod assignment;
 mod chunk;
+mod chunk_tree;
+mod egress;
+mod election;
+mod encoding_scheme;
 mod header;
+mod instance_rc;
+mod layout;
+mod proposer_rc;
 mod runtime;
 mod slot_rc;
+#[cfg(test)]
+mod test_util;
 mod types;
 mod util;
 
 pub use chunk::{Chunk, ProposalEnvelope};
+pub use egress::Dissemination;
 pub use runtime::{DAConfig, DAOutput, DARuntime, EpochHandle};

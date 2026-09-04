@@ -7,6 +7,11 @@ edition = "2024"
 enable_stub = ["monad-mcp-chorus/enable_stub"]
 
 [dependencies]
+bitvec = { workspace = true }
 bytes = { workspace = true }
+derive_more = { workspace = true, features = ["into"] }
+tracing = { workspace = true }
 
+monad-crypto = { workspace = true }
 monad-mcp-chorus = { workspace = true }
+monad-merkle = { workspace = true }

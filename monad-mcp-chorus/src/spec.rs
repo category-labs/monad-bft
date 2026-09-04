@@ -32,14 +32,23 @@ pub mod validator {
 
         // floor(1/3 * self)
         fn honest_threshold(&self) -> Self;
+
+        // Proportional claim on shares discrete shares, as the
+        // quotient and remainder of shares * (self / total). The
+        // caller must guarantee that total is non-zero.
+        fn obligation(&self, total: &Self, shares: usize) -> (usize, usize);
     }
 
+    #[expect(clippy::len_without_is_empty)]
     pub trait ValidatorData {
         type NodeId: NodeId;
         type PubKey: super::vote::PubKey;
         type Stake: Stake;
 
+        // iterate through the validators in a stable order across
+        // all nodes.
         fn nodes(&self) -> impl Iterator<Item = &Self::NodeId>;
+        fn len(&self) -> usize;
         fn contains(&self, node_id: &Self::NodeId) -> bool;
 
         // the caller must guarantee that the node_id is in the valset.

@@ -66,6 +66,12 @@ mod validator {
         fn honest_threshold(&self) -> Self {
             Self(self.0 / 3)
         }
+
+        fn obligation(&self, total: &Self, shares: usize) -> (usize, usize) {
+            let prod = self.0 as u128 * shares as u128;
+            let total = total.0 as u128;
+            ((prod / total) as usize, (prod % total) as usize)
+        }
     }
 
     // invariant: valset/mapping have exactly the same key set, and
@@ -132,6 +138,10 @@ mod validator {
 
         fn nodes(&self) -> impl Iterator<Item = &NodeId> {
             self.sorted.iter()
+        }
+
+        fn len(&self) -> usize {
+            self.sorted.len()
         }
 
         fn contains(&self, node_id: &NodeId) -> bool {

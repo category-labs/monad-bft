@@ -19,13 +19,17 @@ use std::{
     sync::Arc,
 };
 
+use bytes::Bytes;
+
 use super::{
     chunk::{Chunk, ProposalEnvelope},
+    egress::Dissemination,
+    election::ProposerElection,
     header::InvalidProposalHeader,
     slot_rc::SlotRaptorcast,
     types::{
-        ChorusDACommand, ChorusDAEvent, HeaderAuth, NodeId, ProposalKeyPair, Slot, SlotLifecycle,
-        ValidatorData,
+        ChorusDACommand, ChorusDAEvent, HeaderAuth, MerkleRoot, NodeId, ProposalDAEvent,
+        ProposalIndex, ProposalKeyPair, Slot, SlotLifecycle, ValidatorData,
     },
     util::SlotCompletion,
 };
@@ -51,11 +55,13 @@ pub struct DAConfig {
     pub completed_slot_retention: u64,
 }
 
-pub struct DARuntime {
+pub struct DARuntime<E> {
     config: DAConfig,
     // todo: make epoch_handle slot dependent
     epoch_handle: EpochHandle,
     raptorcast_map: BTreeMap<Slot, SlotRaptorcast>,
+
+    election: Arc<E>,
 
     // inclusive start, exclusive end
     ingestion_window: Range<Slot>,
@@ -64,10 +70,14 @@ pub struct DARuntime {
     outbox: VecDeque<DAOutput>,
 }
 
-impl DARuntime {
-    pub fn new(config: DAConfig, epoch_handle: EpochHandle) -> Self {
+impl<E> DARuntime<E>
+where
+    E: ProposerElection,
+{
+    pub fn new(config: DAConfig, epoch_handle: EpochHandle, election: Arc<E>) -> Self {
         Self {
             config,
+            election,
             epoch_handle,
             raptorcast_map: Default::default(),
             // todo: set the lower bound with finalization certificate
@@ -93,15 +103,33 @@ impl DARuntime {
         Ok(())
     }
 
-    // move the slot's pending events to the outbox
+    // move the slot's pending events and messages to the outbox
     fn collect(&mut self, slot: Slot) {
         let Some(slot_raptorcast) = self.raptorcast_map.get_mut(&slot) else {
             return;
         };
 
+        let mut outputs = Vec::new();
         for event in slot_raptorcast.drain_events() {
-            self.outbox.push_back(DAOutput::Consensus(slot, event));
+            if let ProposalDAEvent::Decoded(root) = &event.event {
+                let message = slot_raptorcast
+                    .decoded_message(event.j, root)
+                    .expect("decoded event implies a decoded message")
+                    .clone();
+                outputs.push(DAOutput::Decoded {
+                    slot,
+                    proposal_index: event.j,
+                    root: *root,
+                    message,
+                });
+            }
+
+            outputs.push(DAOutput::Consensus(slot, event));
         }
+        for message in slot_raptorcast.drain_messages() {
+            outputs.push(DAOutput::Disseminate(message));
+        }
+        self.outbox.extend(outputs);
     }
 
     // the slot's raptorcast, created on first use. None once the slot
@@ -114,7 +142,7 @@ impl DARuntime {
         let slot_raptorcast = self
             .raptorcast_map
             .entry(slot)
-            .or_insert_with(|| SlotRaptorcast::new(&self.epoch_handle, slot));
+            .or_insert_with(|| SlotRaptorcast::new(&self.epoch_handle, slot, &*self.election));
         Some(slot_raptorcast)
     }
 
@@ -164,4 +192,132 @@ impl DARuntime {
 pub enum DAOutput {
     // notification for the consensus layer's slot instance
     Consensus(Slot, ChorusDAEvent),
+
+    // the message decoded under (slot, proposal_index, root), for the
+    // layer that recovers proposals
+    Decoded {
+        slot: Slot,
+        proposal_index: ProposalIndex,
+        root: MerkleRoot,
+        message: Bytes,
+    },
+
+    // deliver a proposal's chunks (possibly only its header) to peers
+    Disseminate(Dissemination),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        super::test_util::{
+            MESSAGE_LEN, Proposers, SLOT, author, epoch_handle, group, proposal_chunks,
+            proposal_chunks_from,
+        },
+        *,
+    };
+
+    fn runtime(retention: u64) -> DARuntime<Proposers> {
+        let config = DAConfig {
+            completed_slot_retention: retention,
+        };
+        let election = Arc::new(Proposers::new(vec![author()]));
+        DARuntime::new(config, epoch_handle(), election)
+    }
+
+    fn open(runtime: &mut DARuntime<Proposers>, slots: impl IntoIterator<Item = u64>) {
+        for slot in slots {
+            runtime.handle_slot_event(Slot(slot), SlotLifecycle::Opened);
+        }
+    }
+
+    fn outputs(runtime: &mut DARuntime<Proposers>) -> Vec<DAOutput> {
+        let mut outputs = Vec::new();
+        while let Some(output) = runtime.poll() {
+            outputs.push(output);
+        }
+        outputs
+    }
+
+    #[test]
+    fn ingestion_is_bounded_by_the_opened_slots() {
+        let mut runtime = runtime(1);
+        let epoch_handle = epoch_handle();
+        let (_, chunks) = proposal_chunks(&epoch_handle, 1);
+
+        let closed = runtime.ingest(group(&chunks[..1]));
+        assert_eq!(closed, Err(InvalidProposalHeader::SlotOutOfRange));
+
+        open(&mut runtime, [0, 1]);
+        assert_eq!(runtime.ingest(group(&chunks[..1])), Ok(()));
+
+        let (_, later) = proposal_chunks_from(&epoch_handle, 0, Slot(5), 1);
+        let beyond = runtime.ingest(group(&later[..1]));
+        assert_eq!(beyond, Err(InvalidProposalHeader::SlotOutOfRange));
+    }
+
+    #[test]
+    fn completed_slots_are_kept_for_the_retention_then_dropped() {
+        let mut runtime = runtime(1);
+        let epoch_handle = epoch_handle();
+        open(&mut runtime, [0, 1, 2]);
+        let (_, slot0) = proposal_chunks_from(&epoch_handle, 0, Slot(0), 1);
+        let (_, slot1) = proposal_chunks_from(&epoch_handle, 0, Slot(1), 1);
+        assert_eq!(runtime.ingest(group(&slot0[..1])), Ok(()));
+        assert_eq!(runtime.ingest(group(&slot1[..1])), Ok(()));
+
+        // completing 1 before 0 retires nothing
+        runtime.handle_slot_event(Slot(1), SlotLifecycle::Completed);
+        assert_eq!(runtime.ingest(group(&slot0[1..2])), Ok(()));
+
+        // the cap reaches 2: slot 0 leaves the retention window, slot 1 stays
+        runtime.handle_slot_event(Slot(0), SlotLifecycle::Completed);
+        let retired = runtime.ingest(group(&slot0[2..3]));
+        assert_eq!(retired, Err(InvalidProposalHeader::SlotOutOfRange));
+        assert_eq!(runtime.ingest(group(&slot1[1..2])), Ok(()));
+    }
+
+    #[test]
+    fn a_decode_reaches_execution_then_consensus_then_the_wire() {
+        let mut runtime = runtime(1);
+        let epoch_handle = epoch_handle();
+        open(&mut runtime, [0, 1]);
+        runtime.handle_command(SLOT, ChorusDACommand::ReleaseChunks);
+        let (header, chunks) = proposal_chunks(&epoch_handle, 1);
+        runtime.ingest(group(&chunks[..3])).expect("valid");
+
+        let mut decoded_at = None;
+        let mut consensus_decoded_at = None;
+        let mut disseminated_at = Vec::new();
+        for (i, output) in outputs(&mut runtime).iter().enumerate() {
+            match output {
+                DAOutput::Decoded {
+                    slot,
+                    proposal_index,
+                    root,
+                    message,
+                } => {
+                    assert_eq!((*slot, *proposal_index, *root), (SLOT, 0, header.root));
+                    assert_eq!(message, &Bytes::from(vec![1u8; MESSAGE_LEN]));
+                    decoded_at = Some(i);
+                }
+                DAOutput::Consensus(slot, event) => {
+                    assert_eq!(*slot, SLOT);
+                    if event.event == ProposalDAEvent::Decoded(header.root) {
+                        consensus_decoded_at = Some(i);
+                    }
+                }
+                DAOutput::Disseminate(dissemination) => {
+                    // our chunk 0 on arrival and 3 once derivable, one message
+                    let ids: Vec<_> = dissemination.envelope.chunks().keys().copied().collect();
+                    assert_eq!(ids, [0, 3]);
+                    disseminated_at.push(i);
+                }
+            }
+        }
+
+        let decoded_at = decoded_at.expect("the message is delivered");
+        assert_eq!(consensus_decoded_at, Some(decoded_at + 1));
+        assert_eq!(disseminated_at.len(), 1);
+        assert!(disseminated_at[0] > decoded_at);
+    }
 }
