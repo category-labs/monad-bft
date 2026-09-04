@@ -1,0 +1,55 @@
+#!/usr/bin/env sh
+set -eu
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+
+# --- pinned monad-execution submodule ---
+if [ ! -f "$root_dir/monad-execution/CMakeLists.txt" ]; then
+  echo "Initializing the pinned monad-execution submodule..." >&2
+  git -C "$root_dir" submodule update --init --recursive monad-execution
+fi
+
+# --- toolchain (matches the Jenkins release build, in the docker/builder image) ---
+export CC="${CC:-gcc-15}"
+export CXX="${CXX:-g++-15}"
+export RUSTFLAGS="${RUSTFLAGS:--C force-frame-pointers=yes -C target-cpu=haswell}"
+export TRIEDB_TARGET="${TRIEDB_TARGET:-triedb_driver}"
+# Arch flags reach the cargo build only; the cmake toolchain file owns its own.
+asmflags="${ASMFLAGS:--march=haswell}"
+cflags="${CFLAGS:--march=haswell}"
+cxxflags="${CXXFLAGS:--march=haswell}"
+
+# --- version stamping ---
+# monad-node and monad-rpc read MONAD_VERSION at compile time via option_env!.
+if [ -z "${MONAD_VERSION:-}" ] && [ -n "${PACKAGE_VERSION:-}" ]; then
+  export MONAD_VERSION="$PACKAGE_VERSION"
+fi
+
+cd "$root_dir"
+
+# --- rust binaries ---
+ASMFLAGS="$asmflags" CFLAGS="$cflags" \
+CXXFLAGS="$cxxflags -DQUILL_ACTIVE_LOG_LEVEL=QUILL_LOG_LEVEL_CRITICAL" \
+cargo build --locked --release \
+  --bin monad-node \
+  --bin monad-keystore \
+  --bin monad-debug-node \
+  --bin monad-rpc \
+  --bin monad-archiver \
+  --bin monad-archive-checker \
+  --bin monad-indexer \
+  --bin monad-block-writer \
+  --example ledger-tail \
+  --example wal2json \
+  --example triedb-bench \
+  --example sign-name-record \
+  --example txgen
+
+# --- standalone execution binaries (cmake) ---
+cmake -S monad-execution -B monad-execution/build \
+  -G "${CMAKE_GENERATOR:-Ninja}" \
+  -DCMAKE_TOOLCHAIN_FILE:STRING="$root_dir/monad-execution/category/core/toolchains/gcc-avx2.cmake" \
+  -DCMAKE_BUILD_TYPE:STRING="${CMAKE_BUILD_TYPE:-RelWithDebInfo}" \
+  -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE
+
+cmake --build monad-execution/build --target all

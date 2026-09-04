@@ -1,0 +1,126 @@
+#!/usr/bin/env sh
+set -eu
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+output_dir=${DEB_OUTPUT_DIR:-"$root_dir/dist"}
+strip_symbols=${STRIP_SYMBOLS:-0}
+# Stage outside target/, which is a shared cache mount in container builds.
+stage_root=$(mktemp -d)
+trap 'rm -rf "$stage_root"' EXIT
+stage_dir="$stage_root/debian/monad"
+
+# --- version ---
+version=${PACKAGE_VERSION:-$("$root_dir/scripts/package-version")}
+case "$version" in
+  *[!0-9A-Za-z.+:~\-]*) echo "Invalid Debian version: $version" >&2; exit 2 ;;
+esac
+
+cd "$root_dir"
+
+# --- build ---
+PACKAGE_VERSION="$version" "$root_dir/scripts/build-binaries"
+
+# --- stage binaries ---
+mkdir -p "$stage_dir/DEBIAN" "$stage_dir/usr/local/bin" "$stage_dir/usr/local/lib"
+
+# Install binaries under the names the fleet expects: the ledger-tail,
+# sign-name-record, and txgen examples gain a monad- prefix.
+while read -r source name; do
+  install -m 0755 "$source" "$stage_dir/usr/local/bin/$name"
+done <<EOF
+target/release/monad-node monad-node
+target/release/monad-keystore monad-keystore
+target/release/monad-debug-node monad-debug-node
+target/release/monad-rpc monad-rpc
+target/release/monad-archiver monad-archiver
+target/release/monad-archive-checker monad-archive-checker
+target/release/monad-indexer monad-indexer
+target/release/monad-block-writer monad-block-writer
+target/release/examples/ledger-tail monad-ledger-tail
+target/release/examples/sign-name-record monad-sign-name-record
+target/release/examples/txgen monad-txgen
+target/release/examples/wal2json wal2json
+target/release/examples/triedb-bench triedb-bench
+monad-execution/build/category/mpt/monad-mpt monad-mpt
+monad-execution/build/cmd/monad monad
+monad-execution/build/cmd/monad-cli monad-cli
+EOF
+
+# --- stage libraries ---
+# Bundle libtriedb_driver.so, which is loaded with dlopen at runtime and so
+# never appears as a declared dependency, plus every library that the staged
+# binaries or the driver resolve from inside this source tree. Those are
+# build products the target host does not have. ldd lists dependencies
+# transitively, so one pass is enough, and dpkg-shlibdeps below fails the
+# build if anything is missed here.
+triedb=$(find target/release -name 'libtriedb_driver.so' -exec ls -Lt {} + | head -n 1)
+test -n "$triedb" || { echo "libtriedb_driver.so not found under target/release" >&2; exit 2; }
+cp "$triedb" "$stage_dir/usr/local/lib/"
+libs=$(ldd "$stage_dir"/usr/local/bin/* "$triedb" \
+  | awk -v root="$root_dir/" '$2 == "=>" && index($3, root) == 1 { print $3 }' \
+  | sort -u)
+seen=" "
+for lib in $libs; do
+  base=${lib##*/}
+  case $seen in
+    *" $base "*)
+      # libkeccak.so is built identically by both cargo-driven cmake trees.
+      if [ "$base" != "libkeccak.so" ]; then
+        echo "Bundled library basename collision: $base ($lib)" >&2
+        exit 2
+      fi
+      ;;
+  esac
+  seen="$seen$base "
+  cp "$lib" "$stage_dir/usr/local/lib/"
+done
+
+# The 26.04 builder's libsecp256k1 soname exists on no fleet host; bundle it like Jenkins.
+secp=/usr/lib/x86_64-linux-gnu/libsecp256k1.so.6
+if [ -e "$secp" ]; then
+  cp -L "$secp" "$stage_dir/usr/local/lib/"
+fi
+
+if [ "$strip_symbols" = 1 ]; then
+  find "$stage_dir/usr/local/bin" -type f -exec strip --strip-all {} \;
+  find "$stage_dir/usr/local/lib" -type f -name '*.so*' -exec strip --strip-unneeded {} \;
+fi
+
+# --- check linkage & compute library dependencies ---
+# Strip build-tree runpaths, then run dpkg-shlibdeps to generate Depends.
+#
+# For every library our binaries need, dpkg-shlibdeps locates the file and
+# maps it to a package: our own libraries (such as libtriedb_driver.so)
+# resolve inside the debian/monad staging tree and need no Depends entry;
+# system libraries become versioned Depends.
+#
+# Runpaths into the build tree have to go first, or a library that's absent
+# on the target host still resolves here and the check passes wrongly.
+# Installed binaries find their libraries through ldconfig instead.
+find "$stage_dir/usr/local/bin" "$stage_dir/usr/local/lib" -type f \
+  -exec patchelf --remove-rpath {} \;
+
+# dpkg-shlibdeps only warns about libraries it cannot find, so fail on them here.
+unresolved=$(LD_LIBRARY_PATH="$stage_dir/usr/local/lib" \
+  ldd "$stage_dir"/usr/local/bin/* "$stage_dir"/usr/local/lib/*.so* 2>/dev/null \
+  | grep 'not found' || true)
+if [ -n "$unresolved" ]; then
+  printf 'Unresolved shared libraries after staging:\n%s\n' "$unresolved" >&2
+  exit 2
+fi
+
+printf 'Source: monad\n\nPackage: monad\nArchitecture: amd64\nDescription: stub\n' \
+  > "$stage_root/debian/control"
+lib_deps=$(cd "$stage_root" && dpkg-shlibdeps -O \
+  debian/monad/usr/local/bin/* debian/monad/usr/local/lib/*.so*)
+lib_deps=${lib_deps#shlibs:Depends=}
+
+# --- debian metadata ---
+cp -a debian/. "$stage_dir/"
+sed -e "s/@PACKAGE_VERSION@/$version/" -e "s%@DEPENDS@%$lib_deps%" \
+  debian/DEBIAN/control.in > "$stage_dir/DEBIAN/control"
+rm "$stage_dir/DEBIAN/control.in"
+
+# --- package ---
+mkdir -p "$output_dir"
+dpkg-deb --root-owner-group --build "$stage_dir" "$output_dir/monad_${version}_amd64.deb"
