@@ -15,23 +15,25 @@
 
 mod decoding_tracker;
 mod obligation_tracker;
+mod recovery_tracker;
 
 use std::collections::HashSet;
 
 use bytes::Bytes;
 use decoding_tracker::DecodingTracker;
 use obligation_tracker::ObligationTracker;
+use recovery_tracker::ChunkRecoveryTracker;
 
 use super::{
     assignment::{ChunkAssignment, ChunkId, ChunkRouting, NodeIndex, Upstream},
-    chunk::{ChunkData, WireChunkId},
+    chunk::{ChunkData, ChunkRequest, ChunksSubset, WireChunkId},
     chunk_tree::ChunkTree,
     egress::ChunkEgress,
     encoding_scheme::{DAEncodingScheme as _, SymbolDecoder},
     header::DAProposalHeader as _,
     layout::PacketLayout,
     runtime::EpochHandle,
-    types::{NodeId, ProposalDAEvent, ProposalHeader},
+    types::{ChunkRequestType, NodeId, ProposalDAEvent, ProposalHeader},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,6 +63,7 @@ pub(crate) struct RaptorcastInstance {
     decoder: Box<dyn SymbolDecoder>,
     decoding_tracker: DecodingTracker,
     obligation_tracker: ObligationTracker,
+    recovery_tracker: ChunkRecoveryTracker,
 }
 
 impl RaptorcastInstance {
@@ -82,12 +85,14 @@ impl RaptorcastInstance {
         let decoding_tracker = DecodingTracker::new(num_chunks, decoding_threshold);
 
         let obligation_tracker = ObligationTracker::new(&assignment, self_index);
+        let recovery_tracker = ChunkRecoveryTracker::new(num_chunks);
 
         Self {
             decoding_outcome,
             decoder,
             decoding_tracker,
             obligation_tracker,
+            recovery_tracker,
 
             layout,
             assignment,
@@ -178,6 +183,64 @@ impl RaptorcastInstance {
         Ok(event)
     }
 
+    // serve the requester the requested chunks we hold, once each
+    pub(crate) fn handle_chunk_request(
+        &mut self,
+        requester: &NodeId,
+        request: ChunkRequest,
+        egress: &mut ChunkEgress,
+    ) {
+        let Some(requester_index) = self.assignment.index_of(requester) else {
+            // requester not in chunk assignment, not responding
+            return;
+        };
+        let requested =
+            Self::requested_chunks(&self.assignment, self.self_index, requester_index, request);
+
+        for chunk_id in requested {
+            if !self.chunk_tree.contains(chunk_id) {
+                continue;
+            }
+            if !self.recovery_tracker.try_serve(requester, chunk_id) {
+                continue;
+            }
+            self.enqueue(chunk_id, &HashSet::from([*requester]), egress);
+        }
+    }
+
+    // the request to peers for chunks of the type
+    pub(crate) fn chunk_request(
+        &self,
+        request_type: ChunkRequestType,
+        peer: &NodeId,
+    ) -> Option<ChunkRequest> {
+        if !self.accepting_chunks() {
+            // already decoded/failed, not requesting more chunks.
+            return None;
+        }
+
+        // outside the assignment we own nothing to ask for
+        let owner = request_type.owner(self.self_index, self.assignment.index_of(peer))?;
+
+        let mut missing = vec![];
+        for routing in self.assignment.owned_chunks(owner) {
+            let chunk_id = routing.chunk_id();
+            if !self.chunk_tree.contains(chunk_id) {
+                missing.push(chunk_id);
+            }
+        }
+
+        if missing.is_empty() {
+            // no chunk is missing, so no request is needed.
+            return None;
+        }
+
+        Some(ChunkRequest {
+            kind: request_type,
+            subset: ChunksSubset::narrowed(missing),
+        })
+    }
+
     fn try_decode(&mut self) -> Option<ProposalDAEvent> {
         if !self.decoding_tracker.ready() {
             return None;
@@ -250,6 +313,26 @@ impl RaptorcastInstance {
             .expect("caller ensures the chunk is held");
         egress.enqueue(to, &self.header, chunk_id.to_wire(), data);
     }
+
+    // the chunks a recovery request resolves to. Out-of-range ids are
+    // dropped.
+    fn requested_chunks(
+        assignment: &ChunkAssignment,
+        server: Option<NodeIndex>,
+        requester: NodeIndex,
+        request: ChunkRequest,
+    ) -> Vec<ChunkId> {
+        let ChunkRequest { kind, subset } = request;
+        // outside the assignment we own nothing
+        let Some(owner) = kind.owner(Some(requester), server) else {
+            return vec![];
+        };
+
+        let owned = assignment
+            .owned_chunks(owner)
+            .map(|routing| routing.chunk_id());
+        subset.restrict(owned).collect()
+    }
 }
 
 #[cfg(test)]
@@ -260,7 +343,8 @@ mod tests {
         super::{
             chunk::Chunk,
             test_util::{
-                MESSAGE_LEN, author, epoch_handle, inconsistent_proposal_chunks, proposal_chunks,
+                MESSAGE_LEN, author, epoch_handle, epoch_handle_for, inconsistent_proposal_chunks,
+                proposal_chunks,
             },
         },
         *,
@@ -297,6 +381,10 @@ mod tests {
         }
         ids.sort();
         ids
+    }
+
+    fn all(kind: ChunkRequestType) -> ChunkRequest {
+        ChunkRequest::all(kind)
     }
 
     #[test]
@@ -365,6 +453,10 @@ mod tests {
 
         assert!(!instance.accepting_chunks());
         assert!(instance.decoded_message().is_none());
+        assert_eq!(
+            instance.chunk_request(ChunkRequestType::YourChunks, &NodeId::dummy(2)),
+            None
+        );
         // later chunks are ignored
         assert_eq!(ingest(&mut instance, &chunks[4], &mut egress), Ok(None));
 
@@ -402,6 +494,41 @@ mod tests {
         // node 2 owns 1 and 4: one of them settles nothing
         ingest(&mut instance, &chunks[1], &mut egress).expect("valid");
         assert!(instance.drain_obligation_events().is_empty());
+    }
+
+    #[test]
+    fn outside_the_assignment_decodes_without_owning_anything() {
+        // validator 9 is not in the validator set
+        let epoch_handle = epoch_handle_for(NodeId::dummy(9), 4, vec![author()]);
+        let (header, chunks) = proposal_chunks(&epoch_handle, 1);
+        let mut instance = instance(&epoch_handle, &header);
+        let mut egress = released();
+        let peer = NodeId::dummy(2);
+
+        // nothing of ours to ask for, but theirs can be asked
+        assert_eq!(
+            instance.chunk_request(ChunkRequestType::MyChunks, &peer),
+            None
+        );
+        assert!(
+            instance
+                .chunk_request(ChunkRequestType::YourChunks, &peer)
+                .is_some()
+        );
+
+        for chunk in &chunks[..3] {
+            ingest(&mut instance, chunk, &mut egress).expect("valid");
+        }
+        assert!(instance.decoded_message().is_some());
+        // nothing owned, nothing forwarded
+        assert!(sent(&mut egress).is_empty());
+
+        // nothing of ours to serve, but once decoded theirs is derivable
+        let requester = NodeId::dummy(3);
+        instance.handle_chunk_request(&requester, all(ChunkRequestType::YourChunks), &mut egress);
+        assert!(sent(&mut egress).is_empty());
+        instance.handle_chunk_request(&requester, all(ChunkRequestType::MyChunks), &mut egress);
+        assert_eq!(sent(&mut egress), [2, 5]);
     }
 
     #[test]

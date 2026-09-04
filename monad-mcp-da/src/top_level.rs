@@ -32,6 +32,6 @@ mod test_util;
 mod types;
 mod util;
 
-pub use chunk::{Chunk, ProposalEnvelope};
+pub use chunk::{Chunk, ChunkRequest, ProposalEnvelope};
 pub use egress::Dissemination;
-pub use runtime::{DAConfig, DAOutput, DARuntime, EpochHandle};
+pub use runtime::{ChunkRecoveryRequest, DAConfig, DAOutput, DARuntime, EpochHandle};

@@ -19,13 +19,13 @@ use bytes::Bytes;
 use monad_mcp_chorus::spec::validator::ValidatorData as _;
 
 use super::{
-    chunk::ProposalEnvelope,
+    chunk::{ChunkRequest, ProposalEnvelope},
     egress::ChunkEgress,
     encoding_scheme::DAEncodingScheme as _,
     header::{DAProposalHeader as _, InvalidProposalHeader},
     instance_rc::RaptorcastInstance,
     runtime::EpochHandle,
-    types::{MerkleRoot, NodeId, ProposalDAEvent, ProposalHeader},
+    types::{ChunkRequestType, MerkleRoot, NodeId, ProposalDAEvent, ProposalHeader},
 };
 
 // per-(slot, proposer) raptorcast: root-keyed
@@ -142,12 +142,42 @@ impl ProposerRaptorcast {
     fn can_admit_unpinned(&self) -> bool {
         self.instances.keys().all(|root| self.pinned.contains(root))
     }
+
+    pub(crate) fn handle_chunk_request(
+        &mut self,
+        requester: &NodeId,
+        root: &MerkleRoot,
+        request: ChunkRequest,
+        egress: &mut ChunkEgress,
+    ) {
+        let Some(instance) = self.instances.get_mut(root) else {
+            return;
+        };
+        instance.handle_chunk_request(requester, request, egress);
+    }
+
+    pub(crate) fn chunk_request(
+        &self,
+        root: &MerkleRoot,
+        request_type: ChunkRequestType,
+        peer: &NodeId,
+    ) -> Option<ChunkRequest> {
+        let Some(instance) = self.instances.get(root) else {
+            // without the header there is no assignment to narrow by
+            return Some(ChunkRequest::all(request_type));
+        };
+        instance.chunk_request(request_type, peer)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        super::test_util::{epoch_handle, group, proposal_chunks},
+        super::{
+            chunk::ChunksSubset,
+            egress::Dissemination,
+            test_util::{chunk_id, epoch_handle, group, proposal_chunks},
+        },
         *,
     };
 
@@ -356,5 +386,115 @@ mod tests {
             .expect("well-formed header");
         let events = instance.drain_events();
         assert!(events.contains(&ProposalDAEvent::Decoded(header_b.root)));
+    }
+
+    #[test]
+    fn own_chunk_recovery_serves_the_requesters_chunks() {
+        let epoch_handle = epoch_handle();
+        let mut egress = released_egress();
+        let (header, chunks) = proposal_chunks(&epoch_handle, 1);
+
+        let mut instance = ProposerRaptorcast::new(NodeId::dummy(0));
+        instance
+            .ingest(group(&chunks[..3]), &epoch_handle, &mut egress)
+            .expect("well-formed header");
+        // discard the rebroadcast of our own chunks
+        egress.drain();
+
+        // node 3 asks without naming ids; it owns 2 of the 6 chunks
+        let requester = NodeId::dummy(3);
+        let my_chunks = || ChunkRequest::all(ChunkRequestType::MyChunks);
+        instance.handle_chunk_request(&requester, &header.root, my_chunks(), &mut egress);
+        let recovered = egress.drain();
+        let [Dissemination { to, envelope }] = &recovered[..] else {
+            panic!("recovery unicasts to the requester");
+        };
+        assert_eq!(*to, HashSet::from([requester]));
+        assert_eq!(envelope.chunks().len(), 2);
+
+        // served once
+        instance.handle_chunk_request(&requester, &header.root, my_chunks(), &mut egress);
+        assert!(egress.drain().is_empty());
+    }
+
+    #[test]
+    fn your_chunk_recovery_serves_what_we_hold_before_decoding() {
+        let epoch_handle = epoch_handle();
+        let mut egress = released_egress();
+        let (header, chunks) = proposal_chunks(&epoch_handle, 1);
+
+        // chunk ids 0 and 3 are ours (validator 1); ingesting ids 0
+        // and 1 is short of the decoding threshold
+        let mut instance = ProposerRaptorcast::new(NodeId::dummy(0));
+        instance
+            .ingest(group(&chunks[..2]), &epoch_handle, &mut egress)
+            .expect("well-formed header");
+        assert!(instance.decoded_message(&header.root).is_none());
+        // discard the rebroadcast of our own chunk
+        egress.drain();
+
+        let requester = NodeId::dummy(3);
+        let your_chunks = ChunkRequest::all(ChunkRequestType::YourChunks);
+        instance.handle_chunk_request(&requester, &header.root, your_chunks, &mut egress);
+        let recovered = egress.drain();
+        let [Dissemination { to, envelope }] = &recovered[..] else {
+            panic!("recovery unicasts to the requester");
+        };
+        assert_eq!(*to, HashSet::from([requester]));
+        assert_eq!(envelope.chunks().keys().copied().collect::<Vec<_>>(), [0]);
+
+        // the requester's own chunks (ids 2 and 5) are not held yet
+        let my_chunks = ChunkRequest::all(ChunkRequestType::MyChunks);
+        instance.handle_chunk_request(&requester, &header.root, my_chunks, &mut egress);
+        assert!(egress.drain().is_empty());
+    }
+
+    #[test]
+    fn requests_narrow_to_the_missing_chunks_once_the_assignment_is_known() {
+        let epoch_handle = epoch_handle();
+        let mut egress = released_egress();
+        let (header, chunks) = proposal_chunks(&epoch_handle, 1);
+        let mut instance = ProposerRaptorcast::new(NodeId::dummy(0));
+
+        // without the header every request is for the full set
+        let peer = NodeId::dummy(2);
+        let request = instance.chunk_request(&header.root, ChunkRequestType::YourChunks, &peer);
+        assert_eq!(
+            request,
+            Some(ChunkRequest::all(ChunkRequestType::YourChunks))
+        );
+
+        // holding ids 0 and 1: node 2 still owes id 4, we still miss
+        // our own id 3
+        instance
+            .ingest(group(&chunks[..2]), &epoch_handle, &mut egress)
+            .expect("well-formed header");
+        let request = instance.chunk_request(&header.root, ChunkRequestType::YourChunks, &peer);
+        let expected = ChunksSubset::narrowed([chunk_id(&epoch_handle, &header, 4)]);
+        assert_eq!(
+            request,
+            Some(ChunkRequest {
+                kind: ChunkRequestType::YourChunks,
+                subset: expected
+            })
+        );
+
+        let request = instance.chunk_request(&header.root, ChunkRequestType::MyChunks, &peer);
+        let expected = ChunksSubset::narrowed([chunk_id(&epoch_handle, &header, 3)]);
+        assert_eq!(
+            request,
+            Some(ChunkRequest {
+                kind: ChunkRequestType::MyChunks,
+                subset: expected
+            })
+        );
+
+        // decoded: nothing left to ask for
+        instance
+            .ingest(group(&chunks[2..3]), &epoch_handle, &mut egress)
+            .expect("well-formed header");
+        assert!(instance.decoded_message(&header.root).is_some());
+        let request = instance.chunk_request(&header.root, ChunkRequestType::YourChunks, &peer);
+        assert_eq!(request, None);
     }
 }

@@ -23,12 +23,13 @@ use bytes::Bytes;
 use monad_mcp_chorus::spec::{validator::ValidatorData as _, vote::KeyPair as _};
 
 use super::{
-    assignment::ChunkAssignment,
+    assignment::{ChunkAssignment, ChunkId},
     chorus::env::{D25, EncodingScheme, ProposalSignature},
-    chunk::{Chunk, ProposalEnvelope},
+    chunk::{Chunk, ProposalEnvelope, WireChunkId},
     chunk_tree::ChunkTree,
     election::ProposerElection,
     encoding_scheme::DAEncodingScheme as _,
+    header::DAProposalHeader as _,
     layout::PacketLayout,
     runtime::EpochHandle,
     types::{
@@ -181,6 +182,24 @@ pub(crate) fn inconsistent_proposal_chunks(
     }
     let tree = ChunkTree::complete(&layout, symbols).expect("fits the layout");
     chunks_of(&tree, &assignment, SLOT, 0)
+}
+
+// the verified id of a wire chunk id under the header's assignment
+pub(crate) fn chunk_id(
+    epoch_handle: &EpochHandle,
+    header: &ProposalHeader,
+    wire: WireChunkId,
+) -> ChunkId {
+    let validator_data = &epoch_handle.validator_data;
+    let scheme = header.encoding_scheme();
+    let layout = scheme
+        .packet_layout(validator_data.len())
+        .expect("fits a layout");
+    let assignment = scheme.chunk_assignment(&layout, &author(), validator_data);
+    assignment
+        .resolve_chunk_id(wire)
+        .expect("in range")
+        .chunk_id()
 }
 
 pub(crate) fn group(chunks: &[Chunk]) -> ProposalEnvelope {

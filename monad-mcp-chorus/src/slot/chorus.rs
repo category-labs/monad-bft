@@ -376,9 +376,12 @@ impl Chorus {
         self.broadcast(fast_block);
     }
 
-    // finalize on a fast commit certificate
+    // finalize on a fast commit certificate. the slot closes on
+    // finalization, so committed roots are pulled first.
     fn finalize_fast(&mut self, qc: FastCommitQc) {
         self.broadcast(qc.clone());
+        self.fast.recover_committed(&qc);
+        self.drain_da_commands();
         self.finalize(qc);
     }
 
@@ -491,5 +494,53 @@ mod tests {
 
         // nothing is available, so the all-negative vote pins no root
         assert_eq!(commands, vec![ChorusDACommand::ReleaseChunks]);
+    }
+
+    #[test]
+    fn commit_certificate_pulls_before_finalizing() {
+        use super::super::{
+            fast::{Entry, FastCommitVote},
+            types::{MerkleRoot, ProposalMap, VoteMsg, VotePool},
+        };
+        use crate::env::stub::MerkleHash;
+
+        let config = ChorusConfig {
+            delta: TimestampDelta::from_millis(100),
+            num_proposals: 1,
+        };
+        let context = ChorusContext {
+            node_id: NodeId::dummy(1),
+            key: Arc::new(NodeId::dummy(1).keypair()),
+            validator_data: Arc::new(validator_data(4)),
+            header_auth: Arc::new(HeaderAuth::new(|_, _| None)),
+        };
+        let mut chorus = Chorus::new(Slot(1), &config, &context);
+
+        // a commit qc on an undecoded root, signed by validators 0, 2, 3
+        let root = MerkleRoot(MerkleHash([1; 20]));
+        let entries = ProposalMap::new(1, |_| Entry::Positive(root));
+        let mut pool = VotePool::new(Slot(1));
+        for id in [0, 2, 3] {
+            let voter = NodeId::dummy(id);
+            let vote = FastCommitVote {
+                entries: entries.clone(),
+            };
+            pool.add_vote(voter, VoteMsg::new_signed(Slot(1), vote, &voter.keypair()));
+        }
+        let qc = pool
+            .try_form_strong_qc(&context.validator_data)
+            .expect("three of four votes form a commit qc");
+        chorus.handle_message(NodeId::dummy(0), Message::FastCommitQc(qc));
+
+        // the pull is emitted before the finalization that closes the slot
+        let mut order = Vec::new();
+        while let Some(output) = chorus.poll() {
+            match output {
+                SlotOutput::DA(ChorusDACommand::RecoverChunks { .. }) => order.push("pull"),
+                SlotOutput::Finalize(_) => order.push("finalize"),
+                _ => {}
+            }
+        }
+        assert_eq!(order, ["pull", "finalize"]);
     }
 }

@@ -331,6 +331,11 @@ where
         self.votes.keys()
     }
 
+    // the distinct votes cast, each with its voters
+    pub fn buckets(&self) -> impl Iterator<Item = (&V, &HashSet<NodeId>)> {
+        self.buckets.iter()
+    }
+
     pub fn try_aggregate(
         &self,
         target_stake: Stake,

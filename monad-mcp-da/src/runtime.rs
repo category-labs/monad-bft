@@ -22,7 +22,7 @@ use std::{
 use bytes::Bytes;
 
 use super::{
-    chunk::{Chunk, ProposalEnvelope},
+    chunk::{Chunk, ChunkRequest, ProposalEnvelope},
     egress::Dissemination,
     election::ProposerElection,
     header::InvalidProposalHeader,
@@ -68,6 +68,14 @@ pub struct DARuntime<E> {
     slot_completion: SlotCompletion,
 
     outbox: VecDeque<DAOutput>,
+}
+
+pub struct ChunkRecoveryRequest {
+    pub slot: Slot,
+    pub proposal_index: ProposalIndex,
+    pub root: MerkleRoot,
+
+    pub request: ChunkRequest,
 }
 
 impl<E> DARuntime<E>
@@ -146,6 +154,22 @@ where
         Some(slot_raptorcast)
     }
 
+    pub fn handle_chunk_request(&mut self, from: &NodeId, req: ChunkRecoveryRequest) {
+        let ChunkRecoveryRequest {
+            slot,
+            proposal_index,
+            root,
+            request,
+        } = req;
+
+        let Some(slot_raptorcast) = self.raptorcast_map.get_mut(&slot) else {
+            return;
+        };
+
+        slot_raptorcast.handle_chunk_request(from, proposal_index, root, request);
+        self.collect(slot);
+    }
+
     pub fn handle_slot_event(&mut self, slot: Slot, event: SlotLifecycle) {
         match event {
             SlotLifecycle::Opened => {
@@ -204,14 +228,23 @@ pub enum DAOutput {
 
     // deliver a proposal's chunks (possibly only its header) to peers
     Disseminate(Dissemination),
+
+    // request chunks from a peer
+    RecoveryRequest {
+        to: NodeId,
+        request: ChunkRecoveryRequest,
+    },
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        super::test_util::{
-            MESSAGE_LEN, Proposers, SLOT, author, epoch_handle, group, proposal_chunks,
-            proposal_chunks_from,
+        super::{
+            test_util::{
+                MESSAGE_LEN, Proposers, SLOT, author, epoch_handle, group, proposal_chunks,
+                proposal_chunks_from,
+            },
+            types::ChunkRequestType,
         },
         *,
     };
@@ -312,6 +345,7 @@ mod tests {
                     assert_eq!(ids, [0, 3]);
                     disseminated_at.push(i);
                 }
+                DAOutput::RecoveryRequest { .. } => panic!("nothing to recover"),
             }
         }
 
@@ -319,5 +353,46 @@ mod tests {
         assert_eq!(consensus_decoded_at, Some(decoded_at + 1));
         assert_eq!(disseminated_at.len(), 1);
         assert!(disseminated_at[0] > decoded_at);
+    }
+
+    #[test]
+    fn recovery_requests_skip_ourselves_and_unknown_slots_are_ignored() {
+        let mut runtime = runtime(1);
+        let epoch_handle = epoch_handle();
+        open(&mut runtime, [0, 1]);
+        let (header, _) = proposal_chunks(&epoch_handle, 1);
+
+        let voters = vec![NodeId::dummy(1), NodeId::dummy(2), NodeId::dummy(3)];
+        let command = ChorusDACommand::RecoverChunks {
+            j: 0,
+            root: header.root,
+            request_type: ChunkRequestType::YourChunks,
+            voters,
+        };
+        runtime.handle_command(SLOT, command);
+
+        let mut peers = Vec::new();
+        for output in outputs(&mut runtime) {
+            let DAOutput::RecoveryRequest { to, request } = output else {
+                panic!("only requests are produced");
+            };
+            assert_eq!((request.slot, request.proposal_index), (SLOT, 0));
+            assert_eq!(request.root, header.root);
+            assert_eq!(
+                request.request,
+                ChunkRequest::all(ChunkRequestType::YourChunks)
+            );
+            peers.push(to);
+        }
+        assert_eq!(peers, [NodeId::dummy(2), NodeId::dummy(3)]);
+
+        let unknown_slot = ChunkRecoveryRequest {
+            slot: Slot(7),
+            proposal_index: 0,
+            root: header.root,
+            request: ChunkRequest::all(ChunkRequestType::YourChunks),
+        };
+        runtime.handle_chunk_request(&NodeId::dummy(2), unknown_slot);
+        assert!(outputs(&mut runtime).is_empty());
     }
 }

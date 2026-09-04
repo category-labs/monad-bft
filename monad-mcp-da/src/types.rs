@@ -18,7 +18,7 @@ pub use super::{
     chorus::{
         SlotLifecycle,
         env::MerkleHash,
-        slot::chorus::{ChorusDACommand, ChorusDAEvent, ProposalDAEvent},
+        slot::chorus::{ChorusDACommand, ChorusDAEvent, ChunkRequestType, ProposalDAEvent},
         types::{
             HeaderAuth, MerkleRoot, NodeId, ProposalHeader, ProposalIndex, ProposalMap, Slot,
             Stake, ValidatorData,

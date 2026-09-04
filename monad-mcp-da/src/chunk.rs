@@ -13,15 +13,62 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use bytes::Bytes;
 
-use super::types::{MerkleHash, ProposalHeader};
+use super::{
+    assignment::ChunkId,
+    types::{ChunkRequestType, MerkleHash, ProposalHeader},
+};
 
 // a chunk id as carried on the wire, not yet checked against an
 // assignment.
 pub type WireChunkId = u16;
+
+// the chunks of the type (your-chunks/my-chunks)
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum ChunksSubset {
+    All,
+    // non-empty. todo: allow empty to request the header alone.
+    Narrowed(BTreeSet<WireChunkId>),
+}
+
+impl ChunksSubset {
+    // the caller must ensure chunk_ids is not empty.
+    pub fn narrowed(chunk_ids: impl IntoIterator<Item = ChunkId>) -> Self {
+        let chunk_ids: BTreeSet<_> = chunk_ids.into_iter().map(ChunkId::to_wire).collect();
+        assert!(!chunk_ids.is_empty());
+        Self::Narrowed(chunk_ids)
+    }
+
+    pub fn restrict<'a>(
+        &'a self,
+        chunk_ids: impl IntoIterator<Item = ChunkId> + 'a,
+    ) -> impl Iterator<Item = ChunkId> + 'a {
+        chunk_ids.into_iter().filter(move |id| match self {
+            Self::All => true,
+            Self::Narrowed(named) => named.contains(&id.to_wire()),
+        })
+    }
+}
+
+// the chunks of one owner, the requester's or the peer's
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ChunkRequest {
+    pub(crate) kind: ChunkRequestType,
+    pub(crate) subset: ChunksSubset,
+}
+
+impl ChunkRequest {
+    // the full set of chunks of the kind
+    pub(crate) fn all(kind: ChunkRequestType) -> Self {
+        Self {
+            kind,
+            subset: ChunksSubset::All,
+        }
+    }
+}
 
 // the chunk-specific half of a chunk: what remains after the shared
 // proposal header and the chunk id are factored out.
@@ -142,5 +189,21 @@ mod tests {
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[&header_a].len(), 2);
         assert_eq!(groups[&header_b].len(), 1);
+    }
+
+    #[test]
+    fn restrict_keeps_the_named_ids() {
+        let ids = [
+            ChunkId::unchecked(1),
+            ChunkId::unchecked(2),
+            ChunkId::unchecked(3),
+        ];
+
+        let all: Vec<_> = ChunksSubset::All.restrict(ids).collect();
+        assert_eq!(all, ids);
+
+        let narrowed = ChunksSubset::narrowed([ChunkId::unchecked(2), ChunkId::unchecked(9)]);
+        let kept: Vec<_> = narrowed.restrict(ids).collect();
+        assert_eq!(kept, [ChunkId::unchecked(2)]);
     }
 }
