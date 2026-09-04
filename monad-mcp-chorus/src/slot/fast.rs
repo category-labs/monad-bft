@@ -20,12 +20,12 @@ use itertools::Either;
 
 use super::{
     availability::ProposalAvailability,
-    chorus::{ChorusDACommand, ChorusDAEvent},
+    chorus::{ChorusDACommand, ChorusDAEvent, ProposalDAEvent},
     fallback::Metablock,
     types::{
-        EquivCert, HeaderAuth, IsVote, KeyPair, MerkleRoot, NodeId, ProposalHeader, ProposalIndex,
-        ProposalMap, Signature, Slot, StrongQc, TotalProposalMap, ValidatorData, VoteMsg, VotePool,
-        WeakQc, dummy_serialize,
+        EquivCert, GatedVotePool, GatingRoot, HeaderAuth, IsVote, KeyPair, MerkleRoot, NodeId,
+        ProposalHeader, ProposalIndex, ProposalMap, Signature, Slot, StrongQc, TotalProposalMap,
+        ValidatorData, VoteMsg, VotePool, WeakQc, dummy_serialize,
     },
 };
 use crate::spec::{Stake as _, proposal::HeaderAuth as _, validator::ValidatorData as _};
@@ -51,11 +51,11 @@ pub struct FastPath {
     certs: ProposalMap<LocalCertifiedEntry>,
     phase: Phase,
 
-    votes: ProposalMap<VotePool<Entry>>,
+    votes: ProposalMap<GatedVotePool<Entry>>,
     commit_votes: VotePool<FastCommitVote>,
 
     enter_fallback_votes: VotePool<EnterFallbackVote>,
-    fallback_entry_votes: ProposalMap<VotePool<FallbackEntry>>,
+    fallback_entry_votes: ProposalMap<GatedVotePool<FallbackEntry>>,
 
     // helper field to construct per-proposal values
     proposals: ProposalMap<ProposalIndex>,
@@ -83,12 +83,14 @@ impl FastPath {
         Self {
             slot: s,
 
-            votes: ProposalMap::new(num_proposals, |j| VotePool::new((s, j))),
+            votes: ProposalMap::new(num_proposals, |j| GatedVotePool::new(VotePool::new((s, j)))),
             certs: ProposalMap::new_default(num_proposals),
             commit_votes: VotePool::new(s),
 
             enter_fallback_votes: VotePool::new(s),
-            fallback_entry_votes: ProposalMap::new(num_proposals, |j| VotePool::new((s, j))),
+            fallback_entry_votes: ProposalMap::new(num_proposals, |j| {
+                GatedVotePool::new(VotePool::new((s, j)))
+            }),
 
             phase: Phase::Propose,
             proposals: ProposalMap::new(num_proposals, |j| j),
@@ -109,15 +111,33 @@ impl FastPath {
         self.commands.push_back(command);
     }
 
-    // an equivocation certificate can complete the fast block
+    // admission of gated votes can complete the fast block
     #[must_use]
     pub(crate) fn handle_da_event(&mut self, event: ChorusDAEvent) -> Option<FastBlock> {
         let ChorusDAEvent { j, event } = event;
+
+        match &event {
+            ProposalDAEvent::OwnerObligationFulfilled { owner, root } => {
+                self.votes[j].open(*owner, *root);
+            }
+            ProposalDAEvent::Decoded(root) => {
+                // decode implies possession of every chunk, so it
+                // satisfies both admission gates
+                self.votes[j].open_all(*root);
+                self.fallback_entry_votes[j].open_all(*root);
+            }
+            ProposalDAEvent::ProposerObligationFulfilled(root) => {
+                self.fallback_entry_votes[j].open_all(*root);
+            }
+            _ => {}
+        }
 
         if let Some(cert) = self.availability[j].ingest(event) {
             self.certs[j].try_upgrade(cert);
         }
 
+        self.try_form_fast_qc(j);
+        self.try_form_fallback_qc(j);
         self.try_cast_fast_commit_vote()
     }
 
@@ -292,8 +312,8 @@ impl FastPath {
         // do we have at least 2f+1 valid vote messages?
         //
         // todo: handle invalid signatures
-        let has_enough_votes = self.votes.as_ref().into_iter().all(|pool| {
-            let voter_stake = self.validator_data.sum_stake(pool.all_voters());
+        let has_enough_votes = self.votes.as_ref().into_iter().all(|votes| {
+            let voter_stake = self.validator_data.sum_stake(votes.pool().all_voters());
             voter_stake > self.validator_data.total_stake().supermajority_threshold()
         });
         if !has_enough_votes {
@@ -384,7 +404,10 @@ impl FastPath {
     // find a merkle root for proposer j with f+1 positive votes that is
     // locally decoded, so we can cast a positive fallback entry
     fn weak_available_root(&self, j: ProposalIndex) -> Option<MerkleRoot> {
-        let candidates = match self.votes[j].try_form_weak_qc(&self.validator_data)? {
+        let candidates = match self.votes[j]
+            .pool()
+            .try_form_weak_qc(&self.validator_data)?
+        {
             Either::Left(qc) => [Some(qc), None],
             Either::Right((qc1, qc2)) => [Some(qc1), Some(qc2)],
         };
@@ -405,7 +428,10 @@ impl FastPath {
             return;
         }
 
-        let weak_qc = match self.fallback_entry_votes[j].try_form_weak_qc(&self.validator_data) {
+        let weak_qc = match self.fallback_entry_votes[j]
+            .pool()
+            .try_form_weak_qc(&self.validator_data)
+        {
             None => return,
             Some(Either::Left(qc)) => qc,
             Some(Either::Right((qc1, qc2))) => {
@@ -449,7 +475,10 @@ impl FastPath {
             return;
         }
 
-        if let Some(fast_qc) = self.votes[j].try_form_strong_qc(&self.validator_data) {
+        if let Some(fast_qc) = self.votes[j]
+            .pool()
+            .try_form_strong_qc(&self.validator_data)
+        {
             self.certs[j].try_upgrade(fast_qc);
         }
     }
@@ -466,6 +495,15 @@ impl IsVote for Entry {
 
     fn serialize(&self, scope: &Self::Scope) -> Bytes {
         dummy_serialize(self, scope)
+    }
+}
+
+impl GatingRoot for Entry {
+    fn gating_root(&self) -> Option<MerkleRoot> {
+        match self {
+            Entry::Positive(root) => Some(*root),
+            Entry::Negative => None,
+        }
     }
 }
 
@@ -533,6 +571,12 @@ impl IsVote for FallbackEntry {
 
     fn serialize(&self, scope: &Self::Scope) -> Bytes {
         dummy_serialize(self, scope)
+    }
+}
+
+impl GatingRoot for FallbackEntry {
+    fn gating_root(&self) -> Option<MerkleRoot> {
+        self.0.gating_root()
     }
 }
 
@@ -726,10 +770,7 @@ pub type EnterFallbackCert = StrongQc<EnterFallbackVote>;
 #[cfg(test)]
 mod tests {
     use super::{
-        super::{
-            chorus::ProposalDAEvent,
-            types::{Stake, ValidatorData},
-        },
+        super::types::{Stake, ValidatorData},
         *,
     };
     use crate::{

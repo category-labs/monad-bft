@@ -458,6 +458,133 @@ where
     }
 }
 
+pub trait GatingRoot {
+    fn gating_root(&self) -> Option<MerkleRoot>;
+}
+
+// Admission state for one voter
+#[derive(Clone)]
+struct Gate<V>
+where
+    V: IsVote,
+{
+    open_roots: HashSet<MerkleRoot>,
+    held: Option<VoteMsg<V>>,
+}
+
+impl<V> Default for Gate<V>
+where
+    V: IsVote,
+{
+    fn default() -> Self {
+        Self {
+            open_roots: HashSet::new(),
+            held: None,
+        }
+    }
+}
+
+impl<V> Gate<V>
+where
+    V: IsVote + GatingRoot,
+{
+    fn release(&mut self, root: MerkleRoot) -> Option<VoteMsg<V>> {
+        let claim_open = self
+            .held
+            .as_ref()
+            .is_some_and(|msg| msg.vote.gating_root() == Some(root));
+        if !claim_open {
+            return None;
+        }
+        self.held.take()
+    }
+}
+
+// the fate of a vote added to a GatedVotePool
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Admission {
+    Admitted,
+    // suspended until its root opens for the voter
+    Held,
+    // the voter already has a vote suspended
+    Dropped,
+}
+
+// VotePool with admission control
+#[derive(Clone)]
+pub struct GatedVotePool<V>
+where
+    V: IsVote + GatingRoot,
+{
+    pool: VotePool<V>,
+    gates: HashMap<NodeId, Gate<V>>,
+    open_roots: HashSet<MerkleRoot>,
+}
+
+impl<V> GatedVotePool<V>
+where
+    V: IsVote + GatingRoot,
+{
+    pub fn new(pool: VotePool<V>) -> Self {
+        Self {
+            pool,
+            gates: HashMap::new(),
+            open_roots: HashSet::new(),
+        }
+    }
+
+    pub fn add_vote(&mut self, node_id: NodeId, msg: VoteMsg<V>) -> Admission {
+        let gate = self.gates.entry(node_id).or_default();
+        if gate.held.is_some() {
+            // already holding a vote, ignore new ones
+            return Admission::Dropped;
+        }
+
+        let admissible = match msg.vote.gating_root() {
+            None => true, // e.g. negative vote; always admitted
+            Some(root) => self.open_roots.contains(&root) || gate.open_roots.contains(&root),
+        };
+
+        if !admissible {
+            gate.held = Some(msg);
+            return Admission::Held;
+        }
+        self.pool.add_vote(node_id, msg);
+        Admission::Admitted
+    }
+
+    pub fn open(&mut self, node_id: NodeId, root: MerkleRoot) {
+        let gate = self.gates.entry(node_id).or_default();
+        gate.open_roots.insert(root);
+
+        if let Some(msg) = gate.release(root) {
+            self.pool.add_vote(node_id, msg);
+        }
+    }
+
+    pub fn open_all(&mut self, root: MerkleRoot) {
+        self.open_roots.insert(root);
+
+        for (node_id, gate) in &mut self.gates {
+            if let Some(msg) = gate.release(root) {
+                self.pool.add_vote(*node_id, msg);
+            }
+        }
+    }
+
+    pub fn pool(&self) -> &VotePool<V> {
+        &self.pool
+    }
+
+    // the suspended votes, as (voter, root claimed)
+    pub fn held(&self) -> impl Iterator<Item = (NodeId, MerkleRoot)> + '_ {
+        self.gates.iter().filter_map(|(node_id, gate)| {
+            let root = gate.held.as_ref()?.vote.gating_root()?;
+            Some((*node_id, root))
+        })
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct VoteMsg<V>
 where
@@ -945,5 +1072,118 @@ mod tests {
         assert_eq!(WindowId::FIRST, WindowId(0));
         assert_eq!(WindowId::default(), WindowId(0));
         assert_eq!(WindowId(0).to_index(), Some(0));
+    }
+
+    #[derive(Clone, PartialEq, Eq, Hash, Debug)]
+    enum ClaimVote {
+        Claiming(MerkleRoot),
+        Free,
+    }
+
+    impl IsVote for ClaimVote {
+        type Scope = Slot;
+
+        fn serialize(&self, scope: &Self::Scope) -> bytes::Bytes {
+            dummy_serialize(self, scope)
+        }
+    }
+
+    impl GatingRoot for ClaimVote {
+        fn gating_root(&self) -> Option<MerkleRoot> {
+            match self {
+                ClaimVote::Claiming(root) => Some(*root),
+                ClaimVote::Free => None,
+            }
+        }
+    }
+
+    fn gated_pool() -> GatedVotePool<ClaimVote> {
+        GatedVotePool::new(VotePool::new(Slot(1)))
+    }
+
+    fn root(byte: u8) -> MerkleRoot {
+        crate::env::stub::MerkleRoot(crate::env::stub::MerkleHash([byte; 20]))
+    }
+
+    fn signed(id: u64, vote: ClaimVote) -> (NodeId, VoteMsg<ClaimVote>) {
+        let node = crate::env::stub::NodeId::dummy(id);
+        let msg = VoteMsg::new_signed(Slot(1), vote, &node.keypair());
+        (node, msg)
+    }
+
+    fn admitted(pool: &GatedVotePool<ClaimVote>) -> usize {
+        pool.pool().all_voters().count()
+    }
+
+    #[test]
+    fn free_votes_admit_immediately() {
+        let mut pool = gated_pool();
+        let (node, msg) = signed(1, ClaimVote::Free);
+
+        pool.add_vote(node, msg);
+        assert_eq!(admitted(&pool), 1);
+    }
+
+    #[test]
+    fn claiming_vote_suspends_until_matching_evidence() {
+        let mut pool = gated_pool();
+        let (node, msg) = signed(1, ClaimVote::Claiming(root(1)));
+
+        pool.add_vote(node, msg);
+        assert_eq!(admitted(&pool), 0);
+
+        // evidence for a different root does not release the vote
+        pool.open(node, root(2));
+        assert_eq!(admitted(&pool), 0);
+
+        pool.open(node, root(1));
+        assert_eq!(admitted(&pool), 1);
+    }
+
+    #[test]
+    fn evidence_before_vote_admits_on_arrival() {
+        let mut pool = gated_pool();
+        let (node, msg) = signed(1, ClaimVote::Claiming(root(1)));
+
+        pool.open(node, root(1));
+        pool.add_vote(node, msg);
+        assert_eq!(admitted(&pool), 1);
+    }
+
+    #[test]
+    fn open_all_is_pool_wide_and_root_scoped() {
+        let mut pool = gated_pool();
+        let (n1, m1) = signed(1, ClaimVote::Claiming(root(1)));
+        let (n2, m2) = signed(2, ClaimVote::Claiming(root(1)));
+        let (n3, m3) = signed(3, ClaimVote::Claiming(root(2)));
+
+        pool.add_vote(n1, m1);
+        pool.add_vote(n2, m2);
+        pool.add_vote(n3, m3);
+        assert_eq!(admitted(&pool), 0);
+
+        pool.open_all(root(1));
+        assert_eq!(admitted(&pool), 2);
+
+        // future votes on the opened root admit immediately
+        let (n4, m4) = signed(4, ClaimVote::Claiming(root(1)));
+        pool.add_vote(n4, m4);
+        assert_eq!(admitted(&pool), 3);
+    }
+
+    #[test]
+    fn first_held_vote_wins() {
+        let mut pool = gated_pool();
+        let (node, held) = signed(1, ClaimVote::Claiming(root(1)));
+        pool.add_vote(node, held);
+
+        // a later vote is dropped while one is suspended, even an
+        // immediately admissible one
+        let (_, second) = signed(1, ClaimVote::Free);
+        pool.add_vote(node, second);
+        assert_eq!(admitted(&pool), 0);
+
+        pool.open(node, root(1));
+        assert_eq!(admitted(&pool), 1);
     }
 }

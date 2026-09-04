@@ -14,14 +14,16 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 mod decoding_tracker;
+mod obligation_tracker;
 
 use std::collections::HashSet;
 
 use bytes::Bytes;
 use decoding_tracker::DecodingTracker;
+use obligation_tracker::ObligationTracker;
 
 use super::{
-    assignment::{ChunkAssignment, ChunkId, ChunkRouting, NodeIndex},
+    assignment::{ChunkAssignment, ChunkId, ChunkRouting, NodeIndex, Upstream},
     chunk::{ChunkData, WireChunkId},
     chunk_tree::ChunkTree,
     egress::ChunkEgress,
@@ -58,6 +60,7 @@ pub(crate) struct RaptorcastInstance {
     decoding_outcome: DecodingOutcome,
     decoder: Box<dyn SymbolDecoder>,
     decoding_tracker: DecodingTracker,
+    obligation_tracker: ObligationTracker,
 }
 
 impl RaptorcastInstance {
@@ -78,10 +81,13 @@ impl RaptorcastInstance {
         let decoding_threshold = layout.num_source_chunks();
         let decoding_tracker = DecodingTracker::new(num_chunks, decoding_threshold);
 
+        let obligation_tracker = ObligationTracker::new(&assignment, self_index);
+
         Self {
             decoding_outcome,
             decoder,
             decoding_tracker,
+            obligation_tracker,
 
             layout,
             assignment,
@@ -102,6 +108,22 @@ impl RaptorcastInstance {
         Some(message)
     }
 
+    pub(crate) fn drain_obligation_events(&mut self) -> Vec<ProposalDAEvent> {
+        let root = self.header.root;
+        let mut events = Vec::new();
+        for upstream in self.obligation_tracker.drain_fulfilled() {
+            let event = match upstream {
+                Upstream::Author => ProposalDAEvent::ProposerObligationFulfilled(root),
+                Upstream::Owner(owner) => ProposalDAEvent::OwnerObligationFulfilled {
+                    owner: *self.assignment.node(owner),
+                    root,
+                },
+            };
+            events.push(event);
+        }
+        events
+    }
+
     pub(crate) fn ingest_chunk(
         &mut self,
         chunk_id: WireChunkId,
@@ -117,6 +139,12 @@ impl RaptorcastInstance {
             // chunk id is out of range
             return Err(InvalidChunk::InvalidChunkId);
         };
+
+        // None if the chunk is not routed to us: accepted, but credited
+        // to no obligation.
+        let upstream = self
+            .self_index
+            .and_then(|receiver| routing.upstream(receiver));
 
         let chunk_id = routing.chunk_id();
         if self.decoding_tracker.already_received(chunk_id) {
@@ -136,7 +164,8 @@ impl RaptorcastInstance {
         self.decoder.ingest(chunk_id, &data.symbol);
         self.chunk_tree.insert(chunk_id, data);
 
-        // track decoding
+        // track decoding & obligation
+        self.obligation_tracker.mark(upstream);
         self.decoding_tracker.mark(chunk_id);
 
         // try rebroadcast & decode
@@ -342,6 +371,37 @@ mod tests {
         // our chunk 0 went out on arrival; nothing is derivable from an
         // invalid proposal
         assert_eq!(sent(&mut egress), [0]);
+    }
+
+    #[test]
+    fn our_obligation_from_the_author_completes_with_our_last_chunk() {
+        let epoch_handle = epoch_handle();
+        let (header, chunks) = proposal_chunks(&epoch_handle, 1);
+        let mut instance = instance(&epoch_handle, &header);
+        let mut egress = released();
+
+        // the chunkless author owes nothing from the start
+        let author_owes_nothing = ProposalDAEvent::OwnerObligationFulfilled {
+            owner: author(),
+            root: header.root,
+        };
+        assert_eq!(
+            instance.drain_obligation_events(),
+            vec![author_owes_nothing]
+        );
+
+        // we own 0 and 3
+        ingest(&mut instance, &chunks[0], &mut egress).expect("valid");
+        assert!(instance.drain_obligation_events().is_empty());
+        ingest(&mut instance, &chunks[3], &mut egress).expect("valid");
+        assert_eq!(
+            instance.drain_obligation_events(),
+            vec![ProposalDAEvent::ProposerObligationFulfilled(header.root)]
+        );
+
+        // node 2 owns 1 and 4: one of them settles nothing
+        ingest(&mut instance, &chunks[1], &mut egress).expect("valid");
+        assert!(instance.drain_obligation_events().is_empty());
     }
 
     #[test]

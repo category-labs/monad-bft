@@ -95,6 +95,7 @@ impl ProposerRaptorcast {
 
             self.out_events.extend(event);
         }
+        self.out_events.extend(instance.drain_obligation_events());
         Ok(())
     }
 
@@ -190,7 +191,18 @@ mod tests {
             )
             .expect("well-formed header");
         let events = instance.drain_events();
-        assert_eq!(events, vec![ProposalDAEvent::HeaderSeen(header.clone())]);
+        // the chunkless author owes nothing from the start
+        let author_owes_nothing = ProposalDAEvent::OwnerObligationFulfilled {
+            owner: NodeId::dummy(0),
+            root: header.root,
+        };
+        assert_eq!(
+            events,
+            vec![
+                ProposalDAEvent::HeaderSeen(header.clone()),
+                author_owes_nothing
+            ]
+        );
 
         // the instance exists: later chunks decode it
         instance
@@ -322,7 +334,8 @@ mod tests {
 
         instance.pin(&header_b.root);
 
-        // admitted now, without a second announcement
+        // admitted now, without a second announcement: only the
+        // chunkless author's vacuous obligation
         instance
             .ingest(
                 ProposalEnvelope::from_header(header_b.clone()),
@@ -330,7 +343,12 @@ mod tests {
                 &mut egress,
             )
             .expect("well-formed header");
-        assert!(instance.drain_events().is_empty());
+        let events = instance.drain_events();
+        let author_owes_nothing = ProposalDAEvent::OwnerObligationFulfilled {
+            owner: NodeId::dummy(0),
+            root: header_b.root,
+        };
+        assert_eq!(events, vec![author_owes_nothing]);
 
         // and genuinely assembled: enough chunks decode it
         instance

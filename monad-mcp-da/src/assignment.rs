@@ -83,6 +83,21 @@ impl<'a> ChunkRouting<'a> {
         };
         indices.contains(&node)
     }
+
+    // from whom should the receiver get this chunk? none if unrouted
+    pub(crate) fn upstream(&self, receiver: NodeIndex) -> Option<Upstream> {
+        if receiver == self.assignment.author {
+            // the source holds every chunk
+            return None;
+        }
+        if self.owner_index() == receiver {
+            return Some(Upstream::Author);
+        }
+        if self.is_rebroadcast_target(receiver) {
+            return Some(Upstream::Owner(self.owner_index()));
+        }
+        None
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -188,6 +203,12 @@ impl ChunkAssignment {
             .filter(move |routing| routing.owner_index() == node)
     }
 
+    // the upstream of every chunk routed to the receiver
+    pub(crate) fn upstreams(&self, receiver: NodeIndex) -> impl Iterator<Item = Upstream> + '_ {
+        self.routings()
+            .filter_map(move |routing| routing.upstream(receiver))
+    }
+
     pub(crate) fn full_rebroadcast_targets(&self, owner: NodeIndex) -> HashSet<NodeId> {
         let mut targets = HashSet::with_capacity(self.num_nodes());
         for (index, node) in self.nodes() {
@@ -198,6 +219,19 @@ impl ChunkAssignment {
         }
         targets
     }
+}
+
+// upstream(c, R) = bottom    if R == author
+//                  author    if R == owner(c)
+//                  owner(c)  if R is a rebroadcast target of c
+//                  bottom    if c is unrouted to R
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+pub(crate) enum Upstream {
+    // the chunk is routed to the receiver in first-hop
+    Author,
+    // the chunk is routed to the receiver through rebroadcast via
+    // this node.
+    Owner(NodeIndex),
 }
 
 // assign each node to chunks according to their stake, rounded up.
@@ -324,6 +358,28 @@ mod tests {
         let weights = (0..3).map(|id| (node(id), Stake::from(1)));
         let assignment = StakePartition::new(weights).assign(&node(0), 3, 2.5);
         assert_eq!(assignment.num_chunks(), 9);
+    }
+
+    #[test]
+    fn upstream_follows_the_dissemination_tree() {
+        let assignment = assignment();
+        let author = assignment.index_of(&node(0)).unwrap();
+        let owner = assignment.index_of(&node(1)).unwrap();
+        let other = assignment.index_of(&node(2)).unwrap();
+
+        // chunk 0 is owned by node 1
+        let routing = assignment.routing(ChunkId(0));
+        assert_eq!(routing.owner_index(), owner);
+        assert_eq!(routing.upstream(author), None);
+        assert_eq!(routing.upstream(owner), Some(Upstream::Author));
+        assert_eq!(routing.upstream(other), Some(Upstream::Owner(owner)));
+
+        // the full rebroadcast reaches everyone but the owner and the author
+        assert_eq!(routing.partial_rebroadcast_targets(), None);
+        assert_eq!(
+            assignment.full_rebroadcast_targets(owner),
+            HashSet::from([node(2), node(3)])
+        );
     }
 
     #[test]
