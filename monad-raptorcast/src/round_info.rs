@@ -25,7 +25,6 @@ use crate::{
     },
     udp::ValidatedChunk,
     util::{EncodingScheme, GlobalMerkleRoot, PrimaryBroadcastGroup, SecondaryBroadcastGroup},
-    SIGNATURE_SIZE,
 };
 
 pub(crate) const CACHE_MAX_FUTURE_ROUNDS: Round = Round(100);
@@ -294,11 +293,8 @@ fn try_commit_into<PT: PubKey>(
     if !commitment.conflict_logged {
         tracing::error!(
             author = ?chunk.author,
-            round = ?claim.round,
-            chunk_merkle_root = ?claim.global_merkle_root,
-            commit_merkle_root = ?commitment.global_merkle_root,
-            chunk_signature = ?claim.signature,
-            commit_signature = ?commitment.signature,
+            chunk_claim = ?claim,
+            committed_claim = ?commitment.claim,
             "Conflicting commitment"
         );
         commitment.conflict_logged = true;
@@ -337,68 +333,63 @@ impl PublishedRounds {
     }
 }
 
-type Signature = [u8; SIGNATURE_SIZE];
-
-#[derive(Clone, Copy)]
-struct ChunkCommitmentClaim<'a> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ChunkCommitmentClaim {
+    // the commitment is the data that faithfully identify a header:
+    // root, encoding scheme, residual fields.
     round: Round,
-    signature: &'a Signature,
-    global_merkle_root: &'a GlobalMerkleRoot,
+    global_merkle_root: GlobalMerkleRoot,
+    encoding_scheme_variant: u8,
+    app_message_len: u32,
+    unix_ts_ms: u64,
 }
 
-impl<'a, PT> TryFrom<&'a ValidatedChunk<PT>> for ChunkCommitmentClaim<'a>
-where
-    PT: PubKey,
-{
+impl<PT: PubKey> TryFrom<&ValidatedChunk<PT>> for ChunkCommitmentClaim {
     type Error = ();
 
-    fn try_from(chunk: &'a ValidatedChunk<PT>) -> Result<Self, ()> {
+    fn try_from(chunk: &ValidatedChunk<PT>) -> Result<Self, ()> {
         let round = match chunk.encoding_scheme {
             EncodingScheme::Deterministic25(round) => round,
             EncodingScheme::Unspecified => return Err(()), // not applicable
         };
+        let encoding_scheme_variant = chunk
+            .encoding_scheme
+            .variant()
+            .expect("deterministic rc must have encoding scheme variant");
         let global_merkle_root = chunk
             .global_merkle_root()
             .expect("deterministic rc must have global merkle root");
-        let signature = <&[u8; SIGNATURE_SIZE]>::try_from(chunk.signature.as_ref())
-            .expect("signature of validated chunk must have correct length");
 
         Ok(Self {
-            signature,
-            global_merkle_root,
             round,
+            global_merkle_root: *global_merkle_root,
+            encoding_scheme_variant,
+            app_message_len: chunk.app_message_len,
+            unix_ts_ms: chunk.unix_ts_ms,
         })
     }
 }
 
 struct EncodingCommitment {
-    signature: Signature,
-    global_merkle_root: GlobalMerkleRoot,
+    claim: ChunkCommitmentClaim,
 
     // Remember whether this commitment has been logged as conflicting
     // with another commitment, set to avoid log spam.
     conflict_logged: bool,
 }
 
-impl From<ChunkCommitmentClaim<'_>> for EncodingCommitment {
-    fn from(claim: ChunkCommitmentClaim<'_>) -> Self {
+impl From<ChunkCommitmentClaim> for EncodingCommitment {
+    fn from(claim: ChunkCommitmentClaim) -> Self {
         Self {
-            signature: *claim.signature,
-            global_merkle_root: *claim.global_merkle_root,
+            claim,
             conflict_logged: false,
         }
     }
 }
 
 impl EncodingCommitment {
-    fn is_compatible_with(&self, claim: ChunkCommitmentClaim<'_>) -> bool {
-        if self.global_merkle_root != *claim.global_merkle_root
-            || self.signature != *claim.signature
-        {
-            return false;
-        }
-
-        true
+    fn is_compatible_with(&self, claim: ChunkCommitmentClaim) -> bool {
+        self.claim == claim
     }
 }
 
@@ -416,10 +407,10 @@ mod tests {
 
     type Cache = RoundInfoCache<NopPubKey>;
 
-    const SIG_A: [u8; SIGNATURE_SIZE] = [0xAA; SIGNATURE_SIZE];
-    const SIG_B: [u8; SIGNATURE_SIZE] = [0xBB; SIGNATURE_SIZE];
     const MERKLE_A: MerkleRoot = HexBytes([1; 20]);
     const MERKLE_B: MerkleRoot = HexBytes([2; 20]);
+    const LEN_A: u32 = 100;
+    const LEN_B: u32 = 200;
 
     fn author(seed: u8) -> NodeId<NopPubKey> {
         NodeId::new(NopPubKey::from_bytes(&[seed; 32]).unwrap())
@@ -427,18 +418,19 @@ mod tests {
 
     fn dummy_chunk(
         round: u64,
-        sig: &[u8; SIGNATURE_SIZE],
         merkle: &MerkleRoot,
+        app_message_len: u32,
+        unix_ts_ms: u64,
     ) -> ValidatedChunk<NopPubKey> {
         ValidatedChunk {
             chunk: Bytes::new(),
             message: Bytes::new(),
-            signature: Bytes::copy_from_slice(sig),
+            signature: Bytes::new(),
             author: NodeId::new(NopPubKey::from_bytes(&[0; 32]).unwrap()),
             group_id: GroupId::Primary(monad_types::Epoch(0)),
-            unix_ts_ms: 0,
+            unix_ts_ms,
             app_message_hash: None,
-            app_message_len: 0,
+            app_message_len,
             recipient_hash: None,
             chunk_id: 0,
             version: ChunkVersion::V1,
@@ -526,20 +518,24 @@ mod tests {
     fn only_accept_compatible_claim() {
         let mut info = PrimaryRoundInfo::<NopPubKey>::default();
         assert!(info
-            .try_commit(&dummy_chunk(10, &SIG_A, &MERKLE_A))
+            .try_commit(&dummy_chunk(10, &MERKLE_A, LEN_A, 0))
             .is_some());
 
-        // Conflicting signature.
-        assert!(info
-            .try_commit(&dummy_chunk(10, &SIG_B, &MERKLE_A))
-            .is_none());
         // Conflicting merkle root.
         assert!(info
-            .try_commit(&dummy_chunk(10, &SIG_A, &MERKLE_B))
+            .try_commit(&dummy_chunk(10, &MERKLE_B, LEN_A, 0))
+            .is_none());
+        // Conflicting app message length.
+        assert!(info
+            .try_commit(&dummy_chunk(10, &MERKLE_A, LEN_B, 0))
+            .is_none());
+        // Conflicting timestamp (same timestamp bucket).
+        assert!(info
+            .try_commit(&dummy_chunk(10, &MERKLE_A, LEN_A, 2047))
             .is_none());
         // Compatible.
         assert!(info
-            .try_commit(&dummy_chunk(10, &SIG_A, &MERKLE_A))
+            .try_commit(&dummy_chunk(10, &MERKLE_A, LEN_A, 0))
             .is_some());
     }
 
@@ -548,18 +544,18 @@ mod tests {
         let mut info_10 = PrimaryRoundInfo::<NopPubKey>::default();
         let mut info_11 = PrimaryRoundInfo::<NopPubKey>::default();
         assert!(info_10
-            .try_commit(&dummy_chunk(10, &SIG_A, &MERKLE_A))
+            .try_commit(&dummy_chunk(10, &MERKLE_A, LEN_A, 0))
             .is_some());
         assert!(info_11
-            .try_commit(&dummy_chunk(11, &SIG_B, &MERKLE_B))
+            .try_commit(&dummy_chunk(11, &MERKLE_B, LEN_B, 0))
             .is_some());
 
         // Each round has its own commitment.
         assert!(info_10
-            .try_commit(&dummy_chunk(10, &SIG_B, &MERKLE_B))
+            .try_commit(&dummy_chunk(10, &MERKLE_B, LEN_B, 0))
             .is_none());
         assert!(info_11
-            .try_commit(&dummy_chunk(11, &SIG_A, &MERKLE_A))
+            .try_commit(&dummy_chunk(11, &MERKLE_A, LEN_A, 0))
             .is_none());
     }
 
