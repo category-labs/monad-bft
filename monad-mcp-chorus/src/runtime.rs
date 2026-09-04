@@ -42,12 +42,15 @@ where
     conductor: C,
     driver: D,
     observer: Option<Box<ObserverOf<S>>>,
+    da_sink: Option<Box<DASinkOf<S>>>,
 }
 
 type ObserverOf<S> = dyn FinalizationObserver<
         <S as SlotConsensus>::OptimisticCommitData,
         <S as SlotConsensus>::FinalizationData,
     >;
+
+type DASinkOf<S> = dyn DASink<<S as SlotConsensus>::DACommand>;
 
 impl<S, C> CadenceRuntime<S, C>
 where
@@ -61,6 +64,7 @@ where
             conductor,
             driver: CadenceDriver::default(),
             observer: None,
+            da_sink: None,
         }
     }
 
@@ -73,6 +77,7 @@ where
             slot_manager: self.slot_manager,
             conductor: self.conductor,
             observer: self.observer,
+            da_sink: self.da_sink,
             driver,
         }
     }
@@ -91,10 +96,28 @@ where
         self.observer = Some(Box::new(observer));
     }
 
+    pub fn on_da(&mut self, sink: impl DASink<S::DACommand> + 'static) {
+        self.da_sink = Some(Box::new(sink));
+    }
+
     // in actual runtime this can be controlled by the system clock.
     pub fn advance_clock(&mut self, now: Timestamp) {
         assert!(now >= self.clock);
         self.clock = now;
+    }
+
+    // Inject a data-availability event into the slot's consensus
+    // instance. DA events are local and trusted by construction.
+    pub fn handle_da_event(&mut self, now: Timestamp, slot: Slot, event: S::DAEvent) {
+        self.advance_clock(now);
+
+        if let Some(instance) = self.slot_manager.slot_instance(slot) {
+            // q: do we need to buffer the da events? da begins to
+            // accept chunk ingestion at the same time as slot
+            // consensus, which normally is already conservative.
+            instance.handle_da_event(event);
+        }
+        self.step();
     }
 
     fn step(&mut self) {
@@ -117,6 +140,11 @@ where
                 SlotOutput::Unicast { to, message } => {
                     self.driver.unicast_slot(slot, to, message);
                 }
+                SlotOutput::DA(action) => {
+                    if let Some(sink) = &mut self.da_sink {
+                        sink.handle_command(slot, action);
+                    }
+                }
                 SlotOutput::CommitOptimistic(data) => {
                     if let Some(observer) = &mut self.observer {
                         observer.handle_optimistic_commit(now, slot, &data);
@@ -126,11 +154,17 @@ where
                     if let Some(observer) = &mut self.observer {
                         observer.handle_finalization(now, slot, &data);
                     }
+                    if let Some(sink) = &mut self.da_sink {
+                        sink.handle_lifecycle(slot, SlotLifecycle::Completed);
+                    }
                     self.conductor.handle_slot_finalization(now, slot);
                     self.slot_manager.close(slot);
                 }
                 SlotOutput::Fault { reason } => {
                     tracing::warn!(?slot, reason = %reason, "slot faulted");
+                    if let Some(sink) = &mut self.da_sink {
+                        sink.handle_lifecycle(slot, SlotLifecycle::Completed);
+                    }
                     self.slot_manager.close(slot);
                 }
             }
@@ -152,6 +186,9 @@ where
                     for (slot, deadline) in slots {
                         self.slot_manager.open(slot);
                         self.driver.schedule_slot_deadline(slot, deadline);
+                        if let Some(sink) = &mut self.da_sink {
+                            sink.handle_lifecycle(slot, SlotLifecycle::Opened);
+                        }
                     }
                 }
             }
@@ -216,6 +253,17 @@ where
         self.driver.handle_message(message);
         self.step();
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SlotLifecycle {
+    Opened,
+    Completed,
+}
+
+pub trait DASink<A> {
+    fn handle_lifecycle(&mut self, slot: Slot, event: SlotLifecycle);
+    fn handle_command(&mut self, slot: Slot, action: A);
 }
 
 pub trait FinalizationObserver<OD, FD> {

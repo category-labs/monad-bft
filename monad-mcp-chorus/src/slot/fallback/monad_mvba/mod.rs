@@ -74,7 +74,9 @@ use phases::{Decided, Phase, Transition};
 use super::{
     super::{
         fast::EnterFallbackCert,
-        types::{IsVote, KeyPair, NodeId, Slot, TimestampDelta, ValidatorData, VoteMsg},
+        types::{
+            HeaderAuth, IsVote, KeyPair, NodeId, Slot, TimestampDelta, ValidatorData, VoteMsg,
+        },
     },
     FallbackView, MVBAOutput, Metablock, Mvba, ValidateCert, ValidateInput, Votable,
 };
@@ -98,6 +100,7 @@ pub struct MvbaContext {
     pub node_id: NodeId,
     pub key: Arc<KeyPair>,
     pub validator_data: Arc<ValidatorData>,
+    pub header_auth: Arc<HeaderAuth>,
 }
 
 impl MvbaContext {
@@ -139,6 +142,7 @@ pub struct ValidationContext {
     pub slot: Slot,
     pub num_proposals: usize,
     pub validator_data: Arc<ValidatorData>,
+    pub header_auth: Arc<HeaderAuth>,
 }
 
 /// Transforms protocol context to Input/Cert validation context
@@ -152,6 +156,7 @@ impl MakesValidationContext<Metablock> for MvbaContext {
             slot: self.slot,
             num_proposals: self.num_proposals,
             validator_data: self.validator_data.clone(),
+            header_auth: self.header_auth.clone(),
         }
     }
 }

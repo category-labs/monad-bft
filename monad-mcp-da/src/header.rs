@@ -13,23 +13,25 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-pub use crate::env::stub::{
-    HeaderAuth, KeyPair, MerkleRoot, NodeId, ProposalHeader, PubKey, Signature,
-    SignatureCollection, Stake, ValidatorData, VoteAggregation,
-};
+use super::{chorus::env::EncodingScheme, types::ProposalHeader};
 
-// TODO: fill in the actual production implementation for above types
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InvalidProposalHeader {
+    SlotOutOfRange,
+    // not signed by a proposer of the slot
+    Unauthenticated,
+    // the scheme fits no packet layout
+    NoPacketLayout,
+}
 
-const _: () = crate::spec::assert_env::<
-    NodeId,
-    Stake,
-    PubKey,
-    KeyPair,
-    Signature,
-    ValidatorData,
-    SignatureCollection,
-    VoteAggregation<'_>,
-    MerkleRoot,
-    ProposalHeader,
-    HeaderAuth,
->();
+pub trait DAProposalHeader: monad_mcp_chorus::spec::ProposalHeader {
+    // the encoding scheme determines the packet layout, the chunk
+    // assignment and the symbol code.
+    fn encoding_scheme(&self) -> EncodingScheme;
+}
+
+impl DAProposalHeader for ProposalHeader {
+    fn encoding_scheme(&self) -> EncodingScheme {
+        self.scheme
+    }
+}

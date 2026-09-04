@@ -27,7 +27,8 @@ use super::{
         FastCommitQc, FastCommitVoteMsg, FastPath,
     },
     types::{
-        DAHandle, KeyPair, NodeId, ProposalIndex, ProposalMeta, Slot, TimestampDelta, ValidatorData,
+        HeaderAuth, KeyPair, MerkleRoot, NodeId, ProposalHeader, ProposalIndex, Slot,
+        TimestampDelta, ValidatorData,
     },
 };
 
@@ -35,15 +36,6 @@ use super::{
 type FallbackState = MonadMvba<Metablock, EnterFallbackCert>;
 type FallbackMessage = monad_mvba::MvbaMessage<Metablock, EnterFallbackCert>;
 type FallbackTimer = monad_mvba::TimerEvent<Metablock>;
-
-// emitted from the DA layer upon validating a proposal
-// chunk. possibly only emitted after a significant fraction of
-// the chunks for first-hop-recipient is available.
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct Proposal {
-    pub j: ProposalIndex,
-    pub meta: ProposalMeta,
-}
 
 #[derive(derive_more::From, Clone, PartialEq, Eq, Hash, Debug)]
 #[non_exhaustive]
@@ -97,7 +89,7 @@ pub struct ChorusContext {
     pub node_id: NodeId,
     pub key: Arc<KeyPair>,
     pub validator_data: Arc<ValidatorData>,
-    pub da_handle: Arc<DAHandle>,
+    pub header_auth: Arc<HeaderAuth>,
 }
 
 #[derive(derive_more::From, Clone, PartialEq, Eq, Hash, Debug)]
@@ -108,10 +100,74 @@ pub enum SlotFinalization {
     Fallback(FallbackCommitQc<Metablock>),
 }
 
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct ChorusDAEvent {
+    pub j: ProposalIndex,
+    pub event: ProposalDAEvent,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub enum ProposalDAEvent {
+    // a validated proposer-signed header observed (once per root)
+    HeaderSeen(ProposalHeader),
+
+    // all our own assigned chunks under the root have arrived
+    ProposerObligationFulfilled(MerkleRoot),
+
+    // the owner's rebroadcast obligation to us fulfilled under the root
+    OwnerObligationFulfilled { owner: NodeId, root: MerkleRoot },
+
+    // decode-then-re-encode verified. implies all chunks recoverable
+    // from DA.
+    Decoded(MerkleRoot),
+    DecodingFailed(MerkleRoot),
+}
+
+// An effect directed at the DA layer. Roots named here are pinned by DA.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub enum ChorusDACommand {
+    // release the slot's chunks to peers: rebroadcast our owned
+    // chunks, held and arriving, and serve chunk recovery requests.
+    ReleaseChunks,
+
+    // keep the root's chunks admitted
+    PinRoot {
+        j: ProposalIndex,
+        root: MerkleRoot,
+    },
+
+    // request chunks of the type under (j, root) from its voters:
+    // their own chunks to decode the proposal, or our own chunks from
+    // positive fallback signers, who hold the decoded proposal.
+    RecoverChunks {
+        j: ProposalIndex,
+        root: MerkleRoot,
+        request_type: ChunkRequestType,
+        voters: Vec<NodeId>,
+    },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum ChunkRequestType {
+    MyChunks,
+    YourChunks,
+}
+
+impl ChunkRequestType {
+    // whose chunks the request names, seen from the requester
+    pub fn owner<T: Copy>(self, requester: T, peer: T) -> T {
+        match self {
+            Self::MyChunks => requester,
+            Self::YourChunks => peer,
+        }
+    }
+}
+
 /// The single-slot MCP consensus algorithm from the paper.
 pub struct Chorus {
     slot: Slot,
     key: Arc<KeyPair>,
+    validator_data: Arc<ValidatorData>,
 
     fast: FastPath,
     /// memory is unbounded until this validator proposes into it: the MVBA
@@ -135,6 +191,8 @@ impl SlotConsensus for Chorus {
     type Timer = TimerEvent;
     type OptimisticCommitData = FastBlock;
     type FinalizationData = SlotFinalization;
+    type DAEvent = ChorusDAEvent;
+    type DACommand = ChorusDACommand;
 
     fn new(slot: Slot, config: &Self::Config, context: &Self::Context) -> Self {
         let ChorusConfig {
@@ -145,7 +203,7 @@ impl SlotConsensus for Chorus {
             node_id,
             key,
             validator_data,
-            da_handle,
+            header_auth,
         } = context;
 
         let fast = FastPath::new(
@@ -153,7 +211,7 @@ impl SlotConsensus for Chorus {
             *num_proposals,
             key.clone(),
             validator_data.clone(),
-            da_handle.clone(),
+            header_auth.clone(),
         );
 
         let fallback = FallbackState::new(MvbaContext {
@@ -163,12 +221,14 @@ impl SlotConsensus for Chorus {
             node_id: *node_id,
             key: key.clone(),
             validator_data: validator_data.clone(),
+            header_auth: header_auth.clone(),
         });
 
         Self {
             slot,
             delta: *delta,
             key: key.clone(),
+            validator_data: validator_data.clone(),
             fast,
             fallback,
             outputs: Default::default(),
@@ -180,6 +240,18 @@ impl SlotConsensus for Chorus {
         self.outputs.pop_front()
     }
 
+    fn handle_da_event(&mut self, event: ChorusDAEvent) {
+        if self.decided {
+            return;
+        }
+
+        if let Some(fast_block) = self.fast.handle_da_event(event) {
+            self.commit_fast_block(fast_block);
+        }
+
+        self.drain_da_commands();
+    }
+
     fn handle_message(&mut self, author: NodeId, message: Self::Message) {
         if self.decided {
             return;
@@ -188,24 +260,18 @@ impl SlotConsensus for Chorus {
         match message {
             Message::BatchVote(batch_vote_msg) => {
                 if let Some(fast_block) = self.fast.handle_batch_vote(author, batch_vote_msg) {
-                    let commit_vote = fast_block.commit_vote(self.slot, &self.key);
-                    self.push(SlotOutput::CommitOptimistic(fast_block.clone()));
-                    self.broadcast(commit_vote);
-                    self.broadcast(fast_block);
+                    self.commit_fast_block(fast_block);
                 }
             }
             Message::FastCommitVote(fast_commit_vote) => {
                 if let Some(fast_qc) = self.fast.handle_commit_vote(author, fast_commit_vote) {
-                    self.broadcast(fast_qc.clone());
-                    self.finalize(fast_qc);
+                    self.finalize_fast(fast_qc);
                 }
             }
 
             Message::FastBlock(fast_block) => {
                 if let Some(fast_block) = self.fast.handle_fast_block(fast_block) {
-                    let commit_vote = fast_block.commit_vote(self.slot, &self.key);
-                    self.push(SlotOutput::CommitOptimistic(fast_block));
-                    self.broadcast(commit_vote);
+                    self.commit_fast_block(fast_block);
                 }
             }
 
@@ -213,7 +279,11 @@ impl SlotConsensus for Chorus {
                 self.fast.handle_fallback_vote(author, fallback_vote_msg);
             }
             Message::FastCommitQc(qc) => {
-                self.finalize(qc);
+                let scope_matches = qc.scope == self.slot;
+                if !scope_matches || !qc.verify(&self.validator_data) {
+                    return;
+                }
+                self.finalize_fast(qc);
             }
             Message::EnterFallbackCert(cert) => {
                 // a peer certified that 2f+1 validators entered
@@ -239,6 +309,8 @@ impl SlotConsensus for Chorus {
                 self.drain_fallback();
             }
         }
+
+        self.drain_da_commands();
     }
 
     fn handle_deadline(&mut self) {
@@ -248,9 +320,11 @@ impl SlotConsensus for Chorus {
 
         self.schedule_timer(self.delta, TimerEvent::FallbackTransitionTimeout);
 
-        if let Some(batch_vote) = self.fast.on_propose_deadline() {
+        if let Some(batch_vote) = self.fast.on_deadline() {
             self.broadcast(batch_vote);
         }
+
+        self.drain_da_commands();
     }
 
     fn handle_timer(&mut self, event: Self::Timer) {
@@ -287,10 +361,36 @@ impl SlotConsensus for Chorus {
                 self.drain_fallback();
             }
         }
+
+        self.drain_da_commands();
     }
 }
 
 impl Chorus {
+    // speculatively commit a newly completed fast block, cast our
+    // commit vote, and disseminate the block for peers to adopt
+    fn commit_fast_block(&mut self, fast_block: FastBlock) {
+        let commit_vote = fast_block.commit_vote(self.slot, &self.key);
+        self.push(SlotOutput::CommitOptimistic(fast_block.clone()));
+        self.broadcast(commit_vote);
+        self.broadcast(fast_block);
+    }
+
+    // finalize on a fast commit certificate. the slot closes on
+    // finalization, so committed roots are pulled first.
+    fn finalize_fast(&mut self, qc: FastCommitQc) {
+        self.broadcast(qc.clone());
+        self.fast.recover_committed(&qc);
+        self.drain_da_commands();
+        self.finalize(qc);
+    }
+
+    fn drain_da_commands(&mut self) {
+        while let Some(command) = self.fast.next_da_command() {
+            self.push(SlotOutput::DA(command));
+        }
+    }
+
     // helpers mostly for documentation purpose
     fn broadcast(&mut self, msg: impl Into<Message>) {
         self.push(SlotOutput::Broadcast(msg.into()));
@@ -345,5 +445,102 @@ impl Chorus {
 
     fn push(&mut self, out: SlotOutput<Chorus>) {
         self.outputs.push_back(out);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::{
+        super::types::{HeaderAuth, NodeId, Slot, Stake, TimestampDelta, ValidatorData},
+        *,
+    };
+    use crate::spec::vote::KeyPair as _;
+
+    fn validator_data(n: u64) -> ValidatorData {
+        let validators = (0..n).map(NodeId::dummy).collect::<Vec<_>>();
+        let valset = validators.iter().map(|id| (*id, Stake::from(1))).collect();
+        let mapping = validators
+            .iter()
+            .map(|id| (*id, id.keypair().pubkey()))
+            .collect();
+
+        ValidatorData::new(valset, mapping)
+    }
+
+    #[test]
+    fn deadline_releases_chunks() {
+        let config = ChorusConfig {
+            delta: TimestampDelta::from_millis(100),
+            num_proposals: 2,
+        };
+        let context = ChorusContext {
+            node_id: NodeId::dummy(0),
+            key: Arc::new(NodeId::dummy(0).keypair()),
+            validator_data: Arc::new(validator_data(4)),
+            header_auth: Arc::new(HeaderAuth::new(|_, _| None)),
+        };
+        let mut chorus = Chorus::new(Slot(1), &config, &context);
+
+        chorus.handle_deadline();
+
+        let mut commands = Vec::new();
+        while let Some(output) = chorus.poll() {
+            if let SlotOutput::DA(command) = output {
+                commands.push(command);
+            }
+        }
+
+        // nothing is available, so the all-negative vote pins no root
+        assert_eq!(commands, vec![ChorusDACommand::ReleaseChunks]);
+    }
+
+    #[test]
+    fn commit_certificate_pulls_before_finalizing() {
+        use super::super::{
+            fast::{Entry, FastCommitVote},
+            types::{MerkleRoot, ProposalMap, VoteMsg, VotePool},
+        };
+        use crate::env::stub::MerkleHash;
+
+        let config = ChorusConfig {
+            delta: TimestampDelta::from_millis(100),
+            num_proposals: 1,
+        };
+        let context = ChorusContext {
+            node_id: NodeId::dummy(1),
+            key: Arc::new(NodeId::dummy(1).keypair()),
+            validator_data: Arc::new(validator_data(4)),
+            header_auth: Arc::new(HeaderAuth::new(|_, _| None)),
+        };
+        let mut chorus = Chorus::new(Slot(1), &config, &context);
+
+        // a commit qc on an undecoded root, signed by validators 0, 2, 3
+        let root = MerkleRoot(MerkleHash([1; 20]));
+        let entries = ProposalMap::new(1, |_| Entry::Positive(root));
+        let mut pool = VotePool::new(Slot(1));
+        for id in [0, 2, 3] {
+            let voter = NodeId::dummy(id);
+            let vote = FastCommitVote {
+                entries: entries.clone(),
+            };
+            pool.add_vote(voter, VoteMsg::new_signed(Slot(1), vote, &voter.keypair()));
+        }
+        let qc = pool
+            .try_form_strong_qc(&context.validator_data)
+            .expect("three of four votes form a commit qc");
+        chorus.handle_message(NodeId::dummy(0), Message::FastCommitQc(qc));
+
+        // the pull is emitted before the finalization that closes the slot
+        let mut order = Vec::new();
+        while let Some(output) = chorus.poll() {
+            match output {
+                SlotOutput::DA(ChorusDACommand::RecoverChunks { .. }) => order.push("pull"),
+                SlotOutput::Finalize(_) => order.push("finalize"),
+                _ => {}
+            }
+        }
+        assert_eq!(order, ["pull", "finalize"]);
     }
 }
