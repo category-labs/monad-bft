@@ -259,13 +259,16 @@ mod tests {
     use monad_types::BlockId;
 
     use super::*;
-    use crate::types::{
-        eth_json::{BlockTags, MonadNotification},
-        serialize::JsonSerialized,
+    use crate::{
+        data::source::HistoricalDataSource,
+        types::{
+            eth_json::{BlockTagOrHash, BlockTags, MonadNotification},
+            serialize::JsonSerialized,
+        },
     };
 
-    #[test]
-    fn test_many_proposed_blocks() {
+    #[tokio::test]
+    async fn test_many_proposed_blocks() {
         // Buffer receives many proposed blocks in a row and should handle it correctly.
         // Make sure that the ring buffer is correctly updated and the cached values are correctly updated and removed.
         let capacity = 3;
@@ -285,10 +288,13 @@ mod tests {
             // Check that the latest proposed height is correct.
             assert_eq!(view.get_latest_proposed_block_num(), height);
             assert_eq!(
-                view.resolve_block_height_from_tag(&BlockTags::Latest),
+                view.try_resolve(BlockTagOrHash::BlockTags(BlockTags::Latest))
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .block_number(),
                 height
             );
-
             // Verify the ring buffer length
             let expected_ring_len = if i < capacity { i + 1 } else { capacity };
             assert_eq!(
