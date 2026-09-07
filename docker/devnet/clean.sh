@@ -34,7 +34,7 @@ if [ -S "$controlpanel_sock" ]; then
     rm "$controlpanel_sock"
 fi
 
-rm -f ${wal}_*
+rm -f "${wal}"_*
 
 if [ -f "$forkpoint" ]; then
     rm "$forkpoint"
