@@ -206,7 +206,10 @@ mod proposal {
 
     // stub proposal signature, opaque to consensus
     #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-    pub struct ProposalSignature(pub u64);
+    pub struct ProposalSignature {
+        pub signer: NodeId,
+        pub checksum: u64,
+    }
 
     // the encoding scheme descriptor used by DA. opaque to consensus.
     #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -216,8 +219,10 @@ mod proposal {
 
     #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
     pub struct D25 {
-        pub msg_len: usize,
+        pub msg_len: u32,
         pub unix_ts: u64,
+        // the merkle tree depth
+        pub depth: u8,
     }
 
     #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -245,20 +250,22 @@ mod proposal {
         }
     }
 
-    type ProposerElection = dyn Fn(u64, &NodeId) -> Option<ProposalIndex> + Send + Sync;
+    // the proposal index of a header the legitimate proposer of the
+    // slot signed. Supplied by the DA env, which owns the signature
+    // and scheme checks.
+    type Authenticator = dyn Fn(&ProposalHeader, u64) -> Option<ProposalIndex> + Send + Sync;
 
     pub struct HeaderAuth {
-        // todo: change to Box<dyn ProposerElection> after moving this to shared types crate.
-        proposer_election: Box<ProposerElection>,
+        authenticator: Box<Authenticator>,
     }
 
     impl HeaderAuth {
-        pub fn new<F>(proposer_index: F) -> Self
+        pub fn new<F>(authenticator: F) -> Self
         where
-            F: Fn(u64, &NodeId) -> Option<ProposalIndex> + Send + Sync + 'static,
+            F: Fn(&ProposalHeader, u64) -> Option<ProposalIndex> + Send + Sync + 'static,
         {
             Self {
-                proposer_election: Box::new(proposer_index),
+                authenticator: Box::new(authenticator),
             }
         }
     }
@@ -270,8 +277,7 @@ mod proposal {
             if header.slot.get() != slot {
                 return None;
             }
-            let signer = NodeId::dummy(header.sig.0);
-            (self.proposer_election)(slot, &signer)
+            (self.authenticator)(header, slot)
         }
     }
 }

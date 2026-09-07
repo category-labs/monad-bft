@@ -16,13 +16,10 @@
 use std::collections::{HashMap, HashSet};
 
 use bytes::Bytes;
-use monad_mcp_chorus::spec::validator::ValidatorData as _;
 
 use super::{
     chunk::{ChunkRequest, ProposalEnvelope},
     egress::ChunkEgress,
-    encoding_scheme::DAEncodingScheme as _,
-    header::{DAProposalHeader as _, InvalidProposalHeader},
     instance_rc::RaptorcastInstance,
     runtime::EpochHandle,
     types::{ChunkRequestType, MerkleRoot, NodeId, ProposalDAEvent, ProposalHeader},
@@ -74,14 +71,14 @@ impl ProposerRaptorcast {
         envelope: ProposalEnvelope,
         epoch_handle: &EpochHandle,
         egress: &mut ChunkEgress,
-    ) -> Result<(), InvalidProposalHeader> {
+    ) {
         let (header, chunks) = envelope.into_parts();
         let root = header.root;
-        self.admit(header, epoch_handle)?;
+        self.admit(header, epoch_handle);
 
         let Some(instance) = self.instances.get_mut(&root) else {
             // dismissed root: its chunks are dropped
-            return Ok(());
+            return;
         };
 
         for (chunk_id, data) in chunks {
@@ -96,17 +93,13 @@ impl ProposerRaptorcast {
             self.out_events.extend(event);
         }
         self.out_events.extend(instance.drain_obligation_events());
-        Ok(())
     }
 
-    // admission & instance creation. no-op for known roots.
-    fn admit(
-        &mut self,
-        header: ProposalHeader,
-        epoch_handle: &EpochHandle,
-    ) -> Result<(), InvalidProposalHeader> {
+    // admission & instance creation. no-op for known roots. The
+    // caller must ensure the header is authenticated.
+    fn admit(&mut self, header: ProposalHeader, epoch_handle: &EpochHandle) {
         if self.instances.contains_key(&header.root) {
-            return Ok(());
+            return;
         }
 
         if self.seen.insert(header.root) {
@@ -117,19 +110,12 @@ impl ProposerRaptorcast {
 
         let admissible = self.pinned.contains(&header.root) || self.can_admit_unpinned();
         if !admissible {
-            return Ok(());
+            return;
         }
 
-        let num_validators = epoch_handle.validator_data.len();
-        let layout = header
-            .encoding_scheme()
-            .packet_layout(num_validators)
-            .ok_or(InvalidProposalHeader::NoPacketLayout)?;
-
         let root = header.root;
-        let instance = RaptorcastInstance::new(epoch_handle, header, layout, &self.proposer);
+        let instance = RaptorcastInstance::new(epoch_handle, header, &self.proposer);
         self.instances.insert(root, instance);
-        Ok(())
     }
 
     // pin a root to ensure its chunks are always admitted.
@@ -194,13 +180,11 @@ mod tests {
         let (header, _) = proposal_chunks(&epoch_handle, 1);
 
         let mut instance = ProposerRaptorcast::new(NodeId::dummy(0));
-        instance
-            .ingest(
-                ProposalEnvelope::from_header(header.clone()),
-                &epoch_handle,
-                &mut egress,
-            )
-            .expect("well-formed header");
+        instance.ingest(
+            ProposalEnvelope::from_header(header.clone()),
+            &epoch_handle,
+            &mut egress,
+        );
         let events = instance.drain_events();
 
         assert!(events.contains(&ProposalDAEvent::HeaderSeen(header)));
@@ -213,13 +197,11 @@ mod tests {
         let (header, chunks) = proposal_chunks(&epoch_handle, 1);
 
         let mut instance = ProposerRaptorcast::new(NodeId::dummy(0));
-        instance
-            .ingest(
-                ProposalEnvelope::from_header(header.clone()),
-                &epoch_handle,
-                &mut egress,
-            )
-            .expect("well-formed header");
+        instance.ingest(
+            ProposalEnvelope::from_header(header.clone()),
+            &epoch_handle,
+            &mut egress,
+        );
         let events = instance.drain_events();
         // the chunkless author owes nothing from the start
         let author_owes_nothing = ProposalDAEvent::OwnerObligationFulfilled {
@@ -235,9 +217,7 @@ mod tests {
         );
 
         // the instance exists: later chunks decode it
-        instance
-            .ingest(group(&chunks[..3]), &epoch_handle, &mut egress)
-            .expect("well-formed header");
+        instance.ingest(group(&chunks[..3]), &epoch_handle, &mut egress);
         let events = instance.drain_events();
         assert!(events.contains(&ProposalDAEvent::Decoded(header.root)));
     }
@@ -250,39 +230,31 @@ mod tests {
         let (header_b, chunks_b) = proposal_chunks(&epoch_handle, 2);
 
         let mut instance = ProposerRaptorcast::new(NodeId::dummy(0));
-        instance
-            .ingest(
-                ProposalEnvelope::from_header(header_a),
-                &epoch_handle,
-                &mut egress,
-            )
-            .expect("well-formed header");
+        instance.ingest(
+            ProposalEnvelope::from_header(header_a),
+            &epoch_handle,
+            &mut egress,
+        );
         instance.drain_events();
 
-        instance
-            .ingest(
-                ProposalEnvelope::from_header(header_b.clone()),
-                &epoch_handle,
-                &mut egress,
-            )
-            .expect("well-formed header");
+        instance.ingest(
+            ProposalEnvelope::from_header(header_b.clone()),
+            &epoch_handle,
+            &mut egress,
+        );
         let events = instance.drain_events();
         assert_eq!(events, vec![ProposalDAEvent::HeaderSeen(header_b.clone())]);
-        instance
-            .ingest(
-                ProposalEnvelope::from_header(header_b.clone()),
-                &epoch_handle,
-                &mut egress,
-            )
-            .expect("well-formed header");
+        instance.ingest(
+            ProposalEnvelope::from_header(header_b.clone()),
+            &epoch_handle,
+            &mut egress,
+        );
         let events = instance.drain_events();
         assert!(events.is_empty());
 
         // announced once; the rival is not assembled, so its chunks
         // are dropped silently and it never decodes
-        instance
-            .ingest(group(&chunks_b), &epoch_handle, &mut egress)
-            .expect("well-formed header");
+        instance.ingest(group(&chunks_b), &epoch_handle, &mut egress);
         assert!(instance.drain_events().is_empty());
         assert!(instance.decoded_message(&header_b.root).is_none());
     }
@@ -295,41 +267,33 @@ mod tests {
         let (header_b, _) = proposal_chunks(&epoch_handle, 2);
 
         let mut instance = ProposerRaptorcast::new(NodeId::dummy(0));
-        instance
-            .ingest(
-                ProposalEnvelope::from_header(header_a),
-                &epoch_handle,
-                &mut egress,
-            )
-            .expect("well-formed header");
+        instance.ingest(
+            ProposalEnvelope::from_header(header_a),
+            &epoch_handle,
+            &mut egress,
+        );
         instance.drain_events();
 
         instance.pin(&header_b.root);
-        instance
-            .ingest(
-                ProposalEnvelope::from_header(header_b.clone()),
-                &epoch_handle,
-                &mut egress,
-            )
-            .expect("well-formed header");
+        instance.ingest(
+            ProposalEnvelope::from_header(header_b.clone()),
+            &epoch_handle,
+            &mut egress,
+        );
         let events = instance.drain_events();
         assert!(events.contains(&ProposalDAEvent::HeaderSeen(header_b)));
 
         // still at most one unpinned instance: a third root is announced
         // but not assembled
         let (header_c, chunks_c) = proposal_chunks(&epoch_handle, 3);
-        instance
-            .ingest(
-                ProposalEnvelope::from_header(header_c.clone()),
-                &epoch_handle,
-                &mut egress,
-            )
-            .expect("well-formed header");
+        instance.ingest(
+            ProposalEnvelope::from_header(header_c.clone()),
+            &epoch_handle,
+            &mut egress,
+        );
         let events = instance.drain_events();
         assert_eq!(events, vec![ProposalDAEvent::HeaderSeen(header_c)]);
-        instance
-            .ingest(group(&chunks_c[..1]), &epoch_handle, &mut egress)
-            .expect("well-formed header");
+        instance.ingest(group(&chunks_c[..1]), &epoch_handle, &mut egress);
         let events = instance.drain_events();
         assert!(events.is_empty());
     }
@@ -342,23 +306,19 @@ mod tests {
         let (header_b, chunks_b) = proposal_chunks(&epoch_handle, 2);
 
         let mut instance = ProposerRaptorcast::new(NodeId::dummy(0));
-        instance
-            .ingest(
-                ProposalEnvelope::from_header(header_a),
-                &epoch_handle,
-                &mut egress,
-            )
-            .expect("well-formed header");
+        instance.ingest(
+            ProposalEnvelope::from_header(header_a),
+            &epoch_handle,
+            &mut egress,
+        );
         instance.drain_events();
 
         // rejected rival: header reported once
-        instance
-            .ingest(
-                ProposalEnvelope::from_header(header_b.clone()),
-                &epoch_handle,
-                &mut egress,
-            )
-            .expect("well-formed header");
+        instance.ingest(
+            ProposalEnvelope::from_header(header_b.clone()),
+            &epoch_handle,
+            &mut egress,
+        );
         let events = instance.drain_events();
         assert_eq!(events, vec![ProposalDAEvent::HeaderSeen(header_b.clone())]);
 
@@ -366,13 +326,11 @@ mod tests {
 
         // admitted now, without a second announcement: only the
         // chunkless author's vacuous obligation
-        instance
-            .ingest(
-                ProposalEnvelope::from_header(header_b.clone()),
-                &epoch_handle,
-                &mut egress,
-            )
-            .expect("well-formed header");
+        instance.ingest(
+            ProposalEnvelope::from_header(header_b.clone()),
+            &epoch_handle,
+            &mut egress,
+        );
         let events = instance.drain_events();
         let author_owes_nothing = ProposalDAEvent::OwnerObligationFulfilled {
             owner: NodeId::dummy(0),
@@ -381,9 +339,7 @@ mod tests {
         assert_eq!(events, vec![author_owes_nothing]);
 
         // and genuinely assembled: enough chunks decode it
-        instance
-            .ingest(group(&chunks_b[..3]), &epoch_handle, &mut egress)
-            .expect("well-formed header");
+        instance.ingest(group(&chunks_b[..3]), &epoch_handle, &mut egress);
         let events = instance.drain_events();
         assert!(events.contains(&ProposalDAEvent::Decoded(header_b.root)));
     }
@@ -395,9 +351,7 @@ mod tests {
         let (header, chunks) = proposal_chunks(&epoch_handle, 1);
 
         let mut instance = ProposerRaptorcast::new(NodeId::dummy(0));
-        instance
-            .ingest(group(&chunks[..3]), &epoch_handle, &mut egress)
-            .expect("well-formed header");
+        instance.ingest(group(&chunks[..3]), &epoch_handle, &mut egress);
         // discard the rebroadcast of our own chunks
         egress.drain();
 
@@ -410,7 +364,7 @@ mod tests {
             panic!("recovery unicasts to the requester");
         };
         assert_eq!(*to, HashSet::from([requester]));
-        assert_eq!(envelope.chunks().len(), 2);
+        assert_eq!(envelope.chunk_data().len(), 2);
 
         // served once
         instance.handle_chunk_request(&requester, &header.root, my_chunks(), &mut egress);
@@ -426,9 +380,7 @@ mod tests {
         // chunk ids 0 and 3 are ours (validator 1); ingesting ids 0
         // and 1 is short of the decoding threshold
         let mut instance = ProposerRaptorcast::new(NodeId::dummy(0));
-        instance
-            .ingest(group(&chunks[..2]), &epoch_handle, &mut egress)
-            .expect("well-formed header");
+        instance.ingest(group(&chunks[..2]), &epoch_handle, &mut egress);
         assert!(instance.decoded_message(&header.root).is_none());
         // discard the rebroadcast of our own chunk
         egress.drain();
@@ -441,7 +393,10 @@ mod tests {
             panic!("recovery unicasts to the requester");
         };
         assert_eq!(*to, HashSet::from([requester]));
-        assert_eq!(envelope.chunks().keys().copied().collect::<Vec<_>>(), [0]);
+        assert_eq!(
+            envelope.chunk_data().keys().copied().collect::<Vec<_>>(),
+            [0]
+        );
 
         // the requester's own chunks (ids 2 and 5) are not held yet
         let my_chunks = ChunkRequest::all(ChunkRequestType::MyChunks);
@@ -466,9 +421,7 @@ mod tests {
 
         // holding ids 0 and 1: node 2 still owes id 4, we still miss
         // our own id 3
-        instance
-            .ingest(group(&chunks[..2]), &epoch_handle, &mut egress)
-            .expect("well-formed header");
+        instance.ingest(group(&chunks[..2]), &epoch_handle, &mut egress);
         let request = instance.chunk_request(&header.root, ChunkRequestType::YourChunks, &peer);
         let expected = ChunksSubset::narrowed([chunk_id(&epoch_handle, &header, 4)]);
         assert_eq!(
@@ -490,9 +443,7 @@ mod tests {
         );
 
         // decoded: nothing left to ask for
-        instance
-            .ingest(group(&chunks[2..3]), &epoch_handle, &mut egress)
-            .expect("well-formed header");
+        instance.ingest(group(&chunks[2..3]), &epoch_handle, &mut egress);
         assert!(instance.decoded_message(&header.root).is_some());
         let request = instance.chunk_request(&header.root, ChunkRequestType::YourChunks, &peer);
         assert_eq!(request, None);

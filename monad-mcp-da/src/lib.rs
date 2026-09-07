@@ -15,10 +15,15 @@
 
 mod env;
 
+pub mod spec;
+
 #[cfg(feature = "enable_stub")]
 #[path = ""]
 pub mod stub {
     use crate::env::stub as env;
+
+    #[path = "wire/v1.rs"]
+    mod wire;
 
     #[path = "top_level.rs"]
     mod top_level;

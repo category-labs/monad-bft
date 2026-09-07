@@ -22,7 +22,7 @@ use std::{
 use bytes::Bytes;
 
 use super::{
-    chunk::{Chunk, ChunkRequest, ProposalEnvelope},
+    chunk::{ChunkRequest, ProposalEnvelope},
     egress::Dissemination,
     election::ProposerElection,
     header::InvalidProposalHeader,
@@ -93,11 +93,6 @@ where
             slot_completion: SlotCompletion::new(),
             outbox: Default::default(),
         }
-    }
-
-    pub fn ingest_chunk(&mut self, chunk: Chunk) -> Result<(), InvalidProposalHeader> {
-        let envelope = ProposalEnvelope::from_chunk(chunk);
-        self.ingest(envelope)
     }
 
     pub fn ingest(&mut self, envelope: ProposalEnvelope) -> Result<(), InvalidProposalHeader> {
@@ -341,7 +336,12 @@ mod tests {
                 }
                 DAOutput::Disseminate(dissemination) => {
                     // our chunk 0 on arrival and 3 once derivable, one message
-                    let ids: Vec<_> = dissemination.envelope.chunks().keys().copied().collect();
+                    let ids: Vec<_> = dissemination
+                        .envelope
+                        .chunk_data()
+                        .keys()
+                        .copied()
+                        .collect();
                     assert_eq!(ids, [0, 3]);
                     disseminated_at.push(i);
                 }

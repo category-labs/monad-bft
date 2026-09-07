@@ -87,7 +87,7 @@ mod tests {
         *,
     };
 
-    fn parts(chunk: &Chunk) -> (ProposalHeader, WireChunkId, ChunkData) {
+    fn parts(chunk: &Chunk<'_>) -> (ProposalHeader, WireChunkId, ChunkData) {
         chunk.clone().into_parts()
     }
 
@@ -101,7 +101,7 @@ mod tests {
         egress
     }
 
-    fn enqueue(egress: &mut ChunkEgress, chunk: &Chunk, recipients: &HashSet<NodeId>) {
+    fn enqueue(egress: &mut ChunkEgress, chunk: &Chunk<'_>, recipients: &HashSet<NodeId>) {
         let (header, chunk_id, data) = parts(chunk);
         egress.enqueue(recipients, &header, chunk_id, data);
     }
@@ -117,7 +117,7 @@ mod tests {
         let messages = egress.drain();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].to, to([2, 3]));
-        assert_eq!(messages[0].envelope.chunks().len(), 2);
+        assert_eq!(messages[0].envelope.chunk_data().len(), 2);
         assert!(egress.drain().is_empty());
     }
 
@@ -137,7 +137,7 @@ mod tests {
         let messages = egress.drain();
         assert_eq!(messages.len(), 4);
         for message in &messages {
-            assert_eq!(message.envelope.chunks().len(), 1);
+            assert_eq!(message.envelope.chunk_data().len(), 1);
         }
     }
 

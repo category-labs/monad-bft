@@ -13,7 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet, HashMap},
+};
 
 use bytes::Bytes;
 
@@ -70,34 +73,40 @@ impl ChunkRequest {
     }
 }
 
-// the chunk-specific half of a chunk: what remains after the shared
-// proposal header and the chunk id are factored out.
-#[derive(Clone)]
+// the chunk-specific half of a chunk
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ChunkData {
     pub(crate) symbol: Bytes,
     pub(crate) proof: Box<[MerkleHash]>,
 }
 
-// a chunk is exactly a well-formed (proposal header, chunk id, merkle
-// proof, symbol). todo: enforce proof validity at parse time, so a
-// Chunk always holds a valid merkle proof.
-#[derive(Clone)]
-pub struct Chunk {
-    header: ProposalHeader,
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Chunk<'a> {
+    header: Cow<'a, ProposalHeader>,
     chunk_id: WireChunkId,
-    data: ChunkData,
+    data: Cow<'a, ChunkData>,
 }
 
-impl Chunk {
-    pub(crate) fn new(header: ProposalHeader, chunk_id: WireChunkId, data: ChunkData) -> Self {
+impl Chunk<'static> {
+    pub fn new(header: ProposalHeader, chunk_id: WireChunkId, data: ChunkData) -> Self {
         Self {
-            header,
+            header: Cow::Owned(header),
             chunk_id,
-            data,
+            data: Cow::Owned(data),
+        }
+    }
+}
+
+impl<'a> Chunk<'a> {
+    fn view(header: &'a ProposalHeader, chunk_id: WireChunkId, data: &'a ChunkData) -> Self {
+        Self {
+            header: Cow::Borrowed(header),
+            chunk_id,
+            data: Cow::Borrowed(data),
         }
     }
 
-    pub fn proposal_header(&self) -> &ProposalHeader {
+    pub fn header(&self) -> &ProposalHeader {
         &self.header
     }
 
@@ -105,22 +114,22 @@ impl Chunk {
         self.chunk_id
     }
 
-    pub fn proof(&self) -> &[MerkleHash] {
-        &self.data.proof
+    pub fn data(&self) -> &ChunkData {
+        &self.data
     }
 
-    pub fn symbol(&self) -> &Bytes {
-        &self.data.symbol
-    }
-
-    pub(crate) fn into_parts(self) -> (ProposalHeader, WireChunkId, ChunkData) {
-        (self.header, self.chunk_id, self.data)
+    pub fn into_parts(self) -> (ProposalHeader, WireChunkId, ChunkData) {
+        (
+            self.header.into_owned(),
+            self.chunk_id,
+            self.data.into_owned(),
+        )
     }
 }
 
 // a partial view of one proposal: its header plus any subset of its
 // chunks. the unit of both dissemination and ingestion.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ProposalEnvelope {
     header: ProposalHeader,
     chunks: BTreeMap<WireChunkId, ChunkData>,
@@ -131,11 +140,9 @@ impl ProposalEnvelope {
         Self { header, chunks }
     }
 
-    pub fn from_chunk(chunk: Chunk) -> Self {
+    pub fn from_chunk(chunk: Chunk<'_>) -> Self {
         let (header, chunk_id, data) = chunk.into_parts();
-        let mut chunks = BTreeMap::new();
-        chunks.insert(chunk_id, data);
-        Self::new(header, chunks)
+        Self::new(header, BTreeMap::from([(chunk_id, data)]))
     }
 
     pub fn from_header(header: ProposalHeader) -> Self {
@@ -143,22 +150,31 @@ impl ProposalEnvelope {
     }
 
     // group chunks by header. each header appears once.
-    pub fn group(
-        chunks: impl IntoIterator<Item = Chunk>,
-    ) -> impl Iterator<Item = (ProposalHeader, BTreeMap<WireChunkId, ChunkData>)> {
+    pub fn group<'a>(chunks: impl IntoIterator<Item = Chunk<'a>>) -> impl Iterator<Item = Self> {
         let mut groups: HashMap<ProposalHeader, BTreeMap<WireChunkId, ChunkData>> = HashMap::new();
         for chunk in chunks {
             let (header, chunk_id, data) = chunk.into_parts();
             groups.entry(header).or_default().insert(chunk_id, data);
         }
-        groups.into_iter()
+
+        let mut envelopes = Vec::with_capacity(groups.len());
+        for (header, chunks) in groups {
+            envelopes.push(Self::new(header, chunks));
+        }
+        envelopes.into_iter()
     }
 
     pub fn header(&self) -> &ProposalHeader {
         &self.header
     }
 
-    pub fn chunks(&self) -> &BTreeMap<WireChunkId, ChunkData> {
+    pub fn chunks(&self) -> impl Iterator<Item = Chunk<'_>> {
+        self.chunks
+            .iter()
+            .map(|(chunk_id, data)| Chunk::view(&self.header, *chunk_id, data))
+    }
+
+    pub fn chunk_data(&self) -> &BTreeMap<WireChunkId, ChunkData> {
         &self.chunks
     }
 
@@ -174,7 +190,7 @@ impl ProposalEnvelope {
 #[cfg(test)]
 mod tests {
     use super::{
-        super::test_util::{epoch_handle, proposal_chunks},
+        super::test_util::{epoch_handle, group, proposal_chunks},
         *,
     };
 
@@ -185,10 +201,34 @@ mod tests {
         let (header_b, b) = proposal_chunks(&epoch_handle, 2);
 
         let mixed = [a[0].clone(), b[0].clone(), a[1].clone()];
-        let groups: HashMap<_, _> = ProposalEnvelope::group(mixed).collect();
-        assert_eq!(groups.len(), 2);
-        assert_eq!(groups[&header_a].len(), 2);
-        assert_eq!(groups[&header_b].len(), 1);
+        let mut envelopes: Vec<_> = ProposalEnvelope::group(mixed).collect();
+        envelopes.sort_by_key(|envelope| envelope.chunk_data().len());
+        assert_eq!(envelopes.len(), 2);
+        assert_eq!(envelopes[0].header(), &header_b);
+        assert_eq!(envelopes[0].chunk_data().len(), 1);
+        assert_eq!(envelopes[1].header(), &header_a);
+        assert_eq!(envelopes[1].chunk_data().len(), 2);
+    }
+
+    #[test]
+    fn an_envelope_views_its_chunks_under_one_header() {
+        let epoch_handle = epoch_handle();
+        let (_, chunks) = proposal_chunks(&epoch_handle, 1);
+        let envelope = group(&chunks[1..4]);
+
+        let views: Vec<_> = envelope.chunks().collect();
+        assert_eq!(views.len(), 3);
+        for (view, owned) in views.iter().zip(&chunks[1..4]) {
+            assert!(std::ptr::eq(view.header(), envelope.header()));
+            assert_eq!(view, owned);
+        }
+
+        let regrouped: Vec<_> = ProposalEnvelope::group(views).collect();
+        assert_eq!(regrouped, vec![envelope.clone()]);
+        assert_eq!(
+            ProposalEnvelope::from_chunk(chunks[2].clone()),
+            group(&chunks[2..3])
+        );
     }
 
     #[test]

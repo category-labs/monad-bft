@@ -16,13 +16,12 @@
 use std::collections::BTreeMap;
 
 use bytes::Bytes;
-use monad_merkle::{MerkleProof, MerkleTree};
 
 use super::{
     assignment::ChunkId,
     chunk::{ChunkData, WireChunkId},
-    layout::PacketLayout,
-    types::{MerkleHash, MerkleRoot},
+    types::MerkleRoot,
+    wire,
 };
 
 // the chunks of one proposal under its merkle root. Partial while
@@ -37,7 +36,7 @@ pub(crate) enum ChunkTree {
         root: MerkleRoot,
         // in chunk id order
         symbols: Vec<Bytes>,
-        tree: MerkleTree,
+        tree: wire::Tree,
     },
 }
 
@@ -49,27 +48,28 @@ impl ChunkTree {
         }
     }
 
-    // commit to the symbols in chunk id order. None if they do not fit
-    // the layout's tree depth.
-    pub(crate) fn complete(layout: &PacketLayout, symbols: Vec<Bytes>) -> Option<Self> {
-        let depth = layout.merkle_tree_depth();
-        if symbols.is_empty() || depth == 0 || depth > MerkleTree::MAX_DEPTH {
+    // commit to wire-sized symbols in chunk id order. None if they do
+    // not fit a tree of the depth.
+    pub(crate) fn complete(depth: u8, symbols: Vec<Bytes>) -> Option<Self> {
+        if symbols.is_empty() || !(wire::MIN_DEPTH..=wire::MAX_DEPTH).contains(&depth) {
             return None;
         }
         if symbols.len() > 1usize << (depth - 1) {
             return None;
         }
 
+        let symbol_len = wire::symbol_len(depth);
         let mut leaves = Vec::with_capacity(symbols.len());
         for (leaf_idx, symbol) in symbols.iter().enumerate() {
-            let hash = layout.merkle_leaf_hash(leaf_idx as WireChunkId, symbol);
-            leaves.push(hash);
+            if symbol.len() != symbol_len {
+                return None;
+            }
+            leaves.push(wire::leaf_hash(leaf_idx as WireChunkId, symbol));
         }
-        let tree = MerkleTree::new_with_depth(&leaves, depth);
-        let root = MerkleRoot(MerkleHash(*tree.root()));
+        let tree = wire::Tree::new(depth, &leaves);
 
         Some(Self::Complete {
-            root,
+            root: tree.root(),
             symbols,
             tree,
         })
@@ -82,22 +82,10 @@ impl ChunkTree {
     }
 
     // whether the chunk's proof binds it to our root
-    pub(crate) fn verify(
-        &self,
-        layout: &PacketLayout,
-        chunk_id: ChunkId,
-        data: &ChunkData,
-    ) -> bool {
+    pub(crate) fn verify(&self, chunk_id: ChunkId, data: &ChunkData) -> bool {
         let leaf_idx = chunk_id.to_wire();
-        let leaf = layout.merkle_leaf_hash(leaf_idx, &data.symbol);
-        let siblings = data.proof.iter().map(|hash| hash.0).collect();
-        let Some(proof) = MerkleProof::new_from_leaf_idx(siblings, leaf_idx) else {
-            return false;
-        };
-        let Some(computed) = proof.compute_root(&leaf) else {
-            return false;
-        };
-        MerkleRoot(MerkleHash(computed)) == self.root()
+        let leaf = wire::leaf_hash(leaf_idx, &data.symbol);
+        wire::verify_proof(&self.root(), leaf_idx, &leaf, &data.proof)
     }
 
     // record a received chunk. nothing to record once complete.
@@ -119,15 +107,10 @@ impl ChunkTree {
     pub(crate) fn chunk_data(&self, chunk_id: ChunkId) -> Option<ChunkData> {
         match self {
             Self::Partial { chunks, .. } => chunks.get(&chunk_id).cloned(),
-            Self::Complete { symbols, tree, .. } => {
-                let symbol = symbols[usize::from(chunk_id)].clone();
-                let proof = tree.proof(chunk_id.to_wire());
-                let siblings = proof.siblings().iter().map(|hash| MerkleHash(*hash));
-                Some(ChunkData {
-                    symbol,
-                    proof: siblings.collect(),
-                })
-            }
+            Self::Complete { symbols, tree, .. } => Some(ChunkData {
+                symbol: symbols[usize::from(chunk_id)].clone(),
+                proof: tree.proof(chunk_id.to_wire()),
+            }),
         }
     }
 }
@@ -136,65 +119,68 @@ impl ChunkTree {
 mod tests {
     use super::*;
 
+    // four leaves
+    const DEPTH: u8 = 3;
+
     fn symbols(n: usize) -> Vec<Bytes> {
-        (0..n).map(|i| Bytes::from(vec![i as u8; 8])).collect()
+        let mut symbols = Vec::with_capacity(n);
+        for i in 0..n {
+            symbols.push(Bytes::from(vec![i as u8; wire::symbol_len(DEPTH)]));
+        }
+        symbols
     }
 
     fn id(wire: WireChunkId) -> ChunkId {
         ChunkId::unchecked(wire)
     }
 
-    // depth 3: four leaves
-    fn layout() -> PacketLayout {
-        PacketLayout::new(32, 3)
-    }
-
     #[test]
     fn derived_chunks_verify_under_the_root() {
-        let complete = ChunkTree::complete(&layout(), symbols(4)).expect("fits depth 3");
+        let complete = ChunkTree::complete(DEPTH, symbols(4)).expect("fits depth 3");
         let partial = ChunkTree::partial(complete.root());
 
         for wire in 0..4 {
             let data = complete.chunk_data(id(wire)).expect("derivable");
-            assert!(partial.verify(&layout(), id(wire), &data));
+            assert!(partial.verify(id(wire), &data));
             assert!(complete.contains(id(wire)));
         }
     }
 
     #[test]
     fn verification_binds_symbol_index_and_root() {
-        let complete = ChunkTree::complete(&layout(), symbols(4)).unwrap();
+        let complete = ChunkTree::complete(DEPTH, symbols(4)).unwrap();
         let data = complete.chunk_data(id(0)).unwrap();
         let tree = ChunkTree::partial(complete.root());
 
         // wrong index
-        assert!(!tree.verify(&layout(), id(1), &data));
+        assert!(!tree.verify(id(1), &data));
 
         // tampered symbol
         let tampered = ChunkData {
             symbol: Bytes::from_static(b"tampered"),
             proof: data.proof.clone(),
         };
-        assert!(!tree.verify(&layout(), id(0), &tampered));
+        assert!(!tree.verify(id(0), &tampered));
 
         // another proposal's root
-        let other = ChunkTree::complete(&layout(), symbols(3)).unwrap();
-        assert!(!ChunkTree::partial(other.root()).verify(&layout(), id(0), &data));
+        let other = ChunkTree::complete(DEPTH, symbols(3)).unwrap();
+        assert!(!ChunkTree::partial(other.root()).verify(id(0), &data));
     }
 
     #[test]
-    fn completion_needs_symbols_that_fit_the_depth() {
-        assert!(ChunkTree::complete(&layout(), vec![]).is_none());
-        assert!(ChunkTree::complete(&layout(), symbols(5)).is_none());
-        assert!(ChunkTree::complete(&PacketLayout::new(32, 0), symbols(1)).is_none());
-        let too_deep = PacketLayout::new(32, MerkleTree::MAX_DEPTH + 1);
-        assert!(ChunkTree::complete(&too_deep, symbols(1)).is_none());
-        assert!(ChunkTree::complete(&layout(), symbols(4)).is_some());
+    fn completion_needs_wire_sized_symbols_that_fit_the_depth() {
+        assert!(ChunkTree::complete(DEPTH, vec![]).is_none());
+        assert!(ChunkTree::complete(DEPTH, symbols(5)).is_none());
+        assert!(ChunkTree::complete(wire::MIN_DEPTH - 1, symbols(1)).is_none());
+        assert!(ChunkTree::complete(wire::MAX_DEPTH + 1, symbols(1)).is_none());
+        // sized for depth 3, not 4
+        assert!(ChunkTree::complete(DEPTH + 1, symbols(4)).is_none());
+        assert!(ChunkTree::complete(DEPTH, symbols(4)).is_some());
     }
 
     #[test]
     fn a_partial_tree_records_chunks_and_a_complete_one_ignores_them() {
-        let mut complete = ChunkTree::complete(&layout(), symbols(4)).unwrap();
+        let mut complete = ChunkTree::complete(DEPTH, symbols(4)).unwrap();
         let data = complete.chunk_data(id(0)).unwrap();
 
         let mut partial = ChunkTree::partial(complete.root());

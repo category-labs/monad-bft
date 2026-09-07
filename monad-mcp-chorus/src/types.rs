@@ -52,6 +52,13 @@ impl Slot {
         self.0
     }
 
+    pub const fn from_u64(slot: u64) -> Option<Self> {
+        if slot > Self::MAX.0 {
+            return None;
+        }
+        Some(Self(slot))
+    }
+
     pub fn checked_add(self, slots: u64) -> Option<Self> {
         self.0.checked_add(slots).map(Self)
     }

@@ -14,20 +14,63 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use monad_mcp_chorus::spec::{Stake as _, validator::ValidatorData as _};
-use monad_merkle::MerkleTree;
 
 use super::{
     super::{
         assignment::{ChunkAssignment, StakePartition},
-        chorus::env::D25,
-        layout::PacketLayout,
-        types::{NodeId, Stake, ValidatorData},
+        types::{D25, NodeId, Stake, ValidatorData},
+        wire,
     },
     DAEncodingScheme,
     stub::{StubSymbolDecoder, StubSymbolEncoder},
 };
 
 const REDUNDANCY: f32 = 2.5;
+
+// prod's bound on a raptorcast message
+pub const MAX_MESSAGE_LEN: usize = 3 * 1024 * 1024;
+
+// the scheme a proposer among num_validators picks for its message:
+// the least depth whose leaves fit the chunks. None if the message is
+// empty, over the bound, or fits no depth.
+pub fn for_message(msg_len: usize, unix_ts: u64, num_validators: usize) -> Option<D25> {
+    let msg_len = bounded_len(msg_len)?;
+    for depth in wire::MIN_DEPTH..=wire::MAX_DEPTH {
+        if fits(msg_len, depth, num_validators) {
+            return Some(D25 {
+                msg_len,
+                unix_ts,
+                depth,
+            });
+        }
+    }
+    None
+}
+
+fn bounded_len(msg_len: usize) -> Option<u32> {
+    if msg_len == 0 || msg_len > MAX_MESSAGE_LEN {
+        return None;
+    }
+    u32::try_from(msg_len).ok()
+}
+
+// whether the chunks fit the depth's leaves. the caller must ensure
+// depth is in MIN_DEPTH..MAX_DEPTH.
+fn fits(msg_len: u32, depth: u8, num_validators: usize) -> bool {
+    // in d25, proposer is not in assignment
+    let num_owners = num_validators.saturating_sub(1);
+    let scaled_source_chunks = scale(num_source_chunks(msg_len, depth));
+    scaled_source_chunks + num_owners <= 1usize << (depth - 1)
+}
+
+fn scale(num_source_chunks: usize) -> usize {
+    (num_source_chunks as f32 * REDUNDANCY).ceil() as usize
+}
+
+// the caller must ensure depth is in MIN_DEPTH..MAX_DEPTH.
+fn num_source_chunks(msg_len: u32, depth: u8) -> usize {
+    (msg_len as usize).div_ceil(wire::symbol_len(depth))
+}
 
 // the encoding scheme of deterministic raptorcast for the current
 // monad-bft. This encoding scheme is not going to be used by mcp. I'm
@@ -46,28 +89,33 @@ impl DAEncodingScheme for D25 {
     type Encoder = StubSymbolEncoder;
     type Decoder = StubSymbolDecoder;
 
-    // the smallest merkle tree depth whose leaves fit the assignment's
-    // chunk count (bounded by one rounding chunk per owner)
-    fn packet_layout(&self, num_validators: usize) -> Option<PacketLayout> {
-        let num_owners = num_validators.saturating_sub(1);
-        for depth in 2..=MerkleTree::MAX_DEPTH {
-            let layout = PacketLayout::new(self.msg_len, depth);
-            let scaled_source_chunks =
-                (layout.num_source_chunks() as f32 * REDUNDANCY).ceil() as usize;
-            let chunk_bound = scaled_source_chunks + num_owners;
-            if chunk_bound <= 1usize << (depth - 1) {
-                return Some(layout);
-            }
-        }
-        None
+    fn depth(&self) -> u8 {
+        self.depth
     }
 
-    fn chunk_assignment(
-        &self,
-        layout: &PacketLayout,
-        author: &NodeId,
-        validator_data: &ValidatorData,
-    ) -> ChunkAssignment {
+    fn msg_len(&self) -> usize {
+        self.msg_len as usize
+    }
+
+    fn num_source_chunks(&self) -> usize {
+        num_source_chunks(self.msg_len, self.depth)
+    }
+
+    fn is_canonical(&self, num_validators: usize) -> bool {
+        if bounded_len(self.msg_len as usize).is_none() {
+            return false;
+        }
+        if !(wire::MIN_DEPTH..=wire::MAX_DEPTH).contains(&self.depth) {
+            return false;
+        }
+        if !fits(self.msg_len, self.depth, num_validators) {
+            return false;
+        }
+        // the least fitting depth, as fits is monotone
+        self.depth == wire::MIN_DEPTH || !fits(self.msg_len, self.depth - 1, num_validators)
+    }
+
+    fn chunk_assignment(&self, author: &NodeId, validator_data: &ValidatorData) -> ChunkAssignment {
         let mut weights = vec![];
         for node_id in validator_data.nodes() {
             if node_id == author {
@@ -79,16 +127,19 @@ impl DAEncodingScheme for D25 {
         weights.push((*author, Stake::ZERO));
 
         let partition = StakePartition::new(weights);
-        let num_source_chunks = layout.num_source_chunks();
-        partition.assign(author, num_source_chunks, REDUNDANCY)
+        partition.assign(author, self.num_source_chunks(), REDUNDANCY)
     }
 
-    fn encoder(&self, _layout: PacketLayout, num_chunks: usize) -> StubSymbolEncoder {
-        StubSymbolEncoder::new(num_chunks)
+    fn encoder(&self, num_chunks: usize) -> StubSymbolEncoder {
+        StubSymbolEncoder::new(
+            num_chunks,
+            self.num_source_chunks(),
+            wire::symbol_len(self.depth),
+        )
     }
 
-    fn decoder(&self, layout: PacketLayout, _num_chunks: usize) -> StubSymbolDecoder {
-        StubSymbolDecoder::new(layout)
+    fn decoder(&self, _num_chunks: usize) -> StubSymbolDecoder {
+        StubSymbolDecoder::new(self.num_source_chunks(), self.msg_len())
     }
 }
 
@@ -108,34 +159,54 @@ mod tests {
     };
 
     fn scheme() -> D25 {
-        D25 {
-            msg_len: MESSAGE_LEN,
-            unix_ts: 0,
-        }
+        for_message(MESSAGE_LEN, 0, 4).expect("fits")
     }
 
     #[test]
-    fn packet_layout_is_the_smallest_depth_that_fits() {
+    fn for_message_picks_the_least_depth_that_fits() {
         // 2 source chunks at 2.5x is 5, plus one rounding chunk per
         // owner: 8 leaves for 3 owners (depth 4), 16 for 11 (depth 5)
-        let layout = scheme().packet_layout(4).expect("fits");
-        assert_eq!(layout.merkle_tree_depth(), 4);
-        assert_eq!(layout.num_source_chunks(), 2);
-        assert_eq!(scheme().packet_layout(12).unwrap().merkle_tree_depth(), 5);
+        assert_eq!(scheme().depth(), 4);
+        assert_eq!(scheme().num_source_chunks(), 2);
+        assert_eq!(for_message(MESSAGE_LEN, 0, 12).unwrap().depth(), 5);
 
-        let oversized = D25 {
-            msg_len: 1 << 40,
-            unix_ts: 0,
+        assert!(for_message(0, 0, 4).is_none());
+        assert!(for_message(MAX_MESSAGE_LEN + 1, 0, 4).is_none());
+        // a message in range that no depth can carry
+        assert!(for_message(MAX_MESSAGE_LEN, 0, 20_000).is_none());
+    }
+
+    #[test]
+    fn the_canonical_scheme_is_the_one_for_message_picks() {
+        for msg_len in [1, 1000, MESSAGE_LEN, 5000, 100_000, 1_000_000] {
+            for num_validators in [2, 4, 12, 100, 500] {
+                let scheme = for_message(msg_len, 7, num_validators).expect("fits");
+                assert!(scheme.is_canonical(num_validators), "{scheme:?}");
+
+                let deeper = D25 {
+                    depth: scheme.depth + 1,
+                    ..scheme
+                };
+                assert!(!deeper.is_canonical(num_validators), "{deeper:?}");
+                let shallower = D25 {
+                    depth: scheme.depth - 1,
+                    ..scheme
+                };
+                assert!(!shallower.is_canonical(num_validators), "{shallower:?}");
+            }
+        }
+
+        let empty = D25 {
+            msg_len: 0,
+            ..scheme()
         };
-        assert!(oversized.packet_layout(4).is_none());
+        assert!(!empty.is_canonical(4));
     }
 
     #[test]
     fn the_author_comes_last_and_owns_nothing() {
         let epoch_handle = epoch_handle();
-        let layout = scheme().packet_layout(4).unwrap();
-        let assignment =
-            scheme().chunk_assignment(&layout, &author(), &epoch_handle.validator_data);
+        let assignment = scheme().chunk_assignment(&author(), &epoch_handle.validator_data);
 
         let author_index = assignment.index_of(&author()).expect("in the table");
         assert_eq!(usize::from(author_index), 3);
@@ -150,12 +221,14 @@ mod tests {
 
     #[test]
     fn decoding_needs_one_more_symbol_than_the_source_count() {
-        let layout = scheme().packet_layout(4).unwrap();
         let message = vec![7u8; MESSAGE_LEN];
-        let symbols = scheme().encoder(layout, 6).encode(&message);
+        let symbols = scheme().encoder(6).encode(&message);
         assert_eq!(symbols.len(), 6);
+        for symbol in &symbols {
+            assert_eq!(symbol.len(), wire::symbol_len(scheme().depth()));
+        }
 
-        let mut decoder = scheme().decoder(layout, 6);
+        let mut decoder = scheme().decoder(6);
         decoder.ingest(ChunkId::unchecked(0), &symbols[0]);
         decoder.ingest(ChunkId::unchecked(1), &symbols[1]);
         assert!(decoder.try_decode().is_none());

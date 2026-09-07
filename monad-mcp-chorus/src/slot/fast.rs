@@ -960,17 +960,22 @@ mod tests {
         ProposalHeader {
             slot: crate::stub::types::Slot(SLOT.get()),
             root: root(byte),
-            sig: ProposalSignature(0),
+            sig: ProposalSignature {
+                signer: NodeId::dummy(0),
+                checksum: 0,
+            },
             scheme: EncodingScheme::D25(D25 {
-                msg_len: 0,
+                msg_len: 1,
                 unix_ts: 0,
+                depth: 3,
             }),
         }
     }
 
     // the local node is validator 1 among 4, one proposal per slot
     fn fast_path() -> FastPath {
-        let header_auth = HeaderAuth::new(|_, signer| (*signer == NodeId::dummy(0)).then_some(0));
+        let header_auth =
+            HeaderAuth::new(|header, _| (header.sig.signer == NodeId::dummy(0)).then_some(0));
         FastPath::new(
             SLOT,
             1,
