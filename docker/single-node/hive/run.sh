@@ -4,15 +4,24 @@ set -ex
 
 CHAIN_RLP_PATH=""
 NBLOCKS=""
+MONAD_IMAGE=""
 HIVE_CHAIN_ID="3503995874084926"
 
 usage() {
-    echo "Usage: $0 --chain-rlp /path/to/chain.rlp --nblocks <number>"
+    echo "Usage: $0 --chain-rlp /path/to/chain.rlp --nblocks <number> [--image <tag>]"
     exit 1
 }
 
 while [[ "$#" -gt 0 ]]; do
     case $1 in
+        --image)
+            if [[ -z "${2:-}" || "$2" == --* ]]; then
+                echo "Error: --image requires an image tag argument." >&2
+                usage
+            fi
+            MONAD_IMAGE="$2"
+            shift
+            ;;
         --chain-rlp)
             if [[ -z "${2:-}" || "$2" == --* ]]; then
                 echo "Error: --chain-rlp requires a path argument." >&2
@@ -97,7 +106,7 @@ vol_root="$logs_dir/$(date +%Y%m%d_%H%M%S)-$rand_hex"
 
 mkdir -p "$vol_root/node/ledger"
 touch "$vol_root/node/ledger/wal"
-cp "$hive_dir/compose.yaml" "$hive_dir/run.sh" "$vol_root"
+cp "$hive_dir/compose.yaml" "$hive_dir/compose.prebuilt.yaml" "$hive_dir/run.sh" "$vol_root"
 cp -r "$devnet_dir/monad/config" "$vol_root/node"
 # Hive uses the local single-node RPC config shape; only the chain ID must
 # match the execution-side hive_net chain.
@@ -111,20 +120,25 @@ export NBLOCKS
 
 cd "$vol_root"
 
-set +e
-docker buildx inspect insecure &>/dev/null
-insecure_builder_no_exist=$?
-set -e
-if [ $insecure_builder_no_exist -ne 0 ]; then
-    docker buildx create --buildkitd-flags '--allow-insecure-entitlement security.insecure' --name insecure
-fi
-docker build --builder insecure --allow security.insecure \
-    -f "$MONAD_EXECUTION_ROOT/docker/Dockerfile" \
-    --load -t monad-execution-builder:latest "$MONAD_EXECUTION_ROOT" \
-    --build-arg GIT_COMMIT_HASH=$(git -C "$MONAD_EXECUTION_ROOT" rev-parse HEAD) \
-    --build-arg CC=gcc-15 \
-    --build-arg CXX=g++-15 \
-    --build-arg CMAKE_BUILD_TYPE=RelWithDebInfo \
-    --build-arg TOOLCHAIN=gcc-avx2
+if [ -n "$MONAD_IMAGE" ]; then
+    export MONAD_IMAGE
+    docker compose -f compose.yaml -f compose.prebuilt.yaml up build_triedb build_genesis monad_execution monad_rpc
+else
+    set +e
+    docker buildx inspect insecure &>/dev/null
+    insecure_builder_no_exist=$?
+    set -e
+    if [ $insecure_builder_no_exist -ne 0 ]; then
+        docker buildx create --buildkitd-flags '--allow-insecure-entitlement security.insecure' --name insecure
+    fi
+    docker build --builder insecure --allow security.insecure \
+        -f "$MONAD_EXECUTION_ROOT/docker/Dockerfile" \
+        --load -t monad-execution-builder:latest "$MONAD_EXECUTION_ROOT" \
+        --build-arg GIT_COMMIT_HASH=$(git -C "$MONAD_EXECUTION_ROOT" rev-parse HEAD) \
+        --build-arg CC=gcc-15 \
+        --build-arg CXX=g++-15 \
+        --build-arg CMAKE_BUILD_TYPE=RelWithDebInfo \
+        --build-arg TOOLCHAIN=gcc-avx2
 
-docker compose up build_triedb build_genesis monad_execution monad_rpc --build
+    docker compose up build_triedb build_genesis monad_execution monad_rpc --build
+fi

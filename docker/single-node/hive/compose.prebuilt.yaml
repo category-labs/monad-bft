@@ -1,0 +1,14 @@
+# Runs every service from a caller-supplied image (run.sh --image) instead of building in-place.
+services:
+  build_triedb:
+    image: ${MONAD_IMAGE:?}
+
+  build_genesis:
+    image: ${MONAD_IMAGE:?}
+
+  monad_execution:
+    image: ${MONAD_IMAGE:?}
+
+  monad_rpc:
+    image: ${MONAD_IMAGE:?}
+    build: !reset null
