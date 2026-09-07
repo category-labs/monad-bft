@@ -30,8 +30,6 @@ use super::{
     chunk_tree::ChunkTree,
     egress::ChunkEgress,
     encoding_scheme::{DAEncodingScheme as _, SymbolDecoder},
-    header::DAProposalHeader as _,
-    layout::PacketLayout,
     runtime::EpochHandle,
     types::{ChunkRequestType, NodeId, ProposalDAEvent, ProposalHeader},
 };
@@ -55,7 +53,6 @@ pub(crate) struct RaptorcastInstance {
     // None when this node is outside the assignment (e.g. a full node)
     self_index: Option<NodeIndex>,
 
-    layout: PacketLayout,
     assignment: ChunkAssignment,
     chunk_tree: ChunkTree,
 
@@ -67,21 +64,16 @@ pub(crate) struct RaptorcastInstance {
 }
 
 impl RaptorcastInstance {
-    pub(crate) fn new(
-        epoch_handle: &EpochHandle,
-        header: ProposalHeader,
-        layout: PacketLayout,
-        author: &NodeId,
-    ) -> Self {
-        let scheme = header.encoding_scheme();
-        let assignment = scheme.chunk_assignment(&layout, author, &epoch_handle.validator_data);
+    pub(crate) fn new(epoch_handle: &EpochHandle, header: ProposalHeader, author: &NodeId) -> Self {
+        let scheme = &header.scheme;
+        let assignment = scheme.chunk_assignment(author, &epoch_handle.validator_data);
         let self_index = assignment.index_of(&epoch_handle.self_id);
 
         let num_chunks = assignment.num_chunks();
-        let decoder = scheme.decoder(layout, num_chunks);
+        let decoder = scheme.decoder(num_chunks);
         let decoding_outcome = DecodingOutcome::Pending;
 
-        let decoding_threshold = layout.num_source_chunks();
+        let decoding_threshold = scheme.num_source_chunks();
         let decoding_tracker = DecodingTracker::new(num_chunks, decoding_threshold);
 
         let obligation_tracker = ObligationTracker::new(&assignment, self_index);
@@ -94,7 +86,6 @@ impl RaptorcastInstance {
             obligation_tracker,
             recovery_tracker,
 
-            layout,
             assignment,
             chunk_tree: ChunkTree::partial(header.root),
             header,
@@ -159,7 +150,7 @@ impl RaptorcastInstance {
 
         // todo: check the proof in chunk parsing, so a Chunk always
         // holds a valid merkle proof.
-        if !self.chunk_tree.verify(&self.layout, chunk_id, &data) {
+        if !self.chunk_tree.verify(chunk_id, &data) {
             return Err(InvalidChunk::BadProof);
         }
 
@@ -262,9 +253,8 @@ impl RaptorcastInstance {
     }
 
     fn reencodes_to_root(&mut self, message: &[u8]) -> bool {
-        let scheme = self.header.encoding_scheme();
         let num_chunks = self.assignment.num_chunks();
-        let Some(tree) = scheme.encode(message, self.layout, num_chunks) else {
+        let Some(tree) = self.header.scheme.encode(message, num_chunks) else {
             return false;
         };
         if tree.root() != self.header.root {
@@ -337,8 +327,6 @@ impl RaptorcastInstance {
 
 #[cfg(test)]
 mod tests {
-    use monad_mcp_chorus::spec::validator::ValidatorData as _;
-
     use super::{
         super::{
             chunk::Chunk,
@@ -351,11 +339,7 @@ mod tests {
     };
 
     fn instance(epoch_handle: &EpochHandle, header: &ProposalHeader) -> RaptorcastInstance {
-        let layout = header
-            .encoding_scheme()
-            .packet_layout(epoch_handle.validator_data.len())
-            .expect("fits a layout");
-        RaptorcastInstance::new(epoch_handle, header.clone(), layout, &author())
+        RaptorcastInstance::new(epoch_handle, header.clone(), &author())
     }
 
     fn released() -> ChunkEgress {
@@ -366,7 +350,7 @@ mod tests {
 
     fn ingest(
         instance: &mut RaptorcastInstance,
-        chunk: &Chunk,
+        chunk: &Chunk<'_>,
         egress: &mut ChunkEgress,
     ) -> Result<Option<ProposalDAEvent>, InvalidChunk> {
         let (_, chunk_id, data) = chunk.clone().into_parts();
@@ -377,7 +361,7 @@ mod tests {
     fn sent(egress: &mut ChunkEgress) -> Vec<WireChunkId> {
         let mut ids = Vec::new();
         for message in egress.drain() {
-            ids.extend(message.envelope.chunks().keys().copied());
+            ids.extend(message.envelope.chunk_data().keys().copied());
         }
         ids.sort();
         ids

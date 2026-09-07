@@ -13,51 +13,45 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-mod d25;
+pub mod d25;
 mod stub;
 
 use bytes::Bytes;
 
 use super::{
     assignment::{ChunkAssignment, ChunkId},
-    chorus::env::EncodingScheme,
     chunk_tree::ChunkTree,
-    layout::PacketLayout,
-    types::{NodeId, ValidatorData},
+    types::{EncodingScheme, NodeId, ValidatorData},
 };
 
-// the DA-side capabilities of an encoding scheme: it fixes the packet
-// layout, the chunk assignment and the symbol code.
-//
-// Note: packet_layout & chunk_assignment can be expensive to
-// calculate. Avoid recomputing them where possible.
+// The encoding scheme specifies: the symbol code, the chunk
+// assignment, and the merkle depth its chunks need.
 pub(crate) trait DAEncodingScheme {
     type Encoder: SymbolEncoder;
     type Decoder: SymbolDecoder;
 
-    // None if the scheme fits no packet layout (e.g. an oversized
-    // msg_len)
-    fn packet_layout(&self, num_validators: usize) -> Option<PacketLayout>;
+    fn depth(&self) -> u8;
+    fn msg_len(&self) -> usize;
+    fn num_source_chunks(&self) -> usize;
 
-    fn chunk_assignment(
-        &self,
-        layout: &PacketLayout,
-        author: &NodeId,
-        validator_data: &ValidatorData,
-    ) -> ChunkAssignment;
+    // whether a proposer among num_validators must have chosen exactly
+    // this scheme for its message
+    fn is_canonical(&self, num_validators: usize) -> bool;
 
-    fn encoder(&self, layout: PacketLayout, num_chunks: usize) -> Self::Encoder;
+    // Note: can be expensive to calculate. Avoid recomputing when possible.
+    fn chunk_assignment(&self, author: &NodeId, validator_data: &ValidatorData) -> ChunkAssignment;
 
-    fn decoder(&self, layout: PacketLayout, num_chunks: usize) -> Self::Decoder;
+    fn encoder(&self, num_chunks: usize) -> Self::Encoder;
+    fn decoder(&self, num_chunks: usize) -> Self::Decoder;
 
-    // encode a proposal into its chunk tree. None if the message does
-    // not fit the layout.
-    fn encode(&self, message: &[u8], layout: PacketLayout, num_chunks: usize) -> Option<ChunkTree> {
-        if message.is_empty() {
+    // the chunk tree of a message of the scheme's length. None for any
+    // other length.
+    fn encode(&self, message: &[u8], num_chunks: usize) -> Option<ChunkTree> {
+        if message.is_empty() || message.len() != self.msg_len() {
             return None;
         }
-        let symbols = self.encoder(layout, num_chunks).encode(message);
-        ChunkTree::complete(&layout, symbols)
+        let symbols = self.encoder(num_chunks).encode(message);
+        ChunkTree::complete(self.depth(), symbols)
     }
 }
 
@@ -78,32 +72,45 @@ impl DAEncodingScheme for EncodingScheme {
     type Encoder = Box<dyn SymbolEncoder>;
     type Decoder = Box<dyn SymbolDecoder>;
 
-    fn packet_layout(&self, num_validators: usize) -> Option<PacketLayout> {
+    fn depth(&self) -> u8 {
         match self {
-            EncodingScheme::D25(d25) => d25.packet_layout(num_validators),
+            EncodingScheme::D25(d25) => d25.depth(),
         }
     }
 
-    fn chunk_assignment(
-        &self,
-        layout: &PacketLayout,
-        author: &NodeId,
-        validator_data: &ValidatorData,
-    ) -> ChunkAssignment {
+    fn msg_len(&self) -> usize {
         match self {
-            EncodingScheme::D25(d25) => d25.chunk_assignment(layout, author, validator_data),
+            EncodingScheme::D25(d25) => d25.msg_len(),
         }
     }
 
-    fn encoder(&self, layout: PacketLayout, num_chunks: usize) -> Self::Encoder {
+    fn num_source_chunks(&self) -> usize {
         match self {
-            EncodingScheme::D25(d25) => Box::new(d25.encoder(layout, num_chunks)),
+            EncodingScheme::D25(d25) => d25.num_source_chunks(),
         }
     }
 
-    fn decoder(&self, layout: PacketLayout, num_chunks: usize) -> Self::Decoder {
+    fn is_canonical(&self, num_validators: usize) -> bool {
         match self {
-            EncodingScheme::D25(d25) => Box::new(d25.decoder(layout, num_chunks)),
+            EncodingScheme::D25(d25) => d25.is_canonical(num_validators),
+        }
+    }
+
+    fn chunk_assignment(&self, author: &NodeId, validator_data: &ValidatorData) -> ChunkAssignment {
+        match self {
+            EncodingScheme::D25(d25) => d25.chunk_assignment(author, validator_data),
+        }
+    }
+
+    fn encoder(&self, num_chunks: usize) -> Self::Encoder {
+        match self {
+            EncodingScheme::D25(d25) => Box::new(d25.encoder(num_chunks)),
+        }
+    }
+
+    fn decoder(&self, num_chunks: usize) -> Self::Decoder {
+        match self {
+            EncodingScheme::D25(d25) => Box::new(d25.decoder(num_chunks)),
         }
     }
 }

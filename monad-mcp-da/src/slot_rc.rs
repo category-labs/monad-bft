@@ -80,7 +80,6 @@ impl SlotRaptorcast {
 
     pub fn ingest(&mut self, envelope: ProposalEnvelope) -> Result<(), InvalidProposalHeader> {
         debug_assert!(envelope.header().slot == self.slot);
-
         let j = self
             .authenticate(envelope.header())
             .ok_or(InvalidProposalHeader::Unauthenticated)?;
@@ -88,7 +87,7 @@ impl SlotRaptorcast {
         let raptorcast = self.raptorcasts[j]
             .as_mut()
             .expect("authenticated indices have proposers");
-        raptorcast.ingest(envelope, &self.epoch_handle, &mut self.egress)?;
+        raptorcast.ingest(envelope, &self.epoch_handle, &mut self.egress);
 
         for event in raptorcast.drain_events() {
             self.out_events.push(ChorusDAEvent { j, event });
@@ -246,7 +245,7 @@ mod tests {
     fn chunk_ids(messages: &[Dissemination]) -> Vec<WireChunkId> {
         let mut ids = Vec::new();
         for message in messages {
-            ids.extend(message.envelope.chunks().keys().copied());
+            ids.extend(message.envelope.chunk_data().keys().copied());
         }
         ids.sort();
         ids
@@ -353,9 +352,9 @@ mod tests {
             self_id: NodeId::dummy(1),
             num_proposals: 1,
             key_pair: Arc::new(ProposalKeyPair::dummy(NodeId::dummy(1))),
-            header_auth: Arc::new(HeaderAuth::new(move |_slot, signer| {
+            header_auth: Arc::new(HeaderAuth::new(move |header: &ProposalHeader, _slot| {
                 counted.fetch_add(1, Ordering::SeqCst);
-                (*signer == author()).then_some(0)
+                (header.sig.signer == author()).then_some(0)
             })),
             validator_data: Arc::new(validator_data(4)),
         };
