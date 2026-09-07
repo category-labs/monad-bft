@@ -13,7 +13,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-pub mod cloud_proxy;
 pub mod dynamodb;
 pub mod fs;
 pub mod memory;
@@ -32,9 +31,7 @@ use tokio_retry::{
     RetryIf,
 };
 
-use self::{
-    cloud_proxy::CloudProxyReader, fs::FsStorage, memory::MemoryStorage, mongo::MongoDbStorage,
-};
+use self::{fs::FsStorage, memory::MemoryStorage, mongo::MongoDbStorage};
 use crate::prelude::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,7 +40,6 @@ pub enum KVStoreType {
     AwsDynamoDB,
     Mongo,
     Memory,
-    CloudProxy,
     TrieDb,
     FileSystem,
 }
@@ -74,7 +70,6 @@ impl KVStoreType {
             KVStoreType::AwsDynamoDB => "aws_dynamodb",
             KVStoreType::Mongo => "mongo",
             KVStoreType::Memory => "memory",
-            KVStoreType::CloudProxy => "cloud_proxy",
             KVStoreType::TrieDb => "triedb",
             KVStoreType::FileSystem => "fs",
         }
@@ -97,7 +92,6 @@ pub enum KVReaderErased {
     Bucket,
     MemoryStorage,
     DynamoDBArchive,
-    CloudProxyReader,
     MongoDbStorage,
     FsStorage,
 }
