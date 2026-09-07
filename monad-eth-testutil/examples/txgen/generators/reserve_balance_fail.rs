@@ -13,13 +13,21 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use itertools::Itertools;
+use alloy_consensus::TxEip7702;
+use alloy_eips::eip7702::Authorization;
 
 use super::*;
+
+// Non-zero placeholder used as the delegation target for self-authorizations.
+// The account only needs to be marked delegated; the target does not have to be a
+// deployed contract for the consensus-level reserve-balance check.
+const DELEGATION_TARGET: Address = Address::repeat_byte(0xDE);
+const DELEGATE_GAS_LIMIT: u64 = 100_000;
 
 pub struct ReserveBalanceFailGenerator {
     pub recipient_keys: KeyPool,
     pub num_fail_txs: usize,
+    pub delegate_sender: bool,
 }
 
 impl Generator for ReserveBalanceFailGenerator {
@@ -40,31 +48,67 @@ impl Generator for ReserveBalanceFailGenerator {
                         sender.native_bal);
                 }
 
-                (0..self.num_fail_txs + 1)
-                    .map(|_| {
-                        let to = self.recipient_keys.next_addr();
+                let mut txs = Vec::with_capacity(self.num_fail_txs + 2);
 
-                        let tx = TxEip1559 {
-                            chain_id: ctx.chain_id,
-                            nonce: sender.nonce,
-                            gas_limit,
-                            max_fee_per_gas,
-                            max_priority_fee_per_gas: ctx.priority_fee.unwrap_or(0), // 0 default, override with --priority-fee
-                            to: TxKind::Call(to),
-                            value: U256::from(1000),
-                            access_list: Default::default(),
-                            input: Default::default(),
-                        };
+                if self.delegate_sender {
+                    // Self-authorize: authority == sender. Because the tx's own nonce is
+                    // consumed before authorizations are processed, the auth nonce must
+                    // be sender.nonce + 1, and both the tx and the auth each bump the
+                    // account nonce — so we advance our local view by 2.
+                    let auth = Authorization {
+                        chain_id: U256::from(ctx.chain_id),
+                        address: DELEGATION_TARGET,
+                        nonce: sender.nonce + 1,
+                    };
+                    let auth_sig = sender.key.sign_hash(&auth.signature_hash());
+                    let signed_auth = auth.into_signed(auth_sig);
 
-                        sender.nonce += 1;
+                    let delegate_tx = TxEip7702 {
+                        chain_id: ctx.chain_id,
+                        nonce: sender.nonce,
+                        gas_limit: DELEGATE_GAS_LIMIT,
+                        max_fee_per_gas,
+                        max_priority_fee_per_gas: ctx.priority_fee.unwrap_or(0),
+                        to: sender.addr,
+                        value: U256::ZERO,
+                        access_list: Default::default(),
+                        input: Default::default(),
+                        authorization_list: vec![signed_auth],
+                    };
+                    let sig = sender.key.sign_transaction(&delegate_tx);
+                    sender.nonce += 2;
 
-                        let sig = sender.key.sign_transaction(&tx);
-                        let tx = TxEnvelope::Eip1559(tx.into_signed(sig));
+                    txs.push((
+                        TxEnvelope::Eip7702(delegate_tx.into_signed(sig)),
+                        sender.addr,
+                        sender.key.clone(),
+                    ));
+                }
 
-                        (tx, to, sender.key.clone())
-                    })
-                    .collect_vec()
-                    .into_iter()
+                txs.extend((0..self.num_fail_txs + 1).map(|_| {
+                    let to = self.recipient_keys.next_addr();
+
+                    let tx = TxEip1559 {
+                        chain_id: ctx.chain_id,
+                        nonce: sender.nonce,
+                        gas_limit,
+                        max_fee_per_gas,
+                        max_priority_fee_per_gas: ctx.priority_fee.unwrap_or(0), // 0 default, override with --priority-fee
+                        to: TxKind::Call(to),
+                        value: U256::from(1000),
+                        access_list: Default::default(),
+                        input: Default::default(),
+                    };
+
+                    sender.nonce += 1;
+
+                    let sig = sender.key.sign_transaction(&tx);
+                    let tx = TxEnvelope::Eip1559(tx.into_signed(sig));
+
+                    (tx, to, sender.key.clone())
+                }));
+
+                txs.into_iter()
             })
             .collect()
     }

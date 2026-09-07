@@ -781,11 +781,17 @@ impl Default for EIP7702CreateConfig {
 pub struct ReserveBalanceFailConfig {
     /// Number of failing transactions to generate per account
     pub num_fail_txs: usize,
+    /// If true, prepend a self-authorizing EIP-7702 tx per sender so the failing
+    /// transactions come from a delegated account (exercises the delegated-dip path).
+    pub delegate_sender: bool,
 }
 
 impl Default for ReserveBalanceFailConfig {
     fn default() -> Self {
-        Self { num_fail_txs: 5 }
+        Self {
+            num_fail_txs: 5,
+            delegate_sender: false,
+        }
     }
 }
 
