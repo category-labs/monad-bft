@@ -493,7 +493,11 @@ fn deserialize_variant<E: de::Error, T: DeserializeOwned>(
         .map_err(|err| E::custom(format!("failed to parse {label}: {err}")))
 }
 
-#[derive(Clone, Serialize, Deserialize, Default, Eq, PartialEq, Hash)]
+/// AWS credentials are intentionally not configurable here. They are resolved
+/// at runtime via `--profile` or the AWS default credential chain (environment
+/// variables, shared config, IAM roles), so serialized args (e.g. the checker's
+/// persisted replica list) never contain key material.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, Eq, PartialEq, Hash)]
 pub struct AwsCliArgs {
     pub bucket: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -502,10 +506,6 @@ pub struct AwsCliArgs {
     pub endpoint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub access_key_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub secret_access_key: Option<String>,
     // TODO: remove me, concurrency should be handled elsewhere
     #[serde(default = "default_aws_concurrency")]
     pub concurrency: usize,
@@ -516,32 +516,6 @@ pub struct AwsCliArgs {
     pub operation_attempt_timeout_secs: u64,
     #[serde(default = "get_default_bucket_timeout")]
     pub read_timeout_secs: u64,
-}
-
-impl std::fmt::Debug for AwsCliArgs {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AwsCliArgs")
-            .field("bucket", &self.bucket)
-            .field("region", &self.region)
-            .field("endpoint", &self.endpoint)
-            .field("profile", &self.profile)
-            .field(
-                "access_key_id",
-                &self.access_key_id.as_ref().map(|_| "[REDACTED]"),
-            )
-            .field(
-                "secret_access_key",
-                &self.secret_access_key.as_ref().map(|_| "[REDACTED]"),
-            )
-            .field("concurrency", &self.concurrency)
-            .field("operation_timeout_secs", &self.operation_timeout_secs)
-            .field(
-                "operation_attempt_timeout_secs",
-                &self.operation_attempt_timeout_secs,
-            )
-            .field("read_timeout_secs", &self.read_timeout_secs)
-            .finish()
-    }
 }
 
 impl AwsCliArgs {
@@ -567,8 +541,6 @@ impl AwsCliArgs {
             region: kv.remove("region"),
             endpoint: kv.remove("endpoint"),
             profile: kv.remove("profile"),
-            access_key_id: kv.remove("access-key-id"),
-            secret_access_key: kv.remove("secret-access-key"),
             concurrency: kv
                 .remove("concurrency")
                 .and_then(|s| usize::from_str(&s).ok())
@@ -584,14 +556,25 @@ impl AwsCliArgs {
             read_timeout_secs: get_u64(&kv, "read-timeout-secs", timeout_secs),
         };
 
-        if matches!(
-            (&args.access_key_id, &args.secret_access_key),
-            (Some(_), None) | (None, Some(_))
-        ) {
-            return Err(eyre::eyre!(
-                "aws config for bucket '{}' must set both --access-key-id and --secret-access-key",
-                args.bucket
-            ));
+        // Reject rather than silently ignore removed credential flags so
+        // operators notice the migration instead of falling through to a
+        // different credential source.
+        for key in ["access-key-id", "secret-access-key"] {
+            // Also catch `--flag=value`: the kv parser keeps the whole
+            // token as a single `flag=value` key when a positional value
+            // follows; in other positions it already fails with "requires
+            // a value" before reaching this check.
+            if kv
+                .keys()
+                .any(|k| k == key || k.starts_with(&format!("{key}=")))
+            {
+                return Err(eyre::eyre!(
+                    "--{key} is no longer supported (aws config for bucket '{}'); \
+                     configure credentials via --profile or the AWS default \
+                     credential chain (environment, shared config, IAM role)",
+                    args.bucket
+                ));
+            }
         }
 
         Ok(args)
@@ -855,10 +838,13 @@ mod tests {
             _ => panic!("expected Aws variant"),
         }
 
-        let err = BlockDataReaderArgs::from_str("aws my-bucket --access-key-id only-id")
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("--secret-access-key"));
+        let err = BlockDataReaderArgs::from_str(
+            "aws my-bucket --access-key-id id --secret-access-key secret",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("no longer supported"));
+        assert!(err.contains("--profile"));
     }
 
     #[test]
@@ -1035,83 +1021,6 @@ mod tests {
     }
 
     #[test]
-    fn aws_debug_redacts_secrets_when_present() {
-        let args = AwsCliArgs {
-            bucket: "my-bucket".to_string(),
-            region: Some("us-east-1".to_string()),
-            endpoint: Some("https://s3.amazonaws.com".to_string()),
-            profile: Some("mainnet".to_string()),
-            access_key_id: Some("AKIAIOSFODNN7EXAMPLE".to_string()),
-            secret_access_key: Some("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".to_string()),
-            concurrency: 10,
-            operation_timeout_secs: 30,
-            operation_attempt_timeout_secs: 30,
-            read_timeout_secs: 30,
-        };
-
-        let debug_output = format!("{:?}", args);
-
-        // Should NOT contain actual secrets
-        assert!(!debug_output.contains("AKIAIOSFODNN7EXAMPLE"));
-        assert!(!debug_output.contains("wJalrXUtnFEMI"));
-        assert!(!debug_output.contains("bPxRfiCYEXAMPLEKEY"));
-
-        // Should contain [REDACTED] for secret fields
-        assert!(debug_output.contains("[REDACTED]"));
-
-        // Should still contain non-secret fields
-        assert!(debug_output.contains("my-bucket"));
-        assert!(debug_output.contains("us-east-1"));
-    }
-
-    #[test]
-    fn aws_debug_shows_none_when_secrets_absent() {
-        let args = AwsCliArgs {
-            bucket: "my-bucket".to_string(),
-            region: None,
-            endpoint: None,
-            profile: None,
-            access_key_id: None,
-            secret_access_key: None,
-            concurrency: 10,
-            operation_timeout_secs: 30,
-            operation_attempt_timeout_secs: 30,
-            read_timeout_secs: 30,
-        };
-
-        let debug_output = format!("{:?}", args);
-
-        // When secrets are None, should show None (not [REDACTED])
-        assert!(debug_output.contains("access_key_id: None"));
-        assert!(debug_output.contains("secret_access_key: None"));
-    }
-
-    #[test]
-    fn aws_debug_does_not_leak_secrets_in_alternate_format() {
-        let args = AwsCliArgs {
-            bucket: "test".to_string(),
-            region: None,
-            endpoint: None,
-            profile: None,
-            access_key_id: Some("SECRET_KEY_ID".to_string()),
-            secret_access_key: Some("SECRET_ACCESS_KEY".to_string()),
-            concurrency: default_aws_concurrency(),
-            operation_timeout_secs: get_default_bucket_timeout(),
-            operation_attempt_timeout_secs: get_default_bucket_timeout(),
-            read_timeout_secs: get_default_bucket_timeout(),
-        };
-
-        // Test both {:?} and {:#?} (pretty print)
-        let debug_output = format!("{:?}", args);
-        let pretty_output = format!("{:#?}", args);
-
-        assert!(!debug_output.contains("SECRET_KEY_ID"));
-        assert!(!debug_output.contains("SECRET_ACCESS_KEY"));
-        assert!(!pretty_output.contains("SECRET_KEY_ID"));
-        assert!(!pretty_output.contains("SECRET_ACCESS_KEY"));
-    }
-
-    #[test]
     fn aws_archive_args_deserialize_with_missing_optional_fields() {
         let json = r#"{
             "Aws": {
@@ -1131,10 +1040,35 @@ mod tests {
                 assert_eq!(args.region.as_deref(), Some("us-east-1"));
                 assert_eq!(args.endpoint, None);
                 assert_eq!(args.profile, None);
-                assert_eq!(args.access_key_id, None);
-                assert_eq!(args.secret_access_key, None);
             }
             _ => panic!("expected Aws variant"),
         }
+    }
+
+    /// Replica lists persisted before static credentials were removed may
+    /// still carry key material; loading must succeed (the unknown fields are
+    /// dropped) and re-serializing must not write the secrets back out.
+    #[test]
+    fn aws_archive_args_drop_legacy_static_credentials() {
+        let json = r#"{
+            "Aws": {
+                "bucket": "archive-bucket",
+                "region": "us-east-1",
+                "access_key_id": "AKIAIOSFODNN7EXAMPLE",
+                "secret_access_key": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+                "concurrency": 10,
+                "operation_timeout_secs": 40,
+                "operation_attempt_timeout_secs": 10,
+                "read_timeout_secs": 10
+            }
+        }"#;
+
+        let args: ArchiveArgs = serde_json::from_str(json).unwrap();
+        assert!(matches!(&args, ArchiveArgs::Aws(aws) if aws.bucket == "archive-bucket"));
+
+        let reserialized = serde_json::to_string(&args).unwrap();
+        assert!(!reserialized.contains("AKIAIOSFODNN7EXAMPLE"));
+        assert!(!reserialized.contains("access_key_id"));
+        assert!(!reserialized.contains("secret_access_key"));
     }
 }
