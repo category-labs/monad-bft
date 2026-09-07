@@ -38,8 +38,8 @@ use crate::{
     report::Report,
     shared::{
         ecmul::ECMul, eip7702::EIP7702, erc20::ERC20, erc4337_entrypoint::EntryPoint,
-        eth_json_rpc::EthJsonRpc, nft_sale::NftSale, simple7702_account::Simple7702Account,
-        uniswap::Uniswap,
+        erc4337_paymaster::Paymaster, eth_json_rpc::EthJsonRpc, nft_sale::NftSale,
+        simple7702_account::Simple7702Account, uniswap::Uniswap,
     },
     workers::transform::TransformOptions,
 };
@@ -674,6 +674,11 @@ async fn load_or_deploy_contracts(
             Ok(DeployedContract::NftSale(nft_sale))
         }
         RequiredContract::ERC4337_7702 => {
+            let use_paymaster = match &traffic_gen.gen_mode {
+                GenMode::ERC4337_7702Bundled(config) => config.use_paymaster,
+                _ => false,
+            };
+
             match open_deployed_contracts_file(PATH) {
                 Ok(DeployedContractFile {
                     erc4337_7702: Some(erc4337_7702),
@@ -681,6 +686,8 @@ async fn load_or_deploy_contracts(
                 }) => {
                     if verify_contract_code(client, erc4337_7702.entrypoint).await?
                         && verify_contract_code(client, erc4337_7702.simple7702account).await?
+                        && (!use_paymaster
+                            || verify_contract_code(client, erc4337_7702.paymaster).await?)
                     {
                         info!("ERC4337_7702 contracts loaded from file validated");
                         return Ok(DeployedContract::ERC4337_7702(erc4337_7702));
@@ -706,9 +713,20 @@ async fn load_or_deploy_contracts(
             )
             .await?;
 
+            let paymaster = match use_paymaster {
+                true => {
+                    Paymaster::deploy(&deployer, client, &entrypoint, max_fee_per_gas, chain_id)
+                        .await?
+                }
+                false => Paymaster {
+                    addr: Address::ZERO,
+                },
+            };
+
             let erc4337_7702 = ERC4337_7702Bundled {
                 entrypoint: entrypoint.addr,
                 simple7702account: simple7702account.addr,
+                paymaster: paymaster.addr,
             };
 
             let deployed = DeployedContractFile {
