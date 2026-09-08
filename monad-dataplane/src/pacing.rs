@@ -15,13 +15,14 @@
 
 //! Single-owner global and per-peer packet pacing.
 //!
-//! Flow state is ordered by its next eligible send time. Transport-specific
+//! Flow state is ordered by its next eligible send time. Eligible UDP and TCP
 //! messages move through one global priority queue.
 
 use std::{
     cell::RefCell,
     cmp::{Ordering, Reverse},
     collections::{BinaryHeap, HashMap},
+    mem::size_of,
     net::{SocketAddr, SocketAddrV4},
     num::NonZeroU64,
     rc::Rc,
@@ -35,7 +36,9 @@ use monoio::{select, time::sleep};
 use tokio::sync::mpsc;
 
 use crate::{
-    metrics::DataplaneMetrics, UdpMsg, UdpPacingConfig, UdpSocketId, IPV4_HDR_SIZE, UDP_HDR_SIZE,
+    metrics::DataplaneMetrics,
+    tcp::{TcpMsgHdr, TCP_MESSAGE_LENGTH_LIMIT},
+    TcpMsg, UdpMsg, UdpPacingConfig, UdpSocketId, IPV4_HDR_SIZE, UDP_HDR_SIZE,
 };
 
 const PACER_MAX_CATCH_UP: Duration = Duration::from_millis(5);
@@ -495,6 +498,8 @@ impl<T: PacingItem> PacingQueue<T> {
 
 const UDP_DISPATCH_PACING_BYTES: usize = 64 * 1024;
 const UDP_WORKER_DISPATCH_CHANNEL_SIZE: usize = 128;
+pub const TCP_MANAGER_CHANNEL_SIZE: usize = 64;
+const TCP_PACING_COMMAND_CHANNEL_SIZE: usize = 128;
 const UDP_PACING_COMMAND_CHANNEL_SIZE: usize = 12_800;
 const MAX_COMMAND_DRAIN: usize = 256;
 
@@ -516,26 +521,31 @@ pub(crate) struct PacingTaskConfig {
 
 #[derive(Clone)]
 pub(crate) struct PacingHandle {
-    commands: mpsc::Sender<Command>,
+    tcp_commands: mpsc::Sender<(SocketAddr, TcpMsg)>,
+    udp_commands: mpsc::Sender<UdpMsg>,
     metrics: DataplaneMetrics,
 }
 
 pub(crate) struct PacingTask {
     config: PacingTaskConfig,
-    commands: mpsc::Receiver<Command>,
+    tcp_commands: mpsc::Receiver<(SocketAddr, TcpMsg)>,
+    udp_commands: mpsc::Receiver<UdpMsg>,
     outputs: OutputSenders,
     metrics: DataplaneMetrics,
 }
 
 pub(crate) struct PacingOutputs {
+    pub(crate) tcp: mpsc::Receiver<(SocketAddr, TcpMsg)>,
     pub(crate) udp: Receiver<UdpDispatch>,
 }
 
 struct OutputSenders {
+    tcp: mpsc::Sender<(SocketAddr, TcpMsg)>,
     udp: Sender<UdpDispatch>,
 }
 
 enum Command {
+    Tcp { addr: SocketAddr, message: TcpMsg },
     Udp { message: UdpMsg },
 }
 
@@ -548,7 +558,9 @@ impl PacingHandle {
             config.udp_workers != 0,
             "at least one UDP TX worker is required"
         );
-        let (commands, command_rx) = mpsc::channel(UDP_PACING_COMMAND_CHANNEL_SIZE);
+        let (tcp_commands, tcp_command_rx) = mpsc::channel(TCP_PACING_COMMAND_CHANNEL_SIZE);
+        let (udp_commands, udp_command_rx) = mpsc::channel(UDP_PACING_COMMAND_CHANNEL_SIZE);
+        let (tcp, tcp_rx) = mpsc::channel(TCP_MANAGER_CHANNEL_SIZE);
         let (udp, udp_rx) = async_channel::bounded(UDP_WORKER_DISPATCH_CHANNEL_SIZE);
         metrics
             .egress_pacing_bandwidth_limit_bytes_per_second
@@ -558,27 +570,37 @@ impl PacingHandle {
             .set(u64::try_from(config.udp.max_queued_bytes).unwrap_or(u64::MAX));
         (
             Self {
-                commands,
+                tcp_commands,
+                udp_commands,
                 metrics: metrics.clone(),
             },
             PacingTask {
                 config,
-                commands: command_rx,
-                outputs: OutputSenders { udp },
+                tcp_commands: tcp_command_rx,
+                udp_commands: udp_command_rx,
+                outputs: OutputSenders { tcp, udp },
                 metrics,
             },
-            PacingOutputs { udp: udp_rx },
+            PacingOutputs {
+                tcp: tcp_rx,
+                udp: udp_rx,
+            },
         )
     }
 
+    pub(crate) fn enqueue_tcp(&self, addr: SocketAddr, message: TcpMsg) -> Result<(), TcpMsg> {
+        match self.tcp_commands.try_send((addr, message)) {
+            Ok(()) => Ok(()),
+            Err(err) => Err(err.into_inner().1),
+        }
+    }
+
     pub(crate) fn enqueue_udp(&self, message: UdpMsg) -> Result<(), UdpMsg> {
-        match self.commands.try_send(Command::Udp { message }) {
+        match self.udp_commands.try_send(message) {
             Ok(()) => Ok(()),
             Err(err) => {
                 self.metrics.udp_pacing_command_channel_drops.inc();
-                match err.into_inner() {
-                    Command::Udp { message } => Err(message),
-                }
+                Err(err.into_inner())
             }
         }
     }
@@ -589,14 +611,26 @@ struct UdpWork {
     requested_at: Instant,
 }
 
+struct TcpWork {
+    addr: SocketAddr,
+    message: TcpMsg,
+    requested_at: Instant,
+}
+
 enum PacedMessage {
     Udp(UdpWork),
+    Tcp(TcpWork),
 }
 
 impl PacedMessage {
     fn batch_limit(&self) -> usize {
         match self {
             Self::Udp(_) => UDP_DISPATCH_PACING_BYTES,
+            Self::Tcp(work) => work
+                .message
+                .msg
+                .len()
+                .saturating_add(size_of::<TcpMsgHdr>()),
         }
     }
 }
@@ -605,23 +639,30 @@ impl PacingItem for PacedMessage {
     fn next_payload_bytes(&self) -> usize {
         match self {
             Self::Udp(work) => work.message.next_payload_bytes(),
+            Self::Tcp(work) => work.message.msg.len(),
         }
     }
 
     fn next_pacing_bytes(&self) -> usize {
         match self {
             Self::Udp(work) => work.message.next_pacing_bytes(),
+            Self::Tcp(work) => work
+                .message
+                .msg
+                .len()
+                .saturating_add(size_of::<TcpMsgHdr>()),
         }
     }
 
     fn peer_bytes_per_second(&self, configured: NonZeroU64) -> NonZeroU64 {
         match self {
             Self::Udp(_) => configured,
+            Self::Tcp(_) => NonZeroU64::new(u64::MAX).unwrap(),
         }
     }
 
     fn is_udp(&self) -> bool {
-        true
+        matches!(self, Self::Udp(_))
     }
 }
 
@@ -632,41 +673,36 @@ struct PacingState {
 }
 
 impl PacingTask {
-    pub(crate) async fn run(mut self) {
+    pub(crate) async fn run(self) {
+        let Self {
+            config,
+            mut tcp_commands,
+            mut udp_commands,
+            outputs,
+            metrics,
+        } = self;
         let peer_bytes_per_second = NonZeroU64::new(
-            u64::try_from(u128::from(self.config.udp.peer_bandwidth_mbps) * 1_000_000 / 8)
+            u64::try_from(u128::from(config.udp.peer_bandwidth_mbps) * 1_000_000 / 8)
                 .expect("UDP peer bandwidth overflows bytes per second"),
         )
         .expect("UDP peer bandwidth must be non-zero");
         let mut state = PacingState {
             queue: PacingQueue::new(
-                self.config.global_bytes_per_second,
+                config.global_bytes_per_second,
                 peer_bytes_per_second,
-                self.config.udp.max_queued_bytes,
-                self.metrics.clone(),
+                config.udp.max_queued_bytes,
+                metrics.clone(),
             ),
-            outputs: self.outputs,
-            metrics: self.metrics,
+            outputs,
+            metrics,
         };
 
-        while let Some(first) = self.commands.recv().await {
+        while let Some(first) = recv_command(&mut tcp_commands, &mut udp_commands).await {
             state.enqueue(first);
-            for _ in 1..MAX_COMMAND_DRAIN {
-                match self.commands.try_recv() {
-                    Ok(command) => state.enqueue(command),
-                    Err(mpsc::error::TryRecvError::Empty) => break,
-                    Err(mpsc::error::TryRecvError::Disconnected) => return,
-                }
-            }
+            drain_commands(&mut tcp_commands, &mut udp_commands, &mut state);
 
             loop {
-                for _ in 0..MAX_COMMAND_DRAIN {
-                    match self.commands.try_recv() {
-                        Ok(command) => state.enqueue(command),
-                        Err(mpsc::error::TryRecvError::Empty) => break,
-                        Err(mpsc::error::TryRecvError::Disconnected) => return,
-                    }
-                }
+                drain_commands(&mut tcp_commands, &mut udp_commands, &mut state);
 
                 let now = state.queue.elapsed();
                 match state.dispatch_batch(now).await {
@@ -679,7 +715,7 @@ impl PacingTask {
                     break;
                 };
                 select! {
-                    command = self.commands.recv() => {
+                    command = recv_command(&mut tcp_commands, &mut udp_commands) => {
                         let Some(command) = command else { return };
                         state.enqueue(command);
                     }
@@ -690,10 +726,63 @@ impl PacingTask {
     }
 }
 
+async fn recv_command(
+    tcp: &mut mpsc::Receiver<(SocketAddr, TcpMsg)>,
+    udp: &mut mpsc::Receiver<UdpMsg>,
+) -> Option<Command> {
+    select! {
+        command = tcp.recv() => command.map(|(addr, message)| Command::Tcp { addr, message }),
+        message = udp.recv() => message.map(|message| Command::Udp { message }),
+    }
+}
+
+fn drain_commands(
+    tcp: &mut mpsc::Receiver<(SocketAddr, TcpMsg)>,
+    udp: &mut mpsc::Receiver<UdpMsg>,
+    state: &mut PacingState,
+) {
+    for _ in 0..MAX_COMMAND_DRAIN / 2 {
+        if let Ok((addr, message)) = tcp.try_recv() {
+            state.enqueue(Command::Tcp { addr, message });
+        }
+        if let Ok(message) = udp.try_recv() {
+            state.enqueue(Command::Udp { message });
+        }
+    }
+}
+
 impl PacingState {
     fn enqueue(&mut self, command: Command) {
         match command {
+            Command::Tcp { addr, message } => self.enqueue_tcp(addr, message),
             Command::Udp { message } => self.enqueue_udp(message),
+        }
+    }
+
+    fn enqueue_tcp(&mut self, addr: SocketAddr, message: TcpMsg) {
+        let message_len = message.msg.len();
+        if message_len > TCP_MESSAGE_LENGTH_LIMIT {
+            self.metrics.tcp_egress_messages_dropped.inc();
+            return;
+        }
+        let work = PacedMessage::Tcp(TcpWork {
+            addr,
+            message,
+            requested_at: Instant::now(),
+        });
+        if self
+            .queue
+            .enqueue_egress(
+                PacingKey::Tcp(addr),
+                PacingPriority::Background,
+                work,
+                message_len,
+            )
+            .is_ok()
+        {
+            PacingPriority::Background
+                .queued_requests(&self.metrics)
+                .inc();
         }
     }
 
@@ -809,6 +898,15 @@ impl PacingState {
                             .is_ok(),
                         "requeueing admitted UDP bytes cannot exceed memory"
                     );
+                }
+                priority.record_grant(&self.metrics, pacing_bytes, requested_at.elapsed());
+            }
+            PacedMessage::Tcp(work) => {
+                let addr = work.addr;
+                let requested_at = work.requested_at;
+                priority.queued_requests(&self.metrics).dec();
+                if self.outputs.tcp.try_send((addr, work.message)).is_err() {
+                    self.metrics.tcp_egress_messages_dropped.inc();
                 }
                 priority.record_grant(&self.metrics, pacing_bytes, requested_at.elapsed());
             }
@@ -1358,7 +1456,7 @@ mod tests {
             global_bytes_per_second: NonZeroU64::new(bytes_per_second).unwrap(),
             udp: UdpPacingConfig {
                 peer_bandwidth_mbps: 1_000,
-                max_queued_bytes: 1024 * 1024,
+                max_queued_bytes: 4 * 1024 * 1024,
             },
             udp_workers: 1,
         }
@@ -1385,28 +1483,39 @@ mod tests {
     }
 
     #[monoio::test(timer_enabled = true)]
-    async fn udp_message_is_dispatched() {
-        let (handle, task, outputs) =
-            PacingHandle::new(task_config(1_000_000_000_000), DataplaneMetrics::new());
+    async fn udp_preempts_queued_tcp() {
+        let (handle, task, mut outputs) =
+            PacingHandle::new(task_config(1_000), DataplaneMetrics::new());
         let addr = SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 1).into();
+        assert!(handle
+            .enqueue_tcp(
+                addr,
+                TcpMsg {
+                    msg: Bytes::from(vec![0_u8; UDP_DISPATCH_PACING_BYTES]),
+                    completion: None,
+                },
+            )
+            .is_ok());
         assert!(handle
             .enqueue_udp(UdpMsg {
                 socket_id: UdpSocketId::Raptorcast,
                 dst: addr,
-                payload: Bytes::from_static(&[1, 2, 3]),
-                stride: 3,
+                payload: Bytes::from(vec![0_u8; 100]),
+                stride: 100,
                 priority: UdpPriority::High,
             })
             .is_ok());
         monoio::spawn(task.run());
 
-        let dispatch = monoio::time::timeout(Duration::from_millis(10), outputs.udp.recv())
+        let udp = monoio::time::timeout(Duration::from_millis(10), outputs.udp.recv())
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(dispatch.sends.len(), 1);
-        assert_eq!(dispatch.sends[0].dst, addr);
-        assert_eq!(dispatch.sends[0].payload, Bytes::from_static(&[1, 2, 3]));
+        assert_eq!(udp.sends.len(), 1);
+        assert!(matches!(
+            outputs.tcp.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
     }
 
     #[monoio::test(timer_enabled = true)]
@@ -1464,5 +1573,75 @@ mod tests {
         .unwrap();
         assert!(metrics.udp_tx_queue_wait_micros.get() > 0);
         assert_eq!(metrics.udp_egress_messages_dropped.get(), 0);
+    }
+
+    #[monoio::test(timer_enabled = true)]
+    async fn tcp_message_is_dispatched_complete() {
+        let (handle, task, mut outputs) =
+            PacingHandle::new(task_config(1_000_000_000_000), DataplaneMetrics::new());
+        let addr = SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 1).into();
+        let payload = Bytes::from(vec![7_u8; TCP_MESSAGE_LENGTH_LIMIT]);
+        assert!(handle
+            .enqueue_tcp(
+                addr,
+                TcpMsg {
+                    msg: payload.clone(),
+                    completion: None,
+                },
+            )
+            .is_ok());
+        monoio::spawn(task.run());
+
+        let (received_addr, message) =
+            monoio::time::timeout(Duration::from_millis(10), outputs.tcp.recv())
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(received_addr, addr);
+        assert_eq!(message.msg, payload);
+    }
+
+    #[monoio::test(timer_enabled = true)]
+    async fn full_tcp_manager_channel_drops_without_blocking_udp() {
+        let metrics = DataplaneMetrics::new();
+        let (handle, task, outputs) =
+            PacingHandle::new(task_config(1_000_000_000_000), metrics.clone());
+        let addr = SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 1).into();
+        for _ in 0..=TCP_MANAGER_CHANNEL_SIZE {
+            assert!(handle
+                .enqueue_tcp(
+                    addr,
+                    TcpMsg {
+                        msg: Bytes::from_static(&[1]),
+                        completion: None,
+                    },
+                )
+                .is_ok());
+        }
+        monoio::spawn(task.run());
+
+        monoio::time::timeout(Duration::from_millis(10), async {
+            while metrics.tcp_egress_messages_dropped.get() == 0 {
+                sleep(Duration::from_micros(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        assert!(handle
+            .enqueue_udp(UdpMsg {
+                socket_id: UdpSocketId::Raptorcast,
+                dst: addr,
+                payload: Bytes::from_static(&[2]),
+                stride: 1,
+                priority: UdpPriority::High,
+            })
+            .is_ok());
+        let dispatch = monoio::time::timeout(Duration::from_millis(10), outputs.udp.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(dispatch.sends.len(), 1);
+        assert_eq!(dispatch.sends[0].payload, Bytes::from_static(&[2]));
     }
 }

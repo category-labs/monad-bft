@@ -17,6 +17,7 @@ use std::{
     cell::RefCell,
     collections::BTreeMap,
     io::{Error, ErrorKind},
+    mem::{size_of, size_of_val},
     net::SocketAddr,
     os::fd::{AsRawFd, RawFd},
     rc::Rc,
@@ -49,7 +50,7 @@ use crate::{
 // These are per-peer limits.
 pub const QUEUED_MESSAGE_WARN_LIMIT: usize = 100;
 // should be higher than MAX_UNACKNOWLEDGED_RESPONSES
-pub const QUEUED_MESSAGE_LIMIT: usize = 150;
+pub const QUEUED_MESSAGE_LIMIT: usize = 128;
 pub const QUEUED_MESSAGE_BYTE_LIMIT: usize = 4 * 1024 * 1024;
 
 pub const MSG_WAIT_TIMEOUT: Duration = Duration::from_secs(1);
@@ -436,7 +437,7 @@ fn conn_cork(raw_fd: RawFd, cork_flag: bool) {
             libc::SOL_TCP,
             libc::TCP_CORK,
             &cork_flag as *const _ as _,
-            std::mem::size_of_val(&cork_flag) as _,
+            size_of_val(&cork_flag) as _,
         )
     };
 
@@ -491,8 +492,8 @@ async fn send_message(
         let duration_ms = duration.as_millis();
 
         let bytes_per_second = {
-            let bytes_acked = start_unacked_bytes + std::mem::size_of::<TcpMsgHdr>() + message_len
-                - end_unacked_bytes;
+            let bytes_acked =
+                start_unacked_bytes + size_of::<TcpMsgHdr>() + message_len - end_unacked_bytes;
             let duration_f64 = duration.as_secs_f64();
 
             if duration_f64 >= 0.01 {

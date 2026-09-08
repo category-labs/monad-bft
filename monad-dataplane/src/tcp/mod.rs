@@ -38,14 +38,14 @@ use crate::{metrics::DataplaneMetrics, Addrlist};
 pub mod rx;
 pub mod tx;
 
-const TCP_MESSAGE_LENGTH_LIMIT: usize = 3 * 1024 * 1024;
+pub(crate) const TCP_MESSAGE_LENGTH_LIMIT: usize = 3 * 1024 * 1024;
 
 const HEADER_MAGIC: u32 = 0x434e5353; // "SSNC"
 const HEADER_VERSION: u32 = 1;
 
 #[derive(IntoBytes, Debug, FromBytes, Immutable)]
 #[repr(C)]
-struct TcpMsgHdr {
+pub(crate) struct TcpMsgHdr {
     magic: U32,
     version: U32,
     length: U64,

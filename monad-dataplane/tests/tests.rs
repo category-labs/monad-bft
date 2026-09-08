@@ -24,6 +24,7 @@ use std::{
 
 use futures::{channel::oneshot, executor, FutureExt};
 use monad_dataplane::{
+    pacing::TCP_MANAGER_CHANNEL_SIZE,
     tcp::tx::{MSG_WAIT_TIMEOUT, QUEUED_MESSAGE_BYTE_LIMIT, QUEUED_MESSAGE_LIMIT},
     udp::DEFAULT_SEGMENT_SIZE,
     BroadcastMsg, DataplaneBuilder, RecvUdpMsg, TcpMsg, TcpSocketId, UdpSocketId, UnicastMsg,
@@ -356,7 +357,7 @@ fn tcp_rapid() {
         .map(|_| rand::thread_rng().gen_range(0..255))
         .collect();
 
-    let mut completions = VecDeque::with_capacity(QUEUED_MESSAGE_LIMIT);
+    let mut completions = VecDeque::with_capacity(TCP_MANAGER_CHANNEL_SIZE);
 
     let tcp_socket = tx.tcp_sockets.take(TcpSocketId::Raptorcast).unwrap();
     for _ in 0..num_msgs {
@@ -372,7 +373,7 @@ fn tcp_rapid() {
 
         completions.push_back(receiver);
 
-        while completions.len() >= QUEUED_MESSAGE_LIMIT {
+        while completions.len() >= TCP_MANAGER_CHANNEL_SIZE {
             assert!(executor::block_on(completions.pop_front().unwrap()).is_ok());
         }
     }
@@ -494,7 +495,7 @@ fn tcp_exceed_queue_byte_limit() {
     // Use 2MB messages so the byte limit is reached quickly (4MB / 2MB = 2 messages).
     // Keep num_msgs below QUEUED_MESSAGE_LIMIT so message-count drops cannot occur.
     let message_size = 2 * 1024 * 1024;
-    let num_msgs = 128;
+    let num_msgs = QUEUED_MESSAGE_LIMIT - 1;
 
     assert!(num_msgs < QUEUED_MESSAGE_LIMIT);
     assert!((QUEUED_MESSAGE_BYTE_LIMIT / message_size) < num_msgs);
