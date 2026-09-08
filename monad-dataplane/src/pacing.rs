@@ -1364,6 +1364,26 @@ mod tests {
         }
     }
 
+    #[test]
+    fn full_udp_pacing_command_channel_is_metered() {
+        let metrics = DataplaneMetrics::new();
+        let (handle, _task, _outputs) =
+            PacingHandle::new(task_config(1_000_000_000_000), metrics.clone());
+        let message = || UdpMsg {
+            socket_id: UdpSocketId::Raptorcast,
+            dst: SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 1).into(),
+            payload: Bytes::from_static(&[1]),
+            stride: 1,
+            priority: UdpPriority::High,
+        };
+
+        for _ in 0..UDP_PACING_COMMAND_CHANNEL_SIZE {
+            assert!(handle.enqueue_udp(message()).is_ok());
+        }
+        assert!(handle.enqueue_udp(message()).is_err());
+        assert_eq!(metrics.udp_pacing_command_channel_drops.get(), 1);
+    }
+
     #[monoio::test(timer_enabled = true)]
     async fn udp_message_is_dispatched() {
         let (handle, task, outputs) =
