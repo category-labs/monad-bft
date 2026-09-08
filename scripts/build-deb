@@ -79,6 +79,9 @@ done
 secp=/usr/lib/x86_64-linux-gnu/libsecp256k1.so.6
 if [ -e "$secp" ]; then
   cp -L "$secp" "$stage_dir/usr/local/lib/"
+else
+  echo "libsecp256k1.so.6 not found - soname bumped in the builder image?" >&2
+  exit 2
 fi
 
 if [ "$strip_symbols" = 1 ]; then

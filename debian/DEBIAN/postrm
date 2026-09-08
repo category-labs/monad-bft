@@ -12,7 +12,11 @@ case "$1" in
     rm -f /etc/sysctl.d/90-monad-network-buffer.conf
     # NOTE: this leaves the backup keys folder
     USER="monad"
-    crontab -u "$USER" -l 2>/dev/null | grep -v -F -x -f /opt/monad/scripts/clear-old-artifacts.cron | crontab -u "$USER" -
+    # Depends: declares cron/whiptail now, but hosts that installed under an
+    # older control file may lack cron; guard so removal never fails on them.
+    if command -v crontab >/dev/null 2>&1; then
+      crontab -u "$USER" -l 2>/dev/null | grep -v -F -x -f /opt/monad/scripts/clear-old-artifacts.cron | crontab -u "$USER" -
+    fi
     rm -f /opt/monad/scripts/clear-old-artifacts.cron && rm -f /opt/monad/opt/monad/scripts/clear-old-artifacts.sh
     prefix="monad-"
     for svc in $(systemctl list-units --type=service --all --no-legend | awk '{print $1}' | grep "^${prefix}"); do
