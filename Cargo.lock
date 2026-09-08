@@ -5201,6 +5201,7 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "clap",
+ "criterion",
  "env_logger 0.10.2",
  "futures",
  "futures-util",
