@@ -1491,7 +1491,7 @@ mod tests_deterministic {
             MessageBuilder,
         },
         parser::{
-            packet_parser::{ChunkValidationEnv, RaptorcastPacket},
+            packet_parser::{ChunkValidationEnv, MalformedPacket, RaptorcastPacket},
             signature_verifier::SignatureVerifier,
         },
         udp::SIGNATURE_CACHE_SIZE,
@@ -1501,6 +1501,7 @@ mod tests_deterministic {
             ValidatorGroupMap,
         },
         v1_rollout::DeterministicProtocolRolloutStage,
+        SIGNATURE_SIZE,
     };
 
     type SignatureType = SecpSignature;
@@ -2148,6 +2149,128 @@ mod tests_deterministic {
             Err(InvalidChunk::InvalidChunkId)
         ));
         assert!(matches!(forge(u16::MAX), Err(InvalidChunk::InvalidChunkId)));
+    }
+
+    #[test]
+    fn test_v1_reserved_fields_must_be_zero() {
+        let app_message: Bytes = vec![0x5A_u8; 64 * 1024].into();
+        let (key, validators, _) = validator_set();
+        let self_id = NodeId::new(key.pubkey());
+        let group_map = make_group_map(&validators);
+        let group = PrimaryBroadcastGroup::of_epoch(EPOCH, &self_id, &group_map).unwrap();
+        let packets = build_packets(&key, &app_message, group);
+
+        ChunkParser::new()
+            .parse(&packets[0].payload)
+            .expect("valid packet");
+        let depth = deterministic::canonical_tree_depth(
+            EncodingScheme::Deterministic25(ROUND),
+            app_message.len(),
+            validators.len(),
+        )
+        .unwrap();
+        let layout = deterministic::PacketLayout::new(deterministic::DEFAULT_SEGMENT_LEN, depth);
+
+        let forge = |mutate: &dyn Fn(&mut [u8])| {
+            let mut payload = BytesMut::from(&packets[0].payload[..]);
+            mutate(&mut payload[..]);
+            ChunkParser::new().parse(&payload.freeze()).err()
+        };
+
+        // The broadcast-mode/depth byte follows the signature and version.
+        const MODE_DEPTH_BYTE: usize = SIGNATURE_SIZE + 2;
+        // Each nonzero reserved pair; the error reports the mode nibble.
+        for bits in 1_u8..=0b11 {
+            let malformed = forge(&|payload| payload[MODE_DEPTH_BYTE] |= bits << 4);
+            let mode_bits = (packets[0].payload[MODE_DEPTH_BYTE] | bits << 4) >> 4;
+            assert_eq!(
+                malformed,
+                Some(InvalidChunk::Malformed(MalformedPacket::InvalidMode(
+                    mode_bits
+                )))
+            );
+        }
+
+        let malformed = forge(&|payload| {
+            let chunk_header = &mut payload[layout.chunk_header_range()];
+            chunk_header[..2].copy_from_slice(&0x0102_u16.to_le_bytes());
+        });
+        assert_eq!(
+            malformed,
+            Some(InvalidChunk::Malformed(MalformedPacket::InvalidChunkHeader))
+        );
+    }
+
+    // A chunk whose depth differs from the one derived for the
+    // receiver's group opens no decoder, so it is never rebroadcast.
+    #[test]
+    fn test_deterministic_primary_rejects_non_canonical_depth() {
+        // Small enough that the |V| term moves the depth: 100
+        // validators need depth 9, 10 validators depth 7.
+        let app_message: Bytes = vec![0x5A_u8; 16 * 1024].into();
+        let scheme = EncodingScheme::Deterministic25(ROUND);
+        let (sender_key, validators, _) = validator_set();
+        let sender_id = NodeId::new(sender_key.pubkey());
+        let group_map = make_group_map(&validators);
+        let group = PrimaryBroadcastGroup::of_epoch(EPOCH, &sender_id, &group_map).unwrap();
+        let packets = build_packets(&sender_key, &app_message, group);
+
+        // The receiver knows a smaller validator set for the epoch.
+        let mut members = BTreeMap::new();
+        members.insert(sender_id, Stake::ONE);
+        for (id, stake) in validators.get_members() {
+            if members.len() == 10 {
+                break;
+            }
+            members.insert(*id, *stake);
+        }
+        let small_validators = ValidatorSet::new_unchecked(members);
+        let sender_depth =
+            deterministic::canonical_tree_depth(scheme, app_message.len(), validators.len());
+        let receiver_depth =
+            deterministic::canonical_tree_depth(scheme, app_message.len(), small_validators.len());
+        assert_ne!(sender_depth, receiver_depth);
+
+        // Receive as the first hop of chunk 0 under the receiver-side
+        // assignment, so that a missing check would rebroadcast.
+        let small_group_map = make_group_map(&small_validators);
+        let small_group =
+            PrimaryBroadcastGroup::of_epoch(EPOCH, &sender_id, &small_group_map).unwrap();
+        let encoding = deterministic::PrimaryEncoding::new(
+            scheme,
+            &small_group,
+            app_message.len(),
+            UNIX_TS_MS,
+        )
+        .unwrap();
+        let assignment = encoding.make_assignment().unwrap();
+        let receiver_id = *assignment.resolve_chunk_id(0).unwrap().recipient();
+
+        let epoch_validators: BTreeMap<_, _> = [(EPOCH, small_validators)].into();
+        let full_node_groups = FullNodeGroupMap::default();
+        let mut udp_state = UdpState::<SignatureType>::new(receiver_id, u64::MAX, 10_000);
+        udp_state.set_v1_rollout(DeterministicProtocolRolloutStage::AlwaysV1);
+
+        let mut rebroadcasts = 0;
+        let mut decoded = Vec::new();
+        for packet in &packets {
+            let recv_msg = AuthRecvMsg {
+                src_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8000),
+                payload: packet.payload.clone(),
+                stride: deterministic::DEFAULT_SEGMENT_LEN as u16,
+                sender: None,
+            };
+            decoded.extend(udp_state.handle_message(
+                &epoch_validators,
+                &full_node_groups,
+                &StubProposerSchedule::VALID,
+                |_, _, _| rebroadcasts += 1,
+                recv_msg,
+            ));
+        }
+
+        assert_eq!(rebroadcasts, 0);
+        assert!(decoded.is_empty());
     }
 
     #[rstest]

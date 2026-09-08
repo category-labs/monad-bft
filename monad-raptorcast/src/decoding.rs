@@ -35,8 +35,11 @@ use monad_validator::validator_set::{ValidatorSet, ValidatorSetType as _};
 use rand::Rng as _;
 
 use crate::{
+    packet::deterministic,
     udp::ValidatedChunk,
-    util::{compute_hash, AppMessageHash, BroadcastMode, GlobalMerkleRoot, NodeIdHash},
+    util::{
+        compute_hash, AppMessageHash, BroadcastMode, EncodingScheme, GlobalMerkleRoot, NodeIdHash,
+    },
 };
 
 pub const DECODING_CACHE_METRIC_PREFIX: &str = "monad.raptorcast.decoding_cache";
@@ -214,7 +217,7 @@ where
 
             None => {
                 // the decoder state is not in cache, try create a new one
-                let decoder_state = DecoderState::from_initial_message(message)
+                let decoder_state = DecoderState::from_initial_message(message, context)
                     .map_err(TryDecodeError::InvalidSymbol)?;
 
                 let Some(decoder_state) =
@@ -1455,6 +1458,47 @@ pub(crate) enum InvalidSymbol {
     DuplicateSymbol { encoding_symbol_id: usize },
     /// Error when creating a `ManagedDecoder` with invalid parameters (e.g., too many source symbols).
     InvalidDecoderParameter(std::io::Error),
+    /// The symbol length is not that of the canonical layout for the
+    /// message and its group
+    NonCanonical {
+        symbol_len: usize,
+        // None if there is no possible canonical symbol len
+        canonical_symbol_len: Option<usize>,
+    },
+}
+
+fn canonical_symbol_len<PT: PubKey>(
+    symbol_len: usize,
+    message: &ValidatedChunk<PT>,
+    context: &DecodingContext<'_, PT>,
+) -> Result<usize, InvalidSymbol> {
+    if !matches!(message.encoding_scheme, EncodingScheme::Deterministic25(_)) {
+        // non-deterministic (i.e. v0)
+        return Ok(symbol_len);
+    }
+
+    let app_message_len = message.app_message_len as usize;
+    let canonical_symbol_len = match message.broadcast_mode {
+        BroadcastMode::Primary => context.validator_set_size().and_then(|group_size| {
+            deterministic::canonical_symbol_len(
+                message.encoding_scheme,
+                app_message_len,
+                group_size,
+            )
+        }),
+        BroadcastMode::Secondary => {
+            deterministic::canonical_symbol_len_secondary(message.encoding_scheme, app_message_len)
+        }
+        BroadcastMode::Unspecified => None,
+    };
+
+    if canonical_symbol_len != Some(symbol_len) {
+        return Err(InvalidSymbol::NonCanonical {
+            symbol_len,
+            canonical_symbol_len,
+        });
+    }
+    Ok(symbol_len)
 }
 
 impl InvalidSymbol {
@@ -1529,6 +1573,23 @@ impl InvalidSymbol {
                     "invalid parameter for ManagedDecoder::new"
                 );
             }
+
+            InvalidSymbol::NonCanonical {
+                symbol_len,
+                canonical_symbol_len,
+            } => {
+                tracing::warn!(
+                    ?self_id,
+                    author =? symbol.author,
+                    unix_ts_ms = symbol.unix_ts_ms,
+                    merkle_root =? symbol.merkle_root,
+                    broadcast_mode =? symbol.broadcast_mode,
+                    app_message_len = symbol.app_message_len,
+                    symbol_len,
+                    ?canonical_symbol_len,
+                    "received non-canonical symbol length"
+                );
+            }
         }
     }
 }
@@ -1540,11 +1601,15 @@ struct DecoderState {
 }
 
 impl DecoderState {
-    pub fn from_initial_message<PT>(message: &ValidatedChunk<PT>) -> Result<Self, InvalidSymbol>
+    pub fn from_initial_message<PT>(
+        message: &ValidatedChunk<PT>,
+        context: &DecodingContext<'_, PT>,
+    ) -> Result<Self, InvalidSymbol>
     where
         PT: PubKey,
     {
-        let symbol_len = message.chunk.len();
+        let symbol_len = canonical_symbol_len(message.chunk.len(), message, context)?;
+
         let app_message_len: usize = message
             .app_message_len
             .try_into()
@@ -1721,7 +1786,7 @@ mod test {
 
     use bytes::BytesMut;
     use itertools::Itertools;
-    use monad_types::{Epoch, Stake};
+    use monad_types::{Epoch, Round, Stake};
     use rand::seq::SliceRandom as _;
 
     use super::*;
@@ -1765,6 +1830,104 @@ mod test {
         config.validator_tier.total_slots = validator_tier_cache_size;
         config.p2p_tier.total_slots = p2p_tier_cache_size;
         DecoderCache::new(config)
+    }
+
+    fn deterministic_chunk(
+        broadcast_mode: BroadcastMode,
+        depth: u8,
+        app_message_len: usize,
+    ) -> ValidatedChunk<PT> {
+        let layout = deterministic::PacketLayout::new(deterministic::DEFAULT_SEGMENT_LEN, depth);
+        let num_source_symbols = app_message_len.div_ceil(layout.symbol_len());
+        let group_id = match broadcast_mode {
+            BroadcastMode::Secondary => GroupId::Secondary(Round(1)),
+            _ => GroupId::Primary(EPOCH),
+        };
+        ValidatedChunk {
+            chunk: Bytes::from(vec![0_u8; layout.symbol_len()]),
+            message: Bytes::new(),
+            signature: Bytes::new(),
+            author: node_id(1),
+            group_id,
+            unix_ts_ms: UNIX_TS_MS,
+            app_message_hash: None,
+            merkle_root: HexBytes([depth; 20]),
+            app_message_len: app_message_len as u32,
+            version: ChunkVersion::V1,
+            encoding_scheme: EncodingScheme::Deterministic25(Round(1)),
+            broadcast_mode,
+            recipient_hash: None,
+            chunk_id: 0,
+            num_source_symbols,
+            encoded_symbol_capacity: num_source_symbols * 3,
+        }
+    }
+
+    // The layout rule is enforced on the symbol that opens a decoder;
+    // a non-canonical one never gets a decoder.
+    #[test]
+    fn test_non_canonical_symbol_len_opens_no_decoder() {
+        let app_message_len = 200 * 1024;
+        let scheme = EncodingScheme::Deterministic25(Round(1));
+        let validator_set = make_validator_set(&[(1, 1), (2, 1), (3, 1)]);
+        let primary = DecodingContext::new(Some(&validator_set), UNIX_TS_MS);
+        let secondary = DecodingContext::new(None, UNIX_TS_MS);
+        let mut cache = make_cache(1, 1, 1);
+
+        let depth =
+            deterministic::canonical_tree_depth(scheme, app_message_len, validator_set.len())
+                .unwrap();
+        let canonical = deterministic_chunk(BroadcastMode::Primary, depth, app_message_len);
+        // No validator set, or no mode, gives no canonical layout.
+        assert!(matches!(
+            cache.try_decode(&canonical, &secondary),
+            Err(TryDecodeError::InvalidSymbol(InvalidSymbol::NonCanonical {
+                canonical_symbol_len: None,
+                ..
+            }))
+        ));
+        let modeless = deterministic_chunk(BroadcastMode::Unspecified, depth, app_message_len);
+        assert!(matches!(
+            cache.try_decode(&modeless, &primary),
+            Err(TryDecodeError::InvalidSymbol(InvalidSymbol::NonCanonical {
+                canonical_symbol_len: None,
+                ..
+            }))
+        ));
+        assert!(matches!(
+            cache.try_decode(&canonical, &primary),
+            Ok(TryDecodeStatus::NeedsMoreSymbols)
+        ));
+        let deeper = deterministic_chunk(BroadcastMode::Primary, depth + 1, app_message_len);
+        for _ in 0..2 {
+            assert!(matches!(
+                cache.try_decode(&deeper, &primary),
+                Err(TryDecodeError::InvalidSymbol(InvalidSymbol::NonCanonical {
+                    symbol_len,
+                    canonical_symbol_len,
+                })) if symbol_len == deeper.chunk.len()
+                    && canonical_symbol_len == Some(canonical.chunk.len())
+            ));
+        }
+
+        // Primary and secondary chunks share the broadcast tier, whose
+        // single slot the primary entry above holds.
+        let mut cache = make_cache(1, 1, 1);
+        let depth = deterministic::canonical_tree_depth_secondary(scheme, app_message_len).unwrap();
+        let canonical = deterministic_chunk(BroadcastMode::Secondary, depth, app_message_len);
+        assert!(matches!(
+            cache.try_decode(&canonical, &secondary),
+            Ok(TryDecodeStatus::NeedsMoreSymbols)
+        ));
+        let deeper = deterministic_chunk(BroadcastMode::Secondary, depth + 1, app_message_len);
+        assert!(matches!(
+            cache.try_decode(&deeper, &secondary),
+            Err(TryDecodeError::InvalidSymbol(InvalidSymbol::NonCanonical {
+                symbol_len,
+                canonical_symbol_len,
+            })) if symbol_len == deeper.chunk.len()
+                && canonical_symbol_len == Some(canonical.chunk.len())
+        ));
     }
 
     fn make_symbols(
