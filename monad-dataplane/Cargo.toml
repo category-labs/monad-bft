@@ -12,6 +12,7 @@ bench = false
 monad-executor = { workspace = true }
 monad-types = { workspace = true }
 
+async-channel = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
 governor = { workspace = true }
