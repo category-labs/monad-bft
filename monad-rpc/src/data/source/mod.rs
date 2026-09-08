@@ -49,6 +49,16 @@ pub enum BlockPointer {
     NonFinalized(u64, BlockId),
 }
 
+impl BlockPointer {
+    pub fn block_number(&self) -> u64 {
+        match self {
+            BlockPointer::Finalized(block_number) | BlockPointer::NonFinalized(block_number, _) => {
+                *block_number
+            }
+        }
+    }
+}
+
 /// Canonical block representation shared by historical data sources.
 #[derive(Clone, Debug)]
 pub struct HistoricalBlockData {
