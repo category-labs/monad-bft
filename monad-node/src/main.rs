@@ -218,17 +218,27 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
     _ = std::fs::remove_file(node_state.control_panel_ipc_path.as_path());
     _ = std::fs::remove_file(node_state.statesync_ipc_path.as_path());
 
-    // FIXME this is super jank... we should always just pass the 1 file in monad-node
-    let mut statesync_triedb_path = node_state.triedb_path.clone();
-    if let Ok(files) = std::fs::read_dir(&statesync_triedb_path) {
-        let mut files: Vec<_> = files.collect();
-        assert_eq!(files.len(), 1, "nothing in triedb path");
-        statesync_triedb_path = files
-            .pop()
-            .unwrap()
-            .expect("failed to read triedb path")
-            .path();
-    }
+    // The triedb path may be either a file or a directory containing a single
+    // triedb file. Resolve to the concrete file path for the statesync executor.
+    let statesync_triedb_path = match std::fs::read_dir(&node_state.triedb_path) {
+        Ok(entries) => {
+            let entries: Vec<_> = entries.collect();
+            assert_eq!(
+                entries.len(),
+                1,
+                "expected exactly one triedb file in {}, found {}",
+                node_state.triedb_path.display(),
+                entries.len(),
+            );
+            entries
+                .into_iter()
+                .next()
+                .expect("validated single entry above")
+                .expect("failed to read triedb directory entry")
+                .path()
+        }
+        Err(_) => node_state.triedb_path.clone(),
+    };
 
     let mut bootstrap_nodes = Vec::new();
     for peer_config in &node_state.node_config.bootstrap.peers {
@@ -245,9 +255,11 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         .collect();
 
     // TODO: use PassThruBlockPolicy and NopExecutionStateRead for consensus only mode
+    // last_commit is a placeholder here; it is overwritten during the sync-to-live
+    // transition via BlockPolicy::reset() (see monad-state/src/lib.rs).
     let create_block_policy = || {
         EthBlockPolicy::new(
-            GENESIS_SEQ_NUM, // FIXME: MonadStateBuilder is responsible for updating this to forkpoint root if necessary
+            GENESIS_SEQ_NUM,
             EXECUTION_DELAY,
         )
     };
