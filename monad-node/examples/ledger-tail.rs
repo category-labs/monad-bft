@@ -20,6 +20,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use alloy_consensus::Transaction;
 use clap::{CommandFactory, FromArgMatches, Parser};
 use futures_util::{Stream, StreamExt};
 use inotify::{Inotify, WatchMask};
@@ -209,6 +210,7 @@ async fn main() {
                 epoch =? block.header().epoch.0,
                 seq_num =? block.header().seq_num.0,
                 num_tx =? block.body().execution_body.transactions.len(),
+                gas_used =? block.body().execution_body.transactions.iter().map(|tx| tx.gas_limit()).sum::<u64>(),
                 author =? block.header().author,
                 block_ts_ms =? block.header().timestamp_ns / 1_000_000,
                 now_ts_ms =? now_ts.as_millis(),
