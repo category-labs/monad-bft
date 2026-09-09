@@ -5797,6 +5797,7 @@ dependencies = [
  "actix-server",
  "actix-web",
  "agent",
+ "alloy-consensus",
  "alloy-rlp",
  "chrono",
  "clap",
