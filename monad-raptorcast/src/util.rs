@@ -212,6 +212,16 @@ pub enum EncodingScheme {
     Deterministic25(Round),
 }
 
+impl EncodingScheme {
+    /// The encoding_scheme_variant byte carried in the chunk header.
+    pub fn variant(&self) -> Option<u8> {
+        match self {
+            EncodingScheme::Unspecified => None,
+            EncodingScheme::Deterministic25(_) => Some(0x1),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BroadcastMode {
     Primary,
