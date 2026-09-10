@@ -16,6 +16,8 @@
 //! Wire messages of the MVBA. Every vote is a distinct type, so each gets its
 //! own signing domain, and every one is scoped by `(slot, view)`
 
+use std::{fmt::Debug, hash::Hash};
+
 use bytes::Bytes;
 
 use super::{
@@ -23,7 +25,7 @@ use super::{
         super::types::{
             IsVote, KeyPair, PubKey, Signature, Slot, ValidatorData, VoteMsg, dummy_serialize,
         },
-        FallbackView, FromEntries, ValidateCert, Votable,
+        FallbackView, FromEntries, MvbaScope, ValidateCert, Votable,
     },
     block_store::{BlockRequestMsg, BlockResponseMsg},
     certificates::{FallbackCommitQc, PrepareQc, TimeoutCertificate},
@@ -35,14 +37,14 @@ pub enum MvbaMessage<V: Votable, C: ValidateCert> {
     #[from]
     PrePrepare(PrePrepareMsg<V, C>),
     #[from]
-    Prepare(PrepareVoteMsg<V>),
+    Prepare(PrepareVoteMsg<V::Entries>),
     #[from]
-    Commit(CommitVoteMsg<V>),
+    Commit(CommitVoteMsg<V::Entries>),
     #[from]
-    Timeout(TimeoutMsg<V>),
+    Timeout(TimeoutMsg<V::Entries>),
     /// So a validator that missed the votes it aggregates can still decide
     #[from]
-    CommitQc(FallbackCommitQc<V>),
+    CommitQc(FallbackCommitQc<V::Entries>),
     #[from]
     BlockRequest(BlockRequestMsg<V>),
     #[from]
@@ -51,43 +53,43 @@ pub enum MvbaMessage<V: Votable, C: ValidateCert> {
 
 /// `⟨Prepare, slot, v, entries(x)⟩`
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub(crate) struct PrepareVote<V: Votable>(pub V::Entries);
+pub(crate) struct PrepareVote<E>(pub E);
 
-impl<V: Votable> FromEntries<V> for PrepareVote<V> {
+impl<V: Votable> FromEntries<V> for PrepareVote<V::Entries> {
     fn from_entries(entries: V::Entries) -> Self {
         Self(entries)
     }
 }
 
-impl<V: Votable> IsVote for PrepareVote<V> {
-    type Scope = (Slot, FallbackView);
+impl<E: Clone + Eq + Hash + Debug> IsVote for PrepareVote<E> {
+    type Scope = MvbaScope;
 
     fn serialize(&self, scope: &Self::Scope) -> Bytes {
         dummy_serialize(self, scope)
     }
 }
 
-pub(crate) type PrepareVoteMsg<V> = VoteMsg<PrepareVote<V>>;
+pub(crate) type PrepareVoteMsg<E> = VoteMsg<PrepareVote<E>, MvbaScope>;
 
 /// `⟨Commit, slot, v, entries(x)⟩`
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct FallbackCommitVote<V: Votable>(pub(crate) V::Entries);
+pub struct FallbackCommitVote<E>(pub(crate) E);
 
-impl<V: Votable> FromEntries<V> for FallbackCommitVote<V> {
+impl<V: Votable> FromEntries<V> for FallbackCommitVote<V::Entries> {
     fn from_entries(entries: V::Entries) -> Self {
         Self(entries)
     }
 }
 
-impl<V: Votable> IsVote for FallbackCommitVote<V> {
-    type Scope = (Slot, FallbackView);
+impl<E: Clone + Eq + Hash + Debug> IsVote for FallbackCommitVote<E> {
+    type Scope = MvbaScope;
 
     fn serialize(&self, scope: &Self::Scope) -> Bytes {
         dummy_serialize(self, scope)
     }
 }
 
-pub(crate) type CommitVoteMsg<V> = VoteMsg<FallbackCommitVote<V>>;
+pub(crate) type CommitVoteMsg<E> = VoteMsg<FallbackCommitVote<E>, MvbaScope>;
 
 /// The signed part of a timeout: the *view* of the prepare certificate the
 /// sender carries, not the certificate, so timeouts holding the same lock sign
@@ -99,7 +101,7 @@ pub(crate) struct TimeoutVote {
 }
 
 impl IsVote for TimeoutVote {
-    type Scope = (Slot, FallbackView);
+    type Scope = MvbaScope;
 
     fn serialize(&self, scope: &Self::Scope) -> Bytes {
         dummy_serialize(self, scope)
@@ -108,36 +110,36 @@ impl IsVote for TimeoutVote {
 
 /// `⟨Timeout, slot, v, PrepQC_i, σ_i⟩`
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub(crate) struct TimeoutMsg<V: Votable> {
-    pub vote: VoteMsg<TimeoutVote>,
-    pub high_prep_qc: Option<PrepareQc<V>>,
+pub(crate) struct TimeoutMsg<E> {
+    pub vote: VoteMsg<TimeoutVote, MvbaScope>,
+    pub high_prep_qc: Option<PrepareQc<E>>,
 }
 
-impl<V: Votable> TimeoutMsg<V> {
+impl<E: Clone + Eq + Hash + Debug> TimeoutMsg<E> {
     pub(crate) fn new_signed(
         slot: Slot,
         view: FallbackView,
-        high_prep_qc: Option<PrepareQc<V>>,
+        high_prep_qc: Option<PrepareQc<E>>,
         key: &KeyPair,
     ) -> Self {
         let vote = TimeoutVote {
             high_prep_view: high_prep_qc
                 .as_ref()
-                .map_or(FallbackView::GENESIS, |qc| qc.scope.1),
+                .map_or(FallbackView::GENESIS, |qc| qc.scope.view),
         };
 
         Self {
-            vote: VoteMsg::new_signed((slot, view), vote, key),
+            vote: VoteMsg::new_signed(MvbaScope::new(slot, view), vote, key),
             high_prep_qc,
         }
     }
 
     pub(crate) fn slot(&self) -> Slot {
-        self.vote.scope.0
+        self.vote.scope.slot
     }
 
     pub(crate) fn view(&self) -> FallbackView {
-        self.vote.scope.1
+        self.vote.scope.view
     }
 
     /// Whether the claim in the signed digest is backed by what rides along
@@ -147,7 +149,10 @@ impl<V: Votable> TimeoutMsg<V> {
         match &self.high_prep_qc {
             None => high_prep_view == FallbackView::GENESIS,
             Some(qc) => {
-                let (qc_slot, qc_view) = qc.scope;
+                let MvbaScope {
+                    slot: qc_slot,
+                    view: qc_view,
+                } = qc.scope;
                 qc_slot == self.slot()
                     // view 0 has no certificate, so this also rejects one
                     // carried unclaimed
@@ -178,12 +183,12 @@ pub(crate) struct PrePrepareMsg<V: Votable, C: ValidateCert> {
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) enum Justification<V: Votable, C: ValidateCert> {
     FallbackCert(Option<C>),
-    Tc(TimeoutCertificate<V>),
+    Tc(TimeoutCertificate<V::Entries>),
 }
 
 impl<V: Votable, C: ValidateCert> Justification<V, C> {
     /// The part of `J` the leader's signature covers
-    fn signed_part(&self) -> Option<&TimeoutCertificate<V>> {
+    fn signed_part(&self) -> Option<&TimeoutCertificate<V::Entries>> {
         match self {
             Justification::FallbackCert(_) => None,
             Justification::Tc(tc) => Some(tc),
@@ -226,6 +231,6 @@ fn signed_bytes<V: Votable, C: ValidateCert>(
 ) -> Bytes {
     dummy_serialize(
         &(value.entries(), justification.signed_part()),
-        &(slot, view),
+        &MvbaScope::new(slot, view),
     )
 }

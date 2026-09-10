@@ -60,7 +60,7 @@ impl SlotConsensus for DummySlotConsensus {
     type Config = DummySlotConsensusConfig;
     type Context = Arc<KeyPair>;
 
-    type Message = VoteMsg<DummyVote>;
+    type Message = VoteMsg<DummyVote, Slot>;
     type Timer = ();
     type OptimisticCommitData = ();
     type FinalizationData = ();
@@ -86,7 +86,7 @@ impl SlotConsensus for DummySlotConsensus {
         // no timers in this dummy implementation
     }
 
-    fn handle_message(&mut self, sender: NodeId, vote: VoteMsg<DummyVote>) {
+    fn handle_message(&mut self, sender: NodeId, vote: VoteMsg<DummyVote, Slot>) {
         self.votes.add_vote(sender, vote);
         if self.votes.all_voters().count() == self.config.quorum {
             self.outputs.push_back(SlotOutput::Finalize(()));

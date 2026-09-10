@@ -286,7 +286,7 @@ where
 
     // the caller should ensure that the node_id is in the validator
     // set.
-    pub fn add_vote(&mut self, node_id: NodeId, msg: VoteMsg<V>) {
+    pub fn add_vote(&mut self, node_id: NodeId, msg: VoteMsg<V, V::Scope>) {
         assert!(msg.scope == self.scope);
 
         // first write wins: a sender's later vote never displaces its first.
@@ -302,7 +302,7 @@ where
     /// preserved; what replacement concedes is that the pool's answer can
     /// change between polls, which is only sound where every certificate over
     /// the scope certifies the same fact.
-    pub fn add_or_replace_vote(&mut self, node_id: NodeId, msg: VoteMsg<V>) {
+    pub fn add_or_replace_vote(&mut self, node_id: NodeId, msg: VoteMsg<V, V::Scope>) {
         assert!(msg.scope == self.scope);
 
         if !msg.signature.is_well_formed() {
@@ -433,7 +433,10 @@ where
         Some(groups)
     }
 
-    pub fn try_form_strong_qc(&self, validator_data: &ValidatorData) -> Option<StrongQc<V>> {
+    pub fn try_form_strong_qc(
+        &self,
+        validator_data: &ValidatorData,
+    ) -> Option<StrongQc<V, V::Scope>> {
         let target_stake = validator_data.total_stake().supermajority_threshold();
         let aggs = self.try_aggregate(target_stake, validator_data);
         debug_assert!(aggs.len() <= 1, "at most one strong qc can be formed");
@@ -451,7 +454,7 @@ where
     pub fn try_form_weak_qc(
         &self,
         validator_data: &ValidatorData,
-    ) -> Option<Either<WeakQc<V>, (WeakQc<V>, WeakQc<V>)>> {
+    ) -> Option<Either<WeakQc<V, V::Scope>, (WeakQc<V, V::Scope>, WeakQc<V, V::Scope>)>> {
         let target_stake = validator_data.total_stake().honest_threshold();
         let aggs = self.try_aggregate(target_stake, validator_data);
         debug_assert!(aggs.len() <= 2, "at most two weak qc can be formed");
@@ -481,7 +484,7 @@ where
     V: IsVote,
 {
     open_roots: HashSet<MerkleRoot>,
-    held: Option<VoteMsg<V>>,
+    held: Option<VoteMsg<V, V::Scope>>,
 }
 
 impl<V> Default for Gate<V>
@@ -500,7 +503,7 @@ impl<V> Gate<V>
 where
     V: IsVote + GatingRoot,
 {
-    fn release(&mut self, root: MerkleRoot) -> Option<VoteMsg<V>> {
+    fn release(&mut self, root: MerkleRoot) -> Option<VoteMsg<V, V::Scope>> {
         let claim_open = self
             .held
             .as_ref()
@@ -545,7 +548,7 @@ where
         }
     }
 
-    pub fn add_vote(&mut self, node_id: NodeId, msg: VoteMsg<V>) -> Admission {
+    pub fn add_vote(&mut self, node_id: NodeId, msg: VoteMsg<V, V::Scope>) -> Admission {
         let gate = self.gates.entry(node_id).or_default();
         if gate.held.is_some() {
             // already holding a vote, ignore new ones
@@ -598,28 +601,27 @@ where
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct VoteMsg<V>
-where
-    V: IsVote,
-{
-    pub scope: <V as IsVote>::Scope,
+pub struct VoteMsg<V, S> {
+    pub scope: S,
     pub vote: V,
     pub signature: Signature,
 }
 
-impl<V> VoteMsg<V>
-where
-    V: IsVote,
-{
-    pub fn new(scope: <V as IsVote>::Scope, vote: V, signature: Signature) -> Self {
+impl<V, S> VoteMsg<V, S> {
+    pub fn new(scope: S, vote: V, signature: Signature) -> Self {
         Self {
             scope,
             vote,
             signature,
         }
     }
+}
 
-    pub fn new_signed(scope: <V as IsVote>::Scope, vote: V, key: &KeyPair) -> Self {
+impl<V, S> VoteMsg<V, S>
+where
+    V: IsVote<Scope = S>,
+{
+    pub fn new_signed(scope: S, vote: V, key: &KeyPair) -> Self {
         let serialized_vote = vote.serialize(&scope);
         let sig = key.sign(&serialized_vote);
         Self::new(scope, vote, sig)
@@ -627,19 +629,16 @@ where
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct StrongQc<V>
-where
-    V: IsVote,
-{
-    pub scope: <V as IsVote>::Scope,
+pub struct StrongQc<V, S> {
+    pub scope: S,
     pub verdict: V,
     // 2f+1 votes
     pub sigcol: SignatureCollection,
 }
 
-impl<V> StrongQc<V>
+impl<V, S> StrongQc<V, S>
 where
-    V: IsVote,
+    V: IsVote<Scope = S>,
 {
     pub fn verify(&self, validator_data: &ValidatorData) -> bool {
         let data = self.verdict.serialize(&self.scope);
@@ -653,19 +652,16 @@ where
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct WeakQc<V>
-where
-    V: IsVote,
-{
-    pub scope: <V as IsVote>::Scope,
+pub struct WeakQc<V, S> {
+    pub scope: S,
     pub verdict: V,
     // f+1 votes
     pub sigcol: SignatureCollection,
 }
 
-impl<V> WeakQc<V>
+impl<V, S> WeakQc<V, S>
 where
-    V: IsVote,
+    V: IsVote<Scope = S>,
 {
     pub fn verify(&self, validator_data: &ValidatorData) -> bool {
         let data = self.verdict.serialize(&self.scope);
@@ -679,6 +675,19 @@ where
 }
 
 pub type ProposalIndex = usize;
+
+/// The slot and proposal index authenticated by a per-proposal vote.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct ProposalScope {
+    pub slot: Slot,
+    pub index: ProposalIndex,
+}
+
+impl ProposalScope {
+    pub const fn new(slot: Slot, index: ProposalIndex) -> Self {
+        Self { slot, index }
+    }
+}
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct ProposalMap<T> {
@@ -1117,7 +1126,7 @@ mod tests {
         crate::env::stub::MerkleRoot(crate::env::stub::MerkleHash([byte; 20]))
     }
 
-    fn signed(id: u64, vote: ClaimVote) -> (NodeId, VoteMsg<ClaimVote>) {
+    fn signed(id: u64, vote: ClaimVote) -> (NodeId, VoteMsg<ClaimVote, Slot>) {
         let node = crate::env::stub::NodeId::dummy(id);
         let msg = VoteMsg::new_signed(Slot(1), vote, &node.keypair());
         (node, msg)

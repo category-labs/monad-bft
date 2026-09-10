@@ -35,11 +35,26 @@ use super::{
         driver::{NodeEvent, WakeId},
         runtime::Runtime,
     },
-    types::{IsVote, NodeId, StrongQc, Timestamp, TimestampDelta, TotalProposalMap, Validated},
+    types::{
+        IsVote, NodeId, Slot, StrongQc, Timestamp, TimestampDelta, TotalProposalMap, Validated,
+    },
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct FallbackView(u64);
+
+/// The slot and view authenticated by an MVBA vote.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct MvbaScope {
+    pub slot: Slot,
+    pub view: FallbackView,
+}
+
+impl MvbaScope {
+    pub const fn new(slot: Slot, view: FallbackView) -> Self {
+        Self { slot, view }
+    }
+}
 
 impl FallbackView {
     /// Views are 1-indexed; view 0 is the not-yet-started state
@@ -129,7 +144,9 @@ where
 
     /// The certificate behind [`Mvba::decision`]. `Some` exactly when the
     /// decision is
-    fn decision_proof(&self) -> Option<&StrongQc<Self::CommitVote>>;
+    fn decision_proof(
+        &self,
+    ) -> Option<&StrongQc<Self::CommitVote, <Self::CommitVote as IsVote>::Scope>>;
 
     fn poll(&mut self) -> Option<MVBAOutput<Self::Message, Self::TimerEvent>>;
 }

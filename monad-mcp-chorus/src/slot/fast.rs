@@ -27,8 +27,8 @@ use super::{
     fallback::Metablock,
     types::{
         Admission, EquivCert, GatedVotePool, GatingRoot, HeaderAuth, IsVote, KeyPair, MerkleRoot,
-        NodeId, ProposalHeader, ProposalIndex, ProposalMap, Signature, Slot, StrongQc,
-        TotalProposalMap, ValidatorData, VoteMsg, VotePool, WeakQc, dummy_serialize,
+        NodeId, ProposalHeader, ProposalIndex, ProposalMap, ProposalScope, Signature, Slot,
+        StrongQc, TotalProposalMap, ValidatorData, VoteMsg, VotePool, WeakQc, dummy_serialize,
     },
 };
 use crate::spec::{
@@ -89,13 +89,15 @@ impl FastPath {
         Self {
             slot: s,
 
-            votes: ProposalMap::new(num_proposals, |j| GatedVotePool::new(VotePool::new((s, j)))),
+            votes: ProposalMap::new(num_proposals, |j| {
+                GatedVotePool::new(VotePool::new(ProposalScope::new(s, j)))
+            }),
             certs: ProposalMap::new_default(num_proposals),
             commit_votes: VotePool::new(s),
 
             enter_fallback_votes: VotePool::new(s),
             fallback_entry_votes: ProposalMap::new(num_proposals, |j| {
-                GatedVotePool::new(VotePool::new((s, j)))
+                GatedVotePool::new(VotePool::new(ProposalScope::new(s, j)))
             }),
 
             phase: Phase::Propose,
@@ -173,10 +175,10 @@ impl FastPath {
         self.try_cast_fast_commit_vote()
     }
 
-    fn handle_vote(&mut self, node_id: NodeId, vote_msg: VoteMsg<Entry>) {
+    fn handle_vote(&mut self, node_id: NodeId, vote_msg: VoteMsg<Entry, ProposalScope>) {
         debug_assert!(self.validator_data.contains(&node_id));
 
-        let (_s, j) = vote_msg.scope;
+        let j = vote_msg.scope.index;
         self.votes[j].add_vote(node_id, vote_msg);
         self.try_form_fast_qc(j);
     }
@@ -321,9 +323,11 @@ impl FastPath {
                 };
                 entry.well_formed() && header_valid
             }
-            ProposalEvidence::Certified(cert) => {
-                cert.verify((self.slot, j), &self.header_auth, &self.validator_data)
-            }
+            ProposalEvidence::Certified(cert) => cert.verify(
+                ProposalScope::new(self.slot, j),
+                &self.header_auth,
+                &self.validator_data,
+            ),
         }
     }
 
@@ -342,7 +346,8 @@ impl FastPath {
                 None => Entry::Negative,
             };
 
-            let vote_msg = VoteMsg::new_signed((self.slot, *j), entry.clone(), &self.key);
+            let vote_msg =
+                VoteMsg::new_signed(ProposalScope::new(self.slot, *j), entry.clone(), &self.key);
             (entry, vote_msg.signature)
         });
 
@@ -442,7 +447,7 @@ impl FastPath {
             return cert.clone().into();
         }
 
-        let scope = (self.slot, j);
+        let scope = ProposalScope::new(self.slot, j);
 
         // if there are f+1 positive votes on a root and it's decoded,
         // vote positive.
@@ -460,7 +465,10 @@ impl FastPath {
     }
 
     // the weak qcs for proposer j on a positive entry, as (root, qc)
-    fn positive_weak_qcs(&self, j: ProposalIndex) -> Vec<(MerkleRoot, WeakQc<Entry>)> {
+    fn positive_weak_qcs(
+        &self,
+        j: ProposalIndex,
+    ) -> Vec<(MerkleRoot, WeakQc<Entry, ProposalScope>)> {
         let Some(weak_qc) = self.votes[j].pool().try_form_weak_qc(&self.validator_data) else {
             return vec![];
         };
@@ -634,7 +642,7 @@ pub enum Entry {
 }
 
 impl IsVote for Entry {
-    type Scope = (Slot, ProposalIndex);
+    type Scope = ProposalScope;
 
     fn serialize(&self, scope: &Self::Scope) -> Bytes {
         dummy_serialize(self, scope)
@@ -650,7 +658,7 @@ impl GatingRoot for Entry {
     }
 }
 
-pub type FastQc = StrongQc<Entry>;
+pub type FastQc = StrongQc<Entry, ProposalScope>;
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct BatchVoteMsg {
@@ -661,10 +669,10 @@ pub(crate) struct BatchVoteMsg {
 }
 
 impl BatchVoteMsg {
-    pub fn split(self) -> Vec<VoteMsg<Entry>> {
+    pub fn split(self) -> Vec<VoteMsg<Entry, ProposalScope>> {
         self.votes
             .into_indexed_iter()
-            .map(|(j, (entry, sig))| VoteMsg::new((self.slot, j), entry, sig))
+            .map(|(j, (entry, sig))| VoteMsg::new(ProposalScope::new(self.slot, j), entry, sig))
             .collect()
     }
 }
@@ -674,7 +682,7 @@ pub(crate) struct FastCommitVote {
     pub entries: ProposalMap<Entry>,
 }
 
-pub(crate) type FastCommitVoteMsg = VoteMsg<FastCommitVote>;
+pub(crate) type FastCommitVoteMsg = VoteMsg<FastCommitVote, Slot>;
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct FastBlock(TotalProposalMap<FastQc>);
@@ -701,7 +709,7 @@ impl IsVote for FastCommitVote {
     }
 }
 
-pub(crate) type FastCommitQc = StrongQc<FastCommitVote>;
+pub(crate) type FastCommitQc = StrongQc<FastCommitVote, Slot>;
 
 // ============ Fallback ===============
 
@@ -710,7 +718,7 @@ pub(crate) type FastCommitQc = StrongQc<FastCommitVote>;
 pub struct FallbackEntry(pub Entry);
 
 impl IsVote for FallbackEntry {
-    type Scope = (Slot, ProposalIndex);
+    type Scope = ProposalScope;
 
     fn serialize(&self, scope: &Self::Scope) -> Bytes {
         dummy_serialize(self, scope)
@@ -723,7 +731,7 @@ impl GatingRoot for FallbackEntry {
     }
 }
 
-pub type FallbackQc = WeakQc<FallbackEntry>;
+pub type FallbackQc = WeakQc<FallbackEntry, ProposalScope>;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum EvidenceStrength {
@@ -781,7 +789,7 @@ impl CertifiedEntry {
     /// boundary explicit and catch protocol-logic bugs.
     pub(crate) fn verify(
         &self,
-        scope: (Slot, ProposalIndex),
+        scope: ProposalScope,
         header_auth: &HeaderAuth,
         validator_data: &ValidatorData,
     ) -> bool {
@@ -789,7 +797,7 @@ impl CertifiedEntry {
             CertifiedEntry::FastQc(qc) => qc.verify(validator_data),
             CertifiedEntry::FallbackQc(qc) => qc.verify(validator_data),
             CertifiedEntry::EquivCert(EquivCert(a, b)) => {
-                let (s, j) = scope;
+                let ProposalScope { slot: s, index: j } = scope;
                 a.root != b.root
                     && header_auth.validate(a, s.get(), j)
                     && header_auth.validate(b, s.get(), j)
@@ -810,7 +818,7 @@ struct FallbackSignedEntry {
 
 impl FallbackSignedEntry {
     fn new_signed_positive(
-        scope: (Slot, ProposalIndex),
+        scope: ProposalScope,
         root: MerkleRoot,
         key: &KeyPair,
         header: ProposalHeader,
@@ -824,7 +832,7 @@ impl FallbackSignedEntry {
         }
     }
 
-    fn new_signed_negative(scope: (Slot, ProposalIndex), key: &KeyPair) -> Self {
+    fn new_signed_negative(scope: ProposalScope, key: &KeyPair) -> Self {
         let entry = FallbackEntry(Entry::Negative);
         let signature = VoteMsg::new_signed(scope, entry.clone(), key).signature;
         Self {
@@ -848,8 +856,8 @@ impl FallbackSignedEntry {
         self.header.as_ref()
     }
 
-    fn into_vote_msg(self, slot: Slot, j: ProposalIndex) -> VoteMsg<FallbackEntry> {
-        VoteMsg::new((slot, j), self.entry, self.signature)
+    fn into_vote_msg(self, slot: Slot, j: ProposalIndex) -> VoteMsg<FallbackEntry, ProposalScope> {
+        VoteMsg::new(ProposalScope::new(slot, j), self.entry, self.signature)
     }
 }
 
@@ -920,12 +928,12 @@ impl IsVote for EnterFallbackVote {
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct FallbackVoteMsg {
-    enter_fallback_vote: VoteMsg<EnterFallbackVote>,
+    enter_fallback_vote: VoteMsg<EnterFallbackVote, Slot>,
     evidences: ProposalMap<ProposalEvidence>,
 }
 
 // A fallback cert certifies 2f+1 validators agree to enter fallback path
-pub type EnterFallbackCert = StrongQc<EnterFallbackVote>;
+pub type EnterFallbackCert = StrongQc<EnterFallbackVote, Slot>;
 
 #[cfg(test)]
 mod tests {
@@ -1007,8 +1015,12 @@ mod tests {
     fn positive_fallback_vote(voter: u64, byte: u8) -> (NodeId, FallbackVoteMsg) {
         let voter = NodeId::dummy(voter);
         let key = voter.keypair();
-        let entry =
-            FallbackSignedEntry::new_signed_positive((SLOT, 0), root(byte), &key, header(byte));
+        let entry = FallbackSignedEntry::new_signed_positive(
+            ProposalScope::new(SLOT, 0),
+            root(byte),
+            &key,
+            header(byte),
+        );
         let msg = FallbackVoteMsg {
             enter_fallback_vote: VoteMsg::new_signed(SLOT, EnterFallbackVote, &key),
             evidences: ProposalMap::new(1, |_| {
@@ -1020,10 +1032,14 @@ mod tests {
 
     // a fast qc on root(byte) signed by validators 0, 2 and 3
     fn fast_block(byte: u8) -> FastBlock {
-        let mut pool = VotePool::new((SLOT, 0));
+        let mut pool = VotePool::new(ProposalScope::new(SLOT, 0));
         for id in [0, 2, 3] {
             let voter = NodeId::dummy(id);
-            let msg = VoteMsg::new_signed((SLOT, 0), Entry::Positive(root(byte)), &voter.keypair());
+            let msg = VoteMsg::new_signed(
+                ProposalScope::new(SLOT, 0),
+                Entry::Positive(root(byte)),
+                &voter.keypair(),
+            );
             pool.add_vote(voter, msg);
         }
         let qc = pool
@@ -1111,7 +1127,8 @@ mod tests {
         let voter = NodeId::dummy(voter);
         let key = voter.keypair();
         let votes = ProposalMap::new(1, |j| {
-            let signature = VoteMsg::new_signed((SLOT, j), entry.clone(), &key).signature;
+            let signature =
+                VoteMsg::new_signed(ProposalScope::new(SLOT, j), entry.clone(), &key).signature;
             (entry.clone(), signature)
         });
         (voter, BatchVoteMsg { slot: SLOT, votes })

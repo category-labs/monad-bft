@@ -78,7 +78,7 @@ use super::{
             HeaderAuth, IsVote, KeyPair, NodeId, Slot, TimestampDelta, ValidatorData, VoteMsg,
         },
     },
-    FallbackView, MVBAOutput, Metablock, Mvba, ValidateCert, ValidateInput, Votable,
+    FallbackView, MVBAOutput, Metablock, Mvba, MvbaScope, ValidateCert, ValidateInput, Votable,
 };
 use crate::spec::validator::ValidatorData as _;
 
@@ -190,16 +190,16 @@ pub struct MonadMvba<V: ValidateInput + Votable, C: ValidateCert> {
     last_voted_view: FallbackView,
     /// `PrepQC_i`: the highest prepare certificate seen; the entries this
     /// validator is locked on
-    high_prep_qc: Option<PrepareQc<V>>,
+    high_prep_qc: Option<PrepareQc<V::Entries>>,
     /// `DecidedQC_i`: recorded before the block it settles is necessarily held
-    decided_qc: Option<FallbackCommitQc<V>>,
+    decided_qc: Option<FallbackCommitQc<V::Entries>>,
 
     /// Message buffer and storage
     collectors: BTreeMap<FallbackView, ViewCollectors<V, C>>,
     block_store: BlockStore<V>,
 
     /// `J` for the current view, which also fixes it -- see [`MonadMvba::view`]
-    entry_tc: Option<TimeoutCertificate<V>>,
+    entry_tc: Option<TimeoutCertificate<V::Entries>>,
     /// Whether the timer for the *current* view has fired; cleared on entering
     /// a view and timer fire
     timer_fired: bool,
@@ -218,7 +218,7 @@ where
     type Context = MvbaContext;
     type TimerEvent = TimerEvent<V>;
     type FallbackCert = C;
-    type CommitVote = FallbackCommitVote<V>;
+    type CommitVote = FallbackCommitVote<V::Entries>;
 
     fn new(context: MvbaContext) -> Self {
         let slot = context.slot;
@@ -314,7 +314,7 @@ where
         self.decided().map(Decided::block)
     }
 
-    fn decision_proof(&self) -> Option<&FallbackCommitQc<V>> {
+    fn decision_proof(&self) -> Option<&FallbackCommitQc<V::Entries>> {
         // an instance with no input, an abandoned one, or still fetching
         // decided block may hold a certificate it never acted on
         self.decided().map(Decided::commit_qc)
@@ -391,8 +391,8 @@ where
         self.collectors_mut(view).store_pre_prepare(msg);
     }
 
-    fn handle_prepare_vote(&mut self, sender: NodeId, msg: PrepareVoteMsg<V>) {
-        let (slot, view) = msg.scope;
+    fn handle_prepare_vote(&mut self, sender: NodeId, msg: PrepareVoteMsg<V::Entries>) {
+        let MvbaScope { slot, view } = msg.scope;
         if slot != self.context.slot || !self.in_window(view) {
             return;
         }
@@ -400,8 +400,8 @@ where
         self.collectors_mut(view).store_prepare_vote(sender, msg);
     }
 
-    fn handle_commit_vote(&mut self, sender: NodeId, msg: CommitVoteMsg<V>) {
-        let (slot, view) = msg.scope;
+    fn handle_commit_vote(&mut self, sender: NodeId, msg: CommitVoteMsg<V::Entries>) {
+        let MvbaScope { slot, view } = msg.scope;
         if slot != self.context.slot || !self.in_window(view) {
             return;
         }
@@ -409,7 +409,7 @@ where
         self.collectors_mut(view).store_commit_vote(sender, msg);
     }
 
-    fn handle_timeout(&mut self, sender: NodeId, msg: TimeoutMsg<V>) {
+    fn handle_timeout(&mut self, sender: NodeId, msg: TimeoutMsg<V::Entries>) {
         let view = msg.view();
         if msg.slot() != self.context.slot || !self.in_window(view) {
             return;
@@ -430,8 +430,8 @@ where
         self.collectors_mut(view).store_timeout(sender, msg);
     }
 
-    fn handle_commit_qc(&mut self, qc: FallbackCommitQc<V>) {
-        if qc.scope.0 != self.context.slot || !qc.verify(&self.context.validator_data) {
+    fn handle_commit_qc(&mut self, qc: FallbackCommitQc<V::Entries>) {
+        if qc.scope.slot != self.context.slot || !qc.verify(&self.context.validator_data) {
             return;
         }
 
@@ -586,7 +586,7 @@ where
 
     /// `TryFormCommitQC`. Whether the decision can be *reported* is
     /// [`MonadMvba::pending_decide`]
-    fn known_commit_qc(&self) -> Option<FallbackCommitQc<V>> {
+    fn known_commit_qc(&self) -> Option<FallbackCommitQc<V::Entries>> {
         if let Some(qc) = &self.decided_qc {
             return Some(qc.clone());
         }
@@ -599,7 +599,7 @@ where
 
     /// `TryDecide`: a commit certificate together with the block it settled
     /// Waiting for the block is safe -- the certificate is already recorded
-    fn pending_decide(&self) -> Option<(FallbackCommitQc<V>, V)> {
+    fn pending_decide(&self) -> Option<(FallbackCommitQc<V::Entries>, V)> {
         let qc = self.known_commit_qc()?;
         let block = self.block_store.get(&qc.verdict.0)?.clone();
 
@@ -607,7 +607,7 @@ where
     }
 
     /// `TryFormPrepQC`
-    fn pending_prepare_qc(&self) -> Option<PrepareQc<V>> {
+    fn pending_prepare_qc(&self) -> Option<PrepareQc<V::Entries>> {
         let entries = self.phase.preparing_entries()?;
         let qc = self
             .current_view_collectors()?
@@ -619,7 +619,7 @@ where
 
     /// `SyncView`: the highest timeout certificate for this view or later,
     /// which lets a validator that fell behind rejoin in one step
-    fn pending_tc(&self) -> Option<TimeoutCertificate<V>> {
+    fn pending_tc(&self) -> Option<TimeoutCertificate<V::Entries>> {
         let organic = self
             .current_view_collectors()
             .and_then(|collectors| collectors.try_form_tc(&self.context.validator_data));
@@ -688,7 +688,7 @@ where
         // persist-before-send: lastVotedView
         self.last_voted_view = self.view();
 
-        let vote = self.sign_vote(PrepareVote::<V>(preparing.entries().clone()));
+        let vote = self.sign_vote(PrepareVote::<V::Entries>(preparing.entries().clone()));
         (
             Phase::Preparing(preparing),
             vec![MVBAOutput::Broadcast(MvbaMessage::Prepare(vote))],
@@ -700,7 +700,7 @@ where
     fn apply_prepare_qc(
         &mut self,
         phase: Phase<V>,
-        qc: PrepareQc<V>,
+        qc: PrepareQc<V::Entries>,
     ) -> (Phase<V>, Vec<MVBAOutput<MvbaMessage<V, C>, TimerEvent<V>>>) {
         let committing = match phase {
             Phase::Preparing(p) => p.commit(qc.clone()),
@@ -714,7 +714,9 @@ where
         // persist-before-send: PrepQC
         self.update_prep_qc(qc);
 
-        let vote = self.sign_vote(FallbackCommitVote::<V>(committing.entries().clone()));
+        let vote = self.sign_vote(FallbackCommitVote::<V::Entries>(
+            committing.entries().clone(),
+        ));
 
         (
             Phase::Committing(committing),
@@ -726,7 +728,7 @@ where
     fn decide(
         &mut self,
         phase: Phase<V>,
-        commit_qc: FallbackCommitQc<V>,
+        commit_qc: FallbackCommitQc<V::Entries>,
         block: V,
     ) -> (Phase<V>, Vec<MVBAOutput<MvbaMessage<V, C>, TimerEvent<V>>>) {
         // `pending_decide` fetched the block by the certificate's entries
@@ -746,7 +748,7 @@ where
     /// `SyncView`
     fn advance_view(
         &mut self,
-        tc: TimeoutCertificate<V>,
+        tc: TimeoutCertificate<V::Entries>,
     ) -> (Phase<V>, Vec<MVBAOutput<MvbaMessage<V, C>, TimerEvent<V>>>) {
         debug_assert!(tc.view >= self.view());
 
@@ -806,7 +808,7 @@ where
     #[must_use]
     fn enter_view(
         &mut self,
-        justification: Option<TimeoutCertificate<V>>,
+        justification: Option<TimeoutCertificate<V::Entries>>,
     ) -> Vec<MVBAOutput<MvbaMessage<V, C>, TimerEvent<V>>> {
         self.timer_fired = false;
         self.entry_tc = justification;
@@ -952,11 +954,11 @@ where
     }
 
     /// Understating the lock would be a safety bug
-    fn update_prep_qc(&mut self, qc: PrepareQc<V>) {
+    fn update_prep_qc(&mut self, qc: PrepareQc<V::Entries>) {
         let is_higher = self
             .high_prep_qc
             .as_ref()
-            .is_none_or(|held| held.scope.1 < qc.scope.1);
+            .is_none_or(|held| held.scope.view < qc.scope.view);
 
         if is_higher {
             self.high_prep_qc = Some(qc);
@@ -967,10 +969,14 @@ where
         self.phase.decided()
     }
 
-    fn sign_vote<T>(&self, vote: T) -> VoteMsg<T>
+    fn sign_vote<T>(&self, vote: T) -> VoteMsg<T, T::Scope>
     where
-        T: IsVote<Scope = (Slot, FallbackView)>,
+        T: IsVote<Scope = MvbaScope>,
     {
-        VoteMsg::new_signed((self.context.slot, self.view()), vote, &self.context.key)
+        VoteMsg::new_signed(
+            MvbaScope::new(self.context.slot, self.view()),
+            vote,
+            &self.context.key,
+        )
     }
 }

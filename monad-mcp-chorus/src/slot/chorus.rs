@@ -97,7 +97,7 @@ pub enum SlotFinalization {
     #[from]
     Fast(FastCommitQc),
     #[from]
-    Fallback(FallbackCommitQc<Metablock>),
+    Fallback(FallbackCommitQc<<Metablock as super::fallback::Votable>::Entries>),
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]

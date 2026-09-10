@@ -13,36 +13,36 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::HashSet;
+use std::{collections::HashSet, fmt::Debug, hash::Hash};
 
 use super::{
     super::{
         super::types::{IsVote, SignatureCollection, Slot, StrongQc, ValidatorData},
-        FallbackView, Votable,
+        FallbackView, MvbaScope,
     },
     messages::{FallbackCommitVote, PrepareVote, TimeoutVote},
 };
 use crate::spec::{Stake as _, validator::ValidatorData as _, vote::SignatureCollection as _};
 
 /// `prepareQC_{slot, v}`: 2f+1 prepare votes on the same entries
-pub(crate) type PrepareQc<V> = StrongQc<PrepareVote<V>>;
+pub(crate) type PrepareQc<E> = StrongQc<PrepareVote<E>, MvbaScope>;
 
 /// `CommitQC`: 2f+1 commit votes on the same entries
-pub type FallbackCommitQc<V> = StrongQc<FallbackCommitVote<V>>;
+pub type FallbackCommitQc<E> = StrongQc<FallbackCommitVote<E>, MvbaScope>;
 
 /// `TC_{slot, v}`: 2f+1 timeouts for view `v` from distinct senders
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub(crate) struct TimeoutCertificate<V: Votable> {
+pub(crate) struct TimeoutCertificate<E> {
     pub slot: Slot,
     pub view: FallbackView,
     // exposing raw signature collection for BLS multisig optimization
     pub groups: Vec<(TimeoutVote, SignatureCollection)>,
-    pub high_prep_qc: Option<PrepareQc<V>>,
+    pub high_prep_qc: Option<PrepareQc<E>>,
 }
 
-impl<V: Votable> TimeoutCertificate<V> {
+impl<E: Clone + Eq + Hash + Debug> TimeoutCertificate<E> {
     pub(crate) fn verify(&self, validator_data: &ValidatorData) -> bool {
-        let scope = (self.slot, self.view);
+        let scope = MvbaScope::new(self.slot, self.view);
 
         let mut signers = HashSet::new();
         for (vote, sigcol) in &self.groups {
@@ -74,7 +74,7 @@ impl<V: Votable> TimeoutCertificate<V> {
         match (highest_claim, &self.high_prep_qc) {
             (None, None) => true,
             (Some(claimed_view), Some(qc)) => {
-                qc.scope == (self.slot, claimed_view)
+                qc.scope == MvbaScope::new(self.slot, claimed_view)
                     // no validator can hold a prepare certificate from a view
                     // later than the one it is abandoning
                     && claimed_view <= self.view
@@ -85,7 +85,7 @@ impl<V: Votable> TimeoutCertificate<V> {
     }
 
     /// `lock(J) = entries(highPrepQC(J))`: what the next leader must extend
-    pub(crate) fn lock(&self) -> Option<&V::Entries> {
+    pub(crate) fn lock(&self) -> Option<&E> {
         self.high_prep_qc.as_ref().map(|qc| &qc.verdict.0)
     }
 }
