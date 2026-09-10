@@ -16,12 +16,12 @@
 use std::{collections::VecDeque, sync::Arc};
 
 use alloy_rlp::{RlpDecodable, RlpEncodable};
-use bytes::Bytes;
 
 use super::{
     SlotConsensus, SlotOutput,
-    types::{IsVote, KeyPair, NodeId, Slot, VoteMsg, VotePool, dummy_serialize},
+    types::{IsVote, KeyPair, NodeId, Slot, VoteMsg, VotePool},
 };
+use crate::spec::vote::{SigningDomain, assert_signing_prefix};
 
 /// A dummy one-slot, proposal-less algorithm for testing
 ///
@@ -49,12 +49,16 @@ impl Default for DummySlotConsensusConfig {
 #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
 pub struct DummyVote;
 
+pub struct DummyVoteDomain;
+const _: () = assert_signing_prefix::<DummyVoteDomain>();
+
+impl SigningDomain for DummyVoteDomain {
+    const PREFIX: &'static [u8] = b"\x1Bmonad/cadence/dummy-vote/1\n";
+}
+
 impl IsVote for DummyVote {
     type Scope = Slot;
-
-    fn serialize(&self, scope: &Self::Scope) -> Bytes {
-        dummy_serialize(self, scope)
-    }
+    type SigningDomain = DummyVoteDomain;
 }
 
 impl SlotConsensus for DummySlotConsensus {
