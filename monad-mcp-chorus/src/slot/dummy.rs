@@ -15,6 +15,7 @@
 
 use std::{collections::VecDeque, sync::Arc};
 
+use alloy_rlp::{RlpDecodable, RlpEncodable};
 use bytes::Bytes;
 
 use super::{
@@ -45,7 +46,7 @@ impl Default for DummySlotConsensusConfig {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
 pub struct DummyVote;
 
 impl IsVote for DummyVote {

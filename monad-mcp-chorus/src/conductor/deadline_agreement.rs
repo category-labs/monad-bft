@@ -13,13 +13,15 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use alloy_rlp::{RlpDecodable, RlpEncodable};
+
 use super::{
     ConductorConfig, ConductorError, ConductorOutput, MonadConductor,
     acs::{Acs, AcsOutput},
     types::{NodeId, Slot, Timestamp, WindowId},
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, RlpEncodable, RlpDecodable)]
 pub struct DeadlineAgreementMessage<M> {
     pub window: WindowId,
     pub acs_message: M,

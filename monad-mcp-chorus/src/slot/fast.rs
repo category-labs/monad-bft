@@ -18,6 +18,10 @@ use std::{
     sync::Arc,
 };
 
+use alloy_rlp::{
+    Decodable, Encodable, Header, RlpDecodable, RlpDecodableWrapper, RlpEncodable,
+    RlpEncodableWrapper, encode_list, list_length,
+};
 use bytes::Bytes;
 use itertools::Either;
 
@@ -27,8 +31,8 @@ use super::{
     fallback::Metablock,
     types::{
         Admission, EquivCert, GatedVotePool, GatingRoot, HeaderAuth, IsVote, KeyPair, MerkleRoot,
-        NodeId, ProposalHeader, ProposalIndex, ProposalMap, Signature, Slot, StrongQc,
-        TotalProposalMap, ValidatorData, VoteMsg, VotePool, WeakQc, dummy_serialize,
+        NodeId, ProposalHeader, ProposalIndex, ProposalMap, ProposalScope, Signature, Slot,
+        StrongQc, TotalProposalMap, ValidatorData, VoteMsg, VotePool, WeakQc, dummy_serialize,
     },
 };
 use crate::spec::{
@@ -89,13 +93,15 @@ impl FastPath {
         Self {
             slot: s,
 
-            votes: ProposalMap::new(num_proposals, |j| GatedVotePool::new(VotePool::new((s, j)))),
+            votes: ProposalMap::new(num_proposals, |j| {
+                GatedVotePool::new(VotePool::new(ProposalScope::new(s, j)))
+            }),
             certs: ProposalMap::new_default(num_proposals),
             commit_votes: VotePool::new(s),
 
             enter_fallback_votes: VotePool::new(s),
             fallback_entry_votes: ProposalMap::new(num_proposals, |j| {
-                GatedVotePool::new(VotePool::new((s, j)))
+                GatedVotePool::new(VotePool::new(ProposalScope::new(s, j)))
             }),
 
             phase: Phase::Propose,
@@ -176,7 +182,7 @@ impl FastPath {
     fn handle_vote(&mut self, node_id: NodeId, vote_msg: VoteMsg<Entry>) {
         debug_assert!(self.validator_data.contains(&node_id));
 
-        let (_s, j) = vote_msg.scope;
+        let j = vote_msg.scope.index;
         self.votes[j].add_vote(node_id, vote_msg);
         self.try_form_fast_qc(j);
     }
@@ -321,9 +327,11 @@ impl FastPath {
                 };
                 entry.well_formed() && header_valid
             }
-            ProposalEvidence::Certified(cert) => {
-                cert.verify((self.slot, j), &self.header_auth, &self.validator_data)
-            }
+            ProposalEvidence::Certified(cert) => cert.verify(
+                ProposalScope::new(self.slot, j),
+                &self.header_auth,
+                &self.validator_data,
+            ),
         }
     }
 
@@ -342,11 +350,15 @@ impl FastPath {
                 None => Entry::Negative,
             };
 
-            let vote_msg = VoteMsg::new_signed((self.slot, *j), entry.clone(), &self.key);
-            (entry, vote_msg.signature)
+            let vote_msg =
+                VoteMsg::new_signed(ProposalScope::new(self.slot, *j), entry.clone(), &self.key);
+            SignedEntry {
+                entry,
+                signature: vote_msg.signature,
+            }
         });
 
-        for (j, (entry, _)) in votes.as_ref().into_indexed_iter() {
+        for (j, SignedEntry { entry, .. }) in votes.as_ref().into_indexed_iter() {
             if let Entry::Positive(root) = entry {
                 self.emit(ChorusDACommand::PinRoot { j, root: *root });
             }
@@ -442,7 +454,7 @@ impl FastPath {
             return cert.clone().into();
         }
 
-        let scope = (self.slot, j);
+        let scope = ProposalScope::new(self.slot, j);
 
         // if there are f+1 positive votes on a root and it's decoded,
         // vote positive.
@@ -634,7 +646,7 @@ pub enum Entry {
 }
 
 impl IsVote for Entry {
-    type Scope = (Slot, ProposalIndex);
+    type Scope = ProposalScope;
 
     fn serialize(&self, scope: &Self::Scope) -> Bytes {
         dummy_serialize(self, scope)
@@ -652,19 +664,27 @@ impl GatingRoot for Entry {
 
 pub type FastQc = StrongQc<Entry>;
 
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
 pub(crate) struct BatchVoteMsg {
     slot: Slot,
-    votes: ProposalMap<(Entry, Signature)>,
+    votes: ProposalMap<SignedEntry>,
     // vote only. fields for chunks & decryption share may be added by
     // other components.
+}
+
+#[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
+struct SignedEntry {
+    entry: Entry,
+    signature: Signature,
 }
 
 impl BatchVoteMsg {
     pub fn split(self) -> Vec<VoteMsg<Entry>> {
         self.votes
             .into_indexed_iter()
-            .map(|(j, (entry, sig))| VoteMsg::new((self.slot, j), entry, sig))
+            .map(|(j, SignedEntry { entry, signature })| {
+                VoteMsg::new(ProposalScope::new(self.slot, j), entry, signature)
+            })
             .collect()
     }
 }
@@ -676,7 +696,7 @@ pub(crate) struct FastCommitVote {
 
 pub(crate) type FastCommitVoteMsg = VoteMsg<FastCommitVote>;
 
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodableWrapper, RlpDecodableWrapper)]
 pub struct FastBlock(TotalProposalMap<FastQc>);
 
 impl FastBlock {
@@ -706,11 +726,11 @@ pub(crate) type FastCommitQc = StrongQc<FastCommitVote>;
 // ============ Fallback ===============
 
 // same as Entry, but signed under a distinct signing domain
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodableWrapper, RlpDecodableWrapper)]
 pub struct FallbackEntry(pub Entry);
 
 impl IsVote for FallbackEntry {
-    type Scope = (Slot, ProposalIndex);
+    type Scope = ProposalScope;
 
     fn serialize(&self, scope: &Self::Scope) -> Bytes {
         dummy_serialize(self, scope)
@@ -781,7 +801,7 @@ impl CertifiedEntry {
     /// boundary explicit and catch protocol-logic bugs.
     pub(crate) fn verify(
         &self,
-        scope: (Slot, ProposalIndex),
+        scope: ProposalScope,
         header_auth: &HeaderAuth,
         validator_data: &ValidatorData,
     ) -> bool {
@@ -789,7 +809,7 @@ impl CertifiedEntry {
             CertifiedEntry::FastQc(qc) => qc.verify(validator_data),
             CertifiedEntry::FallbackQc(qc) => qc.verify(validator_data),
             CertifiedEntry::EquivCert(EquivCert(a, b)) => {
-                let (s, j) = scope;
+                let ProposalScope { slot: s, index: j } = scope;
                 a.root != b.root
                     && header_auth.validate(a, s.get(), j)
                     && header_auth.validate(b, s.get(), j)
@@ -798,7 +818,8 @@ impl CertifiedEntry {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
+#[rlp(trailing)]
 struct FallbackSignedEntry {
     entry: FallbackEntry,
     // over (slot, j, self.entry)
@@ -810,7 +831,7 @@ struct FallbackSignedEntry {
 
 impl FallbackSignedEntry {
     fn new_signed_positive(
-        scope: (Slot, ProposalIndex),
+        scope: ProposalScope,
         root: MerkleRoot,
         key: &KeyPair,
         header: ProposalHeader,
@@ -824,7 +845,7 @@ impl FallbackSignedEntry {
         }
     }
 
-    fn new_signed_negative(scope: (Slot, ProposalIndex), key: &KeyPair) -> Self {
+    fn new_signed_negative(scope: ProposalScope, key: &KeyPair) -> Self {
         let entry = FallbackEntry(Entry::Negative);
         let signature = VoteMsg::new_signed(scope, entry.clone(), key).signature;
         Self {
@@ -849,7 +870,7 @@ impl FallbackSignedEntry {
     }
 
     fn into_vote_msg(self, slot: Slot, j: ProposalIndex) -> VoteMsg<FallbackEntry> {
-        VoteMsg::new((slot, j), self.entry, self.signature)
+        VoteMsg::new(ProposalScope::new(slot, j), self.entry, self.signature)
     }
 }
 
@@ -907,7 +928,7 @@ impl LocalCertifiedEntry {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
 pub struct EnterFallbackVote;
 
 impl IsVote for EnterFallbackVote {
@@ -918,7 +939,7 @@ impl IsVote for EnterFallbackVote {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
 pub(crate) struct FallbackVoteMsg {
     enter_fallback_vote: VoteMsg<EnterFallbackVote>,
     evidences: ProposalMap<ProposalEvidence>,
@@ -926,6 +947,166 @@ pub(crate) struct FallbackVoteMsg {
 
 // A fallback cert certifies 2f+1 validators agree to enter fallback path
 pub type EnterFallbackCert = StrongQc<EnterFallbackVote>;
+
+impl Encodable for Entry {
+    fn encode(&self, out: &mut dyn bytes::BufMut) {
+        match self {
+            Self::Positive(message) => {
+                let fields: [&dyn Encodable; 2] = [&1u8, message];
+                encode_list::<_, dyn Encodable>(&fields, out);
+            }
+            Self::Negative => {
+                let fields: [&dyn Encodable; 1] = [&2u8];
+                encode_list::<_, dyn Encodable>(&fields, out);
+            }
+        }
+    }
+
+    fn length(&self) -> usize {
+        match self {
+            Self::Positive(message) => {
+                let fields: [&dyn Encodable; 2] = [&1u8, message];
+                list_length::<_, dyn Encodable>(&fields)
+            }
+            Self::Negative => {
+                let fields: [&dyn Encodable; 1] = [&2u8];
+                list_length::<_, dyn Encodable>(&fields)
+            }
+        }
+    }
+}
+
+impl Decodable for Entry {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = Header::decode_bytes(buf, true)?;
+        let result = match <u8 as Decodable>::decode(&mut payload)? {
+            1 => Self::Positive(<MerkleRoot as Decodable>::decode(&mut payload)?),
+            2 => Self::Negative,
+            _ => return Err(alloy_rlp::Error::Custom("unknown Entry tag")),
+        };
+        if !payload.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
+        }
+        Ok(result)
+    }
+}
+
+impl Encodable for CertifiedEntry {
+    fn encode(&self, out: &mut dyn bytes::BufMut) {
+        match self {
+            Self::FastQc(message) => {
+                let fields: [&dyn Encodable; 2] = [&1u8, message];
+                encode_list::<_, dyn Encodable>(&fields, out);
+            }
+            Self::EquivCert(message) => {
+                let fields: [&dyn Encodable; 2] = [&2u8, message];
+                encode_list::<_, dyn Encodable>(&fields, out);
+            }
+            Self::FallbackQc(message) => {
+                let fields: [&dyn Encodable; 2] = [&3u8, message];
+                encode_list::<_, dyn Encodable>(&fields, out);
+            }
+        }
+    }
+
+    fn length(&self) -> usize {
+        match self {
+            Self::FastQc(message) => {
+                let fields: [&dyn Encodable; 2] = [&1u8, message];
+                list_length::<_, dyn Encodable>(&fields)
+            }
+            Self::EquivCert(message) => {
+                let fields: [&dyn Encodable; 2] = [&2u8, message];
+                list_length::<_, dyn Encodable>(&fields)
+            }
+            Self::FallbackQc(message) => {
+                let fields: [&dyn Encodable; 2] = [&3u8, message];
+                list_length::<_, dyn Encodable>(&fields)
+            }
+        }
+    }
+}
+
+impl Decodable for CertifiedEntry {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = Header::decode_bytes(buf, true)?;
+        let result = match <u8 as Decodable>::decode(&mut payload)? {
+            1 => Self::FastQc(<FastQc as Decodable>::decode(&mut payload)?),
+            2 => Self::EquivCert(<EquivCert as Decodable>::decode(&mut payload)?),
+            3 => Self::FallbackQc(<FallbackQc as Decodable>::decode(&mut payload)?),
+            _ => return Err(alloy_rlp::Error::Custom("unknown CertifiedEntry tag")),
+        };
+        if !payload.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
+        }
+        Ok(result)
+    }
+}
+
+impl Encodable for ProposalEvidence {
+    fn encode(&self, out: &mut dyn bytes::BufMut) {
+        match self {
+            Self::Certified(message) => {
+                let fields: [&dyn Encodable; 2] = [&1u8, message];
+                encode_list::<_, dyn Encodable>(&fields, out);
+            }
+            Self::FallbackSignedEntry(message) => {
+                let fields: [&dyn Encodable; 2] = [&2u8, message];
+                encode_list::<_, dyn Encodable>(&fields, out);
+            }
+        }
+    }
+
+    fn length(&self) -> usize {
+        match self {
+            Self::Certified(message) => {
+                let fields: [&dyn Encodable; 2] = [&1u8, message];
+                list_length::<_, dyn Encodable>(&fields)
+            }
+            Self::FallbackSignedEntry(message) => {
+                let fields: [&dyn Encodable; 2] = [&2u8, message];
+                list_length::<_, dyn Encodable>(&fields)
+            }
+        }
+    }
+}
+
+impl Decodable for ProposalEvidence {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = Header::decode_bytes(buf, true)?;
+        let result = match <u8 as Decodable>::decode(&mut payload)? {
+            1 => Self::Certified(<CertifiedEntry as Decodable>::decode(&mut payload)?),
+            2 => {
+                Self::FallbackSignedEntry(<FallbackSignedEntry as Decodable>::decode(&mut payload)?)
+            }
+            _ => return Err(alloy_rlp::Error::Custom("unknown ProposalEvidence tag")),
+        };
+        if !payload.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
+        }
+        Ok(result)
+    }
+}
+
+// Alloy 0.3.12's wrapper decoder derive only constructs tuple newtypes.
+// Keep both wrapper codecs manual for this named-field struct.
+impl Encodable for FastCommitVote {
+    fn encode(&self, out: &mut dyn bytes::BufMut) {
+        self.entries.encode(out);
+    }
+
+    fn length(&self) -> usize {
+        self.entries.length()
+    }
+}
+
+impl Decodable for FastCommitVote {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        Ok(Self {
+            entries: <ProposalMap<Entry> as Decodable>::decode(buf)?,
+        })
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -1007,8 +1188,12 @@ mod tests {
     fn positive_fallback_vote(voter: u64, byte: u8) -> (NodeId, FallbackVoteMsg) {
         let voter = NodeId::dummy(voter);
         let key = voter.keypair();
-        let entry =
-            FallbackSignedEntry::new_signed_positive((SLOT, 0), root(byte), &key, header(byte));
+        let entry = FallbackSignedEntry::new_signed_positive(
+            ProposalScope::new(SLOT, 0),
+            root(byte),
+            &key,
+            header(byte),
+        );
         let msg = FallbackVoteMsg {
             enter_fallback_vote: VoteMsg::new_signed(SLOT, EnterFallbackVote, &key),
             evidences: ProposalMap::new(1, |_| {
@@ -1020,10 +1205,14 @@ mod tests {
 
     // a fast qc on root(byte) signed by validators 0, 2 and 3
     fn fast_block(byte: u8) -> FastBlock {
-        let mut pool = VotePool::new((SLOT, 0));
+        let mut pool = VotePool::new(ProposalScope::new(SLOT, 0));
         for id in [0, 2, 3] {
             let voter = NodeId::dummy(id);
-            let msg = VoteMsg::new_signed((SLOT, 0), Entry::Positive(root(byte)), &voter.keypair());
+            let msg = VoteMsg::new_signed(
+                ProposalScope::new(SLOT, 0),
+                Entry::Positive(root(byte)),
+                &voter.keypair(),
+            );
             pool.add_vote(voter, msg);
         }
         let qc = pool
@@ -1111,8 +1300,12 @@ mod tests {
         let voter = NodeId::dummy(voter);
         let key = voter.keypair();
         let votes = ProposalMap::new(1, |j| {
-            let signature = VoteMsg::new_signed((SLOT, j), entry.clone(), &key).signature;
-            (entry.clone(), signature)
+            let signature =
+                VoteMsg::new_signed(ProposalScope::new(SLOT, j), entry.clone(), &key).signature;
+            SignedEntry {
+                entry: entry.clone(),
+                signature,
+            }
         });
         (voter, BatchVoteMsg { slot: SLOT, votes })
     }
@@ -1226,5 +1419,155 @@ mod tests {
         });
         fast.recover_committed(&fast_commit_qc(1));
         assert!(drain_requests(&mut fast).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod rlp_tests {
+    use super::{
+        super::{
+            super::{
+                conductor::{MonadConductor, acs::median::MedianAcs},
+                driver::CadenceDriverMsg,
+                test_utils::{assert_roundtrip, assert_serialization_roundtrip},
+                types::SlotDeadline,
+            },
+            chorus::{Chorus, ChorusMessage},
+        },
+        *,
+    };
+    use crate::{
+        env::stub::{D25, EncodingScheme, MerkleHash, ProposalSignature},
+        spec::vote::KeyPair as _,
+    };
+
+    #[test]
+    fn chorus_variants_and_nested_evidence_roundtrip() {
+        let slot = Slot(9);
+        let key = NodeId::dummy(1).keypair();
+        let root = MerkleRoot(MerkleHash([7; 20]));
+        let positive = Entry::Positive(root);
+        let signature = key.sign(&Bytes::from_static(b"test"));
+        // Empty collections suffice for wire tests; validation remains separate.
+        let sigcol = alloy_rlp::decode_exact([0xc0]).unwrap();
+        let fast_qc = StrongQc {
+            scope: ProposalScope::new(slot, 0usize),
+            verdict: positive.clone(),
+            sigcol,
+        };
+        let weak_qc = WeakQc {
+            scope: ProposalScope::new(slot, 0usize),
+            verdict: FallbackEntry(Entry::Negative),
+            sigcol: fast_qc.sigcol.clone(),
+        };
+        let h = ProposalHeader {
+            slot: crate::stub::types::Slot(9),
+            root,
+            sig: ProposalSignature {
+                signer: NodeId::dummy(1),
+                checksum: 12,
+            },
+            scheme: EncodingScheme::D25(D25 {
+                msg_len: 1000,
+                unix_ts: 12345,
+                depth: 4,
+            }),
+        };
+        let mut h2 = h.clone();
+        h2.root = MerkleRoot(MerkleHash([8; 20]));
+        // Cover every certificate variant and signed fallback entries with/without a header.
+        let evidence = vec![
+            ProposalEvidence::Certified(CertifiedEntry::FastQc(fast_qc.clone())),
+            ProposalEvidence::Certified(CertifiedEntry::FallbackQc(weak_qc)),
+            ProposalEvidence::Certified(CertifiedEntry::EquivCert(EquivCert(h.clone(), h2))),
+            ProposalEvidence::FallbackSignedEntry(FallbackSignedEntry::new_signed_positive(
+                ProposalScope::new(slot, 0),
+                root,
+                &key,
+                h,
+            )),
+            ProposalEvidence::FallbackSignedEntry(FallbackSignedEntry::new_signed_negative(
+                ProposalScope::new(slot, 1),
+                &key,
+            )),
+        ];
+        for value in &evidence {
+            assert_roundtrip(value);
+        }
+        let enter = StrongQc {
+            scope: slot,
+            verdict: EnterFallbackVote,
+            sigcol: fast_qc.sigcol.clone(),
+        };
+        let fast_commit_vote = FastCommitVote {
+            entries: ProposalMap::new(2, |i| {
+                if i == 0 {
+                    positive.clone()
+                } else {
+                    Entry::Negative
+                }
+            }),
+        };
+        // Cover all six non-MVBA Chorus variants; MVBA messages have their own round-trip test.
+        let messages = vec![
+            ChorusMessage::BatchVote(BatchVoteMsg {
+                slot,
+                votes: ProposalMap::new(2, |i| SignedEntry {
+                    entry: if i == 0 {
+                        positive.clone()
+                    } else {
+                        Entry::Negative
+                    },
+                    signature: signature.clone(),
+                }),
+            }),
+            ChorusMessage::FastCommitVote(VoteMsg::new_signed(
+                slot,
+                fast_commit_vote.clone(),
+                &key,
+            )),
+            ChorusMessage::FastBlock(FastBlock(ProposalMap::new(2, |_| fast_qc.clone()))),
+            ChorusMessage::FallbackVote(FallbackVoteMsg {
+                enter_fallback_vote: VoteMsg::new_signed(slot, EnterFallbackVote, &key),
+                evidences: ProposalMap::new(evidence.len(), |i| evidence[i].clone()),
+            }),
+            ChorusMessage::FastCommitQc(StrongQc {
+                scope: slot,
+                verdict: fast_commit_vote,
+                sigcol: fast_qc.sigcol,
+            }),
+            ChorusMessage::EnterFallbackCert(enter),
+        ];
+        type Wire = CadenceDriverMsg<Chorus, MonadConductor<MedianAcs<SlotDeadline>>>;
+        // Check both the Chorus RLP payload and its enclosing Cadence byte serialization.
+        for message in messages {
+            assert_roundtrip(&message);
+            assert_serialization_roundtrip(&Wire::Slot(slot, message));
+        }
+    }
+
+    #[test]
+    fn transparent_wrappers_and_unit_votes_have_no_extra_list() {
+        fn encode_scope<V: IsVote>(scope: &V::Scope) -> Vec<u8> {
+            alloy_rlp::encode(scope)
+        }
+        let scope = ProposalScope::new(Slot(7), 3);
+        assert_eq!(encode_scope::<Entry>(&scope), [0xc2, 7, 3]);
+        assert_roundtrip(&scope);
+        let root = MerkleRoot(MerkleHash([7; 20]));
+        assert_eq!(alloy_rlp::encode(root), alloy_rlp::encode([7u8; 20]));
+        let entry = Entry::Negative;
+        assert_eq!(alloy_rlp::encode(&entry), [0xc1, 2]);
+        assert_eq!(alloy_rlp::encode(FallbackEntry(entry)), [0xc1, 2]);
+        assert_eq!(alloy_rlp::encode(EnterFallbackVote), [0xc0]);
+        assert_roundtrip(&EnterFallbackVote);
+        let entries = ProposalMap::new(0, |_| Entry::Negative);
+        assert_eq!(alloy_rlp::encode(FastCommitVote { entries }), [0xc0]);
+        let block = FastBlock(ProposalMap::new(0, |_| unreachable!()));
+        assert_eq!(alloy_rlp::encode(&block), [0xc0]);
+        assert_roundtrip(&block);
+        for bad in [&[0xc1, 3][..], &[0xc2, 2, 0][..], &[0x80][..]] {
+            assert!(alloy_rlp::decode_exact::<Entry>(bad).is_err());
+        }
     }
 }

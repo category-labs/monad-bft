@@ -27,17 +27,17 @@ use super::{
         super::{
             fast::{CertifiedEntry, EnterFallbackCert, EnterFallbackVote, Entry, FallbackEntry},
             types::{
-                HeaderAuth, IsVote, MerkleRoot, NodeId, ProposalMap, Slot, StrongQc,
+                HeaderAuth, IsVote, MerkleRoot, NodeId, ProposalMap, ProposalScope, Slot, StrongQc,
                 TimestampDelta, ValidatorData, VoteMsg, VotePool, WeakQc,
             },
         },
-        FallbackView, MVBAOutput, Metablock, Mvba,
+        FallbackView, MVBAOutput, Metablock, Mvba, MvbaScope, Votable,
     },
     MvbaContext,
     block_store::{BlockRequestMsg, BlockResponseMsg},
     messages::{FallbackCommitVote, PrepareVote},
 };
-use crate::env::stub::MerkleHash;
+use crate::{env::stub::MerkleHash, spec::vote::KeyPair as _};
 
 /// A root whose hash spells out `n`, so distinct seeds give distinct roots
 fn root(n: u64) -> MerkleRoot {
@@ -52,9 +52,10 @@ pub(super) type MonadMvba = super::MonadMvba<Metablock, EnterFallbackCert>;
 pub(super) type Message = super::messages::MvbaMessage<Metablock, EnterFallbackCert>;
 pub(super) type PrePrepareMsg = super::messages::PrePrepareMsg<Metablock, EnterFallbackCert>;
 pub(super) type Justification = super::messages::Justification<Metablock, EnterFallbackCert>;
-pub(super) type TimeoutMsg = super::messages::TimeoutMsg<Metablock>;
-pub(super) type PrepareQc = super::certificates::PrepareQc<Metablock>;
-pub(super) type TimeoutCertificate = super::certificates::TimeoutCertificate<Metablock>;
+pub(super) type TimeoutMsg = super::messages::TimeoutMsg<<Metablock as Votable>::Entries>;
+pub(super) type PrepareQc = super::certificates::PrepareQc<<Metablock as Votable>::Entries>;
+pub(super) type TimeoutCertificate =
+    super::certificates::TimeoutCertificate<<Metablock as Votable>::Entries>;
 pub(super) type ViewCollectors = super::collectors::ViewCollectors<Metablock, EnterFallbackCert>;
 pub(super) type TimerEvent = super::TimerEvent<Metablock>;
 
@@ -87,7 +88,7 @@ pub(super) fn validator_data() -> Arc<ValidatorData> {
     let mapping: HashMap<_, _> = nodes()
         .into_iter()
         .map(|node| {
-            let pubkey = crate::spec::vote::KeyPair::pubkey(&node.keypair());
+            let pubkey = node.keypair().pubkey();
             (node, pubkey)
         })
         .collect();
@@ -119,7 +120,12 @@ pub(super) fn mvba(node: NodeId, validator_data: &Arc<ValidatorData>) -> MonadMv
 pub(super) fn metablock(seed: u64, validator_data: &ValidatorData) -> Metablock {
     Metablock::new(ProposalMap::new(NUM_PROPOSALS, |j| {
         let entry = Entry::Positive(root(seed * 100 + j as u64));
-        let fast_qc = strong_qc((SLOT, j), entry, &quorum(), validator_data);
+        let fast_qc = strong_qc(
+            ProposalScope::new(SLOT, j),
+            entry,
+            &quorum(),
+            validator_data,
+        );
         CertifiedEntry::FastQc(fast_qc)
     }))
 }
@@ -131,10 +137,20 @@ pub(super) fn mixed_evidence_metablock(seed: u64, validator_data: &ValidatorData
     Metablock::new(ProposalMap::new(NUM_PROPOSALS, |j| {
         let entry = Entry::Positive(root(seed * 100 + j as u64));
         if j == 0 {
-            let qc = weak_qc((SLOT, j), FallbackEntry(entry), &quorum(), validator_data);
+            let qc = weak_qc(
+                ProposalScope::new(SLOT, j),
+                FallbackEntry(entry),
+                &quorum(),
+                validator_data,
+            );
             CertifiedEntry::FallbackQc(qc)
         } else {
-            CertifiedEntry::FastQc(strong_qc((SLOT, j), entry, &quorum(), validator_data))
+            CertifiedEntry::FastQc(strong_qc(
+                ProposalScope::new(SLOT, j),
+                entry,
+                &quorum(),
+                validator_data,
+            ))
         }
     }))
 }
@@ -186,7 +202,7 @@ pub(super) fn prepare_qc(
     validator_data: &ValidatorData,
 ) -> PrepareQc {
     strong_qc(
-        (SLOT, v),
+        MvbaScope::new(SLOT, v),
         PrepareVote(entries.clone()),
         &quorum(),
         validator_data,
@@ -269,7 +285,11 @@ pub(super) fn feed_prepare_votes(
     signers: &[NodeId],
 ) {
     for node in signers {
-        let msg = VoteMsg::new_signed((SLOT, v), PrepareVote(entries.clone()), &node.keypair());
+        let msg = VoteMsg::new_signed(
+            MvbaScope::new(SLOT, v),
+            PrepareVote(entries.clone()),
+            &node.keypair(),
+        );
         instance.handle_message(*node, Message::Prepare(msg));
     }
 }
@@ -284,7 +304,7 @@ pub(super) fn feed_commit_votes(
 ) {
     for node in signers {
         let msg = VoteMsg::new_signed(
-            (SLOT, v),
+            MvbaScope::new(SLOT, v),
             FallbackCommitVote(block.entries()),
             &node.keypair(),
         );
@@ -300,7 +320,7 @@ pub(super) fn commit_qc_message(
     validator_data: &ValidatorData,
 ) -> Message {
     let qc = strong_qc(
-        (SLOT, v),
+        MvbaScope::new(SLOT, v),
         FallbackCommitVote(block.entries()),
         &quorum(),
         validator_data,

@@ -8,6 +8,7 @@ edition = "2024"
 enable_stub = []
 
 [dependencies]
+alloy-rlp = { workspace = true, features = ["derive"] }
 bytes = { workspace = true }
 derive_more = { workspace = true, features = ["from", "sum", "add", "into"] }
 itertools = { workspace = true }

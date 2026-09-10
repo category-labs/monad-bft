@@ -74,7 +74,7 @@ pub(crate) struct Committing<V: Votable> {
 /// Decided, with the certificate that proves it and the block it settled
 #[derive(Clone)]
 pub(crate) struct Decided<V: Votable> {
-    commit_qc: FallbackCommitQc<V>,
+    commit_qc: FallbackCommitQc<V::Entries>,
     block: V,
 }
 
@@ -184,7 +184,7 @@ impl<V: Votable> Preparing<V> {
         &self.entries
     }
 
-    pub(crate) fn commit(self, prepare_qc: PrepareQc<V>) -> Committing<V> {
+    pub(crate) fn commit(self, prepare_qc: PrepareQc<V::Entries>) -> Committing<V> {
         debug_assert_eq!(prepare_qc.verdict.0, self.entries);
 
         Committing {
@@ -204,7 +204,7 @@ impl<V: Votable> Decided<V> {
         &self.commit_qc.verdict.0
     }
 
-    pub(crate) fn commit_qc(&self) -> &FallbackCommitQc<V> {
+    pub(crate) fn commit_qc(&self) -> &FallbackCommitQc<V::Entries> {
         &self.commit_qc
     }
 
@@ -214,7 +214,7 @@ impl<V: Votable> Decided<V> {
 
     /// A supermajority commit certificate together with its block decides from
     /// any phase: the certificate is the evidence, the local phase adds none
-    pub(crate) fn new(commit_qc: FallbackCommitQc<V>, block: V) -> Self {
+    pub(crate) fn new(commit_qc: FallbackCommitQc<V::Entries>, block: V) -> Self {
         Decided { commit_qc, block }
     }
 }
@@ -223,14 +223,14 @@ impl<V: Votable> Decided<V> {
 /// `find_pending_transition` constructs these, so applying one cannot fail
 pub(crate) enum Transition<V: Votable, C: ValidateCert> {
     Proposal(PrePrepareMsg<V, C>),
-    PrepareQc(PrepareQc<V>),
+    PrepareQc(PrepareQc<V::Entries>),
     Decide {
-        qc: FallbackCommitQc<V>,
+        qc: FallbackCommitQc<V::Entries>,
         block: V,
     },
     OwnProposalReady(PrePrepareMsg<V, C>),
     AwaitProposal,
-    Tc(TimeoutCertificate<V>),
+    Tc(TimeoutCertificate<V::Entries>),
     /// Timer fired, or f+1 stake already timed out. Repeats in a timed-out view
     /// per retransmission
     Timeout,
