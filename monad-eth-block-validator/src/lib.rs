@@ -227,6 +227,8 @@ where
             excess_blob_gas,
             parent_beacon_block_root,
             requests_hash,
+            block_access_list_hash,
+            slot_number,
         } = &header.execution_inputs;
 
         if ommers_hash != EMPTY_OMMER_ROOT_HASH {
@@ -304,6 +306,28 @@ where
             return Err(HeaderError::InvalidRequestsHash {
                 expected: expected_requests_hash,
                 actual: *requests_hash,
+            });
+        }
+
+        // Monad does not use block access list hashes yet
+        // It is set to zero hash for amsterdam compatibility
+        let expected_block_access_list_hash = execution_chain_params
+            .amsterdam_enabled
+            .then_some([0_u8; 32]);
+        if block_access_list_hash != &expected_block_access_list_hash {
+            return Err(HeaderError::InvalidBlockAccessListHash {
+                expected: expected_block_access_list_hash,
+                actual: *block_access_list_hash,
+            });
+        }
+
+        let expected_slot_number = execution_chain_params
+            .amsterdam_enabled
+            .then_some(header.block_round.as_u64());
+        if slot_number != &expected_slot_number {
+            return Err(HeaderError::InvalidSlotNumber {
+                expected: expected_slot_number,
+                actual: *slot_number,
             });
         }
 
@@ -1421,6 +1445,8 @@ mod test {
                 excess_blob_gas: 0,
                 parent_beacon_block_root: [0_u8; 32],
                 requests_hash: Some([0_u8; 32]),
+                block_access_list_hash: Some([0_u8; 32]),
+                slot_number: Some(1),
                 ..ProposedEthHeader::default()
             },
             payload.get_id(),
