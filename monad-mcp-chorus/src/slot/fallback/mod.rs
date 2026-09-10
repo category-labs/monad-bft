@@ -24,7 +24,7 @@ use std::{
     hash::Hash,
 };
 
-use alloy_rlp::{RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper};
+use alloy_rlp::{Encodable, RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper};
 pub use monad_mvba::FallbackCommitQc;
 
 /// MetaBlock components are exported
@@ -114,7 +114,8 @@ pub trait ValidateCert: Clone + Eq + Hash + Debug {
 
 /// The votable projection of an MVBA value: `entries(x)` in the paper
 pub trait Votable: Clone + Eq + Hash + Debug {
-    type Entries: Clone + Eq + Hash + Debug;
+    // votes range over the entries, so they must be signable
+    type Entries: Clone + Eq + Hash + Debug + Encodable;
 
     fn entries(&self) -> Self::Entries;
 }

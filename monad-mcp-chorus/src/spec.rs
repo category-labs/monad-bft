@@ -101,7 +101,55 @@ pub mod validator {
 pub mod vote {
     use std::collections::{HashMap, HashSet};
 
-    use bytes::Bytes;
+    use alloy_rlp::{EMPTY_LIST_CODE, Encodable, encode_list, list_length};
+    use bytes::{BufMut, Bytes};
+
+    // A namespace mixed into the bytes a signature covers, so a signature
+    // over one message kind can never be read as another.
+    pub trait SigningDomain {
+        // first byte must be the length of the following message
+        // the length of the following message must be < 128
+        // last byte must be \n
+        const PREFIX: &'static [u8];
+    }
+
+    pub const fn assert_signing_prefix<SD: SigningDomain>() {
+        let prefix_len = SD::PREFIX[0];
+        // "For a single byte whose value is in the [0, 127] range, that byte
+        // is its own RLP encoding."
+        assert!(prefix_len < 128);
+        assert!(prefix_len as usize == SD::PREFIX.len() - 1);
+        assert!(SD::PREFIX[SD::PREFIX.len() - 1] == b'\n');
+    }
+
+    // The bytes a vote signature covers: the domain prefix followed by the RLP
+    // list [scope, vote].
+    pub fn signing_bytes<SD: SigningDomain>(scope: &dyn Encodable, vote: &dyn Encodable) -> Bytes {
+        signing_bytes_of::<SD>(&[scope, vote])
+    }
+
+    // The domain prefix followed by the RLP list of `items`. The prefix is
+    // concatenated, not a list element.
+    pub fn signing_bytes_of<SD: SigningDomain>(items: &[&dyn Encodable]) -> Bytes {
+        let mut out = Vec::with_capacity(SD::PREFIX.len() + list_length::<_, dyn Encodable>(items));
+        out.extend_from_slice(SD::PREFIX);
+        encode_list::<_, dyn Encodable>(items, &mut out);
+        Bytes::from(out)
+    }
+
+    // Stands in for an absent optional item, since alloy has no Encodable
+    // for Option.
+    pub struct RlpNone;
+
+    impl Encodable for RlpNone {
+        fn encode(&self, out: &mut dyn BufMut) {
+            out.put_u8(EMPTY_LIST_CODE);
+        }
+
+        fn length(&self) -> usize {
+            1
+        }
+    }
 
     // Only used to verify a Signature signed using KeyPair.
     pub trait PubKey: Clone + Eq {}
@@ -241,7 +289,7 @@ pub mod vote {
 }
 
 pub mod proposal {
-    use crate::prod::types::ProposalIndex;
+    use crate::common_types::ProposalIndex;
 
     // A commitment to a proposal's payload.
     pub trait MerkleRoot: Copy + Eq + std::hash::Hash + std::fmt::Debug {}
