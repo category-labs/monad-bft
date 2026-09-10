@@ -40,64 +40,12 @@ pub use super::{
         ProposerSchedule, ProposerSet, RotatingProposerSchedule, RoundRobinLeaderSchedule,
     },
 };
+pub use crate::common_types::{ProposalIndex, ProposalScope, Slot};
 use crate::spec::{
     Stake as _,
     validator::ValidatorData as _,
     vote::{KeyPair as _, Signature as _, SignatureCollection as _, VoteAggregation as _},
 };
-
-// Slot number, starting from 0.
-#[derive(
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    Debug,
-    RlpEncodableWrapper,
-    RlpDecodableWrapper,
-)]
-pub struct Slot(pub u64);
-
-impl Slot {
-    pub const FIRST: Self = Slot(0);
-
-    // the first and last meaningful slot numbers
-    pub const MIN: Self = Self::FIRST;
-    pub const MAX: Self = Slot(u64::MAX - 1);
-
-    // the max meaningful slot number used as cap
-    pub const MAX_CAP: Self = Slot(u64::MAX);
-
-    pub const fn get(self) -> u64 {
-        self.0
-    }
-
-    pub const fn from_u64(slot: u64) -> Option<Self> {
-        if slot > Self::MAX.0 {
-            return None;
-        }
-        Some(Self(slot))
-    }
-
-    pub fn checked_add(self, slots: u64) -> Option<Self> {
-        self.0.checked_add(slots).map(Self)
-    }
-
-    pub fn checked_sub(self, slots: u64) -> Option<Self> {
-        self.0.checked_sub(slots).map(Self)
-    }
-
-    pub fn checked_next(self) -> Option<Self> {
-        self.checked_add(1)
-    }
-
-    pub fn slots_since(self, earlier: Self) -> Option<u64> {
-        self.0.checked_sub(earlier.0)
-    }
-}
 
 /// An absolute point on the timeline, stored in nanoseconds.
 #[derive(
@@ -829,21 +777,6 @@ where
             verdict,
             sigcol,
         })
-    }
-}
-
-pub type ProposalIndex = usize;
-
-/// The slot and proposal index authenticated by a per-proposal vote.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
-pub struct ProposalScope {
-    pub slot: Slot,
-    pub index: ProposalIndex,
-}
-
-impl ProposalScope {
-    pub const fn new(slot: Slot, index: ProposalIndex) -> Self {
-        Self { slot, index }
     }
 }
 
