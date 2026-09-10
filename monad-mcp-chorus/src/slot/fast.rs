@@ -1139,7 +1139,7 @@ mod tests {
     // signed by validator 0, the only proposer
     fn header(byte: u8) -> ProposalHeader {
         ProposalHeader {
-            slot: crate::stub::types::Slot(SLOT.get()),
+            slot: SLOT,
             root: root(byte),
             sig: ProposalSignature {
                 signer: NodeId::dummy(0),
@@ -1461,7 +1461,7 @@ mod rlp_tests {
             sigcol: fast_qc.sigcol.clone(),
         };
         let h = ProposalHeader {
-            slot: crate::stub::types::Slot(9),
+            slot: Slot(9),
             root,
             sig: ProposalSignature {
                 signer: NodeId::dummy(1),

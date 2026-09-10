@@ -211,8 +211,8 @@ mod proposal {
 
     use super::NodeId;
     use crate::{
+        common_types::{ProposalIndex, Slot},
         spec,
-        stub::types::{ProposalIndex, Slot},
     };
 
     #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, RlpEncodableWrapper, RlpDecodableWrapper)]
