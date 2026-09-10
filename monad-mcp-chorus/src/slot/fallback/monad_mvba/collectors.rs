@@ -18,9 +18,9 @@ use std::{cell::OnceCell, collections::BTreeMap};
 use super::{
     super::{
         super::types::{IsVote, NodeId, Slot, StrongQc, ValidatorData, VoteMsg, VotePool},
-        FallbackView, ValidateCert, Votable,
+        FallbackView, MvbaScope, ValidateCert, Votable,
     },
-    certificates::{FallbackCommitQc, PrepareQc, TimeoutCertificate},
+    certificates::{FallbackCommitQc, PrepareQc, TimeoutCertificate, TimeoutGroup},
     messages::{
         CommitVoteMsg, FallbackCommitVote, PrePrepareMsg, PrepareVote, PrepareVoteMsg, TimeoutMsg,
         TimeoutVote,
@@ -75,15 +75,15 @@ pub(crate) struct ViewCollectors<V: Votable, C: ValidateCert> {
 
     /// The first pre-prepare seen for the view
     pre_prepare: Option<PrePrepareMsg<V, C>>,
-    prepare_votes: SealingVotePool<PrepareVote<V>>,
-    commit_votes: SealingVotePool<FallbackCommitVote<V>>,
+    prepare_votes: SealingVotePool<PrepareVote<V::Entries>>,
+    commit_votes: SealingVotePool<FallbackCommitVote<V::Entries>>,
     timeout_votes: VotePool<TimeoutVote>,
     /// Prepare certificates carried in by timeouts, keyed by their own view
-    prep_qcs: BTreeMap<FallbackView, PrepareQc<V>>,
+    prep_qcs: BTreeMap<FallbackView, PrepareQc<V::Entries>>,
 
     /// A timeout certificate for this view harvested from another message,
     /// kept even when that message is refused
-    harvested_tc: Option<TimeoutCertificate<V>>,
+    harvested_tc: Option<TimeoutCertificate<V::Entries>>,
 }
 
 impl<V: Votable, C: ValidateCert> ViewCollectors<V, C> {
@@ -92,9 +92,9 @@ impl<V: Votable, C: ValidateCert> ViewCollectors<V, C> {
             slot,
             view,
             pre_prepare: None,
-            prepare_votes: SealingVotePool::new((slot, view)),
-            commit_votes: SealingVotePool::new((slot, view)),
-            timeout_votes: VotePool::new((slot, view)),
+            prepare_votes: SealingVotePool::new(MvbaScope::new(slot, view)),
+            commit_votes: SealingVotePool::new(MvbaScope::new(slot, view)),
+            timeout_votes: VotePool::new(MvbaScope::new(slot, view)),
             prep_qcs: BTreeMap::new(),
             harvested_tc: None,
         }
@@ -111,11 +111,11 @@ impl<V: Votable, C: ValidateCert> ViewCollectors<V, C> {
         self.pre_prepare.as_ref()
     }
 
-    pub(crate) fn store_prepare_vote(&mut self, sender: NodeId, msg: PrepareVoteMsg<V>) {
+    pub(crate) fn store_prepare_vote(&mut self, sender: NodeId, msg: PrepareVoteMsg<V::Entries>) {
         self.prepare_votes.add_vote(sender, msg);
     }
 
-    pub(crate) fn store_commit_vote(&mut self, sender: NodeId, msg: CommitVoteMsg<V>) {
+    pub(crate) fn store_commit_vote(&mut self, sender: NodeId, msg: CommitVoteMsg<V::Entries>) {
         self.commit_votes.add_vote(sender, msg);
     }
 
@@ -124,7 +124,7 @@ impl<V: Votable, C: ValidateCert> ViewCollectors<V, C> {
     pub(crate) fn try_form_prepare_qc(
         &self,
         validator_data: &ValidatorData,
-    ) -> Option<PrepareQc<V>> {
+    ) -> Option<PrepareQc<V::Entries>> {
         self.prepare_votes
             .try_form_strong_qc(validator_data)
             .cloned()
@@ -134,17 +134,17 @@ impl<V: Votable, C: ValidateCert> ViewCollectors<V, C> {
     pub(crate) fn try_form_commit_qc(
         &self,
         validator_data: &ValidatorData,
-    ) -> Option<FallbackCommitQc<V>> {
+    ) -> Option<FallbackCommitQc<V::Entries>> {
         self.commit_votes
             .try_form_strong_qc(validator_data)
             .cloned()
     }
 
-    pub(crate) fn store_timeout(&mut self, sender: NodeId, msg: TimeoutMsg<V>) {
+    pub(crate) fn store_timeout(&mut self, sender: NodeId, msg: TimeoutMsg<V::Entries>) {
         debug_assert_eq!((msg.slot(), msg.view()), (self.slot, self.view));
 
         if let Some(qc) = msg.high_prep_qc {
-            self.prep_qcs.entry(qc.scope.1).or_insert(qc);
+            self.prep_qcs.entry(qc.scope.view).or_insert(qc);
         }
 
         // last write wins: sender may update its lock when periodically timing
@@ -160,13 +160,13 @@ impl<V: Votable, C: ValidateCert> ViewCollectors<V, C> {
 
     /// First write wins: every valid certificate for a view certifies the same
     /// thing
-    pub(crate) fn store_tc(&mut self, tc: TimeoutCertificate<V>) {
+    pub(crate) fn store_tc(&mut self, tc: TimeoutCertificate<V::Entries>) {
         debug_assert_eq!((tc.slot, tc.view), (self.slot, self.view));
 
         self.harvested_tc.get_or_insert(tc);
     }
 
-    pub(crate) fn harvested_tc(&self) -> Option<&TimeoutCertificate<V>> {
+    pub(crate) fn harvested_tc(&self) -> Option<&TimeoutCertificate<V::Entries>> {
         self.harvested_tc.as_ref()
     }
 
@@ -176,7 +176,7 @@ impl<V: Votable, C: ValidateCert> ViewCollectors<V, C> {
     pub(crate) fn try_form_tc(
         &self,
         validator_data: &ValidatorData,
-    ) -> Option<TimeoutCertificate<V>> {
+    ) -> Option<TimeoutCertificate<V::Entries>> {
         let target_stake = validator_data.total_stake().supermajority_threshold();
         let groups = self
             .timeout_votes
@@ -198,7 +198,10 @@ impl<V: Votable, C: ValidateCert> ViewCollectors<V, C> {
 
         let groups = groups
             .into_iter()
-            .map(|(vote, sigcol)| (vote.clone(), sigcol))
+            .map(|(vote, sigcol)| TimeoutGroup {
+                vote: vote.clone(),
+                sigcol,
+            })
             .collect();
 
         Some(TimeoutCertificate {

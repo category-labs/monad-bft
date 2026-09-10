@@ -15,6 +15,8 @@
 
 use std::collections::{HashMap, HashSet};
 
+use alloy_rlp::{RlpDecodable, RlpEncodable};
+
 use super::{
     super::{
         super::types::{Slot, TimestampDelta},
@@ -27,13 +29,13 @@ use super::{
 /// request/response round trip
 const BLOCK_RETRANSMIT_DELTAS: u64 = 2;
 
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub(crate) struct BlockRequestMsg<V: Votable> {
+#[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
+pub(crate) struct BlockRequestMsg<E> {
     pub slot: Slot,
-    pub entries: V::Entries,
+    pub entries: E,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
 pub(crate) struct BlockResponseMsg<V> {
     pub slot: Slot,
     pub block: V,
@@ -83,7 +85,7 @@ impl<V: ValidateInput + Votable> BlockStore<V> {
         entries: &V::Entries,
     ) -> impl Iterator<Item = MVBAOutput<M, TimerEvent<V>>>
     where
-        M: From<BlockRequestMsg<V>>,
+        M: From<BlockRequestMsg<V::Entries>>,
     {
         let fresh = !self.known.contains_key(entries) && self.pending.insert(entries.clone());
         fresh.then(|| self.fetch(entries)).into_iter().flatten()
@@ -96,7 +98,7 @@ impl<V: ValidateInput + Votable> BlockStore<V> {
         entries: &V::Entries,
     ) -> impl Iterator<Item = MVBAOutput<M, TimerEvent<V>>>
     where
-        M: From<BlockRequestMsg<V>>,
+        M: From<BlockRequestMsg<V::Entries>>,
     {
         self.pending
             .contains(entries)
@@ -109,7 +111,7 @@ impl<V: ValidateInput + Votable> BlockStore<V> {
     /// live per pending entry: re-arming replaces, since the event is the key
     fn fetch<M>(&self, entries: &V::Entries) -> [MVBAOutput<M, TimerEvent<V>>; 2]
     where
-        M: From<BlockRequestMsg<V>>,
+        M: From<BlockRequestMsg<V::Entries>>,
     {
         [
             MVBAOutput::Broadcast(
@@ -128,7 +130,7 @@ impl<V: ValidateInput + Votable> BlockStore<V> {
 
     pub(crate) fn handle_request(
         &self,
-        request: &BlockRequestMsg<V>,
+        request: &BlockRequestMsg<V::Entries>,
     ) -> Option<BlockResponseMsg<V>> {
         if request.slot != self.slot {
             return None;

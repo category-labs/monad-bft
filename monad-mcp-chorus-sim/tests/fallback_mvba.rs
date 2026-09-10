@@ -36,8 +36,8 @@ mod fixtures {
             Mvba as _, monad_mvba::MvbaContext,
         },
         types::{
-            HeaderAuth, IsVote, MerkleRoot, NodeId, ProposalMap, Slot, Stake, StrongQc,
-            TimestampDelta, ValidatorData, VoteMsg, VotePool, WeakQc,
+            HeaderAuth, IsVote, MerkleRoot, NodeId, ProposalMap, ProposalScope, Slot, Stake,
+            StrongQc, TimestampDelta, ValidatorData, VoteMsg, VotePool, WeakQc,
         },
     };
     use monad_mcp_chorus::{spec::KeyPair as _, stub as chorus};
@@ -102,7 +102,12 @@ mod fixtures {
     pub fn fast_metablock(seed: u64, validator_data: &ValidatorData) -> Metablock {
         Metablock::new(ProposalMap::new(NUM_PROPOSALS, |j| {
             let entry = Entry::Positive(root(seed * 100 + j as u64));
-            CertifiedEntry::FastQc(strong_qc((SLOT, j), entry, &quorum(), validator_data))
+            CertifiedEntry::FastQc(strong_qc(
+                ProposalScope::new(SLOT, j),
+                entry,
+                &quorum(),
+                validator_data,
+            ))
         }))
     }
 
@@ -114,13 +119,18 @@ mod fixtures {
             let entry = Entry::Positive(root(seed * 100 + j as u64));
             if j == 0 {
                 CertifiedEntry::FallbackQc(weak_qc(
-                    (SLOT, j),
+                    ProposalScope::new(SLOT, j),
                     FallbackEntry(entry),
                     &quorum(),
                     validator_data,
                 ))
             } else {
-                CertifiedEntry::FastQc(strong_qc((SLOT, j), entry, &quorum(), validator_data))
+                CertifiedEntry::FastQc(strong_qc(
+                    ProposalScope::new(SLOT, j),
+                    entry,
+                    &quorum(),
+                    validator_data,
+                ))
             }
         }))
     }
