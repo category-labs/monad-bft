@@ -24,6 +24,8 @@ pub mod driver;
 pub mod runtime;
 pub mod slot;
 pub mod slot_manager;
+#[cfg(test)]
+pub(crate) mod test_utils;
 pub mod types;
 
 pub use conductor::{Conductor, ConductorOutput};

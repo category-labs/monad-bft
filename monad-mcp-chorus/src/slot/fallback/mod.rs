@@ -24,22 +24,50 @@ use std::{
     hash::Hash,
 };
 
+use alloy_rlp::{RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper};
 pub use monad_mvba::FallbackCommitQc;
 
 /// MetaBlock components are exported
+pub use super::fast::CertifiedEntry;
 pub use super::fast::{
-    CertifiedEntry, EnterFallbackCert, EnterFallbackVote, Entry, FallbackEntry, FallbackQc, FastQc,
+    EnterFallbackCert, EnterFallbackVote, Entry, FallbackEntry, FallbackQc, FastQc,
 };
 use super::{
     super::{
         driver::{NodeEvent, WakeId},
         runtime::Runtime,
     },
-    types::{IsVote, NodeId, StrongQc, Timestamp, TimestampDelta, TotalProposalMap, Validated},
+    types::{
+        IsVote, NodeId, Slot, StrongQc, Timestamp, TimestampDelta, TotalProposalMap, Validated,
+    },
 };
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Debug,
+    RlpEncodableWrapper,
+    RlpDecodableWrapper,
+)]
 pub struct FallbackView(u64);
+
+/// The slot and view authenticated by an MVBA vote.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
+pub struct MvbaScope {
+    pub slot: Slot,
+    pub view: FallbackView,
+}
+
+impl MvbaScope {
+    pub const fn new(slot: Slot, view: FallbackView) -> Self {
+        Self { slot, view }
+    }
+}
 
 impl FallbackView {
     /// Views are 1-indexed; view 0 is the not-yet-started state
@@ -60,7 +88,7 @@ impl FallbackView {
 }
 
 /// The value the MVBA agrees on: one certified entry per proposer
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodableWrapper, RlpDecodableWrapper)]
 pub struct Metablock(TotalProposalMap<CertifiedEntry>);
 
 impl Metablock {

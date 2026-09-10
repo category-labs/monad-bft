@@ -17,9 +17,9 @@ use super::{
     super::{
         super::{
             fast::{CertifiedEntry, EnterFallbackVote},
-            types::{ProposalMap, Slot, VoteMsg},
+            types::{ProposalMap, ProposalScope, Slot, VoteMsg},
         },
-        FallbackView, Metablock, Mvba,
+        FallbackView, Metablock, Mvba, MvbaScope,
     },
     messages::FallbackCommitVote,
     test_helpers::*,
@@ -514,7 +514,7 @@ fn a_formed_commit_certificate_is_final_against_later_votes() {
     let mut collectors = ViewCollectors::new(SLOT, view(1));
     for node in quorum() {
         let msg = VoteMsg::new_signed(
-            (SLOT, view(1)),
+            MvbaScope::new(SLOT, view(1)),
             FallbackCommitVote(block.entries()),
             &node.keypair(),
         );
@@ -528,7 +528,7 @@ fn a_formed_commit_certificate_is_final_against_later_votes() {
     // sealed by the first quorum
     let late = nodes()[3];
     let msg = VoteMsg::new_signed(
-        (SLOT, view(1)),
+        MvbaScope::new(SLOT, view(1)),
         FallbackCommitVote(other.entries()),
         &late.keypair(),
     );
@@ -1054,7 +1054,7 @@ fn a_bogus_block_response_is_ignored() {
     let forged = Metablock::new(ProposalMap::new(NUM_PROPOSALS, |j| {
         let entry = block_entries[j].clone();
         CertifiedEntry::FastQc(strong_qc(
-            (Slot(SLOT.get() + 1), j),
+            ProposalScope::new(Slot(SLOT.get() + 1), j),
             entry,
             &quorum(),
             &validator_data,
@@ -1900,16 +1900,21 @@ fn a_signer_in_two_groups_invalidates_the_certificate() {
 mod toy_value {
     use std::sync::Arc;
 
-    use super::super::{
+    use super::{
         super::{
-            super::types::{HeaderAuth, NodeId, ValidatorData, VoteMsg},
-            MVBAOutput, Mvba, ValidateCert, ValidateInput, Votable,
+            super::{
+                super::types::{HeaderAuth, NodeId, ValidatorData, VoteMsg},
+                MVBAOutput, Mvba, ValidateCert, ValidateInput, Votable,
+            },
+            MakesValidationContext, MonadMvba, MvbaContext, TimerEvent,
+            messages::{
+                FallbackCommitVote, Justification, MvbaMessage, PrePrepareMsg, PrepareVote,
+            },
+            test_helpers::{
+                DELTA, NUM_PROPOSALS, SLOT, leader_of, nodes, quorum, validator_data, view,
+            },
         },
-        MakesValidationContext, MonadMvba, MvbaContext, TimerEvent,
-        messages::{FallbackCommitVote, Justification, MvbaMessage, PrePrepareMsg, PrepareVote},
-        test_helpers::{
-            DELTA, NUM_PROPOSALS, SLOT, leader_of, nodes, quorum, validator_data, view,
-        },
+        MvbaScope,
     };
 
     #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -2002,8 +2007,8 @@ mod toy_value {
 
         for node in quorum() {
             let msg = VoteMsg::new_signed(
-                (SLOT, view(1)),
-                PrepareVote::<TestValue>(value.entries()),
+                MvbaScope::new(SLOT, view(1)),
+                PrepareVote::<<TestValue as Votable>::Entries>(value.entries()),
                 &node.keypair(),
             );
             instance.handle_message(node, MvbaMessage::Prepare(msg));
@@ -2017,8 +2022,8 @@ mod toy_value {
 
         for node in quorum() {
             let msg = VoteMsg::new_signed(
-                (SLOT, view(1)),
-                FallbackCommitVote::<TestValue>(value.entries()),
+                MvbaScope::new(SLOT, view(1)),
+                FallbackCommitVote::<<TestValue as Votable>::Entries>(value.entries()),
                 &node.keypair(),
             );
             instance.handle_message(node, MvbaMessage::Commit(msg));

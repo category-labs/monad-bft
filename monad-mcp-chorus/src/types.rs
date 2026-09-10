@@ -20,6 +20,10 @@ use std::{
     time::Duration,
 };
 
+use alloy_rlp::{
+    Decodable, Encodable, Header, RlpDecodable, RlpDecodableWrapper, RlpEncodable,
+    RlpEncodableWrapper, encode_list, list_length,
+};
 use bytes::Bytes;
 use itertools::Either;
 
@@ -35,7 +39,18 @@ use crate::spec::{
 };
 
 // Slot number, starting from 0.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Debug,
+    RlpEncodableWrapper,
+    RlpDecodableWrapper,
+)]
 pub struct Slot(pub u64);
 
 impl Slot {
@@ -77,7 +92,18 @@ impl Slot {
 }
 
 /// An absolute point on the timeline, stored in nanoseconds.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Debug,
+    RlpEncodableWrapper,
+    RlpDecodableWrapper,
+)]
 pub struct Timestamp(u128);
 
 impl Timestamp {
@@ -120,7 +146,18 @@ impl Timestamp {
 }
 
 #[derive(
-    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, derive_more::Add, derive_more::Sum,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Debug,
+    derive_more::Add,
+    derive_more::Sum,
+    RlpEncodableWrapper,
+    RlpDecodableWrapper,
 )]
 pub struct TimestampDelta(u64);
 
@@ -175,7 +212,9 @@ impl TimestampDelta {
 pub type SlotDeadline = Timestamp;
 
 // Identifies a window of contiguous slots, starting from 0.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, RlpEncodableWrapper, RlpDecodableWrapper,
+)]
 pub struct WindowId(pub(crate) u64);
 
 impl WindowId {
@@ -251,7 +290,7 @@ impl<T> Validated<T> {
 }
 
 pub trait IsVote: Clone + Hash + Eq {
-    type Scope: Clone + Hash + Eq + std::fmt::Debug;
+    type Scope: Clone + Hash + Eq + std::fmt::Debug + Encodable + Decodable;
 
     // type SigningDomain;
     fn serialize(&self, scope: &Self::Scope) -> Bytes;
@@ -678,7 +717,123 @@ where
     }
 }
 
+// The scope is `V::Scope`, which Alloy's derives cannot bound, so the vote
+// containers encode their three fields as a list by hand.
+impl<V> Encodable for VoteMsg<V>
+where
+    V: IsVote + Encodable,
+{
+    fn encode(&self, out: &mut dyn bytes::BufMut) {
+        let fields: [&dyn Encodable; 3] = [&self.scope, &self.vote, &self.signature];
+        encode_list::<_, dyn Encodable>(&fields, out);
+    }
+
+    fn length(&self) -> usize {
+        let fields: [&dyn Encodable; 3] = [&self.scope, &self.vote, &self.signature];
+        list_length::<_, dyn Encodable>(&fields)
+    }
+}
+
+impl<V> Decodable for VoteMsg<V>
+where
+    V: IsVote + Decodable,
+{
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = Header::decode_bytes(buf, true)?;
+        let scope = <V::Scope as Decodable>::decode(&mut payload)?;
+        let vote = <V as Decodable>::decode(&mut payload)?;
+        let signature = <Signature as Decodable>::decode(&mut payload)?;
+        if !payload.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
+        }
+        Ok(Self::new(scope, vote, signature))
+    }
+}
+
+impl<V> Encodable for StrongQc<V>
+where
+    V: IsVote + Encodable,
+{
+    fn encode(&self, out: &mut dyn bytes::BufMut) {
+        let fields: [&dyn Encodable; 3] = [&self.scope, &self.verdict, &self.sigcol];
+        encode_list::<_, dyn Encodable>(&fields, out);
+    }
+
+    fn length(&self) -> usize {
+        let fields: [&dyn Encodable; 3] = [&self.scope, &self.verdict, &self.sigcol];
+        list_length::<_, dyn Encodable>(&fields)
+    }
+}
+
+impl<V> Decodable for StrongQc<V>
+where
+    V: IsVote + Decodable,
+{
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = Header::decode_bytes(buf, true)?;
+        let scope = <V::Scope as Decodable>::decode(&mut payload)?;
+        let verdict = <V as Decodable>::decode(&mut payload)?;
+        let sigcol = <SignatureCollection as Decodable>::decode(&mut payload)?;
+        if !payload.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
+        }
+        Ok(Self {
+            scope,
+            verdict,
+            sigcol,
+        })
+    }
+}
+
+impl<V> Encodable for WeakQc<V>
+where
+    V: IsVote + Encodable,
+{
+    fn encode(&self, out: &mut dyn bytes::BufMut) {
+        let fields: [&dyn Encodable; 3] = [&self.scope, &self.verdict, &self.sigcol];
+        encode_list::<_, dyn Encodable>(&fields, out);
+    }
+
+    fn length(&self) -> usize {
+        let fields: [&dyn Encodable; 3] = [&self.scope, &self.verdict, &self.sigcol];
+        list_length::<_, dyn Encodable>(&fields)
+    }
+}
+
+impl<V> Decodable for WeakQc<V>
+where
+    V: IsVote + Decodable,
+{
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = Header::decode_bytes(buf, true)?;
+        let scope = <V::Scope as Decodable>::decode(&mut payload)?;
+        let verdict = <V as Decodable>::decode(&mut payload)?;
+        let sigcol = <SignatureCollection as Decodable>::decode(&mut payload)?;
+        if !payload.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
+        }
+        Ok(Self {
+            scope,
+            verdict,
+            sigcol,
+        })
+    }
+}
+
 pub type ProposalIndex = usize;
+
+/// The slot and proposal index authenticated by a per-proposal vote.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
+pub struct ProposalScope {
+    pub slot: Slot,
+    pub index: ProposalIndex,
+}
+
+impl ProposalScope {
+    pub const fn new(slot: Slot, index: ProposalIndex) -> Self {
+        Self { slot, index }
+    }
+}
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct ProposalMap<T> {
@@ -814,12 +969,38 @@ impl<T> std::ops::IndexMut<ProposalIndex> for ProposalMap<T> {
 pub struct Erased<T>(pub T);
 
 // invariant: .0.root != .1.root and both properly signed.
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
 pub struct EquivCert(pub ProposalHeader, pub ProposalHeader);
+
+impl<T> Encodable for ProposalMap<T>
+where
+    T: Encodable,
+{
+    fn encode(&self, out: &mut dyn bytes::BufMut) {
+        encode_list(&self.values, out);
+    }
+
+    fn length(&self) -> usize {
+        list_length(&self.values)
+    }
+}
+
+impl<T> Decodable for ProposalMap<T>
+where
+    T: Decodable,
+{
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let result = Self {
+            values: Vec::<T>::decode(buf)?.into_boxed_slice(),
+        };
+        Ok(result)
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::env::stub::MerkleHash;
 
     #[test]
     fn timestamp_arithmetic_is_checked() {
@@ -1114,7 +1295,7 @@ mod tests {
     }
 
     fn root(byte: u8) -> MerkleRoot {
-        crate::env::stub::MerkleRoot(crate::env::stub::MerkleHash([byte; 20]))
+        MerkleRoot(MerkleHash([byte; 20]))
     }
 
     fn signed(id: u64, vote: ClaimVote) -> (NodeId, VoteMsg<ClaimVote>) {
