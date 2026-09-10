@@ -20,7 +20,7 @@ use super::{
         super::types::{IsVote, NodeId, Slot, StrongQc, ValidatorData, VoteMsg, VotePool},
         FallbackView, MvbaScope, ValidateCert, Votable,
     },
-    certificates::{FallbackCommitQc, PrepareQc, TimeoutCertificate},
+    certificates::{FallbackCommitQc, PrepareQc, TimeoutCertificate, TimeoutGroup},
     messages::{
         CommitVoteMsg, FallbackCommitVote, PrePrepareMsg, PrepareVote, PrepareVoteMsg, TimeoutMsg,
         TimeoutVote,
@@ -198,7 +198,10 @@ impl<V: Votable, C: ValidateCert> ViewCollectors<V, C> {
 
         let groups = groups
             .into_iter()
-            .map(|(vote, sigcol)| (vote.clone(), sigcol))
+            .map(|(vote, sigcol)| TimeoutGroup {
+                vote: vote.clone(),
+                sigcol,
+            })
             .collect();
 
         Some(TimeoutCertificate {

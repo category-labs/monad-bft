@@ -20,6 +20,10 @@ use std::{
     time::Duration,
 };
 
+use alloy_rlp::{
+    Decodable, Encodable, RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper,
+    encode_list, list_length,
+};
 use bytes::Bytes;
 use itertools::Either;
 
@@ -35,7 +39,18 @@ use crate::spec::{
 };
 
 // Slot number, starting from 0.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Debug,
+    RlpEncodableWrapper,
+    RlpDecodableWrapper,
+)]
 pub struct Slot(pub u64);
 
 impl Slot {
@@ -77,7 +92,18 @@ impl Slot {
 }
 
 /// An absolute point on the timeline, stored in nanoseconds.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Debug,
+    RlpEncodableWrapper,
+    RlpDecodableWrapper,
+)]
 pub struct Timestamp(u128);
 
 impl Timestamp {
@@ -120,7 +146,18 @@ impl Timestamp {
 }
 
 #[derive(
-    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, derive_more::Add, derive_more::Sum,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Debug,
+    derive_more::Add,
+    derive_more::Sum,
+    RlpEncodableWrapper,
+    RlpDecodableWrapper,
 )]
 pub struct TimestampDelta(u64);
 
@@ -175,7 +212,9 @@ impl TimestampDelta {
 pub type SlotDeadline = Timestamp;
 
 // Identifies a window of contiguous slots, starting from 0.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, RlpEncodableWrapper, RlpDecodableWrapper,
+)]
 pub struct WindowId(pub(crate) u64);
 
 impl WindowId {
@@ -251,7 +290,7 @@ impl<T> Validated<T> {
 }
 
 pub trait IsVote: Clone + Hash + Eq {
-    type Scope: Clone + Hash + Eq + std::fmt::Debug;
+    type Scope: Clone + Hash + Eq + std::fmt::Debug + Encodable + Decodable;
 
     // type SigningDomain;
     fn serialize(&self, scope: &Self::Scope) -> Bytes;
@@ -600,7 +639,7 @@ where
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
 pub struct VoteMsg<V, S> {
     pub scope: S,
     pub vote: V,
@@ -628,7 +667,7 @@ where
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
 pub struct StrongQc<V, S> {
     pub scope: S,
     pub verdict: V,
@@ -651,7 +690,7 @@ where
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
 pub struct WeakQc<V, S> {
     pub scope: S,
     pub verdict: V,
@@ -677,7 +716,7 @@ where
 pub type ProposalIndex = usize;
 
 /// The slot and proposal index authenticated by a per-proposal vote.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
 pub struct ProposalScope {
     pub slot: Slot,
     pub index: ProposalIndex,
@@ -823,12 +862,38 @@ impl<T> std::ops::IndexMut<ProposalIndex> for ProposalMap<T> {
 pub struct Erased<T>(pub T);
 
 // invariant: .0.root != .1.root and both properly signed.
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
 pub struct EquivCert(pub ProposalHeader, pub ProposalHeader);
+
+impl<T> Encodable for ProposalMap<T>
+where
+    T: Encodable,
+{
+    fn encode(&self, out: &mut dyn bytes::BufMut) {
+        encode_list(&self.values, out);
+    }
+
+    fn length(&self) -> usize {
+        list_length(&self.values)
+    }
+}
+
+impl<T> Decodable for ProposalMap<T>
+where
+    T: Decodable,
+{
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let result = Self {
+            values: Vec::<T>::decode(buf)?.into_boxed_slice(),
+        };
+        Ok(result)
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::env::stub::MerkleHash;
 
     #[test]
     fn timestamp_arithmetic_is_checked() {
@@ -1123,7 +1188,7 @@ mod tests {
     }
 
     fn root(byte: u8) -> MerkleRoot {
-        crate::env::stub::MerkleRoot(crate::env::stub::MerkleHash([byte; 20]))
+        MerkleRoot(MerkleHash([byte; 20]))
     }
 
     fn signed(id: u64, vote: ClaimVote) -> (NodeId, VoteMsg<ClaimVote, Slot>) {

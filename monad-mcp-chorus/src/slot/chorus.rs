@@ -16,11 +16,13 @@
 /// Chorus module for managing single-slot consensus state and logic.
 use std::{collections::VecDeque, sync::Arc};
 
+use alloy_rlp::{Decodable, Encodable, Header, encode_list, list_length};
+
 use super::{
     SlotConsensus, SlotOutput,
     fallback::{
-        FallbackCommitQc, MVBAOutput, Metablock, Mvba as _,
-        monad_mvba::{self, MonadMvba, MvbaContext},
+        FallbackCommitQc, MVBAOutput, Metablock, Mvba as _, monad_mvba,
+        monad_mvba::{MonadMvba, MvbaContext},
     },
     fast::{
         BatchVoteMsg, CommitVoteDeadlineOutcome, EnterFallbackCert, FallbackVoteMsg, FastBlock,
@@ -39,7 +41,7 @@ type FallbackTimer = monad_mvba::TimerEvent<Metablock>;
 
 #[derive(derive_more::From, Clone, PartialEq, Eq, Hash, Debug)]
 #[non_exhaustive]
-pub enum Message {
+pub enum ChorusMessage {
     // vote on proposal deadline (D_s)
     #[from]
     BatchVote(BatchVoteMsg),
@@ -187,7 +189,7 @@ pub struct Chorus {
 impl SlotConsensus for Chorus {
     type Config = ChorusConfig;
     type Context = ChorusContext;
-    type Message = Message;
+    type Message = ChorusMessage;
     type Timer = TimerEvent;
     type OptimisticCommitData = FastBlock;
     type FinalizationData = SlotFinalization;
@@ -258,34 +260,34 @@ impl SlotConsensus for Chorus {
         }
 
         match message {
-            Message::BatchVote(batch_vote_msg) => {
+            ChorusMessage::BatchVote(batch_vote_msg) => {
                 if let Some(fast_block) = self.fast.handle_batch_vote(author, batch_vote_msg) {
                     self.commit_fast_block(fast_block);
                 }
             }
-            Message::FastCommitVote(fast_commit_vote) => {
+            ChorusMessage::FastCommitVote(fast_commit_vote) => {
                 if let Some(fast_qc) = self.fast.handle_commit_vote(author, fast_commit_vote) {
                     self.finalize_fast(fast_qc);
                 }
             }
 
-            Message::FastBlock(fast_block) => {
+            ChorusMessage::FastBlock(fast_block) => {
                 if let Some(fast_block) = self.fast.handle_fast_block(fast_block) {
                     self.commit_fast_block(fast_block);
                 }
             }
 
-            Message::FallbackVote(fallback_vote_msg) => {
+            ChorusMessage::FallbackVote(fallback_vote_msg) => {
                 self.fast.handle_fallback_vote(author, fallback_vote_msg);
             }
-            Message::FastCommitQc(qc) => {
+            ChorusMessage::FastCommitQc(qc) => {
                 let scope_matches = qc.scope == self.slot;
                 if !scope_matches || !qc.verify(&self.validator_data) {
                     return;
                 }
                 self.finalize_fast(qc);
             }
-            Message::EnterFallbackCert(cert) => {
+            ChorusMessage::EnterFallbackCert(cert) => {
                 // a peer certified that 2f+1 validators entered
                 // fallback. enter too, building our block from local
                 // evidence. if we don't have enough evidence, we will
@@ -304,7 +306,7 @@ impl SlotConsensus for Chorus {
                 }
             }
 
-            Message::Fallback(message) => {
+            ChorusMessage::Fallback(message) => {
                 self.fallback.handle_message(author, message);
                 self.drain_fallback();
             }
@@ -392,7 +394,7 @@ impl Chorus {
     }
 
     // helpers mostly for documentation purpose
-    fn broadcast(&mut self, msg: impl Into<Message>) {
+    fn broadcast(&mut self, msg: impl Into<ChorusMessage>) {
         self.push(SlotOutput::Broadcast(msg.into()));
     }
 
@@ -445,6 +447,94 @@ impl Chorus {
 
     fn push(&mut self, out: SlotOutput<Chorus>) {
         self.outputs.push_back(out);
+    }
+}
+
+impl Encodable for ChorusMessage {
+    fn encode(&self, out: &mut dyn bytes::BufMut) {
+        match self {
+            Self::BatchVote(message) => {
+                let fields: [&dyn Encodable; 2] = [&1u8, message];
+                encode_list::<_, dyn Encodable>(&fields, out);
+            }
+            Self::FastCommitVote(message) => {
+                let fields: [&dyn Encodable; 2] = [&2u8, message];
+                encode_list::<_, dyn Encodable>(&fields, out);
+            }
+            Self::FastBlock(message) => {
+                let fields: [&dyn Encodable; 2] = [&3u8, message];
+                encode_list::<_, dyn Encodable>(&fields, out);
+            }
+            Self::FallbackVote(message) => {
+                let fields: [&dyn Encodable; 2] = [&4u8, message];
+                encode_list::<_, dyn Encodable>(&fields, out);
+            }
+            Self::FastCommitQc(message) => {
+                let fields: [&dyn Encodable; 2] = [&5u8, message];
+                encode_list::<_, dyn Encodable>(&fields, out);
+            }
+            Self::EnterFallbackCert(message) => {
+                let fields: [&dyn Encodable; 2] = [&6u8, message];
+                encode_list::<_, dyn Encodable>(&fields, out);
+            }
+            Self::Fallback(message) => {
+                let fields: [&dyn Encodable; 2] = [&7u8, message];
+                encode_list::<_, dyn Encodable>(&fields, out);
+            }
+        }
+    }
+
+    fn length(&self) -> usize {
+        match self {
+            Self::BatchVote(message) => {
+                let fields: [&dyn Encodable; 2] = [&1u8, message];
+                list_length::<_, dyn Encodable>(&fields)
+            }
+            Self::FastCommitVote(message) => {
+                let fields: [&dyn Encodable; 2] = [&2u8, message];
+                list_length::<_, dyn Encodable>(&fields)
+            }
+            Self::FastBlock(message) => {
+                let fields: [&dyn Encodable; 2] = [&3u8, message];
+                list_length::<_, dyn Encodable>(&fields)
+            }
+            Self::FallbackVote(message) => {
+                let fields: [&dyn Encodable; 2] = [&4u8, message];
+                list_length::<_, dyn Encodable>(&fields)
+            }
+            Self::FastCommitQc(message) => {
+                let fields: [&dyn Encodable; 2] = [&5u8, message];
+                list_length::<_, dyn Encodable>(&fields)
+            }
+            Self::EnterFallbackCert(message) => {
+                let fields: [&dyn Encodable; 2] = [&6u8, message];
+                list_length::<_, dyn Encodable>(&fields)
+            }
+            Self::Fallback(message) => {
+                let fields: [&dyn Encodable; 2] = [&7u8, message];
+                list_length::<_, dyn Encodable>(&fields)
+            }
+        }
+    }
+}
+
+impl Decodable for ChorusMessage {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = Header::decode_bytes(buf, true)?;
+        let result = match <u8 as Decodable>::decode(&mut payload)? {
+            1 => Self::BatchVote(<BatchVoteMsg as Decodable>::decode(&mut payload)?),
+            2 => Self::FastCommitVote(<FastCommitVoteMsg as Decodable>::decode(&mut payload)?),
+            3 => Self::FastBlock(<FastBlock as Decodable>::decode(&mut payload)?),
+            4 => Self::FallbackVote(<FallbackVoteMsg as Decodable>::decode(&mut payload)?),
+            5 => Self::FastCommitQc(<FastCommitQc as Decodable>::decode(&mut payload)?),
+            6 => Self::EnterFallbackCert(<EnterFallbackCert as Decodable>::decode(&mut payload)?),
+            7 => Self::Fallback(<FallbackMessage as Decodable>::decode(&mut payload)?),
+            _ => return Err(alloy_rlp::Error::Custom("unknown Message tag")),
+        };
+        if !payload.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
+        }
+        Ok(result)
     }
 }
 
@@ -530,7 +620,7 @@ mod tests {
         let qc = pool
             .try_form_strong_qc(&context.validator_data)
             .expect("three of four votes form a commit qc");
-        chorus.handle_message(NodeId::dummy(0), Message::FastCommitQc(qc));
+        chorus.handle_message(NodeId::dummy(0), ChorusMessage::FastCommitQc(qc));
 
         // the pull is emitted before the finalization that closes the slot
         let mut order = Vec::new();

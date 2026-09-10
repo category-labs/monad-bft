@@ -441,7 +441,7 @@ where
         }
     }
 
-    fn answer_block_request(&mut self, sender: NodeId, request: &BlockRequestMsg<V>) {
+    fn answer_block_request(&mut self, sender: NodeId, request: &BlockRequestMsg<V::Entries>) {
         if let Some(response) = self.block_store.handle_request(request) {
             self.outputs.push_back(MVBAOutput::Unicast {
                 to: sender,

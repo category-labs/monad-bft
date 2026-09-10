@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use alloy_rlp::{Decodable, Encodable};
+
 use super::{Acs, AcsOutput, types::NodeId};
 
 /// An ACS that never communicates and immediately decides on its own
@@ -46,5 +48,21 @@ impl<V> Acs<V> for NopAcs<V> {
 
     fn poll(&mut self) -> Option<AcsOutput<Self::Message>> {
         None
+    }
+}
+
+impl Encodable for NoMessage {
+    fn encode(&self, _out: &mut dyn bytes::BufMut) {
+        panic!("NoMessage cannot be encoded");
+    }
+
+    fn length(&self) -> usize {
+        panic!("NoMessage has no encoded length");
+    }
+}
+
+impl Decodable for NoMessage {
+    fn decode(_buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        Err(alloy_rlp::Error::Custom("NoMessage has no wire messages"))
     }
 }

@@ -37,7 +37,7 @@ use super::{
     block_store::{BlockRequestMsg, BlockResponseMsg},
     messages::{FallbackCommitVote, PrepareVote},
 };
-use crate::env::stub::MerkleHash;
+use crate::{env::stub::MerkleHash, spec::vote::KeyPair as _};
 
 /// A root whose hash spells out `n`, so distinct seeds give distinct roots
 fn root(n: u64) -> MerkleRoot {
@@ -88,7 +88,7 @@ pub(super) fn validator_data() -> Arc<ValidatorData> {
     let mapping: HashMap<_, _> = nodes()
         .into_iter()
         .map(|node| {
-            let pubkey = crate::spec::vote::KeyPair::pubkey(&node.keypair());
+            let pubkey = node.keypair().pubkey();
             (node, pubkey)
         })
         .collect();

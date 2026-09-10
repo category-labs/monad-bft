@@ -18,6 +18,10 @@
 
 use std::{fmt::Debug, hash::Hash};
 
+use alloy_rlp::{
+    Decodable, Encodable, Header, RlpDecodable, RlpDecodableWrapper, RlpEncodable,
+    RlpEncodableWrapper, encode_list, list_length,
+};
 use bytes::Bytes;
 
 use super::{
@@ -46,13 +50,13 @@ pub enum MvbaMessage<V: Votable, C: ValidateCert> {
     #[from]
     CommitQc(FallbackCommitQc<V::Entries>),
     #[from]
-    BlockRequest(BlockRequestMsg<V>),
+    BlockRequest(BlockRequestMsg<V::Entries>),
     #[from]
     BlockResponse(BlockResponseMsg<V>),
 }
 
 /// `⟨Prepare, slot, v, entries(x)⟩`
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodableWrapper, RlpDecodableWrapper)]
 pub(crate) struct PrepareVote<E>(pub E);
 
 impl<V: Votable> FromEntries<V> for PrepareVote<V::Entries> {
@@ -72,7 +76,7 @@ impl<E: Clone + Eq + Hash + Debug> IsVote for PrepareVote<E> {
 pub(crate) type PrepareVoteMsg<E> = VoteMsg<PrepareVote<E>, MvbaScope>;
 
 /// `⟨Commit, slot, v, entries(x)⟩`
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodableWrapper, RlpDecodableWrapper)]
 pub struct FallbackCommitVote<E>(pub(crate) E);
 
 impl<V: Votable> FromEntries<V> for FallbackCommitVote<V::Entries> {
@@ -109,7 +113,8 @@ impl IsVote for TimeoutVote {
 }
 
 /// `⟨Timeout, slot, v, PrepQC_i, σ_i⟩`
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
+#[rlp(trailing)]
 pub(crate) struct TimeoutMsg<E> {
     pub vote: VoteMsg<TimeoutVote, MvbaScope>,
     pub high_prep_qc: Option<PrepareQc<E>>,
@@ -233,4 +238,363 @@ fn signed_bytes<V: Votable, C: ValidateCert>(
         &(value.entries(), justification.signed_part()),
         &MvbaScope::new(slot, view),
     )
+}
+
+impl<V: Votable, C: ValidateCert> Encodable for MvbaMessage<V, C>
+where
+    V: Encodable,
+    V::Entries: Encodable,
+    C: Encodable,
+{
+    fn encode(&self, out: &mut dyn bytes::BufMut) {
+        match self {
+            Self::PrePrepare(message) => {
+                let fields: [&dyn Encodable; 2] = [&1u8, message];
+                encode_list::<_, dyn Encodable>(&fields, out);
+            }
+            Self::Prepare(message) => {
+                let fields: [&dyn Encodable; 2] = [&2u8, message];
+                encode_list::<_, dyn Encodable>(&fields, out);
+            }
+            Self::Commit(message) => {
+                let fields: [&dyn Encodable; 2] = [&3u8, message];
+                encode_list::<_, dyn Encodable>(&fields, out);
+            }
+            Self::Timeout(message) => {
+                let fields: [&dyn Encodable; 2] = [&4u8, message];
+                encode_list::<_, dyn Encodable>(&fields, out);
+            }
+            Self::CommitQc(message) => {
+                let fields: [&dyn Encodable; 2] = [&5u8, message];
+                encode_list::<_, dyn Encodable>(&fields, out);
+            }
+            Self::BlockRequest(message) => {
+                let fields: [&dyn Encodable; 2] = [&6u8, message];
+                encode_list::<_, dyn Encodable>(&fields, out);
+            }
+            Self::BlockResponse(message) => {
+                let fields: [&dyn Encodable; 2] = [&7u8, message];
+                encode_list::<_, dyn Encodable>(&fields, out);
+            }
+        }
+    }
+
+    fn length(&self) -> usize {
+        match self {
+            Self::PrePrepare(message) => {
+                let fields: [&dyn Encodable; 2] = [&1u8, message];
+                list_length::<_, dyn Encodable>(&fields)
+            }
+            Self::Prepare(message) => {
+                let fields: [&dyn Encodable; 2] = [&2u8, message];
+                list_length::<_, dyn Encodable>(&fields)
+            }
+            Self::Commit(message) => {
+                let fields: [&dyn Encodable; 2] = [&3u8, message];
+                list_length::<_, dyn Encodable>(&fields)
+            }
+            Self::Timeout(message) => {
+                let fields: [&dyn Encodable; 2] = [&4u8, message];
+                list_length::<_, dyn Encodable>(&fields)
+            }
+            Self::CommitQc(message) => {
+                let fields: [&dyn Encodable; 2] = [&5u8, message];
+                list_length::<_, dyn Encodable>(&fields)
+            }
+            Self::BlockRequest(message) => {
+                let fields: [&dyn Encodable; 2] = [&6u8, message];
+                list_length::<_, dyn Encodable>(&fields)
+            }
+            Self::BlockResponse(message) => {
+                let fields: [&dyn Encodable; 2] = [&7u8, message];
+                list_length::<_, dyn Encodable>(&fields)
+            }
+        }
+    }
+}
+
+impl<V: Votable, C: ValidateCert> Decodable for MvbaMessage<V, C>
+where
+    V: Decodable,
+    V::Entries: Decodable,
+    C: Decodable,
+{
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = Header::decode_bytes(buf, true)?;
+        let result = match <u8 as Decodable>::decode(&mut payload)? {
+            1 => Self::PrePrepare(<PrePrepareMsg<V, C> as Decodable>::decode(&mut payload)?),
+            2 => Self::Prepare(<PrepareVoteMsg<V::Entries> as Decodable>::decode(
+                &mut payload,
+            )?),
+            3 => Self::Commit(<CommitVoteMsg<V::Entries> as Decodable>::decode(
+                &mut payload,
+            )?),
+            4 => Self::Timeout(<TimeoutMsg<V::Entries> as Decodable>::decode(&mut payload)?),
+            5 => Self::CommitQc(<FallbackCommitQc<V::Entries> as Decodable>::decode(
+                &mut payload,
+            )?),
+            6 => Self::BlockRequest(<BlockRequestMsg<V::Entries> as Decodable>::decode(
+                &mut payload,
+            )?),
+            7 => Self::BlockResponse(<BlockResponseMsg<V> as Decodable>::decode(&mut payload)?),
+            _ => return Err(alloy_rlp::Error::Custom("unknown MvbaMessage tag")),
+        };
+        if !payload.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
+        }
+        Ok(result)
+    }
+}
+
+// Alloy's derives add codec bounds on V and C, but Justification<V, C> also
+// needs a codec for V::Entries. A codec bound on V does not imply one on its
+// associated entries type, so these manual implementations supply that bound
+// without requiring it on the struct definition.
+impl<V: Votable, C: ValidateCert> Encodable for PrePrepareMsg<V, C>
+where
+    V: Encodable,
+    V::Entries: Encodable,
+    C: Encodable,
+{
+    fn encode(&self, out: &mut dyn bytes::BufMut) {
+        let fields: [&dyn Encodable; 5] = [
+            &self.slot,
+            &self.view,
+            &self.value,
+            &self.justification,
+            &self.signature,
+        ];
+        encode_list::<_, dyn Encodable>(&fields, out);
+    }
+
+    fn length(&self) -> usize {
+        let fields: [&dyn Encodable; 5] = [
+            &self.slot,
+            &self.view,
+            &self.value,
+            &self.justification,
+            &self.signature,
+        ];
+        list_length::<_, dyn Encodable>(&fields)
+    }
+}
+
+impl<V: Votable, C: ValidateCert> Decodable for PrePrepareMsg<V, C>
+where
+    V: Decodable,
+    V::Entries: Decodable,
+    C: Decodable,
+{
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = Header::decode_bytes(buf, true)?;
+        let result = Self {
+            slot: <Slot as Decodable>::decode(&mut payload)?,
+            view: <FallbackView as Decodable>::decode(&mut payload)?,
+            value: <V as Decodable>::decode(&mut payload)?,
+            justification: <Justification<V, C> as Decodable>::decode(&mut payload)?,
+            signature: <Signature as Decodable>::decode(&mut payload)?,
+        };
+        if !payload.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
+        }
+        Ok(result)
+    }
+}
+
+impl<V: Votable, C: ValidateCert + Encodable> Encodable for Justification<V, C>
+where
+    V::Entries: Encodable,
+{
+    fn encode(&self, out: &mut dyn bytes::BufMut) {
+        match self {
+            Self::FallbackCert(None) => encode_list(&[1u8], out),
+            Self::FallbackCert(Some(cert)) => {
+                encode_list::<_, dyn Encodable>(&[&1u8 as &dyn Encodable, cert], out)
+            }
+            Self::Tc(tc) => encode_list::<_, dyn Encodable>(&[&2u8 as &dyn Encodable, tc], out),
+        }
+    }
+
+    fn length(&self) -> usize {
+        match self {
+            Self::FallbackCert(None) => list_length(&[1u8]),
+            Self::FallbackCert(Some(cert)) => {
+                list_length::<_, dyn Encodable>(&[&1u8 as &dyn Encodable, cert])
+            }
+            Self::Tc(tc) => list_length::<_, dyn Encodable>(&[&2u8 as &dyn Encodable, tc]),
+        }
+    }
+}
+
+impl<V: Votable, C: ValidateCert + Decodable> Decodable for Justification<V, C>
+where
+    V::Entries: Decodable,
+{
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = Header::decode_bytes(buf, true)?;
+        let result = match u8::decode(&mut payload)? {
+            1 => Self::FallbackCert(if payload.is_empty() {
+                None
+            } else {
+                Some(C::decode(&mut payload)?)
+            }),
+            2 => Self::Tc(TimeoutCertificate::decode(&mut payload)?),
+            _ => return Err(alloy_rlp::Error::Custom("unknown Justification tag")),
+        };
+        if !payload.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
+        }
+        Ok(result)
+    }
+}
+
+// Alloy 0.3.12's wrapper decoder derive only constructs tuple newtypes.
+// Keep both wrapper codecs manual for this named-field struct.
+impl Encodable for TimeoutVote {
+    fn encode(&self, out: &mut dyn bytes::BufMut) {
+        self.high_prep_view.encode(out);
+    }
+
+    fn length(&self) -> usize {
+        self.high_prep_view.length()
+    }
+}
+
+impl Decodable for TimeoutVote {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        Ok(Self {
+            high_prep_view: <FallbackView as Decodable>::decode(buf)?,
+        })
+    }
+}
+
+#[cfg(test)]
+mod rlp_tests {
+    use super::{
+        super::{
+            super::{
+                super::{
+                    super::{
+                        conductor::{MonadConductor, acs::median::MedianAcs},
+                        driver::CadenceDriverMsg,
+                        test_utils::{assert_roundtrip, assert_serialization_roundtrip},
+                        types::SlotDeadline,
+                    },
+                    chorus,
+                    types::ProposalMap,
+                },
+                EnterFallbackCert, Entry, Metablock,
+            },
+            test_helpers as h,
+        },
+        *,
+    };
+    type Wire = CadenceDriverMsg<chorus::Chorus, MonadConductor<MedianAcs<SlotDeadline>>>;
+
+    #[test]
+    fn every_mvba_variant_and_optional_certificate_roundtrips() {
+        type M = MvbaMessage<Metablock, EnterFallbackCert>;
+        let validators = h::validator_data();
+        let block = h::mixed_evidence_metablock(7, &validators);
+        let entries = block.entries();
+        let key = h::nodes()[0].keypair();
+        let qc = h::prepare_qc(h::view(1), &entries, &validators);
+        // Cover proposals with and without a fallback certificate, votes, and block exchange.
+        let mut messages = vec![
+            h::pre_prepare_with_cert(h::view(1), &block, None).1,
+            h::pre_prepare_with_cert(
+                h::view(1),
+                &block,
+                Some(h::enter_fallback_cert(&validators)),
+            )
+            .1,
+            M::Prepare(VoteMsg::new_signed(
+                MvbaScope::new(h::SLOT, h::view(1)),
+                PrepareVote(entries.clone()),
+                &key,
+            )),
+            M::Commit(VoteMsg::new_signed(
+                MvbaScope::new(h::SLOT, h::view(1)),
+                FallbackCommitVote(entries.clone()),
+                &key,
+            )),
+            M::CommitQc(h::strong_qc(
+                MvbaScope::new(h::SLOT, h::view(1)),
+                FallbackCommitVote(entries.clone()),
+                &h::quorum(),
+                &validators,
+            )),
+            h::block_request(&entries),
+            h::block_response(block.clone()),
+        ];
+        // Exercise absent/present prepare QCs in timeouts and timeout certificates.
+        for lock in [None, Some(qc)] {
+            let tc = h::timeout_certificate(h::view(1), lock.clone(), &validators);
+            assert!(assert_roundtrip(&tc).verify(&validators));
+            messages.push(h::pre_prepare(h::view(2), &block, Some(tc)).1);
+            messages.push(M::Timeout(TimeoutMsg::new_signed(
+                h::SLOT,
+                h::view(1),
+                lock,
+                &key,
+            )));
+        }
+        // Check every variant's round trip and that signed evidence still verifies.
+        for message in messages {
+            let decoded = assert_roundtrip(&message);
+            match decoded {
+                M::PrePrepare(p) => {
+                    assert!(p.verify_signature(&h::leader_of(p.view).keypair().pubkey()))
+                }
+                M::Timeout(t) => assert!(t.is_valid(&validators)),
+                M::CommitQc(qc) => assert!(qc.verify(&validators)),
+                _ => {}
+            }
+            // The outer Chorus and Cadence framing also wraps the MVBA arm.
+            assert_serialization_roundtrip(&Wire::Slot(
+                h::SLOT,
+                chorus::ChorusMessage::Fallback(message),
+            ));
+        }
+    }
+
+    #[test]
+    fn mvba_wrappers_and_unknown_tags() {
+        let scope = MvbaScope::new(Slot(7), h::view(1));
+        assert_eq!(alloy_rlp::encode(scope), [0xc2, 7, 1]);
+        assert_roundtrip(&scope);
+        let entries = ProposalMap::new(0, |_| Entry::Negative);
+        assert_eq!(
+            alloy_rlp::encode(PrepareVote::<<Metablock as Votable>::Entries>(
+                entries.clone()
+            )),
+            [0xc0]
+        );
+        assert_eq!(
+            alloy_rlp::encode(FallbackCommitVote::<<Metablock as Votable>::Entries>(
+                entries
+            )),
+            [0xc0]
+        );
+        assert_eq!(
+            alloy_rlp::encode(TimeoutVote {
+                high_prep_view: h::view(1)
+            }),
+            [1]
+        );
+        assert_eq!(
+            alloy_rlp::encode(Justification::<Metablock, EnterFallbackCert>::FallbackCert(
+                None
+            )),
+            [0xc1, 1]
+        );
+        assert!(
+            alloy_rlp::decode_exact::<MvbaMessage<Metablock, EnterFallbackCert>>(&[0xc1, 8])
+                .is_err()
+        );
+        assert!(
+            alloy_rlp::decode_exact::<Justification<Metablock, EnterFallbackCert>>(&[0xc1, 3])
+                .is_err()
+        );
+    }
 }

@@ -15,6 +15,8 @@
 
 use std::{collections::HashSet, fmt::Debug, hash::Hash};
 
+use alloy_rlp::{RlpDecodable, RlpEncodable};
+
 use super::{
     super::{
         super::types::{IsVote, SignatureCollection, Slot, StrongQc, ValidatorData},
@@ -31,13 +33,20 @@ pub(crate) type PrepareQc<E> = StrongQc<PrepareVote<E>, MvbaScope>;
 pub type FallbackCommitQc<E> = StrongQc<FallbackCommitVote<E>, MvbaScope>;
 
 /// `TC_{slot, v}`: 2f+1 timeouts for view `v` from distinct senders
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
+#[rlp(trailing)]
 pub(crate) struct TimeoutCertificate<E> {
     pub slot: Slot,
     pub view: FallbackView,
     // exposing raw signature collection for BLS multisig optimization
-    pub groups: Vec<(TimeoutVote, SignatureCollection)>,
+    pub groups: Vec<TimeoutGroup>,
     pub high_prep_qc: Option<PrepareQc<E>>,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
+pub(crate) struct TimeoutGroup {
+    pub vote: TimeoutVote,
+    pub sigcol: SignatureCollection,
 }
 
 impl<E: Clone + Eq + Hash + Debug> TimeoutCertificate<E> {
@@ -45,7 +54,7 @@ impl<E: Clone + Eq + Hash + Debug> TimeoutCertificate<E> {
         let scope = MvbaScope::new(self.slot, self.view);
 
         let mut signers = HashSet::new();
-        for (vote, sigcol) in &self.groups {
+        for TimeoutGroup { vote, sigcol } in &self.groups {
             let data = vote.serialize(&scope);
             let Some(group_signers) = sigcol.verify(&data, validator_data) else {
                 return false;
@@ -66,7 +75,7 @@ impl<E: Clone + Eq + Hash + Debug> TimeoutCertificate<E> {
         let highest_claim = self
             .groups
             .iter()
-            .map(|(vote, _)| vote.high_prep_view)
+            .map(|group| group.vote.high_prep_view)
             .max()
             // view 0 is the "no lock" claim
             .filter(|view| *view != FallbackView::GENESIS);
