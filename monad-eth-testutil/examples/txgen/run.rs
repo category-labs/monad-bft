@@ -127,6 +127,7 @@ async fn run_workload_group(
                     config.ws_url().expect("WS URL is not valid"),
                     indexer_config.requests_per_block,
                     1, // num_ws_connections not used by indexer
+                    Some(metrics.clone()),
                 );
                 let shutdown_clone = Arc::clone(&shutdown);
                 tasks.push(
@@ -145,6 +146,7 @@ async fn run_workload_group(
                     config.ws_url().expect("WS URL is not valid"),
                     spam_config.requests_per_block,
                     spam_config.num_ws_connections,
+                    Some(metrics.clone()),
                 );
                 let shutdown_clone = Arc::clone(&shutdown);
                 tasks.push(
@@ -161,6 +163,7 @@ async fn run_workload_group(
                 let compare_rpc_ws = RpcWsCompare::new(
                     read_client.clone(),
                     config.ws_url().expect("WS URL is not valid"),
+                    Some(metrics.clone()),
                 );
                 let shutdown_clone = Arc::clone(&shutdown);
                 tasks.push(
