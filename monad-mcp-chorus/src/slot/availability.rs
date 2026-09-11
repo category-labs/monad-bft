@@ -121,9 +121,9 @@ mod tests {
     fn header(byte: u8) -> SignedProposalHeader {
         SignedProposalHeader {
             header: ProposalHeader {
-                slot: crate::stub::types::Slot(1),
                 root: root(byte),
                 scheme: EncodingScheme::D25(D25 {
+                    slot: crate::stub::types::Slot(1),
                     msg_len: 1,
                     unix_ts: 0,
                     depth: 3,

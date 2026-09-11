@@ -237,10 +237,25 @@ mod proposal {
 
     #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
     pub struct D25 {
+        pub slot: Slot,
         pub msg_len: u32,
         pub unix_ts: u64,
         // the merkle tree depth
         pub depth: u8,
+    }
+
+    impl EncodingScheme {
+        pub fn slot(&self) -> Slot {
+            match self {
+                Self::D25(d25) => d25.slot,
+            }
+        }
+    }
+
+    impl From<D25> for EncodingScheme {
+        fn from(d25: D25) -> Self {
+            Self::D25(d25)
+        }
     }
 
     impl Encodable for EncodingScheme {
@@ -279,7 +294,6 @@ mod proposal {
 
     #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
     pub struct ProposalHeader {
-        pub slot: Slot,
         pub root: MerkleRoot,
         pub scheme: EncodingScheme,
     }
@@ -299,7 +313,7 @@ mod proposal {
         type Root = MerkleRoot;
 
         fn slot(&self) -> u64 {
-            self.slot.0
+            self.scheme.slot().0
         }
 
         fn root(&self) -> &MerkleRoot {
@@ -311,7 +325,7 @@ mod proposal {
         type Root = MerkleRoot;
 
         fn slot(&self) -> u64 {
-            self.header.slot.0
+            self.header.slot()
         }
 
         fn root(&self) -> &MerkleRoot {

@@ -13,6 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use bytes::BufMut;
 pub(crate) use chorus::types::NodeId;
 use monad_crypto::hasher::{Hasher as _, HasherType};
 pub(crate) use monad_mcp_chorus::stub as chorus;
@@ -20,7 +21,9 @@ pub(crate) use monad_mcp_chorus::stub as chorus;
 use self::chorus::env::{
     EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader, ProposalSignature, SignedProposalHeader,
 };
-use crate::spec::{DAMerkleRoot, DAProposalHeader, DAProposalKeyPair, DAProposalSignature};
+use crate::spec::{
+    DAMerkleRoot, DAProposalHeader, DAProposalKeyPair, DAProposalSignature, SIGNATURE_LEN,
+};
 
 // The keypair used to sign/verify proposal. Not used for aggregation.
 pub struct ProposalKeyPair(NodeId);
@@ -46,13 +49,10 @@ impl DAProposalKeyPair for ProposalKeyPair {
 impl DAProposalSignature for ProposalSignature {
     type NodeId = NodeId;
 
-    fn to_bytes(&self, field: &mut [u8]) {
-        let (signer, rest) = field.split_at_mut(8);
-        let (checksum, padding) = rest.split_at_mut(8);
-
-        signer.copy_from_slice(&u64::from(self.signer).to_le_bytes());
-        checksum.copy_from_slice(&self.checksum.to_le_bytes());
-        padding.fill(0);
+    fn to_bytes(&self, out: &mut impl BufMut) {
+        out.put_u64_le(u64::from(self.signer));
+        out.put_u64_le(self.checksum);
+        out.put_bytes(0, SIGNATURE_LEN - 16);
     }
 
     fn from_bytes(field: &[u8]) -> Option<Self> {
@@ -77,8 +77,8 @@ impl DAProposalSignature for ProposalSignature {
 }
 
 impl DAMerkleRoot for MerkleRoot {
-    fn to_bytes(&self, field: &mut [u8]) {
-        field.copy_from_slice(&self.0.0);
+    fn to_bytes(&self, out: &mut impl BufMut) {
+        out.put_slice(&self.0.0);
     }
 
     fn from_bytes(field: &[u8]) -> Option<Self> {

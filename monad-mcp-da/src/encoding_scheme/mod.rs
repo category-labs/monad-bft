@@ -22,15 +22,16 @@ use super::{
     assignment::{ChunkAssignment, ChunkId},
     chunk_tree::ChunkTree,
     types::{EncodingScheme, NodeId, ValidatorData},
+    wire::PacketLayout as _,
 };
 
-// The encoding scheme specifies: the symbol code, the chunk
-// assignment, and the merkle depth its chunks need.
+// The encoding scheme specifies the symbol code and the chunk
+// assignment. It sizes its symbols by the layout its header travels
+// in.
 pub(crate) trait DAEncodingScheme {
     type Encoder: SymbolEncoder;
     type Decoder: SymbolDecoder;
 
-    fn depth(&self) -> u8;
     fn msg_len(&self) -> usize;
     fn num_source_chunks(&self) -> usize;
 
@@ -44,15 +45,27 @@ pub(crate) trait DAEncodingScheme {
     fn encoder(&self, num_chunks: usize) -> Self::Encoder;
     fn decoder(&self, num_chunks: usize) -> Self::Decoder;
 
-    // the chunk tree of a message of the scheme's length. None for any
-    // other length.
-    fn encode(&self, message: &[u8], num_chunks: usize) -> Option<ChunkTree> {
+    // one symbol per chunk of a message of the scheme's length. None
+    // for any other length.
+    fn encode(&self, message: &[u8], num_chunks: usize) -> Option<Vec<Bytes>> {
         if message.is_empty() || message.len() != self.msg_len() {
             return None;
         }
         let symbols = self.encoder(num_chunks).encode(message);
-        ChunkTree::complete(self.depth(), symbols)
+        assert!(symbols.len() == num_chunks);
+        Some(symbols)
     }
+}
+
+// the chunk tree of a message under the scheme, in its layout. None
+// unless the message is of the scheme's length.
+pub(crate) fn chunk_tree(
+    scheme: &EncodingScheme,
+    message: &[u8],
+    num_chunks: usize,
+) -> Option<ChunkTree> {
+    let symbols = scheme.encode(message, num_chunks)?;
+    Some(scheme.chunk_tree(symbols))
 }
 
 pub(crate) trait SymbolEncoder {
@@ -71,12 +84,6 @@ pub(crate) trait SymbolDecoder {
 impl DAEncodingScheme for EncodingScheme {
     type Encoder = Box<dyn SymbolEncoder>;
     type Decoder = Box<dyn SymbolDecoder>;
-
-    fn depth(&self) -> u8 {
-        match self {
-            EncodingScheme::D25(d25) => d25.depth(),
-        }
-    }
 
     fn msg_len(&self) -> usize {
         match self {

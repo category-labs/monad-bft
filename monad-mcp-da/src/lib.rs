@@ -22,9 +22,6 @@ pub mod spec;
 pub mod stub {
     use crate::env::stub as env;
 
-    #[path = "wire/v1.rs"]
-    mod wire;
-
     #[path = "top_level.rs"]
     mod top_level;
     pub use top_level::*;

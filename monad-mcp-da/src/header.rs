@@ -45,7 +45,7 @@ where
         if !signed.scheme().is_canonical(validator_data.len()) {
             return None;
         }
-        let preimage = wire::signed_bytes(signed);
+        let preimage = wire::signed_bytes(&signed.header);
         let author = signed.sig().recover_author(&preimage)?;
         election.get_index(Slot(signed.slot()), &author)
     })
@@ -90,7 +90,7 @@ mod tests {
         // validly signed, but one level deeper than the message needs
         let SignedProposalHeader {
             header: mut deeper, ..
-        } = header.clone();
+        } = header;
         let EncodingScheme::D25(d25) = &mut deeper.scheme;
         d25.depth += 1;
         let deeper = signed_header(deeper, 0);

@@ -30,9 +30,11 @@ use super::{
     chunk::{ChunkData, ChunkRequest, ChunksSubset, WireChunkId},
     chunk_tree::ChunkTree,
     egress::ChunkEgress,
-    encoding_scheme::{DAEncodingScheme as _, SymbolDecoder},
+    encoding_scheme::{self, DAEncodingScheme as _, SymbolDecoder},
     runtime::EpochHandle,
     types::{ChunkRequestType, NodeId, ProposalDAEvent, SignedProposalHeader},
+    util::Tree,
+    wire::PacketLayout as _,
 };
 use crate::spec::DAProposalHeader as _;
 
@@ -156,7 +158,7 @@ impl RaptorcastInstance {
 
         // todo: check the proof in chunk parsing, so a Chunk always
         // holds a valid merkle proof.
-        if !self.chunk_tree.verify(chunk_id, &data) {
+        if !self.verify_proof(chunk_id, &data) {
             return Err(InvalidChunk::BadProof);
         }
 
@@ -258,9 +260,19 @@ impl RaptorcastInstance {
         Some(ProposalDAEvent::Decoded(root))
     }
 
+    // whether the chunk's proof binds it to our root
+    fn verify_proof(&self, chunk_id: ChunkId, data: &ChunkData) -> bool {
+        let scheme = self.header.scheme();
+        debug_assert_eq!(data.symbol.len(), scheme.symbol_len());
+        let leaf_idx = chunk_id.to_wire();
+        let leaf = scheme.leaf_hash(leaf_idx, &data.symbol);
+        Tree::verify_proof(&self.chunk_tree.root(), leaf_idx, &leaf, &data.proof)
+    }
+
     fn reencodes_to_root(&mut self, message: &[u8]) -> bool {
         let num_chunks = self.assignment.num_chunks();
-        let Some(tree) = self.header.scheme().encode(message, num_chunks) else {
+        let Some(tree) = encoding_scheme::chunk_tree(self.header.scheme(), message, num_chunks)
+        else {
             return false;
         };
         if tree.root() != *self.header.root() {
@@ -388,8 +400,10 @@ mod tests {
         let out_of_range = instance.ingest_chunk(99, data.clone(), &mut egress);
         assert_eq!(out_of_range, Err(InvalidChunk::InvalidChunkId));
 
+        let mut symbol = data.symbol.to_vec();
+        symbol[0] ^= 1;
         let tampered = ChunkData {
-            symbol: Bytes::from_static(b"tampered"),
+            symbol: Bytes::from(symbol),
             proof: data.proof.clone(),
         };
         let tampered = instance.ingest_chunk(0, tampered, &mut egress);

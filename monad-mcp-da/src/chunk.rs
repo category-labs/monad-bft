@@ -148,6 +148,14 @@ impl ProposalEnvelope {
         Self::new(header, BTreeMap::from([(chunk_id, data)]))
     }
 
+    pub fn header_only(&self) -> bool {
+        self.chunks.is_empty()
+    }
+
+    pub fn num_chunks(&self) -> usize {
+        self.chunks.len()
+    }
+
     pub fn from_header(header: SignedProposalHeader) -> Self {
         Self::new(header, BTreeMap::new())
     }
