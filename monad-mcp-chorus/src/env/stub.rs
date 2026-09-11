@@ -233,6 +233,7 @@ mod proposal {
     #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
     pub enum EncodingScheme {
         D25(D25),
+        S11(S11),
     }
 
     #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
@@ -244,10 +245,22 @@ mod proposal {
         pub depth: u8,
     }
 
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
+    pub struct S11 {
+        pub slot: Slot,
+        // the proposal index the author claims for the slot
+        pub proposer_index: u8,
+        // the merkle tree depth
+        pub depth: u8,
+        pub msg_len: u32,
+        pub unix_ts: u64,
+    }
+
     impl EncodingScheme {
         pub fn slot(&self) -> Slot {
             match self {
                 Self::D25(d25) => d25.slot,
+                Self::S11(s11) => s11.slot,
             }
         }
     }
@@ -258,11 +271,21 @@ mod proposal {
         }
     }
 
+    impl From<S11> for EncodingScheme {
+        fn from(s11: S11) -> Self {
+            Self::S11(s11)
+        }
+    }
+
     impl Encodable for EncodingScheme {
         fn encode(&self, out: &mut dyn bytes::BufMut) {
             match self {
                 Self::D25(f0) => {
                     let fields: [&dyn Encodable; 2] = [&1u8, f0];
+                    encode_list::<_, dyn Encodable>(&fields, out);
+                }
+                Self::S11(f0) => {
+                    let fields: [&dyn Encodable; 2] = [&2u8, f0];
                     encode_list::<_, dyn Encodable>(&fields, out);
                 }
             }
@@ -274,6 +297,10 @@ mod proposal {
                     let fields: [&dyn Encodable; 2] = [&1u8, f0];
                     list_length::<_, dyn Encodable>(&fields)
                 }
+                Self::S11(f0) => {
+                    let fields: [&dyn Encodable; 2] = [&2u8, f0];
+                    list_length::<_, dyn Encodable>(&fields)
+                }
             }
         }
     }
@@ -283,6 +310,7 @@ mod proposal {
             let mut payload = Header::decode_bytes(buf, true)?;
             let result = match <u8 as Decodable>::decode(&mut payload)? {
                 1 => Self::D25(<D25 as Decodable>::decode(&mut payload)?),
+                2 => Self::S11(<S11 as Decodable>::decode(&mut payload)?),
                 _ => return Err(alloy_rlp::Error::Custom("unknown EncodingScheme tag")),
             };
             if !payload.is_empty() {

@@ -236,7 +236,9 @@ mod tests {
     use crate::spec::DAProposalHeader as _;
 
     fn depth_of(header: &SignedProposalHeader) -> u8 {
-        let EncodingScheme::D25(d25) = header.scheme();
+        let EncodingScheme::D25(d25) = header.scheme() else {
+            panic!("the fixture is a d25 proposal");
+        };
         d25.depth
     }
 

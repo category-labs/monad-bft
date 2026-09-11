@@ -19,10 +19,11 @@ use monad_crypto::hasher::{Hasher as _, HasherType};
 pub(crate) use monad_mcp_chorus::stub as chorus;
 
 use self::chorus::env::{
-    EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader, ProposalSignature, SignedProposalHeader,
+    EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader, ProposalSignature, PubKey,
+    SignedProposalHeader,
 };
 use crate::spec::{
-    DAMerkleRoot, DAProposalHeader, DAProposalKeyPair, DAProposalSignature, SIGNATURE_LEN,
+    DAMerkleRoot, DAProposalHeader, DAProposalKeyPair, DAProposalSignature, DAPubKey, SIGNATURE_LEN,
 };
 
 // The keypair used to sign/verify proposal. Not used for aggregation.
@@ -100,6 +101,15 @@ impl DAProposalHeader for SignedProposalHeader {
 
     fn scheme(&self) -> &EncodingScheme {
         &self.header.scheme
+    }
+}
+
+// tag(1) key(8), zero padded to the field. the key sits where the
+// seed derivation reads, after the tag byte.
+impl DAPubKey for PubKey {
+    fn to_bytes(&self, field: &mut [u8]) {
+        field.fill(0);
+        field[1..9].copy_from_slice(&u64::from(*self).to_le_bytes());
     }
 }
 

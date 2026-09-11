@@ -318,7 +318,9 @@ mod header {
         fn a_packet_is_one_segment_at_the_prod_offsets() {
             let epoch_handle = epoch_handle();
             let (header, chunks) = proposal_chunks(&epoch_handle, 1);
-            let EncodingScheme::D25(d25) = header.scheme();
+            let EncodingScheme::D25(d25) = header.scheme() else {
+                panic!("the fixture is a d25 proposal");
+            };
             let (_, chunk_id, data) = chunks[3].clone().into_parts();
 
             let bytes = write_chunk(&chunks[3]);

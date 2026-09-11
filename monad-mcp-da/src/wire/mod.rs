@@ -26,7 +26,8 @@ use super::{
     chunk::{Chunk, ChunkData, ProposalEnvelope, WireChunkId},
     chunk_tree::ChunkTree,
     types::{
-        D25, EncodingScheme, MerkleRoot, ProposalHeader, ProposalSignature, SignedProposalHeader,
+        D25, EncodingScheme, MerkleRoot, ProposalHeader, ProposalSignature, S11,
+        SignedProposalHeader,
     },
 };
 use crate::spec::DAProposalHeader as _;
@@ -104,48 +105,56 @@ impl PacketLayout for EncodingScheme {
     fn signed_bytes(&self, root: &MerkleRoot, out: &mut impl BufMut) {
         match self {
             Self::D25(d25) => d25.v1_layout().signed_bytes(root, out),
+            Self::S11(s11) => s11.v1_layout().signed_bytes(root, out),
         }
     }
 
     fn write_header(&self, root: &MerkleRoot, sig: &ProposalSignature, out: &mut impl BufMut) {
         match self {
             Self::D25(d25) => d25.v1_layout().write_header(root, sig, out),
+            Self::S11(s11) => s11.v1_layout().write_header(root, sig, out),
         }
     }
 
     fn header_len(&self) -> usize {
         match self {
             Self::D25(d25) => d25.v1_layout().header_len(),
+            Self::S11(s11) => s11.v1_layout().header_len(),
         }
     }
 
     fn write_body(&self, chunk_id: WireChunkId, data: &ChunkData, out: &mut impl BufMut) {
         match self {
             Self::D25(d25) => d25.v1_layout().write_body(chunk_id, data, out),
+            Self::S11(s11) => s11.v1_layout().write_body(chunk_id, data, out),
         }
     }
 
     fn body_len(&self) -> usize {
         match self {
             Self::D25(d25) => d25.v1_layout().body_len(),
+            Self::S11(s11) => s11.v1_layout().body_len(),
         }
     }
 
     fn symbol_len(&self) -> usize {
         match self {
             Self::D25(d25) => d25.v1_layout().symbol_len(),
+            Self::S11(s11) => s11.v1_layout().symbol_len(),
         }
     }
 
     fn leaf_hash(&self, chunk_id: WireChunkId, symbol: &[u8]) -> Hash {
         match self {
             Self::D25(d25) => d25.v1_layout().leaf_hash(chunk_id, symbol),
+            Self::S11(s11) => s11.v1_layout().leaf_hash(chunk_id, symbol),
         }
     }
 
     fn chunk_tree(&self, symbols: Vec<Bytes>) -> ChunkTree {
         match self {
             Self::D25(d25) => d25.v1_layout().chunk_tree(symbols),
+            Self::S11(s11) => s11.v1_layout().chunk_tree(symbols),
         }
     }
 }
@@ -166,6 +175,7 @@ fn scheme_variant(bytes: &Bytes) -> Result<u8, MalformedPacket> {
 pub fn read_chunk(bytes: Bytes) -> Result<Chunk<'static>, MalformedPacket> {
     match scheme_variant(&bytes)? {
         D25::VARIANT => v1::Layout::<D25>::read_chunk(bytes),
+        S11::VARIANT => v1::Layout::<S11>::read_chunk(bytes),
         other => Err(MalformedPacket::UnknownScheme(other)),
     }
 }
@@ -173,6 +183,7 @@ pub fn read_chunk(bytes: Bytes) -> Result<Chunk<'static>, MalformedPacket> {
 pub fn read_envelope(bytes: Bytes) -> Result<ProposalEnvelope, MalformedPacket> {
     match scheme_variant(&bytes)? {
         D25::VARIANT => v1::Layout::<D25>::read_envelope(bytes),
+        S11::VARIANT => v1::Layout::<S11>::read_envelope(bytes),
         other => Err(MalformedPacket::UnknownScheme(other)),
     }
 }
@@ -252,9 +263,9 @@ mod tests {
         assert_eq!(foreign, Err(MalformedPacket::UnknownVersion(2)));
 
         let mut unknown = packet.to_vec();
-        unknown[v1::SCHEME_VARIANT_OFFSET] = 2;
+        unknown[v1::SCHEME_VARIANT_OFFSET] = 3;
         let unknown = read_chunk(Bytes::from(unknown));
-        assert_eq!(unknown, Err(MalformedPacket::UnknownScheme(2)));
+        assert_eq!(unknown, Err(MalformedPacket::UnknownScheme(3)));
     }
 
     #[test]

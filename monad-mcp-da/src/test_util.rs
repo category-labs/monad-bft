@@ -141,8 +141,22 @@ pub(crate) fn proposal_chunks_from(
     slot: Slot,
     payload: u8,
 ) -> (SignedProposalHeader, Vec<Chunk<'static>>) {
+    proposal_chunks_under(
+        epoch_handle,
+        scheme_at(epoch_handle, slot),
+        author_id,
+        payload,
+    )
+}
+
+// the proposal under a given scheme for a MESSAGE_LEN message
+pub(crate) fn proposal_chunks_under(
+    epoch_handle: &EpochHandle,
+    scheme: EncodingScheme,
+    author_id: u64,
+    payload: u8,
+) -> (SignedProposalHeader, Vec<Chunk<'static>>) {
     let author = NodeId::dummy(author_id);
-    let scheme = scheme_at(epoch_handle, slot);
     let assignment = scheme.chunk_assignment(&author, &epoch_handle.validator_data);
     let message = vec![payload; MESSAGE_LEN];
     let tree = encoding_scheme::chunk_tree(&scheme, &message, assignment.num_chunks())

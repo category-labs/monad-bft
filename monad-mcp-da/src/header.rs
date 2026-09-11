@@ -22,7 +22,7 @@ use monad_mcp_chorus::spec::{
 use super::{
     election::ProposerElection,
     encoding_scheme::DAEncodingScheme as _,
-    types::{HeaderAuth, SignedProposalHeader, Slot, ValidatorData},
+    types::{EncodingScheme, HeaderAuth, ProposalIndex, SignedProposalHeader, Slot, ValidatorData},
     wire,
 };
 use crate::spec::{DAProposalHeader as _, DAProposalSignature as _};
@@ -47,8 +47,20 @@ where
         }
         let preimage = wire::signed_bytes(&signed.header);
         let author = signed.sig().recover_author(&preimage)?;
-        election.get_index(Slot(signed.slot()), &author)
+        let index = election.get_index(Slot(signed.slot()), &author)?;
+        if claimed_index(signed.scheme()).is_some_and(|claimed| claimed != index) {
+            return None;
+        }
+        Some(index)
     })
+}
+
+// the proposal index a header carries, where its scheme carries one
+fn claimed_index(scheme: &EncodingScheme) -> Option<ProposalIndex> {
+    match scheme {
+        EncodingScheme::D25(_) => None,
+        EncodingScheme::S11(s11) => Some(ProposalIndex::from(s11.proposer_index)),
+    }
 }
 
 #[cfg(test)]
@@ -91,7 +103,9 @@ mod tests {
         let SignedProposalHeader {
             header: mut deeper, ..
         } = header;
-        let EncodingScheme::D25(d25) = &mut deeper.scheme;
+        let EncodingScheme::D25(d25) = &mut deeper.scheme else {
+            panic!("the fixture is a d25 proposal");
+        };
         d25.depth += 1;
         let deeper = signed_header(deeper, 0);
         assert_eq!(auth.authenticate(&deeper, SLOT.get()), None);

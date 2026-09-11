@@ -10,6 +10,9 @@ enable_stub = ["monad-mcp-chorus/enable_stub"]
 bitvec = { workspace = true }
 bytes = { workspace = true }
 derive_more = { workspace = true, features = ["into"] }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
+reed-solomon-simd = { workspace = true }
 tracing = { workspace = true }
 
 monad-crypto = { workspace = true }

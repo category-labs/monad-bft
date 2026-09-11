@@ -57,6 +57,14 @@ pub trait DAProposalKeyPair {
     fn sign(&self, signed_bytes: &[u8]) -> Self::Signature;
 }
 
+// the compressed public key, as the assignment seed reads it
+pub const PUBKEY_LEN: usize = 33;
+
+pub trait DAPubKey: spec::vote::PubKey {
+    // writes exactly PUBKEY_LEN bytes
+    fn to_bytes(&self, field: &mut [u8]);
+}
+
 // Statically checks an env's proposal types against the spec
 pub const fn assert_env<
     NodeId,
