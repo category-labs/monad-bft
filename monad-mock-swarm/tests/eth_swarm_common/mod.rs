@@ -39,6 +39,7 @@ use monad_mock_swarm::{
     mock::TimestamperConfig,
     mock_swarm::{Nodes, SwarmBuilder},
     node::NodeBuilder,
+    sim::{SimNodeBuilder, SimSwarm, DEFAULT_TIMESTAMP_PERIOD},
     swarm::make_state_configs,
     swarm_relation::SwarmRelation,
 };
@@ -134,12 +135,12 @@ pub static CHAIN_PARAMS: ChainParams = ChainParams {
     vote_pace: Duration::from_millis(0),
 };
 
-pub fn generate_eth_swarm_with_accounts(
+pub fn eth_swarm_config_with_accounts(
     num_nodes: u16,
     existing_accounts: BTreeMap<Address, AccountState>,
     txpool_byzantine_config: impl Fn(usize) -> ByzantineConfig,
     validate_reserve_balance: bool,
-) -> Nodes<EthSwarm> {
+) -> SwarmBuilder<EthSwarm> {
     let epoch_length = SeqNum(2000);
     let execution_delay = SeqNum(4);
 
@@ -172,7 +173,7 @@ pub fn generate_eth_swarm_with_accounts(
         .iter()
         .map(|state_config| NodeId::new(state_config.key.pubkey()))
         .collect();
-    let swarm_config = SwarmBuilder::<EthSwarm>(
+    SwarmBuilder::<EthSwarm>(
         state_configs
             .into_iter()
             .enumerate()
@@ -198,9 +199,98 @@ pub fn generate_eth_swarm_with_accounts(
                 )
             })
             .collect(),
-    );
+    )
+}
 
-    swarm_config.build()
+pub fn generate_eth_swarm_with_accounts(
+    num_nodes: u16,
+    existing_accounts: BTreeMap<Address, AccountState>,
+    txpool_byzantine_config: impl Fn(usize) -> ByzantineConfig,
+    validate_reserve_balance: bool,
+) -> Nodes<EthSwarm> {
+    eth_swarm_config_with_accounts(
+        num_nodes,
+        existing_accounts,
+        txpool_byzantine_config,
+        validate_reserve_balance,
+    )
+    .build()
+}
+
+/// The `monad-sim` counterpart of [`generate_eth_swarm`]: returns the node
+/// builders ready to feed into [`SimSwarm::from_builders`]. Constructed directly
+/// (no transformer pipelines) so the new framework stays independent of the
+/// legacy `SwarmBuilder` / `NodeBuilder` path.
+pub fn eth_swarm_config(
+    num_nodes: u16,
+    existing_accounts: impl IntoIterator<Item = Address>,
+    txpool_byzantine_config: impl Fn(usize) -> ByzantineConfig,
+) -> Vec<SimNodeBuilder<EthSwarm>> {
+    let existing_accounts: BTreeMap<Address, AccountState> = existing_accounts
+        .into_iter()
+        .map(|acc| (acc, AccountState::max_balance()))
+        .collect();
+    eth_sim_builders_with_accounts(num_nodes, existing_accounts, txpool_byzantine_config, false)
+}
+
+/// `monad-sim` builders mirroring [`eth_swarm_config_with_accounts`].
+pub fn eth_sim_builders_with_accounts(
+    num_nodes: u16,
+    existing_accounts: BTreeMap<Address, AccountState>,
+    txpool_byzantine_config: impl Fn(usize) -> ByzantineConfig,
+    validate_reserve_balance: bool,
+) -> Vec<SimNodeBuilder<EthSwarm>> {
+    let epoch_length = SeqNum(2000);
+    let execution_delay = SeqNum(4);
+    let chain_config = MockChainConfig::new(&CHAIN_PARAMS);
+    let create_block_policy = || EthBlockPolicy::new(GENESIS_SEQ_NUM, execution_delay.0);
+
+    let state_configs = make_state_configs::<EthSwarm>(
+        num_nodes,
+        ValidatorSetFactory::default,
+        SimpleRoundRobin::default,
+        EthBlockValidator::default,
+        create_block_policy,
+        || {
+            let state = InMemoryStateInner::new(
+                execution_delay,
+                InMemoryBlockState::genesis(existing_accounts.clone()),
+            );
+            if validate_reserve_balance {
+                state.lock().unwrap().validate_reserve_balance = true;
+            }
+            state
+        },
+        execution_delay,
+        CONSENSUS_DELTA,
+        chain_config,
+        SeqNum(100),
+    );
+    let all_peers: BTreeSet<_> = state_configs
+        .iter()
+        .map(|state_config| NodeId::new(state_config.key.pubkey()))
+        .collect();
+
+    state_configs
+        .into_iter()
+        .enumerate()
+        .map(|(idx, state_builder)| {
+            let validators = state_builder.locked_epoch_validators[0].clone();
+            let state_read = state_builder.state_read.clone();
+            SimNodeBuilder {
+                id: NodeId::new(state_builder.key.pubkey()),
+                state_builder,
+                router_scheduler: NoSerRouterConfig::new(all_peers.clone()).build(),
+                val_set_updater: MockValSetUpdaterNop::new(validators.validators, epoch_length),
+                txpool_executor: MockTxPoolExecutor::new(create_block_policy(), state_read.clone())
+                    .with_chain_params(&CHAIN_PARAMS)
+                    .with_byzantine_config(txpool_byzantine_config(idx)),
+                ledger: MockEthLedger::new(state_read.clone()),
+                statesync_executor: MockStateSyncExecutor::new(state_read),
+                timestamp_period: DEFAULT_TIMESTAMP_PERIOD,
+            }
+        })
+        .collect()
 }
 
 pub fn generate_eth_swarm(
@@ -244,6 +334,36 @@ pub fn verify_transactions_in_ledger(
                 "Expected transactions don't exist. NodeID: {}, TxnHashes: {:?}",
                 node_id, txns_to_see
             );
+            return false;
+        }
+    }
+
+    true
+}
+
+/// [`verify_transactions_in_ledger`] for a swarm driven by the `monad-sim` harness.
+pub fn verify_transactions_in_sim(swarm: &SimSwarm<EthSwarm>, txns: Vec<TxEnvelope>) -> bool {
+    let txns: HashSet<_> = HashSet::from_iter(txns.iter().map(|t| *t.tx_hash()));
+    for node_id in swarm.node_ids() {
+        let mut txns_to_see = txns.clone();
+        let consistent = swarm.with_node(node_id, |node| {
+            for (round, block) in node.ledger().get_finalized_blocks() {
+                for txn in &block.body().execution_body.transactions {
+                    let txn_hash = txn.tx_hash();
+                    if txns_to_see.contains(txn_hash) {
+                        txns_to_see.remove(txn_hash);
+                    } else {
+                        println!(
+                            "Unexpected transaction in block round {}. SeqNum: {}, NodeID: {}, TxnHash: {}, Nonce: {}",
+                            round.0, block.get_seq_num().0, node_id, txn_hash, txn.nonce()
+                        );
+                        return false;
+                    }
+                }
+            }
+            txns_to_see.is_empty()
+        });
+        if !consistent {
             return false;
         }
     }
