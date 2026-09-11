@@ -82,7 +82,7 @@ impl NftSale {
         max_fee_per_gas: u128,
         chain_id: u64,
     ) -> TxEnvelope {
-        let bytecode = Bytes::from_hex(NFTSALE_BYTECODE).unwrap();
+        let bytecode = Bytes::from_hex(NFTSALE_BYTECODE.trim()).unwrap();
 
         let constructor = NFTSale::constructorCall {
             name: "MonadNFT".to_string(),

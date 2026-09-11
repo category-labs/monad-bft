@@ -204,7 +204,9 @@ pub async fn refresh_batch(
             acct.native_bal = *b;
         }
         if let Ok((_, n)) = &nonces[i] {
-            acct.nonce = *n;
+            // Never regress the local nonce — the generator may have already
+            // incremented it past the chain-reported value for in-flight txs.
+            acct.nonce = acct.nonce.max(*n);
         }
 
         for (erc20, bals_result) in erc20_contracts.iter().zip(erc20_bals_results.iter()) {

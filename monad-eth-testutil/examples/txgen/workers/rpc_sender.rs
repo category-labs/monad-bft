@@ -323,18 +323,38 @@ pub async fn send_batch(
         })
         .collect::<FuturesUnordered<_>>();
 
+    let num_txs = futs.len();
+
     if let Err(e) = batch_req.send().await {
         error!("Failed to send batch: {e}");
+        metrics.send_errors_other.fetch_add(num_txs, SeqCst);
+        metrics.total_send_errors.fetch_add(num_txs, SeqCst);
         return;
     }
 
-    let num_txs = futs.len();
     metrics.total_txs_sent.fetch_add(num_txs, SeqCst);
 
+    let mut send_errors = 0usize;
     while let Some(resp) = futs.next().await {
         if let Err(e) = resp {
+            let err_str = e.to_string().to_lowercase();
+            if err_str.contains("nonce too low") {
+                metrics.send_errors_nonce_too_low.fetch_add(1, SeqCst);
+            } else if err_str.contains("overloaded") {
+                metrics.send_errors_overloaded.fetch_add(1, SeqCst);
+            } else if err_str.contains("higher priority") {
+                // Monad returns "existing transaction had higher priority" for
+                // nonce replacement / fee-underpriced errors
+                metrics.send_errors_replacement.fetch_add(1, SeqCst);
+            } else {
+                metrics.send_errors_other.fetch_add(1, SeqCst);
+            }
+            send_errors += 1;
             error!("Failed to send tx: {e}");
         }
+    }
+    if send_errors > 0 {
+        metrics.total_send_errors.fetch_add(send_errors, SeqCst);
     }
 
     trace!(elapsed_ms = now.elapsed().as_millis(), "send_batch latency");
