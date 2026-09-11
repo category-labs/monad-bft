@@ -19,7 +19,8 @@ pub mod timed_event;
 use std::{ops::DerefMut, pin::Pin};
 
 pub use metrics::{
-    prometheus_metric_name, ExecutorMetrics, ExecutorMetricsChain, Gauge, Histogram, MetricDef,
+    prometheus_metric_name, Counter, ExecutorMetrics, ExecutorMetricsChain, Gauge, Histogram,
+    LabeledCounterFamily, MetricDef,
 };
 
 /// An Executor executes Commands

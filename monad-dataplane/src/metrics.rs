@@ -17,8 +17,21 @@ use std::sync::Arc;
 
 use monad_executor::{ExecutorMetrics, Gauge};
 
+monad_executor::counter_labels! {
+    pub(crate) struct ReceiveErrors {
+        accept => "accept",
+        header_io => "header_io",
+        header_timeout => "header_timeout",
+        invalid_magic => "invalid_magic",
+        invalid_version => "invalid_version",
+        message_too_large => "message_too_large",
+        body_io => "body_io",
+        body_timeout => "body_timeout",
+    }
+}
+
 macro_rules! define_metrics {
-    ($($field:ident => $constant:ident($name:literal, $help:literal)),+ $(,)?) => {
+    ($($field:ident $(: $ty:ty)? => $constant:ident($name:literal, $help:literal $(, $label:literal)?)),+ $(,)?) => {
         monad_executor::metric_consts! {
             $($constant { name: $name, help: $help })+
         }
@@ -26,14 +39,16 @@ macro_rules! define_metrics {
         #[derive(Clone)]
         pub(crate) struct DataplaneMetrics {
             executor_metrics: Arc<ExecutorMetrics>,
-            $(pub(crate) $field: Gauge,)+
+            $(pub(crate) $field: define_metrics!(@type $($ty)?),)+
         }
 
         impl DataplaneMetrics {
             pub(crate) fn new() -> Self {
-                let mut executor_metrics = ExecutorMetrics::with_metric_defs(&[$($constant),+]);
+                let gauge_defs: Vec<_> = [$(define_metrics!(@gauge_def $constant $(, $label)?)),+]
+                    .into_iter().flatten().collect();
+                let mut executor_metrics = ExecutorMetrics::with_metric_defs(&gauge_defs);
                 Self {
-                    $($field: executor_metrics.gauge($constant).clone(),)+
+                    $($field: define_metrics!(@init executor_metrics, $constant $(, $ty)? $(, $label)?),)+
                     executor_metrics: Arc::new(executor_metrics),
                 }
             }
@@ -42,6 +57,16 @@ macro_rules! define_metrics {
                 self.executor_metrics.as_ref()
             }
         }
+    };
+    (@type) => { Gauge };
+    (@type $ty:ty) => { $ty };
+    (@gauge_def $constant:ident) => { Some($constant) };
+    (@gauge_def $constant:ident, $label:literal) => { None };
+    (@init $metrics:ident, $constant:ident) => {
+        $metrics.gauge($constant).clone()
+    };
+    (@init $metrics:ident, $constant:ident, $ty:ty, $label:literal) => {
+        <$ty>::new(&mut $metrics, $constant, $label)
     };
 }
 
@@ -63,7 +88,7 @@ define_metrics! {
     tcp_inbound_connections_rejected => TCP_INBOUND_CONNECTIONS_REJECTED("monad.dataplane.tcp.total_inbound_connections_rejected", "Total inbound TCP connections rejected because the peer was banned or a connection limit was reached"),
     tcp_outbound_connections_established => TCP_OUTBOUND_CONNECTIONS_ESTABLISHED("monad.dataplane.tcp.total_outbound_connections_established", "Total outbound TCP connections successfully established"),
     tcp_outbound_connection_errors => TCP_OUTBOUND_CONNECTION_ERRORS("monad.dataplane.tcp.total_outbound_connection_errors", "Total outbound TCP connection attempts that failed or timed out"),
-    tcp_receive_errors => TCP_RECEIVE_ERRORS("monad.dataplane.tcp.total_receive_errors", "Total TCP accept, framing, or payload receive errors"),
+    tcp_receive_errors: ReceiveErrors => TCP_RECEIVE_ERRORS("monad.dataplane.tcp.receive_errors_total", "Total TCP accept, framing, or payload receive errors", "reason"),
     tcp_send_errors => TCP_SEND_ERRORS("monad.dataplane.tcp.total_send_errors", "Total TCP payload send errors or timeouts"),
     tcp_egress_messages_dropped => TCP_EGRESS_MESSAGES_DROPPED("monad.dataplane.tcp.total_egress_messages_dropped", "Total TCP egress messages dropped by dataplane limits, full queues, or failed connections"),
     tcp_connections_rate_limited => TCP_CONNECTIONS_RATE_LIMITED("monad.dataplane.tcp.total_connections_rate_limited", "Total inbound TCP connections closed after exceeding the per-connection message rate limit"),
@@ -83,5 +108,40 @@ impl ActiveConnectionGuard {
 impl Drop for ActiveConnectionGuard {
     fn drop(&mut self) {
         self.0.dec();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use monad_executor::ExecutorMetricsChain;
+
+    use super::*;
+
+    #[test]
+    fn receive_errors_are_exported_by_reason_from_shared_handles() {
+        let metrics = DataplaneMetrics::new();
+        let worker = metrics.clone();
+        worker.tcp_receive_errors.header_timeout.inc();
+        worker.tcp_receive_errors.invalid_magic.inc_by(2);
+        let families = ExecutorMetricsChain::from(metrics.executor_metrics()).counter_families();
+        assert_eq!(families.len(), 1);
+        assert_eq!(
+            families[0].definition().name,
+            "monad.dataplane.tcp.receive_errors_total"
+        );
+        assert_eq!(families[0].label_name(), "reason");
+        assert_eq!(
+            families[0].samples().collect::<Vec<_>>(),
+            [
+                ("accept", 0),
+                ("header_io", 0),
+                ("header_timeout", 1),
+                ("invalid_magic", 2),
+                ("invalid_version", 0),
+                ("message_too_large", 0),
+                ("body_io", 0),
+                ("body_timeout", 0),
+            ]
+        );
     }
 }

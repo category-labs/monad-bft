@@ -89,8 +89,8 @@ use self::{
     error::NodeSetupError,
     metrics::{
         default_prometheus_labels, init_triedb_phase_metrics, init_triedb_storage_metrics,
-        record_triedb_phase_metrics, record_triedb_storage_metrics, start_metrics_server,
-        MetricsServerState, NodePrometheusMetrics,
+        record_triedb_phase_metrics, record_triedb_storage_metrics, register_otel_counters,
+        start_metrics_server, MetricsServerState, NodePrometheusMetrics,
     },
     state::NodeState,
 };
@@ -518,6 +518,16 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             error!(?err, "failed to initialize prometheus metrics");
         })?,
     );
+
+    if let Some(meter) = &maybe_otel_meter {
+        register_otel_counters(
+            meter,
+            executor
+                .metrics()
+                .push(&triedb_phase_metrics)
+                .push(&triedb_storage_metrics),
+        );
+    }
 
     if let Some(metrics_config) = &node_state.metrics {
         let server_state = MetricsServerState::new(

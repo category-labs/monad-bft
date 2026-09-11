@@ -78,6 +78,7 @@ monad-version = { workspace = true }
 
 [dev-dependencies]
 monad-block-persist = { workspace = true }
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
 
 inotify = { workspace = true }
 lru = { workspace = true }

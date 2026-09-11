@@ -228,7 +228,7 @@ pub(crate) async fn task(
                 }
             },
             Err(err) => {
-                rx_state.metrics.tcp_receive_errors.inc();
+                rx_state.metrics.tcp_receive_errors.accept.inc();
                 warn!(conn_id, ?err, "error accepting tcp connection");
             }
         }
@@ -317,7 +317,7 @@ async fn read_message(
             Ok(_len) => TcpMsgHdr::read_from_bytes(&header_bytes[..]).unwrap(),
             Err(err) => {
                 if message_id == 0 || err.kind() != ErrorKind::UnexpectedEof {
-                    metrics.tcp_receive_errors.inc();
+                    metrics.tcp_receive_errors.header_io.inc();
                     debug!(
                         conn_id,
                         ?addr,
@@ -332,7 +332,7 @@ async fn read_message(
             }
         },
         Err(_) => {
-            metrics.tcp_receive_errors.inc();
+            metrics.tcp_receive_errors.header_timeout.inc();
             warn!(
                 conn_id,
                 ?addr,
@@ -350,7 +350,7 @@ async fn read_message(
     } = header;
 
     if header_magic.get() != HEADER_MAGIC {
-        metrics.tcp_receive_errors.inc();
+        metrics.tcp_receive_errors.invalid_magic.inc();
         debug!(
             conn_id,
             ?addr,
@@ -361,7 +361,7 @@ async fn read_message(
         return None;
     }
     if header_version.get() != HEADER_VERSION {
-        metrics.tcp_receive_errors.inc();
+        metrics.tcp_receive_errors.invalid_version.inc();
         debug!(
             conn_id,
             ?addr,
@@ -375,7 +375,7 @@ async fn read_message(
     let message_length: usize = header_length.get() as usize;
 
     if message_length > TCP_MESSAGE_LENGTH_LIMIT {
-        metrics.tcp_receive_errors.inc();
+        metrics.tcp_receive_errors.message_too_large.inc();
         debug!(
             conn_id,
             ?addr,
@@ -405,7 +405,7 @@ async fn read_message(
         Ok((ret, message)) => match ret {
             Ok(_len) => message,
             Err(err) => {
-                metrics.tcp_receive_errors.inc();
+                metrics.tcp_receive_errors.body_io.inc();
                 debug!(
                     conn_id,
                     ?addr,
@@ -418,7 +418,7 @@ async fn read_message(
             }
         },
         Err(_) => {
-            metrics.tcp_receive_errors.inc();
+            metrics.tcp_receive_errors.body_timeout.inc();
             warn!(
                 conn_id,
                 ?addr,
