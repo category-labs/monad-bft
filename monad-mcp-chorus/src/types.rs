@@ -30,7 +30,7 @@ use itertools::Either;
 // the environment this module subtree is instantiated.
 pub use super::env::{
     HeaderAuth, KeyPair, MerkleRoot, NodeId, ProposalHeader, PubKey, Signature,
-    SignatureCollection, Stake, ValidatorData, VoteAggregation,
+    SignatureCollection, SignedProposalHeader, Stake, ValidatorData, VoteAggregation,
 };
 use crate::spec::{
     Stake as _,
@@ -968,9 +968,9 @@ impl<T> std::ops::IndexMut<ProposalIndex> for ProposalMap<T> {
 // A helper wrapper type for a type-erased implementation of a trait
 pub struct Erased<T>(pub T);
 
-// invariant: .0.root != .1.root and both properly signed.
+// invariant: .0.root() != .1.root() and both properly signed.
 #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
-pub struct EquivCert(pub ProposalHeader, pub ProposalHeader);
+pub struct EquivCert(pub SignedProposalHeader, pub SignedProposalHeader);
 
 impl<T> Encodable for ProposalMap<T>
 where

@@ -17,8 +17,10 @@ pub(crate) use chorus::types::NodeId;
 use monad_crypto::hasher::{Hasher as _, HasherType};
 pub(crate) use monad_mcp_chorus::stub as chorus;
 
-use self::chorus::env::{MerkleHash, MerkleRoot, ProposalSignature};
-use crate::spec::{DAMerkleRoot, DAProposalKeyPair, DAProposalSignature};
+use self::chorus::env::{
+    EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader, ProposalSignature, SignedProposalHeader,
+};
+use crate::spec::{DAMerkleRoot, DAProposalHeader, DAProposalKeyPair, DAProposalSignature};
 
 // The keypair used to sign/verify proposal. Not used for aggregation.
 pub struct ProposalKeyPair(NodeId);
@@ -85,6 +87,22 @@ impl DAMerkleRoot for MerkleRoot {
     }
 }
 
+impl DAProposalHeader for ProposalHeader {
+    type Scheme = EncodingScheme;
+
+    fn scheme(&self) -> &EncodingScheme {
+        &self.scheme
+    }
+}
+
+impl DAProposalHeader for SignedProposalHeader {
+    type Scheme = EncodingScheme;
+
+    fn scheme(&self) -> &EncodingScheme {
+        &self.header.scheme
+    }
+}
+
 // a hash prefix of the signed bytes
 fn checksum(signed_bytes: &[u8]) -> u64 {
     let mut hasher = HasherType::new();
@@ -94,4 +112,12 @@ fn checksum(signed_bytes: &[u8]) -> u64 {
     u64::from_le_bytes(prefix)
 }
 
-const _: () = crate::spec::assert_env::<NodeId, MerkleRoot, ProposalSignature, ProposalKeyPair>();
+const _: () = crate::spec::assert_env::<
+    NodeId,
+    MerkleRoot,
+    EncodingScheme,
+    ProposalHeader,
+    SignedProposalHeader,
+    ProposalSignature,
+    ProposalKeyPair,
+>();

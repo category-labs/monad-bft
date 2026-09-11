@@ -15,9 +15,18 @@
 
 use monad_mcp_chorus::spec;
 
+// the proposals a slot carries, which a scheme's header must index
+pub const MAX_PROPOSER_SET_SIZE: usize = 5;
+
 pub trait DAMerkleRoot: spec::MerkleRoot {
     fn to_bytes(&self, field: &mut [u8]);
     fn from_bytes(field: &[u8]) -> Option<Self>;
+}
+
+pub trait DAProposalHeader: spec::ProposalHeader {
+    type Scheme;
+
+    fn scheme(&self) -> &Self::Scheme;
 }
 
 pub trait DAProposalSignature: Clone + Eq + std::hash::Hash + std::fmt::Debug {
@@ -37,10 +46,21 @@ pub trait DAProposalKeyPair {
 }
 
 // Statically checks an env's proposal types against the spec
-pub const fn assert_env<NodeId, MerkleRoot, ProposalSignature, ProposalKeyPair>()
+pub const fn assert_env<
+    NodeId,
+    MerkleRoot,
+    EncodingScheme,
+    ProposalHeader,
+    SignedProposalHeader,
+    ProposalSignature,
+    ProposalKeyPair,
+>()
 where
     NodeId: spec::validator::NodeId,
     MerkleRoot: DAMerkleRoot,
+    ProposalHeader: DAProposalHeader<Root = MerkleRoot, Scheme = EncodingScheme>,
+    SignedProposalHeader: DAProposalHeader<Root = MerkleRoot, Scheme = EncodingScheme>
+        + spec::SignedProposalHeader<Sig = ProposalSignature>,
     ProposalSignature: DAProposalSignature<NodeId = NodeId>,
     ProposalKeyPair: DAProposalKeyPair<Signature = ProposalSignature>,
 {

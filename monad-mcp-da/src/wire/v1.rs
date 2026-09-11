@@ -23,14 +23,18 @@
 
 use bytes::{Buf as _, BufMut as _, Bytes, BytesMut};
 use monad_crypto::hasher::{Hash, Hasher as _, HasherType};
+use monad_mcp_chorus::spec::SignedProposalHeader as _;
 use monad_merkle::{MerkleProof, MerkleTree};
 
 use super::top_level::{
     chunk::{Chunk, ChunkData, WireChunkId},
     encoding_scheme::DAEncodingScheme as _,
-    types::{D25, EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader, ProposalSignature, Slot},
+    types::{
+        D25, EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader, ProposalSignature,
+        SignedProposalHeader, Slot,
+    },
 };
-use crate::spec::{DAMerkleRoot as _, DAProposalSignature as _};
+use crate::spec::{DAMerkleRoot as _, DAProposalHeader, DAProposalSignature as _};
 
 pub const VERSION: u16 = 1;
 
@@ -91,22 +95,20 @@ pub enum MalformedPacket {
 // the signing preimage: the header after the signature. The caller
 // must ensure the scheme's depth is in range.
 pub(crate) fn signed_bytes(
-    slot: Slot,
-    scheme: &EncodingScheme,
-    root: &MerkleRoot,
+    header: &impl DAProposalHeader<Root = MerkleRoot, Scheme = EncodingScheme>,
 ) -> [u8; SIGNED_LEN] {
-    let EncodingScheme::D25(d25) = scheme;
+    let EncodingScheme::D25(d25) = header.scheme();
     assert!((MIN_DEPTH..=MAX_DEPTH).contains(&d25.depth));
 
     let mut root_field = [0u8; ROOT_LEN];
-    root.to_bytes(&mut root_field);
+    header.root().to_bytes(&mut root_field);
 
     let mut out = [0u8; SIGNED_LEN];
     let mut cursor = &mut out[..];
     cursor.put_u16_le(VERSION);
     cursor.put_u8(PRIMARY_MODE | d25.depth);
     cursor.put_u8(D25_VARIANT);
-    cursor.put_u64_le(slot.get());
+    cursor.put_u64_le(header.slot());
     cursor.put_u64_le(EPOCH);
     cursor.put_u64_le(d25.unix_ts);
     cursor.put_slice(&root_field);
@@ -116,21 +118,21 @@ pub(crate) fn signed_bytes(
 }
 
 pub fn write_chunk(chunk: &Chunk<'_>) -> Bytes {
-    let header = chunk.header();
-    let depth = header.scheme.depth();
+    let signed = chunk.header();
+    let depth = signed.scheme().depth();
 
     let mut out = BytesMut::with_capacity(SEGMENT_LEN);
-    write_header(header, &mut out);
+    write_header(signed, &mut out);
     write_body(depth, chunk.chunk_id(), chunk.data(), &mut out);
     debug_assert_eq!(out.len(), SEGMENT_LEN);
     out.freeze()
 }
 
-fn write_header(header: &ProposalHeader, out: &mut BytesMut) {
+fn write_header(signed: &SignedProposalHeader, out: &mut BytesMut) {
     let mut signature = [0u8; SIGNATURE_LEN];
-    header.sig.to_bytes(&mut signature);
+    signed.sig().to_bytes(&mut signature);
     out.put_slice(&signature);
-    out.put_slice(&signed_bytes(header.slot, &header.scheme, &header.root));
+    out.put_slice(&signed_bytes(signed));
 }
 
 // the caller must ensure the data is shaped by the depth
@@ -158,13 +160,13 @@ pub fn read_chunk(bytes: Bytes) -> Result<Chunk<'static>, MalformedPacket> {
         return Err(MalformedPacket::BadLength(bytes.len()));
     }
 
-    let header = read_header(header)?;
-    let depth = header.scheme.depth();
+    let signed = read_header(header)?;
+    let depth = signed.scheme().depth();
     let (chunk_id, data) = read_body(depth, bytes.slice(HEADER_LEN..))?;
-    Ok(Chunk::new(header, chunk_id, data))
+    Ok(Chunk::new(signed, chunk_id, data))
 }
 
-fn read_header(bytes: &[u8; HEADER_LEN]) -> Result<ProposalHeader, MalformedPacket> {
+fn read_header(bytes: &[u8; HEADER_LEN]) -> Result<SignedProposalHeader, MalformedPacket> {
     let (signature, mut signed) = bytes.split_at(SIGNATURE_LEN);
     let sig = ProposalSignature::from_bytes(signature).ok_or(MalformedPacket::BadSignature)?;
 
@@ -210,12 +212,8 @@ fn read_header(bytes: &[u8; HEADER_LEN]) -> Result<ProposalHeader, MalformedPack
         unix_ts,
         depth,
     });
-    Ok(ProposalHeader {
-        slot,
-        root,
-        scheme,
-        sig,
-    })
+    let header = ProposalHeader { slot, root, scheme };
+    Ok(SignedProposalHeader { header, sig })
 }
 
 // the caller must pass exactly BODY_LEN bytes
@@ -297,6 +295,8 @@ pub(crate) fn verify_proof(
 
 #[cfg(test)]
 mod tests {
+    use monad_mcp_chorus::spec::ProposalHeader as _;
+
     use super::{
         super::top_level::{
             chunk::ProposalEnvelope,
@@ -319,14 +319,14 @@ mod tests {
     fn a_one_chunk_envelope_is_one_segment_at_the_prod_offsets() {
         let epoch_handle = epoch_handle();
         let (header, chunks) = proposal_chunks(&epoch_handle, 1);
-        let EncodingScheme::D25(d25) = header.scheme;
+        let EncodingScheme::D25(d25) = header.scheme();
         let (_, chunk_id, data) = chunks[3].clone().into_parts();
 
         let bytes = write_chunk(&chunks[3]);
         assert_eq!(bytes.len(), SEGMENT_LEN);
 
         let mut signature = [0u8; 65];
-        header.sig.to_bytes(&mut signature);
+        header.sig().to_bytes(&mut signature);
         assert_eq!(bytes[..65], signature);
         assert_eq!(bytes[65..67], [1, 0]);
         assert_eq!(bytes[67], 0b1000_0000 | d25.depth);
@@ -334,7 +334,7 @@ mod tests {
         assert_eq!(bytes[69..77], SLOT.get().to_le_bytes());
         assert_eq!(bytes[77..85], [0; 8]);
         assert_eq!(bytes[85..93], d25.unix_ts.to_le_bytes());
-        assert_eq!(bytes[93..113], header.root.0.0);
+        assert_eq!(bytes[93..113], header.root().0.0);
         assert_eq!(bytes[113..117], d25.msg_len.to_le_bytes());
 
         let proof_end = 117 + 20 * (d25.depth as usize - 1);
@@ -365,23 +365,23 @@ mod tests {
     fn the_signature_binds_the_signed_bytes() {
         let epoch_handle = epoch_handle();
         let (header, _) = proposal_chunks(&epoch_handle, 1);
-        let signed = signed_bytes(header.slot, &header.scheme, &header.root);
-        assert_eq!(header.sig.recover_author(&signed), Some(author()));
+        let signed = signed_bytes(&header);
+        assert_eq!(header.sig().recover_author(&signed), Some(author()));
 
         let mut altered = signed;
         altered[SIGNED_LEN - 1] ^= 1;
-        assert_eq!(header.sig.recover_author(&altered), None);
+        assert_eq!(header.sig().recover_author(&altered), None);
 
         // the same bytes signed by another author recover that author
         let (other, _) = proposal_chunks_from(&epoch_handle, 2, SLOT, 1);
-        assert_eq!(other.sig.recover_author(&signed), Some(NodeId::dummy(2)));
+        assert_eq!(other.sig().recover_author(&signed), Some(NodeId::dummy(2)));
     }
 
     #[test]
     fn malformed_packets_are_rejected() {
         let epoch_handle = epoch_handle();
         let (header, chunks) = proposal_chunks(&epoch_handle, 1);
-        let EncodingScheme::D25(d25) = header.scheme;
+        let EncodingScheme::D25(d25) = header.scheme();
         let chunk = &chunks[0];
         let reserved_at = HEADER_LEN + proof_len(d25.depth);
 

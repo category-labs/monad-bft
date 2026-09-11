@@ -15,15 +15,17 @@
 
 use std::sync::Arc;
 
-use monad_mcp_chorus::spec::validator::ValidatorData as _;
+use monad_mcp_chorus::spec::{
+    ProposalHeader as _, SignedProposalHeader as _, validator::ValidatorData as _,
+};
 
 use super::{
     election::ProposerElection,
     encoding_scheme::DAEncodingScheme as _,
-    types::{HeaderAuth, ProposalHeader, ValidatorData},
+    types::{HeaderAuth, SignedProposalHeader, Slot, ValidatorData},
     wire,
 };
-use crate::spec::DAProposalSignature as _;
+use crate::spec::{DAProposalHeader as _, DAProposalSignature as _};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvalidProposalHeader {
@@ -39,13 +41,13 @@ pub fn header_auth<E>(election: Arc<E>, validator_data: Arc<ValidatorData>) -> H
 where
     E: ProposerElection + Send + Sync + 'static,
 {
-    HeaderAuth::new(move |header: &ProposalHeader, _slot: u64| {
-        if !header.scheme.is_canonical(validator_data.len()) {
+    HeaderAuth::new(move |signed: &SignedProposalHeader, _slot: u64| {
+        if !signed.scheme().is_canonical(validator_data.len()) {
             return None;
         }
-        let signed = wire::signed_bytes(header.slot, &header.scheme, &header.root);
-        let author = header.sig.recover_author(&signed)?;
-        election.get_index(header.slot, &author)
+        let preimage = wire::signed_bytes(signed);
+        let author = signed.sig().recover_author(&preimage)?;
+        election.get_index(Slot(signed.slot()), &author)
     })
 }
 
@@ -55,7 +57,7 @@ mod tests {
 
     use super::super::{
         test_util::{SLOT, epoch_handle, proposal_chunks, proposal_chunks_from, signed_header},
-        types::{EncodingScheme, MerkleRoot, Slot},
+        types::{EncodingScheme, MerkleRoot, SignedProposalHeader, Slot},
     };
     use crate::spec::DAMerkleRoot as _;
 
@@ -74,14 +76,24 @@ mod tests {
         assert_eq!(auth.authenticate(&other, SLOT.get()), None);
 
         // the signature no longer covers the header
-        let mut tampered = header.clone();
+        let SignedProposalHeader {
+            header: mut tampered,
+            sig,
+        } = header.clone();
         tampered.root = MerkleRoot::from_bytes(&[9; 20]).expect("20 bytes");
+        let tampered = SignedProposalHeader {
+            header: tampered,
+            sig,
+        };
         assert_eq!(auth.authenticate(&tampered, SLOT.get()), None);
 
         // validly signed, but one level deeper than the message needs
-        let EncodingScheme::D25(mut d25) = header.scheme;
+        let SignedProposalHeader {
+            header: mut deeper, ..
+        } = header.clone();
+        let EncodingScheme::D25(d25) = &mut deeper.scheme;
         d25.depth += 1;
-        let deeper = signed_header(SLOT, EncodingScheme::D25(d25), header.root, 0);
+        let deeper = signed_header(deeper, 0);
         assert_eq!(auth.authenticate(&deeper, SLOT.get()), None);
     }
 }

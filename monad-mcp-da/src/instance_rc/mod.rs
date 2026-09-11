@@ -21,6 +21,7 @@ use std::collections::HashSet;
 
 use bytes::Bytes;
 use decoding_tracker::DecodingTracker;
+use monad_mcp_chorus::spec::ProposalHeader as _;
 use obligation_tracker::ObligationTracker;
 use recovery_tracker::ChunkRecoveryTracker;
 
@@ -31,8 +32,9 @@ use super::{
     egress::ChunkEgress,
     encoding_scheme::{DAEncodingScheme as _, SymbolDecoder},
     runtime::EpochHandle,
-    types::{ChunkRequestType, NodeId, ProposalDAEvent, ProposalHeader},
+    types::{ChunkRequestType, NodeId, ProposalDAEvent, SignedProposalHeader},
 };
+use crate::spec::DAProposalHeader as _;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvalidChunk {
@@ -49,7 +51,7 @@ pub enum DecodingOutcome {
 
 // per-(slot, proposal) raptorcast committed to single root
 pub(crate) struct RaptorcastInstance {
-    header: ProposalHeader,
+    header: SignedProposalHeader,
     // None when this node is outside the assignment (e.g. a full node)
     self_index: Option<NodeIndex>,
 
@@ -64,8 +66,12 @@ pub(crate) struct RaptorcastInstance {
 }
 
 impl RaptorcastInstance {
-    pub(crate) fn new(epoch_handle: &EpochHandle, header: ProposalHeader, author: &NodeId) -> Self {
-        let scheme = &header.scheme;
+    pub(crate) fn new(
+        epoch_handle: &EpochHandle,
+        header: SignedProposalHeader,
+        author: &NodeId,
+    ) -> Self {
+        let scheme = header.scheme();
         let assignment = scheme.chunk_assignment(author, &epoch_handle.validator_data);
         let self_index = assignment.index_of(&epoch_handle.self_id);
 
@@ -87,7 +93,7 @@ impl RaptorcastInstance {
             recovery_tracker,
 
             assignment,
-            chunk_tree: ChunkTree::partial(header.root),
+            chunk_tree: ChunkTree::partial(*header.root()),
             header,
             self_index,
         }
@@ -105,7 +111,7 @@ impl RaptorcastInstance {
     }
 
     pub(crate) fn drain_obligation_events(&mut self) -> Vec<ProposalDAEvent> {
-        let root = self.header.root;
+        let root = *self.header.root();
         let mut events = Vec::new();
         for upstream in self.obligation_tracker.drain_fulfilled() {
             let event = match upstream {
@@ -243,7 +249,7 @@ impl RaptorcastInstance {
             return None;
         };
 
-        let root = self.header.root;
+        let root = *self.header.root();
         if !self.reencodes_to_root(&message) {
             self.decoding_outcome = DecodingOutcome::BadEncoding;
             return Some(ProposalDAEvent::DecodingFailed(root));
@@ -254,10 +260,10 @@ impl RaptorcastInstance {
 
     fn reencodes_to_root(&mut self, message: &[u8]) -> bool {
         let num_chunks = self.assignment.num_chunks();
-        let Some(tree) = self.header.scheme.encode(message, num_chunks) else {
+        let Some(tree) = self.header.scheme().encode(message, num_chunks) else {
             return false;
         };
-        if tree.root() != self.header.root {
+        if tree.root() != *self.header.root() {
             return false;
         }
         self.chunk_tree = tree;
@@ -338,7 +344,7 @@ mod tests {
         *,
     };
 
-    fn instance(epoch_handle: &EpochHandle, header: &ProposalHeader) -> RaptorcastInstance {
+    fn instance(epoch_handle: &EpochHandle, header: &SignedProposalHeader) -> RaptorcastInstance {
         RaptorcastInstance::new(epoch_handle, header.clone(), &author())
     }
 
@@ -413,7 +419,7 @@ mod tests {
         // chunk is short, the next one decodes
         assert_eq!(ingest(&mut instance, &chunks[1], &mut egress), Ok(None));
         let event = ingest(&mut instance, &chunks[2], &mut egress);
-        assert_eq!(event, Ok(Some(ProposalDAEvent::Decoded(header.root))));
+        assert_eq!(event, Ok(Some(ProposalDAEvent::Decoded(*header.root()))));
         assert_eq!(
             instance.decoded_message(),
             Some(&Bytes::from(vec![1u8; MESSAGE_LEN]))
@@ -432,7 +438,7 @@ mod tests {
         let event = ingest(&mut instance, &chunks[2], &mut egress);
         assert_eq!(
             event,
-            Ok(Some(ProposalDAEvent::DecodingFailed(header.root)))
+            Ok(Some(ProposalDAEvent::DecodingFailed(*header.root())))
         );
 
         assert!(!instance.accepting_chunks());
@@ -459,7 +465,7 @@ mod tests {
         // the chunkless author owes nothing from the start
         let author_owes_nothing = ProposalDAEvent::OwnerObligationFulfilled {
             owner: author(),
-            root: header.root,
+            root: *header.root(),
         };
         assert_eq!(
             instance.drain_obligation_events(),
@@ -472,7 +478,7 @@ mod tests {
         ingest(&mut instance, &chunks[3], &mut egress).expect("valid");
         assert_eq!(
             instance.drain_obligation_events(),
-            vec![ProposalDAEvent::ProposerObligationFulfilled(header.root)]
+            vec![ProposalDAEvent::ProposerObligationFulfilled(*header.root())]
         );
 
         // node 2 owns 1 and 4: one of them settles nothing
@@ -527,6 +533,6 @@ mod tests {
         assert_eq!(ingest(&mut instance, &chunks[2], &mut egress), Ok(None));
         assert!(instance.decoded_message().is_none());
         let event = ingest(&mut instance, &chunks[4], &mut egress);
-        assert_eq!(event, Ok(Some(ProposalDAEvent::Decoded(header.root))));
+        assert_eq!(event, Ok(Some(ProposalDAEvent::Decoded(*header.root()))));
     }
 }

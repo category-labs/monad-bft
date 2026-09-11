@@ -17,14 +17,15 @@ use std::collections::{HashMap, HashSet};
 
 use super::{
     chorus::ProposalDAEvent,
-    types::{EquivCert, MerkleRoot, ProposalHeader},
+    types::{EquivCert, MerkleRoot, SignedProposalHeader},
 };
+use crate::spec::ProposalHeader as _;
 
 // (slot, j)-scoped proposal availability state, built from DA events.
 #[derive(Clone, Default)]
 pub(crate) struct ProposalAvailability {
     // seen signed headers
-    headers: HashMap<MerkleRoot, ProposalHeader>,
+    headers: HashMap<MerkleRoot, SignedProposalHeader>,
 
     // proposals for which all our own chunks have been received from
     // the author.
@@ -68,21 +69,22 @@ impl ProposalAvailability {
     // invariant: every recorded header is authenticated, so any two
     // with distinct roots form an equivocation certificate. The
     // certificate is formed once, by the second distinct root.
-    pub fn record_header(&mut self, header: ProposalHeader) -> Option<EquivCert> {
-        if self.headers.contains_key(&header.root) {
+    pub fn record_header(&mut self, signed: SignedProposalHeader) -> Option<EquivCert> {
+        let root = *signed.root();
+        if self.headers.contains_key(&root) {
             return None;
         }
         let rival = match self.headers.len() {
             1 => self.headers.values().next().cloned(),
             _ => None,
         };
-        self.headers.insert(header.root, header.clone());
-        Some(EquivCert(rival?, header))
+        self.headers.insert(root, signed.clone());
+        Some(EquivCert(rival?, signed))
     }
 
     // The proposal to vote positively on at D_s: the first root
     // whose author obligation was fulfilled.
-    pub fn fetch_proposal(&self) -> Option<&ProposalHeader> {
+    pub fn fetch_proposal(&self) -> Option<&SignedProposalHeader> {
         let root = self.author_fulfilled.first()?;
         self.headers.get(root)
     }
@@ -100,7 +102,7 @@ impl ProposalAvailability {
         self.decoded.contains(root) || self.invalid.contains(root)
     }
 
-    pub fn header_for(&self, root: &MerkleRoot) -> Option<&ProposalHeader> {
+    pub fn header_for(&self, root: &MerkleRoot) -> Option<&SignedProposalHeader> {
         self.headers.get(root)
     }
 }
@@ -108,25 +110,29 @@ impl ProposalAvailability {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::env::stub::{D25, EncodingScheme, MerkleHash, NodeId, ProposalSignature};
+    use crate::env::stub::{
+        D25, EncodingScheme, MerkleHash, NodeId, ProposalHeader, ProposalSignature,
+    };
 
     fn root(byte: u8) -> MerkleRoot {
         MerkleRoot(MerkleHash([byte; 20]))
     }
 
-    fn header(byte: u8) -> ProposalHeader {
-        ProposalHeader {
-            slot: crate::stub::types::Slot(1),
-            root: root(byte),
+    fn header(byte: u8) -> SignedProposalHeader {
+        SignedProposalHeader {
+            header: ProposalHeader {
+                slot: crate::stub::types::Slot(1),
+                root: root(byte),
+                scheme: EncodingScheme::D25(D25 {
+                    msg_len: 1,
+                    unix_ts: 0,
+                    depth: 3,
+                }),
+            },
             sig: ProposalSignature {
                 signer: NodeId::dummy(0),
                 checksum: 0,
             },
-            scheme: EncodingScheme::D25(D25 {
-                msg_len: 1,
-                unix_ts: 0,
-                depth: 3,
-            }),
         }
     }
 
@@ -162,7 +168,7 @@ mod tests {
 
         let cert = avail.record_header(header(2));
         let EquivCert(a, b) = cert.expect("distinct roots conflict");
-        assert!(a.root != b.root);
+        assert!(a.root() != b.root());
 
         // a third root adds no evidence
         assert!(avail.record_header(header(3)).is_none());

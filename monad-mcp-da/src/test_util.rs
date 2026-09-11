@@ -31,12 +31,12 @@ use super::{
     header::header_auth,
     runtime::EpochHandle,
     types::{
-        EncodingScheme, MerkleRoot, NodeId, ProposalHeader, ProposalIndex, ProposalKeyPair, Slot,
-        Stake, ValidatorData,
+        EncodingScheme, NodeId, ProposalHeader, ProposalIndex, ProposalKeyPair,
+        SignedProposalHeader, Slot, Stake, ValidatorData,
     },
     wire,
 };
-use crate::spec::DAProposalKeyPair as _;
+use crate::spec::{DAProposalHeader as _, DAProposalKeyPair as _};
 
 pub(crate) const SLOT: Slot = Slot(1);
 pub(crate) const MESSAGE_LEN: usize = 1500;
@@ -105,29 +105,19 @@ pub(crate) fn scheme(epoch_handle: &EpochHandle) -> EncodingScheme {
     EncodingScheme::D25(d25)
 }
 
-// the header as the author signs it
-pub(crate) fn signed_header(
-    slot: Slot,
-    scheme: EncodingScheme,
-    root: MerkleRoot,
-    author_id: u64,
-) -> ProposalHeader {
-    let signed = wire::signed_bytes(slot, &scheme, &root);
+// the header as validator `author_id` signs it
+pub(crate) fn signed_header(header: ProposalHeader, author_id: u64) -> SignedProposalHeader {
+    let signed = wire::signed_bytes(&header);
     let sig = ProposalKeyPair::dummy(NodeId::dummy(author_id)).sign(&signed);
-    ProposalHeader {
-        slot,
-        root,
-        scheme,
-        sig,
-    }
+    SignedProposalHeader { header, sig }
 }
 
 // the header and every chunk of a complete tree, in wire id order
 fn chunks_of(
     tree: &ChunkTree,
     assignment: &ChunkAssignment,
-    header: ProposalHeader,
-) -> (ProposalHeader, Vec<Chunk<'static>>) {
+    header: SignedProposalHeader,
+) -> (SignedProposalHeader, Vec<Chunk<'static>>) {
     let mut chunks = Vec::new();
     for chunk_id in assignment.chunk_ids() {
         let data = tree.chunk_data(chunk_id).expect("complete tree");
@@ -146,7 +136,7 @@ pub(crate) fn proposal_chunks_from(
     author_id: u64,
     slot: Slot,
     payload: u8,
-) -> (ProposalHeader, Vec<Chunk<'static>>) {
+) -> (SignedProposalHeader, Vec<Chunk<'static>>) {
     let author = NodeId::dummy(author_id);
     let scheme = scheme(epoch_handle);
     let assignment = scheme.chunk_assignment(&author, &epoch_handle.validator_data);
@@ -154,14 +144,18 @@ pub(crate) fn proposal_chunks_from(
     let tree = scheme
         .encode(&message, assignment.num_chunks())
         .expect("a message of the scheme's length");
-    let header = signed_header(slot, scheme, tree.root(), author_id);
-    chunks_of(&tree, &assignment, header)
+    let header = ProposalHeader {
+        slot,
+        root: tree.root(),
+        scheme,
+    };
+    chunks_of(&tree, &assignment, signed_header(header, author_id))
 }
 
 pub(crate) fn proposal_chunks(
     epoch_handle: &EpochHandle,
     payload: u8,
-) -> (ProposalHeader, Vec<Chunk<'static>>) {
+) -> (SignedProposalHeader, Vec<Chunk<'static>>) {
     proposal_chunks_from(epoch_handle, 0, SLOT, payload)
 }
 
@@ -170,7 +164,7 @@ pub(crate) fn proposal_chunks(
 // carry one payload, the second half another
 pub(crate) fn inconsistent_proposal_chunks(
     epoch_handle: &EpochHandle,
-) -> (ProposalHeader, Vec<Chunk<'static>>) {
+) -> (SignedProposalHeader, Vec<Chunk<'static>>) {
     let scheme = scheme(epoch_handle);
     let assignment = scheme.chunk_assignment(&author(), &epoch_handle.validator_data);
     let num_chunks = assignment.num_chunks();
@@ -182,18 +176,22 @@ pub(crate) fn inconsistent_proposal_chunks(
         symbols.push(Bytes::from(vec![payload; symbol_len]));
     }
     let tree = ChunkTree::complete(scheme.depth(), symbols).expect("fits the depth");
-    let header = signed_header(SLOT, scheme, tree.root(), 0);
-    chunks_of(&tree, &assignment, header)
+    let header = ProposalHeader {
+        slot: SLOT,
+        root: tree.root(),
+        scheme,
+    };
+    chunks_of(&tree, &assignment, signed_header(header, 0))
 }
 
 // the verified id of a wire chunk id under the header's assignment
 pub(crate) fn chunk_id(
     epoch_handle: &EpochHandle,
-    header: &ProposalHeader,
+    header: &SignedProposalHeader,
     wire: WireChunkId,
 ) -> ChunkId {
     let assignment = header
-        .scheme
+        .scheme()
         .chunk_assignment(&author(), &epoch_handle.validator_data);
     assignment
         .resolve_chunk_id(wire)

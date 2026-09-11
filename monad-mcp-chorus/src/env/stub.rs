@@ -211,7 +211,7 @@ mod proposal {
 
     use super::NodeId;
     use crate::{
-        spec,
+        spec::{self, ProposalHeader as _},
         stub::types::{ProposalIndex, Slot},
     };
 
@@ -281,13 +281,18 @@ mod proposal {
     pub struct ProposalHeader {
         pub slot: Slot,
         pub root: MerkleRoot,
+        pub scheme: EncodingScheme,
+    }
+
+    #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
+    pub struct SignedProposalHeader {
+        pub header: ProposalHeader,
 
         // DA-owned fields. defined here rather than in DA because we
         // don't want chorus to depend on DA.
         // todo: we may extract a monad-mcp-da-types crate and depend
         // on it from monad-mcp-chorus and monad-mcp-da.
         pub sig: ProposalSignature,
-        pub scheme: EncodingScheme,
     }
 
     impl spec::ProposalHeader for ProposalHeader {
@@ -302,10 +307,30 @@ mod proposal {
         }
     }
 
+    impl spec::ProposalHeader for SignedProposalHeader {
+        type Root = MerkleRoot;
+
+        fn slot(&self) -> u64 {
+            self.header.slot.0
+        }
+
+        fn root(&self) -> &MerkleRoot {
+            &self.header.root
+        }
+    }
+
+    impl spec::SignedProposalHeader for SignedProposalHeader {
+        type Sig = ProposalSignature;
+
+        fn sig(&self) -> &ProposalSignature {
+            &self.sig
+        }
+    }
+
     // the proposal index of a header the legitimate proposer of the
     // slot signed. Supplied by the DA env, which owns the signature
     // and scheme checks.
-    type Authenticator = dyn Fn(&ProposalHeader, u64) -> Option<ProposalIndex> + Send + Sync;
+    type Authenticator = dyn Fn(&SignedProposalHeader, u64) -> Option<ProposalIndex> + Send + Sync;
 
     pub struct HeaderAuth {
         authenticator: Box<Authenticator>,
@@ -314,7 +339,7 @@ mod proposal {
     impl HeaderAuth {
         pub fn new<F>(authenticator: F) -> Self
         where
-            F: Fn(&ProposalHeader, u64) -> Option<ProposalIndex> + Send + Sync + 'static,
+            F: Fn(&SignedProposalHeader, u64) -> Option<ProposalIndex> + Send + Sync + 'static,
         {
             Self {
                 authenticator: Box::new(authenticator),
@@ -323,13 +348,13 @@ mod proposal {
     }
 
     impl spec::proposal::HeaderAuth for HeaderAuth {
-        type Header = ProposalHeader;
+        type Signed = SignedProposalHeader;
 
-        fn authenticate(&self, header: &ProposalHeader, slot: u64) -> Option<ProposalIndex> {
-            if header.slot.get() != slot {
+        fn authenticate(&self, signed: &SignedProposalHeader, slot: u64) -> Option<ProposalIndex> {
+            if signed.slot() != slot {
                 return None;
             }
-            (self.authenticator)(header, slot)
+            (self.authenticator)(signed, slot)
         }
     }
 }
@@ -635,6 +660,7 @@ const _: () = crate::spec::assert_env::<
     VoteAggregation<'_>,
     MerkleRoot,
     ProposalHeader,
+    SignedProposalHeader,
     HeaderAuth,
 >();
 

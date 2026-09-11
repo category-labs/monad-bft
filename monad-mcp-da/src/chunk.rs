@@ -22,7 +22,7 @@ use bytes::Bytes;
 
 use super::{
     assignment::ChunkId,
-    types::{ChunkRequestType, MerkleHash, ProposalHeader},
+    types::{ChunkRequestType, MerkleHash, SignedProposalHeader},
 };
 
 // a chunk id as carried on the wire, not yet checked against an
@@ -82,13 +82,13 @@ pub struct ChunkData {
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Chunk<'a> {
-    header: Cow<'a, ProposalHeader>,
+    header: Cow<'a, SignedProposalHeader>,
     chunk_id: WireChunkId,
     data: Cow<'a, ChunkData>,
 }
 
 impl Chunk<'static> {
-    pub fn new(header: ProposalHeader, chunk_id: WireChunkId, data: ChunkData) -> Self {
+    pub fn new(header: SignedProposalHeader, chunk_id: WireChunkId, data: ChunkData) -> Self {
         Self {
             header: Cow::Owned(header),
             chunk_id,
@@ -98,7 +98,7 @@ impl Chunk<'static> {
 }
 
 impl<'a> Chunk<'a> {
-    fn view(header: &'a ProposalHeader, chunk_id: WireChunkId, data: &'a ChunkData) -> Self {
+    fn view(header: &'a SignedProposalHeader, chunk_id: WireChunkId, data: &'a ChunkData) -> Self {
         Self {
             header: Cow::Borrowed(header),
             chunk_id,
@@ -106,7 +106,7 @@ impl<'a> Chunk<'a> {
         }
     }
 
-    pub fn header(&self) -> &ProposalHeader {
+    pub fn header(&self) -> &SignedProposalHeader {
         &self.header
     }
 
@@ -118,7 +118,7 @@ impl<'a> Chunk<'a> {
         &self.data
     }
 
-    pub fn into_parts(self) -> (ProposalHeader, WireChunkId, ChunkData) {
+    pub fn into_parts(self) -> (SignedProposalHeader, WireChunkId, ChunkData) {
         (
             self.header.into_owned(),
             self.chunk_id,
@@ -131,12 +131,15 @@ impl<'a> Chunk<'a> {
 // chunks. the unit of both dissemination and ingestion.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ProposalEnvelope {
-    header: ProposalHeader,
+    header: SignedProposalHeader,
     chunks: BTreeMap<WireChunkId, ChunkData>,
 }
 
 impl ProposalEnvelope {
-    pub(crate) fn new(header: ProposalHeader, chunks: BTreeMap<WireChunkId, ChunkData>) -> Self {
+    pub(crate) fn new(
+        header: SignedProposalHeader,
+        chunks: BTreeMap<WireChunkId, ChunkData>,
+    ) -> Self {
         Self { header, chunks }
     }
 
@@ -145,13 +148,14 @@ impl ProposalEnvelope {
         Self::new(header, BTreeMap::from([(chunk_id, data)]))
     }
 
-    pub fn from_header(header: ProposalHeader) -> Self {
+    pub fn from_header(header: SignedProposalHeader) -> Self {
         Self::new(header, BTreeMap::new())
     }
 
     // group chunks by header. each header appears once.
     pub fn group<'a>(chunks: impl IntoIterator<Item = Chunk<'a>>) -> impl Iterator<Item = Self> {
-        let mut groups: HashMap<ProposalHeader, BTreeMap<WireChunkId, ChunkData>> = HashMap::new();
+        let mut groups: HashMap<SignedProposalHeader, BTreeMap<WireChunkId, ChunkData>> =
+            HashMap::new();
         for chunk in chunks {
             let (header, chunk_id, data) = chunk.into_parts();
             groups.entry(header).or_default().insert(chunk_id, data);
@@ -164,7 +168,7 @@ impl ProposalEnvelope {
         envelopes.into_iter()
     }
 
-    pub fn header(&self) -> &ProposalHeader {
+    pub fn header(&self) -> &SignedProposalHeader {
         &self.header
     }
 
@@ -182,7 +186,7 @@ impl ProposalEnvelope {
         self.chunks.insert(chunk_id, data);
     }
 
-    pub(crate) fn into_parts(self) -> (ProposalHeader, BTreeMap<WireChunkId, ChunkData>) {
+    pub(crate) fn into_parts(self) -> (SignedProposalHeader, BTreeMap<WireChunkId, ChunkData>) {
         (self.header, self.chunks)
     }
 }

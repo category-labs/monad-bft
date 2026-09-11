@@ -20,6 +20,7 @@ use std::{
 };
 
 use bytes::Bytes;
+use monad_mcp_chorus::spec::ProposalHeader as _;
 
 use super::{
     chunk::{ChunkRequest, ProposalEnvelope},
@@ -96,7 +97,7 @@ where
     }
 
     pub fn ingest(&mut self, envelope: ProposalEnvelope) -> Result<(), InvalidProposalHeader> {
-        let slot = envelope.header().slot;
+        let slot = Slot(envelope.header().slot());
         let Some(slot_raptorcast) = self.open_slot_raptorcast(slot) else {
             return Err(InvalidProposalHeader::SlotOutOfRange);
         };
@@ -324,13 +325,13 @@ mod tests {
                     root,
                     message,
                 } => {
-                    assert_eq!((*slot, *proposal_index, *root), (SLOT, 0, header.root));
+                    assert_eq!((*slot, *proposal_index, *root), (SLOT, 0, *header.root()));
                     assert_eq!(message, &Bytes::from(vec![1u8; MESSAGE_LEN]));
                     decoded_at = Some(i);
                 }
                 DAOutput::Consensus(slot, event) => {
                     assert_eq!(*slot, SLOT);
-                    if event.event == ProposalDAEvent::Decoded(header.root) {
+                    if event.event == ProposalDAEvent::Decoded(*header.root()) {
                         consensus_decoded_at = Some(i);
                     }
                 }
@@ -365,7 +366,7 @@ mod tests {
         let voters = vec![NodeId::dummy(1), NodeId::dummy(2), NodeId::dummy(3)];
         let command = ChorusDACommand::RecoverChunks {
             j: 0,
-            root: header.root,
+            root: *header.root(),
             request_type: ChunkRequestType::YourChunks,
             voters,
         };
@@ -377,7 +378,7 @@ mod tests {
                 panic!("only requests are produced");
             };
             assert_eq!((request.slot, request.proposal_index), (SLOT, 0));
-            assert_eq!(request.root, header.root);
+            assert_eq!(request.root, *header.root());
             assert_eq!(
                 request.request,
                 ChunkRequest::all(ChunkRequestType::YourChunks)
@@ -389,7 +390,7 @@ mod tests {
         let unknown_slot = ChunkRecoveryRequest {
             slot: Slot(7),
             proposal_index: 0,
-            root: header.root,
+            root: *header.root(),
             request: ChunkRequest::all(ChunkRequestType::YourChunks),
         };
         runtime.handle_chunk_request(&NodeId::dummy(2), unknown_slot);
