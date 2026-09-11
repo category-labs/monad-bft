@@ -21,7 +21,7 @@
 
 mod helper;
 
-use std::{num::NonZeroU64, sync::Arc};
+use std::{num::NonZeroU64, sync::Arc, time::Duration};
 
 use chorus::{
     conductor::{ConductorConfig, MonadConductor, acs::nop::NopAcs},
@@ -37,9 +37,12 @@ use chorus::{
 use helper::{expect_finalized, expect_finalized_at};
 use monad_mcp_chorus::{spec::KeyPair as _, stub as chorus};
 use monad_mcp_chorus_sim::CadenceSwarmBuilder;
+use monad_sim::Time;
+use monad_sim_swarm::Network;
 
 const NODES: u64 = 4;
 const SLOTS_PER_WINDOW: NonZeroU64 = NonZeroU64::new(4).unwrap(); // W
+const LAG_THRESHOLD: NonZeroU64 = SLOTS_PER_WINDOW; // one window behind triggers a cap jump
 const SYNC_BOUNDARY_SLOTS: NonZeroU64 = NonZeroU64::new(2).unwrap(); // p; must be <= W
 const SLOT_INTERVAL: u64 = 100; // tau
 const LATENCY: u64 = 50; // networking latency
@@ -58,6 +61,7 @@ fn conductor() -> Conductor {
         SYNC_BOUNDARY_SLOTS,
         TimestampDelta::from_millis(SLOT_INTERVAL),
         GENESIS_DEADLINE,
+        LAG_THRESHOLD,
     )
     .unwrap();
     Conductor::genesis(config, ()).unwrap()
@@ -176,4 +180,58 @@ fn full_window_rolls_over_with_chorus() {
                 .map(|slot| slot_deadline(slot) + TimestampDelta::from_millis(2 * LATENCY)),
         );
     }
+}
+
+/// A node partitioned for the whole of window 0 finalizes nothing of its own,
+/// then jumps its cap off the majority's `CapAdvance` once the partition lifts.
+#[test]
+fn a_partitioned_node_jumps_its_cap_to_the_majority() {
+    let laggard = NodeId::dummy(NODES - 1);
+    let majority = (0..NODES - 1).map(NodeId::dummy);
+    // covers every window-0 slot; the first announcement the laggard can hear
+    // is the one for cap 6 at t = 700
+    let partition = Time(0)..(Time(0) + Duration::from_millis(680));
+    let network = Network::reliable(TimestampDelta::from_millis(LATENCY).as_duration())
+        .partition(partition, [[laggard]]);
+
+    let mut builder = CadenceSwarmBuilder::new();
+    builder.set_network(network);
+
+    let val_data = Arc::new(gen_validator_data(NODES));
+    for i in 0..NODES {
+        let id = NodeId::dummy(i);
+        let slot_config = ChorusConfig {
+            delta: TimestampDelta::from_millis(DELTA),
+        };
+        let context = ChorusContext {
+            node_id: id,
+            key: Arc::new(id.keypair()),
+            validator_data: val_data.clone(),
+            header_auth: Arc::new(HeaderAuth::new(|_, _| None)),
+            proposers: proposer_schedule(&val_data),
+        };
+        builder.add_node::<Chorus, _>(id, conductor(), slot_config, context);
+    }
+
+    let mut swarm = builder.build();
+    swarm.run_until(Timestamp::from_millis(1150));
+
+    // the three connected nodes keep the fast path throughout
+    for node_id in majority {
+        expect_finalized(&swarm, node_id, 0..=9);
+        expect_finalized_at(
+            &swarm,
+            node_id,
+            (0..=9).map(|slot| slot_deadline(slot) + TimestampDelta::from_millis(2 * LATENCY)),
+        );
+    }
+
+    // the laggard finalizes nothing below the cap it jumped to, then runs in
+    // lockstep with the majority from that slot on
+    expect_finalized(&swarm, laggard, 6..=9);
+    expect_finalized_at(
+        &swarm,
+        laggard,
+        (6..=9).map(|slot| slot_deadline(slot) + TimestampDelta::from_millis(2 * LATENCY)),
+    );
 }

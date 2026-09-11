@@ -57,6 +57,10 @@ impl<M, E> CadenceSwarmBuilder<M, E> {
         self.network = Network::reliable(latency);
     }
 
+    pub fn set_network(&mut self, network: Network<NodeId, SimMessage<M>>) {
+        self.network = network;
+    }
+
     pub fn set_seed(&mut self, seed: u64) {
         self.seed = seed;
     }
