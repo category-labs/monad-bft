@@ -17,6 +17,7 @@ use std::{
     collections::{hash_map::Entry, HashMap, HashSet},
     fmt,
     hash::{Hash, Hasher},
+    sync::Arc,
 };
 
 use hdrhistogram::Histogram as HdrHistogram;
@@ -27,6 +28,10 @@ use prometheus::{
 use tracing::error;
 
 pub type Gauge = GenericGauge<AtomicU64>;
+
+mod counter_labels;
+pub use counter_labels::LabeledCounterFamily;
+pub use prometheus::IntCounter as Counter;
 
 #[derive(Copy, Clone, Debug)]
 pub struct MetricDef {
@@ -118,18 +123,25 @@ macro_rules! metric_consts {
 #[derive(Clone, Default)]
 pub struct ExecutorMetrics {
     gauges: HashMap<&'static MetricDef, Gauge>,
+    counter_families: HashMap<&'static MetricDef, Arc<LabeledCounterFamily>>,
 }
 
 impl fmt::Debug for ExecutorMetrics {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ExecutorMetrics")
             .field("values", &self.snapshot())
+            .field("counter_families", &self.counter_families)
             .finish()
     }
 }
 
 impl ExecutorMetrics {
     fn ensure_gauge(&mut self, metric: &'static MetricDef) -> &Gauge {
+        assert!(
+            !self.counter_families.contains_key(metric),
+            "metric is already a counter: {}",
+            metric.name
+        );
         match self.gauges.entry(metric) {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => entry.insert(
@@ -165,6 +177,11 @@ impl ExecutorMetrics {
         match self.gauges.entry(metric) {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
+                assert!(
+                    !self.counter_families.contains_key(metric),
+                    "metric is already a counter: {}",
+                    metric.name
+                );
                 error!(
                     metric = metric.name,
                     "executor metric gauge was not registered before access"
@@ -186,6 +203,28 @@ impl ExecutorMetrics {
         }
     }
 
+    /// Creates a counter family, or returns handles to the existing family.
+    /// Prefer [`crate::counter_labels!`] for typed, named counter fields.
+    /// Initialize all families before registering metrics with an exporter.
+    pub fn counter_family<const N: usize>(
+        &mut self,
+        metric: &'static MetricDef,
+        label_name: &'static str,
+        label_values: &'static [&'static str; N],
+    ) -> [Counter; N] {
+        assert!(
+            !self.gauges.contains_key(metric),
+            "metric is already a gauge: {}",
+            metric.name
+        );
+        let family = self.counter_families.entry(metric).or_insert_with(|| {
+            Arc::new(LabeledCounterFamily::new(metric, label_name, label_values))
+        });
+        family.assert_schema(metric, label_name, label_values);
+        family.handles()
+    }
+
+    /// Scalar gauge handles. Labeled counters are exported as families separately.
     pub fn metric_handles(&self) -> Vec<(&'static str, Gauge, &'static str)> {
         self.gauges
             .iter()
@@ -197,9 +236,13 @@ impl ExecutorMetrics {
         for (_, gauge, _) in self.metric_handles() {
             registry.register(Box::new(gauge))?;
         }
+        for family in self.counter_families.values() {
+            family.register(registry)?;
+        }
         Ok(())
     }
 
+    /// Scalar gauge snapshots. Use counter families to retain counter labels.
     pub fn iter_with_descriptions(
         &self,
     ) -> impl Iterator<Item = (&'static str, u64, &'static str)> + '_ {
@@ -235,11 +278,34 @@ impl<'a> ExecutorMetricsChain<'a> {
         self
     }
 
+    /// Scalar gauge snapshots. Use [`Self::counter_families`] for labeled counters.
     pub fn into_inner(self) -> Vec<(&'static str, u64, &'static str)> {
         self.metric_handles()
             .into_iter()
             .map(|(name, gauge, help)| (name, gauge.get(), help))
             .collect()
+    }
+
+    /// Deduplicates shared families, preserving every label value within a family.
+    /// Independent families with conflicting names are rejected during registration.
+    pub fn counter_families(&self) -> Vec<Arc<LabeledCounterFamily>> {
+        let mut seen = HashSet::new();
+        self.0
+            .iter()
+            .flat_map(|metrics| metrics.counter_families.values())
+            .filter(|family| seen.insert(Arc::as_ptr(family)))
+            .cloned()
+            .collect()
+    }
+
+    pub fn register(&self, registry: &Registry) -> prometheus::Result<()> {
+        for (_, gauge, _) in self.metric_handles() {
+            registry.register(Box::new(gauge))?;
+        }
+        for family in self.counter_families() {
+            family.register(registry)?;
+        }
+        Ok(())
     }
 
     pub fn metric_handles(&self) -> Vec<(&'static str, Gauge, &'static str)> {

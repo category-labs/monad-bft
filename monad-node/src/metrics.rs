@@ -26,6 +26,9 @@ use monad_executor::{metric_consts, ExecutorMetrics, ExecutorMetricsChain, Gauge
 use monad_triedb_utils::{MigrationPhase, StorageStats};
 use prometheus::{Encoder, ProtobufEncoder, Registry, TextEncoder};
 
+mod otel;
+pub use otel::register_otel_counters;
+
 pub fn default_prometheus_labels(
     service_name: String,
     network_name: String,
@@ -142,9 +145,7 @@ impl NodePrometheusMetrics {
             registry.register(Box::new(gauge.clone()))?;
         }
 
-        for (_, gauge, _) in executor_metrics.metric_handles() {
-            registry.register(Box::new(gauge))?;
-        }
+        executor_metrics.register(&registry)?;
 
         let mut node_executor_metrics = init_node_executor_metrics();
         node_executor_metrics.gauge(GAUGE_NODE_INFO).set(1);

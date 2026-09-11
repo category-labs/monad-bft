@@ -78,7 +78,7 @@ impl RxState {
         let status = self.addrlist.status(&ip);
         match status {
             Status::Banned => {
-                self.metrics.tcp_inbound_connections_rejected.inc();
+                self.metrics.tcp_inbound_connections_rejected.banned.inc();
                 warn!(?ip, "banned address attempting connection, dropping");
                 Err(())
             }
@@ -100,7 +100,10 @@ impl RxState {
             Status::Unknown => {
                 let mut inner_ref = self.inner.borrow_mut();
                 if inner_ref.num_connections >= inner_ref.tcp_connections_limit {
-                    self.metrics.tcp_inbound_connections_rejected.inc();
+                    self.metrics
+                        .tcp_inbound_connections_rejected
+                        .connection_limit
+                        .inc();
                     debug!(
                         ?ip,
                         total_connections = inner_ref.num_connections,
@@ -113,7 +116,10 @@ impl RxState {
                     let per_ip_limit = inner_ref.tcp_per_ip_connections_limit;
                     let count_ref = inner_ref.num_connections_per_ip.entry(ip).or_insert(0);
                     if *count_ref >= per_ip_limit {
-                        self.metrics.tcp_inbound_connections_rejected.inc();
+                        self.metrics
+                            .tcp_inbound_connections_rejected
+                            .per_ip_limit
+                            .inc();
                         debug!(
                             ?ip,
                             ip_connections = *count_ref,
@@ -228,7 +234,7 @@ pub(crate) async fn task(
                 }
             },
             Err(err) => {
-                rx_state.metrics.tcp_receive_errors.inc();
+                rx_state.metrics.tcp_receive_errors.accept.inc();
                 warn!(conn_id, ?err, "error accepting tcp connection");
             }
         }
@@ -317,7 +323,7 @@ async fn read_message(
             Ok(_len) => TcpMsgHdr::read_from_bytes(&header_bytes[..]).unwrap(),
             Err(err) => {
                 if message_id == 0 || err.kind() != ErrorKind::UnexpectedEof {
-                    metrics.tcp_receive_errors.inc();
+                    metrics.tcp_receive_errors.header_io.inc();
                     debug!(
                         conn_id,
                         ?addr,
@@ -332,7 +338,7 @@ async fn read_message(
             }
         },
         Err(_) => {
-            metrics.tcp_receive_errors.inc();
+            metrics.tcp_receive_errors.header_timeout.inc();
             warn!(
                 conn_id,
                 ?addr,
@@ -350,7 +356,7 @@ async fn read_message(
     } = header;
 
     if header_magic.get() != HEADER_MAGIC {
-        metrics.tcp_receive_errors.inc();
+        metrics.tcp_receive_errors.invalid_magic.inc();
         debug!(
             conn_id,
             ?addr,
@@ -361,7 +367,7 @@ async fn read_message(
         return None;
     }
     if header_version.get() != HEADER_VERSION {
-        metrics.tcp_receive_errors.inc();
+        metrics.tcp_receive_errors.invalid_version.inc();
         debug!(
             conn_id,
             ?addr,
@@ -375,7 +381,7 @@ async fn read_message(
     let message_length: usize = header_length.get() as usize;
 
     if message_length > TCP_MESSAGE_LENGTH_LIMIT {
-        metrics.tcp_receive_errors.inc();
+        metrics.tcp_receive_errors.message_too_large.inc();
         debug!(
             conn_id,
             ?addr,
@@ -405,7 +411,7 @@ async fn read_message(
         Ok((ret, message)) => match ret {
             Ok(_len) => message,
             Err(err) => {
-                metrics.tcp_receive_errors.inc();
+                metrics.tcp_receive_errors.body_io.inc();
                 debug!(
                     conn_id,
                     ?addr,
@@ -418,7 +424,7 @@ async fn read_message(
             }
         },
         Err(_) => {
-            metrics.tcp_receive_errors.inc();
+            metrics.tcp_receive_errors.body_timeout.inc();
             warn!(
                 conn_id,
                 ?addr,
@@ -460,4 +466,42 @@ async fn read_message(
     metrics.tcp_messages_received.inc();
     metrics.tcp_bytes_received.add(message_length as u64);
     Some(message.freeze())
+}
+
+#[cfg(test)]
+mod tests {
+    use monad_executor::ExecutorMetricsChain;
+
+    use super::*;
+
+    #[test]
+    fn connection_rejections_are_exported_by_reason() {
+        let metrics = DataplaneMetrics::new();
+        let addrlist = Arc::new(Addrlist::new());
+        let state = RxState::new(addrlist.clone(), 2, 1, metrics.clone());
+        let first: IpAddr = "127.0.0.1".parse().unwrap();
+        let second: IpAddr = "127.0.0.2".parse().unwrap();
+        let third: IpAddr = "127.0.0.3".parse().unwrap();
+
+        // Keep accepted connections alive while exercising each rejection path.
+        let _first = state.apply_limits(first).unwrap();
+        assert!(state.apply_limits(first).is_err());
+        let _second = state.apply_limits(second).unwrap();
+        assert!(state.apply_limits(third).is_err());
+        addrlist.ban(&third, monoio::time::Instant::now());
+        assert!(state.apply_limits(third).is_err());
+
+        let families = ExecutorMetricsChain::from(metrics.executor_metrics()).counter_families();
+        let family = families
+            .iter()
+            .find(|family| {
+                family.definition().name == "monad.dataplane.tcp.inbound_connections_rejected_total"
+            })
+            .unwrap();
+        assert_eq!(family.label_name(), "reason");
+        assert_eq!(
+            family.samples().collect::<Vec<_>>(),
+            [("banned", 1), ("connection_limit", 1), ("per_ip_limit", 1),]
+        );
+    }
 }
