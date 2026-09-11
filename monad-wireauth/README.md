@@ -22,18 +22,17 @@ session management layer:
 
 high-level api with dos protection:
 
-the filter operates in three modes based on load:
+the filter operates using two global handshake rate limits plus a hard session cap:
 
 | condition | action |
 |-----------|--------|
-| cookie invalid and handshakes >= `handshake_cookie_unverified_rate_limit` | send cookie reply (if `handshake_cookie_verified_rate_limit` has remaining budget), otherwise drop request |
+| cookie invalid and handshakes >= `handshake_cookie_unverified_rate_limit` | send cookie reply |
 | cookie valid and handshakes >= `handshake_cookie_verified_rate_limit` | drop request |
+| cookie valid and last verified request from the same ip is within `ip_rate_limit_window` | drop request |
 | sessions >= `high_watermark_sessions` | drop request |
-| sessions >= `low_watermark_sessions` and cookie invalid | send cookie reply |
-| sessions >= `low_watermark_sessions` and cookie valid | apply per-ip rate limiting via lru cache |
-| sessions < `low_watermark_sessions` | no additional measures |
+| otherwise | accept request |
 
-defaults: `high_watermark_sessions`=40,000, `handshake_cookie_unverified_rate_limit`=300/sec, `handshake_cookie_verified_rate_limit`=300/sec, `connect_rate_limit`=300/sec, `low_watermark_sessions`=5,000, `ip_rate_limit_window`=10s, `max_sessions_per_ip`=4, `ip_history_capacity`=1,000,000
+defaults: `high_watermark_sessions`=40,000, `handshake_cookie_unverified_rate_limit`=500/sec, `handshake_cookie_verified_rate_limit`=1,000/sec, `ip_rate_limit_window`=10s, `ip_history_capacity`=1,000,000, `connect_rate_limit`=300/sec
 
 these defaults are per instance. we expect to run more than one wireauth instance, so the per-instance handshake and session limits are intentionally lower and aggregate capacity should come from running multiple instances.
 
@@ -68,7 +67,7 @@ session_decrypt         time:   [166.11 ns 168.75 ns 171.20 ns]
 | `monad.wireauth.state.packet_queue_size` | outbound packets waiting to be sent |
 | `monad.wireauth.state.initiated_session_by_peer_size` | tracks one initiating session per peer to prevent duplicates |
 | `monad.wireauth.state.accepted_sessions_by_peer_size` | tracks accepted sessions per peer for limiting |
-| `monad.wireauth.state.ip_session_counts_size` | tracks session count per ip for rate limiting |
+| `monad.wireauth.state.ip_session_counts_size` | tracks session count per ip |
 
 ### state counters
 
@@ -83,9 +82,9 @@ session_decrypt         time:   [166.11 ns 168.75 ns 171.20 ns]
 
 | metric | description |
 |--------|-------------|
-| `monad.wireauth.filter.ip_request_history_size` | lru cache tracking recent handshake requests per ip |
+| `monad.wireauth.filter.ip_request_history_size` | lru cache tracking recent verified handshake requests per ip |
 | `monad.wireauth.filter.pass` | handshake requests that passed all filters |
-| `monad.wireauth.filter.send_cookie` | cookie challenges sent (between low and high watermark) |
+| `monad.wireauth.filter.send_cookie` | cookie challenges sent due to the unverified handshake rate limit |
 | `monad.wireauth.filter.drop` | handshake requests rejected due to rate limits |
 | `monad.wireauth.rate_limit.connect` | outbound connect attempts rejected due to rate limits |
 
@@ -160,17 +159,15 @@ session_decrypt         time:   [166.11 ns 168.75 ns 171.20 ns]
 | `rekey_interval` | Duration | 6h | time before initiating new handshake to rotate keys |
 | `rekey_jitter` | Duration | 60s | randomization to avoid synchronized rekey storms |
 | `max_session_duration` | Duration | 6h5m | absolute session lifetime regardless of activity (forces rekey) |
-| `handshake_cookie_unverified_rate_limit` | u64 | 300 | max handshake initiations per second without a valid cookie |
-| `handshake_cookie_verified_rate_limit` | u64 | 300 | max handshake initiations per second with a valid cookie |
+| `handshake_cookie_unverified_rate_limit` | u64 | 500 | max handshake initiations per second without a valid cookie |
+| `handshake_cookie_verified_rate_limit` | u64 | 1000 | max handshake initiations per second with a valid cookie |
 | `handshake_rate_reset_interval` | Duration | 1s | window for handshake rate limiting |
 | `connect_rate_limit` | u64 | 300 | max outbound connect attempts per second (dos protection) |
 | `connect_rate_reset_interval` | Duration | 1s | window for outbound connect rate limiting |
 | `cookie_refresh_duration` | Duration | 120s | cookie validity period (responder rotates cookie key) |
-| `low_watermark_sessions` | usize | 5000 | below this threshold, accept all handshakes without cookie challenge |
+| `ip_rate_limit_window` | Duration | 10s | time window for counting verified handshake requests per ip |
+| `ip_history_capacity` | usize | 1000000 | lru cache size for tracking recent verified handshake requests per ip |
 | `high_watermark_sessions` | usize | 40000 | at this threshold, drop all incoming handshake requests |
-| `max_sessions_per_ip` | usize | 4 | limit concurrent sessions from single ip (anti-amplification) |
-| `ip_rate_limit_window` | Duration | 10s | time window for counting handshake requests per ip |
-| `ip_history_capacity` | usize | 1000000 | lru cache size for tracking handshake request timestamps per ip |
 | `psk` | [u8; 32] | zeros | optional pre-shared key mixed into handshake for additional auth |
 | `max_initiated_sessions` | usize | 1000 | max concurrent initiated sessions (handshakes in progress) |
 | `max_buffered_bytes_per_session` | usize | 131072 | max bytes of buffered messages per initiated session (128KB) |
