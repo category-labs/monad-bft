@@ -22,7 +22,7 @@ use monad_eth_types::{
 };
 use monad_types::SeqNum;
 
-use crate::triedb_env::{BlockKey, FinalizedBlockKey, Triedb};
+use crate::triedb_env::{BlockKey, FinalizedBlockKey, PinnedBlock, Triedb};
 
 #[derive(Debug, Default)]
 pub struct MockTriedb {
@@ -83,16 +83,21 @@ impl Triedb for MockTriedb {
         Some(BlockKey::Finalized(FinalizedBlockKey(block_num)))
     }
 
+    // No KV behind the mock, so nothing to pin.
+    fn pin_block(&self, key: BlockKey) -> PinnedBlock {
+        PinnedBlock::unpinned(key)
+    }
+
     fn get_state_availability(
         &self,
-        _key: BlockKey,
+        _block: &PinnedBlock,
     ) -> impl std::future::Future<Output = Result<bool, String>> + Send {
         ready(Ok(true))
     }
 
     fn get_account(
         &self,
-        _block_key: BlockKey,
+        _block: &PinnedBlock,
         _addr: EthAddress,
     ) -> impl std::future::Future<Output = Result<EthAccount, String>> + Send {
         self.accounts.get(&_addr).map_or_else(
@@ -103,7 +108,7 @@ impl Triedb for MockTriedb {
 
     fn get_storage_at(
         &self,
-        _block_key: BlockKey,
+        _block: &PinnedBlock,
         _addr: EthAddress,
         _at: EthStorageKey,
     ) -> impl std::future::Future<Output = Result<EthStorageSlot, String>> + Send {
@@ -112,7 +117,7 @@ impl Triedb for MockTriedb {
 
     fn get_code(
         &self,
-        _block_key: BlockKey,
+        _block: &PinnedBlock,
         _code_hash: EthCodeHash,
     ) -> impl std::future::Future<Output = Result<EthCode, String>> + Send {
         ready(Ok(self.code.clone()))

@@ -45,15 +45,16 @@ pub async fn monad_eth_getBalance<T: Triedb>(
     let block_key = get_block_key_from_tag_or_hash(&data_provider.triedb_env, params.block_number)
         .await
         .ok_or_else(JsonRpcError::block_not_found)?;
+    let block = data_provider.triedb_env.pin_block(block_key);
     let account = data_provider
         .triedb_env
-        .get_account(block_key, params.account.0)
+        .get_account(&block, params.account.0)
         .await
         .map_err(JsonRpcError::internal_error)?;
 
     match data_provider
         .triedb_env
-        .get_state_availability(block_key)
+        .get_state_availability(&block)
         .await
         .map_err(JsonRpcError::internal_error)?
     {
@@ -80,16 +81,17 @@ pub async fn monad_eth_getCode<T: Triedb>(
     let block_key = get_block_key_from_tag_or_hash(&data_provider.triedb_env, params.block)
         .await
         .ok_or_else(JsonRpcError::block_not_found)?;
+    let block = data_provider.triedb_env.pin_block(block_key);
     let account = data_provider
         .triedb_env
-        .get_account(block_key, params.account.0)
+        .get_account(&block, params.account.0)
         .await
         .map_err(JsonRpcError::internal_error)?;
 
     let code = if let Some(code_hash) = account.code_hash {
         data_provider
             .triedb_env
-            .get_code(block_key, code_hash)
+            .get_code(&block, code_hash)
             .await
             .map_err(JsonRpcError::internal_error)?
     } else {
@@ -98,7 +100,7 @@ pub async fn monad_eth_getCode<T: Triedb>(
 
     match data_provider
         .triedb_env
-        .get_state_availability(block_key)
+        .get_state_availability(&block)
         .await
         .map_err(JsonRpcError::internal_error)?
     {
@@ -126,15 +128,16 @@ pub async fn monad_eth_getStorageAt<T: Triedb>(
     let block_key = get_block_key_from_tag_or_hash(&data_provider.triedb_env, params.block)
         .await
         .ok_or_else(JsonRpcError::block_not_found)?;
+    let block = data_provider.triedb_env.pin_block(block_key);
     let storage_value = data_provider
         .triedb_env
-        .get_storage_at(block_key, params.account.0, B256::from(params.position.0).0)
+        .get_storage_at(&block, params.account.0, B256::from(params.position.0).0)
         .await
         .map_err(JsonRpcError::internal_error)?;
 
     match data_provider
         .triedb_env
-        .get_state_availability(block_key)
+        .get_state_availability(&block)
         .await
         .map_err(JsonRpcError::internal_error)?
     {
@@ -161,15 +164,16 @@ pub async fn monad_eth_getTransactionCount<T: Triedb>(
     let block_key = get_block_key_from_tag_or_hash(&data_provider.triedb_env, params.block)
         .await
         .ok_or_else(JsonRpcError::block_not_found)?;
+    let block = data_provider.triedb_env.pin_block(block_key);
     let account = data_provider
         .triedb_env
-        .get_account(block_key, params.account.0)
+        .get_account(&block, params.account.0)
         .await
         .map_err(JsonRpcError::internal_error)?;
 
     match data_provider
         .triedb_env
-        .get_state_availability(block_key)
+        .get_state_availability(&block)
         .await
         .map_err(JsonRpcError::internal_error)?
     {

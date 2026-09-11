@@ -326,9 +326,10 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
         .provider_gas_limit_eth_estimate_gas
         .min(header.header.gas_limit);
     let original_tx_gas = tx.gas.unwrap_or(U256::from(header.header.gas_limit));
+    let block = data_provider.triedb_env.pin_block(block_key);
     fill_gas_params(
         &data_provider.triedb_env,
-        block_key,
+        &block,
         &mut tx,
         &mut header.header,
         &state_override_set,
@@ -377,7 +378,7 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
         if tx.input.input.as_ref().is_none_or(|b| b.is_empty())
             && data_provider
                 .triedb_env
-                .get_account(block_key, to.into())
+                .get_account(&block, to.into())
                 .await
                 .is_ok_and(|acct| acct.code_hash.is_none())
         {
@@ -497,11 +498,12 @@ async fn fill_transaction_with_provider<T: Triedb>(
 
     let block_key = get_block_key_from_tag(&data_provider.triedb_env, BlockTags::Latest)
         .ok_or(JsonRpcError::block_not_found())?;
+    let block = data_provider.triedb_env.pin_block(block_key);
 
     if tx.nonce.is_none() {
         let account = data_provider
             .triedb_env
-            .get_account(block_key, from.into())
+            .get_account(&block, from.into())
             .await
             .map_err(JsonRpcError::internal_error)?;
         tx.nonce = Some(U64::from(account.nonce));

@@ -21,7 +21,7 @@ use alloy_primitives::{
 };
 use alloy_rlp::{Decodable, Encodable, RlpDecodable};
 use monad_rpc_docs::rpc;
-use monad_triedb_utils::triedb_env::{BlockKey, Triedb};
+use monad_triedb_utils::triedb_env::{BlockKey, PinnedBlock, Triedb};
 use serde::{Deserialize, Serialize};
 use tracing::{error, trace};
 
@@ -462,9 +462,10 @@ pub async fn monad_debug_traceBlockByHash<T: Triedb>(
         .to_jsonrpc_result()?
         .ok_or(JsonRpcError::internal_error("block not found".into()))?;
 
+    let block = data_provider.triedb_env.pin_block(block_key);
     decode_block_call_frames(
         &data_provider.triedb_env,
-        block_key,
+        &block,
         tx_hashes,
         call_frames,
         &params.tracer,
@@ -503,9 +504,10 @@ pub async fn monad_debug_traceBlockByNumber<T: Triedb>(
         .to_jsonrpc_result()?
         .ok_or(JsonRpcError::block_not_found())?;
 
+    let block = data_provider.triedb_env.pin_block(block_key);
     decode_block_call_frames(
         &data_provider.triedb_env,
-        block_key,
+        &block,
         tx_hashes,
         call_frames,
         &params.tracer,
@@ -535,10 +537,11 @@ pub async fn monad_debug_traceTransaction<T: Triedb>(
 
     let rlp_call_frame = &mut call_frame.as_slice();
 
+    let block = data_provider.triedb_env.pin_block(block_key);
     let traces = decode_call_frame(
         &data_provider.triedb_env,
         rlp_call_frame,
-        block_key,
+        &block,
         &params.tracer,
     )
     .await?;
@@ -552,7 +555,7 @@ pub async fn monad_debug_traceTransaction<T: Triedb>(
 
 async fn decode_block_call_frames<T: Triedb>(
     triedb_env: &T,
-    block_key: BlockKey,
+    block: &PinnedBlock,
     tx_hashes: Vec<alloy_primitives::TxHash>,
     call_frames: Vec<Vec<u8>>,
     tracer: &TracerObject,
@@ -573,7 +576,7 @@ async fn decode_block_call_frames<T: Triedb>(
     for (call_frame, tx_id) in call_frames.into_iter().zip(tx_hashes) {
         let rlp_call_frame = &mut call_frame.as_slice();
 
-        let Some(traces) = decode_call_frame(triedb_env, rlp_call_frame, block_key, tracer).await?
+        let Some(traces) = decode_call_frame(triedb_env, rlp_call_frame, block, tracer).await?
         else {
             return Err(JsonRpcError::internal_error("traces not found".to_string()));
         };
@@ -599,7 +602,7 @@ async fn decode_block_call_frames<T: Triedb>(
 pub async fn decode_call_frame<T: Triedb>(
     triedb_env: &T,
     rlp_call_frame: &mut &[u8],
-    block_key: BlockKey,
+    block: &PinnedBlock,
     tracer: &TracerObject,
 ) -> JsonRpcResult<Option<MonadCallFrame>> {
     let mut call_frames = Vec::<Vec<CallFrame>>::decode(rlp_call_frame)
@@ -648,7 +651,7 @@ pub async fn decode_call_frame<T: Triedb>(
                 }
 
                 if let Some(root_frame) = call_frames.first_mut() {
-                    include_code_output(root_frame, triedb_env, block_key).await?;
+                    include_code_output(root_frame, triedb_env, block).await?;
                 }
 
                 let mut root = build_call_tree(call_frames);
@@ -664,7 +667,7 @@ pub async fn decode_call_frame<T: Triedb>(
                 call_frames
                     .into_iter()
                     .map(|mut frame| async move {
-                        include_code_output(&mut frame, triedb_env, block_key).await?;
+                        include_code_output(&mut frame, triedb_env, block).await?;
                         Ok::<_, JsonRpcError>(frame)
                     })
                     .collect::<Vec<_>>(),
@@ -682,7 +685,7 @@ pub async fn decode_call_frame<T: Triedb>(
 async fn include_code_output<T: Triedb>(
     frame: &mut CallFrame,
     triedb_env: &T,
-    block_key: BlockKey,
+    block: &PinnedBlock,
 ) -> JsonRpcResult<()> {
     // If the frame is a create or create2 call and the output is empty, include the code output.
     // Historical traces may not include the code output in their output field.
@@ -704,13 +707,13 @@ async fn include_code_output<T: Triedb>(
     };
 
     let account = triedb_env
-        .get_account(block_key, contract_addr.0.into())
+        .get_account(block, contract_addr.0.into())
         .await
         .map_err(JsonRpcError::internal_error)?;
 
     frame.output = if let Some(code_hash) = account.code_hash {
         triedb_env
-            .get_code(block_key, code_hash)
+            .get_code(block, code_hash)
             .await
             .map_err(JsonRpcError::internal_error)?
             .into()
@@ -991,11 +994,12 @@ mod tests {
         let frame = ethhex::decode_bytes("0xf83ff83d808094f39fd6e51aad88f6f4ce6ab8827279cfffb9226694e7f1725e7734ce288f8367e1bb143e90bb3f0512808307a12082529884b0bea725800280c0").expect("decode call frame");
         let triedb = mock_triedb::MockTriedb::default();
         let block_key = BlockKey::Finalized(FinalizedBlockKey(SeqNum(1)));
+        let block = PinnedBlock::unpinned(block_key);
         let tracer = TracerObject::default();
 
         let single = decode_block_call_frames(
             &triedb,
-            block_key,
+            &block,
             vec![alloy_primitives::TxHash::default()],
             vec![frame.clone()],
             &tracer,
@@ -1008,7 +1012,7 @@ mod tests {
         // budget for only one frame, and should be rejected when decoding the second frame
         let err = decode_block_call_frames(
             &triedb,
-            block_key,
+            &block,
             vec![
                 alloy_primitives::TxHash::default(),
                 alloy_primitives::TxHash::from([1u8; 32]),
@@ -1024,7 +1028,7 @@ mod tests {
         // budget that allows all serialization
         let resp = decode_block_call_frames(
             &triedb,
-            block_key,
+            &block,
             vec![
                 alloy_primitives::TxHash::default(),
                 alloy_primitives::TxHash::from([1u8; 32]),

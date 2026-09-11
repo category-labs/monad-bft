@@ -167,13 +167,14 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
         .collect::<Result<Vec<_>, _>>()?;
 
     let mut accumulated_gas: U256 = U256::ZERO;
+    let block = data_provider.triedb_env.pin_block(block_key);
     for (call_list, (_, state_override)) in calls.iter_mut().zip(overrides.iter()) {
         // Inherit the base header. The execution client applies overrides to the simulation header.
         let mut header = header.header.clone();
         for call in call_list.iter_mut() {
             fill_gas_params(
                 &data_provider.triedb_env,
-                block_key,
+                &block,
                 call,
                 &mut header,
                 state_override,

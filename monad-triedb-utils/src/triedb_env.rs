@@ -26,7 +26,7 @@ use std::{
 };
 
 use alloy_consensus::Header;
-use alloy_primitives::keccak256;
+use alloy_primitives::{keccak256, U256, KECCAK256_EMPTY};
 use alloy_rlp::Decodable;
 use auto_impl::auto_impl;
 use futures::{channel::oneshot, FutureExt};
@@ -35,7 +35,8 @@ use monad_eth_types::{
     EthStorageSlot, EthTxHash, ReceiptWithLogIndex, TransactionLocation, TxEnvelopeWithSender,
 };
 use monad_triedb::{
-    compute_page_key, compute_slot_offset, decode_storage_page_slot, TraverseEntry, TriedbHandle,
+    compute_page_key, compute_slot_offset, decode_storage_page_slot, BlobCategory, BlockGuard,
+    KvHandle, TraverseEntry, TriedbHandle,
 };
 use monad_types::{BlockId, Hash, SeqNum};
 use tracing::{error, warn};
@@ -121,10 +122,36 @@ fn get_latest_proposed_block_key(triedb_handle: &TriedbHandle) -> Option<Propose
     ))
 }
 
+/// The three block-tag keys from KV's own cursors, or `None` if KV could not
+/// give a stable snapshot -- in which case the caller stays on triedb for this
+/// tick.
+///
+/// KV is the read authority, so taking the tags from it keeps what RPC believes
+/// exists consistent with what it can actually read: a key derived from KV
+/// always pins. KV's cursors can lag triedb's by a block (each is published in
+/// its own part of the commit), which shows up as the newest block being
+/// reported a moment later, not as a wrong answer.
+///
+/// The defaults mirror the triedb path: voted falls back to finalized, and
+/// proposed to voted, when consensus has not stamped them.
+fn kv_tag_keys(kv: &KvHandle) -> Option<(FinalizedBlockKey, BlockKey, BlockKey)> {
+    let tags = kv.tags()?;
+    let finalized = FinalizedBlockKey(SeqNum(tags.finalized?));
+    let proposed_key = |pair: Option<(u64, [u8; 32])>| {
+        pair.map(|(block, id)| {
+            BlockKey::Proposed(ProposedBlockKey(SeqNum(block), BlockId(Hash(id))))
+        })
+    };
+    let voted = proposed_key(tags.voted).unwrap_or(BlockKey::Finalized(finalized));
+    let proposed = proposed_key(tags.proposed).unwrap_or(voted);
+    Some((finalized, voted, proposed))
+}
+
 fn polling_thread(
     tokio_handle: tokio::runtime::Handle,
     triedb_path: PathBuf,
     node_lru_max_mem: u64,
+    kv: Option<Arc<KvHandle>>,
     meta: Arc<Mutex<TriedbEnvMeta>>,
     receiver_read: mpsc::Receiver<TriedbRequest>,
     max_async_read_concurrency: usize,
@@ -150,26 +177,36 @@ fn polling_thread(
 
     loop {
         if last_meta_updated.elapsed() > META_POLL_INTERVAL {
-            let latest_finalized = FinalizedBlockKey(SeqNum(
-                triedb_handle.latest_finalized_block().unwrap_or_default(),
-            ));
-            let mut latest_voted = BlockKey::Finalized(latest_finalized);
-            for _ in 0..3 {
-                if let Some(voted) = get_latest_voted_block_key(&triedb_handle) {
-                    latest_voted = BlockKey::Proposed(voted);
-                    break;
-                }
-                // retry in case of a race
-            }
+            // KV serves the tags when it is configured; its snapshot is already
+            // internally consistent, so it needs none of the re-read retries
+            // the triedb path below uses to catch a torn (block, id) pair.
+            let kv_keys = kv.as_deref().and_then(kv_tag_keys);
+            let (latest_finalized, latest_voted, latest_proposed) = match kv_keys {
+                Some(keys) => keys,
+                None => {
+                    let latest_finalized = FinalizedBlockKey(SeqNum(
+                        triedb_handle.latest_finalized_block().unwrap_or_default(),
+                    ));
+                    let mut latest_voted = BlockKey::Finalized(latest_finalized);
+                    for _ in 0..3 {
+                        if let Some(voted) = get_latest_voted_block_key(&triedb_handle) {
+                            latest_voted = BlockKey::Proposed(voted);
+                            break;
+                        }
+                        // retry in case of a race
+                    }
 
-            let mut latest_proposed = latest_voted;
-            for _ in 0..3 {
-                if let Some(proposed) = get_latest_proposed_block_key(&triedb_handle) {
-                    latest_proposed = BlockKey::Proposed(proposed);
-                    break;
+                    let mut latest_proposed = latest_voted;
+                    for _ in 0..3 {
+                        if let Some(proposed) = get_latest_proposed_block_key(&triedb_handle) {
+                            latest_proposed = BlockKey::Proposed(proposed);
+                            break;
+                        }
+                        // retry in case of a race
+                    }
+                    (latest_finalized, latest_voted, latest_proposed)
                 }
-                // retry in case of a race
-            }
+            };
 
             last_meta_updated = Instant::now();
 
@@ -394,6 +431,45 @@ pub enum BlockKey {
     Proposed(ProposedBlockKey),
 }
 
+/// A [`BlockKey`] together with the KV pin that keeps that block's data alive.
+///
+/// KV reclaims a block's pages once it falls out of the retained window, so a
+/// request that reads KV must hold a pin for as long as it is reading. The pin
+/// is taken once, where the block is resolved, and then passed to each read --
+/// so a read physically cannot be issued without one being in scope.
+///
+/// `guard` is `None` when there is no KV to pin: triedb-only deployments and
+/// the mock. KV-backed reads fall back to triedb in that case.
+#[derive(Debug, Clone)]
+pub struct PinnedBlock {
+    key: BlockKey,
+    guard: Option<Arc<BlockGuard>>,
+}
+
+impl PinnedBlock {
+    /// Unpinned: reads are served by triedb.
+    pub fn unpinned(key: BlockKey) -> Self {
+        Self { key, guard: None }
+    }
+
+    pub fn new(key: BlockKey, guard: Option<Arc<BlockGuard>>) -> Self {
+        Self { key, guard }
+    }
+
+    pub fn key(&self) -> BlockKey {
+        self.key
+    }
+
+    pub fn seq_num(&self) -> &SeqNum {
+        self.key.seq_num()
+    }
+
+    /// The live pin, if this block is held in KV.
+    pub fn guard(&self) -> Option<&BlockGuard> {
+        self.guard.as_deref()
+    }
+}
+
 impl BlockKey {
     pub fn seq_num(&self) -> &SeqNum {
         match self {
@@ -444,26 +520,35 @@ pub trait Triedb: Debug {
     /// 3. get_state_availability(block_num)
     ///    - if None, return Err early
     fn get_block_key(&self, block_num: SeqNum) -> Option<BlockKey>;
+
+    /// Pin `key` for the duration of a request, so KV cannot reclaim that
+    /// block's data while it is being read. Call this once, where the block is
+    /// resolved, and pass the result to the state reads below.
+    ///
+    /// Always succeeds: with no KV configured, or if the block is not held in
+    /// KV, the result is unpinned and those reads fall back to triedb.
+    fn pin_block(&self, key: BlockKey) -> PinnedBlock;
+
     /// returns whether block number is available in triedb
     fn get_state_availability(
         &self,
-        key: BlockKey,
+        block: &PinnedBlock,
     ) -> impl std::future::Future<Output = Result<bool, String>> + Send;
 
     fn get_account(
         &self,
-        key: BlockKey,
+        block: &PinnedBlock,
         addr: EthAddress,
     ) -> impl std::future::Future<Output = Result<EthAccount, String>> + Send;
     fn get_storage_at(
         &self,
-        key: BlockKey,
+        block: &PinnedBlock,
         addr: EthAddress,
         at: EthStorageKey,
     ) -> impl std::future::Future<Output = Result<EthStorageSlot, String>> + Send;
     fn get_code(
         &self,
-        key: BlockKey,
+        block: &PinnedBlock,
         code_hash: EthCodeHash,
     ) -> impl std::future::Future<Output = Result<EthCode, String>> + Send;
     fn get_receipt(
@@ -529,6 +614,11 @@ pub struct TriedbEnv {
     // offline promote (node stopped, then restarted), so a running RPC re-reads
     // it on the next open.
     page_encoded: bool,
+
+    // KV read store, when one is configured ($KVDB_IMAGE). State reads are
+    // served from here under a pin; everything else still goes to triedb.
+    // `None` leaves every read on triedb, so this is inert unless enabled.
+    kv: Option<Arc<KvHandle>>,
 }
 
 struct TriedbEnvMeta {
@@ -613,6 +703,25 @@ impl std::fmt::Debug for TriedbEnv {
     }
 }
 
+/// The KV read store named by `$KVDB_IMAGE`, if one is configured and opens.
+/// The path is the `.kvhdr` sidecar; execution must already be running, since
+/// opening attaches the hazard segment and metadata it owns. Absent or
+/// unopenable means every read stays on triedb.
+fn kv_from_env() -> Option<Arc<KvHandle>> {
+    let image = std::env::var("KVDB_IMAGE").ok()?;
+    match KvHandle::try_new(Path::new(&image)) {
+        Some(handle) => Some(Arc::new(handle)),
+        None => {
+            warn!(
+                image,
+                "KVDB_IMAGE set but the KV store did not open; \
+                 serving all reads from triedb"
+            );
+            None
+        }
+    }
+}
+
 impl TriedbEnv {
     pub fn new(
         triedb_path: &Path,
@@ -623,6 +732,36 @@ impl TriedbEnv {
         max_async_traverse_concurrency: usize,
         max_finalized_block_cache_len: usize,
         max_voted_block_cache_len: usize,
+    ) -> Self {
+        Self::with_kv(
+            triedb_path,
+            node_lru_max_mem,
+            max_buffered_read_requests,
+            max_async_read_concurrency,
+            max_buffered_traverse_requests,
+            max_async_traverse_concurrency,
+            max_finalized_block_cache_len,
+            max_voted_block_cache_len,
+            kv_from_env(),
+        )
+    }
+
+    /// As [`Self::new`], with the KV store given explicitly rather than taken
+    /// from the environment. Passing `None` gives an environment that is wholly
+    /// on triedb, **including its own poller** -- which is what makes an A/B
+    /// comparison of the block tags possible, since those are served out of
+    /// poller state rather than read per call.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_kv(
+        triedb_path: &Path,
+        node_lru_max_mem: u64,
+        max_buffered_read_requests: usize,
+        max_async_read_concurrency: usize,
+        max_buffered_traverse_requests: usize,
+        max_async_traverse_concurrency: usize,
+        max_finalized_block_cache_len: usize,
+        max_voted_block_cache_len: usize,
+        kv: Option<Arc<KvHandle>>,
     ) -> Self {
         let triedb_handle: TriedbHandle = TriedbHandle::try_new(triedb_path, node_lru_max_mem)
             .expect("triedb should exist in path");
@@ -652,6 +791,7 @@ impl TriedbEnv {
         let meta_cloned = meta.clone();
         let triedb_path_cloned = triedb_path.to_path_buf();
         let tokio_handle = tokio::runtime::Handle::current();
+        let kv_cloned = kv.clone();
 
         thread::Builder::new()
             .name("monad-rpc-poll".into())
@@ -660,6 +800,7 @@ impl TriedbEnv {
                     tokio_handle,
                     triedb_path_cloned,
                     node_lru_max_mem,
+                    kv_cloned,
                     meta_cloned,
                     receiver_read,
                     max_async_read_concurrency,
@@ -675,6 +816,7 @@ impl TriedbEnv {
             mpsc_sender_traverse: sender_traverse,
             meta,
             page_encoded,
+            kv,
         }
     }
 
@@ -684,6 +826,19 @@ impl TriedbEnv {
             .expect("mutex poisoned")
             .cache_manager
             .get_cache(key)
+    }
+
+    /// Pin `key` for the duration of one per-block read, or `None` if KV cannot
+    /// serve it (not configured, or the block is outside KV's retained window)
+    /// -- in which case that read stays on triedb.
+    ///
+    /// Unlike the state reads, the per-block reads take their pin here instead
+    /// of receiving one from the caller: each returns its whole result in a
+    /// single call, so a pin held for that call is all they need. Threading a
+    /// request-long pin in would mean putting it through the data-source trait
+    /// that also fronts the archive backends, which have no notion of one.
+    fn kv_pin(&self, key: BlockKey) -> Option<BlockGuard> {
+        kv_protect(self.kv.as_ref()?, key)
     }
 
     fn send_async_request(
@@ -910,9 +1065,22 @@ impl Triedb for TriedbEnv {
         }
     }
 
-    async fn get_state_availability(&self, block_key: BlockKey) -> Result<bool, String> {
+    fn pin_block(&self, key: BlockKey) -> PinnedBlock {
+        let Some(kv) = self.kv.as_ref() else {
+            return PinnedBlock::unpinned(key);
+        };
+        // A failed pin is not an error: the block may have fallen out of KV's
+        // retained window, which just means triedb serves this read.
+        PinnedBlock::new(key, kv_protect(kv, key).map(Arc::new))
+    }
+
+    async fn get_state_availability(&self, block: &PinnedBlock) -> Result<bool, String> {
+        // A live pin is itself proof the block's state is present in KV.
+        if block.guard().is_some() {
+            return Ok(true);
+        }
         match self
-            .handle_async_request(block_key, KeyInput::State, Ok)
+            .handle_async_request(block.key(), KeyInput::State, Ok)
             .await?
         {
             Some(_) => Ok(true),
@@ -923,10 +1091,26 @@ impl Triedb for TriedbEnv {
     #[tracing::instrument(level = "debug")]
     async fn get_account(
         &self,
-        block_key: BlockKey,
+        block: &PinnedBlock,
         addr: EthAddress,
     ) -> Result<EthAccount, String> {
-        self.handle_async_request(block_key, KeyInput::Address(&addr), |data| {
+        if let Some(guard) = block.guard() {
+            // KV stores a fixed record, so there is no RLP on this path.
+            // A missing account reads as the default, matching the triedb path.
+            return Ok(guard
+                .account(&addr)
+                .map(|account| EthAccount {
+                    nonce: account.nonce,
+                    balance: U256::from_be_bytes(account.balance_be),
+                    // KV always stores a hash; keccak256("") is how it records
+                    // "no code", which is the triedb path's None.
+                    code_hash: (account.code_hash != KECCAK256_EMPTY.0)
+                        .then_some(account.code_hash),
+                    is_delegated: false,
+                })
+                .unwrap_or_default());
+        }
+        self.handle_async_request(block.key(), KeyInput::Address(&addr), |data| {
             rlp_decode_account(data).ok_or_else(|| String::from("Decoding account error"))
         })
         .await
@@ -936,10 +1120,18 @@ impl Triedb for TriedbEnv {
     #[tracing::instrument(level = "debug")]
     async fn get_storage_at(
         &self,
-        block_key: BlockKey,
+        block: &PinnedBlock,
         addr: EthAddress,
         at: EthStorageKey,
     ) -> Result<EthStorageSlot, String> {
+        if let Some(guard) = block.guard() {
+            // KV takes the raw slot key: whether the leaf is a flat record or a
+            // page, locating the slot inside it happens on the C++ side, so the
+            // page geometry stays in one place. An unset slot reads as zero,
+            // which is the same answer triedb gives.
+            return Ok(guard.storage(&addr, &at));
+        }
+        let block_key = block.key();
         if self.page_encoded {
             // Page-encoded: storage is keyed by keccak(page_key) where
             // page_key = slot >> 7, and the leaf is an encoded page. Look up the
@@ -971,10 +1163,17 @@ impl Triedb for TriedbEnv {
     #[tracing::instrument(level = "debug")]
     async fn get_code(
         &self,
-        block_key: BlockKey,
+        block: &PinnedBlock,
         code_hash: EthCodeHash,
     ) -> Result<EthCode, String> {
-        self.handle_async_request(block_key, KeyInput::CodeHash(&code_hash), Ok)
+        // Code is content-addressed and never reclaimed, so the pin is not
+        // needed to read it -- but it does tell us KV is serving this request.
+        if block.guard().is_some() {
+            if let Some(kv) = self.kv.as_ref() {
+                return Ok(kv.code(&code_hash).unwrap_or_default());
+            }
+        }
+        self.handle_async_request(block.key(), KeyInput::CodeHash(&code_hash), Ok)
             .await
             .map(Option::unwrap_or_default)
     }
@@ -987,6 +1186,15 @@ impl Triedb for TriedbEnv {
     ) -> Result<Option<ReceiptWithLogIndex>, String> {
         if let Some(cache) = self.get_block_cache(&block_key) {
             return Ok(cache.receipts.get(receipt_index as usize).cloned());
+        }
+
+        if let Some(guard) = self.kv_pin(block_key) {
+            // Past the last receipt is a miss, as it is on triedb -- and so is
+            // every index of a block that has no receipts at all.
+            return match guard.table_blob(BlobCategory::Receipts, receipt_index as u32) {
+                Some(blob) => Ok(Some(kv_decode(&blob, "receipt")?)),
+                None => Ok(None),
+            };
         }
 
         self.handle_async_request(
@@ -1008,6 +1216,14 @@ impl Triedb for TriedbEnv {
             return Ok((*receipts.receipts).clone());
         }
 
+        if let Some(guard) = self.kv_pin(block_key) {
+            return kv_read_table(guard, BlobCategory::Receipts)
+                .await?
+                .iter()
+                .map(|blob| kv_decode(blob, "receipt"))
+                .collect();
+        }
+
         self.handle_traverse_request(block_key, KeyInput::ReceiptIndex(None), parse_rlp_entries)
             .await
     }
@@ -1020,6 +1236,13 @@ impl Triedb for TriedbEnv {
     ) -> Result<Option<TxEnvelopeWithSender>, String> {
         if let Some(cache) = self.get_block_cache(&block_key) {
             return Ok(cache.transactions.get(txn_index as usize).cloned());
+        }
+
+        if let Some(guard) = self.kv_pin(block_key) {
+            return match guard.table_blob(BlobCategory::Transactions, txn_index as u32) {
+                Some(blob) => Ok(Some(kv_decode(&blob, "transaction")?)),
+                None => Ok(None),
+            };
         }
 
         self.handle_async_request(block_key, KeyInput::TxIndex(Some(txn_index)), |data| {
@@ -1041,12 +1264,32 @@ impl Triedb for TriedbEnv {
             return Ok((*txs.transactions).clone());
         }
 
+        if let Some(guard) = self.kv_pin(block_key) {
+            return kv_read_table(guard, BlobCategory::Transactions)
+                .await?
+                .iter()
+                .map(|blob| kv_decode(blob, "transaction"))
+                .collect();
+        }
+
         self.handle_traverse_request(block_key, KeyInput::TxIndex(None), parse_rlp_entries)
             .await
     }
 
     #[tracing::instrument(level = "debug")]
     async fn get_block_header(&self, block_key: BlockKey) -> Result<Option<BlockHeader>, String> {
+        if let Some(guard) = self.kv_pin(block_key) {
+            // Every block execution commits carries a header blob, so the fall
+            // through below is only reachable for a store whose base image was
+            // bulk-built without blobs.
+            if let Some(data) = guard.block_blob(BlobCategory::Header) {
+                return Ok(Some(BlockHeader {
+                    hash: keccak256(&data),
+                    header: kv_decode(&data, "block header")?,
+                }));
+            }
+        }
+
         self.handle_async_request(block_key, KeyInput::BlockHeader, |data| {
             let mut rlp_buf = data.as_slice();
             let block_header = Header::decode(&mut rlp_buf)
@@ -1065,6 +1308,25 @@ impl Triedb for TriedbEnv {
         block_key: BlockKey,
         tx_hash: EthTxHash,
     ) -> Result<Option<TransactionLocation>, String> {
+        // Takes no block pin. The index is a COW tree whose superseded roots
+        // ARE reclaimed, so the walk does need protection -- but it is a
+        // transient hazard taken inside the C++ resolve (pin the index root,
+        // confirm it is still current, walk, release), not the block pin, since
+        // the index is global rather than versioned at `block_key` and only
+        // names a block rather than reading its data.
+        //
+        // It covers what KV has finalized and still retains, so it can lag
+        // triedb but never lead it: a hit is the answer, a miss falls through
+        // to triedb rather than being reported as "no such tx".
+        if let Some(kv) = self.kv.as_ref() {
+            if let Some((block_num, tx_index)) = kv.resolve_tx_hash(&tx_hash) {
+                return Ok(Some(TransactionLocation {
+                    block_num,
+                    tx_index: tx_index.into(),
+                }));
+            }
+        }
+
         match self
             .handle_async_request(block_key, KeyInput::TxHash(&tx_hash), |data| {
                 rlp_decode_transaction_location(data)
@@ -1086,6 +1348,15 @@ impl Triedb for TriedbEnv {
         block_key: BlockKey,
         block_hash: EthBlockHash,
     ) -> Result<Option<u64>, String> {
+        // Same as the tx-hash index: hazard-protected inside the C++ resolve
+        // rather than by a block pin, a hit is authoritative, and a miss defers
+        // to triedb, which also holds the proposals KV has not finalized yet.
+        if let Some(kv) = self.kv.as_ref() {
+            if let Some(block_num) = kv.resolve_block_hash(&block_hash) {
+                return Ok(Some(block_num));
+            }
+        }
+
         self.handle_async_request(block_key, KeyInput::BlockHash(&block_hash), |data| {
             rlp_decode_block_num(data).ok_or_else(|| String::from("decode block number error"))
         })
@@ -1098,6 +1369,15 @@ impl Triedb for TriedbEnv {
         block_key: BlockKey,
         txn_index: u64,
     ) -> Result<Option<Vec<u8>>, String> {
+        if let Some(guard) = self.kv_pin(block_key) {
+            // KV keeps each frame whole, so there are no chunks to reassemble.
+            // A transaction with no frame has no blob, which is the empty
+            // result the triedb path reports as None.
+            return Ok(guard
+                .table_blob(BlobCategory::CallFrames, txn_index as u32)
+                .filter(|frame| !frame.is_empty()));
+        }
+
         self.handle_async_range_request(
             block_key,
             KeyInput::CallFrame,
@@ -1139,6 +1419,13 @@ impl Triedb for TriedbEnv {
 
     #[tracing::instrument(level = "debug")]
     async fn get_call_frames(&self, block_key: BlockKey) -> Result<Vec<Vec<u8>>, String> {
+        if let Some(guard) = self.kv_pin(block_key) {
+            // The table is indexed by transaction, so the entries are already
+            // the consecutive-from-zero sequence the triedb path has to check
+            // for.
+            return kv_read_table(guard, BlobCategory::CallFrames).await;
+        }
+
         self.handle_traverse_request(block_key, KeyInput::CallFrame, |rlp_call_frames| {
             // txn_index => (chunk_index, rlp_call_frame)
             let grouped_frames = parse_call_frames(rlp_call_frames)?;
@@ -1162,6 +1449,62 @@ impl Triedb for TriedbEnv {
         })
         .await
     }
+}
+
+/// Pin one block-map entry, whether it is finalized or still undecided. An
+/// undecided height can hold several proposals, so KV needs the proposal id to
+/// say which; the finalized entry at a height is unique and takes none.
+fn kv_protect(kv: &Arc<KvHandle>, key: BlockKey) -> Option<BlockGuard> {
+    match key {
+        BlockKey::Finalized(FinalizedBlockKey(seq_num)) => kv.try_protect_block(seq_num.0, None),
+        BlockKey::Proposed(ProposedBlockKey(seq_num, block_id)) => {
+            kv.try_protect_block(seq_num.0, Some(&block_id.0 .0))
+        }
+    }
+}
+
+/// A whole KV table, read off the async runtime.
+///
+/// KV reads are synchronous `pread`s, so a table's worth of them in a row would
+/// park an async worker for as long as they take, where the triedb path awaits
+/// and yields. The blocking pool is what that work belongs on. It is ONE
+/// handoff for the whole table rather than one per entry, which is why the
+/// single-blob reads stay inline: for those a handoff would cost more than the
+/// read it protects.
+async fn kv_read_table(
+    guard: BlockGuard,
+    category: BlobCategory,
+) -> Result<Vec<Vec<u8>>, String> {
+    tokio::task::spawn_blocking(move || kv_table_entries(&guard, category))
+        .await
+        .map_err(|err| format!("kv {category:?} read task failed: {err}"))
+}
+
+/// Every entry of a KV table category, in index order.
+///
+/// An absent category is an EMPTY result, not a missing one: the pin proves KV
+/// holds this block, and execution only writes a table when it has entries, so
+/// "no table" means zero entries (a block with no transactions, no ommers).
+/// An entry with no blob is empty for the same reason -- KV stores an empty
+/// payload as "no blob" -- which is the value for a category whose entries may
+/// legitimately be empty, such as call frames.
+fn kv_table_entries(guard: &BlockGuard, category: BlobCategory) -> Vec<Vec<u8>> {
+    if !guard.blob_present(category) {
+        return Vec::new();
+    }
+    let count = guard.table_count(category).unwrap_or(0);
+    (0..count)
+        .map(|i| guard.table_blob(category, i as u32).unwrap_or_default())
+        .collect()
+}
+
+/// Decode one KV blob. Execution hands KV the identical buffer it writes to
+/// triedb, so these are the same DB-format encodings the triedb paths decode.
+fn kv_decode<T>(bytes: &[u8], what: &str) -> Result<T, String>
+where
+    T: Decodable,
+{
+    T::decode(&mut &bytes[..]).map_err(|err| format!("decode {what} from kv failed: {err}"))
 }
 
 fn parse_rlp_entries<T>(rlp_entries: Vec<TraverseEntry>) -> Result<Vec<T>, String>
@@ -1234,4 +1577,303 @@ fn process_call_frame_chunks(chunks: BTreeMap<u8, Vec<u8>>) -> Result<Vec<u8>, S
 
     // concatenate chunks in order
     Ok(chunks.into_values().flatten().collect())
+}
+
+// KVDB_PROTO: A/B the per-block reads. Every read that KV can serve must give
+// the same answer triedb gives for the same block, so the two paths are run
+// side by side over the blocks both stores still hold.
+#[cfg(test)]
+mod kv_ab_tests {
+    use super::*;
+
+    /// Env-gated on a live store, since KV is only readable while execution is
+    /// running (it owns the hazard segment these reads publish into):
+    ///
+    /// ```text
+    /// KVDB_AB_TRIEDB=/dev/triedb KVDB_IMAGE=<img>.kvhdr KVDB_DEVICE=<img>.img \
+    ///   cargo test -p monad-triedb-utils kv_matches_triedb -- --nocapture
+    /// ```
+    #[tokio::test(flavor = "multi_thread")]
+    async fn kv_matches_triedb_per_block_reads() {
+        let Ok(triedb_path) = std::env::var("KVDB_AB_TRIEDB") else {
+            eprintln!("KVDB_AB_TRIEDB unset; skipping the KV A/B test");
+            return;
+        };
+        assert!(
+            std::env::var("KVDB_IMAGE").is_ok(),
+            "KVDB_AB_TRIEDB is set but KVDB_IMAGE is not: there would be no KV side"
+        );
+
+        // Two independent environments over the same triedb, each with its own
+        // poller: one with KV, one wholly on triedb. Separate pollers are what
+        // make the block tags comparable -- those are served out of poller
+        // state, so a shared poller would have both sides reporting whichever
+        // store it happened to read.
+        //
+        // Cache lengths of zero keep the block cache empty, so every read below
+        // reaches a store instead of being answered out of memory.
+        let env = |kv| {
+            TriedbEnv::with_kv(
+                Path::new(&triedb_path),
+                1 << 28,
+                1024,
+                128,
+                1024,
+                128,
+                0,
+                0,
+                kv,
+            )
+        };
+        let kv = kv_from_env().expect("KVDB_IMAGE is set but the KV store did not open");
+        let kv_env = env(Some(kv.clone()));
+        let td_env = env(None);
+
+        // Wait for both pollers to publish a tick, rather than sleeping a fixed
+        // interval: each opens its own TriedbHandle first, so the first tick is
+        // much slower than META_POLL_INTERVAL. Reading too early gives the
+        // constructor's default (everything Finalized) and silently compares
+        // nothing -- which is exactly what a fixed 20ms sleep did.
+        // Readiness is measured against each env's OWN source, so it is not
+        // circular with the comparison below: if the store has a proposed head,
+        // an env that has ticked reports Proposed rather than the constructor's
+        // Finalized default. Comparing the two envs to each other would be
+        // trivially true before either had ticked.
+        let raw = TriedbHandle::try_new(Path::new(&triedb_path), 1 << 28)
+            .expect("triedb opens for the readiness check");
+        let expect_proposed = raw.latest_proposed_block().is_some();
+        let ready = |e: &TriedbEnv| {
+            matches!(e.get_latest_proposed_block_key(), BlockKey::Proposed(_)) == expect_proposed
+        };
+        let mut waited = Duration::ZERO;
+        while !(ready(&kv_env) && ready(&td_env)) && waited < Duration::from_secs(5) {
+            thread::sleep(META_POLL_INTERVAL);
+            waited += META_POLL_INTERVAL;
+        }
+        assert!(
+            ready(&kv_env) && ready(&td_env),
+            "pollers did not publish a tick within {waited:?}"
+        );
+        eprintln!("pollers ready after {waited:?} (proposed head present: {expect_proposed})");
+
+        let finalized = kv.finalized_block().expect("KV has no finalized tip");
+        let earliest = kv.earliest_block().expect("KV has no retained floor");
+        assert!(earliest <= finalized, "KV window is inverted");
+        eprintln!("kv window: [{earliest}, {finalized}]");
+
+        // Block tags, KV-derived against triedb-derived. Both envs poll the
+        // same triedb, so the only difference is where the cursors came from.
+        {
+            let kv_fin = kv_env.get_latest_finalized_block_key();
+            let td_fin = td_env.get_latest_finalized_block_key();
+            let kv_voted = kv_env.get_latest_voted_block_key();
+            let td_voted = td_env.get_latest_voted_block_key();
+            let kv_prop = kv_env.get_latest_proposed_block_key();
+            let td_prop = td_env.get_latest_proposed_block_key();
+            eprintln!(
+                "tags: finalized kv={:?} td={:?} | voted kv={kv_voted:?} td={td_voted:?} \
+                 | proposed kv={kv_prop:?} td={td_prop:?}",
+                kv_fin.0, td_fin.0
+            );
+
+            // The two stores publish in different parts of the same commit, so
+            // KV may trail triedb by the block in flight -- but it must never
+            // be ahead, and never further behind than that.
+            assert!(
+                kv_fin.0 <= td_fin.0 && td_fin.0 .0 - kv_fin.0 .0 <= 1,
+                "kv finalized {kv_fin:?} vs triedb {td_fin:?}: not within one block"
+            );
+            assert_eq!(
+                kv_fin.0 .0, finalized,
+                "the tag KV reports disagrees with its own cursor"
+            );
+
+            // The (block, id) heads must agree exactly. Asserting this is the
+            // whole point of the two-poller setup: without it the test passes
+            // while the two sides report different heads.
+            assert_eq!(kv_voted, td_voted, "voted head");
+            assert_eq!(kv_prop, td_prop, "proposed head");
+
+            // Whatever KV names as a head must be pinnable -- that is the point
+            // of taking the tags from KV rather than triedb.
+            for (name, key) in [("voted", kv_voted), ("proposed", kv_prop)] {
+                assert!(
+                    kv_env.kv_pin(key).is_some(),
+                    "kv named {key:?} as the {name} head but cannot pin it"
+                );
+            }
+
+            // A height at or below the finalized tip must resolve the same way
+            // from either side.
+            for block in [earliest, (earliest + finalized) / 2, finalized] {
+                assert_eq!(
+                    kv_env.get_block_key(SeqNum(block)),
+                    td_env.get_block_key(SeqNum(block)),
+                    "block key for {block}"
+                );
+            }
+        }
+
+        // Stay a few blocks below the tip: execution is committing while this
+        // runs, and the two stores need not have finalized the same block yet.
+        // Sample from the top of the window rather than across all of it: the
+        // two stores retain different depths and prune on their own schedules,
+        // so the recently finalized blocks are the region both still hold.
+        let top = finalized.saturating_sub(4).max(earliest);
+        let bottom = top.saturating_sub(200).max(earliest);
+        let step = ((top - bottom) / 8).max(1);
+        let mut blocks = 0usize;
+        let mut txs = 0usize;
+
+        for block in (bottom..=top).step_by(step as usize) {
+            let key = BlockKey::Finalized(FinalizedBlockKey(SeqNum(block)));
+
+            // The triedb side is the reference. If it no longer holds the
+            // block, there is nothing to compare against: the two stores are
+            // pruned on their own schedules.
+            let td_header = td_env.get_block_header(key).await.expect("triedb header");
+            let Some(td_header) = td_header else {
+                eprintln!("block {block}: not in triedb, skipping");
+                continue;
+            };
+            // Everything below must actually be served by KV. Without this the
+            // comparison would still pass with KV falling back to triedb on
+            // both sides, which is exactly what it is meant to detect.
+            {
+                let guard = kv_env.kv_pin(key).expect("kv did not pin the block");
+                // A block KV holds with no header at all is a bulk-built base
+                // image block, which predates blob writing -- the store's
+                // retained floor when it was seeded rather than replayed.
+                if !guard.blob_present(BlobCategory::Header) {
+                    eprintln!("block {block}: bulk-built base image, no blobs, skipping");
+                    continue;
+                }
+                for category in [
+                    BlobCategory::Receipts,
+                    BlobCategory::Transactions,
+                    BlobCategory::CallFrames,
+                ] {
+                    assert!(
+                        guard.blob_present(category),
+                        "block {block}: kv has no {category:?}, so that read fell back to triedb"
+                    );
+                }
+            }
+
+            let kv_header = kv_env
+                .get_block_header(key)
+                .await
+                .expect("kv header")
+                .expect("kv is missing a header triedb has");
+            // BlockHeader has no PartialEq, so compare its parts.
+            assert_eq!(
+                (kv_header.hash, &kv_header.header),
+                (td_header.hash, &td_header.header),
+                "block {block}: header"
+            );
+
+            // The block-hash index must map the header's hash back to it.
+            assert_eq!(
+                kv_env
+                    .get_block_number_by_hash(key, td_header.hash.0)
+                    .await
+                    .expect("kv block-hash lookup"),
+                Some(block),
+                "block {block}: block-hash index"
+            );
+
+            let td_txs = td_env.get_transactions(key).await.expect("triedb txs");
+            assert_eq!(
+                kv_env.get_transactions(key).await.expect("kv txs"),
+                td_txs,
+                "block {block}: transactions"
+            );
+
+            let td_receipts = td_env.get_receipts(key).await.expect("triedb receipts");
+            assert_eq!(
+                kv_env.get_receipts(key).await.expect("kv receipts"),
+                td_receipts,
+                "block {block}: receipts"
+            );
+
+            let td_frames = td_env.get_call_frames(key).await.expect("triedb frames");
+            assert_eq!(
+                kv_env.get_call_frames(key).await.expect("kv frames"),
+                td_frames,
+                "block {block}: call frames"
+            );
+
+            // Indexed reads, including one past the end, which must miss on
+            // both sides rather than being served differently.
+            for i in 0..=td_txs.len() as u64 {
+                assert_eq!(
+                    kv_env.get_transaction(key, i).await.expect("kv tx"),
+                    td_env.get_transaction(key, i).await.expect("triedb tx"),
+                    "block {block}: transaction {i}"
+                );
+                assert_eq!(
+                    kv_env.get_receipt(key, i).await.expect("kv receipt"),
+                    td_env.get_receipt(key, i).await.expect("triedb receipt"),
+                    "block {block}: receipt {i}"
+                );
+                assert_eq!(
+                    kv_env.get_call_frame(key, i).await.expect("kv frame"),
+                    td_env.get_call_frame(key, i).await.expect("triedb frame"),
+                    "block {block}: call frame {i}"
+                );
+            }
+
+            // The tx-hash index must place every transaction at its own
+            // position in this block.
+            for (i, tx) in td_txs.iter().enumerate() {
+                let hash = *tx.tx.tx_hash();
+                assert_eq!(
+                    kv_env
+                        .get_transaction_location_by_hash(key, hash.0)
+                        .await
+                        .expect("kv tx-hash lookup"),
+                    Some(TransactionLocation {
+                        block_num: block,
+                        tx_index: i as u64,
+                    }),
+                    "block {block}: tx-hash index for tx {i}"
+                );
+            }
+
+            blocks += 1;
+            txs += td_txs.len();
+            eprintln!("block {block}: {} txs ok", td_txs.len());
+        }
+
+        assert!(blocks > 0, "no block was held by both stores");
+        eprintln!("kv A/B ok: {blocks} blocks, {txs} txs");
+
+        // An undecided block pins by its proposal id, and only by the right
+        // one: a height can carry several proposals, so an id-blind pin would
+        // be free to return a sibling's root.
+        match kv_env.get_latest_proposed_block_key() {
+            BlockKey::Proposed(ProposedBlockKey(seq_num, block_id)) => {
+                let key = BlockKey::Proposed(ProposedBlockKey(seq_num, block_id));
+                assert!(
+                    kv_env.kv_pin(key).is_some(),
+                    "kv did not pin proposal {seq_num:?} {block_id:?}"
+                );
+                let mut wrong = block_id.0 .0;
+                wrong[0] ^= 1;
+                assert!(
+                    kv_env
+                        .kv
+                        .as_ref()
+                        .unwrap()
+                        .try_protect_block(seq_num.0, Some(&wrong))
+                        .is_none(),
+                    "kv pinned a proposal id that does not exist"
+                );
+                eprintln!("proposal pin ok at {seq_num:?}");
+            }
+            BlockKey::Finalized(_) => {
+                eprintln!("no undecided block in triedb; proposal pin not exercised");
+            }
+        }
+    }
 }

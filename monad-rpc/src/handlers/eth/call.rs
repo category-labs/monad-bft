@@ -29,7 +29,7 @@ use monad_ethcall::{
 };
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{
-    BlockKey, FinalizedBlockKey, ProposedBlockKey, Triedb, TriedbPath,
+    BlockKey, FinalizedBlockKey, PinnedBlock, ProposedBlockKey, Triedb, TriedbPath,
 };
 use monad_types::{BlockId, Hash, SeqNum};
 use serde::{Deserialize, Serialize};
@@ -375,7 +375,7 @@ pub fn merge_access_lists(generated: AccessList, original: Option<AccessList>) -
 /// Populate gas limit and gas prices
 pub async fn fill_gas_params<T: Triedb>(
     triedb_env: &T,
-    block_key: BlockKey,
+    block: &PinnedBlock,
     tx: &mut CallRequest,
     header: &mut Header,
     state_overrides: &StateOverrideSet,
@@ -394,7 +394,7 @@ pub async fn fill_gas_params<T: Triedb>(
 
             if tx.gas.is_none() {
                 let allowance =
-                    sender_gas_allowance(triedb_env, block_key, header, tx, state_overrides)
+                    sender_gas_allowance(triedb_env, block, header, tx, state_overrides)
                         .await?;
                 tx.gas = Some(U256::from(allowance).min(eth_call_provider_gas_limit));
             }
@@ -413,7 +413,7 @@ pub async fn fill_gas_params<T: Triedb>(
 /// Subtract the effective gas price from the balance to get an accurate gas limit.
 pub async fn sender_gas_allowance<T: Triedb>(
     triedb_env: &T,
-    block_key: BlockKey,
+    block: &PinnedBlock,
     header: &Header,
     request: &CallRequest,
     state_overrides: &StateOverrideSet,
@@ -433,7 +433,7 @@ pub async fn sender_gas_allowance<T: Triedb>(
         Some(balance) => balance,
         None => {
             let account = triedb_env
-                .get_account(block_key, sender.into())
+                .get_account(block, sender.into())
                 .await
                 .map_err(JsonRpcError::internal_error)?;
             U256::from(account.balance)
@@ -628,9 +628,10 @@ async fn prepare_eth_call_at_block<T: Triedb + TriedbPath>(
     let eth_call_provider_gas_limit = eth_call_handler_config
         .provider_gas_limit_eth_call
         .min(header.header.gas_limit);
+    let block = triedb_env.pin_block(block_key);
     fill_gas_params(
         triedb_env,
-        block_key,
+        &block,
         &mut tx,
         &mut header.header,
         &state_overrides,
@@ -781,10 +782,11 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
     match tracer {
         MonadTracer::CallTracer => {
             let mut slice: &[u8] = raw_payload.as_slice();
+            let block = data_provider.triedb_env.pin_block(block_key);
             let frame = decode_call_frame(
                 &data_provider.triedb_env,
                 &mut slice,
-                block_key,
+                &block,
                 &tracer_params,
             )
             .await?;
@@ -1002,7 +1004,7 @@ mod tests {
     };
     use monad_triedb_utils::{
         mock_triedb::MockTriedb,
-        triedb_env::{BlockKey, FinalizedBlockKey},
+        triedb_env::{BlockKey, FinalizedBlockKey, PinnedBlock},
     };
     use monad_types::SeqNum;
     use serde_json::{from_str, json};
@@ -1334,11 +1336,12 @@ mod tests {
             ..Default::default()
         };
         let block_key = BlockKey::Finalized(FinalizedBlockKey(SeqNum(header.number)));
+        let block = PinnedBlock::unpinned(block_key);
         let state_overrides = StateOverrideSet::default();
 
         let result = fill_gas_params(
             &mock_triedb,
-            block_key,
+            &block,
             &mut call_request,
             &mut header,
             &state_overrides,
@@ -1364,7 +1367,7 @@ mod tests {
         };
         let result = fill_gas_params(
             &mock_triedb,
-            block_key,
+            &block,
             &mut call_request,
             &mut header,
             &state_overrides,
@@ -1390,7 +1393,7 @@ mod tests {
         };
         let result = fill_gas_params(
             &mock_triedb,
-            block_key,
+            &block,
             &mut call_request,
             &mut header,
             &state_overrides,
@@ -1408,11 +1411,12 @@ mod tests {
             ..Default::default()
         };
         let block_key = BlockKey::Finalized(FinalizedBlockKey(SeqNum(header.number)));
+        let block = PinnedBlock::unpinned(block_key);
         let state_overrides = StateOverrideSet::default();
 
         let result = fill_gas_params(
             &mock_triedb,
-            block_key,
+            &block,
             &mut call_request,
             &mut header,
             &state_overrides,
@@ -1484,8 +1488,9 @@ mod tests {
         );
 
         let block_key = BlockKey::Finalized(FinalizedBlockKey(SeqNum(header.number)));
+        let block = PinnedBlock::unpinned(block_key);
         let result =
-            sender_gas_allowance(&mock_triedb, block_key, &header, &call_request, &overrides).await;
+            sender_gas_allowance(&mock_triedb, &block, &header, &call_request, &overrides).await;
         let gas_limit = result.unwrap();
         assert_eq!(U256::from(gas_limit), balance_override / gas_price);
     }
