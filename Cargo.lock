@@ -4996,6 +4996,7 @@ dependencies = [
  "monad-types",
  "monad-validator",
  "tempfile",
+ "tracing",
 ]
 
 [[package]]

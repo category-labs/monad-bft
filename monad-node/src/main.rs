@@ -41,8 +41,8 @@ use monad_eth_block_validator::EthBlockValidator;
 use monad_eth_txpool_executor::{EthTxPoolExecutor, EthTxPoolIpcConfig};
 use monad_execution_state_read::ExecutionStateReadThreadClient;
 use monad_execution_state_read_cache::ExecutionStateReadCache;
-use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
-use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEvent};
+use monad_executor::{Executor, ExecutorMetrics, Gauge as ExecutorGauge};
+use monad_executor_glue::{Command, LogFriendlyMonadEvent, Message, MonadEvent};
 use monad_ledger::MonadBlockFileLedger;
 use monad_node_config::{
     ExecutionProtocolType, FullNodeIdentityConfig, NodeBootstrapConfig, NodeBootstrapPeerConfig,
@@ -64,8 +64,12 @@ use monad_statesync_executor::StateSyncExecutor;
 use monad_triedb_utils::TriedbReader;
 use monad_types::{DropTimer, Epoch, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
 use monad_updaters::{
-    config_file::ConfigFile, config_loader::ConfigLoader, loopback::LoopbackExecutor,
-    parent::ParentExecutor, timer::TokioTimer, tokio_timestamp::TokioTimestamp,
+    config_file::ConfigFile,
+    config_loader::ConfigLoader,
+    loopback::LoopbackExecutor,
+    parent::{CoreExecutor, ExternalExecutor, ParentExecutor},
+    timer::TokioTimer,
+    tokio_timestamp::TokioTimestamp,
     triedb_val_set::ValSetUpdater,
 };
 use monad_validator::{
@@ -82,7 +86,7 @@ use tokio::{
     signal::unix::{signal, SignalKind},
     time::{interval, MissedTickBehavior},
 };
-use tracing::{error, event, info, warn, Instrument, Level};
+use tracing::{error, event, info, info_span, trace_span, warn, Level};
 
 use self::{
     cli::Cli,
@@ -113,6 +117,8 @@ const MONAD_NODE_VERSION: Option<&str> = option_env!("MONAD_VERSION");
 const STATESYNC_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 const EXECUTION_DELAY: u64 = 3;
+const CONSENSUS_EVENT_CHANNEL_CAPACITY: usize = 1024;
+const CONSENSUS_RESULT_CHANNEL_CAPACITY: usize = 1024;
 const WALTRACE_CHANNEL_CAPACITY: usize = 1024;
 const TRIEDB_STORAGE_METRICS_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -157,7 +163,7 @@ fn main() {
     }
 
     if let Err(e) = runtime.block_on(run(node_state)) {
-        tracing::error!("monad consensus node crashed: {:?}", e);
+        error!("monad consensus node crashed: {:?}", e);
     }
 }
 
@@ -263,24 +269,26 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         }
     });
 
-    let mut executor = ParentExecutor {
-        metrics: Default::default(),
-        router,
-        timer: TokioTimer::default(),
-        ledger: MonadBlockFileLedger::new(node_state.ledger_path),
-        config_file: ConfigFile::new(
+    let core_executor = CoreExecutor::new(
+        TokioTimer::default(),
+        MonadBlockFileLedger::new(node_state.ledger_path),
+        ConfigFile::new(
             node_state.forkpoint_path,
             node_state.validators_path.clone(),
             node_state.chain_config,
         ),
-        val_set: ValSetUpdater::new(
+        ValSetUpdater::new(
             node_state.validators_path,
             node_state.chain_config.get_epoch_length(),
             node_state.chain_config.get_staking_activation(),
             state_read.clone(),
         ),
-        timestamp: TokioTimestamp::new(Duration::from_millis(5), 100, 10001),
-        txpool: EthTxPoolExecutor::start(
+        TokioTimestamp::new(Duration::from_millis(5), 100, 10001),
+        LoopbackExecutor::default(),
+    );
+    let external_executor = ExternalExecutor::new(
+        router,
+        EthTxPoolExecutor::start(
             create_block_policy(),
             state_read.clone(),
             EthTxPoolIpcConfig {
@@ -305,14 +313,13 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             score_reader,
         )
         .expect("txpool ipc succeeds"),
-        control_panel: ControlPanelIpcReceiver::new(
+        ControlPanelIpcReceiver::new(
             node_state.control_panel_ipc_path,
             node_state.reload_handle,
             1000,
         )
         .expect("uds bind failed"),
-        loopback: LoopbackExecutor::default(),
-        state_sync: StateSyncExecutor::<SignatureType, SignatureCollectionType>::new(
+        StateSyncExecutor::<SignatureType, SignatureCollectionType>::new(
             node_state.chain_config.chain_id(),
             vec![statesync_triedb_path.to_string_lossy().to_string()],
             node_state.statesync_sq_thread_cpu,
@@ -329,8 +336,9 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                 .expect("invalid file name")
                 .to_owned(),
         ),
-        config_loader: ConfigLoader::new(node_state.node_config_path),
-    };
+        ConfigLoader::new(node_state.node_config_path),
+    );
+    let executor = ParentExecutor::new(core_executor, external_executor);
 
     let waltrace_tx = if node_state.wal_chunks == 0 {
         info!("wal is disabled");
@@ -356,7 +364,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                     }
                 };
                 while let Ok(event) = waltrace_rx.recv() {
-                    let _wal_event_span = tracing::trace_span!("wal_event_span").entered();
+                    let _wal_event_span = trace_span!("wal_event_span").entered();
                     if let Err(err) = wal.push(&event) {
                         event!(Level::ERROR, ?err, "failed to push to wal");
                         return;
@@ -392,8 +400,6 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         )
         .collect();
 
-    let mut last_ledger_tip: Option<SeqNum> = None;
-
     let builder = MonadStateBuilder {
         validator_set_factory: ValidatorSetFactory::default(),
         leader_election,
@@ -426,13 +432,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         _phantom: PhantomData,
     };
 
-    let (mut state, init_commands) = builder.build();
-    executor.exec(init_commands);
-
-    let mut ledger_span = tracing::info_span!(
-        "ledger_span",
-        last_ledger_tip = last_ledger_tip.map(|s| s.as_u64())
-    );
+    let (state, init_commands) = builder.build();
 
     let (maybe_otel_meter_provider, mut maybe_metrics_ticker) = node_state
         .otel_endpoint_interval
@@ -460,7 +460,6 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         .map(|provider| provider.meter("opentelemetry"));
     let mut gauge_cache = HashMap::new();
     let process_start = Instant::now();
-    let mut total_state_update_elapsed = Duration::ZERO;
 
     let mut prometheus_labels = default_prometheus_labels(
         format!(
@@ -504,6 +503,11 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         }
     }
 
+    let executor_metric_handles = executor
+        .metrics()
+        .push(&triedb_phase_metrics)
+        .push(&triedb_storage_metrics)
+        .metric_handles();
     let prometheus_metrics = Arc::new(
         NodePrometheusMetrics::new(
             prometheus_labels,
@@ -541,38 +545,188 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         });
     }
 
+    let ParentExecutor {
+        core: mut core_executor,
+        external: mut external_executor,
+    } = executor;
+    let (consensus_event_tx, mut consensus_event_rx) = tokio::sync::mpsc::channel::<
+        MonadEvent<SignatureType, SignatureCollectionType, ExecutionProtocolType>,
+    >(CONSENSUS_EVENT_CHANNEL_CAPACITY);
+    let (consensus_result_tx, mut consensus_result_rx) =
+        tokio::sync::mpsc::channel(CONSENSUS_RESULT_CHANNEL_CAPACITY);
+    let (consensus_shutdown_tx, mut consensus_shutdown_rx) = tokio::sync::oneshot::channel();
+    let consensus_prometheus_metrics = Arc::clone(&prometheus_metrics);
+    let consensus_thread = std::thread::Builder::new()
+        .name("monad-consensus".to_string())
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .expect("failed to build consensus runtime");
+            runtime.block_on(async move {
+                let mut state = state;
+                let mut total_state_update_elapsed = Duration::ZERO;
+                let mut last_ledger_tip: Option<SeqNum> = None;
+                let mut ledger_span = info_span!(
+                    "ledger_span",
+                    last_ledger_tip = last_ledger_tip.map(|s| s.as_u64())
+                );
+                let mut commands = Some(init_commands);
+
+                loop {
+                    let commands = match commands.take() {
+                        Some(commands) => commands,
+                        None => {
+                            let event = tokio::select! {
+                                biased;
+
+                                _ = &mut consensus_shutdown_rx => {
+                                    return;
+                                }
+                                event = core_executor.next() => {
+                                    let Some(event) = event else {
+                                        event!(Level::ERROR, "core executor stopped");
+                                        return;
+                                    };
+                                    event
+                                }
+                                event = consensus_event_rx.recv() => {
+                                    let Some(event) = event else {
+                                        return;
+                                    };
+                                    event
+                                }
+                            };
+                            if event.is_wal_logged() {
+                                if let Some(waltrace_tx) = waltrace_tx.as_ref() {
+                                    let wal_event = LogFriendlyMonadEvent {
+                                        timestamp: Utc::now(),
+                                        event: event.lossy_clone(),
+                                    };
+                                    match waltrace_tx.try_send(wal_event) {
+                                        Ok(()) => {}
+                                        Err(TrySendError::Full(_)) => {
+                                            warn!("waltrace is lagging; dropping wal event");
+                                        }
+                                        Err(TrySendError::Disconnected(_)) => {
+                                            event!(Level::ERROR, "waltrace thread stopped");
+                                        }
+                                    }
+                                }
+                            }
+                            let event_debug = {
+                                let _timer =
+                                    DropTimer::start(Duration::from_millis(1), |elapsed| {
+                                        warn!(?elapsed, ?event, "long time to format event")
+                                    });
+                                format!("{:?}", event)
+                            };
+                            let commands = {
+                                let _timer =
+                                    DropTimer::start(Duration::from_millis(50), |elapsed| {
+                                        warn!(
+                                            ?elapsed,
+                                            event =? event_debug,
+                                            "long time to update event"
+                                        )
+                                    });
+                                let _ledger_span = ledger_span.enter();
+                                let _event_span = trace_span!("event_span", ?event).entered();
+                                let start = Instant::now();
+                                let commands = state.update(event);
+                                let state_update_elapsed = start.elapsed();
+                                total_state_update_elapsed += state_update_elapsed;
+                                consensus_prometheus_metrics.record_state_update_elapsed(
+                                    &state_update_elapsed,
+                                    &total_state_update_elapsed,
+                                );
+                                commands
+                            };
+                            commands
+                        }
+                    };
+
+                    let num_commands = commands.len();
+                    let (
+                        router,
+                        timer,
+                        ledger,
+                        config_file,
+                        val_set,
+                        timestamp,
+                        txpool,
+                        control_panel,
+                        loopback,
+                        state_sync,
+                        config_reload,
+                    ) = Command::split_commands(commands);
+                    let num_external_commands = router.len()
+                        + txpool.len()
+                        + control_panel.len()
+                        + state_sync.len()
+                        + config_reload.len();
+                    if num_external_commands != 0
+                        && consensus_result_tx
+                            .send((router, txpool, control_panel, state_sync, config_reload))
+                            .await
+                            .is_err()
+                    {
+                        return;
+                    }
+
+                    let num_core_commands = num_commands - num_external_commands;
+                    let _exec_span =
+                        trace_span!("core_exec_span", num_commands = num_core_commands).entered();
+                    core_executor.exec(timer, ledger, config_file, val_set, timestamp, loopback);
+                    if let Some(ledger_tip) = core_executor.ledger().last_commit() {
+                        if last_ledger_tip.is_none_or(|last_tip| ledger_tip > last_tip) {
+                            last_ledger_tip = Some(ledger_tip);
+                            ledger_span = info_span!(
+                                "ledger_span",
+                                last_ledger_tip = last_ledger_tip.map(|s| s.as_u64())
+                            );
+                        }
+                    }
+                }
+            });
+        })
+        .expect("failed to spawn consensus thread");
+
     let mut sigterm = signal(SignalKind::terminate()).expect("in tokio rt");
     let mut sigint = signal(SignalKind::interrupt()).expect("in tokio rt");
 
     let mut triedb_storage_ticker = interval(TRIEDB_STORAGE_METRICS_INTERVAL);
     triedb_storage_ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
+    let mut consensus_shutdown_tx = Some(consensus_shutdown_tx);
+    let mut shutting_down = false;
     loop {
         tokio::select! {
             biased; // events are in order of priority
 
-            result = sigterm.recv() => {
+            result = sigterm.recv(), if !shutting_down => {
                 info!(?result, "received SIGTERM, exiting...");
-                break;
+                shutting_down = true;
+                let _ = consensus_shutdown_tx.take().unwrap().send(());
             }
-            result = sigint.recv() => {
+            result = sigint.recv(), if !shutting_down => {
                 info!(?result, "received SIGINT, exiting...");
-                break;
+                shutting_down = true;
+                let _ = consensus_shutdown_tx.take().unwrap().send(());
             }
             _ = match &mut maybe_metrics_ticker {
                 Some(ticker) => ticker.tick().boxed(),
                 None => futures_util::future::pending().boxed(),
-            } => {
+            }, if !shutting_down => {
                 let otel_meter = maybe_otel_meter.as_ref().expect("otel_endpoint must have been set");
-                let executor_metrics = executor.metrics().push(&triedb_phase_metrics).push(&triedb_storage_metrics);
                 send_metrics(
                     otel_meter,
                     &mut gauge_cache,
                     prometheus_metrics.as_ref(),
-                    executor_metrics,
+                    &executor_metric_handles,
                 );
             }
-            _ = triedb_storage_ticker.tick() => {
+            _ = triedb_storage_ticker.tick(), if !shutting_down => {
                 if let Some(reader) = &triedb_metrics_reader {
                     record_triedb_storage_metrics(
                         &mut triedb_storage_metrics,
@@ -580,83 +734,55 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                     );
                 }
             }
-            event = executor.next().instrument(ledger_span.clone()) => {
-                let Some(event) = event else {
-                    event!(Level::ERROR, "parent executor returned none!");
+            result = consensus_result_rx.recv() => {
+                let Some(commands) = result else {
+                    if shutting_down {
+                        break;
+                    }
+                    event!(Level::ERROR, "consensus thread stopped");
                     return Err(());
                 };
-                let event_debug = {
-                    let _timer = DropTimer::start(Duration::from_millis(1), |elapsed| {
-                        warn!(
-                            ?elapsed,
-                            ?event,
-                            "long time to format event"
-                        )
-                    });
-                    format!("{:?}", event)
+                let (router, txpool, control_panel, state_sync, config_reload) = commands;
+                let num_commands = router.len()
+                    + txpool.len()
+                    + control_panel.len()
+                    + state_sync.len()
+                    + config_reload.len();
+                let _timer = DropTimer::start(Duration::from_millis(50), |elapsed| {
+                    warn!(
+                        ?elapsed,
+                        num_commands,
+                        "long time to execute commands"
+                    )
+                });
+                let _exec_span = trace_span!("external_exec_span", num_commands).entered();
+                external_executor.exec(
+                    router,
+                    txpool,
+                    control_panel,
+                    state_sync,
+                    config_reload,
+                );
+            }
+            result = async {
+                // reserve capacity before polling an executor so an event is never pulled without room to retain it.
+                let permit = consensus_event_tx.clone().reserve_owned().await;
+                let event = external_executor.next().await;
+                (permit, event)
+            }, if !shutting_down => {
+                let (Ok(permit), Some(event)) = result else {
+                    event!(Level::ERROR, "parent executor or consensus thread stopped");
+                    return Err(());
                 };
 
-                {
-                    let _ledger_span = ledger_span.enter();
-                    if event.is_wal_logged() {
-                        if let Some(waltrace_tx) = waltrace_tx.as_ref() {
-                            let wal_event = LogFriendlyMonadEvent {
-                                timestamp: Utc::now(),
-                                event: event.lossy_clone(),
-                            };
-                            match waltrace_tx.try_send(wal_event) {
-                                Ok(()) => {}
-                                Err(TrySendError::Full(_)) => {
-                                    warn!("waltrace is lagging; dropping wal event");
-                                }
-                                Err(TrySendError::Disconnected(_)) => {
-                                    event!(Level::ERROR, "waltrace thread stopped");
-                                }
-                            }
-                        }
-                    }
-                }
-
-                let commands = {
-                    let _timer = DropTimer::start(Duration::from_millis(50), |elapsed| {
-                        warn!(
-                            ?elapsed,
-                            event =? event_debug,
-                            "long time to update event"
-                        )
-                    });
-                    let _ledger_span = ledger_span.enter();
-                    let _event_span = tracing::trace_span!("event_span", ?event).entered();
-                    let start = Instant::now();
-                    let cmds = state.update(event);
-                    total_state_update_elapsed += start.elapsed();
-                    prometheus_metrics.record_state_update_elapsed(&total_state_update_elapsed);
-                    cmds
-                };
-
-                if !commands.is_empty() {
-                    let num_commands = commands.len();
-                    let _timer = DropTimer::start(Duration::from_millis(50), |elapsed| {
-                        warn!(
-                            ?elapsed,
-                            event =? event_debug,
-                            num_commands,
-                            "long time to execute commands"
-                        )
-                    });
-                    let _ledger_span = ledger_span.enter();
-                    let _exec_span = tracing::trace_span!("exec_span", num_commands).entered();
-                    executor.exec(commands);
-                }
-
-                if let Some(ledger_tip) = executor.ledger.last_commit() {
-                    if last_ledger_tip.is_none_or(|last_ledger_tip| ledger_tip > last_ledger_tip) {
-                        last_ledger_tip = Some(ledger_tip);
-                        ledger_span = tracing::info_span!("ledger_span", last_ledger_tip = last_ledger_tip.map(|s| s.as_u64()));
-                    }
-                }
+                permit.send(event);
             }
         }
+    }
+
+    if consensus_thread.join().is_err() {
+        event!(Level::ERROR, "consensus thread panicked during shutdown");
+        return Err(());
     }
 
     Ok(())
@@ -992,7 +1118,7 @@ fn send_metrics(
     meter: &Meter,
     gauge_cache: &mut HashMap<&'static str, Gauge<u64>>,
     node_metrics: &NodePrometheusMetrics,
-    executor_metrics: ExecutorMetricsChain,
+    executor_metrics: &[(&'static str, ExecutorGauge, &'static str)],
 ) {
     node_metrics.refresh_dynamic_metrics();
 
@@ -1000,7 +1126,11 @@ fn send_metrics(
         .metric_handles()
         .into_iter()
         .map(|(name, gauge, help)| (name, gauge.get(), help))
-        .chain(executor_metrics.into_inner())
+        .chain(
+            executor_metrics
+                .iter()
+                .map(|(name, gauge, help)| (*name, gauge.get(), *help)),
+        )
     {
         let gauge = gauge_cache.entry(k).or_insert_with(|| {
             if desc.is_empty() {

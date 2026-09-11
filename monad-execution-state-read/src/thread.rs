@@ -25,7 +25,7 @@ use monad_crypto::certificate_signature::{
 use monad_eth_types::{EthAccount, EthHeader};
 use monad_types::{BlockId, Epoch, SeqNum, Stake};
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
-use tracing::warn;
+use tracing::{instrument, warn};
 
 use crate::{ExecutionStateRead, ExecutionStateReadError};
 
@@ -125,6 +125,12 @@ where
     ST: CertificateSignatureRecoverable,
     SCT: SignatureCollection<NodeIdPubKey = CertificateSignaturePubKey<ST>>,
 {
+    #[instrument(
+        name = "state_read_wait_account_statuses",
+        level = "debug",
+        skip_all,
+        fields(seq_num = seq_num.as_u64(), is_finalized = is_finalized)
+    )]
     fn get_account_statuses<'a>(
         &mut self,
         block_id: &BlockId,
@@ -141,6 +147,12 @@ where
         })
     }
 
+    #[instrument(
+        name = "state_read_wait_execution_result",
+        level = "debug",
+        skip_all,
+        fields(seq_num = seq_num.as_u64(), is_finalized = is_finalized)
+    )]
     fn get_execution_result(
         &mut self,
         block_id: &BlockId,

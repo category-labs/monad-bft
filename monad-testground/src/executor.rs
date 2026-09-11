@@ -48,10 +48,18 @@ use monad_raptorcast::{
 use monad_state::{Forkpoint, MonadMessage, MonadState, MonadStateBuilder, VerifiedMonadMessage};
 use monad_types::{Epoch, ExecutionProtocol, NodeId, Round, SeqNum};
 use monad_updaters::{
-    config_file::MockConfigFile, config_loader::MockConfigLoader, ledger::MockLedger,
-    local_router::LocalPeerRouter, loopback::LoopbackExecutor, parent::ParentExecutor,
-    statesync::MockStateSyncExecutor, timer::TokioTimer, tokio_timestamp::TokioTimestamp,
-    txpool::MockTxPoolExecutor, val_set::MockValSetUpdaterNop, BoxUpdater, Updater,
+    config_file::MockConfigFile,
+    config_loader::MockConfigLoader,
+    ledger::MockLedger,
+    local_router::LocalPeerRouter,
+    loopback::LoopbackExecutor,
+    parent::{CoreExecutor, ExternalExecutor, ParentExecutor},
+    statesync::MockStateSyncExecutor,
+    timer::TokioTimer,
+    tokio_timestamp::TokioTimestamp,
+    txpool::MockTxPoolExecutor,
+    val_set::MockValSetUpdaterNop,
+    BoxUpdater, Updater,
 };
 use monad_validator::{
     signature_collection::SignatureCollection, simple_round_robin::SimpleRoundRobin,
@@ -148,72 +156,71 @@ where
         ..Default::default()
     };
 
-    ParentExecutor {
-        metrics: Default::default(),
-        router: match config.router_config {
-            RouterConfig::Local(router) => Updater::boxed(router),
+    let router = match config.router_config {
+        RouterConfig::Local(router) => Updater::boxed(router),
 
-            RouterConfig::RaptorCast(cfg) => {
-                let pdd = PeerDiscoveryDriver::new(peer_discovery_builder);
-                let shared_peer_discovery_driver = Arc::new(Mutex::new(pdd));
+        RouterConfig::RaptorCast(cfg) => {
+            let pdd = PeerDiscoveryDriver::new(peer_discovery_builder);
+            let shared_peer_discovery_driver = Arc::new(Mutex::new(pdd));
 
-                let auth_socket_addr =
-                    SocketAddr::new(config.local_addr.ip(), config.local_addr.port() + 1);
-                let dataplane_builder = DataplaneBuilder::new(1_000)
-                    .with_udp_buffer_size(62_500_000)
-                    .with_udp_sockets([
-                        (UdpSocketId::Raptorcast, config.local_addr),
-                        (UdpSocketId::AuthenticatedRaptorcast, auth_socket_addr),
-                    ])
-                    .with_tcp_sockets([(TcpSocketId::Raptorcast, config.local_addr)]);
+            let auth_socket_addr =
+                SocketAddr::new(config.local_addr.ip(), config.local_addr.port() + 1);
+            let dataplane_builder = DataplaneBuilder::new(1_000)
+                .with_udp_buffer_size(62_500_000)
+                .with_udp_sockets([
+                    (UdpSocketId::Raptorcast, config.local_addr),
+                    (UdpSocketId::AuthenticatedRaptorcast, auth_socket_addr),
+                ])
+                .with_tcp_sockets([(TcpSocketId::Raptorcast, config.local_addr)]);
 
-                let mut dp = dataplane_builder.build();
-                assert!(dp.block_until_ready(Duration::from_secs(1)));
+            let mut dp = dataplane_builder.build();
+            assert!(dp.block_until_ready(Duration::from_secs(1)));
 
-                let tcp_socket = dp
-                    .tcp_sockets
-                    .take(TcpSocketId::Raptorcast)
-                    .expect("tcp raptorcast socket");
-                let authenticated_socket = dp
-                    .udp_sockets
-                    .take(UdpSocketId::AuthenticatedRaptorcast)
-                    .expect("authenticated raptorcast socket");
-                let non_authenticated_socket = dp
-                    .udp_sockets
-                    .take(UdpSocketId::Raptorcast)
-                    .expect("raptorcast socket");
-                let control = dp.control;
+            let tcp_socket = dp
+                .tcp_sockets
+                .take(TcpSocketId::Raptorcast)
+                .expect("tcp raptorcast socket");
+            let authenticated_socket = dp
+                .udp_sockets
+                .take(UdpSocketId::AuthenticatedRaptorcast)
+                .expect("authenticated raptorcast socket");
+            let non_authenticated_socket = dp
+                .udp_sockets
+                .take(UdpSocketId::Raptorcast)
+                .expect("raptorcast socket");
+            let control = dp.control;
 
-                let authenticated = (authenticated_socket, NoopAuthProtocol::new());
-                Updater::boxed(RaptorCast::<
-                    ST,
-                    MonadMessage<ST, SCT, MockExecutionProtocol>,
-                    VerifiedMonadMessage<ST, SCT, MockExecutionProtocol>,
-                    MonadEvent<ST, SCT, MockExecutionProtocol>,
-                    NopDiscovery<ST>,
-                    NoopAuthProtocol<CertificateSignaturePubKey<ST>>,
-                    NopScore<NodeId<CertificateSignaturePubKey<ST>>>,
-                >::new(
-                    cfg,
-                    SecondaryRaptorCastModeConfig::None,
-                    tcp_socket,
-                    authenticated,
-                    None,
-                    Some(non_authenticated_socket),
-                    control,
-                    shared_peer_discovery_driver,
-                    Epoch(0),
-                    monad_raptorcast::dummy_proposer_schedule(),
-                ))
-            }
-        },
+            let authenticated = (authenticated_socket, NoopAuthProtocol::new());
+            Updater::boxed(RaptorCast::<
+                ST,
+                MonadMessage<ST, SCT, MockExecutionProtocol>,
+                VerifiedMonadMessage<ST, SCT, MockExecutionProtocol>,
+                MonadEvent<ST, SCT, MockExecutionProtocol>,
+                NopDiscovery<ST>,
+                NoopAuthProtocol<CertificateSignaturePubKey<ST>>,
+                NopScore<NodeId<CertificateSignaturePubKey<ST>>>,
+            >::new(
+                cfg,
+                SecondaryRaptorCastModeConfig::None,
+                tcp_socket,
+                authenticated,
+                None,
+                Some(non_authenticated_socket),
+                control,
+                shared_peer_discovery_driver,
+                Epoch(0),
+                monad_raptorcast::dummy_proposer_schedule(),
+            ))
+        }
+    };
 
-        timer: TokioTimer::default(),
-        ledger: match config.ledger_config {
+    let core = CoreExecutor::new(
+        TokioTimer::default(),
+        match config.ledger_config {
             LedgerConfig::Mock => MockLedger::new(state_read.clone()),
         },
-        config_file: MockConfigFile::default(),
-        val_set: match config.val_set_config {
+        MockConfigFile::default(),
+        match config.val_set_config {
             ValSetConfig::Mock {
                 genesis_validator_data,
                 epoch_length,
@@ -222,18 +229,22 @@ where
                 epoch_length,
             )),
         },
-        timestamp: TokioTimestamp::new(Duration::from_millis(5), 100, 10001),
-        txpool: MockTxPoolExecutor::default(),
-        control_panel: ControlPanelIpcReceiver::new(
+        TokioTimestamp::new(Duration::from_millis(5), 100, 10001),
+        LoopbackExecutor::default(),
+    );
+    let external = ExternalExecutor::new(
+        router,
+        MockTxPoolExecutor::default(),
+        ControlPanelIpcReceiver::new(
             format!("./monad_controlpanel_{}.sock", index).into(),
             Box::new(reload_handle),
             1000,
         )
         .expect("uds bind failed"),
-        loopback: LoopbackExecutor::default(),
-        state_sync: MockStateSyncExecutor::new(state_read),
-        config_loader: MockConfigLoader::default(),
-    }
+        MockStateSyncExecutor::new(state_read),
+        MockConfigLoader::default(),
+    );
+    ParentExecutor::new(core, external)
 }
 
 type MonadStateType<ST, SCT> = MonadState<
