@@ -537,6 +537,8 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                 move || metrics.refresh_dynamic_metrics()
             })),
         );
+        let server_state =
+            server_state.with_native_histograms(prometheus_metrics.native_histograms());
         let server =
             start_metrics_server(metrics_config.addr.clone(), server_state).map_err(|err| {
                 error!("failed to start metrics server: {}", err);

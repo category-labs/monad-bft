@@ -20,7 +20,6 @@ use std::{
     sync::Arc,
 };
 
-use hdrhistogram::Histogram as HdrHistogram;
 use prometheus::{
     core::{AtomicU64, GenericGauge},
     Opts, Registry,
@@ -32,6 +31,10 @@ pub type Gauge = GenericGauge<AtomicU64>;
 mod counter_labels;
 pub use counter_labels::LabeledCounterFamily;
 pub use prometheus::IntCounter as Counter;
+
+mod native_histogram;
+use native_histogram::NativeHistogramFamily;
+pub use native_histogram::{NativeHistogram, NativeHistogramRegistry};
 
 #[derive(Copy, Clone, Debug)]
 pub struct MetricDef {
@@ -124,6 +127,7 @@ macro_rules! metric_consts {
 pub struct ExecutorMetrics {
     gauges: HashMap<&'static MetricDef, Gauge>,
     counter_families: HashMap<&'static MetricDef, Arc<LabeledCounterFamily>>,
+    histogram_families: HashMap<&'static MetricDef, Arc<NativeHistogramFamily>>,
 }
 
 impl fmt::Debug for ExecutorMetrics {
@@ -131,6 +135,7 @@ impl fmt::Debug for ExecutorMetrics {
         f.debug_struct("ExecutorMetrics")
             .field("values", &self.snapshot())
             .field("counter_families", &self.counter_families)
+            .field("histogram_families", &self.histogram_families)
             .finish()
     }
 }
@@ -138,8 +143,9 @@ impl fmt::Debug for ExecutorMetrics {
 impl ExecutorMetrics {
     fn ensure_gauge(&mut self, metric: &'static MetricDef) -> &Gauge {
         assert!(
-            !self.counter_families.contains_key(metric),
-            "metric is already a counter: {}",
+            !self.counter_families.contains_key(metric)
+                && !self.histogram_families.contains_key(metric),
+            "metric is already a counter or histogram: {}",
             metric.name
         );
         match self.gauges.entry(metric) {
@@ -178,8 +184,9 @@ impl ExecutorMetrics {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
                 assert!(
-                    !self.counter_families.contains_key(metric),
-                    "metric is already a counter: {}",
+                    !self.counter_families.contains_key(metric)
+                        && !self.histogram_families.contains_key(metric),
+                    "metric is already a counter or histogram: {}",
                     metric.name
                 );
                 error!(
@@ -213,8 +220,8 @@ impl ExecutorMetrics {
         label_values: &'static [&'static str; N],
     ) -> [Counter; N] {
         assert!(
-            !self.gauges.contains_key(metric),
-            "metric is already a gauge: {}",
+            !self.gauges.contains_key(metric) && !self.histogram_families.contains_key(metric),
+            "metric is already a gauge or histogram: {}",
             metric.name
         );
         let family = self.counter_families.entry(metric).or_insert_with(|| {
@@ -222,6 +229,40 @@ impl ExecutorMetrics {
         });
         family.assert_schema(metric, label_name, label_values);
         family.handles()
+    }
+
+    /// Creates an unlabeled histogram using the default latency configuration.
+    pub fn native_histogram(&mut self, metric: &'static MetricDef) -> NativeHistogram {
+        let [histogram] = self.histogram_family_inner(metric, None, &[""]);
+        histogram
+    }
+
+    /// Creates cached labeled histograms. Prefer [`crate::histogram_labels!`].
+    /// Initialize before registering with exporters. Values are recorded in seconds.
+    pub fn histogram_family<const N: usize>(
+        &mut self,
+        metric: &'static MetricDef,
+        label_name: &'static str,
+        label_values: &'static [&'static str; N],
+    ) -> [NativeHistogram; N] {
+        self.histogram_family_inner(metric, Some(label_name), label_values)
+    }
+
+    fn histogram_family_inner<const N: usize>(
+        &mut self,
+        metric: &'static MetricDef,
+        label_name: Option<&'static str>,
+        label_values: &'static [&'static str; N],
+    ) -> [NativeHistogram; N] {
+        assert!(
+            !self.gauges.contains_key(metric) && !self.counter_families.contains_key(metric),
+            "metric is already a gauge or counter: {}",
+            metric.name
+        );
+        let family = self.histogram_families.entry(metric).or_insert_with(|| {
+            Arc::new(NativeHistogramFamily::new(metric, label_name, label_values))
+        });
+        family.handles(metric, label_name, label_values)
     }
 
     /// Scalar gauge handles. Labeled counters are exported as families separately.
@@ -298,6 +339,24 @@ impl<'a> ExecutorMetricsChain<'a> {
             .collect()
     }
 
+    /// Builds the native histogram registry after scalar registration so metric
+    /// names and global labels can be checked for collisions.
+    pub fn native_histogram_registry(
+        &self,
+        labels: HashMap<String, String>,
+        scalar_registry: &Registry,
+    ) -> prometheus::Result<NativeHistogramRegistry> {
+        let mut seen = HashSet::new();
+        let families = self
+            .0
+            .iter()
+            .flat_map(|metrics| metrics.histogram_families.values())
+            .filter(|family| seen.insert(Arc::as_ptr(family)))
+            .cloned()
+            .collect();
+        NativeHistogramRegistry::new(labels, families, scalar_registry)
+    }
+
     pub fn register(&self, registry: &Registry) -> prometheus::Result<()> {
         for (_, gauge, _) in self.metric_handles() {
             registry.register(Box::new(gauge))?;
@@ -324,45 +383,6 @@ impl<'a> ExecutorMetricsChain<'a> {
     }
 }
 
-/// A wrapper around hdrhistogram for computing latency percentiles.
-///
-/// Percentiles method take on order of 1us and nearly constant time even for larger histograms.
-pub struct Histogram {
-    histogram: HdrHistogram<u64>,
-}
-
-impl Histogram {
-    pub fn new(high: u64, sigfig: u8) -> Result<Self, hdrhistogram::CreationError> {
-        Ok(Self {
-            histogram: HdrHistogram::new_with_bounds(1, high, sigfig)?,
-        })
-    }
-
-    pub fn record(&mut self, value: u64) -> Result<(), hdrhistogram::RecordError> {
-        self.histogram.record(value)
-    }
-
-    pub fn p50(&self) -> u64 {
-        self.histogram.value_at_quantile(0.5)
-    }
-
-    pub fn p90(&self) -> u64 {
-        self.histogram.value_at_quantile(0.9)
-    }
-
-    pub fn p99(&self) -> u64 {
-        self.histogram.value_at_quantile(0.99)
-    }
-
-    pub fn count(&self) -> u64 {
-        self.histogram.len()
-    }
-
-    pub fn clear(&mut self) {
-        self.histogram.clear();
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -380,20 +400,6 @@ mod tests {
             name: "1monad.executor.test.invalid",
             help: "Test leading digit metric",
         }
-    }
-
-    #[test]
-    fn test_histogram() {
-        let mut hist = Histogram::new(1_000_000, 3).unwrap();
-
-        for i in 1..=100 {
-            hist.record(i * 100).unwrap();
-        }
-
-        assert_eq!(hist.count(), 100);
-        assert!(hist.p50() >= 5000 && hist.p50() <= 5100);
-        assert!(hist.p90() >= 9000 && hist.p90() <= 9100);
-        assert!(hist.p99() >= 9900 && hist.p99() <= 10000);
     }
 
     #[test]

@@ -22,7 +22,9 @@ use std::{
 use actix_server::Server;
 use actix_web::{http::header, web, App, HttpRequest, HttpResponse, HttpServer};
 use monad_consensus_types::metrics::Metrics as StateMetrics;
-use monad_executor::{metric_consts, ExecutorMetrics, ExecutorMetricsChain, Gauge};
+use monad_executor::{
+    metric_consts, ExecutorMetrics, ExecutorMetricsChain, Gauge, NativeHistogramRegistry,
+};
 use monad_triedb_utils::{MigrationPhase, StorageStats};
 use prometheus::{Encoder, ProtobufEncoder, Registry, TextEncoder};
 
@@ -125,6 +127,7 @@ fn duration_micros_u64(duration: &Duration) -> u64 {
 
 pub struct NodePrometheusMetrics {
     registry: Registry,
+    native_histograms: Arc<NativeHistogramRegistry>,
     state_metrics: Vec<(&'static str, Gauge, &'static str)>,
     total_uptime: Gauge,
     total_state_update: Gauge,
@@ -139,7 +142,7 @@ impl NodePrometheusMetrics {
         executor_metrics: ExecutorMetricsChain<'_>,
         process_start: Instant,
     ) -> Result<Self, prometheus::Error> {
-        let registry = Registry::new_custom(None, Some(labels))?;
+        let registry = Registry::new_custom(None, Some(labels.clone()))?;
         let state_metric_handles = state_metrics.metric_handles();
         for (_, gauge, _) in &state_metric_handles {
             registry.register(Box::new(gauge.clone()))?;
@@ -154,9 +157,12 @@ impl NodePrometheusMetrics {
             .gauge(GAUGE_STATE_TOTAL_UPDATE_US)
             .set(0);
         node_executor_metrics.register(&registry)?;
+        let native_histograms =
+            Arc::new(executor_metrics.native_histogram_registry(labels, &registry)?);
 
         Ok(Self {
             registry,
+            native_histograms,
             state_metrics: state_metric_handles,
             total_uptime: node_executor_metrics.gauge(GAUGE_TOTAL_UPTIME_US).clone(),
             total_state_update: node_executor_metrics
@@ -165,6 +171,10 @@ impl NodePrometheusMetrics {
             node_info: node_executor_metrics.gauge(GAUGE_NODE_INFO).clone(),
             process_start,
         })
+    }
+
+    pub fn native_histograms(&self) -> Arc<NativeHistogramRegistry> {
+        Arc::clone(&self.native_histograms)
     }
 
     pub fn registry(&self) -> Registry {
@@ -209,6 +219,7 @@ impl NodePrometheusMetrics {
 #[derive(Clone)]
 pub struct MetricsServerState {
     registry: Registry,
+    native_histograms: Option<Arc<NativeHistogramRegistry>>,
     before_gather: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
@@ -216,19 +227,56 @@ impl MetricsServerState {
     pub fn new(registry: Registry, before_gather: Option<Arc<dyn Fn() + Send + Sync>>) -> Self {
         Self {
             registry,
+            native_histograms: None,
             before_gather,
         }
+    }
+    pub fn with_native_histograms(mut self, histograms: Arc<NativeHistogramRegistry>) -> Self {
+        self.native_histograms = Some(histograms);
+        self
     }
 }
 
 fn wants_protobuf(request: &HttpRequest) -> bool {
-    // Prometheus negotiates scrape response format with the request Accept header:
-    // https://prometheus.io/docs/instrumenting/content_negotiation/
-    request
-        .headers()
-        .get(header::ACCEPT)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.contains(prometheus::PROTOBUF_FORMAT))
+    // Parse parameters rather than comparing formatting/whitespace in Accept.
+    // Prefer protobuf on equal quality so a native-capable scrape gets its buckets.
+    let mut best = (0.0_f32, false);
+    for value in request.headers().get_all(header::ACCEPT) {
+        let Ok(value) = value.to_str() else { continue };
+        for format in value.split(',') {
+            let mut parts = format.split(';').map(str::trim);
+            let media_type = parts.next().unwrap_or_default();
+            let (mut proto, mut encoding, mut quality) = ("", "", 1.0_f32);
+            for part in parts {
+                let Some((key, value)) = part.split_once('=') else {
+                    continue;
+                };
+                let value = value.trim().trim_matches('"');
+                match key.trim() {
+                    "proto" => proto = value,
+                    "encoding" => encoding = value,
+                    "q" => {
+                        quality = value
+                            .parse::<f32>()
+                            .ok()
+                            .filter(|q| (0.0..=1.0).contains(q))
+                            .unwrap_or(0.0)
+                    }
+                    _ => {}
+                }
+            }
+            let protobuf = media_type == "application/vnd.google.protobuf"
+                && proto == "io.prometheus.client.MetricFamily"
+                && encoding == "delimited";
+            if !protobuf && !matches!(media_type, "text/plain" | "text/*" | "*/*") {
+                continue;
+            }
+            if quality > 0.0 && (quality > best.0 || (quality == best.0 && protobuf)) {
+                best = (quality, protobuf);
+            }
+        }
+    }
+    best.1
 }
 
 async fn handle_metrics(
@@ -239,7 +287,7 @@ async fn handle_metrics(
         before_gather();
     }
 
-    let metric_families = state.registry.gather();
+    let mut metric_families = state.registry.gather();
     let mut buffer = Vec::new();
 
     let content_type = if wants_protobuf(&request) {
@@ -247,8 +295,20 @@ async fn handle_metrics(
         if encoder.encode(&metric_families, &mut buffer).is_err() {
             return HttpResponse::InternalServerError().finish();
         }
+        if let Some(histograms) = &state.native_histograms {
+            match histograms.encode_protobuf() {
+                Ok(native) => buffer.extend(native),
+                Err(_) => return HttpResponse::InternalServerError().finish(),
+            }
+        }
         prometheus::PROTOBUF_FORMAT
     } else {
+        if let Some(histograms) = &state.native_histograms {
+            match histograms.classic_metric_families() {
+                Ok(classic) => metric_families.extend(classic),
+                Err(_) => return HttpResponse::InternalServerError().finish(),
+            }
+        }
         let encoder = TextEncoder::new();
         if encoder.encode(&metric_families, &mut buffer).is_err() {
             return HttpResponse::InternalServerError().finish();
@@ -351,5 +411,134 @@ mod storage_metrics_tests {
             scraped.contains("monad_triedb_disk_used_bytes 700"),
             "{scraped}"
         );
+    }
+}
+
+#[cfg(test)]
+mod native_histogram_tests {
+    use actix_web::{http::StatusCode, test};
+    use prometheus_client::encoding::prometheus_protobuf::prometheus_data_model;
+    use prost::Message;
+
+    use super::*;
+
+    monad_executor::histogram_labels! {
+        struct Latencies { primary => "primary", secondary => "secondary" }
+    }
+    metric_consts! {
+        LATENCY { name: "test.latency_seconds", help: "Test latency" }
+        SCALAR { name: "test.scalar", help: "Test scalar" }
+    }
+
+    #[actix_web::test]
+    async fn endpoint_exports_native_protobuf_and_classic_text_with_global_labels() {
+        let mut metrics = ExecutorMetrics::with_metric_defs(&[SCALAR]);
+        let latency = Latencies::new(&mut metrics, LATENCY, "mode");
+        let node = NodePrometheusMetrics::new(
+            HashMap::from([("network".into(), "testnet".into())]),
+            &StateMetrics::default(),
+            (&metrics).into(),
+            Instant::now(),
+        )
+        .unwrap();
+        let state = MetricsServerState::new(node.registry(), None)
+            .with_native_histograms(node.native_histograms());
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(state))
+                .route("/metrics", web::get().to(handle_metrics)),
+        )
+        .await;
+        // Record after registration to check that collectors share the live handles.
+        latency.primary.observe_duration(Duration::from_millis(12));
+        latency.secondary.observe_duration(Duration::from_secs(30));
+        metrics.gauge(SCALAR).set(7);
+        let request = test::TestRequest::get().uri("/metrics").insert_header((header::ACCEPT,
+            "application/vnd.google.protobuf;proto=io.prometheus.client.MetricFamily;encoding=delimited;q=0.9,text/plain;q=0.5")).to_request();
+        let response = test::call_service(&app, request).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            prometheus::PROTOBUF_FORMAT
+        );
+        let body = test::read_body(response).await;
+        let mut remaining = body.as_ref();
+        let mut families = Vec::new();
+        while !remaining.is_empty() {
+            families.push(
+                prometheus_data_model::MetricFamily::decode_length_delimited(&mut remaining)
+                    .unwrap(),
+            );
+        }
+        assert_eq!(
+            families
+                .iter()
+                .filter(|family| family.name == "test_latency_seconds")
+                .count(),
+            1
+        );
+        assert_eq!(
+            families
+                .iter()
+                .find(|family| family.name == "test_scalar")
+                .unwrap()
+                .metric[0]
+                .gauge
+                .as_ref()
+                .unwrap()
+                .value,
+            7.0
+        );
+        let family = families
+            .iter()
+            .find(|family| family.name == "test_latency_seconds")
+            .unwrap();
+        assert_eq!(family.metric.len(), 2);
+        for metric in &family.metric {
+            assert!(metric
+                .label
+                .iter()
+                .any(|label| label.name == "network" && label.value == "testnet"));
+            let histogram = metric.histogram.as_ref().unwrap();
+            assert_eq!(histogram.sample_count, 1);
+            assert!(!histogram.positive_span.is_empty());
+            assert_eq!(histogram.positive_delta, [1]);
+        }
+        let response =
+            test::call_service(&app, test::TestRequest::get().uri("/metrics").to_request()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            prometheus::TEXT_FORMAT
+        );
+        let body = String::from_utf8(test::read_body(response).await.to_vec()).unwrap();
+        assert!(body.contains("# TYPE test_latency_seconds histogram"));
+        assert!(body.contains("test_scalar{network=\"testnet\"} 7"));
+        let primary_count = body
+            .lines()
+            .find(|line| {
+                line.starts_with("test_latency_seconds_count{") && line.contains("mode=\"primary\"")
+            })
+            .unwrap();
+        assert!(primary_count.contains("network=\"testnet\""));
+        assert!(primary_count.ends_with(" 1"));
+        assert!(body
+            .lines()
+            .any(|line| line.starts_with("test_latency_seconds_bucket{")
+                && line.contains("le=\"+Inf\"")));
+    }
+
+    #[actix_web::test]
+    async fn negotiation_respects_quality_and_parameter_formatting() {
+        for (accept, expected) in [
+            (prometheus::PROTOBUF_FORMAT.to_owned(), true),
+            ("application/vnd.google.protobuf;encoding=delimited;proto=\"io.prometheus.client.MetricFamily\"".to_owned(), true),
+            (format!("{};q=0,text/plain", prometheus::PROTOBUF_FORMAT), false),
+            (format!("{};q=0.5,text/plain;q=0.9", prometheus::PROTOBUF_FORMAT), false),
+            ("application/vnd.google.protobuf;proto=openmetrics.MetricSet;encoding=delimited".to_owned(), false),
+        ] {
+            let request = test::TestRequest::get().insert_header((header::ACCEPT, accept)).to_http_request();
+            assert_eq!(wants_protobuf(&request), expected);
+        }
     }
 }

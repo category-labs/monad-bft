@@ -45,6 +45,8 @@ tracing = { workspace = true }
 zerocopy = { workspace = true }
 
 [dev-dependencies]
+actix-web = { workspace = true }
+prometheus = { workspace = true }
 monad-testutil = { workspace = true }
 
 clap = { workspace = true, features = ["derive"] }

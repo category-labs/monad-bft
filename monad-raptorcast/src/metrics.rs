@@ -13,9 +13,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use monad_executor::{ExecutorMetrics, Histogram, MetricDef};
+use monad_executor::ExecutorMetrics;
 
 use crate::util::unix_ts_ms_now;
 
@@ -76,25 +76,18 @@ monad_executor::metric_consts! {
         name: "monad.raptorcast.deterministic_rollout_stage",
         help: "Current deterministic raptorcast rollout stage (0=always_v0, 1=accept_both_publish_v0, 2=accept_both_publish_v1, 3=always_v1)",
     }
-    pub PRIMARY_BROADCAST_LATENCY_P99_MS {
-        name: "monad.bft.raptorcast.udp.primary_broadcast_latency_p99_ms",
-        help: "P99 primary UDP broadcast latency in ms (30s rolling window)",
-    }
-    pub PRIMARY_BROADCAST_LATENCY_COUNT {
-        name: "monad.bft.raptorcast.udp.primary_broadcast_latency_count",
-        help: "Primary broadcast latency measurement count (30s rolling window)",
-    }
-    pub SECONDARY_BROADCAST_LATENCY_P99_MS {
-        name: "monad.bft.raptorcast.udp.secondary_broadcast_latency_p99_ms",
-        help: "P99 secondary UDP broadcast latency in ms (30s rolling window)",
-    }
-    pub SECONDARY_BROADCAST_LATENCY_COUNT {
-        name: "monad.bft.raptorcast.udp.secondary_broadcast_latency_count",
-        help: "Secondary broadcast latency measurement count (30s rolling window)",
+    pub BROADCAST_LATENCY_SECONDS {
+        name: "monad.raptorcast.broadcast_latency_seconds",
+        help: "UDP broadcast latency from sender timestamp to completed message decoding in seconds",
     }
 }
 
-const HISTOGRAM_CLEAR_INTERVAL: Duration = Duration::from_secs(30);
+monad_executor::histogram_labels! {
+    struct BroadcastLatency {
+        primary => "primary",
+        secondary => "secondary",
+    }
+}
 
 pub(crate) fn init_router_executor_metrics() -> ExecutorMetrics {
     ExecutorMetrics::with_metric_defs(&[
@@ -117,67 +110,22 @@ pub(crate) fn init_udp_state_executor_metrics() -> ExecutorMetrics {
         COUNTER_RAPTORCAST_V0_SECONDARY_CHUNKS_ACCEPTED,
         COUNTER_RAPTORCAST_V1_SECONDARY_CHUNKS_ACCEPTED,
         GAUGE_RAPTORCAST_DETERMINISTIC_ROLLOUT_STAGE,
-        PRIMARY_BROADCAST_LATENCY_P99_MS,
-        PRIMARY_BROADCAST_LATENCY_COUNT,
-        SECONDARY_BROADCAST_LATENCY_P99_MS,
-        SECONDARY_BROADCAST_LATENCY_COUNT,
     ])
 }
 
-pub(crate) struct LatencyHistogram {
-    histogram: Histogram,
-    p99_metric: &'static MetricDef,
-    count_metric: &'static MetricDef,
-    last_reset: Instant,
-}
-
-impl LatencyHistogram {
-    fn new(max_ms: u64, p99_metric: &'static MetricDef, count_metric: &'static MetricDef) -> Self {
-        Self {
-            histogram: Histogram::new(max_ms, 3).expect("failed to create latency histogram"),
-            p99_metric,
-            count_metric,
-            last_reset: Instant::now(),
-        }
-    }
-
-    pub(crate) fn record(&mut self, latency_ms: u64, metrics: &mut ExecutorMetrics) {
-        let now = Instant::now();
-
-        if now.duration_since(self.last_reset) >= HISTOGRAM_CLEAR_INTERVAL {
-            self.histogram.clear();
-            self.last_reset = now;
-        }
-
-        if let Err(e) = self.histogram.record(latency_ms) {
-            tracing::warn!("failed to record latency: {}", e);
-        }
-
-        metrics.gauge(self.p99_metric).set(self.histogram.p99());
-        metrics.gauge(self.count_metric).set(self.histogram.count());
-    }
-}
-
 pub struct UdpStateMetrics {
-    primary_broadcast: LatencyHistogram,
-    secondary_broadcast: LatencyHistogram,
+    broadcast_latency: BroadcastLatency,
     executor_metrics: ExecutorMetrics,
 }
 
 impl UdpStateMetrics {
     pub fn new() -> Self {
+        let mut executor_metrics = init_udp_state_executor_metrics();
+        let broadcast_latency =
+            BroadcastLatency::new(&mut executor_metrics, BROADCAST_LATENCY_SECONDS, "mode");
         Self {
-            primary_broadcast: LatencyHistogram::new(
-                10_000,
-                PRIMARY_BROADCAST_LATENCY_P99_MS,
-                PRIMARY_BROADCAST_LATENCY_COUNT,
-            ),
-            secondary_broadcast: LatencyHistogram::new(
-                10_000,
-                SECONDARY_BROADCAST_LATENCY_P99_MS,
-                SECONDARY_BROADCAST_LATENCY_COUNT,
-            ),
-            executor_metrics: init_udp_state_executor_metrics(),
+            broadcast_latency,
+            executor_metrics,
         }
     }
 
@@ -186,7 +134,15 @@ impl UdpStateMetrics {
         mode: crate::util::BroadcastMode,
         message_ts_ms: u64,
     ) {
-        let now_ms = unix_ts_ms_now();
+        self.record_broadcast_latency_at(mode, message_ts_ms, unix_ts_ms_now());
+    }
+
+    fn record_broadcast_latency_at(
+        &self,
+        mode: crate::util::BroadcastMode,
+        message_ts_ms: u64,
+        now_ms: u64,
+    ) {
         if now_ms < message_ts_ms {
             return;
         }
@@ -194,10 +150,10 @@ impl UdpStateMetrics {
         let latency_ms = now_ms - message_ts_ms;
         let histogram = match mode {
             crate::util::BroadcastMode::Unspecified => return,
-            crate::util::BroadcastMode::Primary => &mut self.primary_broadcast,
-            crate::util::BroadcastMode::Secondary => &mut self.secondary_broadcast,
+            crate::util::BroadcastMode::Primary => &self.broadcast_latency.primary,
+            crate::util::BroadcastMode::Secondary => &self.broadcast_latency.secondary,
         };
-        histogram.record(latency_ms, &mut self.executor_metrics);
+        histogram.observe_duration(Duration::from_millis(latency_ms));
     }
 
     pub fn executor_metrics(&self) -> &ExecutorMetrics {
@@ -212,5 +168,48 @@ impl UdpStateMetrics {
 impl Default for UdpStateMetrics {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use monad_executor::ExecutorMetricsChain;
+
+    use super::*;
+    use crate::util::BroadcastMode;
+
+    #[test]
+    fn broadcast_latency_records_modes_in_seconds_without_a_reset_window() {
+        let metrics = UdpStateMetrics::new();
+        let registry = ExecutorMetricsChain::from(metrics.executor_metrics())
+            .native_histogram_registry(Default::default(), &prometheus::Registry::new())
+            .unwrap();
+        metrics.record_broadcast_latency_at(BroadcastMode::Primary, 1_000, 1_012);
+        metrics.record_broadcast_latency_at(BroadcastMode::Secondary, 1_000, 1_025);
+        // Later observations keep the original samples, including zero and long delays.
+        metrics.record_broadcast_latency_at(BroadcastMode::Primary, 60_000, 60_000);
+        metrics.record_broadcast_latency_at(BroadcastMode::Secondary, 1_000, 61_000);
+        // Preserve the existing timestamp and mode filtering.
+        metrics.record_broadcast_latency_at(BroadcastMode::Primary, 100_000, 1_000);
+        metrics.record_broadcast_latency_at(BroadcastMode::Unspecified, 1_000, 1_005);
+        let families = registry.classic_metric_families().unwrap();
+        assert_eq!(families.len(), 1);
+        assert_eq!(
+            families[0].name(),
+            "monad_raptorcast_broadcast_latency_seconds"
+        );
+        for (mode, sum) in [("primary", 0.012), ("secondary", 60.025)] {
+            let sample = families[0]
+                .get_metric()
+                .iter()
+                .find(|m| {
+                    m.get_label()
+                        .iter()
+                        .any(|l| l.name() == "mode" && l.value() == mode)
+                })
+                .unwrap();
+            assert_eq!(sample.get_histogram().sample_count(), 2);
+            assert!((sample.get_histogram().sample_sum() - sum).abs() < 1e-12);
+        }
     }
 }

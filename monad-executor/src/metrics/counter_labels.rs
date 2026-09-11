@@ -296,7 +296,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "metric is already a gauge")]
+    #[should_panic(expected = "metric is already a gauge or histogram")]
     fn rejects_using_a_gauge_as_a_counter() {
         Errors::new(
             &mut ExecutorMetrics::with_metric_defs(&[ERRORS]),

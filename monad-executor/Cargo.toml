@@ -11,7 +11,7 @@ bench = false
 [dependencies]
 
 bytes = { workspace = true }
-hdrhistogram = { workspace = true }
 monad-types = { workspace = true }
 prometheus = { workspace = true }
+prometheus-client = { workspace = true }
 tracing = { workspace = true }

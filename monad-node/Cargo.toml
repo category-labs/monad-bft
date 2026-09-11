@@ -78,6 +78,8 @@ monad-version = { workspace = true }
 
 [dev-dependencies]
 monad-block-persist = { workspace = true }
+prometheus-client = { workspace = true }
+prost = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
 
 inotify = { workspace = true }
