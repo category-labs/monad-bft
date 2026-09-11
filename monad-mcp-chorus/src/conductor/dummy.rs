@@ -94,7 +94,7 @@ impl Conductor for DummyConductor {
         self.outputs.pop_front()
     }
 
-    fn handle_message(&mut self, _sender: NodeId, never: Never) {
+    fn handle_message(&mut self, _at: Timestamp, _sender: NodeId, never: Never) {
         // guaranteed  from type level
         match never {}
     }

@@ -16,7 +16,7 @@
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 
 use super::{
-    ConductorConfig, ConductorError, ConductorOutput, MonadConductor,
+    ConductorConfig, ConductorError, ConductorMessage, ConductorOutput, MonadConductor,
     acs::{Acs, AcsOutput},
     types::{NodeId, Slot, Timestamp, WindowId},
 };
@@ -150,7 +150,9 @@ where
     }
 
     pub fn poll(&mut self) -> Option<ConductorOutput<MonadConductor<A>>> {
-        self.active_round.poll().map(ConductorOutput::Broadcast)
+        self.active_round
+            .poll()
+            .map(|message| ConductorOutput::Broadcast(ConductorMessage::DeadlineAgreement(message)))
     }
 
     pub fn decision(&self) -> Option<Timestamp> {
@@ -172,6 +174,12 @@ where
             "rounds must advance one window at a time"
         );
 
+        self.active_round = ActiveDeadlineRound::new(target_window, &self.context);
+    }
+
+    // Rotates the round after a cap jump, which skips windows and abandons an
+    // undecided round.
+    pub fn reset_round(&mut self, target_window: WindowId) {
         self.active_round = ActiveDeadlineRound::new(target_window, &self.context);
     }
 }
@@ -228,6 +236,7 @@ mod tests {
             nz(8),
             TimestampDelta::from_nanos(10),
             GENESIS_DEADLINE,
+            nz(10),
         )
         .unwrap()
     }
@@ -259,6 +268,7 @@ mod tests {
             nz(1),
             TimestampDelta::from_nanos(u64::MAX),
             GENESIS_DEADLINE,
+            nz(2),
         )
         .unwrap();
         assert_eq!(
@@ -281,10 +291,10 @@ mod tests {
             Some(ConductorOutput::Broadcast(message)) => {
                 assert_eq!(
                     message,
-                    DeadlineAgreementMessage {
+                    ConductorMessage::DeadlineAgreement(DeadlineAgreementMessage {
                         window: WindowId(1),
                         acs_message: genesis_plus(100),
-                    }
+                    })
                 );
             }
             _ => panic!("expected conductor broadcast"),
@@ -301,10 +311,10 @@ mod tests {
             Some(ConductorOutput::Broadcast(message)) => {
                 assert_eq!(
                     message,
-                    DeadlineAgreementMessage {
+                    ConductorMessage::DeadlineAgreement(DeadlineAgreementMessage {
                         window: WindowId(2),
                         acs_message: genesis_plus(200),
-                    }
+                    })
                 );
             }
             _ => panic!("expected conductor broadcast"),

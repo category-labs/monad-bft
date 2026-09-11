@@ -196,13 +196,14 @@ where
         }
 
         if let Some(event) = self.driver.poll_cadence_event() {
+            let now = self.clock;
             match event {
                 CadenceEvent::Alarm(alarm) => {
                     self.conductor.handle_alarm(alarm);
                 }
                 CadenceEvent::ConductorMessage(message) => {
                     let (message, author) = message.destructure();
-                    self.conductor.handle_message(author, message);
+                    self.conductor.handle_message(now, author, message);
                 }
                 CadenceEvent::SlotDeadline(slot) => {
                     if let Some(instance) = self.slot_manager.slot_instance(slot) {
