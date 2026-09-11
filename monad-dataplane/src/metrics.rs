@@ -30,6 +30,14 @@ monad_executor::counter_labels! {
     }
 }
 
+monad_executor::counter_labels! {
+    pub(crate) struct ConnectionRejections {
+        banned => "banned",
+        connection_limit => "connection_limit",
+        per_ip_limit => "per_ip_limit",
+    }
+}
+
 macro_rules! define_metrics {
     ($($field:ident $(: $ty:ty)? => $constant:ident($name:literal, $help:literal $(, $label:literal)?)),+ $(,)?) => {
         monad_executor::metric_consts! {
@@ -85,7 +93,7 @@ define_metrics! {
     tcp_current_inbound_connections => TCP_CURRENT_INBOUND_CONNECTIONS("monad.dataplane.tcp.current_inbound_connections", "Current accepted inbound TCP connections"),
     tcp_current_outbound_connections => TCP_CURRENT_OUTBOUND_CONNECTIONS("monad.dataplane.tcp.current_outbound_connections", "Current established outbound TCP connections"),
     tcp_inbound_connections_accepted => TCP_INBOUND_CONNECTIONS_ACCEPTED("monad.dataplane.tcp.total_inbound_connections_accepted", "Total inbound TCP connections accepted by dataplane limits"),
-    tcp_inbound_connections_rejected => TCP_INBOUND_CONNECTIONS_REJECTED("monad.dataplane.tcp.total_inbound_connections_rejected", "Total inbound TCP connections rejected because the peer was banned or a connection limit was reached"),
+    tcp_inbound_connections_rejected: ConnectionRejections => TCP_INBOUND_CONNECTIONS_REJECTED("monad.dataplane.tcp.inbound_connections_rejected_total", "Total inbound TCP connections rejected because the peer was banned or a connection limit was reached", "reason"),
     tcp_outbound_connections_established => TCP_OUTBOUND_CONNECTIONS_ESTABLISHED("monad.dataplane.tcp.total_outbound_connections_established", "Total outbound TCP connections successfully established"),
     tcp_outbound_connection_errors => TCP_OUTBOUND_CONNECTION_ERRORS("monad.dataplane.tcp.total_outbound_connection_errors", "Total outbound TCP connection attempts that failed or timed out"),
     tcp_receive_errors: ReceiveErrors => TCP_RECEIVE_ERRORS("monad.dataplane.tcp.receive_errors_total", "Total TCP accept, framing, or payload receive errors", "reason"),
@@ -124,14 +132,14 @@ mod tests {
         worker.tcp_receive_errors.header_timeout.inc();
         worker.tcp_receive_errors.invalid_magic.inc_by(2);
         let families = ExecutorMetricsChain::from(metrics.executor_metrics()).counter_families();
-        assert_eq!(families.len(), 1);
+        assert_eq!(families.len(), 2);
+        let family = families
+            .iter()
+            .find(|family| family.definition().name == TCP_RECEIVE_ERRORS.name)
+            .unwrap();
+        assert_eq!(family.label_name(), "reason");
         assert_eq!(
-            families[0].definition().name,
-            "monad.dataplane.tcp.receive_errors_total"
-        );
-        assert_eq!(families[0].label_name(), "reason");
-        assert_eq!(
-            families[0].samples().collect::<Vec<_>>(),
+            family.samples().collect::<Vec<_>>(),
             [
                 ("accept", 0),
                 ("header_io", 0),
