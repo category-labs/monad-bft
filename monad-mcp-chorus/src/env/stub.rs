@@ -204,6 +204,8 @@ mod validator {
 }
 
 mod proposal {
+    use std::fmt;
+
     use alloy_rlp::{
         Decodable, Encodable, Header, RlpDecodable, RlpDecodableWrapper, RlpEncodable,
         RlpEncodableWrapper, encode_list, list_length,
@@ -215,11 +217,26 @@ mod proposal {
         stub::types::{ProposalIndex, Slot},
     };
 
-    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, RlpEncodableWrapper, RlpDecodableWrapper)]
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, RlpEncodableWrapper, RlpDecodableWrapper)]
     pub struct MerkleHash(pub [u8; 20]);
 
-    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, RlpEncodableWrapper, RlpDecodableWrapper)]
+    impl fmt::Debug for MerkleHash {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            for byte in self.0 {
+                write!(f, "{byte:02x}")?;
+            }
+            Ok(())
+        }
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, RlpEncodableWrapper, RlpDecodableWrapper)]
     pub struct MerkleRoot(pub MerkleHash);
+
+    impl fmt::Debug for MerkleRoot {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "root:{:?}", self.0)
+        }
+    }
     impl spec::MerkleRoot for MerkleRoot {}
 
     // stub proposal signature, opaque to consensus
@@ -402,7 +419,10 @@ mod proposal {
 }
 
 mod vote {
-    use std::collections::{BTreeMap, HashMap, HashSet};
+    use std::{
+        collections::{BTreeMap, HashMap, HashSet},
+        hash::{DefaultHasher, Hash as _, Hasher as _},
+    };
 
     use alloy_rlp::{
         Decodable, Encodable, RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper,
@@ -416,7 +436,7 @@ mod vote {
         self, SignatureCollection as _, validator::ValidatorData as _, vote::Signature as _,
     };
 
-    #[derive(PartialEq, Eq, Hash, Debug, Into)]
+    #[derive(Clone, PartialEq, Eq, Hash, Debug, Into)]
     pub struct KeyPair(u64);
 
     #[derive(
@@ -427,8 +447,14 @@ mod vote {
     #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
     pub struct Signature {
         by: PubKey,
-        data: Bytes,
+        digest: u64,
         malformed: bool,
+    }
+
+    fn digest(data: &[u8]) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        data.hash(&mut hasher);
+        hasher.finish()
     }
 
     impl Signature {
@@ -520,7 +546,7 @@ mod vote {
         fn sign(&self, data: &Bytes) -> Self::Signature {
             Signature {
                 by: self.pubkey(),
-                data: data.clone(),
+                digest: digest(data),
                 malformed: false,
             }
         }
@@ -534,7 +560,7 @@ mod vote {
         }
 
         fn verify(&self, data: &[u8], pubkey: &Self::PubKey) -> bool {
-            self.is_well_formed() && self.by == *pubkey && self.data == data
+            self.is_well_formed() && self.by == *pubkey && self.digest == digest(data)
         }
     }
 

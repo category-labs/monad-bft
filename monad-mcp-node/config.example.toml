@@ -1,0 +1,31 @@
+# a single stub validator. every key derives from a u64 in the stub env.
+node_id = 0
+proposal_key_pair = 0
+cadence_key_pair = 0
+# unix milliseconds, shared by every node of the chain. a node started
+# later catches up on the slots it missed.
+genesis_deadline = 1789412000000
+
+[[validators]]
+node_id = 0
+stake = 1
+chorus_pubkey = 0
+address = "127.0.0.1:9000"
+
+[network]
+port = 9000
+
+# every section below is optional, as is every field in it
+
+[cadence]
+delta = 200
+slot_interval = 1000
+slots_per_window = 10
+sync_boundary_slots = 8
+
+[da]
+completed_slot_retention = 2
+
+[proposal]
+num_proposals = 5
+propose_before_deadline = 500

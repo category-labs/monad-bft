@@ -1,0 +1,25 @@
+[package]
+name = "monad-mcp-node"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["enable_stub"]
+enable_stub = [
+  "monad-mcp-chorus/enable_stub",
+  "monad-mcp-da/enable_stub",
+]
+
+[dependencies]
+bytes = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "signal"] }
+tokio-stream = { workspace = true }
+tokio-util = { workspace = true, features = ["time"] }
+toml = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+monad-mcp-chorus = { workspace = true }
+monad-mcp-da = { workspace = true }

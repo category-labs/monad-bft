@@ -48,9 +48,9 @@ where
 type ObserverOf<S> = dyn FinalizationObserver<
         <S as SlotConsensus>::OptimisticCommitData,
         <S as SlotConsensus>::FinalizationData,
-    >;
+    > + Send;
 
-type DASinkOf<S> = dyn DASink<<S as SlotConsensus>::DACommand>;
+type DASinkOf<S> = dyn DASink<<S as SlotConsensus>::DACommand> + Send;
 
 impl<S, C> CadenceRuntime<S, C>
 where
@@ -91,12 +91,14 @@ where
 {
     pub fn on_finalization(
         &mut self,
-        observer: impl FinalizationObserver<S::OptimisticCommitData, S::FinalizationData> + 'static,
+        observer: impl FinalizationObserver<S::OptimisticCommitData, S::FinalizationData>
+        + Send
+        + 'static,
     ) {
         self.observer = Some(Box::new(observer));
     }
 
-    pub fn on_da(&mut self, sink: impl DASink<S::DACommand> + 'static) {
+    pub fn on_da(&mut self, sink: impl DASink<S::DACommand> + Send + 'static) {
         self.da_sink = Some(Box::new(sink));
     }
 
@@ -187,7 +189,7 @@ where
                         self.slot_manager.open(slot);
                         self.driver.schedule_slot_deadline(slot, deadline);
                         if let Some(sink) = &mut self.da_sink {
-                            sink.handle_lifecycle(slot, SlotLifecycle::Opened);
+                            sink.handle_lifecycle(slot, SlotLifecycle::Opened { deadline });
                         }
                     }
                 }
@@ -257,7 +259,7 @@ where
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SlotLifecycle {
-    Opened,
+    Opened { deadline: Timestamp },
     Completed,
 }
 

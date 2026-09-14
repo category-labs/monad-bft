@@ -70,13 +70,13 @@ pub(crate) fn chunk_tree(
     Some(scheme.chunk_tree(symbols))
 }
 
-pub(crate) trait SymbolEncoder {
+pub(crate) trait SymbolEncoder: Send {
     // one symbol per chunk, in chunk id order
     fn encode(&self, message: &[u8]) -> Vec<Bytes>;
 }
 
 // the decoding state of one proposal.
-pub(crate) trait SymbolDecoder {
+pub(crate) trait SymbolDecoder: Send {
     fn ingest(&mut self, chunk_id: ChunkId, symbol: &Bytes);
 
     // the message, once enough symbols arrived

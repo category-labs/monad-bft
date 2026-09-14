@@ -21,9 +21,8 @@
 //! the state machine counts every vote off the wire, its own included
 
 use std::{
-    cell::RefCell,
     collections::{BTreeMap, HashMap},
-    rc::Rc,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -63,7 +62,7 @@ struct DecisionState {
 
 /// Per-node decisions, shared with the observers planted in the runtimes
 #[derive(Default)]
-struct DecisionLog(HashMap<NodeId, Rc<RefCell<DecisionState>>>);
+struct DecisionLog(HashMap<NodeId, Arc<Mutex<DecisionState>>>);
 
 impl DecisionLog {
     fn new() -> Self {
@@ -73,7 +72,7 @@ impl DecisionLog {
     fn record_decision(&mut self, node: NodeId) -> impl FnMut(Timestamp, &Metablock) + 'static {
         let state = self.0.entry(node).or_default().clone();
         move |at: Timestamp, block: &Metablock| {
-            let mut state = state.borrow_mut();
+            let mut state = state.lock().expect("not poisoned");
             match &state.first {
                 None => {
                     state.first = Some(Decision {
@@ -91,13 +90,18 @@ impl DecisionLog {
     }
 
     fn decision_of(&self, node: &NodeId) -> Option<Decision> {
-        self.0.get(node)?.borrow().first.clone()
+        self.0
+            .get(node)?
+            .lock()
+            .expect("not poisoned")
+            .first
+            .clone()
     }
 
     fn conflicted(&self, node: &NodeId) -> bool {
         self.0
             .get(node)
-            .is_some_and(|state| state.borrow().conflict_decision)
+            .is_some_and(|state| state.lock().expect("not poisoned").conflict_decision)
     }
 }
 

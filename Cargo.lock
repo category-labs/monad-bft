@@ -5727,6 +5727,7 @@ dependencies = [
 name = "monad-mcp-da"
 version = "0.1.0"
 dependencies = [
+ "alloy-rlp",
  "bitvec",
  "bytes",
  "derive_more",
@@ -5737,6 +5738,23 @@ dependencies = [
  "rand_chacha 0.3.1",
  "reed-solomon-simd",
  "tracing",
+]
+
+[[package]]
+name = "monad-mcp-node"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "monad-mcp-chorus",
+ "monad-mcp-da",
+ "rand 0.8.5",
+ "serde",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

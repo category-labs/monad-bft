@@ -71,6 +71,7 @@ pub struct DARuntime<E> {
     outbox: VecDeque<DAOutput>,
 }
 
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ChunkRecoveryRequest {
     pub slot: Slot,
     pub proposal_index: ProposalIndex,
@@ -168,7 +169,7 @@ where
 
     pub fn handle_slot_event(&mut self, slot: Slot, event: SlotLifecycle) {
         match event {
-            SlotLifecycle::Opened => {
+            SlotLifecycle::Opened { .. } => {
                 let open_ingestion_slot = slot
                     .checked_next()
                     .unwrap_or(Slot::MAX_CAP)
@@ -236,6 +237,7 @@ pub enum DAOutput {
 mod tests {
     use super::{
         super::{
+            chorus::types::Timestamp,
             test_util::{
                 MESSAGE_LEN, Proposers, SLOT, author, epoch_handle, group, proposal_chunks,
                 proposal_chunks_from,
@@ -255,7 +257,10 @@ mod tests {
 
     fn open(runtime: &mut DARuntime<Proposers>, slots: impl IntoIterator<Item = u64>) {
         for slot in slots {
-            runtime.handle_slot_event(Slot(slot), SlotLifecycle::Opened);
+            let opened = SlotLifecycle::Opened {
+                deadline: Timestamp::GENESIS,
+            };
+            runtime.handle_slot_event(Slot(slot), opened);
         }
     }
 
