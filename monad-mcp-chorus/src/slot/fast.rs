@@ -31,8 +31,9 @@ use super::{
     fallback::Metablock,
     types::{
         Admission, EquivCert, GatedVotePool, GatingRoot, HeaderAuth, IsVote, KeyPair, MerkleRoot,
-        NodeId, ProposalHeader, ProposalIndex, ProposalMap, ProposalScope, Signature, Slot,
-        StrongQc, TotalProposalMap, ValidatorData, VoteMsg, VotePool, WeakQc, dummy_serialize,
+        NodeId, ProposalHeader, ProposalIndex, ProposalMap, ProposalScope, ProposerSet, Signature,
+        Slot, StrongQc, TotalProposalMap, ValidatorData, VoteMsg, VotePool, WeakQc,
+        dummy_serialize,
     },
 };
 use crate::spec::{
@@ -76,6 +77,9 @@ pub struct FastPath {
     // effects for the DA layer, drained by the slot consensus wrapper
     commands: VecDeque<ChorusDACommand>,
 
+    // who occupies each proposal index in this slot
+    proposers: ProposerSet,
+
     // using Arc to avoid lifetime issues.
     key: Arc<KeyPair>,
     validator_data: Arc<ValidatorData>,
@@ -85,11 +89,12 @@ pub struct FastPath {
 impl FastPath {
     pub(crate) fn new(
         s: Slot,
-        num_proposals: usize,
+        proposers: ProposerSet,
         key: Arc<KeyPair>,
         validator_data: Arc<ValidatorData>,
         header_auth: Arc<HeaderAuth>,
     ) -> Self {
+        let num_proposals = proposers.num_indices();
         Self {
             slot: s,
 
@@ -108,11 +113,18 @@ impl FastPath {
             proposals: ProposalMap::new(num_proposals, |j| j),
             availability: ProposalMap::new_default(num_proposals),
             commands: VecDeque::new(),
+            proposers,
 
             key,
             validator_data,
             header_auth,
         }
+    }
+
+    /// The proposers of this slot, by proposal index. Seam for the DA layer
+    /// and proposal validation once proposer identity is checked there.
+    pub(crate) fn proposers(&self) -> &ProposerSet {
+        &self.proposers
     }
 
     pub(crate) fn next_da_command(&mut self) -> Option<ChorusDACommand> {
@@ -345,9 +357,15 @@ impl FastPath {
         self.phase = Phase::Vote;
 
         let votes = self.proposals.as_ref().map(|j| {
-            let entry = match self.availability[*j].fetch_proposal() {
-                Some(proposal) => Entry::Positive(proposal.root),
+            let entry = match self.proposers.proposer(*j) {
+                // A vacant index has no proposer (rotation vacancy at a
+                // handoff, genesis ramp-up, or fewer staked validators than
+                // indices): its proposal is empty by definition.
                 None => Entry::Negative,
+                Some(_) => match self.availability[*j].fetch_proposal() {
+                    Some(proposal) => Entry::Positive(proposal.root),
+                    None => Entry::Negative,
+                },
             };
 
             let vote_msg =
@@ -1111,7 +1129,10 @@ impl Decodable for FastCommitVote {
 #[cfg(test)]
 mod tests {
     use super::{
-        super::types::{Stake, ValidatorData},
+        super::{
+            super::proposers,
+            types::{FixedProposerSchedule, ProposerSchedule as _, Stake, ValidatorData},
+        },
         *,
     };
     use crate::{
@@ -1155,14 +1176,18 @@ mod tests {
 
     // the local node is validator 1 among 4, one proposal per slot
     fn fast_path() -> FastPath {
-        let header_auth =
-            HeaderAuth::new(|header, _| (header.sig.signer == NodeId::dummy(0)).then_some(0));
+        // index 0 is held by validator 0; consensus and header
+        // authentication read the one schedule, so they cannot disagree
+        let schedule = Arc::new(FixedProposerSchedule::new(vec![NodeId::dummy(0)]));
+        let proposers = schedule
+            .proposers_at(SLOT)
+            .expect("fixed schedule is always available");
         FastPath::new(
             SLOT,
-            1,
+            proposers,
             Arc::new(NodeId::dummy(1).keypair()),
             Arc::new(validator_data(4)),
-            Arc::new(header_auth),
+            Arc::new(proposers::header_auth(schedule)),
         )
     }
 

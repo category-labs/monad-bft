@@ -29,7 +29,10 @@ use chorus::{
         chorus::{Chorus, ChorusConfig, ChorusContext},
         dummy::{DummySlotConsensus, DummySlotConsensusConfig},
     },
-    types::{HeaderAuth, NodeId, SlotDeadline, Stake, Timestamp, TimestampDelta, ValidatorData},
+    types::{
+        CreditLotterySchedule, HeaderAuth, NodeId, ProposerConfig, RotatingProposerSchedule,
+        SlotDeadline, Stake, Timestamp, TimestampDelta, ValidatorData,
+    },
 };
 use helper::{expect_finalized, expect_finalized_at};
 use monad_mcp_chorus::{spec::KeyPair as _, stub as chorus};
@@ -78,6 +81,19 @@ fn gen_validator_data(n: u64) -> ValidatorData {
         .collect();
 
     ValidatorData::new(valset, mapping)
+}
+
+fn proposer_schedule(
+    val_data: &Arc<ValidatorData>,
+) -> Arc<RotatingProposerSchedule<CreditLotterySchedule>> {
+    let config = ProposerConfig {
+        concurrent_proposers: 1,
+        observation_cutoff: 0,
+        rotation_slack: 1,
+        slots_per_epoch: 1_000, // never crossed in this test
+    };
+    let algorithm = CreditLotterySchedule::recommended(&config, 0xC0FFEE);
+    Arc::new(RotatingProposerSchedule::new(config, algorithm, val_data.clone()).unwrap())
 }
 
 #[test]
@@ -135,13 +151,13 @@ fn full_window_rolls_over_with_chorus() {
         let id = NodeId::dummy(i);
         let slot_config = ChorusConfig {
             delta: TimestampDelta::from_millis(DELTA),
-            num_proposals: 1,
         };
         let context = ChorusContext {
             node_id: id,
             key: Arc::new(id.keypair()),
             validator_data: val_data.clone(),
             header_auth: Arc::new(HeaderAuth::new(|_, _| None)),
+            proposers: proposer_schedule(&val_data),
         };
         builder.add_node::<Chorus, _>(id, conductor(), slot_config, context);
     }

@@ -24,12 +24,11 @@ use bytes::Bytes;
 use super::{
     chunk::{ChunkRequest, ProposalEnvelope},
     egress::Dissemination,
-    election::ProposerElection,
     header::InvalidProposalHeader,
     slot_rc::SlotRaptorcast,
     types::{
         ChorusDACommand, ChorusDAEvent, HeaderAuth, MerkleRoot, NodeId, ProposalDAEvent,
-        ProposalIndex, ProposalKeyPair, Slot, SlotLifecycle, ValidatorData,
+        ProposalIndex, ProposalKeyPair, ProposerSchedule, Slot, SlotLifecycle, ValidatorData,
     },
     util::SlotCompletion,
 };
@@ -42,7 +41,6 @@ use super::{
 #[derive(Clone)]
 pub struct EpochHandle {
     pub self_id: NodeId,
-    pub num_proposals: usize,
     pub key_pair: Arc<ProposalKeyPair>,
     pub header_auth: Arc<HeaderAuth>,
     // todo: only this field is slot-scoped, should we isolate it out?
@@ -55,13 +53,14 @@ pub struct DAConfig {
     pub completed_slot_retention: u64,
 }
 
-pub struct DARuntime<E> {
+pub struct DARuntime<S> {
     config: DAConfig,
     // todo: make epoch_handle slot dependent
     epoch_handle: EpochHandle,
     raptorcast_map: BTreeMap<Slot, SlotRaptorcast>,
 
-    election: Arc<E>,
+    // the proposer schedule consensus holds; DA reads the same one
+    schedule: Arc<S>,
 
     // inclusive start, exclusive end
     ingestion_window: Range<Slot>,
@@ -78,14 +77,14 @@ pub struct ChunkRecoveryRequest {
     pub request: ChunkRequest,
 }
 
-impl<E> DARuntime<E>
+impl<S> DARuntime<S>
 where
-    E: ProposerElection,
+    S: ProposerSchedule,
 {
-    pub fn new(config: DAConfig, epoch_handle: EpochHandle, election: Arc<E>) -> Self {
+    pub fn new(config: DAConfig, epoch_handle: EpochHandle, schedule: Arc<S>) -> Self {
         Self {
             config,
-            election,
+            schedule,
             epoch_handle,
             raptorcast_map: Default::default(),
             // todo: set the lower bound with finalization certificate
@@ -145,7 +144,7 @@ where
         let slot_raptorcast = self
             .raptorcast_map
             .entry(slot)
-            .or_insert_with(|| SlotRaptorcast::new(&self.epoch_handle, slot, &*self.election));
+            .or_insert_with(|| SlotRaptorcast::new(&self.epoch_handle, slot, &*self.schedule));
         Some(slot_raptorcast)
     }
 
@@ -236,29 +235,29 @@ mod tests {
     use super::{
         super::{
             test_util::{
-                MESSAGE_LEN, Proposers, SLOT, author, epoch_handle, group, proposal_chunks,
-                proposal_chunks_from,
+                FixedProposerSchedule, MESSAGE_LEN, SLOT, author, epoch_handle, group,
+                proposal_chunks, proposal_chunks_from, proposer_schedule,
             },
             types::ChunkRequestType,
         },
         *,
     };
 
-    fn runtime(retention: u64) -> DARuntime<Proposers> {
+    fn runtime(retention: u64) -> DARuntime<FixedProposerSchedule> {
         let config = DAConfig {
             completed_slot_retention: retention,
         };
-        let election = Arc::new(Proposers::new(vec![author()]));
-        DARuntime::new(config, epoch_handle(), election)
+        let schedule = proposer_schedule(vec![author()]);
+        DARuntime::new(config, epoch_handle(), schedule)
     }
 
-    fn open(runtime: &mut DARuntime<Proposers>, slots: impl IntoIterator<Item = u64>) {
+    fn open(runtime: &mut DARuntime<FixedProposerSchedule>, slots: impl IntoIterator<Item = u64>) {
         for slot in slots {
             runtime.handle_slot_event(Slot(slot), SlotLifecycle::Opened);
         }
     }
 
-    fn outputs(runtime: &mut DARuntime<Proposers>) -> Vec<DAOutput> {
+    fn outputs(runtime: &mut DARuntime<FixedProposerSchedule>) -> Vec<DAOutput> {
         let mut outputs = Vec::new();
         while let Some(output) = runtime.poll() {
             outputs.push(output);
