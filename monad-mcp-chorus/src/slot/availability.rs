@@ -107,7 +107,7 @@ impl ProposalAvailability {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{super::types::Slot, *};
     use crate::env::stub::{D25, EncodingScheme, MerkleHash, NodeId, ProposalSignature};
 
     fn root(byte: u8) -> MerkleRoot {
@@ -116,7 +116,7 @@ mod tests {
 
     fn header(byte: u8) -> ProposalHeader {
         ProposalHeader {
-            slot: crate::stub::types::Slot(1),
+            slot: Slot(1),
             root: root(byte),
             sig: ProposalSignature {
                 signer: NodeId::dummy(0),

@@ -15,7 +15,7 @@
 
 use std::{collections::HashSet, fmt::Debug, hash::Hash};
 
-use alloy_rlp::{RlpDecodable, RlpEncodable};
+use alloy_rlp::{Encodable, RlpDecodable, RlpEncodable};
 
 use super::{
     super::{
@@ -35,7 +35,7 @@ pub type FallbackCommitQc<E> = StrongQc<FallbackCommitVote<E>>;
 /// `TC_{slot, v}`: 2f+1 timeouts for view `v` from distinct senders
 #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
 #[rlp(trailing)]
-pub(crate) struct TimeoutCertificate<E: Clone + Eq + Hash + Debug> {
+pub(crate) struct TimeoutCertificate<E: Clone + Eq + Hash + Debug + Encodable> {
     pub slot: Slot,
     pub view: FallbackView,
     // exposing raw signature collection for BLS multisig optimization
@@ -49,13 +49,13 @@ pub(crate) struct TimeoutGroup {
     pub sigcol: SignatureCollection,
 }
 
-impl<E: Clone + Eq + Hash + Debug> TimeoutCertificate<E> {
+impl<E: Clone + Eq + Hash + Debug + Encodable> TimeoutCertificate<E> {
     pub(crate) fn verify(&self, validator_data: &ValidatorData) -> bool {
         let scope = MvbaScope::new(self.slot, self.view);
 
         let mut signers = HashSet::new();
         for TimeoutGroup { vote, sigcol } in &self.groups {
-            let data = vote.serialize(&scope);
+            let data = vote.signing_bytes(&scope);
             let Some(group_signers) = sigcol.verify(&data, validator_data) else {
                 return false;
             };

@@ -22,7 +22,6 @@ use alloy_rlp::{
     Decodable, Encodable, Header, RlpDecodable, RlpDecodableWrapper, RlpEncodable,
     RlpEncodableWrapper, encode_list, list_length,
 };
-use bytes::Bytes;
 use itertools::Either;
 
 use super::{
@@ -32,12 +31,14 @@ use super::{
     types::{
         Admission, EquivCert, GatedVotePool, GatingRoot, HeaderAuth, IsVote, KeyPair, MerkleRoot,
         NodeId, ProposalHeader, ProposalIndex, ProposalMap, ProposalScope, Signature, Slot,
-        StrongQc, TotalProposalMap, ValidatorData, VoteMsg, VotePool, WeakQc, dummy_serialize,
+        StrongQc, TotalProposalMap, ValidatorData, VoteMsg, VotePool, WeakQc,
     },
 };
 use crate::spec::{
-    Stake as _, proposal::HeaderAuth as _, validator::ValidatorData as _,
-    vote::SignatureCollection as _,
+    Stake as _,
+    proposal::HeaderAuth as _,
+    validator::ValidatorData as _,
+    vote::{SignatureCollection as _, SigningDomain, assert_signing_prefix},
 };
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
@@ -645,12 +646,16 @@ pub enum Entry {
     Negative,
 }
 
+pub struct EntryDomain;
+const _: () = assert_signing_prefix::<EntryDomain>();
+
+impl SigningDomain for EntryDomain {
+    const PREFIX: &'static [u8] = b"\x1Emonad/cadence/proposal-vote/1\n";
+}
+
 impl IsVote for Entry {
     type Scope = ProposalScope;
-
-    fn serialize(&self, scope: &Self::Scope) -> Bytes {
-        dummy_serialize(self, scope)
-    }
+    type SigningDomain = EntryDomain;
 }
 
 impl GatingRoot for Entry {
@@ -713,12 +718,16 @@ impl From<&FastBlock> for FastCommitVote {
     }
 }
 
+pub(crate) struct FastCommitVoteDomain;
+const _: () = assert_signing_prefix::<FastCommitVoteDomain>();
+
+impl SigningDomain for FastCommitVoteDomain {
+    const PREFIX: &'static [u8] = b"\x1Cmonad/cadence/fast-commit/1\n";
+}
+
 impl IsVote for FastCommitVote {
     type Scope = Slot;
-
-    fn serialize(&self, scope: &Self::Scope) -> Bytes {
-        dummy_serialize(self, scope)
-    }
+    type SigningDomain = FastCommitVoteDomain;
 }
 
 pub(crate) type FastCommitQc = StrongQc<FastCommitVote>;
@@ -729,12 +738,16 @@ pub(crate) type FastCommitQc = StrongQc<FastCommitVote>;
 #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodableWrapper, RlpDecodableWrapper)]
 pub struct FallbackEntry(pub Entry);
 
+pub struct FallbackEntryDomain;
+const _: () = assert_signing_prefix::<FallbackEntryDomain>();
+
+impl SigningDomain for FallbackEntryDomain {
+    const PREFIX: &'static [u8] = b"\x27monad/cadence/fallback-proposal-vote/1\n";
+}
+
 impl IsVote for FallbackEntry {
     type Scope = ProposalScope;
-
-    fn serialize(&self, scope: &Self::Scope) -> Bytes {
-        dummy_serialize(self, scope)
-    }
+    type SigningDomain = FallbackEntryDomain;
 }
 
 impl GatingRoot for FallbackEntry {
@@ -931,12 +944,16 @@ impl LocalCertifiedEntry {
 #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
 pub struct EnterFallbackVote;
 
+pub struct EnterFallbackVoteDomain;
+const _: () = assert_signing_prefix::<EnterFallbackVoteDomain>();
+
+impl SigningDomain for EnterFallbackVoteDomain {
+    const PREFIX: &'static [u8] = b"\x1Fmonad/cadence/enter-fallback/1\n";
+}
+
 impl IsVote for EnterFallbackVote {
     type Scope = Slot;
-
-    fn serialize(&self, scope: &Self::Scope) -> Bytes {
-        dummy_serialize(self, scope)
-    }
+    type SigningDomain = EnterFallbackVoteDomain;
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
@@ -1139,7 +1156,7 @@ mod tests {
     // signed by validator 0, the only proposer
     fn header(byte: u8) -> ProposalHeader {
         ProposalHeader {
-            slot: crate::stub::types::Slot(SLOT.get()),
+            slot: SLOT,
             root: root(byte),
             sig: ProposalSignature {
                 signer: NodeId::dummy(0),
@@ -1420,10 +1437,91 @@ mod tests {
         fast.recover_committed(&fast_commit_qc(1));
         assert!(drain_requests(&mut fast).is_empty());
     }
+
+    /// [`FallbackEntry`] wraps [`Entry`] transparently, so the two encode
+    /// alike; only the domain keeps a fast-path vote from being read as a
+    /// fallback vote on the same proposal.
+    #[test]
+    fn a_wrapped_entry_signs_under_its_own_domain() {
+        let scope = ProposalScope::new(SLOT, 0);
+        let entry = Entry::Positive(root(1));
+        let fallback = FallbackEntry(entry.clone());
+        assert_eq!(alloy_rlp::encode(&entry), alloy_rlp::encode(&fallback));
+
+        let entry_bytes = entry.signing_bytes(&scope);
+        let fallback_bytes = fallback.signing_bytes(&scope);
+        assert_ne!(entry_bytes, fallback_bytes);
+        assert!(entry_bytes.starts_with(EntryDomain::PREFIX));
+        assert!(fallback_bytes.starts_with(FallbackEntryDomain::PREFIX));
+    }
+
+    /// Past the prefix the signed bytes are exactly the RLP list
+    /// `[scope, vote]`.
+    #[test]
+    fn signing_bytes_are_the_domain_prefix_then_scope_and_vote() {
+        let scope = ProposalScope::new(SLOT, 1);
+        let entry = Entry::Positive(root(2));
+
+        let bytes = entry.signing_bytes(&scope);
+        let mut payload = bytes
+            .strip_prefix(EntryDomain::PREFIX)
+            .expect("the domain prefix leads the signed bytes");
+        let mut list = Header::decode_bytes(&mut payload, true).expect("a two-item list");
+
+        assert_eq!(ProposalScope::decode(&mut list).unwrap(), scope);
+        assert_eq!(Entry::decode(&mut list).unwrap(), entry);
+        assert!(list.is_empty(), "nothing follows the vote");
+        assert!(payload.is_empty(), "nothing follows the list");
+    }
+
+    /// A certificate is bound to the scope its votes were signed under: the
+    /// same signatures relabelled with another proposal index verify as
+    /// neither a strong nor a weak quorum.
+    #[test]
+    fn a_certificate_does_not_verify_under_a_foreign_scope() {
+        let validators = validator_data(4);
+        let scope = ProposalScope::new(SLOT, 0);
+        let foreign = ProposalScope::new(SLOT, 1);
+
+        let mut pool = VotePool::new(scope);
+        for id in [0, 2, 3] {
+            let voter = NodeId::dummy(id);
+            let msg = VoteMsg::new_signed(scope, Entry::Positive(root(1)), &voter.keypair());
+            pool.add_vote(voter, msg);
+        }
+
+        let strong = pool
+            .try_form_strong_qc(&validators)
+            .expect("three of four votes form a strong qc");
+        assert!(strong.verify(&validators));
+        assert!(
+            !StrongQc {
+                scope: foreign,
+                ..strong
+            }
+            .verify(&validators)
+        );
+
+        let weak = pool
+            .try_form_weak_qc(&validators)
+            .expect("three of four votes exceed the honest threshold")
+            .left()
+            .expect("the voters all cast the same entry");
+        assert!(weak.verify(&validators));
+        assert!(
+            !WeakQc {
+                scope: foreign,
+                ..weak
+            }
+            .verify(&validators)
+        );
+    }
 }
 
 #[cfg(test)]
 mod rlp_tests {
+    use bytes::Bytes;
+
     use super::{
         super::{
             super::{
@@ -1461,7 +1559,7 @@ mod rlp_tests {
             sigcol: fast_qc.sigcol.clone(),
         };
         let h = ProposalHeader {
-            slot: crate::stub::types::Slot(9),
+            slot: Slot(9),
             root,
             sig: ProposalSignature {
                 signer: NodeId::dummy(1),

@@ -24,6 +24,9 @@ mod env;
 // the specification for types used in cadence.
 pub mod spec;
 
+// environment-independent types shared by every variant.
+pub mod common_types;
+
 #[cfg(feature = "enable_stub")]
 // override to top-level path
 #[path = ""]

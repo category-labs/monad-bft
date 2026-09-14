@@ -26,15 +26,15 @@ use bytes::Bytes;
 
 use super::{
     super::{
-        super::types::{
-            IsVote, KeyPair, PubKey, Signature, Slot, ValidatorData, VoteMsg, dummy_serialize,
-        },
+        super::types::{IsVote, KeyPair, PubKey, Signature, Slot, ValidatorData, VoteMsg},
         FallbackView, FromEntries, MvbaScope, ValidateCert, Votable,
     },
     block_store::{BlockRequestMsg, BlockResponseMsg},
     certificates::{FallbackCommitQc, PrepareQc, TimeoutCertificate},
 };
-use crate::spec::vote::{KeyPair as _, Signature as _};
+use crate::spec::vote::{
+    KeyPair as _, RlpNone, Signature as _, SigningDomain, assert_signing_prefix, signing_bytes_of,
+};
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug, derive_more::From)]
 pub enum MvbaMessage<V: Votable, C: ValidateCert> {
@@ -65,12 +65,16 @@ impl<V: Votable> FromEntries<V> for PrepareVote<V::Entries> {
     }
 }
 
-impl<E: Clone + Eq + Hash + Debug> IsVote for PrepareVote<E> {
-    type Scope = MvbaScope;
+pub(crate) struct PrepareVoteDomain;
+const _: () = assert_signing_prefix::<PrepareVoteDomain>();
 
-    fn serialize(&self, scope: &Self::Scope) -> Bytes {
-        dummy_serialize(self, scope)
-    }
+impl SigningDomain for PrepareVoteDomain {
+    const PREFIX: &'static [u8] = b"\x1Dmonad/cadence/mvba-prepare/1\n";
+}
+
+impl<E: Clone + Eq + Hash + Debug + Encodable> IsVote for PrepareVote<E> {
+    type Scope = MvbaScope;
+    type SigningDomain = PrepareVoteDomain;
 }
 
 pub(crate) type PrepareVoteMsg<E> = VoteMsg<PrepareVote<E>>;
@@ -85,12 +89,16 @@ impl<V: Votable> FromEntries<V> for FallbackCommitVote<V::Entries> {
     }
 }
 
-impl<E: Clone + Eq + Hash + Debug> IsVote for FallbackCommitVote<E> {
-    type Scope = MvbaScope;
+pub struct FallbackCommitVoteDomain;
+const _: () = assert_signing_prefix::<FallbackCommitVoteDomain>();
 
-    fn serialize(&self, scope: &Self::Scope) -> Bytes {
-        dummy_serialize(self, scope)
-    }
+impl SigningDomain for FallbackCommitVoteDomain {
+    const PREFIX: &'static [u8] = b"\x1Cmonad/cadence/mvba-commit/1\n";
+}
+
+impl<E: Clone + Eq + Hash + Debug + Encodable> IsVote for FallbackCommitVote<E> {
+    type Scope = MvbaScope;
+    type SigningDomain = FallbackCommitVoteDomain;
 }
 
 pub(crate) type CommitVoteMsg<E> = VoteMsg<FallbackCommitVote<E>>;
@@ -104,23 +112,27 @@ pub(crate) struct TimeoutVote {
     pub high_prep_view: FallbackView,
 }
 
+pub(crate) struct TimeoutVoteDomain;
+const _: () = assert_signing_prefix::<TimeoutVoteDomain>();
+
+impl SigningDomain for TimeoutVoteDomain {
+    const PREFIX: &'static [u8] = b"\x1Dmonad/cadence/mvba-timeout/1\n";
+}
+
 impl IsVote for TimeoutVote {
     type Scope = MvbaScope;
-
-    fn serialize(&self, scope: &Self::Scope) -> Bytes {
-        dummy_serialize(self, scope)
-    }
+    type SigningDomain = TimeoutVoteDomain;
 }
 
 /// `⟨Timeout, slot, v, PrepQC_i, σ_i⟩`
 #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
 #[rlp(trailing)]
-pub(crate) struct TimeoutMsg<E: Clone + Eq + Hash + Debug> {
+pub(crate) struct TimeoutMsg<E: Clone + Eq + Hash + Debug + Encodable> {
     pub vote: VoteMsg<TimeoutVote>,
     pub high_prep_qc: Option<PrepareQc<E>>,
 }
 
-impl<E: Clone + Eq + Hash + Debug> TimeoutMsg<E> {
+impl<E: Clone + Eq + Hash + Debug + Encodable> TimeoutMsg<E> {
     pub(crate) fn new_signed(
         slot: Slot,
         view: FallbackView,
@@ -180,6 +192,9 @@ pub(crate) struct PrePrepareMsg<V: Votable, C: ValidateCert> {
     /// `J`: what justifies the proposal for its view
     pub justification: Justification<V, C>,
     /// The leader's signature over `⟨Pre-Prepare, slot, v, H(entries(x)), J⟩`
+
+    /// TODO: only the expensive aggregatable signature is available in cadence
+    /// now. we need to replace this signature with the identity/integrity one
     pub signature: Signature,
 }
 
@@ -226,6 +241,13 @@ impl<V: Votable, C: ValidateCert> PrePrepareMsg<V, C> {
     }
 }
 
+struct PrePrepareDomain;
+const _: () = assert_signing_prefix::<PrePrepareDomain>();
+
+impl SigningDomain for PrePrepareDomain {
+    const PREFIX: &'static [u8] = b"\x21monad/cadence/mvba-pre-prepare/1\n";
+}
+
 /// Only the timeout-certificate arm of `J` is covered; a fallback certificate
 /// is self-certifying
 fn signed_bytes<V: Votable, C: ValidateCert>(
@@ -234,10 +256,11 @@ fn signed_bytes<V: Votable, C: ValidateCert>(
     value: &V,
     justification: &Justification<V, C>,
 ) -> Bytes {
-    dummy_serialize(
-        &(value.entries(), justification.signed_part()),
-        &MvbaScope::new(slot, view),
-    )
+    let tc: &dyn Encodable = match justification.signed_part() {
+        Some(tc) => tc,
+        None => &RlpNone,
+    };
+    signing_bytes_of::<PrePrepareDomain>(&[&slot, &view, &value.entries(), tc])
 }
 
 impl<V: Votable, C: ValidateCert> Encodable for MvbaMessage<V, C>
@@ -465,6 +488,43 @@ impl Decodable for TimeoutVote {
         Ok(Self {
             high_prep_view: <FallbackView as Decodable>::decode(buf)?,
         })
+    }
+}
+
+#[cfg(test)]
+mod signing_tests {
+    use super::{super::test_helpers as h, *};
+
+    /// The leader's signature covers the timeout certificate that justifies
+    /// its view, so another certificate -- valid, but naming a different lock
+    /// -- does not carry it
+    #[test]
+    fn a_pre_prepare_signature_covers_its_justifying_certificate() {
+        let validators = h::validator_data();
+        let block = h::metablock(1, &validators);
+        let lock = h::prepare_qc(h::view(1), &block.entries(), &validators);
+        let locked = h::timeout_certificate(h::view(1), Some(lock), &validators);
+        let unlocked = h::timeout_certificate(h::view(1), None, &validators);
+        let leader = h::leader_of(h::view(2));
+
+        let msg = h::PrePrepareMsg::new_signed(
+            h::SLOT,
+            h::view(2),
+            block,
+            h::Justification::Tc(locked),
+            &leader.keypair(),
+        );
+        assert!(msg.verify_signature(&leader.keypair().pubkey()));
+        assert!(
+            signed_bytes(msg.slot, msg.view, &msg.value, &msg.justification)
+                .starts_with(PrePrepareDomain::PREFIX)
+        );
+
+        let swapped = h::PrePrepareMsg {
+            justification: h::Justification::Tc(unlocked),
+            ..msg
+        };
+        assert!(!swapped.verify_signature(&leader.keypair().pubkey()));
     }
 }
 
