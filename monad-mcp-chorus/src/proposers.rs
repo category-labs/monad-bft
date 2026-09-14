@@ -93,7 +93,7 @@ use std::{
 
 use super::{
     proposer_schedule::{EpochSchedule, ScheduleConfig, ScheduleError},
-    types::{NodeId, Slot, ValidatorData},
+    types::{HeaderAuth, NodeId, ProposalHeader, Slot, ValidatorData},
 };
 
 /// Slot-timeline parameters of proposer selection. Protocol-wide constants;
@@ -758,6 +758,31 @@ impl ProposerSchedule for FixedProposerSchedule {
                 .collect(),
         })
     }
+}
+
+/// The [`HeaderAuth`] backed by a proposer schedule: a header authenticates
+/// to the proposal index its signer holds at the header's slot.
+///
+/// This is the whole policy for an environment whose proposal signature
+/// names its signer outright. The production data-availability layer owns
+/// two further checks the header carries for it -- the encoding scheme is
+/// the canonical one for the validator set, and the author is *recovered*
+/// from the signature rather than taken at its word -- and then resolves
+/// the index through this very same schedule, so consensus and DA cannot
+/// disagree about who proposes where (see `monad-mcp-da`'s `header_auth`).
+pub fn header_auth<S>(schedule: Arc<S>) -> HeaderAuth
+where
+    S: ProposerSchedule + Send + Sync + 'static,
+{
+    HeaderAuth::new(move |header: &ProposalHeader, slot: u64| {
+        // `slot` rather than `header.slot`: the header type is the
+        // environment's, and its slot field is not this instantiation's
+        // `Slot`. The caller has already checked the two agree.
+        // an unavailable schedule authenticates nothing
+        schedule
+            .proposer_index_at(Slot(slot), &header.sig.signer)
+            .ok()?
+    })
 }
 
 #[cfg(test)]

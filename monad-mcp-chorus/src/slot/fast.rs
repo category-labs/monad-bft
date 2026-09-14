@@ -1129,7 +1129,10 @@ impl Decodable for FastCommitVote {
 #[cfg(test)]
 mod tests {
     use super::{
-        super::types::{FixedProposerSchedule, ProposerSchedule as _, Stake, ValidatorData},
+        super::{
+            super::proposers,
+            types::{FixedProposerSchedule, ProposerSchedule as _, Stake, ValidatorData},
+        },
         *,
     };
     use crate::{
@@ -1173,10 +1176,10 @@ mod tests {
 
     // the local node is validator 1 among 4, one proposal per slot
     fn fast_path() -> FastPath {
-        let header_auth =
-            HeaderAuth::new(|header, _| (header.sig.signer == NodeId::dummy(0)).then_some(0));
-        // index 0 is held by validator 0, matching the header authorization
-        let proposers = FixedProposerSchedule::new(vec![NodeId::dummy(0)])
+        // index 0 is held by validator 0; consensus and header
+        // authentication read the one schedule, so they cannot disagree
+        let schedule = Arc::new(FixedProposerSchedule::new(vec![NodeId::dummy(0)]));
+        let proposers = schedule
             .proposers_at(SLOT)
             .expect("fixed schedule is always available");
         FastPath::new(
@@ -1184,7 +1187,7 @@ mod tests {
             proposers,
             Arc::new(NodeId::dummy(1).keypair()),
             Arc::new(validator_data(4)),
-            Arc::new(header_auth),
+            Arc::new(proposers::header_auth(schedule)),
         )
     }
 
