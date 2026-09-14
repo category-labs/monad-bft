@@ -18,6 +18,8 @@ use std::{
     num::NonZeroU64,
 };
 
+use alloy_rlp::{Decodable, Encodable};
+
 use super::{
     Conductor, ConductorOutput,
     types::{NodeId, Slot, Timestamp, TimestampDelta},
@@ -62,6 +64,7 @@ impl DummyConductor {
         self.deadline_offset = offset;
         self
     }
+
     pub fn set_genesis(mut self, genesis: Timestamp) -> Self {
         self.genesis = genesis;
         self
@@ -122,5 +125,21 @@ impl Conductor for DummyConductor {
         ));
         self.outputs.push_back(ConductorOutput::OpenSlots(slots));
         self.outputs.push_back(ConductorOutput::CloseSlots { cap });
+    }
+}
+
+impl Encodable for Never {
+    fn encode(&self, _out: &mut dyn bytes::BufMut) {
+        panic!("Never cannot be encoded");
+    }
+
+    fn length(&self) -> usize {
+        panic!("Never has no encoded length");
+    }
+}
+
+impl Decodable for Never {
+    fn decode(_buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        Err(alloy_rlp::Error::Custom("Never has no wire messages"))
     }
 }

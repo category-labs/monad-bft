@@ -18,13 +18,26 @@ pub use self::{proposal::*, validator::*, vote::*};
 mod validator {
     use std::collections::HashMap;
 
+    use alloy_rlp::{RlpDecodableWrapper, RlpEncodableWrapper};
     // Into implemented for testing purpose only.
     use derive_more::Into;
 
     use super::vote::{KeyPair, PubKey};
     use crate::spec::{self, validator::Stake as _};
 
-    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Into)]
+    #[derive(
+        Clone,
+        Copy,
+        PartialEq,
+        Eq,
+        PartialOrd,
+        Ord,
+        Hash,
+        Debug,
+        Into,
+        RlpEncodableWrapper,
+        RlpDecodableWrapper,
+    )]
     pub struct NodeId(u64);
 
     impl spec::validator::NodeId for NodeId {}
@@ -65,6 +78,16 @@ mod validator {
         // f
         fn honest_threshold(&self) -> Self {
             Self(self.0 / 3)
+        }
+
+        fn obligation(&self, total: &Self, shares: usize) -> (usize, usize) {
+            let prod = self.0 as u128 * shares as u128;
+            let total = total.0 as u128;
+            ((prod / total) as usize, (prod % total) as usize)
+        }
+
+        fn amount(&self) -> u64 {
+            self.0
         }
     }
 
@@ -116,11 +139,11 @@ mod validator {
             }
         }
 
-        pub(super) fn indices(&self) -> &HashMap<NodeId, usize> {
+        pub(crate) fn indices(&self) -> &HashMap<NodeId, usize> {
             &self.indices
         }
 
-        pub(super) fn get_node(&self, index: usize) -> Option<&NodeId> {
+        pub(crate) fn get_node(&self, index: usize) -> Option<&NodeId> {
             self.sorted.get(index)
         }
     }
@@ -132,6 +155,10 @@ mod validator {
 
         fn nodes(&self) -> impl Iterator<Item = &NodeId> {
             self.sorted.iter()
+        }
+
+        fn len(&self) -> usize {
+            self.sorted.len()
         }
 
         fn contains(&self, node_id: &NodeId) -> bool {
@@ -181,28 +208,132 @@ mod validator {
 }
 
 mod proposal {
-    use crate::spec;
+    use alloy_rlp::{
+        Decodable, Encodable, Header, RlpDecodable, RlpDecodableWrapper, RlpEncodable,
+        RlpEncodableWrapper, encode_list, list_length,
+    };
 
+    use super::NodeId;
+    use crate::{
+        spec,
+        stub::types::{ProposalIndex, Slot},
+    };
+
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, RlpEncodableWrapper, RlpDecodableWrapper)]
+    pub struct MerkleHash(pub [u8; 20]);
+
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, RlpEncodableWrapper, RlpDecodableWrapper)]
+    pub struct MerkleRoot(pub MerkleHash);
+    impl spec::MerkleRoot for MerkleRoot {}
+
+    // stub proposal signature, opaque to consensus
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
+    pub struct ProposalSignature {
+        pub signer: NodeId,
+        pub checksum: u64,
+    }
+
+    // the encoding scheme descriptor used by DA. opaque to consensus.
     #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-    pub struct MerkleRoot(pub u64);
+    pub enum EncodingScheme {
+        D25(D25),
+    }
 
-    impl spec::proposal::MerkleRoot for MerkleRoot {}
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
+    pub struct D25 {
+        pub msg_len: u32,
+        pub unix_ts: u64,
+        // the merkle tree depth
+        pub depth: u8,
+    }
 
-    #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-    pub struct ProposalSignature;
+    impl Encodable for EncodingScheme {
+        fn encode(&self, out: &mut dyn bytes::BufMut) {
+            match self {
+                Self::D25(f0) => {
+                    let fields: [&dyn Encodable; 2] = [&1u8, f0];
+                    encode_list::<_, dyn Encodable>(&fields, out);
+                }
+            }
+        }
 
-    impl spec::proposal::ProposalSignature for ProposalSignature {}
+        fn length(&self) -> usize {
+            match self {
+                Self::D25(f0) => {
+                    let fields: [&dyn Encodable; 2] = [&1u8, f0];
+                    list_length::<_, dyn Encodable>(&fields)
+                }
+            }
+        }
+    }
 
-    #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-    pub struct OpaqueChunkHeader;
+    impl Decodable for EncodingScheme {
+        fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+            let mut payload = Header::decode_bytes(buf, true)?;
+            let result = match <u8 as Decodable>::decode(&mut payload)? {
+                1 => Self::D25(<D25 as Decodable>::decode(&mut payload)?),
+                _ => return Err(alloy_rlp::Error::Custom("unknown EncodingScheme tag")),
+            };
+            if !payload.is_empty() {
+                return Err(alloy_rlp::Error::UnexpectedLength);
+            }
+            Ok(result)
+        }
+    }
 
-    impl spec::proposal::ChunkHeader for OpaqueChunkHeader {
+    #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
+    pub struct ProposalHeader {
+        pub slot: Slot,
+        pub root: MerkleRoot,
+
+        // DA-owned fields. defined here rather than in DA because we
+        // don't want chorus to depend on DA.
+        // todo: we may extract a monad-mcp-da-types crate and depend
+        // on it from monad-mcp-chorus and monad-mcp-da.
+        pub sig: ProposalSignature,
+        pub scheme: EncodingScheme,
+    }
+
+    impl spec::ProposalHeader for ProposalHeader {
         type Root = MerkleRoot;
-        type Sig = ProposalSignature;
 
-        fn validate(&self, _root: &MerkleRoot, _sig: &ProposalSignature) -> bool {
-            // stubbed to always return true for testing purpose
-            true
+        fn slot(&self) -> u64 {
+            self.slot.0
+        }
+
+        fn root(&self) -> &MerkleRoot {
+            &self.root
+        }
+    }
+
+    // the proposal index of a header the legitimate proposer of the
+    // slot signed. Supplied by the DA env, which owns the signature
+    // and scheme checks.
+    type Authenticator = dyn Fn(&ProposalHeader, u64) -> Option<ProposalIndex> + Send + Sync;
+
+    pub struct HeaderAuth {
+        authenticator: Box<Authenticator>,
+    }
+
+    impl HeaderAuth {
+        pub fn new<F>(authenticator: F) -> Self
+        where
+            F: Fn(&ProposalHeader, u64) -> Option<ProposalIndex> + Send + Sync + 'static,
+        {
+            Self {
+                authenticator: Box::new(authenticator),
+            }
+        }
+    }
+
+    impl spec::proposal::HeaderAuth for HeaderAuth {
+        type Header = ProposalHeader;
+
+        fn authenticate(&self, header: &ProposalHeader, slot: u64) -> Option<ProposalIndex> {
+            if header.slot.get() != slot {
+                return None;
+            }
+            (self.authenticator)(header, slot)
         }
     }
 }
@@ -210,6 +341,9 @@ mod proposal {
 mod vote {
     use std::collections::{BTreeMap, HashMap, HashSet};
 
+    use alloy_rlp::{
+        Decodable, Encodable, RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper,
+    };
     use bytes::Bytes;
     // Into implemented on these types for testing purpose only.
     use derive_more::Into;
@@ -222,10 +356,12 @@ mod vote {
     #[derive(PartialEq, Eq, Hash, Debug, Into)]
     pub struct KeyPair(u64);
 
-    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Into)]
+    #[derive(
+        Clone, Copy, PartialEq, Eq, Hash, Debug, Into, RlpEncodableWrapper, RlpDecodableWrapper,
+    )]
     pub struct PubKey(u64);
 
-    #[derive(Clone, PartialEq, Eq, Hash, Debug)]
+    #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
     pub struct Signature {
         by: PubKey,
         data: Bytes,
@@ -250,6 +386,56 @@ mod vote {
         // BLS. keyed by index so duplicates cannot be represented,
         // like a bitmap.
         sigs: BTreeMap<usize, Signature>,
+    }
+
+    #[derive(RlpEncodable, RlpDecodable)]
+    pub(super) struct IndexedSignature<S> {
+        pub(super) index: usize,
+        pub(super) signature: S,
+    }
+
+    impl Encodable for SignatureCollection {
+        fn encode(&self, out: &mut dyn bytes::BufMut) {
+            let pairs: Vec<_> = self
+                .sigs
+                .iter()
+                .map(|(index, sig)| IndexedSignature {
+                    index: *index,
+                    signature: sig,
+                })
+                .collect();
+            pairs.encode(out);
+        }
+
+        fn length(&self) -> usize {
+            let pairs: Vec<_> = self
+                .sigs
+                .iter()
+                .map(|(index, sig)| IndexedSignature {
+                    index: *index,
+                    signature: sig,
+                })
+                .collect();
+            pairs.length()
+        }
+    }
+
+    impl Decodable for SignatureCollection {
+        fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+            let pairs = Vec::<IndexedSignature<Signature>>::decode(buf)?;
+            let mut sigs = BTreeMap::new();
+            let mut previous = None;
+            for IndexedSignature { index, signature } in pairs {
+                if previous.is_some_and(|prev| index <= prev) {
+                    return Err(alloy_rlp::Error::Custom(
+                        "signature indices must be strictly increasing",
+                    ));
+                }
+                previous = Some(index);
+                sigs.insert(index, signature);
+            }
+            Ok(Self { sigs })
+        }
     }
 
     impl spec::vote::PubKey for PubKey {}
@@ -452,6 +638,49 @@ const _: () = crate::spec::assert_env::<
     SignatureCollection,
     VoteAggregation<'_>,
     MerkleRoot,
-    ProposalSignature,
-    OpaqueChunkHeader,
+    ProposalHeader,
+    HeaderAuth,
 >();
+
+#[cfg(test)]
+mod rlp_tests {
+    use super::{vote::IndexedSignature, *};
+    use crate::spec::vote::KeyPair as _;
+
+    #[test]
+    fn signature_maps_reject_duplicate_and_unordered_indices() {
+        let signature = KeyPair::dummy(1).sign(&bytes::Bytes::from_static(b"test"));
+        for indices in [[1usize, 1], [2, 1]] {
+            let encoded = alloy_rlp::encode(vec![
+                IndexedSignature {
+                    index: indices[0],
+                    signature: &signature,
+                },
+                IndexedSignature {
+                    index: indices[1],
+                    signature: &signature,
+                },
+            ]);
+            assert!(alloy_rlp::decode_exact::<SignatureCollection>(&encoded).is_err());
+        }
+        let encoded = alloy_rlp::encode(vec![
+            IndexedSignature {
+                index: 1usize,
+                signature: &signature,
+            },
+            IndexedSignature {
+                index: 2usize,
+                signature: &signature,
+            },
+        ]);
+        let collection: SignatureCollection = alloy_rlp::decode_exact(&encoded).unwrap();
+        assert_eq!(alloy_rlp::encode(&collection), encoded);
+
+        let mut malformed = signature;
+        malformed.make_malformed();
+        assert_eq!(
+            alloy_rlp::decode_exact::<Signature>(alloy_rlp::encode(&malformed)).unwrap(),
+            malformed
+        );
+    }
+}

@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 pub use crate::env::stub::{
-    KeyPair, MerkleRoot, NodeId, OpaqueChunkHeader, ProposalSignature, PubKey, Signature,
+    HeaderAuth, KeyPair, MerkleRoot, NodeId, ProposalHeader, PubKey, Signature,
     SignatureCollection, Stake, ValidatorData, VoteAggregation,
 };
 
@@ -30,6 +30,6 @@ const _: () = crate::spec::assert_env::<
     SignatureCollection,
     VoteAggregation<'_>,
     MerkleRoot,
-    ProposalSignature,
-    OpaqueChunkHeader,
+    ProposalHeader,
+    HeaderAuth,
 >();

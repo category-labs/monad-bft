@@ -1,0 +1,17 @@
+[package]
+name = "monad-mcp-da"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+enable_stub = ["monad-mcp-chorus/enable_stub"]
+
+[dependencies]
+bitvec = { workspace = true }
+bytes = { workspace = true }
+derive_more = { workspace = true, features = ["into"] }
+tracing = { workspace = true }
+
+monad-crypto = { workspace = true }
+monad-mcp-chorus = { workspace = true }
+monad-merkle = { workspace = true }
