@@ -30,7 +30,7 @@ pub struct NodeNetworkConfig {
 
     pub max_rtt_ms: u64,
 
-    /// Global UDP egress bandwidth limit in megabits per second.
+    /// Global dataplane egress bandwidth limit in megabits per second.
     pub max_mbps: u16,
 
     /// Per-peer UDP egress bandwidth limit in megabits per second.
