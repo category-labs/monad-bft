@@ -63,6 +63,7 @@ define_metrics! {
     udp_pacing_peers => UDP_PACING_PEERS("monad.dataplane.udp.pacing.current_peers", "Current number of destination peers retained by the UDP pacing queue"),
     udp_pacing_queued_bytes => UDP_PACING_QUEUED_BYTES("monad.dataplane.udp.pacing.current_queued_bytes", "Current UDP payload bytes retained by the pacing queue"),
     udp_pacing_memory_limit_bytes => UDP_PACING_MEMORY_LIMIT_BYTES("monad.dataplane.udp.pacing.memory_limit_bytes", "Configured UDP pacing queue payload byte limit"),
+    udp_tx_queue_wait_micros => UDP_TX_QUEUE_WAIT_MICROS("monad.dataplane.udp.tx_queue.total_wait_micros", "Total time in microseconds spent sending paced batches to the UDP transmit queue"),
     tcp_messages_received => TCP_MESSAGES_RECEIVED("monad.dataplane.tcp.total_messages_received", "Total TCP payload messages received from the network"),
     tcp_bytes_received => TCP_BYTES_RECEIVED("monad.dataplane.tcp.total_bytes_received", "Total TCP payload bytes received from the network"),
     tcp_messages_sent => TCP_MESSAGES_SENT("monad.dataplane.tcp.total_messages_sent", "Total TCP payload messages successfully sent to the network"),
