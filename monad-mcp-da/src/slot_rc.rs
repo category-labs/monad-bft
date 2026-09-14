@@ -21,13 +21,12 @@ use monad_mcp_chorus::spec::proposal::HeaderAuth as _;
 use super::{
     chunk::{ChunkRequest, ProposalEnvelope},
     egress::{ChunkEgress, Dissemination},
-    election::ProposerElection,
     header::InvalidProposalHeader,
     proposer_rc::ProposerRaptorcast,
     runtime::{ChunkRecoveryRequest, DAOutput, EpochHandle},
     types::{
         ChorusDACommand, ChorusDAEvent, ChunkRequestType, MerkleRoot, NodeId, ProposalHeader,
-        ProposalIndex, ProposalMap, Slot,
+        ProposalIndex, ProposalMap, ProposerSchedule, Slot,
     },
 };
 
@@ -51,13 +50,21 @@ pub struct SlotRaptorcast {
 }
 
 impl SlotRaptorcast {
-    pub fn new<E>(epoch_handle: &EpochHandle, slot: Slot, election: &E) -> Self
+    pub fn new<S>(epoch_handle: &EpochHandle, slot: Slot, schedule: &S) -> Self
     where
-        E: ProposerElection,
+        S: ProposerSchedule,
     {
-        let raptorcasts = ProposalMap::new(epoch_handle.num_proposals, |j| {
-            let proposer = election.get_proposer(slot, j)?;
-            Some(ProposerRaptorcast::new(*proposer))
+        // The schedule validated its configuration at construction and
+        // slots only open within its range, so a failure here is a
+        // programming error -- the same expectation consensus makes when
+        // it opens the slot.
+        let proposers = schedule
+            .proposers_at(slot)
+            .expect("proposer schedule unavailable for open slot");
+
+        // K is the schedule's, so DA and consensus index proposals alike
+        let raptorcasts = ProposalMap::new(proposers.num_indices(), |j| {
+            Some(ProposerRaptorcast::new(proposers.proposer(j)?))
         });
 
         Self {
@@ -222,8 +229,8 @@ mod tests {
         super::{
             chunk::{ChunksSubset, WireChunkId},
             test_util::{
-                MESSAGE_LEN, Proposers, SLOT, author, chunk_id, epoch_handle, epoch_handle_for,
-                group, proposal_chunks, proposal_chunks_from, validator_data,
+                MESSAGE_LEN, SLOT, author, chunk_id, epoch_handle, epoch_handle_for, group,
+                proposal_chunks, proposal_chunks_from, proposer_schedule, validator_data,
             },
             types::{HeaderAuth, ProposalDAEvent, ProposalKeyPair},
         },
@@ -232,8 +239,8 @@ mod tests {
 
     fn slot_raptorcast() -> (EpochHandle, SlotRaptorcast) {
         let epoch_handle = epoch_handle();
-        let election = Proposers::new(vec![author()]);
-        let raptorcast = SlotRaptorcast::new(&epoch_handle, SLOT, &election);
+        let schedule = proposer_schedule(vec![author()]);
+        let raptorcast = SlotRaptorcast::new(&epoch_handle, SLOT, &*schedule);
         (epoch_handle, raptorcast)
     }
 
@@ -350,7 +357,6 @@ mod tests {
         let counted = calls.clone();
         let epoch_handle = EpochHandle {
             self_id: NodeId::dummy(1),
-            num_proposals: 1,
             key_pair: Arc::new(ProposalKeyPair::dummy(NodeId::dummy(1))),
             header_auth: Arc::new(HeaderAuth::new(move |header: &ProposalHeader, _slot| {
                 counted.fetch_add(1, Ordering::SeqCst);
@@ -358,8 +364,8 @@ mod tests {
             })),
             validator_data: Arc::new(validator_data(4)),
         };
-        let election = Proposers::new(vec![author()]);
-        let mut raptorcast = SlotRaptorcast::new(&epoch_handle, SLOT, &election);
+        let schedule = proposer_schedule(vec![author()]);
+        let mut raptorcast = SlotRaptorcast::new(&epoch_handle, SLOT, &*schedule);
         let (_, chunks) = proposal_chunks(&epoch_handle, 1);
 
         raptorcast.ingest(group(&chunks[..1])).expect("valid");
@@ -428,8 +434,8 @@ mod tests {
     fn a_second_proposers_events_carry_its_index() {
         let proposers = vec![author(), NodeId::dummy(2)];
         let epoch_handle = epoch_handle_for(NodeId::dummy(1), 4, proposers.clone());
-        let election = Proposers::new(proposers);
-        let mut raptorcast = SlotRaptorcast::new(&epoch_handle, SLOT, &election);
+        let schedule = proposer_schedule(proposers);
+        let mut raptorcast = SlotRaptorcast::new(&epoch_handle, SLOT, &*schedule);
         let (header, chunks) = proposal_chunks_from(&epoch_handle, 2, SLOT, 1);
 
         raptorcast.ingest(group(&chunks[..1])).expect("valid");
@@ -476,8 +482,8 @@ mod tests {
         let mut nodes = Vec::new();
         for id in 1..=3 {
             let epoch_handle = epoch_handle_for(NodeId::dummy(id), 4, vec![author()]);
-            let election = Proposers::new(vec![author()]);
-            let mut node = SlotRaptorcast::new(&epoch_handle, SLOT, &election);
+            let schedule = proposer_schedule(vec![author()]);
+            let mut node = SlotRaptorcast::new(&epoch_handle, SLOT, &*schedule);
             node.handle_command(ChorusDACommand::ReleaseChunks);
             nodes.push((epoch_handle, node));
         }

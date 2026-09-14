@@ -19,7 +19,6 @@ mod assignment;
 pub(crate) mod chunk;
 mod chunk_tree;
 mod egress;
-mod election;
 pub(crate) mod encoding_scheme;
 mod header;
 mod instance_rc;

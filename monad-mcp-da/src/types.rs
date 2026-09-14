@@ -20,8 +20,8 @@ pub use super::{
         env::{D25, EncodingScheme, MerkleHash, ProposalSignature},
         slot::chorus::{ChorusDACommand, ChorusDAEvent, ChunkRequestType, ProposalDAEvent},
         types::{
-            HeaderAuth, MerkleRoot, NodeId, ProposalHeader, ProposalIndex, ProposalMap, Slot,
-            Stake, ValidatorData,
+            HeaderAuth, MerkleRoot, NodeId, ProposalHeader, ProposalIndex, ProposalMap,
+            ProposerSchedule, Slot, Stake, ValidatorData,
         },
     },
     env::ProposalKeyPair,
