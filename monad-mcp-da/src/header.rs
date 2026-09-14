@@ -42,6 +42,8 @@ where
     E: ProposerElection + Send + Sync + 'static,
 {
     HeaderAuth::new(move |signed: &SignedProposalHeader, _slot: u64| {
+        // todo: cache the auth result by (ProposalHeader, slot).
+
         if !signed.scheme().is_canonical(validator_data.len()) {
             return None;
         }
