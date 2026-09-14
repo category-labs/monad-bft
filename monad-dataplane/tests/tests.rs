@@ -78,9 +78,12 @@ fn udp_broadcast() {
         stride: DEFAULT_SEGMENT_SIZE,
     });
 
-    for _ in 0..num_msgs {
-        let msg: RecvUdpMsg = executor::block_on(rx_socket.recv());
-
+    let mut messages = Vec::with_capacity(num_msgs);
+    while messages.len() < num_msgs {
+        let remaining = num_msgs - messages.len();
+        executor::block_on(rx_socket.recv_many(&mut messages, remaining));
+    }
+    for msg in messages {
         assert_eq!(msg.src_addr, tx_addr);
         assert_eq!(msg.payload, payload);
     }
@@ -121,6 +124,56 @@ fn udp_unicast() {
 
         assert_eq!(msg.src_addr, tx_addr);
         assert_eq!(msg.payload, payload);
+    }
+}
+
+#[test]
+#[timeout(5000)]
+fn udp_parallel_tx_workers() {
+    once_setup();
+
+    const WORKERS: usize = 4;
+    const MESSAGES_PER_WORKER: u8 = 32;
+    let receivers: [UdpSocket; WORKERS] =
+        std::array::from_fn(|_| UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap());
+    for receiver in &receivers {
+        receiver
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+    }
+
+    let bind_addr = SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, 0));
+    let mut tx = DataplaneBuilder::new(UP_BANDWIDTH_MBPS)
+        .with_udp_tx_workers(WORKERS)
+        .with_udp_sockets([(UdpSocketId::Raptorcast, bind_addr)])
+        .build();
+    assert!(tx.block_until_ready(Duration::from_secs(1)));
+    let tx_socket = tx.udp_sockets.take(UdpSocketId::Raptorcast).unwrap();
+    let tx_addr = tx_socket.local_addr();
+
+    for sequence in 0..MESSAGES_PER_WORKER {
+        for (worker, receiver) in receivers.iter().enumerate() {
+            tx_socket.write(
+                receiver.local_addr().unwrap(),
+                vec![worker as u8, sequence].into(),
+                2,
+            );
+        }
+        sleep(Duration::from_millis(1));
+    }
+
+    for (worker, receiver) in receivers.iter().enumerate() {
+        let mut sequences = Vec::with_capacity(MESSAGES_PER_WORKER.into());
+        for _ in 0..MESSAGES_PER_WORKER {
+            let mut payload = [0; 2];
+            let (length, source) = receiver.recv_from(&mut payload).unwrap();
+            assert_eq!(length, payload.len());
+            assert_eq!(source, tx_addr);
+            assert_eq!(payload[0], worker as u8);
+            sequences.push(payload[1]);
+        }
+        sequences.sort_unstable();
+        assert_eq!(sequences, (0..MESSAGES_PER_WORKER).collect::<Vec<_>>());
     }
 }
 
