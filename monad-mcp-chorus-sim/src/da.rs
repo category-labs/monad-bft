@@ -32,10 +32,10 @@
 //! by a `Decoded` for its root — the mock treats availability as whole
 //! rather than per chunk.
 //!
-//! The mock owns the header checks the real layer owns: an announcement is
-//! accepted only if its signer holds the announced proposal index at that
-//! slot according to the proposer schedule. That is the same schedule
-//! consensus derives its own `HeaderAuth` from, so the two cannot disagree.
+//! The mock owns the header check the real layer owns: an announcement is
+//! accepted only if the header authenticates to the announced proposal
+//! index. It is handed the very `HeaderAuth` consensus votes with, so the
+//! two cannot disagree about who proposes where.
 
 use std::{
     collections::BTreeMap,
@@ -46,13 +46,9 @@ use bytes::Bytes;
 use chorus::{
     da::DataAvailability,
     env::{D25, EncodingScheme, MerkleHash, ProposalSignature},
-    types::{MerkleRoot, NodeId, ProposalHeader, ProposalIndex, ProposerSchedule, Slot},
+    types::{HeaderAuth, MerkleRoot, NodeId, ProposalHeader, ProposalIndex, Slot},
 };
-use monad_mcp_chorus::stub as chorus;
-
-/// A shared proposer schedule, as both consensus and the mock DA layer read
-/// it.
-pub type Schedule = Arc<dyn ProposerSchedule + Send + Sync>;
+use monad_mcp_chorus::{spec::proposal::HeaderAuth as _, stub as chorus};
 
 /// The mock's dissemination unit: the signed header a receiver needs to
 /// treat the proposal at `(header.slot, index)` as available.
@@ -82,26 +78,25 @@ struct MockDaState {
 /// One node's [`DataAvailability`] instance; see the module docs.
 pub struct MockDa {
     me: NodeId,
-    schedule: Schedule,
+    /// The authenticator consensus votes with; see the module docs.
+    header_auth: Arc<HeaderAuth>,
     state: Mutex<MockDaState>,
 }
 
 impl MockDa {
-    pub fn new(me: NodeId, schedule: Schedule) -> Self {
+    pub fn new(me: NodeId, header_auth: Arc<HeaderAuth>) -> Self {
         Self {
             me,
-            schedule,
+            header_auth,
             state: Mutex::new(MockDaState::default()),
         }
     }
 
-    /// Whether `header`'s signer holds `index` at the header's slot. The
-    /// real layer performs this check on the chunk header signature; here
-    /// the signer is carried in the clear.
+    /// Whether the header authenticates to `index`. The real layer performs
+    /// this check on the chunk header signature; here the signer is carried
+    /// in the clear.
     fn authentic(&self, index: ProposalIndex, header: &ProposalHeader) -> bool {
-        self.schedule
-            .proposer_index_at(header.slot, &header.sig.signer)
-            .is_ok_and(|held| held == Some(index))
+        self.header_auth.validate(header, header.slot.get(), index)
     }
 
     /// An announcement arrived over the simulated network: the proposal is
@@ -222,17 +217,17 @@ pub fn mock_root(payload: &Bytes) -> MerkleRoot {
 
 #[cfg(test)]
 mod tests {
-    use chorus::types::FixedProposerSchedule;
+    use chorus::{proposers::header_auth, types::FixedProposerSchedule};
 
     use super::*;
 
-    fn schedule(proposers: Vec<NodeId>) -> Schedule {
-        Arc::new(FixedProposerSchedule::new(proposers))
-    }
-
     // index 0 -> validator 0, index 1 -> validator 1
     fn da(me: NodeId) -> MockDa {
-        MockDa::new(me, schedule(vec![NodeId::dummy(0), NodeId::dummy(1)]))
+        let schedule = Arc::new(FixedProposerSchedule::new(vec![
+            NodeId::dummy(0),
+            NodeId::dummy(1),
+        ]));
+        MockDa::new(me, Arc::new(header_auth(schedule)))
     }
 
     fn announcement(proposer: NodeId, slot: u64, index: ProposalIndex) -> DaAnnouncement {

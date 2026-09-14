@@ -26,10 +26,11 @@ use std::{cell::RefCell, collections::BTreeMap, num::NonZeroU64, rc::Rc, sync::A
 use chorus::{
     CadenceDriverMsg,
     conductor::{ConductorConfig, MonadConductor, acs::nop::NopAcs},
+    proposers::header_auth,
     proposing::{PlannerConfig, ProposalPlanner},
     slot::chorus::{Chorus, ChorusConfig, ChorusContext, ChorusDAEvent, Entry, SlotFinalization},
     types::{
-        HeaderAuth, NodeId, ProposerConfig, ProposerSchedule, RotatingProposerSchedule,
+        NodeId, ProposerConfig, ProposerSchedule, RotatingProposerSchedule,
         RoundRobinLeaderSchedule, Slot, SlotDeadline, Stake, Timestamp, TimestampDelta,
         ValidatorData,
     },
@@ -106,19 +107,16 @@ fn build_swarm(
 
     for i in 0..NODES {
         let id = NodeId::dummy(i);
-        let da = Arc::new(MockDa::new(id, schedule.clone()));
-        // Header authorization reads the same schedule the mock DA layer
-        // checks announcements against, so the two cannot disagree.
-        let auth = schedule.clone();
+        // One authenticator, derived from the schedule and shared by
+        // consensus and the node's DA layer: they cannot disagree about
+        // who proposes where.
+        let header_auth = Arc::new(header_auth(schedule.clone()));
+        let da = Arc::new(MockDa::new(id, header_auth.clone()));
         let context = ChorusContext {
             node_id: id,
             key: Arc::new(id.keypair()),
             validator_data: val_data.clone(),
-            header_auth: Arc::new(HeaderAuth::new(move |header, slot| {
-                auth.proposers_at(Slot(slot))
-                    .ok()?
-                    .index_of(&header.sig.signer)
-            })),
+            header_auth,
             proposers: schedule.clone(),
         };
         let planner = ProposalPlanner::new(
