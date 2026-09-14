@@ -5217,6 +5217,7 @@ dependencies = [
 name = "monad-dataplane"
 version = "0.1.0"
 dependencies = [
+ "async-channel",
  "bytes",
  "clap",
  "criterion",
