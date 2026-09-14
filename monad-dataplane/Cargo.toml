@@ -24,13 +24,16 @@ tracing = { workspace = true }
 zerocopy = { workspace = true }
 
 [dev-dependencies]
+agent = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 criterion = { workspace = true }
 env_logger = { workspace = true }
 futures-util = { workspace = true }
 ntest = { workspace = true }
+prometheus = { workspace = true }
 rand = { workspace = true }
 rstest = { workspace = true }
+tracing-manytrace = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [[bench]]

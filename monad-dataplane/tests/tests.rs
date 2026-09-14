@@ -15,7 +15,7 @@
 
 use std::{
     collections::VecDeque,
-    io::Write,
+    io::{Read, Write},
     net::{SocketAddr, TcpListener, TcpStream, UdpSocket},
     sync::{mpsc, Once},
     thread::{self, sleep},
@@ -24,7 +24,7 @@ use std::{
 
 use futures::{channel::oneshot, executor, FutureExt};
 use monad_dataplane::{
-    tcp::tx::{MSG_WAIT_TIMEOUT, QUEUED_MESSAGE_BYTE_LIMIT, QUEUED_MESSAGE_LIMIT},
+    tcp::tx::{MSG_WAIT_TIMEOUT, QUEUED_CHUNK_LIMIT, QUEUED_MESSAGE_BYTE_LIMIT},
     udp::DEFAULT_SEGMENT_SIZE,
     BroadcastMsg, DataplaneBuilder, RecvUdpMsg, TcpMsg, TcpSocketId, UdpSocketId, UnicastMsg,
 };
@@ -35,6 +35,118 @@ use rstest::*;
 use tracing_subscriber::fmt::format::FmtSpan;
 
 const UP_BANDWIDTH_MBPS: u64 = 1_000;
+
+#[test]
+#[timeout(8000)]
+fn tcp_overflow_disconnects_partial_message_and_allows_fresh_connection() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    socket2::SockRef::from(&listener)
+        .set_recv_buffer_size(4096)
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let mut tx = DataplaneBuilder::new(UP_BANDWIDTH_MBPS)
+        .with_tcp_sockets([(TcpSocketId::Raptorcast, "127.0.0.1:0".parse().unwrap())])
+        .build();
+    let mut healthy = DataplaneBuilder::new(UP_BANDWIDTH_MBPS)
+        .with_tcp_sockets([(TcpSocketId::Raptorcast, "127.0.0.1:0".parse().unwrap())])
+        .build();
+    let writer = tx.tcp_sockets.take(TcpSocketId::Raptorcast).unwrap();
+    let mut healthy_reader = healthy.tcp_sockets.take(TcpSocketId::Raptorcast).unwrap();
+    let (first_tx, mut first_rx) = oneshot::channel();
+    writer.write(
+        addr,
+        TcpMsg {
+            msg: vec![1; 3 * 1024 * 1024].into(),
+            completion: Some(first_tx),
+        },
+    );
+    let (mut slow, _) = listener.accept().unwrap();
+    slow.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    let mut prefix = [0; 16 + 4096];
+    slow.read_exact(&mut prefix).unwrap();
+    assert_eq!(&prefix[16..], &[1; 4096]);
+
+    // Stop reading mid-message, then overflow the writer's byte budget. A third
+    // message queued behind the overflowing one must also be discarded.
+    let (second_tx, mut second_rx) = oneshot::channel();
+    let (tail_tx, mut tail_rx) = oneshot::channel();
+    writer.write(
+        addr,
+        TcpMsg {
+            msg: vec![2; 3 * 1024 * 1024].into(),
+            completion: Some(second_tx),
+        },
+    );
+    writer.write(
+        addr,
+        TcpMsg {
+            msg: vec![3; 32].into(),
+            completion: Some(tail_tx),
+        },
+    );
+    let (healthy_tx, mut healthy_rx) = oneshot::channel();
+    writer.write(
+        healthy_reader.local_addr(),
+        TcpMsg {
+            msg: vec![4; 32].into(),
+            completion: Some(healthy_tx),
+        },
+    );
+    let deadline = Instant::now() + Duration::from_millis(500);
+    while healthy_rx.try_recv().unwrap().is_none() {
+        assert!(
+            Instant::now() < deadline,
+            "slow TCP peer blocked a healthy peer"
+        );
+        sleep(Duration::from_millis(1));
+    }
+    assert_eq!(
+        executor::block_on(healthy_reader.recv()).payload.as_ref(),
+        &[4; 32]
+    );
+    for completion in [&mut first_rx, &mut second_rx, &mut tail_rx] {
+        loop {
+            match completion.try_recv() {
+                Err(_) => break,
+                Ok(Some(())) => panic!("aborted message was reported complete"),
+                Ok(None) => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "aborted message retained its completion"
+                    );
+                    sleep(Duration::from_millis(1));
+                }
+            }
+        }
+    }
+    let mut remainder = Vec::new();
+    if let Err(err) = slow.read_to_end(&mut remainder) {
+        assert_eq!(err.kind(), std::io::ErrorKind::ConnectionReset);
+    }
+    assert!(
+        4096 + remainder.len() < 3 * 1024 * 1024,
+        "partial message was drained instead of cancelled"
+    );
+
+    let (fresh_tx, fresh_rx) = oneshot::channel();
+    writer.write(
+        addr,
+        TcpMsg {
+            msg: vec![9; 32].into(),
+            completion: Some(fresh_tx),
+        },
+    );
+    let (mut fresh, _) = listener.accept().unwrap();
+    fresh
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
+    let mut frame = [0; 16 + 32];
+    fresh.read_exact(&mut frame).unwrap();
+    assert_eq!(&frame[..4], &0x434e5353_u32.to_le_bytes());
+    assert_eq!(&frame[8..16], &32_u64.to_le_bytes());
+    assert_eq!(&frame[16..], &[9; 32]);
+    executor::block_on(fresh_rx).unwrap();
+}
 
 static ONCE_SETUP: Once = Once::new();
 
@@ -356,7 +468,8 @@ fn tcp_rapid() {
         .map(|_| rand::thread_rng().gen_range(0..255))
         .collect();
 
-    let mut completions = VecDeque::with_capacity(QUEUED_MESSAGE_LIMIT);
+    const IN_FLIGHT_MESSAGES: usize = 64;
+    let mut completions = VecDeque::with_capacity(IN_FLIGHT_MESSAGES);
 
     let tcp_socket = tx.tcp_sockets.take(TcpSocketId::Raptorcast).unwrap();
     for _ in 0..num_msgs {
@@ -372,7 +485,7 @@ fn tcp_rapid() {
 
         completions.push_back(receiver);
 
-        while completions.len() >= QUEUED_MESSAGE_LIMIT {
+        while completions.len() >= IN_FLIGHT_MESSAGES {
             assert!(executor::block_on(completions.pop_front().unwrap()).is_ok());
         }
     }
@@ -429,7 +542,7 @@ fn tcp_exceed_queue_limits() {
     once_setup();
 
     let bind_addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let num_msgs = 100 * QUEUED_MESSAGE_LIMIT;
+    let num_msgs = 100 * QUEUED_CHUNK_LIMIT;
 
     let mut rx = DataplaneBuilder::new(UP_BANDWIDTH_MBPS)
         .with_tcp_sockets([(TcpSocketId::Raptorcast, bind_addr)])
@@ -462,12 +575,9 @@ fn tcp_exceed_queue_limits() {
         completions.push(receiver);
     }
 
-    // At least QUEUED_MESSAGE_LIMIT messages should be delivered successfully.
-    for _ in 0..QUEUED_MESSAGE_LIMIT {
-        let recv_msg = executor::block_on(rx_socket.recv());
-
-        assert_eq!(recv_msg.payload, payload);
-    }
+    // Overflow now aborts the peer and discards its entire queued backlog, so
+    // no minimum number of successful messages is guaranteed during overload.
+    while rx_socket.recv().now_or_never().is_some() {}
 
     let failures: usize = completions
         .into_iter()
@@ -491,12 +601,12 @@ fn tcp_exceed_queue_byte_limit() {
 
     let bind_addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
 
-    // Use 2MB messages so the byte limit is reached quickly (4MB / 2MB = 2 messages).
-    // Keep num_msgs below QUEUED_MESSAGE_LIMIT so message-count drops cannot occur.
+    // A stalled writer fills its 4 MiB byte budget before its 128-chunk channel
+    // when carrying these large messages in 128 KiB chunks.
     let message_size = 2 * 1024 * 1024;
-    let num_msgs = 128;
+    let num_msgs = QUEUED_CHUNK_LIMIT - 1;
 
-    assert!(num_msgs < QUEUED_MESSAGE_LIMIT);
+    assert!(num_msgs < QUEUED_CHUNK_LIMIT);
     assert!((QUEUED_MESSAGE_BYTE_LIMIT / message_size) < num_msgs);
     assert!(message_size < QUEUED_MESSAGE_BYTE_LIMIT);
     assert!(num_msgs * message_size > QUEUED_MESSAGE_BYTE_LIMIT);
