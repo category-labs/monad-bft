@@ -16,8 +16,8 @@
 use monad_mcp_chorus::stub::types::{NodeId, Slot, Timestamp};
 use monad_mcp_chorus_sim::CadenceSwarm;
 
-pub fn expect_finalized<M: Clone + 'static>(
-    swarm: &CadenceSwarm<M>,
+pub fn expect_finalized<M: Clone + 'static, E: 'static>(
+    swarm: &CadenceSwarm<M, E>,
     node: NodeId,
     slots: impl IntoIterator<Item = u64>,
 ) {
@@ -25,8 +25,8 @@ pub fn expect_finalized<M: Clone + 'static>(
     assert_eq!(swarm.log().get_finalized_slots(node), expected);
 }
 
-pub fn expect_finalized_at<M: Clone + 'static>(
-    swarm: &CadenceSwarm<M>,
+pub fn expect_finalized_at<M: Clone + 'static, E: 'static>(
+    swarm: &CadenceSwarm<M, E>,
     node: NodeId,
     timestamps: impl IntoIterator<Item = Timestamp>,
 ) {

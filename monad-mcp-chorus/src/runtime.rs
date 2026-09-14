@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::collections::BTreeMap;
+
 use super::{
     conductor::{Conductor, ConductorOutput},
     driver::{CadenceDriver, CadenceEvent, Driver, NodeEvent, WakeId},
@@ -24,10 +26,19 @@ use super::{
 // A Runtime describes the wiring logic of the three components of the
 // consensus stack: slot manager, conductor, and driver.
 pub trait Runtime<M> {
+    // The local data-availability events this runtime accepts. Runtimes
+    // driving a stack without a DA layer set this to ().
+    type DAEvent;
+
     fn init(&mut self);
     fn wake(&mut self, now: Timestamp, wake: WakeId);
     fn receive(&mut self, now: Timestamp, message: Validated<M>);
     fn poll(&mut self) -> Option<NodeEvent<M>>;
+
+    // Inject a data-availability event for `slot`. DA events are local
+    // and trusted by construction, so they do not travel as messages.
+    // The default drops them, for stacks without a DA layer.
+    fn handle_da_event(&mut self, _now: Timestamp, _slot: Slot, _event: Self::DAEvent) {}
 }
 
 // A canonical runtime implementation for cadence.
@@ -106,20 +117,6 @@ where
         self.clock = now;
     }
 
-    // Inject a data-availability event into the slot's consensus
-    // instance. DA events are local and trusted by construction.
-    pub fn handle_da_event(&mut self, now: Timestamp, slot: Slot, event: S::DAEvent) {
-        self.advance_clock(now);
-
-        if let Some(instance) = self.slot_manager.slot_instance(slot) {
-            // q: do we need to buffer the da events? da begins to
-            // accept chunk ingestion at the same time as slot
-            // consensus, which normally is already conservative.
-            instance.handle_da_event(event);
-        }
-        self.step();
-    }
-
     fn step(&mut self) {
         while self.step_once() {}
     }
@@ -172,6 +169,8 @@ where
         }
 
         if let Some(out) = self.conductor.poll() {
+            let now = self.clock;
+
             match out {
                 ConductorOutput::Broadcast(msg) => {
                     self.driver.broadcast_conductor(msg);
@@ -181,8 +180,14 @@ where
                 }
                 ConductorOutput::CloseSlots { cap } => {
                     self.slot_manager.advance_cap(cap);
+                    if let Some(observer) = &mut self.observer {
+                        observer.handle_chain_advance(now, cap);
+                    }
                 }
                 ConductorOutput::OpenSlots(slots) => {
+                    if let Some(observer) = &mut self.observer {
+                        observer.handle_slots_opened(now, &slots);
+                    }
                     for (slot, deadline) in slots {
                         self.slot_manager.open(slot);
                         self.driver.schedule_slot_deadline(slot, deadline);
@@ -234,6 +239,8 @@ where
     C: Conductor,
     D: Driver<S, C>,
 {
+    type DAEvent = S::DAEvent;
+
     fn poll(&mut self) -> Option<NodeEvent<D::WireMsg>> {
         self.driver.poll_node_event()
     }
@@ -253,6 +260,18 @@ where
         self.driver.handle_message(message);
         self.step();
     }
+
+    fn handle_da_event(&mut self, now: Timestamp, slot: Slot, event: S::DAEvent) {
+        self.advance_clock(now);
+
+        if let Some(instance) = self.slot_manager.slot_instance(slot) {
+            // q: do we need to buffer the da events? da begins to
+            // accept chunk ingestion at the same time as slot
+            // consensus, which normally is already conservative.
+            instance.handle_da_event(event);
+        }
+        self.step();
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -266,9 +285,20 @@ pub trait DASink<A> {
     fn handle_command(&mut self, slot: Slot, action: A);
 }
 
+/// The runtime's outward event surface: consensus facts for components
+/// outside the consensus core (ledger sequencing, the proposal planner,
+/// test logs). Observers must not influence consensus — every method is a
+/// notification, not a decision point.
 pub trait FinalizationObserver<OD, FD> {
     fn handle_optimistic_commit(&mut self, _now: Timestamp, _slot: Slot, _data: &OD) {}
     fn handle_finalization(&mut self, now: Timestamp, slot: Slot, data: &FD);
+
+    /// The conductor opened `slots`, each with its deadline.
+    fn handle_slots_opened(&mut self, _now: Timestamp, _slots: &BTreeMap<Slot, Timestamp>) {}
+
+    /// The contiguous finalized prefix advanced: every slot strictly below
+    /// `cap` is finalized (consensus chaining).
+    fn handle_chain_advance(&mut self, _now: Timestamp, _cap: Slot) {}
 }
 
 impl<OD, FD, F> FinalizationObserver<OD, FD> for F
@@ -283,5 +313,32 @@ where
 impl<OD, FD> FinalizationObserver<OD, FD> for Vec<(Timestamp, Slot)> {
     fn handle_finalization(&mut self, now: Timestamp, slot: Slot, _data: &FD) {
         self.push((now, slot));
+    }
+}
+
+/// Observers compose as pairs (and, by nesting, as arbitrary trees).
+impl<OD, FD, A, B> FinalizationObserver<OD, FD> for (A, B)
+where
+    A: FinalizationObserver<OD, FD>,
+    B: FinalizationObserver<OD, FD>,
+{
+    fn handle_optimistic_commit(&mut self, now: Timestamp, slot: Slot, data: &OD) {
+        self.0.handle_optimistic_commit(now, slot, data);
+        self.1.handle_optimistic_commit(now, slot, data);
+    }
+
+    fn handle_finalization(&mut self, now: Timestamp, slot: Slot, data: &FD) {
+        self.0.handle_finalization(now, slot, data);
+        self.1.handle_finalization(now, slot, data);
+    }
+
+    fn handle_slots_opened(&mut self, now: Timestamp, slots: &BTreeMap<Slot, Timestamp>) {
+        self.0.handle_slots_opened(now, slots);
+        self.1.handle_slots_opened(now, slots);
+    }
+
+    fn handle_chain_advance(&mut self, now: Timestamp, cap: Slot) {
+        self.0.handle_chain_advance(now, cap);
+        self.1.handle_chain_advance(now, cap);
     }
 }
