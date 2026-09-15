@@ -219,18 +219,6 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
     _ = std::fs::remove_file(node_state.control_panel_ipc_path.as_path());
     _ = std::fs::remove_file(node_state.statesync_ipc_path.as_path());
 
-    // FIXME this is super jank... we should always just pass the 1 file in monad-node
-    let mut statesync_triedb_path = node_state.triedb_path.clone();
-    if let Ok(files) = std::fs::read_dir(&statesync_triedb_path) {
-        let mut files: Vec<_> = files.collect();
-        assert_eq!(files.len(), 1, "nothing in triedb path");
-        statesync_triedb_path = files
-            .pop()
-            .unwrap()
-            .expect("failed to read triedb path")
-            .path();
-    }
-
     let mut bootstrap_nodes = Vec::new();
     for peer_config in &node_state.node_config.bootstrap.peers {
         let peer_id = NodeId::new(peer_config.secp256k1_pubkey);
@@ -315,7 +303,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         loopback: LoopbackExecutor::default(),
         state_sync: StateSyncExecutor::<SignatureType, SignatureCollectionType>::new(
             node_state.chain_config.chain_id(),
-            vec![statesync_triedb_path.to_string_lossy().to_string()],
+            node_state.triedb_path.to_string_lossy().to_string(),
             node_state.statesync_sq_thread_cpu,
             state_sync_init_peers,
             node_state
