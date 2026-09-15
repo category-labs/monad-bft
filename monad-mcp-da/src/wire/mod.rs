@@ -16,6 +16,7 @@
 //! Specifies the wire packet layout of chunk components (signature,
 //! proposal header, merkle proof, chunk id, symbol).
 
+pub mod proposal;
 pub mod v1;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};

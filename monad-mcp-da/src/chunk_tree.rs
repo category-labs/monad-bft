@@ -63,6 +63,13 @@ impl ChunkTree {
         chunks.entry(chunk_id).or_insert(data);
     }
 
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            Self::Partial { chunks, .. } => chunks.len(),
+            Self::Complete { symbols, .. } => symbols.len(),
+        }
+    }
+
     pub(crate) fn contains(&self, chunk_id: ChunkId) -> bool {
         match self {
             Self::Partial { chunks, .. } => chunks.contains_key(&chunk_id),

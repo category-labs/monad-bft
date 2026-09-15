@@ -156,6 +156,16 @@ impl ProposalEnvelope {
         self.chunks.len()
     }
 
+    // None unless the envelope holds exactly one chunk
+    pub fn into_chunk(self) -> Option<Chunk<'static>> {
+        let mut chunks = self.chunks;
+        let (chunk_id, data) = chunks.pop_first()?;
+        if !chunks.is_empty() {
+            return None;
+        }
+        Some(Chunk::new(self.header, chunk_id, data))
+    }
+
     pub fn from_header(header: SignedProposalHeader) -> Self {
         Self::new(header, BTreeMap::new())
     }
@@ -241,6 +251,15 @@ mod tests {
             ProposalEnvelope::from_chunk(chunks[2].clone()),
             group(&chunks[2..3])
         );
+    }
+
+    #[test]
+    fn only_a_single_chunk_envelope_is_a_chunk() {
+        let (header, chunks) = proposal_chunks(&epoch_handle(), 1);
+        let single = ProposalEnvelope::from_chunk(chunks[2].clone());
+        assert_eq!(single.into_chunk(), Some(chunks[2].clone()));
+        assert_eq!(group(&chunks[1..3]).into_chunk(), None);
+        assert_eq!(ProposalEnvelope::from_header(header).into_chunk(), None);
     }
 
     #[test]

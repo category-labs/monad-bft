@@ -56,6 +56,9 @@ pub(crate) struct RaptorcastInstance {
     header: SignedProposalHeader,
     // None when this node is outside the assignment (e.g. a full node)
     self_index: Option<NodeIndex>,
+    // where our chunks go when rebroadcast in full: empty outside
+    // the assignment
+    full_rebroadcast_targets: HashSet<NodeId>,
 
     assignment: ChunkAssignment,
     chunk_tree: ChunkTree,
@@ -76,6 +79,10 @@ impl RaptorcastInstance {
         let scheme = header.scheme();
         let assignment = scheme.chunk_assignment(author, &epoch_handle.validator_data);
         let self_index = assignment.index_of(&epoch_handle.self_id);
+        let full_rebroadcast_targets = match self_index {
+            Some(owner) => assignment.full_rebroadcast_targets(owner),
+            None => HashSet::new(),
+        };
 
         let num_chunks = assignment.num_chunks();
         let decoder = scheme.decoder(num_chunks);
@@ -98,6 +105,7 @@ impl RaptorcastInstance {
             chunk_tree: ChunkTree::partial(*header.root()),
             header,
             self_index,
+            full_rebroadcast_targets,
         }
     }
 
@@ -289,14 +297,11 @@ impl RaptorcastInstance {
             return;
         }
 
-        let to = match routing.partial_rebroadcast_targets() {
-            Some(targets) => targets,
-            None => self
-                .assignment
-                .full_rebroadcast_targets(routing.owner_index()),
-        };
         let chunk_id = routing.chunk_id();
-        self.enqueue(chunk_id, &to, egress);
+        match routing.partial_rebroadcast_targets() {
+            Some(partial) => self.enqueue(chunk_id, &partial, egress),
+            None => self.enqueue(chunk_id, &self.full_rebroadcast_targets, egress),
+        }
     }
 
     // rebroadcast all remaining owned chunks (after decoding).

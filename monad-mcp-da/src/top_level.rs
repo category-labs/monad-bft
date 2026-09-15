@@ -39,5 +39,7 @@ pub use encoding_scheme::d25;
 pub use header::{InvalidProposalHeader, header_auth};
 pub use runtime::{ChunkRecoveryRequest, DAConfig, DAOutput, DARuntime, EpochHandle};
 pub use wire::{
-    MalformedPacket, read_chunk, read_envelope, signed_bytes, write_chunk, write_envelope,
+    MalformedPacket,
+    proposal::{AssembledProposal, FirstHopDissemination},
+    read_chunk, read_envelope, signed_bytes, write_chunk, write_envelope,
 };
