@@ -25,12 +25,12 @@ use super::{
         monad_mvba::{MonadMvba, MvbaContext},
     },
     fast::{
-        BatchVoteMsg, CommitVoteDeadlineOutcome, EnterFallbackCert, FallbackVoteMsg, FastBlock,
-        FastCommitQc, FastCommitVoteMsg, FastPath,
+        BatchVoteMsg, CommitVoteDeadlineOutcome, EnterFallbackCert, Entry, FallbackVoteMsg,
+        FastBlock, FastCommitQc, FastCommitVoteMsg, FastPath,
     },
     types::{
-        HeaderAuth, KeyPair, MerkleRoot, NodeId, ProposalIndex, SignedProposalHeader, Slot,
-        TimestampDelta, ValidatorData,
+        HeaderAuth, KeyPair, MerkleRoot, NodeId, ProposalIndex, ProposalMap, SignedProposalHeader,
+        Slot, TimestampDelta, ValidatorData,
     },
 };
 
@@ -100,6 +100,32 @@ pub enum SlotFinalization {
     Fast(FastCommitQc),
     #[from]
     Fallback(FallbackCommitQc<<Metablock as super::fallback::Votable>::Entries>),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FinalizationPath {
+    Fast,
+    Fallback,
+}
+
+impl SlotFinalization {
+    pub fn path(&self) -> FinalizationPath {
+        match self {
+            Self::Fast(_) => FinalizationPath::Fast,
+            Self::Fallback(_) => FinalizationPath::Fallback,
+        }
+    }
+
+    pub fn roots(&self) -> ProposalMap<Option<MerkleRoot>> {
+        let entries = match self {
+            Self::Fast(qc) => &qc.verdict.entries,
+            Self::Fallback(qc) => &qc.verdict.0,
+        };
+        entries.as_ref().map(|entry| match entry {
+            Entry::Positive(root) => Some(*root),
+            Entry::Negative => None,
+        })
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]

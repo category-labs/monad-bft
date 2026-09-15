@@ -196,7 +196,7 @@ where
     armed: HashMap<WakeId, M::TimerEvent>,
     next_wake: WakeId,
 
-    observer: Option<Box<dyn FnMut(Timestamp, &V)>>,
+    observer: Option<Box<dyn FnMut(Timestamp, &V) + Send>>,
     reported: Option<V>,
 }
 
@@ -236,7 +236,7 @@ where
     }
 
     /// Reports the first decision, and any later one that differs from it
-    pub fn on_decision(&mut self, observer: impl FnMut(Timestamp, &V) + 'static) {
+    pub fn on_decision(&mut self, observer: impl FnMut(Timestamp, &V) + Send + 'static) {
         self.observer = Some(Box::new(observer));
     }
 

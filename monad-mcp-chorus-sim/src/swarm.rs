@@ -13,7 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{cell::RefCell, collections::HashMap, rc::Rc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use chorus::{
     CadenceRuntime, Conductor, FinalizationObserver, Runtime, SlotConsensus, SlotManager,
@@ -163,7 +167,7 @@ where
 
 // Per-node finalization histories, shared with the observers planted in
 // the runtimes.
-type PerNodeLog = Rc<RefCell<Vec<(Timestamp, Slot)>>>;
+type PerNodeLog = Arc<Mutex<Vec<(Timestamp, Slot)>>>;
 pub struct FinalizationLog(HashMap<NodeId, PerNodeLog>);
 
 impl FinalizationLog {
@@ -176,23 +180,24 @@ impl FinalizationLog {
         node: NodeId,
     ) -> impl FinalizationObserver<OD, FD> + 'static {
         let log = self.0.entry(node).or_default().clone();
-        move |at: Timestamp, slot: Slot, _: &FD| log.borrow_mut().push((at, slot))
+        move |at: Timestamp, slot: Slot, _: &FD| log.lock().expect("not poisoned").push((at, slot))
     }
 
     pub fn get_finalization_times(&self, node: NodeId) -> Vec<Timestamp> {
         self.node_log(node)
-            .borrow()
+            .lock()
+            .expect("not poisoned")
             .iter()
             .map(|(at, _)| *at)
             .collect()
     }
 
     pub fn get_finalized_slots(&self, node: NodeId) -> Vec<Slot> {
-        let log = self.node_log(node).borrow();
+        let log = self.node_log(node).lock().expect("not poisoned");
         log.iter().map(|(_, slot)| *slot).collect()
     }
 
-    fn node_log(&self, node: NodeId) -> &Rc<RefCell<Vec<(Timestamp, Slot)>>> {
+    fn node_log(&self, node: NodeId) -> &PerNodeLog {
         self.0.get(&node).expect("unknown node")
     }
 }

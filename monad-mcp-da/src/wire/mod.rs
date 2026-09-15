@@ -17,6 +17,7 @@
 //! proposal header, merkle proof, chunk id, symbol).
 
 pub mod proposal;
+pub mod request;
 pub mod v1;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};

@@ -27,6 +27,7 @@ use crate::spec::{
 };
 
 // The keypair used to sign/verify proposal. Not used for aggregation.
+#[derive(Clone)]
 pub struct ProposalKeyPair(NodeId);
 
 impl ProposalKeyPair {
