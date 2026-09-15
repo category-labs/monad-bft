@@ -75,18 +75,13 @@ pub(crate) struct StateSyncClient<PT: PubKey> {
 impl<PT: PubKey> StateSyncClient<PT> {
     pub fn start(
         chain_config: u32,
-        db_paths: &[String],
+        db_path: &str,
         sq_thread_cpu: Option<u32>,
         state_sync_init_peers: &[NodeId<PT>],
         max_parallel_requests: usize,
         request_timeout: Duration,
     ) -> Self {
-        let db_paths: Vec<CString> = db_paths
-            .iter()
-            .map(|path| {
-                CString::new(path.to_owned()).expect("invalid db_path - does it contain null byte?")
-            })
-            .collect();
+        let db_path = CString::new(db_path).expect("invalid db_path - does it contain null byte?");
 
         let (request_tx, request_rx) =
             tokio::sync::mpsc::unbounded_channel::<SyncRequest<StateSyncRequest, PT>>();
@@ -98,9 +93,7 @@ impl<PT: PubKey> StateSyncClient<PT> {
         thread::Builder::new()
             .name("monad-statesync".to_string())
             .spawn(move || {
-                let db_paths_ptrs: Vec<*const i8> = db_paths.iter().map(|s| s.as_ptr()).collect();
-                let db_paths_ptr = db_paths_ptrs.as_ptr();
-                let num_db_paths = db_paths_ptrs.len();
+                let db_path_ptr = db_path.as_ptr();
 
                 let request_ctx: ffi::StateSyncContext = Box::new({
                     let request_tx = request_tx.clone();
@@ -124,8 +117,7 @@ impl<PT: PubKey> StateSyncClient<PT> {
 
                 let mut sync_ctx = ffi::StateSyncCtx::new(
                     chain_config,
-                    db_paths_ptr,
-                    num_db_paths,
+                    db_path_ptr,
                     sq_thread_cpu.map(|n| n as ::std::os::raw::c_uint),
                     request_ctx,
                     Some(ffi::statesync_send_request),
