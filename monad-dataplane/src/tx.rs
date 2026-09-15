@@ -14,20 +14,26 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::HashMap, net::SocketAddr, num::NonZeroU64, rc::Rc, sync::mpsc as std_mpsc, thread,
+    collections::HashMap,
+    net::{SocketAddr, SocketAddrV4},
+    num::NonZeroU64,
+    rc::Rc,
+    sync::mpsc as std_mpsc,
+    thread,
     time::Instant,
 };
 
 use async_channel::{Receiver, Sender};
 use bytes::Bytes;
 use futures::future::join_all;
+use monad_types::UdpPriority;
 use monoio::{net::udp::UdpSocket, select, spawn, time::sleep, IoUringDriver, RuntimeBuilder};
 use tokio::sync::mpsc::{self, error::TryRecvError};
 use tracing::{debug, trace};
 
 use crate::{
     metrics::DataplaneMetrics,
-    pacing::{PacingItem, PacingKey, PacingPriority, PacingQueue, Scheduled},
+    pacing::{PacingItem, PacingPriority, PacingQueue, Scheduled},
     tcp::{
         tx::{chunk_header_bytes, Chunk, Message, TxState, TCP_CHUNK_BYTES},
         TCP_MESSAGE_LENGTH_LIMIT,
@@ -36,29 +42,38 @@ use crate::{
         max_write_size_for_segment_size, record_send_error, DEFAULT_SEGMENT_SIZE,
         MAX_AGGREGATED_SEGMENTS,
     },
-    RecvUdpMsg, TcpMsg, UdpMsg, UdpPacingConfig, UdpSocketId, IPV4_HDR_SIZE, UDP_HDR_SIZE,
+    RecvUdpMsg, TcpMsg, UdpMsg, UdpPacingConfig, UdpSocketId,
 };
 const MAX_CHANNEL_DRAIN: usize = 64;
 const UDP_TX_QUEUE_SIZE: usize = 128;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum PacingKey {
+    Udp(SocketAddrV4),
+    Tcp(SocketAddr),
+}
+
+impl From<SocketAddrV4> for PacingKey {
+    fn from(addr: SocketAddrV4) -> Self {
+        Self::Udp(addr)
+    }
+}
+
+impl From<UdpPriority> for PacingPriority {
+    fn from(priority: UdpPriority) -> Self {
+        match priority {
+            UdpPriority::High => Self::High,
+            UdpPriority::Regular => Self::Regular,
+        }
+    }
+}
+
+type TxQueue = PacingQueue<PacingKey, PacedMessage>;
 
 struct UdpSend {
     socket_id: UdpSocketId,
     dst: SocketAddr,
     payload: Bytes,
-}
-
-impl PacingItem for UdpMsg {
-    fn queued_bytes(&self) -> usize {
-        self.payload.len()
-    }
-
-    fn next_payload_bytes(&self) -> usize {
-        self.payload
-            .len()
-            .min(self.stride.max(1) as usize)
-            .min(usize::from(u16::MAX - IPV4_HDR_SIZE - UDP_HDR_SIZE))
-            .min(max_write_size_for_segment_size(DEFAULT_SEGMENT_SIZE) as usize)
-    }
 }
 
 struct TcpWork {
@@ -98,15 +113,11 @@ impl PacingItem for PacedMessage {
         }
     }
 
-    fn peer_bytes_per_second(&self, configured: NonZeroU64) -> NonZeroU64 {
+    fn peer_bytes_per_second(&self, configured: NonZeroU64) -> Option<NonZeroU64> {
         match self {
-            Self::Udp(_) => configured,
-            Self::Tcp(_) => NonZeroU64::new(u64::MAX).unwrap(),
+            Self::Udp(_) => Some(configured),
+            Self::Tcp(_) => None,
         }
-    }
-
-    fn is_udp(&self) -> bool {
-        matches!(self, Self::Udp(_))
     }
 }
 
@@ -197,18 +208,30 @@ pub(crate) fn spawn_tasks(
     ));
 }
 
-fn enqueue_udp_msg(queue: &mut PacingQueue<PacedMessage>, metrics: &DataplaneMetrics, msg: UdpMsg) {
+fn enqueue_udp_msg(queue: &mut TxQueue, metrics: &DataplaneMetrics, msg: UdpMsg) {
     let SocketAddr::V4(destination) = msg.dst else {
         metrics.udp_egress_messages_dropped.inc();
         debug!(destination = ?msg.dst, "IPv6 UDP message is not supported");
         return;
     };
     let priority = msg.priority;
-    let _ = queue.enqueue(destination, priority, PacedMessage::Udp(msg));
+    let bytes = msg.queued_bytes();
+    match queue.enqueue(destination.into(), priority, PacedMessage::Udp(msg)) {
+        Ok(new_peer) => {
+            metrics.udp_pacing_queued_bytes.add(bytes as u64);
+            if new_peer {
+                metrics.udp_pacing_peers.inc();
+            }
+        }
+        Err(_) => {
+            metrics.udp_egress_messages_dropped.inc();
+            metrics.udp_pacing_memory_limit_drops.inc();
+        }
+    }
 }
 
 fn enqueue_tcp_msg(
-    queue: &mut PacingQueue<PacedMessage>,
+    queue: &mut TxQueue,
     metrics: &DataplaneMetrics,
     addr: SocketAddr,
     message: TcpMsg,
@@ -273,8 +296,15 @@ async fn tx_pacing(
         global_bytes_per_second,
         peer_bytes_per_second,
         pacing_config.max_queued_bytes,
-        metrics.clone(),
     );
+    metrics
+        .egress_pacing_bandwidth_limit_bytes_per_second
+        .set(global_bytes_per_second.get());
+    metrics.udp_pacing_peers.set(0);
+    metrics.udp_pacing_queued_bytes.set(0);
+    metrics
+        .udp_pacing_memory_limit_bytes
+        .set(pacing_config.max_queued_bytes as u64);
     let max_batch_bytes = max_write_size_for_segment_size(DEFAULT_SEGMENT_SIZE) as usize;
     let max_batch_items = MAX_AGGREGATED_SEGMENTS as usize;
 
@@ -334,9 +364,24 @@ async fn tx_pacing(
             } else {
                 max_batch_bytes - total_bytes
             };
-            let Some(mut scheduled) = queue.dequeue(now, limit) else {
+            let Some(mut scheduled) = queue.dequeue_with_expiry(now, limit, |key| {
+                if matches!(key, PacingKey::Udp(_)) {
+                    metrics.udp_pacing_peers.dec();
+                }
+            }) else {
                 break;
             };
+            match &scheduled.item {
+                PacedMessage::Udp(message) => metrics
+                    .udp_pacing_queued_bytes
+                    .sub(message.queued_bytes() as u64),
+                PacedMessage::Tcp(_) => {
+                    metrics.egress_pacing_background_grants.inc();
+                    metrics
+                        .egress_pacing_background_granted_bytes
+                        .add(scheduled.item.next_pacing_bytes() as u64);
+                }
+            }
             let chunk = scheduled.take_chunk();
             match &mut scheduled.item {
                 PacedMessage::Udp(msg) => {
@@ -346,8 +391,11 @@ async fn tx_pacing(
                         let SocketAddr::V4(destination) = dst else {
                             unreachable!("only IPv4 messages enter the pacing queue")
                         };
+                        metrics
+                            .udp_pacing_queued_bytes
+                            .add(msg.queued_bytes() as u64);
                         assert!(
-                            queue.requeue(destination, scheduled).is_ok(),
+                            queue.requeue(destination.into(), scheduled).is_ok(),
                             "requeueing admitted UDP bytes cannot exceed memory"
                         );
                     }
@@ -452,12 +500,10 @@ mod tests {
 
     #[test]
     fn udp_memory_accounts_for_remaining_payload_not_next_packet() {
-        let metrics = DataplaneMetrics::new();
-        let mut queue = PacingQueue::new(
+        let mut queue: TxQueue = PacingQueue::new(
             NonZeroU64::new(u64::MAX).unwrap(),
             NonZeroU64::new(u64::MAX).unwrap(),
             6,
-            metrics.clone(),
         );
         let key = "127.0.0.1:1".parse::<std::net::SocketAddrV4>().unwrap();
         let message = |bytes| {
@@ -470,28 +516,23 @@ mod tests {
             })
         };
         assert!(queue
-            .enqueue(key, monad_types::UdpPriority::Regular, message(7))
+            .enqueue(key.into(), monad_types::UdpPriority::Regular, message(7))
             .is_err());
-        assert_eq!(metrics.udp_pacing_queued_bytes.get(), 0);
         assert!(queue
-            .enqueue(key, monad_types::UdpPriority::Regular, message(5))
+            .enqueue(key.into(), monad_types::UdpPriority::Regular, message(5))
             .is_ok());
-        assert_eq!(metrics.udp_pacing_queued_bytes.get(), 5);
 
         let mut scheduled = queue.dequeue(Duration::ZERO, usize::MAX).unwrap();
         assert_eq!(scheduled.batch_bytes, 2);
-        assert_eq!(metrics.udp_pacing_queued_bytes.get(), 0);
         assert_eq!(scheduled.take_chunk(), Bytes::from_static(&[0, 0]));
         assert_eq!(scheduled.item.queued_bytes(), 3);
-        assert!(queue.requeue(key, scheduled).is_ok());
-        assert_eq!(metrics.udp_pacing_queued_bytes.get(), 3);
+        assert!(queue.requeue(key.into(), scheduled).is_ok());
         assert!(queue
-            .enqueue(key, monad_types::UdpPriority::Regular, message(4))
+            .enqueue(key.into(), monad_types::UdpPriority::Regular, message(4))
             .is_err());
         assert!(queue
-            .enqueue(key, monad_types::UdpPriority::Regular, message(3))
+            .enqueue(key.into(), monad_types::UdpPriority::Regular, message(3))
             .is_ok());
-        assert_eq!(metrics.udp_pacing_queued_bytes.get(), 6);
     }
     fn tcp_state(metrics: DataplaneMetrics) -> TxState {
         TxState::new(
@@ -499,6 +540,27 @@ mod tests {
             64,
             metrics,
         )
+    }
+
+    #[test]
+    fn udp_admission_records_protocol_metrics_outside_queue() {
+        let metrics = DataplaneMetrics::new();
+        let rate = NonZeroU64::new(u64::MAX).unwrap();
+        let mut queue = PacingQueue::new(rate, rate, 6);
+        let message = |bytes| UdpMsg {
+            socket_id: UdpSocketId::Raptorcast,
+            dst: "127.0.0.1:1".parse().unwrap(),
+            payload: vec![0; bytes].into(),
+            stride: 1,
+            priority: UdpPriority::Regular,
+        };
+        enqueue_udp_msg(&mut queue, &metrics, message(5));
+        enqueue_udp_msg(&mut queue, &metrics, message(1));
+        enqueue_udp_msg(&mut queue, &metrics, message(1));
+        assert_eq!(metrics.udp_pacing_peers.get(), 1);
+        assert_eq!(metrics.udp_pacing_queued_bytes.get(), 6);
+        assert_eq!(metrics.udp_pacing_memory_limit_drops.get(), 1);
+        assert_eq!(metrics.udp_egress_messages_dropped.get(), 1);
     }
 
     #[monoio::test(timer_enabled = true)]
