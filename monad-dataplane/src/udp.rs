@@ -29,9 +29,26 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, trace, warn};
 
 use crate::{
-    buffer_ext::SocketBufferExt, metrics::DataplaneMetrics, RecvUdpMsg, UdpSocketId, IPV4_HDR_SIZE,
-    UDP_HDR_SIZE,
+    buffer_ext::SocketBufferExt, metrics::DataplaneMetrics, pacing::PacingItem, RecvUdpMsg, UdpMsg,
+    UdpSocketId, IPV4_HDR_SIZE, UDP_HDR_SIZE,
 };
+
+impl PacingItem for UdpMsg {
+    fn queued_bytes(&self) -> usize {
+        self.payload.len()
+    }
+
+    fn next_payload_bytes(&self) -> usize {
+        self.payload
+            .len()
+            .min(self.stride.max(1) as usize)
+            .min(usize::from(u16::MAX - IPV4_HDR_SIZE - UDP_HDR_SIZE))
+            .min(max_write_size_for_segment_size(DEFAULT_SEGMENT_SIZE) as usize)
+    }
+    fn next_pacing_bytes(&self) -> usize {
+        self.next_payload_bytes() + usize::from(IPV4_HDR_SIZE + UDP_HDR_SIZE)
+    }
+}
 
 const DEFAULT_RINGBUF_COUNT: u32 = 2048;
 const DEFAULT_RINGBUF_SIZE: u32 = ETHERNET_SEGMENT_SIZE as u32;
