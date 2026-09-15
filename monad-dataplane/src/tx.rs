@@ -17,7 +17,6 @@ use std::{
     collections::HashMap,
     net::{SocketAddr, SocketAddrV4},
     num::NonZeroU64,
-    rc::Rc,
     sync::mpsc as std_mpsc,
     thread,
     time::Instant,
@@ -34,16 +33,14 @@ use tracing::{debug, trace};
 use crate::{
     metrics::DataplaneMetrics,
     pacing::{PacingItem, PacingPriority, PacingQueue, Scheduled},
-    tcp::{
-        tx::{chunk_header_bytes, Chunk, Message, TxState, TCP_CHUNK_BYTES},
-        TCP_MESSAGE_LENGTH_LIMIT,
-    },
+    tcp::tx::{Chunk, Message, TxState, TCP_CHUNK_BYTES},
     udp::{
         max_write_size_for_segment_size, record_send_error, DEFAULT_SEGMENT_SIZE,
         MAX_AGGREGATED_SEGMENTS,
     },
     RecvUdpMsg, TcpMsg, UdpMsg, UdpPacingConfig, UdpSocketId,
 };
+
 const MAX_CHANNEL_DRAIN: usize = 64;
 const UDP_TX_QUEUE_SIZE: usize = 128;
 
@@ -76,56 +73,57 @@ struct UdpSend {
     payload: Bytes,
 }
 
-struct TcpWork {
-    addr: SocketAddr,
-    payload: Bytes,
-    message: Rc<Message>,
-    first: bool,
-}
-
 enum PacedMessage {
     Udp(UdpMsg),
-    Tcp(TcpWork),
+    Tcp(SocketAddr, Message),
+}
+
+enum PacedChunk {
+    Udp(UdpSend),
+    Tcp(SocketAddr, Chunk),
 }
 
 impl PacingItem for PacedMessage {
     fn queued_bytes(&self) -> usize {
         match self {
             Self::Udp(work) => work.queued_bytes(),
-            Self::Tcp(work) => work.payload.len(),
+            Self::Tcp(_, work) => work.queued_bytes(),
         }
     }
 
     fn next_payload_bytes(&self) -> usize {
         match self {
             Self::Udp(work) => work.next_payload_bytes(),
-            Self::Tcp(work) => work
-                .payload
-                .len()
-                .min(TCP_CHUNK_BYTES - chunk_header_bytes(work.first)),
+            Self::Tcp(_, work) => work.next_payload_bytes(),
         }
     }
 
     fn next_pacing_bytes(&self) -> usize {
         match self {
             Self::Udp(work) => work.next_pacing_bytes(),
-            Self::Tcp(work) => self.next_payload_bytes() + chunk_header_bytes(work.first),
+            Self::Tcp(_, work) => work.next_pacing_bytes(),
         }
     }
 
     fn peer_bytes_per_second(&self, configured: NonZeroU64) -> Option<NonZeroU64> {
         match self {
-            Self::Udp(_) => Some(configured),
-            Self::Tcp(_) => None,
+            Self::Udp(work) => work.peer_bytes_per_second(configured),
+            Self::Tcp(_, work) => work.peer_bytes_per_second(configured),
         }
     }
 }
 
 impl Scheduled<PacedMessage> {
-    fn take_chunk(&mut self) -> Bytes {
+    fn take_chunk(&mut self) -> PacedChunk {
         match &mut self.item {
-            PacedMessage::Udp(message) => message.payload.split_to(self.batch_bytes),
-            PacedMessage::Tcp(work) => work.payload.split_to(self.batch_bytes),
+            PacedMessage::Udp(message) => PacedChunk::Udp(UdpSend {
+                socket_id: message.socket_id,
+                dst: message.dst,
+                payload: message.payload.split_to(self.batch_bytes),
+            }),
+            PacedMessage::Tcp(addr, message) => {
+                PacedChunk::Tcp(*addr, message.take_chunk(self.batch_bytes))
+            }
         }
     }
 }
@@ -236,18 +234,13 @@ fn enqueue_tcp_msg(
     addr: SocketAddr,
     message: TcpMsg,
 ) {
-    let message_len = message.msg.len();
-    if message_len > TCP_MESSAGE_LENGTH_LIMIT {
-        metrics.tcp_egress_messages_dropped.inc();
-        return;
+    if let Some(message) = Message::new(message, metrics.clone()) {
+        let _ = queue.enqueue(
+            PacingKey::Tcp(addr),
+            PacingPriority::Background,
+            PacedMessage::Tcp(addr, message),
+        );
     }
-    let work = PacedMessage::Tcp(TcpWork {
-        addr,
-        payload: message.msg,
-        message: Message::new(message_len, message.completion, metrics.clone()),
-        first: true,
-    });
-    let _ = queue.enqueue(PacingKey::Tcp(addr), PacingPriority::Background, work);
 }
 
 // A dataplane may have only UDP or only TCP socket handles. Closing one ingress
@@ -284,9 +277,9 @@ async fn tx_pacing(
 ) {
     let global_bytes_per_second = NonZeroU64::new(
         u64::try_from(u128::from(up_bandwidth_mbps) * 1_000_000 / 8)
-            .expect("UDP bandwidth overflows bytes per second"),
+            .expect("egress bandwidth overflows bytes per second"),
     )
-    .expect("UDP bandwidth must be non-zero");
+    .expect("egress bandwidth must be non-zero");
     let peer_bytes_per_second = NonZeroU64::new(
         u64::try_from(u128::from(pacing_config.peer_bandwidth_mbps) * 1_000_000 / 8)
             .expect("UDP peer bandwidth overflows bytes per second"),
@@ -309,10 +302,8 @@ async fn tx_pacing(
     let max_batch_items = MAX_AGGREGATED_SEGMENTS as usize;
 
     loop {
-        while let Ok(event) = tcp.events.try_recv() {
-            if let Some(addr) = tcp.handle_event(event) {
-                queue.remove_peer(PacingKey::Tcp(addr));
-            }
+        while let Some(addr) = tcp.try_failed_peer() {
+            queue.remove_peer(PacingKey::Tcp(addr));
         }
         for _ in 0..MAX_CHANNEL_DRAIN {
             match udp_egress_rx.try_recv() {
@@ -343,10 +334,8 @@ async fn tx_pacing(
                 message = recv_open(&mut tcp_egress_rx) => {
                     enqueue_tcp_msg(&mut queue, &metrics, message.0, message.1);
                 }
-                event = tcp.events.recv() => {
-                    if let Some(addr) = event.and_then(|event| tcp.handle_event(event)) {
-                        queue.remove_peer(PacingKey::Tcp(addr));
-                    }
+                addr = tcp.failed_peer() => {
+                    queue.remove_peer(PacingKey::Tcp(addr));
                 }
                 _ = timer => {}
             }
@@ -371,58 +360,31 @@ async fn tx_pacing(
             }) else {
                 break;
             };
-            match &scheduled.item {
-                PacedMessage::Udp(message) => metrics
-                    .udp_pacing_queued_bytes
-                    .sub(message.queued_bytes() as u64),
-                PacedMessage::Tcp(_) => {
-                    metrics.egress_pacing_background_grants.inc();
+            match scheduled.take_chunk() {
+                PacedChunk::Udp(send) => {
                     metrics
-                        .egress_pacing_background_granted_bytes
-                        .add(scheduled.item.next_pacing_bytes() as u64);
-                }
-            }
-            let chunk = scheduled.take_chunk();
-            match &mut scheduled.item {
-                PacedMessage::Udp(msg) => {
-                    let socket_id = msg.socket_id;
-                    let dst = msg.dst;
-                    if !msg.payload.is_empty() {
-                        let SocketAddr::V4(destination) = dst else {
+                        .udp_pacing_queued_bytes
+                        .sub(send.payload.len() as u64);
+                    if scheduled.item.queued_bytes() != 0 {
+                        let SocketAddr::V4(destination) = send.dst else {
                             unreachable!("only IPv4 messages enter the pacing queue")
                         };
-                        metrics
-                            .udp_pacing_queued_bytes
-                            .add(msg.queued_bytes() as u64);
                         assert!(
                             queue.requeue(destination.into(), scheduled).is_ok(),
-                            "requeueing admitted UDP bytes cannot exceed memory"
+                            "requeueing admitted bytes cannot exceed memory"
                         );
                     }
-                    total_bytes += chunk.len();
-                    trace!(?socket_id, dst_addr = ?dst, chunk_len = chunk.len(), "preparing udp send");
-                    batch.push(UdpSend {
-                        socket_id,
-                        dst,
-                        payload: chunk,
-                    });
+                    total_bytes += send.payload.len();
+                    trace!(socket_id = ?send.socket_id, dst_addr = ?send.dst, chunk_len = send.payload.len(), "preparing udp send");
+                    batch.push(send);
                 }
-                PacedMessage::Tcp(work) => {
-                    let addr = work.addr;
-                    let last = work.payload.is_empty();
-                    let chunk = Chunk {
-                        payload: chunk,
-                        message: Rc::clone(&work.message),
-                        first: work.first,
-                        last,
-                    };
-                    if !tcp.send(addr, chunk) {
+                PacedChunk::Tcp(addr, chunk) => {
+                    if !tcp.try_send(addr, chunk) {
                         queue.remove_peer(PacingKey::Tcp(addr));
-                    } else if !last {
-                        work.first = false;
+                    } else if scheduled.item.queued_bytes() != 0 {
                         assert!(queue.requeue(PacingKey::Tcp(addr), scheduled).is_ok());
                     }
-                    // Reconsider ingress and priority after each 128 KiB TCP chunk.
+                    // Reconsider ingress and priority after each TCP chunk.
                     break;
                 }
             }
@@ -497,6 +459,7 @@ mod tests {
     use monoio::time;
 
     use super::*;
+    use crate::tcp::TCP_MESSAGE_LENGTH_LIMIT;
 
     #[test]
     fn udp_memory_accounts_for_remaining_payload_not_next_packet() {
@@ -524,7 +487,10 @@ mod tests {
 
         let mut scheduled = queue.dequeue(Duration::ZERO, usize::MAX).unwrap();
         assert_eq!(scheduled.batch_bytes, 2);
-        assert_eq!(scheduled.take_chunk(), Bytes::from_static(&[0, 0]));
+        let PacedChunk::Udp(chunk) = scheduled.take_chunk() else {
+            panic!("expected datagram")
+        };
+        assert_eq!(chunk.payload, Bytes::from_static(&[0, 0]));
         assert_eq!(scheduled.item.queued_bytes(), 3);
         assert!(queue.requeue(key.into(), scheduled).is_ok());
         assert!(queue
