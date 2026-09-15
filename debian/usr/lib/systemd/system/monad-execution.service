@@ -4,11 +4,14 @@ After=network.target
 
 [Service]
 Type=simple
+# --db-stats-file must name the same path as --triedb-stats-path in
+# monad-bft.service; if they drift, monad-node exports zeroed gauges.
 ExecStart=/usr/local/bin/monad \
     --chain "$CHAIN" \
     --db /dev/triedb \
     --block_db /home/monad/monad-bft/ledger \
     --statesync /home/monad/monad-bft/statesync.sock \
+    --db-stats-file /home/monad/monad-bft/triedb-stats \
     --sq_thread_cpu 1 \
     --log_level INFO
 EnvironmentFile=-/home/monad/.env
