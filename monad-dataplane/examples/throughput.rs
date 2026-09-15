@@ -14,9 +14,12 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    io::{Read, Write},
+    fs::OpenOptions,
+    io::{BufWriter, Read, Write},
     net::{SocketAddr, TcpListener, UdpSocket},
+    num::NonZeroU64,
     os::unix::io::AsRawFd,
+    path::PathBuf,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
@@ -110,6 +113,9 @@ struct WriterArgs {
 
 #[derive(clap::Args)]
 struct NativeWriterArgs {
+    #[command(flatten)]
+    sampling: TxSamplingArgs,
+
     #[arg(help = "target address, or comma-separated target addresses, to send packets to")]
     #[arg(value_delimiter = ',', required = true)]
     target: Vec<SocketAddr>,
@@ -180,6 +186,9 @@ struct ReaderArgs {
 
 #[derive(clap::Args)]
 struct TcpWriterArgs {
+    #[command(flatten)]
+    sampling: TxSamplingArgs,
+
     #[arg(help = "receiver address, or comma-separated receiver addresses")]
     #[arg(value_delimiter = ',', required = true)]
     target: Vec<SocketAddr>,
@@ -267,6 +276,19 @@ struct TcpReaderArgs {
 
     #[arg(long, help = "address for externally scraped Prometheus metrics")]
     metrics_addr: SocketAddr,
+}
+
+#[derive(clap::Args)]
+struct TxSamplingArgs {
+    #[arg(long, help = "write timestamped send counters to a new CSV file")]
+    tx_samples_csv: Option<PathBuf>,
+
+    #[arg(
+        long,
+        default_value = "10",
+        help = "send-counter sampling interval in milliseconds"
+    )]
+    tx_sample_interval_ms: NonZeroU64,
 }
 
 fn main() {
@@ -443,6 +465,7 @@ fn run_writer(target_addr: SocketAddr, num_writers: usize, packet_size: usize, b
 
 fn run_native_writer(options: NativeWriterArgs) {
     let NativeWriterArgs {
+        sampling,
         target: target_addrs,
         packet_size,
         writer_bandwidth_mbps,
@@ -500,6 +523,7 @@ fn run_native_writer(options: NativeWriterArgs) {
     if let Some(metrics_addr) = metrics_addr {
         start_metrics_server(dataplane.metrics(), metrics_addr);
     }
+    start_tx_sampler(dataplane.metrics(), sampling);
 
     let udp_socket = dataplane
         .udp_sockets
@@ -593,6 +617,7 @@ struct UdpBurstConfig {
 
 fn run_tcp_writer(options: TcpWriterArgs) {
     let TcpWriterArgs {
+        sampling,
         target: target_addrs,
         bind_addr,
         message_size,
@@ -674,6 +699,7 @@ fn run_tcp_writer(options: TcpWriterArgs) {
         "sender dataplane not ready"
     );
     start_metrics_server(sender.metrics(), metrics_addr);
+    start_tx_sampler(sender.metrics(), sampling);
 
     let sender_socket = sender
         .tcp_sockets
@@ -806,6 +832,62 @@ fn run_tcp_reader(bind_addr: SocketAddr, dataplane_bandwidth_mbps: u64, metrics_
     }
 }
 
+fn start_tx_sampler(metrics: &ExecutorMetrics, options: TxSamplingArgs) {
+    let Some(path) = options.tx_samples_csv else {
+        return;
+    };
+    let handles = metrics.metric_handles();
+    let counter = |name| {
+        handles
+            .iter()
+            .find(|(key, _, _)| *key == name)
+            .expect("dataplane send counter is registered")
+            .1
+            .clone()
+    };
+    let udp = counter("monad.dataplane.udp.total_bytes_sent");
+    let tcp = counter("monad.dataplane.tcp.total_bytes_sent");
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .expect("failed to create send-counter CSV (must not already exist)");
+    let interval = Duration::from_millis(options.tx_sample_interval_ms.get());
+    thread::Builder::new()
+        .name("throughput-samples".to_owned())
+        .spawn(move || {
+            let mut output = BufWriter::new(file);
+            writeln!(output, "elapsed_ns,udp_sent_bytes,tcp_completed_bytes")
+                .expect("failed to write sample header");
+            let epoch = Instant::now();
+            let mut next = epoch;
+            loop {
+                // Read live counters, not HTTP snapshots. TCP advances on complete
+                // messages, so this remains a completion-rate trace, not a wire trace.
+                let udp_bytes = udp.get();
+                let tcp_bytes = tcp.get();
+                if writeln!(
+                    output,
+                    "{},{udp_bytes},{tcp_bytes}",
+                    epoch.elapsed().as_nanos()
+                )
+                .and_then(|_| output.flush())
+                .is_err()
+                {
+                    warn!("failed to write send-counter sample");
+                    return;
+                }
+                next += interval;
+                let now = Instant::now();
+                if next <= now {
+                    next = now + interval;
+                }
+                thread::sleep(next.saturating_duration_since(now));
+            }
+        })
+        .expect("failed to spawn send-counter sampler");
+}
+
 fn start_metrics_server(metrics: &ExecutorMetrics, metrics_addr: SocketAddr) {
     let registry = Registry::new();
     metrics
@@ -859,6 +941,33 @@ mod tests {
     use futures::FutureExt;
 
     use super::*;
+
+    #[test]
+    fn sampling_defaults_to_ten_ms_and_rejects_zero() {
+        for command in ["nw", "tw"] {
+            let args = [
+                "throughput",
+                command,
+                "127.0.0.1:1",
+                "--metrics-addr",
+                "127.0.0.1:3",
+                "--tx-samples-csv",
+                "samples.csv",
+            ];
+            let options = Args::try_parse_from(args).unwrap();
+            let sampling = match options.command {
+                Command::NativeWriter(options) => options.sampling,
+                Command::TcpWriter(options) => options.sampling,
+                _ => unreachable!(),
+            };
+            assert_eq!(sampling.tx_sample_interval_ms.get(), 10);
+            assert_eq!(sampling.tx_samples_csv, Some(PathBuf::from("samples.csv")));
+            assert!(
+                Args::try_parse_from(args.into_iter().chain(["--tx-sample-interval-ms", "0"]))
+                    .is_err()
+            );
+        }
+    }
 
     #[test]
     fn writer_arguments_parse_typed_addresses_and_keep_aliases() {
