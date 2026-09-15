@@ -15,6 +15,7 @@
 
 use std::{
     collections::HashMap,
+    path::Path,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -23,8 +24,9 @@ use actix_server::Server;
 use actix_web::{http::header, web, App, HttpRequest, HttpResponse, HttpServer};
 use monad_consensus_types::metrics::Metrics as StateMetrics;
 use monad_executor::{metric_consts, ExecutorMetrics, ExecutorMetricsChain, Gauge};
-use monad_triedb_utils::{MigrationPhase, StorageStats};
+use monad_triedb_utils::{MigrationPhase, StorageStats, TriedbStatsReader, UpdateStats};
 use prometheus::{Encoder, ProtobufEncoder, Registry, TextEncoder};
+use tracing::{info, warn};
 
 pub fn default_prometheus_labels(
     service_name: String,
@@ -114,6 +116,135 @@ pub fn record_triedb_storage_metrics(metrics: &mut ExecutorMetrics, stats: Stora
     metrics
         .gauge(GAUGE_TRIEDB_DISK_USED_BYTES)
         .set(stats.disk_used_bytes);
+}
+
+metric_consts! {
+    pub GAUGE_TRIEDB_NODES_CREATED_OR_UPDATED {
+        name: "monad.triedb.nodes_created_or_updated",
+        help: "Trie nodes written by execution's upserts, cumulative.",
+    }
+    pub GAUGE_TRIEDB_COMPACTION_READS {
+        name: "monad.triedb.compaction_reads",
+        help: "Node reads issued by compaction, cumulative. These compete with execution's own reads for disk.",
+    }
+    pub GAUGE_TRIEDB_COMPACTED_BYTES_FAST_TO_SLOW {
+        name: "monad.triedb.compacted_bytes_fast_to_slow",
+        help: "Bytes compaction copied out of the fast ring into the slow ring, cumulative.",
+    }
+    pub GAUGE_TRIEDB_COMPACTED_BYTES_SLOW_TO_SLOW {
+        name: "monad.triedb.compacted_bytes_slow_to_slow",
+        help: "Bytes compaction copied within the slow ring, cumulative. This is the recycling that reclaims slow-ring chunks.",
+    }
+    pub GAUGE_TRIEDB_COPIED_BYTES_SLOW_TO_FAST {
+        name: "monad.triedb.copied_bytes_slow_to_fast",
+        help: "Bytes copied from the slow ring back into the fast ring on behalf of slow-ring writes, cumulative.",
+    }
+    pub GAUGE_TRIEDB_EXPIRE_NODES_UPDATED {
+        name: "monad.triedb.expire_nodes_updated",
+        help: "Trie nodes rewritten by history expiry, cumulative.",
+    }
+    pub GAUGE_TRIEDB_EXPIRE_READS {
+        name: "monad.triedb.expire_reads",
+        help: "Node reads issued by history expiry, cumulative.",
+    }
+}
+
+pub fn init_triedb_update_stats_metrics() -> ExecutorMetrics {
+    ExecutorMetrics::with_metric_defs(&[
+        GAUGE_TRIEDB_NODES_CREATED_OR_UPDATED,
+        GAUGE_TRIEDB_COMPACTION_READS,
+        GAUGE_TRIEDB_COMPACTED_BYTES_FAST_TO_SLOW,
+        GAUGE_TRIEDB_COMPACTED_BYTES_SLOW_TO_SLOW,
+        GAUGE_TRIEDB_COPIED_BYTES_SLOW_TO_FAST,
+        GAUGE_TRIEDB_EXPIRE_NODES_UPDATED,
+        GAUGE_TRIEDB_EXPIRE_READS,
+    ])
+}
+
+// ~5 minutes at the refresh cadence, then hourly. An absent sidecar is the
+// ordinary case while execution is still starting and has to stay quiet; a
+// lasting one has to say so without repeating on every tick.
+const MISSES_BEFORE_WARNING: u32 = 10;
+const MISSES_BETWEEN_WARNINGS: u32 = 120;
+
+/// Defines the gauges for a configured sidecar whether or not the file is
+/// there yet: execution creates it when it opens the db, which can be after
+/// this point, and monad-node registers its gauge set once, when
+/// `NodePrometheusMetrics` is built.
+pub fn init_triedb_update_stats(path: Option<&Path>) -> ExecutorMetrics {
+    let Some(path) = path else {
+        return ExecutorMetrics::with_metric_defs(&[]);
+    };
+
+    let mut metrics = init_triedb_update_stats_metrics();
+    let mut misses = 0;
+    if !refresh_triedb_update_stats(path, &mut misses, &mut metrics) {
+        info!(
+            ?path,
+            "no triedb stats sample yet, retrying on the triedb metrics refresh"
+        );
+    }
+    metrics
+}
+
+/// Reopens the sidecar on every call rather than holding it open: the file
+/// execution publishes to can be replaced, and a reader still mapping the old
+/// inode would report its last values as though they were current.
+///
+/// Returns whether a sample was recorded. A miss leaves the gauges at their
+/// last values; zeroing them would read as a counter reset.
+pub fn refresh_triedb_update_stats(
+    path: &Path,
+    consecutive_misses: &mut u32,
+    metrics: &mut ExecutorMetrics,
+) -> bool {
+    let Some(stats) = TriedbStatsReader::try_new(path).and_then(|reader| reader.update_stats())
+    else {
+        *consecutive_misses += 1;
+        if *consecutive_misses >= MISSES_BEFORE_WARNING
+            && (*consecutive_misses - MISSES_BEFORE_WARNING).is_multiple_of(MISSES_BETWEEN_WARNINGS)
+        {
+            warn!(
+                ?path,
+                consecutive_misses = *consecutive_misses,
+                "no triedb stats sample; check that --triedb-stats-path names the same \
+                 file execution is given with --db-stats-file, and that this user can \
+                 read it"
+            );
+        }
+        return false;
+    };
+
+    *consecutive_misses = 0;
+    record_triedb_update_stats_metrics(metrics, stats);
+    true
+}
+
+/// Gauge names carry the copy direction, while the counters behind them are
+/// named for the ring the copy was charged to: `compacted_bytes_in_fast` is
+/// the fast-to-slow gauge, `compacted_bytes_in_slow` the slow-to-slow one.
+pub fn record_triedb_update_stats_metrics(metrics: &mut ExecutorMetrics, stats: UpdateStats) {
+    metrics
+        .gauge(GAUGE_TRIEDB_NODES_CREATED_OR_UPDATED)
+        .set(stats.nodes_created_or_updated);
+    metrics
+        .gauge(GAUGE_TRIEDB_COMPACTION_READS)
+        .set(stats.nreads_compaction);
+    metrics
+        .gauge(GAUGE_TRIEDB_COMPACTED_BYTES_FAST_TO_SLOW)
+        .set(stats.compacted_bytes_in_fast);
+    metrics
+        .gauge(GAUGE_TRIEDB_COMPACTED_BYTES_SLOW_TO_SLOW)
+        .set(stats.compacted_bytes_in_slow);
+    metrics
+        .gauge(GAUGE_TRIEDB_COPIED_BYTES_SLOW_TO_FAST)
+        .set(stats.bytes_copied_slow_to_fast_for_slow);
+    metrics
+        .gauge(GAUGE_TRIEDB_EXPIRE_NODES_UPDATED)
+        .set(stats.nodes_updated_expire);
+    metrics
+        .gauge(GAUGE_TRIEDB_EXPIRE_READS)
+        .set(stats.nreads_expire);
 }
 
 fn duration_micros_u64(duration: &Duration) -> u64 {
@@ -350,5 +481,165 @@ mod storage_metrics_tests {
             scraped.contains("monad_triedb_disk_used_bytes 700"),
             "{scraped}"
         );
+    }
+}
+
+#[cfg(test)]
+mod update_stats_metrics_tests {
+    use monad_triedb_utils::UpdateStats;
+    use prometheus::{Encoder, Registry, TextEncoder};
+
+    use super::{
+        init_triedb_update_stats_metrics, record_triedb_update_stats_metrics,
+        GAUGE_TRIEDB_COMPACTED_BYTES_FAST_TO_SLOW, GAUGE_TRIEDB_COMPACTED_BYTES_SLOW_TO_SLOW,
+        GAUGE_TRIEDB_COMPACTION_READS, GAUGE_TRIEDB_COPIED_BYTES_SLOW_TO_FAST,
+        GAUGE_TRIEDB_EXPIRE_NODES_UPDATED, GAUGE_TRIEDB_EXPIRE_READS,
+        GAUGE_TRIEDB_NODES_CREATED_OR_UPDATED,
+    };
+
+    // Distinct per exported field, so a gauge wired to the wrong counter
+    // reports a value that belongs to another gauge.
+    fn stats() -> UpdateStats {
+        UpdateStats {
+            nodes_created_or_updated: 11,
+            nreads_compaction: 22,
+            nreads_before_compact_offset_fast: 0,
+            nreads_before_compact_offset_slow: 0,
+            nreads_after_compact_offset_fast: 0,
+            nreads_after_compact_offset_slow: 0,
+            bytes_read_before_compact_offset_fast: 0,
+            bytes_read_before_compact_offset_slow: 0,
+            bytes_read_after_compact_offset_fast: 0,
+            bytes_read_after_compact_offset_slow: 0,
+            compacted_nodes_in_fast: 0,
+            compacted_nodes_in_slow: 0,
+            nodes_copied_fast_to_fast_for_fast: 0,
+            nodes_copied_fast_to_fast_for_slow: 0,
+            nodes_copied_slow_to_fast_for_slow: 0,
+            compacted_bytes_in_fast: 33,
+            compacted_bytes_in_slow: 44,
+            bytes_copied_slow_to_fast_for_slow: 55,
+            nodes_updated_expire: 66,
+            nreads_expire: 77,
+        }
+    }
+
+    #[test]
+    fn records_every_exported_counter() {
+        let mut metrics = init_triedb_update_stats_metrics();
+        record_triedb_update_stats_metrics(&mut metrics, stats());
+
+        assert_eq!(
+            metrics.gauge(GAUGE_TRIEDB_NODES_CREATED_OR_UPDATED).get(),
+            11
+        );
+        assert_eq!(metrics.gauge(GAUGE_TRIEDB_COMPACTION_READS).get(), 22);
+        assert_eq!(
+            metrics
+                .gauge(GAUGE_TRIEDB_COMPACTED_BYTES_FAST_TO_SLOW)
+                .get(),
+            33
+        );
+        assert_eq!(
+            metrics
+                .gauge(GAUGE_TRIEDB_COMPACTED_BYTES_SLOW_TO_SLOW)
+                .get(),
+            44
+        );
+        assert_eq!(
+            metrics.gauge(GAUGE_TRIEDB_COPIED_BYTES_SLOW_TO_FAST).get(),
+            55
+        );
+        assert_eq!(metrics.gauge(GAUGE_TRIEDB_EXPIRE_NODES_UPDATED).get(), 66);
+        assert_eq!(metrics.gauge(GAUGE_TRIEDB_EXPIRE_READS).get(), 77);
+    }
+
+    // A refresh reaches the scrape only if it writes the same gauges the
+    // registry holds, so assert through the encoded output rather than through
+    // the ExecutorMetrics the ticker writes to.
+    #[test]
+    fn refresh_after_registration_reaches_the_scrape() {
+        let mut metrics = init_triedb_update_stats_metrics();
+        let registry = Registry::new();
+        metrics.register(&registry).expect("gauges registered");
+
+        for nodes in [11, 99] {
+            record_triedb_update_stats_metrics(
+                &mut metrics,
+                UpdateStats {
+                    nodes_created_or_updated: nodes,
+                    ..stats()
+                },
+            );
+        }
+
+        let mut buffer = Vec::new();
+        TextEncoder::new()
+            .encode(&registry.gather(), &mut buffer)
+            .expect("encoded");
+        let scraped = String::from_utf8(buffer).expect("utf-8");
+        // Every gauge, by its sanitized name: one left out of
+        // init_triedb_update_stats_metrics is created on demand by the first
+        // refresh, after the registry took its snapshot, so it never reaches a
+        // scrape. The debug_assert that would catch that is compiled out of
+        // the release test binaries CI runs.
+        for expected in [
+            "monad_triedb_nodes_created_or_updated 99",
+            "monad_triedb_compaction_reads 22",
+            "monad_triedb_compacted_bytes_fast_to_slow 33",
+            "monad_triedb_compacted_bytes_slow_to_slow 44",
+            "monad_triedb_copied_bytes_slow_to_fast 55",
+            "monad_triedb_expire_nodes_updated 66",
+            "monad_triedb_expire_reads 77",
+        ] {
+            assert!(
+                scraped.lines().any(|line| line == expected),
+                "missing `{expected}` in:\n{scraped}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod update_stats_startup_tests {
+    use std::path::Path;
+
+    use prometheus::{Encoder, Registry, TextEncoder};
+
+    use super::init_triedb_update_stats;
+
+    fn scrape(metrics: &super::ExecutorMetrics) -> String {
+        let registry = Registry::new();
+        metrics.register(&registry).expect("gauges registered");
+        let mut buffer = Vec::new();
+        TextEncoder::new()
+            .encode(&registry.gather(), &mut buffer)
+            .expect("encoded");
+        String::from_utf8(buffer).expect("utf-8")
+    }
+
+    // A gauge set defined only once a sample arrives would be defined after
+    // NodePrometheusMetrics registered the chain, so nothing would scrape it.
+    //
+    // An absent path is the only input safe to hand the reader here: the C++
+    // logger is uninitialized in a test binary, and every other rejection
+    // (short file, bad version, EACCES) logs through it.
+    #[test]
+    fn a_configured_sidecar_registers_its_gauges_before_execution_creates_it() {
+        let metrics = init_triedb_update_stats(Some(Path::new("/nonexistent/triedb-stats")));
+
+        assert!(
+            scrape(&metrics)
+                .lines()
+                .any(|line| line == "monad_triedb_nodes_created_or_updated 0"),
+            "gauges must be registered before the first successful read"
+        );
+    }
+
+    #[test]
+    fn an_unconfigured_sidecar_registers_nothing() {
+        let metrics = init_triedb_update_stats(None);
+
+        assert!(scrape(&metrics).is_empty());
     }
 }

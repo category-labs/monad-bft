@@ -71,6 +71,12 @@ pub struct Cli {
     #[arg(long)]
     pub triedb_path: PathBuf,
 
+    /// Set the path of the triedb statistics sidecar, which must be the same
+    /// file execution is given with --db-stats-file. Without it the triedb
+    /// update counters are not exported.
+    #[arg(long)]
+    pub triedb_stats_path: Option<PathBuf>,
+
     /// Set a custom monad control panel ipc path
     #[arg(long)]
     pub control_panel_ipc_path: PathBuf,
