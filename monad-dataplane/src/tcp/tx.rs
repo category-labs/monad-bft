@@ -19,6 +19,7 @@ use std::{
     io::{Error, ErrorKind},
     mem::size_of_val,
     net::SocketAddr,
+    num::NonZeroU64,
     os::fd::{AsRawFd, RawFd},
     rc::Rc,
     sync::Arc,
@@ -40,10 +41,12 @@ use tokio::sync::mpsc;
 use tracing::{trace, warn};
 use zerocopy::IntoBytes;
 
-use super::{message_timeout, TcpMsgHdr};
+use super::{message_timeout, TcpMsgHdr, TCP_MESSAGE_LENGTH_LIMIT};
 use crate::{
     addrlist::{Addrlist, Status},
     metrics::{ActiveConnectionGuard, DataplaneMetrics},
+    pacing::PacingItem,
+    TcpMsg,
 };
 
 pub const QUEUED_CHUNK_LIMIT: usize = 128;
@@ -54,15 +57,15 @@ const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Shared by the pacing remainder and every dispatched chunk. Failure is counted
 /// once, after all buffers belonging to the message have been discarded.
-pub(crate) struct Message {
-    pub(crate) len: usize,
+struct Completion {
+    len: usize,
     completion: Cell<Option<oneshot::Sender<()>>>,
     completed: Cell<bool>,
     metrics: DataplaneMetrics,
 }
 
-impl Message {
-    pub(crate) fn new(
+impl Completion {
+    fn new(
         len: usize,
         completion: Option<oneshot::Sender<()>>,
         metrics: DataplaneMetrics,
@@ -85,7 +88,7 @@ impl Message {
     }
 }
 
-impl Drop for Message {
+impl Drop for Completion {
     fn drop(&mut self) {
         if !self.completed.get() {
             self.metrics.tcp_egress_messages_dropped.inc();
@@ -93,14 +96,73 @@ impl Drop for Message {
     }
 }
 
-pub(crate) struct Chunk {
-    pub(crate) payload: Bytes,
-    pub(crate) message: Rc<Message>,
-    pub(crate) first: bool,
-    pub(crate) last: bool,
+/// A whole admitted message and its unscheduled remainder. Framing and completion
+/// ownership stay here; the scheduler only asks for byte costs and takes chunks.
+pub(crate) struct Message {
+    payload: Bytes,
+    completion: Rc<Completion>,
+    first: bool,
 }
 
-pub(crate) const fn chunk_header_bytes(first: bool) -> usize {
+impl Message {
+    pub(crate) fn new(message: TcpMsg, metrics: DataplaneMetrics) -> Option<Self> {
+        if message.msg.len() > TCP_MESSAGE_LENGTH_LIMIT {
+            metrics.tcp_egress_messages_dropped.inc();
+            return None;
+        }
+        Some(Self {
+            completion: Completion::new(message.msg.len(), message.completion, metrics),
+            payload: message.msg,
+            first: true,
+        })
+    }
+
+    pub(crate) fn take_chunk(&mut self, bytes: usize) -> Chunk {
+        assert!(bytes <= self.next_payload_bytes());
+        let payload = self.payload.split_to(bytes);
+        let first = std::mem::replace(&mut self.first, false);
+        let metrics = &self.completion.metrics;
+        metrics.egress_pacing_background_grants.inc();
+        metrics
+            .egress_pacing_background_granted_bytes
+            .add((bytes + chunk_header_bytes(first)) as u64);
+        Chunk {
+            payload,
+            message: Rc::clone(&self.completion),
+            first,
+            last: self.payload.is_empty(),
+        }
+    }
+}
+
+impl PacingItem for Message {
+    fn queued_bytes(&self) -> usize {
+        self.payload.len()
+    }
+
+    fn next_payload_bytes(&self) -> usize {
+        self.payload
+            .len()
+            .min(TCP_CHUNK_BYTES - chunk_header_bytes(self.first))
+    }
+
+    fn next_pacing_bytes(&self) -> usize {
+        self.next_payload_bytes() + chunk_header_bytes(self.first)
+    }
+
+    fn peer_bytes_per_second(&self, _: NonZeroU64) -> Option<NonZeroU64> {
+        None
+    }
+}
+
+pub(crate) struct Chunk {
+    payload: Bytes,
+    message: Rc<Completion>,
+    first: bool,
+    last: bool,
+}
+
+const fn chunk_header_bytes(first: bool) -> usize {
     if first {
         std::mem::size_of::<TcpMsgHdr>()
     } else {
@@ -127,7 +189,7 @@ struct PeerWriter {
     abort: AbortHandle,
 }
 
-pub(crate) struct WriterEvent {
+struct WriterEvent {
     addr: SocketAddr,
     id: u64,
     failed: bool,
@@ -141,7 +203,7 @@ pub(crate) struct TxState {
     connections_limit: usize,
     next_id: u64,
     event_tx: mpsc::UnboundedSender<WriterEvent>,
-    pub(crate) events: mpsc::UnboundedReceiver<WriterEvent>,
+    events: mpsc::UnboundedReceiver<WriterEvent>,
     metrics: DataplaneMetrics,
 }
 
@@ -164,7 +226,7 @@ impl TxState {
     }
 
     /// False means the peer's pacing buffers must also be discarded.
-    pub(crate) fn send(&mut self, addr: SocketAddr, chunk: Chunk) -> bool {
+    pub(crate) fn try_send(&mut self, addr: SocketAddr, chunk: Chunk) -> bool {
         if !self.peers.contains_key(&addr) {
             // A new stream can only start at a message boundary.
             if !chunk.first {
@@ -235,7 +297,29 @@ impl TxState {
         }
     }
 
-    pub(crate) fn handle_event(&mut self, event: WriterEvent) -> Option<SocketAddr> {
+    pub(crate) fn try_failed_peer(&mut self) -> Option<SocketAddr> {
+        while let Ok(event) = self.events.try_recv() {
+            if let Some(addr) = self.handle_event(event) {
+                return Some(addr);
+            }
+        }
+        None
+    }
+
+    pub(crate) async fn failed_peer(&mut self) -> SocketAddr {
+        loop {
+            let event = self
+                .events
+                .recv()
+                .await
+                .expect("writer event sender is owned by this state");
+            if let Some(addr) = self.handle_event(event) {
+                return addr;
+            }
+        }
+    }
+
+    fn handle_event(&mut self, event: WriterEvent) -> Option<SocketAddr> {
         // A cancelled writer may finish after its replacement was created.
         if self
             .peers
@@ -258,7 +342,7 @@ impl Drop for TxState {
 }
 
 struct ActiveMessage {
-    message: Rc<Message>,
+    message: Rc<Completion>,
     deadline: Instant,
 }
 
@@ -358,6 +442,100 @@ fn set_socket_option(fd: RawFd, option: libc::c_int, value: u32) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn chunking_keeps_framing_and_completion_inside_tcp() {
+        for len in [
+            0,
+            1,
+            TCP_CHUNK_BYTES - chunk_header_bytes(true),
+            TCP_CHUNK_BYTES,
+            2 * TCP_CHUNK_BYTES + 9,
+        ] {
+            let metrics = DataplaneMetrics::new();
+            let payload = Bytes::from(vec![7; len]);
+            let (completion, mut completed) = oneshot::channel();
+            let mut message = Message::new(
+                TcpMsg {
+                    msg: payload.clone(),
+                    completion: Some(completion),
+                },
+                metrics.clone(),
+            )
+            .unwrap();
+            let mut chunks = Vec::new();
+            let mut offset = 0;
+            loop {
+                let bytes = message.next_payload_bytes();
+                assert!(message.next_pacing_bytes() <= TCP_CHUNK_BYTES);
+                let chunk = message.take_chunk(bytes);
+                assert_eq!(chunk.payload, payload.slice(offset..offset + bytes));
+                assert_eq!(chunk.first, chunks.is_empty());
+                offset += bytes;
+                assert_eq!(chunk.last, offset == len);
+                chunks.push(chunk);
+                if offset == len {
+                    break;
+                }
+            }
+            assert_eq!(message.queued_bytes(), 0);
+            assert_eq!(completed.try_recv().unwrap(), None);
+            assert_eq!(metrics.tcp_messages_sent.get(), 0);
+            assert_eq!(
+                metrics.egress_pacing_background_granted_bytes.get(),
+                (len + chunk_header_bytes(true)) as u64
+            );
+            drop(message);
+            assert_eq!(completed.try_recv().unwrap(), None);
+            // Only the writer's final successful write completes the message.
+            chunks.last().unwrap().message.complete();
+            assert_eq!(completed.try_recv().unwrap(), Some(()));
+            drop(chunks);
+            assert_eq!(metrics.tcp_messages_sent.get(), 1);
+            assert_eq!(metrics.tcp_bytes_sent.get(), len as u64);
+            assert_eq!(metrics.tcp_egress_messages_dropped.get(), 0);
+        }
+    }
+
+    #[test]
+    fn failed_remainder_is_counted_once_after_all_chunks_are_dropped() {
+        let metrics = DataplaneMetrics::new();
+        let (completion, mut completed) = oneshot::channel();
+        let mut message = Message::new(
+            TcpMsg {
+                msg: vec![7; TCP_CHUNK_BYTES * 2].into(),
+                completion: Some(completion),
+            },
+            metrics.clone(),
+        )
+        .unwrap();
+        let chunk = message.take_chunk(message.next_payload_bytes());
+        drop(message);
+        assert_eq!(metrics.tcp_egress_messages_dropped.get(), 0);
+        assert_eq!(completed.try_recv().unwrap(), None);
+        drop(chunk);
+        assert_eq!(metrics.tcp_egress_messages_dropped.get(), 1);
+        assert!(completed.try_recv().is_err());
+    }
+
+    #[test]
+    fn continuation_cannot_create_a_new_connection() {
+        let mut state = state();
+        let mut message = Message::new(
+            TcpMsg {
+                msg: vec![7; TCP_CHUNK_BYTES].into(),
+                completion: None,
+            },
+            state.metrics.clone(),
+        )
+        .unwrap();
+        drop(message.take_chunk(message.next_payload_bytes()));
+        let continuation = message.take_chunk(message.next_payload_bytes());
+        assert!(!state.try_send("127.0.0.1:1".parse().unwrap(), continuation));
+        assert!(state.peers.is_empty());
+        drop(message);
+        assert_eq!(state.metrics.tcp_egress_messages_dropped.get(), 1);
+    }
+
     fn state() -> TxState {
         TxState::new(
             Arc::new(Addrlist::new_with_trusted(std::iter::empty())),
@@ -394,8 +572,8 @@ mod tests {
         let (slow_rx, abort) = install_writer(&mut state, slow, 1, 0);
         let (mut healthy_rx, healthy_abort) = install_writer(&mut state, healthy, 1, 1);
         let (completion, mut completed) = oneshot::channel();
-        let message = Message::new(2, Some(completion), state.metrics.clone());
-        assert!(state.send(
+        let message = Completion::new(2, Some(completion), state.metrics.clone());
+        assert!(state.try_send(
             slow,
             Chunk {
                 payload: Bytes::from_static(&[1]),
@@ -404,7 +582,7 @@ mod tests {
                 last: false
             }
         ));
-        assert!(!state.send(
+        assert!(!state.try_send(
             slow,
             Chunk {
                 payload: Bytes::from_static(&[2]),
@@ -420,8 +598,8 @@ mod tests {
         drop(message);
         assert!(completed.try_recv().is_err());
         assert_eq!(state.metrics.tcp_egress_messages_dropped.get(), 1);
-        let message = Message::new(1, None, state.metrics.clone());
-        assert!(state.send(
+        let message = Completion::new(1, None, state.metrics.clone());
+        assert!(state.try_send(
             healthy,
             Chunk {
                 payload: Bytes::from_static(&[3]),
@@ -441,23 +619,23 @@ mod tests {
         let mut state = state();
         let addr = "127.0.0.1:1".parse().unwrap();
         let (mut receiver, abort) = install_writer(&mut state, addr, QUEUED_CHUNK_LIMIT, 0);
-        let message = Message::new(QUEUED_MESSAGE_BYTE_LIMIT, None, state.metrics.clone());
+        let message = Completion::new(QUEUED_MESSAGE_BYTE_LIMIT, None, state.metrics.clone());
         let chunk = || Chunk {
             payload: Bytes::from(vec![0; TCP_CHUNK_BYTES]),
             message: message.clone(),
             first: false,
             last: false,
         };
-        assert!(state.send(addr, chunk()));
+        assert!(state.try_send(addr, chunk()));
         let in_progress = receiver.try_recv().unwrap();
         for _ in 1..QUEUED_MESSAGE_BYTE_LIMIT / TCP_CHUNK_BYTES {
-            assert!(state.send(addr, chunk()));
+            assert!(state.try_send(addr, chunk()));
         }
         assert_eq!(
             state.peers[&addr].queued_bytes.get(),
             QUEUED_MESSAGE_BYTE_LIMIT
         );
-        assert!(!state.send(addr, chunk()));
+        assert!(!state.try_send(addr, chunk()));
         assert!(abort.is_aborted());
         drop(in_progress);
         drop(receiver);
