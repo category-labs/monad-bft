@@ -726,7 +726,7 @@ pub enum FullnodeBroadcastMode {
     Broadcast,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(usize)]
 pub enum UdpPriority {
     High = 0,
