@@ -23,6 +23,7 @@ rm -rf /home/monad/monad-bft/empty-dir
 rm -rf /home/monad/monad-bft/snapshots
 rm -f /home/monad/monad-bft/mempool.sock
 rm -f /home/monad/monad-bft/controlpanel.sock
+rm -f /home/monad/monad-bft/triedb-stats
 rm -f /home/monad/monad-bft/wal_*
 rm -f /home/monad/monad-bft/config/peers.toml
 rm -rf /home/monad/monad-bft/blockdb
