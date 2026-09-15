@@ -20,11 +20,7 @@ use std::{
 };
 
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
-use monad_dataplane::{
-    pacing::{PacingItem, PacingQueue},
-    DataplaneMetrics,
-};
-use monad_types::UdpPriority;
+use monad_dataplane::pacing::{PacingItem, PacingPriority, PacingQueue};
 
 #[derive(Debug)]
 struct Item(u16);
@@ -37,16 +33,20 @@ impl PacingItem for Item {
     fn next_payload_bytes(&self) -> usize {
         1_472
     }
+
+    fn next_pacing_bytes(&self) -> usize {
+        1_500
+    }
 }
 
 fn scheduler(c: &mut Criterion) {
     const PEERS: usize = 256;
     let rate = NonZeroU64::new(125_000_000).unwrap();
-    let mut queue = PacingQueue::new(rate, rate, usize::MAX, DataplaneMetrics::default());
+    let mut queue = PacingQueue::new(rate, rate, usize::MAX);
     for peer in 0..PEERS {
         let key = SocketAddrV4::new(Ipv4Addr::LOCALHOST, peer as u16);
         queue
-            .enqueue(key, UdpPriority::Regular, Item(peer as u16))
+            .enqueue(key, PacingPriority::Regular, Item(peer as u16))
             .unwrap();
     }
     let mut group = c.benchmark_group("dataplane/pacing");
@@ -58,7 +58,7 @@ fn scheduler(c: &mut Criterion) {
             let item = black_box(scheduled.item);
             let peer = item.0;
             let key = SocketAddrV4::new(Ipv4Addr::LOCALHOST, peer);
-            queue.enqueue(key, UdpPriority::Regular, item).unwrap();
+            queue.enqueue(key, PacingPriority::Regular, item).unwrap();
             black_box(peer)
         });
     });
