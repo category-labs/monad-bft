@@ -41,6 +41,7 @@ pub(crate) mod buffer_ext;
 mod metrics;
 pub mod pacing;
 pub mod tcp;
+mod tx;
 pub mod udp;
 
 pub use metrics::DataplaneMetrics;
@@ -324,12 +325,12 @@ impl DataplaneBuilder {
                                 tcp_bound_addrs_tx,
                                 metrics.clone(),
                             );
-                            udp::spawn_tasks(
+                            tx::spawn_tasks(
                                 udp_socket_configs,
                                 udp_egress_rx,
                                 tcp_egress_rx,
                                 tcp_tx,
-                                udp::UdpTaskConfig {
+                                tx::TxConfig {
                                     up_bandwidth_mbps,
                                     pacing: udp_pacing_config,
                                     buffer_size: udp_buffer_size,
