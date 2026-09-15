@@ -1,0 +1,33 @@
+name: Execution pin
+
+# Only master: a release branch may legitimately pin a cherry-pick that never
+# lands on execution main.
+on:
+  merge_group:
+    branches: ["master"]
+  pull_request:
+    branches: ["master"]
+    types: [ opened, synchronize, reopened, edited ]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: exec-pin-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check-exec-pin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          # Submodules stay unfetched: the pin under test may not be fetchable.
+          submodules: false
+      - name: Check execution pin
+        run: .github/workflows/exec-pin.sh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
