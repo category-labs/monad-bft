@@ -23,7 +23,7 @@ use crate::{
         types::{NodeId, Slot},
     },
     da::{ChunkRecoveryRequest, DAOutput, DARuntime, ProposalEnvelope},
-    epoch::StubElection,
+    epoch::NodeProposerSchedule,
     network::Link,
 };
 
@@ -35,12 +35,15 @@ pub enum DAInput {
 }
 
 pub struct DATask {
-    da: DARuntime<StubElection>,
+    da: DARuntime<NodeProposerSchedule>,
     link: Link<DAOutput, DAInput>,
 }
 
 impl DATask {
-    pub fn spawn(da: DARuntime<StubElection>, link: Link<DAOutput, DAInput>) -> JoinHandle<()> {
+    pub fn spawn(
+        da: DARuntime<NodeProposerSchedule>,
+        link: Link<DAOutput, DAInput>,
+    ) -> JoinHandle<()> {
         let task = Self { da, link };
         tokio::spawn(task.run().instrument(Span::current()))
     }

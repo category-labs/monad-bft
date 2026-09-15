@@ -23,11 +23,10 @@ use tracing::{Instrument as _, Span};
 use crate::{
     chorus::{
         SlotLifecycle,
-        types::{NodeId, Slot, Timestamp, TimestampDelta},
+        types::{NodeId, ProposerSchedule as _, Slot, Timestamp, TimestampDelta},
     },
     config::ProposalConfig,
-    da::ProposerElection as _,
-    epoch::{EpochHandle, StubElection},
+    epoch::{EpochHandle, NodeProposerSchedule},
     network::Link,
     node::Clock,
 };
@@ -51,7 +50,7 @@ pub trait ProposalCreation {
 // proposes a fixed offset before the slot's deadline
 pub struct OffsetProposalCreation {
     self_id: NodeId,
-    election: Arc<StubElection>,
+    proposers: Arc<NodeProposerSchedule>,
     offset: TimestampDelta,
     // when to propose, for each open slot we propose in
     due: BTreeMap<Slot, Timestamp>,
@@ -75,7 +74,7 @@ impl ProposalCreation for OffsetProposalCreation {
     fn new(epoch_handle: &EpochHandle, config: &ProposalConfig) -> Self {
         Self {
             self_id: epoch_handle.self_id,
-            election: epoch_handle.election.clone(),
+            proposers: epoch_handle.proposers.clone(),
             offset: config.propose_before_deadline,
             due: BTreeMap::new(),
         }
@@ -84,7 +83,10 @@ impl ProposalCreation for OffsetProposalCreation {
     fn handle_slot_lifecycle(&mut self, now: Timestamp, slot: Slot, event: SlotLifecycle) {
         match event {
             SlotLifecycle::Opened { deadline } => {
-                if self.election.get_index(slot, &self.self_id).is_none() {
+                if !matches!(
+                    self.proposers.proposer_index_at(slot, &self.self_id),
+                    Ok(Some(_))
+                ) {
                     return;
                 }
                 self.due.insert(slot, self.propose_at(now, deadline));

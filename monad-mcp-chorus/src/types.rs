@@ -32,6 +32,13 @@ pub use super::env::{
     HeaderAuth, KeyPair, MerkleRoot, NodeId, ProposalHeader, PubKey, Signature,
     SignatureCollection, SignedProposalHeader, Stake, ValidatorData, VoteAggregation,
 };
+pub use super::{
+    proposer_schedule::ScheduleError,
+    proposers::{
+        CreditLotterySchedule, EpochAnchor, FixedProposerSchedule, ProposerConfig,
+        ProposerSchedule, ProposerSet, RotatingProposerSchedule, RoundRobinLeaderSchedule,
+    },
+};
 use crate::spec::{
     Stake as _,
     validator::ValidatorData as _,

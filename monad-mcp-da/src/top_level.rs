@@ -19,7 +19,6 @@ mod assignment;
 pub(crate) mod chunk;
 mod chunk_tree;
 mod egress;
-mod election;
 pub(crate) mod encoding_scheme;
 mod header;
 mod instance_rc;
@@ -35,7 +34,6 @@ pub(crate) mod test_util;
 
 pub use chunk::{Chunk, ChunkRequest, ProposalEnvelope};
 pub use egress::Dissemination;
-pub use election::ProposerElection;
 pub use encoding_scheme::d25;
 pub use env::ProposalKeyPair;
 pub use header::{InvalidProposalHeader, header_auth};

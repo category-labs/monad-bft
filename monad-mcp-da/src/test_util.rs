@@ -22,17 +22,17 @@ use std::sync::Arc;
 use bytes::Bytes;
 use monad_mcp_chorus::spec::{validator::ValidatorData as _, vote::KeyPair as _};
 
+pub(crate) use super::chorus::types::FixedProposerSchedule;
 use super::{
     assignment::{ChunkAssignment, ChunkId},
     chunk::{Chunk, ProposalEnvelope, WireChunkId},
     chunk_tree::ChunkTree,
-    election::ProposerElection,
     encoding_scheme::{self, DAEncodingScheme as _, d25},
     header::header_auth,
     runtime::EpochHandle,
     types::{
-        EncodingScheme, NodeId, ProposalHeader, ProposalIndex, ProposalKeyPair,
-        SignedProposalHeader, Slot, Stake, ValidatorData,
+        EncodingScheme, NodeId, ProposalHeader, ProposalKeyPair, SignedProposalHeader, Slot, Stake,
+        ValidatorData,
     },
     wire::{self, PacketLayout as _},
 };
@@ -63,14 +63,12 @@ pub(crate) fn epoch_handle_for(
     num_validators: u64,
     proposers: Vec<NodeId>,
 ) -> EpochHandle {
-    let num_proposals = proposers.len();
     let validator_data = Arc::new(validator_data(num_validators));
-    let election = Arc::new(Proposers::new(proposers));
+    let schedule = proposer_schedule(proposers);
     EpochHandle {
         self_id,
-        num_proposals,
         key_pair: Arc::new(ProposalKeyPair::dummy(self_id)),
-        header_auth: Arc::new(header_auth(election, validator_data.clone())),
+        header_auth: Arc::new(header_auth(schedule, validator_data.clone())),
         validator_data,
     }
 }
@@ -80,22 +78,8 @@ pub(crate) fn epoch_handle() -> EpochHandle {
 }
 
 // the listed nodes propose at their position, in every slot
-pub(crate) struct Proposers(Vec<NodeId>);
-
-impl Proposers {
-    pub(crate) fn new(proposers: Vec<NodeId>) -> Self {
-        Self(proposers)
-    }
-}
-
-impl ProposerElection for Proposers {
-    fn get_proposer(&self, _slot: Slot, index: ProposalIndex) -> Option<&NodeId> {
-        self.0.get(index)
-    }
-
-    fn get_index(&self, _slot: Slot, node: &NodeId) -> Option<ProposalIndex> {
-        self.0.iter().position(|p| p == node)
-    }
+pub(crate) fn proposer_schedule(proposers: Vec<NodeId>) -> Arc<FixedProposerSchedule> {
+    Arc::new(FixedProposerSchedule::new(proposers))
 }
 
 // the scheme a proposer picks for a MESSAGE_LEN message in the epoch

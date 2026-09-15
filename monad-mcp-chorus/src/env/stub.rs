@@ -85,6 +85,10 @@ mod validator {
             let total = total.0 as u128;
             ((prod / total) as usize, (prod % total) as usize)
         }
+
+        fn amount(&self) -> u64 {
+            self.0
+        }
     }
 
     // invariant: valset/mapping have exactly the same key set, and

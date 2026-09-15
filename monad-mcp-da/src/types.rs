@@ -21,7 +21,7 @@ pub use super::{
         slot::chorus::{ChorusDACommand, ChorusDAEvent, ChunkRequestType, ProposalDAEvent},
         types::{
             HeaderAuth, MerkleRoot, NodeId, ProposalHeader, ProposalIndex, ProposalMap,
-            SignedProposalHeader, Slot, Stake, ValidatorData,
+            ProposerSchedule, SignedProposalHeader, Slot, Stake, ValidatorData,
         },
     },
     env::ProposalKeyPair,

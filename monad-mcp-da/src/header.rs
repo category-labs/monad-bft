@@ -20,9 +20,11 @@ use monad_mcp_chorus::spec::{
 };
 
 use super::{
-    election::ProposerElection,
     encoding_scheme::DAEncodingScheme as _,
-    types::{EncodingScheme, HeaderAuth, ProposalIndex, SignedProposalHeader, Slot, ValidatorData},
+    types::{
+        EncodingScheme, HeaderAuth, ProposalIndex, ProposerSchedule, SignedProposalHeader, Slot,
+        ValidatorData,
+    },
     wire,
 };
 use crate::spec::{DAProposalHeader as _, DAProposalSignature as _};
@@ -36,10 +38,11 @@ pub enum InvalidProposalHeader {
 
 // the header check shared by consensus and DA: the scheme is the one
 // the proposer must have chosen for the validator set, and a proposer
-// of the slot signed the header.
-pub fn header_auth<E>(election: Arc<E>, validator_data: Arc<ValidatorData>) -> HeaderAuth
+// of the slot signed the header. The schedule is the same one consensus
+// holds, so the two cannot disagree on who proposes where.
+pub fn header_auth<S>(schedule: Arc<S>, validator_data: Arc<ValidatorData>) -> HeaderAuth
 where
-    E: ProposerElection + Send + Sync + 'static,
+    S: ProposerSchedule + Send + Sync + 'static,
 {
     HeaderAuth::new(move |signed: &SignedProposalHeader, _slot: u64| {
         // todo: cache the auth result by (ProposalHeader, slot).
@@ -49,7 +52,10 @@ where
         }
         let preimage = wire::signed_bytes(&signed.header);
         let author = signed.sig().recover_author(&preimage)?;
-        let index = election.get_index(Slot(signed.slot()), &author)?;
+        // an unavailable schedule authenticates nothing
+        let index = schedule
+            .proposer_index_at(Slot(signed.slot()), &author)
+            .ok()??;
         if claimed_index(signed.scheme()).is_some_and(|claimed| claimed != index) {
             return None;
         }

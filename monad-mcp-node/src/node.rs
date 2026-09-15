@@ -25,16 +25,17 @@ use tokio_stream::StreamExt as _;
 use tokio_util::time::DelayQueue;
 
 use crate::{
+    RunError,
     cadence_task::{CadenceInput, CadenceOutput, CadenceTask, CadenceWireMsg},
     chorus::{
         CadenceRuntime, NodeEvent, SlotManager, WakeId,
-        conductor::{ConductorError, MonadConductor},
-        types::{Slot, Timestamp, TimestampDelta, Validated},
+        conductor::MonadConductor,
+        types::{ProposerSchedule as _, Slot, Timestamp, TimestampDelta, Validated},
     },
     config::NodeConfig,
     da::{
-        AssembledProposal, ChunkRecoveryRequest, DAOutput, DARuntime, Dissemination,
-        ProposerElection as _, read_envelope, write_envelope,
+        AssembledProposal, ChunkRecoveryRequest, DAOutput, DARuntime, Dissemination, read_envelope,
+        write_envelope,
     },
     da_task::{DAInput, DATask},
     epoch::EpochHandle,
@@ -103,11 +104,11 @@ pub struct Node {
 }
 
 impl Node {
-    pub fn new(config: &NodeConfig) -> Result<Self, ConductorError> {
+    pub fn new(config: &NodeConfig) -> Result<Self, RunError> {
         let clock = Clock::start();
-        let epoch_handle = config.epoch_handle();
+        let epoch_handle = config.epoch_handle()?;
 
-        let slot_config = config.cadence.chorus(epoch_handle.num_proposals);
+        let slot_config = config.cadence.chorus();
         let slot_manager = SlotManager::new(slot_config, epoch_handle.chorus());
         let conductor_config = config.cadence.conductor(config.genesis_deadline)?;
         let conductor =
@@ -119,7 +120,7 @@ impl Node {
         let da = DARuntime::new(
             config.da.runtime(),
             epoch_handle.da(),
-            epoch_handle.election.clone(),
+            epoch_handle.proposers.clone(),
         );
         let (da_link, task_link) = Link::pair();
         let da_task = DATask::spawn(da, task_link);
@@ -259,7 +260,11 @@ impl Node {
     // share goes to our DA, the rest to its owners
     fn propose(&mut self, slot: Slot, message: Bytes) {
         let self_id = self.epoch_handle.self_id;
-        let Some(index) = self.epoch_handle.election.get_index(slot, &self_id) else {
+        let Ok(Some(index)) = self
+            .epoch_handle
+            .proposers
+            .proposer_index_at(slot, &self_id)
+        else {
             return;
         };
         let epoch_handle = self.epoch_handle.da();

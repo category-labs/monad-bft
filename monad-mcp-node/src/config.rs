@@ -21,10 +21,14 @@ use crate::{
     chorus::{
         conductor::{ConductorConfig, ConductorError},
         slot::chorus::ChorusConfig,
-        types::{KeyPair, NodeId, PubKey, Stake, Timestamp, TimestampDelta, ValidatorData},
+        types::{
+            KeyPair, NodeId, ProposerConfig, PubKey, RotatingProposerSchedule,
+            RoundRobinLeaderSchedule, ScheduleError, Stake, Timestamp, TimestampDelta,
+            ValidatorData,
+        },
     },
     da::{self, ProposalKeyPair, header_auth},
-    epoch::{EpochHandle, StubElection},
+    epoch::{EpochHandle, NodeProposerSchedule},
 };
 
 #[derive(Deserialize)]
@@ -50,21 +54,19 @@ pub struct NodeConfig {
 }
 
 impl NodeConfig {
-    pub fn epoch_handle(&self) -> EpochHandle {
+    pub fn epoch_handle(&self) -> Result<EpochHandle, ScheduleError> {
         let validator_data = Arc::new(self.validator_data());
-        let num_proposals = self.proposal.num_proposals;
-        let election = Arc::new(StubElection::new(&validator_data, num_proposals));
-        let header_auth = Arc::new(header_auth(election.clone(), validator_data.clone()));
+        let proposers = Arc::new(self.proposal.schedule(validator_data.clone())?);
+        let header_auth = Arc::new(header_auth(proposers.clone(), validator_data.clone()));
 
-        EpochHandle {
+        Ok(EpochHandle {
             self_id: self.node_id,
-            num_proposals,
             key: Arc::new(self.cadence_key_pair.clone()),
             proposal_key: Arc::new(self.proposal_key_pair.clone()),
             validator_data,
-            election,
+            proposers,
             header_auth,
-        }
+        })
     }
 
     pub fn peers(&self) -> HashMap<NodeId, SocketAddr> {
@@ -139,11 +141,8 @@ impl CadenceConfig {
         )
     }
 
-    pub fn chorus(&self, num_proposals: usize) -> ChorusConfig {
-        ChorusConfig {
-            delta: self.delta,
-            num_proposals,
-        }
+    pub fn chorus(&self) -> ChorusConfig {
+        ChorusConfig { delta: self.delta }
     }
 }
 
@@ -176,6 +175,33 @@ pub struct ProposalConfig {
     // how long before the slot's deadline we propose
     #[serde(deserialize_with = "de::millis")]
     pub propose_before_deadline: TimestampDelta,
+}
+
+impl ProposalConfig {
+    // TODO: observation_cutoff is a Cadence deployment constant and must be
+    // the same value every consumer sees; derive it from the conductor
+    // configuration once that carries the parameter.
+    const OBSERVATION_CUTOFF: u64 = 3;
+    const ROTATION_SLACK: u64 = 1;
+    const SLOTS_PER_EPOCH: u64 = 400;
+
+    fn proposer_config(&self) -> ProposerConfig {
+        ProposerConfig {
+            concurrent_proposers: self.num_proposals,
+            observation_cutoff: Self::OBSERVATION_CUTOFF,
+            rotation_slack: Self::ROTATION_SLACK,
+            slots_per_epoch: Self::SLOTS_PER_EPOCH,
+        }
+    }
+
+    fn schedule(
+        &self,
+        validator_data: Arc<ValidatorData>,
+    ) -> Result<NodeProposerSchedule, ScheduleError> {
+        let cfg = self.proposer_config();
+        let algorithm = RoundRobinLeaderSchedule::new(&cfg);
+        RotatingProposerSchedule::new(cfg, algorithm, validator_data)
+    }
 }
 
 impl Default for ProposalConfig {
@@ -220,5 +246,36 @@ mod de {
 
     pub fn unix_millis<'de, D: Deserializer<'de>>(d: D) -> Result<Timestamp, D::Error> {
         u64::deserialize(d).map(Timestamp::from_millis)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use monad_mcp_chorus::spec::vote::KeyPair as _;
+
+    use super::*;
+    use crate::chorus::types::{ProposerSchedule as _, Slot};
+
+    fn validator_data(n: u64) -> Arc<ValidatorData> {
+        let valset = (0..n)
+            .map(|id| (NodeId::dummy(id), Stake::from(1)))
+            .collect();
+        let mapping = (0..n)
+            .map(|id| (NodeId::dummy(id), NodeId::dummy(id).keypair().pubkey()))
+            .collect();
+        Arc::new(ValidatorData::new(valset, mapping))
+    }
+
+    // the default K exceeds a small devnet's validator count; the effective
+    // window clamps to the stake set rather than failing at startup
+    #[test]
+    fn the_default_schedule_builds_for_any_validator_count() {
+        for n in 1..=7 {
+            let schedule = ProposalConfig::default()
+                .schedule(validator_data(n))
+                .unwrap_or_else(|err| panic!("{n} validators: {err}"));
+            let set = schedule.proposers_at(Slot(0)).expect("genesis epoch");
+            assert!(set.iter().any(|(_, proposer)| proposer.is_some()));
+        }
     }
 }

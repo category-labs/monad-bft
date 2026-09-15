@@ -5,10 +5,7 @@ edition = "2024"
 
 [features]
 default = ["enable_stub"]
-enable_stub = [
-  "monad-mcp-chorus/enable_stub",
-  "monad-mcp-da/enable_stub",
-]
+enable_stub = ["monad-mcp-chorus/enable_stub", "monad-mcp-da/enable_stub"]
 
 [dependencies]
 bytes = { workspace = true }
