@@ -13,298 +13,234 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! Deterministic raptorcast v1 packets, compatible with
+//! Deterministic raptorcast v1 packets, mostly compatible with
 //! monad-raptorcast.
 //!
-//! A v1 packet has a fixed length and carries one chunk: the header,
-//! then the chunk body.
-//!
-//! Exports: write_chunk/read_chunk.
+//! A v1 packet carries one chunk, in the following order: the header
+//! (signature, version, proposal header), the body (proof, chunk
+//! header, symbol). A header-only packet is permitted.
 
-use bytes::{Buf as _, BufMut as _, Bytes, BytesMut};
+use bytes::{Buf as _, BufMut, Bytes};
 use monad_crypto::hasher::{Hash, Hasher as _, HasherType};
-use monad_merkle::{MerkleProof, MerkleTree};
 
-use super::top_level::{
-    chunk::{Chunk, ChunkData, WireChunkId},
-    encoding_scheme::DAEncodingScheme as _,
-    types::{D25, EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader, ProposalSignature, Slot},
+use super::{
+    super::{
+        chunk::{Chunk, ChunkData, ProposalEnvelope, WireChunkId},
+        chunk_tree::ChunkTree,
+        types::{
+            EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader, ProposalSignature,
+            SignedProposalHeader,
+        },
+        util::Tree,
+    },
+    DAHeaderScheme, MalformedPacket, PacketLayout, SIGNATURE_LEN,
 };
-use crate::spec::{DAMerkleRoot as _, DAProposalSignature as _};
+use crate::spec::DAProposalSignature as _;
 
 pub const VERSION: u16 = 1;
 
 // ethernet MTU minus the ip, udp and wireauth headers
 pub const SEGMENT_LEN: usize = 1440;
 
-const SIGNATURE_LEN: usize = 65;
-const ROOT_LEN: usize = 20;
-const HASH_LEN: usize = 20;
-const CHUNK_HEADER_LEN: usize = 4;
+// after the signature and the version: the scheme header's second byte
+pub const SCHEME_VARIANT_OFFSET: usize = SIGNATURE_LEN + VERSION_LEN + 1;
 
-// version(2) mode+depth(1) scheme(1) round(8) epoch(8) unix_ts(8)
-// root(20) msg_len(4)
-pub const SIGNED_LEN: usize = 2 + 1 + 1 + 8 + 8 + 8 + ROOT_LEN + 4;
-pub const HEADER_LEN: usize = SIGNATURE_LEN + SIGNED_LEN;
-
-// proof(var) chunk_header(4) symbol(var)
-pub const BODY_LEN: usize = SEGMENT_LEN - HEADER_LEN;
-
-pub const MIN_DEPTH: u8 = 3;
-pub const MAX_DEPTH: u8 = 15;
-
-// the mode+depth byte: 2 mode bits, 2 unused bits, 4 depth bits
-const PRIMARY_MODE: u8 = 0b10 << 6;
-const DEPTH_MASK: u8 = 0b0000_1111;
-
-const D25_VARIANT: u8 = 0x1;
-
-// mcp only uses slot. fix the epoch field to constant.
-const EPOCH: u64 = 0;
-
-// the caller must ensure depth is in MIN_DEPTH..MAX_DEPTH.
-pub const fn symbol_len(depth: u8) -> usize {
-    BODY_LEN - proof_len(depth) - CHUNK_HEADER_LEN
-}
+pub const VERSION_LEN: usize = 2;
+pub const HASH_LEN: usize = 20;
 
 const fn proof_len(depth: u8) -> usize {
     HASH_LEN * (depth as usize - 1)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MalformedPacket {
-    // not exactly one segment
-    BadLength(usize),
-    UnknownVersion(u16),
-    // the mode bits and the unused bits
-    BadMode(u8),
-    DepthOutOfRange(u8),
-    UnknownScheme(u8),
-    SlotOutOfRange(u64),
-    NonZeroEpoch(u64),
-    BadSignature,
-    BadRoot,
-    // the chunk header's reserved bytes
-    ReservedNonZero,
+// the deepest tree whose proof and chunk header leave room for a symbol
+const fn max_depth(body_len: usize, chunk_header_len: usize) -> u8 {
+    let mut depth = 1;
+    while proof_len(depth + 1) + chunk_header_len < body_len {
+        depth += 1;
+    }
+    depth
 }
 
-// the signing preimage: the header after the signature. The caller
-// must ensure the scheme's depth is in range.
-pub(crate) fn signed_bytes(
-    slot: Slot,
-    scheme: &EncodingScheme,
-    root: &MerkleRoot,
-) -> [u8; SIGNED_LEN] {
-    let EncodingScheme::D25(d25) = scheme;
-    assert!((MIN_DEPTH..=MAX_DEPTH).contains(&d25.depth));
+// the v1 frame instantiated by the header scheme it carries. Derived
+// from the scheme alone, through DAHeaderScheme::v1_layout.
+pub struct Layout<'a, H>(&'a H);
 
-    let mut root_field = [0u8; ROOT_LEN];
-    root.to_bytes(&mut root_field);
-
-    let mut out = [0u8; SIGNED_LEN];
-    let mut cursor = &mut out[..];
-    cursor.put_u16_le(VERSION);
-    cursor.put_u8(PRIMARY_MODE | d25.depth);
-    cursor.put_u8(D25_VARIANT);
-    cursor.put_u64_le(slot.get());
-    cursor.put_u64_le(EPOCH);
-    cursor.put_u64_le(d25.unix_ts);
-    cursor.put_slice(&root_field);
-    cursor.put_u32_le(d25.msg_len);
-    debug_assert!(cursor.is_empty());
-    out
+impl<'a, H> Layout<'a, H> {
+    pub(crate) fn new(scheme: &'a H) -> Self {
+        Self(scheme)
+    }
 }
 
-pub fn write_chunk(chunk: &Chunk<'_>) -> Bytes {
-    let header = chunk.header();
-    let depth = header.scheme.depth();
+impl<H: DAHeaderScheme> Layout<'_, H> {
+    pub const SIGNED_LEN: usize = VERSION_LEN + H::PROPOSAL_HEADER_LEN;
 
-    let mut out = BytesMut::with_capacity(SEGMENT_LEN);
-    write_header(header, &mut out);
-    write_body(depth, chunk.chunk_id(), chunk.data(), &mut out);
-    debug_assert_eq!(out.len(), SEGMENT_LEN);
-    out.freeze()
-}
+    // signature, version, scheme header
+    pub const HEADER_LEN: usize = SIGNATURE_LEN + Self::SIGNED_LEN;
 
-fn write_header(header: &ProposalHeader, out: &mut BytesMut) {
-    let mut signature = [0u8; SIGNATURE_LEN];
-    header.sig.to_bytes(&mut signature);
-    out.put_slice(&signature);
-    out.put_slice(&signed_bytes(header.slot, &header.scheme, &header.root));
-}
+    // proof(var) chunk_header symbol(var)
+    const BODY_LEN: usize = SEGMENT_LEN - Self::HEADER_LEN;
 
-// the caller must ensure the data is shaped by the depth
-fn write_body(depth: u8, chunk_id: WireChunkId, data: &ChunkData, out: &mut BytesMut) {
-    assert_eq!(data.proof.len(), depth as usize - 1);
-    assert_eq!(data.symbol.len(), symbol_len(depth));
+    // the maximum feasible depth. Each HeaderScheme defines their own
+    // more restrictive max depth tailored to its specific parameters.
+    pub const MAX_DEPTH: u8 = max_depth(Self::BODY_LEN, H::CHUNK_HEADER_LEN);
 
-    for hash in &data.proof {
-        out.put_slice(&hash.0);
-    }
-    out.put_slice(&chunk_header(chunk_id));
-    out.put_slice(&data.symbol);
-}
-
-fn chunk_header(chunk_id: WireChunkId) -> [u8; CHUNK_HEADER_LEN] {
-    let [lo, hi] = chunk_id.to_le_bytes();
-    [0, 0, lo, hi]
-}
-
-pub fn read_chunk(bytes: Bytes) -> Result<Chunk<'static>, MalformedPacket> {
-    let Some((header, body)) = bytes.split_first_chunk::<HEADER_LEN>() else {
-        return Err(MalformedPacket::BadLength(bytes.len()));
-    };
-    if body.len() != BODY_LEN {
-        return Err(MalformedPacket::BadLength(bytes.len()));
+    // the caller must ensure depth is at most MAX_DEPTH
+    pub const fn symbol_len_at(depth: u8) -> usize {
+        Self::BODY_LEN - proof_len(depth) - H::CHUNK_HEADER_LEN
     }
 
-    let header = read_header(header)?;
-    let depth = header.scheme.depth();
-    let (chunk_id, data) = read_body(depth, bytes.slice(HEADER_LEN..))?;
-    Ok(Chunk::new(header, chunk_id, data))
-}
-
-fn read_header(bytes: &[u8; HEADER_LEN]) -> Result<ProposalHeader, MalformedPacket> {
-    let (signature, mut signed) = bytes.split_at(SIGNATURE_LEN);
-    let sig = ProposalSignature::from_bytes(signature).ok_or(MalformedPacket::BadSignature)?;
-
-    let version = signed.get_u16_le();
-    if version != VERSION {
-        return Err(MalformedPacket::UnknownVersion(version));
+    fn depth(&self) -> u8 {
+        self.0.depth()
     }
 
-    let mode_depth = signed.get_u8();
-    let mode = mode_depth & !DEPTH_MASK;
-    if mode != PRIMARY_MODE {
-        return Err(MalformedPacket::BadMode(mode));
-    }
-    let depth = mode_depth & DEPTH_MASK;
-    if !(MIN_DEPTH..=MAX_DEPTH).contains(&depth) {
-        return Err(MalformedPacket::DepthOutOfRange(depth));
-    }
+    // the caller must pass exactly HEADER_LEN bytes
+    fn read_header(bytes: &[u8]) -> Result<(MerkleRoot, H, ProposalSignature), MalformedPacket> {
+        let (signature, mut signed) = bytes.split_at(SIGNATURE_LEN);
+        let sig = ProposalSignature::from_bytes(signature).ok_or(MalformedPacket::BadSignature)?;
 
-    let variant = signed.get_u8();
-    if variant != D25_VARIANT {
-        return Err(MalformedPacket::UnknownScheme(variant));
-    }
-
-    let slot = signed.get_u64_le();
-    let slot = Slot::from_u64(slot).ok_or(MalformedPacket::SlotOutOfRange(slot))?;
-
-    let epoch = signed.get_u64_le();
-    if epoch != EPOCH {
-        return Err(MalformedPacket::NonZeroEpoch(epoch));
-    }
-
-    let unix_ts = signed.get_u64_le();
-
-    let (root, rest) = signed.split_at(ROOT_LEN);
-    let root = MerkleRoot::from_bytes(root).ok_or(MalformedPacket::BadRoot)?;
-    signed = rest;
-
-    let msg_len = signed.get_u32_le();
-    debug_assert!(signed.is_empty());
-
-    let scheme = EncodingScheme::D25(D25 {
-        msg_len,
-        unix_ts,
-        depth,
-    });
-    Ok(ProposalHeader {
-        slot,
-        root,
-        scheme,
-        sig,
-    })
-}
-
-// the caller must pass exactly BODY_LEN bytes
-fn read_body(depth: u8, body: Bytes) -> Result<(WireChunkId, ChunkData), MalformedPacket> {
-    let proof_end = proof_len(depth);
-    let symbol_start = proof_end + CHUNK_HEADER_LEN;
-
-    let mut proof = Vec::with_capacity(depth as usize - 1);
-    for hash in body[..proof_end].chunks_exact(HASH_LEN) {
-        proof.push(MerkleHash(hash.try_into().expect("HASH_LEN bytes")));
-    }
-
-    let chunk_header: [u8; CHUNK_HEADER_LEN] = body[proof_end..symbol_start]
-        .try_into()
-        .expect("CHUNK_HEADER_LEN bytes");
-    let [reserved0, reserved1, lo, hi] = chunk_header;
-    if reserved0 != 0 || reserved1 != 0 {
-        return Err(MalformedPacket::ReservedNonZero);
-    }
-    let chunk_id = WireChunkId::from_le_bytes([lo, hi]);
-
-    let data = ChunkData {
-        symbol: body.slice(symbol_start..),
-        proof: proof.into_boxed_slice(),
-    };
-    Ok((chunk_id, data))
-}
-
-// the leaf commits to the chunk's wire bytes from its chunk header on
-pub(crate) fn leaf_hash(chunk_id: WireChunkId, symbol: &[u8]) -> Hash {
-    let mut hasher = HasherType::new();
-    hasher.update(chunk_header(chunk_id));
-    hasher.update(symbol);
-    hasher.hash()
-}
-
-// the merkle tree over a proposal's leaves
-pub(crate) struct Tree(MerkleTree);
-
-impl Tree {
-    // the caller must ensure the depth is in range and the leaves fit it
-    pub(crate) fn new(depth: u8, leaves: &[Hash]) -> Self {
-        Self(MerkleTree::new_with_depth(leaves, depth))
-    }
-
-    pub(crate) fn root(&self) -> MerkleRoot {
-        MerkleRoot(MerkleHash(*self.0.root()))
-    }
-
-    // the caller must ensure the leaf exists
-    pub(crate) fn proof(&self, leaf_idx: WireChunkId) -> Box<[MerkleHash]> {
-        let proof = self.0.proof(leaf_idx);
-        let mut siblings = Vec::with_capacity(proof.siblings().len());
-        for hash in proof.siblings() {
-            siblings.push(MerkleHash(*hash));
+        let version = signed.get_u16_le();
+        if version != VERSION {
+            return Err(MalformedPacket::UnknownVersion(version));
         }
-        siblings.into_boxed_slice()
+        let (root, scheme) = H::unpack_header(&mut signed)?;
+        debug_assert!(signed.is_empty());
+
+        Ok((root, scheme, sig))
+    }
+
+    // the caller must pass exactly BODY_LEN bytes
+    fn read_body(&self, body: Bytes) -> Result<(WireChunkId, ChunkData), MalformedPacket> {
+        let proof_end = proof_len(self.depth());
+        let symbol_start = proof_end + H::CHUNK_HEADER_LEN;
+
+        let mut proof = Vec::with_capacity(self.depth() as usize - 1);
+        for hash in body[..proof_end].chunks_exact(HASH_LEN) {
+            proof.push(MerkleHash(hash.try_into().expect("HASH_LEN bytes")));
+        }
+
+        let chunk_id = H::unpack_chunk_header(&mut &body[proof_end..symbol_start])?;
+
+        let data = ChunkData {
+            symbol: body.slice(symbol_start..),
+            proof: proof.into_boxed_slice(),
+        };
+        Ok((chunk_id, data))
+    }
+
+    // todo: the parsing of header can be lru cached
+    pub fn read_chunk(bytes: Bytes) -> Result<Chunk<'static>, MalformedPacket>
+    where
+        H: Into<EncodingScheme>,
+    {
+        if bytes.len() != SEGMENT_LEN {
+            return Err(MalformedPacket::BadLength(bytes.len()));
+        }
+        let (root, scheme, sig) = Self::read_header(&bytes[..Self::HEADER_LEN])?;
+        let body = bytes.slice(Self::HEADER_LEN..);
+        let (chunk_id, data) = scheme.v1_layout().read_body(body)?;
+        Ok(Chunk::new(signed_header(root, scheme, sig), chunk_id, data))
+    }
+
+    // a header alone or one segment
+    pub fn read_envelope(bytes: Bytes) -> Result<ProposalEnvelope, MalformedPacket>
+    where
+        H: Into<EncodingScheme>,
+    {
+        if bytes.len() == Self::HEADER_LEN {
+            let (root, scheme, sig) = Self::read_header(&bytes)?;
+            let header = signed_header(root, scheme, sig);
+            return Ok(ProposalEnvelope::from_header(header));
+        }
+        let chunk = Self::read_chunk(bytes)?;
+        Ok(ProposalEnvelope::from_chunk(chunk))
     }
 }
 
-pub(crate) fn verify_proof(
-    root: &MerkleRoot,
-    leaf_idx: WireChunkId,
-    leaf: &Hash,
-    proof: &[MerkleHash],
-) -> bool {
-    let mut siblings = Vec::with_capacity(proof.len());
-    for hash in proof {
-        siblings.push(hash.0);
+fn signed_header(
+    root: MerkleRoot,
+    scheme: impl Into<EncodingScheme>,
+    sig: ProposalSignature,
+) -> SignedProposalHeader {
+    let header = ProposalHeader {
+        root,
+        scheme: scheme.into(),
+    };
+    SignedProposalHeader { header, sig }
+}
+
+impl<H: DAHeaderScheme> PacketLayout for Layout<'_, H> {
+    fn signed_bytes(&self, root: &MerkleRoot, out: &mut impl BufMut) {
+        out.put_u16_le(VERSION);
+        self.0.pack_header(root, out);
     }
-    let Some(proof) = MerkleProof::new_from_leaf_idx(siblings, leaf_idx) else {
-        return false;
-    };
-    let Some(computed) = proof.compute_root(leaf) else {
-        return false;
-    };
-    MerkleRoot(MerkleHash(computed)) == *root
+
+    fn write_header(&self, root: &MerkleRoot, sig: &ProposalSignature, out: &mut impl BufMut) {
+        sig.to_bytes(out);
+        self.signed_bytes(root, out);
+    }
+
+    fn header_len(&self) -> usize {
+        Self::HEADER_LEN
+    }
+
+    fn write_body(&self, chunk_id: WireChunkId, data: &ChunkData, out: &mut impl BufMut) {
+        for hash in &data.proof {
+            out.put_slice(&hash.0);
+        }
+        H::pack_chunk_header(chunk_id, out);
+        out.put_slice(&data.symbol);
+    }
+
+    fn body_len(&self) -> usize {
+        Self::BODY_LEN
+    }
+
+    fn symbol_len(&self) -> usize {
+        Self::symbol_len_at(self.depth())
+    }
+
+    fn leaf_hash(&self, chunk_id: WireChunkId, symbol: &[u8]) -> Hash {
+        let mut chunk_header = Vec::with_capacity(H::CHUNK_HEADER_LEN);
+        H::pack_chunk_header(chunk_id, &mut chunk_header);
+
+        let mut hasher = HasherType::new();
+        hasher.update(&chunk_header);
+        hasher.update(symbol);
+        hasher.hash()
+    }
+
+    fn chunk_tree(&self, symbols: Vec<Bytes>) -> ChunkTree {
+        let mut leaves = Vec::with_capacity(symbols.len());
+        for (leaf_idx, symbol) in symbols.iter().enumerate() {
+            leaves.push(self.leaf_hash(leaf_idx as WireChunkId, symbol));
+        }
+        let tree = Tree::from_leaves(self.depth(), leaves);
+        ChunkTree::complete(symbols, tree)
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use monad_mcp_chorus::spec::SignedProposalHeader as _;
+
     use super::{
-        super::top_level::{
-            chunk::ProposalEnvelope,
-            test_util::{SLOT, author, epoch_handle, group, proposal_chunks, proposal_chunks_from},
-            types::NodeId,
+        super::{
+            super::{
+                encoding_scheme::d25::D25Layout,
+                test_util::{epoch_handle, group, proposal_chunks},
+            },
+            header_bytes, write_chunk, write_envelope,
         },
         *,
     };
+    use crate::spec::DAProposalHeader as _;
+
+    fn depth_of(header: &SignedProposalHeader) -> u8 {
+        let EncodingScheme::D25(d25) = header.scheme() else {
+            panic!("the fixture is a d25 proposal");
+        };
+        d25.depth
+    }
 
     fn corrupted(
         chunk: &Chunk<'_>,
@@ -312,33 +248,29 @@ mod tests {
     ) -> Result<Chunk<'static>, MalformedPacket> {
         let mut bytes = write_chunk(chunk).to_vec();
         corrupt(&mut bytes);
-        read_chunk(Bytes::from(bytes))
+        D25Layout::read_chunk(Bytes::from(bytes))
     }
 
     #[test]
-    fn a_one_chunk_envelope_is_one_segment_at_the_prod_offsets() {
+    fn a_packet_is_the_signature_the_version_the_header_then_the_body() {
         let epoch_handle = epoch_handle();
         let (header, chunks) = proposal_chunks(&epoch_handle, 1);
-        let EncodingScheme::D25(d25) = header.scheme;
+        let depth = depth_of(&header);
         let (_, chunk_id, data) = chunks[3].clone().into_parts();
 
         let bytes = write_chunk(&chunks[3]);
         assert_eq!(bytes.len(), SEGMENT_LEN);
 
-        let mut signature = [0u8; 65];
-        header.sig.to_bytes(&mut signature);
-        assert_eq!(bytes[..65], signature);
-        assert_eq!(bytes[65..67], [1, 0]);
-        assert_eq!(bytes[67], 0b1000_0000 | d25.depth);
-        assert_eq!(bytes[68], 0x1);
-        assert_eq!(bytes[69..77], SLOT.get().to_le_bytes());
-        assert_eq!(bytes[77..85], [0; 8]);
-        assert_eq!(bytes[85..93], d25.unix_ts.to_le_bytes());
-        assert_eq!(bytes[93..113], header.root.0.0);
-        assert_eq!(bytes[113..117], d25.msg_len.to_le_bytes());
+        let mut signature = Vec::new();
+        header.sig().to_bytes(&mut signature);
+        assert_eq!(signature.len(), SIGNATURE_LEN);
+        assert_eq!(bytes[..SIGNATURE_LEN], signature);
+        let version_end = SIGNATURE_LEN + VERSION_LEN;
+        assert_eq!(bytes[SIGNATURE_LEN..version_end], VERSION.to_le_bytes());
 
-        let proof_end = 117 + 20 * (d25.depth as usize - 1);
-        assert_eq!(bytes[117..137], data.proof[0].0);
+        let body = D25Layout::HEADER_LEN;
+        let proof_end = body + proof_len(depth);
+        assert_eq!(bytes[body..body + HASH_LEN], data.proof[0].0);
         assert_eq!(bytes[proof_end..proof_end + 4], [0, 0, chunk_id as u8, 0]);
         assert_eq!(bytes[proof_end + 4..], data.symbol);
     }
@@ -348,83 +280,99 @@ mod tests {
         let epoch_handle = epoch_handle();
         let (_, chunks) = proposal_chunks(&epoch_handle, 1);
         for chunk in &chunks {
-            assert_eq!(read_chunk(write_chunk(chunk)), Ok(chunk.clone()));
+            let packet = write_chunk(chunk);
+            assert_eq!(D25Layout::read_chunk(packet), Ok(chunk.clone()));
         }
 
         // an envelope crosses the wire as one packet per chunk
         let envelope = group(&chunks[1..4]);
         let mut received = Vec::new();
         for chunk in envelope.chunks() {
-            received.push(read_chunk(write_chunk(&chunk)).expect("well-formed"));
+            let packet = write_chunk(&chunk);
+            received.push(D25Layout::read_chunk(packet).expect("well-formed"));
         }
         let regrouped: Vec<_> = ProposalEnvelope::group(received).collect();
         assert_eq!(regrouped, vec![envelope]);
     }
 
     #[test]
-    fn the_signature_binds_the_signed_bytes() {
+    fn a_header_alone_is_a_packet_that_stops_before_the_body() {
         let epoch_handle = epoch_handle();
-        let (header, _) = proposal_chunks(&epoch_handle, 1);
-        let signed = signed_bytes(header.slot, &header.scheme, &header.root);
-        assert_eq!(header.sig.recover_author(&signed), Some(author()));
+        let (header, chunks) = proposal_chunks(&epoch_handle, 1);
+        let header_only = ProposalEnvelope::from_header(header.clone());
 
-        let mut altered = signed;
-        altered[SIGNED_LEN - 1] ^= 1;
-        assert_eq!(header.sig.recover_author(&altered), None);
+        let packets = write_envelope(&header_only);
+        assert_eq!(packets.len(), 1);
+        assert_eq!(packets[0].len(), D25Layout::HEADER_LEN);
+        assert_eq!(packets[0], header_bytes(&header));
+        assert_eq!(
+            D25Layout::read_envelope(packets[0].clone()),
+            Ok(header_only)
+        );
 
-        // the same bytes signed by another author recover that author
-        let (other, _) = proposal_chunks_from(&epoch_handle, 2, SLOT, 1);
-        assert_eq!(other.sig.recover_author(&signed), Some(NodeId::dummy(2)));
+        // the header bytes are the prefix of every chunk packet
+        let packet = write_chunk(&chunks[0]);
+        assert_eq!(packet[..D25Layout::HEADER_LEN], packets[0]);
+        assert_eq!(D25Layout::read_envelope(packet), Ok(group(&chunks[..1])));
+
+        // in between is neither
+        let mut between = packets[0].to_vec();
+        between.push(0);
+        let between = D25Layout::read_envelope(Bytes::from(between));
+        assert_eq!(between, Err(MalformedPacket::BadLength(118)));
     }
 
     #[test]
-    fn malformed_packets_are_rejected() {
+    fn malformed_frames_are_rejected() {
         let epoch_handle = epoch_handle();
         let (header, chunks) = proposal_chunks(&epoch_handle, 1);
-        let EncodingScheme::D25(d25) = header.scheme;
         let chunk = &chunks[0];
-        let reserved_at = HEADER_LEN + proof_len(d25.depth);
+        let body = D25Layout::HEADER_LEN;
+        let reserved_at = body + proof_len(depth_of(&header));
 
-        let truncated_header = corrupted(chunk, |b| b.truncate(HEADER_LEN - 1));
-        assert_eq!(truncated_header, Err(MalformedPacket::BadLength(116)));
+        let truncated_prefix = corrupted(chunk, |b| b.truncate(body - 1));
+        assert_eq!(truncated_prefix, Err(MalformedPacket::BadLength(116)));
         let truncated_body = corrupted(chunk, |b| b.truncate(SEGMENT_LEN - 1));
         assert_eq!(truncated_body, Err(MalformedPacket::BadLength(1439)));
         let oversized = corrupted(chunk, |b| b.push(0));
         assert_eq!(oversized, Err(MalformedPacket::BadLength(1441)));
 
-        let version = corrupted(chunk, |b| b[65] = 2);
+        let version = corrupted(chunk, |b| b[SIGNATURE_LEN] = 2);
         assert_eq!(version, Err(MalformedPacket::UnknownVersion(2)));
-        let mode = corrupted(chunk, |b| b[67] |= 0b0100_0000);
-        assert_eq!(mode, Err(MalformedPacket::BadMode(0b1100_0000)));
-        let unused_bits = corrupted(chunk, |b| b[67] |= 0b0010_0000);
-        assert_eq!(unused_bits, Err(MalformedPacket::BadMode(0b1010_0000)));
-        let shallow = corrupted(chunk, |b| b[67] = 0b1000_0000 | 2);
-        assert_eq!(shallow, Err(MalformedPacket::DepthOutOfRange(2)));
-        let scheme = corrupted(chunk, |b| b[68] = 2);
-        assert_eq!(scheme, Err(MalformedPacket::UnknownScheme(2)));
-        let slot = corrupted(chunk, |b| {
-            b[69..77].copy_from_slice(&u64::MAX.to_le_bytes())
-        });
-        assert_eq!(slot, Err(MalformedPacket::SlotOutOfRange(u64::MAX)));
-        let epoch = corrupted(chunk, |b| b[77] = 1);
-        assert_eq!(epoch, Err(MalformedPacket::NonZeroEpoch(1)));
-        let padding = corrupted(chunk, |b| b[64] = 1);
+        let padding = corrupted(chunk, |b| b[SIGNATURE_LEN - 1] = 1);
         assert_eq!(padding, Err(MalformedPacket::BadSignature));
         let reserved = corrupted(chunk, |b| b[reserved_at] = 1);
         assert_eq!(reserved, Err(MalformedPacket::ReservedNonZero));
     }
 
     #[test]
-    fn symbol_len_leaves_room_for_headers_and_proof() {
-        assert_eq!(symbol_len(3), 1440 - 117 - 4 - 40);
-        assert_eq!(symbol_len(15), 1440 - 117 - 4 - 280);
-        assert_eq!(BODY_LEN, proof_len(5) + CHUNK_HEADER_LEN + symbol_len(5));
+    fn the_body_is_the_proof_the_chunk_header_and_the_symbol() {
+        let (header, _) = proposal_chunks(&epoch_handle(), 1);
+        let layout = header.scheme();
+
+        let body_len = proof_len(5) + 4 + D25Layout::symbol_len_at(5);
+        assert_eq!(D25Layout::BODY_LEN, body_len);
+        assert_eq!(layout.body_len(), body_len);
+        assert_eq!(
+            layout.symbol_len(),
+            D25Layout::symbol_len_at(depth_of(&header))
+        );
+        // the deepest tree still leaves a symbol
+        assert!(D25Layout::symbol_len_at(D25Layout::MAX_DEPTH) > 0);
     }
 
     #[test]
     fn leaf_hash_covers_the_chunk_id() {
-        assert_eq!(leaf_hash(1, b"x"), leaf_hash(1, b"x"));
-        assert_ne!(leaf_hash(1, b"x"), leaf_hash(2, b"x"));
-        assert_ne!(leaf_hash(1, b"x"), leaf_hash(1, b"y"));
+        let (header, _) = proposal_chunks(&epoch_handle(), 1);
+        let layout = header.scheme();
+        assert_eq!(layout.leaf_hash(1, b"x"), layout.leaf_hash(1, b"x"));
+        assert_ne!(layout.leaf_hash(1, b"x"), layout.leaf_hash(2, b"x"));
+        assert_ne!(layout.leaf_hash(1, b"x"), layout.leaf_hash(1, b"y"));
+
+        // the leaf is the chunk header then the symbol
+        let mut hasher = HasherType::new();
+        hasher.update([0, 0, 1, 0]);
+        hasher.update(b"x");
+        assert_eq!(layout.leaf_hash(1, b"x"), hasher.hash());
     }
 }

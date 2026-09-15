@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-pub use proposal::{MerkleRoot, ProposalHeader};
+pub use proposal::{MerkleRoot, ProposalHeader, SignedProposalHeader};
 pub use validator::{NodeId, Stake};
 pub use vote::{KeyPair, PubKey, Signature, SignatureCollection};
 
@@ -248,20 +248,26 @@ pub mod proposal {
         // todo: change to Slot when we move it to a shared mcp-types
         // crate.
         fn slot(&self) -> u64;
-
         fn root(&self) -> &Self::Root;
     }
 
-    pub trait HeaderAuth {
-        type Header: ProposalHeader;
+    // A header with the proposer's signature over it.
+    pub trait SignedProposalHeader: ProposalHeader {
+        type Sig;
 
-        fn authenticate(&self, header: &Self::Header, slot: u64) -> Option<ProposalIndex>;
+        fn sig(&self) -> &Self::Sig;
+    }
+
+    pub trait HeaderAuth {
+        type Signed: SignedProposalHeader;
+
+        fn authenticate(&self, signed: &Self::Signed, slot: u64) -> Option<ProposalIndex>;
 
         // returns true when:
         // - header is scoped to the slot
         // - header is signed by the legitimate proposer of the slot
-        fn validate(&self, header: &Self::Header, slot: u64, j: ProposalIndex) -> bool {
-            self.authenticate(header, slot) == Some(j)
+        fn validate(&self, signed: &Self::Signed, slot: u64, j: ProposalIndex) -> bool {
+            self.authenticate(signed, slot) == Some(j)
         }
     }
 }
@@ -279,6 +285,7 @@ pub const fn assert_env<
     VoteAggregation,
     MerkleRoot,
     ProposalHeader,
+    SignedProposalHeader,
     HeaderAuth,
 >()
 where
@@ -293,6 +300,7 @@ where
     VoteAggregation: vote::VoteAggregation<'a, Stake, SignatureCollection = SignatureCollection>,
     MerkleRoot: proposal::MerkleRoot,
     ProposalHeader: proposal::ProposalHeader,
-    HeaderAuth: proposal::HeaderAuth<Header = ProposalHeader>,
+    SignedProposalHeader: proposal::SignedProposalHeader,
+    HeaderAuth: proposal::HeaderAuth<Signed = SignedProposalHeader>,
 {
 }

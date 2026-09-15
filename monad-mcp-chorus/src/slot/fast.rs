@@ -31,12 +31,14 @@ use super::{
     fallback::Metablock,
     types::{
         Admission, EquivCert, GatedVotePool, GatingRoot, HeaderAuth, IsVote, KeyPair, MerkleRoot,
-        NodeId, ProposalHeader, ProposalIndex, ProposalMap, ProposalScope, Signature, Slot,
+        NodeId, ProposalIndex, ProposalMap, ProposalScope, Signature, SignedProposalHeader, Slot,
         StrongQc, TotalProposalMap, ValidatorData, VoteMsg, VotePool, WeakQc, dummy_serialize,
     },
 };
 use crate::spec::{
-    Stake as _, proposal::HeaderAuth as _, validator::ValidatorData as _,
+    Stake as _,
+    proposal::{HeaderAuth as _, ProposalHeader as _},
+    validator::ValidatorData as _,
     vote::SignatureCollection as _,
 };
 
@@ -257,7 +259,7 @@ impl FastPath {
                         }
                     }
 
-                    let positive_root = entry.header().map(|header| header.root);
+                    let positive_root = entry.header().map(|header| *header.root());
                     let vote = entry.into_vote_msg(self.slot, j);
                     let admission = self.fallback_entry_votes[j].add_vote(node_id, vote);
                     if admission == Admission::Held
@@ -346,7 +348,7 @@ impl FastPath {
 
         let votes = self.proposals.as_ref().map(|j| {
             let entry = match self.availability[*j].fetch_proposal() {
-                Some(proposal) => Entry::Positive(proposal.root),
+                Some(proposal) => Entry::Positive(*proposal.root()),
                 None => Entry::Negative,
             };
 
@@ -403,7 +405,7 @@ impl FastPath {
             {
                 self.emit(ChorusDACommand::PinRoot {
                     j,
-                    root: header.root,
+                    root: *header.root(),
                 });
             }
         }
@@ -810,7 +812,7 @@ impl CertifiedEntry {
             CertifiedEntry::FallbackQc(qc) => qc.verify(validator_data),
             CertifiedEntry::EquivCert(EquivCert(a, b)) => {
                 let ProposalScope { slot: s, index: j } = scope;
-                a.root != b.root
+                a.root() != b.root()
                     && header_auth.validate(a, s.get(), j)
                     && header_auth.validate(b, s.get(), j)
             }
@@ -825,8 +827,8 @@ struct FallbackSignedEntry {
     // over (slot, j, self.entry)
     signature: Signature,
     // invariant: header.is_some() iff entry is positive
-    // invariant: header.root == entry.root
-    header: Option<ProposalHeader>,
+    // invariant: header.root() == entry.root
+    header: Option<SignedProposalHeader>,
 }
 
 impl FallbackSignedEntry {
@@ -834,7 +836,7 @@ impl FallbackSignedEntry {
         scope: ProposalScope,
         root: MerkleRoot,
         key: &KeyPair,
-        header: ProposalHeader,
+        header: SignedProposalHeader,
     ) -> Self {
         let entry = FallbackEntry(Entry::Positive(root));
         let signature = VoteMsg::new_signed(scope, entry.clone(), key).signature;
@@ -860,12 +862,12 @@ impl FallbackSignedEntry {
             Entry::Positive(root) => self
                 .header
                 .as_ref()
-                .is_some_and(|header| header.root == *root),
+                .is_some_and(|header| header.root() == root),
             Entry::Negative => self.header.is_none(),
         }
     }
 
-    fn header(&self) -> Option<&ProposalHeader> {
+    fn header(&self) -> Option<&SignedProposalHeader> {
         self.header.as_ref()
     }
 
@@ -1115,8 +1117,8 @@ mod tests {
         *,
     };
     use crate::{
-        env::stub::{D25, EncodingScheme, MerkleHash, ProposalSignature},
-        spec::vote::KeyPair as _,
+        env::stub::{D25, EncodingScheme, MerkleHash, ProposalHeader, ProposalSignature},
+        spec::{proposal::SignedProposalHeader as _, vote::KeyPair as _},
     };
 
     const SLOT: Slot = Slot(1);
@@ -1137,26 +1139,28 @@ mod tests {
     }
 
     // signed by validator 0, the only proposer
-    fn header(byte: u8) -> ProposalHeader {
-        ProposalHeader {
-            slot: crate::stub::types::Slot(SLOT.get()),
-            root: root(byte),
+    fn header(byte: u8) -> SignedProposalHeader {
+        SignedProposalHeader {
+            header: ProposalHeader {
+                root: root(byte),
+                scheme: EncodingScheme::D25(D25 {
+                    slot: crate::stub::types::Slot(SLOT.get()),
+                    msg_len: 1,
+                    unix_ts: 0,
+                    depth: 3,
+                }),
+            },
             sig: ProposalSignature {
                 signer: NodeId::dummy(0),
                 checksum: 0,
             },
-            scheme: EncodingScheme::D25(D25 {
-                msg_len: 1,
-                unix_ts: 0,
-                depth: 3,
-            }),
         }
     }
 
     // the local node is validator 1 among 4, one proposal per slot
     fn fast_path() -> FastPath {
         let header_auth =
-            HeaderAuth::new(|header, _| (header.sig.signer == NodeId::dummy(0)).then_some(0));
+            HeaderAuth::new(|header, _| (header.sig().signer == NodeId::dummy(0)).then_some(0));
         FastPath::new(
             SLOT,
             1,
@@ -1437,7 +1441,7 @@ mod rlp_tests {
         *,
     };
     use crate::{
-        env::stub::{D25, EncodingScheme, MerkleHash, ProposalSignature},
+        env::stub::{D25, EncodingScheme, MerkleHash, ProposalHeader, ProposalSignature},
         spec::vote::KeyPair as _,
     };
 
@@ -1460,21 +1464,23 @@ mod rlp_tests {
             verdict: FallbackEntry(Entry::Negative),
             sigcol: fast_qc.sigcol.clone(),
         };
-        let h = ProposalHeader {
-            slot: crate::stub::types::Slot(9),
-            root,
+        let h = SignedProposalHeader {
+            header: ProposalHeader {
+                root,
+                scheme: EncodingScheme::D25(D25 {
+                    slot: crate::stub::types::Slot(9),
+                    msg_len: 1000,
+                    unix_ts: 12345,
+                    depth: 4,
+                }),
+            },
             sig: ProposalSignature {
                 signer: NodeId::dummy(1),
                 checksum: 12,
             },
-            scheme: EncodingScheme::D25(D25 {
-                msg_len: 1000,
-                unix_ts: 12345,
-                depth: 4,
-            }),
         };
         let mut h2 = h.clone();
-        h2.root = MerkleRoot(MerkleHash([8; 20]));
+        h2.header.root = MerkleRoot(MerkleHash([8; 20]));
         // Cover every certificate variant and signed fallback entries with/without a header.
         let evidence = vec![
             ProposalEvidence::Certified(CertifiedEntry::FastQc(fast_qc.clone())),

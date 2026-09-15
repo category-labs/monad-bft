@@ -27,16 +27,16 @@ use super::{
     chunk::{Chunk, ProposalEnvelope, WireChunkId},
     chunk_tree::ChunkTree,
     election::ProposerElection,
-    encoding_scheme::{DAEncodingScheme as _, d25},
+    encoding_scheme::{self, DAEncodingScheme as _, d25},
     header::header_auth,
     runtime::EpochHandle,
     types::{
-        EncodingScheme, MerkleRoot, NodeId, ProposalHeader, ProposalIndex, ProposalKeyPair, Slot,
-        Stake, ValidatorData,
+        EncodingScheme, NodeId, ProposalHeader, ProposalIndex, ProposalKeyPair,
+        SignedProposalHeader, Slot, Stake, ValidatorData,
     },
-    wire,
+    wire::{self, PacketLayout as _},
 };
-use crate::spec::DAProposalKeyPair as _;
+use crate::spec::{DAProposalHeader as _, DAProposalKeyPair as _};
 
 pub(crate) const SLOT: Slot = Slot(1);
 pub(crate) const MESSAGE_LEN: usize = 1500;
@@ -100,34 +100,28 @@ impl ProposerElection for Proposers {
 
 // the scheme a proposer picks for a MESSAGE_LEN message in the epoch
 pub(crate) fn scheme(epoch_handle: &EpochHandle) -> EncodingScheme {
+    scheme_at(epoch_handle, SLOT)
+}
+
+pub(crate) fn scheme_at(epoch_handle: &EpochHandle, slot: Slot) -> EncodingScheme {
     let num_validators = epoch_handle.validator_data.len();
-    let d25 = d25::for_message(MESSAGE_LEN, 0, num_validators).expect("fits a depth");
+    let d25 = d25::for_message(slot, MESSAGE_LEN, 0, num_validators).expect("fits a depth");
     EncodingScheme::D25(d25)
 }
 
-// the header as the author signs it
-pub(crate) fn signed_header(
-    slot: Slot,
-    scheme: EncodingScheme,
-    root: MerkleRoot,
-    author_id: u64,
-) -> ProposalHeader {
-    let signed = wire::signed_bytes(slot, &scheme, &root);
+// the header as validator `author_id` signs it
+pub(crate) fn signed_header(header: ProposalHeader, author_id: u64) -> SignedProposalHeader {
+    let signed = wire::signed_bytes(&header);
     let sig = ProposalKeyPair::dummy(NodeId::dummy(author_id)).sign(&signed);
-    ProposalHeader {
-        slot,
-        root,
-        scheme,
-        sig,
-    }
+    SignedProposalHeader { header, sig }
 }
 
 // the header and every chunk of a complete tree, in wire id order
 fn chunks_of(
     tree: &ChunkTree,
     assignment: &ChunkAssignment,
-    header: ProposalHeader,
-) -> (ProposalHeader, Vec<Chunk<'static>>) {
+    header: SignedProposalHeader,
+) -> (SignedProposalHeader, Vec<Chunk<'static>>) {
     let mut chunks = Vec::new();
     for chunk_id in assignment.chunk_ids() {
         let data = tree.chunk_data(chunk_id).expect("complete tree");
@@ -146,22 +140,38 @@ pub(crate) fn proposal_chunks_from(
     author_id: u64,
     slot: Slot,
     payload: u8,
-) -> (ProposalHeader, Vec<Chunk<'static>>) {
+) -> (SignedProposalHeader, Vec<Chunk<'static>>) {
+    proposal_chunks_under(
+        epoch_handle,
+        scheme_at(epoch_handle, slot),
+        author_id,
+        payload,
+    )
+}
+
+// the proposal under a given scheme for a MESSAGE_LEN message
+pub(crate) fn proposal_chunks_under(
+    epoch_handle: &EpochHandle,
+    scheme: EncodingScheme,
+    author_id: u64,
+    payload: u8,
+) -> (SignedProposalHeader, Vec<Chunk<'static>>) {
     let author = NodeId::dummy(author_id);
-    let scheme = scheme(epoch_handle);
     let assignment = scheme.chunk_assignment(&author, &epoch_handle.validator_data);
     let message = vec![payload; MESSAGE_LEN];
-    let tree = scheme
-        .encode(&message, assignment.num_chunks())
+    let tree = encoding_scheme::chunk_tree(&scheme, &message, assignment.num_chunks())
         .expect("a message of the scheme's length");
-    let header = signed_header(slot, scheme, tree.root(), author_id);
-    chunks_of(&tree, &assignment, header)
+    let header = ProposalHeader {
+        root: tree.root(),
+        scheme,
+    };
+    chunks_of(&tree, &assignment, signed_header(header, author_id))
 }
 
 pub(crate) fn proposal_chunks(
     epoch_handle: &EpochHandle,
     payload: u8,
-) -> (ProposalHeader, Vec<Chunk<'static>>) {
+) -> (SignedProposalHeader, Vec<Chunk<'static>>) {
     proposal_chunks_from(epoch_handle, 0, SLOT, payload)
 }
 
@@ -170,30 +180,33 @@ pub(crate) fn proposal_chunks(
 // carry one payload, the second half another
 pub(crate) fn inconsistent_proposal_chunks(
     epoch_handle: &EpochHandle,
-) -> (ProposalHeader, Vec<Chunk<'static>>) {
+) -> (SignedProposalHeader, Vec<Chunk<'static>>) {
     let scheme = scheme(epoch_handle);
     let assignment = scheme.chunk_assignment(&author(), &epoch_handle.validator_data);
     let num_chunks = assignment.num_chunks();
-    let symbol_len = wire::symbol_len(scheme.depth());
+    let symbol_len = scheme.symbol_len();
 
     let mut symbols = Vec::with_capacity(num_chunks);
     for i in 0..num_chunks {
         let payload = if i < num_chunks / 2 { 1 } else { 2 };
         symbols.push(Bytes::from(vec![payload; symbol_len]));
     }
-    let tree = ChunkTree::complete(scheme.depth(), symbols).expect("fits the depth");
-    let header = signed_header(SLOT, scheme, tree.root(), 0);
-    chunks_of(&tree, &assignment, header)
+    let tree = scheme.chunk_tree(symbols);
+    let header = ProposalHeader {
+        root: tree.root(),
+        scheme,
+    };
+    chunks_of(&tree, &assignment, signed_header(header, 0))
 }
 
 // the verified id of a wire chunk id under the header's assignment
 pub(crate) fn chunk_id(
     epoch_handle: &EpochHandle,
-    header: &ProposalHeader,
+    header: &SignedProposalHeader,
     wire: WireChunkId,
 ) -> ChunkId {
     let assignment = header
-        .scheme
+        .scheme()
         .chunk_assignment(&author(), &epoch_handle.validator_data);
     assignment
         .resolve_chunk_id(wire)

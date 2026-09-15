@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use super::{
     chunk::{ChunkData, ProposalEnvelope, WireChunkId},
-    types::{NodeId, ProposalHeader},
+    types::{NodeId, SignedProposalHeader},
 };
 
 pub struct Dissemination {
@@ -44,7 +44,7 @@ impl ChunkEgress {
     pub(crate) fn enqueue(
         &mut self,
         recipients: &HashSet<NodeId>,
-        header: &ProposalHeader,
+        header: &SignedProposalHeader,
         chunk_id: WireChunkId,
         data: ChunkData,
     ) {
@@ -87,7 +87,7 @@ mod tests {
         *,
     };
 
-    fn parts(chunk: &Chunk<'_>) -> (ProposalHeader, WireChunkId, ChunkData) {
+    fn parts(chunk: &Chunk<'_>) -> (SignedProposalHeader, WireChunkId, ChunkData) {
         chunk.clone().into_parts()
     }
 

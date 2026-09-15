@@ -48,8 +48,11 @@ impl ObligationTracker {
         }
 
         // todo: reduce obligations by a small fraction to account for
-        // network packet loss. q: should we reduce obligation from
-        // author as well?
+        // network packet loss. s11 already targets a source count
+        // raised by a tenth, which pays for a reduction of the author
+        // obligation by at most one chunk in eleven; reducing an owner
+        // obligation costs nothing, as it asserts nothing about what
+        // this node holds.
 
         let mut fulfilled = Vec::new();
         if remaining_author_obligation == 0 {

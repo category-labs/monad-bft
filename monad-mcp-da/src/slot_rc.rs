@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 
 use bytes::Bytes;
-use monad_mcp_chorus::spec::proposal::HeaderAuth as _;
+use monad_mcp_chorus::spec::proposal::{HeaderAuth as _, ProposalHeader as _};
 
 use super::{
     chunk::{ChunkRequest, ProposalEnvelope},
@@ -26,8 +26,8 @@ use super::{
     proposer_rc::ProposerRaptorcast,
     runtime::{ChunkRecoveryRequest, DAOutput, EpochHandle},
     types::{
-        ChorusDACommand, ChorusDAEvent, ChunkRequestType, MerkleRoot, NodeId, ProposalHeader,
-        ProposalIndex, ProposalMap, Slot,
+        ChorusDACommand, ChorusDAEvent, ChunkRequestType, MerkleRoot, NodeId, ProposalIndex,
+        ProposalMap, SignedProposalHeader, Slot,
     },
 };
 
@@ -42,7 +42,7 @@ pub struct SlotRaptorcast {
 
     // memoize the proposal index of headers that authenticated. todo:
     // bound per proposer.
-    authenticated_headers: HashMap<ProposalHeader, ProposalIndex>,
+    authenticated_headers: HashMap<SignedProposalHeader, ProposalIndex>,
 
     egress: ChunkEgress,
 
@@ -79,7 +79,7 @@ impl SlotRaptorcast {
     }
 
     pub fn ingest(&mut self, envelope: ProposalEnvelope) -> Result<(), InvalidProposalHeader> {
-        debug_assert!(envelope.header().slot == self.slot);
+        debug_assert_eq!(envelope.header().slot(), self.slot.get());
         let j = self
             .authenticate(envelope.header())
             .ok_or(InvalidProposalHeader::Unauthenticated)?;
@@ -103,7 +103,7 @@ impl SlotRaptorcast {
     }
 
     // the proposal index of a proposer-signed header for this slot
-    fn authenticate(&mut self, header: &ProposalHeader) -> Option<ProposalIndex> {
+    fn authenticate(&mut self, header: &SignedProposalHeader) -> Option<ProposalIndex> {
         if let Some(j) = self.authenticated_headers.get(header) {
             return Some(*j);
         }
@@ -218,6 +218,8 @@ mod tests {
         },
     };
 
+    use monad_mcp_chorus::spec::SignedProposalHeader as _;
+
     use super::{
         super::{
             chunk::{ChunksSubset, WireChunkId},
@@ -271,7 +273,7 @@ mod tests {
 
         // our chunk 0 arrives and node 3 asks for it: nothing leaves
         assert!(ingest(&mut raptorcast, group(&chunks[..1])).is_empty());
-        assert!(your_chunks(&mut raptorcast, header.root).is_empty());
+        assert!(your_chunks(&mut raptorcast, *header.root()).is_empty());
 
         // released: the second hop to the other owners, and the answer
         // to node 3, both pending until now
@@ -282,7 +284,7 @@ mod tests {
         assert_eq!(messages[1].to, nodes([3]));
 
         // served once
-        assert!(your_chunks(&mut raptorcast, header.root).is_empty());
+        assert!(your_chunks(&mut raptorcast, *header.root()).is_empty());
     }
 
     #[test]
@@ -325,7 +327,7 @@ mod tests {
 
         let decoded = ChorusDAEvent {
             j: 0,
-            event: ProposalDAEvent::Decoded(header.root),
+            event: ProposalDAEvent::Decoded(*header.root()),
         };
         assert!(raptorcast.drain_events().contains(&decoded));
         // our chunks 0 and 3 never arrived, but re-encoding derives them
@@ -352,10 +354,12 @@ mod tests {
             self_id: NodeId::dummy(1),
             num_proposals: 1,
             key_pair: Arc::new(ProposalKeyPair::dummy(NodeId::dummy(1))),
-            header_auth: Arc::new(HeaderAuth::new(move |header: &ProposalHeader, _slot| {
-                counted.fetch_add(1, Ordering::SeqCst);
-                (header.sig.signer == author()).then_some(0)
-            })),
+            header_auth: Arc::new(HeaderAuth::new(
+                move |header: &SignedProposalHeader, _slot| {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    (header.sig().signer == author()).then_some(0)
+                },
+            )),
             validator_data: Arc::new(validator_data(4)),
         };
         let election = Proposers::new(vec![author()]);
@@ -399,7 +403,7 @@ mod tests {
 
         // nothing is known about b: ask every voter but us for everything
         let all = ChunkRequest::all(ChunkRequestType::YourChunks);
-        let outputs = raptorcast.handle_command(recover(header_b.root));
+        let outputs = raptorcast.handle_command(recover(*header_b.root()));
         assert_eq!(
             requests(outputs),
             [(NodeId::dummy(2), all.clone()), (NodeId::dummy(3), all)]
@@ -408,7 +412,7 @@ mod tests {
         // the command pinned b, so it is assembled beside the scratch
         // root; holding 0 and 1 narrows the asks to what is missing
         raptorcast.ingest(group(&chunks_b[..2])).expect("valid");
-        let outputs = raptorcast.handle_command(recover(header_b.root));
+        let outputs = raptorcast.handle_command(recover(*header_b.root()));
         let narrowed = |ids: &[WireChunkId]| ChunkRequest {
             kind: ChunkRequestType::YourChunks,
             subset: ChunksSubset::narrowed(
@@ -482,7 +486,7 @@ mod tests {
             nodes.push((epoch_handle, node));
         }
         let (header, chunks) = proposal_chunks(&nodes[0].0, 1);
-        let decoded = |node: &SlotRaptorcast| node.decoded_message(0, &header.root).is_some();
+        let decoded = |node: &SlotRaptorcast| node.decoded_message(0, header.root()).is_some();
 
         // the author's first hop reaches 1 and 2; 3 is cut off entirely
         let cut_off = HashSet::from([NodeId::dummy(3)]);
@@ -503,7 +507,7 @@ mod tests {
         // 3 pulls its own chunks from a decoded peer, then everyone's
         let ask = |kind, voters: Vec<u64>| ChorusDACommand::RecoverChunks {
             j: 0,
-            root: header.root,
+            root: *header.root(),
             request_type: kind,
             voters: voters.into_iter().map(NodeId::dummy).collect(),
         };
@@ -520,7 +524,7 @@ mod tests {
                 .iter_mut()
                 .find(|(handle, _)| handle.self_id == peer)
                 .unwrap();
-            server.handle_chunk_request(&NodeId::dummy(3), 0, header.root, request);
+            server.handle_chunk_request(&NodeId::dummy(3), 0, *header.root(), request);
         }
         // 1 answers both asks in one message, 2 in another; together
         // they carry every chunk
@@ -530,7 +534,7 @@ mod tests {
         deliver(&mut nodes, responses, &HashSet::new());
         assert!(decoded(&nodes[2].1));
         assert_eq!(
-            nodes[2].1.decoded_message(0, &header.root),
+            nodes[2].1.decoded_message(0, header.root()),
             Some(&Bytes::from(vec![1u8; MESSAGE_LEN]))
         );
     }

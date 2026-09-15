@@ -29,7 +29,7 @@ use super::{
         FastCommitQc, FastCommitVoteMsg, FastPath,
     },
     types::{
-        HeaderAuth, KeyPair, MerkleRoot, NodeId, ProposalHeader, ProposalIndex, Slot,
+        HeaderAuth, KeyPair, MerkleRoot, NodeId, ProposalIndex, SignedProposalHeader, Slot,
         TimestampDelta, ValidatorData,
     },
 };
@@ -111,7 +111,7 @@ pub struct ChorusDAEvent {
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum ProposalDAEvent {
     // a validated proposer-signed header observed (once per root)
-    HeaderSeen(ProposalHeader),
+    HeaderSeen(SignedProposalHeader),
 
     // all our own assigned chunks under the root have arrived
     ProposerObligationFulfilled(MerkleRoot),
