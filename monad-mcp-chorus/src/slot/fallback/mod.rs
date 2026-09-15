@@ -287,6 +287,9 @@ where
     V: ValidateInput + Votable,
     A::TimerEvent: Eq,
 {
+    // the standalone MVBA harness runs without a DA layer
+    type DAEvent = ();
+
     fn init(&mut self) {
         if self.input.is_none() {
             return;

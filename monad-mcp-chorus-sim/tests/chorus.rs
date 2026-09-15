@@ -20,7 +20,7 @@ use std::{num::NonZeroU64, sync::Arc};
 use chorus::{
     CadenceDriverMsg,
     conductor::{ConductorConfig, MonadConductor, acs::nop::NopAcs},
-    slot::chorus::{Chorus, ChorusConfig, ChorusContext},
+    slot::chorus::{Chorus, ChorusConfig, ChorusContext, ChorusDAEvent},
     types::{
         CreditLotterySchedule, HeaderAuth, NodeId, ProposerConfig, RotatingProposerSchedule,
         SlotDeadline, Stake, TimestampDelta, ValidatorData,
@@ -64,7 +64,11 @@ fn proposer_schedule(
     Arc::new(RotatingProposerSchedule::new(config, algorithm, val_data.clone()).unwrap())
 }
 
-fn add_node(builder: &mut CadenceSwarmBuilder<DummyMsg>, id: u64, val_data: &Arc<ValidatorData>) {
+fn add_node(
+    builder: &mut CadenceSwarmBuilder<DummyMsg, ChorusDAEvent>,
+    id: u64,
+    val_data: &Arc<ValidatorData>,
+) {
     let node_id = NodeId::dummy(id);
     let context = ChorusContext {
         node_id,

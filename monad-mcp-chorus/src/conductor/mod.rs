@@ -311,7 +311,16 @@ where
                 open_slot_cap,
             });
         }
+        let chained = self.completion_tracker.cap();
         self.completion_tracker.mark_completed(slot)?;
+        // An advance of the contiguous finalized prefix closes every slot
+        // below it and is surfaced as an output: the runtime forwards it to
+        // observers (e.g. the proposal planner's chaining gate).
+        if self.completion_tracker.cap() > chained {
+            self.outputs.push_back(ConductorOutput::CloseSlots {
+                cap: self.completion_tracker.cap(),
+            });
+        }
         self.try_run_deadline_agreement(slot_completion)
     }
 
@@ -666,7 +675,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_finalization_opens_next_window_without_closing_slots() {
+    fn runtime_finalization_closes_chained_slots_and_opens_next_window() {
         let runtime_config = ConductorConfig::new(
             nz(4),
             nz(2),
@@ -679,24 +688,35 @@ mod tests {
         let _ = conductor.poll().unwrap();
 
         conductor.handle_slot_finalization(Timestamp::from_nanos(11), Slot(0));
-        assert!(conductor.poll().is_none());
+        assert!(matches!(
+            drain_outputs(&mut conductor).as_slice(),
+            [ConductorOutput::CloseSlots { cap: Slot(1) }]
+        ));
 
         conductor.handle_slot_finalization(Timestamp::from_nanos(12), Slot(1));
-        let slots = extract_runtime_open_slots(conductor.poll().unwrap());
+        let outputs = drain_outputs(&mut conductor);
+        assert!(matches!(
+            outputs[0],
+            ConductorOutput::CloseSlots { cap: Slot(2) }
+        ));
+        let slots = extract_open_slots(&outputs);
         assert_eq!(
             slots.keys().copied().collect::<Vec<_>>(),
             (4..8).map(Slot).collect::<Vec<_>>()
         );
         assert_eq!(slots[&Slot(4)], genesis_plus(40));
         assert_eq!(slots[&Slot(7)], genesis_plus(70));
-        assert!(conductor.poll().is_none());
+        assert_eq!(outputs.len(), 2);
     }
 
     #[test]
     fn duplicate_completion_is_rejected() {
         let mut conductor = conductor();
 
-        assert!(complete_slot(&mut conductor, 0, 100).unwrap().is_empty());
+        assert!(matches!(
+            complete_slot(&mut conductor, 0, 100).unwrap().as_slice(),
+            [ConductorOutput::CloseSlots { cap: Slot(1) }]
+        ));
 
         assert!(matches!(
             complete_slot(&mut conductor, 0, 100),
@@ -713,13 +733,19 @@ mod tests {
         assert!(complete_slot(&mut conductor, 1, 100).unwrap().is_empty());
         assert_eq!(conductor.completed_cap(), Slot(0));
 
-        let _ = complete_slot(&mut conductor, 0, 100).unwrap();
+        assert!(matches!(
+            complete_slot(&mut conductor, 0, 100).unwrap().as_slice(),
+            [ConductorOutput::CloseSlots { cap: Slot(2) }]
+        ));
         assert_eq!(conductor.completed_cap(), Slot(2));
 
         assert!(complete_slot(&mut conductor, 3, 100).unwrap().is_empty());
         assert_eq!(conductor.completed_cap(), Slot(2));
 
-        let _ = complete_slot(&mut conductor, 2, 100).unwrap();
+        assert!(matches!(
+            complete_slot(&mut conductor, 2, 100).unwrap().as_slice(),
+            [ConductorOutput::CloseSlots { cap: Slot(4) }]
+        ));
         assert_eq!(conductor.completed_cap(), Slot(4));
     }
 
@@ -728,7 +754,12 @@ mod tests {
         let mut conductor = conductor();
 
         for slot in 0..7 {
-            assert!(complete_slot(&mut conductor, slot, 100).unwrap().is_empty());
+            // in-order completions advance the cap (and close slots below
+            // it), but no window opens before the sync boundary
+            assert!(matches!(
+                complete_slot(&mut conductor, slot, 100).unwrap().as_slice(),
+                [ConductorOutput::CloseSlots { cap }] if *cap == Slot(slot + 1)
+            ));
         }
     }
 
@@ -772,7 +803,10 @@ mod tests {
         let mut conductor = MonadConductor::<MessageAcs>::genesis(config(), ()).unwrap();
         let _ = conductor.poll().unwrap();
         for slot in 0..=7 {
-            assert!(complete_slot(&mut conductor, slot, 100).unwrap().is_empty());
+            assert!(matches!(
+                complete_slot(&mut conductor, slot, 100).unwrap().as_slice(),
+                [ConductorOutput::CloseSlots { cap }] if *cap == Slot(slot + 1)
+            ));
         }
         conductor.handle_message(
             NodeId::dummy(1),

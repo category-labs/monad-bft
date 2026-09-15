@@ -659,6 +659,9 @@ impl FastPath {
     }
 }
 
+/// The verdict on one proposal index: `Positive` carries the merkle root of
+/// the included proposal, `Negative` finalizes the index empty. Part of the
+/// finalization data — downstream consumers (ledger sequencing) read it.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Entry {
     Positive(MerkleRoot),
@@ -710,7 +713,7 @@ impl BatchVoteMsg {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub(crate) struct FastCommitVote {
+pub struct FastCommitVote {
     pub entries: ProposalMap<Entry>,
 }
 
@@ -741,7 +744,7 @@ impl IsVote for FastCommitVote {
     }
 }
 
-pub(crate) type FastCommitQc = StrongQc<FastCommitVote>;
+pub type FastCommitQc = StrongQc<FastCommitVote>;
 
 // ============ Fallback ===============
 

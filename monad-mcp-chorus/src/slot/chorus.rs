@@ -18,6 +18,7 @@ use std::{collections::VecDeque, sync::Arc};
 
 use alloy_rlp::{Decodable, Encodable, Header, encode_list, list_length};
 
+pub use super::fast::Entry;
 use super::{
     SlotConsensus, SlotOutput,
     fallback::{
@@ -25,8 +26,8 @@ use super::{
         monad_mvba::{MonadMvba, MvbaContext},
     },
     fast::{
-        BatchVoteMsg, CommitVoteDeadlineOutcome, EnterFallbackCert, Entry, FallbackVoteMsg,
-        FastBlock, FastCommitQc, FastCommitVoteMsg, FastPath,
+        BatchVoteMsg, CommitVoteDeadlineOutcome, EnterFallbackCert, FallbackVoteMsg, FastBlock,
+        FastCommitQc, FastCommitVoteMsg, FastPath,
     },
     types::{
         HeaderAuth, KeyPair, MerkleRoot, NodeId, ProposalIndex, ProposalMap, ProposerSchedule,

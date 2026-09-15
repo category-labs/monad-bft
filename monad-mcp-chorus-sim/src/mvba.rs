@@ -35,7 +35,7 @@ use monad_sim::{RunOutcome, Time};
 use monad_sim_swarm::{Network, Swarm};
 
 use crate::{
-    node::{SimNode, time_of, to_timestamp},
+    node::{SimMessage, SimNode, time_of, to_timestamp},
     swarm::build_sim_swarm,
 };
 
@@ -109,8 +109,8 @@ impl DecisionLog {
 /// the four inputs can be handed over at four different times
 pub struct MvbaSwarmBuilder {
     seed: u64,
-    network: Network<NodeId, Message>,
-    nodes: Vec<(NodeId, SimNode<Message>)>,
+    network: Network<NodeId, SimMessage<Message>>,
+    nodes: Vec<(NodeId, SimNode<Message, ()>)>,
     inputs: BTreeMap<NodeId, Metablock>,
     log: DecisionLog,
 }
@@ -131,7 +131,7 @@ impl MvbaSwarmBuilder {
         self
     }
 
-    pub fn set_network(&mut self, network: Network<NodeId, Message>) -> &mut Self {
+    pub fn set_network(&mut self, network: Network<NodeId, SimMessage<Message>>) -> &mut Self {
         self.network = network;
         self
     }
@@ -179,13 +179,13 @@ impl Default for MvbaSwarmBuilder {
 
 /// A built swarm: run control, plus the decisions reached and inputs started from
 pub struct MvbaSwarm {
-    swarm: Swarm<SimNode<Message>>,
+    swarm: Swarm<SimNode<Message, ()>>,
     inputs: BTreeMap<NodeId, Metablock>,
     log: DecisionLog,
 }
 
 impl MvbaSwarm {
-    pub fn swarm_mut(&mut self) -> &mut Swarm<SimNode<Message>> {
+    pub fn swarm_mut(&mut self) -> &mut Swarm<SimNode<Message, ()>> {
         &mut self.swarm
     }
 

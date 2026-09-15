@@ -33,6 +33,7 @@ pub use super::env::{
     SignatureCollection, SignedProposalHeader, Stake, ValidatorData, VoteAggregation,
 };
 pub use super::{
+    da::{DaHandle, DataAvailability, NullDa},
     proposer_schedule::ScheduleError,
     proposers::{
         CreditLotterySchedule, EpochAnchor, FixedProposerSchedule, ProposerConfig,
@@ -145,6 +146,10 @@ impl Timestamp {
     pub fn checked_add_deltas(self, delta: TimestampDelta, count: u64) -> Option<Self> {
         let delta = delta.as_nanos().checked_mul(count)?;
         self.0.checked_add(u128::from(delta)).map(Self)
+    }
+
+    pub fn saturating_sub_delta(self, delta: TimestampDelta) -> Self {
+        Self(self.0.saturating_sub(u128::from(delta.as_nanos())))
     }
 
     pub fn max(self, other: Self) -> Self {
