@@ -20,6 +20,7 @@ use serde::Deserialize;
 use crate::{
     chorus::{
         conductor::{ConductorConfig, ConductorError},
+        proposing::PlannerConfig,
         slot::chorus::ChorusConfig,
         types::{
             KeyPair, NodeId, ProposerConfig, PubKey, RotatingProposerSchedule,
@@ -202,6 +203,14 @@ impl ProposalConfig {
         let algorithm = RoundRobinLeaderSchedule::new(&cfg);
         RotatingProposerSchedule::new(cfg, algorithm, validator_data)
     }
+
+    // the gate's cutoff is the schedule's own: the two cannot disagree
+    pub fn planner(&self, proposers: &NodeProposerSchedule) -> PlannerConfig {
+        PlannerConfig {
+            lead: self.propose_before_deadline,
+            observation_cutoff: proposers.config().observation_cutoff,
+        }
+    }
 }
 
 impl Default for ProposalConfig {
@@ -277,5 +286,18 @@ mod tests {
             let set = schedule.proposers_at(Slot(0)).expect("genesis epoch");
             assert!(set.iter().any(|(_, proposer)| proposer.is_some()));
         }
+    }
+
+    // the gate and the rotation vacancy mirror the same deployment constant
+    #[test]
+    fn the_planner_takes_its_cutoff_from_the_schedule() {
+        let config = ProposalConfig::default();
+        let schedule = config.schedule(validator_data(4)).unwrap();
+        let planner = config.planner(&schedule);
+        assert_eq!(
+            planner.observation_cutoff,
+            schedule.config().observation_cutoff
+        );
+        assert_eq!(planner.lead, config.propose_before_deadline);
     }
 }

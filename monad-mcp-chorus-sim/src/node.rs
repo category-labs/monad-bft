@@ -21,12 +21,12 @@ use std::{
 use chorus::{
     NodeEvent, Runtime, WakeId,
     da::DataAvailability as _,
-    proposing::{PlannerOutput, ProposalPlanner},
-    types::{NodeId, Slot, Timestamp, TimestampDelta, Validated},
+    proposing::ProposalPlanner,
+    types::{NodeId, Timestamp, TimestampDelta, Validated},
 };
 // choose stub chorus for implementation
 use monad_mcp_chorus::stub as chorus;
-use monad_sim::{Ctx, Handle, StepLabel, Time};
+use monad_sim::{CancelToken, Ctx, Handle, StepLabel, Time};
 use monad_sim_swarm::{Net, SimClient};
 
 use crate::da::{DaAnnouncement, MockDa, mock_payload};
@@ -70,6 +70,8 @@ pub(crate) struct ProposerHarness<E> {
     pub(crate) planner: Arc<Mutex<ProposalPlanner>>,
     pub(crate) da: Arc<MockDa>,
     pub(crate) da_events: Box<DaEventsFn<E>>,
+    /// The one live seal alarm, at the planner's last polled `next_due`.
+    pub(crate) seal_alarm: Option<(Time, CancelToken)>,
 }
 
 // A monad-sim process that contains a cadence runtime and
@@ -120,14 +122,9 @@ where
         self.process(ctx);
     }
 
-    fn proposal_wake(&mut self, slot: Slot, ctx: &mut Ctx) {
-        if let Some(harness) = &self.proposer {
-            let now = to_timestamp(ctx.now());
-            harness
-                .planner
-                .lock()
-                .expect("planner poisoned")
-                .handle_wake(now, slot);
+    fn proposal_wake(&mut self, ctx: &mut Ctx) {
+        if let Some(harness) = &mut self.proposer {
+            harness.seal_alarm = None;
         }
         self.process(ctx);
     }
@@ -139,7 +136,8 @@ where
                 self.interpret(event, ctx);
             }
             // runtime steps may have fed facts to the planner (through the
-            // observer planted in the runtime); execute its requests.
+            // observer planted in the runtime); seal what is due and re-arm
+            // its alarm.
             self.drain_planner(ctx);
             // a sealed proposal is available to its own proposer at once;
             // reporting it can produce further runtime events.
@@ -183,42 +181,51 @@ where
         let Some(harness) = &self.proposer else {
             return;
         };
+        let now = to_timestamp(ctx.now());
 
         loop {
-            let output = harness.planner.lock().expect("planner poisoned").poll();
-            let Some(output) = output else {
+            let sealed = harness.planner.lock().expect("planner poisoned").poll(now);
+            let Some((slot, index)) = sealed else {
                 break;
             };
-            match output {
-                PlannerOutput::ScheduleWake { at, slot } => {
-                    let me = self.me.expect("node not wired");
-                    // an alarm for a passed timestamp fires immediately
-                    let at = time_of(at).max(ctx.now());
-                    ctx.schedule(
-                        me,
-                        at,
-                        StepLabel::source("proposal-wake"),
-                        move |node, ctx| node.proposal_wake(slot, ctx),
-                    );
-                }
-                PlannerOutput::Seal { slot, index } => {
-                    harness
-                        .da
-                        .submit_proposal(slot, index, mock_payload(self.id, slot, index));
-                    let from = self.id;
-                    let net = self.net.expect("node not wired");
-                    let now = ctx.now();
-                    for announcement in harness.da.drain_announcements() {
-                        let message = SimMessage::Da(announcement);
-                        ctx.schedule(
-                            net,
-                            now,
-                            StepLabel::source("da-broadcast"),
-                            move |net, ctx| net.broadcast(ctx, from, message),
-                        );
-                    }
-                }
+            harness
+                .da
+                .submit_proposal(slot, index, mock_payload(self.id, slot, index));
+            let from = self.id;
+            let net = self.net.expect("node not wired");
+            for announcement in harness.da.drain_announcements() {
+                let message = SimMessage::Da(announcement);
+                ctx.schedule(
+                    net,
+                    ctx.now(),
+                    StepLabel::source("da-broadcast"),
+                    move |net, ctx| net.broadcast(ctx, from, message),
+                );
             }
+        }
+        self.arm_seal_alarm(ctx);
+    }
+
+    // one alarm at next_due; a due already passed fires now. Facts can move
+    // the due time (a released gated seal), so re-arm after every drain.
+    fn arm_seal_alarm(&mut self, ctx: &mut Ctx) {
+        let me = self.me.expect("node not wired");
+        let Some(harness) = &mut self.proposer else {
+            return;
+        };
+        let due = harness.planner.lock().expect("planner poisoned").next_due();
+        let at = due.map(|due| time_of(due).max(ctx.now()));
+        if harness.seal_alarm.as_ref().map(|(at, _)| *at) == at {
+            return;
+        }
+        if let Some((_, token)) = harness.seal_alarm.take() {
+            token.cancel();
+        }
+        if let Some(at) = at {
+            let token = ctx.schedule(me, at, StepLabel::source("proposal-wake"), |node, ctx| {
+                node.proposal_wake(ctx)
+            });
+            harness.seal_alarm = Some((at, token));
         }
     }
 

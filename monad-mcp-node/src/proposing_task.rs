@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::BTreeMap, future::pending, sync::Arc, time::Instant};
+use std::{future::pending, time::Instant};
 
 use bytes::Bytes;
 use rand::{Rng as _, RngCore as _};
@@ -21,7 +21,10 @@ use tokio::task::JoinHandle;
 use tracing::{Instrument as _, Span};
 
 use crate::{
-    chorus::types::{NodeId, ProposerSchedule, Slot, Timestamp, TimestampDelta},
+    chorus::{
+        proposing::ProposalPlanner,
+        types::{ProposalIndex, Slot, Timestamp},
+    },
     config::ProposalConfig,
     epoch::EpochHandle,
     network::Link,
@@ -32,7 +35,7 @@ use crate::{
 // every doubling from 1 byte to 1 MiB is equally likely
 const MAX_PROPOSAL_LEN: usize = 1 << 20;
 
-// decides when we propose in a slot, and what
+// decides when we propose in a slot
 pub trait ProposalCreation {
     fn new(epoch_handle: &EpochHandle, config: &ProposalConfig) -> Self;
 
@@ -44,66 +47,32 @@ pub trait ProposalCreation {
     // when poll may next yield something
     fn next_due(&self) -> Option<Timestamp>;
 
-    fn poll(&mut self, now: Timestamp) -> Option<(Slot, Bytes)>;
+    fn poll(&mut self, now: Timestamp) -> Option<(Slot, ProposalIndex)>;
 }
 
-// proposes a fixed offset before the slot's deadline
-pub struct OffsetProposalCreation {
-    self_id: NodeId,
-    proposers: Arc<dyn ProposerSchedule + Send + Sync>,
-    offset: TimestampDelta,
-    // when to propose, for each open slot we propose in
-    due: BTreeMap<Slot, Timestamp>,
-}
-
-impl OffsetProposalCreation {
-    // now if the offset already passed
-    fn propose_at(&self, now: Timestamp, deadline: Timestamp) -> Timestamp {
-        let Some(remaining) = deadline.duration_since(now) else {
-            return now;
-        };
-        let Some(lead) = remaining.as_nanos().checked_sub(self.offset.as_nanos()) else {
-            return now;
-        };
-        now.checked_add_delta(TimestampDelta::from_nanos(lead))
-            .expect("before the deadline")
-    }
-}
-
-impl ProposalCreation for OffsetProposalCreation {
+impl ProposalCreation for ProposalPlanner {
     fn new(epoch_handle: &EpochHandle, config: &ProposalConfig) -> Self {
-        Self {
-            self_id: epoch_handle.self_id,
-            proposers: epoch_handle.proposers.clone(),
-            offset: config.propose_before_deadline,
-            due: BTreeMap::new(),
-        }
+        ProposalPlanner::new(
+            epoch_handle.self_id,
+            epoch_handle.proposers.clone(),
+            config.planner(&epoch_handle.proposers),
+        )
     }
 
     fn handle_slot_open(&mut self, now: Timestamp, slot: Slot, deadline: Timestamp) {
-        if !matches!(
-            self.proposers.proposer_index_at(slot, &self.self_id),
-            Ok(Some(_))
-        ) {
-            return;
-        }
-        self.due.insert(slot, self.propose_at(now, deadline));
+        ProposalPlanner::handle_slot_open(self, now, slot, deadline);
     }
 
-    // cap is exclusive, so slot cap itself may still be open
-    fn handle_cap_advance(&mut self, _now: Timestamp, cap: Slot) {
-        self.due.retain(|slot, _| *slot >= cap);
+    fn handle_cap_advance(&mut self, now: Timestamp, cap: Slot) {
+        ProposalPlanner::handle_cap_advance(self, now, cap);
     }
 
     fn next_due(&self) -> Option<Timestamp> {
-        self.due.values().min().copied()
+        ProposalPlanner::next_due(self)
     }
 
-    fn poll(&mut self, now: Timestamp) -> Option<(Slot, Bytes)> {
-        let (slot, _) = self.due.iter().find(|(_, at)| **at <= now)?;
-        let slot = *slot;
-        self.due.remove(&slot);
-        Some((slot, proposal_message(slot)))
+    fn poll(&mut self, now: Timestamp) -> Option<(Slot, ProposalIndex)> {
+        ProposalPlanner::poll(self, now)
     }
 }
 
@@ -121,7 +90,7 @@ pub enum ProposingInput {
     CapAdvance(Slot),
 }
 
-pub type ProposingOutput = (Slot, Bytes);
+pub type ProposingOutput = (Slot, ProposalIndex, Bytes);
 
 // runs a ProposalCreation: slot facts in, ready proposals out
 pub struct ProposingTask<P> {
@@ -175,10 +144,11 @@ where
         }
     }
 
+    // the payload is assembled here, not by the creation policy
     fn flush(&mut self) {
         let now = self.clock.now();
-        while let Some(proposal) = self.creation.poll(now) {
-            self.link.send(proposal);
+        while let Some((slot, index)) = self.creation.poll(now) {
+            self.link.send((slot, index, proposal_message(slot)));
         }
     }
 }
@@ -193,86 +163,14 @@ async fn sleep_until(due: Option<Instant>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{super::chorus::types::FixedProposerSchedule, *};
+    use super::*;
 
-    const OFFSET: TimestampDelta = TimestampDelta::from_millis(500);
-
-    fn me() -> NodeId {
-        NodeId::dummy(0)
-    }
-
-    fn creation(proposers: Vec<NodeId>) -> OffsetProposalCreation {
-        OffsetProposalCreation {
-            self_id: me(),
-            proposers: Arc::new(FixedProposerSchedule::new(proposers)),
-            offset: OFFSET,
-            due: BTreeMap::new(),
+    #[test]
+    fn a_proposal_message_is_non_empty_and_bounded() {
+        for slot in 0..64 {
+            let message = proposal_message(Slot(slot));
+            assert!(!message.is_empty());
+            assert!(message.len() <= MAX_PROPOSAL_LEN);
         }
-    }
-
-    // index 1 is ours, index 0 someone else's
-    fn proposer() -> OffsetProposalCreation {
-        creation(vec![NodeId::dummy(1), me()])
-    }
-
-    fn at(millis: u64) -> Timestamp {
-        Timestamp::from_millis(millis)
-    }
-
-    #[test]
-    fn a_proposer_slot_is_due_offset_before_the_deadline() {
-        let mut creation = proposer();
-        creation.handle_slot_open(at(1_000), Slot(3), at(3_000));
-        assert_eq!(creation.next_due(), Some(at(2_500)));
-        assert_eq!(creation.poll(at(2_499)), None);
-    }
-
-    #[test]
-    fn a_non_proposer_slot_has_no_due_time() {
-        let mut creation = creation(vec![NodeId::dummy(1), NodeId::dummy(2)]);
-        creation.handle_slot_open(at(1_000), Slot(3), at(3_000));
-        assert_eq!(creation.next_due(), None);
-        assert_eq!(creation.poll(at(10_000)), None);
-    }
-
-    #[test]
-    fn a_passed_offset_is_due_now() {
-        // offset already passed, deadline not yet
-        let mut creation = proposer();
-        creation.handle_slot_open(at(2_800), Slot(3), at(3_000));
-        assert_eq!(creation.next_due(), Some(at(2_800)));
-
-        // deadline already passed
-        let mut creation = proposer();
-        creation.handle_slot_open(at(3_500), Slot(3), at(3_000));
-        assert_eq!(creation.next_due(), Some(at(3_500)));
-    }
-
-    #[test]
-    fn cap_advance_prunes_strictly_below_the_cap() {
-        let mut creation = proposer();
-        for slot in 0..4 {
-            creation.handle_slot_open(at(0), Slot(slot), at(1_000 * (slot + 1)));
-        }
-
-        creation.handle_cap_advance(at(100), Slot(2));
-        assert_eq!(
-            creation.due.keys().copied().collect::<Vec<_>>(),
-            vec![Slot(2), Slot(3)]
-        );
-        assert_eq!(creation.next_due(), Some(at(2_500)));
-    }
-
-    #[test]
-    fn poll_releases_a_due_slot_once() {
-        let mut creation = proposer();
-        creation.handle_slot_open(at(0), Slot(0), at(1_000));
-        creation.handle_slot_open(at(0), Slot(1), at(2_000));
-
-        let (slot, message) = creation.poll(at(500)).expect("slot 0 is due");
-        assert_eq!(slot, Slot(0));
-        assert!(!message.is_empty());
-        assert_eq!(creation.poll(at(500)), None);
-        assert_eq!(creation.next_due(), Some(at(1_500)));
     }
 }

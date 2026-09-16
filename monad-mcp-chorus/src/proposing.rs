@@ -53,20 +53,18 @@
 //! dissemination latency plus clock skew. Refinements (adaptive leads from
 //! DA feedback, payload-economic strategies) replace the policy inside this
 //! component without touching consensus: the planner's interface to the
-//! outside — facts in ([`ProposalPlanner::handle_slots_opened`],
-//! [`ProposalPlanner::handle_chain_advance`]), wake requests and seal
-//! commands out ([`PlannerOutput`]) — is the seam.
+//! outside — facts in ([`ProposalPlanner::handle_slot_open`],
+//! [`ProposalPlanner::handle_cap_advance`]), the next due time and the
+//! seals out ([`ProposalPlanner::next_due`], [`ProposalPlanner::poll`]) —
+//! is the seam.
 //!
 //! The planner is deliberately not part of the consensus core: it holds no
 //! consensus state, and a missed or skipped seal only costs the proposal
 //! (the index finalizes empty); safety and liveness are unaffected.
 
-use std::{
-    collections::{BTreeMap, VecDeque},
-    sync::Arc,
-};
+use std::{collections::BTreeMap, sync::Arc};
 
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use super::types::{NodeId, ProposalIndex, ProposerSchedule, Slot, Timestamp, TimestampDelta};
 
@@ -85,23 +83,11 @@ pub struct PlannerConfig {
     pub observation_cutoff: u64,
 }
 
-/// An effect requested by the planner, executed by the node wiring.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum PlannerOutput {
-    /// Wake the planner ([`ProposalPlanner::handle_wake`]) for `slot` at
-    /// `at`, clamped to now if `at` already passed.
-    ScheduleWake { at: Timestamp, slot: Slot },
-    /// All prerequisites hold: seal this node's proposal for
-    /// `(slot, index)` now and submit it to the DA layer.
-    Seal { slot: Slot, index: ProposalIndex },
-}
-
 struct PendingSeal {
     index: ProposalIndex,
     deadline: Timestamp,
-    /// The seal alarm fired but the chaining gate was not yet satisfied;
-    /// the seal is released by the next sufficient chain advance.
-    gated: bool,
+    /// `deadline − lead`, clamped to the open time: never in the past.
+    due: Timestamp,
 }
 
 /// See the module docs.
@@ -114,8 +100,6 @@ pub struct ProposalPlanner {
     chained_cap: Slot,
     /// Slots (still) to propose for, with this node's proposal index.
     pending: BTreeMap<Slot, PendingSeal>,
-
-    outputs: VecDeque<PlannerOutput>,
 }
 
 impl ProposalPlanner {
@@ -130,68 +114,35 @@ impl ProposalPlanner {
             config,
             chained_cap: Slot::FIRST,
             pending: BTreeMap::new(),
-            outputs: VecDeque::new(),
         }
     }
 
-    /// Fact: the conductor opened `slots` with their deadlines. Requests a
-    /// seal wake at `deadline − lead` for every slot whose proposer set
-    /// includes this node.
-    pub fn handle_slots_opened(&mut self, slots: &BTreeMap<Slot, Timestamp>) {
-        for (&slot, &deadline) in slots {
-            let index = match self.schedule.proposer_index_at(slot, &self.me) {
-                Ok(Some(index)) => index,
-                Ok(None) => continue,
-                Err(error) => {
-                    warn!(%error, ?slot, "proposer schedule query failed; not proposing");
-                    continue;
-                }
-            };
-
-            let at = deadline.saturating_sub_delta(self.config.lead);
-            self.pending.insert(
-                slot,
-                PendingSeal {
-                    index,
-                    deadline,
-                    gated: false,
-                },
-            );
-            self.outputs
-                .push_back(PlannerOutput::ScheduleWake { at, slot });
-        }
-    }
-
-    /// The seal alarm for `slot` fired: seal now, or hold the seal until
-    /// the chaining gate clears.
-    pub fn handle_wake(&mut self, now: Timestamp, slot: Slot) {
-        let Some(pending) = self.pending.get(&slot) else {
-            return;
+    /// Fact: the conductor opened `slot` with `deadline`. Registers a seal
+    /// due at `deadline − lead` if this node's proposer set includes it.
+    pub fn handle_slot_open(&mut self, now: Timestamp, slot: Slot, deadline: Timestamp) {
+        let index = match self.schedule.proposer_index_at(slot, &self.me) {
+            Ok(Some(index)) => index,
+            Ok(None) => return,
+            Err(error) => {
+                warn!(%error, ?slot, "proposer schedule query failed; not proposing");
+                return;
+            }
         };
 
-        if now >= pending.deadline {
-            info!(
-                ?slot,
-                "skipping proposal: seal alarm fired past the deadline"
-            );
-            self.pending.remove(&slot);
-            return;
-        }
-
-        if self.chained(slot) {
-            self.seal(slot);
-        } else {
-            debug!(?slot, cap = ?self.chained_cap, "proposal gated on chaining");
-            self.pending
-                .get_mut(&slot)
-                .expect("pending presence checked above")
-                .gated = true;
-        }
+        let due = deadline.saturating_sub_delta(self.config.lead).max(now);
+        self.pending.insert(
+            slot,
+            PendingSeal {
+                index,
+                deadline,
+                due,
+            },
+        );
     }
 
-    /// Fact: the chained prefix advanced to `cap` (exclusive). Releases
-    /// seals that were gated on it and drops slots the chain already passed.
-    pub fn handle_chain_advance(&mut self, now: Timestamp, cap: Slot) {
+    /// Fact: the chained prefix advanced to `cap` (exclusive). Drops slots
+    /// the chain already passed; seals gated on it surface via `next_due`.
+    pub fn handle_cap_advance(&mut self, now: Timestamp, cap: Slot) {
         if cap <= self.chained_cap {
             return;
         }
@@ -206,28 +157,30 @@ impl ProposalPlanner {
             );
             self.pending.remove(&slot);
         }
-
-        let released: Vec<Slot> = self
-            .pending
-            .iter()
-            .filter(|(slot, pending)| pending.gated && self.chained(**slot))
-            .map(|(slot, _)| *slot)
-            .collect();
-        for slot in released {
-            if now >= self.pending[&slot].deadline {
-                info!(
-                    ?slot,
-                    "skipping proposal: chaining gate cleared past the deadline"
-                );
-                self.pending.remove(&slot);
-            } else {
-                self.seal(slot);
-            }
-        }
+        self.drop_late(now);
     }
 
-    pub fn poll(&mut self) -> Option<PlannerOutput> {
-        self.outputs.pop_front()
+    /// When `poll` may next seal. May already be in the past (a seal
+    /// released by a cap advance): the caller wakes at once.
+    pub fn next_due(&self) -> Option<Timestamp> {
+        self.pending
+            .iter()
+            .filter(|(slot, _)| self.chained(**slot))
+            .map(|(_, pending)| pending.due)
+            .min()
+    }
+
+    /// The lowest due slot whose chaining gate is satisfied, to seal now and
+    /// submit to the DA layer. Slots past their deadline are dropped first.
+    pub fn poll(&mut self, now: Timestamp) -> Option<(Slot, ProposalIndex)> {
+        self.drop_late(now);
+        let slot = self
+            .pending
+            .iter()
+            .find(|(slot, pending)| pending.due <= now && self.chained(**slot))
+            .map(|(slot, _)| *slot)?;
+        let pending = self.pending.remove(&slot).expect("found above");
+        Some((slot, pending.index))
     }
 
     /// Whether slot `r − y` is chained, for `slot = r` and the observation
@@ -242,15 +195,22 @@ impl ProposalPlanner {
                     .saturating_add(self.config.observation_cutoff)
     }
 
-    fn seal(&mut self, slot: Slot) {
-        let pending = self
+    // `gated`: the chaining gate, not a late alarm, is what cost the proposal
+    fn drop_late(&mut self, now: Timestamp) {
+        let late: Vec<Slot> = self
             .pending
-            .remove(&slot)
-            .expect("seal is only called for pending slots");
-        self.outputs.push_back(PlannerOutput::Seal {
-            slot,
-            index: pending.index,
-        });
+            .iter()
+            .filter(|(_, pending)| now >= pending.deadline)
+            .map(|(slot, _)| *slot)
+            .collect();
+        for slot in late {
+            let gated = !self.chained(slot);
+            info!(
+                ?slot,
+                gated, "skipping proposal: deadline passed before the seal"
+            );
+            self.pending.remove(&slot);
+        }
     }
 }
 
@@ -282,73 +242,59 @@ mod tests {
         Timestamp::from_millis(INTERVAL * (slot + 1))
     }
 
-    fn open(planner: &mut ProposalPlanner, slots: impl IntoIterator<Item = u64>) {
-        let slots = slots
-            .into_iter()
-            .map(|slot| (Slot(slot), deadline(slot)))
-            .collect();
-        planner.handle_slots_opened(&slots);
+    fn due(slot: u64) -> Timestamp {
+        deadline(slot).saturating_sub_delta(LEAD)
     }
 
-    fn drain(planner: &mut ProposalPlanner) -> Vec<PlannerOutput> {
-        std::iter::from_fn(|| planner.poll()).collect()
+    // opened at genesis, so no due time is clamped
+    fn open(planner: &mut ProposalPlanner, slots: impl IntoIterator<Item = u64>) {
+        for slot in slots {
+            planner.handle_slot_open(Timestamp::GENESIS, Slot(slot), deadline(slot));
+        }
     }
 
     #[test]
-    fn schedules_wakes_lead_before_the_deadline() {
+    fn next_due_is_lead_before_the_earliest_deadline() {
         let mut planner = planner(0);
         open(&mut planner, [0, 1]);
 
-        assert_eq!(
-            drain(&mut planner),
-            vec![
-                PlannerOutput::ScheduleWake {
-                    at: deadline(0).saturating_sub_delta(LEAD),
-                    slot: Slot(0),
-                },
-                PlannerOutput::ScheduleWake {
-                    at: deadline(1).saturating_sub_delta(LEAD),
-                    slot: Slot(1),
-                },
-            ]
-        );
+        assert_eq!(planner.next_due(), Some(due(0)));
+        assert_eq!(planner.poll(due(0)), Some((Slot(0), 1)));
+        assert_eq!(planner.next_due(), Some(due(1)));
+        assert_eq!(planner.poll(due(1)), Some((Slot(1), 1)));
+        assert_eq!(planner.next_due(), None);
     }
 
     #[test]
-    fn lead_underflow_saturates_to_genesis() {
+    fn passed_lead_clamps_to_now() {
         let mut planner = planner(0);
-        let slots = [(Slot(0), Timestamp::from_millis(10))]
-            .into_iter()
-            .collect();
-        planner.handle_slots_opened(&slots);
+        let now = Timestamp::from_millis(50);
+        planner.handle_slot_open(now, Slot(0), Timestamp::from_millis(80));
 
-        assert_eq!(
-            drain(&mut planner),
-            vec![PlannerOutput::ScheduleWake {
-                at: Timestamp::GENESIS,
-                slot: Slot(0),
-            }]
-        );
+        assert_eq!(planner.next_due(), Some(now));
+        assert_eq!(planner.poll(now), Some((Slot(0), 1)));
     }
 
     #[test]
-    fn wake_seals_with_a_zero_observation_cutoff() {
+    fn poll_before_due_seals_nothing() {
         let mut planner = planner(0);
         open(&mut planner, [0]);
-        let _ = drain(&mut planner);
 
-        planner.handle_wake(deadline(0).saturating_sub_delta(LEAD), Slot(0));
         assert_eq!(
-            drain(&mut planner),
-            vec![PlannerOutput::Seal {
-                slot: Slot(0),
-                index: 1,
-            }]
+            planner.poll(due(0).saturating_sub_delta(TimestampDelta::from_millis(1))),
+            None
         );
+        assert_eq!(planner.poll(due(0)), Some((Slot(0), 1)));
+    }
 
-        // sealing is one-shot
-        planner.handle_wake(deadline(0), Slot(0));
-        assert_eq!(drain(&mut planner), vec![]);
+    #[test]
+    fn sealing_is_one_shot() {
+        let mut planner = planner(0);
+        open(&mut planner, [0]);
+
+        assert_eq!(planner.poll(due(0)), Some((Slot(0), 1)));
+        assert_eq!(planner.poll(due(0)), None);
+        assert_eq!(planner.next_due(), None);
     }
 
     #[test]
@@ -366,89 +312,95 @@ mod tests {
         );
 
         open(&mut planner, [0, 1, 2]);
-        assert_eq!(drain(&mut planner), vec![]);
+        assert_eq!(planner.next_due(), None);
+        assert_eq!(planner.poll(deadline(2)), None);
     }
 
     #[test]
     fn genesis_slots_are_exempt_from_the_gate() {
         let mut planner = planner(2);
         open(&mut planner, [0, 1]);
-        let _ = drain(&mut planner);
 
-        for slot in [0, 1] {
-            planner.handle_wake(deadline(slot).saturating_sub_delta(LEAD), Slot(slot));
-        }
-        assert_eq!(
-            drain(&mut planner),
-            vec![
-                PlannerOutput::Seal {
-                    slot: Slot(0),
-                    index: 1,
-                },
-                PlannerOutput::Seal {
-                    slot: Slot(1),
-                    index: 1,
-                },
-            ]
-        );
+        assert_eq!(planner.poll(due(0)), Some((Slot(0), 1)));
+        assert_eq!(planner.poll(due(1)), Some((Slot(1), 1)));
     }
 
     #[test]
-    fn gated_seal_is_released_by_chain_advance() {
+    fn gated_slot_has_no_due_time() {
         let mut planner = planner(2);
         open(&mut planner, [5]);
-        let _ = drain(&mut planner);
+
+        assert_eq!(planner.next_due(), None);
+        assert_eq!(planner.poll(due(5)), None);
+    }
+
+    #[test]
+    fn gated_seal_is_released_by_cap_advance() {
+        let mut planner = planner(2);
+        open(&mut planner, [5]);
 
         // slot 5 needs slot 3 chained: cap >= 4
-        planner.handle_wake(deadline(5).saturating_sub_delta(LEAD), Slot(5));
-        assert_eq!(drain(&mut planner), vec![]);
+        assert_eq!(planner.poll(due(5)), None);
 
-        planner.handle_chain_advance(deadline(4), Slot(3));
-        assert_eq!(drain(&mut planner), vec![]);
+        planner.handle_cap_advance(deadline(4), Slot(3));
+        assert_eq!(planner.next_due(), None);
 
-        planner.handle_chain_advance(deadline(4), Slot(4));
-        assert_eq!(
-            drain(&mut planner),
-            vec![PlannerOutput::Seal {
-                slot: Slot(5),
-                index: 1,
-            }]
-        );
+        planner.handle_cap_advance(deadline(4), Slot(4));
+        assert_eq!(planner.next_due(), Some(due(5)));
+        assert_eq!(planner.poll(due(5)), Some((Slot(5), 1)));
     }
 
     #[test]
     fn late_gate_clearance_skips_the_proposal() {
         let mut planner = planner(2);
         open(&mut planner, [5]);
-        let _ = drain(&mut planner);
 
-        planner.handle_wake(deadline(5).saturating_sub_delta(LEAD), Slot(5));
-        planner.handle_chain_advance(deadline(5), Slot(4));
-        assert_eq!(drain(&mut planner), vec![]);
+        assert_eq!(planner.poll(due(5)), None);
+        planner.handle_cap_advance(deadline(5), Slot(4));
+        assert_eq!(planner.next_due(), None);
+        assert_eq!(planner.poll(deadline(5)), None);
     }
 
     #[test]
-    fn late_wake_skips_the_proposal() {
+    fn late_poll_skips_the_proposal() {
         let mut planner = planner(0);
         open(&mut planner, [0]);
-        let _ = drain(&mut planner);
 
-        planner.handle_wake(deadline(0), Slot(0));
-        assert_eq!(drain(&mut planner), vec![]);
+        assert_eq!(planner.poll(deadline(0)), None);
+        assert_eq!(planner.next_due(), None);
     }
 
     #[test]
-    fn chain_passing_a_pending_slot_drops_it() {
+    fn cap_passing_a_pending_slot_drops_it() {
         let mut planner = planner(2);
         open(&mut planner, [5]);
-        let _ = drain(&mut planner);
 
-        planner.handle_wake(deadline(5).saturating_sub_delta(LEAD), Slot(5));
-        planner.handle_chain_advance(deadline(5), Slot(6));
-        assert_eq!(drain(&mut planner), vec![]);
+        planner.handle_cap_advance(deadline(5), Slot(6));
+        assert_eq!(planner.next_due(), None);
+        assert_eq!(planner.poll(due(5)), None);
 
         // no resurrection by a later advance
-        planner.handle_chain_advance(deadline(6), Slot(7));
-        assert_eq!(drain(&mut planner), vec![]);
+        planner.handle_cap_advance(deadline(6), Slot(7));
+        assert_eq!(planner.poll(due(5)), None);
+    }
+
+    #[test]
+    fn cap_advance_keeps_the_slot_at_the_cap() {
+        let mut planner = planner(0);
+        open(&mut planner, [4, 5]);
+
+        planner.handle_cap_advance(Timestamp::GENESIS, Slot(5));
+        assert_eq!(planner.next_due(), Some(due(5)));
+        assert_eq!(planner.poll(due(5)), Some((Slot(5), 1)));
+    }
+
+    #[test]
+    fn cap_advance_is_monotone() {
+        let mut planner = planner(2);
+        planner.handle_cap_advance(Timestamp::GENESIS, Slot(6));
+        planner.handle_cap_advance(Timestamp::GENESIS, Slot(4));
+
+        open(&mut planner, [7]);
+        assert_eq!(planner.poll(due(7)), Some((Slot(7), 1)));
     }
 }

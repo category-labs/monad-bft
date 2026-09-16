@@ -30,7 +30,8 @@ use crate::{
     chorus::{
         CadenceRuntime, NodeEvent, SlotLifecycle, SlotManager, WakeId,
         conductor::MonadConductor,
-        types::{ProposerSchedule as _, Slot, Timestamp, TimestampDelta, Validated},
+        proposing::ProposalPlanner,
+        types::{ProposalIndex, Slot, Timestamp, TimestampDelta, Validated},
     },
     config::NodeConfig,
     da::{
@@ -41,10 +42,7 @@ use crate::{
     epoch::EpochHandle,
     finalization::{FinalizationCollector, FinalizedSlot},
     network::{Inbound, Link, NetworkHandle, Outbound, Packet},
-    proposing_task::{
-        OffsetProposalCreation, ProposalCreation as _, ProposingInput, ProposingOutput,
-        ProposingTask,
-    },
+    proposing_task::{ProposalCreation, ProposingInput, ProposingOutput, ProposingTask},
 };
 
 // monotonic since start, anchored to unix time at start
@@ -125,7 +123,7 @@ impl Node {
         let (da_link, task_link) = Link::pair();
         let da_task = DATask::spawn(da, task_link);
 
-        let creation = OffsetProposalCreation::new(&epoch_handle, &config.proposal);
+        let creation = <ProposalPlanner as ProposalCreation>::new(&epoch_handle, &config.proposal);
         let (proposing_link, task_link) = Link::pair();
         let proposing_task = ProposingTask::spawn(creation, clock, task_link);
 
@@ -159,7 +157,7 @@ impl Node {
                 Some(inbound) = recv_inbound(&mut self.network) => self.handle_inbound(inbound),
                 Some(output) = self.cadence.recv() => self.handle_cadence_output(output),
                 Some(output) = self.da.recv() => self.handle_da_output(output),
-                Some((slot, message)) = self.proposing.recv() => self.propose(slot, message),
+                Some((slot, index, message)) = self.proposing.recv() => self.propose(slot, index, message),
                 Some(expired) = self.timers.next(), if !self.timers.is_empty() => {
                     self.cadence.send(CadenceInput::Wake(expired.into_inner()));
                 }
@@ -263,17 +261,10 @@ impl Node {
         self.cadence.send(CadenceInput::Message(message));
     }
 
-    // first hop of a proposal the proposing task released: our own
-    // share goes to our DA, the rest to its owners
-    fn propose(&mut self, slot: Slot, message: Bytes) {
+    // first hop of a proposal the proposing task released at (slot, index):
+    // our own share goes to our DA, the rest to its owners
+    fn propose(&mut self, slot: Slot, index: ProposalIndex, message: Bytes) {
         let self_id = self.epoch_handle.self_id;
-        let Ok(Some(index)) = self
-            .epoch_handle
-            .proposers
-            .proposer_index_at(slot, &self_id)
-        else {
-            return;
-        };
         let epoch_handle = self.epoch_handle.da();
         let unix_ts = unix_seconds(self.clock.now());
 

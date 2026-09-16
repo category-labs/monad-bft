@@ -169,6 +169,7 @@ impl<M> CadenceSwarmBuilder<M, ChorusDAEvent> {
             planner,
             da,
             da_events,
+            seal_alarm: None,
         };
         let node = SimNode::with_proposer(id, runtime, harness);
         self.nodes.push((id, node));
@@ -241,25 +242,25 @@ where
     }
 }
 
-// Forwards the runtime facts the proposal planner consumes; the planner's
-// resulting requests are executed by the owning SimNode (see node.rs).
+// Forwards the runtime facts the proposal planner consumes; the owning
+// SimNode polls the planner's seals and arms its alarm (see node.rs).
 struct PlannerFacts(Arc<Mutex<ProposalPlanner>>);
 
 impl<OD, FD> FinalizationObserver<OD, FD> for PlannerFacts {
     fn handle_finalization(&mut self, _now: Timestamp, _slot: Slot, _data: &FD) {}
 
-    fn handle_slots_opened(&mut self, _now: Timestamp, slots: &BTreeMap<Slot, Timestamp>) {
-        self.0
-            .lock()
-            .expect("planner poisoned")
-            .handle_slots_opened(slots);
+    fn handle_slots_opened(&mut self, now: Timestamp, slots: &BTreeMap<Slot, Timestamp>) {
+        let mut planner = self.0.lock().expect("planner poisoned");
+        for (&slot, &deadline) in slots {
+            planner.handle_slot_open(now, slot, deadline);
+        }
     }
 
     fn handle_chain_advance(&mut self, now: Timestamp, cap: Slot) {
         self.0
             .lock()
             .expect("planner poisoned")
-            .handle_chain_advance(now, cap);
+            .handle_cap_advance(now, cap);
     }
 }
 
