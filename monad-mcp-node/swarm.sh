@@ -119,7 +119,7 @@ finalized_slots_of() {
     log_of "$1" | grep 'finalized' | grep -o -E 'slot=[0-9]+' | sort
 }
 
-# "finalized ... block=oo.oo": one char per proposal, o committed
+# "finalized ... block=+-+++": one char per proposal, + committed
 report_per_node() {
     echo
     echo "node  finalized  all-committed  proposed  warnings  errors"
@@ -129,7 +129,7 @@ report_per_node() {
         log=$(log_of "$i")
         local finalized full proposed warnings errors
         finalized=$(count_lines 'finalized' <<< "$log")
-        full=$(count_lines 'block="?o+"?( |$)' <<< "$log")
+        full=$(count_lines 'block="?\++"?( |$)' <<< "$log")
         proposed=$(count_lines 'proposing' <<< "$log")
         warnings=$(count_lines ' WARN' <<< "$log")
         errors=$(count_lines ' ERROR|panicked' <<< "$log")

@@ -21,12 +21,9 @@ use tokio::task::JoinHandle;
 use tracing::{Instrument as _, Span};
 
 use crate::{
-    chorus::{
-        SlotLifecycle,
-        types::{NodeId, ProposerSchedule as _, Slot, Timestamp, TimestampDelta},
-    },
+    chorus::types::{NodeId, ProposerSchedule, Slot, Timestamp, TimestampDelta},
     config::ProposalConfig,
-    epoch::{EpochHandle, NodeProposerSchedule},
+    epoch::EpochHandle,
     network::Link,
     node::Clock,
 };
@@ -39,7 +36,10 @@ const MAX_PROPOSAL_LEN: usize = 1 << 20;
 pub trait ProposalCreation {
     fn new(epoch_handle: &EpochHandle, config: &ProposalConfig) -> Self;
 
-    fn handle_slot_lifecycle(&mut self, now: Timestamp, slot: Slot, event: SlotLifecycle);
+    fn handle_slot_open(&mut self, now: Timestamp, slot: Slot, deadline: Timestamp);
+
+    // every slot strictly below cap is finalized
+    fn handle_cap_advance(&mut self, now: Timestamp, cap: Slot);
 
     // when poll may next yield something
     fn next_due(&self) -> Option<Timestamp>;
@@ -50,7 +50,7 @@ pub trait ProposalCreation {
 // proposes a fixed offset before the slot's deadline
 pub struct OffsetProposalCreation {
     self_id: NodeId,
-    proposers: Arc<NodeProposerSchedule>,
+    proposers: Arc<dyn ProposerSchedule + Send + Sync>,
     offset: TimestampDelta,
     // when to propose, for each open slot we propose in
     due: BTreeMap<Slot, Timestamp>,
@@ -80,21 +80,19 @@ impl ProposalCreation for OffsetProposalCreation {
         }
     }
 
-    fn handle_slot_lifecycle(&mut self, now: Timestamp, slot: Slot, event: SlotLifecycle) {
-        match event {
-            SlotLifecycle::Opened { deadline } => {
-                if !matches!(
-                    self.proposers.proposer_index_at(slot, &self.self_id),
-                    Ok(Some(_))
-                ) {
-                    return;
-                }
-                self.due.insert(slot, self.propose_at(now, deadline));
-            }
-            SlotLifecycle::Completed => {
-                self.due.remove(&slot);
-            }
+    fn handle_slot_open(&mut self, now: Timestamp, slot: Slot, deadline: Timestamp) {
+        if !matches!(
+            self.proposers.proposer_index_at(slot, &self.self_id),
+            Ok(Some(_))
+        ) {
+            return;
         }
+        self.due.insert(slot, self.propose_at(now, deadline));
+    }
+
+    // cap is exclusive, so slot cap itself may still be open
+    fn handle_cap_advance(&mut self, _now: Timestamp, cap: Slot) {
+        self.due.retain(|slot, _| *slot >= cap);
     }
 
     fn next_due(&self) -> Option<Timestamp> {
@@ -119,12 +117,13 @@ fn proposal_message(_slot: Slot) -> Bytes {
 }
 
 pub enum ProposingInput {
-    Lifecycle(Slot, SlotLifecycle),
+    SlotOpen(Slot, Timestamp),
+    CapAdvance(Slot),
 }
 
 pub type ProposingOutput = (Slot, Bytes);
 
-// runs a ProposalCreation: lifecycle in, ready proposals out
+// runs a ProposalCreation: slot facts in, ready proposals out
 pub struct ProposingTask<P> {
     clock: Clock,
     creation: P,
@@ -167,8 +166,11 @@ where
     fn handle(&mut self, input: ProposingInput) {
         let now = self.clock.now();
         match input {
-            ProposingInput::Lifecycle(slot, event) => {
-                self.creation.handle_slot_lifecycle(now, slot, event);
+            ProposingInput::SlotOpen(slot, deadline) => {
+                self.creation.handle_slot_open(now, slot, deadline);
+            }
+            ProposingInput::CapAdvance(cap) => {
+                self.creation.handle_cap_advance(now, cap);
             }
         }
     }
@@ -186,5 +188,91 @@ async fn sleep_until(due: Option<Instant>) {
     match due {
         Some(at) => tokio::time::sleep_until(at.into()).await,
         None => pending().await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{super::chorus::types::FixedProposerSchedule, *};
+
+    const OFFSET: TimestampDelta = TimestampDelta::from_millis(500);
+
+    fn me() -> NodeId {
+        NodeId::dummy(0)
+    }
+
+    fn creation(proposers: Vec<NodeId>) -> OffsetProposalCreation {
+        OffsetProposalCreation {
+            self_id: me(),
+            proposers: Arc::new(FixedProposerSchedule::new(proposers)),
+            offset: OFFSET,
+            due: BTreeMap::new(),
+        }
+    }
+
+    // index 1 is ours, index 0 someone else's
+    fn proposer() -> OffsetProposalCreation {
+        creation(vec![NodeId::dummy(1), me()])
+    }
+
+    fn at(millis: u64) -> Timestamp {
+        Timestamp::from_millis(millis)
+    }
+
+    #[test]
+    fn a_proposer_slot_is_due_offset_before_the_deadline() {
+        let mut creation = proposer();
+        creation.handle_slot_open(at(1_000), Slot(3), at(3_000));
+        assert_eq!(creation.next_due(), Some(at(2_500)));
+        assert_eq!(creation.poll(at(2_499)), None);
+    }
+
+    #[test]
+    fn a_non_proposer_slot_has_no_due_time() {
+        let mut creation = creation(vec![NodeId::dummy(1), NodeId::dummy(2)]);
+        creation.handle_slot_open(at(1_000), Slot(3), at(3_000));
+        assert_eq!(creation.next_due(), None);
+        assert_eq!(creation.poll(at(10_000)), None);
+    }
+
+    #[test]
+    fn a_passed_offset_is_due_now() {
+        // offset already passed, deadline not yet
+        let mut creation = proposer();
+        creation.handle_slot_open(at(2_800), Slot(3), at(3_000));
+        assert_eq!(creation.next_due(), Some(at(2_800)));
+
+        // deadline already passed
+        let mut creation = proposer();
+        creation.handle_slot_open(at(3_500), Slot(3), at(3_000));
+        assert_eq!(creation.next_due(), Some(at(3_500)));
+    }
+
+    #[test]
+    fn cap_advance_prunes_strictly_below_the_cap() {
+        let mut creation = proposer();
+        for slot in 0..4 {
+            creation.handle_slot_open(at(0), Slot(slot), at(1_000 * (slot + 1)));
+        }
+
+        creation.handle_cap_advance(at(100), Slot(2));
+        assert_eq!(
+            creation.due.keys().copied().collect::<Vec<_>>(),
+            vec![Slot(2), Slot(3)]
+        );
+        assert_eq!(creation.next_due(), Some(at(2_500)));
+    }
+
+    #[test]
+    fn poll_releases_a_due_slot_once() {
+        let mut creation = proposer();
+        creation.handle_slot_open(at(0), Slot(0), at(1_000));
+        creation.handle_slot_open(at(0), Slot(1), at(2_000));
+
+        let (slot, message) = creation.poll(at(500)).expect("slot 0 is due");
+        assert_eq!(slot, Slot(0));
+        assert!(!message.is_empty());
+        assert_eq!(creation.poll(at(500)), None);
+        assert_eq!(creation.next_due(), Some(at(1_500)));
     }
 }

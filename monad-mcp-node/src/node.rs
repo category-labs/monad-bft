@@ -28,7 +28,7 @@ use crate::{
     RunError,
     cadence_task::{CadenceInput, CadenceOutput, CadenceTask, CadenceWireMsg},
     chorus::{
-        CadenceRuntime, NodeEvent, SlotManager, WakeId,
+        CadenceRuntime, NodeEvent, SlotLifecycle, SlotManager, WakeId,
         conductor::MonadConductor,
         types::{ProposerSchedule as _, Slot, Timestamp, TimestampDelta, Validated},
     },
@@ -209,7 +209,10 @@ impl Node {
             CadenceOutput::NodeEvent(event) => self.handle_node_event(event),
             CadenceOutput::Lifecycle(slot, event) => {
                 self.da.send(DAInput::Lifecycle(slot, event));
-                self.proposing.send(ProposingInput::Lifecycle(slot, event));
+                if let SlotLifecycle::Opened { deadline } = event {
+                    self.proposing
+                        .send(ProposingInput::SlotOpen(slot, deadline));
+                }
                 self.collector.handle_lifecycle(slot, event);
             }
             CadenceOutput::DACommand(slot, command) => {
@@ -221,6 +224,10 @@ impl Node {
                 tracing::debug!(slot = slot.0, ?path, committed, "cadence finalized");
                 self.collector.handle_finalization(now, slot, finalization);
                 self.deliver_finalized();
+            }
+            CadenceOutput::CapAdvance(now, cap) => {
+                tracing::debug!(cap = cap.0, at = now.as_nanos(), "chain advanced");
+                self.proposing.send(ProposingInput::CapAdvance(cap));
             }
         }
     }
