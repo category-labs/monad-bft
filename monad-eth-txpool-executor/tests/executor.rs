@@ -155,8 +155,7 @@ async fn test_ipc_tx_forwarding_pacing() {
         match event {
             MonadEvent::MempoolEvent(mempool_event) => match mempool_event {
                 MempoolEvent::ForwardTxs(vec) => {
-                    assert!(!vec.is_empty());
-                    assert!(vec.len() <= 2, "vec len was {}", vec.len());
+                    assert_eq!(vec.len(), 1);
                     assert!(
                         vec.iter().map(Bytes::len).sum::<usize>()
                             <= egress_max_size_bytes(
