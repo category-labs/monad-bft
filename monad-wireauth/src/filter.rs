@@ -34,6 +34,13 @@ pub enum FilterAction {
     SendCookie,
     Drop,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HandshakeKind {
+    Initiation,
+    Response,
+}
+
 // Filter ...
 // NOTE that rate limiting for ipv6 is not properly supported
 pub struct Filter {
@@ -45,7 +52,8 @@ pub struct Filter {
     handshake_rate_reset_interval: Duration,
     ip_request_history: LruCache<IpAddr, Duration>,
     ip_rate_limit_window: Duration,
-    high_watermark_sessions: usize,
+    total_transport_sessions: usize,
+    max_pending_accepted_sessions: usize,
     metrics: ExecutorMetrics,
     metric_names: &'static MetricNames,
 }
@@ -62,7 +70,8 @@ impl Filter {
         handshake_rate_reset_interval: Duration,
         ip_rate_limit_window: Duration,
         ip_history_capacity: usize,
-        high_watermark_sessions: usize,
+        total_transport_sessions: usize,
+        max_pending_accepted_sessions: usize,
     ) -> Self {
         Self {
             cookie_unverified_counter: 0,
@@ -73,7 +82,8 @@ impl Filter {
             handshake_rate_reset_interval,
             ip_request_history: LruCache::new(NonZeroUsize::new(ip_history_capacity).unwrap()),
             ip_rate_limit_window,
-            high_watermark_sessions,
+            total_transport_sessions,
+            max_pending_accepted_sessions,
             metrics: init_filter_executor_metrics(metric_names),
             metric_names,
         }
@@ -113,15 +123,23 @@ impl Filter {
     pub fn apply<M>(
         &mut self,
         state: &State<M>,
+        handshake_kind: HandshakeKind,
         remote_addr: SocketAddr,
         duration_since_start: Duration,
         cookie_valid: bool,
     ) -> FilterAction {
         trace!(remote_addr = %remote_addr, cookie_valid = cookie_valid, "applying filter");
-        let total_sessions = state.total_sessions();
+        let transport_sessions = state.transport_sessions_count();
+        let pending_accepted_sessions = state.pending_accepted_sessions_count();
 
         let action = self
-            .check_high_watermark(total_sessions, remote_addr)
+            .check_total_transport_sessions(transport_sessions, remote_addr)
+            .or_else(|| match handshake_kind {
+                HandshakeKind::Initiation => self
+                    .check_pending_accepted_session_limit(pending_accepted_sessions, remote_addr),
+                // Responses promote an existing pending session without allocating a new one.
+                HandshakeKind::Response => None,
+            })
             .unwrap_or_else(|| {
                 if cookie_valid {
                     self.check_verified_request(remote_addr, duration_since_start)
@@ -142,17 +160,36 @@ impl Filter {
         action
     }
 
-    fn check_high_watermark(
+    fn check_total_transport_sessions(
         &self,
-        total_sessions: usize,
+        transport_sessions: usize,
         remote_addr: SocketAddr,
     ) -> Option<FilterAction> {
-        (total_sessions >= self.high_watermark_sessions).then(|| {
+        (transport_sessions >= self.total_transport_sessions).then(|| {
             debug!(
                 remote_addr = %remote_addr,
-                sessions = total_sessions,
-                high_watermark = self.high_watermark_sessions,
-                "high load - rejecting new handshake"
+                transport_sessions,
+                total_transport_sessions = self.total_transport_sessions,
+                "too many established transport sessions - rejecting new handshake"
+            );
+            FilterAction::Drop
+        })
+    }
+
+    fn check_pending_accepted_session_limit(
+        &mut self,
+        pending_accepted_sessions: usize,
+        remote_addr: SocketAddr,
+    ) -> Option<FilterAction> {
+        (pending_accepted_sessions >= self.max_pending_accepted_sessions).then(|| {
+            self.metrics
+                .gauge(self.metric_names.filter_pending_accepted_session_limit)
+                .inc();
+            debug!(
+                remote_addr = %remote_addr,
+                pending_accepted_sessions,
+                max_pending_accepted_sessions = self.max_pending_accepted_sessions,
+                "too many pending accepted sessions - rejecting new handshake"
             );
             FilterAction::Drop
         })
@@ -223,7 +260,7 @@ impl Filter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{metrics::DEFAULT_METRICS, state::insert_test_initiator_session};
+    use crate::{metrics::DEFAULT_METRICS, state::insert_test_responder_session};
 
     fn default_filter() -> Filter {
         Filter::new(
@@ -234,6 +271,7 @@ mod tests {
             Duration::from_secs(60),
             1_000,
             100,
+            100,
         )
     }
 
@@ -242,13 +280,19 @@ mod tests {
         let mut filter = default_filter();
         let state = State::new(DEFAULT_METRICS);
         let addr = "127.0.0.1:8080".parse().unwrap();
-        let action = filter.apply(&state, addr, Duration::ZERO, false);
+        let action = filter.apply(
+            &state,
+            HandshakeKind::Initiation,
+            addr,
+            Duration::ZERO,
+            false,
+        );
         assert_eq!(action, FilterAction::Pass);
     }
 
     #[test]
-    fn test_high_watermark_drops() {
-        let high_watermark = 10;
+    fn test_pending_accepted_session_limit_drops() {
+        let max_pending_accepted_sessions = 10;
         let mut filter = Filter::new(
             DEFAULT_METRICS,
             100,
@@ -256,15 +300,22 @@ mod tests {
             Duration::from_secs(60),
             Duration::from_secs(60),
             1_000,
-            high_watermark,
+            100,
+            max_pending_accepted_sessions,
         );
         let mut state = State::new(DEFAULT_METRICS);
-        for i in 0..high_watermark {
+        for i in 0..max_pending_accepted_sessions {
             let addr: SocketAddr = format!("10.0.0.{}:51820", i).parse().unwrap();
-            insert_test_initiator_session(&mut state, addr);
+            insert_test_responder_session(&mut state, addr);
         }
         let addr = "127.0.0.1:8080".parse().unwrap();
-        let action = filter.apply(&state, addr, Duration::ZERO, false);
+        let action = filter.apply(
+            &state,
+            HandshakeKind::Initiation,
+            addr,
+            Duration::ZERO,
+            false,
+        );
         assert_eq!(action, FilterAction::Drop);
     }
 
@@ -279,14 +330,27 @@ mod tests {
             Duration::from_secs(60),
             1_000,
             100,
+            100,
         );
         let state = State::new(DEFAULT_METRICS);
         let addr = "127.0.0.1:8080".parse().unwrap();
         for _ in 0..unverified_rate_limit {
-            let action = filter.apply(&state, addr, Duration::ZERO, false);
+            let action = filter.apply(
+                &state,
+                HandshakeKind::Initiation,
+                addr,
+                Duration::ZERO,
+                false,
+            );
             assert_eq!(action, FilterAction::Pass);
         }
-        let action = filter.apply(&state, addr, Duration::ZERO, false);
+        let action = filter.apply(
+            &state,
+            HandshakeKind::Initiation,
+            addr,
+            Duration::ZERO,
+            false,
+        );
         assert_eq!(action, FilterAction::SendCookie);
         assert_eq!(filter.cookie_unverified_counter, unverified_rate_limit);
     }
@@ -303,24 +367,49 @@ mod tests {
             Duration::from_secs(60),
             1_000,
             100,
+            100,
         );
         let state = State::new(DEFAULT_METRICS);
         let addr = "127.0.0.1:8080".parse().unwrap();
         for _ in 0..handshake_rate_limit {
-            let action = filter.apply(&state, addr, Duration::ZERO, false);
+            let action = filter.apply(
+                &state,
+                HandshakeKind::Initiation,
+                addr,
+                Duration::ZERO,
+                false,
+            );
             assert_eq!(action, FilterAction::Pass);
         }
 
-        let action = filter.apply(&state, addr, Duration::ZERO, false);
+        let action = filter.apply(
+            &state,
+            HandshakeKind::Initiation,
+            addr,
+            Duration::ZERO,
+            false,
+        );
         assert_eq!(action, FilterAction::SendCookie);
 
         for i in 0..verified_rate_limit {
             let verified_addr: SocketAddr = format!("127.0.0.{}:8080", i + 2).parse().unwrap();
-            let action = filter.apply(&state, verified_addr, Duration::from_secs(61), true);
+            let action = filter.apply(
+                &state,
+                HandshakeKind::Initiation,
+                verified_addr,
+                Duration::from_secs(61),
+                true,
+            );
             assert_eq!(action, FilterAction::Pass);
         }
 
-        let action = filter.apply(&state, addr, Duration::ZERO, false);
+        let action = filter.apply(
+            &state,
+            HandshakeKind::Initiation,
+            addr,
+            Duration::ZERO,
+            false,
+        );
         assert_eq!(action, FilterAction::SendCookie);
     }
 
@@ -335,15 +424,23 @@ mod tests {
             Duration::from_secs(60),
             1_000,
             100,
+            100,
         );
         let state = State::new(DEFAULT_METRICS);
         for i in 0..verified_rate_limit {
             let addr: SocketAddr = format!("127.0.0.{}:8080", i + 2).parse().unwrap();
-            let action = filter.apply(&state, addr, Duration::from_secs(61), true);
+            let action = filter.apply(
+                &state,
+                HandshakeKind::Initiation,
+                addr,
+                Duration::from_secs(61),
+                true,
+            );
             assert_eq!(action, FilterAction::Pass);
         }
         let action = filter.apply(
             &state,
+            HandshakeKind::Initiation,
             "127.0.0.100:8080".parse().unwrap(),
             Duration::from_secs(61),
             true,
@@ -361,20 +458,39 @@ mod tests {
             Duration::from_secs(60),
             1_000,
             100,
+            100,
         );
         let state = State::new(DEFAULT_METRICS);
         let addr = "127.0.0.1:8080".parse().unwrap();
 
         assert_eq!(
-            filter.apply(&state, addr, Duration::ZERO, false),
+            filter.apply(
+                &state,
+                HandshakeKind::Initiation,
+                addr,
+                Duration::ZERO,
+                false
+            ),
             FilterAction::Pass
         );
         assert_eq!(
-            filter.apply(&state, addr, Duration::ZERO, false),
+            filter.apply(
+                &state,
+                HandshakeKind::Initiation,
+                addr,
+                Duration::ZERO,
+                false
+            ),
             FilterAction::Pass
         );
         assert_eq!(
-            filter.apply(&state, addr, Duration::ZERO, false),
+            filter.apply(
+                &state,
+                HandshakeKind::Initiation,
+                addr,
+                Duration::ZERO,
+                false
+            ),
             FilterAction::SendCookie
         );
     }
@@ -390,14 +506,27 @@ mod tests {
             Duration::from_secs(60),
             1_000,
             100,
+            100,
         );
         let state = State::new(DEFAULT_METRICS);
         let addr = "127.0.0.1:8080".parse().unwrap();
         for _ in 0..handshake_rate_limit {
-            filter.apply(&state, addr, Duration::ZERO, false);
+            filter.apply(
+                &state,
+                HandshakeKind::Initiation,
+                addr,
+                Duration::ZERO,
+                false,
+            );
         }
         filter.tick(Duration::from_secs(1));
-        let action = filter.apply(&state, addr, Duration::ZERO, false);
+        let action = filter.apply(
+            &state,
+            HandshakeKind::Initiation,
+            addr,
+            Duration::ZERO,
+            false,
+        );
         assert_eq!(action, FilterAction::Pass);
     }
 
@@ -412,14 +541,27 @@ mod tests {
             Duration::from_secs(60),
             1_000,
             100,
+            100,
         );
         let state = State::new(DEFAULT_METRICS);
         let addr = "127.0.0.1:8080".parse().unwrap();
         for _ in 0..handshake_rate_limit {
-            filter.apply(&state, addr, Duration::ZERO, false);
+            filter.apply(
+                &state,
+                HandshakeKind::Initiation,
+                addr,
+                Duration::ZERO,
+                false,
+            );
         }
         filter.tick(Duration::from_secs(5));
-        let action = filter.apply(&state, addr, Duration::from_secs(5), false);
+        let action = filter.apply(
+            &state,
+            HandshakeKind::Initiation,
+            addr,
+            Duration::from_secs(5),
+            false,
+        );
         assert_eq!(action, FilterAction::SendCookie);
     }
 
@@ -434,26 +576,46 @@ mod tests {
             Duration::from_secs(60),
             1_000,
             100,
+            100,
         );
         let state = State::new(DEFAULT_METRICS);
         let addr = "127.0.0.1:8080".parse().unwrap();
         for _ in 0..handshake_rate_limit {
-            filter.apply(&state, addr, Duration::ZERO, false);
+            filter.apply(
+                &state,
+                HandshakeKind::Initiation,
+                addr,
+                Duration::ZERO,
+                false,
+            );
         }
         assert_eq!(
-            filter.apply(&state, addr, Duration::ZERO, false),
+            filter.apply(
+                &state,
+                HandshakeKind::Initiation,
+                addr,
+                Duration::ZERO,
+                false
+            ),
             FilterAction::SendCookie
         );
         for i in 0..handshake_rate_limit {
             let verified_addr: SocketAddr = format!("127.0.0.{}:8080", i + 2).parse().unwrap();
             assert_eq!(
-                filter.apply(&state, verified_addr, Duration::from_secs(61), true,),
+                filter.apply(
+                    &state,
+                    HandshakeKind::Initiation,
+                    verified_addr,
+                    Duration::from_secs(61),
+                    true,
+                ),
                 FilterAction::Pass
             );
         }
         assert_eq!(
             filter.apply(
                 &state,
+                HandshakeKind::Initiation,
                 "127.0.0.100:8080".parse().unwrap(),
                 Duration::from_secs(61),
                 true,
@@ -472,24 +634,49 @@ mod tests {
             Duration::from_secs(5),
             1_000,
             100,
+            100,
         );
         let state = State::new(DEFAULT_METRICS);
         let addr = "127.0.0.1:8080".parse().unwrap();
 
         assert_eq!(
-            filter.apply(&state, addr, Duration::ZERO, false),
+            filter.apply(
+                &state,
+                HandshakeKind::Initiation,
+                addr,
+                Duration::ZERO,
+                false
+            ),
             FilterAction::Pass
         );
         assert_eq!(
-            filter.apply(&state, addr, Duration::from_secs(1), false),
+            filter.apply(
+                &state,
+                HandshakeKind::Initiation,
+                addr,
+                Duration::from_secs(1),
+                false
+            ),
             FilterAction::Pass
         );
         assert_eq!(
-            filter.apply(&state, addr, Duration::from_secs(2), true),
+            filter.apply(
+                &state,
+                HandshakeKind::Initiation,
+                addr,
+                Duration::from_secs(2),
+                true
+            ),
             FilterAction::Pass
         );
         assert_eq!(
-            filter.apply(&state, addr, Duration::from_secs(3), true),
+            filter.apply(
+                &state,
+                HandshakeKind::Initiation,
+                addr,
+                Duration::from_secs(3),
+                true
+            ),
             FilterAction::Drop
         );
     }
@@ -504,12 +691,14 @@ mod tests {
             Duration::from_secs(10),
             1_000,
             100,
+            100,
         );
         let state = State::new(DEFAULT_METRICS);
 
         assert_eq!(
             filter.apply(
                 &state,
+                HandshakeKind::Initiation,
                 "127.0.0.1:8080".parse().unwrap(),
                 Duration::ZERO,
                 true,
@@ -519,6 +708,7 @@ mod tests {
         assert_eq!(
             filter.apply(
                 &state,
+                HandshakeKind::Initiation,
                 "127.0.0.1:8080".parse().unwrap(),
                 Duration::from_secs(1),
                 true,
@@ -529,6 +719,7 @@ mod tests {
         assert_eq!(
             filter.apply(
                 &state,
+                HandshakeKind::Initiation,
                 "127.0.0.2:8080".parse().unwrap(),
                 Duration::from_secs(2),
                 true,
@@ -538,6 +729,7 @@ mod tests {
         assert_eq!(
             filter.apply(
                 &state,
+                HandshakeKind::Initiation,
                 "127.0.0.3:8080".parse().unwrap(),
                 Duration::from_secs(3),
                 true,
@@ -557,22 +749,41 @@ mod tests {
             Duration::from_secs(10),
             1_000,
             100,
+            100,
         );
         let state = State::new(DEFAULT_METRICS);
         let addr = "127.0.0.1:8080".parse().unwrap();
 
         assert_eq!(
-            filter.apply(&state, addr, Duration::ZERO, false),
+            filter.apply(
+                &state,
+                HandshakeKind::Initiation,
+                addr,
+                Duration::ZERO,
+                false
+            ),
             FilterAction::Pass
         );
         assert_eq!(filter.cookie_unverified_counter, 1);
         assert_eq!(
-            filter.apply(&state, addr, Duration::from_secs(1), false),
+            filter.apply(
+                &state,
+                HandshakeKind::Initiation,
+                addr,
+                Duration::from_secs(1),
+                false
+            ),
             FilterAction::SendCookie
         );
         assert_eq!(filter.cookie_unverified_counter, 1);
         assert_eq!(
-            filter.apply(&state, addr, Duration::from_secs(2), false),
+            filter.apply(
+                &state,
+                HandshakeKind::Initiation,
+                addr,
+                Duration::from_secs(2),
+                false
+            ),
             FilterAction::SendCookie
         );
         assert_eq!(filter.cookie_unverified_counter, 1);
@@ -588,6 +799,7 @@ mod tests {
             Duration::from_secs(30),
             2,
             100,
+            100,
         );
         let state = State::new(DEFAULT_METRICS);
 
@@ -596,23 +808,53 @@ mod tests {
         let addr3: SocketAddr = "127.0.0.3:8080".parse().unwrap();
 
         assert_eq!(
-            filter.apply(&state, addr1, Duration::ZERO, true),
+            filter.apply(
+                &state,
+                HandshakeKind::Initiation,
+                addr1,
+                Duration::ZERO,
+                true
+            ),
             FilterAction::Pass
         );
         assert_eq!(
-            filter.apply(&state, addr2, Duration::from_secs(20), true),
+            filter.apply(
+                &state,
+                HandshakeKind::Initiation,
+                addr2,
+                Duration::from_secs(20),
+                true
+            ),
             FilterAction::Pass
         );
         assert_eq!(
-            filter.apply(&state, addr1, Duration::from_secs(25), true),
+            filter.apply(
+                &state,
+                HandshakeKind::Initiation,
+                addr1,
+                Duration::from_secs(25),
+                true
+            ),
             FilterAction::Drop
         );
         assert_eq!(
-            filter.apply(&state, addr3, Duration::from_secs(40), true),
+            filter.apply(
+                &state,
+                HandshakeKind::Initiation,
+                addr3,
+                Duration::from_secs(40),
+                true
+            ),
             FilterAction::Pass
         );
         assert_eq!(
-            filter.apply(&state, addr2, Duration::from_secs(41), true),
+            filter.apply(
+                &state,
+                HandshakeKind::Initiation,
+                addr2,
+                Duration::from_secs(41),
+                true
+            ),
             FilterAction::Drop
         );
     }

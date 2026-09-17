@@ -675,17 +675,26 @@ impl<M> State<M> {
         terminated_addrs
     }
 
+    #[cfg(test)]
     pub fn total_sessions(&self) -> usize {
         self.total_sessions
+    }
+
+    pub(crate) fn pending_accepted_sessions_count(&self) -> usize {
+        self.responding_sessions.len()
+    }
+
+    pub(crate) fn pending_initiated_sessions_count(&self) -> usize {
+        self.initiating_sessions.len()
+    }
+
+    pub(crate) fn transport_sessions_count(&self) -> usize {
+        self.transport_sessions.len()
     }
 
     #[cfg(test)]
     pub fn ip_session_count(&self, ip: &IpAddr) -> usize {
         self.ip_session_counts.get(ip).copied().unwrap_or(0)
-    }
-
-    pub fn initiated_sessions_count(&self) -> usize {
-        self.initiating_sessions.len()
     }
 }
 
@@ -697,7 +706,7 @@ impl State {
 }
 
 #[cfg(test)]
-pub(crate) fn insert_test_initiator_session(
+pub(crate) fn insert_test_responder_session(
     state: &mut State,
     remote_addr: SocketAddr,
 ) -> SessionIndex {
@@ -705,24 +714,36 @@ pub(crate) fn insert_test_initiator_session(
 
     use crate::config::Config;
     let mut rng = rng();
-    let keypair = monad_secp::KeyPair::generate(&mut rng);
-    let remote_public_key = keypair.pubkey();
+    let remote_keypair = monad_secp::KeyPair::generate(&mut rng);
+    let remote_public_key = remote_keypair.pubkey();
     let local_keypair = monad_secp::KeyPair::generate(&mut rng);
     let config = Config::default();
-    let local_index = SessionIndex::new(1);
-    let (initiator, _) = InitiatorState::new(
+    let reservation = state.reserve_session_index().unwrap();
+    let local_index = reservation.index();
+    let (_, (_, mut initiation)) = InitiatorState::<()>::new(
         &mut rng,
         std::time::SystemTime::now(),
         Duration::ZERO,
         &config,
-        local_index,
-        &local_keypair,
-        remote_public_key,
+        SessionIndex::new(1),
+        &remote_keypair,
+        local_keypair.pubkey(),
         remote_addr,
         None,
         0,
     );
-    state.insert_initiator(local_index, initiator, remote_public_key);
+    let validated = ResponderState::validate_init(&local_keypair, &mut initiation).unwrap();
+    let (responder, _, _) = ResponderState::new(
+        &mut rng,
+        Duration::ZERO,
+        &config,
+        local_index,
+        None,
+        validated,
+        remote_addr,
+    );
+    reservation.commit();
+    state.insert_responder(local_index, responder, remote_public_key);
     local_index
 }
 
