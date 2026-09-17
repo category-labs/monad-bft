@@ -149,9 +149,55 @@ pub struct ChunkAssignment {
 
     // mapping from chunk_id to the target node.
     targets: Vec<ChunkTarget>,
+
+    // nodes that are not assigned any chunks.
+    unassigned_nodes: HashSet<NodeIndex>,
 }
 
 impl ChunkAssignment {
+    // chunk ids are dealt round-robin over the holders' obligations,
+    // in holder order. the author must be a holder, possibly of nothing.
+    pub(crate) fn deal(
+        author: &NodeId,
+        holders: impl IntoIterator<Item = (NodeId, usize)>,
+    ) -> Self {
+        let mut nodes = Vec::new();
+        let mut unassigned_nodes = HashSet::new();
+        let mut remaining = Vec::new();
+        for (node, obligation) in holders {
+            if obligation > 0 {
+                remaining.push((NodeIndex(nodes.len()), obligation));
+            } else {
+                unassigned_nodes.insert(NodeIndex(nodes.len()));
+            }
+            nodes.push(node);
+        }
+
+        let mut targets = Vec::new();
+        while !remaining.is_empty() {
+            for (node_index, obligation) in &mut remaining {
+                targets.push(ChunkTarget {
+                    owner_node_index: *node_index,
+                    // every chunk (including rounding) is currently
+                    // rebroadcast to the whole group. todo: stake
+                    // proportional rebroadcast for rounding chunks.
+                    rebroadcast_targets: None,
+                });
+                *obligation -= 1;
+            }
+            remaining.retain(|(_, obligation)| *obligation > 0);
+        }
+
+        let nodes = OrderedNodes(nodes.into_boxed_slice());
+        let author = nodes.index_of(author).expect("author is a holder");
+        ChunkAssignment {
+            nodes,
+            author,
+            targets,
+            unassigned_nodes,
+        }
+    }
+
     pub fn num_chunks(&self) -> usize {
         self.targets.len()
     }
@@ -209,6 +255,11 @@ impl ChunkAssignment {
             .filter_map(move |routing| routing.upstream(receiver))
     }
 
+    pub(crate) fn unassigned_nodes(&self) -> &HashSet<NodeIndex> {
+        &self.unassigned_nodes
+    }
+
+    // the same for every chunk the owner rebroadcasts in full
     pub(crate) fn full_rebroadcast_targets(&self, owner: NodeIndex) -> HashSet<NodeId> {
         let mut targets = HashSet::with_capacity(self.num_nodes());
         for (index, node) in self.nodes() {
@@ -236,22 +287,13 @@ pub(crate) enum Upstream {
 
 // assign each node to chunks according to their stake, rounded up.
 pub struct StakePartition {
-    nodes: OrderedNodes,
-    // the stake of each node, by NodeIndex
-    weights: Vec<Stake>,
+    weights: Vec<(NodeId, Stake)>,
 }
 
 impl StakePartition {
     pub fn new(weights: impl IntoIterator<Item = (NodeId, Stake)>) -> Self {
-        let mut nodes = Vec::new();
-        let mut stakes = Vec::new();
-        for (node, stake) in weights {
-            nodes.push(node);
-            stakes.push(stake);
-        }
         Self {
-            nodes: OrderedNodes(nodes.into_boxed_slice()),
-            weights: stakes,
+            weights: weights.into_iter().collect(),
         }
     }
 
@@ -264,46 +306,17 @@ impl StakePartition {
         redundancy: f32,
     ) -> ChunkAssignment {
         let scaled_num_source_chunks = (num_source_chunks as f32 * redundancy).ceil() as usize;
-        let mut remaining = self.obligations(scaled_num_source_chunks);
-
-        // chunk ids are dealt round-robin across nodes
-        let mut targets = Vec::new();
-        while !remaining.is_empty() {
-            for (node_index, obligation) in &mut remaining {
-                targets.push(ChunkTarget {
-                    owner_node_index: *node_index,
-                    // every chunk (including rounding) is currently
-                    // rebroadcast to the whole group. todo: stake
-                    // proportional rebroadcast for rounding chunks.
-                    rebroadcast_targets: None,
-                });
-                *obligation -= 1;
-            }
-            remaining.retain(|(_, obligation)| *obligation > 0);
-        }
-
-        let author = self
-            .nodes
-            .index_of(author)
-            .expect("author is a weighted node");
-        ChunkAssignment {
-            nodes: self.nodes,
-            author,
-            targets,
-        }
+        ChunkAssignment::deal(author, self.obligations(scaled_num_source_chunks))
     }
 
-    fn obligations(&self, shares: usize) -> Vec<(NodeIndex, usize)> {
-        let total = self.weights.iter().copied().sum::<Stake>();
+    fn obligations(&self, shares: usize) -> Vec<(NodeId, usize)> {
+        let total = self.weights.iter().map(|(_, stake)| *stake).sum::<Stake>();
 
         let mut obligations = Vec::with_capacity(self.weights.len());
-        for (index, stake) in self.weights.iter().enumerate() {
+        for (node, stake) in &self.weights {
             let (whole, remainder) = stake.obligation(&total, shares);
             let rounding_chunk = if remainder > 0 { 1 } else { 0 };
-            let obligation = whole + rounding_chunk;
-            if obligation > 0 {
-                obligations.push((NodeIndex(index), obligation));
-            }
+            obligations.push((*node, whole + rounding_chunk));
         }
         obligations
     }

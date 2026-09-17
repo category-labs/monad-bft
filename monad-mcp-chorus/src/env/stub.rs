@@ -85,6 +85,10 @@ mod validator {
             let total = total.0 as u128;
             ((prod / total) as usize, (prod % total) as usize)
         }
+
+        fn amount(&self) -> u64 {
+            self.0
+        }
     }
 
     // invariant: valset/mapping have exactly the same key set, and
@@ -204,6 +208,8 @@ mod validator {
 }
 
 mod proposal {
+    use std::fmt;
+
     use alloy_rlp::{
         Decodable, Encodable, Header, RlpDecodable, RlpDecodableWrapper, RlpEncodable,
         RlpEncodableWrapper, encode_list, list_length,
@@ -211,15 +217,30 @@ mod proposal {
 
     use super::NodeId;
     use crate::{
-        spec,
-        stub::types::{ProposalIndex, Slot},
+        common_types::{ProposalIndex, Slot},
+        spec::{self, ProposalHeader as _},
     };
 
-    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, RlpEncodableWrapper, RlpDecodableWrapper)]
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, RlpEncodableWrapper, RlpDecodableWrapper)]
     pub struct MerkleHash(pub [u8; 20]);
 
-    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, RlpEncodableWrapper, RlpDecodableWrapper)]
+    impl fmt::Debug for MerkleHash {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            for byte in self.0 {
+                write!(f, "{byte:02x}")?;
+            }
+            Ok(())
+        }
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, RlpEncodableWrapper, RlpDecodableWrapper)]
     pub struct MerkleRoot(pub MerkleHash);
+
+    impl fmt::Debug for MerkleRoot {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "root:{:?}", self.0)
+        }
+    }
     impl spec::MerkleRoot for MerkleRoot {}
 
     // stub proposal signature, opaque to consensus
@@ -233,14 +254,48 @@ mod proposal {
     #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
     pub enum EncodingScheme {
         D25(D25),
+        S11(S11),
     }
 
     #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
     pub struct D25 {
+        pub slot: Slot,
         pub msg_len: u32,
         pub unix_ts: u64,
         // the merkle tree depth
         pub depth: u8,
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
+    pub struct S11 {
+        pub slot: Slot,
+        // the proposal index the author claims for the slot
+        pub proposer_index: u8,
+        // the merkle tree depth
+        pub depth: u8,
+        pub msg_len: u32,
+        pub unix_ts: u64,
+    }
+
+    impl EncodingScheme {
+        pub fn slot(&self) -> Slot {
+            match self {
+                Self::D25(d25) => d25.slot,
+                Self::S11(s11) => s11.slot,
+            }
+        }
+    }
+
+    impl From<D25> for EncodingScheme {
+        fn from(d25: D25) -> Self {
+            Self::D25(d25)
+        }
+    }
+
+    impl From<S11> for EncodingScheme {
+        fn from(s11: S11) -> Self {
+            Self::S11(s11)
+        }
     }
 
     impl Encodable for EncodingScheme {
@@ -248,6 +303,10 @@ mod proposal {
             match self {
                 Self::D25(f0) => {
                     let fields: [&dyn Encodable; 2] = [&1u8, f0];
+                    encode_list::<_, dyn Encodable>(&fields, out);
+                }
+                Self::S11(f0) => {
+                    let fields: [&dyn Encodable; 2] = [&2u8, f0];
                     encode_list::<_, dyn Encodable>(&fields, out);
                 }
             }
@@ -259,6 +318,10 @@ mod proposal {
                     let fields: [&dyn Encodable; 2] = [&1u8, f0];
                     list_length::<_, dyn Encodable>(&fields)
                 }
+                Self::S11(f0) => {
+                    let fields: [&dyn Encodable; 2] = [&2u8, f0];
+                    list_length::<_, dyn Encodable>(&fields)
+                }
             }
         }
     }
@@ -268,6 +331,7 @@ mod proposal {
             let mut payload = Header::decode_bytes(buf, true)?;
             let result = match <u8 as Decodable>::decode(&mut payload)? {
                 1 => Self::D25(<D25 as Decodable>::decode(&mut payload)?),
+                2 => Self::S11(<S11 as Decodable>::decode(&mut payload)?),
                 _ => return Err(alloy_rlp::Error::Custom("unknown EncodingScheme tag")),
             };
             if !payload.is_empty() {
@@ -279,22 +343,26 @@ mod proposal {
 
     #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
     pub struct ProposalHeader {
-        pub slot: Slot,
         pub root: MerkleRoot,
+        pub scheme: EncodingScheme,
+    }
+
+    #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
+    pub struct SignedProposalHeader {
+        pub header: ProposalHeader,
 
         // DA-owned fields. defined here rather than in DA because we
         // don't want chorus to depend on DA.
         // todo: we may extract a monad-mcp-da-types crate and depend
         // on it from monad-mcp-chorus and monad-mcp-da.
         pub sig: ProposalSignature,
-        pub scheme: EncodingScheme,
     }
 
     impl spec::ProposalHeader for ProposalHeader {
         type Root = MerkleRoot;
 
         fn slot(&self) -> u64 {
-            self.slot.0
+            self.scheme.slot().0
         }
 
         fn root(&self) -> &MerkleRoot {
@@ -302,10 +370,30 @@ mod proposal {
         }
     }
 
+    impl spec::ProposalHeader for SignedProposalHeader {
+        type Root = MerkleRoot;
+
+        fn slot(&self) -> u64 {
+            self.header.slot()
+        }
+
+        fn root(&self) -> &MerkleRoot {
+            &self.header.root
+        }
+    }
+
+    impl spec::SignedProposalHeader for SignedProposalHeader {
+        type Sig = ProposalSignature;
+
+        fn sig(&self) -> &ProposalSignature {
+            &self.sig
+        }
+    }
+
     // the proposal index of a header the legitimate proposer of the
     // slot signed. Supplied by the DA env, which owns the signature
     // and scheme checks.
-    type Authenticator = dyn Fn(&ProposalHeader, u64) -> Option<ProposalIndex> + Send + Sync;
+    type Authenticator = dyn Fn(&SignedProposalHeader, u64) -> Option<ProposalIndex> + Send + Sync;
 
     pub struct HeaderAuth {
         authenticator: Box<Authenticator>,
@@ -314,7 +402,7 @@ mod proposal {
     impl HeaderAuth {
         pub fn new<F>(authenticator: F) -> Self
         where
-            F: Fn(&ProposalHeader, u64) -> Option<ProposalIndex> + Send + Sync + 'static,
+            F: Fn(&SignedProposalHeader, u64) -> Option<ProposalIndex> + Send + Sync + 'static,
         {
             Self {
                 authenticator: Box::new(authenticator),
@@ -323,19 +411,22 @@ mod proposal {
     }
 
     impl spec::proposal::HeaderAuth for HeaderAuth {
-        type Header = ProposalHeader;
+        type Signed = SignedProposalHeader;
 
-        fn authenticate(&self, header: &ProposalHeader, slot: u64) -> Option<ProposalIndex> {
-            if header.slot.get() != slot {
+        fn authenticate(&self, signed: &SignedProposalHeader, slot: u64) -> Option<ProposalIndex> {
+            if signed.slot() != slot {
                 return None;
             }
-            (self.authenticator)(header, slot)
+            (self.authenticator)(signed, slot)
         }
     }
 }
 
 mod vote {
-    use std::collections::{BTreeMap, HashMap, HashSet};
+    use std::{
+        collections::{BTreeMap, HashMap, HashSet},
+        hash::{DefaultHasher, Hash as _, Hasher as _},
+    };
 
     use alloy_rlp::{
         Decodable, Encodable, RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper,
@@ -349,7 +440,7 @@ mod vote {
         self, SignatureCollection as _, validator::ValidatorData as _, vote::Signature as _,
     };
 
-    #[derive(PartialEq, Eq, Hash, Debug, Into)]
+    #[derive(Clone, PartialEq, Eq, Hash, Debug, Into)]
     pub struct KeyPair(u64);
 
     #[derive(
@@ -360,8 +451,14 @@ mod vote {
     #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
     pub struct Signature {
         by: PubKey,
-        data: Bytes,
+        digest: u64,
         malformed: bool,
+    }
+
+    fn digest(data: &[u8]) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        data.hash(&mut hasher);
+        hasher.finish()
     }
 
     impl Signature {
@@ -453,7 +550,7 @@ mod vote {
         fn sign(&self, data: &Bytes) -> Self::Signature {
             Signature {
                 by: self.pubkey(),
-                data: data.clone(),
+                digest: digest(data),
                 malformed: false,
             }
         }
@@ -467,7 +564,7 @@ mod vote {
         }
 
         fn verify(&self, data: &[u8], pubkey: &Self::PubKey) -> bool {
-            self.is_well_formed() && self.by == *pubkey && self.data == data
+            self.is_well_formed() && self.by == *pubkey && self.digest == digest(data)
         }
     }
 
@@ -635,6 +732,7 @@ const _: () = crate::spec::assert_env::<
     VoteAggregation<'_>,
     MerkleRoot,
     ProposalHeader,
+    SignedProposalHeader,
     HeaderAuth,
 >();
 

@@ -38,6 +38,7 @@ monad-keystore = { path = "./monad-keystore" }
 monad-leanudp = { path = "./monad-leanudp" }
 monad-ledger = { path = "./monad-ledger" }
 monad-mcp-chorus = { path = "./monad-mcp-chorus" }
+monad-mcp-da = { path = "./monad-mcp-da" }
 monad-merkle = { path = "./monad-merkle" }
 monad-mock-swarm = { path = "./monad-mock-swarm" }
 monad-multi-sig = { path = "./monad-multi-sig" }
@@ -182,6 +183,7 @@ rand = "0.8"
 rand_chacha = "0.3"
 rand_distr = "0.4"
 rayon = "1.7"
+reed-solomon-simd = "3.1"
 regex = "1.10.2"
 reqwest = { version = "0.12.28", features = ["json"] }
 rstest = "0.25.0"

@@ -21,6 +21,7 @@ use std::collections::HashSet;
 
 use bytes::Bytes;
 use decoding_tracker::DecodingTracker;
+use monad_mcp_chorus::spec::ProposalHeader as _;
 use obligation_tracker::ObligationTracker;
 use recovery_tracker::ChunkRecoveryTracker;
 
@@ -29,10 +30,13 @@ use super::{
     chunk::{ChunkData, ChunkRequest, ChunksSubset, WireChunkId},
     chunk_tree::ChunkTree,
     egress::ChunkEgress,
-    encoding_scheme::{DAEncodingScheme as _, SymbolDecoder},
+    encoding_scheme::{self, DAEncodingScheme as _, SymbolDecoder},
     runtime::EpochHandle,
-    types::{ChunkRequestType, NodeId, ProposalDAEvent, ProposalHeader},
+    types::{ChunkRequestType, NodeId, ProposalDAEvent, SignedProposalHeader},
+    util::Tree,
+    wire::PacketLayout as _,
 };
+use crate::spec::DAProposalHeader as _;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvalidChunk {
@@ -49,9 +53,12 @@ pub enum DecodingOutcome {
 
 // per-(slot, proposal) raptorcast committed to single root
 pub(crate) struct RaptorcastInstance {
-    header: ProposalHeader,
+    header: SignedProposalHeader,
     // None when this node is outside the assignment (e.g. a full node)
     self_index: Option<NodeIndex>,
+    // where our chunks go when rebroadcast in full: empty outside
+    // the assignment
+    full_rebroadcast_targets: HashSet<NodeId>,
 
     assignment: ChunkAssignment,
     chunk_tree: ChunkTree,
@@ -64,10 +71,18 @@ pub(crate) struct RaptorcastInstance {
 }
 
 impl RaptorcastInstance {
-    pub(crate) fn new(epoch_handle: &EpochHandle, header: ProposalHeader, author: &NodeId) -> Self {
-        let scheme = &header.scheme;
+    pub(crate) fn new(
+        epoch_handle: &EpochHandle,
+        header: SignedProposalHeader,
+        author: &NodeId,
+    ) -> Self {
+        let scheme = header.scheme();
         let assignment = scheme.chunk_assignment(author, &epoch_handle.validator_data);
         let self_index = assignment.index_of(&epoch_handle.self_id);
+        let full_rebroadcast_targets = match self_index {
+            Some(owner) => assignment.full_rebroadcast_targets(owner),
+            None => HashSet::new(),
+        };
 
         let num_chunks = assignment.num_chunks();
         let decoder = scheme.decoder(num_chunks);
@@ -87,9 +102,10 @@ impl RaptorcastInstance {
             recovery_tracker,
 
             assignment,
-            chunk_tree: ChunkTree::partial(header.root),
+            chunk_tree: ChunkTree::partial(*header.root()),
             header,
             self_index,
+            full_rebroadcast_targets,
         }
     }
 
@@ -105,7 +121,7 @@ impl RaptorcastInstance {
     }
 
     pub(crate) fn drain_obligation_events(&mut self) -> Vec<ProposalDAEvent> {
-        let root = self.header.root;
+        let root = *self.header.root();
         let mut events = Vec::new();
         for upstream in self.obligation_tracker.drain_fulfilled() {
             let event = match upstream {
@@ -150,7 +166,7 @@ impl RaptorcastInstance {
 
         // todo: check the proof in chunk parsing, so a Chunk always
         // holds a valid merkle proof.
-        if !self.chunk_tree.verify(chunk_id, &data) {
+        if !self.verify_proof(chunk_id, &data) {
             return Err(InvalidChunk::BadProof);
         }
 
@@ -243,7 +259,7 @@ impl RaptorcastInstance {
             return None;
         };
 
-        let root = self.header.root;
+        let root = *self.header.root();
         if !self.reencodes_to_root(&message) {
             self.decoding_outcome = DecodingOutcome::BadEncoding;
             return Some(ProposalDAEvent::DecodingFailed(root));
@@ -252,12 +268,22 @@ impl RaptorcastInstance {
         Some(ProposalDAEvent::Decoded(root))
     }
 
+    // whether the chunk's proof binds it to our root
+    fn verify_proof(&self, chunk_id: ChunkId, data: &ChunkData) -> bool {
+        let scheme = self.header.scheme();
+        debug_assert_eq!(data.symbol.len(), scheme.symbol_len());
+        let leaf_idx = chunk_id.to_wire();
+        let leaf = scheme.leaf_hash(leaf_idx, &data.symbol);
+        Tree::verify_proof(&self.chunk_tree.root(), leaf_idx, &leaf, &data.proof)
+    }
+
     fn reencodes_to_root(&mut self, message: &[u8]) -> bool {
         let num_chunks = self.assignment.num_chunks();
-        let Some(tree) = self.header.scheme.encode(message, num_chunks) else {
+        let Some(tree) = encoding_scheme::chunk_tree(self.header.scheme(), message, num_chunks)
+        else {
             return false;
         };
-        if tree.root() != self.header.root {
+        if tree.root() != *self.header.root() {
             return false;
         }
         self.chunk_tree = tree;
@@ -271,14 +297,11 @@ impl RaptorcastInstance {
             return;
         }
 
-        let to = match routing.partial_rebroadcast_targets() {
-            Some(targets) => targets,
-            None => self
-                .assignment
-                .full_rebroadcast_targets(routing.owner_index()),
-        };
         let chunk_id = routing.chunk_id();
-        self.enqueue(chunk_id, &to, egress);
+        match routing.partial_rebroadcast_targets() {
+            Some(partial) => self.enqueue(chunk_id, &partial, egress),
+            None => self.enqueue(chunk_id, &self.full_rebroadcast_targets, egress),
+        }
     }
 
     // rebroadcast all remaining owned chunks (after decoding).
@@ -338,7 +361,7 @@ mod tests {
         *,
     };
 
-    fn instance(epoch_handle: &EpochHandle, header: &ProposalHeader) -> RaptorcastInstance {
+    fn instance(epoch_handle: &EpochHandle, header: &SignedProposalHeader) -> RaptorcastInstance {
         RaptorcastInstance::new(epoch_handle, header.clone(), &author())
     }
 
@@ -382,8 +405,10 @@ mod tests {
         let out_of_range = instance.ingest_chunk(99, data.clone(), &mut egress);
         assert_eq!(out_of_range, Err(InvalidChunk::InvalidChunkId));
 
+        let mut symbol = data.symbol.to_vec();
+        symbol[0] ^= 1;
         let tampered = ChunkData {
-            symbol: Bytes::from_static(b"tampered"),
+            symbol: Bytes::from(symbol),
             proof: data.proof.clone(),
         };
         let tampered = instance.ingest_chunk(0, tampered, &mut egress);
@@ -413,7 +438,7 @@ mod tests {
         // chunk is short, the next one decodes
         assert_eq!(ingest(&mut instance, &chunks[1], &mut egress), Ok(None));
         let event = ingest(&mut instance, &chunks[2], &mut egress);
-        assert_eq!(event, Ok(Some(ProposalDAEvent::Decoded(header.root))));
+        assert_eq!(event, Ok(Some(ProposalDAEvent::Decoded(*header.root()))));
         assert_eq!(
             instance.decoded_message(),
             Some(&Bytes::from(vec![1u8; MESSAGE_LEN]))
@@ -432,7 +457,7 @@ mod tests {
         let event = ingest(&mut instance, &chunks[2], &mut egress);
         assert_eq!(
             event,
-            Ok(Some(ProposalDAEvent::DecodingFailed(header.root)))
+            Ok(Some(ProposalDAEvent::DecodingFailed(*header.root())))
         );
 
         assert!(!instance.accepting_chunks());
@@ -459,7 +484,7 @@ mod tests {
         // the chunkless author owes nothing from the start
         let author_owes_nothing = ProposalDAEvent::OwnerObligationFulfilled {
             owner: author(),
-            root: header.root,
+            root: *header.root(),
         };
         assert_eq!(
             instance.drain_obligation_events(),
@@ -472,7 +497,7 @@ mod tests {
         ingest(&mut instance, &chunks[3], &mut egress).expect("valid");
         assert_eq!(
             instance.drain_obligation_events(),
-            vec![ProposalDAEvent::ProposerObligationFulfilled(header.root)]
+            vec![ProposalDAEvent::ProposerObligationFulfilled(*header.root())]
         );
 
         // node 2 owns 1 and 4: one of them settles nothing
@@ -527,6 +552,6 @@ mod tests {
         assert_eq!(ingest(&mut instance, &chunks[2], &mut egress), Ok(None));
         assert!(instance.decoded_message().is_none());
         let event = ingest(&mut instance, &chunks[4], &mut egress);
-        assert_eq!(event, Ok(Some(ProposalDAEvent::Decoded(header.root))));
+        assert_eq!(event, Ok(Some(ProposalDAEvent::Decoded(*header.root()))));
     }
 }

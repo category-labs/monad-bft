@@ -24,7 +24,7 @@ use std::{
     hash::Hash,
 };
 
-use alloy_rlp::{RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper};
+use alloy_rlp::{Encodable, RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper};
 pub use monad_mvba::FallbackCommitQc;
 
 /// MetaBlock components are exported
@@ -114,7 +114,8 @@ pub trait ValidateCert: Clone + Eq + Hash + Debug {
 
 /// The votable projection of an MVBA value: `entries(x)` in the paper
 pub trait Votable: Clone + Eq + Hash + Debug {
-    type Entries: Clone + Eq + Hash + Debug;
+    // votes range over the entries, so they must be signable
+    type Entries: Clone + Eq + Hash + Debug + Encodable;
 
     fn entries(&self) -> Self::Entries;
 }
@@ -196,7 +197,7 @@ where
     armed: HashMap<WakeId, M::TimerEvent>,
     next_wake: WakeId,
 
-    observer: Option<Box<dyn FnMut(Timestamp, &V)>>,
+    observer: Option<Box<dyn FnMut(Timestamp, &V) + Send>>,
     reported: Option<V>,
 }
 
@@ -236,7 +237,7 @@ where
     }
 
     /// Reports the first decision, and any later one that differs from it
-    pub fn on_decision(&mut self, observer: impl FnMut(Timestamp, &V) + 'static) {
+    pub fn on_decision(&mut self, observer: impl FnMut(Timestamp, &V) + Send + 'static) {
         self.observer = Some(Box::new(observer));
     }
 
@@ -287,6 +288,9 @@ where
     V: ValidateInput + Votable,
     A::TimerEvent: Eq,
 {
+    // the standalone MVBA harness runs without a DA layer
+    type DAEvent = ();
+
     fn init(&mut self) {
         if self.input.is_none() {
             return;

@@ -47,7 +47,7 @@ fn conductor() -> Conductor {
     MonadConductor::genesis(config, ()).unwrap()
 }
 
-fn add_dummy_node(builder: &mut CadenceSwarmBuilder<DummyMsg>, id: NodeId, quorum: usize) {
+fn add_dummy_node(builder: &mut CadenceSwarmBuilder<DummyMsg, ()>, id: NodeId, quorum: usize) {
     let config = DummySlotConsensusConfig { quorum };
     let key = Arc::new(id.keypair());
     builder.add_node::<DummySlotConsensus, _>(id, conductor(), config, key);

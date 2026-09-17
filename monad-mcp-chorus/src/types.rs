@@ -30,66 +30,25 @@ use itertools::Either;
 // the environment this module subtree is instantiated.
 pub use super::env::{
     HeaderAuth, KeyPair, MerkleRoot, NodeId, ProposalHeader, PubKey, Signature,
-    SignatureCollection, Stake, ValidatorData, VoteAggregation,
+    SignatureCollection, SignedProposalHeader, Stake, ValidatorData, VoteAggregation,
 };
+pub use super::{
+    da::{DaHandle, DataAvailability, NullDa},
+    proposer_schedule::ScheduleError,
+    proposers::{
+        CreditLotterySchedule, EpochAnchor, FixedProposerSchedule, ProposerConfig,
+        ProposerSchedule, ProposerSet, RotatingProposerSchedule, RoundRobinLeaderSchedule,
+    },
+};
+pub use crate::common_types::{ProposalIndex, ProposalScope, Slot};
 use crate::spec::{
     Stake as _,
     validator::ValidatorData as _,
-    vote::{KeyPair as _, Signature as _, SignatureCollection as _, VoteAggregation as _},
+    vote::{
+        KeyPair as _, Signature as _, SignatureCollection as _, SigningDomain,
+        VoteAggregation as _, signing_bytes,
+    },
 };
-
-// Slot number, starting from 0.
-#[derive(
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    Debug,
-    RlpEncodableWrapper,
-    RlpDecodableWrapper,
-)]
-pub struct Slot(pub u64);
-
-impl Slot {
-    pub const FIRST: Self = Slot(0);
-
-    // the first and last meaningful slot numbers
-    pub const MIN: Self = Self::FIRST;
-    pub const MAX: Self = Slot(u64::MAX - 1);
-
-    // the max meaningful slot number used as cap
-    pub const MAX_CAP: Self = Slot(u64::MAX);
-
-    pub const fn get(self) -> u64 {
-        self.0
-    }
-
-    pub const fn from_u64(slot: u64) -> Option<Self> {
-        if slot > Self::MAX.0 {
-            return None;
-        }
-        Some(Self(slot))
-    }
-
-    pub fn checked_add(self, slots: u64) -> Option<Self> {
-        self.0.checked_add(slots).map(Self)
-    }
-
-    pub fn checked_sub(self, slots: u64) -> Option<Self> {
-        self.0.checked_sub(slots).map(Self)
-    }
-
-    pub fn checked_next(self) -> Option<Self> {
-        self.checked_add(1)
-    }
-
-    pub fn slots_since(self, earlier: Self) -> Option<u64> {
-        self.0.checked_sub(earlier.0)
-    }
-}
 
 /// An absolute point on the timeline, stored in nanoseconds.
 #[derive(
@@ -138,6 +97,10 @@ impl Timestamp {
     pub fn checked_add_deltas(self, delta: TimestampDelta, count: u64) -> Option<Self> {
         let delta = delta.as_nanos().checked_mul(count)?;
         self.0.checked_add(u128::from(delta)).map(Self)
+    }
+
+    pub fn saturating_sub_delta(self, delta: TimestampDelta) -> Self {
+        Self(self.0.saturating_sub(u128::from(delta.as_nanos())))
     }
 
     pub fn max(self, other: Self) -> Self {
@@ -289,16 +252,13 @@ impl<T> Validated<T> {
     }
 }
 
-pub trait IsVote: Clone + Hash + Eq {
+pub trait IsVote: Clone + Hash + Eq + Encodable {
     type Scope: Clone + Hash + Eq + std::fmt::Debug + Encodable + Decodable;
+    type SigningDomain: SigningDomain;
 
-    // type SigningDomain;
-    fn serialize(&self, scope: &Self::Scope) -> Bytes;
-}
-
-// placeholder serialization until we decide on real wire format
-pub(crate) fn dummy_serialize(vote: &impl std::fmt::Debug, scope: &impl std::fmt::Debug) -> Bytes {
-    Bytes::from(format!("{scope:?}/{vote:?}"))
+    fn signing_bytes(&self, scope: &Self::Scope) -> Bytes {
+        signing_bytes::<Self::SigningDomain>(scope, self)
+    }
 }
 
 #[derive(Clone)]
@@ -396,7 +356,7 @@ where
                 continue;
             }
 
-            let data = vote.serialize(&self.scope);
+            let data = vote.signing_bytes(&self.scope);
             let votes = voters
                 .iter()
                 .map(|node_id| (node_id, &self.votes[node_id]))
@@ -440,7 +400,7 @@ where
         let mut stake = Stake::ZERO;
 
         for (vote, voters) in &self.buckets {
-            let data = vote.serialize(&self.scope);
+            let data = vote.signing_bytes(&self.scope);
             let votes = voters
                 .iter()
                 .map(|node_id| (node_id, &self.votes[node_id]))
@@ -659,7 +619,7 @@ where
     }
 
     pub fn new_signed(scope: <V as IsVote>::Scope, vote: V, key: &KeyPair) -> Self {
-        let serialized_vote = vote.serialize(&scope);
+        let serialized_vote = vote.signing_bytes(&scope);
         let sig = key.sign(&serialized_vote);
         Self::new(scope, vote, sig)
     }
@@ -681,7 +641,7 @@ where
     V: IsVote,
 {
     pub fn verify(&self, validator_data: &ValidatorData) -> bool {
-        let data = self.verdict.serialize(&self.scope);
+        let data = self.verdict.signing_bytes(&self.scope);
         let Some(nodes) = self.sigcol.verify(&data, validator_data) else {
             return false;
         };
@@ -707,7 +667,7 @@ where
     V: IsVote,
 {
     pub fn verify(&self, validator_data: &ValidatorData) -> bool {
-        let data = self.verdict.serialize(&self.scope);
+        let data = self.verdict.signing_bytes(&self.scope);
         let Some(nodes) = self.sigcol.verify(&data, validator_data) else {
             return false;
         };
@@ -721,7 +681,7 @@ where
 // containers encode their three fields as a list by hand.
 impl<V> Encodable for VoteMsg<V>
 where
-    V: IsVote + Encodable,
+    V: IsVote,
 {
     fn encode(&self, out: &mut dyn bytes::BufMut) {
         let fields: [&dyn Encodable; 3] = [&self.scope, &self.vote, &self.signature];
@@ -752,7 +712,7 @@ where
 
 impl<V> Encodable for StrongQc<V>
 where
-    V: IsVote + Encodable,
+    V: IsVote,
 {
     fn encode(&self, out: &mut dyn bytes::BufMut) {
         let fields: [&dyn Encodable; 3] = [&self.scope, &self.verdict, &self.sigcol];
@@ -787,7 +747,7 @@ where
 
 impl<V> Encodable for WeakQc<V>
 where
-    V: IsVote + Encodable,
+    V: IsVote,
 {
     fn encode(&self, out: &mut dyn bytes::BufMut) {
         let fields: [&dyn Encodable; 3] = [&self.scope, &self.verdict, &self.sigcol];
@@ -817,21 +777,6 @@ where
             verdict,
             sigcol,
         })
-    }
-}
-
-pub type ProposalIndex = usize;
-
-/// The slot and proposal index authenticated by a per-proposal vote.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
-pub struct ProposalScope {
-    pub slot: Slot,
-    pub index: ProposalIndex,
-}
-
-impl ProposalScope {
-    pub const fn new(slot: Slot, index: ProposalIndex) -> Self {
-        Self { slot, index }
     }
 }
 
@@ -968,9 +913,9 @@ impl<T> std::ops::IndexMut<ProposalIndex> for ProposalMap<T> {
 // A helper wrapper type for a type-erased implementation of a trait
 pub struct Erased<T>(pub T);
 
-// invariant: .0.root != .1.root and both properly signed.
+// invariant: .0.root() != .1.root() and both properly signed.
 #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
-pub struct EquivCert(pub ProposalHeader, pub ProposalHeader);
+pub struct EquivCert(pub SignedProposalHeader, pub SignedProposalHeader);
 
 impl<T> Encodable for ProposalMap<T>
 where
@@ -1000,7 +945,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::env::stub::MerkleHash;
+    use crate::{env::stub::MerkleHash, spec::vote::assert_signing_prefix};
 
     #[test]
     fn timestamp_arithmetic_is_checked() {
@@ -1021,15 +966,19 @@ mod tests {
 
     /// A vote whose verdict is a bare number, standing in for the claims
     /// timeouts differ on.
-    #[derive(Clone, PartialEq, Eq, Hash, Debug)]
+    #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodableWrapper, RlpDecodableWrapper)]
     struct Claim(u64);
+
+    struct ClaimDomain;
+    const _: () = assert_signing_prefix::<ClaimDomain>();
+
+    impl SigningDomain for ClaimDomain {
+        const PREFIX: &'static [u8] = b"\x1Bmonad/cadence/test-claim/1\n";
+    }
 
     impl IsVote for Claim {
         type Scope = u64;
-
-        fn serialize(&self, scope: &Self::Scope) -> Bytes {
-            dummy_serialize(self, scope)
-        }
+        type SigningDomain = ClaimDomain;
     }
 
     /// Seven validators of stake one each, as in the aggregation tests.
@@ -1086,7 +1035,7 @@ mod tests {
 
         for (claim, sigcol) in &groups {
             let signers = sigcol
-                .verify(&claim.serialize(&SCOPE), &validator_data)
+                .verify(&claim.signing_bytes(&SCOPE), &validator_data)
                 .expect("each group verifies over the digest its bucket signed");
             assert_eq!(signers.len(), 3);
         }
@@ -1152,7 +1101,7 @@ mod tests {
             .iter()
             .map(|(claim, sigcol)| {
                 sigcol
-                    .verify(&claim.serialize(&SCOPE), &validator_data)
+                    .verify(&claim.signing_bytes(&SCOPE), &validator_data)
                     .expect("only verified signatures are aggregated")
                     .len()
             })
@@ -1215,7 +1164,7 @@ mod tests {
             .iter()
             .map(|(claim, sigcol)| {
                 let signers = sigcol
-                    .verify(&claim.serialize(&SCOPE), &validator_data)
+                    .verify(&claim.signing_bytes(&SCOPE), &validator_data)
                     .expect("each group verifies over the digest its bucket signed");
                 (claim.0, signers.len())
             })
@@ -1252,7 +1201,7 @@ mod tests {
 
         let (claim, sigcol) = &groups[0];
         let signers = sigcol
-            .verify(&claim.serialize(&SCOPE), &validator_data)
+            .verify(&claim.signing_bytes(&SCOPE), &validator_data)
             .expect("the stored signatures are the ones that arrived first");
         assert_eq!(signers.len(), 5);
     }
@@ -1273,11 +1222,43 @@ mod tests {
         Free,
     }
 
+    struct ClaimVoteDomain;
+    const _: () = assert_signing_prefix::<ClaimVoteDomain>();
+
+    impl SigningDomain for ClaimVoteDomain {
+        const PREFIX: &'static [u8] = b"\x20monad/cadence/test-claim-vote/1\n";
+    }
+
     impl IsVote for ClaimVote {
         type Scope = Slot;
+        type SigningDomain = ClaimVoteDomain;
+    }
 
-        fn serialize(&self, scope: &Self::Scope) -> bytes::Bytes {
-            dummy_serialize(self, scope)
+    impl Encodable for ClaimVote {
+        fn encode(&self, out: &mut dyn bytes::BufMut) {
+            match self {
+                Self::Claiming(root) => {
+                    let fields: [&dyn Encodable; 2] = [&1u8, root];
+                    encode_list::<_, dyn Encodable>(&fields, out);
+                }
+                Self::Free => {
+                    let fields: [&dyn Encodable; 1] = [&2u8];
+                    encode_list::<_, dyn Encodable>(&fields, out);
+                }
+            }
+        }
+
+        fn length(&self) -> usize {
+            match self {
+                Self::Claiming(root) => {
+                    let fields: [&dyn Encodable; 2] = [&1u8, root];
+                    list_length::<_, dyn Encodable>(&fields)
+                }
+                Self::Free => {
+                    let fields: [&dyn Encodable; 1] = [&2u8];
+                    list_length::<_, dyn Encodable>(&fields)
+                }
+            }
         }
     }
 

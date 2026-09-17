@@ -21,9 +21,8 @@
 //! the state machine counts every vote off the wire, its own included
 
 use std::{
-    cell::RefCell,
     collections::{BTreeMap, HashMap},
-    rc::Rc,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -36,7 +35,7 @@ use monad_sim::{RunOutcome, Time};
 use monad_sim_swarm::{Network, Swarm};
 
 use crate::{
-    node::{SimNode, time_of, to_timestamp},
+    node::{SimMessage, SimNode, time_of, to_timestamp},
     swarm::build_sim_swarm,
 };
 
@@ -63,7 +62,7 @@ struct DecisionState {
 
 /// Per-node decisions, shared with the observers planted in the runtimes
 #[derive(Default)]
-struct DecisionLog(HashMap<NodeId, Rc<RefCell<DecisionState>>>);
+struct DecisionLog(HashMap<NodeId, Arc<Mutex<DecisionState>>>);
 
 impl DecisionLog {
     fn new() -> Self {
@@ -73,7 +72,7 @@ impl DecisionLog {
     fn record_decision(&mut self, node: NodeId) -> impl FnMut(Timestamp, &Metablock) + 'static {
         let state = self.0.entry(node).or_default().clone();
         move |at: Timestamp, block: &Metablock| {
-            let mut state = state.borrow_mut();
+            let mut state = state.lock().expect("not poisoned");
             match &state.first {
                 None => {
                     state.first = Some(Decision {
@@ -91,13 +90,18 @@ impl DecisionLog {
     }
 
     fn decision_of(&self, node: &NodeId) -> Option<Decision> {
-        self.0.get(node)?.borrow().first.clone()
+        self.0
+            .get(node)?
+            .lock()
+            .expect("not poisoned")
+            .first
+            .clone()
     }
 
     fn conflicted(&self, node: &NodeId) -> bool {
         self.0
             .get(node)
-            .is_some_and(|state| state.borrow().conflict_decision)
+            .is_some_and(|state| state.lock().expect("not poisoned").conflict_decision)
     }
 }
 
@@ -105,8 +109,8 @@ impl DecisionLog {
 /// the four inputs can be handed over at four different times
 pub struct MvbaSwarmBuilder {
     seed: u64,
-    network: Network<NodeId, Message>,
-    nodes: Vec<(NodeId, SimNode<Message>)>,
+    network: Network<NodeId, SimMessage<Message>>,
+    nodes: Vec<(NodeId, SimNode<Message, ()>)>,
     inputs: BTreeMap<NodeId, Metablock>,
     log: DecisionLog,
 }
@@ -127,7 +131,7 @@ impl MvbaSwarmBuilder {
         self
     }
 
-    pub fn set_network(&mut self, network: Network<NodeId, Message>) -> &mut Self {
+    pub fn set_network(&mut self, network: Network<NodeId, SimMessage<Message>>) -> &mut Self {
         self.network = network;
         self
     }
@@ -175,13 +179,13 @@ impl Default for MvbaSwarmBuilder {
 
 /// A built swarm: run control, plus the decisions reached and inputs started from
 pub struct MvbaSwarm {
-    swarm: Swarm<SimNode<Message>>,
+    swarm: Swarm<SimNode<Message, ()>>,
     inputs: BTreeMap<NodeId, Metablock>,
     log: DecisionLog,
 }
 
 impl MvbaSwarm {
-    pub fn swarm_mut(&mut self) -> &mut Swarm<SimNode<Message>> {
+    pub fn swarm_mut(&mut self) -> &mut Swarm<SimNode<Message, ()>> {
         &mut self.swarm
     }
 

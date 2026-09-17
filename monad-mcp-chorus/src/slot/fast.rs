@@ -22,7 +22,6 @@ use alloy_rlp::{
     Decodable, Encodable, Header, RlpDecodable, RlpDecodableWrapper, RlpEncodable,
     RlpEncodableWrapper, encode_list, list_length,
 };
-use bytes::Bytes;
 use itertools::Either;
 
 use super::{
@@ -31,13 +30,16 @@ use super::{
     fallback::Metablock,
     types::{
         Admission, EquivCert, GatedVotePool, GatingRoot, HeaderAuth, IsVote, KeyPair, MerkleRoot,
-        NodeId, ProposalHeader, ProposalIndex, ProposalMap, ProposalScope, Signature, Slot,
-        StrongQc, TotalProposalMap, ValidatorData, VoteMsg, VotePool, WeakQc, dummy_serialize,
+        NodeId, ProposalIndex, ProposalMap, ProposalScope, ProposerSet, Signature,
+        SignedProposalHeader, Slot, StrongQc, TotalProposalMap, ValidatorData, VoteMsg, VotePool,
+        WeakQc,
     },
 };
 use crate::spec::{
-    Stake as _, proposal::HeaderAuth as _, validator::ValidatorData as _,
-    vote::SignatureCollection as _,
+    Stake as _,
+    proposal::{HeaderAuth as _, ProposalHeader as _},
+    validator::ValidatorData as _,
+    vote::{SignatureCollection as _, SigningDomain, assert_signing_prefix},
 };
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
@@ -76,6 +78,9 @@ pub struct FastPath {
     // effects for the DA layer, drained by the slot consensus wrapper
     commands: VecDeque<ChorusDACommand>,
 
+    // who occupies each proposal index in this slot
+    proposers: ProposerSet,
+
     // using Arc to avoid lifetime issues.
     key: Arc<KeyPair>,
     validator_data: Arc<ValidatorData>,
@@ -85,11 +90,12 @@ pub struct FastPath {
 impl FastPath {
     pub(crate) fn new(
         s: Slot,
-        num_proposals: usize,
+        proposers: ProposerSet,
         key: Arc<KeyPair>,
         validator_data: Arc<ValidatorData>,
         header_auth: Arc<HeaderAuth>,
     ) -> Self {
+        let num_proposals = proposers.num_indices();
         Self {
             slot: s,
 
@@ -108,11 +114,18 @@ impl FastPath {
             proposals: ProposalMap::new(num_proposals, |j| j),
             availability: ProposalMap::new_default(num_proposals),
             commands: VecDeque::new(),
+            proposers,
 
             key,
             validator_data,
             header_auth,
         }
+    }
+
+    /// The proposers of this slot, by proposal index. Seam for the DA layer
+    /// and proposal validation once proposer identity is checked there.
+    pub(crate) fn proposers(&self) -> &ProposerSet {
+        &self.proposers
     }
 
     pub(crate) fn next_da_command(&mut self) -> Option<ChorusDACommand> {
@@ -257,7 +270,7 @@ impl FastPath {
                         }
                     }
 
-                    let positive_root = entry.header().map(|header| header.root);
+                    let positive_root = entry.header().map(|header| *header.root());
                     let vote = entry.into_vote_msg(self.slot, j);
                     let admission = self.fallback_entry_votes[j].add_vote(node_id, vote);
                     if admission == Admission::Held
@@ -345,9 +358,15 @@ impl FastPath {
         self.phase = Phase::Vote;
 
         let votes = self.proposals.as_ref().map(|j| {
-            let entry = match self.availability[*j].fetch_proposal() {
-                Some(proposal) => Entry::Positive(proposal.root),
+            let entry = match self.proposers.proposer(*j) {
+                // A vacant index has no proposer (rotation vacancy at a
+                // handoff, genesis ramp-up, or fewer staked validators than
+                // indices): its proposal is empty by definition.
                 None => Entry::Negative,
+                Some(_) => match self.availability[*j].fetch_proposal() {
+                    Some(proposal) => Entry::Positive(*proposal.root()),
+                    None => Entry::Negative,
+                },
             };
 
             let vote_msg =
@@ -403,7 +422,7 @@ impl FastPath {
             {
                 self.emit(ChorusDACommand::PinRoot {
                     j,
-                    root: header.root,
+                    root: *header.root(),
                 });
             }
         }
@@ -639,18 +658,25 @@ impl FastPath {
     }
 }
 
+/// The verdict on one proposal index: `Positive` carries the merkle root of
+/// the included proposal, `Negative` finalizes the index empty. Part of the
+/// finalization data — downstream consumers (ledger sequencing) read it.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Entry {
     Positive(MerkleRoot),
     Negative,
 }
 
+pub struct EntryDomain;
+const _: () = assert_signing_prefix::<EntryDomain>();
+
+impl SigningDomain for EntryDomain {
+    const PREFIX: &'static [u8] = b"\x1Emonad/cadence/proposal-vote/1\n";
+}
+
 impl IsVote for Entry {
     type Scope = ProposalScope;
-
-    fn serialize(&self, scope: &Self::Scope) -> Bytes {
-        dummy_serialize(self, scope)
-    }
+    type SigningDomain = EntryDomain;
 }
 
 impl GatingRoot for Entry {
@@ -690,7 +716,7 @@ impl BatchVoteMsg {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub(crate) struct FastCommitVote {
+pub struct FastCommitVote {
     pub entries: ProposalMap<Entry>,
 }
 
@@ -713,15 +739,19 @@ impl From<&FastBlock> for FastCommitVote {
     }
 }
 
-impl IsVote for FastCommitVote {
-    type Scope = Slot;
+pub struct FastCommitVoteDomain;
+const _: () = assert_signing_prefix::<FastCommitVoteDomain>();
 
-    fn serialize(&self, scope: &Self::Scope) -> Bytes {
-        dummy_serialize(self, scope)
-    }
+impl SigningDomain for FastCommitVoteDomain {
+    const PREFIX: &'static [u8] = b"\x1Cmonad/cadence/fast-commit/1\n";
 }
 
-pub(crate) type FastCommitQc = StrongQc<FastCommitVote>;
+impl IsVote for FastCommitVote {
+    type Scope = Slot;
+    type SigningDomain = FastCommitVoteDomain;
+}
+
+pub type FastCommitQc = StrongQc<FastCommitVote>;
 
 // ============ Fallback ===============
 
@@ -729,12 +759,16 @@ pub(crate) type FastCommitQc = StrongQc<FastCommitVote>;
 #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodableWrapper, RlpDecodableWrapper)]
 pub struct FallbackEntry(pub Entry);
 
+pub struct FallbackEntryDomain;
+const _: () = assert_signing_prefix::<FallbackEntryDomain>();
+
+impl SigningDomain for FallbackEntryDomain {
+    const PREFIX: &'static [u8] = b"\x27monad/cadence/fallback-proposal-vote/1\n";
+}
+
 impl IsVote for FallbackEntry {
     type Scope = ProposalScope;
-
-    fn serialize(&self, scope: &Self::Scope) -> Bytes {
-        dummy_serialize(self, scope)
-    }
+    type SigningDomain = FallbackEntryDomain;
 }
 
 impl GatingRoot for FallbackEntry {
@@ -810,7 +844,7 @@ impl CertifiedEntry {
             CertifiedEntry::FallbackQc(qc) => qc.verify(validator_data),
             CertifiedEntry::EquivCert(EquivCert(a, b)) => {
                 let ProposalScope { slot: s, index: j } = scope;
-                a.root != b.root
+                a.root() != b.root()
                     && header_auth.validate(a, s.get(), j)
                     && header_auth.validate(b, s.get(), j)
             }
@@ -825,8 +859,8 @@ struct FallbackSignedEntry {
     // over (slot, j, self.entry)
     signature: Signature,
     // invariant: header.is_some() iff entry is positive
-    // invariant: header.root == entry.root
-    header: Option<ProposalHeader>,
+    // invariant: header.root() == entry.root
+    header: Option<SignedProposalHeader>,
 }
 
 impl FallbackSignedEntry {
@@ -834,7 +868,7 @@ impl FallbackSignedEntry {
         scope: ProposalScope,
         root: MerkleRoot,
         key: &KeyPair,
-        header: ProposalHeader,
+        header: SignedProposalHeader,
     ) -> Self {
         let entry = FallbackEntry(Entry::Positive(root));
         let signature = VoteMsg::new_signed(scope, entry.clone(), key).signature;
@@ -860,12 +894,12 @@ impl FallbackSignedEntry {
             Entry::Positive(root) => self
                 .header
                 .as_ref()
-                .is_some_and(|header| header.root == *root),
+                .is_some_and(|header| header.root() == root),
             Entry::Negative => self.header.is_none(),
         }
     }
 
-    fn header(&self) -> Option<&ProposalHeader> {
+    fn header(&self) -> Option<&SignedProposalHeader> {
         self.header.as_ref()
     }
 
@@ -931,12 +965,16 @@ impl LocalCertifiedEntry {
 #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
 pub struct EnterFallbackVote;
 
+pub struct EnterFallbackVoteDomain;
+const _: () = assert_signing_prefix::<EnterFallbackVoteDomain>();
+
+impl SigningDomain for EnterFallbackVoteDomain {
+    const PREFIX: &'static [u8] = b"\x1Fmonad/cadence/enter-fallback/1\n";
+}
+
 impl IsVote for EnterFallbackVote {
     type Scope = Slot;
-
-    fn serialize(&self, scope: &Self::Scope) -> Bytes {
-        dummy_serialize(self, scope)
-    }
+    type SigningDomain = EnterFallbackVoteDomain;
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
@@ -1111,11 +1149,14 @@ impl Decodable for FastCommitVote {
 #[cfg(test)]
 mod tests {
     use super::{
-        super::types::{Stake, ValidatorData},
+        super::{
+            super::proposers,
+            types::{FixedProposerSchedule, ProposerSchedule as _, Stake, ValidatorData},
+        },
         *,
     };
     use crate::{
-        env::stub::{D25, EncodingScheme, MerkleHash, ProposalSignature},
+        env::stub::{D25, EncodingScheme, MerkleHash, ProposalHeader, ProposalSignature},
         spec::vote::KeyPair as _,
     };
 
@@ -1137,32 +1178,38 @@ mod tests {
     }
 
     // signed by validator 0, the only proposer
-    fn header(byte: u8) -> ProposalHeader {
-        ProposalHeader {
-            slot: crate::stub::types::Slot(SLOT.get()),
-            root: root(byte),
+    fn header(byte: u8) -> SignedProposalHeader {
+        SignedProposalHeader {
+            header: ProposalHeader {
+                root: root(byte),
+                scheme: EncodingScheme::D25(D25 {
+                    slot: crate::stub::types::Slot(SLOT.get()),
+                    msg_len: 1,
+                    unix_ts: 0,
+                    depth: 3,
+                }),
+            },
             sig: ProposalSignature {
                 signer: NodeId::dummy(0),
                 checksum: 0,
             },
-            scheme: EncodingScheme::D25(D25 {
-                msg_len: 1,
-                unix_ts: 0,
-                depth: 3,
-            }),
         }
     }
 
     // the local node is validator 1 among 4, one proposal per slot
     fn fast_path() -> FastPath {
-        let header_auth =
-            HeaderAuth::new(|header, _| (header.sig.signer == NodeId::dummy(0)).then_some(0));
+        // index 0 is held by validator 0; consensus and header
+        // authentication read the one schedule, so they cannot disagree
+        let schedule = Arc::new(FixedProposerSchedule::new(vec![NodeId::dummy(0)]));
+        let proposers = schedule
+            .proposers_at(SLOT)
+            .expect("fixed schedule is always available");
         FastPath::new(
             SLOT,
-            1,
+            proposers,
             Arc::new(NodeId::dummy(1).keypair()),
             Arc::new(validator_data(4)),
-            Arc::new(header_auth),
+            Arc::new(proposers::header_auth(schedule)),
         )
     }
 
@@ -1420,10 +1467,91 @@ mod tests {
         fast.recover_committed(&fast_commit_qc(1));
         assert!(drain_requests(&mut fast).is_empty());
     }
+
+    /// [`FallbackEntry`] wraps [`Entry`] transparently, so the two encode
+    /// alike; only the domain keeps a fast-path vote from being read as a
+    /// fallback vote on the same proposal.
+    #[test]
+    fn a_wrapped_entry_signs_under_its_own_domain() {
+        let scope = ProposalScope::new(SLOT, 0);
+        let entry = Entry::Positive(root(1));
+        let fallback = FallbackEntry(entry.clone());
+        assert_eq!(alloy_rlp::encode(&entry), alloy_rlp::encode(&fallback));
+
+        let entry_bytes = entry.signing_bytes(&scope);
+        let fallback_bytes = fallback.signing_bytes(&scope);
+        assert_ne!(entry_bytes, fallback_bytes);
+        assert!(entry_bytes.starts_with(EntryDomain::PREFIX));
+        assert!(fallback_bytes.starts_with(FallbackEntryDomain::PREFIX));
+    }
+
+    /// Past the prefix the signed bytes are exactly the RLP list
+    /// `[scope, vote]`.
+    #[test]
+    fn signing_bytes_are_the_domain_prefix_then_scope_and_vote() {
+        let scope = ProposalScope::new(SLOT, 1);
+        let entry = Entry::Positive(root(2));
+
+        let bytes = entry.signing_bytes(&scope);
+        let mut payload = bytes
+            .strip_prefix(EntryDomain::PREFIX)
+            .expect("the domain prefix leads the signed bytes");
+        let mut list = Header::decode_bytes(&mut payload, true).expect("a two-item list");
+
+        assert_eq!(ProposalScope::decode(&mut list).unwrap(), scope);
+        assert_eq!(Entry::decode(&mut list).unwrap(), entry);
+        assert!(list.is_empty(), "nothing follows the vote");
+        assert!(payload.is_empty(), "nothing follows the list");
+    }
+
+    /// A certificate is bound to the scope its votes were signed under: the
+    /// same signatures relabelled with another proposal index verify as
+    /// neither a strong nor a weak quorum.
+    #[test]
+    fn a_certificate_does_not_verify_under_a_foreign_scope() {
+        let validators = validator_data(4);
+        let scope = ProposalScope::new(SLOT, 0);
+        let foreign = ProposalScope::new(SLOT, 1);
+
+        let mut pool = VotePool::new(scope);
+        for id in [0, 2, 3] {
+            let voter = NodeId::dummy(id);
+            let msg = VoteMsg::new_signed(scope, Entry::Positive(root(1)), &voter.keypair());
+            pool.add_vote(voter, msg);
+        }
+
+        let strong = pool
+            .try_form_strong_qc(&validators)
+            .expect("three of four votes form a strong qc");
+        assert!(strong.verify(&validators));
+        assert!(
+            !StrongQc {
+                scope: foreign,
+                ..strong
+            }
+            .verify(&validators)
+        );
+
+        let weak = pool
+            .try_form_weak_qc(&validators)
+            .expect("three of four votes exceed the honest threshold")
+            .left()
+            .expect("the voters all cast the same entry");
+        assert!(weak.verify(&validators));
+        assert!(
+            !WeakQc {
+                scope: foreign,
+                ..weak
+            }
+            .verify(&validators)
+        );
+    }
 }
 
 #[cfg(test)]
 mod rlp_tests {
+    use bytes::Bytes;
+
     use super::{
         super::{
             super::{
@@ -1437,7 +1565,7 @@ mod rlp_tests {
         *,
     };
     use crate::{
-        env::stub::{D25, EncodingScheme, MerkleHash, ProposalSignature},
+        env::stub::{D25, EncodingScheme, MerkleHash, ProposalHeader, ProposalSignature},
         spec::vote::KeyPair as _,
     };
 
@@ -1460,21 +1588,23 @@ mod rlp_tests {
             verdict: FallbackEntry(Entry::Negative),
             sigcol: fast_qc.sigcol.clone(),
         };
-        let h = ProposalHeader {
-            slot: crate::stub::types::Slot(9),
-            root,
+        let h = SignedProposalHeader {
+            header: ProposalHeader {
+                root,
+                scheme: EncodingScheme::D25(D25 {
+                    slot: crate::stub::types::Slot(9),
+                    msg_len: 1000,
+                    unix_ts: 12345,
+                    depth: 4,
+                }),
+            },
             sig: ProposalSignature {
                 signer: NodeId::dummy(1),
                 checksum: 12,
             },
-            scheme: EncodingScheme::D25(D25 {
-                msg_len: 1000,
-                unix_ts: 12345,
-                depth: 4,
-            }),
         };
         let mut h2 = h.clone();
-        h2.root = MerkleRoot(MerkleHash([8; 20]));
+        h2.header.root = MerkleRoot(MerkleHash([8; 20]));
         // Cover every certificate variant and signed fallback entries with/without a header.
         let evidence = vec![
             ProposalEvidence::Certified(CertifiedEntry::FastQc(fast_qc.clone())),

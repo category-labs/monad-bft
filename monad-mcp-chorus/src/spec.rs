@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-pub use proposal::{MerkleRoot, ProposalHeader};
+pub use proposal::{MerkleRoot, ProposalHeader, SignedProposalHeader};
 pub use validator::{NodeId, Stake};
 pub use vote::{KeyPair, PubKey, Signature, SignatureCollection};
 
@@ -65,6 +65,10 @@ pub mod validator {
         // quotient and remainder of shares * (self / total). The
         // caller must guarantee that total is non-zero.
         fn obligation(&self, total: &Self, shares: usize) -> (usize, usize);
+
+        // the raw integer stake amount, as consumed by stake-weighted
+        // proposer scheduling
+        fn amount(&self) -> u64;
     }
 
     #[expect(clippy::len_without_is_empty)]
@@ -97,7 +101,55 @@ pub mod validator {
 pub mod vote {
     use std::collections::{HashMap, HashSet};
 
-    use bytes::Bytes;
+    use alloy_rlp::{EMPTY_LIST_CODE, Encodable, encode_list, list_length};
+    use bytes::{BufMut, Bytes};
+
+    // A namespace mixed into the bytes a signature covers, so a signature
+    // over one message kind can never be read as another.
+    pub trait SigningDomain {
+        // first byte must be the length of the following message
+        // the length of the following message must be < 128
+        // last byte must be \n
+        const PREFIX: &'static [u8];
+    }
+
+    pub const fn assert_signing_prefix<SD: SigningDomain>() {
+        let prefix_len = SD::PREFIX[0];
+        // "For a single byte whose value is in the [0, 127] range, that byte
+        // is its own RLP encoding."
+        assert!(prefix_len < 128);
+        assert!(prefix_len as usize == SD::PREFIX.len() - 1);
+        assert!(SD::PREFIX[SD::PREFIX.len() - 1] == b'\n');
+    }
+
+    // The bytes a vote signature covers: the domain prefix followed by the RLP
+    // list [scope, vote].
+    pub fn signing_bytes<SD: SigningDomain>(scope: &dyn Encodable, vote: &dyn Encodable) -> Bytes {
+        signing_bytes_of::<SD>(&[scope, vote])
+    }
+
+    // The domain prefix followed by the RLP list of `items`. The prefix is
+    // concatenated, not a list element.
+    pub fn signing_bytes_of<SD: SigningDomain>(items: &[&dyn Encodable]) -> Bytes {
+        let mut out = Vec::with_capacity(SD::PREFIX.len() + list_length::<_, dyn Encodable>(items));
+        out.extend_from_slice(SD::PREFIX);
+        encode_list::<_, dyn Encodable>(items, &mut out);
+        Bytes::from(out)
+    }
+
+    // Stands in for an absent optional item, since alloy has no Encodable
+    // for Option.
+    pub struct RlpNone;
+
+    impl Encodable for RlpNone {
+        fn encode(&self, out: &mut dyn BufMut) {
+            out.put_u8(EMPTY_LIST_CODE);
+        }
+
+        fn length(&self) -> usize {
+            1
+        }
+    }
 
     // Only used to verify a Signature signed using KeyPair.
     pub trait PubKey: Clone + Eq {}
@@ -237,7 +289,7 @@ pub mod vote {
 }
 
 pub mod proposal {
-    use crate::prod::types::ProposalIndex;
+    use crate::common_types::ProposalIndex;
 
     // A commitment to a proposal's payload.
     pub trait MerkleRoot: Copy + Eq + std::hash::Hash + std::fmt::Debug {}
@@ -248,20 +300,26 @@ pub mod proposal {
         // todo: change to Slot when we move it to a shared mcp-types
         // crate.
         fn slot(&self) -> u64;
-
         fn root(&self) -> &Self::Root;
     }
 
-    pub trait HeaderAuth {
-        type Header: ProposalHeader;
+    // A header with the proposer's signature over it.
+    pub trait SignedProposalHeader: ProposalHeader {
+        type Sig;
 
-        fn authenticate(&self, header: &Self::Header, slot: u64) -> Option<ProposalIndex>;
+        fn sig(&self) -> &Self::Sig;
+    }
+
+    pub trait HeaderAuth {
+        type Signed: SignedProposalHeader;
+
+        fn authenticate(&self, signed: &Self::Signed, slot: u64) -> Option<ProposalIndex>;
 
         // returns true when:
         // - header is scoped to the slot
         // - header is signed by the legitimate proposer of the slot
-        fn validate(&self, header: &Self::Header, slot: u64, j: ProposalIndex) -> bool {
-            self.authenticate(header, slot) == Some(j)
+        fn validate(&self, signed: &Self::Signed, slot: u64, j: ProposalIndex) -> bool {
+            self.authenticate(signed, slot) == Some(j)
         }
     }
 }
@@ -279,6 +337,7 @@ pub const fn assert_env<
     VoteAggregation,
     MerkleRoot,
     ProposalHeader,
+    SignedProposalHeader,
     HeaderAuth,
 >()
 where
@@ -293,6 +352,7 @@ where
     VoteAggregation: vote::VoteAggregation<'a, Stake, SignatureCollection = SignatureCollection>,
     MerkleRoot: proposal::MerkleRoot,
     ProposalHeader: proposal::ProposalHeader,
-    HeaderAuth: proposal::HeaderAuth<Header = ProposalHeader>,
+    SignedProposalHeader: proposal::SignedProposalHeader,
+    HeaderAuth: proposal::HeaderAuth<Signed = SignedProposalHeader>,
 {
 }

@@ -20,16 +20,16 @@ use std::{
 };
 
 use bytes::Bytes;
+use monad_mcp_chorus::spec::ProposalHeader as _;
 
 use super::{
     chunk::{ChunkRequest, ProposalEnvelope},
     egress::Dissemination,
-    election::ProposerElection,
     header::InvalidProposalHeader,
     slot_rc::SlotRaptorcast,
     types::{
         ChorusDACommand, ChorusDAEvent, HeaderAuth, MerkleRoot, NodeId, ProposalDAEvent,
-        ProposalIndex, ProposalKeyPair, Slot, SlotLifecycle, ValidatorData,
+        ProposalIndex, ProposalKeyPair, ProposerSchedule, Slot, SlotLifecycle, ValidatorData,
     },
     util::SlotCompletion,
 };
@@ -42,7 +42,6 @@ use super::{
 #[derive(Clone)]
 pub struct EpochHandle {
     pub self_id: NodeId,
-    pub num_proposals: usize,
     pub key_pair: Arc<ProposalKeyPair>,
     pub header_auth: Arc<HeaderAuth>,
     // todo: only this field is slot-scoped, should we isolate it out?
@@ -55,13 +54,14 @@ pub struct DAConfig {
     pub completed_slot_retention: u64,
 }
 
-pub struct DARuntime<E> {
+pub struct DARuntime<S> {
     config: DAConfig,
     // todo: make epoch_handle slot dependent
     epoch_handle: EpochHandle,
     raptorcast_map: BTreeMap<Slot, SlotRaptorcast>,
 
-    election: Arc<E>,
+    // the proposer schedule consensus holds; DA reads the same one
+    schedule: Arc<S>,
 
     // inclusive start, exclusive end
     ingestion_window: Range<Slot>,
@@ -70,6 +70,7 @@ pub struct DARuntime<E> {
     outbox: VecDeque<DAOutput>,
 }
 
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ChunkRecoveryRequest {
     pub slot: Slot,
     pub proposal_index: ProposalIndex,
@@ -78,14 +79,14 @@ pub struct ChunkRecoveryRequest {
     pub request: ChunkRequest,
 }
 
-impl<E> DARuntime<E>
+impl<S> DARuntime<S>
 where
-    E: ProposerElection,
+    S: ProposerSchedule,
 {
-    pub fn new(config: DAConfig, epoch_handle: EpochHandle, election: Arc<E>) -> Self {
+    pub fn new(config: DAConfig, epoch_handle: EpochHandle, schedule: Arc<S>) -> Self {
         Self {
             config,
-            election,
+            schedule,
             epoch_handle,
             raptorcast_map: Default::default(),
             // todo: set the lower bound with finalization certificate
@@ -96,7 +97,7 @@ where
     }
 
     pub fn ingest(&mut self, envelope: ProposalEnvelope) -> Result<(), InvalidProposalHeader> {
-        let slot = envelope.header().slot;
+        let slot = Slot(envelope.header().slot());
         let Some(slot_raptorcast) = self.open_slot_raptorcast(slot) else {
             return Err(InvalidProposalHeader::SlotOutOfRange);
         };
@@ -145,7 +146,7 @@ where
         let slot_raptorcast = self
             .raptorcast_map
             .entry(slot)
-            .or_insert_with(|| SlotRaptorcast::new(&self.epoch_handle, slot, &*self.election));
+            .or_insert_with(|| SlotRaptorcast::new(&self.epoch_handle, slot, &*self.schedule));
         Some(slot_raptorcast)
     }
 
@@ -167,7 +168,7 @@ where
 
     pub fn handle_slot_event(&mut self, slot: Slot, event: SlotLifecycle) {
         match event {
-            SlotLifecycle::Opened => {
+            SlotLifecycle::Opened { .. } => {
                 let open_ingestion_slot = slot
                     .checked_next()
                     .unwrap_or(Slot::MAX_CAP)
@@ -235,30 +236,34 @@ pub enum DAOutput {
 mod tests {
     use super::{
         super::{
+            chorus::types::Timestamp,
             test_util::{
-                MESSAGE_LEN, Proposers, SLOT, author, epoch_handle, group, proposal_chunks,
-                proposal_chunks_from,
+                FixedProposerSchedule, MESSAGE_LEN, SLOT, author, epoch_handle, group,
+                proposal_chunks, proposal_chunks_from, proposer_schedule,
             },
             types::ChunkRequestType,
         },
         *,
     };
 
-    fn runtime(retention: u64) -> DARuntime<Proposers> {
+    fn runtime(retention: u64) -> DARuntime<FixedProposerSchedule> {
         let config = DAConfig {
             completed_slot_retention: retention,
         };
-        let election = Arc::new(Proposers::new(vec![author()]));
-        DARuntime::new(config, epoch_handle(), election)
+        let schedule = proposer_schedule(vec![author()]);
+        DARuntime::new(config, epoch_handle(), schedule)
     }
 
-    fn open(runtime: &mut DARuntime<Proposers>, slots: impl IntoIterator<Item = u64>) {
+    fn open(runtime: &mut DARuntime<FixedProposerSchedule>, slots: impl IntoIterator<Item = u64>) {
         for slot in slots {
-            runtime.handle_slot_event(Slot(slot), SlotLifecycle::Opened);
+            let opened = SlotLifecycle::Opened {
+                deadline: Timestamp::GENESIS,
+            };
+            runtime.handle_slot_event(Slot(slot), opened);
         }
     }
 
-    fn outputs(runtime: &mut DARuntime<Proposers>) -> Vec<DAOutput> {
+    fn outputs(runtime: &mut DARuntime<FixedProposerSchedule>) -> Vec<DAOutput> {
         let mut outputs = Vec::new();
         while let Some(output) = runtime.poll() {
             outputs.push(output);
@@ -324,13 +329,13 @@ mod tests {
                     root,
                     message,
                 } => {
-                    assert_eq!((*slot, *proposal_index, *root), (SLOT, 0, header.root));
+                    assert_eq!((*slot, *proposal_index, *root), (SLOT, 0, *header.root()));
                     assert_eq!(message, &Bytes::from(vec![1u8; MESSAGE_LEN]));
                     decoded_at = Some(i);
                 }
                 DAOutput::Consensus(slot, event) => {
                     assert_eq!(*slot, SLOT);
-                    if event.event == ProposalDAEvent::Decoded(header.root) {
+                    if event.event == ProposalDAEvent::Decoded(*header.root()) {
                         consensus_decoded_at = Some(i);
                     }
                 }
@@ -365,7 +370,7 @@ mod tests {
         let voters = vec![NodeId::dummy(1), NodeId::dummy(2), NodeId::dummy(3)];
         let command = ChorusDACommand::RecoverChunks {
             j: 0,
-            root: header.root,
+            root: *header.root(),
             request_type: ChunkRequestType::YourChunks,
             voters,
         };
@@ -377,7 +382,7 @@ mod tests {
                 panic!("only requests are produced");
             };
             assert_eq!((request.slot, request.proposal_index), (SLOT, 0));
-            assert_eq!(request.root, header.root);
+            assert_eq!(request.root, *header.root());
             assert_eq!(
                 request.request,
                 ChunkRequest::all(ChunkRequestType::YourChunks)
@@ -389,7 +394,7 @@ mod tests {
         let unknown_slot = ChunkRecoveryRequest {
             slot: Slot(7),
             proposal_index: 0,
-            root: header.root,
+            root: *header.root(),
             request: ChunkRequest::all(ChunkRequestType::YourChunks),
         };
         runtime.handle_chunk_request(&NodeId::dummy(2), unknown_slot);

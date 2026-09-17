@@ -18,6 +18,7 @@ use std::{collections::VecDeque, sync::Arc};
 
 use alloy_rlp::{Decodable, Encodable, Header, encode_list, list_length};
 
+pub use super::fast::Entry;
 use super::{
     SlotConsensus, SlotOutput,
     fallback::{
@@ -29,8 +30,8 @@ use super::{
         FastCommitQc, FastCommitVoteMsg, FastPath,
     },
     types::{
-        HeaderAuth, KeyPair, MerkleRoot, NodeId, ProposalHeader, ProposalIndex, Slot,
-        TimestampDelta, ValidatorData,
+        HeaderAuth, KeyPair, MerkleRoot, NodeId, ProposalIndex, ProposalMap, ProposerSchedule,
+        SignedProposalHeader, Slot, TimestampDelta, ValidatorData,
     },
 };
 
@@ -83,7 +84,6 @@ pub enum TimerEvent {
 #[derive(Clone)]
 pub struct ChorusConfig {
     pub delta: TimestampDelta,
-    pub num_proposals: usize,
 }
 
 /// Shared resources needed to spawn a slot instance.
@@ -92,6 +92,9 @@ pub struct ChorusContext {
     pub key: Arc<KeyPair>,
     pub validator_data: Arc<ValidatorData>,
     pub header_auth: Arc<HeaderAuth>,
+    /// Single source of truth for the number of proposals per slot (`K`) and
+    /// for who may propose at which proposal index.
+    pub proposers: Arc<dyn ProposerSchedule + Send + Sync>,
 }
 
 #[derive(derive_more::From, Clone, PartialEq, Eq, Hash, Debug)]
@@ -100,6 +103,32 @@ pub enum SlotFinalization {
     Fast(FastCommitQc),
     #[from]
     Fallback(FallbackCommitQc<<Metablock as super::fallback::Votable>::Entries>),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FinalizationPath {
+    Fast,
+    Fallback,
+}
+
+impl SlotFinalization {
+    pub fn path(&self) -> FinalizationPath {
+        match self {
+            Self::Fast(_) => FinalizationPath::Fast,
+            Self::Fallback(_) => FinalizationPath::Fallback,
+        }
+    }
+
+    pub fn roots(&self) -> ProposalMap<Option<MerkleRoot>> {
+        let entries = match self {
+            Self::Fast(qc) => &qc.verdict.entries,
+            Self::Fallback(qc) => &qc.verdict.0,
+        };
+        entries.as_ref().map(|entry| match entry {
+            Entry::Positive(root) => Some(*root),
+            Entry::Negative => None,
+        })
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -111,7 +140,7 @@ pub struct ChorusDAEvent {
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum ProposalDAEvent {
     // a validated proposer-signed header observed (once per root)
-    HeaderSeen(ProposalHeader),
+    HeaderSeen(SignedProposalHeader),
 
     // all our own assigned chunks under the root have arrived
     ProposerObligationFulfilled(MerkleRoot),
@@ -197,20 +226,34 @@ impl SlotConsensus for Chorus {
     type DACommand = ChorusDACommand;
 
     fn new(slot: Slot, config: &Self::Config, context: &Self::Context) -> Self {
-        let ChorusConfig {
-            delta,
-            num_proposals,
-        } = config;
+        let ChorusConfig { delta } = config;
         let ChorusContext {
             node_id,
             key,
             validator_data,
             header_auth,
+            proposers,
         } = context;
+
+        // The schedule validated its configuration and its anchor epoch's
+        // stake snapshot at construction, and stakes are static per epoch
+        // for now, so a failure here is a wiring error — in particular the
+        // conductor must not open slots before the schedule's anchor (a
+        // mid-chain conductor start does not exist yet; align the two when
+        // it does).
+        // TODO(dynamic stakes / mid-chain start): construct a decided-dead
+        // instance emitting a fault instead of panicking.
+        let proposers = proposers
+            .proposers_at(slot)
+            .expect("proposer schedule unavailable for open slot");
+
+        // K comes from the schedule, so the fallback path agrees with the
+        // fast path on the number of proposal indices.
+        let num_proposals = proposers.num_indices();
 
         let fast = FastPath::new(
             slot,
-            *num_proposals,
+            proposers,
             key.clone(),
             validator_data.clone(),
             header_auth.clone(),
@@ -218,7 +261,7 @@ impl SlotConsensus for Chorus {
 
         let fallback = FallbackState::new(MvbaContext {
             slot,
-            num_proposals: *num_proposals,
+            num_proposals,
             delta: *delta,
             node_id: *node_id,
             key: key.clone(),
@@ -543,7 +586,9 @@ mod tests {
     use std::sync::Arc;
 
     use super::{
-        super::types::{HeaderAuth, NodeId, Slot, Stake, TimestampDelta, ValidatorData},
+        super::types::{
+            FixedProposerSchedule, HeaderAuth, NodeId, Slot, Stake, TimestampDelta, ValidatorData,
+        },
         *,
     };
     use crate::spec::vote::KeyPair as _;
@@ -563,13 +608,16 @@ mod tests {
     fn deadline_releases_chunks() {
         let config = ChorusConfig {
             delta: TimestampDelta::from_millis(100),
-            num_proposals: 2,
         };
         let context = ChorusContext {
             node_id: NodeId::dummy(0),
             key: Arc::new(NodeId::dummy(0).keypair()),
             validator_data: Arc::new(validator_data(4)),
             header_auth: Arc::new(HeaderAuth::new(|_, _| None)),
+            proposers: Arc::new(FixedProposerSchedule::new(vec![
+                NodeId::dummy(0),
+                NodeId::dummy(1),
+            ])),
         };
         let mut chorus = Chorus::new(Slot(1), &config, &context);
 
@@ -596,13 +644,13 @@ mod tests {
 
         let config = ChorusConfig {
             delta: TimestampDelta::from_millis(100),
-            num_proposals: 1,
         };
         let context = ChorusContext {
             node_id: NodeId::dummy(1),
             key: Arc::new(NodeId::dummy(1).keypair()),
             validator_data: Arc::new(validator_data(4)),
             header_auth: Arc::new(HeaderAuth::new(|_, _| None)),
+            proposers: Arc::new(FixedProposerSchedule::new(vec![NodeId::dummy(0)])),
         };
         let mut chorus = Chorus::new(Slot(1), &config, &context);
 

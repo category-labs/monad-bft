@@ -13,15 +13,20 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use super::types::{NodeId, ProposalIndex, Slot};
+use monad_mcp_node::{RunError, config::NodeConfig, init_logging, run_node};
 
-pub trait ProposerElection {
-    // invariant: get_proposer(s, i) == Some(n) iff get_index(s, n) == Some(i)
-    // corollary: for each slot, a node can occupy at most one index
+#[tokio::main]
+async fn main() -> Result<(), RunError> {
+    init_logging();
 
-    // returns None if index has no proposer
-    fn get_proposer(&self, slot: Slot, index: ProposalIndex) -> Option<&NodeId>;
+    let path = std::env::args()
+        .nth(1)
+        .ok_or("usage: monad-mcp-node <config.toml>")?;
+    let text = std::fs::read_to_string(&path)?;
+    let config: NodeConfig = toml::from_str(&text)?;
 
-    // returns None if node is not a valid proposer for the slot
-    fn get_index(&self, slot: Slot, node: &NodeId) -> Option<ProposalIndex>;
+    tokio::select! {
+        result = run_node(config) => result,
+        _ = tokio::signal::ctrl_c() => Ok(()),
+    }
 }

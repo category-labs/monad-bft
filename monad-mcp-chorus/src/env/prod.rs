@@ -15,7 +15,7 @@
 
 pub use crate::env::stub::{
     HeaderAuth, KeyPair, MerkleRoot, NodeId, ProposalHeader, PubKey, Signature,
-    SignatureCollection, Stake, ValidatorData, VoteAggregation,
+    SignatureCollection, SignedProposalHeader, Stake, ValidatorData, VoteAggregation,
 };
 
 // TODO: fill in the actual production implementation for above types
@@ -31,5 +31,6 @@ const _: () = crate::spec::assert_env::<
     VoteAggregation<'_>,
     MerkleRoot,
     ProposalHeader,
+    SignedProposalHeader,
     HeaderAuth,
 >();

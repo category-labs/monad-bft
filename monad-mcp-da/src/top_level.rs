@@ -13,13 +13,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use super::{env, env::chorus, wire};
+use super::{env, env::chorus};
 
 mod assignment;
 pub(crate) mod chunk;
 mod chunk_tree;
 mod egress;
-mod election;
 pub(crate) mod encoding_scheme;
 mod header;
 mod instance_rc;
@@ -28,6 +27,7 @@ mod runtime;
 mod slot_rc;
 pub(crate) mod types;
 mod util;
+pub(crate) mod wire;
 
 #[cfg(test)]
 pub(crate) mod test_util;
@@ -35,6 +35,11 @@ pub(crate) mod test_util;
 pub use chunk::{Chunk, ChunkRequest, ProposalEnvelope};
 pub use egress::Dissemination;
 pub use encoding_scheme::d25;
+pub use env::ProposalKeyPair;
 pub use header::{InvalidProposalHeader, header_auth};
 pub use runtime::{ChunkRecoveryRequest, DAConfig, DAOutput, DARuntime, EpochHandle};
-pub use wire::{MalformedPacket, SEGMENT_LEN, read_chunk, write_chunk};
+pub use wire::{
+    MalformedPacket,
+    proposal::{AssembledProposal, FirstHopDissemination},
+    read_chunk, read_envelope, signed_bytes, write_chunk, write_envelope,
+};
