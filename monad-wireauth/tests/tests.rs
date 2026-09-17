@@ -367,7 +367,7 @@ fn test_too_many_accepted_sessions() {
     init_tracing();
     // 1. create responder with max 5 accepted sessions
     let config = Config {
-        high_watermark_sessions: 5,
+        max_pending_accepted_sessions: 5,
         ..Default::default()
     };
 
@@ -403,7 +403,7 @@ fn test_too_many_accepted_sessions() {
         dispatch(&mut responder, &init, initiator_addr);
     }
 
-    // 3. verify responder only accepted 5 sessions (high_watermark_sessions limit)
+    // 3. verify responder only accepted 5 sessions (max_pending_accepted_sessions limit)
     let mut pkts = vec![];
     while let Some(pkt) = responder.next_packet() {
         pkts.push(pkt);
@@ -926,10 +926,10 @@ fn test_stale_handshake_response_does_not_poison_pending_initiator() {
 }
 
 #[test]
-fn test_max_initiated_sessions_limit() {
+fn test_max_pending_initiated_sessions_limit() {
     init_tracing();
     let config = Config {
-        max_initiated_sessions: 3,
+        max_pending_initiated_sessions: 3,
         ..Config::default()
     };
 
