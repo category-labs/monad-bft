@@ -1563,13 +1563,17 @@ mod tests {
     }
 
     #[test]
-    fn test_lookup_cookie_from_accepted_sessions_none() {
+    fn test_store_and_lookup_cookie_cache() {
         let mut state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let mut rng = rng();
         let keypair = monad_secp::KeyPair::generate(&mut rng);
         let public_key = keypair.pubkey();
         let key_bytes = public_key;
-        assert!(state.lookup_cookie(&key_bytes).is_none());
+        let cookie = [7u8; 16];
+
+        state.store_cookie(key_bytes, cookie);
+
+        assert_eq!(state.lookup_cookie(&key_bytes), Some(cookie));
     }
 
     #[test]
