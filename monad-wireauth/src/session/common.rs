@@ -262,3 +262,48 @@ pub(crate) fn add_jitter<R: secp256k1::rand::Rng>(
     let random_jitter = rng.next_u64() % (jitter_millis + 1);
     base + Duration::from_millis(random_jitter)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_first_valid_cookie_is_accepted_per_handshake() {
+        let remote_key = monad_secp::KeyPair::from_ikm(b"cookie-once")
+            .unwrap()
+            .pubkey();
+        let mac1 = [3; 16];
+        let mut session = SessionState::new(
+            "127.0.0.1:9000".parse().unwrap(),
+            remote_key,
+            SessionIndex::new(1),
+            Duration::ZERO,
+            0,
+            None,
+            true,
+        );
+        session.last_handshake_mac1 = Some(mac1);
+        let cookie_reply = |nonce, cookie| {
+            cookies::send_cookie_reply(&[4; 32], nonce, &remote_key, 1, &mac1, &cookie)
+        };
+
+        let mut invalid = cookie_reply(0, [5; 16]);
+        invalid.encrypted_cookie[0] ^= 1;
+        assert!(session.handle_cookie(&mut invalid).is_err());
+        assert!(!session.cookie_received);
+
+        let mut valid = cookie_reply(1, [5; 16]);
+        assert_eq!(
+            session.handle_cookie(&mut valid.clone()).unwrap(),
+            Some([5; 16])
+        );
+        assert!(session.cookie_received);
+        assert_eq!(session.handle_cookie(&mut valid).unwrap(), None);
+        assert_eq!(
+            session
+                .handle_cookie(&mut cookie_reply(2, [6; 16]))
+                .unwrap(),
+            None
+        );
+    }
+}
