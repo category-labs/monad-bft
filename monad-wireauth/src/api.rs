@@ -30,7 +30,7 @@ use crate::{
     context::Context,
     cookie::Cookies,
     error::{Error, Result},
-    filter::{Filter, FilterAction},
+    filter::{Filter, FilterAction, HandshakeKind},
     messages::MacMessage,
     metrics::{init_api_executor_metrics, MetricNames},
     protocol::messages::{
@@ -81,7 +81,8 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
             config.handshake_rate_reset_interval,
             config.ip_rate_limit_window,
             config.ip_history_capacity,
-            config.high_watermark_sessions,
+            config.total_transport_sessions,
+            config.max_pending_accepted_sessions,
         );
         let local_serialized_public = CompressedPublicKey::from(&local_static_public);
         debug!(local_public_key=?local_serialized_public, "initialized manager");
@@ -254,6 +255,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
                 self.enqueue_packet(message.remote_addr, message.header);
             }
 
+            // TODO: Enforce the pending initiated sessions limit for retries and rekeys.
             if let Some(rekey) = rekey {
                 if let Ok((new_session_index, timer, message)) = self.init_session_with_cookie(
                     rekey.remote_public_key,
@@ -306,11 +308,15 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
         debug!(retry_attempts, "initiating connection");
 
         self.check_connect_rate_limit()?;
-        let initiated_count = self.state.initiated_sessions_count();
-        if initiated_count >= self.config.max_initiated_sessions {
+        if self.state.pending_initiated_sessions_count()
+            >= self.config.max_pending_initiated_sessions
+        {
             self.metrics.gauge(self.metric_names.error_connect).inc();
+            self.metrics
+                .gauge(self.metric_names.error_pending_initiated_session_limit)
+                .inc();
             return Err(Error::TooManyInitiatedSessions {
-                limit: self.config.max_initiated_sessions,
+                limit: self.config.max_pending_initiated_sessions,
             });
         }
 
@@ -400,6 +406,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
 
     fn is_under_load(
         &mut self,
+        handshake_kind: HandshakeKind,
         remote_addr: SocketAddr,
         sender_index: u32,
         message: &impl MacMessage,
@@ -407,6 +414,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
         let duration_since_start = self.context.duration_since_start();
         let action = self.filter.apply(
             &self.state,
+            handshake_kind,
             remote_addr,
             duration_since_start,
             self.cookies
@@ -453,6 +461,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
         })?;
 
         if !self.is_under_load(
+            HandshakeKind::Initiation,
             remote_addr,
             handshake_packet.sender_index.get(),
             handshake_packet,
@@ -669,7 +678,12 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
                     .inc();
             })?;
 
-        if !self.is_under_load(remote_addr, response.sender_index.get(), response) {
+        if !self.is_under_load(
+            HandshakeKind::Response,
+            remote_addr,
+            response.sender_index.get(),
+            response,
+        ) {
             debug!(?remote_addr, "handshake response dropped under load");
             return Ok(());
         }
