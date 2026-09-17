@@ -310,7 +310,7 @@ impl<PT: PubKey> PoolTx<PT> {
         &mut self,
         last_commit_seq_num: SeqNum,
         last_commit_base_fee: u64,
-    ) -> Option<&TxEnvelope> {
+    ) -> Option<&Recovered<TxEnvelope>> {
         if !self.is_owned_and_forwardable() {
             return None;
         }

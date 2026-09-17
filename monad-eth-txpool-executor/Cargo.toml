@@ -29,6 +29,7 @@ monad-validator = { workspace = true }
 alloy-consensus = { workspace = true }
 alloy-eips = { workspace = true }
 alloy-primitives = { workspace = true }
+alloy-rlp = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
 indexmap = { workspace = true }
@@ -44,6 +45,6 @@ monad-testutil = { workspace = true }
 monad-tfm = { workspace = true }
 
 alloy-primitives = { workspace = true }
-alloy-rlp = { workspace = true }
+rstest = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
