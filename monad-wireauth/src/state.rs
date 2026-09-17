@@ -22,6 +22,7 @@ use std::{
 use monad_executor::ExecutorMetrics;
 
 use crate::{
+    error::{Error, Result},
     metrics::{init_state_executor_metrics, MetricNames},
     protocol::tai64::Tai64N,
     session::{InitiatorState, ResponderState, SessionIndex, TransportState},
@@ -123,13 +124,26 @@ pub struct State<M = ()> {
     initiated_session_by_peer: HashMap<monad_secp::PubKey, SessionIndex>,
     accepted_sessions_by_peer: BTreeSet<(monad_secp::PubKey, SessionIndex)>,
     ip_session_counts: HashMap<IpAddr, usize>,
+    // Count transports per (IP, public key); only the last removal frees a peer allowance.
+    established_peers_by_ip: HashMap<IpAddr, HashMap<monad_secp::PubKey, usize>>,
     total_sessions: usize,
+    max_transport_sessions: usize,
+    max_established_peers_per_ip: usize,
     metrics: ExecutorMetrics,
     metric_names: &'static MetricNames,
 }
 
 impl<M> State<M> {
+    #[cfg(test)]
     pub fn new_with_metadata(metric_names: &'static MetricNames) -> Self {
+        Self::with_limits(metric_names, usize::MAX, usize::MAX)
+    }
+
+    pub(crate) fn with_limits(
+        metric_names: &'static MetricNames,
+        max_transport_sessions: usize,
+        max_established_peers_per_ip: usize,
+    ) -> Self {
         Self {
             initiating_sessions: HashMap::new(),
             responding_sessions: HashMap::new(),
@@ -141,7 +155,10 @@ impl<M> State<M> {
             initiated_session_by_peer: HashMap::new(),
             accepted_sessions_by_peer: BTreeSet::new(),
             ip_session_counts: HashMap::new(),
+            established_peers_by_ip: HashMap::new(),
             total_sessions: 0,
+            max_transport_sessions,
+            max_established_peers_per_ip,
             metrics: init_state_executor_metrics(metric_names),
             metric_names,
         }
@@ -274,11 +291,30 @@ impl<M> State<M> {
         }
     }
 
-    pub fn insert_transport(&mut self, session_id: SessionIndex, transport: TransportState) {
+    pub fn insert_transport(
+        &mut self,
+        session_id: SessionIndex,
+        transport: TransportState,
+    ) -> Result<()> {
         let remote_public_key = &transport.remote_public_key;
         let remote_addr = transport.remote_addr;
         let created = transport.created;
         let is_initiator = transport.is_initiator;
+
+        // Check both limits before changing session indexes or evicting older transports.
+        // TODO(dshulyak): Allow replacement rekeys at the transport limit when evicting
+        // an old session would keep the transport count unchanged.
+        if self.transport_sessions.len() >= self.max_transport_sessions {
+            return Err(Error::TooManyTransportSessions {
+                limit: self.max_transport_sessions,
+            });
+        }
+        if !self.can_establish_peer(&remote_addr.ip(), remote_public_key) {
+            return Err(Error::TooManyEstablishedPeersForIp {
+                ip: remote_addr.ip(),
+                limit: self.max_established_peers_per_ip,
+            });
+        }
 
         if is_initiator {
             self.metrics
@@ -348,10 +384,17 @@ impl<M> State<M> {
             }
         }
 
+        *self
+            .established_peers_by_ip
+            .entry(remote_addr.ip())
+            .or_default()
+            .entry(*remote_public_key)
+            .or_insert(0) += 1;
         self.transport_sessions.insert(session_id, transport);
         self.metrics
             .gauge(self.metric_names.state_transport_sessions)
             .set(self.transport_sessions.len() as u64);
+        Ok(())
     }
 
     pub(crate) fn terminate_session(
@@ -400,6 +443,23 @@ impl<M> State<M> {
             .set(self.allocated_indices.len() as u64);
 
         if let Some(transport) = transport {
+            let peers = self
+                .established_peers_by_ip
+                .get_mut(&remote_addr.ip())
+                .expect("transport IP must be tracked");
+            let count = peers
+                .get_mut(remote_public_key)
+                .expect("transport peer must be tracked");
+            *count = (*count)
+                .checked_sub(1)
+                .expect("established peer count underflow");
+            if *count == 0 {
+                peers.remove(remote_public_key);
+            }
+            if peers.is_empty() {
+                self.established_peers_by_ip.remove(&remote_addr.ip());
+            }
+
             if let Some(sessions) = self
                 .last_established_session_by_socket
                 .get_mut(&remote_addr)
@@ -599,6 +659,8 @@ impl<M> State<M> {
             })
     }
 
+    // TODO(dshulyak): Avoid scanning pending responders on every initiation by caching
+    // the maximum timestamp per peer key or bounding pending responders per key.
     pub fn get_max_timestamp(&self, remote_key: &monad_secp::PubKey) -> Option<Tai64N> {
         let accepted_max = self
             .accepted_sessions_by_peer
@@ -690,6 +752,20 @@ impl<M> State<M> {
 
     pub(crate) fn transport_sessions_count(&self) -> usize {
         self.transport_sessions.len()
+    }
+
+    fn can_establish_peer(&self, ip: &IpAddr, public_key: &monad_secp::PubKey) -> bool {
+        // Existing peers may rekey at capacity because:
+        // 1. Each public key has two roles: initiator and responder.
+        // 2. Each role retains only current and previous sessions.
+        // 3. On a third session, RoleSessions::push returns the oldest for
+        //    insert_transport to terminate, bounding each key to four sessions.
+        match self.established_peers_by_ip.get(ip) {
+            Some(peers) => {
+                peers.contains_key(public_key) || peers.len() < self.max_established_peers_per_ip
+            }
+            None => self.max_established_peers_per_ip > 0,
+        }
     }
 
     #[cfg(test)]
@@ -915,7 +991,7 @@ mod tests {
         let session_id = SessionIndex::new(100);
 
         let transport = create_test_transport(session_id, &public_key, remote_addr, true);
-        state.insert_transport(session_id, transport);
+        state.insert_transport(session_id, transport).unwrap();
 
         assert!(state.get_transport_mut(&session_id).is_some());
         assert!(state.get_transport_mut(&SessionIndex::new(999)).is_none());
@@ -931,7 +1007,7 @@ mod tests {
         let session_id = SessionIndex::new(100);
 
         let transport = create_test_transport(session_id, &public_key, remote_addr, true);
-        state.insert_transport(session_id, transport);
+        state.insert_transport(session_id, transport).unwrap();
 
         assert!(state.get_transport(&session_id).is_some());
         assert!(state.get_transport(&SessionIndex::new(999)).is_none());
@@ -956,7 +1032,7 @@ mod tests {
         let session_id = SessionIndex::new(1);
 
         let transport = create_test_transport(session_id, &public_key, remote_addr, true);
-        state.insert_transport(session_id, transport);
+        state.insert_transport(session_id, transport).unwrap();
 
         assert!(state.get_transport_by_public_key(&public_key).is_some());
     }
@@ -971,7 +1047,7 @@ mod tests {
         let session_id = SessionIndex::new(2);
 
         let transport = create_test_transport(session_id, &public_key, remote_addr, false);
-        state.insert_transport(session_id, transport);
+        state.insert_transport(session_id, transport).unwrap();
 
         assert!(state.get_transport_by_public_key(&public_key).is_some());
     }
@@ -989,12 +1065,16 @@ mod tests {
         let mut transport_resp =
             create_test_transport(session_id_resp, &public_key, remote_addr, false);
         transport_resp.created = Duration::from_secs(100);
-        state.insert_transport(session_id_resp, transport_resp);
+        state
+            .insert_transport(session_id_resp, transport_resp)
+            .unwrap();
 
         let mut transport_init =
             create_test_transport(session_id_init, &public_key, remote_addr, true);
         transport_init.created = Duration::from_secs(200);
-        state.insert_transport(session_id_init, transport_init);
+        state
+            .insert_transport(session_id_init, transport_init)
+            .unwrap();
 
         let retrieved = state.get_transport_by_public_key(&public_key).unwrap();
         assert_eq!(retrieved.local_index, session_id_init);
@@ -1013,12 +1093,16 @@ mod tests {
         let mut transport_init =
             create_test_transport(session_id_init, &public_key, remote_addr, true);
         transport_init.created = Duration::from_secs(100);
-        state.insert_transport(session_id_init, transport_init);
+        state
+            .insert_transport(session_id_init, transport_init)
+            .unwrap();
 
         let mut transport_resp =
             create_test_transport(session_id_resp, &public_key, remote_addr, false);
         transport_resp.created = Duration::from_secs(200);
-        state.insert_transport(session_id_resp, transport_resp);
+        state
+            .insert_transport(session_id_resp, transport_resp)
+            .unwrap();
 
         let retrieved = state.get_transport_by_public_key(&public_key).unwrap();
         assert_eq!(retrieved.local_index, session_id_resp);
@@ -1041,7 +1125,7 @@ mod tests {
         let session_id = SessionIndex::new(5);
 
         let transport = create_test_transport(session_id, &public_key, addr, true);
-        state.insert_transport(session_id, transport);
+        state.insert_transport(session_id, transport).unwrap();
 
         assert!(state.get_transport_by_socket(&addr).is_some());
     }
@@ -1058,11 +1142,15 @@ mod tests {
 
         let mut transport_resp = create_test_transport(session_id_resp, &public_key, addr, false);
         transport_resp.created = Duration::from_secs(100);
-        state.insert_transport(session_id_resp, transport_resp);
+        state
+            .insert_transport(session_id_resp, transport_resp)
+            .unwrap();
 
         let mut transport_init = create_test_transport(session_id_init, &public_key, addr, true);
         transport_init.created = Duration::from_secs(300);
-        state.insert_transport(session_id_init, transport_init);
+        state
+            .insert_transport(session_id_init, transport_init)
+            .unwrap();
 
         let retrieved = state.get_transport_by_socket(&addr).unwrap();
         assert_eq!(retrieved.local_index, session_id_init);
@@ -1184,7 +1272,7 @@ mod tests {
 
         let transport = create_test_transport(session_id, &public_key, remote_addr, true);
 
-        state.insert_transport(session_id, transport);
+        state.insert_transport(session_id, transport).unwrap();
 
         assert!(state.get_transport(&session_id).is_some());
         let key_bytes = public_key;
@@ -1207,13 +1295,17 @@ mod tests {
 
         let first_session_id = SessionIndex::new(100);
         let transport1 = create_test_transport(first_session_id, &public_key, remote_addr, true);
-        state.insert_transport(first_session_id, transport1);
+        state
+            .insert_transport(first_session_id, transport1)
+            .unwrap();
 
         assert_eq!(state.total_sessions(), 0);
 
         let second_session_id = SessionIndex::new(101);
         let transport2 = create_test_transport(second_session_id, &public_key, remote_addr, true);
-        state.insert_transport(second_session_id, transport2);
+        state
+            .insert_transport(second_session_id, transport2)
+            .unwrap();
 
         assert!(state.get_transport(&first_session_id).is_some());
         assert!(state.get_transport(&second_session_id).is_some());
@@ -1222,7 +1314,9 @@ mod tests {
 
         let third_session_id = SessionIndex::new(102);
         let transport3 = create_test_transport(third_session_id, &public_key, remote_addr, true);
-        state.insert_transport(third_session_id, transport3);
+        state
+            .insert_transport(third_session_id, transport3)
+            .unwrap();
 
         assert!(state.get_transport(&first_session_id).is_none());
         assert!(state.get_transport(&second_session_id).is_some());
@@ -1240,7 +1334,7 @@ mod tests {
 
         let transport = create_test_transport(session_id, &public_key, remote_addr, false);
 
-        state.insert_transport(session_id, transport);
+        state.insert_transport(session_id, transport).unwrap();
 
         assert!(state.get_transport(&session_id).is_some());
     }
@@ -1255,12 +1349,16 @@ mod tests {
 
         let init_session_id = SessionIndex::new(100);
         let transport_init = create_test_transport(init_session_id, &public_key, remote_addr, true);
-        state.insert_transport(init_session_id, transport_init);
+        state
+            .insert_transport(init_session_id, transport_init)
+            .unwrap();
 
         let resp_session_id = SessionIndex::new(200);
         let transport_resp =
             create_test_transport(resp_session_id, &public_key, remote_addr, false);
-        state.insert_transport(resp_session_id, transport_resp);
+        state
+            .insert_transport(resp_session_id, transport_resp)
+            .unwrap();
 
         assert!(state.get_transport(&init_session_id).is_some());
         assert!(state.get_transport(&resp_session_id).is_some());
@@ -1285,7 +1383,7 @@ mod tests {
         let session_id = SessionIndex::new(100);
 
         let transport = create_test_transport(session_id, &public_key, remote_addr, true);
-        state.insert_transport(session_id, transport);
+        state.insert_transport(session_id, transport).unwrap();
 
         let reservation = state.reserve_session_index().unwrap();
         reservation.commit();
@@ -1307,7 +1405,7 @@ mod tests {
         let session_id = SessionIndex::new(100);
 
         let transport = create_test_transport(session_id, &public_key, remote_addr, true);
-        state.insert_transport(session_id, transport);
+        state.insert_transport(session_id, transport).unwrap();
 
         state.terminate_session(session_id, &key_bytes, remote_addr);
 
@@ -1327,12 +1425,16 @@ mod tests {
 
         let init_session_id = SessionIndex::new(100);
         let transport_init = create_test_transport(init_session_id, &public_key, remote_addr, true);
-        state.insert_transport(init_session_id, transport_init);
+        state
+            .insert_transport(init_session_id, transport_init)
+            .unwrap();
 
         let resp_session_id = SessionIndex::new(200);
         let transport_resp =
             create_test_transport(resp_session_id, &public_key, remote_addr, false);
-        state.insert_transport(resp_session_id, transport_resp);
+        state
+            .insert_transport(resp_session_id, transport_resp)
+            .unwrap();
 
         state.terminate_session(init_session_id, &key_bytes, remote_addr);
 
@@ -1358,7 +1460,7 @@ mod tests {
         let session_id = SessionIndex::new(100);
 
         let transport = create_test_transport(session_id, &public_key, remote_addr, true);
-        state.insert_transport(session_id, transport);
+        state.insert_transport(session_id, transport).unwrap();
 
         state.terminate_session(session_id, &key_bytes, remote_addr);
 
