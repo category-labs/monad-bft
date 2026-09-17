@@ -33,11 +33,23 @@ the filter operates using two global handshake rate limits plus transport and pe
 | new handshake initiation and pending accepted sessions >= `max_pending_accepted_sessions` | drop request |
 | otherwise | accept request |
 
-defaults: `total_transport_sessions`=40,000, `max_pending_accepted_sessions`=20,000, `max_pending_initiated_sessions`=1,000, `session_timeout`=10s (plus jitter), `handshake_cookie_unverified_rate_limit`=500/sec, `handshake_cookie_verified_rate_limit`=1,000/sec, `ip_rate_limit_window`=10s, `ip_history_capacity`=1,000,000, `connect_rate_limit`=300/sec
+defaults: `total_transport_sessions`=40,000, `max_pending_accepted_sessions`=20,000, `max_pending_initiated_sessions`=1,000, `max_established_peers_per_ip`=8, `session_timeout`=10s (plus jitter), `handshake_cookie_unverified_rate_limit`=500/sec, `handshake_cookie_verified_rate_limit`=1,000/sec, `ip_rate_limit_window`=10s, `ip_history_capacity`=1,000,000, `connect_rate_limit`=300/sec
 
-the `total_transport_sessions` watermark only counts established transport sessions. accepted and initiated pending handshakes have separate admission budgets, so an incoming flood cannot consume the slots reserved for outgoing connections. Responses may complete existing pending sessions even when either budget is full, subject to the other filters.
+the `total_transport_sessions` limit only counts established transport sessions. the filter drops new handshakes at this threshold, and promotion checks it again so already-pending handshakes cannot exceed it. accepted and initiated pending handshakes have separate admission budgets, so an incoming flood cannot consume the slots reserved for outgoing connections. Responses may complete existing pending sessions even when either budget is full, subject to the other filters. the per-IP cap counts distinct authenticated public keys when a handshake becomes established. Rekeys and opposite-direction sessions for the same key share one allowance; it is released only after the last established session for that key and IP is removed.
+
+Allowing an existing identity through at capacity does not admit another peer. The
+session table is keyed by public key across all sockets and retains only the current
+and previous transport for each role (initiator and responder). Promoting a third
+session in one role evicts that role's oldest session immediately; this bound does
+not depend on timeout cleanup. Repeated handshakes or UDP port changes therefore
+cannot grow one key beyond four established sessions. With eight peer identities
+per IP, the bound is 8 × 2 roles × 2 sessions = 32 established sessions. A ninth
+identity is rejected after authentication. Pending sessions remain subject to their
+separate accepted and initiated admission budgets.
 
 The accepted budget applies to new incoming initiations; the initiated budget applies to explicit connect calls. Timer-driven retries and rekeys still bypass the initiated budget (see the TODO in `API::tick`).
+
+Admission failure at the responder occurs after the first authenticated packet. The initiator may already consider the session established and learns about rejection only through timeout. Peer-limit rejection has a dedicated metric and is not counted as a decryption or session-index exhaustion failure.
 
 these defaults are per instance. we expect to run more than one wireauth instance, so the per-instance handshake and session limits are intentionally lower and aggregate capacity should come from running multiple instances.
 
@@ -94,6 +106,8 @@ session_decrypt         time:   [166.11 ns 168.75 ns 171.20 ns]
 | `monad.wireauth.rate_limit.connect` | outbound connect attempts rejected due to rate limits |
 | `monad.wireauth.filter.pending_accepted_session_limit` | incoming initiations rejected because the accepted pending pool is full |
 | `monad.wireauth.error.pending_initiated_session_limit` | explicit connect attempts rejected because the initiated pending pool is full |
+| `monad.wireauth.error.transport_session_limit` | authenticated promotions rejected because the transport session limit is full |
+| `monad.wireauth.error.established_peer_limit` | authenticated promotions rejected because the IP's peer allowance is full |
 
 ### api operations
 
@@ -174,9 +188,10 @@ session_decrypt         time:   [166.11 ns 168.75 ns 171.20 ns]
 | `cookie_refresh_duration` | Duration | 120s | cookie validity period (responder rotates cookie key) |
 | `ip_rate_limit_window` | Duration | 10s | time window for counting verified handshake requests per ip |
 | `ip_history_capacity` | usize | 1000000 | lru cache size for tracking recent verified handshake requests per ip |
-| `total_transport_sessions` | usize | 40000 | at this threshold of established transport sessions, drop all incoming handshake requests |
+| `total_transport_sessions` | usize | 40000 | maximum established transport sessions; also drop handshakes at this threshold |
 | `max_pending_accepted_sessions` | usize | 20000 | max accepted handshakes waiting for the first authenticated packet |
 | `max_pending_initiated_sessions` | usize | 1000 | admission limit for initiated handshakes; retries and rekeys currently bypass it |
+| `max_established_peers_per_ip` | usize | 8 | limit distinct established peer public keys from a single ip |
 | `psk` | [u8; 32] | zeros | optional pre-shared key mixed into handshake for additional auth |
 | `max_buffered_bytes_per_session` | usize | 131072 | max bytes of buffered messages per initiated session (128KB) |
 | `gc_idle_timeout` | Duration | 120s | idle time without useful data before session is garbage collected (keepalives don't reset) |
