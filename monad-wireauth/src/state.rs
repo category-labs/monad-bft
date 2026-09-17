@@ -809,6 +809,45 @@ pub(crate) fn insert_test_responder_session(
 }
 
 #[cfg(test)]
+pub(crate) fn insert_test_transport_session(
+    state: &mut State,
+    remote_addr: SocketAddr,
+) -> SessionIndex {
+    use secp256k1::rand::rng;
+
+    use crate::{
+        protocol::common::{CipherKey, HashOutput},
+        session::{SessionState, TransportState},
+    };
+
+    let mut rng = rng();
+    let keypair = monad_secp::KeyPair::generate(&mut rng);
+    let remote_public_key = keypair.pubkey();
+    let reservation = state.reserve_session_index().unwrap();
+    let local_index = reservation.index();
+    let hash1 = HashOutput([0u8; 32]);
+    let hash2 = HashOutput([1u8; 32]);
+    let common = SessionState::new(
+        remote_addr,
+        remote_public_key,
+        local_index,
+        Duration::ZERO,
+        0,
+        None,
+        true,
+    );
+    let transport = TransportState::new(
+        local_index,
+        CipherKey::from(&hash1),
+        CipherKey::from(&hash2),
+        common,
+    );
+    reservation.commit();
+    state.insert_transport(local_index, transport).unwrap();
+    local_index
+}
+
+#[cfg(test)]
 mod tests {
     use std::{
         net::{IpAddr, Ipv4Addr},

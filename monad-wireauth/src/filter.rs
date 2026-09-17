@@ -258,7 +258,10 @@ impl Filter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{metrics::DEFAULT_METRICS, state::insert_test_responder_session};
+    use crate::{
+        metrics::DEFAULT_METRICS,
+        state::{insert_test_responder_session, insert_test_transport_session},
+    };
 
     fn default_filter() -> Filter {
         Filter::new(
@@ -289,6 +292,35 @@ mod tests {
     }
 
     #[test]
+    fn test_total_transport_sessions_drops() {
+        let total_transport_sessions = 10;
+        let mut filter = Filter::new(
+            DEFAULT_METRICS,
+            100,
+            100,
+            Duration::from_secs(60),
+            Duration::from_secs(60),
+            1_000,
+            total_transport_sessions,
+            100,
+        );
+        let mut state = State::new(DEFAULT_METRICS);
+        for i in 0..total_transport_sessions {
+            let addr: SocketAddr = format!("10.0.0.{}:51820", i).parse().unwrap();
+            insert_test_transport_session(&mut state, addr);
+        }
+        let addr = "127.0.0.1:8080".parse().unwrap();
+        let action = filter.apply(
+            &state,
+            HandshakeKind::Initiation,
+            addr,
+            Duration::ZERO,
+            false,
+        );
+        assert_eq!(action, FilterAction::Drop);
+    }
+
+    #[test]
     fn test_pending_accepted_session_limit_drops() {
         let max_pending_accepted_sessions = 10;
         let mut filter = Filter::new(
@@ -315,6 +347,59 @@ mod tests {
             false,
         );
         assert_eq!(action, FilterAction::Drop);
+    }
+
+    #[test]
+    fn test_responses_at_accepted_capacity_retain_other_limits() {
+        let mut filter = Filter::new(
+            DEFAULT_METRICS,
+            0,
+            2,
+            Duration::from_secs(60),
+            Duration::from_secs(10),
+            1_000,
+            1,
+            1,
+        );
+        let mut state = State::new(DEFAULT_METRICS);
+        let addr = "127.0.0.1:8080".parse().unwrap();
+        insert_test_responder_session(&mut state, addr);
+
+        // A full accepted pool does not bypass cookie challenges.
+        assert_eq!(
+            filter.apply(&state, HandshakeKind::Response, addr, Duration::ZERO, false),
+            FilterAction::SendCookie
+        );
+        assert_eq!(filter.cookie_unverified_counter, 0);
+        assert_eq!(
+            filter.apply(&state, HandshakeKind::Response, addr, Duration::ZERO, true),
+            FilterAction::Pass
+        );
+        // The same source still faces the IP cooldown, without consuming budget.
+        assert_eq!(
+            filter.apply(&state, HandshakeKind::Response, addr, Duration::ZERO, true),
+            FilterAction::Drop
+        );
+        assert_eq!(filter.cookie_verified_counter, 1);
+
+        let other = "127.0.0.2:8080".parse().unwrap();
+        assert_eq!(
+            filter.apply(&state, HandshakeKind::Response, other, Duration::ZERO, true),
+            FilterAction::Pass
+        );
+        let third = "127.0.0.3:8080".parse().unwrap();
+        assert_eq!(
+            filter.apply(&state, HandshakeKind::Response, third, Duration::ZERO, true),
+            FilterAction::Drop
+        );
+        assert_eq!(filter.cookie_verified_counter, 2);
+
+        // The transport watermark still rejects responses before cookie handling.
+        insert_test_transport_session(&mut state, other);
+        assert_eq!(
+            filter.apply(&state, HandshakeKind::Response, addr, Duration::ZERO, false),
+            FilterAction::Drop
+        );
     }
 
     #[test]
