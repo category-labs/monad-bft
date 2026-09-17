@@ -1,0 +1,7 @@
+[Unit]
+Description=Prune the Monad MCP node ledger (%H)
+
+[Service]
+Type=oneshot
+EnvironmentFile=-%h/monad-mcp/cruft.env
+ExecStart=%h/monad-mcp/cruft.sh

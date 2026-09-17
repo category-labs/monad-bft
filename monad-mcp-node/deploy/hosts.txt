@@ -1,0 +1,10 @@
+# the mcp_test validator set. the line index is the node_id (0..7) and
+# is part of the network identity: reordering needs a new genesis.
+ams-001
+deu-011
+ewr-002
+lax-001
+ltu-010
+sgp-008
+swe-001
+vin-002

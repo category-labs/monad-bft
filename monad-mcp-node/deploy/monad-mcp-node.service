@@ -1,0 +1,14 @@
+[Unit]
+Description=Monad MCP node (%H)
+After=network-online.target
+
+[Service]
+ExecStart=%h/monad-mcp/bin/current %h/monad-mcp/config/node.toml
+Environment=RUST_LOG=info
+KillSignal=SIGINT
+Restart=on-failure
+RestartSec=2
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=default.target

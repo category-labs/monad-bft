@@ -1,0 +1,10 @@
+[Unit]
+Description=Prune the Monad MCP node ledger every 10 minutes (%H)
+
+[Timer]
+OnCalendar=*:0/10
+Persistent=true
+Unit=monad-mcp-cruft.service
+
+[Install]
+WantedBy=timers.target
