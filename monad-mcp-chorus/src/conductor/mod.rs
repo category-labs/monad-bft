@@ -19,8 +19,11 @@ use std::{
     num::NonZeroU64,
 };
 
+use alloy_rlp::{
+    Decodable, Encodable, Header, RlpDecodable, RlpEncodable, encode_list, list_length,
+};
 use thiserror::Error;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 pub mod acs;
 pub mod deadline_agreement;
@@ -38,11 +41,76 @@ where
     type Alarm;
     type Message;
 
-    fn handle_message(&mut self, sender: NodeId, message: Self::Message);
+    fn handle_message(&mut self, at: Timestamp, sender: NodeId, message: Self::Message);
     fn handle_alarm(&mut self, alarm: Self::Alarm);
     fn handle_slot_finalization(&mut self, at: Timestamp, slot: Slot);
 
     fn poll(&mut self) -> Option<ConductorOutput<Self>>;
+}
+
+// Unsigned announcement of the sender's local finalization cap. Every slot
+// strictly below `cap` has finalized at the sender. This is a simplified
+// version of the finalization certificate message
+#[derive(Debug, Clone, Copy, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+pub struct CapAdvance {
+    pub cap: Slot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConductorMessage<M> {
+    DeadlineAgreement(DeadlineAgreementMessage<M>),
+    CapAdvance(CapAdvance),
+}
+
+impl<M> Encodable for ConductorMessage<M>
+where
+    M: Encodable,
+{
+    fn encode(&self, out: &mut dyn bytes::BufMut) {
+        match self {
+            Self::DeadlineAgreement(message) => {
+                let fields: [&dyn Encodable; 2] = [&1u8, message];
+                encode_list::<_, dyn Encodable>(&fields, out);
+            }
+            Self::CapAdvance(message) => {
+                let fields: [&dyn Encodable; 2] = [&2u8, message];
+                encode_list::<_, dyn Encodable>(&fields, out);
+            }
+        }
+    }
+
+    fn length(&self) -> usize {
+        match self {
+            Self::DeadlineAgreement(message) => {
+                let fields: [&dyn Encodable; 2] = [&1u8, message];
+                list_length::<_, dyn Encodable>(&fields)
+            }
+            Self::CapAdvance(message) => {
+                let fields: [&dyn Encodable; 2] = [&2u8, message];
+                list_length::<_, dyn Encodable>(&fields)
+            }
+        }
+    }
+}
+
+impl<M> Decodable for ConductorMessage<M>
+where
+    M: Decodable,
+{
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = Header::decode_bytes(buf, true)?;
+        let result = match <u8 as Decodable>::decode(&mut payload)? {
+            1 => Self::DeadlineAgreement(<DeadlineAgreementMessage<M> as Decodable>::decode(
+                &mut payload,
+            )?),
+            2 => Self::CapAdvance(<CapAdvance as Decodable>::decode(&mut payload)?),
+            _ => return Err(alloy_rlp::Error::Custom("unknown ConductorMessage tag")),
+        };
+        if !payload.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
+        }
+        Ok(result)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,6 +137,9 @@ pub struct ConductorConfig {
     // Deadline of the first slot at genesis. Config field for now; can be
     // moved into a chain parameter in the future.
     genesis_deadline: Timestamp,
+    // Minimum distance a peer's announced cap must be ahead of the local cap
+    // before it is applied as a jump.
+    lag_threshold: NonZeroU64,
 }
 
 impl ConductorConfig {
@@ -77,6 +148,7 @@ impl ConductorConfig {
         sync_boundary_slots: NonZeroU64,
         slot_interval: TimestampDelta,
         genesis_deadline: Timestamp,
+        lag_threshold: NonZeroU64,
     ) -> Result<Self, ConductorError> {
         if sync_boundary_slots > slots_per_window {
             return Err(ConductorError::InvalidConfig(
@@ -89,6 +161,7 @@ impl ConductorConfig {
             sync_boundary_slots,
             slot_interval,
             genesis_deadline,
+            lag_threshold,
         };
 
         Ok(config)
@@ -108,6 +181,10 @@ impl ConductorConfig {
 
     pub fn genesis_deadline(&self) -> Timestamp {
         self.genesis_deadline
+    }
+
+    pub fn lag_threshold(&self) -> NonZeroU64 {
+        self.lag_threshold
     }
 
     pub fn first_slot(&self, window: WindowId) -> Result<Slot, ConductorError> {
@@ -206,9 +283,9 @@ impl CompletionTracker {
             .ok_or(ConductorError::ArithmeticOverflow)
     }
 
-    // Marks `slot` completed and advances the cap across the contiguous
-    // completed prefix.
-    fn mark_completed(&mut self, slot: Slot) -> Result<(), ConductorError> {
+    // Records `slot` completed, returning the new cap when the contiguous
+    // completed prefix carried it forward.
+    fn advance_on_completion(&mut self, slot: Slot) -> Result<Option<Slot>, ConductorError> {
         // slots up to u64::MAX - 1 may be represented in the cap notation
         assert!(slot.get() <= u64::MAX - 1);
         if slot < self.cap {
@@ -225,6 +302,25 @@ impl CompletionTracker {
             return Err(ConductorError::InvalidSlot(slot));
         }
 
+        let cap_before = self.cap;
+        self.try_advance_cap()?;
+        Ok((self.cap > cap_before).then_some(self.cap))
+    }
+
+    // Moves the cap forward unconditionally, discarding the out-of-order
+    // completions the jump subsumes. Retained completions can carry the
+    // returned cap past `cap`.
+    fn jump_to(&mut self, cap: Slot) -> Result<Slot, ConductorError> {
+        // the only caller jumps on a peer cap at least `lag_threshold` ahead
+        assert!(cap > self.cap, "jump target must be above the local cap");
+
+        self.cap = cap;
+        self.completed = self.completed.split_off(&cap);
+        self.try_advance_cap()?;
+        Ok(self.cap)
+    }
+
+    fn try_advance_cap(&mut self) -> Result<(), ConductorError> {
         while self.completed.remove(&self.cap) {
             self.cap = self
                 .cap
@@ -311,17 +407,39 @@ where
                 open_slot_cap,
             });
         }
-        let chained = self.completion_tracker.cap();
-        self.completion_tracker.mark_completed(slot)?;
-        // An advance of the contiguous finalized prefix closes every slot
-        // below it and is surfaced as an output: the runtime forwards it to
-        // observers (e.g. the proposal planner's chaining gate).
-        if self.completion_tracker.cap() > chained {
-            self.outputs.push_back(ConductorOutput::CloseSlots {
-                cap: self.completion_tracker.cap(),
-            });
+        if let Some(cap) = self.completion_tracker.advance_on_completion(slot)? {
+            self.outputs.push_back(ConductorOutput::CloseSlots { cap });
+            self.outputs
+                .push_back(ConductorOutput::Broadcast(ConductorMessage::CapAdvance(
+                    CapAdvance { cap },
+                )));
         }
+
         self.try_run_deadline_agreement(slot_completion)
+    }
+
+    // A peer cap at least `lag_threshold` ahead is trusted as a certificate:
+    // the slots it skips close without ever finalizing locally. This will be
+    // converted to handle_chain_certificate after proper chain certificate
+    // implementation
+    fn handle_cap_advance(&mut self, at: Timestamp, cap: Slot) -> Result<(), ConductorError> {
+        let local_cap = self.completion_tracker.cap();
+        let threshold = local_cap
+            .checked_add(self.config.lag_threshold().get())
+            .ok_or(ConductorError::ArithmeticOverflow)?;
+        if cap < threshold {
+            return Ok(());
+        }
+
+        let cap = self.completion_tracker.jump_to(cap)?;
+        info!(?local_cap, new_cap = ?cap, "jumped the finalization cap on a peer cap advance");
+        self.outputs.push_back(ConductorOutput::CloseSlots { cap });
+
+        while self.open_slot_cap()? <= cap {
+            self.open_window_after_jump(cap)?;
+        }
+
+        self.try_run_deadline_agreement(at)
     }
 
     fn try_run_deadline_agreement(
@@ -397,6 +515,25 @@ where
         Ok(())
     }
 
+    // Slots below the cap stay closed and skipped windows keep their natural
+    // deadline schedule, matching the TODO at deadline_agreement.rs:70.
+    fn open_window_after_jump(&mut self, cap: Slot) -> Result<(), ConductorError> {
+        let window = self.open_window_cap;
+        let next_window_cap = window
+            .checked_next()
+            .ok_or(ConductorError::ArithmeticOverflow)?;
+        let first_deadline = self.config.natural_first_slot_deadline(window)?;
+        let mut slots = self.compute_open_slots(window, first_deadline)?;
+        slots.retain(|slot, _| *slot >= cap);
+
+        if !slots.is_empty() {
+            self.outputs.push_back(ConductorOutput::OpenSlots(slots));
+        }
+        self.open_window_cap = next_window_cap;
+        self.deadline_agreement_manager.reset_round(next_window_cap);
+        Ok(())
+    }
+
     // Exclusive: every slot strictly below the cap is open.
     fn open_slot_cap(&self) -> Result<Slot, ConductorError> {
         self.config.first_slot(self.open_window_cap)
@@ -408,10 +545,17 @@ where
     A: Acs<Timestamp>,
 {
     type Alarm = std::convert::Infallible;
-    type Message = DeadlineAgreementMessage<A::Message>;
+    type Message = ConductorMessage<A::Message>;
 
-    fn handle_message(&mut self, sender: NodeId, message: Self::Message) {
-        if let Err(error) = self.handle_deadline_agreement_msg(sender, message) {
+    fn handle_message(&mut self, at: Timestamp, sender: NodeId, message: Self::Message) {
+        let result = match message {
+            ConductorMessage::DeadlineAgreement(message) => {
+                self.handle_deadline_agreement_msg(sender, message)
+            }
+            ConductorMessage::CapAdvance(CapAdvance { cap }) => self.handle_cap_advance(at, cap),
+        };
+
+        if let Err(error) = result {
             debug!(%error, ?sender, "failed to handle conductor message");
         }
     }
@@ -443,6 +587,8 @@ mod tests {
     };
 
     const GENESIS_DEADLINE: Timestamp = Timestamp::from_millis(100);
+    // One window of `config()`: a peer must be a full window ahead to jump us.
+    const LAG_THRESHOLD: NonZeroU64 = NonZeroU64::new(10).unwrap();
 
     fn nz(value: u64) -> NonZeroU64 {
         NonZeroU64::new(value).unwrap()
@@ -454,6 +600,7 @@ mod tests {
             nz(8),
             TimestampDelta::from_nanos(10),
             GENESIS_DEADLINE,
+            LAG_THRESHOLD,
         )
         .unwrap()
     }
@@ -531,6 +678,54 @@ mod tests {
         batches[0].clone()
     }
 
+    fn receive_cap_advance<A: Acs<Timestamp>>(
+        conductor: &mut MonadConductor<A>,
+        cap: u64,
+        time: u64,
+    ) -> Vec<ConductorOutput<MonadConductor<A>>> {
+        conductor.handle_message(
+            Timestamp::from_nanos(u128::from(time)),
+            NodeId::dummy(1),
+            ConductorMessage::CapAdvance(CapAdvance { cap: Slot(cap) }),
+        );
+        drain_outputs(conductor)
+    }
+
+    fn extract_closed_caps<A: Acs<Timestamp>>(
+        outputs: &[ConductorOutput<MonadConductor<A>>],
+    ) -> Vec<Slot> {
+        outputs
+            .iter()
+            .filter_map(|output| match output {
+                ConductorOutput::CloseSlots { cap } => Some(*cap),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn extract_cap_advances<A: Acs<Timestamp>>(
+        outputs: &[ConductorOutput<MonadConductor<A>>],
+    ) -> Vec<Slot> {
+        outputs
+            .iter()
+            .filter_map(|output| match output {
+                ConductorOutput::Broadcast(ConductorMessage::CapAdvance(CapAdvance { cap })) => {
+                    Some(*cap)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn assert_no_window_opened<A: Acs<Timestamp>>(outputs: &[ConductorOutput<MonadConductor<A>>]) {
+        assert!(
+            !outputs
+                .iter()
+                .any(|output| matches!(output, ConductorOutput::OpenSlots(_))),
+            "expected no window to open"
+        );
+    }
+
     fn extract_runtime_open_slots<A: Acs<Timestamp>>(
         output: ConductorOutput<MonadConductor<A>>,
     ) -> BTreeMap<Slot, Timestamp> {
@@ -547,7 +742,8 @@ mod tests {
                 nz(4),
                 nz(5),
                 TimestampDelta::from_nanos(10),
-                GENESIS_DEADLINE
+                GENESIS_DEADLINE,
+                LAG_THRESHOLD,
             )
             .is_err()
         );
@@ -577,16 +773,22 @@ mod tests {
     fn completion_tracker_advances_cap_through_contiguous_prefix() {
         let mut tracker = CompletionTracker::new();
 
-        tracker.mark_completed(Slot(1)).unwrap();
+        assert_eq!(tracker.advance_on_completion(Slot(1)).unwrap(), None);
         assert_eq!(tracker.cap(), Slot(0));
 
-        tracker.mark_completed(Slot(0)).unwrap();
+        assert_eq!(
+            tracker.advance_on_completion(Slot(0)).unwrap(),
+            Some(Slot(2))
+        );
         assert_eq!(tracker.cap(), Slot(2));
 
-        tracker.mark_completed(Slot(3)).unwrap();
+        assert_eq!(tracker.advance_on_completion(Slot(3)).unwrap(), None);
         assert_eq!(tracker.cap(), Slot(2));
 
-        tracker.mark_completed(Slot(2)).unwrap();
+        assert_eq!(
+            tracker.advance_on_completion(Slot(2)).unwrap(),
+            Some(Slot(4))
+        );
         assert_eq!(tracker.cap(), Slot(4));
     }
 
@@ -594,16 +796,16 @@ mod tests {
     fn completion_tracker_rejects_invalid_completions() {
         let mut tracker = CompletionTracker::new();
 
-        tracker.mark_completed(Slot(0)).unwrap();
+        tracker.advance_on_completion(Slot(0)).unwrap();
         // Below the cap.
         assert!(matches!(
-            tracker.mark_completed(Slot(0)),
+            tracker.advance_on_completion(Slot(0)),
             Err(ConductorError::InvalidSlot(Slot(0)))
         ));
         // Duplicate above the cap.
-        tracker.mark_completed(Slot(5)).unwrap();
+        tracker.advance_on_completion(Slot(5)).unwrap();
         assert!(matches!(
-            tracker.mark_completed(Slot(5)),
+            tracker.advance_on_completion(Slot(5)),
             Err(ConductorError::InvalidSlot(Slot(5)))
         ));
         assert_eq!(tracker.cap(), Slot(1));
@@ -614,10 +816,10 @@ mod tests {
         let mut tracker = CompletionTracker::new();
         assert_eq!(tracker.open_slot_count(Slot(10)).unwrap(), 10);
 
-        tracker.mark_completed(Slot(4)).unwrap();
+        tracker.advance_on_completion(Slot(4)).unwrap();
         assert_eq!(tracker.open_slot_count(Slot(10)).unwrap(), 9);
 
-        tracker.mark_completed(Slot(0)).unwrap();
+        tracker.advance_on_completion(Slot(0)).unwrap();
         assert_eq!(tracker.open_slot_count(Slot(10)).unwrap(), 8);
 
         // Opening another window grows the count by its slots.
@@ -675,12 +877,13 @@ mod tests {
     }
 
     #[test]
-    fn runtime_finalization_closes_chained_slots_and_opens_next_window() {
+    fn runtime_finalization_closes_slots_and_opens_next_window() {
         let runtime_config = ConductorConfig::new(
             nz(4),
             nz(2),
             TimestampDelta::from_nanos(10),
             GENESIS_DEADLINE,
+            nz(4),
         )
         .unwrap();
         let mut conductor =
@@ -688,17 +891,15 @@ mod tests {
         let _ = conductor.poll().unwrap();
 
         conductor.handle_slot_finalization(Timestamp::from_nanos(11), Slot(0));
-        assert!(matches!(
-            drain_outputs(&mut conductor).as_slice(),
-            [ConductorOutput::CloseSlots { cap: Slot(1) }]
-        ));
+        let outputs = drain_outputs(&mut conductor);
+        assert_no_window_opened(&outputs);
+        assert_eq!(extract_closed_caps(&outputs), [Slot(1)]);
+        assert_eq!(extract_cap_advances(&outputs), [Slot(1)]);
 
         conductor.handle_slot_finalization(Timestamp::from_nanos(12), Slot(1));
         let outputs = drain_outputs(&mut conductor);
-        assert!(matches!(
-            outputs[0],
-            ConductorOutput::CloseSlots { cap: Slot(2) }
-        ));
+        assert_eq!(extract_closed_caps(&outputs), [Slot(2)]);
+        assert_eq!(extract_cap_advances(&outputs), [Slot(2)]);
         let slots = extract_open_slots(&outputs);
         assert_eq!(
             slots.keys().copied().collect::<Vec<_>>(),
@@ -706,17 +907,16 @@ mod tests {
         );
         assert_eq!(slots[&Slot(4)], genesis_plus(40));
         assert_eq!(slots[&Slot(7)], genesis_plus(70));
-        assert_eq!(outputs.len(), 2);
     }
 
     #[test]
     fn duplicate_completion_is_rejected() {
         let mut conductor = conductor();
 
-        assert!(matches!(
-            complete_slot(&mut conductor, 0, 100).unwrap().as_slice(),
-            [ConductorOutput::CloseSlots { cap: Slot(1) }]
-        ));
+        let outputs = complete_slot(&mut conductor, 0, 100).unwrap();
+        assert_no_window_opened(&outputs);
+        assert_eq!(extract_closed_caps(&outputs), [Slot(1)]);
+        assert_eq!(extract_cap_advances(&outputs), [Slot(1)]);
 
         assert!(matches!(
             complete_slot(&mut conductor, 0, 100),
@@ -733,19 +933,17 @@ mod tests {
         assert!(complete_slot(&mut conductor, 1, 100).unwrap().is_empty());
         assert_eq!(conductor.completed_cap(), Slot(0));
 
-        assert!(matches!(
-            complete_slot(&mut conductor, 0, 100).unwrap().as_slice(),
-            [ConductorOutput::CloseSlots { cap: Slot(2) }]
-        ));
+        let outputs = complete_slot(&mut conductor, 0, 100).unwrap();
+        assert_eq!(extract_closed_caps(&outputs), [Slot(2)]);
+        assert_eq!(extract_cap_advances(&outputs), [Slot(2)]);
         assert_eq!(conductor.completed_cap(), Slot(2));
 
         assert!(complete_slot(&mut conductor, 3, 100).unwrap().is_empty());
         assert_eq!(conductor.completed_cap(), Slot(2));
 
-        assert!(matches!(
-            complete_slot(&mut conductor, 2, 100).unwrap().as_slice(),
-            [ConductorOutput::CloseSlots { cap: Slot(4) }]
-        ));
+        let outputs = complete_slot(&mut conductor, 2, 100).unwrap();
+        assert_eq!(extract_closed_caps(&outputs), [Slot(4)]);
+        assert_eq!(extract_cap_advances(&outputs), [Slot(4)]);
         assert_eq!(conductor.completed_cap(), Slot(4));
     }
 
@@ -754,12 +952,9 @@ mod tests {
         let mut conductor = conductor();
 
         for slot in 0..7 {
-            // in-order completions advance the cap (and close slots below
-            // it), but no window opens before the sync boundary
-            assert!(matches!(
-                complete_slot(&mut conductor, slot, 100).unwrap().as_slice(),
-                [ConductorOutput::CloseSlots { cap }] if *cap == Slot(slot + 1)
-            ));
+            let outputs = complete_slot(&mut conductor, slot, 100).unwrap();
+            assert_no_window_opened(&outputs);
+            assert_eq!(extract_cap_advances(&outputs), [Slot(slot + 1)]);
         }
     }
 
@@ -803,17 +998,16 @@ mod tests {
         let mut conductor = MonadConductor::<MessageAcs>::genesis(config(), ()).unwrap();
         let _ = conductor.poll().unwrap();
         for slot in 0..=7 {
-            assert!(matches!(
-                complete_slot(&mut conductor, slot, 100).unwrap().as_slice(),
-                [ConductorOutput::CloseSlots { cap }] if *cap == Slot(slot + 1)
-            ));
+            let outputs = complete_slot(&mut conductor, slot, 100).unwrap();
+            assert_no_window_opened(&outputs);
         }
         conductor.handle_message(
+            Timestamp::from_nanos(110),
             NodeId::dummy(1),
-            DeadlineAgreementMessage {
+            ConductorMessage::DeadlineAgreement(DeadlineAgreementMessage {
                 window: WindowId(1),
                 acs_message: Timestamp::from_nanos(110),
-            },
+            }),
         );
         assert_eq!(conductor.open_window_cap(), WindowId(2));
         let schedules = extract_open_slots(&drain_outputs(&mut conductor));
@@ -873,6 +1067,7 @@ mod tests {
             nz(8),
             TimestampDelta::from_nanos(10),
             GENESIS_DEADLINE,
+            LAG_THRESHOLD,
         )
         .unwrap();
         let bound = 2 * config.slots_per_window().get() - config.sync_boundary_slots().get();
@@ -897,5 +1092,172 @@ mod tests {
             );
             assert!(conductor.open_slot_count().unwrap() <= bound);
         }
+    }
+
+    #[test]
+    fn out_of_order_completion_leaving_the_cap_put_announces_nothing() {
+        let mut conductor = conductor();
+
+        let outputs = complete_slot(&mut conductor, 1, 100).unwrap();
+        assert_eq!(conductor.completed_cap(), Slot(0));
+        assert!(extract_closed_caps(&outputs).is_empty());
+        assert!(extract_cap_advances(&outputs).is_empty());
+    }
+
+    #[test]
+    fn cap_advance_below_the_lag_threshold_is_ignored() {
+        let mut conductor = conductor();
+
+        let outputs = receive_cap_advance(&mut conductor, LAG_THRESHOLD.get() - 1, 100);
+        assert!(outputs.is_empty());
+        assert_eq!(conductor.completed_cap(), Slot(0));
+        assert_eq!(conductor.open_window_cap(), WindowId(1));
+    }
+
+    #[test]
+    fn stale_cap_advance_is_ignored() {
+        let mut conductor = conductor();
+        let _ = complete_slot(&mut conductor, 0, 100).unwrap();
+
+        for cap in [0, 1] {
+            assert!(receive_cap_advance(&mut conductor, cap, 100).is_empty());
+        }
+        assert_eq!(conductor.completed_cap(), Slot(1));
+    }
+
+    #[test]
+    fn cap_advance_at_the_lag_threshold_jumps_the_cap_and_opens_the_target_window() {
+        let mut conductor = conductor();
+
+        let outputs = receive_cap_advance(&mut conductor, 10, 100);
+
+        assert_eq!(conductor.completed_cap(), Slot(10));
+        assert_eq!(conductor.open_window_cap(), WindowId(2));
+        assert_eq!(extract_closed_caps(&outputs), [Slot(10)]);
+        // A jump is not a local finalization, so it announces nothing.
+        assert!(extract_cap_advances(&outputs).is_empty());
+
+        let slots = extract_open_slots(&outputs);
+        assert_eq!(
+            slots.keys().copied().collect::<Vec<_>>(),
+            (10..20).map(Slot).collect::<Vec<_>>()
+        );
+        assert_eq!(slots[&Slot(10)], genesis_plus(100));
+        assert_eq!(slots[&Slot(19)], genesis_plus(190));
+    }
+
+    #[test]
+    fn a_jump_landing_inside_the_open_window_opens_no_new_window() {
+        // 100 slots per window, so a jump from cap 10 to cap 30 stays inside
+        // the window opened at genesis.
+        let wide_config = ConductorConfig::new(
+            nz(100),
+            nz(80),
+            TimestampDelta::from_nanos(10),
+            GENESIS_DEADLINE,
+            nz(20),
+        )
+        .unwrap();
+        let mut conductor = MonadConductor::<NopAcs<Timestamp>>::genesis(wide_config, ()).unwrap();
+        let _ = conductor.poll().unwrap();
+        for slot in 0..10 {
+            let _ = complete_slot(&mut conductor, slot, 100 + slot).unwrap();
+        }
+        assert_eq!(conductor.open_window_cap(), WindowId(1));
+
+        let outputs = receive_cap_advance(&mut conductor, 30, 200);
+
+        assert_eq!(conductor.completed_cap(), Slot(30));
+        assert_eq!(extract_closed_caps(&outputs), [Slot(30)]);
+        assert_no_window_opened(&outputs);
+        assert_eq!(conductor.open_window_cap(), WindowId(1));
+
+        // the untouched window machinery still rolls over at the sync boundary
+        let mut outputs = Vec::new();
+        for slot in 30..=79 {
+            outputs = complete_slot(&mut conductor, slot, 300 + slot).unwrap();
+        }
+        assert_eq!(conductor.open_window_cap(), WindowId(2));
+        assert_eq!(extract_open_slots(&outputs).keys().next(), Some(&Slot(100)));
+    }
+
+    #[test]
+    fn cap_advance_spanning_two_windows_only_opens_slots_at_or_above_the_cap() {
+        let mut conductor = conductor();
+
+        let outputs = receive_cap_advance(&mut conductor, 25, 100);
+
+        assert_eq!(conductor.completed_cap(), Slot(25));
+        assert_eq!(conductor.open_window_cap(), WindowId(3));
+        assert_eq!(extract_closed_caps(&outputs), [Slot(25)]);
+
+        // Window 1 is skipped entirely; window 2 opens from the cap onwards at
+        // its natural deadlines.
+        let slots = extract_open_slots(&outputs);
+        assert_eq!(
+            slots.keys().copied().collect::<Vec<_>>(),
+            (25..30).map(Slot).collect::<Vec<_>>()
+        );
+        assert_eq!(slots[&Slot(25)], genesis_plus(250));
+        assert_eq!(slots[&Slot(29)], genesis_plus(290));
+    }
+
+    #[test]
+    fn a_jump_keeps_out_of_order_completions_at_or_above_the_new_cap() {
+        let mut conductor = conductor();
+        let _ = receive_cap_advance(&mut conductor, 10, 100);
+
+        let outputs = complete_slot(&mut conductor, 11, 110).unwrap();
+        assert_eq!(conductor.completed_cap(), Slot(10));
+        assert!(extract_cap_advances(&outputs).is_empty());
+
+        let outputs = complete_slot(&mut conductor, 10, 120).unwrap();
+        assert_eq!(conductor.completed_cap(), Slot(12));
+        assert_eq!(extract_closed_caps(&outputs), [Slot(12)]);
+        assert_eq!(extract_cap_advances(&outputs), [Slot(12)]);
+    }
+
+    #[test]
+    fn a_jump_drops_subsumed_completions_and_advances_past_retained_ones() {
+        let mut conductor = conductor();
+        for slot in 0..=7 {
+            let _ = complete_slot(&mut conductor, slot, 100 + slot).unwrap();
+        }
+        assert_eq!(conductor.open_window_cap(), WindowId(2));
+        let _ = complete_slot(&mut conductor, 13, 200).unwrap();
+        let _ = complete_slot(&mut conductor, 18, 210).unwrap();
+
+        let outputs = receive_cap_advance(&mut conductor, 18, 220);
+
+        // slot 18 was already completed, so the cap lands past the received one
+        assert_eq!(conductor.completed_cap(), Slot(19));
+        assert_eq!(extract_closed_caps(&outputs), [Slot(19)]);
+        // A jump is not a local finalization, so it announces nothing.
+        assert!(extract_cap_advances(&outputs).is_empty());
+        // cap 19 clears window 1's sync boundary, so window 2 is proposed
+        assert_eq!(conductor.open_window_cap(), WindowId(3));
+        assert_eq!(extract_open_slots(&outputs).keys().next(), Some(&Slot(20)));
+
+        // slot 13 was subsumed by the jump, not retained
+        assert!(matches!(
+            complete_slot(&mut conductor, 13, 230),
+            Err(ConductorError::InvalidSlot(slot)) if slot == Slot(13)
+        ));
+    }
+
+    #[test]
+    fn the_window_after_a_jump_is_proposed_normally() {
+        let mut conductor = conductor();
+        let _ = receive_cap_advance(&mut conductor, 10, 100);
+
+        let mut outputs = Vec::new();
+        for slot in 10..=17 {
+            outputs = complete_slot(&mut conductor, slot, 200 + slot).unwrap();
+        }
+
+        assert_eq!(conductor.open_window_cap(), WindowId(3));
+        let slots = extract_open_slots(&outputs);
+        assert_eq!(slots.keys().next(), Some(&Slot(20)));
+        assert_eq!(slots[&Slot(20)], genesis_plus(200));
     }
 }

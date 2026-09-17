@@ -115,6 +115,9 @@ pub struct CadenceConfig {
     pub slot_interval: TimestampDelta,
     pub slots_per_window: NonZeroU64,
     pub sync_boundary_slots: NonZeroU64,
+    // How far a peer's announced cap must lead the local one before it is
+    // trusted as a jump; one window by default.
+    pub lag_threshold: NonZeroU64,
 }
 
 impl Default for CadenceConfig {
@@ -125,6 +128,7 @@ impl Default for CadenceConfig {
             slot_interval: TimestampDelta::from_millis(200),
             slots_per_window: NonZeroU64::new(20).expect("nonzero"),
             sync_boundary_slots: NonZeroU64::new(15).expect("nonzero"),
+            lag_threshold: NonZeroU64::new(20).expect("nonzero"),
         }
     }
 }
@@ -139,6 +143,7 @@ impl CadenceConfig {
             self.sync_boundary_slots,
             self.slot_interval,
             genesis_deadline,
+            self.lag_threshold,
         )
     }
 

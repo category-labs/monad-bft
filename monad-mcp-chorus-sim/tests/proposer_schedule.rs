@@ -37,6 +37,7 @@ use monad_mcp_chorus_sim::CadenceSwarmBuilder;
 
 const NODES: u64 = 8;
 const SLOTS_PER_WINDOW: NonZeroU64 = NonZeroU64::new(4).unwrap(); // W
+const LAG_THRESHOLD: NonZeroU64 = SLOTS_PER_WINDOW; // one window behind triggers a cap jump
 const SYNC_BOUNDARY_SLOTS: NonZeroU64 = NonZeroU64::new(2).unwrap(); // p; must be <= W
 const SLOT_INTERVAL: u64 = 100; // tau
 const LATENCY: u64 = 50; // networking latency
@@ -54,6 +55,7 @@ fn conductor() -> Conductor {
         SYNC_BOUNDARY_SLOTS,
         TimestampDelta::from_millis(SLOT_INTERVAL),
         GENESIS_DEADLINE,
+        LAG_THRESHOLD,
     )
     .unwrap();
     Conductor::genesis(config, ()).unwrap()

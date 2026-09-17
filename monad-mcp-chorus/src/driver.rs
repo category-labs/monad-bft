@@ -294,7 +294,9 @@ mod rlp_tests {
 
     use super::{
         super::{
-            conductor::deadline_agreement::DeadlineAgreementMessage,
+            conductor::{
+                CapAdvance, ConductorMessage, deadline_agreement::DeadlineAgreementMessage,
+            },
             test_utils::assert_roundtrip,
             types::{Timestamp, WindowId},
         },
@@ -311,6 +313,9 @@ mod rlp_tests {
             acs_message: Timestamp::from_nanos(42),
         });
         assert_eq!(alloy_rlp::encode(&conductor), [0xc4, 2, 0xc2, 3, 42]);
+        let cap_advance = ConductorMessage::<Timestamp>::CapAdvance(CapAdvance { cap: Slot(9) });
+        assert_eq!(alloy_rlp::encode(&cap_advance), [0xc3, 2, 0xc1, 9]);
+        assert_roundtrip(&cap_advance);
         for message in [slot, conductor] {
             assert_roundtrip(&message);
             let bytes: bytes::Bytes = message.serialize();
@@ -362,10 +367,16 @@ mod rlp_tests {
         assert_serialization_roundtrip(&Wire::Slot(slot, message));
 
         for nanos in [0, 127, 128, u128::MAX] {
-            let message = DeadlineAgreementMessage {
+            let message = ConductorMessage::DeadlineAgreement(DeadlineAgreementMessage {
                 window: WindowId(3),
                 acs_message: Timestamp::from_nanos(nanos),
-            };
+            });
+            assert_roundtrip(&message);
+            assert_serialization_roundtrip(&Wire::Conductor(message));
+        }
+
+        for cap in [0, 127, 128, u64::MAX - 1] {
+            let message = ConductorMessage::<Timestamp>::CapAdvance(CapAdvance { cap: Slot(cap) });
             assert_roundtrip(&message);
             assert_serialization_roundtrip(&Wire::Conductor(message));
         }
@@ -385,7 +396,9 @@ mod rlp_tests {
         let wire = Wire::Slot(slot, message.clone());
         let bytes = <Wire as Serializable<bytes::Bytes>>::serialize(&wire);
         assert_eq!(bytes.len(), wire.length());
-        let Wire::Slot(decoded_slot, decoded_message) = Wire::deserialize(&bytes).unwrap();
+        let Wire::Slot(decoded_slot, decoded_message) = Wire::deserialize(&bytes).unwrap() else {
+            panic!("expected a slot message");
+        };
         assert_eq!(decoded_slot, slot);
         assert_eq!(decoded_message, message);
 
@@ -395,8 +408,15 @@ mod rlp_tests {
         let mut extra = bytes.to_vec();
         extra.push(0x42);
         assert!(Wire::deserialize(&bytes::Bytes::from(extra)).is_err());
-        // [Conductor, [window]] cannot supply a NoMessage value.
-        assert!(Wire::deserialize(&bytes::Bytes::from_static(&[0xc3, 2, 0xc1, 3])).is_err());
+        // [Conductor, [DeadlineAgreement, [window]]] cannot supply a NoMessage value.
+        assert!(
+            Wire::deserialize(&bytes::Bytes::from_static(&[0xc5, 2, 0xc3, 1, 0xc1, 3])).is_err()
+        );
+        // The cap-advance variant carries no ACS message, so it still decodes.
+        assert!(matches!(
+            Wire::deserialize(&bytes::Bytes::from_static(&[0xc5, 2, 0xc3, 2, 0xc1, 9])).unwrap(),
+            Wire::Conductor(ConductorMessage::CapAdvance(CapAdvance { cap })) if cap == Slot(9)
+        ));
     }
 
     #[test]

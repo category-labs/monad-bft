@@ -31,6 +31,7 @@ use monad_mcp_chorus::{spec::KeyPair as _, stub as chorus};
 use monad_mcp_chorus_sim::CadenceSwarmBuilder;
 
 const SLOTS_PER_WINDOW: NonZeroU64 = NonZeroU64::new(10).unwrap();
+const LAG_THRESHOLD: NonZeroU64 = SLOTS_PER_WINDOW; // one window behind triggers a cap jump
 const SYNC_BOUNDARY_SLOTS: NonZeroU64 = NonZeroU64::new(8).unwrap();
 const SLOT_INTERVAL: TimestampDelta = TimestampDelta::from_millis(100);
 const GENESIS_DEADLINE: SlotDeadline = SlotDeadline::from_millis(100);
@@ -46,6 +47,7 @@ fn conductor() -> Conductor {
         SYNC_BOUNDARY_SLOTS,
         SLOT_INTERVAL,
         GENESIS_DEADLINE,
+        LAG_THRESHOLD,
     )
     .unwrap();
     MonadConductor::genesis(config, ()).unwrap()
