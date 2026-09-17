@@ -55,13 +55,15 @@ pub struct Config {
     pub ip_rate_limit_window: Duration,
     /// lru cache size for tracking recent cookie-valid handshake requests per ip
     pub ip_history_capacity: usize,
-    /// at this threshold of established transport sessions, drop all incoming handshake requests
+    /// maximum established transport sessions; also drop handshakes at this threshold
     pub total_transport_sessions: usize,
     /// max concurrent accepted handshakes waiting for the first authenticated packet
     pub max_pending_accepted_sessions: usize,
     /// max concurrent initiated handshakes admitted by connect()
     /// timer-driven retries and rekeys currently bypass this threshold
     pub max_pending_initiated_sessions: usize,
+    /// limit distinct established peer public keys from a single ip
+    pub max_established_peers_per_ip: usize,
     /// optional pre-shared key mixed into handshake for additional auth
     pub psk: Zeroizing<[u8; 32]>,
     /// max bytes of buffered messages per initiated session
@@ -93,6 +95,7 @@ impl Default for Config {
             total_transport_sessions: 40_000,
             max_pending_accepted_sessions: 20_000,
             max_pending_initiated_sessions: 1_000,
+            max_established_peers_per_ip: 8,
             psk: Zeroizing::new([0u8; 32]),
             max_buffered_bytes_per_session: 128 * 1024,
             gc_idle_timeout: Duration::from_secs(120),
