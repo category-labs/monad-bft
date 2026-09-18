@@ -250,7 +250,6 @@ impl TransportState {
                 remote_public_key: self.common.remote_public_key,
                 remote_addr: self.common.remote_addr,
                 retry_attempts: self.common.retry_attempts,
-                stored_cookie: self.common.stored_cookie,
             });
         }
 
