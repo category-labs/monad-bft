@@ -81,7 +81,7 @@ enum Command {
     },
     #[command(alias = "nw", about = "run native dataplane writer")]
     NativeWriter {
-        #[arg(help = "target address to send packets to")]
+        #[arg(help = "target address, or comma-separated target addresses, to send packets to")]
         target: String,
 
         #[arg(
@@ -106,6 +106,12 @@ enum Command {
             help = "dataplane bandwidth limit in Mbps (should be >= writer bandwidth)"
         )]
         dataplane_bandwidth_mbps: u64,
+
+        #[arg(
+            long,
+            help = "per-peer dataplane bandwidth limit in Mbps (defaults to the global limit)"
+        )]
+        peer_bandwidth_mbps: Option<u64>,
 
         #[arg(
             long,
@@ -158,14 +164,19 @@ fn main() {
             packet_size,
             writer_bandwidth_mbps,
             dataplane_bandwidth_mbps,
+            peer_bandwidth_mbps,
             batch_size,
         } => {
-            let target_addr: SocketAddr = target.parse().expect("invalid target address");
+            let target_addrs: Vec<SocketAddr> = target
+                .split(',')
+                .map(|target| target.parse().expect("invalid target address"))
+                .collect();
             run_native_writer(
-                target_addr,
+                target_addrs,
                 packet_size,
                 writer_bandwidth_mbps,
                 dataplane_bandwidth_mbps,
+                peer_bandwidth_mbps,
                 batch_size,
             );
         }
@@ -301,16 +312,18 @@ fn run_writer(target_addr: SocketAddr, num_writers: usize, packet_size: usize, b
 }
 
 fn run_native_writer(
-    target_addr: SocketAddr,
+    target_addrs: Vec<SocketAddr>,
     packet_size: usize,
     writer_bandwidth_mbps: u64,
     dataplane_bandwidth_mbps: u64,
+    peer_bandwidth_mbps: Option<u64>,
     batch_size: usize,
 ) {
     assert!(
         packet_size > 0 && packet_size <= 1472,
         "packet_size must be between 1 and 1472 bytes"
     );
+    assert!(!target_addrs.is_empty(), "at least one target is required");
     assert!(
         writer_bandwidth_mbps > 0,
         "writer_bandwidth_mbps must be greater than 0"
@@ -319,20 +332,29 @@ fn run_native_writer(
         dataplane_bandwidth_mbps > 0,
         "dataplane_bandwidth_mbps must be greater than 0"
     );
+    assert!(
+        peer_bandwidth_mbps.is_none_or(|bandwidth| bandwidth > 0),
+        "peer_bandwidth_mbps must be greater than 0"
+    );
     assert!(batch_size > 0, "batch_size must be greater than 0");
 
     let bind_addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
     info!(
         bind_addr = %bind_addr,
-        target_addr = %target_addr,
+        ?target_addrs,
         packet_size = packet_size,
         writer_bandwidth_mbps = writer_bandwidth_mbps,
         dataplane_bandwidth_mbps = dataplane_bandwidth_mbps,
+        peer_bandwidth_mbps = peer_bandwidth_mbps.unwrap_or(dataplane_bandwidth_mbps),
         batch_size = batch_size,
         "starting native dataplane writer"
     );
 
-    let mut dataplane = DataplaneBuilder::new(dataplane_bandwidth_mbps)
+    let mut builder = DataplaneBuilder::new(dataplane_bandwidth_mbps);
+    if let Some(peer_bandwidth_mbps) = peer_bandwidth_mbps {
+        builder = builder.with_udp_peer_bandwidth_mbps(peer_bandwidth_mbps);
+    }
+    let mut dataplane = builder
         .with_udp_sockets([(UdpSocketId::Raptorcast, bind_addr)])
         .build();
 
@@ -352,10 +374,16 @@ fn run_native_writer(
     let sleep_duration_nanos =
         (packet_size as u64 * batch_size as u64 * 8 * 1_000) / writer_bandwidth_mbps;
     let sleep_duration = Duration::from_nanos(sleep_duration_nanos);
+    let mut target_index = 0;
 
     loop {
         for _ in 0..batch_size {
-            writer.write(target_addr, payload.clone(), packet_size as u16);
+            writer.write(
+                target_addrs[target_index],
+                payload.clone(),
+                packet_size as u16,
+            );
+            target_index = (target_index + 1) % target_addrs.len();
         }
         thread::sleep(sleep_duration);
     }
@@ -396,6 +424,7 @@ fn run_native(bind_addr: SocketAddr, multishot: bool) {
             let mbps = (bytes_received as f64 * 8.0) / elapsed / 1_000_000.0;
 
             info!(
+                bind_addr = %bind_addr,
                 msgs_received = msgs_received,
                 msgs_per_sec = format!("{:.0}", msgs_per_sec),
                 mbps = format!("{:.2}", mbps),
