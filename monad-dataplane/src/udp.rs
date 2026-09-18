@@ -19,8 +19,12 @@ use std::{
     net::SocketAddr,
     num::NonZeroU64,
     os::fd::{AsRawFd, FromRawFd},
+    sync::mpsc as std_mpsc,
+    thread,
+    time::Instant,
 };
 
+use async_channel::{Receiver, Sender};
 use bytes::{Bytes, BytesMut};
 use futures::future::join_all;
 use monoio::{
@@ -28,6 +32,7 @@ use monoio::{
     net::udp::UdpSocket,
     select, spawn,
     time::sleep,
+    IoUringDriver, RuntimeBuilder,
 };
 use tokio::sync::mpsc::{self, error::TryRecvError};
 use tracing::{debug, error, trace, warn};
@@ -47,6 +52,13 @@ pub const DEFAULT_MTU: u16 = monad_types::DEFAULT_MTU;
 const MAX_AGGREGATED_WRITE_SIZE: u16 = u16::MAX - IPV4_HDR_SIZE - UDP_HDR_SIZE;
 const MAX_AGGREGATED_SEGMENTS: u16 = 128;
 const MAX_CHANNEL_DRAIN: usize = 64;
+const UDP_TX_QUEUE_SIZE: usize = 128;
+
+struct UdpSend {
+    socket_id: UdpSocketId,
+    dst: SocketAddr,
+    payload: Bytes,
+}
 
 impl PacingItem for UdpMsg {
     fn queued_bytes(&self) -> usize {
@@ -80,6 +92,7 @@ pub(crate) struct UdpTaskConfig {
     pub pacing: UdpPacingConfig,
     pub buffer_size: Option<usize>,
     pub use_multishot: bool,
+    pub workers: usize,
 }
 
 fn configure_socket(socket: &UdpSocket, buffer_size: Option<usize>) {
@@ -139,7 +152,7 @@ pub(crate) fn spawn_tasks(
     socket_configs: Vec<(UdpSocketId, SocketAddr, mpsc::Sender<RecvUdpMsg>)>,
     udp_egress_rx: mpsc::Receiver<UdpMsg>,
     config: UdpTaskConfig,
-    bound_addrs_tx: std::sync::mpsc::SyncSender<Vec<(UdpSocketId, SocketAddr)>>,
+    bound_addrs_tx: std_mpsc::SyncSender<Vec<(UdpSocketId, SocketAddr)>>,
     metrics: DataplaneMetrics,
 ) {
     let UdpTaskConfig {
@@ -147,20 +160,27 @@ pub(crate) fn spawn_tasks(
         pacing,
         buffer_size,
         use_multishot,
+        workers: worker_count,
     } = config;
-    let mut tx_sockets = Vec::new();
+    assert!(worker_count != 0, "at least one UDP TX worker is required");
+    let mut worker_sockets: Vec<Vec<_>> = (0..worker_count).map(|_| Vec::new()).collect();
     let mut bound_addrs = Vec::with_capacity(socket_configs.len());
 
     for (socket_id, socket_addr, ingress_tx) in socket_configs {
         let socket = std::net::UdpSocket::bind(socket_addr).unwrap();
-        let tx = UdpSocket::from_std(socket).unwrap();
-        configure_socket(&tx, buffer_size);
-        let actual_addr = tx.local_addr().unwrap();
+        for sockets in &mut worker_sockets {
+            sockets.push((
+                socket_id,
+                socket.try_clone().expect("failed to clone UDP TX socket"),
+            ));
+        }
+        let rx = UdpSocket::from_std(socket).unwrap();
+        configure_socket(&rx, buffer_size);
+        let actual_addr = rx.local_addr().unwrap();
         bound_addrs.push((socket_id, actual_addr));
 
         let group_id = socket_id as u16;
         if use_multishot {
-            let rx = tx.dup().expect("failed to dup socket");
             spawn(rx_multishot_socket(
                 rx,
                 ingress_tx.clone(),
@@ -174,17 +194,38 @@ pub(crate) fn spawn_tasks(
                 "created multishot socket"
             );
         } else {
-            let rx = tx.dup().expect("failed to dup socket");
             spawn(rx_single_socket(rx, ingress_tx.clone(), metrics.clone()));
             trace!(?socket_id, ?socket_addr, ?actual_addr, "created socket");
         }
-
-        tx_sockets.push((socket_id, tx));
     }
 
+    let (dispatch_tx, dispatch_rx) = async_channel::bounded(UDP_TX_QUEUE_SIZE);
+    let (startup_tx, startup_rx) = std_mpsc::channel();
+    for (worker, sockets) in worker_sockets.into_iter().enumerate() {
+        let metrics = metrics.clone();
+        let startup_tx = startup_tx.clone();
+        let dispatch_rx = dispatch_rx.clone();
+        thread::Builder::new()
+            .name(format!("monad-udp-tx-{worker}"))
+            .spawn(move || {
+                RuntimeBuilder::<IoUringDriver>::new()
+                    .enable_timer()
+                    .build()
+                    .expect("failed building UDP TX runtime")
+                    .block_on(tx_worker(sockets, dispatch_rx, metrics, startup_tx));
+            })
+            .expect("failed to spawn UDP TX thread");
+    }
+    drop(startup_tx);
+
+    for _ in 0..worker_count {
+        startup_rx
+            .recv()
+            .expect("UDP TX worker exited during startup");
+    }
     bound_addrs_tx.send(bound_addrs).unwrap();
-    spawn(tx(
-        tx_sockets,
+    spawn(tx_pacing(
+        dispatch_tx,
         udp_egress_rx,
         up_bandwidth_mbps,
         pacing,
@@ -328,14 +369,13 @@ fn enqueue_udp_msg(queue: &mut PacingQueue<UdpMsg>, metrics: &DataplaneMetrics, 
     let _ = queue.enqueue(destination, priority, msg);
 }
 
-async fn tx(
-    tx_sockets: Vec<(UdpSocketId, UdpSocket)>,
+async fn tx_pacing(
+    dispatch_tx: Sender<Vec<UdpSend>>,
     mut udp_egress_rx: mpsc::Receiver<UdpMsg>,
     up_bandwidth_mbps: u64,
     pacing_config: UdpPacingConfig,
     metrics: DataplaneMetrics,
 ) {
-    let tx_sockets: HashMap<UdpSocketId, UdpSocket> = tx_sockets.into_iter().collect();
     let global_bytes_per_second = NonZeroU64::new(
         u64::try_from(u128::from(up_bandwidth_mbps) * 1_000_000 / 8)
             .expect("UDP bandwidth overflows bytes per second"),
@@ -354,7 +394,6 @@ async fn tx(
     );
     let max_batch_bytes = max_write_size_for_segment_size(DEFAULT_SEGMENT_SIZE) as usize;
     let max_batch_items = MAX_AGGREGATED_SEGMENTS as usize;
-    let mut send_futures = Vec::with_capacity(max_batch_items);
     let mut incoming = Vec::with_capacity(MAX_CHANNEL_DRAIN);
 
     loop {
@@ -402,9 +441,9 @@ async fn tx(
         }
 
         let queue_len = queue.len();
-        send_futures.clear();
+        let mut batch = Vec::with_capacity(max_batch_items);
         let mut total_bytes = 0;
-        while send_futures.len() < max_batch_items && total_bytes < max_batch_bytes {
+        while batch.len() < max_batch_items && total_bytes < max_batch_bytes {
             let Some(mut scheduled) = queue.dequeue(now, max_batch_bytes - total_bytes) else {
                 break;
             };
@@ -412,7 +451,6 @@ async fn tx(
             let msg = &scheduled.item;
             let socket_id = msg.socket_id;
             let dst = msg.dst;
-            let socket = tx_sockets.get(&socket_id).expect("valid socket_id");
 
             if !msg.payload.is_empty() {
                 let SocketAddr::V4(destination) = dst else {
@@ -426,10 +464,17 @@ async fn tx(
 
             total_bytes += chunk.len();
             trace!(?socket_id, dst_addr = ?dst, chunk_len = chunk.len(), "preparing udp send");
-            send_futures.push(socket.send_to(chunk, dst));
+            batch.push(UdpSend {
+                socket_id,
+                dst,
+                payload: chunk,
+            });
         }
 
-        let batch_count = send_futures.len();
+        if batch.is_empty() {
+            continue;
+        }
+        let batch_count = batch.len();
         if batch_count > 1 {
             trace!(
                 batch_size = batch_count,
@@ -439,7 +484,41 @@ async fn tx(
             );
         }
 
-        for (ret, chunk) in join_all(send_futures.drain(..)).await {
+        let started = Instant::now();
+        let result = dispatch_tx.send(batch).await;
+        metrics
+            .udp_tx_queue_wait_micros
+            .add(u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX));
+        if let Err(error) = result {
+            metrics
+                .udp_egress_messages_dropped
+                .add(u64::try_from(error.0.len()).unwrap_or(u64::MAX));
+            return;
+        }
+    }
+}
+
+async fn tx_worker(
+    tx_sockets: Vec<(UdpSocketId, std::net::UdpSocket)>,
+    dispatch_rx: Receiver<Vec<UdpSend>>,
+    metrics: DataplaneMetrics,
+    startup_tx: std_mpsc::Sender<()>,
+) {
+    let tx_sockets = tx_sockets
+        .into_iter()
+        .map(|(id, socket)| (id, UdpSocket::from_std(socket).unwrap()))
+        .collect::<HashMap<_, _>>();
+    if startup_tx.send(()).is_err() {
+        return;
+    }
+    drop(startup_tx);
+
+    while let Ok(dispatch) = dispatch_rx.recv().await {
+        let sends = dispatch.into_iter().map(|message| {
+            let socket = tx_sockets.get(&message.socket_id).expect("valid socket_id");
+            socket.send_to(message.payload, message.dst)
+        });
+        for (ret, chunk) in join_all(sends).await {
             match ret {
                 Ok(payload_bytes_sent) => {
                     metrics.udp_messages_sent.inc();
@@ -500,10 +579,60 @@ mod tests {
     use super::*;
 
     #[monoio::test(timer_enabled = true)]
+    async fn pacing_waits_for_worker_queue_space_and_counts_closed_queue_drops() {
+        use futures::FutureExt;
+
+        let metrics = DataplaneMetrics::new();
+        let (sender, receiver) = mpsc::channel(4);
+        let (dispatch_tx, dispatch_rx) = async_channel::bounded(1);
+        dispatch_tx.try_send(Vec::new()).unwrap();
+        let message = || UdpMsg {
+            socket_id: UdpSocketId::Raptorcast,
+            dst: "127.0.0.1:1".parse().unwrap(),
+            payload: Bytes::from_static(&[1]),
+            stride: 1,
+            priority: monad_types::UdpPriority::High,
+        };
+        assert!(sender.try_send(message()).is_ok());
+        let mut pacing = std::pin::pin!(tx_pacing(
+            dispatch_tx,
+            receiver,
+            1_000,
+            UdpPacingConfig::for_global_bandwidth(1_000),
+            metrics.clone(),
+        ));
+        assert!(pacing.as_mut().now_or_never().is_none());
+        assert_eq!(metrics.udp_egress_messages_dropped.get(), 0);
+        time::sleep(Duration::from_millis(1)).await;
+        dispatch_rx.try_recv().unwrap();
+        assert!(pacing.as_mut().now_or_never().is_none());
+        let batch = dispatch_rx.try_recv().unwrap();
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].payload, Bytes::from_static(&[1]));
+        assert!(metrics.udp_tx_queue_wait_micros.get() > 0);
+        assert_eq!(metrics.udp_egress_messages_dropped.get(), 0);
+
+        dispatch_rx.close();
+        assert!(sender.try_send(message()).is_ok());
+        time::timeout(Duration::from_millis(100), pacing)
+            .await
+            .unwrap();
+        assert_eq!(metrics.udp_egress_messages_dropped.get(), 1);
+    }
+
+    #[monoio::test(timer_enabled = true)]
     async fn new_peer_wakes_transmit_while_another_peer_is_cooling() {
         let regular = UdpSocket::bind("127.0.0.1:0").unwrap();
         let high = UdpSocket::bind("127.0.0.1:0").unwrap();
-        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let (dispatch_tx, dispatch_rx) = async_channel::bounded(UDP_TX_QUEUE_SIZE);
+        let (startup_tx, _startup_rx) = std_mpsc::channel();
+        spawn(tx_worker(
+            vec![(UdpSocketId::Raptorcast, socket)],
+            dispatch_rx,
+            DataplaneMetrics::new(),
+            startup_tx,
+        ));
         let (sender, receiver) = mpsc::channel(4);
         for _ in 0..2 {
             assert!(sender
@@ -516,8 +645,8 @@ mod tests {
                 })
                 .is_ok());
         }
-        spawn(tx(
-            vec![(UdpSocketId::Raptorcast, socket)],
+        spawn(tx_pacing(
+            dispatch_tx,
             receiver,
             1_000,
             UdpPacingConfig {
