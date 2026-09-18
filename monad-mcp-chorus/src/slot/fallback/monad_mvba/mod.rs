@@ -738,6 +738,7 @@ where
 
         // persist-before-send: DecidedQC
         self.decided_qc = Some(commit_qc.clone());
+        tracing::debug!(slot = ?self.context.slot, view = ?self.view(), "mvba decided");
 
         (
             Phase::Decided(Decided::new(commit_qc.clone(), block)),
@@ -755,6 +756,7 @@ where
         if let Some(qc) = &tc.high_prep_qc {
             self.update_prep_qc(qc.clone());
         }
+        tracing::debug!(slot = ?self.context.slot, view = ?tc.view.next(), "mvba advancing view on tc");
 
         // persist-before-send: PrepQC and the certificate that fixes v
         let outputs = self.enter_view(Some(tc));
@@ -771,6 +773,9 @@ where
     ) -> (Phase<V>, Vec<MVBAOutput<MvbaMessage<V, C>, TimerEvent<V>>>) {
         self.timer_fired = false;
         let view = self.view();
+        if view.get() <= 8 || view.get().is_power_of_two() {
+            tracing::debug!(slot = ?self.context.slot, ?view, "mvba view timed out");
+        }
 
         // persist-before-send: lastVotedView
         self.last_voted_view = self.last_voted_view.max(view);
@@ -855,6 +860,7 @@ where
         phase: Phase<V>,
         pre_prepare: PrePrepareMsg<V, C>,
     ) -> (Phase<V>, Vec<MVBAOutput<MvbaMessage<V, C>, TimerEvent<V>>>) {
+        tracing::debug!(slot = ?self.context.slot, view = ?self.view(), "mvba proposing as leader");
         (
             Self::leave_new_view(phase),
             vec![MVBAOutput::Broadcast(MvbaMessage::PrePrepare(pre_prepare))],

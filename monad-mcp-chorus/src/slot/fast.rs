@@ -196,7 +196,10 @@ impl FastPath {
         debug_assert!(self.validator_data.contains(&node_id));
 
         let j = vote_msg.scope.index;
-        self.votes[j].add_vote(node_id, vote_msg);
+        let admission = self.votes[j].add_vote(node_id, vote_msg);
+        if admission != Admission::Admitted {
+            tracing::debug!(slot = ?self.slot, ?node_id, ?j, ?admission, "batch vote not admitted");
+        }
         self.try_form_fast_qc(j);
     }
 
@@ -437,21 +440,24 @@ impl FastPath {
 
     // D_s + 2Delta
     #[must_use]
-    /// The certificate this validator just formed, and the block it can enter
-    /// the fallback path with. The certificate is returned alongside rather
-    /// than folded into the block: it admits the path, it is not part of the
-    /// value the MVBA agrees on, and the caller has to disseminate it.
-    pub(crate) fn on_fallback_deadline(&self) -> Option<(EnterFallbackCert, Metablock)> {
-        // Note: fast commit qc is impossible at this point because
-        // the possible fast commit qc must have been formed
-        // reactively when handling fast commit votes.
+    /// The block this validator can enter the fallback path with, and the
+    /// certificate admitting it. A held fast metablock is admissible alone
+    /// (the paper's MVBA proposal case 1); any other block needs the
+    /// enter-fallback certificate (case 2). The certificate is returned
+    /// alongside rather than folded into the block: it admits the path, it is
+    /// not part of the value the MVBA agrees on, and the caller has to
+    /// disseminate it.
+    pub(crate) fn on_fallback_deadline(&self) -> Option<(Option<EnterFallbackCert>, Metablock)> {
+        let block = self.try_build_fallback_block()?;
+        if block.is_fast() {
+            return Some((None, block));
+        }
 
         let enter_fallback_cert = self
             .enter_fallback_votes
             .try_form_strong_qc(&self.validator_data)?;
-        let block = self.try_build_fallback_block()?;
 
-        Some((enter_fallback_cert, block))
+        Some((Some(enter_fallback_cert), block))
     }
 
     /// This validator's MVBA input: one certified entry per proposer, built
@@ -465,6 +471,30 @@ impl FastPath {
             })
             .try_into_total()
             .map(|block| Metablock::new(block.into_owned()))
+    }
+
+    // per index: admitted voter count, and the (index, voter) pairs still held
+    pub(crate) fn vote_admission_state(&self) -> (Vec<usize>, Vec<(usize, NodeId)>) {
+        let admitted = (0..self.proposals.size())
+            .map(|j| self.votes[j].pool().all_voters().count())
+            .collect();
+        let held = (0..self.proposals.size())
+            .flat_map(|j| self.votes[j].held().map(move |(voter, _)| (j, voter)))
+            .collect();
+        (admitted, held)
+    }
+
+    pub(crate) fn commit_voter_count(&self) -> usize {
+        self.commit_votes.all_voters().count()
+    }
+
+    // enter-fallback voters seen and the indices still without a certified entry
+    pub(crate) fn fallback_wait_state(&self) -> (Vec<NodeId>, Vec<usize>) {
+        let voters: Vec<NodeId> = self.enter_fallback_votes.all_voters().copied().collect();
+        let uncertified = (0..self.proposals.size())
+            .filter(|j| matches!(self.certs[*j], LocalCertifiedEntry::Absent))
+            .collect();
+        (voters, uncertified)
     }
 
     // ------- internal helper methods ---------
@@ -696,6 +726,20 @@ pub(crate) struct BatchVoteMsg {
     votes: ProposalMap<SignedEntry>,
     // vote only. fields for chunks & decryption share may be added by
     // other components.
+}
+
+impl BatchVoteMsg {
+    // one char per index, + positive / - negative, for logs
+    pub(crate) fn shape(&self) -> String {
+        self.votes
+            .as_ref()
+            .into_indexed_iter()
+            .map(|(_, signed)| match signed.entry {
+                Entry::Positive(_) => '+',
+                Entry::Negative => '-',
+            })
+            .collect()
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]

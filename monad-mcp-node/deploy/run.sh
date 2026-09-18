@@ -13,7 +13,7 @@ fi
 
 # the pid is written by the process that becomes the node, so exec
 # keeps it valid
-RUST_LOG=${RUST_LOG:-info} setsid --fork bash -c \
+RUST_LOG=${RUST_LOG:-info,monad_mcp_chorus::slot=debug} setsid --fork bash -c \
     'echo $$ > "$1/run/pid"; exec "$1/bin/current" "$1/config/node.toml"' \
     run.sh "$root" >> "$root/logs/node.log" 2>&1
 

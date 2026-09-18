@@ -187,8 +187,8 @@ impl ProposalConfig {
     // TODO: observation_cutoff is a Cadence deployment constant and must be
     // the same value every consumer sees; derive it from the conductor
     // configuration once that carries the parameter.
-    const OBSERVATION_CUTOFF: u64 = 3;
-    const ROTATION_SLACK: u64 = 1;
+    const OBSERVATION_CUTOFF: u64 = 5;
+    const ROTATION_SLACK: u64 = 3;
     const SLOTS_PER_EPOCH: u64 = 400;
 
     fn proposer_config(&self) -> ProposerConfig {

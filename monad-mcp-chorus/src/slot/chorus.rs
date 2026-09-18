@@ -213,6 +213,10 @@ pub struct Chorus {
     // Decided but slot not yet closed, ignore all subsequent messages
     // and timer events.
     decided: bool,
+    // FallbackDecisionDelayElapsed fires without enough evidence, for log throttling
+    fallback_waits: u32,
+    // FallbackTransitionTimeout fires without 2f+1 admitted votes, for log throttling
+    transition_waits: u32,
 }
 
 impl SlotConsensus for Chorus {
@@ -278,6 +282,8 @@ impl SlotConsensus for Chorus {
             fallback,
             outputs: Default::default(),
             decided: false,
+            fallback_waits: 0,
+            transition_waits: 0,
         }
     }
 
@@ -342,10 +348,17 @@ impl SlotConsensus for Chorus {
                 // TODO: the retry re-derives the cert from our own vote pool
                 // and this one is dropped; if the votes never arrive we hold a
                 // valid cert yet never enter. Keep it for the deadline path.
-                if self.fast.enter_fallback_cert_is_valid(&cert)
-                    && let Some(block) = self.fast.try_build_fallback_block()
-                {
-                    self.enter_fallback(cert, block);
+                if self.fast.enter_fallback_cert_is_valid(&cert) {
+                    match self.fast.try_build_fallback_block() {
+                        Some(block) => {
+                            tracing::debug!(slot = ?self.slot, "entering fallback mvba on peer certificate");
+                            self.enter_fallback(Some(cert), block);
+                        }
+                        None => {
+                            let (_, uncertified) = self.fast.fallback_wait_state();
+                            tracing::debug!(slot = ?self.slot, ?uncertified, "peer enter-fallback cert held, evidence incomplete");
+                        }
+                    }
                 }
             }
 
@@ -366,6 +379,7 @@ impl SlotConsensus for Chorus {
         self.schedule_timer(self.delta, TimerEvent::FallbackTransitionTimeout);
 
         if let Some(batch_vote) = self.fast.on_deadline() {
+            tracing::debug!(slot = ?self.slot, votes = %batch_vote.shape(), "deadline reached, batch vote cast");
             self.broadcast(batch_vote);
         }
 
@@ -378,26 +392,58 @@ impl SlotConsensus for Chorus {
                 self.schedule_timer(self.delta, TimerEvent::FallbackDecisionDelayElapsed);
 
                 match self.fast.on_commit_vote_deadline() {
-                    CommitVoteDeadlineOutcome::AlreadyVoted => {}
+                    CommitVoteDeadlineOutcome::AlreadyVoted => {
+                        tracing::debug!(
+                            slot = ?self.slot,
+                            commit_voters = self.fast.commit_voter_count(),
+                            "D+delta: fast commit vote already cast, awaiting commit qc"
+                        );
+                    }
                     CommitVoteDeadlineOutcome::NotEnoughVotes => {
+                        self.transition_waits += 1;
+                        if self.transition_waits.is_power_of_two() {
+                            let (admitted, held) = self.fast.vote_admission_state();
+                            tracing::debug!(
+                                slot = ?self.slot,
+                                waits = self.transition_waits,
+                                ?admitted,
+                                ?held,
+                                "D+delta: fewer than 2f+1 admitted votes, waiting"
+                            );
+                        }
                         // not enough valid votes, wait for more votes to arrive
                         self.schedule_timer(self.delta, TimerEvent::FallbackTransitionTimeout);
                     }
                     CommitVoteDeadlineOutcome::FallbackVote(fallback_vote) => {
+                        tracing::debug!(slot = ?self.slot, "no fast block by D+delta, fallback vote cast");
                         self.broadcast(fallback_vote);
                     }
                 }
             }
             TimerEvent::FallbackDecisionDelayElapsed => match self.fast.on_fallback_deadline() {
                 None => {
+                    self.fallback_waits += 1;
+                    if self.fallback_waits.is_power_of_two() {
+                        let (voters, uncertified) = self.fast.fallback_wait_state();
+                        tracing::debug!(
+                            slot = ?self.slot,
+                            waits = self.fallback_waits,
+                            enter_fallback_voters = ?voters,
+                            ?uncertified,
+                            "fallback entry blocked, waiting for evidence"
+                        );
+                    }
                     // not enough evidence yet, wait for more messages to arrive
                     self.schedule_timer(self.delta, TimerEvent::FallbackDecisionDelayElapsed);
                     // todo: maybe rebroadcast fallback vote?
                 }
                 Some((cert, block)) => {
+                    tracing::debug!(slot = ?self.slot, fast = cert.is_none(), "entering fallback mvba");
                     // we formed the fallback certificate locally; disseminate
                     // it so lagging validators can enter without re-deriving it.
-                    self.broadcast(cert.clone());
+                    if let Some(cert) = &cert {
+                        self.broadcast(cert.clone());
+                    }
                     self.enter_fallback(cert, block);
                 }
             },
@@ -415,6 +461,7 @@ impl Chorus {
     // speculatively commit a newly completed fast block, cast our
     // commit vote, and disseminate the block for peers to adopt
     fn commit_fast_block(&mut self, fast_block: FastBlock) {
+        tracing::debug!(slot = ?self.slot, "fast block formed, commit vote cast");
         let commit_vote = fast_block.commit_vote(self.slot, &self.key);
         self.push(SlotOutput::CommitOptimistic(fast_block.clone()));
         self.broadcast(commit_vote);
@@ -457,9 +504,10 @@ impl Chorus {
         self.push(SlotOutput::Finalize(cert.into()));
     }
 
-    /// `propose` is idempotent, so a second certificate changes nothing
-    fn enter_fallback(&mut self, cert: EnterFallbackCert, block: Metablock) {
-        self.fallback.propose(block, Some(cert));
+    /// `propose` is idempotent, so a second certificate changes nothing.
+    /// A fast metablock needs no certificate.
+    fn enter_fallback(&mut self, cert: Option<EnterFallbackCert>, block: Metablock) {
+        self.fallback.propose(block, cert);
         self.drain_fallback();
     }
 

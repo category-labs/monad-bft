@@ -215,17 +215,23 @@ where
                 CadenceEvent::SlotDeadline(slot) => {
                     if let Some(instance) = self.slot_manager.slot_instance(slot) {
                         instance.handle_deadline();
+                    } else {
+                        tracing::debug!(?slot, "deadline for a slot without instance");
                     }
                 }
                 CadenceEvent::SlotTimer(slot, timer) => {
                     if let Some(instance) = self.slot_manager.slot_instance(slot) {
                         instance.handle_timer(timer);
+                    } else {
+                        tracing::debug!(?slot, "timer for a slot without instance");
                     }
                 }
                 CadenceEvent::SlotMessage(message) => {
                     let ((slot, message), author) = message.destructure();
                     if let Some(instance) = self.slot_manager.slot_instance(slot) {
                         instance.handle_message(author, message);
+                    } else {
+                        tracing::debug!(?slot, ?author, "message for a slot without instance");
                     }
                 }
             }

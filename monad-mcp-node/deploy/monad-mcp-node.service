@@ -4,7 +4,7 @@ After=network-online.target
 
 [Service]
 ExecStart=%h/monad-mcp/bin/current %h/monad-mcp/config/node.toml
-Environment=RUST_LOG=info
+Environment=RUST_LOG=info,monad_mcp_chorus=debug
 KillSignal=SIGINT
 Restart=on-failure
 RestartSec=2
