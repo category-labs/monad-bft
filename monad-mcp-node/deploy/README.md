@@ -33,7 +33,7 @@ monad-bft" below. Until then, run a reduced `hosts.txt` over the idle hosts (`am
 | `deploy.sh` | ships binary, `cruft.sh`, `run.sh` and the user units; enables them |
 | `push-config.sh` | `dist/config/<host>.toml` → `~/monad-mcp/config/node.toml` |
 | `netctl.sh` | `start`/`stop`/`restart`/`status`/`logs`/`upgrade`/`run-one` |
-| `report.sh` | per-host finalized/committed counts, slot-set agreement, top warnings |
+| `report.sh` | per-host finalized/committed counts, per-slot block agreement, top warnings |
 | `cruft.sh` | ledger pruner, runs on the host from `monad-mcp-cruft.timer` |
 | `monad-mcp-node.service`, `monad-mcp-cruft.{service,timer}`, `cruft.env`, `run.sh` | pushed to the hosts |
 
@@ -47,7 +47,7 @@ are the two scripts here that do not source `lib.sh`.
   from that one u64). Reordering or inserting a host renumbers the validator set and needs a
   new genesis.
 - **Every whole-network `start`, `restart` and `upgrade` mints a new genesis** (`now + lead`,
-  default 90 s) and wipes `~/monad-mcp/ledger/`; `--keep-ledger` archives it to
+  default 60 s) and wipes `~/monad-mcp/ledger/`; `--keep-ledger` archives it to
   `ledger/blocks-<ts>` instead. The node keeps no state, so this is the normal way to change a
   cadence parameter: flags after `--` go to `gen-config.sh`, e.g. `./netctl.sh restart --
   --delta 200 --slot-interval 120`. `netctl.sh run-one <host> start|stop` is the only path that

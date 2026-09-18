@@ -45,11 +45,6 @@ count_lines() {
     grep -c -E "$1" || true
 }
 
-# the slots a node finalized, one per line, sorted
-finalized_slots_of() {
-    grep finalized "$logs/$1.log" | grep -o -E 'slot=[0-9]+' | sort || true
-}
-
 report_per_node() {
     printf '\n%-8s %-5s %-10s %-14s %-9s %-10s %-9s %s\n' \
         host node finalized all-committed proposed udp-bound warnings errors
@@ -67,22 +62,71 @@ report_per_node() {
     done
 }
 
+# `host slot block` per finalized line, deduplicated; a host that logs one
+# slot with two different blocks conflicts with itself
+finalized_pairs() {
+    local host
+    for host in $(hosts); do
+        sed -nE "s/.*finalized.*slot=([0-9]+).*block=([+-]+).*/$host \1 \2/p" "$logs/$host.log"
+    done | sort -u
+}
+
+# agreement is per slot: every host that finalized a slot must have the same
+# block. Late starts and lag show up as first/last/gaps, not as conflicts.
 report_agreement() {
     echo
-    local first disagreements=0 host
-    first=$(hosts | head -1)
-    finalized_slots_of "$first" > "$logs/slots-$first.txt"
-    for host in $(hosts); do
-        [ "$host" != "$first" ] || continue
-        finalized_slots_of "$host" > "$logs/slots-$host.txt"
-        if ! cmp -s "$logs/slots-$first.txt" "$logs/slots-$host.txt"; then
-            echo "$host finalized a different slot set than $first"
-            disagreements=$((disagreements + 1))
-        fi
-    done
-    if [ "$disagreements" = 0 ]; then
-        echo "all hosts finalized the same $(wc -l < "$logs/slots-$first.txt" | tr -d ' ') slots"
-    fi
+    finalized_pairs > "$logs/finalized.txt"
+    awk -v hosts="$(hosts | tr '\n' ' ')" '
+    {
+        host = $1; slot = $2 + 0; block = $3
+        if (!((host, slot) in seen)) {
+            seen[host, slot] = 1
+            count[host]++
+            if (!(host in first) || slot < first[host]) first[host] = slot
+            if (!(host in last) || slot > last[host]) last[host] = slot
+        }
+        if (!(slot in union)) {
+            union[slot] = 1
+            n++
+            if (n == 1 || slot < lo) lo = slot
+            if (n == 1 || slot > hi) hi = slot
+        }
+        if (!((slot, block) in shape_seen)) {
+            shape_seen[slot, block] = 1
+            nshapes[slot]++
+            shapes[slot, nshapes[slot]] = block
+        }
+        members[slot, block] = members[slot, block] " " host
+    }
+    END {
+        if (n == 0) {
+            print "no finalized slots on any host"
+            exit
+        }
+        conflicts = 0
+        for (slot in nshapes) if (nshapes[slot] > 1) conflicts++
+        printf "slots: union %d (%d..%d), conflicts %d\n\n", n, lo, hi, conflicts
+        printf "%-8s %6s %6s %6s %5s\n", "host", "first", "last", "count", "gaps"
+        nh = split(hosts, h, " ")
+        for (i = 1; i <= nh; i++) {
+            host = h[i]
+            if (host in count)
+                printf "%-8s %6d %6d %6d %5d\n", host, first[host], last[host], count[host], \
+                    last[host] - first[host] + 1 - count[host]
+            else
+                printf "%-8s %6s %6s %6d %5d\n", host, "-", "-", 0, 0
+        }
+        if (conflicts == 0) exit
+        print ""
+        for (slot in nshapes) {
+            if (nshapes[slot] < 2) continue
+            line = "slot " slot ":"
+            for (k = 1; k <= nshapes[slot]; k++)
+                line = line "  " substr(members[slot, shapes[slot, k]], 2) "=" shapes[slot, k]
+            print line | "sort -k2,2n"
+        }
+        close("sort -k2,2n")
+    }' "$logs/finalized.txt"
 }
 
 report_warnings() {

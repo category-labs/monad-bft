@@ -3,7 +3,7 @@
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
-usage="usage: netctl.sh start [--lead 90] [--keep-ledger] [-- gen-config.sh flags] | stop | restart [start flags] | status | logs <host> [-f] | upgrade [start flags] | run-one <host> start|stop"
+usage="usage: netctl.sh start [--lead 60] [--keep-ledger] [-- gen-config.sh flags] | stop | restart [start flags] | status | logs <host> [-f] | upgrade [start flags] | run-one <host> start|stop"
 
 port_free_host() {
     rssh "$1" "if ss -Hlun | tr -s ' ' '\n' | grep -q ':$port\$'; then
@@ -87,7 +87,7 @@ status_host() {
 }
 
 cmd_start() {
-    local lead=90 keep_ledger=no gen_args=()
+    local lead=60 keep_ledger=no gen_args=()
     while [ $# -gt 0 ]; do
         case $1 in
             --lead) lead=${2:?$usage}; shift ;;
