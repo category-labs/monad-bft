@@ -41,6 +41,7 @@ pub(crate) mod buffer_ext;
 mod metrics;
 pub mod pacing;
 pub mod tcp;
+mod tx;
 pub mod udp;
 
 pub use metrics::DataplaneMetrics;
@@ -311,19 +312,25 @@ impl DataplaneBuilder {
                                 ban_duration,
                             ));
 
+                            let tcp_tx = tcp::tx::TxState::new(
+                                addrlist.clone(),
+                                tcp_config.connections_limit,
+                                metrics.clone(),
+                            );
                             tcp::spawn_tasks(
                                 tcp_config,
                                 tcp_control_map,
                                 addrlist.clone(),
                                 tcp_socket_configs,
-                                tcp_egress_rx,
                                 tcp_bound_addrs_tx,
                                 metrics.clone(),
                             );
-                            udp::spawn_tasks(
+                            tx::spawn_tasks(
                                 udp_socket_configs,
                                 udp_egress_rx,
-                                udp::UdpTaskConfig {
+                                tcp_egress_rx,
+                                tcp_tx,
+                                tx::TxConfig {
                                     up_bandwidth_mbps,
                                     pacing: udp_pacing_config,
                                     buffer_size: udp_buffer_size,
@@ -646,7 +653,7 @@ impl TcpSocketWriter {
 
         match self.egress_tx.try_send((addr, msg)) {
             Ok(()) => {}
-            Err(TrySendError::Full(_)) => {
+            Err(_) => {
                 self.metrics.tcp_egress_messages_dropped.inc();
                 let total = self.msgs_dropped.fetch_add(1, Ordering::Relaxed);
                 warn!(
@@ -654,11 +661,8 @@ impl TcpSocketWriter {
                     ?addr,
                     msg_length,
                     total_msgs_dropped = total,
-                    "tcp egress channel full, dropping message"
+                    "tcp pacing queue full, dropping message"
                 );
-            }
-            Err(TrySendError::Closed(_)) => {
-                panic!("socket {:?} tcp egress channel closed", self.socket_id)
             }
         }
     }
@@ -859,7 +863,7 @@ pub(crate) struct UdpMsg {
 }
 
 const TCP_INGRESS_CHANNEL_SIZE: usize = 1024;
-const TCP_EGRESS_CHANNEL_SIZE: usize = 256;
+const TCP_EGRESS_CHANNEL_SIZE: usize = 128;
 const UDP_INGRESS_CHANNEL_SIZE: usize = 12_800;
 const UDP_EGRESS_CHANNEL_SIZE: usize = 12_800;
 
