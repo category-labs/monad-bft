@@ -6,8 +6,8 @@ source "$(dirname "$0")/lib.sh"
 genesis=
 delta=150
 slot_interval=100
-slots_per_window=20
-sync_boundary=15
+slots_per_window=100
+sync_boundary=80
 num_proposals=5
 propose_before=500
 completed_slot_retention=2

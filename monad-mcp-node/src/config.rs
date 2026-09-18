@@ -124,10 +124,10 @@ impl Default for CadenceConfig {
     fn default() -> Self {
         Self {
             // todo: set proper default parameters
-            delta: TimestampDelta::from_millis(300),
-            slot_interval: TimestampDelta::from_millis(200),
-            slots_per_window: NonZeroU64::new(20).expect("nonzero"),
-            sync_boundary_slots: NonZeroU64::new(15).expect("nonzero"),
+            delta: TimestampDelta::from_millis(150),
+            slot_interval: TimestampDelta::from_millis(100),
+            slots_per_window: NonZeroU64::new(100).expect("nonzero"),
+            sync_boundary_slots: NonZeroU64::new(80).expect("nonzero"),
             lag_threshold: NonZeroU64::new(20).expect("nonzero"),
         }
     }

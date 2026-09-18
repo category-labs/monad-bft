@@ -20,7 +20,7 @@ use crate::{
     chorus::{
         CadenceDriverMsg, CadenceRuntime, DASink, FinalizationObserver, NodeEvent, Runtime as _,
         SlotLifecycle, WakeId,
-        conductor::{MonadConductor, acs::median::MedianAcs},
+        conductor::{MonadConductor, acs::nop::NopAcs},
         slot::chorus::{Chorus, ChorusDACommand, ChorusDAEvent, SlotFinalization},
         types::{Slot, SlotDeadline, Timestamp, Validated},
     },
@@ -28,7 +28,7 @@ use crate::{
     node::Clock,
 };
 
-pub type Conductor = MonadConductor<MedianAcs<SlotDeadline>>;
+pub type Conductor = MonadConductor<NopAcs<SlotDeadline>>;
 pub type Cadence = CadenceRuntime<Chorus, Conductor>;
 pub type CadenceWireMsg = CadenceDriverMsg<Chorus, Conductor>;
 

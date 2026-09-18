@@ -23,7 +23,7 @@ use alloy_rlp::{
     Decodable, Encodable, Header, RlpDecodable, RlpEncodable, encode_list, list_length,
 };
 use thiserror::Error;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 pub mod acs;
 pub mod deadline_agreement;
@@ -509,6 +509,11 @@ where
             .ok_or(ConductorError::ArithmeticOverflow)?;
         let slots = self.compute_open_slots(window, first_deadline)?;
 
+        info!(
+            ?window,
+            ?first_deadline,
+            "opened window on deadline agreement"
+        );
         self.outputs.push_back(ConductorOutput::OpenSlots(slots));
         self.open_window_cap = next_window_cap;
         self.deadline_agreement_manager.start_round(next_window_cap);
@@ -526,6 +531,13 @@ where
         let mut slots = self.compute_open_slots(window, first_deadline)?;
         slots.retain(|slot, _| *slot >= cap);
 
+        info!(
+            ?window,
+            ?first_deadline,
+            ?cap,
+            opened = slots.len(),
+            "opened window after cap jump"
+        );
         if !slots.is_empty() {
             self.outputs.push_back(ConductorOutput::OpenSlots(slots));
         }
@@ -556,7 +568,7 @@ where
         };
 
         if let Err(error) = result {
-            debug!(%error, ?sender, "failed to handle conductor message");
+            warn!(%error, ?sender, "failed to handle conductor message");
         }
     }
 
@@ -566,7 +578,7 @@ where
 
     fn handle_slot_finalization(&mut self, at: Timestamp, slot: Slot) {
         if let Err(error) = self.handle_slot_completed(slot, at) {
-            debug!(%error, ?slot, ?at, "failed to handle slot finalization");
+            warn!(%error, ?slot, ?at, "failed to handle slot finalization");
         }
     }
 

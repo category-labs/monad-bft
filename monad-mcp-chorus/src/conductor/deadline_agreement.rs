@@ -69,6 +69,7 @@ where
         if cap > sbs_slot && !self.proposed {
             // TODO: compute next deadline using at
             let deadline = config.natural_first_slot_deadline(self.target_window)?;
+            tracing::info!(window = ?self.target_window, ?cap, ?deadline, "proposing window deadline");
             self.acs.propose(deadline);
             self.proposed = true;
         }
@@ -77,7 +78,7 @@ where
 
     fn handle_message(&mut self, sender: NodeId, message: DeadlineAgreementMessage<A::Message>) {
         if message.window != self.target_window {
-            tracing::debug!(
+            tracing::info!(
                 ?sender,
                 window = ?message.window,
                 target_window = ?self.target_window,
