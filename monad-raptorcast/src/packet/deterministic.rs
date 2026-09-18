@@ -642,14 +642,21 @@ fn encode_unique_symbols<PT: PubKey>(
     Ok(())
 }
 
+// Seed grinding is bounded by the number of buckets that fit in the
+// timeliness window.
+pub const TIMESTAMP_BUCKET_MS: u64 = 2048;
+
+pub fn coarse_ts(unix_ts_ms: u64) -> u64 {
+    unix_ts_ms / TIMESTAMP_BUCKET_MS
+}
+
 // Derive the seed used to shuffling validator set for deterministic raptorcast.
-// Layout: round (8) || floor(unix_ts_ms / 2048) (8) || author_pk[1..17] (16) = 32 bytes
+// Layout: round (8) || coarse_ts (8) || author_pk[1..17] (16) = 32 bytes
 pub fn derive_seed<PT: PubKey>(author: &NodeId<PT>, round: Round, unix_ts_ms: u64) -> [u8; 32] {
     let author_bytes = author.pubkey().bytes();
-    let coarse_ts = unix_ts_ms / 2048; // ~2s resolution
     let mut seed = [0u8; 32];
     seed[..8].copy_from_slice(&round.0.to_le_bytes());
-    seed[8..16].copy_from_slice(&coarse_ts.to_le_bytes());
+    seed[8..16].copy_from_slice(&coarse_ts(unix_ts_ms).to_le_bytes());
     // skipping first byte (tag) of the pubkey with low entropy
     seed[16..].copy_from_slice(&author_bytes[1..17]);
     seed

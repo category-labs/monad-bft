@@ -239,7 +239,8 @@ impl SecpSignature {
         sig_vec.try_into().unwrap()
     }
 
-    /// Deserialize the signature
+    /// Deserialize the signature, accepting only the low-S form so each
+    /// signature has a canonical byte representation (up to recid byte).
     pub fn deserialize(data: &[u8]) -> Result<Self, Error> {
         if data.len() != secp256k1::constants::COMPACT_SIGNATURE_SIZE + 1 {
             return Err(Error(secp256k1::Error::InvalidSignature));
@@ -249,10 +250,20 @@ impl SecpSignature {
             data[secp256k1::constants::COMPACT_SIGNATURE_SIZE] as i32,
         )
         .map_err(Error)?;
-        Ok(SecpSignature(
-            secp256k1::ecdsa::RecoverableSignature::from_compact(sig_data, recid).map_err(Error)?,
-        ))
+        let sig =
+            secp256k1::ecdsa::RecoverableSignature::from_compact(sig_data, recid).map_err(Error)?;
+        if !is_low_s(&sig) {
+            return Err(Error(secp256k1::Error::InvalidSignature));
+        }
+        Ok(SecpSignature(sig))
     }
+}
+
+fn is_low_s(sig: &secp256k1::ecdsa::RecoverableSignature) -> bool {
+    let standard = sig.to_standard();
+    let mut normalized = standard;
+    normalized.normalize_s();
+    normalized == standard
 }
 
 impl Encodable for SecpSignature {
@@ -737,11 +748,10 @@ mod tests {
         mal_bytes[32..64].copy_from_slice(&s_malleable);
         mal_bytes[64] = sig.serialize()[64];
 
-        // 4) The malleable signature must be rejected:
-        let mal_sig = SecpSignature::deserialize(&mal_bytes).unwrap();
+        // 4) The malleable signature must be rejected at deserialization:
         assert!(
-            pubkey.verify::<SigningDomainType>(msg, &mal_sig).is_err(),
-            "High-S malleable signature successfully verified; signature is malleable"
+            SecpSignature::deserialize(&mal_bytes).is_err(),
+            "High-S malleable signature deserialized; signature is malleable"
         );
     }
 
