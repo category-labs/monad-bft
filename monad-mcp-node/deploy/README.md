@@ -9,7 +9,7 @@ validators over ssh. No ansible, no root: the node runs under a user-level syste
 ```
 ./build.sh                  # dist/monad-mcp-node-<sha>, dist/VERSION
 ./preflight.sh              # read-only; never changes a host
-./deploy.sh                 # binary, units, pruner; does NOT start the node
+./deploy.sh [host]          # binary, units, pruner; does NOT start the node
 ./netctl.sh start           # mints a genesis, pushes configs, starts all 8
 ./netctl.sh status
 ./report.sh                 # safe at any time; counts grow as slots finalize
@@ -30,7 +30,7 @@ monad-bft" below. Until then, run a reduced `hosts.txt` over the idle hosts (`am
 | `build.sh` | release build → `dist/monad-mcp-node-<sha>[-dirty]` + `dist/VERSION` |
 | `gen-config.sh` | renders `dist/config/<host>.toml` for one shared genesis |
 | `preflight.sh` | read-only fitness check + pairwise UDP probe |
-| `deploy.sh` | ships binary, `cruft.sh`, `run.sh` and the user units; enables them |
+| `deploy.sh [host]` | ships binary, `cruft.sh`, `run.sh` and the user units; enables them; one host if given |
 | `push-config.sh` | `dist/config/<host>.toml` → `~/monad-mcp/config/node.toml` |
 | `netctl.sh` | `start`/`stop`/`restart`/`status`/`logs`/`upgrade`/`run-one` |
 | `report.sh` | per-host finalized/committed counts, per-slot block agreement, top warnings |
@@ -83,6 +83,7 @@ are the two scripts here that do not source `lib.sh`.
   `MIN_FREE_GB` (default 200). Knobs live in `~/monad-mcp/cruft.env`, which `deploy.sh`
   installs only if it is absent. The node has no ledger writer yet, so `ledger/blocks` stays
   empty and `cruft.sh` exits quietly; the pruner is in place for when the writer lands.
+- **`build.sh` keeps the `MCP_KEEP_BINARIES` (default 3) newest binaries in `dist/`**; older shas are a rebuild away.
 - **The node has no `--version` flag**, so the sha in the binary name plus `dist/VERSION` is
   the version, and `build.sh` refuses to build a dirty `monad-mcp-*` tree unless given
   `--dirty` (which stamps `-dirty` into the name). Health is the `udp bound` line plus

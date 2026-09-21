@@ -32,6 +32,8 @@ cargo build --release -p monad-mcp-node
 
 mkdir -p "$dist_dir"
 install -m 755 "$repo_dir/target/release/monad-mcp-node" "$dist_dir/$name"
+# keep the newest $keep_binaries; anything older is a rebuild away
+ls -t "$dist_dir"/monad-mcp-node-* | tail -n +$((keep_binaries + 1)) | xargs -r rm -v
 
 {
     echo "binary=$name"

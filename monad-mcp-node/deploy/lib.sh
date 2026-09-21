@@ -10,6 +10,7 @@ config_dir=$dist_dir/config
 
 port=${MCP_PORT:-8002}
 supervisor=${MCP_SUPERVISOR:-systemd}
+keep_binaries=${MCP_KEEP_BINARIES:-1}
 unit=monad-mcp-node
 cruft_unit=monad-mcp-cruft
 remote_rel=monad-mcp
@@ -74,10 +75,19 @@ rssh_user_systemd() {
     rssh "$host" "$(remote_env)$*"
 }
 
+rsync_ssh="ssh -o BatchMode=yes -o ConnectTimeout=2 -p $ssh_port -l $ssh_user"
+
 rsync_to() {
     local host=$1 src=$2 dest=$3
-    rsync -az -e "ssh -o BatchMode=yes -o ConnectTimeout=10 -p $ssh_port -l $ssh_user" \
-        "$src" "$(fqdn "$host"):$dest"
+    rsync -az -e "$rsync_ssh" "$src" "$(fqdn "$host"):$dest"
+}
+
+# one connection for a whole tree: paths under dir land at the same
+# paths under the remote $HOME, directories created as needed.
+rsync_tree_to() {
+    local host=$1 dir=$2
+    shift 2
+    (cd "$dir" && rsync -azR -e "$rsync_ssh" "$@" "$(fqdn "$host"):")
 }
 
 # uutils date ignores %3N and prints nanoseconds, so ask python3
