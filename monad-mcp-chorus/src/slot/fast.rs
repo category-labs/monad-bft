@@ -408,6 +408,10 @@ impl FastPath {
             voter_stake > self.validator_data.total_stake().supermajority_threshold()
         });
         if !has_enough_votes {
+            // recover chunks for votes currently on hold due to
+            // insufficient chunks.
+            self.recover_held();
+
             // wait for more votes to arrive.
             return CommitVoteDeadlineOutcome::NotEnoughVotes;
         }
@@ -545,6 +549,19 @@ impl FastPath {
             .into_iter()
             .map(|(root, _)| root)
             .find(|root| self.availability[j].decoded(root))
+    }
+
+    // a vote is on hold because of owed chunks
+    fn recover_held(&mut self) {
+        for j in 0..self.proposals.size() {
+            let mut voters_by_root: HashMap<MerkleRoot, Vec<NodeId>> = HashMap::new();
+            for (voter, root) in self.votes[j].held() {
+                voters_by_root.entry(root).or_default().push(voter);
+            }
+            for (root, voters) in voters_by_root {
+                self.request_chunks(ChunkRequestType::YourChunks, j, root, voters);
+            }
+        }
     }
 
     // P3 and P4: at the fallback transition, pull the roots that block
@@ -1448,6 +1465,42 @@ mod tests {
         let voters = vec![NodeId::dummy(0), NodeId::dummy(3)];
         let expected = (ChunkRequestType::YourChunks, root(1), voters);
         assert_eq!(drain_requests(&mut fast), vec![expected]);
+    }
+
+    #[test]
+    fn short_of_admitted_votes_pulls_held_roots_from_their_voters() {
+        let mut fast = fast_path();
+
+        // validators 0 and 3 vote positive on root(1) but their chunks
+        // never arrived: both votes are held, and the two admitted
+        // negatives are short of 2f+1
+        let _ = fast.on_deadline();
+        let votes = vec![
+            batch_vote(0, Entry::Positive(root(1))),
+            batch_vote(3, Entry::Positive(root(1))),
+            batch_vote(2, Entry::Negative),
+            batch_vote(1, Entry::Negative),
+        ];
+        for (voter, msg) in votes {
+            let _ = fast.handle_batch_vote(voter, msg);
+        }
+        drain_requests(&mut fast);
+
+        let outcome = fast.on_commit_vote_deadline();
+        assert!(matches!(outcome, CommitVoteDeadlineOutcome::NotEnoughVotes));
+        let voters = vec![NodeId::dummy(0), NodeId::dummy(3)];
+        let expected = (ChunkRequestType::YourChunks, root(1), voters);
+        assert_eq!(drain_requests(&mut fast), vec![expected]);
+
+        // their chunks arrive, admitting the votes: the next deadline
+        // transitions without pulling anything
+        owner_fulfilled(&mut fast, 0, 1);
+        owner_fulfilled(&mut fast, 3, 1);
+        let outcome = fast.on_commit_vote_deadline();
+        assert!(matches!(
+            outcome,
+            CommitVoteDeadlineOutcome::FallbackVote(_)
+        ));
     }
 
     #[test]

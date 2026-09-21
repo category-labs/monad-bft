@@ -45,7 +45,9 @@ impl ChunkRecoveryTracker {
             .or_insert_with(|| bitbox![0; num_chunks]);
 
         if served[usize::from(chunk_id)] {
-            return false;
+            // temporarily set to `true` to allow serving repeated
+            // requests. todo: use a rate limiter.
+            return true;
         }
         served.set(usize::from(chunk_id), true);
         true

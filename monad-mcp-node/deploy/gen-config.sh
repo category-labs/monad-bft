@@ -10,7 +10,7 @@ slots_per_window=100
 sync_boundary=80
 num_proposals=5
 propose_before=500
-completed_slot_retention=2
+completed_slot_retention=50
 
 usage="usage: gen-config.sh --genesis <unix_ms> [--port n] [--delta ms] [--slot-interval ms] [--slots-per-window n] [--sync-boundary n] [--num-proposals n] [--propose-before ms]"
 
