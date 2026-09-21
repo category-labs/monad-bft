@@ -11,8 +11,10 @@ sync_boundary=80
 num_proposals=5
 propose_before=500
 completed_slot_retention=50
+repeater_interval=5000
+repeater_retention=5
 
-usage="usage: gen-config.sh --genesis <unix_ms> [--port n] [--delta ms] [--slot-interval ms] [--slots-per-window n] [--sync-boundary n] [--num-proposals n] [--propose-before ms]"
+usage="usage: gen-config.sh --genesis <unix_ms> [--port n] [--delta ms] [--slot-interval ms] [--slots-per-window n] [--sync-boundary n] [--num-proposals n] [--propose-before ms] [--repeater-interval ms] [--repeater-retention n]"
 
 while [ $# -gt 0 ]; do
     case $1 in
@@ -24,6 +26,8 @@ while [ $# -gt 0 ]; do
         --sync-boundary) sync_boundary=${2:?$usage}; shift ;;
         --num-proposals) num_proposals=${2:?$usage}; shift ;;
         --propose-before) propose_before=${2:?$usage}; shift ;;
+        --repeater-interval) repeater_interval=${2:?$usage}; shift ;;
+        --repeater-retention) repeater_retention=${2:?$usage}; shift ;;
         *) die "$usage" ;;
     esac
     shift
@@ -74,6 +78,10 @@ for host in $(hosts); do
         echo "slot_interval = $slot_interval"
         echo "slots_per_window = $slots_per_window"
         echo "sync_boundary_slots = $sync_boundary"
+        echo
+        echo "[cadence.repeater]"
+        echo "interval = $repeater_interval"
+        echo "certificate_retention = $repeater_retention"
         echo
         echo "[da]"
         echo "completed_slot_retention = $completed_slot_retention"

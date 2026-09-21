@@ -25,6 +25,7 @@ pub mod driver;
 pub mod proposer_schedule;
 pub mod proposers;
 pub mod proposing;
+pub mod repeater;
 pub mod runtime;
 pub mod slot;
 pub mod slot_manager;
@@ -34,6 +35,7 @@ pub mod types;
 
 pub use conductor::{Conductor, ConductorOutput};
 pub use driver::{CadenceDriver, CadenceDriverMsg, CadenceMessage, Driver, NodeEvent, WakeId};
+pub use repeater::{Repeater, RepeaterConfig};
 pub use runtime::{CadenceRuntime, DASink, FinalizationObserver, Runtime, SlotLifecycle};
 pub use slot::{SlotConsensus, SlotOutput};
 pub use slot_manager::SlotManager;

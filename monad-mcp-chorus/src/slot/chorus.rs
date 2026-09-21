@@ -291,6 +291,15 @@ impl SlotConsensus for Chorus {
         self.outputs.pop_front()
     }
 
+    fn certificate_message(data: &SlotFinalization) -> Option<ChorusMessage> {
+        Some(match data {
+            SlotFinalization::Fast(qc) => ChorusMessage::FastCommitQc(qc.clone()),
+            SlotFinalization::Fallback(qc) => {
+                ChorusMessage::Fallback(monad_mvba::MvbaMessage::CommitQc(qc.clone()))
+            }
+        })
+    }
+
     fn handle_da_event(&mut self, event: ChorusDAEvent) {
         if self.decided {
             return;

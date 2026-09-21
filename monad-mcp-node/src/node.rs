@@ -110,7 +110,10 @@ impl Node {
         let slot_manager = SlotManager::new(slot_config, epoch_handle.chorus());
         let conductor_config = config.cadence.conductor(config.genesis_deadline)?;
         let conductor = MonadConductor::genesis(conductor_config, ())?;
-        let cadence = CadenceRuntime::new(slot_manager, conductor);
+        let mut cadence = CadenceRuntime::new(slot_manager, conductor);
+        if let Some(repeater) = config.cadence.repeater() {
+            cadence = cadence.with_repeater(repeater);
+        }
         let (cadence_link, task_link) = Link::pair();
         let cadence_task = CadenceTask::spawn(cadence, clock, task_link);
 

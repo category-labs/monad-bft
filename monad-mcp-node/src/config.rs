@@ -19,6 +19,7 @@ use serde::Deserialize;
 
 use crate::{
     chorus::{
+        RepeaterConfig,
         conductor::{ConductorConfig, ConductorError},
         proposing::PlannerConfig,
         slot::chorus::ChorusConfig,
@@ -118,6 +119,8 @@ pub struct CadenceConfig {
     // How far a peer's announced cap must lead the local one before it is
     // trusted as a jump; one window by default.
     pub lag_threshold: NonZeroU64,
+    // Absent table: outbound slot messages are never re-sent.
+    pub repeater: Option<RepeaterSection>,
 }
 
 impl Default for CadenceConfig {
@@ -129,6 +132,7 @@ impl Default for CadenceConfig {
             slots_per_window: NonZeroU64::new(100).expect("nonzero"),
             sync_boundary_slots: NonZeroU64::new(80).expect("nonzero"),
             lag_threshold: NonZeroU64::new(20).expect("nonzero"),
+            repeater: None,
         }
     }
 }
@@ -149,6 +153,31 @@ impl CadenceConfig {
 
     pub fn chorus(&self) -> ChorusConfig {
         ChorusConfig { delta: self.delta }
+    }
+
+    pub fn repeater(&self) -> Option<RepeaterConfig> {
+        self.repeater.map(|section| RepeaterConfig {
+            interval: section.interval,
+            certificate_retention: section.certificate_retention,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(default)]
+pub struct RepeaterSection {
+    #[serde(deserialize_with = "de::millis")]
+    pub interval: TimestampDelta,
+    pub certificate_retention: u64,
+}
+
+impl Default for RepeaterSection {
+    fn default() -> Self {
+        Self {
+            interval: TimestampDelta::from_millis(5_000),
+            // matches the DA layer's completed_slot_retention
+            certificate_retention: 2,
+        }
     }
 }
 
@@ -291,6 +320,22 @@ mod tests {
             let set = schedule.proposers_at(Slot(0)).expect("genesis epoch");
             assert!(set.iter().any(|(_, proposer)| proposer.is_some()));
         }
+    }
+
+    // an absent [cadence.repeater] table leaves the runtime without a
+    // repeater; a present one overrides the defaults field by field
+    #[test]
+    fn the_repeater_table_is_optional() {
+        let without: CadenceConfig = toml::from_str("delta = 150").unwrap();
+        assert!(without.repeater().is_none());
+
+        let with: CadenceConfig = toml::from_str("[repeater]\ninterval = 1000").unwrap();
+        let repeater = with.repeater().expect("the table is present");
+        assert_eq!(repeater.interval, TimestampDelta::from_millis(1_000));
+        assert_eq!(
+            repeater.certificate_retention,
+            RepeaterSection::default().certificate_retention
+        );
     }
 
     // the gate and the rotation vacancy mirror the same deployment constant
