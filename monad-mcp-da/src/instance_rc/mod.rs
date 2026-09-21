@@ -152,12 +152,6 @@ impl RaptorcastInstance {
             return Err(InvalidChunk::InvalidChunkId);
         };
 
-        // None if the chunk is not routed to us: accepted, but credited
-        // to no obligation.
-        let upstream = self
-            .self_index
-            .and_then(|receiver| routing.upstream(receiver));
-
         let chunk_id = routing.chunk_id();
         if self.decoding_tracker.already_received(chunk_id) {
             // chunk already ingested previously, skip ingestion.
@@ -175,16 +169,19 @@ impl RaptorcastInstance {
         // store & update decoder state
         self.decoder.ingest(chunk_id, &data.symbol);
         self.chunk_tree.insert(chunk_id, data);
-
-        // track decoding & obligation
-        self.obligation_tracker.mark(upstream);
         self.decoding_tracker.mark(chunk_id);
 
-        // try rebroadcast & decode
-        self.try_rebroadcast(routing, egress);
+        if let Some(self_index) = self.self_index {
+            self.obligation_tracker.mark(&routing, self_index);
+            self.try_rebroadcast(self_index, routing, egress);
+        }
+
         let event = self.try_decode();
         if matches!(event, Some(ProposalDAEvent::Decoded(_))) {
-            self.rebroadcast_remaining(egress);
+            if let Some(self_index) = self.self_index {
+                self.rebroadcast_remaining(self_index, egress);
+            }
+
             self.decoding_tracker.mark_all();
         }
         Ok(event)
@@ -291,8 +288,14 @@ impl RaptorcastInstance {
         true
     }
 
-    fn try_rebroadcast(&self, routing: ChunkRouting<'_>, egress: &mut ChunkEgress) {
-        if self.self_index != Some(routing.owner_index()) {
+    // the caller should ensure to call this method at most once per chunk.
+    fn try_rebroadcast(
+        &self,
+        self_index: NodeIndex,
+        routing: ChunkRouting<'_>,
+        egress: &mut ChunkEgress,
+    ) {
+        if self_index != routing.owner_index() {
             // it's not our responsibility to rebroadcast this chunk
             return;
         }
@@ -305,16 +308,14 @@ impl RaptorcastInstance {
     }
 
     // rebroadcast all remaining owned chunks (after decoding).
-    fn rebroadcast_remaining(&self, egress: &mut ChunkEgress) {
-        let Some(self_index) = self.self_index else {
-            return;
-        };
+    fn rebroadcast_remaining(&self, self_index: NodeIndex, egress: &mut ChunkEgress) {
         for routing in self.assignment.owned_chunks(self_index) {
             let chunk_id = routing.chunk_id();
             if self.decoding_tracker.already_received(chunk_id) {
+                // received chunks are already rebroadcasted
                 continue;
             }
-            self.try_rebroadcast(routing, egress);
+            self.try_rebroadcast(self_index, routing, egress);
         }
     }
 
@@ -495,9 +496,17 @@ mod tests {
         ingest(&mut instance, &chunks[0], &mut egress).expect("valid");
         assert!(instance.drain_obligation_events().is_empty());
         ingest(&mut instance, &chunks[3], &mut egress).expect("valid");
+        // holding our whole share also settles what we owe as an owner
+        let we_owe_nothing = ProposalDAEvent::OwnerObligationFulfilled {
+            owner: epoch_handle.self_id,
+            root: *header.root(),
+        };
         assert_eq!(
             instance.drain_obligation_events(),
-            vec![ProposalDAEvent::ProposerObligationFulfilled(*header.root())]
+            vec![
+                we_owe_nothing,
+                ProposalDAEvent::ProposerObligationFulfilled(*header.root()),
+            ]
         );
 
         // node 2 owns 1 and 4: one of them settles nothing
@@ -553,5 +562,26 @@ mod tests {
         assert!(instance.decoded_message().is_none());
         let event = ingest(&mut instance, &chunks[4], &mut egress);
         assert_eq!(event, Ok(Some(ProposalDAEvent::Decoded(*header.root()))));
+    }
+
+    #[test]
+    fn the_author_is_owed_nothing_by_anyone_including_itself() {
+        let epoch_handle = epoch_handle_for(author(), 4, vec![author()]);
+        let (header, _) = proposal_chunks(&epoch_handle, 1);
+        let mut instance = instance(&epoch_handle, &header);
+
+        let events = instance.drain_obligation_events();
+        assert!(
+            events.contains(&ProposalDAEvent::ProposerObligationFulfilled(
+                *header.root()
+            ))
+        );
+        for id in 0..4 {
+            let owes_nothing = ProposalDAEvent::OwnerObligationFulfilled {
+                owner: NodeId::dummy(id),
+                root: *header.root(),
+            };
+            assert!(events.contains(&owes_nothing), "owner {id}");
+        }
     }
 }

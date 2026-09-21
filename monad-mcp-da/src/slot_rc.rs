@@ -544,4 +544,40 @@ mod tests {
             Some(&Bytes::from(vec![1u8; MESSAGE_LEN]))
         );
     }
+
+    #[test]
+    fn every_node_settles_its_own_owner_obligation_from_the_first_hop() {
+        // validator 0 authors; 1, 2 and 3 own two chunks each
+        let mut nodes = Vec::new();
+        for id in 0..=3 {
+            let epoch_handle = epoch_handle_for(NodeId::dummy(id), 4, vec![author()]);
+            let schedule = proposer_schedule(vec![author()]);
+            let node = SlotRaptorcast::new(&epoch_handle, SLOT, &*schedule);
+            nodes.push((epoch_handle, node));
+        }
+        let (header, chunks) = proposal_chunks(&nodes[1].0, 1);
+
+        // the author's first hop: its own chunkless share, and each
+        // owner's two chunks. no second hop has run yet.
+        nodes[0]
+            .1
+            .ingest(ProposalEnvelope::from_header(header.clone()))
+            .expect("valid");
+        for (id, owned) in [(1, [0, 3]), (2, [1, 4]), (3, [2, 5])] {
+            let share = group(&[chunks[owned[0]].clone(), chunks[owned[1]].clone()]);
+            nodes[id].1.ingest(share).expect("valid");
+        }
+
+        for (epoch_handle, node) in &mut nodes {
+            let we_owe_nothing = ChorusDAEvent {
+                j: 0,
+                event: ProposalDAEvent::OwnerObligationFulfilled {
+                    owner: epoch_handle.self_id,
+                    root: *header.root(),
+                },
+            };
+            let events = node.drain_events();
+            assert!(events.contains(&we_owe_nothing), "{:?}", epoch_handle.self_id);
+        }
+    }
 }

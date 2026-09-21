@@ -44,6 +44,14 @@ impl ChunkId {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, derive_more::Into)]
 pub(crate) struct NodeIndex(usize);
 
+impl NodeIndex {
+    // the caller must ensure the index is in range for the associated
+    // assignment.
+    pub(crate) fn new_unchecked(index: usize) -> Self {
+        Self(index)
+    }
+}
+
 // Resolved routing for a single chunk: the dissemination path author
 // -> owner -> rebroadcast targets. The author is never a target.
 pub struct ChunkRouting<'a> {
@@ -91,11 +99,16 @@ impl<'a> ChunkRouting<'a> {
             return None;
         }
         if self.owner_index() == receiver {
+            // receiver should receive the chunk from the author (first-hop)
             return Some(Upstream::Author);
         }
         if self.is_rebroadcast_target(receiver) {
+            // receiver should receive the chunk from the owner (second-hop)
             return Some(Upstream::Owner(self.owner_index()));
         }
+
+        // receiver should not receive the chunk via either first- or
+        // second-hop.
         None
     }
 }
@@ -247,12 +260,6 @@ impl ChunkAssignment {
     pub(crate) fn owned_chunks(&self, node: NodeIndex) -> impl Iterator<Item = ChunkRouting<'_>> {
         self.routings()
             .filter(move |routing| routing.owner_index() == node)
-    }
-
-    // the upstream of every chunk routed to the receiver
-    pub(crate) fn upstreams(&self, receiver: NodeIndex) -> impl Iterator<Item = Upstream> + '_ {
-        self.routings()
-            .filter_map(move |routing| routing.upstream(receiver))
     }
 
     pub(crate) fn unassigned_nodes(&self) -> &HashSet<NodeIndex> {
