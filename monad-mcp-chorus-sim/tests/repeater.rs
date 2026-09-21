@@ -204,6 +204,7 @@ mod lossy {
     const LOSS: f64 = 0.04;
     const SEEDS: std::ops::Range<u64> = 0..64;
     const LEAD: TimestampDelta = TimestampDelta::from_millis(60);
+    const MIN_LEAD: TimestampDelta = TimestampDelta::from_millis(30);
     const WINDOW: std::ops::Range<u64> = 0..40;
     // four windows of slots, and a tail of several repeater intervals
     const RUN_UNTIL: Timestamp = Timestamp::from_millis(6_000);
@@ -241,6 +242,7 @@ mod lossy {
                 proposers.clone(),
                 PlannerConfig {
                     lead: LEAD,
+                    min_lead: MIN_LEAD,
                     observation_cutoff: proposers.config().observation_cutoff,
                 },
             );

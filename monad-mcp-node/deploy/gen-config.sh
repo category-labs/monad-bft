@@ -13,8 +13,9 @@ propose_before=500
 completed_slot_retention=50
 repeater_interval=5000
 repeater_retention=5
+withhold_before=0
 
-usage="usage: gen-config.sh --genesis <unix_ms> [--port n] [--delta ms] [--slot-interval ms] [--slots-per-window n] [--sync-boundary n] [--num-proposals n] [--propose-before ms] [--repeater-interval ms] [--repeater-retention n]"
+usage="usage: gen-config.sh --genesis <unix_ms> [--port n] [--delta ms] [--slot-interval ms] [--slots-per-window n] [--sync-boundary n] [--num-proposals n] [--propose-before ms] [--repeater-interval ms] [--repeater-retention n] [--withhold-before ms]"
 
 while [ $# -gt 0 ]; do
     case $1 in
@@ -28,6 +29,7 @@ while [ $# -gt 0 ]; do
         --propose-before) propose_before=${2:?$usage}; shift ;;
         --repeater-interval) repeater_interval=${2:?$usage}; shift ;;
         --repeater-retention) repeater_retention=${2:?$usage}; shift ;;
+        --withhold-before) withhold_before=${2:?$usage}; shift ;;
         *) die "$usage" ;;
     esac
     shift
@@ -89,6 +91,7 @@ for host in $(hosts); do
         echo "[proposal]"
         echo "num_proposals = $num_proposals"
         echo "propose_before_deadline = $propose_before"
+        echo "withhold_before_deadline = $withhold_before"
     } > "$config_dir/$host.toml"
     echo "$config_dir/$host.toml  node_id=$id  address=${ip_of[$host]}:$port"
 done

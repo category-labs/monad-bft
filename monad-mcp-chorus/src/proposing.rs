@@ -76,6 +76,12 @@ pub struct PlannerConfig {
     /// to the DA layer. Must cover dissemination-plus-decode latency at a
     /// supermajority, plus clock skew; a conservative constant for now.
     pub lead: TimestampDelta,
+    /// Delta: a seal this close to the deadline is withheld rather than
+    /// disseminated. A proposal that cannot decode everywhere before the
+    /// deadline splits the batch votes and costs the slot its fast path,
+    /// where an index nobody received is agreed-negative and costs only
+    /// itself.
+    pub min_lead: TimestampDelta,
     /// `y`: the observation cutoff — the proposal for slot `r` may only be
     /// sealed once slot `r − y` is chained. A protocol constant; must equal
     /// the proposer schedule's value (it also sets the rotation vacancy
@@ -108,6 +114,14 @@ impl ProposalPlanner {
         schedule: Arc<dyn ProposerSchedule + Send + Sync>,
         config: PlannerConfig,
     ) -> Self {
+        // a lead at or inside the withhold window means no proposal ever ships
+        if config.min_lead >= config.lead {
+            warn!(
+                lead = ?config.lead,
+                min_lead = ?config.min_lead,
+                "proposal lead is within delta of the deadline; every proposal will be withheld"
+            );
+        }
         Self {
             me,
             schedule,
@@ -171,7 +185,8 @@ impl ProposalPlanner {
     }
 
     /// The lowest due slot whose chaining gate is satisfied, to seal now and
-    /// submit to the DA layer. Slots past their deadline are dropped first.
+    /// submit to the DA layer. Slots within `min_lead` of their deadline are
+    /// dropped first, so a seal is never disseminated too late to decode.
     pub fn poll(&mut self, now: Timestamp) -> Option<(Slot, ProposalIndex)> {
         self.drop_late(now);
         let slot = self
@@ -197,18 +212,27 @@ impl ProposalPlanner {
 
     // `gated`: the chaining gate, not a late alarm, is what cost the proposal
     fn drop_late(&mut self, now: Timestamp) {
-        let late: Vec<Slot> = self
+        let late: Vec<(Slot, bool)> = self
             .pending
             .iter()
-            .filter(|(_, pending)| now >= pending.deadline)
-            .map(|(slot, _)| *slot)
+            .filter_map(|(slot, pending)| {
+                let withhold = now >= pending.deadline.saturating_sub_delta(self.config.min_lead);
+                withhold.then_some((*slot, now >= pending.deadline))
+            })
             .collect();
-        for slot in late {
+        for (slot, passed) in late {
             let gated = !self.chained(slot);
-            info!(
-                ?slot,
-                gated, "skipping proposal: deadline passed before the seal"
-            );
+            if passed {
+                info!(
+                    ?slot,
+                    gated, "skipping proposal: deadline passed before the seal"
+                );
+            } else {
+                info!(
+                    ?slot,
+                    gated, "withholding proposal: sealed within delta of the deadline"
+                );
+            }
             self.pending.remove(&slot);
         }
     }
@@ -222,6 +246,7 @@ mod tests {
     };
 
     const LEAD: TimestampDelta = TimestampDelta::from_millis(60);
+    const MIN_LEAD: TimestampDelta = TimestampDelta::from_millis(20);
     const INTERVAL: u64 = 100;
 
     fn planner(observation_cutoff: u64) -> ProposalPlanner {
@@ -233,6 +258,7 @@ mod tests {
             schedule,
             PlannerConfig {
                 lead: LEAD,
+                min_lead: MIN_LEAD,
                 observation_cutoff,
             },
         )
@@ -244,6 +270,10 @@ mod tests {
 
     fn due(slot: u64) -> Timestamp {
         deadline(slot).saturating_sub_delta(LEAD)
+    }
+
+    fn before_deadline(slot: u64, millis: u64) -> Timestamp {
+        deadline(slot).saturating_sub_delta(TimestampDelta::from_millis(millis))
     }
 
     // opened at genesis, so no due time is clamped
@@ -307,6 +337,7 @@ mod tests {
             schedule,
             PlannerConfig {
                 lead: LEAD,
+                min_lead: MIN_LEAD,
                 observation_cutoff: 0,
             },
         );
@@ -348,6 +379,47 @@ mod tests {
         planner.handle_cap_advance(deadline(4), Slot(4));
         assert_eq!(planner.next_due(), Some(due(5)));
         assert_eq!(planner.poll(due(5)), Some((Slot(5), 1)));
+    }
+
+    #[test]
+    fn a_seal_within_min_lead_of_the_deadline_is_withheld() {
+        let mut planner = planner(0);
+        open(&mut planner, [0]);
+
+        // 19 ms of lead left: too late to decode everywhere before D
+        assert_eq!(planner.poll(before_deadline(0, 19)), None);
+        assert_eq!(planner.next_due(), None);
+    }
+
+    // delta is the arrival bound, so a seal exactly delta out lands on the
+    // deadline itself, racing the batch vote: withheld, and one ms more ships
+    #[test]
+    fn a_seal_exactly_min_lead_from_the_deadline_is_withheld() {
+        let mut planner = planner(0);
+        open(&mut planner, [0]);
+
+        assert_eq!(planner.poll(before_deadline(0, 20)), None);
+    }
+
+    #[test]
+    fn a_seal_beyond_min_lead_is_sent() {
+        let mut planner = planner(0);
+        open(&mut planner, [0]);
+
+        assert_eq!(planner.poll(before_deadline(0, 21)), Some((Slot(0), 1)));
+    }
+
+    #[test]
+    fn a_gate_release_within_min_lead_is_withheld() {
+        let mut planner = planner(2);
+        open(&mut planner, [5]);
+
+        assert_eq!(planner.poll(due(5)), None);
+
+        // the cap clears the gate with less than delta before the deadline
+        planner.handle_cap_advance(before_deadline(5, 10), Slot(4));
+        assert_eq!(planner.next_due(), None);
+        assert_eq!(planner.poll(before_deadline(5, 10)), None);
     }
 
     #[test]

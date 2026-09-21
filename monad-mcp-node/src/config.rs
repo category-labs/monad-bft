@@ -210,6 +210,11 @@ pub struct ProposalConfig {
     // how long before the slot's deadline we propose
     #[serde(deserialize_with = "de::millis")]
     pub propose_before_deadline: TimestampDelta,
+    // a seal with less lead than this is withheld instead of disseminated;
+    // 0 disables the gate. Set it to the cadence delta to withhold every
+    // proposal that cannot arrive before the deadline.
+    #[serde(deserialize_with = "de::millis")]
+    pub withhold_before_deadline: TimestampDelta,
 }
 
 impl ProposalConfig {
@@ -242,6 +247,7 @@ impl ProposalConfig {
     pub fn planner(&self, proposers: &NodeProposerSchedule) -> PlannerConfig {
         PlannerConfig {
             lead: self.propose_before_deadline,
+            min_lead: self.withhold_before_deadline,
             observation_cutoff: proposers.config().observation_cutoff,
         }
     }
@@ -252,6 +258,7 @@ impl Default for ProposalConfig {
         Self {
             num_proposals: 5,
             propose_before_deadline: TimestampDelta::from_millis(500),
+            withhold_before_deadline: TimestampDelta::ZERO,
         }
     }
 }
@@ -349,5 +356,22 @@ mod tests {
             schedule.config().observation_cutoff
         );
         assert_eq!(planner.lead, config.propose_before_deadline);
+        assert_eq!(planner.min_lead, config.withhold_before_deadline);
+    }
+
+    // the gate is off unless the deployment asks for it
+    #[test]
+    fn the_withhold_floor_defaults_off_and_reaches_the_planner() {
+        assert_eq!(
+            ProposalConfig::default().withhold_before_deadline,
+            TimestampDelta::ZERO
+        );
+
+        let config: ProposalConfig = toml::from_str("withhold_before_deadline = 150").unwrap();
+        let schedule = config.schedule(validator_data(4)).unwrap();
+        assert_eq!(
+            config.planner(&schedule).min_lead,
+            TimestampDelta::from_millis(150)
+        );
     }
 }

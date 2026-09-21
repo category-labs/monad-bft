@@ -55,6 +55,8 @@ const DELTA: TimestampDelta = TimestampDelta::from_millis(100); // Chorus latenc
 // margin; small enough that the chaining gate is really exercised (see the
 // staggered-rotation test).
 const LEAD: TimestampDelta = TimestampDelta::from_millis(60);
+// below LEAD: the withhold gate is exercised in proposing.rs, not here
+const MIN_LEAD: TimestampDelta = TimestampDelta::from_millis(30);
 
 type Conductor = MonadConductor<NopAcs<SlotDeadline>>;
 type Msg = CadenceDriverMsg<Chorus, Conductor>;
@@ -130,6 +132,7 @@ fn build_swarm(
             schedule.clone(),
             PlannerConfig {
                 lead: LEAD,
+                min_lead: MIN_LEAD,
                 observation_cutoff: proposer_config.observation_cutoff,
             },
         );

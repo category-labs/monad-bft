@@ -34,3 +34,6 @@ completed_slot_retention = 2
 [proposal]
 num_proposals = 5
 propose_before_deadline = 500
+# withhold a seal with less than this much lead left; 0 disables the gate,
+# the cadence delta withholds anything that cannot arrive before the deadline
+withhold_before_deadline = 0
