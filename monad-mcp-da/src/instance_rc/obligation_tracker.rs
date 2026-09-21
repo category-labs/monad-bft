@@ -15,6 +15,9 @@
 
 use super::super::assignment::{ChunkAssignment, ChunkRouting, NodeIndex, Upstream};
 
+// o' = o * (a/b)
+const PACKET_LOSS_RESISTANCE: (usize, usize) = (9, 10);
+
 pub(crate) struct ObligationTracker {
     // the number of chunks remaining to be received from each
     // rebroadcast owner, by NodeIndex
@@ -46,15 +49,21 @@ impl ObligationTracker {
             }
         }
 
-        // todo: reduce obligations by a small fraction to account for
-        // network packet loss. s11 already targets a source count
-        // raised by a tenth, which pays for a reduction of the author
-        // obligation by at most one chunk in eleven; reducing an owner
-        // obligation costs nothing, as it asserts nothing about what
-        // this node holds.
-
+        this.trim();
         this.fulfill_vacuously();
         this
+    }
+
+    // trim the obligations to account for packet loss.
+    fn trim(&mut self) {
+        // todo: make assignment export this
+        let (a, b) = PACKET_LOSS_RESISTANCE;
+        let cut = |n: &mut usize| *n = (*n * a).div_ceil(b);
+
+        cut(&mut self.remaining_author_obligation);
+        for remaining in self.remaining_owner_obligation.iter_mut() {
+            cut(remaining);
+        }
     }
 
     fn fulfill_vacuously(&mut self) {
