@@ -565,4 +565,8 @@ where
     fn total_db_lookups(&self) -> u64 {
         self.total_mock_lookups.load(Ordering::SeqCst)
     }
+
+    fn node_cache_stats_source(&self) -> Option<std::sync::Arc<dyn crate::NodeCacheStatsSource>> {
+        None
+    }
 }

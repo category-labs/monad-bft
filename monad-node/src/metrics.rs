@@ -23,7 +23,8 @@ use std::{
 use actix_server::Server;
 use actix_web::{http::header, web, App, HttpRequest, HttpResponse, HttpServer};
 use monad_consensus_types::metrics::Metrics as StateMetrics;
-use monad_executor::{metric_consts, ExecutorMetrics, ExecutorMetricsChain, Gauge};
+use monad_execution_state_read::{NodeCacheStats, NodeCacheStatsSource};
+use monad_executor::{metric_consts, ExecutorMetrics, ExecutorMetricsChain, Gauge, MetricDef};
 use monad_triedb_utils::{MigrationPhase, StorageStats, TriedbStatsReader, UpdateStats};
 use prometheus::{Encoder, ProtobufEncoder, Registry, TextEncoder};
 use tracing::{info, warn};
@@ -247,6 +248,73 @@ pub fn record_triedb_update_stats_metrics(metrics: &mut ExecutorMetrics, stats: 
         .set(stats.nreads_expire);
 }
 
+// This process's own read cache, not the database's and not execution's: each
+// triedb handle owns an independent one, and these come from the handle the
+// state-read thread reads through. Execution's caches are not visible here.
+metric_consts! {
+    pub GAUGE_TRIEDB_NODE_CACHE_HITS {
+        name: "monad.triedb.node_cache_hits",
+        help: "Trie-node cache hits on this node's state-read handle, cumulative.",
+    }
+    pub GAUGE_TRIEDB_NODE_CACHE_MISSES {
+        name: "monad.triedb.node_cache_misses",
+        help: "Trie-node cache misses on this node's state-read handle, cumulative. Not a disk-read count: concurrent misses on the same node are served by one read, and only the async read and traverse paths consult this cache at all, so header, account and code-hash reads are absent from both this and node_cache_hits.",
+    }
+    pub GAUGE_TRIEDB_NODE_CACHE_EVICTIONS {
+        name: "monad.triedb.node_cache_evictions",
+        help: "Trie nodes dropped from this node's state-read cache to stay within its bounds, cumulative.",
+    }
+    pub GAUGE_TRIEDB_NODE_CACHE_USED_BYTES {
+        name: "monad.triedb.node_cache_used_bytes",
+        help: "Bytes of trie nodes cached, against node_cache_max_bytes.",
+    }
+    pub GAUGE_TRIEDB_NODE_CACHE_ENTRIES {
+        name: "monad.triedb.node_cache_entries",
+        help: "Trie nodes cached, against node_cache_max_entries. The cache is bounded by both, so read alongside node_cache_used_bytes to see which bound is binding.",
+    }
+    pub GAUGE_TRIEDB_NODE_CACHE_MAX_BYTES {
+        name: "monad.triedb.node_cache_max_bytes",
+        help: "The byte budget node_cache_used_bytes runs against, so utilisation needs no second source. Not operator-tunable on this node: it is a build-time constant, unlike monad-rpc's --triedb-node-lru-max-mem.",
+    }
+    pub GAUGE_TRIEDB_NODE_CACHE_MAX_ENTRIES {
+        name: "monad.triedb.node_cache_max_entries",
+        help: "Slot count derived from node_cache_max_bytes.",
+    }
+}
+
+type NodeCacheGauge = (&'static MetricDef, fn(&NodeCacheStats) -> u64);
+// The same accessor, bound to the gauge it sets once the metrics are declared.
+type BoundNodeCacheGauge = (Gauge, fn(&NodeCacheStats) -> u64);
+
+const NODE_CACHE_GAUGES: &[NodeCacheGauge] = &[
+    (GAUGE_TRIEDB_NODE_CACHE_HITS, |s| s.hits),
+    (GAUGE_TRIEDB_NODE_CACHE_MISSES, |s| s.misses),
+    (GAUGE_TRIEDB_NODE_CACHE_EVICTIONS, |s| s.evictions),
+    (GAUGE_TRIEDB_NODE_CACHE_USED_BYTES, |s| s.used_bytes),
+    (GAUGE_TRIEDB_NODE_CACHE_ENTRIES, |s| s.entries),
+    (GAUGE_TRIEDB_NODE_CACHE_MAX_BYTES, |s| s.max_bytes),
+    (GAUGE_TRIEDB_NODE_CACHE_MAX_ENTRIES, |s| s.max_entries),
+];
+
+/// Declares the gauges and returns them paired with the field each reports, so
+/// the declaration, the registration and the refresh all come off the one
+/// table and a gauge cannot be set from the wrong counter.
+fn node_cache_gauges() -> (ExecutorMetrics, Vec<BoundNodeCacheGauge>) {
+    let defs: Vec<&'static MetricDef> = NODE_CACHE_GAUGES.iter().map(|(def, _)| *def).collect();
+    let mut metrics = ExecutorMetrics::with_metric_defs(&defs);
+    let gauges = NODE_CACHE_GAUGES
+        .iter()
+        .map(|(def, field)| (metrics.gauge(def).clone(), *field))
+        .collect();
+    (metrics, gauges)
+}
+
+fn record_node_cache_gauges(gauges: &[BoundNodeCacheGauge], stats: &NodeCacheStats) {
+    for (gauge, field) in gauges {
+        gauge.set(field(stats));
+    }
+}
+
 fn duration_micros_u64(duration: &Duration) -> u64 {
     duration.as_micros().try_into().unwrap_or(u64::MAX)
 }
@@ -257,7 +325,16 @@ pub struct NodePrometheusMetrics {
     total_uptime: Gauge,
     total_state_update: Gauge,
     node_info: Gauge,
+    node_cache: Option<NodeCacheMetrics>,
     process_start: Instant,
+}
+
+/// Pulled on every scrape and every OTel export, so the resolution is whichever
+/// of those the operator configures rather than any publishing cadence.
+struct NodeCacheMetrics {
+    source: Arc<dyn NodeCacheStatsSource>,
+    metrics: ExecutorMetrics,
+    gauges: Vec<BoundNodeCacheGauge>,
 }
 
 impl NodePrometheusMetrics {
@@ -265,6 +342,7 @@ impl NodePrometheusMetrics {
         labels: HashMap<String, String>,
         state_metrics: &StateMetrics,
         executor_metrics: ExecutorMetricsChain<'_>,
+        node_cache_stats: Option<Arc<dyn NodeCacheStatsSource>>,
         process_start: Instant,
     ) -> Result<Self, prometheus::Error> {
         let registry = Registry::new_custom(None, Some(labels))?;
@@ -285,6 +363,25 @@ impl NodePrometheusMetrics {
             .set(0);
         node_executor_metrics.register(&registry)?;
 
+        // Left unregistered when the backend has no trie-node cache: an absent
+        // series says so, a zeroed one reads as an idle cache.
+        let node_cache = match node_cache_stats {
+            Some(source) => {
+                let (metrics, gauges) = node_cache_gauges();
+                record_node_cache_gauges(&gauges, &source.snapshot());
+                metrics.register(&registry)?;
+                Some(NodeCacheMetrics {
+                    source,
+                    metrics,
+                    gauges,
+                })
+            }
+            None => {
+                warn!("state backend has no trie-node cache, its metrics will not be reported");
+                None
+            }
+        };
+
         Ok(Self {
             registry,
             state_metrics: state_metric_handles,
@@ -293,6 +390,7 @@ impl NodePrometheusMetrics {
                 .gauge(GAUGE_STATE_TOTAL_UPDATE_US)
                 .clone(),
             node_info: node_executor_metrics.gauge(GAUGE_NODE_INFO).clone(),
+            node_cache,
             process_start,
         })
     }
@@ -322,6 +420,11 @@ impl NodePrometheusMetrics {
                     GAUGE_NODE_INFO.help,
                 ),
             ])
+            .chain(
+                self.node_cache
+                    .iter()
+                    .flat_map(|node_cache| node_cache.metrics.metric_handles()),
+            )
             .collect()
     }
 
@@ -333,6 +436,10 @@ impl NodePrometheusMetrics {
     pub fn refresh_dynamic_metrics(&self) {
         self.total_uptime
             .set(duration_micros_u64(&self.process_start.elapsed()));
+
+        if let Some(node_cache) = &self.node_cache {
+            record_node_cache_gauges(&node_cache.gauges, &node_cache.source.snapshot());
+        }
     }
 }
 
@@ -481,6 +588,70 @@ mod storage_metrics_tests {
             scraped.contains("monad_triedb_disk_used_bytes 700"),
             "{scraped}"
         );
+    }
+}
+
+#[cfg(test)]
+mod node_cache_metrics_tests {
+    use monad_execution_state_read::NodeCacheStats;
+    use prometheus::{Encoder, Registry, TextEncoder};
+
+    use super::{node_cache_gauges, record_node_cache_gauges, NODE_CACHE_GAUGES};
+
+    // Distinct per field, so a gauge wired to the wrong counter reports a
+    // value that belongs to another gauge.
+    fn stats() -> NodeCacheStats {
+        NodeCacheStats {
+            hits: 11,
+            misses: 22,
+            evictions: 33,
+            used_bytes: 44,
+            entries: 55,
+            max_bytes: 66,
+            max_entries: 77,
+        }
+    }
+
+    // Exercises the two functions the constructor and the refresh both use,
+    // but through a registry of its own: that NodePrometheusMetrics registers
+    // them, and that refresh_dynamic_metrics calls the refresh, are not
+    // covered here. A gauge missing from the table is never registered and so
+    // never scraped; one set from the wrong field reports another gauge's
+    // value. Asserts through the encoded scrape, and line-exact because a
+    // substring match would let "hits 99" be satisfied by "hits 990".
+    #[test]
+    fn every_gauge_reaches_the_scrape_with_its_own_field() {
+        let (metrics, gauges) = node_cache_gauges();
+        let registry = Registry::new();
+        metrics.register(&registry).expect("gauges registered");
+
+        record_node_cache_gauges(&gauges, &stats());
+        let mut later = stats();
+        later.hits = 99;
+        record_node_cache_gauges(&gauges, &later);
+
+        let mut buffer = Vec::new();
+        TextEncoder::new()
+            .encode(&registry.gather(), &mut buffer)
+            .expect("encoded");
+        let scraped = String::from_utf8(buffer).expect("utf-8");
+
+        let expected = [
+            "monad_triedb_node_cache_hits 99",
+            "monad_triedb_node_cache_misses 22",
+            "monad_triedb_node_cache_evictions 33",
+            "monad_triedb_node_cache_used_bytes 44",
+            "monad_triedb_node_cache_entries 55",
+            "monad_triedb_node_cache_max_bytes 66",
+            "monad_triedb_node_cache_max_entries 77",
+        ];
+        assert_eq!(NODE_CACHE_GAUGES.len(), expected.len());
+        for line in expected {
+            assert!(
+                scraped.lines().any(|scraped_line| scraped_line == line),
+                "{line} missing from {scraped}"
+            );
+        }
     }
 }
 

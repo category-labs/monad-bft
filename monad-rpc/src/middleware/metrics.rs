@@ -13,13 +13,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use actix_web::{
     body::MessageBody,
     dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform},
 };
 use futures_util::future::{FutureExt as _, LocalBoxFuture};
+use monad_triedb_utils::triedb_env::NodeCacheStats;
 use opentelemetry::{
     metrics::{Histogram, MeterProvider, UpDownCounter},
     KeyValue,
@@ -108,6 +109,48 @@ fn attributes_from_request(req: &ServiceRequest) -> Vec<KeyValue> {
 
     attributes
 }
+
+// A tuple table so a name cannot be added without an accessor -- that is how a
+// metric gets registered but never observed.
+type NodeCacheGauge = (&'static str, &'static str, fn(&NodeCacheStats) -> u64);
+
+const NODE_CACHE_GAUGES: &[NodeCacheGauge] = &[
+    (
+        "monad.rpc.triedb.node_cache_hits",
+        "Trie-node cache hits on the rpc read handle, cumulative.",
+        |s| s.hits,
+    ),
+    (
+        "monad.rpc.triedb.node_cache_misses",
+        "Trie-node cache misses on the rpc read handle, cumulative. Neither implies the other with a disk read: concurrent misses on the same node are served by one read, and only the async read and traverse paths consult this cache at all.",
+        |s| s.misses,
+    ),
+    (
+        "monad.rpc.triedb.node_cache_evictions",
+        "Trie nodes dropped from the rpc read cache to stay within its bounds, cumulative.",
+        |s| s.evictions,
+    ),
+    (
+        "monad.rpc.triedb.node_cache_used_bytes",
+        "Bytes of trie nodes cached, against node_cache_max_bytes. Primary timeline only: while a secondary timeline is active its separate cache of the same size is not included, so the process can hold twice this.",
+        |s| s.used_bytes,
+    ),
+    (
+        "monad.rpc.triedb.node_cache_entries",
+        "Trie nodes cached, against node_cache_max_entries. The cache is bounded by both, so read alongside node_cache_used_bytes to see which bound is binding.",
+        |s| s.entries,
+    ),
+    (
+        "monad.rpc.triedb.node_cache_max_bytes",
+        "--triedb-node-lru-max-mem, so utilisation can be computed without knowing how this process was configured.",
+        |s| s.max_bytes,
+    ),
+    (
+        "monad.rpc.triedb.node_cache_max_entries",
+        "Slot count derived from --triedb-node-lru-max-mem.",
+        |s| s.max_entries,
+    ),
+];
 
 #[derive(Clone)]
 pub struct Metrics {
@@ -200,11 +243,119 @@ impl Metrics {
         }
     }
 
+    /// Observable gauges for the trie-node cache on the TriedbEnv polling
+    /// handle. Methods routed through EthCallHandler run against a separate
+    /// cache in the C++ executor and are not counted here, nor are reads
+    /// served from an archive.
+    ///
+    /// `snapshot` is polled on each collection, so the resolution is the
+    /// reader's interval rather than any publishing cadence. It can run on any
+    /// thread, which is why it is a closure over the cache's own counters
+    /// rather than the triedb handle, which is `!Send`.
+    pub fn register_triedb_node_cache(
+        &self,
+        snapshot: impl Fn() -> Option<NodeCacheStats> + Send + Sync + 'static,
+    ) {
+        let meter = self.provider.meter("opentelemetry");
+        let snapshot = Arc::new(snapshot);
+
+        for (name, description, field) in NODE_CACHE_GAUGES {
+            let snapshot = snapshot.clone();
+            meter
+                .u64_observable_gauge(*name)
+                .with_description(*description)
+                .with_callback(move |observer| {
+                    // Absent rather than zero when there is no cache to read:
+                    // zero is what an idle one reports.
+                    if let Some(stats) = snapshot() {
+                        observer.observe(field(&stats), &[]);
+                    }
+                })
+                .build();
+        }
+    }
+
     pub fn record_websocket_connection(&self, increment: i64) {
         self.active_websocket_connections.add(increment, &[]);
     }
 
     pub fn record_websocket_topic(&self, increment: i64) {
         self.active_websocket_topics.add(increment, &[]);
+    }
+}
+
+#[cfg(test)]
+mod node_cache_gauge_tests {
+    use monad_triedb_utils::triedb_env::NodeCacheStats;
+    use opentelemetry_sdk::metrics::{
+        data::{AggregatedMetrics, MetricData},
+        InMemoryMetricExporter, PeriodicReader, SdkMeterProvider,
+    };
+
+    use super::{Metrics, NODE_CACHE_GAUGES};
+
+    // Distinct per field, so a gauge wired to the wrong accessor reports a
+    // value that belongs to another gauge.
+    fn stats() -> NodeCacheStats {
+        NodeCacheStats {
+            hits: 11,
+            misses: 22,
+            evictions: 33,
+            used_bytes: 44,
+            entries: 55,
+            max_bytes: 66,
+            max_entries: 77,
+        }
+    }
+
+    // A gauge whose callback never fires is indistinguishable from one that
+    // was never registered, and both are invisible until someone reads a
+    // dashboard, so collect through the SDK rather than calling the
+    // accessors directly.
+    #[test]
+    fn every_gauge_is_observed_with_its_own_field() {
+        let exporter = InMemoryMetricExporter::default();
+        let provider = SdkMeterProvider::builder()
+            .with_reader(PeriodicReader::builder(exporter.clone()).build())
+            .build();
+        Metrics::new_with_otel_provider(provider.clone())
+            .register_triedb_node_cache(|| Some(stats()));
+        provider.force_flush().expect("flushed");
+
+        let collected = exporter.get_finished_metrics().expect("collected");
+        let mut observed = Vec::new();
+        for resource in &collected {
+            for scope in resource.scope_metrics() {
+                for metric in scope.metrics() {
+                    let AggregatedMetrics::U64(MetricData::Gauge(gauge)) = metric.data() else {
+                        continue;
+                    };
+                    for point in gauge.data_points() {
+                        observed.push((metric.name().to_owned(), point.value()));
+                    }
+                }
+            }
+        }
+
+        // Names are written out rather than read back from the table under
+        // test: zipping the table against itself would assert only that some
+        // name was observed, so a typo in a published name -- or two names
+        // swapped between rows -- would satisfy it.
+        let expected = [
+            ("monad.rpc.triedb.node_cache_hits", 11),
+            ("monad.rpc.triedb.node_cache_misses", 22),
+            ("monad.rpc.triedb.node_cache_evictions", 33),
+            ("monad.rpc.triedb.node_cache_used_bytes", 44),
+            ("monad.rpc.triedb.node_cache_entries", 55),
+            ("monad.rpc.triedb.node_cache_max_bytes", 66),
+            ("monad.rpc.triedb.node_cache_max_entries", 77),
+        ];
+        assert_eq!(NODE_CACHE_GAUGES.len(), expected.len());
+        for (name, value) in expected {
+            assert!(
+                observed.contains(&(name.to_owned(), value)),
+                "{name} = {value} missing from {observed:?}"
+            );
+        }
     }
 }

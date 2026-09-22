@@ -39,7 +39,7 @@ use monad_dataplane::{DataplaneBuilder, TcpSocketId, UdpSocketId};
 use monad_eth_block_policy::EthBlockPolicy;
 use monad_eth_block_validator::EthBlockValidator;
 use monad_eth_txpool_executor::{EthTxPoolExecutor, EthTxPoolIpcConfig};
-use monad_execution_state_read::ExecutionStateReadThreadClient;
+use monad_execution_state_read::{ExecutionStateRead, ExecutionStateReadThreadClient};
 use monad_execution_state_read_cache::ExecutionStateReadCache;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{LogFriendlyMonadEvent, Message, MonadEvent};
@@ -251,6 +251,11 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
             ExecutionStateReadCache::new(triedb_handle, SeqNum(EXECUTION_DELAY))
         }
     });
+
+    // The cache worth reporting is the one on the handle this client reads
+    // through, not the metrics-only handle opened further down, which never
+    // populates its own.
+    let state_read_metrics = state_read.clone();
 
     let mut executor = ParentExecutor {
         metrics: Default::default(),
@@ -499,6 +504,11 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
     let mut triedb_update_stats_metrics = init_triedb_update_stats(triedb_stats_path.as_deref());
     let mut triedb_update_stats_misses = 0;
 
+    // Fetched once: whether a backend has a trie-node cache is a property of
+    // the backend. The source is then polled directly, so the gauges resolve
+    // at the scrape and export intervals rather than a sampling tick.
+    let node_cache_stats = state_read_metrics.node_cache_stats_source();
+
     let prometheus_metrics = Arc::new(
         NodePrometheusMetrics::new(
             prometheus_labels,
@@ -508,6 +518,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                 .push(&triedb_phase_metrics)
                 .push(&triedb_storage_metrics)
                 .push(&triedb_update_stats_metrics),
+            node_cache_stats,
             process_start,
         )
         .map_err(|err| {
