@@ -15,6 +15,8 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
+use tracing::{debug, trace};
+
 use super::{
     conductor::{Conductor, ConductorOutput},
     message::{CadenceMessage, CadenceWireMsg, Outbound},
@@ -123,7 +125,7 @@ where
                 instance.handle_timer(timer);
             }
             PendingWake::Deadline(slot) | PendingWake::SlotTimer(slot, _) => {
-                tracing::debug!(?slot, "wake for a slot without instance");
+                debug!(?slot, "wake for a slot without instance");
             }
         }
     }
@@ -141,7 +143,7 @@ where
                 instance.handle_message(author, message);
             }
             CadenceMessage::Slot(slot, _) => {
-                tracing::debug!(?slot, ?author, "message for a slot without instance");
+                trace!(?slot, ?author, "message for a slot without instance");
             }
         }
     }
