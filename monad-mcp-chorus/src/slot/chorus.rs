@@ -31,9 +31,10 @@ use super::{
     },
     types::{
         HeaderAuth, KeyPair, MerkleRoot, NodeId, ProposalIndex, ProposalMap, ProposerSchedule,
-        SignedProposalHeader, Slot, TimestampDelta, ValidatorData,
+        SignatureCollection, SignedProposalHeader, Slot, TimestampDelta, ValidatorData,
     },
 };
+use crate::spec::vote::SignatureCollection as _;
 
 /// The fallback path's agreement protocol, at the instantiation Chorus runs it
 type FallbackState = MonadMvba<Metablock, EnterFallbackCert>;
@@ -125,6 +126,13 @@ impl SlotFinalization {
         match self {
             Self::Fast(_) => FinalizationPath::Fast,
             Self::Fallback(_) => FinalizationPath::Fallback,
+        }
+    }
+
+    pub fn sigcol(&self) -> &SignatureCollection {
+        match self {
+            Self::Fast(qc) => &qc.sigcol,
+            Self::Fallback(qc) => &qc.sigcol,
         }
     }
 
@@ -477,13 +485,35 @@ impl Chorus {
         self.broadcast(fast_block);
     }
 
-    // finalize on a fast commit certificate. the slot closes on
-    // finalization, so committed roots are pulled first.
     fn finalize_fast(&mut self, qc: FastCommitQc) {
         self.broadcast(qc.clone());
-        self.fast.recover_committed(&qc);
-        self.drain_da_commands();
         self.finalize(qc);
+    }
+
+    // pull every committed root not yet resolved from the certificate's
+    // signers
+    fn recover_committed(&mut self, finalization: &SlotFinalization) {
+        let Some(signers) = finalization.sigcol().signers(&self.validator_data) else {
+            return;
+        };
+        let mut voters: Vec<NodeId> = signers.into_iter().copied().collect();
+        // stable request order across runs
+        voters.sort();
+
+        for (j, root) in finalization.roots().into_indexed_iter() {
+            let Some(root) = root else {
+                continue;
+            };
+            if self.fast.is_resolved(j, &root) {
+                continue;
+            }
+            self.push(SlotOutput::DA(ChorusDACommand::RecoverChunks {
+                j,
+                root,
+                request_type: ChunkRequestType::YourChunks,
+                voters: voters.clone(),
+            }));
+        }
     }
 
     fn drain_da_commands(&mut self) {
@@ -508,9 +538,12 @@ impl Chorus {
             return;
         }
 
+        let cert = cert.into();
+        self.recover_committed(&cert);
+
         self.decided = true;
         self.fallback.abandon();
-        self.push(SlotOutput::Finalize(cert.into()));
+        self.push(SlotOutput::Finalize(cert));
     }
 
     /// `propose` is idempotent, so a second certificate changes nothing.

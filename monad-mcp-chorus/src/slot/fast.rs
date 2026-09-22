@@ -623,21 +623,8 @@ impl FastPath {
 
     // P1 for a committed slot: pull every committed root we have not
     // resolved from the commit certificate's signers
-    pub(crate) fn recover_committed(&mut self, qc: &FastCommitQc) {
-        let Some(signers) = qc.sigcol.signers(&self.validator_data) else {
-            return;
-        };
-        let signers: Vec<NodeId> = signers.into_iter().copied().collect();
-
-        for (j, entry) in qc.verdict.entries.as_ref().into_indexed_iter() {
-            let Entry::Positive(root) = entry else {
-                continue;
-            };
-            if self.availability[j].is_resolved(root) {
-                continue;
-            }
-            self.request_chunks(ChunkRequestType::YourChunks, j, *root, signers.clone());
-        }
+    pub(crate) fn is_resolved(&self, j: ProposalIndex, root: &MerkleRoot) -> bool {
+        self.availability[j].is_resolved(root)
     }
 
     fn try_form_fallback_qc(&mut self, j: ProposalIndex) {
@@ -1545,24 +1532,6 @@ mod tests {
         }
         pool.try_form_strong_qc(&validator_data(4))
             .expect("three of four votes form a commit qc")
-    }
-
-    #[test]
-    fn committed_roots_are_pulled_from_the_commit_signers() {
-        let mut fast = fast_path();
-
-        fast.recover_committed(&fast_commit_qc(1));
-        let signers = vec![NodeId::dummy(0), NodeId::dummy(2), NodeId::dummy(3)];
-        let expected = (ChunkRequestType::YourChunks, root(1), signers);
-        assert_eq!(drain_requests(&mut fast), vec![expected]);
-
-        // a resolved root is not pulled
-        let _ = fast.handle_da_event(ChorusDAEvent {
-            j: 0,
-            event: ProposalDAEvent::Decoded(root(1)),
-        });
-        fast.recover_committed(&fast_commit_qc(1));
-        assert!(drain_requests(&mut fast).is_empty());
     }
 
     /// [`FallbackEntry`] wraps [`Entry`] transparently, so the two encode
