@@ -28,10 +28,8 @@ pub enum Packet {
     ChunkRequest(Bytes),
 }
 
-pub enum Outbound {
-    Broadcast(Packet),
-    Unicast { to: NodeId, packet: Packet },
-}
+// todo: move this to shared types
+pub type Outbound = crate::chorus::Outbound<Packet>;
 
 // the transport authenticates the sender
 pub struct Inbound {

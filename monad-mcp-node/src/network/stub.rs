@@ -108,7 +108,7 @@ impl UdpNetwork {
                     }
                 }
             }
-            Outbound::Unicast { to, packet } => {
+            Outbound::Unicast(to, packet) => {
                 let Some(address) = self.peers.get(&to) else {
                     tracing::debug!(?to, "unknown recipient");
                     return;

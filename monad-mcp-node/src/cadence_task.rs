@@ -13,13 +13,15 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use tokio::{sync::mpsc::UnboundedSender, task::JoinHandle};
+use std::future::pending;
+
+use tokio::{sync::mpsc::UnboundedSender, task::JoinHandle, time::sleep_until};
 use tracing::{Instrument as _, Span};
 
 use crate::{
     chorus::{
-        CadenceDriverMsg, CadenceRuntime, DASink, FinalizationObserver, NodeEvent, Runtime as _,
-        SlotLifecycle, WakeId,
+        CadenceDriverMsg, CadenceRuntime, DASink, FinalizationObserver, Outbound, Runtime as _,
+        SlotLifecycle,
         conductor::{MonadConductor, acs::nop::NopAcs},
         slot::chorus::{Chorus, ChorusDACommand, ChorusDAEvent, SlotFinalization},
         types::{Slot, SlotDeadline, Timestamp, Validated},
@@ -34,12 +36,11 @@ pub type CadenceWireMsg = CadenceDriverMsg<Chorus, Conductor>;
 
 pub enum CadenceInput {
     Message(Validated<CadenceWireMsg>),
-    Wake(WakeId),
     DAEvent(Slot, ChorusDAEvent),
 }
 
 pub enum CadenceOutput {
-    NodeEvent(NodeEvent<CadenceWireMsg>),
+    Outbound(Outbound<CadenceWireMsg>),
     Lifecycle(Slot, SlotLifecycle),
     DACommand(Slot, ChorusDACommand),
     Finalized(Timestamp, Slot, SlotFinalization),
@@ -76,8 +77,18 @@ impl CadenceTask {
     async fn run(mut self) {
         self.cadence.init();
         self.flush();
-        while let Some(input) = self.link.recv().await {
-            self.handle(input);
+        loop {
+            let due = self.cadence.next_due();
+            tokio::select! {
+                input = self.link.recv() => {
+                    let Some(input) = input else { return };
+                    self.handle(input);
+                }
+                () = sleep_until_due(&self.clock, due) => {
+                    let now = self.clock.now();
+                    self.cadence.handle_due(now);
+                }
+            }
             self.flush();
         }
     }
@@ -88,9 +99,6 @@ impl CadenceTask {
             CadenceInput::Message(message) => {
                 self.cadence.receive(now, message);
             }
-            CadenceInput::Wake(wake) => {
-                self.cadence.wake(now, wake);
-            }
             CadenceInput::DAEvent(slot, event) => {
                 self.cadence.handle_da_event(now, slot, event);
             }
@@ -99,9 +107,16 @@ impl CadenceTask {
 
     fn flush(&mut self) {
         while let Some(event) = self.cadence.poll() {
-            self.link.send(CadenceOutput::NodeEvent(event));
+            self.link.send(CadenceOutput::Outbound(event));
         }
     }
+}
+
+async fn sleep_until_due(clock: &Clock, due: Option<Timestamp>) {
+    let Some(due) = due else {
+        return pending().await;
+    };
+    sleep_until(clock.instant_of(due).into()).await
 }
 
 // the DASink handed to cadence: its calls become outputs

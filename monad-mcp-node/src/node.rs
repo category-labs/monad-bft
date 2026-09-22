@@ -24,14 +24,12 @@ use tokio::{
     task::JoinHandle,
     time::{Interval, MissedTickBehavior, interval},
 };
-use tokio_stream::StreamExt as _;
-use tokio_util::time::DelayQueue;
 
 use crate::{
     RunError,
     cadence_task::{CadenceInput, CadenceOutput, CadenceTask, CadenceWireMsg},
     chorus::{
-        CadenceMessage, CadenceRuntime, NodeEvent, SlotLifecycle, SlotManager, WakeId,
+        CadenceMessage, CadenceRuntime, SlotLifecycle, SlotManager,
         conductor::MonadConductor,
         proposing::ProposalPlanner,
         slot::chorus::ChorusMessage,
@@ -91,7 +89,6 @@ pub struct Node {
     epoch_handle: EpochHandle,
     clock: Clock,
     collector: FinalizationCollector,
-    timers: DelayQueue<WakeId>,
     // re-sends slot messages over the lossy transport; off without a config
     repeater: Option<Repeater<ChorusMessage>>,
     repeater_tick: Option<Interval>,
@@ -145,7 +142,6 @@ impl Node {
             epoch_handle,
             clock,
             collector: FinalizationCollector::default(),
-            timers: DelayQueue::new(),
             repeater: repeater_config.map(Repeater::new),
             repeater_tick,
             network: None,
@@ -174,9 +170,6 @@ impl Node {
                 Some(output) = self.cadence.recv() => self.handle_cadence_output(output),
                 Some(output) = self.da.recv() => self.handle_da_output(output),
                 Some((slot, index, message)) = self.proposing.recv() => self.propose(slot, index, message),
-                Some(expired) = self.timers.next(), if !self.timers.is_empty() => {
-                    self.cadence.send(CadenceInput::Wake(expired.into_inner()));
-                }
                 _ = next_tick(&mut self.repeater_tick) => self.repeat(),
                 else => return,
             }
@@ -221,7 +214,7 @@ impl Node {
 
     fn handle_cadence_output(&mut self, output: CadenceOutput) {
         match output {
-            CadenceOutput::NodeEvent(event) => self.handle_node_event(event),
+            CadenceOutput::Outbound(event) => self.handle_outbound(event),
             CadenceOutput::Lifecycle(slot, event) => {
                 self.da.send(DAInput::Lifecycle(slot, event));
                 if let SlotLifecycle::Opened { deadline } = event {
@@ -256,29 +249,22 @@ impl Node {
         }
     }
 
-    fn handle_node_event(&mut self, event: NodeEvent<CadenceWireMsg>) {
+    fn handle_outbound(&mut self, event: crate::chorus::Outbound<CadenceWireMsg>) {
         match event {
-            NodeEvent::Wake(at, wake) => {
-                let deadline = self.clock.instant_of(at);
-                self.timers.insert_at(wake, deadline.into());
-            }
-            NodeEvent::WakeAfter(delta, wake) => {
-                self.timers.insert(wake, delta.as_duration());
-            }
-            NodeEvent::Broadcast(message) => {
+            crate::chorus::Outbound::Broadcast(message) => {
                 self.record(Recipients::Everyone, &message);
                 let packet = Packet::Cadence(message.serialize());
                 self.send(Outbound::Broadcast(packet));
                 self.loopback(message);
             }
-            NodeEvent::Unicast { to, message } => {
+            crate::chorus::Outbound::Unicast(to, message) => {
                 if to == self.epoch_handle.self_id {
                     self.loopback(message);
                     return;
                 }
                 self.record(Recipients::Node(to), &message);
                 let packet = Packet::Cadence(message.serialize());
-                self.send(Outbound::Unicast { to, packet });
+                self.send(Outbound::Unicast(to, packet));
             }
         }
     }
@@ -302,7 +288,7 @@ impl Node {
             let packet = Packet::Cadence(message.serialize());
             match to {
                 Recipients::Everyone => self.send(Outbound::Broadcast(packet)),
-                Recipients::Node(to) => self.send(Outbound::Unicast { to, packet }),
+                Recipients::Node(to) => self.send(Outbound::Unicast(to, packet)),
             }
         }
     }
@@ -338,7 +324,7 @@ impl Node {
         }
         for (to, packet) in first_hop.into_packets() {
             let packet = Packet::Chunk(packet);
-            self.send(Outbound::Unicast { to: *to, packet });
+            self.send(Outbound::Unicast(*to, packet));
         }
     }
 
@@ -362,13 +348,13 @@ impl Node {
                 for node in to {
                     for packet in &packets {
                         let packet = Packet::Chunk(packet.clone());
-                        self.send(Outbound::Unicast { to: node, packet });
+                        self.send(Outbound::Unicast(node, packet));
                     }
                 }
             }
             DAOutput::RecoveryRequest { to, request } => {
                 let packet = Packet::ChunkRequest(request.serialize());
-                self.send(Outbound::Unicast { to, packet });
+                self.send(Outbound::Unicast(to, packet));
             }
         }
     }

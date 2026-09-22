@@ -5752,8 +5752,6 @@ dependencies = [
  "rand 0.8.5",
  "serde",
  "tokio",
- "tokio-stream",
- "tokio-util",
  "toml",
  "tracing",
  "tracing-subscriber",

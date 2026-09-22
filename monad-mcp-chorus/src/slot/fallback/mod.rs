@@ -18,11 +18,7 @@
 //! range over `entries(x)`, never over the value that carried them
 
 pub mod monad_mvba;
-use std::{
-    collections::{HashMap, VecDeque},
-    fmt::Debug,
-    hash::Hash,
-};
+use std::{collections::VecDeque, fmt::Debug, hash::Hash};
 
 use alloy_rlp::{Encodable, RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper};
 pub use monad_mvba::FallbackCommitQc;
@@ -33,10 +29,7 @@ pub use super::fast::{
     EnterFallbackCert, EnterFallbackVote, Entry, FallbackEntry, FallbackQc, FastQc,
 };
 use super::{
-    super::{
-        driver::{NodeEvent, WakeId},
-        runtime::Runtime,
-    },
+    super::{driver::Outbound, runtime::Runtime, timers::Timers},
     types::{
         IsVote, NodeId, Slot, StrongQc, Timestamp, TimestampDelta, TotalProposalMap, Validated,
     },
@@ -184,21 +177,20 @@ where
     V: ValidateInput + Votable,
 {
     mvba: M,
-    /// Held until the start wake fires; `None` is a listener, which never proposes
+    /// Held until the start timer fires; `None` is a listener, which never proposes
     input: Option<(V, Option<M::FallbackCert>)>,
-
-    // Deferred start mechanism
     start_at: Timestamp,
-    start_wake: Option<WakeId>,
 
-    outbox: VecDeque<NodeEvent<M::Message>>,
-    /// Pending timers; the last arm of the same event wins, so a superseded
-    /// wake misses the map
-    armed: HashMap<WakeId, M::TimerEvent>,
-    next_wake: WakeId,
+    outbox: VecDeque<Outbound<M::Message>>,
+    timers: Timers<MvbaTimer<M::TimerEvent>>,
 
     observer: Option<Box<dyn FnMut(Timestamp, &V) + Send>>,
     reported: Option<V>,
+}
+
+enum MvbaTimer<T> {
+    Start,
+    Timer(T),
 }
 
 impl<A, V> MvbaRuntime<A, V>
@@ -222,10 +214,8 @@ where
             mvba,
             input,
             start_at: Timestamp::GENESIS,
-            start_wake: None,
             outbox: VecDeque::new(),
-            armed: HashMap::new(),
-            next_wake: WakeId::FIRST,
+            timers: Timers::default(),
             observer: None,
             reported: None,
         }
@@ -241,24 +231,35 @@ where
         self.observer = Some(Box::new(observer));
     }
 
+    fn fire(&mut self, pending: MvbaTimer<A::TimerEvent>) {
+        match pending {
+            MvbaTimer::Start => {
+                let (input, cert) = self.input.take().expect("start timer armed with an input");
+                self.mvba.propose(input, cert);
+            }
+            MvbaTimer::Timer(timer_event) => self.mvba.handle_timer(timer_event),
+        }
+    }
+
     fn drain(&mut self, now: Timestamp) {
         while let Some(output) = self.mvba.poll() {
             match output {
                 MVBAOutput::Broadcast(message) => {
-                    self.outbox.push_back(NodeEvent::Broadcast(message));
+                    self.outbox.push_back(Outbound::Broadcast(message));
                 }
                 MVBAOutput::Unicast { to, message } => {
-                    self.outbox.push_back(NodeEvent::Unicast { to, message });
+                    self.outbox.push_back(Outbound::Unicast(to, message));
                 }
                 MVBAOutput::ScheduleTimer {
                     duration,
                     timer_event,
                 } => {
-                    // evicting the previous arm is what makes its wake stale
-                    self.armed.retain(|_, armed| *armed != timer_event);
-                    let id = self.next_wake.post_increment();
-                    self.armed.insert(id, timer_event);
-                    self.outbox.push_back(NodeEvent::WakeAfter(duration, id));
+                    // the last arm of the same event wins
+                    self.timers.retain(
+                        |armed| !matches!(armed, MvbaTimer::Timer(event) if *event == timer_event),
+                    );
+                    self.timers
+                        .schedule(now + duration, MvbaTimer::Timer(timer_event));
                 }
             }
         }
@@ -295,23 +296,18 @@ where
         if self.input.is_none() {
             return;
         }
-        let id = self.next_wake.post_increment();
-        self.start_wake = Some(id);
-        self.outbox.push_back(NodeEvent::Wake(self.start_at, id));
+        self.timers.schedule(self.start_at, MvbaTimer::Start);
     }
 
-    fn wake(&mut self, now: Timestamp, wake: WakeId) {
-        if self.start_wake == Some(wake) {
-            self.start_wake = None;
-            let (input, cert) = self.input.take().expect("start wake armed with an input");
-            self.mvba.propose(input, cert);
-        } else if let Some(timer_event) = self.armed.remove(&wake) {
-            self.mvba.handle_timer(timer_event);
-        } else {
-            // canceled: the event was re-armed after this wake was scheduled
-            return;
+    fn next_due(&self) -> Option<Timestamp> {
+        self.timers.next_due()
+    }
+
+    fn handle_due(&mut self, now: Timestamp) {
+        while let Some(pending) = self.timers.pop_due(now) {
+            self.fire(pending);
+            self.drain(now);
         }
-        self.drain(now);
     }
 
     fn receive(&mut self, now: Timestamp, message: Validated<A::Message>) {
@@ -320,7 +316,7 @@ where
         self.drain(now);
     }
 
-    fn poll(&mut self) -> Option<NodeEvent<A::Message>> {
+    fn poll(&mut self) -> Option<Outbound<A::Message>> {
         self.outbox.pop_front()
     }
 }

@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 
 use super::{
     conductor::{Conductor, ConductorOutput},
-    driver::{CadenceDriver, CadenceEvent, Driver, NodeEvent, WakeId},
+    driver::{CadenceDriver, CadenceEvent, Driver, Outbound},
     slot::{SlotConsensus, SlotOutput},
     slot_manager::SlotManager,
     types::{Slot, Timestamp, Validated},
@@ -31,9 +31,10 @@ pub trait Runtime<M> {
     type DAEvent;
 
     fn init(&mut self);
-    fn wake(&mut self, now: Timestamp, wake: WakeId);
+    fn next_due(&self) -> Option<Timestamp>;
+    fn handle_due(&mut self, now: Timestamp);
     fn receive(&mut self, now: Timestamp, message: Validated<M>);
-    fn poll(&mut self) -> Option<NodeEvent<M>>;
+    fn poll(&mut self) -> Option<Outbound<M>>;
 
     // Inject a data-availability event for `slot`. DA events are local
     // and trusted by construction, so they do not travel as messages.
@@ -131,7 +132,7 @@ where
 
             match out {
                 SlotOutput::ScheduleTimer(delta, timer) => {
-                    self.driver.schedule_slot_timer(delta, slot, timer);
+                    self.driver.schedule_slot_timer(now + delta, slot, timer);
                 }
                 SlotOutput::Broadcast(message) => {
                     self.driver.broadcast_slot(slot, message);
@@ -250,17 +251,21 @@ where
 {
     type DAEvent = S::DAEvent;
 
-    fn poll(&mut self) -> Option<NodeEvent<D::WireMsg>> {
-        self.driver.poll_node_event()
+    fn poll(&mut self) -> Option<Outbound<D::WireMsg>> {
+        self.driver.poll_outbound()
     }
 
     fn init(&mut self) {
         self.step();
     }
 
-    fn wake(&mut self, now: Timestamp, wake: WakeId) {
+    fn next_due(&self) -> Option<Timestamp> {
+        self.driver.next_due()
+    }
+
+    fn handle_due(&mut self, now: Timestamp) {
         self.advance_clock(now);
-        self.driver.handle_wake(wake);
+        self.driver.handle_due(now);
         self.step();
     }
 

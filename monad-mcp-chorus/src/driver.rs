@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 
 use alloy_rlp::{Decodable, Encodable, Header, encode_list, list_length};
 use bytes::Bytes;
@@ -21,7 +21,8 @@ use bytes::Bytes;
 use super::{
     conductor::Conductor,
     slot::SlotConsensus,
-    types::{NodeId, Slot, Timestamp, TimestampDelta, Validated},
+    timers::Timers,
+    types::{NodeId, Slot, Timestamp, Validated},
 };
 use crate::spec::{Deserializable, Serializable};
 
@@ -34,17 +35,18 @@ where
 {
     type WireMsg;
 
-    // translate CadenceEvent into NodeEvent
+    // translate consensus effects into Outbound and pending timers
     fn schedule_alarm(&mut self, at: Timestamp, alarm: C::Alarm);
     fn schedule_slot_deadline(&mut self, slot: Slot, deadline: Timestamp);
-    fn schedule_slot_timer(&mut self, delta: TimestampDelta, slot: Slot, timer: S::Timer);
+    fn schedule_slot_timer(&mut self, at: Timestamp, slot: Slot, timer: S::Timer);
     fn broadcast_slot(&mut self, slot: Slot, message: S::Message);
     fn unicast_slot(&mut self, slot: Slot, to: NodeId, message: S::Message);
     fn broadcast_conductor(&mut self, message: C::Message);
-    fn poll_node_event(&mut self) -> Option<NodeEvent<Self::WireMsg>>;
+    fn poll_outbound(&mut self) -> Option<Outbound<Self::WireMsg>>;
 
-    // translate NodeEvent into CadenceEvent
-    fn handle_wake(&mut self, wake: WakeId);
+    // translate node input and elapsed time into CadenceEvent
+    fn next_due(&self) -> Option<Timestamp>;
+    fn handle_due(&mut self, now: Timestamp);
     fn handle_message(&mut self, message: Validated<Self::WireMsg>);
     fn poll_cadence_event(
         &mut self,
@@ -59,25 +61,9 @@ pub enum CadenceEvent<Timer, Alarm, SMessage, CMessage> {
     SlotDeadline(Slot),
 }
 
-// An opaque token for a pending timer/alarm
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct WakeId(u64);
-
-impl WakeId {
-    pub(crate) const FIRST: Self = Self(0);
-
-    pub(crate) fn post_increment(&mut self) -> Self {
-        let id = *self;
-        self.0 = self.0.wrapping_add(1);
-        id
-    }
-}
-
-pub enum NodeEvent<M> {
-    Wake(Timestamp, WakeId),
-    WakeAfter(TimestampDelta, WakeId),
+pub enum Outbound<M> {
     Broadcast(M),
-    Unicast { to: NodeId, message: M },
+    Unicast(NodeId, M),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -97,10 +83,8 @@ where
     C: Conductor,
 {
     inbox: VecDeque<CadenceEvent<S::Timer, C::Alarm, S::Message, C::Message>>,
-    outbox: VecDeque<NodeEvent<CadenceMessage<S::Message, C::Message>>>,
-
-    wakes: HashMap<WakeId, PendingWake<S::Timer, C::Alarm>>,
-    next_wake: WakeId,
+    outbox: VecDeque<Outbound<CadenceMessage<S::Message, C::Message>>>,
+    timers: Timers<PendingWake<S::Timer, C::Alarm>>,
 }
 
 enum PendingWake<Timer, Alarm> {
@@ -118,19 +102,8 @@ where
         Self {
             inbox: VecDeque::new(),
             outbox: VecDeque::new(),
-            wakes: HashMap::new(),
-            next_wake: WakeId::FIRST,
+            timers: Timers::default(),
         }
-    }
-}
-
-impl<S, C> CadenceDriver<S, C>
-where
-    S: SlotConsensus,
-    C: Conductor,
-{
-    fn fresh_wake(&mut self) -> WakeId {
-        self.next_wake.post_increment()
     }
 }
 
@@ -142,57 +115,49 @@ where
     type WireMsg = CadenceMessage<S::Message, C::Message>;
 
     fn schedule_alarm(&mut self, at: Timestamp, alarm: C::Alarm) {
-        let id = self.fresh_wake();
-        self.wakes.insert(id, PendingWake::Alarm(alarm));
-        self.outbox.push_back(NodeEvent::Wake(at, id));
+        self.timers.schedule(at, PendingWake::Alarm(alarm));
     }
 
-    fn schedule_slot_timer(&mut self, delta: TimestampDelta, slot: Slot, timer: S::Timer) {
-        let id = self.fresh_wake();
-        self.wakes.insert(id, PendingWake::SlotTimer(slot, timer));
-        self.outbox.push_back(NodeEvent::WakeAfter(delta, id));
+    fn schedule_slot_timer(&mut self, at: Timestamp, slot: Slot, timer: S::Timer) {
+        self.timers
+            .schedule(at, PendingWake::SlotTimer(slot, timer));
     }
 
     fn schedule_slot_deadline(&mut self, slot: Slot, deadline: Timestamp) {
-        let id = self.fresh_wake();
-        self.wakes.insert(id, PendingWake::Deadline(slot));
-        self.outbox.push_back(NodeEvent::Wake(deadline, id));
+        self.timers.schedule(deadline, PendingWake::Deadline(slot));
     }
 
     fn broadcast_slot(&mut self, slot: Slot, message: S::Message) {
         self.outbox
-            .push_back(NodeEvent::Broadcast(CadenceMessage::Slot(slot, message)));
+            .push_back(Outbound::Broadcast(CadenceMessage::Slot(slot, message)));
     }
 
     fn unicast_slot(&mut self, slot: Slot, to: NodeId, message: S::Message) {
-        self.outbox.push_back(NodeEvent::Unicast {
-            to,
-            message: CadenceMessage::Slot(slot, message),
-        });
+        let message = CadenceMessage::Slot(slot, message);
+        self.outbox.push_back(Outbound::Unicast(to, message));
     }
 
     fn broadcast_conductor(&mut self, message: C::Message) {
         self.outbox
-            .push_back(NodeEvent::Broadcast(CadenceMessage::Conductor(message)))
+            .push_back(Outbound::Broadcast(CadenceMessage::Conductor(message)))
     }
 
-    fn poll_node_event(&mut self) -> Option<NodeEvent<Self::WireMsg>> {
+    fn poll_outbound(&mut self) -> Option<Outbound<Self::WireMsg>> {
         self.outbox.pop_front()
     }
 
-    fn handle_wake(&mut self, wake: WakeId) {
-        if let Some(pending) = self.wakes.remove(&wake) {
-            match pending {
-                PendingWake::Deadline(slot) => {
-                    self.inbox.push_back(CadenceEvent::SlotDeadline(slot));
-                }
-                PendingWake::Alarm(alarm) => {
-                    self.inbox.push_back(CadenceEvent::Alarm(alarm));
-                }
-                PendingWake::SlotTimer(slot, timer) => {
-                    self.inbox.push_back(CadenceEvent::SlotTimer(slot, timer));
-                }
-            }
+    fn next_due(&self) -> Option<Timestamp> {
+        self.timers.next_due()
+    }
+
+    fn handle_due(&mut self, now: Timestamp) {
+        while let Some(pending) = self.timers.pop_due(now) {
+            let event = match pending {
+                PendingWake::Deadline(slot) => CadenceEvent::SlotDeadline(slot),
+                PendingWake::Alarm(alarm) => CadenceEvent::Alarm(alarm),
+                PendingWake::SlotTimer(slot, timer) => CadenceEvent::SlotTimer(slot, timer),
+            };
+            self.inbox.push_back(event);
         }
     }
 

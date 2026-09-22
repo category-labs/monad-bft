@@ -13,16 +13,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::sync::{Arc, Mutex};
 
 use chorus::{
-    NodeEvent, Runtime, WakeId,
+    Outbound, Runtime,
     da::DataAvailability as _,
     proposing::ProposalPlanner,
-    types::{NodeId, Timestamp, TimestampDelta, Validated},
+    types::{NodeId, Timestamp, Validated},
 };
 // choose stub chorus for implementation
 use monad_mcp_chorus::stub as chorus;
@@ -45,10 +42,6 @@ type SimNet<M> = Net<NodeId, SimMessage<M>>;
 // Both chorus and monad-sim store time in nanoseconds.
 pub(crate) fn time_of(at: Timestamp) -> Time {
     Time(i128::try_from(at.as_nanos()).expect("chorus timestamp exceeds simulation time range"))
-}
-
-fn duration_of(delta: TimestampDelta) -> Duration {
-    delta.as_duration()
 }
 
 pub(crate) fn to_timestamp(time: Time) -> Timestamp {
@@ -81,6 +74,8 @@ pub struct SimNode<M, E> {
     id: NodeId,
     runtime: Box<dyn Runtime<M, DAEvent = E>>,
     proposer: Option<ProposerHarness<E>>,
+    /// The one live timer step, at the runtime's last polled `next_due`.
+    due_alarm: Option<(Time, CancelToken)>,
     me: Option<Handle<Self>>,
     net: Option<Handle<SimNet<M>>>,
 }
@@ -95,6 +90,7 @@ where
             id,
             runtime: Box::new(runtime),
             proposer: None,
+            due_alarm: None,
             me: None,
             net: None,
         }
@@ -116,9 +112,10 @@ where
         self.process(ctx);
     }
 
-    fn wake(&mut self, id: WakeId, ctx: &mut Ctx) {
+    fn handle_due(&mut self, ctx: &mut Ctx) {
+        self.due_alarm = None;
         let now = to_timestamp(ctx.now());
-        self.runtime.wake(now, id);
+        self.runtime.handle_due(now);
         self.process(ctx);
     }
 
@@ -144,6 +141,29 @@ where
             if !self.report_availability(ctx) {
                 break;
             }
+        }
+        self.arm_due_alarm(ctx);
+    }
+
+    // one step at next_due; a due already passed fires now. Every runtime
+    // input can move the due time, so re-arm after every process.
+    fn arm_due_alarm(&mut self, ctx: &mut Ctx) {
+        let me = self.me.expect("node not wired");
+        let at = self
+            .runtime
+            .next_due()
+            .map(|due| time_of(due).max(ctx.now()));
+        if self.due_alarm.as_ref().map(|(at, _)| *at) == at {
+            return;
+        }
+        if let Some((_, token)) = self.due_alarm.take() {
+            token.cancel();
+        }
+        if let Some(at) = at {
+            let token = ctx.schedule(me, at, StepLabel::source("due"), |node, ctx| {
+                node.handle_due(ctx)
+            });
+            self.due_alarm = Some((at, token));
         }
     }
 
@@ -229,24 +249,10 @@ where
         }
     }
 
-    fn interpret(&mut self, event: NodeEvent<M>, ctx: &mut Ctx) {
-        let me = self.me.expect("node not wired");
+    fn interpret(&mut self, event: Outbound<M>, ctx: &mut Ctx) {
         let now = ctx.now();
         match event {
-            NodeEvent::Wake(at, id) => {
-                // an alarm for a passed timestamp fires immediately
-                let at = time_of(at).max(now);
-                ctx.schedule(me, at, StepLabel::source("wake"), move |node, ctx| {
-                    node.wake(id, ctx)
-                });
-            }
-            NodeEvent::WakeAfter(delta, id) => {
-                let delta = duration_of(delta);
-                ctx.schedule_after(me, delta, StepLabel::source("wake"), move |node, ctx| {
-                    node.wake(id, ctx)
-                });
-            }
-            NodeEvent::Broadcast(message) => {
+            Outbound::Broadcast(message) => {
                 let from = self.id;
                 let net = self.net.expect("node not wired");
                 let message = SimMessage::Cadence(message);
@@ -254,7 +260,7 @@ where
                     net.broadcast(ctx, from, message)
                 });
             }
-            NodeEvent::Unicast { to, message } => {
+            Outbound::Unicast(to, message) => {
                 let from = self.id;
                 let net = self.net.expect("node not wired");
                 let message = SimMessage::Cadence(message);
