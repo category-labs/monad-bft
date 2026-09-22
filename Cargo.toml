@@ -232,6 +232,11 @@ zstd = "0.13"
 [profile.dev]
 opt-level = 1
 
+[profile.dev.package.reed-solomon-simd]
+opt-level = 3
+debug-assertions = false
+overflow-checks = false
+
 [profile.release]
 debug = true
 lto = "thin"
