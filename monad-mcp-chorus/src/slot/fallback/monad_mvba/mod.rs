@@ -248,6 +248,7 @@ where
         if self.abandoned || self.input.is_some() {
             return;
         }
+        tracing::debug!(slot = ?self.context.slot, fallback_cert = cert.is_some(), "entering fallback mvba");
 
         self.block_store.remember(data.clone());
         self.input = Some(ProposedInput {

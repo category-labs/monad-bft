@@ -368,7 +368,6 @@ impl SlotConsensus for Chorus {
                 if self.fast.enter_fallback_cert_is_valid(&cert) {
                     match self.fast.try_build_fallback_block() {
                         Some(block) => {
-                            tracing::debug!(slot = ?self.slot, "entering fallback mvba on peer certificate");
                             self.enter_fallback(Some(cert), block);
                         }
                         None => {
@@ -460,7 +459,6 @@ impl SlotConsensus for Chorus {
                     self.schedule_timer(self.delta, TimerEvent::FallbackDecisionDelayElapsed);
                 }
                 Some((cert, block)) => {
-                    tracing::debug!(slot = ?self.slot, fast = cert.is_none(), "entering fallback mvba");
                     // we formed the fallback certificate locally; disseminate
                     // it so lagging validators can enter without re-deriving it.
                     if let Some(cert) = &cert {
