@@ -5749,6 +5749,8 @@ dependencies = [
  "bytes",
  "monad-mcp-chorus",
  "monad-mcp-da",
+ "monad-sim",
+ "monad-sim-swarm",
  "rand 0.8.5",
  "serde",
  "tokio",

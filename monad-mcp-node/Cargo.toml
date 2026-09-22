@@ -18,3 +18,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 monad-mcp-chorus = { workspace = true }
 monad-mcp-da = { workspace = true }
+
+[dev-dependencies]
+monad-sim = { workspace = true }
+monad-sim-swarm = { workspace = true }

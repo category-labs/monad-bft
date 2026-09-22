@@ -106,6 +106,12 @@ impl StepLabel {
     }
 }
 
+impl From<&'static str> for StepLabel {
+    fn from(source: &'static str) -> Self {
+        Self::source(source)
+    }
+}
+
 /// Description of an executed step, passed to the observer and available for
 /// run-control predicates.
 #[derive(Clone, Debug)]
@@ -375,7 +381,7 @@ impl Simulation {
         &mut self,
         who: Handle<S>,
         at: Time,
-        label: StepLabel,
+        label: impl Into<StepLabel>,
         step: impl FnOnce(&mut S, &mut Ctx<'_>) + 'static,
     ) -> CancelToken {
         enqueue(
@@ -388,7 +394,7 @@ impl Simulation {
             0,
             who.id,
             at,
-            label,
+            label.into(),
             step,
         )
     }
@@ -398,7 +404,7 @@ impl Simulation {
         &mut self,
         who: Handle<S>,
         delay: Duration,
-        label: StepLabel,
+        label: impl Into<StepLabel>,
         step: impl FnOnce(&mut S, &mut Ctx<'_>) + 'static,
     ) -> CancelToken {
         self.schedule(who, self.now + delay, label, step)
