@@ -90,4 +90,8 @@ where
     fn total_db_lookups(&self) -> u64 {
         0
     }
+
+    fn node_cache_stats_source(&self) -> Option<std::sync::Arc<dyn crate::NodeCacheStatsSource>> {
+        None
+    }
 }
