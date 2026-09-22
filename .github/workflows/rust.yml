@@ -85,7 +85,7 @@ jobs:
         uses: cargo-bins/cargo-binstall@v1.15.7
 
       - name: Install tools
-        run: cargo binstall --no-confirm cargo-shear cargo-sort
+        run: cargo binstall --no-confirm cargo-nextest cargo-shear cargo-sort
 
       - name: Verify lockfile
         run: cargo update --workspace --locked
@@ -132,7 +132,7 @@ jobs:
 
       - name: Run tests
         run: |
-          cargo test --release --all-targets --all-features
+          cargo nextest run --release --all-targets --all-features
 
       - name: Add WASM target
         run: rustup target add wasm32-unknown-unknown
