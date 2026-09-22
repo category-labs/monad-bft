@@ -405,17 +405,9 @@ impl SlotConsensus for Chorus {
 
     fn handle_timer(&mut self, event: Self::Timer) {
         match event {
+            // D+delta, or every delta if there is not enough votes yet
             TimerEvent::FallbackTransitionTimeout => {
-                self.schedule_timer(self.delta, TimerEvent::FallbackDecisionDelayElapsed);
-
                 match self.fast.on_commit_vote_deadline() {
-                    CommitVoteDeadlineOutcome::AlreadyVoted => {
-                        tracing::debug!(
-                            slot = ?self.slot,
-                            commit_voters = self.fast.commit_voter_count(),
-                            "D+delta: fast commit vote already cast, awaiting commit qc"
-                        );
-                    }
                     CommitVoteDeadlineOutcome::NotEnoughVotes => {
                         self.transition_waits += 1;
                         if self.transition_waits.is_power_of_two() {
@@ -431,14 +423,28 @@ impl SlotConsensus for Chorus {
                         // not enough valid votes, wait for more votes to arrive
                         self.schedule_timer(self.delta, TimerEvent::FallbackTransitionTimeout);
                     }
+
+                    CommitVoteDeadlineOutcome::AlreadyVoted => {
+                        tracing::debug!(
+                            slot = ?self.slot,
+                            commit_voters = self.fast.commit_voter_count(),
+                            "D+delta: fast commit vote already cast, awaiting commit qc"
+                        );
+                        self.schedule_timer(self.delta, TimerEvent::FallbackDecisionDelayElapsed);
+                    }
+
                     CommitVoteDeadlineOutcome::FallbackVote(fallback_vote) => {
                         tracing::debug!(slot = ?self.slot, "no fast block by D+delta, fallback vote cast");
                         self.broadcast(fallback_vote);
+                        self.schedule_timer(self.delta, TimerEvent::FallbackDecisionDelayElapsed);
                     }
                 }
             }
+
+            // D+2delta, and every delta if enter fallback cert is not formed yet
             TimerEvent::FallbackDecisionDelayElapsed => match self.fast.on_fallback_deadline() {
                 None => {
+                    // no EnterFallbackCert yet, wait for more votes to arrive
                     self.fallback_waits += 1;
                     if self.fallback_waits.is_power_of_two() {
                         let (voters, uncertified) = self.fast.fallback_wait_state();
@@ -450,9 +456,8 @@ impl SlotConsensus for Chorus {
                             "fallback entry blocked, waiting for evidence"
                         );
                     }
-                    // not enough evidence yet, wait for more messages to arrive
-                    self.schedule_timer(self.delta, TimerEvent::FallbackDecisionDelayElapsed);
                     // todo: maybe rebroadcast fallback vote?
+                    self.schedule_timer(self.delta, TimerEvent::FallbackDecisionDelayElapsed);
                 }
                 Some((cert, block)) => {
                     tracing::debug!(slot = ?self.slot, fast = cert.is_none(), "entering fallback mvba");
@@ -770,5 +775,74 @@ mod tests {
             }
         }
         assert_eq!(order, ["pull", "finalize"]);
+    }
+
+    fn scheduled_timers(chorus: &mut Chorus) -> Vec<TimerEvent> {
+        let mut timers = Vec::new();
+        while let Some(output) = chorus.poll() {
+            if let SlotOutput::ScheduleTimer(_, timer) = output {
+                timers.push(timer);
+            }
+        }
+        timers
+    }
+
+    // a D+delta fire short of votes re-arms only itself; the fire that
+    // settles D+delta arms D+2delta, once
+    #[test]
+    fn a_delayed_transition_arms_the_decision_timer_once() {
+        use super::super::types::ProposerSchedule as _;
+
+        let config = ChorusConfig {
+            delta: TimestampDelta::from_millis(100),
+        };
+        let validator_data = Arc::new(validator_data(4));
+        let header_auth = Arc::new(HeaderAuth::new(|_, _| None));
+        let proposers = Arc::new(FixedProposerSchedule::new(vec![NodeId::dummy(0)]));
+        let context = ChorusContext {
+            node_id: NodeId::dummy(0),
+            key: Arc::new(NodeId::dummy(0).keypair()),
+            validator_data: validator_data.clone(),
+            header_auth: header_auth.clone(),
+            proposers: proposers.clone(),
+        };
+        let mut chorus = Chorus::new(Slot(1), &config, &context);
+
+        chorus.handle_deadline();
+        assert_eq!(
+            scheduled_timers(&mut chorus),
+            vec![TimerEvent::FallbackTransitionTimeout]
+        );
+
+        for _ in 0..3 {
+            chorus.handle_timer(TimerEvent::FallbackTransitionTimeout);
+        }
+        assert_eq!(
+            scheduled_timers(&mut chorus),
+            vec![TimerEvent::FallbackTransitionTimeout; 3]
+        );
+
+        // three all-negative votes form a fast block, so the next fire
+        // finds the commit vote already cast
+        let proposer_set = proposers
+            .proposers_at(Slot(1))
+            .expect("fixed schedule covers every slot");
+        for id in 1..4 {
+            let voter = NodeId::dummy(id);
+            let mut fast = FastPath::new(
+                Slot(1),
+                proposer_set.clone(),
+                Arc::new(voter.keypair()),
+                validator_data.clone(),
+                header_auth.clone(),
+            );
+            let vote = fast.on_deadline().expect("the first deadline casts a vote");
+            chorus.handle_message(voter, ChorusMessage::BatchVote(vote));
+        }
+        chorus.handle_timer(TimerEvent::FallbackTransitionTimeout);
+        assert_eq!(
+            scheduled_timers(&mut chorus),
+            vec![TimerEvent::FallbackDecisionDelayElapsed]
+        );
     }
 }
