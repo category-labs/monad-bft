@@ -57,6 +57,7 @@ fn config(i: u64, nodes: u64, genesis_deadline: Timestamp) -> NodeConfig {
         cadence: Default::default(),
         da: Default::default(),
         proposal: Default::default(),
+        repeater: None,
     }
 }
 

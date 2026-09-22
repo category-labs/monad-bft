@@ -20,8 +20,7 @@ use std::{
 };
 
 use chorus::{
-    CadenceRuntime, Conductor, FinalizationObserver, RepeaterConfig, Runtime, SlotConsensus,
-    SlotManager,
+    CadenceRuntime, Conductor, FinalizationObserver, Runtime, SlotConsensus, SlotManager,
     proposing::ProposalPlanner,
     slot::chorus::{ChorusDAEvent, ProposalDAEvent},
     types::{NodeId, Slot, Timestamp},
@@ -40,7 +39,6 @@ pub struct CadenceSwarmBuilder<M, E> {
     network: Network<NodeId, SimMessage<M>>,
     nodes: Vec<(NodeId, SimNode<M, E>)>,
     track_logs: bool,
-    repeater: Option<RepeaterConfig>,
     log: FinalizationLog,
 }
 
@@ -51,7 +49,6 @@ impl<M, E> CadenceSwarmBuilder<M, E> {
             network: Network::default(),
             nodes: Vec::new(),
             track_logs: true,
-            repeater: None,
             log: FinalizationLog::new(),
         }
     }
@@ -72,10 +69,6 @@ impl<M, E> CadenceSwarmBuilder<M, E> {
         self.track_logs = track;
     }
 
-    pub fn set_repeater(&mut self, config: RepeaterConfig) {
-        self.repeater = Some(config);
-    }
-
     pub fn add_node<S, C>(
         &mut self,
         id: NodeId,
@@ -94,9 +87,6 @@ impl<M, E> CadenceSwarmBuilder<M, E> {
 
         if self.track_logs {
             runtime.on_finalization(self.log.allocate(id));
-        }
-        if let Some(config) = self.repeater {
-            runtime = runtime.with_repeater(config);
         }
 
         self.add_generic_node(id, runtime);
@@ -161,9 +151,6 @@ impl<M> CadenceSwarmBuilder<M, ChorusDAEvent> {
             runtime.on_finalization((self.log.allocate(id), (facts, observer)));
         } else {
             runtime.on_finalization((facts, observer));
-        }
-        if let Some(config) = self.repeater {
-            runtime = runtime.with_repeater(config);
         }
 
         // The mock layer makes a proposal available as a whole, so one

@@ -24,12 +24,12 @@ slots_per_window = 10
 sync_boundary_slots = 8
 
 # absent: outbound slot messages are never re-sent
-# [cadence.repeater]
+# [repeater]
 # interval = 5000
-# certificate_retention = 10
+# certificate_retention = 50
 
 [da]
-completed_slot_retention = 2
+completed_slot_retention = 50
 
 [proposal]
 num_proposals = 5

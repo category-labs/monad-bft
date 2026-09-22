@@ -12,7 +12,7 @@ num_proposals=5
 propose_before=500
 completed_slot_retention=50
 repeater_interval=5000
-repeater_retention=5
+repeater_retention=50
 withhold_before=0
 
 usage="usage: gen-config.sh --genesis <unix_ms> [--port n] [--delta ms] [--slot-interval ms] [--slots-per-window n] [--sync-boundary n] [--num-proposals n] [--propose-before ms] [--repeater-interval ms] [--repeater-retention n] [--withhold-before ms]"
@@ -81,7 +81,7 @@ for host in $(hosts); do
         echo "slots_per_window = $slots_per_window"
         echo "sync_boundary_slots = $sync_boundary"
         echo
-        echo "[cadence.repeater]"
+        echo "[repeater]"
         echo "interval = $repeater_interval"
         echo "certificate_retention = $repeater_retention"
         echo

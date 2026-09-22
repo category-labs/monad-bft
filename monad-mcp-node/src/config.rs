@@ -19,7 +19,6 @@ use serde::Deserialize;
 
 use crate::{
     chorus::{
-        RepeaterConfig,
         conductor::{ConductorConfig, ConductorError},
         proposing::PlannerConfig,
         slot::chorus::ChorusConfig,
@@ -31,6 +30,7 @@ use crate::{
     },
     da::{self, ProposalKeyPair, header_auth},
     epoch::{EpochHandle, NodeProposerSchedule},
+    repeater::RepeaterConfig,
 };
 
 #[derive(Deserialize)]
@@ -53,9 +53,18 @@ pub struct NodeConfig {
     pub da: DAConfig,
     #[serde(default)]
     pub proposal: ProposalConfig,
+    // Absent table: outbound slot messages are never re-sent.
+    pub repeater: Option<RepeaterSection>,
 }
 
 impl NodeConfig {
+    pub fn repeater(&self) -> Option<RepeaterConfig> {
+        self.repeater.map(|section| RepeaterConfig {
+            interval: section.interval,
+            certificate_retention: section.certificate_retention,
+        })
+    }
+
     pub fn epoch_handle(&self) -> Result<EpochHandle, ScheduleError> {
         let validator_data = Arc::new(self.validator_data());
         let proposers = Arc::new(self.proposal.schedule(validator_data.clone())?);
@@ -119,8 +128,6 @@ pub struct CadenceConfig {
     // How far a peer's announced cap must lead the local one before it is
     // trusted as a jump; one window by default.
     pub lag_threshold: NonZeroU64,
-    // Absent table: outbound slot messages are never re-sent.
-    pub repeater: Option<RepeaterSection>,
 }
 
 impl Default for CadenceConfig {
@@ -132,7 +139,6 @@ impl Default for CadenceConfig {
             slots_per_window: NonZeroU64::new(100).expect("nonzero"),
             sync_boundary_slots: NonZeroU64::new(80).expect("nonzero"),
             lag_threshold: NonZeroU64::new(20).expect("nonzero"),
-            repeater: None,
         }
     }
 }
@@ -154,13 +160,6 @@ impl CadenceConfig {
     pub fn chorus(&self) -> ChorusConfig {
         ChorusConfig { delta: self.delta }
     }
-
-    pub fn repeater(&self) -> Option<RepeaterConfig> {
-        self.repeater.map(|section| RepeaterConfig {
-            interval: section.interval,
-            certificate_retention: section.certificate_retention,
-        })
-    }
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -176,7 +175,7 @@ impl Default for RepeaterSection {
         Self {
             interval: TimestampDelta::from_millis(5_000),
             // matches the DA layer's completed_slot_retention
-            certificate_retention: 2,
+            certificate_retention: 50,
         }
     }
 }
@@ -190,7 +189,7 @@ pub struct DAConfig {
 impl Default for DAConfig {
     fn default() -> Self {
         Self {
-            completed_slot_retention: 2,
+            completed_slot_retention: 50,
         }
     }
 }
@@ -329,15 +328,20 @@ mod tests {
         }
     }
 
-    // an absent [cadence.repeater] table leaves the runtime without a
-    // repeater; a present one overrides the defaults field by field
+    // an absent [repeater] table leaves the node without a repeater; a
+    // present one overrides the defaults field by field
     #[test]
     fn the_repeater_table_is_optional() {
-        let without: CadenceConfig = toml::from_str("delta = 150").unwrap();
-        assert!(without.repeater().is_none());
+        #[derive(Deserialize)]
+        struct Top {
+            repeater: Option<RepeaterSection>,
+        }
 
-        let with: CadenceConfig = toml::from_str("[repeater]\ninterval = 1000").unwrap();
-        let repeater = with.repeater().expect("the table is present");
+        let without: Top = toml::from_str("").unwrap();
+        assert!(without.repeater.is_none());
+
+        let with: Top = toml::from_str("[repeater]\ninterval = 1000").unwrap();
+        let repeater = with.repeater.expect("the table is present");
         assert_eq!(repeater.interval, TimestampDelta::from_millis(1_000));
         assert_eq!(
             repeater.certificate_retention,

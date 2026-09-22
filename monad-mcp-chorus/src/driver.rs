@@ -38,7 +38,6 @@ where
     fn schedule_alarm(&mut self, at: Timestamp, alarm: C::Alarm);
     fn schedule_slot_deadline(&mut self, slot: Slot, deadline: Timestamp);
     fn schedule_slot_timer(&mut self, delta: TimestampDelta, slot: Slot, timer: S::Timer);
-    fn schedule_repeater(&mut self, delta: TimestampDelta);
     fn broadcast_slot(&mut self, slot: Slot, message: S::Message);
     fn unicast_slot(&mut self, slot: Slot, to: NodeId, message: S::Message);
     fn broadcast_conductor(&mut self, message: C::Message);
@@ -58,7 +57,6 @@ pub enum CadenceEvent<Timer, Alarm, SMessage, CMessage> {
     ConductorMessage(Validated<CMessage>),
     SlotMessage(Validated<(Slot, SMessage)>),
     SlotDeadline(Slot),
-    RepeaterTick,
 }
 
 // An opaque token for a pending timer/alarm
@@ -109,7 +107,6 @@ enum PendingWake<Timer, Alarm> {
     Deadline(Slot),
     SlotTimer(Slot, Timer),
     Alarm(Alarm),
-    Repeater,
 }
 
 impl<S, C> Default for CadenceDriver<S, C>
@@ -156,12 +153,6 @@ where
         self.outbox.push_back(NodeEvent::WakeAfter(delta, id));
     }
 
-    fn schedule_repeater(&mut self, delta: TimestampDelta) {
-        let id = self.fresh_wake();
-        self.wakes.insert(id, PendingWake::Repeater);
-        self.outbox.push_back(NodeEvent::WakeAfter(delta, id));
-    }
-
     fn schedule_slot_deadline(&mut self, slot: Slot, deadline: Timestamp) {
         let id = self.fresh_wake();
         self.wakes.insert(id, PendingWake::Deadline(slot));
@@ -200,9 +191,6 @@ where
                 }
                 PendingWake::SlotTimer(slot, timer) => {
                     self.inbox.push_back(CadenceEvent::SlotTimer(slot, timer));
-                }
-                PendingWake::Repeater => {
-                    self.inbox.push_back(CadenceEvent::RepeaterTick);
                 }
             }
         }

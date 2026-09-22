@@ -26,7 +26,7 @@ pub trait SlotConsensus: Sized {
     type Config: Clone;
     type Context;
 
-    type Message: Clone + PartialEq;
+    type Message: Clone;
     type Timer: PartialEq + Eq + std::hash::Hash + Clone;
     type OptimisticCommitData: Clone;
     type FinalizationData: Clone;
@@ -53,12 +53,6 @@ pub trait SlotConsensus: Sized {
 
     /// Poll for output actions to be taken by the conductor.
     fn poll(&mut self) -> Option<SlotOutput<Self>>;
-
-    /// The message that carries a slot's finalization certificate, if the
-    /// protocol has one worth re-sending. Default: none.
-    fn certificate_message(_data: &Self::FinalizationData) -> Option<Self::Message> {
-        None
-    }
 }
 
 #[derive(Clone)]

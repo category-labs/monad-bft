@@ -18,7 +18,6 @@ use std::collections::BTreeMap;
 use super::{
     conductor::{Conductor, ConductorOutput},
     driver::{CadenceDriver, CadenceEvent, Driver, NodeEvent, WakeId},
-    repeater::{Recipients, Repeater, RepeaterConfig},
     slot::{SlotConsensus, SlotOutput},
     slot_manager::SlotManager,
     types::{Slot, Timestamp, Validated},
@@ -55,7 +54,6 @@ where
     driver: D,
     observer: Option<Box<ObserverOf<S>>>,
     da_sink: Option<Box<DASinkOf<S>>>,
-    repeater: Option<Repeater<S>>,
 }
 
 type ObserverOf<S> = dyn FinalizationObserver<
@@ -78,7 +76,6 @@ where
             driver: CadenceDriver::default(),
             observer: None,
             da_sink: None,
-            repeater: None,
         }
     }
 
@@ -92,7 +89,6 @@ where
             conductor: self.conductor,
             observer: self.observer,
             da_sink: self.da_sink,
-            repeater: self.repeater,
             driver,
         }
     }
@@ -111,11 +107,6 @@ where
         + 'static,
     ) {
         self.observer = Some(Box::new(observer));
-    }
-
-    pub fn with_repeater(mut self, config: RepeaterConfig) -> Self {
-        self.repeater = Some(Repeater::new(config));
-        self
     }
 
     pub fn on_da(&mut self, sink: impl DASink<S::DACommand> + Send + 'static) {
@@ -143,15 +134,9 @@ where
                     self.driver.schedule_slot_timer(delta, slot, timer);
                 }
                 SlotOutput::Broadcast(message) => {
-                    if let Some(repeater) = &mut self.repeater {
-                        repeater.record(now, slot, Recipients::Everyone, &message);
-                    }
                     self.driver.broadcast_slot(slot, message);
                 }
                 SlotOutput::Unicast { to, message } => {
-                    if let Some(repeater) = &mut self.repeater {
-                        repeater.record(now, slot, Recipients::Node(to), &message);
-                    }
                     self.driver.unicast_slot(slot, to, message);
                 }
                 SlotOutput::DA(action) => {
@@ -165,9 +150,6 @@ where
                     }
                 }
                 SlotOutput::Finalize(data) => {
-                    if let Some(repeater) = &mut self.repeater {
-                        repeater.handle_finalization(slot, &data);
-                    }
                     if let Some(observer) = &mut self.observer {
                         observer.handle_finalization(now, slot, &data);
                     }
@@ -179,9 +161,6 @@ where
                 }
                 SlotOutput::Fault { reason } => {
                     tracing::warn!(?slot, reason = %reason, "slot faulted");
-                    if let Some(repeater) = &mut self.repeater {
-                        repeater.handle_completed(slot);
-                    }
                     if let Some(sink) = &mut self.da_sink {
                         sink.handle_lifecycle(slot, SlotLifecycle::Completed);
                     }
@@ -203,9 +182,6 @@ where
                 }
                 ConductorOutput::CloseSlots { cap } => {
                     self.slot_manager.advance_cap(cap);
-                    if let Some(repeater) = &mut self.repeater {
-                        repeater.handle_cap_advance(cap);
-                    }
                     if let Some(observer) = &mut self.observer {
                         observer.handle_chain_advance(now, cap);
                     }
@@ -250,21 +226,6 @@ where
                         tracing::debug!(?slot, "timer for a slot without instance");
                     }
                 }
-                CadenceEvent::RepeaterTick => {
-                    let repeats = self
-                        .repeater
-                        .as_mut()
-                        .map(|repeater| (repeater.interval(), repeater.due(now)));
-                    if let Some((interval, due)) = repeats {
-                        for (to, slot, message) in due {
-                            match to {
-                                Recipients::Everyone => self.driver.broadcast_slot(slot, message),
-                                Recipients::Node(to) => self.driver.unicast_slot(slot, to, message),
-                            }
-                        }
-                        self.driver.schedule_repeater(interval);
-                    }
-                }
                 CadenceEvent::SlotMessage(message) => {
                     let ((slot, message), author) = message.destructure();
                     if let Some(instance) = self.slot_manager.slot_instance(slot) {
@@ -294,10 +255,6 @@ where
     }
 
     fn init(&mut self) {
-        if let Some(repeater) = &self.repeater {
-            let interval = repeater.interval();
-            self.driver.schedule_repeater(interval);
-        }
         self.step();
     }
 
@@ -392,143 +349,5 @@ where
     fn handle_chain_advance(&mut self, now: Timestamp, cap: Slot) {
         self.0.handle_chain_advance(now, cap);
         self.1.handle_chain_advance(now, cap);
-    }
-}
-
-#[cfg(test)]
-mod repeater_tests {
-    use std::sync::Arc;
-
-    use super::{
-        super::{
-            conductor::dummy::DummyConductor,
-            repeater::RepeaterConfig,
-            slot::dummy::{DummySlotConsensus, DummySlotConsensusConfig},
-            types::{NodeId, TimestampDelta},
-        },
-        *,
-    };
-
-    const SLOT_INTERVAL: TimestampDelta = TimestampDelta::from_millis(100);
-    const DEADLINE_OFFSET: TimestampDelta = TimestampDelta::from_millis(30);
-    // no multiple of it lands on a slot deadline (30 + 100k) or on the
-    // window alarm (500), so a tick never shares a wake time with them
-    const INTERVAL: TimestampDelta = TimestampDelta::from_millis(220);
-
-    type TestRuntime = CadenceRuntime<DummySlotConsensus, DummyConductor>;
-
-    fn runtime() -> TestRuntime {
-        let key = Arc::new(NodeId::dummy(0).keypair());
-        // a quorum no vote pool ever reaches: the slot stays undecided
-        let slot_manager = SlotManager::new(DummySlotConsensusConfig { quorum: 4 }, key);
-        let conductor = DummyConductor::new(SLOT_INTERVAL, 5).set_deadline_offset(DEADLINE_OFFSET);
-        CadenceRuntime::new(slot_manager, conductor)
-    }
-
-    fn repeater_config() -> RepeaterConfig {
-        RepeaterConfig {
-            interval: INTERVAL,
-            certificate_retention: 2,
-        }
-    }
-
-    // The node side of the runtime: pending wakes at their absolute due
-    // time, and the broadcasts seen since the last check.
-    struct Node {
-        now: Timestamp,
-        wakes: Vec<(Timestamp, WakeId)>,
-        broadcasts: usize,
-    }
-
-    impl Node {
-        fn start(runtime: &mut TestRuntime) -> Self {
-            let mut node = Self {
-                now: Timestamp::GENESIS,
-                wakes: Vec::new(),
-                broadcasts: 0,
-            };
-            runtime.init();
-            node.drain(runtime);
-            node
-        }
-
-        fn drain(&mut self, runtime: &mut TestRuntime) {
-            while let Some(event) = runtime.poll() {
-                match event {
-                    NodeEvent::Wake(at, id) => self.wakes.push((at, id)),
-                    NodeEvent::WakeAfter(delta, id) => self.wakes.push((self.now + delta, id)),
-                    NodeEvent::Broadcast(_) => self.broadcasts += 1,
-                    NodeEvent::Unicast { .. } => panic!("the dummy consensus does not unicast"),
-                }
-            }
-        }
-
-        // fire the single wake due at `at`
-        fn fire(&mut self, runtime: &mut TestRuntime, at: Timestamp) {
-            let due: Vec<_> = self
-                .wakes
-                .iter()
-                .enumerate()
-                .filter(|(_, (when, _))| *when == at)
-                .map(|(index, _)| index)
-                .collect();
-            let [index] = due[..] else {
-                panic!("expected exactly one wake at {at:?}, found {}", due.len());
-            };
-            let (_, id) = self.wakes.remove(index);
-            self.now = at;
-            runtime.wake(at, id);
-            self.drain(runtime);
-        }
-
-        fn take_broadcasts(&mut self) -> usize {
-            std::mem::replace(&mut self.broadcasts, 0)
-        }
-    }
-
-    #[test]
-    fn a_repeater_tick_re_sends_an_undecided_slots_broadcast() {
-        let mut runtime = runtime().with_repeater(repeater_config());
-        let mut node = Node::start(&mut runtime);
-
-        // the conductor's genesis alarm opens the first window
-        node.fire(&mut runtime, Timestamp::GENESIS);
-        assert_eq!(node.take_broadcasts(), 0);
-
-        // slot 0's deadline: the dummy consensus broadcasts its vote
-        let vote_at = Timestamp::GENESIS + DEADLINE_OFFSET;
-        node.fire(&mut runtime, vote_at);
-        assert_eq!(node.take_broadcasts(), 1);
-
-        // the first tick comes 190ms after the vote: too young to repeat
-        node.fire(&mut runtime, Timestamp::GENESIS + INTERVAL);
-        assert_eq!(node.take_broadcasts(), 0);
-
-        // the second tick comes 410ms after it
-        node.fire(&mut runtime, Timestamp::GENESIS + INTERVAL + INTERVAL);
-        assert_eq!(node.take_broadcasts(), 1);
-    }
-
-    #[test]
-    fn without_a_repeater_no_tick_is_ever_armed() {
-        let mut runtime = runtime();
-        let mut node = Node::start(&mut runtime);
-
-        // only the conductor's genesis alarm
-        assert_eq!(node.wakes, vec![(Timestamp::GENESIS, WakeId::FIRST)]);
-
-        node.fire(&mut runtime, Timestamp::GENESIS);
-        let vote_at = Timestamp::GENESIS + DEADLINE_OFFSET;
-        node.fire(&mut runtime, vote_at);
-        assert_eq!(node.take_broadcasts(), 1);
-
-        // no wake is left that a tick could hide behind: deadlines and the
-        // next window alarm only
-        let deadlines = (1..5).map(|i| vote_at + SLOT_INTERVAL.checked_mul(i).unwrap());
-        let alarm = Timestamp::GENESIS + SLOT_INTERVAL.checked_mul(5).unwrap();
-        let expected: Vec<Timestamp> = deadlines.chain([alarm]).collect();
-        let mut pending: Vec<Timestamp> = node.wakes.iter().map(|(at, _)| *at).collect();
-        pending.sort();
-        assert_eq!(pending, expected);
     }
 }

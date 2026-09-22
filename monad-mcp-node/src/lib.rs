@@ -22,6 +22,7 @@ mod logging;
 mod network;
 mod node;
 mod proposing_task;
+mod repeater;
 
 use std::error::Error;
 

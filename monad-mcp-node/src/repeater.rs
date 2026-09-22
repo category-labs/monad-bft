@@ -19,10 +19,7 @@
 
 use std::collections::BTreeMap;
 
-use super::{
-    slot::SlotConsensus,
-    types::{NodeId, Slot, Timestamp, TimestampDelta},
-};
+use crate::chorus::types::{NodeId, Slot, Timestamp, TimestampDelta};
 
 #[derive(Clone, Copy)]
 pub struct RepeaterConfig {
@@ -55,19 +52,13 @@ struct Certificate<M> {
     repeated: bool,
 }
 
-pub struct Repeater<S>
-where
-    S: SlotConsensus,
-{
+pub struct Repeater<M> {
     config: RepeaterConfig,
-    undecided: BTreeMap<Slot, Undecided<S::Message>>,
-    finalized: BTreeMap<Slot, Certificate<S::Message>>,
+    undecided: BTreeMap<Slot, Undecided<M>>,
+    finalized: BTreeMap<Slot, Certificate<M>>,
 }
 
-impl<S> Repeater<S>
-where
-    S: SlotConsensus,
-{
+impl<M> Repeater<M> {
     pub fn new(config: RepeaterConfig) -> Self {
         Self {
             config,
@@ -82,7 +73,10 @@ where
 
     /// Remember an outbound message of an undecided slot. Repeats are
     /// emitted past this point, so they are never recorded again.
-    pub fn record(&mut self, now: Timestamp, slot: Slot, to: Recipients, message: &S::Message) {
+    pub fn record(&mut self, now: Timestamp, slot: Slot, to: Recipients, message: &M)
+    where
+        M: Clone + PartialEq,
+    {
         if self.finalized.contains_key(&slot) {
             return;
         }
@@ -100,17 +94,13 @@ where
         }
     }
 
-    pub fn handle_finalization(&mut self, slot: Slot, data: &S::FinalizationData) {
+    pub fn handle_finalization(&mut self, slot: Slot, certificate: M) {
         self.undecided.remove(&slot);
-        if let Some(message) = S::certificate_message(data) {
-            self.finalized.insert(
-                slot,
-                Certificate {
-                    message,
-                    repeated: false,
-                },
-            );
-        }
+        let certificate = Certificate {
+            message: certificate,
+            repeated: false,
+        };
+        self.finalized.insert(slot, certificate);
     }
 
     /// A slot that ended without finalizing has nothing worth repeating.
@@ -135,7 +125,10 @@ where
     /// The repeats owed at `now`: every recorded message of a slot whose
     /// first send is at least `interval` old, plus every retained
     /// certificate.
-    pub fn due(&mut self, now: Timestamp) -> Vec<(Recipients, Slot, S::Message)> {
+    pub fn due(&mut self, now: Timestamp) -> Vec<(Recipients, Slot, M)>
+    where
+        M: Clone,
+    {
         let mut due = Vec::new();
 
         for (slot, undecided) in &self.undecided {
@@ -164,44 +157,11 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{super::slot::SlotOutput, *};
+    use super::*;
 
     const INTERVAL: TimestampDelta = TimestampDelta::from_millis(5_000);
 
-    // A slot consensus whose finalization data is the certificate message
-    // itself, so both the Some and the None case are reachable.
-    struct TestConsensus;
-
-    impl SlotConsensus for TestConsensus {
-        type Config = ();
-        type Context = ();
-        type Message = u64;
-        type Timer = ();
-        type OptimisticCommitData = ();
-        type FinalizationData = Option<u64>;
-        type DAEvent = ();
-        type DACommand = ();
-
-        fn new(_slot: Slot, _config: &(), _context: &()) -> Self {
-            Self
-        }
-
-        fn handle_deadline(&mut self) {}
-
-        fn handle_message(&mut self, _sender: NodeId, _message: u64) {}
-
-        fn handle_timer(&mut self, _timer: ()) {}
-
-        fn poll(&mut self) -> Option<SlotOutput<Self>> {
-            None
-        }
-
-        fn certificate_message(data: &Option<u64>) -> Option<u64> {
-            *data
-        }
-    }
-
-    fn repeater(certificate_retention: u64) -> Repeater<TestConsensus> {
+    fn repeater(certificate_retention: u64) -> Repeater<u64> {
         Repeater::new(RepeaterConfig {
             interval: INTERVAL,
             certificate_retention,
@@ -234,7 +194,7 @@ mod tests {
     fn finalization_drops_the_undecided_messages_and_keeps_the_certificate() {
         let mut repeater = repeater(2);
         repeater.record(at(0), Slot(1), Recipients::Everyone, &7);
-        repeater.handle_finalization(Slot(1), &Some(42));
+        repeater.handle_finalization(Slot(1), 42);
 
         assert_eq!(
             repeater.due(at(5_000)),
@@ -246,15 +206,6 @@ mod tests {
             repeater.due(at(20_000)),
             vec![(Recipients::Everyone, Slot(1), 42)]
         );
-    }
-
-    #[test]
-    fn a_protocol_without_a_certificate_keeps_nothing() {
-        let mut repeater = repeater(2);
-        repeater.record(at(0), Slot(1), Recipients::Everyone, &7);
-        repeater.handle_finalization(Slot(1), &None);
-
-        assert!(repeater.due(at(5_000)).is_empty());
     }
 
     #[test]
@@ -273,7 +224,7 @@ mod tests {
             repeater.record(at(0), Slot(slot), Recipients::Everyone, &slot);
         }
         for slot in 0..3 {
-            repeater.handle_finalization(Slot(slot), &Some(100 + slot));
+            repeater.handle_finalization(Slot(slot), 100 + slot);
         }
         // a tick, so every certificate is past its guaranteed repeat
         repeater.due(at(5_000));
@@ -299,7 +250,7 @@ mod tests {
     #[test]
     fn a_certificate_no_tick_has_sent_yet_outlives_the_cap() {
         let mut repeater = repeater(2);
-        repeater.handle_finalization(Slot(1), &Some(101));
+        repeater.handle_finalization(Slot(1), 101);
 
         // the cap runs past the retention before the first tick
         repeater.handle_cap_advance(Slot(9));

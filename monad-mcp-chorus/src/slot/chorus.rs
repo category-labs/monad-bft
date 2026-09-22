@@ -112,6 +112,15 @@ pub enum FinalizationPath {
 }
 
 impl SlotFinalization {
+    pub fn certificate_message(&self) -> ChorusMessage {
+        match self {
+            Self::Fast(qc) => ChorusMessage::FastCommitQc(qc.clone()),
+            Self::Fallback(qc) => {
+                ChorusMessage::Fallback(monad_mvba::MvbaMessage::CommitQc(qc.clone()))
+            }
+        }
+    }
+
     pub fn path(&self) -> FinalizationPath {
         match self {
             Self::Fast(_) => FinalizationPath::Fast,
@@ -289,15 +298,6 @@ impl SlotConsensus for Chorus {
 
     fn poll(&mut self) -> Option<SlotOutput<Self>> {
         self.outputs.pop_front()
-    }
-
-    fn certificate_message(data: &SlotFinalization) -> Option<ChorusMessage> {
-        Some(match data {
-            SlotFinalization::Fast(qc) => ChorusMessage::FastCommitQc(qc.clone()),
-            SlotFinalization::Fallback(qc) => {
-                ChorusMessage::Fallback(monad_mvba::MvbaMessage::CommitQc(qc.clone()))
-            }
-        })
     }
 
     fn handle_da_event(&mut self, event: ChorusDAEvent) {

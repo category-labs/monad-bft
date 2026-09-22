@@ -20,7 +20,10 @@ use std::{
 
 use bytes::Bytes;
 use monad_mcp_chorus::spec::{Deserializable as _, Serializable as _};
-use tokio::task::JoinHandle;
+use tokio::{
+    task::JoinHandle,
+    time::{Interval, MissedTickBehavior, interval},
+};
 use tokio_stream::StreamExt as _;
 use tokio_util::time::DelayQueue;
 
@@ -28,9 +31,10 @@ use crate::{
     RunError,
     cadence_task::{CadenceInput, CadenceOutput, CadenceTask, CadenceWireMsg},
     chorus::{
-        CadenceRuntime, NodeEvent, SlotLifecycle, SlotManager, WakeId,
+        CadenceMessage, CadenceRuntime, NodeEvent, SlotLifecycle, SlotManager, WakeId,
         conductor::MonadConductor,
         proposing::ProposalPlanner,
+        slot::chorus::ChorusMessage,
         types::{ProposalIndex, Slot, Timestamp, TimestampDelta, Validated},
     },
     config::NodeConfig,
@@ -43,6 +47,7 @@ use crate::{
     finalization::{FinalizationCollector, FinalizedSlot},
     network::{Inbound, Link, NetworkHandle, Outbound, Packet},
     proposing_task::{ProposalCreation, ProposingInput, ProposingOutput, ProposingTask},
+    repeater::{Recipients, Repeater},
 };
 
 // monotonic since start, anchored to unix time at start
@@ -87,6 +92,9 @@ pub struct Node {
     clock: Clock,
     collector: FinalizationCollector,
     timers: DelayQueue<WakeId>,
+    // re-sends slot messages over the lossy transport; off without a config
+    repeater: Option<Repeater<ChorusMessage>>,
+    repeater_tick: Option<Interval>,
     // outbound is dropped until set
     network: Option<NetworkHandle>,
     finalization: Option<FinalizationLogger>,
@@ -110,10 +118,7 @@ impl Node {
         let slot_manager = SlotManager::new(slot_config, epoch_handle.chorus());
         let conductor_config = config.cadence.conductor(config.genesis_deadline)?;
         let conductor = MonadConductor::genesis(conductor_config, ())?;
-        let mut cadence = CadenceRuntime::new(slot_manager, conductor);
-        if let Some(repeater) = config.cadence.repeater() {
-            cadence = cadence.with_repeater(repeater);
-        }
+        let cadence = CadenceRuntime::new(slot_manager, conductor);
         let (cadence_link, task_link) = Link::pair();
         let cadence_task = CadenceTask::spawn(cadence, clock, task_link);
 
@@ -129,11 +134,20 @@ impl Node {
         let (proposing_link, task_link) = Link::pair();
         let proposing_task = ProposingTask::spawn(creation, clock, task_link);
 
+        let repeater_config = config.repeater();
+        let repeater_tick = repeater_config.map(|config| {
+            let mut tick = interval(config.interval.as_duration());
+            tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            tick
+        });
+
         Ok(Self {
             epoch_handle,
             clock,
             collector: FinalizationCollector::default(),
             timers: DelayQueue::new(),
+            repeater: repeater_config.map(Repeater::new),
+            repeater_tick,
             network: None,
             finalization: None,
             cadence: cadence_link,
@@ -163,6 +177,7 @@ impl Node {
                 Some(expired) = self.timers.next(), if !self.timers.is_empty() => {
                     self.cadence.send(CadenceInput::Wake(expired.into_inner()));
                 }
+                _ = next_tick(&mut self.repeater_tick) => self.repeat(),
                 else => return,
             }
         }
@@ -214,6 +229,9 @@ impl Node {
                         .send(ProposingInput::SlotOpen(slot, deadline));
                 }
                 self.collector.handle_lifecycle(slot, event);
+                if let (SlotLifecycle::Completed, Some(repeater)) = (event, &mut self.repeater) {
+                    repeater.handle_completed(slot);
+                }
             }
             CadenceOutput::DACommand(slot, command) => {
                 self.da.send(DAInput::Command(slot, command));
@@ -222,11 +240,17 @@ impl Node {
                 let committed = finalization.roots().into_iter().flatten().count();
                 let path = finalization.path();
                 tracing::debug!(slot = slot.0, ?path, committed, "cadence finalized");
+                if let Some(repeater) = &mut self.repeater {
+                    repeater.handle_finalization(slot, finalization.certificate_message());
+                }
                 self.collector.handle_finalization(now, slot, finalization);
                 self.deliver_finalized();
             }
             CadenceOutput::CapAdvance(now, cap) => {
                 tracing::debug!(cap = cap.0, at = now.as_nanos(), "chain advanced");
+                if let Some(repeater) = &mut self.repeater {
+                    repeater.handle_cap_advance(cap);
+                }
                 self.proposing.send(ProposingInput::CapAdvance(cap));
             }
         }
@@ -242,6 +266,7 @@ impl Node {
                 self.timers.insert(wake, delta.as_duration());
             }
             NodeEvent::Broadcast(message) => {
+                self.record(Recipients::Everyone, &message);
                 let packet = Packet::Cadence(message.serialize());
                 self.send(Outbound::Broadcast(packet));
                 self.loopback(message);
@@ -251,8 +276,33 @@ impl Node {
                     self.loopback(message);
                     return;
                 }
+                self.record(Recipients::Node(to), &message);
                 let packet = Packet::Cadence(message.serialize());
                 self.send(Outbound::Unicast { to, packet });
+            }
+        }
+    }
+
+    fn record(&mut self, to: Recipients, message: &CadenceWireMsg) {
+        let Some(repeater) = &mut self.repeater else {
+            return;
+        };
+        let CadenceMessage::Slot(slot, message) = message else {
+            return;
+        };
+        repeater.record(self.clock.now(), *slot, to, message);
+    }
+
+    fn repeat(&mut self) {
+        let Some(repeater) = &mut self.repeater else {
+            return;
+        };
+        for (to, slot, message) in repeater.due(self.clock.now()) {
+            let message: CadenceWireMsg = CadenceMessage::Slot(slot, message);
+            let packet = Packet::Cadence(message.serialize());
+            match to {
+                Recipients::Everyone => self.send(Outbound::Broadcast(packet)),
+                Recipients::Node(to) => self.send(Outbound::Unicast { to, packet }),
             }
         }
     }
@@ -341,6 +391,13 @@ impl Drop for Node {
 }
 
 // pending forever without a network
+async fn next_tick(tick: &mut Option<Interval>) {
+    let Some(tick) = tick else {
+        return pending().await;
+    };
+    tick.tick().await;
+}
+
 async fn recv_inbound(network: &mut Option<NetworkHandle>) -> Option<Inbound> {
     match network {
         Some(network) => network.recv().await,
