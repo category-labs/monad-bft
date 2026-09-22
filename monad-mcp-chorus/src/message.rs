@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::VecDeque;
+//! The cadence wire message and its byte layout.
 
 use alloy_rlp::{Decodable, Encodable, Header, encode_list, list_length};
 use bytes::Bytes;
@@ -21,45 +21,9 @@ use bytes::Bytes;
 use super::{
     conductor::Conductor,
     slot::SlotConsensus,
-    timers::Timers,
-    types::{NodeId, Slot, Timestamp, Validated},
+    types::{NodeId, Slot},
 };
 use crate::spec::{Deserializable, Serializable};
-
-// A driver translates consensus effects into concrete node effects
-// that are agnostic of the consensus protocol.
-pub trait Driver<S, C>
-where
-    S: SlotConsensus,
-    C: Conductor,
-{
-    type WireMsg;
-
-    // translate consensus effects into Outbound and pending timers
-    fn schedule_alarm(&mut self, at: Timestamp, alarm: C::Alarm);
-    fn schedule_slot_deadline(&mut self, slot: Slot, deadline: Timestamp);
-    fn schedule_slot_timer(&mut self, at: Timestamp, slot: Slot, timer: S::Timer);
-    fn broadcast_slot(&mut self, slot: Slot, message: S::Message);
-    fn unicast_slot(&mut self, slot: Slot, to: NodeId, message: S::Message);
-    fn broadcast_conductor(&mut self, message: C::Message);
-    fn poll_outbound(&mut self) -> Option<Outbound<Self::WireMsg>>;
-
-    // translate node input and elapsed time into CadenceEvent
-    fn next_due(&self) -> Option<Timestamp>;
-    fn handle_due(&mut self, now: Timestamp);
-    fn handle_message(&mut self, message: Validated<Self::WireMsg>);
-    fn poll_cadence_event(
-        &mut self,
-    ) -> Option<CadenceEvent<S::Timer, C::Alarm, S::Message, C::Message>>;
-}
-
-pub enum CadenceEvent<Timer, Alarm, SMessage, CMessage> {
-    SlotTimer(Slot, Timer),
-    Alarm(Alarm),
-    ConductorMessage(Validated<CMessage>),
-    SlotMessage(Validated<(Slot, SMessage)>),
-    SlotDeadline(Slot),
-}
 
 pub enum Outbound<M> {
     Broadcast(M),
@@ -72,118 +36,9 @@ pub enum CadenceMessage<SM, CM> {
     Conductor(CM),
 }
 
-// A type alias for quickly get the wire message type for a given
-// SlotConsensus and Conductor pair.
-pub type CadenceDriverMsg<S, C> = <CadenceDriver<S, C> as Driver<S, C>>::WireMsg;
-
-// A canonical driver implementation for Cadence.
-pub struct CadenceDriver<S, C>
-where
-    S: SlotConsensus,
-    C: Conductor,
-{
-    inbox: VecDeque<CadenceEvent<S::Timer, C::Alarm, S::Message, C::Message>>,
-    outbox: VecDeque<Outbound<CadenceMessage<S::Message, C::Message>>>,
-    timers: Timers<PendingWake<S::Timer, C::Alarm>>,
-}
-
-enum PendingWake<Timer, Alarm> {
-    Deadline(Slot),
-    SlotTimer(Slot, Timer),
-    Alarm(Alarm),
-}
-
-impl<S, C> Default for CadenceDriver<S, C>
-where
-    S: SlotConsensus,
-    C: Conductor,
-{
-    fn default() -> Self {
-        Self {
-            inbox: VecDeque::new(),
-            outbox: VecDeque::new(),
-            timers: Timers::default(),
-        }
-    }
-}
-
-impl<S, C> Driver<S, C> for CadenceDriver<S, C>
-where
-    S: SlotConsensus,
-    C: Conductor,
-{
-    type WireMsg = CadenceMessage<S::Message, C::Message>;
-
-    fn schedule_alarm(&mut self, at: Timestamp, alarm: C::Alarm) {
-        self.timers.schedule(at, PendingWake::Alarm(alarm));
-    }
-
-    fn schedule_slot_timer(&mut self, at: Timestamp, slot: Slot, timer: S::Timer) {
-        self.timers
-            .schedule(at, PendingWake::SlotTimer(slot, timer));
-    }
-
-    fn schedule_slot_deadline(&mut self, slot: Slot, deadline: Timestamp) {
-        self.timers.schedule(deadline, PendingWake::Deadline(slot));
-    }
-
-    fn broadcast_slot(&mut self, slot: Slot, message: S::Message) {
-        self.outbox
-            .push_back(Outbound::Broadcast(CadenceMessage::Slot(slot, message)));
-    }
-
-    fn unicast_slot(&mut self, slot: Slot, to: NodeId, message: S::Message) {
-        let message = CadenceMessage::Slot(slot, message);
-        self.outbox.push_back(Outbound::Unicast(to, message));
-    }
-
-    fn broadcast_conductor(&mut self, message: C::Message) {
-        self.outbox
-            .push_back(Outbound::Broadcast(CadenceMessage::Conductor(message)))
-    }
-
-    fn poll_outbound(&mut self) -> Option<Outbound<Self::WireMsg>> {
-        self.outbox.pop_front()
-    }
-
-    fn next_due(&self) -> Option<Timestamp> {
-        self.timers.next_due()
-    }
-
-    fn handle_due(&mut self, now: Timestamp) {
-        while let Some(pending) = self.timers.pop_due(now) {
-            let event = match pending {
-                PendingWake::Deadline(slot) => CadenceEvent::SlotDeadline(slot),
-                PendingWake::Alarm(alarm) => CadenceEvent::Alarm(alarm),
-                PendingWake::SlotTimer(slot, timer) => CadenceEvent::SlotTimer(slot, timer),
-            };
-            self.inbox.push_back(event);
-        }
-    }
-
-    fn handle_message(&mut self, message: Validated<Self::WireMsg>) {
-        let (message, author) = message.destructure();
-        match message {
-            CadenceMessage::Slot(slot, msg) => {
-                // safety: message is already validated.
-                let validated = Validated::new_unchecked((slot, msg), author);
-                self.inbox.push_back(CadenceEvent::SlotMessage(validated));
-            }
-            CadenceMessage::Conductor(msg) => {
-                // safety: message is already validated.
-                let validated = Validated::new_unchecked(msg, author);
-                self.inbox
-                    .push_back(CadenceEvent::ConductorMessage(validated));
-            }
-        }
-    }
-
-    fn poll_cadence_event(
-        &mut self,
-    ) -> Option<CadenceEvent<S::Timer, C::Alarm, S::Message, C::Message>> {
-        self.inbox.pop_front()
-    }
-}
+// the wire message of a cadence over the given slot consensus and conductor
+pub type CadenceWireMsg<S, C> =
+    CadenceMessage<<S as SlotConsensus>::Message, <C as Conductor>::Message>;
 
 impl<SM, CM> Encodable for CadenceMessage<SM, CM>
 where
@@ -324,7 +179,7 @@ mod rlp_tests {
             test_utils::{assert_roundtrip, assert_serialization_roundtrip},
             types::SlotDeadline,
         };
-        type Wire = CadenceDriverMsg<Chorus, MonadConductor<MedianAcs<SlotDeadline>>>;
+        type Wire = CadenceWireMsg<Chorus, MonadConductor<MedianAcs<SlotDeadline>>>;
 
         let slot = Slot(7);
         let message = chorus_message(slot);
@@ -354,7 +209,7 @@ mod rlp_tests {
             slot::chorus::Chorus,
             types::SlotDeadline,
         };
-        type Wire = CadenceDriverMsg<Chorus, MonadConductor<NopAcs<SlotDeadline>>>;
+        type Wire = CadenceWireMsg<Chorus, MonadConductor<NopAcs<SlotDeadline>>>;
 
         let slot = Slot(7);
         let message = chorus_message(slot);
@@ -392,7 +247,7 @@ mod rlp_tests {
             test_utils::assert_roundtrip,
             types::VoteMsg,
         };
-        type Wire = CadenceDriverMsg<DummySlotConsensus, DummyConductor>;
+        type Wire = CadenceWireMsg<DummySlotConsensus, DummyConductor>;
 
         let slot = Slot(7);
         let message = VoteMsg::new_signed(slot, DummyVote, &NodeId::dummy(1).keypair());

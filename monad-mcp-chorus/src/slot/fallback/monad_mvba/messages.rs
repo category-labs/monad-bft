@@ -536,7 +536,7 @@ mod rlp_tests {
                 super::{
                     super::{
                         conductor::{MonadConductor, acs::median::MedianAcs},
-                        driver::CadenceDriverMsg,
+                        message::CadenceWireMsg,
                         test_utils::{assert_roundtrip, assert_serialization_roundtrip},
                         types::SlotDeadline,
                     },
@@ -549,7 +549,7 @@ mod rlp_tests {
         },
         *,
     };
-    type Wire = CadenceDriverMsg<chorus::Chorus, MonadConductor<MedianAcs<SlotDeadline>>>;
+    type Wire = CadenceWireMsg<chorus::Chorus, MonadConductor<MedianAcs<SlotDeadline>>>;
 
     #[test]
     fn every_mvba_variant_and_optional_certificate_roundtrips() {

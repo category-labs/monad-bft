@@ -18,7 +18,7 @@ mod helper;
 use std::{num::NonZeroU64, sync::Arc};
 
 use chorus::{
-    CadenceDriverMsg,
+    CadenceWireMsg,
     conductor::{ConductorConfig, MonadConductor, acs::nop::NopAcs},
     slot::dummy::{DummySlotConsensus, DummySlotConsensusConfig},
     types::{NodeId, SlotDeadline, TimestampDelta},
@@ -35,7 +35,7 @@ const GENESIS_DEADLINE: SlotDeadline = SlotDeadline::from_millis(100);
 
 type Conductor = MonadConductor<NopAcs<SlotDeadline>>;
 
-type DummyMsg = CadenceDriverMsg<DummySlotConsensus, Conductor>;
+type DummyMsg = CadenceWireMsg<DummySlotConsensus, Conductor>;
 
 fn conductor() -> Conductor {
     let config = ConductorConfig::new(

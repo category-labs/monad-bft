@@ -29,7 +29,7 @@ pub use super::fast::{
     EnterFallbackCert, EnterFallbackVote, Entry, FallbackEntry, FallbackQc, FastQc,
 };
 use super::{
-    super::{driver::Outbound, runtime::Runtime, timers::Timers},
+    super::{message::Outbound, runtime::Runtime, timers::Timers},
     types::{
         IsVote, NodeId, Slot, StrongQc, Timestamp, TimestampDelta, TotalProposalMap, Validated,
     },

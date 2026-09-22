@@ -13,18 +13,19 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 use super::{
     conductor::{Conductor, ConductorOutput},
-    driver::{CadenceDriver, CadenceEvent, Driver, Outbound},
+    message::{CadenceMessage, CadenceWireMsg, Outbound},
     slot::{SlotConsensus, SlotOutput},
     slot_manager::SlotManager,
+    timers::Timers,
     types::{Slot, Timestamp, Validated},
 };
 
-// A Runtime describes the wiring logic of the three components of the
-// consensus stack: slot manager, conductor, and driver.
+// A Runtime describes the wiring logic of the consensus stack: slot
+// manager, conductor and timers.
 pub trait Runtime<M> {
     // The local data-availability events this runtime accepts. Runtimes
     // driving a stack without a DA layer set this to ().
@@ -43,18 +44,24 @@ pub trait Runtime<M> {
 }
 
 // A canonical runtime implementation for cadence.
-pub struct CadenceRuntime<S, C, D = CadenceDriver<S, C>>
+pub struct CadenceRuntime<S, C>
 where
     S: SlotConsensus,
     C: Conductor,
-    D: Driver<S, C>,
 {
     clock: Timestamp,
     slot_manager: SlotManager<S>,
     conductor: C,
-    driver: D,
+    timers: Timers<PendingWake<S::Timer, C::Alarm>>,
+    outbox: VecDeque<Outbound<CadenceWireMsg<S, C>>>,
     observer: Option<Box<ObserverOf<S>>>,
     da_sink: Option<Box<DASinkOf<S>>>,
+}
+
+enum PendingWake<Timer, Alarm> {
+    Deadline(Slot),
+    SlotTimer(Slot, Timer),
+    Alarm(Alarm),
 }
 
 type ObserverOf<S> = dyn FinalizationObserver<
@@ -74,33 +81,13 @@ where
             clock: Timestamp::GENESIS,
             slot_manager,
             conductor,
-            driver: CadenceDriver::default(),
+            timers: Timers::default(),
+            outbox: VecDeque::new(),
             observer: None,
             da_sink: None,
         }
     }
 
-    pub fn with_driver<D>(self, driver: D) -> CadenceRuntime<S, C, D>
-    where
-        D: Driver<S, C>,
-    {
-        CadenceRuntime {
-            clock: self.clock,
-            slot_manager: self.slot_manager,
-            conductor: self.conductor,
-            observer: self.observer,
-            da_sink: self.da_sink,
-            driver,
-        }
-    }
-}
-
-impl<S, C, D> CadenceRuntime<S, C, D>
-where
-    S: SlotConsensus,
-    C: Conductor,
-    D: Driver<S, C>,
-{
     pub fn on_finalization(
         &mut self,
         observer: impl FinalizationObserver<S::OptimisticCommitData, S::FinalizationData>
@@ -120,6 +107,45 @@ where
         self.clock = now;
     }
 
+    fn handle_wake(&mut self, wake: PendingWake<S::Timer, C::Alarm>) {
+        match wake {
+            PendingWake::Alarm(alarm) => {
+                self.conductor.handle_alarm(alarm);
+            }
+            PendingWake::Deadline(slot)
+                if let Some(instance) = self.slot_manager.slot_instance(slot) =>
+            {
+                instance.handle_deadline();
+            }
+            PendingWake::SlotTimer(slot, timer)
+                if let Some(instance) = self.slot_manager.slot_instance(slot) =>
+            {
+                instance.handle_timer(timer);
+            }
+            PendingWake::Deadline(slot) | PendingWake::SlotTimer(slot, _) => {
+                tracing::debug!(?slot, "wake for a slot without instance");
+            }
+        }
+    }
+
+    fn handle_message(&mut self, message: Validated<CadenceWireMsg<S, C>>) {
+        let now = self.clock;
+        let (message, author) = message.destructure();
+        match message {
+            CadenceMessage::Conductor(message) => {
+                self.conductor.handle_message(now, author, message);
+            }
+            CadenceMessage::Slot(slot, message)
+                if let Some(instance) = self.slot_manager.slot_instance(slot) =>
+            {
+                instance.handle_message(author, message);
+            }
+            CadenceMessage::Slot(slot, _) => {
+                tracing::debug!(?slot, ?author, "message for a slot without instance");
+            }
+        }
+    }
+
     fn step(&mut self) {
         while self.step_once() {}
     }
@@ -128,131 +154,102 @@ where
     fn step_once(&mut self) -> bool {
         // todo: use a fair poll order to avoid starvation
         if let Some((slot, out)) = self.slot_manager.poll_any() {
-            let now = self.clock;
-
-            match out {
-                SlotOutput::ScheduleTimer(delta, timer) => {
-                    self.driver.schedule_slot_timer(now + delta, slot, timer);
-                }
-                SlotOutput::Broadcast(message) => {
-                    self.driver.broadcast_slot(slot, message);
-                }
-                SlotOutput::Unicast { to, message } => {
-                    self.driver.unicast_slot(slot, to, message);
-                }
-                SlotOutput::DA(action) => {
-                    if let Some(sink) = &mut self.da_sink {
-                        sink.handle_command(slot, action);
-                    }
-                }
-                SlotOutput::CommitOptimistic(data) => {
-                    if let Some(observer) = &mut self.observer {
-                        observer.handle_optimistic_commit(now, slot, &data);
-                    }
-                }
-                SlotOutput::Finalize(data) => {
-                    if let Some(observer) = &mut self.observer {
-                        observer.handle_finalization(now, slot, &data);
-                    }
-                    if let Some(sink) = &mut self.da_sink {
-                        sink.handle_lifecycle(slot, SlotLifecycle::Completed);
-                    }
-                    self.conductor.handle_slot_finalization(now, slot);
-                    self.slot_manager.close(slot);
-                }
-                SlotOutput::Fault { reason } => {
-                    tracing::warn!(?slot, reason = %reason, "slot faulted");
-                    if let Some(sink) = &mut self.da_sink {
-                        sink.handle_lifecycle(slot, SlotLifecycle::Completed);
-                    }
-                    self.slot_manager.close(slot);
-                }
-            }
+            self.handle_slot_output(slot, out);
             return true;
         }
 
         if let Some(out) = self.conductor.poll() {
-            let now = self.clock;
-
-            match out {
-                ConductorOutput::Broadcast(msg) => {
-                    self.driver.broadcast_conductor(msg);
-                }
-                ConductorOutput::ScheduleAlarm(at, timer) => {
-                    self.driver.schedule_alarm(at, timer);
-                }
-                ConductorOutput::CloseSlots { cap } => {
-                    self.slot_manager.advance_cap(cap);
-                    if let Some(observer) = &mut self.observer {
-                        observer.handle_chain_advance(now, cap);
-                    }
-                }
-                ConductorOutput::OpenSlots(slots) => {
-                    if let Some(observer) = &mut self.observer {
-                        observer.handle_slots_opened(now, &slots);
-                    }
-                    for (slot, deadline) in slots {
-                        self.slot_manager.open(slot);
-                        self.driver.schedule_slot_deadline(slot, deadline);
-                        if let Some(sink) = &mut self.da_sink {
-                            sink.handle_lifecycle(slot, SlotLifecycle::Opened { deadline });
-                        }
-                    }
-                }
-            }
-            return true;
-        }
-
-        if let Some(event) = self.driver.poll_cadence_event() {
-            let now = self.clock;
-            match event {
-                CadenceEvent::Alarm(alarm) => {
-                    self.conductor.handle_alarm(alarm);
-                }
-                CadenceEvent::ConductorMessage(message) => {
-                    let (message, author) = message.destructure();
-                    self.conductor.handle_message(now, author, message);
-                }
-                CadenceEvent::SlotDeadline(slot) => {
-                    if let Some(instance) = self.slot_manager.slot_instance(slot) {
-                        instance.handle_deadline();
-                    } else {
-                        tracing::debug!(?slot, "deadline for a slot without instance");
-                    }
-                }
-                CadenceEvent::SlotTimer(slot, timer) => {
-                    if let Some(instance) = self.slot_manager.slot_instance(slot) {
-                        instance.handle_timer(timer);
-                    } else {
-                        tracing::debug!(?slot, "timer for a slot without instance");
-                    }
-                }
-                CadenceEvent::SlotMessage(message) => {
-                    let ((slot, message), author) = message.destructure();
-                    if let Some(instance) = self.slot_manager.slot_instance(slot) {
-                        instance.handle_message(author, message);
-                    } else {
-                        tracing::debug!(?slot, ?author, "message for a slot without instance");
-                    }
-                }
-            }
+            self.handle_conductor_output(out);
             return true;
         }
 
         false
     }
+
+    fn handle_slot_output(&mut self, slot: Slot, out: SlotOutput<S>) {
+        let now = self.clock;
+        match out {
+            SlotOutput::ScheduleTimer(delta, timer) => {
+                self.timers
+                    .schedule(now + delta, PendingWake::SlotTimer(slot, timer));
+            }
+            SlotOutput::Broadcast(message) => {
+                let message = CadenceMessage::Slot(slot, message);
+                self.outbox.push_back(Outbound::Broadcast(message));
+            }
+            SlotOutput::Unicast { to, message } => {
+                let message = CadenceMessage::Slot(slot, message);
+                self.outbox.push_back(Outbound::Unicast(to, message));
+            }
+            SlotOutput::DA(action) if let Some(sink) = &mut self.da_sink => {
+                sink.handle_command(slot, action);
+            }
+            SlotOutput::CommitOptimistic(data) if let Some(observer) = &mut self.observer => {
+                observer.handle_optimistic_commit(now, slot, &data);
+            }
+            // no sink or observer to tell
+            SlotOutput::DA(_) | SlotOutput::CommitOptimistic(_) => {}
+            SlotOutput::Finalize(data) => {
+                if let Some(observer) = &mut self.observer {
+                    observer.handle_finalization(now, slot, &data);
+                }
+                if let Some(sink) = &mut self.da_sink {
+                    sink.handle_lifecycle(slot, SlotLifecycle::Completed);
+                }
+                self.conductor.handle_slot_finalization(now, slot);
+                self.slot_manager.close(slot);
+            }
+            SlotOutput::Fault { reason } => {
+                tracing::warn!(?slot, reason = %reason, "slot faulted");
+                if let Some(sink) = &mut self.da_sink {
+                    sink.handle_lifecycle(slot, SlotLifecycle::Completed);
+                }
+                self.slot_manager.close(slot);
+            }
+        }
+    }
+
+    fn handle_conductor_output(&mut self, out: ConductorOutput<C>) {
+        let now = self.clock;
+        match out {
+            ConductorOutput::Broadcast(message) => {
+                let message = CadenceMessage::Conductor(message);
+                self.outbox.push_back(Outbound::Broadcast(message));
+            }
+            ConductorOutput::ScheduleAlarm(at, alarm) => {
+                self.timers.schedule(at, PendingWake::Alarm(alarm));
+            }
+            ConductorOutput::CloseSlots { cap } => {
+                self.slot_manager.advance_cap(cap);
+                if let Some(observer) = &mut self.observer {
+                    observer.handle_chain_advance(now, cap);
+                }
+            }
+            ConductorOutput::OpenSlots(slots) => {
+                if let Some(observer) = &mut self.observer {
+                    observer.handle_slots_opened(now, &slots);
+                }
+                for (slot, deadline) in slots {
+                    self.slot_manager.open(slot);
+                    self.timers.schedule(deadline, PendingWake::Deadline(slot));
+                    if let Some(sink) = &mut self.da_sink {
+                        sink.handle_lifecycle(slot, SlotLifecycle::Opened { deadline });
+                    }
+                }
+            }
+        }
+    }
 }
 
-impl<S, C, D> Runtime<D::WireMsg> for CadenceRuntime<S, C, D>
+impl<S, C> Runtime<CadenceWireMsg<S, C>> for CadenceRuntime<S, C>
 where
     S: SlotConsensus,
     C: Conductor,
-    D: Driver<S, C>,
 {
     type DAEvent = S::DAEvent;
 
-    fn poll(&mut self) -> Option<Outbound<D::WireMsg>> {
-        self.driver.poll_outbound()
+    fn poll(&mut self) -> Option<Outbound<CadenceWireMsg<S, C>>> {
+        self.outbox.pop_front()
     }
 
     fn init(&mut self) {
@@ -260,18 +257,21 @@ where
     }
 
     fn next_due(&self) -> Option<Timestamp> {
-        self.driver.next_due()
+        self.timers.next_due()
     }
 
+    // wakes are handled one at a time, each to quiescence
     fn handle_due(&mut self, now: Timestamp) {
         self.advance_clock(now);
-        self.driver.handle_due(now);
-        self.step();
+        while let Some(wake) = self.timers.pop_due(now) {
+            self.handle_wake(wake);
+            self.step();
+        }
     }
 
-    fn receive(&mut self, now: Timestamp, message: Validated<D::WireMsg>) {
+    fn receive(&mut self, now: Timestamp, message: Validated<CadenceWireMsg<S, C>>) {
         self.advance_clock(now);
-        self.driver.handle_message(message);
+        self.handle_message(message);
         self.step();
     }
 

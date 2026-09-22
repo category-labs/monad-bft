@@ -1653,7 +1653,7 @@ mod rlp_tests {
         super::{
             super::{
                 conductor::{MonadConductor, acs::median::MedianAcs},
-                driver::CadenceDriverMsg,
+                message::CadenceWireMsg,
                 test_utils::{assert_roundtrip, assert_serialization_roundtrip},
                 types::SlotDeadline,
             },
@@ -1765,7 +1765,7 @@ mod rlp_tests {
             }),
             ChorusMessage::EnterFallbackCert(enter),
         ];
-        type Wire = CadenceDriverMsg<Chorus, MonadConductor<MedianAcs<SlotDeadline>>>;
+        type Wire = CadenceWireMsg<Chorus, MonadConductor<MedianAcs<SlotDeadline>>>;
         // Check both the Chorus RLP payload and its enclosing Cadence byte serialization.
         for message in messages {
             assert_roundtrip(&message);

@@ -18,7 +18,7 @@ mod helper;
 use std::{num::NonZeroU64, sync::Arc};
 
 use chorus::{
-    CadenceDriverMsg,
+    CadenceWireMsg,
     conductor::{ConductorConfig, MonadConductor, acs::nop::NopAcs},
     slot::chorus::{Chorus, ChorusConfig, ChorusContext, ChorusDAEvent},
     types::{
@@ -39,7 +39,7 @@ const LATENCY: TimestampDelta = TimestampDelta::from_millis(50); // expected net
 const DELTA: TimestampDelta = TimestampDelta::from_millis(100); // latency bound (Delta)
 
 type Conductor = MonadConductor<NopAcs<SlotDeadline>>;
-type DummyMsg = CadenceDriverMsg<Chorus, Conductor>;
+type DummyMsg = CadenceWireMsg<Chorus, Conductor>;
 
 fn conductor() -> Conductor {
     let config = ConductorConfig::new(

@@ -20,15 +20,15 @@ use std::{
 
 use super::Component;
 use crate::chorus::{
-    CadenceDriverMsg, CadenceRuntime, DASink, FinalizationObserver, Outbound, Runtime as _,
-    SlotLifecycle, SlotManager,
+    CadenceRuntime, DASink, FinalizationObserver, Outbound, Runtime as _, SlotLifecycle,
+    SlotManager,
     conductor::{MonadConductor, acs::nop::NopAcs},
     slot::chorus::{Chorus, ChorusDACommand, ChorusDAEvent, SlotFinalization},
     types::{Slot, SlotDeadline, Timestamp, Validated},
 };
 
 pub type Conductor = MonadConductor<NopAcs<SlotDeadline>>;
-pub type CadenceWireMsg = CadenceDriverMsg<Chorus, Conductor>;
+pub type CadenceWireMsg = crate::chorus::CadenceWireMsg<Chorus, Conductor>;
 
 pub enum CadenceInput {
     Message(Validated<CadenceWireMsg>),

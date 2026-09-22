@@ -23,13 +23,13 @@
 //! - In the types module, we import the implementation-dependent
 //!   types from super::env
 //! - In the top_level module, we expose public modules/types
-//!   (e.g. CadenceDriver)
+//!   (e.g. CadenceRuntime)
 //! - Then we define global variant modules crate::{stub, prod} that
 //!   + define/import the env module: pub use crate::env::stub as env;
 //!   + include the top_level.rs file
 //!
 //! - now we have all types accessible through the variant modules
-//!   (e.g. crate::{stub,prod}::CadenceDriver)
+//!   (e.g. crate::{stub,prod}::CadenceRuntime)
 //!
 //! In order to include top_level.rs multiple times (once in each
 //! variant), we use the #[path] attribute on `mod top_level`. It is

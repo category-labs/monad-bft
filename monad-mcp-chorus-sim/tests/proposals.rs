@@ -28,7 +28,7 @@ use std::{
 };
 
 use chorus::{
-    CadenceDriverMsg,
+    CadenceWireMsg,
     conductor::{ConductorConfig, MonadConductor, acs::nop::NopAcs},
     proposers::header_auth,
     proposing::{PlannerConfig, ProposalPlanner},
@@ -59,7 +59,7 @@ const LEAD: TimestampDelta = TimestampDelta::from_millis(60);
 const MIN_LEAD: TimestampDelta = TimestampDelta::from_millis(30);
 
 type Conductor = MonadConductor<NopAcs<SlotDeadline>>;
-type Msg = CadenceDriverMsg<Chorus, Conductor>;
+type Msg = CadenceWireMsg<Chorus, Conductor>;
 type Schedule = RotatingProposerSchedule<RoundRobinLeaderSchedule>;
 
 // Per-node record of the finalized entries: (node, slot) -> entries by
