@@ -17,8 +17,9 @@
 //! yet, over a transport that may drop packets, and the finalization
 //! certificate of a slot that has, until the chain moves past it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
+use super::Component;
 use crate::chorus::types::{NodeId, Slot, Timestamp, TimestampDelta};
 
 #[derive(Clone, Copy)]
@@ -56,7 +57,19 @@ pub struct Repeater<M> {
     config: RepeaterConfig,
     undecided: BTreeMap<Slot, Undecided<M>>,
     finalized: BTreeMap<Slot, Certificate<M>>,
+    // armed while anything is pending
+    next_tick: Option<Timestamp>,
+    outbox: VecDeque<RepeaterOutput<M>>,
 }
+
+pub enum RepeaterInput<M> {
+    Record(Slot, Recipients, M),
+    Finalization(Slot, M),
+    Completed(Slot),
+    CapAdvance(Slot),
+}
+
+pub type RepeaterOutput<M> = (Recipients, Slot, M);
 
 impl<M> Repeater<M> {
     pub fn new(config: RepeaterConfig) -> Self {
@@ -64,18 +77,20 @@ impl<M> Repeater<M> {
             config,
             undecided: BTreeMap::new(),
             finalized: BTreeMap::new(),
+            next_tick: None,
+            outbox: VecDeque::new(),
         }
     }
 
-    pub fn interval(&self) -> TimestampDelta {
-        self.config.interval
+    fn is_pending(&self) -> bool {
+        !self.undecided.is_empty() || !self.finalized.is_empty()
     }
 
     /// Remember an outbound message of an undecided slot. Repeats are
     /// emitted past this point, so they are never recorded again.
-    pub fn record(&mut self, now: Timestamp, slot: Slot, to: Recipients, message: &M)
+    pub fn record(&mut self, now: Timestamp, slot: Slot, to: Recipients, message: M)
     where
-        M: Clone + PartialEq,
+        M: PartialEq,
     {
         if self.finalized.contains_key(&slot) {
             return;
@@ -85,10 +100,7 @@ impl<M> Repeater<M> {
             since: now,
             deliveries: Vec::new(),
         });
-        let delivery = Delivery {
-            to,
-            message: message.clone(),
-        };
+        let delivery = Delivery { to, message };
         if !undecided.deliveries.contains(&delivery) {
             undecided.deliveries.push(delivery);
         }
@@ -155,6 +167,42 @@ impl<M> Repeater<M> {
     }
 }
 
+impl<M> Component for Repeater<M>
+where
+    M: Clone + PartialEq,
+{
+    type Input = RepeaterInput<M>;
+    type Output = RepeaterOutput<M>;
+
+    fn handle(&mut self, now: Timestamp, input: RepeaterInput<M>) {
+        match input {
+            RepeaterInput::Record(slot, to, message) => self.record(now, slot, to, message),
+            RepeaterInput::Finalization(slot, certificate) => {
+                self.handle_finalization(slot, certificate)
+            }
+            RepeaterInput::Completed(slot) => self.handle_completed(slot),
+            RepeaterInput::CapAdvance(cap) => self.handle_cap_advance(cap),
+        }
+        if self.is_pending() && self.next_tick.is_none() {
+            self.next_tick = Some(now + self.config.interval);
+        }
+    }
+
+    fn next_due(&self) -> Option<Timestamp> {
+        self.next_tick
+    }
+
+    fn handle_due(&mut self, now: Timestamp) {
+        let due = self.due(now);
+        self.outbox.extend(due);
+        self.next_tick = self.is_pending().then(|| now + self.config.interval);
+    }
+
+    fn poll(&mut self) -> Option<RepeaterOutput<M>> {
+        self.outbox.pop_front()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,10 +223,10 @@ mod tests {
     #[test]
     fn an_equal_re_record_is_deduped() {
         let mut repeater = repeater(2);
-        repeater.record(at(0), Slot(1), Recipients::Everyone, &7);
-        repeater.record(at(1_000), Slot(1), Recipients::Everyone, &7);
-        repeater.record(at(1_000), Slot(1), Recipients::Node(NodeId::dummy(3)), &7);
-        repeater.record(at(1_000), Slot(1), Recipients::Everyone, &8);
+        repeater.record(at(0), Slot(1), Recipients::Everyone, 7);
+        repeater.record(at(1_000), Slot(1), Recipients::Everyone, 7);
+        repeater.record(at(1_000), Slot(1), Recipients::Node(NodeId::dummy(3)), 7);
+        repeater.record(at(1_000), Slot(1), Recipients::Everyone, 8);
 
         assert_eq!(
             repeater.due(at(5_000)),
@@ -193,7 +241,7 @@ mod tests {
     #[test]
     fn finalization_drops_the_undecided_messages_and_keeps_the_certificate() {
         let mut repeater = repeater(2);
-        repeater.record(at(0), Slot(1), Recipients::Everyone, &7);
+        repeater.record(at(0), Slot(1), Recipients::Everyone, 7);
         repeater.handle_finalization(Slot(1), 42);
 
         assert_eq!(
@@ -201,7 +249,7 @@ mod tests {
             vec![(Recipients::Everyone, Slot(1), 42)]
         );
         // a finalized slot records nothing further
-        repeater.record(at(5_000), Slot(1), Recipients::Everyone, &7);
+        repeater.record(at(5_000), Slot(1), Recipients::Everyone, 7);
         assert_eq!(
             repeater.due(at(20_000)),
             vec![(Recipients::Everyone, Slot(1), 42)]
@@ -211,7 +259,7 @@ mod tests {
     #[test]
     fn a_faulted_slot_is_dropped() {
         let mut repeater = repeater(2);
-        repeater.record(at(0), Slot(1), Recipients::Everyone, &7);
+        repeater.record(at(0), Slot(1), Recipients::Everyone, 7);
         repeater.handle_completed(Slot(1));
 
         assert!(repeater.due(at(5_000)).is_empty());
@@ -221,7 +269,7 @@ mod tests {
     fn a_cap_advance_trims_both_maps() {
         let mut repeater = repeater(2);
         for slot in 0..6 {
-            repeater.record(at(0), Slot(slot), Recipients::Everyone, &slot);
+            repeater.record(at(0), Slot(slot), Recipients::Everyone, slot);
         }
         for slot in 0..3 {
             repeater.handle_finalization(Slot(slot), 100 + slot);
@@ -266,9 +314,9 @@ mod tests {
     #[test]
     fn a_slot_is_repeated_only_once_its_first_send_is_interval_old() {
         let mut repeater = repeater(2);
-        repeater.record(at(1_000), Slot(1), Recipients::Everyone, &7);
+        repeater.record(at(1_000), Slot(1), Recipients::Everyone, 7);
         // a later message of the same slot does not reset the slot's age
-        repeater.record(at(3_000), Slot(1), Recipients::Everyone, &8);
+        repeater.record(at(3_000), Slot(1), Recipients::Everyone, 8);
 
         assert!(repeater.due(at(5_999)).is_empty());
         assert_eq!(

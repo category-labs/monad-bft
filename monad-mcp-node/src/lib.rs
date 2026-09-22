@@ -13,16 +13,16 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-mod cadence_task;
+mod async_node;
+mod clock;
+pub mod component;
 pub mod config;
-mod da_task;
 mod epoch;
 mod finalization;
 mod logging;
-mod network;
+pub mod network;
 mod node;
-mod proposing_task;
-mod repeater;
+mod runtime;
 
 use std::error::Error;
 
@@ -30,13 +30,19 @@ pub use monad_mcp_chorus::stub as chorus;
 pub use monad_mcp_da::stub as da;
 use tracing::Instrument as _;
 
-pub use self::logging::init_logging;
 use self::{
+    async_node::AsyncNode,
     chorus::slot::chorus::FinalizationPath,
+    clock::Clock,
     config::NodeConfig,
-    finalization::FinalizedSlot,
     network::{NetworkHandle, stub::UdpNetwork},
-    node::Node,
+};
+pub use self::{
+    component::{Component, Dispatch},
+    finalization::FinalizedSlot,
+    logging::init_logging,
+    node::{Node, NodeOutput},
+    runtime::{Effect, NodeRuntime, Runtime},
 };
 
 pub type RunError = Box<dyn Error + Send + Sync>;
@@ -49,7 +55,8 @@ pub async fn run_node(config: NodeConfig) -> Result<(), RunError> {
 }
 
 async fn run(config: NodeConfig) -> Result<(), RunError> {
-    let mut node = Node::new(&config)?;
+    let node = Node::new(&config)?;
+    let mut node = AsyncNode::spawn(node, Clock::start());
     let (handle, transport) = NetworkHandle::pair();
     node.set_network(handle);
     node.on_finalization(log_finalized);

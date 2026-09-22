@@ -16,11 +16,11 @@
 pub mod stub;
 
 use bytes::Bytes;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
-use crate::chorus::types::NodeId;
+use crate::{chorus::types::NodeId, component::Link};
 
 // what crosses the wire between nodes
+#[derive(Clone)]
 pub enum Packet {
     Cadence(Bytes),
     // one chunk with its header, or a header alone
@@ -28,7 +28,7 @@ pub enum Packet {
     ChunkRequest(Bytes),
 }
 
-// todo: move this to shared types
+// todo: move this into shared types
 pub type Outbound = crate::chorus::Outbound<Packet>;
 
 // the transport authenticates the sender
@@ -37,40 +37,5 @@ pub struct Inbound {
     pub packet: Packet,
 }
 
-// one end of a two-way channel
-pub struct Link<Out, In> {
-    sender: UnboundedSender<Out>,
-    receiver: UnboundedReceiver<In>,
-}
-
+// what the transport hands the node and takes from it
 pub type NetworkHandle = Link<Outbound, Inbound>;
-
-impl<Out, In> Link<Out, In> {
-    pub fn pair() -> (Link<Out, In>, Link<In, Out>) {
-        let (out_sender, out_receiver) = unbounded_channel();
-        let (in_sender, in_receiver) = unbounded_channel();
-        let ours = Link {
-            sender: out_sender,
-            receiver: in_receiver,
-        };
-        let theirs = Link {
-            sender: in_sender,
-            receiver: out_receiver,
-        };
-        (ours, theirs)
-    }
-
-    // dropped silently once the other end is gone
-    pub fn send(&self, message: Out) {
-        self.sender.send(message).ok();
-    }
-
-    pub fn sender(&self) -> UnboundedSender<Out> {
-        self.sender.clone()
-    }
-
-    // None once the other end is gone
-    pub async fn recv(&mut self) -> Option<In> {
-        self.receiver.recv().await
-    }
-}

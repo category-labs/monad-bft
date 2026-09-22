@@ -28,9 +28,9 @@ use crate::{
             ValidatorData,
         },
     },
+    component::RepeaterConfig,
     da::{self, ProposalKeyPair, header_auth},
     epoch::{EpochHandle, NodeProposerSchedule},
-    repeater::RepeaterConfig,
 };
 
 #[derive(Deserialize)]

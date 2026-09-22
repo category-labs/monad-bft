@@ -13,19 +13,18 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use tokio::task::JoinHandle;
-use tracing::{Instrument as _, Span};
-
+use super::Component;
 use crate::{
     chorus::{
         SlotLifecycle,
         slot::chorus::ChorusDACommand,
-        types::{NodeId, Slot},
+        types::{NodeId, Slot, Timestamp},
     },
     da::{ChunkRecoveryRequest, DAOutput, DARuntime, ProposalEnvelope},
     epoch::NodeProposerSchedule,
-    network::Link,
 };
+
+pub type DA = DARuntime<NodeProposerSchedule>;
 
 pub enum DAInput {
     Envelope(ProposalEnvelope),
@@ -34,49 +33,24 @@ pub enum DAInput {
     Command(Slot, ChorusDACommand),
 }
 
-pub struct DATask {
-    da: DARuntime<NodeProposerSchedule>,
-    link: Link<DAOutput, DAInput>,
-}
+impl Component for DA {
+    type Input = DAInput;
+    type Output = DAOutput;
 
-impl DATask {
-    pub fn spawn(
-        da: DARuntime<NodeProposerSchedule>,
-        link: Link<DAOutput, DAInput>,
-    ) -> JoinHandle<()> {
-        let task = Self { da, link };
-        tokio::spawn(task.run().instrument(Span::current()))
-    }
-
-    async fn run(mut self) {
-        while let Some(input) = self.link.recv().await {
-            self.handle(input);
-            self.flush();
-        }
-    }
-
-    fn handle(&mut self, input: DAInput) {
+    fn handle(&mut self, _now: Timestamp, input: DAInput) {
         match input {
             DAInput::Envelope(envelope) => {
-                if let Err(reason) = self.da.ingest(envelope) {
+                if let Err(reason) = self.ingest(envelope) {
                     tracing::debug!(?reason, "rejected proposal envelope");
                 }
             }
-            DAInput::ChunkRequest(from, request) => {
-                self.da.handle_chunk_request(&from, request);
-            }
-            DAInput::Lifecycle(slot, event) => {
-                self.da.handle_slot_event(slot, event);
-            }
-            DAInput::Command(slot, command) => {
-                self.da.handle_command(slot, command);
-            }
+            DAInput::ChunkRequest(from, request) => self.handle_chunk_request(&from, request),
+            DAInput::Lifecycle(slot, event) => self.handle_slot_event(slot, event),
+            DAInput::Command(slot, command) => self.handle_command(slot, command),
         }
     }
 
-    fn flush(&mut self) {
-        while let Some(output) = self.da.poll() {
-            self.link.send(output);
-        }
+    fn poll(&mut self) -> Option<DAOutput> {
+        DARuntime::poll(self)
     }
 }

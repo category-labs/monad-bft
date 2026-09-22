@@ -25,8 +25,8 @@ use bytes::{BufMut, Bytes, BytesMut};
 use tokio::{net::UdpSocket, task::JoinHandle};
 use tracing::{Instrument as _, Span};
 
-use super::{Inbound, Link, Outbound, Packet};
-use crate::chorus::types::NodeId;
+use super::{Inbound, Outbound, Packet};
+use crate::{chorus::types::NodeId, component::Link};
 
 const CADENCE: u8 = 1;
 const CHUNK: u8 = 2;
