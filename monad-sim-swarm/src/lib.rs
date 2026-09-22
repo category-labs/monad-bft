@@ -44,5 +44,8 @@ mod swarm;
 mod timers;
 
 pub use net::{Conditions, Deliver, Link, Net, Network, NetworkModel};
+// named by `NetworkModel::deliveries`, so implementors outside this crate
+// need it without depending on rand_chacha themselves
+pub use rand_chacha::ChaChaRng;
 pub use swarm::{deliver_to, SimClient, Swarm};
 pub use timers::Timers;

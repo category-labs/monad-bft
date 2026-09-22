@@ -5722,6 +5722,7 @@ dependencies = [
  "monad-mcp-chorus",
  "monad-sim",
  "monad-sim-swarm",
+ "rand 0.8.5",
  "tracing",
 ]
 
