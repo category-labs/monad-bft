@@ -29,7 +29,7 @@ pub type DA = DARuntime<NodeProposerSchedule>;
 pub enum DAInput {
     Envelope(ProposalEnvelope),
     ChunkRequest(NodeId, ChunkRecoveryRequest),
-    Lifecycle(Slot, SlotLifecycle),
+    Lifecycle(SlotLifecycle),
     Command(Slot, ChorusDACommand),
 }
 
@@ -45,7 +45,7 @@ impl Component for DA {
                 }
             }
             DAInput::ChunkRequest(from, request) => self.handle_chunk_request(&from, request),
-            DAInput::Lifecycle(slot, event) => self.handle_slot_event(slot, event),
+            DAInput::Lifecycle(event) => self.handle_slot_lifecycle(event),
             DAInput::Command(slot, command) => self.handle_command(slot, command),
         }
     }

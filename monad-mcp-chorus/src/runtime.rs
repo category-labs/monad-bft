@@ -194,7 +194,7 @@ where
                     observer.handle_finalization(now, slot, &data);
                 }
                 if let Some(sink) = &mut self.da_sink {
-                    sink.handle_lifecycle(slot, SlotLifecycle::Completed);
+                    sink.handle_lifecycle(SlotLifecycle::Completed { slot });
                 }
                 self.conductor.handle_slot_finalization(now, slot);
                 self.slot_manager.close(slot);
@@ -202,7 +202,7 @@ where
             SlotOutput::Fault { reason } => {
                 tracing::warn!(?slot, reason = %reason, "slot faulted");
                 if let Some(sink) = &mut self.da_sink {
-                    sink.handle_lifecycle(slot, SlotLifecycle::Completed);
+                    sink.handle_lifecycle(SlotLifecycle::Completed { slot });
                 }
                 self.slot_manager.close(slot);
             }
@@ -221,6 +221,9 @@ where
             }
             ConductorOutput::CloseSlots { cap } => {
                 self.slot_manager.advance_cap(cap);
+                if let Some(sink) = &mut self.da_sink {
+                    sink.handle_lifecycle(SlotLifecycle::CapAdvance { cap });
+                }
                 if let Some(observer) = &mut self.observer {
                     observer.handle_chain_advance(now, cap);
                 }
@@ -233,7 +236,7 @@ where
                     self.slot_manager.open(slot);
                     self.timers.schedule(deadline, PendingWake::Deadline(slot));
                     if let Some(sink) = &mut self.da_sink {
-                        sink.handle_lifecycle(slot, SlotLifecycle::Opened { deadline });
+                        sink.handle_lifecycle(SlotLifecycle::Opened { slot, deadline });
                     }
                 }
             }
@@ -290,12 +293,14 @@ where
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SlotLifecycle {
-    Opened { deadline: Timestamp },
-    Completed,
+    Opened { slot: Slot, deadline: Timestamp },
+    Completed { slot: Slot },
+    // every slot below cap (exclusive) is closed, finalized locally or not
+    CapAdvance { cap: Slot },
 }
 
 pub trait DASink<A> {
-    fn handle_lifecycle(&mut self, slot: Slot, event: SlotLifecycle);
+    fn handle_lifecycle(&mut self, event: SlotLifecycle);
     fn handle_command(&mut self, slot: Slot, action: A);
 }
 

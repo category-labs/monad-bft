@@ -104,18 +104,14 @@ impl FinalizationCollector {
         self.complete(slot);
     }
 
-    // a slot that ended without finalizing is dropped. todo: decodes
-    // that arrive after that
-    pub fn handle_lifecycle(&mut self, slot: Slot, event: SlotLifecycle) {
-        let SlotLifecycle::Completed = event else {
+    // cadence emits a slot's finalization before any cap past it, so an
+    // unfinalized slot below the cap never finalizes; late decodes wait for the next cap
+    pub fn handle_lifecycle(&mut self, event: SlotLifecycle) {
+        let SlotLifecycle::CapAdvance { cap } = event else {
             return;
         };
-        let Some(collection) = self.slots.get(&slot) else {
-            return;
-        };
-        if collection.finalized.is_none() {
-            self.slots.remove(&slot);
-        }
+        self.slots
+            .retain(|&slot, c| slot >= cap || c.finalized.is_some());
     }
 
     pub fn poll(&mut self) -> Option<FinalizedSlot> {
@@ -131,5 +127,37 @@ impl FinalizationCollector {
         }
         let collection = self.slots.remove(&slot).expect("present");
         self.ready.push_back(collection.into_finalized(slot));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::chorus::env::MerkleHash;
+
+    fn decode(collector: &mut FinalizationCollector, slot: u64) {
+        let root = MerkleRoot(MerkleHash([slot as u8; 20]));
+        collector.handle_decoded(Slot(slot), 0, root, Bytes::from_static(b"m"));
+    }
+
+    #[test]
+    fn a_cap_advance_drops_unfinalized_slots_below_it() {
+        let mut collector = FinalizationCollector::default();
+        decode(&mut collector, 3);
+        decode(&mut collector, 5);
+
+        collector.handle_lifecycle(SlotLifecycle::CapAdvance { cap: Slot(4) });
+        assert_eq!(
+            collector.slots.keys().copied().collect::<Vec<_>>(),
+            [Slot(5)]
+        );
+
+        // a decode for a slot below the cap waits for the next one
+        decode(&mut collector, 3);
+        collector.handle_lifecycle(SlotLifecycle::CapAdvance { cap: Slot(4) });
+        assert_eq!(
+            collector.slots.keys().copied().collect::<Vec<_>>(),
+            [Slot(5)]
+        );
     }
 }

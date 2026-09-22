@@ -40,7 +40,20 @@ impl SlotCompletion {
         }
 
         self.completed_slots.insert(slot);
+        self.walk();
+    }
 
+    pub fn advance_cap(&mut self, cap: Slot) {
+        if cap <= self.cap {
+            return;
+        }
+
+        self.completed_slots = self.completed_slots.split_off(&cap);
+        self.cap = cap;
+        self.walk();
+    }
+
+    fn walk(&mut self) {
         while self.completed_slots.contains(&self.cap) {
             self.completed_slots.remove(&self.cap);
             self.cap = self.cap.checked_next().expect("slot cap overflow");
@@ -108,6 +121,24 @@ mod tests {
         let mut hasher = HasherType::new();
         hasher.update([byte]);
         hasher.hash()
+    }
+
+    #[test]
+    fn advance_cap_steps_over_an_unmarked_slot() {
+        let mut completion = SlotCompletion::new();
+        completion.mark_completed(Slot(1));
+        completion.mark_completed(Slot(3));
+        completion.mark_completed(Slot(4));
+        assert_eq!(completion.cap(), Slot(0));
+
+        // slots 0 and 2 never complete; the jump to 3 picks up the marks at 3 and 4
+        completion.advance_cap(Slot(3));
+        assert_eq!(completion.cap(), Slot(5));
+        assert!(completion.completed_slots.is_empty());
+
+        // a lower cap is a no-op
+        completion.advance_cap(Slot(2));
+        assert_eq!(completion.cap(), Slot(5));
     }
 
     #[test]

@@ -156,15 +156,19 @@ impl Runtime for NodeRuntime {
                 self.handle_cadence_outbound(event, effects);
             }
 
-            CadenceOutput::Lifecycle(slot, event) => {
-                effects.dispatch(Effect::DA(DAInput::Lifecycle(slot, event)));
-                if let SlotLifecycle::Opened { deadline } = event {
-                    effects.dispatch(Effect::Proposing(ProposingInput::SlotOpen(slot, deadline)));
+            CadenceOutput::Lifecycle(event) => {
+                effects.dispatch(Effect::DA(DAInput::Lifecycle(event)));
+                match event {
+                    SlotLifecycle::Opened { slot, deadline } => {
+                        let input = ProposingInput::SlotOpen(slot, deadline);
+                        effects.dispatch(Effect::Proposing(input));
+                    }
+                    SlotLifecycle::Completed { slot } => {
+                        effects.dispatch(Effect::Repeater(RepeaterInput::Completed(slot)));
+                    }
+                    SlotLifecycle::CapAdvance { .. } => {}
                 }
-                if event == SlotLifecycle::Completed {
-                    effects.dispatch(Effect::Repeater(RepeaterInput::Completed(slot)));
-                }
-                self.collector.handle_lifecycle(slot, event);
+                self.collector.handle_lifecycle(event);
             }
 
             CadenceOutput::DACommand(slot, command) => {

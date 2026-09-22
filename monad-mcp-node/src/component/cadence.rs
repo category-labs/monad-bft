@@ -37,7 +37,7 @@ pub enum CadenceInput {
 
 pub enum CadenceOutput {
     Outbound(Outbound<CadenceWireMsg>),
-    Lifecycle(Slot, SlotLifecycle),
+    Lifecycle(SlotLifecycle),
     DACommand(Slot, ChorusDACommand),
     Finalized(Timestamp, Slot, SlotFinalization),
     // the contiguous finalized prefix reached cap (exclusive)
@@ -107,8 +107,8 @@ impl Component for Cadence {
 struct DAChannel(Sender<CadenceOutput>);
 
 impl DASink<ChorusDACommand> for DAChannel {
-    fn handle_lifecycle(&mut self, slot: Slot, event: SlotLifecycle) {
-        self.0.send(CadenceOutput::Lifecycle(slot, event)).ok();
+    fn handle_lifecycle(&mut self, event: SlotLifecycle) {
+        self.0.send(CadenceOutput::Lifecycle(event)).ok();
     }
 
     fn handle_command(&mut self, slot: Slot, action: ChorusDACommand) {

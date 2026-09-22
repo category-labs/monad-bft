@@ -166,17 +166,21 @@ where
         self.collect(slot);
     }
 
-    pub fn handle_slot_event(&mut self, slot: Slot, event: SlotLifecycle) {
+    pub fn handle_slot_lifecycle(&mut self, event: SlotLifecycle) {
         match event {
-            SlotLifecycle::Opened { .. } => {
+            SlotLifecycle::Opened { slot, .. } => {
                 let open_ingestion_slot = slot
                     .checked_next()
                     .unwrap_or(Slot::MAX_CAP)
                     .max(self.ingestion_window.end);
                 self.ingestion_window.end = open_ingestion_slot;
             }
-            SlotLifecycle::Completed => {
+            SlotLifecycle::Completed { slot } => {
                 self.slot_completion.mark_completed(slot);
+                self.close_slots();
+            }
+            SlotLifecycle::CapAdvance { cap } => {
+                self.slot_completion.advance_cap(cap);
                 self.close_slots();
             }
         }
@@ -257,9 +261,10 @@ mod tests {
     fn open(runtime: &mut DARuntime<FixedProposerSchedule>, slots: impl IntoIterator<Item = u64>) {
         for slot in slots {
             let opened = SlotLifecycle::Opened {
+                slot: Slot(slot),
                 deadline: Timestamp::GENESIS,
             };
-            runtime.handle_slot_event(Slot(slot), opened);
+            runtime.handle_slot_lifecycle(opened);
         }
     }
 
@@ -299,14 +304,36 @@ mod tests {
         assert_eq!(runtime.ingest(group(&slot1[..1])), Ok(()));
 
         // completing 1 before 0 retires nothing
-        runtime.handle_slot_event(Slot(1), SlotLifecycle::Completed);
+        runtime.handle_slot_lifecycle(SlotLifecycle::Completed { slot: Slot(1) });
         assert_eq!(runtime.ingest(group(&slot0[1..2])), Ok(()));
 
         // the cap reaches 2: slot 0 leaves the retention window, slot 1 stays
-        runtime.handle_slot_event(Slot(0), SlotLifecycle::Completed);
+        runtime.handle_slot_lifecycle(SlotLifecycle::Completed { slot: Slot(0) });
         let retired = runtime.ingest(group(&slot0[2..3]));
         assert_eq!(retired, Err(InvalidProposalHeader::SlotOutOfRange));
         assert_eq!(runtime.ingest(group(&slot1[1..2])), Ok(()));
+    }
+
+    #[test]
+    fn a_cap_jump_retires_slots_that_never_completed() {
+        let mut runtime = runtime(1);
+        let epoch_handle = epoch_handle();
+        open(&mut runtime, [0, 1, 2, 3]);
+        let (_, slot0) = proposal_chunks_from(&epoch_handle, 0, Slot(0), 1);
+        let (_, slot2) = proposal_chunks_from(&epoch_handle, 0, Slot(2), 1);
+        assert_eq!(runtime.ingest(group(&slot0[..1])), Ok(()));
+        assert_eq!(runtime.ingest(group(&slot2[..1])), Ok(()));
+
+        // slot 0 is skipped, so completing 1 and 2 leaves the cap at 0
+        runtime.handle_slot_lifecycle(SlotLifecycle::Completed { slot: Slot(1) });
+        runtime.handle_slot_lifecycle(SlotLifecycle::Completed { slot: Slot(2) });
+        assert_eq!(runtime.ingest(group(&slot0[1..2])), Ok(()));
+
+        // the jump past 0 picks up 1 and 2: cap 3, slot 2 is the only one retained
+        runtime.handle_slot_lifecycle(SlotLifecycle::CapAdvance { cap: Slot(1) });
+        let retired = runtime.ingest(group(&slot0[2..3]));
+        assert_eq!(retired, Err(InvalidProposalHeader::SlotOutOfRange));
+        assert_eq!(runtime.ingest(group(&slot2[1..2])), Ok(()));
     }
 
     #[test]
