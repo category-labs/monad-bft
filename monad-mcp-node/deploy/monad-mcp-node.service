@@ -6,8 +6,8 @@ After=network-online.target
 ExecStart=%h/monad-mcp/bin/current %h/monad-mcp/config/node.toml
 Environment=RUST_LOG=info,monad_mcp_chorus=debug
 KillSignal=SIGINT
-Restart=on-failure
-RestartSec=2
+# a crashed node stays down for inspection
+Restart=no
 LimitNOFILE=1048576
 
 [Install]
