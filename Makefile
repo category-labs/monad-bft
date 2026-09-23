@@ -12,6 +12,9 @@ GIT_COMMIT ?= $(shell git rev-parse HEAD 2>/dev/null)
 GIT_BRANCH ?= $(shell git branch --show-current 2>/dev/null)
 GIT_TAG ?= $(shell git describe --tags --exact-match HEAD 2>/dev/null)
 GIT_MODIFIED ?= $(shell test -n "$$(git status --porcelain 2>/dev/null)" && echo true || echo false)
+# Exported so recipes can pass them as quoted shell vars; make won't splice
+# branch/tag names (which may hold shell metacharacters) into the command line.
+export GIT_COMMIT GIT_BRANCH GIT_TAG GIT_MODIFIED
 
 .PHONY: build builder deb deb-host clean
 
@@ -33,11 +36,11 @@ deb: builder
 		--iidfile "$$iidfile" \
 		--build-arg BUILDER_IMAGE=$(BUILDER_IMAGE) \
 		--build-arg PACKAGE_VERSION=$(PACKAGE_VERSION) \
-		--build-arg GIT_COMMIT=$(GIT_COMMIT) \
-		--build-arg GIT_BRANCH=$(GIT_BRANCH) \
-		--build-arg GIT_TAG=$(GIT_TAG) \
-		--build-arg GIT_MODIFIED=$(GIT_MODIFIED) \
-		--build-arg GIT_COMMIT_HASH=$(GIT_COMMIT) \
+		--build-arg GIT_COMMIT="$$GIT_COMMIT" \
+		--build-arg GIT_BRANCH="$$GIT_BRANCH" \
+		--build-arg GIT_TAG="$$GIT_TAG" \
+		--build-arg GIT_MODIFIED="$$GIT_MODIFIED" \
+		--build-arg GIT_COMMIT_HASH="$$GIT_COMMIT" \
 		-f docker/debian-package/Dockerfile . && \
 	container_id=$$($(CONTAINER_ENGINE) create "$$(cat "$$iidfile")" true) && \
 	trap '$(CONTAINER_ENGINE) rm -f $$container_id >/dev/null; rm -f "$$iidfile"' EXIT && \
