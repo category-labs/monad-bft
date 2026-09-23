@@ -78,6 +78,9 @@ pub struct Config {
     /// Otel replica name
     pub otel_replica_name: String,
 
+    /// Prometheus metrics listen address (e.g. "0.0.0.0:9148")
+    pub metrics_listen_addr: Option<String>,
+
     /// Gas limit for contract deployment transactions
     pub gas_limit_contract_deployment: Option<u64>,
 
@@ -129,6 +132,7 @@ impl Default for Config {
             use_static_tps_interval: false,
             otel_endpoint: None,
             otel_replica_name: "default".to_string(),
+            metrics_listen_addr: None,
             gas_limit_contract_deployment: None,
             set_tx_gas_limit: None,
             priority_fee: None,

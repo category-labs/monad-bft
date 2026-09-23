@@ -290,10 +290,7 @@ pub(crate) fn kvstore_put_metrics(
     kvstore_type: KVStoreType,
     metrics: &Metrics,
 ) {
-    let attrs = &[opentelemetry::KeyValue::new(
-        "kvstore_type",
-        kvstore_type.as_str(),
-    )];
+    let attrs = &[Label::new("kvstore_type", kvstore_type.as_str())];
     metrics.histogram_with_attrs(
         MetricNames::KV_STORE_PUT_DURATION_MS,
         duration.as_millis() as f64,
@@ -331,10 +328,7 @@ fn kvstore_get_metrics(
     kvstore_type: KVStoreType,
     metrics: &Metrics,
 ) {
-    let attrs = &[opentelemetry::KeyValue::new(
-        "kvstore_type",
-        kvstore_type.as_str(),
-    )];
+    let attrs = &[Label::new("kvstore_type", kvstore_type.as_str())];
     metrics.histogram_with_attrs(
         MetricNames::KV_STORE_GET_DURATION_MS,
         duration.as_millis() as f64,

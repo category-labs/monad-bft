@@ -41,6 +41,7 @@ monad-version = { workspace = true }
 actix = { workspace = true }
 actix-http = { workspace = true }
 actix-rt = { workspace = true }
+actix-server = { workspace = true }
 actix-web = { workspace = true }
 actix-ws = { workspace = true }
 agent = { workspace = true }
@@ -64,8 +65,10 @@ inotify = { workspace = true }
 itertools = { workspace = true }
 opentelemetry = { workspace = true, features = ["metrics", "trace"] }
 opentelemetry-otlp = { workspace = true, features = ["metrics", "grpc-tonic"] }
+opentelemetry-semantic-conventions = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["rt-tokio", "trace"] }
 pin-project = { workspace = true }
+prometheus = { workspace = true }
 rand = { workspace = true }
 rayon = { workspace = true }
 reqwest = { workspace = true }

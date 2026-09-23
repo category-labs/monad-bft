@@ -158,6 +158,10 @@ pub struct CliConfig {
     #[arg(long, global = true)]
     pub otel_replica_name: Option<String>,
 
+    /// Prometheus metrics listen address (e.g. "0.0.0.0:9148")
+    #[arg(long, global = true)]
+    pub metrics_listen_addr: Option<String>,
+
     /// Gas limit for contract deployment transactions
     #[arg(long, global = true)]
     pub gas_limit_contract_deployment: Option<u64>,
@@ -333,6 +337,9 @@ pub fn patch_config_with_cli_args(config: &mut Config, value: CliConfig) {
     }
     if let Some(otel_replica_name) = value.otel_replica_name {
         config.otel_replica_name = otel_replica_name;
+    }
+    if let Some(metrics_listen_addr) = value.metrics_listen_addr {
+        config.metrics_listen_addr = Some(metrics_listen_addr);
     }
     if let Some(gas_limit) = value.gas_limit_contract_deployment {
         config.gas_limit_contract_deployment = Some(gas_limit);

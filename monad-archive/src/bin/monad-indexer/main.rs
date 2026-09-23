@@ -79,12 +79,17 @@ async fn main() -> Result<()> {
 }
 
 async fn run_indexer(args: cli::Cli) -> Result<()> {
-    let metrics = Metrics::new(
-        args.otel_endpoint,
+    let record_interval = args
+        .record_metrics_interval_seconds
+        .map(Duration::from_secs);
+    let metrics = Metrics::new_with_otel(
+        args.metrics_listen_addr,
         "monad-indexer",
         args.otel_replica_name_override
             .unwrap_or_else(|| args.archive_sink.replica_name()),
         Duration::from_secs(15),
+        args.otel_endpoint,
+        record_interval,
     )?;
     set_source_and_sink_metrics(&args.archive_sink, &args.block_data_source, &metrics);
 

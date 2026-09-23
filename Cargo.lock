@@ -4941,6 +4941,8 @@ dependencies = [
 name = "monad-archive"
 version = "0.1.0"
 dependencies = [
+ "actix-server",
+ "actix-web",
  "alloy-consensus",
  "alloy-eips",
  "alloy-primitives",
@@ -4970,6 +4972,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry-semantic-conventions",
  "opentelemetry_sdk",
+ "prometheus",
  "rand 0.8.5",
  "rayon",
  "regex",
@@ -5349,6 +5352,8 @@ dependencies = [
 name = "monad-eth-testutil"
 version = "0.1.0"
 dependencies = [
+ "actix-server",
+ "actix-web",
  "alloy-consensus",
  "alloy-eips",
  "alloy-json-rpc",
@@ -5387,6 +5392,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry-semantic-conventions",
  "opentelemetry_sdk",
+ "prometheus",
  "rand 0.8.5",
  "reqwest 0.12.28",
  "serde",
@@ -6071,6 +6077,7 @@ dependencies = [
  "actix",
  "actix-http",
  "actix-rt",
+ "actix-server",
  "actix-test",
  "actix-web",
  "actix-ws",
@@ -6117,9 +6124,11 @@ dependencies = [
  "monad-version",
  "opentelemetry",
  "opentelemetry-otlp",
+ "opentelemetry-semantic-conventions",
  "opentelemetry_sdk",
  "paste",
  "pin-project",
+ "prometheus",
  "proptest",
  "rand 0.8.5",
  "rayon",

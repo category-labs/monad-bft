@@ -29,8 +29,10 @@ pub struct Cli {
     pub max_concurrent_blocks: usize,
     pub reset_index: bool,
     pub stop_block: Option<u64>,
-    pub otel_endpoint: Option<String>,
+    pub metrics_listen_addr: Option<String>,
     pub otel_replica_name_override: Option<String>,
+    pub otel_endpoint: Option<String>,
+    pub record_metrics_interval_seconds: Option<u64>,
     pub max_inline_encoded_len: usize,
     pub skip_connectivity_check: bool,
     pub enable_logs_indexing: bool,
@@ -114,12 +116,20 @@ pub struct CliArgs {
     #[arg(long)]
     pub stop_block: Option<u64>,
 
-    /// Endpoint to push metrics to
+    /// Listen address for the Prometheus metrics server (e.g. 0.0.0.0:9146)
     #[arg(long)]
-    pub otel_endpoint: Option<String>,
+    pub metrics_listen_addr: Option<String>,
 
     #[arg(long)]
     pub otel_replica_name_override: Option<String>,
+
+    /// OTLP gRPC endpoint for push-based metrics export (e.g. http://127.0.0.1:4317)
+    #[arg(long)]
+    pub otel_endpoint: Option<String>,
+
+    /// How often (in seconds) to forward Prometheus metrics to the OTLP collector
+    #[arg(long)]
+    pub record_metrics_interval_seconds: Option<u64>,
 
     /// Maximum size of an encoded inline tx index entry
     /// If an entry is larger than this, it is stored as a reference pointing to
@@ -147,8 +157,10 @@ impl CliArgs {
             max_concurrent_blocks,
             reset_index,
             stop_block,
-            otel_endpoint,
+            metrics_listen_addr,
             otel_replica_name_override,
+            otel_endpoint,
+            record_metrics_interval_seconds,
             max_inline_encoded_len,
             skip_connectivity_check,
             enable_logs_indexing,
@@ -164,8 +176,10 @@ impl CliArgs {
             max_concurrent_blocks,
             reset_index,
             stop_block,
-            otel_endpoint,
+            metrics_listen_addr,
             otel_replica_name_override,
+            otel_endpoint,
+            record_metrics_interval_seconds,
             max_inline_encoded_len,
             skip_connectivity_check,
             enable_logs_indexing,
@@ -279,8 +293,10 @@ mod tests {
             max_concurrent_blocks: 10,
             reset_index: false,
             stop_block: None,
-            otel_endpoint: None,
+            metrics_listen_addr: None,
             otel_replica_name_override: None,
+            otel_endpoint: None,
+            record_metrics_interval_seconds: None,
             max_inline_encoded_len: 350 * 1024,
             skip_connectivity_check: false,
             enable_logs_indexing: false,
@@ -332,13 +348,13 @@ mod tests {
         args.fallback_block_data_source = Some(make_aws_block_data_source());
         args.async_backfill = true;
         args.stop_block = Some(1000);
-        args.otel_endpoint = Some("http://localhost:4317".to_string());
+        args.metrics_listen_addr = Some("0.0.0.0:9146".to_string());
 
         let cli = args.into_cli().expect("should succeed");
         assert!(cli.fallback_block_data_source.is_some());
         assert!(cli.async_backfill);
         assert_eq!(cli.stop_block, Some(1000));
-        assert_eq!(cli.otel_endpoint, Some("http://localhost:4317".to_string()));
+        assert_eq!(cli.metrics_listen_addr, Some("0.0.0.0:9146".to_string()));
     }
 
     #[test]

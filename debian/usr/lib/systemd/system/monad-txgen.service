@@ -7,6 +7,7 @@ Type=simple
 ExecStart=/usr/local/bin/monad-txgen \
       --rpc-url $RPC_URL \
       --otel-endpoint $OTEL_ENDPOINT \
+      --metrics-listen-addr "0.0.0.0:9148" \
       few-to-many \
       --tx-type erc20 \
       --recipients 300000000 \

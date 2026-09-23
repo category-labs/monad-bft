@@ -36,7 +36,10 @@ use monad_rpc::{
         resources::{MonadJsonRootSpanBuilder, MonadRpcResources},
         rpc_handler,
     },
-    middleware::{DecompressionGuard, Metrics, TimingMiddleware},
+    middleware::{
+        build_otel_meter_provider, start_metrics_server, start_otel_forwarder, DecompressionGuard,
+        Metrics, TimingMiddleware,
+    },
     txpool::EthTxPoolBridge,
     websocket, MONAD_RPC_VERSION,
 };
@@ -298,13 +301,57 @@ async fn main() -> std::io::Result<()> {
         )
     });
 
-    let with_metrics = args.otel_endpoint.map(|otel_endpoint| {
-        Metrics::new_with_otel_endpoint(
-            otel_endpoint,
-            node_config.node_name.clone(),
-            std::time::Duration::from_secs(5),
-        )
-    });
+    let with_metrics = if args.metrics_listen_addr.is_some() || args.otel_endpoint.is_some() {
+        let labels =
+            monad_rpc::middleware::default_prometheus_labels(node_config.node_name.clone());
+        let registry = prometheus::Registry::new_custom(None, Some(labels))
+            .expect("valid prometheus registry");
+        Some(Metrics::new(node_config.node_name.clone(), registry))
+    } else {
+        None
+    };
+
+    // Start the Prometheus metrics server if a listen address was provided.
+    if let (Some(addr), Some(metrics)) = (&args.metrics_listen_addr, &with_metrics) {
+        let registry = metrics.registry().clone();
+        let addr = addr.clone();
+        tokio::spawn(async move {
+            match start_metrics_server(addr.clone(), registry) {
+                Ok(server) => {
+                    info!(addr = %addr, "Prometheus metrics server started");
+                    if let Err(err) = server.await {
+                        error!("metrics server failed: {}", err);
+                    }
+                }
+                Err(err) => {
+                    error!("failed to start metrics server: {}", err);
+                }
+            }
+        });
+    }
+
+    // Start the OTLP gRPC metrics forwarder if an endpoint was provided.
+    let _otel_forwarder = match (&args.otel_endpoint, &with_metrics) {
+        (Some(endpoint), Some(metrics)) => {
+            let interval = Duration::from_secs(args.record_metrics_interval_seconds.unwrap_or(5));
+            let service_name = format!(
+                "{network}_{node}",
+                network = &node_config.network_name,
+                node = &node_config.node_name,
+            );
+            let provider = build_otel_meter_provider(
+                endpoint,
+                service_name,
+                node_config.network_name.clone(),
+                MONAD_RPC_VERSION,
+                interval,
+            )
+            .expect("failed to build OTLP meter provider for monad-rpc");
+            let registry = metrics.registry().clone();
+            Some(start_otel_forwarder(registry, provider, interval))
+        }
+        _ => None,
+    };
 
     // Configure event ring, websocket server and event cache.
     let event_server_client = if let Some(exec_event_path) = args.exec_event_path {

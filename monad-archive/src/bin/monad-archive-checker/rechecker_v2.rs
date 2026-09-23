@@ -15,7 +15,6 @@
 
 use eyre::{Context, Result};
 use monad_archive::{kvstore::WritePolicy, prelude::*};
-use opentelemetry::KeyValue;
 use tokio::time::interval;
 
 use crate::{
@@ -494,7 +493,7 @@ fn update_fault_metrics(
         metrics.periodic_gauge_with_attrs(
             MetricNames::REPLICA_FAULTS_TOTAL,
             total_faults.len() as u64,
-            vec![KeyValue::new("replica", replica.to_owned())],
+            vec![Label::new("replica", replica.to_owned())],
         );
 
         // Group faults by kind and update per-kind metrics
@@ -510,8 +509,8 @@ fn update_fault_metrics(
                 MetricNames::REPLICA_FAULTS_BY_KIND,
                 count,
                 vec![
-                    KeyValue::new("replica", replica.to_owned()),
-                    KeyValue::new("kind", fault_kind),
+                    Label::new("replica", replica.to_owned()),
+                    Label::new("kind", fault_kind),
                 ],
             );
         }

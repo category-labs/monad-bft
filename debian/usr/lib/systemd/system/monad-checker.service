@@ -8,7 +8,9 @@ WorkingDirectory=/home/monad
 Type=simple
 ExecStart=/usr/local/bin/monad-archive-checker \
     --bucket "${ARCHIVE_BUCKET}" \
-    --otel-endpoint ${OTEL_ENDPOINT} \
+    --metrics-listen-addr "0.0.0.0:9147" \
+    --otel-endpoint "http://127.0.0.1:4317" \
+    --record-metrics-interval-seconds 5 \
     --max-compute-threads 2 \
     checker \
     --recheck-freq-min 50 \

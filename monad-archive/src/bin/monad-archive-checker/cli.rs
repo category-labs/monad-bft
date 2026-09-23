@@ -56,10 +56,18 @@ pub struct Cli {
     pub region: Option<String>,
 
     #[arg(long, global = true)]
-    pub otel_endpoint: Option<String>,
+    pub metrics_listen_addr: Option<String>,
 
     #[arg(long, global = true)]
     pub otel_replica_name_override: Option<String>,
+
+    /// OTLP gRPC endpoint for push-based metrics export (e.g. http://127.0.0.1:4317)
+    #[arg(long, global = true)]
+    pub otel_endpoint: Option<String>,
+
+    /// How often (in seconds) to forward Prometheus metrics to the OTLP collector
+    #[arg(long, global = true)]
+    pub record_metrics_interval_seconds: Option<u64>,
 
     #[arg(long, global = true)]
     pub max_compute_threads: Option<usize>,
@@ -237,8 +245,8 @@ mod tests {
             "aws archive-1 20",
             "--region",
             "us-east-1",
-            "--otel-endpoint",
-            "http://localhost:4317",
+            "--metrics-listen-addr",
+            "0.0.0.0:9147",
             "--otel-replica-name-override",
             "test-replica",
             "--max-compute-threads",
@@ -248,7 +256,7 @@ mod tests {
 
         assert_eq!(cli.bucket, "test-bucket");
         assert_eq!(cli.region, Some("us-east-1".to_string()));
-        assert_eq!(cli.otel_endpoint, Some("http://localhost:4317".to_string()));
+        assert_eq!(cli.metrics_listen_addr, Some("0.0.0.0:9147".to_string()));
         assert_eq!(
             cli.otel_replica_name_override,
             Some("test-replica".to_string())

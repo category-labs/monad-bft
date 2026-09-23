@@ -60,18 +60,23 @@ async fn main() -> Result<()> {
 
     // Initialize metrics
     info!(
-        "Initializing metrics with endpoint: {:?}",
-        args.otel_endpoint
+        "Initializing metrics with listen addr: {:?}",
+        args.metrics_listen_addr
     );
     let replica_name = args
         .otel_replica_name_override
         .clone()
         .unwrap_or_else(|| args.bucket.clone());
-    let metrics = Metrics::new(
-        args.otel_endpoint,
+    let record_interval = args
+        .record_metrics_interval_seconds
+        .map(Duration::from_secs);
+    let metrics = Metrics::new_with_otel(
+        args.metrics_listen_addr,
         "monad_archive_checker",
         replica_name,
         Duration::from_secs(15),
+        args.otel_endpoint,
+        record_interval,
     )?;
 
     // Get AWS configuration

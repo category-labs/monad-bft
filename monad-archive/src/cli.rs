@@ -89,21 +89,21 @@ pub fn set_source_and_sink_metrics(
             metrics.periodic_gauge_with_attrs(
                 MetricNames::SINK_STORE_TYPE,
                 1,
-                vec![opentelemetry::KeyValue::new("sink_store_type", "aws")],
+                vec![Label::new("sink_store_type", "aws")],
             );
         }
         ArchiveArgs::MongoDb(_) => {
             metrics.periodic_gauge_with_attrs(
                 MetricNames::SINK_STORE_TYPE,
                 2,
-                vec![opentelemetry::KeyValue::new("sink_store_type", "mongodb")],
+                vec![Label::new("sink_store_type", "mongodb")],
             );
         }
         ArchiveArgs::Fs(_) => {
             metrics.periodic_gauge_with_attrs(
                 MetricNames::SINK_STORE_TYPE,
                 3,
-                vec![opentelemetry::KeyValue::new("sink_store_type", "fs")],
+                vec![Label::new("sink_store_type", "fs")],
             );
         }
     }
@@ -113,28 +113,28 @@ pub fn set_source_and_sink_metrics(
             metrics.periodic_gauge_with_attrs(
                 MetricNames::SOURCE_STORE_TYPE,
                 1,
-                vec![opentelemetry::KeyValue::new("source_store_type", "aws")],
+                vec![Label::new("source_store_type", "aws")],
             );
         }
         BlockDataReaderArgs::MongoDb(_) => {
             metrics.periodic_gauge_with_attrs(
                 MetricNames::SOURCE_STORE_TYPE,
                 2,
-                vec![opentelemetry::KeyValue::new("source_store_type", "mongodb")],
+                vec![Label::new("source_store_type", "mongodb")],
             );
         }
         BlockDataReaderArgs::Fs(_) => {
             metrics.periodic_gauge_with_attrs(
                 MetricNames::SOURCE_STORE_TYPE,
                 4,
-                vec![opentelemetry::KeyValue::new("source_store_type", "fs")],
+                vec![Label::new("source_store_type", "fs")],
             );
         }
         BlockDataReaderArgs::Triedb(_) => {
             metrics.periodic_gauge_with_attrs(
                 MetricNames::SOURCE_STORE_TYPE,
                 3,
-                vec![opentelemetry::KeyValue::new("source_store_type", "triedb")],
+                vec![Label::new("source_store_type", "triedb")],
             );
         }
     }

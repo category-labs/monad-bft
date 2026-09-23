@@ -81,9 +81,17 @@ pub struct Cli {
     #[arg(long, default_value_t = 25_000_000)]
     pub max_response_size: u32,
 
-    /// Otel endpoint to collect metrics data
+    /// Listen address for the Prometheus metrics server (e.g. 0.0.0.0:9144)
+    #[arg(long)]
+    pub metrics_listen_addr: Option<String>,
+
+    /// OpenTelemetry OTLP exporter endpoint (e.g. http://127.0.0.1:4317)
     #[arg(long)]
     pub otel_endpoint: Option<String>,
+
+    /// Metrics collection interval in seconds (requires --otel-endpoint)
+    #[arg(long, requires = "otel_endpoint")]
+    pub record_metrics_interval_seconds: Option<u64>,
 
     /// HTTP endpoint to collect RPC comparison data
     #[arg(long)]

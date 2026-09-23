@@ -15,7 +15,10 @@
 
 pub use self::{
     decompression_guard::{DecompressionGuard, DecompressionGuardService},
-    metrics::{Metrics, MetricsMiddleware},
+    metrics::{
+        build_otel_meter_provider, default_prometheus_labels, start_metrics_server,
+        start_otel_forwarder, Metrics, MetricsMiddleware,
+    },
     timing::{TimingMiddleware, TimingRequestId},
 };
 

@@ -10,7 +10,9 @@ ExecStart=/usr/local/bin/monad-archiver \
     --block-data-source "aws dummy" \
     --archive-sink "aws ${BLOCKCAPD_S3_BUCKET}" \
     --skip-connectivity-check \
-    --otel-endpoint ${OTEL_ENDPOINT} \
+    --metrics-listen-addr "0.0.0.0:9149" \
+    --otel-endpoint "http://127.0.0.1:4317" \
+    --record-metrics-interval-seconds 5 \
     --otel-replica-name-override "exec-events-archiver-%H"
 EnvironmentFile=-/home/monad/.env
 Environment="RUST_LOG=debug,h2=warn,tower=warn"

@@ -41,7 +41,10 @@ use crate::{
         eth_json_rpc::EthJsonRpc, nft_sale::NftSale, simple7702_account::Simple7702Account,
         uniswap::Uniswap,
     },
-    workers::transform::TransformOptions,
+    workers::{
+        metrics::{start_metrics_server, PrometheusMetrics},
+        transform::TransformOptions,
+    },
 };
 
 /// Runs the txgen for the given config
@@ -53,6 +56,19 @@ use crate::{
 pub async fn run(clients: Vec<ReqwestClient>, config: Config) -> Result<()> {
     if config.workload_groups.is_empty() {
         bail!("No workload group configurations provided");
+    }
+
+    // Start Prometheus metrics server if configured (lives across all workload phases)
+    let prom = if config.metrics_listen_addr.is_some() {
+        Some(PrometheusMetrics::new()?)
+    } else {
+        None
+    };
+
+    if let (Some(addr), Some(prom)) = (&config.metrics_listen_addr, &prom) {
+        let server = start_metrics_server(addr.clone(), prom.registry.clone())
+            .map_err(|e| eyre::eyre!("Failed to start Prometheus metrics server: {e}"))?;
+        tokio::spawn(server);
     }
 
     let mut workload_group_index = 0;
@@ -67,8 +83,14 @@ pub async fn run(clients: Vec<ReqwestClient>, config: Config) -> Result<()> {
 
         let start_time = Utc::now();
         let metrics = Arc::new(Metrics::default());
-        if let Err(e) =
-            run_workload_group(&clients, &config, workload_group_index, metrics.clone()).await
+        if let Err(e) = run_workload_group(
+            &clients,
+            &config,
+            workload_group_index,
+            metrics.clone(),
+            prom.clone(),
+        )
+        .await
         {
             error!(
                 workload_group = workload_group.name,
@@ -104,6 +126,7 @@ async fn run_workload_group(
     config: &Config,
     workload_group_index: usize,
     metrics: Arc<Metrics>,
+    prom: Option<PrometheusMetrics>,
 ) -> Result<()> {
     let workload_group = &config.workload_groups[workload_group_index];
     let read_client = clients[0].clone();
@@ -208,6 +231,7 @@ async fn run_workload_group(
         config.otel_endpoint.clone(),
         config.otel_replica_name.clone(),
         workload_group.name.clone(),
+        prom,
     )?;
 
     // continue working if helper task stops

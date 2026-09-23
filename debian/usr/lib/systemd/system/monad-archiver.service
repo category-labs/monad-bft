@@ -9,7 +9,9 @@ ExecStart=/usr/local/bin/monad-archiver \
     --fallback-block-data-source ${FALLBACK_BLOCK_DATA_SOURCE} \
     --archive-sink ${ARCHIVE_SINK} \
     --bft-block-path ${BFT_BLOCK_PATH} \
-    --otel-endpoint ${OTEL_ENDPOINT} \
+    --metrics-listen-addr "0.0.0.0:9145" \
+    --otel-endpoint "http://127.0.0.1:4317" \
+    --record-metrics-interval-seconds 5 \
     --max-concurrent-blocks ${MAX_CONCURRENT_BLOCKS}
 EnvironmentFile=-/home/monad/.env
 Environment="RUST_LOG=debug,h2=warn,tower=warn"

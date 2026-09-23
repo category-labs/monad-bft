@@ -18,10 +18,13 @@ use std::sync::{
     RwLock,
 };
 
+use actix_server::Server;
+use actix_web::{http::header, web, App, HttpRequest, HttpResponse, HttpServer};
 use futures::join;
 use opentelemetry::metrics::{Gauge, MeterProvider};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::metrics::{SdkMeterProvider, Temporality};
+use prometheus::{Encoder, IntGauge, Registry, TextEncoder};
 
 use super::*;
 
@@ -175,6 +178,9 @@ pub struct MetricsReporter {
     total_transactions: Gauge<u64>,
     total_contracts_created: Gauge<u64>,
 
+    // Optional Prometheus pull metrics (mirrors OTel gauges)
+    prom: Option<PrometheusMetrics>,
+
     // Keeping these so they don't get dropped
     _provider: SdkMeterProvider,
     _meter: opentelemetry::metrics::Meter,
@@ -194,6 +200,7 @@ impl MetricsReporter {
         otel_endpoint: Option<impl AsRef<str>>,
         otel_replica_name: String,
         gen_mode: String,
+        prom: Option<PrometheusMetrics>,
     ) -> Result<Self> {
         let provider = build_otel_meter_provider(
             otel_endpoint,
@@ -214,6 +221,8 @@ impl MetricsReporter {
             contracts_deployed_ps: meter.u64_gauge("contracts_deployed_ps").build(),
             total_transactions: meter.u64_gauge("total_transactions").build(),
             total_contracts_created: meter.u64_gauge("total_contracts_created").build(),
+
+            prom,
 
             _provider: provider,
             _meter: meter,
@@ -265,35 +274,140 @@ impl MetricsReporter {
     fn report_metrics(&self, elapsed: f64, rates: &mut Rates) {
         debug!("Reporting Otel Metrics");
 
-        self.committed_tps.record(
-            rates.committed_txs.rate(elapsed) as u64,
-            &[opentelemetry::KeyValue::new(
-                "Generator Mode",
-                self.gen_mode.clone(),
-            )],
-        );
-        self.sent_tps.record(
-            rates.txs_sent.rate(elapsed) as u64,
-            &[opentelemetry::KeyValue::new(
-                "Generator Mode",
-                self.gen_mode.clone(),
-            )],
-        );
-        self.rpc_calls_ps
-            .record(rates.rpc_calls.rate(elapsed) as u64, &[]);
-        self.rpc_calls_error_ps
-            .record(rates.rpc_calls_error.rate(elapsed) as u64, &[]);
-        self.contracts_deployed_ps
-            .record(rates.contracts_deployed.rate(elapsed) as u64, &[]);
+        let committed_tps_val = rates.committed_txs.rate(elapsed) as u64;
+        let sent_tps_val = rates.txs_sent.rate(elapsed) as u64;
+        let rpc_calls_ps_val = rates.rpc_calls.rate(elapsed) as u64;
+        let rpc_calls_error_ps_val = rates.rpc_calls_error.rate(elapsed) as u64;
+        let contracts_deployed_ps_val = rates.contracts_deployed.rate(elapsed) as u64;
+        let total_transactions_val = rates.txs_sent.val() as u64;
+        let total_contracts_created_val = rates.contracts_deployed.val() as u64;
 
-        self.total_transactions
-            .record(rates.txs_sent.val() as u64, &[]);
+        let gen_mode_label = &[opentelemetry::KeyValue::new(
+            "Generator Mode",
+            self.gen_mode.clone(),
+        )];
+
+        self.committed_tps.record(committed_tps_val, gen_mode_label);
+        self.sent_tps.record(sent_tps_val, gen_mode_label);
+        self.rpc_calls_ps.record(rpc_calls_ps_val, &[]);
+        self.rpc_calls_error_ps.record(rpc_calls_error_ps_val, &[]);
+        self.contracts_deployed_ps
+            .record(contracts_deployed_ps_val, &[]);
+        self.total_transactions.record(total_transactions_val, &[]);
         self.total_contracts_created
-            .record(rates.contracts_deployed.val() as u64, &[]);
+            .record(total_contracts_created_val, &[]);
+
+        // Mirror to Prometheus gauges when enabled
+        if let Some(prom) = &self.prom {
+            prom.committed_tps.set(committed_tps_val as i64);
+            prom.sent_tps.set(sent_tps_val as i64);
+            prom.rpc_calls_ps.set(rpc_calls_ps_val as i64);
+            prom.rpc_calls_error_ps.set(rpc_calls_error_ps_val as i64);
+            prom.contracts_deployed_ps
+                .set(contracts_deployed_ps_val as i64);
+            prom.total_transactions.set(total_transactions_val as i64);
+            prom.total_contracts_created
+                .set(total_contracts_created_val as i64);
+        }
 
         info!("Otel Metrics Reported");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Prometheus pull metrics
+// ---------------------------------------------------------------------------
+
+/// Prometheus gauges that mirror the OTel gauges so Prometheus can scrape them.
+#[derive(Clone)]
+pub struct PrometheusMetrics {
+    pub registry: Registry,
+    pub committed_tps: IntGauge,
+    pub sent_tps: IntGauge,
+    pub rpc_calls_ps: IntGauge,
+    pub rpc_calls_error_ps: IntGauge,
+    pub contracts_deployed_ps: IntGauge,
+    pub total_transactions: IntGauge,
+    pub total_contracts_created: IntGauge,
+}
+
+impl PrometheusMetrics {
+    pub fn new() -> Result<Self> {
+        let registry = Registry::new_custom(Some("txgen".to_string()), None)
+            .map_err(|e| eyre::eyre!("Failed to create prometheus registry: {e}"))?;
+
+        let committed_tps = IntGauge::new("committed_tps", "Committed transactions per second")
+            .map_err(|e| eyre::eyre!("{e}"))?;
+        let sent_tps = IntGauge::new("sent_tps", "Sent transactions per second")
+            .map_err(|e| eyre::eyre!("{e}"))?;
+        let rpc_calls_ps = IntGauge::new("rpc_calls_ps", "RPC calls per second")
+            .map_err(|e| eyre::eyre!("{e}"))?;
+        let rpc_calls_error_ps = IntGauge::new("rpc_calls_error_ps", "RPC call errors per second")
+            .map_err(|e| eyre::eyre!("{e}"))?;
+        let contracts_deployed_ps =
+            IntGauge::new("contracts_deployed_ps", "Contracts deployed per second")
+                .map_err(|e| eyre::eyre!("{e}"))?;
+        let total_transactions = IntGauge::new("total_transactions", "Total transactions sent")
+            .map_err(|e| eyre::eyre!("{e}"))?;
+        let total_contracts_created =
+            IntGauge::new("total_contracts_created", "Total contracts created")
+                .map_err(|e| eyre::eyre!("{e}"))?;
+
+        for gauge in [
+            &committed_tps,
+            &sent_tps,
+            &rpc_calls_ps,
+            &rpc_calls_error_ps,
+            &contracts_deployed_ps,
+            &total_transactions,
+            &total_contracts_created,
+        ] {
+            registry
+                .register(Box::new(gauge.clone()))
+                .map_err(|e| eyre::eyre!("Failed to register prometheus gauge: {e}"))?;
+        }
+
+        Ok(Self {
+            registry,
+            committed_tps,
+            sent_tps,
+            rpc_calls_ps,
+            rpc_calls_error_ps,
+            contracts_deployed_ps,
+            total_transactions,
+            total_contracts_created,
+        })
+    }
+}
+
+async fn handle_metrics(_request: HttpRequest, state: web::Data<Registry>) -> HttpResponse {
+    let metric_families = state.gather();
+    let mut buffer = Vec::new();
+    let encoder = TextEncoder::new();
+    if encoder.encode(&metric_families, &mut buffer).is_err() {
+        return HttpResponse::InternalServerError().finish();
+    }
+
+    HttpResponse::Ok()
+        .insert_header((header::CONTENT_TYPE, prometheus::TEXT_FORMAT))
+        .body(buffer)
+}
+
+pub fn start_metrics_server(addr: String, registry: Registry) -> std::io::Result<Server> {
+    info!("Starting Prometheus metrics server on {addr}");
+    Ok(HttpServer::new(move || {
+        App::new()
+            .app_data(web::Data::new(registry.clone()))
+            .route("/metrics", web::get().to(handle_metrics))
+    })
+    .bind(addr)?
+    .workers(1)
+    .run())
+}
+
+// ---------------------------------------------------------------------------
+// OTel push metrics
+// ---------------------------------------------------------------------------
 
 fn build_otel_meter_provider(
     otel_endpoint: Option<impl AsRef<str>>,

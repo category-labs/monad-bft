@@ -33,6 +33,8 @@ monad-version = { workspace = true }
 [dev-dependencies]
 monad-version = { workspace = true }
 
+actix-server = { workspace = true }
+actix-web = { workspace = true }
 alloy-json-rpc = { workspace = true }
 alloy-network = { workspace = true }
 alloy-primitives = { workspace = true, features = ["getrandom"] }
@@ -56,6 +58,7 @@ opentelemetry = { workspace = true }
 opentelemetry-otlp = { workspace = true, features = ["metrics", "grpc-tonic"] }
 opentelemetry-semantic-conventions = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
+prometheus = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

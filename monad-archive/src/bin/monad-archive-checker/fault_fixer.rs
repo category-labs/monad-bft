@@ -18,7 +18,6 @@ use std::collections::HashMap;
 use eyre::{eyre, Context, Result};
 use futures::stream;
 use monad_archive::{kvstore::WritePolicy, prelude::*};
-use opentelemetry::KeyValue;
 use tracing::{debug, error, info, warn};
 
 use crate::{
@@ -158,13 +157,13 @@ pub async fn run_fixer(
             metrics.counter_with_attrs(
                 MetricNames::REPLICA_FAULTS_FIXED,
                 replica_fixed as u64,
-                &[KeyValue::new("replica", replica.clone())],
+                &[Label::new("replica", replica.clone())],
             );
 
             metrics.counter_with_attrs(
                 MetricNames::REPLICA_FAULTS_FIX_FAILED,
                 replica_failed as u64,
-                &[KeyValue::new("replica", replica)],
+                &[Label::new("replica", replica)],
             );
         }
     }
@@ -251,15 +250,11 @@ async fn fix_faults_in_range(
                     fault.block_num, replica, e
                 );
 
-                // Report error metric
+                // Report error metric (use fixed-cardinality labels only)
                 metrics.counter_with_attrs(
                     MetricNames::REPLICA_FAULTS_FIX_FAILED,
                     1,
-                    &[
-                        KeyValue::new("replica", replica.to_owned()),
-                        KeyValue::new("block_num", fault.block_num.to_string()),
-                        KeyValue::new("error", e.to_string()),
-                    ],
+                    &[Label::new("replica", replica.to_owned())],
                 );
 
                 // Fail fast on errors
@@ -269,14 +264,13 @@ async fn fix_faults_in_range(
                 )));
             }
 
-            // Report success metric
+            // Report success metric (use fixed-cardinality labels only)
             metrics.counter_with_attrs(
                 MetricNames::REPLICA_FAULTS_FIX_SUCCESS,
                 1,
                 &[
-                    KeyValue::new("replica", replica.to_owned()),
-                    KeyValue::new("block_num", fault.block_num.to_string()),
-                    KeyValue::new("fault_type", fault.fault.variant_name()),
+                    Label::new("replica", replica.to_owned()),
+                    Label::new("fault_type", fault.fault.variant_name()),
                 ],
             );
             Ok(())

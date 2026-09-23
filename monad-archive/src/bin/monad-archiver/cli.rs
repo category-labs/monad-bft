@@ -134,9 +134,15 @@ pub struct Cli {
     #[serde(default)]
     pub unsafe_allow_traces_overwrite: bool,
 
-    pub otel_endpoint: Option<String>,
+    pub metrics_listen_addr: Option<String>,
 
     pub otel_replica_name_override: Option<String>,
+
+    /// OTLP gRPC endpoint for push-based metrics export (e.g. http://127.0.0.1:4317)
+    pub otel_endpoint: Option<String>,
+
+    /// How often (in seconds) to forward Prometheus metrics to the OTLP collector
+    pub record_metrics_interval_seconds: Option<u64>,
 
     #[serde(default)]
     pub skip_connectivity_check: bool,
@@ -207,8 +213,10 @@ impl Cli {
             unsafe_allow_blocks_overwrite,
             unsafe_allow_receipts_overwrite,
             unsafe_allow_traces_overwrite,
-            otel_endpoint,
+            metrics_listen_addr,
             otel_replica_name_override,
+            otel_endpoint,
+            record_metrics_interval_seconds,
             skip_connectivity_check,
             require_traces,
             traces_only,
@@ -248,8 +256,10 @@ impl Cli {
             unsafe_allow_blocks_overwrite: unsafe_allow_blocks_overwrite.unwrap_or(false),
             unsafe_allow_receipts_overwrite: unsafe_allow_receipts_overwrite.unwrap_or(false),
             unsafe_allow_traces_overwrite: unsafe_allow_traces_overwrite.unwrap_or(false),
-            otel_endpoint,
+            metrics_listen_addr,
             otel_replica_name_override,
+            otel_endpoint,
+            record_metrics_interval_seconds,
             skip_connectivity_check: skip_connectivity_check.unwrap_or(false),
             require_traces: require_traces.unwrap_or(false),
             traces_only: traces_only.unwrap_or(false),
@@ -324,11 +334,17 @@ impl Cli {
         if let Some(value) = overrides.unsafe_allow_traces_overwrite {
             self.unsafe_allow_traces_overwrite = value;
         }
-        if let Some(value) = overrides.otel_endpoint {
-            self.otel_endpoint = Some(value);
+        if let Some(value) = overrides.metrics_listen_addr {
+            self.metrics_listen_addr = Some(value);
         }
         if let Some(value) = overrides.otel_replica_name_override {
             self.otel_replica_name_override = Some(value);
+        }
+        if let Some(value) = overrides.otel_endpoint {
+            self.otel_endpoint = Some(value);
+        }
+        if let Some(value) = overrides.record_metrics_interval_seconds {
+            self.record_metrics_interval_seconds = Some(value);
         }
         if let Some(value) = overrides.skip_connectivity_check {
             self.skip_connectivity_check = value;
@@ -468,10 +484,18 @@ struct CliArgs {
     unsafe_allow_traces_overwrite: bool,
 
     #[arg(long)]
-    otel_endpoint: Option<String>,
+    metrics_listen_addr: Option<String>,
 
     #[arg(long)]
     otel_replica_name_override: Option<String>,
+
+    /// OTLP gRPC endpoint for push-based metrics export (e.g. http://127.0.0.1:4317)
+    #[arg(long)]
+    otel_endpoint: Option<String>,
+
+    /// How often (in seconds) to forward Prometheus metrics to the OTLP collector
+    #[arg(long)]
+    record_metrics_interval_seconds: Option<u64>,
 
     #[arg(long, action = ArgAction::SetTrue)]
     skip_connectivity_check: bool,
@@ -508,8 +532,10 @@ impl CliArgs {
             additional_dirs_to_archive,
             additional_dirs_archive_freq_secs,
             additional_dirs_exclude_prefix,
-            otel_endpoint,
+            metrics_listen_addr,
             otel_replica_name_override,
+            otel_endpoint,
+            record_metrics_interval_seconds,
             skip_connectivity_check,
             unsafe_disable_normal_archiving,
             unsafe_allow_overwrite,
@@ -539,8 +565,10 @@ impl CliArgs {
             additional_dirs_to_archive,
             additional_dirs_archive_freq_secs,
             additional_dirs_exclude_prefix,
-            otel_endpoint,
+            metrics_listen_addr,
             otel_replica_name_override,
+            otel_endpoint,
+            record_metrics_interval_seconds,
             skip_connectivity_check: bool_override(skip_connectivity_check),
             unsafe_disable_normal_archiving: bool_override(unsafe_disable_normal_archiving),
             unsafe_allow_overwrite: bool_override(unsafe_allow_overwrite),
@@ -578,8 +606,10 @@ struct CliOverrides {
     additional_dirs_to_archive: Option<Vec<PathBuf>>,
     additional_dirs_archive_freq_secs: Option<f64>,
     additional_dirs_exclude_prefix: Option<String>,
-    otel_endpoint: Option<String>,
+    metrics_listen_addr: Option<String>,
     otel_replica_name_override: Option<String>,
+    otel_endpoint: Option<String>,
+    record_metrics_interval_seconds: Option<u64>,
     skip_connectivity_check: Option<bool>,
     unsafe_disable_normal_archiving: Option<bool>,
     unsafe_allow_overwrite: Option<bool>,
@@ -657,7 +687,7 @@ mod tests {
             additional_dirs_archive_freq_secs = 7.5
             additional_dirs_exclude_prefix = ".skip"
             unsafe_disable_normal_archiving = true
-            otel_endpoint = "http://otel"
+            metrics_listen_addr = "0.0.0.0:9145"
             otel_replica_name_override = "special"
             skip_connectivity_check = true
             require_traces = true
@@ -700,7 +730,7 @@ mod tests {
         assert_eq!(cli.additional_dirs_archive_freq_secs, 7.5);
         assert_eq!(cli.additional_dirs_exclude_prefix, ".skip");
         assert!(cli.unsafe_disable_normal_archiving);
-        assert_eq!(cli.otel_endpoint.as_deref(), Some("http://otel"));
+        assert_eq!(cli.metrics_listen_addr.as_deref(), Some("0.0.0.0:9145"));
         assert_eq!(cli.otel_replica_name_override.as_deref(), Some("special"));
         assert!(cli.skip_connectivity_check);
         assert!(cli.require_traces);
