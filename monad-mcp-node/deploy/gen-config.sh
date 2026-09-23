@@ -11,7 +11,7 @@ sync_boundary=80
 num_proposals=5
 propose_before=500
 completed_slot_retention=50
-repeater_interval=5000
+repeater_interval=500
 repeater_retention=50
 withhold_before=0
 
