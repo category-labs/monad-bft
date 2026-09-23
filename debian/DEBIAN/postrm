@@ -21,12 +21,10 @@ case "$1" in
     for svc in $(systemctl list-units --type=service --all --no-legend | awk '{print $1}' | grep "^${prefix}"); do
       systemctl reset-failed "$svc" || true
     done
+    # Fall through (no exit) so the trailing ldconfig still runs.
     if ! [ -t 0 ]; then
-      echo "Non-interactive environment detected. Exiting triedb whiptail without running prompt."
-      exit 0
-    fi
-
-    if whiptail --title "Wipe TrieDB" --yesno "Do you want to wipe TrieDB?" 10 60; then
+      echo "Non-interactive environment detected. Skipping triedb whiptail prompt."
+    elif whiptail --title "Wipe TrieDB" --yesno "Do you want to wipe TrieDB?" 10 60; then
       blkdiscard /dev/triedb
     else
       echo "TrieDB remains intact"
