@@ -13,29 +13,29 @@ GIT_BRANCH ?= $(shell git branch --show-current 2>/dev/null)
 GIT_TAG ?= $(shell git describe --tags --exact-match HEAD 2>/dev/null)
 GIT_MODIFIED ?= $(shell test -n "$$(git status --porcelain 2>/dev/null)" && echo true || echo false)
 # Exported so recipes can pass them as quoted shell vars; make won't splice
-# branch/tag names (which may hold shell metacharacters) into the command line.
-export GIT_COMMIT GIT_BRANCH GIT_TAG GIT_MODIFIED
+# values that may hold shell metacharacters into the command line.
+export PACKAGE_VERSION BUILDER_IMAGE GIT_COMMIT GIT_BRANCH GIT_TAG GIT_MODIFIED
 
 .PHONY: build builder deb deb-host clean
 
 build:
-	PACKAGE_VERSION=$(PACKAGE_VERSION) ./scripts/build-binaries
+	PACKAGE_VERSION="$$PACKAGE_VERSION" ./scripts/build-binaries
 
 # Needs the docker/builder toolchain on the host; `make deb` needs only a container engine.
 deb-host:
-	PACKAGE_VERSION=$(PACKAGE_VERSION) DEB_OUTPUT_DIR=$(DEB_OUTPUT_DIR) ./scripts/build-deb
+	PACKAGE_VERSION="$$PACKAGE_VERSION" DEB_OUTPUT_DIR=$(DEB_OUTPUT_DIR) ./scripts/build-deb
 
 builder:
 	@test -n "$(CONTAINER_ENGINE)" || { echo "Install Docker or Podman, or set CONTAINER_ENGINE."; exit 1; }
-	$(CONTAINER_ENGINE) build -t $(BUILDER_IMAGE) docker/builder
+	$(CONTAINER_ENGINE) build -t "$$BUILDER_IMAGE" docker/builder
 
 deb: builder
 	@mkdir -p $(DEB_OUTPUT_DIR); iidfile=$$(mktemp); \
 	trap 'rm -f "$$iidfile"' EXIT; \
 	$(CONTAINER_ENGINE) build \
 		--iidfile "$$iidfile" \
-		--build-arg BUILDER_IMAGE=$(BUILDER_IMAGE) \
-		--build-arg PACKAGE_VERSION=$(PACKAGE_VERSION) \
+		--build-arg BUILDER_IMAGE="$$BUILDER_IMAGE" \
+		--build-arg PACKAGE_VERSION="$$PACKAGE_VERSION" \
 		--build-arg GIT_COMMIT="$$GIT_COMMIT" \
 		--build-arg GIT_BRANCH="$$GIT_BRANCH" \
 		--build-arg GIT_TAG="$$GIT_TAG" \
