@@ -12,8 +12,9 @@ case "$1" in
     rm -f /etc/sysctl.d/90-monad-network-buffer.conf
     # NOTE: this leaves the backup keys folder
     USER="monad"
-    # Older control files lack cron; guard so removal never fails.
-    if command -v crontab >/dev/null 2>&1; then
+    # Older control files lack cron; guard so removal never fails. Without the
+    # pattern file, grep -f emits nothing and crontab - would wipe every entry.
+    if command -v crontab >/dev/null 2>&1 && [ -f /opt/monad/scripts/clear-old-artifacts.cron ]; then
       crontab -u "$USER" -l 2>/dev/null | grep -v -F -x -f /opt/monad/scripts/clear-old-artifacts.cron | crontab -u "$USER" -
     fi
     rm -f /opt/monad/scripts/clear-old-artifacts.cron && rm -f /opt/monad/opt/monad/scripts/clear-old-artifacts.sh
