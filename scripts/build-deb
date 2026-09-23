@@ -12,7 +12,7 @@ stage_dir="$stage_root/debian/monad"
 # --- version ---
 version=${PACKAGE_VERSION:-$("$root_dir/scripts/package-version")}
 case "$version" in
-  *[!0-9A-Za-z.+:~-]*) echo "Invalid Debian version: $version" >&2; exit 2 ;;
+  *[!0-9A-Za-z.+~-]*) echo "Invalid Debian version: $version" >&2; exit 2 ;;
 esac
 
 cd "$root_dir"
