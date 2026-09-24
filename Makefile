@@ -12,9 +12,11 @@ GIT_COMMIT ?= $(shell git rev-parse HEAD 2>/dev/null)
 GIT_BRANCH ?= $(shell git branch --show-current 2>/dev/null)
 GIT_TAG ?= $(shell git describe --tags --exact-match HEAD 2>/dev/null)
 GIT_MODIFIED ?= $(shell test -n "$$(git status --porcelain 2>/dev/null)" && echo true || echo false)
+# The execution submodule's commit, stamped into monad, monad-cli, and monad-mpt.
+GIT_COMMIT_HASH ?= $(shell git -C monad-execution rev-parse HEAD 2>/dev/null)
 # Exported so recipes can pass them as quoted shell vars; make won't splice
 # values that may hold shell metacharacters into the command line.
-export PACKAGE_VERSION BUILDER_IMAGE GIT_COMMIT GIT_BRANCH GIT_TAG GIT_MODIFIED
+export PACKAGE_VERSION BUILDER_IMAGE GIT_COMMIT GIT_BRANCH GIT_TAG GIT_MODIFIED GIT_COMMIT_HASH
 
 .PHONY: build builder deb deb-host clean
 
@@ -40,7 +42,7 @@ deb: builder
 		--build-arg GIT_BRANCH="$$GIT_BRANCH" \
 		--build-arg GIT_TAG="$$GIT_TAG" \
 		--build-arg GIT_MODIFIED="$$GIT_MODIFIED" \
-		--build-arg GIT_COMMIT_HASH="$$GIT_COMMIT" \
+		--build-arg GIT_COMMIT_HASH="$$GIT_COMMIT_HASH" \
 		-f docker/debian-package/Dockerfile . && \
 	container_id=$$($(CONTAINER_ENGINE) create "$$(cat "$$iidfile")" true) && \
 	trap '$(CONTAINER_ENGINE) rm -f $$container_id >/dev/null; rm -f "$$iidfile"' EXIT && \
