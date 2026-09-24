@@ -70,6 +70,8 @@ pub enum MalformedPacket {
     TooLong,
     InvalidTreeDepth(u8),
     InvalidBroadcastBits(u8),
+    InvalidMode(u8),
+    InvalidChunkHeader,
     InvalidEncodingScheme(u8),
     UnknownVersion(u16),
 }
@@ -201,7 +203,7 @@ impl RaptorcastChunkHeaderV0 {
 
 /// Raptorcast packet V1 versioned header layout (follows common header):
 /// - 2 bits => broadcast mode
-/// - 2 bits => unused
+/// - 2 bits => reserved, must be zero
 /// - 4 bits => Merkle tree depth
 /// - 1 byte (u8) => encoding scheme variant
 /// - 8 bytes (u64) => Round #
@@ -212,7 +214,7 @@ impl RaptorcastChunkHeaderV0 {
 #[repr(C, packed)]
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Clone, Copy)]
 pub struct RaptorcastHeaderV1 {
-    broadcast_tree_depth: u8,
+    mode_depth: u8,
     encoding_scheme_variant: u8,
     round: U64<LE>,
     epoch: U64<LE>,
@@ -228,11 +230,20 @@ impl RaptorcastHeaderV1 {
     const SIZE: usize = 1 + 1 + 8 + 8 + 8 + MERKLE_HASH_SIZE + 4;
 
     pub fn broadcast_mode(&self) -> Result<BroadcastMode, MalformedPacket> {
-        match (self.broadcast_tree_depth & 0b1100_0000) >> 6 {
+        match (self.mode_depth & 0b1100_0000) >> 6 {
             0b10 => Ok(BroadcastMode::Primary),
             0b01 => Ok(BroadcastMode::Secondary),
             bits => Err(MalformedPacket::InvalidBroadcastBits(bits)),
         }
+    }
+
+    fn validate_reserved(&self) -> Result<(), MalformedPacket> {
+        let mode_bits = self.mode_depth >> 4;
+        ensure!(
+            mode_bits & 0b0011 == 0,
+            MalformedPacket::InvalidMode(mode_bits)
+        );
+        Ok(())
     }
 
     pub fn encoding_scheme(&self) -> Result<EncodingScheme, MalformedPacket> {
@@ -245,7 +256,7 @@ impl RaptorcastHeaderV1 {
 
     #[allow(clippy::manual_range_contains)]
     pub fn tree_depth(&self) -> Result<u8, MalformedPacket> {
-        let depth = self.broadcast_tree_depth & 0b0000_1111;
+        let depth = self.mode_depth & 0b0000_1111;
         ensure!(
             (deterministic::MIN_MERKLE_TREE_DEPTH..=deterministic::MAX_MERKLE_TREE_DEPTH)
                 .contains(&depth),
@@ -294,6 +305,14 @@ pub struct RaptorcastChunkHeaderV1 {
 
 impl RaptorcastChunkHeaderV1 {
     const SIZE: usize = 2 + 2;
+
+    fn validate_reserved(&self) -> Result<(), MalformedPacket> {
+        ensure!(
+            self.reserved.get() == 0,
+            MalformedPacket::InvalidChunkHeader
+        );
+        Ok(())
+    }
 
     fn merkle_leaf_index(&self) -> u16 {
         self.chunk_id.get()
@@ -563,6 +582,8 @@ impl<'a> RaptorcastPacketV1<'a> {
             Ref::from_bytes(header_bytes).map_err(|_| MalformedPacket::TooShort)?;
 
         let tree_depth = header.tree_depth()?;
+        header.validate_reserved()?;
+
         let merkle_proof_len = MERKLE_HASH_SIZE * (tree_depth - 1) as usize;
         ensure!(rest.len() > merkle_proof_len, MalformedPacket::TooShort);
 
@@ -578,6 +599,7 @@ impl<'a> RaptorcastPacketV1<'a> {
             chunk_header_and_payload.split_at(RaptorcastChunkHeaderV1::SIZE);
         let chunk_header: Ref<&[u8], RaptorcastChunkHeaderV1> =
             Ref::from_bytes(chunk_header_bytes).map_err(|_| MalformedPacket::TooShort)?;
+        chunk_header.validate_reserved()?;
 
         ensure!(!payload.is_empty(), MalformedPacket::TooShort);
 
