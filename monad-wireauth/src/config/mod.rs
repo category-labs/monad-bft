@@ -51,6 +51,9 @@ pub struct Config {
     pub connect_rate_reset_interval: Duration,
     /// cookie validity period (responder rotates cookie key)
     pub cookie_refresh_duration: Duration,
+    /// nonzero lru capacity for cookies received from peers, keyed by public key.
+    /// size alongside handshake/session limits to retain cookies until retries.
+    pub cookie_cache_capacity: usize,
     /// time window for counting cookie-valid handshake requests per ip
     pub ip_rate_limit_window: Duration,
     /// lru cache size for tracking recent cookie-valid handshake requests per ip
@@ -90,6 +93,16 @@ impl Default for Config {
             connect_rate_limit: 300,
             connect_rate_reset_interval: Duration::from_secs(1),
             cookie_refresh_duration: Duration::from_secs(120),
+            // Retain fresh cookies through the normal retry window. Eviction needs
+            // this many other distinct peer keys touched by lookups or inserts.
+            // Over 11s (timeout + jitter), new admissions have up to 12 rate-limit
+            // batches of 500 unverified + 1,000 verified handshakes + 300 connects:
+            // 21,600 opportunities. Existing sessions can also touch cached keys.
+            // Retries/rekeys reuse peer keys but bypass the initiated-session cap,
+            // so these limits do not guarantee a retention time for every state.
+            // Duplicate cookie replies cannot refresh recency. Revisit sizing when
+            // changing admission limits; see the API cookie-flood tests.
+            cookie_cache_capacity: 256_000,
             ip_rate_limit_window: Duration::from_secs(10),
             ip_history_capacity: 1_000_000,
             total_transport_sessions: 40_000,
