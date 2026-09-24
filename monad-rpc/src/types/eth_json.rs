@@ -17,7 +17,7 @@ use std::str::FromStr;
 
 use alloy_consensus::TxEnvelope;
 use alloy_eips::BlockNumberOrTag;
-use alloy_primitives::{Address, FixedBytes, LogData, U256};
+use alloy_primitives::{Address, FixedBytes, LogData, U128, U256};
 use alloy_rpc_types::{
     pubsub::Params, serde_helpers::JsonStorageKey, AccessList, Block, FeeHistory, Header, Log,
     Transaction, TransactionReceipt,
@@ -516,6 +516,9 @@ pub enum SubscriptionResult {
 pub struct MonadNotification<T> {
     pub block_id: BlockId,
     pub commit_state: BlockCommitState,
+    // Consensus proposal timestamp in unix nanoseconds. The header `timestamp` is this value in
+    // whole seconds.
+    pub timestamp_ns: U128,
     #[serde(flatten)]
     pub data: T,
 }
@@ -525,12 +528,14 @@ impl<T> MonadNotification<T> {
         let Self {
             block_id,
             commit_state,
+            timestamp_ns,
             data,
         } = self;
 
         MonadNotification {
             block_id,
             commit_state,
+            timestamp_ns,
             data: f(data),
         }
     }
