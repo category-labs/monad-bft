@@ -126,41 +126,37 @@ where
         )
             -> Pin<Box<dyn Future<Output = DataSourceResult<Option<U>>> + Send + 's>>,
     {
+        let mut pointer = None;
         let mut last_err = None;
 
-        let mut sources = self.sources.iter().peekable();
+        for source in self.sources.iter() {
+            let pointer = match pointer {
+                Some(BlockPointer::Finalized(block_num)) => BlockPointer::Finalized(block_num),
+                Some(BlockPointer::NonFinalized(_, _)) | None => {
+                    match source.try_resolve(block.clone()).await {
+                        Ok(Some(p)) => {
+                            pointer = Some(p);
+                            p
+                        }
+                        Ok(None) => {
+                            continue;
+                        }
+                        Err(err) => {
+                            let err = split_terminating_error(err)?;
+                            last_err.get_or_insert(err);
 
-        let pointer = loop {
-            let Some(source) = sources.peek() else {
-                return last_err.map_or(Ok(None), Err);
+                            continue;
+                        }
+                    }
+                }
             };
 
-            match source.try_resolve(block.clone()).await {
-                Ok(Some(p)) => {
-                    break p;
-                }
-                Ok(None) => {
-                    sources.next();
-                    continue;
-                }
-                Err(err) => {
-                    let err = split_terminating_error(err)?;
-                    last_err.get_or_insert(err);
-
-                    sources.next();
-                    continue;
-                }
-            }
-        };
-
-        for source in sources {
             match f(source, pointer).await {
                 Ok(Some(value)) => return Ok(Some(value)),
-                Ok(None) => continue,
+                Ok(None) => {}
                 Err(err) => {
                     let err = split_terminating_error(err)?;
                     last_err.get_or_insert(err);
-                    continue;
                 }
             }
         }
