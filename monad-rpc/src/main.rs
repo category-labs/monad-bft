@@ -36,7 +36,7 @@ use monad_rpc::{
         resources::{MonadJsonRootSpanBuilder, MonadRpcResources},
         rpc_handler,
     },
-    middleware::{DecompressionGuard, Metrics, TimingMiddleware},
+    middleware::{prometheus_metrics, DecompressionGuard, Metrics, TimingMiddleware},
     txpool::EthTxPoolBridge,
     websocket, MONAD_RPC_VERSION,
 };
@@ -298,13 +298,32 @@ async fn main() -> std::io::Result<()> {
         )
     });
 
+    let prometheus_registry = args
+        .metrics_listen_addr
+        .as_ref()
+        .map(|_| prometheus::Registry::new());
     let with_metrics = args.otel_endpoint.map(|otel_endpoint| {
         Metrics::new_with_otel_endpoint(
             otel_endpoint,
             node_config.node_name.clone(),
             std::time::Duration::from_secs(5),
+            prometheus_registry.clone(),
         )
     });
+
+    let metrics_server = match (args.metrics_listen_addr, prometheus_registry) {
+        (Some(addr), Some(registry)) => Some(
+            HttpServer::new(move || {
+                App::new()
+                    .app_data(web::Data::new(registry.clone()))
+                    .route("/metrics", web::get().to(prometheus_metrics))
+            })
+            .bind(addr)?
+            .workers(1)
+            .run(),
+        ),
+        _ => None,
+    };
 
     // Configure event ring, websocket server and event cache.
     let event_server_client = if let Some(exec_event_path) = args.exec_event_path {
@@ -439,6 +458,15 @@ async fn main() -> std::io::Result<()> {
     let ws_fut = ws_server_handle.map(|ws| ws.run());
 
     tokio::select! {
+        result = async {
+            match metrics_server {
+                Some(server) => server.await,
+                None => futures::future::pending().await,
+            }
+        } => {
+            result?;
+        }
+
         result = app => {
             let () = result?;
         }

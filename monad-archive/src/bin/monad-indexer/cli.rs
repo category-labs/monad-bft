@@ -31,6 +31,7 @@ pub struct Cli {
     pub stop_block: Option<u64>,
     pub otel_endpoint: Option<String>,
     pub otel_replica_name_override: Option<String>,
+    pub metrics_listen_addr: Option<std::net::SocketAddr>,
     pub max_inline_encoded_len: usize,
     pub skip_connectivity_check: bool,
     pub enable_logs_indexing: bool,
@@ -121,6 +122,9 @@ pub struct CliArgs {
     #[arg(long)]
     pub otel_replica_name_override: Option<String>,
 
+    #[arg(long)]
+    pub metrics_listen_addr: Option<std::net::SocketAddr>,
+
     /// Maximum size of an encoded inline tx index entry
     /// If an entry is larger than this, it is stored as a reference pointing to
     /// the block level data store
@@ -149,6 +153,7 @@ impl CliArgs {
             stop_block,
             otel_endpoint,
             otel_replica_name_override,
+            metrics_listen_addr,
             max_inline_encoded_len,
             skip_connectivity_check,
             enable_logs_indexing,
@@ -166,6 +171,7 @@ impl CliArgs {
             stop_block,
             otel_endpoint,
             otel_replica_name_override,
+            metrics_listen_addr,
             max_inline_encoded_len,
             skip_connectivity_check,
             enable_logs_indexing,
@@ -281,6 +287,7 @@ mod tests {
             stop_block: None,
             otel_endpoint: None,
             otel_replica_name_override: None,
+            metrics_listen_addr: None,
             max_inline_encoded_len: 350 * 1024,
             skip_connectivity_check: false,
             enable_logs_indexing: false,

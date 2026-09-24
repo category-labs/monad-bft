@@ -85,6 +85,10 @@ pub struct Cli {
     #[arg(long)]
     pub otel_endpoint: Option<String>,
 
+    /// listen address for prometheus metrics
+    #[arg(long, requires = "otel_endpoint")]
+    pub metrics_listen_addr: Option<String>,
+
     /// HTTP endpoint to collect RPC comparison data
     #[arg(long)]
     pub rpc_comparison_endpoint: Option<String>,

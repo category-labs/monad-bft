@@ -64,8 +64,10 @@ inotify = { workspace = true }
 itertools = { workspace = true }
 opentelemetry = { workspace = true, features = ["metrics", "trace"] }
 opentelemetry-otlp = { workspace = true, features = ["metrics", "grpc-tonic"] }
+opentelemetry-prometheus = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["rt-tokio", "trace"] }
 pin-project = { workspace = true }
+prometheus = { workspace = true }
 rand = { workspace = true }
 rayon = { workspace = true }
 reqwest = { workspace = true }
@@ -102,12 +104,15 @@ alloy-signer-local = { workspace = true }
 arbitrary = { workspace = true }
 awc = { workspace = true }
 criterion = { workspace = true }
+opentelemetry-proto = { workspace = true, default-features = false, features = ["gen-tonic", "metrics"] }
 paste = { workspace = true }
 proptest = { workspace = true }
 reqwest = { workspace = true }
 tempfile = { workspace = true }
 test-case = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
+tokio-stream = { workspace = true, features = ["net"] }
+tonic = { workspace = true, features = ["transport"] }
 
 [[bench]]
 name = "serialize"
