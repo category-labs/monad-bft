@@ -25,4 +25,5 @@ perf.data*
 /logs
 **/proptest-regressions/
 /reports
+/dist
 deployed_contracts.json
