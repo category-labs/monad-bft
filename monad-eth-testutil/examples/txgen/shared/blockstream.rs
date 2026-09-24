@@ -52,11 +52,7 @@ impl BlockStream {
         interval: Duration,
         query_full_txs: bool,
     ) -> Result<Self> {
-        let next_block_number: U64 = client
-            .request("eth_blockNumber", ())
-            .await
-            .context("Failed to fetch initial block number")?;
-        let next_block_number: u64 = next_block_number.to();
+        let next_block_number = Self::fetch_block_number_with_retry(&client).await?;
 
         Ok(Self {
             client,
@@ -66,6 +62,30 @@ impl BlockStream {
             request: None,
             query_full_txs,
         })
+    }
+
+    async fn fetch_block_number_with_retry(client: &ReqwestClient) -> Result<u64> {
+        const MAX_ATTEMPTS: u32 = 5;
+        const RETRY_DELAY: Duration = Duration::from_millis(200);
+
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            match client.request::<_, U64>("eth_blockNumber", ()).await {
+                Ok(next_block_number) => return Ok(next_block_number.to()),
+                Err(e) if attempt < MAX_ATTEMPTS => {
+                    warn!(
+                        attempt,
+                        error = %e,
+                        "Failed to fetch initial block number, retrying..."
+                    );
+                    tokio::time::sleep(RETRY_DELAY).await;
+                }
+                Err(e) => {
+                    return Err(e).context("Failed to fetch initial block number after retries")
+                }
+            }
+        }
     }
 
     fn request_next_block(

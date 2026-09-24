@@ -49,7 +49,7 @@ impl EntryPoint {
         chain_id: u64,
     ) -> Result<Self> {
         let nonce = client.get_transaction_count(&deployer.0).await?;
-        let input = Bytes::from_hex(ENTRYPOINT_BYTECODE).unwrap();
+        let input = Bytes::from_hex(ENTRYPOINT_BYTECODE.trim()).unwrap();
         let tx = TxEip1559 {
             chain_id,
             nonce,

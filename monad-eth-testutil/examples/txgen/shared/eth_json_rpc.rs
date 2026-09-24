@@ -61,7 +61,7 @@ impl EthJsonRpc for ReqwestClient {
     async fn get_transaction_count(&self, addr: &Address) -> Result<u64> {
         let addr = addr.to_string();
         let nonce = self
-            .request::<_, U64>("eth_getTransactionCount", [&addr, "latest"])
+            .request::<_, U64>("eth_getTransactionCount", [&addr, "pending"])
             .await?;
         Ok(nonce.to())
     }
@@ -129,7 +129,7 @@ impl EthJsonRpc for ReqwestClient {
 
         let futs: Vec<_> = addrs
             .map(|addr| {
-                let params = [&addr.to_string(), "latest"];
+                let params = [&addr.to_string(), "pending"];
                 batch
                     .add_call::<_, U64>("eth_getTransactionCount", &params)
                     .map(|r| async move { r.await.map(|b| (*addr, b)) })
