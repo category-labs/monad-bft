@@ -5,6 +5,7 @@
 set -eu
 
 root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-timestamp=$(git -C "$root_dir" log -1 --format=%cd --date=format:%Y%m%d-%H%M)
+# UTC so the same commit yields the same version on any machine.
+timestamp=$(TZ=UTC git -C "$root_dir" log -1 --format=%cd --date=format-local:%Y%m%d-%H%M)
 sha=$(git -C "$root_dir" rev-parse --short=7 HEAD)
 printf '0.0-%s-%s\n' "$timestamp" "$sha"
