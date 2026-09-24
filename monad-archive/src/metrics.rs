@@ -23,6 +23,7 @@ use opentelemetry::{
 };
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::metrics::{SdkMeterProvider, Temporality};
+use prometheus::{Encoder, Registry, TextEncoder};
 use tracing::trace;
 
 #[derive(Eq, Hash, PartialEq, Clone, Copy)]
@@ -239,12 +240,14 @@ impl Metrics {
         service_name: impl Into<String>,
         replica_name: impl Into<String>,
         interval: Duration,
+        prometheus_registry: Option<Registry>,
     ) -> Result<Metrics> {
         let provider = build_otel_meter_provider(
             otel_endpoint,
             service_name.into(),
             replica_name.into(),
             interval,
+            prometheus_registry,
         )?;
         let meter = provider.meter("opentelemetry");
 
@@ -360,6 +363,7 @@ fn build_otel_meter_provider(
     service_name: String,
     replica_name: String,
     interval: Duration,
+    prometheus_registry: Option<Registry>,
 ) -> Result<opentelemetry_sdk::metrics::SdkMeterProvider> {
     let mut provider_builder = opentelemetry_sdk::metrics::SdkMeterProvider::builder()
         .with_resource(
@@ -386,5 +390,26 @@ fn build_otel_meter_provider(
         provider_builder = provider_builder.with_reader(reader)
     }
 
+    if let Some(registry) = prometheus_registry {
+        let prometheus_reader = opentelemetry_prometheus::exporter()
+            .with_registry(registry)
+            .build()
+            .expect("failed to register prometheus metrics");
+        provider_builder = provider_builder.with_reader(prometheus_reader);
+    }
+
     Ok(provider_builder.build())
+}
+
+pub async fn prometheus_metrics(
+    registry: actix_web::web::Data<Registry>,
+) -> actix_web::Result<actix_web::HttpResponse> {
+    let encoder = TextEncoder::new();
+    let mut body = Vec::new();
+    encoder
+        .encode(&registry.gather(), &mut body)
+        .map_err(actix_web::error::ErrorInternalServerError)?;
+    Ok(actix_web::HttpResponse::Ok()
+        .content_type(encoder.format_type())
+        .body(body))
 }

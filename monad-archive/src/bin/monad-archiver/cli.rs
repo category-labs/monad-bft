@@ -138,6 +138,8 @@ pub struct Cli {
 
     pub otel_replica_name_override: Option<String>,
 
+    pub metrics_listen_addr: Option<std::net::SocketAddr>,
+
     #[serde(default)]
     pub skip_connectivity_check: bool,
 }
@@ -209,6 +211,7 @@ impl Cli {
             unsafe_allow_traces_overwrite,
             otel_endpoint,
             otel_replica_name_override,
+            metrics_listen_addr,
             skip_connectivity_check,
             require_traces,
             traces_only,
@@ -250,6 +253,7 @@ impl Cli {
             unsafe_allow_traces_overwrite: unsafe_allow_traces_overwrite.unwrap_or(false),
             otel_endpoint,
             otel_replica_name_override,
+            metrics_listen_addr,
             skip_connectivity_check: skip_connectivity_check.unwrap_or(false),
             require_traces: require_traces.unwrap_or(false),
             traces_only: traces_only.unwrap_or(false),
@@ -329,6 +333,9 @@ impl Cli {
         }
         if let Some(value) = overrides.otel_replica_name_override {
             self.otel_replica_name_override = Some(value);
+        }
+        if let Some(value) = overrides.metrics_listen_addr {
+            self.metrics_listen_addr = Some(value);
         }
         if let Some(value) = overrides.skip_connectivity_check {
             self.skip_connectivity_check = value;
@@ -473,6 +480,9 @@ struct CliArgs {
     #[arg(long)]
     otel_replica_name_override: Option<String>,
 
+    #[arg(long)]
+    metrics_listen_addr: Option<std::net::SocketAddr>,
+
     #[arg(long, action = ArgAction::SetTrue)]
     skip_connectivity_check: bool,
 }
@@ -510,6 +520,7 @@ impl CliArgs {
             additional_dirs_exclude_prefix,
             otel_endpoint,
             otel_replica_name_override,
+            metrics_listen_addr,
             skip_connectivity_check,
             unsafe_disable_normal_archiving,
             unsafe_allow_overwrite,
@@ -541,6 +552,7 @@ impl CliArgs {
             additional_dirs_exclude_prefix,
             otel_endpoint,
             otel_replica_name_override,
+            metrics_listen_addr,
             skip_connectivity_check: bool_override(skip_connectivity_check),
             unsafe_disable_normal_archiving: bool_override(unsafe_disable_normal_archiving),
             unsafe_allow_overwrite: bool_override(unsafe_allow_overwrite),
@@ -580,6 +592,7 @@ struct CliOverrides {
     additional_dirs_exclude_prefix: Option<String>,
     otel_endpoint: Option<String>,
     otel_replica_name_override: Option<String>,
+    metrics_listen_addr: Option<std::net::SocketAddr>,
     skip_connectivity_check: Option<bool>,
     unsafe_disable_normal_archiving: Option<bool>,
     unsafe_allow_overwrite: Option<bool>,

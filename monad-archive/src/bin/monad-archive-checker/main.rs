@@ -63,6 +63,11 @@ async fn main() -> Result<()> {
         "Initializing metrics with endpoint: {:?}",
         args.otel_endpoint
     );
+    let prometheus_registry = args
+        .metrics_listen_addr
+        .as_ref()
+        .map(|_| prometheus::Registry::new());
+
     let replica_name = args
         .otel_replica_name_override
         .clone()
@@ -72,7 +77,28 @@ async fn main() -> Result<()> {
         "monad_archive_checker",
         replica_name,
         Duration::from_secs(15),
+        prometheus_registry.clone(),
     )?;
+
+    if let (Some(addr), Some(registry)) = (args.metrics_listen_addr, prometheus_registry) {
+        let server = actix_web::HttpServer::new(move || {
+            actix_web::App::new()
+                .app_data(actix_web::web::Data::new(registry.clone()))
+                .route(
+                    "/metrics",
+                    actix_web::web::get().to(monad_archive::metrics::prometheus_metrics),
+                )
+        })
+        .bind(addr)?
+        .workers(1)
+        .disable_signals()
+        .run();
+        tokio::spawn(async move {
+            if let Err(err) = server.await {
+                tracing::error!(?err, "metrics server exited");
+            }
+        });
+    }
 
     // Get AWS configuration
     info!("Configuring AWS with region: {:?}", args.region);

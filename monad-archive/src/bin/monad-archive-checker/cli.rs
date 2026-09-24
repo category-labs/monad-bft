@@ -62,6 +62,9 @@ pub struct Cli {
     pub otel_replica_name_override: Option<String>,
 
     #[arg(long, global = true)]
+    pub metrics_listen_addr: Option<std::net::SocketAddr>,
+
+    #[arg(long, global = true)]
     pub max_compute_threads: Option<usize>,
 }
 

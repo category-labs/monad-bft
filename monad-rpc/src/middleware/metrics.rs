@@ -18,6 +18,7 @@ use std::time::Duration;
 use actix_web::{
     body::MessageBody,
     dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform},
+    web, HttpResponse,
 };
 use futures_util::future::{FutureExt as _, LocalBoxFuture};
 use opentelemetry::{
@@ -26,6 +27,22 @@ use opentelemetry::{
 };
 use opentelemetry_otlp::{MetricExporter, WithExportConfig};
 use opentelemetry_sdk::metrics::SdkMeterProvider;
+use prometheus::{Encoder, Registry, TextEncoder};
+
+#[cfg(test)]
+#[path = "metrics_tests.rs"]
+mod tests;
+
+pub async fn prometheus_metrics(registry: web::Data<Registry>) -> actix_web::Result<HttpResponse> {
+    let encoder = TextEncoder::new();
+    let mut body = Vec::new();
+    encoder
+        .encode(&registry.gather(), &mut body)
+        .map_err(actix_web::error::ErrorInternalServerError)?;
+    Ok(HttpResponse::Ok()
+        .content_type(encoder.format_type())
+        .body(body))
+}
 
 pub struct MetricsMiddleware<S> {
     service: S,
@@ -125,6 +142,7 @@ impl Metrics {
         otel_endpoint: String,
         service_name: String,
         interval: Duration,
+        prometheus_registry: Option<Registry>,
     ) -> Self {
         let exporter = MetricExporter::builder()
             .with_tonic()
@@ -137,7 +155,7 @@ impl Metrics {
             .with_interval(interval / 2)
             .build();
 
-        let provider = opentelemetry_sdk::metrics::SdkMeterProvider::builder()
+        let mut provider = opentelemetry_sdk::metrics::SdkMeterProvider::builder()
             .with_reader(reader)
             .with_resource(
                 opentelemetry_sdk::Resource::builder_empty()
@@ -146,10 +164,17 @@ impl Metrics {
                         service_name,
                     )])
                     .build(),
-            )
-            .build();
+            );
 
-        Self::new_with_otel_provider(provider)
+        if let Some(registry) = prometheus_registry {
+            let prometheus_reader = opentelemetry_prometheus::exporter()
+                .with_registry(registry)
+                .build()
+                .expect("failed to register prometheus metrics");
+            provider = provider.with_reader(prometheus_reader);
+        }
+
+        Self::new_with_otel_provider(provider.build())
     }
 
     pub fn new_with_otel_provider(provider: SdkMeterProvider) -> Self {
