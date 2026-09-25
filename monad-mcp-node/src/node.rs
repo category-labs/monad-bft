@@ -24,8 +24,11 @@ use crate::{
     chorus::{
         SlotManager, conductor::MonadConductor, slot::chorus::ChorusMessage, types::Timestamp,
     },
-    component::{Cadence, Component, DA, Proposing, Repeater},
-    config::NodeConfig,
+    component::{
+        Cadence, Component, DA, Mempool, MempoolSource, ProposalSource, Proposing, RandomSource,
+        Repeater, SharedMempool,
+    },
+    config::{NodeConfig, SourceKind},
     da::DARuntime,
     finalization::FinalizedSlot,
     network::{Inbound, Outbound},
@@ -53,6 +56,7 @@ pub struct Node<R = NodeRuntime> {
 
 impl Node {
     pub fn new(config: &NodeConfig) -> Result<Self, RunError> {
+        config.validate()?;
         let epoch_handle = config.epoch_handle()?;
 
         let slot_config = config.cadence.chorus();
@@ -67,11 +71,19 @@ impl Node {
             epoch_handle.proposers.clone(),
         );
 
-        let proposing = Proposing::new(&epoch_handle, &config.proposal);
+        let mempool = match config.proposal.source {
+            SourceKind::Random => None,
+            SourceKind::Mempool => Some(SharedMempool::new(Mempool::new(config.mempool))),
+        };
+        let source: Box<dyn ProposalSource + Send> = match &mempool {
+            None => Box::new(RandomSource),
+            Some(mempool) => Box::new(MempoolSource(mempool.clone())),
+        };
+        let proposing = Proposing::new(&epoch_handle, &config.proposal, source);
         let repeater = config.repeater().map(Repeater::new);
 
         Ok(Self {
-            runtime: NodeRuntime::new(epoch_handle),
+            runtime: NodeRuntime::new(epoch_handle, mempool),
             cadence,
             da,
             proposing,

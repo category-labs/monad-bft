@@ -16,9 +16,8 @@
 use std::collections::VecDeque;
 
 use bytes::Bytes;
-use rand::{Rng as _, RngCore as _};
 
-use super::Component;
+use super::{Component, ProposalSource};
 use crate::{
     chorus::{
         proposing::ProposalPlanner,
@@ -27,10 +26,6 @@ use crate::{
     config::ProposalConfig,
     epoch::EpochHandle,
 };
-
-// random bytes up to the S11 message bound, log-uniform in length:
-// every doubling from 1 byte to 1 MiB is equally likely
-const MAX_PROPOSAL_LEN: usize = 1 << 20;
 
 pub enum ProposingInput {
     SlotOpen(Slot, Timestamp),
@@ -43,11 +38,17 @@ pub type ProposingOutput = (Slot, ProposalIndex, Bytes);
 // decides when we propose in a slot; the payload is assembled here
 pub struct Proposing {
     planner: ProposalPlanner,
+    source: Box<dyn ProposalSource + Send>,
+    proposal_size_limit: usize,
     outbox: VecDeque<ProposingOutput>,
 }
 
 impl Proposing {
-    pub fn new(epoch_handle: &EpochHandle, config: &ProposalConfig) -> Self {
+    pub fn new(
+        epoch_handle: &EpochHandle,
+        config: &ProposalConfig,
+        source: Box<dyn ProposalSource + Send>,
+    ) -> Self {
         let planner = ProposalPlanner::new(
             epoch_handle.self_id,
             epoch_handle.proposers.clone(),
@@ -55,13 +56,18 @@ impl Proposing {
         );
         Self {
             planner,
+            source,
+            proposal_size_limit: config.proposal_size_limit(),
             outbox: VecDeque::new(),
         }
     }
 
     fn collect(&mut self, now: Timestamp) {
         while let Some((slot, index)) = self.planner.poll(now) {
-            self.outbox.push_back((slot, index, proposal_message(slot)));
+            let payload = self
+                .source
+                .next_payload(slot, index, self.proposal_size_limit);
+            self.outbox.push_back((slot, index, payload));
         }
     }
 }
@@ -90,28 +96,5 @@ impl Component for Proposing {
 
     fn poll(&mut self) -> Option<ProposingOutput> {
         self.outbox.pop_front()
-    }
-}
-
-fn proposal_message(_slot: Slot) -> Bytes {
-    let mut rng = rand::thread_rng();
-    let max_bits = (MAX_PROPOSAL_LEN as f64).log2();
-    let len = 2f64.powf(rng.gen_range(0.0..=max_bits)).round() as usize;
-    let mut message = vec![0u8; len.clamp(1, MAX_PROPOSAL_LEN)];
-    rng.fill_bytes(&mut message);
-    Bytes::from(message)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_proposal_message_is_non_empty_and_bounded() {
-        for slot in 0..64 {
-            let message = proposal_message(Slot(slot));
-            assert!(!message.is_empty());
-            assert!(message.len() <= MAX_PROPOSAL_LEN);
-        }
     }
 }

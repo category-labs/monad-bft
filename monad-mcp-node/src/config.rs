@@ -13,8 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::HashMap, net::SocketAddr, num::NonZeroU64, sync::Arc};
+use std::{collections::HashMap, fmt, net::SocketAddr, num::NonZeroU64, sync::Arc};
 
+use alloy_rlp::Encodable as _;
+use monad_mcp_chorus::{ledger::BatchBuilder, spec::vote::KeyPair as _};
 use serde::Deserialize;
 
 use crate::{
@@ -28,7 +30,7 @@ use crate::{
             ValidatorData,
         },
     },
-    component::RepeaterConfig,
+    component::{RepeaterConfig, mempool},
     da::{self, ProposalKeyPair, header_auth},
     epoch::{EpochHandle, NodeProposerSchedule},
 };
@@ -55,9 +57,64 @@ pub struct NodeConfig {
     pub proposal: ProposalConfig,
     // Absent table: outbound slot messages are never re-sent.
     pub repeater: Option<RepeaterSection>,
+    #[serde(default)]
+    pub mempool: MempoolConfig,
 }
 
 impl NodeConfig {
+    // a lone validator on localhost with the 100 ms local-demo parameters of
+    // config.example.toml and the mempool source
+    pub fn single_node(port: u16, genesis_deadline: Timestamp) -> Self {
+        let id = 0;
+        Self {
+            node_id: NodeId::dummy(id),
+            proposal_key_pair: ProposalKeyPair::dummy(NodeId::dummy(id)),
+            cadence_key_pair: KeyPair::dummy(id),
+            validators: vec![ValidatorConfig {
+                node_id: NodeId::dummy(id),
+                stake: 1,
+                chorus_pubkey: KeyPair::dummy(id).pubkey(),
+                address: SocketAddr::from(([127, 0, 0, 1], port)),
+            }],
+            genesis_deadline,
+            network: NetworkConfig { port },
+            cadence: CadenceConfig::local_demo(),
+            da: DAConfig::default(),
+            proposal: ProposalConfig {
+                source: SourceKind::Mempool,
+                ..ProposalConfig::local_demo()
+            },
+            repeater: None,
+            mempool: MempoolConfig::default(),
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        let proposal_size_limit = self.proposal.proposal_size_limit();
+        if proposal_size_limit == 0 || proposal_size_limit > ProposalConfig::MAX_PROPOSAL_SIZE_LIMIT
+        {
+            return Err(ConfigError(format!(
+                "proposal.max_payload_bytes must be in 1..={}",
+                ProposalConfig::MAX_PROPOSAL_SIZE_LIMIT
+            )));
+        }
+        if self.proposal.source == SourceKind::Mempool {
+            let largest = mempool::largest_tx();
+            if !BatchBuilder::new(proposal_size_limit).fits(&largest) {
+                return Err(ConfigError(format!(
+                    "proposal.max_payload_bytes {proposal_size_limit} cannot hold the largest tx"
+                )));
+            }
+            let largest = largest.length();
+            if self.mempool.max_txs == 0 || self.mempool.max_bytes < largest {
+                return Err(ConfigError(format!(
+                    "mempool must hold at least one {largest}-byte tx"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     pub fn repeater(&self) -> Option<RepeaterConfig> {
         self.repeater.map(|section| RepeaterConfig {
             interval: section.interval,
@@ -144,6 +201,15 @@ impl Default for CadenceConfig {
 }
 
 impl CadenceConfig {
+    // single node on localhost, 100 ms slots; see config.example.toml
+    pub fn local_demo() -> Self {
+        Self {
+            delta: TimestampDelta::from_millis(DEMO_DELTA_MS),
+            slot_interval: TimestampDelta::from_millis(100),
+            ..Self::default()
+        }
+    }
+
     pub fn conductor(
         &self,
         genesis_deadline: Timestamp,
@@ -202,10 +268,23 @@ impl DAConfig {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SourceKind {
+    // random bytes, for load tests without clients
+    #[default]
+    Random,
+    // txs sent to this node over udp
+    Mempool,
+}
+
 #[derive(Clone, Copy, Deserialize)]
 #[serde(default)]
 pub struct ProposalConfig {
     pub num_proposals: usize,
+    pub source: SourceKind,
+    // proposal size limit in bytes; absent: 1 MiB for random, 64 KiB for mempool
+    pub max_payload_bytes: Option<usize>,
     // how long before the slot's deadline we propose
     #[serde(deserialize_with = "de::millis")]
     pub propose_before_deadline: TimestampDelta,
@@ -223,6 +302,26 @@ impl ProposalConfig {
     const OBSERVATION_CUTOFF: u64 = 5;
     const ROTATION_SLACK: u64 = 3;
     const SLOTS_PER_EPOCH: u64 = 400;
+
+    // the largest message swiper-11 encodes, which monad-mcp-da keeps private
+    pub const MAX_PROPOSAL_SIZE_LIMIT: usize = 1 << 20;
+    pub const RANDOM_PROPOSAL_SIZE_LIMIT: usize = Self::MAX_PROPOSAL_SIZE_LIMIT;
+    pub const MEMPOOL_PROPOSAL_SIZE_LIMIT: usize = 64 << 10;
+
+    // single node on localhost, 100 ms slots; see config.example.toml
+    pub fn local_demo() -> Self {
+        Self {
+            propose_before_deadline: TimestampDelta::from_millis(DEMO_PROPOSE_BEFORE_MS),
+            ..Self::default()
+        }
+    }
+
+    pub fn proposal_size_limit(&self) -> usize {
+        self.max_payload_bytes.unwrap_or(match self.source {
+            SourceKind::Random => Self::RANDOM_PROPOSAL_SIZE_LIMIT,
+            SourceKind::Mempool => Self::MEMPOOL_PROPOSAL_SIZE_LIMIT,
+        })
+    }
 
     fn proposer_config(&self) -> ProposerConfig {
         ProposerConfig {
@@ -256,11 +355,47 @@ impl Default for ProposalConfig {
     fn default() -> Self {
         Self {
             num_proposals: 5,
+            source: SourceKind::Random,
+            max_payload_bytes: None,
             propose_before_deadline: TimestampDelta::from_millis(500),
             withhold_before_deadline: TimestampDelta::ZERO,
         }
     }
 }
+
+const DEMO_DELTA_MS: u64 = 50;
+const DEMO_PROPOSE_BEFORE_MS: u64 = 200;
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(default)]
+pub struct MempoolConfig {
+    pub max_txs: usize,
+    // total rlp bytes of the queued txs
+    pub max_bytes: usize,
+    // committed tx hashes remembered to reject re-sends as duplicates
+    pub recent_txs: usize,
+}
+
+impl Default for MempoolConfig {
+    fn default() -> Self {
+        Self {
+            max_txs: 10_000,
+            max_bytes: 16 << 20,
+            recent_txs: 100_000,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ConfigError(String);
+
+impl fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "invalid config: {}", self.0)
+    }
+}
+
+impl std::error::Error for ConfigError {}
 
 // the stub env derives every key from a u64
 mod de {
@@ -300,8 +435,6 @@ mod de {
 
 #[cfg(test)]
 mod tests {
-    use monad_mcp_chorus::spec::vote::KeyPair as _;
-
     use super::*;
     use crate::chorus::types::{ProposerSchedule as _, Slot};
 
@@ -377,5 +510,122 @@ mod tests {
             config.planner(&schedule).min_lead,
             TimestampDelta::from_millis(150)
         );
+    }
+
+    const MINIMAL: &str = r#"
+node_id = 0
+proposal_key_pair = 0
+cadence_key_pair = 0
+genesis_deadline = 1789412000000
+
+[[validators]]
+node_id = 0
+stake = 1
+chorus_pubkey = 0
+address = "127.0.0.1:9000"
+
+[network]
+port = 9000
+"#;
+
+    #[test]
+    fn the_example_config_parses_and_validates() {
+        let config: NodeConfig = toml::from_str(include_str!("../config.example.toml")).unwrap();
+        config.validate().unwrap();
+        assert_eq!(config.proposal.source, SourceKind::Random);
+        assert_eq!(config.mempool.max_txs, MempoolConfig::default().max_txs);
+    }
+
+    // an existing deployment's config keeps proposing random payloads
+    #[test]
+    fn the_new_sections_default_to_the_old_behaviour() {
+        let config: NodeConfig = toml::from_str(MINIMAL).unwrap();
+        assert_eq!(config.proposal.source, SourceKind::Random);
+        assert_eq!(
+            config.proposal.proposal_size_limit(),
+            ProposalConfig::RANDOM_PROPOSAL_SIZE_LIMIT
+        );
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn the_demo_sections_parse() {
+        let text = format!(
+            "{MINIMAL}
+[proposal]
+source = \"mempool\"
+max_payload_bytes = 4096
+
+[mempool]
+max_txs = 7
+"
+        );
+        let config: NodeConfig = toml::from_str(&text).unwrap();
+        assert_eq!(config.proposal.source, SourceKind::Mempool);
+        assert_eq!(config.proposal.proposal_size_limit(), 4096);
+        assert_eq!(config.mempool.max_txs, 7);
+        assert_eq!(config.mempool.max_bytes, MempoolConfig::default().max_bytes);
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn an_unknown_source_is_rejected() {
+        let text = format!("{MINIMAL}\n[proposal]\nsource = \"file\"\n");
+        assert!(toml::from_str::<NodeConfig>(&text).is_err());
+    }
+
+    #[test]
+    fn a_mempool_proposal_size_limit_must_hold_the_largest_tx() {
+        let mut config = NodeConfig::single_node(9000, Timestamp::from_millis(0));
+        config.validate().unwrap();
+        let largest = crate::component::mempool::largest_tx().length();
+        config.proposal.max_payload_bytes = Some(largest);
+        assert!(config.validate().is_err());
+        config.proposal.max_payload_bytes = Some(largest + 3);
+        config.validate().unwrap();
+        // a proposal size limit beyond the s11 bound drains batches that never encode
+        config.proposal.max_payload_bytes = Some(ProposalConfig::MAX_PROPOSAL_SIZE_LIMIT);
+        config.validate().unwrap();
+        config.proposal.max_payload_bytes = Some(ProposalConfig::MAX_PROPOSAL_SIZE_LIMIT + 1);
+        assert!(config.validate().is_err());
+        config.proposal.max_payload_bytes = Some(largest + 3);
+
+        config.mempool.max_bytes = largest - 1;
+        assert!(config.validate().is_err());
+        config.mempool.max_bytes = largest;
+        config.mempool.max_txs = 0;
+        assert!(config.validate().is_err());
+
+        // a random source only needs a positive proposal size limit
+        config.proposal.source = SourceKind::Random;
+        config.proposal.max_payload_bytes = Some(1);
+        config.validate().unwrap();
+        config.proposal.max_payload_bytes = Some(0);
+        assert!(config.validate().is_err());
+        config.proposal.max_payload_bytes = Some(ProposalConfig::MAX_PROPOSAL_SIZE_LIMIT + 1);
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn the_single_node_config_uses_the_demo_parameters() {
+        let config = NodeConfig::single_node(9000, Timestamp::from_millis(0));
+        assert_eq!(
+            config.cadence.slot_interval,
+            TimestampDelta::from_millis(100)
+        );
+        assert_eq!(
+            config.cadence.delta,
+            TimestampDelta::from_millis(DEMO_DELTA_MS)
+        );
+        assert_eq!(
+            config.proposal.propose_before_deadline,
+            TimestampDelta::from_millis(DEMO_PROPOSE_BEFORE_MS)
+        );
+        assert_eq!(config.proposal.source, SourceKind::Mempool);
+        assert_eq!(
+            config.proposal.proposal_size_limit(),
+            ProposalConfig::MEMPOOL_PROPOSAL_SIZE_LIMIT
+        );
+        assert_eq!(config.peers().len(), 1);
     }
 }

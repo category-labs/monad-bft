@@ -23,7 +23,7 @@ use crate::{
     },
     component::{
         CadenceInput, CadenceOutput, CadenceWireMsg, DAInput, Dispatch, ProposingInput,
-        ProposingOutput, Recipients, RepeaterInput, RepeaterOutput,
+        ProposingOutput, Recipients, RepeaterInput, RepeaterOutput, SharedMempool,
     },
     da::{
         AssembledProposal, ChunkRecoveryRequest, DAOutput, Dissemination, read_envelope,
@@ -67,14 +67,21 @@ pub trait Runtime {
 pub struct NodeRuntime {
     epoch_handle: EpochHandle,
     collector: FinalizationCollector,
+    // None: the node proposes random payloads
+    mempool: Option<SharedMempool>,
 }
 
 impl NodeRuntime {
-    pub fn new(epoch_handle: EpochHandle) -> Self {
+    pub fn new(epoch_handle: EpochHandle, mempool: Option<SharedMempool>) -> Self {
         Self {
             epoch_handle,
             collector: FinalizationCollector::default(),
+            mempool,
         }
+    }
+
+    pub fn mempool(&self) -> Option<&SharedMempool> {
+        self.mempool.as_ref()
     }
 
     fn handle_cadence_outbound(
@@ -158,6 +165,9 @@ impl Runtime for NodeRuntime {
 
             CadenceOutput::Lifecycle(event) => {
                 effects.dispatch(Effect::DA(DAInput::Lifecycle(event)));
+                if let (SlotLifecycle::CapAdvance { cap }, Some(mempool)) = (event, &self.mempool) {
+                    mempool.lock().expire_below(cap);
+                }
                 match event {
                     SlotLifecycle::Opened { slot, deadline } => {
                         let input = ProposingInput::SlotOpen(slot, deadline);
@@ -179,6 +189,16 @@ impl Runtime for NodeRuntime {
                 let committed = finalization.roots().into_iter().flatten().count();
                 let path = finalization.path();
                 tracing::debug!(slot = slot.0, ?path, committed, "cadence finalized");
+                if let Some(mempool) = &self.mempool {
+                    let positive: Vec<bool> = finalization
+                        .roots()
+                        .into_iter()
+                        .map(|root| root.is_some())
+                        .collect();
+                    mempool
+                        .lock()
+                        .settle(slot, |j| positive.get(j) == Some(&true));
+                }
                 let certificate = finalization.certificate_message();
                 effects.dispatch(Effect::Repeater(RepeaterInput::Finalization(
                     slot,
@@ -289,4 +309,44 @@ fn record(to: Recipients, message: &CadenceWireMsg, effects: &mut impl Dispatch<
 fn unix_seconds(now: Timestamp) -> u64 {
     let nanos_per_second = u128::from(TimestampDelta::NANOS_PER_MILLISECOND) * 1_000;
     (now.as_nanos() / nanos_per_second) as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use bytes::Bytes;
+
+    use super::*;
+    use crate::{
+        chorus::types::Slot,
+        config::{NodeConfig, ProposalConfig, SourceKind},
+        node::Node,
+    };
+
+    fn now() -> Timestamp {
+        Timestamp::from_millis(1_000)
+    }
+
+    fn config(source: SourceKind) -> NodeConfig {
+        let mut config = NodeConfig::single_node(0, Timestamp::from_millis(10_000));
+        config.proposal.source = source;
+        config
+    }
+
+    fn runtime_of(config: &NodeConfig) -> NodeRuntime {
+        Node::new(config).unwrap().runtime
+    }
+
+    #[test]
+    fn the_largest_proposal_size_limit_still_encodes() {
+        let mut runtime = runtime_of(&config(SourceKind::Random));
+        let propose = |runtime: &mut NodeRuntime, len| {
+            let mut effects = Vec::new();
+            let message = Bytes::from(vec![7; len]);
+            runtime.handle_proposal(now(), (Slot(0), 0, message), &mut effects);
+            !effects.is_empty()
+        };
+        let max = ProposalConfig::MAX_PROPOSAL_SIZE_LIMIT;
+        assert!(propose(&mut runtime, max));
+        assert!(!propose(&mut runtime, max + 1));
+    }
 }

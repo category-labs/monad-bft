@@ -5750,6 +5750,7 @@ dependencies = [
 name = "monad-mcp-node"
 version = "0.1.0"
 dependencies = [
+ "alloy-rlp",
  "bytes",
  "monad-mcp-chorus",
  "monad-mcp-da",
@@ -5757,6 +5758,7 @@ dependencies = [
  "monad-sim-swarm",
  "rand 0.8.5",
  "serde",
+ "thiserror 1.0.69",
  "tokio",
  "toml",
  "tracing",

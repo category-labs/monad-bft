@@ -208,6 +208,7 @@ pub fn node_config(id: u64, validators: u64) -> NodeConfig {
             interval: DELTA.checked_mul(2).unwrap(),
             ..RepeaterSection::default()
         }),
+        mempool: Default::default(),
     }
 }
 

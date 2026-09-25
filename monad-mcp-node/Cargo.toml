@@ -8,9 +8,11 @@ default = ["enable_stub"]
 enable_stub = ["monad-mcp-chorus/enable_stub", "monad-mcp-da/enable_stub"]
 
 [dependencies]
+alloy-rlp = { workspace = true, features = ["derive"] }
 bytes = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "signal"] }
 toml = { workspace = true }
 tracing = { workspace = true }

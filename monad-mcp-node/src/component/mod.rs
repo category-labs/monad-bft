@@ -15,6 +15,7 @@
 
 mod cadence;
 mod da;
+pub mod mempool;
 mod proposing;
 mod repeater;
 
@@ -30,6 +31,7 @@ use tracing::{Instrument as _, Span};
 pub use self::{
     cadence::{Cadence, CadenceInput, CadenceOutput, CadenceWireMsg},
     da::{DA, DAInput},
+    mempool::{Mempool, MempoolSource, ProposalSource, RandomSource, SharedMempool},
     proposing::{Proposing, ProposingInput, ProposingOutput},
     repeater::{Recipients, Repeater, RepeaterConfig, RepeaterInput, RepeaterOutput},
 };
