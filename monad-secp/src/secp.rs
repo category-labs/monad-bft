@@ -239,7 +239,8 @@ impl SecpSignature {
         sig_vec.try_into().unwrap()
     }
 
-    /// Deserialize the signature
+    /// Deserialize the signature, accepting only the low-S form so each
+    /// signature has a canonical byte representation (up to recid byte).
     pub fn deserialize(data: &[u8]) -> Result<Self, Error> {
         if data.len() != secp256k1::constants::COMPACT_SIGNATURE_SIZE + 1 {
             return Err(Error(secp256k1::Error::InvalidSignature));
@@ -249,11 +250,21 @@ impl SecpSignature {
             data[secp256k1::constants::COMPACT_SIGNATURE_SIZE] as i32,
         )
         .map_err(Error)?;
-        Ok(SecpSignature(
-            secp256k1::ecdsa::RecoverableSignature::from_compact(sig_data, recid).map_err(Error)?,
-        ))
+        let s = &sig_data[32..];
+        if s > &SECP256K1N_HALF[..] {
+            return Err(Error(secp256k1::Error::InvalidSignature));
+        }
+        let sig =
+            secp256k1::ecdsa::RecoverableSignature::from_compact(sig_data, recid).map_err(Error)?;
+        Ok(SecpSignature(sig))
     }
 }
+
+// Largest s allowed in the low-S form (EIP-2), big-endian.
+const SECP256K1N_HALF: [u8; 32] = [
+    0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0x5D, 0x57, 0x6E, 0x73, 0x57, 0xA4, 0x50, 0x1D, 0xDF, 0xE9, 0x2F, 0x46, 0x68, 0x1B, 0x20, 0xA0,
+];
 
 impl Encodable for SecpSignature {
     fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
@@ -289,7 +300,7 @@ mod tests {
         TestResult,
     };
 
-    use super::{KeyPair, PubKey, SecpSignature};
+    use super::{KeyPair, PubKey, SecpSignature, SECP256K1N_HALF};
 
     type SigningDomainType = signing_domain::Vote;
 
@@ -737,12 +748,39 @@ mod tests {
         mal_bytes[32..64].copy_from_slice(&s_malleable);
         mal_bytes[64] = sig.serialize()[64];
 
-        // 4) The malleable signature must be rejected:
-        let mal_sig = SecpSignature::deserialize(&mal_bytes).unwrap();
+        // 4) The malleable signature must be rejected at deserialization:
         assert!(
-            pubkey.verify::<SigningDomainType>(msg, &mal_sig).is_err(),
-            "High-S malleable signature successfully verified; signature is malleable"
+            SecpSignature::deserialize(&mal_bytes).is_err(),
+            "High-S malleable signature deserialized; signature is malleable"
         );
+    }
+
+    #[test]
+    fn test_secp256k1n_half_is_half_curve_order() {
+        // n is odd, so n = 2 * floor(n/2) + 1
+        let mut doubled_plus_one = [0u8; 32];
+        let mut carry = 1u8;
+        for i in (0..32).rev() {
+            doubled_plus_one[i] = (SECP256K1N_HALF[i] << 1) | carry;
+            carry = SECP256K1N_HALF[i] >> 7;
+        }
+        assert_eq!(carry, 0);
+        assert_eq!(doubled_plus_one, secp256k1::constants::CURVE_ORDER);
+    }
+
+    #[test]
+    fn test_signature_deserialize_low_s_boundary() {
+        let mut s_plus_one = SECP256K1N_HALF;
+        s_plus_one[31] += 1;
+
+        let mut bytes = [0u8; 65];
+        bytes[31] = 1;
+
+        bytes[32..64].copy_from_slice(&SECP256K1N_HALF);
+        assert!(SecpSignature::deserialize(&bytes).is_ok());
+
+        bytes[32..64].copy_from_slice(&s_plus_one);
+        assert!(SecpSignature::deserialize(&bytes).is_err());
     }
 
     #[test]
