@@ -1,0 +1,11 @@
+{
+  "name": "monad-mcp-explorer-e2e",
+  "private": true,
+  "description": "end-to-end tests of the mcp tx demo: node, rpc, mcp-tx and explorer; run through run.sh",
+  "scripts": {
+    "test": "./run.sh"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.0"
+  }
+}
