@@ -1,0 +1,35 @@
+[package]
+name = "monad-mcp-rpc"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "monad-mcp-rpc"
+path = "src/main.rs"
+
+[[bin]]
+name = "mcp-tx"
+path = "src/bin/mcp-tx.rs"
+
+[dependencies]
+actix-web = { workspace = true }
+bytes = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+hex = { workspace = true }
+rand = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+toml = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+monad-mcp-chorus = { workspace = true }
+monad-mcp-node = { path = "../monad-mcp-node" }
+
+[dev-dependencies]
+actix-http = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["net"] }

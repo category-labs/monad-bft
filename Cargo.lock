@@ -5767,6 +5767,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-mcp-rpc"
+version = "0.1.0"
+dependencies = [
+ "actix-http",
+ "actix-web",
+ "bytes",
+ "clap",
+ "hex",
+ "monad-mcp-chorus",
+ "monad-mcp-node",
+ "rand 0.8.5",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "monad-merkle"
 version = "0.1.0"
 dependencies = [
