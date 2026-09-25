@@ -5756,6 +5756,8 @@ dependencies = [
  "monad-raptorcast",
  "monad-router-scheduler",
  "monad-secp",
+ "monad-sim",
+ "monad-sim-swarm",
  "monad-state",
  "monad-testutil",
  "monad-tfm",

@@ -89,7 +89,7 @@ where
     type ChainConfigType: ChainConfig<Self::ChainRevisionType> + Send + Unpin;
     type ChainRevisionType: ChainRevision + Send + Unpin;
 
-    type TransportMessage: PartialEq + Eq + Send + Sync + Unpin;
+    type TransportMessage: PartialEq + Eq + Send + Sync + Unpin + Clone;
 
     type BlockValidator: BlockValidator<
             Self::SignatureType,
