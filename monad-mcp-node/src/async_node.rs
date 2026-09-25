@@ -34,7 +34,6 @@ use crate::{
     runtime::{Effect, NodeRuntime, Runtime},
 };
 
-// todo: the ledger / execution boundary
 type FinalizationLogger = Box<dyn FnMut(FinalizedSlot) + Send>;
 
 type RepeaterLink = Link<RepeaterInput<ChorusMessage>, RepeaterOutput<ChorusMessage>>;

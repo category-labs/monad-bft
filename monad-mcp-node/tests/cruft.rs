@@ -13,19 +13,18 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use monad_mcp_node::{RunError, config::NodeConfig, init_logging, run_node};
+//! Runs the shell test of the ledger pruner, deploy/cruft.sh.
 
-#[tokio::main]
-async fn main() -> Result<(), RunError> {
-    init_logging();
+use std::process::Command;
 
-    let usage = "usage: monad-mcp-node <config.toml>";
-    let path = std::env::args().nth(1).ok_or(usage)?;
-    let text = std::fs::read_to_string(&path)?;
-    let config: NodeConfig = toml::from_str(&text)?;
-
-    tokio::select! {
-        result = run_node(config) => result,
-        _ = tokio::signal::ctrl_c() => Ok(()),
-    }
+#[test]
+fn the_pruner_removes_only_old_block_directories() {
+    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/cruft_test.sh");
+    let output = Command::new("bash").arg(script).output().unwrap();
+    assert!(
+        output.status.success(),
+        "{script} failed:\n{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

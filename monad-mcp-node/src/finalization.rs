@@ -30,12 +30,15 @@ pub struct FinalizedSlot {
     pub slot: Slot,
     // when cadence finalized it
     pub at: Timestamp,
+    // the decided deadline, if the slot was opened here
+    pub deadline: Option<Timestamp>,
     pub finalization: SlotFinalization,
     pub proposals: ProposalMap<Option<Bytes>>,
 }
 
 #[derive(Default)]
 struct SlotCollection {
+    deadline: Option<Timestamp>,
     finalized: Option<(Timestamp, SlotFinalization)>,
     decoded: HashMap<(ProposalIndex, MerkleRoot), Bytes>,
 }
@@ -67,6 +70,7 @@ impl SlotCollection {
         FinalizedSlot {
             slot,
             at,
+            deadline: self.deadline,
             finalization,
             proposals,
         }
@@ -107,11 +111,16 @@ impl FinalizationCollector {
     // cadence emits a slot's finalization before any cap past it, so an
     // unfinalized slot below the cap never finalizes; late decodes wait for the next cap
     pub fn handle_lifecycle(&mut self, event: SlotLifecycle) {
-        let SlotLifecycle::CapAdvance { cap } = event else {
-            return;
-        };
-        self.slots
-            .retain(|&slot, c| slot >= cap || c.finalized.is_some());
+        match event {
+            SlotLifecycle::Opened { slot, deadline } => {
+                self.slots.entry(slot).or_default().deadline = Some(deadline);
+            }
+            SlotLifecycle::CapAdvance { cap } => {
+                self.slots
+                    .retain(|&slot, c| slot >= cap || c.finalized.is_some());
+            }
+            SlotLifecycle::Completed { .. } => {}
+        }
     }
 
     pub fn poll(&mut self) -> Option<FinalizedSlot> {
@@ -158,6 +167,24 @@ mod tests {
         assert_eq!(
             collector.slots.keys().copied().collect::<Vec<_>>(),
             [Slot(5)]
+        );
+    }
+
+    #[test]
+    fn an_opened_slot_keeps_its_deadline_until_the_cap_passes() {
+        let mut collector = FinalizationCollector::default();
+        let deadline = Timestamp::from_millis(500);
+        for slot in [2, 6] {
+            collector.handle_lifecycle(SlotLifecycle::Opened {
+                slot: Slot(slot),
+                deadline,
+            });
+        }
+        assert_eq!(collector.slots[&Slot(2)].deadline, Some(deadline));
+        collector.handle_lifecycle(SlotLifecycle::CapAdvance { cap: Slot(4) });
+        assert_eq!(
+            collector.slots.keys().copied().collect::<Vec<_>>(),
+            [Slot(6)]
         );
     }
 }

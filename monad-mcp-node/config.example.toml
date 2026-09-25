@@ -37,3 +37,42 @@ propose_before_deadline = 500
 # withhold a seal with less than this much lead left; 0 disables the gate,
 # the cadence delta withholds anything that cannot arrive before the deadline
 withhold_before_deadline = 0
+# "random": random payloads, for load tests without clients (the default).
+# "mempool": txs sent to this node over udp (by monad-mcp-rpc or mcp-tx),
+# proposed as rlp(Vec<Tx>). The rpc needs it on every validator: a random
+# node drops the txs it leads unseen.
+source = "random"
+# proposal size limit in bytes, at most 1 MiB; absent: 1 MiB for random,
+# 64 KiB for mempool
+# max_payload_bytes = 65536
+
+# bounds of the mempool, used by source = "mempool"
+[mempool]
+max_txs = 10000
+# total rlp bytes of the queued txs
+max_bytes = 16777216
+# committed tx hashes remembered so a re-send is not committed twice
+recent_txs = 100000
+
+# absent: finalized blocks are only logged. Blocks go to <dir>/blocks/<slot:012>/.
+# [ledger]
+# dir = "/home/monad/monad-mcp/ledger"
+
+# local demo: a lone validator on localhost with 100 ms slots, the
+# parameters of NodeConfig::single_node; these tables replace the ones
+# above. Measured over 20 s runs, every
+# slot finalizes on the fast path and a tx is final ~320 ms after
+# submission (median), ~1 s worst case: a lone proposer leaves 5 of every
+# 8 slots vacant (the rotation's observation cutoff). delta 30..150 and
+# propose_before_deadline 100..500 all finalize steadily; 500 adds ~400 ms.
+#
+# [cadence]
+# delta = 50
+# slot_interval = 100
+#
+# [proposal]
+# source = "mempool"
+# propose_before_deadline = 200
+#
+# [ledger]
+# dir = "/tmp/mcp-demo/ledger"

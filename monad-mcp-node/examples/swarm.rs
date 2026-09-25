@@ -59,6 +59,7 @@ fn config(i: u64, nodes: u64, genesis_deadline: Timestamp) -> NodeConfig {
         proposal: Default::default(),
         repeater: None,
         mempool: Default::default(),
+        ledger: None,
     }
 }
 

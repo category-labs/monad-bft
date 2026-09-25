@@ -19,6 +19,7 @@ pub mod component;
 pub mod config;
 mod epoch;
 mod finalization;
+pub mod ledger;
 mod logging;
 pub mod network;
 mod node;
@@ -28,17 +29,19 @@ use std::error::Error;
 
 pub use monad_mcp_chorus::stub as chorus;
 pub use monad_mcp_da::stub as da;
+use tokio::task::JoinSet;
 use tracing::Instrument as _;
 
 use self::{
     async_node::AsyncNode,
-    chorus::slot::chorus::FinalizationPath,
     clock::Clock,
     config::NodeConfig,
+    ledger::{LedgerSink, Recorder},
     network::{NetworkHandle, stub::UdpNetwork},
 };
 pub use self::{
     component::{Component, Dispatch},
+    epoch::{EpochHandle, NodeProposerSchedule},
     finalization::FinalizedSlot,
     logging::init_logging,
     node::{Node, NodeOutput},
@@ -48,7 +51,8 @@ pub use self::{
 pub type RunError = Box<dyn Error + Send + Sync>;
 
 // a node over the UDP stub, until its loop ends. Every log line
-// carries the node's id.
+// carries the node's id. Dropping the future stops the node and its
+// transport.
 pub async fn run_node(config: NodeConfig) -> Result<(), RunError> {
     let span = tracing::info_span!("node", id = u64::from(config.node_id));
     run(config).instrument(span).await
@@ -56,40 +60,23 @@ pub async fn run_node(config: NodeConfig) -> Result<(), RunError> {
 
 async fn run(config: NodeConfig) -> Result<(), RunError> {
     let node = Node::new(&config)?;
+    let proposers = node.runtime().epoch_handle().proposers.clone();
+    let sink = config
+        .ledger
+        .as_ref()
+        .map(|ledger| LedgerSink::spawn(&ledger.dir))
+        .transpose()?;
+
     let mut node = AsyncNode::spawn(node, Clock::start());
     let (handle, transport) = NetworkHandle::pair();
     node.set_network(handle);
-    node.on_finalization(log_finalized);
+    let mut recorder = Recorder::new(proposers, sink);
+    node.on_finalization(move |finalized| recorder.record(finalized));
 
+    let mut tasks = JoinSet::new();
     let udp = UdpNetwork::bind(config.node_id, config.network.port, config.peers()).await?;
-    let _transport_task = udp.spawn(transport);
+    tasks.spawn(udp.run(transport).in_current_span());
 
     node.run().await;
     Ok(())
-}
-
-// todo: the ledger / execution boundary. The block reads one char per
-// proposal index, + committed or - not, green on the fast path and
-// yellow on the fallback path.
-fn log_finalized(finalized: FinalizedSlot) {
-    let FinalizedSlot {
-        slot,
-        at,
-        finalization,
-        proposals,
-    } = finalized;
-    let mut shape = String::new();
-    for ((j, root), proposal) in finalization.roots().into_indexed_iter().zip(proposals) {
-        shape.push(if root.is_some() { '+' } else { '-' });
-        let Some(message) = proposal else {
-            continue;
-        };
-        tracing::debug!(slot = slot.0, j, ?root, len = message.len(), "committed");
-    }
-    let color = match finalization.path() {
-        FinalizationPath::Fast => logging::GREEN,
-        FinalizationPath::Fallback => logging::YELLOW,
-    };
-    let block = logging::paint(color, &shape);
-    tracing::info!(slot = slot.0, block = %block, at = at.as_nanos(), "finalized");
 }

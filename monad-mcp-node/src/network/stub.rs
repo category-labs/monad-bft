@@ -64,7 +64,7 @@ impl UdpNetwork {
         tokio::spawn(self.run(link).instrument(Span::current()))
     }
 
-    async fn run(self, mut link: Link<Inbound, Outbound>) {
+    pub async fn run(self, mut link: Link<Inbound, Outbound>) {
         let mut buffer = vec![0u8; MAX_FRAME_LEN];
         loop {
             tokio::select! {

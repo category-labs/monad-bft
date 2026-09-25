@@ -83,6 +83,10 @@ impl NodeRuntime {
         }
     }
 
+    pub fn epoch_handle(&self) -> &EpochHandle {
+        &self.epoch_handle
+    }
+
     pub fn mempool(&self) -> Option<&SharedMempool> {
         self.mempool.as_ref()
     }

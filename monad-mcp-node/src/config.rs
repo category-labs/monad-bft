@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::HashMap, fmt, net::SocketAddr, num::NonZeroU64, sync::Arc};
+use std::{collections::HashMap, fmt, net::SocketAddr, num::NonZeroU64, path::PathBuf, sync::Arc};
 
 use alloy_rlp::Encodable as _;
 use monad_mcp_chorus::{ledger::BatchBuilder, spec::vote::KeyPair as _};
@@ -59,11 +59,13 @@ pub struct NodeConfig {
     pub repeater: Option<RepeaterSection>,
     #[serde(default)]
     pub mempool: MempoolConfig,
+    // absent: finalized blocks are only logged
+    pub ledger: Option<LedgerConfig>,
 }
 
 impl NodeConfig {
     // a lone validator on localhost with the 100 ms local-demo parameters of
-    // config.example.toml and the mempool source
+    // config.example.toml and the mempool source; the ledger stays off.
     pub fn single_node(port: u16, genesis_deadline: Timestamp) -> Self {
         let id = 0;
         Self {
@@ -86,6 +88,7 @@ impl NodeConfig {
             },
             repeater: None,
             mempool: MempoolConfig::default(),
+            ledger: None,
         }
     }
 
@@ -386,6 +389,11 @@ impl Default for MempoolConfig {
     }
 }
 
+#[derive(Clone, Debug, Deserialize)]
+pub struct LedgerConfig {
+    pub dir: PathBuf,
+}
+
 #[derive(Debug)]
 pub struct ConfigError(String);
 
@@ -545,6 +553,7 @@ port = 9000
             config.proposal.proposal_size_limit(),
             ProposalConfig::RANDOM_PROPOSAL_SIZE_LIMIT
         );
+        assert!(config.ledger.is_none());
         config.validate().unwrap();
     }
 
@@ -558,6 +567,9 @@ max_payload_bytes = 4096
 
 [mempool]
 max_txs = 7
+
+[ledger]
+dir = \"/var/mcp/ledger\"
 "
         );
         let config: NodeConfig = toml::from_str(&text).unwrap();
@@ -565,6 +577,10 @@ max_txs = 7
         assert_eq!(config.proposal.proposal_size_limit(), 4096);
         assert_eq!(config.mempool.max_txs, 7);
         assert_eq!(config.mempool.max_bytes, MempoolConfig::default().max_bytes);
+        assert_eq!(
+            config.ledger.as_ref().unwrap().dir,
+            PathBuf::from("/var/mcp/ledger")
+        );
         config.validate().unwrap();
     }
 

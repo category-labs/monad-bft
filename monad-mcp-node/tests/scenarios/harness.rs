@@ -209,6 +209,7 @@ pub fn node_config(id: u64, validators: u64) -> NodeConfig {
             ..RepeaterSection::default()
         }),
         mempool: Default::default(),
+        ledger: None,
     }
 }
 

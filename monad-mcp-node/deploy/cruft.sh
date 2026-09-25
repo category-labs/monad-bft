@@ -13,13 +13,15 @@ free_gb() {
     df -B1G --output=avail "$root" | tail -1 | tr -d ' '
 }
 
-# zero-padded block numbers, so lexical order is numeric order
+# zero-padded block numbers, so lexical order is numeric order; the
+# writer's dot-prefixed temp dirs and foreign entries never match
 names() {
-    ls -1 "$blocks" 2> /dev/null | grep -E '^[0-9]{12}' || true
+    ls -1 "$blocks" 2> /dev/null | grep -E '^[0-9]{12}$' || true
 }
 
+# one directory per block
 delete() {
-    sed "s|^|$blocks/|" | xargs -r rm -f --
+    sed "s|^|$blocks/|" | xargs -r rm -rf --
 }
 
 if [ ! -d "$blocks" ]; then
@@ -35,17 +37,17 @@ fi
 
 tip_name=$(names | tail -1)
 if [ -z "$tip_name" ]; then
-    echo "no block files under $blocks, nothing to prune"
+    echo "no blocks under $blocks, nothing to prune"
     exit 0
 fi
 
-tip=$((10#${tip_name%%.*}))
+tip=$((10#$tip_name))
 cutoff=$((tip - retention))
 deleted=0
 
 if [ "$cutoff" -gt 0 ]; then
     padded=$(printf '%012d' "$cutoff")
-    old=$(names | awk -v c="$padded" 'substr($0, 1, length(c)) < c')
+    old=$(names | awk -v c="$padded" '$0 < c')
     if [ -n "$old" ]; then
         deleted=$(wc -l <<< "$old")
         printf '%s\n' "$old" | delete

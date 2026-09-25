@@ -24,3 +24,4 @@ monad-mcp-da = { workspace = true }
 [dev-dependencies]
 monad-sim = { workspace = true }
 monad-sim-swarm = { workspace = true }
+tempfile = { workspace = true }

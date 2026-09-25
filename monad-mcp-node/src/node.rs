@@ -105,6 +105,12 @@ impl Node {
     }
 }
 
+impl<R> Node<R> {
+    pub fn runtime(&self) -> &R {
+        &self.runtime
+    }
+}
+
 impl<R: Runtime> Node<R> {
     fn dispatch(&mut self, now: Timestamp, effect: Effect) {
         match effect {
