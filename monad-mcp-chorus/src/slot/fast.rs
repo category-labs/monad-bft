@@ -373,7 +373,7 @@ impl FastPath {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub(crate) enum Entry {
+pub enum Entry {
     Positive { root: MerkleRoot },
     Negative,
 }
@@ -386,7 +386,7 @@ impl IsVote for Entry {
     }
 }
 
-pub(crate) type FastQc = StrongQc<Entry>;
+pub type FastQc = StrongQc<Entry>;
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct BatchVoteMsg {
@@ -443,7 +443,7 @@ pub(crate) type FastCommitQc = StrongQc<FastCommitVote>;
 
 // same as Entry, but signed under a distinct signing domain
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub(crate) struct FallbackEntry(pub Entry);
+pub struct FallbackEntry(pub Entry);
 
 impl IsVote for FallbackEntry {
     type Scope = (Slot, ProposalIndex);
@@ -453,7 +453,7 @@ impl IsVote for FallbackEntry {
     }
 }
 
-pub(crate) type FallbackQc = WeakQc<FallbackEntry>;
+pub type FallbackQc = WeakQc<FallbackEntry>;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum EvidenceStrength {
@@ -465,7 +465,7 @@ enum EvidenceStrength {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, derive_more::From, Debug)]
-pub(crate) enum CertifiedEntry {
+pub enum CertifiedEntry {
     #[from]
     FastQc(FastQc),
     #[from]
@@ -614,7 +614,7 @@ impl LocalCertifiedEntry {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub(crate) struct EnterFallbackVote;
+pub struct EnterFallbackVote;
 
 impl IsVote for EnterFallbackVote {
     type Scope = Slot;
@@ -631,4 +631,4 @@ pub(crate) struct FallbackVoteMsg {
 }
 
 // A fallback cert certifies 2f+1 validators agree to enter fallback path
-pub(crate) type EnterFallbackCert = StrongQc<EnterFallbackVote>;
+pub type EnterFallbackCert = StrongQc<EnterFallbackVote>;
