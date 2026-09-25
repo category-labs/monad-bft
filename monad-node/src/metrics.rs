@@ -24,7 +24,9 @@ use actix_server::Server;
 use actix_web::{http::header, web, App, HttpRequest, HttpResponse, HttpServer};
 use monad_consensus_types::metrics::Metrics as StateMetrics;
 use monad_executor::{metric_consts, ExecutorMetrics, ExecutorMetricsChain, Gauge};
-use monad_triedb_utils::{MigrationPhase, StorageStats, TriedbStatsReader, UpdateStats};
+use monad_triedb_utils::{
+    MigrationPhase, StorageStats, ThreadIdle, TriedbStatsReader, UpdateStats,
+};
 use prometheus::{Encoder, ProtobufEncoder, Registry, TextEncoder};
 use tracing::{info, warn};
 
@@ -147,6 +149,18 @@ metric_consts! {
         name: "monad.triedb.expire_reads",
         help: "Node reads issued by history expiry, cumulative.",
     }
+    pub GAUGE_EXECUTION_FIBER_POOL_IDLE_NS {
+        name: "monad.execution.fiber_pool_idle_ns",
+        help: "Time execution's fiber pool workers spent with no fiber to run, summed over workers, cumulative. They busy-poll, so CPU usage does not show this.",
+    }
+    pub GAUGE_EXECUTION_FIBER_POOL_THREADS {
+        name: "monad.execution.fiber_pool_threads",
+        help: "Fiber pool worker threads in execution.",
+    }
+    pub GAUGE_EXECUTION_TRIEDB_WORKER_IDLE_NS {
+        name: "monad.execution.triedb_worker_idle_ns",
+        help: "Time execution's triedb worker spent with no request and no I/O completion to process, cumulative. Spinning while I/O is in flight counts as idle; blocking disk waits inside an upsert count as busy. It busy-polls, so CPU usage does not show this.",
+    }
 }
 
 pub fn init_triedb_update_stats_metrics() -> ExecutorMetrics {
@@ -158,7 +172,34 @@ pub fn init_triedb_update_stats_metrics() -> ExecutorMetrics {
         GAUGE_TRIEDB_COPIED_BYTES_SLOW_TO_FAST,
         GAUGE_TRIEDB_EXPIRE_NODES_UPDATED,
         GAUGE_TRIEDB_EXPIRE_READS,
+        GAUGE_EXECUTION_FIBER_POOL_IDLE_NS,
+        GAUGE_EXECUTION_FIBER_POOL_THREADS,
+        GAUGE_EXECUTION_TRIEDB_WORKER_IDLE_NS,
     ])
+}
+
+const FIBER_POOL_THREAD_PREFIX: &str = "ftpool ";
+const TRIEDB_WORKER_THREAD: &str = "triedb rw";
+
+pub fn record_thread_idle_metrics(metrics: &mut ExecutorMetrics, threads: &[ThreadIdle]) {
+    let fiber_pool = || {
+        threads
+            .iter()
+            .filter(|t| t.name.starts_with(FIBER_POOL_THREAD_PREFIX))
+    };
+    metrics
+        .gauge(GAUGE_EXECUTION_FIBER_POOL_IDLE_NS)
+        .set(fiber_pool().map(|t| t.idle_ns).sum());
+    metrics
+        .gauge(GAUGE_EXECUTION_FIBER_POOL_THREADS)
+        .set(fiber_pool().count() as u64);
+    metrics.gauge(GAUGE_EXECUTION_TRIEDB_WORKER_IDLE_NS).set(
+        threads
+            .iter()
+            .filter(|t| t.name == TRIEDB_WORKER_THREAD)
+            .map(|t| t.idle_ns)
+            .sum(),
+    );
 }
 
 // ~5 minutes at the refresh cadence, then hourly. An absent sidecar is the
@@ -191,33 +232,45 @@ pub fn init_triedb_update_stats(path: Option<&Path>) -> ExecutorMetrics {
 /// execution publishes to can be replaced, and a reader still mapping the old
 /// inode would report its last values as though they were current.
 ///
-/// Returns whether a sample was recorded. A miss leaves the gauges at their
-/// last values; zeroing them would read as a counter reset.
+/// Returns whether an update-stats sample was recorded. Thread idle gauges are
+/// recorded whenever the sidecar carries them, independently of that result. A
+/// miss leaves the gauges at their last values; zeroing them would read as a
+/// counter reset.
 pub fn refresh_triedb_update_stats(
     path: &Path,
     consecutive_misses: &mut u32,
     metrics: &mut ExecutorMetrics,
 ) -> bool {
-    let Some(stats) = TriedbStatsReader::try_new(path).and_then(|reader| reader.update_stats())
-    else {
-        *consecutive_misses += 1;
-        if *consecutive_misses >= MISSES_BEFORE_WARNING
-            && (*consecutive_misses - MISSES_BEFORE_WARNING).is_multiple_of(MISSES_BETWEEN_WARNINGS)
-        {
-            warn!(
-                ?path,
-                consecutive_misses = *consecutive_misses,
-                "no triedb stats sample; check that --triedb-stats-path names the same \
-                 file execution is given with --db-stats-file, and that this user can \
-                 read it"
-            );
-        }
+    let Some(reader) = TriedbStatsReader::try_new(path) else {
+        note_triedb_stats_miss(path, consecutive_misses);
+        return false;
+    };
+    if let Some(threads) = reader.thread_idle_stats() {
+        record_thread_idle_metrics(metrics, &threads);
+    }
+    let Some(stats) = reader.update_stats() else {
+        note_triedb_stats_miss(path, consecutive_misses);
         return false;
     };
 
     *consecutive_misses = 0;
     record_triedb_update_stats_metrics(metrics, stats);
     true
+}
+
+fn note_triedb_stats_miss(path: &Path, consecutive_misses: &mut u32) {
+    *consecutive_misses += 1;
+    if *consecutive_misses >= MISSES_BEFORE_WARNING
+        && (*consecutive_misses - MISSES_BEFORE_WARNING).is_multiple_of(MISSES_BETWEEN_WARNINGS)
+    {
+        warn!(
+            ?path,
+            consecutive_misses = *consecutive_misses,
+            "no triedb stats sample; check that --triedb-stats-path names the same \
+             file execution is given with --db-stats-file, and that this user can \
+             read it"
+        );
+    }
 }
 
 /// Gauge names carry the copy direction, while the counters behind them are
@@ -597,6 +650,112 @@ mod update_stats_metrics_tests {
                 "missing `{expected}` in:\n{scraped}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod thread_idle_metrics_tests {
+    use monad_triedb_utils::ThreadIdle;
+    use prometheus::{Encoder, Registry, TextEncoder};
+
+    use super::{
+        init_triedb_update_stats_metrics, record_thread_idle_metrics,
+        GAUGE_EXECUTION_FIBER_POOL_IDLE_NS, GAUGE_EXECUTION_FIBER_POOL_THREADS,
+        GAUGE_EXECUTION_TRIEDB_WORKER_IDLE_NS,
+    };
+
+    fn thread(name: &str, idle_ns: u64) -> ThreadIdle {
+        ThreadIdle {
+            name: name.into(),
+            idle_ns,
+            registered_at_ns: 1,
+        }
+    }
+
+    #[test]
+    fn fiber_workers_are_summed_and_the_triedb_worker_picked_out() {
+        let mut metrics = init_triedb_update_stats_metrics();
+        record_thread_idle_metrics(
+            &mut metrics,
+            &[
+                thread("ftpool 0", 100),
+                thread("ftpool 1", 20),
+                thread("ftpool 2", 3),
+                thread("triedb rw", 4000),
+                thread("unrelated", 50000),
+            ],
+        );
+
+        assert_eq!(metrics.gauge(GAUGE_EXECUTION_FIBER_POOL_IDLE_NS).get(), 123);
+        assert_eq!(metrics.gauge(GAUGE_EXECUTION_FIBER_POOL_THREADS).get(), 3);
+        assert_eq!(
+            metrics.gauge(GAUGE_EXECUTION_TRIEDB_WORKER_IDLE_NS).get(),
+            4000
+        );
+    }
+
+    // The gauges must be in init_triedb_update_stats_metrics: one created on
+    // demand by the first refresh is never scraped.
+    #[test]
+    fn thread_idle_gauges_reach_the_scrape() {
+        let mut metrics = init_triedb_update_stats_metrics();
+        let registry = Registry::new();
+        metrics.register(&registry).expect("gauges registered");
+
+        record_thread_idle_metrics(
+            &mut metrics,
+            &[thread("ftpool 0", 7), thread("triedb rw", 9)],
+        );
+
+        let mut buffer = Vec::new();
+        TextEncoder::new()
+            .encode(&registry.gather(), &mut buffer)
+            .expect("encoded");
+        let scraped = String::from_utf8(buffer).expect("utf-8");
+        for expected in [
+            "monad_execution_fiber_pool_idle_ns 7",
+            "monad_execution_fiber_pool_threads 1",
+            "monad_execution_triedb_worker_idle_ns 9",
+        ] {
+            assert!(
+                scraped.lines().any(|line| line == expected),
+                "missing `{expected}` in:\n{scraped}"
+            );
+        }
+    }
+
+    // An execution binary older than the thread section must keep its update
+    // counters flowing.
+    #[test]
+    fn a_sidecar_without_thread_idle_still_refreshes_update_stats() {
+        let path = std::env::temp_dir().join(format!(
+            "monad_node_stats_no_thread_idle_{}",
+            std::process::id()
+        ));
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&0x4d4f_4e41_4453_5453u64.to_ne_bytes()); // magic
+        bytes.extend_from_slice(&1u32.to_ne_bytes()); // format_version
+        bytes.extend_from_slice(&(20u32 * 8).to_ne_bytes()); // update section only
+        bytes.extend_from_slice(&2u32.to_ne_bytes()); // seq
+        bytes.extend_from_slice(&0u32.to_ne_bytes());
+        for _ in 0..20 {
+            bytes.extend_from_slice(&5u64.to_ne_bytes());
+        }
+        std::fs::write(&path, &bytes).unwrap();
+
+        let mut metrics = init_triedb_update_stats_metrics();
+        let mut misses = 0;
+        let recorded = super::refresh_triedb_update_stats(&path, &mut misses, &mut metrics);
+        let _ = std::fs::remove_file(&path);
+
+        assert!(recorded);
+        assert_eq!(
+            metrics
+                .gauge(super::GAUGE_TRIEDB_NODES_CREATED_OR_UPDATED)
+                .get(),
+            5
+        );
+        assert_eq!(metrics.gauge(GAUGE_EXECUTION_FIBER_POOL_THREADS).get(), 0);
     }
 }
 
