@@ -13,13 +13,16 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use monad_mcp_chorus::spec::{Deserializable as _, Serializable as _};
+use monad_mcp_chorus::{
+    ledger::Tx,
+    spec::{Deserializable as _, Serializable as _},
+};
 
 use crate::{
     chorus::{
         CadenceMessage, SlotLifecycle,
         slot::chorus::ChorusMessage,
-        types::{Timestamp, TimestampDelta, Validated},
+        types::{NodeId, Timestamp, TimestampDelta, Validated},
     },
     component::{
         CadenceInput, CadenceOutput, CadenceWireMsg, DAInput, Dispatch, ProposingInput,
@@ -82,6 +85,17 @@ impl NodeRuntime {
 
     pub fn mempool(&self) -> Option<&SharedMempool> {
         self.mempool.as_ref()
+    }
+
+    fn admit(&self, from: NodeId, tx: Tx) {
+        let Some(mempool) = &self.mempool else {
+            tracing::debug!(?from, "no mempool, tx dropped");
+            return;
+        };
+        match mempool.lock().admit(tx) {
+            Ok(()) => tracing::debug!(?from, "tx admitted"),
+            Err(reject) => tracing::debug!(?from, %reject, "tx dropped"),
+        }
     }
 
     fn handle_cadence_outbound(
@@ -153,6 +167,17 @@ impl Runtime for NodeRuntime {
                     return;
                 };
                 effects.dispatch(Effect::DA(DAInput::ChunkRequest(from, request)));
+            }
+
+            Packet::Tx(bytes) => {
+                let tx = match Tx::decode_exact(&bytes) {
+                    Ok(tx) => tx,
+                    Err(error) => {
+                        tracing::debug!(?from, %error, "malformed tx");
+                        return;
+                    }
+                };
+                self.admit(from, tx);
             }
         }
     }
@@ -317,10 +342,18 @@ mod tests {
 
     use super::*;
     use crate::{
-        chorus::types::Slot,
+        chorus::types::{NodeId, Slot},
         config::{NodeConfig, ProposalConfig, SourceKind},
         node::Node,
     };
+
+    fn tx(nonce: u64) -> Tx {
+        Tx {
+            sender: [5; 20],
+            nonce,
+            payload: Bytes::from_static(b"demux"),
+        }
+    }
 
     fn now() -> Timestamp {
         Timestamp::from_millis(1_000)
@@ -334,6 +367,71 @@ mod tests {
 
     fn runtime_of(config: &NodeConfig) -> NodeRuntime {
         Node::new(config).unwrap().runtime
+    }
+
+    fn inbound(packet: Packet) -> Inbound {
+        Inbound {
+            from: NodeId::dummy(0),
+            packet,
+        }
+    }
+
+    fn pooled(runtime: &NodeRuntime) -> usize {
+        runtime.mempool().unwrap().lock().len()
+    }
+
+    #[test]
+    fn a_tx_packet_lands_in_the_mempool_once() {
+        let mut runtime = runtime_of(&config(SourceKind::Mempool));
+        let mut effects = Vec::new();
+        runtime.handle_inbound(inbound(Packet::Tx(tx(1).to_rlp())), &mut effects);
+        runtime.handle_inbound(
+            inbound(Packet::Tx(Bytes::from_static(b"junk"))),
+            &mut effects,
+        );
+        // never forwarded: the rpc already chose this node
+        assert!(effects.is_empty());
+        assert_eq!(pooled(&runtime), 1);
+        runtime.handle_inbound(inbound(Packet::Tx(tx(1).to_rlp())), &mut effects);
+        assert_eq!(pooled(&runtime), 1);
+        runtime.handle_inbound(inbound(Packet::Tx(tx(2).to_rlp())), &mut effects);
+        assert_eq!(pooled(&runtime), 2);
+        assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn an_oversized_tx_packet_is_dropped() {
+        let mut runtime = runtime_of(&config(SourceKind::Mempool));
+        let mut effects = Vec::new();
+        let oversized = Tx {
+            payload: Bytes::from(vec![0; monad_mcp_chorus::ledger::MAX_TX_PAYLOAD + 1]),
+            ..tx(1)
+        };
+        runtime.handle_inbound(inbound(Packet::Tx(oversized.to_rlp())), &mut effects);
+        assert!(effects.is_empty());
+        assert_eq!(pooled(&runtime), 0);
+    }
+
+    #[test]
+    fn a_tx_packet_to_a_random_source_node_is_dropped() {
+        let mut runtime = runtime_of(&config(SourceKind::Random));
+        assert!(runtime.mempool().is_none());
+        let mut effects = Vec::new();
+        runtime.handle_inbound(inbound(Packet::Tx(tx(1).to_rlp())), &mut effects);
+        assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn a_full_mempool_drops_the_overflow() {
+        let mut config = config(SourceKind::Mempool);
+        config.mempool.max_txs = 1;
+        let mut runtime = runtime_of(&config);
+        let mut effects = Vec::new();
+        for nonce in 1..=3 {
+            runtime.handle_inbound(inbound(Packet::Tx(tx(nonce).to_rlp())), &mut effects);
+        }
+        assert!(effects.is_empty());
+        assert_eq!(pooled(&runtime), 1);
     }
 
     #[test]

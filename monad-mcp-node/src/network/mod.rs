@@ -17,6 +17,7 @@ pub mod stub;
 
 use bytes::Bytes;
 
+pub use self::stub::{decode_frame, encode_frame};
 use crate::{chorus::types::NodeId, component::Link};
 
 // what crosses the wire between nodes
@@ -26,6 +27,8 @@ pub enum Packet {
     // one chunk with its header, or a header alone
     Chunk(Bytes),
     ChunkRequest(Bytes),
+    // rlp(Tx), sent by the rpc to the proposer it chose
+    Tx(Bytes),
 }
 
 // todo: move this into shared types

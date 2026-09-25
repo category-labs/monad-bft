@@ -31,6 +31,7 @@ use crate::{chorus::types::NodeId, component::Link};
 const CADENCE: u8 = 1;
 const CHUNK: u8 = 2;
 const CHUNK_REQUEST: u8 = 3;
+const TX: u8 = 4;
 
 const SENDER_LEN: usize = 8;
 const HEADER_LEN: usize = SENDER_LEN + 1;
@@ -144,6 +145,7 @@ fn parts(packet: &Packet) -> (u8, &Bytes) {
         Packet::Cadence(payload) => (CADENCE, payload),
         Packet::Chunk(payload) => (CHUNK, payload),
         Packet::ChunkRequest(payload) => (CHUNK_REQUEST, payload),
+        Packet::Tx(payload) => (TX, payload),
     }
 }
 
@@ -152,11 +154,12 @@ fn packet(kind: u8, payload: Bytes) -> Option<Packet> {
         CADENCE => Some(Packet::Cadence(payload)),
         CHUNK => Some(Packet::Chunk(payload)),
         CHUNK_REQUEST => Some(Packet::ChunkRequest(payload)),
+        TX => Some(Packet::Tx(payload)),
         _ => None,
     }
 }
 
-fn encode_frame(sender: NodeId, packet: &Packet) -> Bytes {
+pub fn encode_frame(sender: NodeId, packet: &Packet) -> Bytes {
     let (kind, payload) = parts(packet);
     let mut frame = BytesMut::with_capacity(HEADER_LEN + payload.len());
     frame.put_u64_le(u64::from(sender));
@@ -165,7 +168,7 @@ fn encode_frame(sender: NodeId, packet: &Packet) -> Bytes {
     frame.freeze()
 }
 
-fn decode_frame(frame: &[u8]) -> Option<(NodeId, Packet)> {
+pub fn decode_frame(frame: &[u8]) -> Option<(NodeId, Packet)> {
     let (sender, rest) = frame.split_first_chunk::<SENDER_LEN>()?;
     let (kind, payload) = rest.split_first()?;
     let sender = NodeId::dummy(u64::from_le_bytes(*sender));
@@ -175,7 +178,10 @@ fn decode_frame(frame: &[u8]) -> Option<(NodeId, Packet)> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
+    use crate::network::NetworkHandle;
 
     #[test]
     fn frames_roundtrip_and_reject_unknown_types() {
@@ -185,6 +191,7 @@ mod tests {
             Packet::Cadence(payload.clone()),
             Packet::Chunk(payload.clone()),
             Packet::ChunkRequest(payload.clone()),
+            Packet::Tx(payload.clone()),
         ];
         for original in packets {
             let frame = encode_frame(sender, &original);
@@ -198,5 +205,59 @@ mod tests {
         bad_kind[SENDER_LEN] = 9;
         assert!(decode_frame(&bad_kind).is_none());
         assert!(decode_frame(&bad_kind[..HEADER_LEN - 1]).is_none());
+    }
+
+    // the largest tx the node accepts fits one datagram from the rpc
+    #[test]
+    fn the_largest_tx_fits_the_mtu() {
+        let tx = crate::component::mempool::largest_tx();
+        let packet = Packet::Tx(tx.to_rlp());
+        let frame = encode_frame(NodeId::dummy(u64::MAX), &packet);
+        assert!(frame.len() <= MAX_FRAME_LEN);
+        let (_, decoded) = decode_frame(&frame).unwrap();
+        let Packet::Tx(bytes) = decoded else {
+            panic!("a tx packet");
+        };
+        assert_eq!(monad_mcp_chorus::ledger::Tx::decode_exact(&bytes), Ok(tx));
+    }
+
+    // the rpc signs frames with its colocated validator's id: only the sender id
+    // is checked, against the validator set, whatever address the datagram came from
+    #[tokio::test]
+    async fn only_frames_from_a_validator_id_reach_the_node() {
+        let peers = HashMap::from([
+            (NodeId::dummy(0), SocketAddr::from(([127, 0, 0, 1], 1))),
+            (NodeId::dummy(1), SocketAddr::from(([127, 0, 0, 1], 2))),
+        ]);
+        let udp = UdpNetwork::bind(NodeId::dummy(0), 0, peers).await.unwrap();
+        let port = udp.socket.local_addr().unwrap().port();
+        let (mut node, transport) = NetworkHandle::pair();
+        let _task = udp.spawn(transport);
+
+        let client = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let tx = |sender: u64, body: &'static [u8]| {
+            encode_frame(NodeId::dummy(sender), &Packet::Tx(Bytes::from_static(body)))
+        };
+        for frame in [
+            tx(9, b"stranger"),
+            Bytes::from_static(b"junk"),
+            tx(1, b"peer"),
+        ] {
+            client.send_to(&frame, ("127.0.0.1", port)).unwrap();
+        }
+        let inbound = tokio::time::timeout(Duration::from_secs(5), node.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(inbound.from, NodeId::dummy(1));
+        let Packet::Tx(body) = inbound.packet else {
+            panic!("a tx packet");
+        };
+        assert_eq!(&body[..], b"peer");
+        let next = tokio::time::timeout(Duration::from_millis(200), node.recv()).await;
+        assert!(
+            next.is_err(),
+            "a frame outside the validator set got through"
+        );
     }
 }
