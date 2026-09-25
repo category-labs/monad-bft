@@ -22,6 +22,8 @@ use tracing::error;
 use crate::data::ChainStateError;
 
 pub const JSONRPC_VERSION: &str = "2.0";
+/// Error code of [`JsonRpcError::unauthorized`].
+pub const UNAUTHORIZED_ERROR_CODE: i32 = ErrorCode::Unauthorized.code();
 
 #[derive(Debug, Serialize)]
 pub struct Request<'p> {
@@ -359,6 +361,8 @@ pub enum ErrorCode {
     InvalidParams = -32602,
     InternalError = -32603,
     MethodNotSupported = -32004,
+    /// A domain route request without a valid access token.
+    Unauthorized = -32006,
 }
 
 impl ErrorCode {
@@ -379,6 +383,7 @@ impl ErrorCode {
             Self::InvalidParams => "Invalid params",
             Self::InternalError => "Internal error",
             Self::MethodNotSupported => "Method not supported",
+            Self::Unauthorized => "Unauthorized",
         }
     }
 }
@@ -434,6 +439,12 @@ impl JsonRpcError {
             ErrorCode::TransactionRejected,
             format!("Invalid chain ID: expected {}, got {}", expected, got),
         )
+    }
+
+    /// Returned on domain routes when the access token header is missing or fails
+    /// verification.
+    pub fn unauthorized(message: String) -> Self {
+        Self::with_message(ErrorCode::Unauthorized, format!("Unauthorized: {message}"))
     }
 
     pub fn block_not_found() -> Self {

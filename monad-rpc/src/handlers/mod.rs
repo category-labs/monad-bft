@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use actix_web::{web, HttpResponse};
+use actix_web::{web, HttpRequest, HttpResponse};
 use futures::StreamExt;
 use monad_tracing_timing::TimingSpanExtension;
 use monad_triedb_utils::triedb_env::Triedb;
@@ -114,6 +114,7 @@ pub async fn rpc_handler(
 
 pub async fn domain_rpc_handler(
     root_span: RootSpan,
+    req: HttpRequest,
     path: web::Path<String>,
     body: bytes::Bytes,
     app_state: web::Data<MonadRpcResources>,
@@ -127,7 +128,14 @@ pub async fn domain_rpc_handler(
         Ok(domain) => domain,
         Err(err) => return HttpResponse::Ok().json(Response::from_error(err)),
     };
-    let app_state = web::Data::new(app_state.with_domain_context(route_chain_id, domain));
+    let signer = match crate::auth::authenticate_domain_request(&req, route_chain_id) {
+        Ok(signer) => signer,
+        Err(err) => {
+            debug!(%err, route_chain_id, "rejected unauthenticated domain request");
+            return HttpResponse::Ok().json(Response::from_error(err.into()));
+        }
+    };
+    let app_state = web::Data::new(app_state.with_domain_context(route_chain_id, domain, signer));
 
     rpc_handler_inner(root_span, body, app_state, request_id).await
 }

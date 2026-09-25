@@ -726,6 +726,7 @@ mod tests {
             base_chain_id: 1337,
             chain_id: 1337,
             domain: None,
+            signer: None,
             data_provider: None,
             event_server_client: Some(event_server_client),
             batch_request_limit: 5,

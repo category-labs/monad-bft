@@ -40,6 +40,8 @@ pub struct MonadRpcResources {
     pub base_chain_id: u64,
     pub chain_id: u64,
     pub domain: Option<Address>,
+    /// Account authenticated by the domain access token. `None` on the root route.
+    pub signer: Option<Address>,
     pub data_provider: Option<DataProvider<TriedbEnv>>,
     pub event_server_client: Option<EventServerClient>,
     pub batch_request_limit: u16,
@@ -87,6 +89,7 @@ impl MonadRpcResources {
             base_chain_id: chain_id,
             chain_id,
             domain: None,
+            signer: None,
             data_provider,
             event_server_client,
             batch_request_limit,
@@ -108,10 +111,11 @@ impl MonadRpcResources {
         }
     }
 
-    pub fn with_domain_context(&self, chain_id: u64, domain: Address) -> Self {
+    pub fn with_domain_context(&self, chain_id: u64, domain: Address, signer: Address) -> Self {
         let mut resources = self.clone();
         resources.chain_id = chain_id;
         resources.domain = Some(domain);
+        resources.signer = Some(signer);
         resources
     }
 }

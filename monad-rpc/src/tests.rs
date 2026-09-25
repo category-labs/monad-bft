@@ -19,12 +19,15 @@ use actix_web::{
     dev::{Service, ServiceResponse},
     test, web, App, Error,
 };
+use alloy_signer_local::PrivateKeySigner;
 use serde_json::{json, Value};
 use test_case::test_case;
 use tracing_actix_web::TracingLogger;
 
 use crate::{
+    auth::{DomainAuthError, SignedDomainAccessToken, DOMAIN_AUTH_HEADER},
     handlers::{
+        domain_rpc_handler,
         resources::{MonadJsonRootSpanBuilder, MonadRpcResources},
         rpc_handler,
     },
@@ -41,6 +44,7 @@ pub async fn init_server(
         base_chain_id: 1337,
         chain_id: 1337,
         domain: None,
+        signer: None,
         data_provider: None,
         event_server_client: None,
         batch_request_limit: 5,
@@ -65,9 +69,98 @@ pub async fn init_server(
             .wrap(TracingLogger::<MonadJsonRootSpanBuilder>::new())
             .app_data(web::PayloadConfig::default().limit(2_000_000))
             .app_data(web::Data::new(app_state.clone()))
-            .service(web::resource("/").route(web::post().to(rpc_handler))),
+            .service(web::resource("/").route(web::post().to(rpc_handler)))
+            .service(
+                web::resource("/domain/{chain_id}").route(web::post().to(domain_rpc_handler)),
+            ),
     )
     .await
+}
+
+const DOMAIN_CHAIN_ID: u64 = (1 << 16) | 1337;
+
+fn domain_access_token(chain_id: u64) -> String {
+    let signer = PrivateKeySigner::from_bytes(&alloy_primitives::B256::repeat_byte(0x22)).unwrap();
+    SignedDomainAccessToken::sign(&signer, chain_id)
+        .unwrap()
+        .encode()
+}
+
+async fn call_domain_eth_chain_id(
+    app: &impl Service<Request, Response = ServiceResponse<impl MessageBody>, Error = Error>,
+    token: Option<String>,
+) -> ResponseWrapper<Response> {
+    let payload = json!({"jsonrpc": "2.0", "method": "eth_chainId", "params": [], "id": 1});
+    let mut req = test::TestRequest::post()
+        .uri(&format!("/domain/{DOMAIN_CHAIN_ID}"))
+        .set_payload(payload.to_string());
+    if let Some(token) = token {
+        req = req.insert_header((DOMAIN_AUTH_HEADER, token));
+    }
+    let resp = app.call(req.to_request()).await.unwrap();
+    recover_response_body(resp).await
+}
+
+#[actix_web::test]
+async fn domain_route_requires_access_token() {
+    let app = init_server().await;
+
+    let resp = call_domain_eth_chain_id(&app, None).await;
+
+    assert_eq!(
+        resp,
+        ResponseWrapper::Single(Response::from_error(
+            DomainAuthError::MissingToken.into()
+        ))
+    );
+}
+
+#[actix_web::test]
+async fn domain_route_accepts_valid_access_token() {
+    let app = init_server().await;
+    let token = domain_access_token(DOMAIN_CHAIN_ID);
+
+    let resp = call_domain_eth_chain_id(&app, Some(token)).await;
+
+    let chain_id = serde_json::from_str(&format!("\"{DOMAIN_CHAIN_ID:#x}\"")).unwrap();
+    assert_eq!(
+        resp,
+        ResponseWrapper::Single(Response::new(Some(chain_id), None, RequestId::Number(1)))
+    );
+}
+
+#[actix_web::test]
+async fn domain_route_rejects_token_for_other_domain() {
+    let app = init_server().await;
+    let other_chain_id = (2 << 16) | 1337;
+    let token = domain_access_token(other_chain_id);
+
+    let resp = call_domain_eth_chain_id(&app, Some(token)).await;
+
+    assert_eq!(
+        resp,
+        ResponseWrapper::Single(Response::from_error(
+            DomainAuthError::ChainIdMismatch {
+                token: other_chain_id,
+                route: DOMAIN_CHAIN_ID,
+            }
+            .into()
+        ))
+    );
+}
+
+#[actix_web::test]
+async fn domain_route_rejects_malformed_token() {
+    let app = init_server().await;
+
+    let resp = call_domain_eth_chain_id(&app, Some("not-a-token".to_string())).await;
+
+    assert_eq!(
+        resp,
+        ResponseWrapper::Single(Response::from_error(
+            DomainAuthError::MalformedToken.into()
+        ))
+    );
 }
 
 pub async fn recover_response_body(
