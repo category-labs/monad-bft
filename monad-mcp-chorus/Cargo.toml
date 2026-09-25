@@ -11,11 +11,15 @@ enable_stub = []
 alloy-rlp = { workspace = true, features = ["derive"] }
 bytes = { workspace = true }
 derive_more = { workspace = true, features = ["from", "sum", "add", "into"] }
+hex = { workspace = true }
 itertools = { workspace = true }
 thiserror = { workspace = true }
+tiny-keccak = { workspace = true, features = ["keccak"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
 rand = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
 tracing-test = { workspace = true }
