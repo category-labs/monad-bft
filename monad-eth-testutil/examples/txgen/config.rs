@@ -25,7 +25,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Config {
     #[serde(default)]
     pub rpc_urls: Vec<String>,
@@ -340,7 +340,7 @@ impl Config {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct WorkloadGroup {
     /// How long to run this traffic pattern in seconds
     pub runtime_minutes: f64,
@@ -378,7 +378,7 @@ impl Default for WorkloadGroup {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct TrafficGen {
     /// Target tps of the generator for this traffic phase
     pub tps: u64,
@@ -431,7 +431,7 @@ impl Default for TrafficGen {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct IndexerConfig {
     pub requests_per_block: usize,
 }
@@ -445,7 +445,7 @@ impl Default for IndexerConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SpamRpcWsConfig {
     pub requests_per_block: usize,
 
@@ -462,6 +462,7 @@ impl Default for SpamRpcWsConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
 pub struct CompareRpcWsConfig {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -473,7 +474,7 @@ pub enum RpcWorkflowConfig {
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct RpcRequestGeneratorConfig {
     pub workflows: Vec<RpcWorkflowConfig>,
 }
@@ -619,12 +620,14 @@ pub enum GenMode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct ERC4337_7702Config {
     /// Number of UserOperations per handleOps() call
     pub ops_per_bundle: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct FewToManyConfig {
     #[serde(default = "default_tx_type")]
     pub tx_type: TxType,
@@ -642,6 +645,7 @@ impl Default for FewToManyConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct ManyToManyConfig {
     #[serde(default = "default_tx_type")]
     pub tx_type: TxType,
@@ -659,6 +663,7 @@ impl Default for ManyToManyConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct RandomPriorityFeeConfig {
     #[serde(default = "default_tx_type_native")]
     pub tx_type: TxType,
@@ -676,6 +681,7 @@ impl Default for RandomPriorityFeeConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct HighCallDataConfig {
     #[serde(default = "default_contract_count")]
     pub contract_count: usize,
@@ -690,6 +696,7 @@ impl Default for HighCallDataConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct NonDeterministicStorageConfig {
     #[serde(default = "default_contract_count")]
     pub contract_count: usize,
@@ -704,6 +711,7 @@ impl Default for NonDeterministicStorageConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct StorageDeletesConfig {
     #[serde(default = "default_contract_count")]
     pub contract_count: usize,
@@ -718,6 +726,7 @@ impl Default for StorageDeletesConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct ExtremeValuesConfig {
     #[serde(default = "default_contract_count")]
     pub contract_count: usize,
@@ -732,6 +741,7 @@ impl Default for ExtremeValuesConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct SystemSpamConfig {
     pub call_type: SystemCallType,
 }
@@ -740,7 +750,7 @@ const DEFAULT_TOTAL_AUTHORIZATIONS: usize = 5;
 const DEFAULT_AUTHORIZATIONS_PER_TX: usize = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct EIP7702Config {
     /// Number of authorizations to create upfront and reuse across transactions
     /// These authorizations will be used to execute code on behalf of authorized accounts
@@ -761,7 +771,7 @@ impl Default for EIP7702Config {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct EIP7702CreateConfig {
     /// Number of authorizations to create in each transaction
     /// These authorizations are created but not used to execute code
@@ -777,7 +787,7 @@ impl Default for EIP7702CreateConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ReserveBalanceFailConfig {
     /// Number of failing transactions to generate per account
     pub num_fail_txs: usize,
