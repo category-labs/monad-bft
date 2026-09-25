@@ -1,0 +1,21 @@
+[package]
+name = "monad-mcp-explorer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+actix-web = { workspace = true, features = ["compress-gzip"] }
+clap = { workspace = true, features = ["derive"] }
+flate2 = { workspace = true }
+hex = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+monad-mcp-chorus = { workspace = true }
+
+[dev-dependencies]
+actix-http = { workspace = true }
+bytes = { workspace = true }
+tempfile = { workspace = true }

@@ -66,6 +66,7 @@ dependencies = [
  "bytestring",
  "derive_more",
  "encoding_rs",
+ "flate2",
  "foldhash 0.1.5",
  "futures-core",
  "h2 0.3.27",
@@ -5744,6 +5745,24 @@ dependencies = [
  "rand_chacha 0.3.1",
  "reed-solomon-simd",
  "tracing",
+]
+
+[[package]]
+name = "monad-mcp-explorer"
+version = "0.1.0"
+dependencies = [
+ "actix-http",
+ "actix-web",
+ "bytes",
+ "clap",
+ "flate2",
+ "hex",
+ "monad-mcp-chorus",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

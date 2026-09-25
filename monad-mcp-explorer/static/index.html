@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MCP Explorer</title>
+<link rel="stylesheet" href="/app.css">
+<script>
+  // set the theme before first paint.
+  (function () {
+    var t = null;
+    try { t = localStorage.getItem('mcp-explorer.theme'); } catch (e) {}
+    if (t !== 'light' && t !== 'dark') {
+      t = window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+    document.documentElement.dataset.theme = t;
+  })();
+</script>
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="#/" data-testid="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">MCP<span class="brand-sep">/</span>Explorer</span>
+    </a>
+    <form class="search" id="search-form" data-testid="search-form" role="search">
+      <input id="search-input" data-testid="search-input" type="search" autocomplete="off" spellcheck="false"
+             placeholder="Search by slot / tx hash / payload hash / sender" aria-label="Search">
+      <button type="submit" data-testid="search-submit">Search</button>
+    </form>
+    <div class="controls">
+      <span class="head" id="head-slot" data-testid="head-slot" title="Newest indexed slot">slot —</span>
+      <button type="button" class="live" id="live-toggle" data-testid="live-toggle" aria-pressed="true"
+              title="Toggle live updates">
+        <span class="live-dot" aria-hidden="true"></span><span class="live-label">Live</span>
+      </button>
+      <button type="button" class="ghost" id="refresh-button" data-testid="refresh-button" title="Fetch once">Refresh</button>
+      <span class="live-status" id="live-status" data-testid="live-status" aria-live="polite"></span>
+      <button type="button" class="ghost icon" id="theme-toggle" data-testid="theme-toggle"
+              aria-label="Toggle light/dark theme" title="Toggle theme">&#9680;</button>
+    </div>
+  </div>
+</header>
+<div class="banner" id="indexing-banner" data-testid="indexing-banner" hidden></div>
+<div class="banner error" id="error-banner" data-testid="error-banner" hidden></div>
+<div class="banner note" id="search-message" data-testid="search-message" hidden></div>
+<main class="page" id="view" data-testid="view"></main>
+<footer class="foot">MCP ledger explorer &middot; reads <code>ledger/blocks</code> &middot; slots finalize via Chorus fast or fallback path</footer>
+<script src="/app.js"></script>
+</body>
+</html>
