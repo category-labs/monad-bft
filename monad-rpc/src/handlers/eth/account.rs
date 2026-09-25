@@ -37,7 +37,7 @@ fn account_key(domain: Option<Address>, address: EthAddress) -> AccountKey {
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetBalanceParams {
-    account: EthAddress,
+    pub(crate) account: EthAddress,
     block_number: BlockTagOrHash,
 }
 
@@ -160,7 +160,7 @@ pub async fn monad_eth_getStorageAt<T: Triedb>(
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetTransactionCountParams {
-    account: EthAddress,
+    pub(crate) account: EthAddress,
     block: BlockTagOrHash,
 }
 

@@ -22,6 +22,16 @@ use tracing::{debug, trace_span, Instrument, Span};
 use tracing_actix_web::RootSpan;
 
 use self::{
+    access::DomainPolicy,
+    eth::{
+        account::{MonadEthGetBalanceParams, MonadEthGetTransactionCountParams},
+        call::{MonadCreateAccessListParams, MonadEthCallParams},
+        gas::{MonadEthEstimateGasParams, MonadEthFillTransactionParams},
+        txn::MonadEthGetLogsParams,
+    },
+    txpool::TxPoolStatusByAddressParams,
+};
+use self::{
     debug::{
         monad_debug_getRawBlock, monad_debug_getRawHeader, monad_debug_getRawReceipts,
         monad_debug_getRawTransaction, monad_debug_traceBlockByHash,
@@ -75,6 +85,7 @@ use crate::{
     },
 };
 
+pub mod access;
 pub mod debug;
 mod debug_replay;
 pub mod eth;
@@ -477,9 +488,12 @@ async fn eth_call(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
+    let mut params: MonadEthCallParams = serde_json::from_str(params.get()).invalid_params()?;
+    if let Some(caller) = &app_state.caller {
+        caller.restrict_call(&mut params.transaction, &params.state_overrides)?;
+    }
     let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     let eth_call_handler = app_state.eth_call_handler.as_ref().method_not_found()?;
-    let params = serde_json::from_str(params.get()).invalid_params()?;
     let permit = eth_call_handler.acquire(request_id).await?;
 
     permit
@@ -582,9 +596,13 @@ async fn eth_fillTransaction(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
+    let mut params: MonadEthFillTransactionParams =
+        serde_json::from_str(params.get()).invalid_params()?;
+    if let Some(caller) = &app_state.caller {
+        caller.run_as_signer(&mut params.tx);
+    }
     let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     let eth_call_handler = app_state.eth_call_handler.as_ref().method_not_found()?;
-    let params = serde_json::from_str(params.get()).invalid_params()?;
     let permit = eth_call_handler.acquire(request_id).await?;
 
     permit
@@ -609,9 +627,13 @@ async fn eth_createAccessList(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
+    let mut params: MonadCreateAccessListParams =
+        serde_json::from_str(params.get()).invalid_params()?;
+    if let Some(caller) = &app_state.caller {
+        caller.run_as_signer(&mut params.transaction);
+    }
     let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     let eth_call_handler = app_state.eth_call_handler.as_ref().method_not_found()?;
-    let params = serde_json::from_str(params.get()).invalid_params()?;
     let permit = eth_call_handler.acquire(request_id).await?;
 
     permit
@@ -636,8 +658,11 @@ async fn eth_getLogs(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
+    let params: MonadEthGetLogsParams = serde_json::from_str(params.get()).invalid_params()?;
+    if let Some(caller) = &app_state.caller {
+        caller.require_logs_filter_pins_signer(&params.filters)?;
+    }
     let data_provider = app_state.data_provider.as_ref().method_not_found()?;
-    let params = serde_json::from_str(params.get()).invalid_params()?;
     monad_eth_getLogs(
         data_provider,
         app_state.max_response_size,
@@ -661,14 +686,18 @@ async fn eth_getTransactionByHash(
 ) -> Result<Box<RawValue>, JsonRpcError> {
     let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
-    monad_eth_getTransactionByHash(
+    let transaction = monad_eth_getTransactionByHash(
         data_provider,
         app_state.base_chain_id,
         app_state.domain,
         params,
     )
-    .await
-    .map(serialize_result)?
+    .await?;
+    let transaction = match &app_state.caller {
+        Some(caller) => caller.require_sender(transaction, |tx| tx.0.inner.signer())?,
+        None => transaction,
+    };
+    serialize_result(transaction)
 }
 
 #[allow(non_snake_case)]
@@ -755,8 +784,11 @@ async fn eth_getBalance(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
+    let params: MonadEthGetBalanceParams = serde_json::from_str(params.get()).invalid_params()?;
+    if let Some(caller) = &app_state.caller {
+        caller.require_account(alloy_primitives::Address::from(params.account.0))?;
+    }
     let data_provider = app_state.data_provider.as_ref().method_not_found()?;
-    let params = serde_json::from_str(params.get()).invalid_params()?;
     monad_eth_getBalance(data_provider, app_state.domain, params)
         .await
         .map(serialize_result)?
@@ -794,8 +826,12 @@ async fn eth_getTransactionCount(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
+    let params: MonadEthGetTransactionCountParams =
+        serde_json::from_str(params.get()).invalid_params()?;
+    if let Some(caller) = &app_state.caller {
+        caller.require_account(alloy_primitives::Address::from(params.account.0))?;
+    }
     let data_provider = app_state.data_provider.as_ref().method_not_found()?;
-    let params = serde_json::from_str(params.get()).invalid_params()?;
     monad_eth_getTransactionCount(data_provider, app_state.domain, params)
         .await
         .map(serialize_result)?
@@ -839,9 +875,13 @@ async fn eth_estimateGas(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
+    let mut params: MonadEthEstimateGasParams =
+        serde_json::from_str(params.get()).invalid_params()?;
+    if let Some(caller) = &app_state.caller {
+        caller.restrict_call(&mut params.tx, &params.state_override_set)?;
+    }
     let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     let eth_call_handler = app_state.eth_call_handler.as_ref().method_not_found()?;
-    let params = serde_json::from_str(params.get()).invalid_params()?;
     let permit = eth_call_handler.acquire(request_id).await?;
 
     permit
@@ -907,14 +947,18 @@ async fn eth_getTransactionReceipt(
 ) -> Result<Box<RawValue>, JsonRpcError> {
     let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
-    monad_eth_getTransactionReceipt(
+    let receipt = monad_eth_getTransactionReceipt(
         data_provider,
         app_state.base_chain_id,
         app_state.domain,
         params,
     )
-    .await
-    .map(serialize_result)?
+    .await?;
+    let receipt = match &app_state.caller {
+        Some(caller) => caller.require_sender(receipt, |receipt| receipt.0.from)?,
+        None => receipt,
+    };
+    serialize_result(receipt)
 }
 
 #[allow(non_snake_case)]
@@ -976,8 +1020,15 @@ async fn txpool_statusByAddress(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
-    let txpool_bridge_client = app_state.txpool_bridge_client.as_ref().method_not_found()?;
-    let params = serde_json::from_str(params.get()).invalid_params()?;
+    let params: TxPoolStatusByAddressParams =
+        serde_json::from_str(params.get()).invalid_params()?;
+    if let Some(caller) = &app_state.caller {
+        caller.require_account(alloy_primitives::Address::new(params.address.0))?;
+    }
+    let txpool_bridge_client = app_state
+        .txpool_bridge_client
+        .as_ref()
+        .method_not_found()?;
     monad_txpool_statusByAddress(txpool_bridge_client, app_state.domain, params)
         .await
         .map(serialize_result)?
@@ -1086,6 +1137,58 @@ enabled_methods!(
     eth_fillTransaction
 );
 
+impl EnabledMethod {
+    /// Access rule applied on domain routes; see [`access`].
+    fn domain_policy(&self) -> DomainPolicy {
+        match self {
+            // Chain metadata, fee queries and transaction submission reveal no account state.
+            EnabledMethod::eth_blockNumber
+            | EnabledMethod::eth_chainId
+            | EnabledMethod::eth_syncing
+            | EnabledMethod::eth_gasPrice
+            | EnabledMethod::eth_maxPriorityFeePerGas
+            | EnabledMethod::eth_feeHistory
+            | EnabledMethod::eth_sendRawTransaction
+            | EnabledMethod::eth_sendRawTransactionSync
+            | EnabledMethod::net_version
+            | EnabledMethod::web3_clientVersion => DomainPolicy::Open,
+            // The dispatchers above scope these to the caller's own account.
+            EnabledMethod::eth_getBalance
+            | EnabledMethod::eth_getTransactionCount
+            | EnabledMethod::eth_getTransactionByHash
+            | EnabledMethod::eth_getTransactionReceipt
+            | EnabledMethod::eth_call
+            | EnabledMethod::eth_estimateGas
+            | EnabledMethod::eth_createAccessList
+            | EnabledMethod::eth_fillTransaction
+            | EnabledMethod::eth_getLogs
+            | EnabledMethod::txpool_statusByAddress => DomainPolicy::OwnDataOnly,
+            // Everything that enumerates blocks, reads other accounts' state or traces.
+            EnabledMethod::admin_ethCallStatistics
+            | EnabledMethod::debug_getRawBlock
+            | EnabledMethod::debug_getRawHeader
+            | EnabledMethod::debug_getRawReceipts
+            | EnabledMethod::debug_getRawTransaction
+            | EnabledMethod::debug_traceBlockByHash
+            | EnabledMethod::debug_traceBlockByNumber
+            | EnabledMethod::debug_traceCall
+            | EnabledMethod::debug_traceTransaction
+            | EnabledMethod::eth_simulateV1
+            | EnabledMethod::eth_getBlockByHash
+            | EnabledMethod::eth_getBlockByNumber
+            | EnabledMethod::eth_getBlockReceipts
+            | EnabledMethod::eth_getBlockTransactionCountByHash
+            | EnabledMethod::eth_getBlockTransactionCountByNumber
+            | EnabledMethod::eth_getTransactionByBlockHashAndIndex
+            | EnabledMethod::eth_getTransactionByBlockNumberAndIndex
+            | EnabledMethod::eth_getCode
+            | EnabledMethod::eth_getStorageAt
+            | EnabledMethod::monad_getDomainHeader
+            | EnabledMethod::txpool_statusByHash => DomainPolicy::OperatorOnly,
+        }
+    }
+}
+
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn rpc_select(
     app_state: &MonadRpcResources,
@@ -1094,6 +1197,9 @@ pub async fn rpc_select(
     request_id: TimingRequestId,
 ) -> Result<Box<RawValue>, JsonRpcError> {
     let method: EnabledMethod = method.try_into()?;
+    if let Some(caller) = &app_state.caller {
+        caller.authorize(method.domain_policy())?;
+    }
     let mut span = method.span();
     if let Some(metrics) = &app_state.metrics {
         span = span.with_main_timings(metrics.execution_histogram.clone());

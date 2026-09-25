@@ -509,12 +509,12 @@ pub async fn check_value_transfer_balance<T: Triedb>(
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct MonadEthCallParams {
-    transaction: CallRequest,
+    pub(crate) transaction: CallRequest,
     #[serde(default)]
     block: BlockTagOrHash,
     #[schemars(skip)] // TODO: move StateOverrideSet from monad-cxx
     #[serde(default)]
-    state_overrides: StateOverrideSet, // empty = no state overrides
+    pub(crate) state_overrides: StateOverrideSet, // empty = no state overrides
 }
 
 #[derive(Deserialize, Debug, Default, schemars::JsonSchema, Clone)]

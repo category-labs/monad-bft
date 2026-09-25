@@ -280,6 +280,27 @@ async fn main() -> std::io::Result<()> {
         }
     }
 
+    let mut domain_operators = monad_rpc::handlers::access::DomainOperators::new();
+    for (chain_id, operator) in &args.domain_operators {
+        if !matches!(
+            domain_for_chain_id(Some(*chain_id), node_config.chain_id),
+            Ok(Some(_))
+        ) {
+            panic!(
+                "--domain-operator {chain_id}={operator}: not a private domain chain id of network {}",
+                node_config.chain_id
+            );
+        }
+        if !domain_operators
+            .entry(*chain_id)
+            .or_default()
+            .insert(*operator)
+        {
+            panic!("duplicate --domain-operator {chain_id}={operator}");
+        }
+        info!("private domain {} has operator {}", chain_id, operator);
+    }
+
     let eth_call_handler = args.triedb_path.clone().as_deref().map(|triedb_path| {
         EthCallHandler::new(
             EthCallHandlerConfig {
@@ -402,6 +423,7 @@ async fn main() -> std::io::Result<()> {
         with_metrics.clone(),
         rpc_comparator.clone(),
         args.feehistory_max_concurrent_requests,
+        domain_operators,
     );
 
     // Configure the websocket server if enabled

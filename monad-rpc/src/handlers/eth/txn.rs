@@ -64,7 +64,7 @@ pub struct MonadEthGetLogsResult(pub Vec<MonadLog>);
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct MonadEthGetLogsParams {
     #[schemars(schema_with = "schema_for_filter")]
-    filters: Filter,
+    pub(crate) filters: Filter,
 }
 
 fn schema_for_filter(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {

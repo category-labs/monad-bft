@@ -24,6 +24,8 @@ use crate::data::ChainStateError;
 pub const JSONRPC_VERSION: &str = "2.0";
 /// Error code of [`JsonRpcError::unauthorized`].
 pub const UNAUTHORIZED_ERROR_CODE: i32 = ErrorCode::Unauthorized.code();
+/// Error code of [`JsonRpcError::forbidden`].
+pub const FORBIDDEN_ERROR_CODE: i32 = ErrorCode::Forbidden.code();
 
 #[derive(Debug, Serialize)]
 pub struct Request<'p> {
@@ -363,6 +365,8 @@ pub enum ErrorCode {
     MethodNotSupported = -32004,
     /// A domain route request without a valid access token.
     Unauthorized = -32006,
+    /// A domain route request the authenticated account may not make.
+    Forbidden = -32007,
 }
 
 impl ErrorCode {
@@ -384,6 +388,7 @@ impl ErrorCode {
             Self::InternalError => "Internal error",
             Self::MethodNotSupported => "Method not supported",
             Self::Unauthorized => "Unauthorized",
+            Self::Forbidden => "Forbidden",
         }
     }
 }
@@ -445,6 +450,12 @@ impl JsonRpcError {
     /// verification.
     pub fn unauthorized(message: String) -> Self {
         Self::with_message(ErrorCode::Unauthorized, format!("Unauthorized: {message}"))
+    }
+
+    /// Returned on domain routes when the authenticated account is not allowed to access
+    /// the data a method was asked for.
+    pub fn forbidden(message: impl std::fmt::Display) -> Self {
+        Self::with_message(ErrorCode::Forbidden, format!("Forbidden: {message}"))
     }
 
     pub fn block_not_found() -> Self {

@@ -27,6 +27,7 @@ use tracing_actix_web::TracingLogger;
 use crate::{
     auth::{DomainAuthError, SignedDomainAccessToken, DOMAIN_AUTH_HEADER},
     handlers::{
+        access::DomainOperators,
         domain_rpc_handler,
         resources::{MonadJsonRootSpanBuilder, MonadRpcResources},
         rpc_handler,
@@ -44,7 +45,11 @@ pub async fn init_server(
         base_chain_id: 1337,
         chain_id: 1337,
         domain: None,
-        signer: None,
+        caller: None,
+        domain_operators: std::sync::Arc::new(DomainOperators::from([(
+            DOMAIN_CHAIN_ID,
+            std::collections::HashSet::from([operator_signer().address()]),
+        )])),
         data_provider: None,
         event_server_client: None,
         batch_request_limit: 5,
@@ -79,18 +84,37 @@ pub async fn init_server(
 
 const DOMAIN_CHAIN_ID: u64 = (1 << 16) | 1337;
 
-fn domain_access_token(chain_id: u64) -> String {
-    let signer = PrivateKeySigner::from_bytes(&alloy_primitives::B256::repeat_byte(0x22)).unwrap();
-    SignedDomainAccessToken::sign(&signer, chain_id)
+/// An ordinary domain user.
+fn user_signer() -> PrivateKeySigner {
+    PrivateKeySigner::from_bytes(&alloy_primitives::B256::repeat_byte(0x22)).unwrap()
+}
+
+/// The configured operator of `DOMAIN_CHAIN_ID`.
+fn operator_signer() -> PrivateKeySigner {
+    PrivateKeySigner::from_bytes(&alloy_primitives::B256::repeat_byte(0x33)).unwrap()
+}
+
+fn access_token(signer: &PrivateKeySigner, chain_id: u64) -> String {
+    SignedDomainAccessToken::sign(signer, chain_id)
         .unwrap()
         .encode()
 }
 
-async fn call_domain_eth_chain_id(
+fn user_token() -> String {
+    access_token(&user_signer(), DOMAIN_CHAIN_ID)
+}
+
+fn operator_token() -> String {
+    access_token(&operator_signer(), DOMAIN_CHAIN_ID)
+}
+
+async fn call_domain(
     app: &impl Service<Request, Response = ServiceResponse<impl MessageBody>, Error = Error>,
     token: Option<String>,
+    method: &str,
+    params: Value,
 ) -> ResponseWrapper<Response> {
-    let payload = json!({"jsonrpc": "2.0", "method": "eth_chainId", "params": [], "id": 1});
+    let payload = json!({"jsonrpc": "2.0", "method": method, "params": params, "id": 1});
     let mut req = test::TestRequest::post()
         .uri(&format!("/domain/{DOMAIN_CHAIN_ID}"))
         .set_payload(payload.to_string());
@@ -99,6 +123,38 @@ async fn call_domain_eth_chain_id(
     }
     let resp = app.call(req.to_request()).await.unwrap();
     recover_response_body(resp).await
+}
+
+async fn call_domain_eth_chain_id(
+    app: &impl Service<Request, Response = ServiceResponse<impl MessageBody>, Error = Error>,
+    token: Option<String>,
+) -> ResponseWrapper<Response> {
+    call_domain(app, token, "eth_chainId", json!([])).await
+}
+
+fn error_code(resp: ResponseWrapper<Response>) -> i32 {
+    match resp {
+        ResponseWrapper::Single(resp) => resp.error.expect("expected an error response").code,
+        other => panic!("expected a single response, got {other:?}"),
+    }
+}
+
+/// The error a method reports once access control has let it through: the test server has
+/// no data provider or eth_call handler, so every data-backed method stops here.
+fn passed_access_control() -> i32 {
+    JsonRpcError::new(ErrorCode::MethodNotFound).code
+}
+
+fn forbidden() -> i32 {
+    crate::types::jsonrpc::FORBIDDEN_ERROR_CODE
+}
+
+fn hex_address(signer: &PrivateKeySigner) -> String {
+    format!("{:#x}", signer.address())
+}
+
+fn topic_of(signer: &PrivateKeySigner) -> String {
+    format!("{:#x}", signer.address().into_word())
 }
 
 #[actix_web::test]
@@ -118,9 +174,7 @@ async fn domain_route_requires_access_token() {
 #[actix_web::test]
 async fn domain_route_accepts_valid_access_token() {
     let app = init_server().await;
-    let token = domain_access_token(DOMAIN_CHAIN_ID);
-
-    let resp = call_domain_eth_chain_id(&app, Some(token)).await;
+    let resp = call_domain_eth_chain_id(&app, Some(user_token())).await;
 
     let chain_id = serde_json::from_str(&format!("\"{DOMAIN_CHAIN_ID:#x}\"")).unwrap();
     assert_eq!(
@@ -133,7 +187,7 @@ async fn domain_route_accepts_valid_access_token() {
 async fn domain_route_rejects_token_for_other_domain() {
     let app = init_server().await;
     let other_chain_id = (2 << 16) | 1337;
-    let token = domain_access_token(other_chain_id);
+    let token = access_token(&user_signer(), other_chain_id);
 
     let resp = call_domain_eth_chain_id(&app, Some(token)).await;
 
@@ -161,6 +215,123 @@ async fn domain_route_rejects_malformed_token() {
             DomainAuthError::MalformedToken.into()
         ))
     );
+}
+
+#[actix_web::test]
+async fn domain_route_serves_block_methods_to_operators_only() {
+    let app = init_server().await;
+    let params = json!(["latest", false]);
+
+    let user = call_domain(
+        &app,
+        Some(user_token()),
+        "eth_getBlockByNumber",
+        params.clone(),
+    )
+    .await;
+    assert_eq!(error_code(user), forbidden());
+
+    let operator =
+        call_domain(&app, Some(operator_token()), "eth_getBlockByNumber", params).await;
+    assert_eq!(error_code(operator), passed_access_control());
+
+    let user = call_domain(
+        &app,
+        Some(user_token()),
+        "eth_getStorageAt",
+        json!([hex_address(&user_signer()), "0x0", "latest"]),
+    )
+    .await;
+    assert_eq!(error_code(user), forbidden());
+}
+
+#[actix_web::test]
+async fn domain_route_scopes_account_queries_to_signer() {
+    let app = init_server().await;
+    let own = json!([hex_address(&user_signer()), "latest"]);
+    let other = json!([hex_address(&operator_signer()), "latest"]);
+
+    for method in ["eth_getBalance", "eth_getTransactionCount"] {
+        let resp = call_domain(&app, Some(user_token()), method, own.clone()).await;
+        assert_eq!(
+            error_code(resp),
+            passed_access_control(),
+            "{method} own account"
+        );
+
+        let resp = call_domain(&app, Some(user_token()), method, other.clone()).await;
+        assert_eq!(error_code(resp), forbidden(), "{method} other account");
+
+        let resp = call_domain(&app, Some(operator_token()), method, own.clone()).await;
+        assert_eq!(
+            error_code(resp),
+            passed_access_control(),
+            "{method} operator"
+        );
+    }
+}
+
+#[actix_web::test]
+async fn domain_route_requires_log_filter_pinned_to_signer() {
+    let app = init_server().await;
+    let signer_topic = topic_of(&user_signer());
+
+    let pinned = json!([{"topics": [null, signer_topic]}]);
+    let resp = call_domain(&app, Some(user_token()), "eth_getLogs", pinned).await;
+    assert_eq!(error_code(resp), passed_access_control());
+
+    let unpinned = json!([{"address": hex_address(&user_signer())}]);
+    let resp = call_domain(&app, Some(user_token()), "eth_getLogs", unpinned.clone()).await;
+    assert_eq!(error_code(resp), forbidden());
+
+    let resp = call_domain(&app, Some(operator_token()), "eth_getLogs", unpinned).await;
+    assert_eq!(error_code(resp), passed_access_control());
+}
+
+#[actix_web::test]
+async fn domain_route_rejects_state_overrides() {
+    let app = init_server().await;
+    let call = json!({"to": "0x0000000000000000000000000000000000000002", "data": "0x00"});
+    let overrides = json!({ hex_address(&operator_signer()): {"balance": "0x1"} });
+
+    for method in ["eth_call", "eth_estimateGas"] {
+        let with_overrides = json!([call, "latest", overrides]);
+        let resp = call_domain(&app, Some(user_token()), method, with_overrides.clone()).await;
+        assert_eq!(
+            error_code(resp),
+            forbidden(),
+            "{method} user with overrides"
+        );
+
+        let resp = call_domain(&app, Some(operator_token()), method, with_overrides).await;
+        assert_eq!(
+            error_code(resp),
+            passed_access_control(),
+            "{method} operator with overrides"
+        );
+
+        let resp = call_domain(&app, Some(user_token()), method, json!([call, "latest"])).await;
+        assert_eq!(error_code(resp), passed_access_control(), "{method} user");
+    }
+}
+
+#[actix_web::test]
+async fn root_route_is_not_subject_to_domain_rules() {
+    let app = init_server().await;
+    let payload = json!({
+        "jsonrpc": "2.0",
+        "method": "eth_getBalance",
+        "params": [hex_address(&operator_signer()), "latest"],
+        "id": 1
+    });
+    let req = test::TestRequest::post()
+        .uri("/")
+        .set_payload(payload.to_string())
+        .to_request();
+
+    let resp = recover_response_body(app.call(req).await.unwrap()).await;
+
+    assert_eq!(error_code(resp), passed_access_control());
 }
 
 pub async fn recover_response_body(

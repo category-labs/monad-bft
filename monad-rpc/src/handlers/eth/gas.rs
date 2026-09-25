@@ -308,12 +308,12 @@ fn build_fill_transaction_envelope(
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthEstimateGasParams {
-    tx: CallRequest,
+    pub(crate) tx: CallRequest,
     #[serde(default)]
     block: BlockTagOrHash,
     #[schemars(skip)] // TODO: move StateOverrideSet from monad-cxx
     #[serde(default)]
-    state_override_set: StateOverrideSet,
+    pub(crate) state_override_set: StateOverrideSet,
 }
 
 #[rpc(

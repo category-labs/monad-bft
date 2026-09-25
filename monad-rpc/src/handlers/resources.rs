@@ -29,6 +29,7 @@ use crate::{
     comparator::RpcComparator,
     data::{eth_call_handler::EthCallHandler, DataProvider},
     event::EventServerClient,
+    handlers::access::{DomainCaller, DomainOperators},
     middleware::Metrics,
     txpool::EthTxPoolBridgeClient,
 };
@@ -40,8 +41,10 @@ pub struct MonadRpcResources {
     pub base_chain_id: u64,
     pub chain_id: u64,
     pub domain: Option<Address>,
-    /// Account authenticated by the domain access token. `None` on the root route.
-    pub signer: Option<Address>,
+    /// Caller authenticated by the domain access token. `None` on the root route.
+    pub caller: Option<DomainCaller>,
+    /// Operator accounts of each private domain, keyed by domain chain id.
+    pub domain_operators: std::sync::Arc<DomainOperators>,
     pub data_provider: Option<DataProvider<TriedbEnv>>,
     pub event_server_client: Option<EventServerClient>,
     pub batch_request_limit: u16,
@@ -82,6 +85,7 @@ impl MonadRpcResources {
         metrics: Option<Metrics>,
         rpc_comparator: Option<RpcComparator>,
         feehistory_max_concurrent_requests: u32,
+        domain_operators: DomainOperators,
     ) -> Self {
         Self {
             txpool_bridge_client,
@@ -89,7 +93,8 @@ impl MonadRpcResources {
             base_chain_id: chain_id,
             chain_id,
             domain: None,
-            signer: None,
+            caller: None,
+            domain_operators: std::sync::Arc::new(domain_operators),
             data_provider,
             event_server_client,
             batch_request_limit,
@@ -111,11 +116,21 @@ impl MonadRpcResources {
         }
     }
 
-    pub fn with_domain_context(&self, chain_id: u64, domain: Address, signer: Address) -> Self {
+    /// Scopes the resources to a domain route and the account that authenticated the
+    /// request. The account is an operator if it is configured as one for `chain_id`.
+    pub fn with_domain_context(
+        &self,
+        chain_id: u64,
+        domain: Address,
+        signer: Address,
+    ) -> Self {
         let mut resources = self.clone();
         resources.chain_id = chain_id;
         resources.domain = Some(domain);
-        resources.signer = Some(signer);
+        resources.caller = Some(DomainCaller::new(
+            signer,
+            self.domain_operators.get(&chain_id),
+        ));
         resources
     }
 }

@@ -34,6 +34,11 @@ pub struct Cli {
     #[arg(long = "private-domain-spoke", value_name = "CHAIN_ID=ADDRESS", value_parser = parse_private_domain_spoke)]
     pub private_domain_spokes: Vec<(u64, Address)>,
 
+    /// Operator account of a private domain, as CHAIN_ID=ADDRESS. Operators are exempt
+    /// from the per-account access rules of the domain RPC route.
+    #[arg(long = "domain-operator", value_name = "CHAIN_ID=ADDRESS", value_parser = parse_domain_operator)]
+    pub domain_operators: Vec<(u64, Address)>,
+
     /// Set the address for RPC to bind to
     #[arg(long, default_value_t = String::from("0.0.0.0"))]
     pub rpc_addr: String,
@@ -292,18 +297,36 @@ pub struct Cli {
     pub manytrace_socket: Option<String>,
 }
 
-fn parse_private_domain_spoke(value: &str) -> Result<(u64, Address), String> {
-    let (chain_id, address) = value
-        .split_once('=')
-        .ok_or_else(|| "expected CHAIN_ID=ADDRESS".to_string())?;
-    let chain_id = match chain_id
+fn parse_domain_chain_id(chain_id: &str) -> Result<u64, String> {
+    match chain_id
         .strip_prefix("0x")
         .or_else(|| chain_id.strip_prefix("0X"))
     {
         Some(hex) => u64::from_str_radix(hex, 16),
         None => chain_id.parse::<u64>(),
     }
-    .map_err(|err| format!("invalid domain chain id `{chain_id}`: {err}"))?;
+    .map_err(|err| format!("invalid domain chain id `{chain_id}`: {err}"))
+}
+
+fn parse_domain_operator(value: &str) -> Result<(u64, Address), String> {
+    let (chain_id, address) = value
+        .split_once('=')
+        .ok_or_else(|| "expected CHAIN_ID=ADDRESS".to_string())?;
+    let chain_id = parse_domain_chain_id(chain_id)?;
+    let address = address
+        .parse::<Address>()
+        .map_err(|err| format!("invalid domain operator address `{address}`: {err}"))?;
+    if address.is_zero() {
+        return Err("domain operator address must be nonzero".to_string());
+    }
+    Ok((chain_id, address))
+}
+
+fn parse_private_domain_spoke(value: &str) -> Result<(u64, Address), String> {
+    let (chain_id, address) = value
+        .split_once('=')
+        .ok_or_else(|| "expected CHAIN_ID=ADDRESS".to_string())?;
+    let chain_id = parse_domain_chain_id(chain_id)?;
     let address = address
         .parse::<Address>()
         .map_err(|err| format!("invalid domain spoke address `{address}`: {err}"))?;
