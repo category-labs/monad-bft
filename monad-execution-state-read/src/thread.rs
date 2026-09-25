@@ -72,6 +72,9 @@ where
     TotalDbLookups {
         tx: mpsc::SyncSender<u64>,
     },
+    NodeCacheStatsSource {
+        tx: mpsc::SyncSender<Option<Arc<dyn crate::NodeCacheStatsSource>>>,
+    },
 }
 
 #[derive(Clone)]
@@ -184,6 +187,12 @@ where
     fn total_db_lookups(&self) -> u64 {
         self.send_and_recv_request(|tx| ExecutionStateReadThreadRequest::TotalDbLookups { tx })
     }
+
+    fn node_cache_stats_source(&self) -> Option<Arc<dyn crate::NodeCacheStatsSource>> {
+        self.send_and_recv_request(|tx| ExecutionStateReadThreadRequest::NodeCacheStatsSource {
+            tx,
+        })
+    }
 }
 
 struct ExecutionStateReadThread<ST, SCT, ESRT>
@@ -271,6 +280,10 @@ where
                     tx.send(state_read.total_db_lookups())
                         .expect("ExecutionStateReadThreadClient is alive");
                 }
+                ExecutionStateReadThreadRequest::NodeCacheStatsSource { tx } => {
+                    tx.send(state_read.node_cache_stats_source())
+                        .expect("ExecutionStateReadThreadClient is alive");
+                }
             }
         }
 
@@ -318,6 +331,13 @@ mod test {
             let total_db_lookups = client.total_db_lookups();
 
             assert_eq!(total_db_lookups, 0);
+        }
+
+        {
+            // The in-memory backend caches no trie nodes, so the round trip
+            // has to come back as "no such cache" rather than as a source
+            // that reports zeros.
+            assert!(client.node_cache_stats_source().is_none());
         }
     }
 
