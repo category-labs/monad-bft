@@ -32,27 +32,27 @@ use zerocopy::{
     FromBytes, Immutable, IntoBytes,
 };
 
-use super::{RecvTcpMsg, TcpMsg, TcpSocketId};
+use super::{RecvTcpMsg, TcpSocketId};
 use crate::{metrics::DataplaneMetrics, Addrlist};
 
 pub mod rx;
 pub mod tx;
 
-const TCP_MESSAGE_LENGTH_LIMIT: usize = 3 * 1024 * 1024;
+pub(crate) const TCP_MESSAGE_LENGTH_LIMIT: usize = 3 * 1024 * 1024;
 
 const HEADER_MAGIC: u32 = 0x434e5353; // "SSNC"
 const HEADER_VERSION: u32 = 1;
 
 #[derive(IntoBytes, Debug, FromBytes, Immutable)]
 #[repr(C)]
-struct TcpMsgHdr {
+pub(crate) struct TcpMsgHdr {
     magic: U32,
     version: U32,
     length: U64,
 }
 
 impl TcpMsgHdr {
-    fn new(length: u64) -> TcpMsgHdr {
+    pub(crate) fn new(length: u64) -> TcpMsgHdr {
         TcpMsgHdr {
             magic: U32::new(HEADER_MAGIC),
             version: U32::new(HEADER_VERSION),
@@ -66,17 +66,16 @@ pub(crate) fn spawn_tasks(
     tcp_control_map: TcpControl,
     addrlist: Arc<Addrlist>,
     socket_configs: Vec<(TcpSocketId, SocketAddr, mpsc::Sender<RecvTcpMsg>)>,
-    tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>,
     bound_addrs_tx: std::sync::mpsc::SyncSender<Vec<(TcpSocketId, SocketAddr)>>,
     metrics: DataplaneMetrics,
 ) {
     let mut bound_addrs = Vec::with_capacity(socket_configs.len());
 
     let rx_state = rx::RxState::new(
-        addrlist.clone(),
+        addrlist,
         cfg.connections_limit,
         cfg.per_ip_connections_limit,
-        metrics.clone(),
+        metrics,
     );
 
     for (socket_id, socket_addr, ingress_tx) in socket_configs {
@@ -96,7 +95,6 @@ pub(crate) fn spawn_tasks(
     }
 
     bound_addrs_tx.send(bound_addrs).unwrap();
-    spawn(tx::task(cfg, addrlist, tcp_egress_rx, metrics));
 }
 
 // Minimum message receive/transmit speed in bytes per second.  Messages that are

@@ -5200,6 +5200,7 @@ dependencies = [
 name = "monad-dataplane"
 version = "0.1.0"
 dependencies = [
+ "agent",
  "async-channel",
  "bytes",
  "clap",
@@ -5213,11 +5214,13 @@ dependencies = [
  "monad-types",
  "monoio",
  "ntest",
+ "prometheus",
  "rand 0.8.5",
  "rstest",
  "socket2 0.5.10",
  "tokio",
  "tracing",
+ "tracing-manytrace",
  "tracing-subscriber",
  "zerocopy",
 ]
