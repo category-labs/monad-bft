@@ -13,17 +13,19 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::sync::Arc;
+use std::{collections::VecDeque, sync::Arc};
 
 use bytes::Bytes;
 use itertools::Either;
 
 use super::{
+    availability::ProposalAvailability,
+    chorus::{ChorusDACommand, ChorusDAEvent},
     fallback::Metablock,
     types::{
-        DAHandle, EquivCert, FetchProposalError, IsVote, KeyPair, MerkleRoot, NodeId,
-        ProposalIndex, ProposalMap, ProposalMeta, Signature, Slot, StrongQc, TotalProposalMap,
-        ValidatorData, VoteMsg, VotePool, WeakQc, dummy_serialize,
+        EquivCert, IsVote, KeyPair, MerkleRoot, NodeId, ProposalIndex, ProposalMap, ProposalMeta,
+        Signature, Slot, StrongQc, TotalProposalMap, ValidatorData, VoteMsg, VotePool, WeakQc,
+        dummy_serialize,
     },
 };
 use crate::spec::{Stake as _, proposal::ChunkHeader as _, validator::ValidatorData as _};
@@ -58,12 +60,15 @@ pub struct FastPath {
     // helper field to construct per-proposal values
     proposals: ProposalMap<ProposalIndex>,
 
+    // what we know about each proposal's availability
+    availability: ProposalMap<ProposalAvailability>,
+
+    // effects for the DA layer, drained by the slot consensus wrapper
+    commands: VecDeque<ChorusDACommand>,
+
     // using Arc to avoid lifetime issues.
     key: Arc<KeyPair>,
     validator_data: Arc<ValidatorData>,
-
-    // data availability layer handle
-    da: Arc<DAHandle>,
 }
 
 impl FastPath {
@@ -72,7 +77,6 @@ impl FastPath {
         num_proposals: usize,
         key: Arc<KeyPair>,
         validator_data: Arc<ValidatorData>,
-        da_handle: Arc<DAHandle>,
     ) -> Self {
         Self {
             slot: s,
@@ -86,11 +90,35 @@ impl FastPath {
 
             phase: Phase::Propose,
             proposals: ProposalMap::new(num_proposals, |j| j),
+            availability: ProposalMap::new_default(num_proposals),
+            commands: VecDeque::new(),
 
             key,
             validator_data,
-            da: da_handle,
         }
+    }
+
+    pub(crate) fn next_da_command(&mut self) -> Option<ChorusDACommand> {
+        self.commands.pop_front()
+    }
+
+    fn emit(&mut self, command: ChorusDACommand) {
+        self.commands.push_back(command);
+    }
+
+    /// Ingest what the DA layer learned, and retry whatever it unblocks
+    #[must_use]
+    pub(crate) fn handle_da_event(&mut self, event: ChorusDAEvent) -> Option<FastBlock> {
+        let ChorusDAEvent { j, event } = event;
+
+        self.availability[j].ingest(event);
+        if let Some(cert) = self.availability[j].equiv_cert() {
+            self.certs[j].try_upgrade(cert);
+        }
+
+        self.try_form_fast_qc(j);
+        self.try_form_fallback_qc(j);
+        self.try_cast_fast_commit_vote()
     }
 
     /// Whether a fallback certificate received from a peer admits this slot
@@ -154,8 +182,20 @@ impl FastPath {
                 ProposalEvidence::FallbackSignedEntry(entry) => {
                     debug_assert!(entry.well_formed());
                     if let Some(meta) = entry.meta() {
-                        self.da.observe_proposal(self.slot, j, meta.clone());
+                        if self.availability[j].header_for(&meta.root).is_none() {
+                            // a header consensus learned of before DA did
+                            self.emit(ChorusDACommand::ObserveProposal {
+                                j,
+                                meta: meta.clone(),
+                            });
+                        }
+
+                        self.availability[j].record_header(meta.clone());
+                        if let Some(equiv_cert) = self.availability[j].equiv_cert() {
+                            self.certs[j].try_upgrade(equiv_cert);
+                        }
                     }
+
                     let vote = entry.into_vote_msg(self.slot, j);
                     self.fallback_entry_votes[j].add_vote(node_id, vote);
                     self.try_form_fallback_qc(j);
@@ -178,22 +218,23 @@ impl FastPath {
 
         self.phase = Phase::Vote;
 
+        let mut positive = Vec::new();
         let votes = self.proposals.as_ref().map(|j| {
-            let entry = match self.da.fetch_proposal(self.slot, *j) {
-                Ok(proposal) => Entry::Positive {
-                    root: proposal.root,
-                },
-                Err(FetchProposalError::Absent) => Entry::Negative,
-                Err(FetchProposalError::Equivocation(equiv_cert)) => {
-                    self.certs[*j].try_upgrade(equiv_cert);
-                    // upgrade on the equivocation certificate?
-                    todo!()
+            let entry = match self.availability[*j].fetch_proposal() {
+                Some(proposal) => {
+                    positive.push((*j, proposal.root));
+                    Entry::Positive {
+                        root: proposal.root,
+                    }
                 }
+                None => Entry::Negative,
             };
 
             let vote_msg = VoteMsg::new_signed((self.slot, *j), entry.clone(), &self.key);
             (entry, vote_msg.signature)
         });
+
+        self.emit(ChorusDACommand::SlotVoted { positive });
 
         Some(BatchVoteMsg {
             slot: self.slot,
@@ -225,6 +266,17 @@ impl FastPath {
         let enter_fallback_vote = VoteMsg::new_signed(self.slot, EnterFallbackVote, &self.key);
 
         let evidences = self.proposals.as_ref().map(|j| self.proposal_evidence(*j));
+
+        // a fresh positive fallback entry obliges us to re-disseminate the
+        // proposal we hold
+        for (j, evidence) in evidences.as_ref().into_indexed_iter() {
+            if let ProposalEvidence::FallbackSignedEntry(entry) = evidence
+                && let Some(meta) = entry.meta()
+            {
+                let root = meta.root;
+                self.emit(ChorusDACommand::FallbackEntryCast { j, root });
+            }
+        }
 
         let fallback_vote = FallbackVoteMsg {
             enter_fallback_vote,
@@ -276,10 +328,10 @@ impl FastPath {
         // if there are f+1 positive votes on a root and it's decoded,
         // vote positive.
         if let Some(root) = self.weak_available_root(j)
-            && let Ok(meta) = self.da.fetch_proposal(self.slot, j)
-            && meta.root == root
+            && let Some(meta) = self.availability[j].header_for(&root)
         {
-            let fse = FallbackSignedEntry::new_signed_positive(scope, root, &self.key, meta);
+            let fse =
+                FallbackSignedEntry::new_signed_positive(scope, root, &self.key, meta.clone());
             return ProposalEvidence::FallbackSignedEntry(fse);
         }
 
@@ -303,7 +355,7 @@ impl FastPath {
                 Entry::Positive { root } => Some(root),
                 Entry::Negative => None,
             })
-            .find(|root| self.da.proposal_decoded(self.slot, j, root))
+            .find(|root| self.availability[j].decoded(root))
     }
 
     fn try_form_fallback_qc(&mut self, j: ProposalIndex) {

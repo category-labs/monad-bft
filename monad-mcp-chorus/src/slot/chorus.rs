@@ -23,11 +23,12 @@ use super::{
         monad_mvba::{self, MonadMvba, MvbaContext},
     },
     fast::{
-        BatchVoteMsg, CommitVoteDeadlineOutcome, EnterFallbackCert, FallbackVoteMsg, FastBlock,
-        FastCommitQc, FastCommitVoteMsg, FastPath,
+        BatchVoteMsg, CommitVoteDeadlineOutcome, EnterFallbackCert, Entry, FallbackVoteMsg,
+        FastBlock, FastCommitQc, FastCommitVoteMsg, FastPath,
     },
     types::{
-        DAHandle, KeyPair, NodeId, ProposalIndex, ProposalMeta, Slot, TimestampDelta, ValidatorData,
+        EquivCert, KeyPair, MerkleRoot, NodeId, ProposalIndex, ProposalMap, ProposalMeta, Slot,
+        TimestampDelta, ValidatorData,
     },
 };
 
@@ -35,15 +36,6 @@ use super::{
 type FallbackState = MonadMvba<Metablock, EnterFallbackCert>;
 type FallbackMessage = monad_mvba::MvbaMessage<Metablock, EnterFallbackCert>;
 type FallbackTimer = monad_mvba::TimerEvent<Metablock>;
-
-// emitted from the DA layer upon validating a proposal
-// chunk. possibly only emitted after a significant fraction of
-// the chunks for first-hop-recipient is available.
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct Proposal {
-    pub j: ProposalIndex,
-    pub meta: ProposalMeta,
-}
 
 #[derive(derive_more::From, Clone, PartialEq, Eq, Hash, Debug)]
 #[non_exhaustive]
@@ -97,7 +89,6 @@ pub struct ChorusContext {
     pub node_id: NodeId,
     pub key: Arc<KeyPair>,
     pub validator_data: Arc<ValidatorData>,
-    pub da_handle: Arc<DAHandle>,
 }
 
 #[derive(derive_more::From, Clone, PartialEq, Eq, Hash, Debug)]
@@ -106,6 +97,65 @@ pub enum SlotFinalization {
     Fast(FastCommitQc),
     #[from]
     Fallback(FallbackCommitQc<Metablock>),
+}
+
+impl SlotFinalization {
+    /// The verdict committed for each proposer, whichever path decided
+    pub fn entries(&self) -> ProposalMap<Entry> {
+        match self {
+            SlotFinalization::Fast(qc) => qc.verdict.entries.clone(),
+            SlotFinalization::Fallback(qc) => qc.verdict.0.clone(),
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct ChorusDAEvent {
+    pub j: ProposalIndex,
+    pub event: ProposalDAEvent,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub enum ProposalDAEvent {
+    // a validated proposer-signed header observed (once per root)
+    HeaderSeen(ProposalMeta),
+
+    // all our own assigned chunks under the root have arrived
+    ProposerObligationFulfilled(MerkleRoot),
+
+    // the owner's rebroadcast obligation to us fulfilled under the root
+    OwnerObligationFulfilled { owner: NodeId, root: MerkleRoot },
+
+    // decode-then-re-encode verified. implies all chunks recoverable
+    // from DA.
+    Decoded(MerkleRoot),
+    DecodingFailed(MerkleRoot),
+
+    // two validly signed conflicting headers observed by DA
+    Equivocation(EquivCert),
+}
+
+// An effect directed at the DA layer. Roots named here are pinned by DA.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub enum ChorusDACommand {
+    // batch vote cast; rebroadcast our obliged chunks for roots we
+    // voted positive.
+    SlotVoted {
+        positive: Vec<(ProposalIndex, MerkleRoot)>,
+    },
+
+    // positive fallback entry cast; re-encode and send every validator
+    // its assigned chunks
+    FallbackEntryCast {
+        j: ProposalIndex,
+        root: MerkleRoot,
+    },
+
+    // report header learned from consensus evidence
+    ObserveProposal {
+        j: ProposalIndex,
+        meta: ProposalMeta,
+    },
 }
 
 /// The single-slot MCP consensus algorithm from the paper.
@@ -135,6 +185,8 @@ impl SlotConsensus for Chorus {
     type Timer = TimerEvent;
     type OptimisticCommitData = FastBlock;
     type FinalizationData = SlotFinalization;
+    type DAEvent = ChorusDAEvent;
+    type DACommand = ChorusDACommand;
 
     fn new(slot: Slot, config: &Self::Config, context: &Self::Context) -> Self {
         let ChorusConfig {
@@ -145,16 +197,9 @@ impl SlotConsensus for Chorus {
             node_id,
             key,
             validator_data,
-            da_handle,
         } = context;
 
-        let fast = FastPath::new(
-            slot,
-            *num_proposals,
-            key.clone(),
-            validator_data.clone(),
-            da_handle.clone(),
-        );
+        let fast = FastPath::new(slot, *num_proposals, key.clone(), validator_data.clone());
 
         let fallback = FallbackState::new(MvbaContext {
             slot,
@@ -180,6 +225,18 @@ impl SlotConsensus for Chorus {
         self.outputs.pop_front()
     }
 
+    fn handle_da_event(&mut self, event: ChorusDAEvent) {
+        if self.decided {
+            return;
+        }
+
+        if let Some(fast_block) = self.fast.handle_da_event(event) {
+            self.vote_fast_block(fast_block);
+        }
+
+        self.drain_da_commands();
+    }
+
     fn handle_message(&mut self, author: NodeId, message: Self::Message) {
         if self.decided {
             return;
@@ -188,10 +245,7 @@ impl SlotConsensus for Chorus {
         match message {
             Message::BatchVote(batch_vote_msg) => {
                 if let Some(fast_block) = self.fast.handle_batch_vote(author, batch_vote_msg) {
-                    let commit_vote = fast_block.commit_vote(self.slot, &self.key);
-                    self.push(SlotOutput::CommitOptimistic(fast_block.clone()));
-                    self.broadcast(commit_vote);
-                    self.broadcast(fast_block);
+                    self.vote_fast_block(fast_block);
                 }
             }
             Message::FastCommitVote(fast_commit_vote) => {
@@ -203,9 +257,7 @@ impl SlotConsensus for Chorus {
 
             Message::FastBlock(fast_block) => {
                 if let Some(fast_block) = self.fast.handle_fast_block(fast_block) {
-                    let commit_vote = fast_block.commit_vote(self.slot, &self.key);
-                    self.push(SlotOutput::CommitOptimistic(fast_block));
-                    self.broadcast(commit_vote);
+                    self.vote_fast_block(fast_block);
                 }
             }
 
@@ -239,6 +291,8 @@ impl SlotConsensus for Chorus {
                 self.drain_fallback();
             }
         }
+
+        self.drain_da_commands();
     }
 
     fn handle_deadline(&mut self) {
@@ -251,6 +305,8 @@ impl SlotConsensus for Chorus {
         if let Some(batch_vote) = self.fast.on_propose_deadline() {
             self.broadcast(batch_vote);
         }
+
+        self.drain_da_commands();
     }
 
     fn handle_timer(&mut self, event: Self::Timer) {
@@ -287,10 +343,27 @@ impl SlotConsensus for Chorus {
                 self.drain_fallback();
             }
         }
+
+        self.drain_da_commands();
     }
 }
 
 impl Chorus {
+    /// speculatively commit a newly completed fast block, cast our commit
+    /// vote, and disseminate the block for peers to adopt
+    fn vote_fast_block(&mut self, fast_block: FastBlock) {
+        let commit_vote = fast_block.commit_vote(self.slot, &self.key);
+        self.push(SlotOutput::CommitOptimistic(fast_block.clone()));
+        self.broadcast(commit_vote);
+        self.broadcast(fast_block);
+    }
+
+    fn drain_da_commands(&mut self) {
+        while let Some(command) = self.fast.next_da_command() {
+            self.push(SlotOutput::DA(command));
+        }
+    }
+
     // helpers mostly for documentation purpose
     fn broadcast(&mut self, msg: impl Into<Message>) {
         self.push(SlotOutput::Broadcast(msg.into()));
