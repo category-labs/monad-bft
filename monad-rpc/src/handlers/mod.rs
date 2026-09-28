@@ -31,7 +31,7 @@ use self::{
     eth::{
         account::{
             monad_eth_getBalance, monad_eth_getCode, monad_eth_getStorageAt,
-            monad_eth_getTransactionCount, monad_eth_syncing,
+            monad_eth_getStorageValues, monad_eth_getTransactionCount, monad_eth_syncing,
         },
         block::{
             monad_eth_blockNumber, monad_eth_chainId, monad_eth_getBlockByHash,
@@ -697,6 +697,19 @@ async fn eth_getStorageAt(
 }
 
 #[allow(non_snake_case)]
+async fn eth_getStorageValues(
+    _: TimingRequestId,
+    app_state: &MonadRpcResources,
+    params: RequestParams<'_>,
+) -> Result<Box<RawValue>, JsonRpcError> {
+    let data_provider = app_state.data_provider.as_ref().method_not_found()?;
+    let params = serde_json::from_str(params.get()).invalid_params()?;
+    monad_eth_getStorageValues(data_provider, params)
+        .await
+        .map(serialize_result)?
+}
+
+#[allow(non_snake_case)]
 async fn eth_getTransactionCount(
     _: TimingRequestId,
     app_state: &MonadRpcResources,
@@ -951,6 +964,7 @@ enabled_methods!(
     eth_getBalance,
     eth_getCode,
     eth_getStorageAt,
+    eth_getStorageValues,
     eth_getTransactionCount,
     eth_blockNumber,
     eth_chainId,

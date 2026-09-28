@@ -13,6 +13,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::collections::BTreeMap;
+
+use futures::{StreamExt, TryStreamExt};
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::Triedb;
 use serde::Deserialize;
@@ -142,6 +145,70 @@ pub async fn monad_eth_getStorageAt<T: Triedb>(
     }
 }
 
+const MAX_GET_STORAGE_VALUES_SLOTS: usize = 1024;
+const MAX_CONCURRENT_STORAGE_READS: usize = 64;
+
+#[derive(Deserialize, Debug, schemars::JsonSchema)]
+pub struct MonadEthGetStorageValuesParams {
+    requests: BTreeMap<EthAddress, Vec<StorageKey>>,
+    block: BlockTagOrHash,
+}
+
+#[rpc(method = "eth_getStorageValues")]
+#[allow(non_snake_case)]
+/// Returns the values of multiple storage slots for multiple accounts.
+pub async fn monad_eth_getStorageValues<T: Triedb>(
+    data_provider: &DataProvider<T>,
+    params: MonadEthGetStorageValuesParams,
+) -> JsonRpcResult<BTreeMap<EthAddress, Vec<String>>> {
+    trace!("monad_eth_getStorageValues: {params:?}");
+
+    if params.requests.is_empty() {
+        return Err(JsonRpcError::invalid_params());
+    }
+
+    if params.requests.values().map(Vec::len).sum::<usize>() > MAX_GET_STORAGE_VALUES_SLOTS {
+        return Err(JsonRpcError::invalid_params());
+    }
+
+    let block_key = get_block_key_from_tag_or_hash(&data_provider.triedb_env, params.block)
+        .await
+        .ok_or_else(JsonRpcError::block_not_found)?;
+
+    let reads = params
+        .requests
+        .iter()
+        .flat_map(|(address, slots)| slots.iter().map(move |slot| (address, slot)));
+    let values: Vec<String> = futures::stream::iter(reads)
+        .map(|(address, slot)| {
+            data_provider
+                .triedb_env
+                .get_storage_at(block_key, address.0, slot.0)
+        })
+        .buffered(MAX_CONCURRENT_STORAGE_READS)
+        .map_ok(|value| format!("0x{}", hex::encode(value)))
+        .try_collect()
+        .await
+        .map_err(JsonRpcError::internal_error)?;
+
+    let mut values = values.into_iter();
+    let result: BTreeMap<_, Vec<_>> = params
+        .requests
+        .into_iter()
+        .map(|(address, slots)| (address, values.by_ref().take(slots.len()).collect()))
+        .collect();
+
+    match data_provider
+        .triedb_env
+        .get_state_availability(block_key)
+        .await
+        .map_err(JsonRpcError::internal_error)?
+    {
+        true => Ok(result),
+        false => Err(JsonRpcError::block_not_found()),
+    }
+}
+
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetTransactionCountParams {
     account: EthAddress,
@@ -188,8 +255,21 @@ pub async fn monad_eth_syncing() -> JsonRpcResult<bool> {
 
 #[cfg(test)]
 mod tests {
-    use super::MonadEthGetStorageAtParams;
-    use crate::types::eth_json::{BlockTags, Quantity};
+    use std::{str::FromStr, sync::Arc};
+
+    use monad_triedb_utils::mock_triedb::MockTriedb;
+
+    use super::{
+        monad_eth_getStorageValues, EthAddress, MonadEthGetStorageAtParams,
+        MonadEthGetStorageValuesParams, MAX_GET_STORAGE_VALUES_SLOTS,
+    };
+    use crate::{
+        data::DataProvider,
+        types::{
+            eth_json::{BlockTags, Quantity},
+            jsonrpc::JsonRpcError,
+        },
+    };
 
     #[test]
     fn params_without_eip_1898() {
@@ -272,5 +352,59 @@ mod tests {
             r#"["0xaa00000000000000000000000000000000000000", "0xasdf", "latest"]"#,
         )
         .is_err());
+    }
+
+    #[tokio::test]
+    async fn get_storage_values() {
+        let account_a = EthAddress::from_str("0xaa00000000000000000000000000000000000000").unwrap();
+        let account_b = EthAddress::from_str("0xbb00000000000000000000000000000000000000").unwrap();
+        let slot_0 = [0u8; 32];
+        let mut slot_1 = [0u8; 32];
+        slot_1[31] = 1;
+
+        let mut triedb = MockTriedb::default();
+        triedb.set_storage(account_a.0, slot_0, [0xa0; 32]);
+        triedb.set_storage(account_a.0, slot_1, [0xa1; 32]);
+        triedb.set_storage(account_b.0, slot_0, [0xb0; 32]);
+        let provider = DataProvider::new(None, Arc::new(triedb), None);
+
+        let params: MonadEthGetStorageValuesParams = serde_json::from_str(
+            r#"[{"0xaa00000000000000000000000000000000000000": ["0x1", "0x0"], "0xbb00000000000000000000000000000000000000": ["0x0", "0x1"]}, "latest"]"#,
+        )
+        .unwrap();
+        let res = monad_eth_getStorageValues(&provider, params).await.unwrap();
+
+        assert_eq!(res.len(), 2);
+        assert_eq!(
+            res[&account_a],
+            vec![
+                format!("0x{}", "a1".repeat(32)),
+                format!("0x{}", "a0".repeat(32)),
+            ]
+        );
+        assert_eq!(
+            res[&account_b],
+            vec![
+                format!("0x{}", "b0".repeat(32)),
+                format!("0x{}", "00".repeat(32)),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn get_storage_values_limits() {
+        let provider = DataProvider::new(None, Arc::new(MockTriedb::default()), None);
+
+        let slots = vec!["0x0"; MAX_GET_STORAGE_VALUES_SLOTS + 1];
+        let params: MonadEthGetStorageValuesParams = serde_json::from_value(serde_json::json!([
+            {"0xaa00000000000000000000000000000000000000": slots},
+            "latest"
+        ]))
+        .unwrap();
+        let err = monad_eth_getStorageValues(&provider, params)
+            .await
+            .unwrap_err();
+
+        assert_eq!(err, JsonRpcError::invalid_params());
     }
 }
