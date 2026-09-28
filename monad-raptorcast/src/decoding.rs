@@ -848,8 +848,8 @@ impl<PT: PubKey> SoftQuotaCache<PT> {
         let key_set_2 = self
             .author_index
             .per_author_index
-            .iter()
-            .flat_map(|(_, index)| index.reverse_index.keys().cloned())
+            .values()
+            .flat_map(|index| index.reverse_index.keys().cloned())
             .collect::<HashSet<_>>();
 
         if key_set_1 != key_set_2 {

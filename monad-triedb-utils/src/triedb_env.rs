@@ -18,7 +18,7 @@ use std::{
     fmt::Debug,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicUsize, Ordering::SeqCst},
+        atomic::{AtomicU64, AtomicUsize, Ordering::SeqCst},
         mpsc, Arc, Mutex,
     },
     thread,
@@ -35,7 +35,8 @@ use monad_eth_types::{
     EthStorageSlot, EthTxHash, ReceiptWithLogIndex, TransactionLocation, TxEnvelopeWithSender,
 };
 use monad_triedb::{
-    compute_page_key, compute_slot_offset, decode_storage_page_slot, TraverseEntry, TriedbHandle,
+    compute_page_key, compute_slot_offset, decode_storage_page_slot, MigrationPhase, TraverseEntry,
+    TriedbHandle,
 };
 use monad_types::{BlockId, Hash, SeqNum};
 use tracing::{error, warn};
@@ -126,6 +127,7 @@ fn polling_thread(
     triedb_path: PathBuf,
     node_lru_max_mem: u64,
     meta: Arc<Mutex<TriedbEnvMeta>>,
+    primary_earliest: Arc<AtomicU64>,
     receiver_read: mpsc::Receiver<TriedbRequest>,
     max_async_read_concurrency: usize,
     receiver_traverse: mpsc::Receiver<TriedbRequest>,
@@ -153,6 +155,10 @@ fn polling_thread(
             let latest_finalized = FinalizedBlockKey(SeqNum(
                 triedb_handle.latest_finalized_block().unwrap_or_default(),
             ));
+            primary_earliest.store(
+                triedb_handle.primary_earliest_version().unwrap_or(u64::MAX),
+                SeqCst,
+            );
             let mut latest_voted = BlockKey::Finalized(latest_finalized);
             for _ in 0..3 {
                 if let Some(voted) = get_latest_voted_block_key(&triedb_handle) {
@@ -524,11 +530,19 @@ pub struct TriedbEnv {
 
     meta: Arc<Mutex<TriedbEnvMeta>>,
 
-    // True if the primary timeline is page-encoded (Monad state machine). Read
-    // once at open; safe because the primary's encoding only changes via an
-    // offline promote (node stopped, then restarted), so a running RPC re-reads
-    // it on the next open.
-    page_encoded: bool,
+    // Earliest version on file in the primary timeline; u64::MAX when the
+    // primary is empty, so every version routes to the secondary (matching
+    // the FFI `db_for` rule). Versions below it are served by the secondary,
+    // if any. Only moves at history expiry; refreshed by the polling thread.
+    // Kept outside `meta` so the per-read encoding check does not take the
+    // mutex.
+    primary_earliest: Arc<AtomicU64>,
+
+    // Read once at open; fixed for the process lifetime because phases only
+    // change via the offline monad-mpt tool (everything stopped, then
+    // restarted). Determines each timeline's storage encoding (see
+    // serving_db_is_page_encoded).
+    migration_phase: MigrationPhase,
 }
 
 struct TriedbEnvMeta {
@@ -626,9 +640,12 @@ impl TriedbEnv {
     ) -> Self {
         let triedb_handle: TriedbHandle = TriedbHandle::try_new(triedb_path, node_lru_max_mem)
             .expect("triedb should exist in path");
-        let page_encoded = triedb_handle.is_page_encoded();
+        let migration_phase = triedb_handle.migration_phase();
         let latest_finalized = FinalizedBlockKey(SeqNum(
             triedb_handle.latest_finalized_block().unwrap_or_default(),
+        ));
+        let primary_earliest = Arc::new(AtomicU64::new(
+            triedb_handle.primary_earliest_version().unwrap_or(u64::MAX),
         ));
 
         let meta = Arc::new(Mutex::new(TriedbEnvMeta {
@@ -650,6 +667,7 @@ impl TriedbEnv {
 
         // spawn the polling thread in a dedicated thread
         let meta_cloned = meta.clone();
+        let primary_earliest_cloned = primary_earliest.clone();
         let triedb_path_cloned = triedb_path.to_path_buf();
         let tokio_handle = tokio::runtime::Handle::current();
 
@@ -661,6 +679,7 @@ impl TriedbEnv {
                     triedb_path_cloned,
                     node_lru_max_mem,
                     meta_cloned,
+                    primary_earliest_cloned,
                     receiver_read,
                     max_async_read_concurrency,
                     receiver_traverse,
@@ -674,7 +693,8 @@ impl TriedbEnv {
             mpsc_sender: sender_read,
             mpsc_sender_traverse: sender_traverse,
             meta,
-            page_encoded,
+            primary_earliest,
+            migration_phase,
         }
     }
 
@@ -736,6 +756,25 @@ impl TriedbEnv {
                 error!("Error awaiting result: {e}");
                 Err(String::from("error reading from db"))
             }
+        }
+    }
+
+    /// True if a read at `version` is served page-encoded. Mirrors the FFI
+    /// routing rule (`db_for`): the primary serves every version it has on
+    /// file, everything below its earliest falls through to the secondary.
+    ///
+    /// `primary_earliest` is a polling-thread snapshot that only moves at
+    /// history expiry, so staleness can only misclassify versions that are
+    /// expiring anyway.
+    fn serving_db_is_page_encoded(&self, version: SeqNum) -> bool {
+        let primary_earliest = SeqNum(self.primary_earliest.load(SeqCst));
+        match self.migration_phase {
+            MigrationPhase::Legacy => false,
+            MigrationPhase::PageEncoded => true,
+            // Slot primary, page secondary backfill below it.
+            MigrationPhase::DualTimeline => version < primary_earliest,
+            // Page primary, frozen slot history below it.
+            MigrationPhase::Promoted => version >= primary_earliest,
         }
     }
 
@@ -940,7 +979,7 @@ impl Triedb for TriedbEnv {
         addr: EthAddress,
         at: EthStorageKey,
     ) -> Result<EthStorageSlot, String> {
-        if self.page_encoded {
+        if self.serving_db_is_page_encoded(*block_key.seq_num()) {
             // Page-encoded: storage is keyed by keccak(page_key) where
             // page_key = slot >> 7, and the leaf is an encoded page. Look up the
             // page key and extract the slot at its offset within the page. The

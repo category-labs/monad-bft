@@ -18,8 +18,8 @@ use std::ops::Add;
 use alloy_consensus::TxEnvelope;
 use alloy_primitives::{U256, U64};
 use monad_ethcall::{
-    eth_simulate_v1, BlockOverride, EthCallExecutor, SimulateResult, StateOverrideSet,
-    SuccessSimulateResult,
+    overrides::{BlockOverride, StateOverrideSet},
+    MonadExecutor,
 };
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{Triedb, TriedbPath};
@@ -34,7 +34,7 @@ use crate::{
     },
     types::{
         eth_json::{BlockTagOrHash, BlockTags, Quantity},
-        jsonrpc::{JsonRpcError, JsonRpcResult},
+        jsonrpc::{ErrorCode, JsonRpcError, JsonRpcResult},
     },
 };
 
@@ -73,29 +73,33 @@ pub struct MonadSimulateParams {
 
 #[rpc(
     method = "eth_simulateV1",
-    ignore = "chain_id,call_gas_limit,simulation_gas_limit,max_simulated_calls,max_simulated_blocks"
+    ignore = "chain_id,call_gas_limit,simulation_gas_limit,max_simulated_calls,max_simulated_blocks,max_response_size"
 )]
 pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
     data_provider: &DataProvider<T>,
-    eth_call_executor: &EthCallExecutor,
+    eth_call_executor: &MonadExecutor,
     chain_id: u64,
     call_gas_limit: u64,
     simulation_gas_limit: u64,
     max_simulated_calls: usize,
     max_simulated_blocks: usize,
+    max_response_size: usize,
     params: MonadSimulateParams,
 ) -> JsonRpcResult<Box<RawValue>> {
     if !params.simulation.validation {
         let msg = String::from("`\"validation\": false` is not supported yet");
-        return Err(JsonRpcError::custom(msg));
+        return Err(JsonRpcError::with_message(ErrorCode::ServerError, msg));
     }
 
     let total_simulated_blocks = params.simulation.block_state_calls.len();
     if total_simulated_blocks > max_simulated_blocks {
-        return Err(JsonRpcError::custom(format!(
-            "Too many block simulations: {}, maximum allowed is {}",
-            total_simulated_blocks, max_simulated_blocks
-        )));
+        return Err(JsonRpcError::with_message(
+            ErrorCode::ServerError,
+            format!(
+                "Too many block simulations: {}, maximum allowed is {}",
+                total_simulated_blocks, max_simulated_blocks
+            ),
+        ));
     }
 
     let total_simulated_calls = params
@@ -105,10 +109,13 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
         .map(|bsc| bsc.calls.len())
         .sum::<usize>();
     if total_simulated_calls > max_simulated_calls {
-        return Err(JsonRpcError::custom(format!(
-            "Too many calls to simulate: {}, maximum allowed is {}",
-            total_simulated_calls, max_simulated_calls
-        )));
+        return Err(JsonRpcError::with_message(
+            ErrorCode::ServerError,
+            format!(
+                "Too many calls to simulate: {}, maximum allowed is {}",
+                total_simulated_calls, max_simulated_calls
+            ),
+        ));
     }
 
     let block_key = get_block_key_from_tag_or_hash(&data_provider.triedb_env, params.block)
@@ -182,7 +189,7 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
             .await?;
             accumulated_gas = accumulated_gas.add(U256::from(call.gas.unwrap_or_default()));
             if accumulated_gas > U256::from(simulation_gas_limit) {
-                return Err(JsonRpcError::custom(format!(
+                return Err(JsonRpcError::with_message(ErrorCode::ServerError, format!(
                     "Gas limit for simulation exceeded: the simulation requires minimum {} gas which exceeds the maximum allowed {}",
                     accumulated_gas, simulation_gas_limit
                 )));
@@ -226,34 +233,33 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
         None
     };
 
-    let result = eth_simulate_v1(
-        parse_ethcall_chain_id(chain_id)?,
-        &senders,
-        &calls,
-        header.header,
-        block_number,
-        block_id,
-        grandparent_block_id,
-        simulation_gas_limit,
-        max_simulated_blocks,
-        params.simulation.trace_transfers,
-        eth_call_executor,
-        &overrides,
-    )
-    .await;
+    let result = eth_call_executor
+        .eth_simulate_v1(
+            parse_ethcall_chain_id(chain_id)?,
+            &senders,
+            &calls,
+            header.header,
+            block_number,
+            block_id,
+            grandparent_block_id,
+            simulation_gas_limit,
+            max_simulated_blocks,
+            max_response_size,
+            params.simulation.trace_transfers,
+            &overrides,
+        )
+        .await;
 
     match result {
-        SimulateResult::Success(SuccessSimulateResult { output_data, .. }) => {
+        Ok(result) => {
+            let output_data = result.output_data;
             let v: serde_cbor::Value = serde_cbor::from_slice(&output_data)
                 .map_err(|e| JsonRpcError::internal_error(format!("CBOR decode error: {}", e)))?;
             serde_json::value::to_raw_value(&v).map_err(|e| {
                 JsonRpcError::internal_error(format!("json serialization error: {}", e))
             })
         }
-
-        SimulateResult::Failure(error) => {
-            Err(JsonRpcError::eth_call_error(error.message, error.data))
-        }
+        Err(e) => Err(e.into()),
     }
 }
 

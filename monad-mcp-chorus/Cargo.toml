@@ -1,0 +1,20 @@
+[package]
+name = "monad-mcp-chorus"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+# exposes the stub instantiation (crate::stub).
+enable_stub = []
+
+[dependencies]
+bytes = { workspace = true }
+derive_more = { workspace = true, features = ["from", "sum", "add", "into"] }
+itertools = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+rand = { workspace = true }
+tracing-test = { workspace = true }

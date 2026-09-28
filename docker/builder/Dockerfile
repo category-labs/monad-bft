@@ -73,6 +73,6 @@ ENV RUSTUP_HOME=/usr/local/rustup \
     PATH=/usr/local/cargo/bin:$PATH
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | bash -s -- -y
-RUN rustup toolchain install 1.91.1-x86_64-unknown-linux-gnu
+RUN rustup toolchain install 1.97.1-x86_64-unknown-linux-gnu
 
 RUN chmod -R a+rwX $RUSTUP_HOME $CARGO_HOME

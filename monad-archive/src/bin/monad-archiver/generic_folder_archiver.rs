@@ -277,7 +277,7 @@ async fn archive_dir(
     local.retain(|k, _| !known_in_s3.contains(k));
 
     // Process concurrently
-    stream::iter(local.into_iter())
+    stream::iter(local)
         .map(|(key, path)| {
             let store = store.clone();
             let metrics = metrics.clone();

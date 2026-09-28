@@ -13,12 +13,15 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::sync::Arc;
+
 use actix::{Actor, Context};
 use actix_web::{
     dev::{ServiceRequest, ServiceResponse},
     Error,
 };
 use monad_triedb_utils::triedb_env::TriedbEnv;
+use tokio::sync::Semaphore;
 use tracing_actix_web::RootSpanBuilder;
 
 use crate::{
@@ -49,6 +52,7 @@ pub struct MonadRpcResources {
     pub enable_eth_simulate_v1: bool,
     pub metrics: Option<Metrics>,
     pub rpc_comparator: Option<RpcComparator>,
+    pub feehistory_limiter: Arc<Semaphore>,
 }
 
 impl MonadRpcResources {
@@ -72,6 +76,7 @@ impl MonadRpcResources {
         enable_eth_simulate_v1: bool,
         metrics: Option<Metrics>,
         rpc_comparator: Option<RpcComparator>,
+        feehistory_max_concurrent_requests: u32,
     ) -> Self {
         Self {
             txpool_bridge_client,
@@ -92,6 +97,9 @@ impl MonadRpcResources {
             enable_eth_simulate_v1,
             metrics,
             rpc_comparator,
+            feehistory_limiter: Arc::new(Semaphore::new(
+                feehistory_max_concurrent_requests as usize,
+            )),
         }
     }
 }

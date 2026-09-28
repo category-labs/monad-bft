@@ -13,9 +13,145 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use monad_ethcall::{EthCallError, EthCallResult, EthCallSuccess};
+
+use crate::types::jsonrpc::{msg, ErrorCode, JsonRpcError};
+
 pub mod account;
 pub mod block;
 pub mod call;
 pub mod gas;
 pub mod simulate;
 pub mod txn;
+
+#[derive(Clone, Debug)]
+pub enum CallResult {
+    Success(SuccessCallResult),
+    Failure(FailureCallResult),
+    Revert(RevertCallResult), // only used for trace
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct SuccessCallResult {
+    pub gas_used: u64,
+    pub gas_refund: u64,
+    // We interpret this as rlp encoded CallFrames for debug_traceCall
+    pub output_data: Box<[u8]>,
+}
+
+impl From<EthCallSuccess> for SuccessCallResult {
+    fn from(result: EthCallSuccess) -> Self {
+        Self {
+            gas_used: result.gas_used,
+            gas_refund: result.gas_refund,
+            output_data: result.output_data,
+        }
+    }
+}
+
+impl From<SuccessCallResult> for CallResult {
+    fn from(result: SuccessCallResult) -> Self {
+        Self::Success(result)
+    }
+}
+
+impl From<EthCallSuccess> for CallResult {
+    fn from(result: EthCallSuccess) -> Self {
+        Self::Success(result.into())
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct FailureCallResult {
+    pub error_code: EthCallResult,
+    pub gas_used: u64,
+    pub gas_refund: u64,
+    pub message: String,
+    pub data: Option<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct RevertCallResult {
+    pub trace: Box<[u8]>,
+}
+
+impl From<EthCallError> for CallResult {
+    fn from(error: EthCallError) -> Self {
+        match error {
+            EthCallError::Failure {
+                error_code,
+                gas_used,
+                gas_refund,
+                message,
+                data,
+            } => Self::Failure(FailureCallResult {
+                error_code,
+                gas_used,
+                gas_refund,
+                message,
+                data,
+            }),
+            EthCallError::GasLimitTooHigh => Self::Failure(FailureCallResult {
+                error_code: EthCallResult::OtherError,
+                gas_used: 0,
+                gas_refund: 0,
+                message: String::from(msg::GAS_LIMIT_TOO_HIGH),
+                data: None,
+            }),
+            EthCallError::InternalError => Self::Failure(FailureCallResult {
+                error_code: EthCallResult::OtherError,
+                gas_used: 0,
+                gas_refund: 0,
+                message: String::from(msg::INTERNAL_ETH_CALL_ERROR),
+                data: None,
+            }),
+            EthCallError::Other { message } => Self::Failure(FailureCallResult {
+                error_code: EthCallResult::OtherError,
+                gas_used: 0,
+                gas_refund: 0,
+                message,
+                data: None,
+            }),
+            EthCallError::ReserveBalanceViolation {
+                gas_used,
+                gas_refund,
+            } => Self::Failure(FailureCallResult {
+                error_code: EthCallResult::ReserveBalanceViolation,
+                gas_used,
+                gas_refund,
+                message: String::from(msg::RESERVE_BALANCE_VIOLATION),
+                data: None,
+            }),
+            EthCallError::Trace { trace } => Self::Revert(RevertCallResult { trace }),
+        }
+    }
+}
+
+impl From<FailureCallResult> for JsonRpcError {
+    fn from(error: FailureCallResult) -> Self {
+        match error.error_code {
+            EthCallResult::ExecutionError => {
+                Self::eth_call_execution_revert(error.message, error.data)
+            }
+            EthCallResult::OutOfGas => {
+                Self::with_message_and_data(ErrorCode::InternalError, error.message, error.data)
+            }
+            _ => Self::eth_call_error(error.message, error.data),
+        }
+    }
+}
+
+impl From<EthCallError> for JsonRpcError {
+    fn from(error: EthCallError) -> Self {
+        match CallResult::from(error) {
+            CallResult::Success(_) => {
+                JsonRpcError::internal_error("unexpected successful eth_call failure".into())
+            }
+            CallResult::Failure(failure) => failure.into(),
+            // Revert carries tracer output, not an execution revert; unreachable for untraced calls.
+            CallResult::Revert(_) => {
+                JsonRpcError::eth_call_error(String::from("trace error"), None)
+            }
+        }
+    }
+}

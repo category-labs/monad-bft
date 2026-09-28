@@ -24,7 +24,7 @@ use crate::{
     txpool::{EthTxPoolBridgeClient, TxStatus},
     types::{
         eth_json::{EthAddress, EthHash},
-        jsonrpc::{JsonRpcError, JsonRpcResult},
+        jsonrpc::{ErrorCode, JsonRpcError, JsonRpcResult},
     },
 };
 
@@ -70,7 +70,10 @@ pub async fn monad_txpool_statusByHash(
     params: TxPoolStatusByHashParams,
 ) -> JsonRpcResult<TxPoolStatusResult> {
     let Some(status) = txpool_bridge_client.get_status_by_hash(&TxHash::new(params.hash.0)) else {
-        return Err(JsonRpcError::custom("Unknown tx hash".to_string()));
+        return Err(JsonRpcError::with_message(
+            ErrorCode::ServerError,
+            "Unknown tx hash".to_string(),
+        ));
     };
 
     Ok(TxPoolStatusResult::from(status))
@@ -93,7 +96,10 @@ pub async fn monad_txpool_statusByAddress(
     let Some(statuses) =
         txpool_bridge_client.get_status_by_address(&Address::new(params.address.0))
     else {
-        return Err(JsonRpcError::custom("No transactions ".to_string()));
+        return Err(JsonRpcError::with_message(
+            ErrorCode::ServerError,
+            "No transactions".to_string(),
+        ));
     };
 
     Ok(TxPoolStatusByAddressResult(

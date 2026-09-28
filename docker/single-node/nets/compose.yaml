@@ -77,7 +77,7 @@ services:
       --mempool-ipc-path /monad/mempool.sock
       --control-panel-ipc-path /monad/controlpanel.sock
       --ledger-path /monad/ledger
-      --triedb-path /monad/triedb
+      --triedb-path /monad/triedb/test.db
     ulimits: *ulimits
 
   monad_rpc:
@@ -98,6 +98,6 @@ services:
     command: |
       monad-rpc
       --ipc-path /monad/mempool.sock
-      --triedb-path /monad/triedb
+      --triedb-path /monad/triedb/test.db
       --node-config /monad/config/node.toml
     ulimits: *ulimits

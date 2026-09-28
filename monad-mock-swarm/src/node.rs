@@ -143,6 +143,7 @@ impl<S: SwarmRelation> NodeBuilder<S> {
                 consensus_config: self.state_builder.consensus_config,
                 whitelisted_statesync_nodes: self.state_builder.whitelisted_statesync_nodes,
                 statesync_expand_to_group: self.state_builder.statesync_expand_to_group,
+                serve_statesync: self.state_builder.serve_statesync,
 
                 _phantom: PhantomData,
             },

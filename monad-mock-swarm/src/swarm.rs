@@ -123,6 +123,7 @@ pub fn make_state_configs<S: SwarmRelation>(
 
             whitelisted_statesync_nodes: Default::default(),
             statesync_expand_to_group: true,
+            serve_statesync: true,
 
             _phantom: PhantomData,
         })

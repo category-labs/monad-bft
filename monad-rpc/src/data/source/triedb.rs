@@ -18,13 +18,12 @@ use std::sync::Arc;
 use alloy_consensus::Header;
 use alloy_primitives::BlockHash;
 use async_trait::async_trait;
-use monad_eth_types::TxEnvelopeWithSender;
 use monad_triedb_utils::triedb_env::{BlockKey, FinalizedBlockKey, ProposedBlockKey, Triedb};
 use monad_types::SeqNum;
 
 use super::{
-    BlockCommitState, BlockPointer, DataSourceError, DataSourceResult, HistoricalDataSource,
-    HistoricalDataSourceExt,
+    BlockCommitState, BlockPointer, DataSourceError, DataSourceResult, HistoricalBlockData,
+    HistoricalDataSource, HistoricalDataSourceExt,
 };
 
 #[derive(Debug)]
@@ -119,7 +118,7 @@ where
     async fn get_block(
         &self,
         pointer: BlockPointer,
-    ) -> DataSourceResult<Option<(Header, Vec<TxEnvelopeWithSender>)>> {
+    ) -> DataSourceResult<Option<HistoricalBlockData>> {
         let block_key = resolve_block_key(&pointer);
 
         let Some(header) = self
@@ -137,7 +136,12 @@ where
             return Ok(None);
         };
 
-        Ok(Some((header.header, transactions)))
+        Ok(Some(HistoricalBlockData {
+            header: header.header,
+            header_hash_precomputed: Some(header.hash),
+
+            transactions,
+        }))
     }
 
     async fn get_block_header(&self, pointer: BlockPointer) -> DataSourceResult<Option<Header>> {

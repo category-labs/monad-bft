@@ -13,7 +13,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{convert::Infallible, hash::Hash, time::Instant};
+use std::{
+    collections::{HashMap, HashSet},
+    convert::Infallible,
+    hash::Hash,
+    time::Instant,
+};
 
 use bytes::Bytes;
 use monad_executor::{ExecutorMetrics, MetricDef};
@@ -148,6 +153,7 @@ impl From<(PacketHeader, Bytes)> for Packet {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PoolSelection {
+    Dedicated,
     Priority,
     Regular,
 }
@@ -164,6 +170,7 @@ impl From<FragmentPolicy> for PoolSelection {
 impl PoolSelection {
     fn fragments_counter(self) -> &'static MetricDef {
         match self {
+            PoolSelection::Dedicated => COUNTER_LEANUDP_DECODE_FRAGMENTS_DEDICATED,
             PoolSelection::Priority => COUNTER_LEANUDP_DECODE_FRAGMENTS_PRIORITY,
             PoolSelection::Regular => COUNTER_LEANUDP_DECODE_FRAGMENTS_REGULAR,
         }
@@ -171,6 +178,7 @@ impl PoolSelection {
 
     fn bytes_counter(self) -> &'static MetricDef {
         match self {
+            PoolSelection::Dedicated => COUNTER_LEANUDP_DECODE_BYTES_DEDICATED,
             PoolSelection::Priority => COUNTER_LEANUDP_DECODE_BYTES_PRIORITY,
             PoolSelection::Regular => COUNTER_LEANUDP_DECODE_BYTES_REGULAR,
         }
@@ -183,6 +191,10 @@ where
     P: IdentityScore<Identity = I>,
     C: Clock,
 {
+    dedicated_pools: HashMap<I, MessagePool<I, StdRng>>,
+    dedicated_pool_config: PoolConfig,
+    max_messages_per_dedicated_identity: usize,
+    dedicated_pool_rng: StdRng,
     priority_pool: MessagePool<I, StdRng>,
     regular_pool: MessagePool<I, StdRng>,
     identity_score: P,
@@ -217,44 +229,94 @@ where
             StdRng::from_rng(&mut pool_rng).expect("failed to seed priority pool rng");
         let regular_pool_rng =
             StdRng::from_rng(&mut pool_rng).expect("failed to seed regular pool rng");
+        let dedicated_pool_rng =
+            StdRng::from_rng(&mut pool_rng).expect("failed to seed dedicated pool rng");
+        let mut metrics = init_decoder_metrics();
+        let priority_messages_gauge = metrics.gauge(GAUGE_LEANUDP_POOL_PRIORITY_MESSAGES).clone();
+        let regular_messages_gauge = metrics.gauge(GAUGE_LEANUDP_POOL_REGULAR_MESSAGES).clone();
         Self {
+            dedicated_pools: HashMap::new(),
+            dedicated_pool_config: PoolConfig::from_config(
+                config,
+                config.max_messages_per_dedicated_identity,
+            ),
+            max_messages_per_dedicated_identity: config.max_messages_per_dedicated_identity,
+            dedicated_pool_rng,
             priority_pool: MessagePool::new(
                 PoolConfig::from_config(config, config.max_priority_messages),
                 priority_pool_rng,
                 IdentityUsage::new(config),
+                priority_messages_gauge,
             ),
             regular_pool: MessagePool::new(
                 PoolConfig::from_config(config, config.max_regular_messages),
                 regular_pool_rng,
                 IdentityUsage::new(config),
+                regular_messages_gauge,
             ),
             identity_score,
             clock,
-            metrics: init_decoder_metrics(),
+            metrics,
         }
     }
 
     fn select_pool(&mut self, identity: &I, key: &(I, u16), now: Instant) -> PoolSelection {
+        // an identity's pool classification may change while a message is being reassembled.
+        // search all pools first so later fragments reach the pool containing the pending message.
+        let is_dedicated = if let Some(pool) = self.dedicated_pools.get_mut(identity) {
+            match pool.message_status(key, now) {
+                MessageStatus::Active => return PoolSelection::Dedicated,
+                MessageStatus::Stale => {
+                    self.metrics
+                        .gauge(EvictionKind::Timeout.metric_name())
+                        .inc();
+                }
+                MessageStatus::Missing => {}
+            }
+            true
+        } else {
+            false
+        };
+
         match self.priority_pool.message_status(key, now) {
             MessageStatus::Active => return PoolSelection::Priority,
             MessageStatus::Stale => {
                 self.metrics
                     .gauge(EvictionKind::Timeout.metric_name())
                     .inc();
-                return self.identity_score.score(identity).into();
             }
             MessageStatus::Missing => {}
         }
 
         match self.regular_pool.message_status(key, now) {
-            MessageStatus::Active => PoolSelection::Regular,
+            MessageStatus::Active => return PoolSelection::Regular,
             MessageStatus::Stale => {
                 self.metrics
                     .gauge(EvictionKind::Timeout.metric_name())
                     .inc();
-                self.identity_score.score(identity).into()
             }
-            MessageStatus::Missing => self.identity_score.score(identity).into(),
+            MessageStatus::Missing => {}
+        }
+
+        if is_dedicated {
+            PoolSelection::Dedicated
+        } else {
+            self.identity_score.score(identity).into()
+        }
+    }
+
+    fn pool_mut(
+        &mut self,
+        selected_pool: PoolSelection,
+        identity: &I,
+    ) -> &mut MessagePool<I, StdRng> {
+        match selected_pool {
+            PoolSelection::Dedicated => self
+                .dedicated_pools
+                .get_mut(identity)
+                .expect("dedicated pool must exist for selected identity"),
+            PoolSelection::Priority => &mut self.priority_pool,
+            PoolSelection::Regular => &mut self.regular_pool,
         }
     }
 
@@ -265,40 +327,23 @@ where
         key: &(I, u16),
         input: FragmentInput<I>,
     ) -> Result<DecodeOutcome, DecodeError> {
-        let is_new_message = match selected_pool {
-            PoolSelection::Priority => !self.priority_pool.has_message(key),
-            PoolSelection::Regular => !self.regular_pool.has_message(key),
+        let input_identity = input.identity.clone();
+        let mut identity_timeout_evicted = false;
+        let (result, pool_evicted) = {
+            let pool = self.pool_mut(selected_pool, &input_identity);
+            if !pool.has_message(key) {
+                identity_timeout_evicted =
+                    pool.evict_one_stale_for_identity_if_limited(&input_identity, now);
+                pool.ensure_identity_capacity(&input_identity)?;
+            }
+            pool.decode_with_admission(now, key, input)
         };
 
-        if is_new_message {
-            let evicted = match selected_pool {
-                PoolSelection::Priority => self
-                    .priority_pool
-                    .evict_one_stale_for_identity_if_limited(&input.identity, now),
-                PoolSelection::Regular => self
-                    .regular_pool
-                    .evict_one_stale_for_identity_if_limited(&input.identity, now),
-            };
-            if evicted {
-                self.metrics
-                    .gauge(EvictionKind::Timeout.metric_name())
-                    .inc();
-            }
-            match selected_pool {
-                PoolSelection::Priority => self
-                    .priority_pool
-                    .ensure_identity_capacity(&input.identity)?,
-                PoolSelection::Regular => self
-                    .regular_pool
-                    .ensure_identity_capacity(&input.identity)?,
-            }
+        if identity_timeout_evicted {
+            self.metrics
+                .gauge(EvictionKind::Timeout.metric_name())
+                .inc();
         }
-
-        let (result, pool_evicted) = match selected_pool {
-            PoolSelection::Priority => self.priority_pool.decode_with_admission(now, key, input),
-            PoolSelection::Regular => self.regular_pool.decode_with_admission(now, key, input),
-        };
-
         if let Some(kind) = pool_evicted {
             self.metrics.gauge(kind.metric_name()).inc();
         }
@@ -335,18 +380,8 @@ where
         }
     }
 
-    fn update_pool_gauges(&mut self) {
-        self.metrics
-            .gauge(GAUGE_LEANUDP_POOL_PRIORITY_MESSAGES)
-            .set(self.priority_pool.message_count() as u64);
-        self.metrics
-            .gauge(GAUGE_LEANUDP_POOL_REGULAR_MESSAGES)
-            .set(self.regular_pool.message_count() as u64);
-    }
-
     fn reject_decode(&mut self, error: DecodeError) -> DecodeError {
         self.metrics.gauge(error.metric_name()).inc();
-        self.update_pool_gauges();
         error
     }
 
@@ -393,9 +428,39 @@ where
 
         let result = self.decode_in_pool(now, selected_pool, &key, input);
         self.record_decode_metrics(selected_pool, payload_bytes, &result);
-        self.update_pool_gauges();
 
         result
+    }
+
+    /// Replaces the identities that receive isolated reassembly pools.
+    ///
+    /// Existing messages for identities that remain dedicated are preserved.
+    /// Pools for removed identities, including incomplete messages, are dropped.
+    pub fn set_dedicated_identities(&mut self, identities: impl IntoIterator<Item = I>) {
+        let identities = identities.into_iter().collect::<HashSet<_>>();
+        self.dedicated_pools
+            .retain(|identity, _| identities.contains(identity));
+        let dedicated_messages_gauge = self
+            .metrics
+            .gauge(GAUGE_LEANUDP_POOL_DEDICATED_MESSAGES)
+            .clone();
+
+        for identity in identities {
+            if self.dedicated_pools.contains_key(&identity) {
+                continue;
+            }
+            let rng = StdRng::from_rng(&mut self.dedicated_pool_rng)
+                .expect("failed to seed dedicated identity pool rng");
+            self.dedicated_pools.insert(
+                identity,
+                MessagePool::new(
+                    self.dedicated_pool_config.clone(),
+                    rng,
+                    IdentityUsage::with_limit(self.max_messages_per_dedicated_identity),
+                    dedicated_messages_gauge.clone(),
+                ),
+            );
+        }
     }
 
     pub fn executor_metrics(&self) -> &ExecutorMetrics {

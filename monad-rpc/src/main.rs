@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#![recursion_limit = "256"]
+
 use std::{sync::Arc, time::Duration};
 
 use actix_web::{web, App, HttpServer};
@@ -381,6 +383,7 @@ async fn main() -> std::io::Result<()> {
         args.enable_eth_simulate_v1,
         with_metrics.clone(),
         rpc_comparator.clone(),
+        args.feehistory_max_concurrent_requests,
     );
 
     // Configure the websocket server if enabled

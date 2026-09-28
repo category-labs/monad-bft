@@ -49,9 +49,11 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_execution_state_read::ExecutionStateRead;
+use monad_statesync_version::{MONAD_STATESYNC_MAJOR, MONAD_STATESYNC_MINOR_2};
 use monad_types::{
-    deserialize_pubkey, serialize_pubkey, Epoch, ExecutionProtocol, LimitedVec, NodeId, Round,
-    RouterTarget, SeqNum, Stake, UdpPriority, MAX_FORWARDED_TXS_PER_MESSAGE,
+    deserialize_pubkey, serialize_pubkey, Epoch, ExecutionProtocol, FullnodeBroadcastMode,
+    LimitedVec, NodeId, Round, RouterTarget, SeqNum, Stake, UdpPriority,
+    MAX_FORWARDED_TXS_PER_MESSAGE,
 };
 use monad_validator::signature_collection::SignatureCollection;
 use serde::{Deserialize, Serialize};
@@ -81,6 +83,7 @@ pub enum RouterCommand<ST: CertificateSignatureRecoverable, OM> {
     PublishToFullNodes {
         epoch: Epoch,
         round: Round,
+        broadcast_mode: FullnodeBroadcastMode,
         message: OM,
     },
     AddEpochValidatorSet {
@@ -120,11 +123,13 @@ impl<ST: CertificateSignatureRecoverable, OM> Debug for RouterCommand<ST, OM> {
             Self::PublishToFullNodes {
                 epoch,
                 round,
+                broadcast_mode,
                 message: _,
             } => f
                 .debug_struct("PublishToFullNodes")
                 .field("epoch", epoch)
                 .field("round", round)
+                .field("broadcast_mode", broadcast_mode)
                 .finish(),
             Self::AddEpochValidatorSet {
                 epoch,
@@ -298,6 +303,9 @@ pub struct PeerEntry<ST: CertificateSignatureRecoverable> {
         skip_serializing_if = "Option::is_none"
     )]
     pub direct_udp_port: Option<NonZeroU16>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encrypted_tcp_port: Option<NonZeroU16>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -376,17 +384,33 @@ impl<ST: CertificateSignatureRecoverable> Encodable for PeerEntry<ST> {
         let direct_udp_port = self.direct_udp_port.map_or(0, NonZeroU16::get);
         let tcp_port = self.tcp_port().get();
         let udp_port = self.udp_port().map_or(0, NonZeroU16::get);
-        let enc = [
-            &self.pubkey as &dyn Encodable,
-            &address as &dyn Encodable,
-            &self.signature as &dyn Encodable,
-            &self.record_seq_num as &dyn Encodable,
-            &auth_port as &dyn Encodable,
-            &direct_udp_port as &dyn Encodable,
-            &tcp_port as &dyn Encodable,
-            &udp_port as &dyn Encodable,
-        ];
-        encode_list::<_, dyn Encodable>(&enc, out);
+        if let Some(encrypted_tcp_port) = self.encrypted_tcp_port {
+            let encrypted_tcp_port = encrypted_tcp_port.get();
+            let enc = [
+                &self.pubkey as &dyn Encodable,
+                &address as &dyn Encodable,
+                &self.signature as &dyn Encodable,
+                &self.record_seq_num as &dyn Encodable,
+                &auth_port as &dyn Encodable,
+                &direct_udp_port as &dyn Encodable,
+                &tcp_port as &dyn Encodable,
+                &udp_port as &dyn Encodable,
+                &encrypted_tcp_port as &dyn Encodable,
+            ];
+            encode_list::<_, dyn Encodable>(&enc, out);
+        } else {
+            let enc = [
+                &self.pubkey as &dyn Encodable,
+                &address as &dyn Encodable,
+                &self.signature as &dyn Encodable,
+                &self.record_seq_num as &dyn Encodable,
+                &auth_port as &dyn Encodable,
+                &direct_udp_port as &dyn Encodable,
+                &tcp_port as &dyn Encodable,
+                &udp_port as &dyn Encodable,
+            ];
+            encode_list::<_, dyn Encodable>(&enc, out);
+        }
     }
 }
 
@@ -426,6 +450,12 @@ impl<ST: CertificateSignatureRecoverable> Decodable for PeerEntry<ST> {
             (tcp_port, udp_port)
         };
 
+        let encrypted_tcp_port = if payload.is_empty() {
+            None
+        } else {
+            decode_optional_non_zero_u16(&mut payload)?
+        };
+
         if !payload.is_empty() {
             return Err(alloy_rlp::Error::Custom("extra bytes in peer entry"));
         }
@@ -437,6 +467,7 @@ impl<ST: CertificateSignatureRecoverable> Decodable for PeerEntry<ST> {
             record_seq_num,
             auth_port,
             direct_udp_port,
+            encrypted_tcp_port,
         })
     }
 }
@@ -1456,12 +1487,14 @@ where
     }
 }
 
-const STATESYNC_VERSION_V0: StateSyncVersion = StateSyncVersion { major: 1, minor: 0 };
-const STATESYNC_VERSION_V1: StateSyncVersion = StateSyncVersion { major: 1, minor: 1 };
-// Client is required to send completions since this version
-pub const STATESYNC_VERSION_V2: StateSyncVersion = StateSyncVersion { major: 1, minor: 2 };
-pub const SELF_STATESYNC_VERSION: StateSyncVersion = STATESYNC_VERSION_V2;
-pub const STATESYNC_VERSION_MIN: StateSyncVersion = STATESYNC_VERSION_V0;
+// Client is required to send completions since this version. Minors 0 and 1
+// predate that and are no longer spoken; nothing deployed still runs them.
+pub const STATESYNC_VERSION_1_2: StateSyncVersion = StateSyncVersion {
+    major: MONAD_STATESYNC_MAJOR,
+    minor: MONAD_STATESYNC_MINOR_2,
+};
+pub const SELF_STATESYNC_VERSION: StateSyncVersion = STATESYNC_VERSION_1_2;
+pub const STATESYNC_VERSION_MIN: StateSyncVersion = STATESYNC_VERSION_1_2;
 
 #[derive(
     Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, RlpEncodable, RlpDecodable, Serialize,
@@ -1553,39 +1586,15 @@ pub enum StateSyncUpsertType {
 
 #[serde_as]
 #[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize)]
-pub struct StateSyncUpsertV0 {
-    pub upsert_type: StateSyncUpsertType,
-    #[serde_as(as = "serde_with::hex::Hex")]
-    pub data: Vec<u8>,
-}
-
-#[serde_as]
-#[derive(Clone, PartialEq, Eq, RlpEncodable, RlpDecodable, Serialize)]
 pub struct StateSyncUpsertV1 {
     pub upsert_type: StateSyncUpsertType,
     #[serde_as(as = "serde_with::hex::Hex")]
     pub data: Bytes,
 }
 
-impl StateSyncUpsertV0 {
-    fn as_v1(&self) -> StateSyncUpsertV1 {
-        StateSyncUpsertV1 {
-            upsert_type: self.upsert_type,
-            data: Bytes::copy_from_slice(&self.data),
-        }
-    }
-}
-
 impl StateSyncUpsertV1 {
     pub fn new(upsert_type: StateSyncUpsertType, data: Bytes) -> Self {
         Self { upsert_type, data }
-    }
-
-    fn as_v0(&self) -> StateSyncUpsertV0 {
-        StateSyncUpsertV0 {
-            upsert_type: self.upsert_type,
-            data: self.data.to_vec(),
-        }
     }
 }
 
@@ -1671,57 +1680,27 @@ pub struct StateSyncResponse {
 
 impl Encodable for StateSyncResponse {
     fn encode(&self, out: &mut dyn BufMut) {
-        // check if client version is past V1: upsert fork
-        if self.request.version >= STATESYNC_VERSION_V1 {
-            let enc: [&dyn Encodable; 6] = [
-                &self.version,
-                &self.nonce,
-                &self.response_index,
-                &self.request,
-                &self.response,
-                &self.response_n,
-            ];
-            encode_list::<_, dyn Encodable>(&enc, out);
-        } else {
-            let v0_response: Vec<StateSyncUpsertV0> =
-                self.response.iter().map(StateSyncUpsertV1::as_v0).collect();
-            let enc: [&dyn Encodable; 6] = [
-                &self.version,
-                &self.nonce,
-                &self.response_index,
-                &self.request,
-                &v0_response,
-                &self.response_n,
-            ];
-            encode_list::<_, dyn Encodable>(&enc, out);
-        }
+        let enc: [&dyn Encodable; 6] = [
+            &self.version,
+            &self.nonce,
+            &self.response_index,
+            &self.request,
+            &self.response,
+            &self.response_n,
+        ];
+        encode_list::<_, dyn Encodable>(&enc, out);
     }
 
     fn length(&self) -> usize {
-        // check if client version is past V1: upsert fork
-        if self.request.version >= STATESYNC_VERSION_V1 {
-            let enc: Vec<&dyn Encodable> = vec![
-                &self.version,
-                &self.nonce,
-                &self.response_index,
-                &self.request,
-                &self.response,
-                &self.response_n,
-            ];
-            Encodable::length(&enc)
-        } else {
-            let v0_response: Vec<StateSyncUpsertV0> =
-                self.response.iter().map(StateSyncUpsertV1::as_v0).collect();
-            let enc: Vec<&dyn Encodable> = vec![
-                &self.version,
-                &self.nonce,
-                &self.response_index,
-                &self.request,
-                &v0_response,
-                &self.response_n,
-            ];
-            Encodable::length(&enc)
-        }
+        let enc: Vec<&dyn Encodable> = vec![
+            &self.version,
+            &self.nonce,
+            &self.response_index,
+            &self.request,
+            &self.response,
+            &self.response_n,
+        ];
+        Encodable::length(&enc)
     }
 }
 
@@ -1733,16 +1712,9 @@ impl Decodable for StateSyncResponse {
         let nonce = u64::decode(&mut payload)?;
         let response_index = u32::decode(&mut payload)?;
         let request = StateSyncRequest::decode(&mut payload)?;
-        // check if server version is past V1: upsert fork
-        let response: Vec<StateSyncUpsertV1> = if version >= STATESYNC_VERSION_V1 {
+        let response =
             LimitedVec::<StateSyncUpsertV1, MAX_UPSERTS_PER_RESPONSE>::decode(&mut payload)?
-                .into_inner()
-        } else {
-            let v0_response =
-                LimitedVec::<StateSyncUpsertV0, MAX_UPSERTS_PER_RESPONSE>::decode(&mut payload)?
-                    .into_inner();
-            v0_response.iter().map(StateSyncUpsertV0::as_v1).collect()
-        };
+                .into_inner();
         let response_n = u64::decode(&mut payload)?;
 
         if !payload.is_empty() {
@@ -2489,8 +2461,8 @@ mod tests {
     use crate::{
         BlockSyncEvent, MempoolEvent, MonadEvent, PeerEntry, PeerEntryAddress, StateSyncEvent,
         StateSyncNetworkMessage, StateSyncRequest, StateSyncResponse, StateSyncUpsertType,
-        StateSyncUpsertV1, StateSyncVersion, SELF_STATESYNC_VERSION, STATESYNC_VERSION_V0,
-        STATESYNC_VERSION_V1,
+        StateSyncUpsertV1, StateSyncVersion, SELF_STATESYNC_VERSION, STATESYNC_VERSION_1_2,
+        STATESYNC_VERSION_MIN,
     };
 
     type TestSignature = NopSignature;
@@ -2521,13 +2493,29 @@ mod tests {
 
     #[test]
     fn statesync_version_is_compatible() {
-        assert!(STATESYNC_VERSION_V0.is_compatible());
-        assert!(STATESYNC_VERSION_V1.is_compatible());
+        assert!(STATESYNC_VERSION_1_2.is_compatible());
+        assert!(SELF_STATESYNC_VERSION.is_compatible());
+        assert!(STATESYNC_VERSION_MIN == STATESYNC_VERSION_1_2);
+        // Retired: a peer still speaking either one gets BadVersion.
+        assert!(!StateSyncVersion { major: 1, minor: 0 }.is_compatible());
+        assert!(!StateSyncVersion { major: 1, minor: 1 }.is_compatible());
+    }
+
+    /// The rung values come from execution's statesync_version.h, but which rung
+    /// is current and which is the floor is picked independently on each side,
+    /// so a bump here has to be matched there.
+    #[test]
+    fn statesync_version_aliases_match_execution() {
+        use monad_statesync_version::{MONAD_STATESYNC_VERSION, MONAD_STATESYNC_VERSION_MIN};
+
+        assert_eq!(SELF_STATESYNC_VERSION.to_u32(), MONAD_STATESYNC_VERSION);
+        assert_eq!(STATESYNC_VERSION_MIN.to_u32(), MONAD_STATESYNC_VERSION_MIN);
     }
 
     #[test]
     fn statesync_version_ord() {
-        assert!(STATESYNC_VERSION_V0 < STATESYNC_VERSION_V1);
+        assert!(StateSyncVersion { major: 1, minor: 1 } < STATESYNC_VERSION_1_2);
+        assert!(STATESYNC_VERSION_1_2 < StateSyncVersion { major: 2, minor: 0 });
     }
 
     fn make_response(
@@ -2556,53 +2544,14 @@ mod tests {
     }
 
     #[test]
-    fn statesync_version_v0_roundtrip() {
-        let response = make_response(STATESYNC_VERSION_V0, STATESYNC_VERSION_V0);
+    fn statesync_response_roundtrip() {
+        let response = make_response(STATESYNC_VERSION_1_2, STATESYNC_VERSION_1_2);
         let serialized_response = alloy_rlp::encode(&response);
+        assert_eq!(serialized_response.len(), Encodable::length(&response));
         let deserialized_response = alloy_rlp::decode_exact(&serialized_response).unwrap();
         if response != deserialized_response {
-            panic!("failed to roundtrip v0 statesync response")
+            panic!("failed to roundtrip statesync response")
         }
-    }
-
-    #[test]
-    fn statesync_version_v1_roundtrip() {
-        let response = make_response(STATESYNC_VERSION_V1, STATESYNC_VERSION_V1);
-        let serialized_response = alloy_rlp::encode(&response);
-        let deserialized_response = alloy_rlp::decode_exact(&serialized_response).unwrap();
-        if response != deserialized_response {
-            panic!("failed to roundtrip v1 statesync response")
-        }
-    }
-
-    #[test]
-    fn statesync_version_v1_to_v0() {
-        // v0 client, v1 server
-        let response = alloy_rlp::encode(make_response(STATESYNC_VERSION_V0, STATESYNC_VERSION_V1));
-
-        // v0 format
-        let v0_response =
-            alloy_rlp::encode(make_response(STATESYNC_VERSION_V0, STATESYNC_VERSION_V0));
-        // v1 format
-        let v1_response =
-            alloy_rlp::encode(make_response(STATESYNC_VERSION_V1, STATESYNC_VERSION_V1));
-        assert!(
-            v0_response.len() > v1_response.len(),
-            "v1 serializes smaller messages"
-        );
-
-        // use len as a proxy for format
-        // can't check pure equality, because the versions won't match in the serialized messages
-        assert_eq!(
-            response.len(),
-            v0_response.len(),
-            "v0 client can't understand v1 server"
-        );
-        assert_ne!(
-            response.len(),
-            v1_response.len(),
-            "v1 server sent v1 response to v0 client"
-        );
     }
 
     #[test]
@@ -2732,6 +2681,7 @@ tcp_port = 8003"#,
             record_seq_num,
             auth_port: NonZeroU16::new(8000).unwrap(),
             direct_udp_port: None,
+            encrypted_tcp_port: None,
         };
         let encoded = alloy_rlp::encode(&entry);
         let decoded: PeerEntry<NopSignature> = alloy_rlp::decode_exact(&encoded).unwrap();
@@ -2754,6 +2704,7 @@ tcp_port = 8003"#,
             record_seq_num: 7,
             auth_port: NonZeroU16::new(9000).unwrap(),
             direct_udp_port: Some(NonZeroU16::new(9001).unwrap()),
+            encrypted_tcp_port: None,
         };
 
         let encoded = alloy_rlp::encode(&entry);
@@ -2775,6 +2726,31 @@ tcp_port = 8003"#,
             record_seq_num,
             auth_port: NonZeroU16::new(auth_port).unwrap(),
             direct_udp_port: None,
+            encrypted_tcp_port: None,
+        };
+
+        let encoded = alloy_rlp::encode(&entry);
+        let decoded: PeerEntry<NopSignature> = alloy_rlp::decode_exact(&encoded).unwrap();
+        assert_eq!(entry, decoded);
+    }
+
+    #[test]
+    fn peer_entry_rlp_encode_decode_with_encrypted_tcp() {
+        let pubkey = CertificateSignaturePubKey::<NopSignature>::from_bytes(&[4u8; 32]).unwrap();
+        let address: Ipv4Addr = "127.0.0.1".parse().unwrap();
+        let signature = NopSignature { pubkey, id: 77 };
+        let entry = PeerEntry {
+            pubkey,
+            address: PeerEntryAddress::new(
+                address,
+                NonZeroU16::new(8003).unwrap(),
+                Some(NonZeroU16::new(8003).unwrap()),
+            ),
+            signature,
+            record_seq_num: 12,
+            auth_port: NonZeroU16::new(9003).unwrap(),
+            direct_udp_port: None,
+            encrypted_tcp_port: Some(NonZeroU16::new(9004).unwrap()),
         };
 
         let encoded = alloy_rlp::encode(&entry);
@@ -2804,6 +2780,7 @@ tcp_port = 8003"#,
         assert_eq!(decoded.udp_port().map(NonZeroU16::get), Some(8006));
         assert_eq!(decoded.auth_port.get(), auth_port);
         assert_eq!(decoded.direct_udp_port, None);
+        assert_eq!(decoded.encrypted_tcp_port, None);
     }
 
     #[test]
@@ -2891,8 +2868,9 @@ tcp_port = 8003"#,
         let auth_port = 9003u16;
         let direct_udp_port = 9004u16;
         let tcp_port = 8003u16;
-        let extra_port = 9005u16;
-        let enc: [&dyn Encodable; 9] = [
+        let encrypted_tcp_port = 9005u16;
+        let extra_port = 9006u16;
+        let enc: [&dyn Encodable; 10] = [
             &pubkey,
             &"127.0.0.1".to_string(),
             &signature,
@@ -2901,6 +2879,7 @@ tcp_port = 8003"#,
             &direct_udp_port,
             &tcp_port,
             &0u16,
+            &encrypted_tcp_port,
             &extra_port,
         ];
         let mut encoded = Vec::new();

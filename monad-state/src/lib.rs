@@ -439,6 +439,7 @@ where
     // - For validators, this means all validators
     // - For full nodes, this means all secondary raptorcast peers
     statesync_expand_to_group: bool,
+    serve_statesync: bool,
 }
 
 impl<ST, SCT, EPT, BPT, ESRT, VTF, LT, BVT, CCT, CRT>
@@ -528,6 +529,7 @@ where
     /// Check if a statesync request from the given sender should be serviced.
     ///
     /// Service rules:
+    /// - If serve_statesync is disabled: service no requests
     /// - If self is a validator: only service requests from validators or whitelisted full nodes
     /// - If self is a full node: service all requests
     fn should_service_statesync_request(
@@ -535,6 +537,10 @@ where
         sender: &NodeId<CertificateSignaturePubKey<ST>>,
         _request: &StateSyncRequest,
     ) -> bool {
+        if !self.serve_statesync {
+            return false;
+        }
+
         // Check if self is a validator
         let self_role = self.get_role();
 
@@ -856,6 +862,7 @@ where
     pub maybe_blocksync_rng_seed: Option<u64>,
     pub whitelisted_statesync_nodes: HashSet<NodeId<SCT::NodeIdPubKey>>,
     pub statesync_expand_to_group: bool,
+    pub serve_statesync: bool,
 
     pub consensus_config: ConsensusConfig<CCT, CRT>,
 
@@ -955,6 +962,7 @@ where
 
             whitelisted_statesync_nodes: self.whitelisted_statesync_nodes,
             statesync_expand_to_group: self.statesync_expand_to_group,
+            serve_statesync: self.serve_statesync,
         };
 
         let mut init_cmds = Vec::new();

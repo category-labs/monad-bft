@@ -136,7 +136,7 @@ where
 {
     pub fn new(
         chain_id: u64,
-        db_paths: Vec<String>,
+        db_path: String,
         sq_thread_cpu: Option<u32>,
         state_sync_init_peers: Vec<NodeId<CertificateSignaturePubKey<ST>>>,
         max_parallel_requests: usize,
@@ -152,7 +152,7 @@ where
 
             mode: StateSyncMode::Sync(StateSyncClient::start(
                 statesync_chain_config(chain_id),
-                &db_paths,
+                &db_path,
                 sq_thread_cpu,
                 &state_sync_init_peers,
                 max_parallel_requests,

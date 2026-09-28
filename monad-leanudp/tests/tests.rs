@@ -23,8 +23,9 @@ use bytes::{BufMut, Bytes, BytesMut};
 use monad_leanudp::{
     metrics::{
         COUNTER_LEANUDP_DECODE_EVICTED_RANDOM, COUNTER_LEANUDP_DECODE_EVICTED_TIMEOUT,
-        COUNTER_LEANUDP_DECODE_FRAGMENTS_PRIORITY, COUNTER_LEANUDP_DECODE_FRAGMENTS_REGULAR,
-        COUNTER_LEANUDP_ERROR_INVALID_HEADER, COUNTER_LEANUDP_ERROR_UNSUPPORTED_VERSION,
+        COUNTER_LEANUDP_DECODE_FRAGMENTS_DEDICATED, COUNTER_LEANUDP_DECODE_FRAGMENTS_PRIORITY,
+        COUNTER_LEANUDP_DECODE_FRAGMENTS_REGULAR, COUNTER_LEANUDP_ERROR_INVALID_HEADER,
+        COUNTER_LEANUDP_ERROR_UNSUPPORTED_VERSION, GAUGE_LEANUDP_POOL_DEDICATED_MESSAGES,
         GAUGE_LEANUDP_POOL_PRIORITY_MESSAGES, GAUGE_LEANUDP_POOL_REGULAR_MESSAGES,
     },
     Clock, Config, DecodeError, DecodeOutcome, Decoder, EncodeError, Encoder, FragmentPolicy,
@@ -165,6 +166,13 @@ fn test_invalid_config_panics() {
                 ..Config::default()
             },
             "max_messages_per_identity must be > 0",
+        ),
+        (
+            Config {
+                max_messages_per_dedicated_identity: 0,
+                ..Config::default()
+            },
+            "max_messages_per_dedicated_identity must be > 0",
         ),
         (
             Config {
@@ -466,6 +474,94 @@ fn test_identity_limit_is_independent_per_pool() {
             .gauge(COUNTER_LEANUDP_DECODE_FRAGMENTS_REGULAR)
             .get(),
         2
+    );
+}
+
+#[test]
+fn test_dedicated_identity_limits_are_independent() {
+    let config = Config {
+        max_messages_per_dedicated_identity: 1,
+        ..Config::default()
+    };
+    let (mut encoder, mut decoder, _clock) = build_regular(config);
+    decoder.set_dedicated_identities([1000, 2000]);
+
+    let first = first_packet(&mut encoder, Bytes::from(vec![1u8; 3000]));
+    let over_limit = first_packet(&mut encoder, Bytes::from(vec![2u8; 3000]));
+    let other_identity = first_packet(&mut encoder, Bytes::from(vec![3u8; 3000]));
+
+    assert_pending!(decoder, 1000, first);
+    assert_eq!(
+        decoder.decode(1000, over_limit),
+        Err(DecodeError::IdentityLimitExceeded { max: 1 })
+    );
+    assert_pending!(decoder, 2000, other_identity);
+
+    assert_eq!(
+        decoder
+            .metrics()
+            .gauge(GAUGE_LEANUDP_POOL_DEDICATED_MESSAGES)
+            .get(),
+        2
+    );
+    assert_eq!(
+        decoder
+            .metrics()
+            .gauge(COUNTER_LEANUDP_DECODE_FRAGMENTS_DEDICATED)
+            .get(),
+        3
+    );
+    assert_eq!(
+        decoder
+            .metrics()
+            .gauge(GAUGE_LEANUDP_POOL_REGULAR_MESSAGES)
+            .get(),
+        0
+    );
+}
+
+#[test]
+fn test_dedicated_message_gauge_tracks_pool_mutations() {
+    let config = Config {
+        message_timeout: Duration::from_millis(100),
+        ..Config::default()
+    };
+    let (mut encoder, mut decoder, clock) = build_regular(config);
+    decoder.set_dedicated_identities([1000, 2000]);
+
+    let stale = fragment_packets(&mut encoder, Bytes::from(vec![1u8; 3000]));
+    assert_pending!(decoder, 1000, stale[0].clone());
+    clock.advance_ms(200);
+    assert_pending!(decoder, 1000, stale[1].clone());
+
+    let complete = fragment_packets(&mut encoder, Bytes::from(vec![2u8; 3000]));
+    assert_pending!(decoder, 2000, complete[0].clone());
+    assert_eq!(
+        decoder
+            .metrics()
+            .gauge(GAUGE_LEANUDP_POOL_DEDICATED_MESSAGES)
+            .get(),
+        2
+    );
+
+    decoder.set_dedicated_identities([2000]);
+    assert_eq!(
+        decoder
+            .metrics()
+            .gauge(GAUGE_LEANUDP_POOL_DEDICATED_MESSAGES)
+            .get(),
+        1
+    );
+
+    for packet in complete.into_iter().skip(1) {
+        let _ = decoder.decode(2000, packet).unwrap();
+    }
+    assert_eq!(
+        decoder
+            .metrics()
+            .gauge(GAUGE_LEANUDP_POOL_DEDICATED_MESSAGES)
+            .get(),
+        0
     );
 }
 

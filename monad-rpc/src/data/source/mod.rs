@@ -48,3 +48,12 @@ pub enum BlockPointer {
     Finalized(u64),
     NonFinalized(u64, BlockId),
 }
+
+/// Canonical block representation shared by historical data sources.
+#[derive(Clone, Debug)]
+pub struct HistoricalBlockData {
+    pub header: alloy_consensus::Header,
+    pub header_hash_precomputed: Option<alloy_primitives::BlockHash>,
+
+    pub transactions: Vec<monad_eth_types::TxEnvelopeWithSender>,
+}

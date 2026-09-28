@@ -28,8 +28,15 @@ pub struct BlockSyncPeersConfig<P: PubKey> {
 #[serde(deny_unknown_fields)]
 pub struct StateSyncPeersConfig<P: PubKey> {
     pub expand_to_group: bool,
+    /// When false, all inbound statesync requests are refused
+    #[serde(default = "default_serve_statesync")]
+    pub serve_statesync: bool,
     #[serde(bound = "P:PubKey")]
     pub init_peers: Vec<SyncPeerIdentityConfig<P>>,
+}
+
+fn default_serve_statesync() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]

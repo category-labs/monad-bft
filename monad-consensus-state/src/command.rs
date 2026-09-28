@@ -36,7 +36,9 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_execution_state_read::ExecutionStateRead;
-use monad_types::{Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, SeqNum};
+use monad_types::{
+    Epoch, ExecutionProtocol, FullnodeBroadcastMode, NodeId, Round, RouterTarget, SeqNum,
+};
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionKeyPairType};
 
 /// Command type that the consensus state-machine outputs
@@ -62,6 +64,7 @@ where
     PublishToFullNodes {
         epoch: Epoch,
         round: Round,
+        broadcast_mode: FullnodeBroadcastMode,
         message: Verified<ST, Validated<ConsensusMessage<ST, SCT, EPT>>>,
     },
     /// Schedule a timeout event for `round` to be emitted in `duration`
@@ -139,6 +142,7 @@ where
                 cmds.push(ConsensusCommand::PublishToFullNodes {
                     epoch,
                     round: high_certificate.round(),
+                    broadcast_mode: FullnodeBroadcastMode::Broadcast,
                     message: ConsensusMessage {
                         version,
                         message: ProtocolMessage::AdvanceRound(AdvanceRoundMessage {

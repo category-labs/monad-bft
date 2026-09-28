@@ -140,7 +140,7 @@ async fn archive_bft_blocks(
     );
 
     // 3) Process files concurrently using streams
-    stream::iter(local.into_iter())
+    stream::iter(local)
         .map(|(key, path)| {
             let store = store.clone();
             let metrics = metrics.clone();

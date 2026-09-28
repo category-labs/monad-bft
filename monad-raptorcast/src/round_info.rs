@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use monad_crypto::certificate_signature::PubKey;
 use monad_types::{NodeId, Round};
@@ -306,6 +306,37 @@ fn try_commit_into<PT: PubKey>(
     None
 }
 
+// Max number of published rounds to keep track of
+pub(crate) const PUBLISHED_ROUNDS_CACHE_SIZE: usize = 100;
+
+// Receivers commit to a single message per key (round for primary, (publisher,
+// round) for secondary), every build mints conflicting commitments, which will
+// flag this node as an equivocator.
+// This tracks the rounds where a message has been built for.
+pub(crate) struct PublishedRounds {
+    rounds: BTreeSet<Round>,
+}
+
+impl PublishedRounds {
+    pub fn new() -> Self {
+        Self {
+            rounds: BTreeSet::new(),
+        }
+    }
+
+    // Claims the round, returning false if a message was already built
+    #[must_use]
+    pub fn try_claim(&mut self, round: Round) -> bool {
+        if !self.rounds.insert(round) {
+            return false;
+        }
+        while self.rounds.len() > PUBLISHED_ROUNDS_CACHE_SIZE {
+            self.rounds.pop_first();
+        }
+        true
+    }
+}
+
 type Signature = [u8; SIGNATURE_SIZE];
 
 #[derive(Clone, Copy)]
@@ -560,6 +591,30 @@ mod tests {
         cache.update_current_round(blocked);
         let next = Round(AUTHOR_QUOTA_DURING_SYNC as u64 + 1);
         assert!(cache.get_or_insert_primary(next, &attacker).is_some());
+    }
+
+    #[test]
+    fn published_rounds_claim_once() {
+        let mut published = PublishedRounds::new();
+        assert!(published.try_claim(Round(10)));
+        assert!(!published.try_claim(Round(10)));
+        assert!(published.try_claim(Round(11)));
+        assert!(!published.try_claim(Round(10)));
+        assert!(!published.try_claim(Round(11)));
+    }
+
+    #[test]
+    fn published_rounds_eviction() {
+        let mut published = PublishedRounds::new();
+        for r in 1..=PUBLISHED_ROUNDS_CACHE_SIZE as u64 + 1 {
+            assert!(published.try_claim(Round(r)));
+        }
+
+        assert!(published.try_claim(Round(1)));
+
+        // in-window rounds are still tracked
+        assert!(!published.try_claim(Round(PUBLISHED_ROUNDS_CACHE_SIZE as u64)));
+        assert!(!published.try_claim(Round(PUBLISHED_ROUNDS_CACHE_SIZE as u64 + 1)));
     }
 
     #[test]

@@ -26,6 +26,7 @@ use monad_crypto::certificate_signature::PubKey;
 use monad_dataplane::{UdpSocketHandle, UnicastMsg};
 use monad_executor::{ExecutorMetrics, ExecutorMetricsChain};
 use monad_peer_discovery::NameRecord;
+use monad_peer_score::IdentityScore;
 use monad_types::{NodeId, UdpPriority};
 use thiserror::Error;
 use tokio::time::Sleep;
@@ -33,7 +34,7 @@ use tracing::{debug, trace, warn};
 use zerocopy::IntoBytes;
 
 use super::{
-    framing::AuthPacketFramer,
+    framing::{AuthPacketFramer, LeanUdpFramer},
     metrics::{
         init_socket_executor_metrics, GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_READ,
         GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_WRITTEN,
@@ -200,11 +201,14 @@ where
                 }
 
                 let msg_len = msg.len() as u64;
-                if self
-                    .authenticated
-                    .write_with_buffering(public_key, msg, stride, priority)
-                    .is_err()
-                {
+                let result = if has_authenticated_socket {
+                    self.authenticated
+                        .write_connected_socket_with_priority(auth_addr, msg, stride, priority)
+                } else {
+                    self.authenticated
+                        .write_with_buffering(public_key, msg, stride, priority)
+                };
+                if result.is_err() {
                     warn!(
                         ?public_key,
                         "failed to write or buffer authenticated UDP packet"
@@ -356,22 +360,34 @@ where
     }
 
     pub fn write_unicast_with_priority(&mut self, msg: UnicastMsg, priority: UdpPriority) {
-        let stride = msg.stride as usize;
-        for (addr, mut chunk) in msg.msgs {
-            while !chunk.is_empty() {
-                let piece = chunk.split_to(chunk.len().min(stride));
-                let piece_len = piece.len() as u16;
-                if let Some(encrypted) = self.encrypt_packet(addr, piece) {
-                    self.socket.write_unicast_with_priority(
-                        UnicastMsg {
-                            msgs: vec![encrypted],
-                            stride: piece_len + AP::HEADER_SIZE,
-                        },
-                        priority,
-                    );
-                }
-            }
+        for (addr, chunk) in msg.msgs {
+            let _ = self.write_connected_socket_with_priority(addr, chunk, msg.stride, priority);
         }
+    }
+
+    fn write_connected_socket_with_priority(
+        &mut self,
+        addr: SocketAddr,
+        mut plaintext: Bytes,
+        stride: u16,
+        priority: UdpPriority,
+    ) -> Result<(), ()> {
+        let stride = usize::from(stride);
+        while !plaintext.is_empty() {
+            let piece = plaintext.split_to(plaintext.len().min(stride));
+            let piece_len = piece.len() as u16;
+            let Some(encrypted) = self.encrypt_packet(addr, piece) else {
+                return Err(());
+            };
+            self.socket.write_unicast_with_priority(
+                UnicastMsg {
+                    msgs: vec![encrypted],
+                    stride: piece_len + AP::HEADER_SIZE,
+                },
+                priority,
+            );
+        }
+        Ok(())
     }
 
     /// Returns `Err(())` if the message was not written.
@@ -386,6 +402,15 @@ where
             return Err(());
         }
 
+        self.write_by_connected_public_key_with_priority(public_key, plaintext, priority)
+    }
+
+    fn write_by_connected_public_key_with_priority(
+        &mut self,
+        public_key: &AP::PublicKey,
+        plaintext: Bytes,
+        priority: UdpPriority,
+    ) -> Result<(), ()> {
         let Some(addr) = self.auth_protocol.get_socket_by_public_key(public_key) else {
             warn!("failed to find socket for connected public key");
             return Err(());
@@ -424,11 +449,11 @@ where
         priority: UdpPriority,
     ) -> Result<(), ()> {
         let has_authenticated_socket = self.auth_protocol.is_connected_public_key(public_key);
-        let has_initiator_session = self
-            .auth_protocol
-            .has_initiator_session_by_public_key(public_key);
-
-        if !has_authenticated_socket && !has_initiator_session {
+        if !has_authenticated_socket
+            && !self
+                .auth_protocol
+                .has_initiator_session_by_public_key(public_key)
+        {
             return Err(());
         }
 
@@ -441,7 +466,7 @@ where
             let piece = plaintext.split_to(plaintext.len().min(stride));
 
             if has_authenticated_socket {
-                self.write_by_public_key_with_priority(public_key, piece, priority)?;
+                self.write_by_connected_public_key_with_priority(public_key, piece, priority)?;
                 continue;
             }
 
@@ -715,6 +740,19 @@ where
 
     pub fn metrics(&self) -> ExecutorMetricsChain<'_> {
         self.socket.metrics().chain(self.framer.metrics())
+    }
+}
+
+impl<AP, S> FramedAuthenticatedSocketHandle<AP, LeanUdpFramer<NodeId<AP::PublicKey>, S>>
+where
+    AP: AuthenticationProtocol,
+    S: IdentityScore<Identity = NodeId<AP::PublicKey>>,
+{
+    pub fn set_dedicated_identities(
+        &mut self,
+        identities: impl IntoIterator<Item = NodeId<AP::PublicKey>>,
+    ) {
+        self.framer.set_dedicated_identities(identities);
     }
 }
 
@@ -1028,6 +1066,7 @@ mod tests {
             None,
             bob_auth_addr.port(),
             None,
+            None,
             1,
         );
         let payload = Bytes::from_static(b"authenticated path");
@@ -1071,6 +1110,7 @@ mod tests {
             bob_auth_addr.port(),
             None,
             bob_auth_addr.port(),
+            None,
             None,
             1,
         );

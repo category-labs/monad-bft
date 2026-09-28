@@ -633,6 +633,24 @@ fn generate_chunks<PT: PubKey>(
             chunks
         }
 
+        BuildTarget::FullNodeBroadcast(secondary_group) => {
+            let num_symbols = redundancy
+                .scale(num_base_symbols)
+                .ok_or(BuildError::TooManyChunks)?;
+            ensure!(num_symbols <= MAX_TRIPLES, BuildError::TooManyChunks);
+            let recipients: Vec<_> = secondary_group
+                .iter()
+                .filter(|node_id| *node_id != self_node_id)
+                .cloned()
+                .collect();
+            let mut chunks = Vec::with_capacity(num_symbols * recipients.len());
+            for recipient in &recipients {
+                let assignment = ChunkAssignment::unicast(*recipient, num_symbols);
+                chunks.extend(assignment.materialize(segment_len)?);
+            }
+            chunks
+        }
+
         BuildTarget::Raptorcast {
             group: primary_group,
             ..
@@ -666,6 +684,8 @@ fn broadcast_mode_from_build_target<PT: PubKey>(
     match build_target {
         BuildTarget::Raptorcast { .. } => BroadcastMode::Primary,
         BuildTarget::FullNodeRaptorCast { .. } => BroadcastMode::Secondary,
-        BuildTarget::Broadcast(_) | BuildTarget::PointToPoint { .. } => BroadcastMode::Unspecified,
+        BuildTarget::Broadcast(_)
+        | BuildTarget::FullNodeBroadcast(_)
+        | BuildTarget::PointToPoint { .. } => BroadcastMode::Unspecified,
     }
 }

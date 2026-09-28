@@ -28,7 +28,6 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use byte_unit::Byte;
 use clap::{Parser, Subcommand};
 use eyre::Result;
 use futures_util::{FutureExt, StreamExt};
@@ -66,8 +65,46 @@ fn parse_duration(s: &str) -> Result<Duration, String> {
 }
 
 fn parse_size(s: &str) -> Result<usize, String> {
-    let byte = Byte::parse_str(s, true).map_err(|e| e.to_string())?;
-    Ok(byte.as_u64() as usize)
+    let s = s.trim();
+    let unit_at = s
+        .find(|c: char| !c.is_ascii_digit() && c != '.')
+        .unwrap_or(s.len());
+    let (num, unit) = s.split_at(unit_at);
+    let mult: u128 = match unit.trim_start_matches(' ').to_ascii_lowercase().as_str() {
+        "" | "b" => 1,
+        "k" | "kb" => 1000,
+        "ki" | "kib" => 1 << 10,
+        "m" | "mb" => 1000u128.pow(2),
+        "mi" | "mib" => 1 << 20,
+        "g" | "gb" => 1000u128.pow(3),
+        "gi" | "gib" => 1 << 30,
+        _ => return Err(format!("invalid size unit in {s:?}")),
+    };
+    let invalid = || format!("invalid size {s:?}");
+    let too_large = || format!("size {s:?} is too large");
+    let (int, extra) = match num.split_once('.') {
+        Some((int, frac)) => {
+            let scale = 10u128.checked_pow(frac.len() as u32).ok_or_else(invalid)?;
+            let frac = frac.parse::<u128>().map_err(|_| invalid())?;
+            let extra = frac
+                .checked_mul(mult)
+                .ok_or_else(too_large)?
+                .div_ceil(scale);
+            (int, extra)
+        }
+        None => (num, 0),
+    };
+    if int.is_empty() {
+        return Err(invalid());
+    }
+    let bytes = int
+        .parse::<u128>()
+        .map_err(|_| too_large())?
+        .checked_mul(mult)
+        .ok_or_else(too_large)?
+        .checked_add(extra)
+        .ok_or_else(too_large)?;
+    usize::try_from(bytes).map_err(|_| too_large())
 }
 
 #[derive(Parser)]
@@ -117,7 +154,11 @@ enum Commands {
         index: Option<usize>,
         #[arg(long, value_parser = parse_duration)]
         interval: Duration,
-        #[arg(long, value_parser = parse_size)]
+        #[arg(
+            long,
+            value_parser = parse_size,
+            help = "message size in bytes, e.g. 1500, 64KiB, 2MB"
+        )]
         size: usize,
         #[arg(long, help = "opentelemetry otlp endpoint for metrics export")]
         otel_endpoint: Option<String>,
@@ -922,4 +963,34 @@ fn generate_config(output_path: String, count: usize, base_ip: String, port: u16
     );
     println!("Port: {}", port);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_size_units() {
+        assert_eq!(parse_size("4096"), Ok(4096));
+        assert_eq!(parse_size("1kb"), Ok(1000));
+        assert_eq!(parse_size("1kib"), Ok(1024));
+        assert_eq!(parse_size("1K"), Ok(1000));
+        assert_eq!(parse_size("1Ki"), Ok(1024));
+        assert_eq!(parse_size("1.5MB"), Ok(1_500_000));
+        assert_eq!(parse_size("1.5 GiB"), Ok(1_610_612_736));
+    }
+
+    #[test]
+    fn parse_size_rounds_up() {
+        assert_eq!(parse_size("1.4"), Ok(2));
+        assert_eq!(parse_size("0.1KiB"), Ok(103));
+        assert_eq!(parse_size("0.500000000000000000000GiB"), Ok(536_870_912));
+    }
+
+    #[test]
+    fn parse_size_rejects() {
+        for s in ["", "1Mbit", ".5", "1.", "abc", "1X", "1TB", "16EiB"] {
+            assert!(parse_size(s).is_err(), "{s:?} should be rejected");
+        }
+    }
 }

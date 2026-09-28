@@ -24,8 +24,7 @@ use alloy_primitives::{Address, Bytes, Signature, TxKind, Uint, B256, U256, U64,
 use alloy_rpc_types::{AccessList, AccessListItem};
 use monad_chain_config::execution_revision::MonadExecutionRevision;
 use monad_ethcall::{
-    eth_call, CallResult, EthCallExecutor, EthCallRequest, EthCallResult, FailureCallResult,
-    MonadTracer, StateOverrideSet,
+    overrides::StateOverrideSet, EthCallRequest, EthCallResult, MonadExecutor, MonadTracer,
 };
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{
@@ -43,13 +42,14 @@ use crate::{
     },
     handlers::{
         debug::{decode_call_frame, TracerObject},
+        eth::{CallResult, FailureCallResult, SuccessCallResult},
         parse_ethcall_chain_id,
     },
     types::{
         eth_json::{BlockTagOrHash, MonadCreateAccessListResult},
         ethhex,
         json_serialized_len::JsonSerializedLen,
-        jsonrpc::{JsonRpcError, JsonRpcResult},
+        jsonrpc::{msg, ErrorCode, JsonRpcError, JsonRpcResult},
     },
 };
 
@@ -150,9 +150,9 @@ impl CallRequest {
 
                         if let Some(max_priority_fee_per_gas) = max_priority_fee_per_gas {
                             if max_fee_per_gas < max_priority_fee_per_gas {
-                                return Err(JsonRpcError::eth_call_error(
+                                return Err(JsonRpcError::with_message(
+                                    ErrorCode::InvalidParams,
                                     "priority fee greater than max".to_string(),
-                                    None,
                                 ));
                             }
                         }
@@ -427,19 +427,7 @@ pub async fn sender_gas_allowance<T: Triedb>(
         return Ok(header.gas_limit);
     }
 
-    let balance = match state_overrides
-        .get(&sender)
-        .and_then(|override_state| override_state.balance)
-    {
-        Some(balance) => balance,
-        None => {
-            let account = triedb_env
-                .get_account(block_key, sender.into())
-                .await
-                .map_err(JsonRpcError::internal_error)?;
-            U256::from(account.balance)
-        }
-    };
+    let balance = resolve_sender_balance(triedb_env, block_key, sender, state_overrides).await?;
 
     if balance == U256::ZERO {
         return Err(JsonRpcError::insufficient_funds());
@@ -455,6 +443,48 @@ pub async fn sender_gas_allowance<T: Triedb>(
         gas_limit.try_into().unwrap_or(header.gas_limit),
         header.gas_limit,
     ))
+}
+
+async fn resolve_sender_balance<T: Triedb>(
+    triedb_env: &T,
+    block_key: BlockKey,
+    sender: Address,
+    state_overrides: &StateOverrideSet,
+) -> Result<U256, JsonRpcError> {
+    match state_overrides
+        .get(&sender)
+        .and_then(|override_state| override_state.balance)
+    {
+        Some(balance) => Ok(balance),
+        None => {
+            let account = triedb_env
+                .get_account(block_key, sender.into())
+                .await
+                .map_err(JsonRpcError::internal_error)?;
+            Ok(U256::from(account.balance))
+        }
+    }
+}
+
+pub async fn check_value_transfer_balance<T: Triedb>(
+    triedb_env: &T,
+    block_key: BlockKey,
+    request: &CallRequest,
+    state_overrides: &StateOverrideSet,
+) -> Result<(), JsonRpcError> {
+    let value = request.value.unwrap_or_default();
+    if value.is_zero() {
+        return Ok(());
+    }
+
+    let sender = request.from.unwrap_or_default();
+    let balance = resolve_sender_balance(triedb_env, block_key, sender, state_overrides).await?;
+
+    if balance < value {
+        return Err(JsonRpcError::insufficient_funds());
+    }
+
+    Ok(())
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -552,7 +582,7 @@ enum OutOfGasHandling {
 async fn prepare_eth_call<T: Triedb + TriedbPath>(
     triedb_env: &T,
     eth_call_handler_config: &EthCallHandlerConfig,
-    eth_call_executor: &EthCallExecutor,
+    eth_call_executor: &MonadExecutor,
     chain_id: u64,
     params: CallParams,
     out_of_gas_handling: OutOfGasHandling,
@@ -577,7 +607,7 @@ async fn prepare_eth_call<T: Triedb + TriedbPath>(
 async fn prepare_eth_call_at_block<T: Triedb + TriedbPath>(
     triedb_env: &T,
     eth_call_handler_config: &EthCallHandlerConfig,
-    eth_call_executor: &EthCallExecutor,
+    eth_call_executor: &MonadExecutor,
     chain_id: u64,
     params: EthCallExecutionParams,
     out_of_gas_handling: OutOfGasHandling,
@@ -653,6 +683,8 @@ async fn prepare_eth_call_at_block<T: Triedb + TriedbPath>(
         tx.chain_id = Some(U64::from(chain_id));
     }
 
+    check_value_transfer_balance(triedb_env, block_key, &tx, &state_overrides).await?;
+
     let sender = tx.from.unwrap_or_default();
     let tx_chain_id = tx.chain_id.expect("chain_id was set above").to::<u64>();
     let ethcall_chain_id = parse_ethcall_chain_id(tx_chain_id)?;
@@ -664,8 +696,8 @@ async fn prepare_eth_call_at_block<T: Triedb + TriedbPath>(
 
     let header_gas_limit = header.header.gas_limit;
 
-    match eth_call(
-        EthCallRequest {
+    let call_result = match eth_call_executor
+        .eth_call(EthCallRequest {
             chain_id: ethcall_chain_id,
             transaction: &txn,
             block_header: &header.header,
@@ -675,37 +707,40 @@ async fn prepare_eth_call_at_block<T: Triedb + TriedbPath>(
             state_override_set: &state_overrides,
             tracer,
             gas_specified,
-        },
-        eth_call_executor,
-    )
-    .await
+        })
+        .await
     {
-        CallResult::Failure(error) if matches!(error.error_code, EthCallResult::OutOfGas) => {
-            match out_of_gas_handling {
-                OutOfGasHandling::RpcError => Err(JsonRpcError::eth_call_error(
+        Ok(result) => result.into(),
+        Err(monad_ethcall::EthCallError::Failure {
+            error_code,
+            gas_used,
+            gas_refund,
+            ..
+        }) if matches!(error_code, EthCallResult::OutOfGas) => match out_of_gas_handling {
+            OutOfGasHandling::RpcError => {
+                return Err(JsonRpcError::with_message(
+                    ErrorCode::InternalError,
                     if eth_call_provider_gas_limit < header_gas_limit
                         && U256::from(eth_call_provider_gas_limit) < original_tx_gas
                     {
                         "provider-specified max eth_call gas limit exceeded".to_string()
                     } else {
-                        "out of gas".to_string()
+                        msg::OUT_OF_GAS.to_string()
                     },
-                    None,
-                )),
-                OutOfGasHandling::ReturnAsCallFailure => Ok((
-                    block_key,
-                    CallResult::Failure(FailureCallResult {
-                        error_code: error.error_code,
-                        gas_used: error.gas_used,
-                        gas_refund: error.gas_refund,
-                        message: "out of gas".to_string(),
-                        data: None,
-                    }),
-                )),
+                ));
             }
-        }
-        result => Ok((block_key, result)),
-    }
+            OutOfGasHandling::ReturnAsCallFailure => CallResult::Failure(FailureCallResult {
+                error_code,
+                gas_used,
+                gas_refund,
+                message: msg::OUT_OF_GAS.to_string(),
+                data: None,
+            }),
+        },
+        Err(error) => error.into(),
+    };
+
+    Ok((block_key, call_result))
 }
 
 /// Executes a new message call immediately without creating a transaction on the block chain.
@@ -719,7 +754,7 @@ async fn prepare_eth_call_at_block<T: Triedb + TriedbPath>(
 pub async fn monad_eth_call<T: Triedb + TriedbPath>(
     data_provider: &DataProvider<T>,
     eth_call_handler_config: &EthCallHandlerConfig,
-    eth_call_executor: &EthCallExecutor,
+    eth_call_executor: &MonadExecutor,
     chain_id: u64,
     params: MonadEthCallParams,
 ) -> JsonRpcResult<String> {
@@ -735,7 +770,7 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
     )
     .await?;
     match result {
-        CallResult::Success(monad_ethcall::SuccessCallResult { output_data, .. }) => {
+        CallResult::Success(SuccessCallResult { output_data, .. }) => {
             Ok(ethhex::encode_bytes(&output_data))
         }
         CallResult::Failure(error) => Err(error.into()),
@@ -757,7 +792,7 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
 pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
     data_provider: &DataProvider<T>,
     eth_call_handler_config: &EthCallHandlerConfig,
-    eth_call_executor: &EthCallExecutor,
+    eth_call_executor: &MonadExecutor,
     chain_id: u64,
     max_response_size: usize,
     params: MonadDebugTraceCallParams,
@@ -776,15 +811,15 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
         OutOfGasHandling::RpcError,
     )
     .await?;
-    let raw_payload: Vec<u8> = match call_result {
-        CallResult::Success(monad_ethcall::SuccessCallResult { output_data, .. }) => output_data,
+    let raw_payload: Box<[u8]> = match call_result {
+        CallResult::Success(SuccessCallResult { output_data, .. }) => output_data,
         CallResult::Failure(error) => return Err(error.into()),
         CallResult::Revert(result) => result.trace,
     };
 
     match tracer {
         MonadTracer::CallTracer => {
-            let mut slice: &[u8] = raw_payload.as_slice();
+            let mut slice: &[u8] = raw_payload.as_ref();
             let frame = decode_call_frame(
                 &data_provider.triedb_env,
                 &mut slice,
@@ -833,7 +868,7 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
 pub async fn monad_createAccessList<T: Triedb + TriedbPath>(
     data_provider: &DataProvider<T>,
     eth_call_handler_config: &EthCallHandlerConfig,
-    eth_call_executor: &EthCallExecutor,
+    eth_call_executor: &MonadExecutor,
     chain_id: u64,
     params: MonadCreateAccessListParams,
 ) -> JsonRpcResult<MonadCreateAccessListResult> {
@@ -892,7 +927,7 @@ fn decode_access_list_trace(raw_payload: &[u8]) -> Result<AccessList, JsonRpcErr
 
 fn access_list_from_trace_call_result(call_result: CallResult) -> Result<AccessList, JsonRpcError> {
     match call_result {
-        CallResult::Success(monad_ethcall::SuccessCallResult { output_data, .. }) => {
+        CallResult::Success(SuccessCallResult { output_data, .. }) => {
             decode_access_list_trace(&output_data)
         }
         CallResult::Failure(error) => Err(error.into()),
@@ -910,7 +945,7 @@ impl MonadCreateAccessListResult {
         call_result: CallResult,
     ) -> Result<Self, JsonRpcError> {
         match call_result {
-            CallResult::Success(monad_ethcall::SuccessCallResult { gas_used, .. }) => Ok(Self {
+            CallResult::Success(SuccessCallResult { gas_used, .. }) => Ok(Self {
                 access_list,
                 gas_used: U256::from(gas_used),
                 error: None,
@@ -1002,8 +1037,8 @@ mod tests {
     use alloy_rpc_types::{AccessList, AccessListItem};
     use monad_chain_config::execution_revision::MonadExecutionRevision;
     use monad_ethcall::{
-        CallResult, EthCallResult, FailureCallResult, RevertCallResult, StateOverrideObject,
-        StateOverrideSet, SuccessCallResult,
+        overrides::{StateOverrideObject, StateOverrideSet},
+        EthCallResult,
     };
     use monad_triedb_utils::{
         mock_triedb::MockTriedb,
@@ -1012,13 +1047,16 @@ mod tests {
     use monad_types::SeqNum;
     use serde_json::{from_str, json};
 
-    use super::{fill_gas_params, CallRequest, GasPriceDetails};
+    use super::{check_value_transfer_balance, fill_gas_params, CallRequest, GasPriceDetails};
     use crate::{
         handlers::{
             debug::Tracer,
-            eth::call::{
-                access_list_from_trace_call_result, decode_access_list_trace, sender_gas_allowance,
-                CallInput, MonadDebugTraceCallParams,
+            eth::{
+                call::{
+                    access_list_from_trace_call_result, decode_access_list_trace,
+                    sender_gas_allowance, CallInput, MonadDebugTraceCallParams,
+                },
+                CallResult, FailureCallResult, RevertCallResult, SuccessCallResult,
             },
         },
         types::{eth_json::MonadCreateAccessListResult, jsonrpc::JsonRpcError},
@@ -1068,7 +1106,7 @@ mod tests {
 
         let access_list =
             access_list_from_trace_call_result(CallResult::Success(SuccessCallResult {
-                output_data: payload,
+                output_data: payload.into_boxed_slice(),
                 ..Default::default()
             }))
             .expect("successful tracer result decodes");
@@ -1083,7 +1121,7 @@ mod tests {
 
         let access_list =
             access_list_from_trace_call_result(CallResult::Revert(RevertCallResult {
-                trace: payload,
+                trace: payload.into_boxed_slice(),
             }))
             .expect("reverted tracer result decodes");
 
@@ -1188,7 +1226,7 @@ mod tests {
 
         let access_list =
             access_list_from_trace_call_result(CallResult::Revert(RevertCallResult {
-                trace: trace_payload,
+                trace: trace_payload.into_boxed_slice(),
             }))
             .expect("reverted access-list trace still decodes");
 
@@ -1627,6 +1665,59 @@ mod tests {
             sender_gas_allowance(&mock_triedb, block_key, &header, &call_request, &overrides).await;
         let gas_limit = result.unwrap();
         assert_eq!(U256::from(gas_limit), balance_override / gas_price);
+    }
+
+    #[tokio::test]
+    async fn test_check_value_transfer_balance() {
+        let mock_triedb = MockTriedb::default();
+        let block_key = BlockKey::Finalized(FinalizedBlockKey(SeqNum(0)));
+        let no_overrides = StateOverrideSet::default();
+
+        // zero value transfers are not balance checked
+        let call_request = CallRequest::default();
+        let result =
+            check_value_transfer_balance(&mock_triedb, block_key, &call_request, &no_overrides)
+                .await;
+        assert!(result.is_ok());
+
+        // a transfer above the sender balance is rejected before execution
+        let call_request = CallRequest {
+            from: Some(Address::ZERO),
+            value: Some(U256::from(1)),
+            ..Default::default()
+        };
+        let result =
+            check_value_transfer_balance(&mock_triedb, block_key, &call_request, &no_overrides)
+                .await;
+        assert_eq!(result, Err(JsonRpcError::insufficient_funds()));
+
+        // an unspecified sender defaults to the zero address and is checked too
+        let call_request = CallRequest {
+            value: Some(U256::from(1)),
+            ..Default::default()
+        };
+        let result =
+            check_value_transfer_balance(&mock_triedb, block_key, &call_request, &no_overrides)
+                .await;
+        assert_eq!(result, Err(JsonRpcError::insufficient_funds()));
+
+        // a balance override covering the value passes the check
+        let mut overrides: StateOverrideSet = HashMap::new();
+        overrides.insert(
+            Address::ZERO,
+            StateOverrideObject {
+                balance: Some(U256::from(2)),
+                ..Default::default()
+            },
+        );
+        let call_request = CallRequest {
+            from: Some(Address::ZERO),
+            value: Some(U256::from(1)),
+            ..Default::default()
+        };
+        let result =
+            check_value_transfer_balance(&mock_triedb, block_key, &call_request, &overrides).await;
+        assert!(result.is_ok());
     }
 
     #[test]

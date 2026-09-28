@@ -24,6 +24,10 @@ monad_executor::metric_consts! {
         name: "monad.leanudp.pool.regular_messages",
         help: "Regular pool in-flight message count",
     }
+    pub GAUGE_LEANUDP_POOL_DEDICATED_MESSAGES {
+        name: "monad.leanudp.pool.dedicated_messages",
+        help: "Dedicated per-identity pools in-flight message count",
+    }
     pub COUNTER_LEANUDP_DECODE_FRAGMENTS_RECEIVED {
         name: "monad.leanudp.decode.fragments_received",
         help: "Total LeanUDP fragments received",
@@ -47,6 +51,14 @@ monad_executor::metric_consts! {
     pub COUNTER_LEANUDP_DECODE_BYTES_REGULAR {
         name: "monad.leanudp.decode.bytes_regular",
         help: "Total fragment payload bytes routed to the regular pool, excluding LeanUDP headers",
+    }
+    pub COUNTER_LEANUDP_DECODE_FRAGMENTS_DEDICATED {
+        name: "monad.leanudp.decode.fragments_dedicated",
+        help: "Total fragments routed to dedicated per-identity pools",
+    }
+    pub COUNTER_LEANUDP_DECODE_BYTES_DEDICATED {
+        name: "monad.leanudp.decode.bytes_dedicated",
+        help: "Total fragment payload bytes routed to dedicated per-identity pools, excluding LeanUDP headers",
     }
     pub COUNTER_LEANUDP_DECODE_MESSAGES_COMPLETED {
         name: "monad.leanudp.decode.messages_completed",
@@ -127,12 +139,15 @@ pub fn init_decoder_metrics() -> ExecutorMetrics {
     ExecutorMetrics::with_metric_defs(&[
         GAUGE_LEANUDP_POOL_PRIORITY_MESSAGES,
         GAUGE_LEANUDP_POOL_REGULAR_MESSAGES,
+        GAUGE_LEANUDP_POOL_DEDICATED_MESSAGES,
         COUNTER_LEANUDP_DECODE_FRAGMENTS_RECEIVED,
         COUNTER_LEANUDP_DECODE_BYTES_RECEIVED,
         COUNTER_LEANUDP_DECODE_FRAGMENTS_PRIORITY,
         COUNTER_LEANUDP_DECODE_BYTES_PRIORITY,
         COUNTER_LEANUDP_DECODE_FRAGMENTS_REGULAR,
         COUNTER_LEANUDP_DECODE_BYTES_REGULAR,
+        COUNTER_LEANUDP_DECODE_FRAGMENTS_DEDICATED,
+        COUNTER_LEANUDP_DECODE_BYTES_DEDICATED,
         COUNTER_LEANUDP_DECODE_MESSAGES_COMPLETED,
         COUNTER_LEANUDP_DECODE_BYTES_COMPLETED,
         COUNTER_LEANUDP_DECODE_EVICTED_TIMEOUT,
