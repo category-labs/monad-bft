@@ -18,6 +18,14 @@ use std::process;
 use clap::{error::ErrorKind, ArgAction, CommandFactory, Parser, Subcommand};
 use eyre::{eyre, Result};
 use monad_archive::cli::{ArchiveArgs, BlockDataReaderArgs};
+use monad_metrics::{MetricsConfig, MetricsDefaults};
+
+#[derive(Clone, Debug)]
+pub struct IndexerMetrics;
+
+impl MetricsDefaults for IndexerMetrics {
+    const LISTEN_ADDR: &'static str = "0.0.0.0:9146";
+}
 
 #[derive(Debug)]
 pub struct Cli {
@@ -29,9 +37,8 @@ pub struct Cli {
     pub max_concurrent_blocks: usize,
     pub reset_index: bool,
     pub stop_block: Option<u64>,
-    pub otel_endpoint: Option<String>,
+    pub metrics: MetricsConfig<IndexerMetrics>,
     pub otel_replica_name_override: Option<String>,
-    pub metrics_listen_addr: Option<std::net::SocketAddr>,
     pub max_inline_encoded_len: usize,
     pub skip_connectivity_check: bool,
     pub enable_logs_indexing: bool,
@@ -115,15 +122,11 @@ pub struct CliArgs {
     #[arg(long)]
     pub stop_block: Option<u64>,
 
-    /// Endpoint to push metrics to
-    #[arg(long)]
-    pub otel_endpoint: Option<String>,
+    #[command(flatten)]
+    pub metrics: MetricsConfig<IndexerMetrics>,
 
     #[arg(long)]
     pub otel_replica_name_override: Option<String>,
-
-    #[arg(long)]
-    pub metrics_listen_addr: Option<std::net::SocketAddr>,
 
     /// Maximum size of an encoded inline tx index entry
     /// If an entry is larger than this, it is stored as a reference pointing to
@@ -151,9 +154,8 @@ impl CliArgs {
             max_concurrent_blocks,
             reset_index,
             stop_block,
-            otel_endpoint,
+            metrics,
             otel_replica_name_override,
-            metrics_listen_addr,
             max_inline_encoded_len,
             skip_connectivity_check,
             enable_logs_indexing,
@@ -169,9 +171,8 @@ impl CliArgs {
             max_concurrent_blocks,
             reset_index,
             stop_block,
-            otel_endpoint,
+            metrics,
             otel_replica_name_override,
-            metrics_listen_addr,
             max_inline_encoded_len,
             skip_connectivity_check,
             enable_logs_indexing,
@@ -285,9 +286,8 @@ mod tests {
             max_concurrent_blocks: 10,
             reset_index: false,
             stop_block: None,
-            otel_endpoint: None,
+            metrics: MetricsConfig::default(),
             otel_replica_name_override: None,
-            metrics_listen_addr: None,
             max_inline_encoded_len: 350 * 1024,
             skip_connectivity_check: false,
             enable_logs_indexing: false,
@@ -339,13 +339,16 @@ mod tests {
         args.fallback_block_data_source = Some(make_aws_block_data_source());
         args.async_backfill = true;
         args.stop_block = Some(1000);
-        args.otel_endpoint = Some("http://localhost:4317".to_string());
+        args.metrics.otel_endpoint = Some("http://localhost:4317".to_string());
 
         let cli = args.into_cli().expect("should succeed");
         assert!(cli.fallback_block_data_source.is_some());
         assert!(cli.async_backfill);
         assert_eq!(cli.stop_block, Some(1000));
-        assert_eq!(cli.otel_endpoint, Some("http://localhost:4317".to_string()));
+        assert_eq!(
+            cli.metrics.otel_endpoint,
+            Some("http://localhost:4317".to_string())
+        );
     }
 
     #[test]

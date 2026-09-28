@@ -39,6 +39,7 @@ monad-leanudp = { path = "./monad-leanudp" }
 monad-ledger = { path = "./monad-ledger" }
 monad-mcp-chorus = { path = "./monad-mcp-chorus" }
 monad-merkle = { path = "./monad-merkle" }
+monad-metrics = { path = "./monad-metrics" }
 monad-mock-swarm = { path = "./monad-mock-swarm" }
 monad-multi-sig = { path = "./monad-multi-sig" }
 monad-node-config = { path = "./monad-node-config" }
@@ -167,7 +168,6 @@ once_cell = "1.19.0"
 opentelemetry = "0.31"
 opentelemetry-otlp = "0.31"
 opentelemetry-prometheus = "0.31"
-opentelemetry-proto = { version = "0.31", default-features = false }
 opentelemetry-semantic-conventions = "0.29"
 opentelemetry_sdk = "0.31"
 paste = "1.0.15"
@@ -214,7 +214,6 @@ tokio-stream = "0.1.17"
 tokio-tungstenite = { version = "0.24.0", features = ["native-tls"] }
 tokio-util = "0.7"
 toml = "0.9"
-tonic = "0.14"
 tracing = "0.1"
 tracing-actix-web = "0.7"
 tracing-appender = "0.2"
