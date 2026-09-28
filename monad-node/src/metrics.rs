@@ -352,8 +352,10 @@ impl MetricsServerState {
 }
 
 fn wants_protobuf(request: &HttpRequest) -> bool {
-    // Prometheus negotiates scrape response format with the request Accept header:
+    // prometheus negotiates scrape response format with the request accept header:
     // https://prometheus.io/docs/instrumenting/content_negotiation/
+    // todo: parse media types and quality values instead of matching a literal substring.
+    // this misses equivalent headers with different whitespace or parameter order and ignores q=0.
     request
         .headers()
         .get(header::ACCEPT)

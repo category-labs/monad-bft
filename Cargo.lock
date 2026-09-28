@@ -4981,12 +4981,11 @@ dependencies = [
  "monad-compress",
  "monad-eth-testutil",
  "monad-eth-types",
+ "monad-metrics",
  "monad-triedb-utils",
  "monad-types",
  "mongodb",
  "opentelemetry",
- "opentelemetry-otlp",
- "opentelemetry-semantic-conventions",
  "opentelemetry_sdk",
  "rand 0.8.6",
  "rayon",
@@ -5744,6 +5743,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-metrics"
+version = "0.1.0"
+dependencies = [
+ "actix-web",
+ "clap",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry-prometheus",
+ "opentelemetry_sdk",
+ "prometheus",
+ "serde",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "monad-mock-swarm"
 version = "0.1.0"
 dependencies = [
@@ -6126,6 +6141,7 @@ dependencies = [
  "monad-ethcall",
  "monad-event-ring",
  "monad-exec-events",
+ "monad-metrics",
  "monad-node-config",
  "monad-pprof",
  "monad-rpc-docs",
@@ -6134,7 +6150,6 @@ dependencies = [
  "monad-types",
  "monad-version",
  "opentelemetry",
- "opentelemetry-otlp",
  "opentelemetry_sdk",
  "paste",
  "pin-project",
@@ -7109,6 +7124,19 @@ dependencies = [
  "tokio",
  "tonic",
  "tonic-types",
+]
+
+[[package]]
+name = "opentelemetry-prometheus"
+version = "0.32.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2c0359983e7f79cf33c9abd89e5d7ddf67c46c419d0148598022d70e70c01aba"
+dependencies = [
+ "once_cell",
+ "opentelemetry",
+ "opentelemetry_sdk",
+ "prometheus",
+ "tracing",
 ]
 
 [[package]]

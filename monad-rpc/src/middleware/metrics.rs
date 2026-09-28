@@ -13,36 +13,16 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::time::Duration;
-
 use actix_web::{
     body::MessageBody,
     dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform},
-    web, HttpResponse,
 };
 use futures_util::future::{FutureExt as _, LocalBoxFuture};
 use opentelemetry::{
     metrics::{Histogram, MeterProvider, UpDownCounter},
     KeyValue,
 };
-use opentelemetry_otlp::{MetricExporter, WithExportConfig};
 use opentelemetry_sdk::metrics::SdkMeterProvider;
-use prometheus::{Encoder, Registry, TextEncoder};
-
-#[cfg(test)]
-#[path = "metrics_tests.rs"]
-mod tests;
-
-pub async fn prometheus_metrics(registry: web::Data<Registry>) -> actix_web::Result<HttpResponse> {
-    let encoder = TextEncoder::new();
-    let mut body = Vec::new();
-    encoder
-        .encode(&registry.gather(), &mut body)
-        .map_err(actix_web::error::ErrorInternalServerError)?;
-    Ok(HttpResponse::Ok()
-        .content_type(encoder.format_type())
-        .body(body))
-}
 
 pub struct MetricsMiddleware<S> {
     service: S,
@@ -138,45 +118,6 @@ pub struct Metrics {
 }
 
 impl Metrics {
-    pub fn new_with_otel_endpoint(
-        otel_endpoint: String,
-        service_name: String,
-        interval: Duration,
-        prometheus_registry: Option<Registry>,
-    ) -> Self {
-        let exporter = MetricExporter::builder()
-            .with_tonic()
-            .with_endpoint(otel_endpoint)
-            .with_timeout(interval * 2)
-            .build()
-            .unwrap();
-
-        let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(exporter)
-            .with_interval(interval / 2)
-            .build();
-
-        let mut provider = opentelemetry_sdk::metrics::SdkMeterProvider::builder()
-            .with_reader(reader)
-            .with_resource(
-                opentelemetry_sdk::Resource::builder_empty()
-                    .with_attributes(vec![opentelemetry::KeyValue::new(
-                        "service.name".to_string(),
-                        service_name,
-                    )])
-                    .build(),
-            );
-
-        if let Some(registry) = prometheus_registry {
-            let prometheus_reader = opentelemetry_prometheus::exporter()
-                .with_registry(registry)
-                .build()
-                .expect("failed to register prometheus metrics");
-            provider = provider.with_reader(prometheus_reader);
-        }
-
-        Self::new_with_otel_provider(provider.build())
-    }
-
     pub fn new_with_otel_provider(provider: SdkMeterProvider) -> Self {
         const LOW_US_TO_S: &[f64] = &[
             0.000_001, 0.000_002, 0.000_005, 0.000_01, 0.000_02, 0.000_05, 0.000_1, 0.000_2,

@@ -48,40 +48,16 @@ async fn main() -> Result<()> {
     };
     info!(?args, "Cli Arguments: ");
 
-    let prometheus_registry = args
-        .metrics_listen_addr
-        .as_ref()
-        .map(|_| prometheus::Registry::new());
-
-    let metrics = Metrics::new(
-        args.otel_endpoint.clone(),
-        "monad-archiver",
-        args.otel_replica_name_override
-            .clone()
-            .unwrap_or_else(|| args.archive_sink.replica_name()),
-        Duration::from_secs(15),
-        prometheus_registry.clone(),
-    )?;
-
-    if let (Some(addr), Some(registry)) = (args.metrics_listen_addr, prometheus_registry) {
-        let server = actix_web::HttpServer::new(move || {
-            actix_web::App::new()
-                .app_data(actix_web::web::Data::new(registry.clone()))
-                .route(
-                    "/metrics",
-                    actix_web::web::get().to(monad_archive::metrics::prometheus_metrics),
-                )
-        })
-        .bind(addr)?
-        .workers(1)
-        .disable_signals()
-        .run();
-        tokio::spawn(async move {
-            if let Err(err) = server.await {
-                tracing::error!(?err, "metrics server exited");
-            }
-        });
-    }
+    let replica_name = args
+        .otel_replica_name_override
+        .clone()
+        .unwrap_or_else(|| args.archive_sink.replica_name());
+    let interval = Duration::from_secs(15);
+    let (provider, metrics_server) =
+        args.metrics
+            .init(format!("{replica_name}-monad-archiver"), interval, true)?;
+    monad_metrics::spawn_metrics_server(metrics_server);
+    let metrics = Metrics::new(provider, interval);
 
     set_source_and_sink_metrics(&args.archive_sink, &args.block_data_source, &metrics);
 

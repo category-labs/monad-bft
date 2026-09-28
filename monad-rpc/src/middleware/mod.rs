@@ -15,7 +15,7 @@
 
 pub use self::{
     decompression_guard::{DecompressionGuard, DecompressionGuardService},
-    metrics::{prometheus_metrics, Metrics, MetricsMiddleware},
+    metrics::{Metrics, MetricsMiddleware},
     timing::{TimingMiddleware, TimingRequestId},
 };
 

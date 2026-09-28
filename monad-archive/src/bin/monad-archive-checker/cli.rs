@@ -15,6 +15,14 @@
 
 use clap::{Parser, Subcommand};
 use monad_archive::cli::ArchiveArgs;
+use monad_metrics::{MetricsConfig, MetricsDefaults};
+
+#[derive(Clone, Debug)]
+pub struct CheckerMetrics;
+
+impl MetricsDefaults for CheckerMetrics {
+    const LISTEN_ADDR: &'static str = "0.0.0.0:9147";
+}
 
 #[derive(Debug, Parser)]
 #[command(
@@ -55,14 +63,11 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub region: Option<String>,
 
-    #[arg(long, global = true)]
-    pub otel_endpoint: Option<String>,
+    #[command(flatten)]
+    pub metrics: MetricsConfig<CheckerMetrics, true>,
 
     #[arg(long, global = true)]
     pub otel_replica_name_override: Option<String>,
-
-    #[arg(long, global = true)]
-    pub metrics_listen_addr: Option<std::net::SocketAddr>,
 
     #[arg(long, global = true)]
     pub max_compute_threads: Option<usize>,
@@ -242,6 +247,8 @@ mod tests {
             "us-east-1",
             "--otel-endpoint",
             "http://localhost:4317",
+            "--metrics-listen-addr",
+            "127.0.0.1:9147",
             "--otel-replica-name-override",
             "test-replica",
             "--max-compute-threads",
@@ -251,11 +258,18 @@ mod tests {
 
         assert_eq!(cli.bucket, "test-bucket");
         assert_eq!(cli.region, Some("us-east-1".to_string()));
-        assert_eq!(cli.otel_endpoint, Some("http://localhost:4317".to_string()));
+        assert_eq!(
+            cli.metrics.otel_endpoint,
+            Some("http://localhost:4317".to_string())
+        );
         assert_eq!(
             cli.otel_replica_name_override,
             Some("test-replica".to_string())
         );
         assert_eq!(cli.max_compute_threads, Some(4));
+        assert_eq!(
+            cli.metrics.metrics_listen_addr,
+            Some("127.0.0.1:9147".parse().unwrap())
+        );
     }
 }
