@@ -1973,49 +1973,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "axum"
-version = "0.8.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "31b698c5f9a010f6573133b09e0de5408834d0c82f8d7475a89fc1867a71cd90"
-dependencies = [
- "axum-core",
- "bytes",
- "futures-util",
- "http 1.4.0",
- "http-body 1.0.1",
- "http-body-util",
- "itoa",
- "matchit",
- "memchr",
- "mime",
- "percent-encoding",
- "pin-project-lite",
- "serde_core",
- "sync_wrapper",
- "tower",
- "tower-layer",
- "tower-service",
-]
-
-[[package]]
-name = "axum-core"
-version = "0.5.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08c78f31d7b1291f7ee735c1c6780ccde7785daae9a9206026862dab7d8792d1"
-dependencies = [
- "bytes",
- "futures-core",
- "http 1.4.0",
- "http-body 1.0.1",
- "http-body-util",
- "mime",
- "pin-project-lite",
- "sync_wrapper",
- "tower-layer",
- "tower-service",
-]
-
-[[package]]
 name = "az"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4146,7 +4103,6 @@ dependencies = [
  "http 1.4.0",
  "http-body 1.0.1",
  "httparse",
- "httpdate",
  "itoa",
  "pin-project-lite",
  "pin-utils",
@@ -4885,12 +4841,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "matchit"
-version = "0.8.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
-
-[[package]]
 name = "md-5"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4991,7 +4941,6 @@ dependencies = [
 name = "monad-archive"
 version = "0.1.0"
 dependencies = [
- "actix-web",
  "alloy-consensus",
  "alloy-eips",
  "alloy-primitives",
@@ -5014,15 +4963,12 @@ dependencies = [
  "monad-compress",
  "monad-eth-testutil",
  "monad-eth-types",
+ "monad-metrics",
  "monad-triedb-utils",
  "monad-types",
  "mongodb",
  "opentelemetry",
- "opentelemetry-otlp",
- "opentelemetry-prometheus",
- "opentelemetry-semantic-conventions",
  "opentelemetry_sdk",
- "prometheus",
  "rand 0.8.5",
  "rayon",
  "regex",
@@ -5779,6 +5725,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-metrics"
+version = "0.1.0"
+dependencies = [
+ "actix-web",
+ "clap",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry-prometheus",
+ "opentelemetry_sdk",
+ "prometheus",
+ "serde",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "monad-mock-swarm"
 version = "0.1.0"
 dependencies = [
@@ -6161,6 +6123,7 @@ dependencies = [
  "monad-ethcall",
  "monad-event-ring",
  "monad-exec-events",
+ "monad-metrics",
  "monad-node-config",
  "monad-pprof",
  "monad-rpc-docs",
@@ -6169,13 +6132,9 @@ dependencies = [
  "monad-types",
  "monad-version",
  "opentelemetry",
- "opentelemetry-otlp",
- "opentelemetry-prometheus",
- "opentelemetry-proto",
  "opentelemetry_sdk",
  "paste",
  "pin-project",
- "prometheus",
  "proptest",
  "rand 0.8.5",
  "rayon",
@@ -6190,9 +6149,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tikv-jemallocator",
  "tokio",
- "tokio-stream",
  "toml",
- "tonic",
  "tracing",
  "tracing-actix-web",
  "tracing-manytrace",
@@ -9492,10 +9449,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fec7c61a0695dc1887c1b53952990f3ad2e3a31453e1f49f10e75424943a93ec"
 dependencies = [
  "async-trait",
- "axum",
  "base64 0.22.1",
  "bytes",
- "h2 0.4.19",
  "http 1.4.0",
  "http-body 1.0.1",
  "http-body-util",
@@ -9504,7 +9459,6 @@ dependencies = [
  "hyper-util",
  "percent-encoding",
  "pin-project",
- "socket2 0.6.1",
  "sync_wrapper",
  "tokio",
  "tokio-stream",

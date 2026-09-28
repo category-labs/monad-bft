@@ -16,14 +16,11 @@
 use std::{sync::Arc, time::Duration};
 
 use dashmap::DashMap;
-use eyre::Result;
 use opentelemetry::{
     metrics::{Counter, Gauge, Histogram, Meter, MeterProvider},
     KeyValue,
 };
-use opentelemetry_otlp::WithExportConfig;
-use opentelemetry_sdk::metrics::{SdkMeterProvider, Temporality};
-use prometheus::{Encoder, Registry, TextEncoder};
+use opentelemetry_sdk::metrics::SdkMeterProvider;
 use tracing::trace;
 
 #[derive(Eq, Hash, PartialEq, Clone, Copy)]
@@ -235,20 +232,7 @@ pub struct MetricsInner {
 }
 
 impl Metrics {
-    pub fn new(
-        otel_endpoint: Option<impl AsRef<str>>,
-        service_name: impl Into<String>,
-        replica_name: impl Into<String>,
-        interval: Duration,
-        prometheus_registry: Option<Registry>,
-    ) -> Result<Metrics> {
-        let provider = build_otel_meter_provider(
-            otel_endpoint,
-            service_name.into(),
-            replica_name.into(),
-            interval,
-            prometheus_registry,
-        )?;
+    pub fn new(provider: SdkMeterProvider, interval: Duration) -> Metrics {
         let meter = provider.meter("opentelemetry");
 
         let metrics = Metrics(Some(Arc::new(MetricsInner {
@@ -282,7 +266,7 @@ impl Metrics {
             });
         }
 
-        Ok(metrics)
+        metrics
     }
 
     pub fn none() -> Metrics {
@@ -356,60 +340,4 @@ impl Metrics {
     pub fn gauge(&self, metric: MetricNames, value: u64) {
         self.gauge_with_attrs(metric, value, &[]);
     }
-}
-
-fn build_otel_meter_provider(
-    otel_endpoint: Option<impl AsRef<str>>,
-    service_name: String,
-    replica_name: String,
-    interval: Duration,
-    prometheus_registry: Option<Registry>,
-) -> Result<opentelemetry_sdk::metrics::SdkMeterProvider> {
-    let mut provider_builder = opentelemetry_sdk::metrics::SdkMeterProvider::builder()
-        .with_resource(
-            opentelemetry_sdk::Resource::builder_empty()
-                .with_attributes(vec![opentelemetry::KeyValue::new(
-                    opentelemetry_semantic_conventions::resource::SERVICE_NAME,
-                    format!("{replica_name}-{service_name}"),
-                )])
-                .build(),
-        );
-
-    if let Some(otel_endpoint) = otel_endpoint {
-        let exporter = opentelemetry_otlp::MetricExporter::builder()
-            .with_tonic()
-            .with_temporality(Temporality::default())
-            .with_timeout(interval * 2)
-            .with_endpoint(otel_endpoint.as_ref())
-            .build()?;
-
-        let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(exporter)
-            .with_interval(interval / 2)
-            .build();
-
-        provider_builder = provider_builder.with_reader(reader)
-    }
-
-    if let Some(registry) = prometheus_registry {
-        let prometheus_reader = opentelemetry_prometheus::exporter()
-            .with_registry(registry)
-            .build()
-            .expect("failed to register prometheus metrics");
-        provider_builder = provider_builder.with_reader(prometheus_reader);
-    }
-
-    Ok(provider_builder.build())
-}
-
-pub async fn prometheus_metrics(
-    registry: actix_web::web::Data<Registry>,
-) -> actix_web::Result<actix_web::HttpResponse> {
-    let encoder = TextEncoder::new();
-    let mut body = Vec::new();
-    encoder
-        .encode(&registry.gather(), &mut body)
-        .map_err(actix_web::error::ErrorInternalServerError)?;
-    Ok(actix_web::HttpResponse::Ok()
-        .content_type(encoder.format_type())
-        .body(body))
 }
