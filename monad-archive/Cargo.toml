@@ -32,10 +32,10 @@ mongodb-integration-tests = []
 [dependencies]
 monad-compress = { workspace = true }
 monad-eth-types = { workspace = true }
+monad-metrics = { workspace = true }
 monad-triedb-utils = { workspace = true }
 monad-types = { workspace = true }
 
-actix-web = { workspace = true }
 alloy-consensus = { workspace = true, features = ["k256"] }
 alloy-eips = { workspace = true }
 alloy-primitives = { workspace = true, features = ["serde"] }
@@ -57,11 +57,7 @@ futures = { workspace = true }
 hex = { workspace = true }
 mongodb = { workspace = true }
 opentelemetry = { workspace = true }
-opentelemetry-otlp = { workspace = true, features = ["metrics", "grpc-tonic"] }
-opentelemetry-prometheus = { workspace = true }
-opentelemetry-semantic-conventions = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
-prometheus = { workspace = true }
 rayon = { workspace = true }
 regex = { workspace = true }
 reqwest = { workspace = true }
