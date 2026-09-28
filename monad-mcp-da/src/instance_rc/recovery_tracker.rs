@@ -61,6 +61,7 @@ mod tests {
     use super::{
         super::super::{
             assignment::{ChunkAssignment, StakePartition},
+            test_util::PACKET_LOSS_RESISTANCE,
             types::Stake,
         },
         *,
@@ -72,7 +73,7 @@ mod tests {
         let author = NodeId::dummy(0);
         let mut weights = vec![(author, Stake::ZERO)];
         weights.extend((1..=3).map(|id| (NodeId::dummy(id), Stake::from(1))));
-        StakePartition::new(weights).assign(&author, 30, 2.5)
+        StakePartition::new(weights).assign(&author, 30, 2.5, PACKET_LOSS_RESISTANCE)
     }
 
     #[test]

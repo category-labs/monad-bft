@@ -23,7 +23,7 @@ use rand_chacha::ChaCha20Rng;
 use self::reed_solomon::{RsSymbolDecoder, RsSymbolEncoder};
 use super::{
     super::{
-        assignment::ChunkAssignment,
+        assignment::{ChunkAssignment, PacketLossResistance},
         types::{NodeId, ProposalIndex, PubKey, S11, Slot, ValidatorData},
         wire::{DAHeaderScheme as _, PacketLayout as _, v1},
     },
@@ -32,7 +32,6 @@ use super::{
 use crate::spec::{DAPubKey as _, MAX_PROPOSER_SET_SIZE, PUBKEY_LEN};
 
 pub const MAX_MESSAGE_LEN: usize = 1024 * 1024;
-pub const REDUNDANCY: f32 = 1.1;
 
 // the layout s11 proposals travel in
 pub(crate) type S11Layout<'a> = v1::Layout<'a, S11>;
@@ -78,30 +77,19 @@ fn bounded_index(proposer_index: ProposalIndex) -> Option<u8> {
     u8::try_from(proposer_index).ok()
 }
 
-// redundancy multiplied by the source count
+// every set of weight > W/3 still decodes after packet loss trims
+// each node's obligation
+const PACKET_LOSS_RESISTANCE: PacketLossResistance = PacketLossResistance::new(11, 10);
+
 const fn target(num_source_chunks: usize) -> usize {
-    (num_source_chunks * 11).div_ceil(10)
+    PACKET_LOSS_RESISTANCE.scale(num_source_chunks)
 }
 
-// statically assert the `target` calculation is consistent with
-// multiplying by REDUNDANCY.
+// target is never asked to scale beyond MAX_CHUNKS
 const _: () = {
     let symbol_len = S11Layout::symbol_len_at(header::MAX_DEPTH);
     let max_source_chunks = MAX_MESSAGE_LEN.div_ceil(symbol_len);
-
-    let mut source_chunks = 1;
-    while source_chunks <= max_source_chunks {
-        let scaled = source_chunks as f32 * REDUNDANCY;
-        let whole = scaled as usize;
-        // manual rounding because f32::ceil is not const
-        let rounded_up = if whole as f32 == scaled {
-            whole
-        } else {
-            whole + 1
-        };
-        assert!(target(source_chunks) == rounded_up);
-        source_chunks += 1;
-    }
+    assert!(max_source_chunks <= PacketLossResistance::MAX_CHUNKS);
 };
 
 // whether the bound on the assignment's chunks fits the depth's
@@ -180,7 +168,7 @@ impl DAEncodingScheme for S11 {
         let seed = seed(self.slot, self.unix_ts, validator_data.get_pubkey(author));
         holders.shuffle(&mut ChaCha20Rng::from_seed(seed));
 
-        ChunkAssignment::deal(author, holders)
+        ChunkAssignment::deal(author, holders, PACKET_LOSS_RESISTANCE)
     }
 
     fn encoder(&self, num_chunks: usize) -> RsSymbolEncoder {

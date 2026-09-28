@@ -52,6 +52,35 @@ impl NodeIndex {
     }
 }
 
+// an obligation of o chunks is met by ceil(o * den / num) of them, to
+// tolerate packet loss
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub(crate) struct PacketLossResistance {
+    num: usize,
+    den: usize,
+}
+
+impl PacketLossResistance {
+    pub(crate) const MAX_CHUNKS: usize = WireChunkId::MAX as usize + 1;
+
+    pub(crate) const fn new(num: usize, den: usize) -> Self {
+        assert!(0 < den && den <= num, "trimming never grows an obligation");
+        assert!(
+            Self::MAX_CHUNKS.checked_mul(num).is_some(),
+            "trim and scale cannot overflow"
+        );
+        Self { num, den }
+    }
+
+    pub(crate) const fn trim(self, obligation: usize) -> usize {
+        (obligation * self.den).div_ceil(self.num)
+    }
+
+    pub(crate) const fn scale(self, num_chunks: usize) -> usize {
+        (num_chunks * self.num).div_ceil(self.den)
+    }
+}
+
 // Resolved routing for a single chunk: the dissemination path author
 // -> owner -> rebroadcast targets. The author is never a target.
 pub struct ChunkRouting<'a> {
@@ -165,6 +194,8 @@ pub struct ChunkAssignment {
 
     // nodes that are not assigned any chunks.
     unassigned_nodes: HashSet<NodeIndex>,
+
+    packet_loss_resistance: PacketLossResistance,
 }
 
 impl ChunkAssignment {
@@ -173,6 +204,7 @@ impl ChunkAssignment {
     pub(crate) fn deal(
         author: &NodeId,
         holders: impl IntoIterator<Item = (NodeId, usize)>,
+        packet_loss_resistance: PacketLossResistance,
     ) -> Self {
         let mut nodes = Vec::new();
         let mut unassigned_nodes = HashSet::new();
@@ -208,11 +240,16 @@ impl ChunkAssignment {
             author,
             targets,
             unassigned_nodes,
+            packet_loss_resistance,
         }
     }
 
     pub fn num_chunks(&self) -> usize {
         self.targets.len()
+    }
+
+    pub(crate) fn packet_loss_resistance(&self) -> PacketLossResistance {
+        self.packet_loss_resistance
     }
 
     pub(crate) fn num_nodes(&self) -> usize {
@@ -311,9 +348,11 @@ impl StakePartition {
         num_source_chunks: usize,
         // todo: use raptorcast's fixed point redundancy type
         redundancy: f32,
+        packet_loss_resistance: PacketLossResistance,
     ) -> ChunkAssignment {
         let scaled_num_source_chunks = (num_source_chunks as f32 * redundancy).ceil() as usize;
-        ChunkAssignment::deal(author, self.obligations(scaled_num_source_chunks))
+        let obligations = self.obligations(scaled_num_source_chunks);
+        ChunkAssignment::deal(author, obligations, packet_loss_resistance)
     }
 
     fn obligations(&self, shares: usize) -> Vec<(NodeId, usize)> {
@@ -333,7 +372,7 @@ impl StakePartition {
 mod tests {
     use monad_mcp_chorus::spec::Stake as _;
 
-    use super::*;
+    use super::{super::test_util::PACKET_LOSS_RESISTANCE, *};
 
     fn node(id: u64) -> NodeId {
         NodeId::dummy(id)
@@ -347,7 +386,7 @@ mod tests {
             (node(2), Stake::from(1)),
             (node(3), Stake::from(2)),
         ];
-        StakePartition::new(weights).assign(&node(0), 10, 1.0)
+        StakePartition::new(weights).assign(&node(0), 10, 1.0, PACKET_LOSS_RESISTANCE)
     }
 
     fn owned(assignment: &ChunkAssignment, id: u64) -> Vec<WireChunkId> {
@@ -376,7 +415,8 @@ mod tests {
     fn redundancy_scales_the_source_count_rounding_up() {
         // ceil(3 * 2.5) = 8 shares over 3 equal nodes: 2 rem 2 -> 3 each
         let weights = (0..3).map(|id| (node(id), Stake::from(1)));
-        let assignment = StakePartition::new(weights).assign(&node(0), 3, 2.5);
+        let assignment =
+            StakePartition::new(weights).assign(&node(0), 3, 2.5, PACKET_LOSS_RESISTANCE);
         assert_eq!(assignment.num_chunks(), 9);
     }
 
