@@ -198,7 +198,10 @@ mod tests {
         super::{
             super::{
                 chunk::ProposalEnvelope,
-                test_util::{MESSAGE_LEN, SLOT, author, epoch_handle_for, group, proposal_chunks},
+                test_util::{
+                    MESSAGE_LEN, PACKET_LOSS_RESISTANCE, SLOT, author, epoch_handle_for, group,
+                    proposal_chunks,
+                },
             },
             read_envelope, write_chunk,
         },
@@ -281,7 +284,7 @@ mod tests {
             (NodeId::dummy(2), 0),
             (NodeId::dummy(3), 3),
         ];
-        let assignment = ChunkAssignment::deal(&author(), holders);
+        let assignment = ChunkAssignment::deal(&author(), holders, PACKET_LOSS_RESISTANCE);
         let message = vec![1u8; MESSAGE_LEN];
         let chunk_tree =
             encoding_scheme::chunk_tree(header.scheme(), &message, assignment.num_chunks())

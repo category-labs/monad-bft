@@ -24,7 +24,7 @@ use monad_mcp_chorus::spec::{validator::ValidatorData as _, vote::KeyPair as _};
 
 pub(crate) use super::chorus::types::FixedProposerSchedule;
 use super::{
-    assignment::{ChunkAssignment, ChunkId},
+    assignment::{ChunkAssignment, ChunkId, PacketLossResistance},
     chunk::{Chunk, ProposalEnvelope, WireChunkId},
     chunk_tree::ChunkTree,
     encoding_scheme::{self, DAEncodingScheme as _, d25},
@@ -40,6 +40,7 @@ use crate::spec::{DAProposalHeader as _, DAProposalKeyPair as _};
 
 pub(crate) const SLOT: Slot = Slot(1);
 pub(crate) const MESSAGE_LEN: usize = 1500;
+pub(crate) const PACKET_LOSS_RESISTANCE: PacketLossResistance = PacketLossResistance::new(11, 10);
 
 pub(crate) fn author() -> NodeId {
     NodeId::dummy(0)
