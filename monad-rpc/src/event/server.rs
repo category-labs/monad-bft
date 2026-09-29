@@ -13,9 +13,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 use itertools::Itertools;
+use monad_ethcall::{eth_header_layout, ChainId, EthHeaderLayout};
 use monad_event_ring::{DecodedEventRing, EventNextResult};
 use monad_exec_events::{
     BlockBuilderError, BlockCommitState, CommitStateBlockBuilder, CommitStateBlockUpdate,
@@ -26,7 +30,10 @@ use tokio::sync::broadcast;
 use tracing::{debug, warn};
 
 use super::{EventServerClient, EventServerEvent, BROADCAST_CHANNEL_SIZE};
-use crate::types::{eth_json::MonadNotification, serialize::JsonSerialized};
+use crate::{
+    handlers::ethcall_chain_id,
+    types::{eth_json::MonadNotification, serialize::JsonSerialized},
+};
 
 pub struct EventServer<R>
 where
@@ -140,11 +147,17 @@ fn broadcast_block_updates(
 ) {
     let block_id = BlockId(monad_types::Hash(block.start.block_tag.id.bytes));
 
+    let mut header = block.to_alloy_rpc_header();
+    match block_header_layout(&block) {
+        Some(layout) => strip_fields_beyond_layout(&mut header.inner, layout),
+        None => warn_header_layout_unknown(&block),
+    }
+
     let serialized_monad_header = JsonSerialized::new_shared_with_map(
         MonadNotification {
             block_id,
             commit_state,
-            data: block.to_alloy_rpc_header(),
+            data: header,
         },
         |notification| notification.map(JsonSerialized::new_shared),
     );
@@ -186,10 +199,64 @@ fn broadcast_block_updates(
     );
 }
 
+/// Least significant limb first.
+fn chain_id_from_limbs(limbs: [u64; 4]) -> Option<ChainId> {
+    let [low, high @ ..] = limbs;
+    if high.iter().any(|limb| *limb != 0) {
+        return None;
+    }
+    ethcall_chain_id(low)
+}
+
+fn block_header_layout(block: &ExecutedBlock) -> Option<EthHeaderLayout> {
+    let chain = chain_id_from_limbs(block.start.chain_id.limbs)?;
+    eth_header_layout(
+        chain,
+        block.start.eth_block_input.number,
+        block.start.eth_block_input.timestamp,
+    )
+}
+
+/// Makes the header match the block's RLP by clearing the fields its fork lacks.
+fn strip_fields_beyond_layout(header: &mut alloy_consensus::Header, layout: EthHeaderLayout) {
+    if layout < EthHeaderLayout::London {
+        header.base_fee_per_gas = None;
+    }
+    if layout < EthHeaderLayout::Shanghai {
+        header.withdrawals_root = None;
+    }
+    if layout < EthHeaderLayout::Cancun {
+        header.blob_gas_used = None;
+        header.excess_blob_gas = None;
+        header.parent_beacon_block_root = None;
+    }
+    if layout < EthHeaderLayout::Prague {
+        header.requests_hash = None;
+    }
+    if layout < EthHeaderLayout::Amsterdam {
+        header.block_access_list_hash = None;
+        header.slot_number = None;
+    }
+}
+
+static HEADER_LAYOUT_UNKNOWN_WARNED: AtomicBool = AtomicBool::new(false);
+
+fn warn_header_layout_unknown(block: &ExecutedBlock) {
+    if HEADER_LAYOUT_UNKNOWN_WARNED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    warn!(
+        chain_id = %alloy_primitives::U256::from_limbs(block.start.chain_id.limbs),
+        block_number = block.start.eth_block_input.number,
+        "execution cannot report the header layout; serving headers with every optional field"
+    );
+}
+
 #[cfg(test)]
 mod test {
     use std::time::Duration;
 
+    use monad_chain_config::MONAD_MAINNET_CHAIN_ID;
     use monad_event_ring::SnapshotEventRing;
     use monad_exec_events::ExecEventDecoder;
     use serde::{de::DeserializeOwned, Serialize};
@@ -332,6 +399,8 @@ mod test {
 
         assert_eq!(commit_state, BlockCommitState::Proposed);
 
+        assert_eq!(monad_header.data.inner.hash_slow(), monad_header.data.hash);
+
         assert_json::<_, MonadNotification<alloy_rpc_types::Header>>(
             &[&monad_header],
             include_str!(
@@ -383,6 +452,143 @@ mod test {
                 "../../../monad-execution/rust/crates/monad-exec-events/test/data/exec-events-emn-30b-15m/0.log.0.json"
             ),
         );
+    }
+
+    fn header_with_every_optional_field() -> alloy_consensus::Header {
+        alloy_consensus::Header {
+            base_fee_per_gas: Some(1),
+            withdrawals_root: Some(alloy_primitives::B256::repeat_byte(2)),
+            blob_gas_used: Some(3),
+            excess_blob_gas: Some(4),
+            parent_beacon_block_root: Some(alloy_primitives::B256::repeat_byte(5)),
+            requests_hash: Some(alloy_primitives::B256::repeat_byte(6)),
+            block_access_list_hash: Some(alloy_primitives::B256::repeat_byte(7)),
+            slot_number: Some(8),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn strip_fields_beyond_layout_amsterdam_keeps_everything() {
+        let mut header = header_with_every_optional_field();
+        strip_fields_beyond_layout(&mut header, EthHeaderLayout::Amsterdam);
+        assert_eq!(header, header_with_every_optional_field());
+    }
+
+    #[test]
+    fn strip_fields_beyond_layout_prague_clears_the_amsterdam_pair() {
+        let mut header = header_with_every_optional_field();
+        strip_fields_beyond_layout(&mut header, EthHeaderLayout::Prague);
+        assert!(header.base_fee_per_gas.is_some());
+        assert!(header.withdrawals_root.is_some());
+        assert!(header.blob_gas_used.is_some());
+        assert!(header.excess_blob_gas.is_some());
+        assert!(header.parent_beacon_block_root.is_some());
+        assert!(header.requests_hash.is_some());
+        assert!(header.block_access_list_hash.is_none());
+        assert!(header.slot_number.is_none());
+    }
+
+    #[test]
+    fn strip_fields_beyond_layout_cancun_clears_requests_hash() {
+        let mut header = header_with_every_optional_field();
+        strip_fields_beyond_layout(&mut header, EthHeaderLayout::Cancun);
+        assert!(header.base_fee_per_gas.is_some());
+        assert!(header.withdrawals_root.is_some());
+        assert!(header.blob_gas_used.is_some());
+        assert!(header.excess_blob_gas.is_some());
+        assert!(header.parent_beacon_block_root.is_some());
+        assert!(header.requests_hash.is_none());
+        assert!(header.block_access_list_hash.is_none());
+        assert!(header.slot_number.is_none());
+    }
+
+    #[test]
+    fn strip_fields_beyond_layout_shanghai_clears_the_cancun_trio_together() {
+        let mut header = header_with_every_optional_field();
+        strip_fields_beyond_layout(&mut header, EthHeaderLayout::Shanghai);
+        assert!(header.base_fee_per_gas.is_some());
+        assert!(header.withdrawals_root.is_some());
+        assert!(header.blob_gas_used.is_none());
+        assert!(header.excess_blob_gas.is_none());
+        assert!(header.parent_beacon_block_root.is_none());
+        assert!(header.requests_hash.is_none());
+        assert!(header.block_access_list_hash.is_none());
+        assert!(header.slot_number.is_none());
+    }
+
+    #[test]
+    fn strip_fields_beyond_layout_london_clears_withdrawals_root() {
+        let mut header = header_with_every_optional_field();
+        strip_fields_beyond_layout(&mut header, EthHeaderLayout::London);
+        assert!(header.base_fee_per_gas.is_some());
+        assert!(header.withdrawals_root.is_none());
+        assert!(header.blob_gas_used.is_none());
+        assert!(header.excess_blob_gas.is_none());
+        assert!(header.parent_beacon_block_root.is_none());
+        assert!(header.requests_hash.is_none());
+        assert!(header.block_access_list_hash.is_none());
+        assert!(header.slot_number.is_none());
+    }
+
+    #[test]
+    fn strip_fields_beyond_layout_legacy_clears_base_fee() {
+        let mut header = header_with_every_optional_field();
+        strip_fields_beyond_layout(&mut header, EthHeaderLayout::Legacy);
+        assert!(header.base_fee_per_gas.is_none());
+        assert!(header.withdrawals_root.is_none());
+        assert!(header.blob_gas_used.is_none());
+        assert!(header.excess_blob_gas.is_none());
+        assert!(header.parent_beacon_block_root.is_none());
+        assert!(header.requests_hash.is_none());
+        assert!(header.block_access_list_hash.is_none());
+        assert!(header.slot_number.is_none());
+    }
+
+    #[test]
+    fn strip_fields_beyond_layout_never_sets_a_field() {
+        // Legacy runs every clearing branch.
+        let mut header = alloy_consensus::Header::default();
+        strip_fields_beyond_layout(&mut header, EthHeaderLayout::Legacy);
+        assert_eq!(header, alloy_consensus::Header::default());
+    }
+
+    #[test]
+    fn chain_id_from_limbs_accepts_known_chain_in_low_limb() {
+        assert_eq!(
+            chain_id_from_limbs([MONAD_MAINNET_CHAIN_ID, 0, 0, 0]),
+            Some(ChainId::MonadMainnet)
+        );
+    }
+
+    #[test]
+    fn chain_id_from_limbs_rejects_nonzero_high_limbs() {
+        assert_eq!(chain_id_from_limbs([MONAD_MAINNET_CHAIN_ID, 1, 0, 0]), None);
+        assert_eq!(chain_id_from_limbs([MONAD_MAINNET_CHAIN_ID, 0, 1, 0]), None);
+        assert_eq!(chain_id_from_limbs([MONAD_MAINNET_CHAIN_ID, 0, 0, 1]), None);
+    }
+
+    #[test]
+    fn chain_id_from_limbs_rejects_unknown_chain() {
+        assert_eq!(chain_id_from_limbs([42, 0, 0, 0]), None);
+    }
+
+    #[test]
+    fn block_header_layout_monad_mainnet_prague_activation() {
+        // All-zero bytes are a valid value for these plain C structs.
+        let mut block = ExecutedBlock {
+            start: unsafe { std::mem::zeroed() },
+            end: unsafe { std::mem::zeroed() },
+            txns: Box::default(),
+        };
+        block.start.chain_id.limbs = [MONAD_MAINNET_CHAIN_ID, 0, 0, 0];
+        block.start.eth_block_input.number = 40_000_000;
+
+        block.start.eth_block_input.timestamp = 1762266599;
+        assert_eq!(block_header_layout(&block), Some(EthHeaderLayout::Cancun));
+
+        block.start.eth_block_input.timestamp = 1762266600;
+        assert_eq!(block_header_layout(&block), Some(EthHeaderLayout::Prague));
     }
 
     fn assert_json<T, E>(values: &[T], json: &'static str)
