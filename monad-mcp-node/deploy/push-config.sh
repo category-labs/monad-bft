@@ -22,7 +22,8 @@ push_host() {
     fi
     rssh "$host" "mkdir -p $remote_root/config"
     rsync_to "$host" "$config_dir/$host/" "$remote_rel/config/"
-    rssh "$host" "grep -E '^(node_id|genesis_deadline) ' $remote_root/config/node.toml | tr '\n' ' '; echo"
+    # top-level keys only: they end at the first [[validators]]
+    rssh "$host" "awk '/^\[/ { exit } /^(node_id|genesis_deadline) /' $remote_root/config/node.toml | tr '\n' ' '; echo"
 }
 
 [ $# = 0 ] || set_targets "$@"
