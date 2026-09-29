@@ -25,7 +25,7 @@ use crate::{
     data::{get_block_key_from_tag_or_hash, DataProvider},
     types::{
         eth_json::{BlockTagOrHash, EthAddress, StorageKey},
-        jsonrpc::{JsonRpcError, JsonRpcResult},
+        jsonrpc::{ErrorCode, JsonRpcError, JsonRpcResult},
     },
 };
 
@@ -164,11 +164,20 @@ pub async fn monad_eth_getStorageValues<T: Triedb>(
     trace!("monad_eth_getStorageValues: {params:?}");
 
     if params.requests.is_empty() {
-        return Err(JsonRpcError::invalid_params());
+        return Err(JsonRpcError::with_message(
+            ErrorCode::InvalidParams,
+            "requests must not be empty",
+        ));
     }
 
     if params.requests.values().map(Vec::len).sum::<usize>() > MAX_GET_STORAGE_VALUES_SLOTS {
-        return Err(JsonRpcError::invalid_params());
+        return Err(JsonRpcError::with_message(
+            ErrorCode::InvalidParams,
+            format!(
+                "too many storage slots requested, maximum allowed is {}",
+                MAX_GET_STORAGE_VALUES_SLOTS
+            ),
+        ));
     }
 
     let block_key = get_block_key_from_tag_or_hash(&data_provider.triedb_env, params.block)
@@ -267,7 +276,7 @@ mod tests {
         data::DataProvider,
         types::{
             eth_json::{BlockTags, Quantity},
-            jsonrpc::JsonRpcError,
+            jsonrpc::{ErrorCode, JsonRpcError},
         },
     };
 
@@ -405,6 +414,15 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert_eq!(err, JsonRpcError::invalid_params());
+        assert_eq!(
+            err,
+            JsonRpcError::with_message(
+                ErrorCode::InvalidParams,
+                format!(
+                    "too many storage slots requested, maximum allowed is {}",
+                    MAX_GET_STORAGE_VALUES_SLOTS
+                ),
+            )
+        );
     }
 }
