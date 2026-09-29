@@ -52,9 +52,9 @@ dependencies = [
 
 [[package]]
 name = "actix-http"
-version = "3.11.2"
+version = "3.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7926860314cbe2fb5d1f13731e387ab43bd32bca224e82e6e2db85de0a3dba49"
+checksum = "93acb4a42f64936f9b8cae4a433b237599dd6eb6ed06124eb67132ef8cc90662"
 dependencies = [
  "actix-codec",
  "actix-rt",
@@ -78,8 +78,8 @@ dependencies = [
  "mime",
  "percent-encoding",
  "pin-project-lite",
- "rand 0.9.2",
- "sha1",
+ "rand 0.10.1",
+ "sha1 0.11.0",
  "smallvec",
  "tokio",
  "tokio-util",
@@ -343,7 +343,7 @@ dependencies = [
  "mpscbuf",
  "nix 0.30.1",
  "protocol",
- "rand 0.8.5",
+ "rand 0.8.6",
  "rkyv",
  "thiserror 2.0.17",
  "thread_local",
@@ -423,7 +423,7 @@ dependencies = [
  "either",
  "k256",
  "once_cell",
- "rand 0.8.5",
+ "rand 0.8.6",
  "secp256k1 0.30.0",
  "serde",
  "serde_json",
@@ -456,7 +456,7 @@ dependencies = [
  "alloy-rlp",
  "arbitrary",
  "crc",
- "rand 0.8.5",
+ "rand 0.8.6",
  "serde",
  "thiserror 2.0.17",
 ]
@@ -471,7 +471,7 @@ dependencies = [
  "alloy-rlp",
  "arbitrary",
  "borsh",
- "rand 0.8.5",
+ "rand 0.8.6",
  "serde",
 ]
 
@@ -486,7 +486,7 @@ dependencies = [
  "arbitrary",
  "borsh",
  "k256",
- "rand 0.8.5",
+ "rand 0.8.6",
  "serde",
  "thiserror 2.0.17",
 ]
@@ -616,7 +616,7 @@ dependencies = [
  "paste",
  "proptest",
  "proptest-derive",
- "rand 0.9.2",
+ "rand 0.9.3",
  "rapidhash",
  "ruint",
  "rustc-hash",
@@ -710,7 +710,7 @@ dependencies = [
  "alloy-serde",
  "arbitrary",
  "derive_more",
- "rand 0.8.5",
+ "rand 0.8.6",
  "serde",
  "strum",
 ]
@@ -790,7 +790,7 @@ dependencies = [
  "alloy-signer",
  "async-trait",
  "k256",
- "rand 0.8.5",
+ "rand 0.8.6",
  "thiserror 2.0.17",
 ]
 
@@ -1255,7 +1255,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1df2c09229cbc5a028b1d70e00fdb2acee28b1055dfb5ca73eea49c5a25c4e7c"
 dependencies = [
  "num-traits",
- "rand 0.8.5",
+ "rand 0.8.6",
 ]
 
 [[package]]
@@ -1265,7 +1265,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94893f1e0c6eeab764ade8dc4c0db24caf4fe7cbbaafc0eba0a9030f447b5185"
 dependencies = [
  "num-traits",
- "rand 0.8.5",
+ "rand 0.8.6",
 ]
 
 [[package]]
@@ -1275,7 +1275,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "246a225cc6131e9ee4f24619af0f19d67761fff15d7ccc22e42b80846e69449a"
 dependencies = [
  "num-traits",
- "rand 0.8.5",
+ "rand 0.8.6",
 ]
 
 [[package]]
@@ -1285,7 +1285,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "367c9c827ed431bff6868b7aa926e05b16eb46603cc8b6e768e4a5553fa1d155"
 dependencies = [
  "num-traits",
- "rand 0.8.5",
+ "rand 0.8.6",
 ]
 
 [[package]]
@@ -1504,7 +1504,7 @@ dependencies = [
  "mime",
  "percent-encoding",
  "pin-project-lite",
- "rand 0.9.2",
+ "rand 0.9.3",
  "serde",
  "serde_json",
  "serde_urlencoded",
@@ -1791,7 +1791,7 @@ dependencies = [
  "http-body-util",
  "md-5",
  "pin-project-lite",
- "sha1",
+ "sha1 0.10.6",
  "sha2",
  "tracing",
 ]
@@ -2149,6 +2149,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "block-buffer"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2f6c7dbe95a6ed67ad9f18e57daf93a2f034c524b99fd2b76d18fdfeb6660aa"
+dependencies = [
+ "hybrid-array",
+]
+
+[[package]]
 name = "blst"
 version = "0.3.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2205,6 +2214,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bs58"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf88ba1141d185c399bee5288d850d63b8369520c1eafc32a0430b5b6c287bf4"
+dependencies = [
+ "tinyvec",
+]
+
+[[package]]
 name = "bson"
 version = "2.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2219,7 +2237,7 @@ dependencies = [
  "indexmap 2.12.1",
  "js-sys",
  "once_cell",
- "rand 0.9.2",
+ "rand 0.9.3",
  "serde",
  "serde_bytes",
  "serde_json",
@@ -2457,7 +2475,7 @@ version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773f3b9af64447d2ce9850330c473515014aa235e6a783b02db81ff39e4a3dad"
 dependencies = [
- "crypto-common",
+ "crypto-common 0.1.7",
  "inout",
 ]
 
@@ -2595,6 +2613,12 @@ name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
+
+[[package]]
+name = "const-oid"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
 
 [[package]]
 name = "const-random"
@@ -2881,6 +2905,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "crypto-common"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce6e4c961d6cd6c9a86db418387425e8bdeaf05b3c8bc1411e6dca4c252f1453"
+dependencies = [
+ "hybrid-array",
+]
+
+[[package]]
 name = "ctr"
 version = "0.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2901,16 +2934,6 @@ dependencies = [
 
 [[package]]
 name = "darling"
-version = "0.21.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9cdf337090841a411e2a7f3deb9187445851f91b309c0c0a29e05f74a00a48c0"
-dependencies = [
- "darling_core 0.21.3",
- "darling_macro 0.21.3",
-]
-
-[[package]]
-name = "darling"
 version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "25ae13da2f202d56bd7f91c25fba009e7717a1e4a1cc98a76d844b65ae912e9d"
@@ -2924,20 +2947,6 @@ name = "darling_core"
 version = "0.20.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d00b9596d185e565c2207a0b01f8bd1a135483d02d9b7b0a54b11da8d53412e"
-dependencies = [
- "fnv",
- "ident_case",
- "proc-macro2",
- "quote",
- "strsim",
- "syn 2.0.113",
-]
-
-[[package]]
-name = "darling_core"
-version = "0.21.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1247195ecd7e3c85f83c8d2a366e4210d588e802133e1e355180a9870b517ea4"
 dependencies = [
  "fnv",
  "ident_case",
@@ -2968,17 +2977,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc34b93ccb385b40dc71c6fceac4b2ad23662c7eeb248cf10d529b7e055b6ead"
 dependencies = [
  "darling_core 0.20.11",
- "quote",
- "syn 2.0.113",
-]
-
-[[package]]
-name = "darling_macro"
-version = "0.21.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d38308df82d1080de0afee5d069fa14b0326a88c14f15c5ccda35b4a6c414c81"
-dependencies = [
- "darling_core 0.21.3",
  "quote",
  "syn 2.0.113",
 ]
@@ -3032,7 +3030,7 @@ version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1a467a65c5e759bce6e65eaf91cc29f466cdc57cb65777bd646872a8a1fd4de"
 dependencies = [
- "const-oid",
+ "const-oid 0.9.6",
  "zeroize",
 ]
 
@@ -3042,7 +3040,7 @@ version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7c1832837b905bbfb5101e07cc24c8deddf52f93225eee6ead5f4d63d53ddcb"
 dependencies = [
- "const-oid",
+ "const-oid 0.9.6",
  "zeroize",
 ]
 
@@ -3169,10 +3167,21 @@ version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
 dependencies = [
- "block-buffer",
- "const-oid",
- "crypto-common",
+ "block-buffer 0.10.4",
+ "const-oid 0.9.6",
+ "crypto-common 0.1.7",
  "subtle",
+]
+
+[[package]]
+name = "digest"
+version = "0.11.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1dd6dbb5841937940781866fa1281a1ff7bd3bf827091440879f9994983d5c2"
+dependencies = [
+ "block-buffer 0.12.1",
+ "const-oid 0.10.2",
+ "crypto-common 0.2.2",
 ]
 
 [[package]]
@@ -3485,7 +3494,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "835c052cb0c08c1acf6ffd71c022172e18723949c8282f2b9f27efbc51e64534"
 dependencies = [
  "byteorder",
- "rand 0.8.5",
+ "rand 0.8.6",
  "rustc-hex",
  "static_assertions",
 ]
@@ -3757,7 +3766,7 @@ dependencies = [
  "parking_lot",
  "portable-atomic",
  "quanta",
- "rand 0.9.2",
+ "rand 0.9.3",
  "smallvec",
  "spinning_top",
  "web-time",
@@ -4088,6 +4097,15 @@ name = "humantime"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "135b12329e5e3ce057a9f972339ea52bc954fe1e9358ef27f95e89716fbc5424"
+
+[[package]]
+name = "hybrid-array"
+version = "0.4.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3944cf8cf766b40e2a1a333ee5e9b563f854d5fa49d6a8ca2764e97c6eddb214"
+dependencies = [
+ "typenum",
+]
 
 [[package]]
 name = "hyper"
@@ -4970,7 +4988,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry-semantic-conventions",
  "opentelemetry_sdk",
- "rand 0.8.5",
+ "rand 0.8.6",
  "rayon",
  "regex",
  "reqwest 0.12.28",
@@ -5015,7 +5033,7 @@ dependencies = [
  "monad-testutil",
  "monad-types",
  "monad-validator",
- "rand 0.8.5",
+ "rand 0.8.6",
  "rand_chacha 0.3.1",
  "serde",
  "test-case",
@@ -5049,7 +5067,7 @@ dependencies = [
  "monad-testutil",
  "monad-types",
  "monad-validator",
- "rand 0.8.5",
+ "rand 0.8.6",
  "serde",
  "test-case",
  "zeroize",
@@ -5211,7 +5229,7 @@ dependencies = [
  "monad-types",
  "monoio",
  "ntest",
- "rand 0.8.5",
+ "rand 0.8.6",
  "rstest",
  "socket2 0.5.10",
  "thiserror 1.0.69",
@@ -5321,7 +5339,7 @@ dependencies = [
  "monad-types",
  "monad-validator",
  "proptest",
- "rand 0.8.5",
+ "rand 0.8.6",
  "rayon",
  "tracing",
  "tracing-subscriber",
@@ -5387,7 +5405,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry-semantic-conventions",
  "opentelemetry_sdk",
- "rand 0.8.5",
+ "rand 0.8.6",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -5429,7 +5447,7 @@ dependencies = [
  "monad-tfm",
  "monad-types",
  "monad-validator",
- "rand 0.8.5",
+ "rand 0.8.6",
  "rand_chacha 0.3.1",
  "rayon",
  "serde",
@@ -5652,7 +5670,7 @@ dependencies = [
  "monad-secp",
  "monad-version",
  "pbkdf2",
- "rand 0.8.5",
+ "rand 0.8.6",
  "rstest",
  "scrypt",
  "serde",
@@ -5671,7 +5689,7 @@ dependencies = [
  "criterion",
  "indexmap 2.12.1",
  "monad-executor",
- "rand 0.8.5",
+ "rand 0.8.6",
  "thiserror 1.0.69",
  "zerocopy",
 ]
@@ -5702,7 +5720,7 @@ dependencies = [
  "derive_more",
  "itertools 0.13.0",
  "proptest",
- "rand 0.8.5",
+ "rand 0.8.6",
  "thiserror 1.0.69",
  "tracing",
  "tracing-test",
@@ -5764,7 +5782,7 @@ dependencies = [
  "monad-updaters",
  "monad-validator",
  "priority-queue",
- "rand 0.8.5",
+ "rand 0.8.6",
  "rand_chacha 0.3.1",
  "rayon",
  "seq-macro",
@@ -5784,7 +5802,7 @@ dependencies = [
  "monad-testutil",
  "monad-types",
  "monad-validator",
- "rand 0.8.5",
+ "rand 0.8.6",
  "rand_chacha 0.3.1",
  "serde",
  "test-case",
@@ -5891,7 +5909,7 @@ dependencies = [
  "monad-transformer",
  "monad-types",
  "priority-queue",
- "rand 0.8.5",
+ "rand 0.8.6",
  "rand_chacha 0.3.1",
  "tracing",
  "tracing-test",
@@ -5916,7 +5934,7 @@ dependencies = [
  "monad-secp",
  "monad-testutil",
  "monad-types",
- "rand 0.8.5",
+ "rand 0.8.6",
  "rand_chacha 0.3.1",
  "rstest",
  "test-case",
@@ -5975,7 +5993,7 @@ dependencies = [
 name = "monad-raptor"
 version = "0.1.0"
 dependencies = [
- "rand 0.8.5",
+ "rand 0.8.6",
  "rayon",
 ]
 
@@ -6021,7 +6039,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry-semantic-conventions",
  "opentelemetry_sdk",
- "rand 0.8.5",
+ "rand 0.8.6",
  "rand_chacha 0.3.1",
  "rstest",
  "serde",
@@ -6121,7 +6139,7 @@ dependencies = [
  "paste",
  "pin-project",
  "proptest",
- "rand 0.8.5",
+ "rand 0.8.6",
  "rayon",
  "reqwest 0.12.28",
  "schemars 0.8.22",
@@ -6178,7 +6196,7 @@ dependencies = [
  "monad-eth-types",
  "monad-testutil",
  "proptest",
- "rand 0.8.5",
+ "rand 0.8.6",
  "rstest",
  "secp256k1 0.31.1",
  "serde",
@@ -6193,7 +6211,7 @@ dependencies = [
 name = "monad-sim"
 version = "0.1.0"
 dependencies = [
- "rand 0.8.5",
+ "rand 0.8.6",
  "rand_distr",
 ]
 
@@ -6202,7 +6220,7 @@ name = "monad-sim-swarm"
 version = "0.1.0"
 dependencies = [
  "monad-sim",
- "rand 0.8.5",
+ "rand 0.8.6",
  "rand_chacha 0.3.1",
 ]
 
@@ -6258,7 +6276,7 @@ dependencies = [
  "monad-statesync",
  "monad-types",
  "monad-validator",
- "rand 0.8.5",
+ "rand 0.8.6",
  "tempfile",
  "tokio",
  "tracing",
@@ -6321,7 +6339,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry-semantic-conventions",
  "opentelemetry_sdk",
- "rand 0.8.5",
+ "rand 0.8.6",
  "tokio",
  "tracing",
  "tracing-appender",
@@ -6373,7 +6391,7 @@ dependencies = [
  "bytes",
  "monad-crypto",
  "monad-types",
- "rand 0.8.5",
+ "rand 0.8.6",
  "rand_chacha 0.3.1",
 ]
 
@@ -6405,7 +6423,7 @@ dependencies = [
  "monad-secp",
  "monad-triedb",
  "monad-types",
- "rand 0.8.5",
+ "rand 0.8.6",
  "rand_distr",
  "serde",
  "serde_json",
@@ -6440,7 +6458,7 @@ dependencies = [
  "monad-types",
  "monad-updaters",
  "monad-validator",
- "rand 0.8.5",
+ "rand 0.8.6",
  "rand_chacha 0.3.1",
  "serde",
  "serde_json",
@@ -6507,7 +6525,7 @@ dependencies = [
  "monad-crypto",
  "monad-testutil",
  "monad-types",
- "rand 0.8.5",
+ "rand 0.8.6",
  "rand_chacha 0.3.1",
  "serde",
  "test-case",
@@ -6622,12 +6640,12 @@ dependencies = [
  "openssl-probe 0.1.6",
  "pbkdf2",
  "percent-encoding",
- "rand 0.9.2",
+ "rand 0.9.3",
  "rustc_version_runtime",
  "serde",
  "serde_bytes",
  "serde_with",
- "sha1",
+ "sha1 0.10.6",
  "sha2",
  "socket2 0.6.1",
  "stringprep",
@@ -7050,9 +7068,9 @@ dependencies = [
 
 [[package]]
 name = "opentelemetry"
-version = "0.31.0"
+version = "0.32.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b84bcd6ae87133e903af7ef497404dda70c60d0ea14895fc8a5e6722754fc2a0"
+checksum = "b0142c63252a9e054e68a4c61a5778f7b14f576274d593f8ce883d191a099682"
 dependencies = [
  "futures-core",
  "futures-sink",
@@ -7064,22 +7082,22 @@ dependencies = [
 
 [[package]]
 name = "opentelemetry-http"
-version = "0.31.0"
+version = "0.32.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7a6d09a73194e6b66df7c8f1b680f156d916a1a942abf2de06823dd02b7855d"
+checksum = "5683015d09e2df236ef005b17f6f196f0d5f6313c4fa43a7b6a53b52776e4331"
 dependencies = [
  "async-trait",
  "bytes",
  "http 1.4.0",
  "opentelemetry",
- "reqwest 0.12.28",
+ "reqwest 0.13.3",
 ]
 
 [[package]]
 name = "opentelemetry-otlp"
-version = "0.31.0"
+version = "0.32.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a2366db2dca4d2ad033cad11e6ee42844fd727007af5ad04a1730f4cb8163bf"
+checksum = "9966929966d17620d7c316c643ba62631826e10021409357772d5eea84f62c35"
 dependencies = [
  "http 1.4.0",
  "opentelemetry",
@@ -7087,18 +7105,18 @@ dependencies = [
  "opentelemetry-proto",
  "opentelemetry_sdk",
  "prost",
- "reqwest 0.12.28",
+ "reqwest 0.13.3",
  "thiserror 2.0.17",
  "tokio",
  "tonic",
- "tracing",
+ "tonic-types",
 ]
 
 [[package]]
 name = "opentelemetry-proto"
-version = "0.31.0"
+version = "0.32.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7175df06de5eaee9909d4805a3d07e28bb752c34cab57fa9cff549da596b30f"
+checksum = "56d658ba1faf63f7b9c492cfbe6e0ec365440a16132d3270c1065f7b33f1b638"
 dependencies = [
  "opentelemetry",
  "opentelemetry_sdk",
@@ -7115,16 +7133,17 @@ checksum = "84b29a9f89f1a954936d5aa92f19b2feec3c8f3971d3e96206640db7f9706ae3"
 
 [[package]]
 name = "opentelemetry_sdk"
-version = "0.31.0"
+version = "0.32.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e14ae4f5991976fd48df6d843de219ca6d31b01daaab2dad5af2badeded372bd"
+checksum = "9b59f80e1ac4d5ff7a2db8fb6c80badb7f0f3f858211fba08dd9aaec750894f9"
 dependencies = [
  "futures-channel",
  "futures-executor",
  "futures-util",
  "opentelemetry",
  "percent-encoding",
- "rand 0.9.2",
+ "portable-atomic",
+ "rand 0.9.3",
  "thiserror 2.0.17",
  "tokio",
  "tokio-stream",
@@ -7534,7 +7553,7 @@ dependencies = [
  "bit-vec",
  "bitflags 2.10.0",
  "num-traits",
- "rand 0.9.2",
+ "rand 0.9.3",
  "rand_chacha 0.9.0",
  "rand_xorshift",
  "regex-syntax",
@@ -7575,6 +7594,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.113",
+]
+
+[[package]]
+name = "prost-types"
+version = "0.14.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8991c4cbdb8bc5b11f0b074ffe286c30e523de90fee5ba8132f1399f23cb3dd7"
+dependencies = [
+ "prost",
 ]
 
 [[package]]
@@ -7655,7 +7683,7 @@ checksum = "588f6378e4dd99458b60ec275b4477add41ce4fa9f64dcba6f15adccb19b50d6"
 dependencies = [
  "env_logger 0.8.4",
  "log",
- "rand 0.8.5",
+ "rand 0.8.6",
 ]
 
 [[package]]
@@ -7690,9 +7718,9 @@ dependencies = [
 
 [[package]]
 name = "rand"
-version = "0.8.5"
+version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34af8d1a0e25924bc5b7c43c079c942339d8f0a8b57c39049bef581b46327404"
+checksum = "5ca0ecfa931c29007047d1bc58e623ab12e5590e8c7cc53200d5202b69266d8a"
 dependencies = [
  "libc",
  "rand_chacha 0.3.1",
@@ -7702,9 +7730,9 @@ dependencies = [
 
 [[package]]
 name = "rand"
-version = "0.9.2"
+version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6db2770f06117d490610c7488547d543617b21bfa07796d7a12f6f1bd53850d1"
+checksum = "7ec095654a25171c2124e9e3393a930bddbffdc939556c914957a4c3e0a87166"
 dependencies = [
  "rand_chacha 0.9.0",
  "rand_core 0.9.3",
@@ -7774,7 +7802,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32cb0b9bc82b0a0876c2dd994a7e7a2683d3e7390ca40e6886785ef0c7e3ee31"
 dependencies = [
  "num-traits",
- "rand 0.8.5",
+ "rand 0.8.6",
 ]
 
 [[package]]
@@ -7953,7 +7981,9 @@ checksum = "62e0021ea2c22aed41653bc7e1419abb2c97e038ff2c33d0e1309e49a97deec0"
 dependencies = [
  "base64 0.22.1",
  "bytes",
+ "futures-channel",
  "futures-core",
+ "futures-util",
  "http 1.4.0",
  "http-body 1.0.1",
  "http-body-util",
@@ -8112,8 +8142,8 @@ dependencies = [
  "parity-scale-codec",
  "primitive-types",
  "proptest",
- "rand 0.8.5",
- "rand 0.9.2",
+ "rand 0.8.6",
+ "rand 0.9.3",
  "rlp",
  "ruint-macro",
  "serde_core",
@@ -8380,7 +8410,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b50c5943d326858130af85e049f2661ba3c78b26589b8ab98e65e80ae44a1252"
 dependencies = [
  "bitcoin_hashes",
- "rand 0.8.5",
+ "rand 0.8.6",
  "secp256k1-sys 0.10.1",
  "serde",
 ]
@@ -8392,7 +8422,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2c3c81b43dc2d8877c216a3fccf76677ee1ebccd429566d3e67447290d0c42b2"
 dependencies = [
  "bitcoin_hashes",
- "rand 0.9.2",
+ "rand 0.9.3",
  "secp256k1-sys 0.11.0",
 ]
 
@@ -8591,11 +8621,12 @@ dependencies = [
 
 [[package]]
 name = "serde_with"
-version = "3.16.1"
+version = "3.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4fa237f2807440d238e0364a218270b98f767a00d3dada77b1c53ae88940e2e7"
+checksum = "76a5c54c7310e7b8b9577c286d7e399ddd876c3e12b3ed917a8aabc4b96e9e8c"
 dependencies = [
  "base64 0.22.1",
+ "bs58",
  "chrono",
  "hex",
  "indexmap 1.9.3",
@@ -8610,11 +8641,11 @@ dependencies = [
 
 [[package]]
 name = "serde_with_macros"
-version = "3.16.1"
+version = "3.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52a8e3ca0ca629121f70ab50f95249e5a6f925cc0f6ffe8256c45b728875706c"
+checksum = "84d57bc0c8b9a17920c178daa6bb924850d54a9c97ab45194bb8c17ad66bb660"
 dependencies = [
- "darling 0.21.3",
+ "darling 0.23.0",
  "proc-macro2",
  "quote",
  "syn 2.0.113",
@@ -8639,6 +8670,17 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.2.17",
  "digest 0.10.7",
+]
+
+[[package]]
+name = "sha1"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aacc4cc499359472b4abe1bf11d0b12e688af9a805fa5e3016f9a386dc2d0214"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.3.0",
+ "digest 0.11.3",
 ]
 
 [[package]]
@@ -9307,7 +9349,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f57eb36ecbe0fc510036adff84824dd3c24bb781e21bfa67b69d556aa85214f"
 dependencies = [
  "pin-project",
- "rand 0.8.5",
+ "rand 0.8.6",
  "tokio",
 ]
 
@@ -9452,6 +9494,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tonic-types"
+version = "0.14.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a875a902255423d34c1f20838ab374126db8eb41625b7947a1d54113b0b7399"
+dependencies = [
+ "prost",
+ "prost-types",
+ "tonic",
+]
+
+[[package]]
 name = "tower"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9585,9 +9638,9 @@ dependencies = [
 
 [[package]]
 name = "tracing-opentelemetry"
-version = "0.32.1"
+version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ac28f2d093c6c477eaa76b23525478f38de514fa9aeb1285738d4b97a9552fc"
+checksum = "adbc64cba7137545b8044cb1fe9814f7aacf3c6b5f9b45be8bb5db538befdb26"
 dependencies = [
  "js-sys",
  "opentelemetry",
@@ -9670,8 +9723,8 @@ dependencies = [
  "httparse",
  "log",
  "native-tls",
- "rand 0.8.5",
- "sha1",
+ "rand 0.8.6",
+ "sha1 0.10.6",
  "thiserror 1.0.69",
  "utf-8",
 ]
