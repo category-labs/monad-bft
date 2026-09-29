@@ -51,7 +51,7 @@ fn swarm(n: u64) -> NodeConfig {
 }
 
 fn lone() -> NodeConfig {
-    NodeConfig::single_node(9000, at(GENESIS_MS))
+    NodeConfig::single_node(9000, at(GENESIS_MS), "unused-ledger")
 }
 
 #[test]

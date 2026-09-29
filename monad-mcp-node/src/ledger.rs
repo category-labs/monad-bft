@@ -178,22 +178,16 @@ fn write(writer: &LedgerWriter, block: &NewBlock) {
 // what the node does with each finalized slot: log it, then store it
 pub struct Recorder {
     schedule: Arc<dyn ProposerSchedule + Send + Sync>,
-    sink: Option<LedgerSink>,
+    sink: LedgerSink,
 }
 
 impl Recorder {
-    pub fn new(
-        schedule: Arc<dyn ProposerSchedule + Send + Sync>,
-        sink: Option<LedgerSink>,
-    ) -> Self {
+    pub fn new(schedule: Arc<dyn ProposerSchedule + Send + Sync>, sink: LedgerSink) -> Self {
         Self { schedule, sink }
     }
 
     pub fn record(&mut self, finalized: FinalizedSlot) {
         log_finalized(&finalized);
-        let Some(sink) = &mut self.sink else {
-            return;
-        };
         let proposers = match self.schedule.proposers_at(finalized.slot) {
             Ok(set) => Some(set),
             Err(error) => {
@@ -201,7 +195,7 @@ impl Recorder {
                 None
             }
         };
-        sink.write(new_block(&finalized, proposers.as_ref()));
+        self.sink.write(new_block(&finalized, proposers.as_ref()));
     }
 }
 

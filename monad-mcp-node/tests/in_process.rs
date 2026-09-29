@@ -134,7 +134,7 @@ impl<R: Runtime> Harness<R> {
 
 #[test]
 fn a_delivered_tx_is_finalized_and_written_to_the_ledger() {
-    let config = NodeConfig::single_node(0, at(GENESIS_MS));
+    let config = NodeConfig::single_node(0, at(GENESIS_MS), "unused-ledger");
     let mut harness = Harness::new(&config);
 
     harness.deliver(&tx(1));
@@ -198,7 +198,7 @@ fn a_delivered_tx_is_finalized_and_written_to_the_ledger() {
 
 #[test]
 fn a_stream_of_txs_commits_each_exactly_once_and_in_order() {
-    let config = NodeConfig::single_node(0, at(GENESIS_MS));
+    let config = NodeConfig::single_node(0, at(GENESIS_MS), "unused-ledger");
     let mut harness = Harness::new(&config);
     let interval = TimestampDelta::from_millis(37);
     for nonce in 0..60 {
@@ -235,7 +235,7 @@ fn a_stream_of_txs_commits_each_exactly_once_and_in_order() {
 
 #[test]
 fn a_random_source_node_drops_txs() {
-    let mut config = NodeConfig::single_node(0, at(GENESIS_MS));
+    let mut config = NodeConfig::single_node(0, at(GENESIS_MS), "unused-ledger");
     config.proposal.source = SourceKind::Random;
     config.proposal.max_payload_bytes = Some(4096);
     let mut harness = Harness::new(&config);
@@ -296,7 +296,7 @@ impl Runtime for DropFirstBatch {
 
 #[test]
 fn a_batch_left_out_of_its_block_is_proposed_again() {
-    let config = NodeConfig::single_node(0, at(GENESIS_MS));
+    let config = NodeConfig::single_node(0, at(GENESIS_MS), "unused-ledger");
     let node = Node::new(&config)
         .unwrap()
         .map_runtime(|inner| DropFirstBatch {
@@ -335,7 +335,7 @@ fn a_batch_left_out_of_its_block_is_proposed_again() {
 
 #[test]
 fn an_oversized_tx_is_never_committed() {
-    let config = NodeConfig::single_node(0, at(GENESIS_MS));
+    let config = NodeConfig::single_node(0, at(GENESIS_MS), "unused-ledger");
     let mut harness = Harness::new(&config);
     let oversized = Tx {
         payload: Bytes::from(vec![3; monad_mcp_chorus::ledger::MAX_TX_PAYLOAD + 1]),

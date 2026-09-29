@@ -5,8 +5,8 @@
 #
 #   swarm.sh [nodes] [seconds]
 #
-# Defaults: 10 nodes for 60 seconds. Configs and logs are written to
-# $SWARM_DIR (/tmp/mcp-swarm). Ports count up from $BASE_PORT (9100).
+# Defaults: 10 nodes for 60 seconds. Configs, logs and ledgers are written
+# to $SWARM_DIR (/tmp/mcp-swarm). Ports count up from $BASE_PORT (9100).
 # Genesis is $GENESIS_DELAY_MS (5000) after launch.
 
 set -euo pipefail
@@ -68,6 +68,9 @@ write_config() {
         echo
         echo "[network]"
         echo "port = $(port_of $i)"
+        echo
+        echo "[ledger]"
+        echo "dir = \"$dir/ledger-$i\""
     } > "$dir/node-$i.toml"
 }
 

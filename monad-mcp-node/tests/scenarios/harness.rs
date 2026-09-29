@@ -26,8 +26,8 @@ use monad_mcp_node::{
         types::{MerkleRoot, NodeId, ProposalMap, Slot, Timestamp, TimestampDelta},
     },
     config::{
-        CadenceConfig, DAConfig, NetworkConfig, NodeConfig, ProposalConfig, RepeaterSection,
-        ValidatorConfig,
+        CadenceConfig, DAConfig, LedgerConfig, NetworkConfig, NodeConfig, ProposalConfig,
+        RepeaterSection, ValidatorConfig,
     },
     da::ProposalKeyPair,
     network::{Inbound, Packet},
@@ -209,7 +209,9 @@ pub fn node_config(id: u64, validators: u64) -> NodeConfig {
             ..RepeaterSection::default()
         }),
         mempool: Default::default(),
-        ledger: None,
+        ledger: LedgerConfig {
+            dir: "unused-ledger".into(),
+        },
     }
 }
 

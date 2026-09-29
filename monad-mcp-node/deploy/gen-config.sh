@@ -92,6 +92,9 @@ for host in $(hosts); do
         echo "num_proposals = $num_proposals"
         echo "propose_before_deadline = $propose_before"
         echo "withhold_before_deadline = $withhold_before"
+        echo
+        echo "[ledger]"
+        echo "dir = \"/home/$ssh_user/$remote_rel/ledger\""
     } > "$config_dir/$host.toml"
     echo "$config_dir/$host.toml  node_id=$id  address=${ip_of[$host]}:$port"
 done

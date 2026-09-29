@@ -31,7 +31,7 @@ use monad_mcp_chorus::{
 };
 use monad_mcp_node::{
     chorus::types::{KeyPair, NodeId, Timestamp},
-    config::{LedgerConfig, NodeConfig, ValidatorConfig},
+    config::{NodeConfig, ValidatorConfig},
     da::ProposalKeyPair,
     network::{Packet, encode_frame},
     run_node,
@@ -336,13 +336,6 @@ fn the_schedule_flag_is_gone() {
     assert!(output.stdout.is_empty(), "{output:?}");
 }
 
-fn with_ledger(mut config: NodeConfig, dir: &std::path::Path, node: u64) -> NodeConfig {
-    config.ledger = Some(LedgerConfig {
-        dir: dir.join(format!("ledger-{node}")),
-    });
-    config
-}
-
 // how the rpc's tests embed a node: run_node on the caller's runtime,
 // stopped by dropping its task
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -350,7 +343,7 @@ async fn run_node_serves_in_process_and_frees_its_port_on_abort() {
     let dir = tempfile::tempdir().unwrap();
     let genesis = Timestamp::from_millis(unix_millis() + GENESIS_DELAY_MS);
     let port = free_udp_port();
-    let config = with_ledger(NodeConfig::single_node(port, genesis), dir.path(), 0);
+    let config = NodeConfig::single_node(port, genesis, dir.path().join("ledger-0"));
     let node = tokio::spawn(run_node(config));
     let to = SocketAddr::from(([127, 0, 0, 1], port));
 
@@ -383,7 +376,11 @@ async fn a_tx_sent_to_a_peer_lands_in_its_lane_on_every_ledger() {
     let genesis = Timestamp::from_millis(unix_millis() + GENESIS_DELAY_MS);
     let ports: Vec<u16> = (0..NODES).map(|_| free_udp_port()).collect();
     let validators = |node: u64| -> NodeConfig {
-        let mut config = NodeConfig::single_node(ports[node as usize], genesis);
+        let mut config = NodeConfig::single_node(
+            ports[node as usize],
+            genesis,
+            dir.path().join(format!("ledger-{node}")),
+        );
         config.validators = (0..NODES)
             .map(|id| ValidatorConfig {
                 node_id: NodeId::dummy(id),
@@ -395,7 +392,7 @@ async fn a_tx_sent_to_a_peer_lands_in_its_lane_on_every_ledger() {
         config.node_id = NodeId::dummy(node);
         config.proposal_key_pair = ProposalKeyPair::dummy(NodeId::dummy(node));
         config.cadence_key_pair = KeyPair::dummy(node);
-        with_ledger(config, dir.path(), node)
+        config
     };
     let nodes: Vec<_> = (0..NODES)
         .map(|node| tokio::spawn(run_node(validators(node))))

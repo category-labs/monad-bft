@@ -59,14 +59,17 @@ pub struct NodeConfig {
     pub repeater: Option<RepeaterSection>,
     #[serde(default)]
     pub mempool: MempoolConfig,
-    // absent: finalized blocks are only logged
-    pub ledger: Option<LedgerConfig>,
+    pub ledger: LedgerConfig,
 }
 
 impl NodeConfig {
     // a lone validator on localhost with the 100 ms local-demo parameters of
-    // config.example.toml and the mempool source; the ledger stays off.
-    pub fn single_node(port: u16, genesis_deadline: Timestamp) -> Self {
+    // config.example.toml and the mempool source
+    pub fn single_node(
+        port: u16,
+        genesis_deadline: Timestamp,
+        ledger_dir: impl Into<PathBuf>,
+    ) -> Self {
         let id = 0;
         Self {
             node_id: NodeId::dummy(id),
@@ -88,7 +91,9 @@ impl NodeConfig {
             },
             repeater: None,
             mempool: MempoolConfig::default(),
-            ledger: None,
+            ledger: LedgerConfig {
+                dir: ledger_dir.into(),
+            },
         }
     }
 
@@ -544,32 +549,45 @@ port = 9000
         assert_eq!(config.mempool.max_txs, MempoolConfig::default().max_txs);
     }
 
-    // an existing deployment's config keeps proposing random payloads
+    const LEDGER: &str = "
+[ledger]
+dir = \"/var/mcp/ledger\"
+";
+
+    // a config with only the required sections proposes random payloads
     #[test]
-    fn the_new_sections_default_to_the_old_behaviour() {
-        let config: NodeConfig = toml::from_str(MINIMAL).unwrap();
+    fn the_optional_sections_default_to_random_payloads() {
+        let config: NodeConfig = toml::from_str(&format!("{MINIMAL}{LEDGER}")).unwrap();
         assert_eq!(config.proposal.source, SourceKind::Random);
         assert_eq!(
             config.proposal.proposal_size_limit(),
             ProposalConfig::RANDOM_PROPOSAL_SIZE_LIMIT
         );
-        assert!(config.ledger.is_none());
+        assert_eq!(config.ledger.dir, PathBuf::from("/var/mcp/ledger"));
         config.validate().unwrap();
+    }
+
+    #[test]
+    fn a_config_without_a_ledger_is_rejected() {
+        let Err(error) = toml::from_str::<NodeConfig>(MINIMAL) else {
+            panic!("a config without [ledger] parsed");
+        };
+        assert!(
+            error.to_string().contains("missing field `ledger`"),
+            "{error}"
+        );
     }
 
     #[test]
     fn the_demo_sections_parse() {
         let text = format!(
-            "{MINIMAL}
+            "{MINIMAL}{LEDGER}
 [proposal]
 source = \"mempool\"
 max_payload_bytes = 4096
 
 [mempool]
 max_txs = 7
-
-[ledger]
-dir = \"/var/mcp/ledger\"
 "
         );
         let config: NodeConfig = toml::from_str(&text).unwrap();
@@ -577,22 +595,19 @@ dir = \"/var/mcp/ledger\"
         assert_eq!(config.proposal.proposal_size_limit(), 4096);
         assert_eq!(config.mempool.max_txs, 7);
         assert_eq!(config.mempool.max_bytes, MempoolConfig::default().max_bytes);
-        assert_eq!(
-            config.ledger.as_ref().unwrap().dir,
-            PathBuf::from("/var/mcp/ledger")
-        );
         config.validate().unwrap();
     }
 
     #[test]
     fn an_unknown_source_is_rejected() {
-        let text = format!("{MINIMAL}\n[proposal]\nsource = \"file\"\n");
+        let text = format!("{MINIMAL}{LEDGER}\n[proposal]\nsource = \"file\"\n");
         assert!(toml::from_str::<NodeConfig>(&text).is_err());
     }
 
     #[test]
     fn a_mempool_proposal_size_limit_must_hold_the_largest_tx() {
-        let mut config = NodeConfig::single_node(9000, Timestamp::from_millis(0));
+        let mut config =
+            NodeConfig::single_node(9000, Timestamp::from_millis(0), "/var/mcp/ledger");
         config.validate().unwrap();
         let largest = crate::component::mempool::largest_tx().length();
         config.proposal.max_payload_bytes = Some(largest);
@@ -624,7 +639,7 @@ dir = \"/var/mcp/ledger\"
 
     #[test]
     fn the_single_node_config_uses_the_demo_parameters() {
-        let config = NodeConfig::single_node(9000, Timestamp::from_millis(0));
+        let config = NodeConfig::single_node(9000, Timestamp::from_millis(0), "/var/mcp/ledger");
         assert_eq!(
             config.cadence.slot_interval,
             TimestampDelta::from_millis(100)

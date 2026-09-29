@@ -76,7 +76,8 @@ pub fn unix_millis() -> u64 {
 
 // validator `self_id` of a set at `addresses`, with the 100 ms demo parameters
 pub fn node_config(self_id: u64, addresses: &[SocketAddr], genesis: Timestamp) -> NodeConfig {
-    let mut config = NodeConfig::single_node(addresses[self_id as usize].port(), genesis);
+    let mut config =
+        NodeConfig::single_node(addresses[self_id as usize].port(), genesis, "unused-ledger");
     config.validators = addresses
         .iter()
         .enumerate()

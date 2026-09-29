@@ -61,11 +61,7 @@ pub async fn run_node(config: NodeConfig) -> Result<(), RunError> {
 async fn run(config: NodeConfig) -> Result<(), RunError> {
     let node = Node::new(&config)?;
     let proposers = node.runtime().epoch_handle().proposers.clone();
-    let sink = config
-        .ledger
-        .as_ref()
-        .map(|ledger| LedgerSink::spawn(&ledger.dir))
-        .transpose()?;
+    let sink = LedgerSink::spawn(&config.ledger.dir)?;
 
     let mut node = AsyncNode::spawn(node, Clock::start());
     let (handle, transport) = NetworkHandle::pair();

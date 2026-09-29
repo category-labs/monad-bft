@@ -17,13 +17,16 @@
 //! UDP. `cargo run --example swarm -- [nodes] [seconds]`, defaults 10
 //! nodes for 60 seconds.
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{
+    path::Path,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use monad_mcp_chorus::spec::vote::KeyPair as _;
 use monad_mcp_node::{
     RunError,
     chorus::types::{KeyPair, NodeId, Timestamp, TimestampDelta},
-    config::{NetworkConfig, NodeConfig, ValidatorConfig},
+    config::{LedgerConfig, NetworkConfig, NodeConfig, ValidatorConfig},
     da::ProposalKeyPair,
     init_logging, run_node,
 };
@@ -44,7 +47,7 @@ fn validators(nodes: u64) -> Vec<ValidatorConfig> {
     validators
 }
 
-fn config(i: u64, nodes: u64, genesis_deadline: Timestamp) -> NodeConfig {
+fn config(i: u64, nodes: u64, genesis_deadline: Timestamp, ledgers: &Path) -> NodeConfig {
     NodeConfig {
         node_id: NodeId::dummy(i),
         proposal_key_pair: ProposalKeyPair::dummy(NodeId::dummy(i)),
@@ -59,7 +62,9 @@ fn config(i: u64, nodes: u64, genesis_deadline: Timestamp) -> NodeConfig {
         proposal: Default::default(),
         repeater: None,
         mempool: Default::default(),
-        ledger: None,
+        ledger: LedgerConfig {
+            dir: ledgers.join(format!("ledger-{i}")),
+        },
     }
 }
 
@@ -86,12 +91,14 @@ async fn main() -> Result<(), RunError> {
     let nodes: u64 = args.next().map(|n| n.parse()).transpose()?.unwrap_or(10);
     let seconds: u64 = args.next().map(|n| n.parse()).transpose()?.unwrap_or(60);
 
+    // dropped, and so removed, once the swarm stops
+    let ledgers = tempfile::tempdir()?;
     let genesis_deadline = genesis_deadline();
     let mut runs = Vec::new();
     for i in 0..nodes {
         runs.push(tokio::spawn(run_logged(
             i,
-            config(i, nodes, genesis_deadline),
+            config(i, nodes, genesis_deadline, ledgers.path()),
         )));
     }
 

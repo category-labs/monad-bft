@@ -54,9 +54,9 @@ max_bytes = 16777216
 # committed tx hashes remembered so a re-send is not committed twice
 recent_txs = 100000
 
-# absent: finalized blocks are only logged. Blocks go to <dir>/blocks/<slot:012>/.
-# [ledger]
-# dir = "/home/monad/monad-mcp/ledger"
+# required: finalized blocks go to <dir>/blocks/<slot:012>/
+[ledger]
+dir = "/home/monad/monad-mcp/ledger"
 
 # local demo: a lone validator on localhost with 100 ms slots, the
 # parameters of NodeConfig::single_node; these tables replace the ones

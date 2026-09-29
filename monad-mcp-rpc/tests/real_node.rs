@@ -46,9 +46,9 @@ fn free_udp_port() -> u16 {
 }
 
 fn with_ledger(mut config: NodeConfig, dir: &Path, node: u64) -> NodeConfig {
-    config.ledger = Some(LedgerConfig {
+    config.ledger = LedgerConfig {
         dir: ledger_dir(dir, node),
-    });
+    };
     config
 }
 
@@ -87,7 +87,7 @@ async fn txs_commit_through_a_real_node_and_survive_its_restart() {
     let dir = tempfile::tempdir().unwrap();
     let genesis = Timestamp::from_millis(unix_millis() + 2_000);
     let port = free_udp_port();
-    let config = || with_ledger(NodeConfig::single_node(port, genesis), dir.path(), 0);
+    let config = || NodeConfig::single_node(port, genesis, ledger_dir(dir.path(), 0));
     let node = spawn_node(config());
     let (rpc, _) = spawn_rpc(monad_mcp_rpc::RpcConfig {
         ledger_dir: ledger_dir(dir.path(), 0),

@@ -176,8 +176,7 @@ impl RpcSection {
         let ledger_dir = self
             .ledger_dir
             .clone()
-            .or_else(|| node.ledger.as_ref().map(|ledger| ledger.dir.clone()))
-            .ok_or(ConfigError::Missing("ledger_dir"))?;
+            .unwrap_or_else(|| node.ledger.dir.clone());
         self.resolve(&node, ledger_dir)
     }
 
@@ -247,7 +246,7 @@ dir = "/var/mcp/ledger"
 
     #[test]
     fn defaults_follow_the_plan() {
-        let node = NodeConfig::single_node(9000, Timestamp::from_millis(0));
+        let node = NodeConfig::single_node(9000, Timestamp::from_millis(0), "/var/mcp/ledger");
         let config = RpcConfig::colocated(&node, "/var/ledger").unwrap();
         assert_eq!(config.http_addr, DEFAULT_HTTP_ADDR);
         assert_eq!(config.ledger_dir, PathBuf::from("/var/ledger"));
@@ -335,20 +334,10 @@ dir = "/var/mcp/ledger"
         };
         assert!(matches!(garbage.build(), Err(ConfigError::Parse { .. })));
 
-        // a node config without [ledger] needs the rpc's ledger_dir
-        let (without_ledger, _) = NODE.split_once("[ledger]").unwrap();
-        let section = RpcSection {
-            node_config: Some(node_file(dir.path(), without_ledger)),
-            ..RpcSection::default()
-        };
-        assert!(matches!(
-            section.clone().build(),
-            Err(ConfigError::Missing("ledger_dir"))
-        ));
         let zero = RpcSection {
-            ledger_dir: Some("/l".into()),
+            node_config: Some(node_file(dir.path(), NODE)),
             max_attempts: Some(0),
-            ..section
+            ..RpcSection::default()
         };
         assert!(matches!(zero.clone().build(), Err(ConfigError::Invalid(_))));
         let no_retention = RpcSection {

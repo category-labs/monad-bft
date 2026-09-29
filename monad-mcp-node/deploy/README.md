@@ -81,8 +81,8 @@ are the two scripts here that do not source `lib.sh`.
   every 10 minutes, keeping the newest `RETENTION_BLOCKS` (default 1,000,000) files under
   `~/monad-mcp/ledger/blocks` and deleting the oldest in batches while free space is under
   `MIN_FREE_GB` (default 200). Knobs live in `~/monad-mcp/cruft.env`, which `deploy.sh`
-  installs only if it is absent. The node has no ledger writer yet, so `ledger/blocks` stays
-  empty and `cruft.sh` exits quietly; the pruner is in place for when the writer lands.
+  installs only if it is absent. The node writes finalized blocks there: `gen-config.sh`
+  sets the required `[ledger] dir` to `~/monad-mcp/ledger`.
 - **`build.sh` keeps the `MCP_KEEP_BINARIES` (default 3) newest binaries in `dist/`**; older shas are a rebuild away.
 - **The node has no `--version` flag**, so the sha in the binary name plus `dist/VERSION` is
   the version, and `build.sh` refuses to build a dirty `monad-mcp-*` tree unless given

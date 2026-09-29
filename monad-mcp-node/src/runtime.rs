@@ -364,7 +364,8 @@ mod tests {
     }
 
     fn config(source: SourceKind) -> NodeConfig {
-        let mut config = NodeConfig::single_node(0, Timestamp::from_millis(10_000));
+        let mut config =
+            NodeConfig::single_node(0, Timestamp::from_millis(10_000), "unused-ledger");
         config.proposal.source = source;
         config
     }
