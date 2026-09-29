@@ -87,18 +87,24 @@ use monad_chain_config::{
 };
 use monad_ethcall::ChainId;
 
-pub(crate) fn parse_ethcall_chain_id(chain_id: u64) -> JsonRpcResult<ChainId> {
+pub(crate) fn ethcall_chain_id(chain_id: u64) -> Option<ChainId> {
     match chain_id {
-        ETHEREUM_MAINNET_CHAIN_ID => Ok(ChainId::EthereumMainnet),
-        MONAD_MAINNET_CHAIN_ID => Ok(ChainId::MonadMainnet),
-        MONAD_TESTNET_CHAIN_ID => Ok(ChainId::MonadTestnet),
-        MONAD_DEVNET_CHAIN_ID => Ok(ChainId::MonadDevnet),
-        HIVE_CHAIN_ID => Ok(ChainId::HiveNet),
-        other => Err(JsonRpcError::eth_call_error(
-            "unsupported chain id".to_string(),
-            Some(other.to_string()),
-        )),
+        ETHEREUM_MAINNET_CHAIN_ID => Some(ChainId::EthereumMainnet),
+        MONAD_MAINNET_CHAIN_ID => Some(ChainId::MonadMainnet),
+        MONAD_TESTNET_CHAIN_ID => Some(ChainId::MonadTestnet),
+        MONAD_DEVNET_CHAIN_ID => Some(ChainId::MonadDevnet),
+        HIVE_CHAIN_ID => Some(ChainId::HiveNet),
+        _ => None,
     }
+}
+
+pub(crate) fn parse_ethcall_chain_id(chain_id: u64) -> JsonRpcResult<ChainId> {
+    ethcall_chain_id(chain_id).ok_or_else(|| {
+        JsonRpcError::eth_call_error(
+            "unsupported chain id".to_string(),
+            Some(chain_id.to_string()),
+        )
+    })
 }
 
 pub async fn rpc_handler(
