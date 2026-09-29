@@ -239,6 +239,16 @@ impl<PT: PubKey> OutboundRequests<PT> {
         from: NodeId<PT>,
         response: StateSyncResponse,
     ) -> Vec<StateSyncResponse> {
+        // handle_done trusts n as the prefix's progress, and an honest server always sends until
+        if response.response_n != 0 && response.response_n != response.request.until {
+            tracing::debug!(
+                ?from,
+                ?response,
+                "dropping statesync response, response_n is not the request's until"
+            );
+            return Vec::new();
+        }
+
         let maybe_prefix_peer = self.prefix_peers.get(&response.request.prefix);
         if maybe_prefix_peer.is_some_and(|prefix_peer| prefix_peer != &from) {
             tracing::debug!(
@@ -433,11 +443,13 @@ impl<PT: PubKey> OutboundRequests<PT> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use monad_crypto::NopPubKey;
     use monad_executor_glue::{StateSyncRequest, StateSyncResponse, SELF_STATESYNC_VERSION};
     use monad_types::NodeId;
 
-    use super::InFlightRequest;
+    use super::{InFlightRequest, OutboundRequests, RequestPollResult};
 
     fn node_id(seed: u8) -> NodeId<NopPubKey> {
         let pubkey =
@@ -490,5 +502,39 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![0, 1]
         );
+    }
+
+    #[test]
+    fn response_n_other_than_until_is_dropped() {
+        let peer = node_id(1);
+        let mut outbound_requests = OutboundRequests::new(1, Duration::from_secs(60), &[peer]);
+        outbound_requests.queue_request(request());
+        assert!(matches!(
+            outbound_requests.poll(),
+            RequestPollResult::Request(to, sent) if to == peer && sent == request()
+        ));
+
+        let done = |response_n| StateSyncResponse {
+            response_n,
+            ..response(0)
+        };
+        let until = request().until;
+        for response_n in [until - 1, until + 1, u64::MAX] {
+            assert!(
+                outbound_requests
+                    .handle_response(peer, done(response_n))
+                    .is_empty(),
+                "response_n {response_n} was not dropped"
+            );
+            assert!(outbound_requests
+                .in_flight_requests
+                .contains_key(&request()));
+        }
+
+        assert_eq!(
+            outbound_requests.handle_response(peer, done(until)).len(),
+            1
+        );
+        assert!(outbound_requests.is_empty());
     }
 }
