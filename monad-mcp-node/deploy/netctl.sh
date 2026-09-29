@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# every whole-network start mints a new genesis and wipes the ledger.
+# every whole-network start mints a new genesis and wipes the ledger;
+# live-upgrade restarts one host at a time on the running genesis and ledger.
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
-usage="usage: netctl.sh start [--lead 60] [--keep-ledger] [-- gen-config.sh flags] | stop | restart [start flags] | status | logs <host> [-f] | upgrade [start flags] | run-one <host> start|stop"
+usage="usage: netctl.sh start [--lead 60] [--keep-ledger] [-- gen-config.sh flags] | stop | restart [start flags] | status | logs <host> [-f] | upgrade [start flags] | live-upgrade [--hosts a,b] [--timeout 120] [--max-lag 20] [--no-build] [--dirty] [-- gen-config.sh flags] | run-one <host> start|stop|restart"
 
 port_free_host() {
     rssh "$1" "if ss -Hlun | tr -s ' ' '\n' | grep -q ':$port\$'; then
@@ -40,11 +41,28 @@ start_host() {
     fi
 }
 
+# the rpc reads node.toml at startup, so it is (re)started after its node;
+# 2 s catches a config error, since Restart=on-failure would hide it as activating
+rpc_start_host() {
+    local host=$1
+    if [ "$supervisor" != systemd ]; then
+        echo "supervisor=$supervisor: no rpc"
+        return
+    fi
+    rssh_user_systemd "$host" "systemctl --user restart $rpc_unit.service
+        sleep 2
+        state=\$(systemctl --user is-active $rpc_unit.service || true)
+        echo rpc=\$state
+        [ \"\$state\" = active ]"
+}
+
 # the bracket keeps pgrep from matching the ssh command line itself
 stop_host() {
     local host=$1
     if [ "$supervisor" = systemd ]; then
-        rssh_user_systemd "$host" "systemctl --user stop $unit.service" || true
+        # separate calls: an rpc unit not yet deployed must not keep the node running
+        rssh_user_systemd "$host" "systemctl --user stop $rpc_unit.service 2> /dev/null
+            systemctl --user stop $unit.service" || true
     else
         rssh "$host" "if [ -s $remote_root/run/pid ]; then
                 kill -INT \$(cat $remote_root/run/pid) 2> /dev/null || true
@@ -79,10 +97,11 @@ status_host() {
     local host=$1
     rssh_user_systemd "$host" "
         state=\$(systemctl --user is-active $unit.service 2> /dev/null || true)
+        rpc=\$(systemctl --user is-active $rpc_unit.service 2> /dev/null || true)
         since=\$(systemctl --user show $unit.service -p ActiveEnterTimestamp --value 2> /dev/null || true)
         bound=\$(ss -Hlun | tr -s ' ' '\n' | grep -c ':$port\$' || true)
         last=\$($(node_log_cmd) 2> /dev/null | grep finalized | tail -1)
-        echo \"state=\${state:-unknown} port_bound=\$bound since=\${since:-none}\"
+        echo \"state=\${state:-unknown} rpc=\${rpc:-unknown} port_bound=\$bound since=\${since:-none}\"
         echo \"last=\${last:-no finalized line}\""
 }
 
@@ -107,7 +126,16 @@ cmd_start() {
     since=$((start_ms / 1000 - 5))
     ts=$((start_ms / 1000))
 
-    "$deploy_dir/gen-config.sh" --genesis "$genesis" "${gen_args[@]}"
+    local missing
+    missing=$(missing_configs | xargs)
+    if [ ${#gen_args[@]} -gt 0 ] || [ "$missing" = "$(hosts | xargs)" ]; then
+        "$deploy_dir/gen-config.sh" --genesis "$genesis" --force "${gen_args[@]}"
+    elif [ -n "$missing" ]; then
+        die "no config for $missing; re-render all with: netctl.sh start -- --force (overwrites local edits)"
+    else
+        # keeps local edits in config/<host>/
+        "$deploy_dir/gen-config.sh" --genesis "$genesis" --only-genesis
+    fi
     # recorded before the start fanout so a partial failure cannot leave a stale window
     mkdir -p "$dist_dir"
     echo "$genesis" > "$dist_dir/last-genesis"
@@ -122,6 +150,9 @@ cmd_start() {
 
     echo "waiting for the udp bind on every host"
     fanout wait_bound_host "$since"
+
+    echo "starting the rpc on every host"
+    fanout rpc_start_host
 
     echo "genesis_deadline = $genesis ($(iso_of_ms "$genesis")), recorded in $dist_dir/last-genesis"
 }
@@ -165,12 +196,134 @@ cmd_upgrade() {
     cmd_start "$@"
 }
 
+# health_host <host> <since unix s> <genesis ms> <slot_interval ms> <min finalized> <max lag>
+# counts finalized lines since the node's latest `udp bound`, so a restart
+# resets it even in the setsid log. rc 0 healthy, 1 not yet, 2 not running.
+health_host() {
+    local host=$1 since=$2 genesis=$3 interval=$4 need=$5 max_lag=$6 state_cmd
+    if [ "$supervisor" = systemd ]; then
+        state_cmd="systemctl --user is-active $unit.service 2> /dev/null || true"
+    else
+        state_cmd="[ -s $remote_root/run/pid ] && kill -0 \$(cat $remote_root/run/pid) 2> /dev/null && echo active || echo inactive"
+    fi
+    local prog='
+        /udp bound/ { n = 0; tip = -1 }
+        /finalized slot=/ {
+            match($0, /slot=[0-9]+/); s = substr($0, RSTART + 5, RLENGTH - 5) + 0
+            n++; if (s > tip) tip = s
+        }
+        END {
+            clock = int((now - g) / iv)
+            if (tip < 0) printf "state=%s finalized=0 tip=- clock=%d lag=-\n", state, clock
+            else printf "state=%s finalized=%d tip=%d clock=%d lag=%d\n", state, n, tip, clock, clock - tip
+            if (state != "active") exit 2
+            exit !(n >= need && tip >= 0 && clock - tip <= maxlag)
+        }'
+    rssh_user_systemd "$host" "state=\$($state_cmd)
+        now=\$((\$(date +%s%N) / 1000000))
+        $(node_log_cmd "$since") 2> /dev/null | sed 's/\x1b\[[0-9;]*m//g' \
+            | awk -v state=\"\$state\" -v now=\"\$now\" -v g=$genesis -v iv=$interval \
+                -v need=$need -v maxlag=$max_lag -v tip=-1 -v n=0 '$prog'"
+}
+
+cmd_live_upgrade() {
+    local timeout=120 need=10 max_lag=20 build=yes build_args=() subset= render=no gen_args=()
+    while [ $# -gt 0 ]; do
+        case $1 in
+            --hosts) subset=${2:?$usage}; shift ;;
+            --timeout) timeout=${2:?$usage}; shift ;;
+            --max-lag) max_lag=${2:?$usage}; shift ;;
+            --no-build) build=no ;;
+            --dirty) build_args=(--dirty) ;;
+            --) shift; render=yes; gen_args=("$@"); break ;;
+            *) die "$usage" ;;
+        esac
+        shift
+    done
+
+    local upgrade_hosts
+    if [ -n "$subset" ]; then
+        upgrade_hosts=$(set_targets "$subset"; targets | xargs)
+    else
+        upgrade_hosts=$(hosts | xargs)
+    fi
+
+    local src genesis interval
+    src=$(hosts | head -1)
+    genesis=$(remote_config_int "$src" genesis_deadline)
+    interval=$(remote_config_int "$src" slot_interval)
+    echo "live genesis $genesis ($(iso_of_ms "$genesis")) slot_interval=${interval}ms, from $src"
+
+    echo "checking every host is finalizing"
+    fanout health_host $(($(date +%s) - 10)) "$genesis" "$interval" "$need" "$max_lag"
+
+    # rendered for every host so the validator set stays identical; pushed only per upgraded host
+    [ "$render" = no ] || "$deploy_dir/gen-config.sh" --genesis "$genesis" --keep-genesis --force "${gen_args[@]}"
+    local host
+    for host in $upgrade_hosts; do
+        [ -f "$(host_config "$host")" ] || die "no $(host_config "$host"); render on the live genesis with: live-upgrade -- --force"
+        [ "$(local_config_int "$host" genesis_deadline)" = "$genesis" ] \
+            || die "$(host_config "$host") genesis_deadline is not the live $genesis"
+    done
+
+    [ "$build" = no ] || "$deploy_dir/build.sh" "${build_args[@]}"
+    local binary rpc_binary
+    read -r binary rpc_binary <<< "$(dist_binaries)"
+    # shellcheck disable=SC2086
+    "$deploy_dir/deploy.sh" --stage $upgrade_hosts
+
+    local done_hosts= since rc out deadline
+    for host in $upgrade_hosts; do
+        echo
+        echo "=== $host: checking the network before taking it down"
+        fanout health_host $(($(date +%s) - 10)) "$genesis" "$interval" "$need" "$max_lag"
+
+        echo "=== $host: stop, swap to $binary + $rpc_binary, start"
+        stop_host "$host"
+        rssh "$host" "set -e
+            $(swap_cmd "$binary")
+            $(swap_cmd "$rpc_binary" rpc-current)"
+        "$deploy_dir/push-config.sh" "$host"
+        since=$(($(date +%s) - 1))
+        start_host "$host"
+
+        echo "=== $host: waiting up to ${timeout}s for >= $need finalized and lag <= $max_lag slots"
+        deadline=$(($(date +%s) + timeout))
+        while :; do
+            rc=0
+            out=$(health_host "$host" "$since" "$genesis" "$interval" "$need" "$max_lag") || rc=$?
+            echo "    $out"
+            [ "$rc" = 0 ] && break
+            if [ "$rc" = 2 ] || [ "$(date +%s)" -ge "$deadline" ]; then
+                echo "rollout stopped at $host; upgraded: ${done_hosts:-none}" >&2
+                die "$host is not healthy on $binary; see netctl.sh logs $host"
+            fi
+            sleep 3
+        done
+        if ! rpc_start_host "$host"; then
+            echo "rollout stopped at $host (node healthy, rpc not); upgraded: ${done_hosts:-none}" >&2
+            die "rpc on $host is not active; see journalctl --user -u $rpc_unit on $host"
+        fi
+        done_hosts+="${done_hosts:+ }$host"
+    done
+    echo
+    echo "live upgrade done: $done_hosts -> $binary + $rpc_binary"
+}
+
 cmd_run_one() {
     local host=${1:?$usage} action=${2:?$usage}
     node_id_of "$host" > /dev/null
     case $action in
-        start) start_host "$host" ;;
+        start)
+            start_host "$host"
+            rpc_start_host "$host"
+            ;;
         stop) stop_host "$host" ;;
+        restart)
+            stop_host "$host"
+            start_host "$host"
+            rpc_start_host "$host"
+            ;;
         *) die "$usage" ;;
     esac
 }
@@ -187,6 +340,7 @@ case $cmd in
     status) cmd_status "$@" ;;
     logs) cmd_logs "$@" ;;
     upgrade) cmd_upgrade "$@" ;;
+    live-upgrade) cmd_live_upgrade "$@" ;;
     run-one) cmd_run_one "$@" ;;
     *) die "$usage" ;;
 esac

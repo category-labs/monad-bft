@@ -1,0 +1,76 @@
+node_id = 0
+proposal_key_pair = 0
+cadence_key_pair = 0
+genesis_deadline = 1790139877822
+
+[[validators]]
+node_id = 0
+stake = 1
+chorus_pubkey = 0
+address = "84.32.186.173:8002"
+
+[[validators]]
+node_id = 1
+stake = 1
+chorus_pubkey = 1
+address = "185.191.118.174:8002"
+
+[[validators]]
+node_id = 2
+stake = 1
+chorus_pubkey = 2
+address = "64.130.59.199:8002"
+
+[[validators]]
+node_id = 3
+stake = 1
+chorus_pubkey = 3
+address = "72.5.46.22:8002"
+
+[[validators]]
+node_id = 4
+stake = 1
+chorus_pubkey = 4
+address = "46.166.162.43:8002"
+
+[[validators]]
+node_id = 5
+stake = 1
+chorus_pubkey = 5
+address = "69.162.93.55:8002"
+
+[[validators]]
+node_id = 6
+stake = 1
+chorus_pubkey = 6
+address = "185.189.44.164:8002"
+
+[[validators]]
+node_id = 7
+stake = 1
+chorus_pubkey = 7
+address = "40.160.24.182:8002"
+
+[network]
+port = 8002
+
+[cadence]
+delta = 150
+slot_interval = 100
+slots_per_window = 100
+sync_boundary_slots = 80
+
+[repeater]
+interval = 500
+certificate_retention = 50
+
+[da]
+completed_slot_retention = 50
+
+[proposal]
+num_proposals = 5
+propose_before_deadline = 500
+withhold_before_deadline = 0
+
+[ledger]
+dir = "/home/monad/monad-mcp/ledger"

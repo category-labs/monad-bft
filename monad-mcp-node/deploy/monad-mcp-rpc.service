@@ -1,0 +1,14 @@
+[Unit]
+Description=Monad MCP tx rpc (%H)
+After=monad-mcp-node.service
+
+[Service]
+# reads the colocated node's config and ledger; http on 127.0.0.1:8080
+ExecStart=%h/monad-mcp/bin/rpc-current --node-config %h/monad-mcp/config/node.toml
+Environment=RUST_LOG=info
+KillSignal=SIGINT
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

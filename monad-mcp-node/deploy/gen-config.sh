@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# renders dist/config/<host>.toml for one shared genesis; see $usage below.
+# renders config/<host>/node.toml for one shared genesis; see $usage below.
+# --only-genesis rewrites just the genesis_deadline line, keeping local edits.
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
@@ -14,12 +15,23 @@ completed_slot_retention=50
 repeater_interval=500
 repeater_retention=50
 withhold_before=0
+# random: load without clients; mempool: txs from monad-mcp-rpc
+proposal_source=random
+keep_genesis=no
+force=no
+only_genesis=no
+render_args=no
 
-usage="usage: gen-config.sh --genesis <unix_ms> [--port n] [--delta ms] [--slot-interval ms] [--slots-per-window n] [--sync-boundary n] [--num-proposals n] [--propose-before ms] [--repeater-interval ms] [--repeater-retention n] [--withhold-before ms]"
+usage="usage: gen-config.sh --genesis <unix_ms> [--keep-genesis] { --only-genesis | [--force] [--source random|mempool] [--port n] [--delta ms] [--slot-interval ms] [--slots-per-window n] [--sync-boundary n] [--num-proposals n] [--propose-before ms] [--repeater-interval ms] [--repeater-retention n] [--withhold-before ms] }"
 
 while [ $# -gt 0 ]; do
+    case $1 in --genesis | --keep-genesis | --force | --only-genesis) ;; *) render_args=yes ;; esac
     case $1 in
         --genesis) genesis=${2:?$usage}; shift ;;
+        --keep-genesis) keep_genesis=yes ;;
+        --force) force=yes ;;
+        --only-genesis) only_genesis=yes ;;
+        --source) proposal_source=${2:?$usage}; shift ;;
         --port) port=${2:?$usage}; shift ;;
         --delta) delta=${2:?$usage}; shift ;;
         --slot-interval) slot_interval=${2:?$usage}; shift ;;
@@ -36,9 +48,31 @@ while [ $# -gt 0 ]; do
 done
 
 [ -n "$genesis" ] || die "$usage"
+case $proposal_source in random | mempool) ;; *) die "--source is random or mempool" ;; esac
 [[ $genesis =~ ^[0-9]+$ ]] || die "--genesis must be unix milliseconds"
 now=$(now_ms)
-[ "$genesis" -gt "$now" ] || die "genesis $genesis is not in the future (now $now)"
+# --keep-genesis: the running network's genesis, for netctl.sh live-upgrade
+[ "$keep_genesis" = yes ] || [ "$genesis" -gt "$now" ] \
+    || die "genesis $genesis is not in the future (now $now)"
+
+if [ "$only_genesis" = yes ]; then
+    [ "$render_args" = no ] && [ "$force" = no ] || die "--only-genesis takes no render flags"
+    missing=$(missing_configs | xargs)
+    [ -z "$missing" ] || die "no config for $missing; render with gen-config.sh --genesis <ms> first"
+    for host in $(hosts); do
+        f=$(host_config "$host")
+        [ "$(grep -c '^genesis_deadline *=' "$f")" = 1 ] || die "$f needs exactly one genesis_deadline line"
+        awk -v g="$genesis" '/^genesis_deadline *=/ { $0 = "genesis_deadline = " g } { print }' "$f" > "$f.new"
+        mv "$f.new" "$f"
+        echo "$f  genesis_deadline=$genesis"
+    done
+    echo "genesis_deadline = $genesis ($(iso_of_ms "$genesis"), in $(((genesis - now) / 1000))s)"
+    exit 0
+fi
+
+existing=$(for host in $(hosts); do [ ! -f "$(host_config "$host")" ] || echo "$host"; done | xargs)
+[ -z "$existing" ] || [ "$force" = yes ] \
+    || die "config exists for $existing; --force overwrites local edits (see git diff $config_dir), --only-genesis keeps them"
 
 declare -A ip_of
 for host in $(hosts); do
@@ -60,11 +94,10 @@ validator_section() {
 
 validators=$(validator_section)
 
-rm -rf "$config_dir"
-mkdir -p "$config_dir"
-
 for host in $(hosts); do
     id=$(node_id_of "$host")
+    f=$(host_config "$host")
+    mkdir -p "$(dirname "$f")"
     {
         echo "node_id = $id"
         echo "proposal_key_pair = $id"
@@ -89,14 +122,15 @@ for host in $(hosts); do
         echo "completed_slot_retention = $completed_slot_retention"
         echo
         echo "[proposal]"
+        echo "source = \"$proposal_source\""
         echo "num_proposals = $num_proposals"
         echo "propose_before_deadline = $propose_before"
         echo "withhold_before_deadline = $withhold_before"
         echo
         echo "[ledger]"
         echo "dir = \"/home/$ssh_user/$remote_rel/ledger\""
-    } > "$config_dir/$host.toml"
-    echo "$config_dir/$host.toml  node_id=$id  address=${ip_of[$host]}:$port"
+    } > "$f"
+    echo "$f  node_id=$id  address=${ip_of[$host]}:$port"
 done
 
 echo "genesis_deadline = $genesis ($(iso_of_ms "$genesis"), in $(((genesis - now) / 1000))s)"

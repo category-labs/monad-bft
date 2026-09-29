@@ -9,10 +9,26 @@ validators over ssh. No ansible, no root: the node runs under a user-level syste
 ```
 ./build.sh                  # dist/monad-mcp-node-<sha>, dist/VERSION
 ./preflight.sh              # read-only; never changes a host
-./deploy.sh [host]          # binary, units, pruner; does NOT start the node
+./deploy.sh [host...]       # binary, units, pruner; does NOT start the node
 ./netctl.sh start           # mints a genesis, pushes configs, starts all 8
 ./netctl.sh status
-./report.sh                 # safe at any time; counts grow as slots finalize
+./report.sh                 # safe at any time: tips, lag, latency by path
+```
+
+Upgrading a running network without a new genesis:
+
+```
+./netctl.sh live-upgrade                      # build, stage on all, then one host at a time
+./netctl.sh live-upgrade --hosts ams-001,vin-002 --no-build
+./netctl.sh live-upgrade -- --delta 200       # also re-render configs on the live genesis
+```
+
+Changing one host's config by hand:
+
+```
+$EDITOR config/ams-001/node.toml
+./push-config.sh ams-001                      # prints the remote -> local diff
+./netctl.sh run-one ams-001 restart
 ```
 
 `preflight.sh` fails any host where 8002/udp is still bound, which today means the four
@@ -27,20 +43,29 @@ monad-bft" below. Until then, run a reduced `hosts.txt` over the idle hosts (`am
 |---|---|
 | `hosts.txt` | the validator set; **line index is the `node_id`** |
 | `lib.sh` | ssh/rsync/fan-out helpers, sourced by every script |
-| `build.sh` | release build → `dist/monad-mcp-node-<sha>[-dirty]` + `dist/VERSION` |
-| `gen-config.sh` | renders `dist/config/<host>.toml` for one shared genesis |
+| `build.sh` | release build → `dist/monad-mcp-{node,rpc}-<sha>[-dirty]` + `dist/VERSION` |
+| `config/<host>/` | tracked per-host config, `node.toml` plus anything else to ship; mirrors `~/monad-mcp/config/` |
+| `gen-config.sh` | renders `config/<host>/node.toml` for one shared genesis; `--force` to overwrite, `--only-genesis` rewrites just `genesis_deadline` |
 | `preflight.sh` | read-only fitness check + pairwise UDP probe |
-| `deploy.sh [host]` | ships binary, `cruft.sh`, `run.sh` and the user units; enables them; one host if given |
-| `push-config.sh` | `dist/config/<host>.toml` → `~/monad-mcp/config/node.toml` |
-| `netctl.sh` | `start`/`stop`/`restart`/`status`/`logs`/`upgrade`/`run-one` |
-| `report.sh` | per-host finalized/committed counts, per-slot block agreement, top warnings |
+| `deploy.sh [--stage] [host...]` | ships node + rpc binaries, `cruft.sh`, `run.sh` and the user units; enables them; only the hosts given; `--stage` leaves `bin/{current,rpc-current}` alone |
+| `push-config.sh [host...]` | `config/<host>/` → `~/monad-mcp/config/`; prints the `node.toml` diff, keeps a changed one as `node.toml.<ts>~` |
+| `netctl.sh` | `start`/`stop`/`restart`/`status`/`logs`/`upgrade`/`live-upgrade`/`run-one` |
+| `report.sh` | per-host state/tip/lag/clock offset, finalization latency by path; `--logs <dir>` adds per-host counts, per-slot block agreement, top warnings |
 | `cruft.sh` | ledger pruner, runs on the host from `monad-mcp-cruft.timer` |
-| `monad-mcp-node.service`, `monad-mcp-cruft.{service,timer}`, `cruft.env`, `run.sh` | pushed to the hosts |
+| `monad-mcp-node.service`, `monad-mcp-rpc.service`, `monad-mcp-cruft.{service,timer}`, `cruft.env`, `run.sh` | pushed to the hosts |
 
 `dist/` is generated and gitignored. `cruft.sh` and `run.sh` run *on the validator*, so they
 are the two scripts here that do not source `lib.sh`.
 
 ## Things worth knowing
+
+- **`config/<host>/` is the source of truth for host config.** Edit it locally and push; never
+  edit `~/monad-mcp/config/` on a host, the next push overwrites it. `push-config.sh` refuses a
+  `node.toml` whose `node_id` is not the host's. `netctl.sh start` keeps local edits and only
+  rewrites `genesis_deadline`; flags after `--` (`-- --force` for defaults) re-render every
+  host from scratch, discarding edits (`git diff config/` shows what went). Re-render after
+  changing `hosts.txt`: the validator set is baked into every file. `build.sh`'s dirty check
+  ignores `config/`, since every start changes it.
 
 - **`hosts.txt` order is the network identity.** The line index becomes `node_id`,
   `cadence_key_pair`, `proposal_key_pair` and `chorus_pubkey` (the stub env derives every key
@@ -50,8 +75,29 @@ are the two scripts here that do not source `lib.sh`.
   default 60 s) and wipes `~/monad-mcp/ledger/`; `--keep-ledger` archives it to
   `ledger/blocks-<ts>` instead. The node keeps no state, so this is the normal way to change a
   cadence parameter: flags after `--` go to `gen-config.sh`, e.g. `./netctl.sh restart --
-  --delta 200 --slot-interval 120`. `netctl.sh run-one <host> start|stop` is the only path that
-  reuses the config already on the host, for crash/catch-up testing of a single node.
+  --delta 200 --slot-interval 120`. `netctl.sh run-one <host> start|stop|restart` reuses the config
+  already on the host, for crash/catch-up testing of a single node.
+- **`live-upgrade` keeps the genesis and the ledger.** It reads `genesis_deadline` and
+  `slot_interval` from the first host's `node.toml`, checks every host is finalizing, builds
+  (skip with `--no-build`, `--dirty` passes through), stages the binary with `deploy.sh --stage`,
+  then per host, in `hosts.txt` order: re-checks the whole network, stops the node, swaps
+  `bin/current`, starts it, and waits up to `--timeout` (120 s) for at least 10 `finalized`
+  lines since its `udp bound` with a tip within `--max-lag` (20) slots of the clock slot. A
+  node that dies or misses the gate stops the rollout; the hosts after it keep the old
+  `bin/current`. Each host gets its `config/<host>/` pushed just before its restart (a no-op if
+  unchanged); every upgraded host's local `genesis_deadline` must equal the live one. Flags after
+  `--` first re-render every config on the live genesis (`gen-config.sh --keep-genesis --force`,
+  discarding local edits), so parameters differ across the network mid-rollout. `--hosts a,b`
+  upgrades only those hosts. Each host's rpc is swapped with its node and started after the
+  node passes the gate; an rpc that is not active 2 s later also stops the rollout.
+- **`monad-mcp-rpc` runs beside every node** as the user unit `monad-mcp-rpc`
+  (`bin/rpc-current --node-config ~/monad-mcp/config/node.toml`, `Restart=on-failure`). It
+  reads the node's config and ledger, so `netctl.sh` stops it before its node and restarts it
+  after (`start`, `run-one`, `live-upgrade`); `status` shows its state. HTTP is
+  `127.0.0.1:8080` only (`/health`, `POST /tx`, `GET /tx/{hash}`): tunnel with
+  `ssh -L 8080:127.0.0.1:8080`. Txs are proposed only with `gen-config.sh --source mempool`
+  (`[proposal] source`); the default `random` keeps the load-test payloads and leaves rpc
+  txs pending forever. No rpc under `MCP_SUPERVISOR=setsid`.
 - **Always ssh to `<host>.devcore4.com`.** `~/.ssh/config` here has no `ewr-*`/`lax-*`
   short-name pattern; the FQDN matches `Host *.devcore4.com` (user `monad`, port 9022).
   `lib.sh` spells user and port out anyway.
@@ -60,8 +106,8 @@ are the two scripts here that do not source `lib.sh`.
   the only other open port.
 - **`MCP_SUPERVISOR=setsid`** switches every script to the no-systemd fallback: `deploy.sh`
   skips `enable-linger`/`daemon-reload`/`enable`, `netctl.sh` launches
-  `~/monad-mcp/run.sh` (`setsid` + `run/pid`), stops it with `kill -INT`, and `report.sh`
-  reads `~/monad-mcp/logs/node.log` (which it cannot filter by time, unlike journald).
+  `~/monad-mcp/run.sh` (`setsid` + `run/pid`), stops it with `kill -INT`, and `live-upgrade`
+  reads `~/monad-mcp/logs/node.log`. `report.sh` needs the journal and refuses setsid.
   The default is `systemd`.
 - **`preflight.sh` distinguishes FAIL from WARN.** Hard failures (non-zero exit): glibc
   mismatch, no AVX2, 8002 bound, `NTPSynchronized != yes`, no usable chrony source within 50 ms
@@ -88,11 +134,12 @@ are the two scripts here that do not source `lib.sh`.
   the version, and `build.sh` refuses to build a dirty `monad-mcp-*` tree unless given
   `--dirty` (which stamps `-dirty` into the name). Health is the `udp bound` line plus
   `finalized` lines in the journal.
-- **`report.sh` does not tell the fast path from the fallback path.** The distinction only
-  exists in the ansi color of the `block` field, which the report strips rather than decodes, so
-  it counts `finalized`, all-committed blocks (`block=+++++`), `proposing`, warnings and errors.
-  With delta 150 ms against RTTs of 154-240 ms, the far pairs are expected to finalize on the
-  fallback path.
+- **`report.sh` reads one source host** (`--source`, default `ewr-002`) for genesis, slot
+  interval and the latency table, which splits slots by the `mvba decided ... FallbackView(n)`
+  line into fast path and MVBA views over the latest `--slots` (10k) finalizations. Every host
+  contributes its unit state, tip, lag and clock offset. `--logs <dir>` pulls every journal over
+  the same window (`--since` widens it) for the cross-host agreement check. With delta 150 ms
+  against RTTs of 154-240 ms, the far pairs are expected to finalize on the fallback path.
 - **Stub crypto on an Internet-exposed port.** The UDP transport trusts the sender id in the
   frame and every key derives from a small integer; frames from outside the validator set are
   dropped, and that is the whole authentication story. This is a test network — do not put

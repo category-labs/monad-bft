@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# build.sh [--dirty] -> dist/monad-mcp-node-<sha>[-dirty] + dist/VERSION.
-# The binary has no --version flag, so that name is the version.
+# build.sh [--dirty] -> dist/monad-mcp-{node,rpc}-<sha>[-dirty] + dist/VERSION.
+# The binaries have no --version flag, so that name is the version.
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
@@ -15,7 +15,8 @@ done
 
 cd "$repo_dir"
 
-dirt=$(git status --porcelain -- 'monad-mcp-*')
+# every netctl.sh start rewrites genesis_deadline in the tracked host configs
+dirt=$(git status --porcelain -- 'monad-mcp-*' ':!monad-mcp-node/deploy/config')
 suffix=
 if [ -n "$dirt" ]; then
     if [ "$allow_dirty" = no ]; then
@@ -27,16 +28,21 @@ fi
 
 sha=$(git rev-parse --short HEAD)
 name=monad-mcp-node-$sha$suffix
+rpc_name=monad-mcp-rpc-$sha$suffix
 
-cargo build --release -p monad-mcp-node
+cargo build --release -p monad-mcp-node -p monad-mcp-rpc --bin monad-mcp-node --bin monad-mcp-rpc
 
 mkdir -p "$dist_dir"
 install -m 755 "$repo_dir/target/release/monad-mcp-node" "$dist_dir/$name"
-# keep the newest $keep_binaries; anything older is a rebuild away
-ls -t "$dist_dir"/monad-mcp-node-* | tail -n +$((keep_binaries + 1)) | xargs -r rm -v
+install -m 755 "$repo_dir/target/release/monad-mcp-rpc" "$dist_dir/$rpc_name"
+# keep the newest $keep_binaries of each; anything older is a rebuild away
+for kind in node rpc; do
+    ls -t "$dist_dir"/monad-mcp-$kind-* | tail -n +$((keep_binaries + 1)) | xargs -r rm -v
+done
 
 {
     echo "binary=$name"
+    echo "rpc_binary=$rpc_name"
     echo "sha=$(git rev-parse HEAD)$suffix"
     echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "rustc_host=$(rustc -vV | sed -n 's/^host: //p')"
@@ -44,4 +50,4 @@ ls -t "$dist_dir"/monad-mcp-node-* | tail -n +$((keep_binaries + 1)) | xargs -r 
 } > "$dist_dir/VERSION"
 
 cat "$dist_dir/VERSION"
-echo "built $dist_dir/$name ($(du -h "$dist_dir/$name" | cut -f1))"
+echo "built $dist_dir/$name ($(du -h "$dist_dir/$name" | cut -f1)), $dist_dir/$rpc_name ($(du -h "$dist_dir/$rpc_name" | cut -f1))"
