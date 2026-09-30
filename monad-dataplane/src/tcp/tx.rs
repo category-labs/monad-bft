@@ -582,4 +582,188 @@ mod tests {
             Err(BoundedQueueError::Closed)
         ));
     }
+
+    #[test]
+    fn incoming_connections_do_not_use_outgoing_limit() {
+        let limit = OutgoingLimit::new(Arc::new(Addrlist::new()), 1, DataplaneMetrics::new());
+        let registry = ConnectionRegistry::new();
+        let key = |addr: &str| (TcpSocketId::Raptorcast, addr.parse::<SocketAddr>().unwrap());
+        let (_incoming_rx, _incoming_registration) = registry
+            .register(key("127.0.0.1:1000"))
+            .expect("incoming connection should be registered");
+        assert_eq!(limit.num_connections.get(), 0);
+        let _permit = limit
+            .try_acquire("127.0.0.1:2000".parse().unwrap())
+            .expect("incoming connection should not consume outgoing capacity");
+        let (_outgoing_rx, _outgoing_registration) = registry
+            .register(key("127.0.0.1:2000"))
+            .expect("outgoing connection should be registered");
+        assert!(limit
+            .try_acquire("127.0.0.1:3000".parse().unwrap())
+            .is_none());
+    }
+
+    #[monoio::test(enable_timer = true)]
+    async fn disconnect_after_connect_failure_releases_connection_slot() {
+        use std::num::NonZeroU32;
+
+        use super::super::{TcpControl, TcpRateLimit};
+
+        // Use a synchronous close so the connect cannot race an io_uring close.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let metrics = DataplaneMetrics::new();
+        let limit = OutgoingLimit::new(Arc::new(Addrlist::new()), 1, metrics.clone());
+        let registry = ConnectionRegistry::new();
+        let key = (TcpSocketId::Raptorcast, addr);
+        let permit = limit
+            .try_acquire(addr)
+            .expect("connection should be admitted");
+        let (receiver, registration) = registry
+            .register(key)
+            .expect("connection should be registered");
+        let (complete, completion) = futures::channel::oneshot::channel();
+        assert!(registry
+            .try_send(
+                &key,
+                TcpMsg {
+                    msg: Bytes::from_static(b"queued while connecting"),
+                    completion: Some(complete),
+                },
+                &metrics,
+            )
+            .is_none());
+        let (ingress, _messages) = mpsc::channel(1);
+        let control = TcpControl::new();
+        let context = ConnectionContext {
+            socket_id: key.0,
+            rate_limit: TcpRateLimit {
+                rps: NonZeroU32::new(1).unwrap(),
+                rps_burst: NonZeroU32::new(1).unwrap(),
+            },
+            tcp_control_map: control.clone(),
+            tcp_ingress_tx: ingress,
+            metrics: metrics.clone(),
+        };
+        spawn(task_connect(context, addr, receiver, registration, permit));
+        timeout(Duration::from_secs(1), async {
+            assert!(completion.await.is_err());
+        })
+        .await
+        .unwrap();
+        assert_eq!(metrics.tcp_outbound_connection_errors.get(), 1);
+        assert_eq!(metrics.tcp_egress_messages_dropped.get(), 1);
+        assert_eq!(metrics.tcp_current_outbound_connections.get(), 0);
+        assert_eq!(control.0.lock().unwrap().len(), 1);
+        assert_eq!(limit.num_connections.get(), 1);
+
+        // Explicit disconnect must end the failure cooldown immediately.
+        control.disconnect_socket(addr.ip(), addr.port());
+        timeout(Duration::from_millis(250), async {
+            while registry.contains(&key) {
+                sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(control.0.lock().unwrap().is_empty());
+        assert_eq!(limit.num_connections.get(), 0);
+        assert!(limit.try_acquire(addr).is_some());
+    }
+
+    #[monoio::test(enable_timer = true)]
+    async fn write_timeout_cancels_reader_and_removes_connection() {
+        use std::{num::NonZeroU32, os::fd::AsRawFd};
+
+        use monoio::io::AsyncWriteRentExt;
+
+        use super::super::{TcpControl, TcpRateLimit};
+
+        let listener = monoio::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let (mut peer, _) = listener.accept().await.unwrap();
+        // A peer that never reads must block this write even on loopback.
+        let buffer_size: libc::c_int = 4096;
+        for (socket, option) in [
+            (stream.as_raw_fd(), libc::SO_SNDBUF),
+            (peer.as_raw_fd(), libc::SO_RCVBUF),
+        ] {
+            assert_eq!(
+                unsafe {
+                    libc::setsockopt(
+                        socket,
+                        libc::SOL_SOCKET,
+                        option,
+                        &buffer_size as *const _ as _,
+                        std::mem::size_of_val(&buffer_size) as _,
+                    )
+                },
+                0
+            );
+        }
+        let metrics = DataplaneMetrics::new();
+        let registry = ConnectionRegistry::new();
+        let key = (TcpSocketId::Raptorcast, addr);
+        let (receiver, registration) = registry
+            .register(key)
+            .expect("connection should be registered");
+        let (complete, completion) = futures::channel::oneshot::channel();
+        assert!(registry
+            .try_send(
+                &key,
+                TcpMsg {
+                    msg: Bytes::from(vec![0; TCP_MESSAGE_LENGTH_LIMIT]),
+                    completion: Some(complete),
+                },
+                &metrics,
+            )
+            .is_none());
+        let (ingress, _messages) = mpsc::channel(1);
+        let control = TcpControl::new();
+        let context = ConnectionContext {
+            socket_id: key.0,
+            rate_limit: TcpRateLimit {
+                rps: NonZeroU32::new(1).unwrap(),
+                rps_burst: NonZeroU32::new(1).unwrap(),
+            },
+            tcp_control_map: control.clone(),
+            tcp_ingress_tx: ingress,
+            metrics: metrics.clone(),
+        };
+        spawn(async move {
+            let _registration = registration;
+            let connection = TcpConnectionGuard::new(
+                context.tcp_control_map.clone(),
+                addr,
+                _registration.conn_id,
+            );
+            let mut receiver = receiver;
+            assert!(
+                task_connection(&context, addr, stream, &mut receiver, &connection)
+                    .await
+                    .is_err()
+            );
+            drop_queued_messages(&mut receiver, &context.metrics);
+        });
+        // Deliver a full inbound frame halfway through the blocked write so
+        // the preserved reader deadline cannot mask a missing write timeout.
+        monoio::time::sleep(Duration::from_secs(5)).await;
+        let frame = [TcpMsgHdr::new(1).as_bytes(), &[1]].concat();
+        let (result, _) = peer.write_all(frame).await;
+        result.unwrap();
+        monoio::time::timeout(Duration::from_secs(7), async {
+            assert!(completion.await.is_err());
+            while registry.contains(&key) {
+                monoio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(control.0.lock().unwrap().is_empty());
+        assert_eq!(metrics.tcp_send_errors.get(), 1);
+        assert_eq!(metrics.tcp_receive_errors.get(), 0);
+        drop(peer);
+    }
 }

@@ -77,6 +77,11 @@ impl ConnectionRegistry {
         sender.enqueue(key.1, msg, metrics);
         None
     }
+
+    #[cfg(test)]
+    pub(super) fn contains(&self, key: &(TcpSocketId, SocketAddr)) -> bool {
+        self.0.borrow().send_queues.contains_key(key)
+    }
 }
 
 pub(crate) struct ConnectionRegistration {
