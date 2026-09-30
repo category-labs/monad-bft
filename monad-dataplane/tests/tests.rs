@@ -24,7 +24,7 @@ use std::{
 
 use futures::{channel::oneshot, executor, FutureExt};
 use monad_dataplane::{
-    tcp::tx::{MSG_WAIT_TIMEOUT, QUEUED_MESSAGE_BYTE_LIMIT, QUEUED_MESSAGE_LIMIT},
+    tcp::tx::{QUEUED_MESSAGE_BYTE_LIMIT, QUEUED_MESSAGE_LIMIT},
     udp::DEFAULT_SEGMENT_SIZE,
     BroadcastMsg, DataplaneBuilder, RecvUdpMsg, TcpMsg, TcpSocketId, UdpSocketId, UnicastMsg,
 };
@@ -187,10 +187,9 @@ fn udp_direct_socket() {
     }
 }
 
-// This verifies that the TCP transmit task recovers from a peer transmit
-// task exiting after a timeout.
+// Exercise sending after long pauses.
 #[test]
-#[timeout(10000)]
+#[timeout(20000)]
 fn tcp_very_slow() {
     once_setup();
 
@@ -225,7 +224,7 @@ fn tcp_very_slow() {
 
         assert!(executor::block_on(receiver).is_ok());
 
-        sleep(2 * MSG_WAIT_TIMEOUT);
+        sleep(Duration::from_secs(8));
     }
 
     for _ in 0..num_msgs {
