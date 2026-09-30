@@ -419,3 +419,406 @@ where
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::HashMap,
+        future::Future,
+        net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
+
+    use bytes::Bytes;
+    use monad_crypto::certificate_signature::CertificateSignaturePubKey;
+    use monad_dataplane::{DataplaneBuilder, DataplaneControl, TcpSocketHandle, TcpSocketId};
+    use monad_peer_discovery::{
+        driver::PeerDiscoveryDriver,
+        mock::{NopDiscovery, NopDiscoveryBuilder},
+        MonadNameRecord, NameRecord,
+    };
+    use monad_secp::{KeyPair, SecpSignature};
+    use monad_types::NodeId;
+    use monad_wireauth::Config;
+    use tracing_subscriber::EnvFilter;
+
+    use super::{AuthenticatedTcpSocketHandle, DualTcpSocketHandle, SigAuthTcpSocket};
+    use crate::auth::{metrics::TCP_METRICS, protocol::WireAuthProtocol, DataplaneCompletion};
+
+    fn keypair(seed: u8) -> KeyPair {
+        KeyPair::from_bytes(&mut [seed; 32]).unwrap()
+    }
+
+    type PublicKey = CertificateSignaturePubKey<SecpSignature>;
+    type Discovery = NopDiscovery<SecpSignature>;
+    type DiscoveryDriver = Arc<Mutex<PeerDiscoveryDriver<Discovery>>>;
+    type TestSocket = DualTcpSocketHandle<SecpSignature, WireAuthProtocol, Discovery>;
+    type NameRecords = HashMap<NodeId<PublicKey>, MonadNameRecord<SecpSignature>>;
+
+    struct NodeInfo {
+        keypair: Arc<KeyPair>,
+        node_id: NodeId<PublicKey>,
+        sigauth_tcp_addr: SocketAddrV4,
+        wireauth_tcp_addr: SocketAddrV4,
+        sigauth_tcp: Option<TcpSocketHandle>,
+        wireauth_tcp: Option<TcpSocketHandle>,
+        control: Option<DataplaneControl>,
+    }
+
+    impl NodeInfo {
+        fn new(seed: u8) -> Self {
+            let kp = keypair(seed);
+            let node_id = NodeId::new(kp.pubkey());
+            let bind_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+            let mut dp = DataplaneBuilder::new(1000)
+                .with_tcp_sockets([
+                    (TcpSocketId::AuthenticatedRaptorcast, bind_addr),
+                    (TcpSocketId::Raptorcast, bind_addr),
+                ])
+                .build();
+            assert!(dp.block_until_ready(Duration::from_secs(1)));
+
+            let wireauth_tcp = dp
+                .tcp_sockets
+                .take(TcpSocketId::AuthenticatedRaptorcast)
+                .expect("wireauth tcp socket");
+            let sigauth_tcp = dp
+                .tcp_sockets
+                .take(TcpSocketId::Raptorcast)
+                .expect("sigauth tcp socket");
+            let SocketAddr::V4(wireauth_tcp_addr) = wireauth_tcp.local_addr() else {
+                panic!("expected IPv4 wireauth address");
+            };
+            let SocketAddr::V4(sigauth_tcp_addr) = sigauth_tcp.local_addr() else {
+                panic!("expected IPv4 sigauth address");
+            };
+
+            Self {
+                keypair: Arc::new(kp),
+                node_id,
+                sigauth_tcp_addr,
+                wireauth_tcp_addr,
+                sigauth_tcp: Some(sigauth_tcp),
+                wireauth_tcp: Some(wireauth_tcp),
+                control: Some(dp.control),
+            }
+        }
+
+        fn create_name_record(&self, with_wireauth_tcp: bool) -> MonadNameRecord<SecpSignature> {
+            self.create_name_record_with_tcp_port(with_wireauth_tcp, self.sigauth_tcp_addr.port())
+        }
+
+        fn create_name_record_with_tcp_port(
+            &self,
+            with_wireauth_tcp: bool,
+            tcp_port: u16,
+        ) -> MonadNameRecord<SecpSignature> {
+            let name_record = NameRecord::new_with_ports(
+                Ipv4Addr::LOCALHOST,
+                tcp_port,
+                Some(self.sigauth_tcp_addr.port()),
+                self.sigauth_tcp_addr.port(),
+                None,
+                if with_wireauth_tcp {
+                    Some(self.wireauth_tcp_addr.port())
+                } else {
+                    None
+                },
+                1,
+            );
+            MonadNameRecord::new(name_record, &*self.keypair)
+        }
+    }
+
+    fn create_dual_tcp_socket(
+        node: &mut NodeInfo,
+        peer_discovery: DiscoveryDriver,
+        config: Config,
+    ) -> (TestSocket, DataplaneControl) {
+        let wireauth_tcp = node.wireauth_tcp.take().expect("unused wireauth socket");
+        let sigauth_tcp = node.sigauth_tcp.take().expect("unused sigauth socket");
+
+        let (wireauth_reader, wireauth_writer) = wireauth_tcp.split();
+        let (sigauth_reader, sigauth_writer) = sigauth_tcp.split();
+
+        let auth_protocol = WireAuthProtocol::new(&TCP_METRICS, config, node.keypair.clone());
+        let authenticated_handle =
+            AuthenticatedTcpSocketHandle::new(wireauth_reader, wireauth_writer, auth_protocol);
+        let sig_auth = SigAuthTcpSocket::<SecpSignature>::new(
+            sigauth_reader,
+            sigauth_writer,
+            node.keypair.clone(),
+        );
+
+        let socket = DualTcpSocketHandle::new(Some(authenticated_handle), sig_auth, peer_discovery);
+        (
+            socket,
+            node.control.take().expect("unused dataplane control"),
+        )
+    }
+
+    fn create_peer_discovery(name_records: &NameRecords) -> DiscoveryDriver {
+        let builder = NopDiscoveryBuilder {
+            known_addresses: HashMap::new(),
+            name_records: name_records.clone(),
+            ..Default::default()
+        };
+        Arc::new(Mutex::new(PeerDiscoveryDriver::new(builder)))
+    }
+
+    struct TestPair {
+        sender_id: NodeId<PublicKey>,
+        receiver_id: NodeId<PublicKey>,
+        sender: TestSocket,
+        receiver: TestSocket,
+        _controls: [DataplaneControl; 2],
+    }
+
+    impl TestPair {
+        fn new(with_wireauth_tcp: bool) -> Self {
+            Self::with_options(with_wireauth_tcp, Config::default(), None)
+        }
+
+        fn with_options(
+            with_wireauth_tcp: bool,
+            sender_config: Config,
+            receiver_tcp_port: Option<u16>,
+        ) -> Self {
+            let mut sender = NodeInfo::new(1);
+            let mut receiver = NodeInfo::new(2);
+            let mut name_records =
+                HashMap::from([(sender.node_id, sender.create_name_record(with_wireauth_tcp))]);
+            let receiver_record = receiver_tcp_port.map_or_else(
+                || receiver.create_name_record(with_wireauth_tcp),
+                |port| receiver.create_name_record_with_tcp_port(with_wireauth_tcp, port),
+            );
+            name_records.insert(receiver.node_id, receiver_record);
+
+            let (sender_socket, sender_control) = create_dual_tcp_socket(
+                &mut sender,
+                create_peer_discovery(&name_records),
+                sender_config,
+            );
+            let (receiver_socket, receiver_control) = create_dual_tcp_socket(
+                &mut receiver,
+                create_peer_discovery(&name_records),
+                Config::default(),
+            );
+            Self {
+                sender_id: sender.node_id,
+                receiver_id: receiver.node_id,
+                sender: sender_socket,
+                receiver: receiver_socket,
+                _controls: [sender_control, receiver_control],
+            }
+        }
+    }
+
+    fn run_test(test: impl Future<Output = ()>) {
+        init_tracing();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        tokio::task::LocalSet::new().block_on(&runtime, test);
+    }
+
+    fn messages(prefix: &str, count: usize) -> Vec<Bytes> {
+        (0..count)
+            .map(|i| Bytes::from(format!("{prefix}_{i}")))
+            .collect()
+    }
+
+    async fn send_and_receive(
+        mut sender: TestSocket,
+        mut receiver: TestSocket,
+        receiver_id: NodeId<PublicKey>,
+        outbound: Vec<(Bytes, DataplaneCompletion)>,
+    ) -> Vec<Bytes> {
+        let message_count = outbound.len();
+        let drive_sender = async {
+            for (payload, completion) in outbound {
+                sender.write_to_peer(&receiver_id, payload, completion);
+            }
+            loop {
+                if let Err(err) = sender.recv().await {
+                    tracing::warn!(?err, "sender recv error");
+                }
+            }
+        };
+        let collect = async {
+            let mut received = Vec::with_capacity(message_count);
+            while received.len() < message_count {
+                match receiver.recv().await {
+                    Ok(message) => received.push(message.payload),
+                    Err(err) => tracing::warn!(?err, "receiver recv error"),
+                }
+            }
+            received
+        };
+
+        tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::select! {
+                received = collect => received,
+                () = drive_sender => unreachable!("sender receive loop exited"),
+            }
+        })
+        .await
+        .expect("timed out receiving tcp messages")
+    }
+
+    fn init_tracing() {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::from_default_env())
+            .try_init();
+    }
+
+    #[test]
+    fn test_dual_tcp_sigauth_only() {
+        const NUM_MESSAGES: usize = 10;
+        run_test(async {
+            let TestPair {
+                sender,
+                receiver,
+                receiver_id,
+                _controls,
+                ..
+            } = TestPair::new(false);
+            let expected = messages("sigauth_message", NUM_MESSAGES);
+            let outbound = expected
+                .iter()
+                .cloned()
+                .map(|message| (message, None))
+                .collect();
+
+            let received = send_and_receive(sender, receiver, receiver_id, outbound).await;
+            assert_eq!(received, expected);
+        });
+    }
+
+    #[test]
+    fn test_dual_tcp_wireauth_only() {
+        const NUM_MESSAGES: usize = 10;
+        run_test(async {
+            let TestPair {
+                sender,
+                receiver,
+                receiver_id,
+                _controls,
+                ..
+            } = TestPair::new(true);
+            let expected = messages("wireauth_message", NUM_MESSAGES);
+            let outbound = expected
+                .iter()
+                .cloned()
+                .map(|message| (message, None))
+                .collect();
+
+            let received = send_and_receive(sender, receiver, receiver_id, outbound).await;
+            assert_eq!(received, expected);
+        });
+    }
+
+    #[test]
+    fn test_dual_tcp_wireauth_bidirectional() {
+        run_test(async {
+            let TestPair {
+                sender_id: node_a_id,
+                receiver_id: node_b_id,
+                sender: mut socket_a,
+                receiver: mut socket_b,
+                _controls,
+            } = TestPair::new(true);
+            let exchange = async {
+                let node_a = async {
+                    socket_a.write_to_peer(&node_b_id, Bytes::from("init_from_a"), None);
+                    loop {
+                        match socket_a.recv().await {
+                            Ok(message) => break message.payload,
+                            Err(err) => tracing::warn!(?err, "node_a recv error"),
+                        }
+                    }
+                };
+                let node_b = async {
+                    loop {
+                        match socket_b.recv().await {
+                            Ok(message) => {
+                                socket_b.write_to_peer(
+                                    &node_a_id,
+                                    Bytes::from("reply_from_b"),
+                                    None,
+                                );
+                                break message.payload;
+                            }
+                            Err(err) => tracing::warn!(?err, "node_b recv error"),
+                        }
+                    }
+                };
+                tokio::join!(node_a, node_b)
+            };
+
+            let (received_by_a, received_by_b) =
+                tokio::time::timeout(Duration::from_secs(10), exchange)
+                    .await
+                    .expect("test timed out");
+            assert_eq!(received_by_a, Bytes::from_static(b"reply_from_b"));
+            assert_eq!(received_by_b, Bytes::from_static(b"init_from_a"));
+        });
+    }
+
+    #[test]
+    fn test_wireauth_preserves_completion() {
+        run_test(async {
+            let TestPair {
+                sender,
+                receiver,
+                receiver_id,
+                _controls,
+                ..
+            } = TestPair::with_options(true, Config::default(), Some(1));
+            let payload = Bytes::from_static(b"completion_message");
+            let (completion_tx, completion_rx) = futures::channel::oneshot::channel();
+
+            let received = send_and_receive(
+                sender,
+                receiver,
+                receiver_id,
+                vec![(payload.clone(), Some(completion_tx))],
+            )
+            .await;
+
+            assert_eq!(received, [payload]);
+            completion_rx.await.expect("tcp write should complete");
+        });
+    }
+
+    #[test]
+    fn test_wireauth_buffer_failure_does_not_fallback() {
+        run_test(async {
+            let sender_config = Config {
+                max_buffered_bytes_per_session: 0,
+                ..Config::default()
+            };
+            let TestPair {
+                sender: mut sender_socket,
+                receiver: mut receiver_socket,
+                receiver_id,
+                _controls,
+                ..
+            } = TestPair::with_options(true, sender_config, None);
+            let payload = Bytes::from_static(b"rejected_message");
+            let (completion_tx, completion_rx) = futures::channel::oneshot::channel();
+
+            sender_socket.write_to_peer(&receiver_id, payload, Some(completion_tx));
+
+            assert!(completion_rx.await.is_err());
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), receiver_socket.recv())
+                    .await
+                    .is_err(),
+                "buffer failure must not send via sigauth"
+            );
+        });
+    }
+}
