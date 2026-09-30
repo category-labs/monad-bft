@@ -621,4 +621,112 @@ mod tests {
             Err(BoundedQueueError::Closed)
         ));
     }
+
+    #[test]
+    fn incoming_connections_do_not_use_outgoing_limit() {
+        let state = TxState::new(Arc::new(Addrlist::new()), 1, DataplaneMetrics::new());
+        let register = |addr: &str, outgoing| {
+            state.register((TcpSocketId::Raptorcast, addr.parse().unwrap()), outgoing)
+        };
+
+        let RegisterResult::New(_incoming_rx, _incoming_handle) = register("127.0.0.1:1000", false)
+        else {
+            panic!("incoming connection should be registered");
+        };
+        let RegisterResult::New(_outgoing_rx, _outgoing_handle) = register("127.0.0.1:2000", true)
+        else {
+            panic!("incoming connection should not consume outgoing capacity");
+        };
+        assert!(matches!(
+            register("127.0.0.1:3000", true),
+            RegisterResult::Rejected
+        ));
+    }
+    #[monoio::test(enable_timer = true)]
+    async fn write_timeout_cancels_reader_and_removes_connection() {
+        use std::{num::NonZeroU32, os::fd::AsRawFd};
+
+        use monoio::io::AsyncWriteRentExt;
+
+        use super::super::{TcpControl, TcpRateLimit};
+
+        let listener = monoio::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let (mut peer, _) = listener.accept().await.unwrap();
+        // A peer that never reads must block this write even on loopback.
+        let buffer_size: libc::c_int = 4096;
+        for (socket, option) in [
+            (stream.as_raw_fd(), libc::SO_SNDBUF),
+            (peer.as_raw_fd(), libc::SO_RCVBUF),
+        ] {
+            assert_eq!(
+                unsafe {
+                    libc::setsockopt(
+                        socket,
+                        libc::SOL_SOCKET,
+                        option,
+                        &buffer_size as *const _ as _,
+                        std::mem::size_of_val(&buffer_size) as _,
+                    )
+                },
+                0
+            );
+        }
+        let metrics = DataplaneMetrics::new();
+        let state = TxState::new(Arc::new(Addrlist::new()), 1, metrics.clone());
+        let key = (TcpSocketId::Raptorcast, addr);
+        let RegisterResult::New(receiver, handle) = state.register(key, false) else {
+            panic!("connection should be registered");
+        };
+        let (complete, completion) = futures::channel::oneshot::channel();
+        assert!(state
+            .try_send(
+                &key,
+                TcpMsg {
+                    msg: Bytes::from(vec![0; TCP_MESSAGE_LENGTH_LIMIT]),
+                    completion: Some(complete),
+                }
+            )
+            .is_none());
+        let (ingress, _messages) = mpsc::channel(1);
+        let control = TcpControl::new();
+        let context = RxContext {
+            socket_id: key.0,
+            rate_limit: TcpRateLimit {
+                rps: NonZeroU32::new(1).unwrap(),
+                rps_burst: NonZeroU32::new(1).unwrap(),
+            },
+            tcp_control_map: control.clone(),
+            tcp_ingress_tx: ingress,
+            metrics: metrics.clone(),
+        };
+        spawn(task_connection(
+            context,
+            addr,
+            Some(stream),
+            receiver,
+            handle,
+            None,
+        ));
+        // Deliver a full inbound frame halfway through the blocked write so
+        // the preserved reader deadline cannot mask a missing write timeout.
+        monoio::time::sleep(Duration::from_secs(5)).await;
+        let frame = [TcpMsgHdr::new(1).as_bytes(), &[1]].concat();
+        let (result, _) = peer.write_all(frame).await;
+        result.unwrap();
+        monoio::time::timeout(Duration::from_secs(7), async {
+            assert!(completion.await.is_err());
+            while state.inner.borrow().peer_channels.contains_key(&key) {
+                monoio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(control.0.lock().unwrap().is_empty());
+        assert_eq!(state.inner.borrow().outgoing_connections, 0);
+        assert_eq!(metrics.tcp_send_errors.get(), 1);
+        assert_eq!(metrics.tcp_receive_errors.get(), 0);
+        drop(peer);
+    }
 }
