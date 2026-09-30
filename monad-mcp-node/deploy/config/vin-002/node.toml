@@ -68,6 +68,7 @@ certificate_retention = 50
 completed_slot_retention = 50
 
 [proposal]
+source = "mempool"
 num_proposals = 5
 propose_before_deadline = 500
 withhold_before_deadline = 0
