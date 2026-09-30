@@ -411,12 +411,18 @@ impl TcpControl {
 mod tests {
     use std::{
         collections::HashMap,
+        io::ErrorKind,
         net::{IpAddr, Ipv4Addr},
+        num::NonZeroU32,
     };
 
+    use bytes::BytesMut;
+    use monoio::io::{AsyncReadRentExt, AsyncWriteRentExt, Splitable};
     use rstest::*;
+    use zerocopy::IntoBytes;
 
     use super::*;
+    use crate::{addrlist::Addrlist, TcpSocketId};
 
     #[fixture]
     fn tcp_control() -> TcpControl {
@@ -556,5 +562,367 @@ mod tests {
                 expected_disconnected_indices.contains(&i)
             );
         }
+    }
+
+    const SOCKET: TcpSocketId = TcpSocketId::Raptorcast;
+    const PEER_TIMEOUT: Duration = Duration::from_secs(2);
+
+    async fn within<T>(future: impl std::future::Future<Output = T>) -> T {
+        monoio::time::timeout(PEER_TIMEOUT, future).await.unwrap()
+    }
+
+    struct Peer {
+        addr: SocketAddr,
+        read: TcpReadHalf,
+        write: monoio::net::tcp::TcpOwnedWriteHalf,
+    }
+
+    impl Peer {
+        fn new(stream: TcpStream, addr: SocketAddr) -> Self {
+            let (read, write) = stream.into_split();
+            Self { addr, read, write }
+        }
+
+        async fn connect(addr: SocketAddr) -> Self {
+            let stream = within(TcpStream::connect(addr)).await.unwrap();
+            let local_addr = stream.local_addr().unwrap();
+            Self::new(stream, local_addr)
+        }
+
+        async fn send(&mut self, payload: &[u8]) {
+            let frame = [TcpMsgHdr::new(payload.len() as u64).as_bytes(), payload].concat();
+            let (result, _) = within(self.write.write_all(frame)).await;
+            result.unwrap();
+        }
+
+        async fn received(&mut self, payload: &[u8]) {
+            within(async {
+                let (result, header) = self
+                    .read
+                    .read_exact(BytesMut::with_capacity(std::mem::size_of::<TcpMsgHdr>()))
+                    .await;
+                result.unwrap();
+                let header = TcpMsgHdr::read_from_bytes(&header).unwrap();
+                assert_eq!(header.magic.get(), HEADER_MAGIC);
+                assert_eq!(header.version.get(), HEADER_VERSION);
+                assert_eq!(header.length.get(), payload.len() as u64);
+                let (result, body) = self
+                    .read
+                    .read_exact(BytesMut::with_capacity(payload.len()))
+                    .await;
+                result.unwrap();
+                assert_eq!(&body[..], payload);
+            })
+            .await;
+        }
+
+        async fn closed(&mut self) {
+            let (result, _) = self.read.read_exact(BytesMut::with_capacity(1)).await;
+            assert_eq!(result.unwrap_err().kind(), ErrorKind::UnexpectedEof);
+        }
+    }
+
+    struct TestDataplane {
+        egress: mpsc::Sender<(TcpSocketId, SocketAddr, TcpMsg)>,
+        ingress: HashMap<TcpSocketId, mpsc::Receiver<RecvTcpMsg>>,
+        addrs: HashMap<TcpSocketId, SocketAddr>,
+        control: TcpControl,
+        metrics: DataplaneMetrics,
+    }
+
+    impl TestDataplane {
+        fn new(sockets: &[TcpSocketId]) -> Self {
+            let (egress, receiver) = mpsc::channel(16);
+            let mut ingress = HashMap::new();
+            let configs = sockets
+                .iter()
+                .map(|&id| {
+                    let (sender, receiver) = mpsc::channel(16);
+                    ingress.insert(id, receiver);
+                    (id, "127.0.0.1:0".parse().unwrap(), sender)
+                })
+                .collect();
+            let cfg = TcpConfig {
+                rate_limit: TcpRateLimit {
+                    rps: NonZeroU32::new(1000).unwrap(),
+                    rps_burst: NonZeroU32::new(100).unwrap(),
+                },
+                connections_limit: sockets.len(),
+                per_ip_connections_limit: sockets.len(),
+            };
+            let control = TcpControl::new();
+            let metrics = DataplaneMetrics::new();
+            let (bound_tx, bound_rx) = std::sync::mpsc::sync_channel(1);
+            spawn_tasks(
+                cfg,
+                control.clone(),
+                Arc::new(Addrlist::new()),
+                configs,
+                receiver,
+                bound_tx,
+                metrics.clone(),
+            );
+            let addrs = bound_rx.recv().unwrap().into_iter().collect();
+            Self {
+                egress,
+                ingress,
+                addrs,
+                control,
+                metrics,
+            }
+        }
+
+        async fn send_msg(&self, socket: TcpSocketId, addr: SocketAddr, msg: TcpMsg) {
+            within(self.egress.send((socket, addr, msg))).await.unwrap();
+        }
+
+        async fn send(&self, socket: TcpSocketId, addr: SocketAddr, payload: &'static [u8]) {
+            self.send_msg(
+                socket,
+                addr,
+                TcpMsg {
+                    msg: bytes::Bytes::from_static(payload),
+                    completion: None,
+                },
+            )
+            .await;
+        }
+
+        async fn received(&mut self, socket: TcpSocketId, addr: SocketAddr, payload: &[u8]) {
+            let message = within(self.ingress.get_mut(&socket).unwrap().recv())
+                .await
+                .unwrap();
+            assert_eq!(message.src_addr, addr);
+            assert_eq!(&message.payload[..], payload);
+        }
+
+        async fn open(
+            &mut self,
+            socket: TcpSocketId,
+            outgoing: bool,
+            listener: &TcpListener,
+        ) -> Peer {
+            if outgoing {
+                let addr = listener.local_addr().unwrap();
+                self.send(socket, addr, b"open").await;
+                let (stream, _) = within(listener.accept()).await.unwrap();
+                let mut peer = Peer::new(stream, addr);
+                peer.received(b"open").await;
+                peer
+            } else {
+                let mut peer = Peer::connect(self.addrs[&socket]).await;
+                peer.send(b"open").await;
+                self.received(socket, peer.addr, b"open").await;
+                peer
+            }
+        }
+
+        async fn disconnected(&self) {
+            within(async {
+                while !self.control.0.lock().unwrap().is_empty() {
+                    monoio::time::sleep(Duration::from_millis(1)).await;
+                }
+            })
+            .await;
+        }
+    }
+
+    #[rstest]
+    #[case::accepted_receives(false, true)]
+    #[case::accepted_sends(false, false)]
+    #[case::outbound_receives(true, true)]
+    #[case::outbound_sends(true, false)]
+    #[monoio::test(enable_timer = true)]
+    async fn test_one_way_traffic_keeps_both_halves_open(
+        #[case] outgoing: bool,
+        #[case] receiving: bool,
+    ) {
+        let mut dp = TestDataplane::new(&[SOCKET]);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut peer = dp.open(SOCKET, outgoing, &listener).await;
+        // Traffic in only one direction must survive both former idle deadlines.
+        for i in 0..27 {
+            if i > 0 {
+                monoio::time::sleep(Duration::from_millis(500)).await;
+            }
+            if receiving {
+                peer.send(b"incoming").await;
+                dp.received(SOCKET, peer.addr, b"incoming").await;
+            } else {
+                dp.send(SOCKET, peer.addr, b"outgoing").await;
+                peer.received(b"outgoing").await;
+            }
+        }
+        // Check that the inactive half still works on the same socket too.
+        peer.send(b"request").await;
+        dp.received(SOCKET, peer.addr, b"request").await;
+        dp.send(SOCKET, peer.addr, b"response").await;
+        peer.received(b"response").await;
+        dp.control
+            .disconnect_socket(peer.addr.ip(), peer.addr.port());
+        within(peer.closed()).await;
+        dp.disconnected().await;
+    }
+
+    #[rstest]
+    #[case::accepted(false)]
+    #[case::outbound(true)]
+    #[monoio::test(enable_timer = true)]
+    async fn test_idle_check_keeps_either_direction_alive(#[case] outgoing: bool) {
+        let mut dp = TestDataplane::new(&[SOCKET]);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut peer = dp.open(SOCKET, outgoing, &listener).await;
+        // TX-only traffic keeps the first two periodic checks alive.
+        for _ in 0..27 {
+            dp.send(SOCKET, peer.addr, b"outgoing").await;
+            peer.received(b"outgoing").await;
+            monoio::time::sleep(Duration::from_millis(500)).await;
+        }
+        dp.send(SOCKET, peer.addr, b"last").await;
+        peer.received(b"last").await;
+        let stopped = monoio::time::Instant::now();
+        monoio::time::timeout(
+            CONNECTION_IDLE_CHECK_INTERVAL * 2 + PEER_TIMEOUT,
+            peer.closed(),
+        )
+        .await
+        .unwrap();
+        assert!(stopped.elapsed() >= CONNECTION_IDLE_CHECK_INTERVAL);
+        dp.disconnected().await;
+        assert_eq!(dp.metrics.tcp_receive_errors.get(), 0);
+        assert_eq!(dp.metrics.tcp_send_errors.get(), 0);
+    }
+
+    #[monoio::test(enable_timer = true)]
+    async fn test_partial_frame_is_not_idle() {
+        let mut dp = TestDataplane::new(&[SOCKET]);
+        let mut peer = Peer::connect(dp.addrs[&SOCKET]).await;
+        let frame = [TcpMsgHdr::new(2).as_bytes(), b"ok"].concat();
+        // TX becomes idle, but RX remains active while finishing this frame.
+        // Each frame stage still has its own fixed deadline.
+        for chunk in [&frame[..8], &frame[8..17], &frame[17..]] {
+            monoio::time::sleep(Duration::from_secs(6)).await;
+            let (result, _) = within(peer.write.write_all(chunk.to_vec())).await;
+            result.unwrap();
+        }
+        dp.received(SOCKET, peer.addr, b"ok").await;
+        dp.control
+            .disconnect_socket(peer.addr.ip(), peer.addr.port());
+        within(peer.closed()).await;
+        dp.disconnected().await;
+    }
+
+    #[rstest]
+    #[case::header(false)]
+    #[case::body(true)]
+    #[monoio::test(enable_timer = true)]
+    async fn test_frame_deadline_is_not_extended_by_progress(#[case] body: bool) {
+        let dp = TestDataplane::new(&[SOCKET]);
+        let mut peer = Peer::connect(dp.addrs[&SOCKET]).await;
+        let frame = [TcpMsgHdr::new(8).as_bytes(), &[0; 8]].concat();
+        let prefix_len = if body { 17 } else { 1 };
+        let (result, _) = within(peer.write.write_all(frame[..prefix_len].to_vec())).await;
+        result.unwrap();
+        for offset in 0..3 {
+            monoio::time::sleep(Duration::from_secs(3)).await;
+            let (result, _) = within(peer.write.write_all(vec![frame[prefix_len + offset]])).await;
+            result.unwrap();
+        }
+        // RX is active while the frame is incomplete. Its fixed deadline
+        // still closes the socket despite these intermediate bytes.
+        within(peer.closed()).await;
+        dp.disconnected().await;
+        assert_eq!(dp.metrics.tcp_receive_errors.get(), 1);
+        assert_eq!(dp.metrics.tcp_current_inbound_connections.get(), 0);
+    }
+
+    #[rstest]
+    #[case::accepted(false)]
+    #[case::outbound_same_endpoint(true)]
+    #[monoio::test(enable_timer = true)]
+    async fn test_socket_isolation(#[case] outgoing: bool) {
+        let sockets = [SOCKET, TcpSocketId::AuthenticatedRaptorcast];
+        let mut dp = TestDataplane::new(&sockets);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut peers = Vec::new();
+        for socket in sockets {
+            let mut peer = dp.open(socket, outgoing, &listener).await;
+            peer.send(b"request").await;
+            dp.received(socket, peer.addr, b"request").await;
+            dp.send(socket, peer.addr, b"response").await;
+            peer.received(b"response").await;
+            peers.push(peer);
+        }
+        assert_eq!(dp.control.0.lock().unwrap().len(), 2);
+        dp.control
+            .disconnect_socket(peers[0].addr.ip(), peers[0].addr.port());
+        within(peers[0].closed()).await;
+        if !outgoing {
+            // Closing one accepted peer must leave the other socket operational.
+            peers[1].send(b"still connected").await;
+            dp.received(sockets[1], peers[1].addr, b"still connected")
+                .await;
+            dp.control.disconnect_ip(peers[1].addr.ip());
+        }
+        within(peers[1].closed()).await;
+        dp.disconnected().await;
+    }
+
+    #[monoio::test(enable_timer = true)]
+    async fn test_disconnect_with_full_ingress_queue() {
+        let mut dp = TestDataplane::new(&[SOCKET]);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut peer = dp.open(SOCKET, false, &listener).await;
+        for _ in 0..17 {
+            peer.send(b"fill ingress").await;
+        }
+        within(async {
+            while dp.metrics.tcp_messages_received.get() != 18 {
+                monoio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await;
+        assert_eq!(dp.ingress[&SOCKET].len(), 16);
+        dp.control
+            .disconnect_socket(peer.addr.ip(), peer.addr.port());
+        within(peer.closed()).await;
+        dp.disconnected().await;
+        assert_eq!(dp.metrics.tcp_current_inbound_connections.get(), 0);
+    }
+
+    #[monoio::test(enable_timer = true)]
+    async fn test_eof_cancels_writer_and_allows_reconnect() {
+        let mut dp = TestDataplane::new(&[SOCKET]);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        for _ in 0..2 {
+            let peer = dp.open(SOCKET, true, &listener).await;
+            let close_time = monoio::time::Instant::now();
+            drop(peer);
+            dp.disconnected().await;
+            assert!(close_time.elapsed() >= Duration::from_secs(1));
+            assert_eq!(dp.metrics.tcp_current_outbound_connections.get(), 0);
+        }
+    }
+
+    #[rstest]
+    #[case::silent(Vec::new())]
+    #[case::partial_header(TcpMsgHdr::new(1).as_bytes()[..8].to_vec())]
+    #[case::partial_body([TcpMsgHdr::new(TCP_MESSAGE_LENGTH_LIMIT as u64).as_bytes(), &[1]].concat())]
+    #[monoio::test(enable_timer = true)]
+    async fn test_stalled_first_frame_releases_connection_slot(#[case] prefix: Vec<u8>) {
+        let mut dp = TestDataplane::new(&[SOCKET]);
+        let mut peer = Peer::connect(dp.addrs[&SOCKET]).await;
+        if !prefix.is_empty() {
+            let (result, _) = within(peer.write.write_all(prefix)).await;
+            result.unwrap();
+        }
+        monoio::time::timeout(CONNECTION_IDLE_CHECK_INTERVAL + PEER_TIMEOUT, peer.closed())
+            .await
+            .unwrap();
+        dp.disconnected().await;
+        assert_eq!(dp.metrics.tcp_current_inbound_connections.get(), 0);
+        // With a one-connection quota, a new peer proves the slot was released.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let _replacement = dp.open(SOCKET, false, &listener).await;
     }
 }
