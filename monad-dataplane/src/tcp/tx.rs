@@ -18,7 +18,6 @@ use std::{
     collections::BTreeMap,
     io::{Error, ErrorKind},
     net::SocketAddr,
-    os::fd::{AsRawFd, RawFd},
     rc::Rc,
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -28,9 +27,8 @@ use std::{
 };
 
 use monoio::{
-    io::AsyncWriteRentExt,
     net::TcpStream,
-    spawn,
+    select, spawn,
     time::{sleep, timeout},
 };
 use tokio::sync::mpsc::{
@@ -40,10 +38,14 @@ use tokio::sync::mpsc::{
 use tracing::{debug, enabled, trace, warn, Level};
 use zerocopy::IntoBytes;
 
-use super::{message_timeout, TcpConfig, TcpMsg, TcpMsgHdr, TCP_MESSAGE_LENGTH_LIMIT};
+use super::{
+    message_timeout, rx::RxContext, task_connection, ConnectionIdle, ConnectionOrigin,
+    TcpConnectionGuard, TcpMsg, TcpMsgHdr, TcpWriteHalf, TCP_MESSAGE_LENGTH_LIMIT,
+};
 use crate::{
     addrlist::{Addrlist, Status},
     metrics::{ActiveConnectionGuard, DataplaneMetrics},
+    TcpSocketId,
 };
 
 // These are per-peer limits.
@@ -51,8 +53,6 @@ pub const QUEUED_MESSAGE_WARN_LIMIT: usize = 100;
 // should be higher than MAX_UNACKNOWLEDGED_RESPONSES
 pub const QUEUED_MESSAGE_LIMIT: usize = 150;
 pub const QUEUED_MESSAGE_BYTE_LIMIT: usize = 4 * 1024 * 1024;
-
-pub const MSG_WAIT_TIMEOUT: Duration = Duration::from_secs(1);
 
 const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const TCP_FAILURE_LINGER_WAIT: Duration = Duration::from_secs(1);
@@ -68,7 +68,7 @@ struct BoundedQueueSender {
     queued_bytes: Arc<AtomicUsize>,
 }
 
-struct BoundedQueueReceiver {
+pub(crate) struct BoundedQueueReceiver {
     rx: mpsc::Receiver<TcpMsg>,
     queued_bytes: Arc<AtomicUsize>,
 }
@@ -147,21 +147,29 @@ impl BoundedQueueReceiver {
 }
 
 #[derive(Clone)]
-struct TxState {
+pub(crate) struct TxState {
     inner: Rc<RefCell<TxStateInner>>,
     addrlist: Arc<Addrlist>,
     connections_limit: usize,
     metrics: DataplaneMetrics,
 }
 
+pub(crate) enum RegisterResult {
+    Rejected,
+    Existing,
+    New(BoundedQueueReceiver, TxStatePeerHandle),
+}
+
 impl TxState {
-    fn new(
+    pub(crate) fn new(
         addrlist: Arc<Addrlist>,
         connections_limit: usize,
         metrics: DataplaneMetrics,
     ) -> TxState {
         let inner = Rc::new(RefCell::new(TxStateInner {
             peer_channels: BTreeMap::new(),
+            outgoing_connections: 0,
+            next_connection_id: 0,
         }));
 
         TxState {
@@ -172,47 +180,17 @@ impl TxState {
         }
     }
 
-    fn push(
-        &self,
-        addr: &SocketAddr,
-        msg: TcpMsg,
-    ) -> Option<(BoundedQueueReceiver, TxStatePeerHandle)> {
-        let mut ret = None;
+    fn try_send(&self, key: &(TcpSocketId, SocketAddr), msg: TcpMsg) -> Option<TcpMsg> {
+        let inner_ref = self.inner.borrow();
 
-        let mut inner_ref = self.inner.borrow_mut();
+        let Some(sender) = inner_ref.peer_channels.get(key) else {
+            return Some(msg);
+        };
 
-        let is_new_peer = !inner_ref.peer_channels.contains_key(addr);
-        if is_new_peer {
-            let is_trusted = self.addrlist.status(&addr.ip()) == Status::Trusted;
-            if !is_trusted && inner_ref.peer_channels.len() >= self.connections_limit {
-                self.metrics.tcp_egress_messages_dropped.inc();
-                warn!(
-                    ?addr,
-                    total_connections = inner_ref.peer_channels.len(),
-                    connections_limit = self.connections_limit,
-                    "outgoing connection limit reached, dropping message"
-                );
-                return None;
-            }
-        }
-
-        let msg_sender = inner_ref.peer_channels.entry(*addr).or_insert_with(|| {
-            let (sender, receiver) = bounded_queue();
-
-            ret = Some((
-                receiver,
-                TxStatePeerHandle {
-                    tx_state: self.clone(),
-                    addr: *addr,
-                },
-            ));
-
-            sender
-        });
-
-        match msg_sender.try_send(msg) {
+        let addr = key.1;
+        match sender.try_send(msg) {
             Ok(()) => {
-                let message_count = msg_sender.message_count();
+                let message_count = sender.message_count();
                 if message_count >= QUEUED_MESSAGE_WARN_LIMIT {
                     warn!(
                         ?addr,
@@ -224,7 +202,7 @@ impl TxState {
                 self.metrics.tcp_egress_messages_dropped.inc();
                 warn!(
                     ?addr,
-                    queued_bytes = msg_sender.queued_bytes(),
+                    queued_bytes = sender.queued_bytes(),
                     byte_limit = QUEUED_MESSAGE_BYTE_LIMIT,
                     "peer byte limit reached, dropping message"
                 );
@@ -233,7 +211,7 @@ impl TxState {
                 self.metrics.tcp_egress_messages_dropped.inc();
                 warn!(
                     ?addr,
-                    message_count = msg_sender.message_count(),
+                    message_count = sender.message_count(),
                     message_limit = QUEUED_MESSAGE_LIMIT,
                     "peer message limit reached, dropping message"
                 );
@@ -244,153 +222,207 @@ impl TxState {
             }
         }
 
-        ret
+        None
+    }
+
+    pub(crate) fn register(
+        &self,
+        key: (TcpSocketId, SocketAddr),
+        origin: ConnectionOrigin,
+    ) -> RegisterResult {
+        let mut inner_ref = self.inner.borrow_mut();
+
+        if inner_ref.peer_channels.contains_key(&key) {
+            return RegisterResult::Existing;
+        }
+
+        let addr = key.1;
+        let outgoing = matches!(origin, ConnectionOrigin::Outgoing);
+        if outgoing {
+            let is_trusted = self.addrlist.status(&addr.ip()) == Status::Trusted;
+            if !is_trusted && inner_ref.outgoing_connections >= self.connections_limit {
+                self.metrics.tcp_egress_messages_dropped.inc();
+                warn!(
+                    ?addr,
+                    total_connections = inner_ref.outgoing_connections,
+                    connections_limit = self.connections_limit,
+                    "outgoing connection limit reached, dropping message"
+                );
+                return RegisterResult::Rejected;
+            }
+        }
+
+        let (sender, receiver) = bounded_queue();
+        inner_ref.peer_channels.insert(key, sender);
+        inner_ref.outgoing_connections += usize::from(outgoing);
+        let conn_id = inner_ref.next_connection_id;
+        inner_ref.next_connection_id += 1;
+        RegisterResult::New(
+            receiver,
+            TxStatePeerHandle {
+                tx_state: self.clone(),
+                key,
+                origin,
+                conn_id,
+            },
+        )
     }
 }
 
-struct TxStatePeerHandle {
+pub(crate) struct TxStatePeerHandle {
     tx_state: TxState,
-    addr: SocketAddr,
+    key: (TcpSocketId, SocketAddr),
+    origin: ConnectionOrigin,
+    pub(super) conn_id: u64,
 }
 
 impl Drop for TxStatePeerHandle {
     fn drop(&mut self) {
-        self.tx_state
-            .inner
-            .borrow_mut()
-            .peer_channels
-            .remove(&self.addr);
-        trace!(?self.addr, "removed peer from tx channels map");
+        let mut inner = self.tx_state.inner.borrow_mut();
+        inner.peer_channels.remove(&self.key);
+        inner.outgoing_connections -=
+            usize::from(matches!(self.origin, ConnectionOrigin::Outgoing));
+        let addr = self.key.1;
+        trace!(?addr, "removed peer from tx channels map");
     }
 }
 
 struct TxStateInner {
-    // There is a transmit connection task running for a given peer iff there is an
-    // entry for the peer address in this map.  Exiting the transmit connection task
-    // drops a TxStatePeerHandle which removes the entry from this map.
-    peer_channels: BTreeMap<SocketAddr, BoundedQueueSender>,
+    // There is a connection task running for a given (socket_id, peer) iff
+    // there is an entry in this map. Exiting the connection task drops a
+    // TxStatePeerHandle which removes the entry from this map.
+    peer_channels: BTreeMap<(TcpSocketId, SocketAddr), BoundedQueueSender>,
+    outgoing_connections: usize,
+    next_connection_id: u64,
 }
 
 pub(crate) async fn task(
-    cfg: TcpConfig,
-    addrlist: Arc<Addrlist>,
-    mut tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>,
-    metrics: DataplaneMetrics,
+    tx_state: TxState,
+    mut tcp_egress_rx: mpsc::Receiver<(TcpSocketId, SocketAddr, TcpMsg)>,
+    contexts: BTreeMap<TcpSocketId, RxContext>,
 ) {
-    let tx_state = TxState::new(addrlist, cfg.connections_limit, metrics.clone());
-
-    let mut conn_id: u64 = 0;
-
-    while let Some((addr, msg)) = tcp_egress_rx.recv().await {
-        debug!(?addr, len = msg.msg.len(), "queueing up TCP message");
-
-        if let Some((msg_receiver, tx_state_peer_handle)) = tx_state.push(&addr, msg) {
-            let peer_count = tx_state.inner.borrow().peer_channels.len();
-            trace!(
-                conn_id,
-                ?addr,
-                total_tx_connections = peer_count,
-                "spawning tcp transmit connection task for peer"
-            );
-
-            spawn(task_connection(
-                conn_id,
-                addr,
-                msg_receiver,
-                tx_state_peer_handle,
-                metrics.clone(),
-            ));
-
-            conn_id += 1;
+    while let Some((socket_id, addr, msg)) = tcp_egress_rx.recv().await {
+        debug!(
+            ?socket_id,
+            ?addr,
+            len = msg.msg.len(),
+            "queueing up TCP message"
+        );
+        let key = (socket_id, addr);
+        match tx_state.register(key, ConnectionOrigin::Outgoing) {
+            RegisterResult::Rejected => continue,
+            RegisterResult::Existing => {}
+            RegisterResult::New(msg_receiver, peer_handle) => {
+                let context = contexts
+                    .get(&socket_id)
+                    .cloned()
+                    .expect("socket_id must have a TCP context");
+                spawn(task_connect(context, addr, msg_receiver, peer_handle));
+            }
+        }
+        if tx_state.try_send(&key, msg).is_some() {
+            warn!(?socket_id, ?addr, "failed to send message after register");
         }
     }
 }
 
-async fn task_connection(
-    conn_id: u64,
+async fn task_connect(
+    context: RxContext,
     addr: SocketAddr,
     mut msg_receiver: BoundedQueueReceiver,
-    _tx_state_peer_handle: TxStatePeerHandle,
-    metrics: DataplaneMetrics,
+    peer_handle: TxStatePeerHandle,
 ) {
-    trace!(
-        conn_id,
-        ?addr,
-        "starting tcp transmit connection task for peer"
-    );
+    let conn_id = peer_handle.conn_id;
+    let connection = TcpConnectionGuard::new(context.tcp_control_map.clone(), addr, conn_id);
+    let metrics = &context.metrics;
+    let result = select! {
+        biased;
+        _ = connection.connection.disconnected() => Ok(()),
+        result = async {
+            let stream = timeout(TCP_CONNECT_TIMEOUT, TcpStream::connect(addr))
+                .await
+                .unwrap_or_else(|_| Err(Error::from(ErrorKind::TimedOut)))
+                .map_err(|err| {
+                    metrics.tcp_outbound_connection_errors.inc();
+                    Error::other(format!("error connecting to remote host: {err}"))
+                })?;
+            let _active_connection = ActiveConnectionGuard::new(
+                &metrics.tcp_outbound_connections_established,
+                &metrics.tcp_current_outbound_connections,
+            );
+            task_connection(&context, addr, stream, &mut msg_receiver, &connection).await
+        } => result,
+    };
 
-    if let Err(err) = connect_and_send_messages(conn_id, &addr, &mut msg_receiver, &metrics).await {
-        let mut additional_messages_dropped = 0;
-
-        // A connect failure leaves the initial message queued. On a send failure,
-        // the dequeued message is counted before this drains the rest.
-        while msg_receiver.try_recv().is_ok() {
-            additional_messages_dropped += 1;
+    if let Err(err) = result {
+        drop_queued_messages(&mut msg_receiver, metrics);
+        warn!(conn_id, ?addr, ?err, "error in tcp connection task");
+        // Avoid repeatedly reconnecting to a failing peer on every message.
+        select! {
+            _ = connection.connection.disconnected() => {},
+            _ = sleep(TCP_FAILURE_LINGER_WAIT) => {},
         }
-        metrics
-            .tcp_egress_messages_dropped
-            .add(additional_messages_dropped);
-
-        warn!(
-            conn_id,
-            ?addr,
-            ?err,
-            additional_messages_dropped,
-            "error transmitting tcp message"
-        );
-
-        // Sleep to avoid reconnecting too soon.
-        sleep(TCP_FAILURE_LINGER_WAIT).await;
     }
-
-    trace!(
-        conn_id,
-        ?addr,
-        "exiting tcp transmit connection task for peer"
-    );
+    drop_queued_messages(&mut msg_receiver, metrics);
 }
 
-async fn connect_and_send_messages(
+pub(super) fn drop_queued_messages(
+    receiver: &mut BoundedQueueReceiver,
+    metrics: &DataplaneMetrics,
+) {
+    let mut dropped = 0;
+    while receiver.try_recv().is_ok() {
+        dropped += 1;
+    }
+    metrics.tcp_egress_messages_dropped.add(dropped);
+}
+
+// Count a message as dropped even if the connection task cancels its write
+// because reading failed or an explicit disconnect arrived.
+struct PendingMessage<'a> {
+    metrics: &'a DataplaneMetrics,
+    sent: bool,
+}
+
+impl Drop for PendingMessage<'_> {
+    fn drop(&mut self) {
+        if !self.sent {
+            self.metrics.tcp_egress_messages_dropped.inc();
+        }
+    }
+}
+
+pub(super) async fn send_messages(
     conn_id: u64,
     addr: &SocketAddr,
+    write_half: &mut TcpWriteHalf,
     msg_receiver: &mut BoundedQueueReceiver,
     metrics: &DataplaneMetrics,
+    idle: &ConnectionIdle,
 ) -> Result<(), Error> {
-    let mut stream = timeout(TCP_CONNECT_TIMEOUT, TcpStream::connect(addr))
-        .await
-        .unwrap_or_else(|_| Err(Error::from(ErrorKind::TimedOut)))
-        .map_err(|err| {
-            metrics.tcp_outbound_connection_errors.inc();
-            Error::other(format!("error connecting to remote host: {err}"))
-        })?;
-    let _active_connection = ActiveConnectionGuard::new(
-        &metrics.tcp_outbound_connections_established,
-        &metrics.tcp_current_outbound_connections,
-    );
-
-    trace!(conn_id, ?addr, "outbound tcp connection established");
-
-    conn_cork(stream.as_raw_fd(), true);
+    write_half.set_cork(true);
 
     let mut message_id: u64 = 0;
 
     loop {
+        idle.set_tx_idle(true);
         let msg = match msg_receiver.try_recv() {
             Ok(msg) => msg,
             Err(TryRecvError::Disconnected) => break,
             Err(TryRecvError::Empty) => {
-                conn_cork(stream.as_raw_fd(), false);
+                write_half.set_cork(false);
 
-                match timeout(MSG_WAIT_TIMEOUT, msg_receiver.recv()).await {
-                    Ok(None) | Err(_) => break,
-                    Ok(Some(msg)) => {
-                        conn_cork(stream.as_raw_fd(), true);
+                match msg_receiver.recv().await {
+                    None => break,
+                    Some(msg) => {
+                        write_half.set_cork(true);
                         msg
                     }
                 }
             }
         };
 
+        idle.set_tx_idle(false);
         let len = msg.msg.len();
 
         if len > TCP_MESSAGE_LENGTH_LIMIT {
@@ -407,51 +439,34 @@ async fn connect_and_send_messages(
             continue;
         }
 
+        let mut pending = PendingMessage {
+            metrics,
+            sent: false,
+        };
         timeout(
             message_timeout(len),
-            send_message(conn_id, addr, &mut stream, message_id, msg, metrics),
+            send_message(conn_id, addr, write_half, message_id, msg, metrics),
         )
         .await
         .unwrap_or_else(|_| Err(Error::from(ErrorKind::TimedOut)))
         .map_err(|err| {
             metrics.tcp_send_errors.inc();
-            metrics.tcp_egress_messages_dropped.inc();
             Error::other(format!(
                 "error writing message {message_id} on TCP connection: {err}"
             ))
         })?;
 
+        pending.sent = true;
         message_id += 1;
     }
 
     Ok(())
 }
 
-fn conn_cork(raw_fd: RawFd, cork_flag: bool) {
-    let r = unsafe {
-        let cork_flag: libc::c_int = if cork_flag { 1 } else { 0 };
-
-        libc::setsockopt(
-            raw_fd,
-            libc::SOL_TCP,
-            libc::TCP_CORK,
-            &cork_flag as *const _ as _,
-            std::mem::size_of_val(&cork_flag) as _,
-        )
-    };
-
-    if r != 0 {
-        warn!(
-            "setsockopt(TCP_CORK) failed with: {}",
-            Error::last_os_error()
-        );
-    }
-}
-
 async fn send_message(
     conn_id: u64,
     addr: &SocketAddr,
-    stream: &mut TcpStream,
+    write_half: &mut TcpWriteHalf,
     message_id: u64,
     message: TcpMsg,
     metrics: &DataplaneMetrics,
@@ -465,7 +480,7 @@ async fn send_message(
     );
 
     let start = if enabled!(Level::DEBUG) {
-        Some((Instant::now(), num_unacked_bytes(stream.as_raw_fd())))
+        Some((Instant::now(), write_half.unacked_bytes()))
     } else {
         None
     };
@@ -474,17 +489,19 @@ async fn send_message(
 
     let header = TcpMsgHdr::new(message_len as u64);
 
-    let (ret, _header) = stream.write_all(Box::<[u8]>::from(header.as_bytes())).await;
+    let (ret, _header) = write_half
+        .write_all(Box::<[u8]>::from(header.as_bytes()))
+        .await;
     ret?;
 
-    let (ret, _message) = stream.write_all(message.msg).await;
+    let (ret, _message) = write_half.write_all(message.msg).await;
     ret?;
 
     metrics.tcp_messages_sent.inc();
     metrics.tcp_bytes_sent.add(message_len as u64);
 
     if let Some((start_time, start_unacked_bytes)) = start {
-        let end_unacked_bytes = num_unacked_bytes(stream.as_raw_fd());
+        let end_unacked_bytes = write_half.unacked_bytes();
 
         let duration = Instant::now() - start_time;
 
@@ -528,19 +545,6 @@ async fn send_message(
     }
 
     Ok(())
-}
-
-fn num_unacked_bytes(raw_fd: RawFd) -> usize {
-    let mut outq: libc::c_int = 0;
-
-    let r = unsafe { libc::ioctl(raw_fd, libc::TIOCOUTQ, &mut outq as *mut libc::c_int) };
-
-    if r == 0 {
-        outq as _
-    } else {
-        warn!("ioctl(TIOCOUTQ) failed with: {}", Error::last_os_error());
-        0
-    }
 }
 
 #[cfg(test)]

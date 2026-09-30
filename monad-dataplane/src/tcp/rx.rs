@@ -25,9 +25,10 @@ use std::{
 
 use bytes::{Bytes, BytesMut};
 use monoio::{
-    io::AsyncReadRentExt,
+    buf::IoBufMut,
+    io::{AsyncReadRent, AsyncReadRentExt},
     net::{TcpListener, TcpStream},
-    select, spawn,
+    spawn,
     time::timeout,
 };
 use tokio::sync::mpsc;
@@ -35,16 +36,28 @@ use tracing::{debug, enabled, trace, warn, Level};
 use zerocopy::FromBytes;
 
 use super::{
-    message_timeout, RecvTcpMsg, TcpControl, TcpControlMsg, TcpMsgHdr, TcpRateLimit, HEADER_MAGIC,
-    HEADER_VERSION, TCP_MESSAGE_LENGTH_LIMIT,
+    message_timeout, task_connection,
+    tx::{drop_queued_messages, BoundedQueueReceiver, RegisterResult, TxState, TxStatePeerHandle},
+    ConnectionIdle, ConnectionOrigin, RecvTcpMsg, TcpConnectionGuard, TcpControl, TcpMsgHdr,
+    TcpRateLimit, TcpReadHalf, HEADER_MAGIC, HEADER_VERSION, TCP_MESSAGE_LENGTH_LIMIT,
 };
 use crate::{
     addrlist::{Addrlist, Status},
     metrics::{ActiveConnectionGuard, DataplaneMetrics},
-    tcp::RateLimiter,
+    TcpSocketId,
 };
 
+// Finish the remaining header within this deadline after its first byte arrives.
 const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
+
+#[derive(Clone)]
+pub(crate) struct RxContext {
+    pub(crate) socket_id: TcpSocketId,
+    pub(crate) rate_limit: TcpRateLimit,
+    pub(crate) tcp_control_map: TcpControl,
+    pub(crate) tcp_ingress_tx: mpsc::Sender<RecvTcpMsg>,
+    pub(crate) metrics: DataplaneMetrics,
+}
 
 #[derive(Clone)]
 pub(crate) struct RxState {
@@ -90,12 +103,12 @@ impl RxState {
                     connection_limit = inner_ref.tcp_connections_limit,
                     "trusted peer connection accepted"
                 );
-                Ok(ConnectionToken::Trusted {
+                Ok(ConnectionToken(ConnectionTokenInner::Trusted {
                     _active_connection: ActiveConnectionGuard::new(
                         &self.metrics.tcp_inbound_connections_accepted,
                         &self.metrics.tcp_current_inbound_connections,
                     ),
-                })
+                }))
             }
             Status::Unknown => {
                 let mut inner_ref = self.inner.borrow_mut();
@@ -135,20 +148,22 @@ impl RxState {
                         .unwrap_or(0),
                     "unknown peer connection accepted"
                 );
-                Ok(ConnectionToken::Unknown {
+                Ok(ConnectionToken(ConnectionTokenInner::Unknown {
                     inner: self.inner.clone(),
                     ip,
                     _active_connection: ActiveConnectionGuard::new(
                         &self.metrics.tcp_inbound_connections_accepted,
                         &self.metrics.tcp_current_inbound_connections,
                     ),
-                })
+                }))
             }
         }
     }
 }
 
-enum ConnectionToken {
+pub(crate) struct ConnectionToken(ConnectionTokenInner);
+
+enum ConnectionTokenInner {
     Trusted {
         _active_connection: ActiveConnectionGuard,
     },
@@ -159,18 +174,13 @@ enum ConnectionToken {
     },
 }
 
-struct ConnectionContext {
-    _token: ConnectionToken,
-    metrics: DataplaneMetrics,
-}
-
 impl Drop for ConnectionToken {
     fn drop(&mut self) {
-        match self {
-            ConnectionToken::Trusted { .. } => {
+        match &self.0 {
+            ConnectionTokenInner::Trusted { .. } => {
                 trace!("trusted connection dropped");
             }
-            ConnectionToken::Unknown { inner, ip, .. } => {
+            ConnectionTokenInner::Unknown { inner, ip, .. } => {
                 let mut inner_ref = inner.borrow_mut();
                 inner_ref.num_connections -= 1;
                 if let Some(count_ref) = inner_ref.num_connections_per_ip.get_mut(ip) {
@@ -195,114 +205,104 @@ struct RxStateInner {
 }
 
 pub(crate) async fn task(
-    rate_limit: TcpRateLimit,
-    tcp_control_map: TcpControl,
+    context: RxContext,
     rx_state: RxState,
+    tx_state: TxState,
     tcp_listener: TcpListener,
-    tcp_ingress_tx: mpsc::Sender<RecvTcpMsg>,
 ) {
-    let mut conn_id: u64 = 0;
     loop {
         match tcp_listener.accept().await {
-            Ok((tcp_stream, addr)) => match rx_state.apply_limits(addr.ip()) {
+            Ok((stream, addr)) => match rx_state.apply_limits(addr.ip()) {
                 Ok(conn_state) => {
-                    spawn(task_connection(
-                        rate_limit.new_rate_limiter(),
-                        tcp_control_map.clone(),
-                        ConnectionContext {
-                            _token: conn_state,
-                            metrics: rx_state.metrics.clone(),
-                        },
-                        conn_id,
-                        addr,
-                        tcp_stream,
-                        tcp_ingress_tx.clone(),
-                    ));
+                    // Register the send queue before receiving any messages, so
+                    // replies immediately reuse this accepted connection.
+                    if let RegisterResult::New(receiver, peer_handle) =
+                        tx_state.register((context.socket_id, addr), ConnectionOrigin::Accepted)
+                    {
+                        spawn(task_accepted_connection(
+                            context.clone(),
+                            addr,
+                            stream,
+                            receiver,
+                            peer_handle,
+                            conn_state,
+                        ));
+                    } else {
+                        warn!(?addr, "accepted connection for already registered peer");
+                    }
                 }
-                Err(()) => {
-                    debug!(
-                        conn_id,
-                        ?addr,
-                        "connection limit reached, rejecting tcp connection"
-                    );
-                }
+                Err(()) => debug!(?addr, "connection limit reached, rejecting tcp connection"),
             },
             Err(err) => {
-                rx_state.metrics.tcp_receive_errors.inc();
-                warn!(conn_id, ?err, "error accepting tcp connection");
+                context.metrics.tcp_receive_errors.inc();
+                warn!(?err, "error accepting tcp connection");
             }
         }
-
-        conn_id += 1;
     }
 }
 
-async fn task_connection(
-    rate_limiter: RateLimiter,
-    tcp_control_map: TcpControl,
-    connection: ConnectionContext,
+async fn task_accepted_connection(
+    context: RxContext,
+    addr: SocketAddr,
+    stream: TcpStream,
+    mut msg_receiver: BoundedQueueReceiver,
+    peer_handle: TxStatePeerHandle,
+    _rx_state: ConnectionToken,
+) {
+    let conn_id = peer_handle.conn_id;
+    let connection = TcpConnectionGuard::new(context.tcp_control_map.clone(), addr, conn_id);
+    if let Err(err) = task_connection(&context, addr, stream, &mut msg_receiver, &connection).await
+    {
+        warn!(conn_id, ?addr, ?err, "error in tcp connection task");
+    }
+    drop_queued_messages(&mut msg_receiver, &context.metrics);
+}
+
+pub(crate) async fn read_messages(
+    context: &RxContext,
     conn_id: u64,
     addr: SocketAddr,
-    mut tcp_stream: TcpStream,
-    tcp_ingress_tx: mpsc::Sender<RecvTcpMsg>,
+    read_half: &mut TcpReadHalf,
+    idle: &ConnectionIdle,
 ) {
-    let mut control_rx = tcp_control_map.register((addr.ip(), addr.port(), conn_id));
-    let mut message_id: u64 = 0;
-    loop {
-        select! {
-            biased;
-            ctl = control_rx.recv() => {
-                match ctl {
-                    None => {
-                        break;
-                    }
-                    Some(TcpControlMsg::Disconnect) => {
-                        trace!(conn_id, ?addr, "received disconnect control message");
-                        break;
-                    }
-                }
-            },
-            msg = read_message(conn_id, addr, message_id, &mut tcp_stream, &connection.metrics) => {
-                let Some(message) = msg else {
-                    break;
-                };
-                if rate_limiter.check().is_err() {
-                    connection.metrics.tcp_connections_rate_limited.inc();
-                    warn!(conn_id, ?addr, "rate limit exceeded");
-                    break;
-                }
-                let recv_msg = RecvTcpMsg {
-                    src_addr: addr,
-                    payload: message,
-                };
-                if let Err(err) = tcp_ingress_tx.send(recv_msg).await {
-                    warn!(
-                        conn_id,
-                        ?addr,
-                        message_id,
-                        ?err,
-                        "error queueing up received TCP message",
-                    );
-                    break;
-                }
-                message_id += 1;
-            }
+    let rate_limiter = context.rate_limit.new_rate_limiter();
+    let mut message_id = 0;
+    while let Some(message) =
+        read_message(conn_id, addr, message_id, read_half, &context.metrics, idle).await
+    {
+        if rate_limiter.check().is_err() {
+            context.metrics.tcp_connections_rate_limited.inc();
+            warn!(conn_id, ?addr, "rate limit exceeded");
+            break;
         }
+        if let Err(err) = context
+            .tcp_ingress_tx
+            .send(RecvTcpMsg {
+                src_addr: addr,
+                payload: message,
+            })
+            .await
+        {
+            warn!(
+                conn_id,
+                ?addr,
+                message_id,
+                ?err,
+                "error queueing up received TCP message"
+            );
+            break;
+        }
+        message_id += 1;
     }
-    tcp_control_map.unregister(&(addr.ip(), addr.port(), conn_id));
-    trace!(
-        conn_id,
-        ?addr,
-        "connection task ended, unregistered from control map"
-    );
 }
 
 async fn read_message(
     conn_id: u64,
     addr: SocketAddr,
     message_id: u64,
-    tcp_stream: &mut TcpStream,
+    read_half: &mut TcpReadHalf,
     metrics: &DataplaneMetrics,
+    idle: &ConnectionIdle,
 ) -> Option<Bytes> {
     let start_time = if enabled!(Level::DEBUG) {
         Some(Instant::now())
@@ -310,27 +310,55 @@ async fn read_message(
         None
     };
 
-    let header_bytes = BytesMut::with_capacity(std::mem::size_of::<TcpMsgHdr>());
-
-    let header = match timeout(HEADER_TIMEOUT, tcp_stream.read_exact(header_bytes)).await {
-        Ok((ret, header_bytes)) => match ret {
-            Ok(_len) => TcpMsgHdr::read_from_bytes(&header_bytes[..]).unwrap(),
-            Err(err) => {
-                if message_id == 0 || err.kind() != ErrorKind::UnexpectedEof {
-                    metrics.tcp_receive_errors.inc();
-                    debug!(
-                        conn_id,
-                        ?addr,
-                        message_id,
-                        ?err,
-                        "error reading message header on TCP connection"
-                    );
-                } else {
-                    trace!(conn_id, ?addr, "closing incoming TCP connection on EOF",);
-                }
-                return None;
+    let header_size = std::mem::size_of::<TcpMsgHdr>();
+    let header_bytes = BytesMut::with_capacity(header_size);
+    // Waiting for the first byte uses the shared idle check. The remaining
+    // header and body have separate fixed deadlines; the body deadline starts
+    // after the header completes, regardless of TX activity.
+    idle.set_rx_idle(true);
+    let (ret, header_bytes) = read_half.read(header_bytes).await;
+    let header_len = match ret {
+        Ok(len) if len > 0 => len,
+        result => {
+            let err = result
+                .err()
+                .unwrap_or_else(|| ErrorKind::UnexpectedEof.into());
+            if message_id == 0 || err.kind() != ErrorKind::UnexpectedEof {
+                metrics.tcp_receive_errors.inc();
+                debug!(
+                    conn_id,
+                    ?addr,
+                    message_id,
+                    ?err,
+                    "error reading message header on TCP connection"
+                );
+            } else {
+                trace!(conn_id, ?addr, "closing incoming TCP connection on EOF");
             }
-        },
+            return None;
+        }
+    };
+    idle.set_rx_idle(false);
+    let header = match timeout(
+        HEADER_TIMEOUT,
+        read_half.read_exact(header_bytes.slice_mut(header_len..header_size)),
+    )
+    .await
+    {
+        Ok((Ok(_), header_bytes)) => {
+            TcpMsgHdr::read_from_bytes(&header_bytes.into_inner()[..]).unwrap()
+        }
+        Ok((Err(err), _)) => {
+            metrics.tcp_receive_errors.inc();
+            debug!(
+                conn_id,
+                ?addr,
+                message_id,
+                ?err,
+                "error reading message header on TCP connection"
+            );
+            return None;
+        }
         Err(_) => {
             metrics.tcp_receive_errors.inc();
             warn!(
@@ -398,7 +426,7 @@ async fn read_message(
 
     let message = match timeout(
         message_timeout(message_length),
-        tcp_stream.read_exact(message),
+        read_half.read_exact(message),
     )
     .await
     {
