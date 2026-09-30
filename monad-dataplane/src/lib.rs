@@ -48,7 +48,7 @@ pub use metrics::DataplaneMetrics;
 pub(crate) const IPV4_HDR_SIZE: u16 = 20;
 pub(crate) const UDP_HDR_SIZE: u16 = 8;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum TcpSocketId {
     Raptorcast,
     AuthenticatedRaptorcast,
@@ -602,7 +602,7 @@ impl TcpSocketReader {
 pub struct TcpSocketWriter {
     socket_id: TcpSocketId,
     socket_addr: SocketAddr,
-    egress_tx: mpsc::Sender<(SocketAddr, TcpMsg)>,
+    egress_tx: mpsc::Sender<(TcpSocketId, SocketAddr, TcpMsg)>,
     msgs_dropped: Arc<AtomicUsize>,
     metrics: DataplaneMetrics,
 }
@@ -611,7 +611,7 @@ impl TcpSocketWriter {
     pub fn write(&self, addr: SocketAddr, msg: TcpMsg) {
         let msg_length = msg.msg.len();
 
-        match self.egress_tx.try_send((addr, msg)) {
+        match self.egress_tx.try_send((self.socket_id, addr, msg)) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
                 self.metrics.tcp_egress_messages_dropped.inc();
