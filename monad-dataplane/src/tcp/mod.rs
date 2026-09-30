@@ -14,19 +14,26 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
+    cell::Cell,
     collections::BTreeMap,
+    io::Error,
     net::{IpAddr, SocketAddr},
     num::NonZeroU32,
+    os::fd::{AsRawFd, RawFd},
     sync::{Arc, Mutex},
     time::Duration,
 };
 
 use monoio::{
-    net::{ListenerOpts, TcpListener},
+    io::{AsyncWriteRentExt, Splitable},
+    net::{
+        tcp::{TcpOwnedReadHalf, TcpOwnedWriteHalf},
+        ListenerOpts, TcpListener, TcpStream,
+    },
     spawn,
 };
-use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
-use tracing::trace;
+use tokio::sync::{mpsc, watch};
+use tracing::{trace, warn};
 use zerocopy::{
     byteorder::little_endian::{U32, U64},
     FromBytes, Immutable, IntoBytes,
@@ -61,19 +68,154 @@ impl TcpMsgHdr {
     }
 }
 
+pub(crate) type TcpReadHalf = TcpOwnedReadHalf;
+
+pub(crate) struct TcpWriteHalf {
+    inner: TcpOwnedWriteHalf,
+    raw_fd: RawFd,
+}
+
+impl TcpWriteHalf {
+    pub(crate) fn set_cork(&self, enabled: bool) {
+        let r = unsafe {
+            let cork_flag: libc::c_int = if enabled { 1 } else { 0 };
+            libc::setsockopt(
+                self.raw_fd,
+                libc::SOL_TCP,
+                libc::TCP_CORK,
+                &cork_flag as *const _ as _,
+                std::mem::size_of_val(&cork_flag) as _,
+            )
+        };
+        if r != 0 {
+            warn!(
+                "setsockopt(TCP_CORK) failed with: {}",
+                Error::last_os_error()
+            );
+        }
+    }
+
+    pub(crate) fn unacked_bytes(&self) -> usize {
+        let mut outq: libc::c_int = 0;
+        let r = unsafe { libc::ioctl(self.raw_fd, libc::TIOCOUTQ, &mut outq as *mut libc::c_int) };
+        if r == 0 {
+            outq as _
+        } else {
+            warn!("ioctl(TIOCOUTQ) failed with: {}", Error::last_os_error());
+            0
+        }
+    }
+
+    pub(crate) async fn write_all<T: monoio::buf::IoBuf>(
+        &mut self,
+        buf: T,
+    ) -> monoio::BufResult<usize, T> {
+        self.inner.write_all(buf).await
+    }
+}
+
+pub(crate) fn split_stream(stream: TcpStream) -> (TcpReadHalf, TcpWriteHalf) {
+    let raw_fd = stream.as_raw_fd();
+    let (read, write) = stream.into_split();
+    (
+        read,
+        TcpWriteHalf {
+            inner: write,
+            raw_fd,
+        },
+    )
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct TcpConnection(watch::Sender<bool>);
+
+impl TcpConnection {
+    pub(crate) fn new() -> Self {
+        Self(watch::channel(false).0)
+    }
+
+    pub(crate) fn disconnect(&self) {
+        self.0.send_replace(true);
+    }
+
+    pub(crate) async fn disconnected(&self) {
+        let mut rx = self.0.subscribe();
+        let disconnected = *rx.borrow_and_update();
+        if !disconnected {
+            let _ = rx.changed().await;
+        }
+    }
+
+    #[cfg(test)]
+    fn is_disconnected(&self) -> bool {
+        *self.0.borrow()
+    }
+}
+
+const CONNECTION_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
+
+// Both loops update the same activity clock. A bounded frame transfer owns a
+// guard so the idle timer cannot preempt its read or write deadline.
+pub(crate) struct ConnectionActivity {
+    last_activity: Cell<monoio::time::Instant>,
+    transfers: Cell<usize>,
+}
+
+impl ConnectionActivity {
+    fn new() -> Self {
+        Self {
+            last_activity: Cell::new(monoio::time::Instant::now()),
+            transfers: Cell::new(0),
+        }
+    }
+
+    fn transferring(&self) -> TransferGuard<'_> {
+        self.transfers.set(self.transfers.get() + 1);
+        TransferGuard(self)
+    }
+
+    async fn idle(&self) {
+        loop {
+            if self.transfers.get() > 0 {
+                monoio::time::sleep(CONNECTION_IDLE_TIMEOUT).await;
+                continue;
+            }
+            let deadline = self.last_activity.get() + CONNECTION_IDLE_TIMEOUT;
+            monoio::time::sleep_until(deadline).await;
+            if self.transfers.get() == 0
+                && monoio::time::Instant::now()
+                    >= self.last_activity.get() + CONNECTION_IDLE_TIMEOUT
+            {
+                return;
+            }
+        }
+    }
+}
+
+struct TransferGuard<'a>(&'a ConnectionActivity);
+
+impl Drop for TransferGuard<'_> {
+    fn drop(&mut self) {
+        self.0.last_activity.set(monoio::time::Instant::now());
+        self.0.transfers.set(self.0.transfers.get() - 1);
+    }
+}
+
 pub(crate) fn spawn_tasks(
     cfg: TcpConfig,
     tcp_control_map: TcpControl,
     addrlist: Arc<Addrlist>,
     socket_configs: Vec<(TcpSocketId, SocketAddr, mpsc::Sender<RecvTcpMsg>)>,
-    tcp_egress_rx: mpsc::Receiver<(SocketAddr, TcpMsg)>,
+    tcp_egress_rx: mpsc::Receiver<(TcpSocketId, SocketAddr, TcpMsg)>,
     bound_addrs_tx: std::sync::mpsc::SyncSender<Vec<(TcpSocketId, SocketAddr)>>,
     metrics: DataplaneMetrics,
 ) {
     let mut bound_addrs = Vec::with_capacity(socket_configs.len());
+    let tx_state = tx::TxState::new(addrlist.clone(), cfg.connections_limit, metrics.clone());
+    let mut contexts = BTreeMap::new();
 
     let rx_state = rx::RxState::new(
-        addrlist.clone(),
+        addrlist,
         cfg.connections_limit,
         cfg.per_ip_connections_limit,
         metrics.clone(),
@@ -85,18 +227,25 @@ pub(crate) fn spawn_tasks(
         let actual_addr = tcp_listener.local_addr().unwrap();
         bound_addrs.push((socket_id, actual_addr));
 
+        let context = rx::RxContext {
+            socket_id,
+            rate_limit: cfg.rate_limit,
+            tcp_control_map: tcp_control_map.clone(),
+            tcp_ingress_tx: ingress_tx,
+            metrics: metrics.clone(),
+        };
+        contexts.insert(socket_id, context.clone());
         spawn(rx::task(
-            cfg.rate_limit,
-            tcp_control_map.clone(),
+            context,
             rx_state.clone(),
+            tx_state.clone(),
             tcp_listener,
-            ingress_tx,
         ));
         trace!(?socket_id, ?socket_addr, actual_addr = ?actual_addr, "created tcp listener");
     }
 
     bound_addrs_tx.send(bound_addrs).unwrap();
-    spawn(tx::task(cfg, addrlist, tcp_egress_rx, metrics));
+    spawn(tx::task(tx_state, tcp_egress_rx, contexts));
 }
 
 // Minimum message receive/transmit speed in bytes per second.  Messages that are
@@ -140,27 +289,18 @@ impl TcpRateLimit {
     }
 }
 
-#[derive(Debug, Clone)]
-pub(crate) enum TcpControlMsg {
-    Disconnect,
-}
-
 pub(crate) type TcpIdentifier = (IpAddr, u16, u64);
-pub(crate) type TcpControlSender = UnboundedSender<TcpControlMsg>;
-pub(crate) type TcpControlReceiver = UnboundedReceiver<TcpControlMsg>;
 
 #[derive(Debug, Clone)]
-pub(crate) struct TcpControl(Arc<Mutex<BTreeMap<TcpIdentifier, TcpControlSender>>>);
+pub(crate) struct TcpControl(Arc<Mutex<BTreeMap<TcpIdentifier, TcpConnection>>>);
 
 impl TcpControl {
     pub(crate) fn new() -> TcpControl {
         TcpControl(Arc::new(Mutex::new(BTreeMap::new())))
     }
 
-    pub(crate) fn register(&self, id: TcpIdentifier) -> TcpControlReceiver {
-        let (tx, rx) = mpsc::unbounded_channel();
-        self.0.lock().unwrap().insert(id, tx);
-        rx
+    pub(crate) fn register(&self, id: TcpIdentifier, connection: TcpConnection) {
+        self.0.lock().unwrap().insert(id, connection);
     }
 
     pub(crate) fn unregister(&self, id: &TcpIdentifier) {
@@ -168,18 +308,11 @@ impl TcpControl {
     }
 
     #[allow(unused)]
-    pub(crate) fn send_lossy(&self, id: &TcpIdentifier, msg: TcpControlMsg) {
-        if let Some(tx) = self.0.lock().unwrap().get(id) {
-            let _ = tx.send(msg);
-        }
-    }
-
-    #[allow(unused)]
     pub(crate) fn disconnect_ip(&self, ip: IpAddr) {
         let map = self.0.lock().unwrap();
         let mut count = 0;
-        for (id, tx) in map.range((ip, u16::MIN, u64::MIN)..(ip, u16::MAX, u64::MAX)) {
-            let _ = tx.send(TcpControlMsg::Disconnect);
+        for (id, connection) in map.range((ip, u16::MIN, u64::MIN)..(ip, u16::MAX, u64::MAX)) {
+            connection.disconnect();
             count += 1;
         }
         trace!(
@@ -193,8 +326,8 @@ impl TcpControl {
     pub(crate) fn disconnect_socket(&self, ip: IpAddr, port: u16) {
         let map = self.0.lock().unwrap();
         let mut count = 0;
-        for (_, tx) in map.range((ip, port, u64::MIN)..(ip, port, u64::MAX)) {
-            let _ = tx.send(TcpControlMsg::Disconnect);
+        for (_, connection) in map.range((ip, port, u64::MIN)..(ip, port, u64::MAX)) {
+            connection.disconnect();
             count += 1;
         }
         trace!(
@@ -229,28 +362,23 @@ mod tests {
 
     #[rstest]
     fn test_register_and_unregister(tcp_control: TcpControl, tcp_id: TcpIdentifier) {
-        let _rx = tcp_control.register(tcp_id);
-        tcp_control.send_lossy(&tcp_id, TcpControlMsg::Disconnect);
+        let connection = TcpConnection::new();
+        tcp_control.register(tcp_id, connection.clone());
         tcp_control.unregister(&tcp_id);
-        tcp_control.send_lossy(&tcp_id, TcpControlMsg::Disconnect);
-    }
-
-    #[rstest]
-    fn test_send_lossy_existing_and_nonexistent(tcp_control: TcpControl, tcp_id: TcpIdentifier) {
-        tcp_control.send_lossy(&tcp_id, TcpControlMsg::Disconnect);
-
-        let mut rx = tcp_control.register(tcp_id);
-        tcp_control.send_lossy(&tcp_id, TcpControlMsg::Disconnect);
-        assert!(matches!(rx.try_recv().unwrap(), TcpControlMsg::Disconnect));
+        tcp_control.disconnect_socket(tcp_id.0, tcp_id.1);
+        assert!(!connection.is_disconnected());
     }
 
     #[rstest]
     fn test_multiple_registrations_same_id(tcp_control: TcpControl, tcp_id: TcpIdentifier) {
-        let _rx1 = tcp_control.register(tcp_id);
-        let mut rx2 = tcp_control.register(tcp_id);
+        let connection1 = TcpConnection::new();
+        let connection2 = TcpConnection::new();
+        tcp_control.register(tcp_id, connection1.clone());
+        tcp_control.register(tcp_id, connection2.clone());
 
-        tcp_control.send_lossy(&tcp_id, TcpControlMsg::Disconnect);
-        assert!(matches!(rx2.try_recv().unwrap(), TcpControlMsg::Disconnect));
+        tcp_control.disconnect_socket(tcp_id.0, tcp_id.1);
+        assert!(!connection1.is_disconnected());
+        assert!(connection2.is_disconnected());
     }
 
     #[rstest]
@@ -287,22 +415,21 @@ mod tests {
         #[case] disconnect_ip: IpAddr,
         #[case] expected_disconnected_indices: Vec<usize>,
     ) {
-        let mut socket_receivers = HashMap::new();
+        let mut connections = HashMap::new();
 
         for (i, &socket) in sockets.iter().enumerate() {
-            let rx = tcp_control.register(socket);
-            socket_receivers.insert(i, rx);
+            let connection = TcpConnection::new();
+            tcp_control.register(socket, connection.clone());
+            connections.insert(i, connection);
         }
 
         tcp_control.disconnect_ip(disconnect_ip);
 
-        for (i, mut rx) in socket_receivers {
-            let should_disconnect = expected_disconnected_indices.contains(&i);
-            if should_disconnect {
-                assert!(matches!(rx.try_recv().unwrap(), TcpControlMsg::Disconnect));
-            } else {
-                assert!(rx.try_recv().is_err());
-            }
+        for (i, connection) in connections {
+            assert_eq!(
+                connection.is_disconnected(),
+                expected_disconnected_indices.contains(&i)
+            );
         }
     }
 
@@ -345,22 +472,21 @@ mod tests {
         #[case] disconnect_port: u16,
         #[case] expected_disconnected_indices: Vec<usize>,
     ) {
-        let mut socket_receivers = HashMap::new();
+        let mut connections = HashMap::new();
 
         for (i, &socket) in sockets.iter().enumerate() {
-            let rx = tcp_control.register(socket);
-            socket_receivers.insert(i, rx);
+            let connection = TcpConnection::new();
+            tcp_control.register(socket, connection.clone());
+            connections.insert(i, connection);
         }
 
         tcp_control.disconnect_socket(disconnect_ip, disconnect_port);
 
-        for (i, mut rx) in socket_receivers {
-            let should_disconnect = expected_disconnected_indices.contains(&i);
-            if should_disconnect {
-                assert!(matches!(rx.try_recv().unwrap(), TcpControlMsg::Disconnect));
-            } else {
-                assert!(rx.try_recv().is_err());
-            }
+        for (i, connection) in connections {
+            assert_eq!(
+                connection.is_disconnected(),
+                expected_disconnected_indices.contains(&i)
+            );
         }
     }
 }
