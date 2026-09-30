@@ -712,6 +712,7 @@ fn setup_node(
         create_raptorcast_config(keypair_arc),
         SecondaryRaptorCastModeConfig::None,
         tcp_socket,
+        None,
         (authenticated_socket, udp_auth_protocol),
         None,
         Some(non_authenticated_socket),

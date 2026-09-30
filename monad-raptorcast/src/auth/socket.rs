@@ -463,7 +463,7 @@ where
                 continue;
             }
 
-            if let Err(err) = self.auth_protocol.buffer_message(public_key, piece) {
+            if let Err(err) = self.auth_protocol.buffer_message(public_key, piece, None) {
                 warn!(error=?err, "failed to buffer message");
                 return Err(());
             }
@@ -508,7 +508,7 @@ where
     }
 
     pub fn flush(&mut self) {
-        while let Some((addr, packet)) = self.auth_protocol.next_packet() {
+        while let Some((addr, packet, _completion)) = self.auth_protocol.next_packet() {
             self.write_auth_packet(addr, packet);
         }
     }

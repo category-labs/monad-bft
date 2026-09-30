@@ -142,7 +142,7 @@ where
     published_primary_rounds: PublishedRounds,
     published_secondary_rounds: PublishedRounds,
 
-    sig_auth_tcp_socket: auth::SigAuthTcpSocket<ST>,
+    dual_tcp_socket: auth::DualTcpSocketHandle<ST, AP, PD>,
     dual_socket: auth::DualSocketHandle<AP>,
     direct_udp_transport: Option<DirectUdpTransport<ST, AP, DS>>,
     dataplane_control: DataplaneControl,
@@ -184,7 +184,8 @@ where
     pub fn new(
         config: config::RaptorCastConfig<ST>,
         secondary_mode: SecondaryRaptorCastModeConfig,
-        tcp_socket: TcpSocketHandle,
+        non_authenticated_tcp_socket: TcpSocketHandle,
+        authenticated_tcp: Option<(TcpSocketHandle, AP)>,
         authenticated: (UdpSocketHandle, AP),
         direct_udp: Option<(UdpSocketHandle, AP, DS)>,
         non_authenticated_socket: Option<UdpSocketHandle>,
@@ -193,9 +194,21 @@ where
         current_epoch: Epoch,
         proposer_schedule: BoxedProposerSchedule<CertificateSignaturePubKey<ST>>,
     ) -> Self {
-        let (tcp_reader, tcp_writer) = tcp_socket.split();
-        let sig_auth_tcp_socket =
-            auth::SigAuthTcpSocket::new(tcp_reader, tcp_writer, config.shared_key.clone());
+        let (non_auth_tcp_reader, non_auth_tcp_writer) = non_authenticated_tcp_socket.split();
+        let sig_auth_tcp = auth::SigAuthTcpSocket::new(
+            non_auth_tcp_reader,
+            non_auth_tcp_writer,
+            config.shared_key.clone(),
+        );
+        let authenticated_tcp_handle = authenticated_tcp.map(|(socket, protocol)| {
+            let (reader, writer) = socket.split();
+            auth::AuthenticatedTcpSocketHandle::new(reader, writer, protocol)
+        });
+        let dual_tcp_socket = auth::DualTcpSocketHandle::new(
+            authenticated_tcp_handle,
+            sig_auth_tcp,
+            peer_discovery_driver.clone(),
+        );
 
         if config.primary_instance.raptor10_redundancy < 1f32 {
             panic!(
@@ -312,7 +325,7 @@ where
             published_primary_rounds: PublishedRounds::new(),
             published_secondary_rounds: PublishedRounds::new(),
 
-            sig_auth_tcp_socket,
+            dual_tcp_socket,
             dual_socket,
             direct_udp_transport,
             dataplane_control: control,
@@ -416,18 +429,9 @@ where
         make_app_message: impl FnOnce() -> Bytes,
         completion: Option<oneshot::Sender<()>>,
     ) {
-        match self.peer_discovery_driver.lock().unwrap().get_tcp_addr(to) {
-            None => {
-                warn!(
-                    ?to,
-                    "RaptorCastPrimary TcpPointToPoint not sending message, address unknown"
-                );
-            }
-            Some(address) => {
-                self.sig_auth_tcp_socket
-                    .write(address, make_app_message(), completion);
-            }
-        };
+        let app_message = make_app_message();
+        self.dual_tcp_socket
+            .write_to_peer(to, app_message, completion);
     }
 
     fn handle_secondary_outbound_message(
@@ -739,6 +743,7 @@ where
 
 pub struct DataplaneHandles {
     pub tcp_socket: monad_dataplane::TcpSocketHandle,
+    pub authenticated_tcp_socket: Option<monad_dataplane::TcpSocketHandle>,
     pub authenticated_socket: UdpSocketHandle,
     pub direct_udp_socket: Option<UdpSocketHandle>,
     pub non_authenticated_socket: UdpSocketHandle,
@@ -806,6 +811,7 @@ pub fn create_dataplane_for_tests(with_direct_udp: bool) -> DataplaneHandles {
 
     DataplaneHandles {
         tcp_socket,
+        authenticated_tcp_socket: None,
         authenticated_socket,
         direct_udp_socket,
         non_authenticated_socket,
@@ -903,10 +909,14 @@ where
     };
     let pd = PeerDiscoveryDriver::new(peer_discovery_builder);
     let shared_pd = Arc::new(Mutex::new(pd));
+    let authenticated_tcp = dataplane
+        .authenticated_tcp_socket
+        .map(|socket| (socket, auth::NoopAuthProtocol::new()));
     RaptorCast::<ST, M, OM, SE, NopDiscovery<ST>, _, NopScore<NodeId<CertificateSignaturePubKey<ST>>>>::new(
         config,
         SecondaryRaptorCastModeConfig::None,
         dataplane.tcp_socket,
+        authenticated_tcp,
         (
             dataplane.authenticated_socket,
             auth::NoopAuthProtocol::new(),
@@ -970,10 +980,21 @@ where
     let pd = PeerDiscoveryDriver::new(peer_discovery_builder);
     let shared_pd = Arc::new(Mutex::new(pd));
     let wireauth_config = monad_wireauth::Config::default();
+    let authenticated_tcp = dataplane.authenticated_tcp_socket.map(|socket| {
+        (
+            socket,
+            auth::WireAuthProtocol::new(
+                &auth::metrics::TCP_METRICS,
+                wireauth_config.clone(),
+                shared_key.clone(),
+            ),
+        )
+    });
     RaptorCast::<ST, M, OM, SE, NopDiscovery<ST>, _, NopScore<NodeId<CertificateSignaturePubKey<ST>>>>::new(
         config,
         SecondaryRaptorCastModeConfig::None,
         dataplane.tcp_socket,
+        authenticated_tcp,
         (
             dataplane.authenticated_socket,
             auth::WireAuthProtocol::new(&auth::metrics::UDP_METRICS, wireauth_config, shared_key),
@@ -1217,7 +1238,8 @@ where
             .push(self.peer_discovery_metrics.as_ref())
             .push(self.udp_state.metrics().executor_metrics())
             .chain(self.udp_state.decoder_metrics())
-            .chain(self.dual_socket.metrics());
+            .chain(self.dual_socket.metrics())
+            .chain(self.dual_tcp_socket.metrics());
 
         if let Some(socket) = &self.direct_udp_transport {
             chain = chain.chain(socket.metrics());
@@ -1461,16 +1483,16 @@ where
 
         let mut poll_quota = TCP_POLL_QUOTA;
         loop {
-            let mut recv_fut = pin!(budgeted(this.sig_auth_tcp_socket.recv(), &mut poll_quota));
+            let mut recv_fut = pin!(budgeted(this.dual_tcp_socket.recv(), &mut poll_quota));
             let Poll::Ready(result) = recv_fut.poll_unpin(cx) else {
                 break;
             };
 
             let msg = match result {
                 Ok(msg) => msg,
-                Err((src_addr, err)) => {
-                    warn!(?err, ?src_addr, "tcp error");
-                    this.dataplane_control.disconnect(src_addr);
+                Err(err) => {
+                    warn!(?err, "tcp error");
+                    this.dataplane_control.disconnect(err.src_addr());
                     continue;
                 }
             };
