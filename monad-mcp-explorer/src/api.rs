@@ -13,7 +13,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{fmt, str::FromStr, sync::Arc, time::SystemTime};
+use std::{
+    fmt,
+    str::FromStr,
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
 
 use actix_web::{
     HttpRequest, HttpResponse, ResponseError,
@@ -41,6 +46,10 @@ pub const MAX_LIMIT: usize = 100;
 pub const LANE_PREVIEW_TXS: usize = 5;
 pub const SPARKLINE_BLOCKS: usize = 100;
 pub const LIVE_INTERVAL_MS: u64 = 1000;
+// bounds for the send proxy; the rpc accepts at most 16 KiB and replies with a small json.
+pub const MAX_SEND_BODY: usize = 16 * 1024;
+pub const MAX_RPC_REPLY: usize = 64 * 1024;
+pub const RPC_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct AppState {
     pub index: SharedIndex,
@@ -73,6 +82,13 @@ impl ApiError {
     fn internal(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: message.into(),
+        }
+    }
+
+    fn bad_gateway(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_GATEWAY,
             message: message.into(),
         }
     }
@@ -719,6 +735,36 @@ async fn config(state: web::Data<AppState>) -> ApiResult {
     }))
 }
 
+// the send panel posts here, so the browser only needs to reach the explorer.
+async fn send_tx(state: web::Data<AppState>, body: web::Bytes) -> ApiResult {
+    if state.rpc_url.is_empty() {
+        return Err(ApiError {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: "no rpc url configured".into(),
+        });
+    }
+    let url = format!("{}/tx", state.rpc_url);
+    let mut res = awc::Client::builder()
+        .timeout(RPC_TIMEOUT)
+        .finish()
+        .post(&url)
+        .insert_header(ContentType::json())
+        .send_body(body)
+        .await
+        .map_err(|e| ApiError::bad_gateway(format!("rpc {url}: {e}")))?;
+    let reply = res
+        .body()
+        .limit(MAX_RPC_REPLY)
+        .await
+        .map_err(|e| ApiError::bad_gateway(format!("rpc {url}: {e}")))?;
+    let mut out = HttpResponse::build(res.status());
+    out.insert_header(CacheControl(vec![CacheDirective::NoStore]));
+    if let Some(ct) = res.headers().get(header::CONTENT_TYPE) {
+        out.insert_header((header::CONTENT_TYPE, ct.clone()));
+    }
+    Ok(out.body(reply))
+}
+
 async fn asset(req: HttpRequest, asset: &'static assets::Asset) -> HttpResponse {
     let etag = header::EntityTag::new_strong(asset.etag.clone());
     let fresh = <header::IfNoneMatch as header::Header>::parse(&req)
@@ -764,6 +810,11 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
             .route("/block/{slot}/lane/{lane}", web::get().to(lane))
             .route("/block/{slot}/proof", web::get().to(proof))
             .route("/txs", web::get().to(txs))
+            .service(
+                web::resource("/tx")
+                    .app_data(web::PayloadConfig::new(MAX_SEND_BODY))
+                    .route(web::post().to(send_tx)),
+            )
             .route("/tx/{hash}", web::get().to(tx))
             .route("/payload/{hash}", web::get().to(payload))
             .route("/sender/{address}", web::get().to(sender))

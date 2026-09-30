@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 actix-web = { workspace = true, features = ["compress-gzip"] }
+awc = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 flate2 = { workspace = true }
 hex = { workspace = true }

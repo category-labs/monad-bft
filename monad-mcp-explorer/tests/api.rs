@@ -15,18 +15,23 @@
 
 mod common;
 
-use std::{fs, time::Duration};
+use std::{
+    fs,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use actix_web::{
+    App, HttpResponse, HttpServer,
     http::{StatusCode, header},
-    test as atest,
+    test as atest, web,
 };
 use bytes::Bytes;
 use common::*;
 use monad_mcp_chorus::ledger::{
     BLOCKS_DIR, LedgerWriter, MAX_TX_PAYLOAD, block_dir_name, lane_file_name,
 };
-use monad_mcp_explorer::{index::IndexConfig, loader::LoaderConfig};
+use monad_mcp_explorer::{api::MAX_SEND_BODY, index::IndexConfig, loader::LoaderConfig};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -716,6 +721,121 @@ async fn missing_ledger_dir_boots_empty_then_fills() {
     wait_until("first block", Duration::from_secs(10), || {
         explorer.index.read().contains(40)
     });
+}
+
+// a stand-in rpc that records each POST /tx body; `{}` gets a 400, anything else a 202.
+fn stub_rpc() -> (String, Arc<Mutex<Vec<Bytes>>>) {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let recorder = seen.clone();
+    let server = HttpServer::new(move || {
+        let recorder = recorder.clone();
+        App::new().route(
+            "/tx",
+            web::post().to(move |body: Bytes| {
+                let recorder = recorder.clone();
+                async move {
+                    let bad = body.as_ref() == b"{}";
+                    recorder.lock().unwrap().push(body);
+                    if bad {
+                        HttpResponse::BadRequest().json(json!({"error": "no payload"}))
+                    } else {
+                        HttpResponse::Accepted().json(json!({"tx_hash": "0xab", "status": "sent"}))
+                    }
+                }
+            }),
+        )
+    })
+    .workers(1)
+    .bind(("127.0.0.1", 0))
+    .unwrap();
+    let addr = server.addrs()[0];
+    actix_web::rt::spawn(server.run());
+    (format!("http://{addr}"), seen)
+}
+
+async fn post<S, B>(app: &S, body: impl Into<Bytes>) -> (StatusCode, Option<String>, Bytes)
+where
+    S: actix_web::dev::Service<
+            actix_http::Request,
+            Response = actix_web::dev::ServiceResponse<B>,
+            Error = actix_web::Error,
+        >,
+    B: actix_web::body::MessageBody,
+{
+    let req = atest::TestRequest::post()
+        .uri("/api/tx")
+        .set_payload(body.into())
+        .to_request();
+    let resp = atest::call_service(app, req).await;
+    let ct = resp
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .map(|v| v.to_str().unwrap().to_owned());
+    (resp.status(), ct, atest::read_body(resp).await)
+}
+
+#[actix_web::test]
+async fn send_is_forwarded_to_the_rpc_with_its_reply() {
+    let dir = TempDir::new().unwrap();
+    let (rpc, seen) = stub_rpc();
+    let explorer = start_with_rpc(dir.path(), IndexConfig::default(), fast_loader(), &rpc);
+    let app = explorer.app().await;
+
+    let body = r#"{"payload_utf8":"via the explorer"}"#;
+    let (status, ct, reply) = post(&app, body).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(ct.as_deref(), Some("application/json"));
+    let reply: Value = serde_json::from_slice(&reply).unwrap();
+    assert_eq!(reply, json!({"tx_hash": "0xab", "status": "sent"}));
+
+    // an rpc rejection keeps its status and error body
+    let (status, _, reply) = post(&app, "{}").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&reply).unwrap(),
+        json!({"error": "no payload"})
+    );
+    assert_eq!(
+        *seen.lock().unwrap(),
+        vec![Bytes::from(body), Bytes::from_static(b"{}")]
+    );
+}
+
+#[actix_web::test]
+async fn send_without_a_reachable_rpc_is_an_error() {
+    let dir = TempDir::new().unwrap();
+
+    let explorer = start_with_rpc(dir.path(), IndexConfig::default(), fast_loader(), "");
+    let app = explorer.app().await;
+    let (status, _, reply) = post(&app, "{}").await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&reply).unwrap(),
+        json!({"error": "no rpc url configured"})
+    );
+
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", closed.local_addr().unwrap());
+    drop(closed);
+    let explorer = start_with_rpc(dir.path(), IndexConfig::default(), fast_loader(), &url);
+    let app = explorer.app().await;
+    let (status, _, reply) = post(&app, "{}").await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    let reply: Value = serde_json::from_slice(&reply).unwrap();
+    assert!(reply["error"].as_str().unwrap().contains(&url), "{reply}");
+}
+
+#[actix_web::test]
+async fn send_body_over_the_cap_is_not_forwarded() {
+    let dir = TempDir::new().unwrap();
+    let (rpc, seen) = stub_rpc();
+    let explorer = start_with_rpc(dir.path(), IndexConfig::default(), fast_loader(), &rpc);
+    let app = explorer.app().await;
+    let (status, _, _) = post(&app, vec![b'a'; MAX_SEND_BODY + 1]).await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    let (status, _, _) = post(&app, vec![b'a'; MAX_SEND_BODY]).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(seen.lock().unwrap().len(), 1);
 }
 
 #[test]

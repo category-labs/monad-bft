@@ -34,7 +34,10 @@ test('L6b: send from the panel, follow it to its block and payload, then Live of
   await page.getByTestId('send-payload').fill(payload);
   await expect(page.getByTestId('send-size')).toHaveText(`${payload.length} / 1024 B`);
   await page.getByTestId('send-sender').fill(sender);
+  // same-origin: the explorer forwards to the rpc, so a tunnel to the explorer alone suffices
+  const sent = page.waitForResponse((r) => r.request().method() === 'POST' && r.url() === `${stack.explorer}/api/tx`);
   await page.getByTestId('send-submit').click();
+  expect((await sent).status()).toBe(200);
 
   const result = page.getByTestId('send-result');
   await expect(result).toHaveAttribute('data-state', 'landed');

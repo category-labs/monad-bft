@@ -290,12 +290,12 @@
       S.send = { state: 'sending' };
       renderSend();
       try {
-        const res = await fetch(`${S.rpcUrl}/tx`, {
+        const res = await fetch('/api/tx', {
           method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
         });
         let reply = null;
         try { reply = await res.json(); } catch { /* non-json */ }
-        if (!res.ok || !reply || !reply.tx_hash) throw new Error((reply && reply.error) || `rpc answered ${res.status}`);
+        if (!res.ok || !reply || !reply.tx_hash) throw new Error((reply && reply.error) || `explorer answered ${res.status}`);
         const hash = '0x' + String(reply.tx_hash).replace(/^0x/i, '').toLowerCase();
         const target = reply.target_slot != null ? `target slot ${reply.target_slot}` : '';
         S.pending.set(hash, Date.now());

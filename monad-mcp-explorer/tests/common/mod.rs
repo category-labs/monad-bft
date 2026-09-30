@@ -165,16 +165,20 @@ pub struct Explorer {
 }
 
 pub fn start(ledger_dir: &Path, config: IndexConfig, loader: LoaderConfig) -> Explorer {
+    start_with_rpc(ledger_dir, config, loader, "http://rpc.test:1234")
+}
+
+pub fn start_with_rpc(
+    ledger_dir: &Path,
+    config: IndexConfig,
+    loader: LoaderConfig,
+    rpc_url: &str,
+) -> Explorer {
     let reader = LedgerReader::new(ledger_dir);
     let index = SharedIndex::new(Index::new(config));
     let progress = Arc::new(Progress::default());
     let loader = Loader::spawn(reader.clone(), index.clone(), progress.clone(), loader);
-    let state = app_state(
-        reader,
-        index.clone(),
-        progress.clone(),
-        "http://rpc.test:1234".into(),
-    );
+    let state = app_state(reader, index.clone(), progress.clone(), rpc_url.into());
     Explorer {
         index,
         progress,

@@ -25,9 +25,9 @@ struct Args {
     // the node's `ledger.dir`; only `<ledger_dir>/blocks` is read.
     #[arg(long)]
     ledger_dir: PathBuf,
-    #[arg(long, default_value = "127.0.0.1:8090")]
+    #[arg(long, default_value = "127.0.0.1:8081")]
     http_addr: String,
-    // base url of monad-mcp-rpc, used by the page's send panel.
+    // base url of monad-mcp-rpc; the send panel's POST /api/tx is forwarded there. "" disables it.
     #[arg(long, default_value = "http://127.0.0.1:8080")]
     rpc_url: String,
     #[arg(long, default_value_t = IndexConfig::default().retain_slots, value_parser = positive)]

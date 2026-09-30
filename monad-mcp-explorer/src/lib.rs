@@ -37,7 +37,7 @@ use crate::{
 pub struct ExplorerConfig {
     pub ledger_dir: PathBuf,
     pub http_addr: String,
-    // where the page's send panel posts txs.
+    // where POST /api/tx is forwarded; empty disables sending.
     pub rpc_url: String,
     pub index: IndexConfig,
     pub loader: LoaderConfig,
