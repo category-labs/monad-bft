@@ -56,12 +56,28 @@ rpc_start_host() {
         [ \"\$state\" = active ]"
 }
 
+# restarted after its node too, since a new genesis wipes the ledger it has indexed
+explorer_start_host() {
+    local host=$1
+    has_explorer "$host" || return 0
+    if [ "$supervisor" != systemd ]; then
+        echo "supervisor=$supervisor: no explorer"
+        return
+    fi
+    rssh_user_systemd "$host" "systemctl --user restart $explorer_unit.service
+        sleep 2
+        state=\$(systemctl --user is-active $explorer_unit.service || true)
+        echo explorer=\$state
+        [ \"\$state\" = active ]"
+}
+
 # the bracket keeps pgrep from matching the ssh command line itself
 stop_host() {
     local host=$1
     if [ "$supervisor" = systemd ]; then
-        # separate calls: an rpc unit not yet deployed must not keep the node running
-        rssh_user_systemd "$host" "systemctl --user stop $rpc_unit.service 2> /dev/null
+        # separate calls: an rpc or explorer unit not deployed must not keep the node running
+        rssh_user_systemd "$host" "systemctl --user stop $explorer_unit.service 2> /dev/null
+            systemctl --user stop $rpc_unit.service 2> /dev/null
             systemctl --user stop $unit.service" || true
     else
         rssh "$host" "if [ -s $remote_root/run/pid ]; then
@@ -94,14 +110,16 @@ wait_bound_host() {
 }
 
 status_host() {
-    local host=$1
+    local host=$1 explorer='explorer=none'
+    has_explorer "$host" && explorer="explorer=\$(systemctl --user is-active $explorer_unit.service 2> /dev/null || true)"
     rssh_user_systemd "$host" "
         state=\$(systemctl --user is-active $unit.service 2> /dev/null || true)
         rpc=\$(systemctl --user is-active $rpc_unit.service 2> /dev/null || true)
+        $explorer
         since=\$(systemctl --user show $unit.service -p ActiveEnterTimestamp --value 2> /dev/null || true)
         bound=\$(ss -Hlun | tr -s ' ' '\n' | grep -c ':$port\$' || true)
         last=\$($(node_log_cmd) 2> /dev/null | grep finalized | tail -1)
-        echo \"state=\${state:-unknown} rpc=\${rpc:-unknown} port_bound=\$bound since=\${since:-none}\"
+        echo \"state=\${state:-unknown} rpc=\${rpc:-unknown} explorer=\${explorer:-unknown} port_bound=\$bound since=\${since:-none}\"
         echo \"last=\${last:-no finalized line}\""
 }
 
@@ -153,6 +171,9 @@ cmd_start() {
 
     echo "starting the rpc on every host"
     fanout rpc_start_host
+
+    echo "starting the explorer where config/<host>/explorer.env exists"
+    fanout explorer_start_host
 
     echo "genesis_deadline = $genesis ($(iso_of_ms "$genesis")), recorded in $dist_dir/last-genesis"
 }
@@ -267,8 +288,8 @@ cmd_live_upgrade() {
     done
 
     [ "$build" = no ] || "$deploy_dir/build.sh" "${build_args[@]}"
-    local binary rpc_binary
-    read -r binary rpc_binary <<< "$(dist_binaries)"
+    local binary rpc_binary explorer_binary
+    read -r binary rpc_binary explorer_binary <<< "$(dist_binaries)"
     # shellcheck disable=SC2086
     "$deploy_dir/deploy.sh" --stage $upgrade_hosts
 
@@ -282,7 +303,8 @@ cmd_live_upgrade() {
         stop_host "$host"
         rssh "$host" "set -e
             $(swap_cmd "$binary")
-            $(swap_cmd "$rpc_binary" rpc-current)"
+            $(swap_cmd "$rpc_binary" rpc-current)
+            $(has_explorer "$host" && swap_cmd "$explorer_binary" explorer-current)"
         "$deploy_dir/push-config.sh" "$host"
         since=$(($(date +%s) - 1))
         start_host "$host"
@@ -304,6 +326,10 @@ cmd_live_upgrade() {
             echo "rollout stopped at $host (node healthy, rpc not); upgraded: ${done_hosts:-none}" >&2
             die "rpc on $host is not active; see journalctl --user -u $rpc_unit on $host"
         fi
+        if ! explorer_start_host "$host"; then
+            echo "rollout stopped at $host (node and rpc healthy, explorer not); upgraded: ${done_hosts:-none}" >&2
+            die "explorer on $host is not active; see journalctl --user -u $explorer_unit on $host"
+        fi
         done_hosts+="${done_hosts:+ }$host"
     done
     echo
@@ -317,12 +343,14 @@ cmd_run_one() {
         start)
             start_host "$host"
             rpc_start_host "$host"
+            explorer_start_host "$host"
             ;;
         stop) stop_host "$host" ;;
         restart)
             stop_host "$host"
             start_host "$host"
             rpc_start_host "$host"
+            explorer_start_host "$host"
             ;;
         *) die "$usage" ;;
     esac

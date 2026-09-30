@@ -43,7 +43,7 @@ monad-bft" below. Until then, run a reduced `hosts.txt` over the idle hosts (`am
 |---|---|
 | `hosts.txt` | the validator set; **line index is the `node_id`** |
 | `lib.sh` | ssh/rsync/fan-out helpers, sourced by every script |
-| `build.sh` | release build → `dist/monad-mcp-{node,rpc}-<sha>[-dirty]` + `dist/VERSION` |
+| `build.sh` | release build → `dist/monad-mcp-{node,rpc,explorer}-<sha>[-dirty]` + `dist/VERSION` |
 | `config/<host>/` | tracked per-host config, `node.toml` plus anything else to ship; mirrors `~/monad-mcp/config/` |
 | `gen-config.sh` | renders `config/<host>/node.toml` for one shared genesis; `--force` to overwrite, `--only-genesis` rewrites just `genesis_deadline` |
 | `preflight.sh` | read-only fitness check + pairwise UDP probe |
@@ -53,6 +53,7 @@ monad-bft" below. Until then, run a reduced `hosts.txt` over the idle hosts (`am
 | `report.sh` | per-host state/tip/lag/clock offset, finalization latency by path; `--logs <dir>` adds per-host counts, per-slot block agreement, top warnings |
 | `cruft.sh` | ledger pruner, runs on the host from `monad-mcp-cruft.timer` |
 | `monad-mcp-node.service`, `monad-mcp-rpc.service`, `monad-mcp-cruft.{service,timer}`, `cruft.env`, `run.sh` | pushed to the hosts |
+| `monad-mcp-explorer.service` | pushed only to hosts with `config/<host>/explorer.env` |
 
 `dist/` is generated and gitignored. `cruft.sh` and `run.sh` run *on the validator*, so they
 are the two scripts here that do not source `lib.sh`.
@@ -98,6 +99,17 @@ are the two scripts here that do not source `lib.sh`.
   `ssh -L 8080:127.0.0.1:8080`. Txs are proposed only with `gen-config.sh --source mempool`
   (`[proposal] source`); the default `random` keeps the load-test payloads and leaves rpc
   txs pending forever. No rpc under `MCP_SUPERVISOR=setsid`.
+- **`monad-mcp-explorer` runs only where `config/<host>/explorer.env` exists** (today
+  `ewr-002`). That file sets `EXPLORER_ARGS` (`--ledger-dir`, plus any flag overrides) and
+  reaches the host with the rest of `config/<host>/`; `deploy.sh`, `netctl.sh` and `status`
+  skip the explorer elsewhere. It indexes the local ledger in memory, so `netctl.sh` restarts
+  it after its node and rpc (a new genesis wipes the ledger). HTTP is `127.0.0.1:8081` only;
+  the page's send panel posts to the explorer's `/api/tx`, which forwards to the local rpc on
+  8080, so one tunnel is enough: `ssh -N -L 8081:127.0.0.1:8081 -p 9022 monad@ewr-002.devcore4.com`,
+  then open `http://localhost:8081`. Adding a host needs `explorer.env`, `push-config.sh
+  <host>`, `deploy.sh <host>` and `netctl.sh run-one <host> restart` (or just
+  `systemctl --user start monad-mcp-explorer` there); removing the file stops shipping it but
+  does not uninstall it.
 - **Always ssh to `<host>.devcore4.com`.** `~/.ssh/config` here has no `ewr-*`/`lax-*`
   short-name pattern; the FQDN matches `Host *.devcore4.com` (user `monad`, port 9022).
   `lib.sh` spells user and port out anyway.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# build.sh [--dirty] -> dist/monad-mcp-{node,rpc}-<sha>[-dirty] + dist/VERSION.
+# build.sh [--dirty] -> dist/monad-mcp-{node,rpc,explorer}-<sha>[-dirty] + dist/VERSION.
 # The binaries have no --version flag, so that name is the version.
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
@@ -29,20 +29,24 @@ fi
 sha=$(git rev-parse --short HEAD)
 name=monad-mcp-node-$sha$suffix
 rpc_name=monad-mcp-rpc-$sha$suffix
+explorer_name=monad-mcp-explorer-$sha$suffix
 
-cargo build --release -p monad-mcp-node -p monad-mcp-rpc --bin monad-mcp-node --bin monad-mcp-rpc
+cargo build --release -p monad-mcp-node -p monad-mcp-rpc -p monad-mcp-explorer \
+    --bin monad-mcp-node --bin monad-mcp-rpc --bin monad-mcp-explorer
 
 mkdir -p "$dist_dir"
 install -m 755 "$repo_dir/target/release/monad-mcp-node" "$dist_dir/$name"
 install -m 755 "$repo_dir/target/release/monad-mcp-rpc" "$dist_dir/$rpc_name"
+install -m 755 "$repo_dir/target/release/monad-mcp-explorer" "$dist_dir/$explorer_name"
 # keep the newest $keep_binaries of each; anything older is a rebuild away
-for kind in node rpc; do
+for kind in node rpc explorer; do
     ls -t "$dist_dir"/monad-mcp-$kind-* | tail -n +$((keep_binaries + 1)) | xargs -r rm -v
 done
 
 {
     echo "binary=$name"
     echo "rpc_binary=$rpc_name"
+    echo "explorer_binary=$explorer_name"
     echo "sha=$(git rev-parse HEAD)$suffix"
     echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "rustc_host=$(rustc -vV | sed -n 's/^host: //p')"
@@ -50,4 +54,6 @@ done
 } > "$dist_dir/VERSION"
 
 cat "$dist_dir/VERSION"
-echo "built $dist_dir/$name ($(du -h "$dist_dir/$name" | cut -f1)), $dist_dir/$rpc_name ($(du -h "$dist_dir/$rpc_name" | cut -f1))"
+for f in "$name" "$rpc_name" "$explorer_name"; do
+    echo "built $dist_dir/$f ($(du -h "$dist_dir/$f" | cut -f1))"
+done

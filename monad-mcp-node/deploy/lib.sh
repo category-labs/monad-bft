@@ -14,6 +14,7 @@ supervisor=${MCP_SUPERVISOR:-systemd}
 keep_binaries=${MCP_KEEP_BINARIES:-1}
 unit=monad-mcp-node
 rpc_unit=monad-mcp-rpc
+explorer_unit=monad-mcp-explorer
 cruft_unit=monad-mcp-cruft
 remote_rel=monad-mcp
 remote_root='$HOME/monad-mcp'
@@ -177,15 +178,22 @@ swap_cmd() {
         echo \"$link -> \$(readlink $remote_root/bin/$link)\""
 }
 
-# the binary names build.sh recorded, as `node rpc`
+# the binary names build.sh recorded, as `node rpc explorer`
 dist_binaries() {
     [ -f "$dist_dir/VERSION" ] || die "no $dist_dir/VERSION; run build.sh first"
-    local node rpc
+    local node rpc explorer
     node=$(sed -n 's/^binary=//p' "$dist_dir/VERSION")
     rpc=$(sed -n 's/^rpc_binary=//p' "$dist_dir/VERSION")
+    explorer=$(sed -n 's/^explorer_binary=//p' "$dist_dir/VERSION")
     [ -n "$node" ] && [ -f "$dist_dir/$node" ] || die "no node binary in $dist_dir/VERSION; run build.sh"
     [ -n "$rpc" ] && [ -f "$dist_dir/$rpc" ] || die "no rpc binary in $dist_dir/VERSION; run build.sh"
-    echo "$node $rpc"
+    [ -n "$explorer" ] && [ -f "$dist_dir/$explorer" ] || die "no explorer binary in $dist_dir/VERSION; run build.sh"
+    echo "$node $rpc $explorer"
+}
+
+# a host runs the explorer iff config/<host>/explorer.env exists
+has_explorer() {
+    [ -f "$config_dir/$1/explorer.env" ]
 }
 
 # `key = <integer>` from a host's live node.toml
