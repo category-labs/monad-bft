@@ -26,21 +26,16 @@ use std::{
 };
 
 use alloy_rlp::{Decodable, Encodable};
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use futures::{channel::oneshot, FutureExt, Stream, StreamExt};
 use itertools::Itertools;
 use message::{InboundRouterMessage, OutboundRouterMessage};
-use monad_crypto::{
-    certificate_signature::{
-        CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
-        CertificateSignatureRecoverable, PubKey,
-    },
-    signing_domain,
+use monad_crypto::certificate_signature::{
+    CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_dataplane::{
     udp::{segment_size_for_mtu, DEFAULT_MTU},
-    DataplaneBuilder, DataplaneControl, RecvTcpMsg, TcpMsg, TcpSocketHandle, TcpSocketId,
-    TcpSocketReader, TcpSocketWriter, UdpSocketHandle, UdpSocketId,
+    DataplaneBuilder, DataplaneControl, TcpSocketHandle, TcpSocketId, UdpSocketHandle, UdpSocketId,
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
@@ -101,7 +96,7 @@ pub mod udp;
 pub mod util;
 pub mod v1_rollout;
 
-const SIGNATURE_SIZE: usize = 65;
+pub(crate) const SIGNATURE_SIZE: usize = 65;
 const DEFAULT_RETRY_ATTEMPTS: u64 = 3;
 const TX_FORWARD_DIRECT_UDP_MAX_MESSAGE_SIZE_BYTES: usize = 512 * 1024;
 
@@ -122,7 +117,6 @@ where
     AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
     DS: IdentityScore<Identity = NodeId<CertificateSignaturePubKey<ST>>>,
 {
-    signing_key: Arc<ST::KeyPairType>,
     self_id: NodeId<CertificateSignaturePubKey<ST>>,
     is_dynamic_fullnode: bool,
 
@@ -148,8 +142,7 @@ where
     published_primary_rounds: PublishedRounds,
     published_secondary_rounds: PublishedRounds,
 
-    tcp_reader: TcpSocketReader,
-    tcp_writer: TcpSocketWriter,
+    sig_auth_tcp_socket: auth::SigAuthTcpSocket<ST>,
     dual_socket: auth::DualSocketHandle<AP>,
     direct_udp_transport: Option<DirectUdpTransport<ST, AP, DS>>,
     dataplane_control: DataplaneControl,
@@ -201,6 +194,8 @@ where
         proposer_schedule: BoxedProposerSchedule<CertificateSignaturePubKey<ST>>,
     ) -> Self {
         let (tcp_reader, tcp_writer) = tcp_socket.split();
+        let sig_auth_tcp_socket =
+            auth::SigAuthTcpSocket::new(tcp_reader, tcp_writer, config.shared_key.clone());
 
         if config.primary_instance.raptor10_redundancy < 1f32 {
             panic!(
@@ -304,7 +299,6 @@ where
             dedicated_full_nodes: config.primary_instance.fullnode_dedicated.clone(),
             peer_discovery_driver,
 
-            signing_key: config.shared_key.clone(),
             message_builder,
             secondary_message_builder: Some(secondary_message_builder),
 
@@ -318,8 +312,7 @@ where
             published_primary_rounds: PublishedRounds::new(),
             published_secondary_rounds: PublishedRounds::new(),
 
-            tcp_reader,
-            tcp_writer,
+            sig_auth_tcp_socket,
             dual_socket,
             direct_udp_transport,
             dataplane_control: control,
@@ -431,26 +424,8 @@ where
                 );
             }
             Some(address) => {
-                let app_message = make_app_message();
-                // TODO make this more sophisticated
-                // include timestamp, etc
-                let mut signed_message = BytesMut::zeroed(SIGNATURE_SIZE + app_message.len());
-                let signature = <ST as CertificateSignature>::serialize(&ST::sign::<
-                    signing_domain::RaptorcastAppMessage,
-                >(
-                    &app_message,
-                    &self.signing_key,
-                ));
-                assert_eq!(signature.len(), SIGNATURE_SIZE);
-                signed_message[..SIGNATURE_SIZE].copy_from_slice(&signature);
-                signed_message[SIGNATURE_SIZE..].copy_from_slice(&app_message);
-                self.tcp_writer.write(
-                    address,
-                    TcpMsg {
-                        msg: signed_message.freeze(),
-                        completion,
-                    },
-                );
+                self.sig_auth_tcp_socket
+                    .write(address, make_app_message(), completion);
             }
         };
     }
@@ -1486,32 +1461,28 @@ where
 
         let mut poll_quota = TCP_POLL_QUOTA;
         loop {
-            let mut recv_fut = pin!(budgeted(this.tcp_reader.recv(), &mut poll_quota));
-            let Poll::Ready(msg) = recv_fut.poll_unpin(cx) else {
+            let mut recv_fut = pin!(budgeted(this.sig_auth_tcp_socket.recv(), &mut poll_quota));
+            let Poll::Ready(result) = recv_fut.poll_unpin(cx) else {
                 break;
             };
-            let RecvTcpMsg { payload, src_addr } = msg;
-            // check message length to prevent panic during message slicing
-            if payload.len() < SIGNATURE_SIZE {
-                warn!(
-                    ?src_addr,
-                    "invalid message, message length less than signature size"
-                );
-                this.dataplane_control.disconnect(src_addr);
-                continue;
-            }
-            let signature_bytes = &payload[..SIGNATURE_SIZE];
-            let signature = match <ST as CertificateSignature>::deserialize(signature_bytes) {
-                Ok(signature) => signature,
-                Err(err) => {
-                    warn!(?err, ?src_addr, "invalid signature");
+
+            let msg = match result {
+                Ok(msg) => msg,
+                Err((src_addr, err)) => {
+                    warn!(?err, ?src_addr, "tcp error");
                     this.dataplane_control.disconnect(src_addr);
                     continue;
                 }
             };
-            let app_message_bytes = payload.slice(SIGNATURE_SIZE..);
+
+            let auth::AuthRecvTcpMsg {
+                payload,
+                src_addr,
+                from,
+            } = msg;
+
             let deserialized_message =
-                match InboundRouterMessage::<M, ST>::try_deserialize(&app_message_bytes) {
+                match InboundRouterMessage::<M, ST>::try_deserialize(&payload) {
                     Ok(message) => message,
                     Err(err) => {
                         this.metrics
@@ -1522,16 +1493,6 @@ where
                         continue;
                     }
                 };
-            let from = match signature
-                .recover_pubkey::<signing_domain::RaptorcastAppMessage>(app_message_bytes.as_ref())
-            {
-                Ok(from) => from,
-                Err(err) => {
-                    warn!(?err, ?src_addr, "failed to recover pubkey");
-                    this.dataplane_control.disconnect(src_addr);
-                    continue;
-                }
-            };
 
             // Dispatch messages received via TCP
             match deserialized_message {

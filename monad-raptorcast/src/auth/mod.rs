@@ -13,10 +13,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+mod common;
 pub mod framing;
 pub mod metrics;
 pub mod protocol;
 pub mod socket;
+pub mod tcp_socket;
+
+pub(crate) type DataplaneCompletion = Option<futures::channel::oneshot::Sender<()>>;
 
 pub use framing::{AuthPacketFramer, LeanUdpFramer, LeanUdpFramingError, NopScore};
 pub use metrics::{
@@ -30,3 +34,4 @@ pub use socket::{
     AuthRecvMsg, AuthenticatedSocketHandle, DualSocketHandle, FramedAuthenticatedSocketHandle,
     FramedRecvError,
 };
+pub use tcp_socket::{AuthRecvTcpMsg, SigAuthError, SigAuthTcpSocket};
