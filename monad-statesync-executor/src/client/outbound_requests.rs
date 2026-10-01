@@ -271,11 +271,20 @@ impl<PT: PubKey> OutboundRequests<PT> {
             );
             return Vec::new();
         };
-        let responses = in_flight_request.get_mut().apply_response(&from, response);
-        if let Some(response) = responses.last() {
-            if response.response_n != 0 {
-                in_flight_request.remove();
+        let mut responses = in_flight_request.get_mut().apply_response(&from, response);
+        // handle_done ends the request on the C++ side, and an honest server sends the done last
+        if let Some(done_index) = responses
+            .iter()
+            .position(|response| response.response_n != 0)
+        {
+            for response in responses.drain(done_index + 1..) {
+                tracing::debug!(
+                    ?from,
+                    ?response,
+                    "dropping statesync response, request already done"
+                );
             }
+            in_flight_request.remove();
         }
         responses
     }
@@ -534,6 +543,80 @@ mod tests {
         assert_eq!(
             outbound_requests.handle_response(peer, done(until)).len(),
             1
+        );
+        assert!(outbound_requests.is_empty());
+    }
+
+    #[test]
+    fn second_done_is_dropped() {
+        let peer = node_id(1);
+        let mut outbound_requests = OutboundRequests::new(1, Duration::from_secs(60), &[peer]);
+        outbound_requests.queue_request(request());
+        assert!(matches!(
+            outbound_requests.poll(),
+            RequestPollResult::Request(to, sent) if to == peer && sent == request()
+        ));
+
+        let done = |response_index| StateSyncResponse {
+            response_n: request().until,
+            ..response(response_index)
+        };
+        assert!(outbound_requests.handle_response(peer, done(1)).is_empty());
+        assert_eq!(
+            outbound_requests.handle_response(peer, done(0)),
+            vec![done(0)]
+        );
+        assert!(outbound_requests.is_empty());
+    }
+
+    #[test]
+    fn response_after_done_is_dropped() {
+        let peer = node_id(1);
+        let mut outbound_requests = OutboundRequests::new(1, Duration::from_secs(60), &[peer]);
+        outbound_requests.queue_request(request());
+        assert!(matches!(
+            outbound_requests.poll(),
+            RequestPollResult::Request(to, sent) if to == peer && sent == request()
+        ));
+
+        let done = |response_index| StateSyncResponse {
+            response_n: request().until,
+            ..response(response_index)
+        };
+        assert!(outbound_requests
+            .handle_response(peer, response(1))
+            .is_empty());
+        assert_eq!(
+            outbound_requests.handle_response(peer, done(0)),
+            vec![done(0)]
+        );
+        assert!(outbound_requests.is_empty());
+        assert!(outbound_requests.handle_response(peer, done(2)).is_empty());
+    }
+
+    #[test]
+    fn responses_before_done_are_forwarded() {
+        let peer = node_id(1);
+        let mut outbound_requests = OutboundRequests::new(1, Duration::from_secs(60), &[peer]);
+        outbound_requests.queue_request(request());
+        assert!(matches!(
+            outbound_requests.poll(),
+            RequestPollResult::Request(to, sent) if to == peer && sent == request()
+        ));
+
+        let done = StateSyncResponse {
+            response_n: request().until,
+            ..response(2)
+        };
+        assert!(outbound_requests
+            .handle_response(peer, done.clone())
+            .is_empty());
+        assert!(outbound_requests
+            .handle_response(peer, response(1))
+            .is_empty());
+        assert_eq!(
+            outbound_requests.handle_response(peer, response(0)),
+            vec![response(0), response(1), done]
         );
         assert!(outbound_requests.is_empty());
     }
