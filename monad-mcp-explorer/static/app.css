@@ -19,6 +19,10 @@
   --accent-ink: #5b3ff0;
   --accent-soft: #ece8ff;
   --accent-text: #ffffff;
+  --dim: #b3a6ff;
+  --dim-ink: #7c6bd9;
+  --dim-soft: #f5f3ff;
+  --dim-line: #d6cefc;
   --warn: #9a5800;
   --warn-soft: #fff1dc;
   --bad: #b3261e;
@@ -41,6 +45,10 @@
   --accent-ink: #9d8cff;
   --accent-soft: #241a4d;
   --accent-text: #0e091c;
+  --dim: #6a5bb8;
+  --dim-ink: #a99de8;
+  --dim-soft: #1e1640;
+  --dim-line: #3d3270;
   --warn: #ffae45;
   --warn-soft: #2a1c08;
   --bad: #f08278;
@@ -187,6 +195,8 @@ h2.section { font-size: 14px; font-weight: 600; margin: 22px 0 10px; }
 .lanebar { display: inline-flex; gap: 2px; vertical-align: middle; margin-right: 6px; }
 .lanebar i { width: 6px; height: 12px; border-radius: 1px; background: var(--accent); }
 .lanebar i.off { background: var(--line-strong); }
+#recent-blocks .lanebar i:not(.off) { background: var(--dim); }
+#recent-blocks .badge.fast { background: var(--dim-soft); color: var(--dim-ink); border-color: var(--dim-line); }
 
 /* key/value */
 .kv { display: grid; grid-template-columns: 220px minmax(0, 1fr); margin: 0; }
