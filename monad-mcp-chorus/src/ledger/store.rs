@@ -18,6 +18,7 @@ use std::{
     fs::{self, File},
     io::{self, Write},
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 
 use bytes::Bytes;
@@ -41,11 +42,11 @@ pub fn block_dir_name(slot: u64) -> String {
 
 // accepts only the canonical name, so foreign digit strings are not blocks.
 pub fn parse_block_dir_name(name: &str) -> Option<u64> {
-    if name.len() < BLOCK_NAME_DIGITS || !name.bytes().all(|b| b.is_ascii_digit()) {
+    let padded = name.len() > BLOCK_NAME_DIGITS && name.starts_with('0');
+    if name.len() < BLOCK_NAME_DIGITS || padded || !name.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    let slot = name.parse().ok()?;
-    (block_dir_name(slot) == name).then_some(slot)
+    name.parse().ok()
 }
 
 fn temp_dir_name(slot: u64) -> String {
@@ -413,24 +414,33 @@ impl LedgerReader {
         LedgerFollower {
             reader: self.clone(),
             seen: BTreeSet::new(),
+            rescan_interval: FOLLOW_RESCAN_INTERVAL,
+            last_scan: None,
         }
     }
 
     // a follower that skips the blocks present now.
     pub fn follow_from_now(&self) -> Result<LedgerFollower, LedgerError> {
         Ok(LedgerFollower {
-            reader: self.clone(),
             seen: self.scan()?.into_iter().collect(),
+            last_scan: Some(Instant::now()),
+            ..self.follow()
         })
     }
 }
+
+// slots probed on each side of the highest seen one between full listings
+pub const FOLLOW_PROBE_WINDOW: u64 = 128;
+pub const FOLLOW_RESCAN_INTERVAL: Duration = Duration::from_secs(30);
 
 // change feed over the ledger: yields each block once, whatever order the writer wrote it in.
 #[derive(Clone, Debug)]
 pub struct LedgerFollower {
     reader: LedgerReader,
-    // yielded or skipped slots still on disk; pruned ones are dropped, bounding it by the dir.
+    // yielded or skipped slots; a full listing drops the pruned ones, bounding it by the dir.
     seen: BTreeSet<u64>,
+    rescan_interval: Duration,
+    last_scan: Option<Instant>,
 }
 
 impl LedgerFollower {
@@ -439,36 +449,65 @@ impl LedgerFollower {
     }
 
     // metas of up to `limit` new blocks, lowest slot first; unreadable ones are skipped once.
-    // each call lists the whole blocks dir, O(n log n) in the blocks kept on disk.
+    // probes the slots near the highest seen one; a block written further off waits for the
+    // full listing done every rescan interval, which is O(n log n) in the blocks on disk.
     pub fn poll(&mut self, limit: usize) -> Result<Vec<BlockMeta>, LedgerError> {
-        let mut seen = BTreeSet::new();
+        let due = self
+            .last_scan
+            .is_none_or(|at| at.elapsed() >= self.rescan_interval);
+        let high = self.seen.last().copied();
         let mut blocks = Vec::new();
         let mut budget = limit;
-        for slot in self.reader.scan()? {
-            if self.seen.contains(&slot) {
-                seen.insert(slot);
-                continue;
+        match high {
+            Some(high) if !due => {
+                let holes = high.saturating_sub(FOLLOW_PROBE_WINDOW)..high;
+                self.take(holes, &mut budget, &mut blocks);
+                let mut from = high;
+                while budget > 0 && from < u64::MAX {
+                    let to = from.saturating_add(FOLLOW_PROBE_WINDOW);
+                    if !self.take(from + 1..=to, &mut budget, &mut blocks) {
+                        break;
+                    }
+                    from = to;
+                }
             }
-            if budget == 0 {
-                continue;
-            }
-            budget -= 1;
-            match self.reader.read_meta(slot) {
-                Ok(meta) => {
-                    blocks.push(meta);
-                    seen.insert(slot);
-                }
-                Err(LedgerError::NotFound(_)) => {
-                    debug!(slot, "ledger block pruned during read");
-                }
-                Err(e) => {
-                    self.reader.log_skipped(slot, &e);
-                    seen.insert(slot);
-                }
+            _ => {
+                let slots = self.reader.scan()?;
+                self.last_scan = Some(Instant::now());
+                let on_disk: BTreeSet<u64> = slots.iter().copied().collect();
+                self.seen.retain(|slot| on_disk.contains(slot));
+                self.take(slots, &mut budget, &mut blocks);
             }
         }
-        self.seen = seen;
         Ok(blocks)
+    }
+
+    // reads the unseen blocks among `slots` present on disk; true if any was present.
+    fn take(
+        &mut self,
+        slots: impl IntoIterator<Item = u64>,
+        budget: &mut usize,
+        blocks: &mut Vec<BlockMeta>,
+    ) -> bool {
+        let mut found = false;
+        for slot in slots {
+            if *budget == 0 {
+                break;
+            }
+            // reading a block not yet renamed in would race into a spurious missing-meta skip
+            if self.seen.contains(&slot) || !self.reader.block_dir(slot).is_dir() {
+                continue;
+            }
+            match self.reader.read_meta(slot) {
+                Ok(meta) => blocks.push(meta),
+                Err(LedgerError::NotFound(_)) => continue,
+                Err(e) => self.reader.log_skipped(slot, &e),
+            }
+            found = true;
+            *budget -= 1;
+            self.seen.insert(slot);
+        }
+        found
     }
 }
 
@@ -889,6 +928,7 @@ mod tests {
         }
         fs::write(reader.block_dir(3).join(META_FILE), b"garbage").unwrap();
         let mut follower = reader.follow();
+        follower.rescan_interval = Duration::ZERO;
         assert_eq!(slots_of(&follower.poll(usize::MAX).unwrap()), [1, 2, 4]);
         assert_eq!(follower.seen, BTreeSet::from([1, 2, 3, 4]));
         assert_eq!(follower.poll(usize::MAX).unwrap(), vec![]);
@@ -930,6 +970,35 @@ mod tests {
         let mut yielded = poller.join().unwrap();
         yielded.sort_unstable();
         assert_eq!(yielded, (0..200).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn follower_probes_near_slots_and_rescans_for_far_ones() {
+        let (_dir, writer, reader) = setup();
+        writer.write(&block(1000)).unwrap();
+        let mut follower = reader.follow_from_now().unwrap();
+        let far = 1000 + 3 * FOLLOW_PROBE_WINDOW + 1;
+        for slot in [
+            1001,
+            1001 + FOLLOW_PROBE_WINDOW,
+            1000 - FOLLOW_PROBE_WINDOW,
+            far,
+        ] {
+            writer.write(&block(slot)).unwrap();
+        }
+        // a full probe window holds no block between the second and `far`
+        assert_eq!(
+            slots_of(&follower.poll(usize::MAX).unwrap()),
+            [1000 - FOLLOW_PROBE_WINDOW, 1001, 1001 + FOLLOW_PROBE_WINDOW]
+        );
+        writer.write(&block(1)).unwrap();
+        assert_eq!(follower.poll(usize::MAX).unwrap(), vec![]);
+
+        fs::remove_dir_all(reader.block_dir(1000)).unwrap();
+        follower.rescan_interval = Duration::ZERO;
+        assert_eq!(slots_of(&follower.poll(usize::MAX).unwrap()), [1, far]);
+        assert!(!follower.seen.contains(&1000));
+        assert_eq!(follower.poll(usize::MAX).unwrap(), vec![]);
     }
 
     #[test]
