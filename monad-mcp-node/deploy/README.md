@@ -100,7 +100,7 @@ are the two scripts here that do not source `lib.sh`.
   (`[proposal] source`); the default `random` keeps the load-test payloads and leaves rpc
   txs pending forever. No rpc under `MCP_SUPERVISOR=setsid`.
 - **`monad-mcp-explorer` runs only where `config/<host>/explorer.env` exists** (today
-  `ewr-002`). That file sets `EXPLORER_ARGS` (`--ledger-dir`, plus any flag overrides) and
+  `ewr-002` and `sgp-008`). That file sets `EXPLORER_ARGS` (`--ledger-dir`, plus any flag overrides) and
   reaches the host with the rest of `config/<host>/`; `deploy.sh`, `netctl.sh` and `status`
   skip the explorer elsewhere. It indexes the local ledger in memory, so `netctl.sh` restarts
   it after its node and rpc (a new genesis wipes the ledger). HTTP is `127.0.0.1:8081` only;
