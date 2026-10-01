@@ -60,6 +60,7 @@ fn config(i: u64, nodes: u64, genesis_deadline: Timestamp, ledgers: &Path) -> No
         cadence: Default::default(),
         da: Default::default(),
         proposal: Default::default(),
+        leader_election: Default::default(),
         repeater: None,
         mempool: Default::default(),
         ledger: LedgerConfig {

@@ -46,6 +46,12 @@ source = "random"
 # 64 KiB for mempool
 # max_payload_bytes = 65536
 
+# must match on every validator; absent: rotation_slack = 3
+[leader_election]
+# z: a lane rotates every 5 + z slots and is vacant for 5 of them; a proposer
+# keeps its lane for num_proposals * (5 + z) slots
+rotation_slack = 3
+
 # bounds of the mempool, used by source = "mempool"
 [mempool]
 max_txs = 10000

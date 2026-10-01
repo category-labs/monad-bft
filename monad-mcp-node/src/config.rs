@@ -55,6 +55,8 @@ pub struct NodeConfig {
     pub da: DAConfig,
     #[serde(default)]
     pub proposal: ProposalConfig,
+    #[serde(default)]
+    pub leader_election: LeaderElectionConfig,
     // Absent table: outbound slot messages are never re-sent.
     pub repeater: Option<RepeaterSection>,
     #[serde(default)]
@@ -89,6 +91,7 @@ impl NodeConfig {
                 source: SourceKind::Mempool,
                 ..ProposalConfig::local_demo()
             },
+            leader_election: LeaderElectionConfig::default(),
             repeater: None,
             mempool: MempoolConfig::default(),
             ledger: LedgerConfig {
@@ -132,7 +135,10 @@ impl NodeConfig {
 
     pub fn epoch_handle(&self) -> Result<EpochHandle, ScheduleError> {
         let validator_data = Arc::new(self.validator_data());
-        let proposers = Arc::new(self.proposal.schedule(validator_data.clone())?);
+        let proposers = Arc::new(
+            self.proposal
+                .schedule(&self.leader_election, validator_data.clone())?,
+        );
         let header_auth = Arc::new(header_auth(proposers.clone(), validator_data.clone()));
 
         Ok(EpochHandle {
@@ -254,6 +260,21 @@ impl Default for RepeaterSection {
     }
 }
 
+// every validator must carry the same values: they shape the proposer schedule
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LeaderElectionConfig {
+    // `z`: a lane rotates every y + z slots and stays vacant for y of them,
+    // so a proposer holds its lane for K · (y + z) slots
+    pub rotation_slack: u64,
+}
+
+impl Default for LeaderElectionConfig {
+    fn default() -> Self {
+        Self { rotation_slack: 3 }
+    }
+}
+
 #[derive(Clone, Copy, Deserialize)]
 #[serde(default)]
 pub struct DAConfig {
@@ -308,8 +329,7 @@ impl ProposalConfig {
     // the same value every consumer sees; derive it from the conductor
     // configuration once that carries the parameter.
     const OBSERVATION_CUTOFF: u64 = 5;
-    const ROTATION_SLACK: u64 = 3;
-    const SLOTS_PER_EPOCH: u64 = 400;
+    const MIN_SLOTS_PER_EPOCH: u64 = 400;
 
     // the largest message swiper-11 encodes, which monad-mcp-da keeps private
     pub const MAX_PROPOSAL_SIZE_LIMIT: usize = 1 << 20;
@@ -331,20 +351,27 @@ impl ProposalConfig {
         })
     }
 
-    fn proposer_config(&self) -> ProposerConfig {
+    // the epoch is the smallest whole number of rotations covering both
+    // MIN_SLOTS_PER_EPOCH and the K rotations the schedule requires
+    fn proposer_config(&self, election: &LeaderElectionConfig) -> ProposerConfig {
+        let rotation = Self::OBSERVATION_CUTOFF.saturating_add(election.rotation_slack);
+        let rotations = Self::MIN_SLOTS_PER_EPOCH
+            .div_ceil(rotation)
+            .max(self.num_proposals as u64);
         ProposerConfig {
             concurrent_proposers: self.num_proposals,
             observation_cutoff: Self::OBSERVATION_CUTOFF,
-            rotation_slack: Self::ROTATION_SLACK,
-            slots_per_epoch: Self::SLOTS_PER_EPOCH,
+            rotation_slack: election.rotation_slack,
+            slots_per_epoch: rotation.saturating_mul(rotations),
         }
     }
 
     fn schedule(
         &self,
+        election: &LeaderElectionConfig,
         validator_data: Arc<ValidatorData>,
     ) -> Result<NodeProposerSchedule, ScheduleError> {
-        let cfg = self.proposer_config();
+        let cfg = self.proposer_config(election);
         let algorithm = RoundRobinLeaderSchedule::new(&cfg);
         RotatingProposerSchedule::new(cfg, algorithm, validator_data)
     }
@@ -467,11 +494,38 @@ mod tests {
     fn the_default_schedule_builds_for_any_validator_count() {
         for n in 1..=7 {
             let schedule = ProposalConfig::default()
-                .schedule(validator_data(n))
+                .schedule(&LeaderElectionConfig::default(), validator_data(n))
                 .unwrap_or_else(|err| panic!("{n} validators: {err}"));
             let set = schedule.proposers_at(Slot(0)).expect("genesis epoch");
             assert!(set.iter().any(|(_, proposer)| proposer.is_some()));
         }
+    }
+
+    // absent: z = 3 and a 400-slot epoch; z = 95 rotates every 100 slots,
+    // so the epoch grows to K rotations
+    #[test]
+    fn the_leader_election_table_sets_the_rotation() {
+        #[derive(Deserialize)]
+        struct Top {
+            #[serde(default)]
+            leader_election: LeaderElectionConfig,
+        }
+        let proposal = ProposalConfig::default();
+
+        let without: Top = toml::from_str("").unwrap();
+        let cfg = proposal.proposer_config(&without.leader_election);
+        assert_eq!((cfg.rotation_slack, cfg.slots_per_epoch), (3, 400));
+
+        let with: Top = toml::from_str("[leader_election]\nrotation_slack = 95").unwrap();
+        let cfg = proposal.proposer_config(&with.leader_election);
+        assert_eq!((cfg.rotation_slack, cfg.slots_per_epoch), (95, 500));
+        for n in [4, 8] {
+            proposal
+                .schedule(&with.leader_election, validator_data(n))
+                .unwrap_or_else(|err| panic!("{n} validators: {err}"));
+        }
+
+        assert!(toml::from_str::<Top>("[leader_election]\nslack = 1").is_err());
     }
 
     // an absent [repeater] table leaves the node without a repeater; a
@@ -499,7 +553,9 @@ mod tests {
     #[test]
     fn the_planner_takes_its_cutoff_from_the_schedule() {
         let config = ProposalConfig::default();
-        let schedule = config.schedule(validator_data(4)).unwrap();
+        let schedule = config
+            .schedule(&LeaderElectionConfig::default(), validator_data(4))
+            .unwrap();
         let planner = config.planner(&schedule);
         assert_eq!(
             planner.observation_cutoff,
@@ -518,7 +574,9 @@ mod tests {
         );
 
         let config: ProposalConfig = toml::from_str("withhold_before_deadline = 150").unwrap();
-        let schedule = config.schedule(validator_data(4)).unwrap();
+        let schedule = config
+            .schedule(&LeaderElectionConfig::default(), validator_data(4))
+            .unwrap();
         assert_eq!(
             config.planner(&schedule).min_lead,
             TimestampDelta::from_millis(150)

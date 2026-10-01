@@ -204,6 +204,7 @@ pub fn node_config(id: u64, validators: u64) -> NodeConfig {
         },
         da: DAConfig::default(),
         proposal: ProposalConfig::default(),
+        leader_election: Default::default(),
         repeater: Some(RepeaterSection {
             interval: DELTA.checked_mul(2).unwrap(),
             ..RepeaterSection::default()
