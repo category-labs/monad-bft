@@ -23,10 +23,10 @@ use super::{
     egress::{ChunkEgress, Dissemination},
     header::InvalidProposalHeader,
     proposer_rc::ProposerRaptorcast,
-    runtime::{ChunkRecoveryRequest, DAOutput, EpochHandle},
+    runtime::{DAOutput, EpochHandle},
     types::{
-        ChorusDACommand, ChorusDAEvent, ChunkRequestType, MerkleRoot, NodeId, ProposalIndex,
-        ProposalMap, ProposerSchedule, SignedProposalHeader, Slot,
+        ChorusDACommand, ChorusDAEvent, MerkleRoot, NodeId, ProposalIndex, ProposalMap,
+        ProposerSchedule, SignedProposalHeader, Slot,
     },
 };
 
@@ -130,71 +130,19 @@ impl SlotRaptorcast {
         self.raptorcasts[j].as_ref()
     }
 
-    fn raptorcast_mut(&mut self, j: ProposalIndex) -> Option<&mut ProposerRaptorcast> {
-        if j >= self.raptorcasts.size() {
-            return None;
-        }
-        self.raptorcasts[j].as_mut()
-    }
-
     pub(crate) fn handle_command(&mut self, command: ChorusDACommand) -> Vec<DAOutput> {
         match command {
             ChorusDACommand::ReleaseChunks => {
                 self.egress.release();
                 vec![]
             }
-            ChorusDACommand::PinRoot { j, root } => {
-                if let Some(raptorcast) = self.raptorcast_mut(j) {
-                    raptorcast.pin(&root);
-                }
-                vec![]
-            }
-            ChorusDACommand::RecoverChunks {
-                j,
-                root,
-                request_type,
-                voters,
-            } => {
-                let Some(raptorcast) = self.raptorcast_mut(j) else {
-                    return vec![];
-                };
-                raptorcast.pin(&root);
-                self.recover_chunks(j, root, request_type, &voters)
-            }
+            // todo: pull our own chunks from the decoded holders
+            ChorusDACommand::AddDecodedHolders { .. } => vec![],
+            // todo: move to the committed root and free the others
+            ChorusDACommand::PinFinal { .. } => vec![],
+            // todo: ask the voters for the header
+            ChorusDACommand::PullHeader { .. } => vec![],
         }
-    }
-
-    // ask each peer for the chunks of the type under (j, root) that we
-    // still miss
-    fn recover_chunks(
-        &self,
-        j: ProposalIndex,
-        root: MerkleRoot,
-        request_type: ChunkRequestType,
-        peers: &[NodeId],
-    ) -> Vec<DAOutput> {
-        let self_id = &self.epoch_handle.self_id;
-        let Some(raptorcast) = self.raptorcast(j) else {
-            return vec![];
-        };
-
-        let mut outputs = Vec::new();
-        for peer in peers {
-            if peer == self_id {
-                continue;
-            }
-            let Some(request) = raptorcast.chunk_request(&root, request_type, peer) else {
-                continue;
-            };
-            let request = ChunkRecoveryRequest {
-                slot: self.slot,
-                proposal_index: j,
-                root,
-                request,
-            };
-            outputs.push(DAOutput::RecoveryRequest { to: *peer, request });
-        }
-        outputs
     }
 
     // serve a peer chunks under (j, root)
@@ -229,10 +177,10 @@ mod tests {
 
     use super::{
         super::{
-            chunk::{ChunksSubset, WireChunkId},
+            chunk::{ChunkRequestType, WireChunkId},
             test_util::{
-                MESSAGE_LEN, SLOT, author, chunk_id, epoch_handle, epoch_handle_for, group,
-                proposal_chunks, proposal_chunks_from, proposer_schedule, validator_data,
+                MESSAGE_LEN, SLOT, author, epoch_handle, epoch_handle_for, group, proposal_chunks,
+                proposal_chunks_from, proposer_schedule, validator_data,
             },
             types::{HeaderAuth, ProposalDAEvent, ProposalKeyPair},
         },
@@ -379,62 +327,6 @@ mod tests {
     }
 
     // the (peer, request) pairs among the outputs
-    fn requests(outputs: Vec<DAOutput>) -> Vec<(NodeId, ChunkRequest)> {
-        let mut requests = Vec::new();
-        for output in outputs {
-            let DAOutput::RecoveryRequest { to, request } = output else {
-                panic!("only requests are produced");
-            };
-            requests.push((to, request.request));
-        }
-        requests
-    }
-
-    #[test]
-    fn recovery_requests_narrow_once_chunks_are_held_and_pin_the_root() {
-        let (epoch_handle, mut raptorcast) = slot_raptorcast();
-        let (header_a, _) = proposal_chunks(&epoch_handle, 1);
-        let (header_b, chunks_b) = proposal_chunks(&epoch_handle, 2);
-        let voters = vec![NodeId::dummy(1), NodeId::dummy(2), NodeId::dummy(3)];
-        let recover = |root| ChorusDACommand::RecoverChunks {
-            j: 0,
-            root,
-            request_type: ChunkRequestType::YourChunks,
-            voters: voters.clone(),
-        };
-
-        // the scratch instance is taken by root a
-        raptorcast
-            .ingest(ProposalEnvelope::from_header(header_a))
-            .expect("valid");
-
-        // nothing is known about b: ask every voter but us for everything
-        let all = ChunkRequest::all(ChunkRequestType::YourChunks);
-        let outputs = raptorcast.handle_command(recover(*header_b.root()));
-        assert_eq!(
-            requests(outputs),
-            [(NodeId::dummy(2), all.clone()), (NodeId::dummy(3), all)]
-        );
-
-        // the command pinned b, so it is assembled beside the scratch
-        // root; holding 0 and 1 narrows the asks to what is missing
-        raptorcast.ingest(group(&chunks_b[..2])).expect("valid");
-        let outputs = raptorcast.handle_command(recover(*header_b.root()));
-        let narrowed = |ids: &[WireChunkId]| ChunkRequest {
-            kind: ChunkRequestType::YourChunks,
-            subset: ChunksSubset::narrowed(
-                ids.iter().map(|id| chunk_id(&epoch_handle, &header_b, *id)),
-            ),
-        };
-        assert_eq!(
-            requests(outputs),
-            [
-                (NodeId::dummy(2), narrowed(&[4])),
-                (NodeId::dummy(3), narrowed(&[2, 5])),
-            ]
-        );
-    }
-
     #[test]
     fn a_second_proposers_events_carry_its_index() {
         let proposers = vec![author(), NodeId::dummy(2)];
@@ -482,7 +374,7 @@ mod tests {
     }
 
     #[test]
-    fn chunks_reach_everyone_through_the_second_hop_and_recovery() {
+    fn chunks_reach_everyone_through_the_second_hop_and_requests() {
         // validators 1, 2 and 3 own two chunks each of validator 0's proposal
         let mut nodes = Vec::new();
         for id in 1..=3 {
@@ -511,22 +403,14 @@ mod tests {
         assert!(decoded(&nodes[1].1));
         assert!(!decoded(&nodes[2].1));
 
-        // 3 pulls its own chunks from a decoded peer, then everyone's
-        let ask = |kind, voters: Vec<u64>| ChorusDACommand::RecoverChunks {
-            j: 0,
-            root: *header.root(),
-            request_type: kind,
-            voters: voters.into_iter().map(NodeId::dummy).collect(),
-        };
-        let mut outputs = nodes[2]
-            .1
-            .handle_command(ask(ChunkRequestType::MyChunks, vec![1]));
-        outputs.extend(
-            nodes[2]
-                .1
-                .handle_command(ask(ChunkRequestType::YourChunks, vec![1, 2])),
-        );
-        for (peer, request) in requests(outputs) {
+        // 3 asks a decoded peer for its own chunks, and both peers for theirs
+        let requests = [
+            (1, ChunkRequest::all(ChunkRequestType::MyChunks)),
+            (1, ChunkRequest::all(ChunkRequestType::YourChunks)),
+            (2, ChunkRequest::all(ChunkRequestType::YourChunks)),
+        ];
+        for (peer, request) in requests {
+            let peer = NodeId::dummy(peer);
             let (_, server) = nodes
                 .iter_mut()
                 .find(|(handle, _)| handle.self_id == peer)
@@ -544,45 +428,5 @@ mod tests {
             nodes[2].1.decoded_message(0, header.root()),
             Some(&Bytes::from(vec![1u8; MESSAGE_LEN]))
         );
-    }
-
-    #[test]
-    fn every_node_settles_its_own_owner_obligation_from_the_first_hop() {
-        // validator 0 authors; 1, 2 and 3 own two chunks each
-        let mut nodes = Vec::new();
-        for id in 0..=3 {
-            let epoch_handle = epoch_handle_for(NodeId::dummy(id), 4, vec![author()]);
-            let schedule = proposer_schedule(vec![author()]);
-            let node = SlotRaptorcast::new(&epoch_handle, SLOT, &*schedule);
-            nodes.push((epoch_handle, node));
-        }
-        let (header, chunks) = proposal_chunks(&nodes[1].0, 1);
-
-        // the author's first hop: its own chunkless share, and each
-        // owner's two chunks. no second hop has run yet.
-        nodes[0]
-            .1
-            .ingest(ProposalEnvelope::from_header(header.clone()))
-            .expect("valid");
-        for (id, owned) in [(1, [0, 3]), (2, [1, 4]), (3, [2, 5])] {
-            let share = group(&[chunks[owned[0]].clone(), chunks[owned[1]].clone()]);
-            nodes[id].1.ingest(share).expect("valid");
-        }
-
-        for (epoch_handle, node) in &mut nodes {
-            let we_owe_nothing = ChorusDAEvent {
-                j: 0,
-                event: ProposalDAEvent::OwnerObligationFulfilled {
-                    owner: epoch_handle.self_id,
-                    root: *header.root(),
-                },
-            };
-            let events = node.drain_events();
-            assert!(
-                events.contains(&we_owe_nothing),
-                "{:?}",
-                epoch_handle.self_id
-            );
-        }
     }
 }

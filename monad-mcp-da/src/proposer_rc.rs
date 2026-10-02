@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use bytes::Bytes;
 use monad_mcp_chorus::spec::ProposalHeader as _;
@@ -23,36 +23,52 @@ use super::{
     egress::ChunkEgress,
     instance_rc::RaptorcastInstance,
     runtime::EpochHandle,
-    types::{ChunkRequestType, MerkleRoot, NodeId, ProposalDAEvent, SignedProposalHeader},
+    types::{EquivCert, MerkleRoot, NodeId, ProposalDAEvent, SignedProposalHeader},
 };
 
 // per-(slot, proposer) raptorcast: root-keyed
 pub struct ProposerRaptorcast {
     proposer: NodeId,
 
-    // admitted roots. todo: make the chorus commitment to a digest of
-    // the whole signed header.
+    // the headers reported to consensus. A third adds no evidence
+    headers: Option<HeaderState>,
+
+    // every root ever pinned, kept until commit since our votes may
+    // oblige us to serve any of them. todo: make the chorus commitment
+    // to a digest of the whole signed header.
     instances: HashMap<MerkleRoot, RaptorcastInstance>,
 
-    // roots received from consensus. chunks from pinned roots are
-    // always admitted.
-    pinned: HashSet<MerkleRoot>,
-
-    // roots whose header has been reported to consensus.
-    // invariant: every instance's root is seen
-    seen: HashSet<MerkleRoot>,
+    // the first header's root. todo: AddDecodedHolders and PinFinal
+    pinned_root: Option<MerkleRoot>,
 
     // events pending delivery since the last drain
     out_events: Vec<ProposalDAEvent>,
+}
+
+enum HeaderState {
+    Single(SignedProposalHeader),
+    Equivocation(EquivCert),
+}
+
+impl HeaderState {
+    // todo: used again once recovery pulls the pinned root
+    #[expect(dead_code)]
+    fn header_for(&self, root: &MerkleRoot) -> Option<&SignedProposalHeader> {
+        let headers: &[&SignedProposalHeader] = match self {
+            HeaderState::Single(header) => &[header],
+            HeaderState::Equivocation(EquivCert(first, second)) => &[first, second],
+        };
+        headers.iter().copied().find(|header| header.root() == root)
+    }
 }
 
 impl ProposerRaptorcast {
     pub(crate) fn new(proposer: NodeId) -> Self {
         Self {
             proposer,
+            headers: None,
             instances: HashMap::new(),
-            pinned: HashSet::new(),
-            seen: HashSet::new(),
+            pinned_root: None,
             out_events: Vec::new(),
         }
     }
@@ -67,6 +83,7 @@ impl ProposerRaptorcast {
         instance.decoded_message()
     }
 
+    // The caller must ensure the header is authenticated.
     pub(crate) fn ingest(
         &mut self,
         envelope: ProposalEnvelope,
@@ -75,10 +92,16 @@ impl ProposerRaptorcast {
     ) {
         let (header, chunks) = envelope.into_parts();
         let root = *header.root();
-        self.admit(header, epoch_handle);
+        self.record_header(&header);
+
+        let pinned_root = *self.pinned_root.get_or_insert(root);
+        if pinned_root == root && !self.instances.contains_key(&root) {
+            let instance = RaptorcastInstance::new(epoch_handle, header, &self.proposer);
+            self.instances.insert(root, instance);
+        }
 
         let Some(instance) = self.instances.get_mut(&root) else {
-            // dismissed root: its chunks are dropped
+            // never pinned: its chunks are dropped
             return;
         };
 
@@ -96,38 +119,21 @@ impl ProposerRaptorcast {
         self.out_events.extend(instance.drain_obligation_events());
     }
 
-    // admission & instance creation. no-op for known roots. The
-    // caller must ensure the header is authenticated.
-    fn admit(&mut self, header: SignedProposalHeader, epoch_handle: &EpochHandle) {
-        let root = *header.root();
-        if self.instances.contains_key(&root) {
-            return;
-        }
-
-        if self.seen.insert(root) {
-            // fresh header, report for equivocation evidence.
-            self.out_events
-                .push(ProposalDAEvent::HeaderSeen(header.clone()));
-        }
-
-        let admissible = self.pinned.contains(&root) || self.can_admit_unpinned();
-        if !admissible {
-            return;
-        }
-
-        let instance = RaptorcastInstance::new(epoch_handle, header, &self.proposer);
-        self.instances.insert(root, instance);
-    }
-
-    // pin a root to ensure its chunks are always admitted.
-    pub(crate) fn pin(&mut self, root: &MerkleRoot) {
-        self.pinned.insert(*root);
-    }
-
-    // Invariant: we only keep at most one unpinned instance to ensure
-    // constant memory.
-    fn can_admit_unpinned(&self) -> bool {
-        self.instances.keys().all(|root| self.pinned.contains(root))
+    // report a header to consensus while it is the first or second root
+    fn record_header(&mut self, header: &SignedProposalHeader) {
+        let next = match self.headers.take() {
+            None => HeaderState::Single(header.clone()),
+            Some(HeaderState::Single(first)) if first.root() != header.root() => {
+                HeaderState::Equivocation(EquivCert(first, header.clone()))
+            }
+            known => {
+                self.headers = known;
+                return;
+            }
+        };
+        self.headers = Some(next);
+        self.out_events
+            .push(ProposalDAEvent::HeaderSeen(header.clone()));
     }
 
     pub(crate) fn handle_chunk_request(
@@ -142,28 +148,17 @@ impl ProposerRaptorcast {
         };
         instance.handle_chunk_request(requester, request, egress);
     }
-
-    pub(crate) fn chunk_request(
-        &self,
-        root: &MerkleRoot,
-        request_type: ChunkRequestType,
-        peer: &NodeId,
-    ) -> Option<ChunkRequest> {
-        let Some(instance) = self.instances.get(root) else {
-            // without the header there is no assignment to narrow by
-            return Some(ChunkRequest::all(request_type));
-        };
-        instance.chunk_request(request_type, peer)
-    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::{
         super::{
-            chunk::ChunksSubset,
+            chunk::ChunkRequestType,
             egress::Dissemination,
-            test_util::{chunk_id, epoch_handle, group, proposal_chunks},
+            test_util::{epoch_handle, group, proposal_chunks},
         },
         *,
     };
@@ -204,18 +199,7 @@ mod tests {
             &mut egress,
         );
         let events = instance.drain_events();
-        // the chunkless author owes nothing from the start
-        let author_owes_nothing = ProposalDAEvent::OwnerObligationFulfilled {
-            owner: NodeId::dummy(0),
-            root: *header.root(),
-        };
-        assert_eq!(
-            events,
-            vec![
-                ProposalDAEvent::HeaderSeen(header.clone()),
-                author_owes_nothing
-            ]
-        );
+        assert_eq!(events, vec![ProposalDAEvent::HeaderSeen(header.clone())]);
 
         // the instance exists: later chunks decode it
         instance.ingest(group(&chunks[..3]), &epoch_handle, &mut egress);
@@ -258,91 +242,6 @@ mod tests {
         instance.ingest(group(&chunks_b), &epoch_handle, &mut egress);
         assert!(instance.drain_events().is_empty());
         assert!(instance.decoded_message(header_b.root()).is_none());
-    }
-
-    #[test]
-    fn pinned_roots_are_always_admitted() {
-        let epoch_handle = epoch_handle();
-        let mut egress = released_egress();
-        let (header_a, _) = proposal_chunks(&epoch_handle, 1);
-        let (header_b, _) = proposal_chunks(&epoch_handle, 2);
-
-        let mut instance = ProposerRaptorcast::new(NodeId::dummy(0));
-        instance.ingest(
-            ProposalEnvelope::from_header(header_a),
-            &epoch_handle,
-            &mut egress,
-        );
-        instance.drain_events();
-
-        instance.pin(header_b.root());
-        instance.ingest(
-            ProposalEnvelope::from_header(header_b.clone()),
-            &epoch_handle,
-            &mut egress,
-        );
-        let events = instance.drain_events();
-        assert!(events.contains(&ProposalDAEvent::HeaderSeen(header_b)));
-
-        // still at most one unpinned instance: a third root is announced
-        // but not assembled
-        let (header_c, chunks_c) = proposal_chunks(&epoch_handle, 3);
-        instance.ingest(
-            ProposalEnvelope::from_header(header_c.clone()),
-            &epoch_handle,
-            &mut egress,
-        );
-        let events = instance.drain_events();
-        assert_eq!(events, vec![ProposalDAEvent::HeaderSeen(header_c)]);
-        instance.ingest(group(&chunks_c[..1]), &epoch_handle, &mut egress);
-        let events = instance.drain_events();
-        assert!(events.is_empty());
-    }
-
-    #[test]
-    fn pinning_a_seen_root_admits_without_reannouncing() {
-        let epoch_handle = epoch_handle();
-        let mut egress = released_egress();
-        let (header_a, _) = proposal_chunks(&epoch_handle, 1);
-        let (header_b, chunks_b) = proposal_chunks(&epoch_handle, 2);
-
-        let mut instance = ProposerRaptorcast::new(NodeId::dummy(0));
-        instance.ingest(
-            ProposalEnvelope::from_header(header_a),
-            &epoch_handle,
-            &mut egress,
-        );
-        instance.drain_events();
-
-        // rejected rival: header reported once
-        instance.ingest(
-            ProposalEnvelope::from_header(header_b.clone()),
-            &epoch_handle,
-            &mut egress,
-        );
-        let events = instance.drain_events();
-        assert_eq!(events, vec![ProposalDAEvent::HeaderSeen(header_b.clone())]);
-
-        instance.pin(header_b.root());
-
-        // admitted now, without a second announcement: only the
-        // chunkless author's vacuous obligation
-        instance.ingest(
-            ProposalEnvelope::from_header(header_b.clone()),
-            &epoch_handle,
-            &mut egress,
-        );
-        let events = instance.drain_events();
-        let author_owes_nothing = ProposalDAEvent::OwnerObligationFulfilled {
-            owner: NodeId::dummy(0),
-            root: *header_b.root(),
-        };
-        assert_eq!(events, vec![author_owes_nothing]);
-
-        // and genuinely assembled: enough chunks decode it
-        instance.ingest(group(&chunks_b[..3]), &epoch_handle, &mut egress);
-        let events = instance.drain_events();
-        assert!(events.contains(&ProposalDAEvent::Decoded(*header_b.root())));
     }
 
     #[test]
@@ -404,50 +303,5 @@ mod tests {
         let my_chunks = ChunkRequest::all(ChunkRequestType::MyChunks);
         instance.handle_chunk_request(&requester, header.root(), my_chunks, &mut egress);
         assert!(egress.drain().is_empty());
-    }
-
-    #[test]
-    fn requests_narrow_to_the_missing_chunks_once_the_assignment_is_known() {
-        let epoch_handle = epoch_handle();
-        let mut egress = released_egress();
-        let (header, chunks) = proposal_chunks(&epoch_handle, 1);
-        let mut instance = ProposerRaptorcast::new(NodeId::dummy(0));
-
-        // without the header every request is for the full set
-        let peer = NodeId::dummy(2);
-        let request = instance.chunk_request(header.root(), ChunkRequestType::YourChunks, &peer);
-        assert_eq!(
-            request,
-            Some(ChunkRequest::all(ChunkRequestType::YourChunks))
-        );
-
-        // holding ids 0 and 1: node 2 still owes id 4, we still miss
-        // our own id 3
-        instance.ingest(group(&chunks[..2]), &epoch_handle, &mut egress);
-        let request = instance.chunk_request(header.root(), ChunkRequestType::YourChunks, &peer);
-        let expected = ChunksSubset::narrowed([chunk_id(&epoch_handle, &header, 4)]);
-        assert_eq!(
-            request,
-            Some(ChunkRequest {
-                kind: ChunkRequestType::YourChunks,
-                subset: expected
-            })
-        );
-
-        let request = instance.chunk_request(header.root(), ChunkRequestType::MyChunks, &peer);
-        let expected = ChunksSubset::narrowed([chunk_id(&epoch_handle, &header, 3)]);
-        assert_eq!(
-            request,
-            Some(ChunkRequest {
-                kind: ChunkRequestType::MyChunks,
-                subset: expected
-            })
-        );
-
-        // decoded: nothing left to ask for
-        instance.ingest(group(&chunks[2..3]), &epoch_handle, &mut egress);
-        assert!(instance.decoded_message(header.root()).is_some());
-        let request = instance.chunk_request(header.root(), ChunkRequestType::YourChunks, &peer);
-        assert_eq!(request, None);
     }
 }

@@ -209,6 +209,7 @@ where
             .unwrap_or(Slot::MIN);
 
         self.ingestion_window.start = kept_slot_cap;
+        // todo: gc after execution certificate, or can affect fast path liveness
         self.raptorcast_map.retain(|&slot, _| slot >= kept_slot_cap);
     }
 }
@@ -241,11 +242,11 @@ mod tests {
     use super::{
         super::{
             chorus::types::Timestamp,
+            chunk::ChunkRequestType,
             test_util::{
                 FixedProposerSchedule, MESSAGE_LEN, SLOT, author, epoch_handle, group,
                 proposal_chunks, proposal_chunks_from, proposer_schedule,
             },
-            types::ChunkRequestType,
         },
         *,
     };
@@ -388,35 +389,11 @@ mod tests {
     }
 
     #[test]
-    fn recovery_requests_skip_ourselves_and_unknown_slots_are_ignored() {
+    fn chunk_requests_for_unknown_slots_are_ignored() {
         let mut runtime = runtime(1);
         let epoch_handle = epoch_handle();
         open(&mut runtime, [0, 1]);
         let (header, _) = proposal_chunks(&epoch_handle, 1);
-
-        let voters = vec![NodeId::dummy(1), NodeId::dummy(2), NodeId::dummy(3)];
-        let command = ChorusDACommand::RecoverChunks {
-            j: 0,
-            root: *header.root(),
-            request_type: ChunkRequestType::YourChunks,
-            voters,
-        };
-        runtime.handle_command(SLOT, command);
-
-        let mut peers = Vec::new();
-        for output in outputs(&mut runtime) {
-            let DAOutput::RecoveryRequest { to, request } = output else {
-                panic!("only requests are produced");
-            };
-            assert_eq!((request.slot, request.proposal_index), (SLOT, 0));
-            assert_eq!(request.root, *header.root());
-            assert_eq!(
-                request.request,
-                ChunkRequest::all(ChunkRequestType::YourChunks)
-            );
-            peers.push(to);
-        }
-        assert_eq!(peers, [NodeId::dummy(2), NodeId::dummy(3)]);
 
         let unknown_slot = ChunkRecoveryRequest {
             slot: Slot(7),

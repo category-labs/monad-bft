@@ -56,7 +56,6 @@ impl ProposalAvailability {
                     self.author_fulfilled.push(root);
                 }
             }
-            ProposalDAEvent::OwnerObligationFulfilled { .. } => {}
             ProposalDAEvent::DecodingFailed(root) => {
                 self.invalid.insert(root);
             }
@@ -89,13 +88,8 @@ impl ProposalAvailability {
         self.headers.get(root)
     }
 
-    pub fn decoded(&self, root: &MerkleRoot) -> bool {
+    pub fn is_decoded(&self, root: &MerkleRoot) -> bool {
         self.decoded.contains(root)
-    }
-
-    // whether all our own chunks under root arrived
-    pub fn author_fulfilled(&self, root: &MerkleRoot) -> bool {
-        self.author_fulfilled.contains(root)
     }
 
     pub fn is_resolved(&self, root: &MerkleRoot) -> bool {
@@ -198,7 +192,7 @@ mod tests {
 
         assert!(avail.is_resolved(&root(1)));
         assert!(avail.is_resolved(&root(2)));
-        assert!(!avail.decoded(&root(2)));
+        assert!(!avail.is_decoded(&root(2)));
         assert!(!avail.is_resolved(&root(3)));
     }
 
@@ -206,10 +200,10 @@ mod tests {
     fn decoded_is_root_scoped() {
         let mut avail = ProposalAvailability::default();
 
-        assert!(!avail.decoded(&root(1)));
+        assert!(!avail.is_decoded(&root(1)));
         avail.ingest(ProposalDAEvent::Decoded(root(1)));
 
-        assert!(avail.decoded(&root(1)));
-        assert!(!avail.decoded(&root(2)));
+        assert!(avail.is_decoded(&root(1)));
+        assert!(!avail.is_decoded(&root(2)));
     }
 }
