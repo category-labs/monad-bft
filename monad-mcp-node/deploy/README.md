@@ -73,7 +73,7 @@ are the two scripts here that do not source `lib.sh`.
   from that one u64). Reordering or inserting a host renumbers the validator set and needs a
   new genesis.
 - **Every whole-network `start`, `restart` and `upgrade` mints a new genesis** (`now + lead`,
-  default 60 s) and wipes `~/monad-mcp/ledger/`; `--keep-ledger` archives it to
+  default 60 s, taken after the ledger reset) and wipes `~/monad-mcp/ledger/`; `--keep-ledger` archives it to
   `ledger/blocks-<ts>` instead. The node keeps no state, so this is the normal way to change a
   cadence parameter: flags after `--` go to `gen-config.sh`, e.g. `./netctl.sh restart --
   --delta 200 --slot-interval 120`. `netctl.sh run-one <host> start|stop|restart` reuses the config

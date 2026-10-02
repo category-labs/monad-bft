@@ -23,9 +23,11 @@ ledger_reset_host() {
             mkdir -p $remote_root/ledger/blocks
             echo 'archived to ledger/blocks-$ts'"
     else
+        # rsync from an empty dir deletes millions of block files far faster than find -delete
         rssh "$host" "set -e
-            mkdir -p $remote_root/ledger/blocks
-            find $remote_root/ledger/blocks -mindepth 1 -delete
+            mkdir -p $remote_root/ledger/blocks $remote_root/empty-dir
+            rsync -r --delete $remote_root/empty-dir/ $remote_root/ledger/blocks/
+            rmdir $remote_root/empty-dir
             echo 'ledger/blocks emptied'"
     fi
 }
@@ -139,10 +141,14 @@ cmd_start() {
     fanout port_free_host
 
     local genesis start_ms since ts
+    ts=$(($(now_ms) / 1000))
+    echo "resetting the ledger (keep-ledger=$keep_ledger)"
+    fanout ledger_reset_host "$keep_ledger" "$ts"
+
+    # minted after the reset, which can take minutes, so the lead is not spent before the start
     start_ms=$(now_ms)
     genesis=$((start_ms + lead * 1000))
     since=$((start_ms / 1000 - 5))
-    ts=$((start_ms / 1000))
 
     local missing
     missing=$(missing_configs | xargs)
@@ -159,9 +165,6 @@ cmd_start() {
     echo "$genesis" > "$dist_dir/last-genesis"
     echo "$start_ms" > "$dist_dir/last-start"
     "$deploy_dir/push-config.sh"
-
-    echo "resetting the ledger (keep-ledger=$keep_ledger)"
-    fanout ledger_reset_host "$keep_ledger" "$ts"
 
     echo "starting the network"
     fanout start_host
