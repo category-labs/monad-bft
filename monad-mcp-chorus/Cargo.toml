@@ -9,10 +9,10 @@ enable_stub = []
 
 [dependencies]
 alloy-rlp = { workspace = true, features = ["derive"] }
+arrayvec = { workspace = true }
 bytes = { workspace = true }
 derive_more = { workspace = true, features = ["from", "sum", "add", "into"] }
 hex = { workspace = true }
-itertools = { workspace = true }
 libc = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

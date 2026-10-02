@@ -168,7 +168,7 @@ mod rlp_tests {
                 VoteMsg::new_signed(slot, EnterFallbackVote, &node.keypair()),
             );
         }
-        votes.try_form_strong_qc(&validators).unwrap().into()
+        votes.tally(&validators).strong_qc().unwrap().into()
     }
 
     #[test]
