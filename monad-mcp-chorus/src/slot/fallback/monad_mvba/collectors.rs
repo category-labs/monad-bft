@@ -62,7 +62,7 @@ impl<V: IsVote> SealingVotePool<V> {
         if let Some(qc) = self.sealed.get() {
             return Some(qc);
         }
-        let qc = self.votes.try_form_strong_qc(validator_data)?;
+        let qc = self.votes.tally(validator_data).strong_qc()?;
         Some(self.sealed.get_or_init(|| qc))
     }
 }
@@ -178,9 +178,11 @@ impl<V: Votable, C: ValidateCert> ViewCollectors<V, C> {
         validator_data: &ValidatorData,
     ) -> Option<TimeoutCertificate<V::Entries>> {
         let target_stake = validator_data.total_stake().supermajority_threshold();
-        let groups = self
-            .timeout_votes
-            .try_form_vote_groups(target_stake, validator_data)?;
+        let tally = self.timeout_votes.tally(validator_data);
+        if tally.stake() <= target_stake {
+            return None;
+        }
+        let groups = tally.groups();
 
         let highest_claim = groups
             .iter()
@@ -200,7 +202,7 @@ impl<V: Votable, C: ValidateCert> ViewCollectors<V, C> {
             .into_iter()
             .map(|(vote, sigcol)| TimeoutGroup {
                 vote: vote.clone(),
-                sigcol,
+                sigcol: sigcol.clone(),
             })
             .collect();
 

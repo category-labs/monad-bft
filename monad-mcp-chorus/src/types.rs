@@ -24,8 +24,8 @@ use alloy_rlp::{
     Decodable, Encodable, Header, RlpDecodable, RlpDecodableWrapper, RlpEncodable,
     RlpEncodableWrapper, encode_list, list_length,
 };
+use arrayvec::ArrayVec;
 use bytes::Bytes;
-use itertools::Either;
 
 // the environment this module subtree is instantiated.
 pub use super::env::{
@@ -342,63 +342,8 @@ where
         self.buckets.iter()
     }
 
-    pub fn try_aggregate(
-        &self,
-        target_stake: Stake,
-        validator_data: &ValidatorData,
-    ) -> Vec<(&V, SignatureCollection)> {
-        let mut aggs = vec![];
-
-        for (vote, voters) in &self.buckets {
-            let stake = validator_data.sum_stake(voters.iter());
-            // pre-filter to only keep buckets with enough stake
-            if stake <= target_stake {
-                continue;
-            }
-
-            let data = vote.signing_bytes(&self.scope);
-            let votes = voters
-                .iter()
-                .map(|node_id| (node_id, &self.votes[node_id]))
-                .collect();
-
-            let mut vote_agg = VoteAggregation::from_validator_data(validator_data);
-
-            if let Some(sigcol) = vote_agg.try_aggregate(&data, votes, target_stake) {
-                aggs.push((vote, sigcol));
-            }
-        }
-
-        aggs
-    }
-
-    /// Quorum over the scope rather than over one bucket: the target is met
-    /// by the combined stake of *all* the pool's voters, and one signature
-    /// collection comes back per surviving bucket.
-    ///
-    /// This is for votes that agree on the act while legitimately differing in
-    /// verdict -- timeouts abandon the same view but each names the lock its
-    /// sender holds -- where a per-bucket quorum would never form. Signatures
-    /// are verified here and invalid ones dropped, so the stake is counted
-    /// over signers that actually signed; a bucket left with no valid signer
-    /// disappears.
-    pub fn try_form_vote_groups(
-        &self,
-        target_stake: Stake,
-        validator_data: &ValidatorData,
-    ) -> Option<Vec<(&V, SignatureCollection)>> {
-        // claimed stake bounds verified stake from above -- verification only
-        // drops signers -- so a pool short of the target before any signature
-        // is checked forms nothing; skip the aggregation entirely.
-        if validator_data.sum_stake(self.all_voters()) <= target_stake {
-            return None;
-        }
-
-        let mut groups = vec![];
-        // buckets partition the pool -- every insert leaves a sender in exactly
-        // one -- so per-bucket stake adds up without deduplicating signers.
-        let mut stake = Stake::ZERO;
-
+    pub fn tally<'a>(&'a self, validator_data: &'a ValidatorData) -> Tally<'a, V> {
+        let mut buckets = vec![];
         for (vote, voters) in &self.buckets {
             let data = vote.signing_bytes(&self.scope);
             let votes = voters
@@ -406,11 +351,9 @@ where
                 .map(|node_id| (node_id, &self.votes[node_id]))
                 .collect();
 
+            // a bucket whose signatures are all invalid holds no stake and is
+            // dropped here
             let mut vote_agg = VoteAggregation::from_validator_data(validator_data);
-
-            // no threshold within the bucket: the quorum is checked once over
-            // every bucket's survivors below. A bucket whose signatures are
-            // all invalid holds no stake and is dropped here.
             let Some(sigcol) = vote_agg.try_aggregate(&data, votes, Stake::ZERO) else {
                 continue;
             };
@@ -418,181 +361,94 @@ where
             let signers = sigcol
                 .signers(validator_data)
                 .expect("aggregation returns a collection consistent with the validator set");
-            stake = stake + validator_data.sum_stake(signers.iter().copied());
-
-            groups.push((vote, sigcol));
+            let stake = validator_data.sum_stake(signers.iter().copied());
+            buckets.push((vote, sigcol, stake));
         }
 
-        // still needed: invalid signatures may have dropped the verified sum
-        // below the target the claimed sum cleared.
-        if stake <= target_stake {
-            return None;
+        Tally {
+            scope: &self.scope,
+            validator_data,
+            buckets,
         }
+    }
+}
 
-        Some(groups)
+pub trait Gate<V> {
+    fn admits(&self, vote: &V) -> bool;
+}
+
+// invariant: every signature verified, no bucket empty
+pub struct Tally<'a, V: IsVote> {
+    scope: &'a <V as IsVote>::Scope,
+    validator_data: &'a ValidatorData,
+    buckets: Vec<(&'a V, SignatureCollection, Stake)>,
+}
+
+impl<'a, V> Tally<'a, V>
+where
+    V: IsVote,
+{
+    pub fn narrow<G>(mut self, gate: G) -> Tally<'a, V>
+    where
+        G: Gate<V>,
+    {
+        self.buckets.retain(|(vote, _, _)| gate.admits(vote));
+        self
     }
 
-    pub fn try_form_strong_qc(&self, validator_data: &ValidatorData) -> Option<StrongQc<V>> {
-        let target_stake = validator_data.total_stake().supermajority_threshold();
-        let aggs = self.try_aggregate(target_stake, validator_data);
-        debug_assert!(aggs.len() <= 1, "at most one strong qc can be formed");
+    // buckets partition the pool, so their stakes add up without
+    // deduplicating signers
+    pub fn stake(&self) -> Stake {
+        let mut stake = Stake::ZERO;
+        for (_, _, bucket_stake) in &self.buckets {
+            stake = stake + *bucket_stake;
+        }
+        stake
+    }
 
-        let (vote, sigcol) = aggs.into_iter().next()?;
-        let qc = StrongQc {
-            scope: self.scope.clone(),
-            verdict: vote.clone(),
-            sigcol,
-        };
-        Some(qc)
+    pub fn strong_qc(&self) -> Option<StrongQc<V>> {
+        let target_stake = self.validator_data.total_stake().supermajority_threshold();
+        for (vote, sigcol, stake) in &self.buckets {
+            if *stake <= target_stake {
+                continue;
+            }
+            return Some(StrongQc {
+                scope: self.scope.clone(),
+                verdict: (*vote).clone(),
+                sigcol: sigcol.clone(),
+            });
+        }
+        None
     }
 
     // there are at most two weak qcs.
-    pub fn try_form_weak_qc(
-        &self,
-        validator_data: &ValidatorData,
-    ) -> Option<Either<WeakQc<V>, (WeakQc<V>, WeakQc<V>)>> {
-        let target_stake = validator_data.total_stake().honest_threshold();
-        let aggs = self.try_aggregate(target_stake, validator_data);
-        debug_assert!(aggs.len() <= 2, "at most two weak qc can be formed");
-
-        let mut qcs = aggs.into_iter().map(|(vote, sigcol)| WeakQc {
-            scope: self.scope.clone(),
-            verdict: vote.clone(),
-            sigcol,
-        });
-
-        match (qcs.next(), qcs.next()) {
-            (None, _) => None,
-            (Some(qc), None) => Some(Either::Left(qc)),
-            (Some(qc1), Some(qc2)) => Some(Either::Right((qc1, qc2))),
-        }
-    }
-}
-
-pub trait GatingRoot {
-    fn gating_root(&self) -> Option<MerkleRoot>;
-}
-
-// Admission state for one voter
-#[derive(Clone)]
-struct Gate<V>
-where
-    V: IsVote,
-{
-    open_roots: HashSet<MerkleRoot>,
-    held: Option<VoteMsg<V>>,
-}
-
-impl<V> Default for Gate<V>
-where
-    V: IsVote,
-{
-    fn default() -> Self {
-        Self {
-            open_roots: HashSet::new(),
-            held: None,
-        }
-    }
-}
-
-impl<V> Gate<V>
-where
-    V: IsVote + GatingRoot,
-{
-    fn release(&mut self, root: MerkleRoot) -> Option<VoteMsg<V>> {
-        let claim_open = self
-            .held
-            .as_ref()
-            .is_some_and(|msg| msg.vote.gating_root() == Some(root));
-        if !claim_open {
-            return None;
-        }
-        self.held.take()
-    }
-}
-
-// the fate of a vote added to a GatedVotePool
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Admission {
-    Admitted,
-    // suspended until its root opens for the voter
-    Held,
-    // the voter already has a vote suspended
-    Dropped,
-}
-
-// VotePool with admission control
-#[derive(Clone)]
-pub struct GatedVotePool<V>
-where
-    V: IsVote + GatingRoot,
-{
-    pool: VotePool<V>,
-    gates: HashMap<NodeId, Gate<V>>,
-    open_roots: HashSet<MerkleRoot>,
-}
-
-impl<V> GatedVotePool<V>
-where
-    V: IsVote + GatingRoot,
-{
-    pub fn new(pool: VotePool<V>) -> Self {
-        Self {
-            pool,
-            gates: HashMap::new(),
-            open_roots: HashSet::new(),
-        }
-    }
-
-    pub fn add_vote(&mut self, node_id: NodeId, msg: VoteMsg<V>) -> Admission {
-        let gate = self.gates.entry(node_id).or_default();
-        if gate.held.is_some() {
-            // already holding a vote, ignore new ones
-            return Admission::Dropped;
-        }
-
-        let admissible = match msg.vote.gating_root() {
-            None => true, // e.g. negative vote; always admitted
-            Some(root) => self.open_roots.contains(&root) || gate.open_roots.contains(&root),
-        };
-
-        if !admissible {
-            gate.held = Some(msg);
-            return Admission::Held;
-        }
-        self.pool.add_vote(node_id, msg);
-        Admission::Admitted
-    }
-
-    pub fn open(&mut self, node_id: NodeId, root: MerkleRoot) {
-        let gate = self.gates.entry(node_id).or_default();
-        gate.open_roots.insert(root);
-
-        if let Some(msg) = gate.release(root) {
-            self.pool.add_vote(node_id, msg);
-        }
-    }
-
-    pub fn open_all(&mut self, root: MerkleRoot) {
-        self.open_roots.insert(root);
-
-        for (node_id, gate) in &mut self.gates {
-            if let Some(msg) = gate.release(root) {
-                self.pool.add_vote(*node_id, msg);
+    pub fn weak_qcs(&self) -> ArrayVec<WeakQc<V>, 2> {
+        let target_stake = self.validator_data.total_stake().honest_threshold();
+        let mut qcs = ArrayVec::new();
+        for (vote, sigcol, stake) in &self.buckets {
+            if *stake <= target_stake {
+                continue;
             }
+            qcs.push(WeakQc {
+                scope: self.scope.clone(),
+                verdict: (*vote).clone(),
+                sigcol: sigcol.clone(),
+            });
         }
+        qcs
     }
 
-    pub fn pool(&self) -> &VotePool<V> {
-        &self.pool
-    }
-
-    // the suspended votes, as (voter, root claimed)
-    pub fn held(&self) -> impl Iterator<Item = (NodeId, MerkleRoot)> + '_ {
-        self.gates.iter().filter_map(|(node_id, gate)| {
-            let root = gate.held.as_ref()?.vote.gating_root()?;
-            Some((*node_id, root))
-        })
+    /// One signature collection per bucket, for votes that agree on the act
+    /// while legitimately differing in verdict -- timeouts abandon the same
+    /// view but each names the lock its sender holds -- where a per-bucket
+    /// quorum would never form. The caller checks the quorum over the scope
+    /// with [`Tally::stake`].
+    pub fn groups(&self) -> Vec<(&'a V, &SignatureCollection)> {
+        let mut groups = vec![];
+        for (vote, sigcol, _) in &self.buckets {
+            groups.push((*vote, sigcol));
+        }
+        groups
     }
 }
 
@@ -945,7 +801,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{env::stub::MerkleHash, spec::vote::assert_signing_prefix};
+    use crate::spec::vote::assert_signing_prefix;
 
     #[test]
     fn timestamp_arithmetic_is_checked() {
@@ -1019,15 +875,15 @@ mod tests {
             .collect();
         let pool = claim_pool(&votes);
 
-        // no bucket reaches it on its own: three each against a target of four.
-        assert!(
-            pool.try_aggregate(Stake::from(4), &validator_data)
-                .is_empty()
-        );
+        // no bucket reaches a supermajority on its own: three each of seven.
+        assert!(pool.tally(&validator_data).strong_qc().is_none());
 
-        let mut groups = pool
-            .try_form_vote_groups(Stake::from(4), &validator_data)
-            .expect("six of seven exceeds the target across both buckets");
+        let tally = pool.tally(&validator_data);
+        assert!(
+            tally.stake() > Stake::from(4),
+            "six of seven exceeds the target across both buckets"
+        );
+        let mut groups = tally.groups();
         groups.sort_by_key(|(claim, _)| claim.0);
 
         let claims: Vec<_> = groups.iter().map(|(claim, _)| (*claim).clone()).collect();
@@ -1052,30 +908,20 @@ mod tests {
             .map(|(i, node)| (*node, Claim(i as u64 % 2)))
             .collect();
 
-        assert!(
-            claim_pool(&votes)
-                .try_form_vote_groups(Stake::from(4), &validator_data)
-                .is_none()
-        );
+        assert!(claim_pool(&votes).tally(&validator_data).stake() <= Stake::from(4));
     }
 
-    /// The quorum requires strictly more than the target, and the pool-wide
-    /// pre-check honors the same boundary: claimed stake equal to the target
-    /// forms nothing, one less tips it.
+    /// The quorum requires strictly more than the target: stake equal to the
+    /// target forms nothing, one less tips it.
     #[test]
     fn the_target_boundary_is_strict() {
         let (nodes, validator_data) = claim_setup();
         let votes: Vec<_> = nodes[..5].iter().map(|node| (*node, Claim(0))).collect();
         let pool = claim_pool(&votes);
 
-        assert!(
-            pool.try_form_vote_groups(Stake::from(5), &validator_data)
-                .is_none()
-        );
-        assert!(
-            pool.try_form_vote_groups(Stake::from(4), &validator_data)
-                .is_some()
-        );
+        let stake = pool.tally(&validator_data).stake();
+        assert!(stake <= Stake::from(5));
+        assert!(stake > Stake::from(4));
     }
 
     /// Well-formed signatures that do not verify are dropped, and the stake
@@ -1094,9 +940,12 @@ mod tests {
             pool.add_vote(*node, msg);
         }
 
-        let groups = pool
-            .try_form_vote_groups(Stake::from(4), &validator_data)
-            .expect("the five valid signers exceed the target");
+        let tally = pool.tally(&validator_data);
+        assert!(
+            tally.stake() > Stake::from(4),
+            "the five valid signers exceed the target"
+        );
+        let groups = tally.groups();
         let signers: usize = groups
             .iter()
             .map(|(claim, sigcol)| {
@@ -1108,10 +957,7 @@ mod tests {
             .sum();
         assert_eq!(signers, 5);
 
-        assert!(
-            pool.try_form_vote_groups(Stake::from(5), &validator_data)
-                .is_none()
-        );
+        assert!(tally.stake() <= Stake::from(5));
     }
 
     /// A bucket left with no valid signer disappears rather than coming back
@@ -1130,9 +976,12 @@ mod tests {
             pool.add_vote(*node, msg);
         }
 
-        let groups = pool
-            .try_form_vote_groups(Stake::from(4), &validator_data)
-            .expect("the six honest signers exceed the target");
+        let tally = pool.tally(&validator_data);
+        assert!(
+            tally.stake() > Stake::from(4),
+            "the six honest signers exceed the target"
+        );
+        let groups = tally.groups();
         let claims: Vec<_> = groups.iter().map(|(claim, _)| (*claim).clone()).collect();
         assert_eq!(claims, vec![Claim(0)]);
     }
@@ -1155,9 +1004,12 @@ mod tests {
             VoteMsg::new_signed(SCOPE, Claim(2), &raiser.keypair()),
         );
 
-        let mut groups = pool
-            .try_form_vote_groups(Stake::from(4), &validator_data)
-            .expect("the same six senders still exceed the target");
+        let tally = pool.tally(&validator_data);
+        assert!(
+            tally.stake() > Stake::from(4),
+            "the same six senders still exceed the target"
+        );
+        let mut groups = tally.groups();
         groups.sort_by_key(|(claim, _)| claim.0);
 
         let counted: Vec<_> = groups
@@ -1193,9 +1045,12 @@ mod tests {
             VoteMsg::new_signed(SCOPE, Claim(0), &sender.keypair()),
         );
 
-        let groups = pool
-            .try_form_vote_groups(Stake::from(4), &validator_data)
-            .expect("five of seven exceeds the target");
+        let tally = pool.tally(&validator_data);
+        assert!(
+            tally.stake() > Stake::from(4),
+            "five of seven exceeds the target"
+        );
+        let groups = tally.groups();
         let claims: Vec<_> = groups.iter().map(|(claim, _)| (*claim).clone()).collect();
         assert_eq!(claims, vec![Claim(1)]);
 
@@ -1216,148 +1071,57 @@ mod tests {
         assert_eq!(WindowId(0).to_index(), Some(0));
     }
 
-    #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-    enum ClaimVote {
-        Claiming(MerkleRoot),
-        Free,
-    }
+    // admits the listed claims only
+    struct Listed<'a>(&'a [Claim]);
 
-    struct ClaimVoteDomain;
-    const _: () = assert_signing_prefix::<ClaimVoteDomain>();
-
-    impl SigningDomain for ClaimVoteDomain {
-        const PREFIX: &'static [u8] = b"\x20monad/cadence/test-claim-vote/1\n";
-    }
-
-    impl IsVote for ClaimVote {
-        type Scope = Slot;
-        type SigningDomain = ClaimVoteDomain;
-    }
-
-    impl Encodable for ClaimVote {
-        fn encode(&self, out: &mut dyn bytes::BufMut) {
-            match self {
-                Self::Claiming(root) => {
-                    let fields: [&dyn Encodable; 2] = [&1u8, root];
-                    encode_list::<_, dyn Encodable>(&fields, out);
-                }
-                Self::Free => {
-                    let fields: [&dyn Encodable; 1] = [&2u8];
-                    encode_list::<_, dyn Encodable>(&fields, out);
-                }
-            }
-        }
-
-        fn length(&self) -> usize {
-            match self {
-                Self::Claiming(root) => {
-                    let fields: [&dyn Encodable; 2] = [&1u8, root];
-                    list_length::<_, dyn Encodable>(&fields)
-                }
-                Self::Free => {
-                    let fields: [&dyn Encodable; 1] = [&2u8];
-                    list_length::<_, dyn Encodable>(&fields)
-                }
-            }
+    impl Gate<Claim> for Listed<'_> {
+        fn admits(&self, vote: &Claim) -> bool {
+            self.0.contains(vote)
         }
     }
 
-    impl GatingRoot for ClaimVote {
-        fn gating_root(&self) -> Option<MerkleRoot> {
-            match self {
-                ClaimVote::Claiming(root) => Some(*root),
-                ClaimVote::Free => None,
-            }
-        }
-    }
+    #[test]
+    fn a_narrowed_tally_forms_no_qc_on_a_rejected_vote() {
+        let (nodes, validator_data) = claim_setup();
+        let votes: Vec<_> = nodes[..5].iter().map(|node| (*node, Claim(1))).collect();
+        let pool = claim_pool(&votes);
 
-    fn gated_pool() -> GatedVotePool<ClaimVote> {
-        GatedVotePool::new(VotePool::new(Slot(1)))
-    }
+        let rejecting = pool.tally(&validator_data).narrow(Listed(&[Claim(2)]));
+        assert!(rejecting.strong_qc().is_none());
+        assert!(rejecting.weak_qcs().is_empty());
 
-    fn root(byte: u8) -> MerkleRoot {
-        MerkleRoot(MerkleHash([byte; 20]))
-    }
-
-    fn signed(id: u64, vote: ClaimVote) -> (NodeId, VoteMsg<ClaimVote>) {
-        let node = crate::env::stub::NodeId::dummy(id);
-        let msg = VoteMsg::new_signed(Slot(1), vote, &node.keypair());
-        (node, msg)
-    }
-
-    fn admitted(pool: &GatedVotePool<ClaimVote>) -> usize {
-        pool.pool().all_voters().count()
+        let admitting = pool.tally(&validator_data).narrow(Listed(&[Claim(1)]));
+        assert!(admitting.strong_qc().is_some());
+        assert_eq!(admitting.weak_qcs().len(), 1);
     }
 
     #[test]
-    fn free_votes_admit_immediately() {
-        let mut pool = gated_pool();
-        let (node, msg) = signed(1, ClaimVote::Free);
+    fn a_narrowed_tally_leaves_rejected_buckets_out_of_the_stake() {
+        let (nodes, validator_data) = claim_setup();
+        let mut votes: Vec<_> = nodes[..3].iter().map(|node| (*node, Claim(1))).collect();
+        votes.extend(nodes[3..5].iter().map(|node| (*node, Claim(2))));
+        let pool = claim_pool(&votes);
 
-        pool.add_vote(node, msg);
-        assert_eq!(admitted(&pool), 1);
+        assert!(pool.tally(&validator_data).stake() == Stake::from(5));
+        let one_bucket = pool.tally(&validator_data).narrow(Listed(&[Claim(1)]));
+        assert!(one_bucket.stake() == Stake::from(3));
     }
 
     #[test]
-    fn claiming_vote_suspends_until_matching_evidence() {
-        let mut pool = gated_pool();
-        let (node, msg) = signed(1, ClaimVote::Claiming(root(1)));
+    fn a_narrowed_tally_keeps_only_the_admitted_buckets() {
+        let (nodes, validator_data) = claim_setup();
+        let mut votes: Vec<_> = nodes[..3].iter().map(|node| (*node, Claim(1))).collect();
+        votes.extend(nodes[3..5].iter().map(|node| (*node, Claim(2))));
+        let pool = claim_pool(&votes);
 
-        pool.add_vote(node, msg);
-        assert_eq!(admitted(&pool), 0);
+        let narrowed = pool.tally(&validator_data).narrow(Listed(&[Claim(2)]));
+        assert!(narrowed.stake() == Stake::from(2));
 
-        // evidence for a different root does not release the vote
-        pool.open(node, root(2));
-        assert_eq!(admitted(&pool), 0);
-
-        pool.open(node, root(1));
-        assert_eq!(admitted(&pool), 1);
-    }
-
-    #[test]
-    fn evidence_before_vote_admits_on_arrival() {
-        let mut pool = gated_pool();
-        let (node, msg) = signed(1, ClaimVote::Claiming(root(1)));
-
-        pool.open(node, root(1));
-        pool.add_vote(node, msg);
-        assert_eq!(admitted(&pool), 1);
-    }
-
-    #[test]
-    fn open_all_is_pool_wide_and_root_scoped() {
-        let mut pool = gated_pool();
-        let (n1, m1) = signed(1, ClaimVote::Claiming(root(1)));
-        let (n2, m2) = signed(2, ClaimVote::Claiming(root(1)));
-        let (n3, m3) = signed(3, ClaimVote::Claiming(root(2)));
-
-        pool.add_vote(n1, m1);
-        pool.add_vote(n2, m2);
-        pool.add_vote(n3, m3);
-        assert_eq!(admitted(&pool), 0);
-
-        pool.open_all(root(1));
-        assert_eq!(admitted(&pool), 2);
-
-        // future votes on the opened root admit immediately
-        let (n4, m4) = signed(4, ClaimVote::Claiming(root(1)));
-        pool.add_vote(n4, m4);
-        assert_eq!(admitted(&pool), 3);
-    }
-
-    #[test]
-    fn first_held_vote_wins() {
-        let mut pool = gated_pool();
-        let (node, held) = signed(1, ClaimVote::Claiming(root(1)));
-        pool.add_vote(node, held);
-
-        // a later vote is dropped while one is suspended, even an
-        // immediately admissible one
-        let (_, second) = signed(1, ClaimVote::Free);
-        pool.add_vote(node, second);
-        assert_eq!(admitted(&pool), 0);
-
-        pool.open(node, root(1));
-        assert_eq!(admitted(&pool), 1);
+        let claims: Vec<_> = narrowed
+            .groups()
+            .into_iter()
+            .map(|(claim, _)| claim)
+            .collect();
+        assert_eq!(claims, vec![&Claim(2)]);
     }
 }

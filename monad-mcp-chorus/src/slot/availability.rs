@@ -56,9 +56,7 @@ impl ProposalAvailability {
                     self.author_fulfilled.push(root);
                 }
             }
-            ProposalDAEvent::OwnerObligationFulfilled { .. } => {
-                // handled in GatedVotePool
-            }
+            ProposalDAEvent::OwnerObligationFulfilled { .. } => {}
             ProposalDAEvent::DecodingFailed(root) => {
                 self.invalid.insert(root);
             }
@@ -69,6 +67,8 @@ impl ProposalAvailability {
     // invariant: every recorded header is authenticated, so any two
     // with distinct roots form an equivocation certificate. The
     // certificate is formed once, by the second distinct root.
+    //
+    // todo: turn signed into & or Cow
     pub fn record_header(&mut self, signed: SignedProposalHeader) -> Option<EquivCert> {
         let root = *signed.root();
         if self.headers.contains_key(&root) {
