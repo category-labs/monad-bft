@@ -143,6 +143,8 @@ where
     published_secondary_rounds: PublishedRounds,
 
     signature_based_tcp: auth::SigAuthTcpSocket<ST>,
+    authenticated_tcp: Option<auth::AuthenticatedTcpSocketHandle<AP>>,
+    tcp_metrics: ExecutorMetrics,
     dual_socket: auth::DualSocketHandle<AP>,
     direct_udp_transport: Option<DirectUdpTransport<ST, AP, DS>>,
     dataplane_control: DataplaneControl,
@@ -184,7 +186,8 @@ where
     pub fn new(
         config: config::RaptorCastConfig<ST>,
         secondary_mode: SecondaryRaptorCastModeConfig,
-        tcp_socket: TcpSocketHandle,
+        non_authenticated_tcp_socket: TcpSocketHandle,
+        authenticated_tcp: Option<(TcpSocketHandle, AP)>,
         authenticated: (UdpSocketHandle, AP),
         direct_udp: Option<(UdpSocketHandle, AP, DS)>,
         non_authenticated_socket: Option<UdpSocketHandle>,
@@ -193,9 +196,16 @@ where
         current_epoch: Epoch,
         proposer_schedule: BoxedProposerSchedule<CertificateSignaturePubKey<ST>>,
     ) -> Self {
-        let (tcp_reader, tcp_writer) = tcp_socket.split();
-        let signature_based_tcp =
-            auth::SigAuthTcpSocket::new(tcp_reader, tcp_writer, config.shared_key.clone());
+        let (non_auth_tcp_reader, non_auth_tcp_writer) = non_authenticated_tcp_socket.split();
+        let sig_auth_tcp = auth::SigAuthTcpSocket::new(
+            non_auth_tcp_reader,
+            non_auth_tcp_writer,
+            config.shared_key.clone(),
+        );
+        let authenticated_tcp_handle = authenticated_tcp.map(|(socket, protocol)| {
+            let (reader, writer) = socket.split();
+            auth::AuthenticatedTcpSocketHandle::new(reader, writer, protocol)
+        });
 
         if config.primary_instance.raptor10_redundancy < 1f32 {
             panic!(
@@ -312,7 +322,14 @@ where
             published_primary_rounds: PublishedRounds::new(),
             published_secondary_rounds: PublishedRounds::new(),
 
-            signature_based_tcp,
+            signature_based_tcp: sig_auth_tcp,
+            authenticated_tcp: authenticated_tcp_handle,
+            tcp_metrics: ExecutorMetrics::with_metric_defs(&[
+                auth::GAUGE_RAPTORCAST_AUTH_SIGAUTH_TCP_BYTES_READ,
+                auth::GAUGE_RAPTORCAST_AUTH_SIGAUTH_TCP_BYTES_WRITTEN,
+                auth::GAUGE_RAPTORCAST_AUTH_WIREAUTH_TCP_BYTES_READ,
+                auth::GAUGE_RAPTORCAST_AUTH_WIREAUTH_TCP_BYTES_WRITTEN,
+            ]),
             dual_socket,
             direct_udp_transport,
             dataplane_control: control,
@@ -416,18 +433,102 @@ where
         make_app_message: impl FnOnce() -> Bytes,
         completion: Option<oneshot::Sender<()>>,
     ) {
-        match self.peer_discovery_driver.lock().unwrap().get_tcp_addr(to) {
-            None => {
-                warn!(
-                    ?to,
-                    "RaptorCastPrimary TcpPointToPoint not sending message, address unknown"
-                );
-            }
-            Some(address) => {
-                self.signature_based_tcp
-                    .write(address, make_app_message(), completion);
-            }
+        let (tcp_addr, wireauth_addr) = {
+            let peer_discovery = self.peer_discovery_driver.lock().unwrap();
+            let Some(record) = peer_discovery.get_name_record(to) else {
+                warn!(?to, "tcp send: name record unknown");
+                return;
+            };
+            (
+                SocketAddr::V4(record.name_record.tcp_socket()),
+                record
+                    .name_record
+                    .encrypted_tcp_socket()
+                    .map(SocketAddr::V4),
+            )
         };
+        let payload = make_app_message();
+        let payload_len = payload.len() as u64;
+        match (&mut self.authenticated_tcp, wireauth_addr) {
+            (Some(socket), Some(addr)) => {
+                let public_key = to.pubkey();
+                match socket.auth_protocol.get_socket_by_public_key(&public_key) {
+                    Some(session_addr) => {
+                        if !socket.write(session_addr, payload, completion) {
+                            return;
+                        }
+                    }
+                    None => {
+                        if !socket
+                            .auth_protocol
+                            .has_initiator_session_by_public_key(&public_key)
+                        {
+                            match socket.auth_protocol.connect(
+                                &public_key,
+                                addr,
+                                auth::socket::AUTH_SESSION_CONNECT_RETRY_ATTEMPTS,
+                            ) {
+                                Ok(()) => socket.flush(),
+                                Err(error) => {
+                                    warn!(?to, ?addr, ?error, "failed to connect via wireauth");
+                                    return;
+                                }
+                            }
+                        }
+                        match socket
+                            .auth_protocol
+                            .buffer_message(&public_key, payload, completion)
+                        {
+                            Ok(()) => {}
+                            Err(error) => {
+                                warn!(?to, ?addr, ?error, "failed to buffer tcp message");
+                                return;
+                            }
+                        }
+                    }
+                }
+                self.tcp_metrics
+                    .gauge(auth::GAUGE_RAPTORCAST_AUTH_WIREAUTH_TCP_BYTES_WRITTEN)
+                    .add(payload_len);
+            }
+            _ => {
+                self.signature_based_tcp
+                    .write(tcp_addr, payload, completion);
+                self.tcp_metrics
+                    .gauge(auth::GAUGE_RAPTORCAST_AUTH_SIGAUTH_TCP_BYTES_WRITTEN)
+                    .add(payload_len);
+            }
+        }
+    }
+
+    async fn recv_tcp(
+        &mut self,
+    ) -> Result<auth::AuthRecvTcpMsg<AP::PublicKey>, auth::TcpRecvError<AP::Error>> {
+        let (result, bytes_read) = match &mut self.authenticated_tcp {
+            Some(socket) => tokio::select! {
+                result = socket.recv() => (
+                    result.map_err(auth::TcpRecvError::WireAuth),
+                    auth::GAUGE_RAPTORCAST_AUTH_WIREAUTH_TCP_BYTES_READ,
+                ),
+                result = self.signature_based_tcp.recv() => (
+                    result.map_err(auth::TcpRecvError::SigAuth),
+                    auth::GAUGE_RAPTORCAST_AUTH_SIGAUTH_TCP_BYTES_READ,
+                ),
+            },
+            None => (
+                self.signature_based_tcp
+                    .recv()
+                    .await
+                    .map_err(auth::TcpRecvError::SigAuth),
+                auth::GAUGE_RAPTORCAST_AUTH_SIGAUTH_TCP_BYTES_READ,
+            ),
+        };
+        if let Ok(msg) = &result {
+            self.tcp_metrics
+                .gauge(bytes_read)
+                .add(msg.payload.len() as u64);
+        }
+        result
     }
 
     fn handle_secondary_outbound_message(
@@ -739,6 +840,7 @@ where
 
 pub struct DataplaneHandles {
     pub tcp_socket: monad_dataplane::TcpSocketHandle,
+    pub authenticated_tcp_socket: Option<monad_dataplane::TcpSocketHandle>,
     pub authenticated_socket: UdpSocketHandle,
     pub direct_udp_socket: Option<UdpSocketHandle>,
     pub non_authenticated_socket: UdpSocketHandle,
@@ -806,6 +908,7 @@ pub fn create_dataplane_for_tests(with_direct_udp: bool) -> DataplaneHandles {
 
     DataplaneHandles {
         tcp_socket,
+        authenticated_tcp_socket: None,
         authenticated_socket,
         direct_udp_socket,
         non_authenticated_socket,
@@ -903,10 +1006,14 @@ where
     };
     let pd = PeerDiscoveryDriver::new(peer_discovery_builder);
     let shared_pd = Arc::new(Mutex::new(pd));
+    let authenticated_tcp = dataplane
+        .authenticated_tcp_socket
+        .map(|socket| (socket, auth::NoopAuthProtocol::new()));
     RaptorCast::<ST, M, OM, SE, NopDiscovery<ST>, _, NopScore<NodeId<CertificateSignaturePubKey<ST>>>>::new(
         config,
         SecondaryRaptorCastModeConfig::None,
         dataplane.tcp_socket,
+        authenticated_tcp,
         (
             dataplane.authenticated_socket,
             auth::NoopAuthProtocol::new(),
@@ -970,10 +1077,21 @@ where
     let pd = PeerDiscoveryDriver::new(peer_discovery_builder);
     let shared_pd = Arc::new(Mutex::new(pd));
     let wireauth_config = monad_wireauth::Config::default();
+    let authenticated_tcp = dataplane.authenticated_tcp_socket.map(|socket| {
+        (
+            socket,
+            auth::WireAuthProtocol::new(
+                &auth::metrics::TCP_METRICS,
+                auth::tcp_socket::wireauth_config(),
+                shared_key.clone(),
+            ),
+        )
+    });
     RaptorCast::<ST, M, OM, SE, NopDiscovery<ST>, _, NopScore<NodeId<CertificateSignaturePubKey<ST>>>>::new(
         config,
         SecondaryRaptorCastModeConfig::None,
         dataplane.tcp_socket,
+        authenticated_tcp,
         (
             dataplane.authenticated_socket,
             auth::WireAuthProtocol::new(&auth::metrics::UDP_METRICS, wireauth_config, shared_key),
@@ -1217,7 +1335,12 @@ where
             .push(self.peer_discovery_metrics.as_ref())
             .push(self.udp_state.metrics().executor_metrics())
             .chain(self.udp_state.decoder_metrics())
-            .chain(self.dual_socket.metrics());
+            .chain(self.dual_socket.metrics())
+            .push(self.tcp_metrics.as_ref());
+
+        if let Some(socket) = &self.authenticated_tcp {
+            chain = chain.chain(socket.auth_protocol.metrics());
+        }
 
         if let Some(socket) = &self.direct_udp_transport {
             chain = chain.chain(socket.metrics());
@@ -1461,23 +1584,29 @@ where
 
         let mut poll_quota = TCP_POLL_QUOTA;
         loop {
-            let mut recv_fut = pin!(budgeted(this.signature_based_tcp.recv(), &mut poll_quota));
-            let Poll::Ready(result) = recv_fut.poll_unpin(cx) else {
-                break;
+            let result = {
+                let mut recv_fut = pin!(budgeted(this.recv_tcp(), &mut poll_quota));
+                let Poll::Ready(result) = recv_fut.poll_unpin(cx) else {
+                    break;
+                };
+                result
             };
+
             let msg = match result {
                 Ok(msg) => msg,
                 Err(err) => {
-                    warn!(src_addr=?err.src_addr, error=?err.error, "tcp error");
-                    this.dataplane_control.disconnect(err.src_addr);
+                    warn!(src_addr=?err.src_addr(), error=?err, "tcp error");
+                    this.dataplane_control.disconnect(err.src_addr());
                     continue;
                 }
             };
+
             let auth::AuthRecvTcpMsg {
                 payload,
                 src_addr,
                 from,
             } = msg;
+
             let deserialized_message =
                 match InboundRouterMessage::<M, ST>::try_deserialize(&payload) {
                     Ok(message) => message,
@@ -1490,6 +1619,7 @@ where
                         continue;
                     }
                 };
+
             // Dispatch messages received via TCP
             match deserialized_message {
                 InboundRouterMessage::AppMessage(message) => {

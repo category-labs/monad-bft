@@ -262,6 +262,7 @@ fn spawn_validator(
             config,
             monad_raptorcast::raptorcast_secondary::SecondaryRaptorCastModeConfig::None,
             dataplane.tcp_socket,
+            None,
             (
                 dataplane.authenticated_socket,
                 monad_raptorcast::auth::NoopAuthProtocol::new(),
