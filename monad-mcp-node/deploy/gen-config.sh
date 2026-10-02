@@ -10,12 +10,12 @@ slot_interval=100
 slots_per_window=100
 sync_boundary=80
 num_proposals=5
-propose_before=200
+propose_before=150
 completed_slot_retention=50
 repeater_interval=500
 repeater_retention=50
-# withhold a seal that can no longer reach every validator by the deadline (= delta)
-withhold_before=150
+# withhold a seal that can no longer reach every validator by the deadline
+withhold_before=100
 # lane vacant 5 of every 5 + 95 slots: all K lanes 95% of the time, tenure K * 100 slots
 rotation_slack=95
 # random: load without clients; mempool: txs from monad-mcp-rpc

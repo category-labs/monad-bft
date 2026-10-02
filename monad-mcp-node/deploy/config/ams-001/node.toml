@@ -1,7 +1,7 @@
 node_id = 0
 proposal_key_pair = 0
 cadence_key_pair = 0
-genesis_deadline = 1790139877822
+genesis_deadline = 1790973425699
 
 [[validators]]
 node_id = 0
@@ -70,8 +70,8 @@ completed_slot_retention = 50
 [proposal]
 source = "mempool"
 num_proposals = 5
-propose_before_deadline = 200
-withhold_before_deadline = 150
+propose_before_deadline = 150
+withhold_before_deadline = 100
 
 [leader_election]
 rotation_slack = 95
