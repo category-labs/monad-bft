@@ -26,7 +26,7 @@ use super::{
         monad_mvba::{MonadMvba, MvbaContext},
     },
     fast::{
-        BatchVoteMsg, CommitVoteDeadlineOutcome, EnterFallbackCert, FallbackVoteMsg, FastBlock,
+        BatchVoteMsg, EnterFallbackCert, FallbackTransitionOutcome, FallbackVoteMsg, FastBlock,
         FastCommitQc, FastCommitVoteMsg, FastPath,
     },
     types::{
@@ -406,24 +406,24 @@ impl SlotConsensus for Chorus {
         match event {
             // D+delta, or every delta if there is not enough votes yet
             TimerEvent::FallbackTransitionTimeout => {
-                match self.fast.on_commit_vote_deadline() {
-                    CommitVoteDeadlineOutcome::NotEnoughVotes => {
+                match self.fast.try_fallback_transition() {
+                    FallbackTransitionOutcome::Waiting => {
                         self.transition_waits += 1;
                         if self.transition_waits.is_power_of_two() {
-                            let (admitted, held) = self.fast.vote_admission_state();
+                            let (admitted, waiting_on_header) = self.fast.vote_admission_state();
                             tracing::debug!(
                                 slot = ?self.slot,
                                 waits = self.transition_waits,
                                 ?admitted,
-                                ?held,
-                                "D+delta: fewer than 2f+1 admitted votes, waiting"
+                                ?waiting_on_header,
+                                "D+delta: fewer than 2f+1 votes or an unresolved entry, waiting"
                             );
                         }
-                        // not enough valid votes, wait for more votes to arrive
+                        // wait for more votes and chunks to arrive
                         self.schedule_timer(self.delta, TimerEvent::FallbackTransitionTimeout);
                     }
 
-                    CommitVoteDeadlineOutcome::AlreadyVoted => {
+                    FallbackTransitionOutcome::AlreadyCommitVoted => {
                         tracing::debug!(
                             slot = ?self.slot,
                             commit_voters = self.fast.commit_voter_count(),
@@ -432,7 +432,7 @@ impl SlotConsensus for Chorus {
                         self.schedule_timer(self.delta, TimerEvent::FallbackDecisionDelayElapsed);
                     }
 
-                    CommitVoteDeadlineOutcome::FallbackVote(fallback_vote) => {
+                    FallbackTransitionOutcome::FallbackVote(fallback_vote) => {
                         tracing::debug!(slot = ?self.slot, "no fast block by D+delta, fallback vote cast");
                         self.broadcast(fallback_vote);
                         self.schedule_timer(self.delta, TimerEvent::FallbackDecisionDelayElapsed);
@@ -759,7 +759,8 @@ mod tests {
             pool.add_vote(voter, VoteMsg::new_signed(Slot(1), vote, &voter.keypair()));
         }
         let qc = pool
-            .try_form_strong_qc(&context.validator_data)
+            .tally(&context.validator_data)
+            .strong_qc()
             .expect("three of four votes form a commit qc");
         chorus.handle_message(NodeId::dummy(0), ChorusMessage::FastCommitQc(qc));
 

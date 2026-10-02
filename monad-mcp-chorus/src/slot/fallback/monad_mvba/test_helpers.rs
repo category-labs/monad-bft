@@ -173,7 +173,8 @@ pub(super) fn strong_qc<V: IsVote>(
         pool.add_vote(*node, msg);
     }
 
-    pool.try_form_strong_qc(validator_data)
+    pool.tally(validator_data)
+        .strong_qc()
         .expect("the signers hold a supermajority of stake")
 }
 
@@ -190,10 +191,12 @@ pub(super) fn weak_qc<V: IsVote>(
         pool.add_vote(*node, msg);
     }
 
-    pool.try_form_weak_qc(validator_data)
-        .expect("the signers hold more than an honest threshold of stake")
-        .left()
-        .expect("the signers all voted the same way")
+    let mut qcs = pool.tally(validator_data).weak_qcs().into_iter();
+    match (qcs.next(), qcs.next()) {
+        (Some(qc), None) => qc,
+        (None, _) => panic!("the signers hold more than an honest threshold of stake"),
+        (Some(_), Some(_)) => panic!("the signers all voted the same way"),
+    }
 }
 
 pub(super) fn prepare_qc(
