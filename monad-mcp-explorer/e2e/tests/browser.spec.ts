@@ -34,10 +34,13 @@ test('L6b: send from the panel, follow it to its block and payload, then Live of
   await page.getByTestId('send-payload').fill(payload);
   await expect(page.getByTestId('send-size')).toHaveText(`${payload.length} / 1024 B`);
   await page.getByTestId('send-sender').fill(sender);
+  // a lone validator holds lane 0
+  await page.getByTestId('send-lane').selectOption('0');
   // same-origin: the explorer forwards to the rpc, so a tunnel to the explorer alone suffices
   const sent = page.waitForResponse((r) => r.request().method() === 'POST' && r.url() === `${stack.explorer}/api/tx`);
   await page.getByTestId('send-submit').click();
   expect((await sent).status()).toBe(200);
+  expect((await sent).request().postDataJSON()).toEqual({ payload_utf8: payload, sender, lane: 0 });
 
   const result = page.getByTestId('send-result');
   await expect(result).toHaveAttribute('data-state', 'landed');
@@ -141,6 +144,27 @@ test('L6b: send from the panel, follow it to its block and payload, then Live of
   await expect(toggle).toHaveAttribute('aria-pressed', 'true');
   await expect(page.getByTestId('live-status')).toHaveText(/^updated \d\d:\d\d:\d\d$/);
   expect(errors).toEqual([]);
+});
+
+test('L6b: a lane with no upcoming leader is refused; any lane leaves lane out', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByTestId('send-lane').locator('option')).toHaveText(['Any lane', 'Lane 0', 'Lane 1', 'Lane 2', 'Lane 3', 'Lane 4']);
+  await page.getByTestId('send-payload').fill(`lane 3 ${randomBytes(4).toString('hex')}`);
+  await page.getByTestId('send-lane').selectOption('3');
+  const refused = page.waitForResponse((r) => r.request().method() === 'POST' && r.url() === `${stack.explorer}/api/tx`);
+  await page.getByTestId('send-submit').click();
+  expect((await refused).status()).toBe(503);
+  const result = page.getByTestId('send-result');
+  await expect(result).toHaveAttribute('data-state', 'error');
+  await expect(result).toContainText('no proposer on lane 3');
+
+  const payload = `any lane ${randomBytes(4).toString('hex')}`;
+  await page.getByTestId('send-payload').fill(payload);
+  await page.getByTestId('send-lane').selectOption('');
+  const sent = page.waitForResponse((r) => r.request().method() === 'POST' && r.url() === `${stack.explorer}/api/tx`);
+  await page.getByTestId('send-submit').click();
+  expect((await sent).request().postDataJSON()).toEqual({ payload_utf8: payload });
+  await expect(result).toHaveAttribute('data-state', 'landed');
 });
 
 test('L6b: home rows stay unique when the landing refresh overlaps a live tick', async ({ page }) => {

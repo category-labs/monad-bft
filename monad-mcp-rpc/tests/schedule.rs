@@ -282,7 +282,9 @@ fn a_lone_validator_leads_every_occupied_slot() {
     let planner = Planner::new(&lone(), None).unwrap();
     for k in 0..400 {
         let now = at(GENESIS_MS + k * 25);
-        let route = planner.route(now).expect("a route");
+        let route = planner.route(now, None).expect("a route");
+        assert_eq!(planner.route(now, Some(0)), Some(route), "its only lane");
+        assert_eq!(planner.route(now, Some(3)), None, "a lane it never holds");
         let target = planner.target_slot(now);
         let first = (target.0..).map(Slot).find(|slot| occupied(*slot)).unwrap();
         assert_eq!(
@@ -309,7 +311,7 @@ fn each_route_is_recomputed_from_its_own_time() {
     let mut previous: Option<Route> = None;
     for k in 0..SLOTS {
         let now = at(GENESIS_MS + k * 100 + 37);
-        let route = planner.route(now).unwrap();
+        let route = planner.route(now, None).unwrap();
         assert_eq!(
             route.slot,
             planner.target_slot(now),
@@ -320,7 +322,7 @@ fn each_route_is_recomputed_from_its_own_time() {
             most_tenured(schedule.as_ref(), route.slot, horizon),
             "at slot {k}"
         );
-        assert_eq!(planner.route(now), Some(route), "deterministic");
+        assert_eq!(planner.route(now, None), Some(route), "deterministic");
         if let Some(previous) = previous {
             assert_eq!(route.slot, Slot(previous.slot.0 + 1));
         }
@@ -329,4 +331,73 @@ fn each_route_is_recomputed_from_its_own_time() {
     }
     // over a full cycle each validator's fresh tenure makes it the leader
     assert_eq!(leaders, (0..SWARM).collect::<BTreeSet<_>>());
+}
+
+// a pinned lane goes to that lane's proposer at the first slot from the target
+// where it has one, whatever its tenure
+#[test]
+fn a_pinned_lane_routes_to_its_own_proposer() {
+    let config = swarm(SWARM);
+    let planner = Planner::new(&config, None).unwrap();
+    let schedule = schedule_of(&config);
+    let proposer = |slot: Slot, lane| schedule.proposers_at(slot).unwrap().proposer(lane);
+    let mut skipped = 0;
+    for k in 0..SLOTS {
+        let now = at(GENESIS_MS + k * 100 + 37);
+        let target = planner.target_slot(now);
+        for lane in 0..schedule.num_indices() {
+            let route = planner.route(now, Some(lane)).expect("every lane is held");
+            let first = (target.0..)
+                .map(Slot)
+                .find(|slot| proposer(*slot, lane).is_some())
+                .unwrap();
+            skipped += u64::from(first != target);
+            assert_eq!(
+                route,
+                Route {
+                    slot: first,
+                    lane,
+                    leader: proposer(first, lane).unwrap()
+                },
+                "slot {k} lane {lane}"
+            );
+        }
+    }
+    assert!(skipped > 0, "handovers leave a lane vacant for a few slots");
+}
+
+// lane 1 opens a 100-slot rotation after genesis: refused until it is within
+// 5 s of the target, then routed to its first slot
+#[test]
+fn a_pinned_lane_is_only_routed_within_the_lookahead() {
+    let mut config = swarm(SWARM);
+    config.leader_election.rotation_slack = 95;
+    let planner = Planner::new(&config, None).unwrap();
+    let schedule = schedule_of(&config);
+    let proposer = |slot: Slot| schedule.proposers_at(slot).unwrap().proposer(1);
+    let (mut refused, mut routed) = (0, 0);
+    for k in 0..200 {
+        let now = at(GENESIS_MS + k * 100);
+        let target = planner.target_slot(now);
+        let last = planner.clock().slot_at(now + planner.lead() + ms(5_000));
+        let first = (target.0..)
+            .map(Slot)
+            .find(|slot| proposer(*slot).is_some())
+            .unwrap();
+        let expected = (first <= last).then(|| Route {
+            slot: first,
+            lane: 1,
+            leader: proposer(first).unwrap(),
+        });
+        assert_eq!(planner.route(now, Some(1)), expected, "at +{} ms", k * 100);
+        if expected.is_some() {
+            routed += 1;
+        } else {
+            refused += 1;
+        }
+    }
+    assert!(
+        refused > 0 && routed > 0,
+        "refused {refused}, routed {routed}"
+    );
 }

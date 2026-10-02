@@ -75,6 +75,9 @@ pub fn lead(node: &NodeConfig, margin: Option<TimestampDelta>) -> TimestampDelta
     )
 }
 
+// how far past the target slot a send looks for a leader
+pub const LOOKAHEAD: TimestampDelta = TimestampDelta::from_millis(5_000);
+
 // K · (y + z): the longest a proposer can hold one lane
 pub fn tenure_horizon(config: &ProposerConfig) -> u64 {
     (config.concurrent_proposers as u64).saturating_mul(config.slots_per_rotation())
@@ -174,15 +177,17 @@ impl Planner {
         self.clock.slot_at(now + self.lead)
     }
 
-    // the first slot from the target on with a proposer, within the horizon,
-    // and its chosen leader
-    pub fn route(&self, now: Timestamp) -> Option<Route> {
+    // the first slot from the target to LOOKAHEAD past it with a proposer on
+    // `lane`, or on any lane by tenure, and that leader
+    pub fn route(&self, now: Timestamp, lane: Option<ProposalIndex>) -> Option<Route> {
         let target = self.target_slot(now).0;
-        (0..self.horizon.max(1))
-            .map_while(|k| target.checked_add(k).map(Slot))
-            .find_map(|slot| {
-                let (lane, leader) = choose_leader(self.schedule.as_ref(), slot, self.horizon)?;
-                Some(Route { slot, lane, leader })
-            })
+        let last = self.clock.slot_at(now + self.lead + LOOKAHEAD).0;
+        (target..=last).map(Slot).find_map(|slot| {
+            let (lane, leader) = match lane {
+                Some(lane) => (lane, self.schedule.proposers_at(slot).ok()?.proposer(lane)?),
+                None => choose_leader(self.schedule.as_ref(), slot, self.horizon)?,
+            };
+            Some(Route { slot, lane, leader })
+        })
     }
 }

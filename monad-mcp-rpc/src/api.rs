@@ -30,6 +30,7 @@ use actix_web::{
 };
 use bytes::Bytes;
 use monad_mcp_chorus::ledger::{Address, Hash, MAX_TX_PAYLOAD, Tx};
+use monad_mcp_node::chorus::types::ProposalIndex;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -47,10 +48,17 @@ pub struct TxRequest {
     pub nonce: Option<u64>,
     pub payload_hex: Option<String>,
     pub payload_utf8: Option<String>,
+    // routing only: the tx itself does not carry it
+    pub lane: Option<u32>,
 }
+
+// lanes a request may pin, also capped by the schedule's concurrent proposers
+pub const MAX_LANES: usize = 5;
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum RequestError {
+    #[error("lane must be 0 through {}", .lanes - 1)]
+    Lane { lanes: usize },
     #[error("sender must be 20 bytes of hex")]
     Sender,
     #[error("payload_hex is not valid hex")]
@@ -62,6 +70,15 @@ pub enum RequestError {
 }
 
 impl TxRequest {
+    // the requested lane, below `concurrent_proposers` and MAX_LANES
+    pub fn lane(&self, concurrent_proposers: usize) -> Result<Option<ProposalIndex>, RequestError> {
+        let lanes = concurrent_proposers.min(MAX_LANES);
+        match self.lane.map(|lane| lane as usize) {
+            Some(lane) if lane >= lanes => Err(RequestError::Lane { lanes }),
+            lane => Ok(lane),
+        }
+    }
+
     // `sender` and `nonce` default to a random address and `nonce()`
     pub fn into_tx(self, nonce: impl FnOnce() -> u64) -> Result<Tx, RequestError> {
         let payload = match (self.payload_hex, self.payload_utf8) {
@@ -272,8 +289,20 @@ async fn post_tx(
     state: web::Data<RpcState>,
     request: web::Json<TxRequest>,
 ) -> Result<HttpResponse, ApiError> {
-    let tx = request.into_inner().into_tx(|| state.next_nonce())?;
-    let submitted = state.submit(tx).map_err(|error| match error {
+    let request = request.into_inner();
+    let lane = request.lane(
+        state
+            .config()
+            .planner
+            .schedule()
+            .config()
+            .concurrent_proposers,
+    )?;
+    let tx = request.into_tx(|| state.next_nonce())?;
+    let submitted = state.submit(tx, lane).map_err(|error| match error {
+        SubmitError::NoLeader(_) => {
+            ApiError::new(StatusCode::SERVICE_UNAVAILABLE, error.to_string())
+        }
         SubmitError::Full(full) => ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
             format!("{full}; retry later"),
@@ -461,6 +490,7 @@ mod tests {
             nonce: Some(7),
             payload_hex: Some("0xdead".into()),
             payload_utf8: None,
+            lane: None,
         }
         .into_tx(|| unreachable!())
         .unwrap();
@@ -481,6 +511,24 @@ mod tests {
             };
             assert_eq!(bad.into_tx(|| 0), Err(RequestError::Sender));
         }
+    }
+
+    #[test]
+    fn a_lane_is_below_both_the_proposer_count_and_max_lanes() {
+        let lane = |lane| TxRequest {
+            lane,
+            ..request(Some("x"), None)
+        };
+        assert_eq!(lane(None).lane(5), Ok(None));
+        assert_eq!(lane(Some(4)).lane(5), Ok(Some(4)));
+        assert_eq!(lane(Some(5)).lane(5), Err(RequestError::Lane { lanes: 5 }));
+        assert_eq!(lane(Some(4)).lane(8), Ok(Some(4)));
+        assert_eq!(lane(Some(5)).lane(8), Err(RequestError::Lane { lanes: 5 }));
+        assert_eq!(lane(Some(2)).lane(2), Err(RequestError::Lane { lanes: 2 }));
+        assert_eq!(
+            RequestError::Lane { lanes: 5 }.to_string(),
+            "lane must be 0 through 4"
+        );
     }
 
     #[test]

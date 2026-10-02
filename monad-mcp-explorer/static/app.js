@@ -194,8 +194,8 @@
           <div class="card-body">
             <form class="send-form" id="send-form" data-testid="send-form" autocomplete="off">
               <textarea id="send-payload" data-testid="send-payload" rows="1" placeholder="payload, e.g. hello chorus" aria-label="Payload"></textarea>
-              <select id="send-encoding" data-testid="send-encoding" aria-label="Payload encoding">
-                <option value="utf8">UTF-8 text</option><option value="hex">Hex bytes</option></select>
+              <select id="send-lane" data-testid="send-lane" aria-label="Lane">
+                <option value="">Any lane</option>${[0, 1, 2, 3, 4].map((l) => `<option value="${l}">Lane ${l}</option>`).join('')}</select>
               <input id="send-sender" data-testid="send-sender" placeholder="sender 0x… (optional, 20 bytes)" aria-label="Sender" spellcheck="false">
               <button class="primary" type="submit" id="send-submit" data-testid="send-submit">Send tx</button>
             </form>
@@ -229,15 +229,6 @@
   }
 
   // ---- send panel
-  function encodePayload(text, encoding) {
-    if (encoding === 'hex') {
-      const hex = text.replace(/\s+/g, '').replace(/^0x/i, '');
-      if (!/^[0-9a-fA-F]*$/.test(hex) || hex.length % 2) return { error: 'hex must be an even number of hex digits' };
-      return { len: hex.length / 2, field: 'payload_hex', value: '0x' + hex.toLowerCase() };
-    }
-    return { len: new TextEncoder().encode(text).length, field: 'payload_utf8', value: text };
-  }
-
   function renderSend() {
     const el = $('#send-result');
     if (!el) return;
@@ -258,26 +249,25 @@
 
   function mountSend() {
     const payload = $('#send-payload');
-    const encoding = $('#send-encoding');
     const size = $('#send-size');
     const update = () => {
-      const r = encodePayload(payload.value, encoding.value);
-      const bad = !!r.error || r.len > MAX_PAYLOAD;
-      size.textContent = r.error || `${r.len} / ${MAX_PAYLOAD} B`;
+      const len = utf8Len(payload.value);
+      const bad = len > MAX_PAYLOAD;
+      size.textContent = `${len} / ${MAX_PAYLOAD} B`;
       size.classList.toggle('bad', bad);
-      return bad ? null : r;
+      return !bad;
     };
     payload.addEventListener('input', update);
-    encoding.addEventListener('change', update);
     $('#send-form').addEventListener('submit', async (ev) => {
       ev.preventDefault();
-      const r = update();
-      if (!r) return;
+      if (!update()) return;
       if (!S.rpcUrl) {
         S.send = { state: 'error', detail: 'no rpc url configured' };
         return renderSend();
       }
-      const body = { [r.field]: r.value };
+      const body = { payload_utf8: payload.value };
+      const lane = $('#send-lane').value;
+      if (lane !== '') body.lane = Number(lane);
       const sender = $('#send-sender').value.trim();
       if (sender) {
         if (!/^(0x)?[0-9a-fA-F]{40}$/.test(sender)) {

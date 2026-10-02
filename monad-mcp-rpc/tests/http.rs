@@ -196,6 +196,62 @@ async fn submissions_are_owned_idempotent_and_bounded() {
 }
 
 #[actix_web::test]
+async fn a_lane_is_validated_pinned_and_refused_when_it_has_no_leader() {
+    let dir = tempfile::tempdir().unwrap();
+    let swarm = FakeSwarm::spawn(5).await;
+    let service = test::init_service(app(state(&swarm, dir.path(), 10))).await;
+    let post = |value: Value| test::TestRequest::post().uri("/tx").set_json(value);
+    let with_lane = |nonce, lane: Value| {
+        let mut value = body(&tx(nonce));
+        value["lane"] = lane;
+        value
+    };
+
+    for lane in [json!(5), json!(-1), json!("2")] {
+        let (status, _, reply) = call(&service, post(with_lane(1, lane.clone()))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{lane}: {reply}");
+    }
+    let (_, _, reply) = call(&service, post(with_lane(1, json!(5)))).await;
+    assert_eq!(reply["error"], "lane must be 0 through 4");
+    assert_eq!(swarm.frames(), 0, "a rejected request sent a frame");
+
+    for lane in 0..5 {
+        let (status, _, reply) = call(&service, post(with_lane(lane, json!(lane)))).await;
+        assert_eq!(status, StatusCode::OK, "{reply}");
+        assert_eq!(reply["target_lane"], lane, "{reply}");
+    }
+
+    // a lone validator only ever holds lane 0
+    let dir = tempfile::tempdir().unwrap();
+    let lone = FakeSwarm::spawn(1).await;
+    let service = test::init_service(app(state(&lone, dir.path(), 10))).await;
+    let (status, _, reply) = call(&service, post(with_lane(1, json!(3)))).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{reply}");
+    assert!(
+        reply["error"]
+            .as_str()
+            .unwrap()
+            .contains("no proposer on lane 3"),
+        "{reply}"
+    );
+    assert_eq!(lone.frames(), 0);
+    let get = test::TestRequest::get().uri(&format!("/tx/{}", hash_hex(&tx(1))));
+    assert_eq!(
+        call(&service, get).await.0,
+        StatusCode::NOT_FOUND,
+        "not owned"
+    );
+    let (status, _, reply) = call(&service, post(with_lane(1, json!(0)))).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+
+    // owned already, so no leader on the pinned lane is not a refusal
+    let (status, _, reply) = call(&service, post(with_lane(1, json!(3)))).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(reply["known"], true);
+    assert_eq!(reply["attempts"], 1, "a known tx is not resent");
+}
+
+#[actix_web::test]
 async fn a_send_the_socket_refuses_is_202_resent_later_and_unhealthy() {
     let dir = tempfile::tempdir().unwrap();
     // broadcast without SO_BROADCAST: the kernel refuses the datagram

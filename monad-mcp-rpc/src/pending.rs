@@ -22,6 +22,7 @@ use std::{
 };
 
 use monad_mcp_chorus::ledger::{FinalizationPath, Hash, Tx};
+use monad_mcp_node::chorus::types::ProposalIndex;
 
 use crate::schedule::Route;
 
@@ -38,7 +39,7 @@ pub struct PendingConfig {
 pub enum SendOutcome {
     // a datagram to the route's leader; udp says nothing more
     Sent(Route),
-    // no leader within the horizon, or the socket refused the datagram
+    // no leader within the lookahead, or the socket refused the datagram
     Error(String),
 }
 
@@ -104,6 +105,8 @@ impl TxState {
 pub struct Record {
     pub hash: Hash,
     pub tx: Tx,
+    // the lane the request asked for; every send of the tx targets it
+    pub lane: Option<ProposalIndex>,
     pub state: TxState,
     pub submitted_at: SystemTime,
     // at most max_attempts entries, oldest first
@@ -175,8 +178,20 @@ impl PendingSet {
         self.records.len()
     }
 
+    // pending or committed: a submission of it is `Known`
+    pub fn owns(&self, hash: &Hash) -> bool {
+        self.records
+            .get(hash)
+            .is_some_and(|record| !matches!(record.state, TxState::Failed(_)))
+    }
+
     // the caller sends the tx next and reports it with `record_send`
-    pub fn submit(&mut self, tx: Tx, now: Instant) -> Result<(Hash, Admission), PendingFull> {
+    pub fn submit(
+        &mut self,
+        tx: Tx,
+        lane: Option<ProposalIndex>,
+        now: Instant,
+    ) -> Result<(Hash, Admission), PendingFull> {
         let hash = tx.hash();
         let failed = match self.records.get(&hash).map(|record| &record.state) {
             None => false,
@@ -190,6 +205,7 @@ impl PendingSet {
             let record = self.records.get_mut(&hash).unwrap();
             record.state = TxState::Pending;
             record.tx = tx; // demo(tx-timeline): the retry is sent with this admission's stamp
+            record.lane = lane;
             record.history.clear();
             record.last_sent = now;
             self.finished.retain(|finished| *finished != hash);
@@ -201,6 +217,7 @@ impl PendingSet {
             Record {
                 hash,
                 tx,
+                lane,
                 state: TxState::Pending,
                 submitted_at: SystemTime::now(),
                 history: Vec::new(),
@@ -230,7 +247,7 @@ impl PendingSet {
     }
 
     // txs to resend now, oldest send first; those out of attempts fail instead
-    pub fn take_due(&mut self, now: Instant) -> Vec<(Hash, Tx)> {
+    pub fn take_due(&mut self, now: Instant) -> Vec<(Hash, Tx, Option<ProposalIndex>)> {
         let mut due: Vec<(Instant, Hash)> = Vec::new();
         let mut exhausted = Vec::new();
         for hash in &self.in_flight {
@@ -249,7 +266,10 @@ impl PendingSet {
         }
         due.sort_unstable();
         due.into_iter()
-            .map(|(_, hash)| (hash, self.records[&hash].tx.clone()))
+            .map(|(_, hash)| {
+                let record = &self.records[&hash];
+                (hash, record.tx.clone(), record.lane)
+            })
             .collect()
     }
 
@@ -330,22 +350,22 @@ mod tests {
         let mut set = PendingSet::new(config());
         let t0 = Instant::now();
         for nonce in 0..4 {
-            assert_eq!(set.submit(tx(nonce), t0).unwrap().1, Admission::New);
+            assert_eq!(set.submit(tx(nonce), None, t0).unwrap().1, Admission::New);
         }
-        assert_eq!(set.submit(tx(9), t0), Err(PendingFull(4)));
+        assert_eq!(set.submit(tx(9), None, t0), Err(PendingFull(4)));
         assert_eq!(
-            set.submit(tx(2), t0).unwrap(),
+            set.submit(tx(2), None, t0).unwrap(),
             (tx(2).hash(), Admission::Known)
         );
         let mut restamped = tx(2); // demo(tx-timeline)
         restamped.received_at_ns = 9; // demo(tx-timeline)
-        assert_eq!(set.submit(restamped, t0).unwrap().1, Admission::Known); // demo(tx-timeline)
+        assert_eq!(set.submit(restamped, None, t0).unwrap().1, Admission::Known); // demo(tx-timeline)
         assert_eq!(set.get(&tx(2).hash()).unwrap().tx, tx(2)); // demo(tx-timeline)
         assert_eq!(set.in_flight(), 4);
 
         // finishing one frees its slot in the bound
         assert!(set.commit(&tx(0).hash(), commit(1)));
-        assert_eq!(set.submit(tx(9), t0).unwrap().1, Admission::New);
+        assert_eq!(set.submit(tx(9), None, t0).unwrap().1, Admission::New);
         assert_eq!(set.in_flight(), 4);
         assert_eq!(set.tracked(), 5);
     }
@@ -354,12 +374,12 @@ mod tests {
     fn sent_then_resent_then_committed() {
         let mut set = PendingSet::new(config());
         let t0 = Instant::now();
-        let (hash, _) = set.submit(tx(1), t0).unwrap();
+        let (hash, _) = set.submit(tx(1), None, t0).unwrap();
         set.record_send(&hash, t0, sent(10));
         assert!(set.take_due(t0 + RESEND / 2).is_empty());
 
         let due = set.take_due(t0 + RESEND);
-        assert_eq!(due, vec![(hash, tx(1))]);
+        assert_eq!(due, vec![(hash, tx(1), None)]);
         set.record_send(&hash, t0 + RESEND, sent(13));
         assert!(set.take_due(t0 + RESEND + RESEND / 2).is_empty());
 
@@ -384,7 +404,7 @@ mod tests {
     fn a_tx_fails_a_resend_interval_after_its_last_attempt() {
         let mut set = PendingSet::new(config());
         let t0 = Instant::now();
-        let (hash, _) = set.submit(tx(1), t0).unwrap();
+        let (hash, _) = set.submit(tx(1), None, t0).unwrap();
         let mut now = t0;
         set.record_send(&hash, now, SendOutcome::Error("refused".into()));
         for _ in 1..3 {
@@ -415,7 +435,7 @@ mod tests {
     fn resubmitting_a_failed_tx_starts_it_over() {
         let mut set = PendingSet::new(config());
         let t0 = Instant::now();
-        let (hash, _) = set.submit(tx(1), t0).unwrap();
+        let (hash, _) = set.submit(tx(1), None, t0).unwrap();
         for i in 0..3 {
             set.take_due(t0 + RESEND * i);
             set.record_send(&hash, t0 + RESEND * i, sent(20));
@@ -424,7 +444,10 @@ mod tests {
         assert!(matches!(set.get(&hash).unwrap().state, TxState::Failed(_)));
 
         let later = t0 + RESEND * 4;
-        assert_eq!(set.submit(tx(1), later).unwrap().1, Admission::Retried);
+        assert_eq!(
+            set.submit(tx(1), None, later).unwrap().1,
+            Admission::Retried
+        );
         let record = set.get(&hash).unwrap();
         assert_eq!(
             (record.state.clone(), record.attempts()),
@@ -435,12 +458,12 @@ mod tests {
         assert_eq!(set.take_due(later + RESEND).len(), 1);
 
         // a pending or committed tx is not restarted
-        assert_eq!(set.submit(tx(1), later).unwrap().1, Admission::Known);
+        assert_eq!(set.submit(tx(1), None, later).unwrap().1, Admission::Known);
         set.commit(&hash, commit(3));
-        assert_eq!(set.submit(tx(1), later).unwrap().1, Admission::Known);
+        assert_eq!(set.submit(tx(1), None, later).unwrap().1, Admission::Known);
         // it is finished once, so eviction cannot drop a live record
         for nonce in 10..12 {
-            set.submit(tx(nonce), later).unwrap();
+            set.submit(tx(nonce), None, later).unwrap();
             set.commit(&tx(nonce).hash(), commit(nonce));
         }
         assert!(set.get(&hash).is_none());
@@ -451,7 +474,7 @@ mod tests {
     fn a_retried_tx_takes_the_new_received_at() {
         let mut set = PendingSet::new(config());
         let t0 = Instant::now();
-        let (hash, _) = set.submit(tx(1), t0).unwrap();
+        let (hash, _) = set.submit(tx(1), None, t0).unwrap();
         for i in 0..3 {
             set.take_due(t0 + RESEND * i);
             set.record_send(&hash, t0 + RESEND * i, sent(20));
@@ -461,7 +484,10 @@ mod tests {
             received_at_ns: 9,
             ..tx(1)
         };
-        let admission = set.submit(restamped.clone(), t0 + RESEND * 4).unwrap().1;
+        let admission = set
+            .submit(restamped.clone(), None, t0 + RESEND * 4)
+            .unwrap()
+            .1;
         assert_eq!(admission, Admission::Retried);
         assert_eq!(set.get(&hash).unwrap().tx, restamped);
     }
@@ -472,7 +498,7 @@ mod tests {
         for outcome in [sent(10), SendOutcome::Error("no leader".into())] {
             let mut set = PendingSet::new(config());
             let t0 = Instant::now();
-            let (hash, _) = set.submit(tx(1), t0).unwrap();
+            let (hash, _) = set.submit(tx(1), None, t0).unwrap();
             let snapshot = set.record_send(&hash, t0, outcome.clone()).unwrap();
             assert_eq!(snapshot.state, TxState::Pending);
             assert_eq!(snapshot.last_outcome(), Some(&outcome));
@@ -494,8 +520,8 @@ mod tests {
             ..config()
         });
         let t0 = Instant::now();
-        let (hash, _) = set.submit(tx(1), t0).unwrap();
-        let (other, _) = set.submit(tx(2), t0).unwrap();
+        let (hash, _) = set.submit(tx(1), None, t0).unwrap();
+        let (other, _) = set.submit(tx(2), None, t0).unwrap();
         // while tx(1)'s send is out it commits, then a later finish evicts it
         set.commit(&hash, commit(3));
         set.commit(&other, commit(4));
@@ -510,9 +536,28 @@ mod tests {
     fn a_submission_whose_first_send_never_lands_is_resent() {
         let mut set = PendingSet::new(config());
         let t0 = Instant::now();
-        let (hash, _) = set.submit(tx(1), t0).unwrap();
+        let (hash, _) = set.submit(tx(1), None, t0).unwrap();
         assert!(set.take_due(t0 + RESEND / 2).is_empty());
-        assert_eq!(set.take_due(t0 + RESEND), vec![(hash, tx(1))]);
+        assert_eq!(set.take_due(t0 + RESEND), vec![(hash, tx(1), None)]);
+    }
+
+    #[test]
+    fn a_resend_keeps_the_requested_lane_and_a_retry_takes_the_new_one() {
+        let mut set = PendingSet::new(config());
+        let t0 = Instant::now();
+        let (hash, _) = set.submit(tx(1), Some(3), t0).unwrap();
+        assert_eq!(set.take_due(t0 + RESEND), vec![(hash, tx(1), Some(3))]);
+        assert!(set.owns(&hash));
+        for i in 1..=3 {
+            set.record_send(&hash, t0 + RESEND * i, sent(10));
+        }
+        set.take_due(t0 + RESEND * 4);
+        assert!(!set.owns(&hash), "failed");
+        assert_eq!(
+            set.submit(tx(1), Some(2), t0 + RESEND * 4).unwrap().1,
+            Admission::Retried
+        );
+        assert_eq!(set.get(&hash).unwrap().lane, Some(2));
     }
 
     #[test]
@@ -520,13 +565,13 @@ mod tests {
         let mut set = PendingSet::new(config());
         let t0 = Instant::now();
         for (nonce, offset) in [(1, 30), (2, 10), (3, 20)] {
-            let (hash, _) = set.submit(tx(nonce), t0).unwrap();
+            let (hash, _) = set.submit(tx(nonce), None, t0).unwrap();
             set.record_send(&hash, t0 + Duration::from_millis(offset), sent(10));
         }
         let due: Vec<u64> = set
             .take_due(t0 + RESEND * 2)
             .into_iter()
-            .map(|(_, tx)| tx.nonce)
+            .map(|(_, tx, _)| tx.nonce)
             .collect();
         assert_eq!(due, vec![2, 3, 1]);
     }
@@ -536,7 +581,7 @@ mod tests {
         let mut set = PendingSet::new(config());
         let t0 = Instant::now();
         for nonce in 0..3 {
-            set.submit(tx(nonce), t0).unwrap();
+            set.submit(tx(nonce), None, t0).unwrap();
         }
         for nonce in 0..3 {
             set.commit(&tx(nonce).hash(), commit(nonce));
@@ -546,14 +591,14 @@ mod tests {
         assert!(set.get(&tx(2).hash()).is_some());
         assert!(!set.commit(&tx(0).hash(), commit(0)));
         // an evicted tx is new again
-        assert_eq!(set.submit(tx(0), t0).unwrap().1, Admission::New);
+        assert_eq!(set.submit(tx(0), None, t0).unwrap().1, Admission::New);
     }
 
     #[test]
     fn history_is_capped_at_max_attempts() {
         let mut set = PendingSet::new(config());
         let t0 = Instant::now();
-        let (hash, _) = set.submit(tx(1), t0).unwrap();
+        let (hash, _) = set.submit(tx(1), None, t0).unwrap();
         for _ in 0..10 {
             set.record_send(&hash, t0, sent(10));
         }

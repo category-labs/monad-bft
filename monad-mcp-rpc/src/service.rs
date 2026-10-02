@@ -14,6 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
+    collections::HashMap,
     io,
     sync::{
         Mutex, MutexGuard,
@@ -23,14 +24,14 @@ use std::{
 };
 
 use monad_mcp_chorus::ledger::{Hash, LedgerReader, Tx};
-use monad_mcp_node::chorus::types::Timestamp;
+use monad_mcp_node::chorus::types::{ProposalIndex, Timestamp};
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, info, warn};
 
 use crate::{
     config::RpcConfig,
     pending::{Admission, PendingFull, PendingSet, Record, SendOutcome},
-    schedule::Route,
+    schedule::{LOOKAHEAD, Route},
     udp::UdpSender,
     watch::{LedgerWatch, Sighting},
 };
@@ -55,6 +56,13 @@ pub enum SubmitError {
     // finished and pushed out of `retain_finished` while its send was out
     #[error("the tx finished and was evicted before its status could be read")]
     Evicted,
+    // startup, too few validators, or a pinned lane no one holds yet
+    #[error("no proposer {} within {} ms of the target slot", lane_name(*.0), LOOKAHEAD.as_millis())]
+    NoLeader(Option<ProposalIndex>),
+}
+
+fn lane_name(lane: Option<ProposalIndex>) -> String {
+    lane.map_or_else(|| "on any lane".into(), |lane| format!("on lane {lane}"))
 }
 
 // everything the http handlers and the maintenance loop share
@@ -119,30 +127,41 @@ impl RpcState {
             .clone()
     }
 
-    // takes ownership of a new tx and sends it once; a known one is not resent
-    pub fn submit(&self, tx: Tx) -> Result<Submitted, SubmitError> {
+    // takes ownership of a new tx and sends it once to `lane`, or to any lane;
+    // a known one is not resent, and a new one with no leader ahead is refused
+    pub fn submit(&self, tx: Tx, lane: Option<ProposalIndex>) -> Result<Submitted, SubmitError> {
+        let route = self.route(lane);
         let (hash, admission, known) = {
             let mut pending = self.pending();
-            let (hash, admission) = pending.submit(tx.clone(), Instant::now())?;
+            if route.is_none() && !pending.owns(&tx.hash()) {
+                return Err(SubmitError::NoLeader(lane));
+            }
+            let (hash, admission) = pending.submit(tx.clone(), lane, Instant::now())?;
             let known = pending.get(&hash).filter(|_| !admission.sends()).cloned();
             (hash, admission, known)
         };
         let record = match known {
             Some(record) => record,
             None => self
-                .send(hash, &tx, self.route())
+                .send(hash, &tx, lane, route)
                 .ok_or(SubmitError::Evicted)?,
         };
         Ok(Submitted { record, admission })
     }
 
-    // to the leader of this moment's target slot
-    fn route(&self) -> Option<Route> {
-        self.config.planner.route(unix_now())
+    // to the first leader on `lane`, or any lane, within the lookahead from now
+    fn route(&self, lane: Option<ProposalIndex>) -> Option<Route> {
+        self.config.planner.route(unix_now(), lane)
     }
 
     // the record as of this send
-    fn send(&self, hash: Hash, tx: &Tx, route: Option<Route>) -> Option<Record> {
+    fn send(
+        &self,
+        hash: Hash,
+        tx: &Tx,
+        lane: Option<ProposalIndex>,
+        route: Option<Route>,
+    ) -> Option<Record> {
         let sent_at = Instant::now();
         let outcome = match route {
             Some(route) => match self.udp.send(route.leader, tx) {
@@ -151,7 +170,7 @@ impl RpcState {
                     SendOutcome::Error(format!("send to {}: {error}", u64::from(route.leader)))
                 }
             },
-            None => SendOutcome::Error("no proposer within the tenure horizon".into()),
+            None => SendOutcome::Error(SubmitError::NoLeader(lane).to_string()),
         };
         match &outcome {
             SendOutcome::Sent(route) => debug!(
@@ -172,10 +191,11 @@ impl RpcState {
         if due.is_empty() {
             return;
         }
-        // one route for the batch: every tx in it is due at the same moment
-        let route = self.route();
-        for (hash, tx) in due {
-            self.send(hash, &tx, route);
+        // one route per lane for the batch: every tx in it is due at the same moment
+        let mut routes = HashMap::new();
+        for (hash, tx, lane) in due {
+            let route = *routes.entry(lane).or_insert_with(|| self.route(lane));
+            self.send(hash, &tx, lane, route);
         }
     }
 
