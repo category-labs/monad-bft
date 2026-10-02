@@ -567,11 +567,13 @@
     load(true);
   }
 
-  function tick() {
+  // fetch before aging, so the newest rows are not shown a tick old just before they are replaced
+  async function tick() {
+    if (!document.hidden) {
+      if (S.pending.size) pollPending();
+      if (S.live && S.inflight === 0) await load(false);
+    }
     updateAges();
-    if (document.hidden) return;
-    if (S.pending.size) pollPending();
-    if (S.live && S.inflight === 0) load(false);
   }
 
   function setLive(on) {
