@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 //! Finalized slots into the on-disk ledger, on a thread of their own so
-//! the fsyncs never stall the node's event loop.
+//! disk writes never stall the node's event loop.
 
 use std::{
     path::Path,

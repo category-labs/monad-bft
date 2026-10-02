@@ -15,8 +15,7 @@
 
 use std::{
     collections::BTreeSet,
-    fs::{self, File},
-    io::{self, Write},
+    fs, io,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -101,16 +100,10 @@ fn io_err<'a>(op: &'static str, path: &'a Path) -> impl FnOnce(io::Error) -> Led
     }
 }
 
-fn write_synced(path: &Path, data: &[u8]) -> Result<(), LedgerError> {
-    let mut file = File::create(path).map_err(io_err("create", path))?;
-    file.write_all(data).map_err(io_err("write", path))?;
-    file.sync_all().map_err(io_err("fsync", path))
-}
-
-fn sync_dir(path: &Path) -> Result<(), LedgerError> {
-    File::open(path)
-        .and_then(|dir| dir.sync_all())
-        .map_err(io_err("fsync", path))
+// no fsync: nothing relies on the ledger surviving a power loss, and per-file
+// flushes cannot keep up with the slot rate on disks without power-loss protection.
+fn write_file(path: &Path, data: &[u8]) -> Result<(), LedgerError> {
+    fs::write(path, data).map_err(io_err("write", path))
 }
 
 type DecodedLane = Option<Result<Vec<Tx>, TxError>>;
@@ -191,7 +184,6 @@ impl LedgerWriter {
                 debug!(path = %path.display(), "removed leftover ledger temp dir");
             }
         }
-        sync_dir(&blocks)?;
         Ok(Self { blocks })
     }
 
@@ -200,7 +192,6 @@ impl LedgerWriter {
     }
 
     // builds the block in a temp dir and renames it in, so readers never see a partial block.
-    // Ok once the block is published, even if the final fsync of `blocks/` fails.
     pub fn write(&self, block: &NewBlock) -> Result<BlockMeta, LedgerError> {
         let (meta, decoded) = assemble(block)?;
         let dir = self.blocks.join(block_dir_name(block.slot));
@@ -226,9 +217,6 @@ impl LedgerWriter {
             }
             return Err(e);
         }
-        if let Err(e) = sync_dir(&self.blocks) {
-            warn!(slot = block.slot, error = %e, "ledger block published but not yet durable");
-        }
         Ok(meta)
     }
 
@@ -243,23 +231,22 @@ impl LedgerWriter {
             let (Some(committed), Some(txs)) = (&new.committed, txs) else {
                 continue;
             };
-            write_synced(&tmp.join(lane_file_name(lane.index)), &committed.payload)?;
+            write_file(&tmp.join(lane_file_name(lane.index)), &committed.payload)?;
             let json = lane_json(meta.slot, lane, txs) + "\n";
-            write_synced(&tmp.join(lane_json_file_name(lane.index)), json.as_bytes())?;
+            write_file(&tmp.join(lane_json_file_name(lane.index)), json.as_bytes())?;
         }
-        write_synced(&tmp.join(PROOF_FILE), &block.proof)?;
+        write_file(&tmp.join(PROOF_FILE), &block.proof)?;
         // demo(tx-timeline)
         if let Some(at) = block.fast_block_at_ns {
             let json = format!("{TIMELINE_KEY}{at}}}\n");
-            write_synced(&tmp.join(TIMELINE_FILE), json.as_bytes())?;
+            write_file(&tmp.join(TIMELINE_FILE), json.as_bytes())?;
         }
-        write_synced(
+        write_file(
             &tmp.join(META_JSON_FILE),
             (meta.to_json() + "\n").as_bytes(),
         )?;
         // meta last: a block dir with a meta has everything else.
-        write_synced(&tmp.join(META_FILE), &meta.to_rlp())?;
-        sync_dir(tmp)
+        write_file(&tmp.join(META_FILE), &meta.to_rlp())
     }
 }
 
