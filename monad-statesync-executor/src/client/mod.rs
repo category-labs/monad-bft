@@ -74,7 +74,6 @@ pub(crate) struct StateSyncClient<PT: PubKey> {
 
 impl<PT: PubKey> StateSyncClient<PT> {
     pub fn start(
-        chain_config: u32,
         db_path: &str,
         sq_thread_cpu: Option<u32>,
         state_sync_init_peers: &[NodeId<PT>],
@@ -116,7 +115,6 @@ impl<PT: PubKey> StateSyncClient<PT> {
                 });
 
                 let mut sync_ctx = ffi::StateSyncCtx::new(
-                    chain_config,
                     db_path_ptr,
                     sq_thread_cpu.map(|n| n as ::std::os::raw::c_uint),
                     request_ctx,
