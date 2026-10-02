@@ -98,7 +98,7 @@
       <span class="ico">Bk</span>
       <div class="cell">${blockLink(b.slot)}${timeEl(b.finalized_at_ms)}</div>
       <div class="cell"><span>${laneBar(b.positive_lanes, b.num_lanes)}${b.positive_lanes}/${b.num_lanes} lanes</span>
-        <span class="sub">${plural(b.tx_count, 'tx')} · ${bytes(b.payload_bytes)} · latency ${ms(b.latency_ms)}</span></div>
+        <span class="sub">${plural(b.tx_count, 'tx')} · latency ${ms(b.latency_ms)}</span></div>
       ${pathBadge(b.path)}</li>`;
   }
 
@@ -167,13 +167,12 @@
     const lat = w100 && w100.latency_ms;
     const t = st.totals;
     $('#tiles').innerHTML = [
-      tile('head', 'Head slot', st.head ?? '—', `${num(st.retained_blocks)} blocks indexed · ${num(st.missing_slots)} missing`),
+      tile('head', 'Head slot', st.head ?? '—', `${num(st.retained_blocks)} blocks indexed`),
       tile('block-time', 'Block time · last 100', bt ? ms(bt.avg) : '—', bt ? `p50 ${ms(bt.p50)} · p95 ${ms(bt.p95)}` : '', sparkline(st.block_times_ms), true),
       tile('latency', 'Finalization latency', lat ? ms(lat.p50) : '—', lat ? `p50 · p95 ${ms(lat.p95)} · max ${ms(lat.max)}` : 'finalized − deadline'),
       tile('fast', 'Fast path · last 1000', pct(w1000 && w1000.fast_ratio), `${num(t.fallback)} fallback of ${num(t.blocks)}`),
-      tile('empty-lanes', 'Empty lanes · last 100', pct(w100 && w100.empty_lane_ratio), `tx-less positive ${pct(w100 && w100.txless_lane_ratio)}`),
       tile('tps', 'Tx / s · last 100', w100 && w100.tx_per_s != null ? w100.tx_per_s.toFixed(2) : '—', `${num(w1000 ? w1000.txs : 0)} txs in last 1000 blocks`),
-      tile('total-txs', 'Total txs indexed', num(t.txs), `${bytes(t.payload_bytes)} of payload`),
+      tile('total-txs', 'Total txs indexed', num(t.txs), `${bytes(t.payload_bytes)} of payload`, '', true),
     ].join('');
   }
 
