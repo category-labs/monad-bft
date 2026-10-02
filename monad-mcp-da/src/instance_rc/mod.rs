@@ -27,12 +27,12 @@ use recovery_tracker::ChunkRecoveryTracker;
 
 use super::{
     assignment::{ChunkAssignment, ChunkId, ChunkRouting, NodeIndex, Upstream},
-    chunk::{ChunkData, ChunkRequest, ChunksSubset, WireChunkId},
+    chunk::{ChunkData, ChunkRequest, ChunkRequestType, ChunksSubset, WireChunkId},
     chunk_tree::ChunkTree,
     egress::ChunkEgress,
     encoding_scheme::{self, DAEncodingScheme as _, SymbolDecoder},
     runtime::EpochHandle,
-    types::{ChunkRequestType, NodeId, ProposalDAEvent, SignedProposalHeader},
+    types::{NodeId, ProposalDAEvent, SignedProposalHeader},
     util::Tree,
     wire::PacketLayout as _,
 };
@@ -124,14 +124,10 @@ impl RaptorcastInstance {
         let root = *self.header.root();
         let mut events = Vec::new();
         for upstream in self.obligation_tracker.drain_fulfilled() {
-            let event = match upstream {
-                Upstream::Author => ProposalDAEvent::ProposerObligationFulfilled(root),
-                Upstream::Owner(owner) => ProposalDAEvent::OwnerObligationFulfilled {
-                    owner: *self.assignment.node(owner),
-                    root,
-                },
-            };
-            events.push(event);
+            // consensus waits only on our own share
+            if let Upstream::Author = upstream {
+                events.push(ProposalDAEvent::ProposerObligationFulfilled(root));
+            }
         }
         events
     }
@@ -482,31 +478,15 @@ mod tests {
         let mut instance = instance(&epoch_handle, &header);
         let mut egress = released();
 
-        // the chunkless author owes nothing from the start
-        let author_owes_nothing = ProposalDAEvent::OwnerObligationFulfilled {
-            owner: author(),
-            root: *header.root(),
-        };
-        assert_eq!(
-            instance.drain_obligation_events(),
-            vec![author_owes_nothing]
-        );
+        assert!(instance.drain_obligation_events().is_empty());
 
         // we own 0 and 3
         ingest(&mut instance, &chunks[0], &mut egress).expect("valid");
         assert!(instance.drain_obligation_events().is_empty());
         ingest(&mut instance, &chunks[3], &mut egress).expect("valid");
-        // holding our whole share also settles what we owe as an owner
-        let we_owe_nothing = ProposalDAEvent::OwnerObligationFulfilled {
-            owner: epoch_handle.self_id,
-            root: *header.root(),
-        };
         assert_eq!(
             instance.drain_obligation_events(),
-            vec![
-                we_owe_nothing,
-                ProposalDAEvent::ProposerObligationFulfilled(*header.root()),
-            ]
+            vec![ProposalDAEvent::ProposerObligationFulfilled(*header.root())]
         );
 
         // node 2 owns 1 and 4: one of them settles nothing
@@ -565,23 +545,15 @@ mod tests {
     }
 
     #[test]
-    fn the_author_is_owed_nothing_by_anyone_including_itself() {
+    fn the_author_is_owed_nothing_by_itself() {
         let epoch_handle = epoch_handle_for(author(), 4, vec![author()]);
         let (header, _) = proposal_chunks(&epoch_handle, 1);
         let mut instance = instance(&epoch_handle, &header);
 
         let events = instance.drain_obligation_events();
-        assert!(
-            events.contains(&ProposalDAEvent::ProposerObligationFulfilled(
-                *header.root()
-            ))
+        assert_eq!(
+            events,
+            vec![ProposalDAEvent::ProposerObligationFulfilled(*header.root())]
         );
-        for id in 0..4 {
-            let owes_nothing = ProposalDAEvent::OwnerObligationFulfilled {
-                owner: NodeId::dummy(id),
-                root: *header.root(),
-            };
-            assert!(events.contains(&owes_nothing), "owner {id}");
-        }
     }
 }

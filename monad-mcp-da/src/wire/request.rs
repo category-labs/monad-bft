@@ -24,9 +24,9 @@ use bytes::Bytes;
 use monad_mcp_chorus::spec::{Deserializable, Serializable};
 
 use super::super::{
-    chunk::{ChunkRequest, ChunksSubset, WireChunkId},
+    chunk::{ChunkRequest, ChunkRequestType, ChunksSubset, WireChunkId},
     runtime::ChunkRecoveryRequest,
-    types::{ChunkRequestType, MerkleRoot, Slot},
+    types::{MerkleRoot, Slot},
 };
 
 const ALL: u8 = 0;

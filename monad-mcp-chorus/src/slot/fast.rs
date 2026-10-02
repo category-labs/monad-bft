@@ -23,12 +23,13 @@ use arrayvec::ArrayVec;
 
 use super::{
     availability::ProposalAvailability,
-    chorus::{ChorusDACommand, ChorusDAEvent, ChunkRequestType},
+    chorus::{ChorusDACommand, ChorusDAEvent, Holders, Holding, Pin, PinTarget},
     fallback::Metablock,
     types::{
         EquivCert, Gate, HeaderAuth, IsVote, KeyPair, MerkleRoot, NodeId, ProposalIndex,
-        ProposalMap, ProposalScope, ProposerSet, Signature, SignedProposalHeader, Slot, StrongQc,
-        TotalProposalMap, ValidatorData, VoteMsg, VotePool, WeakQc,
+        ProposalMap, ProposalScope, ProposerSet, Signature, SignatureCollection,
+        SignedProposalHeader, Slot, StrongQc, TotalProposalMap, ValidatorData, VoteMsg, VotePool,
+        WeakQc,
     },
 };
 use crate::spec::{
@@ -40,15 +41,15 @@ use crate::spec::{
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 enum Phase {
-    Propose,              // initial phase
-    Vote,                 // vote casted
-    FastCommit,           // fast commit vote cast
-    TransitionToFallback, // fallback vote cast
+    Initial,        // initial phase
+    Vote,           // vote casted
+    FastCommitVote, // fast commit vote cast
+    FallbackVote,   // fallback vote cast
 }
 
 pub enum FallbackTransitionOutcome {
-    AlreadyCommitVoted, // already voted reactively
-    Waiting,            // not yet 2f+1 votes, or an entry is unresolved
+    AlreadyVoted, // already voted for fast commit
+    Waiting,      // retry after Delta
     FallbackVote(FallbackVoteMsg),
 }
 
@@ -104,7 +105,7 @@ impl FastPath {
                 VotePool::new(ProposalScope::new(s, j))
             }),
 
-            phase: Phase::Propose,
+            phase: Phase::Initial,
             proposals: ProposalMap::new(num_proposals, |j| j),
             availability: ProposalMap::new_default(num_proposals),
             commands: VecDeque::new(),
@@ -199,9 +200,7 @@ impl FastPath {
         }
 
         for (j, qc) in fast_block.0.into_indexed_iter() {
-            if self.certs[j].try_upgrade(qc) {
-                self.recover_certified(j);
-            }
+            self.certs[j].try_upgrade(qc);
         }
 
         self.try_cast_fast_commit_vote()
@@ -237,9 +236,7 @@ impl FastPath {
                 }
 
                 ProposalEvidence::Certified(cert) => {
-                    if self.certs[j].try_upgrade(cert) {
-                        self.recover_certified(j);
-                    }
+                    self.certs[j].try_upgrade(cert);
                 }
             }
         }
@@ -269,45 +266,6 @@ impl FastPath {
         self.try_form_fallback_qc(j);
     }
 
-    // P1: pull a newly certified root from the certificate's signers.
-    // A positive FallbackQc's signers also hold the decoded proposal,
-    // so they can serve our own chunks.
-    fn recover_certified(&mut self, j: ProposalIndex) {
-        let LocalCertifiedEntry::Certified(cert) = &self.certs[j] else {
-            return;
-        };
-        let Entry::Positive(root) = cert.entry() else {
-            return;
-        };
-        if self.availability[j].is_resolved(&root) {
-            return;
-        }
-        let signers = cert.signers(&self.validator_data);
-        let signers_decoded = matches!(cert, CertifiedEntry::FallbackQc(_));
-
-        if signers_decoded && !self.availability[j].author_fulfilled(&root) {
-            self.request_chunks(ChunkRequestType::MyChunks, j, root, signers.clone());
-        }
-        self.request_chunks(ChunkRequestType::YourChunks, j, root, signers);
-    }
-
-    fn request_chunks(
-        &mut self,
-        request_type: ChunkRequestType,
-        j: ProposalIndex,
-        root: MerkleRoot,
-        mut voters: Vec<NodeId>,
-    ) {
-        // stable request order across runs
-        voters.sort();
-        self.emit(ChorusDACommand::RecoverChunks {
-            j,
-            root,
-            request_type,
-            voters,
-        });
-    }
-
     fn evidence_valid(&self, j: ProposalIndex, evidence: &ProposalEvidence) -> bool {
         match evidence {
             ProposalEvidence::FallbackSignedEntry(entry) => {
@@ -328,7 +286,12 @@ impl FastPath {
     // D_s
     #[must_use]
     pub(crate) fn on_deadline(&mut self) -> Option<BatchVoteMsg> {
-        if self.phase != Phase::Propose {
+        // a FastBlock arriving before deadline can skip voting phase
+        // (enter FastCommitVote). We will always serve our chunks
+        // after deadline regardless of current phase.
+        self.emit(ChorusDACommand::ReleaseChunks);
+
+        if self.phase != Phase::Initial {
             return None; // already voted; no-op
         }
 
@@ -354,67 +317,55 @@ impl FastPath {
             }
         });
 
-        for (j, SignedEntry { entry, .. }) in votes.as_ref().into_indexed_iter() {
-            if let Entry::Positive(root) = entry {
-                self.emit(ChorusDACommand::PinRoot { j, root: *root });
-            }
-        }
-        self.emit(ChorusDACommand::ReleaseChunks);
-
         Some(BatchVoteMsg {
             slot: self.slot,
             votes,
         })
     }
 
-    // D_s + Delta
+    // D_s + Delta, ..., D_s + N*Delta
     #[must_use]
     pub(crate) fn try_fallback_transition(&mut self) -> FallbackTransitionOutcome {
-        if self.phase != Phase::Vote {
-            return FallbackTransitionOutcome::AlreadyCommitVoted;
+        match self.phase {
+            Phase::Initial => panic!("fallback transition (D_s+Delta) before voting (D_s)"),
+            Phase::FastCommitVote => return FallbackTransitionOutcome::AlreadyVoted,
+            Phase::FallbackVote => panic!("fallback transition attempt after fallback vote"),
+            Phase::Vote => {}
         }
 
         let states = self.proposals.as_ref().map(|j| self.proposal_state(*j));
 
-        let mut waiting = false;
-        for (j, state) in states.as_ref().into_indexed_iter() {
-            match state {
-                // todo: deliver headers reliably, since chunk pulls pin their root
-                ProposalState::NotEnoughVotes => {}
-                ProposalState::Unresolved(weak_qc) => self.recover_unresolved(j, weak_qc),
-                ProposalState::Certified(_) | ProposalState::FallbackSignedEntry(_) => continue,
-            }
-            waiting = true;
-        }
-        if waiting {
-            // wait for more votes and chunks to arrive.
-            return FallbackTransitionOutcome::Waiting;
-        }
-
-        let evidences = states.map(|state| match state {
-            ProposalState::Certified(cert) => ProposalEvidence::Certified(cert),
-            ProposalState::FallbackSignedEntry(fse) => ProposalEvidence::FallbackSignedEntry(fse),
-            ProposalState::NotEnoughVotes | ProposalState::Unresolved(_) => {
-                unreachable!("returned above while waiting")
+        let evidences = states.map_indexed(|j, state| {
+            let scope = ProposalScope::new(self.slot, j);
+            match state.into_evidence(scope, &self.key) {
+                Ok(evidence) => Some(evidence),
+                Err(ProposalState::UnresolvedRoot(target)) => {
+                    // f+1 positive votes, header seen, not resolved.
+                    // pin to request chunks
+                    self.pin(j, Pin::Tentative(target));
+                    None
+                }
+                Err(ProposalState::NotEnoughVotes) => {
+                    // not enough votes, wait for more votes to arrive
+                    None
+                }
+                Err(ProposalState::HeaderMissing) => {
+                    // wait for header broadcasting after D_h. todo: maybe pull header?
+                    None
+                }
+                Err(_) => unreachable!("above clauses are exhaustive"),
             }
         });
 
-        // cast a fallback vote and enter transition to fallback
-        self.phase = Phase::TransitionToFallback;
+        let Some(evidences) = evidences.try_into_total() else {
+            // some proposals are still unresolved, wait for more votes/chunks
+            return FallbackTransitionOutcome::Waiting;
+        };
+
+        // fallback transition decided
+        self.phase = Phase::FallbackVote;
+
         let enter_fallback_vote = VoteMsg::new_signed(self.slot, EnterFallbackVote, &self.key);
-
-        // the roots our positive fallback entries vouch for
-        for (j, evidence) in evidences.as_ref().into_indexed_iter() {
-            if let ProposalEvidence::FallbackSignedEntry(entry) = evidence
-                && let Some(header) = entry.header()
-            {
-                self.emit(ChorusDACommand::PinRoot {
-                    j,
-                    root: *header.root(),
-                });
-            }
-        }
-
         let fallback_vote = FallbackVoteMsg {
             enter_fallback_vote,
             evidences,
@@ -495,92 +446,90 @@ impl FastPath {
 
     // ------- internal helper methods ---------
     fn proposal_state(&self, j: ProposalIndex) -> ProposalState {
-        if let LocalCertifiedEntry::Certified(cert) = &self.certs[j] {
-            // case 1: proposal already certified (fast qc, fallback qc, or equiv cert)
-            return ProposalState::Certified(cert.clone());
-        }
-
-        let avail = &self.availability[j];
-        let tally = self.votes[j]
-            .tally(&self.validator_data)
-            .narrow(HeaderSeen(avail));
-
+        let tally = self.votes[j].tally(&self.validator_data);
         let supermajority = self.validator_data.total_stake().supermajority_threshold();
+
         if tally.stake() <= supermajority {
-            // case 2: lacking 2f+1 votes yet
+            // case 1: lacking 2f+1 votes yet
             return ProposalState::NotEnoughVotes;
         }
 
+        if let LocalCertifiedEntry::Certified(cert) = &self.certs[j] {
+            // case 2: proposal already certified (fast qc, fallback qc, or equiv cert)
+            return ProposalState::Certified(Box::new(cert.clone()));
+        }
+
+        let avail = &self.availability[j];
         let weak_qcs = tally.weak_qcs();
-        let has_neg_weak_qc = weak_qcs
+
+        if weak_qcs
             .iter()
-            .any(|qc| matches!(qc.verdict, Entry::Negative));
+            .any(|qc| matches!(qc.verdict, Entry::Negative))
+        {
+            // case 3a: f+1 negative votes, vote fallback negative
+            return ProposalState::FallbackNegative;
+        }
+
         let pos_weak_qcs = weak_qcs
             .into_iter()
-            .filter_map(|qc| match qc.verdict {
+            .map(|qc| match qc.verdict {
                 Entry::Positive(root) => Some((qc, root)),
                 _ => None,
             })
-            .collect::<ArrayVec<_, 2>>();
-        let scope = ProposalScope::new(self.slot, j);
+            .collect::<Option<ArrayVec<_, 2>>>()
+            .expect("no negative weak qcs, so all weak qcs are positive");
 
-        let fse = match pos_weak_qcs.as_slice() {
-            [] => {
-                // case 3: <f+1 positive votes, sign a negative fallback entry
-                FallbackSignedEntry::new_signed_negative(scope, &self.key)
-            }
-            [_, _] => {
-                unreachable!("equivocation, already handled in case 1")
-            }
-            [(weak_qc, root)] if !avail.is_resolved(root) && !has_neg_weak_qc => {
-                // case 4: f+1 positive votes, but we have yet to
-                // decode it. request voters for their chunks.
-                return ProposalState::Unresolved(weak_qc.clone());
-            }
-            [(weak_qc, root)] if !avail.is_resolved(root) && has_neg_weak_qc => {
-                // case 5: f+1 positive votes on unresolved root, but
-                // we already have f+1 negative votes. we stand with
-                // the negative.
-                FallbackSignedEntry::new_signed_negative(scope, &self.key)
-            }
-            [(_weak_qc, root)] if avail.is_resolved(root) && !avail.decoded(root) => {
-                // case 6: decoded but proposal is invalid
-                // (re-encoding failure), sign a negative fallback
-                // entry.
+        let mut missing_headers = vec![];
 
-                // todo: >=f+1 byzantine peers detected (voted yes on
-                // invalid root), log or report the voter.
-                FallbackSignedEntry::new_signed_negative(scope, &self.key)
-            }
-            [(_weak_qc, root)] => {
-                // case 7: decoded, sign a positive fallback entry
-                let header = avail
-                    .header_for(root)
-                    .expect("already narrowed to roots with a seen header");
-                FallbackSignedEntry::new_signed_positive(scope, *root, &self.key, header.clone())
-            }
-            _ => unreachable!("at most 2 weak qcs"),
-        };
+        for (qc, root) in pos_weak_qcs {
+            // qc: f+1 positive votes
 
-        ProposalState::FallbackSignedEntry(fse)
+            let Some(header) = avail.header_for(&root) else {
+                missing_headers.push(root);
+                continue;
+            };
+
+            if !avail.is_resolved(&root) {
+                // case 5: header seen, not resolved
+                let pin_target = qc
+                    .pin_target(&self.validator_data)
+                    .expect("a positive weak qc names a root");
+                return ProposalState::UnresolvedRoot(pin_target);
+            }
+
+            if !avail.is_decoded(&root) {
+                // case 3b: f+1 positive votes, but decoding is invalid
+                return ProposalState::FallbackNegative;
+            }
+
+            // case 4: resolved and decoded, vote fallback positive
+            return ProposalState::FallbackPositive(header.clone());
+        }
+
+        // case 6: there are positive votes no header seen yet
+        // note: missing_headers can be empty (multiple positive votes, each <= f).
+        drop(missing_headers); // can be used for logging/header pulling
+        ProposalState::HeaderMissing
     }
 
-    // the signers of the weak qc hold their own shares under its root
-    fn recover_unresolved(&mut self, j: ProposalIndex, weak_qc: &WeakQc<Entry>) {
-        let Entry::Positive(root) = weak_qc.verdict else {
-            unreachable!("an unresolved weak qc is positive");
-        };
-        let Some(signers) = weak_qc.sigcol.signers(&self.validator_data) else {
-            return;
-        };
-        let voters = signers.into_iter().copied().collect();
-        self.request_chunks(ChunkRequestType::YourChunks, j, root, voters);
-    }
-
-    // P1 for a committed slot: pull every committed root we have not
-    // resolved from the commit certificate's signers
-    pub(crate) fn is_resolved(&self, j: ProposalIndex, root: &MerkleRoot) -> bool {
-        self.availability[j].is_resolved(root)
+    // the committed roots, with the voters of our own fast qc on each
+    pub(crate) fn fast_commit_targets(&self, qc: &FastCommitQc) -> ProposalMap<Option<PinTarget>> {
+        qc.verdict.entries.as_ref().map_indexed(|j, entry| {
+            let Entry::Positive(root) = entry else {
+                return None;
+            };
+            let own = self.certs[j]
+                .fast_qc()
+                .and_then(|fast_qc| fast_qc.pin_target(&self.validator_data));
+            let holders = match own {
+                Some(own) if own.root == *root => own.holders,
+                _ => Holders::default(),
+            };
+            Some(PinTarget {
+                root: *root,
+                holders,
+            })
+        })
     }
 
     fn try_form_fallback_qc(&mut self, j: ProposalIndex) {
@@ -606,19 +555,17 @@ impl FastPath {
             },
         };
 
-        if self.certs[j].try_upgrade(weak_qc) {
-            self.recover_certified(j);
-        }
+        self.certs[j].try_upgrade(weak_qc);
     }
 
     fn try_cast_fast_commit_vote(&mut self) -> Option<FastBlock> {
-        if matches!(self.phase, Phase::FastCommit | Phase::TransitionToFallback) {
+        if matches!(self.phase, Phase::FastCommitVote | Phase::FallbackVote) {
             // voted for commit or fallback, no-op
             return None;
         }
 
         let fast_block = self.try_form_fast_block()?;
-        self.phase = Phase::FastCommit;
+        self.phase = Phase::FastCommitVote;
         Some(fast_block)
     }
 
@@ -641,28 +588,52 @@ impl FastPath {
             .tally(&self.validator_data)
             .narrow(HeaderSeen(&self.availability[j]))
             .strong_qc();
-        if let Some(fast_qc) = fast_qc
-            && self.certs[j].try_upgrade(fast_qc)
-        {
-            self.recover_certified(j);
+        if let Some(fast_qc) = fast_qc {
+            self.certs[j].try_upgrade(fast_qc);
         }
+    }
+
+    fn pin(&mut self, j: ProposalIndex, pin: Pin) {
+        self.emit(ChorusDACommand::Pin { j, pin });
     }
 }
 
 // the state of a proposal at fallback transition
 enum ProposalState {
-    // no reaching 2f+1 votes yet
+    // fewer than 2f+1 votes
     NotEnoughVotes,
 
-    // out of 2f+1 votes, f+1 positive votes for a root unresolved
-    // locally. triggers recovery.
-    Unresolved(WeakQc<Entry>),
+    // fast qc, fallback qc, or equiv cert
+    Certified(Box<CertifiedEntry>),
 
-    // a qc/equiv_cert already formed
-    Certified(CertifiedEntry),
+    // f+1 negative, or root is invalid
+    FallbackNegative,
 
-    // f+1 positive votes (w/ root resolved), or f+1 negative votes (or invalid decoding).
-    FallbackSignedEntry(FallbackSignedEntry),
+    // f+1 positive votes, decoded
+    FallbackPositive(SignedProposalHeader),
+
+    // f+1 positive votes, header seen, not resolved
+    UnresolvedRoot(PinTarget),
+
+    // positive votes without header
+    HeaderMissing,
+}
+
+impl ProposalState {
+    fn into_evidence(self, scope: ProposalScope, key: &KeyPair) -> Result<ProposalEvidence, Self> {
+        match self {
+            ProposalState::Certified(cert) => Ok(ProposalEvidence::Certified(*cert)),
+            ProposalState::FallbackNegative => {
+                let fse = FallbackSignedEntry::new_signed_negative(scope, key);
+                Ok(ProposalEvidence::FallbackSignedEntry(fse))
+            }
+            ProposalState::FallbackPositive(header) => {
+                let fse = FallbackSignedEntry::new_signed_positive(scope, header, key);
+                Ok(ProposalEvidence::FallbackSignedEntry(fse))
+            }
+            _ => Err(self),
+        }
+    }
 }
 
 /// The verdict on one proposal index: `Positive` carries the merkle root of
@@ -699,6 +670,41 @@ impl Gate<Entry> for HeaderSeen<'_> {
 }
 
 pub type FastQc = StrongQc<Entry>;
+
+impl FastQc {
+    // each signer vouched for its own share of the root
+    fn pin_target(&self, validator_data: &ValidatorData) -> Option<PinTarget> {
+        let Entry::Positive(root) = self.verdict else {
+            return None;
+        };
+        let holders = signers_holding(&self.sigcol, validator_data, Holding::Owned);
+        Some(PinTarget { root, holders })
+    }
+}
+
+impl WeakQc<Entry> {
+    // each positive voter holds its own share of the root
+    fn pin_target(&self, validator_data: &ValidatorData) -> Option<PinTarget> {
+        let Entry::Positive(root) = self.verdict else {
+            return None;
+        };
+        let holders = signers_holding(&self.sigcol, validator_data, Holding::Owned);
+        Some(PinTarget { root, holders })
+    }
+}
+
+// the certificate's signers, each holding the same
+fn signers_holding(
+    sigcol: &SignatureCollection,
+    validator_data: &ValidatorData,
+    holding: Holding,
+) -> Holders {
+    let mut holders = Holders::default();
+    if let Some(signers) = sigcol.signers(validator_data) {
+        holders.add(signers, holding);
+    }
+    holders
+}
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
 pub(crate) struct BatchVoteMsg {
@@ -797,6 +803,17 @@ impl IsVote for FallbackEntry {
 
 pub type FallbackQc = WeakQc<FallbackEntry>;
 
+impl FallbackQc {
+    // a positive signer decoded the root
+    fn pin_target(&self, validator_data: &ValidatorData) -> Option<PinTarget> {
+        let Entry::Positive(root) = self.verdict.0 else {
+            return None;
+        };
+        let holders = signers_holding(&self.sigcol, validator_data, Holding::Decoded);
+        Some(PinTarget { root, holders })
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum EvidenceStrength {
     // From lowest to highest
@@ -833,18 +850,14 @@ impl CertifiedEntry {
         }
     }
 
-    // the validators whose votes form the certificate. none for an
-    // equivocation certificate.
-    fn signers(&self, validator_data: &ValidatorData) -> Vec<NodeId> {
-        let sigcol = match self {
-            CertifiedEntry::FastQc(qc) => &qc.sigcol,
-            CertifiedEntry::FallbackQc(qc) => &qc.sigcol,
-            CertifiedEntry::EquivCert(_) => return vec![],
-        };
-        let Some(signers) = sigcol.signers(validator_data) else {
-            return vec![];
-        };
-        signers.into_iter().copied().collect()
+    // the root to fetch once the entry commits, and who holds it. None
+    // when the entry needs no data
+    pub(crate) fn pin_target(&self, validator_data: &ValidatorData) -> Option<PinTarget> {
+        match self {
+            CertifiedEntry::FastQc(qc) => qc.pin_target(validator_data),
+            CertifiedEntry::FallbackQc(qc) => qc.pin_target(validator_data),
+            CertifiedEntry::EquivCert(_) => None,
+        }
     }
 
     /// Whether this certificate is well-formed and carries valid
@@ -884,11 +897,10 @@ struct FallbackSignedEntry {
 impl FallbackSignedEntry {
     fn new_signed_positive(
         scope: ProposalScope,
-        root: MerkleRoot,
-        key: &KeyPair,
         header: SignedProposalHeader,
+        key: &KeyPair,
     ) -> Self {
-        let entry = FallbackEntry(Entry::Positive(root));
+        let entry = FallbackEntry(Entry::Positive(*header.root()));
         let signature = VoteMsg::new_signed(scope, entry.clone(), key).signature;
         Self {
             entry,
@@ -962,20 +974,13 @@ impl LocalCertifiedEntry {
         }
     }
 
-    // whether the evidence was adopted
-    fn try_upgrade(&mut self, new_ev: impl Into<CertifiedEntry>) -> bool {
+    fn try_upgrade(&mut self, new_ev: impl Into<CertifiedEntry>) {
         let new_ev = new_ev.into();
 
         match self {
-            LocalCertifiedEntry::Absent => {
-                *self = LocalCertifiedEntry::Certified(new_ev);
-                true
-            }
-            LocalCertifiedEntry::Certified(ev) if new_ev.strength() > ev.strength() => {
-                *ev = new_ev;
-                true
-            }
-            _ => false,
+            LocalCertifiedEntry::Absent => *self = LocalCertifiedEntry::Certified(new_ev),
+            LocalCertifiedEntry::Certified(ev) if new_ev.strength() > ev.strength() => *ev = new_ev,
+            _ => {}
         }
     }
 }
@@ -1232,23 +1237,25 @@ mod tests {
         )
     }
 
-    // the chunk requests among the drained commands, for proposal 0
-    fn drain_requests(fast: &mut FastPath) -> Vec<(ChunkRequestType, MerkleRoot, Vec<NodeId>)> {
-        let mut requests = Vec::new();
+    // the pins among the drained commands, for proposal 0
+    fn drain_pins(fast: &mut FastPath) -> Vec<Pin> {
+        let mut pins = Vec::new();
         while let Some(command) = fast.next_da_command() {
-            let ChorusDACommand::RecoverChunks {
-                j,
-                root,
-                request_type,
-                voters,
-            } = command
-            else {
+            let ChorusDACommand::Pin { j, pin } = command else {
                 continue;
             };
             assert_eq!(j, 0);
-            requests.push((request_type, root, voters));
+            pins.push(pin);
         }
-        requests
+        pins
+    }
+
+    fn holders(holdings: &[(u64, Holding)]) -> Holders {
+        let mut holders = Holders::default();
+        for (id, holding) in holdings {
+            holders.add([&NodeId::dummy(*id)], *holding);
+        }
+        holders
     }
 
     // a fast qc on root(byte) signed by validators 0, 2 and 3
@@ -1271,33 +1278,52 @@ mod tests {
     }
 
     #[test]
-    fn certified_root_is_pulled_from_its_signers() {
+    fn a_fast_commit_vote_pins_nothing() {
         let mut fast = fast_path();
 
-        fast.handle_fast_block(fast_block(1));
-        let signers = vec![NodeId::dummy(0), NodeId::dummy(2), NodeId::dummy(3)];
-        let expected = (ChunkRequestType::YourChunks, root(1), signers);
-        assert_eq!(drain_requests(&mut fast), vec![expected]);
-
-        // the same certificate again is no news
-        fast.handle_fast_block(fast_block(1));
-        assert!(drain_requests(&mut fast).is_empty());
+        assert!(fast.handle_fast_block(fast_block(1)).is_some());
+        assert!(drain_pins(&mut fast).is_empty());
     }
 
     #[test]
-    fn resolved_root_is_not_pulled() {
-        let mut fast = fast_path();
+    fn a_fast_commit_names_the_voters_of_our_own_fast_qc() {
+        let entries = ProposalMap::new(1, |_| Entry::Positive(root(1)));
+        let mut pool = VotePool::new(SLOT);
+        for id in [1, 2, 3] {
+            let voter = NodeId::dummy(id);
+            let vote = FastCommitVote {
+                entries: entries.clone(),
+            };
+            pool.add_vote(voter, VoteMsg::new_signed(SLOT, vote, &voter.keypair()));
+        }
+        let qc = pool
+            .tally(&validator_data(4))
+            .strong_qc()
+            .expect("three of four votes form a commit qc");
 
-        let _ = fast.handle_da_event(ChorusDAEvent {
-            j: 0,
-            event: ProposalDAEvent::Decoded(root(1)),
-        });
-        fast.handle_fast_block(fast_block(1));
-        assert!(drain_requests(&mut fast).is_empty());
+        // without a fast qc of our own, no holder is known
+        let mut fast = fast_path();
+        let unknown = PinTarget {
+            root: root(1),
+            holders: Holders::default(),
+        };
+        assert_eq!(fast.fast_commit_targets(&qc)[0], Some(unknown));
+
+        // the fast qc's voters, not the commit signers, hold their shares
+        let _ = fast.handle_fast_block(fast_block(1));
+        let known = PinTarget {
+            root: root(1),
+            holders: holders(&[
+                (0, Holding::Owned),
+                (2, Holding::Owned),
+                (3, Holding::Owned),
+            ]),
+        };
+        assert_eq!(fast.fast_commit_targets(&qc)[0], Some(known));
     }
 
     #[test]
-    fn deadline_pins_positive_roots_before_releasing_chunks() {
+    fn deadline_releases_chunks_without_pinning() {
         let mut fast = fast_path();
 
         let _ = fast.handle_da_event(ChorusDAEvent {
@@ -1314,11 +1340,21 @@ mod tests {
         while let Some(command) = fast.next_da_command() {
             commands.push(command);
         }
-        let pin = ChorusDACommand::PinRoot {
-            j: 0,
-            root: root(1),
-        };
-        assert_eq!(commands, vec![pin, ChorusDACommand::ReleaseChunks]);
+        assert_eq!(commands, vec![ChorusDACommand::ReleaseChunks]);
+    }
+
+    #[test]
+    fn deadline_releases_chunks_after_an_early_fast_commit_vote() {
+        let mut fast = fast_path();
+        assert!(fast.handle_fast_block(fast_block(1)).is_some());
+
+        // the fast commit vote replaced our batch vote, not our chunk serving
+        assert!(fast.on_deadline().is_none());
+        let mut commands = Vec::new();
+        while let Some(command) = fast.next_da_command() {
+            commands.push(command);
+        }
+        assert_eq!(commands, vec![ChorusDACommand::ReleaseChunks]);
     }
 
     fn batch_vote(voter: u64, entry: Entry) -> (NodeId, BatchVoteMsg) {
@@ -1340,7 +1376,7 @@ mod tests {
     }
 
     #[test]
-    fn a_blocked_transition_pulls_unresolved_roots_from_their_voters() {
+    fn a_blocked_transition_pins_unresolved_roots_to_their_voters() {
         let mut fast = fast_path();
         let _ = fast.on_deadline();
         let votes = [
@@ -1351,22 +1387,24 @@ mod tests {
         for (voter, msg) in votes {
             let _ = fast.handle_batch_vote(voter, msg);
         }
-        // the voters relay their own shares, so a vote alone pulls nothing
-        assert!(drain_requests(&mut fast).is_empty());
+        // the voters relay their own shares, so a vote alone pins nothing
+        assert!(drain_pins(&mut fast).is_empty());
 
-        // without the header the votes do not count, and nothing is pulled
+        // without the header the votes do not count, and nothing is pinned
         let outcome = fast.try_fallback_transition();
         assert!(matches!(outcome, FallbackTransitionOutcome::Waiting));
-        assert!(drain_requests(&mut fast).is_empty());
+        assert!(drain_pins(&mut fast).is_empty());
 
-        // f+1 positive votes on an unresolved root: pull it, again each deadline
+        // f+1 positive votes on an unresolved root: pin it, again each deadline
         da_event(&mut fast, ProposalDAEvent::HeaderSeen(header(1)));
-        let voters = vec![NodeId::dummy(0), NodeId::dummy(3)];
-        let expected = (ChunkRequestType::YourChunks, root(1), voters);
+        let target = PinTarget {
+            root: root(1),
+            holders: holders(&[(0, Holding::Owned), (3, Holding::Owned)]),
+        };
         for _ in 0..2 {
             let outcome = fast.try_fallback_transition();
             assert!(matches!(outcome, FallbackTransitionOutcome::Waiting));
-            assert_eq!(drain_requests(&mut fast), vec![expected.clone()]);
+            assert_eq!(drain_pins(&mut fast), vec![Pin::Tentative(target.clone())]);
         }
 
         da_event(&mut fast, ProposalDAEvent::Decoded(root(1)));
@@ -1375,7 +1413,7 @@ mod tests {
             outcome,
             FallbackTransitionOutcome::FallbackVote(_)
         ));
-        assert!(drain_requests(&mut fast).is_empty());
+        assert!(drain_pins(&mut fast).is_empty());
     }
 
     #[test]
@@ -1569,9 +1607,8 @@ mod rlp_tests {
             ProposalEvidence::Certified(CertifiedEntry::EquivCert(EquivCert(h.clone(), h2))),
             ProposalEvidence::FallbackSignedEntry(FallbackSignedEntry::new_signed_positive(
                 ProposalScope::new(slot, 0),
-                root,
-                &key,
                 h,
+                &key,
             )),
             ProposalEvidence::FallbackSignedEntry(FallbackSignedEntry::new_signed_negative(
                 ProposalScope::new(slot, 1),

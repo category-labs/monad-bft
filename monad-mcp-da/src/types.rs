@@ -18,9 +18,9 @@ pub use super::{
     chorus::{
         SlotLifecycle,
         env::{D25, EncodingScheme, MerkleHash, ProposalSignature, PubKey, S11},
-        slot::chorus::{ChorusDACommand, ChorusDAEvent, ChunkRequestType, ProposalDAEvent},
+        slot::chorus::{ChorusDACommand, ChorusDAEvent, Holding, Pin, PinTarget, ProposalDAEvent},
         types::{
-            HeaderAuth, MerkleRoot, NodeId, ProposalHeader, ProposalIndex, ProposalMap,
+            EquivCert, HeaderAuth, MerkleRoot, NodeId, ProposalHeader, ProposalIndex, ProposalMap,
             ProposerSchedule, SignedProposalHeader, Slot, Stake, ValidatorData,
         },
     },

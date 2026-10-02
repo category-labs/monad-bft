@@ -22,7 +22,10 @@ use std::sync::Arc;
 use bytes::Bytes;
 use monad_mcp_chorus::spec::{validator::ValidatorData as _, vote::KeyPair as _};
 
-pub(crate) use super::chorus::types::FixedProposerSchedule;
+pub(crate) use super::chorus::{
+    slot::chorus::{Holders, Holding},
+    types::FixedProposerSchedule,
+};
 use super::{
     assignment::{ChunkAssignment, ChunkId, PacketLossResistance},
     chunk::{Chunk, ProposalEnvelope, WireChunkId},
@@ -41,6 +44,15 @@ use crate::spec::{DAProposalHeader as _, DAProposalKeyPair as _};
 pub(crate) const SLOT: Slot = Slot(1);
 pub(crate) const MESSAGE_LEN: usize = 1500;
 pub(crate) const PACKET_LOSS_RESISTANCE: PacketLossResistance = PacketLossResistance::new(11, 10);
+
+// holders by validator id
+pub(crate) fn holders(holdings: &[(u64, Holding)]) -> Holders {
+    let mut holders = Holders::default();
+    for (id, holding) in holdings {
+        holders.add([&NodeId::dummy(*id)], *holding);
+    }
+    holders
+}
 
 pub(crate) fn author() -> NodeId {
     NodeId::dummy(0)

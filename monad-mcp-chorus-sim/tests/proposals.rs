@@ -140,7 +140,7 @@ fn build_swarm(
         let observer = move |_now: Timestamp, slot: Slot, data: &SlotFinalization| {
             // the proposal flow is a fast-path test; a fallback
             // finalization would mean the premise broke
-            let SlotFinalization::Fast(qc) = data else {
+            let SlotFinalization::Fast { qc } = data else {
                 panic!("slot {slot:?} finalized through the fallback path");
             };
             let slot_entries: Vec<Entry> = qc.verdict.entries.clone().into_iter().collect();

@@ -209,6 +209,7 @@ where
             .unwrap_or(Slot::MIN);
 
         self.ingestion_window.start = kept_slot_cap;
+        // todo: gc after execution certificate, or can affect fast path liveness
         self.raptorcast_map.retain(|&slot, _| slot >= kept_slot_cap);
     }
 }
@@ -241,11 +242,12 @@ mod tests {
     use super::{
         super::{
             chorus::types::Timestamp,
+            chunk::ChunkRequestType,
             test_util::{
-                FixedProposerSchedule, MESSAGE_LEN, SLOT, author, epoch_handle, group,
-                proposal_chunks, proposal_chunks_from, proposer_schedule,
+                FixedProposerSchedule, Holding, MESSAGE_LEN, SLOT, author, epoch_handle, group,
+                holders, proposal_chunks, proposal_chunks_from, proposer_schedule,
             },
-            types::ChunkRequestType,
+            types::{Pin, PinTarget},
         },
         *,
     };
@@ -394,12 +396,17 @@ mod tests {
         open(&mut runtime, [0, 1]);
         let (header, _) = proposal_chunks(&epoch_handle, 1);
 
-        let voters = vec![NodeId::dummy(1), NodeId::dummy(2), NodeId::dummy(3)];
-        let command = ChorusDACommand::RecoverChunks {
-            j: 0,
+        let target = PinTarget {
             root: *header.root(),
-            request_type: ChunkRequestType::YourChunks,
-            voters,
+            holders: holders(&[
+                (1, Holding::Owned),
+                (2, Holding::Owned),
+                (3, Holding::Owned),
+            ]),
+        };
+        let command = ChorusDACommand::Pin {
+            j: 0,
+            pin: Pin::Tentative(target),
         };
         runtime.handle_command(SLOT, command);
 
