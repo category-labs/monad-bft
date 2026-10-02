@@ -21,6 +21,8 @@ use monad_executor::ExecutorMetricsChain;
 use monad_wireauth::messages::{DataPacketHeader, Packet};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
+use super::DataplaneCompletion;
+
 pub trait AuthenticationProtocol {
     type PublicKey: PubKey;
     type Error: std::fmt::Debug;
@@ -59,6 +61,7 @@ pub trait AuthenticationProtocol {
         &mut self,
         public_key: &Self::PublicKey,
         message: Bytes,
+        completion: DataplaneCompletion,
     ) -> Result<(), Self::Error>;
 
     fn is_connected_public_key(&self, public_key: &Self::PublicKey) -> bool;
@@ -83,7 +86,7 @@ pub trait AuthenticationProtocol {
         public_key: &Self::PublicKey,
     ) -> bool;
 
-    fn next_packet(&mut self) -> Option<(SocketAddr, Bytes)>;
+    fn next_packet(&mut self) -> Option<(SocketAddr, Bytes, DataplaneCompletion)>;
 
     fn tick(&mut self);
 
@@ -93,7 +96,11 @@ pub trait AuthenticationProtocol {
 }
 
 pub struct WireAuthProtocol {
-    api: monad_wireauth::API<monad_wireauth::StdContext, Arc<monad_secp::KeyPair>>,
+    api: monad_wireauth::API<
+        monad_wireauth::StdContext,
+        Arc<monad_secp::KeyPair>,
+        DataplaneCompletion,
+    >,
 }
 
 impl WireAuthProtocol {
@@ -104,7 +111,7 @@ impl WireAuthProtocol {
     ) -> Self {
         let context = monad_wireauth::StdContext::new();
         Self {
-            api: monad_wireauth::API::new(metric_names, config, signing_key, context),
+            api: monad_wireauth::API::new_with_metadata(metric_names, config, signing_key, context),
         }
     }
 }
@@ -170,12 +177,16 @@ impl AuthenticationProtocol for WireAuthProtocol {
         &mut self,
         public_key: &Self::PublicKey,
         message: Bytes,
+        completion: DataplaneCompletion,
     ) -> Result<(), Self::Error> {
-        self.api.buffer_message(public_key, message)
+        self.api
+            .buffer_message_with_metadata(public_key, message, completion)
     }
 
-    fn next_packet(&mut self) -> Option<(SocketAddr, Bytes)> {
-        self.api.next_packet()
+    fn next_packet(&mut self) -> Option<(SocketAddr, Bytes, DataplaneCompletion)> {
+        self.api
+            .next_packet_with_metadata()
+            .map(|(addr, packet, completion)| (addr, packet, completion.flatten()))
     }
 
     fn tick(&mut self) {
@@ -297,11 +308,12 @@ impl<P: PubKey> AuthenticationProtocol for NoopAuthProtocol<P> {
         &mut self,
         _public_key: &Self::PublicKey,
         _message: Bytes,
+        _completion: DataplaneCompletion,
     ) -> Result<(), Self::Error> {
         Ok(())
     }
 
-    fn next_packet(&mut self) -> Option<(SocketAddr, Bytes)> {
+    fn next_packet(&mut self) -> Option<(SocketAddr, Bytes, DataplaneCompletion)> {
         None
     }
 

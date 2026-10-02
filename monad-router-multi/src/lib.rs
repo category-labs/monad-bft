@@ -100,6 +100,7 @@ where
         direct_udp_auth_protocol: Option<AP>,
         direct_udp_peer_score: DS,
         proposer_schedule: BoxedProposerSchedule<CertificateSignaturePubKey<ST>>,
+        tcp_auth_protocol: Option<AP>,
     ) -> Self
     where
         B: PeerDiscoveryAlgoBuilder<PeerDiscoveryAlgoType = PD>,
@@ -113,6 +114,14 @@ where
         let dataplane_metrics = dp.metrics().clone();
 
         let tcp_socket = dp.tcp_sockets.take(TcpSocketId::Raptorcast).unwrap();
+        let authenticated_tcp_socket = dp.tcp_sockets.take(TcpSocketId::AuthenticatedRaptorcast);
+        let authenticated_tcp = match (authenticated_tcp_socket, tcp_auth_protocol) {
+            (Some(socket), Some(protocol)) => Some((socket, protocol)),
+            (None, None) => None,
+            (Some(_), None) | (None, Some(_)) => {
+                panic!("authenticated tcp socket and auth protocol must be set or unset together");
+            }
+        };
         let authenticated_socket = dp
             .udp_sockets
             .take(UdpSocketId::AuthenticatedRaptorcast)
@@ -171,6 +180,7 @@ where
             cfg.clone(),
             secondary_mode,
             tcp_socket,
+            authenticated_tcp,
             (authenticated_socket, auth_protocol),
             direct_udp,
             non_authenticated_socket,
