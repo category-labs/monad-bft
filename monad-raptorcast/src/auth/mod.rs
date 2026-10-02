@@ -29,11 +29,15 @@ pub use metrics::{
     GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_WRITTEN,
     GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_READ,
     GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_WRITTEN,
+    GAUGE_RAPTORCAST_AUTH_SIGAUTH_TCP_BYTES_READ, GAUGE_RAPTORCAST_AUTH_SIGAUTH_TCP_BYTES_WRITTEN,
+    GAUGE_RAPTORCAST_AUTH_WIREAUTH_TCP_BYTES_READ,
+    GAUGE_RAPTORCAST_AUTH_WIREAUTH_TCP_BYTES_WRITTEN, TCP_METRICS, UDP_METRICS,
 };
 pub use protocol::{AuthenticationProtocol, NoopAuthProtocol, NoopHeader, WireAuthProtocol};
 pub use socket::{
     AuthRecvMsg, AuthenticatedSocketHandle, DualSocketHandle, FramedAuthenticatedSocketHandle,
     FramedRecvError,
 };
-
-pub use tcp_socket::{AuthRecvTcpMsg, SigAuthError, SigAuthTcpSocket};
+pub use tcp_socket::{
+    AuthRecvTcpMsg, AuthenticatedTcpSocketHandle, SigAuthError, SigAuthTcpSocket, TcpRecvError,
+};
