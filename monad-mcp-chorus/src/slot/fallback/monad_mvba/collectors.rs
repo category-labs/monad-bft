@@ -182,10 +182,8 @@ impl<V: Votable, C: ValidateCert> ViewCollectors<V, C> {
         if tally.stake() <= target_stake {
             return None;
         }
-        let groups = tally.groups();
-
-        let highest_claim = groups
-            .iter()
+        let highest_claim = tally
+            .groups()
             .map(|(vote, _)| vote.high_prep_view)
             .max()
             // view 0 is the "no lock" claim: nothing was carried for it
@@ -198,8 +196,8 @@ impl<V: Votable, C: ValidateCert> ViewCollectors<V, C> {
                 .clone()
         });
 
-        let groups = groups
-            .into_iter()
+        let groups = tally
+            .groups()
             .map(|(vote, sigcol)| TimeoutGroup {
                 vote: vote.clone(),
                 sigcol: sigcol.clone(),

@@ -22,7 +22,7 @@ use bytes::Bytes;
 
 use super::{
     assignment::ChunkId,
-    types::{ChunkRequestType, MerkleHash, SignedProposalHeader},
+    types::{MerkleHash, SignedProposalHeader},
 };
 
 // a chunk id as carried on the wire, not yet checked against an
@@ -39,6 +39,8 @@ pub enum ChunksSubset {
 
 impl ChunksSubset {
     // the caller must ensure chunk_ids is not empty.
+    // todo: used again once recovery pulls the pinned root
+    #[cfg_attr(not(test), expect(dead_code))]
     pub fn narrowed(chunk_ids: impl IntoIterator<Item = ChunkId>) -> Self {
         let chunk_ids: BTreeSet<_> = chunk_ids.into_iter().map(ChunkId::to_wire).collect();
         assert!(!chunk_ids.is_empty());
@@ -56,6 +58,22 @@ impl ChunksSubset {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum ChunkRequestType {
+    MyChunks,
+    YourChunks,
+}
+
+impl ChunkRequestType {
+    // whose chunks the request names, seen from the requester
+    pub fn owner<T: Copy>(self, requester: T, peer: T) -> T {
+        match self {
+            Self::MyChunks => requester,
+            Self::YourChunks => peer,
+        }
+    }
+}
+
 // the chunks of one owner, the requester's or the peer's
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ChunkRequest {
@@ -65,6 +83,8 @@ pub struct ChunkRequest {
 
 impl ChunkRequest {
     // the full set of chunks of the kind
+    // todo: used again once recovery pulls the pinned root
+    #[cfg_attr(not(test), expect(dead_code))]
     pub(crate) fn all(kind: ChunkRequestType) -> Self {
         Self {
             kind,

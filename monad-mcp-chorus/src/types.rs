@@ -443,12 +443,8 @@ where
     /// view but each names the lock its sender holds -- where a per-bucket
     /// quorum would never form. The caller checks the quorum over the scope
     /// with [`Tally::stake`].
-    pub fn groups(&self) -> Vec<(&'a V, &SignatureCollection)> {
-        let mut groups = vec![];
-        for (vote, sigcol, _) in &self.buckets {
-            groups.push((*vote, sigcol));
-        }
-        groups
+    pub fn groups(&self) -> impl Iterator<Item = (&'a V, &SignatureCollection)> {
+        self.buckets.iter().map(|(vote, sigcol, _)| (*vote, sigcol))
     }
 }
 
@@ -883,7 +879,7 @@ mod tests {
             tally.stake() > Stake::from(4),
             "six of seven exceeds the target across both buckets"
         );
-        let mut groups = tally.groups();
+        let mut groups: Vec<_> = tally.groups().collect();
         groups.sort_by_key(|(claim, _)| claim.0);
 
         let claims: Vec<_> = groups.iter().map(|(claim, _)| (*claim).clone()).collect();
@@ -945,7 +941,7 @@ mod tests {
             tally.stake() > Stake::from(4),
             "the five valid signers exceed the target"
         );
-        let groups = tally.groups();
+        let groups: Vec<_> = tally.groups().collect();
         let signers: usize = groups
             .iter()
             .map(|(claim, sigcol)| {
@@ -981,7 +977,7 @@ mod tests {
             tally.stake() > Stake::from(4),
             "the six honest signers exceed the target"
         );
-        let groups = tally.groups();
+        let groups: Vec<_> = tally.groups().collect();
         let claims: Vec<_> = groups.iter().map(|(claim, _)| (*claim).clone()).collect();
         assert_eq!(claims, vec![Claim(0)]);
     }
@@ -1009,7 +1005,7 @@ mod tests {
             tally.stake() > Stake::from(4),
             "the same six senders still exceed the target"
         );
-        let mut groups = tally.groups();
+        let mut groups: Vec<_> = tally.groups().collect();
         groups.sort_by_key(|(claim, _)| claim.0);
 
         let counted: Vec<_> = groups
@@ -1050,7 +1046,7 @@ mod tests {
             tally.stake() > Stake::from(4),
             "five of seven exceeds the target"
         );
-        let groups = tally.groups();
+        let groups: Vec<_> = tally.groups().collect();
         let claims: Vec<_> = groups.iter().map(|(claim, _)| (*claim).clone()).collect();
         assert_eq!(claims, vec![Claim(1)]);
 
@@ -1117,11 +1113,7 @@ mod tests {
         let narrowed = pool.tally(&validator_data).narrow(Listed(&[Claim(2)]));
         assert!(narrowed.stake() == Stake::from(2));
 
-        let claims: Vec<_> = narrowed
-            .groups()
-            .into_iter()
-            .map(|(claim, _)| claim)
-            .collect();
+        let claims: Vec<_> = narrowed.groups().map(|(claim, _)| claim).collect();
         assert_eq!(claims, vec![&Claim(2)]);
     }
 }

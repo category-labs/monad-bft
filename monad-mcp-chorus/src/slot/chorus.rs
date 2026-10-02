@@ -14,7 +14,10 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 /// Chorus module for managing single-slot consensus state and logic.
-use std::{collections::VecDeque, sync::Arc};
+use std::{
+    collections::{HashSet, VecDeque},
+    sync::Arc,
+};
 
 use alloy_rlp::{Decodable, Encodable, Header, encode_list, list_length};
 
@@ -34,7 +37,6 @@ use super::{
         SignatureCollection, SignedProposalHeader, Slot, TimestampDelta, ValidatorData,
     },
 };
-use crate::spec::vote::SignatureCollection as _;
 
 /// The fallback path's agreement protocol, at the instantiation Chorus runs it
 type FallbackState = MonadMvba<Metablock, EnterFallbackCert>;
@@ -74,9 +76,9 @@ pub enum ChorusMessage {
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum TimerEvent {
     // emitted on D_s + Delta
-    FallbackTransitionTimeout,
+    FallbackTransition,
     // emitted on D_s + 2*Delta
-    FallbackDecisionDelayElapsed,
+    FallbackDecision,
     // armed by the MVBA, fed straight back to it
     Fallback(FallbackTimer),
 }
@@ -98,12 +100,15 @@ pub struct ChorusContext {
     pub proposers: Arc<dyn ProposerSchedule + Send + Sync>,
 }
 
-#[derive(derive_more::From, Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum SlotFinalization {
-    #[from]
-    Fast(FastCommitQc),
-    #[from]
-    Fallback(FallbackCommitQc<<Metablock as super::fallback::Votable>::Entries>),
+    Fast {
+        qc: FastCommitQc,
+    },
+    Fallback {
+        qc: FallbackCommitQc<<Metablock as super::fallback::Votable>::Entries>,
+        block: Metablock,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -115,8 +120,8 @@ pub enum FinalizationPath {
 impl SlotFinalization {
     pub fn certificate_message(&self) -> ChorusMessage {
         match self {
-            Self::Fast(qc) => ChorusMessage::FastCommitQc(qc.clone()),
-            Self::Fallback(qc) => {
+            Self::Fast { qc } => ChorusMessage::FastCommitQc(qc.clone()),
+            Self::Fallback { qc, .. } => {
                 ChorusMessage::Fallback(monad_mvba::MvbaMessage::CommitQc(qc.clone()))
             }
         }
@@ -124,22 +129,22 @@ impl SlotFinalization {
 
     pub fn path(&self) -> FinalizationPath {
         match self {
-            Self::Fast(_) => FinalizationPath::Fast,
-            Self::Fallback(_) => FinalizationPath::Fallback,
+            Self::Fast { .. } => FinalizationPath::Fast,
+            Self::Fallback { .. } => FinalizationPath::Fallback,
         }
     }
 
     pub fn sigcol(&self) -> &SignatureCollection {
         match self {
-            Self::Fast(qc) => &qc.sigcol,
-            Self::Fallback(qc) => &qc.sigcol,
+            Self::Fast { qc } => &qc.sigcol,
+            Self::Fallback { qc, .. } => &qc.sigcol,
         }
     }
 
     pub fn roots(&self) -> ProposalMap<Option<MerkleRoot>> {
         let entries = match self {
-            Self::Fast(qc) => &qc.verdict.entries,
-            Self::Fallback(qc) => &qc.verdict.0,
+            Self::Fast { qc } => &qc.verdict.entries,
+            Self::Fallback { qc, .. } => &qc.verdict.0,
         };
         entries.as_ref().map(|entry| match entry {
             Entry::Positive(root) => Some(*root),
@@ -162,53 +167,39 @@ pub enum ProposalDAEvent {
     // all our own assigned chunks under the root have arrived
     ProposerObligationFulfilled(MerkleRoot),
 
-    // the owner's rebroadcast obligation to us fulfilled under the root
-    OwnerObligationFulfilled { owner: NodeId, root: MerkleRoot },
-
     // decode-then-re-encode verified. implies all chunks recoverable
     // from DA.
     Decoded(MerkleRoot),
     DecodingFailed(MerkleRoot),
 }
 
-// An effect directed at the DA layer. Roots named here are pinned by DA.
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+// must be non-empty. ordered by total stake on each root
+pub type MissingHeaders = Vec<(MerkleRoot, HashSet<NodeId>)>;
+
+// An effect directed at the DA layer.
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum ChorusDACommand {
     // release the slot's chunks to peers: rebroadcast our owned
     // chunks, held and arriving, and serve chunk recovery requests.
     ReleaseChunks,
 
-    // keep the root's chunks admitted
-    PinRoot {
+    // nodes that decoded the root under j, so they can serve our own chunks
+    AddDecodedHolders {
         j: ProposalIndex,
         root: MerkleRoot,
+        node_ids: Vec<NodeId>,
     },
 
-    // request chunks of the type under (j, root) from its voters:
-    // their own chunks to decode the proposal, or our own chunks from
-    // positive fallback signers, who hold the decoded proposal.
-    RecoverChunks {
+    // the committed entry under j. None when it needs no data
+    PinFinal {
         j: ProposalIndex,
-        root: MerkleRoot,
-        request_type: ChunkRequestType,
-        voters: Vec<NodeId>,
+        root: Option<MerkleRoot>,
     },
-}
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum ChunkRequestType {
-    MyChunks,
-    YourChunks,
-}
-
-impl ChunkRequestType {
-    // whose chunks the request names, seen from the requester
-    pub fn owner<T: Copy>(self, requester: T, peer: T) -> T {
-        match self {
-            Self::MyChunks => requester,
-            Self::YourChunks => peer,
-        }
-    }
+    PullHeader {
+        j: ProposalIndex,
+        missing: MissingHeaders,
+    },
 }
 
 /// The single-slot MCP consensus algorithm from the paper.
@@ -392,7 +383,7 @@ impl SlotConsensus for Chorus {
             return;
         }
 
-        self.schedule_timer(self.delta, TimerEvent::FallbackTransitionTimeout);
+        self.schedule_timer(self.delta, TimerEvent::FallbackTransition);
 
         if let Some(batch_vote) = self.fast.on_deadline() {
             tracing::debug!(slot = ?self.slot, votes = %batch_vote.shape(), "deadline reached, batch vote cast");
@@ -404,9 +395,11 @@ impl SlotConsensus for Chorus {
 
     fn handle_timer(&mut self, event: Self::Timer) {
         match event {
-            // D+delta, or every delta if there is not enough votes yet
-            TimerEvent::FallbackTransitionTimeout => {
-                match self.fast.try_fallback_transition() {
+            // D_s + Delta, then every Delta if there is not enough votes yet
+            TimerEvent::FallbackTransition => {
+                let outcome = self.fast.try_fallback_transition();
+                self.drain_da_commands();
+                match outcome {
                     FallbackTransitionOutcome::Waiting => {
                         self.transition_waits += 1;
                         if self.transition_waits.is_power_of_two() {
@@ -420,28 +413,28 @@ impl SlotConsensus for Chorus {
                             );
                         }
                         // wait for more votes and chunks to arrive
-                        self.schedule_timer(self.delta, TimerEvent::FallbackTransitionTimeout);
-                    }
-
-                    FallbackTransitionOutcome::AlreadyCommitVoted => {
-                        tracing::debug!(
-                            slot = ?self.slot,
-                            commit_voters = self.fast.commit_voter_count(),
-                            "D+delta: fast commit vote already cast, awaiting commit qc"
-                        );
-                        self.schedule_timer(self.delta, TimerEvent::FallbackDecisionDelayElapsed);
+                        self.schedule_timer(self.delta, TimerEvent::FallbackTransition);
                     }
 
                     FallbackTransitionOutcome::FallbackVote(fallback_vote) => {
                         tracing::debug!(slot = ?self.slot, "no fast block by D+delta, fallback vote cast");
                         self.broadcast(fallback_vote);
-                        self.schedule_timer(self.delta, TimerEvent::FallbackDecisionDelayElapsed);
+                        self.schedule_timer(self.delta, TimerEvent::FallbackDecision);
+                    }
+
+                    FallbackTransitionOutcome::AlreadyVoted => {
+                        tracing::debug!(
+                            slot = ?self.slot,
+                            commit_voters = self.fast.commit_voter_count(),
+                            "D+delta: fast commit vote already cast, awaiting commit qc"
+                        );
+                        self.schedule_timer(self.delta, TimerEvent::FallbackDecision);
                     }
                 }
             }
 
-            // D+2delta, and every delta if enter fallback cert is not formed yet
-            TimerEvent::FallbackDecisionDelayElapsed => match self.fast.on_fallback_deadline() {
+            // >=D + 2Delta, and every Delta if enter fallback cert is not formed yet
+            TimerEvent::FallbackDecision => match self.fast.on_fallback_deadline() {
                 None => {
                     // no EnterFallbackCert yet, wait for more votes to arrive
                     self.fallback_waits += 1;
@@ -456,7 +449,7 @@ impl SlotConsensus for Chorus {
                         );
                     }
                     // todo: maybe rebroadcast fallback vote?
-                    self.schedule_timer(self.delta, TimerEvent::FallbackDecisionDelayElapsed);
+                    self.schedule_timer(self.delta, TimerEvent::FallbackDecision);
                 }
                 Some((cert, block)) => {
                     // we formed the fallback certificate locally; disseminate
@@ -490,32 +483,23 @@ impl Chorus {
 
     fn finalize_fast(&mut self, qc: FastCommitQc) {
         self.broadcast(qc.clone());
-        self.finalize(qc);
+        self.finalize(SlotFinalization::Fast { qc });
     }
 
-    // pull every committed root not yet resolved from the certificate's
-    // signers
-    fn recover_committed(&mut self, finalization: &SlotFinalization) {
-        let Some(signers) = finalization.sigcol().signers(&self.validator_data) else {
+    fn pin_final(&mut self, finalization: &SlotFinalization) {
+        for (j, root) in finalization.roots().into_indexed_iter() {
+            self.push(SlotOutput::DA(ChorusDACommand::PinFinal { j, root }));
+        }
+
+        let SlotFinalization::Fallback { block, .. } = finalization else {
             return;
         };
-        let mut voters: Vec<NodeId> = signers.into_iter().copied().collect();
-        // stable request order across runs
-        voters.sort();
-
-        for (j, root) in finalization.roots().into_indexed_iter() {
-            let Some(root) = root else {
+        for (j, cert) in block.certified_entries().into_indexed_iter() {
+            let Some((root, node_ids)) = cert.decoded_holders(&self.validator_data) else {
                 continue;
             };
-            if self.fast.is_resolved(j, &root) {
-                continue;
-            }
-            self.push(SlotOutput::DA(ChorusDACommand::RecoverChunks {
-                j,
-                root,
-                request_type: ChunkRequestType::YourChunks,
-                voters: voters.clone(),
-            }));
+            let command = ChorusDACommand::AddDecodedHolders { j, root, node_ids };
+            self.push(SlotOutput::DA(command));
         }
     }
 
@@ -534,15 +518,14 @@ impl Chorus {
         self.push(SlotOutput::ScheduleTimer(delta, event));
     }
 
-    fn finalize(&mut self, cert: impl Into<SlotFinalization>) {
+    fn finalize(&mut self, cert: SlotFinalization) {
         // TODO: introduce fast path handling of fallback commit
         if self.decided {
             // idempotent
             return;
         }
 
-        let cert = cert.into();
-        self.recover_committed(&cert);
+        self.pin_final(&cert);
 
         self.decided = true;
         self.fallback.abandon();
@@ -575,9 +558,14 @@ impl Chorus {
             }
         }
 
-        if let Some(qc) = self.fallback.decision_proof() {
-            let qc = qc.clone();
-            self.finalize(qc);
+        if let Some(qc) = self.fallback.decision_proof()
+            && let Some(block) = self.fallback.decision()
+        {
+            let finalization = SlotFinalization::Fallback {
+                qc: qc.clone(),
+                block: block.clone(),
+            };
+            self.finalize(finalization);
         }
     }
 
@@ -728,7 +716,7 @@ mod tests {
     }
 
     #[test]
-    fn commit_certificate_pulls_before_finalizing() {
+    fn commit_certificate_pins_before_finalizing() {
         use super::super::{
             fast::{Entry, FastCommitVote},
             types::{MerkleRoot, ProposalMap, VoteMsg, VotePool},
@@ -764,16 +752,25 @@ mod tests {
             .expect("three of four votes form a commit qc");
         chorus.handle_message(NodeId::dummy(0), ChorusMessage::FastCommitQc(qc));
 
-        // the pull is emitted before the finalization that closes the slot
+        // the pin is emitted before the finalization that closes the slot
         let mut order = Vec::new();
+        let mut pins = Vec::new();
         while let Some(output) = chorus.poll() {
             match output {
-                SlotOutput::DA(ChorusDACommand::RecoverChunks { .. }) => order.push("pull"),
+                SlotOutput::DA(command @ ChorusDACommand::PinFinal { .. }) => {
+                    order.push("pin");
+                    pins.push(command);
+                }
                 SlotOutput::Finalize(_) => order.push("finalize"),
                 _ => {}
             }
         }
-        assert_eq!(order, ["pull", "finalize"]);
+        assert_eq!(order, ["pin", "finalize"]);
+        let pinned = ChorusDACommand::PinFinal {
+            j: 0,
+            root: Some(root),
+        };
+        assert_eq!(pins, [pinned]);
     }
 
     fn scheduled_timers(chorus: &mut Chorus) -> Vec<TimerEvent> {
@@ -810,15 +807,15 @@ mod tests {
         chorus.handle_deadline();
         assert_eq!(
             scheduled_timers(&mut chorus),
-            vec![TimerEvent::FallbackTransitionTimeout]
+            vec![TimerEvent::FallbackTransition]
         );
 
         for _ in 0..3 {
-            chorus.handle_timer(TimerEvent::FallbackTransitionTimeout);
+            chorus.handle_timer(TimerEvent::FallbackTransition);
         }
         assert_eq!(
             scheduled_timers(&mut chorus),
-            vec![TimerEvent::FallbackTransitionTimeout; 3]
+            vec![TimerEvent::FallbackTransition; 3]
         );
 
         // three all-negative votes form a fast block, so the next fire
@@ -838,10 +835,10 @@ mod tests {
             let vote = fast.on_deadline().expect("the first deadline casts a vote");
             chorus.handle_message(voter, ChorusMessage::BatchVote(vote));
         }
-        chorus.handle_timer(TimerEvent::FallbackTransitionTimeout);
+        chorus.handle_timer(TimerEvent::FallbackTransition);
         assert_eq!(
             scheduled_timers(&mut chorus),
-            vec![TimerEvent::FallbackDecisionDelayElapsed]
+            vec![TimerEvent::FallbackDecision]
         );
     }
 }

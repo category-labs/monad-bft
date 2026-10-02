@@ -185,6 +185,8 @@ pub(crate) fn inconsistent_proposal_chunks(
 }
 
 // the verified id of a wire chunk id under the header's assignment
+// todo: used again once recovery pulls the pinned root
+#[expect(dead_code)]
 pub(crate) fn chunk_id(
     epoch_handle: &EpochHandle,
     header: &SignedProposalHeader,
