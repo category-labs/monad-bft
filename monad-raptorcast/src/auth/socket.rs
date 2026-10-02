@@ -759,7 +759,7 @@ mod tests {
     };
     use crate::auth::{
         framing::AuthPacketFramer,
-        metrics::GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_WRITTEN,
+        metrics::{GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_WRITTEN, UDP_METRICS},
         protocol::{NoopAuthProtocol, WireAuthProtocol},
     };
 
@@ -818,6 +818,7 @@ mod tests {
                 .with_udp_sockets(udp_sockets)
                 .build();
 
+            assert!(dp.block_until_ready(Duration::from_secs(1)));
             let tcp_socket = dp
                 .tcp_sockets
                 .take(monad_dataplane::TcpSocketId::Raptorcast)
@@ -839,11 +840,7 @@ mod tests {
             let keypair = keypair(seed);
             let public_key = keypair.pubkey();
             let config = Config::default();
-            let auth_protocol = WireAuthProtocol::new(
-                &crate::auth::metrics::UDP_METRICS,
-                config,
-                Arc::new(keypair),
-            );
+            let auth_protocol = WireAuthProtocol::new(&UDP_METRICS, config, Arc::new(keypair));
             let authenticated_handle =
                 AuthenticatedSocketHandle::new(authenticated_socket, auth_protocol);
             let socket = DualSocketHandle::new(authenticated_handle, non_authenticated_socket);
@@ -1064,15 +1061,17 @@ mod tests {
     async fn test_timer_deadline() {
         init_tracing();
 
-        let bind_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let zero_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0));
 
         let mut dp = DataplaneBuilder::new(1000)
+            .with_tcp_sockets([(monad_dataplane::TcpSocketId::Raptorcast, zero_addr)])
             .with_udp_sockets([(
                 monad_dataplane::UdpSocketId::AuthenticatedRaptorcast,
-                bind_addr,
+                zero_addr,
             )])
             .build();
 
+        assert!(dp.block_until_ready(Duration::from_secs(1)));
         let authenticated_socket = dp
             .udp_sockets
             .take(monad_dataplane::UdpSocketId::AuthenticatedRaptorcast)
@@ -1086,11 +1085,7 @@ mod tests {
             ..Default::default()
         };
 
-        let auth_protocol = WireAuthProtocol::new(
-            &crate::auth::metrics::UDP_METRICS,
-            config,
-            Arc::new(local_keypair),
-        );
+        let auth_protocol = WireAuthProtocol::new(&UDP_METRICS, config, Arc::new(local_keypair));
         let mut handle = AuthenticatedSocketHandle::new(authenticated_socket, auth_protocol);
 
         assert_eq!(poll!(pin!(handle.timer())), Poll::Pending);
@@ -1100,9 +1095,8 @@ mod tests {
         assert_eq!(poll!(pin!(handle.timer())), Poll::Ready(()));
         assert_eq!(poll!(pin!(handle.timer())), Poll::Pending);
 
-        // this ensures that timer is updated with a shorter deadline
         let remote_keypair = keypair(2);
-        let remote_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 19004));
+        let remote_addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 19999));
         handle
             .connect(&remote_keypair.pubkey(), remote_addr, 1)
             .expect("connect failed");
@@ -1153,9 +1147,22 @@ mod tests {
         let result = tokio::time::timeout(Duration::from_secs(2), framed_socket.recv())
             .await
             .expect("timeout waiting for framed recv");
-        assert!(matches!(
-            result,
-            Err(FramedRecvError::MissingAuthPublicKey(_))
-        ));
+        let error = result.err().expect("unauthenticated frame must fail");
+        assert_eq!(error.src_addr(), send_socket.local_addr());
+        assert!(matches!(error, FramedRecvError::MissingAuthPublicKey(_)));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_udp_recv_error_preserves_address_and_cause() {
+        let mut receiver = PeerNode::new(31, false);
+        let peer = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        peer.send_to(&[0], receiver.auth_addr).unwrap();
+        let error = tokio::time::timeout(Duration::from_secs(2), receiver.socket.recv())
+            .await
+            .unwrap()
+            .err()
+            .expect("malformed authentication must fail");
+        assert_eq!(error.src_addr, peer.local_addr().unwrap());
+        assert!(matches!(error.error, monad_wireauth::Error::Message(_)));
     }
 }
