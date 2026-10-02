@@ -98,6 +98,12 @@ validator_section() {
 
 validators=$(validator_section)
 
+# only with a matrix to ship: an rpc whose latency file is missing does not start
+latency=no
+if have_latency; then
+    latency=yes
+fi
+
 for host in $(hosts); do
     id=$(node_id_of "$host")
     f=$(host_config "$host")
@@ -136,8 +142,19 @@ for host in $(hosts); do
         echo
         echo "[ledger]"
         echo "dir = \"/home/$ssh_user/$remote_rel/ledger\""
+        if [ "$latency" = yes ]; then
+            echo
+            echo "[rpc]"
+            echo "latency = \"latency.toml\""
+        fi
     } > "$f"
     echo "$f  node_id=$id  address=${ip_of[$host]}:$port"
 done
+
+if [ "$latency" = yes ]; then
+    echo "rpc routes unpinned txs by $latency_file (push-config.sh ships it)"
+else
+    echo "no $latency_file: rpc routes unpinned txs by tenure (latency.sh measures it)"
+fi
 
 echo "genesis_deadline = $genesis ($(iso_of_ms "$genesis"), in $(((genesis - now) / 1000))s)"

@@ -13,7 +13,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use monad_mcp_node::{
     chorus::types::{NodeId, TimestampDelta},
@@ -21,7 +27,10 @@ use monad_mcp_node::{
 };
 use serde::Deserialize;
 
-use crate::{pending::PendingConfig, schedule::Planner};
+use crate::{
+    pending::PendingConfig,
+    schedule::{Latency, Planner},
+};
 
 pub const DEFAULT_HTTP_ADDR: &str = "127.0.0.1:8080";
 
@@ -50,7 +59,7 @@ impl RpcConfig {
         node: &NodeConfig,
         ledger_dir: impl Into<PathBuf>,
     ) -> Result<Self, ConfigError> {
-        RpcSection::default().resolve(node, ledger_dir.into())
+        RpcSection::default().resolve(node, ledger_dir.into(), None)
     }
 
     pub fn pending(&self) -> PendingConfig {
@@ -126,6 +135,11 @@ pub struct RpcSection {
     pub max_pending: Option<usize>,
     pub retain_finished: Option<usize>,
     pub poll_interval_ms: Option<u64>,
+    // the rtt matrix from deploy/latency.sh, relative to the node config's
+    // dir; unpinned txs then go to the nearest proposer
+    pub latency: Option<PathBuf>,
+    // the slots a nearest proposer must keep its lane [default: 2]
+    pub min_tenure_slots: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -134,11 +148,53 @@ struct ConfigFile {
     rpc: RpcSection,
 }
 
+// row = from node_id, column = to node_id
+#[derive(Deserialize)]
+struct LatencyFile {
+    rtt_ms: Vec<Vec<f64>>,
+}
+
 fn read(path: &PathBuf) -> Result<String, ConfigError> {
     std::fs::read_to_string(path).map_err(|source| ConfigError::Read {
         path: path.clone(),
         source,
     })
+}
+
+// the node's own row of the matrix, halved to one-way
+fn load_latency(path: PathBuf, node: &NodeConfig) -> Result<Latency, ConfigError> {
+    let file: LatencyFile = toml::from_str(&read(&path)?).map_err(|source| ConfigError::Parse {
+        path: path.clone(),
+        source,
+    })?;
+    let invalid = |what: String| ConfigError::Invalid(format!("{}: {what}", path.display()));
+    let n = node.validators.len();
+    if file.rtt_ms.len() != n || file.rtt_ms.iter().any(|row| row.len() != n) {
+        return Err(invalid(format!(
+            "rtt_ms must be {n}x{n}, one per validator"
+        )));
+    }
+    let index = |id: NodeId| usize::try_from(u64::from(id)).ok().filter(|i| *i < n);
+    let row = index(node.node_id)
+        .map(|i| &file.rtt_ms[i])
+        .ok_or_else(|| {
+            invalid(format!(
+                "no rtt_ms row for node {}",
+                u64::from(node.node_id)
+            ))
+        })?;
+    node.validators
+        .iter()
+        .map(|validator| {
+            let id = u64::from(validator.node_id);
+            let rtt = index(validator.node_id)
+                .map(|i| row[i])
+                .ok_or_else(|| invalid(format!("no rtt_ms column for node {id}")))?;
+            let one_way = Duration::try_from_secs_f64(rtt / 2000.0)
+                .map_err(|_| invalid(format!("rtt_ms to node {id} is {rtt}")))?;
+            Ok((validator.node_id, one_way))
+        })
+        .collect()
 }
 
 impl RpcSection {
@@ -163,6 +219,8 @@ impl RpcSection {
             max_pending: over.max_pending.or(self.max_pending),
             retain_finished: over.retain_finished.or(self.retain_finished),
             poll_interval_ms: over.poll_interval_ms.or(self.poll_interval_ms),
+            latency: over.latency.or(self.latency),
+            min_tenure_slots: over.min_tenure_slots.or(self.min_tenure_slots),
         }
     }
 
@@ -172,18 +230,35 @@ impl RpcSection {
             .clone()
             .ok_or(ConfigError::Missing("node_config"))?;
         let node: NodeConfig =
-            toml::from_str(&read(&path)?).map_err(|source| ConfigError::Parse { path, source })?;
+            toml::from_str(&read(&path)?).map_err(|source| ConfigError::Parse {
+                path: path.clone(),
+                source,
+            })?;
         let ledger_dir = self
             .ledger_dir
             .clone()
             .unwrap_or_else(|| node.ledger.dir.clone());
-        self.resolve(&node, ledger_dir)
+        let base = path.parent().unwrap_or(Path::new(""));
+        let latency = self
+            .latency
+            .as_ref()
+            .map(|file| load_latency(base.join(file), &node))
+            .transpose()?;
+        self.resolve(&node, ledger_dir, latency)
     }
 
-    fn resolve(self, node: &NodeConfig, ledger_dir: PathBuf) -> Result<RpcConfig, ConfigError> {
+    fn resolve(
+        self,
+        node: &NodeConfig,
+        ledger_dir: PathBuf,
+        latency: Option<Latency>,
+    ) -> Result<RpcConfig, ConfigError> {
         let lead_margin = self.lead_margin_ms.map(TimestampDelta::from_millis);
-        let planner = Planner::new(node, lead_margin)
+        let mut planner = Planner::new(node, lead_margin)
             .map_err(|error| ConfigError::Invalid(format!("proposer schedule: {error:?}")))?;
+        if let Some(latency) = latency {
+            planner = planner.with_latency(latency, self.min_tenure_slots.unwrap_or(2));
+        }
         let config = RpcConfig {
             http_addr: self
                 .http_addr
@@ -258,6 +333,7 @@ dir = "/var/mcp/ledger"
         assert_eq!(config.peers, node.peers());
         // demo: 200 ms proposing lead, 50 ms delta, one 100 ms slot of margin
         assert_eq!(config.planner.lead(), TimestampDelta::from_millis(350));
+        assert!(config.planner.latency().is_none());
     }
 
     // one toml holds the node's config and the rpc's [rpc] table
@@ -370,5 +446,77 @@ dir = "/var/mcp/ledger"
                 .node_config
                 .is_none()
         );
+    }
+
+    // latency.sh's layout for NODE's two validators, 20 ms apart
+    const MATRIX: &str = r#"
+measured_at = "2026-10-02T00:00:00Z"
+hosts = ["a", "b"]
+rtt_ms = [[0.0, 20.0], [20.0, 0.0]]
+rtt_min_ms = [[0.0, 19.0], [19.0, 0.0]]
+"#;
+
+    // node.toml naming sub/latency.toml in its [rpc] table, as the rpc reads it
+    fn with_latency(dir: &std::path::Path, node: &str, matrix: &str) -> RpcSection {
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub/latency.toml"), matrix).unwrap();
+        let path = node_file(
+            dir,
+            &format!("{node}\n[rpc]\nlatency = \"sub/latency.toml\"\n"),
+        );
+        RpcSection::load(&path).unwrap().merge(RpcSection {
+            node_config: Some(path),
+            ..RpcSection::default()
+        })
+    }
+
+    #[test]
+    fn the_latency_path_is_relative_to_the_node_config_and_keeps_its_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let section = with_latency(dir.path(), NODE, MATRIX);
+        assert_eq!(section.latency, Some(PathBuf::from("sub/latency.toml")));
+        let config = section.clone().build().unwrap();
+        let expected = HashMap::from([
+            (NodeId::dummy(0), Duration::ZERO),
+            (NodeId::dummy(1), Duration::from_millis(10)),
+        ]);
+        assert_eq!(config.planner.latency(), Some(&expected));
+        assert_eq!(config.planner.min_tenure(), 2);
+
+        let flags = RpcSection {
+            min_tenure_slots: Some(3),
+            ..RpcSection::default()
+        };
+        let config = section.merge(flags).build().unwrap();
+        assert_eq!(config.planner.min_tenure(), 3);
+    }
+
+    #[test]
+    fn a_latency_matrix_that_does_not_fit_the_validators_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let invalid =
+            |node: &str, matrix: &str| match with_latency(dir.path(), node, matrix).build() {
+                Err(ConfigError::Invalid(what)) => what,
+                other => panic!("{other:?}"),
+            };
+        let three = "rtt_ms = [[0.0, 1.0, 2.0], [1.0, 0.0, 3.0], [2.0, 3.0, 0.0]]";
+        assert!(invalid(NODE, three).contains("2x2"));
+        assert!(invalid(NODE, "rtt_ms = [[0.0, 1.0], [1.0]]").contains("2x2"));
+        assert!(invalid(NODE, "rtt_ms = [[0.0, -1.0], [1.0, 0.0]]").contains("node 1"));
+        // ids index the matrix: validator 5 has no column, and node 5 no row
+        let five = NODE.replace("node_id = 1\n", "node_id = 5\n");
+        assert!(invalid(&five, MATRIX).contains("no rtt_ms column for node 5"));
+        let own_five = five.replacen("node_id = 0\n", "node_id = 5\n", 1);
+        assert!(invalid(&own_five, MATRIX).contains("no rtt_ms row for node 5"));
+
+        let absent = RpcSection {
+            latency: Some(PathBuf::from("absent.toml")),
+            ..with_latency(dir.path(), NODE, MATRIX)
+        };
+        assert!(matches!(absent.build(), Err(ConfigError::Read { .. })));
+        assert!(matches!(
+            with_latency(dir.path(), NODE, "rtt_ms = 1").build(),
+            Err(ConfigError::Parse { .. })
+        ));
     }
 }

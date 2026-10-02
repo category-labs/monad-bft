@@ -18,17 +18,25 @@
 
 mod common;
 
-use std::{collections::BTreeSet, net::SocketAddr};
+use std::{
+    cmp::Reverse,
+    collections::{BTreeSet, HashMap},
+    net::SocketAddr,
+    time::Duration,
+};
 
 use common::{horizon_of, most_tenured, node_config, run_of, schedule_of};
 use monad_mcp_node::{
+    NodeProposerSchedule,
     chorus::types::{
         FixedProposerSchedule, NodeId, ProposerSchedule, ProposerSet, ScheduleError, Slot,
         Timestamp, TimestampDelta,
     },
     config::NodeConfig,
 };
-use monad_mcp_rpc::schedule::{Planner, Route, SlotClock, choose_leader, lead, tenure_horizon};
+use monad_mcp_rpc::schedule::{
+    Latency, Planner, Route, SlotClock, choose_leader, choose_nearest, lead, tenure_horizon,
+};
 
 const GENESIS_MS: u64 = 1_000_000;
 const SWARM: u64 = 5;
@@ -282,9 +290,17 @@ fn a_lone_validator_leads_every_occupied_slot() {
     let planner = Planner::new(&lone(), None).unwrap();
     for k in 0..400 {
         let now = at(GENESIS_MS + k * 25);
-        let route = planner.route(now, None).expect("a route");
-        assert_eq!(planner.route(now, Some(0)), Some(route), "its only lane");
-        assert_eq!(planner.route(now, Some(3)), None, "a lane it never holds");
+        let route = planner.route(now, None, None).expect("a route");
+        assert_eq!(
+            planner.route(now, Some(0), None),
+            Some(route),
+            "its only lane"
+        );
+        assert_eq!(
+            planner.route(now, Some(3), None),
+            None,
+            "a lane it never holds"
+        );
         let target = planner.target_slot(now);
         let first = (target.0..).map(Slot).find(|slot| occupied(*slot)).unwrap();
         assert_eq!(
@@ -292,7 +308,8 @@ fn a_lone_validator_leads_every_occupied_slot() {
             Route {
                 slot: first,
                 lane: 0,
-                leader: NodeId::dummy(0)
+                leader: NodeId::dummy(0),
+                latency: None,
             },
             "at +{} ms",
             k * 25
@@ -311,7 +328,7 @@ fn each_route_is_recomputed_from_its_own_time() {
     let mut previous: Option<Route> = None;
     for k in 0..SLOTS {
         let now = at(GENESIS_MS + k * 100 + 37);
-        let route = planner.route(now, None).unwrap();
+        let route = planner.route(now, None, None).unwrap();
         assert_eq!(
             route.slot,
             planner.target_slot(now),
@@ -322,7 +339,7 @@ fn each_route_is_recomputed_from_its_own_time() {
             most_tenured(schedule.as_ref(), route.slot, horizon),
             "at slot {k}"
         );
-        assert_eq!(planner.route(now, None), Some(route), "deterministic");
+        assert_eq!(planner.route(now, None, None), Some(route), "deterministic");
         if let Some(previous) = previous {
             assert_eq!(route.slot, Slot(previous.slot.0 + 1));
         }
@@ -346,7 +363,9 @@ fn a_pinned_lane_routes_to_its_own_proposer() {
         let now = at(GENESIS_MS + k * 100 + 37);
         let target = planner.target_slot(now);
         for lane in 0..schedule.num_indices() {
-            let route = planner.route(now, Some(lane)).expect("every lane is held");
+            let route = planner
+                .route(now, Some(lane), None)
+                .expect("every lane is held");
             let first = (target.0..)
                 .map(Slot)
                 .find(|slot| proposer(*slot, lane).is_some())
@@ -357,7 +376,8 @@ fn a_pinned_lane_routes_to_its_own_proposer() {
                 Route {
                     slot: first,
                     lane,
-                    leader: proposer(first, lane).unwrap()
+                    leader: proposer(first, lane).unwrap(),
+                    latency: None,
                 },
                 "slot {k} lane {lane}"
             );
@@ -388,8 +408,14 @@ fn a_pinned_lane_is_only_routed_within_the_lookahead() {
             slot: first,
             lane: 1,
             leader: proposer(first).unwrap(),
+            latency: None,
         });
-        assert_eq!(planner.route(now, Some(1)), expected, "at +{} ms", k * 100);
+        assert_eq!(
+            planner.route(now, Some(1), None),
+            expected,
+            "at +{} ms",
+            k * 100
+        );
         if expected.is_some() {
             routed += 1;
         } else {
@@ -400,4 +426,195 @@ fn a_pinned_lane_is_only_routed_within_the_lookahead() {
         refused > 0 && routed > 0,
         "refused {refused}, routed {routed}"
     );
+}
+
+// four validators on three lanes
+fn small() -> NodeConfig {
+    let mut config = swarm(4);
+    config.proposal.num_proposals = 3;
+    config
+}
+
+// node i is 10·i ms from the rpc's own node 0
+fn latency_row(n: u64) -> Latency {
+    (0..n)
+        .map(|id| (NodeId::dummy(id), Duration::from_millis(10 * id)))
+        .collect()
+}
+
+// each proposer at `slot` other than `avoid`, with its run from `slot`
+fn runs(
+    schedule: &NodeProposerSchedule,
+    slot: Slot,
+    horizon: u64,
+    avoid: Option<NodeId>,
+) -> Vec<(usize, NodeId, u64)> {
+    let set = schedule.proposers_at(slot).unwrap();
+    set.iter()
+        .filter_map(|(lane, proposer)| Some((lane, proposer?)))
+        .filter(|(_, node)| Some(*node) != avoid)
+        .map(|(lane, node)| (lane, node, run_of(schedule, slot, lane, node, horizon)))
+        .collect()
+}
+
+// the reference rule: the nearest of those running `min` slots, then the
+// longest run, then the lower lane; with none, the longest run
+fn nearest(
+    schedule: &NodeProposerSchedule,
+    slot: Slot,
+    latency: &Latency,
+    min: u64,
+    avoid: Option<NodeId>,
+) -> Option<(usize, NodeId)> {
+    let runs = runs(schedule, slot, horizon_of(schedule), avoid);
+    runs.iter()
+        .filter(|(_, _, run)| *run >= min)
+        .min_by_key(|(lane, node, run)| (latency[node], Reverse(*run), *lane))
+        .or_else(|| runs.iter().min_by_key(|(_, _, run)| Reverse(*run)))
+        .map(|&(lane, node, _)| (lane, node))
+}
+
+#[test]
+fn the_nearest_proposer_with_enough_tenure_wins() {
+    let schedule = schedule_of(&small());
+    let horizon = horizon_of(&schedule);
+    let latency = latency_row(4);
+    let mut changed = 0;
+    for slot in (0..SLOTS).map(Slot) {
+        let chosen = choose_nearest(schedule.as_ref(), slot, horizon, &latency, 2, None);
+        assert_eq!(
+            chosen,
+            nearest(&schedule, slot, &latency, 2, None),
+            "{slot:?}"
+        );
+        changed += u64::from(chosen != choose_leader(schedule.as_ref(), slot, horizon));
+    }
+    assert!(changed > 0, "latency never changed the leader");
+}
+
+#[test]
+fn a_near_proposer_about_to_hand_over_loses_to_a_farther_one() {
+    let schedule = schedule_of(&small());
+    let horizon = horizon_of(&schedule);
+    let latency = latency_row(4);
+    let mut handovers = 0;
+    for slot in (0..SLOTS).map(Slot) {
+        let runs = runs(&schedule, slot, horizon, None);
+        let &(_, near, run) = runs
+            .iter()
+            .min_by_key(|(_, node, _)| latency[node])
+            .unwrap();
+        if run >= 2 || runs.iter().all(|(_, _, run)| *run < 2) {
+            continue;
+        }
+        handovers += 1;
+        let (lane, leader) =
+            choose_nearest(schedule.as_ref(), slot, horizon, &latency, 2, None).unwrap();
+        assert_ne!(leader, near, "{slot:?}");
+        assert!(latency[&leader] > latency[&near], "{slot:?}");
+        assert!(run_of(schedule.as_ref(), slot, lane, leader, horizon) >= 2);
+    }
+    assert!(
+        handovers > 0,
+        "the nearest never handed over in {SLOTS} slots"
+    );
+}
+
+#[test]
+fn the_own_node_wins_whenever_it_leads_long_enough() {
+    let schedule = schedule_of(&small());
+    let horizon = horizon_of(&schedule);
+    let own = NodeId::dummy(0);
+    let mut led = 0;
+    for slot in (0..SLOTS).map(Slot) {
+        let holds = runs(&schedule, slot, horizon, None)
+            .iter()
+            .any(|&(_, node, run)| node == own && run >= 2);
+        let (_, leader) =
+            choose_nearest(schedule.as_ref(), slot, horizon, &latency_row(4), 2, None).unwrap();
+        assert_eq!(leader == own, holds, "{slot:?}");
+        led += u64::from(holds);
+    }
+    assert!(led > 0);
+}
+
+#[test]
+fn with_no_proposer_long_enough_the_most_tenured_wins() {
+    let schedule = schedule_of(&small());
+    let horizon = horizon_of(&schedule);
+    for slot in (0..SLOTS).map(Slot) {
+        for min in [horizon + 1, u64::MAX] {
+            assert_eq!(
+                choose_nearest(schedule.as_ref(), slot, horizon, &latency_row(4), min, None),
+                choose_leader(schedule.as_ref(), slot, horizon),
+                "{slot:?}"
+            );
+        }
+    }
+}
+
+// no latency matrix: today's rule, and a resend's last leader is not avoided
+#[test]
+fn without_latency_routes_follow_the_most_tenured() {
+    let config = small();
+    let planner = Planner::new(&config, None).unwrap();
+    assert!(planner.latency().is_none());
+    let schedule = schedule_of(&config);
+    for k in 0..SLOTS {
+        let now = at(GENESIS_MS + k * 100 + 37);
+        let route = planner.route(now, None, None).unwrap();
+        assert_eq!(route.latency, None);
+        assert_eq!(
+            Some((route.lane, route.leader)),
+            choose_leader(schedule.as_ref(), route.slot, horizon_of(&schedule))
+        );
+        assert_eq!(planner.route(now, None, Some(route.leader)), Some(route));
+    }
+}
+
+#[test]
+fn a_resend_skips_the_last_leader() {
+    let config = small();
+    let planner = Planner::new(&config, None)
+        .unwrap()
+        .with_latency(latency_row(4), 2);
+    let schedule = schedule_of(&config);
+    let latency = latency_row(4);
+    for k in 0..SLOTS {
+        let now = at(GENESIS_MS + k * 100 + 37);
+        let first = planner.route(now, None, None).unwrap();
+        assert_eq!(first.latency, Some(latency[&first.leader]));
+        let resend = planner.route(now, None, Some(first.leader)).unwrap();
+        assert_ne!(resend.leader, first.leader, "at slot {k}");
+        // before the lanes ramp up, the first leader may lead alone
+        let other = (first.slot.0..)
+            .map(Slot)
+            .find(|slot| !runs(&schedule, *slot, 1, Some(first.leader)).is_empty());
+        assert_eq!(Some(resend.slot), other, "at slot {k}");
+        assert_eq!(
+            Some((resend.lane, resend.leader)),
+            nearest(&schedule, resend.slot, &latency, 2, Some(first.leader))
+        );
+        // a pinned lane keeps its one proposer
+        assert_eq!(
+            planner.route(now, Some(first.lane), Some(first.leader)),
+            planner.route(now, Some(first.lane), None)
+        );
+    }
+}
+
+#[test]
+fn a_sole_proposer_is_reused_on_resend() {
+    let own = NodeId::dummy(0);
+    let latency = HashMap::from([(own, Duration::ZERO)]);
+    let planner = Planner::new(&lone(), None)
+        .unwrap()
+        .with_latency(latency, 2);
+    for k in 0..400 {
+        let now = at(GENESIS_MS + k * 25);
+        let route = planner.route(now, None, None).expect("a route");
+        assert_eq!(route.leader, own);
+        assert_eq!(route.latency, Some(Duration::ZERO));
+        assert_eq!(planner.route(now, None, Some(own)), Some(route));
+    }
 }

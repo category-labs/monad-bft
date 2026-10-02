@@ -21,6 +21,8 @@ remote_root='$HOME/monad-mcp'
 ssh_user=monad
 ssh_port=9022
 ssh_domain=devcore4.com
+# the rtt matrix latency.sh writes; shipped as config/latency.toml when present
+latency_file=${MCP_LATENCY:-$HOME/tmp/mcp-latency/latency.toml}
 
 die() {
     echo "error: $*" >&2
@@ -189,6 +191,15 @@ dist_binaries() {
     [ -n "$rpc" ] && [ -f "$dist_dir/$rpc" ] || die "no rpc binary in $dist_dir/VERSION; run build.sh"
     [ -n "$explorer" ] && [ -f "$dist_dir/$explorer" ] || die "no explorer binary in $dist_dir/VERSION; run build.sh"
     echo "$node $rpc $explorer"
+}
+
+# whether $latency_file exists; dies unless its rows are hosts.txt, in order
+have_latency() {
+    [ -f "$latency_file" ] || return 1
+    local got want
+    got=$(sed -n 's/^hosts = \[\(.*\)\]$/\1/p' "$latency_file" | tr -d '",')
+    want=$(hosts | xargs)
+    [ "$got" = "$want" ] || die "$latency_file is for hosts ($got), hosts.txt has ($want)"
 }
 
 # a host runs the explorer iff config/<host>/explorer.env exists

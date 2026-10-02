@@ -18,11 +18,11 @@
 
 mod common;
 
-use std::{collections::BTreeSet, time::Duration};
+use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
 use common::*;
 use monad_mcp_node::chorus::types::{NodeId, Slot, Timestamp};
-use monad_mcp_rpc::api::TxView;
+use monad_mcp_rpc::{RpcConfig, api::TxView, schedule::Planner};
 use serde_json::Value;
 
 const RESEND_MS: u64 = 300;
@@ -205,6 +205,33 @@ async fn resends_across_a_rotation_change_leaders() {
         leaders.len() >= 2,
         "one leader over three rotations: {leaders:?}"
     );
+    for (attempt, (node, _)) in view.history.iter().zip(&arrivals) {
+        assert_eq!(attempt.leader, Some(*node));
+    }
+}
+
+// by latency the nearest proposer would keep the tx; each resend leaves the last leader
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn with_latency_an_unseen_tx_is_resent_to_another_leader() {
+    let swarm = FakeSwarm::spawn(SWARM).await;
+    let dir = tempfile::tempdir().unwrap();
+    let node = swarm.config();
+    let latency = (0..SWARM as u64)
+        .map(|id| (NodeId::dummy(id), Duration::from_millis(10 * id)))
+        .collect();
+    let planner = Planner::new(&node, None).unwrap().with_latency(latency, 2);
+    let (rpc, _) = spawn_rpc(RpcConfig {
+        planner: Arc::new(planner),
+        ..rpc_config(&node, dir.path(), RESEND_MS, 4)
+    });
+    let tx = tx(3);
+    post(&rpc, &body(&tx)).await;
+    let view = wait_state(&rpc, &hash_hex(&tx), "failed", Duration::from_secs(5)).await;
+    let arrivals = swarm.arrivals_of(&tx);
+    assert_eq!(arrivals.len(), 4);
+    for pair in arrivals.windows(2) {
+        assert_ne!(pair[0].0, pair[1].0, "resent to the last leader");
+    }
     for (attempt, (node, _)) in view.history.iter().zip(&arrivals) {
         assert_eq!(attempt.leader, Some(*node));
     }

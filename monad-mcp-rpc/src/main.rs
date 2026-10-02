@@ -54,6 +54,13 @@ struct Args {
     /// [default: 200]
     #[arg(long)]
     poll_interval_ms: Option<u64>,
+    /// rtt matrix from deploy/latency.sh, relative to the node config's dir;
+    /// unpinned txs go to the nearest proposer [default: by tenure]
+    #[arg(long)]
+    latency: Option<PathBuf>,
+    /// tenure a nearest proposer must have left [default: 2]
+    #[arg(long)]
+    min_tenure_slots: Option<u64>,
 }
 
 #[actix_web::main]
@@ -84,6 +91,8 @@ async fn serve(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         max_pending: args.max_pending,
         retain_finished: args.retain_finished,
         poll_interval_ms: args.poll_interval_ms,
+        latency: args.latency,
+        min_tenure_slots: args.min_tenure_slots,
     };
     run(file.merge(flags).build()?).await?;
     Ok(())

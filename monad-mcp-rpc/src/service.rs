@@ -24,7 +24,7 @@ use std::{
 };
 
 use monad_mcp_chorus::ledger::{Hash, LedgerReader, Tx};
-use monad_mcp_node::chorus::types::{ProposalIndex, Timestamp};
+use monad_mcp_node::chorus::types::{NodeId, ProposalIndex, Timestamp};
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, info, warn};
 
@@ -130,7 +130,7 @@ impl RpcState {
     // takes ownership of a new tx and sends it once to `lane`, or to any lane;
     // a known one is not resent, and a new one with no leader ahead is refused
     pub fn submit(&self, tx: Tx, lane: Option<ProposalIndex>) -> Result<Submitted, SubmitError> {
-        let route = self.route(lane);
+        let route = self.route(lane, None);
         let (hash, admission, known) = {
             let mut pending = self.pending();
             if route.is_none() && !pending.owns(&tx.hash()) {
@@ -149,9 +149,10 @@ impl RpcState {
         Ok(Submitted { record, admission })
     }
 
-    // to the first leader on `lane`, or any lane, within the lookahead from now
-    fn route(&self, lane: Option<ProposalIndex>) -> Option<Route> {
-        self.config.planner.route(unix_now(), lane)
+    // to the first leader on `lane`, or any lane but `avoid`'s if another
+    // leads, within the lookahead from now
+    fn route(&self, lane: Option<ProposalIndex>, avoid: Option<NodeId>) -> Option<Route> {
+        self.config.planner.route(unix_now(), lane, avoid)
     }
 
     // the record as of this send
@@ -178,6 +179,7 @@ impl RpcState {
                 slot = route.slot.0,
                 lane = route.lane,
                 leader = u64::from(route.leader),
+                latency = ?route.latency,
                 "sent tx"
             ),
             SendOutcome::Error(error) => warn!(hash = %hex::encode(hash), %error, "tx not sent"),
@@ -191,10 +193,12 @@ impl RpcState {
         if due.is_empty() {
             return;
         }
-        // one route per lane for the batch: every tx in it is due at the same moment
+        // one route per lane and last leader: every tx in the batch is due at the same moment
         let mut routes = HashMap::new();
-        for (hash, tx, lane) in due {
-            let route = *routes.entry(lane).or_insert_with(|| self.route(lane));
+        for (hash, tx, lane, avoid) in due {
+            let route = *routes
+                .entry((lane, avoid))
+                .or_insert_with(|| self.route(lane, avoid));
             self.send(hash, &tx, lane, route);
         }
     }

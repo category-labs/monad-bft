@@ -22,7 +22,7 @@ use std::{
 };
 
 use monad_mcp_chorus::ledger::{FinalizationPath, Hash, Tx};
-use monad_mcp_node::chorus::types::ProposalIndex;
+use monad_mcp_node::chorus::types::{NodeId, ProposalIndex};
 
 use crate::schedule::Route;
 
@@ -123,6 +123,17 @@ impl Record {
     pub fn last_outcome(&self) -> Option<&SendOutcome> {
         self.history.last().map(|attempt| &attempt.outcome)
     }
+
+    // the leader of the last send that went out
+    pub fn last_leader(&self) -> Option<NodeId> {
+        self.history
+            .iter()
+            .rev()
+            .find_map(|attempt| match &attempt.outcome {
+                SendOutcome::Sent(route) => Some(route.leader),
+                SendOutcome::Error(_) => None,
+            })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -139,6 +150,8 @@ impl Admission {
         self != Self::Known
     }
 }
+
+pub type Due = (Hash, Tx, Option<ProposalIndex>, Option<NodeId>);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("{0} txs are already in flight")]
@@ -246,8 +259,9 @@ impl PendingSet {
         Some(record.clone())
     }
 
-    // txs to resend now, oldest send first; those out of attempts fail instead
-    pub fn take_due(&mut self, now: Instant) -> Vec<(Hash, Tx, Option<ProposalIndex>)> {
+    // txs to resend now with their lane and last leader, oldest send first;
+    // those out of attempts fail instead
+    pub fn take_due(&mut self, now: Instant) -> Vec<Due> {
         let mut due: Vec<(Instant, Hash)> = Vec::new();
         let mut exhausted = Vec::new();
         for hash in &self.in_flight {
@@ -268,7 +282,7 @@ impl PendingSet {
         due.into_iter()
             .map(|(_, hash)| {
                 let record = &self.records[&hash];
-                (hash, record.tx.clone(), record.lane)
+                (hash, record.tx.clone(), record.lane, record.last_leader())
             })
             .collect()
     }
@@ -335,6 +349,7 @@ mod tests {
             slot: Slot(slot),
             lane: 1,
             leader: NodeId::dummy(2),
+            latency: None,
         })
     }
 
@@ -381,7 +396,7 @@ mod tests {
         assert!(set.take_due(t0 + RESEND / 2).is_empty());
 
         let due = set.take_due(t0 + RESEND);
-        assert_eq!(due, vec![(hash, tx(1), None)]);
+        assert_eq!(due, vec![(hash, tx(1), None, Some(NodeId::dummy(2)))]);
         set.record_send(&hash, t0 + RESEND, sent(13));
         assert!(set.take_due(t0 + RESEND + RESEND / 2).is_empty());
 
@@ -540,7 +555,7 @@ mod tests {
         let t0 = Instant::now();
         let (hash, _) = set.submit(tx(1), None, t0).unwrap();
         assert!(set.take_due(t0 + RESEND / 2).is_empty());
-        assert_eq!(set.take_due(t0 + RESEND), vec![(hash, tx(1), None)]);
+        assert_eq!(set.take_due(t0 + RESEND), vec![(hash, tx(1), None, None)]);
     }
 
     #[test]
@@ -548,7 +563,10 @@ mod tests {
         let mut set = PendingSet::new(config());
         let t0 = Instant::now();
         let (hash, _) = set.submit(tx(1), Some(3), t0).unwrap();
-        assert_eq!(set.take_due(t0 + RESEND), vec![(hash, tx(1), Some(3))]);
+        assert_eq!(
+            set.take_due(t0 + RESEND),
+            vec![(hash, tx(1), Some(3), None)]
+        );
         assert!(set.owns(&hash));
         for i in 1..=3 {
             set.record_send(&hash, t0 + RESEND * i, sent(10));
@@ -562,6 +580,18 @@ mod tests {
         assert_eq!(set.get(&hash).unwrap().lane, Some(2));
     }
 
+    // a resend avoids the leader the tx last went to, not a refused send
+    #[test]
+    fn a_due_tx_names_the_leader_it_last_went_to() {
+        let mut set = PendingSet::new(config());
+        let t0 = Instant::now();
+        let (hash, _) = set.submit(tx(1), None, t0).unwrap();
+        set.record_send(&hash, t0, sent(10));
+        set.record_send(&hash, t0, SendOutcome::Error("refused".into()));
+        let due = set.take_due(t0 + RESEND);
+        assert_eq!(due, vec![(hash, tx(1), None, Some(NodeId::dummy(2)))]);
+    }
+
     #[test]
     fn due_txs_come_oldest_send_first() {
         let mut set = PendingSet::new(config());
@@ -573,7 +603,7 @@ mod tests {
         let due: Vec<u64> = set
             .take_due(t0 + RESEND * 2)
             .into_iter()
-            .map(|(_, tx, _)| tx.nonce)
+            .map(|(_, tx, ..)| tx.nonce)
             .collect();
         assert_eq!(due, vec![2, 3, 1]);
     }

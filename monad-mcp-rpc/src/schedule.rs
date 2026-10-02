@@ -15,11 +15,12 @@
 
 //! Where a tx goes: the slot clock `deadline(slot) = genesis + interval · slot`,
 //! a target slot one lead ahead of now, and among its proposers the one with
-//! the most tenure left. Built from the colocated validator's own config.
+//! the most tenure left, or with a latency matrix the nearest one with enough.
+//! Built from the colocated validator's own config.
 //! The fixed clock holds while chorus `DeadlineAgreement` proposes each
 //! window's natural deadline; its "compute next deadline" TODO would break it.
 
-use std::{fmt, sync::Arc};
+use std::{cmp::Reverse, collections::HashMap, fmt, sync::Arc, time::Duration};
 
 use monad_mcp_node::{
     NodeProposerSchedule,
@@ -83,18 +84,19 @@ pub fn tenure_horizon(config: &ProposerConfig) -> u64 {
     (config.concurrent_proposers as u64).saturating_mul(config.slots_per_rotation())
 }
 
-// among the proposers at `target`, the one keeping its lane for the most
-// slots from `target` on, counted up to `horizon`; ties go to the lower lane
-pub fn choose_leader(
+// the proposers at `target` in lane order, each with the slots it keeps its
+// lane from `target` on, counted up to `horizon`
+fn tenures(
     schedule: &(impl ProposerSchedule + ?Sized),
     target: Slot,
     horizon: u64,
-) -> Option<(ProposalIndex, NodeId)> {
-    let set = schedule.proposers_at(target).ok()?;
-    // lane order, so the survivors of the longest run start with the lowest lane
-    let mut holding: Vec<(ProposalIndex, NodeId)> = set
+) -> Vec<(ProposalIndex, NodeId, u64)> {
+    let Ok(set) = schedule.proposers_at(target) else {
+        return Vec::new();
+    };
+    let mut tenures: Vec<_> = set
         .iter()
-        .filter_map(|(lane, proposer)| Some((lane, proposer?)))
+        .filter_map(|(lane, proposer)| Some((lane, proposer?, 1)))
         .collect();
     for k in 1..horizon {
         let Some(set) = target
@@ -104,17 +106,63 @@ pub fn choose_leader(
         else {
             break;
         };
-        let still: Vec<_> = holding
-            .iter()
-            .copied()
-            .filter(|(lane, node)| set.proposer(*lane) == Some(*node))
-            .collect();
-        if still.is_empty() {
+        let mut held = false;
+        for (lane, node, tenure) in &mut tenures {
+            if *tenure == k && set.proposer(*lane) == Some(*node) {
+                *tenure += 1;
+                held = true;
+            }
+        }
+        if !held {
             break;
         }
-        holding = still;
     }
-    holding.first().copied()
+    tenures
+}
+
+// the first of the longest tenure, so ties go to the lower lane
+fn most_tenured(tenures: &[(ProposalIndex, NodeId, u64)]) -> Option<(ProposalIndex, NodeId)> {
+    tenures
+        .iter()
+        .min_by_key(|(_, _, tenure)| Reverse(*tenure))
+        .map(|&(lane, node, _)| (lane, node))
+}
+
+// among the proposers at `target`, the one keeping its lane for the most
+// slots from `target` on, counted up to `horizon`; ties go to the lower lane
+pub fn choose_leader(
+    schedule: &(impl ProposerSchedule + ?Sized),
+    target: Slot,
+    horizon: u64,
+) -> Option<(ProposalIndex, NodeId)> {
+    most_tenured(&tenures(schedule, target, horizon))
+}
+
+// one-way latency from the rpc's validator to each validator
+pub type Latency = HashMap<NodeId, Duration>;
+
+// among the proposers at `target` other than `avoid` that keep their lane for
+// at least `min_tenure` slots, the nearest; ties go to more tenure, then the
+// lower lane. With none, the most tenured other than `avoid`
+pub fn choose_nearest(
+    schedule: &(impl ProposerSchedule + ?Sized),
+    target: Slot,
+    horizon: u64,
+    latency: &Latency,
+    min_tenure: u64,
+    avoid: Option<NodeId>,
+) -> Option<(ProposalIndex, NodeId)> {
+    let mut candidates = tenures(schedule, target, horizon);
+    candidates.retain(|(_, node, _)| Some(*node) != avoid);
+    candidates
+        .iter()
+        .filter(|(_, _, tenure)| *tenure >= min_tenure)
+        .min_by_key(|(lane, node, tenure)| {
+            let latency = latency.get(node).copied().unwrap_or(Duration::MAX);
+            (latency, Reverse(*tenure), *lane)
+        })
+        .map(|&(lane, node, _)| (lane, node))
+        .or_else(|| most_tenured(&candidates))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -122,6 +170,8 @@ pub struct Route {
     pub slot: Slot,
     pub lane: ProposalIndex,
     pub leader: NodeId,
+    // one-way, from the latency matrix when one is loaded
+    pub latency: Option<Duration>,
 }
 
 pub struct Planner {
@@ -129,6 +179,8 @@ pub struct Planner {
     lead: TimestampDelta,
     schedule: Arc<NodeProposerSchedule>,
     horizon: u64,
+    latency: Option<Latency>,
+    min_tenure: u64,
 }
 
 impl fmt::Debug for Planner {
@@ -137,6 +189,8 @@ impl fmt::Debug for Planner {
             .field("clock", &self.clock)
             .field("lead", &self.lead)
             .field("horizon", &self.horizon)
+            .field("latency", &self.latency)
+            .field("min_tenure", &self.min_tenure)
             .finish_non_exhaustive()
     }
 }
@@ -153,7 +207,18 @@ impl Planner {
             lead: lead(node, lead_margin),
             horizon: tenure_horizon(schedule.config()),
             schedule,
+            latency: None,
+            min_tenure: 0,
         })
+    }
+
+    // unpinned txs go to the nearest proposer keeping its lane `min_tenure` slots
+    pub fn with_latency(self, latency: Latency, min_tenure: u64) -> Self {
+        Self {
+            latency: Some(latency),
+            min_tenure,
+            ..self
+        }
     }
 
     pub fn clock(&self) -> SlotClock {
@@ -177,17 +242,63 @@ impl Planner {
         self.clock.slot_at(now + self.lead)
     }
 
+    pub fn latency(&self) -> Option<&Latency> {
+        self.latency.as_ref()
+    }
+
+    pub fn min_tenure(&self) -> u64 {
+        self.min_tenure
+    }
+
     // the first slot from the target to LOOKAHEAD past it with a proposer on
-    // `lane`, or on any lane by tenure, and that leader
-    pub fn route(&self, now: Timestamp, lane: Option<ProposalIndex>) -> Option<Route> {
+    // `lane`, or on any lane by tenure or latency, and that leader. With a
+    // latency matrix an unpinned route skips `avoid` unless no one else leads
+    pub fn route(
+        &self,
+        now: Timestamp,
+        lane: Option<ProposalIndex>,
+        avoid: Option<NodeId>,
+    ) -> Option<Route> {
+        let route = self.first_route(now, lane, avoid);
+        match avoid {
+            Some(_) if route.is_none() => self.first_route(now, lane, None),
+            _ => route,
+        }
+    }
+
+    fn first_route(
+        &self,
+        now: Timestamp,
+        lane: Option<ProposalIndex>,
+        avoid: Option<NodeId>,
+    ) -> Option<Route> {
         let target = self.target_slot(now).0;
         let last = self.clock.slot_at(now + self.lead + LOOKAHEAD).0;
+        let schedule = self.schedule.as_ref();
         (target..=last).map(Slot).find_map(|slot| {
-            let (lane, leader) = match lane {
-                Some(lane) => (lane, self.schedule.proposers_at(slot).ok()?.proposer(lane)?),
-                None => choose_leader(self.schedule.as_ref(), slot, self.horizon)?,
+            let (lane, leader) = match (lane, &self.latency) {
+                (Some(lane), _) => (lane, schedule.proposers_at(slot).ok()?.proposer(lane)?),
+                (None, Some(latency)) => choose_nearest(
+                    schedule,
+                    slot,
+                    self.horizon,
+                    latency,
+                    self.min_tenure,
+                    avoid,
+                )?,
+                (None, None) => choose_leader(schedule, slot, self.horizon)?,
             };
-            Some(Route { slot, lane, leader })
+            let latency = self
+                .latency
+                .as_ref()
+                .and_then(|row| row.get(&leader))
+                .copied();
+            Some(Route {
+                slot,
+                lane,
+                leader,
+                latency,
+            })
         })
     }
 }
