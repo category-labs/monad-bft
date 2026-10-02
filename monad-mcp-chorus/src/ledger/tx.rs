@@ -28,6 +28,8 @@ pub struct Tx {
     pub sender: Address,
     pub nonce: u64,
     pub payload: Bytes,
+    // unix ns the rpc first admitted it, 0 = unknown; not part of the hash. demo(tx-timeline)
+    pub received_at_ns: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -47,7 +49,11 @@ pub fn keccak256(data: &[u8]) -> Hash {
 }
 
 pub fn tx_hash(tx: &Tx) -> Hash {
-    keccak256(&tx.to_rlp())
+    // demo(tx-timeline): hashes rlp[sender, nonce, payload], leaving out received_at_ns
+    let fields: [&dyn Encodable; 3] = [&tx.sender, &tx.nonce, &tx.payload]; // demo(tx-timeline)
+    let mut rlp = Vec::new(); // demo(tx-timeline)
+    alloy_rlp::encode_list::<_, dyn Encodable>(&fields, &mut rlp); // demo(tx-timeline)
+    keccak256(&rlp) // demo(tx-timeline)
 }
 
 pub fn payload_hash(payload: &[u8]) -> Hash {
@@ -84,21 +90,43 @@ impl Tx {
     }
 }
 
-pub fn encode_batch(txs: &[Tx]) -> Bytes {
-    let mut out = Vec::with_capacity(alloy_rlp::list_length::<_, Tx>(txs));
+// demo(tx-timeline): a lane is rlp[sealed_at_ns, Vec<Tx>], the seal time in the proposer's unix ns.
+#[derive(RlpDecodable)]
+struct SealedBatch {
+    sealed_at_ns: u64,
+    txs: Vec<Tx>,
+}
+
+pub fn encode_batch(sealed_at_ns: u64, txs: &[Tx]) -> Bytes {
+    // demo(tx-timeline): signature gains sealed_at_ns
+    let txs_len = alloy_rlp::list_length::<_, Tx>(txs); // demo(tx-timeline)
+    // demo(tx-timeline)
+    let header = Header {
+        list: true,
+        payload_length: sealed_at_ns.length() + txs_len,
+    };
+    let mut out = Vec::with_capacity(header.length_with_payload()); // demo(tx-timeline)
+    header.encode(&mut out); // demo(tx-timeline)
+    sealed_at_ns.encode(&mut out); // demo(tx-timeline)
     alloy_rlp::encode_list::<_, Tx>(txs, &mut out);
     out.into()
 }
 
 // strict: a lane with trailing bytes or an oversized tx is not a valid batch.
 pub fn decode_batch(buf: &[u8]) -> Result<Vec<Tx>, TxError> {
-    let txs: Vec<Tx> = alloy_rlp::decode_exact(buf)?;
-    txs.iter().try_for_each(Tx::validate)?;
-    Ok(txs)
+    decode_sealed_batch(buf).map(|(_, txs)| txs) // demo(tx-timeline)
 }
 
-// accumulates valid txs into an `rlp(Vec<Tx>)` payload of at most `max(proposal_size_limit, 1)`
-// bytes, since the empty batch is 1 byte; its output always passes `decode_batch`.
+// demo(tx-timeline): `decode_batch` plus the lane's seal time.
+pub fn decode_sealed_batch(buf: &[u8]) -> Result<(u64, Vec<Tx>), TxError> {
+    let SealedBatch { sealed_at_ns, txs } = alloy_rlp::decode_exact(buf)?; // demo(tx-timeline)
+    txs.iter().try_for_each(Tx::validate)?;
+    Ok((sealed_at_ns, txs)) // demo(tx-timeline)
+}
+
+// accumulates valid txs into an `rlp[sealed_at_ns, Vec<Tx>]` payload of at most
+// `max(proposal_size_limit, BatchBuilder::new(0).encoded_size())` bytes; its output always
+// passes `decode_batch`. demo(tx-timeline): sizes reserve a full 8-byte seal time.
 #[derive(Debug)]
 pub struct BatchBuilder {
     proposal_size_limit: usize,
@@ -116,9 +144,16 @@ impl BatchBuilder {
     }
 
     fn encoded_len(content_len: usize) -> usize {
-        Header {
+        // demo(tx-timeline): the tx list nested in the sealed header
+        let txs_len = Header {
             list: true,
             payload_length: content_len,
+        }
+        .length_with_payload();
+        // demo(tx-timeline)
+        Header {
+            list: true,
+            payload_length: u64::MAX.length() + txs_len,
         }
         .length_with_payload()
     }
@@ -146,14 +181,15 @@ impl BatchBuilder {
         self.txs.is_empty()
     }
 
-    // the exact byte length `finish` will return.
+    // demo(tx-timeline): the most bytes `finish` returns; exact for seal times from 2^56 ns (1972).
     pub fn encoded_size(&self) -> usize {
         Self::encoded_len(self.content_len)
     }
 
-    pub fn finish(self) -> Bytes {
-        let out = encode_batch(&self.txs);
-        debug_assert_eq!(out.len(), self.encoded_size());
+    // demo(tx-timeline): the proposer's seal time goes in the header
+    pub fn finish(self, sealed_at_ns: u64) -> Bytes {
+        let out = encode_batch(sealed_at_ns, &self.txs); // demo(tx-timeline)
+        debug_assert!(out.len() <= self.encoded_size()); // demo(tx-timeline)
         out
     }
 }
@@ -169,11 +205,13 @@ mod tests {
             any::<[u8; 20]>(),
             any::<u64>(),
             proptest::collection::vec(any::<u8>(), 0..=max_payload),
+            any::<u64>(), // demo(tx-timeline)
         )
-            .prop_map(|(sender, nonce, payload)| Tx {
+            .prop_map(|(sender, nonce, payload, received_at_ns)| Tx {
                 sender,
                 nonce,
                 payload: payload.into(),
+                received_at_ns, // demo(tx-timeline)
             })
     }
 
@@ -182,8 +220,11 @@ mod tests {
             sender: [0x11; 20],
             nonce: 1,
             payload: Bytes::from_static(b"hello"),
+            received_at_ns: 7, // demo(tx-timeline)
         }
     }
+
+    const SEAL: u64 = 1_700_000_000_000_000_000; // demo(tx-timeline)
 
     #[test]
     fn keccak_standard_vectors() {
@@ -204,7 +245,10 @@ mod tests {
         expected.extend([0x11; 20]);
         expected.extend([0x01, 0x85]);
         expected.extend(b"hello");
-        assert_eq!(tx.to_rlp().as_ref(), expected.as_slice());
+        let mut encoded = expected.clone(); // demo(tx-timeline)
+        encoded[0] = 0xdd; // demo(tx-timeline)
+        encoded.push(0x07); // demo(tx-timeline)
+        assert_eq!(tx.to_rlp().as_ref(), encoded.as_slice()); // demo(tx-timeline)
         assert_eq!(tx.hash(), keccak256(&expected));
         assert_eq!(
             hex::encode(tx.hash()),
@@ -216,11 +260,35 @@ mod tests {
         );
     }
 
+    // demo(tx-timeline): rlp[sealed_at_ns, []]
     #[test]
-    fn empty_batch_is_empty_list() {
-        assert_eq!(encode_batch(&[]).as_ref(), &[0xc0]);
-        assert_eq!(decode_batch(&[0xc0]).unwrap(), vec![]);
-        assert_eq!(BatchBuilder::new(1).finish().as_ref(), &[0xc0]);
+    fn empty_batch_vectors() {
+        assert_eq!(encode_batch(0, &[]).as_ref(), &[0xc2, 0x80, 0xc0]);
+        assert_eq!(
+            decode_sealed_batch(&[0xc2, 0x80, 0xc0]).unwrap(),
+            (0, vec![])
+        );
+        let mut sealed = vec![0xca, 0x88];
+        sealed.extend(SEAL.to_be_bytes());
+        sealed.push(0xc0);
+        assert_eq!(encode_batch(SEAL, &[]).as_ref(), sealed.as_slice());
+        assert_eq!(decode_sealed_batch(&sealed).unwrap(), (SEAL, vec![]));
+        assert_eq!(BatchBuilder::new(1).encoded_size(), sealed.len());
+        assert_eq!(
+            BatchBuilder::new(1).finish(SEAL).as_ref(),
+            sealed.as_slice()
+        );
+        assert_eq!(BatchBuilder::new(1).finish(0).as_ref(), &[0xc2, 0x80, 0xc0]);
+    }
+
+    // demo(tx-timeline): the old `rlp(Vec<Tx>)` lane is not a batch, empty or not
+    #[test]
+    fn old_lane_format_rejected() {
+        assert!(decode_batch(&[0xc0]).is_err());
+        let mut old = Vec::new();
+        alloy_rlp::encode_list::<_, Tx>(&[sample_tx()], &mut old);
+        assert!(matches!(decode_batch(&old), Err(TxError::Rlp(_))));
+        assert!(decode_sealed_batch(&old).is_err());
     }
 
     #[test]
@@ -229,7 +297,7 @@ mod tests {
         tx.payload = vec![0; MAX_TX_PAYLOAD].into();
         tx.validate().unwrap();
         Tx::decode_exact(&tx.to_rlp()).unwrap();
-        decode_batch(&encode_batch(std::slice::from_ref(&tx))).unwrap();
+        decode_batch(&encode_batch(SEAL, std::slice::from_ref(&tx))).unwrap(); // demo(tx-timeline)
 
         tx.payload = vec![0; MAX_TX_PAYLOAD + 1].into();
         let err = TxError::PayloadTooLarge {
@@ -237,7 +305,10 @@ mod tests {
         };
         assert_eq!(tx.validate(), Err(err.clone()));
         assert_eq!(Tx::decode_exact(&tx.to_rlp()), Err(err.clone()));
-        assert_eq!(decode_batch(&encode_batch(&[sample_tx(), tx])), Err(err));
+        assert_eq!(
+            decode_batch(&encode_batch(SEAL, &[sample_tx(), tx])),
+            Err(err)
+        ); // demo(tx-timeline)
     }
 
     #[test]
@@ -246,7 +317,7 @@ mod tests {
         buf.push(0);
         assert!(matches!(Tx::decode_exact(&buf), Err(TxError::Rlp(_))));
 
-        let mut batch = encode_batch(&[sample_tx()]).to_vec();
+        let mut batch = encode_batch(SEAL, &[sample_tx()]).to_vec(); // demo(tx-timeline)
         batch.push(0xc0);
         assert!(matches!(decode_batch(&batch), Err(TxError::Rlp(_))));
 
@@ -260,23 +331,45 @@ mod tests {
         let fields: [&dyn Encodable; 3] = [&[0u8; 19], &1u64, &Bytes::new()];
         alloy_rlp::encode_list::<_, dyn Encodable>(&fields, &mut short);
         assert!(Tx::decode_exact(&short).is_err());
+        // demo(tx-timeline): the old 3-field tx is rejected, alone and in a batch
+        let mut old = Vec::new(); // demo(tx-timeline)
+        let fields: [&dyn Encodable; 3] = [&[0u8; 20], &1u64, &Bytes::new()]; // demo(tx-timeline)
+        alloy_rlp::encode_list::<_, dyn Encodable>(&fields, &mut old); // demo(tx-timeline)
+        assert!(Tx::decode_exact(&old).is_err()); // demo(tx-timeline)
+        let old_batch = [&[0xc0 + old.len() as u8][..], &old].concat(); // demo(tx-timeline)
+        assert!(decode_batch(&old_batch).is_err()); // demo(tx-timeline)
     }
 
     #[test]
     fn builder_rejects_overflow() {
         let tx = sample_tx();
-        let one = encode_batch(std::slice::from_ref(&tx)).len();
+        let one = encode_batch(SEAL, std::slice::from_ref(&tx)).len(); // demo(tx-timeline)
         let mut b = BatchBuilder::new(one);
         b.try_push(tx.clone()).unwrap();
         assert_eq!(b.try_push(tx.clone()), Err(tx.clone()));
         assert_eq!(b.len(), 1);
-        assert_eq!(b.finish().len(), one);
+        assert_eq!(b.finish(SEAL).len(), one); // demo(tx-timeline)
 
         let mut b = BatchBuilder::new(one - 1);
         assert!(!b.fits(&tx));
         assert!(b.try_push(tx).is_err());
         assert!(b.is_empty());
-        assert_eq!(BatchBuilder::new(0).finish().as_ref(), &[0xc0]);
+        assert_eq!(BatchBuilder::new(0).finish(0).as_ref(), &[0xc2, 0x80, 0xc0]); // demo(tx-timeline)
+    }
+
+    // demo(tx-timeline): the limit counts the header, sized for any seal time
+    #[test]
+    fn builder_counts_the_seal_header() {
+        let tx = sample_tx();
+        let txs_only = alloy_rlp::list_length::<_, Tx>(std::slice::from_ref(&tx));
+        let one = encode_batch(u64::MAX, std::slice::from_ref(&tx)).len();
+        assert_eq!(one, txs_only + 10);
+        assert!(!BatchBuilder::new(txs_only).fits(&tx));
+        assert!(!BatchBuilder::new(one - 1).fits(&tx));
+        let mut b = BatchBuilder::new(one);
+        b.try_push(tx).unwrap();
+        assert_eq!(b.encoded_size(), one);
+        assert_eq!(b.finish(1).len(), one - 8);
     }
 
     #[test]
@@ -290,7 +383,7 @@ mod tests {
         let mut max = sample_tx();
         max.payload = vec![0; MAX_TX_PAYLOAD].into();
         b.try_push(max).unwrap();
-        assert_eq!(decode_batch(&b.finish()).unwrap().len(), 2);
+        assert_eq!(decode_batch(&b.finish(SEAL)).unwrap().len(), 2); // demo(tx-timeline)
     }
 
     proptest! {
@@ -300,17 +393,27 @@ mod tests {
             prop_assert_eq!(&decoded, &tx);
             prop_assert_eq!(decoded.hash(), tx.hash());
             prop_assert_eq!(Tx::decode_exact(&tx.to_rlp()).is_ok(), tx.validate().is_ok());
+            let mut restamped = tx.clone(); // demo(tx-timeline)
+            restamped.received_at_ns = !tx.received_at_ns; // demo(tx-timeline)
+            prop_assert_eq!(restamped.hash(), tx.hash()); // demo(tx-timeline)
+            prop_assert_ne!(restamped.to_rlp(), tx.to_rlp()); // demo(tx-timeline)
         }
 
         #[test]
-        fn batch_round_trip(txs in proptest::collection::vec(arb_tx(MAX_TX_PAYLOAD), 0..16)) {
-            prop_assert_eq!(decode_batch(&encode_batch(&txs)).unwrap(), txs);
+        fn batch_round_trip(
+            sealed_at_ns in any::<u64>(), // demo(tx-timeline)
+            txs in proptest::collection::vec(arb_tx(MAX_TX_PAYLOAD), 0..16),
+        ) {
+            let encoded = encode_batch(sealed_at_ns, &txs); // demo(tx-timeline)
+            prop_assert_eq!(&decode_batch(&encoded).unwrap(), &txs); // demo(tx-timeline)
+            prop_assert_eq!(decode_sealed_batch(&encoded).unwrap(), (sealed_at_ns, txs)); // demo(tx-timeline)
         }
 
         #[test]
         fn builder_respects_proposal_size_limit(
             txs in proptest::collection::vec(arb_tx(MAX_TX_PAYLOAD + 64), 0..32),
             proposal_size_limit in 1usize..4096,
+            sealed_at_ns in any::<u64>(), // demo(tx-timeline)
         ) {
             let mut b = BatchBuilder::new(proposal_size_limit);
             let mut taken = Vec::new();
@@ -323,14 +426,18 @@ mod tests {
                 } else if tx.validate().is_ok() {
                     let mut with = taken.clone();
                     with.push(tx);
-                    prop_assert!(encode_batch(&with).len() > proposal_size_limit);
+                    prop_assert!(encode_batch(u64::MAX, &with).len() > proposal_size_limit); // demo(tx-timeline)
                 }
             }
             let size = b.encoded_size();
-            let out = b.finish();
-            prop_assert_eq!(out.len(), size);
-            prop_assert!(out.len() <= proposal_size_limit);
-            prop_assert_eq!(decode_batch(&out).unwrap(), taken);
+            let out = b.finish(sealed_at_ns); // demo(tx-timeline)
+            prop_assert!(out.len() <= size); // demo(tx-timeline)
+            if sealed_at_ns >> 56 != 0 { // demo(tx-timeline)
+                prop_assert_eq!(out.len(), size); // demo(tx-timeline)
+            } // demo(tx-timeline)
+            let minimal = BatchBuilder::new(0).encoded_size(); // demo(tx-timeline)
+            prop_assert!(out.len() <= proposal_size_limit.max(minimal)); // demo(tx-timeline)
+            prop_assert_eq!(decode_sealed_batch(&out).unwrap(), (sealed_at_ns, taken)); // demo(tx-timeline)
         }
     }
 }

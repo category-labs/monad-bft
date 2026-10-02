@@ -30,7 +30,8 @@ pub use store::{
     BLOCKS_DIR, LedgerError, LedgerFollower, LedgerReader, LedgerWriter, META_FILE, META_JSON_FILE,
     PROOF_FILE, Since, block_dir_name, lane_file_name, lane_json_file_name, parse_block_dir_name,
 };
+// demo(tx-timeline): exports decode_sealed_batch
 pub use tx::{
-    Address, BatchBuilder, Hash, MAX_TX_PAYLOAD, Tx, TxError, decode_batch, encode_batch,
-    keccak256, payload_hash, tx_hash,
+    Address, BatchBuilder, Hash, MAX_TX_PAYLOAD, Tx, TxError, decode_batch, decode_sealed_batch,
+    encode_batch, keccak256, payload_hash, tx_hash,
 };

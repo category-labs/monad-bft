@@ -33,6 +33,8 @@ pub const BLOCKS_DIR: &str = "blocks";
 pub const META_FILE: &str = "meta.rlp";
 pub const META_JSON_FILE: &str = "meta.json";
 pub const PROOF_FILE: &str = "proof.rlp";
+pub const TIMELINE_FILE: &str = "timeline.json"; // demo(tx-timeline)
+const TIMELINE_KEY: &str = "{\"fast_block_at_ns\":"; // demo(tx-timeline)
 
 const BLOCK_NAME_DIGITS: usize = 12;
 
@@ -246,6 +248,11 @@ impl LedgerWriter {
             write_synced(&tmp.join(lane_json_file_name(lane.index)), json.as_bytes())?;
         }
         write_synced(&tmp.join(PROOF_FILE), &block.proof)?;
+        // demo(tx-timeline)
+        if let Some(at) = block.fast_block_at_ns {
+            let json = format!("{TIMELINE_KEY}{at}}}\n");
+            write_synced(&tmp.join(TIMELINE_FILE), json.as_bytes())?;
+        }
         write_synced(
             &tmp.join(META_JSON_FILE),
             (meta.to_json() + "\n").as_bytes(),
@@ -382,6 +389,19 @@ impl LedgerReader {
         self.read_block_file(slot, PROOF_FILE)?
             .map(Bytes::from)
             .ok_or_else(|| self.corrupt(slot, PROOF_FILE, "missing"))
+    }
+
+    // demo(tx-timeline): when the fast block formed; None without a timeline.json.
+    pub fn read_fast_block_at(&self, slot: u64) -> Result<Option<u128>, LedgerError> {
+        let Some(data) = self.read_block_file(slot, TIMELINE_FILE)? else {
+            return Ok(None);
+        };
+        std::str::from_utf8(&data)
+            .ok()
+            .and_then(|s| s.trim().strip_prefix(TIMELINE_KEY)?.strip_suffix('}'))
+            .and_then(|at| at.parse().ok())
+            .map(Some)
+            .ok_or_else(|| self.corrupt(slot, TIMELINE_FILE, "unparsable"))
     }
 
     // metas of up to `limit` blocks with slot > `after`, oldest first; unreadable ones are skipped.
@@ -535,6 +555,7 @@ mod tests {
             sender: [0x33; 20],
             nonce,
             payload: Bytes::from(format!("payload {nonce}")),
+            received_at_ns: 0, // demo(tx-timeline)
         }
     }
 
@@ -566,11 +587,12 @@ mod tests {
             } else {
                 FinalizationPath::Fallback
             },
+            fast_block_at_ns: None, // demo(tx-timeline)
             lanes: vec![
-                committed(1, encode_batch(&[tx(slot), tx(slot + 1)])),
+                committed(1, encode_batch(slot, &[tx(slot), tx(slot + 1)])), // demo(tx-timeline)
                 negative(),
                 committed(3, Bytes::from_static(b"\xffgarbage")),
-                committed(4, encode_batch(&[])),
+                committed(4, encode_batch(slot, &[])), // demo(tx-timeline)
             ],
             proof: Bytes::from(format!("proof {slot}")),
         }
@@ -702,6 +724,38 @@ mod tests {
         assert!(lane2["decode_error"].is_string());
         assert!(lane2.get("txs").is_none());
         assert_eq!(read("lane-3.json")["txs"], serde_json::json!([]));
+    }
+
+    // demo(tx-timeline)
+    #[test]
+    fn timeline_is_written_only_with_a_fast_block_time() {
+        let (_dir, writer, reader) = setup();
+        writer.write(&block(1)).unwrap();
+        assert!(!reader.block_dir(1).join(TIMELINE_FILE).exists());
+        assert_eq!(reader.read_fast_block_at(1).unwrap(), None);
+
+        let at = u128::from(u64::MAX) + 7;
+        let fast = NewBlock {
+            fast_block_at_ns: Some(at),
+            ..block(2)
+        };
+        let meta = writer.write(&fast).unwrap();
+        assert_eq!(reader.read_fast_block_at(2).unwrap(), Some(at));
+        assert_eq!(reader.read_meta(2).unwrap(), meta);
+        let json = fs::read_to_string(reader.block_dir(2).join(TIMELINE_FILE)).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(json["fast_block_at_ns"].is_number());
+        assert_eq!(reader.since(None, usize::MAX).unwrap().blocks.len(), 2);
+
+        assert!(matches!(
+            reader.read_fast_block_at(3),
+            Err(LedgerError::NotFound(3))
+        ));
+        fs::write(reader.block_dir(2).join(TIMELINE_FILE), b"{}").unwrap();
+        assert!(matches!(
+            reader.read_fast_block_at(2),
+            Err(LedgerError::Corrupt { .. })
+        ));
     }
 
     #[test]
@@ -1065,7 +1119,7 @@ mod tests {
                 .map(|b| match b {
                     Some(nonces) => committed(
                         9,
-                        encode_batch(&nonces.iter().map(|&n| tx(n)).collect::<Vec<_>>()),
+                        encode_batch(42, &nonces.iter().map(|&n| tx(n)).collect::<Vec<_>>()), // demo(tx-timeline)
                     ),
                     None => negative(),
                 })

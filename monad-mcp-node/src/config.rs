@@ -670,14 +670,19 @@ max_txs = 7
         let largest = crate::component::mempool::largest_tx().length();
         config.proposal.max_payload_bytes = Some(largest);
         assert!(config.validate().is_err());
-        config.proposal.max_payload_bytes = Some(largest + 3);
+        // demo(tx-timeline): the lane header (outer list + 8-byte seal time) counts too
+        let fits = largest + 3 + 3 + 9;
+        config.proposal.max_payload_bytes = Some(fits - 1);
+        assert!(config.validate().is_err());
+        config.proposal.max_payload_bytes = Some(fits);
         config.validate().unwrap();
+        // end demo(tx-timeline)
         // a proposal size limit beyond the s11 bound drains batches that never encode
         config.proposal.max_payload_bytes = Some(ProposalConfig::MAX_PROPOSAL_SIZE_LIMIT);
         config.validate().unwrap();
         config.proposal.max_payload_bytes = Some(ProposalConfig::MAX_PROPOSAL_SIZE_LIMIT + 1);
         assert!(config.validate().is_err());
-        config.proposal.max_payload_bytes = Some(largest + 3);
+        config.proposal.max_payload_bytes = Some(fits); // demo(tx-timeline)
 
         config.mempool.max_bytes = largest - 1;
         assert!(config.validate().is_err());

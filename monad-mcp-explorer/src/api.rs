@@ -28,8 +28,9 @@ use actix_web::{
     },
     web,
 };
+// demo(tx-timeline): decode_sealed_batch in place of decode_batch
 use monad_mcp_chorus::ledger::{
-    Address, BlockMeta, Hash, LedgerError, LedgerReader, PROOF_FILE, Tx, decode_batch,
+    Address, BlockMeta, Hash, LedgerError, LedgerReader, PROOF_FILE, Tx, decode_sealed_batch,
 };
 use serde::{Deserialize, Serialize};
 
@@ -556,6 +557,98 @@ struct InclusionJson {
     slot: u64,
     lane: u32,
     pos: u32,
+    phases: Vec<PhaseJson>, // demo(tx-timeline)
+}
+
+// demo(tx-timeline)
+#[derive(Debug, Serialize)]
+struct PhaseJson {
+    name: &'static str,
+    start_ms: f64,
+    end_ms: f64,
+    // negative under clock skew: received is the rpc host's clock, sealed the proposer's.
+    duration_ms: f64,
+}
+
+// demo(tx-timeline): stage times in unix ns; a phase whose start or end is unknown is left out.
+struct Stages {
+    received: Option<u128>,
+    sealed: Option<u128>,
+    deadline: Option<u128>,
+    fast_block: Option<u128>,
+    finalized: u128,
+}
+
+// demo(tx-timeline): without a locally formed fast block, finalizing starts at the deadline.
+fn phases(s: Stages) -> Vec<PhaseJson> {
+    let ms = |ns: u128| round3(ns as f64 / 1e6);
+    [
+        ("mempool", s.received, s.sealed),
+        ("proposing", s.sealed, s.deadline),
+        ("fast_voting", s.deadline, s.fast_block),
+        ("finalizing", s.fast_block.or(s.deadline), Some(s.finalized)),
+    ]
+    .into_iter()
+    .filter_map(|(name, start, end)| {
+        let (start, end) = (start?, end?);
+        Some(PhaseJson {
+            name,
+            start_ms: ms(start),
+            end_ms: ms(end),
+            duration_ms: round3((end as i128 - start as i128) as f64 / 1e6),
+        })
+    })
+    .collect()
+}
+
+// demo(tx-timeline): `first` is the (sealed, received) stamps the caller already read for
+// inclusion 0, so its lane is not read twice
+async fn with_timelines(
+    state: &AppState,
+    hash: Hash,
+    mut inclusions: Vec<InclusionJson>,
+    first: (u64, u64),
+) -> Result<Vec<InclusionJson>, ApiError> {
+    let reader = state.reader.clone();
+    let keys: Vec<TxKey> = inclusions
+        .iter()
+        .map(|i| TxKey {
+            slot: i.slot,
+            lane: i.lane,
+            pos: i.pos,
+        })
+        .collect();
+    let read = blocking(move || {
+        keys.into_iter()
+            .enumerate()
+            .map(|(k, key)| {
+                let (sealed, received) = if k == 0 {
+                    first
+                } else {
+                    read_sealed_tx(&reader, key, hash)
+                        .map_or((0, 0), |(sealed, tx)| (sealed, tx.received_at_ns))
+                };
+                let known = |ns: u64| (ns > 0).then_some(u128::from(ns));
+                let fast_block = reader.read_fast_block_at(key.slot).ok().flatten();
+                (known(received), known(sealed), fast_block)
+            })
+            .collect::<Vec<_>>()
+    })
+    .await?;
+    let index = state.index.read();
+    for (inclusion, (received, sealed, fast_block)) in inclusions.iter_mut().zip(read) {
+        let Some(block) = index.block(inclusion.slot) else {
+            continue;
+        };
+        inclusion.phases = phases(Stages {
+            received,
+            sealed,
+            deadline: block.deadline_ns().map(u128::from),
+            fast_block,
+            finalized: u128::from(block.finalized_at_ns),
+        });
+    }
+    Ok(inclusions)
 }
 
 #[derive(Serialize)]
@@ -571,20 +664,21 @@ struct TxDetailJson {
     inclusions: Vec<InclusionJson>,
 }
 
-fn read_tx(reader: &LedgerReader, key: TxKey, hash: Hash) -> Result<Tx, String> {
+// demo(tx-timeline): the tx and its lane's seal time
+fn read_sealed_tx(reader: &LedgerReader, key: TxKey, hash: Hash) -> Result<(u64, Tx), String> {
     let payload = reader
         .read_lane(key.slot, key.lane)
         .map_err(|e| e.to_string())?
         .ok_or("lane is negative")?;
-    let tx = decode_batch(&payload)
-        .map_err(|e| e.to_string())?
+    let (sealed_at_ns, txs) = decode_sealed_batch(&payload).map_err(|e| e.to_string())?;
+    let tx = txs
         .into_iter()
         .nth(key.pos as usize)
         .ok_or("tx position out of range")?;
     if tx.hash() != hash {
         return Err("lane file does not hold this tx".into());
     }
-    Ok(tx)
+    Ok((sealed_at_ns, tx))
 }
 
 async fn tx(state: web::Data<AppState>, path: web::Path<String>) -> ApiResult {
@@ -602,6 +696,7 @@ async fn tx(state: web::Data<AppState>, path: web::Path<String>) -> ApiResult {
                 slot: k.slot,
                 lane: k.lane,
                 pos: k.pos,
+                phases: Vec::new(), // demo(tx-timeline)
             })
             .collect();
         (
@@ -612,15 +707,21 @@ async fn tx(state: web::Data<AppState>, path: web::Path<String>) -> ApiResult {
         )
     };
     let reader = state.reader.clone();
-    let read = blocking(move || read_tx(&reader, key, hash)).await?;
+    let read = blocking(move || read_sealed_tx(&reader, key, hash)).await?; // demo(tx-timeline)
+    // demo(tx-timeline)
+    let first = read
+        .as_ref()
+        .map_or((0, 0), |(sealed, tx)| (*sealed, tx.received_at_ns));
     let (payload, payload_utf8, payload_error) = match read {
-        Ok(tx) => (
+        // demo(tx-timeline): the seal was taken into `first` above
+        Ok((_, tx)) => (
             Some(hex0x(&tx.payload)),
             utf8_text(&tx.payload, false),
             None,
         ),
         Err(e) => (None, None, Some(e)),
     };
+    let inclusions = with_timelines(&state, hash, inclusions, first).await?; // demo(tx-timeline)
     json(TxDetailJson {
         summary,
         payload_hash: hex0x(&payload_hash),

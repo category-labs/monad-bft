@@ -150,6 +150,7 @@ mod tests {
             sender: [2; 20],
             nonce,
             payload: Bytes::from(format!("watch {nonce}")),
+            received_at_ns: 0, // demo(tx-timeline)
         }
     }
 
@@ -169,6 +170,7 @@ mod tests {
             deadline_ns: Some(1),
             finalized_at_ns: 2,
             path: FinalizationPath::Fallback,
+            fast_block_at_ns: None, // demo(tx-timeline)
             lanes,
             proof: Bytes::from_static(b"proof"),
         }
@@ -187,7 +189,7 @@ mod tests {
         let writer = LedgerWriter::open(dir.path()).unwrap();
         let reader = LedgerReader::new(dir.path());
         writer
-            .write(&block(1, vec![lane(encode_batch(&[tx(0)]))]))
+            .write(&block(1, vec![lane(encode_batch(1, &[tx(0)]))])) // demo(tx-timeline)
             .unwrap();
         let mut watch = LedgerWatch::from_now(&reader).unwrap();
         assert_eq!(watch.poll().unwrap(), Sighting::default());
@@ -198,8 +200,8 @@ mod tests {
                 vec![
                     negative(),
                     lane(Bytes::from_static(b"\xffgarbage")),
-                    lane(encode_batch(&[])),
-                    lane(encode_batch(&[tx(1), tx(2)])),
+                    lane(encode_batch(1, &[])), // demo(tx-timeline)
+                    lane(encode_batch(1, &[tx(1), tx(2)])), // demo(tx-timeline)
                 ],
             ))
             .unwrap();
@@ -227,11 +229,11 @@ mod tests {
         let writer = LedgerWriter::open(dir.path()).unwrap();
         let mut watch = LedgerWatch::from_start(&LedgerReader::new(dir.path()));
         writer
-            .write(&block(9, vec![lane(encode_batch(&[tx(9)]))]))
+            .write(&block(9, vec![lane(encode_batch(1, &[tx(9)]))])) // demo(tx-timeline)
             .unwrap();
         assert_eq!(watch.poll().unwrap().commits.len(), 1);
         writer
-            .write(&block(4, vec![lane(encode_batch(&[tx(4)]))]))
+            .write(&block(4, vec![lane(encode_batch(1, &[tx(4)]))])) // demo(tx-timeline)
             .unwrap();
         let sighting = watch.poll().unwrap();
         assert_eq!(
@@ -258,7 +260,7 @@ mod tests {
         let reader = LedgerReader::new(dir.path());
         let mut watch = LedgerWatch::from_start(&reader);
         writer
-            .write(&block(3, vec![lane(encode_batch(&[tx(3)]))]))
+            .write(&block(3, vec![lane(encode_batch(1, &[tx(3)]))])) // demo(tx-timeline)
             .unwrap();
         let file = reader.block_dir(3).join(lane_file_name(0));
         let set_mode =
@@ -288,7 +290,7 @@ mod tests {
         let reader = LedgerReader::new(dir.path());
         let mut watch = LedgerWatch::from_start(&reader);
         writer
-            .write(&block(3, vec![lane(encode_batch(&[tx(3)]))]))
+            .write(&block(3, vec![lane(encode_batch(1, &[tx(3)]))])) // demo(tx-timeline)
             .unwrap();
         let file = reader.block_dir(3).join(lane_file_name(0));
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
@@ -310,7 +312,7 @@ mod tests {
         assert_eq!(watch.poll().unwrap().blocks, 0);
         let writer = LedgerWriter::open(&ledger).unwrap();
         writer
-            .write(&block(1, vec![lane(encode_batch(&[tx(1)]))]))
+            .write(&block(1, vec![lane(encode_batch(1, &[tx(1)]))])) // demo(tx-timeline)
             .unwrap();
         assert_eq!(watch.poll().unwrap().commits.len(), 1);
     }

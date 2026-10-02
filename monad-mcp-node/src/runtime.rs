@@ -237,6 +237,11 @@ impl Runtime for NodeRuntime {
                 self.deliver_finalized(effects);
             }
 
+            // demo(tx-timeline)
+            CadenceOutput::FastBlock(now, slot) => {
+                self.collector.handle_fast_block(now, slot);
+            }
+
             CadenceOutput::CapAdvance(now, cap) => {
                 tracing::debug!(cap = cap.0, at = now.as_nanos(), "chain advanced");
                 effects.dispatch(Effect::Repeater(RepeaterInput::CapAdvance(cap)));
@@ -356,6 +361,7 @@ mod tests {
             sender: [5; 20],
             nonce,
             payload: Bytes::from_static(b"demux"),
+            received_at_ns: 0, // demo(tx-timeline)
         }
     }
 

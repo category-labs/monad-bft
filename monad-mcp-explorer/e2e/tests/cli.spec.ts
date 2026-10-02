@@ -97,7 +97,13 @@ test('L6c: a direct udp send to the node shows up in the explorer, bypassing the
   expect(jsonLines(again.stdout)[0]).toMatchObject({ tx_hash: reply.tx_hash, status: 'sent' });
   await new Promise((r) => setTimeout(r, 2_000));
   const after = await getJson(`${stack.explorer}/api/tx/${reply.tx_hash}`);
-  expect(after.body.inclusions).toEqual([{ slot: tx.slot, lane: tx.lane, pos: tx.pos }]);
+  expect(after.body.inclusions).toMatchObject([{ slot: tx.slot, lane: tx.lane, pos: tx.pos }]); // demo(tx-timeline)
+  expect(after.body.inclusions).toHaveLength(1); // demo(tx-timeline)
+  // demo(tx-timeline): a udp send skips the rpc, so there is no received time and no mempool phase
+  const phases = after.body.inclusions[0].phases.map((p: any) => p.name);
+  expect(phases).not.toContain('mempool');
+  expect(phases[0]).toBe('proposing');
+  expect(phases[phases.length - 1]).toBe('finalizing');
 });
 
 test('L6d: a 1025-byte payload is refused by mcp-tx before connecting, and by the rpc', async () => {

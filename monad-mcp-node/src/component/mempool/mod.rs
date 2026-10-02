@@ -40,6 +40,7 @@ pub fn largest_tx() -> Tx {
         sender: [0xff; 20],
         nonce: u64::MAX,
         payload: Bytes::from(vec![0xff; MAX_TX_PAYLOAD]),
+        received_at_ns: u64::MAX, // demo(tx-timeline)
     }
 }
 
@@ -106,13 +107,19 @@ impl Mempool {
         Ok(())
     }
 
-    // `rlp(Vec<Tx>)` of the queue's head within `proposal_size_limit`, in flight at
-    // (slot, index) until the slot settles. A slot already settled gets an
-    // empty batch: nothing drained for it could commit.
-    pub fn drain(&mut self, slot: Slot, index: ProposalIndex, proposal_size_limit: usize) -> Bytes {
+    // demo(tx-timeline): `rlp[sealed_at_ns, Vec<Tx>]` of the queue's head within
+    // `proposal_size_limit`, in flight at (slot, index) until the slot settles. A slot
+    // already settled gets an empty batch: nothing drained for it could commit.
+    pub fn drain(
+        &mut self,
+        slot: Slot,
+        index: ProposalIndex,
+        proposal_size_limit: usize,
+        sealed_at_ns: u64, // demo(tx-timeline)
+    ) -> Bytes {
         let mut batch = BatchBuilder::new(proposal_size_limit);
         if slot < self.floor || self.settled.contains(&slot) {
-            return batch.finish();
+            return batch.finish(sealed_at_ns); // demo(tx-timeline)
         }
         let mut drained = Vec::new();
         while let Some(entry) = self.queue.front() {
@@ -130,7 +137,7 @@ impl Mempool {
                 .or_default()
                 .extend(drained);
         }
-        batch.finish()
+        batch.finish(sealed_at_ns) // demo(tx-timeline)
     }
 
     // the slot finalized: txs of committed lanes are done, the rest are
@@ -226,7 +233,7 @@ impl SharedMempool {
 
 #[cfg(test)]
 mod tests {
-    use monad_mcp_chorus::ledger::decode_batch;
+    use monad_mcp_chorus::ledger::{decode_batch, encode_batch}; // demo(tx-timeline)
 
     use super::*;
 
@@ -235,6 +242,7 @@ mod tests {
             sender: [7; 20],
             nonce,
             payload: Bytes::from(vec![nonce as u8; payload_len]),
+            received_at_ns: 0, // demo(tx-timeline)
         }
     }
 
@@ -252,6 +260,15 @@ mod tests {
             .iter()
             .map(|tx| tx.nonce)
             .collect()
+    }
+
+    const SEAL: u64 = 1_700_000_000_000_000_000; // demo(tx-timeline)
+
+    // demo(tx-timeline): the smallest limit that holds `n` txs of `payload_len`, header included
+    fn limit_for(n: usize, payload_len: usize) -> usize {
+        let mut batch = BatchBuilder::new(usize::MAX);
+        (0..n).for_each(|_| batch.try_push(tx(0, payload_len)).unwrap());
+        batch.encoded_size()
     }
 
     #[test]
@@ -276,7 +293,7 @@ mod tests {
         pool.admit(tx(1, 100)).unwrap();
         pool.admit(tx(2, 100)).unwrap();
         assert_eq!(pool.admit(tx(3, 1)), Err(Reject::Full));
-        pool.drain(Slot(0), 0, 1 << 20);
+        pool.drain(Slot(0), 0, 1 << 20, SEAL); // demo(tx-timeline)
         assert_eq!(pool.queued_bytes(), 0);
         assert_eq!(pool.admit(tx(3, 1)), Ok(()));
     }
@@ -287,12 +304,12 @@ mod tests {
         for nonce in 0..10 {
             pool.admit(tx(nonce, 100)).unwrap();
         }
-        let proposal_size_limit = 3 * tx(0, 100).length() + 3;
-        let batch = pool.drain(Slot(0), 0, proposal_size_limit);
+        let proposal_size_limit = limit_for(3, 100); // demo(tx-timeline)
+        let batch = pool.drain(Slot(0), 0, proposal_size_limit, SEAL); // demo(tx-timeline)
         assert!(batch.len() <= proposal_size_limit);
         assert_eq!(nonces(&batch), [0, 1, 2]);
         assert_eq!(
-            nonces(&pool.drain(Slot(0), 1, proposal_size_limit)),
+            nonces(&pool.drain(Slot(0), 1, proposal_size_limit, SEAL)), // demo(tx-timeline)
             [3, 4, 5]
         );
         assert_eq!(pool.len(), 4);
@@ -302,7 +319,7 @@ mod tests {
     #[test]
     fn an_empty_pool_drains_the_empty_list() {
         let mut pool = mempool(1, 1 << 20, 16);
-        assert_eq!(&pool.drain(Slot(0), 0, 1024)[..], [0xc0]);
+        assert_eq!(pool.drain(Slot(0), 0, 1024, SEAL), encode_batch(SEAL, &[])); // demo(tx-timeline)
         assert_eq!(pool.in_flight(), 0);
     }
 
@@ -311,7 +328,10 @@ mod tests {
         let mut pool = mempool(100, 1 << 20, 16);
         pool.admit(tx(0, 500)).unwrap();
         pool.admit(tx(1, 1)).unwrap();
-        assert_eq!(nonces(&pool.drain(Slot(0), 0, 100)), Vec::<u64>::new());
+        assert_eq!(
+            nonces(&pool.drain(Slot(0), 0, 100, SEAL)),
+            Vec::<u64>::new()
+        ); // demo(tx-timeline)
         assert_eq!(pool.len(), 2);
     }
 
@@ -319,7 +339,7 @@ mod tests {
     fn in_flight_and_committed_txs_are_duplicates() {
         let mut pool = mempool(100, 1 << 20, 16);
         pool.admit(tx(1, 10)).unwrap();
-        pool.drain(Slot(3), 0, 1 << 20);
+        pool.drain(Slot(3), 0, 1 << 20, SEAL); // demo(tx-timeline)
         assert_eq!(pool.admit(tx(1, 10)), Err(Reject::Duplicate));
         pool.settle(Slot(3), |_| true);
         assert_eq!(pool.in_flight(), 0);
@@ -332,7 +352,7 @@ mod tests {
         for nonce in 0..3 {
             pool.admit(tx(nonce, 10)).unwrap();
         }
-        pool.drain(Slot(0), 0, 1 << 20);
+        pool.drain(Slot(0), 0, 1 << 20, SEAL); // demo(tx-timeline)
         pool.settle(Slot(0), |_| true);
         // the oldest committed hash was evicted
         assert_eq!(pool.admit(tx(0, 10)), Ok(()));
@@ -346,13 +366,13 @@ mod tests {
         for nonce in 0..6 {
             pool.admit(tx(nonce, 10)).unwrap();
         }
-        let two = 2 * tx(0, 10).length() + 3;
-        pool.drain(Slot(5), 0, two);
-        pool.drain(Slot(5), 1, two);
+        let two = limit_for(2, 10); // demo(tx-timeline)
+        pool.drain(Slot(5), 0, two, SEAL); // demo(tx-timeline)
+        pool.drain(Slot(5), 1, two, SEAL); // demo(tx-timeline)
         pool.settle(Slot(5), |index| index == 1);
         assert_eq!(pool.len(), 4);
         assert_eq!(pool.in_flight(), 0);
-        assert_eq!(nonces(&pool.drain(Slot(6), 0, 1 << 20)), [0, 1, 4, 5]);
+        assert_eq!(nonces(&pool.drain(Slot(6), 0, 1 << 20, SEAL)), [0, 1, 4, 5]); // demo(tx-timeline)
         // the committed lane stays known
         assert_eq!(pool.admit(tx(2, 10)), Err(Reject::Duplicate));
     }
@@ -362,9 +382,9 @@ mod tests {
         let mut pool = mempool(100, 1 << 20, 16);
         pool.admit(tx(0, 10)).unwrap();
         pool.admit(tx(1, 10)).unwrap();
-        let one = tx(0, 10).length() + 1;
-        pool.drain(Slot(5), 0, one);
-        pool.drain(Slot(6), 0, one);
+        let one = limit_for(1, 10); // demo(tx-timeline)
+        pool.drain(Slot(5), 0, one, SEAL); // demo(tx-timeline)
+        pool.drain(Slot(6), 0, one, SEAL); // demo(tx-timeline)
         pool.settle(Slot(5), |_| false);
         assert_eq!(pool.len(), 1);
         assert_eq!(pool.in_flight(), 1);
@@ -375,11 +395,12 @@ mod tests {
         let mut pool = mempool(100, 1 << 20, 16);
         pool.admit(tx(0, 10)).unwrap();
         pool.settle(Slot(4), |_| false);
-        assert_eq!(&pool.drain(Slot(4), 0, 1 << 20)[..], [0xc0]);
+        let empty = encode_batch(SEAL, &[]); // demo(tx-timeline)
+        assert_eq!(pool.drain(Slot(4), 0, 1 << 20, SEAL), empty); // demo(tx-timeline)
         pool.expire_below(Slot(10));
-        assert_eq!(&pool.drain(Slot(9), 0, 1 << 20)[..], [0xc0]);
+        assert_eq!(pool.drain(Slot(9), 0, 1 << 20, SEAL), empty); // demo(tx-timeline)
         assert_eq!(pool.len(), 1);
-        assert_eq!(nonces(&pool.drain(Slot(10), 0, 1 << 20)), [0]);
+        assert_eq!(nonces(&pool.drain(Slot(10), 0, 1 << 20, SEAL)), [0]); // demo(tx-timeline)
     }
 
     #[test]
@@ -387,9 +408,9 @@ mod tests {
         let mut pool = mempool(100, 1 << 20, 16);
         pool.admit(tx(0, 10)).unwrap();
         pool.admit(tx(1, 10)).unwrap();
-        let one = tx(0, 10).length() + 1;
-        pool.drain(Slot(3), 0, one);
-        pool.drain(Slot(8), 0, one);
+        let one = limit_for(1, 10); // demo(tx-timeline)
+        pool.drain(Slot(3), 0, one, SEAL); // demo(tx-timeline)
+        pool.drain(Slot(8), 0, one, SEAL); // demo(tx-timeline)
         pool.expire_below(Slot(5));
         assert_eq!(pool.in_flight(), 1);
         assert_eq!(pool.len(), 0);

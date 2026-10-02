@@ -45,6 +45,7 @@ fn tx(nonce: u64) -> Tx {
         sender: [0x42; 20],
         nonce,
         payload: Bytes::from(format!("in-process {nonce}")),
+        received_at_ns: 0, // demo(tx-timeline)
     }
 }
 
@@ -181,6 +182,14 @@ fn a_delivered_tx_is_finalized_and_written_to_the_ledger() {
         finalized.deadline.map(Timestamp::as_nanos)
     );
     assert!(meta.deadline_ns.unwrap() <= meta.finalized_at_ns);
+    // demo(tx-timeline): the fast block forms between the deadline and finalization
+    let fast_block_at = finalized.fast_block_at.unwrap().as_nanos(); // demo(tx-timeline)
+    assert_eq!(
+        reader.read_fast_block_at(slot).unwrap(),
+        Some(fast_block_at)
+    ); // demo(tx-timeline)
+    assert!(meta.deadline_ns.unwrap() <= fast_block_at); // demo(tx-timeline)
+    assert!(fast_block_at <= meta.finalized_at_ns); // demo(tx-timeline)
 
     let lane = meta.lanes.iter().find(|lane| lane.tx_count == 1).unwrap();
     assert_eq!(lane.proposer, Some(0));

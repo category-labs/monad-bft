@@ -414,6 +414,30 @@
     };
   }
 
+  // demo(tx-timeline): mempool (rpc received -> sealed), proposing (-> slot deadline),
+  // fast voting (-> fast block formed), finalizing (-> finalized)
+  const PHASES = { mempool: 'Mempool', proposing: 'Proposing', fast_voting: 'Fast voting', finalizing: 'Finalizing' };
+  // demo(tx-timeline)
+  function timelineCard(i) {
+    const ph = i.phases || [];
+    if (!ph.length) return '';
+    const spans = ph.map((p) => Math.max(p.duration_ms, 0));
+    const total = spans.reduce((a, b) => a + b, 0);
+    const label = (p) => PHASES[p.name] || p.name;
+    const tod = (t) => new Date(t).toISOString().slice(11, 23);
+    const segs = ph.map((p, k) => `<span class="tl-seg tl-${esc(p.name)}" data-testid="timeline-seg" style="flex-grow:${total ? spans[k] / total : 1}"
+      title="${esc(label(p))}: ${esc(ms(p.duration_ms))}"></span>`).join('');
+    const rows = ph.map((p) => `<tr data-testid="timeline-row" data-phase="${esc(p.name)}"><td data-testid="timeline-name"><i class="tl-dot tl-${esc(p.name)}"></i>${esc(label(p))}</td>
+      <td class="mono" title="${esc(stamp(p.start_ms))}">${esc(tod(p.start_ms))}</td><td class="mono" title="${esc(stamp(p.end_ms))}">${esc(tod(p.end_ms))}</td>
+      <td class="mono num" data-testid="timeline-duration">${esc(ms(p.duration_ms))}</td></tr>`).join('');
+    const e2e = ph[ph.length - 1].end_ms - ph[0].start_ms;
+    return `<section class="card timeline" data-testid="tx-timeline" data-slot="${i.slot}">
+      <h2><span>Latency · slot ${blockLink(i.slot)}</span><span class="muted" data-testid="timeline-total">end to end ${ms(e2e)}</span></h2>
+      <div class="card-body"><div class="tl-bar">${segs}</div>
+        <table class="tl-table"><thead><tr><th>Phase</th><th>Start (UTC)</th><th>End (UTC)</th><th>Duration</th></tr></thead><tbody>${rows}</tbody></table>
+        <p class="muted tl-note">Clocks: received is the rpc host's, sealed the proposer's, the deadline the slot schedule's, fast block and finalized this explorer's node; skew can make a phase negative.</p></div></section>`;
+  }
+
   // ---- tx
   function TxView(hash) {
     const v = { data: null };
@@ -436,7 +460,7 @@
           <dt>Payload hash</dt><dd><a class="mono" data-testid="tx-payload-hash" href="#/payload/${esc(t.payload_hash)}">${esc(t.payload_hash)}</a></dd>
           <dt>Payload (text)</dt><dd>${payload}</dd>
           <dt>Payload (hex)</dt><dd><p class="payload-hex" data-testid="tx-payload-hex">${esc(t.payload ?? '—')}</p></dd>
-        </dl></section>`;
+        </dl></section>${t.inclusions.map(timelineCard).join('')}`; // demo(tx-timeline)
     }
     return {
       name: 'tx',

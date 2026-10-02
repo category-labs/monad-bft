@@ -66,7 +66,7 @@ impl Proposing {
         while let Some((slot, index)) = self.planner.poll(now) {
             let payload = self
                 .source
-                .next_payload(slot, index, self.proposal_size_limit);
+                .next_payload(now, slot, index, self.proposal_size_limit); // demo(tx-timeline)
             self.outbox.push_back((slot, index, payload));
         }
     }

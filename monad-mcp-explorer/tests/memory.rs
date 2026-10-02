@@ -67,6 +67,7 @@ fn block(slot: u64, txs: u64) -> LoadedBlock {
                 sender,
                 nonce: n,
                 payload: Bytes::from(format!("payload {id}")),
+                received_at_ns: 0, // demo(tx-timeline)
             }
         })
         .collect();
@@ -81,7 +82,7 @@ fn block(slot: u64, txs: u64) -> LoadedBlock {
             index: 0,
             proposer: Some(1),
             root: Some([1; 20]),
-            payload_len: encode_batch(&txs).len() as u32,
+            payload_len: encode_batch(u64::MAX, &txs).len() as u32, // demo(tx-timeline)
             tx_count: txs.len() as u32,
             decode_error: false,
         }],

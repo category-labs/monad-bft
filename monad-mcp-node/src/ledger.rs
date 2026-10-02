@@ -58,9 +58,20 @@ pub fn new_block(finalized: &FinalizedSlot, proposers: Option<&ProposerSet>) -> 
             FinalizationPath::Fast => LedgerPath::Fast,
             FinalizationPath::Fallback => LedgerPath::Fallback,
         },
+        // demo(tx-timeline)
+        fast_block_at_ns: fast_block_at_ns(finalized.finalization.path(), finalized.fast_block_at),
         lanes,
         proof: alloy_rlp::encode(finalized.finalization.certificate_message()).into(),
     }
+}
+
+// demo(tx-timeline): only on the fast path is the formed fast block the one finalized
+fn fast_block_at_ns(
+    path: FinalizationPath,
+    at: Option<crate::chorus::types::Timestamp>,
+) -> Option<u128> {
+    at.filter(|_| path == FinalizationPath::Fast)
+        .map(|at| at.as_nanos())
 }
 
 fn finalization_roots(finalized: &FinalizedSlot) -> Vec<Option<[u8; 20]>> {
@@ -213,12 +224,25 @@ mod tests {
             deadline_ns: None,
             finalized_at_ns: 0,
             path: LedgerPath::Fast,
+            fast_block_at_ns: None, // demo(tx-timeline)
             lanes: vec![NewLane {
                 proposer: None,
                 committed: None,
             }],
             proof: Default::default(),
         }
+    }
+
+    // demo(tx-timeline)
+    #[test]
+    fn the_fast_block_time_is_kept_on_the_fast_path_only() {
+        let at = crate::chorus::types::Timestamp::from_millis(7);
+        assert_eq!(
+            fast_block_at_ns(FinalizationPath::Fast, Some(at)),
+            Some(at.as_nanos())
+        );
+        assert_eq!(fast_block_at_ns(FinalizationPath::Fallback, Some(at)), None);
+        assert_eq!(fast_block_at_ns(FinalizationPath::Fast, None), None);
     }
 
     #[test]

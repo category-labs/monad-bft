@@ -40,6 +40,7 @@ pub enum CadenceOutput {
     Lifecycle(SlotLifecycle),
     DACommand(Slot, ChorusDACommand),
     Finalized(Timestamp, Slot, SlotFinalization),
+    FastBlock(Timestamp, Slot), // demo(tx-timeline)
     // the contiguous finalized prefix reached cap (exclusive)
     CapAdvance(Timestamp, Slot),
 }
@@ -119,6 +120,11 @@ impl DASink<ChorusDACommand> for DAChannel {
 struct FinalizationChannel(Sender<CadenceOutput>);
 
 impl<OD> FinalizationObserver<OD, SlotFinalization> for FinalizationChannel {
+    // demo(tx-timeline)
+    fn handle_optimistic_commit(&mut self, now: Timestamp, slot: Slot, _data: &OD) {
+        self.0.send(CadenceOutput::FastBlock(now, slot)).ok();
+    }
+
     fn handle_finalization(&mut self, now: Timestamp, slot: Slot, data: &SlotFinalization) {
         let event = CadenceOutput::Finalized(now, slot, data.clone());
         self.0.send(event).ok();

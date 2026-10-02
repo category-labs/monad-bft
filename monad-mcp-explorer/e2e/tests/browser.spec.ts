@@ -58,6 +58,7 @@ test('L6b: send from the panel, follow it to its block and payload, then Live of
   await expect(page).toHaveURL(new RegExp(`#/block/${slot}$`));
   await expect(page.getByTestId('block-detail')).toHaveAttribute('data-slot', slot);
   await expect(page.getByTestId('block-path')).toHaveText(/fast|fallback/);
+  const blockPath = (await page.getByTestId('block-path').textContent())!.trim(); // demo(tx-timeline)
   const card = page.locator(`[data-testid="lane-card"][data-lane-index="${lane}"]`);
   await expect(card).toHaveAttribute('data-positive', 'true');
   expect(Number(await card.getAttribute('data-tx-count'))).toBeGreaterThanOrEqual(1);
@@ -82,6 +83,23 @@ test('L6b: send from the panel, follow it to its block and payload, then Live of
   await expect(page.getByTestId('tx-size')).toHaveText(`${payload.length} B`);
   await expect(page.getByTestId('tx-payload-utf8')).toHaveText(payload);
   await expect(page.getByTestId('tx-payload-hex')).toHaveText(hexOf(payload));
+  // demo(tx-timeline): sent through the rpc and sealed by a mempool proposer, so it has a mempool phase;
+  // only a fast block has a fast voting phase
+  const timeline = page.getByTestId('tx-timeline');
+  await expect(timeline).toHaveAttribute('data-slot', slot);
+  const phases = ['mempool', 'proposing', ...(blockPath === 'fast' ? ['fast_voting'] : []), 'finalizing'];
+  const names = { mempool: 'Mempool', proposing: 'Proposing', fast_voting: 'Fast voting', finalizing: 'Finalizing' };
+  const rows = timeline.getByTestId('timeline-row');
+  await expect(rows).toHaveCount(phases.length);
+  expect(await rows.evaluateAll((els) => els.map((e) => e.getAttribute('data-phase')))).toEqual(phases);
+  await expect(timeline.getByTestId('timeline-name')).toHaveText(phases.map((p) => names[p as keyof typeof names]));
+  await expect(timeline.getByTestId('timeline-seg')).toHaveCount(phases.length);
+  for (const d of await timeline.getByTestId('timeline-duration').allTextContents()) expect(d).toMatch(/^-?\d+(\.\d)? ms$/);
+  for (const row of await rows.all()) await expect(row.locator('td')).toHaveCount(4);
+  await expect(timeline.getByTestId('timeline-total')).toHaveText(/^end to end -?\d+(\.\d)? ms$/);
+  await timeline.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: path.join(stack.shots, 'e2e-tx-timeline.png'), fullPage: true });
+  // end demo(tx-timeline)
 
   // live off: silence, one fetch per Refresh, and the choice survives a reload
   await page.goto('/#/');

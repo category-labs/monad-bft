@@ -78,7 +78,10 @@ fn assert_in_ledger(ledger: &Path, view: &TxView, tx: &Tx) -> Option<u64> {
         .read_lane(slot, lane)
         .unwrap()
         .expect("a positive lane");
-    assert!(decode_batch(&payload).unwrap().contains(tx));
+    let mut stamped = tx.clone(); // demo(tx-timeline)
+    stamped.received_at_ns = view.received_at_ns; // demo(tx-timeline)
+    assert!(view.received_at_ns > 0); // demo(tx-timeline)
+    assert!(decode_batch(&payload).unwrap().contains(&stamped)); // demo(tx-timeline)
     reader.read_meta(slot).unwrap().lanes[lane as usize].proposer
 }
 

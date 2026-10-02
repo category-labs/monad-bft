@@ -146,6 +146,7 @@ pub fn tx(nonce: u64) -> Tx {
         sender: [0x77; 20],
         nonce,
         payload: Bytes::from(format!("rpc test {nonce}")),
+        received_at_ns: 0, // demo(tx-timeline)
     }
 }
 
@@ -220,7 +221,7 @@ pub fn write_block(ledger: &Path, slot: u64, lanes: &[&[Tx]]) {
             proposer: Some(0),
             committed: Some(CommittedLane {
                 root: [9; 20],
-                payload: encode_batch(txs),
+                payload: encode_batch(1, txs), // demo(tx-timeline)
             }),
         })
         .collect();
@@ -231,6 +232,7 @@ pub fn write_block(ledger: &Path, slot: u64, lanes: &[&[Tx]]) {
             deadline_ns: Some(1_000_000),
             finalized_at_ns: 2_000_000,
             path: FinalizationPath::Fast,
+            fast_block_at_ns: None, // demo(tx-timeline)
             lanes,
             proof: Bytes::from_static(b"proof"),
         })
@@ -354,7 +356,7 @@ impl FakeSwarm {
     pub fn arrivals_of(&self, tx: &Tx) -> Vec<(u64, Arrival)> {
         self.arrivals()
             .into_iter()
-            .filter(|(_, arrival)| arrival.tx == *tx)
+            .filter(|(_, arrival)| arrival.tx.hash() == tx.hash()) // demo(tx-timeline)
             .collect()
     }
 

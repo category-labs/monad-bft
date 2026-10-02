@@ -241,6 +241,23 @@ pre.hex {
 .lane-txs .preview { text-align: right; }
 .lane .more { padding: 7px 12px; font-size: 12px; border-top: 1px solid var(--line); }
 
+/* demo(tx-timeline): per-tx latency bar and table */
+.timeline { margin-top: 14px; }
+.timeline h2 .muted { font-weight: 500; font-size: 12px; }
+.tl-bar { display: flex; gap: 2px; height: 14px; border-radius: var(--radius); overflow: hidden; background: var(--line); }
+.tl-seg { min-width: 3px; }
+.tl-dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 8px; background: var(--line-strong); }
+.tl-mempool { background: var(--faint); }
+.tl-proposing { background: var(--dim); }
+.tl-fast_voting { background: var(--accent); }
+.tl-finalizing { background: #85e6ff; }
+.tl-table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; }
+.tl-table th, .tl-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.tl-table th { color: var(--muted); font-weight: 500; font-size: 12px; }
+.tl-table th:last-child, .tl-table td:last-child { text-align: right; }
+.tl-note { font-size: 12px; margin: 10px 0 0; }
+/* end demo(tx-timeline) */
+
 .loading { color: var(--muted); padding: 24px 0; }
 .waiting { padding: 28px 16px; text-align: center; color: var(--muted); }
 

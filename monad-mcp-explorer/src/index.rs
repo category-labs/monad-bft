@@ -729,6 +729,7 @@ mod tests {
             sender: [sender; 20],
             nonce,
             payload: Bytes::copy_from_slice(payload.as_bytes()),
+            received_at_ns: 0, // demo(tx-timeline)
         }
     }
 
@@ -738,7 +739,7 @@ mod tests {
             proposer: Some(u64::from(index) + 10),
             root: txs.map(|_| [index as u8; 20]),
             payload_len: txs.map_or(0, |t| {
-                monad_mcp_chorus::ledger::encode_batch(t).len() as u32
+                monad_mcp_chorus::ledger::encode_batch(u64::MAX, t).len() as u32 // demo(tx-timeline)
             }),
             tx_count: txs.map_or(0, |t| t.len() as u32),
             decode_error: false,
@@ -809,7 +810,10 @@ mod tests {
             (4, 3, 2, 1)
         );
         assert_eq!(s.tx_count, 2);
-        assert_eq!(s.payload_bytes, m.lanes[0].payload_len + 1);
+        assert_eq!(
+            s.payload_bytes,
+            m.lanes[0].payload_len + m.lanes[2].payload_len
+        ); // demo(tx-timeline)
         assert_eq!(s.latency_ns(), Some(7_000_000));
         assert_eq!(s.finalized_at_ns, 407_000_000);
 

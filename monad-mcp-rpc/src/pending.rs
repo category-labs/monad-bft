@@ -189,6 +189,7 @@ impl PendingSet {
         if failed {
             let record = self.records.get_mut(&hash).unwrap();
             record.state = TxState::Pending;
+            record.tx = tx; // demo(tx-timeline): the retry is sent with this admission's stamp
             record.history.clear();
             record.last_sent = now;
             self.finished.retain(|finished| *finished != hash);
@@ -302,6 +303,7 @@ mod tests {
             sender: [1; 20],
             nonce,
             payload: Bytes::from_static(b"pending"),
+            received_at_ns: 0, // demo(tx-timeline)
         }
     }
 
@@ -335,6 +337,10 @@ mod tests {
             set.submit(tx(2), t0).unwrap(),
             (tx(2).hash(), Admission::Known)
         );
+        let mut restamped = tx(2); // demo(tx-timeline)
+        restamped.received_at_ns = 9; // demo(tx-timeline)
+        assert_eq!(set.submit(restamped, t0).unwrap().1, Admission::Known); // demo(tx-timeline)
+        assert_eq!(set.get(&tx(2).hash()).unwrap().tx, tx(2)); // demo(tx-timeline)
         assert_eq!(set.in_flight(), 4);
 
         // finishing one frees its slot in the bound
@@ -438,6 +444,26 @@ mod tests {
             set.commit(&tx(nonce).hash(), commit(nonce));
         }
         assert!(set.get(&hash).is_none());
+    }
+
+    // demo(tx-timeline)
+    #[test]
+    fn a_retried_tx_takes_the_new_received_at() {
+        let mut set = PendingSet::new(config());
+        let t0 = Instant::now();
+        let (hash, _) = set.submit(tx(1), t0).unwrap();
+        for i in 0..3 {
+            set.take_due(t0 + RESEND * i);
+            set.record_send(&hash, t0 + RESEND * i, sent(20));
+        }
+        set.take_due(t0 + RESEND * 3);
+        let restamped = Tx {
+            received_at_ns: 9,
+            ..tx(1)
+        };
+        let admission = set.submit(restamped.clone(), t0 + RESEND * 4).unwrap().1;
+        assert_eq!(admission, Admission::Retried);
+        assert_eq!(set.get(&hash).unwrap().tx, restamped);
     }
 
     // nothing the sender learns ends a tx early: only the ledger or the attempts do

@@ -32,6 +32,8 @@ pub struct FinalizedSlot {
     pub at: Timestamp,
     // the decided deadline, if the slot was opened here
     pub deadline: Option<Timestamp>,
+    // when cadence formed the fast block, on either path. demo(tx-timeline)
+    pub fast_block_at: Option<Timestamp>,
     pub finalization: SlotFinalization,
     pub proposals: ProposalMap<Option<Bytes>>,
 }
@@ -39,6 +41,7 @@ pub struct FinalizedSlot {
 #[derive(Default)]
 struct SlotCollection {
     deadline: Option<Timestamp>,
+    fast_block_at: Option<Timestamp>, // demo(tx-timeline)
     finalized: Option<(Timestamp, SlotFinalization)>,
     decoded: HashMap<(ProposalIndex, MerkleRoot), Bytes>,
 }
@@ -71,6 +74,7 @@ impl SlotCollection {
             slot,
             at,
             deadline: self.deadline,
+            fast_block_at: self.fast_block_at, // demo(tx-timeline)
             finalization,
             proposals,
         }
@@ -94,6 +98,11 @@ impl FinalizationCollector {
     ) {
         self.slots.entry(slot).or_default().finalized = Some((at, finalization));
         self.complete(slot);
+    }
+
+    // demo(tx-timeline): an optimistic commit comes before its slot's finalization.
+    pub fn handle_fast_block(&mut self, at: Timestamp, slot: Slot) {
+        self.slots.entry(slot).or_default().fast_block_at = Some(at);
     }
 
     pub fn handle_decoded(

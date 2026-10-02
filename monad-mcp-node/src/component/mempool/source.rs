@@ -17,13 +17,14 @@ use bytes::Bytes;
 use rand::{Rng as _, RngCore as _};
 
 use super::SharedMempool;
-use crate::chorus::types::{ProposalIndex, Slot};
+use crate::chorus::types::{ProposalIndex, Slot, Timestamp}; // demo(tx-timeline)
 
 // what a sealed proposal carries
 pub trait ProposalSource {
     // at most `proposal_size_limit` bytes, and never empty
     fn next_payload(
         &mut self,
+        now: Timestamp, // demo(tx-timeline)
         slot: Slot,
         index: ProposalIndex,
         proposal_size_limit: usize,
@@ -37,6 +38,7 @@ pub struct RandomSource;
 impl ProposalSource for RandomSource {
     fn next_payload(
         &mut self,
+        _now: Timestamp, // demo(tx-timeline)
         _slot: Slot,
         _index: ProposalIndex,
         proposal_size_limit: usize,
@@ -51,17 +53,23 @@ impl ProposalSource for RandomSource {
     }
 }
 
-// the mempool's head as `rlp(Vec<Tx>)`; an empty mempool yields the empty list
+// demo(tx-timeline): the mempool's head as `rlp[sealed_at_ns, Vec<Tx>]` stamped with `now`;
+// an empty mempool yields an empty tx list
 pub struct MempoolSource(pub SharedMempool);
 
 impl ProposalSource for MempoolSource {
     fn next_payload(
         &mut self,
+        now: Timestamp, // demo(tx-timeline)
         slot: Slot,
         index: ProposalIndex,
         proposal_size_limit: usize,
     ) -> Bytes {
-        let payload = self.0.lock().drain(slot, index, proposal_size_limit);
+        let sealed_at_ns = u64::try_from(now.as_nanos()).unwrap_or(0); // demo(tx-timeline)
+        let payload = self
+            .0
+            .lock()
+            .drain(slot, index, proposal_size_limit, sealed_at_ns); // demo(tx-timeline)
         tracing::debug!(slot = slot.0, index, len = payload.len(), "drained mempool");
         payload
     }
@@ -69,16 +77,18 @@ impl ProposalSource for MempoolSource {
 
 #[cfg(test)]
 mod tests {
-    use monad_mcp_chorus::ledger::{Tx, decode_batch};
+    use monad_mcp_chorus::ledger::{Tx, decode_batch, decode_sealed_batch}; // demo(tx-timeline)
 
     use super::*;
     use crate::{component::Mempool, config::MempoolConfig};
+
+    const NOW: Timestamp = Timestamp::from_millis(1_234); // demo(tx-timeline)
 
     #[test]
     fn a_random_payload_is_non_empty_and_within_the_proposal_size_limit() {
         for proposal_size_limit in [0, 1, 7, 1024, 1 << 20] {
             for slot in 0..64 {
-                let message = RandomSource.next_payload(Slot(slot), 0, proposal_size_limit);
+                let message = RandomSource.next_payload(NOW, Slot(slot), 0, proposal_size_limit); // demo(tx-timeline)
                 assert!(!message.is_empty());
                 assert!(message.len() <= proposal_size_limit.max(1));
             }
@@ -89,20 +99,26 @@ mod tests {
     fn a_mempool_payload_decodes_and_fits_the_proposal_size_limit() {
         let mempool = SharedMempool::new(Mempool::new(MempoolConfig::default()));
         let mut source = MempoolSource(mempool.clone());
-        assert_eq!(&source.next_payload(Slot(0), 0, 64)[..], [0xc0]);
+        // demo(tx-timeline): the seal time is the proposing clock's `now`
+        let empty = source.next_payload(NOW, Slot(0), 0, 64);
+        assert_eq!(
+            decode_sealed_batch(&empty).unwrap(),
+            (1_234_000_000, vec![])
+        );
 
         for nonce in 0..100 {
             let tx = Tx {
                 sender: [1; 20],
                 nonce,
                 payload: Bytes::from(vec![0xab; 200]),
+                received_at_ns: 0, // demo(tx-timeline)
             };
             mempool.lock().admit(tx).unwrap();
         }
         let proposal_size_limit = 4096;
         let mut seen = 0;
         for slot in 1.. {
-            let payload = source.next_payload(Slot(slot), 0, proposal_size_limit);
+            let payload = source.next_payload(NOW, Slot(slot), 0, proposal_size_limit); // demo(tx-timeline)
             assert!(payload.len() <= proposal_size_limit);
             let txs = decode_batch(&payload).unwrap();
             if txs.is_empty() {
