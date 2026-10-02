@@ -104,8 +104,13 @@ test('L6b: send from the panel, follow it to its block and payload, then Live of
   await expect(timeline.getByTestId('timeline-name')).toHaveText(phases.map((p) => names[p as keyof typeof names]));
   await expect(timeline.getByTestId('timeline-seg')).toHaveCount(phases.length);
   for (const d of await timeline.getByTestId('timeline-duration').allTextContents()) expect(d).toMatch(/^-?\d+(\.\d)? ms$/);
-  for (const row of await rows.all()) await expect(row.locator('td')).toHaveCount(4);
+  for (const row of await rows.all()) await expect(row.locator('td')).toHaveCount(5);
   await expect(timeline.getByTestId('timeline-total')).toHaveText(/^end to end -?\d+(\.\d)? ms$/);
+  // the axis starts at the send and ends at finalized, so its last label is the end to end total
+  const ticks = timeline.getByTestId('timeline-tick-ms');
+  await expect(ticks.first()).toHaveText('0 ms');
+  const total = (await timeline.getByTestId('timeline-total').textContent())!.replace('end to end ', '');
+  await expect(ticks.last()).toHaveText(total);
   // the lane decode is a milestone: a marker on the bar and its own row, offset from the seal
   await expect(timeline.getByTestId('timeline-decoded-marker')).toBeVisible();
   const decoded = timeline.getByTestId('timeline-decoded');

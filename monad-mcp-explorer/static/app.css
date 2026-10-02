@@ -28,6 +28,7 @@
   --bad: #b3261e;
   --bad-soft: #fbe5e3;
   --new: #f3f0ff;
+  --decoded: #0e7490; /* demo(tx-timeline) */
   --shadow: 0 1px 2px rgba(14, 9, 28, 0.05);
 }
 [data-theme="dark"] {
@@ -54,6 +55,7 @@
   --bad: #f08278;
   --bad-soft: #3b1714;
   --new: #221a40;
+  --decoded: #85e6ff; /* demo(tx-timeline) */
   --shadow: none;
 }
 
@@ -241,25 +243,36 @@ pre.hex {
 .lane-txs .preview { text-align: right; }
 .lane .more { padding: 7px 12px; font-size: 12px; border-top: 1px solid var(--line); }
 
-/* demo(tx-timeline): per-tx latency bar and table */
+/* demo(tx-timeline): per-tx latency diagram and table */
 .timeline { margin-top: 14px; }
 .timeline h2 .muted { font-weight: 500; font-size: 12px; }
-.tl-track { position: relative; }
-.tl-bar { display: flex; gap: 2px; height: 14px; border-radius: var(--radius); overflow: hidden; background: var(--line); }
-.tl-seg { min-width: 3px; }
-.tl-marker { position: absolute; top: -4px; bottom: -4px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--text); }
-.tl-dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 8px; background: var(--line-strong); }
-.tl-submit { background: var(--warn); }
-.tl-forwarding { background: var(--muted); }
-.tl-decoded { background: var(--text); width: 2px; margin: 0 11px 0 3px; }
-.tl-mempool { background: var(--faint); }
-.tl-proposing { background: var(--dim); }
-.tl-fast_voting { background: var(--accent); }
-.tl-finalizing { background: #85e6ff; }
+.tl-svg { display: block; width: 100%; height: auto; overflow: visible; font-family: var(--font); font-size: 12px; }
+.tl-svg .tl-mono { font-family: var(--mono); }
+.tl-svg line { stroke: var(--faint); stroke-width: 1; }
+.tl-svg .tl-guide { stroke-dasharray: 3 3; }
+.tl-svg line.tl-dec { stroke: var(--decoded); }
+.tl-seg rect { fill: var(--seg); stroke: var(--seg-line, none); }
+.tl-in { fill: var(--seg-ink); font-size: 13px; font-weight: 600; }
+.tl-lbl { fill: var(--muted); paint-order: stroke; stroke: var(--surface); stroke-width: 3px; stroke-linejoin: round; }
+.tl-lbl .tl-val { fill: var(--text); }
+.tl-svg .tl-neg { fill: var(--bad); }
+.tl-svg text.tl-dec, .tl-svg text.tl-dec .tl-val { fill: var(--decoded); }
+.tl-decoded-mark { fill: var(--decoded); stroke: var(--surface); stroke-width: 2; }
+.tl-dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 8px; background: var(--seg, var(--line-strong)); }
+.tl-dot.tl-decoded { background: var(--decoded); border-radius: 1px; transform: rotate(45deg) scale(0.85); }
+.tl-submit, .tl-forwarding { --seg: var(--line-strong); --seg-line: var(--faint); --seg-ink: var(--text); }
+.tl-mempool { --seg: var(--dim-soft); --seg-line: var(--dim-line); --seg-ink: var(--text); }
+.tl-proposing { --seg: var(--dim); --seg-ink: var(--text); }
+.tl-fast_voting { --seg: var(--accent); --seg-ink: var(--accent-text); }
+.tl-finalizing { --seg: var(--accent-ink); --seg-ink: var(--accent-text); }
+/* dark --accent-ink equals --accent, so finalizing would merge with fast voting */
+[data-theme="dark"] .tl-finalizing { --seg: var(--monad); }
+.tl-scroll { overflow-x: auto; }
 .tl-table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; }
 .tl-table th, .tl-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
 .tl-table th { color: var(--muted); font-weight: 500; font-size: 12px; }
 .tl-table th:last-child, .tl-table td:last-child { text-align: right; }
+.tl-table td { white-space: nowrap; }
 .tl-note { font-size: 12px; margin: 10px 0 0; }
 /* end demo(tx-timeline) */
 
@@ -275,6 +288,8 @@ pre.hex {
   .search { flex-basis: 100%; }
   .controls { margin-left: 0; }
   .page { padding: 14px; }
+  .tl-table { font-size: 12px; } /* demo(tx-timeline) */
+  .tl-table th, .tl-table td { padding: 6px 4px; }
 }
 @media (max-width: 960px) {
   .grid2 { grid-template-columns: 1fr; }

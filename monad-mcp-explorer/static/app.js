@@ -413,42 +413,135 @@
   const PHASES = {
     submit: 'Submit', forwarding: 'Forwarding', mempool: 'Mempool', proposing: 'Proposing', fast_voting: 'Fast voting', finalizing: 'Finalizing',
   };
+  // demo(tx-timeline): the events bounding each phase; finalizing starts at the fast block, else the deadline
+  const EDGES = {
+    submit: ['sent', 'rpc received'], forwarding: ['rpc received', 'admitted'], mempool: ['admitted', 'sealed'],
+    proposing: ['sealed', 'deadline'], fast_voting: ['deadline', 'fast block'], finalizing: [null, 'finalized'],
+  };
+  // demo(tx-timeline)
+  const at = (v) => (v === 0 ? '0 ms' : ms(v));
+  const rel = (v) => `${v >= 0 ? '+' : ''}${at(v)}`;
+  const textW = (s, size) => s.length * size * 0.6;
+  // demo(tx-timeline): from the middle outward, each label takes the nearest row where it hits no label or tick and
+  // its tick (at b.x) crosses no label above; failing that, a new row whose tick starts below the label it would cross
+  function stagger(boxes, gap, mid) {
+    const rows = [];
+    const over = (row, x0, x1, labels) => row.some(([a, c, l]) => (l || !labels) && x0 < c && a < x1);
+    const crossed = (b, r) => rows.slice(0, r).map((row) => over(row, b.x - 2, b.x + 2, true));
+    for (const b of [...boxes].sort((a, c) => Math.abs(a.x - mid) - Math.abs(c.x - mid))) {
+      const free = (r) => (r === rows.length || !over(rows[r], b.x0 - gap, b.x1 + gap, false)) && !crossed(b, r).includes(true);
+      let r = 0;
+      while (r < rows.length && !free(r)) r++;
+      b.row = r;
+      b.from = crossed(b, r).lastIndexOf(true) + 1;
+      rows[r] = [...(rows[r] || []), [b.x0, b.x1, true]];
+      for (let k = 0; k < r; k++) rows[k].push([b.x, b.x, false]);
+    }
+    return rows.length;
+  }
+
   // demo(tx-timeline)
   function timelineCard(i) {
     const ph = i.phases || [];
     if (!ph.length) return '';
-    const spans = ph.map((p) => Math.max(p.duration_ms, 0));
-    const total = spans.reduce((a, b) => a + b, 0);
     const label = (p) => PHASES[p.name] || p.name;
     const tod = (t) => new Date(t).toISOString().slice(11, 23);
-    const segs = ph.map((p, k) => `<span class="tl-seg tl-${esc(p.name)}" data-testid="timeline-seg" style="flex-grow:${total ? spans[k] / total : 1}"
-      title="${esc(label(p))}: ${esc(ms(p.duration_ms))}"></span>`).join('');
+    const f = (v) => v.toFixed(1);
+    const fast = ph.some((p) => p.name === 'fast_voting');
+    const bounds = (p) => {
+      const [a, b] = EDGES[p.name] || [`${p.name} start`, `${p.name} end`];
+      return [a ?? (fast ? 'fast block' : 'deadline'), b];
+    };
+    // 0 ms is the first event, sent when known; x never runs backwards, so a skewed phase is zero width
+    const t0 = ph[0].start_ms;
+    const times = new Map();
+    for (const p of ph) {
+      const [a, b] = bounds(p);
+      if (!times.has(a)) times.set(a, p.start_ms);
+      if (!times.has(b)) times.set(b, p.end_ms);
+    }
+    let reach = 0;
+    const events = [...times].map(([name, t]) => ({ name, off: t - t0, c: (reach = Math.max(reach, t - t0)) }));
+    const span = Math.max(reach, 1e-3);
+    const e2e = ph[ph.length - 1].end_ms - t0;
+    // viewBox width tracks the rendered width so text stays ~1:1 with css px, legible on a phone
+    const W = Math.max(280, ($('#tx')?.clientWidth || 1034) - 34);
+    const X = (off) => 1 + (Math.min(Math.max(off, 0), span) / span) * (W - 2);
+    const xOf = new Map(events.map((e) => [e.name, X(e.c)]));
+    // labels centre on their tick; at the left edge one starts after it, at the right edge (and the last event's) ends
+    // before it, so edge clusters stair-step clear of each other's ticks
+    const place = (b, x, w, end) => {
+      b.x = x;
+      end = end || x > W - 8;
+      b.anchor = end || x + w / 2 > W ? 'end' : x - w / 2 < 0 ? 'start' : 'middle';
+      b.x0 = end ? x - w - 4 : b.anchor === 'end' ? W - w : b.anchor === 'start' ? x + 4 : x - w / 2;
+      b.x1 = b.x0 + w;
+      b.ax = b.anchor === 'middle' ? x : b.anchor === 'start' ? b.x0 : b.x1;
+    };
+
+    const GAP = 3, BAR = 56, ROW = 18, LEAD = 12, ROW2 = 34;
+    const segs = ph.map((p) => {
+      const [a, b] = bounds(p);
+      const xa = xOf.get(a), xb = xOf.get(b);
+      const text = `${label(p)} · ${ms(p.duration_ms)}`;
+      return { p, xa, xb, cx: (xa + xb) / 2, text, inside: p.duration_ms >= 0 && textW(text, 13) + 16 <= xb - xa - GAP };
+    });
+    const above = segs.filter((s) => !s.inside);
+    for (const s of above) place(s, s.cx, textW(s.text, 12));
+    const t = i.lane_decoded_ms;
+    const marks = events.map((e) => ({ name: e.name, val: at(e.off), x: X(e.c), cls: '', id: 'timeline-tick' }));
+    if (t != null) marks.push({ name: 'lane decoded (this node)', val: at(t - t0), x: X(t - t0), cls: ' tl-dec', id: 'timeline-decoded-tick' });
+    marks.forEach((m, k) => place(m, m.x, Math.max(textW(m.name, 12), textW(m.val, 12)), k === events.length - 1));
+    const na = stagger(above, 8, W / 2), nb = stagger(marks, 8, W / 2);
+    const barY = na ? 14 + LEAD + (na - 1) * ROW : 2, axisY = barY + BAR + 10, H = axisY + 8 + nb * ROW2;
+
+    const val = (p) => `${esc(label(p))} · <tspan class="tl-mono">${esc(ms(p.duration_ms))}</tspan>`;
+    const bars = segs.map(({ p, xa, xb, cx, inside }) => {
+      const w = Math.max(xb - xa - GAP, 2);
+      const rect = p.duration_ms < 0 ? ''
+        : `<rect x="${f(w > 2 ? xa + GAP / 2 : cx - 1)}" y="${barY}" width="${f(w)}" height="${BAR}" rx="${f(Math.min(8, w / 2))}"></rect>`;
+      const tip = `${label(p)}: ${ms(p.duration_ms)}, ${stamp(p.start_ms)} to ${stamp(p.end_ms)}`;
+      return `<g class="tl-seg tl-${esc(p.name)}" data-testid="timeline-seg" data-phase="${esc(p.name)}"><title>${esc(tip)}</title>${rect}${inside
+        ? `<text class="tl-in" x="${f(cx)}" y="${barY + BAR / 2}" dy="0.35em" text-anchor="middle">${val(p)}</text>` : ''}</g>`;
+    }).join('');
+    const lines = [`<line class="tl-axis" x1="0" x2="${W}" y1="${axisY}" y2="${axisY}"></line>`];
+    const texts = [];
+    for (const s of above) {
+      const y = barY - LEAD - s.row * ROW;
+      const y1 = s.from ? barY - LEAD - (s.from - 1) * ROW - 13 : barY - 1;
+      lines.push(`<line class="tl-lead" x1="${f(s.cx)}" x2="${f(s.cx)}" y1="${y1}" y2="${y + 4}"></line>`);
+      texts.push(`<text class="tl-lbl${s.p.duration_ms < 0 ? ' tl-neg' : ''}" x="${f(s.ax)}" y="${y}" text-anchor="${s.anchor}">${val(s.p)}</text>`);
+    }
+    for (const m of marks) {
+      const y = axisY + 8 + m.row * ROW2;
+      lines.push(`<line class="tl-guide${m.cls}" x1="${f(m.x)}" x2="${f(m.x)}" y1="${m.cls ? barY + BAR : barY}" y2="${axisY}"></line>`,
+        `<line class="tl-tick${m.cls}" x1="${f(m.x)}" x2="${f(m.x)}" y1="${axisY + (m.from ? m.from * ROW2 + 6 : 0)}" y2="${y - 2}"></line>`);
+      texts.push(`<text class="tl-lbl${m.cls}" data-testid="${m.id}" data-event="${esc(m.name)}" x="${f(m.ax)}" y="${y + 13}" text-anchor="${m.anchor}">${esc(m.name)}<tspan
+        class="tl-mono tl-val" data-testid="${m.id}-ms" x="${f(m.ax)}" dy="15">${esc(m.val)}</tspan></text>`);
+    }
+
     const rows = ph.map((p) => `<tr data-testid="timeline-row" data-phase="${esc(p.name)}"><td data-testid="timeline-name"><i class="tl-dot tl-${esc(p.name)}"></i>${esc(label(p))}</td>
+      <td class="mono num" data-testid="timeline-offset">${esc(rel(p.start_ms - t0))}</td>
       <td class="mono" title="${esc(stamp(p.start_ms))}">${esc(tod(p.start_ms))}</td><td class="mono" title="${esc(stamp(p.end_ms))}">${esc(tod(p.end_ms))}</td>
       <td class="mono num" data-testid="timeline-duration">${esc(ms(p.duration_ms))}</td></tr>`);
-    // the lane decode is a milestone: a marker where its time falls on the bar, a row in time order
-    const t = i.lane_decoded_ms;
+    // the lane decode is a milestone: a diamond where its time falls on the bar, a row in time order
     let marker = '';
     if (t != null) {
-      let pos = 0;
-      for (const [k, p] of ph.entries()) {
-        if (t <= p.end_ms) { pos += Math.min(Math.max(t - p.start_ms, 0), spans[k]); break; }
-        pos += spans[k];
-      }
       const sealedAt = (ph.find((p) => p.name === 'proposing') || {}).start_ms ?? (ph.find((p) => p.name === 'mempool') || {}).end_ms;
       const offset = sealedAt != null ? `${t - sealedAt >= 0 ? '+' : ''}${ms(t - sealedAt)} after sealed` : '—';
-      marker = `<i class="tl-marker" data-testid="timeline-decoded-marker" style="left:${total ? Math.min(pos / total, 1) * 100 : 0}%"
-        title="Lane decoded (this node): ${esc(offset)}"></i>`;
+      marker = `<path class="tl-decoded-mark" data-testid="timeline-decoded-marker" d="M${f(X(t - t0))} ${barY + BAR - 8}l8 8-8 8-8-8z"><title>Lane decoded (this node): ${esc(offset)}</title></path>`;
       const row = `<tr data-testid="timeline-decoded" data-phase="lane_decoded"><td><i class="tl-dot tl-decoded"></i>Lane decoded (this node)</td>
-        <td class="mono" title="${esc(stamp(t))}">${esc(tod(t))}</td><td></td><td class="mono num" data-testid="timeline-decoded-offset">${esc(offset)}</td></tr>`;
-      const at = ph.findIndex((p) => p.start_ms > t);
-      rows.splice(at < 0 ? rows.length : at, 0, row);
+        <td class="mono num">${esc(rel(t - t0))}</td><td class="mono" title="${esc(stamp(t))}">${esc(tod(t))}</td><td></td>
+        <td class="mono num" data-testid="timeline-decoded-offset">${esc(offset)}</td></tr>`;
+      const k = ph.findIndex((p) => p.start_ms > t);
+      rows.splice(k < 0 ? rows.length : k, 0, row);
     }
-    const e2e = ph[ph.length - 1].end_ms - ph[0].start_ms;
     return `<section class="card timeline" data-testid="tx-timeline" data-slot="${i.slot}">
       <h2><span>Latency · slot ${blockLink(i.slot)}</span><span class="muted" data-testid="timeline-total">end to end ${ms(e2e)}</span></h2>
-      <div class="card-body"><div class="tl-track"><div class="tl-bar">${segs}</div>${marker}</div>
-        <table class="tl-table"><thead><tr><th>Phase</th><th>Start (UTC)</th><th>End (UTC)</th><th>Duration</th></tr></thead><tbody>${rows.join('')}</tbody></table>
+      <div class="card-body"><svg class="tl-svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="${esc(`latency timeline, end to end ${ms(e2e)}`)}">
+        ${bars}${lines.join('')}${marker}${texts.join('')}</svg>
+        <div class="tl-scroll"><table class="tl-table"><thead><tr><th>Phase</th><th>Offset</th><th>Start (UTC)</th><th>End (UTC)</th><th>Duration</th></tr></thead>
+          <tbody>${rows.join('')}</tbody></table></div>
         <p class="muted tl-note">Clocks: sent is the client's, rpc received the rpc host's, admitted and sealed the proposer's, the deadline the slot schedule's,
           lane decoded, fast block and finalized this explorer's node's; skew can make a phase negative.</p></div></section>`;
   }
