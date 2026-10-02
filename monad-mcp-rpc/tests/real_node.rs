@@ -78,10 +78,12 @@ fn assert_in_ledger(ledger: &Path, view: &TxView, tx: &Tx) -> Option<u64> {
         .read_lane(slot, lane)
         .unwrap()
         .expect("a positive lane");
-    let mut stamped = tx.clone(); // demo(tx-timeline)
-    stamped.received_at_ns = view.received_at_ns; // demo(tx-timeline)
-    assert!(view.received_at_ns > 0); // demo(tx-timeline)
-    assert!(decode_batch(&payload).unwrap().contains(&stamped)); // demo(tx-timeline)
+    // demo(tx-timeline): the committed copy carries the rpc's stamp and the node's admission
+    let txs = decode_batch(&payload).unwrap();
+    let committed = txs.iter().find(|t| t.hash() == tx.hash()).unwrap();
+    assert!(view.rpc_received_at_ns > 0);
+    assert_eq!(committed.rpc_received_at_ns, view.rpc_received_at_ns);
+    assert!(committed.mempool_admitted_at_ns >= view.rpc_received_at_ns);
     reader.read_meta(slot).unwrap().lanes[lane as usize].proposer
 }
 

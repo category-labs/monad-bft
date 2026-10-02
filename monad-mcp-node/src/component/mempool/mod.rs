@@ -40,7 +40,9 @@ pub fn largest_tx() -> Tx {
         sender: [0xff; 20],
         nonce: u64::MAX,
         payload: Bytes::from(vec![0xff; MAX_TX_PAYLOAD]),
-        received_at_ns: u64::MAX, // demo(tx-timeline)
+        sent_at_ns: u64::MAX,             // demo(tx-timeline)
+        rpc_received_at_ns: u64::MAX,     // demo(tx-timeline)
+        mempool_admitted_at_ns: u64::MAX, // demo(tx-timeline)
     }
 }
 
@@ -89,12 +91,14 @@ impl Mempool {
         }
     }
 
-    pub fn admit(&mut self, tx: Tx) -> Result<(), Reject> {
+    // demo(tx-timeline): `now_ns` is the node clock's unix ns, stamped as `mempool_admitted_at_ns`
+    pub fn admit(&mut self, mut tx: Tx, now_ns: u64) -> Result<(), Reject> {
         tx.validate()?;
         let hash = tx.hash();
         if self.pending.contains(&hash) || self.recent_set.contains(&hash) {
             return Err(Reject::Duplicate);
         }
+        tx.mempool_admitted_at_ns = now_ns; // demo(tx-timeline)
         let size = tx.length();
         if self.queue.len() >= self.config.max_txs
             || self.queued_bytes + size > self.config.max_bytes
@@ -242,7 +246,9 @@ mod tests {
             sender: [7; 20],
             nonce,
             payload: Bytes::from(vec![nonce as u8; payload_len]),
-            received_at_ns: 0, // demo(tx-timeline)
+            sent_at_ns: 0,               // demo(tx-timeline)
+            rpc_received_at_ns: 0,       // demo(tx-timeline)
+            mempool_admitted_at_ns: NOW, // demo(tx-timeline)
         }
     }
 
@@ -263,6 +269,7 @@ mod tests {
     }
 
     const SEAL: u64 = 1_700_000_000_000_000_000; // demo(tx-timeline)
+    const NOW: u64 = SEAL - 1; // demo(tx-timeline)
 
     // demo(tx-timeline): the smallest limit that holds `n` txs of `payload_len`, header included
     fn limit_for(n: usize, payload_len: usize) -> usize {
@@ -274,35 +281,52 @@ mod tests {
     #[test]
     fn admission_rejects_duplicates_invalid_and_over_bound() {
         let mut pool = mempool(2, 1 << 20, 16);
-        assert_eq!(pool.admit(tx(1, 10)), Ok(()));
-        assert_eq!(pool.admit(tx(1, 10)), Err(Reject::Duplicate));
+        assert_eq!(pool.admit(tx(1, 10), NOW), Ok(()));
+        assert_eq!(pool.admit(tx(1, 10), NOW), Err(Reject::Duplicate));
         assert!(matches!(
-            pool.admit(tx(9, MAX_TX_PAYLOAD + 1)),
+            pool.admit(tx(9, MAX_TX_PAYLOAD + 1), NOW),
             Err(Reject::Invalid(TxError::PayloadTooLarge { .. }))
         ));
-        assert_eq!(pool.admit(tx(2, 10)), Ok(()));
-        assert_eq!(pool.admit(tx(3, 10)), Err(Reject::Full));
+        assert_eq!(pool.admit(tx(2, 10), NOW), Ok(()));
+        assert_eq!(pool.admit(tx(3, 10), NOW), Err(Reject::Full));
         assert_eq!(pool.len(), 2);
         assert_eq!(pool.queued_bytes(), tx(1, 10).length() * 2);
+    }
+
+    // demo(tx-timeline): admission overwrites the stamp, and the bounds count the stamped tx
+    #[test]
+    fn admission_stamps_admitted_at() {
+        let unstamped = Tx {
+            mempool_admitted_at_ns: 0,
+            ..tx(1, 10)
+        };
+        let stamped_len = tx(1, 10).length();
+        let mut pool = mempool(100, stamped_len - 1, 16);
+        assert_eq!(pool.admit(unstamped.clone(), NOW), Err(Reject::Full));
+        let mut pool = mempool(100, stamped_len, 16);
+        assert_eq!(pool.admit(unstamped, NOW), Ok(()));
+        assert_eq!(pool.queued_bytes(), tx(1, 10).length());
+        let batch = pool.drain(Slot(0), 0, 1 << 20, SEAL);
+        assert_eq!(decode_batch(&batch).unwrap(), [tx(1, 10)]);
     }
 
     #[test]
     fn the_byte_bound_counts_encoded_txs() {
         let size = tx(1, 100).length();
         let mut pool = mempool(100, size * 2, 16);
-        pool.admit(tx(1, 100)).unwrap();
-        pool.admit(tx(2, 100)).unwrap();
-        assert_eq!(pool.admit(tx(3, 1)), Err(Reject::Full));
+        pool.admit(tx(1, 100), NOW).unwrap();
+        pool.admit(tx(2, 100), NOW).unwrap();
+        assert_eq!(pool.admit(tx(3, 1), NOW), Err(Reject::Full));
         pool.drain(Slot(0), 0, 1 << 20, SEAL); // demo(tx-timeline)
         assert_eq!(pool.queued_bytes(), 0);
-        assert_eq!(pool.admit(tx(3, 1)), Ok(()));
+        assert_eq!(pool.admit(tx(3, 1), NOW), Ok(()));
     }
 
     #[test]
     fn a_drain_is_fifo_and_fits_the_proposal_size_limit() {
         let mut pool = mempool(100, 1 << 20, 16);
         for nonce in 0..10 {
-            pool.admit(tx(nonce, 100)).unwrap();
+            pool.admit(tx(nonce, 100), NOW).unwrap();
         }
         let proposal_size_limit = limit_for(3, 100); // demo(tx-timeline)
         let batch = pool.drain(Slot(0), 0, proposal_size_limit, SEAL); // demo(tx-timeline)
@@ -326,8 +350,8 @@ mod tests {
     #[test]
     fn a_head_that_does_not_fit_blocks_the_drain() {
         let mut pool = mempool(100, 1 << 20, 16);
-        pool.admit(tx(0, 500)).unwrap();
-        pool.admit(tx(1, 1)).unwrap();
+        pool.admit(tx(0, 500), NOW).unwrap();
+        pool.admit(tx(1, 1), NOW).unwrap();
         assert_eq!(
             nonces(&pool.drain(Slot(0), 0, 100, SEAL)),
             Vec::<u64>::new()
@@ -338,33 +362,33 @@ mod tests {
     #[test]
     fn in_flight_and_committed_txs_are_duplicates() {
         let mut pool = mempool(100, 1 << 20, 16);
-        pool.admit(tx(1, 10)).unwrap();
+        pool.admit(tx(1, 10), NOW).unwrap();
         pool.drain(Slot(3), 0, 1 << 20, SEAL); // demo(tx-timeline)
-        assert_eq!(pool.admit(tx(1, 10)), Err(Reject::Duplicate));
+        assert_eq!(pool.admit(tx(1, 10), NOW), Err(Reject::Duplicate));
         pool.settle(Slot(3), |_| true);
         assert_eq!(pool.in_flight(), 0);
-        assert_eq!(pool.admit(tx(1, 10)), Err(Reject::Duplicate));
+        assert_eq!(pool.admit(tx(1, 10), NOW), Err(Reject::Duplicate));
     }
 
     #[test]
     fn the_recent_set_is_bounded() {
         let mut pool = mempool(100, 1 << 20, 2);
         for nonce in 0..3 {
-            pool.admit(tx(nonce, 10)).unwrap();
+            pool.admit(tx(nonce, 10), NOW).unwrap();
         }
         pool.drain(Slot(0), 0, 1 << 20, SEAL); // demo(tx-timeline)
         pool.settle(Slot(0), |_| true);
         // the oldest committed hash was evicted
-        assert_eq!(pool.admit(tx(0, 10)), Ok(()));
-        assert_eq!(pool.admit(tx(1, 10)), Err(Reject::Duplicate));
-        assert_eq!(pool.admit(tx(2, 10)), Err(Reject::Duplicate));
+        assert_eq!(pool.admit(tx(0, 10), NOW), Ok(()));
+        assert_eq!(pool.admit(tx(1, 10), NOW), Err(Reject::Duplicate));
+        assert_eq!(pool.admit(tx(2, 10), NOW), Err(Reject::Duplicate));
     }
 
     #[test]
     fn uncommitted_lanes_are_requeued_at_the_head_in_order() {
         let mut pool = mempool(100, 1 << 20, 16);
         for nonce in 0..6 {
-            pool.admit(tx(nonce, 10)).unwrap();
+            pool.admit(tx(nonce, 10), NOW).unwrap();
         }
         let two = limit_for(2, 10); // demo(tx-timeline)
         pool.drain(Slot(5), 0, two, SEAL); // demo(tx-timeline)
@@ -374,14 +398,14 @@ mod tests {
         assert_eq!(pool.in_flight(), 0);
         assert_eq!(nonces(&pool.drain(Slot(6), 0, 1 << 20, SEAL)), [0, 1, 4, 5]); // demo(tx-timeline)
         // the committed lane stays known
-        assert_eq!(pool.admit(tx(2, 10)), Err(Reject::Duplicate));
+        assert_eq!(pool.admit(tx(2, 10), NOW), Err(Reject::Duplicate));
     }
 
     #[test]
     fn settling_touches_only_its_own_slot() {
         let mut pool = mempool(100, 1 << 20, 16);
-        pool.admit(tx(0, 10)).unwrap();
-        pool.admit(tx(1, 10)).unwrap();
+        pool.admit(tx(0, 10), NOW).unwrap();
+        pool.admit(tx(1, 10), NOW).unwrap();
         let one = limit_for(1, 10); // demo(tx-timeline)
         pool.drain(Slot(5), 0, one, SEAL); // demo(tx-timeline)
         pool.drain(Slot(6), 0, one, SEAL); // demo(tx-timeline)
@@ -393,7 +417,7 @@ mod tests {
     #[test]
     fn a_settled_or_closed_slot_drains_nothing() {
         let mut pool = mempool(100, 1 << 20, 16);
-        pool.admit(tx(0, 10)).unwrap();
+        pool.admit(tx(0, 10), NOW).unwrap();
         pool.settle(Slot(4), |_| false);
         let empty = encode_batch(SEAL, &[]); // demo(tx-timeline)
         assert_eq!(pool.drain(Slot(4), 0, 1 << 20, SEAL), empty); // demo(tx-timeline)
@@ -406,8 +430,8 @@ mod tests {
     #[test]
     fn a_cap_jump_releases_unsettled_drains() {
         let mut pool = mempool(100, 1 << 20, 16);
-        pool.admit(tx(0, 10)).unwrap();
-        pool.admit(tx(1, 10)).unwrap();
+        pool.admit(tx(0, 10), NOW).unwrap();
+        pool.admit(tx(1, 10), NOW).unwrap();
         let one = limit_for(1, 10); // demo(tx-timeline)
         pool.drain(Slot(3), 0, one, SEAL); // demo(tx-timeline)
         pool.drain(Slot(8), 0, one, SEAL); // demo(tx-timeline)
@@ -415,8 +439,8 @@ mod tests {
         assert_eq!(pool.in_flight(), 1);
         assert_eq!(pool.len(), 0);
         // released: a re-send is admitted again, the later drain is still known
-        assert_eq!(pool.admit(tx(0, 10)), Ok(()));
-        assert_eq!(pool.admit(tx(1, 10)), Err(Reject::Duplicate));
+        assert_eq!(pool.admit(tx(0, 10), NOW), Ok(()));
+        assert_eq!(pool.admit(tx(1, 10), NOW), Err(Reject::Duplicate));
         // a late settle below the floor is ignored
         pool.settle(Slot(3), |_| false);
         assert_eq!(pool.len(), 1);

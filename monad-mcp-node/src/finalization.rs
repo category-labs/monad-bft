@@ -36,6 +36,8 @@ pub struct FinalizedSlot {
     pub fast_block_at: Option<Timestamp>,
     pub finalization: SlotFinalization,
     pub proposals: ProposalMap<Option<Bytes>>,
+    // demo(tx-timeline): when DA decoded each committed lane here; None for a negative lane.
+    pub lane_decoded_at: Vec<Option<Timestamp>>,
 }
 
 #[derive(Default)]
@@ -43,7 +45,7 @@ struct SlotCollection {
     deadline: Option<Timestamp>,
     fast_block_at: Option<Timestamp>, // demo(tx-timeline)
     finalized: Option<(Timestamp, SlotFinalization)>,
-    decoded: HashMap<(ProposalIndex, MerkleRoot), Bytes>,
+    decoded: HashMap<(ProposalIndex, MerkleRoot), (Bytes, Timestamp)>, // demo(tx-timeline)
 }
 
 impl SlotCollection {
@@ -66,9 +68,11 @@ impl SlotCollection {
     fn into_finalized(self, slot: Slot) -> FinalizedSlot {
         let (at, finalization) = self.finalized.expect("complete");
         let mut decoded = self.decoded;
+        let mut lane_decoded_at = Vec::new(); // demo(tx-timeline)
         let proposals = finalization.roots().map_indexed(|j, root| {
-            let root = root?;
-            Some(decoded.remove(&(j, root)).expect("complete"))
+            let decoded = root.map(|root| decoded.remove(&(j, root)).expect("complete"));
+            lane_decoded_at.push(decoded.as_ref().map(|&(_, at)| at)); // demo(tx-timeline)
+            decoded.map(|(message, _)| message)
         });
         FinalizedSlot {
             slot,
@@ -77,6 +81,7 @@ impl SlotCollection {
             fast_block_at: self.fast_block_at, // demo(tx-timeline)
             finalization,
             proposals,
+            lane_decoded_at, // demo(tx-timeline)
         }
     }
 }
@@ -107,13 +112,16 @@ impl FinalizationCollector {
 
     pub fn handle_decoded(
         &mut self,
+        at: Timestamp, // demo(tx-timeline)
         slot: Slot,
         proposal_index: ProposalIndex,
         root: MerkleRoot,
         message: Bytes,
     ) {
         let collection = self.slots.entry(slot).or_default();
-        collection.decoded.insert((proposal_index, root), message);
+        collection
+            .decoded
+            .insert((proposal_index, root), (message, at)); // demo(tx-timeline)
         self.complete(slot);
     }
 
@@ -155,7 +163,8 @@ mod tests {
 
     fn decode(collector: &mut FinalizationCollector, slot: u64) {
         let root = MerkleRoot(MerkleHash([slot as u8; 20]));
-        collector.handle_decoded(Slot(slot), 0, root, Bytes::from_static(b"m"));
+        let at = Timestamp::from_millis(slot); // demo(tx-timeline)
+        collector.handle_decoded(at, Slot(slot), 0, root, Bytes::from_static(b"m"));
     }
 
     #[test]

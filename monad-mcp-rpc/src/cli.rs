@@ -31,7 +31,7 @@ use serde::Serialize;
 use crate::{
     api::{SubmitView, TxView, decode_hex, hex0x, parse_fixed},
     config::DEFAULT_HTTP_ADDR,
-    service::unix_micros,
+    service::{unix_micros, unix_now},
     udp,
 };
 
@@ -188,7 +188,9 @@ impl SendArgs {
                     sender,
                     nonce,
                     payload: Bytes::from(payload),
-                    received_at_ns: 0, // demo(tx-timeline)
+                    sent_at_ns: 0,         // demo(tx-timeline): stamped as each is sent
+                    rpc_received_at_ns: 0, // demo(tx-timeline)
+                    mempool_admitted_at_ns: 0, // demo(tx-timeline)
                 })
             })
             .collect()
@@ -224,6 +226,7 @@ fn request_body(tx: &Tx) -> serde_json::Value {
         "sender": hex0x(&tx.sender),
         "nonce": tx.nonce,
         "payload_hex": hex0x(&tx.payload),
+        "sent_at_ns": tx.sent_at_ns, // demo(tx-timeline)
     })
 }
 
@@ -267,12 +270,13 @@ async fn send(args: SendArgs, out: &mut impl Write) -> Result<(), CliError> {
     if let (Some(node), Some(sender_id)) = (args.node, args.sender_id) {
         let udp_error = |source| CliError::Udp { node, source };
         let socket = udp::bind_ephemeral(node.is_ipv6()).map_err(udp_error)?;
-        for (i, tx) in txs.iter().enumerate() {
+        for (i, mut tx) in txs.into_iter().enumerate() {
             if i > 0 {
                 tokio::time::sleep(interval).await;
             }
+            tx.sent_at_ns = unix_now().as_nanos() as u64; // demo(tx-timeline)
             socket
-                .send_to(&udp::frame(NodeId::dummy(sender_id), tx), node)
+                .send_to(&udp::frame(NodeId::dummy(sender_id), &tx), node)
                 .map_err(udp_error)?;
             let view = DirectView {
                 tx_hash: hex0x(&tx.hash()),
@@ -288,13 +292,14 @@ async fn send(args: SendArgs, out: &mut impl Write) -> Result<(), CliError> {
     let base = rpc_base(args.rpc.as_deref());
     let client = reqwest::Client::new();
     let mut hashes = Vec::with_capacity(txs.len());
-    for (i, tx) in txs.iter().enumerate() {
+    for (i, mut tx) in txs.into_iter().enumerate() {
         if i > 0 {
             tokio::time::sleep(interval).await;
         }
+        tx.sent_at_ns = unix_now().as_nanos() as u64; // demo(tx-timeline)
         let response = client
             .post(format!("{base}/tx"))
-            .json(&request_body(tx))
+            .json(&request_body(&tx))
             .send()
             .await?;
         if !response.status().is_success() {

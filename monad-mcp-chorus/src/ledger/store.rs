@@ -21,6 +21,7 @@ use std::{
 };
 
 use bytes::Bytes;
+use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
 use super::{
@@ -33,7 +34,13 @@ pub const META_FILE: &str = "meta.rlp";
 pub const META_JSON_FILE: &str = "meta.json";
 pub const PROOF_FILE: &str = "proof.rlp";
 pub const TIMELINE_FILE: &str = "timeline.json"; // demo(tx-timeline)
-const TIMELINE_KEY: &str = "{\"fast_block_at_ns\":"; // demo(tx-timeline)
+
+// demo(tx-timeline): the contents of timeline.json, local wall clock unix ns.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Timeline {
+    pub fast_block_at_ns: Option<u128>,
+    pub lane_decoded_at_ns: Vec<Option<u128>>,
+}
 
 const BLOCK_NAME_DIGITS: usize = 12;
 
@@ -237,8 +244,14 @@ impl LedgerWriter {
         }
         write_file(&tmp.join(PROOF_FILE), &block.proof)?;
         // demo(tx-timeline)
-        if let Some(at) = block.fast_block_at_ns {
-            let json = format!("{TIMELINE_KEY}{at}}}\n");
+        let timeline = Timeline {
+            fast_block_at_ns: block.fast_block_at_ns,
+            lane_decoded_at_ns: block.lane_decoded_at_ns.clone(),
+        };
+        if timeline.fast_block_at_ns.is_some()
+            || timeline.lane_decoded_at_ns.iter().any(Option::is_some)
+        {
+            let json = serde_json::to_string(&timeline).expect("timeline serializes") + "\n";
             write_file(&tmp.join(TIMELINE_FILE), json.as_bytes())?;
         }
         write_file(
@@ -378,17 +391,14 @@ impl LedgerReader {
             .ok_or_else(|| self.corrupt(slot, PROOF_FILE, "missing"))
     }
 
-    // demo(tx-timeline): when the fast block formed; None without a timeline.json.
-    pub fn read_fast_block_at(&self, slot: u64) -> Result<Option<u128>, LedgerError> {
+    // demo(tx-timeline): None without a timeline.json.
+    pub fn read_timeline(&self, slot: u64) -> Result<Option<Timeline>, LedgerError> {
         let Some(data) = self.read_block_file(slot, TIMELINE_FILE)? else {
             return Ok(None);
         };
-        std::str::from_utf8(&data)
-            .ok()
-            .and_then(|s| s.trim().strip_prefix(TIMELINE_KEY)?.strip_suffix('}'))
-            .and_then(|at| at.parse().ok())
+        serde_json::from_slice(&data)
             .map(Some)
-            .ok_or_else(|| self.corrupt(slot, TIMELINE_FILE, "unparsable"))
+            .map_err(|e| self.corrupt(slot, TIMELINE_FILE, e.to_string()))
     }
 
     // metas of up to `limit` blocks with slot > `after`, oldest first; unreadable ones are skipped.
@@ -542,7 +552,9 @@ mod tests {
             sender: [0x33; 20],
             nonce,
             payload: Bytes::from(format!("payload {nonce}")),
-            received_at_ns: 0, // demo(tx-timeline)
+            sent_at_ns: 0,             // demo(tx-timeline)
+            rpc_received_at_ns: 0,     // demo(tx-timeline)
+            mempool_admitted_at_ns: 0, // demo(tx-timeline)
         }
     }
 
@@ -574,7 +586,8 @@ mod tests {
             } else {
                 FinalizationPath::Fallback
             },
-            fast_block_at_ns: None, // demo(tx-timeline)
+            fast_block_at_ns: None,     // demo(tx-timeline)
+            lane_decoded_at_ns: vec![], // demo(tx-timeline)
             lanes: vec![
                 committed(1, encode_batch(slot, &[tx(slot), tx(slot + 1)])), // demo(tx-timeline)
                 negative(),
@@ -715,34 +728,55 @@ mod tests {
 
     // demo(tx-timeline)
     #[test]
-    fn timeline_is_written_only_with_a_fast_block_time() {
+    fn timeline_is_written_only_when_a_time_is_known() {
         let (_dir, writer, reader) = setup();
-        writer.write(&block(1)).unwrap();
+        let unknown = NewBlock {
+            lane_decoded_at_ns: vec![None; 4],
+            ..block(1)
+        };
+        writer.write(&unknown).unwrap();
         assert!(!reader.block_dir(1).join(TIMELINE_FILE).exists());
-        assert_eq!(reader.read_fast_block_at(1).unwrap(), None);
+        assert_eq!(reader.read_timeline(1).unwrap(), None);
 
         let at = u128::from(u64::MAX) + 7;
         let fast = NewBlock {
             fast_block_at_ns: Some(at),
+            lane_decoded_at_ns: vec![Some(at - 1), None, Some(5), Some(6)],
             ..block(2)
         };
         let meta = writer.write(&fast).unwrap();
-        assert_eq!(reader.read_fast_block_at(2).unwrap(), Some(at));
+        let timeline = Timeline {
+            fast_block_at_ns: Some(at),
+            lane_decoded_at_ns: vec![Some(at - 1), None, Some(5), Some(6)],
+        };
+        assert_eq!(reader.read_timeline(2).unwrap(), Some(timeline));
         assert_eq!(reader.read_meta(2).unwrap(), meta);
         let json = fs::read_to_string(reader.block_dir(2).join(TIMELINE_FILE)).unwrap();
         let json: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert!(json["fast_block_at_ns"].is_number());
-        assert_eq!(reader.since(None, usize::MAX).unwrap().blocks.len(), 2);
+        assert!(json["lane_decoded_at_ns"][1].is_null());
+
+        let fallback = NewBlock {
+            lane_decoded_at_ns: vec![None, None, Some(9)],
+            ..block(3)
+        };
+        writer.write(&fallback).unwrap();
+        let timeline = reader.read_timeline(3).unwrap().unwrap();
+        assert_eq!(timeline.fast_block_at_ns, None);
+        assert_eq!(timeline.lane_decoded_at_ns, [None, None, Some(9)]);
+        assert_eq!(reader.since(None, usize::MAX).unwrap().blocks.len(), 3);
 
         assert!(matches!(
-            reader.read_fast_block_at(3),
-            Err(LedgerError::NotFound(3))
+            reader.read_timeline(4),
+            Err(LedgerError::NotFound(4))
         ));
-        fs::write(reader.block_dir(2).join(TIMELINE_FILE), b"{}").unwrap();
-        assert!(matches!(
-            reader.read_fast_block_at(2),
-            Err(LedgerError::Corrupt { .. })
-        ));
+        for corrupt in [&b"{}"[..], b"{\"fast_block_at_ns\":1", b"\xff"] {
+            fs::write(reader.block_dir(2).join(TIMELINE_FILE), corrupt).unwrap();
+            assert!(matches!(
+                reader.read_timeline(2),
+                Err(LedgerError::Corrupt { .. })
+            ));
+        }
     }
 
     #[test]

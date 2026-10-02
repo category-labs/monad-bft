@@ -101,13 +101,13 @@ impl<R: Runtime> AsyncNode<R> {
         loop {
             tokio::select! {
                 Some(inbound) = recv(&mut links.network) => {
-                    runtime.handle_inbound(inbound, links);
+                    runtime.handle_inbound(self.clock.now(), inbound, links);
                 }
                 Some(output) = links.cadence.recv() => {
                     runtime.handle_cadence(output, links);
                 }
                 Some(output) = links.da.recv() => {
-                    runtime.handle_da(output, links);
+                    runtime.handle_da(self.clock.now(), output, links);
                 }
                 Some(output) = links.proposing.recv() => {
                     runtime.handle_proposal(self.clock.now(), output, links);

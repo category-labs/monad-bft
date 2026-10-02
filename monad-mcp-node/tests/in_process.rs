@@ -45,7 +45,9 @@ fn tx(nonce: u64) -> Tx {
         sender: [0x42; 20],
         nonce,
         payload: Bytes::from(format!("in-process {nonce}")),
-        received_at_ns: 0, // demo(tx-timeline)
+        sent_at_ns: 0,             // demo(tx-timeline)
+        rpc_received_at_ns: 0,     // demo(tx-timeline)
+        mempool_admitted_at_ns: 0, // demo(tx-timeline)
     }
 }
 
@@ -138,6 +140,7 @@ fn a_delivered_tx_is_finalized_and_written_to_the_ledger() {
     let config = NodeConfig::single_node(0, at(GENESIS_MS), "unused-ledger");
     let mut harness = Harness::new(&config);
 
+    let admitted_at = harness.now.as_nanos() as u64; // demo(tx-timeline)
     harness.deliver(&tx(1));
     assert_eq!(harness.pooled(), 1);
     // a resend from the rpc is a duplicate, not a second entry
@@ -184,17 +187,26 @@ fn a_delivered_tx_is_finalized_and_written_to_the_ledger() {
     assert!(meta.deadline_ns.unwrap() <= meta.finalized_at_ns);
     // demo(tx-timeline): the fast block forms between the deadline and finalization
     let fast_block_at = finalized.fast_block_at.unwrap().as_nanos(); // demo(tx-timeline)
-    assert_eq!(
-        reader.read_fast_block_at(slot).unwrap(),
-        Some(fast_block_at)
-    ); // demo(tx-timeline)
+    let timeline = reader.read_timeline(slot).unwrap().unwrap(); // demo(tx-timeline)
+    assert_eq!(timeline.fast_block_at_ns, Some(fast_block_at)); // demo(tx-timeline)
     assert!(meta.deadline_ns.unwrap() <= fast_block_at); // demo(tx-timeline)
     assert!(fast_block_at <= meta.finalized_at_ns); // demo(tx-timeline)
+    // demo(tx-timeline): a decode time for each positive lane, none for a negative one
+    assert_eq!(timeline.lane_decoded_at_ns.len(), meta.lanes.len());
+    for (lane, decoded_at) in meta.lanes.iter().zip(&timeline.lane_decoded_at_ns) {
+        assert_eq!(lane.is_positive(), decoded_at.is_some());
+        assert!(decoded_at.is_none_or(|at| at <= meta.finalized_at_ns));
+    }
 
     let lane = meta.lanes.iter().find(|lane| lane.tx_count == 1).unwrap();
     assert_eq!(lane.proposer, Some(0));
     let payload = reader.read_lane(slot, lane.index).unwrap().unwrap();
-    assert_eq!(decode_batch(&payload).unwrap(), [tx(1)]);
+    // demo(tx-timeline): the mempool stamped its admission
+    let admitted = Tx {
+        mempool_admitted_at_ns: admitted_at,
+        ..tx(1)
+    };
+    assert_eq!(decode_batch(&payload).unwrap(), [admitted]);
     // the proof is the finalization's certificate as it crosses the wire
     let proof = reader.read_proof(slot).unwrap();
     let certificate: ChorusMessage = alloy_rlp::decode_exact(&proof).unwrap();
@@ -268,16 +280,21 @@ struct DropFirstBatch {
 }
 
 impl Runtime for DropFirstBatch {
-    fn handle_inbound(&mut self, inbound: Inbound, effects: &mut impl Dispatch<Effect>) {
-        self.inner.handle_inbound(inbound, effects);
+    fn handle_inbound(
+        &mut self,
+        now: Timestamp,
+        inbound: Inbound,
+        effects: &mut impl Dispatch<Effect>,
+    ) {
+        self.inner.handle_inbound(now, inbound, effects);
     }
 
     fn handle_cadence(&mut self, output: CadenceOutput, effects: &mut impl Dispatch<Effect>) {
         self.inner.handle_cadence(output, effects);
     }
 
-    fn handle_da(&mut self, output: DAOutput, effects: &mut impl Dispatch<Effect>) {
-        self.inner.handle_da(output, effects);
+    fn handle_da(&mut self, now: Timestamp, output: DAOutput, effects: &mut impl Dispatch<Effect>) {
+        self.inner.handle_da(now, output, effects);
     }
 
     fn handle_proposal(

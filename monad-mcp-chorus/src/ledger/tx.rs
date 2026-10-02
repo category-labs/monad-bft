@@ -28,8 +28,12 @@ pub struct Tx {
     pub sender: Address,
     pub nonce: u64,
     pub payload: Bytes,
-    // unix ns the rpc first admitted it, 0 = unknown; not part of the hash. demo(tx-timeline)
-    pub received_at_ns: u64,
+    // demo(tx-timeline): the *_at_ns are unix ns, 0 = unknown, not hashed. When the client sent it.
+    pub sent_at_ns: u64,
+    // demo(tx-timeline): when the rpc first admitted it, kept across resends.
+    pub rpc_received_at_ns: u64,
+    // demo(tx-timeline): when the node mempool admitted it, on the admitting node's clock.
+    pub mempool_admitted_at_ns: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -49,7 +53,7 @@ pub fn keccak256(data: &[u8]) -> Hash {
 }
 
 pub fn tx_hash(tx: &Tx) -> Hash {
-    // demo(tx-timeline): hashes rlp[sender, nonce, payload], leaving out received_at_ns
+    // demo(tx-timeline): hashes rlp[sender, nonce, payload], leaving out the *_at_ns stamps
     let fields: [&dyn Encodable; 3] = [&tx.sender, &tx.nonce, &tx.payload]; // demo(tx-timeline)
     let mut rlp = Vec::new(); // demo(tx-timeline)
     alloy_rlp::encode_list::<_, dyn Encodable>(&fields, &mut rlp); // demo(tx-timeline)
@@ -205,13 +209,15 @@ mod tests {
             any::<[u8; 20]>(),
             any::<u64>(),
             proptest::collection::vec(any::<u8>(), 0..=max_payload),
-            any::<u64>(), // demo(tx-timeline)
+            any::<[u64; 3]>(), // demo(tx-timeline)
         )
-            .prop_map(|(sender, nonce, payload, received_at_ns)| Tx {
+            .prop_map(|(sender, nonce, payload, [sent, received, admitted])| Tx {
                 sender,
                 nonce,
                 payload: payload.into(),
-                received_at_ns, // demo(tx-timeline)
+                sent_at_ns: sent,                 // demo(tx-timeline)
+                rpc_received_at_ns: received,     // demo(tx-timeline)
+                mempool_admitted_at_ns: admitted, // demo(tx-timeline)
             })
     }
 
@@ -220,7 +226,9 @@ mod tests {
             sender: [0x11; 20],
             nonce: 1,
             payload: Bytes::from_static(b"hello"),
-            received_at_ns: 7, // demo(tx-timeline)
+            sent_at_ns: 5,             // demo(tx-timeline)
+            rpc_received_at_ns: 7,     // demo(tx-timeline)
+            mempool_admitted_at_ns: 9, // demo(tx-timeline)
         }
     }
 
@@ -246,8 +254,8 @@ mod tests {
         expected.extend([0x01, 0x85]);
         expected.extend(b"hello");
         let mut encoded = expected.clone(); // demo(tx-timeline)
-        encoded[0] = 0xdd; // demo(tx-timeline)
-        encoded.push(0x07); // demo(tx-timeline)
+        encoded[0] = 0xdf; // demo(tx-timeline)
+        encoded.extend([0x05, 0x07, 0x09]); // demo(tx-timeline)
         assert_eq!(tx.to_rlp().as_ref(), encoded.as_slice()); // demo(tx-timeline)
         assert_eq!(tx.hash(), keccak256(&expected));
         assert_eq!(
@@ -372,6 +380,18 @@ mod tests {
         assert_eq!(b.finish(1).len(), one - 8);
     }
 
+    // demo(tx-timeline): the stamps count toward the limit
+    #[test]
+    fn builder_counts_the_stamps() {
+        let mut tx = sample_tx();
+        let one = encode_batch(u64::MAX, std::slice::from_ref(&tx)).len();
+        tx.mempool_admitted_at_ns = u64::MAX;
+        assert!(!BatchBuilder::new(one).fits(&tx));
+        let mut b = BatchBuilder::new(one + 8);
+        b.try_push(tx).unwrap();
+        assert_eq!(b.encoded_size(), one + 8);
+    }
+
     #[test]
     fn builder_rejects_invalid_tx() {
         let mut big = sample_tx();
@@ -393,10 +413,18 @@ mod tests {
             prop_assert_eq!(&decoded, &tx);
             prop_assert_eq!(decoded.hash(), tx.hash());
             prop_assert_eq!(Tx::decode_exact(&tx.to_rlp()).is_ok(), tx.validate().is_ok());
-            let mut restamped = tx.clone(); // demo(tx-timeline)
-            restamped.received_at_ns = !tx.received_at_ns; // demo(tx-timeline)
-            prop_assert_eq!(restamped.hash(), tx.hash()); // demo(tx-timeline)
-            prop_assert_ne!(restamped.to_rlp(), tx.to_rlp()); // demo(tx-timeline)
+            // demo(tx-timeline)
+            for stamp in 0..3 {
+                let mut restamped = tx.clone();
+                let field = match stamp {
+                    0 => &mut restamped.sent_at_ns,
+                    1 => &mut restamped.rpc_received_at_ns,
+                    _ => &mut restamped.mempool_admitted_at_ns,
+                };
+                *field = !*field;
+                prop_assert_eq!(restamped.hash(), tx.hash());
+                prop_assert_ne!(restamped.to_rlp(), tx.to_rlp());
+            }
         }
 
         #[test]

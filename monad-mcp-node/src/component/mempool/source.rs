@@ -111,9 +111,11 @@ mod tests {
                 sender: [1; 20],
                 nonce,
                 payload: Bytes::from(vec![0xab; 200]),
-                received_at_ns: 0, // demo(tx-timeline)
+                sent_at_ns: 0,             // demo(tx-timeline)
+                rpc_received_at_ns: 0,     // demo(tx-timeline)
+                mempool_admitted_at_ns: 0, // demo(tx-timeline)
             };
-            mempool.lock().admit(tx).unwrap();
+            mempool.lock().admit(tx, 0).unwrap(); // demo(tx-timeline)
         }
         let proposal_size_limit = 4096;
         let mut seen = 0;

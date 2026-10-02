@@ -30,7 +30,7 @@ use bytes::Bytes;
 use common::*;
 use monad_mcp_chorus::ledger::encode_batch; // demo(tx-timeline)
 use monad_mcp_chorus::ledger::{
-    BLOCKS_DIR, LedgerWriter, MAX_TX_PAYLOAD, block_dir_name, lane_file_name,
+    BLOCKS_DIR, LedgerWriter, MAX_TX_PAYLOAD, Tx, block_dir_name, lane_file_name,
 };
 use monad_mcp_explorer::{api::MAX_SEND_BODY, index::IndexConfig, loader::LoaderConfig};
 use serde_json::{Value, json};
@@ -40,26 +40,34 @@ fn hex0x(b: &[u8]) -> String {
     format!("0x{}", hex::encode(b))
 }
 
-// demo(tx-timeline)
-fn received_at(ms: u64) -> u64 {
+// demo(tx-timeline): unix ns `ms` after genesis
+fn at_ms(ms: u64) -> u64 {
     u64::try_from(GENESIS_NS).unwrap() + ms * 1_000_000
 }
 
-// demo(tx-timeline): a tx's phases in a `write_block` slot (sealed 20 ms before the deadline);
-// only fast slots have a fast voting phase.
-fn phases(slot: u64, received_ms: Option<f64>) -> Value {
-    let genesis_ms = (GENESIS_NS / 1_000_000) as f64;
-    let deadline = genesis_ms + 100.0 * slot as f64;
+// demo(tx-timeline)
+fn deadline_ms(slot: u64) -> f64 {
+    (GENESIS_NS / 1_000_000) as f64 + 100.0 * slot as f64
+}
+
+// demo(tx-timeline): the phases of `tx` in a `write_block` slot (sealed 20 ms before the
+// deadline), from its whole-ms stamps; only fast slots have a fast voting phase.
+fn phases(slot: u64, tx: &Tx) -> Value {
+    let stamp = |ns: u64| (ns > 0).then_some((ns / 1_000_000) as f64);
+    let deadline = deadline_ms(slot);
     assert_eq!(sealed_at(slot) / 1_000_000, (deadline - 20.0) as u64);
     let sealed = deadline - 20.0;
     let fast = fast_block_at(slot).map(|_| deadline + 7.0);
     let finalized = deadline + 12.0;
+    let (sent, received, admitted) = (
+        stamp(tx.sent_at_ns),
+        stamp(tx.rpc_received_at_ns),
+        stamp(tx.mempool_admitted_at_ns),
+    );
     let all = [
-        (
-            "mempool",
-            received_ms.map(|ms| genesis_ms + ms),
-            Some(sealed),
-        ),
+        ("submit", sent, received),
+        ("forwarding", received, admitted),
+        ("mempool", admitted, Some(sealed)),
         ("proposing", Some(sealed), Some(deadline)),
         ("fast_voting", Some(deadline), fast),
         ("finalizing", fast.or(Some(deadline)), Some(finalized)),
@@ -86,7 +94,9 @@ fn fixture() -> Fixture {
     let hello = tx(0xaa, 1, "hello chorus");
     let binary = tx(0xbb, 2, Bytes::from(vec![0xff; 100]));
     let mut resent = tx(0xaa, 3, "resent");
-    resent.received_at_ns = received_at(150); // demo(tx-timeline)
+    resent.sent_at_ns = at_ms(140); // demo(tx-timeline)
+    resent.rpc_received_at_ns = at_ms(150); // demo(tx-timeline)
+    resent.mempool_admitted_at_ns = at_ms(165); // demo(tx-timeline)
     write_empty(&writer, 1);
     write_block(
         &writer,
@@ -218,6 +228,12 @@ async fn block_detail_lanes_and_proof() {
     assert_eq!(lanes[2]["payload_len"], 2);
     assert_eq!(lanes[3]["positive"], true);
     assert_eq!(lanes[3]["tx_count"], 0);
+    // demo(tx-timeline)
+    let decoded: Vec<_> = lanes
+        .iter()
+        .map(|l| l["decoded_after_deadline_ms"].as_f64())
+        .collect();
+    assert_eq!(decoded, [Some(3.0), None, Some(5.0), Some(6.0)]);
 
     let (status, body, _) = get(&app, "/api/block/3").await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
@@ -287,11 +303,14 @@ async fn txs_payloads_senders_and_search() {
     assert_eq!(
         t["inclusions"],
         json!([
-            {"slot": 2, "lane": 0, "pos": 0, "phases": phases(2, Some(150.0))},
-            {"slot": 4, "lane": 0, "pos": 2, "phases": phases(4, Some(150.0))},
+            {"slot": 2, "lane": 0, "pos": 0, "phases": phases(2, &f.resent),
+                "lane_decoded_ms": deadline_ms(2) + 3.0},
+            {"slot": 4, "lane": 0, "pos": 2, "phases": phases(4, &f.resent),
+                "lane_decoded_ms": deadline_ms(4) + 3.0},
         ])
     );
-    // demo(tx-timeline): a fast slot has all four phases, an unstamped tx no mempool phase
+    // demo(tx-timeline): a fully stamped tx in a fast slot has all six phases, an unstamped
+    // one none before the seal
     let names = |p: &Value| {
         p.as_array()
             .unwrap()
@@ -301,11 +320,24 @@ async fn txs_payloads_senders_and_search() {
     };
     assert_eq!(
         names(&t["inclusions"][0]["phases"]),
-        ["mempool", "proposing", "fast_voting", "finalizing"]
+        [
+            "submit",
+            "forwarding",
+            "mempool",
+            "proposing",
+            "fast_voting",
+            "finalizing"
+        ]
     );
-    assert_eq!(t["inclusions"][0]["phases"][0]["duration_ms"], 30.0);
+    let durations: Vec<_> = t["inclusions"][0]["phases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["duration_ms"].as_f64().unwrap())
+        .collect();
+    assert_eq!(durations, [10.0, 15.0, 15.0, 20.0, 7.0, 5.0]);
     let t = ok(&app, &format!("/api/tx/{}", hex0x(&f.hello.hash()))).await;
-    assert_eq!(t["inclusions"][0]["phases"], phases(4, None));
+    assert_eq!(t["inclusions"][0]["phases"], phases(4, &f.hello));
     assert_eq!(
         names(&t["inclusions"][0]["phases"]),
         ["proposing", "fast_voting", "finalizing"]
@@ -407,29 +439,38 @@ async fn tx_payload_read_failure_is_reported() {
 }
 
 // demo(tx-timeline): a fallback block has no fast voting phase; finalizing starts at the deadline,
-// and a skewed rpc clock gives a negative mempool phase
+// a skewed proposer clock gives a negative mempool phase, and the lane decode is still known
 #[actix_web::test]
 async fn tx_phases_on_a_fallback_block() {
     let dir = TempDir::new().unwrap();
     let writer = LedgerWriter::open(dir.path()).unwrap();
     let mut late = tx(0xcc, 1, "late");
-    late.received_at_ns = received_at(1_003);
-    write_block(&writer, 10, vec![Lane::Txs(vec![late.clone()])]);
+    late.rpc_received_at_ns = at_ms(1_003);
+    late.mempool_admitted_at_ns = at_ms(1_004);
+    write_block(
+        &writer,
+        10,
+        vec![Lane::Negative, Lane::Txs(vec![late.clone()])],
+    );
     let explorer = start(dir.path(), IndexConfig::default(), fast_loader());
     explorer.wait_booted();
     let app = explorer.app().await;
     let t = ok(&app, &format!("/api/tx/{}", hex0x(&late.hash()))).await;
     let phases_json = &t["inclusions"][0]["phases"];
-    assert_eq!(*phases_json, phases(10, Some(1_003.0)));
+    assert_eq!(*phases_json, phases(10, &late));
     let names: Vec<_> = phases_json
         .as_array()
         .unwrap()
         .iter()
         .map(|p| p["name"].clone())
         .collect();
-    assert_eq!(names, ["mempool", "proposing", "finalizing"]);
-    assert_eq!(phases_json[0]["duration_ms"], -23.0);
-    assert_eq!(phases_json[2]["duration_ms"], 12.0);
+    assert_eq!(names, ["forwarding", "mempool", "proposing", "finalizing"]);
+    assert_eq!(phases_json[1]["duration_ms"], -24.0);
+    assert_eq!(phases_json[3]["duration_ms"], 12.0);
+    assert_eq!(t["inclusions"][0]["lane_decoded_ms"], deadline_ms(10) + 4.0);
+    let b = ok(&app, "/api/block/10").await;
+    assert_eq!(b["lanes"][0]["decoded_after_deadline_ms"], Value::Null);
+    assert_eq!(b["lanes"][1]["decoded_after_deadline_ms"], 4.0);
 }
 
 // demo(tx-timeline): a lane without a seal time drops the phases that start or end on it
@@ -438,7 +479,8 @@ async fn tx_phases_without_a_seal_time() {
     let dir = TempDir::new().unwrap();
     let writer = LedgerWriter::open(dir.path()).unwrap();
     let mut unsealed = tx(0xdd, 1, "unsealed");
-    unsealed.received_at_ns = received_at(250);
+    unsealed.rpc_received_at_ns = at_ms(250);
+    unsealed.mempool_admitted_at_ns = at_ms(260);
     let payload = encode_batch(0, std::slice::from_ref(&unsealed));
     write_block(&writer, 3, vec![Lane::Raw(payload)]);
     let explorer = start(dir.path(), IndexConfig::default(), fast_loader());
@@ -451,7 +493,37 @@ async fn tx_phases_without_a_seal_time() {
         .iter()
         .map(|p| p["name"].clone())
         .collect();
-    assert_eq!(names, ["fast_voting", "finalizing"]);
+    assert_eq!(names, ["forwarding", "fast_voting", "finalizing"]);
+}
+
+// demo(tx-timeline): a block without a timeline.json has no fast block or lane decode times
+#[actix_web::test]
+async fn tx_phases_without_a_timeline() {
+    let dir = TempDir::new().unwrap();
+    let writer = LedgerWriter::open(dir.path()).unwrap();
+    let plain = tx(0xee, 1, "plain");
+    write_block(&writer, 6, vec![Lane::Txs(vec![plain.clone()])]);
+    fs::remove_file(
+        writer
+            .blocks_dir()
+            .join(block_dir_name(6))
+            .join("timeline.json"),
+    )
+    .unwrap();
+    let explorer = start(dir.path(), IndexConfig::default(), fast_loader());
+    explorer.wait_booted();
+    let app = explorer.app().await;
+    let t = ok(&app, &format!("/api/tx/{}", hex0x(&plain.hash()))).await;
+    assert_eq!(t["inclusions"][0]["lane_decoded_ms"], Value::Null);
+    let names: Vec<_> = t["inclusions"][0]["phases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].clone())
+        .collect();
+    assert_eq!(names, ["proposing", "finalizing"]);
+    let b = ok(&app, "/api/block/6").await;
+    assert_eq!(b["lanes"][0]["decoded_after_deadline_ms"], Value::Null);
 }
 
 #[actix_web::test]

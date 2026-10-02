@@ -50,6 +50,8 @@ pub struct TxRequest {
     pub payload_utf8: Option<String>,
     // routing only: the tx itself does not carry it
     pub lane: Option<u32>,
+    // demo(tx-timeline): unix ns the client sent it; absent = unknown
+    pub sent_at_ns: Option<u64>,
 }
 
 // lanes a request may pin, also capped by the schedule's concurrent proposers
@@ -97,7 +99,9 @@ impl TxRequest {
             sender,
             nonce: self.nonce.unwrap_or_else(nonce),
             payload: Bytes::from(payload),
-            received_at_ns: crate::service::unix_now().as_nanos() as u64, // demo(tx-timeline)
+            sent_at_ns: self.sent_at_ns.unwrap_or(0), // demo(tx-timeline)
+            rpc_received_at_ns: crate::service::unix_now().as_nanos() as u64, // demo(tx-timeline)
+            mempool_admitted_at_ns: 0,                // demo(tx-timeline)
         })
     }
 }
@@ -173,7 +177,9 @@ pub struct TxView {
     pub finalized_at_ms: Option<u64>,
     pub error: Option<String>,
     pub submitted_at_ms: u64,
-    pub received_at_ns: u64, // demo(tx-timeline)
+    pub sent_at_ns: u64,             // demo(tx-timeline)
+    pub rpc_received_at_ns: u64,     // demo(tx-timeline)
+    pub mempool_admitted_at_ns: u64, // demo(tx-timeline)
     pub history: Vec<AttemptView>,
 }
 
@@ -212,7 +218,9 @@ impl TxView {
             finalized_at_ms: commit.map(|c| (c.finalized_at_ns / 1_000_000) as u64),
             error,
             submitted_at_ms: unix_ms(record.submitted_at),
-            received_at_ns: record.tx.received_at_ns, // demo(tx-timeline)
+            sent_at_ns: record.tx.sent_at_ns, // demo(tx-timeline)
+            rpc_received_at_ns: record.tx.rpc_received_at_ns, // demo(tx-timeline)
+            mempool_admitted_at_ns: record.tx.mempool_admitted_at_ns, // demo(tx-timeline)
             history,
         }
     }
@@ -491,15 +499,19 @@ mod tests {
             payload_hex: Some("0xdead".into()),
             payload_utf8: None,
             lane: None,
+            sent_at_ns: Some(3), // demo(tx-timeline)
         }
         .into_tx(|| unreachable!())
         .unwrap();
         assert_eq!(tx.sender, [0x11; 20]);
         assert_eq!(tx.nonce, 7);
         assert_eq!(&tx.payload[..], &[0xde, 0xad]);
-        assert!(tx.received_at_ns > 0); // demo(tx-timeline)
+        assert_eq!(tx.sent_at_ns, 3); // demo(tx-timeline)
+        assert!(tx.rpc_received_at_ns > 0); // demo(tx-timeline)
+        assert_eq!(tx.mempool_admitted_at_ns, 0); // demo(tx-timeline)
 
         let a = request(Some("x"), None).into_tx(|| 42).unwrap();
+        assert_eq!(a.sent_at_ns, 0); // demo(tx-timeline)
         let b = request(Some("x"), None).into_tx(|| 42).unwrap();
         assert_eq!(a.nonce, 42);
         assert_ne!(a.sender, b.sender, "a random sender each time");

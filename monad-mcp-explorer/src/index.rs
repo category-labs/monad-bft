@@ -729,7 +729,9 @@ mod tests {
             sender: [sender; 20],
             nonce,
             payload: Bytes::copy_from_slice(payload.as_bytes()),
-            received_at_ns: 0, // demo(tx-timeline)
+            sent_at_ns: 0,             // demo(tx-timeline)
+            rpc_received_at_ns: 0,     // demo(tx-timeline)
+            mempool_admitted_at_ns: 0, // demo(tx-timeline)
         }
     }
 

@@ -51,9 +51,16 @@ pub enum Effect {
 // the wiring: one component's output in, the effects that follow out.
 // A scenario wraps the node runtime to tamper with the effects.
 pub trait Runtime {
-    fn handle_inbound(&mut self, inbound: Inbound, effects: &mut impl Dispatch<Effect>);
+    // demo(tx-timeline): `now` stamps mempool admission
+    fn handle_inbound(
+        &mut self,
+        now: Timestamp,
+        inbound: Inbound,
+        effects: &mut impl Dispatch<Effect>,
+    );
     fn handle_cadence(&mut self, output: CadenceOutput, effects: &mut impl Dispatch<Effect>);
-    fn handle_da(&mut self, output: DAOutput, effects: &mut impl Dispatch<Effect>);
+    // demo(tx-timeline): `now` stamps lane decodes
+    fn handle_da(&mut self, now: Timestamp, output: DAOutput, effects: &mut impl Dispatch<Effect>);
     fn handle_proposal(
         &mut self,
         now: Timestamp,
@@ -91,12 +98,12 @@ impl NodeRuntime {
         self.mempool.as_ref()
     }
 
-    fn admit(&self, from: NodeId, tx: Tx) {
+    fn admit(&self, now: Timestamp, from: NodeId, tx: Tx) {
         let Some(mempool) = &self.mempool else {
             tracing::debug!(?from, "no mempool, tx dropped");
             return;
         };
-        match mempool.lock().admit(tx) {
+        match mempool.lock().admit(tx, now.as_nanos() as u64) {
             Ok(()) => tracing::debug!(?from, "tx admitted"),
             Err(reject) => tracing::debug!(?from, %reject, "tx dropped"),
         }
@@ -141,7 +148,12 @@ impl NodeRuntime {
 }
 
 impl Runtime for NodeRuntime {
-    fn handle_inbound(&mut self, inbound: Inbound, effects: &mut impl Dispatch<Effect>) {
+    fn handle_inbound(
+        &mut self,
+        now: Timestamp,
+        inbound: Inbound,
+        effects: &mut impl Dispatch<Effect>,
+    ) {
         let Inbound { from, packet } = inbound;
         match packet {
             Packet::Cadence(bytes) => {
@@ -181,7 +193,7 @@ impl Runtime for NodeRuntime {
                         return;
                     }
                 };
-                self.admit(from, tx);
+                self.admit(now, from, tx); // demo(tx-timeline)
             }
         }
     }
@@ -298,7 +310,7 @@ impl Runtime for NodeRuntime {
         }
     }
 
-    fn handle_da(&mut self, output: DAOutput, effects: &mut impl Dispatch<Effect>) {
+    fn handle_da(&mut self, now: Timestamp, output: DAOutput, effects: &mut impl Dispatch<Effect>) {
         match output {
             DAOutput::Consensus(slot, event) => {
                 effects.dispatch(Effect::Cadence(CadenceInput::DAEvent(slot, event)));
@@ -310,7 +322,7 @@ impl Runtime for NodeRuntime {
                 message,
             } => {
                 self.collector
-                    .handle_decoded(slot, proposal_index, root, message);
+                    .handle_decoded(now, slot, proposal_index, root, message); // demo(tx-timeline)
                 self.deliver_finalized(effects);
             }
             DAOutput::Disseminate(Dissemination { to, envelope }) => {
@@ -361,7 +373,9 @@ mod tests {
             sender: [5; 20],
             nonce,
             payload: Bytes::from_static(b"demux"),
-            received_at_ns: 0, // demo(tx-timeline)
+            sent_at_ns: 0,             // demo(tx-timeline)
+            rpc_received_at_ns: 0,     // demo(tx-timeline)
+            mempool_admitted_at_ns: 0, // demo(tx-timeline)
         }
     }
 
@@ -395,19 +409,33 @@ mod tests {
     fn a_tx_packet_lands_in_the_mempool_once() {
         let mut runtime = runtime_of(&config(SourceKind::Mempool));
         let mut effects = Vec::new();
-        runtime.handle_inbound(inbound(Packet::Tx(tx(1).to_rlp())), &mut effects);
+        runtime.handle_inbound(now(), inbound(Packet::Tx(tx(1).to_rlp())), &mut effects);
         runtime.handle_inbound(
+            now(),
             inbound(Packet::Tx(Bytes::from_static(b"junk"))),
             &mut effects,
         );
         // never forwarded: the rpc already chose this node
         assert!(effects.is_empty());
         assert_eq!(pooled(&runtime), 1);
-        runtime.handle_inbound(inbound(Packet::Tx(tx(1).to_rlp())), &mut effects);
+        runtime.handle_inbound(now(), inbound(Packet::Tx(tx(1).to_rlp())), &mut effects);
         assert_eq!(pooled(&runtime), 1);
-        runtime.handle_inbound(inbound(Packet::Tx(tx(2).to_rlp())), &mut effects);
+        runtime.handle_inbound(now(), inbound(Packet::Tx(tx(2).to_rlp())), &mut effects);
         assert_eq!(pooled(&runtime), 2);
         assert!(effects.is_empty());
+        // demo(tx-timeline): admission stamps the node clock's now
+        let batch = runtime
+            .mempool()
+            .unwrap()
+            .lock()
+            .drain(Slot(0), 0, 1 << 20, 0);
+        let admitted = monad_mcp_chorus::ledger::decode_batch(&batch).unwrap();
+        assert_eq!(admitted.len(), 2);
+        assert!(
+            admitted
+                .iter()
+                .all(|tx| u128::from(tx.mempool_admitted_at_ns) == now().as_nanos())
+        );
     }
 
     #[test]
@@ -418,7 +446,7 @@ mod tests {
             payload: Bytes::from(vec![0; monad_mcp_chorus::ledger::MAX_TX_PAYLOAD + 1]),
             ..tx(1)
         };
-        runtime.handle_inbound(inbound(Packet::Tx(oversized.to_rlp())), &mut effects);
+        runtime.handle_inbound(now(), inbound(Packet::Tx(oversized.to_rlp())), &mut effects);
         assert!(effects.is_empty());
         assert_eq!(pooled(&runtime), 0);
     }
@@ -428,7 +456,7 @@ mod tests {
         let mut runtime = runtime_of(&config(SourceKind::Random));
         assert!(runtime.mempool().is_none());
         let mut effects = Vec::new();
-        runtime.handle_inbound(inbound(Packet::Tx(tx(1).to_rlp())), &mut effects);
+        runtime.handle_inbound(now(), inbound(Packet::Tx(tx(1).to_rlp())), &mut effects);
         assert!(effects.is_empty());
     }
 
@@ -439,7 +467,7 @@ mod tests {
         let mut runtime = runtime_of(&config);
         let mut effects = Vec::new();
         for nonce in 1..=3 {
-            runtime.handle_inbound(inbound(Packet::Tx(tx(nonce).to_rlp())), &mut effects);
+            runtime.handle_inbound(now(), inbound(Packet::Tx(tx(nonce).to_rlp())), &mut effects);
         }
         assert!(effects.is_empty());
         assert_eq!(pooled(&runtime), 1);

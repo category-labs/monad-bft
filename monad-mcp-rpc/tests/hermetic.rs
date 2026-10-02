@@ -125,7 +125,8 @@ async fn an_unseen_tx_is_resent_each_time_to_the_leader_of_that_moment() {
     let ledger = config.ledger_dir.clone();
     let (rpc, _) = spawn_rpc(config);
 
-    let tx = tx(1);
+    let mut tx = tx(1);
+    tx.sent_at_ns = 5; // demo(tx-timeline)
     let hash = hash_hex(&tx);
     let (code, first) = post(&rpc, &body(&tx)).await;
     assert_eq!(code, 200, "{first}");
@@ -147,14 +148,14 @@ async fn an_unseen_tx_is_resent_each_time_to_the_leader_of_that_moment() {
     assert_eq!(view["state"], "pending");
     assert_resend_gaps(&arrivals[..3]);
     // demo(tx-timeline): the rpc stamps the tx once and every resend carries that stamp
-    let received_at_ns = arrivals[0].1.tx.received_at_ns; // demo(tx-timeline)
-    assert!(received_at_ns > 0); // demo(tx-timeline)
-    assert!(
-        arrivals
-            .iter()
-            .all(|(_, a)| a.tx.received_at_ns == received_at_ns)
-    ); // demo(tx-timeline)
-    assert_eq!(view["received_at_ns"], received_at_ns); // demo(tx-timeline)
+    let rpc_received = arrivals[0].1.tx.rpc_received_at_ns; // demo(tx-timeline)
+    assert!(rpc_received > 0); // demo(tx-timeline)
+    assert!(arrivals.iter().all(|(_, a)| {
+        (a.tx.sent_at_ns, a.tx.rpc_received_at_ns) == (tx.sent_at_ns, rpc_received)
+    })); // demo(tx-timeline)
+    assert_eq!(view["rpc_received_at_ns"], rpc_received); // demo(tx-timeline)
+    assert_eq!(view["sent_at_ns"], tx.sent_at_ns); // demo(tx-timeline)
+    assert_eq!(view["mempool_admitted_at_ns"], 0); // demo(tx-timeline)
     let history = view["history"].as_array().unwrap();
     let mut targets = Vec::new();
     for (attempt, (node, arrival)) in history.iter().zip(&arrivals) {

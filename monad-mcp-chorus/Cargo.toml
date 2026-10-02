@@ -13,6 +13,8 @@ bytes = { workspace = true }
 derive_more = { workspace = true, features = ["from", "sum", "add", "into"] }
 hex = { workspace = true }
 itertools = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tiny-keccak = { workspace = true, features = ["keccak"] }
 tracing = { workspace = true }
@@ -20,6 +22,5 @@ tracing = { workspace = true }
 [dev-dependencies]
 proptest = { workspace = true }
 rand = { workspace = true }
-serde_json = { workspace = true }
 tempfile = { workspace = true }
 tracing-test = { workspace = true }

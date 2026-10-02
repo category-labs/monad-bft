@@ -51,8 +51,15 @@ pub fn tx(sender: u8, nonce: u64, payload: impl Into<Bytes>) -> Tx {
         sender: [sender; 20],
         nonce,
         payload: payload.into(),
-        received_at_ns: 0, // demo(tx-timeline)
+        sent_at_ns: 0,             // demo(tx-timeline)
+        rpc_received_at_ns: 0,     // demo(tx-timeline)
+        mempool_admitted_at_ns: 0, // demo(tx-timeline)
     }
+}
+
+// demo(tx-timeline): lane j of a slot decodes 3 + j ms after its deadline, on either path
+pub fn lane_decoded_at(slot: u64, j: u32) -> u128 {
+    GENESIS_NS + u128::from(slot) * SLOT_NS + 3_000_000 + u128::from(j) * 1_000_000
 }
 
 // demo(tx-timeline)
@@ -111,6 +118,11 @@ pub fn write_block(writer: &LedgerWriter, slot: u64, lanes: Vec<Lane>) -> BlockM
                 }),
             }
         })
+        .collect::<Vec<_>>();
+    // demo(tx-timeline)
+    let lane_decoded_at_ns = (0..)
+        .zip(&lanes)
+        .map(|(j, lane)| lane.committed.as_ref().map(|_| lane_decoded_at(slot, j)))
         .collect();
     writer
         .write(&NewBlock {
@@ -119,6 +131,7 @@ pub fn write_block(writer: &LedgerWriter, slot: u64, lanes: Vec<Lane>) -> BlockM
             finalized_at_ns: finalized_at(slot),
             path: path_of(slot),
             fast_block_at_ns: fast_block_at(slot), // demo(tx-timeline)
+            lane_decoded_at_ns,                    // demo(tx-timeline)
             lanes,
             proof: proof_of(slot),
         })

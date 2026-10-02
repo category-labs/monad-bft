@@ -67,7 +67,9 @@ fn block(slot: u64, txs: u64) -> LoadedBlock {
                 sender,
                 nonce: n,
                 payload: Bytes::from(format!("payload {id}")),
-                received_at_ns: 0, // demo(tx-timeline)
+                sent_at_ns: 0,             // demo(tx-timeline)
+                rpc_received_at_ns: 0,     // demo(tx-timeline)
+                mempool_admitted_at_ns: 0, // demo(tx-timeline)
             }
         })
         .collect();

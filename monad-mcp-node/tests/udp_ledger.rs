@@ -159,7 +159,9 @@ fn tx(nonce: u64) -> Tx {
         sender: [0x5a; 20],
         nonce,
         payload: Bytes::from(format!("udp-ledger {nonce}")),
-        received_at_ns: 0, // demo(tx-timeline)
+        sent_at_ns: 0,             // demo(tx-timeline)
+        rpc_received_at_ns: 0,     // demo(tx-timeline)
+        mempool_admitted_at_ns: 0, // demo(tx-timeline)
     }
 }
 

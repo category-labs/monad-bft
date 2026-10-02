@@ -40,7 +40,10 @@ test('L6b: send from the panel, follow it to its block and payload, then Live of
   const sent = page.waitForResponse((r) => r.request().method() === 'POST' && r.url() === `${stack.explorer}/api/tx`);
   await page.getByTestId('send-submit').click();
   expect((await sent).status()).toBe(200);
-  expect((await sent).request().postDataJSON()).toEqual({ payload_utf8: payload, sender, lane: 0 });
+  // demo(tx-timeline): the page stamps its send as an integer of unix ns
+  const posted = (await sent).request();
+  expect(posted.postDataJSON()).toEqual({ payload_utf8: payload, sender, lane: 0, sent_at_ns: expect.any(Number) });
+  expect(posted.postData()).toMatch(/"sent_at_ns":\d{19}[,}]/);
 
   const result = page.getByTestId('send-result');
   await expect(result).toHaveAttribute('data-state', 'landed');
@@ -67,6 +70,7 @@ test('L6b: send from the panel, follow it to its block and payload, then Live of
   expect(Number(await card.getAttribute('data-tx-count'))).toBeGreaterThanOrEqual(1);
   await expect(card.getByTestId('lane-proposer')).toHaveText('0');
   await expect(card.getByTestId('lane-root')).toHaveAttribute('title', /^0x[0-9a-f]{40}$/);
+  await expect(card.getByTestId('lane-decoded')).toHaveText(/^[+-]\d+(\.\d)? ms from deadline$/); // demo(tx-timeline)
   const laneTx = card.locator(`[data-testid="lane-tx-row"][data-hash="${hash}"]`);
   await expect(laneTx).toBeVisible();
   await expect(laneTx.locator('.preview')).toHaveText(preview);
@@ -86,12 +90,14 @@ test('L6b: send from the panel, follow it to its block and payload, then Live of
   await expect(page.getByTestId('tx-size')).toHaveText(`${payload.length} B`);
   await expect(page.getByTestId('tx-payload-utf8')).toHaveText(payload);
   await expect(page.getByTestId('tx-payload-hex')).toHaveText(hexOf(payload));
-  // demo(tx-timeline): sent through the rpc and sealed by a mempool proposer, so it has a mempool phase;
-  // only a fast block has a fast voting phase
+  // demo(tx-timeline): sent by the page through the rpc and sealed by a mempool proposer, so every
+  // phase before the seal is known; only a fast block has a fast voting phase
   const timeline = page.getByTestId('tx-timeline');
   await expect(timeline).toHaveAttribute('data-slot', slot);
-  const phases = ['mempool', 'proposing', ...(blockPath === 'fast' ? ['fast_voting'] : []), 'finalizing'];
-  const names = { mempool: 'Mempool', proposing: 'Proposing', fast_voting: 'Fast voting', finalizing: 'Finalizing' };
+  const phases = ['submit', 'forwarding', 'mempool', 'proposing', ...(blockPath === 'fast' ? ['fast_voting'] : []), 'finalizing'];
+  const names = {
+    submit: 'Submit', forwarding: 'Forwarding', mempool: 'Mempool', proposing: 'Proposing', fast_voting: 'Fast voting', finalizing: 'Finalizing',
+  };
   const rows = timeline.getByTestId('timeline-row');
   await expect(rows).toHaveCount(phases.length);
   expect(await rows.evaluateAll((els) => els.map((e) => e.getAttribute('data-phase')))).toEqual(phases);
@@ -100,6 +106,11 @@ test('L6b: send from the panel, follow it to its block and payload, then Live of
   for (const d of await timeline.getByTestId('timeline-duration').allTextContents()) expect(d).toMatch(/^-?\d+(\.\d)? ms$/);
   for (const row of await rows.all()) await expect(row.locator('td')).toHaveCount(4);
   await expect(timeline.getByTestId('timeline-total')).toHaveText(/^end to end -?\d+(\.\d)? ms$/);
+  // the lane decode is a milestone: a marker on the bar and its own row, offset from the seal
+  await expect(timeline.getByTestId('timeline-decoded-marker')).toBeVisible();
+  const decoded = timeline.getByTestId('timeline-decoded');
+  await expect(decoded).toContainText('Lane decoded (this node)');
+  await expect(decoded.getByTestId('timeline-decoded-offset')).toHaveText(/^[+-]\d+(\.\d)? ms after sealed$/);
   await timeline.scrollIntoViewIfNeeded();
   await page.screenshot({ path: path.join(stack.shots, 'e2e-tx-timeline.png'), fullPage: true });
   // end demo(tx-timeline)
@@ -163,7 +174,7 @@ test('L6b: a lane with no upcoming leader is refused; any lane leaves lane out',
   await page.getByTestId('send-lane').selectOption('');
   const sent = page.waitForResponse((r) => r.request().method() === 'POST' && r.url() === `${stack.explorer}/api/tx`);
   await page.getByTestId('send-submit').click();
-  expect((await sent).request().postDataJSON()).toEqual({ payload_utf8: payload });
+  expect((await sent).request().postDataJSON()).toEqual({ payload_utf8: payload, sent_at_ns: expect.any(Number) }); // demo(tx-timeline)
   await expect(result).toHaveAttribute('data-state', 'landed');
 });
 

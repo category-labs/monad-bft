@@ -28,7 +28,8 @@ pub use block::{
 };
 pub use store::{
     BLOCKS_DIR, LedgerError, LedgerFollower, LedgerReader, LedgerWriter, META_FILE, META_JSON_FILE,
-    PROOF_FILE, Since, block_dir_name, lane_file_name, lane_json_file_name, parse_block_dir_name,
+    PROOF_FILE, Since, Timeline, block_dir_name, lane_file_name, lane_json_file_name,
+    parse_block_dir_name,
 };
 // demo(tx-timeline): exports decode_sealed_batch
 pub use tx::{

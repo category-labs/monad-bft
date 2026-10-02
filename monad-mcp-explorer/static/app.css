@@ -244,9 +244,14 @@ pre.hex {
 /* demo(tx-timeline): per-tx latency bar and table */
 .timeline { margin-top: 14px; }
 .timeline h2 .muted { font-weight: 500; font-size: 12px; }
+.tl-track { position: relative; }
 .tl-bar { display: flex; gap: 2px; height: 14px; border-radius: var(--radius); overflow: hidden; background: var(--line); }
 .tl-seg { min-width: 3px; }
+.tl-marker { position: absolute; top: -4px; bottom: -4px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--text); }
 .tl-dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 8px; background: var(--line-strong); }
+.tl-submit { background: var(--warn); }
+.tl-forwarding { background: var(--muted); }
+.tl-decoded { background: var(--text); width: 2px; margin: 0 11px 0 3px; }
 .tl-mempool { background: var(--faint); }
 .tl-proposing { background: var(--dim); }
 .tl-fast_voting { background: var(--accent); }

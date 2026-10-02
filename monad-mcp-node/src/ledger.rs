@@ -60,6 +60,12 @@ pub fn new_block(finalized: &FinalizedSlot, proposers: Option<&ProposerSet>) -> 
         },
         // demo(tx-timeline)
         fast_block_at_ns: fast_block_at_ns(finalized.finalization.path(), finalized.fast_block_at),
+        // demo(tx-timeline)
+        lane_decoded_at_ns: finalized
+            .lane_decoded_at
+            .iter()
+            .map(|at| at.map(|at| at.as_nanos()))
+            .collect(),
         lanes,
         proof: alloy_rlp::encode(finalized.finalization.certificate_message()).into(),
     }
@@ -224,7 +230,8 @@ mod tests {
             deadline_ns: None,
             finalized_at_ns: 0,
             path: LedgerPath::Fast,
-            fast_block_at_ns: None, // demo(tx-timeline)
+            fast_block_at_ns: None,     // demo(tx-timeline)
+            lane_decoded_at_ns: vec![], // demo(tx-timeline)
             lanes: vec![NewLane {
                 proposer: None,
                 committed: None,

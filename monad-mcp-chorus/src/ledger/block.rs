@@ -192,6 +192,8 @@ pub struct NewBlock {
     pub path: FinalizationPath,
     // local wall clock when the fast block formed; written to timeline.json. demo(tx-timeline)
     pub fast_block_at_ns: Option<u128>,
+    // demo(tx-timeline): local wall clock when DA decoded each lane, None = unknown or negative.
+    pub lane_decoded_at_ns: Vec<Option<u128>>,
     // one per proposal index 0..K.
     pub lanes: Vec<NewLane>,
     // rlp of the commit certificate message, opaque here.
@@ -532,7 +534,9 @@ pub(crate) mod tests {
             sender: [0x22; 20],
             nonce: 9,
             payload: Bytes::from_static(b"\x00hi"),
-            received_at_ns: 0, // demo(tx-timeline)
+            sent_at_ns: 0,             // demo(tx-timeline)
+            rpc_received_at_ns: 0,     // demo(tx-timeline)
+            mempool_admitted_at_ns: 0, // demo(tx-timeline)
         };
         let lane = &sample().lanes[0];
         let decoded = decode_batch(&encode_batch(1, std::slice::from_ref(&tx))); // demo(tx-timeline)

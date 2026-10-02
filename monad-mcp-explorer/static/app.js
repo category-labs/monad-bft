@@ -278,6 +278,7 @@
       }
       S.send = { state: 'sending' };
       renderSend();
+      body.sent_at_ns = Date.now() * 1e6; // demo(tx-timeline): ms precision, a JSON integer
       try {
         const res = await fetch('/api/tx', {
           method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
@@ -329,6 +330,8 @@
   }
 
   // ---- block
+  // demo(tx-timeline): a lane's decode time on this explorer's node, from the slot deadline
+  const decodedAt = (v) => (v == null ? '—' : `${v >= 0 ? '+' : ''}${ms(v)} from deadline`);
   function laneCard(slot, l) {
     const cls = !l.positive ? 'empty' : l.decode_error ? 'bad' : l.tx_count ? '' : 'quiet';
     const tag = !l.positive ? 'negative' : l.decode_error ? 'undecodable' : plural(l.tx_count, 'tx');
@@ -338,7 +341,8 @@
       <header><span class="lane-no">Lane ${l.index}</span><span class="lane-tag">${tag}</span></header>
       <dl><dt>Proposer</dt><dd data-testid="lane-proposer">${l.proposer ?? '—'}</dd>
         <dt>Root</dt><dd data-testid="lane-root" title="${esc(l.root || '')}">${l.root ? esc(short(l.root, 8)) : '—'}</dd>
-        <dt>Size</dt><dd>${l.positive ? bytes(l.payload_len) : '—'}</dd></dl>
+        <dt>Size</dt><dd>${l.positive ? bytes(l.payload_len) : '—'}</dd>
+        <dt title="when this explorer's node decoded the lane, relative to the slot deadline">Decoded</dt><dd data-testid="lane-decoded">${decodedAt(l.decoded_after_deadline_ms)}</dd></dl>
       ${txs ? `<ul class="lane-txs">${txs}</ul>` : ''}
       ${l.more_txs ? `<a class="more" data-testid="lane-more" href="#/block/${slot}/lane/${l.index}">All ${plural(l.tx_count, 'tx')} →</a>` : ''}
     </article>`;
@@ -403,9 +407,12 @@
     };
   }
 
-  // demo(tx-timeline): mempool (rpc received -> sealed), proposing (-> slot deadline),
-  // fast voting (-> fast block formed), finalizing (-> finalized)
-  const PHASES = { mempool: 'Mempool', proposing: 'Proposing', fast_voting: 'Fast voting', finalizing: 'Finalizing' };
+  // demo(tx-timeline): submit (client sent -> rpc received), forwarding (-> mempool admitted),
+  // mempool (-> sealed), proposing (-> slot deadline), fast voting (-> fast block formed),
+  // finalizing (-> finalized)
+  const PHASES = {
+    submit: 'Submit', forwarding: 'Forwarding', mempool: 'Mempool', proposing: 'Proposing', fast_voting: 'Fast voting', finalizing: 'Finalizing',
+  };
   // demo(tx-timeline)
   function timelineCard(i) {
     const ph = i.phases || [];
@@ -418,13 +425,32 @@
       title="${esc(label(p))}: ${esc(ms(p.duration_ms))}"></span>`).join('');
     const rows = ph.map((p) => `<tr data-testid="timeline-row" data-phase="${esc(p.name)}"><td data-testid="timeline-name"><i class="tl-dot tl-${esc(p.name)}"></i>${esc(label(p))}</td>
       <td class="mono" title="${esc(stamp(p.start_ms))}">${esc(tod(p.start_ms))}</td><td class="mono" title="${esc(stamp(p.end_ms))}">${esc(tod(p.end_ms))}</td>
-      <td class="mono num" data-testid="timeline-duration">${esc(ms(p.duration_ms))}</td></tr>`).join('');
+      <td class="mono num" data-testid="timeline-duration">${esc(ms(p.duration_ms))}</td></tr>`);
+    // the lane decode is a milestone: a marker where its time falls on the bar, a row in time order
+    const t = i.lane_decoded_ms;
+    let marker = '';
+    if (t != null) {
+      let pos = 0;
+      for (const [k, p] of ph.entries()) {
+        if (t <= p.end_ms) { pos += Math.min(Math.max(t - p.start_ms, 0), spans[k]); break; }
+        pos += spans[k];
+      }
+      const sealedAt = (ph.find((p) => p.name === 'proposing') || {}).start_ms ?? (ph.find((p) => p.name === 'mempool') || {}).end_ms;
+      const offset = sealedAt != null ? `${t - sealedAt >= 0 ? '+' : ''}${ms(t - sealedAt)} after sealed` : '—';
+      marker = `<i class="tl-marker" data-testid="timeline-decoded-marker" style="left:${total ? Math.min(pos / total, 1) * 100 : 0}%"
+        title="Lane decoded (this node): ${esc(offset)}"></i>`;
+      const row = `<tr data-testid="timeline-decoded" data-phase="lane_decoded"><td><i class="tl-dot tl-decoded"></i>Lane decoded (this node)</td>
+        <td class="mono" title="${esc(stamp(t))}">${esc(tod(t))}</td><td></td><td class="mono num" data-testid="timeline-decoded-offset">${esc(offset)}</td></tr>`;
+      const at = ph.findIndex((p) => p.start_ms > t);
+      rows.splice(at < 0 ? rows.length : at, 0, row);
+    }
     const e2e = ph[ph.length - 1].end_ms - ph[0].start_ms;
     return `<section class="card timeline" data-testid="tx-timeline" data-slot="${i.slot}">
       <h2><span>Latency · slot ${blockLink(i.slot)}</span><span class="muted" data-testid="timeline-total">end to end ${ms(e2e)}</span></h2>
-      <div class="card-body"><div class="tl-bar">${segs}</div>
-        <table class="tl-table"><thead><tr><th>Phase</th><th>Start (UTC)</th><th>End (UTC)</th><th>Duration</th></tr></thead><tbody>${rows}</tbody></table>
-        <p class="muted tl-note">Clocks: received is the rpc host's, sealed the proposer's, the deadline the slot schedule's, fast block and finalized this explorer's node; skew can make a phase negative.</p></div></section>`;
+      <div class="card-body"><div class="tl-track"><div class="tl-bar">${segs}</div>${marker}</div>
+        <table class="tl-table"><thead><tr><th>Phase</th><th>Start (UTC)</th><th>End (UTC)</th><th>Duration</th></tr></thead><tbody>${rows.join('')}</tbody></table>
+        <p class="muted tl-note">Clocks: sent is the client's, rpc received the rpc host's, admitted and sealed the proposer's, the deadline the slot schedule's,
+          lane decoded, fast block and finalized this explorer's node's; skew can make a phase negative.</p></div></section>`;
   }
 
   // ---- tx

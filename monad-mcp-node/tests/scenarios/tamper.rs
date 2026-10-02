@@ -64,10 +64,15 @@ impl<R> Tampered<R> {
 }
 
 impl<R: Runtime> Runtime for Tampered<R> {
-    fn handle_inbound(&mut self, inbound: Inbound, effects: &mut impl Dispatch<Effect>) {
+    fn handle_inbound(
+        &mut self,
+        now: Timestamp,
+        inbound: Inbound,
+        effects: &mut impl Dispatch<Effect>,
+    ) {
         let mut effects = Filtered::new(&mut self.filter, effects);
         let Some(handler) = &mut self.inbound_handler else {
-            self.inner.handle_inbound(inbound, &mut effects);
+            self.inner.handle_inbound(now, inbound, &mut effects);
             return;
         };
 
@@ -90,10 +95,10 @@ impl<R: Runtime> Runtime for Tampered<R> {
         }
     }
 
-    fn handle_da(&mut self, output: DAOutput, effects: &mut impl Dispatch<Effect>) {
+    fn handle_da(&mut self, now: Timestamp, output: DAOutput, effects: &mut impl Dispatch<Effect>) {
         let mut effects = Filtered::new(&mut self.filter, effects);
         let Some(handler) = &mut self.da_handler else {
-            self.inner.handle_da(output, &mut effects);
+            self.inner.handle_da(now, output, &mut effects);
             return;
         };
 

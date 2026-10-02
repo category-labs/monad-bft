@@ -55,6 +55,10 @@ test('L6a: mcp-tx via the rpc x5, each found in the explorer, the rpc and the le
     const rpc = await getJson(`${stack.rpc}/tx/${hash}`);
     expect(rpc.status).toBe(200);
     expect(rpc.body).toMatchObject({ state: 'committed', slot: tx.slot, lane: tx.lane });
+    // demo(tx-timeline): mcp-tx stamps the send, the rpc its receipt, the node its admission
+    expect(s.sent_at_ns).toBeGreaterThan(0);
+    expect(s.rpc_received_at_ns).toBeGreaterThan(0);
+    expect(tx.inclusions[0].phases.slice(0, 3).map((p: any) => p.name)).toEqual(['submit', 'forwarding', 'mempool']);
     expect(tx).toMatchObject({
       hash, sender, nonce: nonce + i, payload_utf8: `mcp-tx ${nonce + i}`, payload: hexOf(`mcp-tx ${nonce + i}`),
       payload_hash: s.payload_hash, size: s.payload_len, inclusions: [{ slot: tx.slot, lane: tx.lane, pos: tx.pos }],
@@ -99,10 +103,12 @@ test('L6c: a direct udp send to the node shows up in the explorer, bypassing the
   const after = await getJson(`${stack.explorer}/api/tx/${reply.tx_hash}`);
   expect(after.body.inclusions).toMatchObject([{ slot: tx.slot, lane: tx.lane, pos: tx.pos }]); // demo(tx-timeline)
   expect(after.body.inclusions).toHaveLength(1); // demo(tx-timeline)
-  // demo(tx-timeline): a udp send skips the rpc, so there is no received time and no mempool phase
+  // demo(tx-timeline): a udp send skips the rpc, so there is no rpc received time and no submit or
+  // forwarding phase; the node still stamps its admission
   const phases = after.body.inclusions[0].phases.map((p: any) => p.name);
-  expect(phases).not.toContain('mempool');
-  expect(phases[0]).toBe('proposing');
+  expect(phases).not.toContain('submit');
+  expect(phases).not.toContain('forwarding');
+  expect(phases.slice(0, 2)).toEqual(['mempool', 'proposing']);
   expect(phases[phases.length - 1]).toBe('finalizing');
 });
 

@@ -146,7 +146,9 @@ pub fn tx(nonce: u64) -> Tx {
         sender: [0x77; 20],
         nonce,
         payload: Bytes::from(format!("rpc test {nonce}")),
-        received_at_ns: 0, // demo(tx-timeline)
+        sent_at_ns: 0,             // demo(tx-timeline)
+        rpc_received_at_ns: 0,     // demo(tx-timeline)
+        mempool_admitted_at_ns: 0, // demo(tx-timeline)
     }
 }
 
@@ -155,6 +157,7 @@ pub fn body(tx: &Tx) -> Value {
         "sender": format!("0x{}", hex::encode(tx.sender)),
         "nonce": tx.nonce,
         "payload_hex": format!("0x{}", hex::encode(&tx.payload)),
+        "sent_at_ns": tx.sent_at_ns, // demo(tx-timeline)
     })
 }
 
@@ -232,7 +235,8 @@ pub fn write_block(ledger: &Path, slot: u64, lanes: &[&[Tx]]) {
             deadline_ns: Some(1_000_000),
             finalized_at_ns: 2_000_000,
             path: FinalizationPath::Fast,
-            fast_block_at_ns: None, // demo(tx-timeline)
+            fast_block_at_ns: None,     // demo(tx-timeline)
+            lane_decoded_at_ns: vec![], // demo(tx-timeline)
             lanes,
             proof: Bytes::from_static(b"proof"),
         })

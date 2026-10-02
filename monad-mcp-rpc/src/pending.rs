@@ -323,7 +323,9 @@ mod tests {
             sender: [1; 20],
             nonce,
             payload: Bytes::from_static(b"pending"),
-            received_at_ns: 0, // demo(tx-timeline)
+            sent_at_ns: 0,             // demo(tx-timeline)
+            rpc_received_at_ns: 0,     // demo(tx-timeline)
+            mempool_admitted_at_ns: 0, // demo(tx-timeline)
         }
     }
 
@@ -358,7 +360,7 @@ mod tests {
             (tx(2).hash(), Admission::Known)
         );
         let mut restamped = tx(2); // demo(tx-timeline)
-        restamped.received_at_ns = 9; // demo(tx-timeline)
+        restamped.rpc_received_at_ns = 9; // demo(tx-timeline)
         assert_eq!(set.submit(restamped, None, t0).unwrap().1, Admission::Known); // demo(tx-timeline)
         assert_eq!(set.get(&tx(2).hash()).unwrap().tx, tx(2)); // demo(tx-timeline)
         assert_eq!(set.in_flight(), 4);
@@ -471,7 +473,7 @@ mod tests {
 
     // demo(tx-timeline)
     #[test]
-    fn a_retried_tx_takes_the_new_received_at() {
+    fn a_retried_tx_takes_the_new_rpc_received_at() {
         let mut set = PendingSet::new(config());
         let t0 = Instant::now();
         let (hash, _) = set.submit(tx(1), None, t0).unwrap();
@@ -481,7 +483,7 @@ mod tests {
         }
         set.take_due(t0 + RESEND * 3);
         let restamped = Tx {
-            received_at_ns: 9,
+            rpc_received_at_ns: 9,
             ..tx(1)
         };
         let admission = set

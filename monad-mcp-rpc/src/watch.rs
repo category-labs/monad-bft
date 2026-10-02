@@ -150,7 +150,9 @@ mod tests {
             sender: [2; 20],
             nonce,
             payload: Bytes::from(format!("watch {nonce}")),
-            received_at_ns: 0, // demo(tx-timeline)
+            sent_at_ns: 0,             // demo(tx-timeline)
+            rpc_received_at_ns: 0,     // demo(tx-timeline)
+            mempool_admitted_at_ns: 0, // demo(tx-timeline)
         }
     }
 
@@ -170,7 +172,8 @@ mod tests {
             deadline_ns: Some(1),
             finalized_at_ns: 2,
             path: FinalizationPath::Fallback,
-            fast_block_at_ns: None, // demo(tx-timeline)
+            fast_block_at_ns: None,     // demo(tx-timeline)
+            lane_decoded_at_ns: vec![], // demo(tx-timeline)
             lanes,
             proof: Bytes::from_static(b"proof"),
         }

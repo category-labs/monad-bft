@@ -135,7 +135,7 @@ impl<R: Runtime> Node<R> {
                 self.runtime.handle_cadence(output, &mut effects);
             }
             while let Some(output) = self.da.poll() {
-                self.runtime.handle_da(output, &mut effects);
+                self.runtime.handle_da(now, output, &mut effects);
             }
             while let Some(output) = self.proposing.poll() {
                 self.runtime.handle_proposal(now, output, &mut effects);
@@ -159,7 +159,7 @@ impl<R: Runtime> Component for Node<R> {
 
     fn handle(&mut self, now: Timestamp, inbound: Inbound) {
         let mut effects = Vec::new();
-        self.runtime.handle_inbound(inbound, &mut effects);
+        self.runtime.handle_inbound(now, inbound, &mut effects);
         for effect in effects {
             self.dispatch(now, effect);
         }
