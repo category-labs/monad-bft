@@ -70,8 +70,11 @@ completed_slot_retention = 50
 [proposal]
 source = "mempool"
 num_proposals = 5
-propose_before_deadline = 500
-withhold_before_deadline = 0
+propose_before_deadline = 200
+withhold_before_deadline = 150
+
+[leader_election]
+rotation_slack = 95
 
 [ledger]
 dir = "/home/monad/monad-mcp/ledger"

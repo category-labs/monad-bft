@@ -10,11 +10,14 @@ slot_interval=100
 slots_per_window=100
 sync_boundary=80
 num_proposals=5
-propose_before=500
+propose_before=200
 completed_slot_retention=50
 repeater_interval=500
 repeater_retention=50
-withhold_before=0
+# withhold a seal that can no longer reach every validator by the deadline (= delta)
+withhold_before=150
+# lane vacant 5 of every 5 + 95 slots: all K lanes 95% of the time, tenure K * 100 slots
+rotation_slack=95
 # random: load without clients; mempool: txs from monad-mcp-rpc
 proposal_source=random
 keep_genesis=no
@@ -22,7 +25,7 @@ force=no
 only_genesis=no
 render_args=no
 
-usage="usage: gen-config.sh --genesis <unix_ms> [--keep-genesis] { --only-genesis | [--force] [--source random|mempool] [--port n] [--delta ms] [--slot-interval ms] [--slots-per-window n] [--sync-boundary n] [--num-proposals n] [--propose-before ms] [--repeater-interval ms] [--repeater-retention n] [--withhold-before ms] }"
+usage="usage: gen-config.sh --genesis <unix_ms> [--keep-genesis] { --only-genesis | [--force] [--source random|mempool] [--port n] [--delta ms] [--slot-interval ms] [--slots-per-window n] [--sync-boundary n] [--num-proposals n] [--propose-before ms] [--repeater-interval ms] [--repeater-retention n] [--withhold-before ms] [--rotation-slack n] }"
 
 while [ $# -gt 0 ]; do
     case $1 in --genesis | --keep-genesis | --force | --only-genesis) ;; *) render_args=yes ;; esac
@@ -42,6 +45,7 @@ while [ $# -gt 0 ]; do
         --repeater-interval) repeater_interval=${2:?$usage}; shift ;;
         --repeater-retention) repeater_retention=${2:?$usage}; shift ;;
         --withhold-before) withhold_before=${2:?$usage}; shift ;;
+        --rotation-slack) rotation_slack=${2:?$usage}; shift ;;
         *) die "$usage" ;;
     esac
     shift
@@ -126,6 +130,9 @@ for host in $(hosts); do
         echo "num_proposals = $num_proposals"
         echo "propose_before_deadline = $propose_before"
         echo "withhold_before_deadline = $withhold_before"
+        echo
+        echo "[leader_election]"
+        echo "rotation_slack = $rotation_slack"
         echo
         echo "[ledger]"
         echo "dir = \"/home/$ssh_user/$remote_rel/ledger\""

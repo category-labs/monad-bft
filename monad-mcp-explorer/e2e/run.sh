@@ -10,7 +10,8 @@
 #               and explorer on node 0; runs the swarm suite instead of L6a-L6d
 #   --serve     start the stack, print its urls and wait for ctrl-c; no tests
 #   --no-build  use the binaries already in the cargo target dir
-# env: E2E_SCREENSHOT_DIR (default e2e/test-results), E2E_KEEP=1 keeps the temp dir
+# env: E2E_SCREENSHOT_DIR (default e2e/test-results), E2E_KEEP=1 keeps the temp dir,
+#      E2E_ROTATION_SLACK=z writes [leader_election] rotation_slack (node default 3)
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -100,6 +101,8 @@ node_ledger() { if ((swarm)); then echo "$work/ledger-$1"; else echo "$work/ledg
 slot_ms=100
 genesis_ms=$((3000 + 500 * (nodes - 1)))
 genesis=$(($(date +%s%N) / 1000000 + genesis_ms))
+rotation_slack=${E2E_ROTATION_SLACK:-}
+[[ -z $rotation_slack || $rotation_slack =~ ^[0-9]+$ ]] || die "E2E_ROTATION_SLACK must be a number"
 
 for ((i = 0; i < nodes; i++)); do
     mkdir -p "$(node_ledger "$i")"
@@ -138,6 +141,9 @@ source = "mempool"
 [ledger]
 dir = "$(node_ledger "$i")"
 EOF
+        if [[ -n $rotation_slack ]]; then
+            printf '\n[leader_election]\nrotation_slack = %s\n' "$rotation_slack"
+        fi
     } > "$work/node-$i.toml"
 done
 node_addr=127.0.0.1:${udp_ports[0]}
@@ -188,6 +194,11 @@ start explorer "$bin/monad-mcp-explorer" --ledger-dir "$ledger" \
 
 wait_for 15 "rpc health" sh -c "curl -sf '$rpc_url/health' | jq -e '.ok == true'"
 wait_for 15 "explorer config" curl -sf "$explorer_url/api/config"
+if ((serve)); then
+    log "explorer $explorer_url, rpc $rpc_url ($nodes node(s), node 0 at $node_addr); ctrl-c to stop"
+    while :; do alive; sleep 1; done
+fi
+# the rest readies the chain for the suites: --serve hands over the urls without waiting
 # ten blocks past genesis: the chain is finalizing and the explorer tails it
 wait_for 30 "the explorer to index 10 blocks" \
     sh -c "curl -sf '$explorer_url/api/stats' | jq -e '.indexing.complete and .totals.blocks >= 10'"
@@ -206,7 +217,10 @@ if ((swarm)); then
     for ((i = 1; i < nodes; i++)); do
         wait_for 30 "node $i to finalize 10 blocks" finalized_at_least 10 "${ledgers[i]}"
     done
-    wait_for 30 "a block with all lanes occupied" all_lanes_occupied
+    # lane j opens j rotations of 5 + z slots after genesis
+    lanes=$((nodes < 5 ? nodes : 5))
+    ramp_s=$(((lanes - 1) * (5 + ${rotation_slack:-3}) * slot_ms / 1000))
+    wait_for $((30 + ramp_s)) "a block with all lanes occupied" all_lanes_occupied
 fi
 log "stack up: $nodes node(s), explorer $explorer_url, rpc $rpc_url, node 0 at $node_addr"
 
@@ -217,11 +231,6 @@ export E2E_LEDGER_DIRS
 if ((swarm)); then export E2E_SWARM=$nodes; else unset E2E_SWARM; fi
 export E2E_SLOT_MS=$slot_ms
 export E2E_SCREENSHOT_DIR=${E2E_SCREENSHOT_DIR:-$here/test-results}
-
-if ((serve)); then
-    log "serving; ctrl-c to stop"
-    while :; do alive; sleep 1; done
-fi
 
 cd "$here"
 [[ -d node_modules/@playwright/test ]] || npm ci --no-audit --no-fund
