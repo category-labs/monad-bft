@@ -30,14 +30,16 @@ use crate::{
     context::Context,
     cookie::Cookies,
     error::{Error, Result},
-    filter::{Filter, FilterAction},
+    filter::{Filter, FilterAction, HandshakeKind},
     messages::MacMessage,
     metrics::{init_api_executor_metrics, MetricNames},
     protocol::messages::{
         ControlPacket, CookieReply, DataPacket, DataPacketHeader, HandshakeInitiation,
         HandshakeResponse, Plaintext,
     },
-    session::{InitiatorState, RenewedTimer, ResponderState, SessionError, SessionIndex},
+    session::{
+        InitiatorState, RenewedTimer, ResponderState, SessionError, SessionIndex, TransportState,
+    },
     state::State,
 };
 
@@ -81,12 +83,17 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
             config.handshake_rate_reset_interval,
             config.ip_rate_limit_window,
             config.ip_history_capacity,
-            config.high_watermark_sessions,
+            config.total_transport_sessions,
+            config.max_pending_accepted_sessions,
         );
         let local_serialized_public = CompressedPublicKey::from(&local_static_public);
         debug!(local_public_key=?local_serialized_public, "initialized manager");
         Self {
-            state: State::new(metric_names),
+            state: State::with_limits(
+                metric_names,
+                config.total_transport_sessions,
+                config.max_established_peers_per_ip,
+            ),
             timers: BTreeSet::new(),
             packet_queue: VecDeque::new(),
             config,
@@ -254,6 +261,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
                 self.enqueue_packet(message.remote_addr, message.header);
             }
 
+            // TODO: Enforce the pending initiated sessions limit for retries and rekeys.
             if let Some(rekey) = rekey {
                 if let Ok((new_session_index, timer, message)) = self.init_session_with_cookie(
                     rekey.remote_public_key,
@@ -306,11 +314,15 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
         debug!(retry_attempts, "initiating connection");
 
         self.check_connect_rate_limit()?;
-        let initiated_count = self.state.initiated_sessions_count();
-        if initiated_count >= self.config.max_initiated_sessions {
+        if self.state.pending_initiated_sessions_count()
+            >= self.config.max_pending_initiated_sessions
+        {
             self.metrics.gauge(self.metric_names.error_connect).inc();
+            self.metrics
+                .gauge(self.metric_names.error_pending_initiated_session_limit)
+                .inc();
             return Err(Error::TooManyInitiatedSessions {
-                limit: self.config.max_initiated_sessions,
+                limit: self.config.max_pending_initiated_sessions,
             });
         }
 
@@ -398,8 +410,35 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
         Ok((index, timer, message))
     }
 
+    fn promote_transport(
+        &mut self,
+        session_id: SessionIndex,
+        transport: TransportState,
+    ) -> Result<()> {
+        let remote_public_key = transport.remote_public_key;
+        let remote_addr = transport.remote_addr;
+        if let Err(err) = self.state.insert_transport(session_id, transport) {
+            match &err {
+                Error::TooManyTransportSessions { .. } => self
+                    .metrics
+                    .gauge(self.metric_names.error_transport_session_limit)
+                    .inc(),
+                Error::TooManyEstablishedPeersForIp { .. } => self
+                    .metrics
+                    .gauge(self.metric_names.error_established_peer_limit)
+                    .inc(),
+                _ => {}
+            }
+            self.state
+                .terminate_session(session_id, &remote_public_key, remote_addr);
+            return Err(err);
+        }
+        Ok(())
+    }
+
     fn is_under_load(
         &mut self,
+        handshake_kind: HandshakeKind,
         remote_addr: SocketAddr,
         sender_index: u32,
         message: &impl MacMessage,
@@ -407,6 +446,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
         let duration_since_start = self.context.duration_since_start();
         let action = self.filter.apply(
             &self.state,
+            handshake_kind,
             remote_addr,
             duration_since_start,
             self.cookies
@@ -453,6 +493,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
         })?;
 
         if !self.is_under_load(
+            HandshakeKind::Initiation,
             remote_addr,
             handshake_packet.sender_index.get(),
             handshake_packet,
@@ -622,15 +663,17 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
             // to prove private key ownership. We implement this by storing the
             // responder separately until it has received that packet.
             let duration_since_start = self.context.duration_since_start();
-            match responder.decrypt(&self.config, duration_since_start, data_packet) {
-                Ok((_timer, plaintext)) => {
-                    let remote_public_key = responder.transport.remote_public_key;
+            let decrypt_result = responder
+                .decrypt(&self.config, duration_since_start, data_packet)
+                .map(|(_timer, plaintext)| (plaintext, responder.transport.remote_public_key));
+            match decrypt_result {
+                Ok((plaintext, remote_public_key)) => {
                     // unwrap() is safe as we have &mut and it was accessed right before this line
                     let responder = self.state.remove_responder(&receiver_index).unwrap();
                     let (transport, establish_timer) =
                         responder.establish(self.context.rng(), &self.config, duration_since_start);
+                    self.promote_transport(receiver_index, transport)?;
                     debug!(local_session_id=?receiver_index, "responder session established");
-                    self.state.insert_transport(receiver_index, transport);
                     self.timers.insert((establish_timer, receiver_index));
                     self.metrics
                         .gauge(self.metric_names.state_timers_size)
@@ -660,8 +703,6 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
         response: &mut HandshakeResponse,
         remote_addr: SocketAddr,
     ) -> Result<()> {
-        // The initiator is transitioned into transport in 2 stages.
-        // All validators and other fallible actions must be done before removing the initiator from state.
         crate::protocol::crypto::verify_mac1(response, &self.local_static_key.as_ref().pubkey())
             .inspect_err(|_| {
                 self.metrics
@@ -669,44 +710,52 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
                     .inc();
             })?;
 
-        if !self.is_under_load(remote_addr, response.sender_index.get(), response) {
+        if !self.is_under_load(
+            HandshakeKind::Response,
+            remote_addr,
+            response.sender_index.get(),
+            response,
+        ) {
             debug!(?remote_addr, "handshake response dropped under load");
             return Ok(());
         }
 
         let receiver_session_index = response.receiver_index.into();
 
-        let initiator = self
-            .state
-            .get_initiator_mut(&receiver_session_index)
-            .ok_or_else(|| {
-                self.metrics
-                    .gauge(self.metric_names.error_session_index_not_found)
-                    .inc();
-                Error::InvalidReceiverIndex {
-                    index: receiver_session_index,
-                }
-            })?;
-        let expected_remote_addr = initiator.remote_addr;
-        if remote_addr != expected_remote_addr {
-            self.metrics
-                .gauge(self.metric_names.error_handshake_response_validation)
-                .inc();
-            return Err(Error::HandshakeResponseAddressMismatch {
-                expected: expected_remote_addr,
-                actual: remote_addr,
-            });
-        }
-
-        let validated_response = initiator
-            .validate_response(&self.config, self.local_static_key.as_ref(), response)
-            .inspect_err(|_| {
+        let validated_response = {
+            let initiator = self
+                .state
+                .get_initiator_mut(&receiver_session_index)
+                .ok_or_else(|| {
+                    self.metrics
+                        .gauge(self.metric_names.error_session_index_not_found)
+                        .inc();
+                    Error::InvalidReceiverIndex {
+                        index: receiver_session_index,
+                    }
+                })?;
+            let expected_remote_addr = initiator.remote_addr;
+            if remote_addr != expected_remote_addr {
                 self.metrics
                     .gauge(self.metric_names.error_handshake_response_validation)
                     .inc();
-            })?;
+                return Err(Error::HandshakeResponseAddressMismatch {
+                    expected: expected_remote_addr,
+                    actual: remote_addr,
+                });
+            }
 
-        // Code should not be fallible after this point
+            initiator
+                .validate_response(&self.config, self.local_static_key.as_ref(), response)
+                .inspect_err(|_| {
+                    self.metrics
+                        .gauge(self.metric_names.error_handshake_response_validation)
+                        .inc();
+                })?
+        };
+
+        // Remove the pending initiator only after validating the response;
+        // failures after this point must not be triggerable by unauthenticated peers.
         let initiator = self
             .state
             .remove_initiator(&receiver_session_index)
@@ -714,11 +763,6 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
 
         let buffered_message_count = initiator.buffered_message_count();
         let duration_since_start = self.context.duration_since_start();
-        debug!(
-            local_session_id=?receiver_session_index,
-            buffered_messages=buffered_message_count,
-            "initiator session established"
-        );
         let (transport, messages) = initiator.establish(
             self.context.rng(),
             &self.config,
@@ -727,9 +771,14 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
         );
         let is_buffered = messages.is_buffered();
 
-        self.state
-            .insert_transport(receiver_session_index, transport);
+        self.promote_transport(receiver_session_index, transport)?;
+        debug!(
+            local_session_id=?receiver_session_index,
+            buffered_messages=buffered_message_count,
+            "initiator session established"
+        );
 
+        // Code should not be fallible after this point
         for msg in messages {
             let mut packet = BytesMut::with_capacity(DataPacketHeader::SIZE + msg.len());
             packet.resize(DataPacketHeader::SIZE, 0);
