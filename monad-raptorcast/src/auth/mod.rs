@@ -18,6 +18,9 @@ pub mod framing;
 pub mod metrics;
 pub mod protocol;
 pub mod socket;
+pub mod tcp_socket;
+
+pub(crate) type DataplaneCompletion = Option<futures::channel::oneshot::Sender<()>>;
 
 pub use common::AuthRecvError;
 pub use framing::{AuthPacketFramer, LeanUdpFramer, LeanUdpFramingError, NopScore};
@@ -32,3 +35,5 @@ pub use socket::{
     AuthRecvMsg, AuthenticatedSocketHandle, DualSocketHandle, FramedAuthenticatedSocketHandle,
     FramedRecvError,
 };
+
+pub use tcp_socket::{AuthRecvTcpMsg, SigAuthError, SigAuthTcpSocket};
