@@ -13,11 +13,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+mod common;
 pub mod framing;
 pub mod metrics;
 pub mod protocol;
 pub mod socket;
 
+pub use common::AuthRecvError;
 pub use framing::{AuthPacketFramer, LeanUdpFramer, LeanUdpFramingError, NopScore};
 pub use metrics::{
     GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_READ,

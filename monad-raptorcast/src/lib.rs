@@ -1308,7 +1308,7 @@ where
                     }
                     Poll::Ready(Err(e)) => {
                         this.metrics.gauge(GAUGE_RAPTORCAST_TOTAL_RECV_ERRORS).inc();
-                        trace!(error=?e, "socket recv error");
+                        trace!(src_addr=?e.src_addr, error=?e.error, "socket recv error");
                         continue;
                     }
                     Poll::Pending => break,
@@ -1476,7 +1476,7 @@ where
                         }
                     }
                     Poll::Ready(Err(err)) => {
-                        trace!(error=?err, "direct udp socket recv error");
+                        trace!(src_addr=?err.src_addr(), error=?err, "direct udp socket recv error");
                         continue;
                     }
                     Poll::Pending => break,
