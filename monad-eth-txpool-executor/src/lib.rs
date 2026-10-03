@@ -72,6 +72,7 @@ pub use self::{
 };
 use crate::forward::INGRESS_CHUNK_INTERVAL_MS;
 
+mod batcher;
 mod client;
 pub mod forward;
 mod ipc;
@@ -679,7 +680,7 @@ where
                     inserted_addresses.insert(tx.signer());
 
                     if tx.is_owned_and_forwardable() {
-                        immediately_forwardable_txs.push(tx.raw().clone_inner());
+                        immediately_forwardable_txs.push(tx.raw().clone());
                     }
                 },
             );

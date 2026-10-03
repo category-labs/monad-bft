@@ -14,13 +14,11 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::VecDeque,
     pin::Pin,
     task::{Context, Poll, Waker},
 };
 
-use alloy_consensus::TxEnvelope;
-use alloy_eips::eip2718::Encodable2718;
+use alloy_consensus::{transaction::Recovered, TxEnvelope};
 use bytes::Bytes;
 use monad_chain_config::{
     execution_revision::ExecutionChainParams, revision::ChainRevision, ChainConfig,
@@ -36,6 +34,12 @@ use monad_validator::signature_collection::SignatureCollection;
 use pin_project::pin_project;
 use tracing::error;
 
+use crate::batcher::Batcher;
+
+// smaller messages let leaders process transactions before the full input
+// list arrives. a lost datagram then blocks fewer transactions, reducing
+// the amount of transaction data that needs to be retried.
+const EGRESS_BATCH_TARGET_BYTES: usize = 16 * 1024;
 const EGRESS_MIN_COMMITTED_SEQ_NUM_DIFF: u64 = 5;
 const EGRESS_MAX_RETRIES: usize = 3;
 
@@ -51,7 +55,7 @@ pub struct EthTxPoolForwardingManager<S> {
     ingress_batch: Option<Vec<(S, TxEnvelope)>>,
     ingress_waker: Option<Waker>,
 
-    egress: VecDeque<Bytes>,
+    egress: Batcher,
     egress_waker: Option<Waker>,
 }
 
@@ -61,7 +65,7 @@ impl<S> Default for EthTxPoolForwardingManager<S> {
             ingress_batch: None,
             ingress_waker: None,
 
-            egress: VecDeque::default(),
+            egress: Batcher::new(EGRESS_BATCH_TARGET_BYTES),
             egress_waker: None,
         }
     }
@@ -102,58 +106,18 @@ impl<S> EthTxPoolForwardingManager<S> {
             ..
         } = self.project();
 
-        loop {
-            if egress.is_empty() {
-                match egress_waker.as_mut() {
-                    Some(waker) => waker.clone_from(cx.waker()),
-                    None => *egress_waker = Some(cx.waker().clone()),
-                }
-
-                return Poll::Pending;
-            }
-
-            let egress_max_size_bytes = egress_max_size_bytes(execution_params);
-
-            let mut txs = LimitedVec::default();
-            let mut total_bytes = 0;
-
-            while let Some(tx) = egress.front() {
-                let new_total_bytes = total_bytes + tx.len();
-
-                if new_total_bytes <= egress_max_size_bytes {
-                    let tx = egress.pop_front().unwrap();
-                    match txs.try_push(tx) {
-                        Ok(()) => {
-                            total_bytes = new_total_bytes;
-                            continue;
-                        }
-                        Err(err) => {
-                            egress.push_front(err.rejected);
-                            break;
-                        }
-                    }
-                }
-
-                if tx.len() > egress_max_size_bytes {
-                    error!("txpool forwarding manager detected tx larger than max tx byte size, skipping forwarding");
-                    egress.pop_front();
-                    continue;
-                }
-
-                break;
-            }
-
-            if txs.is_empty() {
-                let tx = egress.pop_front();
-                error!(
-                    ?tx,
-                    "txpool forwarding manager detected empty forward, dropping next tx"
-                );
-                continue;
-            }
-
+        if let Some(txs) = egress
+            .batches(egress_max_size_bytes(execution_params))
+            .next()
+        {
             return Poll::Ready(txs);
         }
+
+        match egress_waker.as_mut() {
+            Some(waker) => waker.clone_from(cx.waker()),
+            None => *egress_waker = Some(cx.waker().clone()),
+        }
+        Poll::Pending
     }
 }
 
@@ -184,14 +148,14 @@ impl<S> EthTxPoolForwardingManagerProjected<'_, S> {
         }
     }
 
-    pub fn add_egress_txs<'a>(&mut self, txs: impl Iterator<Item = &'a TxEnvelope>) {
+    pub fn add_egress_txs<'a>(&mut self, txs: impl Iterator<Item = &'a Recovered<TxEnvelope>>) {
         let Self {
             egress,
             egress_waker,
             ..
         } = self;
 
-        egress.extend(txs.map(|tx| tx.encoded_2718().into()));
+        egress.extend(txs);
 
         if egress.is_empty() {
             return;
@@ -232,12 +196,16 @@ mod test {
     };
 
     use alloy_consensus::{Transaction, TxEnvelope};
+    use alloy_eips::Encodable2718;
+    use alloy_rlp::Encodable;
     use bytes::Bytes;
     use futures::task::noop_waker_ref;
     use monad_chain_config::execution_revision::MonadExecutionRevision;
-    use monad_eth_testutil::{make_eip1559_tx, make_eip7702_tx, make_legacy_tx, S1};
+    use monad_eth_testutil::{make_eip1559_tx, make_eip7702_tx, make_legacy_tx, recover_tx, S1};
 
-    use crate::forward::{egress_max_size_bytes, EthTxPoolForwardingManager};
+    use crate::forward::{
+        egress_max_size_bytes, EthTxPoolForwardingManager, EGRESS_BATCH_TARGET_BYTES,
+    };
 
     const EXECUTION_REVISION: MonadExecutionRevision = MonadExecutionRevision::LATEST;
 
@@ -409,7 +377,7 @@ mod test {
         while total_size < target_size {
             let tx = generate_tx(nonce);
             total_size += tx.eip2718_encoded_length();
-            egress_txs.push(tx);
+            egress_txs.push(recover_tx(tx));
             nonce += 1;
         }
 
@@ -424,38 +392,27 @@ mod test {
             .project()
             .add_egress_txs(egress_txs.iter());
 
-        let Poll::Ready(first_batch) = forwarding_manager
+        let mut forwarded = Vec::new();
+        while let Poll::Ready(batch) = forwarding_manager
             .as_mut()
             .poll_egress(EXECUTION_REVISION.execution_chain_params(), &mut cx)
-        else {
-            panic!("first poll should be ready");
-        };
-
-        let first_batch_size: usize = first_batch.iter().map(|b| b.len()).sum();
-        assert!(
-            first_batch_size <= egress_max_size_bytes(EXECUTION_REVISION.execution_chain_params())
-        );
-        assert!(!first_batch.is_empty());
-
-        let Poll::Ready(second_batch) = forwarding_manager
-            .as_mut()
-            .poll_egress(EXECUTION_REVISION.execution_chain_params(), &mut cx)
-        else {
-            panic!("second poll should be ready");
-        };
-
-        let second_batch_size: usize = second_batch.iter().map(|b| b.len()).sum();
-        assert!(!second_batch.is_empty());
-
-        assert_eq!(first_batch.len() + second_batch.len(), egress_txs.len());
-        assert_eq!(first_batch_size + second_batch_size, actual_total_size);
-
+        {
+            assert!(!batch.is_empty());
+            assert!(batch.length() <= EGRESS_BATCH_TARGET_BYTES);
+            forwarded.extend(batch);
+        }
+        assert_eq!(forwarded.len(), egress_txs.len());
         assert_eq!(
-            forwarding_manager
-                .as_mut()
-                .poll_egress(EXECUTION_REVISION.execution_chain_params(), &mut cx),
-            Poll::Pending
-        )
+            forwarded.iter().map(Bytes::len).sum::<usize>(),
+            actual_total_size
+        );
+        assert_eq!(
+            forwarded,
+            egress_txs
+                .iter()
+                .map(|tx| Bytes::from(tx.encoded_2718()))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[tokio::test]
@@ -509,7 +466,7 @@ mod test {
             forwarding_manager
                 .as_mut()
                 .project()
-                .add_egress_txs([&tx1, &tx2, &tx3].into_iter());
+                .add_egress_txs([tx1.clone(), tx2, tx3.clone()].map(recover_tx).iter());
 
             let Poll::Ready(first_batch) = forwarding_manager
                 .as_mut()
