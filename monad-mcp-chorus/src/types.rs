@@ -280,12 +280,41 @@ where
     pub fn add_vote(&mut self, node_id: NodeId, msg: VoteMsg<V>) {
         assert!(msg.scope == self.scope);
 
+        // first write wins: a sender's later vote never displaces its first.
+        if self.votes.contains_key(&node_id) {
+            return;
+        }
+        self.add_or_replace_vote(node_id, msg)
+    }
+
+    /// Like [`VotePool::add_vote`], except a sender's later vote always
+    /// replaces its earlier one. The sender still occupies exactly one bucket
+    /// afterwards, so the partition the aggregation counts stake over is
+    /// preserved; what replacement concedes is that the pool's answer can
+    /// change between polls, which is only sound where every certificate over
+    /// the scope certifies the same fact.
+    pub fn add_or_replace_vote(&mut self, node_id: NodeId, msg: VoteMsg<V>) {
+        assert!(msg.scope == self.scope);
+
         if !msg.signature.is_well_formed() {
             return;
         }
 
         if self.votes.contains_key(&node_id) {
-            return;
+            let held = self
+                .buckets
+                .iter()
+                .find_map(|(vote, voters)| voters.contains(&node_id).then_some(vote))
+                .expect("a recorded sender is in exactly one bucket");
+
+            // move the sender, dropping a bucket left empty: an empty bucket is
+            // indistinguishable from a missing one everywhere else.
+            let held = held.clone();
+            let voters = self.buckets.get_mut(&held).expect("found above");
+            voters.remove(&node_id);
+            if voters.is_empty() {
+                self.buckets.remove(&held);
+            }
         }
 
         self.buckets.entry(msg.vote).or_default().insert(node_id);
@@ -328,6 +357,66 @@ where
         }
 
         aggs
+    }
+
+    /// Quorum over the scope rather than over one bucket: the target is met
+    /// by the combined stake of *all* the pool's voters, and one signature
+    /// collection comes back per surviving bucket.
+    ///
+    /// This is for votes that agree on the act while legitimately differing in
+    /// verdict -- timeouts abandon the same view but each names the lock its
+    /// sender holds -- where a per-bucket quorum would never form. Signatures
+    /// are verified here and invalid ones dropped, so the stake is counted
+    /// over signers that actually signed; a bucket left with no valid signer
+    /// disappears.
+    pub fn try_form_vote_groups(
+        &self,
+        target_stake: Stake,
+        validator_data: &ValidatorData,
+    ) -> Option<Vec<(&V, SignatureCollection)>> {
+        // claimed stake bounds verified stake from above -- verification only
+        // drops signers -- so a pool short of the target before any signature
+        // is checked forms nothing; skip the aggregation entirely.
+        if validator_data.sum_stake(self.all_voters()) <= target_stake {
+            return None;
+        }
+
+        let mut groups = vec![];
+        // buckets partition the pool -- every insert leaves a sender in exactly
+        // one -- so per-bucket stake adds up without deduplicating signers.
+        let mut stake = Stake::ZERO;
+
+        for (vote, voters) in &self.buckets {
+            let data = vote.serialize(&self.scope);
+            let votes = voters
+                .iter()
+                .map(|node_id| (node_id, &self.votes[node_id]))
+                .collect();
+
+            let mut vote_agg = VoteAggregation::from_validator_data(validator_data);
+
+            // no threshold within the bucket: the quorum is checked once over
+            // every bucket's survivors below. A bucket whose signatures are
+            // all invalid holds no stake and is dropped here.
+            let Some(sigcol) = vote_agg.try_aggregate(&data, votes, Stake::ZERO) else {
+                continue;
+            };
+
+            let signers = sigcol
+                .signers(validator_data)
+                .expect("aggregation returns a collection consistent with the validator set");
+            stake = stake + validator_data.sum_stake(signers.iter().copied());
+
+            groups.push((vote, sigcol));
+        }
+
+        // still needed: invalid signatures may have dropped the verified sum
+        // below the target the claimed sum cleared.
+        if stake <= target_stake {
+            return None;
+        }
+
+        Some(groups)
     }
 
     pub fn try_form_strong_qc(&self, validator_data: &ValidatorData) -> Option<StrongQc<V>> {
@@ -639,6 +728,244 @@ mod tests {
         );
         assert_eq!(Timestamp::from_millis(2).as_nanos(), 2_000_000);
         assert_eq!(TimestampDelta::from_millis(3).as_millis(), 3);
+    }
+
+    /// A vote whose verdict is a bare number, standing in for the claims
+    /// timeouts differ on.
+    #[derive(Clone, PartialEq, Eq, Hash, Debug)]
+    struct Claim(u64);
+
+    impl IsVote for Claim {
+        type Scope = u64;
+
+        fn serialize(&self, scope: &Self::Scope) -> Bytes {
+            dummy_serialize(self, scope)
+        }
+    }
+
+    /// Seven validators of stake one each, as in the aggregation tests.
+    fn claim_setup() -> (Vec<NodeId>, ValidatorData) {
+        let nodes: Vec<NodeId> = (0..7).map(NodeId::dummy).collect();
+        let valset: HashMap<_, _> = nodes.iter().map(|node| (*node, Stake::from(1))).collect();
+        let mapping: HashMap<_, _> = nodes
+            .iter()
+            .map(|node| (*node, node.keypair().pubkey()))
+            .collect();
+
+        (nodes, ValidatorData::new(valset, mapping))
+    }
+
+    const SCOPE: u64 = 7;
+
+    fn claim_pool(votes: &[(NodeId, Claim)]) -> VotePool<Claim> {
+        let mut pool = VotePool::new(SCOPE);
+        for (node, claim) in votes {
+            pool.add_vote(
+                *node,
+                VoteMsg::new_signed(SCOPE, claim.clone(), &node.keypair()),
+            );
+        }
+
+        pool
+    }
+
+    /// Neither claim holds a supermajority alone; together they do, and each
+    /// comes back as its own collection.
+    #[test]
+    fn a_quorum_spanning_buckets_forms_one_group_per_bucket() {
+        let (nodes, validator_data) = claim_setup();
+        let votes: Vec<_> = nodes[..6]
+            .iter()
+            .enumerate()
+            .map(|(i, node)| (*node, Claim(i as u64 % 2)))
+            .collect();
+        let pool = claim_pool(&votes);
+
+        // no bucket reaches it on its own: three each against a target of four.
+        assert!(
+            pool.try_aggregate(Stake::from(4), &validator_data)
+                .is_empty()
+        );
+
+        let mut groups = pool
+            .try_form_vote_groups(Stake::from(4), &validator_data)
+            .expect("six of seven exceeds the target across both buckets");
+        groups.sort_by_key(|(claim, _)| claim.0);
+
+        let claims: Vec<_> = groups.iter().map(|(claim, _)| (*claim).clone()).collect();
+        assert_eq!(claims, vec![Claim(0), Claim(1)]);
+
+        for (claim, sigcol) in &groups {
+            let signers = sigcol
+                .verify(&claim.serialize(&SCOPE), &validator_data)
+                .expect("each group verifies over the digest its bucket signed");
+            assert_eq!(signers.len(), 3);
+        }
+    }
+
+    /// The target is over the whole pool, so a pool short of it forms nothing
+    /// even though every bucket is well signed.
+    #[test]
+    fn a_pool_below_the_target_forms_no_groups() {
+        let (nodes, validator_data) = claim_setup();
+        let votes: Vec<_> = nodes[..4]
+            .iter()
+            .enumerate()
+            .map(|(i, node)| (*node, Claim(i as u64 % 2)))
+            .collect();
+
+        assert!(
+            claim_pool(&votes)
+                .try_form_vote_groups(Stake::from(4), &validator_data)
+                .is_none()
+        );
+    }
+
+    /// The quorum requires strictly more than the target, and the pool-wide
+    /// pre-check honors the same boundary: claimed stake equal to the target
+    /// forms nothing, one less tips it.
+    #[test]
+    fn the_target_boundary_is_strict() {
+        let (nodes, validator_data) = claim_setup();
+        let votes: Vec<_> = nodes[..5].iter().map(|node| (*node, Claim(0))).collect();
+        let pool = claim_pool(&votes);
+
+        assert!(
+            pool.try_form_vote_groups(Stake::from(5), &validator_data)
+                .is_none()
+        );
+        assert!(
+            pool.try_form_vote_groups(Stake::from(4), &validator_data)
+                .is_some()
+        );
+    }
+
+    /// Well-formed signatures that do not verify are dropped, and the stake
+    /// they carried with them: five valid signers clear a target of four, four
+    /// of them do not.
+    #[test]
+    fn invalid_signatures_are_dropped_before_the_quorum_is_counted() {
+        let (nodes, validator_data) = claim_setup();
+        let mut pool = VotePool::new(SCOPE);
+        for (i, node) in nodes.iter().enumerate() {
+            let mut msg = VoteMsg::new_signed(SCOPE, Claim(i as u64 % 2), &node.keypair());
+            // two of seven sign garbage, one in each bucket.
+            if i < 2 {
+                msg.signature.make_invalid();
+            }
+            pool.add_vote(*node, msg);
+        }
+
+        let groups = pool
+            .try_form_vote_groups(Stake::from(4), &validator_data)
+            .expect("the five valid signers exceed the target");
+        let signers: usize = groups
+            .iter()
+            .map(|(claim, sigcol)| {
+                sigcol
+                    .verify(&claim.serialize(&SCOPE), &validator_data)
+                    .expect("only verified signatures are aggregated")
+                    .len()
+            })
+            .sum();
+        assert_eq!(signers, 5);
+
+        assert!(
+            pool.try_form_vote_groups(Stake::from(5), &validator_data)
+                .is_none()
+        );
+    }
+
+    /// A bucket left with no valid signer disappears rather than coming back
+    /// empty.
+    #[test]
+    fn a_bucket_of_only_invalid_signatures_is_dropped() {
+        let (nodes, validator_data) = claim_setup();
+        let mut pool = VotePool::new(SCOPE);
+        for (i, node) in nodes.iter().enumerate() {
+            // one lone dissenter, and its signature is garbage.
+            let claim = Claim(u64::from(i == 0));
+            let mut msg = VoteMsg::new_signed(SCOPE, claim, &node.keypair());
+            if i == 0 {
+                msg.signature.make_invalid();
+            }
+            pool.add_vote(*node, msg);
+        }
+
+        let groups = pool
+            .try_form_vote_groups(Stake::from(4), &validator_data)
+            .expect("the six honest signers exceed the target");
+        let claims: Vec<_> = groups.iter().map(|(claim, _)| (*claim).clone()).collect();
+        assert_eq!(claims, vec![Claim(0)]);
+    }
+
+    /// A replacing insert moves the sender rather than adding it, so the
+    /// buckets still partition the pool and the one it emptied is gone.
+    #[test]
+    fn a_replacing_vote_moves_the_sender_between_buckets() {
+        let (nodes, validator_data) = claim_setup();
+        let mut pool = VotePool::new(SCOPE);
+        // five agree, one dissents alone.
+        for (i, node) in nodes[..6].iter().enumerate() {
+            let claim = Claim(u64::from(i == 5));
+            pool.add_vote(*node, VoteMsg::new_signed(SCOPE, claim, &node.keypair()));
+        }
+
+        let raiser = nodes[5];
+        pool.add_or_replace_vote(
+            raiser,
+            VoteMsg::new_signed(SCOPE, Claim(2), &raiser.keypair()),
+        );
+
+        let mut groups = pool
+            .try_form_vote_groups(Stake::from(4), &validator_data)
+            .expect("the same six senders still exceed the target");
+        groups.sort_by_key(|(claim, _)| claim.0);
+
+        let counted: Vec<_> = groups
+            .iter()
+            .map(|(claim, sigcol)| {
+                let signers = sigcol
+                    .verify(&claim.serialize(&SCOPE), &validator_data)
+                    .expect("each group verifies over the digest its bucket signed");
+                (claim.0, signers.len())
+            })
+            .collect();
+
+        assert_eq!(
+            counted,
+            vec![(0, 5), (2, 1)],
+            "the sender is counted once, under its new claim"
+        );
+    }
+
+    /// A repeated [`VotePool::add_vote`] changes nothing: the first is still
+    /// the one aggregated, under the signature it arrived with.
+    #[test]
+    fn a_repeated_add_vote_leaves_the_first_standing() {
+        let (nodes, validator_data) = claim_setup();
+        let mut pool = VotePool::new(SCOPE);
+        for node in &nodes[..5] {
+            pool.add_vote(*node, VoteMsg::new_signed(SCOPE, Claim(1), &node.keypair()));
+        }
+
+        let sender = nodes[4];
+        pool.add_vote(
+            sender,
+            VoteMsg::new_signed(SCOPE, Claim(0), &sender.keypair()),
+        );
+
+        let groups = pool
+            .try_form_vote_groups(Stake::from(4), &validator_data)
+            .expect("five of seven exceeds the target");
+        let claims: Vec<_> = groups.iter().map(|(claim, _)| (*claim).clone()).collect();
+        assert_eq!(claims, vec![Claim(1)]);
+
+        let (claim, sigcol) = &groups[0];
+        let signers = sigcol
+            .verify(&claim.serialize(&SCOPE), &validator_data)
+            .expect("the stored signatures are the ones that arrived first");
+        assert_eq!(signers.len(), 5);
     }
 
     #[test]
