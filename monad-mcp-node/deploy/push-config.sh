@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # push-config.sh [host...]: config/<host>/ -> ~/monad-mcp/config/, printing the
 # node.toml diff and keeping a changed node.toml as node.toml.<unix ts>~.
-# Ships $MCP_LATENCY (default ~/tmp/mcp-latency/latency.toml) as config/latency.toml.
+# Ships config/latency.toml next to it when present.
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
@@ -40,7 +40,7 @@ for host in $(targets); do
     [ "$(local_config_int "$host" node_id)" = "$(node_id_of "$host")" ] \
         || die "$(host_config "$host") has node_id $(local_config_int "$host" node_id), $host is $(node_id_of "$host")"
     [ "$latency" = yes ] || ! grep -q '^latency *=' "$(host_config "$host")" \
-        || die "$(host_config "$host") names a latency file but there is no $latency_file; set MCP_LATENCY"
+        || die "$(host_config "$host") names a latency file but there is no $latency_file; run latency.sh"
 done
 
 echo "pushing $config_dir/<host>/ to $(targets | xargs)"

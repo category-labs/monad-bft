@@ -21,8 +21,8 @@ remote_root='$HOME/monad-mcp'
 ssh_user=monad
 ssh_port=9022
 ssh_domain=devcore4.com
-# the rtt matrix latency.sh writes; shipped as config/latency.toml when present
-latency_file=${MCP_LATENCY:-$HOME/tmp/mcp-latency/latency.toml}
+# the rtt matrix latency.sh writes; shipped next to node.toml when present
+latency_file=$config_dir/latency.toml
 
 die() {
     echo "error: $*" >&2
@@ -193,13 +193,17 @@ dist_binaries() {
     echo "$node $rpc $explorer"
 }
 
-# whether $latency_file exists; dies unless its rows are hosts.txt, in order
+# have_latency [ip...]: whether $latency_file exists; dies unless it matches hosts.txt and
+# the validator ips given, or else those of every config/<host>/node.toml
 have_latency() {
     [ -f "$latency_file" ] || return 1
-    local got want
-    got=$(sed -n 's/^hosts = \[\(.*\)\]$/\1/p' "$latency_file" | tr -d '",')
-    want=$(hosts | xargs)
-    [ "$got" = "$want" ] || die "$latency_file is for hosts ($got), hosts.txt has ($want)"
+    local h configs=()
+    if [ $# = 0 ]; then
+        for h in $(hosts); do configs+=("$(host_config "$h")"); done
+    fi
+    python3 "$deploy_dir/check-latency.py" "$latency_file" --hosts $(hosts) \
+        ${1:+--ips "$@"} ${configs[0]:+--configs "${configs[@]}"} \
+        || die "$latency_file is stale or malformed; re-run latency.sh"
 }
 
 # a host runs the explorer iff config/<host>/explorer.env exists

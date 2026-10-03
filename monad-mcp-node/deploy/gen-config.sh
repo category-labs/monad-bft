@@ -88,6 +88,7 @@ validator_section() {
     local host
     for host in $(hosts); do
         echo
+        echo "# $host"
         echo "[[validators]]"
         echo "node_id = $(node_id_of "$host")"
         echo "stake = 1"
@@ -100,7 +101,7 @@ validators=$(validator_section)
 
 # only with a matrix to ship: an rpc whose latency file is missing does not start
 latency=no
-if have_latency; then
+if have_latency $(for host in $(hosts); do echo "${ip_of[$host]}"; done); then
     latency=yes
 fi
 

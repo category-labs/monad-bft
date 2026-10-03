@@ -41,6 +41,31 @@ async function mostTenured(target: number, horizon: number): Promise<{ lane: num
   return best && { lane: best.lane, leader: best.leader };
 }
 
+// run.sh --latency: node 0's RTT row and the rpc's min tenure; unset = route by tenure
+const rttRow = process.env.E2E_LATENCY_ROW?.split(',').map(Number);
+const minTenure = Number(process.env.E2E_MIN_TENURE ?? 2);
+
+// with a matrix: the nearest proposer keeping its lane >= minTenure slots (ties: more
+// tenure, then the lower lane); none qualifies -> the most tenured
+async function nearest(target: number, horizon: number): Promise<{ lane: number; leader: number } | undefined> {
+  const sets: (number | null)[][] = [];
+  for (let k = 0; k < horizon; k++) {
+    const m = await finalized(target + k);
+    if (!m) return undefined;
+    sets.push(proposersOf(m));
+  }
+  let best: { lane: number; leader: number; run: number; rtt: number } | undefined;
+  for (const [lane, leader] of sets[0].entries()) {
+    if (leader === null) continue;
+    let run = 0;
+    while (run < horizon && sets[run][lane] === leader) run++;
+    if (run < minTenure) continue;
+    const rtt = rttRow![leader];
+    if (!best || rtt < best.rtt || (rtt === best.rtt && run > best.run)) best = { lane, leader, run, rtt };
+  }
+  return best ? { lane: best.lane, leader: best.leader } : mostTenured(target, horizon);
+}
+
 interface Sent {
   i: number;
   hash: string;
@@ -57,7 +82,7 @@ interface Landed extends Sent {
   history: any[];
 }
 
-test('swarm: the rpc sends each tx to the proposer with the most tenure left, and it lands in that lane', async ({ page }) => {
+test('swarm: the rpc sends each tx to the proposer its routing rule picks, and it lands in that lane', async ({ page }) => {
   expect(nodes, 'run through run.sh --swarm').toBeGreaterThanOrEqual(2);
   expect(SLOT_MS, 'E2E_SLOT_MS from run.sh').toBeGreaterThan(0);
   const health = (await getJson(`${stack.rpc}/health`)).body;
@@ -125,17 +150,17 @@ test('swarm: the rpc sends each tx to the proposer with the most tenure left, an
     'txs that landed in a lane the rpc did not send them to').toEqual([]);
   expect(landed.filter((t) => t.attempts === 1).length, 'txs committed from their first send').toBeGreaterThan(landed.length / 2);
 
-  // the reported leader is the most tenured proposer of the reported target, per the ledger
+  // the reported leader is the one the routing rule picks at the reported target, per the ledger
   const misrouted: string[] = [];
   for (const t of landed) {
-    const rule = await mostTenured(t.target, horizon);
+    const rule = rttRow ? await nearest(t.target, horizon) : await mostTenured(t.target, horizon);
     if (!rule) {
       misrouted.push(`tx ${t.i}: node 0 has not finalized ${t.target}..${t.target + horizon - 1}`);
     } else if (rule.leader !== t.leader || rule.lane !== t.lane) {
       misrouted.push(`tx ${t.i}: target ${t.target} sent to ${t.leader} lane ${t.lane}, rule says ${rule.leader} lane ${rule.lane}`);
     }
   }
-  expect(misrouted, 'leaders that are not the most tenured proposer of their target').toEqual([]);
+  expect(misrouted, `leaders the ${rttRow ? 'nearest' : 'most tenured'} rule does not pick at their target`).toEqual([]);
 
   // over a cycle the choice moves between proposers
   const lanes = new Set(landed.map((t) => t.landedLane));

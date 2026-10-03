@@ -5,9 +5,11 @@
 # config, sending txs over udp to the leader it picks) and the explorer, each
 # on temp dirs and free ports, then the Playwright suites (L6a-L6d).
 #
-# usage: run.sh [--swarm [N]] [--serve] [--no-build] [-- <playwright test args>]
+# usage: run.sh [--swarm [N]] [--latency] [--serve] [--no-build] [-- <playwright test args>]
 #   --swarm N   N validators (default 5) on localhost sharing one genesis, rpc
 #               and explorer on node 0; runs the swarm suite instead of L6a-L6d
+#   --latency   give the rpc a synthetic RTT matrix (validated by check-latency.py,
+#               farther with node_id distance) and require latency-routed sends
 #   --serve     start the stack, print its urls and wait for ctrl-c; no tests
 #   --no-build  use the binaries already in the cargo target dir
 # env: E2E_SCREENSHOT_DIR (default e2e/test-results), E2E_KEEP=1 keeps the temp dir,
@@ -19,6 +21,7 @@ repo=$(cd "$here/../.." && pwd)
 serve=0
 build=1
 swarm=0
+latency=0
 nodes=1
 while (($#)); do
     case $1 in
@@ -31,6 +34,7 @@ while (($#)); do
             fi
             ((nodes >= 2)) || { echo "run.sh: --swarm needs at least 2 nodes" >&2; exit 2; }
             ;;
+        --latency) latency=1 ;;
         --serve) serve=1 ;;
         --no-build) build=0 ;;
         --) shift; break ;;
@@ -146,6 +150,25 @@ EOF
         fi
     } > "$work/node-$i.toml"
 done
+if ((latency)); then
+    {
+        echo "hosts = [$(for ((i = 0; i < nodes; i++)); do printf '"node-%s", ' "$i"; done)]"
+        echo "ips = [$(for ((i = 0; i < nodes; i++)); do printf '"127.0.0.1", '; done)]"
+        echo "rtt_ms = ["
+        for ((i = 0; i < nodes; i++)); do
+            printf '  ['
+            for ((j = 0; j < nodes; j++)); do printf '%s, ' $((i == j ? 0 : 10 * (i > j ? i - j : j - i))); done
+            echo '],'
+        done
+        echo "]"
+    } > "$work/latency.toml"
+    configs=()
+    for ((i = 0; i < nodes; i++)); do configs+=("$work/node-$i.toml"); done
+    python3 "$repo/monad-mcp-node/deploy/check-latency.py" "$work/latency.toml" --configs "${configs[@]}" \
+        || die "synthetic latency matrix failed validation"
+    # node 0's config is the rpc's; the node ignores [rpc]
+    printf '\n[rpc]\nlatency = "latency.toml"\n' >> "$work/node-0.toml"
+fi
 node_addr=127.0.0.1:${udp_ports[0]}
 ledger=$(node_ledger 0)
 ledgers=()
@@ -229,6 +252,12 @@ export E2E_NODE_ADDR=$node_addr E2E_LEDGER_DIR=$ledger
 E2E_LEDGER_DIRS=$(IFS=:; echo "${ledgers[*]}")
 export E2E_LEDGER_DIRS
 if ((swarm)); then export E2E_SWARM=$nodes; else unset E2E_SWARM; fi
+if ((latency)); then
+    E2E_LATENCY_ROW=$(for ((j = 0; j < nodes; j++)); do echo $((10 * j)); done | paste -sd,)
+    export E2E_LATENCY_ROW E2E_MIN_TENURE=2
+else
+    unset E2E_LATENCY_ROW E2E_MIN_TENURE
+fi
 export E2E_SLOT_MS=$slot_ms
 export E2E_SCREENSHOT_DIR=${E2E_SCREENSHOT_DIR:-$here/test-results}
 
@@ -239,5 +268,11 @@ npx playwright test "$@" || status=$?
 alive
 if grep -l 'panicked' "$work"/*.log > /dev/null 2>&1; then
     die "a service panicked: $(grep -l 'panicked' "$work"/*.log | xargs -n1 basename)"
+fi
+if ((latency)); then
+    sends=$(sed 's/\x1b\[[0-9;]*m//g' "$work/rpc.log" | grep -o 'sent tx.*leader=[0-9]* latency=Some([^)]*)' || true)
+    [[ -n $sends ]] || die "--latency: no 'sent tx' with a latency in rpc.log (RUST_LOG needs debug for monad_mcp_rpc)"
+    log "latency-routed sends by leader:"
+    grep -o 'leader=[0-9]* latency=Some([^)]*)' <<< "$sends" | sort | uniq -c >&2
 fi
 exit "$status"

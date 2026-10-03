@@ -2,7 +2,7 @@
 # deploy.sh [--stage] [host...]: ships the node and rpc binaries, the pruner
 # and the user units, and enables them, to every host in hosts.txt or to the
 # hosts given; the explorer too where config/<host>/explorer.env exists, and
-# $MCP_LATENCY (default ~/tmp/mcp-latency/latency.toml) as config/latency.toml.
+# config/latency.toml when present.
 # --stage leaves bin/{current,rpc-current,explorer-current} alone; netctl.sh
 # live-upgrade swaps them per host.
 # Starting is netctl.sh's job: a start mints a genesis.

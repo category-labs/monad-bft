@@ -3,48 +3,56 @@ proposal_key_pair = 1
 cadence_key_pair = 1
 genesis_deadline = 1790973425699
 
+# ams-001
 [[validators]]
 node_id = 0
 stake = 1
 chorus_pubkey = 0
 address = "84.32.186.173:8002"
 
+# deu-011
 [[validators]]
 node_id = 1
 stake = 1
 chorus_pubkey = 1
 address = "185.191.118.174:8002"
 
+# ewr-002
 [[validators]]
 node_id = 2
 stake = 1
 chorus_pubkey = 2
 address = "64.130.59.199:8002"
 
+# lax-001
 [[validators]]
 node_id = 3
 stake = 1
 chorus_pubkey = 3
 address = "72.5.46.22:8002"
 
+# ltu-010
 [[validators]]
 node_id = 4
 stake = 1
 chorus_pubkey = 4
 address = "46.166.162.43:8002"
 
+# sgp-008
 [[validators]]
 node_id = 5
 stake = 1
 chorus_pubkey = 5
 address = "69.162.93.55:8002"
 
+# swe-001
 [[validators]]
 node_id = 6
 stake = 1
 chorus_pubkey = 6
 address = "185.189.44.164:8002"
 
+# vin-002
 [[validators]]
 node_id = 7
 stake = 1
@@ -78,3 +86,6 @@ rotation_slack = 95
 
 [ledger]
 dir = "/home/monad/monad-mcp/ledger"
+
+[rpc]
+latency = "latency.toml"

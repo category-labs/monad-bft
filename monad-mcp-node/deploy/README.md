@@ -49,7 +49,7 @@ monad-bft" below. Until then, run a reduced `hosts.txt` over the idle hosts (`am
 | `preflight.sh` | read-only fitness check + pairwise UDP probe |
 | `deploy.sh [--stage] [host...]` | ships node + rpc binaries, `cruft.sh`, `run.sh` and the user units; enables them; only the hosts given; `--stage` leaves `bin/{current,rpc-current}` alone |
 | `push-config.sh [host...]` | `config/<host>/` → `~/monad-mcp/config/`; prints the `node.toml` diff, keeps a changed one as `node.toml.<ts>~` |
-| `latency.sh` | pings every validator from every host → RTT matrix at `$MCP_LATENCY` (default `~/tmp/mcp-latency/latency.toml`, untracked); when present, `gen-config.sh` adds `[rpc] latency = "latency.toml"` and `push-config.sh`/`deploy.sh` ship it, so the rpc routes unpinned txs to the nearest proposer |
+| `latency.sh` | pings every validator from every host → RTT matrix at `config/latency.toml` (tracked); when present, `gen-config.sh` adds `[rpc] latency = "latency.toml"` and `push-config.sh`/`deploy.sh` ship it, so the rpc routes unpinned txs to the nearest proposer |
 | `netctl.sh` | `start`/`stop`/`restart`/`status`/`logs`/`upgrade`/`live-upgrade`/`run-one` |
 | `report.sh` | per-host state/tip/lag/clock offset, finalization latency by path; `--logs <dir>` adds per-host counts, per-slot block agreement, top warnings |
 | `cruft.sh` | ledger pruner, runs on the host from `monad-mcp-cruft.timer` |
