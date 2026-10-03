@@ -81,8 +81,9 @@ impl RpcSender {
 
     pub async fn run(mut self) {
         // Calculate initial interval using BATCH_SIZE as our starting estimate
-        let mut interval = tokio::time::interval(Duration::from_millis(
-            BATCH_SIZE as u64 * 1000 / self.target_tps,
+        let mut interval = tokio::time::interval(Self::compute_send_interval(
+            BATCH_SIZE as u64,
+            self.target_tps,
         ));
         interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
@@ -173,7 +174,7 @@ impl RpcSender {
             self.last_adjustment_time = now;
 
             // Calculate ideal new interval
-            let ideal_interval = Duration::from_millis(avg_batch_size * 1000 / self.target_tps);
+            let ideal_interval = Self::compute_send_interval(avg_batch_size, self.target_tps);
 
             // Get current interval duration
             let current_duration = current_interval.period();
@@ -204,6 +205,26 @@ impl RpcSender {
             interval
         } else {
             current_interval
+        }
+    }
+
+    fn compute_send_interval(batch_size: u64, target_tps: u64) -> Duration {
+        // Prevent runtime panics from invalid intervals. Startup validation
+        // enforces target_tps > 0, this is a defensive fallback.
+        if target_tps == 0 {
+            return Duration::from_millis(1);
+        }
+
+        let seconds = batch_size as f64 / target_tps as f64;
+        if !seconds.is_finite() || seconds <= 0.0 {
+            return Duration::from_millis(1);
+        }
+
+        let interval = Duration::from_secs_f64(seconds);
+        if interval.is_zero() {
+            Duration::from_millis(1)
+        } else {
+            interval
         }
     }
 
@@ -298,6 +319,25 @@ impl RpcSender {
 
             trace!("Tx batch sent");
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::time::Duration;
+
+    use super::RpcSender;
+
+    #[test]
+    fn compute_send_interval_never_returns_zero() {
+        assert_eq!(
+            RpcSender::compute_send_interval(500, 0),
+            Duration::from_millis(1)
+        );
+        assert_eq!(
+            RpcSender::compute_send_interval(1, u64::MAX),
+            Duration::from_millis(1)
+        );
     }
 }
 
