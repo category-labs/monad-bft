@@ -32,6 +32,7 @@ use tracing::info;
 
 const UDP_SEGMENT: i32 = 103;
 const SOL_UDP: i32 = 17;
+const UDP_RECEIVE_BATCH_SIZE: usize = 1024;
 
 extern "C" {
     fn setsockopt(
@@ -113,6 +114,9 @@ enum Command {
         )]
         peer_bandwidth_mbps: Option<u64>,
 
+        #[arg(long, default_value = "4", help = "number of UDP TX workers")]
+        tx_workers: usize,
+
         #[arg(
             long,
             default_value = "128",
@@ -165,6 +169,7 @@ fn main() {
             writer_bandwidth_mbps,
             dataplane_bandwidth_mbps,
             peer_bandwidth_mbps,
+            tx_workers,
             batch_size,
         } => {
             let target_addrs: Vec<SocketAddr> = target
@@ -177,6 +182,7 @@ fn main() {
                 writer_bandwidth_mbps,
                 dataplane_bandwidth_mbps,
                 peer_bandwidth_mbps,
+                tx_workers,
                 batch_size,
             );
         }
@@ -317,6 +323,7 @@ fn run_native_writer(
     writer_bandwidth_mbps: u64,
     dataplane_bandwidth_mbps: u64,
     peer_bandwidth_mbps: Option<u64>,
+    tx_workers: usize,
     batch_size: usize,
 ) {
     assert!(
@@ -346,11 +353,13 @@ fn run_native_writer(
         writer_bandwidth_mbps = writer_bandwidth_mbps,
         dataplane_bandwidth_mbps = dataplane_bandwidth_mbps,
         peer_bandwidth_mbps = peer_bandwidth_mbps.unwrap_or(dataplane_bandwidth_mbps),
+        tx_workers,
         batch_size = batch_size,
         "starting native dataplane writer"
     );
 
-    let mut builder = DataplaneBuilder::new(dataplane_bandwidth_mbps);
+    let mut builder =
+        DataplaneBuilder::new(dataplane_bandwidth_mbps).with_udp_tx_workers(tx_workers);
     if let Some(peer_bandwidth_mbps) = peer_bandwidth_mbps {
         builder = builder.with_udp_peer_bandwidth_mbps(peer_bandwidth_mbps);
     }
@@ -411,11 +420,16 @@ fn run_native(bind_addr: SocketAddr, multishot: bool) {
     let mut bytes_received = 0u64;
     let mut last_log = Instant::now();
     let log_interval = Duration::from_secs(1);
+    let mut messages = Vec::with_capacity(UDP_RECEIVE_BATCH_SIZE);
 
     loop {
-        let msg = block_on(udp_socket.recv());
-        msgs_received += 1;
-        bytes_received += msg.payload.len() as u64;
+        messages.clear();
+        msgs_received +=
+            block_on(udp_socket.recv_many(&mut messages, UDP_RECEIVE_BATCH_SIZE)) as u64;
+        bytes_received += messages
+            .iter()
+            .map(|message| message.payload.len() as u64)
+            .sum::<u64>();
 
         let now = Instant::now();
         if now.duration_since(last_log) >= log_interval {
