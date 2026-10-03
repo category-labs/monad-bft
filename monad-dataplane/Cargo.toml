@@ -18,16 +18,20 @@ governor = { workspace = true }
 libc = { workspace = true }
 monoio = { workspace = true }
 socket2 = { workspace = true }
-thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 zerocopy = { workspace = true }
 
 [dev-dependencies]
 clap = { workspace = true, features = ["derive"] }
+criterion = { workspace = true }
 env_logger = { workspace = true }
 futures-util = { workspace = true }
 ntest = { workspace = true }
 rand = { workspace = true }
 rstest = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[[bench]]
+name = "pacing"
+harness = false
