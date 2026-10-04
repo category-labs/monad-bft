@@ -1,7 +1,7 @@
 node_id = 4
 proposal_key_pair = 4
 cadence_key_pair = 4
-genesis_deadline = 1790973425699
+genesis_deadline = 1791053335316
 
 # ams-001
 [[validators]]
