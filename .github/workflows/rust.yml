@@ -41,11 +41,11 @@ jobs:
     steps:
       - name: Generate GitHub App token
         id: app-token
-        if: ${{ vars.GITHUB_APP_ID != '' }}
+        if: ${{ vars.CI_APP_ID != '' && github.event_name != 'pull_request' }}
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ vars.GITHUB_APP_ID }}
-          private-key: ${{ secrets.GITHUB_APP_PRIVATE_KEY }}
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
 
       - name: Checkout repository
         uses: actions/checkout@v4
