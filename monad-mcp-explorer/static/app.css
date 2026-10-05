@@ -177,7 +177,8 @@ h2.section { font-size: 14px; font-weight: 600; margin: 22px 0 10px; }
 .row:last-child { border-bottom: 0; }
 .row > .badge { text-align: center; }
 .row.is-new { background: var(--new); }
-.rows.tx .row { grid-template-columns: 34px minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1fr) auto; }
+/* fixed size column: an auto one varies with "12 B" vs "1.2 KiB" and shifts the slot and preview columns */
+.rows.tx .row { grid-template-columns: 34px minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1fr) 64px; }
 .ico {
   width: 34px; height: 34px; border-radius: var(--radius); background: var(--surface-2); border: 1px solid var(--line);
   display: grid; place-items: center; font-family: var(--mono); font-size: 11px; color: var(--muted);
@@ -301,6 +302,6 @@ pre.hex {
   .kv { grid-template-columns: 1fr; }
   .kv > dt { border-bottom: 0; padding-bottom: 0; }
   .tile.wide { grid-column: span 1; }
-  .rows.tx .row { grid-template-columns: 34px minmax(0, 1fr) minmax(0, 1fr) auto; }
+  .rows.tx .row { grid-template-columns: 34px minmax(0, 1fr) minmax(0, 1fr) 64px; }
   .rows.tx .row .preview { display: none; }
 }

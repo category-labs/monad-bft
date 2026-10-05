@@ -411,7 +411,7 @@
   // mempool (-> sealed), proposing (-> slot deadline), fast voting (-> fast block formed),
   // finalizing (-> finalized)
   const PHASES = {
-    submit: 'Submit', forwarding: 'Forwarding', mempool: 'Mempool', proposing: 'Proposing', fast_voting: 'Fast voting', finalizing: 'Finalizing',
+    submit: 'Submitting', forwarding: 'Forwarding', mempool: 'Mempool', proposing: 'Proposing', fast_voting: 'Voting', finalizing: 'Finalizing',
   };
   // demo(tx-timeline): the events bounding each phase; finalizing starts at the fast block, else the deadline
   const EDGES = {

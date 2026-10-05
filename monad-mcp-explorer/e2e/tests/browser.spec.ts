@@ -96,7 +96,7 @@ test('L6b: send from the panel, follow it to its block and payload, then Live of
   await expect(timeline).toHaveAttribute('data-slot', slot);
   const phases = ['submit', 'forwarding', 'mempool', 'proposing', ...(blockPath === 'fast' ? ['fast_voting'] : []), 'finalizing'];
   const names = {
-    submit: 'Submit', forwarding: 'Forwarding', mempool: 'Mempool', proposing: 'Proposing', fast_voting: 'Fast voting', finalizing: 'Finalizing',
+    submit: 'Submitting', forwarding: 'Forwarding', mempool: 'Mempool', proposing: 'Proposing', fast_voting: 'Voting', finalizing: 'Finalizing',
   };
   const rows = timeline.getByTestId('timeline-row');
   await expect(rows).toHaveCount(phases.length);
