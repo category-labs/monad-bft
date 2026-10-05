@@ -48,12 +48,10 @@ impl AssembledProposal {
         message: &[u8],
         timestamp: u64,
     ) -> Option<Self> {
-        let infer_scheme = || {
-            let num_validators = epoch_handle.validator_data.len();
-            let d25 = d25::for_message(slot, message.len(), timestamp, num_validators);
-            d25.map(EncodingScheme::D25)
-        };
-        Self::build(epoch_handle, message, infer_scheme)
+        let num_validators = epoch_handle.validator_data.len();
+        let d25 = d25::for_message(slot, message.len(), timestamp, num_validators)?;
+        let scheme = EncodingScheme::D25(d25);
+        Self::build(epoch_handle, message, scheme)
     }
 
     pub fn build_s11(
@@ -63,21 +61,14 @@ impl AssembledProposal {
         message: &[u8],
         timestamp: u64,
     ) -> Option<Self> {
-        let infer_scheme = || {
-            let num_validators = epoch_handle.validator_data.len();
-            let msg_len = message.len();
-            let s11 = swiper::for_message(slot, msg_len, timestamp, proposer_index, num_validators);
-            s11.map(EncodingScheme::S11)
-        };
-        Self::build(epoch_handle, message, infer_scheme)
+        let num_validators = epoch_handle.validator_data.len();
+        let msg_len = message.len();
+        let s11 = swiper::for_message(slot, msg_len, timestamp, proposer_index, num_validators)?;
+        let scheme = EncodingScheme::S11(s11);
+        Self::build(epoch_handle, message, scheme)
     }
 
-    fn build(
-        epoch_handle: &EpochHandle,
-        message: &[u8],
-        infer_scheme: impl FnOnce() -> Option<EncodingScheme>,
-    ) -> Option<Self> {
-        let scheme = infer_scheme()?;
+    fn build(epoch_handle: &EpochHandle, message: &[u8], scheme: EncodingScheme) -> Option<Self> {
         let author = &epoch_handle.self_id;
         let valset = &epoch_handle.validator_data;
 
@@ -147,6 +138,15 @@ pub struct FirstHopDissemination<'a> {
 }
 
 impl<'a> FirstHopDissemination<'a> {
+    // todo: give DA a shortcut to ingest its own chunks as trusted
+    pub fn envelope(&self) -> ProposalEnvelope {
+        let mut envelope = ProposalEnvelope::from_header(self.header.clone());
+        for (chunk_id, data) in &self.chunks {
+            envelope.insert(chunk_id.to_wire(), data.clone());
+        }
+        envelope
+    }
+
     // take the chunks owned by a particular node
     pub fn split_off(&mut self, node: &NodeId) -> Option<ProposalEnvelope> {
         let index = self.assignment.index_of(node)?;
@@ -230,6 +230,7 @@ mod tests {
         assert!(AssembledProposal::build_d25(&epoch_handle, SLOT, &[], 0).is_none());
 
         let dissemination = proposal.disseminate();
+        assert_eq!(dissemination.envelope(), group(&chunks));
         let packets = dissemination.into_packets();
         // one per chunk, then the header alone to the author itself
         assert_eq!(packets.len(), chunks.len() + 1);

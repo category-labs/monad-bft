@@ -276,8 +276,8 @@ impl Runtime for NodeRuntime {
         effects.dispatch(Effect::Network(outbound));
     }
 
-    // first hop of a proposal released at (slot, index): our own share
-    // goes to our DA, the rest to its owners
+    // a proposal released at (slot, index): the first hop goes to the
+    // other owners, plus all chunks to proposer's DA
     fn handle_proposal(
         &mut self,
         now: Timestamp,
@@ -300,10 +300,15 @@ impl Runtime for NodeRuntime {
         };
 
         tracing::info!(slot = slot.0, index, len = message.len(), "proposing");
+
         let mut first_hop = proposal.disseminate();
-        if let Some(own_share) = first_hop.split_off(&self_id) {
-            effects.dispatch(Effect::DA(DAInput::Envelope(own_share)));
+
+        if let Some(envelope) = first_hop.split_off(&self_id) {
+            effects.dispatch(Effect::DA(DAInput::Envelope(envelope)));
         }
+        // optimization: ingest all chunks for early decode
+        effects.dispatch(Effect::DA(DAInput::Envelope(first_hop.envelope())));
+
         for (to, packet) in first_hop.into_packets() {
             let packet = Packet::Chunk(packet);
             effects.dispatch(Effect::Network(Outbound::Unicast(*to, packet)));
