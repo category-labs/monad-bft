@@ -458,7 +458,7 @@ impl<PT: PubKey> SecondaryEncoding<PT> {
     }
 }
 
-pub fn calc_tree_depth(
+pub fn canonical_tree_depth(
     encoding_scheme: EncodingScheme,
     app_message_len: usize,
     validator_set_size: usize,
@@ -480,7 +480,7 @@ pub fn calc_tree_depth(
     Some(depth)
 }
 
-pub fn calc_tree_depth_secondary(
+pub fn canonical_tree_depth_secondary(
     encoding_scheme: EncodingScheme,
     app_message_len: usize,
 ) -> Option<u8> {
@@ -498,6 +498,23 @@ pub fn calc_tree_depth_secondary(
         let num_base_symbols = layout.num_base_symbols(app_message_len);
         even_partition_num_chunks(num_base_symbols, redundancy)
     })
+}
+
+pub fn canonical_symbol_len(
+    encoding_scheme: EncodingScheme,
+    app_message_len: usize,
+    validator_set_size: usize,
+) -> Option<usize> {
+    let depth = canonical_tree_depth(encoding_scheme, app_message_len, validator_set_size)?;
+    Some(PacketLayout::new(DEFAULT_SEGMENT_LEN, depth).symbol_len())
+}
+
+pub fn canonical_symbol_len_secondary(
+    encoding_scheme: EncodingScheme,
+    app_message_len: usize,
+) -> Option<usize> {
+    let depth = canonical_tree_depth_secondary(encoding_scheme, app_message_len)?;
+    Some(PacketLayout::new(DEFAULT_SEGMENT_LEN, depth).symbol_len())
 }
 
 #[cfg(test)]
@@ -642,14 +659,21 @@ fn encode_unique_symbols<PT: PubKey>(
     Ok(())
 }
 
+// Seed grinding is bounded by the number of buckets that fit in the
+// timeliness window.
+const TIMESTAMP_BUCKET_MS: u64 = 2048;
+
+fn coarse_ts(unix_ts_ms: u64) -> u64 {
+    unix_ts_ms / TIMESTAMP_BUCKET_MS
+}
+
 // Derive the seed used to shuffling validator set for deterministic raptorcast.
-// Layout: round (8) || floor(unix_ts_ms / 2048) (8) || author_pk[1..17] (16) = 32 bytes
+// Layout: round (8) || coarse_ts (8) || author_pk[1..17] (16) = 32 bytes
 pub fn derive_seed<PT: PubKey>(author: &NodeId<PT>, round: Round, unix_ts_ms: u64) -> [u8; 32] {
     let author_bytes = author.pubkey().bytes();
-    let coarse_ts = unix_ts_ms / 2048; // ~2s resolution
     let mut seed = [0u8; 32];
     seed[..8].copy_from_slice(&round.0.to_le_bytes());
-    seed[8..16].copy_from_slice(&coarse_ts.to_le_bytes());
+    seed[8..16].copy_from_slice(&coarse_ts(unix_ts_ms).to_le_bytes());
     // skipping first byte (tag) of the pubkey with low entropy
     seed[16..].copy_from_slice(&author_bytes[1..17]);
     seed
@@ -681,8 +705,8 @@ mod tests {
     use zerocopy::Ref;
 
     use super::{
-        build_header, build_secondary, calc_global_merkle_root_secondary, calc_tree_depth,
-        calc_tree_depth_secondary, PacketLayout, DEFAULT_REDUNDANCY, DEFAULT_SEGMENT_LEN,
+        build_header, build_secondary, calc_global_merkle_root_secondary, canonical_tree_depth,
+        canonical_tree_depth_secondary, PacketLayout, DEFAULT_REDUNDANCY, DEFAULT_SEGMENT_LEN,
         MAX_MERKLE_TREE_DEPTH, MAX_SYMBOL_LEN, MIN_MERKLE_TREE_DEPTH, MIN_SYMBOL_LEN,
     };
     use crate::{
@@ -727,7 +751,7 @@ mod tests {
     const _: () = assert!(MAX_SYMBOL_LEN == 1279);
 
     fn validate_d25_layout(app_msg_len: usize, val_set_size: usize) {
-        let depth = calc_tree_depth(
+        let depth = canonical_tree_depth(
             super::EncodingScheme::Deterministic25(super::Round(0)),
             app_msg_len,
             val_set_size,
@@ -957,11 +981,13 @@ mod tests {
     }
 
     #[test]
-    fn test_calc_tree_depth_secondary_in_range() {
+    fn test_canonical_tree_depth_secondary_in_range() {
         for app_msg_len in [1_usize, 1024, 64 * 1024, MAX_MESSAGE_SIZE] {
-            let depth =
-                calc_tree_depth_secondary(EncodingScheme::Deterministic25(Round(0)), app_msg_len)
-                    .expect("should find a valid depth");
+            let depth = canonical_tree_depth_secondary(
+                EncodingScheme::Deterministic25(Round(0)),
+                app_msg_len,
+            )
+            .expect("should find a valid depth");
             assert!((MIN_MERKLE_TREE_DEPTH..=MAX_MERKLE_TREE_DEPTH).contains(&depth));
         }
     }
