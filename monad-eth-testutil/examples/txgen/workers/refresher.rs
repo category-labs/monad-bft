@@ -25,6 +25,10 @@ use tokio::time::MissedTickBehavior;
 use super::*;
 use crate::{config::DeployedContract, shared::erc20::ERC20};
 
+/// Refresh rounds the chain pending nonce must stay frozen below the local
+/// nonce before we conclude the gap tx was dropped and reset to chain state.
+const NONCE_GAP_STALE_ROUNDS: u32 = 3;
+
 pub struct Refresher {
     pub rpc_rx: mpsc::UnboundedReceiver<AccountsWithTime>,
     pub gen_sender: async_channel::Sender<Accounts>,
@@ -204,11 +208,31 @@ pub async fn refresh_batch(
             acct.native_bal = *b;
         }
         if let Ok((_, n)) = &nonces[i] {
-            // Never regress the local nonce — the generator may have already
-            // incremented it past the chain-reported value for in-flight txs.
-            // Tradeoff: if a tx is dropped, we leave a nonce gap rather than
-            // risk double-sending an in-flight nonce.
-            acct.nonce = acct.nonce.max(*n);
+            // Never regress the local nonce while txs are in flight — the
+            // generator may have incremented it past the chain-reported value.
+            // But if the chain's pending nonce stays frozen below the local
+            // value across several refreshes, the gap nonce was dropped
+            // (drop_percentage or RPC reject) and the account is wedged:
+            // adopt the chain nonce so the gap gets resubmitted.
+            if *n >= acct.nonce {
+                acct.nonce = *n;
+                acct.chain_nonce_stale_rounds = 0;
+            } else if *n == acct.last_chain_nonce {
+                acct.chain_nonce_stale_rounds += 1;
+                if acct.chain_nonce_stale_rounds >= NONCE_GAP_STALE_ROUNDS {
+                    warn!(
+                        "account {} wedged behind nonce gap (local {}, chain pending {} for {} refreshes); resetting to chain nonce",
+                        acct.addr, acct.nonce, n, acct.chain_nonce_stale_rounds
+                    );
+                    acct.nonce = *n;
+                    acct.chain_nonce_stale_rounds = 0;
+                }
+            } else {
+                // Chain nonce advanced but is still below local — in-flight
+                // txs are landing normally.
+                acct.chain_nonce_stale_rounds = 0;
+            }
+            acct.last_chain_nonce = *n;
         }
 
         for (erc20, bals_result) in erc20_contracts.iter().zip(erc20_bals_results.iter()) {
