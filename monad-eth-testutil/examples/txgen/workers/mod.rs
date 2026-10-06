@@ -46,6 +46,11 @@ pub struct SimpleAccount {
     pub erc20_balances: std::collections::HashMap<Address, U256>,
     pub key: PrivateKey,
     pub addr: Address,
+    /// Chain-reported pending nonce from the previous refresh, and how many
+    /// consecutive refreshes it has stayed frozen below the local nonce.
+    /// Used to detect a dropped tx wedging the account behind a nonce gap.
+    pub last_chain_nonce: u64,
+    pub chain_nonce_stale_rounds: u32,
 }
 
 impl SimpleAccount {
@@ -224,6 +229,8 @@ impl From<(Address, PrivateKey)> for SimpleAccount {
             nonce: Default::default(),
             native_bal: Default::default(),
             erc20_balances: Default::default(),
+            last_chain_nonce: Default::default(),
+            chain_nonce_stale_rounds: Default::default(),
         }
     }
 }
