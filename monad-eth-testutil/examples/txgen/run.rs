@@ -260,6 +260,11 @@ async fn run_workload_group(
             Ok(())
         }
         result = try_join_all(tasks) => {
+            // A phase task ended early (critical_task always resolves Err when
+            // its task exits). Signal shutdown so the remaining detached phase
+            // tasks stop instead of overlapping the next workload phase.
+            shutdown_clone.store(true, Ordering::Relaxed);
+            tokio::time::sleep(Duration::from_millis(100)).await;
             match result {
                 Ok(_) => {
                     info!("Task completed successfully");

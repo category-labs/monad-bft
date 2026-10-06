@@ -835,15 +835,37 @@ impl RpcWsCompare {
     pub async fn run(&self, shutdown: Arc<AtomicBool>) {
         let client = self.rpc_client.clone();
 
-        // Create a websocket stream to listen to new blocks
-        let (ws_stream, _) = connect_async(&self.ws_url.to_string())
-            .await
-            .expect("Failed to connect");
-        let (mut write, mut read) = ws_stream.split();
-        write.send(Message::Text("{ \"id\": 1, \"jsonrpc\": \"2.0\", \"method\": \"eth_subscribe\", \"params\": [\"newHeads\"] }".into())).await.expect("failed to send message");
-        Self::wait_for_subscription_id(&mut read, 1)
-            .await
-            .expect("failed to get newHeads subscription ID");
+        // Create a websocket stream to listen to new blocks. Retry while the
+        // endpoint is briefly unavailable — each phase rotation re-creates
+        // this task, and a transient ws blip at phase start would otherwise
+        // panic it and abort the whole phase.
+        let (mut write, mut read) = loop {
+            if shutdown.load(Ordering::Relaxed) {
+                return;
+            }
+            let (ws_stream, _) = match connect_async(&self.ws_url.to_string()).await {
+                Ok(ok) => ok,
+                Err(err) => {
+                    warn!(?err, "Failed to connect newHeads websocket; retrying");
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    continue;
+                }
+            };
+            let (mut write, mut read) = ws_stream.split();
+            if let Err(err) = write.send(Message::Text("{ \"id\": 1, \"jsonrpc\": \"2.0\", \"method\": \"eth_subscribe\", \"params\": [\"newHeads\"] }".into())).await {
+                warn!(?err, "Failed to send newHeads subscription; retrying");
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                continue;
+            }
+            match Self::wait_for_subscription_id(&mut read, 1).await {
+                Some(_) => break (write, read),
+                None => {
+                    warn!("Failed to get newHeads subscription ID; retrying");
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    continue;
+                }
+            }
+        };
 
         let (ws_tx, mut ws_rx) = tokio::sync::mpsc::channel(100);
         let shutdown3 = shutdown.clone();
