@@ -416,6 +416,7 @@ async fn eth_call(
                 executor,
                 app_state.chain_id,
                 params,
+                app_state.max_response_size as usize,
             )
         })
         .await
@@ -540,6 +541,7 @@ async fn eth_createAccessList(
                 executor,
                 app_state.chain_id,
                 params,
+                app_state.max_response_size as usize,
             )
         })
         .await
