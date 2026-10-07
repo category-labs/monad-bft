@@ -174,7 +174,7 @@ impl Runtime for NodeRuntime {
                     tracing::debug!(?from, "malformed chunk packet");
                     return;
                 };
-                effects.dispatch(Effect::DA(DAInput::Envelope(envelope)));
+                effects.dispatch(Effect::DA(DAInput::Envelope(from, envelope)));
             }
 
             Packet::ChunkRequest(bytes) => {
@@ -304,10 +304,11 @@ impl Runtime for NodeRuntime {
         let mut first_hop = proposal.disseminate();
 
         if let Some(envelope) = first_hop.split_off(&self_id) {
-            effects.dispatch(Effect::DA(DAInput::Envelope(envelope)));
+            effects.dispatch(Effect::DA(DAInput::Envelope(self_id, envelope)));
         }
         // optimization: ingest all chunks for early decode
-        effects.dispatch(Effect::DA(DAInput::Envelope(first_hop.envelope())));
+        let envelope = first_hop.envelope();
+        effects.dispatch(Effect::DA(DAInput::Envelope(self_id, envelope)));
 
         for (to, packet) in first_hop.into_packets() {
             let packet = Packet::Chunk(packet);
