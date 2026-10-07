@@ -584,6 +584,7 @@ async fn prepare_eth_call<T: Triedb + TriedbPath>(
     eth_call_handler_config: &EthCallHandlerConfig,
     eth_call_executor: &MonadExecutor,
     chain_id: u64,
+    max_response_size: usize,
     params: CallParams,
     out_of_gas_handling: OutOfGasHandling,
 ) -> Result<(BlockKey, CallResult), JsonRpcError> {
@@ -597,6 +598,7 @@ async fn prepare_eth_call<T: Triedb + TriedbPath>(
         eth_call_handler_config,
         eth_call_executor,
         chain_id,
+        max_response_size,
         execution_params,
         out_of_gas_handling,
         block_key,
@@ -609,6 +611,7 @@ async fn prepare_eth_call_at_block<T: Triedb + TriedbPath>(
     eth_call_handler_config: &EthCallHandlerConfig,
     eth_call_executor: &MonadExecutor,
     chain_id: u64,
+    max_response_size: usize,
     params: EthCallExecutionParams,
     out_of_gas_handling: OutOfGasHandling,
     block_key: BlockKey,
@@ -706,6 +709,7 @@ async fn prepare_eth_call_at_block<T: Triedb + TriedbPath>(
             block_id,
             state_override_set: &state_overrides,
             tracer,
+            call_tracer_max_size: max_response_size,
             gas_specified,
         })
         .await
@@ -749,13 +753,15 @@ async fn prepare_eth_call_at_block<T: Triedb + TriedbPath>(
     method = "eth_call",
     ignore = "eth_call_handler_config",
     ignore = "eth_call_executor",
-    ignore = "chain_id"
+    ignore = "chain_id",
+    ignore = "max_response_size"
 )]
 pub async fn monad_eth_call<T: Triedb + TriedbPath>(
     data_provider: &DataProvider<T>,
     eth_call_handler_config: &EthCallHandlerConfig,
     eth_call_executor: &MonadExecutor,
     chain_id: u64,
+    max_response_size: usize,
     params: MonadEthCallParams,
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_call: {params:?}");
@@ -765,6 +771,7 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
         eth_call_handler_config,
         eth_call_executor,
         chain_id,
+        max_response_size,
         CallParams::Call(params),
         OutOfGasHandling::RpcError,
     )
@@ -807,6 +814,7 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
         eth_call_handler_config,
         eth_call_executor,
         chain_id,
+        max_response_size,
         CallParams::Trace(params),
         OutOfGasHandling::RpcError,
     )
@@ -883,6 +891,7 @@ pub async fn monad_createAccessList<T: Triedb + TriedbPath>(
         eth_call_handler_config,
         eth_call_executor,
         chain_id,
+        0,
         CallParams::AccessList(params),
         OutOfGasHandling::ReturnAsCallFailure,
     )
@@ -908,6 +917,7 @@ pub async fn monad_createAccessList<T: Triedb + TriedbPath>(
         eth_call_handler_config,
         eth_call_executor,
         chain_id,
+        0,
         call_params,
         OutOfGasHandling::ReturnAsCallFailure,
         block_key,
