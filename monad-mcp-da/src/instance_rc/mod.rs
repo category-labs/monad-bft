@@ -27,12 +27,12 @@ use recovery_tracker::ChunkRecoveryTracker;
 
 use super::{
     assignment::{ChunkAssignment, ChunkId, ChunkRouting, NodeIndex, Upstream},
-    chunk::{ChunkData, ChunkRequest, ChunksSubset, WireChunkId},
+    chunk::{ChunkData, ChunkRequest, ChunkRequestType, ChunksSubset, WireChunkId},
     chunk_tree::ChunkTree,
     egress::ChunkEgress,
     encoding_scheme::{self, DAEncodingScheme as _, SymbolDecoder},
     runtime::EpochHandle,
-    types::{ChunkRequestType, NodeId, ProposalDAEvent, SignedProposalHeader},
+    types::{NodeId, ProposalDAEvent, SignedProposalHeader},
     util::Tree,
     wire::PacketLayout as _,
 };
@@ -41,6 +41,7 @@ use crate::spec::DAProposalHeader as _;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvalidChunk {
     InvalidChunkId,
+    UnexpectedSender,
     BadProof,
 }
 
@@ -54,6 +55,7 @@ pub enum DecodingOutcome {
 // per-(slot, proposal) raptorcast committed to single root
 pub(crate) struct RaptorcastInstance {
     header: SignedProposalHeader,
+    author: NodeId,
     // None when this node is outside the assignment (e.g. a full node)
     self_index: Option<NodeIndex>,
     // where our chunks go when rebroadcast in full: empty outside
@@ -104,6 +106,7 @@ impl RaptorcastInstance {
             assignment,
             chunk_tree: ChunkTree::partial(*header.root()),
             header,
+            author: *author,
             self_index,
             full_rebroadcast_targets,
         }
@@ -124,20 +127,17 @@ impl RaptorcastInstance {
         let root = *self.header.root();
         let mut events = Vec::new();
         for upstream in self.obligation_tracker.drain_fulfilled() {
-            let event = match upstream {
-                Upstream::Author => ProposalDAEvent::ProposerObligationFulfilled(root),
-                Upstream::Owner(owner) => ProposalDAEvent::OwnerObligationFulfilled {
-                    owner: *self.assignment.node(owner),
-                    root,
-                },
-            };
-            events.push(event);
+            // consensus waits only on our own share
+            if let Upstream::Author = upstream {
+                events.push(ProposalDAEvent::ProposerObligationFulfilled(root));
+            }
         }
         events
     }
 
     pub(crate) fn ingest_chunk(
         &mut self,
+        sender: &NodeId,
         chunk_id: WireChunkId,
         data: ChunkData,
         egress: &mut ChunkEgress,
@@ -151,6 +151,9 @@ impl RaptorcastInstance {
             // chunk id is out of range
             return Err(InvalidChunk::InvalidChunkId);
         };
+        if !self.accepts_from(sender, &routing) {
+            return Err(InvalidChunk::UnexpectedSender);
+        }
 
         let chunk_id = routing.chunk_id();
         if self.decoding_tracker.already_received(chunk_id) {
@@ -263,6 +266,14 @@ impl RaptorcastInstance {
         }
         self.decoding_outcome = DecodingOutcome::Decoded(message);
         Some(ProposalDAEvent::Decoded(root))
+    }
+
+    fn accepts_from(&self, sender: &NodeId, routing: &ChunkRouting<'_>) -> bool {
+        let owner = routing.owner_index();
+        let from_author = *sender == self.author;
+        let from_owner = self.assignment.index_of(sender) == Some(owner);
+        let to_owner = self.self_index == Some(owner);
+        from_author || from_owner || to_owner
     }
 
     // whether the chunk's proof binds it to our root
@@ -378,7 +389,7 @@ mod tests {
         egress: &mut ChunkEgress,
     ) -> Result<Option<ProposalDAEvent>, InvalidChunk> {
         let (_, chunk_id, data) = chunk.clone().into_parts();
-        instance.ingest_chunk(chunk_id, data, egress)
+        instance.ingest_chunk(&author(), chunk_id, data, egress)
     }
 
     // the wire ids in the drained messages, sorted
@@ -396,6 +407,26 @@ mod tests {
     }
 
     #[test]
+    fn a_peer_may_send_only_its_own_chunks_or_ours() {
+        let epoch_handle = epoch_handle();
+        let (header, chunks) = proposal_chunks(&epoch_handle, 1);
+        let mut instance = instance(&epoch_handle, &header);
+        let mut egress = released();
+        let mut from = |sender: u64, chunk: &Chunk<'_>| {
+            let (_, chunk_id, data) = chunk.clone().into_parts();
+            instance.ingest_chunk(&NodeId::dummy(sender), chunk_id, data, &mut egress)
+        };
+
+        // we are 1 and own 0 and 3; node 2 owns 1 and 4; node 3 owns 2 and 5
+        assert_eq!(from(2, &chunks[2]), Err(InvalidChunk::UnexpectedSender));
+        assert!(from(2, &chunks[1]).is_ok());
+        assert!(from(3, &chunks[0]).is_ok());
+
+        // the proposer may send any chunk
+        assert!(from(0, &chunks[2]).is_ok());
+    }
+
+    #[test]
     fn malformed_chunks_are_rejected() {
         let epoch_handle = epoch_handle();
         let (header, chunks) = proposal_chunks(&epoch_handle, 1);
@@ -403,7 +434,7 @@ mod tests {
         let mut egress = released();
         let (_, _, data) = chunks[0].clone().into_parts();
 
-        let out_of_range = instance.ingest_chunk(99, data.clone(), &mut egress);
+        let out_of_range = instance.ingest_chunk(&author(), 99, data.clone(), &mut egress);
         assert_eq!(out_of_range, Err(InvalidChunk::InvalidChunkId));
 
         let mut symbol = data.symbol.to_vec();
@@ -412,11 +443,11 @@ mod tests {
             symbol: Bytes::from(symbol),
             proof: data.proof.clone(),
         };
-        let tampered = instance.ingest_chunk(0, tampered, &mut egress);
+        let tampered = instance.ingest_chunk(&author(), 0, tampered, &mut egress);
         assert_eq!(tampered, Err(InvalidChunk::BadProof));
 
         // a good chunk under the wrong id fails its proof
-        let misplaced = instance.ingest_chunk(1, data, &mut egress);
+        let misplaced = instance.ingest_chunk(&author(), 1, data, &mut egress);
         assert_eq!(misplaced, Err(InvalidChunk::BadProof));
 
         assert!(sent(&mut egress).is_empty());
@@ -482,31 +513,15 @@ mod tests {
         let mut instance = instance(&epoch_handle, &header);
         let mut egress = released();
 
-        // the chunkless author owes nothing from the start
-        let author_owes_nothing = ProposalDAEvent::OwnerObligationFulfilled {
-            owner: author(),
-            root: *header.root(),
-        };
-        assert_eq!(
-            instance.drain_obligation_events(),
-            vec![author_owes_nothing]
-        );
+        assert!(instance.drain_obligation_events().is_empty());
 
         // we own 0 and 3
         ingest(&mut instance, &chunks[0], &mut egress).expect("valid");
         assert!(instance.drain_obligation_events().is_empty());
         ingest(&mut instance, &chunks[3], &mut egress).expect("valid");
-        // holding our whole share also settles what we owe as an owner
-        let we_owe_nothing = ProposalDAEvent::OwnerObligationFulfilled {
-            owner: epoch_handle.self_id,
-            root: *header.root(),
-        };
         assert_eq!(
             instance.drain_obligation_events(),
-            vec![
-                we_owe_nothing,
-                ProposalDAEvent::ProposerObligationFulfilled(*header.root()),
-            ]
+            vec![ProposalDAEvent::ProposerObligationFulfilled(*header.root())]
         );
 
         // node 2 owns 1 and 4: one of them settles nothing
@@ -565,23 +580,15 @@ mod tests {
     }
 
     #[test]
-    fn the_author_is_owed_nothing_by_anyone_including_itself() {
+    fn the_author_is_owed_nothing_by_itself() {
         let epoch_handle = epoch_handle_for(author(), 4, vec![author()]);
         let (header, _) = proposal_chunks(&epoch_handle, 1);
         let mut instance = instance(&epoch_handle, &header);
 
         let events = instance.drain_obligation_events();
-        assert!(
-            events.contains(&ProposalDAEvent::ProposerObligationFulfilled(
-                *header.root()
-            ))
+        assert_eq!(
+            events,
+            vec![ProposalDAEvent::ProposerObligationFulfilled(*header.root())]
         );
-        for id in 0..4 {
-            let owes_nothing = ProposalDAEvent::OwnerObligationFulfilled {
-                owner: NodeId::dummy(id),
-                root: *header.root(),
-            };
-            assert!(events.contains(&owes_nothing), "owner {id}");
-        }
     }
 }

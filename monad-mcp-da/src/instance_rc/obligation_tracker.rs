@@ -13,10 +13,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use super::super::assignment::{ChunkAssignment, ChunkRouting, NodeIndex, Upstream};
-
-// o' = o * (a/b)
-const PACKET_LOSS_RESISTANCE: (usize, usize) = (9, 10);
+use super::super::assignment::{
+    ChunkAssignment, ChunkRouting, NodeIndex, PacketLossResistance, Upstream,
+};
 
 pub(crate) struct ObligationTracker {
     // the number of chunks remaining to be received from each
@@ -49,20 +48,15 @@ impl ObligationTracker {
             }
         }
 
-        this.trim();
+        this.trim(assignment.packet_loss_resistance());
         this.fulfill_vacuously();
         this
     }
 
-    // trim the obligations to account for packet loss.
-    fn trim(&mut self) {
-        // todo: make assignment export this
-        let (a, b) = PACKET_LOSS_RESISTANCE;
-        let cut = |n: &mut usize| *n = (*n * a).div_ceil(b);
-
-        cut(&mut self.remaining_author_obligation);
+    fn trim(&mut self, resistance: PacketLossResistance) {
+        self.remaining_author_obligation = resistance.trim(self.remaining_author_obligation);
         for remaining in self.remaining_owner_obligation.iter_mut() {
-            cut(remaining);
+            *remaining = resistance.trim(*remaining);
         }
     }
 
@@ -130,6 +124,7 @@ mod tests {
     use super::{
         super::super::{
             assignment::StakePartition,
+            test_util::PACKET_LOSS_RESISTANCE,
             types::{NodeId, Stake},
         },
         *,
@@ -141,7 +136,7 @@ mod tests {
         let author = NodeId::dummy(0);
         let mut weights = vec![(author, Stake::ZERO)];
         weights.extend((1..=3).map(|id| (NodeId::dummy(id), Stake::from(1))));
-        StakePartition::new(weights).assign(&author, 30, 2.5)
+        StakePartition::new(weights).assign(&author, 30, 2.5, PACKET_LOSS_RESISTANCE)
     }
 
     #[test]
@@ -171,8 +166,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // FIXME: failing
-    fn an_obligation_is_fulfilled_once_by_its_last_chunk() {
+    fn an_obligation_is_fulfilled_once_by_its_last_needed_chunk() {
         let assignment = assignment();
         let author = assignment
             .index_of(&NodeId::dummy(0))
@@ -188,24 +182,29 @@ mod tests {
         let mut tracker = ObligationTracker::new(&assignment, Some(member));
         tracker.drain_fulfilled();
 
-        // 25 chunks are owed by the author and 25 by each owner
-        for i in 0..24 {
+        // 25 chunks are owed by the author and 25 by each owner, of
+        // which the trim leaves 23 needed
+        assert_eq!((ours.len(), theirs.len()), (25, 25));
+        let last = PACKET_LOSS_RESISTANCE.trim(25) - 1;
+        assert_eq!(last, 22);
+        for i in 0..last {
             tracker.mark(&ours[i], member);
             tracker.mark(&theirs[i], member);
         }
         assert!(tracker.drain_fulfilled().is_empty());
 
-        // our last own chunk settles the author, and what we owe as owner
-        tracker.mark(&ours[24], member);
+        // our last needed own chunk settles the author, and what we owe
+        // as owner
+        tracker.mark(&ours[last], member);
         assert_eq!(
             tracker.drain_fulfilled(),
             vec![Upstream::Owner(member), Upstream::Author]
         );
-        tracker.mark(&theirs[24], member);
+        tracker.mark(&theirs[last], member);
         assert_eq!(tracker.drain_fulfilled(), vec![Upstream::Owner(owner)]);
 
         // fulfilled once; a chunk unrouted to the receiver credits nothing
-        tracker.mark(&ours[0], member);
+        tracker.mark(&ours[last + 1], member);
         assert!(tracker.drain_fulfilled().is_empty());
         assert!(owed(&ours[0], author).next().is_none());
     }

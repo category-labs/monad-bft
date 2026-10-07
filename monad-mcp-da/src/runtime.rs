@@ -96,13 +96,17 @@ where
         }
     }
 
-    pub fn ingest(&mut self, envelope: ProposalEnvelope) -> Result<(), InvalidProposalHeader> {
+    pub fn ingest(
+        &mut self,
+        sender: &NodeId,
+        envelope: ProposalEnvelope,
+    ) -> Result<(), InvalidProposalHeader> {
         let slot = Slot(envelope.header().slot());
         let Some(slot_raptorcast) = self.open_slot_raptorcast(slot) else {
             return Err(InvalidProposalHeader::SlotOutOfRange);
         };
 
-        slot_raptorcast.ingest(envelope)?;
+        slot_raptorcast.ingest(sender, envelope)?;
         self.collect(slot);
         Ok(())
     }
@@ -209,6 +213,7 @@ where
             .unwrap_or(Slot::MIN);
 
         self.ingestion_window.start = kept_slot_cap;
+        // todo: gc after execution certificate, or can affect fast path liveness
         self.raptorcast_map.retain(|&slot, _| slot >= kept_slot_cap);
     }
 }
@@ -241,11 +246,12 @@ mod tests {
     use super::{
         super::{
             chorus::types::Timestamp,
+            chunk::ChunkRequestType,
             test_util::{
-                FixedProposerSchedule, MESSAGE_LEN, SLOT, author, epoch_handle, group,
-                proposal_chunks, proposal_chunks_from, proposer_schedule,
+                FixedProposerSchedule, Holding, MESSAGE_LEN, SLOT, author, epoch_handle, group,
+                holders, proposal_chunks, proposal_chunks_from, proposer_schedule,
             },
-            types::ChunkRequestType,
+            types::{Pin, PinTarget},
         },
         *,
     };
@@ -282,14 +288,14 @@ mod tests {
         let epoch_handle = epoch_handle();
         let (_, chunks) = proposal_chunks(&epoch_handle, 1);
 
-        let closed = runtime.ingest(group(&chunks[..1]));
+        let closed = runtime.ingest(&author(), group(&chunks[..1]));
         assert_eq!(closed, Err(InvalidProposalHeader::SlotOutOfRange));
 
         open(&mut runtime, [0, 1]);
-        assert_eq!(runtime.ingest(group(&chunks[..1])), Ok(()));
+        assert_eq!(runtime.ingest(&author(), group(&chunks[..1])), Ok(()));
 
         let (_, later) = proposal_chunks_from(&epoch_handle, 0, Slot(5), 1);
-        let beyond = runtime.ingest(group(&later[..1]));
+        let beyond = runtime.ingest(&author(), group(&later[..1]));
         assert_eq!(beyond, Err(InvalidProposalHeader::SlotOutOfRange));
     }
 
@@ -300,18 +306,18 @@ mod tests {
         open(&mut runtime, [0, 1, 2]);
         let (_, slot0) = proposal_chunks_from(&epoch_handle, 0, Slot(0), 1);
         let (_, slot1) = proposal_chunks_from(&epoch_handle, 0, Slot(1), 1);
-        assert_eq!(runtime.ingest(group(&slot0[..1])), Ok(()));
-        assert_eq!(runtime.ingest(group(&slot1[..1])), Ok(()));
+        assert_eq!(runtime.ingest(&author(), group(&slot0[..1])), Ok(()));
+        assert_eq!(runtime.ingest(&author(), group(&slot1[..1])), Ok(()));
 
         // completing 1 before 0 retires nothing
         runtime.handle_slot_lifecycle(SlotLifecycle::Completed { slot: Slot(1) });
-        assert_eq!(runtime.ingest(group(&slot0[1..2])), Ok(()));
+        assert_eq!(runtime.ingest(&author(), group(&slot0[1..2])), Ok(()));
 
         // the cap reaches 2: slot 0 leaves the retention window, slot 1 stays
         runtime.handle_slot_lifecycle(SlotLifecycle::Completed { slot: Slot(0) });
-        let retired = runtime.ingest(group(&slot0[2..3]));
+        let retired = runtime.ingest(&author(), group(&slot0[2..3]));
         assert_eq!(retired, Err(InvalidProposalHeader::SlotOutOfRange));
-        assert_eq!(runtime.ingest(group(&slot1[1..2])), Ok(()));
+        assert_eq!(runtime.ingest(&author(), group(&slot1[1..2])), Ok(()));
     }
 
     #[test]
@@ -321,19 +327,19 @@ mod tests {
         open(&mut runtime, [0, 1, 2, 3]);
         let (_, slot0) = proposal_chunks_from(&epoch_handle, 0, Slot(0), 1);
         let (_, slot2) = proposal_chunks_from(&epoch_handle, 0, Slot(2), 1);
-        assert_eq!(runtime.ingest(group(&slot0[..1])), Ok(()));
-        assert_eq!(runtime.ingest(group(&slot2[..1])), Ok(()));
+        assert_eq!(runtime.ingest(&author(), group(&slot0[..1])), Ok(()));
+        assert_eq!(runtime.ingest(&author(), group(&slot2[..1])), Ok(()));
 
         // slot 0 is skipped, so completing 1 and 2 leaves the cap at 0
         runtime.handle_slot_lifecycle(SlotLifecycle::Completed { slot: Slot(1) });
         runtime.handle_slot_lifecycle(SlotLifecycle::Completed { slot: Slot(2) });
-        assert_eq!(runtime.ingest(group(&slot0[1..2])), Ok(()));
+        assert_eq!(runtime.ingest(&author(), group(&slot0[1..2])), Ok(()));
 
         // the jump past 0 picks up 1 and 2: cap 3, slot 2 is the only one retained
         runtime.handle_slot_lifecycle(SlotLifecycle::CapAdvance { cap: Slot(1) });
-        let retired = runtime.ingest(group(&slot0[2..3]));
+        let retired = runtime.ingest(&author(), group(&slot0[2..3]));
         assert_eq!(retired, Err(InvalidProposalHeader::SlotOutOfRange));
-        assert_eq!(runtime.ingest(group(&slot2[1..2])), Ok(()));
+        assert_eq!(runtime.ingest(&author(), group(&slot2[1..2])), Ok(()));
     }
 
     #[test]
@@ -343,7 +349,9 @@ mod tests {
         open(&mut runtime, [0, 1]);
         runtime.handle_command(SLOT, ChorusDACommand::ReleaseChunks);
         let (header, chunks) = proposal_chunks(&epoch_handle, 1);
-        runtime.ingest(group(&chunks[..3])).expect("valid");
+        runtime
+            .ingest(&author(), group(&chunks[..3]))
+            .expect("valid");
 
         let mut decoded_at = None;
         let mut consensus_decoded_at = None;
@@ -394,12 +402,17 @@ mod tests {
         open(&mut runtime, [0, 1]);
         let (header, _) = proposal_chunks(&epoch_handle, 1);
 
-        let voters = vec![NodeId::dummy(1), NodeId::dummy(2), NodeId::dummy(3)];
-        let command = ChorusDACommand::RecoverChunks {
-            j: 0,
+        let target = PinTarget {
             root: *header.root(),
-            request_type: ChunkRequestType::YourChunks,
-            voters,
+            holders: holders(&[
+                (1, Holding::Owned),
+                (2, Holding::Owned),
+                (3, Holding::Owned),
+            ]),
+        };
+        let command = ChorusDACommand::Pin {
+            j: 0,
+            pin: Pin::Tentative(target),
         };
         runtime.handle_command(SLOT, command);
 

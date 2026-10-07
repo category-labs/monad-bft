@@ -22,7 +22,7 @@ use bytes::Bytes;
 
 use super::{
     assignment::ChunkId,
-    types::{ChunkRequestType, MerkleHash, SignedProposalHeader},
+    types::{MerkleHash, SignedProposalHeader},
 };
 
 // a chunk id as carried on the wire, not yet checked against an
@@ -53,6 +53,22 @@ impl ChunksSubset {
             Self::All => true,
             Self::Narrowed(named) => named.contains(&id.to_wire()),
         })
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum ChunkRequestType {
+    MyChunks,
+    YourChunks,
+}
+
+impl ChunkRequestType {
+    // whose chunks the request names, seen from the requester
+    pub fn owner<T: Copy>(self, requester: T, peer: T) -> T {
+        match self {
+            Self::MyChunks => requester,
+            Self::YourChunks => peer,
+        }
     }
 }
 
