@@ -28,8 +28,9 @@ use super::{
     header::InvalidProposalHeader,
     slot_rc::SlotRaptorcast,
     types::{
-        ChorusDACommand, ChorusDAEvent, HeaderAuth, MerkleRoot, NodeId, ProposalDAEvent,
-        ProposalIndex, ProposalKeyPair, ProposerSchedule, Slot, SlotLifecycle, ValidatorData,
+        ChorusDACommand, ChorusDAEvent, HeaderAuth, MerkleRoot, NodeId, ProposalIndex,
+        ProposalKeyPair, ProposerSchedule, Slot, SlotLifecycle, Timestamp, TimestampDelta,
+        ValidatorData,
     },
     util::SlotCompletion,
 };
@@ -48,10 +49,31 @@ pub struct EpochHandle {
     pub validator_data: Arc<ValidatorData>,
 }
 
+#[derive(Clone, Copy)]
 pub struct DAConfig {
     // keep completed slots for additional time (measured in slots),
     // still ingesting chunks and serving peer chunk recovery requests.
     pub completed_slot_retention: u64,
+    // capital Delta from the paper
+    pub delta: TimestampDelta,
+}
+
+impl DAConfig {
+    pub(crate) fn timing(&self) -> Timing {
+        let two_delta = TimestampDelta::from_millis(2 * self.delta.as_millis());
+        Timing {
+            pull_delay: self.delta,
+            pull_interval: two_delta,
+        }
+    }
+}
+
+// when a proposer's pulls happen
+#[derive(Clone, Copy)]
+pub(crate) struct Timing {
+    // from the slot deadline, when owners release their rebroadcasts
+    pub(crate) pull_delay: TimestampDelta,
+    pub(crate) pull_interval: TimestampDelta,
 }
 
 pub struct DARuntime<S> {
@@ -59,6 +81,7 @@ pub struct DARuntime<S> {
     // todo: make epoch_handle slot dependent
     epoch_handle: EpochHandle,
     raptorcast_map: BTreeMap<Slot, SlotRaptorcast>,
+    deadlines: BTreeMap<Slot, Timestamp>,
 
     // the proposer schedule consensus holds; DA reads the same one
     schedule: Arc<S>,
@@ -67,6 +90,9 @@ pub struct DARuntime<S> {
     ingestion_window: Range<Slot>,
     slot_completion: SlotCompletion,
 
+    // the next pass over every slot's pulls
+    next_tick: Option<Timestamp>,
+
     outbox: VecDeque<DAOutput>,
 }
 
@@ -74,8 +100,6 @@ pub struct DARuntime<S> {
 pub struct ChunkRecoveryRequest {
     pub slot: Slot,
     pub proposal_index: ProposalIndex,
-    pub root: MerkleRoot,
-
     pub request: ChunkRequest,
 }
 
@@ -89,15 +113,18 @@ where
             schedule,
             epoch_handle,
             raptorcast_map: Default::default(),
+            deadlines: Default::default(),
             // todo: set the lower bound with finalization certificate
             ingestion_window: Slot::MIN..Slot::MIN,
             slot_completion: SlotCompletion::new(),
+            next_tick: None,
             outbox: Default::default(),
         }
     }
 
     pub fn ingest(
         &mut self,
+        now: Timestamp,
         sender: &NodeId,
         envelope: ProposalEnvelope,
     ) -> Result<(), InvalidProposalHeader> {
@@ -108,6 +135,7 @@ where
 
         slot_raptorcast.ingest(sender, envelope)?;
         self.collect(slot);
+        self.arm_tick(now);
         Ok(())
     }
 
@@ -118,20 +146,15 @@ where
         };
 
         let mut outputs = Vec::new();
+        for (proposal_index, root, message) in slot_raptorcast.drain_decoded() {
+            outputs.push(DAOutput::Decoded {
+                slot,
+                proposal_index,
+                root,
+                message,
+            });
+        }
         for event in slot_raptorcast.drain_events() {
-            if let ProposalDAEvent::Decoded(root) = &event.event {
-                let message = slot_raptorcast
-                    .decoded_message(event.j, root)
-                    .expect("decoded event implies a decoded message")
-                    .clone();
-                outputs.push(DAOutput::Decoded {
-                    slot,
-                    proposal_index: event.j,
-                    root: *root,
-                    message,
-                });
-            }
-
             outputs.push(DAOutput::Consensus(slot, event));
         }
         for message in slot_raptorcast.drain_messages() {
@@ -147,18 +170,28 @@ where
             return None;
         }
 
-        let slot_raptorcast = self
-            .raptorcast_map
-            .entry(slot)
-            .or_insert_with(|| SlotRaptorcast::new(&self.epoch_handle, slot, &*self.schedule));
+        // a slot opened before we started has its deadline long past
+        let deadline = self
+            .deadlines
+            .get(&slot)
+            .copied()
+            .unwrap_or(Timestamp::GENESIS);
+        let slot_raptorcast = self.raptorcast_map.entry(slot).or_insert_with(|| {
+            SlotRaptorcast::new(
+                &self.epoch_handle,
+                slot,
+                deadline,
+                &*self.schedule,
+                self.config.timing(),
+            )
+        });
         Some(slot_raptorcast)
     }
 
-    pub fn handle_chunk_request(&mut self, from: &NodeId, req: ChunkRecoveryRequest) {
+    pub fn handle_chunk_request(&mut self, req: ChunkRecoveryRequest, from: &NodeId) {
         let ChunkRecoveryRequest {
             slot,
             proposal_index,
-            root,
             request,
         } = req;
 
@@ -166,13 +199,14 @@ where
             return;
         };
 
-        slot_raptorcast.handle_chunk_request(from, proposal_index, root, request);
+        slot_raptorcast.handle_chunk_request(request, proposal_index, from);
         self.collect(slot);
     }
 
     pub fn handle_slot_lifecycle(&mut self, event: SlotLifecycle) {
         match event {
-            SlotLifecycle::Opened { slot, .. } => {
+            SlotLifecycle::Opened { slot, deadline } => {
+                self.deadlines.insert(slot, deadline);
                 let open_ingestion_slot = slot
                     .checked_next()
                     .unwrap_or(Slot::MAX_CAP)
@@ -190,13 +224,47 @@ where
         }
     }
 
-    pub fn handle_command(&mut self, slot: Slot, command: ChorusDACommand) {
+    pub fn handle_command(&mut self, command: ChorusDACommand, slot: Slot, now: Timestamp) {
         let Some(slot_raptorcast) = self.open_slot_raptorcast(slot) else {
             return;
         };
-        let outputs = slot_raptorcast.handle_command(command);
-        self.outbox.extend(outputs);
+        let requests = slot_raptorcast.handle_command(command, now);
+        self.send_requests(requests);
         self.collect(slot);
+        self.arm_tick(now);
+    }
+
+    pub fn next_tick(&self) -> Option<Timestamp> {
+        self.next_tick
+    }
+
+    // passes come Delta apart and act on whatever is due
+    pub fn handle_tick(&mut self, now: Timestamp) {
+        let slots: Vec<Slot> = self.raptorcast_map.keys().copied().collect();
+        for slot in slots {
+            let Some(slot_raptorcast) = self.raptorcast_map.get_mut(&slot) else {
+                continue;
+            };
+            let requests = slot_raptorcast.tick(now);
+            self.send_requests(requests);
+            self.collect(slot);
+        }
+        self.next_tick = None;
+        self.arm_tick(now);
+    }
+
+    fn send_requests(&mut self, requests: Vec<(NodeId, ChunkRecoveryRequest)>) {
+        for (to, request) in requests {
+            let output = DAOutput::RecoveryRequest { to, request };
+            self.outbox.push_back(output);
+        }
+    }
+
+    fn arm_tick(&mut self, now: Timestamp) {
+        if self.next_tick.is_some() || self.raptorcast_map.is_empty() {
+            return;
+        }
+        self.next_tick = Some(now + self.config.delta);
     }
 
     pub fn poll(&mut self) -> Option<DAOutput> {
@@ -215,6 +283,7 @@ where
         self.ingestion_window.start = kept_slot_cap;
         // todo: gc after execution certificate, or can affect fast path liveness
         self.raptorcast_map.retain(|&slot, _| slot >= kept_slot_cap);
+        self.deadlines.retain(|&slot, _| slot >= kept_slot_cap);
     }
 }
 
@@ -248,9 +317,10 @@ mod tests {
             chorus::types::Timestamp,
             chunk::ChunkRequestType,
             test_util::{
-                FixedProposerSchedule, MESSAGE_LEN, SLOT, author, epoch_handle, group,
-                proposal_chunks, proposal_chunks_from, proposer_schedule,
+                FixedProposerSchedule, MESSAGE_LEN, NOW, SLOT, author, da_config, epoch_handle,
+                group, proposal_chunks, proposal_chunks_from, proposer_schedule,
             },
+            types::ProposalDAEvent,
         },
         *,
     };
@@ -258,6 +328,7 @@ mod tests {
     fn runtime(retention: u64) -> DARuntime<FixedProposerSchedule> {
         let config = DAConfig {
             completed_slot_retention: retention,
+            ..da_config()
         };
         let schedule = proposer_schedule(vec![author()]);
         DARuntime::new(config, epoch_handle(), schedule)
@@ -287,14 +358,14 @@ mod tests {
         let epoch_handle = epoch_handle();
         let (_, chunks) = proposal_chunks(&epoch_handle, 1);
 
-        let closed = runtime.ingest(&author(), group(&chunks[..1]));
+        let closed = runtime.ingest(NOW, &author(), group(&chunks[..1]));
         assert_eq!(closed, Err(InvalidProposalHeader::SlotOutOfRange));
 
         open(&mut runtime, [0, 1]);
-        assert_eq!(runtime.ingest(&author(), group(&chunks[..1])), Ok(()));
+        assert_eq!(runtime.ingest(NOW, &author(), group(&chunks[..1])), Ok(()));
 
         let (_, later) = proposal_chunks_from(&epoch_handle, 0, Slot(5), 1);
-        let beyond = runtime.ingest(&author(), group(&later[..1]));
+        let beyond = runtime.ingest(NOW, &author(), group(&later[..1]));
         assert_eq!(beyond, Err(InvalidProposalHeader::SlotOutOfRange));
     }
 
@@ -305,18 +376,18 @@ mod tests {
         open(&mut runtime, [0, 1, 2]);
         let (_, slot0) = proposal_chunks_from(&epoch_handle, 0, Slot(0), 1);
         let (_, slot1) = proposal_chunks_from(&epoch_handle, 0, Slot(1), 1);
-        assert_eq!(runtime.ingest(&author(), group(&slot0[..1])), Ok(()));
-        assert_eq!(runtime.ingest(&author(), group(&slot1[..1])), Ok(()));
+        assert_eq!(runtime.ingest(NOW, &author(), group(&slot0[..1])), Ok(()));
+        assert_eq!(runtime.ingest(NOW, &author(), group(&slot1[..1])), Ok(()));
 
         // completing 1 before 0 retires nothing
         runtime.handle_slot_lifecycle(SlotLifecycle::Completed { slot: Slot(1) });
-        assert_eq!(runtime.ingest(&author(), group(&slot0[1..2])), Ok(()));
+        assert_eq!(runtime.ingest(NOW, &author(), group(&slot0[1..2])), Ok(()));
 
         // the cap reaches 2: slot 0 leaves the retention window, slot 1 stays
         runtime.handle_slot_lifecycle(SlotLifecycle::Completed { slot: Slot(0) });
-        let retired = runtime.ingest(&author(), group(&slot0[2..3]));
+        let retired = runtime.ingest(NOW, &author(), group(&slot0[2..3]));
         assert_eq!(retired, Err(InvalidProposalHeader::SlotOutOfRange));
-        assert_eq!(runtime.ingest(&author(), group(&slot1[1..2])), Ok(()));
+        assert_eq!(runtime.ingest(NOW, &author(), group(&slot1[1..2])), Ok(()));
     }
 
     #[test]
@@ -326,19 +397,19 @@ mod tests {
         open(&mut runtime, [0, 1, 2, 3]);
         let (_, slot0) = proposal_chunks_from(&epoch_handle, 0, Slot(0), 1);
         let (_, slot2) = proposal_chunks_from(&epoch_handle, 0, Slot(2), 1);
-        assert_eq!(runtime.ingest(&author(), group(&slot0[..1])), Ok(()));
-        assert_eq!(runtime.ingest(&author(), group(&slot2[..1])), Ok(()));
+        assert_eq!(runtime.ingest(NOW, &author(), group(&slot0[..1])), Ok(()));
+        assert_eq!(runtime.ingest(NOW, &author(), group(&slot2[..1])), Ok(()));
 
         // slot 0 is skipped, so completing 1 and 2 leaves the cap at 0
         runtime.handle_slot_lifecycle(SlotLifecycle::Completed { slot: Slot(1) });
         runtime.handle_slot_lifecycle(SlotLifecycle::Completed { slot: Slot(2) });
-        assert_eq!(runtime.ingest(&author(), group(&slot0[1..2])), Ok(()));
+        assert_eq!(runtime.ingest(NOW, &author(), group(&slot0[1..2])), Ok(()));
 
         // the jump past 0 picks up 1 and 2: cap 3, slot 2 is the only one retained
         runtime.handle_slot_lifecycle(SlotLifecycle::CapAdvance { cap: Slot(1) });
-        let retired = runtime.ingest(&author(), group(&slot0[2..3]));
+        let retired = runtime.ingest(NOW, &author(), group(&slot0[2..3]));
         assert_eq!(retired, Err(InvalidProposalHeader::SlotOutOfRange));
-        assert_eq!(runtime.ingest(&author(), group(&slot2[1..2])), Ok(()));
+        assert_eq!(runtime.ingest(NOW, &author(), group(&slot2[1..2])), Ok(()));
     }
 
     #[test]
@@ -346,10 +417,10 @@ mod tests {
         let mut runtime = runtime(1);
         let epoch_handle = epoch_handle();
         open(&mut runtime, [0, 1]);
-        runtime.handle_command(SLOT, ChorusDACommand::ReleaseChunks);
+        runtime.handle_command(ChorusDACommand::ReleaseChunks, SLOT, NOW);
         let (header, chunks) = proposal_chunks(&epoch_handle, 1);
         runtime
-            .ingest(&author(), group(&chunks[..3]))
+            .ingest(NOW, &author(), group(&chunks[..3]))
             .expect("valid");
 
         let mut decoded_at = None;
@@ -389,7 +460,8 @@ mod tests {
         }
 
         let decoded_at = decoded_at.expect("the message is delivered");
-        assert_eq!(consensus_decoded_at, Some(decoded_at + 1));
+        let consensus_decoded_at = consensus_decoded_at.expect("consensus learns of it");
+        assert!(consensus_decoded_at > decoded_at);
         assert_eq!(disseminated_at.len(), 1);
         assert!(disseminated_at[0] > decoded_at);
     }
@@ -404,10 +476,54 @@ mod tests {
         let unknown_slot = ChunkRecoveryRequest {
             slot: Slot(7),
             proposal_index: 0,
-            root: *header.root(),
-            request: ChunkRequest::all(ChunkRequestType::YourChunks),
+            request: ChunkRequest::all(*header.root(), ChunkRequestType::YourChunks),
         };
-        runtime.handle_chunk_request(&NodeId::dummy(2), unknown_slot);
+        runtime.handle_chunk_request(unknown_slot, &NodeId::dummy(2));
         assert!(outputs(&mut runtime).is_empty());
+    }
+
+    #[test]
+    fn pulls_leave_as_recovery_requests_once_due() {
+        let mut runtime = runtime(1);
+        let epoch_handle = epoch_handle();
+        let (header, chunks) = proposal_chunks(&epoch_handle, 1);
+        let at = |millis| NOW + TimestampDelta::from_millis(millis);
+        for slot in [0, 1] {
+            let opened = SlotLifecycle::Opened {
+                slot: Slot(slot),
+                deadline: at(100),
+            };
+            runtime.handle_slot_lifecycle(opened);
+        }
+
+        // the first input arms the tick, Delta later
+        assert_eq!(runtime.next_tick(), None);
+        runtime
+            .ingest(NOW, &author(), group(&chunks[..2]))
+            .expect("valid");
+        assert_eq!(runtime.next_tick(), Some(at(100)));
+        outputs(&mut runtime);
+
+        // within the grace period nothing is asked
+        runtime.handle_tick(at(100));
+        assert_eq!(runtime.next_tick(), Some(at(200)));
+        assert!(outputs(&mut runtime).is_empty());
+
+        // then the author for ours and every owner for theirs
+        runtime.handle_tick(at(200));
+        let mut peers = Vec::new();
+        for output in outputs(&mut runtime) {
+            let DAOutput::RecoveryRequest { to, request } = output else {
+                continue;
+            };
+            assert_eq!((request.slot, request.proposal_index), (SLOT, 0));
+            assert_eq!(request.request.root, *header.root());
+            peers.push(to);
+        }
+        peers.sort();
+        assert_eq!(
+            peers,
+            [NodeId::dummy(0), NodeId::dummy(2), NodeId::dummy(3)]
+        );
     }
 }

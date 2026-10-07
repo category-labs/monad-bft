@@ -81,7 +81,8 @@ impl AssembledProposal {
             scheme,
         };
 
-        Self::assemble(&epoch_handle.key_pair, header, chunk_tree, assignment)
+        let proposal = Self::assemble(&epoch_handle.key_pair, header, chunk_tree, assignment);
+        Some(proposal)
     }
 
     pub(crate) fn assemble(
@@ -89,16 +90,16 @@ impl AssembledProposal {
         header: ProposalHeader,
         chunk_tree: ChunkTree,
         assignment: ChunkAssignment,
-    ) -> Option<Self> {
+    ) -> Self {
         let preimage = signed_bytes(&header);
         let sig = key_pair.sign(&preimage);
         let header = SignedProposalHeader { header, sig };
 
-        Some(Self {
+        Self {
             header,
             assignment,
             chunk_tree,
-        })
+        }
     }
 
     pub fn header(&self) -> &SignedProposalHeader {
@@ -295,7 +296,6 @@ mod tests {
             chunk_tree,
             assignment,
         );
-        let proposal = proposal.expect("assembled");
         assert_eq!(proposal.header(), &header);
 
         let packets = by_recipient(proposal.disseminate().into_packets());

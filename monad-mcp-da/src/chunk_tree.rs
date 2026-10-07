@@ -35,7 +35,7 @@ pub(crate) enum ChunkTree {
 }
 
 impl ChunkTree {
-    pub(crate) fn partial(root: MerkleRoot) -> Self {
+    pub(crate) fn new(root: MerkleRoot) -> Self {
         Self::Partial {
             root,
             chunks: BTreeMap::new(),
@@ -143,7 +143,7 @@ mod tests {
         let mut complete = complete(4);
         let data = complete.chunk_data(id(0)).unwrap();
 
-        let mut partial = ChunkTree::partial(complete.root());
+        let mut partial = ChunkTree::new(complete.root());
         assert_eq!(partial.root(), complete.root());
         assert!(!partial.contains(id(0)));
         assert!(partial.chunk_data(id(0)).is_none());

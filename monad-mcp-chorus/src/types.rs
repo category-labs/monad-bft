@@ -66,6 +66,7 @@ use crate::spec::{
 pub struct Timestamp(u128);
 
 impl Timestamp {
+    pub const MIN: Self = Timestamp(0);
     pub const GENESIS: Self = Timestamp(0);
 
     pub const fn from_millis(millis: u64) -> Self {

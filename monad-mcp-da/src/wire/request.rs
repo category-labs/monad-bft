@@ -15,7 +15,8 @@
 
 //! RLP layout of a chunk recovery request:
 //! [slot, proposal_index, root, kind, subset], subset = [0] for all
-//! chunks or [1, [chunk_id, ...]] for a non-empty selection.
+//! chunks, [1, [chunk_id, ...]] for a selection, or [1, []] for the header
+//! alone.
 
 use std::collections::BTreeSet;
 
@@ -62,6 +63,10 @@ impl Encodable for ChunksSubset {
                 let fields: [&dyn Encodable; 2] = [&NARROWED, &ids];
                 encode_list::<_, dyn Encodable>(&fields, out);
             }
+            Self::HeaderOnly => {
+                let fields: [&dyn Encodable; 2] = [&NARROWED, &Vec::<WireChunkId>::new()];
+                encode_list::<_, dyn Encodable>(&fields, out);
+            }
         }
     }
 
@@ -76,6 +81,10 @@ impl Encodable for ChunksSubset {
                 let fields: [&dyn Encodable; 2] = [&NARROWED, &ids];
                 list_length::<_, dyn Encodable>(&fields)
             }
+            Self::HeaderOnly => {
+                let fields: [&dyn Encodable; 2] = [&NARROWED, &Vec::<WireChunkId>::new()];
+                list_length::<_, dyn Encodable>(&fields)
+            }
         }
     }
 }
@@ -88,9 +97,10 @@ impl Decodable for ChunksSubset {
             NARROWED => {
                 let ids = Vec::<WireChunkId>::decode(&mut payload)?;
                 if ids.is_empty() {
-                    return Err(alloy_rlp::Error::Custom("empty chunk selection"));
+                    Self::HeaderOnly
+                } else {
+                    Self::Narrowed(BTreeSet::from_iter(ids))
                 }
-                Self::Narrowed(BTreeSet::from_iter(ids))
             }
             _ => return Err(alloy_rlp::Error::Custom("unknown ChunksSubset tag")),
         };
@@ -108,7 +118,7 @@ impl Encodable for ChunkRecoveryRequest {
         let fields: [&dyn Encodable; 5] = [
             &self.slot,
             &proposal_index,
-            &self.root,
+            &self.request.root,
             &kind,
             &self.request.subset,
         ];
@@ -121,7 +131,7 @@ impl Encodable for ChunkRecoveryRequest {
         let fields: [&dyn Encodable; 5] = [
             &self.slot,
             &proposal_index,
-            &self.root,
+            &self.request.root,
             &kind,
             &self.request.subset,
         ];
@@ -146,8 +156,7 @@ impl Decodable for ChunkRecoveryRequest {
         Ok(Self {
             slot,
             proposal_index,
-            root,
-            request: ChunkRequest { kind, subset },
+            request: ChunkRequest { root, kind, subset },
         })
     }
 }
@@ -174,8 +183,8 @@ mod tests {
         ChunkRecoveryRequest {
             slot: Slot(7),
             proposal_index: 3,
-            root: MerkleRoot(MerkleHash([9; 20])),
             request: ChunkRequest {
+                root: MerkleRoot(MerkleHash([9; 20])),
                 kind: ChunkRequestType::YourChunks,
                 subset,
             },
@@ -186,7 +195,8 @@ mod tests {
     fn roundtrips_and_rejects_framing_errors() {
         let all = request(ChunksSubset::All);
         let narrowed = request(ChunksSubset::Narrowed(BTreeSet::from([2, 5, 300])));
-        for original in [all, narrowed] {
+        let header_only = request(ChunksSubset::HeaderOnly);
+        for original in [all, narrowed, header_only] {
             let bytes: Bytes = original.serialize();
             assert_eq!(bytes.len(), original.length());
             assert_eq!(ChunkRecoveryRequest::deserialize(&bytes).unwrap(), original);
@@ -201,10 +211,11 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unknown_tags_and_an_empty_selection() {
+    fn rejects_unknown_tags_and_reads_an_empty_selection_as_the_header_alone() {
         // [NARROWED, []]
         let empty = [0xc2, NARROWED, 0xc0];
-        assert!(ChunksSubset::decode(&mut &empty[..]).is_err());
+        let decoded = ChunksSubset::decode(&mut &empty[..]).expect("valid");
+        assert_eq!(decoded, ChunksSubset::HeaderOnly);
         let bad_tag = [0xc1, 7];
         assert!(ChunksSubset::decode(&mut &bad_tag[..]).is_err());
 
