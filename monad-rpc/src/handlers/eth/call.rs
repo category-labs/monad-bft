@@ -586,6 +586,7 @@ async fn prepare_eth_call<T: Triedb + TriedbPath>(
     chain_id: u64,
     params: CallParams,
     out_of_gas_handling: OutOfGasHandling,
+    max_response_size: usize,
 ) -> Result<(BlockKey, CallResult), JsonRpcError> {
     let (execution_params, block_tag) = params.into_execution_params();
     let block_key = get_block_key_from_tag_or_hash(triedb_env, block_tag)
@@ -600,6 +601,7 @@ async fn prepare_eth_call<T: Triedb + TriedbPath>(
         execution_params,
         out_of_gas_handling,
         block_key,
+        max_response_size,
     )
     .await
 }
@@ -612,6 +614,7 @@ async fn prepare_eth_call_at_block<T: Triedb + TriedbPath>(
     params: EthCallExecutionParams,
     out_of_gas_handling: OutOfGasHandling,
     block_key: BlockKey,
+    max_response_size: usize,
 ) -> Result<(BlockKey, CallResult), JsonRpcError> {
     let EthCallExecutionParams {
         transaction: mut tx,
@@ -706,6 +709,7 @@ async fn prepare_eth_call_at_block<T: Triedb + TriedbPath>(
             block_id,
             state_override_set: &state_overrides,
             tracer,
+            call_tracer_max_size: max_response_size,
             gas_specified,
         })
         .await
@@ -749,7 +753,8 @@ async fn prepare_eth_call_at_block<T: Triedb + TriedbPath>(
     method = "eth_call",
     ignore = "eth_call_handler_config",
     ignore = "eth_call_executor",
-    ignore = "chain_id"
+    ignore = "chain_id",
+    ignore = "max_response_size"
 )]
 pub async fn monad_eth_call<T: Triedb + TriedbPath>(
     data_provider: &DataProvider<T>,
@@ -757,6 +762,7 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
     eth_call_executor: &MonadExecutor,
     chain_id: u64,
     params: MonadEthCallParams,
+    max_response_size: usize,
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_call: {params:?}");
 
@@ -767,6 +773,7 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
         chain_id,
         CallParams::Call(params),
         OutOfGasHandling::RpcError,
+        max_response_size,
     )
     .await?;
     match result {
@@ -809,6 +816,7 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
         chain_id,
         CallParams::Trace(params),
         OutOfGasHandling::RpcError,
+        max_response_size,
     )
     .await?;
     let raw_payload: Box<[u8]> = match call_result {
@@ -862,7 +870,8 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
     method = "eth_createAccessList",
     ignore = "eth_call_handler_config",
     ignore = "eth_call_executor",
-    ignore = "chain_id"
+    ignore = "chain_id",
+    ignore = "max_response_size"
 )]
 #[allow(non_snake_case)]
 pub async fn monad_createAccessList<T: Triedb + TriedbPath>(
@@ -871,6 +880,7 @@ pub async fn monad_createAccessList<T: Triedb + TriedbPath>(
     eth_call_executor: &MonadExecutor,
     chain_id: u64,
     params: MonadCreateAccessListParams,
+    max_response_size: usize,
 ) -> JsonRpcResult<MonadCreateAccessListResult> {
     trace!("monad_createAccessList: {params:?}");
 
@@ -885,6 +895,7 @@ pub async fn monad_createAccessList<T: Triedb + TriedbPath>(
         chain_id,
         CallParams::AccessList(params),
         OutOfGasHandling::ReturnAsCallFailure,
+        max_response_size,
     )
     .await?;
     let access_list = access_list_from_trace_call_result(call_result)?;
@@ -911,6 +922,7 @@ pub async fn monad_createAccessList<T: Triedb + TriedbPath>(
         call_params,
         OutOfGasHandling::ReturnAsCallFailure,
         block_key,
+        max_response_size,
     )
     .await?;
     MonadCreateAccessListResult::from_follow_up_call_result(access_list, call_result)
