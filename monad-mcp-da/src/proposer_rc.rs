@@ -163,6 +163,7 @@ impl ProposerRaptorcast {
     // The caller must ensure the header is authenticated.
     pub(crate) fn ingest(
         &mut self,
+        sender: &NodeId,
         envelope: ProposalEnvelope,
         epoch_handle: &EpochHandle,
         egress: &mut ChunkEgress,
@@ -186,7 +187,7 @@ impl ProposerRaptorcast {
         };
 
         for (chunk_id, data) in chunks {
-            let event = match instance.ingest_chunk(chunk_id, data, egress) {
+            let event = match instance.ingest_chunk(sender, chunk_id, data, egress) {
                 Ok(event) => event,
                 Err(err) => {
                     tracing::debug!(?root, chunk_id, ?err, "dropping invalid chunk");
@@ -302,7 +303,7 @@ mod tests {
             chunk::ChunksSubset,
             egress::Dissemination,
             test_util::{
-                Holders, Holding, chunk_id, epoch_handle, group, holders, proposal_chunks,
+                Holders, Holding, author, chunk_id, epoch_handle, group, holders, proposal_chunks,
             },
         },
         *,
@@ -322,6 +323,7 @@ mod tests {
 
         let mut instance = ProposerRaptorcast::new(NodeId::dummy(0));
         instance.ingest(
+            &author(),
             ProposalEnvelope::from_header(header.clone()),
             &epoch_handle,
             &mut egress,
@@ -339,6 +341,7 @@ mod tests {
 
         let mut instance = ProposerRaptorcast::new(NodeId::dummy(0));
         instance.ingest(
+            &author(),
             ProposalEnvelope::from_header(header.clone()),
             &epoch_handle,
             &mut egress,
@@ -347,7 +350,7 @@ mod tests {
         assert_eq!(events, vec![ProposalDAEvent::HeaderSeen(header.clone())]);
 
         // the instance exists: later chunks decode it
-        instance.ingest(group(&chunks[..3]), &epoch_handle, &mut egress);
+        instance.ingest(&author(), group(&chunks[..3]), &epoch_handle, &mut egress);
         let events = instance.drain_events();
         assert!(events.contains(&ProposalDAEvent::Decoded(*header.root())));
     }
@@ -361,6 +364,7 @@ mod tests {
 
         let mut instance = ProposerRaptorcast::new(NodeId::dummy(0));
         instance.ingest(
+            &author(),
             ProposalEnvelope::from_header(header_a),
             &epoch_handle,
             &mut egress,
@@ -368,6 +372,7 @@ mod tests {
         instance.drain_events();
 
         instance.ingest(
+            &author(),
             ProposalEnvelope::from_header(header_b.clone()),
             &epoch_handle,
             &mut egress,
@@ -375,6 +380,7 @@ mod tests {
         let events = instance.drain_events();
         assert_eq!(events, vec![ProposalDAEvent::HeaderSeen(header_b.clone())]);
         instance.ingest(
+            &author(),
             ProposalEnvelope::from_header(header_b.clone()),
             &epoch_handle,
             &mut egress,
@@ -384,7 +390,7 @@ mod tests {
 
         // announced once; the rival is not assembled, so its chunks
         // are dropped silently and it never decodes
-        instance.ingest(group(&chunks_b), &epoch_handle, &mut egress);
+        instance.ingest(&author(), group(&chunks_b), &epoch_handle, &mut egress);
         assert!(instance.drain_events().is_empty());
         assert!(instance.decoded_message(header_b.root()).is_none());
     }
@@ -408,6 +414,7 @@ mod tests {
         let mut instance = ProposerRaptorcast::new(NodeId::dummy(0));
         for header in [header_a, header_b] {
             instance.ingest(
+                &author(),
                 ProposalEnvelope::from_header(header),
                 &epoch_handle,
                 &mut egress,
@@ -418,13 +425,14 @@ mod tests {
         // a third header adds no evidence, but the pin admits its root
         instance.pin(tentative(header_c.root()), &epoch_handle);
         instance.ingest(
+            &author(),
             ProposalEnvelope::from_header(header_c.clone()),
             &epoch_handle,
             &mut egress,
         );
         assert!(instance.drain_events().is_empty());
 
-        instance.ingest(group(&chunks_c[..3]), &epoch_handle, &mut egress);
+        instance.ingest(&author(), group(&chunks_c[..3]), &epoch_handle, &mut egress);
         let events = instance.drain_events();
         assert!(events.contains(&ProposalDAEvent::Decoded(*header_c.root())));
     }
@@ -438,6 +446,7 @@ mod tests {
 
         let mut instance = ProposerRaptorcast::new(NodeId::dummy(0));
         instance.ingest(
+            &author(),
             ProposalEnvelope::from_header(header_a.clone()),
             &epoch_handle,
             &mut egress,
@@ -446,6 +455,7 @@ mod tests {
 
         // rejected rival: header reported once
         instance.ingest(
+            &author(),
             ProposalEnvelope::from_header(header_b.clone()),
             &epoch_handle,
             &mut egress,
@@ -455,12 +465,12 @@ mod tests {
 
         // admitted now from the seen header, without a second announcement
         instance.pin(tentative(header_b.root()), &epoch_handle);
-        instance.ingest(group(&chunks_b[..3]), &epoch_handle, &mut egress);
+        instance.ingest(&author(), group(&chunks_b[..3]), &epoch_handle, &mut egress);
         let events = instance.drain_events();
         assert_eq!(events, vec![ProposalDAEvent::Decoded(*header_b.root())]);
 
         // the first root is still assembled: our votes may name it
-        instance.ingest(group(&chunks_a[..3]), &epoch_handle, &mut egress);
+        instance.ingest(&author(), group(&chunks_a[..3]), &epoch_handle, &mut egress);
         let events = instance.drain_events();
         assert!(events.contains(&ProposalDAEvent::Decoded(*header_a.root())));
     }
@@ -473,7 +483,7 @@ mod tests {
         let (header_b, chunks_b) = proposal_chunks(&epoch_handle, 2);
 
         let mut instance = ProposerRaptorcast::new(NodeId::dummy(0));
-        instance.ingest(group(&chunks_a[..3]), &epoch_handle, &mut egress);
+        instance.ingest(&author(), group(&chunks_a[..3]), &epoch_handle, &mut egress);
         assert!(instance.decoded_message(header_a.root()).is_some());
 
         let target = PinTarget {
@@ -483,7 +493,7 @@ mod tests {
         instance.pin(Pin::Final(Some(target)), &epoch_handle);
         assert!(instance.decoded_message(header_a.root()).is_none());
 
-        instance.ingest(group(&chunks_b[..3]), &epoch_handle, &mut egress);
+        instance.ingest(&author(), group(&chunks_b[..3]), &epoch_handle, &mut egress);
         assert!(instance.decoded_message(header_b.root()).is_some());
     }
 
@@ -565,7 +575,7 @@ mod tests {
         let (header, chunks) = proposal_chunks(&epoch_handle, 1);
 
         let mut instance = ProposerRaptorcast::new(NodeId::dummy(0));
-        instance.ingest(group(&chunks[..3]), &epoch_handle, &mut egress);
+        instance.ingest(&author(), group(&chunks[..3]), &epoch_handle, &mut egress);
         // discard the rebroadcast of our own chunks
         egress.drain();
 
@@ -594,7 +604,7 @@ mod tests {
         // chunk ids 0 and 3 are ours (validator 1); ingesting ids 0
         // and 1 is short of the decoding threshold
         let mut instance = ProposerRaptorcast::new(NodeId::dummy(0));
-        instance.ingest(group(&chunks[..2]), &epoch_handle, &mut egress);
+        instance.ingest(&author(), group(&chunks[..2]), &epoch_handle, &mut egress);
         assert!(instance.decoded_message(header.root()).is_none());
         // discard the rebroadcast of our own chunk
         egress.drain();
@@ -648,7 +658,7 @@ mod tests {
 
         // holding ids 0 and 1: we still miss our own id 3, node 2
         // still owes id 4
-        instance.ingest(group(&chunks[..2]), &epoch_handle, &mut egress);
+        instance.ingest(&author(), group(&chunks[..2]), &epoch_handle, &mut egress);
         let narrowed = |kind, id| ChunkRequest {
             kind,
             subset: ChunksSubset::narrowed([chunk_id(&epoch_handle, &header, id)]),
@@ -662,7 +672,7 @@ mod tests {
         );
 
         // decoded: nothing left to ask for
-        instance.ingest(group(&chunks[2..3]), &epoch_handle, &mut egress);
+        instance.ingest(&author(), group(&chunks[2..3]), &epoch_handle, &mut egress);
         assert!(instance.decoded_message(header.root()).is_some());
         assert!(requests(&instance).is_empty());
     }

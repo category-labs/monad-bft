@@ -85,7 +85,11 @@ impl SlotRaptorcast {
         self.egress.drain()
     }
 
-    pub fn ingest(&mut self, envelope: ProposalEnvelope) -> Result<(), InvalidProposalHeader> {
+    pub fn ingest(
+        &mut self,
+        sender: &NodeId,
+        envelope: ProposalEnvelope,
+    ) -> Result<(), InvalidProposalHeader> {
         debug_assert_eq!(envelope.header().slot(), self.slot.get());
         let j = self
             .authenticate(envelope.header())
@@ -94,7 +98,7 @@ impl SlotRaptorcast {
         let raptorcast = self.raptorcasts[j]
             .as_mut()
             .expect("authenticated indices have proposers");
-        raptorcast.ingest(envelope, &self.epoch_handle, &mut self.egress);
+        raptorcast.ingest(sender, envelope, &self.epoch_handle, &mut self.egress);
 
         for event in raptorcast.drain_events() {
             self.out_events.push(ChorusDAEvent { j, event });
@@ -220,7 +224,7 @@ mod tests {
     }
 
     // the wire ids carried by the messages, sorted
-    fn chunk_ids(messages: &[Dissemination]) -> Vec<WireChunkId> {
+    fn chunk_ids<'a>(messages: impl IntoIterator<Item = &'a Dissemination>) -> Vec<WireChunkId> {
         let mut ids = Vec::new();
         for message in messages {
             ids.extend(message.envelope.chunk_data().keys().copied());
@@ -231,7 +235,9 @@ mod tests {
 
     // ingest, returning the messages it caused
     fn ingest(raptorcast: &mut SlotRaptorcast, envelope: ProposalEnvelope) -> Vec<Dissemination> {
-        raptorcast.ingest(envelope).expect("well-formed header");
+        raptorcast
+            .ingest(&author(), envelope)
+            .expect("well-formed header");
         raptorcast.drain_messages()
     }
 
@@ -317,7 +323,7 @@ mod tests {
         // signed by validator 2, who proposes nothing
         let (_, chunks) = proposal_chunks_from(&epoch_handle, 2, SLOT, 1);
 
-        let rejected = raptorcast.ingest(group(&chunks[..1]));
+        let rejected = raptorcast.ingest(&author(), group(&chunks[..1]));
         assert_eq!(rejected, Err(InvalidProposalHeader::Unauthenticated));
         assert!(raptorcast.drain_events().is_empty());
         assert!(raptorcast.drain_messages().is_empty());
@@ -342,8 +348,12 @@ mod tests {
         let mut raptorcast = SlotRaptorcast::new(&epoch_handle, SLOT, &*schedule);
         let (_, chunks) = proposal_chunks(&epoch_handle, 1);
 
-        raptorcast.ingest(group(&chunks[..1])).expect("valid");
-        raptorcast.ingest(group(&chunks[1..2])).expect("valid");
+        raptorcast
+            .ingest(&author(), group(&chunks[..1]))
+            .expect("valid");
+        raptorcast
+            .ingest(&author(), group(&chunks[1..2]))
+            .expect("valid");
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
@@ -378,7 +388,7 @@ mod tests {
 
         // the first header pins root a
         raptorcast
-            .ingest(ProposalEnvelope::from_header(header_a))
+            .ingest(&author(), ProposalEnvelope::from_header(header_a))
             .expect("valid");
 
         // nothing is known about b: ask every holder but us for everything
@@ -394,7 +404,9 @@ mod tests {
 
         // b is pinned, so it is assembled beside root a; holding 0 and
         // 1 narrows a retry's asks to what is missing
-        raptorcast.ingest(group(&chunks_b[..2])).expect("valid");
+        raptorcast
+            .ingest(&author(), group(&chunks_b[..2]))
+            .expect("valid");
         let (_, retried) = raptorcast.raptorcasts[0]
             .as_ref()
             .expect("index 0 has a proposer")
@@ -423,7 +435,9 @@ mod tests {
         let mut raptorcast = SlotRaptorcast::new(&epoch_handle, SLOT, &*schedule);
         let (header, chunks) = proposal_chunks_from(&epoch_handle, 2, SLOT, 1);
 
-        raptorcast.ingest(group(&chunks[..1])).expect("valid");
+        raptorcast
+            .ingest(&author(), group(&chunks[..1]))
+            .expect("valid");
         let events = raptorcast.drain_events();
         assert!(events.contains(&ChorusDAEvent {
             j: 1,
@@ -436,10 +450,10 @@ mod tests {
     // those `lost` names
     fn deliver(
         nodes: &mut [(EpochHandle, SlotRaptorcast)],
-        messages: Vec<Dissemination>,
+        messages: Vec<(NodeId, Dissemination)>,
         lost: &HashSet<NodeId>,
     ) {
-        for message in messages {
+        for (sender, message) in messages {
             for to in &message.to {
                 if lost.contains(to) {
                     continue;
@@ -448,15 +462,19 @@ mod tests {
                 else {
                     continue;
                 };
-                node.ingest(message.envelope.clone()).expect("valid");
+                node.ingest(&sender, message.envelope.clone())
+                    .expect("valid");
             }
         }
     }
 
-    fn drain_all(nodes: &mut [(EpochHandle, SlotRaptorcast)]) -> Vec<Dissemination> {
+    // each message with the node that sent it
+    fn drain_all(nodes: &mut [(EpochHandle, SlotRaptorcast)]) -> Vec<(NodeId, Dissemination)> {
         let mut messages = Vec::new();
-        for (_, node) in nodes {
-            messages.extend(node.drain_messages());
+        for (handle, node) in nodes {
+            for message in node.drain_messages() {
+                messages.push((handle.self_id, message));
+            }
         }
         messages
     }
@@ -479,11 +497,11 @@ mod tests {
         let cut_off = HashSet::from([NodeId::dummy(3)]);
         nodes[0]
             .1
-            .ingest(group(&[chunks[0].clone(), chunks[3].clone()]))
+            .ingest(&author(), group(&[chunks[0].clone(), chunks[3].clone()]))
             .expect("valid");
         nodes[1]
             .1
-            .ingest(group(&[chunks[1].clone(), chunks[4].clone()]))
+            .ingest(&author(), group(&[chunks[1].clone(), chunks[4].clone()]))
             .expect("valid");
         let second_hop = drain_all(&mut nodes);
         deliver(&mut nodes, second_hop, &cut_off);
@@ -512,7 +530,10 @@ mod tests {
         // they carry every chunk
         let responses = drain_all(&mut nodes);
         assert_eq!(responses.len(), 2);
-        assert_eq!(chunk_ids(&responses), [0, 1, 2, 3, 4, 5]);
+        assert_eq!(
+            chunk_ids(responses.iter().map(|(_, message)| message)),
+            [0, 1, 2, 3, 4, 5]
+        );
         deliver(&mut nodes, responses, &HashSet::new());
         assert!(decoded(&nodes[2].1));
         assert_eq!(
