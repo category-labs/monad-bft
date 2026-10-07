@@ -420,11 +420,11 @@ fn generate_sender_groups<'a>(
 }
 
 async fn verify_contract_code(client: &ReqwestClient, addr: Address) -> Result<bool> {
-    for attempt in 0..15 {
+    for attempt in 0..3 {
         match client.get_code(&addr).await {
             Ok(code) if code != "0x" => return Ok(true),
             Ok(_) => {
-                if attempt < 14 {
+                if attempt < 2 {
                     warn!(
                         addr = %addr,
                         attempt = attempt + 1,
@@ -434,7 +434,7 @@ async fn verify_contract_code(client: &ReqwestClient, addr: Address) -> Result<b
                 }
             }
             Err(e) => {
-                if attempt < 14 {
+                if attempt < 2 {
                     warn!(
                         addr = %addr,
                         attempt = attempt + 1,
@@ -445,7 +445,7 @@ async fn verify_contract_code(client: &ReqwestClient, addr: Address) -> Result<b
             }
         }
     }
-    warn!(addr = %addr, "Contract code not available after 15 attempts");
+    warn!(addr = %addr, "Contract code not available after 3 attempts");
     Ok(false)
 }
 
