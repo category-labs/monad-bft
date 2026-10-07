@@ -27,7 +27,7 @@ use crate::{
 pub type DA = DARuntime<NodeProposerSchedule>;
 
 pub enum DAInput {
-    Envelope(ProposalEnvelope),
+    Envelope(NodeId, ProposalEnvelope),
     ChunkRequest(NodeId, ChunkRecoveryRequest),
     Lifecycle(SlotLifecycle),
     Command(Slot, ChorusDACommand),
@@ -39,8 +39,8 @@ impl Component for DA {
 
     fn handle(&mut self, _now: Timestamp, input: DAInput) {
         match input {
-            DAInput::Envelope(envelope) => {
-                if let Err(reason) = self.ingest(envelope) {
+            DAInput::Envelope(sender, envelope) => {
+                if let Err(reason) = self.ingest(&sender, envelope) {
                     tracing::debug!(?reason, "rejected proposal envelope");
                 }
             }

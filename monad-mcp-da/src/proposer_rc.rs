@@ -86,6 +86,7 @@ impl ProposerRaptorcast {
     // The caller must ensure the header is authenticated.
     pub(crate) fn ingest(
         &mut self,
+        sender: &NodeId,
         envelope: ProposalEnvelope,
         epoch_handle: &EpochHandle,
         egress: &mut ChunkEgress,
@@ -106,7 +107,7 @@ impl ProposerRaptorcast {
         };
 
         for (chunk_id, data) in chunks {
-            let event = match instance.ingest_chunk(chunk_id, data, egress) {
+            let event = match instance.ingest_chunk(sender, chunk_id, data, egress) {
                 Ok(event) => event,
                 Err(err) => {
                     tracing::debug!(?root, chunk_id, ?err, "dropping invalid chunk");
@@ -158,7 +159,7 @@ mod tests {
         super::{
             chunk::ChunkRequestType,
             egress::Dissemination,
-            test_util::{epoch_handle, group, proposal_chunks},
+            test_util::{author, epoch_handle, group, proposal_chunks},
         },
         *,
     };
@@ -177,6 +178,7 @@ mod tests {
 
         let mut instance = ProposerRaptorcast::new(NodeId::dummy(0));
         instance.ingest(
+            &author(),
             ProposalEnvelope::from_header(header.clone()),
             &epoch_handle,
             &mut egress,
@@ -194,6 +196,7 @@ mod tests {
 
         let mut instance = ProposerRaptorcast::new(NodeId::dummy(0));
         instance.ingest(
+            &author(),
             ProposalEnvelope::from_header(header.clone()),
             &epoch_handle,
             &mut egress,
@@ -202,7 +205,7 @@ mod tests {
         assert_eq!(events, vec![ProposalDAEvent::HeaderSeen(header.clone())]);
 
         // the instance exists: later chunks decode it
-        instance.ingest(group(&chunks[..3]), &epoch_handle, &mut egress);
+        instance.ingest(&author(), group(&chunks[..3]), &epoch_handle, &mut egress);
         let events = instance.drain_events();
         assert!(events.contains(&ProposalDAEvent::Decoded(*header.root())));
     }
@@ -216,6 +219,7 @@ mod tests {
 
         let mut instance = ProposerRaptorcast::new(NodeId::dummy(0));
         instance.ingest(
+            &author(),
             ProposalEnvelope::from_header(header_a),
             &epoch_handle,
             &mut egress,
@@ -223,6 +227,7 @@ mod tests {
         instance.drain_events();
 
         instance.ingest(
+            &author(),
             ProposalEnvelope::from_header(header_b.clone()),
             &epoch_handle,
             &mut egress,
@@ -230,6 +235,7 @@ mod tests {
         let events = instance.drain_events();
         assert_eq!(events, vec![ProposalDAEvent::HeaderSeen(header_b.clone())]);
         instance.ingest(
+            &author(),
             ProposalEnvelope::from_header(header_b.clone()),
             &epoch_handle,
             &mut egress,
@@ -239,7 +245,7 @@ mod tests {
 
         // announced once; the rival is not assembled, so its chunks
         // are dropped silently and it never decodes
-        instance.ingest(group(&chunks_b), &epoch_handle, &mut egress);
+        instance.ingest(&author(), group(&chunks_b), &epoch_handle, &mut egress);
         assert!(instance.drain_events().is_empty());
         assert!(instance.decoded_message(header_b.root()).is_none());
     }
@@ -252,7 +258,7 @@ mod tests {
         let (header, chunks) = proposal_chunks(&epoch_handle, 1);
 
         let mut instance = ProposerRaptorcast::new(NodeId::dummy(0));
-        instance.ingest(group(&chunks[..3]), &epoch_handle, &mut egress);
+        instance.ingest(&author(), group(&chunks[..3]), &epoch_handle, &mut egress);
         // discard the rebroadcast of our own chunks
         egress.drain();
 
@@ -281,7 +287,7 @@ mod tests {
         // chunk ids 0 and 3 are ours (validator 1); ingesting ids 0
         // and 1 is short of the decoding threshold
         let mut instance = ProposerRaptorcast::new(NodeId::dummy(0));
-        instance.ingest(group(&chunks[..2]), &epoch_handle, &mut egress);
+        instance.ingest(&author(), group(&chunks[..2]), &epoch_handle, &mut egress);
         assert!(instance.decoded_message(header.root()).is_none());
         // discard the rebroadcast of our own chunk
         egress.drain();
