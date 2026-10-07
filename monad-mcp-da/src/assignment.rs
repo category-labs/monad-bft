@@ -44,14 +44,6 @@ impl ChunkId {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, derive_more::Into)]
 pub(crate) struct NodeIndex(usize);
 
-impl NodeIndex {
-    // the caller must ensure the index is in range for the associated
-    // assignment.
-    pub(crate) fn new_unchecked(index: usize) -> Self {
-        Self(index)
-    }
-}
-
 // an obligation of o chunks is met by ceil(o * den / num) of them, to
 // tolerate packet loss
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -250,6 +242,10 @@ impl ChunkAssignment {
 
     pub(crate) fn packet_loss_resistance(&self) -> PacketLossResistance {
         self.packet_loss_resistance
+    }
+
+    pub(crate) fn author(&self) -> NodeIndex {
+        self.author
     }
 
     pub(crate) fn num_nodes(&self) -> usize {

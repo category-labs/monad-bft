@@ -20,14 +20,14 @@ use bitvec::{bitbox, boxed::BitBox};
 use super::super::{assignment::ChunkId, types::NodeId};
 
 // each chunk is served to a requester at most once
-pub(crate) struct ChunkRecoveryTracker {
+pub(crate) struct ChunkServingTracker {
     num_chunks: usize,
 
     // the chunks served to each requester
     served_chunks: HashMap<NodeId, BitBox>,
 }
 
-impl ChunkRecoveryTracker {
+impl ChunkServingTracker {
     pub(crate) fn new(num_chunks: usize) -> Self {
         Self {
             num_chunks,
@@ -80,7 +80,7 @@ mod tests {
     #[ignore] // FIXME: failing
     fn served_chunks_are_not_served_twice() {
         let assignment = assignment();
-        let mut tracker = ChunkRecoveryTracker::new(assignment.num_chunks());
+        let mut tracker = ChunkServingTracker::new(assignment.num_chunks());
         let requester = NodeId::dummy(2);
         let chunk_id = assignment.chunk_ids().next().unwrap();
 

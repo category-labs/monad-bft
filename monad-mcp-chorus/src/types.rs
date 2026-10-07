@@ -66,6 +66,7 @@ use crate::spec::{
 pub struct Timestamp(u128);
 
 impl Timestamp {
+    pub const MIN: Self = Timestamp(0);
     pub const GENESIS: Self = Timestamp(0);
 
     pub const fn from_millis(millis: u64) -> Self {
@@ -169,6 +170,15 @@ impl TimestampDelta {
 
     pub fn checked_mul(self, rhs: u64) -> Option<Self> {
         self.0.checked_mul(rhs).map(Self)
+    }
+}
+
+impl std::ops::Mul<usize> for TimestampDelta {
+    type Output = Self;
+
+    fn mul(self, rhs: usize) -> Self::Output {
+        let rhs = u64::try_from(rhs).expect("timestamp delta overflow");
+        self.checked_mul(rhs).expect("timestamp delta overflow")
     }
 }
 

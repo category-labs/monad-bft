@@ -13,57 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::BTreeSet;
-
 use monad_crypto::hasher::Hash;
 use monad_merkle::{MerkleProof, MerkleTree};
 
-use super::types::{MerkleHash, MerkleRoot, Slot};
-
-// todo: share with conductor's CompletionTracker
-pub struct SlotCompletion {
-    cap: Slot,
-    completed_slots: BTreeSet<Slot>,
-}
-
-impl SlotCompletion {
-    pub fn new() -> Self {
-        Self {
-            cap: Slot::MIN,
-            completed_slots: BTreeSet::new(),
-        }
-    }
-
-    pub fn mark_completed(&mut self, slot: Slot) {
-        if slot < self.cap {
-            return;
-        }
-
-        self.completed_slots.insert(slot);
-        self.walk();
-    }
-
-    pub fn advance_cap(&mut self, cap: Slot) {
-        if cap <= self.cap {
-            return;
-        }
-
-        self.completed_slots = self.completed_slots.split_off(&cap);
-        self.cap = cap;
-        self.walk();
-    }
-
-    fn walk(&mut self) {
-        while self.completed_slots.contains(&self.cap) {
-            self.completed_slots.remove(&self.cap);
-            self.cap = self.cap.checked_next().expect("slot cap overflow");
-        }
-    }
-
-    pub fn cap(&self) -> Slot {
-        self.cap
-    }
-}
+use super::types::{MerkleHash, MerkleRoot};
 
 // a wrapper of MerkleTree type adapted for interfacing with da types.
 pub struct Tree(MerkleTree);
@@ -124,24 +77,6 @@ mod tests {
     }
 
     #[test]
-    fn advance_cap_steps_over_an_unmarked_slot() {
-        let mut completion = SlotCompletion::new();
-        completion.mark_completed(Slot(1));
-        completion.mark_completed(Slot(3));
-        completion.mark_completed(Slot(4));
-        assert_eq!(completion.cap(), Slot(0));
-
-        // slots 0 and 2 never complete; the jump to 3 picks up the marks at 3 and 4
-        completion.advance_cap(Slot(3));
-        assert_eq!(completion.cap(), Slot(5));
-        assert!(completion.completed_slots.is_empty());
-
-        // a lower cap is a no-op
-        completion.advance_cap(Slot(2));
-        assert_eq!(completion.cap(), Slot(5));
-    }
-
-    #[test]
     fn proofs_bind_the_leaf_its_index_and_the_root() {
         let leaves = [leaf(0), leaf(1), leaf(2)];
         let tree = Tree::from_leaves(3, leaves);
@@ -171,21 +106,5 @@ mod tests {
             &leaf(9),
             &tree.proof(0)
         ));
-    }
-
-    #[test]
-    fn the_cap_advances_through_contiguous_completions_only() {
-        let mut completion = SlotCompletion::new();
-
-        completion.mark_completed(Slot(2));
-        assert_eq!(completion.cap(), Slot(0));
-        completion.mark_completed(Slot(0));
-        assert_eq!(completion.cap(), Slot(1));
-        completion.mark_completed(Slot(1));
-        assert_eq!(completion.cap(), Slot(3));
-
-        // below the cap is already accounted for
-        completion.mark_completed(Slot(0));
-        assert_eq!(completion.cap(), Slot(3));
     }
 }

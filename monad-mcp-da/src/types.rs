@@ -18,10 +18,11 @@ pub use super::{
     chorus::{
         SlotLifecycle,
         env::{D25, EncodingScheme, MerkleHash, ProposalSignature, PubKey, S11},
-        slot::chorus::{ChorusDACommand, ChorusDAEvent, ProposalDAEvent},
+        slot::chorus::{ChorusDACommand, ChorusDAEvent, MissingHeaders, ProposalDAEvent},
         types::{
             EquivCert, HeaderAuth, MerkleRoot, NodeId, ProposalHeader, ProposalIndex, ProposalMap,
-            ProposerSchedule, SignedProposalHeader, Slot, Stake, ValidatorData,
+            ProposerSchedule, SignedProposalHeader, Slot, Stake, Timestamp, TimestampDelta,
+            ValidatorData,
         },
     },
     env::ProposalKeyPair,
