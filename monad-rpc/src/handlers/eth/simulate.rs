@@ -73,17 +73,17 @@ pub struct MonadSimulateParams {
 
 #[rpc(
     method = "eth_simulateV1",
-    ignore = "chain_id,call_gas_limit,simulation_gas_limit,max_simulated_calls,max_simulated_blocks,max_response_size"
+    ignore = "chain_id,max_response_size,call_gas_limit,simulation_gas_limit,max_simulated_calls,max_simulated_blocks"
 )]
 pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
     data_provider: &DataProvider<T>,
     eth_call_executor: &MonadExecutor,
     chain_id: u64,
+    max_response_size: usize,
     call_gas_limit: u64,
     simulation_gas_limit: u64,
     max_simulated_calls: usize,
     max_simulated_blocks: usize,
-    max_response_size: usize,
     params: MonadSimulateParams,
 ) -> JsonRpcResult<Box<RawValue>> {
     if !params.simulation.validation {
