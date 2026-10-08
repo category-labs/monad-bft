@@ -356,6 +356,7 @@ fn run_traffic_gen(
         Duration::from_secs_f64(config.refresh_delay_secs),
         deployed_contract,
         traffic_gen.erc20_balance_of,
+        workload_group.drop_percentage > 0.0 || workload_group.mutation_percentage > 0.0,
         workload_group.name.clone(),
         Arc::clone(shutdown),
     )?;
