@@ -20,8 +20,9 @@
 //! positional form clients use. The handler must not panic, and an answer
 //! must describe the chain it was given: one gas-used ratio per block of
 //! the range and one more base fee, every array sized to that range, each
-//! block's base fee and ratio, and per block one reward per percentile in
-//! ascending order, none above the block's largest tip.
+//! block's base fee and ratio, zero blob fees, and per block the
+//! gas-weighted reward of each percentile. A zero block count gets an
+//! empty history.
 
 #![no_main]
 
@@ -160,6 +161,37 @@ fn tip(spec: &TxSpec, base_fee: u64) -> u128 {
     }
 }
 
+/// One block's rewards as the handler computes them: transactions sorted by
+/// tip, and per percentile the tip of the transaction just past that share
+/// of the block's gas (geth reports the one that reaches it).
+fn expected_rewards(spec: &BlockSpec, percentiles: &[f64]) -> Vec<u128> {
+    let base_fee = spec.base_fee.unwrap_or_default();
+    let mut txs: Vec<(u64, u128)> = spec
+        .txs
+        .iter()
+        .take(MAX_TXS)
+        .map(|t| (t.gas_used as u64, tip(t, base_fee)))
+        .collect();
+    if txs.is_empty() {
+        return vec![0; percentiles.len()];
+    }
+    txs.sort_by_key(|&(_, tip)| tip);
+    let used: u64 = txs.iter().map(|&(gas, _)| gas).sum();
+    let mut idx = 0;
+    let mut cumulative = 0u64;
+    percentiles
+        .iter()
+        .map(|p| {
+            let threshold = (used as f64 * p / 100.0).round() as u64;
+            while cumulative < threshold && idx < txs.len() {
+                cumulative += txs[idx].0;
+                idx += 1;
+            }
+            txs[idx.min(txs.len() - 1)].1
+        })
+        .collect()
+}
+
 fn receipt(kind: u8, cumulative_gas_used: u64) -> ReceiptWithLogIndex {
     let inner = ReceiptWithBloom::new(
         Receipt {
@@ -266,6 +298,13 @@ fuzz_target!(|input: Input| {
 
     let provider = DataProvider::new(None, Arc::new(triedb), None);
     let answer = futures::executor::block_on(monad_eth_feeHistory(&provider, params));
+    if input.block_count == 0 {
+        let Ok(answer) = answer else {
+            panic!("zero block count failed: {:?}", answer.err());
+        };
+        assert_eq!(answer.0, Default::default(), "zero block count");
+        return;
+    }
     if !valid {
         return;
     }
@@ -287,14 +326,14 @@ fuzz_target!(|input: Input| {
         "one base fee per block and the next"
     );
     assert_eq!(
-        history.blob_gas_used_ratio.len(),
-        n,
-        "one blob gas-used ratio per block"
+        history.blob_gas_used_ratio,
+        vec![0.0; n],
+        "one zero blob gas-used ratio per block"
     );
     assert_eq!(
-        history.base_fee_per_blob_gas.len(),
-        n + 1,
-        "one blob base fee per block and the next"
+        history.base_fee_per_blob_gas,
+        vec![0; n + 1],
+        "one zero blob base fee per block and the next"
     );
 
     for (i, number) in (oldest..=newest).enumerate() {
@@ -336,24 +375,10 @@ fuzz_target!(|input: Input| {
     let percentiles = percentiles.unwrap();
     assert_eq!(rewards.len(), n, "one reward row per block");
     for (i, number) in (oldest..=newest).enumerate() {
-        let row = &rewards[i];
-        assert_eq!(row.len(), percentiles.len(), "one reward per percentile");
-        assert!(
-            row.windows(2).all(|w| w[0] <= w[1]),
-            "rewards of block {number} are not ascending: {row:?}"
-        );
-        let spec = blocks[number as usize];
-        let base_fee = spec.base_fee.unwrap_or_default();
-        let max_tip = spec
-            .txs
-            .iter()
-            .take(MAX_TXS)
-            .map(|t| tip(t, base_fee))
-            .max()
-            .unwrap_or_default();
-        assert!(
-            row.iter().all(|&r| r <= max_tip),
-            "block {number} reward above its largest tip {max_tip}: {row:?}"
+        assert_eq!(
+            rewards[i],
+            expected_rewards(blocks[number as usize], &percentiles),
+            "rewards of block {number}"
         );
     }
 });
