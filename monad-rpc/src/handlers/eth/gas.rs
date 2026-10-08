@@ -935,11 +935,12 @@ pub async fn monad_eth_feeHistory<T: Triedb>(
         Some(vec![])
     };
 
+    let returned_blocks = gas_used_ratio_history.len();
     Ok(MonadFeeHistory(FeeHistory {
         base_fee_per_gas: base_fee_per_gas_history,
         gas_used_ratio: gas_used_ratio_history,
-        base_fee_per_blob_gas: vec![0; (block_count + 1) as usize],
-        blob_gas_used_ratio: vec![0.0; (block_count) as usize],
+        base_fee_per_blob_gas: vec![0; returned_blocks + 1],
+        blob_gas_used_ratio: vec![0.0; returned_blocks],
         oldest_block,
         reward: rewards,
     }))
@@ -1417,6 +1418,33 @@ mod tests {
         assert_eq!(res.0.base_fee_per_gas, vec![5_000, 1_000, 2_000]);
         assert_eq!(res.0.gas_used_ratio, vec![0.0, gas_used]);
         assert_eq!(res.0.reward, Some(vec![]));
+    }
+
+    #[tokio::test]
+    async fn test_eth_fee_history_range_shorter_than_block_count() {
+        use monad_types::SeqNum;
+        let mut mock_triedb = MockTriedb::default();
+        mock_triedb.set_latest_block(2);
+        for n in 0..=2 {
+            mock_triedb.set_finalized_block(SeqNum(n), make_block(n, 1_000, vec![]));
+        }
+
+        let data_provider = DataProvider::new(None, Arc::new(mock_triedb), None);
+        let res = monad_eth_feeHistory(
+            &data_provider,
+            MonadEthHistoryParams {
+                block_count: Quantity(10),
+                newest_block: BlockTags::Latest,
+                reward_percentiles: None,
+            },
+        )
+        .await
+        .expect("should get fee history");
+        assert_eq!(res.0.oldest_block, 0);
+        assert_eq!(res.0.gas_used_ratio.len(), 3);
+        assert_eq!(res.0.base_fee_per_gas.len(), 4);
+        assert_eq!(res.0.blob_gas_used_ratio.len(), 3);
+        assert_eq!(res.0.base_fee_per_blob_gas.len(), 4);
     }
 
     /// When transactions have different gas_used values that don't correlate with rewards,
