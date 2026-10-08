@@ -866,9 +866,10 @@ pub async fn monad_eth_feeHistory<T: Triedb>(
     };
 
     let oldest_block = header.number.saturating_sub(block_count - 1);
-    let mut base_fee_per_gas_history: Vec<u128> = Vec::with_capacity(block_count as usize + 1);
-    let mut gas_used_ratio_history = Vec::with_capacity(block_count as usize);
-    let mut rewards = Vec::with_capacity(block_count as usize + 1);
+    let returned_blocks = (header.number - oldest_block + 1) as usize;
+    let mut base_fee_per_gas_history: Vec<u128> = Vec::with_capacity(returned_blocks + 1);
+    let mut gas_used_ratio_history = Vec::with_capacity(returned_blocks);
+    let mut rewards = Vec::with_capacity(returned_blocks);
 
     let block_range = oldest_block..=header.number;
 
@@ -898,7 +899,7 @@ pub async fn monad_eth_feeHistory<T: Triedb>(
 
         let header = block.header;
         let base_fee = header.base_fee_per_gas.unwrap_or_default();
-        base_fee_per_gas_history.push(header.base_fee_per_gas.unwrap_or_default().into());
+        base_fee_per_gas_history.push(base_fee.into());
 
         gas_used_ratio_history.push((header.gas_used as f64).div(header.gas_limit as f64));
 
@@ -935,7 +936,6 @@ pub async fn monad_eth_feeHistory<T: Triedb>(
         Some(vec![])
     };
 
-    let returned_blocks = gas_used_ratio_history.len();
     Ok(MonadFeeHistory(FeeHistory {
         base_fee_per_gas: base_fee_per_gas_history,
         gas_used_ratio: gas_used_ratio_history,
@@ -1445,6 +1445,18 @@ mod tests {
         assert_eq!(res.0.base_fee_per_gas.len(), 4);
         assert_eq!(res.0.blob_gas_used_ratio.len(), 3);
         assert_eq!(res.0.base_fee_per_blob_gas.len(), 4);
+
+        let res = monad_eth_feeHistory(
+            &data_provider,
+            MonadEthHistoryParams {
+                block_count: Quantity(10),
+                newest_block: BlockTags::Latest,
+                reward_percentiles: Some(vec![50.0]),
+            },
+        )
+        .await
+        .expect("should get fee history");
+        assert_eq!(res.0.reward, Some(vec![vec![0]; 3]));
     }
 
     /// When transactions have different gas_used values that don't correlate with rewards,
