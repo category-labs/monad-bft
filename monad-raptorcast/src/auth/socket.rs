@@ -784,9 +784,7 @@ impl<AP: AuthenticationProtocol> Future for AuthenticatedTimerFuture<'_, AP> {
                 return Poll::Ready(());
             }
 
-            // wireauth internal timers are expected to be updated
-            // for example initially session with have long timer set to session_timeout
-            // after fully establishing session, keapalive_interval will be set to a shorter duration
+            // refresh the socket timer when wireauth's next deadline moves earlier.
             let should_update_timer = self
                 .auth_timer
                 .as_ref()
@@ -1157,7 +1155,7 @@ mod tests {
         let local_keypair = keypair(1);
         let config = Config {
             handshake_rate_reset_interval: Duration::from_millis(10),
-            session_timeout: Duration::from_millis(4),
+            initiation_timeout: Duration::from_millis(4),
             session_timeout_jitter: Duration::ZERO,
             ..Default::default()
         };

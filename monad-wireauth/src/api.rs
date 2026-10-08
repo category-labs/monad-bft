@@ -839,14 +839,11 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
             .state
             .get_initiator_by_public_key_mut(public_key)
             .ok_or(Error::SessionNotFound)?;
-        let new_size = initiator
-            .buffered_bytes()
-            .checked_add(message.len())
-            .ok_or(Error::BufferLimitExceeded {
-                size: usize::MAX,
-                limit: self.config.max_buffered_bytes_per_session,
-            })?;
+        let new_size = initiator.buffered_bytes().saturating_add(message.len());
         if new_size > self.config.max_buffered_bytes_per_session {
+            self.metrics
+                .gauge(self.metric_names.error_buffer_limit_exceeded)
+                .inc();
             return Err(Error::BufferLimitExceeded {
                 size: new_size,
                 limit: self.config.max_buffered_bytes_per_session,

@@ -40,6 +40,15 @@ fn create_manager() -> (API<TestContext>, monad_secp::PubKey, TestContext, Confi
     (manager, public_key, context_clone, config)
 }
 
+fn metric_value(peer: &API<TestContext>, name: &str) -> u64 {
+    peer.metrics()
+        .into_inner()
+        .into_iter()
+        .find(|(metric_name, _, _)| *metric_name == name)
+        .expect("metric should be registered")
+        .1
+}
+
 fn collect<T>(manager: &mut API<TestContext>) -> Vec<u8>
 where
     for<'a> &'a T: std::convert::TryFrom<&'a [u8]>,
@@ -822,6 +831,20 @@ fn test_message_buffering_during_handshake() {
     assert_eq!(decrypted3, b"buffered3");
 
     assert!(peer1.next_packet().is_none());
+    assert_eq!(
+        metric_value(
+            &peer1,
+            DEFAULT_METRICS.initiator_messages_sent_from_buffer.name
+        ),
+        3
+    );
+    assert_eq!(
+        metric_value(
+            &peer1,
+            DEFAULT_METRICS.initiator_messages_dropped_from_buffer.name
+        ),
+        0
+    );
 }
 
 #[test]
@@ -961,6 +984,133 @@ fn test_max_initiated_sessions_limit() {
 }
 
 #[test]
+fn test_configured_initiation_timeout() {
+    for timeout in [Duration::from_millis(4), Duration::from_secs(3)] {
+        let config = Config {
+            initiation_timeout: timeout,
+            session_timeout_jitter: Duration::ZERO,
+            ..Config::default()
+        };
+        let mut rng = rng();
+        let keypair = monad_secp::KeyPair::generate(&mut rng);
+        let context = TestContext::new();
+        let mut peer = API::new(DEFAULT_METRICS, config, keypair, context.clone());
+        let (_, remote_pubkey, _, _) = create_manager();
+        let remote_addr: SocketAddr = "127.0.0.1:8001".parse().unwrap();
+        peer.connect(remote_pubkey, remote_addr, 0).unwrap();
+
+        context.advance_time(timeout - Duration::from_millis(1));
+        peer.tick();
+        assert!(peer.has_initiator_session_by_public_key(&remote_pubkey));
+        context.advance_time(Duration::from_millis(1));
+        peer.tick();
+        assert!(!peer.has_initiator_session_by_public_key(&remote_pubkey));
+    }
+}
+
+#[test]
+fn test_pending_initiator_timeout_does_not_shorten_transport_timeout() {
+    let (mut peer1, _, context1, config) = create_manager();
+    let (mut peer2, public_key2, _, _) = create_manager();
+    let peer1_addr: SocketAddr = "127.0.0.1:8001".parse().unwrap();
+    let peer2_addr: SocketAddr = "127.0.0.1:8002".parse().unwrap();
+
+    peer1.connect(public_key2, peer2_addr, 0).unwrap();
+    collect::<HandshakeInitiation>(&mut peer1);
+    peer1
+        .buffer_message(&public_key2, bytes::Bytes::from_static(b"pending data"))
+        .unwrap();
+    peer1
+        .buffer_message(
+            &public_key2,
+            bytes::Bytes::from_static(b"more pending data"),
+        )
+        .unwrap();
+
+    context1.advance_time(config.initiation_timeout - Duration::from_millis(1));
+    peer1.tick();
+    assert!(peer1.has_initiator_session_by_public_key(&public_key2));
+    assert_eq!(
+        metric_value(
+            &peer1,
+            DEFAULT_METRICS.initiator_messages_dropped_from_buffer.name
+        ),
+        0
+    );
+
+    // the initiation timeout plus its maximum jitter has expired.
+    context1.advance_time(config.session_timeout_jitter + Duration::from_millis(1));
+    peer1.tick();
+    assert!(!peer1.has_initiator_session_by_public_key(&public_key2));
+    assert!(matches!(
+        peer1.buffer_message(&public_key2, bytes::Bytes::from_static(b"more data")),
+        Err(monad_wireauth::Error::SessionNotFound)
+    ));
+    assert!(peer1.next_packet().is_none());
+    assert_eq!(
+        metric_value(
+            &peer1,
+            DEFAULT_METRICS.initiator_messages_dropped_from_buffer.name
+        ),
+        2
+    );
+
+    peer1.connect(public_key2, peer2_addr, 0).unwrap();
+    let init = collect::<HandshakeInitiation>(&mut peer1);
+    dispatch(&mut peer2, &init, peer1_addr);
+    let response = collect::<HandshakeResponse>(&mut peer2);
+    dispatch(&mut peer1, &response, peer2_addr);
+    let confirm = collect::<DataPacketHeader>(&mut peer1);
+    dispatch(&mut peer2, &confirm, peer1_addr);
+
+    context1.advance_time(config.initiation_timeout + config.session_timeout_jitter);
+    peer1.tick();
+    assert!(peer1.is_connected_public_key(&public_key2));
+
+    context1.advance_time(config.session_timeout);
+    peer1.tick();
+    assert!(!peer1.is_connected_public_key(&public_key2));
+    assert_eq!(
+        metric_value(
+            &peer1,
+            DEFAULT_METRICS.initiator_messages_dropped_from_buffer.name
+        ),
+        2
+    );
+}
+
+#[test]
+fn test_disconnect_counts_dropped_buffered_messages_once() {
+    let (mut peer, _, context, config) = create_manager();
+    let (_, remote_pubkey, _, _) = create_manager();
+    let remote_addr: SocketAddr = "127.0.0.1:8001".parse().unwrap();
+    peer.connect(remote_pubkey, remote_addr, 0).unwrap();
+    for _ in 0..2 {
+        peer.buffer_message(&remote_pubkey, bytes::Bytes::from_static(b"pending data"))
+            .unwrap();
+    }
+
+    peer.disconnect(&remote_pubkey);
+    assert_eq!(
+        metric_value(
+            &peer,
+            DEFAULT_METRICS.initiator_messages_dropped_from_buffer.name
+        ),
+        2
+    );
+    peer.disconnect(&remote_pubkey);
+    context.advance_time(config.initiation_timeout + config.session_timeout_jitter);
+    peer.tick();
+    assert_eq!(
+        metric_value(
+            &peer,
+            DEFAULT_METRICS.initiator_messages_dropped_from_buffer.name
+        ),
+        2
+    );
+}
+
+#[test]
 fn test_buffer_limit_per_session() {
     init_tracing();
     let config = Config {
@@ -984,6 +1134,10 @@ fn test_buffer_limit_per_session() {
 
     peer.buffer_message(&remote_pubkey, bytes::Bytes::from(vec![0u8; 40]))
         .unwrap();
+    assert_eq!(
+        metric_value(&peer, DEFAULT_METRICS.error_buffer_limit_exceeded.name),
+        0
+    );
 
     let result = peer.buffer_message(&remote_pubkey, bytes::Bytes::from(vec![0u8; 20]));
     assert!(result.is_err());
@@ -995,6 +1149,34 @@ fn test_buffer_limit_per_session() {
             limit: 100
         }
     ));
+    assert_eq!(
+        metric_value(&peer, DEFAULT_METRICS.error_buffer_limit_exceeded.name),
+        1
+    );
+    peer.buffer_message(&remote_pubkey, bytes::Bytes::from(vec![0u8; 10]))
+        .unwrap();
+    assert!(matches!(
+        peer.buffer_message(&remote_pubkey, bytes::Bytes::from_static(b"x")),
+        Err(monad_wireauth::Error::BufferLimitExceeded {
+            size: 101,
+            limit: 100
+        })
+    ));
+    assert_eq!(
+        metric_value(&peer, DEFAULT_METRICS.error_buffer_limit_exceeded.name),
+        2
+    );
+    assert_eq!(
+        metric_value(&peer, DEFAULT_METRICS.initiator_buffered_messages.name),
+        3
+    );
+    assert_eq!(
+        metric_value(
+            &peer,
+            DEFAULT_METRICS.initiator_messages_dropped_from_buffer.name
+        ),
+        0
+    );
 }
 
 #[test]
@@ -1010,6 +1192,10 @@ fn test_buffer_message_session_not_found() {
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(matches!(err, monad_wireauth::Error::SessionNotFound));
+    assert_eq!(
+        metric_value(&peer, DEFAULT_METRICS.error_buffer_limit_exceeded.name),
+        0
+    );
 }
 
 #[test]
