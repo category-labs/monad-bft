@@ -168,7 +168,7 @@ fn commit_votes_decide_once_the_block_is_fetched() {
     );
     assert!(
         decided_commit_qc(&outputs),
-        "the echo goes out with the decision, after retrieval"
+        "the certificate goes out with the decision, after retrieval"
     );
 }
 
@@ -1012,7 +1012,7 @@ fn a_received_certificate_decides_once_its_block_is_retrieved() {
     assert!(instance.decision().is_none());
     assert!(
         !decided_commit_qc(&outputs),
-        "a certificate this validator cannot complete is not echoed"
+        "a certificate this validator cannot complete is not passed on"
     );
 
     instance.handle_message(nodes()[2], block_response(block.clone()));
@@ -1408,8 +1408,8 @@ fn a_certificate_arriving_before_propose_is_fetched_once_it_does() {
     let mut instance = mvba(follower, &validator_data);
 
     // the certificate is recorded -- it is valid evidence whenever it arrives --
-    // but an instance with no input does not participate, so it sends nothing:
-    // not a request, and not the echo
+    // but an instance with no input does not participate, so it sends nothing,
+    // not even a block request
     instance.handle_message(
         nodes()[1],
         commit_qc_message(view(1), &block, &validator_data),
@@ -1648,100 +1648,32 @@ fn an_adopted_lock_over_a_held_block_requests_nothing() {
     );
 }
 
-// ---------------- the decided echo ----------------
+// ---------------- the decision, once broadcast ----------------
 
+/// The whole recovery loop: the one-shot broadcast on decide is the discovery
+/// step, and the block half stays pull-based behind it
 #[test]
-fn deciding_arms_the_decided_echo() {
-    let validator_data = validator_data();
-    let block = metablock(1, &validator_data);
-
-    let mut instance = decided(nodes()[0], &block, &validator_data);
-    let outputs = drain(&mut instance);
-
-    assert!(instance.decision().is_some());
-    assert!(decided_commit_qc(&outputs));
-    assert!(
-        scheduled_timers(&outputs).contains(&TimerEvent::DecidedEcho),
-        "one broadcast is not something a laggard can rely on having seen"
-    );
-}
-
-#[test]
-fn the_decided_echo_rebroadcasts_the_commit_certificate_and_re_arms() {
-    let validator_data = validator_data();
-    let block = metablock(1, &validator_data);
-
-    let mut instance = decided(nodes()[0], &block, &validator_data);
-    drain(&mut instance);
-
-    for _ in 0..2 {
-        instance.handle_timer(TimerEvent::DecidedEcho);
-        let outputs = drain(&mut instance);
-
-        assert!(decided_commit_qc(&outputs));
-        assert_eq!(scheduled_timers(&outputs), vec![TimerEvent::DecidedEcho]);
-    }
-}
-
-#[test]
-fn abandon_silences_the_decided_echo() {
-    let validator_data = validator_data();
-    let block = metablock(1, &validator_data);
-
-    let mut instance = decided(nodes()[0], &block, &validator_data);
-    drain(&mut instance);
-
-    instance.abandon();
-    instance.handle_timer(TimerEvent::DecidedEcho);
-
-    assert!(
-        drain(&mut instance).is_empty(),
-        "the fast path taking the slot over is what ends the obligation"
-    );
-}
-
-/// The echo timer is armed only at the moment of decision, so one firing
-/// earlier is a wiring bug, not a race to tolerate
-#[test]
-#[should_panic(expected = "echo decision timer scheduled while not in decided state")]
-fn a_decided_echo_before_any_decision_panics() {
-    let validator_data = validator_data();
-    let block = metablock(1, &validator_data);
-
-    let mut instance = started(nodes()[0], &block, &validator_data);
-    drain(&mut instance);
-
-    instance.handle_timer(TimerEvent::DecidedEcho);
-}
-
-/// The whole recovery loop: the echo is the discovery step, and the block half
-/// stays pull-based behind it
-#[test]
-fn a_laggard_catches_up_on_the_echo() {
+fn a_laggard_catches_up_on_the_decision_broadcast() {
     let validator_data = validator_data();
     let block = metablock(1, &validator_data);
     let own = metablock(2, &validator_data);
 
     let mut decider = decided(nodes()[0], &block, &validator_data);
-    drain(&mut decider);
+    let outputs = drain(&mut decider);
+    let decision = broadcasts(&outputs)
+        .into_iter()
+        .find(|message| matches!(message, Message::CommitQc(_)))
+        .expect("deciding broadcasts the certificate")
+        .clone();
 
-    // it holds a different input and never saw the proposal or the votes: the
-    // one-shot broadcast at decision time is gone, so nothing it holds says the
-    // slot was settled
+    // it holds a different input and never saw the proposal or the votes, so
+    // nothing it holds says the slot was settled
     let laggard_id = nodes()[2];
     let mut laggard = started(laggard_id, &own, &validator_data);
     drain(&mut laggard);
     assert!(laggard.decision().is_none());
 
-    decider.handle_timer(TimerEvent::DecidedEcho);
-    let outputs = drain(&mut decider);
-    let echo = broadcasts(&outputs)
-        .into_iter()
-        .find(|message| matches!(message, Message::CommitQc(_)))
-        .expect("the echo re-broadcasts the certificate")
-        .clone();
-
-    laggard.handle_message(nodes()[0], echo);
+    laggard.handle_message(nodes()[0], decision);
     let outputs = drain(&mut laggard);
     assert_eq!(
         requested_entries(&outputs),
@@ -1763,6 +1695,19 @@ fn a_laggard_catches_up_on_the_echo() {
 
     assert_eq!(laggard.decision(), Some(&block));
     assert!(laggard.decision_proof().is_some());
+}
+
+/// Abandoning is what ends the instance: the fast path taking the slot over
+/// silences everything the decision still had queued
+#[test]
+fn abandon_silences_a_decided_instance() {
+    let validator_data = validator_data();
+    let block = metablock(1, &validator_data);
+
+    let mut instance = decided(nodes()[0], &block, &validator_data);
+    instance.abandon();
+
+    assert!(drain(&mut instance).is_empty());
 }
 
 // ---------------- admission window ----------------

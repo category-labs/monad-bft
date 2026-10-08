@@ -36,7 +36,9 @@
 //!
 //! Agreement runs over `entries(x)`, so certificates arrive independently of
 //! the blocks behind them. [`MonadMvba::request_missing_blocks`] is the one
-//! place a fetch is asked for
+//! place a fetch is asked for. A decision is broadcast once and re-broadcast
+//! by whoever it reaches; being fetchable after that is the recovery layer's
+//! contract, not this instance's
 //!
 //! `v`, `lastVotedView`, `PrepQC` and `DecidedQC` must be durable before any
 //! message they enable is sent. There is no backend yet; the points are marked
@@ -59,7 +61,8 @@ use std::{
 };
 
 use block_store::{BlockRequestMsg, BlockResponseMsg, BlockStore};
-use certificates::{FallbackCommitQc, PrepareQc, TimeoutCertificate};
+pub use certificates::FallbackCommitQc;
+use certificates::{PrepareQc, TimeoutCertificate};
 use collectors::ViewCollectors;
 pub use messages::MvbaMessage;
 use messages::{
@@ -86,9 +89,6 @@ const LOOKBACK_VIEWS: u64 = 1;
 
 /// View timeout in multiples of Δ: proposal, prepare round, commit round
 const VIEW_TIMEOUT_DELTAS: u64 = 3;
-
-/// How often a decided instance re-broadcasts its commit certificate
-const DECIDED_ECHO_DELTAS: u64 = 3;
 
 pub struct MvbaContext {
     pub slot: Slot,
@@ -122,12 +122,6 @@ impl MvbaContext {
             .checked_mul(VIEW_TIMEOUT_DELTAS)
             .expect("view timeout overflows the timestamp range")
     }
-
-    fn decided_echo_timeout(&self) -> TimestampDelta {
-        self.delta
-            .checked_mul(DECIDED_ECHO_DELTAS)
-            .expect("echo timeout overflows the timestamp range")
-    }
 }
 
 /// Timers driven by the MVBA state machine
@@ -138,10 +132,6 @@ pub enum TimerEvent<V: Votable> {
     ViewTimeout(FallbackView),
     /// Retransmit the outstanding request for one block
     BlockRetransmit(V::Entries),
-    /// TODO: decide if fast or fallback path should guarantee eventual commit
-    ///
-    /// Retransmit decided commitQC
-    DecidedEcho,
 }
 
 /// Validation context for MetaBlock and FallbackCert
@@ -307,7 +297,6 @@ where
                         .extend(self.block_store.on_retransmit_timer(&entries));
                 }
             }
-            TimerEvent::DecidedEcho => self.echo_decision(),
         }
     }
 
@@ -745,31 +734,8 @@ where
 
         (
             Phase::Decided(Decided::new(commit_qc.clone(), block)),
-            vec![
-                MVBAOutput::Broadcast(MvbaMessage::CommitQc(commit_qc)),
-                MVBAOutput::ScheduleTimer {
-                    duration: self.context.decided_echo_timeout(),
-                    timer_event: TimerEvent::DecidedEcho,
-                },
-            ],
+            vec![MVBAOutput::Broadcast(MvbaMessage::CommitQc(commit_qc))],
         )
-    }
-
-    /// Runs outside `try_advance` because a decision ends the state machine,
-    /// not the obligation to be fetchable from
-    fn echo_decision(&mut self) {
-        let Some(decided) = self.phase.decided() else {
-            panic!("echo decision timer scheduled while not in decided state");
-        };
-
-        self.outputs
-            .push_back(MVBAOutput::Broadcast(MvbaMessage::CommitQc(
-                decided.commit_qc().clone(),
-            )));
-        self.outputs.push_back(MVBAOutput::ScheduleTimer {
-            duration: self.context.decided_echo_timeout(),
-            timer_event: TimerEvent::DecidedEcho,
-        });
     }
 
     /// `SyncView`
