@@ -62,6 +62,7 @@ pub struct MetricNames {
     pub error_dispatch_control: &'static MetricDef,
 
     pub error_session_exhausted: &'static MetricDef,
+    pub error_buffer_limit_exceeded: &'static MetricDef,
     pub error_mac1_verification_failed: &'static MetricDef,
     pub error_timestamp_replay: &'static MetricDef,
     pub error_session_not_found: &'static MetricDef,
@@ -80,10 +81,11 @@ pub struct MetricNames {
 
     pub initiator_buffered_messages: &'static MetricDef,
     pub initiator_messages_sent_from_buffer: &'static MetricDef,
+    pub initiator_messages_dropped_from_buffer: &'static MetricDef,
 }
 
 impl MetricNames {
-    pub(crate) fn state_metric_defs(&'static self) -> [&'static MetricDef; 14] {
+    pub(crate) fn state_metric_defs(&'static self) -> [&'static MetricDef; 15] {
         [
             self.state_initiating_sessions,
             self.state_responding_sessions,
@@ -99,6 +101,7 @@ impl MetricNames {
             self.state_initiated_session_by_peer_size,
             self.state_accepted_sessions_by_peer_size,
             self.state_ip_session_counts_size,
+            self.initiator_messages_dropped_from_buffer,
         ]
     }
 
@@ -111,7 +114,7 @@ impl MetricNames {
         ]
     }
 
-    pub(crate) fn api_metric_defs(&'static self) -> [&'static MetricDef; 38] {
+    pub(crate) fn api_metric_defs(&'static self) -> [&'static MetricDef; 39] {
         [
             self.state_timers_size,
             self.state_packet_queue_size,
@@ -136,6 +139,7 @@ impl MetricNames {
             self.error_encrypt_by_socket,
             self.error_dispatch_control,
             self.error_session_exhausted,
+            self.error_buffer_limit_exceeded,
             self.error_mac1_verification_failed,
             self.error_timestamp_replay,
             self.error_session_not_found,
@@ -358,6 +362,10 @@ macro_rules! define_metric_names {
                 concat!("monad.wireauth.", $transport, ".error.session_exhausted"),
                 "rejected due to hitting max session limit",
             ),
+            error_buffer_limit_exceeded: &monad_executor::MetricDef::new(
+                concat!("monad.wireauth.", $transport, ".error.buffer_limit_exceeded"),
+                "buffer admission errors caused by exceeding the per-session byte limit",
+            ),
             error_mac1_verification_failed: &monad_executor::MetricDef::new(
                 concat!("monad.wireauth.", $transport, ".error.mac1_verification_failed"),
                 "handshake mac1 authentication failed",
@@ -428,6 +436,14 @@ macro_rules! define_metric_names {
                     ".initiator.messages_sent_from_buffer"
                 ),
                 "buffered messages sent after handshake completed",
+            ),
+            initiator_messages_dropped_from_buffer: &monad_executor::MetricDef::new(
+                concat!(
+                    "monad.wireauth.",
+                    $transport,
+                    ".initiator.messages_dropped_from_buffer"
+                ),
+                "buffered message pieces discarded when an initiator session is terminated",
             ),
         };
     };

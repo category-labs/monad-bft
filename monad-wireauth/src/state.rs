@@ -382,7 +382,11 @@ impl State {
         self.metrics
             .gauge(self.metric_names.state_transport_sessions)
             .set(self.transport_sessions.len() as u64);
-        self.initiating_sessions.remove(&session_id);
+        if let Some(initiator) = self.initiating_sessions.remove(&session_id) {
+            self.metrics
+                .gauge(self.metric_names.initiator_messages_dropped_from_buffer)
+                .add(initiator.buffered_message_count() as u64);
+        }
         self.metrics
             .gauge(self.metric_names.state_initiating_sessions)
             .set(self.initiating_sessions.len() as u64);

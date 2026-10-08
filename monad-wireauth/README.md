@@ -173,6 +173,6 @@ session_decrypt         time:   [166.11 ns 168.75 ns 171.20 ns]
 | `ip_history_capacity` | usize | 1000000 | lru cache size for tracking handshake request timestamps per ip |
 | `psk` | [u8; 32] | zeros | optional pre-shared key mixed into handshake for additional auth |
 | `max_initiated_sessions` | usize | 1000 | max concurrent initiated sessions (handshakes in progress) |
-| `max_buffered_bytes_per_session` | usize | 131072 | max bytes of buffered messages per initiated session (128KB) |
+| `max_buffered_bytes_per_session` | usize | 4194304 | max bytes of buffered messages per initiated session (4 mib) |
 | `gc_idle_timeout` | Duration | 120s | idle time without useful data before session is garbage collected (keepalives don't reset) |
 | `max_expired_timers_per_tick` | usize | 10000 | cap expired timers processed per `API::tick` |

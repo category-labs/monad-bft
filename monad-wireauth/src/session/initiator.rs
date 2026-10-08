@@ -91,8 +91,11 @@ impl InitiatorState {
             buffered_bytes: 0,
         };
 
-        let timeout_with_jitter =
-            add_jitter(rng, config.session_timeout, config.session_timeout_jitter);
+        let timeout_with_jitter = add_jitter(
+            rng,
+            config.initiation_timeout,
+            config.session_timeout_jitter,
+        );
         session
             .common
             .reset_session_timeout(duration_since_start, timeout_with_jitter);
