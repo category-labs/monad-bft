@@ -25,6 +25,14 @@ use tokio::time::MissedTickBehavior;
 use super::*;
 use crate::{config::DeployedContract, shared::erc20::ERC20};
 
+/// Refresh rounds the chain pending nonce must stay frozen below the local
+/// nonce before we conclude the gap tx was dropped and reset to chain state.
+/// When the workload intentionally drops or mutates txs, gaps are expected
+/// rather than exceptional, so heal after a single frozen round; otherwise
+/// wait longer to avoid resetting accounts whose txs are just slow to land.
+const NONCE_GAP_STALE_ROUNDS_EXPECTED_GAPS: u32 = 1;
+const NONCE_GAP_STALE_ROUNDS_DEFAULT: u32 = 3;
+
 pub struct Refresher {
     pub rpc_rx: mpsc::UnboundedReceiver<AccountsWithTime>,
     pub gen_sender: async_channel::Sender<Accounts>,
@@ -36,6 +44,7 @@ pub struct Refresher {
     pub base_fee: Arc<Mutex<u128>>,
 
     pub delay: Duration,
+    pub nonce_gap_stale_rounds: u32,
     pub shutdown: Arc<AtomicBool>,
 }
 
@@ -52,6 +61,7 @@ impl Refresher {
 
         deployed_contract: DeployedContract,
         refresh_erc20_balance: bool,
+        expect_nonce_gaps: bool,
         workload_group_name: String,
         shutdown: Arc<AtomicBool>,
     ) -> Result<Refresher> {
@@ -71,6 +81,11 @@ impl Refresher {
             erc20_contracts,
             base_fee,
             delay,
+            nonce_gap_stale_rounds: if expect_nonce_gaps {
+                NONCE_GAP_STALE_ROUNDS_EXPECTED_GAPS
+            } else {
+                NONCE_GAP_STALE_ROUNDS_DEFAULT
+            },
             workload_group_name,
             shutdown,
         })
@@ -112,11 +127,19 @@ impl Refresher {
         let gen_sender = self.gen_sender.clone();
         let erc20_contracts = self.erc20_contracts.clone();
         let base_fee = self.base_fee.clone();
+        let nonce_gap_stale_rounds = self.nonce_gap_stale_rounds;
         tokio::spawn(async move {
             let mut times_sent = 0;
 
-            while let Err(e) =
-                refresh_batch(&client, &mut accts, &metrics, &erc20_contracts, &base_fee).await
+            while let Err(e) = refresh_batch(
+                &client,
+                &mut accts,
+                &metrics,
+                &erc20_contracts,
+                &base_fee,
+                nonce_gap_stale_rounds,
+            )
+            .await
             {
                 if times_sent > 5 {
                     error!("Exhausted retries refreshing account, oh well! {e}");
@@ -149,6 +172,7 @@ pub async fn refresh_batch(
     metrics: &Metrics,
     erc20_contracts: &[ERC20],
     base_fee: &Arc<Mutex<u128>>,
+    nonce_gap_stale_rounds: u32,
 ) -> Result<()> {
     trace!("Refreshing batch...");
 
@@ -204,7 +228,31 @@ pub async fn refresh_batch(
             acct.native_bal = *b;
         }
         if let Ok((_, n)) = &nonces[i] {
-            acct.nonce = *n;
+            // Never regress the local nonce while txs are in flight — the
+            // generator may have incremented it past the chain-reported value.
+            // But if the chain's pending nonce stays frozen below the local
+            // value across several refreshes, the gap nonce was dropped
+            // (drop_percentage or RPC reject) and the account is wedged:
+            // adopt the chain nonce so the gap gets resubmitted.
+            if *n >= acct.nonce {
+                acct.nonce = *n;
+                acct.chain_nonce_stale_rounds = 0;
+            } else if *n == acct.last_chain_nonce {
+                acct.chain_nonce_stale_rounds += 1;
+                if acct.chain_nonce_stale_rounds >= nonce_gap_stale_rounds {
+                    warn!(
+                        "account {} wedged behind nonce gap (local {}, chain pending {} for {} refreshes); resetting to chain nonce",
+                        acct.addr, acct.nonce, n, acct.chain_nonce_stale_rounds
+                    );
+                    acct.nonce = *n;
+                    acct.chain_nonce_stale_rounds = 0;
+                }
+            } else {
+                // Chain nonce advanced but is still below local — in-flight
+                // txs are landing normally.
+                acct.chain_nonce_stale_rounds = 0;
+            }
+            acct.last_chain_nonce = *n;
         }
 
         for (erc20, bals_result) in erc20_contracts.iter().zip(erc20_bals_results.iter()) {

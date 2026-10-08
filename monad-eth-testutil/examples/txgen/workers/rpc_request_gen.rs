@@ -816,47 +816,56 @@ impl RpcRequestGenerator {
 pub struct RpcWsCompare {
     rpc_client: ReqwestClient,
     ws_url: Url,
+    metrics: Arc<super::metrics::Metrics>,
 }
 
 impl RpcWsCompare {
-    pub fn new(rpc_client: ReqwestClient, ws_url: Url) -> Self {
-        Self { rpc_client, ws_url }
+    pub fn new(
+        rpc_client: ReqwestClient,
+        ws_url: Url,
+        metrics: Arc<super::metrics::Metrics>,
+    ) -> Self {
+        Self {
+            rpc_client,
+            ws_url,
+            metrics,
+        }
     }
 
     pub async fn run(&self, shutdown: Arc<AtomicBool>) {
         let client = self.rpc_client.clone();
 
-        // Get the current tip from the rpc
-        let mut tip = client
-            .request_noparams::<U64>("eth_blockNumber")
-            .map_resp(|res| res.to())
-            .await
-            .unwrap();
-
-        let (block_sender, mut block_receiver) = tokio::sync::mpsc::channel(100);
-        let rpc_client_clone = self.rpc_client.clone();
-
-        // shutdown this tokio task
-        let shutdown2 = shutdown.clone();
-        tokio::spawn(async move {
-            let client = rpc_client_clone;
-            while !shutdown2.load(Ordering::Relaxed) {
-                let block = Self::get_block_by_number(&client, tip).await.unwrap();
-                block_sender.send(block).await.unwrap();
-                tip += 1;
-                tokio::time::sleep(Duration::from_millis(500)).await; // Add a small delay
+        // Create a websocket stream to listen to new blocks. Retry while the
+        // endpoint is briefly unavailable — each phase rotation re-creates
+        // this task, and a transient ws blip at phase start would otherwise
+        // panic it and abort the whole phase.
+        let (mut write, mut read) = loop {
+            if shutdown.load(Ordering::Relaxed) {
+                return;
             }
-        });
-
-        // Create a websocket stream to listen to new blocks
-        let (ws_stream, _) = connect_async(&self.ws_url.to_string())
-            .await
-            .expect("Failed to connect");
-        let (mut write, mut read) = ws_stream.split();
-        write.send(Message::Text("{ \"id\": 1, \"jsonrpc\": \"2.0\", \"method\": \"eth_subscribe\", \"params\": [\"newHeads\"] }".into())).await.expect("failed to send message");
-        Self::wait_for_subscription_id(&mut read, 1)
-            .await
-            .expect("failed to get newHeads subscription ID");
+            let (ws_stream, _) = match connect_async(&self.ws_url.to_string()).await {
+                Ok(ok) => ok,
+                Err(err) => {
+                    warn!(?err, "Failed to connect newHeads websocket; retrying");
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    continue;
+                }
+            };
+            let (mut write, mut read) = ws_stream.split();
+            if let Err(err) = write.send(Message::Text("{ \"id\": 1, \"jsonrpc\": \"2.0\", \"method\": \"eth_subscribe\", \"params\": [\"newHeads\"] }".into())).await {
+                warn!(?err, "Failed to send newHeads subscription; retrying");
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                continue;
+            }
+            match Self::wait_for_subscription_id(&mut read, 1).await {
+                Some(_) => break (write, read),
+                None => {
+                    warn!("Failed to get newHeads subscription ID; retrying");
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    continue;
+                }
+            }
+        };
 
         let (ws_tx, mut ws_rx) = tokio::sync::mpsc::channel(100);
         let shutdown3 = shutdown.clone();
@@ -864,24 +873,43 @@ impl RpcWsCompare {
             while !shutdown3.load(Ordering::Relaxed) {
                 tokio::select! {
                     Some(message) = read.next() => {
-                        let message = message.expect("failed to parse message");
+                        let message = match message {
+                            Ok(message) => message,
+                            Err(err) => {
+                                error!(?err, "websocket read error, stopping comparison stream");
+                                break;
+                            }
+                        };
                         match message {
                             Message::Text(text) => {
                                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
-                                    if let Some(result) = json.get("params").unwrap().get("result") {
+                                    if let Some(result) = json.get("params").and_then(|p| p.get("result")) {
                                         // Convert result to alloy_rpc_types_eth::Header
-                                        let header = serde_json::from_value::<alloy_rpc_types_eth::Header>(result.clone()).expect("failed to convert result to alloy_rpc_types_eth::Header");
-                                        ws_tx.send(header).await.unwrap();
+                                        match serde_json::from_value::<alloy_rpc_types_eth::Header>(result.clone()) {
+                                            Ok(header) => {
+                                                if ws_tx.send(header).await.is_err() {
+                                                    // Receiver gone (workload group ended)
+                                                    break;
+                                                }
+                                            }
+                                            Err(err) => {
+                                                error!(?err, "failed to decode newHeads header");
+                                            }
+                                        }
                                     }
                                 }
                             }
                             Message::Binary(_) => {}
                             Message::Ping(data) => {
-                                write.send(Message::Pong(data)).await.expect("failed to send message");
+                                if write.send(Message::Pong(data)).await.is_err() {
+                                    error!("websocket write error, stopping comparison stream");
+                                    break;
+                                }
                             }
                             Message::Pong(_) => {}
                             Message::Close(frame) => {
-                                panic!("Received close message: {:?}", frame);
+                                error!("websocket closed by server: {:?}, stopping comparison stream", frame);
+                                break;
                             }
                             Message::Frame(_) => {}
                         }
@@ -890,24 +918,31 @@ impl RpcWsCompare {
             }
         });
 
+        // The websocket stream drives the comparison: for each streamed head,
+        // fetch the SAME block number over the rpc and compare the header
+        // contents. get_block_by_number retries until the rpc serves the
+        // block, which absorbs the lag between the speculative heads the
+        // events websocket announces and the finalized view the rpc serves
+        // (several blocks on 400ms block times), as well as ws/rpc pointing
+        // at different nodes.
         while !shutdown.load(Ordering::Relaxed) {
             let ws_header = match ws_rx.recv().await {
                 Some(header) => header,
                 None => break,
             };
-            let rpc_header = match block_receiver.recv().await {
-                Some(block) => block.header,
-                None => break,
-            };
+            let rpc_header =
+                match Self::get_block_by_number(&client, ws_header.number, &shutdown).await {
+                    Some(block) => block.header,
+                    None => break,
+                };
 
-            if ws_header.number != rpc_header.number {
-                error!(
-                    "block number mismatch websocket {:?} rpc {:?}. stopping comparison",
-                    ws_header.number, rpc_header.number
-                );
-                break;
-            }
+            self.metrics
+                .ws_compares_total
+                .fetch_add(1, Ordering::Relaxed);
             if ws_header != rpc_header {
+                self.metrics
+                    .ws_compare_mismatches
+                    .fetch_add(1, Ordering::Relaxed);
                 error!(
                     "block header mismatch websocket {:?} rpc {:?}",
                     ws_header, rpc_header
@@ -919,8 +954,12 @@ impl RpcWsCompare {
     async fn get_block_by_number(
         client: &ReqwestClient,
         block_number: BlockNumber,
+        shutdown: &AtomicBool,
     ) -> Option<alloy_rpc_types_eth::Block> {
         loop {
+            if shutdown.load(Ordering::Relaxed) {
+                return None;
+            }
             match client
                 .request::<_, alloy_rpc_types_eth::Block>(
                     "eth_getBlockByNumber",
