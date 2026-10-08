@@ -278,7 +278,7 @@ impl MetricsReporter {
     /// from 0) and on phase shutdown (so stale series are cleared).
     pub fn emit_zeros(&self) {
         let label = &[opentelemetry::KeyValue::new(
-            "generator_mode",
+            "Generator Mode",
             self.gen_mode.clone(),
         )];
         self.committed_tps.record(0.0, label);
@@ -336,7 +336,7 @@ impl MetricsReporter {
         debug!("Reporting Otel Metrics");
 
         let label = &[opentelemetry::KeyValue::new(
-            "generator_mode",
+            "Generator Mode",
             self.gen_mode.clone(),
         )];
         self.committed_tps
