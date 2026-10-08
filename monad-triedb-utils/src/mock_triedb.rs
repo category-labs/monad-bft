@@ -30,6 +30,7 @@ pub struct MockTriedb {
     finalized_blocks: HashMap<SeqNum, Block<TxEnvelope>>,
     receipts: HashMap<SeqNum, Vec<ReceiptWithLogIndex>>,
     accounts: HashMap<EthAddress, EthAccount>,
+    storage: HashMap<(EthAddress, EthStorageKey), EthStorageSlot>,
     tx_locations: HashMap<EthTxHash, TransactionLocation>,
     call_frames: HashMap<TransactionLocation, Vec<u8>>,
     code: Vec<u8>,
@@ -42,6 +43,10 @@ impl MockTriedb {
 
     pub fn set_account(&mut self, address: EthAddress, account: EthAccount) {
         self.accounts.insert(address, account);
+    }
+
+    pub fn set_storage(&mut self, address: EthAddress, key: EthStorageKey, value: EthStorageSlot) {
+        self.storage.insert((address, key), value);
     }
 
     pub fn set_transaction_location_by_hash(
@@ -104,10 +109,14 @@ impl Triedb for MockTriedb {
     fn get_storage_at(
         &self,
         _block_key: BlockKey,
-        _addr: EthAddress,
-        _at: EthStorageKey,
+        addr: EthAddress,
+        at: EthStorageKey,
     ) -> impl std::future::Future<Output = Result<EthStorageSlot, String>> + Send {
-        ready(Ok(EthStorageSlot::default()))
+        ready(Ok(self
+            .storage
+            .get(&(addr, at))
+            .copied()
+            .unwrap_or_default()))
     }
 
     fn get_code(
