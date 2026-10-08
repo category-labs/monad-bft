@@ -267,7 +267,7 @@ fuzz_target!(|input: Input| {
 
     let params = serde_json::from_value::<MonadEthHistoryParams>(request);
     assert!(
-        params.is_ok() || !valid,
+        params.is_ok() || !(valid || input.block_count == 0),
         "valid request rejected: {params:?}"
     );
     let Ok(params) = params else {
