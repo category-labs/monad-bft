@@ -22,6 +22,8 @@ pub const DEFAULT_RETRY_ATTEMPTS: u64 = 3;
 
 #[derive(Clone)]
 pub struct Config {
+    /// wait for a handshake response before an initiating session expires
+    pub initiation_timeout: Duration,
     /// idle time before session expires (reset on any packet exchange)
     pub session_timeout: Duration,
     /// randomization to prevent thundering herd on timeout
@@ -76,6 +78,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            initiation_timeout: Duration::from_secs(2),
             session_timeout: Duration::from_secs(10),
             session_timeout_jitter: Duration::from_secs(1),
             keepalive_interval: Duration::from_secs(3),
@@ -95,8 +98,9 @@ impl Default for Config {
             ip_rate_limit_window: Duration::from_secs(10),
             ip_history_capacity: 1_000_000,
             psk: Zeroizing::new([0u8; 32]),
+            // TODO(dshulyak): decrease this limit to account for the risk of filling all allowed buffers.
             max_initiated_sessions: 1000,
-            max_buffered_bytes_per_session: 128 * 1024,
+            max_buffered_bytes_per_session: 4 * 1024 * 1024,
             gc_idle_timeout: Duration::from_secs(120),
             max_expired_timers_per_tick: 10_000,
         }
