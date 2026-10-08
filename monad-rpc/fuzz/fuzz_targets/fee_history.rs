@@ -305,12 +305,11 @@ fuzz_target!(|input: Input| {
         assert_eq!(answer.0, Default::default(), "zero block count");
         return;
     }
-    if !valid {
-        return;
-    }
     let Ok(answer) = answer else {
-        panic!("valid request failed: {:?}", answer.err());
+        assert!(!valid, "valid request failed: {:?}", answer.err());
+        return;
     };
+    assert!(valid, "invalid request answered: {answer:?}");
     let history = answer.0;
     let oldest = newest.saturating_sub(input.block_count - 1);
     let n = (newest - oldest + 1) as usize;
