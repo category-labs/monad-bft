@@ -25,7 +25,7 @@
 
 #![no_main]
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use alloy_consensus::{
     Block, Eip658Value, Receipt, ReceiptEnvelope, ReceiptWithBloom, SignableTransaction, TxEip1559,
@@ -47,6 +47,9 @@ use serde_json::json;
 
 const MAX_BLOCKS: usize = 24;
 const MAX_TXS: usize = 6;
+
+static SIGNER: LazyLock<PrivateKeySigner> =
+    LazyLock::new(|| PrivateKeySigner::from_bytes(&[7u8; 32].into()).unwrap());
 
 #[derive(Arbitrary, Debug)]
 struct TxSpec {
@@ -75,7 +78,10 @@ enum Newest {
 
 #[derive(Arbitrary, Debug)]
 enum Percentiles {
-    None,
+    /// Left out of the request: `[blockCount, newestBlock]`.
+    Omitted,
+    /// An explicit `null`.
+    Null,
     /// Valid: bytes mapped onto [0, 100] and sorted.
     Valid(Vec<u8>),
     /// Anything, to exercise validation.
@@ -174,35 +180,13 @@ fn receipt(kind: u8, cumulative_gas_used: u64) -> ReceiptWithLogIndex {
 }
 
 fuzz_target!(|input: Input| {
-    let signer = PrivateKeySigner::from_bytes(&[7u8; 32].into()).unwrap();
     let blocks: Vec<&BlockSpec> = input.blocks.iter().take(MAX_BLOCKS).collect();
     if blocks.is_empty() {
         return;
     }
     let latest = (blocks.len() - 1) as u64;
 
-    let mut triedb = MockTriedb::default();
-    triedb.set_latest_block(latest);
-    let mut nonce = 0u64;
-    for (number, spec) in blocks.iter().enumerate() {
-        let mut block = Block::<TxEnvelope>::default();
-        let mut receipts = Vec::new();
-        let mut cumulative = 0u64;
-        for tx in spec.txs.iter().take(MAX_TXS) {
-            block.body.transactions.push(sign(&signer, tx, nonce));
-            nonce += 1;
-            cumulative += tx.gas_used as u64;
-            receipts.push(receipt(tx.kind, cumulative));
-        }
-        block.header.number = number as u64;
-        block.header.base_fee_per_gas = spec.base_fee;
-        block.header.gas_limit = spec.gas_limit;
-        block.header.gas_used = cumulative;
-        triedb.set_finalized_block(SeqNum(number as u64), block);
-        triedb.set_receipts(SeqNum(number as u64), receipts);
-    }
-
-    let newest = match input.newest {
+    let newest_tag = match input.newest {
         Newest::Latest => json!("latest"),
         Newest::Safe => json!("safe"),
         Newest::Finalized => json!("finalized"),
@@ -210,7 +194,7 @@ fuzz_target!(|input: Input| {
         Newest::Number(n) => json!(format!("0x{n:x}")),
     };
     let percentiles: Option<Vec<f64>> = match &input.percentiles {
-        Percentiles::None => None,
+        Percentiles::Omitted | Percentiles::Null => None,
         Percentiles::Valid(bytes) => {
             let mut p: Vec<f64> = bytes
                 .iter()
@@ -228,25 +212,67 @@ fuzz_target!(|input: Input| {
                 .collect(),
         ),
     };
-    let request = json!([format!("0x{:x}", input.block_count), newest, percentiles]);
-    let Ok(params) = serde_json::from_value::<MonadEthHistoryParams>(request) else {
-        return;
+    let block_count = json!(format!("0x{:x}", input.block_count));
+    let request = match input.percentiles {
+        Percentiles::Omitted => json!([block_count, newest_tag]),
+        _ => json!([block_count, newest_tag, percentiles]),
     };
 
-    let provider = DataProvider::new(None, Arc::new(triedb), None);
-    let Ok(answer) = futures::executor::block_on(monad_eth_feeHistory(&provider, params)) else {
-        return;
-    };
-    let history = answer.0;
-    if input.block_count == 0 {
-        return;
-    }
-
+    // Requests the handler must answer: a block count it accepts, a newest
+    // block that exists, and percentiles that are few, in range and sorted.
     let newest = match input.newest {
         Newest::Number(n) => n,
         Newest::BehindLatest(n) => latest.saturating_sub(n as u64),
         _ => latest,
     };
+    let valid = (1..=1024).contains(&input.block_count)
+        && newest <= latest
+        && percentiles.as_ref().is_none_or(|p| {
+            p.len() <= 100
+                && p.iter().all(|x| (0.0..=100.0).contains(x))
+                && p.windows(2).all(|w| w[0] <= w[1])
+        });
+
+    let params = serde_json::from_value::<MonadEthHistoryParams>(request);
+    assert!(
+        params.is_ok() || !valid,
+        "valid request rejected: {params:?}"
+    );
+    let Ok(params) = params else {
+        return;
+    };
+
+    // Only requests that reach the blocks need signed transactions.
+    let mut triedb = MockTriedb::default();
+    triedb.set_latest_block(latest);
+    let mut nonce = 0u64;
+    for (number, spec) in blocks.iter().enumerate() {
+        let mut block = Block::<TxEnvelope>::default();
+        let mut receipts = Vec::new();
+        let mut cumulative = 0u64;
+        for tx in spec.txs.iter().take(if valid { MAX_TXS } else { 0 }) {
+            block.body.transactions.push(sign(&SIGNER, tx, nonce));
+            nonce += 1;
+            cumulative += tx.gas_used as u64;
+            receipts.push(receipt(tx.kind, cumulative));
+        }
+        block.header.number = number as u64;
+        block.header.base_fee_per_gas = spec.base_fee;
+        block.header.gas_limit = spec.gas_limit;
+        block.header.gas_used = cumulative;
+        triedb.set_finalized_block(SeqNum(number as u64), block);
+        triedb.set_receipts(SeqNum(number as u64), receipts);
+    }
+
+    let provider = DataProvider::new(None, Arc::new(triedb), None);
+    let answer = futures::executor::block_on(monad_eth_feeHistory(&provider, params));
+    if !valid {
+        return;
+    }
+    let Ok(answer) = answer else {
+        panic!("valid request failed: {:?}", answer.err());
+    };
+    let history = answer.0;
     let oldest = newest.saturating_sub(input.block_count - 1);
     let n = (newest - oldest + 1) as usize;
     assert_eq!(history.oldest_block, oldest, "oldest block");
@@ -291,6 +317,15 @@ fuzz_target!(|input: Input| {
             "gas-used ratio of block {number}: {got} vs {ratio}"
         );
     }
+
+    // The next block's base fee: the block after `newest` when one exists
+    // and was named by number, otherwise the newest block's own.
+    let base_fee_of = |number: u64| blocks[number as usize].base_fee.unwrap_or_default() as u128;
+    let next = match input.newest {
+        Newest::Number(_) | Newest::BehindLatest(_) if newest < latest => base_fee_of(newest + 1),
+        _ => base_fee_of(newest),
+    };
+    assert_eq!(history.base_fee_per_gas[n], next, "next block's base fee");
 
     let wants_rewards = percentiles.as_ref().is_some_and(|p| !p.is_empty());
     let rewards = history.reward.expect("reward is always present");
