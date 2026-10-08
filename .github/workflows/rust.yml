@@ -39,10 +39,19 @@ jobs:
     runs-on: self-hosted
 
     steps:
+      - name: Generate GitHub App token
+        id: app-token
+        if: ${{ vars.CI_APP_ID != '' && github.event_name != 'pull_request' }}
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
+          token: ${{ steps.app-token.outputs.token || github.token }}
 
       - name: Install dependencies
         run: |
