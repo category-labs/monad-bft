@@ -16,6 +16,14 @@
 use std::path::PathBuf;
 
 use clap::Parser;
+use monad_metrics::{MetricsConfig, MetricsDefaults};
+
+#[derive(Clone, Debug)]
+pub struct RpcMetrics;
+
+impl MetricsDefaults for RpcMetrics {
+    const LISTEN_ADDR: &'static str = "0.0.0.0:9144";
+}
 
 #[derive(Debug, Parser)]
 #[command(name = "monad-rpc", about, long_about = None, version = monad_version::version!())]
@@ -81,9 +89,8 @@ pub struct Cli {
     #[arg(long, default_value_t = 25_000_000)]
     pub max_response_size: u32,
 
-    /// Otel endpoint to collect metrics data
-    #[arg(long)]
-    pub otel_endpoint: Option<String>,
+    #[command(flatten)]
+    pub metrics: MetricsConfig<RpcMetrics>,
 
     /// HTTP endpoint to collect RPC comparison data
     #[arg(long)]

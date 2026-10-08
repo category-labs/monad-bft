@@ -79,13 +79,17 @@ async fn main() -> Result<()> {
 }
 
 async fn run_indexer(args: cli::Cli) -> Result<()> {
-    let metrics = Metrics::new(
-        args.otel_endpoint,
-        "monad-indexer",
-        args.otel_replica_name_override
-            .unwrap_or_else(|| args.archive_sink.replica_name()),
-        Duration::from_secs(15),
-    )?;
+    let replica_name = args
+        .otel_replica_name_override
+        .clone()
+        .unwrap_or_else(|| args.archive_sink.replica_name());
+    let interval = Duration::from_secs(15);
+    let (provider, metrics_server) =
+        args.metrics
+            .init(format!("{replica_name}-monad-indexer"), interval, true)?;
+    monad_metrics::spawn_metrics_server(metrics_server);
+    let metrics = Metrics::new(provider, interval);
+
     set_source_and_sink_metrics(&args.archive_sink, &args.block_data_source, &metrics);
 
     let block_data_reader = args.block_data_source.build(&metrics).await?;

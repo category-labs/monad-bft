@@ -30,6 +30,7 @@ monad-eth-types = { workspace = true }
 monad-ethcall = { workspace = true }
 monad-event-ring = { workspace = true }
 monad-exec-events = { workspace = true, features = ["alloy"] }
+monad-metrics = { workspace = true }
 monad-node-config = { workspace = true, features = ["crypto"] }
 monad-pprof = { workspace = true }
 monad-rpc-docs = { workspace = true }
@@ -63,7 +64,6 @@ hex = { workspace = true }
 inotify = { workspace = true }
 itertools = { workspace = true }
 opentelemetry = { workspace = true, features = ["metrics", "trace"] }
-opentelemetry-otlp = { workspace = true, features = ["metrics", "grpc-tonic"] }
 opentelemetry_sdk = { workspace = true, features = ["rt-tokio", "trace"] }
 pin-project = { workspace = true }
 rand = { workspace = true }

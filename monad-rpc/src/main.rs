@@ -298,13 +298,14 @@ async fn main() -> std::io::Result<()> {
         )
     });
 
-    let with_metrics = args.otel_endpoint.map(|otel_endpoint| {
-        Metrics::new_with_otel_endpoint(
-            otel_endpoint,
-            node_config.node_name.clone(),
-            std::time::Duration::from_secs(5),
-        )
-    });
+    let (provider, metrics_server) =
+        args.metrics
+            .init(node_config.node_name.clone(), Duration::from_secs(5), false)?;
+    monad_metrics::spawn_metrics_server(metrics_server);
+    let with_metrics = args
+        .metrics
+        .enabled()
+        .then(|| Metrics::new_with_otel_provider(provider));
 
     // Configure event ring, websocket server and event cache.
     let event_server_client = if let Some(exec_event_path) = args.exec_event_path {

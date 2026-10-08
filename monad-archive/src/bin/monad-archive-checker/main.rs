@@ -58,21 +58,18 @@ async fn main() -> Result<()> {
             .build_global()?;
     }
 
-    // Initialize metrics
-    info!(
-        "Initializing metrics with endpoint: {:?}",
-        args.otel_endpoint
-    );
     let replica_name = args
         .otel_replica_name_override
         .clone()
         .unwrap_or_else(|| args.bucket.clone());
-    let metrics = Metrics::new(
-        args.otel_endpoint,
-        "monad_archive_checker",
-        replica_name,
-        Duration::from_secs(15),
+    let interval = Duration::from_secs(15);
+    let (provider, metrics_server) = args.metrics.init(
+        format!("{replica_name}-monad_archive_checker"),
+        interval,
+        true,
     )?;
+    monad_metrics::spawn_metrics_server(metrics_server);
+    let metrics = Metrics::new(provider, interval);
 
     // Get AWS configuration
     info!("Configuring AWS with region: {:?}", args.region);

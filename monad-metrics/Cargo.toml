@@ -1,0 +1,16 @@
+[package]
+name = "monad-metrics"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+actix-web = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+opentelemetry = { workspace = true }
+opentelemetry-otlp = { workspace = true, features = ["metrics", "grpc-tonic"] }
+opentelemetry-prometheus = { workspace = true }
+opentelemetry_sdk = { workspace = true, features = ["rt-tokio"] }
+prometheus = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+tokio = { workspace = true, features = ["rt"] }
+tracing = { workspace = true }

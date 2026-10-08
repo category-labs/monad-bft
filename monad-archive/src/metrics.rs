@@ -16,13 +16,11 @@
 use std::{sync::Arc, time::Duration};
 
 use dashmap::DashMap;
-use eyre::Result;
 use opentelemetry::{
     metrics::{Counter, Gauge, Histogram, Meter, MeterProvider},
     KeyValue,
 };
-use opentelemetry_otlp::WithExportConfig;
-use opentelemetry_sdk::metrics::{SdkMeterProvider, Temporality};
+use opentelemetry_sdk::metrics::SdkMeterProvider;
 use tracing::trace;
 
 #[derive(Eq, Hash, PartialEq, Clone, Copy)]
@@ -234,18 +232,7 @@ pub struct MetricsInner {
 }
 
 impl Metrics {
-    pub fn new(
-        otel_endpoint: Option<impl AsRef<str>>,
-        service_name: impl Into<String>,
-        replica_name: impl Into<String>,
-        interval: Duration,
-    ) -> Result<Metrics> {
-        let provider = build_otel_meter_provider(
-            otel_endpoint,
-            service_name.into(),
-            replica_name.into(),
-            interval,
-        )?;
+    pub fn new(provider: SdkMeterProvider, interval: Duration) -> Metrics {
         let meter = provider.meter("opentelemetry");
 
         let metrics = Metrics(Some(Arc::new(MetricsInner {
@@ -279,7 +266,7 @@ impl Metrics {
             });
         }
 
-        Ok(metrics)
+        metrics
     }
 
     pub fn none() -> Metrics {
@@ -353,38 +340,4 @@ impl Metrics {
     pub fn gauge(&self, metric: MetricNames, value: u64) {
         self.gauge_with_attrs(metric, value, &[]);
     }
-}
-
-fn build_otel_meter_provider(
-    otel_endpoint: Option<impl AsRef<str>>,
-    service_name: String,
-    replica_name: String,
-    interval: Duration,
-) -> Result<opentelemetry_sdk::metrics::SdkMeterProvider> {
-    let mut provider_builder = opentelemetry_sdk::metrics::SdkMeterProvider::builder()
-        .with_resource(
-            opentelemetry_sdk::Resource::builder_empty()
-                .with_attributes(vec![opentelemetry::KeyValue::new(
-                    opentelemetry_semantic_conventions::resource::SERVICE_NAME,
-                    format!("{replica_name}-{service_name}"),
-                )])
-                .build(),
-        );
-
-    if let Some(otel_endpoint) = otel_endpoint {
-        let exporter = opentelemetry_otlp::MetricExporter::builder()
-            .with_tonic()
-            .with_temporality(Temporality::default())
-            .with_timeout(interval * 2)
-            .with_endpoint(otel_endpoint.as_ref())
-            .build()?;
-
-        let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(exporter)
-            .with_interval(interval / 2)
-            .build();
-
-        provider_builder = provider_builder.with_reader(reader)
-    }
-
-    Ok(provider_builder.build())
 }

@@ -48,14 +48,16 @@ async fn main() -> Result<()> {
     };
     info!(?args, "Cli Arguments: ");
 
-    let metrics = Metrics::new(
-        args.otel_endpoint.clone(),
-        "monad-archiver",
-        args.otel_replica_name_override
-            .clone()
-            .unwrap_or_else(|| args.archive_sink.replica_name()),
-        Duration::from_secs(15),
-    )?;
+    let replica_name = args
+        .otel_replica_name_override
+        .clone()
+        .unwrap_or_else(|| args.archive_sink.replica_name());
+    let interval = Duration::from_secs(15);
+    let (provider, metrics_server) =
+        args.metrics
+            .init(format!("{replica_name}-monad-archiver"), interval, true)?;
+    monad_metrics::spawn_metrics_server(metrics_server);
+    let metrics = Metrics::new(provider, interval);
 
     set_source_and_sink_metrics(&args.archive_sink, &args.block_data_source, &metrics);
 

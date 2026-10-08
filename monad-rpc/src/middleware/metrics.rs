@@ -13,8 +13,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::time::Duration;
-
 use actix_web::{
     body::MessageBody,
     dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform},
@@ -24,7 +22,6 @@ use opentelemetry::{
     metrics::{Histogram, MeterProvider, UpDownCounter},
     KeyValue,
 };
-use opentelemetry_otlp::{MetricExporter, WithExportConfig};
 use opentelemetry_sdk::metrics::SdkMeterProvider;
 
 pub struct MetricsMiddleware<S> {
@@ -121,37 +118,6 @@ pub struct Metrics {
 }
 
 impl Metrics {
-    pub fn new_with_otel_endpoint(
-        otel_endpoint: String,
-        service_name: String,
-        interval: Duration,
-    ) -> Self {
-        let exporter = MetricExporter::builder()
-            .with_tonic()
-            .with_endpoint(otel_endpoint)
-            .with_timeout(interval * 2)
-            .build()
-            .unwrap();
-
-        let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(exporter)
-            .with_interval(interval / 2)
-            .build();
-
-        let provider = opentelemetry_sdk::metrics::SdkMeterProvider::builder()
-            .with_reader(reader)
-            .with_resource(
-                opentelemetry_sdk::Resource::builder_empty()
-                    .with_attributes(vec![opentelemetry::KeyValue::new(
-                        "service.name".to_string(),
-                        service_name,
-                    )])
-                    .build(),
-            )
-            .build();
-
-        Self::new_with_otel_provider(provider)
-    }
-
     pub fn new_with_otel_provider(provider: SdkMeterProvider) -> Self {
         const LOW_US_TO_S: &[f64] = &[
             0.000_001, 0.000_002, 0.000_005, 0.000_01, 0.000_02, 0.000_05, 0.000_1, 0.000_2,
