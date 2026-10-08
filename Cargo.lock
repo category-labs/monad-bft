@@ -5709,6 +5709,7 @@ dependencies = [
  "derive_more",
  "hex",
  "itertools 0.13.0",
+ "libc",
  "proptest",
  "rand 0.8.5",
  "serde",

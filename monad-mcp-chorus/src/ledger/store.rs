@@ -15,7 +15,9 @@
 
 use std::{
     collections::BTreeSet,
-    fs, io,
+    fs,
+    io::{self, Read},
+    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -111,6 +113,23 @@ fn io_err<'a>(op: &'static str, path: &'a Path) -> impl FnOnce(io::Error) -> Led
 // flushes cannot keep up with the slot rate on disks without power-loss protection.
 fn write_file(path: &Path, data: &[u8]) -> Result<(), LedgerError> {
     fs::write(path, data).map_err(io_err("write", path))
+}
+
+// an atime update from a reader's cgroup makes the kernel switch the inode's writeback
+// owner away from the node; over a full ledger that keeps a kworker busy for hours.
+fn read_noatime(path: &Path) -> io::Result<Vec<u8>> {
+    let opened = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOATIME)
+        .open(path);
+    // O_NOATIME is refused for files the caller does not own.
+    let mut file = match opened {
+        Err(e) if e.raw_os_error() == Some(libc::EPERM) => fs::File::open(path)?,
+        opened => opened?,
+    };
+    let mut data = Vec::new();
+    file.read_to_end(&mut data)?;
+    Ok(data)
 }
 
 type DecodedLane = Option<Result<Vec<Tx>, TxError>>;
@@ -321,7 +340,7 @@ impl LedgerReader {
     fn read_block_file(&self, slot: u64, name: &str) -> Result<Option<Vec<u8>>, LedgerError> {
         let dir = self.block_dir(slot);
         let path = dir.join(name);
-        match fs::read(&path) {
+        match read_noatime(&path) {
             Ok(data) => Ok(Some(data)),
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 if dir.is_dir() {
@@ -628,6 +647,23 @@ mod tests {
         }
         assert!(!is_temp_dir_name(".foo.tmp"));
         assert!(!is_temp_dir_name("000000012345.tmp"));
+    }
+
+    #[test]
+    fn reads_leave_atime_alone() {
+        let (_dir, writer, reader) = setup();
+        writer.write(&block(7)).unwrap();
+        let path = reader.block_dir(7).join(META_FILE);
+        // an atime older than the mtime is one relatime would refresh on a plain read
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_accessed(std::time::UNIX_EPOCH))
+            .unwrap();
+        reader.read_meta(7).unwrap();
+        let accessed = fs::metadata(&path).unwrap().accessed().unwrap();
+        assert_eq!(accessed, std::time::UNIX_EPOCH);
     }
 
     #[test]
