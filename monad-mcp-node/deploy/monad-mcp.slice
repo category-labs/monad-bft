@@ -1,0 +1,4 @@
+[Unit]
+Description=Monad MCP node, rpc, explorer and pruner (%H)
+# members set MemoryAccounting=no so the ledger's memcg is this slice, which outlives node restarts;
+# a per-unit memcg dies with each stop and the kernel re-homes every ledger inode (inode_switch_wbs)

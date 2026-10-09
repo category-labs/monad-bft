@@ -33,7 +33,7 @@ else
     echo "no $latency_file: latency.toml not shipped"
 fi
 cp "$deploy_dir/$unit.service" "$deploy_dir/$rpc_unit.service" "$deploy_dir/$cruft_unit".{service,timer} \
-    "$stage/$systemd_dir/"
+    "$deploy_dir/monad-mcp.slice" "$stage/$systemd_dir/"
 chmod -R u=rwX,go=rX "$stage"
 chmod 755 "$stage/$remote_rel"/{bin/"$binary",bin/"$rpc_binary",cruft.sh,run.sh}
 

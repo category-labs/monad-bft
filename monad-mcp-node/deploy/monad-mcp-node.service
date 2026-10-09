@@ -3,6 +3,8 @@ Description=Monad MCP node (%H)
 After=network-online.target
 
 [Service]
+Slice=monad-mcp.slice
+MemoryAccounting=no
 ExecStart=%h/monad-mcp/bin/current %h/monad-mcp/config/node.toml
 Environment=RUST_LOG=info,monad_mcp_chorus=debug
 KillSignal=SIGINT

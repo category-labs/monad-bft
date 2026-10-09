@@ -3,6 +3,8 @@ Description=Monad MCP block explorer (%H)
 After=monad-mcp-node.service monad-mcp-rpc.service
 
 [Service]
+Slice=monad-mcp.slice
+MemoryAccounting=no
 # reads the node's ledger; http on 127.0.0.1:8081, POST /api/tx forwarded to the rpc on 8080
 EnvironmentFile=%h/monad-mcp/config/explorer.env
 ExecStart=%h/monad-mcp/bin/explorer-current $EXPLORER_ARGS

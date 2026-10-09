@@ -55,6 +55,7 @@ monad-bft" below. Until then, run a reduced `hosts.txt` over the idle hosts (`am
 | `cruft.sh` | ledger pruner, runs on the host from `monad-mcp-cruft.timer` |
 | `monad-mcp-node.service`, `monad-mcp-rpc.service`, `monad-mcp-cruft.{service,timer}`, `cruft.env`, `run.sh` | pushed to the hosts |
 | `monad-mcp-explorer.service` | pushed only to hosts with `config/<host>/explorer.env` |
+| `monad-mcp.slice` | pushed to the hosts; every unit above runs in it with `MemoryAccounting=no`, so the ledger's memcg survives node restarts (a per-unit one dies on stop and leaves the kernel re-homing ~15M ledger inodes for hours) |
 
 `dist/` is generated and gitignored. `cruft.sh` and `run.sh` run *on the validator*, so they
 are the two scripts here that do not source `lib.sh`.
