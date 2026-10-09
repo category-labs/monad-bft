@@ -31,7 +31,7 @@ pub const MAX_CONCURRENT_MESSAGES_PER_IDENTITY: usize = 100;
 /// Default in-flight messages reserved for each dedicated identity.
 pub const MAX_CONCURRENT_MESSAGES_PER_DEDICATED_IDENTITY: usize = 10;
 
-const DEFAULT_MESSAGE_TIMEOUT: Duration = Duration::from_millis(100);
+const DEFAULT_MESSAGE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Content identity, stable across retransmissions with the same fragment layout.
 pub type MessageId = [u8; 32];

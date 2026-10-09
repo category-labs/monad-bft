@@ -23,10 +23,11 @@ use bytes::{BufMut, Bytes, BytesMut};
 use monad_leanudp::{
     metrics::{
         COUNTER_LEANUDP_DECODE_EVICTED_RANDOM, COUNTER_LEANUDP_DECODE_EVICTED_TIMEOUT,
-        COUNTER_LEANUDP_DECODE_FRAGMENTS_DEDICATED, COUNTER_LEANUDP_DECODE_FRAGMENTS_PRIORITY,
-        COUNTER_LEANUDP_DECODE_FRAGMENTS_REGULAR, COUNTER_LEANUDP_ERROR_INVALID_HEADER,
-        COUNTER_LEANUDP_ERROR_UNSUPPORTED_VERSION, GAUGE_LEANUDP_POOL_DEDICATED_MESSAGES,
-        GAUGE_LEANUDP_POOL_PRIORITY_MESSAGES, GAUGE_LEANUDP_POOL_REGULAR_MESSAGES,
+        COUNTER_LEANUDP_DECODE_FRAGMENTS_DEDICATED, COUNTER_LEANUDP_DECODE_FRAGMENTS_DUPLICATE,
+        COUNTER_LEANUDP_DECODE_FRAGMENTS_PRIORITY, COUNTER_LEANUDP_DECODE_FRAGMENTS_REGULAR,
+        COUNTER_LEANUDP_ERROR_INVALID_HEADER, COUNTER_LEANUDP_ERROR_UNSUPPORTED_VERSION,
+        GAUGE_LEANUDP_POOL_DEDICATED_MESSAGES, GAUGE_LEANUDP_POOL_PRIORITY_MESSAGES,
+        GAUGE_LEANUDP_POOL_REGULAR_MESSAGES,
     },
     Clock, Config, DecodeError, DecodeOutcome, Decoder, EncodeError, Encoder, FragmentPolicy,
     IdentityScore, LEANUDP_HEADER_SIZE,
@@ -199,10 +200,12 @@ fn test_roundtrip_single_fragment_message() {
     let (mut encoder, mut decoder, _clock) = build_regular(Config::default());
     let packets = fragment_packets(&mut encoder, Bytes::from_static(b"hello"));
     assert_eq!(packets.len(), 1);
-    assert_eq!(
-        decoder.decode(42, packets[0].clone()),
-        Ok(DecodeOutcome::Complete(Bytes::from_static(b"hello")))
-    );
+    for _ in 0..4 {
+        assert_eq!(
+            decoder.decode(42, packets[0].clone()),
+            Ok(DecodeOutcome::Complete(Bytes::from_static(b"hello")))
+        );
+    }
 }
 
 #[test]
@@ -260,15 +263,19 @@ fn test_reassembles_multi_fragment_out_of_order() {
 }
 
 #[test]
-fn test_duplicate_fragment_is_rejected() {
+fn test_duplicate_fragment_is_ignored() {
     let (mut encoder, mut decoder, _clock) = build_regular(Config::default());
     let first = first_packet(&mut encoder, Bytes::from(vec![1u8; 3000]));
 
     assert_pending!(decoder, 1, first.clone());
-    assert!(matches!(
-        decoder.decode(1, first),
-        Err(DecodeError::DuplicateFragment { .. })
-    ));
+    assert_pending!(decoder, 1, first);
+    assert_eq!(
+        decoder
+            .metrics()
+            .gauge(COUNTER_LEANUDP_DECODE_FRAGMENTS_DUPLICATE)
+            .get(),
+        1
+    );
 }
 
 #[test]
@@ -784,7 +791,7 @@ fn test_accepts_large_inflight_data_bounded_by_message_count_only() {
 
 #[test]
 fn test_content_hash_header_and_retries_are_stable() {
-    let (mut encoder, _decoder, _clock) = build_regular(Config::default());
+    let (mut encoder, mut decoder, _clock) = build_regular(Config::default());
     assert_eq!(LEANUDP_HEADER_SIZE, 36);
     let payload = Bytes::from(vec![42; 256 * 1024]);
     let first = fragment_packets(&mut encoder, payload.clone());
@@ -793,10 +800,29 @@ fn test_content_hash_header_and_retries_are_stable() {
     assert_eq!(first, retry);
     assert_eq!(&first[0][1..33], blake3::hash(&payload).as_bytes());
     assert_eq!(&first[0][33..36], &[0, 0, 0]);
+    for (index, packet) in first.iter().enumerate() {
+        if index != 10 && index != 20 {
+            assert_pending!(decoder, 1, packet.clone());
+        }
+    }
+    assert_pending!(decoder, 1, retry[0].clone());
+    assert_pending!(decoder, 1, retry[10].clone());
+    assert_eq!(
+        decoder.decode(1, retry[20].clone()),
+        Ok(DecodeOutcome::Complete(payload.clone()))
+    );
+    // Successful reassembly removes the pending entry; another full copy is accepted.
+    for packet in retry.iter().take(retry.len() - 1) {
+        assert_pending!(decoder, 1, packet.clone());
+    }
+    assert_eq!(
+        decoder.decode(1, retry.last().unwrap().clone()),
+        Ok(DecodeOutcome::Complete(payload))
+    );
 }
 
 #[test]
-fn test_reassembled_message_hash_is_verified() {
+fn test_hash_mismatch_and_conflicting_duplicate_allow_retry() {
     let (mut encoder, mut decoder, _clock) = build_regular(Config::default());
     let packet = first_packet(&mut encoder, Bytes::from_static(b"hash me"));
     let mut corrupt = packet.to_vec();
@@ -804,5 +830,46 @@ fn test_reassembled_message_hash_is_verified() {
     assert_eq!(
         decoder.decode(1, Bytes::from(corrupt)),
         Err(DecodeError::MessageHashMismatch)
+    );
+    let payload = Bytes::from(vec![5; 3000]);
+    let packets = fragment_packets(&mut encoder, payload.clone());
+    assert_pending!(decoder, 1, packets[0].clone());
+    let mut corrupt = packets[0].to_vec();
+    corrupt[LEANUDP_HEADER_SIZE] ^= 1;
+    assert!(matches!(
+        decoder.decode(1, Bytes::from(corrupt)),
+        Err(DecodeError::ConflictingFragment { .. })
+    ));
+    for packet in packets.iter().take(packets.len() - 1) {
+        assert_pending!(decoder, 1, packet.clone());
+    }
+    assert_eq!(
+        decoder.decode(1, packets.last().unwrap().clone()),
+        Ok(DecodeOutcome::Complete(payload))
+    );
+}
+
+#[test]
+fn test_retry_duplicates_do_not_extend_incomplete_deadline() {
+    let config = Config::default();
+    let payload = two_fragment_payload(config.max_fragment_payload, 9);
+    let (mut encoder, mut decoder, clock) = build_regular(config);
+    let packets = fragment_packets(&mut encoder, payload.clone());
+    assert_pending!(decoder, 1, packets[0].clone());
+    clock.advance_ms(1_900);
+    assert_pending!(decoder, 1, packets[0].clone());
+    clock.advance_ms(100);
+    assert_pending!(decoder, 1, packets[1].clone());
+    assert_eq!(
+        decoder
+            .metrics()
+            .gauge(COUNTER_LEANUDP_DECODE_EVICTED_TIMEOUT)
+            .get(),
+        1
+    );
+    // Timed-out hashes may restart and complete on a later whole-message retry.
+    assert_eq!(
+        decoder.decode(1, packets[0].clone()),
+        Ok(DecodeOutcome::Complete(payload))
     );
 }

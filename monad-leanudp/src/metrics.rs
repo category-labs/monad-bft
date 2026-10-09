@@ -16,6 +16,10 @@
 use monad_executor::ExecutorMetrics;
 
 monad_executor::metric_consts! {
+    pub COUNTER_LEANUDP_DECODE_FRAGMENTS_DUPLICATE {
+        name: "monad.leanudp.decode.fragments_duplicate",
+        help: "Repeated fragments ignored while reassembling a message",
+    }
     pub COUNTER_LEANUDP_ERROR_MESSAGE_HASH_MISMATCH {
         name: "monad.leanudp.error.message_hash_mismatch",
         help: "Reassembled messages rejected because their content hash differs from their ID",
@@ -92,9 +96,9 @@ monad_executor::metric_consts! {
         name: "monad.leanudp.error.identity_limit",
         help: "Total fragments rejected because the sender exceeded its in-flight message limit",
     }
-    pub COUNTER_LEANUDP_ERROR_DUPLICATE_FRAGMENT {
-        name: "monad.leanudp.error.duplicate_fragment",
-        help: "Total fragments rejected because the sequence number was already present",
+    pub COUNTER_LEANUDP_ERROR_CONFLICTING_FRAGMENT {
+        name: "monad.leanudp.error.conflicting_fragment",
+        help: "Repeated sequence numbers rejected because their contents or END flags differ",
     }
     pub COUNTER_LEANUDP_ERROR_TOO_MANY_FRAGMENTS {
         name: "monad.leanudp.error.too_many_fragments",
@@ -141,6 +145,7 @@ pub fn init_encoder_metrics() -> ExecutorMetrics {
 
 pub fn init_decoder_metrics() -> ExecutorMetrics {
     ExecutorMetrics::with_metric_defs(&[
+        COUNTER_LEANUDP_DECODE_FRAGMENTS_DUPLICATE,
         COUNTER_LEANUDP_ERROR_MESSAGE_HASH_MISMATCH,
         GAUGE_LEANUDP_POOL_PRIORITY_MESSAGES,
         GAUGE_LEANUDP_POOL_REGULAR_MESSAGES,
@@ -160,7 +165,7 @@ pub fn init_decoder_metrics() -> ExecutorMetrics {
         COUNTER_LEANUDP_ERROR_INVALID_HEADER,
         COUNTER_LEANUDP_ERROR_UNSUPPORTED_VERSION,
         COUNTER_LEANUDP_ERROR_IDENTITY_LIMIT,
-        COUNTER_LEANUDP_ERROR_DUPLICATE_FRAGMENT,
+        COUNTER_LEANUDP_ERROR_CONFLICTING_FRAGMENT,
         COUNTER_LEANUDP_ERROR_TOO_MANY_FRAGMENTS,
         COUNTER_LEANUDP_ERROR_CONFLICTING_END,
         COUNTER_LEANUDP_ERROR_MESSAGE_TOO_LARGE,

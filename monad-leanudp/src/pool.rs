@@ -193,6 +193,7 @@ where
     rng: R,
     identity_usage: IdentityUsage<I>,
     messages_gauge: Gauge,
+    duplicate_fragments: Gauge,
 }
 
 impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
@@ -201,6 +202,7 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
         rng: R,
         identity_usage: IdentityUsage<I>,
         messages_gauge: Gauge,
+        duplicate_fragments: Gauge,
     ) -> Self {
         Self {
             messages: IndexMap::new(),
@@ -210,6 +212,7 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
             rng,
             identity_usage,
             messages_gauge,
+            duplicate_fragments,
         }
     }
 
@@ -360,18 +363,22 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
                 }
             );
 
-            // NOTE(dshulyak): duplicate fragments should only happen when a sender is buggy
-            // or malicious and resends the same chunk.
-            ensure!(
-                !state.fragments.contains_key(&seq_num),
-                DecodeError::DuplicateFragment { msg_id, seq_num }
-            );
+            if let Some(existing) = state.fragments.get(&seq_num) {
+                let is_end = matches!(fragment_type, FragmentType::End | FragmentType::Complete);
+                ensure!(
+                    existing == &data && is_end == (state.total_frags == Some(seq_num + 1)),
+                    || { self.remove_message(&key); };
+                    DecodeError::ConflictingFragment { msg_id, seq_num }
+                );
+                self.duplicate_fragments.inc();
+                return Ok(DecodeOutcome::Pending);
+            }
 
             if matches!(fragment_type, FragmentType::End | FragmentType::Complete) {
                 let new_total = seq_num + 1;
                 let existing_total_frags = state.total_frags;
                 ensure!(
-                    existing_total_frags.is_none(),
+                    existing_total_frags.is_none() && state.fragments.keys().all(|seq| *seq < new_total),
                     || {
                         self.remove_message(&key);
                     };
@@ -471,6 +478,9 @@ mod tests {
             IdentityUsage::new(&config),
             init_decoder_metrics()
                 .gauge(GAUGE_LEANUDP_POOL_REGULAR_MESSAGES)
+                .clone(),
+            init_decoder_metrics()
+                .gauge(COUNTER_LEANUDP_DECODE_FRAGMENTS_DUPLICATE)
                 .clone(),
         );
         let identity = 7u64;

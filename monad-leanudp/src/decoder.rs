@@ -80,8 +80,8 @@ pub enum DecodeError {
     #[error("identity at message limit ({max})")]
     IdentityLimitExceeded { max: usize },
 
-    #[error("duplicate fragment msg_id={msg_id:?} seq={seq_num}")]
-    DuplicateFragment { msg_id: MessageId, seq_num: u16 },
+    #[error("conflicting fragment msg_id={msg_id:?} seq={seq_num}")]
+    ConflictingFragment { msg_id: MessageId, seq_num: u16 },
 
     #[error("reassembled message does not match its content hash")]
     MessageHashMismatch,
@@ -107,7 +107,7 @@ impl DecodeError {
             }
             DecodeError::UnsupportedVersion { .. } => COUNTER_LEANUDP_ERROR_UNSUPPORTED_VERSION,
             DecodeError::IdentityLimitExceeded { .. } => COUNTER_LEANUDP_ERROR_IDENTITY_LIMIT,
-            DecodeError::DuplicateFragment { .. } => COUNTER_LEANUDP_ERROR_DUPLICATE_FRAGMENT,
+            DecodeError::ConflictingFragment { .. } => COUNTER_LEANUDP_ERROR_CONFLICTING_FRAGMENT,
             DecodeError::MessageHashMismatch => COUNTER_LEANUDP_ERROR_MESSAGE_HASH_MISMATCH,
             DecodeError::TooManyFragments { .. } => COUNTER_LEANUDP_ERROR_TOO_MANY_FRAGMENTS,
             DecodeError::ConflictingEndMarker { .. } => COUNTER_LEANUDP_ERROR_CONFLICTING_END,
@@ -251,12 +251,18 @@ where
                 priority_pool_rng,
                 IdentityUsage::new(config),
                 priority_messages_gauge,
+                metrics
+                    .gauge(COUNTER_LEANUDP_DECODE_FRAGMENTS_DUPLICATE)
+                    .clone(),
             ),
             regular_pool: MessagePool::new(
                 PoolConfig::from_config(config, config.max_regular_messages),
                 regular_pool_rng,
                 IdentityUsage::new(config),
                 regular_messages_gauge,
+                metrics
+                    .gauge(COUNTER_LEANUDP_DECODE_FRAGMENTS_DUPLICATE)
+                    .clone(),
             ),
             identity_score,
             clock,
@@ -462,6 +468,9 @@ where
                     rng,
                     IdentityUsage::with_limit(self.max_messages_per_dedicated_identity),
                     dedicated_messages_gauge.clone(),
+                    self.metrics
+                        .gauge(COUNTER_LEANUDP_DECODE_FRAGMENTS_DUPLICATE)
+                        .clone(),
                 ),
             );
         }

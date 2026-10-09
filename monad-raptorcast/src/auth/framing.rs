@@ -297,4 +297,39 @@ mod tests {
                 > 2
         );
     }
+
+    #[test]
+    fn whole_message_retry_fills_missing_fragments_and_allows_redelivery() {
+        let mut framer = LeanUdpFramer::new(NopScore::<u64>::new(), Config::default());
+        let payload = Bytes::from(vec![17; 256 * 1024]);
+        let first: Vec<_> = <LeanUdpFramer<u64, NopScore<u64>> as AuthPacketFramer<u64>>::frame(
+            &mut framer,
+            payload.clone(),
+        )
+        .unwrap()
+        .collect();
+        let retry: Vec<_> = <LeanUdpFramer<u64, NopScore<u64>> as AuthPacketFramer<u64>>::frame(
+            &mut framer,
+            payload.clone(),
+        )
+        .unwrap()
+        .collect();
+        assert_eq!(first, retry);
+        for (index, packet) in first.into_iter().enumerate() {
+            if index != 10 {
+                assert_eq!(framer.deframe(1u64, packet).unwrap(), None);
+            }
+        }
+        assert_eq!(
+            framer.deframe(1u64, retry[10].clone()).unwrap(),
+            Some(payload.clone())
+        );
+        for packet in retry.iter().take(retry.len() - 1) {
+            assert_eq!(framer.deframe(1u64, packet.clone()).unwrap(), None);
+        }
+        assert_eq!(
+            framer.deframe(1u64, retry.last().unwrap().clone()).unwrap(),
+            Some(payload)
+        );
+    }
 }
