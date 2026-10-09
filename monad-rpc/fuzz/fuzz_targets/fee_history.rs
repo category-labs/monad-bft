@@ -161,9 +161,9 @@ fn tip(spec: &TxSpec, base_fee: u64) -> u128 {
     }
 }
 
-/// One block's rewards as the handler computes them: transactions sorted by
-/// tip, and per percentile the tip of the transaction just past that share
-/// of the block's gas (geth reports the one that reaches it).
+/// One block's rewards by geth's rule: transactions sorted by tip, and per
+/// percentile the tip of the transaction whose cumulative gas reaches that
+/// share of the block's gas.
 fn expected_rewards(spec: &BlockSpec, percentiles: &[f64]) -> Vec<u128> {
     let base_fee = spec.base_fee.unwrap_or_default();
     let mut txs: Vec<(u64, u128)> = spec
@@ -178,16 +178,16 @@ fn expected_rewards(spec: &BlockSpec, percentiles: &[f64]) -> Vec<u128> {
     txs.sort_by_key(|&(_, tip)| tip);
     let used: u64 = txs.iter().map(|&(gas, _)| gas).sum();
     let mut idx = 0;
-    let mut cumulative = 0u64;
+    let mut cumulative = txs[0].0;
     percentiles
         .iter()
         .map(|p| {
-            let threshold = (used as f64 * p / 100.0).round() as u64;
-            while cumulative < threshold && idx < txs.len() {
-                cumulative += txs[idx].0;
+            let threshold = (used as f64 * p / 100.0) as u64;
+            while cumulative < threshold && idx < txs.len() - 1 {
                 idx += 1;
+                cumulative += txs[idx].0;
             }
-            txs[idx.min(txs.len() - 1)].1
+            txs[idx].1
         })
         .collect()
 }
