@@ -29,7 +29,7 @@ use zerocopy::FromBytes;
 use crate::{
     metrics::*,
     pool::{EvictionKind, FragmentInput, IdentityUsage, MessagePool, MessageStatus, PoolConfig},
-    Config, FragmentPolicy, IdentityScore, PacketHeader, LEANUDP_HEADER_SIZE,
+    Config, FragmentPolicy, IdentityScore, MessageId, PacketHeader, LEANUDP_HEADER_SIZE,
     LEANUDP_PROTOCOL_VERSION,
 };
 
@@ -80,8 +80,11 @@ pub enum DecodeError {
     #[error("identity at message limit ({max})")]
     IdentityLimitExceeded { max: usize },
 
-    #[error("duplicate fragment msg_id={msg_id} seq={seq_num}")]
-    DuplicateFragment { msg_id: u16, seq_num: u16 },
+    #[error("duplicate fragment msg_id={msg_id:?} seq={seq_num}")]
+    DuplicateFragment { msg_id: MessageId, seq_num: u16 },
+
+    #[error("reassembled message does not match its content hash")]
+    MessageHashMismatch,
 
     #[error("too many fragments: {count} exceeds max {max}")]
     TooManyFragments { count: usize, max: usize },
@@ -105,6 +108,7 @@ impl DecodeError {
             DecodeError::UnsupportedVersion { .. } => COUNTER_LEANUDP_ERROR_UNSUPPORTED_VERSION,
             DecodeError::IdentityLimitExceeded { .. } => COUNTER_LEANUDP_ERROR_IDENTITY_LIMIT,
             DecodeError::DuplicateFragment { .. } => COUNTER_LEANUDP_ERROR_DUPLICATE_FRAGMENT,
+            DecodeError::MessageHashMismatch => COUNTER_LEANUDP_ERROR_MESSAGE_HASH_MISMATCH,
             DecodeError::TooManyFragments { .. } => COUNTER_LEANUDP_ERROR_TOO_MANY_FRAGMENTS,
             DecodeError::ConflictingEndMarker { .. } => COUNTER_LEANUDP_ERROR_CONFLICTING_END,
             DecodeError::MessageSizeExceeded { .. } => COUNTER_LEANUDP_ERROR_MESSAGE_TOO_LARGE,
@@ -260,7 +264,7 @@ where
         }
     }
 
-    fn select_pool(&mut self, identity: &I, key: &(I, u16), now: Instant) -> PoolSelection {
+    fn select_pool(&mut self, identity: &I, key: &(I, MessageId), now: Instant) -> PoolSelection {
         // an identity's pool classification may change while a message is being reassembled.
         // search all pools first so later fragments reach the pool containing the pending message.
         let is_dedicated = if let Some(pool) = self.dedicated_pools.get_mut(identity) {
@@ -324,7 +328,7 @@ where
         &mut self,
         now: Instant,
         selected_pool: PoolSelection,
-        key: &(I, u16),
+        key: &(I, MessageId),
         input: FragmentInput<I>,
     ) -> Result<DecodeOutcome, DecodeError> {
         let input_identity = input.identity.clone();

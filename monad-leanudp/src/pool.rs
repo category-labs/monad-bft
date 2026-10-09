@@ -27,8 +27,9 @@ use rand::{CryptoRng, Rng as _, RngCore};
 use crate::{
     decoder::{DecodeError, DecodeOutcome},
     encoder::MAX_FRAGMENTS,
+    message_id,
     metrics::*,
-    Config, FragmentType,
+    Config, FragmentType, MessageId,
 };
 
 macro_rules! ensure {
@@ -47,7 +48,7 @@ macro_rules! ensure {
 
 pub(crate) struct FragmentInput<I> {
     pub(crate) identity: I,
-    pub(crate) msg_id: u16,
+    pub(crate) msg_id: MessageId,
     pub(crate) seq_num: u16,
     pub(crate) fragment_type: FragmentType,
     pub(crate) payload: Bytes,
@@ -183,11 +184,11 @@ where
     I: Eq + Hash + Clone + Ord,
     R: CryptoRng + RngCore,
 {
-    messages: IndexMap<(I, u16), MessageState>,
+    messages: IndexMap<(I, MessageId), MessageState>,
     // Min-by-deadline eviction index.
-    eviction_index: BTreeSet<(Instant, (I, u16))>,
+    eviction_index: BTreeSet<(Instant, (I, MessageId))>,
     // Per-identity min-by-deadline eviction index.
-    eviction_index_by_identity: BTreeMap<I, BTreeSet<(Instant, u16)>>,
+    eviction_index_by_identity: BTreeMap<I, BTreeSet<(Instant, MessageId)>>,
     cfg: PoolConfig,
     rng: R,
     identity_usage: IdentityUsage<I>,
@@ -212,11 +213,11 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
         }
     }
 
-    pub(crate) fn has_message(&self, key: &(I, u16)) -> bool {
+    pub(crate) fn has_message(&self, key: &(I, MessageId)) -> bool {
         self.messages.contains_key(key)
     }
 
-    pub(crate) fn message_status(&mut self, key: &(I, u16), now: Instant) -> MessageStatus {
+    pub(crate) fn message_status(&mut self, key: &(I, MessageId), now: Instant) -> MessageStatus {
         let Some(deadline) = self.messages.get(key).map(|state| state.eviction_deadline) else {
             return MessageStatus::Missing;
         };
@@ -270,7 +271,7 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
         self.messages.len() >= self.cfg.max_messages
     }
 
-    pub(crate) fn insert_message(&mut self, key: (I, u16), now: Instant) {
+    pub(crate) fn insert_message(&mut self, key: (I, MessageId), now: Instant) {
         let deadline = now + self.cfg.message_timeout;
         self.messages
             .insert(key.clone(), MessageState::new(deadline));
@@ -285,7 +286,7 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
     pub(crate) fn decode_with_admission(
         &mut self,
         now: Instant,
-        key: &(I, u16),
+        key: &(I, MessageId),
         input: FragmentInput<I>,
     ) -> (Result<DecodeOutcome, DecodeError>, Option<EvictionKind>) {
         let mut evicted = None;
@@ -316,7 +317,7 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
 
     fn evict_candidate_if_stale(
         &mut self,
-        stale_candidate: Option<(Instant, (I, u16))>,
+        stale_candidate: Option<(Instant, (I, MessageId))>,
         now: Instant,
     ) -> bool {
         let Some((deadline, stale_key)) = stale_candidate else {
@@ -417,10 +418,15 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
         let state = self
             .remove_message(&key)
             .expect("message must exist when extracting");
-        Ok(DecodeOutcome::Complete(state.extract()))
+        let payload = state.extract();
+        ensure!(
+            message_id(&payload) == msg_id,
+            DecodeError::MessageHashMismatch
+        );
+        Ok(DecodeOutcome::Complete(payload))
     }
 
-    fn remove_message(&mut self, key: &(I, u16)) -> Option<MessageState> {
+    fn remove_message(&mut self, key: &(I, MessageId)) -> Option<MessageState> {
         let state = self.messages.swap_remove(key)?;
         self.messages_gauge.dec();
         let deadline = state.eviction_deadline;
@@ -468,7 +474,7 @@ mod tests {
                 .clone(),
         );
         let identity = 7u64;
-        let msg_id = 11u16;
+        let msg_id = message_id(b"done");
 
         let (result, evicted) = pool.decode_with_admission(
             Instant::now(),

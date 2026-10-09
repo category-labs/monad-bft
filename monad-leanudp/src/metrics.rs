@@ -16,6 +16,10 @@
 use monad_executor::ExecutorMetrics;
 
 monad_executor::metric_consts! {
+    pub COUNTER_LEANUDP_ERROR_MESSAGE_HASH_MISMATCH {
+        name: "monad.leanudp.error.message_hash_mismatch",
+        help: "Reassembled messages rejected because their content hash differs from their ID",
+    }
     pub GAUGE_LEANUDP_POOL_PRIORITY_MESSAGES {
         name: "monad.leanudp.pool.priority_messages",
         help: "Priority pool in-flight message count",
@@ -137,6 +141,7 @@ pub fn init_encoder_metrics() -> ExecutorMetrics {
 
 pub fn init_decoder_metrics() -> ExecutorMetrics {
     ExecutorMetrics::with_metric_defs(&[
+        COUNTER_LEANUDP_ERROR_MESSAGE_HASH_MISMATCH,
         GAUGE_LEANUDP_POOL_PRIORITY_MESSAGES,
         GAUGE_LEANUDP_POOL_REGULAR_MESSAGES,
         GAUGE_LEANUDP_POOL_DEDICATED_MESSAGES,

@@ -5,6 +5,7 @@ edition = "2021"
 description = "Lightweight UDP protocol with fragmentation and ordered reassembly"
 
 [dependencies]
+blake3 = { workspace = true }
 bytes = { workspace = true }
 indexmap = { workspace = true }
 monad-executor = { workspace = true }

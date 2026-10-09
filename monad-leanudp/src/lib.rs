@@ -33,6 +33,13 @@ pub const MAX_CONCURRENT_MESSAGES_PER_DEDICATED_IDENTITY: usize = 10;
 
 const DEFAULT_MESSAGE_TIMEOUT: Duration = Duration::from_millis(100);
 
+/// Content identity, stable across retransmissions with the same fragment layout.
+pub type MessageId = [u8; 32];
+
+pub(crate) fn message_id(payload: &[u8]) -> MessageId {
+    *blake3::hash(payload).as_bytes()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FragmentType {
     Start,
@@ -55,7 +62,7 @@ impl From<FragmentType> for u8 {
 #[derive(Clone, Copy, Debug, FromBytes, IntoBytes, Immutable, KnownLayout)]
 pub struct PacketHeader {
     version: u8,
-    msg_id: U16<LE>,
+    msg_id: MessageId,
     seq_num: U16<LE>,
     // Bit 0 marks the final fragment; higher bits are reserved.
     flags: u8,
@@ -67,10 +74,10 @@ impl PacketHeader {
     const KNOWN_FLAGS_MASK: u8 = Self::END_FLAG;
 
     #[inline]
-    pub(crate) fn new(msg_id: u16, seq_num: u16, fragment_type: FragmentType) -> Self {
+    pub(crate) fn new(msg_id: MessageId, seq_num: u16, fragment_type: FragmentType) -> Self {
         Self {
             version: LEANUDP_PROTOCOL_VERSION,
-            msg_id: U16::new(msg_id),
+            msg_id,
             seq_num: U16::new(seq_num),
             flags: fragment_type.into(),
         }
@@ -82,8 +89,8 @@ impl PacketHeader {
     }
 
     #[inline]
-    pub(crate) fn msg_id(&self) -> u16 {
-        self.msg_id.get()
+    pub(crate) fn msg_id(&self) -> MessageId {
+        self.msg_id
     }
 
     #[inline]

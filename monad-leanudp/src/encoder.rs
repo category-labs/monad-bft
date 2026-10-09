@@ -18,11 +18,12 @@ use monad_executor::ExecutorMetrics;
 use thiserror::Error;
 
 use crate::{
+    message_id,
     metrics::{
         init_encoder_metrics, COUNTER_LEANUDP_ENCODE_BYTES, COUNTER_LEANUDP_ENCODE_ERROR_TOO_LARGE,
         COUNTER_LEANUDP_ENCODE_FRAGMENTS, COUNTER_LEANUDP_ENCODE_MESSAGES,
     },
-    FragmentType, PacketHeader, LEANUDP_HEADER_SIZE,
+    FragmentType, MessageId, PacketHeader, LEANUDP_HEADER_SIZE,
 };
 
 /// Maximum fragments per message. At the default 1440-byte fragment size,
@@ -56,7 +57,6 @@ pub enum EncodeError {
 
 pub struct Encoder {
     max_fragment_payload: usize,
-    next_msg_id: u16,
     metrics: ExecutorMetrics,
 }
 
@@ -64,7 +64,6 @@ impl Encoder {
     pub(crate) fn new(max_fragment_payload: usize) -> Self {
         Self {
             max_fragment_payload: max_fragment_payload.saturating_sub(LEANUDP_HEADER_SIZE),
-            next_msg_id: 0,
             metrics: init_encoder_metrics(),
         }
     }
@@ -83,8 +82,7 @@ impl Encoder {
             });
         }
 
-        let msg_id = self.next_msg_id;
-        self.next_msg_id = self.next_msg_id.wrapping_add(1);
+        let msg_id = message_id(&payload);
 
         self.metrics.gauge(COUNTER_LEANUDP_ENCODE_MESSAGES).inc();
         self.metrics
@@ -120,7 +118,7 @@ impl Encoder {
 pub struct FragmentIter {
     payload: Bytes,
     max_payload: usize,
-    msg_id: u16,
+    msg_id: MessageId,
     current: usize,
     count: usize,
 }

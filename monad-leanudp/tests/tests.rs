@@ -33,8 +33,8 @@ use monad_leanudp::{
 };
 use zerocopy::IntoBytes;
 
-const SEQ_NUM_OFFSET: usize = 3;
-const FLAGS_OFFSET: usize = 5;
+const SEQ_NUM_OFFSET: usize = 33;
+const FLAGS_OFFSET: usize = 35;
 
 #[derive(Clone)]
 struct FixedClock(Rc<Cell<Instant>>);
@@ -585,7 +585,7 @@ fn test_regular_per_identity_limit_applies_under_pressure() {
         assert_pending!(decoder, 9_999, first);
     }
 
-    let over = first_packet(&mut encoder, Bytes::from(vec![0u8; 3_000]));
+    let over = first_packet(&mut encoder, Bytes::from(vec![201u8; 3_000]));
     assert_eq!(
         decoder.decode(9_999, over),
         Err(DecodeError::IdentityLimitExceeded {
@@ -779,5 +779,30 @@ fn test_accepts_large_inflight_data_bounded_by_message_count_only() {
             .gauge(GAUGE_LEANUDP_POOL_REGULAR_MESSAGES)
             .get(),
         3
+    );
+}
+
+#[test]
+fn test_content_hash_header_and_retries_are_stable() {
+    let (mut encoder, _decoder, _clock) = build_regular(Config::default());
+    assert_eq!(LEANUDP_HEADER_SIZE, 36);
+    let payload = Bytes::from(vec![42; 256 * 1024]);
+    let first = fragment_packets(&mut encoder, payload.clone());
+    let retry = fragment_packets(&mut encoder, payload.clone());
+    assert_eq!(first.len(), 187);
+    assert_eq!(first, retry);
+    assert_eq!(&first[0][1..33], blake3::hash(&payload).as_bytes());
+    assert_eq!(&first[0][33..36], &[0, 0, 0]);
+}
+
+#[test]
+fn test_reassembled_message_hash_is_verified() {
+    let (mut encoder, mut decoder, _clock) = build_regular(Config::default());
+    let packet = first_packet(&mut encoder, Bytes::from_static(b"hash me"));
+    let mut corrupt = packet.to_vec();
+    corrupt[LEANUDP_HEADER_SIZE] ^= 1;
+    assert_eq!(
+        decoder.decode(1, Bytes::from(corrupt)),
+        Err(DecodeError::MessageHashMismatch)
     );
 }
