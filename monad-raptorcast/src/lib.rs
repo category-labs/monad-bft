@@ -73,12 +73,13 @@ use util::{
 };
 
 use crate::{
-    auth::NopScore,
+    auth::{AuthPacketFramer, NopScore},
     metrics::{
         init_router_executor_metrics, COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_FALLBACK,
         COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_OVERSIZE, COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_SENT,
-        GAUGE_RAPTORCAST_TOTAL_DESERIALIZE_ERRORS, GAUGE_RAPTORCAST_TOTAL_MESSAGES_RECEIVED,
-        GAUGE_RAPTORCAST_TOTAL_RECV_ERRORS,
+        COUNTER_RAPTORCAST_MULTIPLEX_DIRECT_UDP_RECEIVED,
+        COUNTER_RAPTORCAST_MULTIPLEX_UNKNOWN_PROTOCOL, GAUGE_RAPTORCAST_TOTAL_DESERIALIZE_ERRORS,
+        GAUGE_RAPTORCAST_TOTAL_MESSAGES_RECEIVED, GAUGE_RAPTORCAST_TOTAL_RECV_ERRORS,
     },
     packet::RetrofitResult as _,
     raptorcast_secondary::{
@@ -152,6 +153,7 @@ where
     tcp_writer: TcpSocketWriter,
     dual_socket: auth::DualSocketHandle<AP>,
     direct_udp_transport: Option<DirectUdpTransport<ST, AP, DS>>,
+    multiplexed_direct_udp: auth::LeanUdpFramer<NodeId<CertificateSignaturePubKey<ST>>, DS>,
     dataplane_control: DataplaneControl,
     pending_events: VecDeque<RaptorCastEvent<M::Event, ST>>,
 
@@ -193,7 +195,8 @@ where
         secondary_mode: SecondaryRaptorCastModeConfig,
         tcp_socket: TcpSocketHandle,
         authenticated: (UdpSocketHandle, AP),
-        direct_udp: Option<(UdpSocketHandle, AP, DS)>,
+        direct_udp: Option<(UdpSocketHandle, AP)>,
+        direct_udp_peer_score: DS,
         non_authenticated_socket: Option<UdpSocketHandle>,
         control: DataplaneControl,
         peer_discovery_driver: Arc<Mutex<PeerDiscoveryDriver<PD>>>,
@@ -253,18 +256,21 @@ where
             auth::AuthenticatedSocketHandle::new(authenticated.0, authenticated.1),
             non_authenticated_socket,
         );
-        let direct_udp_transport = direct_udp.map(|(socket, protocol, direct_udp_peer_score)| {
-            let max_fragment_payload =
-                usize::from(segment_size_for_mtu(config.mtu).saturating_sub(AP::HEADER_SIZE));
-            let leanudp_config = monad_leanudp::Config {
-                max_message_size: TX_FORWARD_DIRECT_UDP_MAX_MESSAGE_SIZE_BYTES,
-                max_fragment_payload,
-                ..Default::default()
-            };
+        let max_fragment_payload =
+            usize::from(segment_size_for_mtu(config.mtu).saturating_sub(AP::HEADER_SIZE));
+        let leanudp_config = monad_leanudp::Config {
+            max_message_size: TX_FORWARD_DIRECT_UDP_MAX_MESSAGE_SIZE_BYTES,
+            max_fragment_payload,
+            ..Default::default()
+        };
+        let score = Arc::new(direct_udp_peer_score);
+        let multiplexed_direct_udp =
+            auth::LeanUdpFramer::with_shared_score(score.clone(), leanudp_config.clone());
+        let direct_udp_transport = direct_udp.map(|(socket, protocol)| {
             let socket = auth::AuthenticatedSocketHandle::new(socket, protocol);
             auth::FramedAuthenticatedSocketHandle::new(
                 socket,
-                auth::LeanUdpFramer::new(direct_udp_peer_score, leanudp_config),
+                auth::LeanUdpFramer::with_shared_score(score, leanudp_config),
             )
         });
 
@@ -322,6 +328,7 @@ where
             tcp_writer,
             dual_socket,
             direct_udp_transport,
+            multiplexed_direct_udp,
             dataplane_control: control,
             pending_events: Default::default(),
             channel_to_secondary: None,
@@ -383,7 +390,10 @@ where
         let validators = [self.current_epoch, self.current_epoch + Epoch(1)]
             .into_iter()
             .filter_map(|epoch| self.epoch_validators.get(&epoch))
-            .flat_map(|validator_set| validator_set.get_members().keys().copied());
+            .flat_map(|validator_set| validator_set.get_members().keys().copied())
+            .collect::<Vec<_>>();
+        self.multiplexed_direct_udp
+            .set_dedicated_identities(validators.iter().copied());
 
         if let Some(transport) = self.direct_udp_transport.as_mut() {
             transport.set_dedicated_identities(validators);
@@ -937,6 +947,7 @@ where
             auth::NoopAuthProtocol::new(),
         ),
         None,
+        NopScore::new(),
         Some(dataplane.non_authenticated_socket),
         dataplane.control,
         shared_pd,
@@ -1004,6 +1015,7 @@ where
             auth::WireAuthProtocol::new(&auth::metrics::UDP_METRICS, wireauth_config, shared_key),
         ),
         None,
+        NopScore::new(),
         Some(dataplane.non_authenticated_socket),
         dataplane.control,
         shared_pd,
@@ -1244,8 +1256,13 @@ where
             .chain(self.udp_state.decoder_metrics())
             .chain(self.dual_socket.metrics());
 
+        // LeanUDP exports the same metric names for each framer. Preserve the
+        // dedicated socket metrics when it is configured; otherwise expose the
+        // shared-port pools. Multiplex routing counters are always exported.
         if let Some(socket) = &self.direct_udp_transport {
             chain = chain.chain(socket.metrics());
+        } else {
+            chain = chain.chain(self.multiplexed_direct_udp.metrics());
         }
 
         chain
@@ -1261,6 +1278,10 @@ fn iter_ips<'a, ST: CertificateSignatureRecoverable, PD: PeerDiscoveryAlgo<Signa
         .keys()
         .filter_map(|node_id| peer_discovery.get_ip(node_id))
 }
+
+// Zero preserves the existing RaptorCast bytes and Wireauth encoding.
+const RAPTORCAST_PROTOCOL: u8 = 0;
+const DIRECT_UDP_PROTOCOL: u8 = 1;
 
 const RAPTORCAST_POLL_QUOTA: usize = 256;
 const DIRECT_UDP_POLL_QUOTA: usize = 64;
@@ -1320,6 +1341,47 @@ where
                 message.payload.len(),
                 message.src_addr
             );
+
+            match message.protocol {
+                RAPTORCAST_PROTOCOL => {}
+                DIRECT_UDP_PROTOCOL => {
+                    let Some(from) = message.sender else {
+                        continue;
+                    };
+                    match this
+                        .multiplexed_direct_udp
+                        .deframe(from.pubkey(), message.payload)
+                    {
+                        Ok(Some(payload)) => {
+                            this.metrics
+                                .gauge(COUNTER_RAPTORCAST_MULTIPLEX_DIRECT_UDP_RECEIVED)
+                                .inc();
+                            match InboundRouterMessage::<M, ST>::try_deserialize(&payload) {
+                                Ok(InboundRouterMessage::AppMessage(app_message)) => {
+                                    return Poll::Ready(Some(
+                                        RaptorCastEvent::Message(app_message.event(from)).into(),
+                                    ));
+                                }
+                                Ok(_) => debug!(
+                                    ?from,
+                                    "dropping control message received over direct udp"
+                                ),
+                                Err(err) => debug!(?from, ?err, "invalid direct udp message"),
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(err) => debug!(?from, ?err, "invalid shared-port direct udp fragment"),
+                    }
+                    continue;
+                }
+                protocol => {
+                    this.metrics
+                        .gauge(COUNTER_RAPTORCAST_MULTIPLEX_UNKNOWN_PROTOCOL)
+                        .inc();
+                    debug!(protocol, addr=?message.src_addr, "dropping unknown authenticated udp protocol");
+                    continue;
+                }
+            }
 
             // Enter the received raptorcast chunk into the udp_state for reassembly.
             // If the field "first-hop recipient" in the chunk has our node Id, then

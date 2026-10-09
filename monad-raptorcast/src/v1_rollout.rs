@@ -164,6 +164,7 @@ mod tests {
         let mut decoded_count = 0;
         for packet in &packets {
             let recv_msg = AuthRecvMsg {
+                protocol: 0,
                 src_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8000),
                 payload: packet.payload.clone(),
                 stride: packet.stride as u16,
@@ -259,6 +260,7 @@ mod tests {
         let mut decoded_count = 0;
         for packet in &packets {
             let recv_msg = AuthRecvMsg {
+                protocol: 0,
                 src_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8000),
                 payload: packet.payload.clone(),
                 stride: packet.stride as u16,
@@ -384,6 +386,7 @@ mod tests {
         let mut rebroadcast_count = 0usize;
         for packet in &packets {
             let recv_msg = AuthRecvMsg {
+                protocol: 0,
                 src_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8000),
                 payload: packet.payload.clone(),
                 stride: packet.stride as u16,
@@ -474,6 +477,7 @@ mod tests {
         let mut decoded = Vec::new();
         for packet in packets_a.iter().chain(packets_b.iter()) {
             let recv_msg = AuthRecvMsg {
+                protocol: 0,
                 src_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8000),
                 payload: packet.payload.clone(),
                 stride: packet.stride as u16,

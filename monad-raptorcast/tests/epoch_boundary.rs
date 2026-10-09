@@ -267,6 +267,7 @@ fn spawn_validator(
                 monad_raptorcast::auth::NoopAuthProtocol::new(),
             ),
             None,
+            monad_raptorcast::auth::NopScore::new(),
             Some(dataplane.non_authenticated_socket),
             dataplane.control,
             shared_pd,

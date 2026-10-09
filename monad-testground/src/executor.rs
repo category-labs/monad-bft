@@ -199,6 +199,7 @@ where
                     tcp_socket,
                     authenticated,
                     None,
+                    NopScore::new(),
                     Some(non_authenticated_socket),
                     control,
                     shared_peer_discovery_driver,

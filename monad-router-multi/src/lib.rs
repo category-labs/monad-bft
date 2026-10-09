@@ -121,7 +121,7 @@ where
             dp.udp_sockets.take(UdpSocketId::DirectUdp),
             direct_udp_auth_protocol,
         ) {
-            (Some(socket), Some(protocol)) => Some((socket, protocol, direct_udp_peer_score)),
+            (Some(socket), Some(protocol)) => Some((socket, protocol)),
             (None, None) => None,
             (Some(_), None) | (None, Some(_)) => {
                 panic!("direct udp socket and auth protocol must be set or unset together");
@@ -173,6 +173,7 @@ where
             tcp_socket,
             (authenticated_socket, auth_protocol),
             direct_udp,
+            direct_udp_peer_score,
             non_authenticated_socket,
             control,
             shared_pdd.clone(),

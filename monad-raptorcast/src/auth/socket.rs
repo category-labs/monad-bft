@@ -50,6 +50,8 @@ pub(crate) const AUTH_SESSION_CONNECT_RETRY_ATTEMPTS: u64 = 0;
 
 #[derive(Clone)]
 pub struct AuthRecvMsg<P: PubKey> {
+    /// Zero for legacy traffic; nonzero tags are verified by Wireauth before dispatch.
+    pub protocol: u8,
     pub src_addr: SocketAddr,
     pub payload: Bytes,
     pub stride: u16,
@@ -239,6 +241,10 @@ where
         self.authenticated.flush();
     }
 
+    pub fn authenticated_mut(&mut self) -> &mut AuthenticatedSocketHandle<AP> {
+        &mut self.authenticated
+    }
+
     pub async fn recv(&mut self) -> Result<AuthRecvMsg<AP::PublicKey>, AP::Error> {
         if let Some(non_authenticated) = &mut self.non_authenticated {
             tokio::select! {
@@ -255,6 +261,7 @@ where
                         .gauge(GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_READ)
                         .add(msg.payload.len() as u64);
                     Ok(AuthRecvMsg {
+                        protocol: 0,
                         src_addr: msg.src_addr,
                         payload: msg.payload,
                         stride: msg.stride,
@@ -322,6 +329,15 @@ where
         }
     }
 
+    pub fn has_initiator_session_by_socket_and_public_key(
+        &self,
+        addr: &SocketAddr,
+        public_key: &AP::PublicKey,
+    ) -> bool {
+        self.auth_protocol
+            .has_initiator_session_by_socket_and_public_key(addr, public_key)
+    }
+
     pub async fn recv(&mut self) -> Result<AuthRecvMsg<AP::PublicKey>, AP::Error> {
         loop {
             let timer = AuthenticatedTimerFuture {
@@ -337,8 +353,9 @@ where
                 message = self.socket.recv() => {
                     let mut packet_buf = message.payload.to_vec();
                     match self.auth_protocol.dispatch(&mut packet_buf, message.src_addr) {
-                        Ok(Some((plaintext, auth_public_key))) => {
+                        Ok(Some((plaintext, auth_public_key, protocol))) => {
                             return Ok(AuthRecvMsg {
+                                protocol,
                                 src_addr: message.src_addr,
                                 payload: plaintext,
                                 stride: message.stride,
@@ -411,12 +428,23 @@ where
         plaintext: Bytes,
         priority: UdpPriority,
     ) -> Result<(), ()> {
+        self.write_by_connected_public_key_with_protocol(public_key, 0, plaintext, priority)
+    }
+
+    fn write_by_connected_public_key_with_protocol(
+        &mut self,
+        public_key: &AP::PublicKey,
+        protocol: u8,
+        plaintext: Bytes,
+        priority: UdpPriority,
+    ) -> Result<(), ()> {
         let Some(addr) = self.auth_protocol.get_socket_by_public_key(public_key) else {
             warn!("failed to find socket for connected public key");
             return Err(());
         };
 
-        let Some(packet) = self.encrypt_packet_by_public_key(public_key, plaintext) else {
+        let Some(packet) = self.encrypt_packet_by_public_key(public_key, protocol, plaintext)
+        else {
             return Err(());
         };
 
@@ -444,6 +472,19 @@ where
     pub fn write_with_buffering(
         &mut self,
         public_key: &AP::PublicKey,
+        plaintext: Bytes,
+        stride: u16,
+        priority: UdpPriority,
+    ) -> Result<(), ()> {
+        self.write_with_protocol(public_key, 0, plaintext, stride, priority)
+    }
+
+    /// Writes or buffers a tagged packet without modifying its plaintext framing.
+    #[allow(clippy::result_unit_err)]
+    pub fn write_with_protocol(
+        &mut self,
+        public_key: &AP::PublicKey,
+        protocol: u8,
         mut plaintext: Bytes,
         stride: u16,
         priority: UdpPriority,
@@ -466,11 +507,16 @@ where
             let piece = plaintext.split_to(plaintext.len().min(stride));
 
             if has_authenticated_socket {
-                self.write_by_connected_public_key_with_priority(public_key, piece, priority)?;
+                self.write_by_connected_public_key_with_protocol(
+                    public_key, protocol, piece, priority,
+                )?;
                 continue;
             }
 
-            if let Err(err) = self.auth_protocol.buffer_message(public_key, piece) {
+            if let Err(err) = self
+                .auth_protocol
+                .buffer_message(public_key, protocol, piece)
+            {
                 warn!(error=?err, "failed to buffer message");
                 return Err(());
             }
@@ -543,7 +589,7 @@ where
 
         match self
             .auth_protocol
-            .encrypt_by_socket(&addr, &mut packet[header_size..])
+            .encrypt_by_socket(&addr, 0, &mut packet[header_size..])
         {
             Ok(header) => {
                 let header_bytes = header.as_bytes();
@@ -560,6 +606,7 @@ where
     fn encrypt_packet_by_public_key(
         &mut self,
         public_key: &AP::PublicKey,
+        protocol: u8,
         plaintext: Bytes,
     ) -> Option<Bytes> {
         let header_size = AP::HEADER_SIZE as usize;
@@ -567,10 +614,11 @@ where
         packet.resize(header_size, 0);
         packet.extend_from_slice(&plaintext);
 
-        match self
-            .auth_protocol
-            .encrypt_by_public_key(public_key, &mut packet[header_size..])
-        {
+        match self.auth_protocol.encrypt_by_public_key(
+            public_key,
+            protocol,
+            &mut packet[header_size..],
+        ) {
             Ok(header) => {
                 let header_bytes = header.as_bytes();
                 packet[..header_size].copy_from_slice(header_bytes);
@@ -610,6 +658,8 @@ pub enum FramedRecvError<E: std::fmt::Debug> {
     Auth(E),
     #[error("received unauthenticated message on framed socket")]
     MissingAuthPublicKey,
+    #[error("unexpected protocol tag on dedicated framed socket: {0}")]
+    UnexpectedProtocol(u8),
 }
 
 impl<AP, F> FramedAuthenticatedSocketHandle<AP, F>
@@ -628,9 +678,13 @@ where
                 return Err(FramedRecvError::MissingAuthPublicKey);
             };
 
+            if msg.protocol != 0 {
+                return Err(FramedRecvError::UnexpectedProtocol(msg.protocol));
+            }
             match self.framer.deframe(sender.pubkey(), msg.payload) {
                 Ok(Some(payload)) => {
                     return Ok(AuthRecvMsg {
+                        protocol: 0,
                         src_addr: msg.src_addr,
                         payload,
                         sender: Some(sender),

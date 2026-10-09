@@ -269,6 +269,7 @@ fn spawn_noop_validator(
                 monad_raptorcast::auth::NoopAuthProtocol::new(),
             ),
             None,
+            monad_raptorcast::auth::NopScore::new(),
             Some(dataplane.non_authenticated_socket),
             dataplane.control,
             shared_pd,
@@ -337,13 +338,7 @@ fn spawn_wireauth_validator(
                 wireauth_config.clone(),
                 keypair.clone(),
             );
-            (
-                socket,
-                protocol,
-                monad_raptorcast::auth::NopScore::<
-                    NodeId<CertificateSignaturePubKey<SecpSignature>>,
-                >::new(),
-            )
+            (socket, protocol)
         });
         let non_authenticated_socket = if with_non_authenticated_socket {
             Some(dataplane.non_authenticated_socket)
@@ -365,6 +360,7 @@ fn spawn_wireauth_validator(
             dataplane.tcp_socket,
             authenticated,
             direct_udp,
+            monad_raptorcast::auth::NopScore::new(),
             non_authenticated_socket,
             dataplane.control,
             shared_pd,
