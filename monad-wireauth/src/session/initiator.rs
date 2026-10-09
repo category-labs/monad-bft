@@ -41,10 +41,15 @@ pub struct ValidatedHandshakeResponse {
     remote_index: SessionIndex,
 }
 
+pub struct BufferedMessage {
+    pub protocol: u8,
+    pub payload: Bytes,
+}
+
 pub struct InitiatorState {
     handshake_state: handshake::HandshakeState,
     common: SessionState,
-    buffered_messages: VecDeque<Bytes>,
+    buffered_messages: VecDeque<BufferedMessage>,
     buffered_bytes: usize,
 }
 
@@ -185,9 +190,12 @@ impl InitiatorState {
         Some((timer, SessionTimeoutResult { terminated, rekey }))
     }
 
-    pub fn buffer_message(&mut self, message: Bytes) {
+    pub fn buffer_message(&mut self, protocol: u8, message: Bytes) {
         self.buffered_bytes = self.buffered_bytes.saturating_add(message.len());
-        self.buffered_messages.push_back(message);
+        self.buffered_messages.push_back(BufferedMessage {
+            protocol,
+            payload: message,
+        });
     }
 
     pub fn buffered_message_count(&self) -> usize {
@@ -204,14 +212,17 @@ pub struct MessagesToSend {
 }
 
 enum MessagesToSendInner {
-    Buffered(vec_deque::IntoIter<Bytes>),
-    Keepalive(iter::Once<Bytes>),
+    Buffered(vec_deque::IntoIter<BufferedMessage>),
+    Keepalive(iter::Once<BufferedMessage>),
 }
 
 impl MessagesToSend {
-    fn new(messages: VecDeque<Bytes>) -> Self {
+    fn new(messages: VecDeque<BufferedMessage>) -> Self {
         let inner = if messages.is_empty() {
-            MessagesToSendInner::Keepalive(iter::once(Bytes::new()))
+            MessagesToSendInner::Keepalive(iter::once(BufferedMessage {
+                protocol: 0,
+                payload: Bytes::new(),
+            }))
         } else {
             MessagesToSendInner::Buffered(messages.into_iter())
         };
@@ -224,7 +235,7 @@ impl MessagesToSend {
 }
 
 impl Iterator for MessagesToSend {
-    type Item = Bytes;
+    type Item = BufferedMessage;
 
     fn next(&mut self) -> Option<Self::Item> {
         match &mut self.inner {

@@ -1147,3 +1147,93 @@ fn test_gc_terminate_has_no_side_effects() {
     assert!(!peer1.is_connected_public_key(&peer2_pubkey));
     assert!(!peer2.is_connected_public_key(&peer1_pubkey));
 }
+
+#[test]
+fn protocol_tags_survive_handshake_buffering_and_share_a_session() {
+    let (mut a, _, _, _) = create_manager();
+    let (mut b, b_key, _, _) = create_manager();
+    let a_addr = "127.0.0.1:8001".parse().unwrap();
+    let b_addr = "127.0.0.1:8002".parse().unwrap();
+    a.connect(b_key, b_addr, 0).unwrap();
+    for protocol in [0, 1, 255, 0] {
+        a.buffer_message_with_protocol(&b_key, protocol, bytes::Bytes::from_static(b"payload"))
+            .unwrap();
+    }
+    let init = collect::<HandshakeInitiation>(&mut a);
+    dispatch(&mut b, &init, a_addr);
+    let response = collect::<HandshakeResponse>(&mut b);
+    dispatch(&mut a, &response, b_addr);
+    for protocol in [0, 1, 255, 0] {
+        let mut packet = collect::<DataPacketHeader>(&mut a);
+        assert_eq!(packet.len(), DataPacketHeader::SIZE + b"payload".len());
+        let Packet::Data(data) = Packet::try_from(packet.as_mut_slice()).unwrap() else {
+            panic!("expected data packet");
+        };
+        let (plaintext, _) = b.decrypt(data, a_addr).unwrap();
+        assert_eq!(plaintext.protocol(), protocol);
+        assert_eq!(plaintext.as_slice(), b"payload");
+    }
+    assert!(a.next_packet().is_none());
+
+    let mut payload = b"socket encryption".to_vec();
+    let header = a
+        .encrypt_by_socket_with_protocol(&b_addr, 1, &mut payload)
+        .unwrap();
+    let mut packet = header.as_bytes().to_vec();
+    packet.extend(payload);
+    let Packet::Data(data) = Packet::try_from(packet.as_mut_slice()).unwrap() else {
+        unreachable!()
+    };
+    let (plaintext, _) = b.decrypt(data, a_addr).unwrap();
+    assert_eq!(plaintext.protocol(), 1);
+    assert_eq!(plaintext.as_slice(), b"socket encryption");
+}
+
+#[test]
+fn protocol_tag_tampering_fails_without_consuming_the_nonce() {
+    let (mut a, _, _, _) = create_manager();
+    let (mut b, b_key, _, _) = create_manager();
+    let a_addr = "127.0.0.1:8001".parse().unwrap();
+    let b_addr = "127.0.0.1:8002".parse().unwrap();
+    a.connect(b_key, b_addr, 0).unwrap();
+    let init = collect::<HandshakeInitiation>(&mut a);
+    dispatch(&mut b, &init, a_addr);
+    let response = collect::<HandshakeResponse>(&mut b);
+    dispatch(&mut a, &response, b_addr);
+    let keepalive = collect::<DataPacketHeader>(&mut a);
+    assert_eq!(
+        <&DataPacketHeader>::try_from(keepalive.as_slice())
+            .unwrap()
+            .protocol(),
+        0
+    );
+    dispatch(&mut b, &keepalive, a_addr);
+
+    for protocol in [0, 1, 255] {
+        let mut payload = b"authenticated payload".to_vec();
+        let header = a
+            .encrypt_by_public_key_with_protocol(&b_key, protocol, &mut payload)
+            .unwrap();
+        let mut original = header.as_bytes().to_vec();
+        original.extend(payload);
+        for (offset, byte) in [(1, protocol ^ 1), (2, 1), (3, 1)] {
+            let mut changed = original.clone();
+            changed[offset] = byte;
+            let Packet::Data(data) = Packet::try_from(changed.as_mut_slice()).unwrap() else {
+                unreachable!()
+            };
+            assert!(b.decrypt(data, a_addr).is_err());
+        }
+        let mut packet = original.clone();
+        let Packet::Data(data) = Packet::try_from(packet.as_mut_slice()).unwrap() else {
+            unreachable!()
+        };
+        let (plaintext, _) = b.decrypt(data, a_addr).unwrap();
+        assert_eq!(plaintext.protocol(), protocol);
+        assert_eq!(plaintext.as_slice(), b"authenticated payload");
+        assert!(
+            dispatch(&mut b, &original, a_addr).is_none(),
+            "replay must be rejected"
+        );
+    }
+}

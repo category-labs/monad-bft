@@ -733,9 +733,9 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
             .insert_transport(receiver_session_index, transport);
 
         for msg in messages {
-            let mut packet = BytesMut::with_capacity(DataPacketHeader::SIZE + msg.len());
+            let mut packet = BytesMut::with_capacity(DataPacketHeader::SIZE + msg.payload.len());
             packet.resize(DataPacketHeader::SIZE, 0);
-            packet.extend_from_slice(&msg);
+            packet.extend_from_slice(&msg.payload);
 
             let transport = self
                 .state
@@ -745,6 +745,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
                 self.context.rng(),
                 &self.config,
                 duration_since_start,
+                msg.protocol,
                 &mut packet[DataPacketHeader::SIZE..],
             );
             packet[..DataPacketHeader::SIZE].copy_from_slice(header.as_bytes());
@@ -762,10 +763,19 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
     }
 
     /// Encrypts plaintext in place using the latest established session for a public key.
-    #[instrument(level = Level::TRACE, skip(self, public_key, plaintext), fields(local_public_key = ?self.local_serialized_public))]
     pub fn encrypt_by_public_key(
         &mut self,
         public_key: &monad_secp::PubKey,
+        plaintext: &mut [u8],
+    ) -> Result<DataPacketHeader> {
+        self.encrypt_by_public_key_with_protocol(public_key, 0, plaintext)
+    }
+
+    #[instrument(level = Level::TRACE, skip(self, public_key, plaintext), fields(local_public_key = ?self.local_serialized_public))]
+    pub fn encrypt_by_public_key_with_protocol(
+        &mut self,
+        public_key: &monad_secp::PubKey,
+        protocol: u8,
         plaintext: &mut [u8],
     ) -> Result<DataPacketHeader> {
         self.metrics
@@ -788,6 +798,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
             self.context.rng(),
             &self.config,
             duration_since_start,
+            protocol,
             plaintext,
         );
         let session_id = transport.common.local_index;
@@ -796,10 +807,19 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
     }
 
     /// Encrypts plaintext in place using the latest established session for a socket address.
-    #[instrument(level = Level::TRACE, skip(self, plaintext), fields(local_public_key = ?self.local_serialized_public, socket_addr = ?socket_addr))]
     pub fn encrypt_by_socket(
         &mut self,
         socket_addr: &SocketAddr,
+        plaintext: &mut [u8],
+    ) -> Result<DataPacketHeader> {
+        self.encrypt_by_socket_with_protocol(socket_addr, 0, plaintext)
+    }
+
+    #[instrument(level = Level::TRACE, skip(self, plaintext), fields(local_public_key = ?self.local_serialized_public, socket_addr = ?socket_addr))]
+    pub fn encrypt_by_socket_with_protocol(
+        &mut self,
+        socket_addr: &SocketAddr,
+        protocol: u8,
         plaintext: &mut [u8],
     ) -> Result<DataPacketHeader> {
         self.metrics
@@ -819,6 +839,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
             self.context.rng(),
             &self.config,
             duration_since_start,
+            protocol,
             plaintext,
         );
         let session_id = transport.common.local_index;
@@ -829,10 +850,19 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
     /// Buffers a message for a peer that has an initiator session (handshake in progress).
     /// Returns Ok(()) if the message was buffered, or Err if no initiator session exists
     /// or the buffer limit would be exceeded.
-    #[instrument(level = Level::TRACE, skip(self, public_key, message), fields(local_public_key = ?self.local_serialized_public))]
     pub fn buffer_message(
         &mut self,
         public_key: &monad_secp::PubKey,
+        message: Bytes,
+    ) -> Result<()> {
+        self.buffer_message_with_protocol(public_key, 0, message)
+    }
+
+    #[instrument(level = Level::TRACE, skip(self, public_key, message), fields(local_public_key = ?self.local_serialized_public))]
+    pub fn buffer_message_with_protocol(
+        &mut self,
+        public_key: &monad_secp::PubKey,
+        protocol: u8,
         message: Bytes,
     ) -> Result<()> {
         let initiator = self
@@ -852,7 +882,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
                 limit: self.config.max_buffered_bytes_per_session,
             });
         }
-        initiator.buffer_message(message);
+        initiator.buffer_message(protocol, message);
         self.metrics
             .gauge(self.metric_names.initiator_buffered_messages)
             .inc();

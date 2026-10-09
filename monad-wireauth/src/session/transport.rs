@@ -63,16 +63,23 @@ impl TransportState {
         rng: &mut R,
         config: &Config,
         duration_since_start: Duration,
+        protocol: u8,
         plaintext: &mut [u8],
     ) -> (DataPacketHeader, RenewedTimer) {
         use crate::protocol::crypto;
 
-        let header = DataPacketHeader {
+        let mut header = DataPacketHeader {
+            reserved: [protocol, 0, 0],
             receiver_index: self.remote_index.as_u32().into(),
             nonce: self.send_nonce.into(),
-            tag: crypto::encrypt_in_place(&self.send_key, &self.send_nonce.into(), plaintext, &[]),
             ..Default::default()
         };
+        header.tag = crypto::encrypt_in_place(
+            &self.send_key,
+            &self.send_nonce.into(),
+            plaintext,
+            header.associated_data(),
+        );
 
         self.send_nonce += 1;
 
@@ -111,13 +118,14 @@ impl TransportState {
 
         let counter = data_packet.header().nonce.get();
         let tag = data_packet.header().tag;
+        let header = data_packet.header().clone();
 
         crypto::decrypt_in_place(
             &self.recv_key,
             &counter.into(),
             data_packet.data_mut(),
             &tag,
-            &[],
+            header.associated_data(),
         )
         .map_err(SessionError::InvalidMac)?;
 
@@ -229,7 +237,7 @@ impl TransportState {
                 remote_addr = ?self.common.remote_addr,
                 "sending keepalive packet"
             );
-            let (header, _) = self.encrypt(rng, config, duration_since_start, &mut []);
+            let (header, _) = self.encrypt(rng, config, duration_since_start, 0, &mut []);
             message = Some(MessageEvent {
                 remote_addr: self.common.remote_addr,
                 header,

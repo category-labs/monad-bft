@@ -281,6 +281,8 @@ impl From<CookieReply> for Bytes {
 #[derive(FromBytes, IntoBytes, Immutable, KnownLayout, Clone)]
 pub struct DataPacketHeader {
     pub message_type: u8,
+    /// The first byte is an application protocol tag. Zero preserves legacy data.
+    /// Nonzero reserved bytes are authenticated as AEAD associated data.
     pub reserved: [u8; 3],
     pub receiver_index: U32<LE>,
     pub nonce: U64<LE>,
@@ -299,6 +301,18 @@ impl Default for DataPacketHeader {
 
 impl DataPacketHeader {
     pub const SIZE: usize = 4 + 4 + 8 + CIPHER_TAG_SIZE;
+
+    pub fn protocol(&self) -> u8 {
+        self.reserved[0]
+    }
+
+    pub(crate) fn associated_data(&self) -> &[u8] {
+        if self.reserved == [0; 3] {
+            &[]
+        } else {
+            &self.reserved
+        }
+    }
 }
 
 impl<'a> TryFrom<&'a [u8]> for &'a DataPacketHeader {
@@ -374,6 +388,11 @@ impl<'a> Plaintext<'a> {
 
     pub fn as_slice(&self) -> &[u8] {
         self.0.data()
+    }
+
+    /// Only available after the packet's authentication tag has been verified.
+    pub fn protocol(&self) -> u8 {
+        self.0.header().protocol()
     }
 }
 
