@@ -152,6 +152,18 @@ impl<PD: PeerDiscoveryAlgo> std::fmt::Debug for PeerDiscoveryDriver<PD> {
 }
 
 impl<PD: PeerDiscoveryAlgo> PeerDiscoveryDriver<PD> {
+    pub fn set_extensions(&mut self, extensions: Option<crate::DiscoveryExtensions>) {
+        let cmds = self.pd.set_extensions(extensions);
+        self.exec(cmds);
+    }
+
+    pub fn get_peer_extensions(
+        &self,
+        id: &NodeId<CertificateSignaturePubKey<PD::SignatureType>>,
+    ) -> Option<crate::DiscoveryExtensions> {
+        self.pd.get_peer_extensions(id)
+    }
+
     pub fn new<B: PeerDiscoveryAlgoBuilder<PeerDiscoveryAlgoType = PD>>(builder: B) -> Self {
         let (peer_discovery, init_cmds) = builder.build();
 

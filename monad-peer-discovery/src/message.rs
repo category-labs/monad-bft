@@ -26,6 +26,55 @@ use crate::{MonadNameRecord, PeerDiscoveryEvent, PeerSource};
 
 const PEER_DISCOVERY_VERSION: u16 = 1;
 
+/// Runtime receive capabilities on the name record's authenticated UDP endpoint.
+/// Unknown bits do not enable a protocol; the name record remains unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, RlpEncodable)]
+pub struct DiscoveryExtensions {
+    pub version: u8,
+    pub capabilities: u64,
+}
+
+impl DiscoveryExtensions {
+    pub const VERSION: u8 = 1;
+    pub const WIREAUTH_MULTIPLEX_V1: u64 = 1 << 0;
+    pub const DIRECT_UDP_V1: u64 = 1 << 1;
+
+    pub const fn new(capabilities: u64) -> Self {
+        Self {
+            version: Self::VERSION,
+            capabilities,
+        }
+    }
+
+    pub fn supports(&self, capabilities: u64) -> bool {
+        self.version == Self::VERSION && self.capabilities & capabilities == capabilities
+    }
+}
+
+impl Decodable for DiscoveryExtensions {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = Header::decode_bytes(buf, true)?;
+        if payload.len() > 64 {
+            return Err(alloy_rlp::Error::Custom("discovery extension too large"));
+        }
+        let version = u8::decode(&mut payload)?;
+        // A future extension must not prevent the base ping/pong from being processed.
+        let capabilities = if version == Self::VERSION {
+            let capabilities = u64::decode(&mut payload)?;
+            if !payload.is_empty() {
+                return Err(alloy_rlp::Error::UnexpectedLength);
+            }
+            capabilities
+        } else {
+            0
+        };
+        Ok(Self {
+            version,
+            capabilities,
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum PeerDiscoveryMessage<ST: CertificateSignatureRecoverable> {
     Ping(Ping<ST>),
@@ -137,17 +186,21 @@ impl<ST: CertificateSignatureRecoverable> Decodable for PeerDiscoveryMessage<ST>
 }
 
 #[derive(Debug, Clone, PartialEq, RlpDecodable, RlpEncodable)]
+#[rlp(trailing)]
 pub struct Ping<ST: CertificateSignatureRecoverable> {
     pub id: u32,
     pub local_name_record: MonadNameRecord<ST>,
+    pub extensions: Option<DiscoveryExtensions>,
 }
 
 impl<ST: CertificateSignatureRecoverable> Eq for Ping<ST> {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, RlpDecodable, RlpEncodable)]
+#[rlp(trailing)]
 pub struct Pong {
     pub ping_id: u32,
     pub local_record_seq: u64,
+    pub extensions: Option<DiscoveryExtensions>,
 }
 
 #[derive(Debug, Clone, RlpDecodable, RlpEncodable)]
@@ -180,9 +233,58 @@ mod test {
     type SignatureType = SecpSignature;
 
     #[test]
+    fn extended_pong_preserves_legacy_encoding_when_disabled() {
+        #[derive(RlpDecodable, RlpEncodable)]
+        struct LegacyPong {
+            ping_id: u32,
+            local_record_seq: u64,
+        }
+        let legacy = alloy_rlp::encode(LegacyPong {
+            ping_id: 7,
+            local_record_seq: 42,
+        });
+        let mut pong = Pong {
+            ping_id: 7,
+            local_record_seq: 42,
+            extensions: None,
+        };
+        assert_eq!(alloy_rlp::encode(pong), legacy);
+        assert_eq!(Pong::decode(&mut legacy.as_slice()).unwrap(), pong);
+
+        pong.extensions = Some(DiscoveryExtensions::new(3 | (1 << 63)));
+        let encoded = alloy_rlp::encode(pong);
+        assert_eq!(Pong::decode(&mut encoded.as_slice()).unwrap(), pong);
+        assert!(LegacyPong::decode(&mut encoded.as_slice()).is_err());
+        assert!(pong.extensions.unwrap().supports(3));
+        assert!(!DiscoveryExtensions::new(1 << 63).supports(3));
+    }
+
+    #[test]
+    fn unknown_extension_version_does_not_discard_pong() {
+        let mut extension = Vec::new();
+        let fields: [&dyn Encodable; 2] = [&2u8, &"future fields"];
+        encode_list::<_, dyn Encodable>(&fields, &mut extension);
+        let mut encoded = Vec::new();
+        // Embed the already encoded extension in the pong list.
+        let mut fields = alloy_rlp::encode(7u32);
+        fields.extend(alloy_rlp::encode(42u64));
+        fields.extend(extension);
+        Header {
+            list: true,
+            payload_length: fields.len(),
+        }
+        .encode(&mut encoded);
+        encoded.extend(fields);
+        let pong = Pong::decode(&mut encoded.as_slice()).unwrap();
+        assert_eq!(pong.ping_id, 7);
+        assert!(!pong.extensions.unwrap().supports(3));
+    }
+
+    #[test]
     fn test_ping_rlp_roundtrip() {
         let key = get_key::<SignatureType>(37);
         let ping = Ping {
+            extensions: None,
             id: 257,
             local_name_record: MonadNameRecord::<SignatureType>::new(
                 NameRecord::new(
@@ -208,6 +310,7 @@ mod test {
     fn test_peer_discovery_message_ping_encoding() {
         let key = get_key::<SignatureType>(37);
         let ping = Ping {
+            extensions: None,
             id: 257,
             local_name_record: MonadNameRecord::<SignatureType>::new(
                 NameRecord::new(
@@ -231,6 +334,7 @@ mod test {
     #[test]
     fn test_peer_discovery_message_pong_encoding() {
         let pong = Pong {
+            extensions: None,
             ping_id: 123,
             local_record_seq: 456,
         };

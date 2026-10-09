@@ -33,7 +33,7 @@ use rand_chacha::ChaCha8Rng;
 use tracing::{debug, info, trace, warn};
 
 use crate::{
-    MonadNameRecord, MonadNameRecordWithPubkey, NameRecord, PeerDiscoveryAlgo,
+    DiscoveryExtensions, MonadNameRecord, MonadNameRecordWithPubkey, NameRecord, PeerDiscoveryAlgo,
     PeerDiscoveryAlgoBuilder, PeerDiscoveryCommand, PeerDiscoveryEvent, PeerDiscoveryMessage,
     PeerDiscoveryTimerCommand, PeerLookupRequest, PeerLookupResponse, PeerSource, Ping, Pong,
     TimerKind,
@@ -275,6 +275,12 @@ pub struct PeerDiscovery<
     // mapping of lookup IDs to their corresponding lookup info, node will only entertain lookup response
     // that matches a local lookup ID
     pub outstanding_lookup_requests: HashMap<u32, LookupInfo<ST>>,
+    extensions: Option<DiscoveryExtensions>,
+    // Runtime advertisements are confirmed by a fresh pong and bound to the endpoint
+    // we probed. They are not persisted or relayed with signed name records.
+    peer_extensions:
+        BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, (NameRecord, DiscoveryExtensions)>,
+    outstanding_pings: BTreeMap<NodeId<CertificateSignaturePubKey<ST>>, (u32, NameRecord)>,
     pub metrics: ExecutorMetrics,
     // duration before checking min/max watermark and decide to look for more peers or prune peers
     pub refresh_period: Duration,
@@ -385,6 +391,9 @@ impl<ST: CertificateSignatureRecoverable> PeerDiscoveryAlgoBuilder for PeerDisco
             pending_queue: Default::default(),
             socket_to_id: Default::default(),
             outstanding_lookup_requests: Default::default(),
+            extensions: None,
+            peer_extensions: Default::default(),
+            outstanding_pings: Default::default(),
             metrics: init_executor_metrics(),
             refresh_period: self.refresh_period,
             request_timeout: self.request_timeout,
@@ -514,7 +523,28 @@ impl<ST: CertificateSignatureRecoverable, C: governor::clock::Clock> PeerDiscove
         )]
     }
 
+    fn refresh_extensions(&mut self) -> Vec<PeerDiscoveryCommand<ST>> {
+        let peers = self
+            .routing_info
+            .iter()
+            .filter(|(id, _)| !self.outstanding_pings.contains_key(id))
+            .map(|(id, record)| (*id, record.name_record.clone()))
+            .collect::<Vec<_>>();
+        let mut cmds = Vec::new();
+        for (to, record) in peers {
+            let ping = Ping {
+                id: self.rng.next_u32(),
+                local_name_record: self.self_record.clone(),
+                extensions: self.extensions,
+            };
+            cmds.extend(self.send_ping(to, record, ping));
+        }
+        cmds
+    }
+
     fn clear_connection_info(&mut self) {
+        self.peer_extensions.clear();
+        self.outstanding_pings.clear();
         self.participation_info.iter_mut().for_each(|(_, info)| {
             info.status = SecondaryRaptorcastConnectionStatus::None;
         });
@@ -567,6 +597,7 @@ impl<ST: CertificateSignatureRecoverable, C: governor::clock::Clock> PeerDiscove
 
         // insert into pending queue and send ping
         let ping_msg = Ping {
+            extensions: self.extensions,
             id: self.rng.next_u32(),
             local_name_record: self.self_record.clone(),
         };
@@ -594,6 +625,7 @@ impl<ST: CertificateSignatureRecoverable, C: governor::clock::Clock> PeerDiscove
 
         // remove from pending queue
         self.pending_queue.remove(&peer_id);
+        self.outstanding_pings.remove(&peer_id);
         cmds.extend(self.clear_ping_timeout(peer_id));
 
         self.metrics
@@ -705,6 +737,7 @@ impl<ST: CertificateSignatureRecoverable, C: governor::clock::Clock> PeerDiscove
                 cmds.push(PeerDiscoveryCommand::RouterCommand {
                     target: *validator,
                     message: PeerDiscoveryMessage::Ping(Ping {
+                        extensions: self.extensions,
                         id: self.rng.next_u32(),
                         local_name_record: self.self_record.clone(),
                     }),
@@ -891,15 +924,46 @@ where
 {
     type SignatureType = ST;
 
+    fn set_extensions(
+        &mut self,
+        extensions: Option<DiscoveryExtensions>,
+    ) -> Vec<PeerDiscoveryCommand<ST>> {
+        if self.extensions == extensions {
+            return Vec::new();
+        }
+        self.extensions = extensions;
+        self.refresh_extensions()
+    }
+
+    fn get_peer_extensions(
+        &self,
+        id: &NodeId<CertificateSignaturePubKey<ST>>,
+    ) -> Option<DiscoveryExtensions> {
+        let (endpoint, extensions) = self.peer_extensions.get(id)?;
+        self.routing_info
+            .get(id)
+            .filter(|record| record.name_record == *endpoint)
+            .map(|_| *extensions)
+    }
+
     fn send_ping(
         &mut self,
         to: NodeId<CertificateSignaturePubKey<ST>>,
         name_record: NameRecord,
-        ping: Ping<ST>,
+        mut ping: Ping<ST>,
     ) -> Vec<PeerDiscoveryCommand<ST>> {
         debug!(?to, "sending ping request");
 
         let mut cmds = Vec::new();
+
+        ping.extensions = self.extensions;
+        if let Some(info) = self.pending_queue.get_mut(&to)
+            && info.last_ping.id == ping.id
+        {
+            info.last_ping = ping.clone();
+        }
+        self.outstanding_pings
+            .insert(to, (ping.id, name_record.clone()));
 
         cmds.extend(self.schedule_ping_timeout(to, ping.id));
 
@@ -1012,15 +1076,33 @@ where
 
         // respond to ping
         let pong_msg = Pong {
+            extensions: self.extensions,
             ping_id: ping_msg.id,
             local_record_seq: self.self_record.seq(),
         };
         cmds.push(PeerDiscoveryCommand::PingPongCommand {
             target: from,
-            name_record: ping_msg.local_name_record.name_record,
+            name_record: ping_msg.local_name_record.name_record.clone(),
             message: PeerDiscoveryMessage::Pong(pong_msg),
         });
         self.metrics.gauge(GAUGE_PEER_DISC_SEND_PONG).inc();
+
+        // A changed advertisement prompts our own challenge, including for a
+        // known peer whose name record sequence did not change.
+        if self.routing_info.contains_key(&from)
+            && !self.outstanding_pings.contains_key(&from)
+            && self.get_peer_extensions(&from)
+                != ping_msg
+                    .extensions
+                    .filter(|ext| ext.version == DiscoveryExtensions::VERSION)
+        {
+            let ping = Ping {
+                id: self.rng.next_u32(),
+                local_name_record: self.self_record.clone(),
+                extensions: self.extensions,
+            };
+            cmds.extend(self.send_ping(from, ping_msg.local_name_record.name_record.clone(), ping));
+        }
 
         cmds
     }
@@ -1037,6 +1119,15 @@ where
 
         let mut cmds = Vec::new();
 
+        let confirmed = self
+            .outstanding_pings
+            .get(&from)
+            .cloned()
+            .filter(|(id, record)| {
+                *id == pong_msg.ping_id && src_addr.ip() == IpAddr::V4(record.ip())
+            });
+
+        let was_pending = self.pending_queue.contains_key(&from);
         if let Some(info) = self.pending_queue.get(&from) {
             let expected_ip = IpAddr::V4(info.name_record.name_record.ip());
             if src_addr.ip() != expected_ip {
@@ -1057,12 +1148,30 @@ where
                 debug!(?from, "dropping pong, ping id does not match");
                 self.metrics.gauge(GAUGE_PEER_DISC_DROP_PONG).inc();
             }
-        } else {
+        } else if confirmed.is_none() {
             debug!(
                 ?from,
                 "dropping pong, ping sender does not exist in pending queue"
             );
             self.metrics.gauge(GAUGE_PEER_DISC_DROP_PONG).inc();
+        }
+
+        if let Some((_, endpoint)) = confirmed {
+            self.outstanding_pings.remove(&from);
+            if !was_pending {
+                cmds.extend(self.clear_ping_timeout(from));
+            }
+            self.peer_extensions.remove(&from);
+            if pong_msg.local_record_seq == endpoint.seq()
+                && self
+                    .routing_info
+                    .get(&from)
+                    .is_some_and(|record| record.name_record == endpoint)
+                && let Some(extensions) = pong_msg.extensions
+                && extensions.version == DiscoveryExtensions::VERSION
+            {
+                self.peer_extensions.insert(from, (endpoint, extensions));
+            }
         }
 
         cmds
@@ -1075,6 +1184,15 @@ where
     ) -> Vec<PeerDiscoveryCommand<ST>> {
         debug!(?to, "ping timeout");
         let mut cmds = Vec::new();
+
+        if self
+            .outstanding_pings
+            .get(&to)
+            .is_some_and(|(id, _)| *id == ping_id)
+        {
+            self.outstanding_pings.remove(&to);
+            self.peer_extensions.remove(&to);
+        }
 
         let Some(info) = self.pending_queue.get_mut(&to) else {
             debug!(
@@ -1101,6 +1219,7 @@ where
                 // retry ping
                 let name_record = info.name_record.name_record.clone();
                 let ping = Ping {
+                    extensions: self.extensions,
                     id: self.rng.next_u32(),
                     local_name_record: self.self_record.clone(),
                 };
@@ -1683,6 +1802,15 @@ where
 
         self.write_peers_to_file();
 
+        self.peer_extensions
+            .retain(|id, _| self.routing_info.contains_key(id));
+        self.outstanding_pings.retain(|id, _| {
+            self.routing_info.contains_key(id) || self.pending_queue.contains_key(id)
+        });
+        if self.extensions.is_some() || !self.peer_extensions.is_empty() {
+            cmds.extend(self.refresh_extensions());
+        }
+
         // reset timer to schedule for the next refresh
         cmds.extend(self.reset_refresh_timer());
 
@@ -1766,6 +1894,7 @@ where
                         cmds.push(PeerDiscoveryCommand::RouterCommand {
                             target: validator,
                             message: PeerDiscoveryMessage::Ping(Ping {
+                                extensions: self.extensions,
                                 id: self.rng.next_u32(),
                                 local_name_record: self.self_record.clone(),
                             }),
@@ -2091,6 +2220,9 @@ mod tests {
             pending_queue: BTreeMap::new(),
             socket_to_id,
             outstanding_lookup_requests: HashMap::new(),
+            extensions: None,
+            peer_extensions: Default::default(),
+            outstanding_pings: Default::default(),
             metrics: init_executor_metrics(),
             refresh_period: Duration::from_secs(120),
             request_timeout: Duration::from_secs(5),
@@ -2187,6 +2319,7 @@ mod tests {
 
         // send ping to peer1
         let ping = Ping {
+            extensions: None,
             id: 12345,
             local_name_record: state.self_record.clone(),
         };
@@ -2221,6 +2354,7 @@ mod tests {
 
         let (mut state, _clock) = generate_test_state(peer0, vec![peer1]);
         let last_ping = Ping {
+            extensions: None,
             id: 12345,
             local_name_record: generate_name_record(peer0, 0),
         };
@@ -2237,6 +2371,7 @@ mod tests {
         state.handle_pong(
             peer_source_from_record(peer1),
             Pong {
+                extensions: None,
                 ping_id: 54321, // incorrect ping id,
                 local_record_seq: 0,
             },
@@ -2299,6 +2434,7 @@ mod tests {
                 state.handle_ping(
                     peer_source(peer1, addr),
                     Ping {
+                        extensions: None,
                         id,
                         local_name_record: peer_name_record.clone(),
                     },
@@ -2346,6 +2482,7 @@ mod tests {
 
         let name_record = generate_name_record(peer1, 0);
         let ping = Ping {
+            extensions: None,
             id: 12345,
             local_name_record: name_record.clone(),
         };
@@ -2374,6 +2511,7 @@ mod tests {
         state.handle_pong(
             peer_source_from_record(peer1),
             Pong {
+                extensions: None,
                 ping_id: ping[0].1.id,
                 local_record_seq: 0,
             },
@@ -2470,6 +2608,7 @@ mod tests {
         state.handle_pong(
             peer_source_from_record(peer2),
             Pong {
+                extensions: None,
                 ping_id: ping[0].1.id,
                 local_record_seq: 0,
             },
@@ -2653,6 +2792,7 @@ mod tests {
         state.handle_pong(
             peer_source_from_record(peer1),
             Pong {
+                extensions: None,
                 ping_id: pings[0].1.id,
                 local_record_seq: 0,
             },
@@ -2749,6 +2889,7 @@ mod tests {
             peer1_pubkey,
             ConnectionInfo {
                 last_ping: Ping {
+                    extensions: None,
                     id: ping_id,
                     local_name_record: state.self_record.clone(),
                 },
@@ -2905,6 +3046,7 @@ mod tests {
         let cmds = state.handle_ping(
             peer_source_from_record(peer2),
             Ping {
+                extensions: None,
                 id: 2,
                 local_name_record: generate_name_record(peer2, 0),
             },
@@ -2918,6 +3060,7 @@ mod tests {
         let cmds = state.handle_ping(
             peer_source_from_record(peer3),
             Ping {
+                extensions: None,
                 id: 3,
                 local_name_record: generate_name_record(peer3, 0),
             },
@@ -2931,6 +3074,7 @@ mod tests {
         let cmds = state.handle_ping(
             peer_source_from_record(peer4),
             Ping {
+                extensions: None,
                 id: 4,
                 local_name_record: generate_name_record(peer4, 0),
             },
@@ -3009,6 +3153,7 @@ mod tests {
         let cmds = state.handle_ping(
             peer_source(peer1, src_addr),
             Ping {
+                extensions: None,
                 id: 7,
                 local_name_record: name_record,
             },
@@ -3036,6 +3181,7 @@ mod tests {
             assert_eq!(
                 pong,
                 Pong {
+                    extensions: None,
                     ping_id: 7,
                     local_record_seq: 0
                 }
@@ -3061,6 +3207,7 @@ mod tests {
         let cmds = state.handle_ping(
             peer_source(peer1, dummy_src),
             Ping {
+                extensions: None,
                 id: 1,
                 local_name_record: generate_dummy_name_record(peer1),
             },
@@ -3073,6 +3220,7 @@ mod tests {
         state.handle_pong(
             peer_source(peer1, dummy_src),
             Pong {
+                extensions: None,
                 ping_id: ping[0].1.id,
                 local_record_seq: 0,
             },
@@ -3084,6 +3232,7 @@ mod tests {
         let cmds = state.handle_ping(
             peer_source(peer2, dummy_src),
             Ping {
+                extensions: None,
                 id: 2,
                 local_name_record: generate_dummy_name_record(peer2),
             },
@@ -3172,6 +3321,7 @@ mod tests {
         state.handle_pong(
             peer_source(peer1, name_record_addr(&peer1_record)),
             Pong {
+                extensions: None,
                 ping_id: first_pings[0].1.id,
                 local_record_seq: peer1_record.seq(),
             },
@@ -3497,6 +3647,7 @@ mod tests {
             peer2_pubkey,
             ConnectionInfo {
                 last_ping: Ping {
+                    extensions: None,
                     id: 0,
                     local_name_record: peer2_name_record.clone(),
                 },
@@ -3508,6 +3659,7 @@ mod tests {
             peer3_pubkey,
             ConnectionInfo {
                 last_ping: Ping {
+                    extensions: None,
                     id: 0,
                     local_name_record: peer3_name_record.clone(),
                 },
@@ -3547,6 +3699,9 @@ mod tests {
             pending_queue,
             socket_to_id: BTreeMap::new(),
             outstanding_lookup_requests: HashMap::new(),
+            extensions: None,
+            peer_extensions: Default::default(),
+            outstanding_pings: Default::default(),
             metrics: init_executor_metrics(),
             refresh_period: Duration::from_secs(120),
             request_timeout: Duration::from_secs(5),
@@ -3693,6 +3848,7 @@ mod tests {
         let cmds = state.handle_ping(
             peer_source(peer1, src_addr),
             Ping {
+                extensions: None,
                 id: 123,
                 local_name_record: incorrect_name_record,
             },
@@ -3723,6 +3879,7 @@ mod tests {
         let cmds = state.handle_ping(
             peer_source(peer1, matching_addr),
             Ping {
+                extensions: None,
                 id: 1,
                 local_name_record: name_record,
             },
@@ -3750,6 +3907,7 @@ mod tests {
         let cmds = state.handle_ping(
             peer_source(peer1, wrong_addr),
             Ping {
+                extensions: None,
                 id: 1,
                 local_name_record: name_record,
             },
@@ -3779,6 +3937,7 @@ mod tests {
         let cmds = state.handle_ping(
             peer_source(peer1, src_addr),
             Ping {
+                extensions: None,
                 id: 42,
                 local_name_record: name_record,
             },
@@ -3797,6 +3956,7 @@ mod tests {
         state.handle_pong(
             peer_source(peer1, src_addr),
             Pong {
+                extensions: None,
                 ping_id: reply_ping_id,
                 local_record_seq: 0,
             },
@@ -3820,6 +3980,7 @@ mod tests {
         let cmds = state.handle_ping(
             peer_source(peer1, src_addr),
             Ping {
+                extensions: None,
                 id: 42,
                 local_name_record: name_record,
             },
@@ -3834,6 +3995,7 @@ mod tests {
         state.handle_pong(
             peer_source(peer1, wrong_addr),
             Pong {
+                extensions: None,
                 ping_id: reply_ping_id,
                 local_record_seq: 0,
             },
@@ -3847,5 +4009,120 @@ mod tests {
             state.pending_queue.contains_key(&peer1_pubkey),
             "peer should remain in pending queue"
         );
+    }
+
+    #[test]
+    fn runtime_extensions_refresh_without_resigning_name_record() {
+        let keys = create_keys::<SignatureType>(2);
+        let a = &keys[0];
+        let b = &keys[1];
+        let id = NodeId::new(b.pubkey());
+        let (mut state, _) = generate_test_state(a, vec![b]);
+        let record = state.routing_info[&id].clone();
+        let source = || peer_source(b, name_record_addr(&record));
+        let advertised = DiscoveryExtensions::new(3);
+        let cmds = state.set_extensions(Some(advertised));
+        let ping = extract_ping(cmds)[0].1.clone();
+        assert_eq!(ping.extensions, Some(advertised));
+        assert!(state.get_peer_extensions(&id).is_none());
+
+        state.handle_pong(
+            source(),
+            Pong {
+                ping_id: ping.id.wrapping_add(1),
+                local_record_seq: record.seq(),
+                extensions: Some(advertised),
+            },
+        );
+        assert!(state.get_peer_extensions(&id).is_none());
+        state.handle_pong(
+            source(),
+            Pong {
+                ping_id: ping.id,
+                local_record_seq: record.seq(),
+                extensions: Some(advertised),
+            },
+        );
+        assert_eq!(state.get_peer_extensions(&id), Some(advertised));
+
+        let changed = DiscoveryExtensions::new(0);
+        let cmds = state.handle_ping(
+            source(),
+            Ping {
+                id: 10,
+                local_name_record: record.clone(),
+                extensions: Some(changed),
+            },
+        );
+        let ping = extract_ping(cmds)[0].1.clone();
+        state.handle_pong(
+            source(),
+            Pong {
+                ping_id: ping.id,
+                local_record_seq: record.seq(),
+                extensions: Some(changed),
+            },
+        );
+        assert_eq!(state.get_peer_extensions(&id), Some(changed));
+        assert_eq!(state.routing_info[&id], record);
+
+        let ping = extract_ping(state.refresh_extensions())[0].1.clone();
+        state.handle_ping_timeout(id, ping.id);
+        assert!(state.get_peer_extensions(&id).is_none());
+        state.handle_pong(
+            source(),
+            Pong {
+                ping_id: ping.id,
+                local_record_seq: record.seq(),
+                extensions: Some(advertised),
+            },
+        );
+        assert!(state.get_peer_extensions(&id).is_none());
+    }
+
+    #[test]
+    fn runtime_extensions_require_correct_source_sequence_and_endpoint() {
+        let keys = create_keys::<SignatureType>(2);
+        let a = &keys[0];
+        let b = &keys[1];
+        let id = NodeId::new(b.pubkey());
+        let (mut state, _) = generate_test_state(a, vec![b]);
+        let record = state.routing_info[&id].clone();
+        let extensions = Some(DiscoveryExtensions::new(3));
+        let ping = extract_ping(state.set_extensions(extensions))[0].1.clone();
+        state.handle_pong(
+            PeerSource {
+                id,
+                addr: "9.9.9.9:8000".parse().unwrap(),
+            },
+            Pong {
+                ping_id: ping.id,
+                local_record_seq: record.seq(),
+                extensions,
+            },
+        );
+        assert!(state.get_peer_extensions(&id).is_none());
+        state.handle_pong(
+            peer_source(b, name_record_addr(&record)),
+            Pong {
+                ping_id: ping.id,
+                local_record_seq: record.seq() + 1,
+                extensions,
+            },
+        );
+        assert!(state.get_peer_extensions(&id).is_none());
+
+        let ping = extract_ping(state.refresh_extensions())[0].1.clone();
+        state.handle_pong(
+            peer_source(b, name_record_addr(&record)),
+            Pong {
+                ping_id: ping.id,
+                local_record_seq: record.seq(),
+                extensions,
+            },
+        );
+        assert_eq!(state.get_peer_extensions(&id), extensions);
+        state.routing_info.insert(id, generate_name_record(b, 1));
+        assert!(state.get_peer_extensions(&id).is_none());
     }
 }

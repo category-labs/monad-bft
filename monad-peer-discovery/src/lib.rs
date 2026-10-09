@@ -41,7 +41,7 @@ pub mod ipv4_validation;
 pub mod message;
 pub mod mock;
 
-pub use message::PeerDiscoveryMessage;
+pub use message::{DiscoveryExtensions, PeerDiscoveryMessage};
 
 #[derive(Debug, Clone)]
 pub struct PeerSource<PK: monad_crypto::certificate_signature::PubKey> {
@@ -729,6 +729,21 @@ pub enum PeerDiscoveryCommand<ST: CertificateSignatureRecoverable> {
 
 pub trait PeerDiscoveryAlgo {
     type SignatureType: CertificateSignatureRecoverable;
+
+    /// `None` keeps the legacy ping/pong encoding for the decoder-first rollout.
+    fn set_extensions(
+        &mut self,
+        _extensions: Option<DiscoveryExtensions>,
+    ) -> Vec<PeerDiscoveryCommand<Self::SignatureType>> {
+        Vec::new()
+    }
+
+    fn get_peer_extensions(
+        &self,
+        _id: &NodeId<CertificateSignaturePubKey<Self::SignatureType>>,
+    ) -> Option<DiscoveryExtensions> {
+        None
+    }
 
     fn send_ping(
         &mut self,

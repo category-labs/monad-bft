@@ -979,6 +979,7 @@ async fn run_send_with_record_uses_name_record_address() {
     );
 
     let ping = Ping {
+        extensions: None,
         id: 42,
         local_name_record: alice_local_name_record,
     };
