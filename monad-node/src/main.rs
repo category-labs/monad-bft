@@ -738,6 +738,9 @@ where
     let direct_udp_bind_address = network_config
         .direct_udp_bind_address_port
         .map(|port| SocketAddr::new(IpAddr::V4(network_config.bind_address_host), port));
+    let authenticated_tcp_bind_address = network_config
+        .encrypted_tcp_bind_address_port
+        .map(|port| SocketAddr::new(IpAddr::V4(network_config.bind_address_host), port));
     let self_id = NodeId::new(identity.pubkey());
     let self_tcp_port = peer_discovery_config.tcp_port();
     let name_record_address = if let Some(ip) = peer_discovery_config.ip() {
@@ -758,6 +761,7 @@ where
         ?non_authenticated_bind_address,
         ?authenticated_bind_address,
         ?direct_udp_bind_address,
+        ?authenticated_tcp_bind_address,
         ?name_record_address,
         "Monad-node starting, pid: {}",
         process::id()
@@ -788,9 +792,14 @@ where
     if let Some(direct_addr) = direct_udp_bind_address {
         udp_sockets.push((UdpSocketId::DirectUdp, direct_addr));
     }
+    let mut tcp_sockets: Vec<(TcpSocketId, SocketAddr)> =
+        vec![(TcpSocketId::Raptorcast, tcp_bind_address)];
+    if let Some(address) = authenticated_tcp_bind_address {
+        tcp_sockets.push((TcpSocketId::AuthenticatedRaptorcast, address));
+    }
     dp_builder = dp_builder
         .with_udp_sockets(udp_sockets)
-        .with_tcp_sockets([(TcpSocketId::Raptorcast, tcp_bind_address)]);
+        .with_tcp_sockets(tcp_sockets);
 
     assert_eq!(
         peer_discovery_config.self_direct_udp_port.is_some(),
@@ -909,6 +918,13 @@ where
             shared_key.clone(),
         )
     });
+    let tcp_auth_protocol = authenticated_tcp_bind_address.map(|_| {
+        WireAuthProtocol::new(
+            &monad_raptorcast::auth::metrics::TCP_METRICS,
+            monad_raptorcast::auth::tcp_socket::wireauth_config(),
+            shared_key.clone(),
+        )
+    });
 
     MultiRouter::new(
         self_id,
@@ -935,6 +951,7 @@ where
         direct_udp_auth_protocol,
         direct_udp_peer_score_reader,
         proposer_schedule,
+        tcp_auth_protocol,
     )
 }
 

@@ -197,6 +197,7 @@ where
                     cfg,
                     SecondaryRaptorCastModeConfig::None,
                     tcp_socket,
+                    None,
                     authenticated,
                     None,
                     Some(non_authenticated_socket),
