@@ -2070,3 +2070,6 @@ where
         self.get_socket_by_public_key(&node_id.pubkey())
     }
 }
+
+#[cfg(test)]
+mod multiplex_tests;

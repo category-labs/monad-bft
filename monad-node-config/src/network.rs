@@ -105,3 +105,27 @@ fn default_signature_verifications_per_second() -> u32 {
 fn default_enable_udp_mutishot() -> bool {
     true
 }
+
+#[cfg(test)]
+mod tests {
+    use super::NodeNetworkConfig;
+
+    #[test]
+    fn direct_udp_defaults_to_disabled_and_can_be_overridden() {
+        let network = r#"
+            bind_address_host = "0.0.0.0"
+            authenticated_bind_address_port = 8000
+            max_rtt_ms = 1000
+            max_mbps = 1000
+        "#;
+        let config: NodeNetworkConfig = toml::from_str(network).unwrap();
+        assert!(!config.direct_udp);
+        for direct_udp in [false, true] {
+            let config: NodeNetworkConfig =
+                toml::from_str(&format!("{network}\ndirect_udp = {direct_udp}\n")).unwrap();
+            assert_eq!(config.direct_udp, direct_udp);
+            assert_eq!(config.direct_udp_bind_address_port, None);
+            assert_eq!(config.authenticated_bind_address_port, 8000);
+        }
+    }
+}
