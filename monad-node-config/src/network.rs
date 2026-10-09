@@ -28,8 +28,8 @@ pub struct NodeNetworkConfig {
     pub direct_udp_bind_address_port: Option<u16>,
 
     /// Advertise Direct UDP receive capabilities and enable Direct UDP sending.
-    /// Disabled by default until encoder rollout. False uses RaptorCast
-    /// point-to-point without advertisements; receive support remains available.
+    /// Enabled by default. False withdraws advertisements and uses RaptorCast
+    /// point-to-point; receive support remains available.
     #[serde(default = "default_direct_udp")]
     pub direct_udp: bool,
     pub encrypted_tcp_bind_address_port: Option<u16>,
@@ -66,7 +66,7 @@ pub struct NodeNetworkConfig {
 }
 
 fn default_direct_udp() -> bool {
-    false
+    true
 }
 
 fn default_mtu() -> u16 {
@@ -111,7 +111,7 @@ mod tests {
     use super::NodeNetworkConfig;
 
     #[test]
-    fn direct_udp_defaults_to_disabled_and_can_be_overridden() {
+    fn direct_udp_defaults_to_enabled_and_can_be_overridden() {
         let network = r#"
             bind_address_host = "0.0.0.0"
             authenticated_bind_address_port = 8000
@@ -119,7 +119,7 @@ mod tests {
             max_mbps = 1000
         "#;
         let config: NodeNetworkConfig = toml::from_str(network).unwrap();
-        assert!(!config.direct_udp);
+        assert!(config.direct_udp);
         for direct_udp in [false, true] {
             let config: NodeNetworkConfig =
                 toml::from_str(&format!("{network}\ndirect_udp = {direct_udp}\n")).unwrap();
