@@ -51,7 +51,7 @@ use monad_peer_discovery::{
     driver::{PeerDiscoveryDriver, PeerDiscoveryEmit},
     message::PeerDiscoveryMessage,
     mock::{NopDiscovery, NopDiscoveryBuilder},
-    MonadNameRecord, NameRecord, PeerDiscoveryAlgo, PeerDiscoveryEvent,
+    DiscoveryExtensions, MonadNameRecord, NameRecord, PeerDiscoveryAlgo, PeerDiscoveryEvent,
 };
 use monad_peer_score::IdentityScore;
 use monad_types::{
@@ -78,6 +78,7 @@ use crate::{
         init_router_executor_metrics, COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_FALLBACK,
         COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_OVERSIZE, COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_SENT,
         COUNTER_RAPTORCAST_MULTIPLEX_DIRECT_UDP_RECEIVED,
+        COUNTER_RAPTORCAST_MULTIPLEX_DIRECT_UDP_SENT,
         COUNTER_RAPTORCAST_MULTIPLEX_UNKNOWN_PROTOCOL, GAUGE_RAPTORCAST_TOTAL_DESERIALIZE_ERRORS,
         GAUGE_RAPTORCAST_TOTAL_MESSAGES_RECEIVED, GAUGE_RAPTORCAST_TOTAL_RECV_ERRORS,
     },
@@ -154,6 +155,7 @@ where
     dual_socket: auth::DualSocketHandle<AP>,
     direct_udp_transport: Option<DirectUdpTransport<ST, AP, DS>>,
     multiplexed_direct_udp: auth::LeanUdpFramer<NodeId<CertificateSignaturePubKey<ST>>, DS>,
+    direct_udp: bool,
     dataplane_control: DataplaneControl,
     pending_events: VecDeque<RaptorCastEvent<M::Event, ST>>,
 
@@ -299,7 +301,7 @@ where
         );
         udp_state.set_v1_rollout(config.deterministic_protocol_rollout);
 
-        Self {
+        let mut router = Self {
             self_id,
             is_dynamic_fullnode,
             epoch_validators: Default::default(),
@@ -329,6 +331,7 @@ where
             dual_socket,
             direct_udp_transport,
             multiplexed_direct_udp,
+            direct_udp: false,
             dataplane_control: control,
             pending_events: Default::default(),
             channel_to_secondary: None,
@@ -339,7 +342,9 @@ where
             metrics: init_router_executor_metrics(),
             peer_discovery_metrics,
             _phantom: PhantomData,
-        }
+        };
+        router.set_direct_udp(config.direct_udp);
+        router
     }
 
     /// Initializes the channels needed between primary and secondary raptorcast
@@ -398,6 +403,22 @@ where
         if let Some(transport) = self.direct_udp_transport.as_mut() {
             transport.set_dedicated_identities(validators);
         }
+    }
+
+    /// Enable Direct UDP sending and advertise its receive capabilities.
+    /// Disabling this uses RaptorCast point-to-point and withdraws advertisements;
+    /// receive support remains available for packets already in flight.
+    pub fn set_direct_udp(&mut self, enabled: bool) {
+        self.direct_udp = enabled && AP::SUPPORTS_PROTOCOL_TAGS;
+        let extensions = self.direct_udp.then(|| {
+            DiscoveryExtensions::new(
+                DiscoveryExtensions::WIREAUTH_MULTIPLEX_V1 | DiscoveryExtensions::DIRECT_UDP_V1,
+            )
+        });
+        self.peer_discovery_driver
+            .lock()
+            .unwrap()
+            .set_extensions(extensions);
     }
 
     // Used only in tests
@@ -684,8 +705,87 @@ where
         priority: UdpPriority,
         self_id: NodeId<CertificateSignaturePubKey<ST>>,
     ) {
-        // fall back to raptorcast point-to-point when direct UDP is not configured.
-        let Some(socket) = self.direct_udp_transport.as_mut() else {
+        enum Route {
+            Shared,
+            Dedicated,
+        }
+
+        if !self.direct_udp {
+            self.metrics
+                .gauge(COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_FALLBACK)
+                .inc();
+            self.handle_publish(
+                RouterTarget::PointToPoint(target),
+                message,
+                priority,
+                self_id,
+            );
+            return;
+        }
+        let target_pubkey = target.pubkey();
+        let shared_addr = {
+            let pd = self.peer_discovery_driver.lock().unwrap();
+            pd.get_peer_extensions(&target)
+                .filter(|extensions| {
+                    extensions.supports(
+                        DiscoveryExtensions::WIREAUTH_MULTIPLEX_V1
+                            | DiscoveryExtensions::DIRECT_UDP_V1,
+                    )
+                })
+                .and_then(|_| pd.get_name_record(&target))
+                .map(|record| SocketAddr::V4(record.name_record.authenticated_udp_socket()))
+        };
+
+        let shared_ready = shared_addr.is_some_and(|addr| {
+            let socket = self.dual_socket.authenticated_mut();
+            if socket.is_connected_socket_and_public_key(&addr, &target_pubkey) {
+                return true;
+            }
+            if !socket.has_initiator_session_by_socket_and_public_key(&addr, &target_pubkey) {
+                if let Err(err) = socket.connect(&target_pubkey, addr, DEFAULT_RETRY_ATTEMPTS) {
+                    warn!(
+                        ?target,
+                        ?addr,
+                        ?err,
+                        "shared-port direct udp connect failed"
+                    );
+                }
+                socket.flush();
+            }
+            false
+        });
+
+        // Keep using the established path during negotiation or authentication.
+        // Never send the same application message on both paths.
+        let route = if shared_ready {
+            Route::Shared
+        } else if let Some(socket) = self.direct_udp_transport.as_mut() {
+            if !socket.has_any_session_by_public_key(&target_pubkey) {
+                let discovered_addr = self
+                    .peer_discovery_driver
+                    .lock()
+                    .unwrap()
+                    .get_direct_udp_addr(&target);
+                let Some(addr) = discovered_addr else {
+                    self.metrics
+                        .gauge(COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_FALLBACK)
+                        .inc();
+                    self.handle_publish(
+                        RouterTarget::PointToPoint(target),
+                        message,
+                        priority,
+                        self_id,
+                    );
+                    return;
+                };
+                if let Err(err) = socket.connect(&target_pubkey, addr, DEFAULT_RETRY_ATTEMPTS) {
+                    warn!(?target, ?addr, ?err, "direct udp connect failed");
+                    return;
+                }
+                socket.flush();
+            }
+            Route::Dedicated
+        } else {
             self.metrics
                 .gauge(COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_FALLBACK)
                 .inc();
@@ -697,37 +797,6 @@ where
             );
             return;
         };
-
-        let target_pubkey = target.pubkey();
-        if !socket.has_any_session_by_public_key(&target_pubkey) {
-            let discovered_addr = self
-                .peer_discovery_driver
-                .lock()
-                .ok()
-                .and_then(|pd| pd.get_direct_udp_addr(&target));
-
-            // Fall back when peer discovery doesn't have a direct UDP address for the target.
-            let Some(discovered_addr) = discovered_addr else {
-                self.metrics
-                    .gauge(COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_FALLBACK)
-                    .inc();
-                self.handle_publish(
-                    RouterTarget::PointToPoint(target),
-                    message,
-                    priority,
-                    self_id,
-                );
-                return;
-            };
-
-            if let Err(err) =
-                socket.connect(&target_pubkey, discovered_addr, DEFAULT_RETRY_ATTEMPTS)
-            {
-                warn!(?target, ?discovered_addr, ?err, "direct udp connect failed");
-                return;
-            }
-            socket.flush();
-        }
 
         let outbound_message =
             match OutboundRouterMessage::<OM, ST>::AppMessage(message).try_serialize() {
@@ -755,11 +824,50 @@ where
             );
             return;
         }
-        // buffer will be drained when session is established or dropped on timeout
-        if socket
-            .write_buffered(&target_pubkey, outbound_message, priority)
-            .is_ok()
-        {
+        let result = match route {
+            Route::Shared => {
+                let mut packets = match <auth::LeanUdpFramer<
+                    NodeId<CertificateSignaturePubKey<ST>>,
+                    DS,
+                > as AuthPacketFramer<CertificateSignaturePubKey<ST>>>::frame(
+                    &mut self.multiplexed_direct_udp,
+                    outbound_message,
+                ) {
+                    Ok(packets) => packets,
+                    Err(err) => {
+                        warn!(
+                            ?target,
+                            ?err,
+                            "failed to frame shared-port direct udp message"
+                        );
+                        return;
+                    }
+                };
+                let socket = self.dual_socket.authenticated_mut();
+                let result = packets.try_for_each(|packet| {
+                    let stride = packet.len() as u16;
+                    socket.write_with_protocol(
+                        &target_pubkey,
+                        DIRECT_UDP_PROTOCOL,
+                        packet,
+                        stride,
+                        priority,
+                    )
+                });
+                if result.is_ok() {
+                    self.metrics
+                        .gauge(COUNTER_RAPTORCAST_MULTIPLEX_DIRECT_UDP_SENT)
+                        .inc();
+                }
+                result
+            }
+            Route::Dedicated => self.direct_udp_transport.as_mut().unwrap().write_buffered(
+                &target_pubkey,
+                outbound_message,
+                priority,
+            ),
+        };
+        if result.is_ok() {
             self.metrics
                 .gauge(COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_SENT)
                 .inc();
@@ -934,6 +1042,7 @@ where
             invite_future_dist_max: Round(5),
             invite_accept_heartbeat_ms: 100,
         },
+        direct_udp: false,
         deterministic_protocol_rollout: v1_rollout::CURRENT_STAGE,
     };
     let pd = PeerDiscoveryDriver::new(peer_discovery_builder);
@@ -1001,6 +1110,7 @@ where
             invite_future_dist_max: Round(5),
             invite_accept_heartbeat_ms: 100,
         },
+        direct_udp: false,
         deterministic_protocol_rollout: v1_rollout::CURRENT_STAGE,
     };
     let pd = PeerDiscoveryDriver::new(peer_discovery_builder);

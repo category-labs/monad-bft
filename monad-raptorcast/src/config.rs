@@ -43,6 +43,10 @@ where
     /// Rate limit for signature verifications performed by raptorcast
     pub sig_verification_rate_limit: u32,
 
+    /// Advertise Direct UDP receive support and enable Direct UDP sending.
+    /// Receive support remains available when this is false.
+    pub direct_udp: bool,
+
     // The primary instance owns the receive side of the UDP traffic used for
     // raptorcast and hence is mandatory in all configuration cases.
     pub primary_instance: RaptorCastConfigPrimary<ST>,
@@ -67,6 +71,7 @@ where
             mtu: self.mtu,
             udp_message_max_age_ms: self.udp_message_max_age_ms,
             sig_verification_rate_limit: self.sig_verification_rate_limit,
+            direct_udp: self.direct_udp,
             primary_instance: self.primary_instance.clone(),
             secondary_instance: self.secondary_instance.clone(),
             deterministic_protocol_rollout: self.deterministic_protocol_rollout,

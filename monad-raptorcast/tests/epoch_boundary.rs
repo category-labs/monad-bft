@@ -237,6 +237,7 @@ fn spawn_validator(
                 invite_accept_heartbeat_ms: 100,
             },
             // pin v1 semantics regardless of the current rollout stage
+            direct_udp: false,
             deterministic_protocol_rollout: DeterministicProtocolRolloutStage::AlwaysV1,
         };
 

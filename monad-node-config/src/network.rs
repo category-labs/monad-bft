@@ -26,6 +26,12 @@ pub struct NodeNetworkConfig {
     pub bind_address_tcp_port: Option<u16>,
     pub authenticated_bind_address_port: u16,
     pub direct_udp_bind_address_port: Option<u16>,
+
+    /// Advertise Direct UDP receive capabilities and enable Direct UDP sending.
+    /// Disabled by default until encoder rollout. False uses RaptorCast
+    /// point-to-point without advertisements; receive support remains available.
+    #[serde(default = "default_direct_udp")]
+    pub direct_udp: bool,
     pub encrypted_tcp_bind_address_port: Option<u16>,
 
     pub max_rtt_ms: u64,
@@ -57,6 +63,10 @@ pub struct NodeNetworkConfig {
 
     #[serde(default = "default_enable_udp_mutishot")]
     pub enable_udp_multishot: bool,
+}
+
+fn default_direct_udp() -> bool {
+    false
 }
 
 fn default_mtu() -> u16 {

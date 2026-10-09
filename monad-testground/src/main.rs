@@ -353,6 +353,7 @@ where
                                 invite_future_dist_max: Round(5),
                                 invite_accept_heartbeat_ms: 100,
                             },
+                            direct_udp: false,
                             deterministic_protocol_rollout:
                                 monad_raptorcast::v1_rollout::CURRENT_STAGE,
                         }),

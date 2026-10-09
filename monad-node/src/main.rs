@@ -925,6 +925,7 @@ where
                     .collect(),
             },
             secondary_instance: node_config.fullnode_raptorcast,
+            direct_udp: network_config.direct_udp,
             deterministic_protocol_rollout: node_config.deterministic_raptorcast_rollout,
         },
         dp_builder,
