@@ -957,10 +957,6 @@ fn calculate_fee_history_rewards(
         return vec![];
     };
 
-    if transactions.is_empty() {
-        return vec![0; percentiles.len()];
-    }
-
     // Get the reward and gas used for each transaction using receipt.
     let gas_and_rewards = transactions
         .into_iter()
@@ -972,6 +968,10 @@ fn calculate_fee_history_rewards(
         })
         .sorted_by_key(|(_, reward)| *reward)
         .collect::<Vec<_>>();
+
+    if gas_and_rewards.is_empty() {
+        return vec![0; percentiles.len()];
+    }
 
     let mut idx = 0;
     let mut cumulative_gas_used = gas_and_rewards[0].0;
