@@ -97,6 +97,8 @@ pub type TcpSocketHandles = SocketHandles<TcpSocketId, TcpSocketHandle>;
 pub type UdpSocketHandles = SocketHandles<UdpSocketId, UdpSocketHandle>;
 
 pub const DEFAULT_UDP_MAX_QUEUED_BYTES: usize = 100 * 1024 * 1024;
+pub const DEFAULT_UDP_TX_WORKERS: usize = 1;
+pub const MAX_UDP_TX_WORKERS: usize = 64;
 
 /// Configuration for the UDP pacing queue.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -138,6 +140,7 @@ pub struct DataplaneBuilder {
     udp_sockets: Vec<(UdpSocketId, SocketAddr)>,
     tcp_sockets: Vec<(TcpSocketId, SocketAddr)>,
     udp_multishot: bool,
+    udp_tx_workers: usize,
 }
 
 impl DataplaneBuilder {
@@ -163,6 +166,7 @@ impl DataplaneBuilder {
             udp_sockets: Vec::new(),
             tcp_sockets: Vec::new(),
             udp_multishot: true,
+            udp_tx_workers: DEFAULT_UDP_TX_WORKERS,
         }
     }
 
@@ -222,6 +226,18 @@ impl DataplaneBuilder {
         self
     }
 
+    /// sets the number of independent udp transmit workers.
+    ///
+    /// workers consume prepared batches from one shared queue after global pacing.
+    pub fn with_udp_tx_workers(mut self, workers: usize) -> Self {
+        assert!(
+            (1..=MAX_UDP_TX_WORKERS).contains(&workers),
+            "UDP TX workers must be between 1 and {MAX_UDP_TX_WORKERS}"
+        );
+        self.udp_tx_workers = workers;
+        self
+    }
+
     pub fn build(self) -> Dataplane {
         let DataplaneBuilder {
             udp_up_bandwidth_mbps: up_bandwidth_mbps,
@@ -233,6 +249,7 @@ impl DataplaneBuilder {
             udp_sockets,
             tcp_sockets,
             udp_multishot,
+            udp_tx_workers,
         } = self;
 
         udp_pacing_config.validate();
@@ -311,6 +328,7 @@ impl DataplaneBuilder {
                                     pacing: udp_pacing_config,
                                     buffer_size: udp_buffer_size,
                                     use_multishot: udp_multishot,
+                                    workers: udp_tx_workers,
                                 },
                                 udp_bound_addrs_tx,
                                 metrics,
@@ -406,6 +424,17 @@ pub struct UdpSocketReader {
 }
 
 impl UdpSocketReader {
+    pub async fn recv_many(&mut self, messages: &mut Vec<RecvUdpMsg>, limit: usize) -> usize {
+        assert!(limit != 0, "UDP receive batch limit must be non-zero");
+        let received = self.ingress_rx.recv_many(messages, limit).await;
+        assert!(
+            received != 0,
+            "socket {:?} ingress channel closed",
+            self.socket_id
+        );
+        received
+    }
+
     pub async fn recv(&mut self) -> RecvUdpMsg {
         self.ingress_rx
             .recv()
@@ -429,6 +458,10 @@ pub struct UdpSocketHandle {
 }
 
 impl UdpSocketHandle {
+    pub async fn recv_many(&mut self, messages: &mut Vec<RecvUdpMsg>, limit: usize) -> usize {
+        self.reader.recv_many(messages, limit).await
+    }
+
     pub fn split(self) -> (UdpSocketReader, UdpSocketWriter) {
         (self.reader, self.writer)
     }
