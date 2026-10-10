@@ -24,7 +24,7 @@ macro_rules! define_metrics {
         }
 
         #[derive(Clone)]
-        pub(crate) struct DataplaneMetrics {
+        pub struct DataplaneMetrics {
             executor_metrics: Arc<ExecutorMetrics>,
             $(pub(crate) $field: Gauge,)+
         }
@@ -42,6 +42,12 @@ macro_rules! define_metrics {
                 self.executor_metrics.as_ref()
             }
         }
+
+        impl Default for DataplaneMetrics {
+            fn default() -> Self {
+                Self::new()
+            }
+        }
     };
 }
 
@@ -53,6 +59,10 @@ define_metrics! {
     udp_receive_errors => UDP_RECEIVE_ERRORS("monad.dataplane.udp.total_receive_errors", "Total UDP socket receive errors"),
     udp_send_errors => UDP_SEND_ERRORS("monad.dataplane.udp.total_send_errors", "Total UDP socket send errors"),
     udp_egress_messages_dropped => UDP_EGRESS_MESSAGES_DROPPED("monad.dataplane.udp.total_egress_messages_dropped", "Total UDP egress messages dropped because a dataplane queue was full"),
+    udp_pacing_memory_limit_drops => UDP_PACING_MEMORY_LIMIT_DROPS("monad.dataplane.udp.pacing.total_memory_limit_drops", "Total UDP egress messages dropped because the pacing queue memory limit was reached"),
+    udp_pacing_peers => UDP_PACING_PEERS("monad.dataplane.udp.pacing.current_peers", "Current number of destination peers retained by the UDP pacing queue"),
+    udp_pacing_queued_bytes => UDP_PACING_QUEUED_BYTES("monad.dataplane.udp.pacing.current_queued_bytes", "Current UDP payload bytes retained by the pacing queue"),
+    udp_pacing_memory_limit_bytes => UDP_PACING_MEMORY_LIMIT_BYTES("monad.dataplane.udp.pacing.memory_limit_bytes", "Configured UDP pacing queue payload byte limit"),
     tcp_messages_received => TCP_MESSAGES_RECEIVED("monad.dataplane.tcp.total_messages_received", "Total TCP payload messages received from the network"),
     tcp_bytes_received => TCP_BYTES_RECEIVED("monad.dataplane.tcp.total_bytes_received", "Total TCP payload bytes received from the network"),
     tcp_messages_sent => TCP_MESSAGES_SENT("monad.dataplane.tcp.total_messages_sent", "Total TCP payload messages successfully sent to the network"),

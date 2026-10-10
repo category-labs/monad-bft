@@ -5220,6 +5220,7 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "clap",
+ "criterion",
  "env_logger 0.10.2",
  "futures",
  "futures-util",
@@ -5232,7 +5233,6 @@ dependencies = [
  "rand 0.8.6",
  "rstest",
  "socket2 0.5.10",
- "thiserror 1.0.69",
  "tokio",
  "tracing",
  "tracing-subscriber",
