@@ -1,0 +1,11 @@
+version: 2
+updates:
+  - package-ecosystem: "gitsubmodule"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # Dependency names in this ecosystem are submodule paths, and allow is an
+    # exclusive filter: a second submodule added later stays out of the bump
+    # rotation until it is listed here.
+    allow:
+      - dependency-name: "monad-execution"
