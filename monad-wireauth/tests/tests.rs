@@ -365,9 +365,9 @@ fn test_timestamp_replay() {
 #[test]
 fn test_too_many_accepted_sessions() {
     init_tracing();
-    // 1. create responder with max 5 accepted sessions
+    // 1. create responder with max 5 pending sessions
     let config = Config {
-        high_watermark_sessions: 5,
+        max_pending_accepted_sessions: 5,
         ..Default::default()
     };
 
@@ -403,7 +403,7 @@ fn test_too_many_accepted_sessions() {
         dispatch(&mut responder, &init, initiator_addr);
     }
 
-    // 3. verify responder only accepted 5 sessions (high_watermark_sessions limit)
+    // 3. verify responder only accepted 5 sessions (max_pending_accepted_sessions limit)
     let mut pkts = vec![];
     while let Some(pkt) = responder.next_packet() {
         pkts.push(pkt);
@@ -865,10 +865,17 @@ fn test_handshake_response_address_mismatch_rejected() {
     assert_eq!(decrypted, b"hello after address check");
 }
 
-#[test]
-fn test_stale_handshake_response_does_not_poison_pending_initiator() {
+#[rstest::rstest]
+#[case(1)]
+#[case(1_000)]
+fn test_stale_handshake_response_does_not_poison_pending_initiator(
+    #[case] max_pending_initiated_sessions: usize,
+) {
     init_tracing();
-    let config = Config::default();
+    let config = Config {
+        max_pending_initiated_sessions,
+        ..Config::default()
+    };
     let stale_peer1_keypair = monad_secp::KeyPair::from_ikm(b"initiator key").unwrap();
     let peer1_keypair = monad_secp::KeyPair::from_ikm(b"initiator key").unwrap();
     let peer1_context = TestContext::new();
@@ -926,10 +933,10 @@ fn test_stale_handshake_response_does_not_poison_pending_initiator() {
 }
 
 #[test]
-fn test_max_initiated_sessions_limit() {
+fn test_max_pending_initiated_sessions_limit() {
     init_tracing();
     let config = Config {
-        max_initiated_sessions: 3,
+        max_pending_initiated_sessions: 3,
         ..Config::default()
     };
 
@@ -956,6 +963,85 @@ fn test_max_initiated_sessions_limit() {
         err,
         monad_wireauth::Error::TooManyInitiatedSessions { limit: 3 }
     ));
+}
+
+#[test]
+fn test_handshake_response_completes_at_pending_capacity() {
+    let mut rng = rng();
+    let initiator_keypair = monad_secp::KeyPair::generate(&mut rng);
+    let initiator_pubkey = initiator_keypair.pubkey();
+    let mut initiator = API::new(
+        DEFAULT_METRICS,
+        Config {
+            max_pending_initiated_sessions: 1,
+            max_pending_accepted_sessions: 1,
+            ..Config::default()
+        },
+        initiator_keypair,
+        TestContext::new(),
+    );
+    let (mut responder, responder_pubkey, _, _) = create_manager();
+    let (mut other, other_pubkey, _, _) = create_manager();
+    let initiator_addr: SocketAddr = "10.0.0.1:8000".parse().unwrap();
+    let responder_addr: SocketAddr = "10.0.0.2:8000".parse().unwrap();
+    let other_addr: SocketAddr = "10.0.0.3:8000".parse().unwrap();
+
+    initiator
+        .connect(responder_pubkey, responder_addr, DEFAULT_RETRY_ATTEMPTS)
+        .unwrap();
+    let init = collect::<HandshakeInitiation>(&mut initiator);
+    dispatch(&mut responder, &init, initiator_addr);
+    let response = collect::<HandshakeResponse>(&mut responder);
+
+    // Fill the accepted pool independently of our occupied initiated slot.
+    other
+        .connect(initiator_pubkey, initiator_addr, DEFAULT_RETRY_ATTEMPTS)
+        .unwrap();
+    let other_init = collect::<HandshakeInitiation>(&mut other);
+    dispatch(&mut initiator, &other_init, other_addr);
+    let other_response = collect::<HandshakeResponse>(&mut initiator);
+    let (mut extra, _, _, _) = create_manager();
+    let extra_addr: SocketAddr = "10.0.0.4:8000".parse().unwrap();
+    extra
+        .connect(initiator_pubkey, initiator_addr, DEFAULT_RETRY_ATTEMPTS)
+        .unwrap();
+    let extra_init = collect::<HandshakeInitiation>(&mut extra);
+    dispatch(&mut initiator, &extra_init, extra_addr);
+    assert!(initiator.next_packet().is_none());
+    assert!(matches!(
+        initiator.connect(other_pubkey, other_addr, DEFAULT_RETRY_ATTEMPTS),
+        Err(monad_wireauth::Error::TooManyInitiatedSessions { limit: 1 })
+    ));
+
+    // Exemption from the pending limit must not bypass source-address validation.
+    let mut wrong_source_response = response.clone();
+    let Packet::Control(control) = Packet::try_from(&mut wrong_source_response[..]).unwrap() else {
+        panic!("expected handshake response");
+    };
+    assert!(matches!(
+        initiator.dispatch_control(control, other_addr),
+        Err(monad_wireauth::Error::HandshakeResponseAddressMismatch { .. })
+    ));
+    assert!(!initiator.is_connected_public_key(&responder_pubkey));
+
+    // A valid response completes even while both pending budgets are full.
+    dispatch(&mut initiator, &response, responder_addr);
+    assert!(initiator.is_connected_public_key(&responder_pubkey));
+    let (_, confirmation) = initiator.next_packet().unwrap();
+    dispatch(&mut responder, &confirmation, initiator_addr);
+    assert!(responder.is_connected_public_key(&initiator_pubkey));
+
+    // Completion frees the initiated slot despite the accepted pool remaining full.
+    initiator
+        .connect(other_pubkey, other_addr, DEFAULT_RETRY_ATTEMPTS)
+        .unwrap();
+    collect::<HandshakeInitiation>(&mut initiator);
+
+    // The first authenticated packet also promotes an accepted session at capacity.
+    dispatch(&mut other, &other_response, initiator_addr);
+    let confirmation = collect::<DataPacketHeader>(&mut other);
+    dispatch(&mut initiator, &confirmation, other_addr);
+    assert!(initiator.is_connected_public_key(&other_pubkey));
 }
 
 #[test]
@@ -1144,4 +1230,392 @@ fn test_gc_terminate_has_no_side_effects() {
 
     assert!(!peer1.is_connected_public_key(&peer2_pubkey));
     assert!(!peer2.is_connected_public_key(&peer1_pubkey));
+}
+
+// API-only peers for exercising admission, overlap, and timer-driven handshakes.
+struct LimitPeer {
+    api: API<TestContext>,
+    public_key: monad_secp::PubKey,
+    context: TestContext,
+    addr: SocketAddr,
+}
+
+impl LimitPeer {
+    fn new(addr: &str, config: Config) -> Self {
+        let key = monad_secp::KeyPair::generate(&mut rng());
+        let public_key = key.pubkey();
+        let context = TestContext::new();
+        Self {
+            api: API::new(DEFAULT_METRICS, config, key, context.clone()),
+            public_key,
+            context,
+            addr: addr.parse().unwrap(),
+        }
+    }
+
+    fn receive(&mut self, mut packet: Vec<u8>, from: SocketAddr) -> monad_wireauth::Result<()> {
+        match Packet::try_from(packet.as_mut_slice()).unwrap() {
+            Packet::Control(control) => self.api.dispatch_control(control, from),
+            Packet::Data(data) => self.api.decrypt(data, from).map(|_| ()),
+        }
+    }
+
+    fn finish(&mut self, responder: &mut Self) -> monad_wireauth::Result<()> {
+        responder.receive(collect::<HandshakeInitiation>(&mut self.api), self.addr)?;
+        self.receive(
+            collect::<HandshakeResponse>(&mut responder.api),
+            responder.addr,
+        )?;
+        responder.receive(collect::<DataPacketHeader>(&mut self.api), self.addr)
+    }
+
+    fn establish(&mut self, responder: &mut Self) -> monad_wireauth::Result<()> {
+        self.context.advance_time(Duration::from_millis(1));
+        responder.context.advance_time(Duration::from_millis(1));
+        self.api
+            .connect(responder.public_key, responder.addr, DEFAULT_RETRY_ATTEMPTS)?;
+        self.finish(responder)
+    }
+
+    fn metric(&self, definition: &'static monad_executor::MetricDef) -> u64 {
+        self.api
+            .metrics()
+            .into_inner()
+            .into_iter()
+            .find(|(name, _, _)| *name == definition.name)
+            .unwrap()
+            .1
+    }
+}
+
+#[rstest::rstest]
+#[case(Some(1), true)]
+#[case(Some(1), false)]
+#[case(Some(4), true)]
+#[case(Some(4), false)]
+#[case(None, true)]
+#[case(None, false)]
+fn test_existing_peer_exception_bounds_established_sessions(
+    #[case] configured_limit: Option<usize>,
+    #[case] victim_initiates: bool,
+) {
+    let mut config = Config::default();
+    if let Some(limit) = configured_limit {
+        config.max_established_peers_per_ip = limit;
+    }
+    let limit = config.max_established_peers_per_ip;
+    let mut victim = LimitPeer::new("10.0.0.1:9000", config);
+    let mut peers: Vec<_> = (0..limit)
+        .map(|i| LimitPeer::new(&format!("10.0.0.2:{}", 9000 + i), Config::default()))
+        .collect();
+    let mut expected_transports = 0;
+    let mut oldest_packets = Vec::new();
+    // Repeated API handshakes in both roles, with source-port churn. Never tick:
+    // removal must happen on promotion, independently of timeout cleanup.
+    for round in 0..16 {
+        for (i, peer) in peers.iter_mut().enumerate() {
+            peer.addr
+                .set_port((9000 + round * limit + i).try_into().unwrap());
+            for local_initiator in [true, false] {
+                if local_initiator {
+                    victim.establish(peer).unwrap();
+                } else {
+                    peer.establish(&mut victim).unwrap();
+                }
+                if round < 2 {
+                    expected_transports += 1;
+                }
+                assert_eq!(
+                    victim.metric(DEFAULT_METRICS.state_transport_sessions),
+                    expected_transports
+                );
+                assert_eq!(
+                    victim.metric(DEFAULT_METRICS.state_allocated_indices),
+                    expected_transports
+                );
+                if round == 0 {
+                    // Save a packet for the first session in each role. It must
+                    // remain decryptable as the previous session, then be evicted.
+                    let packet =
+                        encrypt(&mut peer.api, &victim.public_key, &mut b"old key".to_vec());
+                    oldest_packets.push((peer.addr, packet));
+                }
+            }
+        }
+        if round == 1 {
+            for (from, packet) in &oldest_packets {
+                victim.receive(packet.clone(), *from).unwrap();
+            }
+        } else if round == 2 {
+            for (from, packet) in &oldest_packets {
+                // Require a missing receiver index, not merely a replay error.
+                assert!(matches!(
+                    victim.receive(packet.clone(), *from),
+                    Err(monad_wireauth::Error::SessionIndexNotFound { .. })
+                ));
+            }
+        }
+    }
+    assert_eq!(expected_transports, (4 * limit) as u64);
+    for peer in &mut peers {
+        let packet = encrypt(
+            &mut victim.api,
+            &peer.public_key,
+            &mut b"after rekey".to_vec(),
+        );
+        assert_eq!(decrypt(&mut peer.api, &packet, victim.addr), b"after rekey");
+    }
+    let decrypt_errors = victim.metric(DEFAULT_METRICS.error_decrypt);
+
+    let mut extra = LimitPeer::new("10.0.0.2:9999", Config::default());
+    let result = if victim_initiates {
+        victim.establish(&mut extra)
+    } else {
+        extra.establish(&mut victim)
+    };
+    assert!(
+        matches!(result, Err(monad_wireauth::Error::TooManyEstablishedPeersForIp { limit: actual, .. }) if actual == limit)
+    );
+    assert!(!victim.api.is_connected_public_key(&extra.public_key));
+    assert_eq!(
+        victim.metric(DEFAULT_METRICS.error_established_peer_limit),
+        1
+    );
+    assert_eq!(victim.metric(DEFAULT_METRICS.error_session_exhausted), 0);
+    assert_eq!(victim.metric(DEFAULT_METRICS.error_decrypt), decrypt_errors);
+    assert_eq!(victim.metric(DEFAULT_METRICS.state_initiating_sessions), 0);
+    assert_eq!(victim.metric(DEFAULT_METRICS.state_responding_sessions), 0);
+    assert_eq!(
+        victim.metric(DEFAULT_METRICS.state_allocated_indices),
+        expected_transports
+    );
+
+    victim.api.disconnect(&peers[0].public_key);
+    if victim_initiates {
+        victim.establish(&mut extra).unwrap();
+    } else {
+        extra.establish(&mut victim).unwrap();
+    }
+    assert!(victim.api.is_connected_public_key(&extra.public_key));
+}
+
+#[rstest::rstest]
+#[case(true)]
+#[case(false)]
+fn test_peer_allowance_survives_old_session_expiry(#[case] victim_initiates: bool) {
+    let config = Config {
+        max_established_peers_per_ip: 1,
+        session_timeout: Duration::from_secs(1000),
+        session_timeout_jitter: Duration::ZERO,
+        keepalive_interval: Duration::from_secs(1000),
+        max_session_duration: Duration::from_secs(5),
+        ..Config::default()
+    };
+    let mut victim = LimitPeer::new("10.0.0.1:9000", config.clone());
+    let mut peer = LimitPeer::new("10.0.0.2:9000", config);
+    let mut extra = LimitPeer::new("10.0.0.2:9001", Config::default());
+    for round in 0..2 {
+        if round != 0 {
+            victim.context.advance_time(Duration::from_secs(3));
+            peer.context.advance_time(Duration::from_secs(3));
+        }
+        if victim_initiates {
+            victim.establish(&mut peer).unwrap();
+        } else {
+            peer.establish(&mut victim).unwrap();
+        }
+    }
+    victim.context.advance_time(Duration::from_millis(2100));
+    victim.api.tick();
+    assert_eq!(victim.metric(DEFAULT_METRICS.state_transport_sessions), 1);
+    assert!(matches!(
+        extra.establish(&mut victim),
+        Err(monad_wireauth::Error::TooManyEstablishedPeersForIp { .. })
+    ));
+    victim.context.advance_time(Duration::from_secs(3));
+    victim.api.tick();
+    assert_eq!(victim.metric(DEFAULT_METRICS.state_transport_sessions), 0);
+    extra.establish(&mut victim).unwrap();
+}
+
+#[test]
+fn test_existing_identity_must_fit_new_ip_limit() {
+    let mut victim = LimitPeer::new(
+        "10.0.0.1:9000",
+        Config {
+            max_established_peers_per_ip: 1,
+            ..Config::default()
+        },
+    );
+    let mut moving = LimitPeer::new("10.0.0.2:9000", Config::default());
+    let mut resident = LimitPeer::new("10.0.0.3:9000", Config::default());
+    moving.establish(&mut victim).unwrap();
+    resident.establish(&mut victim).unwrap();
+    moving.addr = "10.0.0.3:9001".parse().unwrap();
+    assert!(matches!(
+        moving.establish(&mut victim),
+        Err(monad_wireauth::Error::TooManyEstablishedPeersForIp { .. })
+    ));
+    victim.api.disconnect(&resident.public_key);
+    moving.establish(&mut victim).unwrap();
+    // The same identity still occupies its allowance on the old IP as well.
+    let mut extra = LimitPeer::new("10.0.0.2:9001", Config::default());
+    assert!(matches!(
+        extra.establish(&mut victim),
+        Err(monad_wireauth::Error::TooManyEstablishedPeersForIp { .. })
+    ));
+    victim.api.disconnect(&moving.public_key);
+    extra.establish(&mut victim).unwrap();
+}
+
+#[rstest::rstest]
+#[case(1, 3, true)]
+#[case(3, 1, true)]
+#[case(1, 3, false)]
+#[case(3, 1, false)]
+#[case(0, 2, true)]
+#[case(2, 0, false)]
+fn test_pending_accepted_and_initiated_budgets_are_independent(
+    #[case] accepted_limit: usize,
+    #[case] initiated_limit: usize,
+    #[case] accepted_first: bool,
+) {
+    let mut victim = LimitPeer::new(
+        "10.0.0.1:9000",
+        Config {
+            max_pending_accepted_sessions: accepted_limit,
+            max_pending_initiated_sessions: initiated_limit,
+            ..Config::default()
+        },
+    );
+    for fill_accepted in [accepted_first, !accepted_first] {
+        let limit = if fill_accepted {
+            accepted_limit
+        } else {
+            initiated_limit
+        };
+        for i in 0..limit {
+            let mut peer = LimitPeer::new(&format!("10.0.0.2:{}", 9000 + i), Config::default());
+            if fill_accepted {
+                peer.api.connect(victim.public_key, victim.addr, 0).unwrap();
+                victim
+                    .receive(collect::<HandshakeInitiation>(&mut peer.api), peer.addr)
+                    .unwrap();
+                collect::<HandshakeResponse>(&mut victim.api);
+            } else {
+                victim.api.connect(peer.public_key, peer.addr, 0).unwrap();
+                collect::<HandshakeInitiation>(&mut victim.api);
+            }
+        }
+        // Verify rejection in this direction before filling the other budget.
+        let mut extra = LimitPeer::new("10.0.0.3:9000", Config::default());
+        if fill_accepted {
+            extra
+                .api
+                .connect(victim.public_key, victim.addr, 0)
+                .unwrap();
+            victim
+                .receive(collect::<HandshakeInitiation>(&mut extra.api), extra.addr)
+                .unwrap();
+            assert!(victim.api.next_packet().is_none());
+            assert_eq!(
+                victim.metric(DEFAULT_METRICS.filter_pending_accepted_session_limit),
+                1
+            );
+        } else {
+            assert!(
+                matches!(victim.api.connect(extra.public_key, extra.addr, 0),
+                Err(monad_wireauth::Error::TooManyInitiatedSessions { limit }) if limit == initiated_limit)
+            );
+            assert_eq!(
+                victim.metric(DEFAULT_METRICS.error_pending_initiated_session_limit),
+                1
+            );
+        }
+    }
+    assert_eq!(
+        victim.metric(DEFAULT_METRICS.state_initiating_sessions),
+        initiated_limit as u64
+    );
+    assert_eq!(
+        victim.metric(DEFAULT_METRICS.state_responding_sessions),
+        accepted_limit as u64
+    );
+    assert_eq!(victim.metric(DEFAULT_METRICS.error_session_exhausted), 0);
+}
+
+#[test]
+fn test_pending_peer_does_not_reserve_established_allowance() {
+    let mut victim = LimitPeer::new(
+        "10.0.0.1:9000",
+        Config {
+            max_established_peers_per_ip: 1,
+            ..Config::default()
+        },
+    );
+    let mut pending = LimitPeer::new("10.0.0.2:9000", Config::default());
+    let mut honest = LimitPeer::new("10.0.0.2:9001", Config::default());
+    pending
+        .api
+        .connect(victim.public_key, victim.addr, 0)
+        .unwrap();
+    victim
+        .receive(
+            collect::<HandshakeInitiation>(&mut pending.api),
+            pending.addr,
+        )
+        .unwrap();
+    let held_response = collect::<HandshakeResponse>(&mut victim.api);
+    // Pending state for another key on the same IP does not prevent promotion.
+    honest.establish(&mut victim).unwrap();
+    pending.receive(held_response, victim.addr).unwrap();
+    let confirmation = collect::<DataPacketHeader>(&mut pending.api);
+    assert!(matches!(
+        victim.receive(confirmation, pending.addr),
+        Err(monad_wireauth::Error::TooManyEstablishedPeersForIp { .. })
+    ));
+    assert!(victim.api.is_connected_public_key(&honest.public_key));
+    assert!(!victim
+        .api
+        .has_any_session_by_public_key(&pending.public_key));
+}
+
+#[test]
+fn test_pending_responders_cannot_exceed_transport_limit_on_promotion() {
+    let mut victim = LimitPeer::new(
+        "10.0.0.1:9000",
+        Config {
+            total_transport_sessions: 1,
+            ..Config::default()
+        },
+    );
+    let mut first = LimitPeer::new("10.0.0.2:9000", Config::default());
+    let mut second = LimitPeer::new("10.0.0.3:9000", Config::default());
+
+    for peer in [&mut first, &mut second] {
+        peer.api.connect(victim.public_key, victim.addr, 0).unwrap();
+        victim
+            .receive(collect::<HandshakeInitiation>(&mut peer.api), peer.addr)
+            .unwrap();
+        peer.receive(collect::<HandshakeResponse>(&mut victim.api), victim.addr)
+            .unwrap();
+    }
+    assert_eq!(victim.metric(DEFAULT_METRICS.state_responding_sessions), 2);
+
+    victim
+        .receive(collect::<DataPacketHeader>(&mut first.api), first.addr)
+        .unwrap();
+    assert!(matches!(
+        victim.receive(collect::<DataPacketHeader>(&mut second.api), second.addr),
+        Err(monad_wireauth::Error::TooManyTransportSessions { limit: 1 })
+    ));
+    assert_eq!(victim.metric(DEFAULT_METRICS.state_transport_sessions), 1);
+    assert_eq!(victim.metric(DEFAULT_METRICS.state_responding_sessions), 0);
+    assert_eq!(victim.metric(DEFAULT_METRICS.state_allocated_indices), 1);
+    assert_eq!(
+        victim.metric(DEFAULT_METRICS.error_transport_session_limit),
+        1
+    );
+    assert!(victim.api.is_connected_public_key(&first.public_key));
+    assert!(!victim.api.has_any_session_by_public_key(&second.public_key));
 }

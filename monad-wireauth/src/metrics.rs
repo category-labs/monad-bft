@@ -37,6 +37,7 @@ pub struct MetricNames {
     pub filter_send_cookie: &'static MetricDef,
     pub filter_drop: &'static MetricDef,
     pub filter_ip_request_history_size: &'static MetricDef,
+    pub filter_pending_accepted_session_limit: &'static MetricDef,
 
     pub api_connect: &'static MetricDef,
     pub api_decrypt: &'static MetricDef,
@@ -62,6 +63,9 @@ pub struct MetricNames {
     pub error_dispatch_control: &'static MetricDef,
 
     pub error_session_exhausted: &'static MetricDef,
+    pub error_transport_session_limit: &'static MetricDef,
+    pub error_established_peer_limit: &'static MetricDef,
+    pub error_pending_initiated_session_limit: &'static MetricDef,
     pub error_mac1_verification_failed: &'static MetricDef,
     pub error_timestamp_replay: &'static MetricDef,
     pub error_session_not_found: &'static MetricDef,
@@ -102,16 +106,17 @@ impl MetricNames {
         ]
     }
 
-    pub(crate) fn filter_metric_defs(&'static self) -> [&'static MetricDef; 4] {
+    pub(crate) fn filter_metric_defs(&'static self) -> [&'static MetricDef; 5] {
         [
             self.filter_pass,
             self.filter_send_cookie,
             self.filter_drop,
             self.filter_ip_request_history_size,
+            self.filter_pending_accepted_session_limit,
         ]
     }
 
-    pub(crate) fn api_metric_defs(&'static self) -> [&'static MetricDef; 38] {
+    pub(crate) fn api_metric_defs(&'static self) -> [&'static MetricDef; 41] {
         [
             self.state_timers_size,
             self.state_packet_queue_size,
@@ -136,6 +141,9 @@ impl MetricNames {
             self.error_encrypt_by_socket,
             self.error_dispatch_control,
             self.error_session_exhausted,
+            self.error_transport_session_limit,
+            self.error_established_peer_limit,
+            self.error_pending_initiated_session_limit,
             self.error_mac1_verification_failed,
             self.error_timestamp_replay,
             self.error_session_not_found,
@@ -267,6 +275,10 @@ macro_rules! define_metric_names {
                 concat!("monad.wireauth.", $transport, ".filter.drop"),
                 "handshake requests rejected due to rate limits",
             ),
+            filter_pending_accepted_session_limit: &monad_executor::MetricDef::new(
+                concat!("monad.wireauth.", $transport, ".filter.pending_accepted_session_limit"),
+                "incoming initiations rejected at the pending accepted session limit",
+            ),
             filter_ip_request_history_size: &monad_executor::MetricDef::new(
                 concat!("monad.wireauth.", $transport, ".filter.ip_request_history_size"),
                 "lru cache tracking recent handshake requests per ip",
@@ -354,9 +366,21 @@ macro_rules! define_metric_names {
                 concat!("monad.wireauth.", $transport, ".error.dispatch_control"),
                 "control message processing failures",
             ),
+            error_pending_initiated_session_limit: &monad_executor::MetricDef::new(
+                concat!("monad.wireauth.", $transport, ".error.pending_initiated_session_limit"),
+                "explicit connect attempts rejected at the pending initiated session limit",
+            ),
+            error_established_peer_limit: &monad_executor::MetricDef::new(
+                concat!("monad.wireauth.", $transport, ".error.established_peer_limit"),
+                "authenticated promotions rejected at the established peer per-IP limit",
+            ),
             error_session_exhausted: &monad_executor::MetricDef::new(
                 concat!("monad.wireauth.", $transport, ".error.session_exhausted"),
-                "rejected due to hitting max session limit",
+                "session index space exhausted",
+            ),
+            error_transport_session_limit: &monad_executor::MetricDef::new(
+                concat!("monad.wireauth.", $transport, ".error.transport_session_limit"),
+                "authenticated promotions rejected at the transport session limit",
             ),
             error_mac1_verification_failed: &monad_executor::MetricDef::new(
                 concat!("monad.wireauth.", $transport, ".error.mac1_verification_failed"),
