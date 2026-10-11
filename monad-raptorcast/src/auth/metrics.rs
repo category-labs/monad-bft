@@ -32,6 +32,19 @@ monad_executor::metric_consts! {
         name: "monad.raptorcast.auth.non_authenticated_udp_bytes_read",
         help: "Bytes read via non-authenticated UDP",
     }
+    pub COUNTER_DIRECT_UDP_ACKS_GENERATED {
+        name: "monad.raptorcast.direct_udp.acks_generated",
+        help: "Direct UDP acknowledgement packets generated",
+    }
+    pub COUNTER_DIRECT_UDP_ACKS_RECEIVED {
+        name: "monad.raptorcast.direct_udp.acks_received",
+        help: "Valid authenticated Direct UDP acknowledgement packets received",
+    }
+    pub COUNTER_DIRECT_UDP_INVALID_PACKETS {
+        name: "monad.raptorcast.direct_udp.invalid_packets",
+        help: "Authenticated Direct UDP packets rejected by framing or reassembly",
+    }
+
 }
 
 monad_wireauth::define_metric_names!(UDP_METRICS, "udp");
@@ -43,5 +56,13 @@ pub(crate) fn init_socket_executor_metrics() -> ExecutorMetrics {
         GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_WRITTEN,
         GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_READ,
         GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_READ,
+    ])
+}
+
+pub(crate) fn init_framing_metrics() -> ExecutorMetrics {
+    ExecutorMetrics::with_metric_defs(&[
+        COUNTER_DIRECT_UDP_ACKS_GENERATED,
+        COUNTER_DIRECT_UDP_ACKS_RECEIVED,
+        COUNTER_DIRECT_UDP_INVALID_PACKETS,
     ])
 }

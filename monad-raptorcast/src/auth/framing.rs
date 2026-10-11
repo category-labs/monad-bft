@@ -21,7 +21,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use monad_executor::ExecutorMetricsChain;
+use monad_executor::{ExecutorMetrics, ExecutorMetricsChain};
 use monad_leanudp::{
     Acknowledgement, Clock, Config, DecodeError, DecodeOutcome, Decoder, EncodeError, Encoder,
     FragmentPolicy, IdentityScore, Packet, RetrySender, SystemClock,
@@ -29,6 +29,11 @@ use monad_leanudp::{
 use monad_peer_score::PeerStatus;
 use monad_types::UdpPriority;
 use thiserror::Error;
+
+use super::metrics::{
+    init_framing_metrics, COUNTER_DIRECT_UDP_ACKS_GENERATED, COUNTER_DIRECT_UDP_ACKS_RECEIVED,
+    COUNTER_DIRECT_UDP_INVALID_PACKETS,
+};
 
 pub trait AuthPacketFramer<P> {
     type Decoded;
@@ -128,6 +133,7 @@ where
     sender: RetrySender<N, UdpPriority>,
     acknowledgements: VecDeque<(N, Bytes)>,
     clock: C,
+    metrics: ExecutorMetrics,
     config: Config,
 }
 
@@ -156,6 +162,7 @@ where
             decoder,
             sender,
             acknowledgements: VecDeque::new(),
+            metrics: init_framing_metrics(),
             clock,
             config,
         }
@@ -174,6 +181,7 @@ where
             .push(self.encoder.executor_metrics())
             .push(self.decoder.executor_metrics())
             .push(self.sender.metrics())
+            .push(&self.metrics)
     }
 }
 
@@ -236,6 +244,9 @@ where
                 .into_iter()
                 .map(|(peer, ack)| (peer, ack.encode())),
         );
+        self.metrics
+            .gauge(COUNTER_DIRECT_UDP_ACKS_GENERATED)
+            .add(self.acknowledgements.len() as u64);
         let mut packets: Vec<_> = self
             .acknowledgements
             .drain(..)
@@ -250,19 +261,27 @@ where
         identity: N,
         packet: Bytes,
     ) -> Result<Option<Self::Decoded>, Self::Error> {
-        let packet = Packet::try_from(packet)?;
-        if let Some(ack) = Acknowledgement::from_packet(&packet)? {
-            self.sender.acknowledge(&identity, ack, self.clock.now());
-            return Ok(None);
+        let result = (|| {
+            let packet = Packet::try_from(packet)?;
+            if packet.header.is_ack() {
+                let ack = Acknowledgement::from_packet(&packet)?.expect("ACK header");
+                self.metrics.gauge(COUNTER_DIRECT_UDP_ACKS_RECEIVED).inc();
+                self.sender.acknowledge(&identity, ack, self.clock.now());
+                return Ok(None);
+            }
+            let (outcome, ack) = self.decoder.decode_with_ack(identity.clone(), packet)?;
+            if let Some(ack) = ack {
+                self.acknowledgements.push_back((identity, ack.encode()));
+            }
+            match outcome {
+                DecodeOutcome::Pending => Ok(None),
+                DecodeOutcome::Complete(payload) => Ok(Some(payload)),
+            }
+        })();
+        if result.is_err() {
+            self.metrics.gauge(COUNTER_DIRECT_UDP_INVALID_PACKETS).inc();
         }
-        let (outcome, ack) = self.decoder.decode_with_ack(identity.clone(), packet)?;
-        if let Some(ack) = ack {
-            self.acknowledgements.push_back((identity, ack.encode()));
-        }
-        match outcome {
-            DecodeOutcome::Pending => Ok(None),
-            DecodeOutcome::Complete(payload) => Ok(Some(payload)),
-        }
+        result
     }
 
     fn metrics(&self) -> ExecutorMetricsChain<'_> {
@@ -401,5 +420,172 @@ mod tests {
                 .get()
                 > 2
         );
+    }
+    #[derive(Clone)]
+    struct TestClock(std::rc::Rc<std::cell::Cell<Instant>>);
+    impl Clock for TestClock {
+        fn now(&self) -> Instant {
+            self.0.get()
+        }
+    }
+    impl TestClock {
+        fn new() -> Self {
+            Self(std::rc::Rc::new(std::cell::Cell::new(Instant::now())))
+        }
+        fn advance(&self, ms: u64) {
+            self.0.set(self.now() + Duration::from_millis(ms));
+        }
+    }
+    type TestFramer = LeanUdpFramer<u64, NopScore<u64>, TestClock>;
+    fn test_framer(clock: &TestClock) -> TestFramer {
+        TestFramer::with_clock(
+            NopScore::new(),
+            Config {
+                max_fragment_payload: 64,
+                max_regular_messages: 1,
+                ..Config::default()
+            },
+            clock.clone(),
+        )
+    }
+    fn start(sender: &mut TestFramer) -> (Bytes, Vec<Bytes>) {
+        let payload = Bytes::from(vec![5; 150]);
+        let (id, packets) = sender
+            .frame(
+                2,
+                payload.clone(),
+                UdpPriority::Regular,
+                Duration::from_millis(500),
+            )
+            .unwrap();
+        sender.mark_sent(&2, id);
+        (payload, packets)
+    }
+    fn feedback(receiver: &mut TestFramer, sender: &mut TestFramer) {
+        for (peer, priority, packet) in receiver.poll_outbound() {
+            assert_eq!(peer, 1);
+            assert_eq!(priority, UdpPriority::High);
+            assert_eq!(sender.deframe(2, packet).unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn selective_retry_recovers_missing_end_fragment() {
+        let clock = TestClock::new();
+        let mut sender = test_framer(&clock);
+        let mut receiver = test_framer(&clock);
+        let (payload, packets) = start(&mut sender);
+        for packet in &packets[..2] {
+            assert_eq!(receiver.deframe(1, packet.clone()).unwrap(), None);
+        }
+        clock.advance(200);
+        feedback(&mut receiver, &mut sender);
+        clock.advance(300);
+        let retry = sender.poll_outbound();
+        assert_eq!(retry.len(), 1);
+        assert_eq!(retry[0].2, packets[2]);
+        assert_eq!(
+            receiver.deframe(1, retry[0].2.clone()).unwrap(),
+            Some(payload)
+        );
+        feedback(&mut receiver, &mut sender);
+        assert_eq!(
+            sender
+                .sender
+                .metrics()
+                .metric_handles()
+                .into_iter()
+                .find(|(name, _, _)| *name == "monad.leanudp.retry.messages")
+                .unwrap()
+                .1
+                .get(),
+            0
+        );
+        clock.advance(500);
+        assert!(sender.poll_outbound().is_empty());
+    }
+
+    #[test]
+    fn lost_progress_ack_falls_back_to_all_fragments() {
+        let clock = TestClock::new();
+        let mut sender = test_framer(&clock);
+        let mut receiver = test_framer(&clock);
+        let (payload, packets) = start(&mut sender);
+        for seq in [0, 2] {
+            receiver.deframe(1, packets[seq].clone()).unwrap();
+        }
+        clock.advance(200);
+        assert_eq!(receiver.poll_outbound().len(), 1); // drop the ACK
+        clock.advance(300);
+        let retry = sender.poll_outbound();
+        assert_eq!(retry.len(), 3);
+        let deliveries: Vec<_> = retry
+            .into_iter()
+            .filter_map(|(_, _, packet)| receiver.deframe(1, packet).unwrap())
+            .collect();
+        assert_eq!(deliveries, [payload]);
+        feedback(&mut receiver, &mut sender);
+        assert_eq!(
+            receiver
+                .metrics
+                .gauge(COUNTER_DIRECT_UDP_INVALID_PACKETS)
+                .get(),
+            0
+        );
+    }
+
+    #[test]
+    fn lost_completion_ack_allows_duplicate_delivery() {
+        let clock = TestClock::new();
+        let mut sender = test_framer(&clock);
+        let mut receiver = test_framer(&clock);
+        let (payload, packets) = start(&mut sender);
+        let first: Vec<_> = packets
+            .into_iter()
+            .filter_map(|packet| receiver.deframe(1, packet).unwrap())
+            .collect();
+        assert_eq!(first, [payload.clone()]);
+        assert_eq!(receiver.poll_outbound().len(), 1); // drop completion
+        clock.advance(500);
+        let second: Vec<_> = sender
+            .poll_outbound()
+            .into_iter()
+            .filter_map(|(_, _, packet)| receiver.deframe(1, packet).unwrap())
+            .collect();
+        assert_eq!(second, [payload]);
+        feedback(&mut receiver, &mut sender);
+        assert_eq!(
+            sender.metrics.gauge(COUNTER_DIRECT_UDP_ACKS_RECEIVED).get(),
+            1
+        );
+    }
+
+    #[test]
+    fn receiver_eviction_replaces_ack_snapshot_and_requests_old_chunks() {
+        let clock = TestClock::new();
+        let mut sender = test_framer(&clock);
+        let mut receiver = test_framer(&clock);
+        let (payload, packets) = start(&mut sender);
+        receiver.deframe(1, packets[0].clone()).unwrap();
+        clock.advance(200);
+        feedback(&mut receiver, &mut sender);
+        receiver.deframe(9, packets[0].clone()).unwrap(); // evicts the first entry
+        clock.advance(300);
+        let retry = sender.poll_outbound();
+        assert_eq!(retry.len(), 2);
+        for (_, _, packet) in retry {
+            assert_eq!(receiver.deframe(1, packet).unwrap(), None);
+        }
+        clock.advance(200);
+        feedback(&mut receiver, &mut sender); // now holds 1 and 2, no longer 0
+        clock.advance(300);
+        let retry = sender.poll_outbound();
+        assert_eq!(retry.len(), 1);
+        assert_eq!(retry[0].2, packets[0]);
+        assert_eq!(
+            receiver.deframe(1, retry[0].2.clone()).unwrap(),
+            Some(payload)
+        );
+        feedback(&mut receiver, &mut sender);
     }
 }
