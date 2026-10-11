@@ -29,7 +29,7 @@ use zerocopy::FromBytes;
 use crate::{
     metrics::*,
     pool::{EvictionKind, FragmentInput, IdentityUsage, MessagePool, MessageStatus, PoolConfig},
-    Config, FragmentPolicy, IdentityScore, PacketHeader, LEANUDP_HEADER_SIZE,
+    Acknowledgement, Config, FragmentPolicy, IdentityScore, PacketHeader, LEANUDP_HEADER_SIZE,
     LEANUDP_PROTOCOL_VERSION,
 };
 
@@ -326,7 +326,7 @@ where
         selected_pool: PoolSelection,
         key: &(I, u16),
         input: FragmentInput<I>,
-    ) -> Result<DecodeOutcome, DecodeError> {
+    ) -> Result<(DecodeOutcome, Option<Acknowledgement>), DecodeError> {
         let input_identity = input.identity.clone();
         let mut identity_timeout_evicted = false;
         let (result, pool_evicted) = {
@@ -355,7 +355,7 @@ where
         &mut self,
         selected_pool: PoolSelection,
         payload_bytes: u64,
-        result: &Result<DecodeOutcome, DecodeError>,
+        result: &Result<(DecodeOutcome, Option<Acknowledgement>), DecodeError>,
     ) {
         self.metrics.gauge(selected_pool.fragments_counter()).inc();
         if payload_bytes > 0 {
@@ -365,7 +365,7 @@ where
         }
 
         match result {
-            Ok(DecodeOutcome::Complete(msg)) => {
+            Ok((DecodeOutcome::Complete(msg), _)) => {
                 self.metrics
                     .gauge(COUNTER_LEANUDP_DECODE_MESSAGES_COMPLETED)
                     .inc();
@@ -373,7 +373,7 @@ where
                     .gauge(COUNTER_LEANUDP_DECODE_BYTES_COMPLETED)
                     .add(msg.len() as u64);
             }
-            Ok(DecodeOutcome::Pending) => {}
+            Ok((DecodeOutcome::Pending, _)) => {}
             Err(e) => {
                 self.metrics.gauge(e.metric_name()).inc();
             }
@@ -385,7 +385,47 @@ where
         error
     }
 
+    /// The earliest progress-ACK or reassembly-expiration deadline.
+    pub fn next_deadline(&self) -> Option<Instant> {
+        self.dedicated_pools
+            .values()
+            .chain([&self.priority_pool, &self.regular_pool])
+            .filter_map(MessagePool::next_deadline)
+            .min()
+    }
+
+    /// Emits snapshots only for retained entries; expired entries never acknowledge discarded data.
+    pub fn poll_acknowledgements(&mut self) -> Vec<(I, Acknowledgement)> {
+        let now = self.clock.now();
+        let mut acks = Vec::new();
+        for pool in self
+            .dedicated_pools
+            .values_mut()
+            .chain([&mut self.priority_pool, &mut self.regular_pool])
+        {
+            let (pending, expired) = pool.tick(now);
+            acks.extend(pending);
+            self.metrics
+                .gauge(EvictionKind::Timeout.metric_name())
+                .add(expired);
+        }
+        acks
+    }
+
     pub fn decode<T>(&mut self, identity: I, packet: T) -> Result<DecodeOutcome, DecodeError>
+    where
+        T: TryInto<Packet>,
+        T::Error: Into<DecodeError>,
+    {
+        self.decode_with_ack(identity, packet)
+            .map(|(outcome, _)| outcome)
+    }
+
+    pub fn decode_with_ack<T>(
+        &mut self,
+        identity: I,
+        packet: T,
+    ) -> Result<(DecodeOutcome, Option<Acknowledgement>), DecodeError>
     where
         T: TryInto<Packet>,
         T::Error: Into<DecodeError>,

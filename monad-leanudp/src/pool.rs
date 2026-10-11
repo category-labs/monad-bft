@@ -28,7 +28,7 @@ use crate::{
     decoder::{DecodeError, DecodeOutcome},
     encoder::MAX_FRAGMENTS,
     metrics::*,
-    Config, FragmentType,
+    Acknowledgement, Config, FragmentBitmap, FragmentType, ACK_DELAY,
 };
 
 macro_rules! ensure {
@@ -58,6 +58,7 @@ struct MessageState {
     total_size: usize,
     total_frags: Option<u16>,
     eviction_deadline: Instant,
+    ack_deadline: Option<Instant>,
 }
 
 impl MessageState {
@@ -67,7 +68,16 @@ impl MessageState {
             total_size: 0,
             total_frags: None,
             eviction_deadline,
+            ack_deadline: None,
         }
+    }
+
+    fn acknowledgement(&self, msg_id: u16) -> Acknowledgement {
+        let mut received = FragmentBitmap::default();
+        for seq in self.fragments.keys() {
+            received.insert(*seq);
+        }
+        Acknowledgement { msg_id, received }
     }
 
     fn extract(self) -> Bytes {
@@ -184,6 +194,7 @@ where
     R: CryptoRng + RngCore,
 {
     messages: IndexMap<(I, u16), MessageState>,
+    ack_index: BTreeSet<(Instant, (I, u16))>,
     // Min-by-deadline eviction index.
     eviction_index: BTreeSet<(Instant, (I, u16))>,
     // Per-identity min-by-deadline eviction index.
@@ -203,6 +214,7 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
     ) -> Self {
         Self {
             messages: IndexMap::new(),
+            ack_index: BTreeSet::new(),
             eviction_index: BTreeSet::new(),
             eviction_index_by_identity: BTreeMap::new(),
             cfg,
@@ -287,7 +299,10 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
         now: Instant,
         key: &(I, u16),
         input: FragmentInput<I>,
-    ) -> (Result<DecodeOutcome, DecodeError>, Option<EvictionKind>) {
+    ) -> (
+        Result<(DecodeOutcome, Option<Acknowledgement>), DecodeError>,
+        Option<EvictionKind>,
+    ) {
         let mut evicted = None;
 
         if !self.has_message(key) {
@@ -302,7 +317,41 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
                 .increment_identity_count(&input.identity);
         }
 
+        self.schedule_ack(key, now);
         (self.decode(input), evicted)
+    }
+
+    fn schedule_ack(&mut self, key: &(I, u16), now: Instant) {
+        let state = self.messages.get_mut(key).expect("admitted message");
+        if state.ack_deadline.is_none() {
+            let deadline = now + ACK_DELAY;
+            state.ack_deadline = Some(deadline);
+            self.ack_index.insert((deadline, key.clone()));
+        }
+    }
+
+    pub(crate) fn next_deadline(&self) -> Option<Instant> {
+        self.ack_index
+            .first()
+            .map(|entry| entry.0)
+            .into_iter()
+            .chain(self.eviction_index.first().map(|entry| entry.0))
+            .min()
+    }
+
+    pub(crate) fn tick(&mut self, now: Instant) -> (Vec<(I, Acknowledgement)>, u64) {
+        let mut expired = 0;
+        while self.evict_candidate_if_stale(self.eviction_index.first().cloned(), now) {
+            expired += 1;
+        }
+        let mut acks = Vec::new();
+        while self.ack_index.first().is_some_and(|entry| entry.0 <= now) {
+            let (_, key) = self.ack_index.pop_first().expect("due acknowledgement");
+            let state = self.messages.get_mut(&key).expect("indexed message");
+            state.ack_deadline = None;
+            acks.push((key.0, state.acknowledgement(key.1)));
+        }
+        (acks, expired)
     }
 
     pub(crate) fn evict_stale_for_identity(&mut self, identity: &I, now: Instant) -> bool {
@@ -330,7 +379,10 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
     }
 
     /// Decode a fragment into the pool.
-    pub(crate) fn decode(&mut self, input: FragmentInput<I>) -> Result<DecodeOutcome, DecodeError> {
+    pub(crate) fn decode(
+        &mut self,
+        input: FragmentInput<I>,
+    ) -> Result<(DecodeOutcome, Option<Acknowledgement>), DecodeError> {
         let FragmentInput {
             identity,
             msg_id,
@@ -359,21 +411,27 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
                 }
             );
 
-            // NOTE(dshulyak): duplicate fragments should only happen when a sender is buggy
-            // or malicious and resends the same chunk.
-            ensure!(
-                !state.fragments.contains_key(&seq_num),
-                DecodeError::DuplicateFragment { msg_id, seq_num }
-            );
+            let is_end = matches!(fragment_type, FragmentType::End | FragmentType::Complete);
+            if let Some(existing) = state.fragments.get(&seq_num) {
+                let same_end = (state.total_frags == Some(seq_num + 1)) == is_end;
+                if existing == &data && same_end {
+                    return Ok((DecodeOutcome::Pending, None));
+                }
+                self.remove_message(&key);
+                return Err(DecodeError::DuplicateFragment { msg_id, seq_num });
+            }
 
-            if matches!(fragment_type, FragmentType::End | FragmentType::Complete) {
+            if is_end {
                 let new_total = seq_num + 1;
                 let existing_total_frags = state.total_frags;
+                let past_end = state
+                    .fragments
+                    .last_key_value()
+                    .map(|(seq, _)| *seq >= new_total)
+                    .unwrap_or(false);
                 ensure!(
-                    existing_total_frags.is_none(),
-                    || {
-                        self.remove_message(&key);
-                    };
+                    existing_total_frags.is_none() && !past_end,
+                    || { self.remove_message(&key); };
                     DecodeError::ConflictingEndMarker {
                         expected: existing_total_frags.unwrap_or_default(),
                         actual: new_total,
@@ -411,18 +469,22 @@ impl<I: Eq + Hash + Clone + Ord, R: CryptoRng + RngCore> MessagePool<I, R> {
             state.total_frags == Some(state.fragments.len() as u16)
         };
         if !is_complete {
-            return Ok(DecodeOutcome::Pending);
+            return Ok((DecodeOutcome::Pending, None));
         }
 
         let state = self
             .remove_message(&key)
             .expect("message must exist when extracting");
-        Ok(DecodeOutcome::Complete(state.extract()))
+        let ack = state.acknowledgement(msg_id);
+        Ok((DecodeOutcome::Complete(state.extract()), Some(ack)))
     }
 
     fn remove_message(&mut self, key: &(I, u16)) -> Option<MessageState> {
         let state = self.messages.swap_remove(key)?;
         self.messages_gauge.dec();
+        if let Some(deadline) = state.ack_deadline {
+            self.ack_index.remove(&(deadline, key.clone()));
+        }
         let deadline = state.eviction_deadline;
         let _ = self.eviction_index.remove(&(deadline, key.clone()));
         let mut should_remove_identity = false;
@@ -483,7 +545,7 @@ mod tests {
         );
 
         assert_eq!(
-            result,
+            result.map(|(outcome, _)| outcome),
             Ok(DecodeOutcome::Complete(Bytes::from_static(b"done")))
         );
         assert_eq!(evicted, None);

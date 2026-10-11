@@ -260,13 +260,16 @@ fn test_reassembles_multi_fragment_out_of_order() {
 }
 
 #[test]
-fn test_duplicate_fragment_is_rejected() {
+fn test_identical_duplicate_fragment_is_ignored() {
     let (mut encoder, mut decoder, _clock) = build_regular(Config::default());
     let first = first_packet(&mut encoder, Bytes::from(vec![1u8; 3000]));
 
     assert_pending!(decoder, 1, first.clone());
+    assert_pending!(decoder, 1, first.clone());
+    let mut conflicting = first.to_vec();
+    *conflicting.last_mut().unwrap() ^= 1;
     assert!(matches!(
-        decoder.decode(1, first),
+        decoder.decode(1, Bytes::from(conflicting)),
         Err(DecodeError::DuplicateFragment { .. })
     ));
 }
@@ -780,4 +783,105 @@ fn test_accepts_large_inflight_data_bounded_by_message_count_only() {
             .get(),
         3
     );
+}
+
+#[test]
+fn test_ack_deadline_snapshots_and_immediate_completion() {
+    let config = Config {
+        max_fragment_payload: 64,
+        ..Config::default()
+    };
+    let (mut encoder, mut decoder, clock) = build_regular(config);
+    let payload = Bytes::from(vec![7; 150]);
+    let packets = fragment_packets(&mut encoder, payload.clone());
+    let start = clock.now();
+    assert_pending!(decoder, 1, packets[0].clone());
+    assert_eq!(
+        decoder.next_deadline(),
+        Some(start + Duration::from_millis(200))
+    );
+    clock.advance_ms(190);
+    assert_pending!(decoder, 1, packets[1].clone());
+    assert!(decoder.poll_acknowledgements().is_empty());
+    clock.advance_ms(10);
+    let acks = decoder.poll_acknowledgements();
+    assert_eq!(acks.len(), 1);
+    assert_eq!(acks[0].0, 1);
+    assert!(acks[0].1.received.contains(0));
+    assert!(acks[0].1.received.contains(1));
+    assert!(!acks[0].1.received.contains(2));
+    let (outcome, ack) = decoder.decode_with_ack(1, packets[2].clone()).unwrap();
+    assert_eq!(outcome, DecodeOutcome::Complete(payload));
+    assert!(ack.unwrap().received.is_complete(3));
+    assert_eq!(decoder.next_deadline(), None);
+    // Completion releases all state; delivering the message again is allowed.
+    for packet in &packets[..2] {
+        assert_pending!(decoder, 1, packet.clone());
+    }
+    assert!(matches!(
+        decoder.decode(1, packets[2].clone()),
+        Ok(DecodeOutcome::Complete(_))
+    ));
+}
+
+#[test]
+fn test_retry_rearms_ack_without_extending_expiration() {
+    let (mut encoder, mut decoder, clock) = build_regular(Config::default());
+    let first = first_packet(&mut encoder, Bytes::from(vec![1; 3000]));
+    assert_pending!(decoder, 1, first.clone());
+    clock.advance_ms(200);
+    assert_eq!(decoder.poll_acknowledgements().len(), 1);
+    clock.advance_ms(300);
+    assert_pending!(decoder, 1, first.clone());
+    clock.advance_ms(200);
+    assert_eq!(decoder.poll_acknowledgements().len(), 1);
+    clock.advance_ms(1200);
+    assert_pending!(decoder, 1, first);
+    clock.advance_ms(100);
+    assert!(decoder.poll_acknowledgements().is_empty());
+    assert_eq!(decoder.next_deadline(), None);
+    assert_eq!(
+        decoder
+            .metrics()
+            .gauge(GAUGE_LEANUDP_POOL_REGULAR_MESSAGES)
+            .get(),
+        0
+    );
+    assert_eq!(
+        decoder
+            .metrics()
+            .gauge(COUNTER_LEANUDP_DECODE_EVICTED_TIMEOUT)
+            .get(),
+        1
+    );
+}
+
+#[test]
+fn test_eviction_discards_ack_snapshot() {
+    let config = Config {
+        max_regular_messages: 1,
+        ..Config::default()
+    };
+    let (mut encoder, mut decoder, clock) = build_regular(config);
+    let first = first_packet(&mut encoder, Bytes::from(vec![1; 3000]));
+    let other = first_packet(&mut encoder, Bytes::from(vec![2; 3000]));
+    assert_pending!(decoder, 1, first);
+    assert_pending!(decoder, 2, other);
+    clock.advance_ms(200);
+    let acks = decoder.poll_acknowledgements();
+    assert_eq!(acks.len(), 1);
+    assert_eq!(acks[0].0, 2);
+}
+
+#[test]
+fn test_end_before_already_retained_fragment_is_rejected() {
+    let (mut encoder, mut decoder, _clock) = build_regular(Config::default());
+    let packets = fragment_packets(&mut encoder, Bytes::from(vec![3; 5000]));
+    assert_pending!(decoder, 1, packets[2].clone());
+    let premature_end = packet_with_flags(&packets[1], 1);
+    assert!(matches!(
+        decoder.decode(1, premature_end),
+        Err(DecodeError::ConflictingEndMarker { .. })
+    ));
+    assert_eq!(decoder.next_deadline(), None);
 }

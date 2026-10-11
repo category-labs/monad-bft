@@ -33,7 +33,8 @@ pub const MAX_CONCURRENT_MESSAGES_PER_IDENTITY: usize = 100;
 /// Default in-flight messages reserved for each dedicated identity.
 pub const MAX_CONCURRENT_MESSAGES_PER_DEDICATED_IDENTITY: usize = 10;
 
-const DEFAULT_MESSAGE_TIMEOUT: Duration = Duration::from_millis(100);
+pub const MESSAGE_LIFETIME: Duration = Duration::from_secs(2);
+pub const ACK_DELAY: Duration = Duration::from_millis(200);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FragmentType {
@@ -191,7 +192,7 @@ impl Default for Config {
             max_regular_messages: 1_024,
             max_messages_per_identity: MAX_CONCURRENT_MESSAGES_PER_IDENTITY,
             max_messages_per_dedicated_identity: MAX_CONCURRENT_MESSAGES_PER_DEDICATED_IDENTITY,
-            message_timeout: DEFAULT_MESSAGE_TIMEOUT,
+            message_timeout: MESSAGE_LIFETIME,
             max_fragment_payload: 1440, // MTU(1500) - IP(20) - UDP(8) - WireAuth(32)
         }
     }
