@@ -52,6 +52,7 @@ fn make_packet(header: &PacketHeader, payload: &[u8]) -> Bytes {
 
 fn make_config(max_regular_messages: usize) -> Config {
     Config {
+        retry: Default::default(),
         max_message_size: 128 * 1024,
         max_priority_messages: 100,
         max_regular_messages,

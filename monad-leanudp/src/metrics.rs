@@ -124,6 +124,35 @@ monad_executor::metric_consts! {
         name: "monad.leanudp.encode.error.too_large",
         help: "Total messages rejected by the encoder because they exceed the fragment limit",
     }
+    pub GAUGE_LEANUDP_RETRY_MESSAGES {
+        name: "monad.leanudp.retry.messages",
+        help: "Messages retained for acknowledgement and retries",
+    }
+    pub GAUGE_LEANUDP_RETRY_BYTES {
+        name: "monad.leanudp.retry.bytes",
+        help: "Payload bytes retained for acknowledgement and retries",
+    }
+    pub COUNTER_LEANUDP_RETRY_FRAGMENTS {
+        name: "monad.leanudp.retry.fragments",
+        help: "Data fragments submitted for retransmission",
+    }
+    pub COUNTER_LEANUDP_RETRY_TRANSMISSIONS {
+        name: "monad.leanudp.retry.transmissions",
+        help: "Message retransmission attempts",
+    }
+    pub COUNTER_LEANUDP_RETRY_ACKNOWLEDGED {
+        name: "monad.leanudp.retry.acknowledged",
+        help: "Messages confirmed complete by the receiver",
+    }
+    pub COUNTER_LEANUDP_RETRY_EXPIRED {
+        name: "monad.leanudp.retry.expired",
+        help: "Outgoing messages released at their deadline without confirmation",
+    }
+    pub COUNTER_LEANUDP_RETRY_PRUNED {
+        name: "monad.leanudp.retry.pruned",
+        help: "Retry records pruned on overflow or message ID collision",
+    }
+
 }
 
 pub fn init_encoder_metrics() -> ExecutorMetrics {
@@ -160,5 +189,17 @@ pub fn init_decoder_metrics() -> ExecutorMetrics {
         COUNTER_LEANUDP_ERROR_CONFLICTING_END,
         COUNTER_LEANUDP_ERROR_MESSAGE_TOO_LARGE,
         COUNTER_LEANUDP_ERROR_POOL_FULL,
+    ])
+}
+
+pub fn init_retry_metrics() -> ExecutorMetrics {
+    ExecutorMetrics::with_metric_defs(&[
+        GAUGE_LEANUDP_RETRY_MESSAGES,
+        GAUGE_LEANUDP_RETRY_BYTES,
+        COUNTER_LEANUDP_RETRY_FRAGMENTS,
+        COUNTER_LEANUDP_RETRY_TRANSMISSIONS,
+        COUNTER_LEANUDP_RETRY_ACKNOWLEDGED,
+        COUNTER_LEANUDP_RETRY_EXPIRED,
+        COUNTER_LEANUDP_RETRY_PRUNED,
     ])
 }

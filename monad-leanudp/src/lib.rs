@@ -18,12 +18,14 @@ mod decoder;
 mod encoder;
 pub mod metrics;
 mod pool;
+mod retransmit;
 
 use std::{hash::Hash, time::Duration};
 
 pub use acknowledgement::{Acknowledgement, FragmentBitmap, ACK_BITMAP_BYTES};
 pub use decoder::{Clock, DecodeError, DecodeOutcome, Decoder, Packet, SystemClock};
-pub use encoder::{max_payload_for_mtu, EncodeError, Encoder};
+pub use encoder::{max_payload_for_mtu, EncodeError, Encoder, FragmentIter};
+pub use retransmit::{RetryConfig, RetrySender};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, LE, U16};
 
 pub const LEANUDP_HEADER_SIZE: usize = PacketHeader::SIZE;
@@ -128,6 +130,7 @@ impl PacketHeader {
 #[derive(Debug, Clone)]
 pub struct Config {
     pub max_message_size: usize,
+    pub retry: RetryConfig,
     pub max_priority_messages: usize,
     pub max_regular_messages: usize,
     pub max_messages_per_identity: usize,
@@ -187,6 +190,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             max_message_size: 512 * 1024,
+            retry: RetryConfig::default(),
             // with the default config, the pool is capped at about 1.5 gib.
             max_priority_messages: 2_048,
             max_regular_messages: 1_024,

@@ -13,9 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use bytes::Bytes;
+use bytes::{BufMut, Bytes, BytesMut};
 use monad_executor::ExecutorMetrics;
 use thiserror::Error;
+use zerocopy::IntoBytes;
 
 use crate::{
     metrics::{
@@ -45,6 +46,8 @@ pub fn max_payload_for_mtu(mtu: usize) -> usize {
 
 #[derive(Debug, Error)]
 pub enum EncodeError {
+    #[error("retry interval must be nonzero and fit in the monotonic clock")]
+    InvalidRetryInterval,
     #[error(
         "payload too large: {payload_len} bytes requires {fragment_count} fragments, max is {MAX_FRAGMENTS}"
     )]
@@ -116,13 +119,39 @@ impl Encoder {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct FragmentIter {
     payload: Bytes,
     max_payload: usize,
     msg_id: u16,
     current: usize,
     count: usize,
+}
+
+impl FragmentIter {
+    pub fn msg_id(&self) -> u16 {
+        self.msg_id
+    }
+    pub fn fragment_count(&self) -> usize {
+        self.count
+    }
+    pub fn payload_len(&self) -> usize {
+        self.payload.len()
+    }
+
+    /// Recreates one datagram with the original message ID and END marker.
+    pub fn packet(&self, seq: u16) -> Option<Bytes> {
+        if usize::from(seq) >= self.count {
+            return None;
+        }
+        let mut iter = self.clone();
+        iter.current = usize::from(seq);
+        let (header, payload) = iter.next()?;
+        let mut packet = BytesMut::with_capacity(LEANUDP_HEADER_SIZE + payload.len());
+        packet.put_slice(header.as_bytes());
+        packet.put_slice(&payload);
+        Some(packet.freeze())
+    }
 }
 
 impl Iterator for FragmentIter {
