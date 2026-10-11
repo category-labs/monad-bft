@@ -410,7 +410,7 @@ where
                 expected: LEANUDP_PROTOCOL_VERSION,
             }));
         }
-        if !header.has_known_flags() {
+        if !header.has_known_flags() || header.is_ack() {
             return Err(self.reject_decode(DecodeError::InvalidHeader));
         }
 

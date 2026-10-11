@@ -13,6 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+mod acknowledgement;
 mod decoder;
 mod encoder;
 pub mod metrics;
@@ -20,6 +21,7 @@ mod pool;
 
 use std::{hash::Hash, time::Duration};
 
+pub use acknowledgement::{Acknowledgement, FragmentBitmap, ACK_BITMAP_BYTES};
 pub use decoder::{Clock, DecodeError, DecodeOutcome, Decoder, Packet, SystemClock};
 pub use encoder::{max_payload_for_mtu, EncodeError, Encoder};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, LE, U16};
@@ -57,14 +59,15 @@ pub struct PacketHeader {
     version: u8,
     msg_id: U16<LE>,
     seq_num: U16<LE>,
-    // Bit 0 marks the final fragment; higher bits are reserved.
+    // Bit 0 marks the final fragment; bit 1 marks an acknowledgement.
     flags: u8,
 }
 
 impl PacketHeader {
     pub const SIZE: usize = std::mem::size_of::<Self>();
     const END_FLAG: u8 = 0x01;
-    const KNOWN_FLAGS_MASK: u8 = Self::END_FLAG;
+    const ACK_FLAG: u8 = 0x02;
+    const KNOWN_FLAGS_MASK: u8 = Self::END_FLAG | Self::ACK_FLAG;
 
     #[inline]
     pub(crate) fn new(msg_id: u16, seq_num: u16, fragment_type: FragmentType) -> Self {
@@ -76,13 +79,26 @@ impl PacketHeader {
         }
     }
 
+    pub fn is_ack(&self) -> bool {
+        self.flags & Self::ACK_FLAG != 0
+    }
+
+    pub(crate) fn acknowledgement(msg_id: u16) -> Self {
+        Self {
+            version: LEANUDP_PROTOCOL_VERSION,
+            msg_id: U16::new(msg_id),
+            seq_num: U16::new(0),
+            flags: Self::ACK_FLAG,
+        }
+    }
+
     #[inline]
     pub(crate) fn version(&self) -> u8 {
         self.version
     }
 
     #[inline]
-    pub(crate) fn msg_id(&self) -> u16 {
+    pub fn msg_id(&self) -> u16 {
         self.msg_id.get()
     }
 
@@ -104,6 +120,7 @@ impl PacketHeader {
     #[inline]
     pub(crate) fn has_known_flags(&self) -> bool {
         self.flags & !Self::KNOWN_FLAGS_MASK == 0
+            && !(self.is_ack() && self.flags & Self::END_FLAG != 0)
     }
 }
 
