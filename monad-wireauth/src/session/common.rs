@@ -86,6 +86,8 @@ pub struct SessionState {
     pub remote_public_key: monad_secp::PubKey,
     pub local_index: SessionIndex,
     pub created: Duration,
+    /// Local handshake turnaround, including peer processing and queueing.
+    pub rtt: Option<Duration>,
     pub is_initiator: bool,
 }
 
@@ -113,6 +115,7 @@ impl SessionState {
             remote_public_key,
             local_index,
             created,
+            rtt: None,
             is_initiator,
         }
     }

@@ -917,6 +917,17 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
     pub fn get_socket_by_public_key(&self, public_key: &monad_secp::PubKey) -> Option<SocketAddr> {
         self.state.get_socket_by_public_key(public_key)
     }
+
+    /// Initial RTT estimate from the latest established session's handshake.
+    ///
+    /// Includes queueing and peer processing. A CPU-starved peer or one under
+    /// denial of service can take longer to respond. This is neither a pure
+    /// network RTT nor an absolute bound on future response times. Consumers
+    /// must clamp derived timers to a reasonable maximum; Direct UDP uses 500ms.
+    /// Keepalives do not refresh the estimate.
+    pub fn session_rtt(&self, public_key: &monad_secp::PubKey) -> Option<Duration> {
+        self.state.session_rtt(public_key)
+    }
 }
 
 struct CompressedPublicKey([u8; monad_secp::COMPRESSED_PUBLIC_KEY_SIZE]);

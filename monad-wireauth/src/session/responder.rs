@@ -141,6 +141,9 @@ impl ResponderState {
         config: &Config,
         duration_since_start: Duration,
     ) -> (TransportState, Duration) {
+        // The initiator sends buffered data or an immediate keepalive after
+        // receiving our response. Loss or queueing makes this conservative.
+        self.transport.common.rtt = duration_since_start.checked_sub(self.transport.common.created);
         self.transport
             .common
             .reset_session_timeout(duration_since_start, config.session_timeout);

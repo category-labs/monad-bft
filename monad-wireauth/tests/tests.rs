@@ -86,6 +86,50 @@ fn decrypt(manager: &mut API<TestContext>, packet: &[u8], from: SocketAddr) -> V
 }
 
 #[test]
+fn test_session_rtt_requires_validated_handshake_and_resets_on_disconnect() {
+    let (mut initiator, initiator_key, initiator_clock, _) = create_manager();
+    let (mut responder, responder_key, responder_clock, _) = create_manager();
+    let initiator_addr = "127.0.0.1:8001".parse().unwrap();
+    let responder_addr = "127.0.0.1:8002".parse().unwrap();
+    assert_eq!(initiator.session_rtt(&responder_key), None);
+    initiator
+        .connect(responder_key, responder_addr, DEFAULT_RETRY_ATTEMPTS)
+        .unwrap();
+    let init = collect::<HandshakeInitiation>(&mut initiator);
+    for clock in [&initiator_clock, &responder_clock] {
+        clock.advance_time(Duration::from_millis(10));
+    }
+    dispatch(&mut responder, &init, initiator_addr);
+    let response = collect::<HandshakeResponse>(&mut responder);
+    assert_eq!(responder.session_rtt(&initiator_key), None);
+    for clock in [&initiator_clock, &responder_clock] {
+        clock.advance_time(Duration::from_millis(10));
+    }
+    dispatch(&mut initiator, &response, "127.0.0.1:8003".parse().unwrap());
+    assert_eq!(initiator.session_rtt(&responder_key), None);
+    dispatch(&mut initiator, &response, responder_addr);
+    assert_eq!(
+        initiator.session_rtt(&responder_key),
+        Some(Duration::from_millis(20))
+    );
+    let (_, keepalive) = initiator.next_packet().unwrap();
+    for clock in [&initiator_clock, &responder_clock] {
+        clock.advance_time(Duration::from_millis(10));
+    }
+    dispatch(&mut responder, &keepalive, initiator_addr);
+    assert_eq!(
+        responder.session_rtt(&initiator_key),
+        Some(Duration::from_millis(20))
+    );
+    initiator.disconnect(&responder_key);
+    assert_eq!(initiator.session_rtt(&responder_key), None);
+    initiator
+        .connect(responder_key, responder_addr, DEFAULT_RETRY_ATTEMPTS)
+        .unwrap();
+    assert_eq!(initiator.session_rtt(&responder_key), None);
+}
+
+#[test]
 fn test_concurrent_init() {
     init_tracing();
     let (mut peer1, peer1_pubkey, _, _) = create_manager();
@@ -163,7 +207,13 @@ fn test_retries() {
     // 7. peer2 sends response
     let resp = collect::<HandshakeResponse>(&mut peer2);
     // 8. peer1 receives response and completes handshake
+    peer1_ctx.advance_time(Duration::from_millis(25));
     dispatch(&mut peer1, &resp, peer2_addr);
+    // The two earlier failed attempts do not inflate the successful session's RTT.
+    assert_eq!(
+        peer1.session_rtt(&peer2_pubkey),
+        Some(Duration::from_millis(25))
+    );
 
     // 9. exchange several messages
     let mut plaintext1 = b"message1".to_vec();

@@ -244,6 +244,14 @@ impl State {
             .map(|t| t.remote_addr)
     }
 
+    pub fn session_rtt(&self, public_key: &monad_secp::PubKey) -> Option<Duration> {
+        let session_id = self
+            .last_established_session_by_public_key
+            .get(public_key)
+            .and_then(|sessions| sessions.get_latest())?;
+        self.transport_sessions.get(&session_id)?.rtt
+    }
+
     pub fn get_transport_by_socket(
         &mut self,
         socket_addr: &SocketAddr,

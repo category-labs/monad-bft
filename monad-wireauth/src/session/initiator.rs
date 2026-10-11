@@ -139,6 +139,7 @@ impl InitiatorState {
         duration_since_start: Duration,
         validated_response: ValidatedHandshakeResponse,
     ) -> (TransportState, MessagesToSend) {
+        self.common.rtt = duration_since_start.checked_sub(self.common.created);
         self.common.reset_session_timeout(
             duration_since_start,
             add_jitter(rng, config.session_timeout, config.session_timeout_jitter),

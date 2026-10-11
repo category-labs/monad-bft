@@ -13,7 +13,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{convert::TryFrom, net::SocketAddr, sync::Arc, time::Instant};
+use std::{
+    convert::TryFrom,
+    net::SocketAddr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use bytes::Bytes;
 use monad_crypto::certificate_signature::PubKey;
@@ -73,6 +78,13 @@ pub trait AuthenticationProtocol {
 
     fn get_socket_by_public_key(&self, public_key: &Self::PublicKey) -> Option<SocketAddr>;
 
+    /// Handshake turnaround includes peer processing, which can be inflated by
+    /// CPU starvation or denial of service. It is not an absolute response-time
+    /// bound; callers must clamp any derived timers.
+    fn session_rtt(&self, _public_key: &Self::PublicKey) -> Option<Duration> {
+        None
+    }
+
     fn has_any_session_by_public_key(&self, public_key: &Self::PublicKey) -> bool;
 
     fn has_initiator_session_by_public_key(&self, public_key: &Self::PublicKey) -> bool;
@@ -115,6 +127,10 @@ impl AuthenticationProtocol for WireAuthProtocol {
     type Header = monad_wireauth::messages::DataPacketHeader;
 
     const HEADER_SIZE: u16 = DataPacketHeader::SIZE as u16;
+
+    fn session_rtt(&self, public_key: &Self::PublicKey) -> Option<Duration> {
+        self.api.session_rtt(public_key)
+    }
 
     fn connect(
         &mut self,
