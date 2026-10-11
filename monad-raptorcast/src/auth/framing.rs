@@ -13,23 +13,47 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{hash::Hash, marker::PhantomData};
+use std::{
+    collections::VecDeque,
+    hash::Hash,
+    marker::PhantomData,
+    time::{Duration, Instant},
+};
 
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::Bytes;
 use monad_executor::ExecutorMetricsChain;
 use monad_leanudp::{
-    Config, DecodeError, DecodeOutcome, Decoder, EncodeError, Encoder, FragmentPolicy,
-    IdentityScore, PacketHeader, SystemClock,
+    Acknowledgement, Clock, Config, DecodeError, DecodeOutcome, Decoder, EncodeError, Encoder,
+    FragmentPolicy, IdentityScore, Packet, RetrySender, SystemClock,
 };
 use monad_peer_score::PeerStatus;
+use monad_types::UdpPriority;
 use thiserror::Error;
-use zerocopy::IntoBytes;
 
 pub trait AuthPacketFramer<P> {
     type Decoded;
     type Error: std::fmt::Debug;
 
-    fn frame(&mut self, payload: Bytes) -> Result<impl Iterator<Item = Bytes>, Self::Error>;
+    fn frame(
+        &mut self,
+        peer: P,
+        payload: Bytes,
+        priority: UdpPriority,
+        retry_interval: Duration,
+    ) -> Result<(u16, Vec<Bytes>), Self::Error>;
+
+    fn mark_sent(&mut self, _peer: &P, _msg_id: u16) {}
+    fn cancel(&mut self, _peer: &P, _msg_id: u16) {}
+    fn mark_connected(&mut self, _peer: &P) {}
+    fn waiting_peers(&self) -> Vec<P> {
+        Vec::new()
+    }
+    fn next_deadline(&self) -> Option<Instant> {
+        None
+    }
+    fn poll_outbound(&mut self) -> Vec<(P, UdpPriority, Bytes)> {
+        Vec::new()
+    }
 
     fn deframe(
         &mut self,
@@ -93,13 +117,17 @@ pub enum LeanUdpFramingError {
     Decode(#[from] DecodeError),
 }
 
-pub struct LeanUdpFramer<N, S>
+pub struct LeanUdpFramer<N, S, C = SystemClock>
 where
     N: Hash + Eq + Clone + Ord + Send + Sync,
     S: monad_peer_score::IdentityScore<Identity = N>,
+    C: Clock,
 {
     encoder: Encoder,
-    decoder: Decoder<N, PeerScoreAdapter<S>, SystemClock>,
+    decoder: Decoder<N, PeerScoreAdapter<S>, C>,
+    sender: RetrySender<N, UdpPriority>,
+    acknowledgements: VecDeque<(N, Bytes)>,
+    clock: C,
     config: Config,
 }
 
@@ -109,12 +137,26 @@ where
     S: monad_peer_score::IdentityScore<Identity = N>,
 {
     pub fn new(score_reader: S, config: Config) -> Self {
-        let peer_score = PeerScoreAdapter::new(score_reader);
-        let (encoder, decoder) = config.clone().build(peer_score);
+        Self::with_clock(score_reader, config, SystemClock)
+    }
+}
 
+impl<N, S, C> LeanUdpFramer<N, S, C>
+where
+    N: Hash + Eq + Clone + Ord + Send + Sync,
+    S: monad_peer_score::IdentityScore<Identity = N>,
+    C: Clock,
+{
+    pub fn with_clock(score_reader: S, config: Config, clock: C) -> Self {
+        let peer_score = PeerScoreAdapter::new(score_reader);
+        let (encoder, decoder) = config.clone().build_with_clock(peer_score, clock.clone());
+        let sender = RetrySender::new(config.retry.clone());
         Self {
             encoder,
             decoder,
+            sender,
+            acknowledgements: VecDeque::new(),
+            clock,
             config,
         }
     }
@@ -131,36 +173,93 @@ where
         ExecutorMetricsChain::default()
             .push(self.encoder.executor_metrics())
             .push(self.decoder.executor_metrics())
+            .push(self.sender.metrics())
     }
 }
 
-impl<P, N, S> AuthPacketFramer<P> for LeanUdpFramer<N, S>
+impl<N, S, C> AuthPacketFramer<N> for LeanUdpFramer<N, S, C>
 where
-    P: Into<N>,
     N: Hash + Eq + Clone + Ord + Send + Sync,
     S: monad_peer_score::IdentityScore<Identity = N>,
+    C: Clock,
 {
     type Decoded = Bytes;
     type Error = LeanUdpFramingError;
 
-    fn frame(&mut self, payload: Bytes) -> Result<impl Iterator<Item = Bytes>, Self::Error> {
+    fn frame(
+        &mut self,
+        peer: N,
+        payload: Bytes,
+        priority: UdpPriority,
+        retry_interval: Duration,
+    ) -> Result<(u16, Vec<Bytes>), Self::Error> {
         let fragments = self.encoder.fragment(payload)?;
+        let msg_id = fragments.msg_id();
+        self.sender.track(
+            peer,
+            fragments.clone(),
+            priority,
+            retry_interval,
+            self.clock.now(),
+        )?;
+        Ok((
+            msg_id,
+            (0..fragments.fragment_count() as u16)
+                .map(move |seq| fragments.packet(seq).expect("valid fragment"))
+                .collect(),
+        ))
+    }
 
-        Ok(fragments.map(move |(header, data)| {
-            let mut buf = BytesMut::with_capacity(PacketHeader::SIZE + data.len());
-            buf.put_slice(header.as_bytes());
-            buf.put_slice(&data);
-            buf.freeze()
-        }))
+    fn mark_sent(&mut self, peer: &N, msg_id: u16) {
+        self.sender.mark_sent(peer, msg_id, self.clock.now());
+    }
+    fn cancel(&mut self, peer: &N, msg_id: u16) {
+        self.sender.cancel(peer, msg_id);
+    }
+    fn mark_connected(&mut self, peer: &N) {
+        self.sender.mark_connected(peer, self.clock.now());
+    }
+    fn waiting_peers(&self) -> Vec<N> {
+        self.sender.waiting_peers()
+    }
+    fn next_deadline(&self) -> Option<Instant> {
+        self.sender
+            .next_deadline()
+            .into_iter()
+            .chain(self.decoder.next_deadline())
+            .min()
+    }
+    fn poll_outbound(&mut self) -> Vec<(N, UdpPriority, Bytes)> {
+        self.acknowledgements.extend(
+            self.decoder
+                .poll_acknowledgements()
+                .into_iter()
+                .map(|(peer, ack)| (peer, ack.encode())),
+        );
+        let mut packets: Vec<_> = self
+            .acknowledgements
+            .drain(..)
+            .map(|(peer, packet)| (peer, UdpPriority::High, packet))
+            .collect();
+        packets.extend(self.sender.poll_retries(self.clock.now()));
+        packets
     }
 
     fn deframe(
         &mut self,
-        public_key: P,
+        identity: N,
         packet: Bytes,
     ) -> Result<Option<Self::Decoded>, Self::Error> {
-        let identity = public_key.into();
-        match self.decoder.decode(identity, packet)? {
+        let packet = Packet::try_from(packet)?;
+        if let Some(ack) = Acknowledgement::from_packet(&packet)? {
+            self.sender.acknowledge(&identity, ack, self.clock.now());
+            return Ok(None);
+        }
+        let (outcome, ack) = self.decoder.decode_with_ack(identity.clone(), packet)?;
+        if let Some(ack) = ack {
+            self.acknowledgements.push_back((identity, ack.encode()));
+        }
+        match outcome {
             DecodeOutcome::Pending => Ok(None),
             DecodeOutcome::Complete(payload) => Ok(Some(payload)),
         }
@@ -205,9 +304,15 @@ mod tests {
 
     fn fragmented_message(framer: &mut LeanUdpFramer<u64, TestScore>, fill: u8) -> Vec<Bytes> {
         let payload = Bytes::from(vec![fill; framer.config().max_fragment_payload]);
-        <LeanUdpFramer<u64, TestScore> as AuthPacketFramer<u64>>::frame(framer, payload)
-            .unwrap()
-            .collect()
+        <LeanUdpFramer<u64, TestScore> as AuthPacketFramer<u64>>::frame(
+            framer,
+            0,
+            payload,
+            UdpPriority::Regular,
+            Duration::from_millis(500),
+        )
+        .unwrap()
+        .1
     }
 
     #[test]

@@ -14,11 +14,11 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    future::Future,
+    future::{poll_fn, Future},
     net::SocketAddr,
     pin::Pin,
-    task::{Context, Poll},
-    time::Instant,
+    task::{Context, Poll, Waker},
+    time::{Duration, Instant},
 };
 
 use bytes::{Bytes, BytesMut};
@@ -324,35 +324,32 @@ where
 
     pub async fn recv(&mut self) -> Result<AuthRecvMsg<AP::PublicKey>, AP::Error> {
         loop {
-            let timer = AuthenticatedTimerFuture {
-                auth_protocol: &mut self.auth_protocol,
-                auth_timer: &mut self.auth_timer,
-            };
+            if let Some(message) = self.recv_event().await? {
+                return Ok(message);
+            }
+        }
+    }
 
-            tokio::select! {
-                () = timer => {
-                    self.flush();
-                    continue;
-                }
-                message = self.socket.recv() => {
-                    let mut packet_buf = message.payload.to_vec();
-                    match self.auth_protocol.dispatch(&mut packet_buf, message.src_addr) {
-                        Ok(Some((plaintext, auth_public_key))) => {
-                            return Ok(AuthRecvMsg {
-                                src_addr: message.src_addr,
-                                payload: plaintext,
-                                stride: message.stride,
-                                sender: auth_public_key.map(NodeId::new),
-                            })
-                        }
-                        Ok(None) => {
-                            self.flush();
-                            continue;
-                        }
-                        Err(e) => {
-                            debug!(addr=?message.src_addr, error=?e, "failed to decrypt message");
-                            return Err(e);
-                        }
+    // Expose control-packet progress to the framer so buffered transmissions
+    // start their retry clocks as soon as the handshake flushes them.
+    async fn recv_event(&mut self) -> Result<Option<AuthRecvMsg<AP::PublicKey>>, AP::Error> {
+        let timer = AuthenticatedTimerFuture {
+            auth_protocol: &mut self.auth_protocol,
+            auth_timer: &mut self.auth_timer,
+        };
+        tokio::select! {
+            () = timer => { self.flush(); Ok(None) }
+            message = self.socket.recv() => {
+                let mut packet_buf = message.payload.to_vec();
+                match self.auth_protocol.dispatch(&mut packet_buf, message.src_addr) {
+                    Ok(Some((plaintext, auth_public_key))) => Ok(Some(AuthRecvMsg {
+                        src_addr: message.src_addr, payload: plaintext, stride: message.stride,
+                        sender: auth_public_key.map(NodeId::new),
+                    })),
+                    Ok(None) => { self.flush(); Ok(None) }
+                    Err(e) => {
+                        debug!(addr=?message.src_addr, error=?e, "failed to decrypt message");
+                        Err(e)
                     }
                 }
             }
@@ -598,10 +595,12 @@ where
 pub struct FramedAuthenticatedSocketHandle<AP, F>
 where
     AP: AuthenticationProtocol,
-    F: AuthPacketFramer<AP::PublicKey, Decoded = Bytes>,
+    F: AuthPacketFramer<NodeId<AP::PublicKey>, Decoded = Bytes>,
 {
     socket: AuthenticatedSocketHandle<AP>,
     framer: F,
+    frame_timer: Option<(Pin<Box<Sleep>>, Instant)>,
+    frame_waker: Option<Waker>,
 }
 
 #[derive(Debug, Error)]
@@ -615,83 +614,136 @@ pub enum FramedRecvError<E: std::fmt::Debug> {
 impl<AP, F> FramedAuthenticatedSocketHandle<AP, F>
 where
     AP: AuthenticationProtocol,
-    F: AuthPacketFramer<AP::PublicKey, Decoded = Bytes>,
+    F: AuthPacketFramer<NodeId<AP::PublicKey>, Decoded = Bytes>,
 {
     pub fn new(socket: AuthenticatedSocketHandle<AP>, framer: F) -> Self {
-        Self { socket, framer }
+        Self {
+            socket,
+            framer,
+            frame_timer: None,
+            frame_waker: None,
+        }
+    }
+
+    fn drive_framer(&mut self) {
+        for peer in self.framer.waiting_peers() {
+            if self
+                .socket
+                .auth_protocol
+                .is_connected_public_key(&peer.pubkey())
+            {
+                self.framer.mark_connected(&peer);
+            }
+        }
+        for (peer, priority, packet) in self.framer.poll_outbound() {
+            // Retry tracking expires independently if the session disappears.
+            let _ = self
+                .socket
+                .write_by_public_key_with_priority(&peer.pubkey(), packet, priority);
+        }
+        self.socket.flush();
     }
 
     pub async fn recv(&mut self) -> Result<AuthRecvMsg<AP::PublicKey>, FramedRecvError<AP::Error>> {
         loop {
-            let msg = self.socket.recv().await.map_err(FramedRecvError::Auth)?;
+            self.drive_framer();
+            let deadline = self.framer.next_deadline();
+            let event = tokio::select! {
+                result = self.socket.recv_event() => result.map_err(FramedRecvError::Auth)?,
+                () = poll_fn(|cx| poll_frame_timer(&mut self.frame_timer, &mut self.frame_waker, deadline, cx)) => continue,
+            };
+            let Some(msg) = event else {
+                continue;
+            };
             let Some(sender) = msg.sender else {
                 return Err(FramedRecvError::MissingAuthPublicKey);
             };
-
-            match self.framer.deframe(sender.pubkey(), msg.payload) {
+            let decoded = self.framer.deframe(sender, msg.payload);
+            // Send completion feedback before returning the payload to the application.
+            self.drive_framer();
+            match decoded {
                 Ok(Some(payload)) => {
                     return Ok(AuthRecvMsg {
                         src_addr: msg.src_addr,
                         payload,
                         sender: Some(sender),
                         stride: msg.stride,
-                    });
+                    })
                 }
                 Ok(None) => continue,
                 Err(err) => {
                     debug!(addr=?msg.src_addr, error=?err, "failed to decode authenticated packet");
-                    continue;
                 }
             }
         }
     }
 
-    /// Returns `Err(())` if the message was not written.
+    /// `retry_interval` is chosen by the caller from RTT. Up to three retries
+    /// fit inside the fixed two-second lifetime; longer intervals allow fewer.
     #[allow(clippy::result_unit_err)]
     pub fn write(
         &mut self,
         public_key: &AP::PublicKey,
         plaintext: Bytes,
         priority: UdpPriority,
+        retry_interval: Duration,
     ) -> Result<(), ()> {
-        let packets = match self.framer.frame(plaintext) {
-            Ok(packets) => packets,
-            Err(err) => {
-                warn!(error=?err, "failed to encode message");
-                return Err(());
-            }
-        };
-
-        for packet in packets {
-            self.socket
-                .write_by_public_key_with_priority(public_key, packet, priority)?;
-        }
-
-        Ok(())
+        self.write_framed(public_key, plaintext, priority, retry_interval, false)
     }
 
-    /// Returns `Err(())` if the message was not written or buffered.
+    /// Buffers initial fragments during a handshake. The retry clock starts
+    /// when the session is established and WireAuth flushes those fragments.
     #[allow(clippy::result_unit_err)]
     pub fn write_buffered(
         &mut self,
         public_key: &AP::PublicKey,
         plaintext: Bytes,
         priority: UdpPriority,
+        retry_interval: Duration,
     ) -> Result<(), ()> {
-        let packets = match self.framer.frame(plaintext) {
-            Ok(packets) => packets,
+        self.write_framed(public_key, plaintext, priority, retry_interval, true)
+    }
+
+    fn write_framed(
+        &mut self,
+        public_key: &AP::PublicKey,
+        plaintext: Bytes,
+        priority: UdpPriority,
+        retry_interval: Duration,
+        buffered: bool,
+    ) -> Result<(), ()> {
+        let peer = NodeId::new(*public_key);
+        let (msg_id, packets) = match self.framer.frame(peer, plaintext, priority, retry_interval) {
+            Ok(encoded) => encoded,
             Err(err) => {
                 warn!(error=?err, "failed to encode message");
                 return Err(());
             }
         };
-
         for packet in packets {
-            let stride = packet.len() as u16;
-            self.socket
-                .write_with_buffering(public_key, packet, stride, priority)?;
+            let result = if buffered {
+                let stride = packet.len() as u16;
+                self.socket
+                    .write_with_buffering(public_key, packet, stride, priority)
+            } else {
+                self.socket
+                    .write_by_public_key_with_priority(public_key, packet, priority)
+            };
+            if result.is_err() {
+                self.framer.cancel(&peer, msg_id);
+                return Err(());
+            }
         }
-
+        if self
+            .socket
+            .auth_protocol
+            .is_connected_public_key(public_key)
+        {
+            self.framer.mark_sent(&peer, msg_id);
+        }
+        if let Some(waker) = &self.frame_waker {
+            waker.wake_by_ref();
+        }
         Ok(())
     }
 
@@ -730,8 +782,14 @@ where
         self.socket.flush();
     }
 
-    pub fn timer(&mut self) -> AuthenticatedTimerFuture<'_, AP> {
-        self.socket.timer()
+    pub async fn timer(&mut self) {
+        self.drive_framer();
+        let deadline = self.framer.next_deadline();
+        tokio::select! {
+            () = self.socket.timer() => {}
+            () = poll_fn(|cx| poll_frame_timer(&mut self.frame_timer, &mut self.frame_waker, deadline, cx)) => {}
+        }
+        self.drive_framer();
     }
 
     pub fn has_any_session_by_public_key(&self, public_key: &AP::PublicKey) -> bool {
@@ -754,6 +812,31 @@ where
     ) {
         self.framer.set_dedicated_identities(identities);
     }
+}
+
+// Keep the sleep on the socket: the router recreates recv futures every poll.
+fn poll_frame_timer(
+    timer: &mut Option<(Pin<Box<Sleep>>, Instant)>,
+    waker: &mut Option<Waker>,
+    deadline: Option<Instant>,
+    cx: &mut Context<'_>,
+) -> Poll<()> {
+    *waker = Some(cx.waker().clone());
+    let Some(deadline) = deadline else {
+        *timer = None;
+        return Poll::Pending;
+    };
+    if timer.as_ref().is_none_or(|(_, stored)| *stored != deadline) {
+        *timer = Some((
+            Box::pin(tokio::time::sleep_until(deadline.into())),
+            deadline,
+        ));
+    }
+    let result = timer.as_mut().expect("timer installed").0.as_mut().poll(cx);
+    if result.is_ready() {
+        *timer = None;
+    }
+    result
 }
 
 pub struct AuthenticatedTimerFuture<'a, AP: AuthenticationProtocol> {
@@ -841,17 +924,23 @@ mod tests {
 
     struct PanicFramer;
 
-    impl AuthPacketFramer<monad_secp::PubKey> for PanicFramer {
+    impl AuthPacketFramer<monad_types::NodeId<monad_secp::PubKey>> for PanicFramer {
         type Decoded = Bytes;
         type Error = Infallible;
 
-        fn frame(&mut self, _payload: Bytes) -> Result<impl Iterator<Item = Bytes>, Self::Error> {
-            Ok(std::iter::empty())
+        fn frame(
+            &mut self,
+            _peer: monad_types::NodeId<monad_secp::PubKey>,
+            _payload: Bytes,
+            _priority: UdpPriority,
+            _retry_interval: Duration,
+        ) -> Result<(u16, Vec<Bytes>), Self::Error> {
+            Ok((0, Vec::new()))
         }
 
         fn deframe(
             &mut self,
-            _public_key: monad_secp::PubKey,
+            _public_key: monad_types::NodeId<monad_secp::PubKey>,
             _packet: Bytes,
         ) -> Result<Option<Self::Decoded>, Self::Error> {
             unreachable!("framer should not be called for unauthenticated messages");
@@ -1230,5 +1319,84 @@ mod tests {
             .await
             .expect("timeout waiting for framed recv");
         assert!(matches!(result, Err(FramedRecvError::MissingAuthPublicKey)));
+    }
+
+    #[tokio::test]
+    async fn test_framed_buffered_send_completes_and_ack_is_consumed() {
+        let mut alice = PeerNode::new(31, false);
+        let bob = PeerNode::new(32, false);
+        alice.connect(&bob.public_key, bob.auth_addr);
+        let framer = || {
+            crate::auth::LeanUdpFramer::new(
+                crate::auth::NopScore::<monad_types::NodeId<monad_secp::PubKey>>::new(),
+                monad_leanudp::Config::default(),
+            )
+        };
+        let mut sender = FramedAuthenticatedSocketHandle::new(alice.socket.authenticated, framer());
+        let mut receiver = FramedAuthenticatedSocketHandle::new(bob.socket.authenticated, framer());
+        let payload = Bytes::from(vec![9; 4000]);
+        sender
+            .write_buffered(
+                &bob.public_key,
+                payload.clone(),
+                UdpPriority::Regular,
+                Duration::from_millis(500),
+            )
+            .unwrap();
+        let receive = async {
+            assert_eq!(receiver.recv().await.unwrap().payload, payload);
+        };
+        let consume_ack = async {
+            // ACKs drive the transport but never become application messages.
+            assert!(
+                tokio::time::timeout(Duration::from_millis(300), sender.recv())
+                    .await
+                    .is_err()
+            );
+        };
+        tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::join!(receive, consume_ack);
+        })
+        .await
+        .unwrap();
+        let metrics = sender.metrics().metric_handles();
+        let value = |name| {
+            metrics
+                .iter()
+                .find(|(metric, _, _)| *metric == name)
+                .unwrap()
+                .1
+                .get()
+        };
+        assert_eq!(value("monad.leanudp.retry.acknowledged"), 1);
+        assert_eq!(value("monad.leanudp.retry.messages"), 0);
+        assert_eq!(value("monad.leanudp.retry.transmissions"), 0);
+    }
+
+    #[tokio::test]
+    async fn test_frame_timer_keeps_wakeup_when_recv_future_is_dropped() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        struct WakeCount(AtomicU64);
+        impl futures::task::ArcWake for WakeCount {
+            fn wake_by_ref(value: &Arc<Self>) {
+                value.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        let wakes = Arc::new(WakeCount(AtomicU64::new(0)));
+        let waker = futures::task::waker(wakes.clone());
+        let mut cx = std::task::Context::from_waker(&waker);
+        let mut timer = None;
+        let mut frame_waker = None;
+        let deadline = std::time::Instant::now() + Duration::from_millis(20);
+        assert!(
+            super::poll_frame_timer(&mut timer, &mut frame_waker, Some(deadline), &mut cx)
+                .is_pending()
+        );
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        assert!(wakes.0.load(Ordering::Relaxed) > 0);
+        assert!(
+            super::poll_frame_timer(&mut timer, &mut frame_waker, Some(deadline), &mut cx)
+                .is_ready()
+        );
     }
 }
