@@ -24,14 +24,36 @@ Direct UDP selects its interval internally as `min(50ms + 1.5 * session_rtt, 500
 The extra half RTT is a timing margin, not another required round trip. Unknown
 RTT falls back to 500ms. Buffered messages adopt the measured interval when their
 handshake completes. The upper bound limits the effect of inflated measurements
-and preserves three scheduled retries within the two-second lifetime. An actual
-path RTT longer than the cap can cause premature retransmissions.
+and allows the default three scheduled retries within the two-second lifetime.
+An actual path RTT longer than the cap can cause premature retransmissions.
 
-There are up to three retries, separated by the selected interval, within a
-fixed two-second outgoing lifetime. At 500ms they occur at 500, 1000 and 1500ms,
-then the sender waits for ACKs until 2000ms. Delayed polling does not send several
-retries back to back. Completing an ACK cancels retries and releases the payload
-immediately.
+The caller selects a policy for each message, excluding the initial send:
+
+- `RetryPolicy::NoRetry` sends the initial fragments once and retains no sender
+  retry state or timer. Receivers still generate ACKs, which the sender ignores
+  for this message. These sends do not increment the retry confirmation metric.
+- `RetryPolicy::Retries(n)` permits 1 to 5 additional transmissions. Other
+  counts are rejected before sending; use `NoRetry` for zero. The router uses
+  `Retries(3)`, also the default policy.
+
+Retries are separated by the selected interval within a fixed two-second
+outgoing lifetime. With `Retries(3)` and a 500ms interval they occur at 500, 1000
+and 1500ms, then the sender waits for ACKs until 2000ms. With `Retries(1)` and an
+80ms interval, it retries at 80ms and then only waits for completion feedback.
+With `Retries(5)` and an 80ms interval, retries occur at 80, 160, 240, 320 and
+400ms. At a 500ms interval only three retries fit, even if five were requested:
+expiry takes precedence at 2000ms.
+
+Delayed polling sends at most one retry per message, then schedules the next
+interval from that poll; it does not catch up with several retries back to back.
+After the last permitted retry the payload remains tracked until completion,
+expiry or pruning. A completion ACK cancels retries and releases the payload
+immediately. Partial ACKs do not reset the retry timer or extend the lifetime.
+
+For example, `write_buffered(&peer, payload, priority, RetryPolicy::Retries(1))`
+allows one retry, and replacing the last argument with `RetryPolicy::NoRetry`
+disables retransmissions. The policy only controls message-fragment retries;
+WireAuth session establishment has its own behavior.
 
 The retry clock starts when initial fragments are submitted to the authenticated
 socket after a handshake. Before that, tracking has a bounded two-second
@@ -52,6 +74,8 @@ recreated with the same ID and sequence. Sender state defaults to 1024 messages
 or 64MiB globally, and 100 messages or 32MiB per peer. Old tracking is pruned on
 overflow. A payload too large for the tracking budget is still sent initially.
 Existing receiver pool limits and eviction policies remain in effect.
+`NoRetry` consumes none of this sender tracking budget. On an ID collision, even
+a `NoRetry` send cancels old tracking for that peer and ID.
 
 An ACK is a snapshot of currently retained receiver fragments. The sender
 replaces its bitmap rather than ORing snapshots, allowing recovery when the
@@ -66,6 +90,9 @@ For independent per-datagram loss probability `p`, `n` fragments and four
 transmission opportunities, retaining fragments across attempts gives delivery
 probability `(1 - p^4)^n`. Requiring a whole attempt to arrive gives
 `1 - (1 - (1 - p)^n)^4`.
+For a retry count `r`, replace the four opportunities with `r + 1`; the following
+table uses the router's three-retry policy. Lifetime limits can reduce the actual
+number of opportunities.
 
 | Datagram loss | Five fragments, whole attempts | Five fragments, retained chunks |
 | --- | --- | --- |

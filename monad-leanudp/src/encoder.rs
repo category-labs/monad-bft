@@ -46,6 +46,8 @@ pub fn max_payload_for_mtu(mtu: usize) -> usize {
 
 #[derive(Debug, Error)]
 pub enum EncodeError {
+    #[error("retry count must be in 1..=5; use NoRetry to disable retransmissions")]
+    InvalidRetryCount,
     #[error("retry interval must be nonzero and fit in the monotonic clock")]
     InvalidRetryInterval,
     #[error(

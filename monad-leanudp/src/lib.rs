@@ -25,7 +25,7 @@ use std::{hash::Hash, time::Duration};
 pub use acknowledgement::{Acknowledgement, FragmentBitmap, ACK_BITMAP_BYTES};
 pub use decoder::{Clock, DecodeError, DecodeOutcome, Decoder, Packet, SystemClock};
 pub use encoder::{max_payload_for_mtu, EncodeError, Encoder, FragmentIter};
-pub use retransmit::{RetryConfig, RetrySender};
+pub use retransmit::{RetryConfig, RetryPolicy, RetrySender};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, LE, U16};
 
 pub const LEANUDP_HEADER_SIZE: usize = PacketHeader::SIZE;

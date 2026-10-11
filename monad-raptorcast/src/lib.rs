@@ -747,7 +747,12 @@ where
         }
         // buffer will be drained when session is established or dropped on timeout
         if socket
-            .write_buffered(&target_pubkey, outbound_message, priority)
+            .write_buffered(
+                &target_pubkey,
+                outbound_message,
+                priority,
+                monad_leanudp::RetryPolicy::Retries(3),
+            )
             .is_ok()
         {
             self.metrics

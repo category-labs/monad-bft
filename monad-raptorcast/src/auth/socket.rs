@@ -25,6 +25,7 @@ use bytes::{Bytes, BytesMut};
 use monad_crypto::certificate_signature::PubKey;
 use monad_dataplane::{UdpSocketHandle, UnicastMsg};
 use monad_executor::{ExecutorMetrics, ExecutorMetricsChain};
+use monad_leanudp::RetryPolicy;
 use monad_peer_discovery::NameRecord;
 use monad_peer_score::IdentityScore;
 use monad_types::{NodeId, UdpPriority};
@@ -690,28 +691,34 @@ where
         }
     }
 
-    /// Uses the authenticated session's RTT to schedule up to three retries
-    /// inside the fixed two-second lifetime.
+    /// Sends once, then schedules at most `retry_policy` additional transmissions
+    /// using the session RTT. `NoRetry` retains no sender retry state; `Retries(n)`
+    /// accepts 1..=5. Tracking limits and the two-second lifetime can stop retries
+    /// early. A fresh ACK selects missing fragments; absent fresh feedback, a
+    /// retry sends all fragments. A completion ACK immediately releases tracking.
     #[allow(clippy::result_unit_err)]
     pub fn write(
         &mut self,
         public_key: &AP::PublicKey,
         plaintext: Bytes,
         priority: UdpPriority,
+        retry_policy: RetryPolicy,
     ) -> Result<(), ()> {
-        self.write_framed(public_key, plaintext, priority, false)
+        self.write_framed(public_key, plaintext, priority, retry_policy, false)
     }
 
     /// Buffers initial fragments during a handshake. The retry clock starts
     /// when the session is established and WireAuth flushes those fragments.
+    /// Uses the same per-message retry policy as `write`.
     #[allow(clippy::result_unit_err)]
     pub fn write_buffered(
         &mut self,
         public_key: &AP::PublicKey,
         plaintext: Bytes,
         priority: UdpPriority,
+        retry_policy: RetryPolicy,
     ) -> Result<(), ()> {
-        self.write_framed(public_key, plaintext, priority, true)
+        self.write_framed(public_key, plaintext, priority, retry_policy, true)
     }
 
     /// Handshake turnaround can include delays from peer starvation or denial
@@ -722,7 +729,8 @@ where
     }
 
     /// Allow progress feedback one RTT plus a half-RTT margin, after ACK delay.
-    /// The cap preserves three retry opportunities within the two-second lifetime.
+    /// Capped at 500ms. The two-second lifetime can cut the retry count short;
+    /// at the cap, at most three retries fit before expiry even with `Retries(5)`.
     pub fn retry_interval(&self, public_key: &AP::PublicKey) -> Duration {
         direct_udp_retry_interval(self.session_rtt(public_key))
     }
@@ -732,17 +740,22 @@ where
         public_key: &AP::PublicKey,
         plaintext: Bytes,
         priority: UdpPriority,
+        retry_policy: RetryPolicy,
         buffered: bool,
     ) -> Result<(), ()> {
         let peer = NodeId::new(*public_key);
         let retry_interval = self.retry_interval(public_key);
-        let (msg_id, packets) = match self.framer.frame(peer, plaintext, priority, retry_interval) {
-            Ok(encoded) => encoded,
-            Err(err) => {
-                warn!(error=?err, "failed to encode message");
-                return Err(());
-            }
-        };
+        let (msg_id, packets) =
+            match self
+                .framer
+                .frame(peer, plaintext, priority, retry_interval, retry_policy)
+            {
+                Ok(encoded) => encoded,
+                Err(err) => {
+                    warn!(error=?err, "failed to encode message");
+                    return Err(());
+                }
+            };
         for packet in packets {
             let result = if buffered {
                 let stride = packet.len() as u16;
@@ -929,6 +942,7 @@ mod tests {
     use bytes::Bytes;
     use futures::poll;
     use monad_dataplane::{DataplaneBuilder, UnicastMsg};
+    use monad_leanudp::RetryPolicy;
     use monad_peer_discovery::NameRecord;
     use monad_secp::KeyPair;
     use monad_types::UdpPriority;
@@ -957,6 +971,7 @@ mod tests {
             _payload: Bytes,
             _priority: UdpPriority,
             _retry_interval: Duration,
+            _retry_policy: RetryPolicy,
         ) -> Result<(u16, Vec<Bytes>), Self::Error> {
             Ok((0, Vec::new()))
         }
@@ -1362,6 +1377,26 @@ mod tests {
 
     #[tokio::test]
     async fn test_framed_buffered_send_completes_and_ack_is_consumed() {
+        framed_buffered_send_completes_and_ack_is_consumed(RetryPolicy::Retries(3), 1).await;
+    }
+
+    #[tokio::test]
+    async fn test_framed_buffered_send_without_retries() {
+        framed_buffered_send_completes_and_ack_is_consumed(RetryPolicy::NoRetry, 0).await;
+    }
+
+    #[tokio::test]
+    async fn test_framed_buffered_send_with_retry_limits() {
+        for count in [1, 5] {
+            framed_buffered_send_completes_and_ack_is_consumed(RetryPolicy::Retries(count), 1)
+                .await;
+        }
+    }
+
+    async fn framed_buffered_send_completes_and_ack_is_consumed(
+        policy: RetryPolicy,
+        confirmed: u64,
+    ) {
         let mut alice = PeerNode::new(31, false);
         let bob = PeerNode::new(32, false);
         alice.connect(&bob.public_key, bob.auth_addr);
@@ -1375,7 +1410,12 @@ mod tests {
         let mut receiver = FramedAuthenticatedSocketHandle::new(bob.socket.authenticated, framer());
         let payload = Bytes::from(vec![9; 4000]);
         sender
-            .write_buffered(&bob.public_key, payload.clone(), UdpPriority::Regular)
+            .write_buffered(
+                &bob.public_key,
+                payload.clone(),
+                UdpPriority::Regular,
+                policy,
+            )
             .unwrap();
         let receive = async {
             assert_eq!(receiver.recv().await.unwrap().payload, payload);
@@ -1402,7 +1442,7 @@ mod tests {
                 .1
                 .get()
         };
-        assert_eq!(value("monad.leanudp.retry.acknowledged"), 1);
+        assert_eq!(value("monad.leanudp.retry.acknowledged"), confirmed);
         assert_eq!(value("monad.leanudp.retry.messages"), 0);
         assert_eq!(value("monad.leanudp.retry.transmissions"), 0);
     }

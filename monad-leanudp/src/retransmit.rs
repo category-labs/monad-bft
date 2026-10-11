@@ -33,11 +33,32 @@ impl Default for RetryConfig {
     }
 }
 
+/// Per-message retransmission limit, excluding the initial transmission.
+///
+/// Retries use the latest fresh ACK to send only missing fragments; without
+/// fresh feedback they resend all fragments. Completion ACKs stop retries.
+/// The fixed two-second lifetime and tracking limits can end retries early.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RetryPolicy {
+    /// Send once without retaining sender retry state. Receivers still ACK.
+    NoRetry,
+    /// Allow this many additional transmissions. Counts outside 1..=5 are
+    /// rejected with `EncodeError::InvalidRetryCount` when tracking the send.
+    Retries(u8),
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self::Retries(3)
+    }
+}
+
 struct Pending<T> {
     fragments: FragmentIter,
     context: T,
     interval: Duration,
     retries: u8,
+    max_retries: u8,
     fresh_ack: Option<FragmentBitmap>,
     started: bool,
     created: Instant,
@@ -89,20 +110,32 @@ where
 
     /// Registers an initial transmission. Bounds affect retry tracking only:
     /// the caller must still send the initial fragments when tracking is pruned.
+    /// `NoRetry` skips retention and timer validation, but cancels older tracking
+    /// for the same peer and ID. Invalid retry counts reject the registration.
+    #[allow(clippy::too_many_arguments)]
     pub fn track(
         &mut self,
         peer: I,
         fragments: FragmentIter,
         context: T,
         interval: Duration,
+        policy: RetryPolicy,
         now: Instant,
     ) -> Result<(), EncodeError> {
-        if interval.is_zero() || now.checked_add(interval).is_none() {
+        let max_retries = match policy {
+            RetryPolicy::NoRetry => 0,
+            RetryPolicy::Retries(count @ 1..=5) => count,
+            RetryPolicy::Retries(_) => return Err(EncodeError::InvalidRetryCount),
+        };
+        if max_retries > 0 && (interval.is_zero() || now.checked_add(interval).is_none()) {
             return Err(EncodeError::InvalidRetryInterval);
         }
         let key = (peer.clone(), fragments.msg_id());
         if self.remove(&key).is_some() {
             self.metrics.gauge(COUNTER_LEANUDP_RETRY_PRUNED).inc();
+        }
+        if max_retries == 0 {
+            return Ok(());
         }
         let size = fragments.payload_len();
         if size > self.config.max_bytes || size > self.config.max_bytes_per_peer {
@@ -138,6 +171,7 @@ where
                 context,
                 interval,
                 retries: 0,
+                max_retries,
                 fresh_ack: None,
                 started: false,
                 created: now,
@@ -256,7 +290,7 @@ where
                 .gauge(COUNTER_LEANUDP_RETRY_FRAGMENTS)
                 .add((packets.len() - before) as u64);
             state.retries += 1;
-            state.deadline = if state.retries < 3 {
+            state.deadline = if state.retries < state.max_retries {
                 now.checked_add(state.interval)
                     .unwrap_or(state.expires)
                     .min(state.expires)
@@ -338,11 +372,200 @@ mod tests {
     }
 
     #[test]
+    fn no_retry_skips_retention_without_pruning_other_messages_and_cancels_id_collision() {
+        let now = Instant::now();
+        let mut sender = RetrySender::new(RetryConfig {
+            max_messages: 1,
+            ..RetryConfig::default()
+        });
+        sender
+            .track(
+                2,
+                fragments(),
+                (),
+                Duration::from_millis(50),
+                RetryPolicy::Retries(1),
+                now,
+            )
+            .unwrap();
+        sender
+            .track(
+                1,
+                fragments(),
+                (),
+                Duration::ZERO,
+                RetryPolicy::NoRetry,
+                now,
+            )
+            .unwrap();
+        sender.mark_sent(&1, 0, now);
+        sender.acknowledge(&1, ack(0, &[0, 1, 2]), now);
+        assert_eq!(sender.messages.len(), 1);
+        assert!(sender.messages.contains_key(&(2, 0)));
+        assert_eq!(sender.bytes, 150);
+        assert_eq!(sender.waiting_peers(), [2]);
+        assert_eq!(sender.metrics.gauge(COUNTER_LEANUDP_RETRY_PRUNED).get(), 0);
+        assert_eq!(
+            sender
+                .metrics
+                .gauge(COUNTER_LEANUDP_RETRY_ACKNOWLEDGED)
+                .get(),
+            0
+        );
+
+        // A send-once message still supersedes old retry state after an ID wrap.
+        sender
+            .track(
+                2,
+                fragments(),
+                (),
+                Duration::ZERO,
+                RetryPolicy::NoRetry,
+                now,
+            )
+            .unwrap();
+        assert!(sender.messages.is_empty() && sender.peers.is_empty());
+        assert!(sender.deadlines.is_empty() && sender.oldest.is_empty());
+        assert_eq!(sender.bytes, 0);
+        assert_eq!(sender.metrics.gauge(GAUGE_LEANUDP_RETRY_MESSAGES).get(), 0);
+        assert_eq!(sender.metrics.gauge(GAUGE_LEANUDP_RETRY_BYTES).get(), 0);
+        assert!(sender.poll_retries(now + MESSAGE_LIFETIME).is_empty());
+        assert_eq!(
+            sender
+                .metrics
+                .gauge(COUNTER_LEANUDP_RETRY_TRANSMISSIONS)
+                .get(),
+            0
+        );
+    }
+
+    #[test]
+    fn retry_counts_are_per_message_and_exclude_initial_send() {
+        let now = Instant::now();
+        let interval = Duration::from_millis(50);
+        let mut sender = RetrySender::new(RetryConfig::default());
+        let mut encoder = Config {
+            max_fragment_payload: 64,
+            ..Config::default()
+        }
+        .build(Score)
+        .0;
+        for count in 1..=5 {
+            let fragments = encoder.fragment(Bytes::from(vec![7; 150])).unwrap();
+            let id = fragments.msg_id();
+            sender
+                .track(1, fragments, (), interval, RetryPolicy::Retries(count), now)
+                .unwrap();
+            sender.mark_sent(&1, id, now);
+        }
+        for attempt in 1..=6 {
+            let packets = sender.poll_retries(now + interval * attempt);
+            let ids: Vec<_> = packets
+                .into_iter()
+                .map(|(_, _, packet)| Packet::try_from(packet).unwrap().header.msg_id())
+                .collect();
+            let expected: Vec<_> = ((attempt - 1)..5).flat_map(|id| [id as u16; 3]).collect();
+            assert_eq!(ids, expected);
+        }
+        assert_eq!(
+            sender
+                .metrics
+                .gauge(COUNTER_LEANUDP_RETRY_TRANSMISSIONS)
+                .get(),
+            15
+        );
+        // Keep accepting completion feedback after the last permitted retry.
+        for id in 0..5 {
+            sender.acknowledge(&1, ack(id, &[0, 1, 2]), now + interval * 7);
+        }
+        assert!(sender.messages.is_empty());
+        assert_eq!(
+            sender
+                .metrics
+                .gauge(COUNTER_LEANUDP_RETRY_ACKNOWLEDGED)
+                .get(),
+            5
+        );
+    }
+
+    #[test]
+    fn invalid_retry_counts_do_not_replace_tracking() {
+        let now = Instant::now();
+        let mut sender = RetrySender::new(RetryConfig::default());
+        sender
+            .track(
+                1,
+                fragments(),
+                (),
+                Duration::from_millis(50),
+                RetryPolicy::Retries(1),
+                now,
+            )
+            .unwrap();
+        sender.mark_sent(&1, 0, now);
+        for count in [0, 6, u8::MAX] {
+            assert!(matches!(
+                sender.track(
+                    1,
+                    fragments(),
+                    (),
+                    Duration::from_millis(50),
+                    RetryPolicy::Retries(count),
+                    now
+                ),
+                Err(EncodeError::InvalidRetryCount)
+            ));
+        }
+        assert_eq!(sender.messages.len(), 1);
+        assert_eq!(
+            sender.poll_retries(now + Duration::from_millis(50)).len(),
+            3
+        );
+        assert!(sender
+            .poll_retries(now + Duration::from_millis(100))
+            .is_empty());
+    }
+
+    #[test]
+    fn lifetime_limits_retry_count_and_delayed_polling_does_not_burst() {
+        let now = Instant::now();
+        for (interval_ms, polls_ms) in [(500, vec![500, 1000, 1500]), (100, vec![800, 1600])] {
+            let mut sender = RetrySender::new(RetryConfig::default());
+            sender
+                .track(
+                    1,
+                    fragments(),
+                    (),
+                    Duration::from_millis(interval_ms),
+                    RetryPolicy::Retries(5),
+                    now,
+                )
+                .unwrap();
+            sender.mark_sent(&1, 0, now);
+            for ms in polls_ms {
+                let poll = now + Duration::from_millis(ms);
+                assert_eq!(sender.poll_retries(poll).len(), 3);
+                assert!(sender.poll_retries(poll).is_empty());
+            }
+            assert!(sender.poll_retries(now + MESSAGE_LIFETIME).is_empty());
+            assert!(sender.messages.is_empty());
+            assert_eq!(sender.metrics.gauge(COUNTER_LEANUDP_RETRY_EXPIRED).get(), 1);
+        }
+    }
+
+    #[test]
     fn selective_retries_replace_snapshots_and_fall_back_without_fresh_ack() {
         let now = Instant::now();
         let mut sender = RetrySender::new(RetryConfig::default());
         sender
-            .track(1, fragments(), (), Duration::from_millis(500), now)
+            .track(
+                1,
+                fragments(),
+                (),
+                Duration::from_millis(500),
+                RetryPolicy::Retries(3),
+                now,
+            )
             .unwrap();
         sender.mark_sent(&1, 0, now);
         sender.acknowledge(&1, ack(0, &[0]), now);
@@ -384,7 +607,14 @@ mod tests {
         let mut sender = RetrySender::new(RetryConfig::default());
         for peer in [1, 2] {
             sender
-                .track(peer, fragments(), (), Duration::from_millis(500), now)
+                .track(
+                    peer,
+                    fragments(),
+                    (),
+                    Duration::from_millis(500),
+                    RetryPolicy::Retries(3),
+                    now,
+                )
                 .unwrap();
             sender.mark_sent(&peer, 0, now);
         }
@@ -407,7 +637,14 @@ mod tests {
         let now = Instant::now();
         let mut sender = RetrySender::new(RetryConfig::default());
         sender
-            .track(1, fragments(), (), Duration::from_millis(300), now)
+            .track(
+                1,
+                fragments(),
+                (),
+                Duration::from_millis(300),
+                RetryPolicy::Retries(3),
+                now,
+            )
             .unwrap();
         assert!(sender
             .poll_retries(now + Duration::from_millis(500))
@@ -428,7 +665,14 @@ mod tests {
         sender.poll_retries(now + Duration::from_secs(3));
         assert!(sender.messages.is_empty());
         assert!(sender
-            .track(1, fragments(), (), Duration::ZERO, now)
+            .track(
+                1,
+                fragments(),
+                (),
+                Duration::ZERO,
+                RetryPolicy::Retries(3),
+                now
+            )
             .is_err());
     }
 
@@ -442,10 +686,24 @@ mod tests {
         };
         let mut sender = RetrySender::new(config);
         sender
-            .track(1, fragments(), (), Duration::from_millis(500), now)
+            .track(
+                1,
+                fragments(),
+                (),
+                Duration::from_millis(500),
+                RetryPolicy::Retries(3),
+                now,
+            )
             .unwrap();
         sender
-            .track(1, fragments(), (), Duration::from_millis(200), now)
+            .track(
+                1,
+                fragments(),
+                (),
+                Duration::from_millis(200),
+                RetryPolicy::Retries(3),
+                now,
+            )
             .unwrap();
         assert_eq!(
             sender.messages[&(1, 0)].interval,
@@ -453,7 +711,14 @@ mod tests {
         );
         for peer in [2, 3] {
             sender
-                .track(peer, fragments(), (), Duration::from_millis(500), now)
+                .track(
+                    peer,
+                    fragments(),
+                    (),
+                    Duration::from_millis(500),
+                    RetryPolicy::Retries(3),
+                    now,
+                )
                 .unwrap();
         }
         assert_eq!(sender.messages.len(), 2);
@@ -462,7 +727,14 @@ mod tests {
         encoder.fragment(Bytes::new()).unwrap();
         let next = encoder.fragment(Bytes::from(vec![7; 150])).unwrap();
         sender
-            .track(3, next, (), Duration::from_millis(500), now)
+            .track(
+                3,
+                next,
+                (),
+                Duration::from_millis(500),
+                RetryPolicy::Retries(3),
+                now,
+            )
             .unwrap();
         assert!(!sender.messages.contains_key(&(3, 0)));
         assert!(sender.messages.contains_key(&(3, 1)));
@@ -484,7 +756,14 @@ mod tests {
         for peer in [1, 1, 2, 3] {
             let iter = encoder.fragment(Bytes::from_static(b"x")).unwrap();
             sender
-                .track(peer, iter, (), Duration::from_millis(500), now)
+                .track(
+                    peer,
+                    iter,
+                    (),
+                    Duration::from_millis(500),
+                    RetryPolicy::Retries(3),
+                    now,
+                )
                 .unwrap();
         }
         assert_eq!(sender.messages.len(), 2);

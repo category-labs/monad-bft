@@ -24,7 +24,7 @@ use bytes::Bytes;
 use monad_executor::{ExecutorMetrics, ExecutorMetricsChain};
 use monad_leanudp::{
     Acknowledgement, Clock, Config, DecodeError, DecodeOutcome, Decoder, EncodeError, Encoder,
-    FragmentPolicy, IdentityScore, Packet, RetrySender, SystemClock,
+    FragmentPolicy, IdentityScore, Packet, RetryPolicy, RetrySender, SystemClock,
 };
 use monad_peer_score::PeerStatus;
 use monad_types::UdpPriority;
@@ -45,6 +45,7 @@ pub trait AuthPacketFramer<P> {
         payload: Bytes,
         priority: UdpPriority,
         retry_interval: Duration,
+        retry_policy: RetryPolicy,
     ) -> Result<(u16, Vec<Bytes>), Self::Error>;
 
     fn mark_sent(&mut self, _peer: &P, _msg_id: u16) {}
@@ -200,6 +201,7 @@ where
         payload: Bytes,
         priority: UdpPriority,
         retry_interval: Duration,
+        retry_policy: RetryPolicy,
     ) -> Result<(u16, Vec<Bytes>), Self::Error> {
         let fragments = self.encoder.fragment(payload)?;
         let msg_id = fragments.msg_id();
@@ -208,6 +210,7 @@ where
             fragments.clone(),
             priority,
             retry_interval,
+            retry_policy,
             self.clock.now(),
         )?;
         Ok((
@@ -330,6 +333,7 @@ mod tests {
             payload,
             UdpPriority::Regular,
             Duration::from_millis(500),
+            RetryPolicy::Retries(3),
         )
         .unwrap()
         .1
@@ -457,6 +461,7 @@ mod tests {
                 payload.clone(),
                 UdpPriority::Regular,
                 Duration::from_millis(500),
+                RetryPolicy::Retries(3),
             )
             .unwrap();
         sender.mark_sent(&2, id);
@@ -468,6 +473,37 @@ mod tests {
             assert_eq!(priority, UdpPriority::High);
             assert_eq!(sender.deframe(2, packet).unwrap(), None);
         }
+    }
+
+    #[test]
+    fn no_retry_sends_initial_fragments_and_ignores_lost_completion_ack() {
+        let clock = TestClock::new();
+        let mut sender = test_framer(&clock);
+        let mut receiver = test_framer(&clock);
+        let payload = Bytes::from(vec![5; 150]);
+        let (id, packets) = sender
+            .frame(
+                2,
+                payload.clone(),
+                UdpPriority::Regular,
+                Duration::from_millis(50),
+                RetryPolicy::NoRetry,
+            )
+            .unwrap();
+        assert_eq!(packets.len(), 3);
+        sender.mark_sent(&2, id);
+        assert_eq!(sender.next_deadline(), None);
+        assert!(sender.waiting_peers().is_empty());
+        let deliveries: Vec<_> = packets
+            .into_iter()
+            .filter_map(|packet| receiver.deframe(1, packet).unwrap())
+            .collect();
+        assert_eq!(deliveries, [payload]);
+        assert_eq!(receiver.poll_outbound().len(), 1); // drop completion ACK
+        clock.advance(500);
+        assert!(sender.poll_outbound().is_empty());
+        clock.advance(1500);
+        assert!(sender.poll_outbound().is_empty());
     }
 
     #[test]
