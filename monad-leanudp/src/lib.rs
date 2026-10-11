@@ -36,7 +36,7 @@ pub const MAX_CONCURRENT_MESSAGES_PER_IDENTITY: usize = 100;
 pub const MAX_CONCURRENT_MESSAGES_PER_DEDICATED_IDENTITY: usize = 10;
 
 pub const MESSAGE_LIFETIME: Duration = Duration::from_secs(2);
-pub const ACK_DELAY: Duration = Duration::from_millis(200);
+pub const ACK_DELAY: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FragmentType {

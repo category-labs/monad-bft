@@ -187,13 +187,18 @@ where
             .collect()
     }
 
-    pub fn mark_connected(&mut self, peer: &I, now: Instant) {
+    pub fn mark_connected(&mut self, peer: &I, interval: Duration, now: Instant) {
+        assert!(!interval.is_zero() && now.checked_add(interval).is_some());
         let waiting: Vec<_> = self
             .peers
             .get(peer)
             .map(|usage| usage.waiting.iter().copied().collect())
             .unwrap_or_default();
         for id in waiting {
+            self.messages
+                .get_mut(&(peer.clone(), id))
+                .expect("waiting message")
+                .interval = interval;
             self.mark_sent(peer, id, now);
         }
     }
@@ -407,12 +412,13 @@ mod tests {
         assert!(sender
             .poll_retries(now + Duration::from_millis(500))
             .is_empty());
-        sender.mark_connected(&1, now + Duration::from_secs(1));
+        // The fallback selected before the handshake is replaced by session timing.
+        sender.mark_connected(&1, Duration::from_millis(75), now + Duration::from_secs(1));
         assert_eq!(
             sender.next_deadline(),
-            Some(now + Duration::from_millis(1300))
+            Some(now + Duration::from_millis(1075))
         );
-        for ms in [1300, 1600, 1900] {
+        for ms in [1075, 1150, 1225] {
             assert_eq!(
                 sender.poll_retries(now + Duration::from_millis(ms)).len(),
                 3

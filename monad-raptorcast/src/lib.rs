@@ -747,12 +747,7 @@ where
         }
         // buffer will be drained when session is established or dropped on timeout
         if socket
-            .write_buffered(
-                &target_pubkey,
-                outbound_message,
-                priority,
-                Duration::from_millis(500),
-            )
+            .write_buffered(&target_pubkey, outbound_message, priority)
             .is_ok()
         {
             self.metrics

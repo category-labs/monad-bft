@@ -49,7 +49,7 @@ pub trait AuthPacketFramer<P> {
 
     fn mark_sent(&mut self, _peer: &P, _msg_id: u16) {}
     fn cancel(&mut self, _peer: &P, _msg_id: u16) {}
-    fn mark_connected(&mut self, _peer: &P) {}
+    fn mark_connected(&mut self, _peer: &P, _retry_interval: Duration) {}
     fn waiting_peers(&self) -> Vec<P> {
         Vec::new()
     }
@@ -224,8 +224,9 @@ where
     fn cancel(&mut self, peer: &N, msg_id: u16) {
         self.sender.cancel(peer, msg_id);
     }
-    fn mark_connected(&mut self, peer: &N) {
-        self.sender.mark_connected(peer, self.clock.now());
+    fn mark_connected(&mut self, peer: &N, retry_interval: Duration) {
+        self.sender
+            .mark_connected(peer, retry_interval, self.clock.now());
     }
     fn waiting_peers(&self) -> Vec<N> {
         self.sender.waiting_peers()

@@ -611,6 +611,17 @@ pub enum FramedRecvError<E: std::fmt::Debug> {
     MissingAuthPublicKey,
 }
 
+fn direct_udp_retry_interval(rtt: Option<Duration>) -> Duration {
+    let maximum = Duration::from_millis(500);
+    rtt.map(|rtt| {
+        monad_leanudp::ACK_DELAY
+            .saturating_add(rtt)
+            .saturating_add(rtt / 2)
+            .min(maximum)
+    })
+    .unwrap_or(maximum)
+}
+
 impl<AP, F> FramedAuthenticatedSocketHandle<AP, F>
 where
     AP: AuthenticationProtocol,
@@ -632,7 +643,8 @@ where
                 .auth_protocol
                 .is_connected_public_key(&peer.pubkey())
             {
-                self.framer.mark_connected(&peer);
+                self.framer
+                    .mark_connected(&peer, self.retry_interval(&peer.pubkey()));
             }
         }
         for (peer, priority, packet) in self.framer.poll_outbound() {
@@ -678,17 +690,16 @@ where
         }
     }
 
-    /// `retry_interval` is chosen by the caller from RTT. Up to three retries
-    /// fit inside the fixed two-second lifetime; longer intervals allow fewer.
+    /// Uses the authenticated session's RTT to schedule up to three retries
+    /// inside the fixed two-second lifetime.
     #[allow(clippy::result_unit_err)]
     pub fn write(
         &mut self,
         public_key: &AP::PublicKey,
         plaintext: Bytes,
         priority: UdpPriority,
-        retry_interval: Duration,
     ) -> Result<(), ()> {
-        self.write_framed(public_key, plaintext, priority, retry_interval, false)
+        self.write_framed(public_key, plaintext, priority, false)
     }
 
     /// Buffers initial fragments during a handshake. The retry clock starts
@@ -699,9 +710,21 @@ where
         public_key: &AP::PublicKey,
         plaintext: Bytes,
         priority: UdpPriority,
-        retry_interval: Duration,
     ) -> Result<(), ()> {
-        self.write_framed(public_key, plaintext, priority, retry_interval, true)
+        self.write_framed(public_key, plaintext, priority, true)
+    }
+
+    /// Handshake turnaround can include delays from peer starvation or denial
+    /// of service. Treat it as an estimate, not an absolute response-time bound;
+    /// clamp derived timers, as `retry_interval` does.
+    pub fn session_rtt(&self, public_key: &AP::PublicKey) -> Option<Duration> {
+        self.socket.auth_protocol.session_rtt(public_key)
+    }
+
+    /// Allow progress feedback one RTT plus a half-RTT margin, after ACK delay.
+    /// The cap preserves three retry opportunities within the two-second lifetime.
+    pub fn retry_interval(&self, public_key: &AP::PublicKey) -> Duration {
+        direct_udp_retry_interval(self.session_rtt(public_key))
     }
 
     fn write_framed(
@@ -709,10 +732,10 @@ where
         public_key: &AP::PublicKey,
         plaintext: Bytes,
         priority: UdpPriority,
-        retry_interval: Duration,
         buffered: bool,
     ) -> Result<(), ()> {
         let peer = NodeId::new(*public_key);
+        let retry_interval = self.retry_interval(public_key);
         let (msg_id, packets) = match self.framer.frame(peer, plaintext, priority, retry_interval) {
             Ok(encoded) => encoded,
             Err(err) => {
@@ -1321,6 +1344,22 @@ mod tests {
         assert!(matches!(result, Err(FramedRecvError::MissingAuthPublicKey)));
     }
 
+    #[test]
+    fn test_direct_udp_retry_interval_bounds() {
+        for (rtt, expected_ms) in [
+            (None, 500),
+            (Some(Duration::ZERO), 50),
+            (Some(Duration::from_millis(20)), 80),
+            (Some(Duration::from_millis(300)), 500),
+            (Some(Duration::MAX), 500),
+        ] {
+            assert_eq!(
+                super::direct_udp_retry_interval(rtt),
+                Duration::from_millis(expected_ms)
+            );
+        }
+    }
+
     #[tokio::test]
     async fn test_framed_buffered_send_completes_and_ack_is_consumed() {
         let mut alice = PeerNode::new(31, false);
@@ -1336,12 +1375,7 @@ mod tests {
         let mut receiver = FramedAuthenticatedSocketHandle::new(bob.socket.authenticated, framer());
         let payload = Bytes::from(vec![9; 4000]);
         sender
-            .write_buffered(
-                &bob.public_key,
-                payload.clone(),
-                UdpPriority::Regular,
-                Duration::from_millis(500),
-            )
+            .write_buffered(&bob.public_key, payload.clone(), UdpPriority::Regular)
             .unwrap();
         let receive = async {
             assert_eq!(receiver.recv().await.unwrap().payload, payload);

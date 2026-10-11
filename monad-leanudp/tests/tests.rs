@@ -798,9 +798,9 @@ fn test_ack_deadline_snapshots_and_immediate_completion() {
     assert_pending!(decoder, 1, packets[0].clone());
     assert_eq!(
         decoder.next_deadline(),
-        Some(start + Duration::from_millis(200))
+        Some(start + Duration::from_millis(50))
     );
-    clock.advance_ms(190);
+    clock.advance_ms(40);
     assert_pending!(decoder, 1, packets[1].clone());
     assert!(decoder.poll_acknowledgements().is_empty());
     clock.advance_ms(10);
@@ -829,15 +829,15 @@ fn test_retry_rearms_ack_without_extending_expiration() {
     let (mut encoder, mut decoder, clock) = build_regular(Config::default());
     let first = first_packet(&mut encoder, Bytes::from(vec![1; 3000]));
     assert_pending!(decoder, 1, first.clone());
-    clock.advance_ms(200);
+    clock.advance_ms(50);
     assert_eq!(decoder.poll_acknowledgements().len(), 1);
-    clock.advance_ms(300);
+    clock.advance_ms(450);
     assert_pending!(decoder, 1, first.clone());
-    clock.advance_ms(200);
+    clock.advance_ms(50);
     assert_eq!(decoder.poll_acknowledgements().len(), 1);
-    clock.advance_ms(1200);
+    clock.advance_ms(1400);
     assert_pending!(decoder, 1, first);
-    clock.advance_ms(100);
+    clock.advance_ms(50);
     assert!(decoder.poll_acknowledgements().is_empty());
     assert_eq!(decoder.next_deadline(), None);
     assert_eq!(

@@ -13,15 +13,25 @@ ambiguous. Completed messages are not cached; duplicate delivery is allowed.
 
 ## Timings
 
-The send API takes `retry_interval: Duration`, chosen by the caller from its RTT
-estimate. The router currently passes 500ms because its Direct UDP send path
-has no RTT estimate. Zero intervals are rejected.
+The authenticated session records an initial RTT estimate from its handshake.
+The initiator measures initiation to a validated response; the responder measures
+its response to the first authenticated data or keepalive. The estimate includes
+local queueing and peer processing. Starvation or denial of service can inflate
+it, and it is not an absolute bound on future response times. Keepalives do not
+refresh it; a new session gets a new estimate.
 
-There are up to three retries, separated by the supplied interval, within a
+Direct UDP selects its interval internally as `min(50ms + 1.5 * session_rtt, 500ms)`.
+The extra half RTT is a timing margin, not another required round trip. Unknown
+RTT falls back to 500ms. Buffered messages adopt the measured interval when their
+handshake completes. The upper bound limits the effect of inflated measurements
+and preserves three scheduled retries within the two-second lifetime. An actual
+path RTT longer than the cap can cause premature retransmissions.
+
+There are up to three retries, separated by the selected interval, within a
 fixed two-second outgoing lifetime. At 500ms they occur at 500, 1000 and 1500ms,
-then the sender waits for ACKs until 2000ms. Longer intervals permit fewer
-retries. Delayed polling does not send several retries back to back. Completing
-an ACK cancels retries and releases the payload immediately.
+then the sender waits for ACKs until 2000ms. Delayed polling does not send several
+retries back to back. Completing an ACK cancels retries and releases the payload
+immediately.
 
 The retry clock starts when initial fragments are submitted to the authenticated
 socket after a handshake. Before that, tracking has a bounded two-second
@@ -29,8 +39,9 @@ handshake wait. WireAuth's existing handshake buffer limits still apply.
 
 The receiver retains each incomplete entry for two seconds from its first
 fragment. Additional fragments and duplicates never extend that deadline.
-It generates a progress ACK 200ms after first receipt, and rearms that timer on
-subsequent traffic after an ACK. It generates a completion ACK immediately,
+A 512KiB message takes about 44–45ms to transmit at 100Mbps, including packet
+overhead. The receiver generates a progress ACK 50ms after first receipt, and
+rearms that timer on subsequent traffic after an ACK. It generates a completion ACK immediately,
 with the bitmap captured before releasing reassembly state. Timers wake even
 when no more network traffic arrives.
 
