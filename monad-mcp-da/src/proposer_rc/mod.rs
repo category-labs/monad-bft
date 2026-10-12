@@ -37,6 +37,8 @@ pub struct ProposerRaptorcast {
     self_id: NodeId,
 
     pull_interval: TimestampDelta,
+    // how often each tracked root serves a requester
+    serve_window: TimestampDelta,
 
     pin: Pin,
     first_pull: Timestamp, // nothing is pulled before this timestamp
@@ -109,6 +111,7 @@ impl ProposerRaptorcast {
             self_id,
             first_pull: deadline + timing.pull_delay,
             pull_interval: timing.pull_interval,
+            serve_window: timing.serve_window,
             headers: None,
             roots: HashMap::new(),
             pin: Pin::Unseen,
@@ -142,10 +145,11 @@ impl ProposerRaptorcast {
         }
 
         let author = &self.proposer;
+        let serve_window = self.serve_window;
         let instance = self
             .roots
             .entry(root)
-            .or_insert_with(|| RaptorcastInstance::new(header, epoch_handle, author));
+            .or_insert_with(|| RaptorcastInstance::new(header, epoch_handle, author, serve_window));
 
         for (wire_chunk_id, data) in chunks {
             if let Err(err) = instance.ingest(wire_chunk_id, data, sender) {
@@ -304,15 +308,16 @@ impl ProposerRaptorcast {
     }
 
     pub(crate) fn handle_chunk_request(
-        &self,
+        &mut self,
         request: ChunkRequest,
         requester: &NodeId,
+        now: Timestamp,
         egress: &mut ChunkEgress,
     ) {
-        let Some(instance) = self.roots.get(&request.root) else {
+        let Some(instance) = self.roots.get_mut(&request.root) else {
             return;
         };
-        instance.handle_chunk_request(request, requester, egress);
+        instance.handle_chunk_request(request, requester, now, egress);
     }
 }
 
@@ -498,7 +503,7 @@ mod tests {
 
         let requester = NodeId::dummy(3);
         let your_chunks = ChunkRequest::all(*header.root(), ChunkRequestType::YourChunks);
-        instance.handle_chunk_request(your_chunks, &requester, &mut egress);
+        instance.handle_chunk_request(your_chunks, &requester, NOW, &mut egress);
         let recovered = egress.drain();
         let [Dissemination { to, envelope }] = &recovered[..] else {
             panic!("recovery unicasts to the requester");
@@ -511,7 +516,7 @@ mod tests {
 
         // the requester's own chunks (ids 2 and 5) are not held yet
         let my_chunks = ChunkRequest::all(*header.root(), ChunkRequestType::MyChunks);
-        instance.handle_chunk_request(my_chunks, &requester, &mut egress);
+        instance.handle_chunk_request(my_chunks, &requester, NOW, &mut egress);
         assert!(egress.drain().is_empty());
     }
 
@@ -549,7 +554,7 @@ mod tests {
         assert_eq!(decoded_roots(&mut instance), vec![*header_b.root()]);
         egress.drain();
         let your_chunks = ChunkRequest::all(*header_b.root(), ChunkRequestType::YourChunks);
-        instance.handle_chunk_request(your_chunks, &NodeId::dummy(1), &mut egress);
+        instance.handle_chunk_request(your_chunks, &NodeId::dummy(1), NOW, &mut egress);
         assert!(!egress.drain().is_empty());
     }
 

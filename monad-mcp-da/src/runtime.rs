@@ -61,16 +61,19 @@ impl DAConfig {
         Timing {
             pull_delay: self.delta,
             pull_interval: self.delta * 2,
+            serve_window: self.delta,
         }
     }
 }
 
-// when a proposer's pulls happen
+// when a proposer's pulls happen, and how often its requests are served
 #[derive(Clone, Copy)]
 pub(crate) struct Timing {
     // from the slot deadline, when owners release their rebroadcasts
     pub(crate) pull_delay: TimestampDelta,
     pub(crate) pull_interval: TimestampDelta,
+    // shorter than pull_interval, so jittered honest requests still fit
+    pub(crate) serve_window: TimestampDelta,
 }
 
 pub struct DARuntime<S> {
@@ -167,7 +170,12 @@ where
         ));
     }
 
-    pub fn handle_chunk_request(&mut self, req: ChunkRecoveryRequest, from: &NodeId) {
+    pub fn handle_chunk_request(
+        &mut self,
+        req: ChunkRecoveryRequest,
+        from: &NodeId,
+        now: Timestamp,
+    ) {
         let ChunkRecoveryRequest {
             slot,
             proposal_index,
@@ -179,7 +187,7 @@ where
             return;
         };
 
-        slot_raptorcast.handle_chunk_request(request, proposal_index, from);
+        slot_raptorcast.handle_chunk_request(request, proposal_index, from, now);
         self.collect(slot);
     }
 
@@ -402,7 +410,7 @@ mod tests {
             proposal_index: 0,
             request: ChunkRequest::all(*header.root(), ChunkRequestType::YourChunks),
         };
-        runtime.handle_chunk_request(unknown_slot, &NodeId::dummy(2));
+        runtime.handle_chunk_request(unknown_slot, &NodeId::dummy(2), NOW);
         assert!(outputs(&mut runtime).is_empty());
     }
 

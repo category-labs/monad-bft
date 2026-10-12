@@ -14,8 +14,6 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 mod obligation_tracker;
-// unused until serving is rate limited
-#[cfg_attr(not(test), expect(dead_code))]
 mod serving_tracker;
 
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -23,6 +21,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use bytes::Bytes;
 use monad_mcp_chorus::spec::ProposalHeader as _;
 use obligation_tracker::ObligationTracker;
+use serving_tracker::ServingTracker;
 
 use super::{
     assignment::{ChunkAssignment, ChunkId, NodeIndex},
@@ -31,7 +30,10 @@ use super::{
     egress::ChunkEgress,
     encoding_scheme::{self, DAEncodingScheme as _, SymbolDecoder},
     runtime::EpochHandle,
-    types::{EncodingScheme, MerkleRoot, NodeId, ProposalDAEvent, SignedProposalHeader},
+    types::{
+        EncodingScheme, MerkleRoot, NodeId, ProposalDAEvent, SignedProposalHeader, Timestamp,
+        TimestampDelta,
+    },
     util::Tree,
     wire::PacketLayout as _,
 };
@@ -70,6 +72,7 @@ pub(crate) struct RaptorcastInstance {
 
     chunks: ChunkTree,
     obligation: ObligationTracker,
+    serving: ServingTracker,
 
     pending_rebroadcast: BTreeSet<ChunkId>,
     state: DecodingState,
@@ -80,6 +83,7 @@ impl RaptorcastInstance {
         header: SignedProposalHeader,
         epoch_handle: &EpochHandle,
         author: &NodeId,
+        serve_window: TimestampDelta,
     ) -> Self {
         let scheme = header.scheme();
         let assignment = scheme.chunk_assignment(author, &epoch_handle.validator_data);
@@ -93,6 +97,7 @@ impl RaptorcastInstance {
         assert!(0 < decoding_threshold && decoding_threshold < num_chunks);
         let decoder = scheme.decoder(num_chunks);
         let obligation = ObligationTracker::new(&assignment, self_index);
+        let serving = ServingTracker::new(&assignment, self_index, serve_window);
 
         Self {
             chunks: ChunkTree::new(*header.root()),
@@ -102,6 +107,7 @@ impl RaptorcastInstance {
             full_rebroadcast_targets,
             decoding_threshold,
             obligation,
+            serving,
             pending_rebroadcast: BTreeSet::new(),
             state: DecodingState::Decoding(decoder),
         }
@@ -227,9 +233,10 @@ impl RaptorcastInstance {
 
     // serve the requester the requested chunks we hold
     pub(crate) fn handle_chunk_request(
-        &self,
+        &mut self,
         request: ChunkRequest,
         requester: &NodeId,
+        now: Timestamp,
         egress: &mut ChunkEgress,
     ) {
         let Some(requester_index) = self.assignment.index_of(requester) else {
@@ -237,15 +244,19 @@ impl RaptorcastInstance {
             return;
         };
         let to = HashSet::from([*requester]);
+        // a header counts as one chunk
         if request.subset == ChunksSubset::HeaderOnly {
-            egress.enqueue_header(&to, &self.header);
+            if self.serving.grant(requester_index, 1, now) == 1 {
+                egress.enqueue_header(&to, &self.header);
+            }
             return;
         }
 
-        for chunk_id in self.requested_chunks(request, requester_index) {
-            if !self.chunks.contains(chunk_id) {
-                continue;
-            }
+        let mut held = self.requested_chunks(request, requester_index);
+        held.retain(|chunk_id| self.chunks.contains(*chunk_id));
+        let granted = self.serving.grant(requester_index, held.len(), now);
+        held.truncate(granted);
+        for chunk_id in held {
             self.enqueue(chunk_id, &to, egress);
         }
     }
@@ -318,15 +329,20 @@ mod tests {
         super::{
             chunk::{Chunk, ChunkRequestType},
             test_util::{
-                MESSAGE_LEN, author, epoch_handle, epoch_handle_for, inconsistent_proposal_chunks,
-                proposal_chunks,
+                MESSAGE_LEN, NOW, author, epoch_handle, epoch_handle_for,
+                inconsistent_proposal_chunks, proposal_chunks, timing,
             },
         },
         *,
     };
 
     fn instance(header: &SignedProposalHeader, epoch_handle: &EpochHandle) -> RaptorcastInstance {
-        RaptorcastInstance::new(header.clone(), epoch_handle, &author())
+        RaptorcastInstance::new(
+            header.clone(),
+            epoch_handle,
+            &author(),
+            timing().serve_window,
+        )
     }
 
     fn released() -> ChunkEgress {
@@ -492,10 +508,10 @@ mod tests {
         let requester = NodeId::dummy(3);
         let root = *header.root();
         let your_chunks = ChunkRequest::all(root, ChunkRequestType::YourChunks);
-        instance.handle_chunk_request(your_chunks, &requester, &mut egress);
+        instance.handle_chunk_request(your_chunks, &requester, NOW, &mut egress);
         assert!(sent(&mut egress).is_empty());
         let my_chunks = ChunkRequest::all(root, ChunkRequestType::MyChunks);
-        instance.handle_chunk_request(my_chunks, &requester, &mut egress);
+        instance.handle_chunk_request(my_chunks, &requester, NOW, &mut egress);
         assert_eq!(sent(&mut egress), [2, 5]);
     }
 
@@ -503,7 +519,7 @@ mod tests {
     fn a_header_only_request_is_answered_for_validators_alone() {
         let epoch_handle = epoch_handle();
         let (header, _) = proposal_chunks(&epoch_handle, 1);
-        let instance = instance(&header, &epoch_handle);
+        let mut instance = instance(&header, &epoch_handle);
         let mut egress = released();
         let request = ChunkRequest {
             root: *header.root(),
@@ -512,10 +528,10 @@ mod tests {
         };
 
         // validator 9 is not in the validator set
-        instance.handle_chunk_request(request.clone(), &NodeId::dummy(9), &mut egress);
+        instance.handle_chunk_request(request.clone(), &NodeId::dummy(9), NOW, &mut egress);
         assert!(egress.drain().is_empty());
 
-        instance.handle_chunk_request(request, &NodeId::dummy(3), &mut egress);
+        instance.handle_chunk_request(request, &NodeId::dummy(3), NOW, &mut egress);
         let replies = egress.drain();
         let [reply] = replies.as_slice() else {
             panic!("one reply");

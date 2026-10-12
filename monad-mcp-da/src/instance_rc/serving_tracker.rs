@@ -15,79 +15,143 @@
 
 use std::collections::HashMap;
 
-use bitvec::{bitbox, boxed::BitBox};
+use super::super::{
+    assignment::{ChunkAssignment, NodeIndex},
+    types::{Timestamp, TimestampDelta},
+};
 
-use super::super::{assignment::ChunkId, types::NodeId};
-
-// each chunk is served to a requester at most once
-pub(crate) struct ChunkServingTracker {
-    num_chunks: usize,
-
-    // the chunks served to each requester
-    served_chunks: HashMap<NodeId, BitBox>,
+// each requester is served at most one round of honest demand per window
+pub(crate) struct ServingTracker {
+    window: TimestampDelta,
+    // chunks each node owns, by node index
+    shares: Vec<usize>,
+    own_share: usize,
+    // each requester's current window: its start, and the chunks served in it
+    served: HashMap<NodeIndex, (Timestamp, usize)>,
 }
 
-impl ChunkServingTracker {
-    pub(crate) fn new(num_chunks: usize) -> Self {
+impl ServingTracker {
+    pub(crate) fn new(
+        assignment: &ChunkAssignment,
+        self_index: Option<NodeIndex>,
+        window: TimestampDelta,
+    ) -> Self {
+        let mut shares = vec![0; assignment.num_nodes()];
+        for chunk_id in assignment.chunk_ids() {
+            let owner = assignment.routing(chunk_id).owner_index();
+            shares[usize::from(owner)] += 1;
+        }
+        let own_share = match self_index {
+            Some(index) => shares[usize::from(index)],
+            None => 0,
+        };
         Self {
-            num_chunks,
-            served_chunks: HashMap::new(),
+            window,
+            shares,
+            own_share,
+            served: HashMap::new(),
         }
     }
 
-    // returns whether to serve the chunk to the requester, recording it as
-    // served if true.
-    pub(crate) fn try_serve(&mut self, requester: &NodeId, chunk_id: ChunkId) -> bool {
-        let num_chunks = self.num_chunks;
-        let served = self
-            .served_chunks
-            .entry(*requester)
-            .or_insert_with(|| bitbox![0; num_chunks]);
-
-        if served[usize::from(chunk_id)] {
-            // temporarily set to `true` to allow serving repeated
-            // requests. todo: use a rate limiter.
-            return true;
+    // how many of the wanted chunks the requester may be sent now
+    pub(crate) fn grant(&mut self, requester: NodeIndex, wanted: usize, now: Timestamp) -> usize {
+        let quota = self.quota(requester);
+        let (start, served) = self.served.entry(requester).or_insert((now, 0));
+        if now >= *start + self.window {
+            *start = now;
+            *served = 0;
         }
-        served.set(usize::from(chunk_id), true);
-        true
+        let granted = wanted.min(quota - *served);
+        *served += granted;
+        granted
+    }
+
+    // the requester's chunks, ours, and the header
+    fn quota(&self, requester: NodeIndex) -> usize {
+        self.shares[usize::from(requester)] + self.own_share + 1
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use monad_mcp_chorus::spec::Stake as _;
-
     use super::{
         super::super::{
-            assignment::{ChunkAssignment, StakePartition},
-            test_util::PACKET_LOSS_RESISTANCE,
-            types::Stake,
+            encoding_scheme::DAEncodingScheme as _,
+            test_util::{NOW, author, epoch_handle, scheme, timing},
         },
         *,
     };
 
-    // author 0 owning nothing, then 3 nodes with equal stake over 30
-    // source chunks at 2.5x redundancy: 75 chunks
-    fn assignment() -> ChunkAssignment {
-        let author = NodeId::dummy(0);
-        let mut weights = vec![(author, Stake::ZERO)];
-        weights.extend((1..=3).map(|id| (NodeId::dummy(id), Stake::from(1))));
-        StakePartition::new(weights).assign(&author, 30, 2.5, PACKET_LOSS_RESISTANCE)
+    fn assignment() -> (ChunkAssignment, Option<NodeIndex>) {
+        let epoch_handle = epoch_handle();
+        let scheme = scheme(&epoch_handle);
+        let assignment = scheme.chunk_assignment(&author(), &epoch_handle.validator_data);
+        let self_index = assignment.index_of(&epoch_handle.self_id);
+        (assignment, self_index)
+    }
+
+    fn tracker() -> ServingTracker {
+        let (assignment, self_index) = assignment();
+        ServingTracker::new(&assignment, self_index, timing().serve_window)
+    }
+
+    fn requesters() -> (NodeIndex, NodeIndex) {
+        let (assignment, _) = assignment();
+        let mut indices = assignment.nodes().map(|(index, _)| index);
+        (indices.next().unwrap(), indices.next().unwrap())
     }
 
     #[test]
-    #[ignore] // FIXME: failing
-    fn served_chunks_are_not_served_twice() {
-        let assignment = assignment();
-        let mut tracker = ChunkServingTracker::new(assignment.num_chunks());
-        let requester = NodeId::dummy(2);
-        let chunk_id = assignment.chunk_ids().next().unwrap();
+    fn the_quota_is_both_shares_and_the_header() {
+        let (assignment, self_index) = assignment();
+        let self_index = self_index.expect("we are a validator");
+        let (requester, _) = requesters();
 
-        assert!(tracker.try_serve(&requester, chunk_id));
-        assert!(!tracker.try_serve(&requester, chunk_id));
+        let theirs = assignment.owned_chunks(requester).count();
+        let ours = assignment.owned_chunks(self_index).count();
+        assert_eq!(tracker().quota(requester), theirs + ours + 1);
+    }
 
-        // per requester
-        assert!(tracker.try_serve(&NodeId::dummy(3), chunk_id));
+    #[test]
+    fn a_round_of_honest_demand_is_granted_in_full() {
+        let mut tracker = tracker();
+        let (requester, _) = requesters();
+        let quota = tracker.quota(requester);
+
+        assert_eq!(tracker.grant(requester, quota, NOW), quota);
+    }
+
+    #[test]
+    fn demand_beyond_the_quota_is_cut() {
+        let mut tracker = tracker();
+        let (requester, _) = requesters();
+        let quota = tracker.quota(requester);
+
+        assert_eq!(tracker.grant(requester, quota - 1, NOW), quota - 1);
+        assert_eq!(tracker.grant(requester, 3, NOW), 1);
+        assert_eq!(tracker.grant(requester, 1, NOW), 0);
+    }
+
+    #[test]
+    fn a_window_later_grants_again() {
+        let mut tracker = tracker();
+        let (requester, _) = requesters();
+        let quota = tracker.quota(requester);
+        tracker.grant(requester, quota, NOW);
+
+        let window = timing().serve_window;
+        let just_before = NOW + TimestampDelta::from_millis(window.as_millis() - 1);
+        assert_eq!(tracker.grant(requester, 1, just_before), 0);
+        assert_eq!(tracker.grant(requester, 1, NOW + window), 1);
+    }
+
+    #[test]
+    fn requesters_do_not_share_a_budget() {
+        let mut tracker = tracker();
+        let (first, second) = requesters();
+        let quota = tracker.quota(first);
+        tracker.grant(first, quota, NOW);
+
+        assert_eq!(tracker.grant(second, 1, NOW), 1);
     }
 }

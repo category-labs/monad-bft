@@ -44,7 +44,7 @@ impl Component for DA {
                     tracing::debug!(?reason, "rejected proposal envelope");
                 }
             }
-            DAInput::ChunkRequest(from, request) => self.handle_chunk_request(request, &from),
+            DAInput::ChunkRequest(from, request) => self.handle_chunk_request(request, &from, now),
             DAInput::Lifecycle(event) => self.handle_slot_lifecycle(event),
             DAInput::Command(slot, command) => self.handle_command(command, slot, now),
         }

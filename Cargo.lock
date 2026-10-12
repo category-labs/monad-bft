@@ -5737,7 +5737,6 @@ name = "monad-mcp-da"
 version = "0.1.0"
 dependencies = [
  "alloy-rlp",
- "bitvec",
  "bytes",
  "derive_more",
  "monad-crypto",

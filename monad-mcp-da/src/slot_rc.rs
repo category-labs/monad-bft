@@ -238,6 +238,7 @@ impl SlotRaptorcast {
         request: ChunkRequest,
         proposal_index: ProposalIndex,
         requester: &NodeId,
+        now: Timestamp,
     ) {
         if proposal_index >= self.raptorcasts.size() {
             return;
@@ -245,7 +246,7 @@ impl SlotRaptorcast {
         let Some(raptorcast) = self.raptorcasts[proposal_index].as_mut() else {
             return;
         };
-        raptorcast.handle_chunk_request(request, requester, &mut self.egress);
+        raptorcast.handle_chunk_request(request, requester, now, &mut self.egress);
     }
 }
 
@@ -304,9 +305,13 @@ mod tests {
     }
 
     // node 3 asks for our chunks, returning the messages it caused
-    fn your_chunks(raptorcast: &mut SlotRaptorcast, root: MerkleRoot) -> Vec<Dissemination> {
+    fn your_chunks(
+        raptorcast: &mut SlotRaptorcast,
+        root: MerkleRoot,
+        now: Timestamp,
+    ) -> Vec<Dissemination> {
         let request = ChunkRequest::all(root, ChunkRequestType::YourChunks);
-        raptorcast.handle_chunk_request(request, 0, &NodeId::dummy(3));
+        raptorcast.handle_chunk_request(request, 0, &NodeId::dummy(3), now);
         raptorcast.drain_messages()
     }
 
@@ -317,7 +322,7 @@ mod tests {
 
         // our chunk 0 arrives and node 3 asks for it: nothing leaves
         assert!(ingest(&mut raptorcast, group(&chunks[..1])).is_empty());
-        assert!(your_chunks(&mut raptorcast, *header.root()).is_empty());
+        assert!(your_chunks(&mut raptorcast, *header.root(), NOW).is_empty());
 
         // released: the second hop to the other owners, and the answer
         // to node 3, both pending until now
@@ -327,9 +332,31 @@ mod tests {
         assert_eq!(messages[0].to, nodes([2, 3]));
         assert_eq!(messages[1].to, nodes([3]));
 
-        // released: a repeat is answered at once
-        let repeat = your_chunks(&mut raptorcast, *header.root());
+        // released: a repeat a window later is answered at once
+        let a_window_later = NOW + timing().serve_window;
+        let repeat = your_chunks(&mut raptorcast, *header.root(), a_window_later);
         assert_eq!(chunk_ids(&repeat), [0]);
+    }
+
+    #[test]
+    fn a_requester_is_cut_off_at_its_quota() {
+        let (epoch_handle, mut raptorcast) = slot_raptorcast();
+        let (header, chunks) = proposal_chunks(&epoch_handle, 1);
+        raptorcast.handle_command(ChorusDACommand::ReleaseChunks, NOW);
+        ingest(&mut raptorcast, group(&chunks[..1]));
+
+        // node 3's 2 chunks, our 2 and the header: 5 per window
+        let root = *header.root();
+        for _ in 0..5 {
+            assert_eq!(chunk_ids(&your_chunks(&mut raptorcast, root, NOW)), [0]);
+        }
+        assert!(your_chunks(&mut raptorcast, root, NOW).is_empty());
+
+        let a_window_later = NOW + timing().serve_window;
+        assert_eq!(
+            chunk_ids(&your_chunks(&mut raptorcast, root, a_window_later)),
+            [0]
+        );
     }
 
     #[test]
@@ -552,7 +579,7 @@ mod tests {
                 .iter_mut()
                 .find(|(handle, _)| handle.self_id == peer)
                 .unwrap();
-            server.handle_chunk_request(request, 0, &NodeId::dummy(3));
+            server.handle_chunk_request(request, 0, &NodeId::dummy(3), NOW);
         }
         // 1 answers both asks in one message, 2 in another; together
         // they carry every chunk
