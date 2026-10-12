@@ -322,7 +322,11 @@ fn spawn_wireauth_validator(
 
     tokio::task::spawn_local(async move {
         let config = create_raptorcast_config(keypair.clone(), sig_verification_rate_limit);
-        let wireauth_config = monad_wireauth::Config::default();
+        // The ten simulated validators all use 127.0.0.1, so each needs nine peer slots.
+        let wireauth_config = monad_wireauth::Config {
+            max_established_peers_per_ip: NUM_NODES - 1,
+            ..monad_wireauth::Config::default()
+        };
         let authenticated = (
             dataplane.authenticated_socket,
             monad_raptorcast::auth::WireAuthProtocol::new(
