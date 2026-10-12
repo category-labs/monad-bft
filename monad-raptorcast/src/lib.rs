@@ -65,7 +65,7 @@ use monad_validator::{
 };
 use packet::regular;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use tracing::{debug, debug_span, error, info, trace, warn};
+use tracing::{debug, debug_span, error, trace, warn};
 use util::{
     budgeted, AutoRebroadcast, BroadcastGroup, BroadcastGroupError, BuildTarget, Collector,
     FullNodeGroupMap, PeerAddrLookup, PrimaryBroadcastGroup, Redundancy, SecondaryBroadcastGroup,
@@ -99,7 +99,6 @@ pub mod raptorcast_secondary;
 mod round_info;
 pub mod udp;
 pub mod util;
-pub mod v1_rollout;
 
 const SIGNATURE_SIZE: usize = 65;
 const DEFAULT_RETRY_ATTEMPTS: u64 = 3;
@@ -243,10 +242,6 @@ where
         debug!(
             ?is_dynamic_fullnode, ?self_id, ?config.mtu, "RaptorCast::new",
         );
-        info!(
-            stage = %config.deterministic_protocol_rollout,
-            "deterministic raptorcast rollout",
-        );
 
         let dual_socket = auth::DualSocketHandle::new(
             auth::AuthenticatedSocketHandle::new(authenticated.0, authenticated.1),
@@ -285,12 +280,11 @@ where
             .redundancy(secondary_redundancy);
         let peer_discovery_metrics = peer_discovery_driver.lock().unwrap().metrics().clone();
 
-        let mut udp_state = udp::UdpState::new(
+        let udp_state = udp::UdpState::new(
             self_id,
             config.udp_message_max_age_ms,
             config.sig_verification_rate_limit,
         );
-        udp_state.set_v1_rollout(config.deterministic_protocol_rollout);
 
         Self {
             self_id,
@@ -303,7 +297,7 @@ where
             dedicated_full_nodes: config.primary_instance.fullnode_dedicated.clone(),
             peer_discovery_driver,
 
-            signing_key: config.shared_key.clone(),
+            signing_key: config.shared_key,
             message_builder,
             secondary_message_builder: Some(secondary_message_builder),
 
@@ -922,7 +916,6 @@ where
             invite_future_dist_max: Round(5),
             invite_accept_heartbeat_ms: 100,
         },
-        deterministic_protocol_rollout: v1_rollout::CURRENT_STAGE,
     };
     let pd = PeerDiscoveryDriver::new(peer_discovery_builder);
     let shared_pd = Arc::new(Mutex::new(pd));
@@ -988,7 +981,6 @@ where
             invite_future_dist_max: Round(5),
             invite_accept_heartbeat_ms: 100,
         },
-        deterministic_protocol_rollout: v1_rollout::CURRENT_STAGE,
     };
     let pd = PeerDiscoveryDriver::new(peer_discovery_builder);
     let shared_pd = Arc::new(Mutex::new(pd));

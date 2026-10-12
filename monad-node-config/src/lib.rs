@@ -39,9 +39,6 @@ mod peers;
 pub mod fullnode_raptorcast;
 pub use fullnode_raptorcast::FullNodeRaptorCastConfig;
 
-pub mod raptorcast;
-pub use raptorcast::DeterministicProtocolRolloutStage;
-
 mod sync_peers;
 
 #[derive(Debug, Deserialize, Clone)]
@@ -80,9 +77,6 @@ pub struct NodeConfig<ST: CertificateSignatureRecoverable> {
     pub txpool_peer_score: ema::ScoreConfig,
 
     pub fullnode_raptorcast: FullNodeRaptorCastConfig<CertificateSignaturePubKey<ST>>,
-
-    #[serde(default)]
-    pub deterministic_raptorcast_rollout: DeterministicProtocolRolloutStage,
 
     // TODO split network-wide configuration into separate file
     ////////////////////////////////

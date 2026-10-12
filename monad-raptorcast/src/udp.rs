@@ -31,14 +31,9 @@ pub use crate::packet::build_messages;
 use crate::{
     decoding::{DecoderCache, DecodingContext, TryDecodeError, TryDecodeStatus},
     metrics::{
-        UdpStateMetrics, COUNTER_RAPTORCAST_CHUNKS_DROPPED_INCOMPATIBLE_VERSION,
-        COUNTER_RAPTORCAST_SECONDARY_CHUNKS_DROPPED_INCOMPATIBLE_VERSION,
-        COUNTER_RAPTORCAST_V0_PRIMARY_CHUNKS_ACCEPTED,
-        COUNTER_RAPTORCAST_V0_SECONDARY_CHUNKS_ACCEPTED,
-        COUNTER_RAPTORCAST_V1_PRIMARY_CHUNKS_ACCEPTED,
+        UdpStateMetrics, COUNTER_RAPTORCAST_V1_PRIMARY_CHUNKS_ACCEPTED,
         COUNTER_RAPTORCAST_V1_SECONDARY_CHUNKS_ACCEPTED,
         GAUGE_RAPTORCAST_DECODING_CACHE_SIGNATURE_VERIFICATIONS_RATE_LIMITED,
-        GAUGE_RAPTORCAST_DETERMINISTIC_ROLLOUT_STAGE,
     },
     packet::deterministic,
     parser::{
@@ -51,7 +46,6 @@ use crate::{
         BroadcastMode, EncodingScheme, FullNodeGroupMap, GlobalMerkleRoot, MerkleRoot, NodeIdHash,
         PrimaryBroadcastGroup, SecondaryBroadcastGroup,
     },
-    v1_rollout::{self, DeterministicProtocolRolloutStage},
 };
 
 pub const SIGNATURE_CACHE_SIZE: usize = 10_000;
@@ -81,7 +75,6 @@ pub(crate) struct UdpState<ST: CertificateSignatureRecoverable> {
     round_info_cache: RoundInfoCache<CertificateSignaturePubKey<ST>>,
 
     signature_verifier: ChunkSignatureVerifier<ST>,
-    v1_rollout: DeterministicProtocolRolloutStage,
 
     metrics: UdpStateMetrics,
 }
@@ -105,18 +98,9 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
             decoder_cache: DecoderCache::default(),
             signature_verifier,
             round_info_cache: RoundInfoCache::new(),
-            v1_rollout: v1_rollout::CURRENT_STAGE,
 
             metrics: UdpStateMetrics::new(),
         }
-    }
-
-    pub fn set_v1_rollout(&mut self, stage: DeterministicProtocolRolloutStage) {
-        self.v1_rollout = stage;
-        self.metrics
-            .executor_metrics_mut()
-            .gauge(GAUGE_RAPTORCAST_DETERMINISTIC_ROLLOUT_STAGE)
-            .set(stage as u64);
     }
 
     pub fn metrics(&self) -> &UdpStateMetrics {
@@ -223,7 +207,14 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                 ),
             (EncodingScheme::Deterministic25(round), BroadcastGroup::Secondary(g)) => self
                 .handle_deterministic_secondary(g, round, chunk, &decoding_context, rebroadcast_to),
-            _ => self.handle_regular(&group, chunk, &decoding_context, rebroadcast_to),
+            (EncodingScheme::Unspecified, _) => {
+                tracing::debug!(
+                    ?chunk.group_id,
+                    author =? chunk.author,
+                    "dropping raptorcast chunk without deterministic encoding"
+                );
+                None
+            }
         }
     }
 
@@ -385,37 +376,6 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
         message
     }
 
-    fn handle_regular(
-        &mut self,
-        group: &BroadcastGroup<'_, CertificateSignaturePubKey<ST>>,
-        chunk: &ValidatedChunk<CertificateSignaturePubKey<ST>>,
-        decoding_context: &DecodingContext<CertificateSignaturePubKey<ST>>,
-        rebroadcast_to: &mut impl FnMut(Vec<NodeId<CertificateSignaturePubKey<ST>>>),
-    ) -> Option<(NodeId<CertificateSignaturePubKey<ST>>, Bytes)> {
-        let message = self.try_decode(chunk, decoding_context)?;
-
-        if let Some((_author, message)) = &message {
-            if let Some(hash_valid) = chunk.check_message_hash(message) {
-                if !hash_valid {
-                    self.decoder_cache.mark_tainted(chunk);
-                    tracing::warn!(
-                        author =? chunk.author,
-                        "message failed hash validation"
-                    );
-                    return None;
-                }
-            }
-        }
-
-        let is_first_hop_recipient = chunk.recipient_hash == Some(self.self_id_hash);
-        if let Some(ctx) = group.try_rebroadcast(&self.self_id, is_first_hop_recipient) {
-            // TODO: cap rebroadcast symbols based on some multiple of esis.
-            rebroadcast_to(ctx.peers().cloned().collect());
-        }
-
-        message
-    }
-
     // Outer Option: whether the chunk was admitted
     // Inner Option: the successfully decoded app message
     fn try_decode(
@@ -562,36 +522,10 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
                     self.handle_unicast(epoch_validators, &chunk, message.sender.as_ref())
                 }
                 BroadcastMode::Primary | BroadcastMode::Secondary => {
-                    if !v1_rollout::should_accept(self.v1_rollout, &chunk) {
-                        let dropped_metric = match chunk.broadcast_mode {
-                            BroadcastMode::Primary => {
-                                COUNTER_RAPTORCAST_CHUNKS_DROPPED_INCOMPATIBLE_VERSION
-                            }
-                            BroadcastMode::Secondary => {
-                                COUNTER_RAPTORCAST_SECONDARY_CHUNKS_DROPPED_INCOMPATIBLE_VERSION
-                            }
-                            BroadcastMode::Unspecified => unreachable!(),
-                        };
-                        self.metrics
-                            .executor_metrics_mut()
-                            .gauge(dropped_metric)
-                            .inc();
-                        continue;
-                    }
-                    let accepted_metric = match (chunk.broadcast_mode, chunk.version) {
-                        (BroadcastMode::Primary, ChunkVersion::V0) => {
-                            COUNTER_RAPTORCAST_V0_PRIMARY_CHUNKS_ACCEPTED
-                        }
-                        (BroadcastMode::Primary, ChunkVersion::V1) => {
-                            COUNTER_RAPTORCAST_V1_PRIMARY_CHUNKS_ACCEPTED
-                        }
-                        (BroadcastMode::Secondary, ChunkVersion::V0) => {
-                            COUNTER_RAPTORCAST_V0_SECONDARY_CHUNKS_ACCEPTED
-                        }
-                        (BroadcastMode::Secondary, ChunkVersion::V1) => {
-                            COUNTER_RAPTORCAST_V1_SECONDARY_CHUNKS_ACCEPTED
-                        }
-                        (BroadcastMode::Unspecified, _) => unreachable!(),
+                    let accepted_metric = if chunk.broadcast_mode == BroadcastMode::Primary {
+                        COUNTER_RAPTORCAST_V1_PRIMARY_CHUNKS_ACCEPTED
+                    } else {
+                        COUNTER_RAPTORCAST_V1_SECONDARY_CHUNKS_ACCEPTED
                     };
                     self.metrics
                         .executor_metrics_mut()
@@ -632,12 +566,6 @@ impl From<GroupId> for u64 {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ChunkVersion {
-    V0, // raptor-coded message for broadcast/point-to-point
-    V1, // primary raptorcast with deterministic encoding
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ValidatedChunk<PT>
 where
@@ -656,7 +584,6 @@ where
     pub app_message_hash: Option<AppMessageHash>,
     pub merkle_root: MerkleRoot,
     pub app_message_len: u32,
-    pub version: ChunkVersion,
     pub encoding_scheme: EncodingScheme,
     pub broadcast_mode: BroadcastMode,
     pub recipient_hash: Option<NodeIdHash>, // V0: hash of first-hop recipient; V1 (deterministic): None
@@ -910,7 +837,7 @@ mod tests {
     use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
     use monad_secp::{KeyPair, SecpSignature};
     use monad_types::{Epoch, NodeId, Stake};
-    use monad_validator::validator_set::{ValidatorSet, MAX_VALIDATOR_SET_SIZE};
+    use monad_validator::validator_set::ValidatorSet;
     use rstest::*;
 
     use super::{ChunkSignatureVerifier, InvalidChunk, UdpState, ValidatedChunk};
@@ -1234,16 +1161,12 @@ mod tests {
     pub const MAX_REDUNDANCY: u16 = 3;
 
     #[rstest]
-    #[case(SYMBOL_LEN * 2, 1, false, true)] // sanity check
-    #[case(SYMBOL_LEN * 2, MAX_REDUNDANCY * 2 - 1, false, true)]
-    #[case(SYMBOL_LEN * 2, MAX_REDUNDANCY * 2, false, false)]
-    #[case(SYMBOL_LEN * 2, MAX_REDUNDANCY * 2, true, true)]
-    #[case(SYMBOL_LEN * 2, MAX_REDUNDANCY * 2 + MAX_VALIDATOR_SET_SIZE as u16 - 1, true, true)]
-    #[case(SYMBOL_LEN * 2, MAX_REDUNDANCY * 2 + MAX_VALIDATOR_SET_SIZE as u16, true, false)]
+    #[case(SYMBOL_LEN * 2, 1, true)] // sanity check
+    #[case(SYMBOL_LEN * 2, MAX_REDUNDANCY * 2 - 1, true)]
+    #[case(SYMBOL_LEN * 2, MAX_REDUNDANCY * 2, false)]
     fn test_chunk_id_validation(
         #[case] app_msg_len: usize,
         #[case] chunk_id: u16,
-        #[case] primary: bool,
         #[case] should_succeed: bool,
     ) {
         let (key, validators, _known_addresses) = validator_set();
@@ -1259,11 +1182,6 @@ mod tests {
             .build_vec(&app_msg, &target);
         let message = messages.unwrap().into_iter().next().unwrap();
         let mut payload = BytesMut::from(&message.payload[..message.stride]);
-
-        if primary {
-            // set the primary broadcast mode bits in the common header
-            payload[crate::SIGNATURE_SIZE + 2] |= 0b10 << 6;
-        }
 
         let layout = regular::PacketLayout::new(DEFAULT_SEGMENT_SIZE as usize, MERKLE_TREE_DEPTH);
         let chunk_header = &mut payload[layout.chunk_header_range()];
@@ -1282,6 +1200,29 @@ mod tests {
         } else {
             assert!(matches!(result, Err(InvalidChunk::InvalidChunkId)));
         }
+    }
+
+    #[rstest]
+    #[case(0b10)]
+    #[case(0b01)]
+    fn test_broadcast_mode_bits_rejected(#[case] mode_bits: u8) {
+        let (key, validators, _known_addresses) = validator_set();
+        let self_id = NodeId::new(key.pubkey());
+        let group_map = make_group_map(&validators);
+        let group = PrimaryBroadcastGroup::of_epoch(EPOCH, &self_id, &group_map).unwrap();
+        let app_msg = vec![0; SYMBOL_LEN * 2];
+        let messages = MessageBuilder::<SignatureType>::new(&key)
+            .segment_size(DEFAULT_SEGMENT_SIZE as usize)
+            .redundancy(Redundancy::from_u8(1))
+            .merkle_tree_depth(MERKLE_TREE_DEPTH)
+            .build_vec(&app_msg, &BuildTarget::Broadcast(group))
+            .unwrap();
+        let message = messages.into_iter().next().unwrap();
+        let mut payload = BytesMut::from(&message.payload[..message.stride]);
+        payload[crate::SIGNATURE_SIZE + 2] |= mode_bits << 6;
+
+        let result = ChunkParser::new().parse(&payload.freeze());
+        assert_eq!(result.err(), Some(InvalidChunk::InvalidBroadcastMode));
     }
 
     #[test]
@@ -1391,7 +1332,7 @@ mod tests_deterministic {
         hasher::{Hasher, HasherType},
     };
     use monad_secp::{KeyPair, SecpSignature};
-    use monad_types::{Epoch, NodeId, Round, Stake};
+    use monad_types::{Epoch, NodeId, Round, RoundSpan, Stake};
     use monad_validator::validator_set::{
         ValidatorSet, ValidatorSetType as _, MAX_VALIDATOR_SET_SIZE,
     };
@@ -1412,10 +1353,9 @@ mod tests_deterministic {
         udp::SIGNATURE_CACHE_SIZE,
         util::{
             BroadcastMode, BuildTarget, EncodingScheme, FullNodeGroupMap, PrimaryBroadcastGroup,
-            SecondaryBroadcastGroup, SecondaryGroup, StubProposerSchedule, UdpMessage,
-            ValidatorGroupMap,
+            Redundancy, SecondaryBroadcastGroup, SecondaryGroup, SecondaryGroupAssignment,
+            StubProposerSchedule, UdpMessage, ValidatorGroupMap,
         },
-        v1_rollout::DeterministicProtocolRolloutStage,
         SIGNATURE_SIZE,
     };
 
@@ -1639,7 +1579,6 @@ mod tests_deterministic {
         let full_node_groups = FullNodeGroupMap::default();
 
         let mut udp_state = UdpState::<SignatureType>::new(self_id, u64::MAX, 10_000);
-        udp_state.set_v1_rollout(DeterministicProtocolRolloutStage::AlwaysV1);
 
         // payload will fail to parse but shouldn't panic on index error
         let stride = deterministic::DEFAULT_SEGMENT_LEN;
@@ -1801,7 +1740,6 @@ mod tests_deterministic {
         let full_node_groups = FullNodeGroupMap::default();
         let proposer_schedule = StubProposerSchedule::VALID;
         let mut udp_state = UdpState::<SignatureType>::new(receiver_id, u64::MAX, 10_000);
-        udp_state.set_v1_rollout(DeterministicProtocolRolloutStage::AlwaysV1);
 
         let stride = deterministic::DEFAULT_SEGMENT_LEN;
         let mut all_decoded = Vec::new();
@@ -1938,7 +1876,6 @@ mod tests_deterministic {
         let full_node_groups = FullNodeGroupMap::default();
         let proposer_schedule = StubProposerSchedule::VALID;
         let mut udp_state = UdpState::<SignatureType>::new(receiver_id, u64::MAX, 10_000);
-        udp_state.set_v1_rollout(DeterministicProtocolRolloutStage::AlwaysV1);
 
         let subset_len = packets.len() * 2 / 3;
         let stride = deterministic::DEFAULT_SEGMENT_LEN;
@@ -2158,7 +2095,6 @@ mod tests_deterministic {
         let epoch_validators: BTreeMap<_, _> = [(EPOCH, small_validators)].into();
         let full_node_groups = FullNodeGroupMap::default();
         let mut udp_state = UdpState::<SignatureType>::new(receiver_id, u64::MAX, 10_000);
-        udp_state.set_v1_rollout(DeterministicProtocolRolloutStage::AlwaysV1);
 
         let mut rebroadcasts = 0;
         let mut decoded = Vec::new();
@@ -2207,7 +2143,6 @@ mod tests_deterministic {
         let epoch_validators: BTreeMap<_, _> = [(EPOCH, validators)].into();
         let full_node_groups = FullNodeGroupMap::default();
         let mut udp_state = UdpState::<SignatureType>::new(receiver_id, u64::MAX, 10_000);
-        udp_state.set_v1_rollout(DeterministicProtocolRolloutStage::AlwaysV1);
 
         let mut decoded = Vec::new();
         for packet in &packets {
@@ -2266,7 +2201,6 @@ mod tests_deterministic {
         let full_node_groups = FullNodeGroupMap::default();
         let proposer_schedule = StubProposerSchedule::VALID;
         let mut udp_state = UdpState::<SignatureType>::new(validator_id, u64::MAX, 10_000);
-        udp_state.set_v1_rollout(DeterministicProtocolRolloutStage::AlwaysV1);
 
         let stride = deterministic::DEFAULT_SEGMENT_LEN;
 
@@ -2314,5 +2248,153 @@ mod tests_deterministic {
         for (pp, vp) in proposer_packets.iter().zip(validator_packets.iter()) {
             assert_eq!(pp.payload, vp.payload);
         }
+    }
+
+    #[test]
+    fn test_v1_secondary_rebroadcast_matches_deterministic_assignment() {
+        let publisher_key = make_key_pair(0);
+        let publisher_id = NodeId::new(publisher_key.pubkey());
+
+        let full_nodes: BTreeSet<NodeId<PubKeyType>> = (1_u8..=20)
+            .map(|n| NodeId::new(make_key_pair(n).pubkey()))
+            .collect();
+        let group = SecondaryGroup::new(full_nodes.clone()).unwrap();
+
+        let bg = SecondaryBroadcastGroup::as_publisher(&publisher_id, ROUND, &group);
+        let build_target = BuildTarget::fullnode_raptorcast(bg, EPOCH);
+
+        let app_message: Bytes = vec![0xCD_u8; 64 * 1024].into();
+        let unix_ts_ms = 1_700_000_000_000_u64;
+        let packets = MessageBuilder::<SignatureType>::new(&publisher_key)
+            .unix_ts_ms(unix_ts_ms)
+            .redundancy(Redundancy::from_u8(2))
+            .build_vec(&app_message, &build_target)
+            .expect("build should succeed");
+        assert!(!packets.is_empty());
+
+        let receiver_id = *full_nodes.iter().next().unwrap();
+        let mut fn_group_map = FullNodeGroupMap::<PubKeyType>::default();
+        let round_span = RoundSpan::new(Round(0), Round(u64::MAX)).unwrap();
+        fn_group_map
+            .try_insert(SecondaryGroupAssignment::new(
+                publisher_id,
+                round_span,
+                group.clone(),
+            ))
+            .expect("group insert");
+
+        let mut udp_state = UdpState::<SignatureType>::new(receiver_id, u64::MAX, 10_000);
+
+        let group_map: BTreeMap<_, _> = BTreeMap::new();
+        let proposer_map = StubProposerSchedule::default();
+        let mut rebroadcast_count = 0usize;
+        for packet in &packets {
+            let recv_msg = AuthRecvMsg {
+                src_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8000),
+                payload: packet.payload.clone(),
+                stride: packet.stride as u16,
+                sender: None,
+            };
+            udp_state.handle_message(
+                &group_map,
+                &fn_group_map,
+                &proposer_map,
+                |_targets, _payload, _stride| rebroadcast_count += 1,
+                recv_msg,
+            );
+        }
+
+        // Reconstruct the deterministic chunk assignment to count how
+        // many chunks were addressed to the receiver.
+        let bg2 = SecondaryBroadcastGroup::as_publisher(&publisher_id, ROUND, &group);
+        let encoding = deterministic::SecondaryEncoding::new(
+            EncodingScheme::Deterministic25(ROUND),
+            &bg2,
+            app_message.len(),
+            unix_ts_ms,
+        )
+        .unwrap();
+        let chunks = encoding.make_chunks().unwrap();
+        let addressed_to_receiver = chunks
+            .iter()
+            .filter(|c| *c.recipient().node_id() == receiver_id)
+            .count();
+
+        assert_eq!(rebroadcast_count, addressed_to_receiver);
+        assert!(
+            rebroadcast_count > 0,
+            "receiver should be assigned some chunks"
+        );
+    }
+
+    #[test]
+    fn test_v1_secondary_conflicting_commitment_rejected() {
+        let publisher_key = make_key_pair(0);
+        let publisher_id = NodeId::new(publisher_key.pubkey());
+
+        let full_nodes: BTreeSet<NodeId<PubKeyType>> = (1_u8..=20)
+            .map(|n| NodeId::new(make_key_pair(n).pubkey()))
+            .collect();
+        let group = SecondaryGroup::new(full_nodes.clone()).unwrap();
+
+        let bg1 = SecondaryBroadcastGroup::as_publisher(&publisher_id, ROUND, &group);
+        let build_target_a = BuildTarget::fullnode_raptorcast(bg1, EPOCH);
+        let bg2 = SecondaryBroadcastGroup::as_publisher(&publisher_id, ROUND, &group);
+        let build_target_b = BuildTarget::fullnode_raptorcast(bg2, EPOCH);
+
+        // Two different messages at the same round, both signed by the
+        // same publisher: the second must not decode.
+        let app_a: Bytes = vec![0xAA_u8; 64 * 1024].into();
+        let app_b: Bytes = vec![0xBB_u8; 64 * 1024].into();
+        let unix_ts_ms = 1_700_000_000_000_u64;
+
+        let packets_a = MessageBuilder::<SignatureType>::new(&publisher_key)
+            .unix_ts_ms(unix_ts_ms)
+            .redundancy(Redundancy::from_u8(2))
+            .build_vec(&app_a, &build_target_a)
+            .expect("build a");
+        let packets_b = MessageBuilder::<SignatureType>::new(&publisher_key)
+            .unix_ts_ms(unix_ts_ms)
+            .redundancy(Redundancy::from_u8(2))
+            .build_vec(&app_b, &build_target_b)
+            .expect("build b");
+
+        let receiver_id = *full_nodes.iter().next().unwrap();
+        let mut fn_group_map = FullNodeGroupMap::<PubKeyType>::default();
+        let round_span = RoundSpan::new(Round(0), Round(u64::MAX)).unwrap();
+        fn_group_map
+            .try_insert(SecondaryGroupAssignment::new(
+                publisher_id,
+                round_span,
+                group.clone(),
+            ))
+            .expect("group insert");
+
+        let mut udp_state = UdpState::<SignatureType>::new(receiver_id, u64::MAX, 10_000);
+
+        let group_map: BTreeMap<_, _> = BTreeMap::new();
+        let proposer_map = StubProposerSchedule::default();
+        let mut decoded = Vec::new();
+        for packet in packets_a.iter().chain(packets_b.iter()) {
+            let recv_msg = AuthRecvMsg {
+                src_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8000),
+                payload: packet.payload.clone(),
+                stride: packet.stride as u16,
+                sender: None,
+            };
+            decoded.extend(udp_state.handle_message(
+                &group_map,
+                &fn_group_map,
+                &proposer_map,
+                |_, _, _| {},
+                recv_msg,
+            ));
+        }
+
+        // Only one of the two broadcasts should decode, whichever the
+        // receiver committed to first.
+        assert_eq!(decoded.len(), 1);
+        let (_, msg) = &decoded[0];
+        assert!(*msg == app_a || *msg == app_b);
     }
 }

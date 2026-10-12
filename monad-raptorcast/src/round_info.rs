@@ -395,7 +395,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        udp::{ChunkVersion, GroupId},
+        udp::GroupId,
         util::{BroadcastMode, HexBytes, MerkleRoot},
     };
 
@@ -427,7 +427,6 @@ mod tests {
             app_message_len,
             recipient_hash: None,
             chunk_id: 0,
-            version: ChunkVersion::V1,
             num_source_symbols: 0,
             encoded_symbol_capacity: 0,
             encoding_scheme: EncodingScheme::Deterministic25(Round(round)),

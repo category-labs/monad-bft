@@ -42,10 +42,7 @@ use monad_peer_discovery::{
     mock::{NopDiscovery, NopDiscoveryBuilder},
     MonadNameRecord, NameRecord,
 };
-use monad_raptorcast::{
-    create_dataplane_for_tests, v1_rollout::DeterministicProtocolRolloutStage, DataplaneHandles,
-    RaptorCastEvent,
-};
+use monad_raptorcast::{create_dataplane_for_tests, DataplaneHandles, RaptorCastEvent};
 use monad_secp::{KeyPair, SecpSignature};
 use monad_types::{Deserializable, Epoch, NodeId, Round, Serializable, Stake};
 use monad_validator::{
@@ -236,8 +233,6 @@ fn spawn_validator(
                 invite_future_dist_max: Round(5),
                 invite_accept_heartbeat_ms: 100,
             },
-            // pin v1 semantics regardless of the current rollout stage
-            deterministic_protocol_rollout: DeterministicProtocolRolloutStage::AlwaysV1,
         };
 
         let shared_pd = Arc::new(Mutex::new(PeerDiscoveryDriver::new(NopDiscoveryBuilder {
