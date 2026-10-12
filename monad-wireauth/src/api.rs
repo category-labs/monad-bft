@@ -91,6 +91,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
         Self {
             state: State::with_limits(
                 metric_names,
+                config.cookie_cache_capacity,
                 config.total_transport_sessions,
                 config.max_established_peers_per_ip,
             ),
@@ -263,10 +264,11 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
 
             // TODO: Enforce the pending initiated sessions limit for retries and rekeys.
             if let Some(rekey) = rekey {
+                let stored_cookie = self.state.lookup_cookie(&rekey.remote_public_key);
                 if let Ok((new_session_index, timer, message)) = self.init_session_with_cookie(
                     rekey.remote_public_key,
                     rekey.remote_addr,
-                    rekey.stored_cookie,
+                    stored_cookie,
                     rekey.retry_attempts,
                 ) {
                     self.metrics
@@ -326,11 +328,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
             });
         }
 
-        // Cookies are looked up from initiated sessions for simplicity.
-        // In the future, this can be improved to look up from both initiated and accepted sessions.
-        let cookie = self
-            .state
-            .lookup_cookie_from_initiated_sessions(&remote_static_key);
+        let cookie = self.state.lookup_cookie(&remote_static_key);
 
         let (local_index, timer, message) = self
             .init_session_with_cookie(remote_static_key, remote_addr, cookie, retry_attempts)
@@ -525,10 +523,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
             return Err(Error::TimestampReplay);
         }
 
-        // Cookie is looked up from accepted sessions for simplicity.
-        // There is technically no reason not to reuse cookies between initiated and accepted sessions,
-        // and this can be improved in the future.
-        let stored_cookie = self.state.lookup_cookie_from_accepted_sessions(remote_key);
+        let stored_cookie = self.state.lookup_cookie(&remote_key);
 
         // Reservation should be committed only when code is no longer fallible
         // TODO(dshulyak): Get rid of reservation; code was refactored to be non-fallible when index is allocated
@@ -565,19 +560,33 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>> API<C, K> {
 
     fn accept_cookie(&mut self, cookie_reply: &mut CookieReply) -> Result<()> {
         let receiver_session_index = cookie_reply.receiver_index.into();
+        let stored_cookie =
+            if let Some(session) = self.state.get_initiator_mut(&receiver_session_index) {
+                let remote_public_key = session.remote_public_key;
+                let cookie = session.handle_cookie(cookie_reply).inspect_err(|_| {
+                    self.metrics
+                        .gauge(self.metric_names.error_cookie_reply)
+                        .inc();
+                })?;
+                cookie.map(|cookie| (remote_public_key, cookie))
+            } else if let Some(session) = self.state.get_responder_mut(&receiver_session_index) {
+                let remote_public_key = session.remote_public_key;
+                let cookie = session.handle_cookie(cookie_reply).inspect_err(|_| {
+                    self.metrics
+                        .gauge(self.metric_names.error_cookie_reply)
+                        .inc();
+                })?;
+                cookie.map(|cookie| (remote_public_key, cookie))
+            } else {
+                None
+            };
 
-        if let Some(session) = self.state.get_initiator_mut(&receiver_session_index) {
-            session.handle_cookie(cookie_reply).inspect_err(|_| {
-                self.metrics
-                    .gauge(self.metric_names.error_cookie_reply)
-                    .inc();
-            })?;
-        } else if let Some(session) = self.state.get_responder_mut(&receiver_session_index) {
-            session.handle_cookie(cookie_reply).inspect_err(|_| {
-                self.metrics
-                    .gauge(self.metric_names.error_cookie_reply)
-                    .inc();
-            })?;
+        if let Some((remote_public_key, cookie)) = stored_cookie {
+            // Only pending handshakes can supply a cookie, once per handshake.
+            // NOTE: We accept the risk that an attacker who observes a handshake
+            // can inject a forged cookie reply. Reply encryption uses public inputs;
+            // a forged reply arriving first blocks the genuine reply for that handshake.
+            self.state.store_cookie(remote_public_key, cookie);
         }
         Ok(())
     }
@@ -1007,5 +1016,323 @@ fn track_decrypt_error_metrics(
         _ => {
             warn!(error=?e, "unexpected decrypt error variant");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::Ipv4Addr;
+
+    use secp256k1::rand::rng;
+
+    use super::*;
+    use crate::{
+        protocol::{
+            cookies, crypto, handshake,
+            messages::{Packet, TYPE_COOKIE_REPLY, TYPE_HANDSHAKE_RESPONSE},
+        },
+        TestContext, DEFAULT_METRICS,
+    };
+
+    fn dispatch(
+        api: &mut API<TestContext>,
+        packet: &(impl IntoBytes + zerocopy::Immutable),
+        addr: SocketAddr,
+    ) {
+        let mut bytes = packet.as_bytes().to_vec();
+        let Packet::Control(control) = Packet::try_from(bytes.as_mut_slice()).unwrap() else {
+            panic!("expected control packet");
+        };
+        api.dispatch_control(control, addr).unwrap();
+    }
+
+    fn cookie_reply(public_key: &PubKey, sender_index: u32, mac1: &[u8; 16]) -> CookieReply {
+        cookies::send_cookie_reply(
+            &[1; 32],
+            u128::from(sender_index),
+            public_key,
+            sender_index,
+            mac1,
+            &[2; 16],
+        )
+    }
+
+    #[rstest::rstest]
+    #[case::defaults(Config::default(), true)]
+    #[case::small_cache(Config { cookie_cache_capacity: 1_024, ..Config::default() }, false)]
+    #[case::unverified_flood_session_limit(
+        Config { handshake_cookie_unverified_rate_limit: 30_000, ..Config::default() }, true
+    )]
+    #[case::unverified_flood_eviction(
+        Config {
+            handshake_cookie_unverified_rate_limit: 30_000,
+            max_pending_accepted_sessions: 300_000,
+            ..Config::default()
+        }, false
+    )]
+    #[case::verified_flood_eviction(
+        Config {
+            handshake_cookie_verified_rate_limit: 30_000,
+            max_pending_accepted_sessions: 300_000,
+            ..Config::default()
+        }, false
+    )]
+    #[case::outbound_flood_session_limit(
+        Config { connect_rate_limit: 30_000, ..Config::default() }, true
+    )]
+    #[case::outbound_flood_eviction(
+        Config {
+            connect_rate_limit: 30_000,
+            max_pending_initiated_sessions: 300_000,
+            ..Config::default()
+        }, false
+    )]
+    fn cookie_retention_under_api_flood(#[case] mut config: Config, #[case] retained: bool) {
+        // Fix the workload independently of the configuration. Unsafe defaults must
+        // expose actual eviction, rather than also reducing the generated traffic.
+        const ATTACK_PEERS: usize = 256_001;
+        let mut rng = rng();
+        config.session_timeout_jitter = Duration::ZERO;
+        let context = TestContext::new();
+        let local_key = monad_secp::KeyPair::generate(&mut rng);
+        let local_public = local_key.pubkey();
+        let mut api = API::new(DEFAULT_METRICS, config.clone(), local_key, context.clone());
+        let local_addr: SocketAddr = "192.0.2.1:9000".parse().unwrap();
+        let honest_addr: SocketAddr = "192.0.2.2:9000".parse().unwrap();
+
+        // Start with a full cache, so this tests eviction pressure rather than unused
+        // space. Only this historical-cache fixture bypasses the API. All handshakes,
+        // cookie deliveries, rate-limit resets and the honest retry below use the API.
+        // Share only immutable attacker identities across cases to avoid regenerating
+        // hundreds of thousands of keys. Each case has independent API/cache state.
+        static ATTACKERS: std::sync::OnceLock<Vec<monad_secp::KeyPair>> =
+            std::sync::OnceLock::new();
+        let attackers = ATTACKERS.get_or_init(|| {
+            (0..ATTACK_PEERS)
+                .map(|_| monad_secp::KeyPair::generate(&mut rng))
+                .collect()
+        });
+        for index in 0..config.cookie_cache_capacity {
+            let public = attackers.get(index).map_or_else(
+                || monad_secp::KeyPair::generate(&mut rng).pubkey(),
+                |key| key.pubkey(),
+            );
+            api.state.store_cookie(public, [0; 16]);
+        }
+
+        // Obtain the honest cookie from a real peer that requires cookies. Begin just
+        // before a rate-limit reset to exercise the extra boundary burst in 10 seconds.
+        context.advance_time(Duration::from_millis(900));
+        let honest_context = TestContext::new();
+        let honest_key = monad_secp::KeyPair::generate(&mut rng);
+        let honest_public = honest_key.pubkey();
+        let mut honest = API::new(
+            DEFAULT_METRICS,
+            Config {
+                handshake_cookie_unverified_rate_limit: 0,
+                ..config.clone()
+            },
+            honest_key,
+            honest_context.clone(),
+        );
+        api.connect(honest_public, honest_addr, 1).unwrap();
+        let (_, init_bytes) = api.next_packet().unwrap();
+        let init = <&HandshakeInitiation>::try_from(init_bytes.as_ref()).unwrap();
+        dispatch(&mut honest, init, local_addr);
+        let (_, reply_bytes) = honest.next_packet().unwrap();
+        let reply = <&CookieReply>::try_from(reply_bytes.as_ref()).unwrap();
+        let honest_cookie =
+            cookies::accept_cookie_reply(&honest_public, &mut reply.clone(), init.mac1.as_ref())
+                .unwrap();
+        dispatch(&mut api, reply, honest_addr);
+        let cookie_received_at = context.duration_since_start();
+
+        let mut cookie_deliveries = 0;
+        let mut unsolicited_deliveries = 0;
+        let mut replay_deliveries = 0;
+        let mut saved_replies = Vec::new();
+        let mut attempted_peers = 0;
+        let batch_size = attackers.len().div_ceil(11);
+        for (batch, peers) in attackers.chunks(batch_size).enumerate() {
+            if batch > 0 {
+                context.advance_time(if batch == 1 {
+                    Duration::from_millis(100)
+                } else {
+                    Duration::from_secs(1)
+                });
+                api.tick();
+                assert!(
+                    api.next_packet().is_none(),
+                    "no session is due to retry yet"
+                );
+            }
+            for key in peers {
+                attempted_peers += 1;
+                let public = key.pubkey();
+                // Separate IPs avoid the per-IP limiter hiding the global limits.
+                let addr =
+                    SocketAddr::from((Ipv4Addr::from(0x0a00_0000 + attempted_peers as u32), 9000));
+                let (mut initiation, _) = handshake::send_handshake_init(
+                    &mut rng,
+                    context.system_time(),
+                    attempted_peers as u32,
+                    key,
+                    &local_public,
+                    None,
+                );
+                dispatch(&mut api, &initiation, addr);
+                let mut response_bytes = api.next_packet().map(|(_, bytes)| bytes);
+                if let Some(bytes) = response_bytes
+                    .as_ref()
+                    .filter(|bytes| bytes[0] == TYPE_COOKIE_REPLY)
+                {
+                    // Retry with the cookie actually issued by the API. This exercises
+                    // the verified budget as well as the unverified admission budget.
+                    let mut challenge = <&CookieReply>::try_from(bytes.as_ref()).unwrap().clone();
+                    let cookie = cookies::accept_cookie_reply(
+                        &local_public,
+                        &mut challenge,
+                        initiation.mac1.as_ref(),
+                    )
+                    .unwrap();
+                    let cookie_key =
+                        crate::hash!(crypto::LABEL_COOKIE, &local_public.bytes_compressed());
+                    initiation.mac2 =
+                        crate::keyed_hash!(cookie_key.as_ref(), initiation.mac2_input(), &cookie)
+                            .into();
+                    dispatch(&mut api, &initiation, addr);
+                    response_bytes = api.next_packet().map(|(_, bytes)| bytes);
+                }
+                if let Some(bytes) = response_bytes {
+                    let response = <&HandshakeResponse>::try_from(bytes.as_ref()).unwrap();
+                    let reply =
+                        cookie_reply(&public, response.sender_index.get(), response.mac1.as_ref());
+                    dispatch(&mut api, &reply, addr);
+                    cookie_deliveries += 1;
+                    saved_replies.push((addr, reply));
+                }
+
+                // Try the initiator-side path too. Even if a caller requests connects
+                // for every attacker, the API must enforce its outbound budget.
+                match api.connect(public, addr, 0) {
+                    Ok(()) => {
+                        let (_, bytes) = api.next_packet().unwrap();
+                        let init = <&HandshakeInitiation>::try_from(bytes.as_ref()).unwrap();
+                        let reply =
+                            cookie_reply(&public, init.sender_index.get(), init.mac1.as_ref());
+                        dispatch(&mut api, &reply, addr);
+                        cookie_deliveries += 1;
+                        saved_replies.push((addr, reply));
+                    }
+                    Err(
+                        Error::ConnectRateLimited { .. } | Error::TooManyInitiatedSessions { .. },
+                    ) => {}
+                    Err(error) => panic!("unexpected connect failure: {error}"),
+                }
+
+                // Every identity also sends an unsolicited encrypted cookie. These
+                // receiver indices are far above the indices allocated in this test.
+                let unsolicited = cookie_reply(
+                    &public,
+                    u32::MAX - attempted_peers as u32,
+                    initiation.mac1.as_ref(),
+                );
+                dispatch(&mut api, &unsolicited, addr);
+                cookie_deliveries += 1;
+                unsolicited_deliveries += 1;
+
+                // Replay valid replies from both handshake directions; these should
+                // neither add entries nor refresh the previously accepted cookies.
+                if !saved_replies.is_empty() {
+                    let (replay_addr, replay) =
+                        &saved_replies[attempted_peers % saved_replies.len()];
+                    dispatch(&mut api, replay, *replay_addr);
+                    cookie_deliveries += 1;
+                    replay_deliveries += 1;
+                }
+                assert!(api.next_packet().is_none());
+            }
+        }
+        assert_eq!(attempted_peers, ATTACK_PEERS);
+        assert!(cookie_deliveries >= ATTACK_PEERS);
+        assert_eq!(unsolicited_deliveries, attempted_peers);
+        assert!(replay_deliveries > 0);
+        assert!(context.duration_since_start() - cookie_received_at < config.session_timeout);
+
+        // Do not look up the honest cookie while flooding: that would refresh its
+        // recency and mask eviction. Check the actual retry packet at exactly 10s.
+        context.advance_time(Duration::from_millis(900));
+        honest_context.advance_time(config.session_timeout);
+        assert_eq!(
+            context.duration_since_start() - cookie_received_at,
+            config.session_timeout
+        );
+        api.tick();
+        let (addr, retry_bytes) = api.next_packet().expect("honest handshake must retry");
+        assert_eq!(addr, honest_addr);
+        let retry = <&HandshakeInitiation>::try_from(retry_bytes.as_ref()).unwrap();
+        assert_eq!(
+            crypto::verify_mac2(retry, &honest_public, &honest_cookie).is_ok(),
+            retained,
+            "unexpected honest-cookie retention after the API flood"
+        );
+        dispatch(&mut honest, retry, local_addr);
+        let (_, response_bytes) = honest.next_packet().unwrap();
+        if !retained {
+            assert_eq!(
+                response_bytes[0], TYPE_COOKIE_REPLY,
+                "eviction must require a fresh cookie"
+            );
+            return;
+        }
+        assert_eq!(response_bytes[0], TYPE_HANDSHAKE_RESPONSE);
+        let response = <&HandshakeResponse>::try_from(response_bytes.as_ref()).unwrap();
+        // The attack may have exhausted the local unverified budget; use its next
+        // reset to complete the handshake without another cookie round trip.
+        context.advance_time(Duration::from_millis(100));
+        api.tick();
+        dispatch(&mut api, response, honest_addr);
+        assert!(api.is_connected_public_key(&honest_public));
+    }
+
+    #[rstest::rstest]
+    #[case(1)]
+    #[case(2)]
+    fn configured_cookie_cache_capacity_is_respected(#[case] capacity: usize) {
+        let mut rng = rng();
+        let mut api = API::new(
+            DEFAULT_METRICS,
+            Config {
+                cookie_cache_capacity: capacity,
+                ..Config::default()
+            },
+            monad_secp::KeyPair::generate(&mut rng),
+            TestContext::new(),
+        );
+        let addr: SocketAddr = "192.0.2.2:9000".parse().unwrap();
+        let peers: Vec<_> = (0..=capacity)
+            .map(|_| monad_secp::KeyPair::generate(&mut rng).pubkey())
+            .collect();
+        for public in &peers {
+            api.connect(*public, addr, 0).unwrap();
+            let (_, bytes) = api.next_packet().unwrap();
+            let init = <&HandshakeInitiation>::try_from(bytes.as_ref()).unwrap();
+            let reply = cookie_reply(public, init.sender_index.get(), init.mac1.as_ref());
+            dispatch(&mut api, &reply, addr);
+            api.disconnect(public);
+        }
+
+        // The configured capacity must evict the oldest peer's cookie, while keeping
+        // the latest one reusable across disconnects. Check outgoing packets via API.
+        api.connect(peers[0], addr, 0).unwrap();
+        let (_, bytes) = api.next_packet().unwrap();
+        let init = <&HandshakeInitiation>::try_from(bytes.as_ref()).unwrap();
+        assert_eq!(init.mac2.0, [0; 16]);
+
+        let latest = peers.last().unwrap();
+        api.connect(*latest, addr, 0).unwrap();
+        let (_, bytes) = api.next_packet().unwrap();
+        let init = <&HandshakeInitiation>::try_from(bytes.as_ref()).unwrap();
+        crypto::verify_mac2(init, latest, &[2; 16]).unwrap();
     }
 }
