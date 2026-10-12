@@ -279,19 +279,26 @@ impl ProposerRaptorcast {
     }
 
     pub(crate) fn pull_header(&self, missing: MissingHeaders) -> Vec<(NodeId, ChunkRequest)> {
+        let mut subset = match self.pin {
+            // heuristic, HeaderOnly alone is also correct.
+            Pin::Unseen => ChunksSubset::All,
+            _ => ChunksSubset::HeaderOnly,
+        };
         let mut requests = vec![];
         for (root, voters) in missing {
             if self.roots.contains_key(&root) {
                 continue;
             }
+
             for voter in voters {
                 let request = ChunkRequest {
                     root,
                     kind: ChunkRequestType::YourChunks,
-                    subset: ChunksSubset::HeaderOnly,
+                    subset: subset.clone(),
                 };
                 requests.push((voter, request));
             }
+            subset = ChunksSubset::HeaderOnly;
         }
         requests
     }
@@ -689,6 +696,36 @@ mod tests {
         assert_eq!(asked_holder(pulled), vec![your_chunks]);
         let pulled = instance.poll_chunk_requests(after(350), &epoch_handle);
         assert_eq!(asked_holder(pulled), vec![my_chunks]);
+    }
+
+    #[test]
+    fn with_no_root_seen_a_header_pull_also_fetches_the_first_roots_chunks() {
+        let epoch_handle = epoch_handle();
+        let (header_a, _) = proposal_chunks(&epoch_handle, 1);
+        let (header_b, _) = proposal_chunks(&epoch_handle, 2);
+
+        let instance =
+            ProposerRaptorcast::new(NodeId::dummy(0), epoch_handle.self_id, NOW, timing());
+        let voters = HashSet::from([NodeId::dummy(2), NodeId::dummy(3)]);
+        let missing = MissingHeaders::from([
+            (*header_a.root(), voters.clone()),
+            (*header_b.root(), voters),
+        ]);
+        let pulled = instance.pull_header(missing);
+
+        let all_of_a = ChunkRequest::all(*header_a.root(), ChunkRequestType::YourChunks);
+        let header_of_b = ChunkRequest {
+            root: *header_b.root(),
+            kind: ChunkRequestType::YourChunks,
+            subset: ChunksSubset::HeaderOnly,
+        };
+        let expected = vec![
+            (NodeId::dummy(2), all_of_a.clone()),
+            (NodeId::dummy(2), header_of_b.clone()),
+            (NodeId::dummy(3), all_of_a),
+            (NodeId::dummy(3), header_of_b),
+        ];
+        assert_eq!(requests(pulled), expected);
     }
 
     #[test]
