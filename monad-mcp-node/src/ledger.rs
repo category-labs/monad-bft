@@ -23,7 +23,8 @@ use std::{
 };
 
 use monad_mcp_chorus::ledger::{
-    CommittedLane, FinalizationPath as LedgerPath, LedgerError, LedgerWriter, NewBlock, NewLane,
+    CommittedLane, FinalizationPath as LedgerPath, LanePid, LedgerError, LedgerWriter, NewBlock,
+    NewLane,
 };
 
 use crate::{
@@ -38,16 +39,16 @@ use crate::{
 // the block the writer stores for a finalized slot; `proposers` is the
 // slot's schedule, None if it could not be queried
 pub fn new_block(finalized: &FinalizedSlot, proposers: Option<&ProposerSet>) -> NewBlock {
-    let roots = finalization_roots(finalized);
-    let lanes = roots
+    let pids = finalization_pids(finalized);
+    let lanes = pids
         .into_iter()
         .zip(finalized.proposals.clone())
         .enumerate()
-        .map(|(index, (root, payload))| NewLane {
+        .map(|(index, (pid, payload))| NewLane {
             proposer: proposers.and_then(|set| set.proposer(index)).map(u64::from),
-            committed: root
+            committed: pid
                 .zip(payload)
-                .map(|(root, payload)| CommittedLane { root, payload }),
+                .map(|(pid, payload)| CommittedLane { pid, payload }),
         })
         .collect();
     NewBlock {
@@ -80,12 +81,12 @@ fn fast_block_at_ns(
         .map(|at| at.as_nanos())
 }
 
-fn finalization_roots(finalized: &FinalizedSlot) -> Vec<Option<[u8; 20]>> {
+fn finalization_pids(finalized: &FinalizedSlot) -> Vec<Option<LanePid>> {
     finalized
         .finalization
-        .roots()
+        .pids()
         .into_iter()
-        .map(|root| root.map(|root| root.0.0))
+        .map(|pid| pid.map(|pid| *pid.as_bytes()))
         .collect()
 }
 
@@ -93,16 +94,16 @@ fn finalization_roots(finalized: &FinalizedSlot) -> Vec<Option<[u8; 20]>> {
 // - not, green on the fast path and yellow on the fallback path
 pub fn log_finalized(finalized: &FinalizedSlot) {
     let mut shape = String::new();
-    let roots = finalized.finalization.roots();
-    for ((j, root), proposal) in roots.into_indexed_iter().zip(finalized.proposals.as_ref()) {
-        shape.push(if root.is_some() { '+' } else { '-' });
+    let pids = finalized.finalization.pids();
+    for ((j, pid), proposal) in pids.into_indexed_iter().zip(finalized.proposals.as_ref()) {
+        shape.push(if pid.is_some() { '+' } else { '-' });
         let Some(message) = proposal else {
             continue;
         };
         tracing::debug!(
             slot = finalized.slot.0,
             j,
-            ?root,
+            ?pid,
             len = message.len(),
             "committed"
         );

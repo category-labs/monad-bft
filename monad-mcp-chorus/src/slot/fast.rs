@@ -26,7 +26,7 @@ use super::{
     chorus::{ChorusDACommand, ChorusDAEvent, MissingHeaders},
     fallback::Metablock,
     types::{
-        EquivCert, Gate, HeaderAuth, IsVote, KeyPair, MerkleRoot, NodeId, ProposalIndex,
+        EquivCert, Gate, HeaderAuth, IsVote, KeyPair, NodeId, ProposalId, ProposalIndex,
         ProposalMap, ProposalScope, ProposerSet, Signature, SignedProposalHeader, Slot, StrongQc,
         TotalProposalMap, ValidatorData, VoteMsg, VotePool, WeakQc,
     },
@@ -249,7 +249,7 @@ impl FastPath {
     ) {
         // 1. an unseen header goes to DA
         if let Some(header) = entry.header()
-            && self.availability[j].header_for(header.root()).is_none()
+            && self.availability[j].header_for(&header.pid()).is_none()
         {
             let header = header.clone();
             self.emit(ChorusDACommand::IngestProposalHeader {
@@ -304,7 +304,7 @@ impl FastPath {
                 // indices): its proposal is empty by definition.
                 None => Entry::Negative,
                 Some(_) => match self.availability[*j].fetch_proposal() {
-                    Some(proposal) => Entry::Positive(*proposal.root()),
+                    Some(proposal) => Entry::Positive(proposal.pid()),
                     None => Entry::Negative,
                 },
             };
@@ -404,7 +404,7 @@ impl FastPath {
     }
 
     // per index: admitted voter count, and the (index, voter) pairs whose
-    // positive vote names a root without a seen header
+    // positive vote names a proposal without a seen header
     pub(crate) fn vote_admission_state(&self) -> (Vec<usize>, Vec<(usize, NodeId)>) {
         let mut admitted = Vec::new();
         let mut waiting_on_header = Vec::new();
@@ -467,25 +467,25 @@ impl FastPath {
         let pos_weak_qcs = weak_qcs
             .into_iter()
             .map(|qc| match qc.verdict {
-                Entry::Positive(root) => Some((qc, root)),
+                Entry::Positive(pid) => Some((qc, pid)),
                 _ => None,
             })
             .collect::<Option<ArrayVec<_, 2>>>()
             .expect("no negative weak qcs, so all weak qcs are positive");
 
-        for (_qc, root) in pos_weak_qcs {
+        for (_qc, pid) in pos_weak_qcs {
             // qc: f+1 positive votes
-            let Some(header) = avail.header_for(&root) else {
+            let Some(header) = avail.header_for(&pid) else {
                 continue;
             };
 
-            if !avail.is_resolved(&root) {
+            if !avail.is_resolved(&pid) {
                 // case 5: header seen, not resolved. DA will pull the
-                // pinned root by itself
+                // pinned proposal by itself
                 return None;
             }
 
-            if !avail.is_decoded(&root) {
+            if !avail.is_decoded(&pid) {
                 // case 3b: f+1 positive votes, but decoding is invalid
                 return Some(ProposalState::FallbackNegative);
             }
@@ -494,7 +494,7 @@ impl FastPath {
             return Some(ProposalState::FallbackPositive(header.clone()));
         }
 
-        // case 6: positive votes on roots without a header:
+        // case 6: positive votes on proposals without a header:
         // - f+1 on one of them, or
         // - each <= f
         None
@@ -505,18 +505,18 @@ impl FastPath {
         let tally = self.votes[j].tally(&self.validator_data);
         let mut missing = MissingHeaders::new();
         for (entry, sigcol) in tally.groups() {
-            let Entry::Positive(root) = entry else {
+            let Entry::Positive(pid) = entry else {
                 continue;
             };
-            if avail.header_for(root).is_some() {
+            if avail.header_for(pid).is_some() {
                 continue;
             }
             let signers = sigcol
                 .signers(&self.validator_data)
                 .expect("a tally's collections match the validator set");
-            missing.push((*root, signers.into_iter().copied().collect()));
+            missing.push((*pid, signers.into_iter().copied().collect()));
         }
-        // heuristic: the best-backed root first
+        // heuristic: the best-backed proposal first
         missing.sort_by_cached_key(|(_, voters)| Reverse(self.validator_data.sum_stake(voters)));
         missing
     }
@@ -585,7 +585,7 @@ enum ProposalState {
     // fast qc, fallback qc, or equiv cert
     Certified(Box<CertifiedEntry>),
 
-    // f+1 negative, or root is invalid
+    // f+1 negative, or the proposal is invalid
     FallbackNegative,
 
     // f+1 positive votes, decoded
@@ -608,12 +608,12 @@ impl ProposalState {
     }
 }
 
-/// The verdict on one proposal index: `Positive` carries the merkle root of
+/// The verdict on one proposal index: `Positive` carries the pid of
 /// the included proposal, `Negative` finalizes the index empty. Part of the
 /// finalization data — downstream consumers (ledger sequencing) read it.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Entry {
-    Positive(MerkleRoot),
+    Positive(ProposalId),
     Negative,
 }
 
@@ -629,15 +629,15 @@ impl IsVote for Entry {
     type SigningDomain = EntryDomain;
 }
 
-// admits a positive vote once its root's header is seen
+// admits a positive vote once its proposal's header is seen
 struct HeaderSeen<'a>(&'a ProposalAvailability);
 
 impl Gate<Entry> for HeaderSeen<'_> {
     fn admits(&self, vote: &Entry) -> bool {
-        let Entry::Positive(root) = vote else {
+        let Entry::Positive(pid) = vote else {
             return true;
         };
-        self.0.header_for(root).is_some()
+        self.0.header_for(pid).is_some()
     }
 }
 
@@ -741,13 +741,13 @@ impl IsVote for FallbackEntry {
 pub type FallbackQc = WeakQc<FallbackEntry>;
 
 impl FallbackQc {
-    // a positive signer decoded the root
-    fn decoded_holders(&self, validator_data: &ValidatorData) -> Option<(MerkleRoot, Vec<NodeId>)> {
-        let Entry::Positive(root) = self.verdict.0 else {
+    // a positive signer decoded the proposal
+    fn decoded_holders(&self, validator_data: &ValidatorData) -> Option<(ProposalId, Vec<NodeId>)> {
+        let Entry::Positive(pid) = self.verdict.0 else {
             return None;
         };
         let signers = self.sigcol.signers(validator_data)?;
-        Some((root, signers.into_iter().copied().collect()))
+        Some((pid, signers.into_iter().copied().collect()))
     }
 }
 
@@ -787,11 +787,11 @@ impl CertifiedEntry {
         }
     }
 
-    // the root and the nodes known to have decoded it
+    // the proposal and the nodes known to have decoded it
     pub(crate) fn decoded_holders(
         &self,
         validator_data: &ValidatorData,
-    ) -> Option<(MerkleRoot, Vec<NodeId>)> {
+    ) -> Option<(ProposalId, Vec<NodeId>)> {
         let CertifiedEntry::FallbackQc(qc) = self else {
             return None;
         };
@@ -813,7 +813,7 @@ impl CertifiedEntry {
             CertifiedEntry::FallbackQc(qc) => qc.verify(validator_data),
             CertifiedEntry::EquivCert(EquivCert(a, b)) => {
                 let ProposalScope { slot: s, index: j } = scope;
-                a.root() != b.root()
+                a.pid() != b.pid()
                     && header_auth.validate(a, s.get(), j)
                     && header_auth.validate(b, s.get(), j)
             }
@@ -828,7 +828,7 @@ struct FallbackSignedEntry {
     // over (slot, j, self.entry)
     signature: Signature,
     // invariant: header.is_some() iff entry is positive
-    // invariant: header.root() == entry.root
+    // invariant: header.pid() == entry's pid
     header: Option<SignedProposalHeader>,
 }
 
@@ -838,7 +838,7 @@ impl FallbackSignedEntry {
         header: SignedProposalHeader,
         key: &KeyPair,
     ) -> Self {
-        let entry = FallbackEntry(Entry::Positive(*header.root()));
+        let entry = FallbackEntry(Entry::Positive(header.pid()));
         let signature = VoteMsg::new_signed(scope, entry.clone(), key).signature;
         Self {
             entry,
@@ -859,10 +859,10 @@ impl FallbackSignedEntry {
 
     fn well_formed(&self) -> bool {
         match &self.entry.0 {
-            Entry::Positive(root) => self
+            Entry::Positive(pid) => self
                 .header
                 .as_ref()
-                .is_some_and(|header| header.root() == root),
+                .is_some_and(|header| header.pid() == *pid),
             Entry::Negative => self.header.is_none(),
         }
     }
@@ -979,7 +979,7 @@ impl Decodable for Entry {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let mut payload = Header::decode_bytes(buf, true)?;
         let result = match <u8 as Decodable>::decode(&mut payload)? {
-            1 => Self::Positive(<MerkleRoot as Decodable>::decode(&mut payload)?),
+            1 => Self::Positive(<ProposalId as Decodable>::decode(&mut payload)?),
             2 => Self::Negative,
             _ => return Err(alloy_rlp::Error::Custom("unknown Entry tag")),
         };
@@ -1120,7 +1120,7 @@ mod tests {
         *,
     };
     use crate::{
-        env::stub::{D25, EncodingScheme, MerkleHash, ProposalHeader, ProposalSignature},
+        env::stub::{EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader, ProposalSignature},
         spec::vote::KeyPair as _,
     };
 
@@ -1141,17 +1141,16 @@ mod tests {
         MerkleRoot(MerkleHash([byte; 20]))
     }
 
+    fn pid(byte: u8) -> ProposalId {
+        header(byte).pid()
+    }
+
     // signed by validator 0, the only proposer
     fn header(byte: u8) -> SignedProposalHeader {
         SignedProposalHeader {
             header: ProposalHeader {
                 root: root(byte),
-                scheme: EncodingScheme::D25(D25 {
-                    slot: crate::stub::types::Slot(SLOT.get()),
-                    msg_len: 1,
-                    unix_ts: 0,
-                    depth: 3,
-                }),
+                scheme: EncodingScheme::dummy(crate::stub::types::Slot(SLOT.get())),
             },
             sig: ProposalSignature {
                 signer: NodeId::dummy(0),
@@ -1186,14 +1185,14 @@ mod tests {
         commands
     }
 
-    // a fast qc on root(byte) signed by validators 0, 2 and 3
+    // a fast qc on header(byte) signed by validators 0, 2 and 3
     fn fast_block(byte: u8) -> FastBlock {
         let mut pool = VotePool::new(ProposalScope::new(SLOT, 0));
-        for id in [0, 2, 3] {
-            let voter = NodeId::dummy(id);
+        for index in [0, 2, 3] {
+            let voter = NodeId::dummy(index);
             let msg = VoteMsg::new_signed(
                 ProposalScope::new(SLOT, 0),
-                Entry::Positive(root(byte)),
+                Entry::Positive(pid(byte)),
                 &voter.keypair(),
             );
             pool.add_vote(voter, msg);
@@ -1215,7 +1214,7 @@ mod tests {
 
     #[test]
     fn a_positive_fallback_qc_names_its_signers_as_decoded_holders() {
-        let entry = FallbackEntry(Entry::Positive(root(1)));
+        let entry = FallbackEntry(Entry::Positive(pid(1)));
         let mut pool = VotePool::new(ProposalScope::new(SLOT, 0));
         for id in [0, 2] {
             let voter = NodeId::dummy(id);
@@ -1232,11 +1231,11 @@ mod tests {
             .expect("two of four votes form a weak qc");
         let cert = CertifiedEntry::FallbackQc(qc);
 
-        let (decoded_root, mut node_ids) = cert
+        let (decoded_id, mut node_ids) = cert
             .decoded_holders(&validator_data)
             .expect("a positive fallback qc");
         node_ids.sort();
-        assert_eq!(decoded_root, root(1));
+        assert_eq!(decoded_id, pid(1));
         assert_eq!(node_ids, [NodeId::dummy(0), NodeId::dummy(2)]);
     }
 
@@ -1250,7 +1249,7 @@ mod tests {
         });
         let _ = fast.handle_da_event(ChorusDAEvent {
             j: 0,
-            event: ProposalDAEvent::ProposerObligationFulfilled(root(1)),
+            event: ProposalDAEvent::ProposerObligationFulfilled(pid(1)),
         });
         let _ = fast.on_deadline();
 
@@ -1298,8 +1297,8 @@ mod tests {
         let mut fast = fast_path();
         let _ = fast.on_deadline();
         let votes = [
-            batch_vote(0, Entry::Positive(root(1))),
-            batch_vote(3, Entry::Positive(root(1))),
+            batch_vote(0, Entry::Positive(pid(1))),
+            batch_vote(3, Entry::Positive(pid(1))),
             batch_vote(2, Entry::Negative),
         ];
         for (voter, msg) in votes {
@@ -1320,7 +1319,7 @@ mod tests {
             assert!(drain_commands(&mut fast).is_empty());
         }
 
-        da_event(&mut fast, ProposalDAEvent::Decoded(root(1)));
+        da_event(&mut fast, ProposalDAEvent::Decoded(pid(1)));
         let outcome = fast.try_fallback_transition();
         assert!(matches!(
             outcome,
@@ -1334,8 +1333,8 @@ mod tests {
         let mut fast = fast_path();
         let _ = fast.on_deadline();
         let votes = [
-            batch_vote(0, Entry::Positive(root(1))),
-            batch_vote(3, Entry::Positive(root(1))),
+            batch_vote(0, Entry::Positive(pid(1))),
+            batch_vote(3, Entry::Positive(pid(1))),
             batch_vote(2, Entry::Negative),
         ];
         for (voter, msg) in votes {
@@ -1346,7 +1345,7 @@ mod tests {
         let voters = HashSet::from([NodeId::dummy(0), NodeId::dummy(3)]);
         let pull = ChorusDACommand::PullHeader {
             j: 0,
-            missing: MissingHeaders::from([(root(1), voters)]),
+            missing: MissingHeaders::from([(pid(1), voters)]),
         };
         for _ in 0..2 {
             let outcome = fast.try_fallback_transition();
@@ -1364,9 +1363,9 @@ mod tests {
         let mut fast = fast_path();
         let _ = fast.on_deadline();
         let votes = [
-            batch_vote(2, Entry::Positive(root(2))),
-            batch_vote(0, Entry::Positive(root(1))),
-            batch_vote(3, Entry::Positive(root(1))),
+            batch_vote(2, Entry::Positive(pid(2))),
+            batch_vote(0, Entry::Positive(pid(1))),
+            batch_vote(3, Entry::Positive(pid(1))),
         ];
         for (voter, msg) in votes {
             let _ = fast.handle_batch_vote(voter, msg);
@@ -1375,8 +1374,8 @@ mod tests {
 
         let _ = fast.try_fallback_transition();
         let missing = vec![
-            (root(1), HashSet::from([NodeId::dummy(0), NodeId::dummy(3)])),
-            (root(2), HashSet::from([NodeId::dummy(2)])),
+            (pid(1), HashSet::from([NodeId::dummy(0), NodeId::dummy(3)])),
+            (pid(2), HashSet::from([NodeId::dummy(2)])),
         ];
         let pull = ChorusDACommand::PullHeader { j: 0, missing };
         assert_eq!(drain_commands(&mut fast), vec![pull]);
@@ -1387,9 +1386,9 @@ mod tests {
         let mut fast = fast_path();
         let _ = fast.on_deadline();
         let votes = [
-            batch_vote(0, Entry::Positive(root(1))),
-            batch_vote(3, Entry::Positive(root(1))),
-            batch_vote(2, Entry::Positive(root(2))),
+            batch_vote(0, Entry::Positive(pid(1))),
+            batch_vote(3, Entry::Positive(pid(1))),
+            batch_vote(2, Entry::Positive(pid(2))),
         ];
         for (voter, msg) in votes {
             let _ = fast.handle_batch_vote(voter, msg);
@@ -1399,7 +1398,7 @@ mod tests {
 
         let outcome = fast.try_fallback_transition();
         assert!(matches!(outcome, FallbackTransitionOutcome::Waiting));
-        let missing = vec![(root(2), HashSet::from([NodeId::dummy(2)]))];
+        let missing = vec![(pid(2), HashSet::from([NodeId::dummy(2)]))];
         let pull = ChorusDACommand::PullHeader { j: 0, missing };
         assert_eq!(drain_commands(&mut fast), vec![pull]);
     }
@@ -1430,7 +1429,7 @@ mod tests {
             header: header(1),
         };
         assert_eq!(drain_commands(&mut fast), vec![ingest]);
-        assert!(fast.availability[0].header_for(&root(1)).is_none());
+        assert!(fast.availability[0].header_for(&pid(1)).is_none());
 
         // once DA reports it back, the header is seen and not sent again
         da_event(&mut fast, ProposalDAEvent::HeaderSeen(header(1)));
@@ -1443,7 +1442,7 @@ mod tests {
     fn a_positive_vote_counts_once_its_header_is_seen() {
         let mut fast = fast_path();
         for voter in [0, 2, 3] {
-            let (voter, msg) = batch_vote(voter, Entry::Positive(root(1)));
+            let (voter, msg) = batch_vote(voter, Entry::Positive(pid(1)));
             let _ = fast.handle_batch_vote(voter, msg);
         }
         assert!(fast.certs[0].fast_qc().is_none());
@@ -1457,8 +1456,8 @@ mod tests {
         let mut fast = fast_path();
         let _ = fast.on_deadline();
         let votes = [
-            batch_vote(0, Entry::Positive(root(1))),
-            batch_vote(3, Entry::Positive(root(1))),
+            batch_vote(0, Entry::Positive(pid(1))),
+            batch_vote(3, Entry::Positive(pid(1))),
             batch_vote(2, Entry::Negative),
         ];
         for (voter, msg) in votes {
@@ -1474,14 +1473,14 @@ mod tests {
         let outcome = fast.try_fallback_transition();
         assert!(matches!(outcome, FallbackTransitionOutcome::Waiting));
 
-        da_event(&mut fast, ProposalDAEvent::Decoded(root(1)));
+        da_event(&mut fast, ProposalDAEvent::Decoded(pid(1)));
         let FallbackTransitionOutcome::FallbackVote(msg) = fast.try_fallback_transition() else {
             panic!("the decoded root decides the entry");
         };
         let ProposalEvidence::FallbackSignedEntry(entry) = &msg.evidences[0] else {
             panic!("no certificate formed");
         };
-        assert_eq!(entry.entry, FallbackEntry(Entry::Positive(root(1))));
+        assert_eq!(entry.entry, FallbackEntry(Entry::Positive(pid(1))));
     }
 
     /// [`FallbackEntry`] wraps [`Entry`] transparently, so the two encode
@@ -1490,7 +1489,7 @@ mod tests {
     #[test]
     fn a_wrapped_entry_signs_under_its_own_domain() {
         let scope = ProposalScope::new(SLOT, 0);
-        let entry = Entry::Positive(root(1));
+        let entry = Entry::Positive(pid(1));
         let fallback = FallbackEntry(entry.clone());
         assert_eq!(alloy_rlp::encode(&entry), alloy_rlp::encode(&fallback));
 
@@ -1506,7 +1505,7 @@ mod tests {
     #[test]
     fn signing_bytes_are_the_domain_prefix_then_scope_and_vote() {
         let scope = ProposalScope::new(SLOT, 1);
-        let entry = Entry::Positive(root(2));
+        let entry = Entry::Positive(pid(2));
 
         let bytes = entry.signing_bytes(&scope);
         let mut payload = bytes
@@ -1530,9 +1529,9 @@ mod tests {
         let foreign = ProposalScope::new(SLOT, 1);
 
         let mut pool = VotePool::new(scope);
-        for id in [0, 2, 3] {
-            let voter = NodeId::dummy(id);
-            let msg = VoteMsg::new_signed(scope, Entry::Positive(root(1)), &voter.keypair());
+        for index in [0, 2, 3] {
+            let voter = NodeId::dummy(index);
+            let msg = VoteMsg::new_signed(scope, Entry::Positive(pid(1)), &voter.keypair());
             pool.add_vote(voter, msg);
         }
 
@@ -1583,7 +1582,9 @@ mod rlp_tests {
         *,
     };
     use crate::{
-        env::stub::{D25, EncodingScheme, MerkleHash, ProposalHeader, ProposalSignature},
+        env::stub::{
+            D25, EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader, ProposalSignature,
+        },
         spec::vote::KeyPair as _,
     };
 
@@ -1592,7 +1593,8 @@ mod rlp_tests {
         let slot = Slot(9);
         let key = NodeId::dummy(1).keypair();
         let root = MerkleRoot(MerkleHash([7; 20]));
-        let positive = Entry::Positive(root);
+        let scheme = EncodingScheme::dummy(slot);
+        let positive = Entry::Positive(ProposalHeader { root, scheme }.pid());
         let signature = key.sign(&Bytes::from_static(b"test"));
         // Empty collections suffice for wire tests; validation remains separate.
         let sigcol = alloy_rlp::decode_exact([0xc0]).unwrap();
@@ -1701,8 +1703,12 @@ mod rlp_tests {
         let scope = ProposalScope::new(Slot(7), 3);
         assert_eq!(encode_scope::<Entry>(&scope), [0xc2, 7, 3]);
         assert_roundtrip(&scope);
-        let root = MerkleRoot(MerkleHash([7; 20]));
-        assert_eq!(alloy_rlp::encode(root), alloy_rlp::encode([7u8; 20]));
+        let header = ProposalHeader {
+            root: MerkleRoot(MerkleHash([7; 20])),
+            scheme: EncodingScheme::dummy(Slot(7)),
+        };
+        let pid = header.pid();
+        assert_eq!(alloy_rlp::encode(pid), alloy_rlp::encode(pid.as_bytes()));
         let entry = Entry::Negative;
         assert_eq!(alloy_rlp::encode(&entry), [0xc1, 2]);
         assert_eq!(alloy_rlp::encode(FallbackEntry(entry)), [0xc1, 2]);

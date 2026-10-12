@@ -223,7 +223,7 @@ pub fn write_block(ledger: &Path, slot: u64, lanes: &[&[Tx]]) {
         .map(|txs| NewLane {
             proposer: Some(0),
             committed: Some(CommittedLane {
-                root: [9; 20],
+                pid: [9; 32],
                 payload: encode_batch(1, txs), // demo(tx-timeline)
             }),
         })

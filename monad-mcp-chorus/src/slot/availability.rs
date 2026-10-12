@@ -17,7 +17,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::{
     chorus::ProposalDAEvent,
-    types::{EquivCert, MerkleRoot, SignedProposalHeader},
+    types::{EquivCert, ProposalId, SignedProposalHeader},
 };
 use crate::spec::ProposalHeader as _;
 
@@ -25,17 +25,17 @@ use crate::spec::ProposalHeader as _;
 #[derive(Clone, Default)]
 pub(crate) struct ProposalAvailability {
     // seen signed headers
-    headers: HashMap<MerkleRoot, SignedProposalHeader>,
+    headers: HashMap<ProposalId, SignedProposalHeader>,
 
     // proposals for which all our own chunks have been received from
     // the author.
-    author_fulfilled: Vec<MerkleRoot>,
+    author_fulfilled: Vec<ProposalId>,
 
     // proposals that have been successfully decoded.
-    decoded: HashSet<MerkleRoot>,
+    decoded: HashSet<ProposalId>,
 
     // proposals whose decoding or re-encoding failed.
-    invalid: HashSet<MerkleRoot>,
+    invalid: HashSet<ProposalId>,
 }
 
 impl ProposalAvailability {
@@ -43,21 +43,21 @@ impl ProposalAvailability {
     pub fn ingest(&mut self, event: ProposalDAEvent) -> Option<EquivCert> {
         match event {
             ProposalDAEvent::HeaderSeen(header) => return self.record_header(header),
-            ProposalDAEvent::ProposerObligationFulfilled(root) => {
-                if !self.author_fulfilled.contains(&root) {
-                    self.author_fulfilled.push(root);
+            ProposalDAEvent::ProposerObligationFulfilled(pid) => {
+                if !self.author_fulfilled.contains(&pid) {
+                    self.author_fulfilled.push(pid);
                 }
             }
-            ProposalDAEvent::Decoded(root) => {
-                self.decoded.insert(root);
+            ProposalDAEvent::Decoded(pid) => {
+                self.decoded.insert(pid);
                 // decoding implies possession of every chunk, our own
                 // author-assigned ones included
-                if !self.author_fulfilled.contains(&root) {
-                    self.author_fulfilled.push(root);
+                if !self.author_fulfilled.contains(&pid) {
+                    self.author_fulfilled.push(pid);
                 }
             }
-            ProposalDAEvent::DecodingFailed(root) => {
-                self.invalid.insert(root);
+            ProposalDAEvent::DecodingFailed(pid) => {
+                self.invalid.insert(pid);
             }
         }
         None
@@ -65,39 +65,39 @@ impl ProposalAvailability {
 
     // invariant: every recorded header is authenticated, so any two
     // with distinct roots form an equivocation certificate. The
-    // certificate is formed once, by the second distinct root.
+    // certificate is formed once, by the second distinct pid.
     //
     // todo: turn signed into & or Cow
     fn record_header(&mut self, signed: SignedProposalHeader) -> Option<EquivCert> {
-        let root = *signed.root();
-        if self.headers.contains_key(&root) {
+        let pid = signed.pid();
+        if self.headers.contains_key(&pid) {
             return None;
         }
         let rival = match self.headers.len() {
             1 => self.headers.values().next().cloned(),
             _ => None,
         };
-        self.headers.insert(root, signed.clone());
+        self.headers.insert(pid, signed.clone());
         Some(EquivCert(rival?, signed))
     }
 
-    // The proposal to vote positively on at D_s: the first root
+    // The proposal to vote positively on at D_s: the first one
     // whose author obligation was fulfilled.
     pub fn fetch_proposal(&self) -> Option<&SignedProposalHeader> {
-        let root = self.author_fulfilled.first()?;
-        self.headers.get(root)
+        let pid = self.author_fulfilled.first()?;
+        self.headers.get(pid)
     }
 
-    pub fn is_decoded(&self, root: &MerkleRoot) -> bool {
-        self.decoded.contains(root)
+    pub fn is_decoded(&self, pid: &ProposalId) -> bool {
+        self.decoded.contains(pid)
     }
 
-    pub fn is_resolved(&self, root: &MerkleRoot) -> bool {
-        self.decoded.contains(root) || self.invalid.contains(root)
+    pub fn is_resolved(&self, pid: &ProposalId) -> bool {
+        self.decoded.contains(pid) || self.invalid.contains(pid)
     }
 
-    pub fn header_for(&self, root: &MerkleRoot) -> Option<&SignedProposalHeader> {
-        self.headers.get(root)
+    pub fn header_for(&self, pid: &ProposalId) -> Option<&SignedProposalHeader> {
+        self.headers.get(pid)
     }
 }
 
@@ -105,23 +105,22 @@ impl ProposalAvailability {
 mod tests {
     use super::*;
     use crate::env::stub::{
-        D25, EncodingScheme, MerkleHash, NodeId, ProposalHeader, ProposalSignature,
+        EncodingScheme, MerkleHash, MerkleRoot, NodeId, ProposalHeader, ProposalSignature,
     };
 
     fn root(byte: u8) -> MerkleRoot {
         MerkleRoot(MerkleHash([byte; 20]))
     }
 
+    fn pid(byte: u8) -> ProposalId {
+        header(byte).pid()
+    }
+
     fn header(byte: u8) -> SignedProposalHeader {
         SignedProposalHeader {
             header: ProposalHeader {
                 root: root(byte),
-                scheme: EncodingScheme::D25(D25 {
-                    slot: crate::stub::types::Slot(1),
-                    msg_len: 1,
-                    unix_ts: 0,
-                    depth: 3,
-                }),
+                scheme: EncodingScheme::dummy(crate::stub::types::Slot(1)),
             },
             sig: ProposalSignature {
                 signer: NodeId::dummy(0),
@@ -139,12 +138,12 @@ mod tests {
         // header alone is not enough to vote positively
         assert!(avail.fetch_proposal().is_none());
 
-        avail.ingest(ProposalDAEvent::ProposerObligationFulfilled(root(1)));
+        avail.ingest(ProposalDAEvent::ProposerObligationFulfilled(pid(1)));
         assert_eq!(avail.fetch_proposal(), Some(&header(1)));
 
         // a later fulfillment does not displace the vote target
         avail.ingest(ProposalDAEvent::HeaderSeen(header(2)));
-        avail.ingest(ProposalDAEvent::ProposerObligationFulfilled(root(2)));
+        avail.ingest(ProposalDAEvent::ProposerObligationFulfilled(pid(2)));
         assert_eq!(avail.fetch_proposal(), Some(&header(1)));
     }
 
@@ -162,14 +161,14 @@ mod tests {
 
         let cert = avail.record_header(header(2));
         let EquivCert(a, b) = cert.expect("distinct roots conflict");
-        assert!(a.root() != b.root());
+        assert!(a.pid() != b.pid());
 
         // a third root adds no evidence
         assert!(avail.record_header(header(3)).is_none());
 
         // both headers remain queryable
-        assert_eq!(avail.header_for(&root(1)), Some(&header(1)));
-        assert_eq!(avail.header_for(&root(2)), Some(&header(2)));
+        assert_eq!(avail.header_for(&pid(1)), Some(&header(1)));
+        assert_eq!(avail.header_for(&pid(2)), Some(&header(2)));
     }
 
     #[test]
@@ -177,7 +176,7 @@ mod tests {
         let mut avail = ProposalAvailability::default();
 
         avail.ingest(ProposalDAEvent::HeaderSeen(header(1)));
-        avail.ingest(ProposalDAEvent::Decoded(root(1)));
+        avail.ingest(ProposalDAEvent::Decoded(pid(1)));
 
         assert_eq!(avail.fetch_proposal(), Some(&header(1)));
     }
@@ -186,24 +185,24 @@ mod tests {
     fn resolved_by_decode_or_failure() {
         let mut avail = ProposalAvailability::default();
 
-        assert!(!avail.is_resolved(&root(1)));
-        avail.ingest(ProposalDAEvent::Decoded(root(1)));
-        avail.ingest(ProposalDAEvent::DecodingFailed(root(2)));
+        assert!(!avail.is_resolved(&pid(1)));
+        avail.ingest(ProposalDAEvent::Decoded(pid(1)));
+        avail.ingest(ProposalDAEvent::DecodingFailed(pid(2)));
 
-        assert!(avail.is_resolved(&root(1)));
-        assert!(avail.is_resolved(&root(2)));
-        assert!(!avail.is_decoded(&root(2)));
-        assert!(!avail.is_resolved(&root(3)));
+        assert!(avail.is_resolved(&pid(1)));
+        assert!(avail.is_resolved(&pid(2)));
+        assert!(!avail.is_decoded(&pid(2)));
+        assert!(!avail.is_resolved(&pid(3)));
     }
 
     #[test]
     fn decoded_is_root_scoped() {
         let mut avail = ProposalAvailability::default();
 
-        assert!(!avail.is_decoded(&root(1)));
-        avail.ingest(ProposalDAEvent::Decoded(root(1)));
+        assert!(!avail.is_decoded(&pid(1)));
+        avail.ingest(ProposalDAEvent::Decoded(pid(1)));
 
-        assert!(avail.is_decoded(&root(1)));
-        assert!(!avail.is_decoded(&root(2)));
+        assert!(avail.is_decoded(&pid(1)));
+        assert!(!avail.is_decoded(&pid(2)));
     }
 }

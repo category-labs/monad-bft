@@ -23,7 +23,7 @@ use monad_mcp_node::{
     Component, NodeOutput,
     chorus::{
         Outbound,
-        types::{MerkleRoot, NodeId, ProposalMap, Slot, Timestamp, TimestampDelta},
+        types::{NodeId, ProposalId, ProposalMap, Slot, Timestamp, TimestampDelta},
     },
     config::{
         CadenceConfig, DAConfig, LedgerConfig, NetworkConfig, NodeConfig, ProposalConfig,
@@ -54,7 +54,7 @@ pub fn deadline_of_slot(slot: u64) -> Timestamp {
 }
 
 // the finalized shape of a slot: which proposal indices committed
-pub type Pattern = ProposalMap<Option<MerkleRoot>>;
+pub type Pattern = ProposalMap<Option<ProposalId>>;
 
 // a node as a monad-sim process, boxed so one swarm can mix node kinds
 pub struct SimNode {
@@ -100,7 +100,7 @@ impl SimNode {
             match output {
                 NodeOutput::Send(outbound) => self.send(outbound, ctx),
                 NodeOutput::Finalized(finalized) => {
-                    let pattern = finalized.finalization.roots();
+                    let pattern = finalized.finalization.pids();
                     self.finalized.insert(finalized.slot, pattern);
                 }
             }

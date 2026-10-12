@@ -142,7 +142,7 @@ mod tests {
         let lane = |index: u32, positive: bool, tx_count: u32| LaneMeta {
             index,
             proposer: None,
-            root: positive.then_some([0; 20]),
+            pid: positive.then_some([0; 32]),
             payload_len: u32::from(positive),
             tx_count,
             decode_error: false,

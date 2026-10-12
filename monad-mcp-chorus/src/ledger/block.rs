@@ -23,7 +23,7 @@ use super::{
 
 pub const LEDGER_VERSION: u8 = 1;
 
-pub type LaneRoot = [u8; 20];
+pub type LanePid = [u8; 32];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u8)]
@@ -66,7 +66,7 @@ pub struct LaneMeta {
     pub index: u32,
     pub proposer: Option<u64>,
     // Some iff the lane is positive and has a lane file.
-    pub root: Option<LaneRoot>,
+    pub pid: Option<LanePid>,
     pub payload_len: u32,
     pub tx_count: u32,
     pub decode_error: bool,
@@ -74,11 +74,11 @@ pub struct LaneMeta {
 
 impl LaneMeta {
     pub fn is_positive(&self) -> bool {
-        self.root.is_some()
+        self.pid.is_some()
     }
 
     fn check(&self) -> Result<(), &'static str> {
-        if self.root.is_none() && (self.payload_len != 0 || self.tx_count != 0 || self.decode_error)
+        if self.pid.is_none() && (self.payload_len != 0 || self.tx_count != 0 || self.decode_error)
         {
             return Err("negative lane with content");
         }
@@ -92,7 +92,7 @@ impl LaneMeta {
         Object::new()
             .num("index", self.index)
             .opt_num("proposer", self.proposer)
-            .opt_hex("root", self.root.as_ref().map(|r| &r[..]))
+            .opt_hex("pid", self.pid.as_ref().map(|r| &r[..]))
             .num("payload_len", self.payload_len)
             .num("tx_count", self.tx_count)
             .bool("decode_error", self.decode_error)
@@ -163,7 +163,7 @@ pub fn lane_json(slot: u64, lane: &LaneMeta, decoded: &Result<Vec<Tx>, TxError>)
     obj.num("slot", slot)
         .num("index", lane.index)
         .opt_num("proposer", lane.proposer)
-        .opt_hex("root", lane.root.as_ref().map(|r| &r[..]))
+        .opt_hex("pid", lane.pid.as_ref().map(|r| &r[..]))
         .num("payload_len", lane.payload_len);
     match decoded {
         Ok(txs) => obj.raw(
@@ -209,7 +209,7 @@ pub struct NewLane {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommittedLane {
-    pub root: LaneRoot,
+    pub pid: LanePid,
     pub payload: Bytes,
 }
 
@@ -261,7 +261,7 @@ impl LaneMeta {
     fn payload_length(&self) -> usize {
         self.index.length()
             + opt_len(&self.proposer)
-            + opt_len(&self.root)
+            + opt_len(&self.pid)
             + self.payload_len.length()
             + self.tx_count.length()
             + self.decode_error.length()
@@ -277,7 +277,7 @@ impl Encodable for LaneMeta {
         .encode(out);
         self.index.encode(out);
         encode_opt(&self.proposer, out);
-        encode_opt(&self.root, out);
+        encode_opt(&self.pid, out);
         self.payload_len.encode(out);
         self.tx_count.encode(out);
         self.decode_error.encode(out);
@@ -298,7 +298,7 @@ impl Decodable for LaneMeta {
         let lane = Self {
             index: u32::decode(&mut b)?,
             proposer: decode_opt(&mut b)?,
-            root: decode_opt(&mut b)?,
+            pid: decode_opt(&mut b)?,
             payload_len: u32::decode(&mut b)?,
             tx_count: u32::decode(&mut b)?,
             decode_error: bool::decode(&mut b)?,
@@ -378,17 +378,17 @@ pub(crate) mod tests {
     pub(crate) fn arb_lane(index: u32) -> impl Strategy<Value = LaneMeta> {
         (
             any::<Option<u64>>(),
-            any::<Option<LaneRoot>>(),
+            any::<Option<LanePid>>(),
             any::<u32>(),
             any::<u32>(),
             any::<bool>(),
         )
             .prop_map(
-                move |(proposer, root, payload_len, tx_count, decode_error)| match root {
+                move |(proposer, pid, payload_len, tx_count, decode_error)| match pid {
                     None => LaneMeta {
                         index,
                         proposer,
-                        root,
+                        pid,
                         payload_len: 0,
                         tx_count: 0,
                         decode_error: false,
@@ -396,7 +396,7 @@ pub(crate) mod tests {
                     Some(_) => LaneMeta {
                         index,
                         proposer,
-                        root,
+                        pid,
                         payload_len,
                         tx_count: if decode_error { 0 } else { tx_count },
                         decode_error,
@@ -444,7 +444,7 @@ pub(crate) mod tests {
                 LaneMeta {
                     index: 0,
                     proposer: Some(3),
-                    root: Some([0xaa; 20]),
+                    pid: Some([0xaa; 32]),
                     payload_len: 30,
                     tx_count: 1,
                     decode_error: false,
@@ -452,7 +452,7 @@ pub(crate) mod tests {
                 LaneMeta {
                     index: 1,
                     proposer: None,
-                    root: None,
+                    pid: None,
                     payload_len: 0,
                     tx_count: 0,
                     decode_error: false,
@@ -514,11 +514,11 @@ pub(crate) mod tests {
         assert_eq!(v["num_lanes"], 2);
         assert_eq!(v["tx_count"], 1);
         assert_eq!(v["lanes"][0]["proposer"], 3);
-        assert_eq!(v["lanes"][0]["root"], format!("0x{}", "aa".repeat(20)));
+        assert_eq!(v["lanes"][0]["pid"], format!("0x{}", "aa".repeat(32)));
         assert_eq!(v["lanes"][0]["payload_len"], 30);
         assert_eq!(v["lanes"][0]["decode_error"], false);
         assert!(v["lanes"][1]["proposer"].is_null());
-        assert!(v["lanes"][1]["root"].is_null());
+        assert!(v["lanes"][1]["pid"].is_null());
 
         let mut m = m;
         m.deadline_ns = None;

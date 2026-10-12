@@ -164,7 +164,7 @@ impl<M> CadenceSwarmBuilder<M, ChorusDAEvent> {
                 },
                 ChorusDAEvent {
                     j: *index,
-                    event: ProposalDAEvent::Decoded(announcement.root()),
+                    event: ProposalDAEvent::Decoded(announcement.pid()),
                 },
             ]
         });

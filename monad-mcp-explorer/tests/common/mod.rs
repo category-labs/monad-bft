@@ -113,7 +113,7 @@ pub fn write_block(writer: &LedgerWriter, slot: u64, lanes: Vec<Lane>) -> BlockM
             NewLane {
                 proposer: Some(100 + u64::from(j)),
                 committed: Some(CommittedLane {
-                    root: [j + 1; 20],
+                    pid: [j + 1; 32],
                     payload,
                 }),
             }
@@ -153,7 +153,7 @@ pub fn write_raw_empty(ledger_dir: &Path, slot: u64, num_lanes: u32) {
         .map(|index| LaneMeta {
             index,
             proposer: Some(u64::from(index)),
-            root: (index % 2 == 0).then_some([7; 20]),
+            pid: (index % 2 == 0).then_some([7; 32]),
             payload_len: u32::from(index % 2 == 0) * empty.len() as u32, // demo(tx-timeline)
             tx_count: 0,
             decode_error: false,

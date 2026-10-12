@@ -30,26 +30,38 @@ mod fixtures {
     use std::{collections::HashMap, sync::Arc};
 
     use chorus::{
-        env::MerkleHash,
+        env::{D25, EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader as Header},
         slot::fallback::{
             CertifiedEntry, EnterFallbackCert, EnterFallbackVote, Entry, FallbackEntry, Metablock,
             Mvba as _, monad_mvba::MvbaContext,
         },
         types::{
-            HeaderAuth, IsVote, MerkleRoot, NodeId, ProposalMap, ProposalScope, Slot, Stake,
+            HeaderAuth, IsVote, NodeId, ProposalId, ProposalMap, ProposalScope, Slot, Stake,
             StrongQc, TimestampDelta, ValidatorData, VoteMsg, VotePool, WeakQc,
         },
     };
-    use monad_mcp_chorus::{spec::KeyPair as _, stub as chorus};
+    use monad_mcp_chorus::{
+        spec::{KeyPair as _, ProposalHeader as _},
+        stub as chorus,
+    };
     use monad_mcp_chorus_sim::MonadMvba;
 
     const NUM_NODES: u64 = 4;
 
-    /// A root whose hash spells out `n`, so distinct seeds give distinct roots
-    fn root(n: u64) -> MerkleRoot {
+    /// The pid of a header whose root spells out `n`, so distinct seeds give distinct pids
+    fn pid(n: u64) -> ProposalId {
         let mut hash = [0u8; 20];
         hash[..8].copy_from_slice(&n.to_le_bytes());
-        MerkleRoot(MerkleHash(hash))
+        let header = Header {
+            root: MerkleRoot(MerkleHash(hash)),
+            scheme: EncodingScheme::D25(D25 {
+                slot: SLOT,
+                msg_len: 1,
+                unix_ts: 0,
+                depth: 3,
+            }),
+        };
+        header.pid()
     }
     const NUM_PROPOSALS: usize = 2;
     const SLOT: Slot = Slot(0);
@@ -101,7 +113,7 @@ mod fixtures {
     /// give two metablocks that cannot be confused for one another
     pub fn fast_metablock(seed: u64, validator_data: &ValidatorData) -> Metablock {
         Metablock::new(ProposalMap::new(NUM_PROPOSALS, |j| {
-            let entry = Entry::Positive(root(seed * 100 + j as u64));
+            let entry = Entry::Positive(pid(seed * 100 + j as u64));
             CertifiedEntry::FastQc(strong_qc(
                 ProposalScope::new(SLOT, j),
                 entry,
@@ -116,7 +128,7 @@ mod fixtures {
     /// differ only in their evidence
     pub fn mixed_evidence_metablock(seed: u64, validator_data: &ValidatorData) -> Metablock {
         Metablock::new(ProposalMap::new(NUM_PROPOSALS, |j| {
-            let entry = Entry::Positive(root(seed * 100 + j as u64));
+            let entry = Entry::Positive(pid(seed * 100 + j as u64));
             if j == 0 {
                 CertifiedEntry::FallbackQc(weak_qc(
                     ProposalScope::new(SLOT, j),

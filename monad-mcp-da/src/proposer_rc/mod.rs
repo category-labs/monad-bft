@@ -26,28 +26,28 @@ use super::{
     instance_rc::{InvalidEncoding, MissingChunks, RaptorcastInstance, Resolved},
     runtime::{EpochHandle, Timing},
     types::{
-        EquivCert, MerkleRoot, MissingHeaders, NodeId, ProposalDAEvent, SignedProposalHeader,
+        EquivCert, MissingHeaders, NodeId, ProposalDAEvent, ProposalId, SignedProposalHeader,
         Timestamp, TimestampDelta,
     },
 };
 
-// per-(slot, proposer) raptorcast: root-keyed
+// per-(slot, proposer) raptorcast: keyed by proposal pid
 pub struct ProposerRaptorcast {
     proposer: NodeId,
     self_id: NodeId,
 
     pull_interval: TimestampDelta,
-    // how often each tracked root serves a requester
+    // how often each tracked proposal serves a requester
     serve_window: TimestampDelta,
 
     pin: Pin,
     first_pull: Timestamp, // nothing is pulled before this timestamp
 
-    roots: HashMap<MerkleRoot, RaptorcastInstance>,
+    tracked: HashMap<ProposalId, RaptorcastInstance>,
     headers: Option<HeaderState>,
 
     out_events: Vec<ProposalDAEvent>,
-    resolved: Vec<(MerkleRoot, Resolved)>,
+    resolved: Vec<(ProposalId, Resolved)>,
 }
 
 enum HeaderState {
@@ -56,24 +56,24 @@ enum HeaderState {
 }
 
 impl HeaderState {
-    fn header_for(&self, root: &MerkleRoot) -> Option<&SignedProposalHeader> {
+    fn header_for(&self, pid: &ProposalId) -> Option<&SignedProposalHeader> {
         let headers: &[&SignedProposalHeader] = match self {
             HeaderState::Single(header) => &[header],
             HeaderState::Equivocation(EquivCert(first, second)) => &[first, second],
         };
-        headers.iter().copied().find(|header| header.root() == root)
+        headers.iter().copied().find(|header| header.pid() == *pid)
     }
 }
 
-// the root we pull: the first one seen, then the committed one
+// the proposal we pull: the first one seen, then the committed one
 #[derive(Default)]
 enum Pin {
     // no header yet
     #[default]
     Unseen,
-    // before commit: the first header's root. A recorded rival is tracked too
+    // before commit: the first header's proposal. A recorded rival is tracked too
     Open(Recovery),
-    // the committed root, the only one tracked
+    // the committed proposal, the only one tracked
     Committed(Recovery),
     // a negative entry: nothing is tracked
     CommittedEmpty,
@@ -87,9 +87,9 @@ impl Pin {
         }
     }
 
-    fn root(&self) -> Option<MerkleRoot> {
+    fn pid(&self) -> Option<ProposalId> {
         match self {
-            Pin::Open(recovery) | Pin::Committed(recovery) => Some(recovery.root()),
+            Pin::Open(recovery) | Pin::Committed(recovery) => Some(recovery.pid()),
             Pin::Unseen | Pin::CommittedEmpty => None,
         }
     }
@@ -113,7 +113,7 @@ impl ProposerRaptorcast {
             pull_interval: timing.pull_interval,
             serve_window: timing.serve_window,
             headers: None,
-            roots: HashMap::new(),
+            tracked: HashMap::new(),
             pin: Pin::Unseen,
             out_events: Vec::new(),
             resolved: Vec::new(),
@@ -124,7 +124,7 @@ impl ProposerRaptorcast {
         std::mem::take(&mut self.out_events)
     }
 
-    pub(crate) fn drain_resolved(&mut self) -> Vec<(MerkleRoot, Resolved)> {
+    pub(crate) fn drain_resolved(&mut self) -> Vec<(ProposalId, Resolved)> {
         std::mem::take(&mut self.resolved)
     }
 
@@ -137,23 +137,23 @@ impl ProposerRaptorcast {
         egress: &mut ChunkEgress,
     ) {
         let (header, chunks) = envelope.into_parts();
-        let root = *header.root();
+        let pid = header.pid();
         self.record_header(&header);
-        if !self.tracks(root) {
-            // an untracked root: its chunks are dropped
+        if !self.tracks(pid) {
+            // an untracked proposal: its chunks are dropped
             return;
         }
 
         let author = &self.proposer;
         let serve_window = self.serve_window;
         let instance = self
-            .roots
-            .entry(root)
+            .tracked
+            .entry(pid)
             .or_insert_with(|| RaptorcastInstance::new(header, epoch_handle, author, serve_window));
 
         for (wire_chunk_id, data) in chunks {
             if let Err(err) = instance.ingest(wire_chunk_id, data, sender) {
-                tracing::debug!(?root, wire_chunk_id, ?err, "dropping invalid chunk");
+                tracing::debug!(?pid, wire_chunk_id, ?err, "dropping invalid chunk");
             };
         }
 
@@ -161,34 +161,34 @@ impl ProposerRaptorcast {
         match instance.try_decode() {
             None => {}
             Some(Ok(message)) => {
-                self.out_events.push(ProposalDAEvent::Decoded(root));
-                self.resolved.push((root, Ok(message)));
+                self.out_events.push(ProposalDAEvent::Decoded(pid));
+                self.resolved.push((pid, Ok(message)));
             }
             Some(Err(InvalidEncoding)) => {
-                tracing::debug!(?root, "proposal does not re-encode to its root");
-                self.out_events.push(ProposalDAEvent::DecodingFailed(root));
-                self.resolved.push((root, Err(InvalidEncoding)));
+                tracing::debug!(?pid, "proposal does not re-encode to its pid");
+                self.out_events.push(ProposalDAEvent::DecodingFailed(pid));
+                self.resolved.push((pid, Err(InvalidEncoding)));
             }
         }
         instance.rebroadcast_chunks(egress);
     }
 
-    // the pinned root, or before commit a recorded rival
-    fn tracks(&mut self, root: MerkleRoot) -> bool {
+    // the pinned proposal, or before commit a recorded rival
+    fn tracks(&mut self, pid: ProposalId) -> bool {
         match &self.pin {
             Pin::Unseen => {
-                self.pin = Pin::Open(self.recovery_for(root));
+                self.pin = Pin::Open(self.recovery_for(pid));
                 true
             }
-            Pin::Open(_) => self.known_header(&root).is_some(),
-            Pin::Committed(recovery) => recovery.root() == root,
+            Pin::Open(_) => self.known_header(&pid).is_some(),
+            Pin::Committed(recovery) => recovery.pid() == pid,
             Pin::CommittedEmpty => false,
         }
     }
 
-    fn recovery_for(&self, root: MerkleRoot) -> Recovery {
+    fn recovery_for(&self, pid: ProposalId) -> Recovery {
         Recovery::new(
-            root,
+            pid,
             self.proposer,
             self.self_id,
             self.first_pull,
@@ -196,14 +196,14 @@ impl ProposerRaptorcast {
         )
     }
 
-    fn known_header(&self, root: &MerkleRoot) -> Option<&SignedProposalHeader> {
-        self.headers.as_ref()?.header_for(root)
+    fn known_header(&self, pid: &ProposalId) -> Option<&SignedProposalHeader> {
+        self.headers.as_ref()?.header_for(pid)
     }
 
     fn record_header(&mut self, header: &SignedProposalHeader) {
         let next = match self.headers.take() {
             None => HeaderState::Single(header.clone()),
-            Some(HeaderState::Single(first)) if first.root() != header.root() => {
+            Some(HeaderState::Single(first)) if first.pid() != header.pid() => {
                 HeaderState::Equivocation(EquivCert(first, header.clone()))
             }
             known => {
@@ -219,11 +219,11 @@ impl ProposerRaptorcast {
     pub(crate) fn add_decoded_holders(
         &mut self,
         node_ids: Vec<NodeId>,
-        root: &MerkleRoot,
+        pid: &ProposalId,
         now: Timestamp,
         epoch_handle: &EpochHandle,
     ) -> Vec<(NodeId, ChunkRequest)> {
-        if self.pin.root() != Some(*root) {
+        if self.pin.pid() != Some(*pid) {
             return vec![];
         }
         let Some(recovery) = self.pin.recovery_mut() else {
@@ -233,23 +233,21 @@ impl ProposerRaptorcast {
         self.poll_chunk_requests(now, epoch_handle)
     }
 
-    pub(crate) fn pin_final(&mut self, root: Option<MerkleRoot>) {
+    pub(crate) fn pin_final(&mut self, pid: Option<ProposalId>) {
         if self.pin.is_committed() {
-            tracing::warn!(?root, "ignoring a second final pin");
+            tracing::warn!(?pid, "ignoring a second final pin");
             return;
         }
 
-        // discard all other roots
-        self.roots.retain(|tracked, _| Some(*tracked) == root);
+        // discard all other proposals
+        self.tracked.retain(|tracked, _| Some(*tracked) == pid);
 
-        self.pin = match (std::mem::take(&mut self.pin), root) {
+        self.pin = match (std::mem::take(&mut self.pin), pid) {
             // committed a negative entry
             (_, None) => Pin::CommittedEmpty,
-            (Pin::Open(recovery), Some(root)) if recovery.root() == root => {
-                Pin::Committed(recovery)
-            }
+            (Pin::Open(recovery), Some(pid)) if recovery.pid() == pid => Pin::Committed(recovery),
             // without its header yet, the first reply to a pull brings it
-            (_, Some(root)) => Pin::Committed(self.recovery_for(root)),
+            (_, Some(pid)) => Pin::Committed(self.recovery_for(pid)),
         };
     }
 
@@ -258,10 +256,10 @@ impl ProposerRaptorcast {
         now: Timestamp,
         epoch_handle: &EpochHandle,
     ) -> Vec<(NodeId, ChunkRequest)> {
-        let Some(root) = self.pin.root() else {
+        let Some(pid) = self.pin.pid() else {
             return vec![];
         };
-        let Some(missing) = self.missing_chunks(&root, epoch_handle) else {
+        let Some(missing) = self.missing_chunks(&pid, epoch_handle) else {
             return vec![];
         };
         let Some(recovery) = self.pin.recovery_mut() else {
@@ -272,10 +270,10 @@ impl ProposerRaptorcast {
 
     fn missing_chunks(
         &self,
-        root: &MerkleRoot,
+        pid: &ProposalId,
         epoch_handle: &EpochHandle,
     ) -> Option<MissingChunks> {
-        match self.roots.get(root) {
+        match self.tracked.get(pid) {
             Some(instance) => instance.missing_chunks(),
             // no header yet, so no assignment: any validator may own chunks we lack
             None => Some(everything_missing(epoch_handle.validator_data.nodes())),
@@ -289,14 +287,14 @@ impl ProposerRaptorcast {
             _ => ChunksSubset::HeaderOnly,
         };
         let mut requests = vec![];
-        for (root, voters) in missing {
-            if self.roots.contains_key(&root) {
+        for (pid, voters) in missing {
+            if self.tracked.contains_key(&pid) {
                 continue;
             }
 
             for voter in voters {
                 let request = ChunkRequest {
-                    root,
+                    pid,
                     kind: ChunkRequestType::YourChunks,
                     subset: subset.clone(),
                 };
@@ -314,7 +312,7 @@ impl ProposerRaptorcast {
         now: Timestamp,
         egress: &mut ChunkEgress,
     ) {
-        let Some(instance) = self.roots.get_mut(&request.root) else {
+        let Some(instance) = self.tracked.get_mut(&request.pid) else {
             return;
         };
         instance.handle_chunk_request(request, requester, now, egress);
@@ -338,14 +336,14 @@ mod tests {
         *,
     };
 
-    fn decoded_roots(instance: &mut ProposerRaptorcast) -> Vec<MerkleRoot> {
-        let mut roots = Vec::new();
-        for (root, message) in instance.drain_resolved() {
+    fn decoded_pids(instance: &mut ProposerRaptorcast) -> Vec<ProposalId> {
+        let mut pids = Vec::new();
+        for (pid, message) in instance.drain_resolved() {
             if message.is_ok() {
-                roots.push(root);
+                pids.push(pid);
             }
         }
-        roots
+        pids
     }
 
     fn released_egress() -> ChunkEgress {
@@ -393,7 +391,7 @@ mod tests {
         // the instance exists: later chunks decode it
         instance.ingest(group(&chunks[..3]), &author(), &epoch_handle, &mut egress);
         let events = instance.drain_events();
-        assert!(events.contains(&ProposalDAEvent::Decoded(*header.root())));
+        assert!(events.contains(&ProposalDAEvent::Decoded(header.pid())));
     }
 
     #[test]
@@ -401,16 +399,16 @@ mod tests {
         let epoch_handle = epoch_handle();
         let mut egress = released_egress();
         let (header, chunks) = inconsistent_proposal_chunks(&epoch_handle);
-        let root = *header.root();
+        let pid = header.pid();
 
         let mut instance =
             ProposerRaptorcast::new(NodeId::dummy(0), epoch_handle.self_id, NOW, timing());
         instance.ingest(group(&chunks[..3]), &author(), &epoch_handle, &mut egress);
 
         let events = instance.drain_events();
-        assert!(events.contains(&ProposalDAEvent::DecodingFailed(root)));
+        assert!(events.contains(&ProposalDAEvent::DecodingFailed(pid)));
         let resolved = instance.drain_resolved();
-        assert_eq!(resolved, vec![(root, Err(InvalidEncoding))]);
+        assert_eq!(resolved, vec![(pid, Err(InvalidEncoding))]);
     }
 
     #[test]
@@ -451,7 +449,7 @@ mod tests {
         instance.ingest(group(&chunks_b), &author(), &epoch_handle, &mut egress);
         let events = instance.drain_events();
         assert!(!events.contains(&ProposalDAEvent::HeaderSeen(header_b.clone())));
-        assert_eq!(decoded_roots(&mut instance), vec![*header_b.root()]);
+        assert_eq!(decoded_pids(&mut instance), vec![header_b.pid()]);
     }
 
     #[test]
@@ -482,7 +480,7 @@ mod tests {
         // every chunk of the third root: no event, no decode, nothing relayed
         instance.ingest(group(&chunks_c), &author(), &epoch_handle, &mut egress);
         assert!(instance.drain_events().is_empty());
-        assert!(decoded_roots(&mut instance).is_empty());
+        assert!(decoded_pids(&mut instance).is_empty());
         assert!(egress.drain().is_empty());
     }
 
@@ -497,12 +495,12 @@ mod tests {
         let mut instance =
             ProposerRaptorcast::new(NodeId::dummy(0), epoch_handle.self_id, NOW, timing());
         instance.ingest(group(&chunks[..2]), &author(), &epoch_handle, &mut egress);
-        assert!(decoded_roots(&mut instance).is_empty());
+        assert!(decoded_pids(&mut instance).is_empty());
         // discard the rebroadcast of our own chunk
         egress.drain();
 
         let requester = NodeId::dummy(3);
-        let your_chunks = ChunkRequest::all(*header.root(), ChunkRequestType::YourChunks);
+        let your_chunks = ChunkRequest::all(header.pid(), ChunkRequestType::YourChunks);
         instance.handle_chunk_request(your_chunks, &requester, NOW, &mut egress);
         let recovered = egress.drain();
         let [Dissemination { to, envelope }] = &recovered[..] else {
@@ -515,7 +513,7 @@ mod tests {
         );
 
         // the requester's own chunks (ids 2 and 5) are not held yet
-        let my_chunks = ChunkRequest::all(*header.root(), ChunkRequestType::MyChunks);
+        let my_chunks = ChunkRequest::all(header.pid(), ChunkRequestType::MyChunks);
         instance.handle_chunk_request(my_chunks, &requester, NOW, &mut egress);
         assert!(egress.drain().is_empty());
     }
@@ -551,9 +549,9 @@ mod tests {
         );
         instance.ingest(group(&chunks_b), &author(), &epoch_handle, &mut egress);
 
-        assert_eq!(decoded_roots(&mut instance), vec![*header_b.root()]);
+        assert_eq!(decoded_pids(&mut instance), vec![header_b.pid()]);
         egress.drain();
-        let your_chunks = ChunkRequest::all(*header_b.root(), ChunkRequestType::YourChunks);
+        let your_chunks = ChunkRequest::all(header_b.pid(), ChunkRequestType::YourChunks);
         instance.handle_chunk_request(your_chunks, &NodeId::dummy(1), NOW, &mut egress);
         assert!(!egress.drain().is_empty());
     }
@@ -574,14 +572,14 @@ mod tests {
             &mut egress,
         );
         instance.ingest(group(&chunks_b[..3]), &author(), &epoch_handle, &mut egress);
-        assert_eq!(decoded_roots(&mut instance), vec![*header_b.root()]);
+        assert_eq!(decoded_pids(&mut instance), vec![header_b.pid()]);
 
-        instance.pin_final(Some(*header_b.root()));
-        assert!(!instance.roots.contains_key(header_a.root()));
+        instance.pin_final(Some(header_b.pid()));
+        assert!(!instance.tracked.contains_key(&header_a.pid()));
 
         // a second final pin changes nothing
         instance.pin_final(None);
-        assert!(instance.roots.contains_key(header_b.root()));
+        assert!(instance.tracked.contains_key(&header_b.pid()));
     }
 
     #[test]
@@ -595,14 +593,14 @@ mod tests {
         instance.ingest(group(&chunks_a[..1]), &author(), &epoch_handle, &mut egress);
         instance.pin_final(None);
 
-        assert!(instance.roots.is_empty());
+        assert!(instance.tracked.is_empty());
         instance.ingest(
             group(&chunks_a[1..2]),
             &author(),
             &epoch_handle,
             &mut egress,
         );
-        assert!(!instance.roots.contains_key(header_a.root()));
+        assert!(!instance.tracked.contains_key(&header_a.pid()));
     }
 
     #[test]
@@ -622,7 +620,7 @@ mod tests {
 
         // Delta after the deadline: the author for ours, every owner for theirs
         let narrowed = |kind, ids: &[WireChunkId]| ChunkRequest {
-            root: *header.root(),
+            pid: header.pid(),
             kind,
             subset: ChunksSubset::narrowed(
                 ids.iter().map(|id| chunk_id(&epoch_handle, &header, *id)),
@@ -664,11 +662,11 @@ mod tests {
             ProposerRaptorcast::new(NodeId::dummy(0), epoch_handle.self_id, NOW, timing());
         instance.ingest(group(&chunks[1..2]), &author(), &epoch_handle, &mut egress);
         let holders = vec![NodeId::dummy(2)];
-        instance.add_decoded_holders(holders, header.root(), NOW, &epoch_handle);
+        instance.add_decoded_holders(holders, &header.pid(), NOW, &epoch_handle);
         let pulled = instance.poll_chunk_requests(after(200), &epoch_handle);
 
         let my_chunks = ChunkRequest {
-            root: *header.root(),
+            pid: header.pid(),
             kind: ChunkRequestType::MyChunks,
             subset: ChunksSubset::narrowed([0, 3].map(|id| chunk_id(&epoch_handle, &header, id))),
         };
@@ -687,7 +685,7 @@ mod tests {
         instance.ingest(group(&chunks[1..2]), &author(), &epoch_handle, &mut egress);
 
         let request = |kind, ids: &[WireChunkId]| ChunkRequest {
-            root: *header.root(),
+            pid: header.pid(),
             kind,
             subset: ChunksSubset::narrowed(
                 ids.iter().map(|id| chunk_id(&epoch_handle, &header, *id)),
@@ -714,7 +712,7 @@ mod tests {
         // the hint asks for our chunks at once, the owner pull waits
         let holders = vec![NodeId::dummy(2)];
         let hinted =
-            instance.add_decoded_holders(holders, header.root(), after(150), &epoch_handle);
+            instance.add_decoded_holders(holders, &header.pid(), after(150), &epoch_handle);
         assert_eq!(asked_holder(hinted), vec![my_chunks.clone()]);
         assert!(asked_holder(instance.poll_chunk_requests(after(200), &epoch_handle)).is_empty());
 
@@ -734,15 +732,13 @@ mod tests {
         let instance =
             ProposerRaptorcast::new(NodeId::dummy(0), epoch_handle.self_id, NOW, timing());
         let voters = HashSet::from([NodeId::dummy(2), NodeId::dummy(3)]);
-        let missing = MissingHeaders::from([
-            (*header_a.root(), voters.clone()),
-            (*header_b.root(), voters),
-        ]);
+        let missing =
+            MissingHeaders::from([(header_a.pid(), voters.clone()), (header_b.pid(), voters)]);
         let pulled = instance.pull_header(missing);
 
-        let all_of_a = ChunkRequest::all(*header_a.root(), ChunkRequestType::YourChunks);
+        let all_of_a = ChunkRequest::all(header_a.pid(), ChunkRequestType::YourChunks);
         let header_of_b = ChunkRequest {
-            root: *header_b.root(),
+            pid: header_b.pid(),
             kind: ChunkRequestType::YourChunks,
             subset: ChunksSubset::HeaderOnly,
         };
@@ -772,15 +768,13 @@ mod tests {
         );
 
         let voters = HashSet::from([NodeId::dummy(2), NodeId::dummy(3)]);
-        let missing = MissingHeaders::from([
-            (*header_a.root(), voters.clone()),
-            (*header_b.root(), voters),
-        ]);
+        let missing =
+            MissingHeaders::from([(header_a.pid(), voters.clone()), (header_b.pid(), voters)]);
         let pulled = instance.pull_header(missing);
 
         // a is known, so only b is asked for
         let header_alone = ChunkRequest {
-            root: *header_b.root(),
+            pid: header_b.pid(),
             kind: ChunkRequestType::YourChunks,
             subset: ChunksSubset::HeaderOnly,
         };
@@ -813,11 +807,11 @@ mod tests {
                 .is_empty()
         );
 
-        instance.pin_final(Some(*header_b.root()));
+        instance.pin_final(Some(header_b.pid()));
         let pulled = instance.poll_chunk_requests(after(150), &epoch_handle);
         assert!(!pulled.is_empty());
         for (_, request) in &pulled {
-            assert_eq!(&request.root, header_b.root());
+            assert_eq!(&request.pid, &header_b.pid());
         }
     }
 
@@ -829,16 +823,16 @@ mod tests {
 
         let mut instance =
             ProposerRaptorcast::new(NodeId::dummy(0), epoch_handle.self_id, NOW, timing());
-        instance.pin_final(Some(*header.root()));
+        instance.pin_final(Some(header.pid()));
         let holders = vec![NodeId::dummy(2)];
-        let mut asked = instance.add_decoded_holders(holders, header.root(), NOW, &epoch_handle);
+        let mut asked = instance.add_decoded_holders(holders, &header.pid(), NOW, &epoch_handle);
 
         // owners are pulled from Delta after the deadline, even once committed
         assert!(instance.poll_chunk_requests(NOW, &epoch_handle).is_empty());
         asked.extend(instance.poll_chunk_requests(after(100), &epoch_handle));
 
-        let your_chunks = ChunkRequest::all(*header.root(), ChunkRequestType::YourChunks);
-        let my_chunks = ChunkRequest::all(*header.root(), ChunkRequestType::MyChunks);
+        let your_chunks = ChunkRequest::all(header.pid(), ChunkRequestType::YourChunks);
+        let my_chunks = ChunkRequest::all(header.pid(), ChunkRequestType::MyChunks);
         let expected = vec![
             (NodeId::dummy(0), my_chunks.clone()),
             (NodeId::dummy(0), your_chunks.clone()),
@@ -856,6 +850,6 @@ mod tests {
             &mut egress,
         );
         instance.ingest(group(&chunks[..3]), &author(), &epoch_handle, &mut egress);
-        assert_eq!(decoded_roots(&mut instance), vec![*header.root()]);
+        assert_eq!(decoded_pids(&mut instance), vec![header.pid()]);
     }
 }

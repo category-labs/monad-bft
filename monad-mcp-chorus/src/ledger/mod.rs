@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 //! The finalized-block ledger and the tx format carried in mini-proposal
-//! payloads. Env-independent: ids and roots are plain ints/bytes and the
+//! payloads. Env-independent: ids and pids are plain ints/bytes and the
 //! commit proof is opaque bytes.
 
 pub mod block;
@@ -23,7 +23,7 @@ pub mod store;
 pub mod tx;
 
 pub use block::{
-    BlockMeta, CommittedLane, FinalizationPath, LEDGER_VERSION, LaneMeta, LaneRoot, NewBlock,
+    BlockMeta, CommittedLane, FinalizationPath, LEDGER_VERSION, LaneMeta, LanePid, NewBlock,
     NewLane, lane_json,
 };
 pub use store::{

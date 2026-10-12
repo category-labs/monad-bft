@@ -47,7 +47,8 @@ use chorus::{
     da::DataAvailability,
     env::{D25, EncodingScheme, MerkleHash, ProposalSignature},
     types::{
-        HeaderAuth, MerkleRoot, NodeId, ProposalHeader, ProposalIndex, SignedProposalHeader, Slot,
+        HeaderAuth, MerkleRoot, NodeId, ProposalHeader, ProposalId, ProposalIndex,
+        SignedProposalHeader, Slot,
     },
 };
 use monad_mcp_chorus::{
@@ -70,6 +71,10 @@ impl DaAnnouncement {
 
     pub fn root(&self) -> MerkleRoot {
         self.header.header.root
+    }
+
+    pub fn pid(&self) -> ProposalId {
+        self.header.pid()
     }
 }
 

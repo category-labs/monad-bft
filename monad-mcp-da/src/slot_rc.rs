@@ -25,7 +25,7 @@ use super::{
     proposer_rc::ProposerRaptorcast,
     runtime::{ChunkRecoveryRequest, EpochHandle, Timing},
     types::{
-        ChorusDACommand, ChorusDAEvent, MerkleRoot, NodeId, ProposalIndex, ProposalMap,
+        ChorusDACommand, ChorusDAEvent, NodeId, ProposalId, ProposalIndex, ProposalMap,
         ProposerSchedule, SignedProposalHeader, Slot, Timestamp,
     },
 };
@@ -127,15 +127,15 @@ impl SlotRaptorcast {
         }
     }
 
-    // roots resolved since the last drain, under j, with their messages
-    pub(crate) fn drain_resolved(&mut self) -> Vec<(ProposalIndex, MerkleRoot, Resolved)> {
+    // proposals resolved since the last drain, under j, with their roots and messages
+    pub(crate) fn drain_resolved(&mut self) -> Vec<(ProposalIndex, ProposalId, Resolved)> {
         let mut resolved = Vec::new();
         for j in 0..self.raptorcasts.size() {
             let Some(raptorcast) = self.raptorcasts[j].as_mut() else {
                 continue;
             };
-            for (root, message) in raptorcast.drain_resolved() {
-                resolved.push((j, root, message));
+            for (pid, message) in raptorcast.drain_resolved() {
+                resolved.push((j, pid, message));
             }
         }
         resolved
@@ -160,7 +160,7 @@ impl SlotRaptorcast {
             ChorusDACommand::ReleaseChunks => {
                 self.egress.release();
             }
-            ChorusDACommand::AddDecodedHolders { j, root, node_ids } => {
+            ChorusDACommand::AddDecodedHolders { j, pid, node_ids } => {
                 if j >= self.raptorcasts.size() {
                     return;
                 }
@@ -168,7 +168,7 @@ impl SlotRaptorcast {
                     return;
                 };
                 let requests =
-                    raptorcast.add_decoded_holders(node_ids, &root, now, &self.epoch_handle);
+                    raptorcast.add_decoded_holders(node_ids, &pid, now, &self.epoch_handle);
                 for (to, request) in requests {
                     let request = ChunkRecoveryRequest {
                         slot: self.slot,
@@ -178,14 +178,14 @@ impl SlotRaptorcast {
                     self.out_requests.push((to, request));
                 }
             }
-            ChorusDACommand::PinFinal { j, root } => {
+            ChorusDACommand::PinFinal { j, pid } => {
                 if j >= self.raptorcasts.size() {
                     return;
                 }
                 let Some(raptorcast) = self.raptorcasts[j].as_mut() else {
                     return;
                 };
-                raptorcast.pin_final(root);
+                raptorcast.pin_final(pid);
                 self.collect_events(j);
             }
             ChorusDACommand::PullHeader { j, missing } => {
@@ -232,7 +232,7 @@ impl SlotRaptorcast {
         }
     }
 
-    // serve a peer chunks under proposer j's root
+    // serve a peer chunks of proposer j's proposal
     pub(crate) fn handle_chunk_request(
         &mut self,
         request: ChunkRequest,
@@ -307,10 +307,10 @@ mod tests {
     // node 3 asks for our chunks, returning the messages it caused
     fn your_chunks(
         raptorcast: &mut SlotRaptorcast,
-        root: MerkleRoot,
+        pid: ProposalId,
         now: Timestamp,
     ) -> Vec<Dissemination> {
-        let request = ChunkRequest::all(root, ChunkRequestType::YourChunks);
+        let request = ChunkRequest::all(pid, ChunkRequestType::YourChunks);
         raptorcast.handle_chunk_request(request, 0, &NodeId::dummy(3), now);
         raptorcast.drain_messages()
     }
@@ -322,7 +322,7 @@ mod tests {
 
         // our chunk 0 arrives and node 3 asks for it: nothing leaves
         assert!(ingest(&mut raptorcast, group(&chunks[..1])).is_empty());
-        assert!(your_chunks(&mut raptorcast, *header.root(), NOW).is_empty());
+        assert!(your_chunks(&mut raptorcast, header.pid(), NOW).is_empty());
 
         // released: the second hop to the other owners, and the answer
         // to node 3, both pending until now
@@ -334,7 +334,7 @@ mod tests {
 
         // released: a repeat a window later is answered at once
         let a_window_later = NOW + timing().serve_window;
-        let repeat = your_chunks(&mut raptorcast, *header.root(), a_window_later);
+        let repeat = your_chunks(&mut raptorcast, header.pid(), a_window_later);
         assert_eq!(chunk_ids(&repeat), [0]);
     }
 
@@ -346,15 +346,15 @@ mod tests {
         ingest(&mut raptorcast, group(&chunks[..1]));
 
         // node 3's 2 chunks, our 2 and the header: 5 per window
-        let root = *header.root();
+        let pid = header.pid();
         for _ in 0..5 {
-            assert_eq!(chunk_ids(&your_chunks(&mut raptorcast, root, NOW)), [0]);
+            assert_eq!(chunk_ids(&your_chunks(&mut raptorcast, pid, NOW)), [0]);
         }
-        assert!(your_chunks(&mut raptorcast, root, NOW).is_empty());
+        assert!(your_chunks(&mut raptorcast, pid, NOW).is_empty());
 
         let a_window_later = NOW + timing().serve_window;
         assert_eq!(
-            chunk_ids(&your_chunks(&mut raptorcast, root, a_window_later)),
+            chunk_ids(&your_chunks(&mut raptorcast, pid, a_window_later)),
             [0]
         );
     }
@@ -399,7 +399,7 @@ mod tests {
 
         let decoded = ChorusDAEvent {
             j: 0,
-            event: ProposalDAEvent::Decoded(*header.root()),
+            event: ProposalDAEvent::Decoded(header.pid()),
         };
         assert!(raptorcast.drain_events().contains(&decoded));
         // our chunks 0 and 3 never arrived, but re-encoding derives them
@@ -567,11 +567,11 @@ mod tests {
         assert!(decoded(&mut nodes[2].1).is_empty());
 
         // 3 asks a decoded peer for its own chunks, and both peers for theirs
-        let root = *header.root();
+        let pid = header.pid();
         let requests = [
-            (1, ChunkRequest::all(root, ChunkRequestType::MyChunks)),
-            (1, ChunkRequest::all(root, ChunkRequestType::YourChunks)),
-            (2, ChunkRequest::all(root, ChunkRequestType::YourChunks)),
+            (1, ChunkRequest::all(pid, ChunkRequestType::MyChunks)),
+            (1, ChunkRequest::all(pid, ChunkRequestType::YourChunks)),
+            (2, ChunkRequest::all(pid, ChunkRequestType::YourChunks)),
         ];
         for (peer, request) in requests {
             let peer = NodeId::dummy(peer);

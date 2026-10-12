@@ -145,7 +145,7 @@ fn assemble(block: &NewBlock) -> Result<(BlockMeta, Vec<DecodedLane>), LedgerErr
                 LaneMeta {
                     index,
                     proposer: lane.proposer,
-                    root: None,
+                    pid: None,
                     payload_len: 0,
                     tx_count: 0,
                     decode_error: false,
@@ -165,7 +165,7 @@ fn assemble(block: &NewBlock) -> Result<(BlockMeta, Vec<DecodedLane>), LedgerErr
                     LaneMeta {
                         index,
                         proposer: lane.proposer,
-                        root: Some(committed.root),
+                        pid: Some(committed.pid),
                         payload_len,
                         tx_count,
                         decode_error: txs.is_err(),
@@ -577,11 +577,11 @@ mod tests {
         }
     }
 
-    fn committed(root: u8, payload: Bytes) -> NewLane {
+    fn committed(pid: u8, payload: Bytes) -> NewLane {
         NewLane {
-            proposer: Some(u64::from(root)),
+            proposer: Some(u64::from(pid)),
             committed: Some(CommittedLane {
-                root: [root; 20],
+                pid: [pid; 32],
                 payload,
             }),
         }
@@ -682,7 +682,7 @@ mod tests {
         let summary: Vec<_> = meta
             .lanes
             .iter()
-            .map(|l| (l.proposer, l.root.map(|r| r[0]), l.tx_count, l.decode_error))
+            .map(|l| (l.proposer, l.pid.map(|r| r[0]), l.tx_count, l.decode_error))
             .collect();
         assert_eq!(
             summary,
