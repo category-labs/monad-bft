@@ -42,7 +42,9 @@ pub(crate) type MissingChunks = HashMap<NodeId, ChunksSubset>;
 
 // decoded proposal does not reencode back to root
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct InvalidEncoding;
+pub struct InvalidEncoding;
+
+pub type Resolved = Result<Bytes, InvalidEncoding>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum InvalidChunk {
@@ -170,7 +172,7 @@ impl RaptorcastInstance {
         Some(ProposalDAEvent::ProposerObligationFulfilled(root))
     }
 
-    pub(crate) fn try_decode(&mut self) -> Option<Result<Bytes, InvalidEncoding>> {
+    pub(crate) fn try_decode(&mut self) -> Option<Resolved> {
         let DecodingState::Decoding(decoder) = &mut self.state else {
             return None;
         };
@@ -338,7 +340,7 @@ mod tests {
         instance: &mut RaptorcastInstance,
         chunk: &Chunk<'_>,
         egress: &mut ChunkEgress,
-    ) -> Result<Option<Result<Bytes, InvalidEncoding>>, InvalidChunk> {
+    ) -> Result<Option<Resolved>, InvalidChunk> {
         let (_, wire_chunk_id, data) = chunk.clone().into_parts();
         let chunk_id = instance.resolve(wire_chunk_id, &author(), &author())?;
         instance.ingest(chunk_id, data)?;

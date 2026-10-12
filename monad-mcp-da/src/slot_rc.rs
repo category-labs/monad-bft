@@ -15,13 +15,13 @@
 
 use std::collections::HashMap;
 
-use bytes::Bytes;
 use monad_mcp_chorus::spec::proposal::{HeaderAuth as _, ProposalHeader as _};
 
 use super::{
     chunk::{ChunkRequest, ProposalEnvelope},
     egress::{ChunkEgress, Dissemination},
     header::InvalidProposalHeader,
+    instance_rc::Resolved,
     proposer_rc::ProposerRaptorcast,
     runtime::{ChunkRecoveryRequest, EpochHandle, Timing},
     types::{
@@ -120,18 +120,18 @@ impl SlotRaptorcast {
         }
     }
 
-    // messages decoded since the last drain, under (j, root)
-    pub(crate) fn drain_decoded(&mut self) -> Vec<(ProposalIndex, MerkleRoot, Bytes)> {
-        let mut decoded = Vec::new();
+    // roots resolved since the last drain, under j, with their messages
+    pub(crate) fn drain_resolved(&mut self) -> Vec<(ProposalIndex, MerkleRoot, Resolved)> {
+        let mut resolved = Vec::new();
         for j in 0..self.raptorcasts.size() {
             let Some(raptorcast) = self.raptorcasts[j].as_mut() else {
                 continue;
             };
-            for (root, message) in raptorcast.drain_decoded() {
-                decoded.push((j, root, message));
+            for (root, message) in raptorcast.drain_resolved() {
+                resolved.push((j, root, message));
             }
         }
-        decoded
+        resolved
     }
 
     // the proposal index of a proposer-signed header for this slot
@@ -258,6 +258,7 @@ mod tests {
         },
     };
 
+    use bytes::Bytes;
     use monad_mcp_chorus::spec::SignedProposalHeader as _;
 
     use super::{
@@ -493,7 +494,10 @@ mod tests {
     // the messages decoded since the last call
     fn decoded(node: &mut SlotRaptorcast) -> Vec<Bytes> {
         let mut messages = Vec::new();
-        for (_, _, message) in node.drain_decoded() {
+        for (_, _, message) in node.drain_resolved() {
+            let Ok(message) = message else {
+                continue;
+            };
             messages.push(message);
         }
         messages

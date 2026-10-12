@@ -17,14 +17,13 @@ mod recovery;
 
 use std::collections::HashMap;
 
-use bytes::Bytes;
 use monad_mcp_chorus::spec::{ProposalHeader as _, validator::ValidatorData as _};
 use recovery::{Recovery, everything_missing};
 
 use super::{
     chunk::{ChunkRequest, ChunkRequestType, ChunksSubset, ProposalEnvelope},
     egress::ChunkEgress,
-    instance_rc::{InvalidEncoding, MissingChunks, RaptorcastInstance},
+    instance_rc::{InvalidEncoding, MissingChunks, RaptorcastInstance, Resolved},
     runtime::{EpochHandle, Timing},
     types::{
         EquivCert, MerkleRoot, MissingHeaders, NodeId, ProposalDAEvent, SignedProposalHeader,
@@ -53,8 +52,8 @@ pub struct ProposerRaptorcast {
 
     // events pending delivery since the last drain
     out_events: Vec<ProposalDAEvent>,
-    // messages decoded since the last drain, under their roots
-    decoded: Vec<(MerkleRoot, Bytes)>,
+    // roots resolved since the last drain, with their messages
+    resolved: Vec<(MerkleRoot, Resolved)>,
 }
 
 enum HeaderState {
@@ -122,7 +121,7 @@ impl ProposerRaptorcast {
             roots: HashMap::new(),
             pin: Pin::Unseen,
             out_events: Vec::new(),
-            decoded: Vec::new(),
+            resolved: Vec::new(),
         }
     }
 
@@ -130,8 +129,8 @@ impl ProposerRaptorcast {
         std::mem::take(&mut self.out_events)
     }
 
-    pub(crate) fn drain_decoded(&mut self) -> Vec<(MerkleRoot, Bytes)> {
-        std::mem::take(&mut self.decoded)
+    pub(crate) fn drain_resolved(&mut self) -> Vec<(MerkleRoot, Resolved)> {
+        std::mem::take(&mut self.resolved)
     }
 
     // The caller must ensure the header is authenticated.
@@ -171,11 +170,12 @@ impl ProposerRaptorcast {
             None => {}
             Some(Ok(message)) => {
                 self.out_events.push(ProposalDAEvent::Decoded(root));
-                self.decoded.push((root, message));
+                self.resolved.push((root, Ok(message)));
             }
             Some(Err(InvalidEncoding)) => {
                 tracing::debug!(?root, "proposal does not re-encode to its root");
                 self.out_events.push(ProposalDAEvent::DecodingFailed(root));
+                self.resolved.push((root, Err(InvalidEncoding)));
             }
         }
         instance.rebroadcast_chunks(egress);
@@ -342,7 +342,10 @@ mod tests {
         super::{
             chunk::{ChunkRequestType, ChunksSubset, WireChunkId},
             egress::Dissemination,
-            test_util::{NOW, author, chunk_id, epoch_handle, group, proposal_chunks, timing},
+            test_util::{
+                NOW, author, chunk_id, epoch_handle, group, inconsistent_proposal_chunks,
+                proposal_chunks, timing,
+            },
             types::TimestampDelta,
         },
         *,
@@ -350,8 +353,10 @@ mod tests {
 
     fn decoded_roots(instance: &mut ProposerRaptorcast) -> Vec<MerkleRoot> {
         let mut roots = Vec::new();
-        for (root, _) in instance.drain_decoded() {
-            roots.push(root);
+        for (root, message) in instance.drain_resolved() {
+            if message.is_ok() {
+                roots.push(root);
+            }
         }
         roots
     }
@@ -402,6 +407,23 @@ mod tests {
         instance.ingest(group(&chunks[..3]), &author(), &epoch_handle, &mut egress);
         let events = instance.drain_events();
         assert!(events.contains(&ProposalDAEvent::Decoded(*header.root())));
+    }
+
+    #[test]
+    fn an_invalid_root_resolves_with_its_encoding_error() {
+        let epoch_handle = epoch_handle();
+        let mut egress = released_egress();
+        let (header, chunks) = inconsistent_proposal_chunks(&epoch_handle);
+        let root = *header.root();
+
+        let mut instance =
+            ProposerRaptorcast::new(NodeId::dummy(0), epoch_handle.self_id, NOW, timing());
+        instance.ingest(group(&chunks[..3]), &author(), &epoch_handle, &mut egress);
+
+        let events = instance.drain_events();
+        assert!(events.contains(&ProposalDAEvent::DecodingFailed(root)));
+        let resolved = instance.drain_resolved();
+        assert_eq!(resolved, vec![(root, Err(InvalidEncoding))]);
     }
 
     #[test]

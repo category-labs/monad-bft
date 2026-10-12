@@ -321,14 +321,14 @@ impl Runtime for NodeRuntime {
             DAOutput::Consensus(slot, event) => {
                 effects.dispatch(Effect::Cadence(CadenceInput::DAEvent(slot, event)));
             }
-            DAOutput::Decoded {
+            DAOutput::Resolved {
                 slot,
                 proposal_index,
                 root,
                 message,
             } => {
                 self.collector
-                    .handle_decoded(now, slot, proposal_index, root, message); // demo(tx-timeline)
+                    .handle_resolved(now, slot, proposal_index, root, message); // demo(tx-timeline)
                 self.deliver_finalized(effects);
             }
             DAOutput::Disseminate(Dissemination { to, envelope }) => {

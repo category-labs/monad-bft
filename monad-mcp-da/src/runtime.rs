@@ -19,13 +19,13 @@ use std::{
     sync::Arc,
 };
 
-use bytes::Bytes;
 use monad_mcp_chorus::spec::ProposalHeader as _;
 
 use super::{
     chunk::{ChunkRequest, ProposalEnvelope},
     egress::Dissemination,
     header::InvalidProposalHeader,
+    instance_rc::Resolved,
     slot_rc::SlotRaptorcast,
     types::{
         ChorusDACommand, ChorusDAEvent, HeaderAuth, MerkleRoot, NodeId, ProposalIndex,
@@ -146,8 +146,8 @@ where
         };
 
         let mut outputs = Vec::new();
-        for (proposal_index, root, message) in slot_raptorcast.drain_decoded() {
-            outputs.push(DAOutput::Decoded {
+        for (proposal_index, root, message) in slot_raptorcast.drain_resolved() {
+            outputs.push(DAOutput::Resolved {
                 slot,
                 proposal_index,
                 root,
@@ -291,13 +291,13 @@ pub enum DAOutput {
     // notification for the consensus layer's slot instance
     Consensus(Slot, ChorusDAEvent),
 
-    // the message decoded under (slot, proposal_index, root), for the
-    // layer that recovers proposals
-    Decoded {
+    // the message under (slot, proposal_index, root), or why it has none,
+    // for the layer that recovers proposals
+    Resolved {
         slot: Slot,
         proposal_index: ProposalIndex,
         root: MerkleRoot,
-        message: Bytes,
+        message: Resolved,
     },
 
     // deliver a proposal's chunks (possibly only its header) to peers
@@ -312,6 +312,8 @@ pub enum DAOutput {
 
 #[cfg(test)]
 mod tests {
+    use bytes::Bytes;
+
     use super::{
         super::{
             chorus::types::Timestamp,
@@ -428,14 +430,14 @@ mod tests {
         let mut disseminated_at = Vec::new();
         for (i, output) in outputs(&mut runtime).iter().enumerate() {
             match output {
-                DAOutput::Decoded {
+                DAOutput::Resolved {
                     slot,
                     proposal_index,
                     root,
                     message,
                 } => {
                     assert_eq!((*slot, *proposal_index, *root), (SLOT, 0, *header.root()));
-                    assert_eq!(message, &Bytes::from(vec![1u8; MESSAGE_LEN]));
+                    assert_eq!(message, &Ok(Bytes::from(vec![1u8; MESSAGE_LEN])));
                     decoded_at = Some(i);
                 }
                 DAOutput::Consensus(slot, event) => {
