@@ -24,7 +24,7 @@ use std::{
 
 use futures::{channel::oneshot, executor, FutureExt};
 use monad_dataplane::{
-    tcp::tx::{MSG_WAIT_TIMEOUT, QUEUED_MESSAGE_BYTE_LIMIT, QUEUED_MESSAGE_LIMIT},
+    tcp::tx::{QUEUED_MESSAGE_BYTE_LIMIT, QUEUED_MESSAGE_LIMIT},
     udp::DEFAULT_SEGMENT_SIZE,
     BroadcastMsg, DataplaneBuilder, RecvUdpMsg, TcpMsg, TcpSocketId, UdpSocketId, UnicastMsg,
 };
@@ -187,11 +187,11 @@ fn udp_direct_socket() {
     }
 }
 
-// This verifies that the TCP transmit task recovers from a peer transmit
-// task exiting after a timeout.
+// A connection is reused after the old writer idle deadline, before its
+// shared connection idle deadline expires.
 #[test]
-#[timeout(10000)]
-fn tcp_very_slow() {
+#[timeout(20000)]
+fn tcp_reuses_connection_after_idle() {
     once_setup();
 
     let bind_addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
@@ -212,7 +212,8 @@ fn tcp_very_slow() {
         .collect();
 
     let tcp_socket = tx.tcp_sockets.take(TcpSocketId::Raptorcast).unwrap();
-    for _ in 0..num_msgs {
+    let mut peer_addr = None;
+    for i in 0..num_msgs {
         let (sender, receiver) = oneshot::channel::<()>();
 
         tcp_socket.write(
@@ -225,13 +226,17 @@ fn tcp_very_slow() {
 
         assert!(executor::block_on(receiver).is_ok());
 
-        sleep(2 * MSG_WAIT_TIMEOUT);
-    }
-
-    for _ in 0..num_msgs {
         let recv_msg = executor::block_on(rx_socket.recv());
-
         assert_eq!(recv_msg.payload, payload);
+        if let Some(addr) = peer_addr {
+            assert_eq!(recv_msg.src_addr, addr, "idle connection must be reused");
+        }
+        peer_addr = Some(recv_msg.src_addr);
+        if i + 1 < num_msgs {
+            // Exceeds the old 4s writer idle deadline while staying below
+            // the 10s idle deadline shared by both directions.
+            sleep(Duration::from_secs(5));
+        }
     }
 }
 
