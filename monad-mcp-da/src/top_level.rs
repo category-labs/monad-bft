@@ -37,6 +37,7 @@ pub use egress::Dissemination;
 pub use encoding_scheme::d25;
 pub use env::ProposalKeyPair;
 pub use header::{InvalidProposalHeader, header_auth};
+pub use instance_rc::{InvalidEncoding, Resolved};
 pub use runtime::{ChunkRecoveryRequest, DAConfig, DAOutput, DARuntime, EpochHandle};
 pub use wire::{
     MalformedPacket,
