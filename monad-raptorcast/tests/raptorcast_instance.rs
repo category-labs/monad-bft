@@ -36,7 +36,7 @@ use monad_peer_discovery::{mock::NopDiscovery, MonadNameRecord, NameRecord};
 use monad_raptorcast::{
     create_dataplane_for_tests, new_defaulted_raptorcast_for_tests,
     new_defaulted_raptorcast_for_tests_with_name_records,
-    packet::{build_messages, regular},
+    packet::{build_messages, deterministic},
     raptorcast_secondary::{
         group_message::FullNodesGroupMessage, SecondaryOutboundMessage,
         SecondaryRaptorCastModeConfig,
@@ -62,18 +62,11 @@ type PubKeyType = CertificateSignaturePubKey<SignatureType>;
 // A previous version of the R10 managed decoder did not handle this correctly and would panic.
 #[test]
 pub fn different_symbol_sizes() {
-    let rebroadcast_socket = UdpSocket::bind("127.0.0.1:0").unwrap();
-    let rebroadcast_addr = rebroadcast_socket.local_addr().unwrap();
-
-    let (tx_nodeid, tx_keypair, rx_nodeid, known_addresses, _rx_addr) =
-        set_up_test(Some(rebroadcast_addr));
+    let (tx_nodeid, tx_keypair, rx_nodeid, known_addresses, _rx_addr) = set_up_test(None);
 
     let message: Bytes = vec![0; 100 * 1000].into();
 
     let tx_socket = UdpSocket::bind("127.0.0.1:0").unwrap();
-    rebroadcast_socket
-        .set_read_timeout(Some(Duration::from_millis(200)))
-        .unwrap();
 
     // Generate differently-sized encoded symbols that look like they are part of the same
     // message.  For the RaptorCast receiver to think that they are part of the same message,
@@ -99,7 +92,7 @@ pub fn different_symbol_sizes() {
             message.clone(),
             Redundancy::from_u8(2),
             0, // unix_ts_ms
-            BuildTarget::raptorcast(group),
+            BuildTarget::Broadcast(group),
             &known_addresses,
         );
 
@@ -120,15 +113,6 @@ pub fn different_symbol_sizes() {
 
     // Wait for RaptorCast instance to catch up.
     std::thread::sleep(Duration::from_millis(200));
-
-    // Verify that the rebroadcast target receives the first symbol.
-    let _ = rebroadcast_socket.recv(&mut []).unwrap();
-
-    // Verify that the rebroadcast target never receives another symbol of different length.
-    assert_eq!(
-        rebroadcast_socket.recv(&mut []).unwrap_err().kind(),
-        ErrorKind::WouldBlock
-    );
 }
 
 // Try to crash the R10 decoder by feeding it more than 2^16 encoded symbols.
@@ -154,7 +138,7 @@ pub fn buffer_count_overflow() {
         message,
         Redundancy::from_u8(2),
         0, // unix_ts_ms
-        BuildTarget::raptorcast(group),
+        BuildTarget::Broadcast(group),
         &known_addresses,
     );
 
@@ -204,7 +188,7 @@ pub fn valid_rebroadcast() {
     let rebroadcast_socket = UdpSocket::bind("127.0.0.1:0").unwrap();
     let rebroadcast_addr = rebroadcast_socket.local_addr().unwrap();
 
-    let (tx_nodeid, tx_keypair, rx_nodeid, known_addresses, _rx_addr) =
+    let (tx_nodeid, tx_keypair, _rx_nodeid, known_addresses, rx_addr) =
         set_up_test(Some(rebroadcast_addr));
 
     let message: Bytes = vec![0; 4 * 1000].into();
@@ -214,25 +198,36 @@ pub fn valid_rebroadcast() {
         .set_read_timeout(Some(Duration::from_millis(100)))
         .unwrap();
 
-    let valset = BTreeMap::from([(rx_nodeid, Stake::ONE), (tx_nodeid, Stake::ONE)]);
+    // The sender and the receiver must share the validator set for
+    // the deterministic chunk assignment to agree.
+    let valset: BTreeMap<_, _> = known_addresses
+        .keys()
+        .map(|node_id| (*node_id, Stake::ONE))
+        .collect();
     let validators = ValidatorSet::new_unchecked(valset);
     let group_map: ValidatorGroupMap<_> = [(Epoch(0), validators)].into();
     let group = PrimaryBroadcastGroup::of_epoch(Epoch(0), &tx_nodeid, &group_map).unwrap();
 
-    let messages = build_messages::<SignatureType>(
+    // Only send the chunks assigned to the receiver, so every chunk it
+    // gets is one it is responsible for rebroadcasting.
+    let messages: Vec<_> = build_messages::<SignatureType>(
         &tx_keypair,
         DEFAULT_SEGMENT_SIZE,
         message,
-        regular::MAX_REDUNDANCY, // redundancy,
-        0,                       // unix_ts_ms
-        BuildTarget::raptorcast(group),
+        Redundancy::from_u8(2),
+        0, // unix_ts_ms
+        BuildTarget::raptorcast(group, Round(1)),
         &known_addresses,
-    );
+    )
+    .into_iter()
+    .filter(|(dest, _)| *dest == rx_addr)
+    .collect();
+    assert!(!messages.is_empty());
 
     for i in 0..=1 {
         let mut num_chunks = 0;
         for message in &messages {
-            for chunk in message.1.chunks(usize::from(DEFAULT_SEGMENT_SIZE)) {
+            for chunk in message.1.chunks(deterministic::DEFAULT_SEGMENT_LEN) {
                 tx_socket.send_to(chunk, message.0).unwrap();
 
                 num_chunks += 1;

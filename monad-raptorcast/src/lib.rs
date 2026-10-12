@@ -139,7 +139,6 @@ where
     current_epoch: Epoch,
 
     udp_state: udp::UdpState<ST>,
-    v1_rollout: v1_rollout::DeterministicProtocolRolloutStage,
     message_builder: OwnedMessageBuilder<ST>,
     secondary_message_builder: Option<OwnedMessageBuilder<ST>>,
 
@@ -313,7 +312,6 @@ where
             current_epoch,
 
             udp_state,
-            v1_rollout: config.deterministic_protocol_rollout,
 
             published_primary_rounds: PublishedRounds::new(),
             published_secondary_rounds: PublishedRounds::new(),
@@ -503,7 +501,7 @@ where
                     SecondaryBroadcastGroup::as_publisher(&self.self_id, round, &group);
                 let build_target = match broadcast_mode {
                     FullnodeBroadcastMode::SecondaryRaptorcast => {
-                        v1_rollout::secondary_build_target(self.v1_rollout, epoch, broadcast_group)
+                        BuildTarget::fullnode_raptorcast(broadcast_group, epoch)
                     }
                     FullnodeBroadcastMode::Broadcast => {
                         BuildTarget::FullNodeBroadcast(broadcast_group)
@@ -574,7 +572,7 @@ where
                 let build_target = match &target {
                     RouterTarget::Broadcast(_) => BuildTarget::Broadcast(group),
                     RouterTarget::Raptorcast { round, .. } => {
-                        v1_rollout::build_target(self.v1_rollout, *round, group)
+                        BuildTarget::raptorcast(group, *round)
                     }
                     _ => unreachable!(),
                 };

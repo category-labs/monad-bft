@@ -26,7 +26,7 @@ use monad_raptorcast::{
 };
 use monad_secp::SecpSignature;
 use monad_testutil::signing::get_key;
-use monad_types::{Epoch, NodeId, Stake};
+use monad_types::{Epoch, NodeId, Round, Stake};
 use monad_validator::validator_set::ValidatorSet;
 
 const NUM_NODES: usize = 100;
@@ -106,7 +106,11 @@ fn setup_raptorcast() -> (
     let author_id = Box::leak(Box::new(author_id));
     let group = PrimaryBroadcastGroup::of_epoch(Epoch(0), author_id, group_map).unwrap();
 
-    (author, BuildTarget::raptorcast(group), known_addresses)
+    (
+        author,
+        BuildTarget::raptorcast(group, Round(0)),
+        known_addresses,
+    )
 }
 
 fn setup_broadcast() -> (

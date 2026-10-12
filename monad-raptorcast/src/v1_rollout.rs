@@ -15,12 +15,8 @@
 
 use monad_crypto::certificate_signature::PubKey;
 pub use monad_node_config::raptorcast::{DeterministicProtocolRolloutStage, CURRENT_STAGE};
-use monad_types::{Epoch, Round};
 
-use crate::{
-    udp::{ChunkVersion, ValidatedChunk},
-    util::{BuildTarget, PrimaryBroadcastGroup, SecondaryBroadcastGroup},
-};
+use crate::udp::{ChunkVersion, ValidatedChunk};
 
 // should only be called on receiving a v0 or v1 raptorcast chunk
 pub(crate) fn should_accept<PT: PubKey>(
@@ -33,46 +29,12 @@ pub(crate) fn should_accept<PT: PubKey>(
     }
 }
 
-// should only be called when building primary raptorcast message
-pub(crate) fn build_target<'a, PT: PubKey>(
-    stage: DeterministicProtocolRolloutStage,
-    message_round: Round,
-    group: PrimaryBroadcastGroup<'a, PT>,
-) -> BuildTarget<'a, PT> {
-    if should_publish_v1(stage) {
-        BuildTarget::deterministic_raptorcast(group, message_round)
-    } else {
-        BuildTarget::raptorcast(group)
-    }
-}
-
-// should only be called when building secondary raptorcast message
-pub(crate) fn secondary_build_target<'a, PT: PubKey>(
-    stage: DeterministicProtocolRolloutStage,
-    epoch: Epoch,
-    group: SecondaryBroadcastGroup<'a, PT>,
-) -> BuildTarget<'a, PT> {
-    if should_publish_v1(stage) {
-        BuildTarget::deterministic_fullnode_raptorcast(group, epoch)
-    } else {
-        BuildTarget::fullnode_raptorcast(group)
-    }
-}
-
 fn should_accept_v0(stage: DeterministicProtocolRolloutStage) -> bool {
     !matches!(stage, DeterministicProtocolRolloutStage::AlwaysV1)
 }
 
 fn should_accept_v1(stage: DeterministicProtocolRolloutStage) -> bool {
     !matches!(stage, DeterministicProtocolRolloutStage::AlwaysV0)
-}
-
-fn should_publish_v1(stage: DeterministicProtocolRolloutStage) -> bool {
-    matches!(
-        stage,
-        DeterministicProtocolRolloutStage::AcceptBothPublishV1
-            | DeterministicProtocolRolloutStage::AlwaysV1
-    )
 }
 
 #[cfg(test)]
@@ -92,15 +54,15 @@ mod tests {
     use monad_types::{Epoch, NodeId, Round, RoundSpan, Stake};
     use monad_validator::validator_set::{ValidatorSet, ValidatorSetType as _};
 
-    use super::{build_target, secondary_build_target, DeterministicProtocolRolloutStage};
+    use super::{should_accept, DeterministicProtocolRolloutStage};
     use crate::{
         auth::AuthRecvMsg,
         packet::MessageBuilder,
-        udp::UdpState,
+        udp::{ChunkVersion, GroupId, UdpState, ValidatedChunk},
         util::{
-            BuildTarget, FullNodeGroupMap, PrimaryBroadcastGroup, RaptorcastMode, Redundancy,
-            SecondaryBroadcastGroup, SecondaryGroup, SecondaryGroupAssignment,
-            StubProposerSchedule,
+            BroadcastMode, BuildTarget, EncodingScheme, FullNodeGroupMap, HexBytes,
+            PrimaryBroadcastGroup, Redundancy, SecondaryBroadcastGroup, SecondaryGroup,
+            SecondaryGroupAssignment, StubProposerSchedule,
         },
     };
 
@@ -109,6 +71,52 @@ mod tests {
 
     const EPOCH: Epoch = Epoch(5);
     const ROUND: Round = Round(42);
+
+    // (stage, accepts v0, accepts v1)
+    fn accept_by_stage() -> [(DeterministicProtocolRolloutStage, bool, bool); 4] {
+        use DeterministicProtocolRolloutStage::*;
+        [
+            (AlwaysV0, true, false),
+            (AcceptBothPublishV0, true, true),
+            (AcceptBothPublishV1, true, true),
+            (AlwaysV1, false, true),
+        ]
+    }
+
+    fn stub_chunk(version: ChunkVersion) -> ValidatedChunk<PubKeyType> {
+        ValidatedChunk {
+            chunk: Bytes::new(),
+            message: Bytes::new(),
+            signature: Bytes::new(),
+            author: NodeId::new(make_key_pair(0).pubkey()),
+            group_id: GroupId::Primary(EPOCH),
+            unix_ts_ms: 0,
+            app_message_hash: None,
+            merkle_root: HexBytes([0; 20]),
+            app_message_len: 0,
+            version,
+            encoding_scheme: EncodingScheme::Unspecified,
+            broadcast_mode: BroadcastMode::Primary,
+            recipient_hash: None,
+            chunk_id: 0,
+            num_source_symbols: 0,
+            encoded_symbol_capacity: 0,
+        }
+    }
+
+    #[test]
+    fn test_should_accept_by_stage() {
+        for (stage, accepts_v0, accepts_v1) in accept_by_stage() {
+            assert_eq!(
+                should_accept(stage, &stub_chunk(ChunkVersion::V0)),
+                accepts_v0
+            );
+            assert_eq!(
+                should_accept(stage, &stub_chunk(ChunkVersion::V1)),
+                accepts_v1
+            );
+        }
+    }
 
     fn make_key_pair(n: u8) -> KeyPair {
         let mut hasher = HasherType::new();
@@ -128,10 +136,7 @@ mod tests {
     }
 
     // returns the number of successfully decoded messages.
-    fn rollout_publish_and_receive(
-        publisher_stage: DeterministicProtocolRolloutStage,
-        receiver_stage: DeterministicProtocolRolloutStage,
-    ) -> usize {
+    fn primary_publish_and_receive(receiver_stage: DeterministicProtocolRolloutStage) -> usize {
         let (sender_key, validators) = validator_set();
         let sender_id = NodeId::new(sender_key.pubkey());
         let group_map = [(EPOCH, validators.clone())].into();
@@ -141,8 +146,7 @@ mod tests {
 
         let app_message: Bytes = vec![0xAB_u8; 64 * 1024].into();
 
-        // Build packets using the publisher's rollout stage
-        let build_target = build_target(publisher_stage, ROUND, group);
+        let build_target = BuildTarget::raptorcast(group, ROUND);
         let packets = MessageBuilder::<SignatureType>::new(&sender_key)
             .redundancy(Redundancy::from_u8(2))
             .build_vec(&app_message, &build_target)
@@ -183,44 +187,16 @@ mod tests {
     }
 
     #[test]
-    fn test_rollout_adjacent_stages_compatible() {
-        use DeterministicProtocolRolloutStage::*;
-        let stages = [AlwaysV0, AcceptBothPublishV0, AcceptBothPublishV1, AlwaysV1];
-
-        for window in stages.windows(2) {
-            let (a, b) = (window[0], window[1]);
-            let count = rollout_publish_and_receive(a, b);
-            assert_eq!(count, 1);
-
-            let count = rollout_publish_and_receive(b, a);
-            assert_eq!(count, 1);
+    fn test_primary_decodes_by_stage() {
+        for (stage, _accepts_v0, accepts_v1) in accept_by_stage() {
+            assert_eq!(primary_publish_and_receive(stage), usize::from(accepts_v1));
         }
     }
 
-    #[test]
-    fn test_rollout_non_adjacent_stages_incompatible() {
-        use DeterministicProtocolRolloutStage::{self as Stage, *};
-
-        const NON_ADJACENT_PAIRS: &[(Stage, Stage)] = &[
-            (AlwaysV0, AcceptBothPublishV1),
-            (AcceptBothPublishV0, AlwaysV1),
-            (AlwaysV0, AlwaysV1),
-        ];
-
-        for (a, b) in NON_ADJACENT_PAIRS {
-            let count1 = rollout_publish_and_receive(*a, *b);
-            let count2 = rollout_publish_and_receive(*b, *a);
-            assert!(count1 == 0 || count2 == 0);
-        }
-    }
-
-    // Secondary-rollout analogue of rollout_publish_and_receive:
-    // publisher is a validator, receiver is a full node in the
-    // publisher's secondary group.
-    fn rollout_secondary_publish_and_receive(
-        publisher_stage: DeterministicProtocolRolloutStage,
-        receiver_stage: DeterministicProtocolRolloutStage,
-    ) -> usize {
+    // Secondary analogue of primary_publish_and_receive: publisher is
+    // a validator, receiver is a full node in the publisher's
+    // secondary group.
+    fn secondary_publish_and_receive(receiver_stage: DeterministicProtocolRolloutStage) -> usize {
         let publisher_key = make_key_pair(0);
         let publisher_id = NodeId::new(publisher_key.pubkey());
 
@@ -230,7 +206,7 @@ mod tests {
         let group = SecondaryGroup::new(full_nodes.clone()).unwrap();
 
         let bg = SecondaryBroadcastGroup::as_publisher(&publisher_id, ROUND, &group);
-        let build_target = secondary_build_target(publisher_stage, EPOCH, bg);
+        let build_target = BuildTarget::fullnode_raptorcast(bg, EPOCH);
 
         let app_message: Bytes = vec![0xAB_u8; 64 * 1024].into();
         let packets = MessageBuilder::<SignatureType>::new(&publisher_key)
@@ -277,66 +253,12 @@ mod tests {
     }
 
     #[test]
-    fn test_rollout_secondary_adjacent_stages_compatible() {
-        use DeterministicProtocolRolloutStage::*;
-        let stages = [AlwaysV0, AcceptBothPublishV0, AcceptBothPublishV1, AlwaysV1];
-
-        for window in stages.windows(2) {
-            let (a, b) = (window[0], window[1]);
-            assert_eq!(rollout_secondary_publish_and_receive(a, b), 1);
-            assert_eq!(rollout_secondary_publish_and_receive(b, a), 1);
-        }
-    }
-
-    #[test]
-    fn test_rollout_secondary_non_adjacent_stages_incompatible() {
-        use DeterministicProtocolRolloutStage::{self as Stage, *};
-
-        const NON_ADJACENT_PAIRS: &[(Stage, Stage)] = &[
-            (AlwaysV0, AcceptBothPublishV1),
-            (AcceptBothPublishV0, AlwaysV1),
-            (AlwaysV0, AlwaysV1),
-        ];
-
-        for (a, b) in NON_ADJACENT_PAIRS {
-            let count1 = rollout_secondary_publish_and_receive(*a, *b);
-            let count2 = rollout_secondary_publish_and_receive(*b, *a);
-            assert!(count1 == 0 || count2 == 0);
-        }
-    }
-
-    #[test]
-    fn test_secondary_build_target_picks_mode_by_stage() {
-        use DeterministicProtocolRolloutStage::*;
-
-        let publisher = NodeId::new(make_key_pair(0).pubkey());
-        let full_nodes: BTreeSet<_> = (1_u8..=4)
-            .map(|n| NodeId::new(make_key_pair(n).pubkey()))
-            .collect();
-        let group = SecondaryGroup::new(full_nodes).unwrap();
-
-        for stage in [AlwaysV0, AcceptBothPublishV0] {
-            let bg = SecondaryBroadcastGroup::as_publisher(&publisher, ROUND, &group);
-            let target = secondary_build_target(stage, EPOCH, bg);
-            assert!(matches!(
-                target,
-                BuildTarget::FullNodeRaptorCast {
-                    mode: RaptorcastMode::Regular,
-                    ..
-                }
-            ));
-        }
-
-        for stage in [AcceptBothPublishV1, AlwaysV1] {
-            let bg = SecondaryBroadcastGroup::as_publisher(&publisher, ROUND, &group);
-            let target = secondary_build_target(stage, EPOCH, bg);
-            assert!(matches!(
-                target,
-                BuildTarget::FullNodeRaptorCast {
-                    mode: RaptorcastMode::Deterministic { .. },
-                    ..
-                }
-            ));
+    fn test_secondary_decodes_by_stage() {
+        for (stage, _accepts_v0, accepts_v1) in accept_by_stage() {
+            assert_eq!(
+                secondary_publish_and_receive(stage),
+                usize::from(accepts_v1)
+            );
         }
     }
 
@@ -353,8 +275,7 @@ mod tests {
         let group = SecondaryGroup::new(full_nodes.clone()).unwrap();
 
         let bg = SecondaryBroadcastGroup::as_publisher(&publisher_id, ROUND, &group);
-        let build_target =
-            secondary_build_target(DeterministicProtocolRolloutStage::AlwaysV1, EPOCH, bg);
+        let build_target = BuildTarget::fullnode_raptorcast(bg, EPOCH);
 
         let app_message: Bytes = vec![0xCD_u8; 64 * 1024].into();
         let unix_ts_ms = 1_700_000_000_000_u64;
@@ -432,11 +353,9 @@ mod tests {
         let group = SecondaryGroup::new(full_nodes.clone()).unwrap();
 
         let bg1 = SecondaryBroadcastGroup::as_publisher(&publisher_id, ROUND, &group);
-        let build_target_a =
-            secondary_build_target(DeterministicProtocolRolloutStage::AlwaysV1, EPOCH, bg1);
+        let build_target_a = BuildTarget::fullnode_raptorcast(bg1, EPOCH);
         let bg2 = SecondaryBroadcastGroup::as_publisher(&publisher_id, ROUND, &group);
-        let build_target_b =
-            secondary_build_target(DeterministicProtocolRolloutStage::AlwaysV1, EPOCH, bg2);
+        let build_target_b = BuildTarget::fullnode_raptorcast(bg2, EPOCH);
 
         // Two different messages at the same round, both signed by the
         // same publisher: the second must not decode.

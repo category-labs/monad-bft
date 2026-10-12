@@ -23,10 +23,7 @@ use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
 use super::{deterministic, regular, BuildError};
 use crate::{
     message::MAX_MESSAGE_SIZE,
-    util::{
-        unix_ts_ms_now, BuildTarget, Collector, EncodingScheme, RaptorcastMode, Redundancy,
-        UdpMessage,
-    },
+    util::{unix_ts_ms_now, BuildTarget, Collector, EncodingScheme, Redundancy, UdpMessage},
 };
 
 pub const DEFAULT_MERKLE_TREE_DEPTH: u8 = 6;
@@ -206,61 +203,57 @@ where
     where
         C: Collector<UdpMessage<CertificateSignaturePubKey<ST>>>,
     {
-        if let BuildTarget::Raptorcast {
-            group,
-            mode: RaptorcastMode::Deterministic { round, .. },
-        } = build_target
-        {
-            let unix_ts_ms = self.unwrap_unix_ts_ms()?;
-            return deterministic::build::<ST, C>(
-                self.key.as_ref(),
-                unix_ts_ms,
-                app_message,
-                group,
-                EncodingScheme::Deterministic25(*round),
-                collector,
-            );
-        }
+        match build_target {
+            BuildTarget::Raptorcast { group, round } => {
+                let unix_ts_ms = self.unwrap_unix_ts_ms()?;
+                deterministic::build::<ST, C>(
+                    self.key.as_ref(),
+                    unix_ts_ms,
+                    app_message,
+                    group,
+                    EncodingScheme::Deterministic25(*round),
+                    collector,
+                )
+            }
+            BuildTarget::FullNodeRaptorCast { group, epoch } => {
+                let unix_ts_ms = self.unwrap_unix_ts_ms()?;
+                deterministic::build_secondary::<ST, C>(
+                    self.key.as_ref(),
+                    unix_ts_ms,
+                    app_message,
+                    group,
+                    *epoch,
+                    EncodingScheme::Deterministic25(group.round()),
+                    collector,
+                )
+            }
+            BuildTarget::Broadcast(_)
+            | BuildTarget::FullNodeBroadcast(_)
+            | BuildTarget::PointToPoint { .. } => {
+                if app_message.is_empty() {
+                    return Err(BuildError::AppMessageEmpty);
+                }
+                if app_message.len() > MAX_MESSAGE_SIZE {
+                    return Err(BuildError::AppMessageTooLarge);
+                }
 
-        if let BuildTarget::FullNodeRaptorCast {
-            group,
-            mode: RaptorcastMode::Deterministic { round, epoch },
-        } = build_target
-        {
-            let unix_ts_ms = self.unwrap_unix_ts_ms()?;
-            return deterministic::build_secondary::<ST, C>(
-                self.key.as_ref(),
-                unix_ts_ms,
-                app_message,
-                group,
-                *epoch,
-                EncodingScheme::Deterministic25(*round),
-                collector,
-            );
-        }
+                let segment_size = self.unwrap_segment_size()?;
+                let depth = self.unwrap_merkle_tree_depth()?;
+                let redundancy = self.unwrap_redundancy()?;
+                let unix_ts_ms = self.unwrap_unix_ts_ms()?;
+                let layout = regular::PacketLayout::new(segment_size, depth);
 
-        if app_message.is_empty() {
-            return Err(BuildError::AppMessageEmpty);
+                regular::build_into::<ST, C>(
+                    self.key.as_ref(),
+                    layout,
+                    redundancy,
+                    unix_ts_ms,
+                    app_message,
+                    build_target,
+                    collector,
+                )
+            }
         }
-        if app_message.len() > MAX_MESSAGE_SIZE {
-            return Err(BuildError::AppMessageTooLarge);
-        }
-
-        let segment_size = self.unwrap_segment_size()?;
-        let depth = self.unwrap_merkle_tree_depth()?;
-        let redundancy = self.unwrap_redundancy()?;
-        let unix_ts_ms = self.unwrap_unix_ts_ms()?;
-        let layout = regular::PacketLayout::new(segment_size, depth);
-
-        regular::build_into::<ST, C>(
-            self.key.as_ref(),
-            layout,
-            redundancy,
-            unix_ts_ms,
-            app_message,
-            build_target,
-            collector,
-        )
     }
 
     pub fn build_vec(
