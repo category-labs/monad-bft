@@ -68,7 +68,7 @@ impl ProposalAvailability {
     // certificate is formed once, by the second distinct root.
     //
     // todo: turn signed into & or Cow
-    pub fn record_header(&mut self, signed: SignedProposalHeader) -> Option<EquivCert> {
+    fn record_header(&mut self, signed: SignedProposalHeader) -> Option<EquivCert> {
         let root = *signed.root();
         if self.headers.contains_key(&root) {
             return None;
