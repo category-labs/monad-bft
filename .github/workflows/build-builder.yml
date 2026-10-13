@@ -66,4 +66,6 @@ jobs:
           build-args: |
             TRIEDB_TARGET=triedb_driver
           builder: ${{ steps.setup-buildx.outputs.name }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           allow: security.insecure

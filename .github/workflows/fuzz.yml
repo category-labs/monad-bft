@@ -53,6 +53,10 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Get submodule key
+        id: submodule
+        run: echo "sha=$(git submodule status monad-execution | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
       - name: Install cargo-afl
         run: cargo install cargo-afl
 
@@ -70,6 +74,9 @@ jobs:
           sed -i -E 's/^(exclude = .*), "monad-fuzz"(.*)/\1\2/' Cargo.toml
 
       - uses: Swatinem/rust-cache@v2
+        if: github.event_name != 'pull_request'
+        with:
+          shared-key: fuzz-${{ steps.submodule.outputs.sha }}
       - name: Run fuzzing
         id: fuzz
         run: |
