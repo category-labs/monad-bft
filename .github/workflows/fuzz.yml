@@ -32,6 +32,10 @@ env:
 
   RUST_BACKTRACE: '1'
 
+permissions:
+  contents: read
+  packages: read
+
 jobs:
   fuzz:
     runs-on: ubuntu-26.04-32
