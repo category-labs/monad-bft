@@ -34,7 +34,7 @@ env:
 
 jobs:
   fuzz:
-    runs-on: ubuntu-24.04-32
+    runs-on: ubuntu-26.04-32
 
     container:
       image: ghcr.io/${{ github.repository }}/builder:master
