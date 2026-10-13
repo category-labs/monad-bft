@@ -22,9 +22,9 @@ permissions:
 jobs:
   check-command:
     if: |
-      github.event.issue.pull_request && 
+      github.event.issue.pull_request &&
       contains(github.event.comment.body, '/test all') &&
-      (github.event.comment.author_association == 'MEMBER' || 
+      (github.event.comment.author_association == 'MEMBER' ||
        github.event.comment.author_association == 'OWNER' ||
        github.event.comment.author_association == 'COLLABORATOR')
     runs-on: ubuntu-latest
@@ -35,7 +35,7 @@ jobs:
         id: get-pr
         run: |
           echo "pr_number=${{ github.event.issue.number }}" >> $GITHUB_OUTPUT
-      
+
       - name: React to comment
         uses: actions/github-script@v7
         with:
@@ -46,7 +46,7 @@ jobs:
               comment_id: context.payload.comment.id,
               content: 'rocket'
             });
-            
+
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -56,10 +56,12 @@ jobs:
 
   run-tests:
     needs: check-command
-    runs-on: self-hosted
+    runs-on: ubuntu-26.04-32
     container:
-      image: peach10.devcore4.com/category-labs/builder
-      options: --privileged -u 1000:1000
+      image: ghcr.io/${{ github.repository }}/builder
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Get PR info
         id: pr-info
@@ -85,7 +87,7 @@ jobs:
 
       - name: Install cargo-binstall
         uses: cargo-bins/cargo-binstall@v1.15.7
-      
+
       - name: Install cargo-shear
         run: cargo binstall --no-confirm cargo-shear
 
@@ -138,7 +140,7 @@ jobs:
         run: cargo test --release --doc --all-features
 
       - run: rustup target add wasm32-unknown-unknown
-      
+
       - name: Check WASM
         run: cargo check --target wasm32-unknown-unknown -p monad-debugger
 
@@ -150,15 +152,15 @@ jobs:
             const status = '${{ job.status }}';
             const emoji = status === 'success' ? '✅' : '❌';
             const prNumber = ${{ needs.check-command.outputs.pr_number }};
-            
+
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: prNumber,
               body: `${emoji} Full test suite completed: **${status}**
-              
+
               [View detailed results](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
-              
+
               Triggered by: @${{ github.event.comment.user.login }}
               Commit tested: \`${{ steps.pr-info.outputs.ref }}\``
             });

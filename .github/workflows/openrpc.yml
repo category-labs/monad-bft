@@ -22,7 +22,7 @@ env:
 
 jobs:
   build:
-    runs-on: self-hosted
+    runs-on: ubuntu-26.04-32
     permissions:
       contents: read
       pull-requests: write
