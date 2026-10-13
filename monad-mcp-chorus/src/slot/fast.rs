@@ -247,15 +247,16 @@ impl FastPath {
         j: ProposalIndex,
         entry: FallbackSignedEntry,
     ) {
-        let avail = &mut self.availability[j];
-
-        // 1. record seen header, which may admit first-round votes
+        // 1. an unseen header goes to DA
         if let Some(header) = entry.header()
-            && let Some(equiv_cert) = avail.record_header(header.clone())
+            && self.availability[j].header_for(header.root()).is_none()
         {
-            self.certs[j].try_upgrade(equiv_cert);
+            let header = header.clone();
+            self.emit(ChorusDACommand::IngestProposalHeader {
+                sender: voter,
+                header,
+            });
         }
-        self.try_form_fast_qc(j);
 
         // 2. count the vote
         let vote = entry.into_vote_msg(self.slot, j);
@@ -333,37 +334,30 @@ impl FastPath {
         }
 
         let states = self.proposals.as_ref().map(|j| self.proposal_state(*j));
-
-        let evidences = states.map_indexed(|j, state| {
-            let scope = ProposalScope::new(self.slot, j);
-            match state.into_evidence(scope, &self.key) {
-                Ok(evidence) => Some(evidence),
-                Err(ProposalState::UnresolvedRoot) => {
-                    // f+1 positive votes, header seen, not resolved.
-                    // DA pulls the pinned root by itself
-                    None
-                }
-                Err(ProposalState::NotEnoughVotes) => {
-                    // not enough votes, wait for more votes to arrive
-                    None
-                }
-                Err(ProposalState::HeaderMissing(missing)) => {
-                    // header not seen for a positively voted root, pull it
-                    let pull = ChorusDACommand::PullHeader { j, missing };
-                    self.commands.push_back(pull);
-                    None
-                }
-                Err(_) => unreachable!("above clauses are exhaustive"),
+        for (j, state) in states.as_ref().into_indexed_iter() {
+            if state.is_some() {
+                continue;
             }
-        });
 
-        let Some(evidences) = evidences.try_into_total() else {
-            // some proposals are still unresolved, wait for more votes/chunks
+            // pull the unseen headers when we're undecided
+            let missing = self.missing_headers(j);
+            if !missing.is_empty() {
+                self.emit(ChorusDACommand::PullHeader { j, missing });
+            }
+        }
+
+        let Some(states) = states.try_into_total::<ProposalState>() else {
+            // some proposals are still undecided, wait for more votes/chunks
             return FallbackTransitionOutcome::Waiting;
         };
 
         // fallback transition decided
         self.phase = Phase::FallbackVote;
+
+        let evidences = states.map_indexed(|j, state| {
+            let scope = ProposalScope::new(self.slot, j);
+            state.into_evidence(scope, &self.key)
+        });
 
         let enter_fallback_vote = VoteMsg::new_signed(self.slot, EnterFallbackVote, &self.key);
         let fallback_vote = FallbackVoteMsg {
@@ -445,18 +439,18 @@ impl FastPath {
     }
 
     // ------- internal helper methods ---------
-    fn proposal_state(&self, j: ProposalIndex) -> ProposalState {
+    fn proposal_state(&self, j: ProposalIndex) -> Option<ProposalState> {
         let tally = self.votes[j].tally(&self.validator_data);
         let supermajority = self.validator_data.total_stake().supermajority_threshold();
 
         if tally.stake() <= supermajority {
             // case 1: lacking 2f+1 votes yet
-            return ProposalState::NotEnoughVotes;
+            return None;
         }
 
         if let LocalCertifiedEntry::Certified(cert) = &self.certs[j] {
             // case 2: proposal already certified (fast qc, fallback qc, or equiv cert)
-            return ProposalState::Certified(Box::new(cert.clone()));
+            return Some(ProposalState::Certified(Box::new(cert.clone())));
         }
 
         let avail = &self.availability[j];
@@ -467,7 +461,7 @@ impl FastPath {
             .any(|qc| matches!(qc.verdict, Entry::Negative))
         {
             // case 3a: f+1 negative votes, vote fallback negative
-            return ProposalState::FallbackNegative;
+            return Some(ProposalState::FallbackNegative);
         }
 
         let pos_weak_qcs = weak_qcs
@@ -486,22 +480,29 @@ impl FastPath {
             };
 
             if !avail.is_resolved(&root) {
-                // case 5: header seen, not resolved
-                return ProposalState::UnresolvedRoot;
+                // case 5: header seen, not resolved. DA will pull the
+                // pinned root by itself
+                return None;
             }
 
             if !avail.is_decoded(&root) {
                 // case 3b: f+1 positive votes, but decoding is invalid
-                return ProposalState::FallbackNegative;
+                return Some(ProposalState::FallbackNegative);
             }
 
             // case 4: resolved and decoded, vote fallback positive
-            return ProposalState::FallbackPositive(header.clone());
+            return Some(ProposalState::FallbackPositive(header.clone()));
         }
 
         // case 6: positive votes on roots without a header:
         // - f+1 on one of them, or
         // - each <= f
+        None
+    }
+
+    fn missing_headers(&self, j: ProposalIndex) -> MissingHeaders {
+        let avail = &self.availability[j];
+        let tally = self.votes[j].tally(&self.validator_data);
         let mut missing = MissingHeaders::new();
         for (entry, sigcol) in tally.groups() {
             let Entry::Positive(root) = entry else {
@@ -515,11 +516,9 @@ impl FastPath {
                 .expect("a tally's collections match the validator set");
             missing.push((*root, signers.into_iter().copied().collect()));
         }
-        // with 2f+1 votes and every header seen, an earlier case holds
-        assert!(!missing.is_empty());
         // heuristic: the best-backed root first
         missing.sort_by_cached_key(|(_, voters)| Reverse(self.validator_data.sum_stake(voters)));
-        ProposalState::HeaderMissing(missing)
+        missing
     }
 
     fn try_form_fallback_qc(&mut self, j: ProposalIndex) {
@@ -535,9 +534,6 @@ impl FastPath {
         let weak_qc = match (weak_qcs.next(), weak_qcs.next()) {
             (None, _) => return,
             (Some(qc), None) => qc,
-            // at most one is positive: two positive entries carry
-            // rival headers, whose EquivCert outranks a FallbackQc
-            // and returned above
             (Some(qc1), Some(qc2)) => match (&qc1.verdict.0, &qc2.verdict.0) {
                 (Entry::Positive { .. }, _) => qc1,
                 (_, Entry::Positive { .. }) => qc2,
@@ -584,11 +580,8 @@ impl FastPath {
     }
 }
 
-// the state of a proposal at fallback transition
+// a proposal's decided state at fallback transition
 enum ProposalState {
-    // fewer than 2f+1 votes
-    NotEnoughVotes,
-
     // fast qc, fallback qc, or equiv cert
     Certified(Box<CertifiedEntry>),
 
@@ -597,27 +590,20 @@ enum ProposalState {
 
     // f+1 positive votes, decoded
     FallbackPositive(SignedProposalHeader),
-
-    // f+1 positive votes, header seen, not resolved
-    UnresolvedRoot,
-
-    // positive votes on roots without a header
-    HeaderMissing(MissingHeaders),
 }
 
 impl ProposalState {
-    fn into_evidence(self, scope: ProposalScope, key: &KeyPair) -> Result<ProposalEvidence, Self> {
+    fn into_evidence(self, scope: ProposalScope, key: &KeyPair) -> ProposalEvidence {
         match self {
-            ProposalState::Certified(cert) => Ok(ProposalEvidence::Certified(*cert)),
+            ProposalState::Certified(cert) => ProposalEvidence::Certified(*cert),
             ProposalState::FallbackNegative => {
                 let fse = FallbackSignedEntry::new_signed_negative(scope, key);
-                Ok(ProposalEvidence::FallbackSignedEntry(fse))
+                ProposalEvidence::FallbackSignedEntry(fse)
             }
             ProposalState::FallbackPositive(header) => {
                 let fse = FallbackSignedEntry::new_signed_positive(scope, header, key);
-                Ok(ProposalEvidence::FallbackSignedEntry(fse))
+                ProposalEvidence::FallbackSignedEntry(fse)
             }
-            _ => Err(self),
         }
     }
 }
@@ -1394,6 +1380,63 @@ mod tests {
         ];
         let pull = ChorusDACommand::PullHeader { j: 0, missing };
         assert_eq!(drain_commands(&mut fast), vec![pull]);
+    }
+
+    #[test]
+    fn a_rival_header_is_pulled_while_the_first_root_is_unresolved() {
+        let mut fast = fast_path();
+        let _ = fast.on_deadline();
+        let votes = [
+            batch_vote(0, Entry::Positive(root(1))),
+            batch_vote(3, Entry::Positive(root(1))),
+            batch_vote(2, Entry::Positive(root(2))),
+        ];
+        for (voter, msg) in votes {
+            let _ = fast.handle_batch_vote(voter, msg);
+        }
+        da_event(&mut fast, ProposalDAEvent::HeaderSeen(header(1)));
+        let _ = drain_commands(&mut fast);
+
+        let outcome = fast.try_fallback_transition();
+        assert!(matches!(outcome, FallbackTransitionOutcome::Waiting));
+        let missing = vec![(root(2), HashSet::from([NodeId::dummy(2)]))];
+        let pull = ChorusDACommand::PullHeader { j: 0, missing };
+        assert_eq!(drain_commands(&mut fast), vec![pull]);
+    }
+
+    // a fallback vote whose entry is positive on `header`
+    fn fallback_vote(voter: u64, header: SignedProposalHeader) -> (NodeId, FallbackVoteMsg) {
+        let voter = NodeId::dummy(voter);
+        let key = voter.keypair();
+        let scope = ProposalScope::new(SLOT, 0);
+        let entry = FallbackSignedEntry::new_signed_positive(scope, header, &key);
+        let msg = FallbackVoteMsg {
+            enter_fallback_vote: VoteMsg::new_signed(SLOT, EnterFallbackVote, &key),
+            evidences: ProposalMap::new(1, |_| {
+                ProposalEvidence::FallbackSignedEntry(entry.clone())
+            }),
+        };
+        (voter, msg)
+    }
+
+    #[test]
+    fn an_unseen_fallback_entry_header_goes_to_da() {
+        let mut fast = fast_path();
+
+        let (voter, msg) = fallback_vote(2, header(1));
+        fast.handle_fallback_vote(voter, msg);
+        let ingest = ChorusDACommand::IngestProposalHeader {
+            sender: voter,
+            header: header(1),
+        };
+        assert_eq!(drain_commands(&mut fast), vec![ingest]);
+        assert!(fast.availability[0].header_for(&root(1)).is_none());
+
+        // once DA reports it back, the header is seen and not sent again
+        da_event(&mut fast, ProposalDAEvent::HeaderSeen(header(1)));
+        let (voter, msg) = fallback_vote(3, header(1));
+        fast.handle_fallback_vote(voter, msg);
+        assert!(drain_commands(&mut fast).is_empty());
     }
 
     #[test]

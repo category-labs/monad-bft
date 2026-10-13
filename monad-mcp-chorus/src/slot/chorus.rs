@@ -200,6 +200,12 @@ pub enum ChorusDACommand {
         j: ProposalIndex,
         missing: MissingHeaders,
     },
+
+    // an unseen header from a peer's fallback entry
+    IngestProposalHeader {
+        sender: NodeId,
+        header: SignedProposalHeader,
+    },
 }
 
 /// The single-slot MCP consensus algorithm from the paper.

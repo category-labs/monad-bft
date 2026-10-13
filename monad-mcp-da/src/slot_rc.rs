@@ -190,6 +190,13 @@ impl SlotRaptorcast {
                 let requests = raptorcast.pull_header(missing);
                 addressed(requests, self.slot, j)
             }
+            ChorusDACommand::IngestProposalHeader { sender, header } => {
+                let envelope = ProposalEnvelope::from_header(header);
+                if let Err(err) = self.ingest(&sender, envelope) {
+                    tracing::debug!(?err, "dropping a header from consensus");
+                }
+                vec![]
+            }
         }
     }
 
@@ -428,6 +435,26 @@ mod tests {
             event: ProposalDAEvent::HeaderSeen(header),
         }));
         assert!(events.iter().all(|event| event.j == 1));
+    }
+
+    #[test]
+    fn a_header_from_consensus_pins_its_proposal() {
+        let (epoch_handle, mut raptorcast) = slot_raptorcast();
+        let (header, _) = proposal_chunks(&epoch_handle, 1);
+
+        let command = ChorusDACommand::IngestProposalHeader {
+            sender: NodeId::dummy(2),
+            header: header.clone(),
+        };
+        assert!(raptorcast.handle_command(command, NOW).is_empty());
+        let seen = ChorusDAEvent {
+            j: 0,
+            event: ProposalDAEvent::HeaderSeen(header),
+        };
+        assert_eq!(raptorcast.drain_events(), vec![seen]);
+
+        // pinned, so its chunks are pulled once pulls are due
+        assert!(!raptorcast.tick(NOW + timing().pull_delay).is_empty());
     }
 
     // deliver messages to their recipients among `nodes`, dropping
