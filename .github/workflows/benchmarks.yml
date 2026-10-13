@@ -6,6 +6,11 @@ on:
 jobs:
   benchmark:
     runs-on: ubuntu-26.04-32
+    container:
+      image: ghcr.io/${{ github.repository }}/builder:master
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     permissions:
       pull-requests: write
       contents: write
