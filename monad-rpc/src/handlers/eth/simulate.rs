@@ -60,7 +60,7 @@ pub struct MonadSimulation {
     pub trace_transfers: bool,
 }
 
-// TODO(dhil): We currently don't support validation: false mode, so we make sure to default to true for now.
+// TODO(dhil): Consider whether to flip this to `false` to align with Geth.
 fn validation_default() -> bool {
     true
 }
@@ -86,11 +86,6 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
     max_simulated_blocks: usize,
     params: MonadSimulateParams,
 ) -> JsonRpcResult<Box<RawValue>> {
-    if !params.simulation.validation {
-        let msg = String::from("`\"validation\": false` is not supported yet");
-        return Err(JsonRpcError::with_message(ErrorCode::ServerError, msg));
-    }
-
     let total_simulated_blocks = params.simulation.block_state_calls.len();
     if total_simulated_blocks > max_simulated_blocks {
         return Err(JsonRpcError::with_message(
@@ -245,6 +240,7 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
             simulation_gas_limit,
             max_simulated_blocks,
             max_response_size,
+            params.simulation.validation,
             params.simulation.trace_transfers,
             &overrides,
         )
@@ -355,7 +351,7 @@ mod tests {
         assert!(params.simulation.block_state_calls[0]
             .state_overrides
             .is_empty());
-        // TODO(dhil): We default to validation mode 'true' as we do not support the false mode yet.
+        // TODO(dhil): We default to validation mode 'true' -- reconsider defaulting to 'false'
         assert!(params.simulation.validation);
         assert!(!params.simulation.trace_transfers);
     }
