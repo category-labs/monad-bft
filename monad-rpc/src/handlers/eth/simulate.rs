@@ -15,21 +15,21 @@
 
 use std::ops::Add;
 
-use alloy_consensus::TxEnvelope;
+use alloy_consensus::{Header, TxEnvelope};
 use alloy_primitives::{U256, U64};
 use monad_ethcall::{
     overrides::{BlockOverride, StateOverrideSet},
     MonadExecutor,
 };
 use monad_rpc_docs::rpc;
-use monad_triedb_utils::triedb_env::{Triedb, TriedbPath};
+use monad_triedb_utils::triedb_env::{BlockKey, Triedb, TriedbPath};
 use serde::Deserialize;
 use serde_json::value::RawValue;
 
 use crate::{
     data::{block_key_to_parts, get_block_key_from_tag_or_hash, DataProvider},
     handlers::{
-        eth::call::{fill_gas_params, CallRequest},
+        eth::call::{sender_gas_allowance, CallRequest},
         parse_ethcall_chain_id,
     },
     types::{
@@ -60,15 +60,50 @@ pub struct MonadSimulation {
     pub trace_transfers: bool,
 }
 
-// TODO(dhil): We currently don't support validation: false mode, so we make sure to default to true for now.
 fn validation_default() -> bool {
-    true
+    false
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct MonadSimulateParams {
     pub simulation: MonadSimulation,
     pub block: BlockTagOrHash,
+}
+
+async fn fill_simulation_gas_params<T: Triedb>(
+    triedb_env: &T,
+    block_key: BlockKey,
+    calls: &mut [CallRequest],
+    header: &mut Header,
+    parent_base_fee: &U256,
+    overrides: (&BlockOverride, &StateOverrideSet),
+    call_gas_limit: u64,
+    validation: bool,
+) -> JsonRpcResult<U256> {
+    let (block_override, state_overrides) = overrides;
+    // Mirrors the executor: with validation, a block without a base fee
+    // override inherits its parent's base fee.
+    let base_fee = block_override.base_fee_per_gas.unwrap_or(if validation {
+        *parent_base_fee
+    } else {
+        U256::ZERO
+    });
+    if let Some(gas_limit) = block_override.gas_limit {
+        header.gas_limit = gas_limit.to();
+    }
+
+    for call in calls {
+        call.fill_gas_prices(base_fee)?;
+        if call.gas.is_none() {
+            let allowance =
+                sender_gas_allowance(triedb_env, block_key, header, call, state_overrides)
+                    .await
+                    .unwrap_or(header.gas_limit);
+            call.gas = Some(U256::from(allowance).min(U256::from(call_gas_limit)));
+        }
+    }
+
+    Ok(base_fee)
 }
 
 #[rpc(
@@ -86,11 +121,6 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
     max_simulated_blocks: usize,
     params: MonadSimulateParams,
 ) -> JsonRpcResult<Box<RawValue>> {
-    if !params.simulation.validation {
-        let msg = String::from("`\"validation\": false` is not supported yet");
-        return Err(JsonRpcError::with_message(ErrorCode::ServerError, msg));
-    }
-
     let total_simulated_blocks = params.simulation.block_state_calls.len();
     if total_simulated_blocks > max_simulated_blocks {
         return Err(JsonRpcError::with_message(
@@ -174,19 +204,21 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
         .collect::<Result<Vec<_>, _>>()?;
 
     let mut accumulated_gas: U256 = U256::ZERO;
-    for (call_list, (_, state_override)) in calls.iter_mut().zip(overrides.iter()) {
-        // Inherit the base header. The execution client applies overrides to the simulation header.
-        let mut header = header.header.clone();
+    let mut simulation_header = header.header.clone();
+    let mut parent_base_fee = U256::from(header.header.base_fee_per_gas.unwrap_or_default());
+    for (call_list, &block_overrides) in calls.iter_mut().zip(overrides.iter()) {
+        let base_fee = fill_simulation_gas_params(
+            &data_provider.triedb_env,
+            block_key,
+            call_list,
+            &mut simulation_header,
+            &parent_base_fee,
+            block_overrides,
+            call_gas_limit,
+            params.simulation.validation,
+        )
+        .await?;
         for call in call_list.iter_mut() {
-            fill_gas_params(
-                &data_provider.triedb_env,
-                block_key,
-                call,
-                &mut header,
-                state_override,
-                U256::from(call_gas_limit),
-            )
-            .await?;
             accumulated_gas = accumulated_gas.add(U256::from(call.gas.unwrap_or_default()));
             if accumulated_gas > U256::from(simulation_gas_limit) {
                 return Err(JsonRpcError::with_message(ErrorCode::ServerError, format!(
@@ -195,6 +227,7 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
                 )));
             }
         }
+        parent_base_fee = base_fee;
     }
 
     let calls: Vec<Vec<TxEnvelope>> = calls
@@ -245,6 +278,7 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
             simulation_gas_limit,
             max_simulated_blocks,
             max_response_size,
+            params.simulation.validation,
             params.simulation.trace_transfers,
             &overrides,
         )
@@ -265,13 +299,226 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
 
 #[cfg(test)]
 mod tests {
-    use alloy_primitives::U256;
+    use alloy_consensus::Header;
+    use alloy_primitives::{Address, U256, U64};
+    use monad_ethcall::overrides::{BlockOverride, StateOverrideObject, StateOverrideSet};
+    use monad_triedb_utils::{
+        mock_triedb::MockTriedb,
+        triedb_env::{BlockKey, FinalizedBlockKey},
+    };
+    use monad_types::SeqNum;
     use serde_json::from_str;
 
+    use super::{fill_simulation_gas_params, MonadSimulateParams};
     use crate::{
-        handlers::eth::simulate::MonadSimulateParams,
+        handlers::eth::call::{CallRequest, GasPriceDetails},
         types::eth_json::{BlockTagOrHash, BlockTags},
     };
+
+    #[tokio::test]
+    async fn simulation_gas_params_base_fee() {
+        let triedb = MockTriedb::default();
+        let block_key = BlockKey::Finalized(FinalizedBlockKey(SeqNum(0)));
+        let parent_header = Header {
+            base_fee_per_gas: Some(1000),
+            gas_limit: 1000,
+            ..Default::default()
+        };
+        let parent_base_fee = U256::from(parent_header.base_fee_per_gas.unwrap());
+        let state_overrides = StateOverrideSet::default();
+
+        for base_fee_override in [
+            None,
+            Some(U256::ZERO),
+            Some(U256::from(10)),
+            Some(U256::from(u64::MAX) + U256::from(1)),
+        ] {
+            let block_override = BlockOverride {
+                base_fee_per_gas: base_fee_override,
+                ..Default::default()
+            };
+
+            for validation in [false, true] {
+                let base_fee = base_fee_override.unwrap_or(if validation {
+                    parent_base_fee
+                } else {
+                    U256::ZERO
+                });
+                let mut header = parent_header.clone();
+                let mut calls = [
+                    CallRequest::default(),
+                    CallRequest {
+                        gas_price_details: GasPriceDetails::Eip1559 {
+                            max_fee_per_gas: Some(base_fee + U256::from(10)),
+                            max_priority_fee_per_gas: Some(U256::from(5)),
+                        },
+                        ..Default::default()
+                    },
+                    CallRequest {
+                        gas_price_details: GasPriceDetails::Legacy {
+                            gas_price: U256::ZERO,
+                        },
+                        ..Default::default()
+                    },
+                    CallRequest {
+                        gas: Some(U256::from(42)),
+                        ..Default::default()
+                    },
+                ];
+
+                let resolved_base_fee = fill_simulation_gas_params(
+                    &triedb,
+                    block_key,
+                    &mut calls,
+                    &mut header,
+                    &parent_base_fee,
+                    (&block_override, &state_overrides),
+                    100,
+                    validation,
+                )
+                .await
+                .unwrap();
+
+                assert_eq!(resolved_base_fee, base_fee);
+                assert_eq!(calls[0].max_fee_per_gas(), Some(base_fee));
+                assert_eq!(calls[1].max_fee_per_gas(), Some(base_fee + U256::from(5)));
+                assert_eq!(calls[2].max_fee_per_gas(), Some(base_fee));
+                assert_eq!(calls[3].max_fee_per_gas(), Some(base_fee));
+                for call in &calls[..3] {
+                    assert_eq!(call.gas, Some(U256::from(100)));
+                }
+                assert_eq!(calls[3].gas, Some(U256::from(42)));
+                assert_eq!(header, parent_header);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn simulation_gas_params_balance_allowance() {
+        let triedb = MockTriedb::default();
+        let block_key = BlockKey::Finalized(FinalizedBlockKey(SeqNum(0)));
+        let block_override = BlockOverride {
+            base_fee_per_gas: Some(U256::from(10)),
+            gas_limit: Some(U64::from(100)),
+            ..Default::default()
+        };
+        let value = U256::from(20);
+
+        for gas_price_details in [
+            GasPriceDetails::Legacy {
+                gas_price: U256::from(1),
+            },
+            GasPriceDetails::Eip1559 {
+                max_fee_per_gas: Some(U256::from(100)),
+                max_priority_fee_per_gas: Some(U256::from(5)),
+            },
+        ] {
+            for balance in [U256::ZERO, U256::from(10), U256::from(1000)] {
+                let state_overrides = StateOverrideSet::from([(
+                    Address::ZERO,
+                    StateOverrideObject {
+                        balance: Some(balance),
+                        ..Default::default()
+                    },
+                )]);
+
+                for validation in [false, true] {
+                    for call_gas_limit in [50, 200] {
+                        let mut calls = [CallRequest {
+                            from: Some(Address::ZERO),
+                            value: Some(value),
+                            gas_price_details: gas_price_details.clone(),
+                            ..Default::default()
+                        }];
+                        let mut header = Header {
+                            base_fee_per_gas: Some(1000),
+                            gas_limit: 1000,
+                            ..Default::default()
+                        };
+
+                        let result = fill_simulation_gas_params(
+                            &triedb,
+                            block_key,
+                            &mut calls,
+                            &mut header,
+                            &U256::from(1000),
+                            (&block_override, &state_overrides),
+                            call_gas_limit,
+                            validation,
+                        )
+                        .await;
+
+                        result.unwrap();
+                        let allowance = (balance - value) / calls[0].max_fee_per_gas().unwrap();
+                        assert_eq!(
+                            calls[0].gas,
+                            Some(
+                                allowance
+                                    .min(U256::from(100))
+                                    .min(U256::from(call_gas_limit))
+                            )
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn simulation_gas_params_block_isolation() {
+        let triedb = MockTriedb::default();
+        let block_key = BlockKey::Finalized(FinalizedBlockKey(SeqNum(0)));
+        let state_overrides = StateOverrideSet::default();
+
+        for validation in [false, true] {
+            let mut header = Header {
+                base_fee_per_gas: Some(1000),
+                gas_limit: 1000,
+                ..Default::default()
+            };
+            let mut parent_base_fee = U256::from(header.base_fee_per_gas.unwrap());
+
+            // (base fee override, gas limit override,
+            //  (expected fee without validation, expected fee with validation), expected gas)
+            for (base_fee, gas_limit, (no_validation_fee, validation_fee), expected_gas) in [
+                (None, None, (0, 1000), 1000),
+                (Some(10), Some(100), (10, 10), 100),
+                (None, None, (0, 10), 100),
+                (Some(20), None, (20, 20), 100),
+                (None, Some(200), (0, 20), 200),
+            ] {
+                let block_override = BlockOverride {
+                    base_fee_per_gas: base_fee.map(U256::from),
+                    gas_limit: gas_limit.map(U64::from),
+                    ..Default::default()
+                };
+                let mut calls = [CallRequest::default()];
+                let expected_fee = U256::from(if validation {
+                    validation_fee
+                } else {
+                    no_validation_fee
+                });
+
+                let resolved_base_fee = fill_simulation_gas_params(
+                    &triedb,
+                    block_key,
+                    &mut calls,
+                    &mut header,
+                    &parent_base_fee,
+                    (&block_override, &state_overrides),
+                    1000,
+                    validation,
+                )
+                .await
+                .unwrap();
+                parent_base_fee = resolved_base_fee;
+
+                assert_eq!(resolved_base_fee, expected_fee);
+                assert_eq!(calls[0].max_fee_per_gas(), Some(expected_fee));
+                assert_eq!(calls[0].gas, Some(U256::from(expected_gas)));
+            }
+        }
+    }
 
     #[test]
     fn parse_simulate() {
@@ -355,8 +602,7 @@ mod tests {
         assert!(params.simulation.block_state_calls[0]
             .state_overrides
             .is_empty());
-        // TODO(dhil): We default to validation mode 'true' as we do not support the false mode yet.
-        assert!(params.simulation.validation);
+        assert!(!params.simulation.validation);
         assert!(!params.simulation.trace_transfers);
     }
 
