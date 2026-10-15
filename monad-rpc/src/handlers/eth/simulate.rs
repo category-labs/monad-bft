@@ -15,21 +15,21 @@
 
 use std::ops::Add;
 
-use alloy_consensus::TxEnvelope;
+use alloy_consensus::{Header, TxEnvelope};
 use alloy_primitives::{U256, U64};
 use monad_ethcall::{
     overrides::{BlockOverride, StateOverrideSet},
     MonadExecutor,
 };
 use monad_rpc_docs::rpc;
-use monad_triedb_utils::triedb_env::{Triedb, TriedbPath};
+use monad_triedb_utils::triedb_env::{BlockKey, Triedb, TriedbPath};
 use serde::Deserialize;
 use serde_json::value::RawValue;
 
 use crate::{
     data::{block_key_to_parts, get_block_key_from_tag_or_hash, DataProvider},
     handlers::{
-        eth::call::{fill_gas_params, CallRequest},
+        eth::call::{sender_gas_allowance, CallRequest},
         parse_ethcall_chain_id,
     },
     types::{
@@ -69,6 +69,36 @@ fn validation_default() -> bool {
 pub struct MonadSimulateParams {
     pub simulation: MonadSimulation,
     pub block: BlockTagOrHash,
+}
+
+async fn fill_simulation_gas_params<T: Triedb>(
+    triedb_env: &T,
+    block_key: BlockKey,
+    calls: &mut [CallRequest],
+    header: &mut Header,
+    overrides: (&BlockOverride, &StateOverrideSet),
+    call_gas_limit: u64,
+    validation: bool,
+) -> JsonRpcResult<()> {
+    let (block_override, state_overrides) = overrides;
+    let base_fee = block_override.base_fee_per_gas.unwrap_or_default();
+    if let Some(gas_limit) = block_override.gas_limit {
+        header.gas_limit = gas_limit.to();
+    }
+
+    for call in calls {
+        call.fill_gas_prices(base_fee)?;
+        if call.gas.is_none() {
+            let allowance = if validation {
+                sender_gas_allowance(triedb_env, block_key, header, call, state_overrides).await?
+            } else {
+                header.gas_limit
+            };
+            call.gas = Some(U256::from(allowance).min(U256::from(call_gas_limit)));
+        }
+    }
+
+    Ok(())
 }
 
 #[rpc(
@@ -169,20 +199,19 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
         .collect::<Result<Vec<_>, _>>()?;
 
     let mut accumulated_gas: U256 = U256::ZERO;
-    for (call_list, (_, state_override)) in calls.iter_mut().zip(overrides.iter()) {
-        // Inherit the base header. The execution client applies overrides to the simulation header.
-        let mut header = header.header.clone();
+    let mut simulation_header = header.header.clone();
+    for (call_list, &block_overrides) in calls.iter_mut().zip(overrides.iter()) {
+        fill_simulation_gas_params(
+            &data_provider.triedb_env,
+            block_key,
+            call_list,
+            &mut simulation_header,
+            block_overrides,
+            call_gas_limit,
+            params.simulation.validation,
+        )
+        .await?;
         for call in call_list.iter_mut() {
-            fill_gas_params(
-                &data_provider.triedb_env,
-                block_key,
-                call,
-                &mut header,
-                state_override,
-                U256::from(call_gas_limit),
-                params.simulation.validation,
-            )
-            .await?;
             accumulated_gas = accumulated_gas.add(U256::from(call.gas.unwrap_or_default()));
             if accumulated_gas > U256::from(simulation_gas_limit) {
                 return Err(JsonRpcError::with_message(ErrorCode::ServerError, format!(
@@ -262,13 +291,215 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
 
 #[cfg(test)]
 mod tests {
-    use alloy_primitives::U256;
+    use alloy_consensus::Header;
+    use alloy_primitives::{Address, U256, U64};
+    use monad_ethcall::overrides::{BlockOverride, StateOverrideObject, StateOverrideSet};
+    use monad_triedb_utils::{
+        mock_triedb::MockTriedb,
+        triedb_env::{BlockKey, FinalizedBlockKey},
+    };
+    use monad_types::SeqNum;
     use serde_json::from_str;
 
+    use super::{fill_simulation_gas_params, MonadSimulateParams};
     use crate::{
-        handlers::eth::simulate::MonadSimulateParams,
-        types::eth_json::{BlockTagOrHash, BlockTags},
+        handlers::eth::call::{CallRequest, GasPriceDetails},
+        types::{
+            eth_json::{BlockTagOrHash, BlockTags},
+            jsonrpc::JsonRpcError,
+        },
     };
+
+    #[tokio::test]
+    async fn simulation_gas_params_base_fee() {
+        let triedb = MockTriedb::default();
+        let block_key = BlockKey::Finalized(FinalizedBlockKey(SeqNum(0)));
+        let parent_header = Header {
+            base_fee_per_gas: Some(1000),
+            gas_limit: 1000,
+            ..Default::default()
+        };
+        let state_overrides = StateOverrideSet::default();
+
+        for base_fee_override in [
+            None,
+            Some(U256::ZERO),
+            Some(U256::from(10)),
+            Some(U256::from(u64::MAX) + U256::from(1)),
+        ] {
+            let block_override = BlockOverride {
+                base_fee_per_gas: base_fee_override,
+                ..Default::default()
+            };
+            let base_fee = base_fee_override.unwrap_or_default();
+
+            for validation in [false, true] {
+                let mut header = parent_header.clone();
+                let mut calls = [
+                    CallRequest::default(),
+                    CallRequest {
+                        gas_price_details: GasPriceDetails::Eip1559 {
+                            max_fee_per_gas: Some(base_fee + U256::from(10)),
+                            max_priority_fee_per_gas: Some(U256::from(5)),
+                        },
+                        ..Default::default()
+                    },
+                    CallRequest {
+                        gas_price_details: GasPriceDetails::Legacy {
+                            gas_price: U256::ZERO,
+                        },
+                        ..Default::default()
+                    },
+                    CallRequest {
+                        gas: Some(U256::from(42)),
+                        ..Default::default()
+                    },
+                ];
+
+                fill_simulation_gas_params(
+                    &triedb,
+                    block_key,
+                    &mut calls,
+                    &mut header,
+                    (&block_override, &state_overrides),
+                    100,
+                    validation,
+                )
+                .await
+                .unwrap();
+
+                assert_eq!(calls[0].max_fee_per_gas(), Some(base_fee));
+                assert_eq!(calls[1].max_fee_per_gas(), Some(base_fee + U256::from(5)));
+                assert_eq!(calls[2].max_fee_per_gas(), Some(base_fee));
+                assert_eq!(calls[3].max_fee_per_gas(), Some(base_fee));
+                for call in &calls[..3] {
+                    assert_eq!(call.gas, Some(U256::from(100)));
+                }
+                assert_eq!(calls[3].gas, Some(U256::from(42)));
+                assert_eq!(header, parent_header);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn simulation_gas_params_balance_allowance() {
+        let triedb = MockTriedb::default();
+        let block_key = BlockKey::Finalized(FinalizedBlockKey(SeqNum(0)));
+        let block_override = BlockOverride {
+            base_fee_per_gas: Some(U256::from(10)),
+            gas_limit: Some(U64::from(100)),
+            ..Default::default()
+        };
+        let value = U256::from(20);
+
+        for gas_price_details in [
+            GasPriceDetails::Legacy {
+                gas_price: U256::from(1),
+            },
+            GasPriceDetails::Eip1559 {
+                max_fee_per_gas: Some(U256::from(100)),
+                max_priority_fee_per_gas: Some(U256::from(5)),
+            },
+        ] {
+            for balance in [U256::ZERO, U256::from(10), U256::from(1000)] {
+                let state_overrides = StateOverrideSet::from([(
+                    Address::ZERO,
+                    StateOverrideObject {
+                        balance: Some(balance),
+                        ..Default::default()
+                    },
+                )]);
+
+                for validation in [false, true] {
+                    for call_gas_limit in [50, 200] {
+                        let mut calls = [CallRequest {
+                            from: Some(Address::ZERO),
+                            value: Some(value),
+                            gas_price_details: gas_price_details.clone(),
+                            ..Default::default()
+                        }];
+                        let mut header = Header {
+                            base_fee_per_gas: Some(1000),
+                            gas_limit: 1000,
+                            ..Default::default()
+                        };
+
+                        let result = fill_simulation_gas_params(
+                            &triedb,
+                            block_key,
+                            &mut calls,
+                            &mut header,
+                            (&block_override, &state_overrides),
+                            call_gas_limit,
+                            validation,
+                        )
+                        .await;
+
+                        if validation && balance < value {
+                            assert_eq!(result, Err(JsonRpcError::insufficient_funds()));
+                            continue;
+                        }
+
+                        result.unwrap();
+                        let allowance = if validation {
+                            (balance - value) / calls[0].max_fee_per_gas().unwrap()
+                        } else {
+                            U256::from(100)
+                        };
+                        assert_eq!(
+                            calls[0].gas,
+                            Some(
+                                allowance
+                                    .min(U256::from(100))
+                                    .min(U256::from(call_gas_limit))
+                            )
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn simulation_gas_params_block_isolation() {
+        let triedb = MockTriedb::default();
+        let block_key = BlockKey::Finalized(FinalizedBlockKey(SeqNum(0)));
+        let state_overrides = StateOverrideSet::default();
+        let mut header = Header {
+            base_fee_per_gas: Some(1000),
+            gas_limit: 1000,
+            ..Default::default()
+        };
+
+        for (base_fee, gas_limit, expected_fee, expected_gas) in [
+            (Some(10), Some(100), 10, 100),
+            (None, None, 0, 100),
+            (Some(20), None, 20, 100),
+            (None, Some(200), 0, 200),
+        ] {
+            let block_override = BlockOverride {
+                base_fee_per_gas: base_fee.map(U256::from),
+                gas_limit: gas_limit.map(U64::from),
+                ..Default::default()
+            };
+            let mut calls = [CallRequest::default()];
+
+            fill_simulation_gas_params(
+                &triedb,
+                block_key,
+                &mut calls,
+                &mut header,
+                (&block_override, &state_overrides),
+                1000,
+                true,
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(calls[0].max_fee_per_gas(), Some(U256::from(expected_fee)));
+            assert_eq!(calls[0].gas, Some(U256::from(expected_gas)));
+        }
+    }
 
     #[test]
     fn parse_simulate() {
