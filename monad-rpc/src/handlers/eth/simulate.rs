@@ -180,6 +180,7 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
                 &mut header,
                 state_override,
                 U256::from(call_gas_limit),
+                params.simulation.validation,
             )
             .await?;
             accumulated_gas = accumulated_gas.add(U256::from(call.gas.unwrap_or_default()));
