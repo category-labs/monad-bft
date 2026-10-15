@@ -957,12 +957,6 @@ fn calculate_fee_history_rewards(
         return vec![];
     };
 
-    if transactions.is_empty() {
-        return vec![0; percentiles.len()];
-    }
-
-    let transactions_len = transactions.len();
-
     // Get the reward and gas used for each transaction using receipt.
     let gas_and_rewards = transactions
         .into_iter()
@@ -975,19 +969,21 @@ fn calculate_fee_history_rewards(
         .sorted_by_key(|(_, reward)| *reward)
         .collect::<Vec<_>>();
 
+    if gas_and_rewards.is_empty() {
+        return vec![0; percentiles.len()];
+    }
+
     let mut idx = 0;
-    let mut cumulative_gas_used: u64 = 0;
+    let mut cumulative_gas_used = gas_and_rewards[0].0;
     let mut rewards = Vec::new();
 
     for pct in percentiles {
-        let gas_threshold = (block_gas_used as f64 * pct / 100.0).round() as u64;
-        while cumulative_gas_used < gas_threshold && idx < transactions_len {
-            cumulative_gas_used += gas_and_rewards[idx].0;
+        let gas_threshold = (block_gas_used as f64 * pct / 100.0) as u64;
+        while cumulative_gas_used < gas_threshold && idx < gas_and_rewards.len() - 1 {
             idx += 1;
+            cumulative_gas_used += gas_and_rewards[idx].0;
         }
-        // Clamp idx to valid range
-        let reward_idx = idx.min(transactions_len - 1);
-        rewards.push(gas_and_rewards[reward_idx].1);
+        rewards.push(gas_and_rewards[idx].1);
     }
 
     rewards
@@ -1386,7 +1382,7 @@ mod tests {
         assert_eq!(res.0.oldest_block, 1000);
         assert_eq!(res.0.base_fee_per_gas, vec![2_000, 2_000]);
         assert_eq!(res.0.gas_used_ratio, vec![gas_used]);
-        assert_eq!(res.0.reward, Some(vec![vec![1000, 2000]]));
+        assert_eq!(res.0.reward, Some(vec![vec![0, 1000]]));
 
         // Fetch block history with explicit block heights
         let res = monad_eth_feeHistory(
@@ -1507,13 +1503,7 @@ mod tests {
             Some(&percentiles),
         );
 
-        for i in 1..rewards.len() {
-            assert!(
-                rewards[i - 1] <= rewards[i],
-                "Rewards should be sorted in ascending order. Got {:?}",
-                rewards
-            );
-        }
+        assert_eq!(rewards, vec![1000, 2000, 2000, 4000]);
     }
 
     #[test]
