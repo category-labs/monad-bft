@@ -16,6 +16,9 @@ futures = { workspace = true }
 governor = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_with = { workspace = true }
+tempfile = { workspace = true }
 tokio-util = { workspace = true, features = ["time"] }
 toml = { workspace = true }
 tracing = { workspace = true }

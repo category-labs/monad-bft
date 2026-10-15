@@ -116,4 +116,13 @@ pub struct Cli {
     /// Set the path for the file that will persist peer discovery records across restarts
     #[arg(long)]
     pub persisted_peers_path: PathBuf,
+
+    #[arg(
+        long,
+        help = "Persist the current and previous signed name records at <path> and <path>.bak \
+                (default: self.toml beside --persisted-peers-path). Omit self_name_record_sig \
+                to sign automatically. Without a saved record, start at self_record_seq_num + 1 \
+                (or 0 if omitted); otherwise self_record_seq_num is a lower bound."
+    )]
+    pub name_record_path: Option<PathBuf>,
 }

@@ -33,13 +33,17 @@ use monad_executor::ExecutorMetrics;
 use monad_executor_glue::{PeerEntry, PeerEntryAddress};
 use monad_node_config::NodeBootstrapPeerConfig;
 use monad_types::{Epoch, NodeId, Round};
+use serde::{Deserialize, Serialize};
+use serde_with::{DisplayFromStr, serde_as};
 use tracing::debug;
 
+pub mod atomic_file;
 pub mod discovery;
 pub mod driver;
 pub mod ipv4_validation;
 pub mod message;
 pub mod mock;
+pub mod name_record;
 
 pub use message::PeerDiscoveryMessage;
 
@@ -58,7 +62,8 @@ pub enum PortTag {
     EncryptedTCP = 4,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Port {
     pub tag: u8,
     pub port: NonZeroU16,
@@ -107,7 +112,8 @@ impl Decodable for Port {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
 struct PortList<const N: usize>(ArrayVec<Port, N>);
 
 impl<const N: usize> Encodable for PortList<N> {
@@ -189,11 +195,15 @@ impl<const N: usize> PortList<N> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[serde_as]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NameRecord {
     ip: Ipv4Addr,
     ports: PortList<8>,
+    #[serde_as(as = "DisplayFromStr")]
     capabilities: u64,
+    #[serde_as(as = "DisplayFromStr")]
     seq: u64,
 }
 
@@ -382,7 +392,8 @@ impl Decodable for NameRecord {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Capability {}
 
-#[derive(Debug, Clone, PartialEq, RlpEncodable, RlpDecodable, Eq)]
+#[derive(Debug, Clone, PartialEq, RlpEncodable, RlpDecodable, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, bound = "ST: CertificateSignatureRecoverable")]
 pub struct MonadNameRecord<ST: CertificateSignatureRecoverable> {
     pub name_record: NameRecord,
     pub signature: ST,
