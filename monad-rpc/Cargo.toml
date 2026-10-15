@@ -93,6 +93,9 @@ monad-version = { workspace = true }
 [dev-dependencies]
 monad-eth-testutil = { workspace = true }
 
+# The in-memory metric exporter the node-cache gauge test collects through.
+opentelemetry_sdk = { workspace = true, features = ["rt-tokio", "testing", "trace"] }
+
 actix-test = { workspace = true }
 alloy-consensus = { workspace = true, features = ["arbitrary", "k256"] }
 alloy-rpc-client = { workspace = true }

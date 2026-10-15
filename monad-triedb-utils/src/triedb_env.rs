@@ -19,7 +19,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, AtomicUsize, Ordering::SeqCst},
-        mpsc, Arc, Mutex,
+        mpsc, Arc, Mutex, OnceLock,
     },
     thread,
     time::{Duration, Instant},
@@ -38,6 +38,7 @@ use monad_triedb::{
     compute_page_key, compute_slot_offset, decode_storage_page_slot, MigrationPhase, TraverseEntry,
     TriedbHandle,
 };
+pub use monad_triedb::{NodeCacheStats, NodeCacheStatsHandle};
 use monad_types::{BlockId, Hash, SeqNum};
 use tracing::{error, warn};
 
@@ -128,6 +129,7 @@ fn polling_thread(
     node_lru_max_mem: u64,
     meta: Arc<Mutex<TriedbEnvMeta>>,
     primary_earliest: Arc<AtomicU64>,
+    node_cache_stats: Arc<OnceLock<NodeCacheStatsHandle>>,
     receiver_read: mpsc::Receiver<TriedbRequest>,
     max_async_read_concurrency: usize,
     receiver_traverse: mpsc::Receiver<TriedbRequest>,
@@ -136,6 +138,18 @@ fn polling_thread(
     // create a new triedb handle for the polling thread
     let triedb_handle: TriedbHandle =
         TriedbHandle::try_new(&triedb_path, node_lru_max_mem).expect("triedb should exist in path");
+    // The scraper polls this directly; the handle itself never leaves this
+    // thread. Left unset only if the C++ allocation fails, and then the gauges
+    // stay absent forever, which on its own is indistinguishable from the
+    // documented startup transient -- so say so once here.
+    match triedb_handle.node_cache_stats_handle() {
+        Some(handle) => {
+            let _ = node_cache_stats.set(handle);
+        }
+        None => {
+            warn!("could not open the trie node cache counters, their metrics will not be reported")
+        }
+    }
 
     let triedb_async_read_concurrency_tracker: Arc<()> = Arc::new(());
     let triedb_async_traverse_concurrency_tracker: Arc<()> = Arc::new(());
@@ -538,6 +552,8 @@ pub struct TriedbEnv {
     // mutex.
     primary_earliest: Arc<AtomicU64>,
 
+    node_cache_stats: Arc<OnceLock<NodeCacheStatsHandle>>,
+
     // Read once at open; fixed for the process lifetime because phases only
     // change via the offline monad-mpt tool (everything stopped, then
     // restarted). Determines each timeline's storage encoding (see
@@ -668,6 +684,8 @@ impl TriedbEnv {
         // spawn the polling thread in a dedicated thread
         let meta_cloned = meta.clone();
         let primary_earliest_cloned = primary_earliest.clone();
+        let node_cache_stats: Arc<OnceLock<NodeCacheStatsHandle>> = Arc::new(OnceLock::new());
+        let node_cache_stats_cloned = node_cache_stats.clone();
         let triedb_path_cloned = triedb_path.to_path_buf();
         let tokio_handle = tokio::runtime::Handle::current();
 
@@ -680,6 +698,7 @@ impl TriedbEnv {
                     node_lru_max_mem,
                     meta_cloned,
                     primary_earliest_cloned,
+                    node_cache_stats_cloned,
                     receiver_read,
                     max_async_read_concurrency,
                     receiver_traverse,
@@ -694,8 +713,15 @@ impl TriedbEnv {
             mpsc_sender_traverse: sender_traverse,
             meta,
             primary_earliest,
+            node_cache_stats,
             migration_phase,
         }
+    }
+
+    /// The trie-node cache this env reads through. Empty until the polling
+    /// thread has opened its handle.
+    pub fn node_cache_stats(&self) -> Arc<OnceLock<NodeCacheStatsHandle>> {
+        self.node_cache_stats.clone()
     }
 
     fn get_block_cache(&self, key: &BlockKey) -> Option<BlockCache> {

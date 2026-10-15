@@ -30,7 +30,9 @@ use key::Version;
 use monad_bls::{BlsPubKey, BlsSignatureCollection};
 use monad_crypto::certificate_signature::PubKey;
 use monad_eth_types::{EthAccount, EthHeader};
-use monad_execution_state_read::{ExecutionStateRead, ExecutionStateReadError};
+use monad_execution_state_read::{
+    ExecutionStateRead, ExecutionStateReadError, NodeCacheStats, NodeCacheStatsSource,
+};
 use monad_secp::SecpSignature;
 use monad_triedb::TriedbHandle;
 pub use monad_triedb::{MigrationPhase, StorageStats, TriedbStatsReader, UpdateStats};
@@ -255,6 +257,42 @@ impl TriedbReader {
     }
 }
 
+/// Newtype so this crate can implement the state-read crate's source trait for
+/// the triedb handle; both are foreign to it.
+#[derive(Debug)]
+struct TriedbNodeCacheStats(monad_triedb::NodeCacheStatsHandle);
+
+// Destructured so a field added on either side fails to compile here rather
+// than being silently dropped between the two types. Free of the handle so it
+// can be tested without a db: the destructuring catches an added or renamed
+// field but not two of these same-typed fields swapped.
+fn mirror_node_cache_stats(stats: monad_triedb::NodeCacheStats) -> NodeCacheStats {
+    let monad_triedb::NodeCacheStats {
+        hits,
+        misses,
+        evictions,
+        used_bytes,
+        entries,
+        max_bytes,
+        max_entries,
+    } = stats;
+    NodeCacheStats {
+        hits,
+        misses,
+        evictions,
+        used_bytes,
+        entries,
+        max_bytes,
+        max_entries,
+    }
+}
+
+impl NodeCacheStatsSource for TriedbNodeCacheStats {
+    fn snapshot(&self) -> NodeCacheStats {
+        mirror_node_cache_stats(self.0.snapshot())
+    }
+}
+
 impl ExecutionStateRead<SecpSignature, BlsSignatureCollection<monad_secp::PubKey>>
     for TriedbReader
 {
@@ -397,5 +435,38 @@ impl ExecutionStateRead<SecpSignature, BlsSignatureCollection<monad_secp::PubKey
     fn total_db_lookups(&self) -> u64 {
         self.state_read_total_lookups
             .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn node_cache_stats_source(&self) -> Option<Arc<dyn NodeCacheStatsSource>> {
+        let handle = self.handle.node_cache_stats_handle()?;
+        Some(Arc::new(TriedbNodeCacheStats(handle)))
+    }
+}
+
+#[cfg(test)]
+mod node_cache_stats_mirror_tests {
+    use super::mirror_node_cache_stats;
+
+    // Distinct per field, so a field copied from its neighbour reports a value
+    // that belongs to another field.
+    #[test]
+    fn every_field_mirrors_its_own_counterpart() {
+        let mirrored = mirror_node_cache_stats(monad_triedb::NodeCacheStats {
+            hits: 11,
+            misses: 22,
+            evictions: 33,
+            used_bytes: 44,
+            entries: 55,
+            max_bytes: 66,
+            max_entries: 77,
+        });
+
+        assert_eq!(mirrored.hits, 11);
+        assert_eq!(mirrored.misses, 22);
+        assert_eq!(mirrored.evictions, 33);
+        assert_eq!(mirrored.used_bytes, 44);
+        assert_eq!(mirrored.entries, 55);
+        assert_eq!(mirrored.max_bytes, 66);
+        assert_eq!(mirrored.max_entries, 77);
     }
 }

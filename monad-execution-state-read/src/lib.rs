@@ -42,6 +42,36 @@ pub enum ExecutionStateReadError {
     NeverAvailable,
 }
 
+/// Backend-agnostic mirror of `monad_triedb::NodeCacheStats`, so this crate
+/// does not take a dependency on the triedb FFI.
+///
+/// `hits`, `misses` and `evictions` are totals for the life of the cache and
+/// are never reset; `used_bytes` and `entries` are current levels and go down.
+/// `max_bytes` and `max_entries` are the bounds those two levels run against.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NodeCacheStats {
+    pub hits: u64,
+    pub misses: u64,
+    pub evictions: u64,
+    pub used_bytes: u64,
+    pub entries: u64,
+    pub max_bytes: u64,
+    /// The cache is bounded by both, so compare the two ratios to see which
+    /// bound is binding.
+    pub max_entries: u64,
+}
+
+/// A pollable view of one cache's counters, held by a scraper and read at
+/// whatever rate it likes.
+///
+/// `Send + Sync` so it can be sampled from a metrics thread, which the backend
+/// handle it came from generally cannot be.
+pub trait NodeCacheStatsSource: Send + Sync + std::fmt::Debug {
+    /// The values are read independently, so a snapshot can mix two updates;
+    /// only a ratio computed across them is approximate.
+    fn snapshot(&self) -> NodeCacheStats;
+}
+
 /// A read-only view of block state.
 pub trait ExecutionStateRead<ST, SCT>
 where
@@ -75,6 +105,11 @@ where
     ) -> Vec<(SCT::NodeIdPubKey, SignatureCollectionPubKeyType<SCT>, Stake)>;
 
     fn total_db_lookups(&self) -> u64;
+
+    /// `None` if the backend has no trie-node cache, which is a property of
+    /// the backend and does not change. Fetch once and poll the source
+    /// directly; it does not have to be re-fetched to get a fresh reading.
+    fn node_cache_stats_source(&self) -> Option<Arc<dyn NodeCacheStatsSource>>;
 }
 
 pub trait MockExecution<ST, SCT>
@@ -146,6 +181,10 @@ where
 
     fn total_db_lookups(&self) -> u64 {
         self.lock().unwrap().total_db_lookups()
+    }
+
+    fn node_cache_stats_source(&self) -> Option<Arc<dyn NodeCacheStatsSource>> {
+        self.lock().unwrap().node_cache_stats_source()
     }
 }
 
