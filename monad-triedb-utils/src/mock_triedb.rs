@@ -15,7 +15,7 @@
 
 use std::{collections::HashMap, future::ready};
 
-use alloy_consensus::{transaction::SignerRecoverable, Block, TxEnvelope};
+use alloy_consensus::{transaction::SignerRecoverable, Block, Header, TxEnvelope};
 use alloy_primitives::Address;
 use monad_eth_types::{
     AccountKey, BlockHeader, EthAccount, EthAddress, EthBlockHash, EthCode, EthCodeHash,
@@ -36,6 +36,11 @@ pub struct MockTriedb {
     tx_locations: HashMap<EthTxHash, TransactionLocation>,
     call_frames: HashMap<TransactionLocation, Vec<u8>>,
     code: Vec<u8>,
+    // Domain tables and headers, keyed by (L1 block, domain). A block without an
+    // entry falls back to the L1 block's own transactions and receipts.
+    domain_transactions: HashMap<(SeqNum, EthAddress), Vec<TxEnvelopeWithSender>>,
+    domain_receipts: HashMap<(SeqNum, EthAddress), Vec<ReceiptWithLogIndex>>,
+    domain_block_headers: HashMap<(SeqNum, EthAddress), Header>,
 }
 
 impl MockTriedb {
@@ -83,6 +88,54 @@ impl MockTriedb {
 
     pub fn set_receipts(&mut self, block_num: SeqNum, receipts: Vec<ReceiptWithLogIndex>) {
         self.receipts.insert(block_num, receipts);
+    }
+
+    /// Serves `transactions` and `receipts` as `domain`'s tables at `block_num`. Set the
+    /// same tables for a later block without a domain block header to model the
+    /// versioned trie carrying them forward through a block the domain did not execute.
+    pub fn set_domain_tables(
+        &mut self,
+        block_num: SeqNum,
+        domain: EthAddress,
+        transactions: Vec<TxEnvelopeWithSender>,
+        receipts: Vec<ReceiptWithLogIndex>,
+    ) {
+        self.domain_transactions
+            .insert((block_num, domain), transactions);
+        self.domain_receipts.insert((block_num, domain), receipts);
+    }
+
+    /// Records that `domain` committed a block of its own at `block_num`.
+    pub fn set_domain_block_header(
+        &mut self,
+        block_num: SeqNum,
+        domain: EthAddress,
+        header: Header,
+    ) {
+        self.domain_block_headers
+            .insert((block_num, domain), header);
+    }
+
+    fn l1_transactions(&self, block_key: BlockKey) -> Vec<TxEnvelopeWithSender> {
+        self.finalized_blocks
+            .get(block_key.seq_num())
+            .map_or_else(Vec::new, |blk| {
+                blk.body
+                    .transactions
+                    .iter()
+                    .map(|tx| TxEnvelopeWithSender {
+                        tx: tx.clone(),
+                        sender: tx.recover_signer().expect("should recover sender"),
+                    })
+                    .collect()
+            })
+    }
+
+    fn l1_receipts(&self, block_key: BlockKey) -> Vec<ReceiptWithLogIndex> {
+        self.receipts
+            .get(block_key.seq_num())
+            .cloned()
+            .unwrap_or_default()
     }
 }
 
@@ -171,9 +224,7 @@ impl Triedb for MockTriedb {
         block_key: BlockKey,
     ) -> impl std::future::Future<Output = Result<Vec<ReceiptWithLogIndex>, String>> + Send + Sync
     {
-        self.receipts
-            .get(block_key.seq_num())
-            .map_or_else(|| ready(Ok(vec![])), |rcpts| ready(Ok(rcpts.clone())))
+        ready(Ok(self.l1_receipts(block_key)))
     }
 
     fn get_domain_receipt(
@@ -188,10 +239,14 @@ impl Triedb for MockTriedb {
     fn get_domain_receipts(
         &self,
         block_key: BlockKey,
-        _domain: EthAddress,
+        domain: EthAddress,
     ) -> impl std::future::Future<Output = Result<Vec<ReceiptWithLogIndex>, String>> + Send + Sync
     {
-        self.get_receipts(block_key)
+        ready(Ok(self
+            .domain_receipts
+            .get(&(*block_key.seq_num(), domain))
+            .cloned()
+            .unwrap_or_else(|| self.l1_receipts(block_key))))
     }
 
     fn get_transaction(
@@ -219,21 +274,7 @@ impl Triedb for MockTriedb {
         block_key: BlockKey,
     ) -> impl std::future::Future<Output = Result<Vec<TxEnvelopeWithSender>, String>> + Send + Sync
     {
-        self.finalized_blocks.get(block_key.seq_num()).map_or_else(
-            || ready(Ok(vec![])),
-            |blk| {
-                let txns = blk
-                    .body
-                    .transactions
-                    .iter()
-                    .map(|tx| TxEnvelopeWithSender {
-                        tx: tx.clone(),
-                        sender: tx.recover_signer().expect("should recover sender"),
-                    })
-                    .collect();
-                ready(Ok(txns))
-            },
-        )
+        ready(Ok(self.l1_transactions(block_key)))
     }
 
     fn get_domain_transaction(
@@ -249,10 +290,14 @@ impl Triedb for MockTriedb {
     fn get_domain_transactions(
         &self,
         block_key: BlockKey,
-        _domain: EthAddress,
+        domain: EthAddress,
     ) -> impl std::future::Future<Output = Result<Vec<TxEnvelopeWithSender>, String>> + Send + Sync
     {
-        self.get_transactions(block_key)
+        ready(Ok(self
+            .domain_transactions
+            .get(&(*block_key.seq_num(), domain))
+            .cloned()
+            .unwrap_or_else(|| self.l1_transactions(block_key))))
     }
 
     fn get_block_header(
@@ -272,10 +317,16 @@ impl Triedb for MockTriedb {
 
     fn get_domain_block_header(
         &self,
-        _block_key: BlockKey,
-        _domain: EthAddress,
+        block_key: BlockKey,
+        domain: EthAddress,
     ) -> impl std::future::Future<Output = Result<Option<BlockHeader>, String>> + Send + Sync {
-        ready(Ok(None))
+        ready(Ok(self
+            .domain_block_headers
+            .get(&(*block_key.seq_num(), domain))
+            .map(|header| BlockHeader {
+                hash: header.hash_slow(),
+                header: header.clone(),
+            })))
     }
 
     fn get_transaction_location_by_hash(
