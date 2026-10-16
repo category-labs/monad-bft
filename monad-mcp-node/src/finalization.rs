@@ -17,15 +17,18 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use bytes::Bytes;
 
-use crate::chorus::{
-    SlotLifecycle,
-    slot::chorus::SlotFinalization,
-    types::{MerkleRoot, ProposalIndex, ProposalMap, Slot, Timestamp},
+use crate::{
+    chorus::{
+        SlotLifecycle,
+        slot::chorus::SlotFinalization,
+        types::{MerkleRoot, ProposalIndex, ProposalMap, Slot, Timestamp},
+    },
+    da::Resolved,
 };
 
-// a finalized slot with every committed proposal decoded, for the
+// a finalized slot with every committed proposal resolved, for the
 // ledger and execution. proposals[j] is the message under the root
-// the finalization commits at j.
+// the finalization commits at j, None when negative or invalid.
 pub struct FinalizedSlot {
     pub slot: Slot,
     // when cadence finalized it
@@ -45,7 +48,7 @@ struct SlotCollection {
     deadline: Option<Timestamp>,
     fast_block_at: Option<Timestamp>, // demo(tx-timeline)
     finalized: Option<(Timestamp, SlotFinalization)>,
-    decoded: HashMap<(ProposalIndex, MerkleRoot), (Bytes, Timestamp)>, // demo(tx-timeline)
+    resolved: HashMap<(ProposalIndex, MerkleRoot), (Resolved, Timestamp)>, // demo(tx-timeline)
 }
 
 impl SlotCollection {
@@ -57,7 +60,7 @@ impl SlotCollection {
             let Some(root) = root else {
                 continue;
             };
-            if !self.decoded.contains_key(&(j, root)) {
+            if !self.resolved.contains_key(&(j, root)) {
                 return false;
             }
         }
@@ -67,12 +70,12 @@ impl SlotCollection {
     // the caller checked is_complete
     fn into_finalized(self, slot: Slot) -> FinalizedSlot {
         let (at, finalization) = self.finalized.expect("complete");
-        let mut decoded = self.decoded;
+        let mut resolved = self.resolved;
         let mut lane_decoded_at = Vec::new(); // demo(tx-timeline)
         let proposals = finalization.roots().map_indexed(|j, root| {
-            let decoded = root.map(|root| decoded.remove(&(j, root)).expect("complete"));
-            lane_decoded_at.push(decoded.as_ref().map(|&(_, at)| at)); // demo(tx-timeline)
-            decoded.map(|(message, _)| message)
+            let resolved = root.map(|root| resolved.remove(&(j, root)).expect("complete"));
+            lane_decoded_at.push(resolved.as_ref().map(|&(_, at)| at)); // demo(tx-timeline)
+            resolved.and_then(|(message, _)| message.ok())
         });
         FinalizedSlot {
             slot,
@@ -110,17 +113,17 @@ impl FinalizationCollector {
         self.slots.entry(slot).or_default().fast_block_at = Some(at);
     }
 
-    pub fn handle_decoded(
+    pub fn handle_resolved(
         &mut self,
         at: Timestamp, // demo(tx-timeline)
         slot: Slot,
         proposal_index: ProposalIndex,
         root: MerkleRoot,
-        message: Bytes,
+        message: Resolved,
     ) {
         let collection = self.slots.entry(slot).or_default();
         collection
-            .decoded
+            .resolved
             .insert((proposal_index, root), (message, at)); // demo(tx-timeline)
         self.complete(slot);
     }
@@ -164,7 +167,8 @@ mod tests {
     fn decode(collector: &mut FinalizationCollector, slot: u64) {
         let root = MerkleRoot(MerkleHash([slot as u8; 20]));
         let at = Timestamp::from_millis(slot); // demo(tx-timeline)
-        collector.handle_decoded(at, Slot(slot), 0, root, Bytes::from_static(b"m"));
+        let message = Ok(Bytes::from_static(b"m"));
+        collector.handle_resolved(at, Slot(slot), 0, root, message);
     }
 
     #[test]

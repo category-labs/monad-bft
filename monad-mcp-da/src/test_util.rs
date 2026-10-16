@@ -24,36 +24,55 @@ use monad_mcp_chorus::spec::{validator::ValidatorData as _, vote::KeyPair as _};
 
 pub(crate) use super::chorus::types::FixedProposerSchedule;
 use super::{
-    assignment::{ChunkAssignment, ChunkId},
+    assignment::{ChunkAssignment, ChunkId, PacketLossResistance},
     chunk::{Chunk, ProposalEnvelope, WireChunkId},
     chunk_tree::ChunkTree,
     encoding_scheme::{self, DAEncodingScheme as _, d25},
     header::header_auth,
-    runtime::EpochHandle,
+    runtime::{DAConfig, EpochHandle, Timing},
     types::{
         EncodingScheme, NodeId, ProposalHeader, ProposalKeyPair, SignedProposalHeader, Slot, Stake,
-        ValidatorData,
+        Timestamp, TimestampDelta, ValidatorData,
     },
     wire::{self, PacketLayout as _},
 };
 use crate::spec::{DAProposalHeader as _, DAProposalKeyPair as _};
 
 pub(crate) const SLOT: Slot = Slot(1);
+pub(crate) const NOW: Timestamp = Timestamp::GENESIS;
+
+// Delta of 100 ms: pulls from 100 ms after the deadline, every 200 ms
+pub(crate) fn da_config() -> DAConfig {
+    DAConfig {
+        completed_slot_retention: 1,
+        delta: TimestampDelta::from_millis(100),
+    }
+}
+
+pub(crate) fn timing() -> Timing {
+    da_config().timing()
+}
 pub(crate) const MESSAGE_LEN: usize = 1500;
+pub(crate) const PACKET_LOSS_RESISTANCE: PacketLossResistance = PacketLossResistance::new(11, 10);
 
 pub(crate) fn author() -> NodeId {
     NodeId::dummy(0)
 }
 
 pub(crate) fn validator_data(n: u64) -> ValidatorData {
-    let validators = (0..n).map(NodeId::dummy).collect::<Vec<_>>();
-    let valset = validators.iter().map(|id| (*id, Stake::from(1))).collect();
-    let mapping = validators
-        .iter()
-        .map(|id| (*id, id.keypair().pubkey()))
-        .collect();
+    staked_validator_data(&vec![1; n as usize])
+}
 
-    ValidatorData::new(valset, mapping)
+// validator i holds stakes[i]
+pub(crate) fn staked_validator_data(stakes: &[u64]) -> ValidatorData {
+    let mut valset = Vec::new();
+    let mut mapping = Vec::new();
+    for (id, stake) in stakes.iter().enumerate() {
+        let node = NodeId::dummy(id as u64);
+        valset.push((node, Stake::from(*stake)));
+        mapping.push((node, node.keypair().pubkey()));
+    }
+    ValidatorData::new(valset.into_iter().collect(), mapping.into_iter().collect())
 }
 
 // the node's view of `num_validators` equal-stake validators, where

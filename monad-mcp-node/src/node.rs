@@ -66,7 +66,7 @@ impl Node {
         let cadence = Cadence::new(slot_manager, conductor);
 
         let da = DARuntime::new(
-            config.da.runtime(),
+            config.da.runtime(config.cadence.delta),
             epoch_handle.da(),
             epoch_handle.proposers.clone(),
         );

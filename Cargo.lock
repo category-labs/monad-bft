@@ -5705,10 +5705,10 @@ name = "monad-mcp-chorus"
 version = "0.1.0"
 dependencies = [
  "alloy-rlp",
+ "arrayvec",
  "bytes",
  "derive_more",
  "hex",
- "itertools 0.13.0",
  "proptest",
  "rand 0.8.5",
  "serde",
@@ -5736,7 +5736,6 @@ name = "monad-mcp-da"
 version = "0.1.0"
 dependencies = [
  "alloy-rlp",
- "bitvec",
  "bytes",
  "derive_more",
  "monad-crypto",

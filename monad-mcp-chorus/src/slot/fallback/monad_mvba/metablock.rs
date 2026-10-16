@@ -60,6 +60,10 @@ impl Metablock {
     pub(crate) fn entries(&self) -> ProposalMap<Entry> {
         self.0.as_ref().map(CertifiedEntry::entry)
     }
+
+    pub(crate) fn certified_entries(&self) -> ProposalMap<&CertifiedEntry> {
+        self.0.as_ref()
+    }
 }
 
 impl ValidateInput for Metablock {

@@ -17,7 +17,7 @@ use monad_mcp_chorus::spec::{Stake as _, validator::ValidatorData as _};
 
 use super::{
     super::{
-        assignment::{ChunkAssignment, StakePartition},
+        assignment::{ChunkAssignment, PacketLossResistance, StakePartition},
         types::{D25, NodeId, Slot, Stake, ValidatorData},
         wire::{DAHeaderScheme as _, PacketLayout as _, v1},
     },
@@ -26,6 +26,9 @@ use super::{
 };
 
 const REDUNDANCY: f32 = 2.5;
+
+// todo: set this properly
+const PACKET_LOSS_RESISTANCE: PacketLossResistance = PacketLossResistance::new(11, 10);
 
 // prod's bound on a raptorcast message
 pub const MAX_MESSAGE_LEN: usize = 3 * 1024 * 1024;
@@ -130,7 +133,12 @@ impl DAEncodingScheme for D25 {
         weights.push((*author, Stake::ZERO));
 
         let partition = StakePartition::new(weights);
-        partition.assign(author, self.num_source_chunks(), REDUNDANCY)
+        partition.assign(
+            author,
+            self.num_source_chunks(),
+            REDUNDANCY,
+            PACKET_LOSS_RESISTANCE,
+        )
     }
 
     fn encoder(&self, num_chunks: usize) -> StubSymbolEncoder {
@@ -379,7 +387,7 @@ mod tests {
         super::{
             super::{
                 assignment::ChunkId,
-                test_util::{MESSAGE_LEN, SLOT, author, epoch_handle},
+                test_util::{MESSAGE_LEN, SLOT, author, epoch_handle, staked_validator_data},
             },
             SymbolDecoder as _, SymbolEncoder as _,
         },
@@ -436,6 +444,17 @@ mod tests {
             ..scheme()
         };
         assert!(!empty.is_canonical(4));
+    }
+
+    #[test]
+    fn every_validator_is_in_the_table_however_small_its_stake() {
+        let validator_data = staked_validator_data(&[1000, 1000, 1000, 1000, 1]);
+        let assignment = scheme().chunk_assignment(&author(), &validator_data);
+
+        assert_eq!(assignment.num_nodes(), validator_data.len());
+        for node in validator_data.nodes() {
+            assert!(assignment.index_of(node).is_some());
+        }
     }
 
     #[test]

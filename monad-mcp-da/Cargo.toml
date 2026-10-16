@@ -8,7 +8,6 @@ enable_stub = ["monad-mcp-chorus/enable_stub"]
 
 [dependencies]
 alloy-rlp = { workspace = true }
-bitvec = { workspace = true }
 bytes = { workspace = true }
 derive_more = { workspace = true, features = ["into"] }
 rand = { workspace = true }

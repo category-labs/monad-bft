@@ -27,7 +27,7 @@ use crate::{
 pub type DA = DARuntime<NodeProposerSchedule>;
 
 pub enum DAInput {
-    Envelope(ProposalEnvelope),
+    Envelope(NodeId, ProposalEnvelope),
     ChunkRequest(NodeId, ChunkRecoveryRequest),
     Lifecycle(SlotLifecycle),
     Command(Slot, ChorusDACommand),
@@ -37,20 +37,28 @@ impl Component for DA {
     type Input = DAInput;
     type Output = DAOutput;
 
-    fn handle(&mut self, _now: Timestamp, input: DAInput) {
+    fn handle(&mut self, now: Timestamp, input: DAInput) {
         match input {
-            DAInput::Envelope(envelope) => {
-                if let Err(reason) = self.ingest(envelope) {
+            DAInput::Envelope(sender, envelope) => {
+                if let Err(reason) = self.ingest(now, &sender, envelope) {
                     tracing::debug!(?reason, "rejected proposal envelope");
                 }
             }
-            DAInput::ChunkRequest(from, request) => self.handle_chunk_request(&from, request),
+            DAInput::ChunkRequest(from, request) => self.handle_chunk_request(request, &from, now),
             DAInput::Lifecycle(event) => self.handle_slot_lifecycle(event),
-            DAInput::Command(slot, command) => self.handle_command(slot, command),
+            DAInput::Command(slot, command) => self.handle_command(command, slot, now),
         }
     }
 
     fn poll(&mut self) -> Option<DAOutput> {
         DARuntime::poll(self)
+    }
+
+    fn next_due(&self) -> Option<Timestamp> {
+        self.next_tick()
+    }
+
+    fn handle_due(&mut self, now: Timestamp) {
+        self.handle_tick(now);
     }
 }

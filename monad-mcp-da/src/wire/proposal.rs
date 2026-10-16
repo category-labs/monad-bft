@@ -81,7 +81,8 @@ impl AssembledProposal {
             scheme,
         };
 
-        Self::assemble(&epoch_handle.key_pair, header, chunk_tree, assignment)
+        let proposal = Self::assemble(&epoch_handle.key_pair, header, chunk_tree, assignment);
+        Some(proposal)
     }
 
     pub(crate) fn assemble(
@@ -89,16 +90,16 @@ impl AssembledProposal {
         header: ProposalHeader,
         chunk_tree: ChunkTree,
         assignment: ChunkAssignment,
-    ) -> Option<Self> {
+    ) -> Self {
         let preimage = signed_bytes(&header);
         let sig = key_pair.sign(&preimage);
         let header = SignedProposalHeader { header, sig };
 
-        Some(Self {
+        Self {
             header,
             assignment,
             chunk_tree,
-        })
+        }
     }
 
     pub fn header(&self) -> &SignedProposalHeader {
@@ -198,7 +199,10 @@ mod tests {
         super::{
             super::{
                 chunk::ProposalEnvelope,
-                test_util::{MESSAGE_LEN, SLOT, author, epoch_handle_for, group, proposal_chunks},
+                test_util::{
+                    MESSAGE_LEN, PACKET_LOSS_RESISTANCE, SLOT, author, epoch_handle_for, group,
+                    proposal_chunks,
+                },
             },
             read_envelope, write_chunk,
         },
@@ -281,7 +285,7 @@ mod tests {
             (NodeId::dummy(2), 0),
             (NodeId::dummy(3), 3),
         ];
-        let assignment = ChunkAssignment::deal(&author(), holders);
+        let assignment = ChunkAssignment::deal(&author(), holders, PACKET_LOSS_RESISTANCE);
         let message = vec![1u8; MESSAGE_LEN];
         let chunk_tree =
             encoding_scheme::chunk_tree(header.scheme(), &message, assignment.num_chunks())
@@ -292,7 +296,6 @@ mod tests {
             chunk_tree,
             assignment,
         );
-        let proposal = proposal.expect("assembled");
         assert_eq!(proposal.header(), &header);
 
         let packets = by_recipient(proposal.disseminate().into_packets());

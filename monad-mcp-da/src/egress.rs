@@ -65,6 +65,19 @@ impl ChunkEgress {
         });
     }
 
+    pub(crate) fn enqueue_header(
+        &mut self,
+        recipients: &HashSet<NodeId>,
+        header: &SignedProposalHeader,
+    ) {
+        let envelope = ProposalEnvelope::from_header(header.clone());
+        let dissemination = Dissemination {
+            to: recipients.clone(),
+            envelope,
+        };
+        self.pending.push(dissemination);
+    }
+
     pub(crate) fn release(&mut self) {
         self.released = true;
     }

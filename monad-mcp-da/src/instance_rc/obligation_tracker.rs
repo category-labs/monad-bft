@@ -15,112 +15,48 @@
 
 use super::super::assignment::{ChunkAssignment, ChunkRouting, NodeIndex, Upstream};
 
-// o' = o * (a/b)
-const PACKET_LOSS_RESISTANCE: (usize, usize) = (9, 10);
-
+// our owned chunks of a proposal, owed to us directly by its author
 pub(crate) struct ObligationTracker {
-    // the number of chunks remaining to be received from each
-    // rebroadcast owner, by NodeIndex
-    remaining_owner_obligation: Box<[usize]>,
-
-    // the number of chunks remaining to be received from the author
-    remaining_author_obligation: usize,
-
-    // an outbox of upstreams whose obligations have been fulfilled
-    // since the last drain.
-    fulfilled: Vec<Upstream>,
+    // our chunks still needed from the author, after the packet-loss trim
+    remaining: usize,
+    // set when our owned chunks complete, until taken
+    fulfilled: bool,
 }
 
 impl ObligationTracker {
-    // a receiver outside the assignment (None) is routed nothing.
+    // a receiver outside the assignment (None) is owed nothing
     pub(crate) fn new(assignment: &ChunkAssignment, receiver: Option<NodeIndex>) -> Self {
-        let mut this = Self {
-            remaining_author_obligation: 0,
-            remaining_owner_obligation: vec![0; assignment.num_nodes()].into_boxed_slice(),
-            fulfilled: vec![],
-        };
-
+        let mut owed = 0;
         if let Some(receiver) = receiver {
             for chunk_id in assignment.chunk_ids() {
-                let routing = assignment.routing(chunk_id);
-                for upstream in owed(&routing, receiver) {
-                    *this.counter(upstream) += 1;
+                if from_author(&assignment.routing(chunk_id), receiver) {
+                    owed += 1;
                 }
             }
         }
-
-        this.trim();
-        this.fulfill_vacuously();
-        this
-    }
-
-    // trim the obligations to account for packet loss.
-    fn trim(&mut self) {
-        // todo: make assignment export this
-        let (a, b) = PACKET_LOSS_RESISTANCE;
-        let cut = |n: &mut usize| *n = (*n * a).div_ceil(b);
-
-        cut(&mut self.remaining_author_obligation);
-        for remaining in self.remaining_owner_obligation.iter_mut() {
-            cut(remaining);
+        let remaining = assignment.packet_loss_resistance().trim(owed);
+        Self {
+            remaining,
+            fulfilled: remaining == 0,
         }
     }
 
-    fn fulfill_vacuously(&mut self) {
-        if self.remaining_author_obligation == 0 {
-            self.fulfilled.push(Upstream::Author);
-        }
-        for (node_index, remaining) in self.remaining_owner_obligation.iter().enumerate() {
-            if *remaining == 0 {
-                let owner = NodeIndex::new_unchecked(node_index);
-                self.fulfilled.push(Upstream::Owner(owner));
-            }
-        }
-    }
-
-    pub(crate) fn drain_fulfilled(&mut self) -> Vec<Upstream> {
-        std::mem::take(&mut self.fulfilled)
-    }
-
-    // the caller must ensure each chunk is recorded at most once, with
-    // the routing given by the assignment this tracker was built from.
     pub(crate) fn mark(&mut self, routing: &ChunkRouting<'_>, receiver: NodeIndex) {
-        for upstream in owed(routing, receiver) {
-            self.settle(upstream);
-        }
-    }
-
-    fn settle(&mut self, upstream: Upstream) {
-        let counter = self.counter(upstream);
-        if *counter == 0 {
+        if self.remaining == 0 || !from_author(routing, receiver) {
             return;
         }
-
-        *counter -= 1;
-        if *counter == 0 {
-            self.fulfilled.push(upstream);
-        }
+        self.remaining -= 1;
+        self.fulfilled = self.remaining == 0;
     }
 
-    fn counter(&mut self, upstream: Upstream) -> &mut usize {
-        match upstream {
-            Upstream::Author => &mut self.remaining_author_obligation,
-            Upstream::Owner(owner) => &mut self.remaining_owner_obligation[usize::from(owner)],
-        }
+    // true once, when our owned chunks are complete
+    pub(crate) fn take_fulfilled(&mut self) -> bool {
+        std::mem::take(&mut self.fulfilled)
     }
 }
 
-// who owes the receiver this chunk: its owner, and when the receiver
-// is the owner, the author as well.
-fn owed(routing: &ChunkRouting<'_>, receiver: NodeIndex) -> impl Iterator<Item = Upstream> {
-    let mut owed = Vec::with_capacity(2);
-    if let Some(upstream) = routing.upstream(receiver) {
-        owed.push(Upstream::Owner(routing.owner_index()));
-        if upstream == Upstream::Author {
-            owed.push(Upstream::Author);
-        }
-    }
-    owed.into_iter()
+fn from_author(routing: &ChunkRouting<'_>, receiver: NodeIndex) -> bool {
+    routing.upstream(receiver) == Some(Upstream::Author)
 }
 
 #[cfg(test)]
@@ -130,6 +66,7 @@ mod tests {
     use super::{
         super::super::{
             assignment::StakePartition,
+            test_util::PACKET_LOSS_RESISTANCE,
             types::{NodeId, Stake},
         },
         *,
@@ -141,42 +78,32 @@ mod tests {
         let author = NodeId::dummy(0);
         let mut weights = vec![(author, Stake::ZERO)];
         weights.extend((1..=3).map(|id| (NodeId::dummy(id), Stake::from(1))));
-        StakePartition::new(weights).assign(&author, 30, 2.5)
+        StakePartition::new(weights).assign(&author, 30, 2.5, PACKET_LOSS_RESISTANCE)
     }
 
     #[test]
-    fn zero_obligations_are_vacuously_fulfilled() {
+    fn nothing_owed_is_fulfilled_from_the_start() {
         let assignment = assignment();
-        let author = assignment
-            .index_of(&NodeId::dummy(0))
-            .expect("author in assignment");
 
-        // the author is owed nothing and, holding every chunk, owes
-        // nothing: everything is vacuous from the start, and drained once
-        let mut tracker = ObligationTracker::new(&assignment, Some(author));
-        let fulfilled = tracker.drain_fulfilled();
-        assert!(fulfilled.contains(&Upstream::Author));
-        assert!(fulfilled.contains(&Upstream::Owner(author)));
-        assert_eq!(fulfilled.len(), 1 + assignment.num_nodes());
-        assert!(tracker.drain_fulfilled().is_empty());
+        // the author owns nothing, so is owed nothing; reported once
+        let author = assignment.index_of(&NodeId::dummy(0));
+        let mut tracker = ObligationTracker::new(&assignment, author);
+        assert!(tracker.take_fulfilled());
+        assert!(!tracker.take_fulfilled());
 
-        // a member is owed nothing only by the chunkless author
+        // a node outside the assignment is owed nothing either
+        let mut tracker = ObligationTracker::new(&assignment, None);
+        assert!(tracker.take_fulfilled());
+
+        // the author owes a member its owned chunks
         let member = assignment.index_of(&NodeId::dummy(1));
         let mut tracker = ObligationTracker::new(&assignment, member);
-        assert_eq!(tracker.drain_fulfilled(), vec![Upstream::Owner(author)]);
-
-        // a node outside the assignment is owed nothing by anyone
-        let mut tracker = ObligationTracker::new(&assignment, None);
-        assert_eq!(tracker.drain_fulfilled().len(), 1 + assignment.num_nodes());
+        assert!(!tracker.take_fulfilled());
     }
 
     #[test]
-    #[ignore] // FIXME: failing
-    fn an_obligation_is_fulfilled_once_by_its_last_chunk() {
+    fn our_share_is_fulfilled_once_by_its_last_needed_chunk() {
         let assignment = assignment();
-        let author = assignment
-            .index_of(&NodeId::dummy(0))
-            .expect("in the assignment");
         let member = assignment
             .index_of(&NodeId::dummy(1))
             .expect("in the assignment");
@@ -186,27 +113,25 @@ mod tests {
         let ours: Vec<_> = assignment.owned_chunks(member).collect();
         let theirs: Vec<_> = assignment.owned_chunks(owner).collect();
         let mut tracker = ObligationTracker::new(&assignment, Some(member));
-        tracker.drain_fulfilled();
 
-        // 25 chunks are owed by the author and 25 by each owner
-        for i in 0..24 {
-            tracker.mark(&ours[i], member);
-            tracker.mark(&theirs[i], member);
+        // 25 chunks are ours, of which the trim leaves 23 needed
+        assert_eq!(ours.len(), 25);
+        let last = PACKET_LOSS_RESISTANCE.trim(25) - 1;
+        assert_eq!(last, 22);
+        for routing in &ours[..last] {
+            tracker.mark(routing, member);
         }
-        assert!(tracker.drain_fulfilled().is_empty());
+        // another owner's chunks are not owed by the author
+        for routing in &theirs {
+            tracker.mark(routing, member);
+        }
+        assert!(!tracker.take_fulfilled());
 
-        // our last own chunk settles the author, and what we owe as owner
-        tracker.mark(&ours[24], member);
-        assert_eq!(
-            tracker.drain_fulfilled(),
-            vec![Upstream::Owner(member), Upstream::Author]
-        );
-        tracker.mark(&theirs[24], member);
-        assert_eq!(tracker.drain_fulfilled(), vec![Upstream::Owner(owner)]);
+        tracker.mark(&ours[last], member);
+        assert!(tracker.take_fulfilled());
 
-        // fulfilled once; a chunk unrouted to the receiver credits nothing
-        tracker.mark(&ours[0], member);
-        assert!(tracker.drain_fulfilled().is_empty());
-        assert!(owed(&ours[0], author).next().is_none());
+        // fulfilled once
+        tracker.mark(&ours[last + 1], member);
+        assert!(!tracker.take_fulfilled());
     }
 }

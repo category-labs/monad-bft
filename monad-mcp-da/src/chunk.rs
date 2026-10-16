@@ -22,7 +22,7 @@ use bytes::Bytes;
 
 use super::{
     assignment::ChunkId,
-    types::{ChunkRequestType, MerkleHash, SignedProposalHeader},
+    types::{MerkleHash, MerkleRoot, SignedProposalHeader},
 };
 
 // a chunk id as carried on the wire, not yet checked against an
@@ -33,7 +33,8 @@ pub type WireChunkId = u16;
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum ChunksSubset {
     All,
-    // non-empty. todo: allow empty to request the header alone.
+    HeaderOnly,
+    // non-empty
     Narrowed(BTreeSet<WireChunkId>),
 }
 
@@ -51,22 +52,42 @@ impl ChunksSubset {
     ) -> impl Iterator<Item = ChunkId> + 'a {
         chunk_ids.into_iter().filter(move |id| match self {
             Self::All => true,
+            Self::HeaderOnly => false,
             Self::Narrowed(named) => named.contains(&id.to_wire()),
         })
     }
 }
 
-// the chunks of one owner, the requester's or the peer's
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum ChunkRequestType {
+    MyChunks,
+    YourChunks,
+}
+
+impl ChunkRequestType {
+    // whose chunks the request names, seen from the requester
+    pub fn owner<T: Copy>(self, requester: T, peer: T) -> T {
+        match self {
+            Self::MyChunks => requester,
+            Self::YourChunks => peer,
+        }
+    }
+}
+
+// the chunks of one owner under a root, the requester's or the peer's
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ChunkRequest {
+    pub(crate) root: MerkleRoot,
     pub(crate) kind: ChunkRequestType,
     pub(crate) subset: ChunksSubset,
 }
 
+#[cfg(test)]
 impl ChunkRequest {
     // the full set of chunks of the kind
-    pub(crate) fn all(kind: ChunkRequestType) -> Self {
+    pub(crate) fn all(root: MerkleRoot, kind: ChunkRequestType) -> Self {
         Self {
+            root,
             kind,
             subset: ChunksSubset::All,
         }

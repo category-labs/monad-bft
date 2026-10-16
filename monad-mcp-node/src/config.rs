@@ -290,9 +290,10 @@ impl Default for DAConfig {
 }
 
 impl DAConfig {
-    pub fn runtime(&self) -> da::DAConfig {
+    pub fn runtime(&self, delta: TimestampDelta) -> da::DAConfig {
         da::DAConfig {
             completed_slot_retention: self.completed_slot_retention,
+            delta,
         }
     }
 }
