@@ -1490,12 +1490,15 @@ mod tests {
         let gas_price = U256::from(2000);
         let value = U256::from(2000);
 
-        for gas_price_details in [
-            GasPriceDetails::Legacy { gas_price },
-            GasPriceDetails::Eip1559 {
-                max_fee_per_gas: Some(gas_price),
-                max_priority_fee_per_gas: None,
-            },
+        for (gas_price_details, expected_gas_price) in [
+            (GasPriceDetails::Legacy { gas_price }, gas_price),
+            (
+                GasPriceDetails::Eip1559 {
+                    max_fee_per_gas: Some(gas_price),
+                    max_priority_fee_per_gas: None,
+                },
+                U256::from(1000),
+            ),
         ] {
             for balance in [
                 None,
@@ -1548,12 +1551,12 @@ mod tests {
 
                         result.unwrap();
                         let expected_gas = if validation {
-                            (balance.unwrap_or_default() - value) / gas_price
+                            (balance.unwrap_or_default() - value) / expected_gas_price
                         } else {
                             U256::from(header.gas_limit)
                         };
                         assert_eq!(call_request.gas, Some(expected_gas.min(provider_gas_limit)));
-                        assert_eq!(call_request.max_fee_per_gas(), Some(gas_price));
+                        assert_eq!(call_request.max_fee_per_gas(), Some(expected_gas_price));
                         assert_eq!(header.base_fee_per_gas, Some(1000));
                     }
                 }
