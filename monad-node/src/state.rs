@@ -78,6 +78,7 @@ pub struct NodeState {
     pub triedb_path: PathBuf,
     pub triedb_stats_path: Option<PathBuf>,
     pub persisted_peers_path: PathBuf,
+    pub name_record_path: PathBuf,
 
     pub metrics: Option<MetricsConfig>,
     pub otel_endpoint_interval: Option<(String, Duration)>,
@@ -113,7 +114,11 @@ impl NodeState {
             pprof,
             manytrace_socket,
             persisted_peers_path,
+            name_record_path,
         } = Cli::from_arg_matches_mut(&mut cmd.get_matches_mut())?;
+
+        let name_record_path =
+            name_record_path.unwrap_or_else(|| persisted_peers_path.with_file_name("self.toml"));
 
         let (reload_handle, agent) = NodeState::setup_tracing(manytrace_socket)?;
 
@@ -210,6 +215,7 @@ impl NodeState {
             reload_handle,
             manytrace_agent: agent,
             persisted_peers_path,
+            name_record_path,
         })
     }
 

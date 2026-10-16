@@ -210,6 +210,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         current_round,
         proposer_schedule,
         node_state.persisted_peers_path,
+        node_state.name_record_path,
         score_reader.clone(),
     );
 
@@ -692,6 +693,7 @@ fn build_raptorcast_router<ST, SCT, M, OM, DS>(
     current_round: Round,
     proposer_schedule: BoxedProposerSchedule<CertificateSignaturePubKey<ST>>,
     persisted_peers_path: PathBuf,
+    name_record_path: PathBuf,
     direct_udp_peer_score_reader: DS,
 ) -> MultiRouter<
     ST,
@@ -813,14 +815,22 @@ where
         peer_discovery_config
             .self_encrypted_tcp_port
             .map(NonZeroU16::get),
+        0,
+    );
+    let self_record = monad_peer_discovery::name_record::load_or_create(
+        &name_record_path,
         peer_discovery_config.self_record_seq_num,
-    );
-    let self_record = MonadNameRecord::new(self_record, &identity);
-    info!(?self_id, ?self_record, "self name record");
-    assert!(
-        self_record.signature == peer_discovery_config.self_name_record_sig,
-        "self name record signature mismatch"
-    );
+        self_record,
+        peer_discovery_config.self_name_record_sig,
+        &identity,
+    )
+    .unwrap_or_else(|err| {
+        panic!(
+            "failed to prepare name record at {}: {}",
+            name_record_path.display(),
+            err
+        )
+    });
 
     // initial set of peers
     let bootstrap_peers: BTreeMap<_, _> = bootstrap_nodes
