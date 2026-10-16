@@ -378,6 +378,7 @@ pub async fn fill_gas_params<T: Triedb>(
     header: &mut Header,
     state_overrides: &StateOverrideSet,
     eth_call_provider_gas_limit: U256,
+    validation: bool,
 ) -> Result<(), JsonRpcError> {
     // Geth checks that the sender can pay for gas if a nonzero gas price is populated.
     // Set the base fee to zero if gas price is missing or explicitly zero, preserving
@@ -394,9 +395,11 @@ pub async fn fill_gas_params<T: Triedb>(
             tx.fill_gas_prices(U256::from(header.base_fee_per_gas.unwrap_or_default()))?;
 
             if tx.gas.is_none() {
-                let allowance =
-                    sender_gas_allowance(triedb_env, block_key, header, tx, state_overrides)
-                        .await?;
+                let allowance = if validation {
+                    sender_gas_allowance(triedb_env, block_key, header, tx, state_overrides).await?
+                } else {
+                    header.gas_limit
+                };
                 tx.gas = Some(U256::from(allowance).min(eth_call_provider_gas_limit));
             }
         }
@@ -584,6 +587,7 @@ async fn prepare_eth_call<T: Triedb + TriedbPath>(
     eth_call_handler_config: &EthCallHandlerConfig,
     eth_call_executor: &MonadExecutor,
     chain_id: u64,
+    max_response_size: usize,
     params: CallParams,
     out_of_gas_handling: OutOfGasHandling,
 ) -> Result<(BlockKey, CallResult), JsonRpcError> {
@@ -597,6 +601,7 @@ async fn prepare_eth_call<T: Triedb + TriedbPath>(
         eth_call_handler_config,
         eth_call_executor,
         chain_id,
+        max_response_size,
         execution_params,
         out_of_gas_handling,
         block_key,
@@ -609,6 +614,7 @@ async fn prepare_eth_call_at_block<T: Triedb + TriedbPath>(
     eth_call_handler_config: &EthCallHandlerConfig,
     eth_call_executor: &MonadExecutor,
     chain_id: u64,
+    max_response_size: usize,
     params: EthCallExecutionParams,
     out_of_gas_handling: OutOfGasHandling,
     block_key: BlockKey,
@@ -669,6 +675,7 @@ async fn prepare_eth_call_at_block<T: Triedb + TriedbPath>(
         &mut header.header,
         &state_overrides,
         U256::from(eth_call_provider_gas_limit),
+        true,
     )
     .await?;
 
@@ -706,6 +713,7 @@ async fn prepare_eth_call_at_block<T: Triedb + TriedbPath>(
             block_id,
             state_override_set: &state_overrides,
             tracer,
+            call_tracer_max_size: max_response_size,
             gas_specified,
         })
         .await
@@ -749,13 +757,15 @@ async fn prepare_eth_call_at_block<T: Triedb + TriedbPath>(
     method = "eth_call",
     ignore = "eth_call_handler_config",
     ignore = "eth_call_executor",
-    ignore = "chain_id"
+    ignore = "chain_id",
+    ignore = "max_response_size"
 )]
 pub async fn monad_eth_call<T: Triedb + TriedbPath>(
     data_provider: &DataProvider<T>,
     eth_call_handler_config: &EthCallHandlerConfig,
     eth_call_executor: &MonadExecutor,
     chain_id: u64,
+    max_response_size: usize,
     params: MonadEthCallParams,
 ) -> JsonRpcResult<String> {
     trace!("monad_eth_call: {params:?}");
@@ -765,6 +775,7 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
         eth_call_handler_config,
         eth_call_executor,
         chain_id,
+        max_response_size,
         CallParams::Call(params),
         OutOfGasHandling::RpcError,
     )
@@ -807,6 +818,7 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
         eth_call_handler_config,
         eth_call_executor,
         chain_id,
+        max_response_size,
         CallParams::Trace(params),
         OutOfGasHandling::RpcError,
     )
@@ -883,6 +895,7 @@ pub async fn monad_createAccessList<T: Triedb + TriedbPath>(
         eth_call_handler_config,
         eth_call_executor,
         chain_id,
+        0,
         CallParams::AccessList(params),
         OutOfGasHandling::ReturnAsCallFailure,
     )
@@ -908,6 +921,7 @@ pub async fn monad_createAccessList<T: Triedb + TriedbPath>(
         eth_call_handler_config,
         eth_call_executor,
         chain_id,
+        0,
         call_params,
         OutOfGasHandling::ReturnAsCallFailure,
         block_key,
@@ -1386,6 +1400,7 @@ mod tests {
             &mut header,
             &state_overrides,
             U256::MAX,
+            true,
         )
         .await;
         assert!(result.is_ok());
@@ -1412,6 +1427,7 @@ mod tests {
             &mut header,
             &state_overrides,
             U256::MAX,
+            true,
         )
         .await;
         assert!(result.is_ok());
@@ -1438,6 +1454,7 @@ mod tests {
             &mut header,
             &state_overrides,
             U256::MAX,
+            true,
         )
         .await;
         assert!(result.is_err());
@@ -1460,10 +1477,91 @@ mod tests {
             &mut header,
             &state_overrides,
             U256::from(100),
+            true,
         )
         .await;
         assert!(result.is_ok());
         assert_eq!(call_request.gas, Some(U256::from(100)));
+    }
+
+    #[tokio::test]
+    async fn test_fill_gas_params_validation() {
+        let mock_triedb = MockTriedb::default();
+        let gas_price = U256::from(2000);
+        let value = U256::from(2000);
+
+        for (gas_price_details, expected_gas_price) in [
+            (GasPriceDetails::Legacy { gas_price }, gas_price),
+            (
+                GasPriceDetails::Eip1559 {
+                    max_fee_per_gas: Some(gas_price),
+                    max_priority_fee_per_gas: None,
+                },
+                U256::from(1000),
+            ),
+        ] {
+            for balance in [
+                None,
+                Some(U256::ZERO),
+                Some(U256::from(1000)),
+                Some(U256::from(1_000_000)),
+            ] {
+                let mut state_overrides = StateOverrideSet::default();
+                if let Some(balance) = balance {
+                    state_overrides.insert(
+                        Address::ZERO,
+                        StateOverrideObject {
+                            balance: Some(balance),
+                            ..Default::default()
+                        },
+                    );
+                }
+
+                for validation in [false, true] {
+                    for provider_gas_limit in [U256::MAX, U256::from(100)] {
+                        let mut call_request = CallRequest {
+                            from: Some(Address::ZERO),
+                            value: Some(value),
+                            gas_price_details: gas_price_details.clone(),
+                            ..Default::default()
+                        };
+                        let mut header = Header {
+                            base_fee_per_gas: Some(1000),
+                            gas_limit: 300_000_000,
+                            ..Default::default()
+                        };
+                        let block_key =
+                            BlockKey::Finalized(FinalizedBlockKey(SeqNum(header.number)));
+
+                        let result = fill_gas_params(
+                            &mock_triedb,
+                            block_key,
+                            &mut call_request,
+                            &mut header,
+                            &state_overrides,
+                            provider_gas_limit,
+                            validation,
+                        )
+                        .await;
+
+                        if validation && balance.unwrap_or_default() < value {
+                            assert_eq!(result, Err(JsonRpcError::insufficient_funds()));
+                            continue;
+                        }
+
+                        result.unwrap();
+                        let expected_gas = if validation {
+                            (balance.unwrap_or_default() - value) / expected_gas_price
+                        } else {
+                            U256::from(header.gas_limit)
+                        };
+                        assert_eq!(call_request.gas, Some(expected_gas.min(provider_gas_limit)));
+                        assert_eq!(call_request.max_fee_per_gas(), Some(expected_gas_price));
+                        assert_eq!(header.base_fee_per_gas, Some(1000));
+                    }
+                }
+            }
+        }
     }
 
     #[tokio::test]
@@ -1495,6 +1593,7 @@ mod tests {
             &mut header,
             &state_overrides,
             U256::MAX,
+            true,
         )
         .await;
         assert!(result.is_ok());
@@ -1523,6 +1622,7 @@ mod tests {
             &mut header,
             &state_overrides,
             U256::MAX,
+            true,
         )
         .await;
         assert!(result.is_ok());
@@ -1548,6 +1648,7 @@ mod tests {
             &mut header,
             &state_overrides,
             U256::MAX,
+            true,
         )
         .await;
         assert!(result.is_ok());
@@ -1574,6 +1675,7 @@ mod tests {
             &mut header,
             &state_overrides,
             U256::MAX,
+            true,
         )
         .await;
         assert!(result.is_err());

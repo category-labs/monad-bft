@@ -347,6 +347,7 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
         &mut header.header,
         &state_override_set,
         U256::from(provider_gas_limit),
+        true,
     )
     .await?;
 
@@ -379,6 +380,7 @@ pub async fn monad_eth_estimateGas<T: Triedb>(
                     block_id,
                     state_override_set: &state_override_set,
                     tracer: MonadTracer::NoopTracer,
+                    call_tracer_max_size: 0,
                     gas_specified,
                 })
                 .await,
@@ -453,6 +455,7 @@ pub async fn monad_eth_fillTransaction<T: Triedb>(
                         block_id,
                         state_override_set: &state_override,
                         tracer: MonadTracer::NoopTracer,
+                        call_tracer_max_size: 0,
                         gas_specified: true,
                     })
                     .await,
