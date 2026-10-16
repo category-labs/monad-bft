@@ -626,11 +626,19 @@ where
                 get_block_key_from_tag_or_hash(&self.triedb_env, block.clone()).await
             {
                 let domain_bytes = domain.into_array();
-                let transactions = self
-                    .triedb_env
-                    .get_domain_transactions(block_key, domain_bytes)
+                // Only a block the domain committed holds receipts of its own; see
+                // `has_domain_block`.
+                let transactions = if has_domain_block(&self.triedb_env, block_key, domain_bytes)
                     .await
-                    .map_err(ChainStateError::Triedb)?;
+                    .map_err(ChainStateError::Triedb)?
+                {
+                    self.triedb_env
+                        .get_domain_transactions(block_key, domain_bytes)
+                        .await
+                        .map_err(ChainStateError::Triedb)?
+                } else {
+                    vec![]
+                };
                 if !transactions.is_empty() {
                     let header = self
                         .triedb_env
@@ -994,6 +1002,15 @@ where
                 }) = domain_filter
                 {
                     let domain_bytes = domain.into_array();
+                    // A block the domain did not commit has no logs of its own: its
+                    // tables would be the previous domain block's carried forward, or
+                    // absent before the domain's first block (see `has_domain_block`).
+                    if !has_domain_block(&self.triedb_env, block_key, domain_bytes)
+                        .await
+                        .map_err(JsonRpcError::internal_error)?
+                    {
+                        return Ok(Either::Left((header, vec![], vec![])));
+                    }
                     let transactions = self
                         .triedb_env
                         .get_domain_transactions(block_key, domain_bytes)
@@ -1934,6 +1951,25 @@ async fn get_receipt_from_triedb<T: Triedb>(
     }
 }
 
+/// Whether `domain` committed a block of its own at the L1 block `block_key` refers to.
+///
+/// Domain tables live in the versioned trie, so an L1 block in which the domain executed
+/// nothing still carries the previous domain block's transactions and receipts forward,
+/// and a block before the domain's first one has no tables to traverse at all. The domain
+/// block header is stamped by the execution client with the L1 block number it was
+/// committed at, which tells those versions apart from a real domain block.
+async fn has_domain_block<T: Triedb>(
+    triedb_env: &T,
+    block_key: BlockKey,
+    domain: [u8; 20],
+) -> Result<bool, String> {
+    let block_number = block_key.seq_num().0;
+    Ok(triedb_env
+        .get_domain_block_header(block_key, domain)
+        .await?
+        .is_some_and(|header| header.header.number == block_number))
+}
+
 #[tracing::instrument(level = "debug")]
 async fn get_domain_transaction_from_triedb<T: Triedb>(
     triedb_env: &T,
@@ -2125,6 +2161,74 @@ mod tests {
         assert_eq!(filtered[0].transaction_index, Some(1));
         assert_eq!(filtered[0].gas_used, 20);
         assert_eq!(filtered[0].logs()[0].log_index, Some(1));
+    }
+
+    #[tokio::test]
+    async fn domain_logs_come_only_from_blocks_the_domain_committed() {
+        // The versioned trie carries a domain's tables forward through L1 blocks in which
+        // the domain executed nothing: blocks 10 and 11 serve the same domain transaction
+        // and receipt, but only block 10 holds a domain block header stamped with its
+        // number. Block 9 precedes the domain's first block and has no tables.
+        let domain = make_representable_domain(1);
+        let domain_tx = TxEnvelopeWithSender {
+            tx: make_domain_legacy_tx(domain, S1, 1, 21_000, 0, 0),
+            sender: Address::ZERO,
+        };
+        let l1_block = |number: u64| ConsensusBlock::<TxEnvelope> {
+            header: Header {
+                number,
+                timestamp: 11,
+                ..Default::default()
+            },
+            body: BlockBody {
+                transactions: vec![],
+                ommers: vec![],
+                withdrawals: None,
+            },
+        };
+        let mut mock_triedb = MockTriedb::default();
+        mock_triedb.set_latest_block(1000);
+        for number in [9u64, 10, 11] {
+            mock_triedb.set_finalized_block(SeqNum(number), l1_block(number));
+        }
+        for number in [10u64, 11] {
+            mock_triedb.set_domain_tables(
+                SeqNum(number),
+                domain.into_array(),
+                vec![domain_tx.clone()],
+                vec![mock_rx(1, 21_000)],
+            );
+        }
+        mock_triedb.set_domain_block_header(SeqNum(10), domain.into_array(), l1_block(10).header);
+        let data_provider = DataProvider::new(None, Arc::new(mock_triedb), None);
+
+        let logs = data_provider
+            .get_logs_for_domain(
+                Filter::new().from_block(9u64).to_block(11u64),
+                1 << 24,
+                100,
+                false,
+                false,
+                0,
+                BASE_CHAIN_ID,
+                Some(domain),
+            )
+            .await
+            .unwrap();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].0.block_number, Some(10));
+
+        for (number, expected) in [(9u64, 0usize), (10, 1), (11, 0)] {
+            let receipts = data_provider
+                .get_block_receipts_for_domain(
+                    BlockTagOrHash::BlockTags(BlockTags::Number(Quantity(number))),
+                    BASE_CHAIN_ID,
+                    Some(domain),
+                )
+                .await
+                .unwrap();
+            assert_eq!(receipts.len(), expected, "block {number}");
+        }
     }
 
     #[test]
