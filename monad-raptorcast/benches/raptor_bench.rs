@@ -22,13 +22,13 @@ use monad_crypto::hasher::{Hasher, HasherType};
 use monad_dataplane::udp::DEFAULT_SEGMENT_SIZE;
 use monad_raptor::ManagedDecoder;
 use monad_raptorcast::{
-    packet::{build_messages, regular::MAX_REDUNDANCY},
+    packet::{build_messages, deterministic},
     parser::packet_parser::{ChunkValidationEnv, RaptorcastPacket},
     udp::{ChunkSignatureVerifier, SIGNATURE_CACHE_SIZE},
     util::{BuildTarget, PrimaryBroadcastGroup, Redundancy, ValidatorGroupMap},
 };
 use monad_secp::{KeyPair, SecpSignature};
-use monad_types::{Epoch, NodeId, Stake};
+use monad_types::{Epoch, NodeId, Round, Stake};
 use monad_validator::validator_set::ValidatorSet;
 
 #[allow(clippy::useless_vec)]
@@ -75,7 +75,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                 message.clone(),
                 Redundancy::from_u8(2),
                 0, // unix_ts_ms
-                BuildTarget::raptorcast(group),
+                BuildTarget::raptorcast(group, Round(0)),
                 &known_addresses,
             );
         });
@@ -118,7 +118,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             message.clone(),
             Redundancy::from_u8(2),
             0, // unix_ts_ms
-            BuildTarget::raptorcast(group),
+            BuildTarget::raptorcast(group, Round(0)),
             &known_addresses,
         )
         .into_iter()
@@ -127,7 +127,9 @@ pub fn criterion_benchmark(c: &mut Criterion) {
 
         let mut signature_verifier =
             ChunkSignatureVerifier::<SecpSignature>::new().with_cache(SIGNATURE_CACHE_SIZE);
-        let example_payload = messages[0].clone().split_to(DEFAULT_SEGMENT_SIZE.into());
+        let example_payload = messages[0]
+            .clone()
+            .split_to(deterministic::DEFAULT_SEGMENT_LEN);
         let packet = RaptorcastPacket::parse(&example_payload).unwrap();
         let env = ChunkValidationEnv {
             signature_verifier: &mut signature_verifier,
@@ -144,20 +146,16 @@ pub fn criterion_benchmark(c: &mut Criterion) {
             |messages| {
                 let mut signature_verifier =
                     ChunkSignatureVerifier::<SecpSignature>::new().with_cache(SIGNATURE_CACHE_SIZE);
-                let mut decoder = {
-                    let symbol_len = example_chunk.chunk.len();
-
-                    // data_size is always greater than zero, so this division is safe
-                    let num_source_symbols = message_size.div_ceil(symbol_len);
-                    let encoded_symbol_capacity = MAX_REDUNDANCY.scale(num_source_symbols).unwrap();
-
-                    ManagedDecoder::new(num_source_symbols, encoded_symbol_capacity, symbol_len)
-                        .unwrap()
-                };
+                let mut decoder = ManagedDecoder::new(
+                    example_chunk.num_source_symbols,
+                    example_chunk.encoded_symbol_capacity,
+                    example_chunk.chunk.len(),
+                )
+                .unwrap();
                 let mut decode_success = false;
                 for mut message in messages {
                     while !message.is_empty() {
-                        let payload = message.split_to(DEFAULT_SEGMENT_SIZE.into());
+                        let payload = message.split_to(deterministic::DEFAULT_SEGMENT_LEN);
                         let packet = RaptorcastPacket::parse(&payload).unwrap();
                         let env = ChunkValidationEnv {
                             signature_verifier: &mut signature_verifier,

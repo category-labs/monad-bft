@@ -60,12 +60,6 @@ pub async fn budgeted<F: Future>(fut: F, quota: &mut usize) -> F::Output {
     out
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum RaptorcastMode {
-    Regular,
-    Deterministic { round: Round, epoch: Epoch },
-}
-
 // Argument for raptorcast send
 #[derive(Debug, Clone, Copy)]
 pub enum BuildTarget<'a, PT: PubKey> {
@@ -76,17 +70,16 @@ pub enum BuildTarget<'a, PT: PubKey> {
     // proportion of stakes.
     Raptorcast {
         group: PrimaryBroadcastGroup<'a, PT>,
-        mode: RaptorcastMode,
+        round: Round,
     },
     // broadcast a message to a set of full nodes where each full node
     // gets the full chunks of the raptor-coded message.
     FullNodeBroadcast(SecondaryBroadcastGroup<'a, PT>),
-    // raptorcast to a set of full nodes. In regular mode, chunks are
-    // assigned round-robin; in deterministic mode, chunks are
-    // assigned by the seeded shuffle of the full-node group.
+    // raptorcast to a set of full nodes, chunks assigned by the seeded
+    // shuffle of the full-node group.
     FullNodeRaptorCast {
         group: SecondaryBroadcastGroup<'a, PT>,
-        mode: RaptorcastMode,
+        epoch: Epoch,
     },
     // unicast message as raptor-coded chunks to a single recipient
     PointToPoint {
@@ -96,37 +89,12 @@ pub enum BuildTarget<'a, PT: PubKey> {
 }
 
 impl<'a, PT: PubKey> BuildTarget<'a, PT> {
-    pub fn raptorcast(group: PrimaryBroadcastGroup<'a, PT>) -> Self {
-        BuildTarget::Raptorcast {
-            group,
-            mode: RaptorcastMode::Regular,
-        }
+    pub fn raptorcast(group: PrimaryBroadcastGroup<'a, PT>, round: Round) -> Self {
+        BuildTarget::Raptorcast { group, round }
     }
 
-    pub fn deterministic_raptorcast(group: PrimaryBroadcastGroup<'a, PT>, round: Round) -> Self {
-        let epoch = group.epoch();
-        BuildTarget::Raptorcast {
-            group,
-            mode: RaptorcastMode::Deterministic { round, epoch },
-        }
-    }
-
-    pub fn fullnode_raptorcast(group: SecondaryBroadcastGroup<'a, PT>) -> Self {
-        BuildTarget::FullNodeRaptorCast {
-            group,
-            mode: RaptorcastMode::Regular,
-        }
-    }
-
-    pub fn deterministic_fullnode_raptorcast(
-        group: SecondaryBroadcastGroup<'a, PT>,
-        epoch: Epoch,
-    ) -> Self {
-        let round = group.round();
-        BuildTarget::FullNodeRaptorCast {
-            group,
-            mode: RaptorcastMode::Deterministic { round, epoch },
-        }
+    pub fn fullnode_raptorcast(group: SecondaryBroadcastGroup<'a, PT>, epoch: Epoch) -> Self {
+        BuildTarget::FullNodeRaptorCast { group, epoch }
     }
 
     pub fn point_to_point(epoch: Epoch, recipient: &'a NodeId<PT>) -> Self {

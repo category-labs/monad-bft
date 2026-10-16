@@ -32,7 +32,7 @@ use crate::{
         assigner::{even_partition_num_chunks, stake_partition_num_chunks_hint},
         deterministic, regular,
     },
-    udp::{ChunkSignatureVerifier, ChunkVersion, GroupId, InvalidChunk, ValidatedChunk},
+    udp::{ChunkSignatureVerifier, GroupId, InvalidChunk, ValidatedChunk},
     util::{ensure, BroadcastMode, EncodingScheme, HexBytes},
     SIGNATURE_SIZE,
 };
@@ -482,6 +482,12 @@ impl<'a> RaptorcastPacketV0<'a> {
         common_header: &Ref<&[u8], RaptorcastHeader>,
         max_age_ms: u64,
     ) -> Result<ChunkMeta, InvalidChunk> {
+        let broadcast_mode = self.header.broadcast_mode()?;
+        ensure!(
+            matches!(broadcast_mode, BroadcastMode::Unspecified),
+            InvalidChunk::InvalidBroadcastMode
+        );
+
         let app_message_len = self.header.app_message_len.get() as usize;
         ensure!(
             app_message_len > 0 && app_message_len <= MAX_MESSAGE_SIZE,
@@ -507,16 +513,9 @@ impl<'a> RaptorcastPacketV0<'a> {
                 .contains(&num_source_symbols),
             InvalidChunk::InvalidAppMessageLen(app_message_len)
         );
-        let mut chunk_id_cap = regular::MAX_REDUNDANCY
+        let chunk_id_cap = regular::MAX_REDUNDANCY
             .scale(num_source_symbols)
             .ok_or(InvalidChunk::InvalidChunkLen)?;
-
-        let broadcast_mode = self.header.broadcast_mode()?;
-        if matches!(broadcast_mode, BroadcastMode::Primary) {
-            // TODO: use more accurate estimation for number of rounding chunks
-            chunk_id_cap = chunk_id_cap.saturating_add(MAX_VALIDATOR_SET_SIZE);
-        }
-
         let chunk_id = self.chunk_header.chunk_id.get() as usize;
         ensure!(chunk_id < chunk_id_cap, InvalidChunk::InvalidChunkId);
 
@@ -795,9 +794,9 @@ impl<'a> RaptorcastPacket<'a> {
     {
         let meta = self.validate_chunk_meta(env.max_age_ms)?;
         let author = verify_signature(env.signature_verifier, &meta, env.bypass_rate_limiter)?;
-        let (chunk, version) = match &self.versioned {
-            RaptorcastPacketVersioned::V0(v0) => (v0.split_chunk(message)?, ChunkVersion::V0),
-            RaptorcastPacketVersioned::V1(v1) => (v1.split_chunk(message)?, ChunkVersion::V1),
+        let chunk = match &self.versioned {
+            RaptorcastPacketVersioned::V0(v0) => v0.split_chunk(message)?,
+            RaptorcastPacketVersioned::V1(v1) => v1.split_chunk(message)?,
         };
 
         ensure!(author != *env.self_id, InvalidChunk::Loopback);
@@ -807,7 +806,6 @@ impl<'a> RaptorcastPacket<'a> {
             message: message.clone(),
             signature: message.slice(..SIGNATURE_SIZE),
             author,
-            version,
             group_id: meta.group_id,
             unix_ts_ms: meta.timestamp,
             app_message_hash: meta.app_message_hash,

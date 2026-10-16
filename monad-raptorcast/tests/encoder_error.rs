@@ -25,7 +25,7 @@ use monad_raptorcast::{
     util::{BuildTarget, PrimaryBroadcastGroup, Redundancy, ValidatorGroupMap},
 };
 use monad_secp::{KeyPair, SecpSignature};
-use monad_types::{Epoch, NodeId, Stake};
+use monad_types::{Epoch, NodeId, Round, Stake};
 use monad_validator::validator_set::ValidatorSet;
 use tracing_subscriber::fmt::format::FmtSpan;
 
@@ -77,7 +77,7 @@ pub fn encoder_error() {
         message,
         Redundancy::from_u8(1),
         0, // unix_ts_ms
-        BuildTarget::raptorcast(group),
+        BuildTarget::raptorcast(group, Round(0)),
         &known_addresses,
     );
 }

@@ -1791,7 +1791,7 @@ mod test {
 
     use super::*;
     use crate::{
-        udp::{ChunkVersion, GroupId},
+        udp::GroupId,
         util::{compute_app_message_hash, BroadcastMode, EncodingScheme, HexBytes},
     };
     type PT = monad_crypto::NopPubKey;
@@ -1853,7 +1853,6 @@ mod test {
             app_message_hash: None,
             merkle_root: HexBytes([depth; 20]),
             app_message_len: app_message_len as u32,
-            version: ChunkVersion::V1,
             encoding_scheme: EncodingScheme::Deterministic25(Round(1)),
             broadcast_mode,
             recipient_hash: None,
@@ -1953,7 +1952,6 @@ mod test {
                 app_message_hash: Some(app_message_hash),
                 merkle_root: HexBytes([0; 20]),
                 app_message_len: app_message.len() as u32,
-                version: ChunkVersion::V0,
                 encoding_scheme: EncodingScheme::Unspecified,
                 broadcast_mode: BroadcastMode::Unspecified,
                 chunk: chunk.freeze(),

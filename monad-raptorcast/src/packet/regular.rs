@@ -29,19 +29,11 @@ use monad_dataplane::udp::{segment_size_for_mtu, ETHERNET_SEGMENT_SIZE};
 use monad_merkle::{MerkleHash, MerkleTree};
 use monad_raptor::{r10::lt::MAX_TRIPLES, Encoder};
 use monad_types::NodeId;
-use rand::Rng;
 
-use super::{
-    assigner::{ChunkAssignment, EvenPartition, Partition as _, StakePartition},
-    chunk::Chunk,
-    BuildError, Result,
-};
+use super::{assigner::ChunkAssignment, chunk::Chunk, BuildError, Result};
 use crate::{
     udp::{GroupId, MAX_NUM_PACKETS},
-    util::{
-        compute_app_message_hash, ensure, BroadcastMode, BuildTarget, Collector, Redundancy,
-        UdpMessage,
-    },
+    util::{compute_app_message_hash, ensure, BuildTarget, Collector, Redundancy, UdpMessage},
     SIGNATURE_SIZE,
 };
 
@@ -470,7 +462,6 @@ const VERSION: u16 = 0x0;
 
 // return the shared header for all chunks sans the signature.
 pub(crate) fn build_header(
-    broadcast_mode: BroadcastMode,
     merkle_tree_depth: u8,
     group_id: GroupId,
     unix_ts_ms: u64,
@@ -478,8 +469,7 @@ pub(crate) fn build_header(
     app_message_len: usize,
 ) -> Result<Bytes> {
     // 2  // Version
-    // 1  // Broadcast bit
-    //       Secondary broadcast bit,
+    // 1  // 2 bits for Broadcast Mode (always unspecified),
     //       2 unused bits,
     //       4 bits for Merkle Tree Depth
     // 8  // Group id
@@ -494,17 +484,11 @@ pub(crate) fn build_header(
 
     let (cursor_broadcast_merkle_depth, cursor) =
         cursor.split_at_mut_checked(1).expect("header to short");
-    let mut broadcast_byte: u8 = match broadcast_mode {
-        BroadcastMode::Primary => 0b10 << 6,
-        BroadcastMode::Secondary => 0b01 << 6,
-        BroadcastMode::Unspecified => 0b00 << 6,
-    };
     // tree_depth max 4 bits
     if (merkle_tree_depth & 0b1111_0000) != 0 {
         return Err(BuildError::MerkleTreeTooDeep);
     }
-    broadcast_byte |= merkle_tree_depth & 0b0000_1111;
-    cursor_broadcast_merkle_depth[0] = broadcast_byte;
+    cursor_broadcast_merkle_depth[0] = merkle_tree_depth & 0b0000_1111;
 
     let group_id: u64 = group_id.into();
     let (cursor_group_id, cursor) = cursor.split_at_mut_checked(8).expect("header too short");
@@ -530,14 +514,9 @@ pub(crate) fn build_header(
     Ok(buffer.freeze())
 }
 
-// Derive the seed used to shuffling validator set for regular raptorcast
-pub fn derive_seed(app_message_hash: &[u8; 20]) -> [u8; 32] {
-    let mut padded_seed = [0u8; 32];
-    padded_seed[..20].copy_from_slice(app_message_hash);
-    padded_seed
-}
-
-/// Build regular raptorcast packets from validated parameters.
+/// Build regular raptorcast packets from validated parameters. Every
+/// recipient of the build target other than the sender gets the full
+/// set of encoded symbols.
 ///
 /// The caller is responsible for validating inputs (segment size bounds,
 /// merkle tree depth bounds, redundancy bounds, message size).
@@ -560,15 +539,12 @@ where
 
     let num_base_symbols = layout.num_base_symbols(app_message.len());
 
-    // generate chunks based on build target
-    let chunks = generate_chunks(
-        build_target,
-        &self_node_id,
-        &app_message_hash,
-        num_base_symbols,
-        redundancy,
-        layout,
-    )?;
+    let recipients: Vec<_> = build_target
+        .iter()
+        .filter(|node_id| **node_id != self_node_id)
+        .copied()
+        .collect();
+    let chunks = generate_chunks(&recipients, num_base_symbols, redundancy, layout)?;
 
     if chunks.is_empty() {
         tracing::warn!(app_msg_len = app_message.len(), "no chunk generated");
@@ -577,7 +553,6 @@ where
 
     // build the shared header
     let header = build_header(
-        broadcast_mode_from_build_target(build_target),
         layout.merkle_tree_depth(),
         build_target.group_id(),
         unix_ts_ms,
@@ -592,100 +567,26 @@ where
 }
 
 fn generate_chunks<PT: PubKey>(
-    build_target: &BuildTarget<'_, PT>,
-    self_node_id: &NodeId<PT>,
-    app_message_hash: &[u8; 20],
+    recipients: &[NodeId<PT>],
     num_base_symbols: usize,
     redundancy: Redundancy,
     layout: PacketLayout,
 ) -> Result<Vec<Chunk<PT>>> {
-    let segment_len = layout.segment_len();
+    let num_symbols = redundancy
+        .scale(num_base_symbols)
+        .ok_or(BuildError::TooManyChunks)?;
+    ensure!(num_symbols <= MAX_TRIPLES, BuildError::TooManyChunks);
+    let num_chunks = num_symbols
+        .checked_mul(recipients.len())
+        .ok_or(BuildError::TooManyChunks)?;
+    ensure!(num_chunks <= MAX_NUM_PACKETS, BuildError::TooManyChunks);
 
-    let chunks = match build_target {
-        BuildTarget::PointToPoint { recipient, .. } => {
-            if *recipient == self_node_id {
-                return Ok(Vec::new());
-            }
-            let num_symbols = redundancy
-                .scale(num_base_symbols)
-                .ok_or(BuildError::TooManyChunks)?;
-            ensure!(num_symbols <= MAX_TRIPLES, BuildError::TooManyChunks);
-            let assignment = ChunkAssignment::unicast(**recipient, num_symbols);
-            assignment.materialize(segment_len)?
-        }
-
-        BuildTarget::Broadcast(primary_group) => {
-            let num_symbols = redundancy
-                .scale(num_base_symbols)
-                .ok_or(BuildError::TooManyChunks)?;
-            ensure!(num_symbols <= MAX_TRIPLES, BuildError::TooManyChunks);
-            let recipients: Vec<_> = primary_group
-                .iter()
-                .map(|(n, _stake)| n)
-                .filter(|node_id| *node_id != self_node_id)
-                .cloned()
-                .collect();
-            let mut chunks = Vec::with_capacity(num_symbols * recipients.len());
-            for recipient in &recipients {
-                let assignment = ChunkAssignment::unicast(*recipient, num_symbols);
-                chunks.extend(assignment.materialize(segment_len)?);
-            }
-            chunks
-        }
-
-        BuildTarget::FullNodeBroadcast(secondary_group) => {
-            let num_symbols = redundancy
-                .scale(num_base_symbols)
-                .ok_or(BuildError::TooManyChunks)?;
-            ensure!(num_symbols <= MAX_TRIPLES, BuildError::TooManyChunks);
-            let recipients: Vec<_> = secondary_group
-                .iter()
-                .filter(|node_id| *node_id != self_node_id)
-                .cloned()
-                .collect();
-            let mut chunks = Vec::with_capacity(num_symbols * recipients.len());
-            for recipient in &recipients {
-                let assignment = ChunkAssignment::unicast(*recipient, num_symbols);
-                chunks.extend(assignment.materialize(segment_len)?);
-            }
-            chunks
-        }
-
-        BuildTarget::Raptorcast {
-            group: primary_group,
-            ..
-        } => {
-            let mut partition = StakePartition::from_group(primary_group);
-            partition.shuffle(derive_seed(app_message_hash));
-            let assignment = partition.assign(num_base_symbols, redundancy)?;
-            assignment.materialize(segment_len)?
-        }
-
-        BuildTarget::FullNodeRaptorCast {
-            group: secondary_group,
-            ..
-        } => {
-            let seed = rand::thread_rng().gen::<[u8; 32]>();
-            let mut partition = EvenPartition::from_group(secondary_group);
-            partition.shuffle(seed);
-            let assignment = partition.assign(num_base_symbols, redundancy)?;
-            assignment.materialize(segment_len)?
-        }
-    };
-
-    ensure!(chunks.len() <= MAX_NUM_PACKETS, BuildError::TooManyChunks);
+    let mut chunks = Vec::with_capacity(num_chunks);
+    for recipient in recipients {
+        let assignment = ChunkAssignment::unicast(*recipient, num_symbols);
+        chunks.extend(assignment.materialize(layout.segment_len())?);
+    }
+    debug_assert_eq!(chunks.len(), num_chunks);
 
     Ok(chunks)
-}
-
-fn broadcast_mode_from_build_target<PT: PubKey>(
-    build_target: &BuildTarget<'_, PT>,
-) -> BroadcastMode {
-    match build_target {
-        BuildTarget::Raptorcast { .. } => BroadcastMode::Primary,
-        BuildTarget::FullNodeRaptorCast { .. } => BroadcastMode::Secondary,
-        BuildTarget::Broadcast(_)
-        | BuildTarget::FullNodeBroadcast(_)
-        | BuildTarget::PointToPoint { .. } => BroadcastMode::Unspecified,
-    }
 }
