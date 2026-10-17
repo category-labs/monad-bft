@@ -922,28 +922,29 @@ fn test_zero_nonce_included_in_block() {
 #[test]
 #[traced_test]
 fn test_nonce_gap() {
-    // A transaction with nonce 1 should not be included in the block if a tx with nonce 0 is missing
+    // Future nonces have no gap limit, but cannot be proposed while nonce 0 is missing.
+    for nonce in [1, 1_000_000, u64::MAX] {
+        let tx1 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, nonce, 10);
 
-    let tx1 = make_legacy_tx(S1, BASE_FEE, GAS_LIMIT, 1, 10);
-
-    run_simple(
-        &[S1],
-        [
-            TxPoolTestEvent::InsertTxs {
-                txs: vec![(&tx1, true)],
-                expected_pool_size_change: 1,
-            },
-            TxPoolTestEvent::CreateProposal {
-                base_fee: BASE_FEE_PER_GAS,
-                tx_limit: 128,
-                gas_limit: 10 * GAS_LIMIT,
-                byte_limit: PROPOSAL_SIZE_LIMIT,
-                expected_txs: vec![],
-                expected_sender_gas: None,
-                add_to_blocktree: true,
-            },
-        ],
-    );
+        run_simple(
+            &[S1],
+            [
+                TxPoolTestEvent::InsertTxs {
+                    txs: vec![(&tx1, true)],
+                    expected_pool_size_change: 1,
+                },
+                TxPoolTestEvent::CreateProposal {
+                    base_fee: BASE_FEE_PER_GAS,
+                    tx_limit: 128,
+                    gas_limit: 10 * GAS_LIMIT,
+                    byte_limit: PROPOSAL_SIZE_LIMIT,
+                    expected_txs: vec![],
+                    expected_sender_gas: None,
+                    add_to_blocktree: true,
+                },
+            ],
+        );
+    }
 }
 
 #[test]
