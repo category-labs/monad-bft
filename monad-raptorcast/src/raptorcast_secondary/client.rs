@@ -325,49 +325,39 @@ where
             return false;
         }
 
-        let log_exceed_max_num_group = || {
+        // Reject an invite that overlaps a live group from the same
+        // validator, e.g. [30, 40)->validator3 when we already hold
+        // [25, 35)->validator3. Overlaps across validators are fine,
+        // e.g. [30, 40)->validator3 + [25, 35)->validator4.
+        if self
+            .validator_groups
+            .get(&invite_msg.validator_id)
+            .is_some_and(|groups| groups.has_overlap(invite_msg.start_round, invite_msg.end_round))
+        {
+            warn!(
+                "RaptorCastSecondary received self-overlapping \
+                        invite for rounds [{:?}, {:?}) from validator {:?}",
+                invite_msg.start_round, invite_msg.end_round, invite_msg.validator_id
+            );
+            return false;
+        }
+
+        // Count the validators whose live (pending or confirmed) spans overlap
+        // the invite's span. A validator's live spans are disjoint, so it occupies
+        // at most one of our max_num_group slots at any round, however many groups
+        // it lines up back to back.
+        let num_other_validators = self
+            .validator_groups
+            .values()
+            .filter(|groups| groups.has_overlap(invite_msg.start_round, invite_msg.end_round))
+            .count();
+        if num_other_validators + 1 > self.config.max_num_group {
             debug!(
                 "RaptorCastSecondary rejected invite for rounds \
                         [{:?}, {:?}) from validator {:?} due to exceeding number of active groups",
                 invite_msg.start_round, invite_msg.end_round, invite_msg.validator_id
             );
-        };
-        let mut num_current_groups = 0;
-
-        for (validator_id, groups) in self.validator_groups.iter() {
-            // Check if we already have an overlapping group from the
-            // same validator, e.g. [30, 40)->validator3 but we already
-            // have [25, 35)->validator3. If so reject the invite.
-            //
-            // Note that we accept overlaps across different validators,
-            // e.g. [30, 40)->validator3 + [25, 35)->validator4
-            if validator_id == &invite_msg.validator_id
-                && groups.has_overlap(invite_msg.start_round, invite_msg.end_round)
-            {
-                warn!(
-                    "RaptorCastSecondary received self-overlapping \
-                            invite for rounds [{:?}, {:?}) from validator {:?}",
-                    invite_msg.start_round, invite_msg.end_round, invite_msg.validator_id
-                );
-                return false;
-            }
-
-            // Check that the confirmed groups, plus the groups we were
-            // invited to but are still unconfirmed, don't exceed max
-            // number of groups during the invite's round span
-            num_current_groups += groups
-                .confirmed
-                .intervals(invite_msg.start_round..invite_msg.end_round)
-                .count();
-            num_current_groups += groups
-                .pending
-                .range(..invite_msg.end_round)
-                .filter(|(_, other)| Self::overlaps(other.start_round, other.end_round, invite_msg))
-                .count();
-            if num_current_groups + 1 > self.config.max_num_group {
-                log_exceed_max_num_group();
-                return false;
-            }
+            return false;
         }
 
         true
@@ -614,16 +604,6 @@ where
                     .count() as u64
             })
             .sum()
-    }
-
-    fn overlaps(
-        begin: Round,
-        end: Round,
-        group: &PrepareGroup<CertificateSignaturePubKey<ST>>,
-    ) -> bool {
-        assert!(begin <= end);
-        assert!(group.start_round <= group.end_round);
-        group.start_round < end && group.end_round > begin
     }
 
     pub fn metrics(&self) -> &ExecutorMetrics {
@@ -1149,6 +1129,82 @@ mod tests {
 
         // Overlaps across validators are accepted
         assert!(clt.handle_prepare_group_message(invite(3, 15, 35)).accept);
+    }
+
+    #[test]
+    fn back_to_back_groups_from_one_validator_take_one_slot() {
+        let (clt_tx, _clt_rx): RcToRcChannelGrp = unbounded_channel();
+        let mut clt = Client::<ST>::new(
+            nid(1),
+            clt_tx,
+            RaptorCastConfigSecondaryClient {
+                max_num_group: 3,
+                max_group_size: 50,
+                invite_future_dist_min: Round(1),
+                invite_future_dist_max: Round(600),
+                invite_accept_heartbeat: Duration::from_secs(10),
+            },
+        );
+        clt.enter_round(Round(100));
+        let invite = |validator: u64, start: u64, end: u64| PrepareGroup {
+            validator_id: nid(validator),
+            max_group_size: 50,
+            start_round: Round(start),
+            end_round: Round(end),
+        };
+
+        // Validator 2 lines up three back-to-back groups
+        for k in 0..3 {
+            assert!(
+                clt.handle_prepare_group_message(invite(2, 200 + 80 * k, 280 + 80 * k))
+                    .accept
+            );
+        }
+        // Two more validators fit over the same rounds, a fourth does not
+        assert!(clt.handle_prepare_group_message(invite(3, 210, 450)).accept);
+        assert!(clt.handle_prepare_group_message(invite(4, 220, 460)).accept);
+        assert!(!clt.handle_prepare_group_message(invite(5, 230, 470)).accept);
+    }
+
+    // Two validators each hold a current group with the next one lined
+    // up behind it. An invite straddling their boundaries counts each
+    // validator once, not once per group.
+    #[test]
+    fn straddling_invite_counts_each_validator_once() {
+        let (clt_tx, _clt_rx): RcToRcChannelGrp = unbounded_channel();
+        let mut clt = Client::<ST>::new(
+            nid(1),
+            clt_tx,
+            RaptorCastConfigSecondaryClient {
+                max_num_group: 3,
+                max_group_size: 50,
+                invite_future_dist_min: Round(1),
+                invite_future_dist_max: Round(600),
+                invite_accept_heartbeat: Duration::from_secs(10),
+            },
+        );
+        clt.enter_round(Round(100));
+        let invite = |validator: u64, start: u64, end: u64| PrepareGroup {
+            validator_id: nid(validator),
+            max_group_size: 50,
+            start_round: Round(start),
+            end_round: Round(end),
+        };
+
+        for (validator, start) in [(2, 150), (3, 160)] {
+            for k in 0..2 {
+                assert!(
+                    clt.handle_prepare_group_message(invite(
+                        validator,
+                        start + 240 * k,
+                        start + 240 * (k + 1)
+                    ))
+                    .accept
+                );
+            }
+        }
+        assert!(clt.handle_prepare_group_message(invite(4, 250, 490)).accept);
+        assert!(!clt.handle_prepare_group_message(invite(5, 260, 500)).accept);
     }
 
     // Creates a node id that we can refer to just from its seed
