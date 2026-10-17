@@ -15,7 +15,7 @@
 
 pub mod chorus;
 pub mod dummy;
-mod fallback;
+pub mod fallback;
 mod fast;
 
 use super::types::{self, NodeId, Slot, TimestampDelta};

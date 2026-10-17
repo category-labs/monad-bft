@@ -33,7 +33,7 @@ use super::{
         },
         FallbackView, MVBAOutput, Metablock, Mvba,
     },
-    Context,
+    MvbaContext,
     block_store::{BlockRequestMsg, BlockResponseMsg},
     messages::{FallbackCommitVote, PrepareVote},
 };
@@ -41,7 +41,7 @@ use super::{
 // The `V = Metablock` instantiation the existing suite runs on; the toy-value
 // test in `tests` is what pins genericity
 pub(super) type MonadMvba = super::MonadMvba<Metablock, EnterFallbackCert>;
-pub(super) type Message = super::messages::Message<Metablock, EnterFallbackCert>;
+pub(super) type Message = super::messages::MvbaMessage<Metablock, EnterFallbackCert>;
 pub(super) type PrePrepareMsg = super::messages::PrePrepareMsg<Metablock, EnterFallbackCert>;
 pub(super) type Justification = super::messages::Justification<Metablock, EnterFallbackCert>;
 pub(super) type TimeoutMsg = super::messages::TimeoutMsg<Metablock>;
@@ -95,7 +95,7 @@ pub(super) fn leader_of(v: FallbackView) -> NodeId {
 }
 
 pub(super) fn mvba(node: NodeId, validator_data: &Arc<ValidatorData>) -> MonadMvba {
-    MonadMvba::new(Context {
+    MonadMvba::new(MvbaContext {
         slot: SLOT,
         num_proposals: NUM_PROPOSALS,
         node_id: node,

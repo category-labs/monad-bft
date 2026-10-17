@@ -1960,8 +1960,8 @@ mod toy_value {
             super::types::{NodeId, ValidatorData, VoteMsg},
             MVBAOutput, Mvba, ValidateCert, ValidateInput, Votable,
         },
-        Context, MakesValidationContext, MonadMvba, TimerEvent,
-        messages::{FallbackCommitVote, Justification, Message, PrePrepareMsg, PrepareVote},
+        MakesValidationContext, MonadMvba, MvbaContext, TimerEvent,
+        messages::{FallbackCommitVote, Justification, MvbaMessage, PrePrepareMsg, PrepareVote},
         test_helpers::{
             DELTA, NUM_PROPOSALS, SLOT, leader_of, nodes, quorum, validator_data, view,
         },
@@ -1992,7 +1992,7 @@ mod toy_value {
         }
     }
 
-    impl MakesValidationContext<TestValue> for Context {
+    impl MakesValidationContext<TestValue> for MvbaContext {
         fn make_validation_context(&self) {}
     }
 
@@ -2012,7 +2012,7 @@ mod toy_value {
         node: NodeId,
         validator_data: &Arc<ValidatorData>,
     ) -> MonadMvba<TestValue, TestCert> {
-        MonadMvba::new(Context {
+        MonadMvba::new(MvbaContext {
             slot: SLOT,
             num_proposals: NUM_PROPOSALS,
             node_id: node,
@@ -2046,11 +2046,11 @@ mod toy_value {
             Justification::FallbackCert(Some(TestCert)),
             &leader.keypair(),
         );
-        instance.handle_message(leader, Message::PrePrepare(proposal));
+        instance.handle_message(leader, MvbaMessage::PrePrepare(proposal));
         assert!(
             drain(&mut instance)
                 .into_iter()
-                .any(|output| matches!(output, MVBAOutput::Broadcast(Message::Prepare(_)))),
+                .any(|output| matches!(output, MVBAOutput::Broadcast(MvbaMessage::Prepare(_)))),
             "an accepted proposal is voted to prepare"
         );
 
@@ -2060,12 +2060,12 @@ mod toy_value {
                 PrepareVote::<TestValue>(value.entries()),
                 &node.keypair(),
             );
-            instance.handle_message(node, Message::Prepare(msg));
+            instance.handle_message(node, MvbaMessage::Prepare(msg));
         }
         assert!(
             drain(&mut instance)
                 .into_iter()
-                .any(|output| matches!(output, MVBAOutput::Broadcast(Message::Commit(_)))),
+                .any(|output| matches!(output, MVBAOutput::Broadcast(MvbaMessage::Commit(_)))),
             "a prepare certificate over the projection is voted to commit"
         );
 
@@ -2075,7 +2075,7 @@ mod toy_value {
                 FallbackCommitVote::<TestValue>(value.entries()),
                 &node.keypair(),
             );
-            instance.handle_message(node, Message::Commit(msg));
+            instance.handle_message(node, MvbaMessage::Commit(msg));
         }
 
         assert_eq!(
@@ -2090,7 +2090,7 @@ mod toy_value {
     /// `V = Metablock`
     fn drain(
         instance: &mut MonadMvba<TestValue, TestCert>,
-    ) -> Vec<MVBAOutput<Message<TestValue, TestCert>, TimerEvent<TestValue>>> {
+    ) -> Vec<MVBAOutput<MvbaMessage<TestValue, TestCert>, TimerEvent<TestValue>>> {
         std::iter::from_fn(|| instance.poll()).collect()
     }
 }

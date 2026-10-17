@@ -13,8 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+mod mvba;
 mod node;
 mod swarm;
 
+pub use mvba::{Decision, Message, MonadMvba, MvbaSwarm, MvbaSwarmBuilder, at_millis};
 pub use node::SimNode;
 pub use swarm::{CadenceSwarm, CadenceSwarmBuilder, FinalizationLog};
