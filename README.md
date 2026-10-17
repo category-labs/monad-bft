@@ -139,7 +139,7 @@ rm -rf "${CARGO_TARGET_DIR:-target}"/release/build/monad-cxx-*
 sequenceDiagram
 autonumber
     participant D as Driver
-    box Purple Executor
+    box rgb(191,93,233) Executor
     participant S as impl Stream
     participant E as impl Executor
     end
