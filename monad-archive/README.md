@@ -103,7 +103,7 @@ scoped binaries:
 Within the library there are 2 primary abstraction tiers, in order from lowest to highest:
 - kvstore
     - Defines a key-value store trait and its read-only equivalent.
-    - Provides implementations for many backends: `S3`, `DynamoDB`, `MongoDB`, `TrieDB`, `FileSystem`, `MemoryStorage`, `CloudProxy`
+    - Provides implementations for many backends: `S3`, `DynamoDB`, `MongoDB`, `TrieDB`, `FileSystem`, `MemoryStorage`
     - Uses enum dispatch to provide a type erased `KVStore`/`KVReader` to prevent generics contagion
     without needing dynamic dispatch
     - Each implementation includes retry logic, metrics collection, and appropriate error handling
