@@ -136,7 +136,7 @@ impl Uniswap {
         max_fee_per_gas: u128,
         chain_id: u64,
     ) -> Result<Address> {
-        let input = Bytes::from_hex(FACTORY_BYTECODE).unwrap();
+        let input = Bytes::from_hex(FACTORY_BYTECODE.trim()).unwrap();
         let tx = TxEip1559 {
             chain_id,
             nonce,
@@ -175,7 +175,7 @@ impl Uniswap {
         max_fee_per_gas: u128,
         chain_id: u64,
     ) -> Result<Address> {
-        let bytecode = Bytes::from_hex(NON_FUNGIBLE_POSITION_MANAGER_BYTECODE).unwrap();
+        let bytecode = Bytes::from_hex(NON_FUNGIBLE_POSITION_MANAGER_BYTECODE.trim()).unwrap();
 
         let constructor = NonfungiblePositionManager::constructorCall {
             factory: factory_address,
