@@ -1,0 +1,19 @@
+config:
+  target: 'ws://ltu-022.devcore4.com:8081'
+  processor: './index.mjs'
+  phases:
+    - duration: 120m
+      arrivalRate: 10
+      maxVusers: 5000
+
+scenarios:
+  - engine: ws
+    flow:
+      - send:
+          id: 1
+          jsonrpc: "2.0"
+          method: "eth_subscribe"
+          params:
+            - "logs"
+      - function: 'handleLogs'
+      - think: 120m
