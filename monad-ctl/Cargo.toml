@@ -1,0 +1,18 @@
+[package]
+name = "monad-ctl"
+description = "Wrapper for Monad command-line tools"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+bench = false
+
+[[bin]]
+name = "monad-ctl"
+bench = false
+
+[dependencies]
+clap = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
