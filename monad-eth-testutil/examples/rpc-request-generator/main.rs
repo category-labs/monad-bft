@@ -597,6 +597,57 @@ impl RpcRequestGenerator {
         }
     }
 
+    async fn debug_trace_call(
+        client: &ReqwestClient,
+        block_number: BlockNumber,
+        addrs: Vec<Address>,
+    ) -> Result<(), RpcError<alloy_transport::TransportErrorKind>> {
+        for chunk in addrs.chunks(1000) {
+            let futs = loop {
+                let mut batch = client.new_batch();
+
+                let futs = chunk
+                    .iter()
+                    .map(|addr| {
+                        let call_request = TransactionRequest {
+                            from: Some(*addr),
+                            input: Some(Bytes::from(CONTRACT_BYTECODE)).into(),
+                            ..Default::default()
+                        };
+
+                        let config = GethDebugTracingOptions {
+                            tracer: Some(GethDebugTracerType::BuiltInTracer(
+                                GethDebugBuiltInTracerType::CallTracer,
+                            )),
+                            ..Default::default()
+                        };
+
+                        let params = (call_request, U64::from(block_number), config);
+
+                        batch
+                            .add_call::<_, GethTrace>("debug_traceCall", &params)
+                            .map(|w| async move { w.await })
+                            .unwrap()
+                    })
+                    .collect::<Vec<_>>();
+
+                match batch.send().await {
+                    Ok(_) => break futs,
+                    Err(err) => {
+                        Self::handle_rpc_error(err)?;
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                        continue;
+                    }
+                }
+            };
+
+            for fut in futs {
+                fut.await?;
+            }
+        }
+        Ok(())
+    }
+
     async fn index_block(
         rpc_url: Url,
         requests_per_block: u64,
@@ -721,10 +772,11 @@ impl RpcRequestGenerator {
                 .map(|receipt| receipt.from)
                 .collect::<Vec<_>>();
             debug!(n = addrs.len(), "reading account balances");
-            let (balances_res, eth_call_res, trace_res) = tokio::join!(
+            let (balances_res, eth_call_res, trace_res, trace_call_res) = tokio::join!(
                 Self::get_balances(&client, block_number, addrs.clone()),
                 Self::eth_call(&client, block_number, addrs.clone()),
                 Self::debug_trace_transaction(&client, txn_hashes),
+                Self::debug_trace_call(&client, block_number, addrs.clone()),
             );
             if let Err(ref err) = balances_res {
                 warn!(?block_number, ?err, "Error fetching balances");
@@ -734,6 +786,9 @@ impl RpcRequestGenerator {
             }
             if let Err(ref err) = trace_res {
                 warn!(?block_number, ?err, "Error tracing transaction");
+            }
+            if let Err(ref err) = trace_call_res {
+                warn!(?block_number, ?err, "Error in debug_traceCall");
             }
             let duration = start.elapsed();
             let num_addr = addrs.len();
