@@ -13,9 +13,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::path::PathBuf;
+use std::{ffi::OsStr, path::PathBuf};
 
-use clap::Parser;
+use clap::{
+    builder::{PathBufValueParser, TypedValueParser},
+    Parser,
+};
+use monad_peer_discovery::name_record::NAME_RECORD_FILE;
 
 const DEFAULT_WAL_CHUNKS: u64 = 8;
 const DEFAULT_WAL_CHUNK_SIZE_BYTES: u64 = 1024 * 1024 * 1024;
@@ -113,7 +117,37 @@ pub struct Cli {
     #[arg(long)]
     pub manytrace_socket: Option<String>,
 
-    /// Set the path for the file that will persist peer discovery records across restarts
-    #[arg(long)]
+    #[arg(
+        long,
+        value_parser = persisted_peers_path_parser(),
+        help = "Set the path for the file that will persist peer discovery records across restarts. \
+                The filename self.toml is reserved for the node's signed name record."
+    )]
     pub persisted_peers_path: PathBuf,
+
+    #[arg(
+        long,
+        value_name = "DIRECTORY",
+        help = "Directory for current and previous signed name records (self.toml and self.toml.bak; \
+                default: directory of --persisted-peers-path). Omit self_name_record_sig for automatic \
+                signing. Increase self_record_seq_num for migration or recovery; record_revision \
+                increments automatically on content changes."
+    )]
+    pub name_record_path: Option<PathBuf>,
+
+    #[arg(
+        long,
+        help = "Require an existing signed self.toml matching this node's identity and configuration. \
+                Disable automatic signing and all writes to the name record."
+    )]
+    pub read_only_name_record: bool,
+}
+
+fn persisted_peers_path_parser() -> impl TypedValueParser<Value = PathBuf> {
+    PathBufValueParser::new().try_map(|path| {
+        if path.file_name() == Some(OsStr::new(NAME_RECORD_FILE)) {
+            return Err(format!("the filename {NAME_RECORD_FILE} is reserved"));
+        }
+        Ok(path)
+    })
 }
