@@ -32,7 +32,11 @@ use monad_keystore::keystore::Keystore;
 use monad_node_config::{
     ForkpointConfig, MetricsConfig as NodeMetricsConfig, MonadNodeConfig, ValidatorsConfigType,
 };
-use monad_secp::KeyPair;
+use monad_peer_discovery::{
+    name_record::{self, Mode, NAME_RECORD_FILE},
+    MonadNameRecord,
+};
+use monad_secp::{KeyPair, SecpSignature};
 use monad_types::Round;
 use reqwest::{blocking::Client, Url};
 use tracing::{info, warn};
@@ -78,6 +82,7 @@ pub struct NodeState {
     pub triedb_path: PathBuf,
     pub triedb_stats_path: Option<PathBuf>,
     pub persisted_peers_path: PathBuf,
+    pub name_record: MonadNameRecord<SecpSignature>,
 
     pub metrics: Option<MetricsConfig>,
     pub otel_endpoint_interval: Option<(String, Duration)>,
@@ -113,13 +118,39 @@ impl NodeState {
             pprof,
             manytrace_socket,
             persisted_peers_path,
+            name_record_path,
+            read_only_name_record,
         } = Cli::from_arg_matches_mut(&mut cmd.get_matches_mut())?;
 
+        let directory = match name_record_path {
+            Some(directory) => std::path::absolute(directory)?,
+            None => {
+                let mut directory = std::path::absolute(&persisted_peers_path)?;
+                // persisted_peers_path includes a filename; use its parent directory.
+                directory.pop();
+                directory
+            }
+        };
         let (reload_handle, agent) = NodeState::setup_tracing(manytrace_socket)?;
 
         let keystore_password = keystore_password.as_deref().unwrap_or("");
 
         let secp_key = load_secp256k1_keypair(&secp_identity, keystore_password)?;
+        let node_config: MonadNodeConfig =
+            toml::from_str(&std::fs::read_to_string(&node_config_path)?)?;
+        let config = &node_config.peer_discovery;
+        let configured_record = name_record::from_config(config)?;
+        let name_record = name_record::load_or_create(
+            &directory.join(NAME_RECORD_FILE),
+            configured_record,
+            config.self_name_record_sig,
+            &secp_key,
+            if read_only_name_record {
+                Mode::ReadOnly
+            } else {
+                Mode::ReadWrite
+            },
+        )?;
         let secp_pubkey = secp_key.pubkey();
         info!(
             "Loaded secp256k1 key from {:?}, pubkey=0x{}",
@@ -140,8 +171,6 @@ impl NodeState {
             hex::encode(bls_key.pubkey().compress())
         );
 
-        let node_config: MonadNodeConfig =
-            toml::from_str(&std::fs::read_to_string(&node_config_path)?)?;
         let metrics = parse_metrics_config(&node_config.metrics)?;
 
         if !matches!(
@@ -210,6 +239,7 @@ impl NodeState {
             reload_handle,
             manytrace_agent: agent,
             persisted_peers_path,
+            name_record,
         })
     }
 

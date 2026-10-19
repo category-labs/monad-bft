@@ -40,6 +40,7 @@ pub mod driver;
 pub mod ipv4_validation;
 pub mod message;
 pub mod mock;
+pub mod name_record;
 
 pub use message::PeerDiscoveryMessage;
 
@@ -630,9 +631,11 @@ impl<ST: CertificateSignatureRecoverable> From<MonadNameRecordWithPubkey<'_, ST>
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum PeerConfigConversionError {
+    #[error("invalid name record signature")]
     InvalidSignature,
+    #[error("invalid name record address: {0}")]
     InvalidAddress(String),
 }
 

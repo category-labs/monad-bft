@@ -20,17 +20,30 @@ use std::{
     path::PathBuf,
 };
 
-use clap::Parser;
+use clap::{Args as _, CommandFactory, FromArgMatches, Parser};
 use monad_keystore::keystore::Keystore;
 use monad_node_config::MonadNodeConfig;
-use monad_peer_discovery::{MonadNameRecord, NameRecord};
+use monad_peer_discovery::{MonadNameRecord, NameRecord, name_record};
 use monad_secp::SecpSignature;
 
-/// Example commands to run the following program:
-/// sign-name-record -- --address 0.0.0.0:8888 --authenticated-udp-port 8889 --node-config <...> --keystore-path <...> --password ""
-/// sign-name-record -- --ip 0.0.0.0 --tcp-port 8888 --udp-port 8888 --authenticated-udp-port 8889 --node-config <...> --keystore-path <...> --password ""
+const PRINT_EXAMPLE: &str = r"Print a node configuration snippet
+  sign-name-record --address 192.0.2.1:8000 --authenticated-udp-port 8001 \
+    --node-config /path/to/node.toml --keystore-path /path/to/id-secp --password ''";
+
+const WRITE_EXAMPLE: &str = concat!(
+    "Write a signed self.toml file\n",
+    "  sign-name-record write --node-config /path/to/node.toml --output /path/to/self.toml",
+);
+
+/// Sign a peer discovery name record and print its settings or write it to a file.
+///
+/// Run without a subcommand to sign the supplied endpoints and print a node configuration snippet.
+/// With --node-config, this mode signs self_record_seq_num + 1.
+///
+/// Run write to use the endpoints and current sequence in node.toml and save the signed record
+/// in self.toml format.
 #[derive(Debug, Parser)]
-#[command(name = "monad-peer-discovery", about)]
+#[command(name = "monad-peer-discovery")]
 struct Args {
     /// Legacy IPv4 address and shared TCP/UDP port.
     #[arg(long, conflicts_with_all = ["ip", "tcp_port", "udp_port"])]
@@ -74,6 +87,69 @@ struct Args {
     /// Keystore password
     #[arg(long)]
     password: String,
+}
+
+#[derive(clap::Args)]
+struct WriteArgs {
+    #[arg(
+        long,
+        value_name = "FILE",
+        help = "Read advertised endpoints, sequence, and any configured signature from this node TOML file",
+        long_help = "Read advertised endpoints, sequence, and any configured signature from this node TOML file. \
+                     Omit peer_discovery.self_name_record_sig to sign automatically. A configured signature is used \
+                     at revision 0.\n\n\
+                     For a hostname in self_address, the first IPv4 DNS answer becomes the signed address. \
+                     A wrong DNS answer can produce a valid signature for an unintended IP. \
+                     Use a literal IPv4 address to pin it."
+    )]
+    node_config: PathBuf,
+
+    #[arg(
+        long,
+        value_name = "FILE",
+        help = "Write the signed record to this file in self.toml format"
+    )]
+    output: PathBuf,
+
+    #[arg(
+        long,
+        value_name = "FILE",
+        help = "Path to the secp256k1 keystore. Defaults to id-secp in the node config directory"
+    )]
+    keystore_path: Option<PathBuf>,
+
+    #[arg(
+        long,
+        default_value = "",
+        hide_default_value = true,
+        help = "Password for the secp256k1 keystore. Defaults to an empty password"
+    )]
+    password: String,
+}
+
+impl WriteArgs {
+    fn run(self) -> Result<(), Box<dyn std::error::Error>> {
+        let key_path = self
+            .keystore_path
+            .unwrap_or_else(|| self.node_config.with_file_name("id-secp"));
+        let keypair = Keystore::load_secp_key(&key_path, &self.password).map_err(|err| {
+            format!(
+                "unable to load secp keystore {}: {err:?}",
+                key_path.display()
+            )
+        })?;
+        let config: MonadNodeConfig = toml::from_str(&std::fs::read_to_string(self.node_config)?)?;
+        let peer_discovery = &config.peer_discovery;
+        let record = name_record::from_config(peer_discovery)?;
+        name_record::load_or_create(
+            &self.output,
+            record,
+            peer_discovery.self_name_record_sig,
+            &keypair,
+            name_record::Mode::ReadWrite,
+        )?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -133,8 +209,29 @@ impl Args {
     }
 }
 
+fn command() -> clap::Command {
+    Args::command()
+        .after_help(format!("{PRINT_EXAMPLE}\n\n{WRITE_EXAMPLE}"))
+        .subcommand(WriteArgs::augment_args(
+            clap::Command::new("write")
+                .about("Prepare and write a signed name record from node config")
+                .after_help(WRITE_EXAMPLE),
+        ))
+        .args_conflicts_with_subcommands(true)
+        .subcommand_negates_reqs(true)
+}
+
 fn main() {
-    let args = Args::parse();
+    let mut matches = command().get_matches();
+    if let Some((_, mut matches)) = matches.remove_subcommand() {
+        let args = WriteArgs::from_arg_matches_mut(&mut matches).unwrap_or_else(|err| err.exit());
+        if let Err(err) = args.run() {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    let args = Args::from_arg_matches_mut(&mut matches).unwrap_or_else(|err| err.exit());
     let endpoint = args.endpoint();
     let (ip, tcp_port, udp_port) = endpoint.name_record_parts();
 
@@ -188,6 +285,36 @@ mod tests {
     use clap::{Parser, error::ErrorKind};
 
     use super::*;
+
+    #[test]
+    fn write_requires_only_node_config_and_output() {
+        let matches = command()
+            .try_get_matches_from([
+                "sign-name-record",
+                "write",
+                "--node-config",
+                "node.toml",
+                "--output",
+                "self.toml",
+            ])
+            .unwrap();
+        let args =
+            WriteArgs::from_arg_matches(matches.subcommand_matches("write").unwrap()).unwrap();
+        assert_eq!(args.node_config, PathBuf::from("node.toml"));
+        assert_eq!(args.output, PathBuf::from("self.toml"));
+        assert!(args.keystore_path.is_none());
+        assert!(args.password.is_empty());
+
+        for args in [
+            ["sign-name-record", "write", "--node-config", "node.toml"],
+            ["sign-name-record", "write", "--output", "self.toml"],
+        ] {
+            assert_eq!(
+                command().try_get_matches_from(args).unwrap_err().kind(),
+                ErrorKind::MissingRequiredArgument
+            );
+        }
+    }
 
     fn parse(endpoint: &[&str]) -> Result<Args, clap::Error> {
         let mut arguments = vec!["sign-name-record"];
