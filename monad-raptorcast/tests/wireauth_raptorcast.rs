@@ -207,6 +207,7 @@ fn create_raptorcast_config(
             invite_future_dist_max: monad_types::Round(5),
             invite_accept_heartbeat_ms: 100,
         },
+        direct_udp: true,
         deterministic_protocol_rollout: monad_raptorcast::v1_rollout::CURRENT_STAGE,
     }
 }

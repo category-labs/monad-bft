@@ -99,6 +99,7 @@ fn create_raptorcast_config(
             invite_future_dist_max: monad_types::Round(5),
             invite_accept_heartbeat_ms: 100,
         },
+        direct_udp: false,
         deterministic_protocol_rollout: crate::v1_rollout::CURRENT_STAGE,
     }
 }
@@ -163,8 +164,9 @@ impl Pair {
                 persisted_peers_path: Default::default(),
                 ping_rate_limit_per_second: 1_000,
             };
-            let config =
+            let mut config =
                 create_raptorcast_config(keys[i].clone(), DEFAULT_SIG_VERIFICATION_RATE_LIMIT);
+            config.direct_udp = direct_udp[i];
             let protocol = WireAuthProtocol::new(
                 &crate::auth::metrics::UDP_METRICS,
                 Default::default(),
@@ -290,6 +292,57 @@ impl Pair {
 }
 
 #[tokio::test]
+async fn shared_port_interleaves_raptorcast_and_fragmented_direct_udp() {
+    let mut pair = Pair::new([true, true]);
+    pair.ready().await;
+    // Routing must preserve the signed capability advertisements.
+    let records = pair.records.clone();
+    let large = Bytes::from(vec![0x41; 256 * 1024]);
+    let small = Bytes::from_static(b"ordinary raptorcast bytes");
+    pair.send(
+        0,
+        RouterTarget::DirectPointToPoint(pair.ids[1]),
+        large.clone(),
+    );
+    pair.send(0, RouterTarget::PointToPoint(pair.ids[1]), small.clone());
+    pair.send(
+        1,
+        RouterTarget::DirectPointToPoint(pair.ids[0]),
+        Bytes::from_static(b"return path"),
+    );
+    pair.until(|pair| pair.events[1].len() == 2 && pair.events[0].len() == 1)
+        .await;
+    assert!(pair.events[1].contains(&(pair.ids[0], large)));
+    assert!(pair.events[1].contains(&(pair.ids[0], small)));
+    assert_eq!(
+        pair.metric(0, COUNTER_RAPTORCAST_MULTIPLEX_DIRECT_UDP_SENT),
+        1
+    );
+    assert_eq!(
+        pair.metric(1, COUNTER_RAPTORCAST_MULTIPLEX_DIRECT_UDP_RECEIVED),
+        1
+    );
+    assert_eq!(
+        pair.metric(0, COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_FALLBACK),
+        0
+    );
+    assert_eq!(
+        pair.metric(1, COUNTER_RAPTORCAST_MULTIPLEX_DIRECT_UDP_SENT),
+        1
+    );
+    for i in 0..2 {
+        assert_eq!(
+            pair.routers[i]
+                .peer_discovery_driver
+                .lock()
+                .unwrap()
+                .get_name_record(&pair.ids[1 - i]),
+            Some(&records[1 - i])
+        );
+    }
+}
+
+#[tokio::test]
 async fn prepared_receiver_dispatches_tags_and_drops_unknown_or_malformed_frames() {
     let mut pair = Pair::new([false, false]);
     pair.ready().await;
@@ -360,4 +413,129 @@ async fn prepared_receiver_dispatches_tags_and_drops_unknown_or_malformed_frames
     );
     assert!(pair.events[1].contains(&(pair.ids[0], Bytes::from_static(b"prepared decoder"))));
     assert!(pair.events[1].contains(&(pair.ids[0], Bytes::from_static(b"legacy still works"))));
+}
+
+#[tokio::test]
+async fn shared_port_rejects_oversize_and_preserves_subsequent_delivery() {
+    let mut pair = Pair::new([true, true]);
+    pair.ready().await;
+    // The limit applies to the serialized application message, including RLP.
+    pair.send(
+        0,
+        RouterTarget::DirectPointToPoint(pair.ids[1]),
+        Bytes::from(vec![
+            0x41;
+            crate::TX_FORWARD_DIRECT_UDP_MAX_MESSAGE_SIZE_BYTES
+        ]),
+    );
+    assert_eq!(
+        pair.metric(0, COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_OVERSIZE),
+        1
+    );
+    assert_eq!(
+        pair.metric(0, COUNTER_RAPTORCAST_MULTIPLEX_DIRECT_UDP_SENT),
+        0
+    );
+    pair.send(
+        0,
+        RouterTarget::DirectPointToPoint(pair.ids[1]),
+        Bytes::from_static(b"after oversize"),
+    );
+    pair.until(|pair| pair.events[1].len() == 1).await;
+    assert_eq!(
+        pair.events[1][0],
+        (pair.ids[0], Bytes::from_static(b"after oversize"))
+    );
+}
+
+#[rstest::rstest]
+#[case(false, false)]
+#[case(false, true)]
+#[case(true, false)]
+#[case(true, true)]
+#[tokio::test]
+async fn direct_udp_setting_controls_advertisements_and_sending(
+    #[case] enabled_a: bool,
+    #[case] enabled_b: bool,
+    #[values(false, true)] dedicated: bool,
+) {
+    let mut pair = Pair::with_transport([enabled_a, enabled_b], dedicated);
+    pair.ready().await;
+    pair.until(|pair| {
+        pair.peer_supports_direct_udp(0) == enabled_b
+            && pair.peer_supports_direct_udp(1) == enabled_a
+    })
+    .await;
+    pair.send(
+        0,
+        RouterTarget::DirectPointToPoint(pair.ids[1]),
+        Bytes::from_static(b"outgoing"),
+    );
+    pair.send(
+        1,
+        RouterTarget::DirectPointToPoint(pair.ids[0]),
+        Bytes::from_static(b"incoming"),
+    );
+    pair.until(|pair| pair.events[0].len() == 1 && pair.events[1].len() == 1)
+        .await;
+    assert_eq!(
+        pair.events[1][0],
+        (pair.ids[0], Bytes::from_static(b"outgoing"))
+    );
+    assert_eq!(
+        pair.events[0][0],
+        (pair.ids[1], Bytes::from_static(b"incoming"))
+    );
+    for (i, enabled) in [enabled_a, enabled_b].into_iter().enumerate() {
+        let peer_enabled = [enabled_b, enabled_a][i];
+        assert_eq!(
+            pair.metric(i, COUNTER_RAPTORCAST_MULTIPLEX_DIRECT_UDP_SENT),
+            u64::from(enabled && peer_enabled)
+        );
+        assert_eq!(
+            pair.metric(i, COUNTER_RAPTORCAST_MULTIPLEX_DIRECT_UDP_RECEIVED),
+            u64::from(enabled && peer_enabled)
+        );
+        assert_eq!(
+            pair.metric(i, COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_FALLBACK),
+            u64::from(!enabled || (!peer_enabled && !dedicated))
+        );
+        assert_eq!(
+            pair.metric(i, COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_SENT),
+            u64::from(enabled && (peer_enabled || dedicated))
+        );
+        assert_eq!(
+            pair.routers[i]
+                .peer_discovery_driver
+                .lock()
+                .unwrap()
+                .get_name_record(&pair.ids[1 - i]),
+            Some(&pair.records[1 - i])
+        );
+    }
+
+    if enabled_a && !enabled_b && dedicated {
+        pair.routers[0].direct_udp = false;
+        pair.send(
+            0,
+            RouterTarget::DirectPointToPoint(pair.ids[1]),
+            Bytes::from_static(b"disabled established dedicated"),
+        );
+        pair.until(|pair| pair.events[1].len() == 2).await;
+        assert_eq!(
+            pair.events[1][1],
+            (
+                pair.ids[0],
+                Bytes::from_static(b"disabled established dedicated")
+            )
+        );
+        assert_eq!(
+            pair.metric(0, COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_FALLBACK),
+            1
+        );
+        assert_eq!(
+            pair.metric(0, COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_SENT),
+            1
+        );
+    }
 }

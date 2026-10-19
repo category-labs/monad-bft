@@ -332,6 +332,7 @@ fn create_raptorcast_config(keypair: Arc<KeyPair>) -> RaptorCastConfig<Signature
             invite_future_dist_max: monad_types::Round(5),
             invite_accept_heartbeat_ms: 100,
         },
+        direct_udp: false,
         deterministic_protocol_rollout: monad_raptorcast::v1_rollout::CURRENT_STAGE,
     }
 }
