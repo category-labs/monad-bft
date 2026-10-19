@@ -563,6 +563,33 @@ pub struct Stake(
     pub U256,
 );
 
+/// Preserve integer encodings where possible, using strings above TOML's signed integer limit.
+pub mod serde_u64 {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use serde_json::Value;
+
+    pub fn serialize<S: Serializer>(value: &u64, serializer: S) -> Result<S::Ok, S::Error> {
+        if serializer.is_human_readable() && *value > i64::MAX as u64 {
+            serializer.collect_str(value)
+        } else {
+            serializer.serialize_u64(*value)
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
+        if !deserializer.is_human_readable() {
+            return u64::deserialize(deserializer);
+        }
+        match Value::deserialize(deserializer)? {
+            Value::Number(number) => number
+                .as_u64()
+                .ok_or_else(|| serde::de::Error::custom("invalid u64")),
+            Value::String(string) => string.parse().map_err(serde::de::Error::custom),
+            _ => Err(serde::de::Error::custom("expected u64 or decimal string")),
+        }
+    }
+}
+
 pub fn serialize_u256<S>(num: &U256, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,

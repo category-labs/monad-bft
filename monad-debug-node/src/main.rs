@@ -178,6 +178,7 @@ fn main() -> Result<(), Error> {
                         name_record_sig: peer.signature,
                         record_seq_num: peer.record_seq_num,
                         capabilities: peer.capabilities,
+                        record_revision: peer.record_revision,
                         auth_port: peer.auth_port,
                         direct_udp_port: peer.direct_udp_port,
                         encrypted_tcp_port: peer.encrypted_tcp_port,

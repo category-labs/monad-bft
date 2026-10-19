@@ -47,7 +47,10 @@ pub struct NodeBootstrapPeerConfig<ST: CertificateSignatureRecoverable> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub udp_port: Option<NonZeroU16>,
 
+    #[serde(with = "monad_types::serde_u64")]
     pub record_seq_num: u64,
+    #[serde(default, with = "monad_types::serde_u64")]
+    pub record_revision: u64,
 
     // Use a string so every u64 bitmask fits in a TOML value.
     #[serde(default, skip_serializing_if = "capabilities_are_empty")]

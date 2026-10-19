@@ -543,25 +543,25 @@ impl<ST: CertificateSignatureRecoverable, C: governor::clock::Clock> PeerDiscove
             return Err(err);
         }
 
-        // only accept new name record or name record with higher sequence number
+        // Only accept new records or a higher sequence number, then revision.
         if let Some(current_name_record) = self.routing_info.get(&peer_id)
-            && name_record.seq() <= current_name_record.seq()
+            && name_record.seq_and_revision() <= current_name_record.seq_and_revision()
         {
             // no updates are required, exit
             debug!(
                 ?peer_id,
                 ?name_record,
                 ?current_name_record,
-                "name record already exists with same or lower seq in routing info"
+                "name record already exists with same or newer version in routing info"
             );
             return Ok(vec![]);
         }
 
         if let Some(info) = self.pending_queue.get(&peer_id)
-            && name_record.seq() <= info.name_record.seq()
+            && name_record.seq_and_revision() <= info.name_record.seq_and_revision()
         {
             // no updates are required, exit
-            debug!(?peer_id, ?name_record, ?info.name_record, "name record already exists with same or lower seq in pending queue");
+            debug!(?peer_id, ?name_record, ?info.name_record, "name record already exists with same or newer version in pending queue");
             return Ok(vec![]);
         }
 
@@ -983,7 +983,7 @@ where
             if self
                 .routing_info
                 .get(&from)
-                .is_none_or(|local| peer_name_record.seq() > local.seq())
+                .is_none_or(|local| peer_name_record.seq_and_revision() > local.seq_and_revision())
             {
                 match self.insert_peer_to_pending(from, peer_name_record) {
                     Ok(cmds_from_insert) => cmds.extend(cmds_from_insert),
@@ -992,19 +992,17 @@ where
             } else if self
                 .routing_info
                 .get(&from)
-                .is_some_and(|local| peer_name_record.seq() < local.seq())
+                .is_some_and(|local| peer_name_record.seq_and_revision() < local.seq_and_revision())
             {
-                warn!(
-                    ?from,
-                    "peer updated name record sequence number went backwards"
-                );
+                warn!(?from, "peer sent an older name record");
                 return cmds;
             } else if self.routing_info.get(&from).is_some_and(|local| {
-                peer_name_record.seq() == local.seq() && peer_name_record != *local
+                peer_name_record.seq_and_revision() == local.seq_and_revision()
+                    && peer_name_record != *local
             }) {
                 warn!(
                     ?from,
-                    "peer updated name record without bumping sequence number"
+                    "peer updated name record without bumping sequence number or revision"
                 );
                 return cmds;
             }
@@ -2982,6 +2980,38 @@ mod tests {
         NameRecord::new(*OLD_ADDR.ip(), OLD_ADDR.port(), Some(OLD_ADDR.port()), 9000, 0, 1),
         false;
         "conflicting record"
+    )]
+    #[test_case(
+        Some(NameRecord::new(*OLD_ADDR.ip(), OLD_ADDR.port(), Some(OLD_ADDR.port()), 9000, 0, 1)),
+        NameRecord::new(*NEW_ADDR.ip(), NEW_ADDR.port(), Some(NEW_ADDR.port()), 9001, 0, 1).with_revision(1),
+        true,
+        NameRecord::new(*NEW_ADDR.ip(), NEW_ADDR.port(), Some(NEW_ADDR.port()), 9001, 0, 1).with_revision(1),
+        true;
+        "higher revision"
+    )]
+    #[test_case(
+        Some(NameRecord::new(*OLD_ADDR.ip(), OLD_ADDR.port(), Some(OLD_ADDR.port()), 9000, 0, 1).with_revision(1)),
+        NameRecord::new(*NEW_ADDR.ip(), NEW_ADDR.port(), Some(NEW_ADDR.port()), 9001, 0, 1),
+        false,
+        NameRecord::new(*OLD_ADDR.ip(), OLD_ADDR.port(), Some(OLD_ADDR.port()), 9000, 0, 1).with_revision(1),
+        false;
+        "lower revision"
+    )]
+    #[test_case(
+        Some(NameRecord::new(*OLD_ADDR.ip(), OLD_ADDR.port(), Some(OLD_ADDR.port()), 9000, 0, 1).with_revision(u64::MAX)),
+        NameRecord::new(*NEW_ADDR.ip(), NEW_ADDR.port(), Some(NEW_ADDR.port()), 9001, 0, 2),
+        true,
+        NameRecord::new(*NEW_ADDR.ip(), NEW_ADDR.port(), Some(NEW_ADDR.port()), 9001, 0, 2),
+        true;
+        "higher sequence resets revision"
+    )]
+    #[test_case(
+        Some(NameRecord::new(*OLD_ADDR.ip(), OLD_ADDR.port(), Some(OLD_ADDR.port()), 9000, 0, u64::MAX)),
+        NameRecord::new(*NEW_ADDR.ip(), NEW_ADDR.port(), Some(NEW_ADDR.port()), 9001, 0, 1).with_revision(u64::MAX),
+        false,
+        NameRecord::new(*OLD_ADDR.ip(), OLD_ADDR.port(), Some(OLD_ADDR.port()), 9000, 0, u64::MAX),
+        false;
+        "lower sequence cannot override with revision"
     )]
     fn test_ping_record(
         known_record: Option<NameRecord>,

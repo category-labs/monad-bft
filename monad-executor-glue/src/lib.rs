@@ -297,7 +297,11 @@ pub struct PeerEntry<ST: CertificateSignatureRecoverable> {
     pub address: PeerEntryAddress,
 
     pub signature: ST,
+
+    #[serde(with = "monad_types::serde_u64")]
     pub record_seq_num: u64,
+    #[serde(default, with = "monad_types::serde_u64")]
+    pub record_revision: u64,
 
     // Use a string so every u64 bitmask fits in a TOML value.
     #[serde(default, skip_serializing_if = "capabilities_are_empty")]
@@ -408,16 +412,18 @@ impl<ST: CertificateSignatureRecoverable> Encodable for PeerEntry<ST> {
             &udp_port as &dyn Encodable,
             &encrypted_tcp_port as &dyn Encodable,
             &self.capabilities as &dyn Encodable,
+            &self.record_revision as &dyn Encodable,
         ];
         // Preserve the legacy WAL format when optional fields are absent.
-        let field_count = if self.capabilities != 0 {
-            10
-        } else if self.encrypted_tcp_port.is_some() {
-            9
-        } else {
-            8
-        };
-        encode_list::<_, dyn Encodable>(&enc[..field_count], out);
+        let omitted_fields = [
+            self.record_revision,
+            self.capabilities,
+            u64::from(encrypted_tcp_port),
+        ]
+        .into_iter()
+        .take_while(|value| *value == 0)
+        .count();
+        encode_list::<_, dyn Encodable>(&enc[..enc.len() - omitted_fields], out);
     }
 }
 
@@ -473,10 +479,20 @@ impl<ST: CertificateSignatureRecoverable> Decodable for PeerEntry<ST> {
             0
         } else {
             let capabilities = u64::decode(&mut payload)?;
-            if capabilities == 0 {
+            if capabilities == 0 && payload.is_empty() {
                 return Err(alloy_rlp::Error::Custom("empty trailing capabilities"));
             }
             capabilities
+        };
+
+        let record_revision = if payload.is_empty() {
+            0
+        } else {
+            let revision = u64::decode(&mut payload)?;
+            if revision == 0 {
+                return Err(alloy_rlp::Error::Custom("empty trailing record revision"));
+            }
+            revision
         };
 
         if !payload.is_empty() {
@@ -489,6 +505,7 @@ impl<ST: CertificateSignatureRecoverable> Decodable for PeerEntry<ST> {
             signature,
             record_seq_num,
             capabilities,
+            record_revision,
             auth_port,
             direct_udp_port,
             encrypted_tcp_port,
@@ -2732,6 +2749,7 @@ tcp_port = 8003"#,
             signature,
             record_seq_num,
             capabilities: 0,
+            record_revision: 0,
             auth_port: NonZeroU16::new(8000).unwrap(),
             direct_udp_port: None,
             encrypted_tcp_port: None,
@@ -2756,6 +2774,7 @@ tcp_port = 8003"#,
             signature,
             record_seq_num: 7,
             capabilities: 0,
+            record_revision: 1,
             auth_port: NonZeroU16::new(9000).unwrap(),
             direct_udp_port: Some(NonZeroU16::new(9001).unwrap()),
             encrypted_tcp_port: None,
@@ -2779,6 +2798,7 @@ tcp_port = 8003"#,
             signature,
             record_seq_num,
             capabilities: 0,
+            record_revision: 0,
             auth_port: NonZeroU16::new(auth_port).unwrap(),
             direct_udp_port: None,
             encrypted_tcp_port: None,
@@ -2794,11 +2814,15 @@ tcp_port = 8003"#,
         let pubkey = CertificateSignaturePubKey::<NopSignature>::from_bytes(&[4u8; 32]).unwrap();
         let address: Ipv4Addr = "127.0.0.1".parse().unwrap();
         let signature = NopSignature { pubkey, id: 77 };
-        for (encrypted_tcp_port, capabilities) in [
-            (None, 0),
-            (NonZeroU16::new(9004), 0),
-            (None, u64::MAX),
-            (NonZeroU16::new(9004), u64::MAX),
+        for (encrypted_tcp_port, capabilities, record_revision) in [
+            (None, 0, 0),
+            (None, 0, u64::MAX),
+            (NonZeroU16::new(9004), 0, 0),
+            (NonZeroU16::new(9004), 0, u64::MAX),
+            (None, u64::MAX, 0),
+            (None, u64::MAX, u64::MAX),
+            (NonZeroU16::new(9004), u64::MAX, 0),
+            (NonZeroU16::new(9004), u64::MAX, u64::MAX),
         ] {
             let entry = PeerEntry {
                 pubkey,
@@ -2810,6 +2834,7 @@ tcp_port = 8003"#,
                 signature,
                 record_seq_num: 12,
                 capabilities,
+                record_revision,
                 auth_port: NonZeroU16::new(9003).unwrap(),
                 direct_udp_port: None,
                 encrypted_tcp_port,
@@ -2933,10 +2958,15 @@ tcp_port = 8003"#,
         let direct_udp_port = 9004u16;
         let tcp_port = 8003u16;
         let extra_port = 9006u16;
-        for (encrypted_tcp_port, capabilities, field_count) in
-            [(0u16, 0u64, 9), (0, 0, 10), (9005, 0, 10), (9005, 1, 11)]
-        {
-            let enc: [&dyn Encodable; 11] = [
+        for (encrypted_tcp_port, capabilities, record_revision, field_count) in [
+            (0u16, 0u64, 0u64, 9),
+            (0, 0, 0, 10),
+            (9005, 0, 0, 10),
+            (9005, 1, 0, 11),
+            (9005, 0, 0, 11),
+            (9005, 1, 1, 12),
+        ] {
+            let enc: [&dyn Encodable; 12] = [
                 &pubkey,
                 &"127.0.0.1".to_string(),
                 &signature,
@@ -2947,6 +2977,7 @@ tcp_port = 8003"#,
                 &0u16,
                 &encrypted_tcp_port,
                 &capabilities,
+                &record_revision,
                 &extra_port,
             ];
             let mut encoded = Vec::new();
