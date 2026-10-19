@@ -50,7 +50,7 @@ use monad_node_config::{
 };
 use monad_peer_discovery::{
     discovery::{PeerDiscovery, PeerDiscoveryBuilder},
-    MonadNameRecord, NameRecord,
+    Capability, MonadNameRecord, NameRecord,
 };
 use monad_peer_score::{ema, IdentityScore, StdClock};
 use monad_pprof::start_pprof_server;
@@ -804,7 +804,7 @@ where
         network_config.encrypted_tcp_bind_address_port.is_some()
     );
 
-    let self_record = NameRecord::new_with_ports(
+    let mut self_record = NameRecord::new_with_ports(
         *name_record_address.ip(),
         self_tcp_port.get(),
         self_udp_port.map(NonZeroU16::get),
@@ -817,6 +817,9 @@ where
             .map(NonZeroU16::get),
         0,
     );
+    if network_config.direct_udp {
+        self_record.set_capability(Capability::DirectUdp);
+    }
     let self_record = monad_peer_discovery::name_record::load_or_create(
         &name_record_path,
         peer_discovery_config.self_record_seq_num,
