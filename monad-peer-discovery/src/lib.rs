@@ -390,7 +390,9 @@ impl Decodable for NameRecord {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Capability {}
+pub enum Capability {
+    DirectUdp = 0,
+}
 
 #[derive(Debug, Clone, PartialEq, RlpEncodable, RlpDecodable, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, bound = "ST: CertificateSignatureRecoverable")]

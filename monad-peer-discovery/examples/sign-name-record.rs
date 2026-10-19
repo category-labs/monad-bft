@@ -23,7 +23,7 @@ use std::{
 use clap::Parser;
 use monad_keystore::keystore::Keystore;
 use monad_node_config::MonadNodeConfig;
-use monad_peer_discovery::{MonadNameRecord, NameRecord};
+use monad_peer_discovery::{Capability, MonadNameRecord, NameRecord};
 use monad_secp::SecpSignature;
 
 /// Example commands to run the following program:
@@ -55,6 +55,12 @@ struct Args {
 
     #[arg(long, help = "Optional direct UDP port")]
     direct_udp_port: Option<NonZeroU16>,
+
+    #[arg(
+        long,
+        help = "Advertise direct UDP support; read from --node-config when supplied"
+    )]
+    direct_udp: bool,
 
     #[arg(long, help = "Optional encrypted TCP port")]
     encrypted_tcp_port: Option<NonZeroU16>,
@@ -146,21 +152,28 @@ fn main() {
         }
     };
 
-    let self_record_seq_num = if let Some(node_config_path) = args.node_config {
+    let (self_record_seq_num, direct_udp) = if let Some(node_config_path) = args.node_config {
         let contents =
             std::fs::read_to_string(node_config_path).expect("Failed to read node toml file");
         let node_config: MonadNodeConfig =
             toml::from_str(&contents).expect("Invalid format in node toml file");
-        node_config
-            .peer_discovery
-            .self_record_seq_num
-            .unwrap_or_default()
-            + 1
+        (
+            node_config
+                .peer_discovery
+                .self_record_seq_num
+                .unwrap_or_default()
+                + 1,
+            node_config.network.direct_udp,
+        )
     } else {
-        args.self_record_seq_num
-            .unwrap_or_else(|| panic!("Either node_config or self_record_seq_num must be provided"))
+        (
+            args.self_record_seq_num.unwrap_or_else(|| {
+                panic!("Either node_config or self_record_seq_num must be provided")
+            }),
+            args.direct_udp,
+        )
     };
-    let name_record = NameRecord::new_with_ports(
+    let mut name_record = NameRecord::new_with_ports(
         ip,
         tcp_port,
         udp_port,
@@ -169,6 +182,9 @@ fn main() {
         args.encrypted_tcp_port.map(NonZeroU16::get),
         self_record_seq_num,
     );
+    if direct_udp {
+        name_record.set_capability(Capability::DirectUdp);
+    }
     let signed_name_record: MonadNameRecord<SecpSignature> =
         MonadNameRecord::new(name_record, &keypair);
 
