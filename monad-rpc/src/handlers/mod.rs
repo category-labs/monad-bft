@@ -415,7 +415,6 @@ async fn eth_call(
                 eth_call_handler_config,
                 executor,
                 app_state.chain_id,
-                app_state.max_response_size as usize,
                 params,
             )
         })

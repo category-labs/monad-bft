@@ -15,7 +15,7 @@
 
 use std::num::TryFromIntError;
 
-use monad_ethcall::{ChainId, MonadExecutor, MonadTracer};
+use monad_ethcall::{ChainId, MonadExecutor};
 use monad_triedb_utils::triedb_env::{BlockKey, Triedb};
 use monad_types::SeqNum;
 use serde_json::value::RawValue;
@@ -25,7 +25,7 @@ use crate::{
     handlers::{
         debug::{
             MonadDebugTraceBlockByHashParams, MonadDebugTraceBlockByNumberParams,
-            MonadDebugTraceTransactionParams, Tracer, TracerObject,
+            MonadDebugTraceTransactionParams, Tracer, TracerDescriptor, TracerObject,
         },
         parse_ethcall_chain_id, MonadRpcResources,
     },
@@ -35,16 +35,6 @@ use crate::{
         jsonrpc::{JsonRpcError, JsonRpcResult, JsonRpcResultExt},
     },
 };
-
-impl From<TracerObject> for MonadTracer {
-    fn from(tracer_obj: TracerObject) -> Self {
-        match tracer_obj.tracer {
-            Tracer::PreStateTracer if tracer_obj.config.diff_mode => MonadTracer::StateDiffTracer,
-            Tracer::PreStateTracer => MonadTracer::PreStateTracer,
-            Tracer::CallTracer => MonadTracer::CallTracer,
-        }
-    }
-}
 
 /// A trait for debug trace parameters as well as determining if a request requires transaction replay.
 pub trait DebugTraceParams {
@@ -143,7 +133,7 @@ pub async fn monad_debug_trace_replay<T: Triedb>(
         get_block_key_from_tag(&data_provider.triedb_env, params.into()).ok_or_else(|| {
             JsonRpcError::internal_error("error getting block key from tag: found none".into())
         })?;
-    let tracer: MonadTracer = params.tracer().into();
+    let tracer = TracerDescriptor::new(params.tracer(), max_response_size);
     let (block_key, block_number, transaction_index) = match params.trace_target() {
         TraceTarget::Transaction => {
             let tx_hash: EthHash = params.block_tag_or_hash().try_into()?;
@@ -242,7 +232,7 @@ pub async fn monad_debug_trace_replay<T: Triedb>(
             parent_key.into(),
             grandparent_key.and_then(|key: BlockKey| key.into()),
             transaction_index,
-            tracer,
+            tracer.into(),
         )
         .await;
     let raw_payload = match call_result {
