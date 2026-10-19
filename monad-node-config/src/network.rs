@@ -26,6 +26,11 @@ pub struct NodeNetworkConfig {
     pub bind_address_tcp_port: Option<u16>,
     pub authenticated_bind_address_port: u16,
     pub direct_udp_bind_address_port: Option<u16>,
+
+    /// Enable Direct UDP sending and advertise support in the signed name record.
+    /// Receive support remains available when false.
+    #[serde(default)]
+    pub direct_udp: bool,
     pub encrypted_tcp_bind_address_port: Option<u16>,
 
     pub max_rtt_ms: u64,
@@ -132,5 +137,24 @@ mod tests {
     fn udp_bandwidth_is_configurable() {
         let config = parse("max_mbps = 2000\npeer_max_mbps = 500");
         assert_eq!((config.max_mbps, config.peer_max_mbps), (2_000, 500));
+    }
+
+    #[test]
+    fn direct_udp_requires_opt_in() {
+        let network = r#"
+            bind_address_host = "0.0.0.0"
+            authenticated_bind_address_port = 8000
+            max_rtt_ms = 1000
+            max_mbps = 1000
+        "#;
+        let config: NodeNetworkConfig = toml::from_str(network).unwrap();
+        assert!(!config.direct_udp);
+        for direct_udp in [false, true] {
+            let config: NodeNetworkConfig =
+                toml::from_str(&format!("{network}\ndirect_udp = {direct_udp}\n")).unwrap();
+            assert_eq!(config.direct_udp, direct_udp);
+            assert_eq!(config.direct_udp_bind_address_port, None);
+            assert_eq!(config.authenticated_bind_address_port, 8000);
+        }
     }
 }
