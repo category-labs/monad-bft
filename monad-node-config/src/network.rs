@@ -66,7 +66,9 @@ pub struct NodeNetworkConfig {
 
     /// Number of independent UDP transmit workers.
     ///
-    /// Workers consume globally paced batches from a shared queue.
+    /// Pacing and priority are applied before batches enter the shared dispatch queue.
+    /// Workers have no private queues; thread scheduling can reorder sends across
+    /// batches and priority classes. The kernel may also buffer packets.
     #[serde(default = "default_udp_tx_workers")]
     pub udp_tx_workers: usize,
 }

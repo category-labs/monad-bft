@@ -226,9 +226,12 @@ impl DataplaneBuilder {
         self
     }
 
-    /// sets the number of independent udp transmit workers.
+    /// Sets the number of independent UDP transmit workers.
     ///
-    /// workers consume prepared batches from one shared queue after global pacing.
+    /// Pacing and priority are applied before batches enter the shared dispatch queue.
+    /// Workers submit each received batch directly to the kernel, without private queues.
+    /// With multiple workers, thread scheduling can reorder sends across batches,
+    /// including across priority classes. The kernel may also buffer packets.
     pub fn with_udp_tx_workers(mut self, workers: usize) -> Self {
         assert!(
             (1..=MAX_UDP_TX_WORKERS).contains(&workers),
