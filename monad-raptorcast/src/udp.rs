@@ -1250,6 +1250,7 @@ mod tests {
         // payload will fail to parse but shouldn't panic on index error
         let payload: Bytes = vec![1_u8; 1024 * 8 + 1].into();
         let recv_msg = crate::auth::AuthRecvMsg {
+            protocol: 0,
             src_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8000),
             payload,
             stride: 1024,
@@ -1733,6 +1734,7 @@ mod tests_deterministic {
         let stride = deterministic::DEFAULT_SEGMENT_LEN;
         let payload: Bytes = vec![1_u8; stride * 8 + 1].into();
         let recv_msg = AuthRecvMsg {
+            protocol: 0,
             src_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8000),
             payload,
             stride: stride as u16,
@@ -1900,6 +1902,7 @@ mod tests_deterministic {
 
         for packet in &packets {
             let recv_msg = AuthRecvMsg {
+                protocol: 0,
                 src_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8000),
                 payload: packet.payload.clone(),
                 stride: stride as u16,
@@ -2037,6 +2040,7 @@ mod tests_deterministic {
 
         for packet in packets.iter().take(subset_len) {
             let recv_msg = AuthRecvMsg {
+                protocol: 0,
                 src_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8000),
                 payload: packet.payload.clone(),
                 stride: stride as u16,
@@ -2255,6 +2259,7 @@ mod tests_deterministic {
         let mut decoded = Vec::new();
         for packet in &packets {
             let recv_msg = AuthRecvMsg {
+                protocol: 0,
                 src_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8000),
                 payload: packet.payload.clone(),
                 stride: deterministic::DEFAULT_SEGMENT_LEN as u16,
@@ -2303,6 +2308,7 @@ mod tests_deterministic {
         let mut decoded = Vec::new();
         for packet in &packets {
             let recv_msg = AuthRecvMsg {
+                protocol: 0,
                 src_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8000),
                 payload: packet.payload.clone(),
                 stride: deterministic::DEFAULT_SEGMENT_LEN as u16,
@@ -2364,6 +2370,7 @@ mod tests_deterministic {
         let mut decoded_msg = None;
         for packet in &proposer_packets {
             let recv_msg = AuthRecvMsg {
+                protocol: 0,
                 src_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8000),
                 payload: packet.payload.clone(),
                 stride: stride as u16,

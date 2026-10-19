@@ -21,12 +21,38 @@ use monad_executor::ExecutorMetricsChain;
 use monad_wireauth::messages::{DataPacketHeader, Packet};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Protocol {
+    RaptorCast = 0,
+    DirectUdp = 1,
+}
+
+impl From<Protocol> for u8 {
+    fn from(protocol: Protocol) -> Self {
+        protocol as Self
+    }
+}
+
+impl TryFrom<u8> for Protocol {
+    type Error = u8;
+
+    fn try_from(protocol: u8) -> Result<Self, Self::Error> {
+        match protocol {
+            0 => Ok(Self::RaptorCast),
+            1 => Ok(Self::DirectUdp),
+            _ => Err(protocol),
+        }
+    }
+}
+
 pub trait AuthenticationProtocol {
     type PublicKey: PubKey;
     type Error: std::fmt::Debug;
     type Header: IntoBytes + Immutable;
 
     const HEADER_SIZE: u16;
+    const SUPPORTS_PROTOCOL_TAGS: bool = false;
 
     fn connect(
         &mut self,
@@ -41,23 +67,26 @@ pub trait AuthenticationProtocol {
         &mut self,
         packet: &mut [u8],
         remote_addr: SocketAddr,
-    ) -> Result<Option<(Bytes, Option<Self::PublicKey>)>, Self::Error>;
+    ) -> Result<Option<(Bytes, Option<Self::PublicKey>, u8)>, Self::Error>;
 
     fn encrypt_by_public_key(
         &mut self,
         public_key: &Self::PublicKey,
+        protocol: impl Into<u8>,
         plaintext: &mut [u8],
     ) -> Result<Self::Header, Self::Error>;
 
     fn encrypt_by_socket(
         &mut self,
         socket_addr: &SocketAddr,
+        protocol: impl Into<u8>,
         plaintext: &mut [u8],
     ) -> Result<Self::Header, Self::Error>;
 
     fn buffer_message(
         &mut self,
         public_key: &Self::PublicKey,
+        protocol: impl Into<u8>,
         message: Bytes,
     ) -> Result<(), Self::Error>;
 
@@ -115,6 +144,7 @@ impl AuthenticationProtocol for WireAuthProtocol {
     type Header = monad_wireauth::messages::DataPacketHeader;
 
     const HEADER_SIZE: u16 = DataPacketHeader::SIZE as u16;
+    const SUPPORTS_PROTOCOL_TAGS: bool = true;
 
     fn connect(
         &mut self,
@@ -134,7 +164,7 @@ impl AuthenticationProtocol for WireAuthProtocol {
         &mut self,
         packet: &mut [u8],
         remote_addr: SocketAddr,
-    ) -> Result<Option<(Bytes, Option<Self::PublicKey>)>, Self::Error> {
+    ) -> Result<Option<(Bytes, Option<Self::PublicKey>, u8)>, Self::Error> {
         match Packet::try_from(packet).map_err(monad_wireauth::Error::from)? {
             Packet::Control(control_packet) => {
                 self.api.dispatch_control(control_packet, remote_addr)?;
@@ -145,6 +175,7 @@ impl AuthenticationProtocol for WireAuthProtocol {
                 Ok(Some((
                     Bytes::copy_from_slice(plaintext.as_ref()),
                     Some(public_key),
+                    plaintext.protocol(),
                 )))
             }
         }
@@ -153,25 +184,31 @@ impl AuthenticationProtocol for WireAuthProtocol {
     fn encrypt_by_public_key(
         &mut self,
         public_key: &Self::PublicKey,
+        protocol: impl Into<u8>,
         plaintext: &mut [u8],
     ) -> Result<Self::Header, Self::Error> {
-        self.api.encrypt_by_public_key(public_key, plaintext)
+        self.api
+            .encrypt_by_public_key_with_protocol(public_key, protocol, plaintext)
     }
 
     fn encrypt_by_socket(
         &mut self,
         socket_addr: &SocketAddr,
+        protocol: impl Into<u8>,
         plaintext: &mut [u8],
     ) -> Result<Self::Header, Self::Error> {
-        self.api.encrypt_by_socket(socket_addr, plaintext)
+        self.api
+            .encrypt_by_socket_with_protocol(socket_addr, protocol, plaintext)
     }
 
     fn buffer_message(
         &mut self,
         public_key: &Self::PublicKey,
+        protocol: impl Into<u8>,
         message: Bytes,
     ) -> Result<(), Self::Error> {
-        self.api.buffer_message(public_key, message)
+        self.api
+            .buffer_message_with_protocol(public_key, protocol, message)
     }
 
     fn next_packet(&mut self) -> Option<(SocketAddr, Bytes)> {
@@ -273,13 +310,18 @@ impl<P: PubKey> AuthenticationProtocol for NoopAuthProtocol<P> {
         &mut self,
         packet: &mut [u8],
         _remote_addr: SocketAddr,
-    ) -> Result<Option<(Bytes, Option<Self::PublicKey>)>, Self::Error> {
-        Ok(Some((Bytes::copy_from_slice(packet), None)))
+    ) -> Result<Option<(Bytes, Option<Self::PublicKey>, u8)>, Self::Error> {
+        Ok(Some((
+            Bytes::copy_from_slice(packet),
+            None,
+            Protocol::RaptorCast.into(),
+        )))
     }
 
     fn encrypt_by_public_key(
         &mut self,
         _public_key: &Self::PublicKey,
+        _protocol: impl Into<u8>,
         _plaintext: &mut [u8],
     ) -> Result<Self::Header, Self::Error> {
         Ok(NoopHeader)
@@ -288,6 +330,7 @@ impl<P: PubKey> AuthenticationProtocol for NoopAuthProtocol<P> {
     fn encrypt_by_socket(
         &mut self,
         _socket_addr: &SocketAddr,
+        _protocol: impl Into<u8>,
         _plaintext: &mut [u8],
     ) -> Result<Self::Header, Self::Error> {
         Ok(NoopHeader)
@@ -296,6 +339,7 @@ impl<P: PubKey> AuthenticationProtocol for NoopAuthProtocol<P> {
     fn buffer_message(
         &mut self,
         _public_key: &Self::PublicKey,
+        _protocol: impl Into<u8>,
         _message: Bytes,
     ) -> Result<(), Self::Error> {
         Ok(())

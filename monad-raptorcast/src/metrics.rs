@@ -48,6 +48,14 @@ monad_executor::metric_consts! {
         name: "monad.raptorcast.direct_udp.forward_oversize",
         help: "Direct UDP forwards rejected due to oversize payload",
     }
+    pub COUNTER_RAPTORCAST_MULTIPLEX_DIRECT_UDP_RECEIVED {
+        name: "monad.raptorcast.multiplex.direct_udp_received",
+        help: "Direct UDP messages reassembled on the authenticated RaptorCast port",
+    }
+    pub COUNTER_RAPTORCAST_MULTIPLEX_UNKNOWN_PROTOCOL {
+        name: "monad.raptorcast.multiplex.unknown_protocol",
+        help: "Authenticated UDP packets dropped due to unknown protocol tags",
+    }
     pub COUNTER_RAPTORCAST_CHUNKS_DROPPED_INCOMPATIBLE_VERSION {
         name: "monad.raptorcast.chunks_dropped_incompatible_version",
         help: "Chunks dropped due to incompatible raptorcast version",
@@ -104,6 +112,8 @@ pub(crate) fn init_router_executor_metrics() -> ExecutorMetrics {
         COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_SENT,
         COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_FALLBACK,
         COUNTER_RAPTORCAST_DIRECT_UDP_FORWARD_OVERSIZE,
+        COUNTER_RAPTORCAST_MULTIPLEX_DIRECT_UDP_RECEIVED,
+        COUNTER_RAPTORCAST_MULTIPLEX_UNKNOWN_PROTOCOL,
     ])
 }
 

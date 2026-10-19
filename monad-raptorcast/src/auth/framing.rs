@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{hash::Hash, marker::PhantomData};
+use std::{hash::Hash, marker::PhantomData, sync::Arc};
 
 use bytes::{BufMut, Bytes, BytesMut};
 use monad_executor::ExecutorMetricsChain;
@@ -43,12 +43,14 @@ pub trait AuthPacketFramer<P> {
 }
 
 pub struct PeerScoreAdapter<S> {
-    score_reader: S,
+    score_reader: Arc<S>,
 }
 
 impl<S> PeerScoreAdapter<S> {
     pub fn new(score_reader: S) -> Self {
-        Self { score_reader }
+        Self {
+            score_reader: Arc::new(score_reader),
+        }
     }
 }
 
@@ -109,7 +111,11 @@ where
     S: monad_peer_score::IdentityScore<Identity = N>,
 {
     pub fn new(score_reader: S, config: Config) -> Self {
-        let peer_score = PeerScoreAdapter::new(score_reader);
+        Self::with_shared_score(Arc::new(score_reader), config)
+    }
+
+    pub fn with_shared_score(score_reader: Arc<S>, config: Config) -> Self {
+        let peer_score = PeerScoreAdapter { score_reader };
         let (encoder, decoder) = config.clone().build(peer_score);
 
         Self {
