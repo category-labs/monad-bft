@@ -232,7 +232,7 @@ impl NameRecord {
         capabilities: u64,
         seq: u64,
     ) -> Self {
-        let mut record = Self::new_with_ports(
+        Self::new_with_ports(
             ip,
             tcp_port,
             udp_port,
@@ -240,9 +240,8 @@ impl NameRecord {
             None,
             None,
             seq,
-        );
-        record.capabilities = capabilities;
-        record
+        )
+        .with_capabilities(capabilities)
     }
 
     pub fn new_with_ports(
@@ -341,6 +340,18 @@ impl NameRecord {
 
     pub fn set_capability(&mut self, capability: Capability) {
         self.capabilities |= 1u64 << (capability as u8);
+    }
+
+    #[must_use]
+    pub fn with_capability(mut self, capability: Capability) -> Self {
+        self.set_capability(capability);
+        self
+    }
+
+    // Restore the full signed mask, including capabilities unknown to this node.
+    fn with_capabilities(mut self, capabilities: u64) -> Self {
+        self.capabilities = capabilities;
+        self
     }
 }
 
@@ -463,7 +474,8 @@ impl<ST: CertificateSignatureRecoverable> TryFrom<&PeerEntry<ST>> for MonadNameR
             peer.direct_udp_port.map(NonZeroU16::get),
             peer.encrypted_tcp_port.map(NonZeroU16::get),
             peer.record_seq_num,
-        );
+        )
+        .with_capabilities(peer.capabilities);
 
         let mut encoded = Vec::new();
         name_record.encode(&mut encoded);
@@ -495,6 +507,7 @@ impl<ST: CertificateSignatureRecoverable> TryFrom<&MonadNameRecord<ST>> for Peer
             ),
             signature: record.signature,
             record_seq_num: record.name_record.seq(),
+            capabilities: record.name_record.capabilities(),
             auth_port: NonZeroU16::new(record.name_record.authenticated_udp_port())
                 .expect("name record authenticated UDP port must be non-zero"),
             direct_udp_port: record.name_record.direct_udp_port().map(|port| {
@@ -519,6 +532,7 @@ impl<ST: CertificateSignatureRecoverable> From<MonadNameRecordWithPubkey<'_, ST>
             secp256k1_pubkey: peer.pubkey,
             name_record_sig: peer.signature,
             record_seq_num: peer.record_seq_num,
+            capabilities: peer.capabilities,
             auth_port: peer.auth_port,
             direct_udp_port: peer.direct_udp_port,
             encrypted_tcp_port: peer.encrypted_tcp_port,
@@ -556,7 +570,8 @@ impl<ST: CertificateSignatureRecoverable> TryFrom<&NodeBootstrapPeerConfig<ST>>
             peer_config.direct_udp_port.map(NonZeroU16::get),
             peer_config.encrypted_tcp_port.map(NonZeroU16::get),
             peer_config.record_seq_num,
-        );
+        )
+        .with_capabilities(peer_config.capabilities);
 
         let mut encoded = Vec::new();
         name_record.encode(&mut encoded);
@@ -597,6 +612,7 @@ impl<ST: CertificateSignatureRecoverable> From<MonadNameRecordWithPubkey<'_, ST>
             ),
             signature: record_with_pubkey.record.signature,
             record_seq_num: record_with_pubkey.record.name_record.seq(),
+            capabilities: record_with_pubkey.record.name_record.capabilities(),
             auth_port: NonZeroU16::new(
                 record_with_pubkey
                     .record
@@ -1211,6 +1227,7 @@ mod tests {
             ),
             signature: wrong_signature,
             record_seq_num: seq,
+            capabilities: 0,
             auth_port: NonZeroU16::new(port).unwrap(),
             direct_udp_port: None,
             encrypted_tcp_port: None,
@@ -1220,15 +1237,18 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_peer_entry_monad_name_record_roundtrip_with_auth() {
+    #[rstest]
+    #[case(0)]
+    #[case(1)]
+    #[case(u64::MAX)]
+    fn test_peer_entry_monad_name_record_roundtrip_with_auth(#[case] capabilities: u64) {
         let ip = Ipv4Addr::from_str("172.31.0.100").unwrap();
         let port = 8888u16;
         let auth_port = 8889u16;
         let seq = 99u64;
 
         let keypair = KeyPair::from_ikm(b"test roundtrip auth").unwrap();
-        let name_record = NameRecord::new(ip, port, Some(port), auth_port, 0, seq);
+        let name_record = NameRecord::new(ip, port, Some(port), auth_port, capabilities, seq);
         let original_monad_record = MonadNameRecord::<SecpSignature>::new(name_record, &keypair);
 
         let pubkey = original_monad_record.recover_pubkey().unwrap().pubkey();
@@ -1245,6 +1265,33 @@ mod tests {
         assert_eq!(
             converted_monad_record.signature,
             original_monad_record.signature
+        );
+
+        assert_eq!(
+            PeerEntry::try_from(&original_monad_record).unwrap(),
+            peer_entry
+        );
+        let encoded = alloy_rlp::encode(&peer_entry);
+        let decoded: PeerEntry<SecpSignature> = alloy_rlp::decode_exact(&encoded).unwrap();
+        assert_eq!(decoded, peer_entry);
+
+        let serialized = toml::to_string(&peer_entry).unwrap();
+        assert_eq!(serialized.contains("capabilities"), capabilities != 0);
+        let decoded: PeerEntry<SecpSignature> = toml::from_str(&serialized).unwrap();
+        assert_eq!(decoded, peer_entry);
+
+        let config = monad_node_config::NodeBootstrapConfig {
+            peers: vec![NodeBootstrapPeerConfig::from(
+                original_monad_record.with_pubkey(pubkey),
+            )],
+        };
+        let serialized = toml::to_string(&config).unwrap();
+        assert_eq!(serialized.contains("capabilities"), capabilities != 0);
+        let decoded: monad_node_config::NodeBootstrapConfig<SecpSignature> =
+            toml::from_str(&serialized).unwrap();
+        assert_eq!(
+            MonadNameRecord::try_from(&decoded.peers[0]).unwrap(),
+            original_monad_record
         );
     }
 

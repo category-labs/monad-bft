@@ -29,6 +29,7 @@ pub struct NodeBootstrapConfig<ST: CertificateSignatureRecoverable> {
     pub peers: Vec<NodeBootstrapPeerConfig<ST>>,
 }
 
+#[serde_with::serde_as]
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
 #[serde(bound = "ST: CertificateSignatureRecoverable")]
@@ -48,6 +49,11 @@ pub struct NodeBootstrapPeerConfig<ST: CertificateSignatureRecoverable> {
 
     pub record_seq_num: u64,
 
+    // Use a string so every u64 bitmask fits in a TOML value.
+    #[serde(default, skip_serializing_if = "capabilities_are_empty")]
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    pub capabilities: u64,
+
     #[serde(serialize_with = "serialize_pubkey::<_, CertificateSignaturePubKey<ST>>")]
     #[serde(deserialize_with = "deserialize_pubkey::<_, CertificateSignaturePubKey<ST>>")]
     pub secp256k1_pubkey: CertificateSignaturePubKey<ST>,
@@ -65,6 +71,10 @@ pub struct NodeBootstrapPeerConfig<ST: CertificateSignatureRecoverable> {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub encrypted_tcp_port: Option<NonZeroU16>,
+}
+
+fn capabilities_are_empty(capabilities: &u64) -> bool {
+    *capabilities == 0
 }
 
 fn deserialize_bootstrap_peers<'de, D, ST>(
@@ -189,6 +199,7 @@ direct_udp_port = 9001
         assert_eq!(peer.udp_port().map(NonZeroU16::get), Some(8000));
         assert_eq!(peer.domain(), None);
         assert_eq!(peer.direct_udp_port.map(NonZeroU16::get), Some(9001));
+        assert_eq!(peer.capabilities, 0);
     }
 
     #[test]
