@@ -19,6 +19,7 @@ use monad_wireauth::{
     messages::{CookieReply, DataPacketHeader, HandshakeInitiation, HandshakeResponse, Packet},
     Config, Context, TestContext, API, DEFAULT_METRICS, DEFAULT_RETRY_ATTEMPTS,
 };
+use rstest::rstest;
 use secp256k1::rand::rng;
 use tracing_subscriber::EnvFilter;
 use zerocopy::IntoBytes;
@@ -191,43 +192,71 @@ fn test_retries() {
     assert_eq!(decrypted3, b"message3");
 }
 
-#[test]
-fn test_encrypt_by_pubkey_and_socket() {
+#[rstest]
+#[case(0)]
+#[case(1)]
+#[case(255)]
+fn test_encrypt_by_pubkey_and_socket(#[case] protocol: u8) {
     init_tracing();
     let (mut peer1, _, _, _) = create_manager();
     let (mut peer2, peer2_pubkey, _, _) = create_manager();
     let peer1_addr: SocketAddr = "127.0.0.1:8001".parse().unwrap();
     let peer2_addr: SocketAddr = "127.0.0.1:8002".parse().unwrap();
 
-    // 1. peer1 initiates to peer2
     peer1
         .connect(peer2_pubkey, peer2_addr, DEFAULT_RETRY_ATTEMPTS)
         .unwrap();
-
-    // 2. complete handshake
     let init = collect::<HandshakeInitiation>(&mut peer1);
     dispatch(&mut peer2, &init, peer1_addr);
     let resp = collect::<HandshakeResponse>(&mut peer2);
     dispatch(&mut peer1, &resp, peer2_addr);
+    let keepalive = collect::<DataPacketHeader>(&mut peer1);
+    assert_eq!(
+        <&DataPacketHeader>::try_from(keepalive.as_slice())
+            .unwrap()
+            .protocol,
+        0
+    );
+    dispatch(&mut peer2, &keepalive, peer1_addr);
 
-    // 3. peer1 encrypts by public key and sends to peer2
-    let mut plaintext1 = b"by pubkey".to_vec();
-    let packet1 = encrypt(&mut peer1, &peer2_pubkey, &mut plaintext1);
-    // 5a. peer2 decrypts message sent by public key
-    let decrypted1 = decrypt(&mut peer2, &packet1, peer1_addr);
-    assert_eq!(decrypted1, b"by pubkey");
-
-    // 4. peer1 encrypts by socket and sends to peer2
-    let mut plaintext2 = b"by socket".to_vec();
-    let header2 = peer1
-        .encrypt_by_socket(&peer2_addr, &mut plaintext2)
+    for by_socket in [false, true] {
+        let mut plaintext = b"authenticated payload".to_vec();
+        let header = match (by_socket, protocol) {
+            (false, 0) => peer1.encrypt_by_public_key(&peer2_pubkey, &mut plaintext),
+            (true, 0) => peer1.encrypt_by_socket(&peer2_addr, &mut plaintext),
+            (false, _) => {
+                peer1.encrypt_by_public_key_with_protocol(&peer2_pubkey, protocol, &mut plaintext)
+            }
+            (true, _) => {
+                peer1.encrypt_by_socket_with_protocol(&peer2_addr, protocol, &mut plaintext)
+            }
+        }
         .unwrap();
-    let mut packet2 = Vec::with_capacity(DataPacketHeader::SIZE + plaintext2.len());
-    packet2.extend_from_slice(header2.as_bytes());
-    packet2.extend_from_slice(&plaintext2);
-    // 5b. peer2 decrypts message sent by socket
-    let decrypted2 = decrypt(&mut peer2, &packet2, peer1_addr);
-    assert_eq!(decrypted2, b"by socket");
+        assert_eq!(header.protocol, protocol);
+        assert_eq!(header.reserved, [0; 2]);
+        assert_eq!(&header.as_bytes()[1..4], &[protocol, 0, 0]);
+        let mut packet = header.as_bytes().to_vec();
+        packet.extend(plaintext);
+        for (offset, byte) in [(1, protocol ^ 1), (2, 1), (3, 1)] {
+            let mut changed = packet.clone();
+            changed[offset] = byte;
+            let Packet::Data(data) = Packet::try_from(changed.as_mut_slice()).unwrap() else {
+                unreachable!()
+            };
+            assert!(peer2.decrypt(data, peer1_addr).is_err());
+        }
+        let mut original = packet.clone();
+        let Packet::Data(data) = Packet::try_from(original.as_mut_slice()).unwrap() else {
+            unreachable!()
+        };
+        let (plaintext, _) = peer2.decrypt(data, peer1_addr).unwrap();
+        assert_eq!(plaintext.protocol(), protocol);
+        assert_eq!(plaintext.as_slice(), b"authenticated payload");
+        assert!(
+            dispatch(&mut peer2, &packet, peer1_addr).is_none(),
+            "replay must be rejected"
+        );
+    }
 }
 
 #[test]
@@ -790,8 +819,10 @@ fn test_keepalive_reset_on_encrypt() {
     );
 }
 
-#[test]
-fn test_message_buffering_during_handshake() {
+#[rstest]
+#[case([0, 0, 0])]
+#[case([0, 1, 255])]
+fn test_message_buffering_during_handshake(#[case] protocols: [u8; 3]) {
     init_tracing();
     let (mut peer1, _, _, _) = create_manager();
     let (mut peer2, peer2_pubkey, _, _) = create_manager();
@@ -802,15 +833,18 @@ fn test_message_buffering_during_handshake() {
         .connect(peer2_pubkey, peer2_addr, DEFAULT_RETRY_ATTEMPTS)
         .unwrap();
 
-    peer1
-        .buffer_message(&peer2_pubkey, bytes::Bytes::from_static(b"buffered1"))
-        .unwrap();
-    peer1
-        .buffer_message(&peer2_pubkey, bytes::Bytes::from_static(b"buffered2"))
-        .unwrap();
-    peer1
-        .buffer_message(&peer2_pubkey, bytes::Bytes::from_static(b"buffered3"))
-        .unwrap();
+    for (protocol, payload) in protocols
+        .into_iter()
+        .zip([b"buffered1", b"buffered2", b"buffered3"])
+    {
+        peer1
+            .buffer_message_with_protocol(
+                &peer2_pubkey,
+                protocol,
+                bytes::Bytes::from_static(payload),
+            )
+            .unwrap();
+    }
 
     let init = collect::<HandshakeInitiation>(&mut peer1);
     dispatch(&mut peer2, &init, peer1_addr);
@@ -818,17 +852,19 @@ fn test_message_buffering_during_handshake() {
     let response = collect::<HandshakeResponse>(&mut peer2);
     dispatch(&mut peer1, &response, peer2_addr);
 
-    let packet1 = peer1.next_packet().unwrap();
-    let decrypted1 = decrypt(&mut peer2, &packet1.1, peer1_addr);
-    assert_eq!(decrypted1, b"buffered1");
-
-    let packet2 = peer1.next_packet().unwrap();
-    let decrypted2 = decrypt(&mut peer2, &packet2.1, peer1_addr);
-    assert_eq!(decrypted2, b"buffered2");
-
-    let packet3 = peer1.next_packet().unwrap();
-    let decrypted3 = decrypt(&mut peer2, &packet3.1, peer1_addr);
-    assert_eq!(decrypted3, b"buffered3");
+    for (protocol, payload) in protocols
+        .into_iter()
+        .zip([b"buffered1", b"buffered2", b"buffered3"])
+    {
+        let mut packet = collect::<DataPacketHeader>(&mut peer1);
+        assert_eq!(packet.len(), DataPacketHeader::SIZE + payload.len());
+        let Packet::Data(data) = Packet::try_from(packet.as_mut_slice()).unwrap() else {
+            unreachable!()
+        };
+        let (plaintext, _) = peer2.decrypt(data, peer1_addr).unwrap();
+        assert_eq!(plaintext.protocol(), protocol);
+        assert_eq!(plaintext.as_slice(), payload);
+    }
 
     assert!(peer1.next_packet().is_none());
     assert_eq!(
