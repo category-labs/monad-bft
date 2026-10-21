@@ -19,7 +19,7 @@ use chorus::{
     Outbound, Runtime,
     da::DataAvailability as _,
     proposing::ProposalPlanner,
-    types::{NodeId, Timestamp, Validated},
+    types::{NodeId, Timestamp},
 };
 // choose stub chorus for implementation
 use monad_mcp_chorus::stub as chorus;
@@ -290,9 +290,8 @@ where
             SimMessage::Cadence(message) => {
                 // this is where the message validation would happen in a real
                 // network.
-                let message = Validated::new_unchecked(message, from);
                 let now = to_timestamp(ctx.now());
-                self.runtime.receive(now, message);
+                self.runtime.receive(now, from, message);
                 self.process(ctx);
             }
             SimMessage::Da(announcement) => {

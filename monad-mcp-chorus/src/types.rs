@@ -220,46 +220,6 @@ impl Default for WindowId {
     }
 }
 
-// A message with author signature validated.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct Validated<T> {
-    message: T,
-    author: NodeId,
-}
-
-impl<T> Validated<T> {
-    // for testing only
-    pub fn new_unchecked(message: T, author: NodeId) -> Self {
-        Self { message, author }
-    }
-
-    pub fn destructure(self) -> (T, NodeId) {
-        (self.message, self.author)
-    }
-
-    pub fn author(&self) -> &NodeId {
-        &self.author
-    }
-
-    pub fn into(self) -> T {
-        self.message
-    }
-
-    pub fn project<T2>(self, f: impl FnOnce(T) -> T2) -> Validated<T2> {
-        Validated {
-            message: f(self.message),
-            author: self.author,
-        }
-    }
-
-    pub fn try_map<T2, E>(self, f: impl FnOnce(T) -> Result<T2, E>) -> Result<Validated<T2>, E> {
-        Ok(Validated {
-            message: f(self.message)?,
-            author: self.author,
-        })
-    }
-}
-
 pub trait IsVote: Clone + Hash + Eq + Encodable {
     type Scope: Clone + Hash + Eq + std::fmt::Debug + Encodable + Decodable;
     type SigningDomain: SigningDomain;

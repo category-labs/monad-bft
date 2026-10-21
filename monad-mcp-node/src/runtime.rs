@@ -22,7 +22,7 @@ use crate::{
     chorus::{
         CadenceMessage, SlotLifecycle,
         slot::chorus::ChorusMessage,
-        types::{NodeId, Timestamp, TimestampDelta, Validated},
+        types::{NodeId, Timestamp, TimestampDelta},
     },
     component::{
         CadenceInput, CadenceOutput, CadenceWireMsg, DAInput, Dispatch, ProposingInput,
@@ -136,8 +136,8 @@ impl NodeRuntime {
 
     // a message we authored needs no validation
     fn loopback(&self, message: CadenceWireMsg, effects: &mut impl Dispatch<Effect>) {
-        let message = Validated::new_unchecked(message, self.epoch_handle.self_id);
-        effects.dispatch(Effect::Cadence(CadenceInput::Message(message)));
+        let self_id = self.epoch_handle.self_id;
+        effects.dispatch(Effect::Cadence(CadenceInput::Message(self_id, message)));
     }
 
     fn deliver_finalized(&mut self, effects: &mut impl Dispatch<Effect>) {
@@ -163,10 +163,9 @@ impl Runtime for NodeRuntime {
                 };
                 // todo: signature checks for a transport that does
                 // not authenticate the sender.
-                let message = Validated::new_unchecked(message, from);
 
                 // todo: verify slot number against current state
-                effects.dispatch(Effect::Cadence(CadenceInput::Message(message)));
+                effects.dispatch(Effect::Cadence(CadenceInput::Message(from, message)));
             }
 
             Packet::Chunk(bytes) => {

@@ -23,7 +23,7 @@ use super::{
     slot::{SlotConsensus, SlotOutput},
     slot_manager::SlotManager,
     timers::Timers,
-    types::{Slot, Timestamp, Validated},
+    types::{NodeId, Slot, Timestamp},
 };
 
 // A Runtime describes the wiring logic of the consensus stack: slot
@@ -36,7 +36,7 @@ pub trait Runtime<M> {
     fn init(&mut self);
     fn next_due(&self) -> Option<Timestamp>;
     fn handle_due(&mut self, now: Timestamp);
-    fn receive(&mut self, now: Timestamp, message: Validated<M>);
+    fn receive(&mut self, now: Timestamp, sender: NodeId, message: M);
     fn poll(&mut self) -> Option<Outbound<M>>;
 
     // Inject a data-availability event for `slot`. DA events are local
@@ -130,20 +130,19 @@ where
         }
     }
 
-    fn handle_message(&mut self, message: Validated<CadenceWireMsg<S, C>>) {
+    fn handle_message(&mut self, sender: NodeId, message: CadenceWireMsg<S, C>) {
         let now = self.clock;
-        let (message, author) = message.destructure();
         match message {
             CadenceMessage::Conductor(message) => {
-                self.conductor.handle_message(now, author, message);
+                self.conductor.handle_message(now, sender, message);
             }
             CadenceMessage::Slot(slot, message)
                 if let Some(instance) = self.slot_manager.slot_instance(slot) =>
             {
-                instance.handle_message(author, message);
+                instance.handle_message(sender, message);
             }
             CadenceMessage::Slot(slot, _) => {
-                trace!(?slot, ?author, "message for a slot without instance");
+                trace!(?slot, ?sender, "message for a slot without instance");
             }
         }
     }
@@ -274,9 +273,9 @@ where
         }
     }
 
-    fn receive(&mut self, now: Timestamp, message: Validated<CadenceWireMsg<S, C>>) {
+    fn receive(&mut self, now: Timestamp, sender: NodeId, message: CadenceWireMsg<S, C>) {
         self.advance_clock(now);
-        self.handle_message(message);
+        self.handle_message(sender, message);
         self.step();
     }
 

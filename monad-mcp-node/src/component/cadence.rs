@@ -24,14 +24,14 @@ use crate::chorus::{
     SlotManager,
     conductor::{MonadConductor, acs::nop::NopAcs},
     slot::chorus::{Chorus, ChorusDACommand, ChorusDAEvent, SlotFinalization},
-    types::{Slot, SlotDeadline, Timestamp, Validated},
+    types::{NodeId, Slot, SlotDeadline, Timestamp},
 };
 
 pub type Conductor = MonadConductor<NopAcs<SlotDeadline>>;
 pub type CadenceWireMsg = crate::chorus::CadenceWireMsg<Chorus, Conductor>;
 
 pub enum CadenceInput {
-    Message(Validated<CadenceWireMsg>),
+    Message(NodeId, CadenceWireMsg),
     DAEvent(Slot, ChorusDAEvent),
 }
 
@@ -85,7 +85,7 @@ impl Component for Cadence {
 
     fn handle(&mut self, now: Timestamp, input: CadenceInput) {
         match input {
-            CadenceInput::Message(message) => self.runtime.receive(now, message),
+            CadenceInput::Message(sender, message) => self.runtime.receive(now, sender, message),
             CadenceInput::DAEvent(slot, event) => self.runtime.handle_da_event(now, slot, event),
         }
         self.collect();

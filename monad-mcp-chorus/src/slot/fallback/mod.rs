@@ -30,7 +30,7 @@ pub use super::fast::{
 };
 use super::{
     super::{message::Outbound, runtime::Runtime, timers::Timers},
-    types::{IsVote, Lanes, NodeId, Slot, StrongQc, Timestamp, TimestampDelta, Validated},
+    types::{IsVote, Lanes, NodeId, Slot, StrongQc, Timestamp, TimestampDelta},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, RlpEncodableWrapper)]
@@ -323,9 +323,8 @@ where
         }
     }
 
-    fn receive(&mut self, now: Timestamp, message: Validated<A::Message>) {
-        let (message, author) = message.destructure();
-        self.mvba.handle_message(author, message);
+    fn receive(&mut self, now: Timestamp, sender: NodeId, message: A::Message) {
+        self.mvba.handle_message(sender, message);
         self.drain(now);
     }
 
