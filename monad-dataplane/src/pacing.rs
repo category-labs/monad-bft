@@ -524,6 +524,68 @@ mod tests {
 
     const UNLIMITED: u64 = 1_000_000_000_000;
 
+    #[test]
+    fn pacing_reply_channel_is_reused_without_stale_notifications() {
+        let (ready, mut grants) = mpsc::channel(1);
+        for bytes in [1, 64 * 1024, 17] {
+            let mut request = PacingRequest::new(bytes, ready.clone());
+            assert_eq!(request.next_payload_bytes(), bytes);
+            assert_eq!(request.next_pacing_bytes(), bytes);
+            assert!(matches!(
+                grants.try_recv(),
+                Err(mpsc::error::TryRecvError::Empty)
+            ));
+            request.grant();
+            request.grant();
+            drop(request);
+            assert_eq!(grants.try_recv(), Ok(Ok(())));
+            assert!(matches!(
+                grants.try_recv(),
+                Err(mpsc::error::TryRecvError::Empty)
+            ));
+        }
+        drop(PacingRequest::new(1, ready.clone()));
+        assert_eq!(grants.try_recv(), Ok(Err(ErrorKind::BrokenPipe)));
+        let mut request = PacingRequest::new(1, ready);
+        request.grant();
+        assert_eq!(grants.try_recv(), Ok(Ok(())));
+    }
+
+    #[test]
+    fn rejected_and_abandoned_reservations_cancel_the_waiter() {
+        let (ready, mut grants) = mpsc::channel(1);
+        let mut queue =
+            PacingQueue::new(rate(UNLIMITED), rate(UNLIMITED), 1, DataplaneMetrics::new());
+        assert!(queue
+            .enqueue(
+                key(1),
+                UdpPriority::Regular,
+                PacingRequest::new(64 * 1024, ready.clone())
+            )
+            .is_err());
+        assert_eq!(grants.try_recv(), Ok(Err(ErrorKind::BrokenPipe)));
+
+        let mut queue = PacingQueue::new(
+            rate(UNLIMITED),
+            rate(UNLIMITED),
+            1024,
+            DataplaneMetrics::new(),
+        );
+        queue
+            .enqueue(
+                key(1),
+                UdpPriority::Regular,
+                PacingRequest::new(64 * 1024, ready),
+            )
+            .unwrap();
+        assert!(matches!(
+            grants.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        drop(queue);
+        assert_eq!(grants.try_recv(), Ok(Err(ErrorKind::BrokenPipe)));
+    }
+
     #[derive(Debug, PartialEq, Eq)]
     struct Item {
         id: u64,
