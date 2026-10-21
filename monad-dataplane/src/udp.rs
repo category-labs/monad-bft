@@ -38,10 +38,12 @@ use tokio::sync::mpsc::{self, error::TryRecvError};
 use tracing::{debug, error, trace, warn};
 
 use super::{RecvUdpMsg, UdpMsg, UdpPacingConfig, UdpSocketId, IPV4_HDR_SIZE, UDP_HDR_SIZE};
+#[cfg(test)]
+use crate::pacing::Scheduled;
 use crate::{
     buffer_ext::SocketBufferExt,
     metrics::DataplaneMetrics,
-    pacing::{PacingItem, PacingQueue, Scheduled},
+    pacing::{PacingItem, PacingQueue, PacingRequest},
 };
 
 const DEFAULT_RINGBUF_COUNT: u32 = 2048;
@@ -51,6 +53,7 @@ pub const DEFAULT_MTU: u16 = monad_types::DEFAULT_MTU;
 
 const MAX_AGGREGATED_WRITE_SIZE: u16 = u16::MAX - IPV4_HDR_SIZE - UDP_HDR_SIZE;
 const MAX_AGGREGATED_SEGMENTS: u16 = 128;
+pub(crate) const MAX_BURST_SIZE: usize = 128 * 1024;
 const MAX_CHANNEL_DRAIN: usize = 64;
 const UDP_TX_QUEUE_SIZE_PER_WORKER: usize = 8;
 
@@ -58,6 +61,60 @@ struct UdpSend {
     socket_id: UdpSocketId,
     dst: SocketAddr,
     payload: Bytes,
+}
+
+pub(crate) enum PacedMessage {
+    Udp(UdpMsg),
+    Tcp {
+        addr: SocketAddr,
+        priority: monad_types::UdpPriority,
+        request: PacingRequest,
+    },
+}
+
+impl PacedMessage {
+    fn addr(&self) -> SocketAddr {
+        match self {
+            Self::Udp(message) => message.dst,
+            Self::Tcp { addr, .. } => *addr,
+        }
+    }
+
+    fn priority(&self) -> monad_types::UdpPriority {
+        match self {
+            Self::Udp(message) => message.priority,
+            Self::Tcp { priority, .. } => *priority,
+        }
+    }
+}
+
+impl From<UdpMsg> for PacedMessage {
+    fn from(message: UdpMsg) -> Self {
+        Self::Udp(message)
+    }
+}
+
+impl PacingItem for PacedMessage {
+    fn queued_bytes(&self) -> usize {
+        match self {
+            Self::Udp(message) => message.queued_bytes(),
+            Self::Tcp { request, .. } => request.queued_bytes(),
+        }
+    }
+
+    fn next_payload_bytes(&self) -> usize {
+        match self {
+            Self::Udp(message) => message.next_payload_bytes(),
+            Self::Tcp { request, .. } => request.next_payload_bytes(),
+        }
+    }
+
+    fn next_pacing_bytes(&self) -> usize {
+        match self {
+            Self::Udp(message) => message.next_pacing_bytes(),
+            Self::Tcp { request, .. } => request.next_pacing_bytes(),
+        }
+    }
 }
 
 impl PacingItem for UdpMsg {
@@ -74,6 +131,7 @@ impl PacingItem for UdpMsg {
     }
 }
 
+#[cfg(test)]
 impl Scheduled<UdpMsg> {
     pub(crate) fn take_chunk(&mut self) -> Bytes {
         self.item.payload.split_to(self.batch_bytes)
@@ -150,7 +208,7 @@ fn set_mtu_discovery(socket: &UdpSocket) {
 
 pub(crate) fn spawn_tasks(
     socket_configs: Vec<(UdpSocketId, SocketAddr, mpsc::Sender<RecvUdpMsg>)>,
-    udp_egress_rx: mpsc::Receiver<UdpMsg>,
+    egress_rx: mpsc::Receiver<PacedMessage>,
     config: UdpTaskConfig,
     bound_addrs_tx: std_mpsc::SyncSender<Vec<(UdpSocketId, SocketAddr)>>,
     metrics: DataplaneMetrics,
@@ -227,7 +285,7 @@ pub(crate) fn spawn_tasks(
     bound_addrs_tx.send(bound_addrs).unwrap();
     spawn(tx_pacing(
         dispatch_tx,
-        udp_egress_rx,
+        egress_rx,
         up_bandwidth_mbps,
         pacing,
         metrics,
@@ -360,19 +418,9 @@ async fn rx_multishot_socket(
     }
 }
 
-fn enqueue_udp_msg(queue: &mut PacingQueue<UdpMsg>, metrics: &DataplaneMetrics, msg: UdpMsg) {
-    let SocketAddr::V4(destination) = msg.dst else {
-        metrics.udp_egress_messages_dropped.inc();
-        debug!(destination = ?msg.dst, "IPv6 UDP message is not supported");
-        return;
-    };
-    let priority = msg.priority;
-    let _ = queue.enqueue(destination, priority, msg);
-}
-
 async fn tx_pacing(
     dispatch_tx: Sender<Vec<UdpSend>>,
-    mut udp_egress_rx: mpsc::Receiver<UdpMsg>,
+    mut egress_rx: mpsc::Receiver<PacedMessage>,
     up_bandwidth_mbps: u64,
     pacing_config: UdpPacingConfig,
     metrics: DataplaneMetrics,
@@ -393,47 +441,36 @@ async fn tx_pacing(
         pacing_config.max_queued_bytes,
         metrics.clone(),
     );
-    let max_batch_bytes = max_write_size_for_segment_size(DEFAULT_SEGMENT_SIZE) as usize;
     let max_batch_items = MAX_AGGREGATED_SEGMENTS as usize;
-    let mut incoming = Vec::with_capacity(MAX_CHANNEL_DRAIN);
 
+    let mut incoming = Vec::with_capacity(MAX_CHANNEL_DRAIN);
     loop {
         for _ in 0..MAX_CHANNEL_DRAIN {
-            match udp_egress_rx.try_recv() {
-                Ok(msg) => enqueue_udp_msg(&mut queue, &metrics, msg),
+            match egress_rx.try_recv() {
+                Ok(message) => incoming.push(message),
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => return,
             }
         }
-
-        if queue.is_empty() {
-            incoming.clear();
-            if udp_egress_rx
-                .recv_many(&mut incoming, MAX_CHANNEL_DRAIN)
-                .await
-                == 0
-            {
-                return;
-            }
-            for msg in incoming.drain(..) {
-                enqueue_udp_msg(&mut queue, &metrics, msg);
+        if incoming.is_empty() {
+            let now = queue.elapsed();
+            let wake_at = queue.next_wakeup(now);
+            if wake_at.is_none_or(|at| at > now) {
+                select! {
+                    received = egress_rx.recv_many(&mut incoming, MAX_CHANNEL_DRAIN) => {
+                        if received == 0 { return; }
+                    }
+                    _ = async {
+                        match wake_at {
+                            Some(at) => sleep(at.saturating_sub(now)).await,
+                            None => std::future::pending().await,
+                        }
+                    } => {}
+                }
             }
         }
-
-        let now = queue.elapsed();
-        let Some(at) = queue.next_wakeup(now) else {
-            continue;
-        };
-        let delay = at.saturating_sub(now);
-        if !delay.is_zero() {
-            select! {
-                message = udp_egress_rx.recv() => {
-                    let Some(message) = message else { return };
-                    enqueue_udp_msg(&mut queue, &metrics, message);
-                    continue;
-                }
-                _ = sleep(delay) => {}
-            }
+        for message in incoming.drain(..) {
+            let _ = queue.enqueue(message.addr().ip(), message.priority(), message);
         }
 
         let now = queue.elapsed();
@@ -443,27 +480,33 @@ async fn tx_pacing(
 
         let queue_len = queue.len();
         let mut batch = Vec::with_capacity(max_batch_items);
-        let mut total_bytes = 0;
-        while batch.len() < max_batch_items && total_bytes < max_batch_bytes {
-            let Some(mut scheduled) = queue.dequeue(now, max_batch_bytes - total_bytes) else {
+        let mut burst_size = 0;
+        for _ in 0..max_batch_items {
+            if burst_size >= MAX_BURST_SIZE {
+                break;
+            }
+            let Some(mut scheduled) = queue.dequeue(now, MAX_BURST_SIZE - burst_size) else {
                 break;
             };
-            let chunk = scheduled.take_chunk();
-            let msg = &scheduled.item;
+            burst_size += scheduled.batch_bytes;
+            let msg = match &mut scheduled.item {
+                PacedMessage::Udp(msg) => msg,
+                PacedMessage::Tcp { request, .. } => {
+                    request.grant();
+                    continue;
+                }
+            };
+            let chunk = msg.payload.split_to(scheduled.batch_bytes);
             let socket_id = msg.socket_id;
             let dst = msg.dst;
 
             if !msg.payload.is_empty() {
-                let SocketAddr::V4(destination) = dst else {
-                    unreachable!("only IPv4 messages enter the pacing queue")
-                };
                 assert!(
-                    queue.requeue(destination, scheduled).is_ok(),
+                    queue.requeue(dst.ip(), scheduled).is_ok(),
                     "requeueing admitted UDP bytes cannot exceed memory"
                 );
             }
 
-            total_bytes += chunk.len();
             trace!(?socket_id, dst_addr = ?dst, chunk_len = chunk.len(), "preparing udp send");
             batch.push(UdpSend {
                 socket_id,
@@ -479,7 +522,7 @@ async fn tx_pacing(
         if batch_count > 1 {
             trace!(
                 batch_size = batch_count,
-                total_bytes,
+                burst_size,
                 queue_size = queue_len,
                 "sending udp batch"
             );
@@ -497,6 +540,20 @@ async fn tx_pacing(
             return;
         }
     }
+}
+
+#[cfg(test)]
+pub(crate) fn test_pacing() -> mpsc::Sender<PacedMessage> {
+    let (sender, receiver) = mpsc::channel(crate::TCP_EGRESS_CHANNEL_SIZE);
+    let (dispatch, _) = async_channel::bounded(1);
+    spawn(tx_pacing(
+        dispatch,
+        receiver,
+        1_000,
+        UdpPacingConfig::for_global_bandwidth(1_000),
+        DataplaneMetrics::new(),
+    ));
+    sender
 }
 
 async fn tx_worker(
@@ -594,7 +651,7 @@ mod tests {
             stride: 1,
             priority: monad_types::UdpPriority::High,
         };
-        assert!(sender.try_send(message()).is_ok());
+        assert!(sender.try_send(message().into()).is_ok());
         let mut pacing = std::pin::pin!(tx_pacing(
             dispatch_tx,
             receiver,
@@ -614,7 +671,7 @@ mod tests {
         assert_eq!(metrics.udp_egress_messages_dropped.get(), 0);
 
         dispatch_rx.close();
-        assert!(sender.try_send(message()).is_ok());
+        assert!(sender.try_send(message().into()).is_ok());
         time::timeout(Duration::from_millis(100), pacing)
             .await
             .unwrap();
@@ -624,7 +681,7 @@ mod tests {
     #[monoio::test(timer_enabled = true)]
     async fn new_peer_wakes_transmit_while_another_peer_is_cooling() {
         let regular = UdpSocket::bind("127.0.0.1:0").unwrap();
-        let high = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let high = UdpSocket::bind("127.0.0.2:0").unwrap();
         let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         let (dispatch_tx, dispatch_rx) = async_channel::bounded(UDP_TX_QUEUE_SIZE_PER_WORKER);
         let (startup_tx, _startup_rx) = std_mpsc::channel();
@@ -637,13 +694,16 @@ mod tests {
         let (sender, receiver) = mpsc::channel(4);
         for _ in 0..2 {
             assert!(sender
-                .try_send(UdpMsg {
-                    socket_id: UdpSocketId::Raptorcast,
-                    dst: regular.local_addr().unwrap(),
-                    payload: vec![1; 60_000].into(),
-                    stride: 60_000,
-                    priority: monad_types::UdpPriority::Regular,
-                })
+                .try_send(
+                    UdpMsg {
+                        socket_id: UdpSocketId::Raptorcast,
+                        dst: regular.local_addr().unwrap(),
+                        payload: vec![1; 60_000].into(),
+                        stride: 60_000,
+                        priority: monad_types::UdpPriority::Regular,
+                    }
+                    .into()
+                )
                 .is_ok());
         }
         spawn(tx_pacing(
@@ -662,13 +722,16 @@ mod tests {
         assert_eq!(result.unwrap().0, 60_000);
         // Regular traffic is cooling for about 480 ms; the new peer need not wait.
         assert!(sender
-            .try_send(UdpMsg {
-                socket_id: UdpSocketId::Raptorcast,
-                dst: high.local_addr().unwrap(),
-                payload: Bytes::from_static(&[2]),
-                stride: 1,
-                priority: monad_types::UdpPriority::High,
-            })
+            .try_send(
+                UdpMsg {
+                    socket_id: UdpSocketId::Raptorcast,
+                    dst: high.local_addr().unwrap(),
+                    payload: Bytes::from_static(&[2]),
+                    stride: 1,
+                    priority: monad_types::UdpPriority::High,
+                }
+                .into()
+            )
             .is_ok());
         let (result, payload) =
             time::timeout(Duration::from_millis(100), high.recv_from(vec![0; 1]))
