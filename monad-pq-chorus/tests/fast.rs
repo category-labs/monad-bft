@@ -32,7 +32,8 @@ const SLOTS: u64 = 35;
 // seal at D − L; chunks at +h; votes at +2h; path votes at +3h; Finalized
 // at +4h
 fn fast_path(n: u64) {
-    let params = Params::new(n, 4.min(n as usize));
+    let mut params = Params::new(n, 4.min(n as usize));
+    params.config.early_vote = true;
     let (lead, h) = (params.lead as i64, params.latency as i64);
     let run_until = params.deadline(SLOTS).as_nanos() as u64 / 1_000_000;
     let outcome = Scenario::new(params).run_until_ms(run_until);
@@ -115,6 +116,7 @@ fn a_proposer_that_never_sends_is_excluded_fast() {
 #[test]
 fn single_node_with_vacant_lanes_finalizes_every_slot() {
     let mut params = Params::new(1, 5);
+    params.config.early_vote = true;
     params.slots = 30;
     let config = ProposerConfig {
         concurrent_proposers: 5,

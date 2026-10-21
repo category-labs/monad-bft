@@ -23,6 +23,10 @@ decode_grace=
 # lane vacant 5 of every 5 + 95 slots: all K lanes 95% of the time, tenure K * 100 slots
 rotation_slack=95
 release_chunks=vote
+early_vote=false
+# the rpc resends a tx not seen in the ledger after this; its 3000 ms default dominates
+# tx latency when the targeted proposer is down
+rpc_resend_after=500
 # mempool: txs from monad-mcp-rpc; random: load without clients, and no [rpc] table
 proposal_source=mempool
 keep_genesis=no
@@ -30,7 +34,7 @@ force=no
 only_genesis=no
 render_args=no
 
-usage="usage: gen-config.sh --genesis <unix_ms> [--keep-genesis] { --only-genesis | [--force] [--source mempool|random] [--port n] [--delta ms] [--slot-interval ms] [--slots-per-window n] [--sync-boundary n] [--lag-threshold n] [--num-proposals n] [--propose-before ms] [--withhold-before ms] [--repeater-interval ms] [--repeater-retention n] [--rotation-slack n] [--retransmit-interval ms] [--decode-grace ms] [--release-chunks vote|receipt] }"
+usage="usage: gen-config.sh --genesis <unix_ms> [--keep-genesis] { --only-genesis | [--force] [--source mempool|random] [--port n] [--delta ms] [--slot-interval ms] [--slots-per-window n] [--sync-boundary n] [--lag-threshold n] [--num-proposals n] [--propose-before ms] [--withhold-before ms] [--repeater-interval ms] [--repeater-retention n] [--rotation-slack n] [--retransmit-interval ms] [--decode-grace ms] [--release-chunks vote|receipt] [--early-vote true|false] [--rpc-resend-after ms] }"
 
 while [ $# -gt 0 ]; do
     case $1 in --genesis | --keep-genesis | --force | --only-genesis) ;; *) render_args=yes ;; esac
@@ -55,6 +59,8 @@ while [ $# -gt 0 ]; do
         --retransmit-interval) retransmit_interval=${2:?$usage}; shift ;;
         --decode-grace) decode_grace=${2:?$usage}; shift ;;
         --release-chunks) release_chunks=${2:?$usage}; shift ;;
+        --early-vote) early_vote=${2:?$usage}; shift ;;
+        --rpc-resend-after) rpc_resend_after=${2:?$usage}; shift ;;
         *) die "$usage" ;;
     esac
     shift
@@ -63,6 +69,8 @@ done
 [ -n "$genesis" ] || die "$usage"
 case $proposal_source in random | mempool) ;; *) die "--source is mempool or random" ;; esac
 case $release_chunks in vote | receipt) ;; *) die "--release-chunks is vote or receipt" ;; esac
+case $early_vote in true | false) ;; *) die "--early-vote is true or false" ;; esac
+[[ $rpc_resend_after =~ ^[1-9][0-9]*$ ]] || die "--rpc-resend-after must be positive ms"
 [[ $genesis =~ ^[0-9]+$ ]] || die "--genesis must be unix milliseconds"
 now=$(now_ms)
 # --keep-genesis: the running network's genesis, for netctl.sh live-upgrade
@@ -180,13 +188,14 @@ for host in $(hosts); do
         echo "decode_grace = $decode_grace"
         echo "coda_timeout_deltas = 5"
         echo "release_chunks = \"$release_chunks\""
-        echo "early_vote = true"
+        echo "early_vote = $early_vote"
         echo "ledger_proof = \"path-votes\""
         echo "evidence = true"
-        if [ "$latency" = yes ]; then
+        if [ "$proposal_source" = mempool ]; then
             echo
             echo "[rpc]"
-            echo "latency = \"latency.toml\""
+            echo "resend_after_ms = $rpc_resend_after"
+            [ "$latency" = yes ] && echo "latency = \"latency.toml\""
         fi
     } > "$f"
     echo "$f  node_id=$id  address=${ip_of[$host]}:$port"

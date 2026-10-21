@@ -9,7 +9,8 @@
 # Overrides (env): PQ_DELTA_MS (50), PQ_SLOT_MS (100), PQ_PROPOSE_MS (100),
 # PQ_WITHHOLD_MS (90), PQ_ROTATION_SLACK (95; 995 for a lone validator), PQ_REPEATER_MS (200),
 # PQ_RETRANSMIT_MS (= delta), PQ_DECODE_GRACE_MS (= delta / 2),
-# PQ_SOURCE (mempool), PQ_RELEASE_CHUNKS (vote).
+# PQ_SOURCE (mempool), PQ_RELEASE_CHUNKS (vote), PQ_EARLY_VOTE (false),
+# PQ_RPC_RESEND_MS (500).
 
 write_pq_config() {
     local out=$1 id=$2 genesis=$3 ledger=$4
@@ -71,6 +72,10 @@ dir = "$ledger"
 retransmit_interval = ${PQ_RETRANSMIT_MS:-$delta}
 decode_grace = ${PQ_DECODE_GRACE_MS:-$((delta / 2))}
 release_chunks = "${PQ_RELEASE_CHUNKS:-vote}"
+early_vote = ${PQ_EARLY_VOTE:-false}
 EOF
+        if [ "${PQ_SOURCE:-mempool}" = mempool ]; then
+            printf '\n[rpc]\nresend_after_ms = %s\n' "${PQ_RPC_RESEND_MS:-500}"
+        fi
     } > "$out"
 }

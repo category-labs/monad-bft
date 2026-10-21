@@ -99,7 +99,7 @@ impl Default for QuantumSection {
             decode_grace: None,
             coda_timeout_deltas: 5,
             release_chunks: ReleaseChunksKind::Vote,
-            early_vote: true,
+            early_vote: false,
             ledger_proof: LedgerProof::PathVotes,
             evidence: true,
             evidence_retention_slots: 1_000,

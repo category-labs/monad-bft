@@ -65,7 +65,8 @@ decode_grace = 25
 coda_timeout_deltas = 5
 # "vote" | "receipt"
 release_chunks = "vote"
-early_vote = true
+# vote as soon as every lane's chunk arrived instead of at the deadline
+early_vote = false
 # "metablock" | "path-votes"
 ledger_proof = "path-votes"
 # misbehavior evidence under <ledger.dir>/evidence; only signed conflicts

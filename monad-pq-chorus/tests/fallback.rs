@@ -34,6 +34,7 @@ const SPLIT_LANE: usize = 3;
 #[test]
 fn split_proposer_finalizes_in_coda_view_one() {
     let mut params = Params::new(4, 4);
+    params.config.early_vote = true;
     params.pull_delay = 100;
     let (lead, h) = (params.lead as i64, params.latency as i64);
     let delta = params.config.delta.as_millis() as i64;
@@ -83,7 +84,8 @@ fn split_proposer_finalizes_in_coda_view_one() {
 // lane before the deadline, so the slot stays fast
 #[test]
 fn a_split_lane_recovered_before_the_deadline_stays_fast() {
-    let params = Params::new(4, 4);
+    let mut params = Params::new(4, 4);
+    params.config.early_vote = true;
     let (lead, h) = (params.lead as i64, params.latency as i64);
     let timely = params.timely();
     let mut scenario = Scenario::new(params.clone());

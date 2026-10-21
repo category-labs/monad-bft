@@ -98,9 +98,10 @@ retransmit_interval = 150
 decode_grace = 75
 coda_timeout_deltas = 5
 release_chunks = "vote"
-early_vote = true
+early_vote = false
 ledger_proof = "path-votes"
 evidence = true
 
 [rpc]
+resend_after_ms = 500
 latency = "latency.toml"

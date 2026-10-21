@@ -111,7 +111,9 @@ fn coda_vote1(outs: &[Out]) -> Option<ProposalMap<CodaValue<Entry>>> {
 
 #[test]
 fn early_vote_once_every_chunk_arrived() {
-    let mut harness = harness();
+    let mut config = config();
+    config.early_vote = true;
+    let mut harness = Harness::with_config(0, N, two_proposers(), config);
     let outs = harness.chunk(0, &h(0, 1));
     assert!(votes(&outs).is_empty(), "one proposer still missing");
 
@@ -771,7 +773,9 @@ fn single_node_with_vacant_lanes_finalizes_from_its_own_chunk() {
         "one occupied lane"
     );
     let j = lanes[0].0;
-    let mut harness = Harness::new(0, 1, schedule);
+    let mut config = config();
+    config.early_vote = true;
+    let mut harness = Harness::with_config(0, 1, schedule, config);
 
     let header = header(SLOT, 0, 1);
     let outs = harness.chunk(j, &header);

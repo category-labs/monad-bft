@@ -20,6 +20,7 @@
 use std::path::{Path, PathBuf};
 
 use monad_mcp_node::config::{NodeConfig, SourceKind};
+use monad_mcp_rpc::config::RpcSection;
 use monad_pq_node::{chorus::types::TimestampDelta, config::PqNodeConfig};
 use serde::Deserialize;
 
@@ -79,7 +80,7 @@ fn every_host_config_is_a_valid_pq_config_with_the_mcp_test_values() {
         assert_eq!(quantum.retransmit_interval, ms(150));
         assert_eq!(quantum.decode_grace, ms(75));
         assert_eq!(quantum.coda_timeout_deltas, 5);
-        assert!(quantum.early_vote);
+        assert!(!quantum.early_vote);
         assert!(config.has_rpc);
     }
 }
@@ -88,15 +89,6 @@ fn every_host_config_is_a_valid_pq_config_with_the_mcp_test_values() {
 // separately; the latency matrix it names must fit the validator set
 #[test]
 fn every_host_config_is_an_rpc_node_config() {
-    #[derive(Deserialize)]
-    struct RpcFile {
-        rpc: RpcTable,
-    }
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct RpcTable {
-        latency: Option<PathBuf>,
-    }
     #[derive(Deserialize)]
     struct LatencyFile {
         rtt_ms: Vec<Vec<f64>>,
@@ -108,8 +100,9 @@ fn every_host_config_is_an_rpc_node_config() {
         node.validate().unwrap();
         node.epoch_handle().unwrap();
 
-        let rpc: RpcFile = toml::from_str(&text).unwrap();
-        let latency = rpc.rpc.latency.expect("an [rpc] latency matrix");
+        let rpc = RpcSection::parse(&text).unwrap();
+        assert_eq!(rpc.resend_after_ms, Some(500));
+        let latency = rpc.latency.expect("an [rpc] latency matrix");
         // shipped as config/latency.toml next to node.toml
         let path = deploy_dir().join("config").join(latency);
         let matrix: LatencyFile = toml::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();

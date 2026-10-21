@@ -373,7 +373,7 @@ The paper retransmits every broadcast until abandoned (`paper:3-model.tex`). Alg
 | Timer | Scheduled in | Fires at | Handler |
 |---|---|---|---|
 | deadline | runtime | D | `handle_deadline`: set `deadline_passed`; vote if not voted; schedule `PathVoteGate`(Δ), `DecodeGrace`(Δ + g), `Adoption`(2Δ), `Accountability`(2Δ + g, 4Δ + g), where g = `decode_grace` |
-| early vote | none (event) | when `chunk[j]` is set for every **non-vacant** j | `try_vote`. This is new code: upstream Chorus votes only at D (`monad-mcp-chorus/src/slot/fast.rs:288-324`) |
+| early vote | none (event) | when `early_vote` is set and `chunk[j]` is set for every **non-vacant** j | `try_vote`. Off by default (`QuantumConfig.early_vote = false`), so votes go out at D as in upstream Chorus (`monad-mcp-chorus/src/slot/fast.rs:288-324`). The early path vote (all lanes strong-matching, before D+Δ) is not gated |
 | `PathVoteGate` | deadline | D+Δ | set `pv_gate`; `try_path_vote` |
 | `DecodeGrace` | deadline | D+Δ+decode_grace | set `decode_grace_over`; `try_path_vote` |
 | `Adoption` | deadline | D+2Δ | set `adopt_gate`; `try_adopt` |
@@ -692,7 +692,7 @@ retransmit_interval = 150     # ms, default = cadence.delta
 decode_grace = 75             # ms, default = cadence.delta / 2; must be ≤ delta / 2
 coda_timeout_deltas = 5
 release_chunks = "vote"       # "vote" | "receipt"
-early_vote = true
+early_vote = false            # default; true votes as soon as every lane's chunk arrived
 ledger_proof = "path-votes"   # "metablock" | "path-votes"
 evidence = true
 evidence_retention_slots = 1000

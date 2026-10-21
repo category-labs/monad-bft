@@ -79,7 +79,7 @@ impl QuantumConfig {
             retransmit_interval: delta,
             coda_timeout_deltas: 5,
             release_chunks: ReleaseChunks::Vote,
-            early_vote: true,
+            early_vote: false,
         }
     }
 
