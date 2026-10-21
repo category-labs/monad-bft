@@ -21,13 +21,13 @@ use crate::{
     chorus::{
         SlotLifecycle,
         slot::chorus::SlotFinalization,
-        types::{MerkleRoot, ProposalIndex, ProposalMap, Slot, Timestamp},
+        types::{ProposalId, ProposalIndex, ProposalMap, Slot, Timestamp},
     },
     da::Resolved,
 };
 
 // a finalized slot with every committed proposal resolved, for the
-// ledger and execution. proposals[j] is the message under the root
+// ledger and execution. proposals[j] is the message of the proposal
 // the finalization commits at j, None when negative or invalid.
 pub struct FinalizedSlot {
     pub slot: Slot,
@@ -48,7 +48,7 @@ struct SlotCollection {
     deadline: Option<Timestamp>,
     fast_block_at: Option<Timestamp>, // demo(tx-timeline)
     finalized: Option<(Timestamp, SlotFinalization)>,
-    resolved: HashMap<(ProposalIndex, MerkleRoot), (Resolved, Timestamp)>, // demo(tx-timeline)
+    resolved: HashMap<(ProposalIndex, ProposalId), (Resolved, Timestamp)>, // demo(tx-timeline)
 }
 
 impl SlotCollection {
@@ -56,11 +56,11 @@ impl SlotCollection {
         let Some((_, finalization)) = &self.finalized else {
             return false;
         };
-        for (j, root) in finalization.roots().into_indexed_iter() {
-            let Some(root) = root else {
+        for (j, pid) in finalization.pids().into_indexed_iter() {
+            let Some(pid) = pid else {
                 continue;
             };
-            if !self.resolved.contains_key(&(j, root)) {
+            if !self.resolved.contains_key(&(j, pid)) {
                 return false;
             }
         }
@@ -72,8 +72,8 @@ impl SlotCollection {
         let (at, finalization) = self.finalized.expect("complete");
         let mut resolved = self.resolved;
         let mut lane_decoded_at = Vec::new(); // demo(tx-timeline)
-        let proposals = finalization.roots().map_indexed(|j, root| {
-            let resolved = root.map(|root| resolved.remove(&(j, root)).expect("complete"));
+        let proposals = finalization.pids().map_indexed(|j, pid| {
+            let resolved = pid.map(|pid| resolved.remove(&(j, pid)).expect("complete"));
             lane_decoded_at.push(resolved.as_ref().map(|&(_, at)| at)); // demo(tx-timeline)
             resolved.and_then(|(message, _)| message.ok())
         });
@@ -118,13 +118,13 @@ impl FinalizationCollector {
         at: Timestamp, // demo(tx-timeline)
         slot: Slot,
         proposal_index: ProposalIndex,
-        root: MerkleRoot,
+        pid: ProposalId,
         message: Resolved,
     ) {
         let collection = self.slots.entry(slot).or_default();
         collection
             .resolved
-            .insert((proposal_index, root), (message, at)); // demo(tx-timeline)
+            .insert((proposal_index, pid), (message, at)); // demo(tx-timeline)
         self.complete(slot);
     }
 
@@ -161,14 +161,24 @@ impl FinalizationCollector {
 
 #[cfg(test)]
 mod tests {
+    use monad_mcp_chorus::spec::ProposalHeader as _;
+
     use super::*;
-    use crate::chorus::env::MerkleHash;
+    use crate::chorus::env::{D25, EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader};
 
     fn decode(collector: &mut FinalizationCollector, slot: u64) {
-        let root = MerkleRoot(MerkleHash([slot as u8; 20]));
+        let header = ProposalHeader {
+            root: MerkleRoot(MerkleHash([slot as u8; 20])),
+            scheme: EncodingScheme::D25(D25 {
+                slot: Slot(slot),
+                msg_len: 1,
+                unix_ts: 0,
+                depth: 3,
+            }),
+        };
         let at = Timestamp::from_millis(slot); // demo(tx-timeline)
         let message = Ok(Bytes::from_static(b"m"));
-        collector.handle_resolved(at, Slot(slot), 0, root, message);
+        collector.handle_resolved(at, Slot(slot), 0, header.pid(), message);
     }
 
     #[test]

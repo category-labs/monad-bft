@@ -16,6 +16,7 @@
 mod qualification;
 mod reed_solomon;
 
+use monad_crypto::hasher::{Hash, Hasher as _, HasherType};
 use monad_mcp_chorus::spec::validator::ValidatorData as _;
 use rand::{SeedableRng as _, seq::SliceRandom as _};
 use rand_chacha::ChaCha20Rng;
@@ -24,6 +25,7 @@ use self::reed_solomon::{RsSymbolDecoder, RsSymbolEncoder};
 use super::{
     super::{
         assignment::{ChunkAssignment, PacketLossResistance},
+        chunk::WireChunkId,
         types::{NodeId, ProposalIndex, PubKey, S11, Slot, ValidatorData},
         wire::{DAHeaderScheme as _, PacketLayout as _, v1},
     },
@@ -179,6 +181,19 @@ impl DAEncodingScheme for S11 {
     fn decoder(&self, num_chunks: usize) -> RsSymbolDecoder {
         RsSymbolDecoder::new(num_chunks, self.num_source_chunks(), self.msg_len())
     }
+
+    fn depth(&self) -> u8 {
+        self.depth
+    }
+
+    // the message length makes the root pin the decoded message, not only the symbols
+    fn leaf_hash(&self, chunk_id: WireChunkId, symbol: &[u8]) -> Hash {
+        let mut hasher = HasherType::new();
+        hasher.update(self.msg_len.to_le_bytes());
+        hasher.update(chunk_id.to_le_bytes());
+        hasher.update(symbol);
+        hasher.hash()
+    }
 }
 
 // the v1 header of a s11 proposal, after the version(2):
@@ -273,10 +288,6 @@ mod header {
 
         fn unpack_chunk_header(bytes: &mut impl Buf) -> Result<WireChunkId, MalformedPacket> {
             Ok(bytes.get_u16_le())
-        }
-
-        fn depth(&self) -> u8 {
-            self.depth
         }
 
         fn v1_layout(&self) -> v1::Layout<'_, S11> {

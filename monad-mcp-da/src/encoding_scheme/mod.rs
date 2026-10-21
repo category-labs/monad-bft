@@ -19,12 +19,14 @@ pub mod swiper;
 mod stub;
 
 use bytes::Bytes;
+use monad_crypto::hasher::Hash;
 
 use super::{
     assignment::{ChunkAssignment, ChunkId},
+    chunk::WireChunkId,
     chunk_tree::ChunkTree,
     types::{EncodingScheme, NodeId, ValidatorData},
-    wire::PacketLayout as _,
+    util::Tree,
 };
 
 // The encoding scheme specifies the symbol code and the chunk
@@ -47,6 +49,9 @@ pub(crate) trait DAEncodingScheme {
     fn encoder(&self, num_chunks: usize) -> Self::Encoder;
     fn decoder(&self, num_chunks: usize) -> Self::Decoder;
 
+    fn depth(&self) -> u8;
+    fn leaf_hash(&self, chunk_id: WireChunkId, symbol: &[u8]) -> Hash;
+
     // one symbol per chunk of a message of the scheme's length. None
     // for any other length.
     fn encode(&self, message: &[u8], num_chunks: usize) -> Option<Vec<Bytes>> {
@@ -59,15 +64,20 @@ pub(crate) trait DAEncodingScheme {
     }
 }
 
-// the chunk tree of a message under the scheme, in its layout. None
-// unless the message is of the scheme's length.
+// the chunk tree of a message under the scheme. None unless the
+// message is of the scheme's length.
 pub(crate) fn chunk_tree(
     scheme: &EncodingScheme,
     message: &[u8],
     num_chunks: usize,
 ) -> Option<ChunkTree> {
     let symbols = scheme.encode(message, num_chunks)?;
-    Some(scheme.chunk_tree(symbols))
+    let mut leaves = Vec::with_capacity(symbols.len());
+    for (leaf_idx, symbol) in symbols.iter().enumerate() {
+        leaves.push(scheme.leaf_hash(leaf_idx as WireChunkId, symbol));
+    }
+    let tree = Tree::from_leaves(scheme.depth(), leaves);
+    Some(ChunkTree::complete(symbols, tree))
 }
 
 pub(crate) trait SymbolEncoder: Send {
@@ -126,6 +136,20 @@ impl DAEncodingScheme for EncodingScheme {
         match self {
             EncodingScheme::D25(d25) => Box::new(d25.decoder(num_chunks)),
             EncodingScheme::S11(s11) => Box::new(s11.decoder(num_chunks)),
+        }
+    }
+
+    fn depth(&self) -> u8 {
+        match self {
+            EncodingScheme::D25(d25) => d25.depth(),
+            EncodingScheme::S11(s11) => s11.depth(),
+        }
+    }
+
+    fn leaf_hash(&self, chunk_id: WireChunkId, symbol: &[u8]) -> Hash {
+        match self {
+            EncodingScheme::D25(d25) => d25.leaf_hash(chunk_id, symbol),
+            EncodingScheme::S11(s11) => s11.leaf_hash(chunk_id, symbol),
         }
     }
 }

@@ -340,7 +340,7 @@
     return `<article class="lane ${cls}" data-testid="lane-card" data-lane-index="${l.index}" data-positive="${l.positive}" data-tx-count="${l.tx_count}">
       <header><span class="lane-no">Lane ${l.index}</span><span class="lane-tag">${tag}</span></header>
       <dl><dt>Proposer</dt><dd data-testid="lane-proposer">${l.proposer ?? '—'}</dd>
-        <dt>Root</dt><dd data-testid="lane-root" title="${esc(l.root || '')}">${l.root ? esc(short(l.root, 8)) : '—'}</dd>
+        <dt>Pid</dt><dd data-testid="lane-pid" title="${esc(l.pid || '')}">${l.pid ? esc(short(l.pid, 8)) : '—'}</dd>
         <dt>Size</dt><dd>${l.positive ? bytes(l.payload_len) : '—'}</dd>
         <dt title="when this explorer's node decoded the lane, relative to the slot deadline">Decoded</dt><dd data-testid="lane-decoded">${decodedAt(l.decoded_after_deadline_ms)}</dd></dl>
       ${txs ? `<ul class="lane-txs">${txs}</ul>` : ''}

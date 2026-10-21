@@ -22,7 +22,7 @@ use bytes::Bytes;
 
 use super::{
     assignment::ChunkId,
-    types::{MerkleHash, MerkleRoot, SignedProposalHeader},
+    types::{MerkleHash, ProposalId, SignedProposalHeader},
 };
 
 // a chunk id as carried on the wire, not yet checked against an
@@ -74,10 +74,10 @@ impl ChunkRequestType {
     }
 }
 
-// the chunks of one owner under a root, the requester's or the peer's
+// the chunks of one owner of a proposal, the requester's or the peer's
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ChunkRequest {
-    pub(crate) root: MerkleRoot,
+    pub(crate) pid: ProposalId,
     pub(crate) kind: ChunkRequestType,
     pub(crate) subset: ChunksSubset,
 }
@@ -85,9 +85,9 @@ pub struct ChunkRequest {
 #[cfg(test)]
 impl ChunkRequest {
     // the full set of chunks of the kind
-    pub(crate) fn all(root: MerkleRoot, kind: ChunkRequestType) -> Self {
+    pub(crate) fn all(pid: ProposalId, kind: ChunkRequestType) -> Self {
         Self {
-            root,
+            pid,
             kind,
             subset: ChunksSubset::All,
         }

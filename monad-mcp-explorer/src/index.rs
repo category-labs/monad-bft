@@ -739,7 +739,7 @@ mod tests {
         LaneMeta {
             index,
             proposer: Some(u64::from(index) + 10),
-            root: txs.map(|_| [index as u8; 20]),
+            pid: txs.map(|_| [index as u8; 32]),
             payload_len: txs.map_or(0, |t| {
                 monad_mcp_chorus::ledger::encode_batch(u64::MAX, t).len() as u32 // demo(tx-timeline)
             }),

@@ -170,8 +170,9 @@ impl RaptorcastInstance {
         if !self.obligation.take_fulfilled() {
             return None;
         }
-        let root = *self.header.root();
-        Some(ProposalDAEvent::ProposerObligationFulfilled(root))
+        Some(ProposalDAEvent::ProposerObligationFulfilled(
+            self.header.pid(),
+        ))
     }
 
     pub(crate) fn try_decode(&mut self) -> Option<Resolved> {
@@ -477,7 +478,7 @@ mod tests {
         ingest(&mut instance, &chunks[3], &mut egress).expect("valid");
         assert_eq!(
             instance.take_obligation_event(),
-            Some(ProposalDAEvent::ProposerObligationFulfilled(*header.root()))
+            Some(ProposalDAEvent::ProposerObligationFulfilled(header.pid()))
         );
 
         // node 2 owns 1 and 4: one of them settles nothing
@@ -506,7 +507,7 @@ mod tests {
 
         // nothing of ours to serve, but once decoded theirs is derivable
         let requester = NodeId::dummy(3);
-        let root = *header.root();
+        let root = header.pid();
         let your_chunks = ChunkRequest::all(root, ChunkRequestType::YourChunks);
         instance.handle_chunk_request(your_chunks, &requester, NOW, &mut egress);
         assert!(sent(&mut egress).is_empty());
@@ -522,7 +523,7 @@ mod tests {
         let mut instance = instance(&header, &epoch_handle);
         let mut egress = released();
         let request = ChunkRequest {
-            root: *header.root(),
+            pid: header.pid(),
             kind: ChunkRequestType::YourChunks,
             subset: ChunksSubset::HeaderOnly,
         };
@@ -563,7 +564,7 @@ mod tests {
 
         assert_eq!(
             instance.take_obligation_event(),
-            Some(ProposalDAEvent::ProposerObligationFulfilled(*header.root()))
+            Some(ProposalDAEvent::ProposerObligationFulfilled(header.pid()))
         );
     }
 }

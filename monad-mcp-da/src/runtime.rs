@@ -27,7 +27,7 @@ use super::{
     instance_rc::Resolved,
     slot_rc::SlotRaptorcast,
     types::{
-        ChorusDACommand, ChorusDAEvent, HeaderAuth, MerkleRoot, NodeId, ProposalIndex,
+        ChorusDACommand, ChorusDAEvent, HeaderAuth, NodeId, ProposalId, ProposalIndex,
         ProposalKeyPair, ProposerSchedule, Slot, SlotLifecycle, Timestamp, TimestampDelta,
         ValidatorData,
     },
@@ -138,11 +138,11 @@ where
         for (to, request) in slot_raptorcast.drain_requests() {
             outputs.push(DAOutput::RecoveryRequest { to, request });
         }
-        for (proposal_index, root, message) in slot_raptorcast.drain_resolved() {
+        for (proposal_index, pid, message) in slot_raptorcast.drain_resolved() {
             outputs.push(DAOutput::Resolved {
                 slot,
                 proposal_index,
-                root,
+                pid,
                 message,
             });
         }
@@ -243,12 +243,12 @@ pub enum DAOutput {
     // notification for the consensus layer's slot instance
     Consensus(Slot, ChorusDAEvent),
 
-    // the message under (slot, proposal_index, root), or why it has none,
+    // the message of the proposal (slot, proposal_index, pid), or why it has none,
     // for the layer that recovers proposals
     Resolved {
         slot: Slot,
         proposal_index: ProposalIndex,
-        root: MerkleRoot,
+        pid: ProposalId,
         message: Resolved,
     },
 
@@ -363,16 +363,16 @@ mod tests {
                 DAOutput::Resolved {
                     slot,
                     proposal_index,
-                    root,
+                    pid,
                     message,
                 } => {
-                    assert_eq!((*slot, *proposal_index, *root), (SLOT, 0, *header.root()));
+                    assert_eq!((*slot, *proposal_index, *pid), (SLOT, 0, header.pid()));
                     assert_eq!(message, &Ok(Bytes::from(vec![1u8; MESSAGE_LEN])));
                     decoded_at = Some(i);
                 }
                 DAOutput::Consensus(slot, event) => {
                     assert_eq!(*slot, SLOT);
-                    if event.event == ProposalDAEvent::Decoded(*header.root()) {
+                    if event.event == ProposalDAEvent::Decoded(header.pid()) {
                         consensus_decoded_at = Some(i);
                     }
                 }
@@ -408,7 +408,7 @@ mod tests {
         let unknown_slot = ChunkRecoveryRequest {
             slot: Slot(7),
             proposal_index: 0,
-            request: ChunkRequest::all(*header.root(), ChunkRequestType::YourChunks),
+            request: ChunkRequest::all(header.pid(), ChunkRequestType::YourChunks),
         };
         runtime.handle_chunk_request(unknown_slot, &NodeId::dummy(2), NOW);
         assert!(outputs(&mut runtime).is_empty());
@@ -448,7 +448,7 @@ mod tests {
                 continue;
             };
             assert_eq!((request.slot, request.proposal_index), (SLOT, 0));
-            assert_eq!(request.request.root, *header.root());
+            assert_eq!(request.request.pid, header.pid());
             peers.push(to);
         }
         peers.sort();

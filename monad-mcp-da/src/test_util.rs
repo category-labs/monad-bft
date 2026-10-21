@@ -34,6 +34,7 @@ use super::{
         EncodingScheme, NodeId, ProposalHeader, ProposalKeyPair, SignedProposalHeader, Slot, Stake,
         Timestamp, TimestampDelta, ValidatorData,
     },
+    util::Tree,
     wire::{self, PacketLayout as _},
 };
 use crate::spec::{DAProposalHeader as _, DAProposalKeyPair as _};
@@ -194,7 +195,11 @@ pub(crate) fn inconsistent_proposal_chunks(
         let payload = if i < num_chunks / 2 { 1 } else { 2 };
         symbols.push(Bytes::from(vec![payload; symbol_len]));
     }
-    let tree = scheme.chunk_tree(symbols);
+    let mut leaves = Vec::with_capacity(num_chunks);
+    for (leaf_idx, symbol) in symbols.iter().enumerate() {
+        leaves.push(scheme.leaf_hash(leaf_idx as WireChunkId, symbol));
+    }
+    let tree = ChunkTree::complete(symbols, Tree::from_leaves(scheme.depth(), leaves));
     let header = ProposalHeader {
         root: tree.root(),
         scheme,

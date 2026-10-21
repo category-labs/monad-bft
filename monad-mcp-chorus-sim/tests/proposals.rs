@@ -16,7 +16,7 @@
 //! End-to-end proposal flow: the proposal planner seals `lead` before each
 //! slot deadline, the mock DA layer disseminates announcements over the
 //! simulated network, and the finalized slots carry the scheduled
-//! proposers' entries — `Positive` with the proposer's payload root where
+//! proposers' entries — `Positive` with the pid of the proposer's header where
 //! the schedule assigns a proposer, `Negative` where the index is vacant.
 
 mod helper;
@@ -40,8 +40,11 @@ use chorus::{
     },
 };
 use helper::{expect_finalized, expect_finalized_at};
-use monad_mcp_chorus::{spec::KeyPair as _, stub as chorus};
-use monad_mcp_chorus_sim::{CadenceSwarm, CadenceSwarmBuilder, MockDa, mock_payload, mock_root};
+use monad_mcp_chorus::{
+    spec::{KeyPair as _, ProposalHeader as _},
+    stub as chorus,
+};
+use monad_mcp_chorus_sim::{CadenceSwarm, CadenceSwarmBuilder, MockDa, mock_header, mock_payload};
 
 const NODES: u64 = 4;
 const SLOTS_PER_WINDOW: NonZeroU64 = NonZeroU64::new(10).unwrap();
@@ -165,13 +168,14 @@ fn build_swarm(
     (builder.build(), entries)
 }
 
-// The entry expected at (slot, index): the scheduled proposer's payload
-// root, or Negative for a vacant index.
+// The entry expected at (slot, index): the pid of the scheduled proposer's
+// header, or Negative for a vacant index.
 fn expected_entry(schedule: &Schedule, slot: Slot, index: usize) -> Entry {
-    match schedule.proposers_at(slot).unwrap().proposer(index) {
-        Some(proposer) => Entry::Positive(mock_root(&mock_payload(proposer, slot, index))),
-        None => Entry::Negative,
-    }
+    let Some(proposer) = schedule.proposers_at(slot).unwrap().proposer(index) else {
+        return Entry::Negative;
+    };
+    let payload = mock_payload(proposer, slot, index);
+    Entry::Positive(mock_header(proposer, slot, &payload).pid())
 }
 
 fn expect_entries(
@@ -199,7 +203,7 @@ fn expect_entries(
 fn scheduled_proposals_finalize_positive() {
     // K = 1, observation cutoff 0: every slot has exactly one proposer, rotating
     // every slot. All entries finalize Positive with the scheduled
-    // proposer's payload root, on the same schedule as the proposal-less
+    // proposer's header pid, on the same schedule as the proposal-less
     // runs (finalization at deadline + 2 latencies).
     let proposer_config = ProposerConfig {
         concurrent_proposers: 1,

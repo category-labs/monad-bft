@@ -227,14 +227,14 @@ impl Runtime for NodeRuntime {
             }
 
             CadenceOutput::Finalized(now, slot, finalization) => {
-                let committed = finalization.roots().into_iter().flatten().count();
+                let committed = finalization.pids().into_iter().flatten().count();
                 let path = finalization.path();
                 tracing::debug!(slot = slot.0, ?path, committed, "cadence finalized");
                 if let Some(mempool) = &self.mempool {
                     let positive: Vec<bool> = finalization
-                        .roots()
+                        .pids()
                         .into_iter()
-                        .map(|root| root.is_some())
+                        .map(|pid| pid.is_some())
                         .collect();
                     mempool
                         .lock()
@@ -324,11 +324,11 @@ impl Runtime for NodeRuntime {
             DAOutput::Resolved {
                 slot,
                 proposal_index,
-                root,
+                pid,
                 message,
             } => {
                 self.collector
-                    .handle_resolved(now, slot, proposal_index, root, message); // demo(tx-timeline)
+                    .handle_resolved(now, slot, proposal_index, pid, message); // demo(tx-timeline)
                 self.deliver_finalized(effects);
             }
             DAOutput::Disseminate(Dissemination { to, envelope }) => {

@@ -13,11 +13,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use monad_crypto::hasher::{Hash, Hasher as _, HasherType};
 use monad_mcp_chorus::spec::{Stake as _, validator::ValidatorData as _};
 
 use super::{
     super::{
         assignment::{ChunkAssignment, PacketLossResistance, StakePartition},
+        chunk::WireChunkId,
         types::{D25, NodeId, Slot, Stake, ValidatorData},
         wire::{DAHeaderScheme as _, PacketLayout as _, v1},
     },
@@ -149,6 +151,20 @@ impl DAEncodingScheme for D25 {
     fn decoder(&self, _num_chunks: usize) -> StubSymbolDecoder {
         StubSymbolDecoder::new(self.num_source_chunks(), self.msg_len())
     }
+
+    fn depth(&self) -> u8 {
+        self.depth
+    }
+
+    fn leaf_hash(&self, chunk_id: WireChunkId, symbol: &[u8]) -> Hash {
+        let mut chunk_header = Vec::with_capacity(D25::CHUNK_HEADER_LEN);
+        D25::pack_chunk_header(chunk_id, &mut chunk_header);
+
+        let mut hasher = HasherType::new();
+        hasher.update(&chunk_header);
+        hasher.update(symbol);
+        hasher.hash()
+    }
 }
 
 // the v1 header of a d25 proposal, after the version(2):
@@ -260,10 +276,6 @@ mod header {
                 return Err(MalformedPacket::ReservedNonZero);
             }
             Ok(bytes.get_u16_le())
-        }
-
-        fn depth(&self) -> u8 {
-            self.depth
         }
 
         fn v1_layout(&self) -> v1::Layout<'_, D25> {
@@ -488,5 +500,19 @@ mod tests {
         assert!(decoder.try_decode().is_none());
         decoder.ingest(ChunkId::unchecked(2), &symbols[2]);
         assert_eq!(decoder.try_decode(), Some(Bytes::from(message)));
+    }
+
+    #[test]
+    fn leaf_hash_covers_the_chunk_id() {
+        let scheme = scheme();
+        assert_eq!(scheme.leaf_hash(1, b"x"), scheme.leaf_hash(1, b"x"));
+        assert_ne!(scheme.leaf_hash(1, b"x"), scheme.leaf_hash(2, b"x"));
+        assert_ne!(scheme.leaf_hash(1, b"x"), scheme.leaf_hash(1, b"y"));
+
+        // the leaf is the chunk header then the symbol
+        let mut hasher = HasherType::new();
+        hasher.update([0, 0, 1, 0]);
+        hasher.update(b"x");
+        assert_eq!(scheme.leaf_hash(1, b"x"), hasher.hash());
     }
 }

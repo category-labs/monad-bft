@@ -160,7 +160,7 @@ mod tests {
         NewLane {
             proposer: Some(0),
             committed: Some(CommittedLane {
-                root: [7; 20],
+                pid: [7; 32],
                 payload,
             }),
         }

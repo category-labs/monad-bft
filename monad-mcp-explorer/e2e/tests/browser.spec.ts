@@ -69,7 +69,7 @@ test('L6b: send from the panel, follow it to its block and payload, then Live of
   await expect(card).toHaveAttribute('data-positive', 'true');
   expect(Number(await card.getAttribute('data-tx-count'))).toBeGreaterThanOrEqual(1);
   await expect(card.getByTestId('lane-proposer')).toHaveText('0');
-  await expect(card.getByTestId('lane-root')).toHaveAttribute('title', /^0x[0-9a-f]{40}$/);
+  await expect(card.getByTestId('lane-pid')).toHaveAttribute('title', /^0x[0-9a-f]{64}$/);
   await expect(card.getByTestId('lane-decoded')).toHaveText(/^[+-]\d+(\.\d)? ms from deadline$/); // demo(tx-timeline)
   const laneTx = card.locator(`[data-testid="lane-tx-row"][data-hash="${hash}"]`);
   await expect(laneTx).toBeVisible();

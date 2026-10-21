@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-pub use proposal::{MerkleRoot, ProposalHeader, SignedProposalHeader};
+pub use proposal::{MerkleRoot, ProposalHeader, ProposalId, SignedProposalHeader};
 pub use validator::{NodeId, Stake};
 pub use vote::{KeyPair, PubKey, Signature, SignatureCollection};
 
@@ -294,13 +294,18 @@ pub mod proposal {
     // A commitment to a proposal's payload.
     pub trait MerkleRoot: Copy + Eq + std::hash::Hash + std::fmt::Debug {}
 
+    // What consensus votes on: a commitment to the whole header, so one pid is one proposal.
+    pub trait ProposalId: Copy + Eq + std::hash::Hash + std::fmt::Debug {}
+
     pub trait ProposalHeader: Clone + Eq + std::hash::Hash + std::fmt::Debug {
         type Root: MerkleRoot;
+        type Pid: ProposalId;
 
         // todo: change to Slot when we move it to a shared mcp-types
         // crate.
         fn slot(&self) -> u64;
         fn root(&self) -> &Self::Root;
+        fn pid(&self) -> Self::Pid;
     }
 
     // A header with the proposer's signature over it.
@@ -336,6 +341,7 @@ pub const fn assert_env<
     SignatureCollection,
     VoteAggregation,
     MerkleRoot,
+    ProposalId,
     ProposalHeader,
     SignedProposalHeader,
     HeaderAuth,
@@ -351,7 +357,8 @@ where
         vote::SignatureCollection<Signature = Signature, ValidatorData = ValidatorData>,
     VoteAggregation: vote::VoteAggregation<'a, Stake, SignatureCollection = SignatureCollection>,
     MerkleRoot: proposal::MerkleRoot,
-    ProposalHeader: proposal::ProposalHeader,
+    ProposalId: proposal::ProposalId,
+    ProposalHeader: proposal::ProposalHeader<Root = MerkleRoot, Pid = ProposalId>,
     SignedProposalHeader: proposal::SignedProposalHeader,
     HeaderAuth: proposal::HeaderAuth<Signed = SignedProposalHeader>,
 {

@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 //! RLP layout of a chunk recovery request:
-//! [slot, proposal_index, root, kind, subset], subset = [0] for all
+//! [slot, proposal_index, pid, kind, subset], subset = [0] for all
 //! chunks, [1, [chunk_id, ...]] for a selection, or [1, []] for the header
 //! alone.
 
@@ -27,7 +27,7 @@ use monad_mcp_chorus::spec::{Deserializable, Serializable};
 use super::super::{
     chunk::{ChunkRequest, ChunkRequestType, ChunksSubset, WireChunkId},
     runtime::ChunkRecoveryRequest,
-    types::{MerkleRoot, Slot},
+    types::{ProposalId, Slot},
 };
 
 const ALL: u8 = 0;
@@ -118,7 +118,7 @@ impl Encodable for ChunkRecoveryRequest {
         let fields: [&dyn Encodable; 5] = [
             &self.slot,
             &proposal_index,
-            &self.request.root,
+            &self.request.pid,
             &kind,
             &self.request.subset,
         ];
@@ -131,7 +131,7 @@ impl Encodable for ChunkRecoveryRequest {
         let fields: [&dyn Encodable; 5] = [
             &self.slot,
             &proposal_index,
-            &self.request.root,
+            &self.request.pid,
             &kind,
             &self.request.subset,
         ];
@@ -144,7 +144,7 @@ impl Decodable for ChunkRecoveryRequest {
         let mut payload = Header::decode_bytes(buf, true)?;
         let slot = Slot::decode(&mut payload)?;
         let proposal_index = u64::decode(&mut payload)?;
-        let root = MerkleRoot::decode(&mut payload)?;
+        let pid = ProposalId::decode(&mut payload)?;
         let kind = kind_of(u8::decode(&mut payload)?)?;
         let subset = ChunksSubset::decode(&mut payload)?;
         if !payload.is_empty() {
@@ -156,7 +156,7 @@ impl Decodable for ChunkRecoveryRequest {
         Ok(Self {
             slot,
             proposal_index,
-            request: ChunkRequest { root, kind, subset },
+            request: ChunkRequest { pid, kind, subset },
         })
     }
 }
@@ -177,14 +177,19 @@ impl Deserializable<Bytes> for ChunkRecoveryRequest {
 
 #[cfg(test)]
 mod tests {
-    use super::{super::super::types::MerkleHash, *};
+    use monad_mcp_chorus::spec::ProposalHeader as _;
+
+    use super::{
+        super::super::test_util::{epoch_handle, proposal_chunks},
+        *,
+    };
 
     fn request(subset: ChunksSubset) -> ChunkRecoveryRequest {
         ChunkRecoveryRequest {
             slot: Slot(7),
             proposal_index: 3,
             request: ChunkRequest {
-                root: MerkleRoot(MerkleHash([9; 20])),
+                pid: proposal_chunks(&epoch_handle(), 9).0.pid(),
                 kind: ChunkRequestType::YourChunks,
                 subset,
             },

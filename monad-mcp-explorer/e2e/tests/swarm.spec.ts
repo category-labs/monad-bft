@@ -191,7 +191,7 @@ test('swarm: the rpc sends each tx to the proposer its routing rule picks, and i
       if (JSON.stringify(consensus(other)) !== JSON.stringify(consensus(ref))) {
         disagreements.push(`slot ${slot}: node ${n} meta ${JSON.stringify(consensus(other))} != node 0 ${JSON.stringify(consensus(ref))}`);
       }
-      for (const l of ref.lanes.filter((l: any) => l.root !== null)) {
+      for (const l of ref.lanes.filter((l: any) => l.pid !== null)) {
         const file = `lane-${l.index}.rlp`;
         const [a, b] = await Promise.all([readFile(path.join(blockDir(slot), file)), readFile(path.join(blockDir(slot, ledger), file)).catch(() => undefined)]);
         if (!b || !a.equals(b)) disagreements.push(`slot ${slot}: node ${n} ${file} ${b ? 'differs' : 'missing'}`);

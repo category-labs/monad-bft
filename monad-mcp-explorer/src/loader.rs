@@ -104,7 +104,7 @@ pub fn load_block(reader: &LedgerReader, slot: u64) -> Result<LoadedBlock, LoadF
             .read_lane_for(&meta, lane.index)
             .map_err(fail)?
             .ok_or_else(|| {
-                LoadFailure::Corrupt(format!("lane {} has txs but no root", lane.index))
+                LoadFailure::Corrupt(format!("lane {} has txs but no pid", lane.index))
             })?;
         let txs = decode_batch(&payload)
             .map_err(|e| LoadFailure::Corrupt(format!("lane {}: {e}", lane.index)))?;

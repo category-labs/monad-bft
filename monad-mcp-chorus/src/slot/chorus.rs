@@ -33,7 +33,7 @@ use super::{
         FastCommitQc, FastCommitVoteMsg, FastPath,
     },
     types::{
-        HeaderAuth, KeyPair, MerkleRoot, NodeId, ProposalIndex, ProposalMap, ProposerSchedule,
+        HeaderAuth, KeyPair, NodeId, ProposalId, ProposalIndex, ProposalMap, ProposerSchedule,
         SignatureCollection, SignedProposalHeader, Slot, TimestampDelta, ValidatorData,
     },
 };
@@ -141,13 +141,13 @@ impl SlotFinalization {
         }
     }
 
-    pub fn roots(&self) -> ProposalMap<Option<MerkleRoot>> {
+    pub fn pids(&self) -> ProposalMap<Option<ProposalId>> {
         let entries = match self {
             Self::Fast { qc } => &qc.verdict.entries,
             Self::Fallback { qc, .. } => &qc.verdict.0,
         };
         entries.as_ref().map(|entry| match entry {
-            Entry::Positive(root) => Some(*root),
+            Entry::Positive(pid) => Some(*pid),
             Entry::Negative => None,
         })
     }
@@ -161,20 +161,20 @@ pub struct ChorusDAEvent {
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum ProposalDAEvent {
-    // a validated proposer-signed header observed (once per root)
+    // a validated proposer-signed header observed (once per pid)
     HeaderSeen(SignedProposalHeader),
 
-    // all our own assigned chunks under the root have arrived
-    ProposerObligationFulfilled(MerkleRoot),
+    // all our own assigned chunks of the proposal have arrived
+    ProposerObligationFulfilled(ProposalId),
 
     // decode-then-re-encode verified. implies all chunks recoverable
     // from DA.
-    Decoded(MerkleRoot),
-    DecodingFailed(MerkleRoot),
+    Decoded(ProposalId),
+    DecodingFailed(ProposalId),
 }
 
-// must be non-empty. ordered by total stake on each root
-pub type MissingHeaders = Vec<(MerkleRoot, HashSet<NodeId>)>;
+// must be non-empty. ordered by total stake on each pid
+pub type MissingHeaders = Vec<(ProposalId, HashSet<NodeId>)>;
 
 // An effect directed at the DA layer.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -183,17 +183,17 @@ pub enum ChorusDACommand {
     // chunks, held and arriving, and serve chunk recovery requests.
     ReleaseChunks,
 
-    // nodes that decoded the root under j, so they can serve our own chunks
+    // nodes that decoded the proposal under j, so they can serve our own chunks
     AddDecodedHolders {
         j: ProposalIndex,
-        root: MerkleRoot,
+        pid: ProposalId,
         node_ids: Vec<NodeId>,
     },
 
     // the committed entry under j. None when it needs no data
     PinFinal {
         j: ProposalIndex,
-        root: Option<MerkleRoot>,
+        pid: Option<ProposalId>,
     },
 
     PullHeader {
@@ -493,18 +493,18 @@ impl Chorus {
     }
 
     fn pin_final(&mut self, finalization: &SlotFinalization) {
-        for (j, root) in finalization.roots().into_indexed_iter() {
-            self.push(SlotOutput::DA(ChorusDACommand::PinFinal { j, root }));
+        for (j, pid) in finalization.pids().into_indexed_iter() {
+            self.push(SlotOutput::DA(ChorusDACommand::PinFinal { j, pid }));
         }
 
         let SlotFinalization::Fallback { block, .. } = finalization else {
             return;
         };
         for (j, cert) in block.certified_entries().into_indexed_iter() {
-            let Some((root, node_ids)) = cert.decoded_holders(&self.validator_data) else {
+            let Some((pid, node_ids)) = cert.decoded_holders(&self.validator_data) else {
                 continue;
             };
-            let command = ChorusDACommand::AddDecodedHolders { j, root, node_ids };
+            let command = ChorusDACommand::AddDecodedHolders { j, pid, node_ids };
             self.push(SlotOutput::DA(command));
         }
     }
@@ -717,7 +717,7 @@ mod tests {
             }
         }
 
-        // nothing is available, so the all-negative vote pins no root
+        // nothing is available, so the all-negative vote pins no proposal
         assert_eq!(commands, vec![ChorusDACommand::ReleaseChunks]);
     }
 
@@ -725,9 +725,12 @@ mod tests {
     fn commit_certificate_pins_before_finalizing() {
         use super::super::{
             fast::{Entry, FastCommitVote},
-            types::{MerkleRoot, ProposalMap, VoteMsg, VotePool},
+            types::{ProposalMap, VoteMsg, VotePool},
         };
-        use crate::env::stub::MerkleHash;
+        use crate::{
+            env::stub::{EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader},
+            spec::ProposalHeader as _,
+        };
 
         let config = ChorusConfig {
             delta: TimestampDelta::from_millis(100),
@@ -741,12 +744,16 @@ mod tests {
         };
         let mut chorus = Chorus::new(Slot(1), &config, &context);
 
-        // a commit qc on an undecoded root, signed by validators 0, 2, 3
-        let root = MerkleRoot(MerkleHash([1; 20]));
-        let entries = ProposalMap::new(1, |_| Entry::Positive(root));
+        // a commit qc on an undecoded proposal, signed by validators 0, 2, 3
+        let header = ProposalHeader {
+            root: MerkleRoot(MerkleHash([1; 20])),
+            scheme: EncodingScheme::dummy(Slot(1)),
+        };
+        let pid = header.pid();
+        let entries = ProposalMap::new(1, |_| Entry::Positive(pid));
         let mut pool = VotePool::new(Slot(1));
-        for id in [0, 2, 3] {
-            let voter = NodeId::dummy(id);
+        for index in [0, 2, 3] {
+            let voter = NodeId::dummy(index);
             let vote = FastCommitVote {
                 entries: entries.clone(),
             };
@@ -774,7 +781,7 @@ mod tests {
         assert_eq!(order, ["pin", "finalize"]);
         let pinned = ChorusDACommand::PinFinal {
             j: 0,
-            root: Some(root),
+            pid: Some(pid),
         };
         assert_eq!(pins, [pinned]);
     }

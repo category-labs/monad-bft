@@ -18,13 +18,13 @@ use std::collections::HashSet;
 use super::super::{
     chunk::{ChunkRequest, ChunkRequestType, ChunksSubset},
     instance_rc::MissingChunks,
-    types::{MerkleRoot, NodeId, Timestamp, TimestampDelta},
+    types::{NodeId, ProposalId, Timestamp, TimestampDelta},
 };
 
-// the pulls for the chunks the pinned root still misses: ours from the
+// the pulls for the chunks the pinned proposal still misses: ours from the
 // decoded holders, everyone else's from their owners
 pub(crate) struct Recovery {
-    root: MerkleRoot,
+    pid: ProposalId,
     self_id: NodeId,
     // nodes that can derive our chunks: the author, then hinted holders
     decoded_holders: HashSet<NodeId>,
@@ -34,14 +34,14 @@ pub(crate) struct Recovery {
 
 impl Recovery {
     pub(crate) fn new(
-        root: MerkleRoot,
+        pid: ProposalId,
         author: NodeId,
         self_id: NodeId,
         first_pull: Timestamp,
         interval: TimestampDelta,
     ) -> Self {
         Self {
-            root,
+            pid,
             self_id,
             decoded_holders: HashSet::from([author]),
             my_chunks_timer: RetryTimer::new(first_pull, interval),
@@ -49,8 +49,8 @@ impl Recovery {
         }
     }
 
-    pub(crate) fn root(&self) -> MerkleRoot {
-        self.root
+    pub(crate) fn pid(&self) -> ProposalId {
+        self.pid
     }
 
     pub(crate) fn add_decoded_holders(&mut self, node_ids: Vec<NodeId>, now: Timestamp) {
@@ -76,22 +76,22 @@ impl Recovery {
     }
 
     fn ask_decoded_holders(&self, mine: ChunksSubset) -> Vec<(NodeId, ChunkRequest)> {
-        let root = self.root;
+        let pid = self.pid;
         let kind = ChunkRequestType::MyChunks;
         let mut requests = Vec::new();
         for holder in &self.decoded_holders {
             let subset = mine.clone();
-            requests.push((*holder, ChunkRequest { root, kind, subset }));
+            requests.push((*holder, ChunkRequest { pid, kind, subset }));
         }
         requests
     }
 
     fn ask_owners(&self, theirs: MissingChunks) -> Vec<(NodeId, ChunkRequest)> {
-        let root = self.root;
+        let pid = self.pid;
         let kind = ChunkRequestType::YourChunks;
         let mut requests = Vec::new();
         for (owner, subset) in theirs {
-            requests.push((owner, ChunkRequest { root, kind, subset }));
+            requests.push((owner, ChunkRequest { pid, kind, subset }));
         }
         requests
     }

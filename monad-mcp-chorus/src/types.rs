@@ -29,7 +29,7 @@ use bytes::Bytes;
 
 // the environment this module subtree is instantiated.
 pub use super::env::{
-    HeaderAuth, KeyPair, MerkleRoot, NodeId, ProposalHeader, PubKey, Signature,
+    HeaderAuth, KeyPair, MerkleRoot, NodeId, ProposalHeader, ProposalId, PubKey, Signature,
     SignatureCollection, SignedProposalHeader, Stake, ValidatorData, VoteAggregation,
 };
 pub use super::{
@@ -775,7 +775,7 @@ impl<T> std::ops::IndexMut<ProposalIndex> for ProposalMap<T> {
 // A helper wrapper type for a type-erased implementation of a trait
 pub struct Erased<T>(pub T);
 
-// invariant: .0.root() != .1.root() and both properly signed.
+// invariant: .0.pid() != .1.pid() and both properly signed.
 #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
 pub struct EquivCert(pub SignedProposalHeader, pub SignedProposalHeader);
 
