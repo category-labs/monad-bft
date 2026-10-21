@@ -2,7 +2,7 @@ node_id = 5
 proposal_key_pair = 5
 # unused by pq consensus; kept for NodeConfig and rpc compatibility
 cadence_key_pair = 5
-genesis_deadline = 1792616314000
+genesis_deadline = 1792617153067
 
 # ams-001
 [[validators]]
