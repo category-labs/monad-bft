@@ -141,8 +141,8 @@ impl DAEncodingScheme for EncodingScheme {
 
     fn depth(&self) -> u8 {
         match self {
-            EncodingScheme::D25(d25) => DAEncodingScheme::depth(d25),
-            EncodingScheme::S11(s11) => DAEncodingScheme::depth(s11),
+            EncodingScheme::D25(d25) => d25.depth(),
+            EncodingScheme::S11(s11) => s11.depth(),
         }
     }
 

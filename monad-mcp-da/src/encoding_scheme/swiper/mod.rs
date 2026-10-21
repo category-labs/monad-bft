@@ -290,10 +290,6 @@ mod header {
             Ok(bytes.get_u16_le())
         }
 
-        fn depth(&self) -> u8 {
-            self.depth
-        }
-
         fn v1_layout(&self) -> v1::Layout<'_, S11> {
             v1::Layout::new(self)
         }

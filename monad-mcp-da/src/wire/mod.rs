@@ -25,6 +25,7 @@ use monad_mcp_chorus::spec::{ProposalHeader as _, SignedProposalHeader as _};
 
 use super::{
     chunk::{Chunk, ChunkData, ProposalEnvelope, WireChunkId},
+    encoding_scheme::DAEncodingScheme,
     types::{
         D25, EncodingScheme, MerkleRoot, ProposalHeader, ProposalSignature, S11,
         SignedProposalHeader,
@@ -57,7 +58,7 @@ pub enum MalformedPacket {
 
 // the scheme's part of the header: every field but the root, and the
 // chunk header. the layout a proposal travels in is a function of it.
-pub trait DAHeaderScheme: Sized {
+pub trait DAHeaderScheme: DAEncodingScheme + Sized {
     const VARIANT: u8;
     const PROPOSAL_HEADER_LEN: usize;
     const CHUNK_HEADER_LEN: usize;
@@ -71,8 +72,6 @@ pub trait DAHeaderScheme: Sized {
     fn pack_chunk_header(chunk_id: WireChunkId, out: &mut impl BufMut);
     // the caller must pass exactly CHUNK_HEADER_LEN bytes
     fn unpack_chunk_header(buf: &mut impl Buf) -> Result<WireChunkId, MalformedPacket>;
-
-    fn depth(&self) -> u8;
 
     fn v1_layout(&self) -> v1::Layout<'_, Self>;
 }
