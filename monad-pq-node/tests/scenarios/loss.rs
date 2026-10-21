@@ -21,10 +21,10 @@ use monad_pq_node::{
 };
 use monad_sim_swarm::Network;
 
-use crate::harness::{SimNode, assert_progress, build_swarm, node_config, run_through};
+use crate::harness::{SimNode, assert_consistent_progress, build_swarm, node_config, run_through};
 
 // 8 validators, 2 never start, every wire message dropped with 10%
-// probability: the live 6 (exactly the strong quorum) keep finalizing
+// probability: the live 6 (exactly the strong quorum) finalize every slot
 // through retransmission
 #[test]
 fn six_of_eight_finalize_through_ten_percent_loss() {
@@ -43,5 +43,5 @@ fn six_of_eight_finalize_through_ten_percent_loss() {
     run_through(&mut swarm, SLOTS);
 
     let live: Vec<NodeId> = (0..LIVE).map(NodeId::dummy).collect();
-    assert_progress(&swarm, &live, Slot(SLOTS * 8 / 10));
+    assert_consistent_progress(&swarm, &live, Slot(SLOTS - 10));
 }

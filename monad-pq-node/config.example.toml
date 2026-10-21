@@ -14,10 +14,11 @@ genesis_deadline = 1789412000000
 node_id = 0
 stake = 1
 chorus_pubkey = 0
-address = "127.0.0.1:9300"
+address = "127.0.0.1:9290"
 
+# clear of swarm.sh (9300 up) and the swarm example (9400 up)
 [network]
-port = 9300
+port = 9290
 
 [cadence]
 delta = 50
@@ -54,7 +55,8 @@ dir = "/tmp/pq-demo/ledger"
 
 [quantum]
 signature = "stub"
-# 2420 emulates ML-DSA-44 sizes (needs fragmentation, not in v1)
+# 2420 emulates ML-DSA-44 sizes; rejected until fragmentation lands, as is
+# any length or num_proposals whose slot messages exceed one frame
 stub_signature_len = 32
 # ms; absent: cadence.delta
 retransmit_interval = 50
@@ -66,5 +68,8 @@ release_chunks = "vote"
 early_vote = true
 # "metablock" | "path-votes"
 ledger_proof = "path-votes"
-# misbehavior evidence under <ledger.dir>/evidence
+# misbehavior evidence under <ledger.dir>/evidence; only signed conflicts
+# prove misbehavior, the rest are filed as suspect-*
 evidence = true
+# evidence files this many slots behind the newest are pruned
+evidence_retention_slots = 1000

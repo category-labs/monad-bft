@@ -18,13 +18,19 @@
 //! K > 19) plugs in behind the same trait.
 
 use bytes::Bytes;
-use monad_mcp_chorus::spec::{Deserializable as _, Serializable as _};
-use monad_pq_chorus::{PqMessage, message::CodaMessage};
+use monad_mcp_chorus::spec::{Deserializable as _, ProposalHeader as _, Serializable as _};
+use monad_pq_chorus::{
+    PqMessage,
+    message::{CodaMessage, PathVoteBody, VoteBody},
+    sig::{Signed, StubPq},
+    types::{CodaValue, Entry, PathEntry},
+};
 
 use crate::{
     chorus::{
         CadenceMessage,
-        types::{NodeId, Timestamp},
+        env::{EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader, S11},
+        types::{NodeId, ProposalId, ProposalMap, Slot, Timestamp},
     },
     component::PqCadenceWireMsg,
 };
@@ -40,17 +46,24 @@ pub trait SlotWire: Send {
 }
 
 #[derive(Default)]
-pub struct Unfragmented;
+pub struct Unfragmented {
+    dropped: u64,
+}
 
 impl SlotWire for Unfragmented {
     fn encode(&mut self, message: &PqCadenceWireMsg) -> Vec<Bytes> {
         let payload: Bytes = message.serialize();
         if payload.len() > MAX_PAYLOAD_LEN {
-            tracing::warn!(
-                kind = kind(message),
-                len = payload.len(),
-                "pq message exceeds frame, dropped"
-            );
+            self.dropped += 1;
+            // the 1st, 2nd, 4th, 8th, ... drop, so a misfit cannot flood the log
+            if self.dropped.is_power_of_two() {
+                tracing::warn!(
+                    kind = kind(message),
+                    len = payload.len(),
+                    dropped = self.dropped,
+                    "pq message exceeds frame, dropped"
+                );
+            }
             return Vec::new();
         }
         vec![payload]
@@ -87,79 +100,89 @@ pub fn kind(message: &PqCadenceWireMsg) -> &'static str {
     }
 }
 
+const LARGEST_SLOT: Slot = Slot(u64::MAX / 2);
+
+// a pid whose header encodes at its largest
+fn largest_pid(j: usize) -> ProposalId {
+    ProposalHeader {
+        root: MerkleRoot(MerkleHash([j as u8; 20])),
+        scheme: EncodingScheme::S11(S11 {
+            slot: LARGEST_SLOT,
+            msg_len: u32::MAX,
+            unix_ts: u64::MAX,
+            proposer_index: u8::MAX,
+            depth: u8::MAX,
+        }),
+    }
+    .pid()
+}
+
+// every v1 slot message of a k-proposal slot at its largest, signed with
+// sig_len-byte stub signatures
+pub fn largest_messages(k: usize, sig_len: usize) -> Vec<PqMessage> {
+    let signer = NodeId::dummy(u64::MAX);
+    let key = StubPq::new(sig_len).signer(signer);
+    let roots = ProposalMap::new(k, |j| Entry::Root(largest_pid(j)));
+    let coda = ProposalMap::new(k, |j| CodaValue::Value(Entry::Root(largest_pid(j))));
+    let vote = VoteBody {
+        entries: roots.clone(),
+    };
+    let path_vote = PathVoteBody {
+        entries: ProposalMap::new(k, |j| PathEntry::Fallback(Entry::Root(largest_pid(j)))),
+    };
+    vec![
+        PqMessage::Vote(Signed::sign(LARGEST_SLOT, signer, vote, &key)),
+        PqMessage::PathVote(Signed::sign(LARGEST_SLOT, signer, path_vote, &key)),
+        PqMessage::Finalized(roots),
+        PqMessage::Coda(CodaMessage::Prepare {
+            view: u64::MAX,
+            x: coda.clone(),
+        }),
+        PqMessage::Coda(CodaMessage::Vote1 {
+            view: u64::MAX,
+            x: coda.clone(),
+        }),
+        PqMessage::Coda(CodaMessage::Vote2 {
+            view: u64::MAX,
+            lock: Some(coda.clone()),
+            guard: coda,
+        }),
+        PqMessage::Coda(CodaMessage::Echo {
+            view: u64::MAX,
+            j: u16::MAX,
+            v: CodaValue::Value(Entry::Root(largest_pid(0))),
+        }),
+    ]
+}
+
+// v1 sends each message in one frame: the first that cannot fit, with
+// its encoded length
+pub fn first_misfit(k: usize, sig_len: usize) -> Option<(&'static str, usize)> {
+    largest_messages(k, sig_len)
+        .into_iter()
+        .find_map(|message| {
+            let message: PqCadenceWireMsg = CadenceMessage::Slot(LARGEST_SLOT, message);
+            let payload: Bytes = message.serialize();
+            (payload.len() > MAX_PAYLOAD_LEN).then(|| (kind(&message), payload.len()))
+        })
+}
+
 #[cfg(test)]
 mod tests {
-    use monad_mcp_chorus::spec::ProposalHeader as _;
-    use monad_pq_chorus::{
-        message::{PathVoteBody, VoteBody},
-        sig::{Signed, StubPq},
-        types::{CodaValue, Entry, PathEntry},
-    };
-
     use super::*;
-    use crate::chorus::{
-        env::{EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader, S11},
-        types::{ProposalId, ProposalMap, Slot},
-    };
 
     const K: usize = 5;
-    const SLOT: Slot = Slot(u64::MAX / 2);
-
-    fn pid(j: usize) -> ProposalId {
-        ProposalHeader {
-            root: MerkleRoot(MerkleHash([j as u8; 20])),
-            scheme: EncodingScheme::S11(S11 {
-                slot: SLOT,
-                msg_len: u32::MAX,
-                unix_ts: u64::MAX,
-                proposer_index: j as u8,
-                depth: u8::MAX,
-            }),
-        }
-        .pid()
-    }
-
-    fn messages(sig_len: usize) -> Vec<PqMessage> {
-        let signer = NodeId::dummy(u64::MAX);
-        let key = StubPq::new(sig_len).signer(signer);
-        let roots = ProposalMap::new(K, |j| Entry::Root(pid(j)));
-        let coda = ProposalMap::new(K, |j| CodaValue::Value(Entry::Root(pid(j))));
-        let vote = VoteBody {
-            entries: roots.clone(),
-        };
-        let path_vote = PathVoteBody {
-            entries: ProposalMap::new(K, |j| PathEntry::Fallback(Entry::Root(pid(j)))),
-        };
-        vec![
-            PqMessage::Vote(Signed::sign(SLOT, signer, vote, &key)),
-            PqMessage::PathVote(Signed::sign(SLOT, signer, path_vote, &key)),
-            PqMessage::Finalized(roots),
-            PqMessage::Coda(CodaMessage::Prepare {
-                view: u64::MAX,
-                x: coda.clone(),
-            }),
-            PqMessage::Coda(CodaMessage::Vote1 {
-                view: u64::MAX,
-                x: coda.clone(),
-            }),
-            PqMessage::Coda(CodaMessage::Vote2 {
-                view: u64::MAX,
-                lock: Some(coda.clone()),
-                guard: coda,
-            }),
-            PqMessage::Coda(CodaMessage::Echo {
-                view: u64::MAX,
-                j: u16::MAX,
-                v: CodaValue::Value(Entry::Root(pid(0))),
-            }),
-        ]
-    }
+    const SLOT: Slot = LARGEST_SLOT;
 
     // §6.3: at K = 5 with the stub signature every v1 message fits a frame
     #[test]
     fn every_message_fits_a_frame_at_k5_with_the_stub_signature() {
-        let mut wire = Unfragmented;
-        for message in messages(monad_pq_chorus::sig::STUB_SIGNATURE_LEN) {
+        let mut wire = Unfragmented::default();
+        assert_eq!(
+            first_misfit(K, monad_pq_chorus::sig::STUB_SIGNATURE_LEN),
+            None
+        );
+        for message in largest_messages(K, monad_pq_chorus::sig::STUB_SIGNATURE_LEN) {
             let message = CadenceMessage::Slot(SLOT, message);
             let payloads = wire.encode(&message);
             assert_eq!(payloads.len(), 1, "{} does not fit", kind(&message));
@@ -176,17 +199,29 @@ mod tests {
 
     #[test]
     fn an_oversized_message_is_dropped() {
-        let mut wire = Unfragmented;
-        let [vote, ..] = &messages(2420)[..] else {
+        let mut wire = Unfragmented::default();
+        let [vote, ..] = &largest_messages(K, 2420)[..] else {
             unreachable!()
         };
         let message = CadenceMessage::Slot(SLOT, vote.clone());
-        assert!(wire.encode(&message).is_empty());
+        for _ in 0..3 {
+            assert!(wire.encode(&message).is_empty());
+        }
+        assert_eq!(wire.dropped, 3);
+    }
+
+    // ML-DSA-44 sized signatures, or too many proposals, need fragmentation
+    #[test]
+    fn the_misfits_are_found() {
+        assert_eq!(first_misfit(K, 2420).map(|(kind, _)| kind), Some("vote"));
+        let (kind, len) = first_misfit(64, monad_pq_chorus::sig::STUB_SIGNATURE_LEN).unwrap();
+        assert_eq!(kind, "vote");
+        assert!(len > MAX_PAYLOAD_LEN);
     }
 
     #[test]
     fn a_malformed_payload_is_rejected() {
-        let mut wire = Unfragmented;
+        let mut wire = Unfragmented::default();
         let payload = Bytes::from_static(b"\xc1\x09");
         assert!(
             wire.decode(NodeId::dummy(0), payload, Timestamp::GENESIS)

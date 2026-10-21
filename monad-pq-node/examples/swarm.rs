@@ -32,7 +32,8 @@ use monad_pq_node::{
     init_logging, run_node,
 };
 
-const BASE_PORT: u16 = 9300;
+// clear of swarm.sh (9300 up) and config.example.toml (9290)
+const BASE_PORT: u16 = 9400;
 const GENESIS_DELAY: TimestampDelta = TimestampDelta::from_millis(2000);
 
 fn address(i: u64) -> SocketAddr {

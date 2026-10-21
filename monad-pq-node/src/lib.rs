@@ -60,9 +60,10 @@ async fn run(config: PqNodeConfig) -> Result<(), RunError> {
     let node = PqNode::new(&config)?;
     let proposers = node.runtime().epoch_handle().proposers.clone();
     let sink = monad_mcp_node::ledger::LedgerSink::spawn(&config.base.ledger.dir)?;
+    let retention_slots = config.quantum.evidence_retention_slots;
     let evidence = config
         .evidence_dir()
-        .map(|dir| EvidenceSink::open(dir, config.base.node_id))
+        .map(|dir| EvidenceSink::spawn(dir, config.base.node_id, retention_slots))
         .transpose()?;
 
     let mut node = PqAsyncNode::spawn(node, Clock::start());
@@ -70,8 +71,8 @@ async fn run(config: PqNodeConfig) -> Result<(), RunError> {
     node.set_network(handle);
     let mut recorder = PqRecorder::new(proposers, sink, config.quantum.ledger_proof);
     node.on_finalization(move |finalized| recorder.record(finalized));
-    if let Some(evidence) = evidence {
-        node.on_evidence(move |slot, found| evidence.record(slot, &found));
+    if let Some(mut evidence) = evidence {
+        node.on_evidence(move |slot, found| evidence.record(slot, found));
     }
 
     let mut tasks = JoinSet::new();

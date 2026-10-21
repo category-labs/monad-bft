@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Summarize a local pq run: per-node finalized counts, cross-node agreement
-(lane roots of every slot finalized by more than one node), path breakdown
+(lane pids of every slot finalized by more than one node), path breakdown
 (fast / coda / gadget) and slot finalization latency after the deadline.
 
 usage: summarize.py --dir D --nodes N [--skip-slots S]
@@ -61,8 +61,9 @@ def read_ledger(path):
             data = json.loads(meta.read_text())
         except (OSError, json.JSONDecodeError):
             continue
-        lanes = tuple(lane.get("root") for lane in data["lanes"])
-        blocks[data["slot"]] = (lanes, data.get("deadline_ns"), data["finalized_at_ns"], data["tx_count"])
+        # the slot's metablock: each lane's committed pid, null for a negative lane
+        pids = tuple(lane["pid"] for lane in data["lanes"])
+        blocks[data["slot"]] = (pids, data["path"], data.get("deadline_ns"), data["finalized_at_ns"], data["tx_count"])
     return blocks
 
 
@@ -91,18 +92,23 @@ def main():
               f"{paths['Fast']:<6} {paths['Coda']:<6} {paths['Gadget']:<7} {len(halted):<7} "
               f"{proposed:<9} {warnings:<5} {errors}")
 
-    # agreement: every slot two nodes both stored has the same lane roots
+    # agreement: every slot two nodes both stored has the same lane pids. The
+    # path may differ: one node finalizes fast while another adopts via the gadget
     print()
     by_slot = defaultdict(dict)
+    paths_by_slot = defaultdict(set)
     for i, blocks in enumerate(ledgers):
-        for slot, (lanes, *_rest) in blocks.items():
-            by_slot[slot][i] = lanes
+        for slot, (pids, path, *_rest) in blocks.items():
+            by_slot[slot][i] = pids
+            paths_by_slot[slot].add(path)
     disagreements = [slot for slot, per_node in by_slot.items() if len(set(per_node.values())) > 1]
     common = [slot for slot, per_node in by_slot.items() if len(per_node) == args.nodes]
+    mixed_paths = sum(1 for paths in paths_by_slot.values() if len(paths) > 1)
     if disagreements:
         print(f"AGREEMENT VIOLATED in {len(disagreements)} slots, first {sorted(disagreements)[:5]}")
     else:
-        print(f"agreement: OK ({len(by_slot)} slots stored, {len(common)} by every node, no conflicts)")
+        print(f"agreement: OK ({len(by_slot)} slots stored, {len(common)} by every node, no conflicts, "
+              f"{mixed_paths} finalized on mixed paths)")
     finalized_sets = [set(f) for f, *_ in logs]
     if finalized_sets and all(s == finalized_sets[0] for s in finalized_sets):
         print(f"all nodes finalized the same {len(finalized_sets[0])} slots")
@@ -123,7 +129,7 @@ def main():
         for slot, (_, at, path) in finalized.items():
             if slot < args.skip_slots or slot not in ledgers[i]:
                 continue
-            deadline = ledgers[i][slot][1]
+            deadline = ledgers[i][slot][2]
             if deadline is None:
                 continue
             after = (at - deadline) / 1e6

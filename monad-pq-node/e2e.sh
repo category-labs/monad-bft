@@ -60,15 +60,21 @@ work=${E2E_DIR:-/tmp/pq-e2e}
 rm -rf "$work"
 mkdir -p "$work"
 pids=()
-cleanup() {
-    local status=$?
-    trap - EXIT INT TERM
+# SIGINT every service, then SIGKILL whatever is still up after 5 s
+stop_services() {
+    local pid
     for pid in "${pids[@]}"; do kill -INT "$pid" 2> /dev/null || true; done
     for pid in "${pids[@]}"; do
         for _ in $(seq 50); do kill -0 "$pid" 2> /dev/null || break; sleep 0.1; done
         kill -KILL "$pid" 2> /dev/null || true
         wait "$pid" 2> /dev/null || true
     done
+    pids=()
+}
+cleanup() {
+    local status=$?
+    trap - EXIT INT TERM
+    stop_services
     if ((status != 0 && status != 130)); then
         for f in "$work"/*.log; do
             [[ -f $f ]] || continue
@@ -171,9 +177,7 @@ echo
 
 # stop everything before reading the logs, so the summary covers whole runs
 cleanup_status=0
-for pid in "${pids[@]}"; do kill -INT "$pid" 2> /dev/null || true; done
-for pid in "${pids[@]}"; do wait "$pid" 2> /dev/null || true; done
-pids=()
+stop_services
 python3 "$here/scripts/summarize.py" --dir "$work" --nodes "$nodes" || cleanup_status=$?
 if grep -l 'panicked' "$work"/*.log > /dev/null 2>&1; then
     die "a service panicked: $(grep -l 'panicked' "$work"/*.log | xargs -n1 basename)"

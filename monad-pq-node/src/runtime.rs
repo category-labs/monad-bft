@@ -143,14 +143,15 @@ impl PqNodeRuntime {
         epoch_handle: EpochHandle,
         da_handle: da::EpochHandle,
         mempool: Option<SharedMempool>,
+        da_retention: u64,
     ) -> Self {
         Self {
             epoch_handle,
             da_handle,
-            collector: PqFinalizationCollector::default(),
+            collector: PqFinalizationCollector::new(da_retention),
             gate: ChainGate::default(),
             mempool,
-            wire: Box::new(Unfragmented),
+            wire: Box::<Unfragmented>::default(),
         }
     }
 
@@ -355,6 +356,7 @@ impl PqRuntime for PqNodeRuntime {
                     SlotLifecycle::CapAdvance { .. } => {}
                 }
                 self.collector.handle_lifecycle(event);
+                self.deliver_finalized(effects);
             }
 
             PqCadenceOutput::DACommand(slot, command) => {

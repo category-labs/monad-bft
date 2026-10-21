@@ -18,6 +18,7 @@
 
 use std::sync::Arc;
 
+use bytes::Bytes;
 use monad_mcp_chorus::ledger::{CommittedLane, FinalizationPath as LedgerPath, NewBlock, NewLane};
 use monad_mcp_node::ledger::LedgerSink;
 use monad_pq_chorus::{PqPath, PqProof};
@@ -51,12 +52,17 @@ pub fn pq_new_block(
         .into_iter()
         .zip(finalized.proposals.clone())
         .enumerate()
-        .map(|(index, (pid, payload))| NewLane {
-            proposer: proposers.and_then(|set| set.proposer(index)).map(u64::from),
-            committed: pid.zip(payload).map(|(pid, payload)| CommittedLane {
-                pid: *pid.as_bytes(),
-                payload,
-            }),
+        .map(|(index, (pid, payload))| {
+            // an unresolved lane keeps its pid; the empty payload reads back as decode_error
+            let payload =
+                payload.or_else(|| finalized.unresolved.contains(&index).then(Bytes::new));
+            NewLane {
+                proposer: proposers.and_then(|set| set.proposer(index)).map(u64::from),
+                committed: pid.zip(payload).map(|(pid, payload)| CommittedLane {
+                    pid: *pid.as_bytes(),
+                    payload,
+                }),
+            }
         })
         .collect();
     let path_votes = match proof {
@@ -158,7 +164,6 @@ impl PqRecorder {
 
 #[cfg(test)]
 mod tests {
-    use bytes::Bytes;
     use monad_mcp_chorus::{
         ledger::{LedgerReader, LedgerWriter},
         spec::ProposalHeader as _,
@@ -205,7 +210,25 @@ mod tests {
             path_votes: vec![(signer, vote)],
             proposals: ProposalMap::new(2, |j| (j == 0).then(|| Bytes::from_static(b"lane"))),
             lane_decoded_at: vec![Some(Timestamp::from_millis(1_050)), None],
+            unresolved: Vec::new(),
         }
+    }
+
+    #[test]
+    fn an_unresolved_lane_is_stored_with_its_pid_and_marked_undecodable() {
+        let dir = tempfile::tempdir().unwrap();
+        let writer = LedgerWriter::open(dir.path()).unwrap();
+        let mut slot = finalized(PqPath::Fast);
+        slot.proposals = ProposalMap::new(2, |_| None);
+        slot.lane_decoded_at = vec![None, None];
+        slot.unresolved = vec![0];
+        let meta = writer
+            .write(&pq_new_block(&slot, None, LedgerProof::Metablock))
+            .unwrap();
+        meta.check().unwrap();
+        assert_eq!(meta.lanes[0].pid, Some(*pid().as_bytes()));
+        assert!(meta.lanes[0].decode_error);
+        assert_eq!(meta.lanes[1].pid, None);
     }
 
     #[test]

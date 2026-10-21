@@ -68,8 +68,14 @@ write_configs() {
 
 pids=()
 
+# SIGINT every node, then SIGKILL whatever is still up after 5 s
 stop_nodes() {
+    local pid
     kill -INT "${pids[@]}" 2> /dev/null || true
+    for pid in "${pids[@]}"; do
+        for _ in $(seq 50); do kill -0 "$pid" 2> /dev/null || break; sleep 0.1; done
+        kill -KILL "$pid" 2> /dev/null || true
+    done
     wait 2> /dev/null || true
 }
 

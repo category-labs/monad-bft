@@ -46,6 +46,8 @@ pub struct PqFinalizedSlot {
     pub proposals: ProposalMap<Option<Bytes>>,
     // when DA resolved each committed lane here; None for ⊥
     pub lane_decoded_at: Vec<Option<Timestamp>>,
+    // committed lanes DA never resolved here before it forgot the slot
+    pub unresolved: Vec<ProposalIndex>,
 }
 
 impl PqFinalizedSlot {
@@ -81,14 +83,19 @@ impl SlotCollection {
             .all(|(j, pid)| pid.is_none_or(|pid| self.resolved.contains_key(&(j, pid))))
     }
 
-    // the caller checked is_complete
+    // the caller checked the slot finalized; lanes not yet resolved are
+    // listed as unresolved
     fn into_finalized(self, slot: Slot) -> PqFinalizedSlot {
-        let (at, finalized) = self.finalized.expect("complete");
+        let (at, finalized) = self.finalized.expect("finalized");
         let mut resolved = self.resolved;
         let mut lane_decoded_at = Vec::new();
+        let mut unresolved = Vec::new();
         let pids = finalized.metablock.as_ref().map(|entry| entry.root());
         let proposals = pids.map_indexed(|j, pid| {
-            let resolved = pid.map(|pid| resolved.remove(&(j, pid)).expect("complete"));
+            let resolved = pid.and_then(|pid| resolved.remove(&(j, pid)));
+            if pid.is_some() && resolved.is_none() {
+                unresolved.push(j);
+            }
             lane_decoded_at.push(resolved.as_ref().map(|&(_, at)| at));
             resolved.and_then(|(message, _)| message.ok())
         });
@@ -103,19 +110,29 @@ impl SlotCollection {
             path_votes: finalized.path_votes,
             proposals,
             lane_decoded_at,
+            unresolved,
         }
     }
 }
 
 // joins a slot's `PqEvent::Final` with DA's resolution of its committed
 // proposals, which arrive in either order
-#[derive(Default)]
 pub struct PqFinalizationCollector {
     slots: BTreeMap<Slot, SlotCollection>,
     ready: VecDeque<PqFinalizedSlot>,
+    // DA's completed_slot_retention: it forgets slots this far below the cap
+    da_retention: u64,
 }
 
 impl PqFinalizationCollector {
+    pub fn new(da_retention: u64) -> Self {
+        Self {
+            slots: BTreeMap::new(),
+            ready: VecDeque::new(),
+            da_retention,
+        }
+    }
+
     pub fn handle_final(&mut self, at: Timestamp, slot: Slot, finalized: PqFinal) {
         let collection = self.slots.entry(slot).or_default();
         if collection.finalized.is_some() {
@@ -155,8 +172,27 @@ impl PqFinalizationCollector {
             SlotLifecycle::CapAdvance { cap } => {
                 self.slots
                     .retain(|&slot, c| slot >= cap || c.finalized.is_some());
+                self.give_up_below(cap);
             }
             SlotLifecycle::Completed { .. } => {}
+        }
+    }
+
+    // a finalized slot DA has forgotten never resolves: it goes out with
+    // its missing lanes marked rather than waiting forever
+    fn give_up_below(&mut self, cap: Slot) {
+        let Some(resolvable) = cap.checked_sub(self.da_retention) else {
+            return;
+        };
+        let kept = self.slots.split_off(&resolvable);
+        for (slot, collection) in std::mem::replace(&mut self.slots, kept) {
+            let finalized = collection.into_finalized(slot);
+            tracing::warn!(
+                slot = slot.0,
+                unresolved = ?finalized.unresolved,
+                "finalized slot never resolved here, stored with lanes missing"
+            );
+            self.ready.push_back(finalized);
         }
     }
 
@@ -183,6 +219,8 @@ mod tests {
 
     use super::*;
     use crate::chorus::env::{D25, EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader};
+
+    const RETENTION: u64 = 50;
 
     fn pid(slot: u64) -> ProposalId {
         ProposalHeader {
@@ -214,7 +252,7 @@ mod tests {
 
     #[test]
     fn a_slot_completes_once_finalized_and_resolved_in_either_order() {
-        let mut collector = PqFinalizationCollector::default();
+        let mut collector = PqFinalizationCollector::new(RETENTION);
         collector.handle_final(Timestamp::from_millis(10), Slot(3), final_of(3));
         assert!(collector.poll().is_none());
         resolve(&mut collector, 3);
@@ -237,7 +275,7 @@ mod tests {
 
     #[test]
     fn an_all_bot_metablock_completes_at_once() {
-        let mut collector = PqFinalizationCollector::default();
+        let mut collector = PqFinalizationCollector::new(RETENTION);
         let mut finalized = final_of(1);
         finalized.metablock = ProposalMap::new(2, |_| Entry::Bot);
         collector.handle_final(Timestamp::from_millis(1), Slot(1), finalized);
@@ -249,7 +287,7 @@ mod tests {
 
     #[test]
     fn a_cap_advance_drops_unfinalized_slots_below_it() {
-        let mut collector = PqFinalizationCollector::default();
+        let mut collector = PqFinalizationCollector::new(RETENTION);
         resolve(&mut collector, 3);
         resolve(&mut collector, 5);
         collector.handle_final(Timestamp::from_millis(2), Slot(2), final_of(2));
@@ -258,5 +296,25 @@ mod tests {
             collector.slots.keys().copied().collect::<Vec<_>>(),
             [Slot(2), Slot(5)]
         );
+    }
+
+    #[test]
+    fn a_finalized_slot_da_forgot_goes_out_with_its_lanes_marked_missing() {
+        let mut collector = PqFinalizationCollector::new(RETENTION);
+        collector.handle_final(Timestamp::from_millis(2), Slot(2), final_of(2));
+        collector.handle_lifecycle(SlotLifecycle::CapAdvance {
+            cap: Slot(2 + RETENTION),
+        });
+        assert!(collector.poll().is_none());
+
+        collector.handle_lifecycle(SlotLifecycle::CapAdvance {
+            cap: Slot(3 + RETENTION),
+        });
+        let done = collector.poll().unwrap();
+        assert_eq!(done.slot, Slot(2));
+        assert_eq!(done.unresolved, [0]);
+        assert_eq!(done.pids()[0], Some(pid(2)));
+        assert_eq!(done.proposals[0], None);
+        assert!(collector.slots.is_empty());
     }
 }

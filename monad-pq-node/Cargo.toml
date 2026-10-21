@@ -19,4 +19,8 @@ monad-pq-da = { path = "../monad-pq-da" }
 [dev-dependencies]
 monad-sim = { workspace = true }
 monad-sim-swarm = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
 tempfile = { workspace = true }
+
+monad-mcp-rpc = { path = "../monad-mcp-rpc" }

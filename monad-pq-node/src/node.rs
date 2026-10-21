@@ -98,7 +98,12 @@ impl PqNode {
             .ok_or_else(|| PqConfigError("[repeater] is required".into()))?;
 
         Ok(Self {
-            runtime: PqNodeRuntime::new(handle, da_handle, mempool),
+            runtime: PqNodeRuntime::new(
+                handle,
+                da_handle,
+                mempool,
+                base.da.completed_slot_retention,
+            ),
             cadence,
             da,
             proposing,

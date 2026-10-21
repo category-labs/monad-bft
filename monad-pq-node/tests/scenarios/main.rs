@@ -16,9 +16,11 @@
 //! Whole pq-node scenarios on the deterministic simulator, with the real
 //! pq DA (§14.4).
 
+mod cap_jump;
 mod equivocation;
 mod harness;
 mod loss;
 mod mute;
 mod partition;
 mod tamper;
+mod wan;

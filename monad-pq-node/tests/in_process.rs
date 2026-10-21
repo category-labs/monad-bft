@@ -308,6 +308,8 @@ fn halted_slots_complete_and_the_chain_rolls_over_windows() {
     let mut config = config();
     config.base.cadence.slots_per_window = 10.try_into().unwrap();
     config.base.cadence.sync_boundary_slots = 8.try_into().unwrap();
+    // two repeats fit the 2 slots after the sync boundary
+    config.base.repeater.as_mut().unwrap().interval = TimestampDelta::from_millis(100);
     let mut harness = Harness::new(&config);
     harness.run_until(at(GENESIS_MS + 5_000));
     let last = harness.finalized.last().unwrap().slot;

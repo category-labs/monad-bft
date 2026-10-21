@@ -612,14 +612,15 @@ pub enum Evidence {
 | `FallbackQuorum` (`lem:qv:acc-f`) | `Accountability(D+4Δ)` with not finalized: per j with ≥ strong path votes holding a fallback entry | `path_votes` |
 
 Surfacing:
-1. `warn!(slot, kind, culprit, "misbehavior evidence")`.
-2. `CommitOptimistic(PqEvent::Evidence)` → node `EvidenceSink` writes `<ledger.dir>/evidence/<slot:012>-<kind>-<culprit>.rlp`. RLP of `Evidence` contains signed bodies plus `(slot, signer)`, so a third party can verify it with the signer's pubkey.
+1. `CommitOptimistic(PqEvent::Evidence)` → node `EvidenceSink`, which hands it to an `evidence-writer` thread (never the event loop) that writes `<ledger.dir>/evidence/<slot:012>-<kind>-<culprit>.rlp`. RLP of `Evidence` contains signed bodies plus `(slot, signer)`, so a third party can verify it with the signer's pubkey.
+2. Only the self-proving kinds (equivocating headers, conflicting votes, conflicting path votes) keep their plain kind and log `warn!("misbehavior proven")`. `FallbackQuorum` and `PartialDissemination` hold only for a timely slot, so they and vote dumps are filed as `suspect-<kind>` and logged as `"misbehavior suspected"`.
+3. Files more than `[quantum] evidence_retention_slots` (default 1000) behind the newest are pruned, including a previous run's; vote dumps are capped at 10 per 100 slots.
 
 Evidence stays outside `blocks/`, so `LedgerReader`, the explorer and `cruft.sh` (which matches `^[0-9]{12}$` under `blocks/`) are unaffected.
 
 Two notes on limits:
 - `PartialDissemination` convicts only under ≤ ⌊f/2⌋ Byzantine validators (the lemma's premise). It is filed as kind `suspect-partial-dissemination`.
-- Cross-validator `ConflictingVotes` (`lem:qv:acc-f` case 2) needs two validators' views. v1 dumps all signed votes of a slot not finalized by D+4Δ to `evidence/<slot>-votes-<self>.rlp`, for offline comparison (deviation D20).
+- Cross-validator `ConflictingVotes` (`lem:qv:acc-f` case 2) needs two validators' views. v1 dumps all signed votes of a slot not finalized by D+4Δ to `evidence/<slot>-suspect-votes-<self>.rlp`, for offline comparison (deviation D20).
 
 Ledger `proof.rlp` = `rlp(PqProof { version: 1, path: PqPath, metablock, path_votes: Vec<Signed<PathVoteBody>> })`. The path votes are the `strong` fast-path votes, included when `[quantum] ledger_proof = "path-votes"` (default with the stub sig); otherwise they are left empty. There is no transferable certificate by design.
 
@@ -686,7 +687,7 @@ dir = "/home/monad/monad-pq/ledger"
 
 [quantum]
 signature = "stub"            # "stub" | (later) "ml-dsa-44"
-stub_signature_len = 32       # set 2420 to emulate ML-DSA-44 sizes (needs fragmentation)
+stub_signature_len = 32       # 2420 emulates ML-DSA-44 sizes; rejected until fragmentation lands
 retransmit_interval = 150     # ms, default = cadence.delta
 decode_grace = 75             # ms, default = cadence.delta / 2; must be ≤ delta / 2
 coda_timeout_deltas = 5
@@ -694,6 +695,7 @@ release_chunks = "vote"       # "vote" | "receipt"
 early_vote = true
 ledger_proof = "path-votes"   # "metablock" | "path-votes"
 evidence = true
+evidence_retention_slots = 1000
 
 [rpc]                         # read by monad-mcp-rpc only
 latency = "latency.toml"
@@ -798,17 +800,20 @@ Properties checked on every swarm run:
 
 - `in_process.rs`: a single node; txs via `Packet::Tx`; ledger blocks readable by `LedgerReader`; `BlockMeta::check()` passes.
 - `scenarios/` (dup of `monad-mcp-node/tests/scenarios/harness.rs`, real DA over `monad-sim-swarm`):
-  - `loss` (8 nodes, 2 never start, 10 % loss, 500 slots);
+  - `loss` (8 nodes, 2 never start, 10 % loss, 300 slots; no gaps);
   - `mute`;
   - `partition`;
+  - `cap_jump` (2 of 8 cut off for 4 s, past `lag_threshold`; they rejoin by a cap jump);
+  - `wan` (mcp_test timing over the mcp_test RTT/2 matrix: ≥ 95 % fast path; 7 of 8 live with 2 % loss: no gaps);
   - `tamper` (equivocating proposer via a runtime wrapper);
-  - `equivocation_partition` (B1 scenario with real DA);
-  - `stub_sig_len = 2420` (expects oversize warnings until fragmentation lands).
+  - `equivocation_partition` (B1 scenario with real DA).
+- `loopback.rs`: 4 `run_node`s over loopback UDP on ephemeral ports for a few seconds; their ledgers agree.
+- `stub_signature_len = 2420` (or a `num_proposals` whose slot messages exceed one frame) is rejected by config validation until fragmentation lands.
 
 ### 14.5 Local swarm and e2e
 
-- `monad-pq-node/swarm.sh [nodes] [secs]`: `SWARM_DIR=/tmp/pq-swarm`, `BASE_PORT=9200`. It checks finalized-slot agreement across nodes and the all-committed ratio.
-- `monad-pq-node/e2e/run.sh [--swarm N] [--serve]`: the pq node + `monad-mcp-rpc` + `monad-mcp-explorer`, with the Playwright checks of the explorer e2e.
+- `monad-pq-node/swarm.sh [nodes] [secs]`: `SWARM_DIR=/tmp/pq-swarm`, `BASE_PORT=9300`. It checks finalized-slot agreement (lane pids) across nodes and the all-committed ratio. `examples/swarm.rs` (one process) counts up from 9400, and `config.example.toml` uses 9290.
+- `monad-pq-node/e2e.sh [--swarm N] [--seconds S]`: the pq node + `monad-mcp-rpc` + `monad-mcp-explorer` on free ports, under tx load through the explorer, the rpc and raw udp; it reports e2e latency and the swarm summary. No Playwright checks.
 
 ### 14.6 e2e latency
 

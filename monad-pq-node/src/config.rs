@@ -36,6 +36,7 @@ use serde::Deserialize;
 use crate::{
     chorus::types::{NodeId, Slot, Timestamp, TimestampDelta},
     da::{self, AssembledProposal, ProposalKeyPair},
+    wire::{self, MAX_PAYLOAD_LEN},
 };
 
 pub struct PqNodeConfig {
@@ -85,6 +86,8 @@ pub struct QuantumSection {
     pub ledger_proof: LedgerProof,
     // write evidence files under <ledger.dir>/evidence
     pub evidence: bool,
+    // evidence files more than this many slots behind the newest are pruned
+    pub evidence_retention_slots: u64,
 }
 
 impl Default for QuantumSection {
@@ -99,6 +102,7 @@ impl Default for QuantumSection {
             early_vote: true,
             ledger_proof: LedgerProof::PathVotes,
             evidence: true,
+            evidence_retention_slots: 1_000,
         }
     }
 }
@@ -143,6 +147,9 @@ pub const DEMO_WITHHOLD_BEFORE_MS: u64 = 90;
 pub const DEMO_REPEATER_INTERVAL_MS: u64 = 200;
 // a lane rotates every 100 slots and is vacant for 5 of them
 pub const DEMO_ROTATION_SLACK: u64 = 95;
+// a repeater interval past this many deltas draws a warning
+pub const MAX_REPEATER_DELTAS: u32 = 4;
+const NANOS_PER_MS: u128 = TimestampDelta::NANOS_PER_MILLISECOND as u128;
 
 impl PqNodeConfig {
     pub fn parse(text: &str) -> Result<Self, PqConfigError> {
@@ -223,9 +230,7 @@ impl PqNodeConfig {
                 "[repeater] is required: it keeps Finalized alive after halt",
             ));
         };
-        if repeater.interval == TimestampDelta::ZERO {
-            return Err(invalid("repeater.interval must be positive"));
-        }
+        self.check_repeater_interval(repeater.interval)?;
         let lag_threshold = self.base.cadence.lag_threshold.get();
         if repeater.certificate_retention < lag_threshold {
             return Err(invalid(format!(
@@ -241,6 +246,18 @@ impl PqNodeConfig {
             return Err(invalid("[rpc] needs [proposal] source = \"mempool\""));
         }
         self.check_every_validator_owed()?;
+        if let Some((kind, len)) = wire::first_misfit(
+            self.base.proposal.num_proposals,
+            self.quantum.stub_signature_len,
+        ) {
+            return Err(invalid(format!(
+                "a {kind} of {len} bytes exceeds the {MAX_PAYLOAD_LEN}-byte frame at num_proposals {} and stub_signature_len {}; v1 does not fragment",
+                self.base.proposal.num_proposals, self.quantum.stub_signature_len
+            )));
+        }
+        if self.quantum.evidence_retention_slots == 0 {
+            return Err(invalid("quantum.evidence_retention_slots must be positive"));
+        }
 
         let proposal = &self.base.proposal;
         let lead = proposal.propose_before_deadline.as_nanos();
@@ -256,6 +273,37 @@ impl PqNodeConfig {
             tracing::warn!(
                 n = self.base.validators.len(),
                 "n divisible by 3: f+1 holders do not guarantee decoding"
+            );
+        }
+        Ok(())
+    }
+
+    // a node behind the sync boundary needs at least two repeats of each
+    // Finalized before the window closes
+    fn check_repeater_interval(&self, interval: TimestampDelta) -> Result<(), PqConfigError> {
+        if interval == TimestampDelta::ZERO {
+            return Err(invalid("repeater.interval must be positive"));
+        }
+        let cadence = &self.base.cadence;
+        let tail_slots = cadence
+            .slots_per_window
+            .get()
+            .saturating_sub(cadence.sync_boundary_slots.get());
+        let bound = u128::from(cadence.slot_interval.as_nanos()) * u128::from(tail_slots) / 2;
+        let interval_ns = u128::from(interval.as_nanos());
+        if interval_ns > bound {
+            return Err(invalid(format!(
+                "repeater.interval {} ms exceeds half of the {tail_slots} slots after the sync boundary ({} ms)",
+                interval_ns / NANOS_PER_MS,
+                bound / NANOS_PER_MS
+            )));
+        }
+        let delta_ns = u128::from(cadence.delta.as_nanos());
+        if interval_ns > delta_ns * u128::from(MAX_REPEATER_DELTAS) {
+            tracing::warn!(
+                interval_ms = interval_ns / NANOS_PER_MS,
+                delta_ms = delta_ns / NANOS_PER_MS,
+                "repeater.interval above {MAX_REPEATER_DELTAS} deltas slows catch-up after halt"
             );
         }
         Ok(())
@@ -330,6 +378,8 @@ impl PqNodeConfig {
 
 #[cfg(test)]
 mod tests {
+    use monad_mcp_rpc::config::RpcSection;
+
     use super::*;
 
     const EXAMPLE: &str = include_str!("../config.example.toml");
@@ -359,17 +409,15 @@ mod tests {
         let node: NodeConfig = toml::from_str(&text).unwrap();
         node.validate().unwrap();
 
-        #[derive(Deserialize)]
-        struct RpcFile {
-            rpc: RpcTable,
-        }
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct RpcTable {
-            lead_margin_ms: Option<u64>,
-        }
-        let file: RpcFile = toml::from_str(&text).unwrap();
-        assert_eq!(file.rpc.lead_margin_ms, Some(50));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("node.toml");
+        std::fs::write(&path, &text).unwrap();
+        let mut rpc = RpcSection::parse(&text).unwrap();
+        assert_eq!(rpc.lead_margin_ms, Some(50));
+        rpc.node_config = Some(path);
+        let rpc = rpc.build().unwrap();
+        assert_eq!(rpc.node_id, node.node_id);
+        assert_eq!(rpc.ledger_dir, node.ledger.dir);
 
         let config = PqNodeConfig::parse(&text).unwrap();
         assert!(config.has_rpc);
@@ -415,6 +463,34 @@ mod tests {
         let mut config = base();
         config.has_rpc = true;
         config.base.proposal.source = SourceKind::Random;
+        assert!(config.validate().is_err());
+
+        let mut config = base();
+        config.quantum.evidence_retention_slots = 0;
+        assert!(config.validate().is_err());
+    }
+
+    // 20 slots of 100 ms past the sync boundary: at most 1000 ms
+    #[test]
+    fn a_repeater_too_slow_for_the_sync_window_is_rejected() {
+        let mut config = PqNodeConfig::parse(EXAMPLE).unwrap();
+        let repeater = config.base.repeater.as_mut().unwrap();
+        repeater.interval = TimestampDelta::from_millis(1_000);
+        config.validate().unwrap();
+        config.base.repeater.as_mut().unwrap().interval = TimestampDelta::from_millis(1_001);
+        assert!(config.validate().is_err());
+        config.base.repeater.as_mut().unwrap().interval = TimestampDelta::ZERO;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn slot_messages_that_cannot_fit_a_frame_are_rejected() {
+        let mut config = PqNodeConfig::parse(EXAMPLE).unwrap();
+        config.quantum.stub_signature_len = 2420;
+        assert!(config.validate().is_err());
+
+        let mut config = PqNodeConfig::parse(EXAMPLE).unwrap();
+        config.base.proposal.num_proposals = 64;
         assert!(config.validate().is_err());
     }
 
