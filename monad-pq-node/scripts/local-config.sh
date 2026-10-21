@@ -7,7 +7,7 @@
 #   write_pq_config <out> <node_id> <genesis_ms> <ledger_dir> <port_0> ... <port_n-1>
 #
 # Overrides (env): PQ_DELTA_MS (50), PQ_SLOT_MS (100), PQ_PROPOSE_MS (100),
-# PQ_WITHHOLD_MS (90), PQ_ROTATION_SLACK (95), PQ_REPEATER_MS (200),
+# PQ_WITHHOLD_MS (90), PQ_ROTATION_SLACK (95; 995 for a lone validator), PQ_REPEATER_MS (200),
 # PQ_RETRANSMIT_MS (= delta), PQ_DECODE_GRACE_MS (= delta / 2),
 # PQ_SOURCE (mempool), PQ_RELEASE_CHUNKS (vote).
 
@@ -16,6 +16,8 @@ write_pq_config() {
     shift 4
     local ports=("$@")
     local delta=${PQ_DELTA_MS:-50}
+    # a lone validator cannot cover its lane's 5-slot rotation vacancy: rotate every 1000 slots, not 100
+    local slack=${PQ_ROTATION_SLACK:-$((${#ports[@]} == 1 ? 995 : 95))}
     local v
     {
         cat << EOF
@@ -60,7 +62,7 @@ propose_before_deadline = ${PQ_PROPOSE_MS:-100}
 withhold_before_deadline = ${PQ_WITHHOLD_MS:-90}
 
 [leader_election]
-rotation_slack = ${PQ_ROTATION_SLACK:-95}
+rotation_slack = $slack
 
 [ledger]
 dir = "$ledger"
