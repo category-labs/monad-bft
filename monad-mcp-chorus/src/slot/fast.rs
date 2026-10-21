@@ -149,9 +149,9 @@ impl FastPath {
         voter: NodeId,
         vote_msg: BatchVoteMsg,
     ) -> Option<FastBlock> {
-        let shape_valid =
-            vote_msg.slot == self.slot && vote_msg.votes.size() == self.proposals.size();
-        if !shape_valid {
+        let in_slot = vote_msg.slot == self.slot;
+        let one_vote_per_lane = vote_msg.votes.size() == self.proposals.size();
+        if !in_slot || !one_vote_per_lane {
             return None;
         }
 
@@ -178,7 +178,9 @@ impl FastPath {
     ) -> Option<FastCommitQc> {
         debug_assert!(self.validator_data.contains(&voter));
 
-        if vote_msg.scope != self.slot {
+        let in_slot = vote_msg.scope == self.slot;
+        let one_entry_per_lane = vote_msg.vote.entries.size() == self.proposals.size();
+        if !in_slot || !one_entry_per_lane {
             return None;
         }
 
@@ -188,12 +190,7 @@ impl FastPath {
     }
 
     pub(crate) fn handle_fast_block(&mut self, fast_block: FastBlock) -> Option<FastBlock> {
-        let all_qcs_valid = fast_block
-            .0
-            .as_ref()
-            .into_iter()
-            .all(|qc| qc.verify(&self.validator_data));
-        if !all_qcs_valid {
+        if !self.fast_block_is_valid(&fast_block) {
             return None;
         }
 
@@ -202,6 +199,22 @@ impl FastPath {
         }
 
         self.try_cast_fast_commit_vote()
+    }
+
+    fn fast_block_is_valid(&self, fast_block: &FastBlock) -> bool {
+        if fast_block.0.size() != self.proposals.size() {
+            return false;
+        }
+        fast_block.0.as_ref().into_indexed_iter().all(|(j, qc)| {
+            let at_its_lane = qc.scope == ProposalScope::new(self.slot, j);
+            at_its_lane && qc.verify(&self.validator_data)
+        })
+    }
+
+    pub(crate) fn fast_commit_qc_is_valid(&self, qc: &FastCommitQc) -> bool {
+        qc.scope == self.slot
+            && qc.verdict.entries.size() == self.proposals.size()
+            && qc.verify(&self.validator_data)
     }
 
     pub(crate) fn handle_fallback_vote(&mut self, voter: NodeId, vote_msg: FallbackVoteMsg) {
@@ -791,10 +804,10 @@ impl CertifiedEntry {
         qc.decoded_holders(validator_data)
     }
 
-    /// Whether this certificate is well-formed and carries valid
-    /// signatures. Authenticity is enforced at message ingress (see the
-    /// crate header); we restate it at adoption points to make the trust
-    /// boundary explicit and catch protocol-logic bugs.
+    /// Whether this certificate is bound to `scope`, is well-formed and
+    /// carries valid signatures. Authenticity is enforced at message ingress
+    /// (see the crate header); we restate it at adoption points to make the
+    /// trust boundary explicit and catch protocol-logic bugs.
     pub(crate) fn verify(
         &self,
         scope: ProposalScope,
@@ -802,8 +815,8 @@ impl CertifiedEntry {
         validator_data: &ValidatorData,
     ) -> bool {
         match self {
-            CertifiedEntry::FastQc(qc) => qc.verify(validator_data),
-            CertifiedEntry::FallbackQc(qc) => qc.verify(validator_data),
+            CertifiedEntry::FastQc(qc) => qc.scope == scope && qc.verify(validator_data),
+            CertifiedEntry::FallbackQc(qc) => qc.scope == scope && qc.verify(validator_data),
             CertifiedEntry::EquivCert(EquivCert(a, b)) => {
                 let ProposalScope { slot: s, lane: j } = scope;
                 let a_authentic = header_auth.validate(a, s.get(), j);
@@ -1134,7 +1147,10 @@ mod tests {
         super::{
             super::proposers,
             chorus::ProposalDAEvent,
-            types::{FixedProposerSchedule, ProposerSchedule as _, Stake, ValidatorData},
+            types::{
+                FixedProposerSchedule, MAX_PROPOSER_SET_SIZE, ProposerSchedule as _, Stake,
+                ValidatorData,
+            },
         },
         *,
     };
@@ -1180,9 +1196,14 @@ mod tests {
 
     // the local node is validator 1 among 4, one proposal per slot
     fn fast_path() -> FastPath {
-        // index 0 is held by validator 0; consensus and header
-        // authentication read the one schedule, so they cannot disagree
-        let schedule = Arc::new(FixedProposerSchedule::new(vec![NodeId::dummy(0)]));
+        fast_path_of(vec![NodeId::dummy(0)])
+    }
+
+    // the local node is validator 1 among 4, one lane per proposer
+    fn fast_path_of(proposers: Vec<NodeId>) -> FastPath {
+        // consensus and header authentication read the one schedule, so
+        // they cannot disagree
+        let schedule = Arc::new(FixedProposerSchedule::new(proposers));
         let proposers = schedule
             .proposers_at(SLOT)
             .expect("fixed schedule is always available");
@@ -1204,23 +1225,114 @@ mod tests {
         commands
     }
 
-    // a fast qc on header(byte) signed by validators 0, 2 and 3
-    fn fast_block(byte: u8) -> FastBlock {
-        let mut pool = VotePool::new(ProposalScope::new(SLOT, Lane::new_unchecked(0)));
+    // a fast qc on header(byte) at `scope`, signed by validators 0, 2 and 3
+    fn fast_qc(scope: ProposalScope, byte: u8) -> FastQc {
+        let mut pool = VotePool::new(scope);
         for index in [0, 2, 3] {
             let voter = NodeId::dummy(index);
-            let msg = VoteMsg::new_signed(
-                ProposalScope::new(SLOT, Lane::new_unchecked(0)),
-                Entry::Positive(pid(byte)),
-                &voter.keypair(),
-            );
+            let msg = VoteMsg::new_signed(scope, Entry::Positive(pid(byte)), &voter.keypair());
             pool.add_vote(voter, msg);
         }
-        let qc = pool
-            .tally(&validator_data(4))
+        pool.tally(&validator_data(4))
             .strong_qc()
-            .expect("three of four votes form a fast qc");
+            .expect("three of four votes form a fast qc")
+    }
+
+    fn fast_block(byte: u8) -> FastBlock {
+        let qc = fast_qc(ProposalScope::new(SLOT, Lane::new_unchecked(0)), byte);
         FastBlock(Lanes::new(1, |_| qc.clone()))
+    }
+
+    // a fast commit qc on `entries`, signed by validators 0, 2 and 3
+    fn fast_commit_qc(entries: Lanes<Entry>) -> FastCommitQc {
+        let vote = FastCommitVote { entries };
+        let mut pool = VotePool::new(SLOT);
+        for index in [0, 2, 3] {
+            let voter = NodeId::dummy(index);
+            let msg = VoteMsg::new_signed(SLOT, vote.clone(), &voter.keypair());
+            pool.add_vote(voter, msg);
+        }
+        pool.tally(&validator_data(4))
+            .strong_qc()
+            .expect("three of four votes form a fast commit qc")
+    }
+
+    #[test]
+    fn a_fast_block_with_extra_lanes_is_rejected() {
+        let mut fast = fast_path();
+        let qc = fast_qc(ProposalScope::new(SLOT, Lane::new_unchecked(0)), 1);
+        let padded = FastBlock(Lanes::new(MAX_PROPOSER_SET_SIZE, |_| qc.clone()));
+
+        assert!(fast.handle_fast_block(padded).is_none());
+        assert!(fast.certs[Lane::new_unchecked(0)].fast_qc().is_none());
+    }
+
+    #[test]
+    fn a_fast_block_with_a_qc_from_another_slot_is_rejected() {
+        let mut fast = fast_path();
+        let other_slot = Slot(SLOT.get() + 1);
+        let qc = fast_qc(ProposalScope::new(other_slot, Lane::new_unchecked(0)), 1);
+        let replayed = FastBlock(Lanes::new(1, |_| qc.clone()));
+
+        assert!(fast.handle_fast_block(replayed).is_none());
+        assert!(fast.certs[Lane::new_unchecked(0)].fast_qc().is_none());
+    }
+
+    #[test]
+    fn a_fast_block_with_its_qcs_on_swapped_lanes_is_rejected() {
+        let mut fast = fast_path_of(vec![NodeId::dummy(0), NodeId::dummy(2)]);
+        let lane_0 = fast_qc(ProposalScope::new(SLOT, Lane::new_unchecked(0)), 1);
+        let lane_1 = fast_qc(ProposalScope::new(SLOT, Lane::new_unchecked(1)), 2);
+        let swapped = FastBlock(Lanes::new(2, |j| match usize::from(j) {
+            0 => lane_1.clone(),
+            _ => lane_0.clone(),
+        }));
+        assert!(fast.handle_fast_block(swapped).is_none());
+
+        let ordered = FastBlock(Lanes::new(2, |j| match usize::from(j) {
+            0 => lane_0.clone(),
+            _ => lane_1.clone(),
+        }));
+        assert!(fast.handle_fast_block(ordered).is_some());
+    }
+
+    #[test]
+    fn a_certified_entry_verifies_only_at_its_own_lane() {
+        let validator_data = validator_data(4);
+        let header_auth = HeaderAuth::new(|_, _| None);
+        let lane_0 = fast_qc(ProposalScope::new(SLOT, Lane::new_unchecked(0)), 1);
+        let cert = CertifiedEntry::FastQc(lane_0);
+
+        let verify_at = |slot, lane| {
+            let scope = ProposalScope::new(slot, Lane::new_unchecked(lane));
+            cert.verify(scope, &header_auth, &validator_data)
+        };
+        assert!(verify_at(SLOT, 0));
+        assert!(!verify_at(SLOT, 1));
+        assert!(!verify_at(Slot(SLOT.get() + 1), 0));
+    }
+
+    #[test]
+    fn a_fast_commit_vote_with_extra_lanes_is_not_counted() {
+        let mut fast = fast_path();
+        let padded = FastCommitVote {
+            entries: Lanes::new(2, |_| Entry::Negative),
+        };
+        for index in [0, 2, 3] {
+            let voter = NodeId::dummy(index);
+            let msg = VoteMsg::new_signed(SLOT, padded.clone(), &voter.keypair());
+            assert!(fast.handle_commit_vote(voter, msg).is_none());
+        }
+    }
+
+    #[test]
+    fn a_fast_commit_qc_is_valid_only_with_one_entry_per_lane() {
+        let fast = fast_path();
+        let exact = fast_commit_qc(Lanes::new(1, |_| Entry::Negative));
+        let padded = fast_commit_qc(Lanes::new(2, |_| Entry::Negative));
+
+        assert!(fast.fast_commit_qc_is_valid(&exact));
+        assert!(!fast.fast_commit_qc_is_valid(&padded));
     }
 
     #[test]

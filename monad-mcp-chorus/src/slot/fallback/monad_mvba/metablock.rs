@@ -39,12 +39,8 @@ impl Metablock {
         }
 
         self.0.as_ref().into_indexed_iter().all(|(j, cert)| {
-            certified_entry_is_valid(
-                cert,
-                ProposalScope::new(slot, j),
-                header_auth,
-                validator_data,
-            )
+            let scope = ProposalScope::new(slot, j);
+            cert.verify(scope, header_auth, validator_data)
         })
     }
 
@@ -89,22 +85,4 @@ impl Votable for Metablock {
     fn entries(&self) -> Self::Entries {
         Metablock::entries(self)
     }
-}
-
-/// `CE.verify(slot, j)`
-fn certified_entry_is_valid(
-    cert: &CertifiedEntry,
-    scope: ProposalScope,
-    header_auth: &HeaderAuth,
-    validator_data: &ValidatorData,
-) -> bool {
-    let bound_to_proposer = match cert {
-        CertifiedEntry::FastQc(qc) => qc.scope == scope,
-        CertifiedEntry::FallbackQc(qc) => qc.scope == scope,
-        // an EquivCert's binding to (slot, j) is checked by `verify`, which
-        // authenticates both headers against the scope
-        CertifiedEntry::EquivCert(_) => true,
-    };
-
-    bound_to_proposer && cert.verify(scope, header_auth, validator_data)
 }

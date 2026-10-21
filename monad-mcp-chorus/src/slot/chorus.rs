@@ -37,6 +37,7 @@ use super::{
         SignatureCollection, SignedProposalHeader, Slot, TimestampDelta, ValidatorData,
     },
 };
+use crate::spec::validator::ValidatorData as _;
 
 /// The fallback path's agreement protocol, at the instantiation Chorus runs it
 type FallbackState = MonadMvba<Metablock, EnterFallbackCert>;
@@ -318,7 +319,8 @@ impl SlotConsensus for Chorus {
     }
 
     fn handle_message(&mut self, author: NodeId, message: Self::Message) {
-        if self.decided {
+        let from_validator = self.validator_data.contains(&author);
+        if self.decided || !from_validator {
             return;
         }
 
@@ -344,8 +346,7 @@ impl SlotConsensus for Chorus {
                 self.fast.handle_fallback_vote(author, fallback_vote_msg);
             }
             ChorusMessage::FastCommitQc(qc) => {
-                let scope_matches = qc.scope == self.slot;
-                if !scope_matches || !qc.verify(&self.validator_data) {
+                if !self.fast.fast_commit_qc_is_valid(&qc) {
                     return;
                 }
                 self.finalize_fast(qc);
@@ -719,6 +720,34 @@ mod tests {
 
         // nothing is available, so the all-negative vote pins no proposal
         assert_eq!(commands, vec![ChorusDACommand::ReleaseChunks]);
+    }
+
+    #[test]
+    fn a_message_from_a_non_validator_is_dropped() {
+        let config = ChorusConfig {
+            delta: TimestampDelta::from_millis(100),
+        };
+        let context = ChorusContext {
+            node_id: NodeId::dummy(0),
+            key: Arc::new(NodeId::dummy(0).keypair()),
+            validator_data: Arc::new(validator_data(4)),
+            header_auth: Arc::new(HeaderAuth::new(|_, _| None)),
+            proposers: Arc::new(FixedProposerSchedule::new(vec![NodeId::dummy(0)])),
+        };
+        let mut voter = Chorus::new(Slot(1), &config, &context);
+        voter.handle_deadline();
+        let batch_vote = std::iter::from_fn(|| voter.poll())
+            .find_map(|output| match output {
+                SlotOutput::Broadcast(message @ ChorusMessage::BatchVote(_)) => Some(message),
+                _ => None,
+            })
+            .expect("the deadline casts a batch vote");
+
+        let mut chorus = Chorus::new(Slot(1), &config, &context);
+        let stranger = NodeId::dummy(99);
+        chorus.handle_message(stranger, batch_vote);
+        let outputs: Vec<_> = std::iter::from_fn(|| chorus.poll()).collect();
+        assert!(outputs.is_empty());
     }
 
     #[test]
