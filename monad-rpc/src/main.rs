@@ -307,6 +307,17 @@ async fn main() -> std::io::Result<()> {
         .enabled()
         .then(|| Metrics::new_with_otel_provider(provider));
 
+    match (&with_metrics, &triedb_env) {
+        (Some(metrics), Some(triedb_env)) => {
+            let stats = triedb_env.node_cache_stats();
+            metrics.register_triedb_node_cache(move || Some(stats.get()?.snapshot()));
+        }
+        (Some(_), None) => {
+            warn!("--triedb-path is not set, trie-node cache metrics will not be reported")
+        }
+        (None, _) => {}
+    }
+
     // Configure event ring, websocket server and event cache.
     let event_server_client = if let Some(exec_event_path) = args.exec_event_path {
         let event_ring_path =
