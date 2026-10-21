@@ -1,0 +1,22 @@
+[package]
+name = "monad-pq-node"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+alloy-rlp = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "signal"] }
+toml = { workspace = true }
+tracing = { workspace = true }
+
+monad-mcp-chorus = { workspace = true, features = ["enable_stub"] }
+monad-mcp-node = { path = "../monad-mcp-node" }
+monad-pq-chorus = { path = "../monad-pq-chorus" }
+monad-pq-da = { path = "../monad-pq-da" }
+
+[dev-dependencies]
+monad-sim = { workspace = true }
+monad-sim-swarm = { workspace = true }
+tempfile = { workspace = true }

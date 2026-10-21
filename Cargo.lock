@@ -6046,6 +6046,60 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-pq-chorus"
+version = "0.1.0"
+dependencies = [
+ "alloy-rlp",
+ "bytes",
+ "monad-mcp-chorus",
+ "monad-mcp-chorus-sim",
+ "monad-sim",
+ "monad-sim-swarm",
+ "proptest",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
+ "tiny-keccak",
+ "tracing",
+]
+
+[[package]]
+name = "monad-pq-da"
+version = "0.1.0"
+dependencies = [
+ "alloy-rlp",
+ "bytes",
+ "derive_more",
+ "monad-crypto",
+ "monad-mcp-chorus",
+ "monad-mcp-da",
+ "monad-merkle",
+ "monad-pq-chorus",
+ "rand 0.8.5",
+ "rand_chacha 0.3.1",
+ "reed-solomon-simd",
+ "tracing",
+]
+
+[[package]]
+name = "monad-pq-node"
+version = "0.1.0"
+dependencies = [
+ "alloy-rlp",
+ "bytes",
+ "monad-mcp-chorus",
+ "monad-mcp-node",
+ "monad-pq-chorus",
+ "monad-pq-da",
+ "monad-sim",
+ "monad-sim-swarm",
+ "serde",
+ "tempfile",
+ "tokio",
+ "toml",
+ "tracing",
+]
+
+[[package]]
 name = "monad-randomized-tests"
 version = "0.1.0"
 dependencies = [

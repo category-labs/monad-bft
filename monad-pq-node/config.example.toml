@@ -1,0 +1,70 @@
+# a single stub validator on localhost with the local demo values of the
+# Quantum Cadence design (§8.3). The file is a superset of monad-mcp-node's
+# node.toml: the unchanged monad-mcp-rpc reads it, and every pq-only
+# parameter lives in [quantum].
+node_id = 0
+proposal_key_pair = 0
+# unused by pq consensus; kept for NodeConfig and rpc compatibility
+cadence_key_pair = 0
+# unix milliseconds, shared by every node of the chain
+genesis_deadline = 1789412000000
+
+# stakes must be equal (pq check)
+[[validators]]
+node_id = 0
+stake = 1
+chorus_pubkey = 0
+address = "127.0.0.1:9300"
+
+[network]
+port = 9300
+
+[cadence]
+delta = 50
+slot_interval = 100
+slots_per_window = 100
+sync_boundary_slots = 80
+lag_threshold = 20
+
+# required: keeps Finalized alive after a slot halts (§7);
+# certificate_retention must be at least cadence.lag_threshold
+[repeater]
+interval = 200
+certificate_retention = 50
+
+[da]
+completed_slot_retention = 50
+
+[proposal]
+source = "mempool"
+num_proposals = 5
+propose_before_deadline = 100
+# L - 10: a seal behind the chaining gate is withheld, not split (§3.4)
+withhold_before_deadline = 90
+
+# must match on every validator. z = 95: a lane rotates every 100 slots and
+# is vacant for 5 of them, so a tx rarely waits for an occupied lane
+[leader_election]
+rotation_slack = 95
+
+[mempool]
+
+[ledger]
+dir = "/tmp/pq-demo/ledger"
+
+[quantum]
+signature = "stub"
+# 2420 emulates ML-DSA-44 sizes (needs fragmentation, not in v1)
+stub_signature_len = 32
+# ms; absent: cadence.delta
+retransmit_interval = 50
+# ms; absent: cadence.delta / 2; at most cadence.delta / 2
+decode_grace = 25
+coda_timeout_deltas = 5
+# "vote" | "receipt"
+release_chunks = "vote"
+early_vote = true
+# "metablock" | "path-votes"
+ledger_proof = "path-votes"
+# misbehavior evidence under <ledger.dir>/evidence
+evidence = true
