@@ -393,9 +393,36 @@ mod tests {
     async fn test_s3_bucket() {
         let minio = TestMinioContainer::new().await.unwrap();
 
+        // Static credentials are no longer accepted as args; provide minio's
+        // credentials through the AWS default credential chain instead,
+        // restoring the previous values when the test ends.
+        // SAFETY: env mutation is process-global; this relies on no other
+        // concurrently running test reading AWS_* env vars (the other
+        // #[ignore]d tests in this binary don't touch them).
+        struct EnvVarGuard(&'static str, Option<String>);
+        impl Drop for EnvVarGuard {
+            fn drop(&mut self) {
+                match self.1.take() {
+                    Some(value) => unsafe { std::env::set_var(self.0, value) },
+                    None => unsafe { std::env::remove_var(self.0) },
+                }
+            }
+        }
+        let _env_guards: Vec<EnvVarGuard> = [
+            ("AWS_ACCESS_KEY_ID", "minioadmin"),
+            ("AWS_SECRET_ACCESS_KEY", "minioadmin"),
+        ]
+        .into_iter()
+        .map(|(key, value)| {
+            let previous = std::env::var(key).ok();
+            unsafe { std::env::set_var(key, value) };
+            EnvVarGuard(key, previous)
+        })
+        .collect();
+
         // connect to minio
         let arg_string = format!(
-            "aws test-bucket  --endpoint http://127.0.0.1:{port} --access-key-id minioadmin --secret-access-key minioadmin",
+            "aws test-bucket  --endpoint http://127.0.0.1:{port}",
             port = minio.port
         );
         let sdk_config = AwsCliArgs::parse(&arg_string)

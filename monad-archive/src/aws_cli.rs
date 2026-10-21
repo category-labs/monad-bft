@@ -18,10 +18,10 @@
 //! Intended precedence:
 //! - Region: explicit `--region`, then named `--profile`, then the AWS default
 //!   region chain, then static `us-east-2`.
-//! - Credentials: explicit `--access-key-id` and `--secret-access-key`, then
-//!   named `--profile`, then the AWS default credential chain.
-//! - Partial static credentials are rejected instead of silently falling
-//!   through to ambient configuration.
+//! - Credentials: named `--profile`, then the AWS default credential chain
+//!   (environment variables, shared config, IAM roles). Static credentials are
+//!   deliberately not accepted as configuration so they can never end up in
+//!   logs or serialized state.
 
 use aws_config::{
     meta::{credentials::CredentialsProviderChain, region::RegionProviderChain},
@@ -30,15 +30,12 @@ use aws_config::{
     timeout::TimeoutConfig,
     BehaviorVersion, Region, SdkConfig,
 };
-use aws_sdk_s3::config::{Credentials, SharedCredentialsProvider};
-use eyre::bail;
+use aws_sdk_s3::config::SharedCredentialsProvider;
 
 use crate::{cli::AwsCliArgs, prelude::*};
 
 impl AwsCliArgs {
     pub(crate) async fn config(&self) -> Result<SdkConfig> {
-        self.validate_credentials_config()?;
-
         let mut config = aws_config::defaults(BehaviorVersion::latest());
 
         if let Some(profile) = &self.profile {
@@ -49,7 +46,7 @@ impl AwsCliArgs {
         // behavior stays auditable as new flags are added.
         config = config.region(self.region_provider());
 
-        if let Some(credentials_provider) = self.credentials_provider().await? {
+        if let Some(credentials_provider) = self.credentials_provider().await {
             config = config.credentials_provider(credentials_provider);
         }
 
@@ -79,25 +76,7 @@ impl AwsCliArgs {
         Ok(sdk_config)
     }
 
-    fn validate_credentials_config(&self) -> Result<()> {
-        match (&self.access_key_id, &self.secret_access_key) {
-            (Some(_), None) => bail!(
-                "aws config for bucket '{}' must set --secret-access-key when --access-key-id is provided",
-                self.bucket
-            ),
-            (None, Some(_)) => bail!(
-                "aws config for bucket '{}' must set --access-key-id when --secret-access-key is provided",
-                self.bucket
-            ),
-            _ => Ok(()),
-        }
-    }
-
-    async fn credentials_provider(&self) -> Result<Option<SharedCredentialsProvider>> {
-        if let Some(provider) = self.static_credentials_provider()? {
-            return Ok(Some(provider));
-        }
-
+    async fn credentials_provider(&self) -> Option<SharedCredentialsProvider> {
         if let Some(profile) = &self.profile {
             let provider = CredentialsProviderChain::first_try(
                 "Profile",
@@ -107,29 +86,10 @@ impl AwsCliArgs {
             )
             .or_default_provider()
             .await;
-            return Ok(Some(SharedCredentialsProvider::new(provider)));
+            return Some(SharedCredentialsProvider::new(provider));
         }
 
-        Ok(None)
-    }
-
-    fn static_credentials_provider(&self) -> Result<Option<SharedCredentialsProvider>> {
-        match (&self.access_key_id, &self.secret_access_key) {
-            (Some(access_key_id), Some(secret_access_key)) => {
-                Ok(Some(SharedCredentialsProvider::new(Credentials::new(
-                    access_key_id,
-                    secret_access_key,
-                    None,
-                    None,
-                    "minio",
-                ))))
-            }
-            (None, None) => Ok(None),
-            _ => {
-                self.validate_credentials_config()?;
-                unreachable!("invalid partial credentials should be rejected")
-            }
-        }
+        None
     }
 
     fn region_provider(&self) -> RegionProviderChain {
@@ -356,11 +316,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn aws_explicit_static_credentials_beat_profile_credentials() {
-        let (_dir, config_path, credentials_path) = write_profile_files(
-            "[profile isolated]\nregion = us-west-2\n",
-            "[isolated]\naws_access_key_id = PROFILE_KEY\naws_secret_access_key = PROFILE_SECRET\n",
-        );
+    async fn aws_environment_credentials_used_without_profile() {
+        let (_dir, config_path, credentials_path) = write_profile_files("", "");
 
         let _env = EnvGuard::set(&[
             ("AWS_CONFIG_FILE", config_path.to_str().unwrap()),
@@ -370,13 +327,11 @@ mod tests {
             ),
             ("AWS_ACCESS_KEY_ID", "ENV_KEY"),
             ("AWS_SECRET_ACCESS_KEY", "ENV_SECRET"),
+            ("AWS_REGION", "eu-central-1"),
         ]);
 
         let config = AwsCliArgs {
             bucket: "my-bucket".to_string(),
-            profile: Some("isolated".to_string()),
-            access_key_id: Some("STATIC_KEY".to_string()),
-            secret_access_key: Some("STATIC_SECRET".to_string()),
             ..Default::default()
         }
         .config()
@@ -389,22 +344,7 @@ mod tests {
             .provide_credentials()
             .await
             .unwrap();
-        assert_eq!(credentials.access_key_id(), "STATIC_KEY");
-        assert_eq!(credentials.secret_access_key(), "STATIC_SECRET");
-    }
-
-    #[tokio::test]
-    async fn aws_partial_static_credentials_are_rejected() {
-        let err = AwsCliArgs {
-            bucket: "my-bucket".to_string(),
-            access_key_id: Some("STATIC_KEY".to_string()),
-            ..Default::default()
-        }
-        .config()
-        .await
-        .unwrap_err()
-        .to_string();
-
-        assert!(err.contains("--secret-access-key"));
+        assert_eq!(credentials.access_key_id(), "ENV_KEY");
+        assert_eq!(credentials.secret_access_key(), "ENV_SECRET");
     }
 }
