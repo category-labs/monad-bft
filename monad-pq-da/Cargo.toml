@@ -1,0 +1,26 @@
+[package]
+name = "monad-pq-da"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+# PqDACommand is stub-typed, so the stub instantiation is the only one
+default = ["enable_stub"]
+enable_stub = ["monad-mcp-chorus/enable_stub"]
+
+[dependencies]
+alloy-rlp = { workspace = true }
+bytes = { workspace = true }
+derive_more = { workspace = true, features = ["into"] }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
+reed-solomon-simd = { workspace = true }
+tracing = { workspace = true }
+
+monad-crypto = { workspace = true }
+monad-mcp-chorus = { workspace = true }
+monad-merkle = { workspace = true }
+monad-pq-chorus = { path = "../monad-pq-chorus" }
+
+[dev-dependencies]
+monad-mcp-da = { workspace = true, features = ["enable_stub"] }
