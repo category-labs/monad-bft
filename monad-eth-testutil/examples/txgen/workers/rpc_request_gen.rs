@@ -627,7 +627,7 @@ impl RpcRequestGenerator {
 
             // 4) eth_getBalance at the same block
             next_id += 1;
-            let random_addr = Address::random();
+            let random_addr = Address::from(rand::random::<[u8; 20]>());
             match compare_results(
                 ws_call(
                     &mut write,
