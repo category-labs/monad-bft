@@ -296,7 +296,11 @@ pub struct PeerEntry<ST: CertificateSignatureRecoverable> {
     pub address: PeerEntryAddress,
 
     pub signature: ST,
+
+    #[serde(with = "monad_types::serde_u64")]
     pub record_seq_num: u64,
+    #[serde(default, with = "monad_types::serde_u64")]
+    pub record_revision: u64,
 
     pub auth_port: NonZeroU16,
 
@@ -386,8 +390,8 @@ impl<ST: CertificateSignatureRecoverable> Encodable for PeerEntry<ST> {
         let direct_udp_port = self.direct_udp_port.map_or(0, NonZeroU16::get);
         let tcp_port = self.tcp_port().get();
         let udp_port = self.udp_port().map_or(0, NonZeroU16::get);
-        if let Some(encrypted_tcp_port) = self.encrypted_tcp_port {
-            let encrypted_tcp_port = encrypted_tcp_port.get();
+        if self.encrypted_tcp_port.is_some() || self.record_revision != 0 {
+            let encrypted_tcp_port = self.encrypted_tcp_port.map_or(0, NonZeroU16::get);
             let enc = [
                 &self.pubkey as &dyn Encodable,
                 &address as &dyn Encodable,
@@ -398,8 +402,14 @@ impl<ST: CertificateSignatureRecoverable> Encodable for PeerEntry<ST> {
                 &tcp_port as &dyn Encodable,
                 &udp_port as &dyn Encodable,
                 &encrypted_tcp_port as &dyn Encodable,
+                &self.record_revision as &dyn Encodable,
             ];
-            encode_list::<_, dyn Encodable>(&enc, out);
+            let fields = if self.record_revision == 0 {
+                &enc[..9]
+            } else {
+                &enc[..]
+            };
+            encode_list::<_, dyn Encodable>(fields, out);
         } else {
             let enc = [
                 &self.pubkey as &dyn Encodable,
@@ -458,6 +468,12 @@ impl<ST: CertificateSignatureRecoverable> Decodable for PeerEntry<ST> {
             decode_optional_non_zero_u16(&mut payload)?
         };
 
+        let record_revision = if payload.is_empty() {
+            0
+        } else {
+            u64::decode(&mut payload)?
+        };
+
         if !payload.is_empty() {
             return Err(alloy_rlp::Error::Custom("extra bytes in peer entry"));
         }
@@ -467,6 +483,7 @@ impl<ST: CertificateSignatureRecoverable> Decodable for PeerEntry<ST> {
             address: PeerEntryAddress::new(address, tcp_port, udp_port),
             signature,
             record_seq_num,
+            record_revision,
             auth_port,
             direct_udp_port,
             encrypted_tcp_port,
@@ -2708,6 +2725,7 @@ tcp_port = 8003"#,
             ),
             signature,
             record_seq_num,
+            record_revision: 0,
             auth_port: NonZeroU16::new(8000).unwrap(),
             direct_udp_port: None,
             encrypted_tcp_port: None,
@@ -2731,6 +2749,7 @@ tcp_port = 8003"#,
             ),
             signature,
             record_seq_num: 7,
+            record_revision: 1,
             auth_port: NonZeroU16::new(9000).unwrap(),
             direct_udp_port: Some(NonZeroU16::new(9001).unwrap()),
             encrypted_tcp_port: None,
@@ -2753,6 +2772,7 @@ tcp_port = 8003"#,
             address: PeerEntryAddress::new(ip, NonZeroU16::new(8002).unwrap(), None),
             signature,
             record_seq_num,
+            record_revision: 0,
             auth_port: NonZeroU16::new(auth_port).unwrap(),
             direct_udp_port: None,
             encrypted_tcp_port: None,
@@ -2777,6 +2797,7 @@ tcp_port = 8003"#,
             ),
             signature,
             record_seq_num: 12,
+            record_revision: u64::MAX,
             auth_port: NonZeroU16::new(9003).unwrap(),
             direct_udp_port: None,
             encrypted_tcp_port: Some(NonZeroU16::new(9004).unwrap()),
@@ -2899,7 +2920,7 @@ tcp_port = 8003"#,
         let tcp_port = 8003u16;
         let encrypted_tcp_port = 9005u16;
         let extra_port = 9006u16;
-        let enc: [&dyn Encodable; 10] = [
+        let enc: [&dyn Encodable; 11] = [
             &pubkey,
             &"127.0.0.1".to_string(),
             &signature,
@@ -2909,6 +2930,7 @@ tcp_port = 8003"#,
             &tcp_port,
             &0u16,
             &encrypted_tcp_port,
+            &0u64,
             &extra_port,
         ];
         let mut encoded = Vec::new();

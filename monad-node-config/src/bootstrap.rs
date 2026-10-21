@@ -46,7 +46,10 @@ pub struct NodeBootstrapPeerConfig<ST: CertificateSignatureRecoverable> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub udp_port: Option<NonZeroU16>,
 
+    #[serde(with = "monad_types::serde_u64")]
     pub record_seq_num: u64,
+    #[serde(default, with = "monad_types::serde_u64")]
+    pub record_revision: u64,
 
     #[serde(serialize_with = "serialize_pubkey::<_, CertificateSignaturePubKey<ST>>")]
     #[serde(deserialize_with = "deserialize_pubkey::<_, CertificateSignaturePubKey<ST>>")]
