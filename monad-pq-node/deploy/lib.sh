@@ -19,8 +19,8 @@ explorer_unit=monad-pq-explorer
 cruft_unit=monad-pq-cruft
 remote_rel=monad-pq
 remote_root='$HOME/monad-pq'
-# the pq rpc's http port on 127.0.0.1, spelled out in monad-pq-{rpc,explorer}.service
-# with the explorer's 8091; mcp's pair is 8080/8081
+# the pq rpc's http port on 127.0.0.1, spelled out in monad-pq-{rpc,explorer}.service;
+# the pq explorer uses mcp's 8081 (the sgp-008 nginx proxy target)
 rpc_http_port=8090
 ssh_user=monad
 ssh_port=9022

@@ -104,11 +104,12 @@ table, since the node requires `mempool` when one is present.
 ## Things worth knowing
 
 - **Ports.** UDP `8002` (`PQ_PORT` overrides; 8000 is dropped by nftables for short datagrams).
-  The pq rpc listens on `127.0.0.1:8090` and the pq explorer on `127.0.0.1:8091` (set in the
-  unit files; `lib.sh`'s `rpc_http_port` mirrors the rpc's for `report.sh --tx`), so they never collide with or get confused for the
-  still-installed mcp ones on 8080/8081. Explorer tunnel:
-  `ssh -N -L 8091:127.0.0.1:8091 -p 9022 monad@ewr-002.devcore4.com`, then
-  `http://localhost:8091`. Rpc: `curl -s 127.0.0.1:8090/health` on a host.
+  The pq rpc listens on `127.0.0.1:8090` (`lib.sh`'s `rpc_http_port` mirrors it for
+  `report.sh --tx`). The pq explorer listens on `127.0.0.1:8081`, the same port as mcp's, because
+  the sgp-008 nginx demo proxy (`/` → `127.0.0.1:8081`) targets it; the mcp and pq explorers
+  therefore can't run on one host at the same time. Explorer tunnel:
+  `ssh -N -L 8081:127.0.0.1:8081 -p 9022 monad@ewr-002.devcore4.com`, then
+  `http://localhost:8081`. Rpc: `curl -s 127.0.0.1:8090/health` on a host.
 - **`config/<host>/` is the source of truth**, as in mcp: edit locally and push. `netctl.sh
   start` keeps local edits and only rewrites `genesis_deadline`; flags after `--` re-render
   every host. Every whole-network `start`, `restart`, `upgrade` (and `takeover` without

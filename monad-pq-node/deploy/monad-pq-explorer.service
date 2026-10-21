@@ -5,10 +5,10 @@ After=monad-pq-node.service monad-pq-rpc.service
 [Service]
 Slice=monad-pq.slice
 MemoryAccounting=no
-# the unchanged monad-mcp-explorer over the pq ledger; http on 127.0.0.1:8091,
-# POST /api/tx forwarded to the pq rpc on 8090 (mcp's pair is 8081/8080)
+# the unchanged monad-mcp-explorer over the pq ledger; http on 127.0.0.1:8081, the port the
+# sgp-008 nginx proxy targets (same as mcp's explorer, so the two can't run together)
 EnvironmentFile=%h/monad-pq/config/explorer.env
-ExecStart=%h/monad-pq/bin/explorer-current --http-addr 127.0.0.1:8091 --rpc-url http://127.0.0.1:8090 $EXPLORER_ARGS
+ExecStart=%h/monad-pq/bin/explorer-current --http-addr 127.0.0.1:8081 --rpc-url http://127.0.0.1:8090 $EXPLORER_ARGS
 Environment=RUST_LOG=info
 KillSignal=SIGINT
 Restart=on-failure
