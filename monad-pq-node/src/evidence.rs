@@ -37,7 +37,8 @@ const VOTE_DUMP_WINDOW_SLOTS: u64 = 100;
 
 // two signatures of one validator over conflicting statements prove
 // misbehavior by themselves; the rest only do for a timely slot
-// (lem:qv:acc-f, lem:qv:acc-half)
+// (lem:qv:acc-f, lem:qv:acc-half). Header signatures are still DA's
+// 65-byte stub (D11), so EquivocatingHeaders proves nothing offline yet.
 pub fn is_self_proving(evidence: &Evidence) -> bool {
     matches!(
         evidence,

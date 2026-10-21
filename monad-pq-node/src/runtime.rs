@@ -37,7 +37,7 @@ use crate::{
     },
     finalization::{PqFinal, PqFinalizationCollector, PqFinalizedSlot},
     network::{Inbound, Outbound, Packet},
-    wire::{SlotWire, Unfragmented},
+    wire::SlotWire,
 };
 
 // everything the wiring can emit, named by where it goes
@@ -144,6 +144,7 @@ impl PqNodeRuntime {
         da_handle: da::EpochHandle,
         mempool: Option<SharedMempool>,
         da_retention: u64,
+        wire: Box<dyn SlotWire>,
     ) -> Self {
         Self {
             epoch_handle,
@@ -151,7 +152,7 @@ impl PqNodeRuntime {
             collector: PqFinalizationCollector::new(da_retention),
             gate: ChainGate::default(),
             mempool,
-            wire: Box::<Unfragmented>::default(),
+            wire,
         }
     }
 

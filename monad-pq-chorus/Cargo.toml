@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 alloy-rlp = { workspace = true, features = ["derive"] }
 bytes = { workspace = true }
+ml-dsa = { version = "=0.1.1", default-features = false, features = ["alloc", "zeroize"] }
 monad-mcp-chorus = { workspace = true, features = ["enable_stub"] }
 tiny-keccak = { workspace = true, features = ["keccak"] }
 tracing = { workspace = true }

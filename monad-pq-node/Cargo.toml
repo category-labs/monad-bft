@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 alloy-rlp = { workspace = true }
 bytes = { workspace = true }
+hex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "signal"] }
 toml = { workspace = true }

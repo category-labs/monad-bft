@@ -17,7 +17,12 @@
 //! `NodeConfig`, so the unchanged rpc reads the same file. Every pq
 //! parameter lives in the `[quantum]` table.
 
-use std::{collections::HashSet, fmt, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashSet,
+    fmt,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use monad_mcp_node::{
     EpochHandle,
@@ -29,14 +34,17 @@ use monad_mcp_node::{
 use monad_pq_chorus::{
     QuantumConfig, QuantumContext,
     config::ReleaseChunks,
-    sig::{PqVerifier, StubPq},
+    sig::{
+        ML_DSA_44_SIGNATURE_LEN, ML_DSA_SEED_LEN, MlDsa44PublicKey, MlDsa44Signer, MlDsa44Verifier,
+        PqSigner, PqVerifier, StubPq,
+    },
 };
 use serde::Deserialize;
 
 use crate::{
     chorus::types::{NodeId, Slot, Timestamp, TimestampDelta},
     da::{self, AssembledProposal, ProposalKeyPair},
-    wire::{self, MAX_PAYLOAD_LEN},
+    wire::{self, Fragmenting, MAX_MESSAGE_LEN, MAX_PAYLOAD_LEN, SlotWire, Unfragmented},
 };
 
 pub struct PqNodeConfig {
@@ -53,6 +61,17 @@ pub struct PqNodeConfig {
 pub enum SignatureKind {
     #[default]
     Stub,
+    // FIPS 204; messages over one frame are fragmented
+    #[serde(rename = "ml-dsa-44")]
+    MlDsa44,
+}
+
+// a validator's ML-DSA-44 public key, hex encoded
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QuantumValidator {
+    pub node_id: u64,
+    pub public_key: String,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Deserialize)]
@@ -76,6 +95,10 @@ pub enum LedgerProof {
 pub struct QuantumSection {
     pub signature: SignatureKind,
     pub stub_signature_len: usize,
+    // ml-dsa-44: the hex FIPS 204 seed, with every validator's key in
+    // `validators`; both absent: keys derived from node ids (test networks)
+    pub secret_key_file: Option<PathBuf>,
+    pub validators: Vec<QuantumValidator>,
     // ms; absent: cadence.delta
     pub retransmit_interval: Option<u64>,
     // ms; absent: cadence.delta / 2; at most cadence.delta / 2
@@ -95,6 +118,8 @@ impl Default for QuantumSection {
         Self {
             signature: SignatureKind::Stub,
             stub_signature_len: monad_pq_chorus::sig::STUB_SIGNATURE_LEN,
+            secret_key_file: None,
+            validators: Vec::new(),
             retransmit_interval: None,
             decode_grace: None,
             coda_timeout_deltas: 5,
@@ -246,15 +271,8 @@ impl PqNodeConfig {
             return Err(invalid("[rpc] needs [proposal] source = \"mempool\""));
         }
         self.check_every_validator_owed()?;
-        if let Some((kind, len)) = wire::first_misfit(
-            self.base.proposal.num_proposals,
-            self.quantum.stub_signature_len,
-        ) {
-            return Err(invalid(format!(
-                "a {kind} of {len} bytes exceeds the {MAX_PAYLOAD_LEN}-byte frame at num_proposals {} and stub_signature_len {}; v1 does not fragment",
-                self.base.proposal.num_proposals, self.quantum.stub_signature_len
-            )));
-        }
+        self.check_message_sizes()?;
+        self.check_signature_keys()?;
         if self.quantum.evidence_retention_slots == 0 {
             return Err(invalid("quantum.evidence_retention_slots must be positive"));
         }
@@ -276,6 +294,121 @@ impl PqNodeConfig {
             );
         }
         Ok(())
+    }
+
+    // stub signatures send one frame per message, ml-dsa-44 fragments
+    fn check_message_sizes(&self) -> Result<(), PqConfigError> {
+        let k = self.base.proposal.num_proposals;
+        match self.quantum.signature {
+            SignatureKind::Stub => {
+                let sig_len = self.quantum.stub_signature_len;
+                if let Some((kind, len)) = wire::first_misfit(k, sig_len) {
+                    return Err(invalid(format!(
+                        "a {kind} of {len} bytes exceeds the {MAX_PAYLOAD_LEN}-byte frame at num_proposals {k} and stub_signature_len {sig_len}; stub signatures do not fragment"
+                    )));
+                }
+            }
+            SignatureKind::MlDsa44 => {
+                if let Some((kind, len)) = wire::first_unfragmentable(k, ML_DSA_44_SIGNATURE_LEN) {
+                    return Err(invalid(format!(
+                        "a {kind} of {len} bytes exceeds the {MAX_MESSAGE_LEN}-byte fragmented message at num_proposals {k}"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    // the listed keys, without reading the secret key file
+    fn check_signature_keys(&self) -> Result<(), PqConfigError> {
+        let quantum = &self.quantum;
+        let listed = !quantum.validators.is_empty();
+        match quantum.signature {
+            SignatureKind::Stub if quantum.secret_key_file.is_some() || listed => Err(invalid(
+                "quantum.secret_key_file and [[quantum.validators]] need signature = \"ml-dsa-44\"",
+            )),
+            SignatureKind::Stub => Ok(()),
+            SignatureKind::MlDsa44 if quantum.secret_key_file.is_some() != listed => Err(invalid(
+                "ml-dsa-44 needs both quantum.secret_key_file and [[quantum.validators]], or neither for keys derived from node ids",
+            )),
+            SignatureKind::MlDsa44 if listed => self.ml_dsa_public_keys().map(|_| ()),
+            SignatureKind::MlDsa44 => Ok(()),
+        }
+    }
+
+    // exactly one valid key per validator
+    fn ml_dsa_public_keys(&self) -> Result<Vec<(NodeId, MlDsa44PublicKey)>, PqConfigError> {
+        let validators: HashSet<NodeId> = self.base.validators.iter().map(|v| v.node_id).collect();
+        let mut seen = HashSet::new();
+        let mut keys = Vec::with_capacity(self.quantum.validators.len());
+        for listed in &self.quantum.validators {
+            let id = NodeId::dummy(listed.node_id);
+            if !validators.contains(&id) {
+                return Err(invalid(format!(
+                    "quantum.validators lists {} outside [[validators]]",
+                    listed.node_id
+                )));
+            }
+            if !seen.insert(id) {
+                return Err(invalid(format!(
+                    "quantum.validators lists {} twice",
+                    listed.node_id
+                )));
+            }
+            let key = hex::decode(listed.public_key.trim())
+                .ok()
+                .and_then(|bytes| MlDsa44PublicKey::from_bytes(&bytes))
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "quantum.validators {}: public_key is not a hex ML-DSA-44 key",
+                        listed.node_id
+                    ))
+                })?;
+            keys.push((id, key));
+        }
+        if let Some(missing) = validators.iter().find(|id| !seen.contains(id)) {
+            return Err(invalid(format!(
+                "quantum.validators has no key for {}",
+                u64::from(*missing)
+            )));
+        }
+        Ok(keys)
+    }
+
+    fn signature_scheme(
+        &self,
+        self_id: NodeId,
+    ) -> Result<(Arc<dyn PqSigner>, Arc<dyn PqVerifier>), PqConfigError> {
+        if self.quantum.signature == SignatureKind::Stub {
+            let scheme = StubPq::new(self.quantum.stub_signature_len);
+            return Ok((Arc::new(scheme.signer(self_id)), Arc::new(scheme)));
+        }
+        let Some(path) = &self.quantum.secret_key_file else {
+            tracing::warn!("ml-dsa-44 keys derived from node ids: for test networks only");
+            let validators = self.base.validators.iter().map(|v| v.node_id);
+            let verifier = MlDsa44Verifier::dev(validators);
+            return Ok((Arc::new(MlDsa44Signer::dev(self_id)), Arc::new(verifier)));
+        };
+        let signer = MlDsa44Signer::from_seed(&load_ml_dsa_seed(path)?);
+        let verifier = MlDsa44Verifier::new(self.ml_dsa_public_keys()?);
+        if verifier.public_key(&self_id) != Some(&signer.public_key()) {
+            return Err(invalid(format!(
+                "{} is not the secret key of node {}'s listed public key",
+                path.display(),
+                u64::from(self_id)
+            )));
+        }
+        Ok((Arc::new(signer), Arc::new(verifier)))
+    }
+
+    pub fn slot_wire(&self) -> Box<dyn SlotWire> {
+        match self.quantum.signature {
+            SignatureKind::Stub => Box::<Unfragmented>::default(),
+            SignatureKind::MlDsa44 => {
+                let ttl = self.base.cadence.delta.as_nanos().saturating_mul(2);
+                Box::new(Fragmenting::new(TimestampDelta::from_nanos(ttl)))
+            }
+        }
     }
 
     // a node behind the sync boundary needs at least two repeats of each
@@ -350,12 +483,10 @@ impl PqNodeConfig {
             .epoch_handle()
             .map_err(|e| invalid(format!("{e:?}")))?;
         let da = self.da_handle(&handle);
-        let SignatureKind::Stub = self.quantum.signature;
-        let scheme = StubPq::new(self.quantum.stub_signature_len);
-        let verifier: Arc<dyn PqVerifier> = Arc::new(scheme);
+        let (signer, verifier) = self.signature_scheme(handle.self_id)?;
         let context = QuantumContext::new(
             handle.self_id,
-            Arc::new(scheme.signer(handle.self_id)),
+            signer,
             verifier,
             handle.validator_data.clone(),
             handle.header_auth.clone(),
@@ -374,6 +505,21 @@ impl PqNodeConfig {
             .evidence
             .then(|| self.base.ledger.dir.join("evidence"))
     }
+}
+
+/// An ML-DSA-44 secret key file: the 32-byte FIPS 204 seed in hex.
+pub fn load_ml_dsa_seed(path: &Path) -> Result<[u8; ML_DSA_SEED_LEN], PqConfigError> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|error| invalid(format!("read {}: {error}", path.display())))?;
+    hex::decode(text.trim())
+        .ok()
+        .and_then(|bytes| <[u8; ML_DSA_SEED_LEN]>::try_from(bytes).ok())
+        .ok_or_else(|| {
+            invalid(format!(
+                "{} must hold a {ML_DSA_SEED_LEN}-byte hex seed",
+                path.display()
+            ))
+        })
 }
 
 #[cfg(test)]
@@ -491,6 +637,92 @@ mod tests {
 
         let mut config = PqNodeConfig::parse(EXAMPLE).unwrap();
         config.base.proposal.num_proposals = 64;
+        assert!(config.validate().is_err());
+    }
+
+    // [quantum] is the example's last table: `extra` may add key tables
+    fn ml_dsa(extra: &str) -> Result<PqNodeConfig, PqConfigError> {
+        let text = EXAMPLE.replace("signature = \"stub\"", "signature = \"ml-dsa-44\"");
+        let config = PqNodeConfig::parse(&format!("{text}{extra}"))?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    fn key_table(id: u64, key: &MlDsa44PublicKey) -> String {
+        format!(
+            "\n[[quantum.validators]]\nnode_id = {id}\npublic_key = \"{}\"\n",
+            hex::encode(key.to_bytes())
+        )
+    }
+
+    // stubs default; ml-dsa-44 messages take more than one frame and pass
+    #[test]
+    fn ml_dsa_44_dev_keys_validate_and_fragment() {
+        assert_eq!(
+            PqNodeConfig::parse(EXAMPLE).unwrap().quantum.signature,
+            SignatureKind::Stub
+        );
+        let mut config = ml_dsa("").unwrap();
+        assert_eq!(config.quantum.signature, SignatureKind::MlDsa44);
+        assert!(wire::first_misfit(5, ML_DSA_44_SIGNATURE_LEN).is_some());
+        let epoch = config.epoch().unwrap();
+        assert_eq!(
+            epoch.context.verifier.max_sig_len(),
+            ML_DSA_44_SIGNATURE_LEN
+        );
+
+        config.base.proposal.num_proposals = 64;
+        config.validate().unwrap();
+        config.base.proposal.num_proposals = 400;
+        let error = config.validate().unwrap_err().0;
+        assert!(error.contains("fragmented message"), "{error}");
+    }
+
+    #[test]
+    fn ml_dsa_44_keys_load_from_a_seed_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let seed = [3u8; ML_DSA_SEED_LEN];
+        let path = dir.path().join("node.key");
+        std::fs::write(&path, format!("{}\n", hex::encode(seed))).unwrap();
+        let own = MlDsa44Signer::from_seed(&seed).public_key();
+        let file = format!("secret_key_file = \"{}\"", path.display());
+
+        let config = ml_dsa(&format!("{file}{}", key_table(0, &own))).unwrap();
+        let epoch = config.epoch().unwrap();
+        let sig = epoch.context.signer.sign(b"m");
+        assert!(epoch.context.verifier.verify(NodeId::dummy(0), b"m", &sig));
+
+        // the listed key is not the file's
+        let other = MlDsa44Signer::dev(NodeId::dummy(0)).public_key();
+        let config = ml_dsa(&format!("{file}{}", key_table(0, &other))).unwrap();
+        assert!(config.epoch().is_err());
+
+        // a file that is not a seed
+        std::fs::write(&path, "abcd").unwrap();
+        let config = ml_dsa(&format!("{file}{}", key_table(0, &own))).unwrap();
+        assert!(config.epoch().is_err());
+        assert!(load_ml_dsa_seed(&dir.path().join("absent")).is_err());
+    }
+
+    #[test]
+    fn ml_dsa_44_key_lists_are_checked() {
+        let key = MlDsa44Signer::dev(NodeId::dummy(0)).public_key();
+        let file = "secret_key_file = \"/unused\"";
+        // only one of the two
+        assert!(ml_dsa(file).is_err());
+        assert!(ml_dsa(&key_table(0, &key)).is_err());
+        // a key outside the set, twice, or malformed
+        assert!(ml_dsa(&format!("{file}{}", key_table(1, &key))).is_err());
+        let twice = format!("{file}{}{}", key_table(0, &key), key_table(0, &key));
+        assert!(ml_dsa(&twice).is_err());
+        let malformed =
+            format!("{file}\n[[quantum.validators]]\nnode_id = 0\npublic_key = \"00\"\n");
+        assert!(ml_dsa(&malformed).is_err());
+        assert!(ml_dsa(&format!("{file}{}", key_table(0, &key))).is_ok());
+
+        // the keys need ml-dsa-44
+        let text = format!("{EXAMPLE}{}", key_table(0, &key));
+        let config = PqNodeConfig::parse(&text).unwrap();
         assert!(config.validate().is_err());
     }
 

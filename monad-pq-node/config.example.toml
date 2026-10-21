@@ -54,9 +54,13 @@ rotation_slack = 95
 dir = "/tmp/pq-demo/ledger"
 
 [quantum]
+# "stub" | "ml-dsa-44". ml-dsa-44 fragments messages over one frame; with
+# neither secret_key_file (hex 32-byte seed) nor [[quantum.validators]]
+# node_id + public_key (hex), keys derive from node ids: test networks only.
+# `monad-pq-node --ml-dsa-public-key <seed-file>` prints a seed's public key.
 signature = "stub"
-# 2420 emulates ML-DSA-44 sizes; rejected until fragmentation lands, as is
-# any length or num_proposals whose slot messages exceed one frame
+# stub only: a length or num_proposals whose slot messages exceed one frame
+# is rejected (stubs do not fragment)
 stub_signature_len = 32
 # ms; absent: cadence.delta
 retransmit_interval = 50

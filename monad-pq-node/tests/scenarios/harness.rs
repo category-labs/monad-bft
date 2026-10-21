@@ -33,6 +33,7 @@ use monad_pq_node::{
     component::Component,
     config::{PqNodeConfig, QuantumSection},
     network::{Inbound, Packet},
+    wire::{FRAGMENT_MARKER, MAX_PAYLOAD_LEN},
 };
 use monad_sim::{CancelToken, Ctx, Handle, StepLabel, Time};
 use monad_sim_swarm::{Net, SimClient, Swarm};
@@ -71,6 +72,7 @@ pub struct SimNode {
     node: Box<dyn Component<Input = Inbound, Output = PqNodeOutput>>,
     finalized: BTreeMap<Slot, Finalized>,
     evidence: Vec<(Slot, Evidence)>,
+    fragments_sent: u64,
     // the one live timer step, at the node's last polled next_due
     due_alarm: Option<(Time, CancelToken)>,
     me: Option<Handle<Self>>,
@@ -87,6 +89,7 @@ impl SimNode {
             node: Box::new(node),
             finalized: BTreeMap::new(),
             evidence: Vec::new(),
+            fragments_sent: 0,
             due_alarm: None,
             me: None,
             net: None,
@@ -124,9 +127,18 @@ impl SimNode {
         self.arm_due_alarm(ctx);
     }
 
-    fn send(&self, outbound: Outbound<Packet>, ctx: &mut Ctx) {
+    fn send(&mut self, outbound: Outbound<Packet>, ctx: &mut Ctx) {
         let from = self.id;
         let net = self.net.expect("node not wired");
+        if let Outbound::Broadcast(Packet::Cadence(payload))
+        | Outbound::Unicast(_, Packet::Cadence(payload)) = &outbound
+        {
+            // the sim does not enforce the udp frame, so check it here
+            assert!(payload.len() <= MAX_PAYLOAD_LEN, "{} bytes", payload.len());
+            if payload.first() == Some(&FRAGMENT_MARKER) {
+                self.fragments_sent += 1;
+            }
+        }
         match outbound {
             Outbound::Broadcast(packet) => {
                 ctx.schedule(
@@ -171,6 +183,10 @@ impl SimNode {
 
     pub fn evidence(&self) -> &[(Slot, Evidence)] {
         &self.evidence
+    }
+
+    pub fn fragments_sent(&self) -> u64 {
+        self.fragments_sent
     }
 
     // every log line of a step names its node

@@ -92,6 +92,7 @@ Defaults are the mcp_test row of `docs/pq-cadence.md` §8.3:
 | `[repeater] interval / certificate_retention` | 500 / 50 (retention ≥ lag_threshold) |
 | `[quantum] retransmit_interval / decode_grace` | 150 (= delta) / 75 (= delta / 2, the maximum) |
 | `[quantum] coda_timeout_deltas / release_chunks / early_vote / ledger_proof / evidence` | 5 / `vote` / true / `path-votes` / true |
+| `[quantum] signature` | `stub` (`--signature ml-dsa-44`: real ML-DSA-44 votes with keys derived from node ids, test networks only) |
 | `[leader_election] rotation_slack` | 95 |
 | `[ledger] dir` | `/home/monad/monad-pq/ledger` (evidence under `ledger/evidence`) |
 | `[rpc] latency` | `latency.toml`, when `config/latency.toml` matches the validators |

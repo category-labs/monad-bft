@@ -28,6 +28,12 @@ use monad_mcp_chorus::{
 };
 use tiny_keccak::{Hasher, Keccak};
 
+mod ml_dsa;
+pub use ml_dsa::{
+    ML_DSA_44_PUBLIC_KEY_LEN, ML_DSA_44_SIGNATURE_LEN, ML_DSA_SEED_LEN, MlDsa44PublicKey,
+    MlDsa44Signer, MlDsa44Verifier, dev_seed,
+};
+
 /// An opaque, variable-length signature.
 #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodableWrapper, RlpDecodableWrapper)]
 pub struct PqSignature(pub Bytes);

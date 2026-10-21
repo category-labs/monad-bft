@@ -10,7 +10,8 @@
 # PQ_WITHHOLD_MS (90), PQ_ROTATION_SLACK (95; 995 for a lone validator), PQ_REPEATER_MS (200),
 # PQ_RETRANSMIT_MS (= delta), PQ_DECODE_GRACE_MS (= delta / 2),
 # PQ_SOURCE (mempool), PQ_RELEASE_CHUNKS (vote), PQ_EARLY_VOTE (false),
-# PQ_RPC_RESEND_MS (500).
+# PQ_RPC_RESEND_MS (500), PQ_SIGNATURE (stub; ml-dsa-44 uses keys derived
+# from node ids, for test networks only).
 
 write_pq_config() {
     local out=$1 id=$2 genesis=$3 ledger=$4
@@ -69,6 +70,7 @@ rotation_slack = $slack
 dir = "$ledger"
 
 [quantum]
+signature = "${PQ_SIGNATURE:-stub}"
 retransmit_interval = ${PQ_RETRANSMIT_MS:-$delta}
 decode_grace = ${PQ_DECODE_GRACE_MS:-$((delta / 2))}
 release_chunks = "${PQ_RELEASE_CHUNKS:-vote}"

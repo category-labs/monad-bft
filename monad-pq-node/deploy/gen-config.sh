@@ -29,12 +29,14 @@ early_vote=false
 rpc_resend_after=500
 # mempool: txs from monad-mcp-rpc; random: load without clients, and no [rpc] table
 proposal_source=mempool
+# ml-dsa-44 keys derive from node ids (test networks only); stub keeps one frame per message
+signature=stub
 keep_genesis=no
 force=no
 only_genesis=no
 render_args=no
 
-usage="usage: gen-config.sh --genesis <unix_ms> [--keep-genesis] { --only-genesis | [--force] [--source mempool|random] [--port n] [--delta ms] [--slot-interval ms] [--slots-per-window n] [--sync-boundary n] [--lag-threshold n] [--num-proposals n] [--propose-before ms] [--withhold-before ms] [--repeater-interval ms] [--repeater-retention n] [--rotation-slack n] [--retransmit-interval ms] [--decode-grace ms] [--release-chunks vote|receipt] [--early-vote true|false] [--rpc-resend-after ms] }"
+usage="usage: gen-config.sh --genesis <unix_ms> [--keep-genesis] { --only-genesis | [--force] [--source mempool|random] [--port n] [--delta ms] [--slot-interval ms] [--slots-per-window n] [--sync-boundary n] [--lag-threshold n] [--num-proposals n] [--propose-before ms] [--withhold-before ms] [--repeater-interval ms] [--repeater-retention n] [--rotation-slack n] [--retransmit-interval ms] [--decode-grace ms] [--release-chunks vote|receipt] [--early-vote true|false] [--rpc-resend-after ms] [--signature stub|ml-dsa-44] }"
 
 while [ $# -gt 0 ]; do
     case $1 in --genesis | --keep-genesis | --force | --only-genesis) ;; *) render_args=yes ;; esac
@@ -61,6 +63,7 @@ while [ $# -gt 0 ]; do
         --release-chunks) release_chunks=${2:?$usage}; shift ;;
         --early-vote) early_vote=${2:?$usage}; shift ;;
         --rpc-resend-after) rpc_resend_after=${2:?$usage}; shift ;;
+        --signature) signature=${2:?$usage}; shift ;;
         *) die "$usage" ;;
     esac
     shift
@@ -70,6 +73,7 @@ done
 case $proposal_source in random | mempool) ;; *) die "--source is mempool or random" ;; esac
 case $release_chunks in vote | receipt) ;; *) die "--release-chunks is vote or receipt" ;; esac
 case $early_vote in true | false) ;; *) die "--early-vote is true or false" ;; esac
+case $signature in stub | ml-dsa-44) ;; *) die "--signature is stub or ml-dsa-44" ;; esac
 [[ $rpc_resend_after =~ ^[1-9][0-9]*$ ]] || die "--rpc-resend-after must be positive ms"
 [[ $genesis =~ ^[0-9]+$ ]] || die "--genesis must be unix milliseconds"
 now=$(now_ms)
@@ -182,8 +186,12 @@ for host in $(hosts); do
         echo "dir = \"/home/$ssh_user/$remote_rel/ledger\""
         echo
         echo "[quantum]"
-        echo "signature = \"stub\""
-        echo "stub_signature_len = 32"
+        echo "signature = \"$signature\""
+        if [ "$signature" = stub ]; then
+            echo "stub_signature_len = 32"
+        else
+            echo "# no secret_key_file: keys derived from node ids, for test networks only"
+        fi
         echo "retransmit_interval = $retransmit_interval"
         echo "decode_grace = $decode_grace"
         echo "coda_timeout_deltas = 5"

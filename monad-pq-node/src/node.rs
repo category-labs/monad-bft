@@ -103,6 +103,7 @@ impl PqNode {
                 da_handle,
                 mempool,
                 base.da.completed_slot_retention,
+                config.slot_wire(),
             ),
             cadence,
             da,

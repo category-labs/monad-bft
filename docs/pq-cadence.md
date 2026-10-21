@@ -13,7 +13,7 @@ Citations are `path:line` relative to the repo root unless marked `paper:`.
 | Q | Verdict |
 |---|---|
 | Q1 runtime | `QuantumChorus` implements `monad_mcp_chorus::stub::SlotConsensus` and runs in the **unchanged** `CadenceRuntime<QuantumChorus, MonadConductor<NopAcs<SlotDeadline>>>`. The slot emits `SlotOutput::Finalize` **at halt** (paper §6: completion at halting). The ledger-visible finalization is delivered earlier, at finalize time, through `SlotOutput::CommitOptimistic(PqEvent::Final{..})`, which the runtime forwards to `FinalizationObserver::handle_optimistic_commit`. No runtime duplication. |
-| Q2 DA | **Duplicate** `monad-mcp-da` as `monad-pq-da` now. The S11, Merkle and Reed-Solomon logic, the wire format and `ChorusDAEvent` stay identical. Commands become `PqDACommand`, a superset of `ChorusDACommand` with `PullRoot`. Upstream DA never pulls a root that is not the proposer's first-seen pid (`proposer_rc/mod.rs:177-187`, `254-269`), forwards owned chunks only once, and treats `PullHeader` as one-shot. So a fast or fallback entry for a rival root may never resolve, and Coda input stalls (section 4.3, B1). The paper's "chunks attached to f+1 positive votes" becomes "f+1 positive votes, and DA reports `Decoded(pid)` / `DecodingFailed(pid)`", backed by `PullRoot` to those voters. A bounded `decode_grace` (≤ Δ/2) covers the path vote. PQ header signatures are a later env change in the same crate. |
+| Q2 DA | **Duplicate** `monad-mcp-da` as `monad-pq-da` now. The S11, Merkle and Reed-Solomon logic, the wire format and `ChorusDAEvent` stay identical. Commands become `PqDACommand`, a superset of `ChorusDACommand` with `PullRoot`. Upstream DA never pulls a root that is not the proposer's first-seen pid (`proposer_rc/mod.rs:177-187`, `254-269`), forwards owned chunks only once, and treats `PullHeader` as one-shot. So a fast or fallback entry for a rival root may never resolve, and Coda input stalls (section 4.3, B1). The paper's "chunks attached to f+1 positive votes" becomes "f+1 positive votes, and DA reports `Decoded(pid)` / `DecodingFailed(pid)`", backed by `PullRoot` to those voters. A bounded `decode_grace` (≤ Δ/2) covers the path vote. The proposer header signature stays DA's 65-byte stub even with ML-DSA-44 votes (section 4.3 item 3). |
 | Q3 RPC | Reuse `monad-mcp-rpc` **unchanged**. The pq `node.toml` is a strict superset of `monad_mcp_node::config::NodeConfig` (new keys only in a new `[quantum]` table). The pq node builds its proposer schedule with the same `NodeConfig::epoch_handle()` and speaks the same UDP framing (`monad_mcp_node::network`). |
 | Q4 node | Depend on `monad-mcp-node` as a library for `network::*`, `component::{Component, Dispatch, Link, Proposing*, Repeater*, Mempool*}`, `config::NodeConfig` (whole struct, `epoch_handle()`, `peers()`, `repeater()`), `EpochHandle`, `ledger::LedgerSink` and `init_logging`. Duplicate `component/cadence.rs`, `component/da.rs` (the DA type differs), `component::{spawn, run, sleep_until_due}` together with `clock.rs`, `runtime.rs`, `node.rs`, `async_node.rs`, `finalization.rs`, `ledger::{new_block, log_finalized, Recorder}`, `main.rs`, the swarm example and the test harnesses. `spawn` is pub but takes the private `Clock` (`component/mod.rs:68,79,108`). The `ledger` functions are pub but Chorus-typed. |
 | Q5 explorer | Reuse `monad-mcp-explorer` **unchanged**. The pq node writes the same ledger with `monad_mcp_chorus::ledger::LedgerWriter`, maps paths onto `FinalizationPath::{Fast, Fallback}` and puts an opaque proof in `proof.rlp`. |
@@ -68,7 +68,7 @@ monad-pq-node/            lib + bin `monad-pq-node`
   src/finalization.rs     PqFinalizationCollector, PqFinalizedSlot (dup of finalization.rs)
   src/ledger.rs           pq_new_block, log_finalized, PqRecorder (reuses LedgerSink)
   src/evidence.rs         EvidenceSink: <ledger.dir>/evidence/*.rlp
-  src/wire.rs             frame-size check + fragmentation hook (section 6.4)
+  src/wire.rs             Unfragmented (stub) / Fragmenting (ml-dsa-44) wire (section 6.4)
   examples/swarm.rs       in-process N-node swarm
   examples/latency.rs     e2e latency from the ledger (section 14.6)
   swarm.sh                local multi-process swarm (copy of monad-mcp-node/swarm.sh, renamed)
@@ -188,7 +188,10 @@ The pq slot emits these outputs:
    Now take an equivocating proposer with roots r1 and r2. A correct node N first sees r1, or N is partitioned over [D, D+Δ] and misses the forwards. Then N never pulls r2. If ≥ weak correct validators send ⟨fast, r2⟩ or ⟨fallback, r2⟩, N cannot accept the fast entries, because acceptance needs `resolved(r2)`. N may then never hold a clean set and never inputs to Coda. Coda termination needs every correct validator to input. The halting gadget helps only if some correct validator halts, and with Coda stuck none may.
 
    `monad-pq-da` fixes this with `PullRoot` (any root with ≥ weak positive voters is tracked and pulled from them until resolved) plus `PullHeader` retries. At most ⌊n/weak⌋ ≤ 3 roots per index can have ≥ weak voters, because each validator votes one root per index. That bounds the extra tracking.
-3. **The PQ proposer-header signature cannot be plugged in yet.** `SIGNATURE_LEN = 65` and the v1 layout are fixed (`monad-mcp-da/src/spec.rs:26`; `wire/v1.rs`). DA headers are signed over `version | scheme header` without a domain prefix (`wire/v1.rs:169-172`). This is unlike consensus signing bytes (`monad-mcp-chorus/src/spec.rs:105-116`). The variable-length env goes into `monad-pq-da` in WP8.
+3. **The PQ proposer-header signature cannot be plugged in yet.** `SIGNATURE_LEN = 65` and the v1 layout are fixed (`monad-mcp-da/src/spec.rs:26`; `wire/v1.rs`). DA headers are signed over `version | scheme header` without a domain prefix (`wire/v1.rs:169-172`). This is unlike consensus signing bytes (`monad-mcp-chorus/src/spec.rs:105-116`).
+   - **Still open after WP8.** With `signature = "ml-dsa-44"`, Vote and PathVote carry real ML-DSA-44 signatures, but the proposal (chunk) header keeps the 65-byte stub `ProposalSignature { signer, checksum }`, verified by `recover_author` in `monad-pq-da/src/header.rs`. Anyone can forge it, so `Evidence::EquivocatingHeaders` is not transferable proof (`monad-pq-node/src/evidence.rs`), and the paper's signed Chunk header (`paper:3-model.tex`) is not met.
+   - **Why not in the DA wire.** `ProposalSignature`, `SignedProposalHeader`, `HeaderAuth` and `EquivCert` are `monad-mcp-chorus` types that pq-da and pq-chorus share unchanged. A 2420-byte signature also cannot fit a chunk packet: the S11 header alone becomes 2420 + 2 + 41 = 2463 B against fixed 1440-byte segments (`wire/v1.rs`).
+   - **The planned fix** is a separate `PqMessage::HeaderSig { j, header, sig }` over the fragmenting wire. The proposer signs `domain ‖ signed_bytes(header)` with its `PqSigner` before the first hop. Receivers verify by `PqVerifier` and cache the signature by `(slot, pid)`. `header_auth` then accepts a header only once its PQ signature is cached, so DA must buffer early chunks. Peers that pull headers must also be served the signature. `EquivocatingHeaders` would carry both PQ signatures. Estimate: about 430 lines in 8 files, plus tests.
 4. **n ≡ 0 (mod 3).** With equal stake, weak = f+1 = n/3 is not more than W/3. S11's "weight > W/3 decodes" (`swiper/mod.rs:82`) then does not guarantee decoding from weak correct holders. mcp_test (n=8) and n = 4 or 7 are fine. Config load documents this and `warn!`s for n ≡ 0 (mod 3). It does not reject: decoding then relies on a fast quorum (strong − f > W/3 holders).
 
 ### 4.4 When to release
@@ -312,7 +315,13 @@ Notes:
 
 ### 6.2 Signature config (forward-compatible)
 
-`[quantum] signature = "stub"` with `stub_signature_len`. Later, `"ml-dsa-44"` with `secret_key_file` and `[[quantum.validators]] node_id, pubkey_hex`. That stays in `[quantum]`, so `NodeConfig` parsing is unaffected. `QuantumContext` holds `Arc<dyn PqSigner>` and `Arc<dyn PqVerifier>`. Verification cost lands in `on_vote` and `on_path_vote` only.
+`[quantum] signature = "stub"` (the default) with `stub_signature_len`, or `"ml-dsa-44"` (WP8, opt-in). That stays in `[quantum]`, so `NodeConfig` parsing is unaffected.
+
+ML-DSA-44 (`monad-pq-chorus/src/sig/ml_dsa.rs`, RustCrypto `ml-dsa = "=0.1.1"`, FIPS 204) works as follows:
+- **Signing.** `MlDsa44Signer` signs deterministically with the empty context string. The signed bytes are the domain-prefixed ones above. Signatures are 2420 B and public keys 1312 B.
+- **Verification.** `MlDsa44Verifier` looks up the signer's key by `NodeId`. An unknown signer, a wrong length or a malformed encoding all fail.
+- **Real keys.** `secret_key_file` holds the 32-byte FIPS 204 seed in hex. `[[quantum.validators]] node_id, public_key` (hex) lists exactly one key per validator, and the node checks that its own listed key matches its seed. `monad-pq-node --ml-dsa-public-key <seed-file>` prints a seed's key.
+- **Dev keys.** With neither field set, every key derives from `keccak256("monad/pq-cadence/ml-dsa-44/dev-seed/1" ‖ node_id)`. Anyone can compute these keys, so they are for test networks only, and the node warns at startup. Setting only one of the two fields is rejected. `QuantumContext` holds `Arc<dyn PqSigner>` and `Arc<dyn PqVerifier>`. Verification cost lands in `on_vote` and `on_path_vote` only.
 
 ### 6.3 Size table (K = 5, RLP)
 
@@ -340,9 +349,15 @@ pub trait SlotWire {
 }
 ```
 
-- **v1 (`Unfragmented`).** One payload per message. If the payload exceeds 1463 B: `warn!("pq message exceeds frame, dropped", kind, len)`, plus a unit test that every v1 message at K=5 with the stub sig fits.
-- **Later (`Fragmenting`).** A fragment payload starts with byte `0x01` (RLP list prefixes are ≥ 0xc0, so it is unambiguous), then `msg_id: u32, idx: u8, count: u8`, then the bytes.
-  - The reassembler is keyed by `(from, msg_id)`, with a 2Δ TTL and at most 64 entries per sender.
+- **`Unfragmented` (stub signatures, the default).** One payload per message. If the payload exceeds 1463 B: `warn!("pq message exceeds the wire limit, dropped", kind, len)`. A unit test checks that every v1 message at K=5 with the stub sig fits, and config validation rejects stub settings whose messages do not.
+- **`Fragmenting` (ml-dsa-44, WP8).**
+  - A message that fits one frame is sent unchanged, byte for byte as in `Unfragmented`.
+  - A longer one is split into `count` fragments of at most 1456 B. Each fragment payload starts with byte `0x01` (RLP list prefixes are ≥ 0xc0, so it is unambiguous), then `msg_id: u32 BE, idx: u8, count: u8`, then the bytes. `msg_id` is a per-node counter.
+  - `count` is at most 16, so a message is at most 23 296 B. Config validation rejects a `num_proposals` whose largest message is longer. At K=5 a Vote or PathVote takes 2 fragments.
+  - The reassembler is keyed by `(from, msg_id)`. A partial message expires after 2Δ: it is swept at most once per 2Δ, and an expired entry is dropped on access. Each sender keeps at most 64 partials, and the oldest is evicted, so one sender cannot crowd out another.
+  - Malformed fragments are dropped without state. That covers a short header, `count < 2` or `> 16`, `idx ≥ count`, and an oversized payload.
+  - A duplicate fragment is ignored. A fragment that conflicts with a held one (other bytes or another `count` under the same id, e.g. after a sender restart) restarts that message.
+  - A reassembled message that does not decode is dropped. A lost fragment loses the message, and the slot's Δ retransmission resends it whole under a new id.
   - It stays within `Packet::Cadence`, so `monad_mcp_node::network` is unchanged.
 
 ---
@@ -686,8 +701,13 @@ rotation_slack = 95
 dir = "/home/monad/monad-pq/ledger"
 
 [quantum]
-signature = "stub"            # "stub" | (later) "ml-dsa-44"
-stub_signature_len = 32       # 2420 emulates ML-DSA-44 sizes; rejected until fragmentation lands
+signature = "stub"            # "stub" (default) | "ml-dsa-44" (fragmenting wire, section 6.2)
+stub_signature_len = 32       # stub only; settings whose messages exceed one frame are rejected
+# ml-dsa-44 with real keys (both or neither; neither = node-id dev keys, test networks only):
+# secret_key_file = "/home/monad/monad-pq/ml-dsa.key"   # hex 32-byte seed
+# [[quantum.validators]]                                 # one per validator
+# node_id = 0
+# public_key = "<2624 hex chars>"
 retransmit_interval = 150     # ms, default = cadence.delta
 decode_grace = 75             # ms, default = cadence.delta / 2; must be ≤ delta / 2
 coda_timeout_deltas = 5
@@ -808,7 +828,11 @@ Properties checked on every swarm run:
   - `tamper` (equivocating proposer via a runtime wrapper);
   - `equivocation_partition` (B1 scenario with real DA).
 - `loopback.rs`: 4 `run_node`s over loopback UDP on ephemeral ports for a few seconds; their ledgers agree.
-- `stub_signature_len = 2420` (or a `num_proposals` whose slot messages exceed one frame) is rejected by config validation until fragmentation lands.
+- With stub signatures, `stub_signature_len = 2420` (or a `num_proposals` whose slot messages exceed one frame) is rejected by config validation.
+- `ml_dsa` (WP8):
+  - 8 nodes with ML-DSA-44 dev keys run 40 slots (4 s virtual). Every node fragments, and every slot finalizes on the fast path, in agreement, with no evidence.
+  - 6 of 8 live with 10 % per-packet (per-fragment) loss finalize every slot.
+  - The harness asserts that every `Packet::Cadence` payload fits a frame.
 
 ### 14.5 Local swarm and e2e
 
@@ -875,8 +899,13 @@ Each work package (WP) ends with `cargo check -p <crate>`, `cargo test -p <crate
      - `netctl start` brings 8 nodes to `finalized` lines with cross-host agreement in `report.sh`;
      - mcp_test e2e p99 meets 14.6;
      - `netctl handback` restores the mcp units.
-8. **WP8 (later): fragmentation + ML-DSA-44.** `wire.rs` `Fragmenting`; a `PqSigner` impl; a `monad-pq-da` env with variable-length proposer signatures.
-   - Accept: `stub_signature_len = 2420` scenario tests finalize.
+8. **WP8: fragmentation + ML-DSA-44 (done, opt-in).**
+   - Delivered: `wire.rs` `Fragmenting`; `MlDsa44Signer`/`MlDsa44Verifier`; `[quantum] signature = "ml-dsa-44"` with dev or file keys; `PQ_SIGNATURE` in `scripts/local-config.sh`; `gen-config.sh --signature`. Stub stays the default everywhere.
+   - Accepted by: the `ml_dsa` scenario tests (14.4).
+   - Local runs with ml-dsa-44:
+     - `swarm.sh 8 30`: 100 % fast path, agreement. Finalization after D is p50 2.4 / p99 4.0 ms, against 1.4 / 3.2 ms with the stub.
+     - `e2e.sh --swarm 4`: tx e2e p50 ≈ 153 / p99 ≈ 228–252 ms, the same as the stub within noise.
+   - Not done: the proposer header signature (section 4.3 item 3).
 
 Dependencies:
 - WP1 `da.rs` → WP-DA.
@@ -901,7 +930,8 @@ WP-DA runs in parallel with WP1–WP3. WP2 can start once `types.rs` is fixed.
 | D8 | Equal stake required; `strong = ⌈(n+f+1)/2⌉` for n ≠ 3f+1 | paper model is n = 3f+1 by count; mcp_test has n = 8 |
 | D9 | `leader(V) = validators[(slot+V) mod n]` | the paper only says round-robin |
 | D10 | Persistent memory is in memory only; no crash recovery | user decision |
-| D11 | Stub signatures; the proposer header signature is DA's 65-byte stub | user decision; DA layout fixed (`monad-mcp-da/src/spec.rs:26`) |
+| D11 | Stub signatures by default. With `signature = "ml-dsa-44"` (opt-in, WP8), Vote and PathVote carry real ML-DSA-44 signatures. The proposer header signature is DA's 65-byte stub either way, so header-equivocation evidence is not transferable | user decision (stub default); the DA header type and layout are fixed upstream, and a 2420-byte signature does not fit a chunk packet (section 4.3 item 3) |
+| D23 | Dev ML-DSA keys derived from `node_id` when no key file is configured | test networks (local, mcp_test) without key distribution; anyone can derive them |
 | D12 | Authenticated channels assumed; the transport trusts the claimed sender id (`network/stub.rs`) | Coda/Finalized rely on authentication; `monad-wireauth` integration later |
 | D13 | Conductor = `MonadConductor<NopAcs>` fixed schedule; unsigned `CapAdvance` trusted | user decision (signature-free ACS deferred) |
 | D14 | Ledger path: Gadget is recorded as Fallback; the exact path is in `proof.rlp` | ledger enum is two-valued (`ledger/block.rs:30-33`); explorer unchanged |
@@ -920,7 +950,7 @@ WP-DA runs in parallel with WP1–WP3. WP2 can start once `types.rs` is fixed.
 
 Risks:
 - **R1.** The Coda path at the paper's bound (D+4Δ) gives e2e ≈ 970 ms on mcp_test. Fast and typical view-1 cases are well under 1 s. Measure before tuning Δ.
-- **R2.** Frame size: the Vote2 limit is K ≤ 19 unfragmented, and ML-DSA votes need fragmentation (WP8).
+- **R2.** Frame size: with stub signatures the Vote2 limit is K ≤ 19, because the stub wire does not fragment. ML-DSA-44 configs use the fragmenting wire (WP8). Each lost fragment loses its whole message: at loss p, a 2-fragment vote arrives with probability (1−p)², and Δ retransmission covers the rest.
 - **R3.** Unsigned `CapAdvance` and an unauthenticated transport: any host can forge a sender id. This is inherited and accepted for testing.
 - **R4.** An equivocating proposer adds DA pulls: up to ⌊n/weak⌋ roots per index, each pulled every 2Δ until resolved. The cost is bounded by the existing serving quota (`serving_tracker.rs`), and the equivocation is provable (`EquivocatingHeaders`). The gadget is *not* a mitigation for a Coda-input stall, because no correct validator may halt; `PullRoot` is the mitigation.
 - **R5.** The four hosts that run monad-bft and bind 8002 (README) constrain pq exactly as they constrain mcp.
@@ -931,7 +961,7 @@ Risks:
 Open questions (human decision):
 - **O1.** Should `release_chunks = "receipt"` (paper §7 evaluation) be the mcp_test default? It lowers decode latency but drops the deadline-gated forwarding Chorus uses.
 - **O2.** How should Gadget-path finalizations appear in explorer stats: as Fallback (current choice) or as Fast? A third ledger variant needs explorer and rpc code changes.
-- **O3.** Should `PathVote` evidence (`ledger_proof = "path-votes"`) stay on once ML-DSA sizes apply (about 16 KB per block)?
+- **O3.** Should `PathVote` evidence (`ledger_proof = "path-votes"`) stay on once ML-DSA sizes apply (about 16 KB per block)? In the local 4-node e2e run, the ledger grew by about 10 % over the stub (30.2 vs 27.5 MB for about 680 blocks).
 
 ## 18. Rollback
 

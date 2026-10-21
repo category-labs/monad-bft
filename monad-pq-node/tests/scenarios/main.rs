@@ -20,6 +20,7 @@ mod cap_jump;
 mod equivocation;
 mod harness;
 mod loss;
+mod ml_dsa;
 mod mute;
 mod partition;
 mod tamper;
