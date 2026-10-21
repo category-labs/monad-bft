@@ -21,12 +21,10 @@ pub mod request;
 pub mod v1;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-use monad_crypto::hasher::Hash;
 use monad_mcp_chorus::spec::{ProposalHeader as _, SignedProposalHeader as _};
 
 use super::{
     chunk::{Chunk, ChunkData, ProposalEnvelope, WireChunkId},
-    chunk_tree::ChunkTree,
     types::{
         D25, EncodingScheme, MerkleRoot, ProposalHeader, ProposalSignature, S11,
         SignedProposalHeader,
@@ -95,12 +93,6 @@ pub trait PacketLayout {
     fn body_len(&self) -> usize;
 
     fn symbol_len(&self) -> usize;
-
-    // the leaf commits to the chunk's wire bytes from its chunk header on
-    fn leaf_hash(&self, chunk_id: WireChunkId, symbol: &[u8]) -> Hash;
-
-    // the caller must pass one symbol per chunk, in chunk id order
-    fn chunk_tree(&self, symbols: Vec<Bytes>) -> ChunkTree;
 }
 
 impl PacketLayout for EncodingScheme {
@@ -143,20 +135,6 @@ impl PacketLayout for EncodingScheme {
         match self {
             Self::D25(d25) => d25.v1_layout().symbol_len(),
             Self::S11(s11) => s11.v1_layout().symbol_len(),
-        }
-    }
-
-    fn leaf_hash(&self, chunk_id: WireChunkId, symbol: &[u8]) -> Hash {
-        match self {
-            Self::D25(d25) => d25.v1_layout().leaf_hash(chunk_id, symbol),
-            Self::S11(s11) => s11.v1_layout().leaf_hash(chunk_id, symbol),
-        }
-    }
-
-    fn chunk_tree(&self, symbols: Vec<Bytes>) -> ChunkTree {
-        match self {
-            Self::D25(d25) => d25.v1_layout().chunk_tree(symbols),
-            Self::S11(s11) => s11.v1_layout().chunk_tree(symbols),
         }
     }
 }

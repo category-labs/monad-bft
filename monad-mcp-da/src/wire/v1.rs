@@ -21,17 +21,14 @@
 //! header, symbol). A header-only packet is permitted.
 
 use bytes::{Buf as _, BufMut, Bytes};
-use monad_crypto::hasher::{Hash, Hasher as _, HasherType};
 
 use super::{
     super::{
         chunk::{Chunk, ChunkData, ProposalEnvelope, WireChunkId},
-        chunk_tree::ChunkTree,
         types::{
             EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader, ProposalSignature,
             SignedProposalHeader,
         },
-        util::Tree,
     },
     DAHeaderScheme, MalformedPacket, PacketLayout, SIGNATURE_LEN,
 };
@@ -198,25 +195,6 @@ impl<H: DAHeaderScheme> PacketLayout for Layout<'_, H> {
     fn symbol_len(&self) -> usize {
         Self::symbol_len_at(self.depth())
     }
-
-    fn leaf_hash(&self, chunk_id: WireChunkId, symbol: &[u8]) -> Hash {
-        let mut chunk_header = Vec::with_capacity(H::CHUNK_HEADER_LEN);
-        H::pack_chunk_header(chunk_id, &mut chunk_header);
-
-        let mut hasher = HasherType::new();
-        hasher.update(&chunk_header);
-        hasher.update(symbol);
-        hasher.hash()
-    }
-
-    fn chunk_tree(&self, symbols: Vec<Bytes>) -> ChunkTree {
-        let mut leaves = Vec::with_capacity(symbols.len());
-        for (leaf_idx, symbol) in symbols.iter().enumerate() {
-            leaves.push(self.leaf_hash(leaf_idx as WireChunkId, symbol));
-        }
-        let tree = Tree::from_leaves(self.depth(), leaves);
-        ChunkTree::complete(symbols, tree)
-    }
 }
 
 #[cfg(test)]
@@ -359,20 +337,5 @@ mod tests {
         );
         // the deepest tree still leaves a symbol
         assert!(D25Layout::symbol_len_at(D25Layout::MAX_DEPTH) > 0);
-    }
-
-    #[test]
-    fn leaf_hash_covers_the_chunk_id() {
-        let (header, _) = proposal_chunks(&epoch_handle(), 1);
-        let layout = header.scheme();
-        assert_eq!(layout.leaf_hash(1, b"x"), layout.leaf_hash(1, b"x"));
-        assert_ne!(layout.leaf_hash(1, b"x"), layout.leaf_hash(2, b"x"));
-        assert_ne!(layout.leaf_hash(1, b"x"), layout.leaf_hash(1, b"y"));
-
-        // the leaf is the chunk header then the symbol
-        let mut hasher = HasherType::new();
-        hasher.update([0, 0, 1, 0]);
-        hasher.update(b"x");
-        assert_eq!(layout.leaf_hash(1, b"x"), hasher.hash());
     }
 }
