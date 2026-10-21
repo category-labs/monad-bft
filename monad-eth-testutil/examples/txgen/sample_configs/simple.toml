@@ -4,8 +4,8 @@ chain_id = 31337
 name = "few_to_many"
 runtime_minutes = 1
 
-[rpc_generator]
-enabled_workflows = ["indexer"]
+[[workload_groups.rpc_generator.workflows]]
+mode = "indexer"
 requests_per_block = 10
 
 [[workload_groups.traffic_gens]]
