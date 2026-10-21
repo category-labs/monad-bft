@@ -25,7 +25,7 @@ use std::{cmp::Reverse, collections::HashMap, fmt, sync::Arc, time::Duration};
 use monad_mcp_node::{
     NodeProposerSchedule,
     chorus::types::{
-        NodeId, ProposalIndex, ProposerConfig, ProposerSchedule, ScheduleError, Slot, Timestamp,
+        Lane, NodeId, ProposerConfig, ProposerSchedule, ScheduleError, Slot, Timestamp,
         TimestampDelta,
     },
     config::NodeConfig,
@@ -90,7 +90,7 @@ fn tenures(
     schedule: &(impl ProposerSchedule + ?Sized),
     target: Slot,
     horizon: u64,
-) -> Vec<(ProposalIndex, NodeId, u64)> {
+) -> Vec<(Lane, NodeId, u64)> {
     let Ok(set) = schedule.proposers_at(target) else {
         return Vec::new();
     };
@@ -121,7 +121,7 @@ fn tenures(
 }
 
 // the first of the longest tenure, so ties go to the lower lane
-fn most_tenured(tenures: &[(ProposalIndex, NodeId, u64)]) -> Option<(ProposalIndex, NodeId)> {
+fn most_tenured(tenures: &[(Lane, NodeId, u64)]) -> Option<(Lane, NodeId)> {
     tenures
         .iter()
         .min_by_key(|(_, _, tenure)| Reverse(*tenure))
@@ -134,7 +134,7 @@ pub fn choose_leader(
     schedule: &(impl ProposerSchedule + ?Sized),
     target: Slot,
     horizon: u64,
-) -> Option<(ProposalIndex, NodeId)> {
+) -> Option<(Lane, NodeId)> {
     most_tenured(&tenures(schedule, target, horizon))
 }
 
@@ -151,7 +151,7 @@ pub fn choose_nearest(
     latency: &Latency,
     min_tenure: u64,
     avoid: Option<NodeId>,
-) -> Option<(ProposalIndex, NodeId)> {
+) -> Option<(Lane, NodeId)> {
     let mut candidates = tenures(schedule, target, horizon);
     candidates.retain(|(_, node, _)| Some(*node) != avoid);
     candidates
@@ -168,7 +168,7 @@ pub fn choose_nearest(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Route {
     pub slot: Slot,
-    pub lane: ProposalIndex,
+    pub lane: Lane,
     pub leader: NodeId,
     // one-way, from the latency matrix when one is loaded
     pub latency: Option<Duration>,
@@ -256,7 +256,7 @@ impl Planner {
     pub fn route(
         &self,
         now: Timestamp,
-        lane: Option<ProposalIndex>,
+        lane: Option<Lane>,
         avoid: Option<NodeId>,
     ) -> Option<Route> {
         let route = self.first_route(now, lane, avoid);
@@ -269,7 +269,7 @@ impl Planner {
     fn first_route(
         &self,
         now: Timestamp,
-        lane: Option<ProposalIndex>,
+        lane: Option<Lane>,
         avoid: Option<NodeId>,
     ) -> Option<Route> {
         let target = self.target_slot(now).0;

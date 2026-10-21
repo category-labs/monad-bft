@@ -21,7 +21,7 @@ use super::{Component, ProposalSource};
 use crate::{
     chorus::{
         proposing::ProposalPlanner,
-        types::{ProposalIndex, Slot, Timestamp},
+        types::{Lane, Slot, Timestamp},
     },
     config::ProposalConfig,
     epoch::EpochHandle,
@@ -33,7 +33,7 @@ pub enum ProposingInput {
     CapAdvance(Slot),
 }
 
-pub type ProposingOutput = (Slot, ProposalIndex, Bytes);
+pub type ProposingOutput = (Slot, Lane, Bytes);
 
 // decides when we propose in a slot; the payload is assembled here
 pub struct Proposing {
@@ -63,11 +63,11 @@ impl Proposing {
     }
 
     fn collect(&mut self, now: Timestamp) {
-        while let Some((slot, index)) = self.planner.poll(now) {
+        while let Some((slot, lane)) = self.planner.poll(now) {
             let payload = self
                 .source
-                .next_payload(now, slot, index, self.proposal_size_limit); // demo(tx-timeline)
-            self.outbox.push_back((slot, index, payload));
+                .next_payload(now, slot, lane, self.proposal_size_limit); // demo(tx-timeline)
+            self.outbox.push_back((slot, lane, payload));
         }
     }
 }

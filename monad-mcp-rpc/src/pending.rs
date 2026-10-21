@@ -22,7 +22,7 @@ use std::{
 };
 
 use monad_mcp_chorus::ledger::{FinalizationPath, Hash, Tx};
-use monad_mcp_node::chorus::types::{NodeId, ProposalIndex};
+use monad_mcp_node::chorus::types::{Lane, NodeId};
 
 use crate::schedule::Route;
 
@@ -106,7 +106,7 @@ pub struct Record {
     pub hash: Hash,
     pub tx: Tx,
     // the lane the request asked for; every send of the tx targets it
-    pub lane: Option<ProposalIndex>,
+    pub lane: Option<Lane>,
     pub state: TxState,
     pub submitted_at: SystemTime,
     // at most max_attempts entries, oldest first
@@ -151,7 +151,7 @@ impl Admission {
     }
 }
 
-pub type Due = (Hash, Tx, Option<ProposalIndex>, Option<NodeId>);
+pub type Due = (Hash, Tx, Option<Lane>, Option<NodeId>);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("{0} txs are already in flight")]
@@ -202,7 +202,7 @@ impl PendingSet {
     pub fn submit(
         &mut self,
         tx: Tx,
-        lane: Option<ProposalIndex>,
+        lane: Option<Lane>,
         now: Instant,
     ) -> Result<(Hash, Admission), PendingFull> {
         let hash = tx.hash();
@@ -347,7 +347,7 @@ mod tests {
     fn sent(slot: u64) -> SendOutcome {
         SendOutcome::Sent(Route {
             slot: Slot(slot),
-            lane: 1,
+            lane: Lane::new_unchecked(1),
             leader: NodeId::dummy(2),
             latency: None,
         })
@@ -562,10 +562,10 @@ mod tests {
     fn a_resend_keeps_the_requested_lane_and_a_retry_takes_the_new_one() {
         let mut set = PendingSet::new(config());
         let t0 = Instant::now();
-        let (hash, _) = set.submit(tx(1), Some(3), t0).unwrap();
+        let (hash, _) = set.submit(tx(1), Some(Lane::new_unchecked(3)), t0).unwrap();
         assert_eq!(
             set.take_due(t0 + RESEND),
-            vec![(hash, tx(1), Some(3), None)]
+            vec![(hash, tx(1), Some(Lane::new_unchecked(3)), None)]
         );
         assert!(set.owns(&hash));
         for i in 1..=3 {
@@ -574,10 +574,12 @@ mod tests {
         set.take_due(t0 + RESEND * 4);
         assert!(!set.owns(&hash), "failed");
         assert_eq!(
-            set.submit(tx(1), Some(2), t0 + RESEND * 4).unwrap().1,
+            set.submit(tx(1), Some(Lane::new_unchecked(2)), t0 + RESEND * 4)
+                .unwrap()
+                .1,
             Admission::Retried
         );
-        assert_eq!(set.get(&hash).unwrap().lane, Some(2));
+        assert_eq!(set.get(&hash).unwrap().lane, Some(Lane::new_unchecked(2)));
     }
 
     // a resend avoids the leader the tx last went to, not a refused send

@@ -87,11 +87,11 @@ impl LedgerWatch {
         }
         for meta in &blocks {
             for lane in meta.lanes.iter().filter(|lane| lane.tx_count > 0) {
-                if let Err(error) = lane_commits(reader, meta, lane.index, &mut sighting.commits) {
-                    warn!(slot = meta.slot, lane = lane.index, %error, "unreadable ledger lane; retrying");
+                if let Err(error) = lane_commits(reader, meta, lane.lane, &mut sighting.commits) {
+                    warn!(slot = meta.slot, lane = lane.lane, %error, "unreadable ledger lane; retrying");
                     retries.push(Retry {
                         meta: meta.clone(),
-                        lane: lane.index,
+                        lane: lane.lane,
                         left: LANE_RETRIES,
                     });
                 }
@@ -106,28 +106,28 @@ impl LedgerWatch {
 fn lane_commits(
     reader: &LedgerReader,
     meta: &BlockMeta,
-    index: u32,
+    lane: u32,
     out: &mut Vec<(Hash, Commit)>,
 ) -> Result<(), LedgerError> {
-    let payload = match reader.read_lane_for(meta, index) {
+    let payload = match reader.read_lane_for(meta, lane) {
         Ok(Some(payload)) => payload,
         Ok(None) => return Ok(()),
         Err(error @ LedgerError::Io { .. }) => return Err(error),
         Err(error) => {
-            warn!(slot = meta.slot, lane = index, %error, "unreadable ledger lane");
+            warn!(slot = meta.slot, lane, %error, "unreadable ledger lane");
             return Ok(());
         }
     };
     let txs = match decode_batch(&payload) {
         Ok(txs) => txs,
         Err(error) => {
-            warn!(slot = meta.slot, lane = index, %error, "undecodable ledger lane");
+            warn!(slot = meta.slot, lane, %error, "undecodable ledger lane");
             return Ok(());
         }
     };
     let commit = Commit {
         slot: meta.slot,
-        lane: index,
+        lane,
         path: meta.path,
         finalized_at_ns: meta.finalized_at_ns,
     };

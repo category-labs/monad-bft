@@ -27,7 +27,7 @@ use super::{
         super::{
             fast::{CertifiedEntry, EnterFallbackCert, EnterFallbackVote, Entry, FallbackEntry},
             types::{
-                HeaderAuth, IsVote, NodeId, ProposalId, ProposalMap, ProposalScope, Slot, StrongQc,
+                HeaderAuth, IsVote, Lane, Lanes, NodeId, ProposalId, ProposalScope, Slot, StrongQc,
                 TimestampDelta, ValidatorData, VoteMsg, VotePool, WeakQc,
             },
         },
@@ -67,7 +67,7 @@ pub(super) type ViewCollectors = super::collectors::ViewCollectors<Metablock, En
 pub(super) type TimerEvent = super::TimerEvent<Metablock>;
 
 pub(super) const NUM_NODES: u64 = 4;
-pub(super) const NUM_PROPOSALS: usize = 2;
+pub(super) const NUM_LANES: usize = 2;
 pub(super) const SLOT: Slot = Slot(0);
 pub(super) const DELTA: TimestampDelta = TimestampDelta::from_millis(10);
 
@@ -113,7 +113,7 @@ pub(super) fn leader_of(v: FallbackView) -> NodeId {
 pub(super) fn mvba(node: NodeId, validator_data: &Arc<ValidatorData>) -> MonadMvba {
     MonadMvba::new(MvbaContext {
         slot: SLOT,
-        num_proposals: NUM_PROPOSALS,
+        num_lanes: NUM_LANES,
         node_id: node,
         key: Arc::new(node.keypair()),
         validator_data: validator_data.clone(),
@@ -125,8 +125,8 @@ pub(super) fn mvba(node: NodeId, validator_data: &Arc<ValidatorData>) -> MonadMv
 /// A valid metablock whose entries are determined by `seed`, so two seeds give
 /// two metablocks that cannot be confused for one another
 pub(super) fn metablock(seed: u64, validator_data: &ValidatorData) -> Metablock {
-    Metablock::new(ProposalMap::new(NUM_PROPOSALS, |j| {
-        let entry = Entry::Positive(pid(seed * 100 + j as u64));
+    Metablock::new(Lanes::new(NUM_LANES, |j| {
+        let entry = Entry::Positive(pid(seed * 100 + usize::from(j) as u64));
         let fast_qc = strong_qc(
             ProposalScope::new(SLOT, j),
             entry,
@@ -141,9 +141,9 @@ pub(super) fn metablock(seed: u64, validator_data: &ValidatorData) -> Metablock 
 /// quorum. `entries()` matches [`metablock`] on the same seed, so the two
 /// differ only in their evidence
 pub(super) fn mixed_evidence_metablock(seed: u64, validator_data: &ValidatorData) -> Metablock {
-    Metablock::new(ProposalMap::new(NUM_PROPOSALS, |j| {
-        let entry = Entry::Positive(pid(seed * 100 + j as u64));
-        if j == 0 {
+    Metablock::new(Lanes::new(NUM_LANES, |j| {
+        let entry = Entry::Positive(pid(seed * 100 + usize::from(j) as u64));
+        if j == Lane::new_unchecked(0) {
             let qc = weak_qc(
                 ProposalScope::new(SLOT, j),
                 FallbackEntry(entry),
@@ -208,7 +208,7 @@ pub(super) fn weak_qc<V: IsVote>(
 
 pub(super) fn prepare_qc(
     v: FallbackView,
-    entries: &ProposalMap<Entry>,
+    entries: &Lanes<Entry>,
     validator_data: &ValidatorData,
 ) -> PrepareQc {
     strong_qc(
@@ -291,7 +291,7 @@ pub(super) fn timeout_certificate_in(
 pub(super) fn feed_prepare_votes(
     instance: &mut MonadMvba,
     v: FallbackView,
-    entries: &ProposalMap<Entry>,
+    entries: &Lanes<Entry>,
     signers: &[NodeId],
 ) {
     for node in signers {
@@ -356,7 +356,7 @@ pub(super) fn block_response(block: Metablock) -> Message {
     Message::BlockResponse(BlockResponseMsg { slot: SLOT, block })
 }
 
-pub(super) fn block_request(entries: &ProposalMap<Entry>) -> Message {
+pub(super) fn block_request(entries: &Lanes<Entry>) -> Message {
     Message::BlockRequest(BlockRequestMsg {
         slot: SLOT,
         entries: entries.clone(),
@@ -398,7 +398,7 @@ pub(super) fn scheduled_timers(outputs: &[Output]) -> Vec<TimerEvent> {
 }
 
 /// The entries of every block request broadcast in `outputs`
-pub(super) fn requested_entries(outputs: &[Output]) -> Vec<ProposalMap<Entry>> {
+pub(super) fn requested_entries(outputs: &[Output]) -> Vec<Lanes<Entry>> {
     broadcasts(outputs)
         .into_iter()
         .filter_map(|message| match message {
@@ -409,7 +409,7 @@ pub(super) fn requested_entries(outputs: &[Output]) -> Vec<ProposalMap<Entry>> {
 }
 
 /// The entries of the single prepare vote in `outputs`, if there is one
-pub(super) fn prepared_entries(outputs: &[Output]) -> Option<ProposalMap<Entry>> {
+pub(super) fn prepared_entries(outputs: &[Output]) -> Option<Lanes<Entry>> {
     broadcasts(outputs)
         .into_iter()
         .find_map(|message| match message {
@@ -418,7 +418,7 @@ pub(super) fn prepared_entries(outputs: &[Output]) -> Option<ProposalMap<Entry>>
         })
 }
 
-pub(super) fn committed_entries(outputs: &[Output]) -> Option<ProposalMap<Entry>> {
+pub(super) fn committed_entries(outputs: &[Output]) -> Option<Lanes<Entry>> {
     broadcasts(outputs)
         .into_iter()
         .find_map(|message| match message {

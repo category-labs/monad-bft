@@ -65,7 +65,7 @@ test('L6b: send from the panel, follow it to its block and payload, then Live of
   await expect(page.getByTestId('block-detail')).toHaveAttribute('data-slot', slot);
   await expect(page.getByTestId('block-path')).toHaveText(/fast|fallback/);
   const blockPath = (await page.getByTestId('block-path').textContent())!.trim(); // demo(tx-timeline)
-  const card = page.locator(`[data-testid="lane-card"][data-lane-index="${lane}"]`);
+  const card = page.locator(`[data-testid="lane-card"][data-lane="${lane}"]`);
   await expect(card).toHaveAttribute('data-positive', 'true');
   expect(Number(await card.getAttribute('data-tx-count'))).toBeGreaterThanOrEqual(1);
   await expect(card.getByTestId('lane-proposer')).toHaveText('0');

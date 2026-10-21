@@ -238,7 +238,7 @@ impl Runtime for NodeRuntime {
                         .collect();
                     mempool
                         .lock()
-                        .settle(slot, |j| positive.get(j) == Some(&true));
+                        .settle(slot, |j| positive.get(usize::from(j)) == Some(&true));
                 }
                 let certificate = finalization.certificate_message();
                 effects.dispatch(Effect::Repeater(RepeaterInput::Finalization(
@@ -276,12 +276,12 @@ impl Runtime for NodeRuntime {
         effects.dispatch(Effect::Network(outbound));
     }
 
-    // a proposal released at (slot, index): the first hop goes to the
+    // a proposal released at (slot, lane): the first hop goes to the
     // other owners, plus all chunks to proposer's DA
     fn handle_proposal(
         &mut self,
         now: Timestamp,
-        (slot, index, message): ProposingOutput,
+        (slot, lane, message): ProposingOutput,
         effects: &mut impl Dispatch<Effect>,
     ) {
         let self_id = self.epoch_handle.self_id;
@@ -289,7 +289,7 @@ impl Runtime for NodeRuntime {
         let unix_ts = unix_seconds(now);
 
         // encode with swiper-11 scheme.
-        let proposal = AssembledProposal::build_s11(&epoch_handle, slot, index, &message, unix_ts);
+        let proposal = AssembledProposal::build_s11(&epoch_handle, slot, lane, &message, unix_ts);
         let Some(proposal) = proposal else {
             tracing::warn!(
                 ?slot,
@@ -299,7 +299,12 @@ impl Runtime for NodeRuntime {
             return;
         };
 
-        tracing::info!(slot = slot.0, index, len = message.len(), "proposing");
+        tracing::info!(
+            slot = slot.0,
+            lane = usize::from(lane),
+            len = message.len(),
+            "proposing"
+        );
 
         let mut first_hop = proposal.disseminate();
 
@@ -323,12 +328,12 @@ impl Runtime for NodeRuntime {
             }
             DAOutput::Resolved {
                 slot,
-                proposal_index,
+                lane,
                 pid,
                 message,
             } => {
                 self.collector
-                    .handle_resolved(now, slot, proposal_index, pid, message); // demo(tx-timeline)
+                    .handle_resolved(now, slot, lane, pid, message); // demo(tx-timeline)
                 self.deliver_finalized(effects);
             }
             DAOutput::Disseminate(Dissemination { to, envelope }) => {
@@ -369,7 +374,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        chorus::types::{NodeId, Slot},
+        chorus::types::{Lane, NodeId, Slot},
         config::{NodeConfig, ProposalConfig, SourceKind},
         node::Node,
     };
@@ -430,11 +435,12 @@ mod tests {
         assert_eq!(pooled(&runtime), 2);
         assert!(effects.is_empty());
         // demo(tx-timeline): admission stamps the node clock's now
-        let batch = runtime
-            .mempool()
-            .unwrap()
-            .lock()
-            .drain(Slot(0), 0, 1 << 20, 0);
+        let batch =
+            runtime
+                .mempool()
+                .unwrap()
+                .lock()
+                .drain(Slot(0), Lane::new_unchecked(0), 1 << 20, 0);
         let admitted = monad_mcp_chorus::ledger::decode_batch(&batch).unwrap();
         assert_eq!(admitted.len(), 2);
         assert!(
@@ -485,7 +491,11 @@ mod tests {
         let propose = |runtime: &mut NodeRuntime, len| {
             let mut effects = Vec::new();
             let message = Bytes::from(vec![7; len]);
-            runtime.handle_proposal(now(), (Slot(0), 0, message), &mut effects);
+            runtime.handle_proposal(
+                now(),
+                (Slot(0), Lane::new_unchecked(0), message),
+                &mut effects,
+            );
             !effects.is_empty()
         };
         let max = ProposalConfig::MAX_PROPOSAL_SIZE_LIMIT;

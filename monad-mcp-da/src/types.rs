@@ -20,9 +20,9 @@ pub use super::{
         env::{D25, EncodingScheme, MerkleHash, ProposalSignature, PubKey, S11},
         slot::chorus::{ChorusDACommand, ChorusDAEvent, MissingHeaders, ProposalDAEvent},
         types::{
-            EquivCert, HeaderAuth, MerkleRoot, NodeId, ProposalHeader, ProposalId, ProposalIndex,
-            ProposalMap, ProposerSchedule, SignedProposalHeader, Slot, Stake, Timestamp,
-            TimestampDelta, ValidatorData,
+            EquivCert, HeaderAuth, Lane, Lanes, MAX_PROPOSER_SET_SIZE, MerkleRoot, NodeId,
+            ProposalHeader, ProposalId, ProposerSchedule, SignedProposalHeader, Slot, Stake,
+            Timestamp, TimestampDelta, ValidatorData,
         },
     },
     env::ProposalKeyPair,

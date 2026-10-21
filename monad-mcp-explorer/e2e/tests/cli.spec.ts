@@ -10,7 +10,7 @@ import { explorerTx, getJson, hexOf, jsonLines, laneJson, mcpTx, randomSender, r
 async function expectInLedger(tx: any) {
   const lane = await laneJson(tx.slot, tx.lane);
   expect(lane.slot).toBe(tx.slot);
-  expect(lane.index).toBe(tx.lane);
+  expect(lane.lane).toBe(tx.lane);
   const hits = lane.txs.filter((t: any) => t.hash === tx.hash);
   expect(hits).toHaveLength(1);
   expect(lane.txs.indexOf(hits[0])).toBe(tx.pos);
@@ -22,7 +22,7 @@ async function expectInLedger(tx: any) {
 async function expectInBlock(tx: any) {
   const got = await getJson(`${stack.explorer}/api/block/${tx.slot}`);
   expect(got.status).toBe(200);
-  const card = got.body.lanes.find((l: any) => l.index === tx.lane);
+  const card = got.body.lanes.find((l: any) => l.lane === tx.lane);
   expect(card).toMatchObject({ positive: true, decode_error: false });
   expect(card.tx_count).toBeGreaterThan(tx.pos);
   if (tx.pos < card.txs.length) expect(card.txs[tx.pos].hash).toBe(tx.hash);

@@ -33,7 +33,7 @@ use monad_mcp_chorus::{
 };
 use monad_mcp_node::{
     NodeProposerSchedule,
-    chorus::types::{KeyPair, NodeId, ProposerSchedule, Slot, Timestamp},
+    chorus::types::{KeyPair, Lane, NodeId, ProposerSchedule, Slot, Timestamp},
     config::{NodeConfig, ValidatorConfig},
     network::{Packet, decode_frame},
 };
@@ -108,7 +108,7 @@ pub fn horizon_of(schedule: &NodeProposerSchedule) -> u64 {
 pub fn run_of(
     schedule: &(impl ProposerSchedule + ?Sized),
     from: Slot,
-    lane: usize,
+    lane: Lane,
     node: NodeId,
     horizon: u64,
 ) -> u64 {
@@ -126,9 +126,9 @@ pub fn most_tenured(
     schedule: &(impl ProposerSchedule + ?Sized),
     slot: Slot,
     horizon: u64,
-) -> Option<(usize, NodeId)> {
+) -> Option<(Lane, NodeId)> {
     let set = schedule.proposers_at(slot).ok()?;
-    let mut best: Option<(u64, usize, NodeId)> = None;
+    let mut best: Option<(u64, Lane, NodeId)> = None;
     for (lane, proposer) in set.iter() {
         let Some(node) = proposer else {
             continue;

@@ -27,9 +27,8 @@ use super::{
     instance_rc::Resolved,
     slot_rc::SlotRaptorcast,
     types::{
-        ChorusDACommand, ChorusDAEvent, HeaderAuth, NodeId, ProposalId, ProposalIndex,
-        ProposalKeyPair, ProposerSchedule, Slot, SlotLifecycle, Timestamp, TimestampDelta,
-        ValidatorData,
+        ChorusDACommand, ChorusDAEvent, HeaderAuth, Lane, NodeId, ProposalId, ProposalKeyPair,
+        ProposerSchedule, Slot, SlotLifecycle, Timestamp, TimestampDelta, ValidatorData,
     },
 };
 
@@ -94,7 +93,7 @@ pub struct DARuntime<S> {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ChunkRecoveryRequest {
     pub slot: Slot,
-    pub proposal_index: ProposalIndex,
+    pub lane: Lane,
     pub request: ChunkRequest,
 }
 
@@ -138,10 +137,10 @@ where
         for (to, request) in slot_raptorcast.drain_requests() {
             outputs.push(DAOutput::RecoveryRequest { to, request });
         }
-        for (proposal_index, pid, message) in slot_raptorcast.drain_resolved() {
+        for (lane, pid, message) in slot_raptorcast.drain_resolved() {
             outputs.push(DAOutput::Resolved {
                 slot,
-                proposal_index,
+                lane,
                 pid,
                 message,
             });
@@ -178,7 +177,7 @@ where
     ) {
         let ChunkRecoveryRequest {
             slot,
-            proposal_index,
+            lane,
             request,
         } = req;
 
@@ -187,7 +186,7 @@ where
             return;
         };
 
-        slot_raptorcast.handle_chunk_request(request, proposal_index, from, now);
+        slot_raptorcast.handle_chunk_request(request, lane, from, now);
         self.collect(slot);
     }
 
@@ -243,11 +242,11 @@ pub enum DAOutput {
     // notification for the consensus layer's slot instance
     Consensus(Slot, ChorusDAEvent),
 
-    // the message of the proposal (slot, proposal_index, pid), or why it has none,
+    // the message of the proposal (slot, lane, pid), or why it has none,
     // for the layer that recovers proposals
     Resolved {
         slot: Slot,
-        proposal_index: ProposalIndex,
+        lane: Lane,
         pid: ProposalId,
         message: Resolved,
     },
@@ -362,11 +361,14 @@ mod tests {
             match output {
                 DAOutput::Resolved {
                     slot,
-                    proposal_index,
+                    lane,
                     pid,
                     message,
                 } => {
-                    assert_eq!((*slot, *proposal_index, *pid), (SLOT, 0, header.pid()));
+                    assert_eq!(
+                        (*slot, *lane, *pid),
+                        (SLOT, Lane::new_unchecked(0), header.pid())
+                    );
                     assert_eq!(message, &Ok(Bytes::from(vec![1u8; MESSAGE_LEN])));
                     decoded_at = Some(i);
                 }
@@ -407,7 +409,7 @@ mod tests {
 
         let unknown_slot = ChunkRecoveryRequest {
             slot: Slot(7),
-            proposal_index: 0,
+            lane: Lane::new_unchecked(0),
             request: ChunkRequest::all(header.pid(), ChunkRequestType::YourChunks),
         };
         runtime.handle_chunk_request(unknown_slot, &NodeId::dummy(2), NOW);
@@ -447,7 +449,7 @@ mod tests {
             let DAOutput::RecoveryRequest { to, request } = output else {
                 continue;
             };
-            assert_eq!((request.slot, request.proposal_index), (SLOT, 0));
+            assert_eq!((request.slot, request.lane), (SLOT, Lane::new_unchecked(0)));
             assert_eq!(request.request.pid, header.pid());
             peers.push(to);
         }

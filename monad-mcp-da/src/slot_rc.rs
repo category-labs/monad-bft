@@ -25,8 +25,8 @@ use super::{
     proposer_rc::ProposerRaptorcast,
     runtime::{ChunkRecoveryRequest, EpochHandle, Timing},
     types::{
-        ChorusDACommand, ChorusDAEvent, NodeId, ProposalId, ProposalIndex, ProposalMap,
-        ProposerSchedule, SignedProposalHeader, Slot, Timestamp,
+        ChorusDACommand, ChorusDAEvent, Lane, Lanes, NodeId, ProposalId, ProposerSchedule,
+        SignedProposalHeader, Slot, Timestamp,
     },
 };
 
@@ -36,12 +36,12 @@ pub struct SlotRaptorcast {
     epoch_handle: EpochHandle,
     slot: Slot,
 
-    // None if the index has no proposer
-    raptorcasts: ProposalMap<Option<ProposerRaptorcast>>,
+    // None if the lane has no proposer
+    raptorcasts: Lanes<Option<ProposerRaptorcast>>,
 
-    // memoize the proposal index of headers that authenticated. todo:
+    // memoize the lane of headers that authenticated. todo:
     // bound per proposer.
-    authenticated_headers: HashMap<SignedProposalHeader, ProposalIndex>,
+    authenticated_headers: HashMap<SignedProposalHeader, Lane>,
 
     egress: ChunkEgress,
 
@@ -71,7 +71,7 @@ impl SlotRaptorcast {
             .expect("proposer schedule unavailable for open slot");
 
         // K is the schedule's, so DA and consensus index proposals alike
-        let raptorcasts = ProposalMap::new(proposers.num_indices(), |j| {
+        let raptorcasts = Lanes::new(proposers.num_lanes(), |j| {
             let proposer = proposers.proposer(j)?;
             let self_id = epoch_handle.self_id;
             Some(ProposerRaptorcast::new(proposer, self_id, deadline, timing))
@@ -118,7 +118,7 @@ impl SlotRaptorcast {
         Ok(())
     }
 
-    fn collect_events(&mut self, j: ProposalIndex) {
+    fn collect_events(&mut self, j: Lane) {
         let Some(raptorcast) = self.raptorcasts[j].as_mut() else {
             return;
         };
@@ -128,9 +128,9 @@ impl SlotRaptorcast {
     }
 
     // proposals resolved since the last drain, under j, with their roots and messages
-    pub(crate) fn drain_resolved(&mut self) -> Vec<(ProposalIndex, ProposalId, Resolved)> {
+    pub(crate) fn drain_resolved(&mut self) -> Vec<(Lane, ProposalId, Resolved)> {
         let mut resolved = Vec::new();
-        for j in 0..self.raptorcasts.size() {
+        for j in self.raptorcasts.lanes() {
             let Some(raptorcast) = self.raptorcasts[j].as_mut() else {
                 continue;
             };
@@ -141,8 +141,8 @@ impl SlotRaptorcast {
         resolved
     }
 
-    // the proposal index of a proposer-signed header for this slot
-    fn authenticate(&mut self, header: &SignedProposalHeader) -> Option<ProposalIndex> {
+    // the lane of a proposer-signed header for this slot
+    fn authenticate(&mut self, header: &SignedProposalHeader) -> Option<Lane> {
         if let Some(j) = self.authenticated_headers.get(header) {
             return Some(*j);
         }
@@ -161,9 +161,9 @@ impl SlotRaptorcast {
                 self.egress.release();
             }
             ChorusDACommand::AddDecodedHolders { j, pid, node_ids } => {
-                if j >= self.raptorcasts.size() {
+                let Some(j) = self.raptorcasts.checked_lane(usize::from(j)) else {
                     return;
-                }
+                };
                 let Some(raptorcast) = self.raptorcasts[j].as_mut() else {
                     return;
                 };
@@ -172,16 +172,16 @@ impl SlotRaptorcast {
                 for (to, request) in requests {
                     let request = ChunkRecoveryRequest {
                         slot: self.slot,
-                        proposal_index: j,
+                        lane: j,
                         request,
                     };
                     self.out_requests.push((to, request));
                 }
             }
             ChorusDACommand::PinFinal { j, pid } => {
-                if j >= self.raptorcasts.size() {
+                let Some(j) = self.raptorcasts.checked_lane(usize::from(j)) else {
                     return;
-                }
+                };
                 let Some(raptorcast) = self.raptorcasts[j].as_mut() else {
                     return;
                 };
@@ -189,9 +189,9 @@ impl SlotRaptorcast {
                 self.collect_events(j);
             }
             ChorusDACommand::PullHeader { j, missing } => {
-                if j >= self.raptorcasts.size() {
+                let Some(j) = self.raptorcasts.checked_lane(usize::from(j)) else {
                     return;
-                }
+                };
                 let Some(raptorcast) = self.raptorcasts[j].as_ref() else {
                     return;
                 };
@@ -199,7 +199,7 @@ impl SlotRaptorcast {
                 for (to, request) in requests {
                     let request = ChunkRecoveryRequest {
                         slot: self.slot,
-                        proposal_index: j,
+                        lane: j,
                         request,
                     };
                     self.out_requests.push((to, request));
@@ -216,7 +216,7 @@ impl SlotRaptorcast {
 
     // every proposer's pulls due by now
     pub(crate) fn tick(&mut self, now: Timestamp) {
-        for j in 0..self.raptorcasts.size() {
+        for j in self.raptorcasts.lanes() {
             let Some(raptorcast) = self.raptorcasts[j].as_mut() else {
                 continue;
             };
@@ -224,7 +224,7 @@ impl SlotRaptorcast {
             for (to, request) in requests {
                 let request = ChunkRecoveryRequest {
                     slot: self.slot,
-                    proposal_index: j,
+                    lane: j,
                     request,
                 };
                 self.out_requests.push((to, request));
@@ -236,14 +236,14 @@ impl SlotRaptorcast {
     pub(crate) fn handle_chunk_request(
         &mut self,
         request: ChunkRequest,
-        proposal_index: ProposalIndex,
+        lane: Lane,
         requester: &NodeId,
         now: Timestamp,
     ) {
-        if proposal_index >= self.raptorcasts.size() {
+        let Some(lane) = self.raptorcasts.checked_lane(usize::from(lane)) else {
             return;
-        }
-        let Some(raptorcast) = self.raptorcasts[proposal_index].as_mut() else {
+        };
+        let Some(raptorcast) = self.raptorcasts[lane].as_mut() else {
             return;
         };
         raptorcast.handle_chunk_request(request, requester, now, &mut self.egress);
@@ -311,7 +311,7 @@ mod tests {
         now: Timestamp,
     ) -> Vec<Dissemination> {
         let request = ChunkRequest::all(pid, ChunkRequestType::YourChunks);
-        raptorcast.handle_chunk_request(request, 0, &NodeId::dummy(3), now);
+        raptorcast.handle_chunk_request(request, Lane::new_unchecked(0), &NodeId::dummy(3), now);
         raptorcast.drain_messages()
     }
 
@@ -398,7 +398,7 @@ mod tests {
         let messages = ingest(&mut raptorcast, group(&chunks[4..5]));
 
         let decoded = ChorusDAEvent {
-            j: 0,
+            j: Lane::new_unchecked(0),
             event: ProposalDAEvent::Decoded(header.pid()),
         };
         assert!(raptorcast.drain_events().contains(&decoded));
@@ -428,7 +428,7 @@ mod tests {
             header_auth: Arc::new(HeaderAuth::new(
                 move |header: &SignedProposalHeader, _slot| {
                     counted.fetch_add(1, Ordering::SeqCst);
-                    (header.sig().signer == author()).then_some(0)
+                    (header.sig().signer == author()).then_some(Lane::new_unchecked(0))
                 },
             )),
             validator_data: Arc::new(validator_data(4)),
@@ -460,10 +460,10 @@ mod tests {
             .expect("valid");
         let events = raptorcast.drain_events();
         assert!(events.contains(&ChorusDAEvent {
-            j: 1,
+            j: Lane::new_unchecked(1),
             event: ProposalDAEvent::HeaderSeen(header),
         }));
-        assert!(events.iter().all(|event| event.j == 1));
+        assert!(events.iter().all(|event| event.j == Lane::new_unchecked(1)));
     }
 
     #[test]
@@ -478,7 +478,7 @@ mod tests {
         raptorcast.handle_command(command, NOW);
         assert!(raptorcast.drain_requests().is_empty());
         let seen = ChorusDAEvent {
-            j: 0,
+            j: Lane::new_unchecked(0),
             event: ProposalDAEvent::HeaderSeen(header),
         };
         assert_eq!(raptorcast.drain_events(), vec![seen]);
@@ -579,7 +579,7 @@ mod tests {
                 .iter_mut()
                 .find(|(handle, _)| handle.self_id == peer)
                 .unwrap();
-            server.handle_chunk_request(request, 0, &NodeId::dummy(3), NOW);
+            server.handle_chunk_request(request, Lane::new_unchecked(0), &NodeId::dummy(3), NOW);
         }
         // 1 answers both asks in one message, 2 in another; together
         // they carry every chunk

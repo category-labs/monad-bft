@@ -156,14 +156,14 @@ impl<M> CadenceSwarmBuilder<M, ChorusDAEvent> {
         // The mock layer makes a proposal available as a whole, so one
         // announcement reports both the signed header and its decoding.
         let da_events = Box::new(|announcement: &DaAnnouncement| {
-            let DaAnnouncement { index, header } = announcement;
+            let DaAnnouncement { lane, header } = announcement;
             vec![
                 ChorusDAEvent {
-                    j: *index,
+                    j: *lane,
                     event: ProposalDAEvent::HeaderSeen(header.clone()),
                 },
                 ChorusDAEvent {
-                    j: *index,
+                    j: *lane,
                     event: ProposalDAEvent::Decoded(announcement.pid()),
                 },
             ]

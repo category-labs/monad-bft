@@ -289,7 +289,7 @@ pub mod vote {
 }
 
 pub mod proposal {
-    use crate::common_types::ProposalIndex;
+    use crate::common_types::Lane;
 
     // A commitment to a proposal's payload.
     pub trait MerkleRoot: Copy + Eq + std::hash::Hash + std::fmt::Debug {}
@@ -318,12 +318,12 @@ pub mod proposal {
     pub trait HeaderAuth {
         type Signed: SignedProposalHeader;
 
-        fn authenticate(&self, signed: &Self::Signed, slot: u64) -> Option<ProposalIndex>;
+        fn authenticate(&self, signed: &Self::Signed, slot: u64) -> Option<Lane>;
 
         // returns true when:
         // - header is scoped to the slot
         // - header is signed by the legitimate proposer of the slot
-        fn validate(&self, signed: &Self::Signed, slot: u64, j: ProposalIndex) -> bool {
+        fn validate(&self, signed: &Self::Signed, slot: u64, j: Lane) -> bool {
             self.authenticate(signed, slot) == Some(j)
         }
     }

@@ -21,7 +21,7 @@ use crate::{
     chorus::{
         SlotLifecycle,
         slot::chorus::SlotFinalization,
-        types::{ProposalId, ProposalIndex, ProposalMap, Slot, Timestamp},
+        types::{Lane, Lanes, ProposalId, Slot, Timestamp},
     },
     da::Resolved,
 };
@@ -38,7 +38,7 @@ pub struct FinalizedSlot {
     // when cadence formed the fast block, on either path. demo(tx-timeline)
     pub fast_block_at: Option<Timestamp>,
     pub finalization: SlotFinalization,
-    pub proposals: ProposalMap<Option<Bytes>>,
+    pub proposals: Lanes<Option<Bytes>>,
     // demo(tx-timeline): when DA decoded each committed lane here; None for a negative lane.
     pub lane_decoded_at: Vec<Option<Timestamp>>,
 }
@@ -48,7 +48,7 @@ struct SlotCollection {
     deadline: Option<Timestamp>,
     fast_block_at: Option<Timestamp>, // demo(tx-timeline)
     finalized: Option<(Timestamp, SlotFinalization)>,
-    resolved: HashMap<(ProposalIndex, ProposalId), (Resolved, Timestamp)>, // demo(tx-timeline)
+    resolved: HashMap<(Lane, ProposalId), (Resolved, Timestamp)>, // demo(tx-timeline)
 }
 
 impl SlotCollection {
@@ -117,14 +117,12 @@ impl FinalizationCollector {
         &mut self,
         at: Timestamp, // demo(tx-timeline)
         slot: Slot,
-        proposal_index: ProposalIndex,
+        lane: Lane,
         pid: ProposalId,
         message: Resolved,
     ) {
         let collection = self.slots.entry(slot).or_default();
-        collection
-            .resolved
-            .insert((proposal_index, pid), (message, at)); // demo(tx-timeline)
+        collection.resolved.insert((lane, pid), (message, at)); // demo(tx-timeline)
         self.complete(slot);
     }
 
@@ -178,7 +176,13 @@ mod tests {
         };
         let at = Timestamp::from_millis(slot); // demo(tx-timeline)
         let message = Ok(Bytes::from_static(b"m"));
-        collector.handle_resolved(at, Slot(slot), 0, header.pid(), message);
+        collector.handle_resolved(
+            at,
+            Slot(slot),
+            Lane::new_unchecked(0),
+            header.pid(),
+            message,
+        );
     }
 
     #[test]

@@ -30,7 +30,7 @@ use actix_web::{
 };
 use bytes::Bytes;
 use monad_mcp_chorus::ledger::{Address, Hash, MAX_TX_PAYLOAD, Tx};
-use monad_mcp_node::chorus::types::ProposalIndex;
+use monad_mcp_node::chorus::types::{Lane, MAX_PROPOSER_SET_SIZE};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -54,9 +54,6 @@ pub struct TxRequest {
     pub sent_at_ns: Option<u64>,
 }
 
-// lanes a request may pin, also capped by the schedule's concurrent proposers
-pub const MAX_LANES: usize = 5;
-
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum RequestError {
     #[error("lane must be 0 through {}", .lanes - 1)]
@@ -72,13 +69,17 @@ pub enum RequestError {
 }
 
 impl TxRequest {
-    // the requested lane, below `concurrent_proposers` and MAX_LANES
-    pub fn lane(&self, concurrent_proposers: usize) -> Result<Option<ProposalIndex>, RequestError> {
-        let lanes = concurrent_proposers.min(MAX_LANES);
-        match self.lane.map(|lane| lane as usize) {
-            Some(lane) if lane >= lanes => Err(RequestError::Lane { lanes }),
-            lane => Ok(lane),
+    // the requested lane, below `concurrent_proposers` and MAX_PROPOSER_SET_SIZE
+    pub fn lane(&self, concurrent_proposers: usize) -> Result<Option<Lane>, RequestError> {
+        let lanes = concurrent_proposers.min(MAX_PROPOSER_SET_SIZE);
+        let Some(lane) = self.lane else {
+            return Ok(None);
+        };
+        if lane as usize >= lanes {
+            return Err(RequestError::Lane { lanes });
         }
+        let lane = Lane::new_unchecked(lane as u8);
+        Ok(Some(lane))
     }
 
     // `sender` and `nonce` default to a random address and `nonce()`
@@ -147,7 +148,7 @@ impl AttemptView {
             at_ms,
             status: outcome.status_str().to_owned(),
             target_slot: route.map(|route| route.slot.0),
-            target_lane: route.map(|route| route.lane as u32),
+            target_lane: route.map(|route| usize::from(route.lane) as u32),
             leader: route.map(|route| u64::from(route.leader)),
             error,
         }
@@ -532,9 +533,9 @@ mod tests {
             ..request(Some("x"), None)
         };
         assert_eq!(lane(None).lane(5), Ok(None));
-        assert_eq!(lane(Some(4)).lane(5), Ok(Some(4)));
+        assert_eq!(lane(Some(4)).lane(5), Ok(Some(Lane::new_unchecked(4))));
         assert_eq!(lane(Some(5)).lane(5), Err(RequestError::Lane { lanes: 5 }));
-        assert_eq!(lane(Some(4)).lane(8), Ok(Some(4)));
+        assert_eq!(lane(Some(4)).lane(8), Ok(Some(Lane::new_unchecked(4))));
         assert_eq!(lane(Some(5)).lane(8), Err(RequestError::Lane { lanes: 5 }));
         assert_eq!(lane(Some(2)).lane(2), Err(RequestError::Lane { lanes: 2 }));
         assert_eq!(

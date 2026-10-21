@@ -24,8 +24,8 @@ use super::{
         encoding_scheme::{self, DAEncodingScheme as _, d25, swiper},
         runtime::EpochHandle,
         types::{
-            EncodingScheme, NodeId, ProposalHeader, ProposalIndex, ProposalKeyPair,
-            SignedProposalHeader, Slot,
+            EncodingScheme, Lane, NodeId, ProposalHeader, ProposalKeyPair, SignedProposalHeader,
+            Slot,
         },
     },
     PacketLayout as _, header_bytes, signed_bytes,
@@ -57,13 +57,13 @@ impl AssembledProposal {
     pub fn build_s11(
         epoch_handle: &EpochHandle,
         slot: Slot,
-        proposer_index: ProposalIndex,
+        lane: Lane,
         message: &[u8],
         timestamp: u64,
     ) -> Option<Self> {
         let num_validators = epoch_handle.validator_data.len();
         let msg_len = message.len();
-        let s11 = swiper::for_message(slot, msg_len, timestamp, proposer_index, num_validators)?;
+        let s11 = swiper::for_message(slot, msg_len, timestamp, lane, num_validators)?;
         let scheme = EncodingScheme::S11(s11);
         Self::build(epoch_handle, message, scheme)
     }
@@ -313,7 +313,8 @@ mod tests {
         let epoch_handle = authoring_handle();
         let message = vec![1u8; MESSAGE_LEN];
 
-        let proposal = AssembledProposal::build_s11(&epoch_handle, SLOT, 0, &message, 0);
+        let proposal =
+            AssembledProposal::build_s11(&epoch_handle, SLOT, Lane::new_unchecked(0), &message, 0);
         let proposal = proposal.expect("the message fits");
         assert!(matches!(proposal.header().scheme(), EncodingScheme::S11(_)));
 

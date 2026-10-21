@@ -22,7 +22,7 @@ use monad_mcp_chorus::spec::{
 use super::{
     encoding_scheme::DAEncodingScheme as _,
     types::{
-        EncodingScheme, HeaderAuth, ProposalIndex, ProposerSchedule, SignedProposalHeader, Slot,
+        EncodingScheme, HeaderAuth, Lane, ProposerSchedule, SignedProposalHeader, Slot,
         ValidatorData,
     },
     wire,
@@ -53,21 +53,19 @@ where
         let preimage = wire::signed_bytes(&signed.header);
         let author = signed.sig().recover_author(&preimage)?;
         // an unavailable schedule authenticates nothing
-        let index = schedule
-            .proposer_index_at(Slot(signed.slot()), &author)
-            .ok()??;
-        if claimed_index(signed.scheme()).is_some_and(|claimed| claimed != index) {
+        let lane = schedule.lane_at(Slot(signed.slot()), &author).ok()??;
+        if claimed_lane(signed.scheme()).is_some_and(|claimed| claimed != lane) {
             return None;
         }
-        Some(index)
+        Some(lane)
     })
 }
 
-// the proposal index a header carries, where its scheme carries one
-fn claimed_index(scheme: &EncodingScheme) -> Option<ProposalIndex> {
+// the lane a header carries, where its scheme carries one
+fn claimed_lane(scheme: &EncodingScheme) -> Option<Lane> {
     match scheme {
         EncodingScheme::D25(_) => None,
-        EncodingScheme::S11(s11) => Some(ProposalIndex::from(s11.proposer_index)),
+        EncodingScheme::S11(s11) => Some(s11.lane),
     }
 }
 
@@ -77,7 +75,7 @@ mod tests {
 
     use super::super::{
         test_util::{SLOT, epoch_handle, proposal_chunks, proposal_chunks_from, signed_header},
-        types::{EncodingScheme, MerkleRoot, SignedProposalHeader, Slot},
+        types::{EncodingScheme, Lane, MerkleRoot, SignedProposalHeader, Slot},
     };
     use crate::spec::DAMerkleRoot as _;
 
@@ -86,7 +84,10 @@ mod tests {
         let epoch_handle = epoch_handle();
         let auth = &epoch_handle.header_auth;
         let (header, _) = proposal_chunks(&epoch_handle, 1);
-        assert_eq!(auth.authenticate(&header, SLOT.get()), Some(0));
+        assert_eq!(
+            auth.authenticate(&header, SLOT.get()),
+            Some(Lane::new_unchecked(0))
+        );
 
         // another slot's scope
         assert_eq!(auth.authenticate(&header, Slot(2).get()), None);

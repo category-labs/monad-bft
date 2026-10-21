@@ -17,7 +17,7 @@ use super::{
     super::{
         super::{
             fast::{CertifiedEntry, EnterFallbackVote},
-            types::{ProposalMap, ProposalScope, Slot, VoteMsg},
+            types::{Lanes, ProposalScope, Slot, VoteMsg},
         },
         FallbackView, Metablock, Mvba, MvbaScope,
     },
@@ -1051,7 +1051,7 @@ fn a_bogus_block_response_is_ignored() {
     // the entries a `FastQc` certifies are its verdict, so tampering with its
     // scope leaves the identity of the block intact
     let block_entries = block.entries();
-    let forged = Metablock::new(ProposalMap::new(NUM_PROPOSALS, |j| {
+    let forged = Metablock::new(Lanes::new(NUM_LANES, |j| {
         let entry = block_entries[j].clone();
         CertifiedEntry::FastQc(strong_qc(
             ProposalScope::new(Slot(SLOT.get() + 1), j),
@@ -1911,7 +1911,7 @@ mod toy_value {
                 FallbackCommitVote, Justification, MvbaMessage, PrePrepareMsg, PrepareVote,
             },
             test_helpers::{
-                DELTA, NUM_PROPOSALS, SLOT, leader_of, nodes, quorum, validator_data, view,
+                DELTA, NUM_LANES, SLOT, leader_of, nodes, quorum, validator_data, view,
             },
         },
         MvbaScope,
@@ -1964,7 +1964,7 @@ mod toy_value {
     ) -> MonadMvba<TestValue, TestCert> {
         MonadMvba::new(MvbaContext {
             slot: SLOT,
-            num_proposals: NUM_PROPOSALS,
+            num_lanes: NUM_LANES,
             node_id: node,
             key: Arc::new(node.keypair()),
             validator_data: validator_data.clone(),

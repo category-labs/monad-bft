@@ -13,43 +13,43 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! Cadence-facing proposer selection: who may propose at which proposal
-//! index for a given slot.
+//! Cadence-facing proposer selection: who may propose at which lane
+//! for a given slot.
 //!
-//! Every slot runs `K` concurrent proposals, one per *proposal index*
-//! `j ∈ 0..K`. This module assigns each index a proposer by laying the
+//! Every slot runs `K` concurrent proposals, one per *lane*
+//! `j ∈ 0..K`. This module assigns each lane a proposer by laying the
 //! per-epoch leader sequence of a [`LeaderSchedule`] onto the slot timeline:
 //!
 //! * one leader per *rotation* of [`ProposerConfig::slots_per_rotation`]
-//!   slots; the leader of (global) rotation `r` occupies proposal index
+//!   slots; the leader of (global) rotation `r` occupies lane
 //!   `r mod K` for the rotation's whole lifetime;
 //! * the leader sequence restarts from a fresh stake snapshot at every
 //!   *epoch* of [`ProposerConfig::slots_per_epoch`] slots (epoch boundaries
 //!   are where stakes update), with the no-repeat window carried across the
 //!   seam.
 //!
-//! An index with no proposer is *vacant*: nothing may be proposed for it and
+//! A lane with no proposer is *vacant*: nothing may be proposed for it and
 //! its proposals are empty. Vacancy has three causes:
 //!
-//! * **Rotation vacancy.** A handed-over index stays vacant for the `y`
+//! * **Rotation vacancy.** A handed-over lane stays vacant for the `y`
 //!   slots between the outgoing and the incoming proposer, where `y` =
 //!   [`ProposerConfig::observation_cutoff`] is the duration of one *blind
 //!   window* — the sliding window of the last `y` slots, whose proposals a
 //!   party may not know yet (MCP spec, `main.tex`). The vacancy guarantees
-//!   the incoming proposer knows every in-flight proposal at its index:
+//!   the incoming proposer knows every in-flight proposal at its lane:
 //!   the vacant slots are empty by definition, everything older is
-//!   observable. At most one index at a time is vacant for this reason, so
+//!   observable. At most one lane at a time is vacant for this reason, so
 //!   at least two concurrent proposers are needed to guarantee a proposer
 //!   in every slot. The chain's first `y` slots have no handoff, which
 //!   exempts exactly the first rotation. The spec mandates the full
 //!   constant-`y` vacancy; in principle an incoming proposer whose
 //!   chaining has caught up further could start earlier — a possible
 //!   future optimization, deliberately not implemented.
-//! * **Genesis ramp-up.** An index whose first rotation has not started yet
+//! * **Genesis ramp-up.** A lane whose first rotation has not started yet
 //!   is vacant.
 //! * **Too few validators (per-epoch).** With fewer positively staked
 //!   validators than `K` — not expected in production — the effective
-//!   concurrency drops to the validator count: indices fill from 0 and the
+//!   concurrency drops to the validator count: lanes fill from 0 and the
 //!   remaining ones stay vacant for the whole epoch.
 //!
 //! # Minimum validators (protocol contract)
@@ -59,7 +59,7 @@
 //! [`ScheduleError::NotEnoughValidators`], never as a stall or panic. There
 //! is no other minimum: the effective window `min(K, staked)` shrinks with
 //! the validator set, so a shrinking set degrades concurrency — higher
-//! indices go vacant — instead of stalling election. (Stakes only change at
+//! lanes go vacant — instead of stalling election. (Stakes only change at
 //! epoch boundaries, so shrinkage happens at seams; today the window is
 //! computed from the static snapshot and becomes per-epoch together with a
 //! per-epoch stake source.) Mind the rotation-vacancy caveat above: a
@@ -93,7 +93,9 @@ use std::{
 
 use super::{
     proposer_schedule::{EpochSchedule, ScheduleConfig, ScheduleError},
-    types::{HeaderAuth, NodeId, SignedProposalHeader, Slot, ValidatorData},
+    types::{
+        HeaderAuth, Lane, MAX_PROPOSER_SET_SIZE, NodeId, SignedProposalHeader, Slot, ValidatorData,
+    },
 };
 
 /// Slot-timeline parameters of proposer selection. Protocol-wide constants;
@@ -101,13 +103,13 @@ use super::{
 #[derive(Debug, Clone)]
 pub struct ProposerConfig {
     /// `K`: number of concurrently active (staggered) proposer phases, and
-    /// thereby the number of proposal indices per slot.
+    /// thereby the number of lanes per slot.
     pub concurrent_proposers: usize,
     /// `y`: the observation cutoff of the surrounding Cadence protocol —
     /// proposals of slot `r` build against the chained block of slot
     /// `r − y`, and the last `y` slots form the blind window whose
     /// proposals may not be known yet. Here it sets the rotation vacancy:
-    /// a handed-over index stays vacant for `y` slots.
+    /// a handed-over lane stays vacant for `y` slots.
     ///
     /// A protocol constant of the surrounding Cadence deployment,
     /// independent of MCP. The conductor configuration does not model it
@@ -119,7 +121,7 @@ pub struct ProposerConfig {
     pub observation_cutoff: u64,
     /// `z`: slots between the end of a rotation's vacancy and the next
     /// rotation — successive rotations are `y + z` slots apart. May be 0:
-    /// then the newest index is always vacant and exactly `K − 1` indices
+    /// then the newest lane is always vacant and exactly `K − 1` lanes
     /// carry a proposer in every slot.
     pub rotation_slack: u64,
     /// Slots per stake epoch; must be a multiple of the rotation length.
@@ -148,6 +150,11 @@ impl ProposerConfig {
         if self.concurrent_proposers == 0 {
             return Err(ScheduleError::InvalidConfig(
                 "concurrent_proposers must be > 0",
+            ));
+        }
+        if self.concurrent_proposers > MAX_PROPOSER_SET_SIZE {
+            return Err(ScheduleError::InvalidConfig(
+                "concurrent_proposers must be at most MAX_PROPOSER_SET_SIZE",
             ));
         }
         if self
@@ -328,8 +335,8 @@ impl LeaderSchedule for RoundRobinLeaderSchedule {
     }
 }
 
-/// The proposers of one slot: one `Option<NodeId>` per proposal index
-/// `j ∈ 0..K`. A `None` index is vacant — no proposer may propose for it and
+/// The proposers of one slot: one `Option<NodeId>` per lane
+/// `j ∈ 0..K`. A `None` lane is vacant — no proposer may propose for it and
 /// its proposals are empty (see the module docs for the vacancy causes).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ProposerSet {
@@ -348,47 +355,45 @@ impl ProposerSet {
         self.rotation
     }
 
-    /// `K`: the number of proposal indices per slot.
-    pub fn num_indices(&self) -> usize {
+    /// `K`: the number of lanes per slot.
+    pub fn num_lanes(&self) -> usize {
         self.proposers.len()
     }
 
-    /// The proposer at proposal index `index`; `None` when the index is
-    /// vacant or out of range.
-    pub fn proposer(&self, index: usize) -> Option<NodeId> {
-        self.proposers.get(index).copied().flatten()
+    /// The proposer at `lane`; `None` when the lane is vacant or out of
+    /// range.
+    pub fn proposer(&self, lane: Lane) -> Option<NodeId> {
+        self.proposers.get(usize::from(lane)).copied().flatten()
     }
 
-    /// The proposal index `node` occupies, if it is a proposer of this slot.
-    pub fn index_of(&self, node: &NodeId) -> Option<usize> {
-        self.proposers
-            .iter()
-            .position(|proposer| *proposer == Some(*node))
+    /// The lane `proposer` occupies, if it is a proposer of this slot.
+    pub fn lane_of(&self, proposer: &NodeId) -> Option<Lane> {
+        self.iter()
+            .find(|(_, held)| *held == Some(*proposer))
+            .map(|(lane, _)| lane)
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (usize, Option<NodeId>)> + '_ {
-        self.proposers
-            .iter()
-            .enumerate()
-            .map(|(index, proposer)| (index, *proposer))
+    pub fn iter(&self) -> impl Iterator<Item = (Lane, Option<NodeId>)> + '_ {
+        let lanes = (0..self.num_lanes()).map(|j| Lane::new_unchecked(j as u8));
+        lanes.zip(self.proposers.iter().copied())
     }
 }
 
-/// Who may propose at which proposal index for a given slot.
+/// Who may propose at which lane for a given slot.
 ///
 /// Both directions are supported: slot to proposer set, and membership of a
 /// node in a slot's proposer set. Dyn-compatible on purpose — this is the
 /// mock seam for consensus tests.
 pub trait ProposerSchedule {
-    /// `K`: the number of proposal indices per slot.
-    fn num_indices(&self) -> usize;
+    /// `K`: the number of lanes per slot.
+    fn num_lanes(&self) -> usize;
 
-    /// The proposer occupying each proposal index at `slot`.
+    /// The proposer occupying each lane at `slot`.
     fn proposers_at(&self, slot: Slot) -> Result<ProposerSet, ScheduleError>;
 
-    /// The proposal index `node` holds at `slot`, if any.
-    fn proposer_index_at(&self, slot: Slot, node: &NodeId) -> Result<Option<usize>, ScheduleError> {
-        Ok(self.proposers_at(slot)?.index_of(node))
+    /// The lane `node` holds at `slot`, if any.
+    fn lane_at(&self, slot: Slot, node: &NodeId) -> Result<Option<Lane>, ScheduleError> {
+        Ok(self.proposers_at(slot)?.lane_of(node))
     }
 }
 
@@ -438,7 +443,7 @@ impl EpochAnchor {
 }
 
 /// The production [`ProposerSchedule`]: rotates the leader sequence of a
-/// [`LeaderSchedule`] through the proposal indices, one epoch at a time.
+/// [`LeaderSchedule`] through the lanes, one epoch at a time.
 ///
 /// Epochs are fixed slot spans (`epoch = slot / slots_per_epoch`). Schedules
 /// are built per epoch on demand and cached; building always proceeds in
@@ -449,7 +454,7 @@ impl EpochAnchor {
 /// replays the chain from the anchor instead.
 ///
 /// The effective concurrency is `min(K, positively staked validators)`:
-/// rotations cycle through indices `0..effective` and any higher index stays
+/// rotations cycle through lanes `0..effective` and any higher lane stays
 /// vacant. For now a single static stake snapshot feeds every epoch —
 /// schedules still differ per epoch through the algorithm's epoch input —
 /// so the effective concurrency is a constant; it becomes per-epoch once a
@@ -656,7 +661,7 @@ fn boundary_tail(leaders: &[NodeId], tail_len: usize) -> Vec<NodeId> {
 }
 
 impl<A: LeaderSchedule> ProposerSchedule for RotatingProposerSchedule<A> {
-    fn num_indices(&self) -> usize {
+    fn num_lanes(&self) -> usize {
         self.cfg.concurrent_proposers
     }
 
@@ -677,18 +682,18 @@ impl<A: LeaderSchedule> ProposerSchedule for RotatingProposerSchedule<A> {
         // rotations before it resolve from the anchor tail.
         let anchor_rotation = self.anchor.epoch() * self.cfg.rotations_per_epoch();
 
-        // Indices at or above the effective concurrency stay vacant.
+        // Lanes at or above the effective concurrency stay vacant.
         let mut proposers = vec![None; self.cfg.concurrent_proposers];
-        for index in 0..window {
-            // Newest rotation at or before `rotation` occupying `index`.
-            let distance = (rotation % window + window - index) % window;
+        for lane in 0..window {
+            // Newest rotation at or before `rotation` occupying `lane`.
+            let distance = (rotation % window + window - lane) % window;
             let Some(serving) = rotation.checked_sub(distance) else {
                 // The rotation would predate genesis: still vacant.
                 continue;
             };
-            // Rotation vacancy: a handed-over index stays vacant for one
+            // Rotation vacancy: a handed-over lane stays vacant for one
             // blind window (`y` slots) so the incoming proposer knows all
-            // in-flight proposals at its index. The chain's first `y`
+            // in-flight proposals at its lane. The chain's first `y`
             // slots have no handoff, which exempts exactly the first
             // rotation.
             if serving == rotation
@@ -697,7 +702,7 @@ impl<A: LeaderSchedule> ProposerSchedule for RotatingProposerSchedule<A> {
             {
                 continue;
             }
-            proposers[index as usize] = if serving >= anchor_rotation {
+            proposers[lane as usize] = if serving >= anchor_rotation {
                 Some(self.leader_of_global_rotation(serving)?)
             } else {
                 // Pre-anchor rotation: the anchor tail holds the leaders of
@@ -718,7 +723,7 @@ impl<A: LeaderSchedule> ProposerSchedule for RotatingProposerSchedule<A> {
     }
 }
 
-/// Test stub: a fixed assignment of proposers to proposal indices, identical
+/// Test stub: a fixed assignment of proposers to lanes, identical
 /// for every slot. No rotation, no vacancies.
 #[derive(Debug)]
 pub struct FixedProposerSchedule {
@@ -726,11 +731,15 @@ pub struct FixedProposerSchedule {
 }
 
 impl FixedProposerSchedule {
-    /// The proposers must be distinct: one node holding two indices would
-    /// make the reverse membership lookup ([`ProposerSet::index_of`])
+    /// The proposers must be distinct: one node holding two lanes would
+    /// make the reverse membership lookup ([`ProposerSet::lane_of`])
     /// ambiguous.
     pub fn new(proposers: Vec<NodeId>) -> Self {
         assert!(!proposers.is_empty(), "at least one proposer required");
+        assert!(
+            proposers.len() <= MAX_PROPOSER_SET_SIZE,
+            "too many proposers"
+        );
         let mut distinct = proposers.clone();
         distinct.sort_unstable();
         distinct.dedup();
@@ -743,7 +752,7 @@ impl FixedProposerSchedule {
 }
 
 impl ProposerSchedule for FixedProposerSchedule {
-    fn num_indices(&self) -> usize {
+    fn num_lanes(&self) -> usize {
         self.proposers.len()
     }
 
@@ -761,14 +770,14 @@ impl ProposerSchedule for FixedProposerSchedule {
 }
 
 /// The [`HeaderAuth`] backed by a proposer schedule: a header authenticates
-/// to the proposal index its signer holds at the header's slot.
+/// to the lane its signer holds at the header's slot.
 ///
 /// This is the whole policy for an environment whose proposal signature
 /// names its signer outright. The production data-availability layer owns
 /// two further checks the header carries for it -- the encoding scheme is
 /// the canonical one for the validator set, and the author is *recovered*
 /// from the signature rather than taken at its word -- and then resolves
-/// the index through this very same schedule, so consensus and DA cannot
+/// the lane through this very same schedule, so consensus and DA cannot
 /// disagree about who proposes where (see `monad-mcp-da`'s `header_auth`).
 pub fn header_auth<S>(schedule: Arc<S>) -> HeaderAuth
 where
@@ -779,9 +788,7 @@ where
         // environment's, and its slot field is not this instantiation's
         // `Slot`. The caller has already checked the two agree.
         // an unavailable schedule authenticates nothing
-        schedule
-            .proposer_index_at(Slot(slot), &header.sig.signer)
-            .ok()?
+        schedule.lane_at(Slot(slot), &header.sig.signer).ok()?
     })
 }
 
@@ -859,7 +866,7 @@ mod tests {
         };
         let schedule = round_robin(cfg, 5);
 
-        // One index per elapsed rotation until all K are live.
+        // One lane per elapsed rotation until all K are live.
         assert_eq!(occupied(&schedule.proposers_at(Slot(0)).unwrap()), 1);
         assert_eq!(occupied(&schedule.proposers_at(Slot(1)).unwrap()), 2);
         for slot in 2..12 {
@@ -878,12 +885,12 @@ mod tests {
         let schedule = round_robin(cfg, 5);
 
         for rotation in 0..6u64 {
-            let index = (rotation % 3) as usize;
+            let lane = Lane::new_unchecked((rotation % 3) as u8);
             let leader = schedule.leader_of_global_rotation(rotation).unwrap();
             for slot in rotation * 3..(rotation + 1) * 3 {
                 let set = schedule.proposers_at(Slot(slot)).unwrap();
                 assert_eq!(set.rotation(), rotation);
-                assert_eq!(set.proposer(index), Some(leader));
+                assert_eq!(set.proposer(lane), Some(leader));
             }
         }
     }
@@ -905,24 +912,24 @@ mod tests {
                 schedule
                     .proposers_at(Slot(offset))
                     .unwrap()
-                    .proposer(0)
+                    .proposer(Lane::new_unchecked(0))
                     .is_some()
             );
         }
 
         for rotation in 1..6u64 {
-            let index = (rotation % 3) as usize;
+            let lane = Lane::new_unchecked((rotation % 3) as u8);
             let leader = schedule.leader_of_global_rotation(rotation).unwrap();
             for offset in 0..3u64 {
                 let set = schedule.proposers_at(Slot(rotation * 3 + offset)).unwrap();
                 if offset < 2 {
                     assert_eq!(
-                        set.proposer(index),
+                        set.proposer(lane),
                         None,
                         "vacant during the rotation vacancy"
                     );
                 } else {
-                    assert_eq!(set.proposer(index), Some(leader));
+                    assert_eq!(set.proposer(lane), Some(leader));
                 }
             }
         }
@@ -938,18 +945,21 @@ mod tests {
         };
         let schedule = round_robin(cfg, 5);
 
-        // Past the genesis ramp-up the incoming index is always inside its
-        // blind window: exactly K - 1 indices carry a proposer.
+        // Past the genesis ramp-up the incoming lane is always inside its
+        // blind window: exactly K - 1 lanes carry a proposer.
         for slot in 4..24 {
             let set = schedule.proposers_at(Slot(slot)).unwrap();
             assert_eq!(occupied(&set), 2);
-            assert_eq!(set.proposer((set.rotation() % 3) as usize), None);
+            assert_eq!(
+                set.proposer(Lane::new_unchecked((set.rotation() % 3) as u8)),
+                None
+            );
         }
     }
 
     #[test]
     fn single_proposer_goes_vacant_during_the_rotation_vacancy() {
-        // K = 1 is not special: with a blind window the only index is
+        // K = 1 is not special: with a blind window the only lane is
         // vacant at every rotation start (except the chain's first), which
         // is why at least two concurrent proposers are needed to guarantee
         // a proposer in every slot.
@@ -963,13 +973,17 @@ mod tests {
 
         for slot in 0..12u64 {
             let set = schedule.proposers_at(Slot(slot)).unwrap();
-            assert_eq!(set.num_indices(), 1);
+            assert_eq!(set.num_lanes(), 1);
             let rotation_start = slot.is_multiple_of(2);
             if rotation_start && slot > 0 {
-                assert_eq!(set.proposer(0), None, "slot {slot}");
+                assert_eq!(set.proposer(Lane::new_unchecked(0)), None, "slot {slot}");
             } else {
                 let leader = schedule.leader_of_global_rotation(slot / 2).unwrap();
-                assert_eq!(set.proposer(0), Some(leader), "slot {slot}");
+                assert_eq!(
+                    set.proposer(Lane::new_unchecked(0)),
+                    Some(leader),
+                    "slot {slot}"
+                );
             }
         }
     }
@@ -988,18 +1002,15 @@ mod tests {
             let slot = Slot(slot);
             let set = schedule.proposers_at(slot).unwrap();
             let mut members = Vec::new();
-            for (index, proposer) in set.iter() {
+            for (lane, proposer) in set.iter() {
                 let Some(proposer) = proposer else { continue };
-                assert_eq!(
-                    schedule.proposer_index_at(slot, &proposer).unwrap(),
-                    Some(index)
-                );
+                assert_eq!(schedule.lane_at(slot, &proposer).unwrap(), Some(lane));
                 members.push(proposer);
             }
             for id in 0..5 {
                 let node = NodeId::dummy(id);
                 if !members.contains(&node) {
-                    assert_eq!(schedule.proposer_index_at(slot, &node).unwrap(), None);
+                    assert_eq!(schedule.lane_at(slot, &node).unwrap(), None);
                 }
             }
         }
@@ -1186,7 +1197,7 @@ mod tests {
     fn capped_window_allows_short_epochs() {
         // Two staked validators under K = 4 need only two rotations per
         // epoch — one per effective phase — even though K itself would not
-        // fit. Indices 2 and 3 stay vacant.
+        // fit. Lanes 2 and 3 stay vacant.
         let cfg = ProposerConfig {
             concurrent_proposers: 4,
             observation_cutoff: 0,
@@ -1198,8 +1209,8 @@ mod tests {
         for slot in 1..8u64 {
             let set = schedule.proposers_at(Slot(slot)).unwrap();
             assert_eq!(occupied(&set), 2);
-            assert_eq!(set.proposer(2), None);
-            assert_eq!(set.proposer(3), None);
+            assert_eq!(set.proposer(Lane::new_unchecked(2)), None);
+            assert_eq!(set.proposer(Lane::new_unchecked(3)), None);
         }
     }
 
@@ -1228,8 +1239,8 @@ mod tests {
 
     #[test]
     fn short_validator_set_caps_the_concurrency() {
-        // Two staked validators under K = 4: indices 0 and 1 rotate between
-        // them (effective window 2), indices 2 and 3 stay vacant for the
+        // Two staked validators under K = 4: lanes 0 and 1 rotate between
+        // them (effective window 2), lanes 2 and 3 stay vacant for the
         // whole epoch.
         let cfg = ProposerConfig {
             concurrent_proposers: 4,
@@ -1241,9 +1252,9 @@ mod tests {
 
         for slot in 0..12u64 {
             let set = schedule.proposers_at(Slot(slot)).unwrap();
-            assert_eq!(set.num_indices(), 4);
-            assert_eq!(set.proposer(2), None);
-            assert_eq!(set.proposer(3), None);
+            assert_eq!(set.num_lanes(), 4);
+            assert_eq!(set.proposer(Lane::new_unchecked(2)), None);
+            assert_eq!(set.proposer(Lane::new_unchecked(3)), None);
             assert_eq!(occupied(&set), if slot == 0 { 1 } else { 2 });
         }
 
@@ -1375,17 +1386,16 @@ mod tests {
         let proposers: Vec<NodeId> = (0..3).map(NodeId::dummy).collect();
         let schedule = FixedProposerSchedule::new(proposers.clone());
 
-        assert_eq!(schedule.num_indices(), 3);
+        assert_eq!(schedule.num_lanes(), 3);
         for slot in [0, 7, 1_000] {
             let set = schedule.proposers_at(Slot(slot)).unwrap();
-            for (index, expected) in proposers.iter().enumerate() {
-                assert_eq!(set.proposer(index), Some(*expected));
+            for ((lane, proposer), expected) in set.iter().zip(&proposers) {
+                assert_eq!(proposer, Some(*expected));
+                assert_eq!(set.proposer(lane), Some(*expected));
             }
             assert_eq!(
-                schedule
-                    .proposer_index_at(Slot(slot), &proposers[1])
-                    .unwrap(),
-                Some(1)
+                schedule.lane_at(Slot(slot), &proposers[1]).unwrap(),
+                Some(Lane::new_unchecked(1))
             );
         }
     }

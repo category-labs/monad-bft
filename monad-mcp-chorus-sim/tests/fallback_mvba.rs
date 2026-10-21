@@ -36,7 +36,7 @@ mod fixtures {
             Mvba as _, monad_mvba::MvbaContext,
         },
         types::{
-            HeaderAuth, IsVote, NodeId, ProposalId, ProposalMap, ProposalScope, Slot, Stake,
+            HeaderAuth, IsVote, Lane, Lanes, NodeId, ProposalId, ProposalScope, Slot, Stake,
             StrongQc, TimestampDelta, ValidatorData, VoteMsg, VotePool, WeakQc,
         },
     };
@@ -63,7 +63,7 @@ mod fixtures {
         };
         header.pid()
     }
-    const NUM_PROPOSALS: usize = 2;
+    const NUM_LANES: usize = 2;
     const SLOT: Slot = Slot(0);
     pub const DELTA: TimestampDelta = TimestampDelta::from_millis(super::DELTA_MILLIS);
 
@@ -100,7 +100,7 @@ mod fixtures {
     pub fn mvba(node: NodeId, validator_data: &Arc<ValidatorData>) -> MonadMvba {
         MonadMvba::new(MvbaContext {
             slot: SLOT,
-            num_proposals: NUM_PROPOSALS,
+            num_lanes: NUM_LANES,
             node_id: node,
             key: Arc::new(node.keypair()),
             validator_data: validator_data.clone(),
@@ -112,8 +112,8 @@ mod fixtures {
     /// A valid metablock whose entries are determined by `seed`, so two seeds
     /// give two metablocks that cannot be confused for one another
     pub fn fast_metablock(seed: u64, validator_data: &ValidatorData) -> Metablock {
-        Metablock::new(ProposalMap::new(NUM_PROPOSALS, |j| {
-            let entry = Entry::Positive(pid(seed * 100 + j as u64));
+        Metablock::new(Lanes::new(NUM_LANES, |j| {
+            let entry = Entry::Positive(pid(seed * 100 + usize::from(j) as u64));
             CertifiedEntry::FastQc(strong_qc(
                 ProposalScope::new(SLOT, j),
                 entry,
@@ -127,9 +127,9 @@ mod fixtures {
     /// quorum. `entries()` matches [`metablock`] on the same seed, so the two
     /// differ only in their evidence
     pub fn mixed_evidence_metablock(seed: u64, validator_data: &ValidatorData) -> Metablock {
-        Metablock::new(ProposalMap::new(NUM_PROPOSALS, |j| {
-            let entry = Entry::Positive(pid(seed * 100 + j as u64));
-            if j == 0 {
+        Metablock::new(Lanes::new(NUM_LANES, |j| {
+            let entry = Entry::Positive(pid(seed * 100 + usize::from(j) as u64));
+            if j == Lane::new_unchecked(0) {
                 CertifiedEntry::FallbackQc(weak_qc(
                     ProposalScope::new(SLOT, j),
                     FallbackEntry(entry),

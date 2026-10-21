@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 //! RLP layout of a chunk recovery request:
-//! [slot, proposal_index, pid, kind, subset], subset = [0] for all
+//! [slot, lane, pid, kind, subset], subset = [0] for all
 //! chunks, [1, [chunk_id, ...]] for a selection, or [1, []] for the header
 //! alone.
 
@@ -27,7 +27,7 @@ use monad_mcp_chorus::spec::{Deserializable, Serializable};
 use super::super::{
     chunk::{ChunkRequest, ChunkRequestType, ChunksSubset, WireChunkId},
     runtime::ChunkRecoveryRequest,
-    types::{ProposalId, Slot},
+    types::{Lane, ProposalId, Slot},
 };
 
 const ALL: u8 = 0;
@@ -113,11 +113,10 @@ impl Decodable for ChunksSubset {
 
 impl Encodable for ChunkRecoveryRequest {
     fn encode(&self, out: &mut dyn bytes::BufMut) {
-        let proposal_index = self.proposal_index as u64;
         let kind = kind_tag(self.request.kind);
         let fields: [&dyn Encodable; 5] = [
             &self.slot,
-            &proposal_index,
+            &self.lane,
             &self.request.pid,
             &kind,
             &self.request.subset,
@@ -126,11 +125,10 @@ impl Encodable for ChunkRecoveryRequest {
     }
 
     fn length(&self) -> usize {
-        let proposal_index = self.proposal_index as u64;
         let kind = kind_tag(self.request.kind);
         let fields: [&dyn Encodable; 5] = [
             &self.slot,
-            &proposal_index,
+            &self.lane,
             &self.request.pid,
             &kind,
             &self.request.subset,
@@ -143,7 +141,7 @@ impl Decodable for ChunkRecoveryRequest {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let mut payload = Header::decode_bytes(buf, true)?;
         let slot = Slot::decode(&mut payload)?;
-        let proposal_index = u64::decode(&mut payload)?;
+        let lane = Lane::decode(&mut payload)?;
         let pid = ProposalId::decode(&mut payload)?;
         let kind = kind_of(u8::decode(&mut payload)?)?;
         let subset = ChunksSubset::decode(&mut payload)?;
@@ -151,11 +149,9 @@ impl Decodable for ChunkRecoveryRequest {
             return Err(alloy_rlp::Error::UnexpectedLength);
         }
 
-        let proposal_index = usize::try_from(proposal_index)
-            .map_err(|_| alloy_rlp::Error::Custom("proposal index out of range"))?;
         Ok(Self {
             slot,
-            proposal_index,
+            lane,
             request: ChunkRequest { pid, kind, subset },
         })
     }
@@ -187,7 +183,7 @@ mod tests {
     fn request(subset: ChunksSubset) -> ChunkRecoveryRequest {
         ChunkRecoveryRequest {
             slot: Slot(7),
-            proposal_index: 3,
+            lane: Lane::new_unchecked(3),
             request: ChunkRequest {
                 pid: proposal_chunks(&epoch_handle(), 9).0.pid(),
                 kind: ChunkRequestType::YourChunks,

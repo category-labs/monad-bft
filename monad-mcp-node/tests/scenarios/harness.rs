@@ -23,7 +23,7 @@ use monad_mcp_node::{
     Component, NodeOutput,
     chorus::{
         Outbound,
-        types::{NodeId, ProposalId, ProposalMap, Slot, Timestamp, TimestampDelta},
+        types::{Lanes, NodeId, ProposalId, Slot, Timestamp, TimestampDelta},
     },
     config::{
         CadenceConfig, DAConfig, LedgerConfig, NetworkConfig, NodeConfig, ProposalConfig,
@@ -53,8 +53,8 @@ pub fn deadline_of_slot(slot: u64) -> Timestamp {
         .expect("in range")
 }
 
-// the finalized shape of a slot: which proposal indices committed
-pub type Pattern = ProposalMap<Option<ProposalId>>;
+// the finalized shape of a slot: which lanes committed
+pub type Pattern = Lanes<Option<ProposalId>>;
 
 // a node as a monad-sim process, boxed so one swarm can mix node kinds
 pub struct SimNode {

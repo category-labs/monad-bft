@@ -94,7 +94,7 @@ const VIEW_TIMEOUT_DELTAS: u64 = 3;
 
 pub struct MvbaContext {
     pub slot: Slot,
-    pub num_proposals: usize,
+    pub num_lanes: usize,
     pub delta: TimestampDelta,
 
     pub node_id: NodeId,
@@ -140,7 +140,7 @@ pub enum TimerEvent<V: Votable> {
 /// Validation context for MetaBlock and FallbackCert
 pub struct ValidationContext {
     pub slot: Slot,
-    pub num_proposals: usize,
+    pub num_lanes: usize,
     pub validator_data: Arc<ValidatorData>,
     pub header_auth: Arc<HeaderAuth>,
 }
@@ -154,7 +154,7 @@ impl MakesValidationContext<Metablock> for MvbaContext {
     fn make_validation_context(&self) -> ValidationContext {
         ValidationContext {
             slot: self.slot,
-            num_proposals: self.num_proposals,
+            num_lanes: self.num_lanes,
             validator_data: self.validator_data.clone(),
             header_auth: self.header_auth.clone(),
         }

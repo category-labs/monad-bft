@@ -40,7 +40,7 @@ pub use super::{
         ProposerSchedule, ProposerSet, RotatingProposerSchedule, RoundRobinLeaderSchedule,
     },
 };
-pub use crate::common_types::{ProposalIndex, ProposalScope, Slot};
+pub use crate::common_types::{Lane, MAX_PROPOSER_SET_SIZE, ProposalScope, Slot};
 use crate::spec::{
     Stake as _,
     validator::ValidatorData as _,
@@ -643,27 +643,27 @@ where
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct ProposalMap<T> {
+pub struct Lanes<T> {
     values: Box<[T]>,
 }
 
-// for documentation only. the "total" here means that all entries are
-// guaranteed to be present.
-pub type TotalProposalMap<T> = ProposalMap<T>;
-
-impl<T> ProposalMap<T> {
-    pub fn new(size: usize, init_fn: impl FnMut(ProposalIndex) -> T) -> Self {
+impl<T> Lanes<T> {
+    // the caller must ensure `size` is contextually valid.
+    pub fn new(size: usize, init_fn: impl FnMut(Lane) -> T) -> Self {
+        assert!(size <= MAX_PROPOSER_SET_SIZE, "too many lanes");
         Self {
-            values: (0..size).map(init_fn).collect(),
+            values: lanes_unchecked(size).map(init_fn).collect(),
         }
     }
 
+    // the caller must ensure `size` is contextually valid.
     pub fn new_default(size: usize) -> Self
     where
         T: Default,
     {
+        assert!(size <= MAX_PROPOSER_SET_SIZE, "too many lanes");
         Self {
-            values: (0..size).map(|_| T::default()).collect(),
+            values: lanes_unchecked(size).map(|_| T::default()).collect(),
         }
     }
 
@@ -671,42 +671,59 @@ impl<T> ProposalMap<T> {
         self.values.len()
     }
 
-    pub fn as_ref(&self) -> ProposalMap<&T> {
+    pub fn lanes(&self) -> impl Iterator<Item = Lane> + use<T> {
+        lanes_unchecked(self.size())
+    }
+
+    // None if `index` is not a lane of this slot
+    pub fn checked_lane(&self, index: usize) -> Option<Lane> {
+        let in_range = index < self.size();
+        in_range.then(|| Lane::new_unchecked(index as u8))
+    }
+
+    pub fn get(&self, index: usize) -> Option<&T> {
+        self.values.get(index)
+    }
+
+    pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
+        self.values.get_mut(index)
+    }
+
+    pub fn as_ref(&self) -> Lanes<&T> {
         let values = self.values.iter().collect();
-        ProposalMap { values }
+        Lanes { values }
     }
 
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
         self.values.iter_mut()
     }
 
-    pub fn map<F, U>(self, f: F) -> ProposalMap<U>
+    pub fn map<F, U>(self, f: F) -> Lanes<U>
     where
         F: FnMut(T) -> U,
     {
         let values = self.values.into_iter().map(f).collect();
-        ProposalMap { values }
+        Lanes { values }
     }
 
-    pub fn map_indexed<F, U>(self, mut f: F) -> ProposalMap<U>
+    pub fn map_indexed<F, U>(self, mut f: F) -> Lanes<U>
     where
-        F: FnMut(ProposalIndex, T) -> U,
+        F: FnMut(Lane, T) -> U,
     {
         let values = self
-            .values
-            .into_iter()
-            .enumerate()
-            .map(|(i, v)| f(i, v))
+            .lanes()
+            .zip(self.values)
+            .map(|(lane, v)| f(lane, v))
             .collect();
-        ProposalMap { values }
+        Lanes { values }
     }
 
-    pub fn into_indexed_iter(self) -> impl Iterator<Item = (ProposalIndex, T)> {
-        self.values.into_iter().enumerate()
+    pub fn into_indexed_iter(self) -> impl Iterator<Item = (Lane, T)> {
+        self.lanes().zip(self.values)
     }
 }
 
-impl<T> IntoIterator for ProposalMap<T> {
+impl<T> IntoIterator for Lanes<T> {
     type Item = T;
     type IntoIter = std::vec::IntoIter<T>;
 
@@ -715,13 +732,13 @@ impl<T> IntoIterator for ProposalMap<T> {
     }
 }
 
-impl<T> ProposalMap<Option<T>> {
-    /// Panics if index out of bounds. The caller must ensure the index is valid.
-    pub fn set(&mut self, index: ProposalIndex, value: T) {
-        self.values[index] = Some(value);
+impl<T> Lanes<Option<T>> {
+    /// Panics if the lane is out of bounds. The caller must ensure the lane is valid.
+    pub fn set(&mut self, lane: Lane, value: T) {
+        self.values[usize::from(lane)] = Some(value);
     }
 
-    pub fn try_into_total<S>(self) -> Option<TotalProposalMap<S>>
+    pub fn try_into_total<S>(self) -> Option<Lanes<S>>
     where
         S: From<T>,
     {
@@ -737,10 +754,10 @@ impl<T> ProposalMap<Option<T>> {
             .map(|opt| S::from(opt.unwrap()))
             .collect();
 
-        Some(ProposalMap { values })
+        Some(Lanes { values })
     }
 
-    pub fn into_total<S>(self) -> TotalProposalMap<S>
+    pub fn into_total<S>(self) -> Lanes<S>
     where
         S: From<Option<T>>,
     {
@@ -748,8 +765,8 @@ impl<T> ProposalMap<Option<T>> {
     }
 }
 
-impl<T> ProposalMap<&T> {
-    pub fn into_owned(self) -> ProposalMap<T>
+impl<T> Lanes<&T> {
+    pub fn into_owned(self) -> Lanes<T>
     where
         T: Clone,
     {
@@ -757,19 +774,25 @@ impl<T> ProposalMap<&T> {
     }
 }
 
-/// Panics if index out of bounds. The caller must ensure the index is valid.
-impl<T> std::ops::Index<ProposalIndex> for ProposalMap<T> {
+/// Panics if the lane is out of bounds. The caller must ensure the lane is valid.
+impl<T> std::ops::Index<Lane> for Lanes<T> {
     type Output = T;
-    fn index(&self, index: ProposalIndex) -> &T {
-        &self.values[index]
+    fn index(&self, lane: Lane) -> &T {
+        &self.values[usize::from(lane)]
     }
 }
 
-/// Panics if index out of bounds. The caller must ensure the index is valid.
-impl<T> std::ops::IndexMut<ProposalIndex> for ProposalMap<T> {
-    fn index_mut(&mut self, index: ProposalIndex) -> &mut T {
-        &mut self.values[index]
+/// Panics if the lane is out of bounds. The caller must ensure the lane is valid.
+impl<T> std::ops::IndexMut<Lane> for Lanes<T> {
+    fn index_mut(&mut self, lane: Lane) -> &mut T {
+        &mut self.values[usize::from(lane)]
     }
+}
+
+// the caller must ensure count is contextually valid
+fn lanes_unchecked(count: usize) -> impl Iterator<Item = Lane> {
+    assert!(count <= MAX_PROPOSER_SET_SIZE);
+    (0..count).map(|j| Lane::new_unchecked(j as u8))
 }
 
 // A helper wrapper type for a type-erased implementation of a trait
@@ -779,7 +802,7 @@ pub struct Erased<T>(pub T);
 #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
 pub struct EquivCert(pub SignedProposalHeader, pub SignedProposalHeader);
 
-impl<T> Encodable for ProposalMap<T>
+impl<T> Encodable for Lanes<T>
 where
     T: Encodable,
 {
@@ -792,13 +815,17 @@ where
     }
 }
 
-impl<T> Decodable for ProposalMap<T>
+impl<T> Decodable for Lanes<T>
 where
     T: Decodable,
 {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let values = Vec::<T>::decode(buf)?;
+        if values.len() > MAX_PROPOSER_SET_SIZE {
+            return Err(alloy_rlp::Error::Custom("too many lanes"));
+        }
         let result = Self {
-            values: Vec::<T>::decode(buf)?.into_boxed_slice(),
+            values: values.into_boxed_slice(),
         };
         Ok(result)
     }
@@ -808,6 +835,16 @@ where
 mod tests {
     use super::*;
     use crate::spec::vote::assert_signing_prefix;
+
+    #[test]
+    fn a_lane_decodes_only_below_the_proposer_set_size() {
+        for lane in 0..=u8::MAX {
+            let bytes = alloy_rlp::encode(lane);
+            let decoded = Lane::decode(&mut bytes.as_slice());
+            let in_range = usize::from(lane) < MAX_PROPOSER_SET_SIZE;
+            assert_eq!(decoded.is_ok(), in_range, "lane {lane}");
+        }
+    }
 
     #[test]
     fn timestamp_arithmetic_is_checked() {

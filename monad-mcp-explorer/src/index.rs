@@ -177,7 +177,7 @@ impl LoadedBlock {
         let mut expected = meta.lanes.iter().filter(|l| l.tx_count > 0);
         for (lane, lane_txs) in lanes {
             let meta_lane = expected.next().ok_or("unexpected lane txs")?;
-            if meta_lane.index != lane || meta_lane.tx_count as usize != lane_txs.len() {
+            if meta_lane.lane != lane || meta_lane.tx_count as usize != lane_txs.len() {
                 return Err("lane txs do not match meta");
             }
             for (pos, tx) in (0..).zip(&lane_txs) {
@@ -735,11 +735,11 @@ mod tests {
         }
     }
 
-    fn lane_meta(index: u32, txs: Option<&[Tx]>) -> LaneMeta {
+    fn lane_meta(lane: u32, txs: Option<&[Tx]>) -> LaneMeta {
         LaneMeta {
-            index,
-            proposer: Some(u64::from(index) + 10),
-            pid: txs.map(|_| [index as u8; 32]),
+            lane,
+            proposer: Some(u64::from(lane) + 10),
+            pid: txs.map(|_| [lane as u8; 32]),
             payload_len: txs.map_or(0, |t| {
                 monad_mcp_chorus::ledger::encode_batch(u64::MAX, t).len() as u32 // demo(tx-timeline)
             }),

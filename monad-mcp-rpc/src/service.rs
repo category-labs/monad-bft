@@ -24,7 +24,7 @@ use std::{
 };
 
 use monad_mcp_chorus::ledger::{Hash, LedgerReader, Tx};
-use monad_mcp_node::chorus::types::{NodeId, ProposalIndex, Timestamp};
+use monad_mcp_node::chorus::types::{Lane, NodeId, Timestamp};
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, info, warn};
 
@@ -58,11 +58,14 @@ pub enum SubmitError {
     Evicted,
     // startup, too few validators, or a pinned lane no one holds yet
     #[error("no proposer {} within {} ms of the target slot", lane_name(*.0), LOOKAHEAD.as_millis())]
-    NoLeader(Option<ProposalIndex>),
+    NoLeader(Option<Lane>),
 }
 
-fn lane_name(lane: Option<ProposalIndex>) -> String {
-    lane.map_or_else(|| "on any lane".into(), |lane| format!("on lane {lane}"))
+fn lane_name(lane: Option<Lane>) -> String {
+    lane.map_or_else(
+        || "on any lane".into(),
+        |lane| format!("on lane {}", usize::from(lane)),
+    )
 }
 
 // everything the http handlers and the maintenance loop share
@@ -129,7 +132,7 @@ impl RpcState {
 
     // takes ownership of a new tx and sends it once to `lane`, or to any lane;
     // a known one is not resent, and a new one with no leader ahead is refused
-    pub fn submit(&self, tx: Tx, lane: Option<ProposalIndex>) -> Result<Submitted, SubmitError> {
+    pub fn submit(&self, tx: Tx, lane: Option<Lane>) -> Result<Submitted, SubmitError> {
         let route = self.route(lane, None);
         let (hash, admission, known) = {
             let mut pending = self.pending();
@@ -151,7 +154,7 @@ impl RpcState {
 
     // to the first leader on `lane`, or any lane but `avoid`'s if another
     // leads, within the lookahead from now
-    fn route(&self, lane: Option<ProposalIndex>, avoid: Option<NodeId>) -> Option<Route> {
+    fn route(&self, lane: Option<Lane>, avoid: Option<NodeId>) -> Option<Route> {
         self.config.planner.route(unix_now(), lane, avoid)
     }
 
@@ -160,7 +163,7 @@ impl RpcState {
         &self,
         hash: Hash,
         tx: &Tx,
-        lane: Option<ProposalIndex>,
+        lane: Option<Lane>,
         route: Option<Route>,
     ) -> Option<Record> {
         let sent_at = Instant::now();
@@ -177,7 +180,7 @@ impl RpcState {
             SendOutcome::Sent(route) => debug!(
                 hash = %hex::encode(hash),
                 slot = route.slot.0,
-                lane = route.lane,
+                lane = usize::from(route.lane),
                 leader = u64::from(route.leader),
                 latency = ?route.latency,
                 "sent tx"

@@ -29,7 +29,7 @@ use common::{horizon_of, most_tenured, node_config, run_of, schedule_of};
 use monad_mcp_node::{
     NodeProposerSchedule,
     chorus::types::{
-        FixedProposerSchedule, NodeId, ProposerSchedule, ProposerSet, ScheduleError, Slot,
+        FixedProposerSchedule, Lane, NodeId, ProposerSchedule, ProposerSet, ScheduleError, Slot,
         Timestamp, TimestampDelta,
     },
     config::NodeConfig,
@@ -165,12 +165,12 @@ fn the_leader_is_the_proposer_with_the_most_tenure_left() {
             let run = run_of(schedule.as_ref(), slot, other, proposer, horizon);
             assert!(
                 run <= longest,
-                "{slot:?}: lane {other} runs {run} > {longest}"
+                "{slot:?}: lane {other:?} runs {run} > {longest}"
             );
             if run == longest {
                 assert!(
                     lane <= other,
-                    "{slot:?}: a tie went to lane {lane} over {other}"
+                    "{slot:?}: a tie went to lane {lane:?} over {other:?}"
                 );
             }
         }
@@ -185,14 +185,14 @@ fn a_proposer_about_to_hand_over_loses() {
     for slot in (0..SLOTS).map(Slot) {
         let set = schedule.proposers_at(slot).unwrap();
         let (lane, _) = choose_leader(schedule.as_ref(), slot, horizon).unwrap();
-        for (index, proposer) in set.iter() {
+        for (other, proposer) in set.iter() {
             let Some(proposer) = proposer else {
                 continue;
             };
             // its last slot on this lane
-            if run_of(schedule.as_ref(), slot, index, proposer, horizon) == 1 {
+            if run_of(schedule.as_ref(), slot, other, proposer, horizon) == 1 {
                 handovers += 1;
-                assert_ne!(lane, index, "{slot:?}: chose a proposer leaving its lane");
+                assert_ne!(lane, other, "{slot:?}: chose a proposer leaving its lane");
             }
         }
     }
@@ -209,15 +209,15 @@ fn a_vacant_lane_is_never_chosen() {
         let next = schedule.proposers_at(Slot(slot.0 + 1)).unwrap();
         let (lane, _) = choose_leader(schedule.as_ref(), slot, horizon).unwrap();
         assert!(set.proposer(lane).is_some(), "{slot:?}");
-        for index in 0..set.num_indices() {
-            if set.proposer(index).is_some() {
+        for (other, proposer) in set.iter() {
+            if proposer.is_some() {
                 continue;
             }
             vacant += 1;
             // the incoming proposer will hold the lane longest, but not yet
-            if next.proposer(index).is_some() {
+            if next.proposer(other).is_some() {
                 incoming += 1;
-                assert_ne!(lane, index, "{slot:?}: chose a lane still vacant");
+                assert_ne!(lane, other, "{slot:?}: chose a lane still vacant");
             }
         }
     }
@@ -246,7 +246,7 @@ fn ties_go_to_the_lower_lane() {
     let fixed = FixedProposerSchedule::new(vec![NodeId::dummy(3), NodeId::dummy(1)]);
     assert_eq!(
         choose_leader(&fixed, Slot(42), 40),
-        Some((0, NodeId::dummy(3)))
+        Some((Lane::new_unchecked(0), NodeId::dummy(3)))
     );
 }
 
@@ -254,8 +254,8 @@ fn ties_go_to_the_lower_lane() {
 struct Constant(ProposerSet);
 
 impl ProposerSchedule for Constant {
-    fn num_indices(&self) -> usize {
-        self.0.num_indices()
+    fn num_lanes(&self) -> usize {
+        self.0.num_lanes()
     }
 
     fn proposers_at(&self, _: Slot) -> Result<ProposerSet, ScheduleError> {
@@ -275,7 +275,11 @@ fn a_lone_validator_leads_every_occupied_slot() {
     for slot in (0..SLOTS).map(Slot) {
         let chosen = choose_leader(schedule.as_ref(), slot, horizon);
         if occupied(slot) {
-            assert_eq!(chosen, Some((0, NodeId::dummy(0))), "{slot:?}");
+            assert_eq!(
+                chosen,
+                Some((Lane::new_unchecked(0), NodeId::dummy(0))),
+                "{slot:?}"
+            );
         } else {
             assert_eq!(chosen, None, "{slot:?}");
             vacant.push(slot);
@@ -292,12 +296,12 @@ fn a_lone_validator_leads_every_occupied_slot() {
         let now = at(GENESIS_MS + k * 25);
         let route = planner.route(now, None, None).expect("a route");
         assert_eq!(
-            planner.route(now, Some(0), None),
+            planner.route(now, Some(Lane::new_unchecked(0)), None),
             Some(route),
             "its only lane"
         );
         assert_eq!(
-            planner.route(now, Some(3), None),
+            planner.route(now, Some(Lane::new_unchecked(3)), None),
             None,
             "a lane it never holds"
         );
@@ -307,7 +311,7 @@ fn a_lone_validator_leads_every_occupied_slot() {
             route,
             Route {
                 slot: first,
-                lane: 0,
+                lane: Lane::new_unchecked(0),
                 leader: NodeId::dummy(0),
                 latency: None,
             },
@@ -362,7 +366,8 @@ fn a_pinned_lane_routes_to_its_own_proposer() {
     for k in 0..SLOTS {
         let now = at(GENESIS_MS + k * 100 + 37);
         let target = planner.target_slot(now);
-        for lane in 0..schedule.num_indices() {
+        let set = schedule.proposers_at(target).unwrap();
+        for (lane, _) in set.iter() {
             let route = planner
                 .route(now, Some(lane), None)
                 .expect("every lane is held");
@@ -379,7 +384,7 @@ fn a_pinned_lane_routes_to_its_own_proposer() {
                     leader: proposer(first, lane).unwrap(),
                     latency: None,
                 },
-                "slot {k} lane {lane}"
+                "slot {k} lane {lane:?}"
             );
         }
     }
@@ -394,7 +399,12 @@ fn a_pinned_lane_is_only_routed_within_the_lookahead() {
     config.leader_election.rotation_slack = 95;
     let planner = Planner::new(&config, None).unwrap();
     let schedule = schedule_of(&config);
-    let proposer = |slot: Slot| schedule.proposers_at(slot).unwrap().proposer(1);
+    let proposer = |slot: Slot| {
+        schedule
+            .proposers_at(slot)
+            .unwrap()
+            .proposer(Lane::new_unchecked(1))
+    };
     let (mut refused, mut routed) = (0, 0);
     for k in 0..200 {
         let now = at(GENESIS_MS + k * 100);
@@ -406,12 +416,12 @@ fn a_pinned_lane_is_only_routed_within_the_lookahead() {
             .unwrap();
         let expected = (first <= last).then(|| Route {
             slot: first,
-            lane: 1,
+            lane: Lane::new_unchecked(1),
             leader: proposer(first).unwrap(),
             latency: None,
         });
         assert_eq!(
-            planner.route(now, Some(1), None),
+            planner.route(now, Some(Lane::new_unchecked(1)), None),
             expected,
             "at +{} ms",
             k * 100
@@ -431,7 +441,7 @@ fn a_pinned_lane_is_only_routed_within_the_lookahead() {
 // four validators on three lanes
 fn small() -> NodeConfig {
     let mut config = swarm(4);
-    config.proposal.num_proposals = 3;
+    config.proposal.num_lanes = 3;
     config
 }
 
@@ -448,7 +458,7 @@ fn runs(
     slot: Slot,
     horizon: u64,
     avoid: Option<NodeId>,
-) -> Vec<(usize, NodeId, u64)> {
+) -> Vec<(Lane, NodeId, u64)> {
     let set = schedule.proposers_at(slot).unwrap();
     set.iter()
         .filter_map(|(lane, proposer)| Some((lane, proposer?)))
@@ -465,7 +475,7 @@ fn nearest(
     latency: &Latency,
     min: u64,
     avoid: Option<NodeId>,
-) -> Option<(usize, NodeId)> {
+) -> Option<(Lane, NodeId)> {
     let runs = runs(schedule, slot, horizon_of(schedule), avoid);
     runs.iter()
         .filter(|(_, _, run)| *run >= min)

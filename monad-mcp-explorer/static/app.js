@@ -337,14 +337,14 @@
     const tag = !l.positive ? 'negative' : l.decode_error ? 'undecodable' : plural(l.tx_count, 'tx');
     const txs = l.txs.map((t) => `<li class="${S.landed.has(t.hash) ? 'is-new' : ''}" data-testid="lane-tx-row" data-hash="${esc(t.hash)}">
         ${txLink(t.hash, 6)}<span class="preview">${previewText(t)}</span></li>`).join('');
-    return `<article class="lane ${cls}" data-testid="lane-card" data-lane-index="${l.index}" data-positive="${l.positive}" data-tx-count="${l.tx_count}">
-      <header><span class="lane-no">Lane ${l.index}</span><span class="lane-tag">${tag}</span></header>
+    return `<article class="lane ${cls}" data-testid="lane-card" data-lane="${l.lane}" data-positive="${l.positive}" data-tx-count="${l.tx_count}">
+      <header><span class="lane-no">Lane ${l.lane}</span><span class="lane-tag">${tag}</span></header>
       <dl><dt>Proposer</dt><dd data-testid="lane-proposer">${l.proposer ?? '—'}</dd>
         <dt>Pid</dt><dd data-testid="lane-pid" title="${esc(l.pid || '')}">${l.pid ? esc(short(l.pid, 8)) : '—'}</dd>
         <dt>Size</dt><dd>${l.positive ? bytes(l.payload_len) : '—'}</dd>
         <dt title="when this explorer's node decoded the lane, relative to the slot deadline">Decoded</dt><dd data-testid="lane-decoded">${decodedAt(l.decoded_after_deadline_ms)}</dd></dl>
       ${txs ? `<ul class="lane-txs">${txs}</ul>` : ''}
-      ${l.more_txs ? `<a class="more" data-testid="lane-more" href="#/block/${slot}/lane/${l.index}">All ${plural(l.tx_count, 'tx')} →</a>` : ''}
+      ${l.more_txs ? `<a class="more" data-testid="lane-more" href="#/block/${slot}/lane/${l.lane}">All ${plural(l.tx_count, 'tx')} →</a>` : ''}
     </article>`;
   }
 

@@ -17,7 +17,7 @@
 //! slot deadline, the mock DA layer disseminates announcements over the
 //! simulated network, and the finalized slots carry the scheduled
 //! proposers' entries — `Positive` with the pid of the proposer's header where
-//! the schedule assigns a proposer, `Negative` where the index is vacant.
+//! the schedule assigns a proposer, `Negative` where the lane is vacant.
 
 mod helper;
 
@@ -34,7 +34,7 @@ use chorus::{
     proposing::{PlannerConfig, ProposalPlanner},
     slot::chorus::{Chorus, ChorusConfig, ChorusContext, ChorusDAEvent, Entry, SlotFinalization},
     types::{
-        NodeId, ProposerConfig, ProposerSchedule, RotatingProposerSchedule,
+        Lane, NodeId, ProposerConfig, ProposerSchedule, RotatingProposerSchedule,
         RoundRobinLeaderSchedule, Slot, SlotDeadline, Stake, Timestamp, TimestampDelta,
         ValidatorData,
     },
@@ -66,7 +66,7 @@ type Msg = CadenceWireMsg<Chorus, Conductor>;
 type Schedule = RotatingProposerSchedule<RoundRobinLeaderSchedule>;
 
 // Per-node record of the finalized entries: (node, slot) -> entries by
-// proposal index.
+// lane.
 type EntriesLog = Arc<Mutex<BTreeMap<(NodeId, Slot), Vec<Entry>>>>;
 
 fn conductor() -> Conductor {
@@ -168,13 +168,13 @@ fn build_swarm(
     (builder.build(), entries)
 }
 
-// The entry expected at (slot, index): the pid of the scheduled proposer's
-// header, or Negative for a vacant index.
-fn expected_entry(schedule: &Schedule, slot: Slot, index: usize) -> Entry {
-    let Some(proposer) = schedule.proposers_at(slot).unwrap().proposer(index) else {
+// The entry expected at (slot, lane): the pid of the scheduled proposer's
+// header, or Negative for a vacant lane.
+fn expected_entry(schedule: &Schedule, slot: Slot, lane: Lane) -> Entry {
+    let Some(proposer) = schedule.proposers_at(slot).unwrap().proposer(lane) else {
         return Entry::Negative;
     };
-    let payload = mock_payload(proposer, slot, index);
+    let payload = mock_payload(proposer, slot, lane);
     Entry::Positive(mock_header(proposer, slot, &payload).pid())
 }
 
@@ -188,8 +188,10 @@ fn expect_entries(
         for slot in slots.clone() {
             let slot = Slot(slot);
             let finalized = &entries[&(node, slot)];
-            let expected: Vec<Entry> = (0..finalized.len())
-                .map(|index| expected_entry(schedule, slot, index))
+            let set = schedule.proposers_at(slot).unwrap();
+            let expected: Vec<Entry> = set
+                .iter()
+                .map(|(lane, _)| expected_entry(schedule, slot, lane))
                 .collect();
             assert_eq!(
                 finalized, &expected,
@@ -218,7 +220,10 @@ fn scheduled_proposals_finalize_positive() {
     // s mod NODES
     for slot in 0..8 {
         assert_eq!(
-            schedule.proposers_at(Slot(slot)).unwrap().proposer(0),
+            schedule
+                .proposers_at(Slot(slot))
+                .unwrap()
+                .proposer(Lane::new_unchecked(0)),
             Some(NodeId::dummy(slot % NODES)),
         );
     }
@@ -241,7 +246,7 @@ fn scheduled_proposals_finalize_positive() {
     // and they really are Positive, not vacuously equal
     for slot in 0..4 {
         assert!(matches!(
-            expected_entry(&schedule, Slot(slot), 0),
+            expected_entry(&schedule, Slot(slot), Lane::new_unchecked(0)),
             Entry::Positive { .. }
         ));
     }
@@ -254,8 +259,8 @@ fn staggered_proposers_with_rotation_vacancy() {
     // across a window rollover:
     //  * the genesis exemption (slots 0, 1 sealed without a chained prefix
     //    to wait for),
-    //  * rotation vacancies (a handed-over index is vacant for y slots, so
-    //    the incoming proposer knows all in-flight proposals at its index),
+    //  * rotation vacancies (a handed-over lane is vacant for y slots, so
+    //    the incoming proposer knows all in-flight proposals at its lane),
     //  * the planner's chaining gate: sealing slot r at deadline − lead
     //    requires slot r − y chained, which happens 40ms before the seal
     //    alarm — late enough that early sealing would vote Negative.
@@ -272,14 +277,17 @@ fn staggered_proposers_with_rotation_vacancy() {
     // validator r mod NODES, occupying index r mod 2 for 4 slots).
     let proposers_of = |slot: u64| {
         let set = schedule.proposers_at(Slot(slot)).unwrap();
-        [set.proposer(0), set.proposer(1)]
+        [
+            set.proposer(Lane::new_unchecked(0)),
+            set.proposer(Lane::new_unchecked(1)),
+        ]
     };
     let v = |i: u64| Some(NodeId::dummy(i));
-    assert_eq!(proposers_of(0), [v(0), None]); // genesis ramp-up at index 1
+    assert_eq!(proposers_of(0), [v(0), None]); // genesis ramp-up at lane 1
     assert_eq!(proposers_of(3), [v(0), None]);
-    assert_eq!(proposers_of(4), [v(0), None]); // index 1 handed over: vacant
+    assert_eq!(proposers_of(4), [v(0), None]); // lane 1 handed over: vacant
     assert_eq!(proposers_of(6), [v(0), v(1)]); // ... and starts proposing
-    assert_eq!(proposers_of(8), [None, v(1)]); // index 0 handed over: vacant
+    assert_eq!(proposers_of(8), [None, v(1)]); // lane 0 handed over: vacant
     assert_eq!(proposers_of(10), [v(2), v(1)]);
     assert_eq!(proposers_of(11), [v(2), v(1)]);
 

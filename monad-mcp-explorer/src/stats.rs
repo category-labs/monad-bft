@@ -139,8 +139,8 @@ mod tests {
     // 4 lanes: two positive, the first holding all `txs`.
     fn block(slot: u64, at_ms: u64, latency_ms: Option<u64>, txs: u32) -> BlockSummary {
         let at = at_ms * 1_000_000;
-        let lane = |index: u32, positive: bool, tx_count: u32| LaneMeta {
-            index,
+        let lane = |lane: u32, positive: bool, tx_count: u32| LaneMeta {
+            lane,
             proposer: None,
             pid: positive.then_some([0; 32]),
             payload_len: u32::from(positive),

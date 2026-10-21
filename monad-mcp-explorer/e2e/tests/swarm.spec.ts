@@ -19,7 +19,7 @@ async function meta(slot: number, ledger = stack.ledger): Promise<any | undefine
 const finalized = (slot: number, within = 15_000) =>
   waitFor(`node 0 to finalize slot ${slot}`, within, () => meta(slot)).catch(() => undefined);
 
-// proposers per lane index as the ledger recorded them from the schedule
+// proposers per lane as the ledger recorded them from the schedule
 const proposersOf = (m: any): (number | null)[] => m.lanes.map((l: any) => l.proposer);
 
 // the rule the rpc must follow, recomputed from the ledger: at `target`, the
@@ -192,7 +192,7 @@ test('swarm: the rpc sends each tx to the proposer its routing rule picks, and i
         disagreements.push(`slot ${slot}: node ${n} meta ${JSON.stringify(consensus(other))} != node 0 ${JSON.stringify(consensus(ref))}`);
       }
       for (const l of ref.lanes.filter((l: any) => l.pid !== null)) {
-        const file = `lane-${l.index}.rlp`;
+        const file = `lane-${l.lane}.rlp`;
         const [a, b] = await Promise.all([readFile(path.join(blockDir(slot), file)), readFile(path.join(blockDir(slot, ledger), file)).catch(() => undefined)]);
         if (!b || !a.equals(b)) disagreements.push(`slot ${slot}: node ${n} ${file} ${b ? 'differs' : 'missing'}`);
       }
@@ -210,7 +210,7 @@ test('swarm: the rpc sends each tx to the proposer its routing rule picks, and i
   await explorerTx(shown.hash);
   await page.goto(`/#/block/${shown.slot}`);
   await expect(page.getByTestId('block-detail')).toHaveAttribute('data-slot', String(shown.slot));
-  const card = page.locator(`[data-testid="lane-card"][data-lane-index="${shown.landedLane}"]`);
+  const card = page.locator(`[data-testid="lane-card"][data-lane="${shown.landedLane}"]`);
   await expect(card).toHaveAttribute('data-positive', 'true');
   await expect(card.getByTestId('lane-proposer')).toHaveText(String(shown.landedProposer));
   await expect(card.locator(`[data-testid="lane-tx-row"][data-hash="${shown.hash}"]`)).toBeVisible();

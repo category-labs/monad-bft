@@ -387,7 +387,7 @@ fn not_indexed(slot: u64) -> ApiError {
 
 #[derive(Serialize)]
 struct LaneJson {
-    index: u32,
+    lane: u32,
     positive: bool,
     proposer: Option<u64>,
     pid: Option<String>,
@@ -454,16 +454,16 @@ async fn block(state: web::Data<AppState>, path: web::Path<String>) -> ApiResult
             meta.lanes
                 .iter()
                 .map(|lane| {
-                    let page = index.lane_txs(slot, lane.index, 0, LANE_PREVIEW_TXS);
+                    let page = index.lane_txs(slot, lane.lane, 0, LANE_PREVIEW_TXS);
                     LaneJson {
-                        index: lane.index,
+                        lane: lane.lane,
                         positive: lane.is_positive(),
                         proposer: lane.proposer,
                         pid: lane.pid.as_ref().map(|r| hex0x(r)),
                         payload_len: lane.payload_len,
                         tx_count: lane.tx_count,
                         decode_error: lane.decode_error,
-                        decoded_after_deadline_ms: decoded_after_deadline_ms(lane.index), // demo(tx-timeline)
+                        decoded_after_deadline_ms: decoded_after_deadline_ms(lane.lane), // demo(tx-timeline)
                         txs: tx_jsons(&index, page.items),
                         more_txs: page.has_more,
                     }
@@ -487,7 +487,7 @@ async fn block(state: web::Data<AppState>, path: web::Path<String>) -> ApiResult
 #[derive(Serialize)]
 struct LaneTxsJson {
     slot: u64,
-    index: u32,
+    lane: u32,
     tx_count: usize,
     txs: Vec<TxJson>,
     next_cursor: Option<u32>,
@@ -524,7 +524,7 @@ async fn lane(
         .flatten();
     json(LaneTxsJson {
         slot,
-        index: lane,
+        lane,
         tx_count: index.lane_tx_count(slot, lane),
         txs: tx_jsons(&index, page.items),
         next_cursor,

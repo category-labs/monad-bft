@@ -137,7 +137,7 @@ delta = 50
 slot_interval = $slot_ms
 
 [proposal]
-num_proposals = 5
+num_lanes = 5
 propose_before_deadline = 200
 withhold_before_deadline = 0
 source = "mempool"

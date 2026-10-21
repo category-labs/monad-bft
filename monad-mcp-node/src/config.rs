@@ -311,7 +311,7 @@ pub enum SourceKind {
 #[derive(Clone, Copy, Deserialize)]
 #[serde(default)]
 pub struct ProposalConfig {
-    pub num_proposals: usize,
+    pub num_lanes: usize,
     pub source: SourceKind,
     // proposal size limit in bytes; absent: 1 MiB for random, 64 KiB for mempool
     pub max_payload_bytes: Option<usize>,
@@ -358,9 +358,9 @@ impl ProposalConfig {
         let rotation = Self::OBSERVATION_CUTOFF.saturating_add(election.rotation_slack);
         let rotations = Self::MIN_SLOTS_PER_EPOCH
             .div_ceil(rotation)
-            .max(self.num_proposals as u64);
+            .max(self.num_lanes as u64);
         ProposerConfig {
-            concurrent_proposers: self.num_proposals,
+            concurrent_proposers: self.num_lanes,
             observation_cutoff: Self::OBSERVATION_CUTOFF,
             rotation_slack: election.rotation_slack,
             slots_per_epoch: rotation.saturating_mul(rotations),
@@ -390,7 +390,7 @@ impl ProposalConfig {
 impl Default for ProposalConfig {
     fn default() -> Self {
         Self {
-            num_proposals: 5,
+            num_lanes: 5,
             source: SourceKind::Random,
             max_payload_bytes: None,
             propose_before_deadline: TimestampDelta::from_millis(500),

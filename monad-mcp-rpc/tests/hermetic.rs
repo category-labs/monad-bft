@@ -21,7 +21,7 @@ mod common;
 use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
 use common::*;
-use monad_mcp_node::chorus::types::{NodeId, Slot, Timestamp};
+use monad_mcp_node::chorus::types::{Lane, NodeId, Slot, Timestamp};
 use monad_mcp_rpc::{RpcConfig, api::TxView, schedule::Planner};
 use serde_json::Value;
 
@@ -52,7 +52,7 @@ fn assert_routed(swarm: &FakeSwarm, target: u64, leader: u64, lane: u64) {
     let schedule = schedule_of(&swarm.config());
     let expected = most_tenured(schedule.as_ref(), Slot(target), horizon_of(&schedule));
     assert_eq!(
-        Some((lane as usize, NodeId::dummy(leader))),
+        Some((Lane::new_unchecked(lane as u8), NodeId::dummy(leader))),
         expected,
         "slot {target}"
     );

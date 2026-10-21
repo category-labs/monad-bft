@@ -63,7 +63,7 @@ impl Decodable for FinalizationPath {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LaneMeta {
-    pub index: u32,
+    pub lane: u32,
     pub proposer: Option<u64>,
     // Some iff the lane is positive and has a lane file.
     pub pid: Option<LanePid>,
@@ -90,7 +90,7 @@ impl LaneMeta {
 
     pub fn to_json(&self) -> String {
         Object::new()
-            .num("index", self.index)
+            .num("lane", self.lane)
             .opt_num("proposer", self.proposer)
             .opt_hex("pid", self.pid.as_ref().map(|r| &r[..]))
             .num("payload_len", self.payload_len)
@@ -126,8 +126,8 @@ impl BlockMeta {
             return Err("num_lanes does not match lanes");
         }
         for (i, lane) in self.lanes.iter().enumerate() {
-            if usize::try_from(lane.index).ok() != Some(i) {
-                return Err("lane index out of order");
+            if usize::try_from(lane.lane).ok() != Some(i) {
+                return Err("lanes out of order");
             }
             lane.check()?;
         }
@@ -161,7 +161,7 @@ impl BlockMeta {
 pub fn lane_json(slot: u64, lane: &LaneMeta, decoded: &Result<Vec<Tx>, TxError>) -> String {
     let mut obj = Object::new();
     obj.num("slot", slot)
-        .num("index", lane.index)
+        .num("lane", lane.lane)
         .opt_num("proposer", lane.proposer)
         .opt_hex("pid", lane.pid.as_ref().map(|r| &r[..]))
         .num("payload_len", lane.payload_len);
@@ -194,7 +194,7 @@ pub struct NewBlock {
     pub fast_block_at_ns: Option<u128>,
     // demo(tx-timeline): local wall clock when DA decoded each lane, None = unknown or negative.
     pub lane_decoded_at_ns: Vec<Option<u128>>,
-    // one per proposal index 0..K.
+    // one per lane 0..K.
     pub lanes: Vec<NewLane>,
     // rlp of the commit certificate message, opaque here.
     pub proof: Bytes,
@@ -259,7 +259,7 @@ fn finish_list(rest: &[u8]) -> alloy_rlp::Result<()> {
 
 impl LaneMeta {
     fn payload_length(&self) -> usize {
-        self.index.length()
+        self.lane.length()
             + opt_len(&self.proposer)
             + opt_len(&self.pid)
             + self.payload_len.length()
@@ -275,7 +275,7 @@ impl Encodable for LaneMeta {
             payload_length: self.payload_length(),
         }
         .encode(out);
-        self.index.encode(out);
+        self.lane.encode(out);
         encode_opt(&self.proposer, out);
         encode_opt(&self.pid, out);
         self.payload_len.encode(out);
@@ -296,7 +296,7 @@ impl Decodable for LaneMeta {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let mut b = Header::decode_bytes(buf, true)?;
         let lane = Self {
-            index: u32::decode(&mut b)?,
+            lane: u32::decode(&mut b)?,
             proposer: decode_opt(&mut b)?,
             pid: decode_opt(&mut b)?,
             payload_len: u32::decode(&mut b)?,
@@ -375,7 +375,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::ledger::tx::{decode_batch, encode_batch};
 
-    pub(crate) fn arb_lane(index: u32) -> impl Strategy<Value = LaneMeta> {
+    pub(crate) fn arb_lane(lane: u32) -> impl Strategy<Value = LaneMeta> {
         (
             any::<Option<u64>>(),
             any::<Option<LanePid>>(),
@@ -386,7 +386,7 @@ pub(crate) mod tests {
             .prop_map(
                 move |(proposer, pid, payload_len, tx_count, decode_error)| match pid {
                     None => LaneMeta {
-                        index,
+                        lane,
                         proposer,
                         pid,
                         payload_len: 0,
@@ -394,7 +394,7 @@ pub(crate) mod tests {
                         decode_error: false,
                     },
                     Some(_) => LaneMeta {
-                        index,
+                        lane,
                         proposer,
                         pid,
                         payload_len,
@@ -442,7 +442,7 @@ pub(crate) mod tests {
             num_lanes: 2,
             lanes: vec![
                 LaneMeta {
-                    index: 0,
+                    lane: 0,
                     proposer: Some(3),
                     pid: Some([0xaa; 32]),
                     payload_len: 30,
@@ -450,7 +450,7 @@ pub(crate) mod tests {
                     decode_error: false,
                 },
                 LaneMeta {
-                    index: 1,
+                    lane: 1,
                     proposer: None,
                     pid: None,
                     payload_len: 0,
@@ -542,7 +542,7 @@ pub(crate) mod tests {
         let decoded = decode_batch(&encode_batch(1, std::slice::from_ref(&tx))); // demo(tx-timeline)
         let v: serde_json::Value = serde_json::from_str(&lane_json(7, lane, &decoded)).unwrap();
         assert_eq!(v["slot"], 7);
-        assert_eq!(v["index"], 0);
+        assert_eq!(v["lane"], 0);
         assert!(v.get("decode_error").is_none());
         let t = &v["txs"][0];
         assert_eq!(t["hash"], format!("0x{}", hex::encode(tx.hash())));

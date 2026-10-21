@@ -19,9 +19,6 @@ use monad_mcp_chorus::spec;
 // the validator set an encoding scheme sizes its depth range for
 pub const MAX_VALIDATOR_SET_SIZE: usize = 300;
 
-// the proposals a slot carries, which a scheme's header must index
-pub const MAX_PROPOSER_SET_SIZE: usize = 5;
-
 // the signature field of a packet
 pub const SIGNATURE_LEN: usize = 65;
 

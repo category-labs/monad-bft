@@ -26,12 +26,12 @@ use super::{
     super::{
         assignment::{ChunkAssignment, PacketLossResistance},
         chunk::WireChunkId,
-        types::{NodeId, ProposalIndex, PubKey, S11, Slot, ValidatorData},
+        types::{Lane, MAX_PROPOSER_SET_SIZE, NodeId, PubKey, S11, Slot, ValidatorData},
         wire::{DAHeaderScheme as _, PacketLayout as _, v1},
     },
     DAEncodingScheme,
 };
-use crate::spec::{DAPubKey as _, MAX_PROPOSER_SET_SIZE, PUBKEY_LEN};
+use crate::spec::{DAPubKey as _, PUBKEY_LEN};
 
 pub const MAX_MESSAGE_LEN: usize = 1024 * 1024;
 
@@ -40,22 +40,22 @@ pub(crate) type S11Layout<'a> = v1::Layout<'a, S11>;
 
 // the scheme a proposer among num_validators picks for its message:
 // the least depth whose leaves fit the chunk bound. None if the
-// message is empty, over the bound, fits no depth, or the index is
+// message is empty, over the bound, fits no depth, or the lane is
 // beyond the header's.
 pub fn for_message(
     slot: Slot,
     msg_len: usize,
     unix_ts: u64,
-    proposer_index: ProposalIndex,
+    lane: Lane,
     num_validators: usize,
 ) -> Option<S11> {
     let msg_len = bounded_len(msg_len)?;
-    let proposer_index = bounded_index(proposer_index)?;
+    let lane = bounded_lane(lane)?;
     for depth in header::MIN_DEPTH..=header::MAX_DEPTH {
         if fits(msg_len, depth, num_validators) {
             return Some(S11 {
                 slot,
-                proposer_index,
+                lane,
                 depth,
                 msg_len,
                 unix_ts,
@@ -72,11 +72,8 @@ fn bounded_len(msg_len: usize) -> Option<u32> {
     u32::try_from(msg_len).ok()
 }
 
-fn bounded_index(proposer_index: ProposalIndex) -> Option<u8> {
-    if proposer_index >= MAX_PROPOSER_SET_SIZE {
-        return None;
-    }
-    u8::try_from(proposer_index).ok()
+fn bounded_lane(lane: Lane) -> Option<Lane> {
+    (usize::from(lane) < MAX_PROPOSER_SET_SIZE).then_some(lane)
 }
 
 // every set of weight > W/3 still decodes after packet loss trims
@@ -144,7 +141,7 @@ impl DAEncodingScheme for S11 {
         if bounded_len(self.msg_len as usize).is_none() {
             return false;
         }
-        if bounded_index(ProposalIndex::from(self.proposer_index)).is_none() {
+        if bounded_lane(self.lane).is_none() {
             return false;
         }
         if !(header::MIN_DEPTH..=header::MAX_DEPTH).contains(&self.depth) {
@@ -197,7 +194,7 @@ impl DAEncodingScheme for S11 {
 }
 
 // the v1 header of a s11 proposal, after the version(2):
-// proposer_index+depth(1) variant(1) slot(8) unix_ts(8) root(20) msg_len(3)
+// lane+depth(1) variant(1) slot(8) unix_ts(8) root(20) msg_len(3)
 // and its chunk header: chunk_id(2)
 mod header {
     use bytes::{Buf, BufMut};
@@ -205,13 +202,13 @@ mod header {
     use super::{
         super::super::{
             chunk::WireChunkId,
-            types::{MerkleRoot, S11, Slot},
+            types::{Lane, MAX_PROPOSER_SET_SIZE, MerkleRoot, S11, Slot},
             util::Tree,
             wire::{DAHeaderScheme, MalformedPacket, v1},
         },
         MAX_MESSAGE_LEN, S11Layout,
     };
-    use crate::spec::{DAMerkleRoot as _, MAX_PROPOSER_SET_SIZE, ROOT_LEN};
+    use crate::spec::{DAMerkleRoot as _, ROOT_LEN};
 
     pub(crate) const VARIANT: u8 = 0x2;
 
@@ -222,8 +219,8 @@ mod header {
     // validators needs
     pub(super) const MAX_DEPTH: u8 = 13;
 
-    // the index+depth byte: 4 proposer index bits over 4 depth bits
-    const PROPOSER_INDEX_SHIFT: u32 = 4;
+    // the lane+depth byte: 4 lane bits over 4 depth bits
+    const LANE_SHIFT: u32 = 4;
     const DEPTH_MASK: u8 = 0b0000_1111;
 
     const MSG_LEN_LEN: usize = 3;
@@ -237,10 +234,10 @@ mod header {
 
         fn pack_header(&self, root: &MerkleRoot, out: &mut impl BufMut) {
             assert!((MIN_DEPTH..=MAX_DEPTH).contains(&self.depth));
-            assert!(usize::from(self.proposer_index) < MAX_PROPOSER_SET_SIZE);
+            assert!(usize::from(self.lane) < MAX_PROPOSER_SET_SIZE);
             assert!(self.msg_len as usize <= MAX_MESSAGE_LEN);
 
-            out.put_u8(self.proposer_index << PROPOSER_INDEX_SHIFT | self.depth);
+            out.put_u8((usize::from(self.lane) as u8) << LANE_SHIFT | self.depth);
             out.put_u8(VARIANT);
             out.put_u64_le(self.slot.get());
             out.put_u64_le(self.unix_ts);
@@ -249,12 +246,13 @@ mod header {
         }
 
         fn unpack_header(bytes: &mut impl Buf) -> Result<(MerkleRoot, S11), MalformedPacket> {
-            let index_depth = bytes.get_u8();
-            let depth = index_depth & DEPTH_MASK;
+            let lane_depth = bytes.get_u8();
+            let depth = lane_depth & DEPTH_MASK;
             if !(MIN_DEPTH..=MAX_DEPTH).contains(&depth) {
                 return Err(MalformedPacket::DepthOutOfRange(depth));
             }
-            let proposer_index = index_depth >> PROPOSER_INDEX_SHIFT;
+            let lane = lane_depth >> LANE_SHIFT;
+            let lane = Lane::from_u8(lane).ok_or(MalformedPacket::LaneOutOfRange(lane))?;
 
             let variant = bytes.get_u8();
             if variant != VARIANT {
@@ -274,7 +272,7 @@ mod header {
 
             let scheme = S11 {
                 slot,
-                proposer_index,
+                lane,
                 depth,
                 msg_len,
                 unix_ts,
@@ -306,8 +304,8 @@ mod header {
         assert!(MAX_DEPTH <= DEPTH_MASK);
         assert!(MAX_DEPTH <= Tree::MAX_DEPTH);
         assert!(MAX_DEPTH <= S11Layout::MAX_DEPTH);
-        // the index+depth byte carries the whole index range
-        assert!(MAX_PROPOSER_SET_SIZE - 1 <= (u8::MAX >> PROPOSER_INDEX_SHIFT) as usize);
+        // the lane+depth byte carries the whole lane range
+        assert!(MAX_PROPOSER_SET_SIZE - 1 <= (u8::MAX >> LANE_SHIFT) as usize);
         assert!(MAX_MESSAGE_LEN < 1 << (8 * MSG_LEN_LEN));
         // the leaves address as u16 chunk ids and as Reed-Solomon shards
         assert!(1usize << (MAX_DEPTH - 1) <= 1 << 14);
@@ -373,7 +371,7 @@ mod header {
             header.sig().to_bytes(&mut signature);
             assert_eq!(bytes[..65], signature);
             assert_eq!(bytes[65..67], [1, 0]);
-            assert_eq!(bytes[67], s11.proposer_index << 4 | s11.depth);
+            assert_eq!(bytes[67], (usize::from(s11.lane) as u8) << 4 | s11.depth);
             assert_eq!(bytes[68], VARIANT);
             assert_eq!(v1::SCHEME_VARIANT_OFFSET, 68);
             assert_eq!(bytes[69..77], SLOT.get().to_le_bytes());
@@ -411,6 +409,9 @@ mod header {
                 b[69..77].copy_from_slice(&u64::MAX.to_le_bytes())
             });
             assert_eq!(slot, Err(MalformedPacket::SlotOutOfRange(u64::MAX)));
+            let beyond = MAX_PROPOSER_SET_SIZE as u8;
+            let lane = corrupted(chunk, |b| b[67] = beyond << LANE_SHIFT | b[67] & DEPTH_MASK);
+            assert_eq!(lane, Err(MalformedPacket::LaneOutOfRange(beyond)));
         }
     }
 }
@@ -437,10 +438,10 @@ mod tests {
     };
     use crate::spec::MAX_VALIDATOR_SET_SIZE;
 
-    const PROPOSER_INDEX: ProposalIndex = 0;
+    const LANE: Lane = Lane::new_unchecked(0);
 
     fn scheme_for(num_validators: usize) -> S11 {
-        for_message(SLOT, MESSAGE_LEN, 0, PROPOSER_INDEX, num_validators).expect("fits")
+        for_message(SLOT, MESSAGE_LEN, 0, LANE, num_validators).expect("fits")
     }
 
     fn scheme() -> S11 {
@@ -465,22 +466,16 @@ mod tests {
         assert_eq!(scheme().num_source_chunks(), 2);
         assert_eq!(scheme_for(12).depth, 6);
 
-        assert!(for_message(SLOT, 0, 0, PROPOSER_INDEX, 4).is_none());
-        assert!(for_message(SLOT, MAX_MESSAGE_LEN + 1, 0, PROPOSER_INDEX, 4).is_none());
-        assert!(for_message(SLOT, MESSAGE_LEN, 0, 16, 4).is_none());
+        assert!(for_message(SLOT, 0, 0, LANE, 4).is_none());
+        assert!(for_message(SLOT, MAX_MESSAGE_LEN + 1, 0, LANE, 4).is_none());
+        assert!(for_message(SLOT, MESSAGE_LEN, 0, Lane::new_unchecked(16), 4).is_none());
         // a message in range that no depth can carry
-        assert!(for_message(SLOT, MAX_MESSAGE_LEN, 0, PROPOSER_INDEX, 20_000).is_none());
+        assert!(for_message(SLOT, MAX_MESSAGE_LEN, 0, LANE, 20_000).is_none());
     }
 
     #[test]
     fn the_max_depth_is_the_one_the_largest_proposal_needs() {
-        let deepest = for_message(
-            SLOT,
-            MAX_MESSAGE_LEN,
-            0,
-            PROPOSER_INDEX,
-            MAX_VALIDATOR_SET_SIZE,
-        );
+        let deepest = for_message(SLOT, MAX_MESSAGE_LEN, 0, LANE, MAX_VALIDATOR_SET_SIZE);
         assert_eq!(deepest.expect("fits").depth, header::MAX_DEPTH);
     }
 
@@ -488,7 +483,8 @@ mod tests {
     fn the_canonical_scheme_is_the_one_for_message_picks() {
         for msg_len in [1, 1000, MESSAGE_LEN, 5000, 100_000, 1_000_000] {
             for num_validators in [1, 2, 4, 12, 100, 500] {
-                let scheme = for_message(SLOT, msg_len, 7, 3, num_validators).expect("fits");
+                let scheme = for_message(SLOT, msg_len, 7, Lane::new_unchecked(3), num_validators)
+                    .expect("fits");
                 assert!(scheme.is_canonical(num_validators), "{scheme:?}");
 
                 let deeper = S11 {

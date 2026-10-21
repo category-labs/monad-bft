@@ -17,7 +17,7 @@
 //! protocol modules, so `env` and `spec` can name them without picking
 //! a variant. `types` re-exports them.
 
-use alloy_rlp::{RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper};
+use alloy_rlp::{Decodable, RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper};
 
 // Slot number, starting from 0.
 #[derive(
@@ -72,17 +72,49 @@ impl Slot {
     }
 }
 
-pub type ProposalIndex = usize;
+// the max number of lanes we currently permit
+pub const MAX_PROPOSER_SET_SIZE: usize = 5;
 
-/// The slot and proposal index authenticated by a per-proposal vote.
+// The position of a proposal in a slot. Only meaningful under the
+// context of a given slot. Invariant: .0 < MAX_PROPOSER_SET_SIZE.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, RlpEncodableWrapper)]
+pub struct Lane(u8);
+
+impl Lane {
+    pub const fn new_unchecked(lane: u8) -> Self {
+        Self(lane)
+    }
+
+    pub const fn from_u8(lane: u8) -> Option<Self> {
+        if lane as usize >= MAX_PROPOSER_SET_SIZE {
+            return None;
+        }
+        Some(Self(lane))
+    }
+}
+
+impl Decodable for Lane {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let lane = u8::decode(buf)?;
+        Self::from_u8(lane).ok_or(alloy_rlp::Error::Custom("lane out of range"))
+    }
+}
+
+impl From<Lane> for usize {
+    fn from(lane: Lane) -> Self {
+        usize::from(lane.0)
+    }
+}
+
+/// The slot and lane authenticated by a per-proposal vote.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
 pub struct ProposalScope {
     pub slot: Slot,
-    pub index: ProposalIndex,
+    pub lane: Lane,
 }
 
 impl ProposalScope {
-    pub const fn new(slot: Slot, index: ProposalIndex) -> Self {
-        Self { slot, index }
+    pub const fn new(slot: Slot, lane: Lane) -> Self {
+        Self { slot, lane }
     }
 }

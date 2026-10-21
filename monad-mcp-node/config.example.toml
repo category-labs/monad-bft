@@ -32,7 +32,7 @@ sync_boundary_slots = 8
 completed_slot_retention = 50
 
 [proposal]
-num_proposals = 5
+num_lanes = 5
 propose_before_deadline = 500
 # withhold a seal with less than this much lead left; 0 disables the gate,
 # the cadence delta withholds anything that cannot arrive before the deadline
@@ -49,7 +49,7 @@ source = "random"
 # must match on every validator; absent: rotation_slack = 3
 [leader_election]
 # z: a lane rotates every 5 + z slots and is vacant for 5 of them; a proposer
-# keeps its lane for num_proposals * (5 + z) slots
+# keeps its lane for num_lanes * (5 + z) slots
 rotation_slack = 3
 
 # bounds of the mempool, used by source = "mempool"

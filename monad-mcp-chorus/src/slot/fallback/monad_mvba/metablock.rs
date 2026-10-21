@@ -17,7 +17,7 @@ use super::{
     super::{
         super::{
             fast::{CertifiedEntry, Entry},
-            types::{HeaderAuth, ProposalMap, ProposalScope, Slot, ValidatorData},
+            types::{HeaderAuth, Lanes, ProposalScope, Slot, ValidatorData},
         },
         Metablock, ValidateInput, Votable,
     },
@@ -25,20 +25,20 @@ use super::{
 };
 
 impl Metablock {
-    /// One entry per proposer, each bound to this slot and its own index with
+    /// One entry per proposer, each bound to this slot and its own lane with
     /// valid signatures. Availability behind a positive root is not checked
     pub(crate) fn is_valid(
         &self,
         slot: Slot,
-        num_proposals: usize,
+        num_lanes: usize,
         header_auth: &HeaderAuth,
         validator_data: &ValidatorData,
     ) -> bool {
-        if self.0.size() != num_proposals {
+        if self.0.size() != num_lanes {
             return false;
         }
 
-        self.0.as_ref().into_iter().enumerate().all(|(j, cert)| {
+        self.0.as_ref().into_indexed_iter().all(|(j, cert)| {
             certified_entry_is_valid(
                 cert,
                 ProposalScope::new(slot, j),
@@ -56,12 +56,12 @@ impl Metablock {
             .all(|cert| matches!(cert, CertifiedEntry::FastQc(_)))
     }
 
-    /// `entries(B)`, in increasing order of proposer index
-    pub(crate) fn entries(&self) -> ProposalMap<Entry> {
+    /// `entries(B)`, in increasing order of lane
+    pub(crate) fn entries(&self) -> Lanes<Entry> {
         self.0.as_ref().map(CertifiedEntry::entry)
     }
 
-    pub(crate) fn certified_entries(&self) -> ProposalMap<&CertifiedEntry> {
+    pub(crate) fn certified_entries(&self) -> Lanes<&CertifiedEntry> {
         self.0.as_ref()
     }
 }
@@ -72,7 +72,7 @@ impl ValidateInput for Metablock {
     fn validate(&self, context: &Self::Context) -> bool {
         self.is_valid(
             context.slot,
-            context.num_proposals,
+            context.num_lanes,
             &context.header_auth,
             &context.validator_data,
         )
@@ -84,7 +84,7 @@ impl ValidateInput for Metablock {
 }
 
 impl Votable for Metablock {
-    type Entries = ProposalMap<Entry>;
+    type Entries = Lanes<Entry>;
 
     fn entries(&self) -> Self::Entries {
         Metablock::entries(self)

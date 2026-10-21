@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 //! The stake-weighted proposer schedule driving a Chorus swarm: K = 4
-//! concurrent proposal indices over non-uniform stakes, with one rotation
+//! concurrent lanes over non-uniform stakes, with one rotation
 //! per slot and four rotations per epoch, so the run crosses the epoch
 //! seams at slots 4 and 8. Every node derives the schedule independently.
 
@@ -26,7 +26,7 @@ use chorus::{
     conductor::{ConductorConfig, MonadConductor, acs::nop::NopAcs},
     slot::chorus::{Chorus, ChorusConfig, ChorusContext},
     types::{
-        CreditLotterySchedule, HeaderAuth, NodeId, ProposerConfig, ProposerSchedule,
+        CreditLotterySchedule, HeaderAuth, Lane, NodeId, ProposerConfig, ProposerSchedule,
         RotatingProposerSchedule, Slot, SlotDeadline, Stake, Timestamp, TimestampDelta,
         ValidatorData,
     },
@@ -167,9 +167,9 @@ fn weighted_schedule_drives_the_swarm_across_epochs() {
     for slot in 0..SLOTS {
         let set = schedule.proposers_at(Slot(slot)).unwrap();
 
-        // With one rotation per slot, slot s is rotation s: indices fill one
+        // With one rotation per slot, slot s is rotation s: lanes fill one
         // per rotation at genesis (observation_cutoff is 0, so no rotating
-        // vacancy), and rotation s's leader holds the stable index s mod K.
+        // vacancy), and rotation s's leader holds the stable lane s mod K.
         assert_eq!(set.rotation(), slot);
         let occupied = set
             .iter()
@@ -177,16 +177,15 @@ fn weighted_schedule_drives_the_swarm_across_epochs() {
             .count();
         assert_eq!(occupied, (slot as usize + 1).min(CONCURRENT_PROPOSERS));
 
-        let newest = set.proposer(slot as usize % CONCURRENT_PROPOSERS);
+        let newest = set.proposer(Lane::new_unchecked(
+            (slot as usize % CONCURRENT_PROPOSERS) as u8,
+        ));
         assert_eq!(newest, Some(leaders[slot as usize]));
 
         // Membership answers the reverse direction consistently.
-        for (index, proposer) in set.iter() {
+        for (lane, proposer) in set.iter() {
             if let Some(proposer) = proposer {
-                assert_eq!(
-                    schedule.proposer_index_at(Slot(slot), &proposer).unwrap(),
-                    Some(index)
-                );
+                assert_eq!(schedule.lane_at(Slot(slot), &proposer).unwrap(), Some(lane));
             }
         }
     }
@@ -195,8 +194,8 @@ fn weighted_schedule_drives_the_swarm_across_epochs() {
 #[test]
 fn vacant_indices_do_not_delay_the_fast_path() {
     // K = 2 with a blind window of one slot: every rotation start except
-    // the chain's first has its incoming index vacant, so half of all slots
-    // run with a single proposer. A vacant index cannot carry a valid
+    // the chain's first has its incoming lane vacant, so half of all slots
+    // run with a single proposer. A vacant lane cannot carry a valid
     // proposal, so every honest node votes Negative for it immediately and
     // unanimously — no equivocation or vote split is possible there — and
     // finalization must stay on the exact fast-path schedule.
@@ -215,7 +214,7 @@ fn vacant_indices_do_not_delay_the_fast_path() {
         Arc::new(RotatingProposerSchedule::new(config, algorithm, val_data.clone()).unwrap());
 
     // Sanity: the vacancies this test is about do occur. Rotation starts
-    // (slots 2, 4, 6) run with one index vacant; all other slots — and the
+    // (slots 2, 4, 6) run with one lane vacant; all other slots — and the
     // genesis rotation, exempt from the blind window — have both occupied.
     for slot in 0..SLOTS_RUN {
         let set = schedule.proposers_at(Slot(slot)).unwrap();
@@ -224,7 +223,7 @@ fn vacant_indices_do_not_delay_the_fast_path() {
             .filter(|(_, proposer)| proposer.is_some())
             .count();
         let rotation_start = slot.is_multiple_of(2) && slot > 0;
-        // Slots 0 and 1 also run a single proposer: index 1's first
+        // Slots 0 and 1 also run a single proposer: lane 1's first
         // rotation has not started yet (genesis ramp-up).
         let expected = if rotation_start || slot < 2 { 1 } else { 2 };
         assert_eq!(occupied, expected, "slot {slot}");
@@ -254,7 +253,7 @@ fn vacant_indices_do_not_delay_the_fast_path() {
     ));
 
     // Every slot finalizes exactly two latencies after its deadline — the
-    // same fast-path schedule as with fully occupied indices.
+    // same fast-path schedule as with fully occupied lanes.
     for id in 0..NODES {
         let node_id = NodeId::dummy(id);
         expect_finalized(&swarm, node_id, 0..SLOTS_RUN);

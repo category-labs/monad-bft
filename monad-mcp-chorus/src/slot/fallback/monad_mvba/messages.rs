@@ -541,7 +541,7 @@ mod rlp_tests {
                         types::SlotDeadline,
                     },
                     chorus,
-                    types::ProposalMap,
+                    types::Lanes,
                 },
                 EnterFallbackCert, Entry, Metablock,
             },
@@ -623,7 +623,7 @@ mod rlp_tests {
         let scope = MvbaScope::new(Slot(7), h::view(1));
         assert_eq!(alloy_rlp::encode(scope), [0xc2, 7, 1]);
         assert_roundtrip(&scope);
-        let entries = ProposalMap::new(0, |_| Entry::Negative);
+        let entries = Lanes::new(0, |_| Entry::Negative);
         assert_eq!(
             alloy_rlp::encode(PrepareVote::<<Metablock as Votable>::Entries>(
                 entries.clone()

@@ -30,7 +30,7 @@ use monad_mcp_chorus::ledger::{BatchBuilder, Hash, MAX_TX_PAYLOAD, Tx, TxError};
 
 pub use self::source::{MempoolSource, ProposalSource, RandomSource};
 use crate::{
-    chorus::types::{ProposalIndex, Slot},
+    chorus::types::{Lane, Slot},
     config::MempoolConfig,
 };
 
@@ -66,7 +66,7 @@ pub struct Mempool {
     config: MempoolConfig,
     queue: VecDeque<Entry>,
     queued_bytes: usize,
-    in_flight: BTreeMap<(Slot, ProposalIndex), Vec<Entry>>,
+    in_flight: BTreeMap<Slot, BTreeMap<Lane, Vec<Entry>>>,
     // every hash queued or in flight
     pending: HashSet<Hash>,
     recent: VecDeque<Hash>,
@@ -112,12 +112,12 @@ impl Mempool {
     }
 
     // demo(tx-timeline): `rlp[sealed_at_ns, Vec<Tx>]` of the queue's head within
-    // `proposal_size_limit`, in flight at (slot, index) until the slot settles. A slot
+    // `proposal_size_limit`, in flight at (slot, lane) until the slot settles. A slot
     // already settled gets an empty batch: nothing drained for it could commit.
     pub fn drain(
         &mut self,
         slot: Slot,
-        index: ProposalIndex,
+        lane: Lane,
         proposal_size_limit: usize,
         sealed_at_ns: u64, // demo(tx-timeline)
     ) -> Bytes {
@@ -137,7 +137,9 @@ impl Mempool {
         }
         if !drained.is_empty() {
             self.in_flight
-                .entry((slot, index))
+                .entry(slot)
+                .or_default()
+                .entry(lane)
                 .or_default()
                 .extend(drained);
         }
@@ -146,20 +148,17 @@ impl Mempool {
 
     // the slot finalized: txs of committed lanes are done, the rest are
     // re-queued ahead of everything, over the bounds they were admitted under
-    pub fn settle(&mut self, slot: Slot, committed: impl Fn(ProposalIndex) -> bool) {
+    pub fn settle(&mut self, slot: Slot, committed: impl Fn(Lane) -> bool) {
         if slot < self.floor {
             return;
         }
         self.settled.insert(slot);
-        let lanes: Vec<_> = self
-            .in_flight
-            .range((slot, 0)..=(slot, ProposalIndex::MAX))
-            .map(|(key, _)| *key)
-            .collect();
+        let Some(lanes) = self.in_flight.remove(&slot) else {
+            return;
+        };
         let mut requeue = Vec::new();
-        for key in lanes {
-            let entries = self.in_flight.remove(&key).expect("listed above");
-            if committed(key.1) {
+        for (lane, entries) in lanes {
+            if committed(lane) {
                 for entry in entries {
                     self.pending.remove(&entry.hash);
                     self.remember(entry.hash);
@@ -183,9 +182,11 @@ impl Mempool {
         }
         self.floor = cap;
         self.settled = self.settled.split_off(&cap);
-        let kept = self.in_flight.split_off(&(cap, 0));
-        for entry in std::mem::replace(&mut self.in_flight, kept)
+        let kept = self.in_flight.split_off(&cap);
+        let expired = std::mem::replace(&mut self.in_flight, kept);
+        for entry in expired
             .into_values()
+            .flat_map(BTreeMap::into_values)
             .flatten()
         {
             self.pending.remove(&entry.hash);
@@ -205,7 +206,11 @@ impl Mempool {
     }
 
     pub fn in_flight(&self) -> usize {
-        self.in_flight.values().map(Vec::len).sum()
+        self.in_flight
+            .values()
+            .flat_map(BTreeMap::values)
+            .map(Vec::len)
+            .sum()
     }
 
     fn remember(&mut self, hash: Hash) {
@@ -306,7 +311,7 @@ mod tests {
         let mut pool = mempool(100, stamped_len, 16);
         assert_eq!(pool.admit(unstamped, NOW), Ok(()));
         assert_eq!(pool.queued_bytes(), tx(1, 10).length());
-        let batch = pool.drain(Slot(0), 0, 1 << 20, SEAL);
+        let batch = pool.drain(Slot(0), Lane::new_unchecked(0), 1 << 20, SEAL);
         assert_eq!(decode_batch(&batch).unwrap(), [tx(1, 10)]);
     }
 
@@ -317,7 +322,7 @@ mod tests {
         pool.admit(tx(1, 100), NOW).unwrap();
         pool.admit(tx(2, 100), NOW).unwrap();
         assert_eq!(pool.admit(tx(3, 1), NOW), Err(Reject::Full));
-        pool.drain(Slot(0), 0, 1 << 20, SEAL); // demo(tx-timeline)
+        pool.drain(Slot(0), Lane::new_unchecked(0), 1 << 20, SEAL); // demo(tx-timeline)
         assert_eq!(pool.queued_bytes(), 0);
         assert_eq!(pool.admit(tx(3, 1), NOW), Ok(()));
     }
@@ -329,11 +334,11 @@ mod tests {
             pool.admit(tx(nonce, 100), NOW).unwrap();
         }
         let proposal_size_limit = limit_for(3, 100); // demo(tx-timeline)
-        let batch = pool.drain(Slot(0), 0, proposal_size_limit, SEAL); // demo(tx-timeline)
+        let batch = pool.drain(Slot(0), Lane::new_unchecked(0), proposal_size_limit, SEAL); // demo(tx-timeline)
         assert!(batch.len() <= proposal_size_limit);
         assert_eq!(nonces(&batch), [0, 1, 2]);
         assert_eq!(
-            nonces(&pool.drain(Slot(0), 1, proposal_size_limit, SEAL)), // demo(tx-timeline)
+            nonces(&pool.drain(Slot(0), Lane::new_unchecked(1), proposal_size_limit, SEAL)), // demo(tx-timeline)
             [3, 4, 5]
         );
         assert_eq!(pool.len(), 4);
@@ -343,7 +348,10 @@ mod tests {
     #[test]
     fn an_empty_pool_drains_the_empty_list() {
         let mut pool = mempool(1, 1 << 20, 16);
-        assert_eq!(pool.drain(Slot(0), 0, 1024, SEAL), encode_batch(SEAL, &[])); // demo(tx-timeline)
+        assert_eq!(
+            pool.drain(Slot(0), Lane::new_unchecked(0), 1024, SEAL),
+            encode_batch(SEAL, &[])
+        ); // demo(tx-timeline)
         assert_eq!(pool.in_flight(), 0);
     }
 
@@ -353,7 +361,7 @@ mod tests {
         pool.admit(tx(0, 500), NOW).unwrap();
         pool.admit(tx(1, 1), NOW).unwrap();
         assert_eq!(
-            nonces(&pool.drain(Slot(0), 0, 100, SEAL)),
+            nonces(&pool.drain(Slot(0), Lane::new_unchecked(0), 100, SEAL)),
             Vec::<u64>::new()
         ); // demo(tx-timeline)
         assert_eq!(pool.len(), 2);
@@ -363,7 +371,7 @@ mod tests {
     fn in_flight_and_committed_txs_are_duplicates() {
         let mut pool = mempool(100, 1 << 20, 16);
         pool.admit(tx(1, 10), NOW).unwrap();
-        pool.drain(Slot(3), 0, 1 << 20, SEAL); // demo(tx-timeline)
+        pool.drain(Slot(3), Lane::new_unchecked(0), 1 << 20, SEAL); // demo(tx-timeline)
         assert_eq!(pool.admit(tx(1, 10), NOW), Err(Reject::Duplicate));
         pool.settle(Slot(3), |_| true);
         assert_eq!(pool.in_flight(), 0);
@@ -376,7 +384,7 @@ mod tests {
         for nonce in 0..3 {
             pool.admit(tx(nonce, 10), NOW).unwrap();
         }
-        pool.drain(Slot(0), 0, 1 << 20, SEAL); // demo(tx-timeline)
+        pool.drain(Slot(0), Lane::new_unchecked(0), 1 << 20, SEAL); // demo(tx-timeline)
         pool.settle(Slot(0), |_| true);
         // the oldest committed hash was evicted
         assert_eq!(pool.admit(tx(0, 10), NOW), Ok(()));
@@ -391,12 +399,15 @@ mod tests {
             pool.admit(tx(nonce, 10), NOW).unwrap();
         }
         let two = limit_for(2, 10); // demo(tx-timeline)
-        pool.drain(Slot(5), 0, two, SEAL); // demo(tx-timeline)
-        pool.drain(Slot(5), 1, two, SEAL); // demo(tx-timeline)
-        pool.settle(Slot(5), |index| index == 1);
+        pool.drain(Slot(5), Lane::new_unchecked(0), two, SEAL); // demo(tx-timeline)
+        pool.drain(Slot(5), Lane::new_unchecked(1), two, SEAL); // demo(tx-timeline)
+        pool.settle(Slot(5), |lane| lane == Lane::new_unchecked(1));
         assert_eq!(pool.len(), 4);
         assert_eq!(pool.in_flight(), 0);
-        assert_eq!(nonces(&pool.drain(Slot(6), 0, 1 << 20, SEAL)), [0, 1, 4, 5]); // demo(tx-timeline)
+        assert_eq!(
+            nonces(&pool.drain(Slot(6), Lane::new_unchecked(0), 1 << 20, SEAL)),
+            [0, 1, 4, 5]
+        ); // demo(tx-timeline)
         // the committed lane stays known
         assert_eq!(pool.admit(tx(2, 10), NOW), Err(Reject::Duplicate));
     }
@@ -407,8 +418,8 @@ mod tests {
         pool.admit(tx(0, 10), NOW).unwrap();
         pool.admit(tx(1, 10), NOW).unwrap();
         let one = limit_for(1, 10); // demo(tx-timeline)
-        pool.drain(Slot(5), 0, one, SEAL); // demo(tx-timeline)
-        pool.drain(Slot(6), 0, one, SEAL); // demo(tx-timeline)
+        pool.drain(Slot(5), Lane::new_unchecked(0), one, SEAL); // demo(tx-timeline)
+        pool.drain(Slot(6), Lane::new_unchecked(0), one, SEAL); // demo(tx-timeline)
         pool.settle(Slot(5), |_| false);
         assert_eq!(pool.len(), 1);
         assert_eq!(pool.in_flight(), 1);
@@ -420,11 +431,20 @@ mod tests {
         pool.admit(tx(0, 10), NOW).unwrap();
         pool.settle(Slot(4), |_| false);
         let empty = encode_batch(SEAL, &[]); // demo(tx-timeline)
-        assert_eq!(pool.drain(Slot(4), 0, 1 << 20, SEAL), empty); // demo(tx-timeline)
+        assert_eq!(
+            pool.drain(Slot(4), Lane::new_unchecked(0), 1 << 20, SEAL),
+            empty
+        ); // demo(tx-timeline)
         pool.expire_below(Slot(10));
-        assert_eq!(pool.drain(Slot(9), 0, 1 << 20, SEAL), empty); // demo(tx-timeline)
+        assert_eq!(
+            pool.drain(Slot(9), Lane::new_unchecked(0), 1 << 20, SEAL),
+            empty
+        ); // demo(tx-timeline)
         assert_eq!(pool.len(), 1);
-        assert_eq!(nonces(&pool.drain(Slot(10), 0, 1 << 20, SEAL)), [0]); // demo(tx-timeline)
+        assert_eq!(
+            nonces(&pool.drain(Slot(10), Lane::new_unchecked(0), 1 << 20, SEAL)),
+            [0]
+        ); // demo(tx-timeline)
     }
 
     #[test]
@@ -433,8 +453,8 @@ mod tests {
         pool.admit(tx(0, 10), NOW).unwrap();
         pool.admit(tx(1, 10), NOW).unwrap();
         let one = limit_for(1, 10); // demo(tx-timeline)
-        pool.drain(Slot(3), 0, one, SEAL); // demo(tx-timeline)
-        pool.drain(Slot(8), 0, one, SEAL); // demo(tx-timeline)
+        pool.drain(Slot(3), Lane::new_unchecked(0), one, SEAL); // demo(tx-timeline)
+        pool.drain(Slot(8), Lane::new_unchecked(0), one, SEAL); // demo(tx-timeline)
         pool.expire_below(Slot(5));
         assert_eq!(pool.in_flight(), 1);
         assert_eq!(pool.len(), 0);

@@ -70,12 +70,12 @@ fn is_temp_dir_name(name: &str) -> bool {
         .is_some()
 }
 
-pub fn lane_file_name(index: u32) -> String {
-    format!("lane-{index}.rlp")
+pub fn lane_file_name(lane: u32) -> String {
+    format!("lane-{lane}.rlp")
 }
 
-pub fn lane_json_file_name(index: u32) -> String {
-    format!("lane-{index}.json")
+pub fn lane_json_file_name(lane: u32) -> String {
+    format!("lane-{lane}.json")
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -93,10 +93,10 @@ pub enum LedgerError {
     // like MissingLane, also seen when a pruner is midway through deleting the block.
     #[error("corrupt ledger entry {}: {reason}", path.display())]
     Corrupt { path: PathBuf, reason: String },
-    #[error("slot {slot} has no lane {index}")]
-    NoSuchLane { slot: u64, index: u32 },
-    #[error("slot {slot} lane {index} is positive but its lane file is missing")]
-    MissingLane { slot: u64, index: u32 },
+    #[error("slot {slot} has no lane {lane}")]
+    NoSuchLane { slot: u64, lane: u32 },
+    #[error("slot {slot} lane {lane} is positive but its lane file is missing")]
+    MissingLane { slot: u64, lane: u32 },
     #[error("invalid block: {0}")]
     Invalid(&'static str),
 }
@@ -139,12 +139,12 @@ fn assemble(block: &NewBlock) -> Result<(BlockMeta, Vec<DecodedLane>), LedgerErr
         u32::try_from(block.lanes.len()).map_err(|_| LedgerError::Invalid("too many lanes"))?;
     let mut lanes = Vec::with_capacity(block.lanes.len());
     let mut decoded = Vec::with_capacity(block.lanes.len());
-    for (index, lane) in (0..num_lanes).zip(&block.lanes) {
-        let (meta, txs) = match &lane.committed {
+    for (lane, new_lane) in (0..num_lanes).zip(&block.lanes) {
+        let (meta, txs) = match &new_lane.committed {
             None => (
                 LaneMeta {
-                    index,
-                    proposer: lane.proposer,
+                    lane,
+                    proposer: new_lane.proposer,
                     pid: None,
                     payload_len: 0,
                     tx_count: 0,
@@ -163,8 +163,8 @@ fn assemble(block: &NewBlock) -> Result<(BlockMeta, Vec<DecodedLane>), LedgerErr
                 };
                 (
                     LaneMeta {
-                        index,
-                        proposer: lane.proposer,
+                        lane,
+                        proposer: new_lane.proposer,
                         pid: Some(committed.pid),
                         payload_len,
                         tx_count,
@@ -257,9 +257,9 @@ impl LedgerWriter {
             let (Some(committed), Some(txs)) = (&new.committed, txs) else {
                 continue;
             };
-            write_file(&tmp.join(lane_file_name(lane.index)), &committed.payload)?;
+            write_file(&tmp.join(lane_file_name(lane.lane)), &committed.payload)?;
             let json = lane_json(meta.slot, lane, txs) + "\n";
-            write_file(&tmp.join(lane_json_file_name(lane.index)), json.as_bytes())?;
+            write_file(&tmp.join(lane_json_file_name(lane.lane)), json.as_bytes())?;
         }
         write_file(&tmp.join(PROOF_FILE), &block.proof)?;
         // demo(tx-timeline)
@@ -373,32 +373,28 @@ impl LedgerReader {
     }
 
     // None for a negative lane.
-    pub fn read_lane(&self, slot: u64, index: u32) -> Result<Option<Bytes>, LedgerError> {
-        self.read_lane_for(&self.read_meta(slot)?, index)
+    pub fn read_lane(&self, slot: u64, lane: u32) -> Result<Option<Bytes>, LedgerError> {
+        self.read_lane_for(&self.read_meta(slot)?, lane)
     }
 
-    pub fn read_lane_for(
-        &self,
-        meta: &BlockMeta,
-        index: u32,
-    ) -> Result<Option<Bytes>, LedgerError> {
+    pub fn read_lane_for(&self, meta: &BlockMeta, lane: u32) -> Result<Option<Bytes>, LedgerError> {
         let slot = meta.slot;
-        let lane = usize::try_from(index)
+        let lane_meta = usize::try_from(lane)
             .ok()
             .and_then(|i| meta.lanes.get(i))
-            .ok_or(LedgerError::NoSuchLane { slot, index })?;
-        if !lane.is_positive() {
+            .ok_or(LedgerError::NoSuchLane { slot, lane })?;
+        if !lane_meta.is_positive() {
             return Ok(None);
         }
-        let name = lane_file_name(index);
+        let name = lane_file_name(lane);
         let data = self
             .read_block_file(slot, &name)?
-            .ok_or(LedgerError::MissingLane { slot, index })?;
-        if u32::try_from(data.len()).ok() != Some(lane.payload_len) {
+            .ok_or(LedgerError::MissingLane { slot, lane })?;
+        if u32::try_from(data.len()).ok() != Some(lane_meta.payload_len) {
             return Err(self.corrupt(
                 slot,
                 &name,
-                format!("{} bytes, meta says {}", data.len(), lane.payload_len),
+                format!("{} bytes, meta says {}", data.len(), lane_meta.payload_len),
             ));
         }
         Ok(Some(data.into()))
@@ -694,11 +690,11 @@ mod tests {
             ]
         );
 
-        for (index, lane) in (0..).zip(&new.lanes) {
-            let expected = lane.committed.as_ref().map(|c| c.payload.clone());
-            assert_eq!(reader.read_lane(12345, index).unwrap(), expected);
+        for (lane, new_lane) in (0..).zip(&new.lanes) {
+            let expected = new_lane.committed.as_ref().map(|c| c.payload.clone());
+            assert_eq!(reader.read_lane(12345, lane).unwrap(), expected);
             assert_eq!(
-                meta.lanes[index as usize].payload_len as usize,
+                meta.lanes[lane as usize].payload_len as usize,
                 expected.map_or(0, |p| p.len())
             );
         }
@@ -709,7 +705,7 @@ mod tests {
             reader.read_lane(12345, 4),
             Err(LedgerError::NoSuchLane {
                 slot: 12345,
-                index: 4
+                lane: 4
             })
         ));
 
@@ -919,7 +915,7 @@ mod tests {
         fs::remove_file(d(1).join(lane_file_name(0))).unwrap();
         assert!(matches!(
             reader.read_lane(1, 0),
-            Err(LedgerError::MissingLane { slot: 1, index: 0 })
+            Err(LedgerError::MissingLane { slot: 1, lane: 0 })
         ));
         assert_eq!(reader.read_lane(1, 1).unwrap(), None);
 
@@ -1138,9 +1134,9 @@ mod tests {
                 while !done.load(Ordering::Acquire) {
                     for slot in reader.scan().unwrap() {
                         let meta = reader.read_meta(slot).unwrap();
-                        for index in 0..meta.num_lanes {
-                            let lane = reader.read_lane_for(&meta, index).unwrap();
-                            assert_eq!(lane.is_some(), meta.lanes[index as usize].is_positive());
+                        for lane in 0..meta.num_lanes {
+                            let payload = reader.read_lane_for(&meta, lane).unwrap();
+                            assert_eq!(payload.is_some(), meta.lanes[lane as usize].is_positive());
                         }
                         reader.read_proof(slot).unwrap();
                         checked += 1;
@@ -1184,11 +1180,11 @@ mod tests {
             let new = NewBlock { lanes, ..block(42) };
             let meta = writer.write(&new).unwrap();
             prop_assert_eq!(&reader.read_meta(42).unwrap(), &meta);
-            for (index, b) in (0..).zip(&batches) {
-                let lane = reader.read_lane(42, index).unwrap();
-                let txs = lane.map(|p| decode_batch(&p).unwrap());
+            for (lane, b) in (0..).zip(&batches) {
+                let payload = reader.read_lane(42, lane).unwrap();
+                let txs = payload.map(|p| decode_batch(&p).unwrap());
                 let expected = b.as_ref().map(|n| n.iter().map(|&n| tx(n)).collect::<Vec<_>>());
-                prop_assert_eq!(meta.lanes[index as usize].tx_count as usize,
+                prop_assert_eq!(meta.lanes[lane as usize].tx_count as usize,
                     expected.as_ref().map_or(0, Vec::len));
                 prop_assert_eq!(txs, expected);
             }

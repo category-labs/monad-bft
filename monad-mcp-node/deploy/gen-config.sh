@@ -9,7 +9,7 @@ delta=150
 slot_interval=100
 slots_per_window=100
 sync_boundary=80
-num_proposals=5
+num_lanes=5
 propose_before=150
 completed_slot_retention=50
 repeater_interval=500
@@ -25,7 +25,7 @@ force=no
 only_genesis=no
 render_args=no
 
-usage="usage: gen-config.sh --genesis <unix_ms> [--keep-genesis] { --only-genesis | [--force] [--source random|mempool] [--port n] [--delta ms] [--slot-interval ms] [--slots-per-window n] [--sync-boundary n] [--num-proposals n] [--propose-before ms] [--repeater-interval ms] [--repeater-retention n] [--withhold-before ms] [--rotation-slack n] }"
+usage="usage: gen-config.sh --genesis <unix_ms> [--keep-genesis] { --only-genesis | [--force] [--source random|mempool] [--port n] [--delta ms] [--slot-interval ms] [--slots-per-window n] [--sync-boundary n] [--num-lanes n] [--propose-before ms] [--repeater-interval ms] [--repeater-retention n] [--withhold-before ms] [--rotation-slack n] }"
 
 while [ $# -gt 0 ]; do
     case $1 in --genesis | --keep-genesis | --force | --only-genesis) ;; *) render_args=yes ;; esac
@@ -40,7 +40,7 @@ while [ $# -gt 0 ]; do
         --slot-interval) slot_interval=${2:?$usage}; shift ;;
         --slots-per-window) slots_per_window=${2:?$usage}; shift ;;
         --sync-boundary) sync_boundary=${2:?$usage}; shift ;;
-        --num-proposals) num_proposals=${2:?$usage}; shift ;;
+        --num-lanes) num_lanes=${2:?$usage}; shift ;;
         --propose-before) propose_before=${2:?$usage}; shift ;;
         --repeater-interval) repeater_interval=${2:?$usage}; shift ;;
         --repeater-retention) repeater_retention=${2:?$usage}; shift ;;
@@ -134,7 +134,7 @@ for host in $(hosts); do
         echo
         echo "[proposal]"
         echo "source = \"$proposal_source\""
-        echo "num_proposals = $num_proposals"
+        echo "num_lanes = $num_lanes"
         echo "propose_before_deadline = $propose_before"
         echo "withhold_before_deadline = $withhold_before"
         echo

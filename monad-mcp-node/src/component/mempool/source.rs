@@ -17,7 +17,7 @@ use bytes::Bytes;
 use rand::{Rng as _, RngCore as _};
 
 use super::SharedMempool;
-use crate::chorus::types::{ProposalIndex, Slot, Timestamp}; // demo(tx-timeline)
+use crate::chorus::types::{Lane, Slot, Timestamp}; // demo(tx-timeline)
 
 // what a sealed proposal carries
 pub trait ProposalSource {
@@ -26,7 +26,7 @@ pub trait ProposalSource {
         &mut self,
         now: Timestamp, // demo(tx-timeline)
         slot: Slot,
-        index: ProposalIndex,
+        lane: Lane,
         proposal_size_limit: usize,
     ) -> Bytes;
 }
@@ -40,7 +40,7 @@ impl ProposalSource for RandomSource {
         &mut self,
         _now: Timestamp, // demo(tx-timeline)
         _slot: Slot,
-        _index: ProposalIndex,
+        _lane: Lane,
         proposal_size_limit: usize,
     ) -> Bytes {
         let proposal_size_limit = proposal_size_limit.max(1);
@@ -62,15 +62,20 @@ impl ProposalSource for MempoolSource {
         &mut self,
         now: Timestamp, // demo(tx-timeline)
         slot: Slot,
-        index: ProposalIndex,
+        lane: Lane,
         proposal_size_limit: usize,
     ) -> Bytes {
         let sealed_at_ns = u64::try_from(now.as_nanos()).unwrap_or(0); // demo(tx-timeline)
         let payload = self
             .0
             .lock()
-            .drain(slot, index, proposal_size_limit, sealed_at_ns); // demo(tx-timeline)
-        tracing::debug!(slot = slot.0, index, len = payload.len(), "drained mempool");
+            .drain(slot, lane, proposal_size_limit, sealed_at_ns); // demo(tx-timeline)
+        tracing::debug!(
+            slot = slot.0,
+            lane = usize::from(lane),
+            len = payload.len(),
+            "drained mempool"
+        );
         payload
     }
 }
@@ -88,7 +93,12 @@ mod tests {
     fn a_random_payload_is_non_empty_and_within_the_proposal_size_limit() {
         for proposal_size_limit in [0, 1, 7, 1024, 1 << 20] {
             for slot in 0..64 {
-                let message = RandomSource.next_payload(NOW, Slot(slot), 0, proposal_size_limit); // demo(tx-timeline)
+                let message = RandomSource.next_payload(
+                    NOW,
+                    Slot(slot),
+                    Lane::new_unchecked(0),
+                    proposal_size_limit,
+                ); // demo(tx-timeline)
                 assert!(!message.is_empty());
                 assert!(message.len() <= proposal_size_limit.max(1));
             }
@@ -100,7 +110,7 @@ mod tests {
         let mempool = SharedMempool::new(Mempool::new(MempoolConfig::default()));
         let mut source = MempoolSource(mempool.clone());
         // demo(tx-timeline): the seal time is the proposing clock's `now`
-        let empty = source.next_payload(NOW, Slot(0), 0, 64);
+        let empty = source.next_payload(NOW, Slot(0), Lane::new_unchecked(0), 64);
         assert_eq!(
             decode_sealed_batch(&empty).unwrap(),
             (1_234_000_000, vec![])
@@ -120,7 +130,8 @@ mod tests {
         let proposal_size_limit = 4096;
         let mut seen = 0;
         for slot in 1.. {
-            let payload = source.next_payload(NOW, Slot(slot), 0, proposal_size_limit); // demo(tx-timeline)
+            let payload =
+                source.next_payload(NOW, Slot(slot), Lane::new_unchecked(0), proposal_size_limit); // demo(tx-timeline)
             assert!(payload.len() <= proposal_size_limit);
             let txs = decode_batch(&payload).unwrap();
             if txs.is_empty() {

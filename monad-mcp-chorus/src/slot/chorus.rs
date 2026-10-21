@@ -33,7 +33,7 @@ use super::{
         FastCommitQc, FastCommitVoteMsg, FastPath,
     },
     types::{
-        HeaderAuth, KeyPair, NodeId, ProposalId, ProposalIndex, ProposalMap, ProposerSchedule,
+        HeaderAuth, KeyPair, Lane, Lanes, NodeId, ProposalId, ProposerSchedule,
         SignatureCollection, SignedProposalHeader, Slot, TimestampDelta, ValidatorData,
     },
 };
@@ -96,7 +96,7 @@ pub struct ChorusContext {
     pub validator_data: Arc<ValidatorData>,
     pub header_auth: Arc<HeaderAuth>,
     /// Single source of truth for the number of proposals per slot (`K`) and
-    /// for who may propose at which proposal index.
+    /// for who may propose at which lane.
     pub proposers: Arc<dyn ProposerSchedule + Send + Sync>,
 }
 
@@ -141,7 +141,7 @@ impl SlotFinalization {
         }
     }
 
-    pub fn pids(&self) -> ProposalMap<Option<ProposalId>> {
+    pub fn pids(&self) -> Lanes<Option<ProposalId>> {
         let entries = match self {
             Self::Fast { qc } => &qc.verdict.entries,
             Self::Fallback { qc, .. } => &qc.verdict.0,
@@ -155,7 +155,7 @@ impl SlotFinalization {
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct ChorusDAEvent {
-    pub j: ProposalIndex,
+    pub j: Lane,
     pub event: ProposalDAEvent,
 }
 
@@ -185,19 +185,19 @@ pub enum ChorusDACommand {
 
     // nodes that decoded the proposal under j, so they can serve our own chunks
     AddDecodedHolders {
-        j: ProposalIndex,
+        j: Lane,
         pid: ProposalId,
         node_ids: Vec<NodeId>,
     },
 
     // the committed entry under j. None when it needs no data
     PinFinal {
-        j: ProposalIndex,
+        j: Lane,
         pid: Option<ProposalId>,
     },
 
     PullHeader {
-        j: ProposalIndex,
+        j: Lane,
         missing: MissingHeaders,
     },
 
@@ -266,8 +266,8 @@ impl SlotConsensus for Chorus {
             .expect("proposer schedule unavailable for open slot");
 
         // K comes from the schedule, so the fallback path agrees with the
-        // fast path on the number of proposal indices.
-        let num_proposals = proposers.num_indices();
+        // fast path on the number of lanes.
+        let num_lanes = proposers.num_lanes();
 
         let fast = FastPath::new(
             slot,
@@ -279,7 +279,7 @@ impl SlotConsensus for Chorus {
 
         let fallback = FallbackState::new(MvbaContext {
             slot,
-            num_proposals,
+            num_lanes,
             delta: *delta,
             node_id: *node_id,
             key: key.clone(),
@@ -725,7 +725,7 @@ mod tests {
     fn commit_certificate_pins_before_finalizing() {
         use super::super::{
             fast::{Entry, FastCommitVote},
-            types::{ProposalMap, VoteMsg, VotePool},
+            types::{Lanes, VoteMsg, VotePool},
         };
         use crate::{
             env::stub::{EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader},
@@ -750,7 +750,7 @@ mod tests {
             scheme: EncodingScheme::dummy(Slot(1)),
         };
         let pid = header.pid();
-        let entries = ProposalMap::new(1, |_| Entry::Positive(pid));
+        let entries = Lanes::new(1, |_| Entry::Positive(pid));
         let mut pool = VotePool::new(Slot(1));
         for index in [0, 2, 3] {
             let voter = NodeId::dummy(index);
@@ -780,7 +780,7 @@ mod tests {
         }
         assert_eq!(order, ["pin", "finalize"]);
         let pinned = ChorusDACommand::PinFinal {
-            j: 0,
+            j: Lane::new_unchecked(0),
             pid: Some(pid),
         };
         assert_eq!(pins, [pinned]);

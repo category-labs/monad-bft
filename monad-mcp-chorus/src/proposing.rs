@@ -41,7 +41,7 @@
 //! sequencing/translation exists as a component). The chain's first `y`
 //! slots have no prefix to wait for and are exempt. The rest of the
 //! blind-window knowledge a proposer needs — the in-flight proposals at
-//! its own index — it has by construction: mid-phase they are its own
+//! its own lane — it has by construction: mid-phase they are its own
 //! proposals, and at a phase handoff the schedule's rotation vacancy of
 //! `y` slots guarantees there are none (see [`super::proposers`]); the
 //! planner sees vacancy simply as "not scheduled". The `state^{r−x}` half
@@ -60,13 +60,13 @@
 //!
 //! The planner is deliberately not part of the consensus core: it holds no
 //! consensus state, and a missed or skipped seal only costs the proposal
-//! (the index finalizes empty); safety and liveness are unaffected.
+//! (the lane finalizes empty); safety and liveness are unaffected.
 
 use std::{collections::BTreeMap, sync::Arc};
 
 use tracing::{info, warn};
 
-use super::types::{NodeId, ProposalIndex, ProposerSchedule, Slot, Timestamp, TimestampDelta};
+use super::types::{Lane, NodeId, ProposerSchedule, Slot, Timestamp, TimestampDelta};
 
 /// Timing parameters of the proposal planner. Node-local policy, not
 /// protocol: a bad value costs proposals, never consensus.
@@ -79,7 +79,7 @@ pub struct PlannerConfig {
     /// Delta: a seal this close to the deadline is withheld rather than
     /// disseminated. A proposal that cannot decode everywhere before the
     /// deadline splits the batch votes and costs the slot its fast path,
-    /// where an index nobody received is agreed-negative and costs only
+    /// where a lane nobody received is agreed-negative and costs only
     /// itself.
     pub min_lead: TimestampDelta,
     /// `y`: the observation cutoff — the proposal for slot `r` may only be
@@ -90,7 +90,7 @@ pub struct PlannerConfig {
 }
 
 struct PendingSeal {
-    index: ProposalIndex,
+    lane: Lane,
     deadline: Timestamp,
     /// `deadline − lead`, clamped to the open time: never in the past.
     due: Timestamp,
@@ -104,7 +104,7 @@ pub struct ProposalPlanner {
 
     /// The chained prefix frontier: every slot strictly below is finalized.
     chained_cap: Slot,
-    /// Slots (still) to propose for, with this node's proposal index.
+    /// Slots (still) to propose for, with this node's lane.
     pending: BTreeMap<Slot, PendingSeal>,
 }
 
@@ -134,8 +134,8 @@ impl ProposalPlanner {
     /// Fact: the conductor opened `slot` with `deadline`. Registers a seal
     /// due at `deadline − lead` if this node's proposer set includes it.
     pub fn handle_slot_open(&mut self, now: Timestamp, slot: Slot, deadline: Timestamp) {
-        let index = match self.schedule.proposer_index_at(slot, &self.me) {
-            Ok(Some(index)) => index,
+        let lane = match self.schedule.lane_at(slot, &self.me) {
+            Ok(Some(lane)) => lane,
             Ok(None) => return,
             Err(error) => {
                 warn!(%error, ?slot, "proposer schedule query failed; not proposing");
@@ -147,7 +147,7 @@ impl ProposalPlanner {
         self.pending.insert(
             slot,
             PendingSeal {
-                index,
+                lane,
                 deadline,
                 due,
             },
@@ -187,7 +187,7 @@ impl ProposalPlanner {
     /// The lowest due slot whose chaining gate is satisfied, to seal now and
     /// submit to the DA layer. Slots within `min_lead` of their deadline are
     /// dropped first, so a seal is never disseminated too late to decode.
-    pub fn poll(&mut self, now: Timestamp) -> Option<(Slot, ProposalIndex)> {
+    pub fn poll(&mut self, now: Timestamp) -> Option<(Slot, Lane)> {
         self.drop_late(now);
         let slot = self
             .pending
@@ -195,7 +195,7 @@ impl ProposalPlanner {
             .find(|(slot, pending)| pending.due <= now && self.chained(**slot))
             .map(|(slot, _)| *slot)?;
         let pending = self.pending.remove(&slot).expect("found above");
-        Some((slot, pending.index))
+        Some((slot, pending.lane))
     }
 
     /// Whether slot `r − y` is chained, for `slot = r` and the observation
@@ -289,9 +289,15 @@ mod tests {
         open(&mut planner, [0, 1]);
 
         assert_eq!(planner.next_due(), Some(due(0)));
-        assert_eq!(planner.poll(due(0)), Some((Slot(0), 1)));
+        assert_eq!(
+            planner.poll(due(0)),
+            Some((Slot(0), Lane::new_unchecked(1)))
+        );
         assert_eq!(planner.next_due(), Some(due(1)));
-        assert_eq!(planner.poll(due(1)), Some((Slot(1), 1)));
+        assert_eq!(
+            planner.poll(due(1)),
+            Some((Slot(1), Lane::new_unchecked(1)))
+        );
         assert_eq!(planner.next_due(), None);
     }
 
@@ -302,7 +308,7 @@ mod tests {
         planner.handle_slot_open(now, Slot(0), Timestamp::from_millis(80));
 
         assert_eq!(planner.next_due(), Some(now));
-        assert_eq!(planner.poll(now), Some((Slot(0), 1)));
+        assert_eq!(planner.poll(now), Some((Slot(0), Lane::new_unchecked(1))));
     }
 
     #[test]
@@ -314,7 +320,10 @@ mod tests {
             planner.poll(due(0).saturating_sub_delta(TimestampDelta::from_millis(1))),
             None
         );
-        assert_eq!(planner.poll(due(0)), Some((Slot(0), 1)));
+        assert_eq!(
+            planner.poll(due(0)),
+            Some((Slot(0), Lane::new_unchecked(1)))
+        );
     }
 
     #[test]
@@ -322,7 +331,10 @@ mod tests {
         let mut planner = planner(0);
         open(&mut planner, [0]);
 
-        assert_eq!(planner.poll(due(0)), Some((Slot(0), 1)));
+        assert_eq!(
+            planner.poll(due(0)),
+            Some((Slot(0), Lane::new_unchecked(1)))
+        );
         assert_eq!(planner.poll(due(0)), None);
         assert_eq!(planner.next_due(), None);
     }
@@ -352,8 +364,14 @@ mod tests {
         let mut planner = planner(2);
         open(&mut planner, [0, 1]);
 
-        assert_eq!(planner.poll(due(0)), Some((Slot(0), 1)));
-        assert_eq!(planner.poll(due(1)), Some((Slot(1), 1)));
+        assert_eq!(
+            planner.poll(due(0)),
+            Some((Slot(0), Lane::new_unchecked(1)))
+        );
+        assert_eq!(
+            planner.poll(due(1)),
+            Some((Slot(1), Lane::new_unchecked(1)))
+        );
     }
 
     #[test]
@@ -378,7 +396,10 @@ mod tests {
 
         planner.handle_cap_advance(deadline(4), Slot(4));
         assert_eq!(planner.next_due(), Some(due(5)));
-        assert_eq!(planner.poll(due(5)), Some((Slot(5), 1)));
+        assert_eq!(
+            planner.poll(due(5)),
+            Some((Slot(5), Lane::new_unchecked(1)))
+        );
     }
 
     #[test]
@@ -406,7 +427,10 @@ mod tests {
         let mut planner = planner(0);
         open(&mut planner, [0]);
 
-        assert_eq!(planner.poll(before_deadline(0, 21)), Some((Slot(0), 1)));
+        assert_eq!(
+            planner.poll(before_deadline(0, 21)),
+            Some((Slot(0), Lane::new_unchecked(1)))
+        );
     }
 
     #[test]
@@ -463,7 +487,10 @@ mod tests {
 
         planner.handle_cap_advance(Timestamp::GENESIS, Slot(5));
         assert_eq!(planner.next_due(), Some(due(5)));
-        assert_eq!(planner.poll(due(5)), Some((Slot(5), 1)));
+        assert_eq!(
+            planner.poll(due(5)),
+            Some((Slot(5), Lane::new_unchecked(1)))
+        );
     }
 
     #[test]
@@ -473,6 +500,9 @@ mod tests {
         planner.handle_cap_advance(Timestamp::GENESIS, Slot(4));
 
         open(&mut planner, [7]);
-        assert_eq!(planner.poll(due(7)), Some((Slot(7), 1)));
+        assert_eq!(
+            planner.poll(due(7)),
+            Some((Slot(7), Lane::new_unchecked(1)))
+        );
     }
 }

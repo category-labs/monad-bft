@@ -178,10 +178,10 @@ fn ledger_txs(ledger: &LedgerReader) -> BTreeMap<u64, usize> {
     for slot in ledger.scan().unwrap() {
         let meta = ledger.read_meta(slot).unwrap();
         for lane in meta.lanes.iter().filter(|lane| lane.is_positive()) {
-            let Some(payload) = ledger.read_lane_for(&meta, lane.index).unwrap() else {
+            let Some(payload) = ledger.read_lane_for(&meta, lane.lane).unwrap() else {
                 continue;
             };
-            let json = ledger.block_dir(slot).join(lane_json_file_name(lane.index));
+            let json = ledger.block_dir(slot).join(lane_json_file_name(lane.lane));
             assert!(json.exists(), "{} is missing", json.display());
             let Ok(txs) = decode_batch(&payload) else {
                 continue;
@@ -200,7 +200,7 @@ fn proposer_of(ledger: &LedgerReader, nonce: u64) -> Option<u64> {
     for slot in ledger.scan().unwrap() {
         let meta = ledger.read_meta(slot).unwrap();
         for lane in meta.lanes.iter().filter(|lane| lane.is_positive()) {
-            let payload = ledger.read_lane_for(&meta, lane.index).unwrap().unwrap();
+            let payload = ledger.read_lane_for(&meta, lane.lane).unwrap().unwrap();
             if !decode_batch(&payload)
                 .unwrap()
                 .iter()

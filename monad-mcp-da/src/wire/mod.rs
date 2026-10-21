@@ -47,6 +47,7 @@ pub enum MalformedPacket {
     // the mode bits
     BadMode(u8),
     DepthOutOfRange(u8),
+    LaneOutOfRange(u8),
     UnknownScheme(u8),
     SlotOutOfRange(u64),
     NonZeroEpoch(u64),

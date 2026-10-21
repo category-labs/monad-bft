@@ -205,12 +205,12 @@ where
 
         loop {
             let sealed = harness.planner.lock().expect("planner poisoned").poll(now);
-            let Some((slot, index)) = sealed else {
+            let Some((slot, lane)) = sealed else {
                 break;
             };
             harness
                 .da
-                .submit_proposal(slot, index, mock_payload(self.id, slot, index));
+                .submit_proposal(slot, lane, mock_payload(self.id, slot, lane));
             let from = self.id;
             let net = self.net.expect("node not wired");
             for announcement in harness.da.drain_announcements() {
@@ -298,7 +298,7 @@ where
             SimMessage::Da(announcement) => {
                 // nodes without a mock DA instance drop announcements (and
                 // vote negative on the affected proposals). The mock layer
-                // checks the announced index against the proposer schedule;
+                // checks the announced lane against the proposer schedule;
                 // see the module docs of crate::da.
                 if let Some(harness) = &self.proposer {
                     harness.da.receive_announcement(announcement);

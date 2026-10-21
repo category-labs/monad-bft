@@ -179,7 +179,7 @@ fn a_delivered_tx_is_finalized_and_written_to_the_ledger() {
     assert_eq!(meta, written);
     assert_eq!(meta.path, FinalizationPath::Fast);
     assert_eq!(meta.tx_count(), 1);
-    assert_eq!(meta.num_lanes as usize, config.proposal.num_proposals);
+    assert_eq!(meta.num_lanes as usize, config.proposal.num_lanes);
     assert_eq!(
         meta.deadline_ns,
         finalized.deadline.map(Timestamp::as_nanos)
@@ -200,7 +200,7 @@ fn a_delivered_tx_is_finalized_and_written_to_the_ledger() {
 
     let lane = meta.lanes.iter().find(|lane| lane.tx_count == 1).unwrap();
     assert_eq!(lane.proposer, Some(0));
-    let payload = reader.read_lane(slot, lane.index).unwrap().unwrap();
+    let payload = reader.read_lane(slot, lane.lane).unwrap().unwrap();
     // demo(tx-timeline): the mempool stamped its admission
     let admitted = Tx {
         mempool_admitted_at_ns: admitted_at,
@@ -213,7 +213,7 @@ fn a_delivered_tx_is_finalized_and_written_to_the_ledger() {
     assert_eq!(certificate, finalized.finalization.certificate_message());
     // negative lanes have no lane file
     for lane in meta.lanes.iter().filter(|lane| !lane.is_positive()) {
-        assert_eq!(reader.read_lane(slot, lane.index).unwrap(), None);
+        assert_eq!(reader.read_lane(slot, lane.lane).unwrap(), None);
     }
 }
 

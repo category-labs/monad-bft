@@ -40,12 +40,13 @@ use crate::{
 // slot's schedule, None if it could not be queried
 pub fn new_block(finalized: &FinalizedSlot, proposers: Option<&ProposerSet>) -> NewBlock {
     let pids = finalization_pids(finalized);
-    let lanes = pids
-        .into_iter()
+    let lanes = finalized
+        .proposals
+        .lanes()
+        .zip(pids)
         .zip(finalized.proposals.clone())
-        .enumerate()
-        .map(|(index, (pid, payload))| NewLane {
-            proposer: proposers.and_then(|set| set.proposer(index)).map(u64::from),
+        .map(|((lane, pid), payload)| NewLane {
+            proposer: proposers.and_then(|set| set.proposer(lane)).map(u64::from),
             committed: pid
                 .zip(payload)
                 .map(|(pid, payload)| CommittedLane { pid, payload }),
@@ -90,7 +91,7 @@ fn finalization_pids(finalized: &FinalizedSlot) -> Vec<Option<LanePid>> {
         .collect()
 }
 
-// the block line of the log: one char per proposal index, + committed or
+// the block line of the log: one char per lane, + committed or
 // - not, green on the fast path and yellow on the fallback path
 pub fn log_finalized(finalized: &FinalizedSlot) {
     let mut shape = String::new();
@@ -102,7 +103,7 @@ pub fn log_finalized(finalized: &FinalizedSlot) {
         };
         tracing::debug!(
             slot = finalized.slot.0,
-            j,
+            j = usize::from(j),
             ?pid,
             len = message.len(),
             "committed"

@@ -221,7 +221,7 @@ mod proposal {
 
     use super::NodeId;
     use crate::{
-        common_types::{ProposalIndex, Slot},
+        common_types::{Lane, Slot},
         spec::{self, ProposalHeader as _},
     };
 
@@ -307,8 +307,8 @@ mod proposal {
     #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
     pub struct S11 {
         pub slot: Slot,
-        // the proposal index the author claims for the slot
-        pub proposer_index: u8,
+        // the lane the author claims for the slot
+        pub lane: Lane,
         // the merkle tree depth
         pub depth: u8,
         pub msg_len: u32,
@@ -443,10 +443,10 @@ mod proposal {
         }
     }
 
-    // the proposal index of a header the legitimate proposer of the
+    // the lane of a header the legitimate proposer of the
     // slot signed. Supplied by the DA env, which owns the signature
     // and scheme checks.
-    type Authenticator = dyn Fn(&SignedProposalHeader, u64) -> Option<ProposalIndex> + Send + Sync;
+    type Authenticator = dyn Fn(&SignedProposalHeader, u64) -> Option<Lane> + Send + Sync;
 
     pub struct HeaderAuth {
         authenticator: Box<Authenticator>,
@@ -455,7 +455,7 @@ mod proposal {
     impl HeaderAuth {
         pub fn new<F>(authenticator: F) -> Self
         where
-            F: Fn(&SignedProposalHeader, u64) -> Option<ProposalIndex> + Send + Sync + 'static,
+            F: Fn(&SignedProposalHeader, u64) -> Option<Lane> + Send + Sync + 'static,
         {
             Self {
                 authenticator: Box::new(authenticator),
@@ -466,7 +466,7 @@ mod proposal {
     impl spec::proposal::HeaderAuth for HeaderAuth {
         type Signed = SignedProposalHeader;
 
-        fn authenticate(&self, signed: &SignedProposalHeader, slot: u64) -> Option<ProposalIndex> {
+        fn authenticate(&self, signed: &SignedProposalHeader, slot: u64) -> Option<Lane> {
             if signed.slot() != slot {
                 return None;
             }

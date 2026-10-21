@@ -77,7 +77,7 @@ completed_slot_retention = 50
 
 [proposal]
 source = "mempool"
-num_proposals = 5
+num_lanes = 5
 propose_before_deadline = 150
 withhold_before_deadline = 100
 

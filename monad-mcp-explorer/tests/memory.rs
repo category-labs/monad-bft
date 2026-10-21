@@ -81,7 +81,7 @@ fn block(slot: u64, txs: u64) -> LoadedBlock {
         path: FinalizationPath::Fast,
         num_lanes: 1,
         lanes: vec![LaneMeta {
-            index: 0,
+            lane: 0,
             proposer: Some(1),
             pid: Some([1; 32]),
             payload_len: encode_batch(u64::MAX, &txs).len() as u32, // demo(tx-timeline)

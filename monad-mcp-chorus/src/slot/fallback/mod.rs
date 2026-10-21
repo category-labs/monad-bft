@@ -30,9 +30,7 @@ pub use super::fast::{
 };
 use super::{
     super::{message::Outbound, runtime::Runtime, timers::Timers},
-    types::{
-        IsVote, NodeId, Slot, StrongQc, Timestamp, TimestampDelta, TotalProposalMap, Validated,
-    },
+    types::{IsVote, Lanes, NodeId, Slot, StrongQc, Timestamp, TimestampDelta, Validated},
 };
 
 #[derive(
@@ -82,10 +80,10 @@ impl FallbackView {
 
 /// The value the MVBA agrees on: one certified entry per proposer
 #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodableWrapper, RlpDecodableWrapper)]
-pub struct Metablock(TotalProposalMap<CertifiedEntry>);
+pub struct Metablock(Lanes<CertifiedEntry>);
 
 impl Metablock {
-    pub fn new(entries: TotalProposalMap<CertifiedEntry>) -> Self {
+    pub fn new(entries: Lanes<CertifiedEntry>) -> Self {
         Self(entries)
     }
 }

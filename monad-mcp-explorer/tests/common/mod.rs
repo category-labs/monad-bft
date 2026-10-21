@@ -150,11 +150,11 @@ pub fn write_empty(writer: &LedgerWriter, slot: u64) -> BlockMeta {
 pub fn write_raw_empty(ledger_dir: &Path, slot: u64, num_lanes: u32) {
     let empty = encode_batch(sealed_at(slot), &[]); // demo(tx-timeline)
     let lanes = (0..num_lanes)
-        .map(|index| LaneMeta {
-            index,
-            proposer: Some(u64::from(index)),
-            pid: (index % 2 == 0).then_some([7; 32]),
-            payload_len: u32::from(index % 2 == 0) * empty.len() as u32, // demo(tx-timeline)
+        .map(|lane| LaneMeta {
+            lane,
+            proposer: Some(u64::from(lane)),
+            pid: (lane % 2 == 0).then_some([7; 32]),
+            payload_len: u32::from(lane % 2 == 0) * empty.len() as u32, // demo(tx-timeline)
             tx_count: 0,
             decode_error: false,
         })
@@ -170,8 +170,8 @@ pub fn write_raw_empty(ledger_dir: &Path, slot: u64, num_lanes: u32) {
     };
     let dir = ledger_dir.join(BLOCKS_DIR).join(block_dir_name(slot));
     fs::create_dir_all(&dir).unwrap();
-    for index in (0..num_lanes).filter(|i| i % 2 == 0) {
-        fs::write(dir.join(format!("lane-{index}.rlp")), &empty).unwrap(); // demo(tx-timeline)
+    for lane in (0..num_lanes).filter(|i| i % 2 == 0) {
+        fs::write(dir.join(format!("lane-{lane}.rlp")), &empty).unwrap(); // demo(tx-timeline)
     }
     fs::write(dir.join("proof.rlp"), proof_of(slot)).unwrap();
     fs::write(dir.join(META_FILE), meta.to_rlp()).unwrap();

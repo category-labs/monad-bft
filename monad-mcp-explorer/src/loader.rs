@@ -101,14 +101,14 @@ pub fn load_block(reader: &LedgerReader, slot: u64) -> Result<LoadedBlock, LoadF
     let mut lanes = Vec::new();
     for lane in meta.lanes.iter().filter(|l| l.tx_count > 0) {
         let payload = reader
-            .read_lane_for(&meta, lane.index)
+            .read_lane_for(&meta, lane.lane)
             .map_err(fail)?
             .ok_or_else(|| {
-                LoadFailure::Corrupt(format!("lane {} has txs but no pid", lane.index))
+                LoadFailure::Corrupt(format!("lane {} has txs but no pid", lane.lane))
             })?;
         let txs = decode_batch(&payload)
-            .map_err(|e| LoadFailure::Corrupt(format!("lane {}: {e}", lane.index)))?;
-        lanes.push((lane.index, txs));
+            .map_err(|e| LoadFailure::Corrupt(format!("lane {}: {e}", lane.lane)))?;
+        lanes.push((lane.lane, txs));
     }
     LoadedBlock::new(&meta, lanes).map_err(|e| LoadFailure::Corrupt(e.to_string()))
 }
