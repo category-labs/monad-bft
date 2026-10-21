@@ -1,0 +1,17 @@
+[Unit]
+Description=Monad Quantum Cadence tx rpc (%H)
+After=monad-pq-node.service
+
+[Service]
+Slice=monad-pq.slice
+MemoryAccounting=no
+# the unchanged monad-mcp-rpc over the colocated pq node's config and ledger;
+# http on 127.0.0.1:8090, since monad-mcp-rpc may still be installed on 8080
+ExecStart=%h/monad-pq/bin/rpc-current --node-config %h/monad-pq/config/node.toml --http-addr 127.0.0.1:8090
+Environment=RUST_LOG=info
+KillSignal=SIGINT
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,16 @@
+[Unit]
+Description=Monad Quantum Cadence node (%H)
+After=network-online.target
+
+[Service]
+Slice=monad-pq.slice
+MemoryAccounting=no
+ExecStart=%h/monad-pq/bin/current %h/monad-pq/config/node.toml
+Environment=RUST_LOG=info,monad_pq_chorus=debug
+KillSignal=SIGINT
+# a crashed node stays down for inspection
+Restart=no
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=default.target

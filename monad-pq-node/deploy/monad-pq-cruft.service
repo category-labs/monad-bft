@@ -1,0 +1,9 @@
+[Unit]
+Description=Prune the Monad Quantum Cadence node ledger (%H)
+
+[Service]
+Slice=monad-pq.slice
+MemoryAccounting=no
+Type=oneshot
+EnvironmentFile=-%h/monad-pq/cruft.env
+ExecStart=%h/monad-pq/cruft.sh

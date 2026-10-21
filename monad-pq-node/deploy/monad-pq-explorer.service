@@ -1,0 +1,18 @@
+[Unit]
+Description=Monad Quantum Cadence block explorer (%H)
+After=monad-pq-node.service monad-pq-rpc.service
+
+[Service]
+Slice=monad-pq.slice
+MemoryAccounting=no
+# the unchanged monad-mcp-explorer over the pq ledger; http on 127.0.0.1:8091,
+# POST /api/tx forwarded to the pq rpc on 8090 (mcp's pair is 8081/8080)
+EnvironmentFile=%h/monad-pq/config/explorer.env
+ExecStart=%h/monad-pq/bin/explorer-current --http-addr 127.0.0.1:8091 --rpc-url http://127.0.0.1:8090 $EXPLORER_ARGS
+Environment=RUST_LOG=info
+KillSignal=SIGINT
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

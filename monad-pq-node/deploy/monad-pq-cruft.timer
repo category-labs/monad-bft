@@ -1,0 +1,10 @@
+[Unit]
+Description=Prune the Monad Quantum Cadence node ledger every 10 minutes (%H)
+
+[Timer]
+OnCalendar=*:0/10
+Persistent=true
+Unit=monad-pq-cruft.service
+
+[Install]
+WantedBy=timers.target
