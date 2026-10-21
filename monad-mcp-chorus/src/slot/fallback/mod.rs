@@ -20,7 +20,7 @@
 pub mod monad_mvba;
 use std::{collections::VecDeque, fmt::Debug, hash::Hash};
 
-use alloy_rlp::{Encodable, RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper};
+use alloy_rlp::{Decodable, Encodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper};
 pub use monad_mvba::FallbackCommitQc;
 
 /// MetaBlock components are exported
@@ -33,25 +33,40 @@ use super::{
     types::{IsVote, Lanes, NodeId, Slot, StrongQc, Timestamp, TimestampDelta, Validated},
 };
 
-#[derive(
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    Debug,
-    RlpEncodableWrapper,
-    RlpDecodableWrapper,
-)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, RlpEncodableWrapper)]
 pub struct FallbackView(u64);
 
+// u64::MAX is never a view, so `next` cannot overflow on a decoded one
+impl Decodable for FallbackView {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let view = u64::decode(buf)?;
+        if view == u64::MAX {
+            return Err(alloy_rlp::Error::Custom("view out of range"));
+        }
+        Ok(Self(view))
+    }
+}
+
 /// The slot and view authenticated by an MVBA vote.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, RlpEncodable)]
 pub struct MvbaScope {
     pub slot: Slot,
     pub view: FallbackView,
+}
+
+impl Decodable for MvbaScope {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
+        let slot = Slot::decode(&mut payload)?;
+        let view = FallbackView::decode(&mut payload)?;
+        if !payload.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
+        }
+        if view < FallbackView::FIRST {
+            return Err(alloy_rlp::Error::Custom("scope names no view"));
+        }
+        Ok(Self { slot, view })
+    }
 }
 
 impl MvbaScope {

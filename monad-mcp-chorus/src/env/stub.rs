@@ -215,8 +215,7 @@ mod proposal {
     };
 
     use alloy_rlp::{
-        Decodable, Encodable, Header, RlpDecodable, RlpDecodableWrapper, RlpEncodable,
-        RlpEncodableWrapper, encode_list, list_length,
+        Decodable, Encodable, RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper,
     };
 
     use super::NodeId;
@@ -341,11 +340,11 @@ mod proposal {
             match self {
                 Self::D25(f0) => {
                     let fields: [&dyn Encodable; 2] = [&1u8, f0];
-                    encode_list::<_, dyn Encodable>(&fields, out);
+                    alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
                 }
                 Self::S11(f0) => {
                     let fields: [&dyn Encodable; 2] = [&2u8, f0];
-                    encode_list::<_, dyn Encodable>(&fields, out);
+                    alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
                 }
             }
         }
@@ -354,11 +353,11 @@ mod proposal {
             match self {
                 Self::D25(f0) => {
                     let fields: [&dyn Encodable; 2] = [&1u8, f0];
-                    list_length::<_, dyn Encodable>(&fields)
+                    alloy_rlp::list_length::<_, dyn Encodable>(&fields)
                 }
                 Self::S11(f0) => {
                     let fields: [&dyn Encodable; 2] = [&2u8, f0];
-                    list_length::<_, dyn Encodable>(&fields)
+                    alloy_rlp::list_length::<_, dyn Encodable>(&fields)
                 }
             }
         }
@@ -366,7 +365,7 @@ mod proposal {
 
     impl Decodable for EncodingScheme {
         fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-            let mut payload = Header::decode_bytes(buf, true)?;
+            let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
             let result = match <u8 as Decodable>::decode(&mut payload)? {
                 1 => Self::D25(<D25 as Decodable>::decode(&mut payload)?),
                 2 => Self::S11(<S11 as Decodable>::decode(&mut payload)?),
@@ -501,11 +500,29 @@ mod vote {
     )]
     pub struct PubKey(u64);
 
-    #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
+    #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable)]
     pub struct Signature {
         by: PubKey,
         digest: u64,
         malformed: bool,
+    }
+
+    impl Decodable for Signature {
+        fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+            let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
+            let signature = Self {
+                by: PubKey::decode(&mut payload)?,
+                digest: u64::decode(&mut payload)?,
+                malformed: bool::decode(&mut payload)?,
+            };
+            if !payload.is_empty() {
+                return Err(alloy_rlp::Error::UnexpectedLength);
+            }
+            if !signature.is_well_formed() {
+                return Err(alloy_rlp::Error::Custom("malformed signature"));
+            }
+            Ok(signature)
+        }
     }
 
     fn digest(data: &[u8]) -> u64 {
@@ -826,10 +843,7 @@ mod rlp_tests {
 
         let mut malformed = signature;
         malformed.make_malformed();
-        assert_eq!(
-            alloy_rlp::decode_exact::<Signature>(alloy_rlp::encode(&malformed)).unwrap(),
-            malformed
-        );
+        assert!(alloy_rlp::decode_exact::<Signature>(alloy_rlp::encode(&malformed)).is_err());
     }
 }
 

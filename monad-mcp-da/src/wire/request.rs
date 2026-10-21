@@ -20,7 +20,7 @@
 
 use std::collections::BTreeSet;
 
-use alloy_rlp::{Decodable, Encodable, Header, encode_list, list_length};
+use alloy_rlp::{Decodable, Encodable};
 use bytes::Bytes;
 use monad_mcp_chorus::spec::{Deserializable, Serializable};
 
@@ -56,16 +56,16 @@ impl Encodable for ChunksSubset {
         match self {
             Self::All => {
                 let fields: [&dyn Encodable; 1] = [&ALL];
-                encode_list::<_, dyn Encodable>(&fields, out);
+                alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
             }
             Self::Narrowed(ids) => {
                 let ids: Vec<WireChunkId> = ids.iter().copied().collect();
                 let fields: [&dyn Encodable; 2] = [&NARROWED, &ids];
-                encode_list::<_, dyn Encodable>(&fields, out);
+                alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
             }
             Self::HeaderOnly => {
                 let fields: [&dyn Encodable; 2] = [&NARROWED, &Vec::<WireChunkId>::new()];
-                encode_list::<_, dyn Encodable>(&fields, out);
+                alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
             }
         }
     }
@@ -74,16 +74,16 @@ impl Encodable for ChunksSubset {
         match self {
             Self::All => {
                 let fields: [&dyn Encodable; 1] = [&ALL];
-                list_length::<_, dyn Encodable>(&fields)
+                alloy_rlp::list_length::<_, dyn Encodable>(&fields)
             }
             Self::Narrowed(ids) => {
                 let ids: Vec<WireChunkId> = ids.iter().copied().collect();
                 let fields: [&dyn Encodable; 2] = [&NARROWED, &ids];
-                list_length::<_, dyn Encodable>(&fields)
+                alloy_rlp::list_length::<_, dyn Encodable>(&fields)
             }
             Self::HeaderOnly => {
                 let fields: [&dyn Encodable; 2] = [&NARROWED, &Vec::<WireChunkId>::new()];
-                list_length::<_, dyn Encodable>(&fields)
+                alloy_rlp::list_length::<_, dyn Encodable>(&fields)
             }
         }
     }
@@ -91,7 +91,7 @@ impl Encodable for ChunksSubset {
 
 impl Decodable for ChunksSubset {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let mut payload = Header::decode_bytes(buf, true)?;
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
         let subset = match u8::decode(&mut payload)? {
             ALL => Self::All,
             NARROWED => {
@@ -121,7 +121,7 @@ impl Encodable for ChunkRecoveryRequest {
             &kind,
             &self.request.subset,
         ];
-        encode_list::<_, dyn Encodable>(&fields, out);
+        alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
     }
 
     fn length(&self) -> usize {
@@ -133,13 +133,13 @@ impl Encodable for ChunkRecoveryRequest {
             &kind,
             &self.request.subset,
         ];
-        list_length::<_, dyn Encodable>(&fields)
+        alloy_rlp::list_length::<_, dyn Encodable>(&fields)
     }
 }
 
 impl Decodable for ChunkRecoveryRequest {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let mut payload = Header::decode_bytes(buf, true)?;
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
         let slot = Slot::decode(&mut payload)?;
         let lane = Lane::decode(&mut payload)?;
         let pid = ProposalId::decode(&mut payload)?;

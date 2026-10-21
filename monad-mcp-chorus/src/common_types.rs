@@ -17,22 +17,18 @@
 //! protocol modules, so `env` and `spec` can name them without picking
 //! a variant. `types` re-exports them.
 
-use alloy_rlp::{Decodable, RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper};
+use alloy_rlp::{Decodable, RlpDecodable, RlpEncodable, RlpEncodableWrapper};
 
 // Slot number, starting from 0.
-#[derive(
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    Debug,
-    RlpEncodableWrapper,
-    RlpDecodableWrapper,
-)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, RlpEncodableWrapper)]
 pub struct Slot(pub u64);
+
+impl Decodable for Slot {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let slot = u64::decode(buf)?;
+        Self::from_u64(slot).ok_or(alloy_rlp::Error::Custom("slot out of range"))
+    }
+}
 
 impl Slot {
     pub const FIRST: Self = Slot(0);

@@ -18,16 +18,13 @@
 
 use std::{fmt::Debug, hash::Hash};
 
-use alloy_rlp::{
-    Decodable, Encodable, Header, RlpDecodable, RlpDecodableWrapper, RlpEncodable,
-    RlpEncodableWrapper, encode_list, list_length,
-};
+use alloy_rlp::{Decodable, Encodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper};
 use bytes::Bytes;
 
 use super::{
     super::{
         super::types::{IsVote, KeyPair, PubKey, Signature, Slot, ValidatorData, VoteMsg},
-        FallbackView, FromEntries, MvbaScope, ValidateCert, Votable,
+        FallbackView, FromEntries, MvbaScope, ValidateCert, ValidateInput, Votable,
     },
     block_store::{BlockRequestMsg, BlockResponseMsg},
     certificates::{FallbackCommitQc, PrepareQc, TimeoutCertificate},
@@ -125,7 +122,7 @@ impl IsVote for TimeoutVote {
 }
 
 /// `⟨Timeout, slot, v, PrepQC_i, σ_i⟩`
-#[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable)]
 #[rlp(trailing)]
 pub(crate) struct TimeoutMsg<E: Clone + Eq + Hash + Debug + Encodable> {
     pub vote: VoteMsg<TimeoutVote>,
@@ -160,26 +157,53 @@ impl<E: Clone + Eq + Hash + Debug + Encodable> TimeoutMsg<E> {
     }
 
     /// Whether the claim in the signed digest is backed by what rides along
-    pub(crate) fn is_valid(&self, validator_data: &ValidatorData) -> bool {
+    fn is_well_formed(&self) -> bool {
         let high_prep_view = self.vote.vote.high_prep_view;
+        let Some(qc) = &self.high_prep_qc else {
+            return high_prep_view == FallbackView::GENESIS;
+        };
+        let MvbaScope {
+            slot: qc_slot,
+            view: qc_view,
+        } = qc.scope;
+        qc_slot == self.slot()
+            // view 0 has no certificate, so this also rejects one
+            // carried unclaimed
+            && qc_view == high_prep_view
+            // a validator may hold a certificate of the view it is
+            // abandoning, but never of a later one
+            && qc_view <= self.view()
+    }
 
-        match &self.high_prep_qc {
-            None => high_prep_view == FallbackView::GENESIS,
-            Some(qc) => {
-                let MvbaScope {
-                    slot: qc_slot,
-                    view: qc_view,
-                } = qc.scope;
-                qc_slot == self.slot()
-                    // view 0 has no certificate, so this also rejects one
-                    // carried unclaimed
-                    && qc_view == high_prep_view
-                    // a validator may hold a certificate of the view it is
-                    // abandoning, but never of a later one
-                    && qc_view <= self.view()
-                    && qc.verify(validator_data)
-            }
+    /// Whether the certificate that rides along verifies
+    pub(crate) fn is_valid(&self, validator_data: &ValidatorData) -> bool {
+        self.high_prep_qc
+            .as_ref()
+            .is_none_or(|qc| qc.verify(validator_data))
+    }
+}
+
+impl<E> Decodable for TimeoutMsg<E>
+where
+    E: Clone + Eq + Hash + Debug + Encodable + Decodable,
+{
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
+        let vote = VoteMsg::<TimeoutVote>::decode(&mut payload)?;
+        let high_prep_qc = match payload.is_empty() {
+            true => None,
+            false => Some(PrepareQc::<E>::decode(&mut payload)?),
+        };
+        if !payload.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
         }
+        let msg = Self { vote, high_prep_qc };
+        if !msg.is_well_formed() {
+            return Err(alloy_rlp::Error::Custom(
+                "timeout claim and certificate disagree",
+            ));
+        }
+        Ok(msg)
     }
 }
 
@@ -239,6 +263,26 @@ impl<V: Votable, C: ValidateCert> PrePrepareMsg<V, C> {
         let data = signed_bytes(self.slot, self.view, &self.value, &self.justification);
         self.signature.verify(&data, leader_pubkey)
     }
+
+    // view 1 is justified by a fallback certificate, every later view by
+    // the previous view's TC, whose lock the value keeps
+    fn is_well_formed(&self) -> bool
+    where
+        V: ValidateInput,
+    {
+        match (&self.justification, self.view == FallbackView::FIRST) {
+            (Justification::FallbackCert(Some(_)), true) => true,
+            (Justification::FallbackCert(None), true) => self.value.fbcert_optional(),
+            (Justification::Tc(tc), false) => {
+                let same_slot = tc.slot == self.slot;
+                let previous_view = tc.view.next() == self.view;
+                // the lock rule
+                let keeps_lock = tc.lock().is_none_or(|lock| self.value.entries() == *lock);
+                same_slot && previous_view && keeps_lock
+            }
+            _ => false,
+        }
+    }
 }
 
 struct PrePrepareDomain;
@@ -273,31 +317,31 @@ where
         match self {
             Self::PrePrepare(message) => {
                 let fields: [&dyn Encodable; 2] = [&1u8, message];
-                encode_list::<_, dyn Encodable>(&fields, out);
+                alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
             }
             Self::Prepare(message) => {
                 let fields: [&dyn Encodable; 2] = [&2u8, message];
-                encode_list::<_, dyn Encodable>(&fields, out);
+                alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
             }
             Self::Commit(message) => {
                 let fields: [&dyn Encodable; 2] = [&3u8, message];
-                encode_list::<_, dyn Encodable>(&fields, out);
+                alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
             }
             Self::Timeout(message) => {
                 let fields: [&dyn Encodable; 2] = [&4u8, message];
-                encode_list::<_, dyn Encodable>(&fields, out);
+                alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
             }
             Self::CommitQc(message) => {
                 let fields: [&dyn Encodable; 2] = [&5u8, message];
-                encode_list::<_, dyn Encodable>(&fields, out);
+                alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
             }
             Self::BlockRequest(message) => {
                 let fields: [&dyn Encodable; 2] = [&6u8, message];
-                encode_list::<_, dyn Encodable>(&fields, out);
+                alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
             }
             Self::BlockResponse(message) => {
                 let fields: [&dyn Encodable; 2] = [&7u8, message];
-                encode_list::<_, dyn Encodable>(&fields, out);
+                alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
             }
         }
     }
@@ -306,31 +350,31 @@ where
         match self {
             Self::PrePrepare(message) => {
                 let fields: [&dyn Encodable; 2] = [&1u8, message];
-                list_length::<_, dyn Encodable>(&fields)
+                alloy_rlp::list_length::<_, dyn Encodable>(&fields)
             }
             Self::Prepare(message) => {
                 let fields: [&dyn Encodable; 2] = [&2u8, message];
-                list_length::<_, dyn Encodable>(&fields)
+                alloy_rlp::list_length::<_, dyn Encodable>(&fields)
             }
             Self::Commit(message) => {
                 let fields: [&dyn Encodable; 2] = [&3u8, message];
-                list_length::<_, dyn Encodable>(&fields)
+                alloy_rlp::list_length::<_, dyn Encodable>(&fields)
             }
             Self::Timeout(message) => {
                 let fields: [&dyn Encodable; 2] = [&4u8, message];
-                list_length::<_, dyn Encodable>(&fields)
+                alloy_rlp::list_length::<_, dyn Encodable>(&fields)
             }
             Self::CommitQc(message) => {
                 let fields: [&dyn Encodable; 2] = [&5u8, message];
-                list_length::<_, dyn Encodable>(&fields)
+                alloy_rlp::list_length::<_, dyn Encodable>(&fields)
             }
             Self::BlockRequest(message) => {
                 let fields: [&dyn Encodable; 2] = [&6u8, message];
-                list_length::<_, dyn Encodable>(&fields)
+                alloy_rlp::list_length::<_, dyn Encodable>(&fields)
             }
             Self::BlockResponse(message) => {
                 let fields: [&dyn Encodable; 2] = [&7u8, message];
-                list_length::<_, dyn Encodable>(&fields)
+                alloy_rlp::list_length::<_, dyn Encodable>(&fields)
             }
         }
     }
@@ -338,12 +382,12 @@ where
 
 impl<V: Votable, C: ValidateCert> Decodable for MvbaMessage<V, C>
 where
-    V: Decodable,
+    V: Decodable + ValidateInput,
     V::Entries: Decodable,
     C: Decodable,
 {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let mut payload = Header::decode_bytes(buf, true)?;
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
         let result = match <u8 as Decodable>::decode(&mut payload)? {
             1 => Self::PrePrepare(<PrePrepareMsg<V, C> as Decodable>::decode(&mut payload)?),
             2 => Self::Prepare(<PrepareVoteMsg<V::Entries> as Decodable>::decode(
@@ -387,7 +431,7 @@ where
             &self.justification,
             &self.signature,
         ];
-        encode_list::<_, dyn Encodable>(&fields, out);
+        alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
     }
 
     fn length(&self) -> usize {
@@ -398,18 +442,18 @@ where
             &self.justification,
             &self.signature,
         ];
-        list_length::<_, dyn Encodable>(&fields)
+        alloy_rlp::list_length::<_, dyn Encodable>(&fields)
     }
 }
 
 impl<V: Votable, C: ValidateCert> Decodable for PrePrepareMsg<V, C>
 where
-    V: Decodable,
+    V: Decodable + ValidateInput,
     V::Entries: Decodable,
     C: Decodable,
 {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let mut payload = Header::decode_bytes(buf, true)?;
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
         let result = Self {
             slot: <Slot as Decodable>::decode(&mut payload)?,
             view: <FallbackView as Decodable>::decode(&mut payload)?,
@@ -419,6 +463,11 @@ where
         };
         if !payload.is_empty() {
             return Err(alloy_rlp::Error::UnexpectedLength);
+        }
+        if !result.is_well_formed() {
+            return Err(alloy_rlp::Error::Custom(
+                "justification does not fit the view",
+            ));
         }
         Ok(result)
     }
@@ -430,21 +479,25 @@ where
 {
     fn encode(&self, out: &mut dyn bytes::BufMut) {
         match self {
-            Self::FallbackCert(None) => encode_list(&[1u8], out),
+            Self::FallbackCert(None) => alloy_rlp::encode_list(&[1u8], out),
             Self::FallbackCert(Some(cert)) => {
-                encode_list::<_, dyn Encodable>(&[&1u8 as &dyn Encodable, cert], out)
+                alloy_rlp::encode_list::<_, dyn Encodable>(&[&1u8 as &dyn Encodable, cert], out)
             }
-            Self::Tc(tc) => encode_list::<_, dyn Encodable>(&[&2u8 as &dyn Encodable, tc], out),
+            Self::Tc(tc) => {
+                alloy_rlp::encode_list::<_, dyn Encodable>(&[&2u8 as &dyn Encodable, tc], out)
+            }
         }
     }
 
     fn length(&self) -> usize {
         match self {
-            Self::FallbackCert(None) => list_length(&[1u8]),
+            Self::FallbackCert(None) => alloy_rlp::list_length(&[1u8]),
             Self::FallbackCert(Some(cert)) => {
-                list_length::<_, dyn Encodable>(&[&1u8 as &dyn Encodable, cert])
+                alloy_rlp::list_length::<_, dyn Encodable>(&[&1u8 as &dyn Encodable, cert])
             }
-            Self::Tc(tc) => list_length::<_, dyn Encodable>(&[&2u8 as &dyn Encodable, tc]),
+            Self::Tc(tc) => {
+                alloy_rlp::list_length::<_, dyn Encodable>(&[&2u8 as &dyn Encodable, tc])
+            }
         }
     }
 }
@@ -454,7 +507,7 @@ where
     V::Entries: Decodable,
 {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let mut payload = Header::decode_bytes(buf, true)?;
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
         let result = match u8::decode(&mut payload)? {
             1 => Self::FallbackCert(if payload.is_empty() {
                 None
@@ -559,9 +612,11 @@ mod rlp_tests {
         let entries = block.entries();
         let key = h::nodes()[0].keypair();
         let qc = h::prepare_qc(h::view(1), &entries, &validators);
+        // a proposal without a fallback certificate is legal only over a fast metablock
+        let fast_block = h::metablock(7, &validators);
         // Cover proposals with and without a fallback certificate, votes, and block exchange.
         let mut messages = vec![
-            h::pre_prepare_with_cert(h::view(1), &block, None).1,
+            h::pre_prepare_with_cert(h::view(1), &fast_block, None).1,
             h::pre_prepare_with_cert(
                 h::view(1),
                 &block,

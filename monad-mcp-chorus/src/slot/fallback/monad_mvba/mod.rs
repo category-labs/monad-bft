@@ -349,40 +349,24 @@ where
             return;
         }
 
-        match (&msg.justification, view == FallbackView::FIRST) {
-            (Justification::FallbackCert(Some(cert)), true) => {
+        match &msg.justification {
+            Justification::FallbackCert(Some(cert)) => {
                 if !cert.validate(self.validation_context()) {
                     return;
                 }
             }
-            (Justification::FallbackCert(None), true) => {
-                if !msg.value.fbcert_optional() {
-                    return;
-                }
-            }
-            (Justification::Tc(tc), false) => {
-                // verified ahead of the cheap refusals below so that it can
-                // be harvested: a valid certificate is evidence its view was
-                // left, whatever becomes of the message carrying it
-                if tc.slot != self.context.slot || !tc.verify(&self.context.validator_data) {
+            Justification::FallbackCert(None) => {}
+            Justification::Tc(tc) => {
+                // harvested ahead of the value check below: a valid
+                // certificate is evidence its view was left, whatever becomes
+                // of the message carrying it
+                if !tc.verify(&self.context.validator_data) {
                     return;
                 }
                 if self.in_window_or_catching_up(tc.view) {
                     self.collectors_mut(tc.view).store_tc(tc.clone());
                 }
-
-                if tc.view.next() != view {
-                    return;
-                }
-
-                // the lock rule
-                if let Some(lock) = tc.lock()
-                    && msg.value.entries() != *lock
-                {
-                    return;
-                }
             }
-            _ => return,
         }
 
         if !msg.value.validate(self.validation_context()) {

@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_rlp::{Encodable, Header, RlpDecodable, RlpEncodable};
+use alloy_rlp::{Encodable, RlpDecodable, RlpEncodable};
 use bytes::Bytes;
 use tiny_keccak::{Hasher, Keccak};
 
@@ -105,7 +105,7 @@ pub fn encode_batch(sealed_at_ns: u64, txs: &[Tx]) -> Bytes {
     // demo(tx-timeline): signature gains sealed_at_ns
     let txs_len = alloy_rlp::list_length::<_, Tx>(txs); // demo(tx-timeline)
     // demo(tx-timeline)
-    let header = Header {
+    let header = alloy_rlp::Header {
         list: true,
         payload_length: sealed_at_ns.length() + txs_len,
     };
@@ -149,13 +149,13 @@ impl BatchBuilder {
 
     fn encoded_len(content_len: usize) -> usize {
         // demo(tx-timeline): the tx list nested in the sealed header
-        let txs_len = Header {
+        let txs_len = alloy_rlp::Header {
             list: true,
             payload_length: content_len,
         }
         .length_with_payload();
         // demo(tx-timeline)
-        Header {
+        alloy_rlp::Header {
             list: true,
             payload_length: u64::MAX.length() + txs_len,
         }

@@ -16,8 +16,7 @@
 use std::{cmp::Reverse, collections::VecDeque, sync::Arc};
 
 use alloy_rlp::{
-    Decodable, Encodable, Header, RlpDecodable, RlpDecodableWrapper, RlpEncodable,
-    RlpEncodableWrapper, encode_list, list_length,
+    Decodable, Encodable, RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper,
 };
 use arrayvec::ArrayVec;
 
@@ -263,13 +262,10 @@ impl FastPath {
 
     fn evidence_valid(&self, j: Lane, evidence: &ProposalEvidence) -> bool {
         match evidence {
-            ProposalEvidence::FallbackSignedEntry(entry) => {
-                let header_valid = match entry.header() {
-                    Some(header) => self.header_auth.validate(header, self.slot.get(), j),
-                    None => true,
-                };
-                entry.well_formed() && header_valid
-            }
+            ProposalEvidence::FallbackSignedEntry(entry) => match entry.header() {
+                Some(header) => self.header_auth.validate(header, self.slot.get(), j),
+                None => true,
+            },
             ProposalEvidence::Certified(cert) => cert.verify(
                 ProposalScope::new(self.slot, j),
                 &self.header_auth,
@@ -810,15 +806,15 @@ impl CertifiedEntry {
             CertifiedEntry::FallbackQc(qc) => qc.verify(validator_data),
             CertifiedEntry::EquivCert(EquivCert(a, b)) => {
                 let ProposalScope { slot: s, lane: j } = scope;
-                a.pid() != b.pid()
-                    && header_auth.validate(a, s.get(), j)
-                    && header_auth.validate(b, s.get(), j)
+                let a_authentic = header_auth.validate(a, s.get(), j);
+                let b_authentic = header_auth.validate(b, s.get(), j);
+                a_authentic && b_authentic
             }
         }
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable)]
 #[rlp(trailing)]
 struct FallbackSignedEntry {
     entry: FallbackEntry,
@@ -827,6 +823,32 @@ struct FallbackSignedEntry {
     // invariant: header.is_some() iff entry is positive
     // invariant: header.pid() == entry's pid
     header: Option<SignedProposalHeader>,
+}
+
+impl Decodable for FallbackSignedEntry {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
+        let entry = FallbackEntry::decode(&mut payload)?;
+        let signature = Signature::decode(&mut payload)?;
+        let header = match payload.is_empty() {
+            true => None,
+            false => Some(SignedProposalHeader::decode(&mut payload)?),
+        };
+        if !payload.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
+        }
+        let signed = Self {
+            entry,
+            signature,
+            header,
+        };
+        if !signed.is_well_formed() {
+            return Err(alloy_rlp::Error::Custom(
+                "fallback entry and header disagree",
+            ));
+        }
+        Ok(signed)
+    }
 }
 
 impl FallbackSignedEntry {
@@ -854,7 +876,7 @@ impl FallbackSignedEntry {
         }
     }
 
-    fn well_formed(&self) -> bool {
+    fn is_well_formed(&self) -> bool {
         match &self.entry.0 {
             Entry::Positive(pid) => self
                 .header
@@ -949,11 +971,11 @@ impl Encodable for Entry {
         match self {
             Self::Positive(message) => {
                 let fields: [&dyn Encodable; 2] = [&1u8, message];
-                encode_list::<_, dyn Encodable>(&fields, out);
+                alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
             }
             Self::Negative => {
                 let fields: [&dyn Encodable; 1] = [&2u8];
-                encode_list::<_, dyn Encodable>(&fields, out);
+                alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
             }
         }
     }
@@ -962,11 +984,11 @@ impl Encodable for Entry {
         match self {
             Self::Positive(message) => {
                 let fields: [&dyn Encodable; 2] = [&1u8, message];
-                list_length::<_, dyn Encodable>(&fields)
+                alloy_rlp::list_length::<_, dyn Encodable>(&fields)
             }
             Self::Negative => {
                 let fields: [&dyn Encodable; 1] = [&2u8];
-                list_length::<_, dyn Encodable>(&fields)
+                alloy_rlp::list_length::<_, dyn Encodable>(&fields)
             }
         }
     }
@@ -974,7 +996,7 @@ impl Encodable for Entry {
 
 impl Decodable for Entry {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let mut payload = Header::decode_bytes(buf, true)?;
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
         let result = match <u8 as Decodable>::decode(&mut payload)? {
             1 => Self::Positive(<ProposalId as Decodable>::decode(&mut payload)?),
             2 => Self::Negative,
@@ -992,15 +1014,15 @@ impl Encodable for CertifiedEntry {
         match self {
             Self::FastQc(message) => {
                 let fields: [&dyn Encodable; 2] = [&1u8, message];
-                encode_list::<_, dyn Encodable>(&fields, out);
+                alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
             }
             Self::EquivCert(message) => {
                 let fields: [&dyn Encodable; 2] = [&2u8, message];
-                encode_list::<_, dyn Encodable>(&fields, out);
+                alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
             }
             Self::FallbackQc(message) => {
                 let fields: [&dyn Encodable; 2] = [&3u8, message];
-                encode_list::<_, dyn Encodable>(&fields, out);
+                alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
             }
         }
     }
@@ -1009,15 +1031,15 @@ impl Encodable for CertifiedEntry {
         match self {
             Self::FastQc(message) => {
                 let fields: [&dyn Encodable; 2] = [&1u8, message];
-                list_length::<_, dyn Encodable>(&fields)
+                alloy_rlp::list_length::<_, dyn Encodable>(&fields)
             }
             Self::EquivCert(message) => {
                 let fields: [&dyn Encodable; 2] = [&2u8, message];
-                list_length::<_, dyn Encodable>(&fields)
+                alloy_rlp::list_length::<_, dyn Encodable>(&fields)
             }
             Self::FallbackQc(message) => {
                 let fields: [&dyn Encodable; 2] = [&3u8, message];
-                list_length::<_, dyn Encodable>(&fields)
+                alloy_rlp::list_length::<_, dyn Encodable>(&fields)
             }
         }
     }
@@ -1025,7 +1047,7 @@ impl Encodable for CertifiedEntry {
 
 impl Decodable for CertifiedEntry {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let mut payload = Header::decode_bytes(buf, true)?;
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
         let result = match <u8 as Decodable>::decode(&mut payload)? {
             1 => Self::FastQc(<FastQc as Decodable>::decode(&mut payload)?),
             2 => Self::EquivCert(<EquivCert as Decodable>::decode(&mut payload)?),
@@ -1044,11 +1066,11 @@ impl Encodable for ProposalEvidence {
         match self {
             Self::Certified(message) => {
                 let fields: [&dyn Encodable; 2] = [&1u8, message];
-                encode_list::<_, dyn Encodable>(&fields, out);
+                alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
             }
             Self::FallbackSignedEntry(message) => {
                 let fields: [&dyn Encodable; 2] = [&2u8, message];
-                encode_list::<_, dyn Encodable>(&fields, out);
+                alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
             }
         }
     }
@@ -1057,11 +1079,11 @@ impl Encodable for ProposalEvidence {
         match self {
             Self::Certified(message) => {
                 let fields: [&dyn Encodable; 2] = [&1u8, message];
-                list_length::<_, dyn Encodable>(&fields)
+                alloy_rlp::list_length::<_, dyn Encodable>(&fields)
             }
             Self::FallbackSignedEntry(message) => {
                 let fields: [&dyn Encodable; 2] = [&2u8, message];
-                list_length::<_, dyn Encodable>(&fields)
+                alloy_rlp::list_length::<_, dyn Encodable>(&fields)
             }
         }
     }
@@ -1069,7 +1091,7 @@ impl Encodable for ProposalEvidence {
 
 impl Decodable for ProposalEvidence {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let mut payload = Header::decode_bytes(buf, true)?;
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
         let result = match <u8 as Decodable>::decode(&mut payload)? {
             1 => Self::Certified(<CertifiedEntry as Decodable>::decode(&mut payload)?),
             2 => {
@@ -1199,6 +1221,44 @@ mod tests {
             .strong_qc()
             .expect("three of four votes form a fast qc");
         FastBlock(Lanes::new(1, |_| qc.clone()))
+    }
+
+    #[test]
+    fn a_fallback_entry_decodes_only_if_it_agrees_with_its_header() {
+        let key = NodeId::dummy(0).keypair();
+        let scope = ProposalScope::new(SLOT, Lane::new_unchecked(0));
+        let positive = FallbackSignedEntry::new_signed_positive(scope, header(1), &key);
+        let negative = FallbackSignedEntry::new_signed_negative(scope, &key);
+        let decode = |signed: &FallbackSignedEntry| {
+            alloy_rlp::decode_exact::<FallbackSignedEntry>(alloy_rlp::encode(signed)).ok()
+        };
+        assert_eq!(decode(&positive), Some(positive.clone()));
+        assert_eq!(decode(&negative), Some(negative.clone()));
+
+        let headerless = FallbackSignedEntry {
+            header: None,
+            ..positive.clone()
+        };
+        let mismatched = FallbackSignedEntry {
+            header: Some(header(2)),
+            ..positive
+        };
+        let negative_with_header = FallbackSignedEntry {
+            header: Some(header(1)),
+            ..negative
+        };
+        for signed in [headerless, mismatched, negative_with_header] {
+            assert_eq!(decode(&signed), None);
+        }
+    }
+
+    #[test]
+    fn an_equivocation_over_one_proposal_does_not_decode() {
+        let decode =
+            |cert: &EquivCert| alloy_rlp::decode_exact::<EquivCert>(alloy_rlp::encode(cert)).ok();
+        let distinct = EquivCert(header(1), header(2));
+        assert_eq!(decode(&distinct), Some(distinct.clone()));
+        assert_eq!(decode(&EquivCert(header(1), header(1))), None);
     }
 
     #[test]
@@ -1523,7 +1583,8 @@ mod tests {
         let mut payload = bytes
             .strip_prefix(EntryDomain::PREFIX)
             .expect("the domain prefix leads the signed bytes");
-        let mut list = Header::decode_bytes(&mut payload, true).expect("a two-item list");
+        let mut list =
+            alloy_rlp::Header::decode_bytes(&mut payload, true).expect("a two-item list");
 
         assert_eq!(ProposalScope::decode(&mut list).unwrap(), scope);
         assert_eq!(Entry::decode(&mut list).unwrap(), entry);

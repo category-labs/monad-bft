@@ -172,7 +172,7 @@ impl<V: Votable, C: ValidateCert> ViewCollectors<V, C> {
 
     /// `TC_{slot, view}` once a supermajority has timed out here. The highest
     /// claim comes from the *formed* groups, which is what
-    /// [`TimeoutCertificate::verify`] re-checks
+    /// [`TimeoutCertificate::is_well_formed`] checks
     pub(crate) fn try_form_tc(
         &self,
         validator_data: &ValidatorData,

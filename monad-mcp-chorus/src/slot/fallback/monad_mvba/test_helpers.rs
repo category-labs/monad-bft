@@ -247,7 +247,7 @@ pub(super) fn pre_prepare_with_cert(
     pre_prepare_justified(v, block, Justification::FallbackCert(cert))
 }
 
-fn pre_prepare_justified(
+pub(super) fn pre_prepare_justified(
     v: FallbackView,
     block: &Metablock,
     justification: Justification,
@@ -256,6 +256,11 @@ fn pre_prepare_justified(
     let msg = PrePrepareMsg::new_signed(SLOT, v, block.clone(), justification, &leader.keypair());
 
     (leader, Message::PrePrepare(msg))
+}
+
+/// `message` as a peer receives it, None if it does not decode
+pub(super) fn delivered(message: Message) -> Option<Message> {
+    alloy_rlp::decode_exact::<Message>(alloy_rlp::encode(&message)).ok()
 }
 
 /// A timeout certificate for `v`, aggregated from timeouts carrying

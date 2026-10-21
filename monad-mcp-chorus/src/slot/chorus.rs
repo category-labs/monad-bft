@@ -19,7 +19,7 @@ use std::{
     sync::Arc,
 };
 
-use alloy_rlp::{Decodable, Encodable, Header, encode_list, list_length};
+use alloy_rlp::{Decodable, Encodable};
 
 pub use super::fast::Entry;
 use super::{
@@ -585,31 +585,31 @@ impl Encodable for ChorusMessage {
         match self {
             Self::BatchVote(message) => {
                 let fields: [&dyn Encodable; 2] = [&1u8, message];
-                encode_list::<_, dyn Encodable>(&fields, out);
+                alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
             }
             Self::FastCommitVote(message) => {
                 let fields: [&dyn Encodable; 2] = [&2u8, message];
-                encode_list::<_, dyn Encodable>(&fields, out);
+                alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
             }
             Self::FastBlock(message) => {
                 let fields: [&dyn Encodable; 2] = [&3u8, message];
-                encode_list::<_, dyn Encodable>(&fields, out);
+                alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
             }
             Self::FallbackVote(message) => {
                 let fields: [&dyn Encodable; 2] = [&4u8, message];
-                encode_list::<_, dyn Encodable>(&fields, out);
+                alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
             }
             Self::FastCommitQc(message) => {
                 let fields: [&dyn Encodable; 2] = [&5u8, message];
-                encode_list::<_, dyn Encodable>(&fields, out);
+                alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
             }
             Self::EnterFallbackCert(message) => {
                 let fields: [&dyn Encodable; 2] = [&6u8, message];
-                encode_list::<_, dyn Encodable>(&fields, out);
+                alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
             }
             Self::Fallback(message) => {
                 let fields: [&dyn Encodable; 2] = [&7u8, message];
-                encode_list::<_, dyn Encodable>(&fields, out);
+                alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
             }
         }
     }
@@ -618,31 +618,31 @@ impl Encodable for ChorusMessage {
         match self {
             Self::BatchVote(message) => {
                 let fields: [&dyn Encodable; 2] = [&1u8, message];
-                list_length::<_, dyn Encodable>(&fields)
+                alloy_rlp::list_length::<_, dyn Encodable>(&fields)
             }
             Self::FastCommitVote(message) => {
                 let fields: [&dyn Encodable; 2] = [&2u8, message];
-                list_length::<_, dyn Encodable>(&fields)
+                alloy_rlp::list_length::<_, dyn Encodable>(&fields)
             }
             Self::FastBlock(message) => {
                 let fields: [&dyn Encodable; 2] = [&3u8, message];
-                list_length::<_, dyn Encodable>(&fields)
+                alloy_rlp::list_length::<_, dyn Encodable>(&fields)
             }
             Self::FallbackVote(message) => {
                 let fields: [&dyn Encodable; 2] = [&4u8, message];
-                list_length::<_, dyn Encodable>(&fields)
+                alloy_rlp::list_length::<_, dyn Encodable>(&fields)
             }
             Self::FastCommitQc(message) => {
                 let fields: [&dyn Encodable; 2] = [&5u8, message];
-                list_length::<_, dyn Encodable>(&fields)
+                alloy_rlp::list_length::<_, dyn Encodable>(&fields)
             }
             Self::EnterFallbackCert(message) => {
                 let fields: [&dyn Encodable; 2] = [&6u8, message];
-                list_length::<_, dyn Encodable>(&fields)
+                alloy_rlp::list_length::<_, dyn Encodable>(&fields)
             }
             Self::Fallback(message) => {
                 let fields: [&dyn Encodable; 2] = [&7u8, message];
-                list_length::<_, dyn Encodable>(&fields)
+                alloy_rlp::list_length::<_, dyn Encodable>(&fields)
             }
         }
     }
@@ -650,7 +650,7 @@ impl Encodable for ChorusMessage {
 
 impl Decodable for ChorusMessage {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let mut payload = Header::decode_bytes(buf, true)?;
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
         let result = match <u8 as Decodable>::decode(&mut payload)? {
             1 => Self::BatchVote(<BatchVoteMsg as Decodable>::decode(&mut payload)?),
             2 => Self::FastCommitVote(<FastCommitVoteMsg as Decodable>::decode(&mut payload)?),

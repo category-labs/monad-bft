@@ -101,7 +101,7 @@ pub mod validator {
 pub mod vote {
     use std::collections::{HashMap, HashSet};
 
-    use alloy_rlp::{EMPTY_LIST_CODE, Encodable, encode_list, list_length};
+    use alloy_rlp::{EMPTY_LIST_CODE, Encodable};
     use bytes::{BufMut, Bytes};
 
     // A namespace mixed into the bytes a signature covers, so a signature
@@ -131,9 +131,11 @@ pub mod vote {
     // The domain prefix followed by the RLP list of `items`. The prefix is
     // concatenated, not a list element.
     pub fn signing_bytes_of<SD: SigningDomain>(items: &[&dyn Encodable]) -> Bytes {
-        let mut out = Vec::with_capacity(SD::PREFIX.len() + list_length::<_, dyn Encodable>(items));
+        let mut out = Vec::with_capacity(
+            SD::PREFIX.len() + alloy_rlp::list_length::<_, dyn Encodable>(items),
+        );
         out.extend_from_slice(SD::PREFIX);
-        encode_list::<_, dyn Encodable>(items, &mut out);
+        alloy_rlp::encode_list::<_, dyn Encodable>(items, &mut out);
         Bytes::from(out)
     }
 

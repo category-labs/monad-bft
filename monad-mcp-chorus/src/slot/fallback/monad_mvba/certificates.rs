@@ -15,7 +15,7 @@
 
 use std::{collections::HashSet, fmt::Debug, hash::Hash};
 
-use alloy_rlp::{Encodable, RlpDecodable, RlpEncodable};
+use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
 
 use super::{
     super::{
@@ -33,7 +33,7 @@ pub(crate) type PrepareQc<E> = StrongQc<PrepareVote<E>>;
 pub type FallbackCommitQc<E> = StrongQc<FallbackCommitVote<E>>;
 
 /// `TC_{slot, v}`: 2f+1 timeouts for view `v` from distinct senders
-#[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable)]
 #[rlp(trailing)]
 pub(crate) struct TimeoutCertificate<E: Clone + Eq + Hash + Debug + Encodable> {
     pub slot: Slot,
@@ -41,6 +41,37 @@ pub(crate) struct TimeoutCertificate<E: Clone + Eq + Hash + Debug + Encodable> {
     // exposing raw signature collection for BLS multisig optimization
     pub groups: Vec<TimeoutGroup>,
     pub high_prep_qc: Option<PrepareQc<E>>,
+}
+
+impl<E> Decodable for TimeoutCertificate<E>
+where
+    E: Clone + Eq + Hash + Debug + Encodable + Decodable,
+{
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
+        let slot = Slot::decode(&mut payload)?;
+        let view = FallbackView::decode(&mut payload)?;
+        let groups = Vec::<TimeoutGroup>::decode(&mut payload)?;
+        let high_prep_qc = match payload.is_empty() {
+            true => None,
+            false => Some(PrepareQc::<E>::decode(&mut payload)?),
+        };
+        if !payload.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
+        }
+        let tc = Self {
+            slot,
+            view,
+            groups,
+            high_prep_qc,
+        };
+        if !tc.is_well_formed() {
+            return Err(alloy_rlp::Error::Custom(
+                "timeout claims and certificate disagree",
+            ));
+        }
+        Ok(tc)
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
@@ -72,6 +103,22 @@ impl<E: Clone + Eq + Hash + Debug + Encodable> TimeoutCertificate<E> {
             return false;
         }
 
+        self.high_prep_qc
+            .as_ref()
+            .is_none_or(|qc| qc.verify(validator_data))
+    }
+
+    /// A real view, one group per distinct vote, and the carried prepare
+    /// certificate is the one the highest claim names
+    pub(crate) fn is_well_formed(&self) -> bool {
+        let votes: HashSet<&TimeoutVote> = self.groups.iter().map(|group| &group.vote).collect();
+        let real_view = self.view >= FallbackView::FIRST;
+        let has_groups = !self.groups.is_empty();
+        let one_group_per_vote = votes.len() == self.groups.len();
+        if !(real_view && has_groups && one_group_per_vote) {
+            return false;
+        }
+
         let highest_claim = self
             .groups
             .iter()
@@ -87,7 +134,6 @@ impl<E: Clone + Eq + Hash + Debug + Encodable> TimeoutCertificate<E> {
                     // no validator can hold a prepare certificate from a view
                     // later than the one it is abandoning
                     && claimed_view <= self.view
-                    && qc.verify(validator_data)
             }
             _ => false,
         }

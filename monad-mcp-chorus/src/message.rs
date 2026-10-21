@@ -15,7 +15,7 @@
 
 //! The cadence wire message and its byte layout.
 
-use alloy_rlp::{Decodable, Encodable, Header, encode_list, list_length};
+use alloy_rlp::{Decodable, Encodable};
 use bytes::Bytes;
 
 use super::{
@@ -49,11 +49,11 @@ where
         match self {
             Self::Slot(slot, message) => {
                 let fields: [&dyn Encodable; 3] = [&1u8, slot, message];
-                encode_list::<_, dyn Encodable>(&fields, out);
+                alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
             }
             Self::Conductor(message) => {
                 let fields: [&dyn Encodable; 2] = [&2u8, message];
-                encode_list::<_, dyn Encodable>(&fields, out);
+                alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
             }
         }
     }
@@ -62,11 +62,11 @@ where
         match self {
             Self::Slot(slot, message) => {
                 let fields: [&dyn Encodable; 3] = [&1u8, slot, message];
-                list_length::<_, dyn Encodable>(&fields)
+                alloy_rlp::list_length::<_, dyn Encodable>(&fields)
             }
             Self::Conductor(message) => {
                 let fields: [&dyn Encodable; 2] = [&2u8, message];
-                list_length::<_, dyn Encodable>(&fields)
+                alloy_rlp::list_length::<_, dyn Encodable>(&fields)
             }
         }
     }
@@ -78,7 +78,7 @@ where
     CM: Decodable,
 {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let mut payload = Header::decode_bytes(buf, true)?;
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
         let result = match <u8 as Decodable>::decode(&mut payload)? {
             1 => Self::Slot(
                 <Slot as Decodable>::decode(&mut payload)?,

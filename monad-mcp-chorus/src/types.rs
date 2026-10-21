@@ -20,10 +20,7 @@ use std::{
     time::Duration,
 };
 
-use alloy_rlp::{
-    Decodable, Encodable, Header, RlpDecodable, RlpDecodableWrapper, RlpEncodable,
-    RlpEncodableWrapper, encode_list, list_length,
-};
+use alloy_rlp::{Decodable, Encodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper};
 use arrayvec::ArrayVec;
 use bytes::Bytes;
 
@@ -43,6 +40,7 @@ pub use super::{
 pub use crate::common_types::{Lane, MAX_PROPOSER_SET_SIZE, ProposalScope, Slot};
 use crate::spec::{
     Stake as _,
+    proposal::ProposalHeader as _,
     validator::ValidatorData as _,
     vote::{
         KeyPair as _, Signature as _, SignatureCollection as _, SigningDomain,
@@ -547,12 +545,12 @@ where
 {
     fn encode(&self, out: &mut dyn bytes::BufMut) {
         let fields: [&dyn Encodable; 3] = [&self.scope, &self.vote, &self.signature];
-        encode_list::<_, dyn Encodable>(&fields, out);
+        alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
     }
 
     fn length(&self) -> usize {
         let fields: [&dyn Encodable; 3] = [&self.scope, &self.vote, &self.signature];
-        list_length::<_, dyn Encodable>(&fields)
+        alloy_rlp::list_length::<_, dyn Encodable>(&fields)
     }
 }
 
@@ -561,7 +559,7 @@ where
     V: IsVote + Decodable,
 {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let mut payload = Header::decode_bytes(buf, true)?;
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
         let scope = <V::Scope as Decodable>::decode(&mut payload)?;
         let vote = <V as Decodable>::decode(&mut payload)?;
         let signature = <Signature as Decodable>::decode(&mut payload)?;
@@ -578,12 +576,12 @@ where
 {
     fn encode(&self, out: &mut dyn bytes::BufMut) {
         let fields: [&dyn Encodable; 3] = [&self.scope, &self.verdict, &self.sigcol];
-        encode_list::<_, dyn Encodable>(&fields, out);
+        alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
     }
 
     fn length(&self) -> usize {
         let fields: [&dyn Encodable; 3] = [&self.scope, &self.verdict, &self.sigcol];
-        list_length::<_, dyn Encodable>(&fields)
+        alloy_rlp::list_length::<_, dyn Encodable>(&fields)
     }
 }
 
@@ -592,7 +590,7 @@ where
     V: IsVote + Decodable,
 {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let mut payload = Header::decode_bytes(buf, true)?;
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
         let scope = <V::Scope as Decodable>::decode(&mut payload)?;
         let verdict = <V as Decodable>::decode(&mut payload)?;
         let sigcol = <SignatureCollection as Decodable>::decode(&mut payload)?;
@@ -613,12 +611,12 @@ where
 {
     fn encode(&self, out: &mut dyn bytes::BufMut) {
         let fields: [&dyn Encodable; 3] = [&self.scope, &self.verdict, &self.sigcol];
-        encode_list::<_, dyn Encodable>(&fields, out);
+        alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
     }
 
     fn length(&self) -> usize {
         let fields: [&dyn Encodable; 3] = [&self.scope, &self.verdict, &self.sigcol];
-        list_length::<_, dyn Encodable>(&fields)
+        alloy_rlp::list_length::<_, dyn Encodable>(&fields)
     }
 }
 
@@ -627,7 +625,7 @@ where
     V: IsVote + Decodable,
 {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let mut payload = Header::decode_bytes(buf, true)?;
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
         let scope = <V::Scope as Decodable>::decode(&mut payload)?;
         let verdict = <V as Decodable>::decode(&mut payload)?;
         let sigcol = <SignatureCollection as Decodable>::decode(&mut payload)?;
@@ -799,19 +797,34 @@ fn lanes_unchecked(count: usize) -> impl Iterator<Item = Lane> {
 pub struct Erased<T>(pub T);
 
 // invariant: .0.pid() != .1.pid() and both properly signed.
-#[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable)]
 pub struct EquivCert(pub SignedProposalHeader, pub SignedProposalHeader);
+
+impl Decodable for EquivCert {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
+        let a = SignedProposalHeader::decode(&mut payload)?;
+        let b = SignedProposalHeader::decode(&mut payload)?;
+        if !payload.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
+        }
+        if a.pid() == b.pid() {
+            return Err(alloy_rlp::Error::Custom("equivocation over one proposal"));
+        }
+        Ok(Self(a, b))
+    }
+}
 
 impl<T> Encodable for Lanes<T>
 where
     T: Encodable,
 {
     fn encode(&self, out: &mut dyn bytes::BufMut) {
-        encode_list(&self.values, out);
+        alloy_rlp::encode_list(&self.values, out);
     }
 
     fn length(&self) -> usize {
-        list_length(&self.values)
+        alloy_rlp::list_length(&self.values)
     }
 }
 
@@ -835,6 +848,13 @@ where
 mod tests {
     use super::*;
     use crate::spec::vote::assert_signing_prefix;
+
+    #[test]
+    fn a_slot_decodes_only_up_to_the_max_slot() {
+        let decode = |slot: u64| Slot::decode(&mut alloy_rlp::encode(slot).as_slice()).ok();
+        assert_eq!(decode(Slot::MAX.0), Some(Slot::MAX));
+        assert_eq!(decode(Slot::MAX_CAP.0), None);
+    }
 
     #[test]
     fn a_lane_decodes_only_below_the_proposer_set_size() {

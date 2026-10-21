@@ -19,9 +19,7 @@ use std::{
     num::NonZeroU64,
 };
 
-use alloy_rlp::{
-    Decodable, Encodable, Header, RlpDecodable, RlpEncodable, encode_list, list_length,
-};
+use alloy_rlp::{Decodable, Encodable, RlpEncodable};
 use thiserror::Error;
 use tracing::{info, warn};
 
@@ -51,9 +49,21 @@ where
 // Unsigned announcement of the sender's local finalization cap. Every slot
 // strictly below `cap` has finalized at the sender. This is a simplified
 // version of the finalization certificate message
-#[derive(Debug, Clone, Copy, PartialEq, Eq, RlpEncodable, RlpDecodable)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, RlpEncodable)]
 pub struct CapAdvance {
     pub cap: Slot,
+}
+
+// a cap may be Slot::MAX_CAP, past every slot number
+impl Decodable for CapAdvance {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
+        let cap = Slot(u64::decode(&mut payload)?);
+        if !payload.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
+        }
+        Ok(Self { cap })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,11 +80,11 @@ where
         match self {
             Self::DeadlineAgreement(message) => {
                 let fields: [&dyn Encodable; 2] = [&1u8, message];
-                encode_list::<_, dyn Encodable>(&fields, out);
+                alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
             }
             Self::CapAdvance(message) => {
                 let fields: [&dyn Encodable; 2] = [&2u8, message];
-                encode_list::<_, dyn Encodable>(&fields, out);
+                alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
             }
         }
     }
@@ -83,11 +93,11 @@ where
         match self {
             Self::DeadlineAgreement(message) => {
                 let fields: [&dyn Encodable; 2] = [&1u8, message];
-                list_length::<_, dyn Encodable>(&fields)
+                alloy_rlp::list_length::<_, dyn Encodable>(&fields)
             }
             Self::CapAdvance(message) => {
                 let fields: [&dyn Encodable; 2] = [&2u8, message];
-                list_length::<_, dyn Encodable>(&fields)
+                alloy_rlp::list_length::<_, dyn Encodable>(&fields)
             }
         }
     }
@@ -98,7 +108,7 @@ where
     M: Decodable,
 {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let mut payload = Header::decode_bytes(buf, true)?;
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
         let result = match <u8 as Decodable>::decode(&mut payload)? {
             1 => Self::DeadlineAgreement(<DeadlineAgreementMessage<M> as Decodable>::decode(
                 &mut payload,
@@ -745,6 +755,13 @@ mod tests {
             ConductorOutput::OpenSlots(slots) => slots,
             _ => panic!("expected runtime open-slots output"),
         }
+    }
+
+    #[test]
+    fn a_cap_advance_carries_the_max_cap() {
+        let cap = CapAdvance { cap: Slot::MAX_CAP };
+        let decoded = alloy_rlp::decode_exact::<CapAdvance>(alloy_rlp::encode(cap));
+        assert_eq!(decoded.ok(), Some(cap));
     }
 
     #[test]

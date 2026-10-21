@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_rlp::{BufMut, Decodable, Encodable, Error as RlpError, Header};
+use alloy_rlp::{BufMut, Decodable, Encodable, Error as RlpError};
 use bytes::Bytes;
 
 use super::{
@@ -214,7 +214,7 @@ pub struct CommittedLane {
 }
 
 fn encode_opt<T: Encodable>(value: &Option<T>, out: &mut dyn BufMut) {
-    Header {
+    alloy_rlp::Header {
         list: true,
         payload_length: opt_payload_len(value),
     }
@@ -229,7 +229,7 @@ fn opt_payload_len<T: Encodable>(value: &Option<T>) -> usize {
 }
 
 fn opt_len<T: Encodable>(value: &Option<T>) -> usize {
-    Header {
+    alloy_rlp::Header {
         list: true,
         payload_length: opt_payload_len(value),
     }
@@ -238,7 +238,7 @@ fn opt_len<T: Encodable>(value: &Option<T>) -> usize {
 
 // an option is a list of zero or one items.
 fn decode_opt<T: Decodable>(buf: &mut &[u8]) -> alloy_rlp::Result<Option<T>> {
-    let mut inner = Header::decode_bytes(buf, true)?;
+    let mut inner = alloy_rlp::Header::decode_bytes(buf, true)?;
     if inner.is_empty() {
         return Ok(None);
     }
@@ -270,7 +270,7 @@ impl LaneMeta {
 
 impl Encodable for LaneMeta {
     fn encode(&self, out: &mut dyn BufMut) {
-        Header {
+        alloy_rlp::Header {
             list: true,
             payload_length: self.payload_length(),
         }
@@ -284,7 +284,7 @@ impl Encodable for LaneMeta {
     }
 
     fn length(&self) -> usize {
-        Header {
+        alloy_rlp::Header {
             list: true,
             payload_length: self.payload_length(),
         }
@@ -294,7 +294,7 @@ impl Encodable for LaneMeta {
 
 impl Decodable for LaneMeta {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let mut b = Header::decode_bytes(buf, true)?;
+        let mut b = alloy_rlp::Header::decode_bytes(buf, true)?;
         let lane = Self {
             lane: u32::decode(&mut b)?,
             proposer: decode_opt(&mut b)?,
@@ -322,7 +322,7 @@ impl BlockMeta {
 
 impl Encodable for BlockMeta {
     fn encode(&self, out: &mut dyn BufMut) {
-        Header {
+        alloy_rlp::Header {
             list: true,
             payload_length: self.payload_length(),
         }
@@ -337,7 +337,7 @@ impl Encodable for BlockMeta {
     }
 
     fn length(&self) -> usize {
-        Header {
+        alloy_rlp::Header {
             list: true,
             payload_length: self.payload_length(),
         }
@@ -347,7 +347,7 @@ impl Encodable for BlockMeta {
 
 impl Decodable for BlockMeta {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let mut b = Header::decode_bytes(buf, true)?;
+        let mut b = alloy_rlp::Header::decode_bytes(buf, true)?;
         // the version gates the layout of everything after it.
         let version = u8::decode(&mut b)?;
         if version != LEDGER_VERSION {

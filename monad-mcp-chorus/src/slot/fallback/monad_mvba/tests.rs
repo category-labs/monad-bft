@@ -179,25 +179,19 @@ fn a_proposal_that_breaks_the_lock_is_ignored() {
     let other = metablock(2, &validator_data);
 
     let follower = nodes()[0];
-    let mut instance = started(follower, &locked, &validator_data);
-    drain(&mut instance);
-
     let qc = prepare_qc(view(1), &locked.entries(), &validator_data);
     let tc = timeout_certificate(view(1), Some(qc), &validator_data);
 
-    let (leader, proposal) = pre_prepare(view(2), &other, Some(tc.clone()));
-    instance.handle_message(leader, proposal);
-    let outputs = drain(&mut instance);
-
-    assert_eq!(
-        prepared_entries(&outputs),
-        None,
+    let (_, proposal) = pre_prepare(view(2), &other, Some(tc.clone()));
+    assert!(
+        delivered(proposal).is_none(),
         "a leader may not replace the locked value"
     );
 
     let mut instance = started(follower, &locked, &validator_data);
     drain(&mut instance);
     let (leader, proposal) = pre_prepare(view(2), &locked, Some(tc));
+    let proposal = delivered(proposal).expect("a proposal that keeps the lock decodes");
     instance.handle_message(leader, proposal);
     let outputs = drain(&mut instance);
 
@@ -354,27 +348,15 @@ fn a_proposal_carrying_a_certificate_for_another_slot_is_rejected() {
 fn a_proposal_carrying_a_timeout_certificate_for_another_slot_is_rejected() {
     let validator_data = validator_data();
     let block = metablock(1, &validator_data);
-    let follower = nodes()[0];
-
-    let mut instance = started(follower, &block, &validator_data);
-    drain(&mut instance);
 
     // genuinely aggregated, and verifiable against the slot it names -- which
     // is not this one. neither harvested nor taken as justification
     let foreign = timeout_certificate_in(Slot(SLOT.get() + 1), view(1), None, &validator_data);
-    let (leader, proposal) = pre_prepare(view(2), &block, Some(foreign));
-
-    instance.handle_message(leader, proposal);
-    let outputs = drain(&mut instance);
+    let (_, proposal) = pre_prepare(view(2), &block, Some(foreign));
 
     assert!(
-        !scheduled_timers(&outputs).contains(&TimerEvent::ViewTimeout(view(2))),
-        "another slot's certificate is no evidence this slot left its view"
-    );
-    assert_eq!(
-        prepared_entries(&outputs),
-        None,
-        "a carried certificate is checked, so an out-of-scope one is not voted on"
+        delivered(proposal).is_none(),
+        "another slot's certificate is no justification for this slot's view"
     );
 }
 
@@ -412,13 +394,9 @@ fn a_fast_metablock_is_the_only_thing_an_absent_certificate_admits() {
 
     // one entry short of a `FastQc`, so nothing here stands in for the
     // certificate that admits the slot to the fallback path
-    let (leader, proposal) = pre_prepare_with_cert(view(1), &block, None);
-    instance.handle_message(leader, proposal);
-    let outputs = drain(&mut instance);
-
-    assert_eq!(
-        prepared_entries(&outputs),
-        None,
+    let (_, proposal) = pre_prepare_with_cert(view(1), &block, None);
+    assert!(
+        delivered(proposal).is_none(),
         "`fbcert = ⊥` is legal only over a fast metablock"
     );
 
@@ -1886,6 +1864,102 @@ fn a_signer_in_two_groups_invalidates_the_certificate() {
         !tc.verify(&validator_data),
         "a signer in two groups is equivocation, not extra stake"
     );
+}
+
+#[test]
+fn a_timeout_whose_claim_disagrees_with_its_certificate_does_not_decode() {
+    let validator_data = validator_data();
+    let block = metablock(1, &validator_data);
+    let node = nodes()[0];
+    let qc = prepare_qc(view(1), &block.entries(), &validator_data);
+
+    let locked = TimeoutMsg::new_signed(SLOT, view(2), Some(qc), &node.keypair());
+    assert!(delivered(Message::Timeout(locked.clone())).is_some());
+
+    let unbacked = TimeoutMsg {
+        high_prep_qc: None,
+        ..locked
+    };
+    // a timeout for view 1 cannot carry a certificate of view 2
+    let ahead = prepare_qc(view(2), &block.entries(), &validator_data);
+    let from_the_future = TimeoutMsg::new_signed(SLOT, view(1), Some(ahead), &node.keypair());
+    for timeout in [unbacked, from_the_future] {
+        assert!(delivered(Message::Timeout(timeout)).is_none());
+    }
+}
+
+#[test]
+fn a_timeout_certificate_whose_claims_disagree_with_its_lock_does_not_decode() {
+    let validator_data = validator_data();
+    let block = metablock(1, &validator_data);
+    let qc = prepare_qc(view(1), &block.entries(), &validator_data);
+    let locked = timeout_certificate(view(1), Some(qc.clone()), &validator_data);
+    let unlocked = timeout_certificate(view(1), None, &validator_data);
+    let carried = |tc: TimeoutCertificate| {
+        let (_, proposal) = pre_prepare(view(2), &block, Some(tc));
+        delivered(proposal)
+    };
+    assert!(carried(locked.clone()).is_some());
+    assert!(carried(unlocked.clone()).is_some());
+
+    let claimed_but_dropped = TimeoutCertificate {
+        high_prep_qc: None,
+        ..locked
+    };
+    let unclaimed_but_carried = TimeoutCertificate {
+        high_prep_qc: Some(qc),
+        ..unlocked
+    };
+    for tc in [claimed_but_dropped, unclaimed_but_carried] {
+        assert!(carried(tc).is_none());
+    }
+}
+
+#[test]
+fn a_pre_prepare_whose_justification_does_not_fit_its_view_does_not_decode() {
+    let validator_data = validator_data();
+    let block = metablock(1, &validator_data);
+    let tc_1 = timeout_certificate(view(1), None, &validator_data);
+    let cert = Justification::FallbackCert(Some(enter_fallback_cert(&validator_data)));
+
+    let (_, view_1_with_tc) =
+        pre_prepare_justified(view(1), &block, Justification::Tc(tc_1.clone()));
+    let (_, view_2_with_cert) = pre_prepare_justified(view(2), &block, cert);
+    let (_, view_3_with_tc_1) = pre_prepare_justified(view(3), &block, Justification::Tc(tc_1));
+    for proposal in [view_1_with_tc, view_2_with_cert, view_3_with_tc_1] {
+        assert!(delivered(proposal).is_none());
+    }
+}
+
+#[test]
+fn a_scope_without_a_real_view_does_not_decode() {
+    let decode =
+        |scope: MvbaScope| alloy_rlp::decode_exact::<MvbaScope>(alloy_rlp::encode(scope)).ok();
+    let real = MvbaScope::new(SLOT, view(1));
+    assert_eq!(decode(real), Some(real));
+    assert_eq!(decode(MvbaScope::new(SLOT, FallbackView::GENESIS)), None);
+    assert_eq!(decode(MvbaScope::new(SLOT, FallbackView(u64::MAX))), None);
+}
+
+#[test]
+fn a_timeout_certificate_needs_one_group_per_distinct_vote() {
+    let validator_data = validator_data();
+    let block = metablock(1, &validator_data);
+    let tc = timeout_certificate(view(1), None, &validator_data);
+    let mut groups = tc.groups.clone();
+    groups.extend(tc.groups.iter().cloned());
+    let repeated = TimeoutCertificate {
+        groups,
+        ..tc.clone()
+    };
+    let empty = TimeoutCertificate {
+        groups: Vec::new(),
+        ..tc
+    };
+    for tc in [repeated, empty] {
+        let (_, proposal) = pre_prepare(view(2), &block, Some(tc));
+        assert!(delivered(proposal).is_none());
+    }
 }
 
 // ---------------- the genericity pin ----------------
