@@ -33,8 +33,8 @@ pub use self::{
     cadence::{Cadence, CadenceInput, CadenceOutput, CadenceWireMsg},
     da::{DA, DAInput},
     finalization::FinalizationInput,
-    mempool::{Mempool, MempoolSource, ProposalSource, RandomSource, SharedMempool},
-    proposing::{Proposing, ProposingInput, ProposingOutput},
+    mempool::Mempool,
+    proposing::{MempoolProposing, Proposing, ProposingInput, ProposingOutput, RandomProposing},
     repeater::{Recipients, Repeater, RepeaterConfig, RepeaterInput, RepeaterOutput},
 };
 use crate::{chorus::types::Timestamp, clock::Clock};

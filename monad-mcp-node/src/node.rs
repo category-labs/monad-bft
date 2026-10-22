@@ -25,8 +25,7 @@ use crate::{
         SlotManager, conductor::MonadConductor, slot::chorus::ChorusMessage, types::Timestamp,
     },
     component::{
-        Cadence, Component, DA, Mempool, MempoolSource, ProposalSource, Proposing, RandomSource,
-        Repeater, SharedMempool,
+        Cadence, Component, DA, Mempool, MempoolProposing, Proposing, RandomProposing, Repeater,
     },
     config::{NodeConfig, SourceKind},
     da::DARuntime,
@@ -72,20 +71,22 @@ impl Node {
             epoch_handle.proposers.clone(),
         );
 
-        let mempool = match config.proposal.source {
-            SourceKind::Random => None,
-            SourceKind::Mempool => Some(SharedMempool::new(Mempool::new(config.mempool))),
+        let proposing: Proposing = match config.proposal.source {
+            SourceKind::Random => {
+                let proposing = RandomProposing::new(&epoch_handle, &config.proposal);
+                Box::new(proposing)
+            }
+            SourceKind::Mempool => {
+                let mempool = Mempool::new(config.mempool);
+                let proposing = MempoolProposing::new(&epoch_handle, &config.proposal, mempool);
+                Box::new(proposing)
+            }
         };
-        let source: Box<dyn ProposalSource + Send> = match &mempool {
-            None => Box::new(RandomSource),
-            Some(mempool) => Box::new(MempoolSource(mempool.clone())),
-        };
-        let proposing = Proposing::new(&epoch_handle, &config.proposal, source);
         let repeater = config.repeater().map(Repeater::new);
         let collector = FinalizationCollector::default();
 
         Ok(Self {
-            runtime: NodeRuntime::new(epoch_handle, mempool),
+            runtime: NodeRuntime::new(epoch_handle),
             cadence,
             da,
             collector,
@@ -112,6 +113,12 @@ impl Node {
 impl<R> Node<R> {
     pub fn runtime(&self) -> &R {
         &self.runtime
+    }
+
+    // the same node with a wrapped or replaced proposer, for scenarios
+    pub fn map_proposing(mut self, wrap: impl FnOnce(Proposing) -> Proposing) -> Self {
+        self.proposing = wrap(self.proposing);
+        self
     }
 }
 

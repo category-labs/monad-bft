@@ -17,18 +17,12 @@
 //! in flight until its slot settles: committed, it is remembered to reject
 //! re-sends; left out of the block, it goes back to the head of the queue.
 
-mod source;
-
-use std::{
-    collections::{BTreeMap, BTreeSet, HashSet, VecDeque},
-    sync::{Arc, Mutex, MutexGuard},
-};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 
 use alloy_rlp::Encodable as _;
 use bytes::Bytes;
 use monad_mcp_chorus::ledger::{BatchBuilder, Hash, MAX_TX_PAYLOAD, Tx, TxError};
 
-pub use self::source::{MempoolSource, ProposalSource, RandomSource};
 use crate::{
     chorus::types::{Lane, Slot},
     config::MempoolConfig,
@@ -223,20 +217,6 @@ impl Mempool {
         }
         self.recent.push_back(hash);
         self.recent_set.insert(hash);
-    }
-}
-
-// admitted to by the runtime, drained by the proposing component
-#[derive(Clone)]
-pub struct SharedMempool(Arc<Mutex<Mempool>>);
-
-impl SharedMempool {
-    pub fn new(mempool: Mempool) -> Self {
-        Self(Arc::new(Mutex::new(mempool)))
-    }
-
-    pub fn lock(&self) -> MutexGuard<'_, Mempool> {
-        self.0.lock().expect("mempool lock poisoned")
     }
 }
 

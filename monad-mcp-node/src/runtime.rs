@@ -22,11 +22,11 @@ use crate::{
     chorus::{
         CadenceMessage, SlotLifecycle,
         slot::chorus::ChorusMessage,
-        types::{NodeId, Timestamp, TimestampDelta},
+        types::{Timestamp, TimestampDelta},
     },
     component::{
         CadenceInput, CadenceOutput, CadenceWireMsg, DAInput, Dispatch, FinalizationInput,
-        ProposingInput, ProposingOutput, Recipients, RepeaterInput, RepeaterOutput, SharedMempool,
+        ProposingInput, ProposingOutput, Recipients, RepeaterInput, RepeaterOutput,
     },
     da::{
         AssembledProposal, ChunkRecoveryRequest, DAOutput, Dissemination, read_envelope,
@@ -78,35 +78,15 @@ pub trait Runtime {
 
 pub struct NodeRuntime {
     epoch_handle: EpochHandle,
-    // None: the node proposes random payloads
-    mempool: Option<SharedMempool>,
 }
 
 impl NodeRuntime {
-    pub fn new(epoch_handle: EpochHandle, mempool: Option<SharedMempool>) -> Self {
-        Self {
-            epoch_handle,
-            mempool,
-        }
+    pub fn new(epoch_handle: EpochHandle) -> Self {
+        Self { epoch_handle }
     }
 
     pub fn epoch_handle(&self) -> &EpochHandle {
         &self.epoch_handle
-    }
-
-    pub fn mempool(&self) -> Option<&SharedMempool> {
-        self.mempool.as_ref()
-    }
-
-    fn admit(&self, now: Timestamp, from: NodeId, tx: Tx) {
-        let Some(mempool) = &self.mempool else {
-            tracing::debug!(?from, "no mempool, tx dropped");
-            return;
-        };
-        match mempool.lock().admit(tx, now.as_nanos() as u64) {
-            Ok(()) => tracing::debug!(?from, "tx admitted"),
-            Err(reject) => tracing::debug!(?from, %reject, "tx dropped"),
-        }
     }
 
     fn handle_cadence_outbound(
@@ -186,7 +166,8 @@ impl Runtime for NodeRuntime {
                         return;
                     }
                 };
-                self.admit(now, from, tx); // demo(tx-timeline)
+                let input = ProposingInput::Tx { at: now, from, tx }; // demo(tx-timeline)
+                effects.dispatch(Effect::Proposing(input));
             }
         }
     }
@@ -199,9 +180,6 @@ impl Runtime for NodeRuntime {
 
             CadenceOutput::Lifecycle(event) => {
                 effects.dispatch(Effect::DA(DAInput::Lifecycle(event)));
-                if let (SlotLifecycle::CapAdvance { cap }, Some(mempool)) = (event, &self.mempool) {
-                    mempool.lock().expire_below(cap);
-                }
                 match event {
                     SlotLifecycle::Opened { slot, deadline } => {
                         let input = ProposingInput::SlotOpen(slot, deadline);
@@ -224,16 +202,9 @@ impl Runtime for NodeRuntime {
                 let committed = finalization.pids().into_iter().flatten().count();
                 let path = finalization.path();
                 tracing::debug!(slot = slot.0, ?path, committed, "cadence finalized");
-                if let Some(mempool) = &self.mempool {
-                    let positive: Vec<bool> = finalization
-                        .pids()
-                        .into_iter()
-                        .map(|pid| pid.is_some())
-                        .collect();
-                    mempool
-                        .lock()
-                        .settle(slot, |j| positive.get(usize::from(j)) == Some(&true));
-                }
+                let positive = finalization.pids().map(|pid| pid.is_some());
+                let input = ProposingInput::Finalized(slot, positive);
+                effects.dispatch(Effect::Proposing(input));
                 let certificate = finalization.certificate_message();
                 effects.dispatch(Effect::Repeater(RepeaterInput::Finalization(
                     slot,
@@ -276,9 +247,10 @@ impl Runtime for NodeRuntime {
     fn handle_proposal(
         &mut self,
         now: Timestamp,
-        (slot, lane, message): ProposingOutput,
+        proposal: ProposingOutput,
         effects: &mut impl Dispatch<Effect>,
     ) {
+        let ProposingOutput::Propose(slot, lane, message) = proposal;
         let self_id = self.epoch_handle.self_id;
         let epoch_handle = self.epoch_handle.da();
         let unix_ts = unix_seconds(now);
@@ -416,77 +388,21 @@ mod tests {
         }
     }
 
-    fn pooled(runtime: &NodeRuntime) -> usize {
-        runtime.mempool().unwrap().lock().len()
-    }
-
     #[test]
-    fn a_tx_packet_lands_in_the_mempool_once() {
+    fn a_tx_packet_goes_to_proposing_and_junk_goes_nowhere() {
         let mut runtime = runtime_of(&config(SourceKind::Mempool));
         let mut effects = Vec::new();
+        let junk = Packet::Tx(Bytes::from_static(b"junk"));
+        runtime.handle_inbound(now(), inbound(junk), &mut effects);
+        assert!(effects.is_empty());
+
         runtime.handle_inbound(now(), inbound(Packet::Tx(tx(1).to_rlp())), &mut effects);
-        runtime.handle_inbound(
-            now(),
-            inbound(Packet::Tx(Bytes::from_static(b"junk"))),
-            &mut effects,
-        );
         // never forwarded: the rpc already chose this node
-        assert!(effects.is_empty());
-        assert_eq!(pooled(&runtime), 1);
-        runtime.handle_inbound(now(), inbound(Packet::Tx(tx(1).to_rlp())), &mut effects);
-        assert_eq!(pooled(&runtime), 1);
-        runtime.handle_inbound(now(), inbound(Packet::Tx(tx(2).to_rlp())), &mut effects);
-        assert_eq!(pooled(&runtime), 2);
-        assert!(effects.is_empty());
-        // demo(tx-timeline): admission stamps the node clock's now
-        let batch =
-            runtime
-                .mempool()
-                .unwrap()
-                .lock()
-                .drain(Slot(0), Lane::new_unchecked(0), 1 << 20, 0);
-        let admitted = monad_mcp_chorus::ledger::decode_batch(&batch).unwrap();
-        assert_eq!(admitted.len(), 2);
-        assert!(
-            admitted
-                .iter()
-                .all(|tx| u128::from(tx.mempool_admitted_at_ns) == now().as_nanos())
-        );
-    }
-
-    #[test]
-    fn an_oversized_tx_packet_is_dropped() {
-        let mut runtime = runtime_of(&config(SourceKind::Mempool));
-        let mut effects = Vec::new();
-        let oversized = Tx {
-            payload: Bytes::from(vec![0; monad_mcp_chorus::ledger::MAX_TX_PAYLOAD + 1]),
-            ..tx(1)
+        let [Effect::Proposing(ProposingInput::Tx { at, tx, .. })] = &effects[..] else {
+            panic!("one tx for proposing");
         };
-        runtime.handle_inbound(now(), inbound(Packet::Tx(oversized.to_rlp())), &mut effects);
-        assert!(effects.is_empty());
-        assert_eq!(pooled(&runtime), 0);
-    }
-
-    #[test]
-    fn a_tx_packet_to_a_random_source_node_is_dropped() {
-        let mut runtime = runtime_of(&config(SourceKind::Random));
-        assert!(runtime.mempool().is_none());
-        let mut effects = Vec::new();
-        runtime.handle_inbound(now(), inbound(Packet::Tx(tx(1).to_rlp())), &mut effects);
-        assert!(effects.is_empty());
-    }
-
-    #[test]
-    fn a_full_mempool_drops_the_overflow() {
-        let mut config = config(SourceKind::Mempool);
-        config.mempool.max_txs = 1;
-        let mut runtime = runtime_of(&config);
-        let mut effects = Vec::new();
-        for nonce in 1..=3 {
-            runtime.handle_inbound(now(), inbound(Packet::Tx(tx(nonce).to_rlp())), &mut effects);
-        }
-        assert!(effects.is_empty());
-        assert_eq!(pooled(&runtime), 1);
+        assert_eq!(*at, now()); // demo(tx-timeline)
+        assert_eq!(tx.nonce, 1);
     }
 
     #[test]
@@ -495,11 +411,8 @@ mod tests {
         let propose = |runtime: &mut NodeRuntime, len| {
             let mut effects = Vec::new();
             let message = Bytes::from(vec![7; len]);
-            runtime.handle_proposal(
-                now(),
-                (Slot(0), Lane::new_unchecked(0), message),
-                &mut effects,
-            );
+            let proposal = ProposingOutput::Propose(Slot(0), Lane::new_unchecked(0), message);
+            runtime.handle_proposal(now(), proposal, &mut effects);
             !effects.is_empty()
         };
         let max = ProposalConfig::MAX_PROPOSAL_SIZE_LIMIT;

@@ -17,19 +17,21 @@
 //! reach the ledger through proposal, DA and finalization, with no tokio and
 //! no sockets.
 
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, OnceLock},
+};
 
 use bytes::Bytes;
 use monad_mcp_chorus::ledger::{FinalizationPath, LedgerReader, LedgerWriter, Tx, decode_batch};
 use monad_mcp_node::{
-    Component as _, Dispatch, Effect, FinalizedSlot, Node, NodeOutput, NodeRuntime, Runtime,
+    Component, FinalizedSlot, Node, NodeOutput, NodeRuntime, Runtime,
     chorus::{
         slot::chorus::ChorusMessage,
         types::{NodeId, ProposerSchedule as _, Timestamp, TimestampDelta},
     },
-    component::{CadenceOutput, ProposingOutput, RepeaterOutput},
+    component::{Proposing, ProposingInput, ProposingOutput},
     config::{NodeConfig, SourceKind},
-    da::DAOutput,
     ledger::new_block,
     network::{Inbound, Outbound, Packet},
 };
@@ -60,12 +62,6 @@ struct Harness<R = NodeRuntime> {
 impl Harness {
     fn new(config: &NodeConfig) -> Self {
         Self::with(Node::new(config).unwrap())
-    }
-}
-
-impl Harness {
-    fn pooled(&self) -> usize {
-        self.node.runtime().mempool().unwrap().lock().len()
     }
 }
 
@@ -142,10 +138,8 @@ fn a_delivered_tx_is_finalized_and_written_to_the_ledger() {
 
     let admitted_at = harness.now.as_nanos() as u64; // demo(tx-timeline)
     harness.deliver(&tx(1));
-    assert_eq!(harness.pooled(), 1);
     // a resend from the rpc is a duplicate, not a second entry
     harness.deliver(&tx(1));
-    assert_eq!(harness.pooled(), 1);
 
     harness.run_until(at(GENESIS_MS + 3_000));
     assert!(harness.finalized.len() >= 25, "slots keep finalizing");
@@ -247,11 +241,6 @@ fn a_stream_of_txs_commits_each_exactly_once_and_in_order() {
         })
         .collect();
     assert!(slots.is_sorted(), "fifo across slots: {slots:?}");
-    assert!(harness.node.runtime().mempool().unwrap().lock().is_empty());
-    assert_eq!(
-        harness.node.runtime().mempool().unwrap().lock().in_flight(),
-        0
-    );
 }
 
 #[test]
@@ -260,7 +249,6 @@ fn a_random_source_node_drops_txs() {
     config.proposal.source = SourceKind::Random;
     config.proposal.max_payload_bytes = Some(4096);
     let mut harness = Harness::new(&config);
-    assert!(harness.node.runtime().mempool().is_none());
     harness.deliver(&tx(1));
 
     harness.run_until(at(GENESIS_MS + 1_000));
@@ -275,71 +263,53 @@ fn a_random_source_node_drops_txs() {
 
 // drops our first non-empty proposal, so its lane finalizes negative
 struct DropFirstBatch {
-    inner: NodeRuntime,
-    dropped: Option<u64>,
+    inner: Proposing,
+    dropped: Arc<OnceLock<u64>>,
 }
 
-impl Runtime for DropFirstBatch {
-    fn handle_inbound(
-        &mut self,
-        now: Timestamp,
-        inbound: Inbound,
-        effects: &mut impl Dispatch<Effect>,
-    ) {
-        self.inner.handle_inbound(now, inbound, effects);
+impl Component for DropFirstBatch {
+    type Input = ProposingInput;
+    type Output = ProposingOutput;
+
+    fn handle(&mut self, now: Timestamp, input: ProposingInput) {
+        self.inner.handle(now, input);
     }
 
-    fn handle_cadence(&mut self, output: CadenceOutput, effects: &mut impl Dispatch<Effect>) {
-        self.inner.handle_cadence(output, effects);
+    fn next_due(&self) -> Option<Timestamp> {
+        self.inner.next_due()
     }
 
-    fn handle_da(&mut self, now: Timestamp, output: DAOutput, effects: &mut impl Dispatch<Effect>) {
-        self.inner.handle_da(now, output, effects);
+    fn handle_due(&mut self, now: Timestamp) {
+        self.inner.handle_due(now);
     }
 
-    fn handle_proposal(
-        &mut self,
-        now: Timestamp,
-        proposal: ProposingOutput,
-        effects: &mut impl Dispatch<Effect>,
-    ) {
-        let (slot, _, payload) = &proposal;
-        if self.dropped.is_none() && !decode_batch(payload).unwrap().is_empty() {
-            self.dropped = Some(slot.0);
-            return;
+    fn poll(&mut self) -> Option<ProposingOutput> {
+        let proposal = self.inner.poll()?;
+        let ProposingOutput::Propose(slot, _, payload) = &proposal;
+        let has_txs = !decode_batch(payload).unwrap().is_empty();
+        if !has_txs || self.dropped.get().is_some() {
+            return Some(proposal);
         }
-        self.inner.handle_proposal(now, proposal, effects);
-    }
-
-    fn handle_repeat(
-        &mut self,
-        repeat: RepeaterOutput<ChorusMessage>,
-        effects: &mut impl Dispatch<Effect>,
-    ) {
-        self.inner.handle_repeat(repeat, effects);
-    }
-
-    fn handle_finalized(&mut self, finalized: FinalizedSlot, effects: &mut impl Dispatch<Effect>) {
-        self.inner.handle_finalized(finalized, effects);
+        self.dropped.set(slot.0).expect("dropped once");
+        self.inner.poll()
     }
 }
 
 #[test]
 fn a_batch_left_out_of_its_block_is_proposed_again() {
     let config = NodeConfig::single_node(0, at(GENESIS_MS), "unused-ledger");
-    let node = Node::new(&config)
-        .unwrap()
-        .map_runtime(|inner| DropFirstBatch {
-            inner,
-            dropped: None,
-        });
+    let dropped = Arc::new(OnceLock::new());
+    let node = Node::new(&config).unwrap().map_proposing(|inner| {
+        let dropped = dropped.clone();
+        Box::new(DropFirstBatch { inner, dropped })
+    });
     let mut harness = Harness::with(node);
     for nonce in 0..3 {
         harness.deliver(&tx(nonce));
     }
     harness.run_until(at(GENESIS_MS + 3_000));
 
-    let dropped = harness.node.runtime().dropped.expect("a batch was dropped");
+    let dropped = *dropped.get().expect("a batch was dropped");
     let block = harness
         .finalized
         .iter()
@@ -373,7 +343,6 @@ fn an_oversized_tx_is_never_committed() {
     };
     harness.deliver(&oversized);
     harness.deliver(&tx(1));
-    assert_eq!(harness.pooled(), 1);
     harness.run_until(at(GENESIS_MS + 2_000));
     assert_eq!(harness.committed().keys().copied().collect::<Vec<_>>(), [1]);
 }
