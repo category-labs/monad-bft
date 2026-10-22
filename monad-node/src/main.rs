@@ -385,6 +385,11 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
     // Read the node's consensus secp256k1 pubkey for the metrics label below.
     // `secp256k1_identity` is moved into the state builder on the next statement,
     // so the pubkey must be captured here, before that move.
+    //
+    // Use the compressed form so the label matches the canonical `node_id`
+    // serialization in validators.toml (see monad_types::serialize_pubkey). Do
+    // not switch to the concrete `.bytes()`, which is uncompressed and would
+    // break that parity.
     let secp_key_label = format!(
         "0x{}",
         hex::encode(node_state.secp256k1_identity.pubkey().bytes_compressed())
