@@ -114,3 +114,10 @@ impl ProposalScope {
         Self { slot, lane }
     }
 }
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Proposal<B> {
+    pub slot: Slot,
+    pub lane: Lane,
+    pub payload: B,
+}

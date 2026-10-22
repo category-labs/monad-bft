@@ -27,9 +27,11 @@ use super::{
     instance_rc::Resolved,
     slot_rc::SlotRaptorcast,
     types::{
-        ChorusDACommand, ChorusDAEvent, HeaderAuth, Lane, NodeId, ProposalId, ProposalKeyPair,
-        ProposerSchedule, Slot, SlotLifecycle, Timestamp, TimestampDelta, ValidatorData,
+        ChorusDACommand, ChorusDAEvent, HeaderAuth, Lane, NodeId, Proposal, ProposalId,
+        ProposalKeyPair, ProposerSchedule, Slot, SlotLifecycle, Timestamp, TimestampDelta,
+        ValidatorData, unix_seconds,
     },
+    wire::proposal::AssembledProposal,
 };
 
 // todo: give this type a more proper name. it encodes the concept of
@@ -125,6 +127,37 @@ where
         slot_raptorcast.ingest(sender, envelope)?;
         self.collect(slot);
         Ok(())
+    }
+
+    // our proposal, encoded with swiper-11
+    pub fn propose(&mut self, proposal: Proposal, now: Timestamp) {
+        let unix_ts = unix_seconds(now);
+        let assembled = AssembledProposal::build_s11(&self.epoch_handle, &proposal, unix_ts);
+        let Some(assembled) = assembled else {
+            tracing::warn!("proposal does not fit the scheme");
+            return;
+        };
+
+        let self_id = self.epoch_handle.self_id;
+        let mut first_hop = assembled.disseminate();
+        if let Some(own_envelope) = first_hop.split_off(&self_id) {
+            self.ingest_own(own_envelope);
+        }
+
+        // optimization: ingest all chunks for early decode, so peers
+        // don't have to rebroadcast back to author.
+        self.ingest_own(first_hop.envelope());
+
+        for dissemination in first_hop.into_disseminations() {
+            self.outbox.push_back(DAOutput::Disseminate(dissemination));
+        }
+    }
+
+    fn ingest_own(&mut self, envelope: ProposalEnvelope) {
+        let self_id = self.epoch_handle.self_id;
+        if let Err(reason) = self.ingest(&self_id, envelope) {
+            tracing::error!(?reason, "rejected our own proposal envelope");
+        }
     }
 
     // move the slot's pending outputs to the outbox

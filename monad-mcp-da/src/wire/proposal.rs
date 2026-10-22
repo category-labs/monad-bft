@@ -13,7 +13,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use bytes::{BufMut as _, Bytes, BytesMut};
 use monad_mcp_chorus::spec::validator::ValidatorData as _;
 
 use super::{
@@ -21,16 +20,16 @@ use super::{
         assignment::{ChunkAssignment, ChunkId, NodeIndex},
         chunk::{ChunkData, ProposalEnvelope},
         chunk_tree::ChunkTree,
+        egress::Dissemination,
         encoding_scheme::{self, DAEncodingScheme as _, d25, swiper},
         runtime::EpochHandle,
         types::{
-            EncodingScheme, Lane, NodeId, ProposalHeader, ProposalKeyPair, SignedProposalHeader,
-            Slot,
+            EncodingScheme, NodeId, Proposal, ProposalHeader, ProposalKeyPair, SignedProposalHeader,
         },
     },
-    PacketLayout as _, header_bytes, signed_bytes,
+    signed_bytes,
 };
-use crate::spec::{DAProposalHeader as _, DAProposalKeyPair as _};
+use crate::spec::DAProposalKeyPair as _;
 
 // a proposal this node authored: the signed header over the complete
 // tree of its chunks, and the assignment that routes them.
@@ -44,28 +43,28 @@ impl AssembledProposal {
     // None unless the message is the length the scheme encodes
     pub fn build_d25(
         epoch_handle: &EpochHandle,
-        slot: Slot,
-        message: &[u8],
+        proposal: &Proposal,
         timestamp: u64,
     ) -> Option<Self> {
         let num_validators = epoch_handle.validator_data.len();
-        let d25 = d25::for_message(slot, message.len(), timestamp, num_validators)?;
+        let msg_len = proposal.payload.len();
+        // Note: d25 doesn't encode the lane
+        let d25 = d25::for_message(proposal.slot, msg_len, timestamp, num_validators)?;
         let scheme = EncodingScheme::D25(d25);
-        Self::build(epoch_handle, message, scheme)
+        Self::build(epoch_handle, &proposal.payload, scheme)
     }
 
     pub fn build_s11(
         epoch_handle: &EpochHandle,
-        slot: Slot,
-        lane: Lane,
-        message: &[u8],
+        proposal: &Proposal,
         timestamp: u64,
     ) -> Option<Self> {
         let num_validators = epoch_handle.validator_data.len();
-        let msg_len = message.len();
-        let s11 = swiper::for_message(slot, msg_len, timestamp, lane, num_validators)?;
+        let msg_len = proposal.payload.len();
+        let lane = proposal.lane;
+        let s11 = swiper::for_message(proposal.slot, msg_len, timestamp, lane, num_validators)?;
         let scheme = EncodingScheme::S11(s11);
-        Self::build(epoch_handle, message, scheme)
+        Self::build(epoch_handle, &proposal.payload, scheme)
     }
 
     fn build(epoch_handle: &EpochHandle, message: &[u8], scheme: EncodingScheme) -> Option<Self> {
@@ -120,8 +119,6 @@ impl AssembledProposal {
 
         FirstHopDissemination {
             header: &self.header,
-            header_bytes: header_bytes(&self.header),
-            body_len: self.header.scheme().body_len(),
             chunks,
             header_only,
             assignment: &self.assignment,
@@ -131,15 +128,12 @@ impl AssembledProposal {
 
 pub struct FirstHopDissemination<'a> {
     header: &'a SignedProposalHeader,
-    header_bytes: Bytes,
-    body_len: usize,
     chunks: Vec<(ChunkId, ChunkData)>,
     header_only: Vec<NodeIndex>,
     assignment: &'a ChunkAssignment,
 }
 
 impl<'a> FirstHopDissemination<'a> {
-    // todo: give DA a shortcut to ingest its own chunks as trusted
     pub fn envelope(&self) -> ProposalEnvelope {
         let mut envelope = ProposalEnvelope::from_header(self.header.clone());
         for (chunk_id, data) in &self.chunks {
@@ -164,36 +158,34 @@ impl<'a> FirstHopDissemination<'a> {
         Some(envelope)
     }
 
-    pub fn into_packets(self) -> Vec<(&'a NodeId, Bytes)> {
-        let num_chunks = self.chunks.len();
-        let segment_len = self.header_bytes.len() + self.body_len;
-        let mut buffer = BytesMut::with_capacity(segment_len * num_chunks);
-        let mut packets = Vec::with_capacity(num_chunks + self.header_only.len());
-
-        let layout = self.header.scheme();
+    pub fn into_disseminations(self) -> Vec<Dissemination> {
+        let mut disseminations = Vec::with_capacity(self.chunks.len() + self.header_only.len());
         for (chunk_id, data) in self.chunks {
             let routing = self.assignment.routing(chunk_id);
             let recipient = self.assignment.node(routing.owner_index());
 
-            buffer.put_slice(&self.header_bytes);
-            layout.write_body(chunk_id.to_wire(), &data, &mut buffer);
-            let packet = buffer.split().freeze();
-
-            packets.push((recipient, packet));
+            let mut envelope = ProposalEnvelope::from_header(self.header.clone());
+            envelope.insert(chunk_id.to_wire(), data);
+            let to = [*recipient].into();
+            disseminations.push(Dissemination { to, envelope });
         }
 
         for node_index in self.header_only {
             let node = self.assignment.node(node_index);
-            packets.push((node, self.header_bytes.clone()));
+            let envelope = ProposalEnvelope::from_header(self.header.clone());
+            let to = [*node].into();
+            disseminations.push(Dissemination { to, envelope });
         }
 
-        packets
+        disseminations
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+
+    use bytes::Bytes;
 
     use super::{
         super::{
@@ -203,23 +195,46 @@ mod tests {
                     MESSAGE_LEN, PACKET_LOSS_RESISTANCE, SLOT, author, epoch_handle_for, group,
                     proposal_chunks,
                 },
+                types::Lane,
             },
-            read_envelope, write_chunk,
+            header_bytes, read_envelope, write_chunk, write_envelope,
         },
         *,
     };
+    use crate::spec::DAProposalHeader as _;
 
     // the author's view of the default fixture
     fn authoring_handle() -> EpochHandle {
         epoch_handle_for(author(), 4, vec![author()])
     }
 
-    fn by_recipient(packets: Vec<(&NodeId, Bytes)>) -> HashMap<NodeId, Vec<Bytes>> {
+    // the first hop as the runtime puts it on the wire
+    fn packets(first_hop: FirstHopDissemination<'_>) -> Vec<(NodeId, Bytes)> {
+        let mut packets = Vec::new();
+        for Dissemination { to, envelope } in first_hop.into_disseminations() {
+            for node in to {
+                for packet in write_envelope(&envelope) {
+                    packets.push((node, packet));
+                }
+            }
+        }
+        packets
+    }
+
+    fn by_recipient(packets: Vec<(NodeId, Bytes)>) -> HashMap<NodeId, Vec<Bytes>> {
         let mut by_recipient: HashMap<NodeId, Vec<Bytes>> = HashMap::new();
         for (node, packet) in packets {
-            by_recipient.entry(*node).or_default().push(packet);
+            by_recipient.entry(node).or_default().push(packet);
         }
         by_recipient
+    }
+
+    fn proposal_of(payload: Vec<u8>) -> Proposal {
+        Proposal {
+            slot: SLOT,
+            lane: Lane::new_unchecked(0),
+            payload: payload.into(),
+        }
     }
 
     #[test]
@@ -228,23 +243,24 @@ mod tests {
         let (header, chunks) = proposal_chunks(&epoch_handle, 1);
         let message = vec![1u8; MESSAGE_LEN];
 
-        let proposal = AssembledProposal::build_d25(&epoch_handle, SLOT, &message, 0);
+        let proposal = AssembledProposal::build_d25(&epoch_handle, &proposal_of(message), 0);
         let proposal = proposal.expect("the fixture's message fits");
         assert_eq!(proposal.header(), &header);
-        assert!(AssembledProposal::build_d25(&epoch_handle, SLOT, &[], 0).is_none());
+        let empty = proposal_of(vec![]);
+        assert!(AssembledProposal::build_d25(&epoch_handle, &empty, 0).is_none());
 
         let dissemination = proposal.disseminate();
         assert_eq!(dissemination.envelope(), group(&chunks));
-        let packets = dissemination.into_packets();
+        let packets = packets(dissemination);
         // one per chunk, then the header alone to the author itself
         assert_eq!(packets.len(), chunks.len() + 1);
         for ((recipient, packet), chunk) in packets.iter().zip(&chunks) {
             let owner = NodeId::dummy(1 + u64::from(chunk.chunk_id()) % 3);
-            assert_eq!(**recipient, owner);
+            assert_eq!(*recipient, owner);
             assert_eq!(*packet, write_chunk(chunk));
         }
         let (recipient, packet) = &packets[chunks.len()];
-        assert_eq!((**recipient, packet), (author(), &header_bytes(&header)));
+        assert_eq!((*recipient, packet), (author(), &header_bytes(&header)));
     }
 
     #[test]
@@ -252,7 +268,7 @@ mod tests {
         let epoch_handle = authoring_handle();
         let (header, chunks) = proposal_chunks(&epoch_handle, 1);
         let message = vec![1u8; MESSAGE_LEN];
-        let proposal = AssembledProposal::build_d25(&epoch_handle, SLOT, &message, 0);
+        let proposal = AssembledProposal::build_d25(&epoch_handle, &proposal_of(message), 0);
         let proposal = proposal.expect("the fixture's message fits");
         let mut dissemination = proposal.disseminate();
 
@@ -268,7 +284,7 @@ mod tests {
         assert_eq!(authors, ProposalEnvelope::from_header(header));
         assert_eq!(dissemination.split_off(&NodeId::dummy(9)), None);
 
-        let packets = by_recipient(dissemination.into_packets());
+        let packets = by_recipient(packets(dissemination));
         assert!(!packets.contains_key(&NodeId::dummy(1)));
         assert!(!packets.contains_key(&author()));
         assert_eq!(packets[&NodeId::dummy(2)].len(), 2);
@@ -298,7 +314,7 @@ mod tests {
         );
         assert_eq!(proposal.header(), &header);
 
-        let packets = by_recipient(proposal.disseminate().into_packets());
+        let packets = by_recipient(packets(proposal.disseminate()));
         assert_eq!(packets[&NodeId::dummy(1)].len(), 3);
         assert_eq!(packets[&NodeId::dummy(3)].len(), 3);
         assert_eq!(packets[&author()], vec![header_bytes(&header)]);
@@ -313,12 +329,11 @@ mod tests {
         let epoch_handle = authoring_handle();
         let message = vec![1u8; MESSAGE_LEN];
 
-        let proposal =
-            AssembledProposal::build_s11(&epoch_handle, SLOT, Lane::new_unchecked(0), &message, 0);
+        let proposal = AssembledProposal::build_s11(&epoch_handle, &proposal_of(message), 0);
         let proposal = proposal.expect("the message fits");
         assert!(matches!(proposal.header().scheme(), EncodingScheme::S11(_)));
 
-        for (_, packet) in proposal.disseminate().into_packets() {
+        for (_, packet) in packets(proposal.disseminate()) {
             let envelope = read_envelope(packet).expect("well-formed");
             assert_eq!(envelope.header(), proposal.header());
         }

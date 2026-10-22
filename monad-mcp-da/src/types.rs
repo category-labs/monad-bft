@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use bytes::Bytes;
+
 // re-export chorus types
 pub use super::{
     chorus::{
@@ -27,3 +29,11 @@ pub use super::{
     },
     env::ProposalKeyPair,
 };
+
+// a proposal's payload is opaque bytes to DA
+pub type Proposal = super::chorus::types::Proposal<Bytes>;
+
+pub(crate) fn unix_seconds(now: Timestamp) -> u64 {
+    let nanos_per_second = u128::from(TimestampDelta::NANOS_PER_MILLISECOND) * 1_000;
+    (now.as_nanos() / nanos_per_second) as u64
+}

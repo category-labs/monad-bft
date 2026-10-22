@@ -23,7 +23,7 @@ use super::{Component, Mempool};
 use crate::{
     chorus::{
         proposing::ProposalPlanner,
-        types::{Lane, Lanes, NodeId, Slot, Timestamp},
+        types::{Lane, Lanes, NodeId, Proposal, Slot, Timestamp},
     },
     config::ProposalConfig,
     epoch::EpochHandle,
@@ -39,9 +39,7 @@ pub enum ProposingInput {
     Finalized(Slot, Lanes<bool>),
 }
 
-pub enum ProposingOutput {
-    Propose(Slot, Lane, Bytes),
-}
+pub type ProposingOutput = Proposal<Bytes>;
 
 // any proposing component; the node holds one and never knows which
 pub type Proposing = Box<dyn Component<Input = ProposingInput, Output = ProposingOutput> + Send>;
@@ -111,8 +109,12 @@ impl MempoolProposing {
                 len = payload.len(),
                 "drained mempool"
             );
-            self.outbox
-                .push_back(ProposingOutput::Propose(slot, lane, payload));
+            let proposal = Proposal {
+                slot,
+                lane,
+                payload,
+            };
+            self.outbox.push_back(proposal);
         }
     }
 }
@@ -177,8 +179,12 @@ impl RandomProposing {
     fn collect(&mut self, now: Timestamp) {
         while let Some((slot, lane)) = self.planner.poll(now) {
             let payload = random_payload(self.proposal_size_limit);
-            self.outbox
-                .push_back(ProposingOutput::Propose(slot, lane, payload));
+            let proposal = Proposal {
+                slot,
+                lane,
+                payload,
+            };
+            self.outbox.push_back(proposal);
         }
     }
 }
@@ -340,13 +346,13 @@ mod tests {
         let due = proposing.next_due().expect("a seal is due");
         proposing.handle_due(due);
 
-        let Some(ProposingOutput::Propose(slot, _, payload)) = proposing.poll() else {
+        let Some(proposal) = proposing.poll() else {
             panic!("a proposal at the seal time");
         };
-        assert_eq!(slot, Slot(0));
+        assert_eq!(proposal.slot, Slot(0));
         let sealed_at_ns = due.as_nanos() as u64;
         assert_eq!(
-            decode_sealed_batch(&payload).unwrap(),
+            decode_sealed_batch(&proposal.payload).unwrap(),
             (sealed_at_ns, vec![])
         );
     }

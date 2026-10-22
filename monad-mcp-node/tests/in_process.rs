@@ -28,7 +28,7 @@ use monad_mcp_node::{
     Component, FinalizedSlot, Node, NodeOutput, NodeRuntime, Runtime,
     chorus::{
         slot::chorus::ChorusMessage,
-        types::{NodeId, ProposerSchedule as _, Timestamp, TimestampDelta},
+        types::{NodeId, Proposal, ProposerSchedule as _, Timestamp, TimestampDelta},
     },
     component::{Proposing, ProposingInput, ProposingOutput},
     config::{NodeConfig, SourceKind},
@@ -285,7 +285,7 @@ impl Component for DropFirstBatch {
 
     fn poll(&mut self) -> Option<ProposingOutput> {
         let proposal = self.inner.poll()?;
-        let ProposingOutput::Propose(slot, _, payload) = &proposal;
+        let Proposal { slot, payload, .. } = &proposal;
         let has_txs = !decode_batch(payload).unwrap().is_empty();
         if !has_txs || self.dropped.get().is_some() {
             return Some(proposal);

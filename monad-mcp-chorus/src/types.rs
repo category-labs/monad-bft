@@ -37,7 +37,7 @@ pub use super::{
         ProposerSchedule, ProposerSet, RotatingProposerSchedule, RoundRobinLeaderSchedule,
     },
 };
-pub use crate::common_types::{Lane, MAX_PROPOSER_SET_SIZE, ProposalScope, Slot};
+pub use crate::common_types::{Lane, MAX_PROPOSER_SET_SIZE, Proposal, ProposalScope, Slot};
 use crate::spec::{
     Stake as _,
     proposal::ProposalHeader as _,

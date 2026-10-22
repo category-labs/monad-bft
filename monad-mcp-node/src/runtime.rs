@@ -19,19 +19,12 @@ use monad_mcp_chorus::{
 };
 
 use crate::{
-    chorus::{
-        CadenceMessage, SlotLifecycle,
-        slot::chorus::ChorusMessage,
-        types::{Timestamp, TimestampDelta},
-    },
+    chorus::{CadenceMessage, SlotLifecycle, slot::chorus::ChorusMessage, types::Timestamp},
     component::{
         CadenceInput, CadenceOutput, CadenceWireMsg, DAInput, Dispatch, FinalizationInput,
         ProposingInput, ProposingOutput, Recipients, RepeaterInput, RepeaterOutput,
     },
-    da::{
-        AssembledProposal, ChunkRecoveryRequest, DAOutput, Dissemination, read_envelope,
-        write_envelope,
-    },
+    da::{ChunkRecoveryRequest, DAOutput, Dissemination, read_envelope, write_envelope},
     epoch::EpochHandle,
     finalization::FinalizedSlot,
     network::{Inbound, Outbound, Packet},
@@ -242,50 +235,20 @@ impl Runtime for NodeRuntime {
         effects.dispatch(Effect::Network(outbound));
     }
 
-    // a proposal released at (slot, lane): the first hop goes to the
-    // other owners, plus all chunks to proposer's DA
     fn handle_proposal(
         &mut self,
-        now: Timestamp,
+        _now: Timestamp,
         proposal: ProposingOutput,
         effects: &mut impl Dispatch<Effect>,
     ) {
-        let ProposingOutput::Propose(slot, lane, message) = proposal;
-        let self_id = self.epoch_handle.self_id;
-        let epoch_handle = self.epoch_handle.da();
-        let unix_ts = unix_seconds(now);
-
-        // encode with swiper-11 scheme.
-        let proposal = AssembledProposal::build_s11(&epoch_handle, slot, lane, &message, unix_ts);
-        let Some(proposal) = proposal else {
-            tracing::warn!(
-                ?slot,
-                len = message.len(),
-                "message does not fit the scheme"
-            );
-            return;
-        };
-
         tracing::info!(
-            slot = slot.0,
-            lane = usize::from(lane),
-            len = message.len(),
+            ?proposal.slot,
+            ?proposal.lane,
+            len = proposal.payload.len(),
             "proposing"
         );
-
-        let mut first_hop = proposal.disseminate();
-
-        if let Some(envelope) = first_hop.split_off(&self_id) {
-            effects.dispatch(Effect::DA(DAInput::Envelope(self_id, envelope)));
-        }
-        // optimization: ingest all chunks for early decode
-        let envelope = first_hop.envelope();
-        effects.dispatch(Effect::DA(DAInput::Envelope(self_id, envelope)));
-
-        for (to, packet) in first_hop.into_packets() {
-            let packet = Packet::Chunk(packet);
-            effects.dispatch(Effect::Network(Outbound::Unicast(*to, packet)));
-        }
+        let input = DAInput::Propose(proposal);
+        effects.dispatch(Effect::DA(input));
     }
 
     fn handle_da(&mut self, now: Timestamp, output: DAOutput, effects: &mut impl Dispatch<Effect>) {
@@ -338,20 +301,14 @@ fn record(to: Recipients, message: &CadenceWireMsg, effects: &mut impl Dispatch<
     effects.dispatch(Effect::Repeater(input));
 }
 
-// todo: confirm the header's unix_ts unit
-fn unix_seconds(now: Timestamp) -> u64 {
-    let nanos_per_second = u128::from(TimestampDelta::NANOS_PER_MILLISECOND) * 1_000;
-    (now.as_nanos() / nanos_per_second) as u64
-}
-
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
 
     use super::*;
     use crate::{
-        chorus::types::{Lane, NodeId, Slot},
-        config::{NodeConfig, ProposalConfig, SourceKind},
+        chorus::types::NodeId,
+        config::{NodeConfig, SourceKind},
         node::Node,
     };
 
@@ -403,20 +360,5 @@ mod tests {
         };
         assert_eq!(*at, now()); // demo(tx-timeline)
         assert_eq!(tx.nonce, 1);
-    }
-
-    #[test]
-    fn the_largest_proposal_size_limit_still_encodes() {
-        let mut runtime = runtime_of(&config(SourceKind::Random));
-        let propose = |runtime: &mut NodeRuntime, len| {
-            let mut effects = Vec::new();
-            let message = Bytes::from(vec![7; len]);
-            let proposal = ProposingOutput::Propose(Slot(0), Lane::new_unchecked(0), message);
-            runtime.handle_proposal(now(), proposal, &mut effects);
-            !effects.is_empty()
-        };
-        let max = ProposalConfig::MAX_PROPOSAL_SIZE_LIMIT;
-        assert!(propose(&mut runtime, max));
-        assert!(!propose(&mut runtime, max + 1));
     }
 }
