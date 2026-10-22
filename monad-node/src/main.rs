@@ -382,6 +382,14 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
 
     let mut last_ledger_tip: Option<SeqNum> = None;
 
+    // Read the node's consensus secp256k1 pubkey for the metrics label below.
+    // `secp256k1_identity` is moved into the state builder on the next statement,
+    // so the pubkey must be captured here, before that move.
+    let secp_key_label = format!(
+        "0x{}",
+        hex::encode(node_state.secp256k1_identity.pubkey().bytes_compressed())
+    );
+
     let builder = MonadStateBuilder {
         validator_set_factory: ValidatorSetFactory::default(),
         leader_election,
@@ -469,6 +477,17 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                 return Err(());
             }
         }
+    }
+
+    // Always stamp the node's own secp256k1 identity as a label so every scrape
+    // is self-identifying regardless of operator config. This is authoritative:
+    // it overrides any operator-supplied `secp_key` so a stale or mislabeled
+    // value can't mask the real identity (e.g. after an operator swaps servers).
+    if prometheus_labels
+        .insert("secp_key".to_string(), secp_key_label)
+        .is_some()
+    {
+        warn!("operator-set `secp_key` prometheus label overridden by the node's secp256k1 identity");
     }
 
     // Migration phase is read once (it only changes via the offline monad-mpt
