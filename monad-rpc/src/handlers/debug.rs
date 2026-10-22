@@ -292,7 +292,7 @@ pub enum Tracer {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Default, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TracerConfig {
     /// onlyTopCall for callTracer, ignored for prestateTracer
     #[serde(default)]
@@ -1648,5 +1648,41 @@ mod tests {
         let c_frame = &e_frame.calls[0];
         assert_eq!(c_frame.logs.len(), 1);
         assert_eq!(c_frame.logs[0].index.0, 2); // C0
+    }
+
+    #[test]
+    fn tracer_config_rejects_unsupported_options() {
+        for option in ["disableCode", "disableStorage", "includeEmpty"] {
+            let input = serde_json::json!({
+                "tracer": "prestateTracer",
+                "tracerConfig": {option: true}
+            });
+            let error = serde_json::from_value::<TracerObject>(input).unwrap_err();
+            assert!(error
+                .to_string()
+                .contains(&format!("unknown field `{option}`")));
+        }
+    }
+
+    #[test]
+    fn tracer_config_accepts_supported_options_and_defaults() {
+        let tracer: TracerObject = serde_json::from_value(serde_json::json!({
+            "tracer": "prestateTracer",
+            "tracerConfig": {"diffMode": true, "onlyTopCall": true, "withLog": true}
+        }))
+        .unwrap();
+        assert!(tracer.config.diff_mode);
+        assert!(tracer.config.only_top_call);
+        assert!(tracer.config.with_log);
+
+        for input in [
+            serde_json::json!({}),
+            serde_json::json!({"tracerConfig": {}}),
+        ] {
+            let tracer: TracerObject = serde_json::from_value(input).unwrap();
+            assert!(!tracer.config.diff_mode);
+            assert!(!tracer.config.only_top_call);
+            assert!(!tracer.config.with_log);
+        }
     }
 }
