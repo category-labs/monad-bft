@@ -30,7 +30,7 @@ use crate::{
     },
     config::{NodeConfig, SourceKind},
     da::DARuntime,
-    finalization::FinalizedSlot,
+    finalization::{FinalizationCollector, FinalizedSlot},
     network::{Inbound, Outbound},
     runtime::{Effect, NodeRuntime, Runtime},
 };
@@ -47,6 +47,7 @@ pub struct Node<R = NodeRuntime> {
     // components
     pub(crate) cadence: Cadence,
     pub(crate) da: DA,
+    pub(crate) collector: FinalizationCollector,
     pub(crate) proposing: Proposing,
     pub(crate) repeater: Option<Repeater<ChorusMessage>>,
 
@@ -81,11 +82,13 @@ impl Node {
         };
         let proposing = Proposing::new(&epoch_handle, &config.proposal, source);
         let repeater = config.repeater().map(Repeater::new);
+        let collector = FinalizationCollector::default();
 
         Ok(Self {
             runtime: NodeRuntime::new(epoch_handle, mempool),
             cadence,
             da,
+            collector,
             proposing,
             repeater,
             outbox: VecDeque::new(),
@@ -98,6 +101,7 @@ impl Node {
             runtime: wrap(self.runtime),
             cadence: self.cadence,
             da: self.da,
+            collector: self.collector,
             proposing: self.proposing,
             repeater: self.repeater,
             outbox: self.outbox,
@@ -116,6 +120,7 @@ impl<R: Runtime> Node<R> {
         match effect {
             Effect::Cadence(input) => self.cadence.handle(now, input),
             Effect::DA(input) => self.da.handle(now, input),
+            Effect::Finalization(input) => self.collector.handle(now, input),
             Effect::Proposing(input) => self.proposing.handle(now, input),
             Effect::Repeater(input) => {
                 if let Some(repeater) = &mut self.repeater {
@@ -136,6 +141,9 @@ impl<R: Runtime> Node<R> {
             }
             while let Some(output) = self.da.poll() {
                 self.runtime.handle_da(now, output, &mut effects);
+            }
+            while let Some(output) = self.collector.poll() {
+                self.runtime.handle_finalized(output, &mut effects);
             }
             while let Some(output) = self.proposing.poll() {
                 self.runtime.handle_proposal(now, output, &mut effects);

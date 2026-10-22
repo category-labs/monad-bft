@@ -24,8 +24,8 @@ use crate::{
     chorus::slot::chorus::ChorusMessage,
     clock::Clock,
     component::{
-        CadenceInput, CadenceOutput, DAInput, Dispatch, Link, ProposingInput, ProposingOutput,
-        RepeaterInput, RepeaterOutput, spawn,
+        CadenceInput, CadenceOutput, DAInput, Dispatch, FinalizationInput, Link, ProposingInput,
+        ProposingOutput, RepeaterInput, RepeaterOutput, spawn,
     },
     da::DAOutput,
     finalization::FinalizedSlot,
@@ -51,6 +51,7 @@ pub struct AsyncNode<R = NodeRuntime> {
 struct Links {
     cadence: Link<CadenceInput, CadenceOutput>,
     da: Link<DAInput, DAOutput>,
+    collector: Link<FinalizationInput, FinalizedSlot>,
     proposing: Link<ProposingInput, ProposingOutput>,
 
     repeater: Option<RepeaterLink>,
@@ -65,6 +66,7 @@ impl<R: Runtime> AsyncNode<R> {
             runtime,
             cadence,
             da,
+            collector,
             proposing,
             repeater,
             ..
@@ -74,6 +76,7 @@ impl<R: Runtime> AsyncNode<R> {
         let links = Links {
             cadence: spawn(cadence, clock, &mut tasks),
             da: spawn(da, clock, &mut tasks),
+            collector: spawn(collector, clock, &mut tasks),
             proposing: spawn(proposing, clock, &mut tasks),
             repeater: repeater.map(|repeater| spawn(repeater, clock, &mut tasks)),
             network: None,
@@ -109,6 +112,9 @@ impl<R: Runtime> AsyncNode<R> {
                 Some(output) = links.da.recv() => {
                     runtime.handle_da(self.clock.now(), output, links);
                 }
+                Some(finalized) = links.collector.recv() => {
+                    runtime.handle_finalized(finalized, links);
+                }
                 Some(output) = links.proposing.recv() => {
                     runtime.handle_proposal(self.clock.now(), output, links);
                 }
@@ -127,6 +133,7 @@ impl Dispatch<Effect> for Links {
             // required components
             Effect::Cadence(input) => self.cadence.send(input),
             Effect::DA(input) => self.da.send(input),
+            Effect::Finalization(input) => self.collector.send(input),
             Effect::Proposing(input) => self.proposing.send(input),
 
             // optional components

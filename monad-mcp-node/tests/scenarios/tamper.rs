@@ -17,7 +17,7 @@
 //! reach the components or the network.
 
 use monad_mcp_node::{
-    Dispatch, Effect, Runtime,
+    Dispatch, Effect, FinalizedSlot, Runtime,
     chorus::{slot::chorus::ChorusMessage, types::Timestamp},
     component::{CadenceOutput, ProposingOutput, RepeaterOutput},
     da::DAOutput,
@@ -141,6 +141,11 @@ impl<R: Runtime> Runtime for Tampered<R> {
         for effect in new_effects {
             effects.dispatch(effect);
         }
+    }
+
+    fn handle_finalized(&mut self, finalized: FinalizedSlot, effects: &mut impl Dispatch<Effect>) {
+        let mut effects = Filtered::new(&mut self.filter, effects);
+        self.inner.handle_finalized(finalized, &mut effects);
     }
 }
 

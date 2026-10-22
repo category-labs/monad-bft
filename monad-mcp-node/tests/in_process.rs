@@ -318,6 +318,10 @@ impl Runtime for DropFirstBatch {
     ) {
         self.inner.handle_repeat(repeat, effects);
     }
+
+    fn handle_finalized(&mut self, finalized: FinalizedSlot, effects: &mut impl Dispatch<Effect>) {
+        self.inner.handle_finalized(finalized, effects);
+    }
 }
 
 #[test]

@@ -25,15 +25,15 @@ use crate::{
         types::{NodeId, Timestamp, TimestampDelta},
     },
     component::{
-        CadenceInput, CadenceOutput, CadenceWireMsg, DAInput, Dispatch, ProposingInput,
-        ProposingOutput, Recipients, RepeaterInput, RepeaterOutput, SharedMempool,
+        CadenceInput, CadenceOutput, CadenceWireMsg, DAInput, Dispatch, FinalizationInput,
+        ProposingInput, ProposingOutput, Recipients, RepeaterInput, RepeaterOutput, SharedMempool,
     },
     da::{
         AssembledProposal, ChunkRecoveryRequest, DAOutput, Dissemination, read_envelope,
         write_envelope,
     },
     epoch::EpochHandle,
-    finalization::{FinalizationCollector, FinalizedSlot},
+    finalization::FinalizedSlot,
     network::{Inbound, Outbound, Packet},
 };
 
@@ -41,6 +41,7 @@ use crate::{
 pub enum Effect {
     Cadence(CadenceInput),
     DA(DAInput),
+    Finalization(FinalizationInput),
     Proposing(ProposingInput),
     Repeater(RepeaterInput<ChorusMessage>),
     Network(Outbound),
@@ -72,11 +73,11 @@ pub trait Runtime {
         repeat: RepeaterOutput<ChorusMessage>,
         effects: &mut impl Dispatch<Effect>,
     );
+    fn handle_finalized(&mut self, finalized: FinalizedSlot, effects: &mut impl Dispatch<Effect>);
 }
 
 pub struct NodeRuntime {
     epoch_handle: EpochHandle,
-    collector: FinalizationCollector,
     // None: the node proposes random payloads
     mempool: Option<SharedMempool>,
 }
@@ -85,7 +86,6 @@ impl NodeRuntime {
     pub fn new(epoch_handle: EpochHandle, mempool: Option<SharedMempool>) -> Self {
         Self {
             epoch_handle,
-            collector: FinalizationCollector::default(),
             mempool,
         }
     }
@@ -138,12 +138,6 @@ impl NodeRuntime {
     fn loopback(&self, message: CadenceWireMsg, effects: &mut impl Dispatch<Effect>) {
         let self_id = self.epoch_handle.self_id;
         effects.dispatch(Effect::Cadence(CadenceInput::Message(self_id, message)));
-    }
-
-    fn deliver_finalized(&mut self, effects: &mut impl Dispatch<Effect>) {
-        while let Some(finalized) = self.collector.poll() {
-            effects.dispatch(Effect::Ledger(finalized));
-        }
     }
 }
 
@@ -218,7 +212,8 @@ impl Runtime for NodeRuntime {
                     }
                     SlotLifecycle::CapAdvance { .. } => {}
                 }
-                self.collector.handle_lifecycle(event);
+                let input = FinalizationInput::Lifecycle(event);
+                effects.dispatch(Effect::Finalization(input));
             }
 
             CadenceOutput::DACommand(slot, command) => {
@@ -244,13 +239,14 @@ impl Runtime for NodeRuntime {
                     slot,
                     certificate,
                 )));
-                self.collector.handle_finalization(now, slot, finalization);
-                self.deliver_finalized(effects);
+                let input = FinalizationInput::Finalized(now, slot, finalization);
+                effects.dispatch(Effect::Finalization(input));
             }
 
             // demo(tx-timeline)
             CadenceOutput::FastBlock(now, slot) => {
-                self.collector.handle_fast_block(now, slot);
+                let input = FinalizationInput::FastBlock(now, slot);
+                effects.dispatch(Effect::Finalization(input));
             }
 
             CadenceOutput::CapAdvance(now, cap) => {
@@ -331,9 +327,14 @@ impl Runtime for NodeRuntime {
                 pid,
                 message,
             } => {
-                self.collector
-                    .handle_resolved(now, slot, lane, pid, message); // demo(tx-timeline)
-                self.deliver_finalized(effects);
+                let input = FinalizationInput::Resolved {
+                    at: now, // demo(tx-timeline)
+                    slot,
+                    lane,
+                    pid,
+                    message,
+                };
+                effects.dispatch(Effect::Finalization(input));
             }
             DAOutput::Disseminate(Dissemination { to, envelope }) => {
                 let packets = write_envelope(&envelope);
@@ -349,6 +350,10 @@ impl Runtime for NodeRuntime {
                 effects.dispatch(Effect::Network(Outbound::Unicast(to, packet)));
             }
         }
+    }
+
+    fn handle_finalized(&mut self, finalized: FinalizedSlot, effects: &mut impl Dispatch<Effect>) {
+        effects.dispatch(Effect::Ledger(finalized));
     }
 }
 
