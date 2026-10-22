@@ -492,7 +492,9 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         .insert("secp_key".to_string(), secp_key_label)
         .is_some()
     {
-        warn!("operator-set `secp_key` prometheus label overridden by the node's secp256k1 identity");
+        warn!(
+            "operator-set `secp_key` prometheus label overridden by the node's secp256k1 identity"
+        );
     }
 
     // Migration phase is read once (it only changes via the offline monad-mpt
