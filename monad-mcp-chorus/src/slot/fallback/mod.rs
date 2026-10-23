@@ -17,15 +17,14 @@
 //! proposer -- when the fast path cannot commit a slot. Votes and certificates
 //! range over `entries(x)`, never over the value that carried them
 
-// Not wired into `FallbackPath` yet; routing chorus messages in is a follow-up
-#[allow(dead_code)]
 pub mod monad_mvba;
 use std::{
     collections::{HashMap, VecDeque},
     fmt::Debug,
     hash::Hash,
-    sync::Arc,
 };
+
+pub use monad_mvba::FallbackCommitQc;
 
 /// MetaBlock components are exported
 pub use super::fast::{
@@ -36,16 +35,12 @@ use super::{
         driver::{NodeEvent, WakeId},
         runtime::Runtime,
     },
-    types::{
-        IsVote, KeyPair, NodeId, Slot, StrongQc, Timestamp, TimestampDelta, TotalProposalMap,
-        Validated, ValidatorData,
-    },
+    types::{IsVote, NodeId, StrongQc, Timestamp, TimestampDelta, TotalProposalMap, Validated},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct FallbackView(u64);
 
-#[allow(dead_code)]
 impl FallbackView {
     /// Views are 1-indexed; view 0 is the not-yet-started state
     const GENESIS: Self = Self(0);
@@ -61,37 +56,6 @@ impl FallbackView {
 
     fn saturating_sub(self, views: u64) -> Self {
         Self(self.0.saturating_sub(views))
-    }
-}
-
-#[derive(Clone)]
-pub(crate) struct FallbackPath {
-    slot: Slot,
-    round: FallbackView,
-
-    cert: EnterFallbackCert,
-    block: Metablock,
-
-    key: Arc<KeyPair>,
-    validator_data: Arc<ValidatorData>,
-}
-
-impl FallbackPath {
-    pub(crate) fn new(
-        slot: Slot,
-        key: Arc<KeyPair>,
-        validator_data: Arc<ValidatorData>,
-        cert: EnterFallbackCert,
-        block: Metablock,
-    ) -> Self {
-        Self {
-            slot,
-            round: FallbackView(0),
-            key,
-            validator_data,
-            cert,
-            block,
-        }
     }
 }
 

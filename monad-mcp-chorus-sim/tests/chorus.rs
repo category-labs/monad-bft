@@ -51,6 +51,7 @@ fn conductor() -> Conductor {
 fn add_node(builder: &mut CadenceSwarmBuilder<DummyMsg>, id: u64, val_data: &Arc<ValidatorData>) {
     let node_id = NodeId::dummy(id);
     let context = ChorusContext {
+        node_id,
         key: Arc::new(node_id.keypair()),
         validator_data: val_data.clone(),
         da_handle: Arc::new(DAHandle),

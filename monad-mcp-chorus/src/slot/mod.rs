@@ -57,6 +57,9 @@ pub enum SlotOutput<S: SlotConsensus> {
     /// SlotConsensusInput.
     Broadcast(S::Message),
 
+    /// Send a message to a single peer validator
+    Unicast { to: NodeId, message: S::Message },
+
     /// Signal execution for optimistic execution.  Q: maybe move this
     /// message into a Context handle method? CommitOptimistic is
     /// meaningless without the knowledge of execution.

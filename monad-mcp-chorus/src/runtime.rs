@@ -114,6 +114,9 @@ where
                 SlotOutput::Broadcast(message) => {
                     self.driver.broadcast_slot(slot, message);
                 }
+                SlotOutput::Unicast { to, message } => {
+                    self.driver.unicast_slot(slot, to, message);
+                }
                 SlotOutput::CommitOptimistic(data) => {
                     if let Some(observer) = &mut self.observer {
                         observer.handle_optimistic_commit(now, slot, &data);
