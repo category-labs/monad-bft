@@ -48,7 +48,7 @@ impl Simple7702Account {
         max_fee_per_gas: u128,
         chain_id: u64,
     ) -> Result<Self> {
-        let bytecode = Bytes::from_hex(SIMPLE7702ACCOUNT_BYTECODE).unwrap();
+        let bytecode = Bytes::from_hex(SIMPLE7702ACCOUNT_BYTECODE.trim()).unwrap();
 
         let constructor = ISimple7702Account::constructorCall {
             anEntryPoint: entrypoint_addr,
