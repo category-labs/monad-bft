@@ -382,6 +382,13 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
 
     let mut last_ledger_tip: Option<SeqNum> = None;
 
+    // Capture the secp256k1 identity before it is moved into the builder below.
+    // PubKey::bytes matches the canonical node_id serialization in validators.toml.
+    let secp_key_label = format!(
+        "0x{}",
+        hex::encode(PubKey::bytes(&node_state.secp256k1_identity.pubkey()))
+    );
+
     let builder = MonadStateBuilder {
         validator_set_factory: ValidatorSetFactory::default(),
         leader_election,
@@ -469,6 +476,15 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
                 return Err(());
             }
         }
+    }
+
+    if prometheus_labels
+        .insert("secp_key".to_string(), secp_key_label)
+        .is_some()
+    {
+        warn!(
+            "operator-set `secp_key` prometheus label overridden by the node's secp256k1 identity"
+        );
     }
 
     // Migration phase is read once (it only changes via the offline monad-mpt
