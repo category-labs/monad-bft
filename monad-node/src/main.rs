@@ -382,17 +382,11 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
 
     let mut last_ledger_tip: Option<SeqNum> = None;
 
-    // Read the node's consensus secp256k1 pubkey for the metrics label below.
-    // `secp256k1_identity` is moved into the state builder on the next statement,
-    // so the pubkey must be captured here, before that move.
-    //
-    // Use the compressed form so the label matches the canonical `node_id`
-    // serialization in validators.toml (see monad_types::serialize_pubkey). Do
-    // not switch to the concrete `.bytes()`, which is uncompressed and would
-    // break that parity.
+    // Capture the secp256k1 identity before it is moved into the builder below.
+    // PubKey::bytes matches the canonical node_id serialization in validators.toml.
     let secp_key_label = format!(
         "0x{}",
-        hex::encode(node_state.secp256k1_identity.pubkey().bytes_compressed())
+        hex::encode(PubKey::bytes(&node_state.secp256k1_identity.pubkey()))
     );
 
     let builder = MonadStateBuilder {
@@ -484,10 +478,6 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         }
     }
 
-    // Always stamp the node's own secp256k1 identity as a label so every scrape
-    // is self-identifying regardless of operator config. This is authoritative:
-    // it overrides any operator-supplied `secp_key` so a stale or mislabeled
-    // value can't mask the real identity (e.g. after an operator swaps servers).
     if prometheus_labels
         .insert("secp_key".to_string(), secp_key_label)
         .is_some()
