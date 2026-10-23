@@ -282,6 +282,46 @@ pub struct TracerObject {
     pub config: TracerConfig,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TracerDescriptor {
+    NoopTracer,
+    CallTracer { max_size: usize },
+    PreStateTracer,
+    StateDiffTracer,
+    AccessListTracer,
+}
+
+impl TracerDescriptor {
+    pub fn new(tracer: TracerObject, max_response_size: usize) -> Self {
+        match tracer.tracer {
+            Tracer::CallTracer => Self::CallTracer {
+                max_size: max_response_size,
+            },
+            Tracer::PreStateTracer if tracer.config.diff_mode => Self::StateDiffTracer,
+            Tracer::PreStateTracer => Self::PreStateTracer,
+        }
+    }
+
+    pub fn call_tracer_max_size(self) -> usize {
+        match self {
+            Self::CallTracer { max_size } => max_size,
+            _ => 0,
+        }
+    }
+}
+
+impl From<TracerDescriptor> for monad_ethcall::MonadTracer {
+    fn from(tracer: TracerDescriptor) -> Self {
+        match tracer {
+            TracerDescriptor::NoopTracer => Self::NoopTracer,
+            TracerDescriptor::CallTracer { .. } => Self::CallTracer,
+            TracerDescriptor::PreStateTracer => Self::PreStateTracer,
+            TracerDescriptor::StateDiffTracer => Self::StateDiffTracer,
+            TracerDescriptor::AccessListTracer => Self::AccessListTracer,
+        }
+    }
+}
+
 #[derive(Deserialize, Debug, Default, schemars::JsonSchema, Clone, Copy, PartialEq, Eq)]
 pub enum Tracer {
     #[default]
