@@ -918,13 +918,10 @@ impl RpcWsCompare {
             }
         });
 
-        // The websocket stream drives the comparison: for each streamed head,
-        // fetch the SAME block number over the rpc and compare the header
-        // contents. get_block_by_number retries until the rpc serves the
-        // block, which absorbs the lag between the speculative heads the
-        // events websocket announces and the finalized view the rpc serves
-        // (several blocks on 400ms block times), as well as ws/rpc pointing
-        // at different nodes.
+        // For each streamed head, fetch the same block number over the rpc and
+        // compare headers. get_block_by_number retries until the rpc serves the
+        // block, absorbing the lag between the ws's speculative heads and the
+        // rpc's finalized view (and ws/rpc pointing at different nodes).
         while !shutdown.load(Ordering::Relaxed) {
             let ws_header = match ws_rx.recv().await {
                 Some(header) => header,
@@ -986,7 +983,10 @@ impl RpcWsCompare {
         json_rpc_id: u32,
     ) -> Option<String> {
         while let Some(message) = read.next().await {
-            let message = message.expect("failed to parse message");
+            let Ok(message) = message else {
+                warn!("websocket read error while waiting for subscription ID; retrying");
+                return None;
+            };
             match message {
                 Message::Text(text) => {
                     if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {

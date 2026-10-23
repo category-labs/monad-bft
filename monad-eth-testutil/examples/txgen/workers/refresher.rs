@@ -228,12 +228,10 @@ pub async fn refresh_batch(
             acct.native_bal = *b;
         }
         if let Ok((_, n)) = &nonces[i] {
-            // Never regress the local nonce while txs are in flight — the
-            // generator may have incremented it past the chain-reported value.
-            // But if the chain's pending nonce stays frozen below the local
-            // value across several refreshes, the gap nonce was dropped
-            // (drop_percentage or RPC reject) and the account is wedged:
-            // adopt the chain nonce so the gap gets resubmitted.
+            // Don't regress the local nonce while txs are in flight. But if the
+            // chain pending nonce stays frozen below it across several refreshes,
+            // the gap nonce was dropped and the account is wedged — adopt the
+            // chain nonce so the gap gets resubmitted.
             if *n >= acct.nonce {
                 acct.nonce = *n;
                 acct.chain_nonce_stale_rounds = 0;
