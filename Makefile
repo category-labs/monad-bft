@@ -1,52 +1,24 @@
 SHELL := /bin/sh
 
 CONTAINER_ENGINE ?= $(shell command -v podman 2>/dev/null || command -v docker 2>/dev/null)
-ifeq ($(origin PACKAGE_VERSION),undefined)
-PACKAGE_VERSION := $(shell ./scripts/package-version)
-endif
+PACKAGE_VERSION ?= $(shell ./debian/scripts/dev-version)
+GIT_COMMIT ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
+GIT_BRANCH ?= $(shell git symbolic-ref --short -q HEAD 2>/dev/null || echo detached)
+GIT_TAG ?= $(shell git describe --tags --exact-match HEAD 2>/dev/null || echo untagged)
+GIT_MODIFIED ?= $(shell test -n "$$(git status --porcelain --ignore-submodules=all 2>/dev/null)" && echo true || echo false)
+GIT_COMMIT_HASH ?= $(shell git -C monad-execution rev-parse HEAD 2>/dev/null || echo unknown)
 DEB_OUTPUT_DIR ?= dist
-BUILDER_IMAGE ?= monad-bft-builder:local
+STRIP_SYMBOLS ?= 1
 
-# Passed into the container build, which has no .git to read them from.
-GIT_COMMIT ?= $(shell git rev-parse HEAD 2>/dev/null)
-GIT_BRANCH ?= $(shell git branch --show-current 2>/dev/null)
-GIT_TAG ?= $(shell git describe --tags --exact-match HEAD 2>/dev/null)
-GIT_MODIFIED ?= $(shell test -n "$$(git status --porcelain 2>/dev/null)" && echo true || echo false)
-# The execution submodule's commit, stamped into monad, monad-cli, and monad-mpt.
-GIT_COMMIT_HASH ?= $(shell git -C monad-execution rev-parse HEAD 2>/dev/null)
-# Exported so recipes can pass them as quoted shell vars; make won't splice
-# values that may hold shell metacharacters into the command line.
-export PACKAGE_VERSION BUILDER_IMAGE GIT_COMMIT GIT_BRANCH GIT_TAG GIT_MODIFIED GIT_COMMIT_HASH
+export CONTAINER_ENGINE PACKAGE_VERSION GIT_COMMIT GIT_BRANCH GIT_TAG GIT_MODIFIED GIT_COMMIT_HASH DEB_OUTPUT_DIR STRIP_SYMBOLS
 
-.PHONY: build builder deb deb-host clean
+.PHONY: deb deb-host clean
 
-build:
-	PACKAGE_VERSION="$$PACKAGE_VERSION" ./scripts/build-binaries
+deb:
+	./debian/scripts/package-deb-containerized
 
-# Needs the docker/builder toolchain on the host; `make deb` needs only a container engine.
 deb-host:
-	PACKAGE_VERSION="$$PACKAGE_VERSION" DEB_OUTPUT_DIR=$(DEB_OUTPUT_DIR) ./scripts/build-deb
-
-builder:
-	@test -n "$(CONTAINER_ENGINE)" || { echo "Install Docker or Podman, or set CONTAINER_ENGINE."; exit 1; }
-	$(CONTAINER_ENGINE) build -t "$$BUILDER_IMAGE" docker/builder
-
-deb: builder
-	@mkdir -p $(DEB_OUTPUT_DIR); iidfile=$$(mktemp); \
-	trap 'rm -f "$$iidfile"' EXIT; \
-	$(CONTAINER_ENGINE) build \
-		--iidfile "$$iidfile" \
-		--build-arg BUILDER_IMAGE="$$BUILDER_IMAGE" \
-		--build-arg PACKAGE_VERSION="$$PACKAGE_VERSION" \
-		--build-arg GIT_COMMIT="$$GIT_COMMIT" \
-		--build-arg GIT_BRANCH="$$GIT_BRANCH" \
-		--build-arg GIT_TAG="$$GIT_TAG" \
-		--build-arg GIT_MODIFIED="$$GIT_MODIFIED" \
-		--build-arg GIT_COMMIT_HASH="$$GIT_COMMIT_HASH" \
-		-f docker/debian-package/Dockerfile . && \
-	container_id=$$($(CONTAINER_ENGINE) create "$$(cat "$$iidfile")" true) && \
-	trap '$(CONTAINER_ENGINE) rm -f $$container_id >/dev/null; rm -f "$$iidfile"' EXIT && \
-	$(CONTAINER_ENGINE) cp "$$container_id":/out/. $(DEB_OUTPUT_DIR)
+	./debian/scripts/package-deb
 
 clean:
-	rm -rf $(DEB_OUTPUT_DIR)
+	rm -rf '$(DEB_OUTPUT_DIR)'

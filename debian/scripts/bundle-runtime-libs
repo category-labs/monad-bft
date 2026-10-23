@@ -1,0 +1,43 @@
+#!/usr/bin/env sh
+set -eu
+
+cd "$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
+
+lib_dir="debian/monad/usr/local/lib"
+mkdir -p "$lib_dir"
+
+triedb=$(find target/release -type f -name 'libtriedb_driver.so' \
+  -printf '%T@ %p\n' | sort -nr | head -n 1 | cut -d' ' -f2-)
+
+test -n "$triedb" || {
+  echo "libtriedb_driver.so not found under target/release" >&2
+  exit 2
+}
+
+cp "$triedb" "$lib_dir/"
+
+lddtree_output=
+for binary in \
+  "$triedb" \
+  target/release/monad-* \
+  target/release/examples/* \
+  monad-execution/build/category/mpt/monad-mpt \
+  monad-execution/build/cmd/monad \
+  monad-execution/build/cmd/monad-cli; do
+  [ -x "$binary" ] || continue
+  output=$(lddtree -l "$binary")
+  lddtree_output="$lddtree_output
+$output"
+done
+
+libs=$(printf '%s\n' "$lddtree_output" \
+  | awk -v root="$PWD/" 'index($0, root) == 1' | sort -u)
+
+duplicates=$(printf '%s\n' "$libs" | sed 's#.*/##' | sort | uniq -d)
+
+if [ -n "$duplicates" ]; then
+  echo "Bundled library basename collision: $duplicates" >&2
+  exit 2
+fi
+
+[ -z "$libs" ] || cp $libs "$lib_dir/"

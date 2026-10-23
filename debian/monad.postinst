@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+
+case "$1" in
+  configure)
+    ldconfig
+    if [ -d /run/systemd/system ]; then
+      systemctl daemon-reexec || true
+      systemctl daemon-reload || true
+      systemctl enable --now set-hugepages.service || true
+      systemctl enable --now monad-cruft.timer || true
+    fi
+    sysctl --system || true
+    ;;
+esac

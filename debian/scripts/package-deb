@@ -1,0 +1,21 @@
+#!/usr/bin/env sh
+set -eu
+
+PACKAGE_VERSION=${PACKAGE_VERSION:?PACKAGE_VERSION must be set}
+DEB_OUTPUT_DIR=${DEB_OUTPUT_DIR:?DEB_OUTPUT_DIR must be set}
+STRIP_SYMBOLS=${STRIP_SYMBOLS:?STRIP_SYMBOLS must be set}
+
+cd "$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)"
+mkdir -p "$DEB_OUTPUT_DIR"
+
+rm -f debian/changelog
+
+printf 'monad (%s) unstable; urgency=medium\n\n  * See https://github.com/category-labs/monad-bft for the change history.\n\n -- Category Labs <engineering@category.xyz>  %s\n' \
+  "$PACKAGE_VERSION" "$(date -R)" > debian/changelog
+
+env -u DEB_OUTPUT_DIR \
+  PACKAGE_VERSION="$PACKAGE_VERSION" STRIP_SYMBOLS="$STRIP_SYMBOLS" \
+  dpkg-buildpackage --build=binary --unsigned-source --unsigned-changes
+rm -f debian/changelog
+
+mv "../monad_${PACKAGE_VERSION}_amd64.deb" "$DEB_OUTPUT_DIR/"

@@ -1,0 +1,29 @@
+#!/usr/bin/env sh
+set -eu
+
+CONTAINER_ENGINE=${CONTAINER_ENGINE:?CONTAINER_ENGINE must be set}
+PACKAGE_VERSION=${PACKAGE_VERSION:?PACKAGE_VERSION must be set}
+GIT_COMMIT=${GIT_COMMIT:?GIT_COMMIT must be set}
+GIT_BRANCH=${GIT_BRANCH:?GIT_BRANCH must be set}
+GIT_TAG=${GIT_TAG:?GIT_TAG must be set}
+GIT_MODIFIED=${GIT_MODIFIED:?GIT_MODIFIED must be set}
+GIT_COMMIT_HASH=${GIT_COMMIT_HASH:?GIT_COMMIT_HASH must be set}
+DEB_OUTPUT_DIR=${DEB_OUTPUT_DIR:?DEB_OUTPUT_DIR must be set}
+STRIP_SYMBOLS=${STRIP_SYMBOLS:?STRIP_SYMBOLS must be set}
+
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+cd "$root_dir"
+
+mkdir -p "$DEB_OUTPUT_DIR"
+
+"$CONTAINER_ENGINE" build \
+  --build-arg "PACKAGE_VERSION=$PACKAGE_VERSION" \
+  --build-arg "GIT_COMMIT=$GIT_COMMIT" \
+  --build-arg "GIT_BRANCH=$GIT_BRANCH" \
+  --build-arg "GIT_TAG=$GIT_TAG" \
+  --build-arg "GIT_MODIFIED=$GIT_MODIFIED" \
+  --build-arg "GIT_COMMIT_HASH=$GIT_COMMIT_HASH" \
+  --build-arg "STRIP_SYMBOLS=$STRIP_SYMBOLS" \
+  --output "type=local,dest=$DEB_OUTPUT_DIR" \
+  -f debian/Dockerfile \
+  .

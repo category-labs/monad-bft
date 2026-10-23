@@ -1,0 +1,29 @@
+#!/usr/bin/make -f
+
+export DEB_CFLAGS_MAINT_STRIP = -Werror=format-security
+export DEB_CXXFLAGS_MAINT_STRIP = -Werror=format-security
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	./debian/scripts/build-binaries
+
+override_dh_auto_install:
+	./debian/scripts/bundle-runtime-libs
+	# Required until binaries are renamed
+	mkdir -p debian/monad/usr/local/bin
+	cp target/release/examples/ledger-tail debian/monad/usr/local/bin/monad-ledger-tail
+	cp target/release/examples/sign-name-record debian/monad/usr/local/bin/monad-sign-name-record
+	cp target/release/examples/txgen debian/monad/usr/local/bin/monad-txgen
+
+override_dh_installsystemd:
+	dh_installsystemd --no-enable --no-start
+
+override_dh_usrlocal:
+	# Keep the package payload under /usr/local for now.
+
+override_dh_strip:
+	if [ "$(STRIP_SYMBOLS)" = 1 ]; then dh_strip --no-automatic-dbgsym; fi
+	find debian/monad/usr/local/lib -type f \
+		-exec patchelf --set-rpath '$$ORIGIN' {} \;

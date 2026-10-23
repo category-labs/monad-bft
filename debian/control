@@ -1,0 +1,13 @@
+Source: monad
+Section: net
+Priority: optional
+Maintainer: Category Labs <engineering@category.xyz>
+Build-Depends: debhelper-compat (= 13), dpkg-dev, patchelf, pax-utils
+Standards-Version: 4.7.0
+
+Package: monad
+Architecture: amd64
+Depends: ca-certificates, ${shlibs:Depends}, ${misc:Depends}
+Description: Monad
+ Execution and Consensus binaries maintained by the monad-bft
+ repository.

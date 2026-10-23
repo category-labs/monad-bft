@@ -1,0 +1,32 @@
+#!/bin/sh
+set -eu
+
+case "$1" in
+  install)
+    rm -f /etc/sysctl.d/99-custom.conf
+
+    if command -v lscpu >/dev/null 2>&1; then
+      threads_per_core=$(lscpu | awk '/Thread\(s\) per core:/ { print $4; exit }')
+      case "$threads_per_core" in
+        ''|*[!0-9]*) ;;
+        *)
+          if [ "$threads_per_core" -gt 1 ]; then
+            echo "WARNING: Hyper-Threading is enabled. Monad recommends disabling it for optimal performance."
+          fi
+          ;;
+      esac
+
+      cores_per_socket=$(lscpu | awk '/Core\(s\) per socket:/ { print $4; exit }')
+      case "$cores_per_socket" in
+        ''|*[!0-9]*) ;;
+        *)
+          if [ "$cores_per_socket" -lt 16 ]; then
+            echo "WARNING: System has only $cores_per_socket cores per socket. Minimum required: 16."
+          else
+            echo "System has $cores_per_socket cores per socket."
+          fi
+          ;;
+      esac
+    fi
+    ;;
+esac

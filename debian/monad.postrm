@@ -1,0 +1,17 @@
+#!/bin/sh
+set -eu
+
+case "$1" in
+  remove|purge)
+    if [ -d /run/systemd/system ]; then
+      systemctl daemon-reload || true
+      for unit in monad-archiver monad-bft monad-blockcapd monad-checker monad-cruft monad-exec-events-uploader monad-execution-genesis monad-execution monad-indexer monad-ledger-tail monad-mpt monad-txgen set-hugepages; do
+        systemctl reset-failed "$unit.service" >/dev/null 2>&1 || true
+      done
+      systemctl reset-failed monad-cruft.timer >/dev/null 2>&1 || true
+    fi
+    rm -f /etc/security/limits.d/90-monad-nofile.conf
+    rm -f /etc/sysctl.d/90-monad-network-buffer.conf
+    ldconfig || true
+    ;;
+esac

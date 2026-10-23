@@ -1,0 +1,20 @@
+debian/etc/security/limits.d/90-monad-nofile.conf etc/security/limits.d/
+debian/etc/sysctl.d/90-monad-network-buffer.conf etc/sysctl.d/
+debian/opt/monad/scripts/clear-old-artifacts.sh opt/monad/scripts/
+debian/opt/monad/scripts/reset-workspace.sh opt/monad/scripts/
+debian/resources/usr/lib/systemd/system/*.service usr/lib/systemd/system/
+debian/resources/usr/lib/systemd/system/*.timer usr/lib/systemd/system/
+
+monad-execution/build/category/mpt/monad-mpt usr/local/bin/
+monad-execution/build/cmd/monad usr/local/bin/
+monad-execution/build/cmd/monad-cli usr/local/bin/
+
+target/release/examples/triedb-bench usr/local/bin/
+target/release/examples/wal2json usr/local/bin/
+target/release/monad-archive-checker usr/local/bin/
+target/release/monad-archiver usr/local/bin/
+target/release/monad-block-writer usr/local/bin/
+target/release/monad-debug-node usr/local/bin/
+target/release/monad-indexer usr/local/bin/
+target/release/monad-keystore usr/local/bin/
+target/release/monad-node usr/local/bin/

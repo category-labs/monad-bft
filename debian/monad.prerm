@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+
+case "$1" in
+  remove|deconfigure)
+    if [ -d /run/systemd/system ]; then
+      for unit in monad-archiver monad-bft monad-blockcapd monad-checker monad-cruft monad-exec-events-uploader monad-execution-genesis monad-execution monad-indexer monad-ledger-tail monad-mpt monad-txgen set-hugepages; do
+        systemctl stop "$unit.service" || true
+      done
+    fi
+    ;;
+esac

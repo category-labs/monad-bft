@@ -2,10 +2,26 @@
 
 set -ex
 
-systemctl stop monad-bft monad-execution monad-rpc monad-mpt monad-execution-genesis || true
+systemctl stop monad-bft monad-execution monad-mpt monad-execution-genesis || true
+
+mkdir /home/monad/monad-bft/empty-dir
+rsync -r --delete /home/monad/monad-bft/empty-dir/ /home/monad/monad-bft/ledger/
+rsync -r --delete /home/monad/monad-bft/empty-dir/ /home/monad/monad-bft/config/forkpoint/
+rsync -r --delete /home/monad/monad-bft/empty-dir/ /home/monad/monad-bft/config/validators/
+rm -rf /home/monad/monad-bft/empty-dir
+
+touch /home/monad/monad-bft/ledger/wal
+find /home/monad/monad-bft -maxdepth 1 -type f -name 'wal_*' -delete
+rm -f /home/monad/monad-bft/config/peers.toml
+rm -f /home/monad/monad-bft/controlpanel.sock
+rm -f /home/monad/monad-bft/mempool.sock
+rm -f /home/monad/monad-bft/triedb-stats
+rm -rf /home/monad/monad-bft/blockdb
+rm -rf /home/monad/monad-bft/snapshots
 
 DB_MODE="slot"
 MPT_OUTPUT=$(monad-mpt --storage /dev/triedb 2>/dev/null || true)
+
 if [ -z "$MPT_OUTPUT" ]; then
   echo "WARNING: monad-mpt returned no output; defaulting to slot mode"
 elif echo "$MPT_OUTPUT" | grep -q "Secondary:"; then
@@ -13,21 +29,9 @@ elif echo "$MPT_OUTPUT" | grep -q "Secondary:"; then
 elif echo "$MPT_OUTPUT" | grep -q "State machine kind: monad"; then
   DB_MODE="page"
 fi
+
 echo "Detected DB mode: $DB_MODE"
-mkdir /home/monad/monad-bft/empty-dir
-rsync -r --delete /home/monad/monad-bft/empty-dir/ /home/monad/monad-bft/ledger/
-rsync -r --delete /home/monad/monad-bft/empty-dir/ /home/monad/monad-bft/config/forkpoint/
-rsync -r --delete /home/monad/monad-bft/empty-dir/ /home/monad/monad-bft/config/validators/
-touch /home/monad/monad-bft/ledger/wal
-rm -rf /home/monad/monad-bft/empty-dir
-rm -rf /home/monad/monad-bft/snapshots
-rm -f /home/monad/monad-bft/mempool.sock
-rm -f /home/monad/monad-bft/controlpanel.sock
-rm -f /home/monad/monad-bft/triedb-stats
-rm -f /home/monad/monad-bft/wal_*
-rm -f /home/monad/monad-bft/config/peers.toml
-rm -rf /home/monad/monad-bft/blockdb
-source /home/monad/.env
+
 case "$DB_MODE" in
   dual)
     monad-mpt --storage /dev/triedb --truncate --yes
