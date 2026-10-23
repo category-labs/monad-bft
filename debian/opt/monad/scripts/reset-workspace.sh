@@ -2,7 +2,7 @@
 
 set -ex
 
-systemctl stop monad-bft monad-execution monad-rpc monad-mpt monad-execution-genesis || true
+systemctl stop monad-bft monad-execution monad-mpt monad-execution-genesis || true
 
 DB_MODE="slot"
 MPT_OUTPUT=$(monad-mpt --storage /dev/triedb 2>/dev/null || true)

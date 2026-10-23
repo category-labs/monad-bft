@@ -31,7 +31,6 @@ done <<EOF
 target/release/monad-node monad-node
 target/release/monad-keystore monad-keystore
 target/release/monad-debug-node monad-debug-node
-target/release/monad-rpc monad-rpc
 target/release/monad-archiver monad-archiver
 target/release/monad-archive-checker monad-archive-checker
 target/release/monad-indexer monad-indexer

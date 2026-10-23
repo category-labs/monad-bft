@@ -22,7 +22,7 @@ RUN test -n "$PACKAGE_VERSION"
 
 # monad-version resolves these from git, then falls back to the environment.
 # .dockerignore strips **/.git, so without them the binaries report no
-# provenance. Same contract as docker/rpc/Dockerfile.
+# provenance. Same contract as the other release Dockerfiles.
 ARG GIT_COMMIT=""
 ARG GIT_BRANCH=""
 ARG GIT_TAG=""
