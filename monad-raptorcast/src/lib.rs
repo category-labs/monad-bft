@@ -1822,18 +1822,15 @@ where
             return;
         }
 
-        let Ok(peer_discovery) = self.peer_disc_driver.lock() else {
-            return;
-        };
-
-        let Some(name_record) = peer_discovery
-            .get_name_record(item.recipient.node_id())
-            .map(|record| &record.name_record)
-        else {
-            warn!(
-                "raptorcast: unknown name record for node {}",
-                item.recipient.node_id()
-            );
+        // the recipient caches the lookup, so peer discovery is locked and queried
+        // once per recipient instead of once per chunk
+        let peer_disc_driver = self.peer_disc_driver;
+        let Some(name_record) = item.recipient.lookup_name_record(|node_id| {
+            let peer_discovery = peer_disc_driver.lock().ok()?;
+            peer_discovery
+                .get_name_record(node_id)
+                .map(|record| record.name_record.clone())
+        }) else {
             return;
         };
 

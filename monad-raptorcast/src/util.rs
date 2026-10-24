@@ -39,6 +39,7 @@ use monad_crypto::{
     certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey},
     hasher::{Hasher, HasherType},
 };
+use monad_peer_discovery::NameRecord;
 use monad_types::{Epoch, NodeId, Round, RoundSpan, Stake};
 use monad_validator::{
     proposer_schedule::ProposerSchedule,
@@ -865,6 +866,7 @@ struct RecipientInner<PT: PubKey> {
     node_id: NodeId<PT>,
     node_hash: OnceCell<[u8; 20]>,
     addr: OnceCell<Option<SocketAddr>>,
+    name_record: OnceCell<Option<Rc<NameRecord>>>,
 }
 
 impl Recipient<monad_crypto::NopPubKey> {
@@ -885,10 +887,12 @@ impl<PT: PubKey> Recipient<PT> {
     pub fn new(node_id: NodeId<PT>) -> Self {
         let node_hash = OnceCell::new();
         let addr = OnceCell::new();
+        let name_record = OnceCell::new();
         let inner = RecipientInner {
             node_id,
             node_hash,
             addr,
+            name_record,
         };
         Self(Rc::new(inner))
     }
@@ -917,6 +921,28 @@ impl<PT: PubKey> Recipient<PT> {
             }
             addr
         })
+    }
+
+    /// Looks up the name record at most once per recipient. The result, including a
+    /// miss, is cached so that every clone of this recipient (one per chunk of a
+    /// message) shares it, and the lookup and the warning happen once per recipient.
+    pub fn lookup_name_record(
+        &self,
+        lookup: impl FnOnce(&NodeId<PT>) -> Option<NameRecord>,
+    ) -> Option<&NameRecord> {
+        self.0
+            .name_record
+            .get_or_init(|| {
+                let name_record = lookup(&self.0.node_id).map(Rc::new);
+                if name_record.is_none() {
+                    tracing::warn!(
+                        "raptorcast: unknown name record for node {}",
+                        self.0.node_id
+                    );
+                }
+                name_record
+            })
+            .as_deref()
     }
 }
 
@@ -1059,6 +1085,57 @@ mod tests {
     use crate::udp::GroupId;
     type ST = SecpSignature;
     type PT = CertificateSignaturePubKey<ST>;
+
+    fn name_record(seq: u64) -> NameRecord {
+        NameRecord::new(
+            std::net::Ipv4Addr::LOCALHOST,
+            8000,
+            Some(8000),
+            8001,
+            0,
+            seq,
+        )
+    }
+
+    #[test]
+    fn recipient_looks_up_name_record_once_across_clones() {
+        let recipient = Recipient::new(nid(1));
+        let clones: Vec<_> = (0..3).map(|_| recipient.clone()).collect();
+        let mut lookups = 0;
+
+        for clone in &clones {
+            let found = clone.lookup_name_record(|node_id| {
+                lookups += 1;
+                assert_eq!(node_id, &nid(1));
+                Some(name_record(7))
+            });
+            assert_eq!(found, Some(&name_record(7)));
+        }
+
+        assert_eq!(lookups, 1);
+    }
+
+    #[test]
+    fn recipient_caches_missing_name_record() {
+        let recipient = Recipient::new(nid(2));
+        let clone = recipient.clone();
+        let mut lookups = 0;
+
+        assert!(recipient
+            .lookup_name_record(|_| {
+                lookups += 1;
+                None
+            })
+            .is_none());
+        assert!(clone
+            .lookup_name_record(|_| {
+                lookups += 1;
+                Some(name_record(1))
+            })
+            .is_none());
+
+        assert_eq!(lookups, 1);
+    }
 
     // Creates a node id that we can refer to just from its seed
     fn nid(seed: u64) -> NodeId<PT> {
