@@ -636,6 +636,243 @@ mod tests {
 
     use super::*;
 
+    #[rstest::rstest]
+    #[case::udp_high(
+        monad_types::UdpPriority::High,
+        monad_types::UdpPriority::Regular,
+        true
+    )]
+    #[case::tcp_high(
+        monad_types::UdpPriority::Regular,
+        monad_types::UdpPriority::High,
+        false
+    )]
+    #[case::equal_fifo(
+        monad_types::UdpPriority::Regular,
+        monad_types::UdpPriority::Regular,
+        false
+    )]
+    fn mixed_queue_preserves_caller_priority_and_fifo(
+        #[case] udp_priority: monad_types::UdpPriority,
+        #[case] tcp_priority: monad_types::UdpPriority,
+        #[case] udp_first: bool,
+        #[values(false, true)] same_peer: bool,
+    ) {
+        let mut queue = PacingQueue::new(
+            NonZeroU64::new(1000).unwrap(),
+            NonZeroU64::new(1000).unwrap(),
+            1024,
+            DataplaneMetrics::new(),
+        );
+        let addr = "127.0.0.1:1".parse().unwrap();
+        let (ready, mut grants) = mpsc::channel(1);
+        let tcp = PacedMessage::Tcp {
+            addr,
+            priority: tcp_priority,
+            request: PacingRequest::new(100, ready),
+        };
+        queue
+            .enqueue(tcp.addr().ip(), tcp.priority(), tcp)
+            .ok()
+            .unwrap();
+        let udp = PacedMessage::Udp(UdpMsg {
+            socket_id: UdpSocketId::Raptorcast,
+            dst: if same_peer {
+                "127.0.0.1:2".parse().unwrap()
+            } else {
+                "127.0.0.2:2".parse().unwrap()
+            },
+            payload: vec![1; 100].into(),
+            stride: 100,
+            priority: udp_priority,
+        });
+        queue
+            .enqueue(udp.addr().ip(), udp.priority(), udp)
+            .ok()
+            .unwrap();
+        let first = queue.dequeue(Duration::ZERO, MAX_BURST_SIZE).unwrap();
+        assert_eq!(matches!(first.item, PacedMessage::Udp(_)), udp_first);
+        let mut items = vec![first.item];
+        let now = queue.next_wakeup(Duration::ZERO).unwrap();
+        items.push(queue.dequeue(now, MAX_BURST_SIZE).unwrap().item);
+        for item in &mut items {
+            if let PacedMessage::Tcp { request, .. } = item {
+                request.grant();
+            }
+        }
+        assert_eq!(grants.try_recv(), Ok(Ok(())));
+    }
+
+    #[rstest::rstest]
+    #[case::global_limit(1000, 10_000, false)]
+    #[case::shared_peer_limit(10_000, 1000, true)]
+    fn tcp_reservations_and_udp_share_rate_limits(
+        #[case] global: u64,
+        #[case] peer: u64,
+        #[case] same_peer: bool,
+    ) {
+        let mut queue = PacingQueue::new(
+            NonZeroU64::new(global).unwrap(),
+            NonZeroU64::new(peer).unwrap(),
+            4096,
+            DataplaneMetrics::new(),
+        );
+        let addr = "127.0.0.1:1".parse().unwrap();
+        let (ready, mut grants) = mpsc::channel(1);
+        let tcp = PacedMessage::Tcp {
+            addr,
+            priority: monad_types::UdpPriority::Regular,
+            request: PacingRequest::new(1000, ready),
+        };
+        queue
+            .enqueue(tcp.addr().ip(), tcp.priority(), tcp)
+            .ok()
+            .unwrap();
+        let mut scheduled = queue.dequeue(Duration::ZERO, MAX_BURST_SIZE).unwrap();
+        let PacedMessage::Tcp { request, .. } = &mut scheduled.item else {
+            panic!("expected reservation")
+        };
+        request.grant();
+        assert_eq!(grants.try_recv(), Ok(Ok(())));
+        let udp = PacedMessage::Udp(UdpMsg {
+            socket_id: UdpSocketId::Raptorcast,
+            dst: if same_peer {
+                "127.0.0.1:2".parse().unwrap()
+            } else {
+                "127.0.0.2:2".parse().unwrap()
+            },
+            payload: vec![1; 100].into(),
+            stride: 100,
+            priority: monad_types::UdpPriority::High,
+        });
+        queue
+            .enqueue(udp.addr().ip(), udp.priority(), udp)
+            .ok()
+            .unwrap();
+        assert_eq!(
+            queue.next_wakeup(Duration::ZERO),
+            Some(Duration::from_secs(1))
+        );
+        assert!(matches!(
+            queue
+                .dequeue(Duration::from_secs(1), MAX_BURST_SIZE)
+                .unwrap()
+                .item,
+            PacedMessage::Udp(_)
+        ));
+    }
+
+    #[monoio::test(timer_enabled = true)]
+    async fn pacing_grants_tcp_without_udp_and_reuses_the_reply_channel() {
+        let (sender, receiver) = mpsc::channel(4);
+        let (dispatch_tx, dispatch_rx) = async_channel::bounded(1);
+        spawn(tx_pacing(
+            dispatch_tx,
+            receiver,
+            1000,
+            UdpPacingConfig::for_global_bandwidth(1000),
+            DataplaneMetrics::new(),
+        ));
+        let (ready, mut grants) = mpsc::channel(1);
+        for _ in 0..4 {
+            assert!(sender
+                .try_send(PacedMessage::Tcp {
+                    addr: "127.0.0.1:1".parse().unwrap(),
+                    priority: monad_types::UdpPriority::Regular,
+                    request: PacingRequest::new(64 * 1024, ready.clone())
+                })
+                .is_ok());
+            assert_eq!(
+                time::timeout(Duration::from_secs(1), grants.recv())
+                    .await
+                    .unwrap(),
+                Some(Ok(()))
+            );
+        }
+        assert!(dispatch_rx.try_recv().is_err());
+    }
+
+    #[monoio::test(timer_enabled = true)]
+    async fn new_udp_peer_sends_while_tcp_waits_for_its_peer_budget() {
+        let (sender, receiver) = mpsc::channel(4);
+        let (dispatch_tx, dispatch_rx) = async_channel::bounded(1);
+        spawn(tx_pacing(
+            dispatch_tx,
+            receiver,
+            1000,
+            UdpPacingConfig {
+                peer_bandwidth_mbps: 1,
+                max_queued_bytes: 1024 * 1024,
+            },
+            DataplaneMetrics::new(),
+        ));
+        let (ready, mut grants) = mpsc::channel(1);
+        let tcp = || PacedMessage::Tcp {
+            addr: "127.0.0.1:1".parse().unwrap(),
+            priority: monad_types::UdpPriority::Regular,
+            request: PacingRequest::new(64 * 1024, ready.clone()),
+        };
+        assert!(sender.try_send(tcp()).is_ok());
+        assert_eq!(
+            time::timeout(Duration::from_secs(1), grants.recv())
+                .await
+                .unwrap(),
+            Some(Ok(()))
+        );
+        assert!(sender.try_send(tcp()).is_ok());
+        assert!(sender
+            .try_send(
+                UdpMsg {
+                    socket_id: UdpSocketId::Raptorcast,
+                    dst: "127.0.0.2:2".parse().unwrap(),
+                    payload: Bytes::from_static(b"high"),
+                    stride: 4,
+                    priority: monad_types::UdpPriority::High
+                }
+                .into()
+            )
+            .is_ok());
+        let batch = time::timeout(Duration::from_millis(100), dispatch_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].payload, Bytes::from_static(b"high"));
+        assert!(matches!(grants.try_recv(), Err(TryRecvError::Empty)));
+        assert_eq!(
+            time::timeout(Duration::from_secs(1), grants.recv())
+                .await
+                .unwrap(),
+            Some(Ok(()))
+        );
+    }
+
+    #[test]
+    fn tcp_reservation_waits_until_it_fits_the_remaining_burst() {
+        let mut queue = PacingQueue::new(
+            NonZeroU64::new(1_000_000).unwrap(),
+            NonZeroU64::new(1_000_000).unwrap(),
+            1024,
+            DataplaneMetrics::new(),
+        );
+        let (ready, mut grants) = mpsc::channel(1);
+        queue
+            .enqueue(
+                "::1".parse::<std::net::IpAddr>().unwrap(),
+                monad_types::UdpPriority::Regular,
+                PacingRequest::new(64 * 1024, ready),
+            )
+            .unwrap();
+        assert!(queue.dequeue(Duration::ZERO, 64 * 1024 - 1).is_none());
+        assert_eq!(queue.len(), 1);
+        assert!(matches!(grants.try_recv(), Err(TryRecvError::Empty)));
+        let mut scheduled = queue.dequeue(Duration::ZERO, MAX_BURST_SIZE).unwrap();
+        assert_eq!(scheduled.batch_bytes, 64 * 1024);
+        scheduled.item.grant();
+        assert_eq!(grants.try_recv(), Ok(Ok(())));
+        assert!(queue.is_empty());
+    }
+
     #[monoio::test(timer_enabled = true)]
     async fn pacing_waits_for_worker_queue_space_and_counts_closed_queue_drops() {
         use futures::FutureExt;
