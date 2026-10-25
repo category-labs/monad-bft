@@ -39,8 +39,8 @@ use zerocopy::{
     FromBytes, Immutable, IntoBytes,
 };
 
-use super::{RecvTcpMsg, TcpMsg, TcpSocketId};
-use crate::{metrics::DataplaneMetrics, Addrlist};
+use super::{RecvTcpMsg, TcpSocketId};
+use crate::{metrics::DataplaneMetrics, udp::PacedMessage, Addrlist};
 
 mod conn;
 pub mod rx;
@@ -53,6 +53,7 @@ pub(crate) struct ConnectionContext {
     pub(crate) tcp_control_map: TcpControl,
     pub(crate) tcp_ingress_tx: mpsc::Sender<RecvTcpMsg>,
     pub(crate) metrics: DataplaneMetrics,
+    pub(crate) pacing: mpsc::Sender<PacedMessage>,
 }
 
 const TCP_MESSAGE_LENGTH_LIMIT: usize = 3 * 1024 * 1024;
@@ -310,7 +311,7 @@ pub(crate) async fn task_connection(
             let idle = ConnectionIdle::new();
             select! {
                 _ = rx::read_messages(context, conn_id, addr, &mut read_half, &idle) => Err(ErrorKind::UnexpectedEof.into()),
-                result = tx::send_messages(conn_id, &addr, &mut write_half, msg_receiver, metrics, &idle) => result,
+                result = tx::send_messages(conn_id, &addr, &mut write_half, msg_receiver, metrics, &idle, &context.pacing) => result,
                 _ = idle.both_idle() => {
                     trace!(conn_id, ?addr, "closing idle TCP connection");
                     Ok(())
@@ -325,7 +326,8 @@ pub(crate) fn spawn_tasks(
     tcp_control_map: TcpControl,
     addrlist: Arc<Addrlist>,
     socket_configs: Vec<(TcpSocketId, SocketAddr, mpsc::Sender<RecvTcpMsg>)>,
-    tcp_egress_rx: mpsc::Receiver<(TcpSocketId, SocketAddr, TcpMsg)>,
+    tcp_egress_rx: mpsc::Receiver<(TcpSocketId, SocketAddr, tx::TcpEgressMsg)>,
+    pacing: mpsc::Sender<PacedMessage>,
     bound_addrs_tx: std::sync::mpsc::SyncSender<Vec<(TcpSocketId, SocketAddr)>>,
     metrics: DataplaneMetrics,
 ) {
@@ -356,6 +358,7 @@ pub(crate) fn spawn_tasks(
             tcp_control_map: tcp_control_map.clone(),
             tcp_ingress_tx: ingress_tx,
             metrics: metrics.clone(),
+            pacing: pacing.clone(),
         };
         contexts.insert(socket_id, context.clone());
         spawn(rx::task(
@@ -486,7 +489,7 @@ mod tests {
     use zerocopy::IntoBytes;
 
     use super::*;
-    use crate::{addrlist::Addrlist, TcpSocketId};
+    use crate::{addrlist::Addrlist, TcpMsg, TcpSocketId};
 
     #[fixture]
     fn tcp_control() -> TcpControl {
@@ -687,7 +690,7 @@ mod tests {
     }
 
     struct TestDataplane {
-        egress: mpsc::Sender<(TcpSocketId, SocketAddr, TcpMsg)>,
+        egress: mpsc::Sender<(TcpSocketId, SocketAddr, tx::TcpEgressMsg)>,
         ingress: HashMap<TcpSocketId, mpsc::Receiver<RecvTcpMsg>>,
         addrs: HashMap<TcpSocketId, SocketAddr>,
         control: TcpControl,
@@ -723,6 +726,7 @@ mod tests {
                 Arc::new(Addrlist::new()),
                 configs,
                 receiver,
+                crate::udp::test_pacing(),
                 bound_tx,
                 metrics.clone(),
             );
@@ -737,7 +741,9 @@ mod tests {
         }
 
         async fn send_msg(&self, socket: TcpSocketId, addr: SocketAddr, msg: TcpMsg) {
-            within(self.egress.send((socket, addr, msg))).await.unwrap();
+            within(self.egress.send((socket, addr, msg.into())))
+                .await
+                .unwrap();
         }
 
         async fn send(&self, socket: TcpSocketId, addr: SocketAddr, payload: &'static [u8]) {
