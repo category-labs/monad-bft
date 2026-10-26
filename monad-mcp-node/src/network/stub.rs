@@ -25,7 +25,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use tokio::{net::UdpSocket, task::JoinHandle};
 use tracing::{Instrument as _, Span};
 
-use super::{Inbound, Outbound, Packet};
+use super::{NodeInbound, NodeMessage, NodeOutbound};
 use crate::{chorus::types::NodeId, component::Link};
 
 const CADENCE: u8 = 1;
@@ -60,11 +60,11 @@ impl UdpNetwork {
         })
     }
 
-    pub fn spawn(self, link: Link<Inbound, Outbound>) -> JoinHandle<()> {
+    pub fn spawn(self, link: Link<NodeInbound, NodeOutbound>) -> JoinHandle<()> {
         tokio::spawn(self.run(link).instrument(Span::current()))
     }
 
-    pub async fn run(self, mut link: Link<Inbound, Outbound>) {
+    pub async fn run(self, mut link: Link<NodeInbound, NodeOutbound>) {
         let mut buffer = vec![0u8; MAX_FRAME_LEN];
         loop {
             tokio::select! {
@@ -82,8 +82,8 @@ impl UdpNetwork {
         }
     }
 
-    fn receive(&self, frame: &[u8], from: SocketAddr, link: &Link<Inbound, Outbound>) {
-        let Some((sender, packet)) = decode_frame(frame) else {
+    fn receive(&self, frame: &[u8], from: SocketAddr, link: &Link<NodeInbound, NodeOutbound>) {
+        let Some((sender, message)) = decode_frame(frame) else {
             tracing::debug!(%from, "malformed frame");
             return;
         };
@@ -91,16 +91,16 @@ impl UdpNetwork {
             tracing::debug!(?sender, %from, "unknown sender");
             return;
         }
-        link.send(Inbound {
+        link.send(NodeInbound {
             from: sender,
-            packet,
+            message,
         });
     }
 
-    async fn send(&self, outbound: Outbound) {
+    async fn send(&self, outbound: NodeOutbound) {
         match outbound {
-            Outbound::Broadcast(packet) => {
-                let Some(frame) = self.frame(&packet) else {
+            NodeOutbound::Broadcast(message) => {
+                let Some(frame) = self.frame(&message) else {
                     return;
                 };
                 for (peer, address) in &self.peers {
@@ -109,12 +109,12 @@ impl UdpNetwork {
                     }
                 }
             }
-            Outbound::Unicast(to, packet) => {
+            NodeOutbound::Unicast(to, message) => {
                 let Some(address) = self.peers.get(&to) else {
                     tracing::debug!(?to, "unknown recipient");
                     return;
                 };
-                let Some(frame) = self.frame(&packet) else {
+                let Some(frame) = self.frame(&message) else {
                     return;
                 };
                 self.send_to(&frame, *address).await;
@@ -123,10 +123,10 @@ impl UdpNetwork {
     }
 
     // None, logged, if the frame does not fit one datagram
-    fn frame(&self, packet: &Packet) -> Option<Bytes> {
-        let frame = encode_frame(self.self_id, packet);
+    fn frame(&self, message: &NodeMessage) -> Option<Bytes> {
+        let frame = encode_frame(self.self_id, message);
         if frame.len() > MAX_FRAME_LEN {
-            let (kind, _) = parts(packet);
+            let (kind, _) = parts(message);
             tracing::warn!(kind, len = frame.len(), "frame exceeds the mtu, dropped");
             return None;
         }
@@ -140,27 +140,27 @@ impl UdpNetwork {
     }
 }
 
-fn parts(packet: &Packet) -> (u8, &Bytes) {
-    match packet {
-        Packet::Cadence(payload) => (CADENCE, payload),
-        Packet::Chunk(payload) => (CHUNK, payload),
-        Packet::ChunkRequest(payload) => (CHUNK_REQUEST, payload),
-        Packet::Tx(payload) => (TX, payload),
+fn parts(message: &NodeMessage) -> (u8, &Bytes) {
+    match message {
+        NodeMessage::Cadence(payload) => (CADENCE, payload),
+        NodeMessage::Chunk(payload) => (CHUNK, payload),
+        NodeMessage::ChunkRequest(payload) => (CHUNK_REQUEST, payload),
+        NodeMessage::Tx(payload) => (TX, payload),
     }
 }
 
-fn packet(kind: u8, payload: Bytes) -> Option<Packet> {
+fn from_parts(kind: u8, payload: Bytes) -> Option<NodeMessage> {
     match kind {
-        CADENCE => Some(Packet::Cadence(payload)),
-        CHUNK => Some(Packet::Chunk(payload)),
-        CHUNK_REQUEST => Some(Packet::ChunkRequest(payload)),
-        TX => Some(Packet::Tx(payload)),
+        CADENCE => Some(NodeMessage::Cadence(payload)),
+        CHUNK => Some(NodeMessage::Chunk(payload)),
+        CHUNK_REQUEST => Some(NodeMessage::ChunkRequest(payload)),
+        TX => Some(NodeMessage::Tx(payload)),
         _ => None,
     }
 }
 
-pub fn encode_frame(sender: NodeId, packet: &Packet) -> Bytes {
-    let (kind, payload) = parts(packet);
+pub fn encode_frame(sender: NodeId, message: &NodeMessage) -> Bytes {
+    let (kind, payload) = parts(message);
     let mut frame = BytesMut::with_capacity(HEADER_LEN + payload.len());
     frame.put_u64_le(u64::from(sender));
     frame.put_u8(kind);
@@ -168,12 +168,12 @@ pub fn encode_frame(sender: NodeId, packet: &Packet) -> Bytes {
     frame.freeze()
 }
 
-pub fn decode_frame(frame: &[u8]) -> Option<(NodeId, Packet)> {
+pub fn decode_frame(frame: &[u8]) -> Option<(NodeId, NodeMessage)> {
     let (sender, rest) = frame.split_first_chunk::<SENDER_LEN>()?;
     let (kind, payload) = rest.split_first()?;
     let sender = NodeId::dummy(u64::from_le_bytes(*sender));
-    let packet = packet(*kind, Bytes::copy_from_slice(payload))?;
-    Some((sender, packet))
+    let message = from_parts(*kind, Bytes::copy_from_slice(payload))?;
+    Some((sender, message))
 }
 
 #[cfg(test)]
@@ -187,13 +187,13 @@ mod tests {
     fn frames_roundtrip_and_reject_unknown_types() {
         let sender = NodeId::dummy(7);
         let payload = Bytes::from_static(b"hello");
-        let packets = [
-            Packet::Cadence(payload.clone()),
-            Packet::Chunk(payload.clone()),
-            Packet::ChunkRequest(payload.clone()),
-            Packet::Tx(payload.clone()),
+        let messages = [
+            NodeMessage::Cadence(payload.clone()),
+            NodeMessage::Chunk(payload.clone()),
+            NodeMessage::ChunkRequest(payload.clone()),
+            NodeMessage::Tx(payload.clone()),
         ];
-        for original in packets {
+        for original in messages {
             let frame = encode_frame(sender, &original);
             assert_eq!(frame.len(), HEADER_LEN + payload.len());
             let (decoded_sender, decoded) = decode_frame(&frame).unwrap();
@@ -201,7 +201,7 @@ mod tests {
             assert_eq!(parts(&decoded), parts(&original));
         }
 
-        let mut bad_kind = encode_frame(sender, &Packet::Cadence(payload)).to_vec();
+        let mut bad_kind = encode_frame(sender, &NodeMessage::Cadence(payload)).to_vec();
         bad_kind[SENDER_LEN] = 9;
         assert!(decode_frame(&bad_kind).is_none());
         assert!(decode_frame(&bad_kind[..HEADER_LEN - 1]).is_none());
@@ -211,12 +211,12 @@ mod tests {
     #[test]
     fn the_largest_tx_fits_the_mtu() {
         let tx = crate::component::mempool::largest_tx();
-        let packet = Packet::Tx(tx.to_rlp());
-        let frame = encode_frame(NodeId::dummy(u64::MAX), &packet);
+        let message = NodeMessage::Tx(tx.to_rlp());
+        let frame = encode_frame(NodeId::dummy(u64::MAX), &message);
         assert!(frame.len() <= MAX_FRAME_LEN);
         let (_, decoded) = decode_frame(&frame).unwrap();
-        let Packet::Tx(bytes) = decoded else {
-            panic!("a tx packet");
+        let NodeMessage::Tx(bytes) = decoded else {
+            panic!("a tx message");
         };
         assert_eq!(monad_mcp_chorus::ledger::Tx::decode_exact(&bytes), Ok(tx));
     }
@@ -236,7 +236,8 @@ mod tests {
 
         let client = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         let tx = |sender: u64, body: &'static [u8]| {
-            encode_frame(NodeId::dummy(sender), &Packet::Tx(Bytes::from_static(body)))
+            let message = NodeMessage::Tx(Bytes::from_static(body));
+            encode_frame(NodeId::dummy(sender), &message)
         };
         for frame in [
             tx(9, b"stranger"),
@@ -250,8 +251,8 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(inbound.from, NodeId::dummy(1));
-        let Packet::Tx(body) = inbound.packet else {
-            panic!("a tx packet");
+        let NodeMessage::Tx(body) = inbound.message else {
+            panic!("a tx message");
         };
         assert_eq!(&body[..], b"peer");
         let next = tokio::time::timeout(Duration::from_millis(200), node.recv()).await;

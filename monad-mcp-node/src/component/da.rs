@@ -80,7 +80,7 @@ mod tests {
     #[test]
     fn the_largest_proposal_size_limit_still_encodes() {
         let config = NodeConfig::single_node(0, Timestamp::from_millis(10_000), "unused-ledger");
-        let mut da = Node::new(&config).unwrap().da;
+        let mut da = Node::new(&config).unwrap().parts.da;
         let now = Timestamp::from_millis(1_000);
         let deadline = Timestamp::from_millis(10_000);
         let opened = SlotLifecycle::Opened {

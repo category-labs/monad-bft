@@ -55,17 +55,6 @@ pub trait Component {
     fn handle_due(&mut self, _now: Timestamp) {}
 }
 
-// where a composite sends the effects its wiring decides on
-pub trait Dispatch<E> {
-    fn dispatch(&mut self, effect: E);
-}
-
-impl<E> Dispatch<E> for Vec<E> {
-    fn dispatch(&mut self, effect: E) {
-        self.push(effect);
-    }
-}
-
 // runs a component in its own task, the link its inputs and outputs
 pub fn spawn<C>(component: C, clock: Clock, tasks: &mut JoinSet<()>) -> Link<C::Input, C::Output>
 where

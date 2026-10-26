@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! A lone validator stepped in virtual time: txs arriving as `Packet::Tx`
+//! A lone validator stepped in virtual time: txs arriving as `NodeMessage::Tx`
 //! reach the ledger through proposal, DA and finalization, with no tokio and
 //! no sockets.
 
@@ -25,7 +25,7 @@ use std::{
 use bytes::Bytes;
 use monad_mcp_chorus::ledger::{FinalizationPath, LedgerReader, LedgerWriter, Tx, decode_batch};
 use monad_mcp_node::{
-    Component, FinalizedSlot, Node, NodeOutput, NodeRuntime, Runtime,
+    Component, FinalizedSlot, Node, NodeOutput, NodeRouter, Router,
     chorus::{
         slot::chorus::ChorusMessage,
         types::{NodeId, Proposal, ProposerSchedule as _, Timestamp, TimestampDelta},
@@ -33,7 +33,7 @@ use monad_mcp_node::{
     component::{Proposing, ProposingInput, ProposingOutput},
     config::{NodeConfig, SourceKind},
     ledger::new_block,
-    network::{Inbound, Outbound, Packet},
+    network::{NodeInbound, NodeMessage, NodeOutbound},
 };
 
 const GENESIS_MS: u64 = 1_000_000;
@@ -53,7 +53,7 @@ fn tx(nonce: u64) -> Tx {
     }
 }
 
-struct Harness<R = NodeRuntime> {
+struct Harness<R = NodeRouter> {
     node: Node<R>,
     now: Timestamp,
     finalized: Vec<FinalizedSlot>,
@@ -65,12 +65,12 @@ impl Harness {
     }
 }
 
-impl<R: Runtime> Harness<R> {
+impl<R: Router> Harness<R> {
     // what the rpc sends: a tx frame under a validator's id
     fn deliver(&mut self, tx: &Tx) {
-        let inbound = Inbound {
+        let inbound = NodeInbound {
             from: NodeId::dummy(0),
-            packet: Packet::Tx(tx.to_rlp()),
+            message: NodeMessage::Tx(tx.to_rlp()),
         };
         self.node.handle(self.now, inbound);
         self.drain();
@@ -101,15 +101,15 @@ impl<R: Runtime> Harness<R> {
         let self_id = NodeId::dummy(0);
         while let Some(output) = self.node.poll() {
             match output {
-                NodeOutput::Finalized(finalized) => self.finalized.push(finalized),
-                NodeOutput::Send(Outbound::Unicast(to, packet)) if to == self_id => {
-                    let inbound = Inbound {
+                NodeOutput::Ledger(finalized) => self.finalized.push(finalized),
+                NodeOutput::Network(NodeOutbound::Unicast(to, message)) if to == self_id => {
+                    let inbound = NodeInbound {
                         from: self_id,
-                        packet,
+                        message,
                     };
                     self.node.handle(self.now, inbound);
                 }
-                NodeOutput::Send(_) => {}
+                NodeOutput::Network(_) => {}
             }
         }
     }
@@ -158,7 +158,7 @@ fn a_delivered_tx_is_finalized_and_written_to_the_ledger() {
     let writer = LedgerWriter::open(dir.path()).unwrap();
     let proposers = harness
         .node
-        .runtime()
+        .router()
         .epoch_handle()
         .proposers
         .proposers_at(finalized.slot)

@@ -22,7 +22,7 @@ use crate::{chorus::types::NodeId, component::Link};
 
 // what crosses the wire between nodes
 #[derive(Clone)]
-pub enum Packet {
+pub enum NodeMessage {
     Cadence(Bytes),
     // one chunk with its header, or a header alone
     Chunk(Bytes),
@@ -32,13 +32,13 @@ pub enum Packet {
 }
 
 // todo: move this into shared types
-pub type Outbound = crate::chorus::Outbound<Packet>;
+pub type NodeOutbound = crate::chorus::Outbound<NodeMessage>;
 
 // the transport authenticates the sender
-pub struct Inbound {
+pub struct NodeInbound {
     pub from: NodeId,
-    pub packet: Packet,
+    pub message: NodeMessage,
 }
 
 // what the transport hands the node and takes from it
-pub type NetworkHandle = Link<Outbound, Inbound>;
+pub type NetworkHandle = Link<NodeOutbound, NodeInbound>;

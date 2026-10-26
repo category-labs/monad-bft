@@ -16,7 +16,7 @@
 use std::time::Duration;
 
 use monad_mcp_node::{
-    Effect, Node,
+    Node, Routed,
     chorus::types::{NodeId, Slot},
 };
 use monad_sim::Time;
@@ -43,7 +43,7 @@ fn six_of_eight_finalize_beside_two_mute_nodes() {
         let node_id = NodeId::dummy(id);
         let node = Node::new(&node_config(id, VALIDATORS)).expect("config builds");
         let sim_node = if id < MUTE {
-            let node = node.map_runtime(|runtime| Tampered::from(runtime).filtered(drop_network));
+            let node = node.map_router(|router| Tampered::from(router).tamper_post(drop_network));
             SimNode::new(node_id, node)
         } else {
             SimNode::new(node_id, node)
@@ -64,9 +64,9 @@ fn six_of_eight_finalize_beside_two_mute_nodes() {
     assert_consistent_progress(&swarm, Slot(SLOTS - 20));
 }
 
-fn drop_network(effect: Effect) -> Vec<Effect> {
-    match effect {
-        Effect::Network(_) => vec![],
-        effect => vec![effect],
+fn drop_network(routed: Routed) -> Vec<Routed> {
+    match routed {
+        Routed::Network(_) => vec![],
+        routed => vec![routed],
     }
 }

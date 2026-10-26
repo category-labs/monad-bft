@@ -23,7 +23,7 @@ pub mod ledger;
 mod logging;
 pub mod network;
 mod node;
-mod runtime;
+mod router;
 
 use std::error::Error;
 
@@ -40,12 +40,12 @@ use self::{
     network::{NetworkHandle, stub::UdpNetwork},
 };
 pub use self::{
-    component::{Component, Dispatch},
+    component::Component,
     epoch::{EpochHandle, NodeProposerSchedule},
     finalization::FinalizedSlot,
     logging::init_logging,
     node::{Node, NodeOutput},
-    runtime::{Effect, NodeRuntime, Runtime},
+    router::{Effect, NodeRouter, Routed, Router, Sink},
 };
 
 pub type RunError = Box<dyn Error + Send + Sync>;
@@ -60,7 +60,7 @@ pub async fn run_node(config: NodeConfig) -> Result<(), RunError> {
 
 async fn run(config: NodeConfig) -> Result<(), RunError> {
     let node = Node::new(&config)?;
-    let proposers = node.runtime().epoch_handle().proposers.clone();
+    let proposers = node.router().epoch_handle().proposers.clone();
     let sink = LedgerSink::spawn(&config.ledger.dir)?;
 
     let mut node = AsyncNode::spawn(node, Clock::start());

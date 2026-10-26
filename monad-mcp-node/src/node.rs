@@ -15,7 +15,7 @@
 
 //! The node with every component stepped in place: deterministic,
 //! itself a component, for simulation and tests. `AsyncNode` runs the
-//! same runtime with the components in tasks.
+//! same router with the components in tasks.
 
 use std::collections::VecDeque;
 
@@ -30,28 +30,28 @@ use crate::{
     config::{NodeConfig, SourceKind},
     da::DARuntime,
     finalization::{FinalizationCollector, FinalizedSlot},
-    network::{Inbound, Outbound},
-    runtime::{Effect, NodeRuntime, Runtime},
+    network::{NodeInbound, NodeOutbound},
+    router::{Effect, NodeRouter, Routed, Router, Sink},
 };
 
 pub enum NodeOutput {
-    Send(Outbound),
-    Finalized(FinalizedSlot),
+    Network(NodeOutbound),
+    Ledger(FinalizedSlot),
 }
 
-pub struct Node<R = NodeRuntime> {
-    // wiring of components
-    pub(crate) runtime: R,
+pub struct Node<R = NodeRouter> {
+    pub(crate) router: R,
+    pub(crate) parts: Parts,
+    outbox: VecDeque<NodeOutput>,
+}
 
+pub(crate) struct Parts {
     // components
     pub(crate) cadence: Cadence,
     pub(crate) da: DA,
     pub(crate) collector: FinalizationCollector,
     pub(crate) proposing: Proposing,
     pub(crate) repeater: Option<Repeater<ChorusMessage>>,
-
-    // node effects
-    outbox: VecDeque<NodeOutput>,
 }
 
 impl Node {
@@ -85,100 +85,106 @@ impl Node {
         let repeater = config.repeater().map(Repeater::new);
         let collector = FinalizationCollector::default();
 
-        Ok(Self {
-            runtime: NodeRuntime::new(epoch_handle),
+        let parts = Parts {
             cadence,
             da,
             collector,
             proposing,
             repeater,
+        };
+        Ok(Self {
+            router: NodeRouter::new(epoch_handle),
+            parts,
             outbox: VecDeque::new(),
         })
     }
 
-    // the same components under a wrapped runtime, for scenarios
-    pub fn map_runtime<R>(self, wrap: impl FnOnce(NodeRuntime) -> R) -> Node<R> {
+    // the same components under a wrapped router, for scenarios
+    pub fn map_router<R>(self, wrap: impl FnOnce(NodeRouter) -> R) -> Node<R> {
         Node {
-            runtime: wrap(self.runtime),
-            cadence: self.cadence,
-            da: self.da,
-            collector: self.collector,
-            proposing: self.proposing,
-            repeater: self.repeater,
+            router: wrap(self.router),
+            parts: self.parts,
             outbox: self.outbox,
         }
     }
 }
 
 impl<R> Node<R> {
-    pub fn runtime(&self) -> &R {
-        &self.runtime
+    pub fn router(&self) -> &R {
+        &self.router
     }
 
     // the same node with a wrapped or replaced proposer, for scenarios
     pub fn map_proposing(mut self, wrap: impl FnOnce(Proposing) -> Proposing) -> Self {
-        self.proposing = wrap(self.proposing);
+        self.parts.proposing = wrap(self.parts.proposing);
         self
     }
 }
 
-impl<R: Runtime> Node<R> {
-    fn dispatch(&mut self, now: Timestamp, effect: Effect) {
-        match effect {
-            Effect::Cadence(input) => self.cadence.handle(now, input),
-            Effect::DA(input) => self.da.handle(now, input),
-            Effect::Finalization(input) => self.collector.handle(now, input),
-            Effect::Proposing(input) => self.proposing.handle(now, input),
-            Effect::Repeater(input) => {
-                if let Some(repeater) = &mut self.repeater {
-                    repeater.handle(now, input);
-                }
-            }
-            Effect::Network(outbound) => self.outbox.push_back(NodeOutput::Send(outbound)),
-            Effect::Ledger(finalized) => self.outbox.push_back(NodeOutput::Finalized(finalized)),
-        }
+impl<R: Router> Node<R> {
+    fn route(&mut self, now: Timestamp, effect: Effect) {
+        let mut sink = NodeSink {
+            parts: &mut self.parts,
+            outbox: &mut self.outbox,
+            now,
+        };
+        self.router.route(now, effect, &mut sink);
     }
 
     // wire every component's outputs onward until nothing moves
     fn step(&mut self, now: Timestamp) {
-        let mut effects = Vec::new();
-        loop {
-            while let Some(output) = self.cadence.poll() {
-                self.runtime.handle_cadence(output, &mut effects);
-            }
-            while let Some(output) = self.da.poll() {
-                self.runtime.handle_da(now, output, &mut effects);
-            }
-            while let Some(output) = self.collector.poll() {
-                self.runtime.handle_finalized(output, &mut effects);
-            }
-            while let Some(output) = self.proposing.poll() {
-                self.runtime.handle_proposal(now, output, &mut effects);
-            }
-            while let Some(output) = self.repeater.as_mut().and_then(Repeater::poll) {
-                self.runtime.handle_repeat(output, &mut effects);
-            }
-            if effects.is_empty() {
-                return;
-            }
-            for effect in effects.drain(..) {
-                self.dispatch(now, effect);
-            }
+        while let Some(effect) = self.parts.poll() {
+            self.route(now, effect);
         }
     }
 }
 
-impl<R: Runtime> Component for Node<R> {
-    type Input = Inbound;
+impl<R: Router> Component for Node<R> {
+    type Input = NodeInbound;
     type Output = NodeOutput;
 
-    fn handle(&mut self, now: Timestamp, inbound: Inbound) {
-        let mut effects = Vec::new();
-        self.runtime.handle_inbound(now, inbound, &mut effects);
-        for effect in effects {
-            self.dispatch(now, effect);
-        }
+    fn handle(&mut self, now: Timestamp, inbound: NodeInbound) {
+        self.route(now, Effect::Network(inbound));
         self.step(now);
+    }
+
+    fn next_due(&self) -> Option<Timestamp> {
+        self.parts.next_due()
+    }
+
+    fn handle_due(&mut self, now: Timestamp) {
+        self.parts.handle_due(now);
+        self.step(now);
+    }
+
+    fn poll(&mut self) -> Option<NodeOutput> {
+        self.outbox.pop_front()
+    }
+}
+
+// Parts is the parallel-composition of its components into a larger
+// Component. However, it does not implement Component because it can
+// produce/handle external effects (network and ledger).
+impl Parts {
+    fn poll(&mut self) -> Option<Effect> {
+        if let Some(output) = self.cadence.poll() {
+            return Some(Effect::Cadence(output));
+        }
+        if let Some(output) = self.da.poll() {
+            return Some(Effect::DA(output));
+        }
+        if let Some(output) = self.collector.poll() {
+            return Some(Effect::Finalization(output));
+        }
+        if let Some(output) = self.proposing.poll() {
+            return Some(Effect::Proposing(output));
+        }
+        if let Some(repeater) = &mut self.repeater
+            && let Some(output) = repeater.poll()
+        {
+            return Some(Effect::Repeater(output));
+        }
+        None
     }
 
     fn next_due(&self) -> Option<Timestamp> {
@@ -201,11 +207,32 @@ impl<R: Runtime> Component for Node<R> {
         if let Some(repeater) = &mut self.repeater {
             handle_if_due(repeater, now);
         }
-        self.step(now);
     }
+}
 
-    fn poll(&mut self) -> Option<NodeOutput> {
-        self.outbox.pop_front()
+struct NodeSink<'a> {
+    parts: &'a mut Parts,
+    outbox: &'a mut VecDeque<NodeOutput>,
+    now: Timestamp,
+}
+
+impl Sink<Routed> for NodeSink<'_> {
+    fn send(&mut self, routed: Routed) {
+        let now = self.now;
+        let parts = &mut *self.parts;
+        match routed {
+            Routed::Cadence(input) => parts.cadence.handle(now, input),
+            Routed::DA(input) => parts.da.handle(now, input),
+            Routed::Finalization(input) => parts.collector.handle(now, input),
+            Routed::Proposing(input) => parts.proposing.handle(now, input),
+            Routed::Repeater(input) => {
+                if let Some(repeater) = &mut parts.repeater {
+                    repeater.handle(now, input);
+                }
+            }
+            Routed::Network(outbound) => self.outbox.push_back(NodeOutput::Network(outbound)),
+            Routed::Ledger(finalized) => self.outbox.push_back(NodeOutput::Ledger(finalized)),
+        }
     }
 }
 

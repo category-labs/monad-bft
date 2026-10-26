@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! The node with a temp config: `Packet::Tx` frames sent to its udp port
+//! The node with a temp config: `NodeMessage::Tx` frames sent to its udp port
 //! under a validator's id show up in its ledger; any other sender is dropped.
 
 use std::{
@@ -33,7 +33,7 @@ use monad_mcp_node::{
     chorus::types::{KeyPair, NodeId, Timestamp},
     config::{NodeConfig, ValidatorConfig},
     da::ProposalKeyPair,
-    network::{Packet, encode_frame},
+    network::{NodeMessage, encode_frame},
     run_node,
 };
 use tempfile::TempDir;
@@ -167,7 +167,7 @@ fn tx(nonce: u64) -> Tx {
 
 // one datagram, as the rpc frames it: the sender id is a validator's
 fn send(to: SocketAddr, sender: u64, tx: &Tx) {
-    let frame = encode_frame(NodeId::dummy(sender), &Packet::Tx(tx.to_rlp()));
+    let frame = encode_frame(NodeId::dummy(sender), &NodeMessage::Tx(tx.to_rlp()));
     let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
     socket.send_to(&frame, to).unwrap();
 }

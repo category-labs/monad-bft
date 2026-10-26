@@ -30,7 +30,7 @@ use monad_mcp_node::{
         RepeaterSection, ValidatorConfig,
     },
     da::ProposalKeyPair,
-    network::{Inbound, Packet},
+    network::{NodeInbound, NodeMessage},
 };
 use monad_sim::{CancelToken, Ctx, Handle, StepLabel, Time};
 use monad_sim_swarm::{Net, SimClient, Swarm};
@@ -59,18 +59,18 @@ pub type Pattern = Lanes<Option<ProposalId>>;
 // a node as a monad-sim process, boxed so one swarm can mix node kinds
 pub struct SimNode {
     id: NodeId,
-    node: Box<dyn Component<Input = Inbound, Output = NodeOutput>>,
+    node: Box<dyn Component<Input = NodeInbound, Output = NodeOutput>>,
     finalized: BTreeMap<Slot, Pattern>,
     // the one live timer step, at the node's last polled next_due
     due_alarm: Option<(Time, CancelToken)>,
     me: Option<Handle<Self>>,
-    net: Option<Handle<Net<NodeId, Packet>>>,
+    net: Option<Handle<Net<NodeId, NodeMessage>>>,
 }
 
 impl SimNode {
     pub fn new(
         id: NodeId,
-        node: impl Component<Input = Inbound, Output = NodeOutput> + 'static,
+        node: impl Component<Input = NodeInbound, Output = NodeOutput> + 'static,
     ) -> Self {
         Self {
             id,
@@ -98,8 +98,8 @@ impl SimNode {
     fn process(&mut self, ctx: &mut Ctx) {
         while let Some(output) = self.node.poll() {
             match output {
-                NodeOutput::Send(outbound) => self.send(outbound, ctx),
-                NodeOutput::Finalized(finalized) => {
+                NodeOutput::Network(outbound) => self.send(outbound, ctx),
+                NodeOutput::Ledger(finalized) => {
                     let pattern = finalized.finalization.pids();
                     self.finalized.insert(finalized.slot, pattern);
                 }
@@ -108,24 +108,24 @@ impl SimNode {
         self.arm_due_alarm(ctx);
     }
 
-    fn send(&self, outbound: Outbound<Packet>, ctx: &mut Ctx) {
+    fn send(&self, outbound: Outbound<NodeMessage>, ctx: &mut Ctx) {
         let from = self.id;
         let net = self.net.expect("node not wired");
         match outbound {
-            Outbound::Broadcast(packet) => {
+            Outbound::Broadcast(message) => {
                 ctx.schedule(
                     net,
                     ctx.now(),
                     StepLabel::source("broadcast"),
-                    move |net, ctx| net.broadcast(ctx, from, packet),
+                    move |net, ctx| net.broadcast(ctx, from, message),
                 );
             }
-            Outbound::Unicast(to, packet) => {
+            Outbound::Unicast(to, message) => {
                 ctx.schedule(
                     net,
                     ctx.now(),
                     StepLabel::source("unicast"),
-                    move |net, ctx| net.send(ctx, from, to, packet),
+                    move |net, ctx| net.send(ctx, from, to, message),
                 );
             }
         }
@@ -161,20 +161,20 @@ impl SimNode {
 
 impl SimClient for SimNode {
     type Addr = NodeId;
-    type Message = Packet;
+    type Message = NodeMessage;
 
-    fn wire(&mut self, me: Handle<Self>, net: Handle<Net<NodeId, Packet>>) {
+    fn wire(&mut self, me: Handle<Self>, net: Handle<Net<NodeId, NodeMessage>>) {
         self.me = Some(me);
         self.net = Some(net);
     }
 
-    fn receive(&mut self, from: NodeId, packet: Packet, ctx: &mut Ctx) {
+    fn receive(&mut self, from: NodeId, message: NodeMessage, ctx: &mut Ctx) {
         let _span = self.span().entered();
         // the node loops its own messages back itself
         if from == self.id {
             return;
         }
-        let inbound = Inbound { from, packet };
+        let inbound = NodeInbound { from, message };
         self.node.handle(timestamp_of(ctx.now()), inbound);
         self.process(ctx);
     }

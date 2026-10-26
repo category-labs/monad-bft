@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! The node with every component in its own task. Same runtime as
+//! The node with every component in its own task. Same router as
 //! `Node`; only where the components run differs.
 
 use std::future::pending;
@@ -24,31 +24,28 @@ use crate::{
     chorus::slot::chorus::ChorusMessage,
     clock::Clock,
     component::{
-        CadenceInput, CadenceOutput, DAInput, Dispatch, FinalizationInput, Link, ProposingInput,
+        CadenceInput, CadenceOutput, DAInput, FinalizationInput, Link, ProposingInput,
         ProposingOutput, RepeaterInput, RepeaterOutput, spawn,
     },
     da::DAOutput,
     finalization::FinalizedSlot,
     network::NetworkHandle,
-    node::Node,
-    runtime::{Effect, NodeRuntime, Runtime},
+    node::{Node, Parts},
+    router::{Effect, NodeRouter, Routed, Router, Sink},
 };
 
 type FinalizationLogger = Box<dyn FnMut(FinalizedSlot) + Send>;
 
 type RepeaterLink = Link<RepeaterInput<ChorusMessage>, RepeaterOutput<ChorusMessage>>;
 
-pub struct AsyncNode<R = NodeRuntime> {
-    runtime: R,
+pub struct AsyncNode<R = NodeRouter> {
+    router: R,
     clock: Clock,
-    links: Links,
-
-    #[expect(unused)] // abort on Drop only
-    tasks: JoinSet<()>,
+    tasks: Tasks,
 }
 
 // the far ends of the component tasks, the transport and the ledger
-struct Links {
+struct Tasks {
     cadence: Link<CadenceInput, CadenceOutput>,
     da: Link<DAInput, DAOutput>,
     collector: Link<FinalizationInput, FinalizedSlot>,
@@ -57,99 +54,96 @@ struct Links {
     repeater: Option<RepeaterLink>,
     network: Option<NetworkHandle>,
     finalization: Option<FinalizationLogger>,
+
+    #[expect(unused)] // abort on Drop only
+    join_set: JoinSet<()>,
 }
 
-impl<R: Runtime> AsyncNode<R> {
-    // lifts each component of a node into its own task
+impl<R: Router> AsyncNode<R> {
     pub fn spawn(node: Node<R>, clock: Clock) -> Self {
-        let Node {
-            runtime,
-            cadence,
-            da,
-            collector,
-            proposing,
-            repeater,
-            ..
-        } = node;
-
-        let mut tasks = JoinSet::new();
-        let links = Links {
-            cadence: spawn(cadence, clock, &mut tasks),
-            da: spawn(da, clock, &mut tasks),
-            collector: spawn(collector, clock, &mut tasks),
-            proposing: spawn(proposing, clock, &mut tasks),
-            repeater: repeater.map(|repeater| spawn(repeater, clock, &mut tasks)),
-            network: None,
-            finalization: None,
-        };
+        let Node { router, parts, .. } = node;
+        let tasks = Tasks::spawn(parts, clock);
         Self {
-            runtime,
+            router,
             clock,
-            links,
             tasks,
         }
     }
 
     pub fn set_network(&mut self, network: NetworkHandle) {
-        self.links.network = Some(network);
+        self.tasks.network = Some(network);
     }
 
     pub fn on_finalization(&mut self, logger: impl FnMut(FinalizedSlot) + Send + 'static) {
-        self.links.finalization = Some(Box::new(logger));
+        self.tasks.finalization = Some(Box::new(logger));
     }
 
     pub async fn run(mut self) {
-        let links = &mut self.links;
-        let runtime = &mut self.runtime;
+        let tasks = &mut self.tasks;
+        let router = &mut self.router;
         loop {
-            tokio::select! {
-                Some(inbound) = recv(&mut links.network) => {
-                    runtime.handle_inbound(self.clock.now(), inbound, links);
-                }
-                Some(output) = links.cadence.recv() => {
-                    runtime.handle_cadence(output, links);
-                }
-                Some(output) = links.da.recv() => {
-                    runtime.handle_da(self.clock.now(), output, links);
-                }
-                Some(finalized) = links.collector.recv() => {
-                    runtime.handle_finalized(finalized, links);
-                }
-                Some(output) = links.proposing.recv() => {
-                    runtime.handle_proposal(self.clock.now(), output, links);
-                }
-                Some(output) = recv(&mut links.repeater) => {
-                    runtime.handle_repeat(output, links);
-                }
+            let effect = tokio::select! {
+                Some(inbound) = recv(&mut tasks.network) => Effect::Network(inbound),
+                Some(output) = tasks.cadence.recv() => Effect::Cadence(output),
+                Some(output) = tasks.da.recv() => Effect::DA(output),
+                Some(finalized) = tasks.collector.recv() => Effect::Finalization(finalized),
+                Some(output) = tasks.proposing.recv() => Effect::Proposing(output),
+                Some(output) = recv(&mut tasks.repeater) => Effect::Repeater(output),
                 else => return,
-            }
+            };
+            router.route(self.clock.now(), effect, tasks);
         }
     }
 }
 
-impl Dispatch<Effect> for Links {
-    fn dispatch(&mut self, effect: Effect) {
-        match effect {
+impl Tasks {
+    // lifts each component of a node into its own task
+    fn spawn(parts: Parts, clock: Clock) -> Self {
+        let Parts {
+            cadence,
+            da,
+            collector,
+            proposing,
+            repeater,
+        } = parts;
+
+        let mut join_set = JoinSet::new();
+        Self {
+            cadence: spawn(cadence, clock, &mut join_set),
+            da: spawn(da, clock, &mut join_set),
+            collector: spawn(collector, clock, &mut join_set),
+            proposing: spawn(proposing, clock, &mut join_set),
+            repeater: repeater.map(|repeater| spawn(repeater, clock, &mut join_set)),
+            network: None,
+            finalization: None,
+            join_set,
+        }
+    }
+}
+
+impl Sink<Routed> for Tasks {
+    fn send(&mut self, routed: Routed) {
+        match routed {
             // required components
-            Effect::Cadence(input) => self.cadence.send(input),
-            Effect::DA(input) => self.da.send(input),
-            Effect::Finalization(input) => self.collector.send(input),
-            Effect::Proposing(input) => self.proposing.send(input),
+            Routed::Cadence(input) => self.cadence.send(input),
+            Routed::DA(input) => self.da.send(input),
+            Routed::Finalization(input) => self.collector.send(input),
+            Routed::Proposing(input) => self.proposing.send(input),
 
             // optional components
-            Effect::Repeater(input) if let Some(repeater) = &mut self.repeater => {
+            Routed::Repeater(input) if let Some(repeater) = &mut self.repeater => {
                 repeater.send(input);
             }
-            Effect::Network(outbound) if let Some(network) = &mut self.network => {
+            Routed::Network(outbound) if let Some(network) = &mut self.network => {
                 network.send(outbound)
             }
-            Effect::Ledger(finalized) if let Some(logger) = &mut self.finalization => {
+            Routed::Ledger(finalized) if let Some(logger) = &mut self.finalization => {
                 logger(finalized);
             }
-            // component not present, effect dropped
-            Effect::Repeater(_) => {}
-            Effect::Network(_) => {}
-            Effect::Ledger(_) => {}
+            // component not present, dropped
+            Routed::Repeater(_) => {}
+            Routed::Network(_) => {}
+            Routed::Ledger(_) => {}
         }
     }
 }

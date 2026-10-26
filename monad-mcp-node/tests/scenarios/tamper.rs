@@ -13,162 +13,96 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! A node runtime whose effects pass through a filter before they
-//! reach the components or the network.
+//! A node router whose effects pass through a filter before routing,
+//! and whose routed values pass through a filter before they reach the
+//! components or the network.
 
-use monad_mcp_node::{
-    Dispatch, Effect, FinalizedSlot, Runtime,
-    chorus::{slot::chorus::ChorusMessage, types::Timestamp},
-    component::{CadenceOutput, ProposingOutput, RepeaterOutput},
-    da::DAOutput,
-    network::Inbound,
-};
+use monad_mcp_node::{Effect, Routed, Router, Sink, chorus::types::Timestamp};
 
-pub type EffectFilter = Box<dyn FnMut(Effect) -> Vec<Effect>>;
-pub type Handler<R, T> = Box<dyn FnMut(&mut R, T) -> Vec<Effect>>;
-pub type ProposalHandler<R> = Box<dyn FnMut(&mut R, Timestamp, ProposingOutput) -> Vec<Effect>>;
+pub type PreRouteFilter = Box<dyn FnMut(Effect) -> Vec<Effect>>;
+pub type PostRouteFilter = Box<dyn FnMut(Routed) -> Vec<Routed>>;
+pub type CustomRouter<R> = Box<dyn FnMut(&mut R, Timestamp, Effect) -> Vec<Routed>>;
 
 pub struct Tampered<R> {
     inner: R,
 
-    pub filter: Option<EffectFilter>,
-    pub inbound_handler: Option<Handler<R, Inbound>>,
-    pub cadence_handler: Option<Handler<R, CadenceOutput>>,
-    pub da_handler: Option<Handler<R, DAOutput>>,
-    pub proposal_handler: Option<ProposalHandler<R>>,
-    pub repeat_handler: Option<Handler<R, RepeaterOutput<ChorusMessage>>>,
+    pub pre_filter: Option<PreRouteFilter>,
+    pub tamper: Option<CustomRouter<R>>,
+    pub post_filter: Option<PostRouteFilter>,
 }
 
 impl<R> From<R> for Tampered<R> {
     fn from(inner: R) -> Self {
         Self {
             inner,
-            filter: None,
-            inbound_handler: None,
-            cadence_handler: None,
-            da_handler: None,
-            proposal_handler: None,
-            repeat_handler: None,
+            pre_filter: None,
+            tamper: None,
+            post_filter: None,
         }
     }
 }
 
 impl<R> Tampered<R> {
-    pub fn filtered<F>(mut self, filter: F) -> Self
+    #[allow(unused)]
+    pub fn tamper_pre<F>(mut self, pre_filter: F) -> Self
     where
         F: FnMut(Effect) -> Vec<Effect> + 'static,
     {
-        self.filter = Some(Box::new(filter));
+        self.pre_filter = Some(Box::new(pre_filter));
+        self
+    }
+
+    #[allow(unused)]
+    pub fn tamper_post<F>(mut self, post_filter: F) -> Self
+    where
+        F: FnMut(Routed) -> Vec<Routed> + 'static,
+    {
+        self.post_filter = Some(Box::new(post_filter));
         self
     }
 }
 
-impl<R: Runtime> Runtime for Tampered<R> {
-    fn handle_inbound(
-        &mut self,
-        now: Timestamp,
-        inbound: Inbound,
-        effects: &mut impl Dispatch<Effect>,
-    ) {
-        let mut effects = Filtered::new(&mut self.filter, effects);
-        let Some(handler) = &mut self.inbound_handler else {
-            self.inner.handle_inbound(now, inbound, &mut effects);
-            return;
+impl<R: Router> Router for Tampered<R> {
+    fn route(&mut self, now: Timestamp, effect: Effect, sink: &mut impl Sink<Routed>) {
+        let effects = match &mut self.pre_filter {
+            Some(pre_filter) => pre_filter(effect),
+            None => vec![effect],
         };
+        let mut sink = FilteredSink::new(&mut self.post_filter, sink);
+        for effect in effects {
+            let Some(tamper) = &mut self.tamper else {
+                self.inner.route(now, effect, &mut sink);
+                continue;
+            };
 
-        let new_effects = handler(&mut self.inner, inbound);
-        for effect in new_effects {
-            effects.dispatch(effect);
+            let new_routed = tamper(&mut self.inner, now, effect);
+            for next in new_routed {
+                sink.send(next);
+            }
         }
-    }
-
-    fn handle_cadence(&mut self, output: CadenceOutput, effects: &mut impl Dispatch<Effect>) {
-        let mut effects = Filtered::new(&mut self.filter, effects);
-        let Some(handler) = &mut self.cadence_handler else {
-            self.inner.handle_cadence(output, &mut effects);
-            return;
-        };
-
-        let new_effects = handler(&mut self.inner, output);
-        for effect in new_effects {
-            effects.dispatch(effect);
-        }
-    }
-
-    fn handle_da(&mut self, now: Timestamp, output: DAOutput, effects: &mut impl Dispatch<Effect>) {
-        let mut effects = Filtered::new(&mut self.filter, effects);
-        let Some(handler) = &mut self.da_handler else {
-            self.inner.handle_da(now, output, &mut effects);
-            return;
-        };
-
-        let new_effects = handler(&mut self.inner, output);
-        for effect in new_effects {
-            effects.dispatch(effect);
-        }
-    }
-
-    fn handle_proposal(
-        &mut self,
-        now: Timestamp,
-        output: ProposingOutput,
-        effects: &mut impl Dispatch<Effect>,
-    ) {
-        let mut effects = Filtered::new(&mut self.filter, effects);
-        let Some(handler) = &mut self.proposal_handler else {
-            self.inner.handle_proposal(now, output, &mut effects);
-            return;
-        };
-
-        let new_effects = handler(&mut self.inner, now, output);
-        for effect in new_effects {
-            effects.dispatch(effect);
-        }
-    }
-
-    fn handle_repeat(
-        &mut self,
-        output: RepeaterOutput<ChorusMessage>,
-        effects: &mut impl Dispatch<Effect>,
-    ) {
-        let mut effects = Filtered::new(&mut self.filter, effects);
-        let Some(handler) = &mut self.repeat_handler else {
-            self.inner.handle_repeat(output, &mut effects);
-            return;
-        };
-
-        let new_effects = handler(&mut self.inner, output);
-        for effect in new_effects {
-            effects.dispatch(effect);
-        }
-    }
-
-    fn handle_finalized(&mut self, finalized: FinalizedSlot, effects: &mut impl Dispatch<Effect>) {
-        let mut effects = Filtered::new(&mut self.filter, effects);
-        self.inner.handle_finalized(finalized, &mut effects);
     }
 }
 
-struct Filtered<'a, D> {
-    filter: &'a mut Option<EffectFilter>,
+struct FilteredSink<'a, D> {
+    filter: &'a mut Option<PostRouteFilter>,
     sink: &'a mut D,
 }
 
-impl<'a, D> Filtered<'a, D> {
-    fn new(filter: &'a mut Option<EffectFilter>, sink: &'a mut D) -> Self {
+impl<'a, D> FilteredSink<'a, D> {
+    fn new(filter: &'a mut Option<PostRouteFilter>, sink: &'a mut D) -> Self {
         Self { filter, sink }
     }
 }
 
-impl<D: Dispatch<Effect>> Dispatch<Effect> for Filtered<'_, D> {
-    fn dispatch(&mut self, effect: Effect) {
+impl<D: Sink<Routed>> Sink<Routed> for FilteredSink<'_, D> {
+    fn send(&mut self, routed: Routed) {
         let Some(filter) = &mut self.filter else {
-            self.sink.dispatch(effect);
+            self.sink.send(routed);
             return;
         };
 
-        for effect in filter(effect) {
-            self.sink.dispatch(effect);
+        for next in filter(routed) {
+            self.sink.send(next);
         }
     }
 }
