@@ -151,4 +151,12 @@ mod tests {
         assert_eq!((config.max_mbps, config.peer_max_mbps), (2_000, 500));
         assert_eq!(config.udp_tx_workers, 8);
     }
+
+    #[test]
+    fn encrypted_tcp_advertisement_is_opt_in_without_an_extra_port() {
+        assert!(!parse("max_mbps = 2000").enable_encrypted_tcp);
+        let config = parse("max_mbps = 2000\nenable_encrypted_tcp = true");
+        assert!(config.enable_encrypted_tcp);
+        assert!(config.encrypted_tcp_bind_address_port.is_none());
+    }
 }

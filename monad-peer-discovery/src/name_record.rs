@@ -217,3 +217,56 @@ fn record_changes(previous: Option<&NameRecord>, current: &NameRecord) -> Vec<St
     }
     changes
 }
+
+#[cfg(test)]
+mod tests {
+    use monad_secp::{KeyPair, SecpSignature};
+
+    use super::*;
+    use crate::Capability;
+
+    #[test]
+    fn capability_changes_are_signed_persisted_and_advance_revision() {
+        let directory = tempfile::tempdir().unwrap();
+        let key = KeyPair::from_bytes(&mut [1; 32]).unwrap();
+        let legacy = NameRecord::new_with_ports(
+            "127.0.0.1".parse().unwrap(),
+            8000,
+            None,
+            8001,
+            None,
+            None,
+            1,
+        );
+        let initial =
+            load_or_create::<SecpSignature>(directory.path(), legacy.clone(), None, &key).unwrap();
+        let enabled = legacy.clone().with_capability(Capability::EncryptedTcp);
+        let advertised =
+            load_or_create::<SecpSignature>(directory.path(), enabled.clone(), None, &key).unwrap();
+        assert_eq!(
+            advertised.seq_and_revision(),
+            (1, initial.name_record.revision() + 1)
+        );
+        assert!(
+            advertised
+                .name_record
+                .check_capability(Capability::EncryptedTcp)
+        );
+        assert_eq!(advertised.recover_pubkey().unwrap().pubkey(), key.pubkey());
+        let reused =
+            load_or_create::<SecpSignature>(directory.path(), enabled, None, &key).unwrap();
+        assert_eq!(reused, advertised);
+        let disabled =
+            load_or_create::<SecpSignature>(directory.path(), legacy, None, &key).unwrap();
+        assert_eq!(
+            disabled.seq_and_revision(),
+            (1, advertised.name_record.revision() + 1)
+        );
+        assert!(
+            !disabled
+                .name_record
+                .check_capability(Capability::EncryptedTcp)
+        );
+        assert_eq!(disabled.recover_pubkey().unwrap().pubkey(), key.pubkey());
+    }
+}

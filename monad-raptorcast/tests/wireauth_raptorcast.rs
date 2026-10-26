@@ -44,6 +44,135 @@ const CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 const MESSAGE_TIMEOUT: Duration = Duration::from_secs(10);
 const NUM_NODES: usize = 10;
 
+#[rstest]
+#[case(false, false)]
+#[case(true, true)]
+#[case(false, true)]
+#[tokio::test(flavor = "current_thread")]
+async fn tcp_application_round_trip_uses_signed_capabilities(
+    #[case] alice_encrypted: bool,
+    #[case] bob_encrypted: bool,
+) {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let infos = [ValidatorInfo::new(43), ValidatorInfo::new(44)];
+            let dataplanes = [
+                create_dataplane_for_tests(false),
+                create_dataplane_for_tests(false),
+            ];
+            let records: HashMap<_, _> = infos
+                .iter()
+                .zip(&dataplanes)
+                .zip([alice_encrypted, bob_encrypted])
+                .map(|((info, dp), encrypted)| {
+                    let mut record = info
+                        .create_name_record(dp.tcp_addr, dp.auth_addr, None, dp.non_auth_addr)
+                        .name_record;
+                    if encrypted {
+                        record.set_capability(monad_peer_discovery::Capability::EncryptedTcp);
+                    }
+                    (info.nodeid, MonadNameRecord::new(record, &*info.keypair))
+                })
+                .collect();
+            let mut channels: Vec<_> = infos
+                .iter()
+                .zip(dataplanes)
+                .map(|(info, dp)| {
+                    spawn_wireauth_validator(
+                        info.keypair.clone(),
+                        dp,
+                        HashMap::new(),
+                        records.clone(),
+                        vec![],
+                        DEFAULT_SIG_VERIFICATION_RATE_LIMIT,
+                        false,
+                    )
+                })
+                .collect();
+            for (sender, receiver) in [(0, 1), (1, 0)] {
+                let (tx, completion) = futures::channel::oneshot::channel();
+                channels[sender]
+                    .cmd_tx
+                    .send(RouterCommand::Publish {
+                        target: monad_types::RouterTarget::TcpPointToPoint {
+                            to: infos[receiver].nodeid,
+                            completion: Some(tx),
+                        },
+                        message: MockMessage::new(123, 1024),
+                    })
+                    .unwrap();
+                let event =
+                    tokio::time::timeout(MESSAGE_TIMEOUT, channels[receiver].event_rx.recv())
+                        .await
+                        .unwrap()
+                        .unwrap();
+                assert_eq!(event.0, (infos[sender].nodeid, 123));
+                tokio::time::timeout(MESSAGE_TIMEOUT, completion)
+                    .await
+                    .unwrap()
+                    .unwrap();
+            }
+        })
+        .await;
+}
+
+#[rstest]
+#[case(false, monad_dataplane::TcpProtocol::Signature)]
+#[case(true, monad_dataplane::TcpProtocol::WireAuth)]
+#[tokio::test(flavor = "current_thread")]
+async fn signed_capability_selects_protocol_on_ordinary_tcp_port(
+    #[case] encrypted: bool,
+    #[case] expected: monad_dataplane::TcpProtocol,
+) {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let alice = ValidatorInfo::new(41);
+            let bob = ValidatorInfo::new(42);
+            let alice_dp = create_dataplane_for_tests(false);
+            let bob_dp = create_dataplane_for_tests(false);
+            let mut record = NameRecord::new_with_ports(
+                *bob_dp.tcp_addr.ip(),
+                bob_dp.tcp_addr.port(),
+                None,
+                bob_dp.auth_addr.port(),
+                None,
+                Some(1),
+                1,
+            );
+            if encrypted {
+                record.set_capability(monad_peer_discovery::Capability::EncryptedTcp);
+            }
+            let records =
+                HashMap::from([(bob.nodeid, MonadNameRecord::new(record, &*bob.keypair))]);
+            let channels = spawn_wireauth_validator(
+                alice.keypair,
+                alice_dp,
+                HashMap::new(),
+                records,
+                vec![],
+                DEFAULT_SIG_VERIFICATION_RATE_LIMIT,
+                false,
+            );
+            channels.ready_rx.await.unwrap();
+            channels
+                .cmd_tx
+                .send(RouterCommand::Publish {
+                    target: monad_types::RouterTarget::TcpPointToPoint {
+                        to: bob.nodeid,
+                        completion: None,
+                    },
+                    message: MockMessage::new(123, 1024),
+                })
+                .unwrap();
+            let (mut reader, _) = bob_dp.tcp_socket.split();
+            let message = tokio::time::timeout(MESSAGE_TIMEOUT, reader.recv())
+                .await
+                .unwrap();
+            assert_eq!(message.protocol, expected);
+        })
+        .await;
+}
+
 fn init_tracing() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
