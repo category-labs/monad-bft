@@ -36,6 +36,92 @@ sampled latency, independent loss, time-bounded partitions, predicate drops);
 The net keeps its own ChaCha RNG, seeded independently of the engine's
 scheduling RNG, so network randomness is reproducible on its own.
 
+### Topology and uplinks
+
+Latency can depend on the link. `Network::with_link_latency` takes a function
+of the link (sender, receiver, send time) and the RNG.
+`Network::with_matrix` builds on it with a `LatencyMatrix`: one-way base
+latencies between regions, a placement of addresses into regions, and a
+jitter distribution added per message. Rows are senders, so asymmetric paths
+are allowed. One region per node gives a full node-to-node matrix; a
+geographic topology places many nodes per region and keeps the matrix small.
+
+`Network::egress` gives every sender a serial uplink of a given bit rate, with
+per-sender overrides through `egress_rate`. The caller supplies the size of a
+message. A message leaves after everything the same sender sent before it and
+occupies the uplink for its size divided by the rate; its delivery delay is
+that wait and transmission time plus the link latency.
+
+- A message the model then drops (loss, partition, predicate) was still
+  transmitted, so it still occupies the uplink.
+- A node's messages to itself bypass the uplink.
+- Unicast fan-out serializes, as on a real uplink: a broadcast to n nodes
+  takes n transmission times.
+
+Sequencing is per message. That fits transports whose messages each fit one
+datagram. Splitting a large message into frames that interleave with other
+traffic is out of scope. Scheduling *policy*, such as priority queues, belongs
+to the node: a node decides in which order it hands messages to the net, and
+the net transmits them in that order.
+
+### Topology presets
+
+`topology.rs` builds `LatencyMatrix` values; the network model itself does
+not know about it.
+
+A `RegionTable` is a square table of one-way latencies between named
+regions, plus a weight per region and a `Provenance`: a name, the source of
+the numbers, and the date they were measured or entered. Every table records
+where its numbers come from, and says so when they are approximations.
+
+Every entry must be positive, the diagonal included: nodes in the same
+region still have a positive one-way latency. `with_matrix` adds jitter as a
+`Duration`, so never negative, which makes each entry a true per-link lower
+bound. A scheduler that needs a lower bound on link delays can take
+`min_latency()` or the entries themselves. A measured RTT matrix usually has
+a zero diagonal; the caller replaces it before building a table.
+
+The crate ships one geographic table, derived from a public ping dataset (see
+its rustdoc for the sources and method), and a few synthetic shapes
+for tests (one region, two clusters, ring, star). Measured matrices of
+specific deployments are project data: the consumer that owns them builds a
+`RegionTable` with `new` or `from_rtt`, or loads one from its own files.
+
+A `Placer` turns a table into a node-level topology:
+
+- By default (`Regions::Apportioned`), region counts are apportioned to the
+  weights by largest remainder (ties go to the lower region index), so 100
+  nodes over weights summing to 100 match them exactly. A shuffle then
+  decides which address goes where. Every seed has the same geographic
+  composition, which suits tests and comparisons between protocol variants.
+- `Regions::Sampled` draws each node's region independently by weight, so
+  the seed varies the composition too: the right choice for Monte Carlo over
+  random node sets, and for comparing with models that sample the same way.
+  Small regions may end up empty under either method.
+- An optional last mile per node, uniform over a range, is added at both
+  ends of every link.
+- An optional route spread scales the region latency of each node pair by a
+  factor drawn once, the same in both directions. An optional asymmetry
+  scales one direction by `1 + a` and the other by `1 - a`, keeping the
+  round trip. Both are persistent per pair, unlike jitter, which is drawn
+  per message: without them, all nodes in two regions see the same base
+  latency, and arrival times cluster by region. Asymmetry also matters to
+  anything that estimates one-way delay as half the round trip, such as
+  clock-offset estimation, since an asymmetric path looks like an offset.
+  Factors stay positive (the spread range is positive and `|a| < 1`), so
+  entries remain positive lower bounds.
+- Stake is equal, or log-normal and normalized to sum to 1.
+
+Without last mile, spread and asymmetry, the matrix stays region-level and
+small; with any of them, it has one row per node.
+
+Randomness comes only from the RNG passed to `place`, drawn in a fixed order
+(regions, last miles, stakes, then per pair spread and asymmetry), so a seed
+reproduces the placement, and turning on the route options does not change
+the earlier draws. The
+placer holds no state between calls, and the matrix it yields is immutable
+data.
+
 ## The type-erased delivery boundary
 
 `Net` routes to nodes through `Deliver<Addr, Msg>` thunks (built by
