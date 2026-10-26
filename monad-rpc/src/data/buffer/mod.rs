@@ -252,7 +252,7 @@ mod tests {
         transaction::Recovered, Eip658Value, Receipt, ReceiptEnvelope, ReceiptWithBloom,
         SignableTransaction, TxEip1559, TxEnvelope,
     };
-    use alloy_primitives::{Address, Bloom, TxKind, B256};
+    use alloy_primitives::{Address, Bloom, TxKind, B256, U128};
     use alloy_rpc_types::TransactionReceipt;
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
@@ -638,6 +638,7 @@ mod tests {
         let monad_header = MonadNotification {
             block_id: BlockId(monad_types::Hash(block_hash.0)),
             commit_state: BlockCommitState::Proposed,
+            timestamp_ns: U128::ZERO,
             data: serialized_header,
         };
         let serialized_monad_header = JsonSerialized::new_shared(monad_header);
