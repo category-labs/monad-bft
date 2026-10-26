@@ -36,6 +36,34 @@ sampled latency, independent loss, time-bounded partitions, predicate drops);
 The net keeps its own ChaCha RNG, seeded independently of the engine's
 scheduling RNG, so network randomness is reproducible on its own.
 
+### Topology and uplinks
+
+Latency can depend on the link. `Network::with_link_latency` takes a function
+of the link (sender, receiver, send time) and the RNG.
+`Network::with_matrix` builds on it with a `LatencyMatrix`: one-way base
+latencies between regions, a placement of addresses into regions, and a
+jitter distribution added per message. Rows are senders, so asymmetric paths
+are allowed. One region per node gives a full node-to-node matrix; a
+geographic topology places many nodes per region and keeps the matrix small.
+
+`Network::egress` gives every sender a serial uplink of a given bit rate, with
+per-sender overrides through `egress_rate`. The caller supplies the size of a
+message. A message leaves after everything the same sender sent before it and
+occupies the uplink for its size divided by the rate; its delivery delay is
+that wait and transmission time plus the link latency.
+
+- A message the model then drops (loss, partition, predicate) was still
+  transmitted, so it still occupies the uplink.
+- A node's messages to itself bypass the uplink.
+- Unicast fan-out serializes, as on a real uplink: a broadcast to n nodes
+  takes n transmission times.
+
+Sequencing is per message. That fits transports whose messages each fit one
+datagram. Splitting a large message into frames that interleave with other
+traffic is out of scope. Scheduling *policy*, such as priority queues, belongs
+to the node: a node decides in which order it hands messages to the net, and
+the net transmits them in that order.
+
 ## The type-erased delivery boundary
 
 `Net` routes to nodes through `Deliver<Addr, Msg>` thunks (built by

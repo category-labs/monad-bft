@@ -20,6 +20,10 @@ engine.
   ```rust
   Network::reliable(delta)                    // constant latency, lossless
   Network::with_latency(distribution)         // per-message sampled latency
+  Network::with_link_latency(|link, rng| ..)  // latency per sender/receiver
+  Network::with_matrix(matrix, jitter)        // region latency matrix + jitter
+      .egress(bits_per_sec, |msg| size)       // serial per-sender uplink
+      .egress_rate(addr, bits_per_sec)        // per-sender uplink override
       .loss(p)                                // independent drop probability
       .partition(window, [group_a, group_b])  // time-bounded network split
       .drop_if(|link, msg| ...)               // predicate drop
