@@ -106,4 +106,6 @@ services:
       --node-config /monad/config/node.toml
       --private-domain-spoke 85679=0x5FbDB2315678afecb367f032d93F642f64180aa3
       --private-domain-spoke 151215=0x5FbDB2315678afecb367f032d93F642f64180aa3
+      --domain-operator 85679=0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
+      --domain-operator 151215=0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
     ulimits: *ulimits
