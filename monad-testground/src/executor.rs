@@ -196,7 +196,7 @@ where
                 >::new(
                     cfg,
                     SecondaryRaptorCastModeConfig::None,
-                    tcp_socket,
+                    (tcp_socket, monad_raptorcast::auth::NoopAuthProtocol::new()),
                     authenticated,
                     None,
                     Some(non_authenticated_socket),

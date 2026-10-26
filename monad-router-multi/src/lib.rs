@@ -97,6 +97,7 @@ where
         current_epoch: Epoch,
         epoch_validators: BTreeMap<Epoch, BTreeSet<NodeId<CertificateSignaturePubKey<ST>>>>,
         auth_protocol: AP,
+        tcp_auth_protocol: AP,
         direct_udp_auth_protocol: Option<AP>,
         direct_udp_peer_score: DS,
         proposer_schedule: BoxedProposerSchedule<CertificateSignaturePubKey<ST>>,
@@ -170,7 +171,7 @@ where
         let mut rc_primary = RaptorCast::new(
             cfg.clone(),
             secondary_mode,
-            tcp_socket,
+            (tcp_socket, tcp_auth_protocol),
             (authenticated_socket, auth_protocol),
             direct_udp,
             non_authenticated_socket,

@@ -707,9 +707,16 @@ fn setup_node(
         WireAuthProtocol,
         NopScore<NodeId<PubKeyType>>,
     >::new(
-        create_raptorcast_config(keypair_arc),
+        create_raptorcast_config(keypair_arc.clone()),
         SecondaryRaptorCastModeConfig::None,
-        tcp_socket,
+        (
+            tcp_socket,
+            WireAuthProtocol::new(
+                &monad_raptorcast::auth::metrics::TCP_METRICS,
+                monad_raptorcast::auth::tcp_socket::wireauth_config(),
+                keypair_arc,
+            ),
+        ),
         (authenticated_socket, auth_protocol),
         None,
         Some(non_authenticated_socket),

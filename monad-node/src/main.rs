@@ -878,6 +878,11 @@ where
         )
     });
 
+    let tcp_auth_protocol = WireAuthProtocol::new(
+        &monad_raptorcast::auth::metrics::TCP_METRICS,
+        monad_raptorcast::auth::tcp_socket::wireauth_config(),
+        shared_key.clone(),
+    );
     MultiRouter::new(
         self_id,
         RaptorCastConfig {
@@ -899,6 +904,7 @@ where
         current_epoch,
         epoch_validators,
         auth_protocol,
+        tcp_auth_protocol,
         direct_udp_auth_protocol,
         direct_udp_peer_score_reader,
         proposer_schedule,
