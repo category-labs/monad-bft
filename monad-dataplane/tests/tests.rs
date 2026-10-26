@@ -272,6 +272,7 @@ fn tcp_reuses_connection_after_idle() {
         tcp_socket.write(
             rx_addr,
             TcpMsg {
+                protocol: monad_dataplane::TcpProtocol::Signature,
                 msg: payload.clone().into(),
                 completion: Some(sender),
             },
@@ -323,6 +324,7 @@ fn tcp_slow() {
         tcp_socket.write(
             rx_addr,
             TcpMsg {
+                protocol: monad_dataplane::TcpProtocol::Signature,
                 msg: payload.clone().into(),
                 completion: Some(sender),
             },
@@ -370,6 +372,7 @@ fn tcp_rapid() {
         tcp_socket.write(
             rx_addr,
             TcpMsg {
+                protocol: monad_dataplane::TcpProtocol::Signature,
                 msg: payload.clone().into(),
                 completion: Some(sender),
             },
@@ -420,6 +423,7 @@ fn tcp_connect_fail() {
     tcp_socket.write(
         rx_addr,
         TcpMsg {
+            protocol: monad_dataplane::TcpProtocol::Signature,
             msg: payload.into(),
             completion: Some(sender),
         },
@@ -459,6 +463,7 @@ fn tcp_exceed_queue_limits() {
         tcp_socket.write(
             rx_addr,
             TcpMsg {
+                protocol: monad_dataplane::TcpProtocol::Signature,
                 msg: payload.clone().into(),
                 completion: Some(sender),
             },
@@ -534,6 +539,7 @@ fn tcp_exceed_queue_byte_limit() {
         tcp_socket.write(
             rx_addr,
             TcpMsg {
+                protocol: monad_dataplane::TcpProtocol::Signature,
                 msg: payload.clone().into(),
                 completion: Some(sender),
             },
@@ -592,6 +598,7 @@ fn tcp_outgoing_connection_limit() {
     tcp_socket.write(
         rx1_addr,
         TcpMsg {
+            protocol: monad_dataplane::TcpProtocol::Signature,
             msg: payload1.clone().into(),
             completion: Some(sender1),
         },
@@ -606,6 +613,7 @@ fn tcp_outgoing_connection_limit() {
     tcp_socket.write(
         rx2_addr,
         TcpMsg {
+            protocol: monad_dataplane::TcpProtocol::Signature,
             msg: payload2.into(),
             completion: Some(sender2),
         },
@@ -641,6 +649,7 @@ fn tcp_reject_oversized_message() {
     tcp_socket.write(
         rx_addr,
         TcpMsg {
+            protocol: monad_dataplane::TcpProtocol::Signature,
             msg: oversized_payload.into(),
             completion: None,
         },
@@ -679,6 +688,7 @@ fn tcp_accept_max_size_message() {
     tcp_socket.write(
         rx_addr,
         TcpMsg {
+            protocol: monad_dataplane::TcpProtocol::Signature,
             msg: max_size_payload.clone().into(),
             completion: Some(sender),
         },
@@ -860,6 +870,7 @@ async fn test_tcp_limits_are_applied(
     tx1_socket.write(
         rx_addr,
         TcpMsg {
+            protocol: monad_dataplane::TcpProtocol::Signature,
             msg: payload1.clone().into(),
             completion: None,
         },
@@ -874,6 +885,7 @@ async fn test_tcp_limits_are_applied(
     tx2_socket.write(
         rx_addr,
         TcpMsg {
+            protocol: monad_dataplane::TcpProtocol::Signature,
             msg: payload2.clone().into(),
             completion: None,
         },
@@ -917,6 +929,7 @@ async fn test_tcp_rps_limits() {
         tx1_socket.write(
             rx_addr,
             TcpMsg {
+                protocol: monad_dataplane::TcpProtocol::Signature,
                 msg: payload.into(),
                 completion: None,
             },
@@ -975,6 +988,7 @@ async fn test_tcp_limits_ignored_for_trusted(
     tx1_socket.write(
         rx_addr,
         TcpMsg {
+            protocol: monad_dataplane::TcpProtocol::Signature,
             msg: payload1.clone().into(),
             completion: None,
         },
@@ -989,6 +1003,7 @@ async fn test_tcp_limits_ignored_for_trusted(
     tx2_socket.write(
         rx_addr,
         TcpMsg {
+            protocol: monad_dataplane::TcpProtocol::Signature,
             msg: payload2.clone().into(),
             completion: None,
         },
@@ -1021,6 +1036,7 @@ async fn test_tcp_banned() {
     tx1_socket.write(
         rx_addr,
         TcpMsg {
+            protocol: monad_dataplane::TcpProtocol::Signature,
             msg: payload1.clone().into(),
             completion: None,
         },
@@ -1035,6 +1051,7 @@ async fn test_tcp_banned() {
     tx1_socket.write(
         rx_addr,
         TcpMsg {
+            protocol: monad_dataplane::TcpProtocol::Signature,
             msg: payload2.clone().into(),
             completion: None,
         },
@@ -1405,6 +1422,7 @@ fn tcp_multi_socket() {
         tcp_socket.write(
             rx_addr,
             TcpMsg {
+                protocol: monad_dataplane::TcpProtocol::Signature,
                 msg: payload1.clone().into(),
                 completion: None,
             },
@@ -1412,6 +1430,7 @@ fn tcp_multi_socket() {
         tcp_socket_2.write(
             rx_addr_2,
             TcpMsg {
+                protocol: monad_dataplane::TcpProtocol::Signature,
                 msg: payload2.clone().into(),
                 completion: None,
             },
