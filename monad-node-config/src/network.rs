@@ -28,6 +28,10 @@ pub struct NodeNetworkConfig {
     pub direct_udp_bind_address_port: Option<u16>,
     pub encrypted_tcp_bind_address_port: Option<u16>,
 
+    /// Advertise WireAuth support on the existing TCP socket.
+    #[serde(default)]
+    pub enable_encrypted_tcp: bool,
+
     pub max_rtt_ms: u64,
 
     /// Global UDP egress bandwidth limit in megabits per second.

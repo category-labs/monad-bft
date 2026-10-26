@@ -22,7 +22,7 @@ use std::{
 use clap::Parser;
 use monad_keystore::keystore::Keystore;
 use monad_node_config::{MonadNodeConfig, NodeBootstrapConfig};
-use monad_peer_discovery::{MonadNameRecord, NameRecord};
+use monad_peer_discovery::{Capability, MonadNameRecord, NameRecord};
 use monad_secp::SecpSignature;
 
 /// Example commands to run the following program:
@@ -58,6 +58,10 @@ struct Args {
 
     #[arg(long, help = "Optional encrypted TCP port")]
     encrypted_tcp_port: Option<NonZeroU16>,
+
+    /// Advertise WireAuth on the ordinary TCP port (also read from --node-config).
+    #[arg(long)]
+    enable_encrypted_tcp: bool,
 
     /// Sequence to sign; overrides the saved record and --node-config.
     #[arg(long)]
@@ -178,20 +182,21 @@ fn main() {
                 .expect("Invalid saved name record")
                 .seq_and_revision()
         });
+    let node_config = args.node_config.as_ref().map(|path| {
+        let contents = std::fs::read_to_string(path).expect("Failed to read node toml file");
+        toml::from_str::<MonadNodeConfig>(&contents).expect("Invalid format in node toml file")
+    });
     let self_record_seq_num = if let Some(sequence) = args
         .self_record_seq_num
         .or(saved.map(|(sequence, _)| sequence))
     {
         sequence
-    } else if let Some(path) = args.node_config {
-        let contents = std::fs::read_to_string(path).expect("Failed to read node toml file");
-        let node_config: MonadNodeConfig =
-            toml::from_str(&contents).expect("Invalid format in node toml file");
+    } else if let Some(node_config) = &node_config {
         node_config.peer_discovery.self_record_seq_num
     } else {
         panic!("Provide --self-record-seq-num, --name-record-path, or --node-config")
     };
-    let name_record = NameRecord::new_with_ports(
+    let mut name_record = NameRecord::new_with_ports(
         ip,
         tcp_port,
         udp_port,
@@ -207,6 +212,11 @@ fn main() {
                 .map(|(_, revision)| revision))
             .unwrap_or_default(),
     );
+    if args.enable_encrypted_tcp
+        || node_config.is_some_and(|config| config.network.enable_encrypted_tcp)
+    {
+        name_record.set_capability(Capability::EncryptedTcp);
+    }
     let signed_name_record: MonadNameRecord<SecpSignature> =
         MonadNameRecord::new(name_record, &keypair);
 

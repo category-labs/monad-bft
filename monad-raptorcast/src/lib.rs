@@ -35,7 +35,8 @@ use monad_crypto::certificate_signature::{
 };
 use monad_dataplane::{
     udp::{segment_size_for_mtu, DEFAULT_MTU},
-    DataplaneBuilder, DataplaneControl, TcpSocketHandle, TcpSocketId, UdpSocketHandle, UdpSocketId,
+    DataplaneBuilder, DataplaneControl, TcpProtocol, TcpSocketHandle, TcpSocketId, UdpSocketHandle,
+    UdpSocketId,
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
@@ -46,7 +47,7 @@ use monad_peer_discovery::{
     driver::{PeerDiscoveryDriver, PeerDiscoveryEmit},
     message::PeerDiscoveryMessage,
     mock::{NopDiscovery, NopDiscoveryBuilder},
-    MonadNameRecord, NameRecord, PeerDiscoveryAlgo, PeerDiscoveryEvent,
+    Capability, MonadNameRecord, NameRecord, PeerDiscoveryAlgo, PeerDiscoveryEvent,
 };
 use monad_peer_score::IdentityScore;
 use monad_types::{
@@ -410,18 +411,34 @@ where
         make_app_message: impl FnOnce() -> Bytes,
         completion: Option<oneshot::Sender<()>>,
     ) {
-        match self.peer_discovery_driver.lock().unwrap().get_tcp_addr(to) {
+        let destination = self
+            .peer_discovery_driver
+            .lock()
+            .unwrap()
+            .get_name_record(to)
+            .map(|record| {
+                let protocol = if record
+                    .name_record
+                    .check_capability(Capability::EncryptedTcp)
+                {
+                    TcpProtocol::WireAuth
+                } else {
+                    TcpProtocol::Signature
+                };
+                (SocketAddr::V4(record.name_record.tcp_socket()), protocol)
+            });
+        match destination {
             None => {
                 warn!(
                     ?to,
                     "RaptorCastPrimary TcpPointToPoint not sending message, address unknown"
                 );
             }
-            Some(address) => {
+            Some((address, protocol)) => {
                 if let Err(error) = self.tcp_socket.write(
                     address,
                     &to.pubkey(),
-                    monad_dataplane::TcpProtocol::Signature,
+                    protocol,
                     make_app_message(),
                     completion,
                 ) {

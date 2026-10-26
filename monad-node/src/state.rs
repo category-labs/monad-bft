@@ -34,7 +34,7 @@ use monad_keystore::keystore::Keystore;
 use monad_node_config::{
     ForkpointConfig, MetricsConfig as NodeMetricsConfig, MonadNodeConfig, ValidatorsConfigType,
 };
-use monad_peer_discovery::{name_record, MonadNameRecord, NameRecord};
+use monad_peer_discovery::{name_record, Capability, MonadNameRecord, NameRecord};
 use monad_secp::{KeyPair, SecpSignature};
 use monad_types::{NodeId, Round};
 use reqwest::{blocking::Client, Url};
@@ -146,17 +146,21 @@ impl NodeState {
             kind: ErrorKind::ValueValidation,
             msg: format!("unable to resolve self address: {}", config.self_address),
         })?;
+        let mut desired_record = NameRecord::new_with_ports(
+            *address.ip(),
+            config.tcp_port().get(),
+            config.udp_port().map(NonZeroU16::get),
+            config.self_auth_port.get(),
+            config.self_direct_udp_port.map(NonZeroU16::get),
+            config.self_encrypted_tcp_port.map(NonZeroU16::get),
+            config.self_record_seq_num,
+        );
+        if node_config.network.enable_encrypted_tcp {
+            desired_record.set_capability(Capability::EncryptedTcp);
+        }
         let name_record = name_record::load_or_create(
             &directory,
-            NameRecord::new_with_ports(
-                *address.ip(),
-                config.tcp_port().get(),
-                config.udp_port().map(NonZeroU16::get),
-                config.self_auth_port.get(),
-                config.self_direct_udp_port.map(NonZeroU16::get),
-                config.self_encrypted_tcp_port.map(NonZeroU16::get),
-                config.self_record_seq_num,
-            ),
+            desired_record,
             config.self_name_record_sig,
             &secp_key,
         )?;
