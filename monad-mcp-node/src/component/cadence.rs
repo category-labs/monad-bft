@@ -18,13 +18,17 @@ use std::{
     sync::mpsc::{Receiver, Sender, channel},
 };
 
+use monad_mcp_common::{Slot, SlotDeadline, Timestamp};
+
 use super::Component;
-use crate::chorus::{
-    CadenceRuntime, DASink, FinalizationObserver, Outbound, Runtime as _, SlotLifecycle,
-    SlotManager,
-    conductor::{MonadConductor, acs::nop::NopAcs},
-    slot::chorus::{Chorus, ChorusDACommand, ChorusDAEvent, SlotFinalization},
-    types::{NodeId, Slot, SlotDeadline, Timestamp},
+use crate::{
+    chorus::{
+        CadenceRuntime, DASink, FinalizationObserver, Outbound, Runtime as _, SlotLifecycle,
+        SlotManager,
+        conductor::{MonadConductor, acs::nop::NopAcs},
+        slot::chorus::{Chorus, ChorusDACommand, ChorusDAEvent, SlotFinalization},
+    },
+    common::NodeId,
 };
 
 pub type Conductor = MonadConductor<NopAcs<SlotDeadline>>;

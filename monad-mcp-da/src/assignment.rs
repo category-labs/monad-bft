@@ -15,8 +15,6 @@
 
 use std::collections::HashSet;
 
-use monad_mcp_chorus::spec::Stake as _;
-
 use super::{
     chunk::WireChunkId,
     types::{NodeId, Stake},
@@ -352,6 +350,8 @@ impl StakePartition {
     }
 
     fn obligations(&self, shares: usize) -> Vec<(NodeId, usize)> {
+        use monad_mcp_common::spec::Stake as _;
+
         let total = self.weights.iter().map(|(_, stake)| *stake).sum::<Stake>();
 
         let mut obligations = Vec::with_capacity(self.weights.len());
@@ -366,7 +366,7 @@ impl StakePartition {
 
 #[cfg(test)]
 mod tests {
-    use monad_mcp_chorus::spec::Stake as _;
+    use monad_mcp_common::spec::Stake as _;
 
     use super::{super::test_util::PACKET_LOSS_RESISTANCE, *};
 

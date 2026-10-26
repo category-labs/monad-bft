@@ -1,0 +1,12 @@
+[package]
+name = "monad-mcp-common"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+alloy-rlp = { workspace = true, features = ["derive"] }
+bytes = { workspace = true }
+derive_more = { workspace = true, features = ["from", "sum", "add", "into"] }
+
+[dev-dependencies]
+proptest = { workspace = true }

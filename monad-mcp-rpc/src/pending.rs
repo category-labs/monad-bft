@@ -22,7 +22,8 @@ use std::{
 };
 
 use monad_mcp_chorus::ledger::{FinalizationPath, Hash, Tx};
-use monad_mcp_node::chorus::types::{Lane, NodeId};
+use monad_mcp_common::Lane;
+use monad_mcp_node::common::NodeId;
 
 use crate::schedule::Route;
 
@@ -317,7 +318,8 @@ impl PendingSet {
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
-    use monad_mcp_node::chorus::types::{NodeId, Slot};
+    use monad_mcp_common::Slot;
+    use monad_mcp_node::common::NodeId;
 
     use super::*;
 

@@ -15,10 +15,8 @@
 
 use std::time::Duration;
 
-use monad_mcp_node::{
-    Node, Routed,
-    chorus::types::{NodeId, Slot},
-};
+use monad_mcp_common::Slot;
+use monad_mcp_node::{Node, Routed, common::NodeId};
 use monad_sim::Time;
 use monad_sim_swarm::{Network, Swarm};
 

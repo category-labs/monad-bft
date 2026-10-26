@@ -20,6 +20,7 @@ use std::{fmt::Debug, hash::Hash};
 
 use alloy_rlp::{Decodable, Encodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper};
 use bytes::Bytes;
+use monad_mcp_common::spec::KeyPair as _;
 
 use super::{
     super::{
@@ -29,9 +30,7 @@ use super::{
     block_store::{BlockRequestMsg, BlockResponseMsg},
     certificates::{FallbackCommitQc, PrepareQc, TimeoutCertificate},
 };
-use crate::spec::vote::{
-    KeyPair as _, RlpNone, Signature as _, SigningDomain, assert_signing_prefix, signing_bytes_of,
-};
+use crate::spec::vote::{RlpNone, SigningDomain, assert_signing_prefix, signing_bytes_of};
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug, derive_more::From)]
 pub enum MvbaMessage<V: Votable, C: ValidateCert> {
@@ -260,6 +259,8 @@ impl<V: Votable, C: ValidateCert> PrePrepareMsg<V, C> {
     }
 
     pub(crate) fn verify_signature(&self, leader_pubkey: &PubKey) -> bool {
+        use monad_mcp_common::spec::Signature as _;
+
         let data = signed_bytes(self.slot, self.view, &self.value, &self.justification);
         self.signature.verify(&data, leader_pubkey)
     }
@@ -583,6 +584,8 @@ mod signing_tests {
 
 #[cfg(test)]
 mod rlp_tests {
+    use monad_mcp_common::SlotDeadline;
+
     use super::{
         super::{
             super::{
@@ -591,7 +594,6 @@ mod rlp_tests {
                         conductor::{MonadConductor, acs::median::MedianAcs},
                         message::CadenceWireMsg,
                         test_utils::{assert_roundtrip, assert_serialization_roundtrip},
-                        types::SlotDeadline,
                     },
                     chorus,
                     types::Lanes,

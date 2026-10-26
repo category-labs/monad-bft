@@ -18,13 +18,11 @@
 
 use std::{collections::BTreeMap, net::SocketAddr};
 
-use monad_mcp_chorus::spec::KeyPair as _;
+use monad_mcp_common::{Lanes, Slot, Timestamp, TimestampDelta};
 use monad_mcp_node::{
     Component, NodeOutput,
-    chorus::{
-        Outbound,
-        types::{Lanes, NodeId, ProposalId, Slot, Timestamp, TimestampDelta},
-    },
+    chorus::{Outbound, types::ProposalId},
+    common::NodeId,
     config::{
         CadenceConfig, DAConfig, LedgerConfig, NetworkConfig, NodeConfig, ProposalConfig,
         RepeaterSection, ValidatorConfig,
@@ -181,6 +179,8 @@ impl SimClient for SimNode {
 }
 
 pub fn node_config(id: u64, validators: u64) -> NodeConfig {
+    use monad_mcp_common::spec::KeyPair as _;
+
     let node_id = NodeId::dummy(id);
     let address: SocketAddr = "127.0.0.1:0".parse().expect("valid");
     let validators = (0..validators)

@@ -13,15 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use monad_mcp_chorus::{
-    ledger::Tx,
-    spec::{Deserializable as _, Serializable as _},
-};
+use monad_mcp_chorus::{ledger::Tx, spec::Serializable as _};
+use monad_mcp_common::Timestamp;
 
 use crate::{
-    chorus::{
-        CadenceMessage, Outbound, SlotLifecycle, slot::chorus::ChorusMessage, types::Timestamp,
-    },
+    chorus::{CadenceMessage, Outbound, SlotLifecycle, slot::chorus::ChorusMessage},
     component::{
         CadenceInput, CadenceOutput, CadenceWireMsg, DAInput, FinalizationInput, ProposingInput,
         ProposingOutput, Recipients, RepeaterInput, RepeaterOutput,
@@ -184,6 +180,8 @@ impl Router for NodeRouter {
 }
 
 fn route_inbound(now: Timestamp, inbound: NodeInbound, sink: &mut impl Sink<Routed>) {
+    use monad_mcp_chorus::spec::Deserializable as _;
+
     let NodeInbound { from, message } = inbound;
     match message {
         NodeMessage::Cadence(bytes) => {
@@ -300,7 +298,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        chorus::types::NodeId,
+        common::NodeId,
         config::{NodeConfig, SourceKind},
         node::Node,
     };

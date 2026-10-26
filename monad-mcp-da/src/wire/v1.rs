@@ -20,7 +20,7 @@
 //! (signature, version, proposal header), the body (proof, chunk
 //! header, symbol). A header-only packet is permitted.
 
-use bytes::{Buf as _, BufMut, Bytes};
+use bytes::{BufMut, Bytes};
 
 use super::{
     super::{
@@ -92,6 +92,8 @@ impl<H: DAHeaderScheme> Layout<'_, H> {
 
     // the caller must pass exactly HEADER_LEN bytes
     fn read_header(bytes: &[u8]) -> Result<(MerkleRoot, H, ProposalSignature), MalformedPacket> {
+        use bytes::Buf as _;
+
         let (signature, mut signed) = bytes.split_at(SIGNATURE_LEN);
         let sig = ProposalSignature::from_bytes(signature).ok_or(MalformedPacket::BadSignature)?;
 

@@ -13,83 +13,17 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+pub(crate) use monad_mcp_common::stub::{KeyPair, NodeId, PubKey, Signature, Stake};
+
 pub use self::{proposal::*, validator::*, vote::*};
 
 mod validator {
     use std::collections::HashMap;
 
-    use alloy_rlp::{RlpDecodableWrapper, RlpEncodableWrapper};
-    // Into implemented for testing purpose only.
-    use derive_more::Into;
+    use monad_mcp_common::spec::Stake as _;
 
-    use super::vote::{KeyPair, PubKey};
-    use crate::spec::{self, validator::Stake as _};
-
-    #[derive(
-        Clone,
-        Copy,
-        PartialEq,
-        Eq,
-        PartialOrd,
-        Ord,
-        Hash,
-        Debug,
-        Into,
-        RlpEncodableWrapper,
-        RlpDecodableWrapper,
-    )]
-    pub struct NodeId(u64);
-
-    impl spec::validator::NodeId for NodeId {}
-
-    impl NodeId {
-        pub fn dummy(id: u64) -> Self {
-            NodeId(id)
-        }
-
-        // allows quickly deriving the KeyPair from a NodeId for
-        // testing purpose.
-        pub fn keypair(&self) -> KeyPair {
-            KeyPair::dummy(self.0)
-        }
-    }
-
-    #[derive(
-        Clone,
-        Copy,
-        PartialEq,
-        Eq,
-        PartialOrd,
-        Ord,
-        derive_more::Add,
-        derive_more::Sum,
-        derive_more::From,
-    )]
-    pub struct Stake(u64);
-
-    impl spec::validator::Stake for Stake {
-        const ZERO: Self = Self(0);
-
-        // 2f
-        fn supermajority_threshold(&self) -> Self {
-            Self(self.0 / 3 * 2 + 2 * (self.0 % 3) / 3)
-        }
-
-        // f
-        fn honest_threshold(&self) -> Self {
-            Self(self.0 / 3)
-        }
-
-        fn obligation(&self, total: &Self, shares: usize) -> (usize, usize) {
-            let prod = self.0 as u128 * shares as u128;
-            let total = total.0 as u128;
-            ((prod / total) as usize, (prod % total) as usize)
-        }
-
-        fn amount(&self) -> u64 {
-            self.0
-        }
-    }
+    use super::{NodeId, PubKey, Stake};
+    use crate::spec;
 
     // invariant: valset/mapping have exactly the same key set, and
     // sorted/indices are the canonical enumeration of the
@@ -187,24 +121,6 @@ mod validator {
         sorted.sort();
         sorted
     }
-
-    #[cfg(test)]
-    mod tests {
-        use proptest::prelude::*;
-
-        use super::*;
-
-        proptest! {
-            #[test]
-            fn stake_exact_and_not_overflowing(n in any::<u64>()) {
-                let expected = (n as u128 * 2 / 3) as u64;
-                prop_assert!(Stake(n).supermajority_threshold() == Stake(expected));
-
-                let expected = n / 3;
-                prop_assert!(Stake(n).honest_threshold() == Stake(expected));
-            }
-        }
-    }
 }
 
 mod proposal {
@@ -217,12 +133,10 @@ mod proposal {
     use alloy_rlp::{
         Decodable, Encodable, RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper,
     };
+    use monad_mcp_common::{Lane, Slot};
 
     use super::NodeId;
-    use crate::{
-        common_types::{Lane, Slot},
-        spec::{self, ProposalHeader as _},
-    };
+    use crate::spec::{self, ProposalHeader as _};
 
     #[derive(Clone, Copy, PartialEq, Eq, Hash, RlpEncodableWrapper, RlpDecodableWrapper)]
     pub struct MerkleHash(pub [u8; 20]);
@@ -475,73 +389,13 @@ mod proposal {
 }
 
 mod vote {
-    use std::{
-        collections::{BTreeMap, HashMap, HashSet},
-        hash::{DefaultHasher, Hash as _, Hasher as _},
-    };
+    use std::collections::{BTreeMap, HashMap, HashSet};
 
-    use alloy_rlp::{
-        Decodable, Encodable, RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper,
-    };
-    use bytes::Bytes;
-    // Into implemented on these types for testing purpose only.
-    use derive_more::Into;
+    use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
+    use monad_mcp_common::spec::Signature as _;
 
-    use super::{NodeId, Stake, ValidatorData};
-    use crate::spec::{
-        self, SignatureCollection as _, validator::ValidatorData as _, vote::Signature as _,
-    };
-
-    #[derive(Clone, PartialEq, Eq, Hash, Debug, Into)]
-    pub struct KeyPair(u64);
-
-    #[derive(
-        Clone, Copy, PartialEq, Eq, Hash, Debug, Into, RlpEncodableWrapper, RlpDecodableWrapper,
-    )]
-    pub struct PubKey(u64);
-
-    #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable)]
-    pub struct Signature {
-        by: PubKey,
-        digest: u64,
-        malformed: bool,
-    }
-
-    impl Decodable for Signature {
-        fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-            let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
-            let signature = Self {
-                by: PubKey::decode(&mut payload)?,
-                digest: u64::decode(&mut payload)?,
-                malformed: bool::decode(&mut payload)?,
-            };
-            if !payload.is_empty() {
-                return Err(alloy_rlp::Error::UnexpectedLength);
-            }
-            if !signature.is_well_formed() {
-                return Err(alloy_rlp::Error::Custom("malformed signature"));
-            }
-            Ok(signature)
-        }
-    }
-
-    fn digest(data: &[u8]) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        data.hash(&mut hasher);
-        hasher.finish()
-    }
-
-    impl Signature {
-        pub fn make_invalid(&mut self) {
-            // Simulate an invalid signature
-            self.by = PubKey(self.by.0.wrapping_add(10000));
-        }
-
-        pub fn make_malformed(&mut self) {
-            // Simulate a bad point, e.g. outside the BLS subgroup
-            self.malformed = true;
-        }
-    }
+    use super::{NodeId, Signature, Stake, ValidatorData};
+    use crate::spec::{self, SignatureCollection as _, validator::ValidatorData as _};
 
     #[derive(Clone, PartialEq, Eq, Hash, Debug)]
     pub struct SignatureCollection {
@@ -598,43 +452,6 @@ mod vote {
                 sigs.insert(index, signature);
             }
             Ok(Self { sigs })
-        }
-    }
-
-    impl spec::vote::PubKey for PubKey {}
-
-    impl KeyPair {
-        pub fn dummy(id: u64) -> Self {
-            KeyPair(id)
-        }
-    }
-
-    impl spec::vote::KeyPair for KeyPair {
-        type PubKey = PubKey;
-        type Signature = Signature;
-
-        fn pubkey(&self) -> Self::PubKey {
-            PubKey(self.0)
-        }
-
-        fn sign(&self, data: &Bytes) -> Self::Signature {
-            Signature {
-                by: self.pubkey(),
-                digest: digest(data),
-                malformed: false,
-            }
-        }
-    }
-
-    impl spec::vote::Signature for Signature {
-        type PubKey = PubKey;
-
-        fn is_well_formed(&self) -> bool {
-            !self.malformed
-        }
-
-        fn verify(&self, data: &[u8], pubkey: &Self::PubKey) -> bool {
-            self.is_well_formed() && self.by == *pubkey && self.digest == digest(data)
         }
     }
 
@@ -748,9 +565,10 @@ mod vote {
         use std::collections::HashMap;
 
         use bytes::Bytes;
+        use monad_mcp_common::spec::KeyPair as _;
 
         use super::*;
-        use crate::spec::vote::{KeyPair as _, VoteAggregation as _};
+        use crate::{env::stub::PubKey, spec::vote::VoteAggregation as _};
 
         // 7 nodes of stake 1 each against threshold 5: excluding one bad
         // sig leaves 6 > 5, excluding two leaves 5 == 5 which must fail.
@@ -809,8 +627,9 @@ const _: () = crate::spec::assert_env::<
 
 #[cfg(test)]
 mod rlp_tests {
+    use monad_mcp_common::spec::KeyPair as _;
+
     use super::{vote::IndexedSignature, *};
-    use crate::spec::vote::KeyPair as _;
 
     #[test]
     fn signature_maps_reject_duplicate_and_unordered_indices() {
@@ -849,8 +668,10 @@ mod rlp_tests {
 
 #[cfg(test)]
 mod proposal_id_tests {
+    use monad_mcp_common::Slot;
+
     use super::*;
-    use crate::{common_types::Slot, spec::ProposalHeader as _};
+    use crate::spec::ProposalHeader as _;
 
     fn header(root: u8, msg_len: u32) -> ProposalHeader {
         ProposalHeader {

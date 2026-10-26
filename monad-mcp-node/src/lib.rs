@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#![cfg(feature = "enable_stub")]
+
 mod async_node;
 mod clock;
 pub mod component;
@@ -28,6 +30,7 @@ mod router;
 use std::error::Error;
 
 pub use monad_mcp_chorus::stub as chorus;
+pub use monad_mcp_common::stub as common;
 pub use monad_mcp_da::stub as da;
 use tokio::task::JoinSet;
 use tracing::Instrument as _;

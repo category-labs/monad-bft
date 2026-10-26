@@ -30,13 +30,16 @@ use chorus::{
         dummy::{DummySlotConsensus, DummySlotConsensusConfig},
     },
     types::{
-        CreditLotterySchedule, HeaderAuth, NodeId, ProposerConfig, RotatingProposerSchedule,
-        SlotDeadline, Stake, Timestamp, TimestampDelta, ValidatorData,
+        CreditLotterySchedule, HeaderAuth, ProposerConfig, RotatingProposerSchedule, ValidatorData,
     },
 };
 use helper::{expect_finalized, expect_finalized_at};
-use monad_mcp_chorus::{spec::KeyPair as _, stub as chorus};
+use monad_mcp_chorus::stub as chorus;
 use monad_mcp_chorus_sim::CadenceSwarmBuilder;
+use monad_mcp_common::{
+    SlotDeadline, Timestamp, TimestampDelta,
+    stub::{NodeId, Stake},
+};
 use monad_sim::Time;
 use monad_sim_swarm::Network;
 
@@ -77,6 +80,8 @@ fn slot_deadline(slot: u64) -> Timestamp {
 }
 
 fn gen_validator_data(n: u64) -> ValidatorData {
+    use monad_mcp_common::spec::KeyPair as _;
+
     let validators = (0..n).map(NodeId::dummy).collect::<Vec<_>>();
     let valset = validators.iter().map(|id| (*id, Stake::from(1))).collect();
     let mapping = validators

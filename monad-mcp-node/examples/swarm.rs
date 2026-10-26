@@ -22,10 +22,10 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use monad_mcp_chorus::spec::vote::KeyPair as _;
+use monad_mcp_common::{Timestamp, TimestampDelta};
 use monad_mcp_node::{
     RunError,
-    chorus::types::{KeyPair, NodeId, Timestamp, TimestampDelta},
+    common::{KeyPair, NodeId},
     config::{LedgerConfig, NetworkConfig, NodeConfig, ValidatorConfig},
     da::ProposalKeyPair,
     init_logging, run_node,
@@ -35,6 +35,8 @@ const BASE_PORT: u16 = 9100;
 const GENESIS_DELAY: TimestampDelta = TimestampDelta::from_millis(1000);
 
 fn validators(nodes: u64) -> Vec<ValidatorConfig> {
+    use monad_mcp_common::spec::KeyPair as _;
+
     let mut validators = Vec::new();
     for i in 0..nodes {
         validators.push(ValidatorConfig {

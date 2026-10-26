@@ -22,11 +22,9 @@ use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use alloy_rlp::Encodable as _;
 use bytes::Bytes;
 use monad_mcp_chorus::ledger::{BatchBuilder, Hash, MAX_TX_PAYLOAD, Tx, TxError};
+use monad_mcp_common::{Lane, Slot};
 
-use crate::{
-    chorus::types::{Lane, Slot},
-    config::MempoolConfig,
-};
+use crate::config::MempoolConfig;
 
 // the tx with the longest encoding the node accepts
 pub fn largest_tx() -> Tx {

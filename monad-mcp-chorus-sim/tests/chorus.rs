@@ -22,13 +22,16 @@ use chorus::{
     conductor::{ConductorConfig, MonadConductor, acs::nop::NopAcs},
     slot::chorus::{Chorus, ChorusConfig, ChorusContext, ChorusDAEvent},
     types::{
-        CreditLotterySchedule, HeaderAuth, NodeId, ProposerConfig, RotatingProposerSchedule,
-        SlotDeadline, Stake, TimestampDelta, ValidatorData,
+        CreditLotterySchedule, HeaderAuth, ProposerConfig, RotatingProposerSchedule, ValidatorData,
     },
 };
 use helper::expect_finalized_at;
-use monad_mcp_chorus::{spec::KeyPair as _, stub as chorus};
+use monad_mcp_chorus::stub as chorus;
 use monad_mcp_chorus_sim::CadenceSwarmBuilder;
+use monad_mcp_common::{
+    SlotDeadline, TimestampDelta,
+    stub::{NodeId, Stake},
+};
 
 const SLOTS_PER_WINDOW: NonZeroU64 = NonZeroU64::new(10).unwrap();
 const LAG_THRESHOLD: NonZeroU64 = SLOTS_PER_WINDOW; // one window behind triggers a cap jump
@@ -85,6 +88,8 @@ fn add_node(
 }
 
 fn gen_validator_data(n: u64) -> ValidatorData {
+    use monad_mcp_common::spec::KeyPair as _;
+
     let validators = (0..n).map(NodeId::dummy).collect::<Vec<_>>();
     let valset = validators.iter().map(|id| (*id, Stake::from(1))).collect();
     let mapping = validators

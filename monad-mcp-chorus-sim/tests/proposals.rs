@@ -34,17 +34,17 @@ use chorus::{
     proposing::{PlannerConfig, ProposalPlanner},
     slot::chorus::{Chorus, ChorusConfig, ChorusContext, ChorusDAEvent, Entry, SlotFinalization},
     types::{
-        Lane, NodeId, ProposerConfig, ProposerSchedule, RotatingProposerSchedule,
-        RoundRobinLeaderSchedule, Slot, SlotDeadline, Stake, Timestamp, TimestampDelta,
+        ProposerConfig, ProposerSchedule, RotatingProposerSchedule, RoundRobinLeaderSchedule,
         ValidatorData,
     },
 };
 use helper::{expect_finalized, expect_finalized_at};
-use monad_mcp_chorus::{
-    spec::{KeyPair as _, ProposalHeader as _},
-    stub as chorus,
-};
+use monad_mcp_chorus::stub as chorus;
 use monad_mcp_chorus_sim::{CadenceSwarm, CadenceSwarmBuilder, MockDa, mock_header, mock_payload};
+use monad_mcp_common::{
+    Lane, Slot, SlotDeadline, Timestamp, TimestampDelta,
+    stub::{NodeId, Stake},
+};
 
 const NODES: u64 = 4;
 const SLOTS_PER_WINDOW: NonZeroU64 = NonZeroU64::new(10).unwrap();
@@ -88,6 +88,8 @@ fn deadline_of_slot(slot: u64) -> Timestamp {
 }
 
 fn gen_validator_data(n: u64) -> ValidatorData {
+    use monad_mcp_common::spec::KeyPair as _;
+
     let validators = (0..n).map(NodeId::dummy).collect::<Vec<_>>();
     let valset = validators.iter().map(|id| (*id, Stake::from(1))).collect();
     let mapping = validators
@@ -171,6 +173,8 @@ fn build_swarm(
 // The entry expected at (slot, lane): the pid of the scheduled proposer's
 // header, or Negative for a vacant lane.
 fn expected_entry(schedule: &Schedule, slot: Slot, lane: Lane) -> Entry {
+    use monad_mcp_chorus::spec::ProposalHeader as _;
+
     let Some(proposer) = schedule.proposers_at(slot).unwrap().proposer(lane) else {
         return Entry::Negative;
     };

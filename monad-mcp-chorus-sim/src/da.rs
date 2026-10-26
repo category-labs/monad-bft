@@ -46,15 +46,10 @@ use bytes::Bytes;
 use chorus::{
     da::DataAvailability,
     env::{D25, EncodingScheme, MerkleHash, ProposalSignature},
-    types::{
-        HeaderAuth, Lane, MerkleRoot, NodeId, ProposalHeader, ProposalId, SignedProposalHeader,
-        Slot,
-    },
+    types::{HeaderAuth, MerkleRoot, ProposalHeader, ProposalId, SignedProposalHeader},
 };
-use monad_mcp_chorus::{
-    spec::proposal::{HeaderAuth as _, ProposalHeader as _},
-    stub as chorus,
-};
+use monad_mcp_chorus::{spec::proposal::ProposalHeader as _, stub as chorus};
+use monad_mcp_common::{Lane, Slot, stub::NodeId};
 
 /// The mock's dissemination unit: the signed header a receiver needs to
 /// treat the proposal at `(header.slot, lane)` as available.
@@ -110,6 +105,8 @@ impl MockDa {
     /// this check on the chunk header signature; here the signer is carried
     /// in the clear.
     fn authentic(&self, lane: Lane, header: &SignedProposalHeader) -> bool {
+        use monad_mcp_chorus::spec::proposal::HeaderAuth as _;
+
         self.header_auth.validate(header, header.slot(), lane)
     }
 

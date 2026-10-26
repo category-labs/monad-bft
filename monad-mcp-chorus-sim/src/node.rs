@@ -15,14 +15,10 @@
 
 use std::sync::{Arc, Mutex};
 
-use chorus::{
-    Outbound, Runtime,
-    da::DataAvailability as _,
-    proposing::ProposalPlanner,
-    types::{NodeId, Timestamp},
-};
+use chorus::{Outbound, Runtime, proposing::ProposalPlanner};
 // choose stub chorus for implementation
 use monad_mcp_chorus::stub as chorus;
+use monad_mcp_common::{Timestamp, stub::NodeId};
 use monad_sim::{CancelToken, Ctx, Handle, StepLabel, Time};
 use monad_sim_swarm::{Net, SimClient};
 
@@ -198,6 +194,8 @@ where
     }
 
     fn drain_planner(&mut self, ctx: &mut Ctx) {
+        use chorus::da::DataAvailability as _;
+
         let Some(harness) = &self.proposer else {
             return;
         };

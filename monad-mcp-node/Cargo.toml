@@ -3,8 +3,13 @@ name = "monad-mcp-node"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "monad-mcp-node"
+path = "src/main.rs"
+# remove the stub feature after prod env exists
+required-features = ["enable_stub"]
+
 [features]
-default = ["enable_stub"]
 enable_stub = ["monad-mcp-chorus/enable_stub", "monad-mcp-da/enable_stub"]
 
 [dependencies]
@@ -19,9 +24,12 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 monad-mcp-chorus = { workspace = true }
+monad-mcp-common = { workspace = true }
 monad-mcp-da = { workspace = true }
 
 [dev-dependencies]
+# turns on enable_stub for the tests and examples
+monad-mcp-node = { path = ".", features = ["enable_stub"] }
 monad-sim = { workspace = true }
 monad-sim-swarm = { workspace = true }
 tempfile = { workspace = true }

@@ -25,12 +25,12 @@ use std::{
 };
 
 use bytes::Bytes;
-use monad_mcp_chorus::{
-    ledger::{LedgerReader, MAX_TX_PAYLOAD, Tx, decode_batch, lane_json_file_name},
-    spec::vote::KeyPair as _,
+use monad_mcp_chorus::ledger::{
+    LedgerReader, MAX_TX_PAYLOAD, Tx, decode_batch, lane_json_file_name,
 };
+use monad_mcp_common::Timestamp;
 use monad_mcp_node::{
-    chorus::types::{KeyPair, NodeId, Timestamp},
+    common::{KeyPair, NodeId},
     config::{NodeConfig, ValidatorConfig},
     da::ProposalKeyPair,
     network::{NodeMessage, encode_frame},
@@ -374,6 +374,8 @@ async fn run_node_serves_in_process_and_frees_its_port_on_abort() {
 // in node 2's lane and stored by every ledger; a stranger's frame nowhere
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_tx_sent_to_a_peer_lands_in_its_lane_on_every_ledger() {
+    use monad_mcp_common::spec::KeyPair as _;
+
     const NODES: u64 = 4;
     let dir = tempfile::tempdir().unwrap();
     let genesis = Timestamp::from_millis(unix_millis() + GENESIS_DELAY_MS);

@@ -25,7 +25,7 @@ use std::{
 use bytes::Bytes;
 use clap::{Args, Parser, Subcommand};
 use monad_mcp_chorus::ledger::{Address, MAX_TX_PAYLOAD, Tx};
-use monad_mcp_node::chorus::types::NodeId;
+use monad_mcp_node::common::NodeId;
 use serde::Serialize;
 
 use crate::{

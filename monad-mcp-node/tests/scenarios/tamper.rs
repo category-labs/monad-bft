@@ -17,7 +17,8 @@
 //! and whose routed values pass through a filter before they reach the
 //! components or the network.
 
-use monad_mcp_node::{Effect, Routed, Router, Sink, chorus::types::Timestamp};
+use monad_mcp_common::Timestamp;
+use monad_mcp_node::{Effect, Routed, Router, Sink};
 
 pub type PreRouteFilter = Box<dyn FnMut(Effect) -> Vec<Effect>>;
 pub type PostRouteFilter = Box<dyn FnMut(Routed) -> Vec<Routed>>;

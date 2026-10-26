@@ -27,7 +27,8 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 monad-mcp-chorus = { workspace = true }
-monad-mcp-node = { path = "../monad-mcp-node" }
+monad-mcp-common = { workspace = true }
+monad-mcp-node = { path = "../monad-mcp-node", features = ["enable_stub"] }
 
 [dev-dependencies]
 actix-http = { workspace = true }

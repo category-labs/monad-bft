@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use monad_crypto::hasher::{Hash, Hasher as _, HasherType};
-use monad_mcp_chorus::spec::{Stake as _, validator::ValidatorData as _};
+use monad_mcp_chorus::spec::validator::ValidatorData as _;
 
 use super::{
     super::{
@@ -124,6 +124,8 @@ impl DAEncodingScheme for D25 {
     }
 
     fn chunk_assignment(&self, author: &NodeId, validator_data: &ValidatorData) -> ChunkAssignment {
+        use monad_mcp_common::spec::Stake as _;
+
         let mut weights = vec![];
         for node_id in validator_data.nodes() {
             if node_id == author {

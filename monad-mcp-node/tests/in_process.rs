@@ -24,12 +24,11 @@ use std::{
 
 use bytes::Bytes;
 use monad_mcp_chorus::ledger::{FinalizationPath, LedgerReader, LedgerWriter, Tx, decode_batch};
+use monad_mcp_common::{Proposal, Timestamp, TimestampDelta};
 use monad_mcp_node::{
     Component, FinalizedSlot, Node, NodeOutput, NodeRouter, Router,
-    chorus::{
-        slot::chorus::ChorusMessage,
-        types::{NodeId, Proposal, ProposerSchedule as _, Timestamp, TimestampDelta},
-    },
+    chorus::slot::chorus::ChorusMessage,
+    common::NodeId,
     component::{Proposing, ProposingInput, ProposingOutput},
     config::{NodeConfig, SourceKind},
     ledger::new_block,
@@ -133,6 +132,8 @@ impl<R: Router> Harness<R> {
 
 #[test]
 fn a_delivered_tx_is_finalized_and_written_to_the_ledger() {
+    use monad_mcp_node::chorus::types::ProposerSchedule as _;
+
     let config = NodeConfig::single_node(0, at(GENESIS_MS), "unused-ledger");
     let mut harness = Harness::new(&config);
 

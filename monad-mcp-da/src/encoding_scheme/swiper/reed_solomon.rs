@@ -18,7 +18,7 @@
 
 use std::collections::BTreeMap;
 
-use bytes::{BufMut as _, Bytes, BytesMut};
+use bytes::{Bytes, BytesMut};
 
 use super::super::{super::assignment::ChunkId, SymbolDecoder, SymbolEncoder};
 
@@ -139,6 +139,8 @@ impl SymbolDecoder for RsSymbolDecoder {
     }
 
     fn try_decode(&mut self) -> Option<Bytes> {
+        use bytes::BufMut as _;
+
         if self.received < self.num_source_chunks() {
             return None;
         }

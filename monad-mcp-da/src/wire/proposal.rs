@@ -21,7 +21,7 @@ use super::{
         chunk::{ChunkData, ProposalEnvelope},
         chunk_tree::ChunkTree,
         egress::Dissemination,
-        encoding_scheme::{self, DAEncodingScheme as _, d25, swiper},
+        encoding_scheme::{self, d25, swiper},
         runtime::EpochHandle,
         types::{
             EncodingScheme, NodeId, Proposal, ProposalHeader, ProposalKeyPair, SignedProposalHeader,
@@ -29,7 +29,6 @@ use super::{
     },
     signed_bytes,
 };
-use crate::spec::DAProposalKeyPair as _;
 
 // a proposal this node authored: the signed header over the complete
 // tree of its chunks, and the assignment that routes them.
@@ -68,6 +67,8 @@ impl AssembledProposal {
     }
 
     fn build(epoch_handle: &EpochHandle, message: &[u8], scheme: EncodingScheme) -> Option<Self> {
+        use super::super::encoding_scheme::DAEncodingScheme as _;
+
         let author = &epoch_handle.self_id;
         let valset = &epoch_handle.validator_data;
 
@@ -90,6 +91,8 @@ impl AssembledProposal {
         chunk_tree: ChunkTree,
         assignment: ChunkAssignment,
     ) -> Self {
+        use crate::spec::DAProposalKeyPair as _;
+
         let preimage = signed_bytes(&header);
         let sig = key_pair.sign(&preimage);
         let header = SignedProposalHeader { header, sig };

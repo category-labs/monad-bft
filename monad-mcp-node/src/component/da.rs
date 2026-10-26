@@ -14,14 +14,12 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use bytes::Bytes;
+use monad_mcp_common::{Proposal, Slot, Timestamp};
 
 use super::Component;
 use crate::{
-    chorus::{
-        SlotLifecycle,
-        slot::chorus::ChorusDACommand,
-        types::{NodeId, Proposal, Slot, Timestamp},
-    },
+    chorus::{SlotLifecycle, slot::chorus::ChorusDACommand},
+    common::NodeId,
     da::{ChunkRecoveryRequest, DAOutput, DARuntime, ProposalEnvelope},
     epoch::NodeProposerSchedule,
 };
@@ -70,9 +68,10 @@ impl Component for DA {
 
 #[cfg(test)]
 mod tests {
+    use monad_mcp_common::Lane;
+
     use super::*;
     use crate::{
-        chorus::types::Lane,
         config::{NodeConfig, ProposalConfig},
         node::Node,
     };

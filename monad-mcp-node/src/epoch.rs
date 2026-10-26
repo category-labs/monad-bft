@@ -18,11 +18,9 @@ use std::sync::Arc;
 use crate::{
     chorus::{
         slot::chorus::ChorusContext,
-        types::{
-            HeaderAuth, KeyPair, NodeId, RotatingProposerSchedule, RoundRobinLeaderSchedule,
-            ValidatorData,
-        },
+        types::{HeaderAuth, RotatingProposerSchedule, RoundRobinLeaderSchedule, ValidatorData},
     },
+    common::{KeyPair, NodeId},
     da::{self, ProposalKeyPair},
 };
 

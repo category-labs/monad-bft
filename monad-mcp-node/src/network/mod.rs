@@ -18,7 +18,7 @@ pub mod stub;
 use bytes::Bytes;
 
 pub use self::stub::{decode_frame, encode_frame};
-use crate::{chorus::types::NodeId, component::Link};
+use crate::{common::NodeId, component::Link};
 
 // what crosses the wire between nodes
 #[derive(Clone)]

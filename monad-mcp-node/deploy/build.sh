@@ -32,7 +32,8 @@ rpc_name=monad-mcp-rpc-$sha$suffix
 explorer_name=monad-mcp-explorer-$sha$suffix
 
 cargo build --release -p monad-mcp-node -p monad-mcp-rpc -p monad-mcp-explorer \
-    --bin monad-mcp-node --bin monad-mcp-rpc --bin monad-mcp-explorer
+    --bin monad-mcp-node --bin monad-mcp-rpc --bin monad-mcp-explorer \
+    --features monad-mcp-node/enable_stub
 
 mkdir -p "$dist_dir"
 install -m 755 "$repo_dir/target/release/monad-mcp-node" "$dist_dir/$name"

@@ -17,4 +17,5 @@ tracing = { workspace = true }
 
 monad-crypto = { workspace = true }
 monad-mcp-chorus = { workspace = true }
+monad-mcp-common = { workspace = true }
 monad-merkle = { workspace = true }

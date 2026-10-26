@@ -76,7 +76,7 @@ pub fn new_block(finalized: &FinalizedSlot, proposers: Option<&ProposerSet>) -> 
 // demo(tx-timeline): only on the fast path is the formed fast block the one finalized
 fn fast_block_at_ns(
     path: FinalizationPath,
-    at: Option<crate::chorus::types::Timestamp>,
+    at: Option<monad_mcp_common::Timestamp>,
 ) -> Option<u128> {
     at.filter(|_| path == FinalizationPath::Fast)
         .map(|at| at.as_nanos())
@@ -245,7 +245,7 @@ mod tests {
     // demo(tx-timeline)
     #[test]
     fn the_fast_block_time_is_kept_on_the_fast_path_only() {
-        let at = crate::chorus::types::Timestamp::from_millis(7);
+        let at = monad_mcp_common::Timestamp::from_millis(7);
         assert_eq!(
             fast_block_at_ns(FinalizationPath::Fast, Some(at)),
             Some(at.as_nanos())

@@ -22,12 +22,13 @@ mod repeater;
 
 use std::future::pending;
 
+use monad_mcp_common::Timestamp;
 use tokio::{
     sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
     task::JoinSet,
     time::sleep_until,
 };
-use tracing::{Instrument as _, Span};
+use tracing::Span;
 
 pub use self::{
     cadence::{Cadence, CadenceInput, CadenceOutput, CadenceWireMsg},
@@ -37,7 +38,7 @@ pub use self::{
     proposing::{MempoolProposing, Proposing, ProposingInput, ProposingOutput, RandomProposing},
     repeater::{Recipients, Repeater, RepeaterConfig, RepeaterInput, RepeaterOutput},
 };
-use crate::{chorus::types::Timestamp, clock::Clock};
+use crate::clock::Clock;
 
 // a component is a deterministic state machine with an optional timer
 // effect.
@@ -62,6 +63,8 @@ where
     C::Input: Send + 'static,
     C::Output: Send + 'static,
 {
+    use tracing::Instrument as _;
+
     let (ours, theirs) = Link::pair();
     tasks.spawn(run(component, clock, theirs).instrument(Span::current()));
     ours

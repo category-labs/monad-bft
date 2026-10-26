@@ -14,13 +14,17 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use bytes::BufMut;
-pub(crate) use chorus::types::NodeId;
-use monad_crypto::hasher::{Hasher as _, HasherType};
+use monad_crypto::hasher::HasherType;
 pub(crate) use monad_mcp_chorus::stub as chorus;
+pub(crate) use monad_mcp_common::stub as common;
 
-use self::chorus::env::{
-    EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader, ProposalSignature, PubKey,
-    SignedProposalHeader,
+pub(crate) use self::common::NodeId;
+use self::{
+    chorus::env::{
+        EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader, ProposalSignature,
+        SignedProposalHeader,
+    },
+    common::PubKey,
 };
 use crate::spec::{
     DAMerkleRoot, DAProposalHeader, DAProposalKeyPair, DAProposalSignature, DAPubKey, SIGNATURE_LEN,
@@ -116,6 +120,8 @@ impl DAPubKey for PubKey {
 
 // a hash prefix of the signed bytes
 fn checksum(signed_bytes: &[u8]) -> u64 {
+    use monad_crypto::hasher::Hasher as _;
+
     let mut hasher = HasherType::new();
     hasher.update(signed_bytes);
     let hash = hasher.hash();

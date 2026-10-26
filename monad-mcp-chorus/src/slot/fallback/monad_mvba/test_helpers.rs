@@ -37,13 +37,12 @@ use super::{
     block_store::{BlockRequestMsg, BlockResponseMsg},
     messages::{FallbackCommitVote, PrepareVote},
 };
-use crate::{
-    env::stub::{EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader},
-    spec::{ProposalHeader as _, vote::KeyPair as _},
-};
+use crate::env::stub::{EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader};
 
 /// The pid of a header whose root spells out `n`, so distinct seeds give distinct pids
 fn pid(n: u64) -> ProposalId {
+    use crate::spec::ProposalHeader as _;
+
     let mut hash = [0u8; 20];
     hash[..8].copy_from_slice(&n.to_le_bytes());
     let header = ProposalHeader {
@@ -88,6 +87,8 @@ pub(super) fn quorum() -> Vec<NodeId> {
 }
 
 pub(super) fn validator_data() -> Arc<ValidatorData> {
+    use monad_mcp_common::spec::KeyPair as _;
+
     let valset: HashMap<_, _> = nodes()
         .into_iter()
         .map(|node| (node, 1u64.into()))

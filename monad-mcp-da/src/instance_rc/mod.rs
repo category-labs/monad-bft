@@ -35,7 +35,6 @@ use super::{
         TimestampDelta,
     },
     util::Tree,
-    wire::PacketLayout as _,
 };
 use crate::spec::DAProposalHeader as _;
 
@@ -48,6 +47,7 @@ pub struct InvalidEncoding;
 pub type Resolved = Result<Bytes, InvalidEncoding>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(clippy::enum_variant_names)]
 pub(crate) enum InvalidChunk {
     InvalidChunkId,
     UnexpectedSender,
@@ -318,6 +318,8 @@ fn verify_proof(
     scheme: &EncodingScheme,
     root: &MerkleRoot,
 ) -> bool {
+    use super::wire::PacketLayout as _;
+
     debug_assert_eq!(data.symbol.len(), scheme.symbol_len());
     let leaf_idx = chunk_id.to_wire();
     let leaf = scheme.leaf_hash(leaf_idx, &data.symbol);

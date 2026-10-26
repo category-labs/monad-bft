@@ -147,11 +147,12 @@ mod rlp_tests {
     }
 
     fn chorus_message(slot: Slot) -> super::super::slot::chorus::ChorusMessage {
+        use monad_mcp_common::spec::KeyPair as _;
+
         use super::super::{
             slot::fallback::EnterFallbackVote,
             types::{ValidatorData, VoteMsg, VotePool},
         };
-        use crate::spec::KeyPair as _;
 
         let nodes: Vec<_> = (0..4).map(NodeId::dummy).collect();
         let validators = ValidatorData::new(
@@ -173,11 +174,12 @@ mod rlp_tests {
 
     #[test]
     fn concrete_cadence_slot_and_conductor_byte_roundtrips() {
+        use monad_mcp_common::SlotDeadline;
+
         use super::super::{
             conductor::{MonadConductor, acs::median::MedianAcs},
             slot::chorus::Chorus,
             test_utils::{assert_roundtrip, assert_serialization_roundtrip},
-            types::SlotDeadline,
         };
         type Wire = CadenceWireMsg<Chorus, MonadConductor<MedianAcs<SlotDeadline>>>;
 
@@ -204,10 +206,11 @@ mod rlp_tests {
 
     #[test]
     fn nop_conductor_still_allows_slot_message_serialization() {
+        use monad_mcp_common::SlotDeadline;
+
         use super::super::{
             conductor::{MonadConductor, acs::nop::NopAcs},
             slot::chorus::Chorus,
-            types::SlotDeadline,
         };
         type Wire = CadenceWireMsg<Chorus, MonadConductor<NopAcs<SlotDeadline>>>;
 

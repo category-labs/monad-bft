@@ -27,13 +27,14 @@ use std::{
 };
 
 use bytes::Bytes;
-use monad_mcp_chorus::{
-    ledger::{CommittedLane, FinalizationPath, LedgerWriter, NewBlock, NewLane, Tx, encode_batch},
-    spec::vote::KeyPair as _,
+use monad_mcp_chorus::ledger::{
+    CommittedLane, FinalizationPath, LedgerWriter, NewBlock, NewLane, Tx, encode_batch,
 };
+use monad_mcp_common::{Lane, Slot, Timestamp};
 use monad_mcp_node::{
     NodeProposerSchedule,
-    chorus::types::{KeyPair, Lane, NodeId, ProposerSchedule, Slot, Timestamp},
+    chorus::types::ProposerSchedule,
+    common::{KeyPair, NodeId},
     config::{NodeConfig, ValidatorConfig},
     network::{NodeMessage, decode_frame},
 };
@@ -76,6 +77,8 @@ pub fn unix_millis() -> u64 {
 
 // validator `self_id` of a set at `addresses`, with the 100 ms demo parameters
 pub fn node_config(self_id: u64, addresses: &[SocketAddr], genesis: Timestamp) -> NodeConfig {
+    use monad_mcp_common::spec::KeyPair as _;
+
     let mut config =
         NodeConfig::single_node(addresses[self_id as usize].port(), genesis, "unused-ledger");
     config.validators = addresses

@@ -14,24 +14,27 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use bytes::Bytes;
+pub(crate) use monad_mcp_common::{
+    Lane, Lanes, MAX_PROPOSER_SET_SIZE, Slot, Timestamp, TimestampDelta,
+};
 
+pub(crate) use super::common::{NodeId, PubKey, Stake};
 // re-export chorus types
 pub use super::{
     chorus::{
         SlotLifecycle,
-        env::{D25, EncodingScheme, MerkleHash, ProposalSignature, PubKey, S11},
+        env::{D25, EncodingScheme, MerkleHash, ProposalSignature, S11},
         slot::chorus::{ChorusDACommand, ChorusDAEvent, MissingHeaders, ProposalDAEvent},
         types::{
-            EquivCert, HeaderAuth, Lane, Lanes, MAX_PROPOSER_SET_SIZE, MerkleRoot, NodeId,
-            ProposalHeader, ProposalId, ProposerSchedule, SignedProposalHeader, Slot, Stake,
-            Timestamp, TimestampDelta, ValidatorData,
+            EquivCert, HeaderAuth, MerkleRoot, ProposalHeader, ProposalId, ProposerSchedule,
+            SignedProposalHeader, ValidatorData,
         },
     },
     env::ProposalKeyPair,
 };
 
 // a proposal's payload is opaque bytes to DA
-pub type Proposal = super::chorus::types::Proposal<Bytes>;
+pub type Proposal = monad_mcp_common::Proposal<Bytes>;
 
 pub(crate) fn unix_seconds(now: Timestamp) -> u64 {
     let nanos_per_second = u128::from(TimestampDelta::NANOS_PER_MILLISECOND) * 1_000;

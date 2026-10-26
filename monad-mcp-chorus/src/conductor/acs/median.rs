@@ -22,7 +22,6 @@ use super::{
     Acs, AcsOutput,
     types::{NodeId, ValidatorData},
 };
-use crate::spec::validator::ValidatorData as _;
 
 /// A single-round ACS protocol that decides on median of all
 /// received messages after receiving all proposals.
@@ -41,6 +40,8 @@ where
     type Context = Arc<ValidatorData>;
 
     fn new(val_data: &Arc<ValidatorData>) -> Self {
+        use crate::spec::validator::ValidatorData as _;
+
         let proposals: BTreeMap<NodeId, _> = val_data.nodes().map(|id| (*id, None)).collect();
         assert!(!proposals.is_empty());
 
@@ -96,11 +97,12 @@ where
 mod tests {
     use std::{collections::HashMap, sync::Arc};
 
+    use monad_mcp_common::spec::KeyPair as _;
+
     use super::{
         super::types::{Stake, Timestamp},
         *,
     };
-    use crate::spec::vote::KeyPair as _;
 
     fn context(validators: &[NodeId]) -> Arc<ValidatorData> {
         let valset = validators

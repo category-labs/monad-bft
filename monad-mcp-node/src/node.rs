@@ -19,11 +19,11 @@
 
 use std::collections::VecDeque;
 
+use monad_mcp_common::Timestamp;
+
 use crate::{
     RunError,
-    chorus::{
-        SlotManager, conductor::MonadConductor, slot::chorus::ChorusMessage, types::Timestamp,
-    },
+    chorus::{SlotManager, conductor::MonadConductor, slot::chorus::ChorusMessage},
     component::{
         Cadence, Component, DA, Mempool, MempoolProposing, Proposing, RandomProposing, Repeater,
     },

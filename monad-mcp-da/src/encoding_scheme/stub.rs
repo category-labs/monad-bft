@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use bytes::{BufMut as _, Bytes, BytesMut};
+use bytes::{Bytes, BytesMut};
 
 use super::{super::assignment::ChunkId, SymbolDecoder, SymbolEncoder};
 
@@ -84,6 +84,8 @@ impl SymbolDecoder for StubSymbolDecoder {
     }
 
     fn try_decode(&mut self) -> Option<Bytes> {
+        use bytes::BufMut as _;
+
         if self.received <= self.sources.len() {
             return None;
         }

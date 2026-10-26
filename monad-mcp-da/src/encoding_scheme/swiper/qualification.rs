@@ -18,7 +18,7 @@
 //! with w(S) > W/3 holds t(S) >= target. Tickets have the form
 //! floor(s * w_i / W + 2/3) for the least scale s that qualifies.
 
-use monad_mcp_chorus::spec::Stake as _;
+use monad_mcp_common::spec::Stake as _;
 
 use super::super::super::types::Stake;
 

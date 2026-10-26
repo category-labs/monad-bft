@@ -5710,6 +5710,7 @@ dependencies = [
  "derive_more",
  "hex",
  "libc",
+ "monad-mcp-common",
  "proptest",
  "rand 0.8.5",
  "serde",
@@ -5727,9 +5728,20 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "monad-mcp-chorus",
+ "monad-mcp-common",
  "monad-sim",
  "monad-sim-swarm",
  "tracing",
+]
+
+[[package]]
+name = "monad-mcp-common"
+version = "0.1.0"
+dependencies = [
+ "alloy-rlp",
+ "bytes",
+ "derive_more",
+ "proptest",
 ]
 
 [[package]]
@@ -5741,6 +5753,7 @@ dependencies = [
  "derive_more",
  "monad-crypto",
  "monad-mcp-chorus",
+ "monad-mcp-common",
  "monad-merkle",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
@@ -5774,7 +5787,9 @@ dependencies = [
  "alloy-rlp",
  "bytes",
  "monad-mcp-chorus",
+ "monad-mcp-common",
  "monad-mcp-da",
+ "monad-mcp-node",
  "monad-sim",
  "monad-sim-swarm",
  "rand 0.8.5",
@@ -5797,6 +5812,7 @@ dependencies = [
  "clap",
  "hex",
  "monad-mcp-chorus",
+ "monad-mcp-common",
  "monad-mcp-node",
  "rand 0.8.5",
  "reqwest 0.12.28",

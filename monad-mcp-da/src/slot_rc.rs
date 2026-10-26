@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 
-use monad_mcp_chorus::spec::proposal::{HeaderAuth as _, ProposalHeader as _};
+use monad_mcp_chorus::spec::proposal::ProposalHeader as _;
 
 use super::{
     chunk::{ChunkRequest, ProposalEnvelope},
@@ -143,6 +143,8 @@ impl SlotRaptorcast {
 
     // the lane of a proposer-signed header for this slot
     fn authenticate(&mut self, header: &SignedProposalHeader) -> Option<Lane> {
+        use monad_mcp_chorus::spec::proposal::HeaderAuth as _;
+
         if let Some(j) = self.authenticated_headers.get(header) {
             return Some(*j);
         }

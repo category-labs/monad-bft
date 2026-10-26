@@ -16,9 +16,8 @@
 mod qualification;
 mod reed_solomon;
 
-use monad_crypto::hasher::{Hash, Hasher as _, HasherType};
+use monad_crypto::hasher::{Hash, HasherType};
 use monad_mcp_chorus::spec::validator::ValidatorData as _;
-use rand::{SeedableRng as _, seq::SliceRandom as _};
 use rand_chacha::ChaCha20Rng;
 
 use self::reed_solomon::{RsSymbolDecoder, RsSymbolEncoder};
@@ -31,7 +30,7 @@ use super::{
     },
     DAEncodingScheme,
 };
-use crate::spec::{DAPubKey as _, PUBKEY_LEN};
+use crate::spec::PUBKEY_LEN;
 
 pub const MAX_MESSAGE_LEN: usize = 1024 * 1024;
 
@@ -107,6 +106,8 @@ fn num_source_chunks(msg_len: u32, depth: u8) -> usize {
 // the prod seed: slot(8) unix_ts_ms/2048(8) pubkey[1..17]. the first
 // pubkey byte is a low entropy tag.
 fn seed(slot: Slot, unix_ts: u64, author: &PubKey) -> [u8; 32] {
+    use crate::spec::DAPubKey as _;
+
     let mut pubkey = [0u8; PUBKEY_LEN];
     author.to_bytes(&mut pubkey);
     let coarse_ts = unix_ts / 2048;
@@ -155,6 +156,8 @@ impl DAEncodingScheme for S11 {
     }
 
     fn chunk_assignment(&self, author: &NodeId, validator_data: &ValidatorData) -> ChunkAssignment {
+        use rand::{SeedableRng as _, seq::SliceRandom as _};
+
         let mut nodes = Vec::with_capacity(validator_data.len());
         let mut weights = Vec::with_capacity(validator_data.len());
         for node_id in validator_data.nodes() {
@@ -185,6 +188,8 @@ impl DAEncodingScheme for S11 {
 
     // the message length makes the root pin the decoded message, not only the symbols
     fn leaf_hash(&self, chunk_id: WireChunkId, symbol: &[u8]) -> Hash {
+        use monad_crypto::hasher::Hasher as _;
+
         let mut hasher = HasherType::new();
         hasher.update(self.msg_len.to_le_bytes());
         hasher.update(chunk_id.to_le_bytes());

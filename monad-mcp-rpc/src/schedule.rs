@@ -22,12 +22,11 @@
 
 use std::{cmp::Reverse, collections::HashMap, fmt, sync::Arc, time::Duration};
 
+use monad_mcp_common::{Lane, Slot, Timestamp, TimestampDelta};
 use monad_mcp_node::{
     NodeProposerSchedule,
-    chorus::types::{
-        Lane, NodeId, ProposerConfig, ProposerSchedule, ScheduleError, Slot, Timestamp,
-        TimestampDelta,
-    },
+    chorus::types::{ProposerConfig, ProposerSchedule, ScheduleError},
+    common::NodeId,
     config::NodeConfig,
 };
 

@@ -23,10 +23,10 @@ use std::{collections::HashMap, io, net::SocketAddr};
 
 use bytes::{BufMut, Bytes, BytesMut};
 use tokio::{net::UdpSocket, task::JoinHandle};
-use tracing::{Instrument as _, Span};
+use tracing::Span;
 
 use super::{NodeInbound, NodeMessage, NodeOutbound};
-use crate::{chorus::types::NodeId, component::Link};
+use crate::{common::NodeId, component::Link};
 
 const CADENCE: u8 = 1;
 const CHUNK: u8 = 2;
@@ -61,6 +61,8 @@ impl UdpNetwork {
     }
 
     pub fn spawn(self, link: Link<NodeInbound, NodeOutbound>) -> JoinHandle<()> {
+        use tracing::Instrument as _;
+
         tokio::spawn(self.run(link).instrument(Span::current()))
     }
 

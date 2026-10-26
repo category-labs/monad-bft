@@ -17,16 +17,11 @@ use std::collections::VecDeque;
 
 use bytes::Bytes;
 use monad_mcp_chorus::ledger::Tx;
-use rand::{Rng as _, RngCore as _};
+use monad_mcp_common::{Lane, Lanes, Proposal, Slot, Timestamp};
 
 use super::{Component, Mempool};
 use crate::{
-    chorus::{
-        proposing::ProposalPlanner,
-        types::{Lane, Lanes, NodeId, Proposal, Slot, Timestamp},
-    },
-    config::ProposalConfig,
-    epoch::EpochHandle,
+    chorus::proposing::ProposalPlanner, common::NodeId, config::ProposalConfig, epoch::EpochHandle,
 };
 
 pub enum ProposingInput {
@@ -221,6 +216,8 @@ impl Component for RandomProposing {
 // never empty, log-uniform in length: every doubling from 1 byte to the
 // proposal size limit is equally likely
 fn random_payload(proposal_size_limit: usize) -> Bytes {
+    use rand::{Rng as _, RngCore as _};
+
     let proposal_size_limit = proposal_size_limit.max(1);
     let mut rng = rand::thread_rng();
     let max_bits = (proposal_size_limit as f64).log2();

@@ -19,9 +19,10 @@
 
 use std::{cell::Cell, collections::BTreeMap, rc::Rc, time::Duration};
 
-use chorus::{slot::fallback::Metablock, types::NodeId};
+use chorus::slot::fallback::Metablock;
 use monad_mcp_chorus::stub as chorus;
 use monad_mcp_chorus_sim::{Message, MvbaSwarm, MvbaSwarmBuilder, SimMessage};
+use monad_mcp_common::stub::NodeId;
 use monad_sim::{RunOutcome, Time, dist::uniform_duration};
 use monad_sim_swarm::Network;
 
@@ -36,15 +37,16 @@ mod fixtures {
             Mvba as _, monad_mvba::MvbaContext,
         },
         types::{
-            HeaderAuth, IsVote, Lane, Lanes, NodeId, ProposalId, ProposalScope, Slot, Stake,
-            StrongQc, TimestampDelta, ValidatorData, VoteMsg, VotePool, WeakQc,
+            HeaderAuth, IsVote, ProposalId, StrongQc, ValidatorData, VoteMsg, VotePool, WeakQc,
         },
     };
-    use monad_mcp_chorus::{
-        spec::{KeyPair as _, ProposalHeader as _},
-        stub as chorus,
-    };
+    use monad_mcp_chorus::{spec::ProposalHeader as _, stub as chorus};
     use monad_mcp_chorus_sim::MonadMvba;
+    use monad_mcp_common::{
+        Lane, Lanes, ProposalScope, Slot, TimestampDelta,
+        spec::KeyPair as _,
+        stub::{NodeId, Stake},
+    };
 
     const NUM_NODES: u64 = 4;
 

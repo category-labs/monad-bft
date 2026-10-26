@@ -23,9 +23,9 @@ use chorus::{
     CadenceRuntime, Conductor, FinalizationObserver, Runtime, SlotConsensus, SlotManager,
     proposing::ProposalPlanner,
     slot::chorus::{ChorusDAEvent, ProposalDAEvent},
-    types::{NodeId, Slot, Timestamp},
 };
 use monad_mcp_chorus::stub as chorus;
+use monad_mcp_common::{Slot, Timestamp, stub::NodeId};
 use monad_sim::{RunOutcome, StepLabel};
 use monad_sim_swarm::{Network, Swarm};
 

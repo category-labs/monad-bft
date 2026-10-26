@@ -13,13 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use monad_mcp_common::{Lane, Slot, Timestamp};
+
 use super::Component;
 use crate::{
-    chorus::{
-        SlotLifecycle,
-        slot::chorus::SlotFinalization,
-        types::{Lane, ProposalId, Slot, Timestamp},
-    },
+    chorus::{SlotLifecycle, slot::chorus::SlotFinalization, types::ProposalId},
     da::Resolved,
     finalization::{FinalizationCollector, FinalizedSlot},
 };

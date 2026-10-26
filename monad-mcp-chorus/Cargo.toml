@@ -20,6 +20,8 @@ thiserror = { workspace = true }
 tiny-keccak = { workspace = true, features = ["keccak"] }
 tracing = { workspace = true }
 
+monad-mcp-common = { workspace = true }
+
 [dev-dependencies]
 proptest = { workspace = true }
 rand = { workspace = true }

@@ -37,7 +37,6 @@ use super::{
         SignatureCollection, SignedProposalHeader, Slot, TimestampDelta, ValidatorData,
     },
 };
-use crate::spec::validator::ValidatorData as _;
 
 /// The fallback path's agreement protocol, at the instantiation Chorus runs it
 type FallbackState = MonadMvba<Metablock, EnterFallbackCert>;
@@ -319,6 +318,8 @@ impl SlotConsensus for Chorus {
     }
 
     fn handle_message(&mut self, author: NodeId, message: Self::Message) {
+        use crate::spec::validator::ValidatorData as _;
+
         let from_validator = self.validator_data.contains(&author);
         if self.decided || !from_validator {
             return;
@@ -673,13 +674,14 @@ impl Decodable for ChorusMessage {
 mod tests {
     use std::sync::Arc;
 
+    use monad_mcp_common::spec::KeyPair as _;
+
     use super::{
         super::types::{
             FixedProposerSchedule, HeaderAuth, NodeId, Slot, Stake, TimestampDelta, ValidatorData,
         },
         *,
     };
-    use crate::spec::vote::KeyPair as _;
 
     fn validator_data(n: u64) -> ValidatorData {
         let validators = (0..n).map(NodeId::dummy).collect::<Vec<_>>();

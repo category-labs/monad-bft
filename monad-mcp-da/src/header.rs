@@ -15,19 +15,13 @@
 
 use std::sync::Arc;
 
-use monad_mcp_chorus::spec::{
-    ProposalHeader as _, SignedProposalHeader as _, validator::ValidatorData as _,
-};
-
 use super::{
-    encoding_scheme::DAEncodingScheme as _,
     types::{
         EncodingScheme, HeaderAuth, Lane, ProposerSchedule, SignedProposalHeader, Slot,
         ValidatorData,
     },
     wire,
 };
-use crate::spec::{DAProposalHeader as _, DAProposalSignature as _};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvalidProposalHeader {
@@ -44,6 +38,13 @@ pub fn header_auth<S>(schedule: Arc<S>, validator_data: Arc<ValidatorData>) -> H
 where
     S: ProposerSchedule + Send + Sync + 'static,
 {
+    use monad_mcp_chorus::spec::{
+        ProposalHeader as _, SignedProposalHeader as _, validator::ValidatorData as _,
+    };
+
+    use super::encoding_scheme::DAEncodingScheme as _;
+    use crate::spec::{DAProposalHeader as _, DAProposalSignature as _};
+
     HeaderAuth::new(move |signed: &SignedProposalHeader, _slot: u64| {
         // todo: cache the auth result by (ProposalHeader, slot).
 

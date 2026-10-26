@@ -16,7 +16,8 @@
 use std::{collections::HashMap, fmt, net::SocketAddr, num::NonZeroU64, path::PathBuf, sync::Arc};
 
 use alloy_rlp::Encodable as _;
-use monad_mcp_chorus::{ledger::BatchBuilder, spec::vote::KeyPair as _};
+use monad_mcp_chorus::ledger::BatchBuilder;
+use monad_mcp_common::{Timestamp, TimestampDelta, spec::KeyPair as _};
 use serde::Deserialize;
 
 use crate::{
@@ -25,11 +26,11 @@ use crate::{
         proposing::PlannerConfig,
         slot::chorus::ChorusConfig,
         types::{
-            KeyPair, NodeId, ProposerConfig, PubKey, RotatingProposerSchedule,
-            RoundRobinLeaderSchedule, ScheduleError, Stake, Timestamp, TimestampDelta,
+            ProposerConfig, RotatingProposerSchedule, RoundRobinLeaderSchedule, ScheduleError,
             ValidatorData,
         },
     },
+    common::{KeyPair, NodeId, PubKey, Stake},
     component::{RepeaterConfig, mempool},
     da::{self, ProposalKeyPair, header_auth},
     epoch::{EpochHandle, NodeProposerSchedule},
@@ -440,11 +441,11 @@ impl std::error::Error for ConfigError {}
 
 // the stub env derives every key from a u64
 mod de {
-    use monad_mcp_chorus::spec::vote::KeyPair as _;
+    use monad_mcp_common::{Timestamp, TimestampDelta, spec::KeyPair as _};
     use serde::{Deserialize, Deserializer};
 
     use crate::{
-        chorus::types::{KeyPair, NodeId, PubKey, Timestamp, TimestampDelta},
+        common::{KeyPair, NodeId, PubKey},
         da::ProposalKeyPair,
     };
 
@@ -476,8 +477,10 @@ mod de {
 
 #[cfg(test)]
 mod tests {
+    use monad_mcp_common::Slot;
+
     use super::*;
-    use crate::chorus::types::{ProposerSchedule as _, Slot};
+    use crate::chorus::types::ProposerSchedule as _;
 
     fn validator_data(n: u64) -> Arc<ValidatorData> {
         let valset = (0..n)

@@ -336,7 +336,9 @@ impl EpochSchedule<NodeId> {
         validators: &ValidatorData,
         prev_epoch_tail: &[NodeId],
     ) -> Result<Self, ScheduleError> {
-        use crate::spec::{Stake as _, validator::ValidatorData as _};
+        use monad_mcp_common::spec::Stake as _;
+
+        use crate::spec::validator::ValidatorData as _;
 
         Self::build(
             cfg,

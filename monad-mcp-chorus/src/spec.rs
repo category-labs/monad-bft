@@ -13,9 +13,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use monad_mcp_common::spec as common_spec;
 pub use proposal::{MerkleRoot, ProposalHeader, ProposalId, SignedProposalHeader};
-pub use validator::{NodeId, Stake};
-pub use vote::{KeyPair, PubKey, Signature, SignatureCollection};
+pub use vote::SignatureCollection;
 
 /// Serialize to S, usually bytes.
 pub trait Serializable<S> {
@@ -46,36 +46,13 @@ impl<S: Clone> Deserializable<S> for S {
 }
 
 pub mod validator {
-    use std::{iter::Sum, ops::Add};
-
-    // A simple, pure identifier to a node. The NodeId type
-    // is not involved in any sort of crypto operation *in this module*.
-    pub trait NodeId: Copy + Ord + std::hash::Hash {}
-
-    pub trait Stake: Add<Output = Self> + Sum + From<u64> + Ord + Copy {
-        const ZERO: Self;
-
-        // floor(2/3 * self)
-        fn supermajority_threshold(&self) -> Self;
-
-        // floor(1/3 * self)
-        fn honest_threshold(&self) -> Self;
-
-        // Proportional claim on shares discrete shares, as the
-        // quotient and remainder of shares * (self / total). The
-        // caller must guarantee that total is non-zero.
-        fn obligation(&self, total: &Self, shares: usize) -> (usize, usize);
-
-        // the raw integer stake amount, as consumed by stake-weighted
-        // proposer scheduling
-        fn amount(&self) -> u64;
-    }
+    use monad_mcp_common::spec as common_spec;
 
     #[expect(clippy::len_without_is_empty)]
     pub trait ValidatorData {
-        type NodeId: NodeId;
-        type PubKey: super::vote::PubKey;
-        type Stake: Stake;
+        type NodeId: common_spec::NodeId;
+        type PubKey: common_spec::PubKey;
+        type Stake: common_spec::Stake;
 
         // iterate through the validators in a stable order across
         // all nodes.
@@ -103,6 +80,7 @@ pub mod vote {
 
     use alloy_rlp::{EMPTY_LIST_CODE, Encodable};
     use bytes::{BufMut, Bytes};
+    use monad_mcp_common::spec as common_spec;
 
     // A namespace mixed into the bytes a signature covers, so a signature
     // over one message kind can never be read as another.
@@ -153,48 +131,19 @@ pub mod vote {
         }
     }
 
-    // Only used to verify a Signature signed using KeyPair.
-    pub trait PubKey: Clone + Eq {}
-
-    // Used to sign a piece of data to get a Signature. Clone deliberately
-    // not required - the programmer should carefully evaluate any need
-    // for cloning the KeyPair for security purpose.
-    pub trait KeyPair {
-        type PubKey: PubKey;
-        type Signature: Signature<PubKey = Self::PubKey>;
-        fn pubkey(&self) -> Self::PubKey;
-        fn sign(&self, data: &Bytes) -> Self::Signature;
-    }
-
     type SigColSignature<SC> = <SC as SignatureCollection>::Signature;
-    type SigColPubKey<SC> = <<SC as SignatureCollection>::Signature as Signature>::PubKey;
+    type SigColPubKey<SC> =
+        <<SC as SignatureCollection>::Signature as common_spec::Signature>::PubKey;
     type SigColNodeId<SC> = ValidatorNodeId<<SC as SignatureCollection>::ValidatorData>;
     type SigColValidatorData<SC> = <SC as SignatureCollection>::ValidatorData;
     type ValidatorNodeId<VD> = <VD as super::validator::ValidatorData>::NodeId;
-
-    // A signature on a message by a KeyPair. Once presented the message &
-    // PubKey it can verify the authenticity of the message & the
-    // signer. Note: no pubkey-recovery capability assumed.
-    //
-    // Note: the signature type on its own doesn't imply that it's
-    // verified.
-    pub trait Signature: Clone + Eq {
-        type PubKey: PubKey;
-
-        // Structural validity of the signature value itself,
-        // independent of any message or pubkey. For BLS this is the
-        // on-curve point check.
-        fn is_well_formed(&self) -> bool;
-
-        fn verify(&self, data: &[u8], pubkey: &Self::PubKey) -> bool;
-    }
 
     // A collection of signatures on a common message.
     //
     // Contains the information of the set of signers, assuming the
     // proper context of a validator set.
     pub trait SignatureCollection: Clone + Eq {
-        type Signature: Signature;
+        type Signature: common_spec::Signature;
 
         // The validator context for this signature collection. It may
         // carry implementation-dependent data for optimized
@@ -233,7 +182,7 @@ pub mod vote {
 
     pub trait VoteAggregation<'a, Stake>
     where
-        Stake: super::Stake,
+        Stake: common_spec::Stake,
         SigColValidatorData<Self::SignatureCollection>:
             super::validator::ValidatorData<Stake = Stake>,
     {
@@ -291,7 +240,7 @@ pub mod vote {
 }
 
 pub mod proposal {
-    use crate::common_types::Lane;
+    use monad_mcp_common::Lane;
 
     // A commitment to a proposal's payload.
     pub trait MerkleRoot: Copy + Eq + std::hash::Hash + std::fmt::Debug {}
@@ -349,11 +298,11 @@ pub const fn assert_env<
     HeaderAuth,
 >()
 where
-    NodeId: validator::NodeId,
-    Stake: validator::Stake,
-    PubKey: vote::PubKey,
-    KeyPair: vote::KeyPair<PubKey = PubKey, Signature = Signature>,
-    Signature: vote::Signature<PubKey = PubKey>,
+    NodeId: common_spec::NodeId,
+    Stake: common_spec::Stake,
+    PubKey: common_spec::PubKey,
+    KeyPair: common_spec::KeyPair<PubKey = PubKey, Signature = Signature>,
+    Signature: common_spec::Signature<PubKey = PubKey>,
     ValidatorData: validator::ValidatorData<NodeId = NodeId, PubKey = PubKey, Stake = Stake>,
     SignatureCollection:
         vote::SignatureCollection<Signature = Signature, ValidatorData = ValidatorData>,

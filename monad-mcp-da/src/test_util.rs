@@ -20,7 +20,6 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use monad_mcp_chorus::spec::{validator::ValidatorData as _, vote::KeyPair as _};
 
 pub(crate) use super::chorus::types::FixedProposerSchedule;
 use super::{
@@ -35,9 +34,8 @@ use super::{
         Timestamp, TimestampDelta, ValidatorData,
     },
     util::Tree,
-    wire::{self, PacketLayout as _},
+    wire,
 };
-use crate::spec::{DAProposalHeader as _, DAProposalKeyPair as _};
 
 pub(crate) const SLOT: Slot = Slot(1);
 pub(crate) const NOW: Timestamp = Timestamp::GENESIS;
@@ -66,6 +64,8 @@ pub(crate) fn validator_data(n: u64) -> ValidatorData {
 
 // validator i holds stakes[i]
 pub(crate) fn staked_validator_data(stakes: &[u64]) -> ValidatorData {
+    use monad_mcp_common::spec::KeyPair as _;
+
     let mut valset = Vec::new();
     let mut mapping = Vec::new();
     for (id, stake) in stakes.iter().enumerate() {
@@ -108,6 +108,8 @@ pub(crate) fn scheme(epoch_handle: &EpochHandle) -> EncodingScheme {
 }
 
 pub(crate) fn scheme_at(epoch_handle: &EpochHandle, slot: Slot) -> EncodingScheme {
+    use monad_mcp_chorus::spec::validator::ValidatorData as _;
+
     let num_validators = epoch_handle.validator_data.len();
     let d25 = d25::for_message(slot, MESSAGE_LEN, 0, num_validators).expect("fits a depth");
     EncodingScheme::D25(d25)
@@ -115,6 +117,8 @@ pub(crate) fn scheme_at(epoch_handle: &EpochHandle, slot: Slot) -> EncodingSchem
 
 // the header as validator `author_id` signs it
 pub(crate) fn signed_header(header: ProposalHeader, author_id: u64) -> SignedProposalHeader {
+    use crate::spec::DAProposalKeyPair as _;
+
     let signed = wire::signed_bytes(&header);
     let sig = ProposalKeyPair::dummy(NodeId::dummy(author_id)).sign(&signed);
     SignedProposalHeader { header, sig }
@@ -185,6 +189,8 @@ pub(crate) fn proposal_chunks(
 pub(crate) fn inconsistent_proposal_chunks(
     epoch_handle: &EpochHandle,
 ) -> (SignedProposalHeader, Vec<Chunk<'static>>) {
+    use super::wire::PacketLayout as _;
+
     let scheme = scheme(epoch_handle);
     let assignment = scheme.chunk_assignment(&author(), &epoch_handle.validator_data);
     let num_chunks = assignment.num_chunks();
@@ -213,6 +219,8 @@ pub(crate) fn chunk_id(
     header: &SignedProposalHeader,
     wire: WireChunkId,
 ) -> ChunkId {
+    use crate::spec::DAProposalHeader as _;
+
     let assignment = header
         .scheme()
         .chunk_assignment(&author(), &epoch_handle.validator_data);

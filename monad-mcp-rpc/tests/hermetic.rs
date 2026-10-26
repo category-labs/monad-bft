@@ -21,7 +21,8 @@ mod common;
 use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
 use common::*;
-use monad_mcp_node::chorus::types::{Lane, NodeId, Slot, Timestamp};
+use monad_mcp_common::{Lane, Slot, Timestamp};
+use monad_mcp_node::common::NodeId;
 use monad_mcp_rpc::{RpcConfig, api::TxView, schedule::Planner};
 use serde_json::Value;
 

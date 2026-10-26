@@ -31,7 +31,6 @@ use super::{
     },
 };
 use crate::spec::{
-    Stake as _,
     proposal::{HeaderAuth as _, ProposalHeader as _},
     validator::ValidatorData as _,
     vote::{SignatureCollection as _, SigningDomain, assert_signing_prefix},
@@ -446,6 +445,8 @@ impl FastPath {
 
     // ------- internal helper methods ---------
     fn proposal_state(&self, j: Lane) -> Option<ProposalState> {
+        use monad_mcp_common::spec::Stake as _;
+
         let tally = self.votes[j].tally(&self.validator_data);
         let supermajority = self.validator_data.total_stake().supermajority_threshold();
 
@@ -1143,6 +1144,8 @@ impl Decodable for FastCommitVote {
 mod tests {
     use std::collections::HashSet;
 
+    use monad_mcp_common::spec::KeyPair as _;
+
     use super::{
         super::{
             super::proposers,
@@ -1154,9 +1157,8 @@ mod tests {
         },
         *,
     };
-    use crate::{
-        env::stub::{EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader, ProposalSignature},
-        spec::vote::KeyPair as _,
+    use crate::env::stub::{
+        EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader, ProposalSignature,
     };
 
     const SLOT: Slot = Slot(1);
@@ -1753,6 +1755,7 @@ mod tests {
 #[cfg(test)]
 mod rlp_tests {
     use bytes::Bytes;
+    use monad_mcp_common::{SlotDeadline, spec::KeyPair as _};
 
     use super::{
         super::{
@@ -1760,17 +1763,13 @@ mod rlp_tests {
                 conductor::{MonadConductor, acs::median::MedianAcs},
                 message::CadenceWireMsg,
                 test_utils::{assert_roundtrip, assert_serialization_roundtrip},
-                types::SlotDeadline,
             },
             chorus::{Chorus, ChorusMessage},
         },
         *,
     };
-    use crate::{
-        env::stub::{
-            D25, EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader, ProposalSignature,
-        },
-        spec::vote::KeyPair as _,
+    use crate::env::stub::{
+        D25, EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader, ProposalSignature,
     };
 
     #[test]

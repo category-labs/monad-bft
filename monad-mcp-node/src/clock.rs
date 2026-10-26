@@ -15,7 +15,7 @@
 
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use crate::chorus::types::Timestamp;
+use monad_mcp_common::Timestamp;
 
 // monotonic since start, anchored to unix time at start
 #[derive(Clone, Copy)]

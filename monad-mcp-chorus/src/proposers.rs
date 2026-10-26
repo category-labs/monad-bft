@@ -503,7 +503,9 @@ impl<A: LeaderSchedule> RotatingProposerSchedule<A> {
         validator_data: Arc<ValidatorData>,
         anchor: EpochAnchor,
     ) -> Result<Self, ScheduleError> {
-        use crate::spec::{Stake as _, validator::ValidatorData as _};
+        use monad_mcp_common::spec::Stake as _;
+
+        use crate::spec::validator::ValidatorData as _;
 
         cfg.validate()?;
         let stakes: Vec<(NodeId, u64)> = validator_data
@@ -794,8 +796,9 @@ where
 
 #[cfg(test)]
 mod tests {
+    use monad_mcp_common::spec::KeyPair as _;
+
     use super::{super::types::Stake, *};
-    use crate::spec::vote::KeyPair as _;
 
     fn validator_data(stakes: &[(u64, u64)]) -> Arc<ValidatorData> {
         let valset = stakes

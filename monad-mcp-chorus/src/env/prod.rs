@@ -13,9 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+pub(crate) use monad_mcp_common::prod::{KeyPair, NodeId, PubKey, Signature, Stake};
+
 pub use crate::env::stub::{
-    HeaderAuth, KeyPair, MerkleRoot, NodeId, ProposalHeader, ProposalId, PubKey, Signature,
-    SignatureCollection, SignedProposalHeader, Stake, ValidatorData, VoteAggregation,
+    HeaderAuth, MerkleRoot, ProposalHeader, ProposalId, SignatureCollection, SignedProposalHeader,
+    ValidatorData, VoteAggregation,
 };
 
 // TODO: fill in the actual production implementation for above types

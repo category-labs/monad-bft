@@ -16,13 +16,10 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use bytes::Bytes;
+use monad_mcp_common::{Lane, Lanes, Slot, Timestamp};
 
 use crate::{
-    chorus::{
-        SlotLifecycle,
-        slot::chorus::SlotFinalization,
-        types::{Lane, Lanes, ProposalId, Slot, Timestamp},
-    },
+    chorus::{SlotLifecycle, slot::chorus::SlotFinalization, types::ProposalId},
     da::Resolved,
 };
 

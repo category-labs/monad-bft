@@ -25,7 +25,7 @@ use std::{
 use bytes::Bytes;
 use monad_mcp_chorus::ledger::Tx;
 use monad_mcp_node::{
-    chorus::types::NodeId,
+    common::NodeId,
     network::{NodeMessage, encode_frame},
 };
 

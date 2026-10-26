@@ -27,8 +27,8 @@ use std::{
 
 use common::*;
 use monad_mcp_chorus::ledger::{LedgerReader, Tx, decode_batch};
+use monad_mcp_common::Timestamp;
 use monad_mcp_node::{
-    chorus::types::Timestamp,
     config::{LedgerConfig, NodeConfig},
     run_node,
 };

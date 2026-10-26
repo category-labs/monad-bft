@@ -21,11 +21,11 @@ use chorus::{
     CadenceWireMsg,
     conductor::{ConductorConfig, MonadConductor, acs::nop::NopAcs},
     slot::dummy::{DummySlotConsensus, DummySlotConsensusConfig},
-    types::{NodeId, SlotDeadline, TimestampDelta},
 };
 use helper::expect_finalized_at;
 use monad_mcp_chorus::stub as chorus;
 use monad_mcp_chorus_sim::CadenceSwarmBuilder;
+use monad_mcp_common::{SlotDeadline, TimestampDelta, stub::NodeId};
 
 const SLOTS_PER_WINDOW: NonZeroU64 = NonZeroU64::new(10).unwrap();
 const LAG_THRESHOLD: NonZeroU64 = SLOTS_PER_WINDOW; // one window behind triggers a cap jump

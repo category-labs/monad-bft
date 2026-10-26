@@ -300,13 +300,12 @@ mod tests {
 
     use super::{
         super::{
-            chorus::types::Timestamp,
             chunk::ChunkRequestType,
             test_util::{
                 FixedProposerSchedule, MESSAGE_LEN, NOW, SLOT, author, da_config, epoch_handle,
                 group, proposal_chunks, proposal_chunks_from, proposer_schedule,
             },
-            types::ProposalDAEvent,
+            types::{ProposalDAEvent, Timestamp},
         },
         *,
     };

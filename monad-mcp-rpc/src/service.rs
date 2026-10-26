@@ -24,7 +24,8 @@ use std::{
 };
 
 use monad_mcp_chorus::ledger::{Hash, LedgerReader, Tx};
-use monad_mcp_node::chorus::types::{Lane, NodeId, Timestamp};
+use monad_mcp_common::{Lane, Timestamp};
+use monad_mcp_node::common::NodeId;
 use tokio::time::MissedTickBehavior;
 use tracing::{debug, info, warn};
 

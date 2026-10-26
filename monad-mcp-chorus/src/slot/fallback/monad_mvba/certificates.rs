@@ -24,7 +24,6 @@ use super::{
     },
     messages::{FallbackCommitVote, PrepareVote, TimeoutVote},
 };
-use crate::spec::{Stake as _, validator::ValidatorData as _, vote::SignatureCollection as _};
 
 /// `prepareQC_{slot, v}`: 2f+1 prepare votes on the same entries
 pub(crate) type PrepareQc<E> = StrongQc<PrepareVote<E>>;
@@ -82,6 +81,10 @@ pub(crate) struct TimeoutGroup {
 
 impl<E: Clone + Eq + Hash + Debug + Encodable> TimeoutCertificate<E> {
     pub(crate) fn verify(&self, validator_data: &ValidatorData) -> bool {
+        use monad_mcp_common::spec::Stake as _;
+
+        use crate::spec::{validator::ValidatorData as _, vote::SignatureCollection as _};
+
         let scope = MvbaScope::new(self.slot, self.view);
 
         let mut signers = HashSet::new();

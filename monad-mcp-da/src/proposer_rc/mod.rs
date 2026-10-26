@@ -17,7 +17,7 @@ mod recovery;
 
 use std::collections::HashMap;
 
-use monad_mcp_chorus::spec::{ProposalHeader as _, validator::ValidatorData as _};
+use monad_mcp_chorus::spec::ProposalHeader as _;
 use recovery::{Recovery, everything_missing};
 
 use super::{
@@ -273,6 +273,8 @@ impl ProposerRaptorcast {
         pid: &ProposalId,
         epoch_handle: &EpochHandle,
     ) -> Option<MissingChunks> {
+        use monad_mcp_chorus::spec::validator::ValidatorData as _;
+
         match self.tracked.get(pid) {
             Some(instance) => instance.missing_chunks(),
             // no header yet, so no assignment: any validator may own chunks we lack

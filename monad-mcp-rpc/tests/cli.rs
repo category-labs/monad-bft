@@ -24,7 +24,7 @@ use std::{
 
 use common::*;
 use monad_mcp_chorus::ledger::MAX_TX_PAYLOAD;
-use monad_mcp_node::chorus::types::NodeId;
+use monad_mcp_node::common::NodeId;
 use serde_json::Value;
 
 async fn mcp_tx(args: Vec<String>) -> Output {

@@ -14,7 +14,8 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use bytes::BufMut;
-use monad_mcp_chorus::spec;
+use monad_mcp_chorus::spec as chorus_spec;
+use monad_mcp_common::spec as common_spec;
 
 // the validator set an encoding scheme sizes its depth range for
 pub const MAX_VALIDATOR_SET_SIZE: usize = 300;
@@ -25,20 +26,20 @@ pub const SIGNATURE_LEN: usize = 65;
 // the bytes a merkle root serializes to
 pub const ROOT_LEN: usize = 20;
 
-pub trait DAMerkleRoot: spec::MerkleRoot {
+pub trait DAMerkleRoot: chorus_spec::MerkleRoot {
     // writes exactly ROOT_LEN bytes
     fn to_bytes(&self, out: &mut impl BufMut);
     fn from_bytes(field: &[u8]) -> Option<Self>;
 }
 
-pub trait DAProposalHeader: spec::ProposalHeader {
+pub trait DAProposalHeader: chorus_spec::ProposalHeader {
     type Scheme;
 
     fn scheme(&self) -> &Self::Scheme;
 }
 
 pub trait DAProposalSignature: Clone + Eq + std::hash::Hash + std::fmt::Debug {
-    type NodeId: spec::validator::NodeId;
+    type NodeId: common_spec::NodeId;
 
     // writes exactly SIGNATURE_LEN bytes
     fn to_bytes(&self, out: &mut impl BufMut);
@@ -57,7 +58,7 @@ pub trait DAProposalKeyPair {
 // the compressed public key, as the assignment seed reads it
 pub const PUBKEY_LEN: usize = 33;
 
-pub trait DAPubKey: spec::vote::PubKey {
+pub trait DAPubKey: common_spec::PubKey {
     // writes exactly PUBKEY_LEN bytes
     fn to_bytes(&self, field: &mut [u8]);
 }
@@ -73,11 +74,11 @@ pub const fn assert_env<
     ProposalKeyPair,
 >()
 where
-    NodeId: spec::validator::NodeId,
+    NodeId: common_spec::NodeId,
     MerkleRoot: DAMerkleRoot,
     ProposalHeader: DAProposalHeader<Root = MerkleRoot, Scheme = EncodingScheme>,
     SignedProposalHeader: DAProposalHeader<Root = MerkleRoot, Scheme = EncodingScheme>
-        + spec::SignedProposalHeader<Sig = ProposalSignature>,
+        + chorus_spec::SignedProposalHeader<Sig = ProposalSignature>,
     ProposalSignature: DAProposalSignature<NodeId = NodeId>,
     ProposalKeyPair: DAProposalKeyPair<Signature = ProposalSignature>,
 {

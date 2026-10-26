@@ -26,11 +26,9 @@ use std::{
     time::Duration,
 };
 
-use chorus::{
-    slot::fallback::{EnterFallbackCert, Metablock, MvbaRuntime, monad_mvba},
-    types::{NodeId, Timestamp},
-};
+use chorus::slot::fallback::{EnterFallbackCert, Metablock, MvbaRuntime, monad_mvba};
 use monad_mcp_chorus::stub as chorus;
+use monad_mcp_common::{Timestamp, stub::NodeId};
 use monad_sim::{RunOutcome, Time};
 use monad_sim_swarm::{Network, Swarm};
 

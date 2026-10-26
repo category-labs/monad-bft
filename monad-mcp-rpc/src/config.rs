@@ -21,10 +21,8 @@ use std::{
     time::Duration,
 };
 
-use monad_mcp_node::{
-    chorus::types::{NodeId, TimestampDelta},
-    config::NodeConfig,
-};
+use monad_mcp_common::TimestampDelta;
+use monad_mcp_node::{common::NodeId, config::NodeConfig};
 use serde::Deserialize;
 
 use crate::{
@@ -280,10 +278,8 @@ impl RpcSection {
 
 #[cfg(test)]
 mod tests {
-    use monad_mcp_node::{
-        chorus::types::{NodeId, Timestamp, TimestampDelta},
-        config::NodeConfig,
-    };
+    use monad_mcp_common::{Timestamp, TimestampDelta};
+    use monad_mcp_node::{common::NodeId, config::NodeConfig};
 
     use super::*;
 

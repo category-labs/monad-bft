@@ -26,14 +26,17 @@ use chorus::{
     conductor::{ConductorConfig, MonadConductor, acs::nop::NopAcs},
     slot::chorus::{Chorus, ChorusConfig, ChorusContext},
     types::{
-        CreditLotterySchedule, HeaderAuth, Lane, NodeId, ProposerConfig, ProposerSchedule,
-        RotatingProposerSchedule, Slot, SlotDeadline, Stake, Timestamp, TimestampDelta,
-        ValidatorData,
+        CreditLotterySchedule, HeaderAuth, ProposerConfig, ProposerSchedule,
+        RotatingProposerSchedule, ValidatorData,
     },
 };
 use helper::{expect_finalized, expect_finalized_at};
-use monad_mcp_chorus::{spec::KeyPair as _, stub as chorus};
+use monad_mcp_chorus::stub as chorus;
 use monad_mcp_chorus_sim::CadenceSwarmBuilder;
+use monad_mcp_common::{
+    Lane, Slot, SlotDeadline, Timestamp, TimestampDelta,
+    stub::{NodeId, Stake},
+};
 
 const NODES: u64 = 8;
 const SLOTS_PER_WINDOW: NonZeroU64 = NonZeroU64::new(4).unwrap(); // W
@@ -75,6 +78,8 @@ fn stakes() -> Vec<(NodeId, Stake)> {
 }
 
 fn gen_validator_data() -> ValidatorData {
+    use monad_mcp_common::spec::KeyPair as _;
+
     let stakes = stakes();
     let valset = stakes.iter().copied().collect();
     let mapping = stakes

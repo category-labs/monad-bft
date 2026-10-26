@@ -61,7 +61,7 @@ fn from_author(routing: &ChunkRouting<'_>, receiver: NodeIndex) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use monad_mcp_chorus::spec::Stake as _;
+    use monad_mcp_common::spec::Stake as _;
 
     use super::{
         super::super::{

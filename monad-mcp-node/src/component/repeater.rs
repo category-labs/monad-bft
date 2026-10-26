@@ -19,8 +19,10 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
+use monad_mcp_common::{Slot, Timestamp, TimestampDelta};
+
 use super::Component;
-use crate::chorus::types::{NodeId, Slot, Timestamp, TimestampDelta};
+use crate::common::NodeId;
 
 #[derive(Clone, Copy)]
 pub struct RepeaterConfig {

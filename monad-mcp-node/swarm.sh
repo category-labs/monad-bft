@@ -31,7 +31,7 @@ build_binary() {
     echo "building for $host"
     local output="$dir/build.log"
     mkdir -p "$dir"
-    if ! (cd "$repo_dir" && cargo build -p monad-mcp-node --target "$host" > "$output" 2>&1); then
+    if ! (cd "$repo_dir" && cargo build -p monad-mcp-node --features enable_stub --target "$host" > "$output" 2>&1); then
         cat "$output"
         exit 1
     fi
