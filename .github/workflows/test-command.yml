@@ -63,7 +63,6 @@ jobs:
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
-      options: --privileged -u 1000:1000
     steps:
       - name: Get PR info
         id: pr-info
