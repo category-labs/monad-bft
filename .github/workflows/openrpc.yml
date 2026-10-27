@@ -42,6 +42,10 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v6
 
+      # builder image doesn't ship jq
+      - name: Install jq
+        run: apt-get update && apt-get install -y jq
+
       - name: Generate OpenRPC documentation
         run: cargo run --bin monad-rpc-docs | jq . > openrpc.json
 
