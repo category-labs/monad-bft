@@ -23,9 +23,7 @@ use alloy_eips::eip7702::SignedAuthorization;
 use alloy_primitives::{Address, Bytes, Signature, TxKind, Uint, B256, U256, U64, U8};
 use alloy_rpc_types::{AccessList, AccessListItem};
 use monad_chain_config::execution_revision::MonadExecutionRevision;
-use monad_ethcall::{
-    overrides::StateOverrideSet, EthCallRequest, EthCallResult, MonadExecutor, MonadTracer,
-};
+use monad_ethcall::{overrides::StateOverrideSet, EthCallRequest, EthCallResult, MonadExecutor};
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{
     BlockKey, FinalizedBlockKey, ProposedBlockKey, Triedb, TriedbPath,
@@ -41,7 +39,7 @@ use crate::{
         get_block_key_from_tag_or_hash, DataProvider,
     },
     handlers::{
-        debug::{decode_call_frame, TracerObject},
+        debug::{decode_call_frame, TracerDescriptor, TracerObject},
         eth::{CallResult, FailureCallResult, SuccessCallResult},
         parse_ethcall_chain_id,
     },
@@ -525,49 +523,11 @@ pub struct MonadCreateAccessListParams {
     pub state_overrides: StateOverrideSet,
 }
 
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub enum CallParams {
-    Call(MonadEthCallParams),
-    Trace(MonadDebugTraceCallParams),
-    AccessList(MonadCreateAccessListParams),
-}
-
-impl CallParams {
-    /// Destructure into the component parts needed by `prepare_eth_call`.
-    fn into_execution_params(self) -> (EthCallExecutionParams, BlockTagOrHash) {
-        match self {
-            CallParams::Call(p) => {
-                let execution_params = EthCallExecutionParams {
-                    transaction: p.transaction,
-                    state_overrides: p.state_overrides,
-                    tracer: MonadTracer::NoopTracer,
-                };
-                (execution_params, p.block)
-            }
-            CallParams::Trace(p) => {
-                let execution_params = EthCallExecutionParams {
-                    transaction: p.transaction,
-                    state_overrides: p.tracer.state_overrides,
-                    tracer: p.tracer.tracer_params.into(),
-                };
-                (execution_params, p.block)
-            }
-            CallParams::AccessList(p) => {
-                let execution_params = EthCallExecutionParams {
-                    transaction: p.transaction,
-                    state_overrides: p.state_overrides,
-                    tracer: MonadTracer::AccessListTracer,
-                };
-                (execution_params, p.block)
-            }
-        }
-    }
-}
-
-struct EthCallExecutionParams {
+#[derive(Debug)]
+struct CallParams {
     transaction: CallRequest,
     state_overrides: StateOverrideSet,
-    tracer: MonadTracer,
+    tracer: TracerDescriptor,
 }
 
 /// Controls response shaping for provider-cap and execution out-of-gas cases.
@@ -585,9 +545,9 @@ async fn prepare_eth_call<T: Triedb + TriedbPath>(
     eth_call_executor: &MonadExecutor,
     chain_id: u64,
     params: CallParams,
+    block_tag: BlockTagOrHash,
     out_of_gas_handling: OutOfGasHandling,
 ) -> Result<(BlockKey, CallResult), JsonRpcError> {
-    let (execution_params, block_tag) = params.into_execution_params();
     let block_key = get_block_key_from_tag_or_hash(triedb_env, block_tag)
         .await
         .ok_or_else(JsonRpcError::block_not_found)?;
@@ -597,7 +557,7 @@ async fn prepare_eth_call<T: Triedb + TriedbPath>(
         eth_call_handler_config,
         eth_call_executor,
         chain_id,
-        execution_params,
+        params,
         out_of_gas_handling,
         block_key,
     )
@@ -609,11 +569,11 @@ async fn prepare_eth_call_at_block<T: Triedb + TriedbPath>(
     eth_call_handler_config: &EthCallHandlerConfig,
     eth_call_executor: &MonadExecutor,
     chain_id: u64,
-    params: EthCallExecutionParams,
+    params: CallParams,
     out_of_gas_handling: OutOfGasHandling,
     block_key: BlockKey,
 ) -> Result<(BlockKey, CallResult), JsonRpcError> {
-    let EthCallExecutionParams {
+    let CallParams {
         transaction: mut tx,
         state_overrides,
         tracer,
@@ -705,7 +665,8 @@ async fn prepare_eth_call_at_block<T: Triedb + TriedbPath>(
             block_number,
             block_id,
             state_override_set: &state_overrides,
-            tracer,
+            tracer: tracer.into(),
+            call_tracer_max_size: tracer.call_tracer_max_size(),
             gas_specified,
         })
         .await
@@ -765,7 +726,12 @@ pub async fn monad_eth_call<T: Triedb + TriedbPath>(
         eth_call_handler_config,
         eth_call_executor,
         chain_id,
-        CallParams::Call(params),
+        CallParams {
+            transaction: params.transaction,
+            state_overrides: params.state_overrides,
+            tracer: TracerDescriptor::NoopTracer,
+        },
+        params.block,
         OutOfGasHandling::RpcError,
     )
     .await?;
@@ -800,14 +766,19 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
     debug!(?params, "monad_debug_traceCall");
 
     let tracer_params = params.tracer.tracer_params;
-    let tracer: MonadTracer = tracer_params.into();
+    let tracer = TracerDescriptor::new(tracer_params, max_response_size);
 
     let (block_key, call_result) = prepare_eth_call(
         &data_provider.triedb_env,
         eth_call_handler_config,
         eth_call_executor,
         chain_id,
-        CallParams::Trace(params),
+        CallParams {
+            transaction: params.transaction,
+            state_overrides: params.tracer.state_overrides,
+            tracer,
+        },
+        params.block,
         OutOfGasHandling::RpcError,
     )
     .await?;
@@ -818,7 +789,7 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
     };
 
     match tracer {
-        MonadTracer::CallTracer => {
+        TracerDescriptor::CallTracer { max_size } => {
             let mut slice: &[u8] = raw_payload.as_ref();
             let frame = decode_call_frame(
                 &data_provider.triedb_env,
@@ -828,7 +799,7 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
             )
             .await?;
 
-            if frame.json_serialized_len() > max_response_size {
+            if frame.json_serialized_len() > max_size {
                 return Err(JsonRpcError::max_response_size_exceeded());
             }
             serde_json::value::to_raw_value(&frame).map_err(|e| {
@@ -836,7 +807,7 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
             })
         }
 
-        MonadTracer::PreStateTracer | MonadTracer::StateDiffTracer => {
+        TracerDescriptor::PreStateTracer | TracerDescriptor::StateDiffTracer => {
             // reject on the approximated encoded length before serialization
             if raw_payload.len() > max_response_size {
                 return Err(JsonRpcError::max_response_size_exceeded());
@@ -848,9 +819,9 @@ pub async fn monad_debug_traceCall<T: Triedb + TriedbPath>(
             })
         }
 
-        MonadTracer::AccessListTracer => Err(JsonRpcError::invalid_params()),
+        TracerDescriptor::AccessListTracer => Err(JsonRpcError::invalid_params()),
 
-        MonadTracer::NoopTracer => Ok(Box::<RawValue>::default()),
+        TracerDescriptor::NoopTracer => Ok(Box::<RawValue>::default()),
     }
 }
 
@@ -883,7 +854,12 @@ pub async fn monad_createAccessList<T: Triedb + TriedbPath>(
         eth_call_handler_config,
         eth_call_executor,
         chain_id,
-        CallParams::AccessList(params),
+        CallParams {
+            transaction: params.transaction,
+            state_overrides: params.state_overrides,
+            tracer: TracerDescriptor::AccessListTracer,
+        },
+        params.block,
         OutOfGasHandling::ReturnAsCallFailure,
     )
     .await?;
@@ -897,10 +873,10 @@ pub async fn monad_createAccessList<T: Triedb + TriedbPath>(
         original_access_list,
     ));
 
-    let call_params = EthCallExecutionParams {
+    let call_params = CallParams {
         transaction: follow_up_tx,
         state_overrides,
-        tracer: MonadTracer::NoopTracer,
+        tracer: TracerDescriptor::NoopTracer,
     };
 
     let (_, call_result) = prepare_eth_call_at_block(
@@ -1038,7 +1014,7 @@ mod tests {
     use monad_chain_config::execution_revision::MonadExecutionRevision;
     use monad_ethcall::{
         overrides::{StateOverrideObject, StateOverrideSet},
-        EthCallResult,
+        EthCallResult, MonadTracer,
     };
     use monad_triedb_utils::{
         mock_triedb::MockTriedb,
@@ -1050,7 +1026,7 @@ mod tests {
     use super::{check_value_transfer_balance, fill_gas_params, CallRequest, GasPriceDetails};
     use crate::{
         handlers::{
-            debug::Tracer,
+            debug::{Tracer, TracerConfig, TracerDescriptor, TracerObject},
             eth::{
                 call::{
                     access_list_from_trace_call_result, decode_access_list_trace,
@@ -1061,6 +1037,75 @@ mod tests {
         },
         types::{eth_json::MonadCreateAccessListResult, jsonrpc::JsonRpcError},
     };
+
+    #[test]
+    fn tracer_descriptor_from_request() {
+        for max_response_size in [0, 25_000_000, usize::MAX] {
+            for (tracer, diff_mode, expected, ffi_tracer) in [
+                (
+                    Tracer::CallTracer,
+                    false,
+                    TracerDescriptor::CallTracer {
+                        max_size: max_response_size,
+                    },
+                    MonadTracer::CallTracer,
+                ),
+                (
+                    Tracer::CallTracer,
+                    true,
+                    TracerDescriptor::CallTracer {
+                        max_size: max_response_size,
+                    },
+                    MonadTracer::CallTracer,
+                ),
+                (
+                    Tracer::PreStateTracer,
+                    false,
+                    TracerDescriptor::PreStateTracer,
+                    MonadTracer::PreStateTracer,
+                ),
+                (
+                    Tracer::PreStateTracer,
+                    true,
+                    TracerDescriptor::StateDiffTracer,
+                    MonadTracer::StateDiffTracer,
+                ),
+            ] {
+                let descriptor = TracerDescriptor::new(
+                    TracerObject {
+                        tracer,
+                        config: TracerConfig {
+                            diff_mode,
+                            ..Default::default()
+                        },
+                    },
+                    max_response_size,
+                );
+
+                assert_eq!(descriptor, expected);
+                assert_eq!(MonadTracer::from(descriptor), ffi_tracer);
+                assert_eq!(
+                    descriptor.call_tracer_max_size(),
+                    if tracer == Tracer::CallTracer {
+                        max_response_size
+                    } else {
+                        0
+                    }
+                );
+            }
+        }
+
+        for (descriptor, ffi_tracer) in [
+            (TracerDescriptor::NoopTracer, MonadTracer::NoopTracer),
+            (
+                TracerDescriptor::AccessListTracer,
+                MonadTracer::AccessListTracer,
+            ),
+        ] {
+            assert_eq!(MonadTracer::from(descriptor), ffi_tracer);
+            assert_eq!(descriptor.call_tracer_max_size(), 0);
+        }
+    }
 
     fn sample_access_list() -> AccessList {
         AccessList(vec![AccessListItem {

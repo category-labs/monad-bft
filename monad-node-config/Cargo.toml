@@ -22,6 +22,7 @@ monad-types = { workspace = true }
 
 alloy-primitives = { workspace = true }
 serde = { workspace = true }
+serde_with = { workspace = true }
 
 [dev-dependencies]
 monad-chain-config = { workspace = true }

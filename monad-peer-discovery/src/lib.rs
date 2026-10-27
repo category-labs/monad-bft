@@ -190,14 +190,14 @@ impl<const N: usize> PortList<N> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NameRecord {
+struct WireNameRecordV2 {
     ip: Ipv4Addr,
     ports: PortList<8>,
     capabilities: u64,
     seq: u64,
 }
 
-impl NameRecord {
+impl WireNameRecordV2 {
     fn validate(&self) -> alloy_rlp::Result<()> {
         let mut seen_tags = HashSet::new();
         for port in self.ports.iter() {
@@ -223,6 +223,39 @@ impl NameRecord {
 
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WireNameRecordV3 {
+    record: WireNameRecordV2,
+    revision: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum VersionedNameRecord {
+    V2(WireNameRecordV2),
+    V3(WireNameRecordV3),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NameRecord {
+    record: VersionedNameRecord,
+}
+
+impl NameRecord {
+    fn common(&self) -> &WireNameRecordV2 {
+        match &self.record {
+            VersionedNameRecord::V2(record) => record,
+            VersionedNameRecord::V3(record) => &record.record,
+        }
+    }
+
+    fn common_mut(&mut self) -> &mut WireNameRecordV2 {
+        match &mut self.record {
+            VersionedNameRecord::V2(record) => record,
+            VersionedNameRecord::V3(record) => &mut record.record,
+        }
+    }
 
     pub fn new(
         ip: Ipv4Addr,
@@ -232,7 +265,7 @@ impl NameRecord {
         capabilities: u64,
         seq: u64,
     ) -> Self {
-        let mut record = Self::new_with_ports(
+        Self::new_with_ports(
             ip,
             tcp_port,
             udp_port,
@@ -240,9 +273,8 @@ impl NameRecord {
             None,
             None,
             seq,
-        );
-        record.capabilities = capabilities;
-        record
+        )
+        .with_capabilities(capabilities)
     }
 
     pub fn new_with_ports(
@@ -266,28 +298,55 @@ impl NameRecord {
         if let Some(encrypted_tcp_port) = encrypted_tcp_port {
             ports_vec.push(Port::new(PortTag::EncryptedTCP, encrypted_tcp_port));
         }
-        Self {
+        let record = WireNameRecordV2 {
             ip,
             ports: PortList(ports_vec),
             capabilities: 0,
             seq,
+        };
+        Self {
+            record: VersionedNameRecord::V2(record),
         }
     }
 
     pub fn ip(&self) -> Ipv4Addr {
-        self.ip
+        self.common().ip
     }
 
     pub fn capabilities(&self) -> u64 {
-        self.capabilities
+        self.common().capabilities
     }
 
     pub fn seq(&self) -> u64 {
-        self.seq
+        self.common().seq
+    }
+
+    pub fn revision(&self) -> u64 {
+        match &self.record {
+            VersionedNameRecord::V2(_) => 0,
+            VersionedNameRecord::V3(record) => record.revision,
+        }
+    }
+
+    /// Revision zero retains the V2 encoding and existing signatures.
+    #[must_use]
+    pub fn with_revision(self, revision: u64) -> Self {
+        let record = match self.record {
+            VersionedNameRecord::V2(record) => record,
+            VersionedNameRecord::V3(record) => record.record,
+        };
+        Self {
+            record: if revision == 0 {
+                VersionedNameRecord::V2(record)
+            } else {
+                VersionedNameRecord::V3(WireNameRecordV3 { record, revision })
+            },
+        }
     }
 
     pub fn tcp_port(&self) -> u16 {
-        self.ports
+        self.common()
+            .ports
             .tcp_port()
             .expect("name record must have TCP port")
             .get()
@@ -298,7 +357,7 @@ impl NameRecord {
     }
 
     pub fn udp_port(&self) -> Option<u16> {
-        self.ports.udp_port().map(NonZeroU16::get)
+        self.common().ports.udp_port().map(NonZeroU16::get)
     }
 
     pub fn udp_socket(&self) -> Option<SocketAddrV4> {
@@ -307,7 +366,8 @@ impl NameRecord {
     }
 
     pub fn authenticated_udp_port(&self) -> u16 {
-        self.ports
+        self.common()
+            .ports
             .authenticated_udp_port()
             .expect("name record must have authenticated UDP port")
             .get()
@@ -318,7 +378,7 @@ impl NameRecord {
     }
 
     pub fn direct_udp_port(&self) -> Option<u16> {
-        self.ports.direct_udp_port().map(NonZeroU16::get)
+        self.common().ports.direct_udp_port().map(NonZeroU16::get)
     }
 
     pub fn direct_udp_socket(&self) -> Option<SocketAddrV4> {
@@ -327,7 +387,10 @@ impl NameRecord {
     }
 
     pub fn encrypted_tcp_port(&self) -> Option<u16> {
-        self.ports.encrypted_tcp_port().map(NonZeroU16::get)
+        self.common()
+            .ports
+            .encrypted_tcp_port()
+            .map(NonZeroU16::get)
     }
 
     pub fn encrypted_tcp_socket(&self) -> Option<SocketAddrV4> {
@@ -340,19 +403,38 @@ impl NameRecord {
     }
 
     pub fn set_capability(&mut self, capability: Capability) {
-        self.capabilities |= 1u64 << (capability as u8);
+        self.common_mut().capabilities |= 1u64 << (capability as u8);
+    }
+
+    #[must_use]
+    pub fn with_capability(mut self, capability: Capability) -> Self {
+        self.set_capability(capability);
+        self
+    }
+
+    // Restore the full signed mask, including capabilities unknown to this node.
+    fn with_capabilities(mut self, capabilities: u64) -> Self {
+        self.common_mut().capabilities = capabilities;
+        self
     }
 }
 
 impl Encodable for NameRecord {
     fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
-        let enc: [&dyn Encodable; 4] = [
-            &self.ip.octets(),
-            &self.ports,
-            &self.capabilities,
-            &self.seq,
+        let record = self.common();
+        let enc: [&dyn Encodable; 5] = [
+            &record.ip.octets(),
+            &record.ports,
+            &record.capabilities,
+            &record.seq,
+            &self.revision(),
         ];
-        encode_list::<_, dyn Encodable>(&enc, out);
+        // Keep legacy signed bytes unchanged; V3 appends a separate revision.
+        let fields = match self.record {
+            VersionedNameRecord::V2(_) => &enc[..4],
+            VersionedNameRecord::V3(_) => &enc[..],
+        };
+        encode_list::<_, dyn Encodable>(fields, out);
     }
 }
 
@@ -363,19 +445,30 @@ impl Decodable for NameRecord {
         let Ok(ip_bytes) = <[u8; 4]>::decode(buf) else {
             return Err(alloy_rlp::Error::Custom("Invalid IPv4 address"));
         };
-        let record = Self {
+        let record = WireNameRecordV2 {
             ip: Ipv4Addr::from(ip_bytes),
             ports: PortList::decode(buf)?,
             capabilities: u64::decode(buf)?,
             seq: u64::decode(buf)?,
+        };
+        record.validate()?;
+        let record = if buf.is_empty() {
+            VersionedNameRecord::V2(record)
+        } else {
+            let revision = u64::decode(buf)?;
+            if revision == 0 {
+                return Err(alloy_rlp::Error::Custom(
+                    "zero revision must use V2 name record",
+                ));
+            }
+            VersionedNameRecord::V3(WireNameRecordV3 { record, revision })
         };
 
         if !buf.is_empty() {
             return Err(alloy_rlp::Error::UnexpectedLength);
         }
 
-        record.validate()?;
-        Ok(record)
+        Ok(Self { record })
     }
 }
 
@@ -440,6 +533,11 @@ impl<ST: CertificateSignatureRecoverable> MonadNameRecord<ST> {
         self.name_record.seq()
     }
 
+    /// Compare records by operator sequence first, then node revision.
+    pub fn seq_and_revision(&self) -> (u64, u64) {
+        (self.name_record.seq(), self.name_record.revision())
+    }
+
     pub fn with_pubkey(
         &self,
         pubkey: CertificateSignaturePubKey<ST>,
@@ -463,7 +561,9 @@ impl<ST: CertificateSignatureRecoverable> TryFrom<&PeerEntry<ST>> for MonadNameR
             peer.direct_udp_port.map(NonZeroU16::get),
             peer.encrypted_tcp_port.map(NonZeroU16::get),
             peer.record_seq_num,
-        );
+        )
+        .with_capabilities(peer.capabilities)
+        .with_revision(peer.record_revision);
 
         let mut encoded = Vec::new();
         name_record.encode(&mut encoded);
@@ -495,6 +595,8 @@ impl<ST: CertificateSignatureRecoverable> TryFrom<&MonadNameRecord<ST>> for Peer
             ),
             signature: record.signature,
             record_seq_num: record.name_record.seq(),
+            capabilities: record.name_record.capabilities(),
+            record_revision: record.name_record.revision(),
             auth_port: NonZeroU16::new(record.name_record.authenticated_udp_port())
                 .expect("name record authenticated UDP port must be non-zero"),
             direct_udp_port: record.name_record.direct_udp_port().map(|port| {
@@ -519,6 +621,8 @@ impl<ST: CertificateSignatureRecoverable> From<MonadNameRecordWithPubkey<'_, ST>
             secp256k1_pubkey: peer.pubkey,
             name_record_sig: peer.signature,
             record_seq_num: peer.record_seq_num,
+            capabilities: peer.capabilities,
+            record_revision: peer.record_revision,
             auth_port: peer.auth_port,
             direct_udp_port: peer.direct_udp_port,
             encrypted_tcp_port: peer.encrypted_tcp_port,
@@ -556,7 +660,9 @@ impl<ST: CertificateSignatureRecoverable> TryFrom<&NodeBootstrapPeerConfig<ST>>
             peer_config.direct_udp_port.map(NonZeroU16::get),
             peer_config.encrypted_tcp_port.map(NonZeroU16::get),
             peer_config.record_seq_num,
-        );
+        )
+        .with_capabilities(peer_config.capabilities)
+        .with_revision(peer_config.record_revision);
 
         let mut encoded = Vec::new();
         name_record.encode(&mut encoded);
@@ -597,6 +703,8 @@ impl<ST: CertificateSignatureRecoverable> From<MonadNameRecordWithPubkey<'_, ST>
             ),
             signature: record_with_pubkey.record.signature,
             record_seq_num: record_with_pubkey.record.name_record.seq(),
+            capabilities: record_with_pubkey.record.name_record.capabilities(),
+            record_revision: record_with_pubkey.record.name_record.revision(),
             auth_port: NonZeroU16::new(
                 record_with_pubkey
                     .record
@@ -915,6 +1023,26 @@ mod tests {
         assert_eq!(result.unwrap(), name_record);
     }
 
+    #[rstest]
+    #[case::zero_revision(0, false)]
+    #[case::revision_overflow(u128::from(u64::MAX) + 1, false)]
+    #[case::extra_field(1, true)]
+    fn test_name_record_rejects_invalid_revision(#[case] revision: u128, #[case] extra: bool) {
+        let record = NameRecord::new(Ipv4Addr::LOCALHOST, 8000, None, 8001, 0, 1);
+        let fields = record.common();
+        let enc: [&dyn Encodable; 6] = [
+            &fields.ip.octets(),
+            &fields.ports,
+            &fields.capabilities,
+            &fields.seq,
+            &revision,
+            &0u64,
+        ];
+        let mut encoded = Vec::new();
+        encode_list::<_, dyn Encodable>(&enc[..if extra { 6 } else { 5 }], &mut encoded);
+        assert!(alloy_rlp::decode_exact::<NameRecord>(&encoded).is_err());
+    }
+
     #[test]
     fn test_name_record_duplicate_port() {
         let mut ports_vec = ArrayVec::new();
@@ -923,10 +1051,12 @@ mod tests {
         ports_vec.push(Port::new(PortTag::TCP, 8002));
 
         let wire = NameRecord {
-            ip: Ipv4Addr::from_str("1.1.1.1").unwrap(),
-            ports: PortList(ports_vec),
-            capabilities: 0,
-            seq: 1,
+            record: VersionedNameRecord::V2(WireNameRecordV2 {
+                ip: Ipv4Addr::from_str("1.1.1.1").unwrap(),
+                ports: PortList(ports_vec),
+                capabilities: 0,
+                seq: 1,
+            }),
         };
 
         let mut encoded = Vec::new();
@@ -942,10 +1072,12 @@ mod tests {
         ports_vec.push(Port::new(PortTag::TCP, 8000));
 
         let wire = NameRecord {
-            ip: Ipv4Addr::from_str("1.1.1.1").unwrap(),
-            ports: PortList(ports_vec),
-            capabilities: 0,
-            seq: 1,
+            record: VersionedNameRecord::V2(WireNameRecordV2 {
+                ip: Ipv4Addr::from_str("1.1.1.1").unwrap(),
+                ports: PortList(ports_vec),
+                capabilities: 0,
+                seq: 1,
+            }),
         };
 
         let mut encoded = Vec::new();
@@ -970,10 +1102,12 @@ mod tests {
         });
 
         let wire = NameRecord {
-            ip: Ipv4Addr::from_str("10.0.0.1").unwrap(),
-            ports: PortList(ports_vec),
-            capabilities: 7,
-            seq: 100,
+            record: VersionedNameRecord::V2(WireNameRecordV2 {
+                ip: Ipv4Addr::from_str("10.0.0.1").unwrap(),
+                ports: PortList(ports_vec),
+                capabilities: 7,
+                seq: 100,
+            }),
         };
 
         let mut wire_encoded = Vec::new();
@@ -1005,15 +1139,17 @@ mod tests {
         assert_eq!(recovered_node_id, expected_node_id);
     }
 
-    #[test]
-    fn test_name_record_roundtrip() {
+    #[rstest]
+    #[case::v2(42, 0)]
+    #[case::v2_full_sequence(u64::MAX, 0)]
+    #[case::v3(42, 1)]
+    #[case::v3_full_counters(u64::MAX, u64::MAX)]
+    fn test_name_record_roundtrip(#[case] seq: u64, #[case] revision: u64) {
         let ip = Ipv4Addr::from_str("192.168.50.100").unwrap();
         let tcp_port = 9000u16;
         let udp_port = 9001u16;
         let authenticated_udp_port = 9002u16;
         let capabilities = 15u64;
-        let seq = 42u64;
-
         let record = NameRecord::new(
             ip,
             tcp_port,
@@ -1021,11 +1157,21 @@ mod tests {
             authenticated_udp_port,
             capabilities,
             seq,
-        );
+        )
+        .with_revision(revision);
         let mut encoded = Vec::new();
         record.encode(&mut encoded);
 
-        insta::assert_debug_snapshot!("name_record_encoded", hex::encode(&encoded));
+        if seq == 42 && revision == 0 {
+            insta::assert_debug_snapshot!("name_record_encoded", hex::encode(&encoded));
+        }
+        if revision == 0 {
+            let legacy: [&dyn Encodable; 4] =
+                [&ip.octets(), &record.common().ports, &capabilities, &seq];
+            let mut expected = Vec::new();
+            encode_list::<_, dyn Encodable>(&legacy, &mut expected);
+            assert_eq!(encoded, expected);
+        }
 
         let decoded = NameRecord::decode(&mut encoded.as_slice()).unwrap();
 
@@ -1035,6 +1181,7 @@ mod tests {
         assert_eq!(decoded.authenticated_udp_port(), authenticated_udp_port);
         assert_eq!(decoded.capabilities(), capabilities);
         assert_eq!(decoded.seq(), seq);
+        assert_eq!(decoded.revision(), revision);
 
         let mut reencoded = Vec::new();
         decoded.encode(&mut reencoded);
@@ -1066,6 +1213,7 @@ mod tests {
         );
         assert_eq!(decoded_signed.name_record.capabilities(), capabilities);
         assert_eq!(decoded_signed.name_record.seq(), seq);
+        assert_eq!(decoded_signed.seq_and_revision(), (seq, revision));
 
         let recovered_from_decoded = decoded_signed.recover_pubkey().unwrap();
         assert_eq!(recovered_from_decoded, expected_node_id);
@@ -1211,6 +1359,8 @@ mod tests {
             ),
             signature: wrong_signature,
             record_seq_num: seq,
+            capabilities: 0,
+            record_revision: 0,
             auth_port: NonZeroU16::new(port).unwrap(),
             direct_udp_port: None,
             encrypted_tcp_port: None,
@@ -1220,20 +1370,25 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_peer_entry_monad_name_record_roundtrip_with_auth() {
+    #[rstest]
+    fn test_peer_entry_monad_name_record_roundtrip_with_auth(
+        #[values(99, u64::from(u32::MAX) + 1, u64::MAX)] seq: u64,
+        #[values(0, 1, u64::MAX)] revision: u64,
+        #[values(0, 1, u64::MAX)] capabilities: u64,
+    ) {
         let ip = Ipv4Addr::from_str("172.31.0.100").unwrap();
         let port = 8888u16;
         let auth_port = 8889u16;
-        let seq = 99u64;
-
         let keypair = KeyPair::from_ikm(b"test roundtrip auth").unwrap();
-        let name_record = NameRecord::new(ip, port, Some(port), auth_port, 0, seq);
+        let name_record = NameRecord::new(ip, port, Some(port), auth_port, capabilities, seq)
+            .with_revision(revision);
         let original_monad_record = MonadNameRecord::<SecpSignature>::new(name_record, &keypair);
 
         let pubkey = original_monad_record.recover_pubkey().unwrap().pubkey();
         let peer_entry = PeerEntry::from(original_monad_record.with_pubkey(pubkey));
         assert_eq!(peer_entry.auth_port.get(), auth_port);
+        let peer_entry: PeerEntry<SecpSignature> =
+            toml::from_str(&toml::to_string(&peer_entry).unwrap()).unwrap();
 
         let converted_monad_record =
             MonadNameRecord::<SecpSignature>::try_from(&peer_entry).unwrap();
@@ -1245,6 +1400,33 @@ mod tests {
         assert_eq!(
             converted_monad_record.signature,
             original_monad_record.signature
+        );
+
+        assert_eq!(
+            PeerEntry::try_from(&original_monad_record).unwrap(),
+            peer_entry
+        );
+        let encoded = alloy_rlp::encode(&peer_entry);
+        let decoded: PeerEntry<SecpSignature> = alloy_rlp::decode_exact(&encoded).unwrap();
+        assert_eq!(decoded, peer_entry);
+
+        let serialized = toml::to_string(&peer_entry).unwrap();
+        assert_eq!(serialized.contains("capabilities"), capabilities != 0);
+        let decoded: PeerEntry<SecpSignature> = toml::from_str(&serialized).unwrap();
+        assert_eq!(decoded, peer_entry);
+
+        let config = monad_node_config::NodeBootstrapConfig {
+            peers: vec![NodeBootstrapPeerConfig::from(
+                original_monad_record.with_pubkey(pubkey),
+            )],
+        };
+        let serialized = toml::to_string(&config).unwrap();
+        assert_eq!(serialized.contains("capabilities"), capabilities != 0);
+        let decoded: monad_node_config::NodeBootstrapConfig<SecpSignature> =
+            toml::from_str(&serialized).unwrap();
+        assert_eq!(
+            MonadNameRecord::try_from(&decoded.peers[0]).unwrap(),
+            original_monad_record
         );
     }
 
