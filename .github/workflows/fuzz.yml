@@ -42,7 +42,7 @@ jobs:
 
     container:
       image: ghcr.io/${{ github.repository }}/builder:master
-      options: --privileged  # seccomp=unconfined is redundant: --privileged already disables seccomp
+      options: --privileged
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
