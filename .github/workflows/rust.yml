@@ -97,11 +97,6 @@ jobs:
           -A clippy::large_enum_variant
           -A clippy::doc-overindented-list-items
 
-      - name: Tune network buffers
-        run: |
-          sudo cp debian/etc/sysctl.d/90-monad-network-buffer.conf /etc/sysctl.d/
-          sudo sysctl --system
-
       - name: Run tests
         run: |
           cargo test --release --all-targets --all-features
