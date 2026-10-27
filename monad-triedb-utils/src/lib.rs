@@ -23,22 +23,22 @@ use std::{
 };
 
 use alloy_consensus::Header;
-use alloy_primitives::U256;
+use alloy_primitives::{Address, U256};
 use alloy_rlp::Decodable;
 use futures::{channel::oneshot, executor::block_on, future::join_all, FutureExt};
 use key::Version;
 use monad_bls::{BlsPubKey, BlsSignatureCollection};
 use monad_crypto::certificate_signature::PubKey;
-use monad_eth_types::{AccountKey, EthAccount, EthHeader, EthStorageKey, EthStorageSlot};
+use monad_eth_types::{EthAccount, EthHeader};
 use monad_execution_state_read::{ExecutionStateRead, ExecutionStateReadError};
 use monad_secp::SecpSignature;
-use monad_triedb::{compute_page_key, compute_slot_offset, decode_storage_page_slot, TriedbHandle};
+use monad_triedb::TriedbHandle;
 pub use monad_triedb::{MigrationPhase, StorageStats, TriedbStatsReader, UpdateStats};
 use monad_types::{BlockId, Epoch, Hash, SeqNum, Stake};
 use tracing::{debug, trace, warn};
 
 use crate::{
-    decode::{rlp_decode_account, rlp_decode_storage_slot},
+    decode::rlp_decode_account,
     key::{create_triedb_key, KeyInput},
 };
 
@@ -173,38 +173,19 @@ impl TriedbReader {
         rlp_decode_account(account_rlp)
     }
 
-    fn key_input_for_account(account_key: &AccountKey) -> KeyInput<'_> {
-        match account_key.domain.as_ref() {
-            Some(domain) => KeyInput::DomainAddress(domain.as_ref(), account_key.address.as_ref()),
-            None => KeyInput::Address(account_key.address.as_ref()),
-        }
-    }
-
-    fn key_input_for_storage<'a>(
-        account_key: &'a AccountKey,
-        storage_key: &'a EthStorageKey,
-    ) -> KeyInput<'a> {
-        match account_key.domain.as_ref() {
-            Some(domain) => {
-                KeyInput::DomainStorage(domain.as_ref(), account_key.address.as_ref(), storage_key)
-            }
-            None => KeyInput::Storage(account_key.address.as_ref(), storage_key),
-        }
-    }
-
     pub fn get_accounts_async<'a>(
         &self,
         seq_num: &SeqNum,
         version: Version,
-        account_keys: impl Iterator<Item = &'a AccountKey>,
+        eth_addresses: impl Iterator<Item = &'a Address>,
     ) -> Option<Vec<Option<EthAccount>>> {
         // Counter which is updated when TrieDB processes a single async read to completion
         let completed_counter = Arc::new(AtomicUsize::new(0));
         let mut num_accounts = 0;
-        let eth_account_receivers = account_keys.map(|account_key| {
+        let eth_account_receivers = eth_addresses.map(|eth_address| {
             num_accounts += 1;
             let (triedb_key, key_len_nibbles) =
-                create_triedb_key(version, Self::key_input_for_account(account_key));
+                create_triedb_key(version, KeyInput::Address(eth_address.as_ref()));
             let (sender, receiver) = oneshot::channel();
             self.handle.read_async(
                 triedb_key.as_ref(),
@@ -227,8 +208,7 @@ impl TriedbReader {
                                 // Request code
                                 let (triedb_key, key_len_nibbles) =
                                     create_triedb_key(version, KeyInput::CodeHash(&code_hash));
-                                let res =
-                                    self.handle.read(&triedb_key, key_len_nibbles, seq_num.0);
+                                let res = self.handle.read(&triedb_key, key_len_nibbles, seq_num.0);
                                 trace!(?res, block_id = ?seq_num.0, ?eth_account, "account code_data");
                                 match res {
                                     Some(data) => {
@@ -283,7 +263,7 @@ impl ExecutionStateRead<SecpSignature, BlsSignatureCollection<monad_secp::PubKey
         block_id: &BlockId,
         seq_num: &SeqNum,
         is_finalized: bool,
-        account_keys: impl Iterator<Item = &'a AccountKey>,
+        eth_addresses: impl Iterator<Item = &'a Address>,
     ) -> Result<Vec<Option<EthAccount>>, ExecutionStateReadError> {
         let statuses = if is_finalized
             && self
@@ -294,7 +274,8 @@ impl ExecutionStateRead<SecpSignature, BlsSignatureCollection<monad_secp::PubKey
             // check finalized
 
             // block <= latest
-            let Some(statuses) = self.get_accounts_async(seq_num, Version::Finalized, account_keys)
+            let Some(statuses) =
+                self.get_accounts_async(seq_num, Version::Finalized, eth_addresses)
             else {
                 return Err(ExecutionStateReadError::NotAvailableYet);
             };
@@ -317,7 +298,7 @@ impl ExecutionStateRead<SecpSignature, BlsSignatureCollection<monad_secp::PubKey
             };
 
             let Some(statuses) =
-                self.get_accounts_async(seq_num, Version::Proposal(*block_id), account_keys)
+                self.get_accounts_async(seq_num, Version::Proposal(*block_id), eth_addresses)
             else {
                 return Err(ExecutionStateReadError::NotAvailableYet);
             };
@@ -358,63 +339,6 @@ impl ExecutionStateRead<SecpSignature, BlsSignatureCollection<monad_secp::PubKey
             };
             Ok(header)
         }
-    }
-
-    fn get_storage_at_by_key(
-        &mut self,
-        block_id: &BlockId,
-        seq_num: &SeqNum,
-        is_finalized: bool,
-        account_key: AccountKey,
-        storage_key: EthStorageKey,
-    ) -> Result<EthStorageSlot, ExecutionStateReadError> {
-        let version = if is_finalized
-            && self
-                .raw_read_latest_finalized_block()
-                .is_some_and(|latest_finalized| seq_num <= &latest_finalized)
-        {
-            let earliest = self
-                .raw_read_earliest_finalized_block()
-                .expect("earliest must exist if latest does");
-            if seq_num < &earliest {
-                return Err(ExecutionStateReadError::NeverAvailable);
-            }
-            Version::Finalized
-        } else {
-            let Some(_header) = self.get_proposed_eth_header(block_id, seq_num) else {
-                return Err(ExecutionStateReadError::NotAvailableYet);
-            };
-            Version::Proposal(*block_id)
-        };
-
-        let storage = if self.handle.is_page_encoded() {
-            let page_key = compute_page_key(storage_key);
-            let offset = compute_slot_offset(storage_key);
-            let (triedb_key, key_len_nibbles) = create_triedb_key(
-                version,
-                Self::key_input_for_storage(&account_key, &page_key),
-            );
-            let Some(storage_page) = self.handle.read(&triedb_key, key_len_nibbles, seq_num.0)
-            else {
-                return Ok([0_u8; 32]);
-            };
-            decode_storage_page_slot(&storage_page, offset)
-        } else {
-            let (triedb_key, key_len_nibbles) = create_triedb_key(
-                version,
-                Self::key_input_for_storage(&account_key, &storage_key),
-            );
-            let Some(storage_rlp) = self.handle.read(&triedb_key, key_len_nibbles, seq_num.0)
-            else {
-                return Ok([0_u8; 32]);
-            };
-            rlp_decode_storage_slot(storage_rlp)
-        };
-
-        self.state_read_total_lookups
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-
-        storage.ok_or(ExecutionStateReadError::NotAvailableYet)
     }
 
     fn raw_read_earliest_finalized_block(&self) -> Option<SeqNum> {

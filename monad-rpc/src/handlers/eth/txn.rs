@@ -19,7 +19,7 @@ use alloy_consensus::Transaction as _;
 use alloy_eips::Decodable2718;
 use alloy_primitives::{Address, FixedBytes};
 use alloy_rpc_types::Filter;
-use monad_eth_types::{domain_for_chain_id, EthTxEnvelope};
+use monad_eth_types::EthTxEnvelope;
 use monad_exec_events::BlockCommitState;
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::Triedb;
@@ -177,19 +177,16 @@ fn validate_and_decode_tx(
         ));
     }
 
-    let tx_domain = match domain_for_chain_id(tx.chain_id(), base_chain_id) {
-        Ok(tx_domain) => tx_domain,
-        Err(err) => {
-            let tx_chain_id = match err {
-                monad_eth_types::WrongChainId::InvalidDomainSuffix { tx_chain_id, .. } => {
-                    tx_chain_id
-                }
-            };
+    if let Some(tx_chain_id) = tx.chain_id() {
+        if tx_chain_id != base_chain_id {
             return Err(JsonRpcError::invalid_chain_id(base_chain_id, tx_chain_id));
         }
-    };
+    }
 
-    if route_domain.is_some() && tx_domain != route_domain {
+    // Domain transactions only enter a domain as ciphertext sequenced through
+    // the DomainHub, and execution rejects a domain chain ID on an ordinary
+    // transaction, so a domain route has nothing it can submit.
+    if route_domain.is_some() {
         return Err(JsonRpcError::invalid_chain_id(
             route_chain_id,
             tx.chain_id().unwrap_or(base_chain_id),
@@ -468,7 +465,7 @@ mod tests {
     use alloy_rlp::Encodable;
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
-    use monad_eth_testutil::{make_domain_legacy_tx, make_representable_domain};
+    use monad_eth_testutil::{make_domain_legacy_tx, make_legacy_tx, make_representable_domain};
     use monad_eth_types::{chain_id_for_domain, EthAccount};
     use monad_event_ring::SnapshotEventRing;
     use monad_triedb_utils::mock_triedb::MockTriedb;
@@ -632,28 +629,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn eth_send_raw_transaction_domain_route_still_uses_txpool() {
+    async fn eth_send_raw_transaction_rejects_domain_route() {
         let domain = make_representable_domain(1);
         let route_chain_id = chain_id_for_domain(domain, 1337).unwrap();
-        let tx = make_domain_legacy_tx(domain, FixedBytes::repeat_byte(0x11), 1_000, 21_000, 0, 0);
         let txpool_bridge_client = EthTxPoolBridgeClient::for_testing();
 
-        let result = monad_eth_sendRawTransaction(
-            &txpool_bridge_client,
-            MonadEthSendRawTransactionParams {
-                hex_tx: serialize_tx(tx),
-            },
-            1337,
-            route_chain_id,
-            Some(domain),
-            true,
-        )
-        .await;
+        for tx in [
+            make_domain_legacy_tx(domain, FixedBytes::repeat_byte(0x11), 1_000, 21_000, 0, 0),
+            make_legacy_tx(FixedBytes::repeat_byte(0x11), 1_000, 21_000, 0, 0),
+        ] {
+            let result = monad_eth_sendRawTransaction(
+                &txpool_bridge_client,
+                MonadEthSendRawTransactionParams {
+                    hex_tx: serialize_tx(tx),
+                },
+                1337,
+                route_chain_id,
+                Some(domain),
+                true,
+            )
+            .await;
 
-        assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().message,
-            JsonRpcError::overloaded().message
-        );
+            assert_eq!(
+                result.unwrap_err().code,
+                JsonRpcError::invalid_chain_id(0, 0).code
+            );
+        }
     }
 }

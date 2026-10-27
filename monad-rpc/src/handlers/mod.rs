@@ -969,9 +969,13 @@ async fn txpool_statusByAddress(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
+    // The txpool only holds L1 transactions; a domain has no mempool.
+    if app_state.domain.is_some() {
+        return Err(JsonRpcError::new(ErrorCode::MethodNotFound));
+    }
     let txpool_bridge_client = app_state.txpool_bridge_client.as_ref().method_not_found()?;
     let params = serde_json::from_str(params.get()).invalid_params()?;
-    monad_txpool_statusByAddress(txpool_bridge_client, app_state.domain, params)
+    monad_txpool_statusByAddress(txpool_bridge_client, params)
         .await
         .map(serialize_result)?
 }

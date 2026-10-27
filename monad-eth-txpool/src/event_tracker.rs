@@ -18,12 +18,11 @@ use std::{
     time::Instant,
 };
 
-use alloy_consensus::transaction::Recovered;
+use alloy_consensus::{transaction::Recovered, TxEnvelope};
 use alloy_primitives::TxHash;
 use monad_eth_txpool_types::{
     EthTxPoolDropReason, EthTxPoolEventType, EthTxPoolEvictReason, EthTxPoolInternalDropReason,
 };
-use monad_eth_types::EthTxEnvelope;
 use tracing::error;
 
 use crate::EthTxPoolMetrics;
@@ -48,7 +47,7 @@ impl<'a> EthTxPoolEventTracker<'a> {
         }
     }
 
-    pub fn insert(&mut self, tx: &Recovered<EthTxEnvelope>, owned: bool) {
+    pub fn insert(&mut self, tx: &Recovered<TxEnvelope>, owned: bool) {
         if owned {
             self.metrics.insert_owned_txs.inc();
         } else {
@@ -68,7 +67,7 @@ impl<'a> EthTxPoolEventTracker<'a> {
     pub fn replace(
         &mut self,
         old_tx_hash: TxHash,
-        new_tx: &Recovered<EthTxEnvelope>,
+        new_tx: &Recovered<TxEnvelope>,
         new_owned: bool,
     ) {
         self.drop(
@@ -162,7 +161,7 @@ impl<'a> EthTxPoolEventTracker<'a> {
 
     pub fn drop_all(
         &mut self,
-        txs: impl Iterator<Item = Recovered<EthTxEnvelope>>,
+        txs: impl Iterator<Item = Recovered<TxEnvelope>>,
         reason: EthTxPoolDropReason,
     ) {
         for tx in txs {

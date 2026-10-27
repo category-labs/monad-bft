@@ -18,8 +18,9 @@ use std::{
     collections::{BTreeMap, BinaryHeap, VecDeque},
 };
 
-use alloy_consensus::{transaction::Recovered, Transaction};
+use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
 use alloy_eips::eip7702::{RecoveredAuthority, RecoveredAuthorization};
+use alloy_primitives::Address;
 use monad_chain_config::{revision::ChainRevision, ChainConfig};
 use monad_consensus_types::block::AccountBalanceState;
 use monad_crypto::certificate_signature::{
@@ -29,7 +30,7 @@ use monad_eth_block_policy::{
     nonce_usage::{NonceUsage, NonceUsageRetrievable},
     EthBlockPolicyBlockValidator, EthValidatedBlock,
 };
-use monad_eth_types::{AccountKey, EthTxEnvelope, ValidatedTx};
+use monad_eth_types::ValidatedTx;
 use monad_types::NodeId;
 use monad_validator::signature_collection::SignatureCollection;
 use rand::seq::SliceRandom;
@@ -97,7 +98,7 @@ where
 {
     tx: OrderedTx<'a, ST>,
     virtual_time: u64,
-    account_key: &'a AccountKey,
+    address: &'a Address,
     queued: VecDeque<OrderedTx<'a, ST>>,
 }
 
@@ -136,7 +137,7 @@ where
     ST: CertificateSignatureRecoverable,
 {
     pub fn new<SCT>(
-        tracked_txs: impl Iterator<Item = (&'a AccountKey, &'a TrackedTxList<ST>)>,
+        tracked_txs: impl Iterator<Item = (&'a Address, &'a TrackedTxList<ST>)>,
         extending_blocks: &Vec<&EthValidatedBlock<ST, SCT>>,
         base_fee: u64,
         tx_limit: usize,
@@ -149,21 +150,21 @@ where
         let mut heap_vec = Vec::default();
         let mut virtual_time = 0;
 
-        for (account_key, tx_list) in tracked_txs {
+        for (address, tx_list) in tracked_txs {
             let mut queued = tx_list
-                .get_queued(pending_nonce_usages.remove(account_key))
+                .get_queued(pending_nonce_usages.remove(address))
                 .map_while(|tx| OrderedTx::new(tx, base_fee));
 
             let Some(tx) = queued.next() else {
                 continue;
             };
 
-            assert_eq!(*account_key, tx.tx.account_key());
+            assert_eq!(address, tx.tx.signer_ref());
 
             heap_vec.push(OrderedTxGroup {
                 tx,
                 virtual_time,
-                account_key,
+                address,
                 queued: queued.collect(),
             });
             virtual_time += 1;
@@ -186,14 +187,14 @@ where
         self.heap.len()
     }
 
-    pub fn addresses<'s>(&'s self) -> impl Iterator<Item = &'a AccountKey> + 's {
+    pub fn addresses<'s>(&'s self) -> impl Iterator<Item = &'a Address> + 's {
         self.heap.iter().map(
             |OrderedTxGroup {
                  tx: _,
                  virtual_time: _,
-                 account_key,
+                 address,
                  queued: _,
-             }| *account_key,
+             }| *address,
         )
     }
 
@@ -203,7 +204,7 @@ where
         proposal_gas_limit: u64,
         proposal_byte_limit: u64,
         chain_config: &CCT,
-        mut account_balances: BTreeMap<&AccountKey, AccountBalanceState>,
+        mut account_balances: BTreeMap<&Address, AccountBalanceState>,
         validator: EthBlockPolicyBlockValidator<CRT>,
     ) -> Proposal<ST>
     where
@@ -212,21 +213,20 @@ where
     {
         let mut proposal = Proposal::default();
 
-        let mut authority_possible_nonce_deltas = BTreeMap::<AccountKey, Vec<u64>>::default();
+        let mut authority_possible_nonce_deltas = BTreeMap::<Address, Vec<u64>>::default();
 
         'proposal: while proposal.txs.len() < tx_limit {
             let Some(OrderedTxGroup {
                 mut tx,
                 virtual_time: _,
-                account_key,
+                address,
                 mut queued,
             }) = self.heap.pop()
             else {
                 break;
             };
 
-            if let Some(possible_nonce_deltas) = authority_possible_nonce_deltas.remove(account_key)
-            {
+            if let Some(possible_nonce_deltas) = authority_possible_nonce_deltas.remove(address) {
                 let new_account_nonce = NonceUsage::Possible(possible_nonce_deltas.into())
                     .apply_to_account_nonce(tx.tx.nonce());
 
@@ -249,7 +249,7 @@ where
                     break 'proposal;
                 }
 
-                self.push(account_key, tx, queued);
+                self.push(address, tx, queued);
                 continue;
             }
 
@@ -258,12 +258,11 @@ where
                 proposal_byte_limit,
                 &mut account_balances,
                 &validator,
-                chain_config.chain_id(),
                 &mut proposal,
                 tx.tx,
             ) {
                 if let Some(next_tx) = queued.pop_front() {
-                    self.push(account_key, next_tx, queued);
+                    self.push(address, next_tx, queued);
                 }
 
                 for PoolTxRecoveredAuthorization {
@@ -277,14 +276,13 @@ where
                         continue;
                     }
 
-                    let authority_key = tx.tx.authority_account_key(*authority);
-                    if !account_balances.contains_key(&authority_key) {
+                    if !account_balances.contains_key(&authority) {
                         // Authority not used during sequencing, no need to track possible nonces
                         continue;
                     }
 
                     authority_possible_nonce_deltas
-                        .entry(authority_key)
+                        .entry(*authority)
                         .or_default()
                         .push(authorization.nonce);
                 }
@@ -298,9 +296,8 @@ where
     fn try_add_tx_to_proposal<CRT: ChainRevision>(
         proposal_gas_limit: u64,
         proposal_byte_limit: u64,
-        account_balances: &mut BTreeMap<&AccountKey, AccountBalanceState>,
+        account_balances: &mut BTreeMap<&Address, AccountBalanceState>,
         validator: &EthBlockPolicyBlockValidator<CRT>,
-        chain_id: u64,
         proposal: &mut Proposal<ST>,
         tx: &PoolTx<CertificateSignaturePubKey<ST>>,
     ) -> bool {
@@ -334,8 +331,7 @@ where
                 })
                 .collect(),
         };
-        if let Err(error) = validator.try_add_transaction(account_balances, &validated_tx, chain_id)
-        {
+        if let Err(error) = validator.try_add_transaction(account_balances, &validated_tx) {
             debug!(
                 ?error,
                 signer = ?tx.raw().signer(),
@@ -361,16 +357,16 @@ where
     #[inline]
     fn push(
         &mut self,
-        account_key: &'a AccountKey,
+        address: &'a Address,
         tx: OrderedTx<'a, ST>,
         queued: VecDeque<OrderedTx<'a, ST>>,
     ) {
-        assert_eq!(*account_key, tx.tx.account_key());
+        assert_eq!(address, tx.tx.signer_ref());
 
         self.heap.push(OrderedTxGroup {
             tx,
             virtual_time: self.virtual_time,
-            account_key,
+            address,
             queued,
         });
         self.virtual_time += 1;
@@ -381,7 +377,7 @@ pub(super) struct Proposal<ST>
 where
     ST: CertificateSignatureRecoverable,
 {
-    pub txs: Vec<Recovered<EthTxEnvelope>>,
+    pub txs: Vec<Recovered<TxEnvelope>>,
     pub sender_gas: SenderGasContributions<ST>,
     pub total_gas: u64,
     pub total_size: u64,

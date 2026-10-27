@@ -43,9 +43,7 @@ use monad_eth_txpool::{
     EthTxPool, EthTxPoolConfig, EthTxPoolEventTracker, EthTxPoolMetrics, PoolTxKind,
     TrackedTxLimitsConfig,
 };
-use monad_eth_types::{
-    EthBlockBody, EthExecutionProtocol, EthHeader, EthTxEnvelope, ProposedEthHeader,
-};
+use monad_eth_types::{EthBlockBody, EthExecutionProtocol, EthHeader, ProposedEthHeader};
 use monad_execution_state_read::NopExecutionStateRead;
 use monad_testutil::signing::MockSignatures;
 use monad_types::{Epoch, NodeId, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_ROUND, GENESIS_SEQ_NUM};
@@ -457,7 +455,7 @@ fn check_txpool_coherency(
     let mut event_tracker = EthTxPoolEventTracker::new(&metrics, &mut ipc_events);
 
     // insert transactions of the incoming block into txpool
-    let block_txs: Vec<Recovered<EthTxEnvelope>> = block_under_test
+    let block_txs: Vec<Recovered<TxEnvelope>> = block_under_test
         .validated_txns
         .iter()
         .map(|vtx| vtx.tx.clone())
@@ -527,7 +525,7 @@ fn check_txpool_coherency(
         .iter()
         .cloned()
         .map(recover_tx)
-        .collect::<Vec<Recovered<EthTxEnvelope>>>();
+        .collect::<Vec<Recovered<TxEnvelope>>>();
     let block_policy = TestBlockPolicy::new(GENESIS_SEQ_NUM, 3);
     let created_block = create_test_block_helper(
         chain_config,
@@ -553,7 +551,7 @@ fn test_runner(
     chain_config: MonadChainConfig,
     block_policy: TestBlockPolicy,
     mut state_read: NopExecutionStateRead,
-    txs: BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    txs: BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     expect_coherent: bool,
 ) {
     let validated_blocks = create_test_blocks(&chain_config, &block_policy, txs);
@@ -608,7 +606,7 @@ fn genesis_setup() -> (Round, SeqNum, TestBlockPolicy, MonadChainConfig) {
 fn create_test_blocks(
     chain_config: &MonadChainConfig,
     block_policy: &TestBlockPolicy,
-    txs: BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    txs: BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
 ) -> Vec<EthValidatedBlock<NopSignature, MockSignatures<NopSignature>>> {
     let mut blocks = vec![];
 
@@ -637,7 +635,7 @@ fn create_test_blocks(
 }
 
 fn create_block_body_helper(
-    txs: Vec<Recovered<EthTxEnvelope>>,
+    txs: Vec<Recovered<TxEnvelope>>,
 ) -> ConsensusBlockBody<EthExecutionProtocol> {
     ConsensusBlockBody::new(ConsensusBlockBodyInner {
         execution_body: EthBlockBody {
@@ -701,7 +699,7 @@ fn create_test_block_helper(
     block_policy: &TestBlockPolicy,
     round: Round,
     seq_num: SeqNum,
-    txs: Vec<Recovered<EthTxEnvelope>>,
+    txs: Vec<Recovered<TxEnvelope>>,
     blocks: &[EthValidatedBlock<NopSignature, MockSignatures<NopSignature>>],
 ) -> EthValidatedBlock<NopSignature, MockSignatures<NopSignature>> {
     let body = create_block_body_helper(txs);
@@ -751,7 +749,7 @@ fn make_test_tx(
     max_fee_per_gas: u128,
     value: u128,
     nonce: u64,
-) -> Recovered<EthTxEnvelope> {
+) -> Recovered<TxEnvelope> {
     let transaction = TxLegacy {
         chain_id: Some(MONAD_DEVNET_CHAIN_ID),
         nonce,
@@ -779,7 +777,7 @@ pub fn make_eip7702_tx_with_value(
     nonce: u64,
     authorization_list: Vec<SignedAuthorization>,
     input_len: usize,
-) -> Recovered<EthTxEnvelope> {
+) -> Recovered<TxEnvelope> {
     let transaction = TxEip7702 {
         chain_id: MONAD_DEVNET_CHAIN_ID,
         nonce,
@@ -828,7 +826,7 @@ pub fn sign_authorization(
 
 // 1
 fn insufficient_single_emptying_transaction_inputs() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -854,7 +852,7 @@ fn insufficient_single_emptying_transaction_inputs() -> (
 
 // 2
 fn insufficient_single_emptying_transaction_inputs_2() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -880,7 +878,7 @@ fn insufficient_single_emptying_transaction_inputs_2() -> (
 
 // 3
 fn sufficient_single_emptying_transaction_inputs() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -906,7 +904,7 @@ fn sufficient_single_emptying_transaction_inputs() -> (
 
 // 4
 fn insufficient_emptying_transaction_inputs() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -933,7 +931,7 @@ fn insufficient_emptying_transaction_inputs() -> (
 
 // 5
 fn insufficient_emptying_transaction_inputs_2() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -961,7 +959,7 @@ fn insufficient_emptying_transaction_inputs_2() -> (
 
 // 6
 fn sufficient_emptying_transaction_inputs() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -989,7 +987,7 @@ fn sufficient_emptying_transaction_inputs() -> (
 
 // 7
 fn emptying_transaction_different_blocks_insufficient_inputs() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -1016,7 +1014,7 @@ fn emptying_transaction_different_blocks_insufficient_inputs() -> (
 
 // 8
 fn emptying_transaction_different_blocks_insufficient_reserve_inputs() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -1044,7 +1042,7 @@ fn emptying_transaction_different_blocks_insufficient_reserve_inputs() -> (
 
 // 9
 fn emptying_transaction_different_blocks_sufficient_inputs() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -1072,7 +1070,7 @@ fn emptying_transaction_different_blocks_sufficient_inputs() -> (
 
 // 10
 fn non_emptying_transaction_different_blocks_insufficient_inputs() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -1103,7 +1101,7 @@ fn non_emptying_transaction_different_blocks_insufficient_inputs() -> (
 
 // 11
 fn non_emptying_transaction_different_blocks_insufficient_reserve_inputs() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -1134,7 +1132,7 @@ fn non_emptying_transaction_different_blocks_insufficient_reserve_inputs() -> (
 
 // 12
 fn non_emptying_transaction_different_blocks_sufficient_inputs() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -1164,7 +1162,7 @@ fn non_emptying_transaction_different_blocks_sufficient_inputs() -> (
 
 // 13
 fn delegation_non_emptying_same_block_insufficient_inputs() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -1197,7 +1195,7 @@ fn delegation_non_emptying_same_block_insufficient_inputs() -> (
 
 // 14
 fn delegation_non_emptying_same_block_insufficient_reserve_inputs() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -1230,7 +1228,7 @@ fn delegation_non_emptying_same_block_insufficient_reserve_inputs() -> (
 
 // 15
 fn delegation_non_emptying_same_block_sufficient_inputs() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -1263,7 +1261,7 @@ fn delegation_non_emptying_same_block_sufficient_inputs() -> (
 
 // 16
 fn invalid_delegation_non_emptying_same_block_inputs() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -1312,7 +1310,7 @@ fn invalid_delegation_non_emptying_same_block_inputs() -> (
 
 // 17
 fn delegation_non_emptying_different_blocks_insufficient_inputs() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -1346,7 +1344,7 @@ fn delegation_non_emptying_different_blocks_insufficient_inputs() -> (
 
 // 18
 fn delegation_non_emptying_different_blocks_insufficient_reserve_inputs() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -1380,7 +1378,7 @@ fn delegation_non_emptying_different_blocks_insufficient_reserve_inputs() -> (
 
 // 19
 fn delegation_non_emptying_different_blocks_sufficient_inputs() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -1414,7 +1412,7 @@ fn delegation_non_emptying_different_blocks_sufficient_inputs() -> (
 
 // 20
 fn invalid_delegation_non_emptying_different_blocks_inputs() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -1463,7 +1461,7 @@ fn invalid_delegation_non_emptying_different_blocks_inputs() -> (
 
 // 21
 fn invalid_delegation_non_emptying_different_blocks_inputs_2() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -1513,7 +1511,7 @@ fn invalid_delegation_non_emptying_different_blocks_inputs_2() -> (
 
 // 22
 fn emptying_txn_and_delegation_same_block_inputs() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -1546,7 +1544,7 @@ fn emptying_txn_and_delegation_same_block_inputs() -> (
 
 // 23
 fn emptying_txn_with_value_and_delegation_same_block_inputs() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -1579,7 +1577,7 @@ fn emptying_txn_with_value_and_delegation_same_block_inputs() -> (
 
 // 24
 fn sufficient_balance_emptying_txn_with_value_and_delegation_same_block_inputs() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -1612,7 +1610,7 @@ fn sufficient_balance_emptying_txn_with_value_and_delegation_same_block_inputs()
 
 // 25
 fn delegation_undelegation_insufficient_reserve_inputs() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -1655,7 +1653,7 @@ fn delegation_undelegation_insufficient_reserve_inputs() -> (
 
 // 26
 fn delegation_undelegation_sufficient_reserve_inputs() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -1698,7 +1696,7 @@ fn delegation_undelegation_sufficient_reserve_inputs() -> (
 
 // 27
 fn delegation_and_transfer_same_transaction_insufficient_inputs() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -1733,7 +1731,7 @@ fn delegation_and_transfer_same_transaction_insufficient_inputs() -> (
 
 // 28
 fn delegation_and_transfer_same_transaction_insufficient_inputs_2() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -1768,7 +1766,7 @@ fn delegation_and_transfer_same_transaction_insufficient_inputs_2() -> (
 
 // 29
 fn delegation_and_transfer_same_transaction_sufficient_inputs() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -1803,7 +1801,7 @@ fn delegation_and_transfer_same_transaction_sufficient_inputs() -> (
 
 // 30
 fn prev_block_delegation_insufficient_inputs() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -1839,7 +1837,7 @@ fn prev_block_delegation_insufficient_inputs() -> (
 
 // 31
 fn prev_block_delegation_sufficient_inputs() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -1875,7 +1873,7 @@ fn prev_block_delegation_sufficient_inputs() -> (
 
 // 32
 fn emptying_and_delegation_preceding_blocks_insufficient_inputs() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -1910,7 +1908,7 @@ fn emptying_and_delegation_preceding_blocks_insufficient_inputs() -> (
 
 // 33
 fn emptying_and_delegation_preceding_blocks_insufficient_reserve_inputs() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -1946,7 +1944,7 @@ fn emptying_and_delegation_preceding_blocks_insufficient_reserve_inputs() -> (
 
 // 34
 fn emptying_and_delegation_preceding_blocks_sufficient_inputs() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -1982,7 +1980,7 @@ fn emptying_and_delegation_preceding_blocks_sufficient_inputs() -> (
 
 // 35
 fn multiple_non_emptying_same_block_insufficient_inputs() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -2017,7 +2015,7 @@ fn multiple_non_emptying_same_block_insufficient_inputs() -> (
 
 // 36
 fn multiple_non_emptying_same_block_sufficient_inputs() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -2052,7 +2050,7 @@ fn multiple_non_emptying_same_block_sufficient_inputs() -> (
 
 // 37
 fn multiple_non_emptying_different_blocks_insufficient_inputs() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -2089,7 +2087,7 @@ fn multiple_non_emptying_different_blocks_insufficient_inputs() -> (
 
 // 38
 fn multiple_non_emptying_different_blocks_sufficient_inputs() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -2125,7 +2123,7 @@ fn multiple_non_emptying_different_blocks_sufficient_inputs() -> (
 
 // 39
 fn emptying_non_emptying_delegation_insufficient_inputs() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -2161,7 +2159,7 @@ fn emptying_non_emptying_delegation_insufficient_inputs() -> (
 
 // 40
 fn emptying_delegation_sufficient_inputs() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -2194,7 +2192,7 @@ fn emptying_delegation_sufficient_inputs() -> (
 
 // 41
 fn invalid_delegation_non_emptying_sufficient_inputs() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;
@@ -2242,7 +2240,7 @@ fn invalid_delegation_non_emptying_sufficient_inputs() -> (
 
 // 42
 fn invalid_delegation_non_emptying_insufficient_inputs() -> (
-    BTreeMap<SeqNum, Vec<Recovered<EthTxEnvelope>>>,
+    BTreeMap<SeqNum, Vec<Recovered<TxEnvelope>>>,
     NopExecutionStateRead,
 ) {
     let signer = S1;

@@ -21,7 +21,7 @@ use std::{
 
 use alloy_consensus::{
     transaction::{Recovered, SignerRecoverable},
-    SignableTransaction, Transaction, TxLegacy,
+    SignableTransaction, Transaction, TxEnvelope, TxLegacy,
 };
 use alloy_primitives::{Address, TxKind, B256, U256};
 use alloy_signer::SignerSync;
@@ -48,7 +48,6 @@ use monad_eth_txpool::{
     EthTxPoolMetrics, PoolTxKind, TrackedTxLimitsConfig,
 };
 use monad_eth_txpool_types::EthTxPoolSnapshot;
-use monad_eth_types::{AccountKey, EthTxEnvelope};
 use monad_execution_state_read::{
     AccountState, InMemoryBlockState, InMemoryState, InMemoryStateInner,
 };
@@ -89,15 +88,15 @@ fn make_test_block_policy() -> BlockPolicyType {
 #[derive(Clone)]
 enum TxPoolTestEvent<'a> {
     InsertTxs {
-        txs: Vec<(&'a EthTxEnvelope, bool)>,
+        txs: Vec<(&'a TxEnvelope, bool)>,
         expected_pool_size_change: usize,
     },
     InsertTxBatch {
-        txs: Vec<&'a EthTxEnvelope>,
+        txs: Vec<&'a TxEnvelope>,
         should_insert: bool,
     },
     InsertTxsWithKind {
-        txs: Vec<(&'a EthTxEnvelope, PoolTxKind<NopPubKey>)>,
+        txs: Vec<(&'a TxEnvelope, PoolTxKind<NopPubKey>)>,
         should_insert: bool,
     },
     CreateProposal {
@@ -105,7 +104,7 @@ enum TxPoolTestEvent<'a> {
         tx_limit: usize,
         gas_limit: u64,
         byte_limit: u64,
-        expected_txs: Vec<&'a EthTxEnvelope>,
+        expected_txs: Vec<&'a TxEnvelope>,
         expected_sender_gas: Option<Vec<(NodeId<NopPubKey>, u64)>>,
         add_to_blocktree: bool,
     },
@@ -450,18 +449,17 @@ fn run_custom_iter<const N: usize>(
                 address,
                 nonce: expected_nonce,
             } => {
-                let account_key = AccountKey::global(address);
                 let mut nonces = eth_block_policy
                     .get_account_base_nonces(
                         SeqNum(current_seq_num),
                         &mut state_read,
                         &pending_blocks.iter().collect_vec(),
-                        [&account_key].into_iter(),
+                        [&address].into_iter(),
                     )
                     .unwrap();
 
-                let (lookup_account_key, nonce) = nonces.pop_first().unwrap();
-                assert_eq!(&account_key, lookup_account_key);
+                let (lookup_address, nonce) = nonces.pop_first().unwrap();
+                assert_eq!(&address, lookup_address);
 
                 assert!(nonces.is_empty());
 
@@ -516,7 +514,7 @@ fn run_simple<const N: usize>(account: &[B256], events: [TxPoolTestEvent<'_>; N]
     );
 }
 
-fn make_forwarded_test_txs(gas_limits: impl IntoIterator<Item = u64>) -> Vec<EthTxEnvelope> {
+fn make_forwarded_test_txs(gas_limits: impl IntoIterator<Item = u64>) -> Vec<TxEnvelope> {
     gas_limits
         .into_iter()
         .enumerate()
@@ -1584,7 +1582,7 @@ fn test_eip1559_proposal_base_fee() {
 
 #[test]
 fn test_missing_chain_id() {
-    let tx: EthTxEnvelope = {
+    let tx: TxEnvelope = {
         let tx = TxLegacy {
             chain_id: None,
             nonce: 0,
@@ -1807,7 +1805,7 @@ fn test_eviction_policy() {
         let a_idx = txs.iter().position(|tx| *tx == &tx_a).unwrap();
         let b_idx = txs.iter().position(|tx| *tx == &tx_b).unwrap();
         let c_idx = txs.iter().position(|tx| *tx == &tx_c).unwrap();
-        let _d_idx = txs.iter().position(|tx| *tx == &tx_d).unwrap();
+        let d_idx = txs.iter().position(|tx| *tx == &tx_d).unwrap();
 
         let a_eviction_condition =
             // tx_b will be evicted so tx_a will not have priority

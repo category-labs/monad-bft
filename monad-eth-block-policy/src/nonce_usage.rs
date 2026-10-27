@@ -15,7 +15,7 @@
 
 use std::collections::{btree_map::Entry as BTreeMapEntry, BTreeMap, VecDeque};
 
-use monad_eth_types::AccountKey;
+use alloy_primitives::Address;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
@@ -79,32 +79,32 @@ impl NonceUsage {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NonceUsageMap {
-    pub(crate) map: BTreeMap<AccountKey, NonceUsage>,
+    pub(crate) map: BTreeMap<Address, NonceUsage>,
 }
 
 impl NonceUsageMap {
-    pub fn get(&self, account_key: &AccountKey) -> Option<&NonceUsage> {
-        self.map.get(account_key)
+    pub fn get(&self, address: &Address) -> Option<&NonceUsage> {
+        self.map.get(address)
     }
 
-    pub fn add_known(&mut self, account_key: AccountKey, nonce: u64) -> Option<NonceUsage> {
-        self.map.insert(account_key, NonceUsage::Known(nonce))
+    pub fn add_known(&mut self, signer: Address, nonce: u64) -> Option<NonceUsage> {
+        self.map.insert(signer, NonceUsage::Known(nonce))
     }
 
-    pub fn entry(&mut self, account_key: AccountKey) -> BTreeMapEntry<'_, AccountKey, NonceUsage> {
-        self.map.entry(account_key)
+    pub fn entry(&mut self, address: Address) -> BTreeMapEntry<'_, Address, NonceUsage> {
+        self.map.entry(address)
     }
 
-    pub fn into_map(self) -> BTreeMap<AccountKey, NonceUsage> {
+    pub fn into_map(self) -> BTreeMap<Address, NonceUsage> {
         self.map
     }
 
     pub(crate) fn merge_with_previous_block<'a>(
         &mut self,
-        previous_block_nonce_usages: impl Iterator<Item = (&'a AccountKey, &'a NonceUsage)>,
+        previous_block_nonce_usages: impl Iterator<Item = (&'a Address, &'a NonceUsage)>,
     ) {
-        for (account_key, previous_nonce_usage) in previous_block_nonce_usages {
-            match self.map.entry(*account_key) {
+        for (address, previous_nonce_usage) in previous_block_nonce_usages {
+            match self.map.entry(*address) {
                 BTreeMapEntry::Vacant(v) => {
                     v.insert(previous_nonce_usage.to_owned());
                 }
@@ -155,7 +155,6 @@ mod test {
     use alloy_primitives::{Address, FixedBytes};
     use itertools::Itertools;
     use monad_crypto::NopSignature;
-    use monad_eth_types::AccountKey;
     use monad_testutil::signing::MockSignatures;
     use monad_types::{GENESIS_ROUND, GENESIS_SEQ_NUM};
 
@@ -241,7 +240,7 @@ mod test {
 
     fn nonce_usage_map_strategy() -> impl Strategy<Value = NonceUsageMap> {
         prop::collection::btree_map(
-            any::<u8>().prop_map(|b| AccountKey::global(Address(FixedBytes([b; 20])))),
+            any::<u8>().prop_map(|b| Address(FixedBytes([b; 20]))),
             nonce_usage_strategy(),
             0..8,
         )

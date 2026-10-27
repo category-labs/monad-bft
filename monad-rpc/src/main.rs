@@ -141,7 +141,7 @@ async fn main() -> std::io::Result<()> {
                     info!("Waiting for statesync to complete");
                 }
                 _= retry_timer.tick() => {
-                    match EthTxPoolBridge::start(&ipc_path, node_config.chain_id).await {
+                    match EthTxPoolBridge::start(&ipc_path).await {
                         Ok((client, handle)) => {
                             info!("Statesync complete, starting RPC server");
                             break (client, handle)

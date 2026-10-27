@@ -50,17 +50,13 @@ use monad_eth_block_policy::{
     nonce_usage::{NonceUsage, NonceUsageMap},
     EthValidatedBlock,
 };
-use monad_eth_types::{
-    chain_id_for_domain, AccountKey, DomainTx, EthBlockBody, EthExecutionProtocol, EthTxEnvelope,
-    ProposedEthHeader, ValidatedTx,
-};
+use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ProposedEthHeader, ValidatedTx};
 use monad_secp::KeyPair;
 use monad_testutil::signing::MockSignatures;
 use monad_types::{Balance, Epoch, NodeId, Round, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
 
 const BASE_FEE: u64 = 100_000_000_000;
-const TEST_CHAIN_ID: u64 = 1337;
 
 // pubkey starts with AAA
 pub const S1: B256 = B256::new(hex!(
@@ -96,7 +92,7 @@ where
     pub block: ConsensusFullBlock<ST, SCT, EthExecutionProtocol>,
     pub validated_txns: Vec<ValidatedTx>,
     pub nonce_usages: NonceUsageMap,
-    pub txn_fees: BTreeMap<AccountKey, TxnFee>,
+    pub txn_fees: BTreeMap<Address, TxnFee>,
 }
 
 pub fn make_legacy_tx(
@@ -105,7 +101,7 @@ pub fn make_legacy_tx(
     gas_limit: u64,
     nonce: u64,
     input_len: usize,
-) -> EthTxEnvelope {
+) -> TxEnvelope {
     make_legacy_tx_with_value(sender, 0, gas_price, gas_limit, nonce, input_len)
 }
 
@@ -116,20 +112,9 @@ pub fn make_legacy_tx_with_value(
     gas_limit: u64,
     nonce: u64,
     input_len: usize,
-) -> EthTxEnvelope {
-    make_legacy_tx_envelope_with_value(sender, value, gas_price, gas_limit, nonce, input_len)
-}
-
-pub fn make_legacy_tx_envelope_with_value(
-    sender: FixedBytes<32>,
-    value: u128,
-    gas_price: u128,
-    gas_limit: u64,
-    nonce: u64,
-    input_len: usize,
 ) -> TxEnvelope {
     let transaction = TxLegacy {
-        chain_id: Some(TEST_CHAIN_ID),
+        chain_id: Some(1337),
         nonce,
         gas_price,
         gas_limit,
@@ -145,6 +130,14 @@ pub fn make_legacy_tx_envelope_with_value(
     transaction.into_signed(signature).into()
 }
 
+/// A domain address whose chain ID shares the test network's low 16 bits.
+pub fn make_representable_domain(tag: u64) -> Address {
+    let chain_id = (tag << 16) | 1337;
+    let mut bytes = [0u8; 20];
+    bytes[12..].copy_from_slice(&chain_id.to_be_bytes());
+    Address::from(bytes)
+}
+
 pub fn make_domain_legacy_tx(
     domain: Address,
     sender: FixedBytes<32>,
@@ -152,27 +145,16 @@ pub fn make_domain_legacy_tx(
     gas_limit: u64,
     nonce: u64,
     input_len: usize,
-) -> EthTxEnvelope {
-    make_domain_legacy_tx_with_value(domain, sender, 0, gas_price, gas_limit, nonce, input_len)
-}
-
-pub fn make_domain_legacy_tx_with_value(
-    domain: Address,
-    sender: FixedBytes<32>,
-    value: u128,
-    gas_price: u128,
-    gas_limit: u64,
-    nonce: u64,
-    input_len: usize,
-) -> EthTxEnvelope {
-    let chain_id = domain_chain_id(domain);
+) -> TxEnvelope {
+    let mut chain_id = [0u8; 8];
+    chain_id.copy_from_slice(&domain.as_slice()[12..]);
     let transaction = TxLegacy {
-        chain_id: Some(chain_id),
+        chain_id: Some(u64::from_be_bytes(chain_id)),
         nonce,
         gas_price,
         gas_limit,
         to: TxKind::Call(Address::repeat_byte(0u8)),
-        value: U256::from(value),
+        value: U256::ZERO,
         input: vec![0; input_len].into(),
     };
 
@@ -190,7 +172,7 @@ pub fn make_eip1559_tx(
     gas_limit: u64,
     nonce: u64,
     input_len: usize,
-) -> EthTxEnvelope {
+) -> TxEnvelope {
     make_eip1559_tx_with_value(
         sender,
         0,
@@ -210,80 +192,9 @@ pub fn make_eip1559_tx_with_value(
     gas_limit: u64,
     nonce: u64,
     input_len: usize,
-) -> EthTxEnvelope {
-    make_eip1559_tx_envelope_with_value(
-        sender,
-        value,
-        max_fee_per_gas,
-        max_priority_fee_per_gas,
-        gas_limit,
-        nonce,
-        input_len,
-    )
-}
-
-pub fn make_eip1559_tx_envelope_with_value(
-    sender: FixedBytes<32>,
-    value: u128,
-    max_fee_per_gas: u128,
-    max_priority_fee_per_gas: u128,
-    gas_limit: u64,
-    nonce: u64,
-    input_len: usize,
 ) -> TxEnvelope {
     let transaction = TxEip1559 {
-        chain_id: TEST_CHAIN_ID,
-        nonce,
-        gas_limit,
-        max_fee_per_gas,
-        max_priority_fee_per_gas,
-        to: TxKind::Call(Address::repeat_byte(0u8)),
-        value: U256::from(value),
-        access_list: Default::default(),
-        input: vec![0; input_len].into(),
-    };
-
-    let signer = PrivateKeySigner::from_bytes(&sender).unwrap();
-    let signature = signer
-        .sign_hash_sync(&transaction.signature_hash())
-        .unwrap();
-    transaction.into_signed(signature).into()
-}
-
-pub fn make_domain_eip1559_tx(
-    domain: Address,
-    sender: FixedBytes<32>,
-    max_fee_per_gas: u128,
-    max_priority_fee_per_gas: u128,
-    gas_limit: u64,
-    nonce: u64,
-    input_len: usize,
-) -> EthTxEnvelope {
-    make_domain_eip1559_tx_with_value(
-        domain,
-        sender,
-        0,
-        max_fee_per_gas,
-        max_priority_fee_per_gas,
-        gas_limit,
-        nonce,
-        input_len,
-    )
-}
-
-pub fn make_domain_eip1559_tx_with_value(
-    domain: Address,
-    sender: FixedBytes<32>,
-    value: u128,
-    max_fee_per_gas: u128,
-    max_priority_fee_per_gas: u128,
-    gas_limit: u64,
-    nonce: u64,
-    input_len: usize,
-) -> EthTxEnvelope {
-    let chain_id = domain_chain_id(domain);
-    let transaction = TxEip1559 {
-        chain_id,
+        chain_id: 1337,
         nonce,
         gas_limit,
         max_fee_per_gas,
@@ -309,7 +220,7 @@ pub fn make_eip7702_tx(
     nonce: u64,
     authorization_list: Vec<SignedAuthorization>,
     input_len: usize,
-) -> EthTxEnvelope {
+) -> TxEnvelope {
     make_eip7702_tx_with_value(
         sender,
         0,
@@ -331,86 +242,9 @@ pub fn make_eip7702_tx_with_value(
     nonce: u64,
     authorization_list: Vec<SignedAuthorization>,
     input_len: usize,
-) -> EthTxEnvelope {
-    make_eip7702_tx_envelope_with_value(
-        sender,
-        value,
-        max_fee_per_gas,
-        max_priority_fee_per_gas,
-        gas_limit,
-        nonce,
-        authorization_list,
-        input_len,
-    )
-}
-
-pub fn make_eip7702_tx_envelope_with_value(
-    sender: FixedBytes<32>,
-    value: u128,
-    max_fee_per_gas: u128,
-    max_priority_fee_per_gas: u128,
-    gas_limit: u64,
-    nonce: u64,
-    authorization_list: Vec<SignedAuthorization>,
-    input_len: usize,
 ) -> TxEnvelope {
     let transaction = TxEip7702 {
-        chain_id: TEST_CHAIN_ID,
-        nonce,
-        gas_limit,
-        max_fee_per_gas,
-        max_priority_fee_per_gas,
-        to: Address::repeat_byte(0u8),
-        value: U256::from(value),
-        access_list: Default::default(),
-        authorization_list,
-        input: vec![0; input_len].into(),
-    };
-
-    let signer = PrivateKeySigner::from_bytes(&sender).unwrap();
-    let signature = signer
-        .sign_hash_sync(&transaction.signature_hash())
-        .unwrap();
-    transaction.into_signed(signature).into()
-}
-
-pub fn make_domain_eip7702_tx(
-    domain: Address,
-    sender: FixedBytes<32>,
-    max_fee_per_gas: u128,
-    max_priority_fee_per_gas: u128,
-    gas_limit: u64,
-    nonce: u64,
-    authorization_list: Vec<SignedAuthorization>,
-    input_len: usize,
-) -> EthTxEnvelope {
-    make_domain_eip7702_tx_with_value(
-        domain,
-        sender,
-        0,
-        max_fee_per_gas,
-        max_priority_fee_per_gas,
-        gas_limit,
-        nonce,
-        authorization_list,
-        input_len,
-    )
-}
-
-pub fn make_domain_eip7702_tx_with_value(
-    domain: Address,
-    sender: FixedBytes<32>,
-    value: u128,
-    max_fee_per_gas: u128,
-    max_priority_fee_per_gas: u128,
-    gas_limit: u64,
-    nonce: u64,
-    authorization_list: Vec<SignedAuthorization>,
-    input_len: usize,
-) -> EthTxEnvelope {
-    let chain_id = domain_chain_id(domain);
-    let transaction = TxEip7702 {
-        chain_id,
+        chain_id: 1337,
         nonce,
         gas_limit,
         max_fee_per_gas,
@@ -435,7 +269,7 @@ pub fn make_signed_authorization(
     nonce: u64,
 ) -> SignedAuthorization {
     let authorization = Authorization {
-        chain_id: U256::from(TEST_CHAIN_ID),
+        chain_id: U256::from(1337),
         address,
         nonce,
     };
@@ -454,21 +288,9 @@ pub fn sign_authorization(
     authorization.into_signed(signature)
 }
 
-pub fn recover_tx(tx: EthTxEnvelope) -> Recovered<EthTxEnvelope> {
+pub fn recover_tx(tx: TxEnvelope) -> Recovered<TxEnvelope> {
     let signer = tx.recover_signer().unwrap();
     Recovered::new_unchecked(tx, signer)
-}
-
-fn domain_chain_id(domain: Address) -> u64 {
-    chain_id_for_domain(domain, TEST_CHAIN_ID)
-        .expect("test domain must fit in the temporary u64 subset")
-}
-
-pub fn make_representable_domain(tag: u64) -> Address {
-    let chain_id = (tag << 16) | TEST_CHAIN_ID;
-    let mut bytes = [0u8; 20];
-    bytes[12..].copy_from_slice(&chain_id.to_be_bytes());
-    Address::from(bytes)
 }
 
 pub fn make_receipt(logs_len: usize) -> ReceiptWithBloom {
@@ -495,8 +317,8 @@ pub fn secret_to_eth_address(mut secret: FixedBytes<32>) -> Address {
 }
 
 fn compute_expected_txn_fees_and_nonce_usages(
-    txs: &[Recovered<EthTxEnvelope>],
-) -> (BTreeMap<AccountKey, TxnFee>, NonceUsageMap) {
+    txs: &[Recovered<TxEnvelope>],
+) -> (BTreeMap<Address, TxnFee>, NonceUsageMap) {
     let mut txn_fees: BTreeMap<_, TxnFee> = BTreeMap::new();
 
     for eth_txn in txs.iter() {
@@ -504,9 +326,8 @@ fn compute_expected_txn_fees_and_nonce_usages(
             if let Some(auth_list) = eth_txn.authorization_list() {
                 for auth in auth_list {
                     let authority = auth.recover_authority().unwrap();
-                    let authority_key = eth_txn.account_key(TEST_CHAIN_ID, authority).unwrap();
                     txn_fees
-                        .entry(authority_key)
+                        .entry(authority)
                         .and_modify(|e| {
                             e.is_delegated = true;
                         })
@@ -522,19 +343,15 @@ fn compute_expected_txn_fees_and_nonce_usages(
         }
 
         txn_fees
-            .entry(
-                eth_txn
-                    .account_key(TEST_CHAIN_ID, eth_txn.signer())
-                    .unwrap(),
-            )
+            .entry(eth_txn.signer())
             .and_modify(|e| {
                 e.max_gas_cost = e
                     .max_gas_cost
-                    .saturating_add(compute_txn_max_gas_cost(eth_txn.inner(), BASE_FEE));
+                    .saturating_add(compute_txn_max_gas_cost(eth_txn, BASE_FEE));
             })
             .or_insert_with(|| TxnFee {
                 first_txn_value: eth_txn.value(),
-                first_txn_gas: compute_txn_max_gas_cost(eth_txn.inner(), BASE_FEE),
+                first_txn_gas: compute_txn_max_gas_cost(eth_txn, BASE_FEE),
                 max_gas_cost: Balance::ZERO,
                 is_delegated: false,
                 delegation_before_first_txn: false,
@@ -544,10 +361,7 @@ fn compute_expected_txn_fees_and_nonce_usages(
     let nonce_usages = txs
         .iter()
         .flat_map(|t| {
-            let mut pairs = vec![(
-                t.account_key(TEST_CHAIN_ID, t.signer()).unwrap(),
-                NonceUsage::Known(t.nonce()),
-            )];
+            let mut pairs = vec![(t.signer(), NonceUsage::Known(t.nonce()))];
 
             if t.is_eip7702() {
                 if let Some(auth_list) = t.authorization_list() {
@@ -555,7 +369,7 @@ fn compute_expected_txn_fees_and_nonce_usages(
                         let authority = auth.recover_authority().unwrap();
 
                         pairs.push((
-                            t.account_key(TEST_CHAIN_ID, authority).unwrap(),
+                            authority,
                             NonceUsage::Possible(VecDeque::from_iter([auth.nonce()])),
                         ));
                     }
@@ -582,7 +396,7 @@ fn compute_expected_txn_fees_and_nonce_usages(
     (txn_fees, nonce_usages)
 }
 
-pub fn compute_expected_nonce_usages(txs: &[Recovered<EthTxEnvelope>]) -> NonceUsageMap {
+pub fn compute_expected_nonce_usages(txs: &[Recovered<TxEnvelope>]) -> NonceUsageMap {
     compute_expected_txn_fees_and_nonce_usages(txs).1
 }
 
@@ -591,18 +405,17 @@ pub fn generate_consensus_test_block(
     seq_num: SeqNum,
     base_fee: u64,
     chain_config: &MockChainConfig,
-    txs: Vec<Recovered<EthTxEnvelope>>,
+    txs: Vec<Recovered<TxEnvelope>>,
 ) -> ConsensusTestBlock<NopSignature, MockSignatures<NopSignature>> {
     let chain_params = chain_config.get_chain_revision(round).chain_params();
 
-    let body: ConsensusBlockBody<EthExecutionProtocol> =
-        ConsensusBlockBody::new(ConsensusBlockBodyInner {
-            execution_body: EthBlockBody {
-                transactions: txs.iter().map(|tx| tx.inner().to_owned()).collect(),
-                ommers: Default::default(),
-                withdrawals: Default::default(),
-            },
-        });
+    let body = ConsensusBlockBody::new(ConsensusBlockBodyInner {
+        execution_body: EthBlockBody {
+            transactions: txs.iter().map(|tx| tx.inner().to_owned()).collect(),
+            ommers: Default::default(),
+            withdrawals: Default::default(),
+        },
+    });
 
     let keypair = NopKeyPair::from_bytes(rand::random::<[u8; 32]>().as_mut_slice()).unwrap();
 
@@ -616,7 +429,7 @@ pub fn generate_consensus_test_block(
         // execution_inputs
         ProposedEthHeader {
             ommers_hash: EMPTY_OMMER_ROOT_HASH.0,
-            transactions_root: calculate_transaction_root(&body.execution_body.transactions).0,
+            transactions_root: calculate_transaction_root(&txs).0,
             number: seq_num.0,
             gas_limit: chain_params.proposal_gas_limit,
             mix_hash: signature.get_hash().0,
@@ -671,7 +484,7 @@ pub fn generate_block_with_txs(
     seq_num: SeqNum,
     base_fee: u64,
     chain_config: &MockChainConfig,
-    txs: Vec<Recovered<EthTxEnvelope>>,
+    txs: Vec<Recovered<TxEnvelope>>,
 ) -> EthValidatedBlock<NopSignature, MockSignatures<NopSignature>> {
     let test_block = generate_consensus_test_block(round, seq_num, base_fee, chain_config, txs);
 

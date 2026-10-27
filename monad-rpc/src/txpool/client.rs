@@ -15,25 +15,18 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use alloy_primitives::TxHash;
+use alloy_consensus::TxEnvelope;
+use alloy_primitives::{Address, TxHash};
 use flume::{Sender, TrySendError};
-use monad_eth_types::{AccountKey, EthTxEnvelope};
 
 use super::{
     state::{EthTxPoolBridgeStateView, TxStatusReceiverSender},
     TxStatus,
 };
 
-pub(crate) enum EthTxPoolBridgeSubmission {
-    Transaction {
-        tx: EthTxEnvelope,
-        tx_status_recv_send: TxStatusReceiverSender,
-    },
-}
-
 #[derive(Clone)]
 pub struct EthTxPoolBridgeClient {
-    tx_sender: Sender<EthTxPoolBridgeSubmission>,
+    tx_sender: Sender<(TxEnvelope, TxStatusReceiverSender)>,
     tx_sender_capacity: usize,
 
     tx_inflight: Arc<()>,
@@ -43,7 +36,7 @@ pub struct EthTxPoolBridgeClient {
 
 impl EthTxPoolBridgeClient {
     pub(super) fn new(
-        tx_sender: Sender<EthTxPoolBridgeSubmission>,
+        tx_sender: Sender<(TxEnvelope, TxStatusReceiverSender)>,
         state: EthTxPoolBridgeStateView,
     ) -> Self {
         let tx_sender_capacity = tx_sender
@@ -70,27 +63,20 @@ impl EthTxPoolBridgeClient {
         Some(tx_inflight_guard)
     }
 
-    pub(crate) fn try_send(
+    pub fn try_send(
         &self,
-        tx: EthTxEnvelope,
+        tx: TxEnvelope,
         tx_status_recv_send: TxStatusReceiverSender,
-    ) -> Result<(), TrySendError<EthTxPoolBridgeSubmission>> {
-        self.tx_sender
-            .try_send(EthTxPoolBridgeSubmission::Transaction {
-                tx,
-                tx_status_recv_send,
-            })
+    ) -> Result<(), TrySendError<(TxEnvelope, TxStatusReceiverSender)>> {
+        self.tx_sender.try_send((tx, tx_status_recv_send))
     }
 
     pub fn get_status_by_hash(&self, hash: &TxHash) -> Option<TxStatus> {
         self.state.get_status_by_hash(hash)
     }
 
-    pub fn get_status_by_address(
-        &self,
-        account_key: &AccountKey,
-    ) -> Option<HashMap<TxHash, TxStatus>> {
-        self.state.get_status_by_address(account_key)
+    pub fn get_status_by_address(&self, address: &Address) -> Option<HashMap<TxHash, TxStatus>> {
+        self.state.get_status_by_address(address)
     }
 
     pub fn for_testing() -> Self {

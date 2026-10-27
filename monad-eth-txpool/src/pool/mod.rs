@@ -16,7 +16,7 @@
 use std::{collections::BTreeMap, time::Duration};
 
 use alloy_consensus::{
-    constants::EMPTY_WITHDRAWALS, transaction::Recovered, EMPTY_OMMER_ROOT_HASH,
+    constants::EMPTY_WITHDRAWALS, transaction::Recovered, TxEnvelope, EMPTY_OMMER_ROOT_HASH,
 };
 use alloy_primitives::Address;
 use alloy_rlp::Encodable;
@@ -38,10 +38,7 @@ use monad_eth_block_policy::{
     EthValidatedBlock,
 };
 use monad_eth_txpool_types::{EthTxPoolDropReason, EthTxPoolInternalDropReason, EthTxPoolSnapshot};
-use monad_eth_types::{
-    AccountKey, EthBlockBody, EthExecutionProtocol, EthTxEnvelope, ExtractEthAddress,
-    ProposedEthHeader,
-};
+use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ExtractEthAddress, ProposedEthHeader};
 use monad_execution_state_read::{ExecutionStateRead, ExecutionStateReadError};
 use monad_system_calls::{SystemTransactionGenerator, SYSTEM_SENDER_ETH_ADDRESS};
 use monad_types::{DropTimer, Epoch, NodeId, Round, SeqNum};
@@ -85,6 +82,7 @@ where
     CRT: ChainRevision,
 {
     tracked: TrackedTxMap<ST, SCT, ESRT, CCT, CRT>,
+
     last_commit: Option<ConsensusBlockHeader<ST, SCT, EthExecutionProtocol>>,
 
     chain_id: u64,
@@ -113,6 +111,7 @@ where
 
         Self {
             tracked: TrackedTxMap::new(config_limits),
+
             last_commit: None,
 
             chain_id,
@@ -140,7 +139,7 @@ where
         state_read: &mut ESRT,
         chain_config: &CCT,
         txs: Vec<(
-            Recovered<EthTxEnvelope>,
+            Recovered<TxEnvelope>,
             PoolTxKind<CertificateSignaturePubKey<ST>>,
         )>,
         mut on_insert: impl FnMut(&PoolTx<CertificateSignaturePubKey<ST>>),
@@ -179,14 +178,14 @@ where
         // the range at N-k+1.
         let block_seq_num = block_policy.get_last_commit() + SeqNum(1);
 
-        let account_balance_keys = txs.iter().map(PoolTx::account_key).collect_vec();
+        let account_balance_addresses = txs.iter().map(PoolTx::signer).collect_vec();
 
         let account_balances = match block_policy.compute_account_base_balances(
             block_seq_num,
             state_read,
             chain_config,
             None,
-            account_balance_keys.iter(),
+            account_balance_addresses.iter(),
         ) {
             Ok(account_balances) => account_balances,
             Err(err) => {
@@ -210,10 +209,10 @@ where
             .into_iter()
             .filter(|tx| {
                 if account_balances
-                    .get(&tx.account_key())
+                    .get(tx.signer_ref())
                     .is_none_or(|account_balance_state| {
                         account_balance_state.balance
-                            < compute_txn_max_gas_cost(tx.raw().inner(), last_commit_base_fee)
+                            < compute_txn_max_gas_cost(tx.raw(), last_commit_base_fee)
                     })
                 {
                     event_tracker.drop(tx.hash(), EthTxPoolDropReason::InsufficientBalance);
@@ -222,15 +221,15 @@ where
 
                 true
             })
-            .into_group_map_by(|tx| tx.account_key());
+            .into_group_map_by(|tx| tx.signer());
 
-        let account_nonce_keys = txs.keys().cloned().collect_vec();
+        let account_nonce_addresses = txs.keys().cloned().collect_vec();
 
         let mut account_nonces = match block_policy.get_account_base_nonces(
             block_seq_num,
             state_read,
             &vec![],
-            account_nonce_keys.iter(),
+            account_nonce_addresses.iter(),
         ) {
             Ok(account_nonces) => account_nonces,
             Err(err) => {
@@ -248,8 +247,8 @@ where
             }
         };
 
-        for (account_key, txs) in txs {
-            let Some(account_nonce) = account_nonces.remove(&account_key) else {
+        for (address, txs) in txs {
+            let Some(account_nonce) = account_nonces.remove(&address) else {
                 event_tracker.drop_all(
                     txs.into_iter().map(PoolTx::into_raw),
                     EthTxPoolDropReason::Internal(
@@ -262,7 +261,7 @@ where
             self.tracked.try_insert_txs(
                 event_tracker,
                 last_commit,
-                account_key,
+                address,
                 txs,
                 account_nonce,
                 &mut on_insert,
@@ -333,15 +332,13 @@ where
             }
         }
 
-        let extending_block_refs = extending_blocks.iter().collect_vec();
-
         let self_eth_address = node_id.pubkey().get_eth_address();
         let system_transactions = self.get_system_transactions(
             epoch,
             round,
             proposed_seq_num,
             self_eth_address,
-            &extending_block_refs,
+            &extending_blocks.iter().collect(),
             block_policy,
             state_read,
             chain_config,
@@ -358,7 +355,7 @@ where
             tx_limit - system_transactions.len(),
             proposal_gas_limit,
             proposal_byte_limit - system_txs_size,
-            extending_block_refs.clone(),
+            extending_blocks.iter().collect(),
             block_policy,
             state_read,
             chain_config,
@@ -366,7 +363,8 @@ where
         let Proposal {
             sender_gas,
             txs: user_transactions,
-            ..
+            total_gas: _,
+            total_size: _,
         } = user_proposal;
 
         let body = EthBlockBody {
@@ -516,6 +514,7 @@ where
         }
 
         self.tracked.reset();
+
         self.update_aggregate_metrics(event_tracker);
     }
 
@@ -530,7 +529,7 @@ where
 
     pub fn get_forwardable_txs<const MIN_SEQNUM_DIFF: u64, const MAX_RETRIES: usize>(
         &mut self,
-    ) -> Option<impl Iterator<Item = &EthTxEnvelope>> {
+    ) -> Option<impl Iterator<Item = &TxEnvelope>> {
         let last_commit = self.last_commit.as_ref()?;
 
         let last_commit_seq_num = last_commit.seq_num;
@@ -557,10 +556,10 @@ where
         }
     }
 
-    pub fn generate_sender_snapshot(&self) -> Vec<AccountKey> {
+    pub fn generate_sender_snapshot(&self) -> Vec<Address> {
         self.tracked
             .iter_txs()
-            .map(PoolTx::account_key)
+            .map(PoolTx::signer)
             .unique()
             .collect()
     }
@@ -575,18 +574,17 @@ where
         block_policy: &EthBlockPolicy<ST, SCT, CCT, CRT>,
         state_read: &mut ESRT,
         chain_config: &impl ChainConfig<CRT>,
-    ) -> Result<Vec<Recovered<EthTxEnvelope>>, ExecutionStateReadError> {
+    ) -> Result<Vec<Recovered<TxEnvelope>>, ExecutionStateReadError> {
         // TODO this should be inside SystemTransactionGenerator to prevent
         // exposing SYSTEM_SENDER_ETH_ADDRESS outside the crate
-        let system_sender_key = AccountKey::global(SYSTEM_SENDER_ETH_ADDRESS);
         let next_system_txn_nonce = *block_policy
             .get_account_base_nonces(
                 proposed_seq_num,
                 state_read,
                 extending_blocks,
-                [system_sender_key].iter(),
+                [SYSTEM_SENDER_ETH_ADDRESS].iter(),
             )?
-            .get(&system_sender_key)
+            .get(&SYSTEM_SENDER_ETH_ADDRESS)
             .unwrap();
 
         let parent_block_epoch = {

@@ -13,10 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_consensus::{transaction::Recovered, Transaction, TxLegacy};
+use alloy_consensus::{Transaction, TxEnvelope, TxLegacy, transaction::Recovered};
 use alloy_primitives::{Address, Bytes, FixedBytes, TxKind, U256, hex};
 use alloy_sol_types::SolValue;
-use monad_eth_types::{EthTxEnvelope, ValidatedTx};
+use monad_eth_types::ValidatedTx;
 use monad_types::Epoch;
 
 use crate::{sign_with_system_sender, validator::SystemTransactionError};
@@ -47,7 +47,7 @@ impl StakingContractCall {
 
     pub const MON: u64 = 1_000_000_000_000_000_000;
 
-    pub fn is_restricted_staking_contract_call(txn: &Recovered<EthTxEnvelope>) -> bool {
+    pub fn is_restricted_staking_contract_call(txn: &Recovered<TxEnvelope>) -> bool {
         if txn.to() == Some(Self::STAKING_CONTRACT_ADDRESS) {
             let input = txn.input();
             return input.starts_with(Self::REWARD_FUNCTION_SELECTOR.as_slice())
@@ -196,13 +196,13 @@ impl StakingContractCall {
 
 #[derive(Debug, Clone)]
 pub enum StakingContractTransaction {
-    Reward(Recovered<EthTxEnvelope>),
-    Snapshot(Recovered<EthTxEnvelope>),
-    EpochChange(Recovered<EthTxEnvelope>),
+    Reward(Recovered<TxEnvelope>),
+    Snapshot(Recovered<TxEnvelope>),
+    EpochChange(Recovered<TxEnvelope>),
 }
 
 impl StakingContractTransaction {
-    pub fn into_inner(self) -> Recovered<EthTxEnvelope> {
+    pub fn into_inner(self) -> Recovered<TxEnvelope> {
         match self {
             Self::Reward(txn) => txn,
             Self::Snapshot(txn) => txn,
@@ -210,7 +210,7 @@ impl StakingContractTransaction {
         }
     }
 
-    pub fn inner(&self) -> &Recovered<EthTxEnvelope> {
+    pub fn inner(&self) -> &Recovered<TxEnvelope> {
         match self {
             Self::Reward(txn) => txn,
             Self::Snapshot(txn) => txn,

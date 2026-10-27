@@ -19,15 +19,16 @@ use std::{
     time::Duration,
 };
 
+use alloy_consensus::TxEnvelope;
 use flume::Receiver;
 use futures::{SinkExt, StreamExt};
 use monad_eth_txpool_ipc::EthTxPoolIpcClient;
 use monad_eth_txpool_types::EthTxPoolIpcTx;
+use state::TxStatusReceiverSender;
 use tracing::{debug, error, info, warn};
 
 pub use self::{client::EthTxPoolBridgeClient, handle::EthTxPoolBridgeHandle, types::TxStatus};
 use self::{
-    client::EthTxPoolBridgeSubmission,
     socket::SocketWatcher,
     state::{EthTxPoolBridgeEvictionQueue, EthTxPoolBridgeState},
 };
@@ -54,7 +55,6 @@ pub struct EthTxPoolBridge {
 impl EthTxPoolBridge {
     pub async fn start<P>(
         bind_path: P,
-        chain_id: u64,
     ) -> io::Result<(EthTxPoolBridgeClient, EthTxPoolBridgeHandle)>
     where
         P: AsRef<Path>,
@@ -62,8 +62,7 @@ impl EthTxPoolBridge {
         let (ipc_client, snapshot) = EthTxPoolIpcClient::new(&bind_path).await?;
 
         let mut eviction_queue = EthTxPoolBridgeEvictionQueue::default();
-        let state: EthTxPoolBridgeState =
-            EthTxPoolBridgeState::new(&mut eviction_queue, snapshot, chain_id);
+        let state: EthTxPoolBridgeState = EthTxPoolBridgeState::new(&mut eviction_queue, snapshot);
 
         let (tx_sender, tx_receiver) = flume::bounded(ETH_TXPOOL_BRIDGE_CHANNEL_SIZE);
 
@@ -86,7 +85,7 @@ impl EthTxPoolBridge {
         Ok((client, handle))
     }
 
-    async fn run(mut self, tx_receiver: Receiver<EthTxPoolBridgeSubmission>) {
+    async fn run(mut self, tx_receiver: Receiver<(TxEnvelope, TxStatusReceiverSender)>) {
         let mut cleanup_timer = tokio::time::interval(Duration::from_secs(5));
 
         cleanup_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -128,23 +127,16 @@ impl EthTxPoolBridge {
                         },
                     };
 
-                    for submission in std::iter::once(tx_pair).chain(tx_receiver.drain()) {
-                        match submission {
-                            EthTxPoolBridgeSubmission::Transaction {
-                                tx,
-                                tx_status_recv_send,
-                            } => {
-                                if !self.state.add_tx(&mut self.eviction_queue, &tx, tx_status_recv_send) {
-                                    continue;
-                                }
+                    for (tx, tx_status_recv_send) in std::iter::once(tx_pair).chain(tx_receiver.drain()) {
+                        if !self.state.add_tx(&mut self.eviction_queue, &tx, tx_status_recv_send) {
+                            continue;
+                        }
 
-                                if let Err(e) = ipc_client.feed(EthTxPoolIpcTx::new_with_default_priority(
-                                    tx,
-                                    Vec::default(),
-                                )).await {
-                                    warn!("TxPoolBridge IPC feed failed, monad-bft likely crashed: {}", e);
-                                }
-                            }
+                        if let Err(e) = ipc_client.feed(EthTxPoolIpcTx::new_with_default_priority(
+                            tx,
+                            Vec::default(),
+                        )).await {
+                            warn!("TxPoolBridge IPC feed failed, monad-bft likely crashed: {}", e);
                         }
                     }
 
@@ -263,10 +255,8 @@ mod tests {
     use tokio::{net::UnixListener, time::Duration};
 
     use super::{
-        client::{EthTxPoolBridgeClient, EthTxPoolBridgeSubmission},
-        handle::EthTxPoolBridgeHandle,
-        state::EthTxPoolBridgeStateView,
-        EthTxPoolBridge, TxStatus,
+        client::EthTxPoolBridgeClient, handle::EthTxPoolBridgeHandle,
+        state::EthTxPoolBridgeStateView, EthTxPoolBridge, TxStatus,
     };
 
     const BASE_FEE_PER_GAS: u64 = 100_000_000_000;
@@ -321,10 +311,7 @@ mod tests {
         let result = client.try_send(tx, status_sender);
         assert!(result.is_ok());
 
-        let received_submission = rx.try_recv().unwrap();
-        let EthTxPoolBridgeSubmission::Transaction {
-            tx: received_tx, ..
-        } = received_submission;
+        let (received_tx, _) = rx.try_recv().unwrap();
         assert_eq!(*received_tx.tx_hash(), tx_hash);
     }
 
@@ -366,7 +353,7 @@ mod tests {
             drop(ipc_stream); // Simulate crash
         });
 
-        let (client, _handle) = EthTxPoolBridge::start(&socket_path, 1)
+        let (client, _handle) = EthTxPoolBridge::start(&socket_path)
             .await
             .expect("Bridge should start");
 
@@ -417,7 +404,7 @@ mod tests {
             }
         });
 
-        let (client, handle) = EthTxPoolBridge::start(&socket_path, 1)
+        let (client, handle) = EthTxPoolBridge::start(&socket_path)
             .await
             .expect("Bridge should start");
 
@@ -462,7 +449,7 @@ mod tests {
             (received_tx, ipc_stream)
         });
 
-        let (client, _handle) = EthTxPoolBridge::start(&socket_path, 1)
+        let (client, _handle) = EthTxPoolBridge::start(&socket_path)
             .await
             .expect("Bridge should start");
 
@@ -529,7 +516,7 @@ mod tests {
             drop(ipc_stream1);
         });
 
-        let (client, _handle) = EthTxPoolBridge::start(&socket_path, 1)
+        let (client, _handle) = EthTxPoolBridge::start(&socket_path)
             .await
             .expect("Bridge should start");
 

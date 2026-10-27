@@ -19,11 +19,12 @@ use std::{
     time::Duration,
 };
 
+use alloy_primitives::Address;
 use itertools::Itertools;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
-use monad_eth_types::{AccountKey, EthAccount, EthHeader, EthStorageKey, EthStorageSlot};
+use monad_eth_types::{EthAccount, EthHeader};
 use monad_execution_state_read::{ExecutionStateRead, ExecutionStateReadError};
 use monad_types::{BlockId, DropTimer, Epoch, SeqNum, Stake};
 use monad_validator::signature_collection::{SignatureCollection, SignatureCollectionPubKeyType};
@@ -32,8 +33,7 @@ use tracing::warn;
 #[derive(Debug)]
 struct BlockCache {
     seq_num: SeqNum,
-    accounts: BTreeMap<AccountKey, Option<EthAccount>>,
-    storage: BTreeMap<(AccountKey, EthStorageKey), EthStorageSlot>,
+    accounts: BTreeMap<Address, Option<EthAccount>>,
     execution_result: Option<EthHeader>,
 }
 
@@ -79,21 +79,21 @@ where
         block_id: &BlockId,
         seq_num: &SeqNum,
         is_finalized: bool,
-        account_keys: impl Iterator<Item = &'a AccountKey>,
+        addresses: impl Iterator<Item = &'a Address>,
     ) -> Result<Vec<Option<EthAccount>>, ExecutionStateReadError> {
-        let account_keys = account_keys.collect_vec();
-        if account_keys.is_empty() {
+        let addresses = addresses.collect_vec();
+        if addresses.is_empty() {
             return Ok(Vec::new());
         }
 
         // TODO consider removing this uniqueness filter... the callers we have so far already only
         // pass in a unique set of accounts
-        let unique_account_keys = account_keys.iter().unique().copied();
+        let unique_addresses = addresses.iter().unique().copied();
         // find accounts that are missing from cache
         let cache_misses: Vec<_> = match self.cache.get(block_id) {
-            None => unique_account_keys.collect(),
-            Some(block_cache) => unique_account_keys
-                .filter(|&account_key| !block_cache.accounts.contains_key(account_key))
+            None => unique_addresses.collect(),
+            Some(block_cache) => unique_addresses
+                .filter(|&address| !block_cache.accounts.contains_key(address))
                 .collect(),
         };
 
@@ -119,14 +119,13 @@ where
                 .or_insert_with(|| BlockCache {
                     seq_num: *seq_num,
                     accounts: Default::default(),
-                    storage: Default::default(),
                     execution_result: None,
                 })
                 .accounts
                 .extend(
                     cache_misses
                         .iter()
-                        .map(|&&account_key| account_key)
+                        .map(|&&address| address)
                         .zip_eq(cache_misses_data),
                 )
         }
@@ -134,14 +133,14 @@ where
         let block_cache = self
             .cache
             .get(block_id)
-            .expect("cache must be populated... we asserted nonzero account keys at the start");
+            .expect("cache must be populated... we asserted nonzero addresses at the start");
 
-        let accounts_data = account_keys
+        let accounts_data = addresses
             .iter()
-            .map(|&account_key| {
+            .map(|&address| {
                 block_cache
                     .accounts
-                    .get(account_key)
+                    .get(address)
                     .expect("cache was hydrated")
             })
             .cloned()
@@ -178,50 +177,11 @@ where
             .or_insert_with(|| BlockCache {
                 seq_num: *seq_num,
                 accounts: Default::default(),
-                storage: Default::default(),
                 execution_result: None,
             })
             .execution_result = Some(execution_result.clone());
 
         Ok(execution_result)
-    }
-
-    fn get_storage_at_by_key(
-        &mut self,
-        block_id: &BlockId,
-        seq_num: &SeqNum,
-        is_finalized: bool,
-        account_key: AccountKey,
-        storage_key: EthStorageKey,
-    ) -> Result<EthStorageSlot, ExecutionStateReadError> {
-        let cache_key = (account_key, storage_key);
-
-        if let Some(block_cache) = self.cache.get(block_id) {
-            if let Some(slot) = block_cache.storage.get(&cache_key) {
-                return Ok(*slot);
-            }
-        }
-
-        let slot = self.state_read.get_storage_at_by_key(
-            block_id,
-            seq_num,
-            is_finalized,
-            account_key,
-            storage_key,
-        )?;
-
-        self.cache
-            .entry(*block_id)
-            .or_insert_with(|| BlockCache {
-                seq_num: *seq_num,
-                accounts: Default::default(),
-                storage: Default::default(),
-                execution_result: None,
-            })
-            .storage
-            .insert(cache_key, slot);
-
-        Ok(slot)
     }
 
     fn raw_read_earliest_finalized_block(&self) -> Option<SeqNum> {
