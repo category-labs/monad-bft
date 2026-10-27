@@ -35,8 +35,6 @@ pub trait AuthenticationProtocol {
         retry_attempts: u64,
     ) -> Result<(), Self::Error>;
 
-    fn disconnect(&mut self, remote_public_key: &Self::PublicKey);
-
     fn dispatch(
         &mut self,
         packet: &mut [u8],
@@ -62,8 +60,6 @@ pub trait AuthenticationProtocol {
     ) -> Result<(), Self::Error>;
 
     fn is_connected_public_key(&self, public_key: &Self::PublicKey) -> bool;
-
-    fn is_connected_socket(&self, socket_addr: &SocketAddr) -> bool;
 
     fn is_connected_socket_and_public_key(
         &self,
@@ -126,10 +122,6 @@ impl AuthenticationProtocol for WireAuthProtocol {
             .connect(*remote_public_key, remote_addr, retry_attempts)
     }
 
-    fn disconnect(&mut self, remote_public_key: &Self::PublicKey) {
-        self.api.disconnect(remote_public_key)
-    }
-
     fn dispatch(
         &mut self,
         packet: &mut [u8],
@@ -190,10 +182,6 @@ impl AuthenticationProtocol for WireAuthProtocol {
         self.api.is_connected_public_key(public_key)
     }
 
-    fn is_connected_socket(&self, socket_addr: &SocketAddr) -> bool {
-        self.api.is_connected_socket(socket_addr)
-    }
-
     fn is_connected_socket_and_public_key(
         &self,
         socket_addr: &SocketAddr,
@@ -233,6 +221,7 @@ impl AuthenticationProtocol for WireAuthProtocol {
 #[derive(Clone, Copy, Debug, FromBytes, IntoBytes, Immutable, KnownLayout)]
 pub struct NoopHeader;
 
+// TODO(dshulyak): Remove NoopAuthProtocol after migrating its test and simulation users.
 pub struct NoopAuthProtocol<P: PubKey> {
     _phantom: std::marker::PhantomData<P>,
 }
@@ -266,8 +255,6 @@ impl<P: PubKey> AuthenticationProtocol for NoopAuthProtocol<P> {
     ) -> Result<(), Self::Error> {
         Ok(())
     }
-
-    fn disconnect(&mut self, _remote_public_key: &Self::PublicKey) {}
 
     fn dispatch(
         &mut self,
@@ -315,16 +302,13 @@ impl<P: PubKey> AuthenticationProtocol for NoopAuthProtocol<P> {
         false
     }
 
-    fn is_connected_socket(&self, _socket_addr: &SocketAddr) -> bool {
-        false
-    }
-
     fn is_connected_socket_and_public_key(
         &self,
         _socket_addr: &SocketAddr,
         _public_key: &Self::PublicKey,
     ) -> bool {
-        false
+        // Noop can send to an explicit address, but has no session map for key-only sends.
+        true
     }
 
     fn get_socket_by_public_key(&self, _public_key: &Self::PublicKey) -> Option<SocketAddr> {
