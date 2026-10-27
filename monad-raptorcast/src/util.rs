@@ -36,7 +36,7 @@ pub(crate) use ensure; // export the macro for use in other modules
 use fixed::{types::extra::U11, FixedU16};
 use iset::IntervalMap;
 use monad_crypto::{
-    certificate_signature::{CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey},
+    certificate_signature::PubKey,
     hasher::{Hasher, HasherType},
 };
 use monad_types::{Epoch, NodeId, Round, RoundSpan, Stake};
@@ -801,28 +801,6 @@ where
 {
     fn lookup(&self, node_id: &NodeId<PT>) -> Option<SocketAddr> {
         self.as_ref().lookup(node_id)
-    }
-}
-
-/// Used in RaptorCast instance to lookup peer addresses with the peer discovery driver.
-impl<ST: CertificateSignatureRecoverable, PD> PeerAddrLookup<CertificateSignaturePubKey<ST>>
-    for std::sync::Mutex<monad_peer_discovery::driver::PeerDiscoveryDriver<PD>>
-where
-    PD: monad_peer_discovery::PeerDiscoveryAlgo<SignatureType = ST>,
-{
-    fn lookup(&self, node_id: &NodeId<CertificateSignaturePubKey<ST>>) -> Option<SocketAddr> {
-        let guard = self.lock().ok()?;
-        guard.lookup(node_id)
-    }
-}
-
-impl<ST: CertificateSignatureRecoverable, PD> PeerAddrLookup<CertificateSignaturePubKey<ST>>
-    for monad_peer_discovery::driver::PeerDiscoveryDriver<PD>
-where
-    PD: monad_peer_discovery::PeerDiscoveryAlgo<SignatureType = ST>,
-{
-    fn lookup(&self, node_id: &NodeId<CertificateSignaturePubKey<ST>>) -> Option<SocketAddr> {
-        self.get_udp_addr(node_id)
     }
 }
 
