@@ -98,6 +98,12 @@ jobs:
           -A clippy::large_enum_variant
           -A clippy::doc-overindented-list-items
 
+      # privileged container shares the host kernel; sysctl must be set via /proc
+      - name: Tune network buffers
+        run: |
+          cp debian/etc/sysctl.d/90-monad-network-buffer.conf /etc/sysctl.d/
+          sysctl --system
+
       - name: Run tests
         run: |
           cargo test --release --all-targets --all-features
