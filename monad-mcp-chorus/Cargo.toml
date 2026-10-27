@@ -13,7 +13,6 @@ arrayvec = { workspace = true }
 bytes = { workspace = true }
 derive_more = { workspace = true, features = ["from", "sum", "add", "into"] }
 hex = { workspace = true }
-libc = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -21,6 +20,9 @@ tiny-keccak = { workspace = true, features = ["keccak"] }
 tracing = { workspace = true }
 
 monad-mcp-common = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

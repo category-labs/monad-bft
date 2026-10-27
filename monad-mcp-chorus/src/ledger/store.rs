@@ -15,9 +15,7 @@
 
 use std::{
     collections::BTreeSet,
-    fs,
-    io::{self, Read},
-    os::unix::fs::OpenOptionsExt,
+    fs, io,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -117,7 +115,10 @@ fn write_file(path: &Path, data: &[u8]) -> Result<(), LedgerError> {
 
 // an atime update from a reader's cgroup makes the kernel switch the inode's writeback
 // owner away from the node; over a full ledger that keeps a kworker busy for hours.
+#[cfg(target_os = "linux")]
 fn read_noatime(path: &Path) -> io::Result<Vec<u8>> {
+    use std::{io::Read, os::unix::fs::OpenOptionsExt};
+
     let opened = fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOATIME)
@@ -130,6 +131,12 @@ fn read_noatime(path: &Path) -> io::Result<Vec<u8>> {
     let mut data = Vec::new();
     file.read_to_end(&mut data)?;
     Ok(data)
+}
+
+// O_NOATIME is linux-only; macos mounts APFS with atime updates off by default.
+#[cfg(not(target_os = "linux"))]
+fn read_noatime(path: &Path) -> io::Result<Vec<u8>> {
+    fs::read(path)
 }
 
 type DecodedLane = Option<Result<Vec<Tx>, TxError>>;
@@ -645,6 +652,7 @@ mod tests {
         assert!(!is_temp_dir_name("000000012345.tmp"));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn reads_leave_atime_alone() {
         let (_dir, writer, reader) = setup();
