@@ -41,6 +41,7 @@ mod sim;
 pub mod time;
 
 pub use sim::{
-    CancelToken, Ctx, Handle, ProcessId, RunOutcome, SimMetrics, Simulation, StepInfo, StepLabel,
+    CancelToken, Ctx, Domain, Grouping, Handle, Lookahead, ProcessId, RunOutcome, SimMetrics,
+    Simulation, SimulationBuilder, StepInfo, StepLabel, TieBreak, UniformLookahead, DEFAULT_GROUPS,
 };
 pub use time::{ClockDiff, Time};

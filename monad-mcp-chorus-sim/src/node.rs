@@ -48,12 +48,12 @@ pub(crate) fn to_timestamp(time: Time) -> Timestamp {
 
 // What a node does with the local outputs of its runtime, supplied by the
 // wiring, which knows the concrete runtime (see swarm.rs and mvba.rs).
-pub(crate) type OutputFn<R> = dyn FnMut(Timestamp, <R as Runtime>::LocalOut);
+pub(crate) type OutputFn<R> = dyn FnMut(Timestamp, <R as Runtime>::LocalOut) + Send;
 
 // How an available proposal is reported to the slot consensus: the local
 // inputs, in order, that make it votable. Supplied by the wiring, which
 // knows the concrete consensus (see swarm.rs).
-pub(crate) type DaEventsFn<E> = dyn Fn(&DaAnnouncement) -> Vec<E>;
+pub(crate) type DaEventsFn<E> = dyn Fn(&DaAnnouncement) -> Vec<E> + Send;
 
 // The node-level proposal machinery: the planner decides when to seal, the
 // mock DA layer stores and announces the sealed proposals and reports what
@@ -82,13 +82,13 @@ pub struct SimNode<R: Runtime> {
 
 impl<R> SimNode<R>
 where
-    R: Runtime + 'static,
-    R::Message: Clone + 'static,
+    R: Runtime + Send + 'static,
+    R::Message: Clone + Send + 'static,
 {
     pub(crate) fn new(
         id: NodeId,
         runtime: R,
-        on_output: impl FnMut(Timestamp, R::LocalOut) + 'static,
+        on_output: impl FnMut(Timestamp, R::LocalOut) + Send + 'static,
     ) -> Self {
         Self {
             id,
@@ -104,7 +104,7 @@ where
     pub(crate) fn with_proposer(
         id: NodeId,
         runtime: R,
-        on_output: impl FnMut(Timestamp, R::LocalOut) + 'static,
+        on_output: impl FnMut(Timestamp, R::LocalOut) + Send + 'static,
         harness: ProposerHarness<R::LocalIn>,
     ) -> Self {
         Self {
@@ -222,7 +222,6 @@ where
             harness
                 .da
                 .submit_proposal(slot, lane, mock_payload(self.id, slot, lane));
-            let from = self.id;
             let net = self.net.expect("node not wired");
             for announcement in harness.da.drain_announcements() {
                 let message = SimMessage::Da(announcement);
@@ -230,7 +229,7 @@ where
                     net,
                     ctx.now(),
                     StepLabel::source("da-broadcast"),
-                    move |net, ctx| net.broadcast(ctx, from, message),
+                    move |net, ctx| net.broadcast(ctx, message),
                 );
             }
         }
@@ -264,19 +263,17 @@ where
         let now = ctx.now();
         match event {
             Outbound::Broadcast(message) => {
-                let from = self.id;
                 let net = self.net.expect("node not wired");
                 let message = SimMessage::Cadence(message);
                 ctx.schedule(net, now, StepLabel::source("broadcast"), move |net, ctx| {
-                    net.broadcast(ctx, from, message)
+                    net.broadcast(ctx, message)
                 });
             }
             Outbound::Unicast(to, message) => {
-                let from = self.id;
                 let net = self.net.expect("node not wired");
                 let message = SimMessage::Cadence(message);
                 ctx.schedule(net, now, StepLabel::source("unicast"), move |net, ctx| {
-                    net.send(ctx, from, to, message)
+                    net.send(ctx, to, message)
                 });
             }
         }
@@ -285,8 +282,8 @@ where
 
 impl<R> SimClient for SimNode<R>
 where
-    R: Runtime + 'static,
-    R::Message: Clone + 'static,
+    R: Runtime + Send + 'static,
+    R::Message: Clone + Send + 'static,
 {
     type Addr = NodeId;
     type Message = SimMessage<R::Message>;

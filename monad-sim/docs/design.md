@@ -26,7 +26,7 @@ belongs in a consumer crate.
 
 A simulation is a time-ordered queue of *steps*. A step is a closure that runs
 at a specific `Time` and may schedule further steps. State lives in
-*processes*: any value `S: 'static` registered with `Simulation::spawn`,
+*processes*: any value `S: Send + 'static` registered with `Simulation::spawn`,
 addressed by a typed `Handle<S>`. When a step scheduled against a handle runs,
 the framework lends it `&mut S` **exclusively** for that step, via a `Ctx`
 that can read time, sample randomness, and schedule more work — but cannot
@@ -37,11 +37,12 @@ impl Simulation {
     pub fn new(seed: u64) -> Self;                 // fresh, isolated; the unit of reset
     pub fn now(&self) -> Time;
 
-    pub fn spawn<S: 'static>(&mut self, state: S) -> Handle<S>;
-    pub fn schedule<S: 'static>(&mut self, who: Handle<S>, at: Time, label: StepLabel,
-                                step: impl FnOnce(&mut S, &mut Ctx) + 'static) -> CancelToken;
+    pub fn spawn<S: Send + 'static>(&mut self, state: S) -> Handle<S>;
+    pub fn schedule<S: Send + 'static>(&mut self, who: Handle<S>, at: Time, label: StepLabel,
+                                       step: impl FnOnce(&mut S, &mut Ctx) + Send + 'static)
+        -> CancelToken;
     pub fn schedule_global(&mut self, at: Time, label: StepLabel,
-                           step: impl FnOnce(&mut Ctx) + 'static) -> CancelToken;
+                           step: impl FnOnce(&mut Ctx) + Send + 'static) -> CancelToken;
 
     // run control — each returns why it stopped (RunOutcome)
     pub fn run_to_completion(&mut self) -> RunOutcome;
@@ -73,7 +74,7 @@ cancellation is lazy — a cancelled step is skipped when popped).
 
 `Handle<S>` / `Ctx` *is* the engine's public seam. The engine defines no
 `Process`, `Network`, or `EffectHandler` trait — a process is just some
-`S: 'static`, and event/effect dispatch is the consumer's job. Concrete event
+`S: Send + 'static`, and event/effect dispatch is the consumer's job. Concrete event
 types (for the Monad BFT harness: `MonadEvent`, `Command`) appear only inside
 consumer closures, never in an engine signature. A new consumer brings its own
 state, address, and message types and only ever talks to the scheduler; that
@@ -83,18 +84,27 @@ is what makes the engine reusable across protocols and protocol versions.
 
 The scheduler is deterministic: a run is exactly reproducible from
 `(configuration, seed)`. Steps are ordered by the total key
-`(time, tie_break, priority, seq)`:
+`(time, tie_break, priority, created_at, creator, counter)`:
 
 - **`priority`** is a same-time ordering class (lower runs first); consumers
   use it to encode policies such as "drain a node's ready internal work before
   servicing a same-tick network message".
 - **`tie_break`** selects the policy. The default `TieBreak::Fifo` makes
-  `tie_break` a constant, so ordering reduces to `(time, priority, seq)` —
-  fully reproducible, which is what lets test suites assert *exact* ticks with
+  `tie_break` a constant, so same-time steps run by priority, then by
+  `created_at` (when they were scheduled) — fully reproducible, which is what lets test suites assert *exact* ticks with
   no tolerance window. `TieBreak::Randomized` shuffles same-time steps with a
   seeded permutation (still deterministic per seed); sweeping the seed
   explores different same-instant orderings — fuzzing for order-dependence
   bugs.
+- **`creator`, `counter`** identify a step: the process that scheduled it and
+  how many steps that process had scheduled before. They make the key unique,
+  and keep one process's same-time steps in the order it scheduled them.
+
+No component of the key is a global sequence number: each depends only on the
+history of the scheduling process. The order therefore does not depend on how
+the execution of processes is interleaved, which is what lets parts of a
+simulation run in parallel with identical results (see
+[parallel.md](parallel.md)).
 
 `tie_break` deliberately precedes `priority` in the key: under `Randomized`
 the per-step tie-break dominates, so same-time steps are shuffled *across*
@@ -102,9 +112,12 @@ priority classes. Priority-respecting fuzzing (shuffle only within a class)
 would put `priority` first instead; it is a clean future toggle, not
 implemented until a consumer needs it.
 
-All randomness flows through the simulation's seeded generator
-(`Simulation::sample` / `Ctx::sample`); the `dist` module provides latency and
-clock-drift distributions to sample through it.
+All randomness flows through seeded generators. Each process has its own,
+seeded from the simulation seed and its process id and created on first use
+(`Ctx::sample`); `Simulation::sample` and global steps draw from the root
+process's. A process's draws therefore do not depend on what other processes
+sample. The `dist` module provides latency and clock-drift distributions to
+sample through them.
 
 ## Concurrency metric
 
@@ -138,7 +151,13 @@ cross-process parallelism.
 
 ### Concurrency stance
 
-A simulation is single-threaded and deterministic. Internal parallelism in
+Process state and step closures must be `Send`, in every simulation, so that
+parts of a run can execute on worker threads (see [parallel.md](parallel.md)).
+The bound costs nothing at run time; it rules out `Rc`-shared state between
+processes, which the lent-state model already discourages. Observers
+(`on_step`) run on the driver and need not be `Send`.
+
+A simulation is deterministic. Internal parallelism in
 pure consumer computation that never touches the simulation environment (e.g.
 cryptographic primitives) is allowed and invisible — it produces no observable
 scheduling effect. Independent simulations run in parallel across threads —
@@ -146,12 +165,13 @@ per-simulation isolation (`Simulation::new` owns all its state; no shared
 `thread_local`) is what makes that safe, and that is the parallelism that
 scales (seed sweeps, independent scenarios).
 
-Parallelizing a *single* run is deliberately deferred. The measured ceiling on
-the first consumer is low and flat: the Monad BFT harness measured `W / D`
-plateauing around ~2.9× regardless of swarm size (see that harness's
-documentation), and conservative-window execution would realize only a
-fraction of the ceiling. The `StepLabel` schema reserves the metadata a
-parallel executor would need (`min_propagation`).
+A single run can also execute in parallel. Processes live in *domains*; a
+`Lookahead` declares the minimum delay of any step between two domains, and
+`Simulation::builder` groups the domains and runs the groups in windows no
+wider than the lookahead between them (conservative synchronization, no
+rollback). Results are identical for every grouping and thread count. A
+`Simulation::new` simulation has one domain and runs exactly as before. See
+[parallel.md](parallel.md).
 
 ## Future work
 
@@ -166,8 +186,7 @@ parallel executor would need (`min_propagation`).
   evaluate a finer decomposition). This measures *whether* a protocol or
   scenario has parallelism worth exploiting, and is the trigger for the next
   item.
-- **Parallel execution of a single run** — conservative windowing with
-  lookahead bounded by the minimum event latency; needs the per-step
-  `min_propagation` metadata and a per-process RNG. Revisit when a consumer's
-  measured `W / D` makes it worthwhile. Batching same-tick steps is a cheaper,
-  deterministic intermediate win.
+- **Parallel execution, next steps** (see [parallel.md](parallel.md)):
+  per-node network stacks in `monad-sim-swarm`, regrouping between windows
+  from measured load, and asynchronous per-pair horizons instead of global
+  windows for strongly asymmetric lookahead.

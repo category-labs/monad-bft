@@ -11,10 +11,11 @@ engine.
 
 ## Pieces
 
-- **`Net<Addr, Msg>`** — the network as a simulation *process*: a routing
-  table plus a swappable `NetworkModel`. A node sends by scheduling a step on
-  the `Net` handle; the net samples the model and schedules the surviving
-  deliveries on the recipients.
+- **`Net<Addr, Msg>`** — a node's network stack, a simulation *process*. A
+  node sends by scheduling a step on its `Net`; the stack samples the model and
+  schedules the surviving deliveries on the recipients. All stacks share the
+  routing table and a swappable `NetworkModel`; each has its own uplink state
+  and random generator. `Wiring` assembles them.
 - **`Network`** — the declarative model builder:
 
   ```rust
@@ -27,6 +28,7 @@ engine.
       .loss(p)                                // independent drop probability
       .partition(window, [group_a, group_b])  // time-bounded network split
       .drop_if(|link, msg| ...)               // predicate drop
+      .min_latency(bound)                     // declared lower bound (sampled latency)
   Network::custom(model)                      // a full NetworkModel impl
   ```
 
@@ -41,9 +43,12 @@ engine.
   node) as long as they share the wire type.
 - **`Swarm<N>` + `SimClient`** — the minimal harness: implement `SimClient`
   for your node type (a `receive` handler, plus an optional `wire` hook that
-  hands the node its own and the network's handles), and `Swarm::build` spawns
-  the nodes and the net, wires them together, and forwards run control to the
-  engine.
+  hands the node its own and its stack's handles), and `Swarm::build` spawns
+  the nodes and their stacks, wires them together, and forwards run control to
+  the engine. `Swarm::build_parallel` places the nodes in domains (one per
+  node, or by `Parallel::domains`) and runs them on worker threads, with the
+  lookahead taken from the network's lower bounds on link delay; results are
+  the same for every thread count.
 - **`Timers<K>`** — at most one armed timeout per key, re-arming resets — the
   pacemaker pattern every node needs.
 
@@ -53,7 +58,7 @@ engine.
 use monad_sim::{time::millis, Ctx, Handle, StepLabel, Time};
 use monad_sim_swarm::{Net, Network, SimClient, Swarm};
 
-struct Counter { addr: u32, net: Option<Handle<Net<u32, u64>>>, got: u32 }
+struct Counter { net: Option<Handle<Net<u32, u64>>>, got: u32 }
 
 impl SimClient for Counter {
     type Addr = u32;
@@ -66,15 +71,15 @@ impl SimClient for Counter {
     }
 }
 
-let nodes = (0..3).map(|a| (a, Counter { addr: a, net: None, got: 0 }));
+let nodes = (0..3).map(|a| (a, Counter { net: None, got: 0 }));
 let mut swarm = Swarm::build(0, Network::reliable(millis(5)), nodes);
 
-// Kick node 0: broadcast once. Sending = scheduling a step on the net.
+// Kick node 0: broadcast once. Sending = scheduling a step on its stack.
 let h = swarm.handle(&0).unwrap();
 swarm.sim().schedule(h, Time(0), StepLabel::source("start"), |c, ctx| {
-    let (net, from) = (c.net.unwrap(), c.addr);
+    let net = c.net.unwrap();
     ctx.schedule(net, ctx.now(), StepLabel::source("route"), move |net, ctx| {
-        net.broadcast(ctx, from, 7)
+        net.broadcast(ctx, 7)
     });
 });
 
@@ -84,8 +89,9 @@ for a in 0..3 {
 }
 ```
 
-Determinism comes from the engine; the net additionally keeps its own
-independently-seeded RNG, so network randomness is reproducible on its own.
+Determinism comes from the engine; each stack additionally keeps its own
+generator (one network seed, a stream per address), so network randomness is
+reproducible on its own and independent of how nodes are grouped.
 
 ## Topologies
 

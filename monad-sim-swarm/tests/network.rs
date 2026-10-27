@@ -22,7 +22,7 @@ use monad_sim::{
     time::{micros, millis},
     Ctx, Handle, Simulation, StepLabel, Time,
 };
-use monad_sim_swarm::{deliver_to, LatencyMatrix, Net, Network, SimClient};
+use monad_sim_swarm::{deliver_to, LatencyMatrix, Net, Network, SimClient, Wiring};
 
 type Addr = u32;
 /// The message is its own size in bytes.
@@ -30,20 +30,19 @@ type Msg = usize;
 
 /// Sends a scripted list of `(to, size)` messages, all at its start time.
 struct Sender {
-    addr: Addr,
     script: Vec<(Addr, Msg)>,
     net: Option<Handle<Net<Addr, Msg>>>,
 }
 
 impl Sender {
     fn emit(&mut self, ctx: &mut Ctx) {
-        let (net, from) = (self.net.unwrap(), self.addr);
+        let net = self.net.unwrap();
         for (to, size) in self.script.clone() {
             ctx.schedule(
                 net,
                 ctx.now(),
                 StepLabel::source("route"),
-                move |net, ctx| net.send(ctx, from, to, size),
+                move |net, ctx| net.send(ctx, to, size),
             );
         }
     }
@@ -80,22 +79,19 @@ fn run(
     receivers: &[Addr],
 ) -> Vec<Vec<Time>> {
     let mut sim = Simulation::new(0);
-    let net = sim.spawn(Net::new(0, network));
-    let send = sim.spawn(Sender {
-        addr: 0,
-        script,
-        net: None,
-    });
-    sim.with_mut(send, |s| s.wire(send, net));
-    sim.with_mut(net, |n| n.register(0, deliver_to(send)));
+    let mut wiring = Wiring::new(0, network);
+    let send = sim.spawn(Sender { script, net: None });
+    wiring.register(0, deliver_to(send));
     let recorders: Vec<_> = receivers
         .iter()
         .map(|&addr| {
             let handle = sim.spawn(Recorder::default());
-            sim.with_mut(net, |n| n.register(addr, deliver_to(handle)));
+            wiring.register(addr, deliver_to(handle));
             handle
         })
         .collect();
+    let net = sim.spawn(wiring.stack(0));
+    sim.with_mut(send, |s| s.wire(send, net));
 
     sim.schedule(send, Time(0), StepLabel::source("start"), |s, ctx| {
         s.emit(ctx)

@@ -58,7 +58,7 @@ pub type Pattern = Lanes<Option<ProposalId>>;
 // a node as a monad-sim process, boxed so one swarm can mix node kinds
 pub struct SimNode {
     id: NodeId,
-    node: Box<dyn Component<Input = NodeInbound, Output = NodeOutput>>,
+    node: Box<dyn Component<Input = NodeInbound, Output = NodeOutput> + Send>,
     finalized: BTreeMap<Slot, Pattern>,
     // hashes every message delivered to this node, with its time, in
     // delivery order
@@ -72,7 +72,7 @@ pub struct SimNode {
 impl SimNode {
     pub fn new(
         id: NodeId,
-        node: impl Component<Input = NodeInbound, Output = NodeOutput> + 'static,
+        node: impl Component<Input = NodeInbound, Output = NodeOutput> + Send + 'static,
     ) -> Self {
         Self {
             id,
@@ -112,7 +112,6 @@ impl SimNode {
     }
 
     fn send(&self, outbound: Outbound<NodeMessage>, ctx: &mut Ctx) {
-        let from = self.id;
         let net = self.net.expect("node not wired");
         match outbound {
             Outbound::Broadcast(message) => {
@@ -120,7 +119,7 @@ impl SimNode {
                     net,
                     ctx.now(),
                     StepLabel::source("broadcast"),
-                    move |net, ctx| net.broadcast(ctx, from, message),
+                    move |net, ctx| net.broadcast(ctx, message),
                 );
             }
             Outbound::Unicast(to, message) => {
@@ -128,7 +127,7 @@ impl SimNode {
                     net,
                     ctx.now(),
                     StepLabel::source("unicast"),
-                    move |net, ctx| net.send(ctx, from, to, message),
+                    move |net, ctx| net.send(ctx, to, message),
                 );
             }
         }

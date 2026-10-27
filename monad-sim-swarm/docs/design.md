@@ -17,24 +17,40 @@ consumer, other protocols build on it elsewhere, and further harnesses are
 expected. Anything that requires knowing a protocol's events, rounds, or
 assertions belongs in those harnesses, not here.
 
-## The network as a process
+## The network as processes
 
-The network is just another `monad-sim` process — no dedicated framework
-concept. `Net<Addr, Msg>`'s state is a routing table plus a `NetworkModel`; a
-node sends by scheduling a routing step on the `Net` handle, and the net
-samples the model and schedules the surviving deliveries on the recipients.
-This makes the network model modular and swappable, including mid-run
-(`set_model`).
+The network is made of ordinary `monad-sim` processes — no dedicated framework
+concept. Each node has its own network stack, a `Net<Addr, Msg>` process. A
+node sends by scheduling a step on its stack (a step can only reach its own
+process's state, so sending is a scheduled step); the stack samples the model
+and schedules the surviving deliveries on the recipients.
 
-A `NetworkModel` answers one question per message: at which delays are copies
-of it delivered? An empty answer drops the message, more than one duplicates
-it, and reordering needs no special handling — a smaller delay simply arrives
-first. The declarative `Network` builder covers the common cases (constant or
-sampled latency, independent loss, time-bounded partitions, predicate drops);
+All stacks share one read-only description: the routing table and the
+`NetworkModel`. What changes as messages are sent is per stack: the sender's
+part of the model (its uplink queue) and its random generator. That keeps the
+stacks independent of each other, so they run in parallel when their nodes'
+domains do (see [parallel.md](parallel.md)).
+
+A `NetworkModel` is shared by all stacks. It creates each sender's part, a
+`SenderModel`, which answers one question per message: at which delays are
+copies of it delivered? An empty answer drops the message, more than one
+duplicates it, and reordering needs no special handling — a smaller delay
+simply arrives first. The model also declares a lower bound on each link's
+delay (`min_delay`), which a parallel swarm uses as its lookahead. The
+declarative `Network` builder covers the common cases (constant or sampled
+latency, independent loss, time-bounded partitions, predicate drops, uplinks);
 `Network::custom` accepts a full `NetworkModel` implementation.
 
-The net keeps its own ChaCha RNG, seeded independently of the engine's
-scheduling RNG, so network randomness is reproducible on its own.
+`Wiring` assembles a network: register each node's delivery, then spawn each
+node's stack from it. After a change (a registration, a new model) it brings
+the live stacks up to date, which is how the model stays swappable mid-run.
+`Swarm` does this for a homogeneous swarm; tests build heterogeneous ones by
+hand.
+
+Each stack has its own ChaCha generator: one seed for the network, and a
+stream per address in order of first registration. Network randomness is
+therefore reproducible on its own, and does not depend on how nodes are
+grouped for execution or on what other senders draw.
 
 ### Topology and uplinks
 
@@ -57,6 +73,11 @@ that wait and transmission time plus the link latency.
 - A node's messages to itself bypass the uplink.
 - Unicast fan-out serializes, as on a real uplink: a broadcast to n nodes
   takes n transmission times.
+
+Each lower bound ignores the uplink: queueing only adds delay. `reliable`
+and `with_matrix` know their bounds; a sampled latency has bound 0 unless the
+scenario declares one with `Network::min_latency`, which every sample is
+checked against.
 
 Sequencing is per message. That fits transports whose messages each fit one
 datagram. Splitting a large message into frames that interleave with other
@@ -158,6 +179,10 @@ schedules the step and hands the token to `arm`. `reset` cancels a pending
 timer; `clear` forgets one that has just fired.
 
 ## Future work
+
+- **An inbound hook** in the receiver's stack (downlink bandwidth, ingress
+  queues, demultiplexing to several node processes); see
+  [parallel.md](parallel.md).
 
 - **A heterogeneous swarm builder** (mixed node process types over one `Net`).
   The delivery boundary already supports it; only the builder is missing.
