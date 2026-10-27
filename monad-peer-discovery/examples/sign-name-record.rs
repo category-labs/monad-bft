@@ -16,19 +16,19 @@
 use std::{
     net::{Ipv4Addr, SocketAddrV4},
     num::NonZeroU16,
-    panic,
     path::PathBuf,
 };
 
 use clap::Parser;
 use monad_keystore::keystore::Keystore;
-use monad_node_config::MonadNodeConfig;
+use monad_node_config::{MonadNodeConfig, NodeBootstrapConfig};
 use monad_peer_discovery::{MonadNameRecord, NameRecord};
 use monad_secp::SecpSignature;
 
 /// Example commands to run the following program:
 /// sign-name-record -- --address 0.0.0.0:8888 --authenticated-udp-port 8889 --node-config <...> --keystore-path <...> --password ""
 /// sign-name-record -- --ip 0.0.0.0 --tcp-port 8888 --udp-port 8888 --authenticated-udp-port 8889 --node-config <...> --keystore-path <...> --password ""
+/// To reproduce a signature, use the original sequence, revision, key, and endpoints.
 #[derive(Debug, Parser)]
 #[command(name = "monad-peer-discovery", about)]
 struct Args {
@@ -59,11 +59,24 @@ struct Args {
     #[arg(long, help = "Optional encrypted TCP port")]
     encrypted_tcp_port: Option<NonZeroU16>,
 
-    /// Sequence number for the name record
+    /// Sequence to sign; overrides the saved record and --node-config.
     #[arg(long)]
     self_record_seq_num: Option<u64>,
 
-    /// Set the node config path
+    #[arg(
+        long,
+        help = "Revision to sign (default: saved revision for the same sequence, otherwise 0)"
+    )]
+    record_revision: Option<u64>,
+
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Read sequence and revision from a peer TOML file or a directory containing self.toml"
+    )]
+    name_record_path: Option<PathBuf>,
+
+    /// Read the configured sequence unchanged; older versions signed sequence + 1.
     #[arg(long)]
     node_config: Option<PathBuf>,
 
@@ -146,15 +159,37 @@ fn main() {
         }
     };
 
-    let self_record_seq_num = if let Some(node_config_path) = args.node_config {
-        let contents =
-            std::fs::read_to_string(node_config_path).expect("Failed to read node toml file");
+    let saved = args
+        .name_record_path
+        .filter(|_| args.self_record_seq_num.is_none() || args.record_revision.is_none())
+        .map(|path| {
+            let path = if path.is_dir() {
+                path.join("self.toml")
+            } else {
+                path
+            };
+            let contents = std::fs::read_to_string(path).expect("Failed to read name record");
+            let config: NodeBootstrapConfig<SecpSignature> =
+                toml::from_str(&contents).expect("Invalid name record TOML");
+            let [peer] = config.peers.as_slice() else {
+                panic!("Name record file must contain exactly one peer")
+            };
+            MonadNameRecord::try_from(peer)
+                .expect("Invalid saved name record")
+                .seq_and_revision()
+        });
+    let self_record_seq_num = if let Some(sequence) = args
+        .self_record_seq_num
+        .or(saved.map(|(sequence, _)| sequence))
+    {
+        sequence
+    } else if let Some(path) = args.node_config {
+        let contents = std::fs::read_to_string(path).expect("Failed to read node toml file");
         let node_config: MonadNodeConfig =
             toml::from_str(&contents).expect("Invalid format in node toml file");
-        node_config.peer_discovery.self_record_seq_num + 1
+        node_config.peer_discovery.self_record_seq_num
     } else {
-        args.self_record_seq_num
-            .unwrap_or_else(|| panic!("Either node_config or self_record_seq_num must be provided"))
+        panic!("Provide --self-record-seq-num, --name-record-path, or --node-config")
     };
     let name_record = NameRecord::new_with_ports(
         ip,
@@ -164,6 +199,13 @@ fn main() {
         args.direct_udp_port.map(NonZeroU16::get),
         args.encrypted_tcp_port.map(NonZeroU16::get),
         self_record_seq_num,
+    )
+    .with_revision(
+        args.record_revision
+            .or(saved
+                .filter(|(sequence, _)| *sequence == self_record_seq_num)
+                .map(|(_, revision)| revision))
+            .unwrap_or_default(),
     );
     let signed_name_record: MonadNameRecord<SecpSignature> =
         MonadNameRecord::new(name_record, &keypair);
@@ -208,6 +250,7 @@ mod tests {
     #[test]
     fn legacy_address_sets_tcp_and_udp_ports() {
         let args = parse(&["--address", "65.109.127.109:8000"]).unwrap();
+        assert_eq!(args.record_revision, None);
         let endpoint = args.endpoint();
 
         assert_eq!(
@@ -229,8 +272,11 @@ mod tests {
             "8000",
             "--udp-port",
             "8002",
+            "--record-revision",
+            "7",
         ])
         .unwrap();
+        assert_eq!(args.record_revision, Some(7));
         let endpoint = args.endpoint();
 
         assert_eq!(

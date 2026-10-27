@@ -9,3 +9,16 @@ Run the following in the repo root directory:
     - Initialize consensus forkpoint to genesis
 3. `CXX=/usr/bin/g++-15 CC=/usr/bin/gcc-15 ASMFLAGS=-march=haswell CFLAGS="-march=haswell" CXXFLAGS="-march=haswell" TRIEDB_TARGET=triedb_driver cargo run --bin monad-node -- --secp-identity docker/devnet/monad/config/id-secp --bls-identity docker/devnet/monad/config/id-bls --node-config docker/devnet/monad/config/node.toml --forkpoint-config docker/devnet/monad/config/forkpoint.toml --wal-path docker/devnet/monad/wal --mempool-ipc-path docker/devnet/monad/mempool.sock --control-panel-ipc-path docker/devnet/monad/controlpanel.sock --ledger-path docker/devnet/monad/ledger --statesync-ipc-path docker/devnet/monad/statesync.sock --triedb-path <path_to_triedb>`
     - The generated files and directories path (`--wal-path`, `--mempool-ipc-path`, `--control-panel-ipc-path`, `--ledger-path`, `--statesync-ipc-path`) can be changed.
+
+## Signing name records
+
+**Behavior change:** when `--node-config` supplies the sequence, `sign-name-record`
+now signs `self_record_seq_num` unchanged. Older versions signed
+`self_record_seq_num + 1`, so rerunning a saved command no longer generates the
+next sequence. To sign a new operator sequence, update the configured value or
+pass it explicitly with `--self-record-seq-num`.
+
+`--name-record-path` reads saved counters without changing the file. Its revision
+is reused only when the sequence being signed matches the saved sequence;
+otherwise revision defaults to zero. An explicit `--record-revision` overrides
+that default.

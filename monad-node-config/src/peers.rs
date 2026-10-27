@@ -40,7 +40,8 @@ pub struct PeerDiscoveryConfig<ST: CertificateSignatureRecoverable> {
     pub self_encrypted_tcp_port: Option<NonZeroU16>,
     pub self_record_seq_num: u64,
 
-    pub self_name_record_sig: ST,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub self_name_record_sig: Option<ST>,
 
     pub refresh_period: u64,
     pub request_timeout: u64,
