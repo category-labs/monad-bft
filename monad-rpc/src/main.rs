@@ -181,38 +181,73 @@ async fn main() -> std::io::Result<()> {
     // Initialize archive reader if specified. If not specified, RPC can only read the latest <history_length> blocks from chain tip
     info!("Initializing archive readers for historical data access");
 
-    let aws_archive_reader = match (
-        &args.s3_bucket,
-        &args.region,
-        &args.archive_url,
-        &args.archive_api_key,
-    ) {
-        (Some(s3_bucket), Some(region), Some(archive_url), Some(archive_api_key)) => {
-            info!(
-                s3_bucket,
-                region, archive_url, "Initializing AWS archive reader"
-            );
-            match ArchiveReader::init_aws_reader(
-                s3_bucket.clone(),
-                Some(region.clone()),
-                archive_url,
-                archive_api_key,
-                5,
-            )
-            .await
-            {
-                Ok(reader) => {
-                    info!("AWS archive reader initialized successfully");
-                    Some(reader)
+    // The AWS reader has two independent halves: block data (blocks/receipts/
+    // traces/logs, keyed by block number) served straight from the S3 bucket, and
+    // the tx-hash index (hash -> block ref) served by the cloud-proxy lambda.
+    // Initialize the S3 block reader whenever bucket+region are present; attach the
+    // cloud-proxy index only when --archive-url and --archive-api-key are also
+    // given. Previously all four flags were required together, so an S3-only
+    // configuration silently returned null for everything, even block-number reads
+    // the bucket could serve.
+    let aws_archive_reader = match (&args.s3_bucket, &args.region) {
+        (Some(s3_bucket), Some(region)) => {
+            match (&args.archive_url, &args.archive_api_key) {
+                (Some(archive_url), Some(archive_api_key)) => {
+                    info!(
+                        s3_bucket,
+                        region,
+                        archive_url,
+                        "Initializing AWS archive reader (S3 block data + cloud-proxy tx index)"
+                    );
+                    match ArchiveReader::init_aws_reader(
+                        s3_bucket.clone(),
+                        Some(region.clone()),
+                        archive_url,
+                        archive_api_key,
+                        5,
+                    )
+                    .await
+                    {
+                        Ok(reader) => {
+                            info!("AWS archive reader initialized successfully");
+                            Some(reader)
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "Unable to initialize AWS archive reader");
+                            None
+                        }
+                    }
                 }
-                Err(e) => {
-                    warn!(error = %e, "Unable to initialize AWS archive reader");
-                    None
+                _ => {
+                    info!(
+                        s3_bucket,
+                        region,
+                        "Initializing S3-only AWS archive reader (block data only; tx-by-hash \
+                         unavailable without --archive-url and --archive-api-key)"
+                    );
+                    match ArchiveReader::init_aws_block_reader(
+                        s3_bucket.clone(),
+                        Some(region.clone()),
+                        5,
+                    )
+                    .await
+                    {
+                        Ok(reader) => {
+                            info!("S3-only AWS archive reader initialized successfully");
+                            Some(reader)
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "Unable to initialize S3-only AWS archive reader");
+                            None
+                        }
+                    }
                 }
             }
         }
         _ => {
-            debug!("AWS archive reader configuration not provided, skipping initialization");
+            debug!(
+                "AWS archive reader: s3_bucket/region not provided, skipping initialization"
+            );
             None
         }
     };

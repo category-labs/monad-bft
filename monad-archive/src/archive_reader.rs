@@ -21,7 +21,7 @@ use tracing::trace;
 use crate::{
     cli::AwsCliArgs,
     failover_circuit_breaker::{CircuitBreaker, FallbackExecutor},
-    kvstore::{cloud_proxy::CloudProxyReader, mongo::MongoDbStorage},
+    kvstore::{cloud_proxy::CloudProxyReader, memory::MemoryStorage, mongo::MongoDbStorage},
     model::logs_index::LogsIndexArchiver,
     prelude::*,
 };
@@ -175,6 +175,54 @@ impl ArchiveReader {
         let tx_index_reader = IndexReaderImpl::new(cloud_proxy_reader, block_data_reader.clone());
 
         debug!("AWS ArchiveReader initialization complete");
+        Ok(ArchiveReader::new(
+            block_data_reader,
+            tx_index_reader,
+            None,
+            None,
+        ))
+    }
+
+    /// Initialize an AWS reader backed only by the S3 block-data bucket, with no
+    /// tx-hash index.
+    ///
+    /// Block-number-keyed reads (blocks, receipts, traces, logs by range) are
+    /// served directly from the S3 bucket. Tx-hash lookups degrade to `None`
+    /// because the hash->block index lives in DynamoDB (and was historically
+    /// exposed via the cloud-proxy lambda), not in the bucket. Use
+    /// [`ArchiveReader::init_aws_reader`] when a cloud-proxy index is available.
+    pub async fn init_aws_block_reader(
+        bucket: String,
+        region: Option<String>,
+        concurrency: usize,
+    ) -> Result<ArchiveReader> {
+        info!(
+            bucket,
+            region, "Initializing S3-only AWS ArchiveReader (block data only, no tx-hash index)"
+        );
+
+        trace!("Creating AWS block data reader");
+        let args = AwsCliArgs {
+            bucket: bucket.clone(),
+            region,
+            concurrency,
+            // TODO: these should be configurable
+            operation_timeout_secs: 5,
+            operation_attempt_timeout_secs: 2,
+            read_timeout_secs: 2,
+            ..Default::default()
+        };
+        let config = args.config().await?;
+        let block_data_reader =
+            BlockDataArchive::new(Bucket::new(bucket.clone(), &config, Metrics::none()));
+
+        // No hash->block index without the cloud proxy; back the index with an
+        // empty in-memory store so tx-by-hash lookups resolve to `None` rather
+        // than taking down block-number reads too.
+        let tx_index_reader =
+            IndexReaderImpl::new(MemoryStorage::new("unused_index"), block_data_reader.clone());
+
+        debug!("S3-only AWS ArchiveReader initialization complete");
         Ok(ArchiveReader::new(
             block_data_reader,
             tx_index_reader,
