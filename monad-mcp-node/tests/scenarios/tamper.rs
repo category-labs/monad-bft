@@ -20,9 +20,9 @@
 use monad_mcp_common::Timestamp;
 use monad_mcp_node::{Effect, Routed, Router, Sink};
 
-pub type PreRouteFilter = Box<dyn FnMut(Effect) -> Vec<Effect>>;
-pub type PostRouteFilter = Box<dyn FnMut(Routed) -> Vec<Routed>>;
-pub type CustomRouter<R> = Box<dyn FnMut(&mut R, Timestamp, Effect) -> Vec<Routed>>;
+pub type PreRouteFilter = Box<dyn FnMut(Effect) -> Vec<Effect> + Send>;
+pub type PostRouteFilter = Box<dyn FnMut(Routed) -> Vec<Routed> + Send>;
+pub type CustomRouter<R> = Box<dyn FnMut(&mut R, Timestamp, Effect) -> Vec<Routed> + Send>;
 
 pub struct Tampered<R> {
     inner: R,
@@ -47,7 +47,7 @@ impl<R> Tampered<R> {
     #[allow(unused)]
     pub fn tamper_pre<F>(mut self, pre_filter: F) -> Self
     where
-        F: FnMut(Effect) -> Vec<Effect> + 'static,
+        F: FnMut(Effect) -> Vec<Effect> + Send + 'static,
     {
         self.pre_filter = Some(Box::new(pre_filter));
         self
@@ -56,7 +56,7 @@ impl<R> Tampered<R> {
     #[allow(unused)]
     pub fn tamper_post<F>(mut self, post_filter: F) -> Self
     where
-        F: FnMut(Routed) -> Vec<Routed> + 'static,
+        F: FnMut(Routed) -> Vec<Routed> + Send + 'static,
     {
         self.post_filter = Some(Box::new(post_filter));
         self

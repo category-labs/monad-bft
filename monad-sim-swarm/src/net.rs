@@ -13,15 +13,22 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! The network as a simulation process, generic over the node address `Addr`
-//! and the wire message `Msg`. A node sends by scheduling a step on the [`Net`]
-//! handle; the net samples its [`NetworkModel`] and schedules the surviving
-//! deliveries against the recipients.
+//! The network as per-node simulation processes, generic over the node address
+//! `Addr` and the wire message `Msg`. Each node has its own [`Net`], its
+//! network stack. A node sends by scheduling a step on its `Net`; the stack
+//! samples the [`NetworkModel`] and schedules the surviving deliveries against
+//! the recipients.
+//!
+//! All stacks share one read-only description of the network: the routing
+//! table and the model. What changes as messages are sent (a sender's uplink
+//! queue, its random generator) is per stack. Stacks therefore run in parallel
+//! when their nodes' domains do, and the model's lower bound on link delays
+//! ([`NetworkModel::min_delay`]) is the lookahead between them.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
     ops::Range,
-    rc::Rc,
+    sync::Arc,
     time::Duration,
 };
 
@@ -31,24 +38,41 @@ use rand_chacha::ChaChaRng;
 
 /// A type-erased "deliver this message to one node at this time" operation.
 ///
-/// Registered per address (see [`Net::register`] / [`crate::deliver_to`]), it
-/// captures the recipient's *concrete* `Handle` and monomorphizes the
+/// Registered per address (see [`Wiring::register`] / [`crate::deliver_to`]),
+/// it captures the recipient's *concrete* `Handle` and monomorphizes the
 /// `ctx.schedule` call, so the network itself only ever names `Addr` and `Msg`.
-/// This is what lets one [`Net`] carry heterogeneous node process types.
-pub type Deliver<Addr, Msg> = Rc<dyn Fn(&mut Ctx, Time, Addr, Msg)>;
+/// This is what lets one network carry heterogeneous node process types.
+pub type Deliver<Addr, Msg> = Arc<dyn Fn(&mut Ctx, Time, Addr, Msg) + Send + Sync>;
 
-/// Per-message context handed to a [`NetworkModel`].
+/// Per-message context handed to a [`SenderModel`].
 pub struct Link<Addr> {
     pub now: Time,
     pub from: Addr,
     pub to: Addr,
 }
 
-/// Decides the fate of a single message: the delays at which copies are
-/// delivered to `link.to`. An empty result drops the message; more than one
-/// duplicates it. Reordering needs no special handling — a smaller delay simply
-/// arrives first.
-pub trait NetworkModel<Addr, Msg> {
+/// A network model: a description shared by every node's stack. It creates the
+/// part of the model that runs in each sender's stack, and declares a lower
+/// bound on the delay of each link.
+pub trait NetworkModel<Addr, Msg>: Send + Sync {
+    /// The part of the model that runs in `from`'s stack. Everything that
+    /// changes as messages are sent lives there; the model itself is immutable.
+    fn sender(&self, from: &Addr) -> Box<dyn SenderModel<Addr, Msg>>;
+
+    /// A lower bound on the delay of every message `from` -> `to`
+    /// (`from != to`). A parallel swarm derives the lookahead between its
+    /// domains from it. The default, 0, is always correct but keeps every node
+    /// in one domain.
+    fn min_delay(&self, _from: &Addr, _to: &Addr) -> Duration {
+        Duration::ZERO
+    }
+}
+
+/// Decides the fate of a single message from one sender: the delays at which
+/// copies are delivered to `link.to`. An empty result drops the message; more
+/// than one duplicates it. Reordering needs no special handling — a smaller
+/// delay simply arrives first.
+pub trait SenderModel<Addr, Msg>: Send {
     fn deliveries(
         &mut self,
         link: &Link<Addr>,
@@ -57,9 +81,10 @@ pub trait NetworkModel<Addr, Msg> {
     ) -> Vec<Duration>;
 }
 
-type LatencyFn<Addr> = Box<dyn FnMut(&Link<Addr>, &mut ChaChaRng) -> Duration>;
-type DropFn<Addr, Msg> = Box<dyn Fn(&Link<Addr>, &Msg) -> bool>;
-type SizeFn<Msg> = Box<dyn Fn(&Msg) -> usize>;
+type LatencyFn<Addr> = Box<dyn Fn(&Link<Addr>, &mut ChaChaRng) -> Duration + Send + Sync>;
+type MinLatencyFn<Addr> = Box<dyn Fn(&Addr, &Addr) -> Duration + Send + Sync>;
+type DropFn<Addr, Msg> = Box<dyn Fn(&Link<Addr>, &Msg) -> bool + Send + Sync>;
+type SizeFn<Msg> = Box<dyn Fn(&Msg) -> usize + Send + Sync>;
 type Partition<Addr> = (Range<Time>, Vec<BTreeSet<Addr>>);
 
 /// One-way base latencies between *regions*, plus a placement of addresses
@@ -110,9 +135,10 @@ impl<Addr: Ord> LatencyMatrix<Addr> {
     }
 }
 
-/// A sender's serial uplink. Messages leave one after another in the order
-/// they are sent, each occupying the link for its size divided by the rate;
-/// a message sent while the link is busy waits its turn.
+/// A serial uplink per sender, configured once for the whole network. Messages
+/// leave one after another in the order they are sent, each occupying the link
+/// for its size divided by the rate; a message sent while the link is busy
+/// waits its turn.
 ///
 /// Sequencing is per message, which models a transport whose messages each
 /// fit one datagram. Anything finer (frames of a larger message interleaving
@@ -121,60 +147,105 @@ struct Egress<Addr, Msg> {
     bits_per_sec: u64,
     rates: BTreeMap<Addr, u64>,
     size_of: SizeFn<Msg>,
-    busy_until: BTreeMap<Addr, Time>,
-}
-
-impl<Addr: Ord + Clone, Msg> Egress<Addr, Msg> {
-    /// The delay from `link.now` until `message` has fully left the sender.
-    fn transmit(&mut self, link: &Link<Addr>, message: &Msg) -> Duration {
-        let rate = self
-            .rates
-            .get(&link.from)
-            .copied()
-            .unwrap_or(self.bits_per_sec);
-        let bits = (self.size_of)(message) as u128 * 8;
-        let nanos = (bits * 1_000_000_000).div_ceil(u128::from(rate));
-        let busy_until = self.busy_until.get(&link.from).copied().unwrap_or(link.now);
-        let start = if busy_until > link.now {
-            busy_until
-        } else {
-            link.now
-        };
-        let done = start + Duration::from_nanos(u64::try_from(nanos).expect("transmit time"));
-        self.busy_until.insert(link.from.clone(), done);
-        done.abs_diff(link.now)
-    }
 }
 
 /// A declarative network model: a base latency plus optional, independent
 /// conditions. Anything left unconfigured behaves reliably.
 pub struct Conditions<Addr, Msg> {
     latency: LatencyFn<Addr>,
+    /// A lower bound on `latency` per link; every sample is checked against it.
+    min_latency: MinLatencyFn<Addr>,
     loss: f64,
     partitions: Vec<Partition<Addr>>,
     drop_if: Option<DropFn<Addr, Msg>>,
     egress: Option<Egress<Addr, Msg>>,
 }
 
-impl<Addr: Ord + Clone, Msg> NetworkModel<Addr, Msg> for Conditions<Addr, Msg> {
+/// [`Conditions`] shared by every stack.
+struct SharedConditions<Addr, Msg>(Arc<Conditions<Addr, Msg>>);
+
+impl<Addr, Msg> NetworkModel<Addr, Msg> for SharedConditions<Addr, Msg>
+where
+    Addr: Ord + Clone + Send + Sync + 'static,
+    Msg: 'static,
+{
+    fn sender(&self, from: &Addr) -> Box<dyn SenderModel<Addr, Msg>> {
+        let rate = self.0.egress.as_ref().map(|egress| {
+            egress
+                .rates
+                .get(from)
+                .copied()
+                .unwrap_or(egress.bits_per_sec)
+        });
+        Box::new(ConditionsSender {
+            conditions: self.0.clone(),
+            rate,
+            busy_until: Time(0),
+        })
+    }
+
+    // egress only adds delay, and loss, partitions and `drop_if` only remove
+    // messages, so the latency bound is the link's bound
+    fn min_delay(&self, from: &Addr, to: &Addr) -> Duration {
+        (self.0.min_latency)(from, to)
+    }
+}
+
+/// One sender's part of [`Conditions`]: its uplink.
+struct ConditionsSender<Addr, Msg> {
+    conditions: Arc<Conditions<Addr, Msg>>,
+    /// The uplink rate, if egress is configured.
+    rate: Option<u64>,
+    busy_until: Time,
+}
+
+/// The delay from `now` until `message` has fully left an uplink of `rate`
+/// that is busy until `busy_until`, which it then extends.
+fn transmit<Msg>(
+    busy_until: &mut Time,
+    rate: u64,
+    size_of: &SizeFn<Msg>,
+    now: Time,
+    message: &Msg,
+) -> Duration {
+    let bits = size_of(message) as u128 * 8;
+    let nanos = (bits * 1_000_000_000).div_ceil(u128::from(rate));
+    let start = (*busy_until).max(now);
+    let done = start + Duration::from_nanos(u64::try_from(nanos).expect("transmit time"));
+    *busy_until = done;
+    done.abs_diff(now)
+}
+
+impl<Addr, Msg> SenderModel<Addr, Msg> for ConditionsSender<Addr, Msg>
+where
+    Addr: Ord + Send + Sync,
+    Msg: 'static,
+{
     fn deliveries(
         &mut self,
         link: &Link<Addr>,
         message: &Msg,
         rng: &mut ChaChaRng,
     ) -> Vec<Duration> {
+        let conditions = &*self.conditions;
         // a message dropped in the network still used the sender's uplink;
         // a node's messages to itself never touch it
-        let transmit = match &mut self.egress {
-            Some(egress) if link.from != link.to => egress.transmit(link, message),
+        let transmit = match (self.rate, &conditions.egress) {
+            (Some(rate), Some(egress)) if link.from != link.to => transmit(
+                &mut self.busy_until,
+                rate,
+                &egress.size_of,
+                link.now,
+                message,
+            ),
             _ => Duration::ZERO,
         };
-        if let Some(drop_if) = &self.drop_if {
+        if let Some(drop_if) = &conditions.drop_if {
             if drop_if(link, message) {
                 return Vec::new();
             }
         }
-        let split = self.partitions.iter().any(|(window, groups)| {
+        let split = conditions.partitions.iter().any(|(window, groups)| {
             window.contains(&link.now)
                 && groups
                     .iter()
@@ -183,10 +254,18 @@ impl<Addr: Ord + Clone, Msg> NetworkModel<Addr, Msg> for Conditions<Addr, Msg> {
         if split {
             return Vec::new();
         }
-        if self.loss > 0.0 && rng.gen::<f64>() < self.loss {
+        if conditions.loss > 0.0 && rng.gen::<f64>() < conditions.loss {
             return Vec::new();
         }
-        vec![transmit + (self.latency)(link, rng)]
+        let latency = (conditions.latency)(link, rng);
+        if link.from != link.to {
+            let bound = (conditions.min_latency)(&link.from, &link.to);
+            assert!(
+                latency >= bound,
+                "sampled latency {latency:?} below the declared minimum {bound:?}"
+            );
+        }
+        vec![transmit + latency]
     }
 }
 
@@ -195,7 +274,7 @@ impl<Addr: Ord + Clone, Msg> NetworkModel<Addr, Msg> for Conditions<Addr, Msg> {
 /// and layer conditions, or supply a [`custom`](Network::custom) model.
 pub enum Network<Addr, Msg> {
     Conditions(Conditions<Addr, Msg>),
-    Custom(Box<dyn NetworkModel<Addr, Msg>>),
+    Custom(Arc<dyn NetworkModel<Addr, Msg>>),
 }
 
 impl<Addr, Msg> Default for Network<Addr, Msg> {
@@ -209,6 +288,7 @@ impl<Addr, Msg> Network<Addr, Msg> {
     pub fn reliable(latency: Duration) -> Self {
         Network::Conditions(Conditions {
             latency: Box::new(move |_, _| latency),
+            min_latency: Box::new(move |_, _| latency),
             loss: 0.0,
             partitions: Vec::new(),
             drop_if: None,
@@ -216,15 +296,17 @@ impl<Addr, Msg> Network<Addr, Msg> {
         })
     }
 
-    /// Latency sampled per message from `distribution`.
-    pub fn with_latency(distribution: impl Distribution<Duration> + 'static) -> Self {
+    /// Latency sampled per message from `distribution`. Its lower bound is
+    /// unknown (0) unless declared with [`min_latency`](Network::min_latency).
+    pub fn with_latency(distribution: impl Distribution<Duration> + Send + Sync + 'static) -> Self {
         Network::with_link_latency(move |_, rng| distribution.sample(rng))
     }
 
     /// Latency chosen per message from the link (sender, receiver, send time)
-    /// and the network's RNG.
+    /// and the sender's RNG. Its lower bound is unknown (0) unless declared with
+    /// [`min_latency`](Network::min_latency).
     pub fn with_link_latency(
-        latency: impl FnMut(&Link<Addr>, &mut ChaChaRng) -> Duration + 'static,
+        latency: impl Fn(&Link<Addr>, &mut ChaChaRng) -> Duration + Send + Sync + 'static,
     ) -> Self {
         let mut network = Network::reliable(Duration::ZERO);
         network.conditions().latency = Box::new(latency);
@@ -232,17 +314,30 @@ impl<Addr, Msg> Network<Addr, Msg> {
     }
 
     /// Base latency from `matrix` for each sender/receiver pair, plus
-    /// `jitter` sampled per message.
+    /// `jitter` sampled per message. The base latency is the link's lower
+    /// bound.
     pub fn with_matrix(
         matrix: LatencyMatrix<Addr>,
-        jitter: impl Distribution<Duration> + 'static,
+        jitter: impl Distribution<Duration> + Send + Sync + 'static,
     ) -> Self
     where
-        Addr: Ord + 'static,
+        Addr: Ord + Send + Sync + 'static,
     {
-        Network::with_link_latency(move |link, rng| {
+        let matrix = Arc::new(matrix);
+        let bound = matrix.clone();
+        let mut network = Network::with_link_latency(move |link, rng| {
             matrix.latency(&link.from, &link.to) + jitter.sample(rng)
-        })
+        });
+        network.conditions().min_latency = Box::new(move |from, to| bound.latency(from, to));
+        network
+    }
+
+    /// Declare a lower bound on every link's latency, for a sampled latency
+    /// whose bound the network cannot know. Every sample is checked against it.
+    /// A parallel swarm uses it as the lookahead between nodes.
+    pub fn min_latency(mut self, bound: Duration) -> Self {
+        self.conditions().min_latency = Box::new(move |_, _| bound);
+        self
     }
 
     /// Give every sender a serial uplink of `bits_per_sec` (see
@@ -250,13 +345,16 @@ impl<Addr, Msg> Network<Addr, Msg> {
     /// occupies it for `size_of(message)` bytes and waits for the messages
     /// the same sender sent before it; its delivery delay is that queueing
     /// and transmission time plus the link latency.
-    pub fn egress(mut self, bits_per_sec: u64, size_of: impl Fn(&Msg) -> usize + 'static) -> Self {
+    pub fn egress(
+        mut self,
+        bits_per_sec: u64,
+        size_of: impl Fn(&Msg) -> usize + Send + Sync + 'static,
+    ) -> Self {
         assert!(bits_per_sec > 0, "egress rate must be positive");
         self.conditions().egress = Some(Egress {
             bits_per_sec,
             rates: BTreeMap::new(),
             size_of: Box::new(size_of),
-            busy_until: BTreeMap::new(),
         });
         self
     }
@@ -279,7 +377,7 @@ impl<Addr, Msg> Network<Addr, Msg> {
 
     /// A fully custom model.
     pub fn custom(model: impl NetworkModel<Addr, Msg> + 'static) -> Self {
-        Network::Custom(Box::new(model))
+        Network::Custom(Arc::new(model))
     }
 
     /// Drop each message independently with probability `probability`.
@@ -307,7 +405,10 @@ impl<Addr, Msg> Network<Addr, Msg> {
     }
 
     /// Drop messages for which `predicate` holds.
-    pub fn drop_if(mut self, predicate: impl Fn(&Link<Addr>, &Msg) -> bool + 'static) -> Self {
+    pub fn drop_if(
+        mut self,
+        predicate: impl Fn(&Link<Addr>, &Msg) -> bool + Send + Sync + 'static,
+    ) -> Self {
         self.conditions().drop_if = Some(Box::new(predicate));
         self
     }
@@ -320,91 +421,174 @@ impl<Addr, Msg> Network<Addr, Msg> {
         }
     }
 
-    fn into_model(self) -> Box<dyn NetworkModel<Addr, Msg>>
+    fn into_model(self) -> Arc<dyn NetworkModel<Addr, Msg>>
     where
-        Addr: Ord + Clone + 'static,
+        Addr: Ord + Clone + Send + Sync + 'static,
         Msg: 'static,
     {
         match self {
-            Network::Conditions(conditions) => Box::new(conditions),
+            Network::Conditions(conditions) => Arc::new(SharedConditions(Arc::new(conditions))),
             Network::Custom(model) => model,
         }
     }
 }
 
-/// The network process: a routing table (type-erased per-node delivery) plus a
-/// [`NetworkModel`] and an independent RNG (kept separate from the engine's
-/// scheduling RNG so network randomness is reproducible on its own).
-pub struct Net<Addr, Msg> {
+/// What every stack shares: the routing table and the model.
+struct Shared<Addr, Msg> {
     routes: BTreeMap<Addr, Deliver<Addr, Msg>>,
-    model: Box<dyn NetworkModel<Addr, Msg>>,
+    model: Arc<dyn NetworkModel<Addr, Msg>>,
+}
+
+/// A node's network stack: a process in the node's domain that sends the
+/// node's messages. It shares the routing table and the model with every other
+/// stack, and owns the sender's part of the model and its own random generator,
+/// seeded from the network seed and a stream per address.
+pub struct Net<Addr, Msg> {
+    addr: Addr,
+    shared: Arc<Shared<Addr, Msg>>,
+    sender: Box<dyn SenderModel<Addr, Msg>>,
     rng: ChaChaRng,
 }
 
 impl<Addr, Msg> Net<Addr, Msg>
 where
-    Addr: Ord + Copy + 'static,
-    Msg: Clone + 'static,
+    Addr: Ord + Copy + Send + Sync + 'static,
+    Msg: Clone + Send + 'static,
 {
-    /// A fresh network with the given model, seeded independently of the engine.
-    pub fn new(seed: u64, network: Network<Addr, Msg>) -> Self {
-        Self {
-            routes: BTreeMap::new(),
-            model: network.into_model(),
-            rng: ChaChaRng::seed_from_u64(seed),
-        }
+    /// The address this stack sends from.
+    pub fn addr(&self) -> Addr {
+        self.addr
     }
 
-    /// Register a node's delivery entry point (see [`crate::deliver_to`]).
-    pub fn register(&mut self, addr: Addr, deliver: Deliver<Addr, Msg>) {
-        self.routes.insert(addr, deliver);
-    }
-
-    /// Drop a node from the routing table (e.g. a restart/removal); messages to
-    /// it are silently discarded thereafter.
-    pub fn deregister(&mut self, addr: &Addr) {
-        self.routes.remove(addr);
-    }
-
-    /// Replace the network model (mid-run reconfiguration).
-    pub fn set_model(&mut self, network: Network<Addr, Msg>) {
-        self.model = network.into_model();
-    }
-
-    /// Send one message `from` -> `to`: apply the model and schedule the
-    /// surviving deliveries. A recipient not in the routing table drops it.
-    pub fn send(&mut self, ctx: &mut Ctx, from: Addr, to: Addr, msg: Msg) {
-        let link = Link {
-            now: ctx.now(),
-            from,
-            to,
-        };
-        let Some(deliver) = self.routes.get(&to).cloned() else {
+    /// Send one message to `to`: apply the model and schedule the surviving
+    /// deliveries. A recipient not in the routing table drops it.
+    pub fn send(&mut self, ctx: &mut Ctx, to: Addr, msg: Msg) {
+        let Some(deliver) = self.shared.routes.get(&to).cloned() else {
             return;
         };
-        let delays = self.model.deliveries(&link, &msg, &mut self.rng);
+        let link = Link {
+            now: ctx.now(),
+            from: self.addr,
+            to,
+        };
+        let delays = self.sender.deliveries(&link, &msg, &mut self.rng);
         match delays.as_slice() {
             [] => {}
-            [delay] => deliver(ctx, ctx.now() + *delay, from, msg),
+            [delay] => deliver(ctx, ctx.now() + *delay, self.addr, msg),
             _ => {
                 for delay in delays {
-                    deliver(ctx, ctx.now() + delay, from, msg.clone());
+                    deliver(ctx, ctx.now() + delay, self.addr, msg.clone());
                 }
             }
         }
     }
 
-    /// Send `msg` to every registered node (including `from` itself, if
-    /// registered). The model is applied independently per recipient.
-    pub fn broadcast(&mut self, ctx: &mut Ctx, from: Addr, msg: Msg) {
-        let targets: Vec<Addr> = self.routes.keys().copied().collect();
-        for to in targets {
-            self.send(ctx, from, to, msg.clone());
+    /// Send `msg` to every registered node (including this one, if registered).
+    /// The model is applied independently per recipient.
+    pub fn broadcast(&mut self, ctx: &mut Ctx, msg: Msg) {
+        let shared = self.shared.clone();
+        for &to in shared.routes.keys() {
+            self.send(ctx, to, msg.clone());
         }
     }
 
     /// The set of currently-routable node addresses.
     pub fn addrs(&self) -> impl Iterator<Item = &Addr> {
-        self.routes.keys()
+        self.shared.routes.keys()
+    }
+}
+
+/// The network under construction or reconfiguration: the model, the routing
+/// table, and a random stream per address. Register every node's delivery, then
+/// spawn each node's stack from [`stack`](Self::stack); after a change
+/// (registration, a new model), [`refresh`](Self::refresh) each live stack.
+///
+/// [`crate::Swarm`] does all of this; use `Wiring` directly to build a swarm by
+/// hand (e.g. with heterogeneous node types).
+pub struct Wiring<Addr, Msg> {
+    seed: u64,
+    shared: Arc<Shared<Addr, Msg>>,
+    /// Each address's RNG stream, in order of first registration.
+    streams: BTreeMap<Addr, u64>,
+}
+
+impl<Addr, Msg> Wiring<Addr, Msg>
+where
+    Addr: Ord + Copy + Send + Sync + 'static,
+    Msg: Clone + Send + 'static,
+{
+    /// A network with the given model; stack generators derive from `seed`.
+    pub fn new(seed: u64, network: Network<Addr, Msg>) -> Self {
+        Self {
+            seed,
+            shared: Arc::new(Shared {
+                routes: BTreeMap::new(),
+                model: network.into_model(),
+            }),
+            streams: BTreeMap::new(),
+        }
+    }
+
+    /// Register a node's delivery entry point (see [`crate::deliver_to`]).
+    pub fn register(&mut self, addr: Addr, deliver: Deliver<Addr, Msg>) {
+        self.stream(addr);
+        let mut routes = self.shared.routes.clone();
+        routes.insert(addr, deliver);
+        self.set_routes(routes);
+    }
+
+    /// Drop a node from the routing table (e.g. a restart/removal); messages to
+    /// it are silently discarded thereafter.
+    pub fn deregister(&mut self, addr: &Addr) {
+        let mut routes = self.shared.routes.clone();
+        routes.remove(addr);
+        self.set_routes(routes);
+    }
+
+    /// Replace the network model (mid-run reconfiguration). Refreshed stacks
+    /// start the new model's sender parts fresh.
+    pub fn set_network(&mut self, network: Network<Addr, Msg>) {
+        self.shared = Arc::new(Shared {
+            routes: self.shared.routes.clone(),
+            model: network.into_model(),
+        });
+    }
+
+    /// The stack for `addr`, sharing the current routes and model.
+    pub fn stack(&mut self, addr: Addr) -> Net<Addr, Msg> {
+        let mut rng = ChaChaRng::seed_from_u64(self.seed);
+        rng.set_stream(self.stream(addr));
+        Net {
+            addr,
+            sender: self.shared.model.sender(&addr),
+            shared: self.shared.clone(),
+            rng,
+        }
+    }
+
+    /// Bring a live stack up to date: the current routes, and with a new model
+    /// a fresh sender part.
+    pub fn refresh(&self, net: &mut Net<Addr, Msg>) {
+        if !Arc::ptr_eq(&net.shared.model, &self.shared.model) {
+            net.sender = self.shared.model.sender(&net.addr);
+        }
+        net.shared = self.shared.clone();
+    }
+
+    /// The model's lower bound on the delay `from` -> `to`.
+    pub fn min_delay(&self, from: &Addr, to: &Addr) -> Duration {
+        self.shared.model.min_delay(from, to)
+    }
+
+    fn stream(&mut self, addr: Addr) -> u64 {
+        let next = self.streams.len() as u64;
+        *self.streams.entry(addr).or_insert(next)
+    }
+
+    fn set_routes(&mut self, routes: BTreeMap<Addr, Deliver<Addr, Msg>>) {
+        self.shared = Arc::new(Shared {
+            routes,
+            model: self.shared.model.clone(),
+        });
     }
 }

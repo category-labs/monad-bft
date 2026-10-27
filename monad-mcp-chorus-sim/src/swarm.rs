@@ -82,6 +82,8 @@ impl<S: SlotConsensus, C: Conductor> CadenceSwarmBuilder<S, C> {
         S: 'static,
         C: 'static,
         C::Message: Clone,
+        CadenceRuntime<S, C>: Send,
+        CadenceWireMsg<S, C>: Send,
     {
         let slot_manager = SlotManager::new(slot_config, slot_context);
         let runtime = CadenceRuntime::new(slot_manager, conductor);
@@ -117,11 +119,13 @@ impl<S: SlotConsensus, C: Conductor> CadenceSwarmBuilder<S, C> {
         slot_context: S::Context,
         planner: ProposalPlanner,
         da: Arc<MockDa>,
-        mut observer: impl FnMut(Timestamp, Slot, &S::FinalizationData) + 'static,
+        mut observer: impl FnMut(Timestamp, Slot, &S::FinalizationData) + Send + 'static,
     ) where
         S: SlotConsensus<LocalIn = ChorusDAEvent> + 'static,
         C: 'static,
         C::Message: Clone,
+        CadenceRuntime<S, C>: Send,
+        CadenceWireMsg<S, C>: Send,
     {
         let planner = Arc::new(Mutex::new(planner));
         let facts = planner.clone();
@@ -179,6 +183,8 @@ impl<S: SlotConsensus, C: Conductor> CadenceSwarmBuilder<S, C> {
         S: 'static,
         C: 'static,
         C::Message: Clone,
+        CadenceRuntime<S, C>: Send,
+        CadenceWireMsg<S, C>: Send,
     {
         CadenceSwarm {
             swarm: build_sim_swarm(self.seed, self.network, self.nodes),
@@ -205,8 +211,8 @@ pub(crate) fn build_sim_swarm<R>(
     nodes: Vec<(NodeId, SimNode<R>)>,
 ) -> Swarm<SimNode<R>>
 where
-    R: Runtime + 'static,
-    R::Message: Clone + 'static,
+    R: Runtime + Send + 'static,
+    R::Message: Clone + Send + 'static,
 {
     let mut swarm = Swarm::build(seed, network, nodes);
     for id in swarm.node_ids() {
@@ -234,6 +240,8 @@ where
     S: SlotConsensus + 'static,
     C: Conductor + 'static,
     C::Message: Clone,
+    CadenceRuntime<S, C>: Send,
+    CadenceWireMsg<S, C>: Send,
 {
     swarm: Swarm<CadenceNode<S, C>>,
     log: FinalizationLog,
@@ -244,6 +252,8 @@ where
     S: SlotConsensus + 'static,
     C: Conductor + 'static,
     C::Message: Clone,
+    CadenceRuntime<S, C>: Send,
+    CadenceWireMsg<S, C>: Send,
 {
     pub fn now(&self) -> Timestamp {
         to_timestamp(self.swarm.simulation().now())
@@ -280,7 +290,7 @@ impl FinalizationLog {
         Self(HashMap::new())
     }
 
-    pub fn allocate(&mut self, node: NodeId) -> impl FnMut(Timestamp, Slot) + 'static {
+    pub fn allocate(&mut self, node: NodeId) -> impl FnMut(Timestamp, Slot) + Send + 'static {
         let log = self.0.entry(node).or_default().clone();
         move |at: Timestamp, slot: Slot| log.lock().expect("not poisoned").push((at, slot))
     }
