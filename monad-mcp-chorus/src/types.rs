@@ -14,13 +14,14 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet},
     hash::Hash,
 };
 
 use alloy_rlp::{Decodable, Encodable, RlpEncodable};
 use arrayvec::ArrayVec;
 use bytes::Bytes;
+use indexmap::IndexMap;
 use monad_mcp_common::spec::{KeyPair as _, Stake as _};
 pub(crate) use monad_mcp_common::{
     Lane, Lanes, MAX_PROPOSER_SET_SIZE, ProposalScope, Slot, Timestamp, TimestampDelta, WindowId,
@@ -60,8 +61,10 @@ where
     V: IsVote,
 {
     scope: <V as IsVote>::Scope,
-    buckets: HashMap<V, HashSet<NodeId>>,
-    votes: HashMap<NodeId, Signature>,
+    // in the order each vote was first cast: a tally, and every certificate
+    // or request built from one, must not depend on a hasher
+    buckets: IndexMap<V, BTreeSet<NodeId>>,
+    votes: BTreeMap<NodeId, Signature>,
 }
 
 impl<V> VotePool<V>
@@ -71,8 +74,8 @@ where
     pub fn new(scope: <V as IsVote>::Scope) -> Self {
         Self {
             scope,
-            buckets: HashMap::new(),
-            votes: HashMap::new(),
+            buckets: IndexMap::new(),
+            votes: BTreeMap::new(),
         }
     }
 
@@ -116,7 +119,7 @@ where
             let voters = self.buckets.get_mut(&held).expect("found above");
             voters.remove(&node_id);
             if voters.is_empty() {
-                self.buckets.remove(&held);
+                self.buckets.shift_remove(&held);
             }
         }
 
@@ -133,7 +136,7 @@ where
     }
 
     // the distinct votes cast, each with its voters
-    pub fn buckets(&self) -> impl Iterator<Item = (&V, &HashSet<NodeId>)> {
+    pub fn buckets(&self) -> impl Iterator<Item = (&V, &BTreeSet<NodeId>)> {
         self.buckets.iter()
     }
 
@@ -452,6 +455,8 @@ impl Decodable for EquivCert {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use alloy_rlp::{RlpDecodableWrapper, RlpEncodableWrapper};
 
     use super::*;

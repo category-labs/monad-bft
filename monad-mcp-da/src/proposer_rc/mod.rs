@@ -323,7 +323,7 @@ impl ProposerRaptorcast {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeSet, HashSet};
+    use std::collections::BTreeSet;
 
     use super::{
         super::{
@@ -733,7 +733,7 @@ mod tests {
 
         let instance =
             ProposerRaptorcast::new(NodeId::dummy(0), epoch_handle.self_id, NOW, timing());
-        let voters = HashSet::from([NodeId::dummy(2), NodeId::dummy(3)]);
+        let voters = BTreeSet::from([NodeId::dummy(2), NodeId::dummy(3)]);
         let missing =
             MissingHeaders::from([(header_a.pid(), voters.clone()), (header_b.pid(), voters)]);
         let pulled = instance.pull_header(missing);
@@ -769,7 +769,7 @@ mod tests {
             &mut egress,
         );
 
-        let voters = HashSet::from([NodeId::dummy(2), NodeId::dummy(3)]);
+        let voters = BTreeSet::from([NodeId::dummy(2), NodeId::dummy(3)]);
         let missing =
             MissingHeaders::from([(header_a.pid(), voters.clone()), (header_b.pid(), voters)]);
         let pulled = instance.pull_header(missing);
