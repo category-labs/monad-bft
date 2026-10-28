@@ -19,6 +19,7 @@ use super::super::{
     chunk::{ChunkRequest, ChunkRequestType, ChunksSubset},
     instance_rc::MissingChunks,
     types::{NodeId, ProposalId, Timestamp, TimestampDelta},
+    util::shuffle_sends,
 };
 
 // the pulls for the chunks the pinned proposal still misses: ours from the
@@ -83,6 +84,7 @@ impl Recovery {
             let subset = mine.clone();
             requests.push((*holder, ChunkRequest { pid, kind, subset }));
         }
+        shuffle_sends(&mut requests, &self.pid, &self.self_id);
         requests
     }
 
@@ -93,6 +95,7 @@ impl Recovery {
         for (owner, subset) in theirs {
             requests.push((owner, ChunkRequest { pid, kind, subset }));
         }
+        shuffle_sends(&mut requests, &self.pid, &self.self_id);
         requests
     }
 }

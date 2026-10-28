@@ -13,16 +13,16 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use super::{
     chunk::{ChunkData, ProposalEnvelope, WireChunkId},
     types::{NodeId, SignedProposalHeader},
 };
 
-// recipients are ordered: the order of sends decides delivery times
+// recipients in send order, which decides delivery times
 pub struct Dissemination {
-    pub to: BTreeSet<NodeId>,
+    pub to: Vec<NodeId>,
     pub envelope: ProposalEnvelope,
 }
 
@@ -44,7 +44,7 @@ impl ChunkEgress {
     // todo: bound the pending buffer
     pub(crate) fn enqueue(
         &mut self,
-        recipients: &BTreeSet<NodeId>,
+        recipients: &[NodeId],
         header: &SignedProposalHeader,
         chunk_id: WireChunkId,
         data: ChunkData,
@@ -61,19 +61,15 @@ impl ChunkEgress {
         let chunks = BTreeMap::from([(chunk_id, data)]);
         let envelope = ProposalEnvelope::new(header.clone(), chunks);
         self.pending.push(Dissemination {
-            to: recipients.clone(),
+            to: recipients.to_vec(),
             envelope,
         });
     }
 
-    pub(crate) fn enqueue_header(
-        &mut self,
-        recipients: &BTreeSet<NodeId>,
-        header: &SignedProposalHeader,
-    ) {
+    pub(crate) fn enqueue_header(&mut self, recipients: &[NodeId], header: &SignedProposalHeader) {
         let envelope = ProposalEnvelope::from_header(header.clone());
         let dissemination = Dissemination {
-            to: recipients.clone(),
+            to: recipients.to_vec(),
             envelope,
         };
         self.pending.push(dissemination);
@@ -105,7 +101,7 @@ mod tests {
         chunk.clone().into_parts()
     }
 
-    fn to(ids: impl IntoIterator<Item = u64>) -> BTreeSet<NodeId> {
+    fn to(ids: impl IntoIterator<Item = u64>) -> Vec<NodeId> {
         ids.into_iter().map(NodeId::dummy).collect()
     }
 
@@ -115,7 +111,7 @@ mod tests {
         egress
     }
 
-    fn enqueue(egress: &mut ChunkEgress, chunk: &Chunk<'_>, recipients: &BTreeSet<NodeId>) {
+    fn enqueue(egress: &mut ChunkEgress, chunk: &Chunk<'_>, recipients: &[NodeId]) {
         let (header, chunk_id, data) = parts(chunk);
         egress.enqueue(recipients, &header, chunk_id, data);
     }
