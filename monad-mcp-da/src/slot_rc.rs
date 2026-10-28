@@ -288,6 +288,11 @@ mod tests {
         ids.into_iter().map(NodeId::dummy).collect()
     }
 
+    // recipients go out in a shuffled order; the tests check who, not when
+    fn set(to: &[NodeId]) -> BTreeSet<NodeId> {
+        to.iter().copied().collect()
+    }
+
     // the wire ids carried by the messages, sorted
     fn chunk_ids<'a>(messages: impl IntoIterator<Item = &'a Dissemination>) -> Vec<WireChunkId> {
         let mut ids = Vec::new();
@@ -331,8 +336,8 @@ mod tests {
         raptorcast.handle_command(ChorusDACommand::ReleaseChunks, NOW);
         let messages = raptorcast.drain_messages();
         assert_eq!(chunk_ids(&messages), [0, 0]);
-        assert_eq!(messages[0].to, nodes([2, 3]));
-        assert_eq!(messages[1].to, nodes([3]));
+        assert_eq!(set(&messages[0].to), nodes([2, 3]));
+        assert_eq!(set(&messages[1].to), nodes([3]));
 
         // released: a repeat a window later is answered at once
         let a_window_later = NOW + timing().serve_window;
@@ -370,7 +375,7 @@ mod tests {
         // our chunk 3 is forwarded on arrival, a repeat is not
         let messages = ingest(&mut raptorcast, group(&chunks[3..4]));
         assert_eq!(chunk_ids(&messages), [3]);
-        assert_eq!(messages[0].to, nodes([2, 3]));
+        assert_eq!(set(&messages[0].to), nodes([2, 3]));
         assert!(ingest(&mut raptorcast, group(&chunks[3..4])).is_empty());
 
         // a chunk we do not own is not ours to forward

@@ -34,7 +34,7 @@ use super::{
         EncodingScheme, MerkleRoot, NodeId, ProposalDAEvent, SignedProposalHeader, Timestamp,
         TimestampDelta,
     },
-    util::Tree,
+    util::{Tree, shuffle_sends},
 };
 use crate::spec::DAProposalHeader as _;
 
@@ -68,7 +68,10 @@ pub(crate) struct RaptorcastInstance {
     assignment: ChunkAssignment,
     // None when this node is outside the assignment (e.g. a full node)
     self_index: Option<NodeIndex>,
-    full_rebroadcast_targets: BTreeSet<NodeId>,
+    // every node of the assignment, in the order we send to them
+    send_order: Vec<NodeId>,
+    // in send order
+    full_rebroadcast_targets: Vec<NodeId>,
     decoding_threshold: usize,
 
     chunks: ChunkTree,
@@ -89,9 +92,11 @@ impl RaptorcastInstance {
         let scheme = header.scheme();
         let assignment = scheme.chunk_assignment(author, &epoch_handle.validator_data);
         let self_index = assignment.index_of(&epoch_handle.self_id);
+        let mut send_order: Vec<NodeId> = assignment.nodes().map(|(_, node)| *node).collect();
+        shuffle_sends(&mut send_order, &header.pid(), &epoch_handle.self_id);
         let full_rebroadcast_targets = match self_index {
-            Some(owner) => assignment.full_rebroadcast_targets(owner),
-            None => BTreeSet::new(),
+            Some(owner) => in_order(&send_order, &assignment.full_rebroadcast_targets(owner)),
+            None => Vec::new(),
         };
         let num_chunks = assignment.num_chunks();
         let decoding_threshold = scheme.num_source_chunks();
@@ -105,6 +110,7 @@ impl RaptorcastInstance {
             header,
             assignment,
             self_index,
+            send_order,
             full_rebroadcast_targets,
             decoding_threshold,
             obligation,
@@ -201,7 +207,10 @@ impl RaptorcastInstance {
         while let Some(chunk_id) = self.pending_rebroadcast.pop_first() {
             let routing = self.assignment.routing(chunk_id);
             match routing.partial_rebroadcast_targets() {
-                Some(partial) => self.enqueue(chunk_id, &partial, egress),
+                Some(partial) => {
+                    let partial = in_order(&self.send_order, &partial);
+                    self.enqueue(chunk_id, &partial, egress);
+                }
                 None => self.enqueue(chunk_id, &self.full_rebroadcast_targets, egress),
             }
         }
@@ -245,7 +254,7 @@ impl RaptorcastInstance {
             // not a validator: the assignment lists them all
             return;
         };
-        let to = BTreeSet::from([*requester]);
+        let to = [*requester];
         // a header counts as one chunk
         if request.subset == ChunksSubset::HeaderOnly {
             if self.serving.grant(requester_index, 1, now) == 1 {
@@ -277,7 +286,7 @@ impl RaptorcastInstance {
     }
 
     // the caller must ensure the chunk is held
-    fn enqueue(&self, chunk_id: ChunkId, to: &BTreeSet<NodeId>, egress: &mut ChunkEgress) {
+    fn enqueue(&self, chunk_id: ChunkId, to: &[NodeId], egress: &mut ChunkEgress) {
         let data = self
             .chunks
             .chunk_data(chunk_id)
@@ -325,6 +334,15 @@ fn verify_proof(
     let leaf_idx = chunk_id.to_wire();
     let leaf = scheme.leaf_hash(leaf_idx, &data.symbol);
     Tree::verify_proof(root, leaf_idx, &leaf, &data.proof)
+}
+
+// the members of `targets`, in send order
+fn in_order(send_order: &[NodeId], targets: &BTreeSet<NodeId>) -> Vec<NodeId> {
+    send_order
+        .iter()
+        .filter(|node| targets.contains(node))
+        .copied()
+        .collect()
 }
 
 #[cfg(test)]
@@ -542,7 +560,7 @@ mod tests {
         };
         assert!(reply.envelope.header_only());
         assert_eq!(reply.envelope.header(), &header);
-        assert_eq!(reply.to, BTreeSet::from([NodeId::dummy(3)]));
+        assert_eq!(reply.to, [NodeId::dummy(3)]);
     }
 
     #[test]

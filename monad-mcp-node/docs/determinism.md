@@ -45,15 +45,24 @@ Hash-container order that reached outputs:
 
 | source | resolution |
 |---|---|
-| `Dissemination.to` (DA `egress.rs`), iterated by the router's DA output handler | `BTreeSet<NodeId>` |
-| `full_rebroadcast_targets`, `partial_rebroadcast_targets` (DA `assignment.rs`) | `BTreeSet<NodeId>` |
+| `Dissemination.to` (DA `egress.rs`), iterated by the router's DA output handler | a `Vec<NodeId>` in send order (see below) |
+| `full_rebroadcast_targets`, `partial_rebroadcast_targets` (DA `assignment.rs`) | `BTreeSet<NodeId>` membership, sent in send order |
 | `unassigned_nodes`, the header-only first-hop recipients | `BTreeSet<NodeIndex>` |
 | `ProposalEnvelope::group` (DA `chunk.rs`) | envelopes in order of each header's first chunk |
-| `MissingChunks`, `missing_chunks`, `everything_missing` (pull recovery to owners) | `BTreeMap<NodeId, _>` |
-| `Recovery.decoded_holders` (pull recovery of our own chunks) | `BTreeSet<NodeId>` |
+| `MissingChunks`, `missing_chunks`, `everything_missing` (pull recovery to owners) | `BTreeMap<NodeId, _>`, requests in send order |
+| `Recovery.decoded_holders` (pull recovery of our own chunks) | `BTreeSet<NodeId>`, requests in send order |
 | `SignatureCollection::signers`/`verify` and the `aggregate`/`try_aggregate` inputs (chorus `spec.rs`, stub env) | `BTreeSet`/`BTreeMap`; their signers address header pulls and decoded-holder hints |
-| `MissingHeaders` voters (header pull fan-out) | `BTreeSet<NodeId>` |
+| `MissingHeaders` voters (header pull fan-out) | `BTreeSet<NodeId>`; DA pulls in send order |
 | `VotePool` buckets, voters and votes (chorus `types.rs`); a tally's bucket order decides weak QC order, timeout certificate groups, header-wait and fallback-wait lists | buckets in an `IndexMap` (first-vote order), voters `BTreeSet`, votes `BTreeMap` |
+
+Send order: an ordered container alone would send to low node ids first,
+every time. DA instead shuffles a sender's rebroadcasts, recovery requests
+and header pulls for one proposal with `util::shuffle_sends`: ChaCha20 seeded
+from Blake3 of (pid, sender). That is uniform over proposals and senders, the
+same in every run and process, and pinned by a test so that it also stays the
+same across releases. The first hop already follows the assignment's holder
+order, which S11 and D33 shuffle per proposal. This stands in for a send
+strategy (prioritized sends) still to be designed.
 
 Hash containers kept, lookup or membership only: DA `authenticated_headers`,
 `ServingTracker.served`, `ProposerRaptorcast.tracked`; chorus availability
