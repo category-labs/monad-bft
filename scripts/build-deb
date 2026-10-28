@@ -53,11 +53,10 @@ EOF
 # pass is enough, and dpkg-shlibdeps below fails the build if anything is
 # missed here.
 #
-# The shared target cache can hold drivers from other builds; monad-node's
-# runpath still points at the one this build linked against.
-triedb=$(ldd target/release/monad-node \
-  | awk '$1 == "libtriedb_driver.so" && $2 == "=>" { print $3 }')
-test -n "$triedb" || { echo "libtriedb_driver.so not resolved from target/release/monad-node" >&2; exit 2; }
+# The newest driver this build's cmake invocation produced; ldd on monad-node
+# can't find it because the rpath link-arg never reaches monad-node's link.
+triedb=$(ls -t target/release/build/monad-triedb-*/out/build/libtriedb_driver.so 2>/dev/null | head -n 1)
+test -n "$triedb" || { echo "libtriedb_driver.so not found under target/release/build" >&2; exit 2; }
 cp "$triedb" "$stage_dir/usr/local/lib/"
 libs=$(ldd "$stage_dir"/usr/local/bin/* "$triedb" \
   | awk -v root="$root_dir/" '$2 == "=>" && index($3, root) == 1 { print $3 }' \

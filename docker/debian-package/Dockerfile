@@ -43,13 +43,9 @@ COPY . .
 # deliberately verified here instead of cloning an unpinned dependency at build time.
 RUN test -f monad-execution/CMakeLists.txt
 
-# Cargo locks its target dir itself, so that cache can stay shared. CMake has no
-# such lock, so the execution build dir is sharing=locked to serialize builds.
-RUN --mount=type=cache,id=monad-bft-cargo-registry,target=/usr/local/cargo/registry \
-    --mount=type=cache,id=monad-bft-cargo-git,target=/usr/local/cargo/git \
-    --mount=type=cache,id=monad-bft-target,target=/src/target \
-    --mount=type=cache,id=monad-bft-execution-build,target=/src/monad-execution/build,sharing=locked \
-    PACKAGE_VERSION="${PACKAGE_VERSION}" DEB_OUTPUT_DIR=/out ./scripts/build-deb
+# No cache mounts: an interrupted build can leave a half-unpacked crate in a
+# persistent registry volume, poisoning later builds. Slower but reproducible.
+RUN PACKAGE_VERSION="${PACKAGE_VERSION}" DEB_OUTPUT_DIR=/out ./scripts/build-deb
 
 FROM scratch
 COPY --from=package /out /out
