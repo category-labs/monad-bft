@@ -16,7 +16,7 @@
 mod obligation_tracker;
 mod serving_tracker;
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 use bytes::Bytes;
 use monad_mcp_chorus::spec::ProposalHeader as _;
@@ -38,7 +38,8 @@ use super::{
 };
 use crate::spec::DAProposalHeader as _;
 
-pub(crate) type MissingChunks = HashMap<NodeId, ChunksSubset>;
+// by owner, ordered: requests go out in this order
+pub(crate) type MissingChunks = BTreeMap<NodeId, ChunksSubset>;
 
 // decoded proposal does not reencode back to root
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,7 +68,7 @@ pub(crate) struct RaptorcastInstance {
     assignment: ChunkAssignment,
     // None when this node is outside the assignment (e.g. a full node)
     self_index: Option<NodeIndex>,
-    full_rebroadcast_targets: HashSet<NodeId>,
+    full_rebroadcast_targets: BTreeSet<NodeId>,
     decoding_threshold: usize,
 
     chunks: ChunkTree,
@@ -90,7 +91,7 @@ impl RaptorcastInstance {
         let self_index = assignment.index_of(&epoch_handle.self_id);
         let full_rebroadcast_targets = match self_index {
             Some(owner) => assignment.full_rebroadcast_targets(owner),
-            None => HashSet::new(),
+            None => BTreeSet::new(),
         };
         let num_chunks = assignment.num_chunks();
         let decoding_threshold = scheme.num_source_chunks();
@@ -213,7 +214,7 @@ impl RaptorcastInstance {
             return None;
         }
 
-        let mut by_owner: HashMap<NodeIndex, Vec<ChunkId>> = HashMap::new();
+        let mut by_owner: BTreeMap<NodeIndex, Vec<ChunkId>> = BTreeMap::new();
         for chunk_id in self.assignment.chunk_ids() {
             if self.chunks.contains(chunk_id) {
                 continue;
@@ -244,7 +245,7 @@ impl RaptorcastInstance {
             // not a validator: the assignment lists them all
             return;
         };
-        let to = HashSet::from([*requester]);
+        let to = BTreeSet::from([*requester]);
         // a header counts as one chunk
         if request.subset == ChunksSubset::HeaderOnly {
             if self.serving.grant(requester_index, 1, now) == 1 {
@@ -276,7 +277,7 @@ impl RaptorcastInstance {
     }
 
     // the caller must ensure the chunk is held
-    fn enqueue(&self, chunk_id: ChunkId, to: &HashSet<NodeId>, egress: &mut ChunkEgress) {
+    fn enqueue(&self, chunk_id: ChunkId, to: &BTreeSet<NodeId>, egress: &mut ChunkEgress) {
         let data = self
             .chunks
             .chunk_data(chunk_id)
@@ -541,7 +542,7 @@ mod tests {
         };
         assert!(reply.envelope.header_only());
         assert_eq!(reply.envelope.header(), &header);
-        assert_eq!(reply.to, HashSet::from([NodeId::dummy(3)]));
+        assert_eq!(reply.to, BTreeSet::from([NodeId::dummy(3)]));
     }
 
     #[test]
