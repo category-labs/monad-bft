@@ -19,6 +19,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  LIBCLANG_PATH: /usr/lib/llvm-20/lib
 
 jobs:
   build:
@@ -40,6 +41,9 @@ jobs:
 
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Install libclang
+        run: sudo apt-get update && sudo apt-get install -y libclang-20-dev
 
       - name: Generate OpenRPC documentation
         run: cargo run --bin monad-rpc-docs | jq . > openrpc.json
