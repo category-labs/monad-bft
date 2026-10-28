@@ -4,7 +4,7 @@ set -eu
 root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 output_dir=${DEB_OUTPUT_DIR:-"$root_dir/dist"}
 strip_symbols=${STRIP_SYMBOLS:-0}
-# Stage outside target/, which is a shared cache mount in container builds.
+# Stage outside target/, which may be a shared cache mount in container builds.
 stage_root=$(mktemp -d)
 trap 'rm -rf "$stage_root"' EXIT
 stage_dir="$stage_root/debian/monad"
@@ -53,8 +53,6 @@ EOF
 # pass is enough, and dpkg-shlibdeps below fails the build if anything is
 # missed here.
 #
-# The newest driver this build's cmake invocation produced; ldd on monad-node
-# can't find it because the rpath link-arg never reaches monad-node's link.
 triedb=$(ls -t target/release/build/monad-triedb-*/out/build/libtriedb_driver.so 2>/dev/null | head -n 1)
 test -n "$triedb" || { echo "libtriedb_driver.so not found under target/release/build" >&2; exit 2; }
 cp "$triedb" "$stage_dir/usr/local/lib/"
