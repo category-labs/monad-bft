@@ -25,7 +25,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  LIBCLANG_PATH: /usr/lib/llvm-20/lib
+  LIBCLANG_PATH: /usr/lib/llvm-19/lib
 
   ASMFLAGS: -march=haswell
   CC: gcc-15
@@ -69,7 +69,7 @@ jobs:
             libgmp-dev \
             libsecp256k1-dev \
             libzstd-dev \
-            libclang-20-dev \
+            libclang-19-dev \
             gcc-15 \
             g++-15 \
             libhugetlbfs-dev \
