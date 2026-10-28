@@ -5,6 +5,9 @@ cadence_key_pair = 0
 # unix milliseconds, shared by every node of the chain. a node started
 # later catches up on the slots it missed.
 genesis_deadline = 1789412000000
+# seeds the node's randomness (random payloads); absent: OS entropy.
+# Simulations set it so that a run is a function of its seeds.
+# seed = 1
 
 [[validators]]
 node_id = 0

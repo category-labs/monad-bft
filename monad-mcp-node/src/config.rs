@@ -18,6 +18,8 @@ use std::{collections::HashMap, fmt, net::SocketAddr, num::NonZeroU64, path::Pat
 use alloy_rlp::Encodable as _;
 use monad_mcp_chorus::ledger::BatchBuilder;
 use monad_mcp_common::{Timestamp, TimestampDelta, spec::KeyPair as _};
+use rand::SeedableRng as _;
+use rand_chacha::ChaCha8Rng;
 use serde::Deserialize;
 
 use crate::{
@@ -63,6 +65,10 @@ pub struct NodeConfig {
     #[serde(default)]
     pub mempool: MempoolConfig,
     pub ledger: LedgerConfig,
+    // seeds the node's randomness (random payloads); absent: OS entropy.
+    // A simulation sets it so that a run is a function of its seeds.
+    #[serde(default)]
+    pub seed: Option<u64>,
 }
 
 impl NodeConfig {
@@ -98,6 +104,15 @@ impl NodeConfig {
             ledger: LedgerConfig {
                 dir: ledger_dir.into(),
             },
+            seed: None,
+        }
+    }
+
+    // the generator behind the node's randomness, from the seed if set
+    pub fn rng(&self) -> ChaCha8Rng {
+        match self.seed {
+            Some(seed) => ChaCha8Rng::seed_from_u64(seed),
+            None => ChaCha8Rng::from_entropy(),
         }
     }
 

@@ -458,11 +458,11 @@ impl LedgerReader {
         }
     }
 
-    // a follower that skips the blocks present now.
-    pub fn follow_from_now(&self) -> Result<LedgerFollower, LedgerError> {
+    // a follower that skips the blocks present at `now`.
+    pub fn follow_from_now(&self, now: Instant) -> Result<LedgerFollower, LedgerError> {
         Ok(LedgerFollower {
             seen: self.scan()?.into_iter().collect(),
-            last_scan: Some(Instant::now()),
+            last_scan: Some(now),
             ..self.follow()
         })
     }
@@ -490,10 +490,11 @@ impl LedgerFollower {
     // metas of up to `limit` new blocks, lowest slot first; unreadable ones are skipped once.
     // probes the slots near the highest seen one; a block written further off waits for the
     // full listing done every rescan interval, which is O(n log n) in the blocks on disk.
-    pub fn poll(&mut self, limit: usize) -> Result<Vec<BlockMeta>, LedgerError> {
+    // the caller's clock decides when a rescan is due.
+    pub fn poll(&mut self, now: Instant, limit: usize) -> Result<Vec<BlockMeta>, LedgerError> {
         let due = self
             .last_scan
-            .is_none_or(|at| at.elapsed() >= self.rescan_interval);
+            .is_none_or(|at| now.saturating_duration_since(at) >= self.rescan_interval);
         let high = self.seen.last().copied();
         let mut blocks = Vec::new();
         let mut budget = limit;
@@ -512,7 +513,7 @@ impl LedgerFollower {
             }
             _ => {
                 let slots = self.reader.scan()?;
-                self.last_scan = Some(Instant::now());
+                self.last_scan = Some(now);
                 let on_disk: BTreeSet<u64> = slots.iter().copied().collect();
                 self.seen.retain(|slot| on_disk.contains(slot));
                 self.take(slots, &mut budget, &mut blocks);
@@ -1003,12 +1004,18 @@ mod tests {
         let mut follower = reader.follow();
         writer.write(&block(10)).unwrap();
         writer.write(&block(12)).unwrap();
-        assert_eq!(slots_of(&follower.poll(usize::MAX).unwrap()), [10, 12]);
+        assert_eq!(
+            slots_of(&follower.poll(Instant::now(), usize::MAX).unwrap()),
+            [10, 12]
+        );
         let cursor = reader.since(None, usize::MAX).unwrap().cursor;
 
         writer.write(&block(11)).unwrap();
-        assert_eq!(slots_of(&follower.poll(usize::MAX).unwrap()), [11]);
-        assert_eq!(follower.poll(usize::MAX).unwrap(), vec![]);
+        assert_eq!(
+            slots_of(&follower.poll(Instant::now(), usize::MAX).unwrap()),
+            [11]
+        );
+        assert_eq!(follower.poll(Instant::now(), usize::MAX).unwrap(), vec![]);
         // the slot cursor of `since` cannot see it.
         assert_eq!(reader.since(cursor, usize::MAX).unwrap().blocks, vec![]);
     }
@@ -1019,20 +1026,23 @@ mod tests {
         for slot in [3, 1] {
             writer.write(&block(slot)).unwrap();
         }
-        let mut from_now = reader.follow_from_now().unwrap();
+        let mut from_now = reader.follow_from_now(Instant::now()).unwrap();
         let mut all = reader.follow();
         for slot in [9, 5, 7] {
             writer.write(&block(slot)).unwrap();
         }
-        assert_eq!(slots_of(&all.poll(2).unwrap()), [1, 3]);
+        assert_eq!(slots_of(&all.poll(Instant::now(), 2).unwrap()), [1, 3]);
         writer.write(&block(2)).unwrap();
-        assert_eq!(slots_of(&all.poll(2).unwrap()), [2, 5]);
-        assert_eq!(slots_of(&all.poll(2).unwrap()), [7, 9]);
-        assert_eq!(all.poll(2).unwrap(), vec![]);
-        assert_eq!(all.poll(0).unwrap(), vec![]);
+        assert_eq!(slots_of(&all.poll(Instant::now(), 2).unwrap()), [2, 5]);
+        assert_eq!(slots_of(&all.poll(Instant::now(), 2).unwrap()), [7, 9]);
+        assert_eq!(all.poll(Instant::now(), 2).unwrap(), vec![]);
+        assert_eq!(all.poll(Instant::now(), 0).unwrap(), vec![]);
 
-        assert_eq!(slots_of(&from_now.poll(usize::MAX).unwrap()), [2, 5, 7, 9]);
-        assert_eq!(from_now.poll(usize::MAX).unwrap(), vec![]);
+        assert_eq!(
+            slots_of(&from_now.poll(Instant::now(), usize::MAX).unwrap()),
+            [2, 5, 7, 9]
+        );
+        assert_eq!(from_now.poll(Instant::now(), usize::MAX).unwrap(), vec![]);
     }
 
     #[test]
@@ -1044,13 +1054,16 @@ mod tests {
         fs::write(reader.block_dir(3).join(META_FILE), b"garbage").unwrap();
         let mut follower = reader.follow();
         follower.rescan_interval = Duration::ZERO;
-        assert_eq!(slots_of(&follower.poll(usize::MAX).unwrap()), [1, 2, 4]);
+        assert_eq!(
+            slots_of(&follower.poll(Instant::now(), usize::MAX).unwrap()),
+            [1, 2, 4]
+        );
         assert_eq!(follower.seen, BTreeSet::from([1, 2, 3, 4]));
-        assert_eq!(follower.poll(usize::MAX).unwrap(), vec![]);
+        assert_eq!(follower.poll(Instant::now(), usize::MAX).unwrap(), vec![]);
 
         fs::remove_dir_all(reader.block_dir(1)).unwrap();
         fs::remove_dir_all(reader.block_dir(3)).unwrap();
-        assert_eq!(follower.poll(usize::MAX).unwrap(), vec![]);
+        assert_eq!(follower.poll(Instant::now(), usize::MAX).unwrap(), vec![]);
         assert_eq!(follower.seen, BTreeSet::from([2, 4]));
     }
 
@@ -1065,7 +1078,7 @@ mod tests {
                 let mut yielded = Vec::new();
                 loop {
                     let finished = done.load(Ordering::Acquire);
-                    let got = slots_of(&follower.poll(7).unwrap());
+                    let got = slots_of(&follower.poll(Instant::now(), 7).unwrap());
                     if finished && got.is_empty() {
                         return yielded;
                     }
@@ -1091,7 +1104,7 @@ mod tests {
     fn follower_probes_near_slots_and_rescans_for_far_ones() {
         let (_dir, writer, reader) = setup();
         writer.write(&block(1000)).unwrap();
-        let mut follower = reader.follow_from_now().unwrap();
+        let mut follower = reader.follow_from_now(Instant::now()).unwrap();
         let far = 1000 + 3 * FOLLOW_PROBE_WINDOW + 1;
         for slot in [
             1001,
@@ -1103,17 +1116,20 @@ mod tests {
         }
         // a full probe window holds no block between the second and `far`
         assert_eq!(
-            slots_of(&follower.poll(usize::MAX).unwrap()),
+            slots_of(&follower.poll(Instant::now(), usize::MAX).unwrap()),
             [1000 - FOLLOW_PROBE_WINDOW, 1001, 1001 + FOLLOW_PROBE_WINDOW]
         );
         writer.write(&block(1)).unwrap();
-        assert_eq!(follower.poll(usize::MAX).unwrap(), vec![]);
+        assert_eq!(follower.poll(Instant::now(), usize::MAX).unwrap(), vec![]);
 
         fs::remove_dir_all(reader.block_dir(1000)).unwrap();
         follower.rescan_interval = Duration::ZERO;
-        assert_eq!(slots_of(&follower.poll(usize::MAX).unwrap()), [1, far]);
+        assert_eq!(
+            slots_of(&follower.poll(Instant::now(), usize::MAX).unwrap()),
+            [1, far]
+        );
         assert!(!follower.seen.contains(&1000));
-        assert_eq!(follower.poll(usize::MAX).unwrap(), vec![]);
+        assert_eq!(follower.poll(Instant::now(), usize::MAX).unwrap(), vec![]);
     }
 
     #[test]

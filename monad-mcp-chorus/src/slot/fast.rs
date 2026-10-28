@@ -1142,7 +1142,7 @@ impl Decodable for FastCommitVote {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use std::collections::BTreeSet;
 
     use monad_mcp_common::spec::KeyPair as _;
 
@@ -1519,7 +1519,7 @@ mod tests {
         }
         let _ = drain_commands(&mut fast);
 
-        let voters = HashSet::from([NodeId::dummy(0), NodeId::dummy(3)]);
+        let voters = BTreeSet::from([NodeId::dummy(0), NodeId::dummy(3)]);
         let pull = ChorusDACommand::PullHeader {
             j: Lane::new_unchecked(0),
             missing: MissingHeaders::from([(pid(1), voters)]),
@@ -1551,8 +1551,8 @@ mod tests {
 
         let _ = fast.try_fallback_transition();
         let missing = vec![
-            (pid(1), HashSet::from([NodeId::dummy(0), NodeId::dummy(3)])),
-            (pid(2), HashSet::from([NodeId::dummy(2)])),
+            (pid(1), BTreeSet::from([NodeId::dummy(0), NodeId::dummy(3)])),
+            (pid(2), BTreeSet::from([NodeId::dummy(2)])),
         ];
         let pull = ChorusDACommand::PullHeader {
             j: Lane::new_unchecked(0),
@@ -1578,7 +1578,7 @@ mod tests {
 
         let outcome = fast.try_fallback_transition();
         assert!(matches!(outcome, FallbackTransitionOutcome::Waiting));
-        let missing = vec![(pid(2), HashSet::from([NodeId::dummy(2)]))];
+        let missing = vec![(pid(2), BTreeSet::from([NodeId::dummy(2)]))];
         let pull = ChorusDACommand::PullHeader {
             j: Lane::new_unchecked(0),
             missing,

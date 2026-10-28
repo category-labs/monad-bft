@@ -15,7 +15,7 @@
 
 use std::{
     borrow::Cow,
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet},
 };
 
 use bytes::Bytes;
@@ -191,20 +191,25 @@ impl ProposalEnvelope {
         Self::new(header, BTreeMap::new())
     }
 
-    // group chunks by header. each header appears once.
+    // group chunks by header. each header appears once, in the order of
+    // its first chunk.
     pub fn group<'a>(chunks: impl IntoIterator<Item = Chunk<'a>>) -> impl Iterator<Item = Self> {
-        let mut groups: HashMap<SignedProposalHeader, BTreeMap<WireChunkId, ChunkData>> =
-            HashMap::new();
+        // usually one or two headers: a linear search, newest group first
+        let mut groups: Vec<(SignedProposalHeader, BTreeMap<WireChunkId, ChunkData>)> = Vec::new();
         for chunk in chunks {
             let (header, chunk_id, data) = chunk.into_parts();
-            groups.entry(header).or_default().insert(chunk_id, data);
+            let i = match groups.iter().rposition(|(seen, _)| *seen == header) {
+                Some(i) => i,
+                None => {
+                    groups.push((header, BTreeMap::new()));
+                    groups.len() - 1
+                }
+            };
+            groups[i].1.insert(chunk_id, data);
         }
-
-        let mut envelopes = Vec::with_capacity(groups.len());
-        for (header, chunks) in groups {
-            envelopes.push(Self::new(header, chunks));
-        }
-        envelopes.into_iter()
+        groups
+            .into_iter()
+            .map(|(header, chunks)| Self::new(header, chunks))
     }
 
     pub fn header(&self) -> &SignedProposalHeader {

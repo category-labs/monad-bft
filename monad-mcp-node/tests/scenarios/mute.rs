@@ -34,12 +34,13 @@ fn six_of_eight_finalize_beside_two_mute_nodes() {
     const VALIDATORS: u64 = 8;
     const MUTE: u64 = 2;
     const SLOTS: u64 = 60;
+    const SEED: u64 = 0xC0FFEE;
 
     let network = Network::reliable(Duration::from_millis(10));
     let mut nodes = Vec::new();
     for id in 0..VALIDATORS {
         let node_id = NodeId::dummy(id);
-        let node = Node::new(&node_config(id, VALIDATORS)).expect("config builds");
+        let node = Node::new(&node_config(SEED, id, VALIDATORS)).expect("config builds");
         let sim_node = if id < MUTE {
             let node = node.map_router(|router| Tampered::from(router).tamper_post(drop_network));
             SimNode::new(node_id, node)
@@ -49,7 +50,7 @@ fn six_of_eight_finalize_beside_two_mute_nodes() {
         nodes.push((node_id, sim_node));
     }
 
-    let mut swarm = Swarm::build(0xC0FFEE, network, nodes);
+    let mut swarm = Swarm::build(SEED, network, nodes);
     for id in swarm.node_ids() {
         let handle = swarm.handle(&id).expect("node just built");
         let sim = swarm.sim();

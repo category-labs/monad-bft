@@ -131,7 +131,7 @@ impl AssembledProposal {
             chunks.push((chunk_id, data));
         }
 
-        let header_only = self.assignment.unassigned_nodes().iter().copied().collect();
+        let header_only = self.assignment.unassigned_nodes().to_vec();
 
         FirstHopDissemination {
             header: &self.header,
