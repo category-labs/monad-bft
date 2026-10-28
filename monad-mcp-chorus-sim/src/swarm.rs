@@ -16,7 +16,8 @@
 use std::{cell::RefCell, collections::HashMap, rc::Rc, time::Duration};
 
 use chorus::{
-    CadenceRuntime, Conductor, FinalizationObserver, Runtime, SlotConsensus, SlotManager,
+    CadenceRuntime, Conductor, DataAvailability, FinalizationObserver, NodeRuntime, Runtime,
+    SlotConsensus, SlotManager,
     types::{NodeId, Slot, Timestamp},
 };
 use monad_mcp_chorus::stub as chorus;
@@ -48,6 +49,10 @@ impl<M> CadenceSwarmBuilder<M> {
         self.network = Network::reliable(latency);
     }
 
+    pub fn set_network(&mut self, network: Network<NodeId, M>) {
+        self.network = network;
+    }
+
     pub fn set_seed(&mut self, seed: u64) {
         self.seed = seed;
     }
@@ -76,6 +81,46 @@ impl<M> CadenceSwarmBuilder<M> {
         }
 
         self.add_generic_node(id, runtime);
+    }
+
+    /// A node whose data-availability layer is `da`. The returned log keeps
+    /// the certificate behind each finalization, which the swarm's own log
+    /// does not.
+    pub fn add_node_with_da<S, C, A>(
+        &mut self,
+        id: NodeId,
+        conductor: C,
+        slot_config: S::Config,
+        slot_context: S::Context,
+        da: A,
+    ) -> SlotLog<S::FinalizationData>
+    where
+        M: Clone + 'static,
+        S: SlotConsensus + 'static,
+        C: Conductor + 'static,
+        A: DataAvailability<S> + 'static,
+        NodeRuntime<S, C, A>: Runtime<M>,
+    {
+        let slot_manager = SlotManager::new(slot_config, slot_context);
+        let mut runtime = CadenceRuntime::<S, C>::new(slot_manager, conductor);
+
+        let mut shared = self.track_logs.then(|| {
+            self.log
+                .allocate::<S::OptimisticCommitData, S::FinalizationData>(id)
+        });
+        let log = SlotLog::default();
+        let recorder = log.clone();
+        runtime.on_finalization(
+            move |at: Timestamp, slot: Slot, data: &S::FinalizationData| {
+                if let Some(shared) = &mut shared {
+                    shared.handle_finalization(at, slot, data);
+                }
+                recorder.borrow_mut().push((at, slot, data.clone()));
+            },
+        );
+
+        self.add_generic_node(id, NodeRuntime::new(runtime, da));
+        log
     }
 
     pub fn add_generic_node(&mut self, id: NodeId, runtime: impl Runtime<M> + 'static)
@@ -160,6 +205,9 @@ where
         &mut self.swarm
     }
 }
+
+/// One node's finalizations with the data behind them
+pub type SlotLog<FD> = Rc<RefCell<Vec<(Timestamp, Slot, FD)>>>;
 
 // Per-node finalization histories, shared with the observers planted in
 // the runtimes.

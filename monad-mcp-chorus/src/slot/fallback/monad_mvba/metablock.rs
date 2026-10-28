@@ -53,7 +53,7 @@ impl Metablock {
     }
 
     /// `entries(B)`, in increasing order of proposer index
-    pub(crate) fn entries(&self) -> ProposalMap<Entry> {
+    pub fn entries(&self) -> ProposalMap<Entry> {
         self.0.as_ref().map(CertifiedEntry::entry)
     }
 }
