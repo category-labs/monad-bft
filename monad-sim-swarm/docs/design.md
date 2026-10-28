@@ -64,6 +64,43 @@ traffic is out of scope. Scheduling *policy*, such as priority queues, belongs
 to the node: a node decides in which order it hands messages to the net, and
 the net transmits them in that order.
 
+### Topology presets
+
+`topology.rs` builds `LatencyMatrix` values; the network model itself does
+not know about it.
+
+A `RegionTable` is a square table of one-way latencies between named
+regions, plus a weight per region and a `Provenance`: a name, the source of
+the numbers, and the date they were measured or entered. Every table records
+where its numbers come from, and says so when they are approximations.
+
+Every entry must be positive, the diagonal included: nodes in the same
+region still have a positive one-way latency. `with_matrix` adds jitter as a
+`Duration`, so never negative, which makes each entry a true per-link lower
+bound. A scheduler that needs a lower bound on link delays can take
+`min_latency()` or the entries themselves. A measured RTT matrix usually has
+a zero diagonal; the caller replaces it before building a table.
+
+The crate ships one approximate geographic table and a few synthetic shapes
+for tests (one region, two clusters, ring, star). Measured matrices of
+specific deployments are project data: the consumer that owns them builds a
+`RegionTable` with `new` or `from_rtt`, or loads one from its own files.
+
+A `Placer` turns a table into a node-level topology:
+
+- Region counts are apportioned to the weights by largest remainder (ties go
+  to the lower region index), so 100 nodes over weights summing to 100 match
+  them exactly. A shuffle then decides which address goes where.
+- An optional last mile per node, uniform over a range, is added at both
+  ends of every link. Without it the matrix stays region-level and small;
+  with it, it has one row per node.
+- Stake is equal, or log-normal and normalized to sum to 1.
+
+Randomness comes only from the RNG passed to `place`, drawn in a fixed order
+(shuffle, last miles, stakes), so a seed reproduces the placement. The
+placer holds no state between calls, and the matrix it yields is immutable
+data.
+
 ## The type-erased delivery boundary
 
 `Net` routes to nodes through `Deliver<Addr, Msg>` thunks (built by

@@ -33,6 +33,8 @@ engine.
   A model returns the delays at which *copies* of a message are delivered: an
   empty result drops it, more than one duplicates it, and reordering needs no
   special handling — a smaller delay simply arrives first.
+- **`RegionTable` / `Placer`** — predefined latency topologies (see
+  [Topologies](#topologies)).
 - **`Deliver` / `deliver_to`** — a *type-erased* per-node delivery thunk, so
   the network only ever names `Addr` and `Msg`. One net can therefore carry
   heterogeneous node process types (different protocol versions, a Byzantine
@@ -85,6 +87,38 @@ for a in 0..3 {
 Determinism comes from the engine; the net additionally keeps its own
 independently-seeded RNG, so network randomness is reproducible on its own.
 
+## Topologies
+
+A `RegionTable` holds one-way latencies between named regions, a weight per
+region, and its provenance (name, source, date). Every entry, including the
+diagonal, is positive. Presets:
+
+| preset | regions | source |
+|---|---|---|
+| `RegionTable::public_internet()` | FRA, AMS, LON, NYC, CHI, LAX, SGP, TYO, SYD, SAO | hand-entered approximate p50 RTTs, halved; not a measurement |
+| `RegionTable::single_region(local)` | 1 | synthetic |
+| `RegionTable::two_clusters(near, far)` | 2 | synthetic |
+| `RegionTable::ring(n, local, hop)` | n | synthetic |
+| `RegionTable::star(leaves, local, spoke)` | hub + leaves | synthetic |
+
+`RegionTable::new` and `RegionTable::from_rtt` build your own, for example
+from a measured matrix of a specific deployment; such data belongs with the
+code that uses it, not in this crate.
+
+A `Placer` spreads nodes over a table's regions in proportion to the weights,
+optionally with a per-node last mile and stake weights. It draws only from the
+RNG it is given:
+
+```rust
+let table = RegionTable::public_internet();
+let placement = Placer::new(&table)
+    .last_mile(micros(300)..=millis(4))
+    .stake(Stake::LogNormal { sigma: 1.0 })
+    .place(0..100u32, &mut ChaChaRng::seed_from_u64(seed));
+let network = Network::with_matrix(placement.matrix(), jitter);
+// placement.nodes(): region, last mile and stake share per address
+```
+
 ## Inspection & lifecycle
 
 `with_node` / `with_node_mut` inspect or mutate a node between steps;
@@ -99,4 +133,5 @@ cargo test -p monad-sim-swarm
 ```
 
 `tests/swarm.rs` demonstrates heterogeneous node types sharing one network,
-the swarm broadcast, and predicate drops.
+the swarm broadcast, and predicate drops. `tests/network.rs` covers the
+latency matrix and egress, and `tests/topology.rs` the presets and the placer.
