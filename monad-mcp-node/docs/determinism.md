@@ -87,5 +87,13 @@ keccak256 (of the header's rlp encoding, and of the signed bytes), not std's
 `DefaultHasher`, whose algorithm and derived-`Hash` input Rust does not
 promise to keep across releases. With that, a seeded run should be the same
 across releases too, except where a dependency changes its output (rand,
-rand_chacha, blake3) or floating point differs: the random payload length
-goes through `log2`/`powf`. Tests pin the send order and the digest.
+rand_chacha, blake3). Tests pin the send order, the digest and the random
+payload lengths.
+
+Platforms: simulated code avoids transcendental float functions (`log2`,
+`powf`, `ln`, `exp`, ...). libm does not round them correctly, and results
+differ in the last bit between platforms (macOS vs Linux, FMA vs no FMA on
+arm and x86), so a seeded run could diverge between machines. The random
+payload length is drawn with integers only. Basic float operations (`+`,
+`*`, `ceil`, comparisons) are exact under IEEE 754 and safe; the network's
+loss draw and DA's chunk counts use only those.
