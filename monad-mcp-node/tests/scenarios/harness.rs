@@ -16,7 +16,11 @@
 //! A sync `Node` as a monad-sim process, and the checks the scenarios
 //! share.
 
-use std::{collections::BTreeMap, net::SocketAddr};
+use std::{
+    collections::BTreeMap,
+    hash::{DefaultHasher, Hash as _, Hasher as _},
+    net::SocketAddr,
+};
 
 use monad_mcp_common::{Lanes, Slot, Timestamp, TimestampDelta};
 use monad_mcp_node::{
@@ -59,6 +63,8 @@ pub struct SimNode {
     id: NodeId,
     node: Box<dyn Component<Input = NodeInbound, Output = NodeOutput>>,
     finalized: BTreeMap<Slot, Pattern>,
+    // every message delivered to this node, with its time, in delivery order
+    deliveries: DefaultHasher,
     // the one live timer step, at the node's last polled next_due
     due_alarm: Option<(Time, CancelToken)>,
     me: Option<Handle<Self>>,
@@ -74,6 +80,7 @@ impl SimNode {
             id,
             node: Box::new(node),
             finalized: BTreeMap::new(),
+            deliveries: DefaultHasher::new(),
             due_alarm: None,
             me: None,
             net: None,
@@ -151,6 +158,16 @@ impl SimNode {
         &self.finalized
     }
 
+    fn record_delivery(&mut self, at: Time, from: NodeId, message: &NodeMessage) {
+        let (kind, bytes) = match message {
+            NodeMessage::Cadence(bytes) => (0u8, bytes),
+            NodeMessage::Chunk(bytes) => (1, bytes),
+            NodeMessage::ChunkRequest(bytes) => (2, bytes),
+            NodeMessage::Tx(bytes) => (3, bytes),
+        };
+        (at.0, from, kind, bytes.as_ref()).hash(&mut self.deliveries);
+    }
+
     // every log line of a step names its node
     fn span(&self) -> tracing::Span {
         tracing::info_span!("node", id = u64::from(self.id))
@@ -168,6 +185,7 @@ impl SimClient for SimNode {
 
     fn receive(&mut self, from: NodeId, message: NodeMessage, ctx: &mut Ctx) {
         let _span = self.span().entered();
+        self.record_delivery(ctx.now(), from, &message);
         // the node loops its own messages back itself
         if from == self.id {
             return;
@@ -228,6 +246,19 @@ pub fn node_config(seed: u64, id: u64, validators: u64) -> NodeConfig {
         },
         seed: Some(node_seed(seed, id)),
     }
+}
+
+// a digest of the run: per node, the finalized history and every delivered
+// message with its time. DefaultHasher::new() has fixed keys, so the digest is
+// comparable across processes of the same build.
+pub fn run_digest(swarm: &Swarm<SimNode>) -> u64 {
+    let mut digest = DefaultHasher::new();
+    for id in swarm.node_ids() {
+        swarm.with_node(&id, |node| {
+            (id, &node.finalized, node.deliveries.finish()).hash(&mut digest);
+        });
+    }
+    digest.finish()
 }
 
 // every slot below the horizon finalized everywhere, with agreed-upon pattern
