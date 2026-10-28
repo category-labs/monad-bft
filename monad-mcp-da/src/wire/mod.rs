@@ -27,7 +27,7 @@ use super::{
     chunk::{Chunk, ChunkData, ProposalEnvelope, WireChunkId},
     encoding_scheme::DAEncodingScheme,
     types::{
-        D25, EncodingScheme, MerkleRoot, ProposalHeader, ProposalSignature, S11,
+        D25, D33, EncodingScheme, MerkleRoot, ProposalHeader, ProposalSignature, S11,
         SignedProposalHeader,
     },
 };
@@ -100,6 +100,7 @@ impl PacketLayout for EncodingScheme {
         match self {
             Self::D25(d25) => d25.v1_layout().signed_bytes(root, out),
             Self::S11(s11) => s11.v1_layout().signed_bytes(root, out),
+            Self::D33(d33) => d33.v1_layout().signed_bytes(root, out),
         }
     }
 
@@ -107,6 +108,7 @@ impl PacketLayout for EncodingScheme {
         match self {
             Self::D25(d25) => d25.v1_layout().write_header(root, sig, out),
             Self::S11(s11) => s11.v1_layout().write_header(root, sig, out),
+            Self::D33(d33) => d33.v1_layout().write_header(root, sig, out),
         }
     }
 
@@ -114,6 +116,7 @@ impl PacketLayout for EncodingScheme {
         match self {
             Self::D25(d25) => d25.v1_layout().header_len(),
             Self::S11(s11) => s11.v1_layout().header_len(),
+            Self::D33(d33) => d33.v1_layout().header_len(),
         }
     }
 
@@ -121,6 +124,7 @@ impl PacketLayout for EncodingScheme {
         match self {
             Self::D25(d25) => d25.v1_layout().write_body(chunk_id, data, out),
             Self::S11(s11) => s11.v1_layout().write_body(chunk_id, data, out),
+            Self::D33(d33) => d33.v1_layout().write_body(chunk_id, data, out),
         }
     }
 
@@ -128,6 +132,7 @@ impl PacketLayout for EncodingScheme {
         match self {
             Self::D25(d25) => d25.v1_layout().body_len(),
             Self::S11(s11) => s11.v1_layout().body_len(),
+            Self::D33(d33) => d33.v1_layout().body_len(),
         }
     }
 
@@ -135,6 +140,7 @@ impl PacketLayout for EncodingScheme {
         match self {
             Self::D25(d25) => d25.v1_layout().symbol_len(),
             Self::S11(s11) => s11.v1_layout().symbol_len(),
+            Self::D33(d33) => d33.v1_layout().symbol_len(),
         }
     }
 }
@@ -156,6 +162,7 @@ pub fn read_chunk(bytes: Bytes) -> Result<Chunk<'static>, MalformedPacket> {
     match scheme_variant(&bytes)? {
         D25::VARIANT => v1::Layout::<D25>::read_chunk(bytes),
         S11::VARIANT => v1::Layout::<S11>::read_chunk(bytes),
+        D33::VARIANT => v1::Layout::<D33>::read_chunk(bytes),
         other => Err(MalformedPacket::UnknownScheme(other)),
     }
 }
@@ -164,6 +171,7 @@ pub fn read_envelope(bytes: Bytes) -> Result<ProposalEnvelope, MalformedPacket> 
     match scheme_variant(&bytes)? {
         D25::VARIANT => v1::Layout::<D25>::read_envelope(bytes),
         S11::VARIANT => v1::Layout::<S11>::read_envelope(bytes),
+        D33::VARIANT => v1::Layout::<D33>::read_envelope(bytes),
         other => Err(MalformedPacket::UnknownScheme(other)),
     }
 }
@@ -243,9 +251,9 @@ mod tests {
         assert_eq!(foreign, Err(MalformedPacket::UnknownVersion(2)));
 
         let mut unknown = packet.to_vec();
-        unknown[v1::SCHEME_VARIANT_OFFSET] = 3;
+        unknown[v1::SCHEME_VARIANT_OFFSET] = 4;
         let unknown = read_chunk(Bytes::from(unknown));
-        assert_eq!(unknown, Err(MalformedPacket::UnknownScheme(3)));
+        assert_eq!(unknown, Err(MalformedPacket::UnknownScheme(4)));
     }
 
     #[test]

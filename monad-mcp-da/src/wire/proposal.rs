@@ -21,7 +21,7 @@ use super::{
         chunk::{ChunkData, ProposalEnvelope},
         chunk_tree::ChunkTree,
         egress::Dissemination,
-        encoding_scheme::{self, d25, swiper},
+        encoding_scheme::{self, d25, d33, swiper},
         runtime::EpochHandle,
         types::{
             EncodingScheme, NodeId, Proposal, ProposalHeader, ProposalKeyPair, SignedProposalHeader,
@@ -63,6 +63,19 @@ impl AssembledProposal {
         let lane = proposal.lane;
         let s11 = swiper::for_message(proposal.slot, msg_len, timestamp, lane, num_validators)?;
         let scheme = EncodingScheme::S11(s11);
+        Self::build(epoch_handle, &proposal.payload, scheme)
+    }
+
+    pub fn build_d33(
+        epoch_handle: &EpochHandle,
+        proposal: &Proposal,
+        timestamp: u64,
+    ) -> Option<Self> {
+        let num_validators = epoch_handle.validator_data.len();
+        let msg_len = proposal.payload.len();
+        let lane = proposal.lane;
+        let d33 = d33::for_message(proposal.slot, msg_len, timestamp, lane, num_validators)?;
+        let scheme = EncodingScheme::D33(d33);
         Self::build(epoch_handle, &proposal.payload, scheme)
     }
 

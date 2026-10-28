@@ -14,13 +14,11 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 mod qualification;
-mod reed_solomon;
 
 use monad_crypto::hasher::{Hash, HasherType};
 use monad_mcp_chorus::spec::validator::ValidatorData as _;
 use rand_chacha::ChaCha20Rng;
 
-use self::reed_solomon::{RsSymbolDecoder, RsSymbolEncoder};
 use super::{
     super::{
         assignment::{ChunkAssignment, PacketLossResistance},
@@ -29,6 +27,7 @@ use super::{
         wire::{DAHeaderScheme as _, PacketLayout as _, v1},
     },
     DAEncodingScheme,
+    reed_solomon::{RsSymbolDecoder, RsSymbolEncoder},
 };
 use crate::spec::PUBKEY_LEN;
 
@@ -105,7 +104,7 @@ fn num_source_chunks(msg_len: u32, depth: u8) -> usize {
 
 // the prod seed: slot(8) unix_ts_ms/2048(8) pubkey[1..17]. the first
 // pubkey byte is a low entropy tag.
-fn seed(slot: Slot, unix_ts: u64, author: &PubKey) -> [u8; 32] {
+pub(super) fn seed(slot: Slot, unix_ts: u64, author: &PubKey) -> [u8; 32] {
     use crate::spec::DAPubKey as _;
 
     let mut pubkey = [0u8; PUBKEY_LEN];

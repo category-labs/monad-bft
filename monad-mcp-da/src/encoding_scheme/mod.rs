@@ -14,8 +14,10 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 pub mod d25;
+pub mod d33;
 pub mod swiper;
 
+mod reed_solomon;
 mod stub;
 
 use bytes::Bytes;
@@ -101,6 +103,7 @@ impl DAEncodingScheme for EncodingScheme {
         match self {
             EncodingScheme::D25(d25) => d25.msg_len(),
             EncodingScheme::S11(s11) => s11.msg_len(),
+            EncodingScheme::D33(d33) => d33.msg_len(),
         }
     }
 
@@ -108,6 +111,7 @@ impl DAEncodingScheme for EncodingScheme {
         match self {
             EncodingScheme::D25(d25) => d25.num_source_chunks(),
             EncodingScheme::S11(s11) => s11.num_source_chunks(),
+            EncodingScheme::D33(d33) => d33.num_source_chunks(),
         }
     }
 
@@ -115,6 +119,7 @@ impl DAEncodingScheme for EncodingScheme {
         match self {
             EncodingScheme::D25(d25) => d25.is_canonical(num_validators),
             EncodingScheme::S11(s11) => s11.is_canonical(num_validators),
+            EncodingScheme::D33(d33) => d33.is_canonical(num_validators),
         }
     }
 
@@ -122,6 +127,7 @@ impl DAEncodingScheme for EncodingScheme {
         match self {
             EncodingScheme::D25(d25) => d25.chunk_assignment(author, validator_data),
             EncodingScheme::S11(s11) => s11.chunk_assignment(author, validator_data),
+            EncodingScheme::D33(d33) => d33.chunk_assignment(author, validator_data),
         }
     }
 
@@ -129,6 +135,7 @@ impl DAEncodingScheme for EncodingScheme {
         match self {
             EncodingScheme::D25(d25) => Box::new(d25.encoder(num_chunks)),
             EncodingScheme::S11(s11) => Box::new(s11.encoder(num_chunks)),
+            EncodingScheme::D33(d33) => Box::new(d33.encoder(num_chunks)),
         }
     }
 
@@ -136,6 +143,7 @@ impl DAEncodingScheme for EncodingScheme {
         match self {
             EncodingScheme::D25(d25) => Box::new(d25.decoder(num_chunks)),
             EncodingScheme::S11(s11) => Box::new(s11.decoder(num_chunks)),
+            EncodingScheme::D33(d33) => Box::new(d33.decoder(num_chunks)),
         }
     }
 
@@ -143,6 +151,7 @@ impl DAEncodingScheme for EncodingScheme {
         match self {
             EncodingScheme::D25(d25) => d25.depth(),
             EncodingScheme::S11(s11) => s11.depth(),
+            EncodingScheme::D33(d33) => d33.depth(),
         }
     }
 
@@ -150,6 +159,7 @@ impl DAEncodingScheme for EncodingScheme {
         match self {
             EncodingScheme::D25(d25) => d25.leaf_hash(chunk_id, symbol),
             EncodingScheme::S11(s11) => s11.leaf_hash(chunk_id, symbol),
+            EncodingScheme::D33(d33) => d33.leaf_hash(chunk_id, symbol),
         }
     }
 }

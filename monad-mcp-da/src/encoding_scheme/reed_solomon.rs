@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 
 use bytes::{Bytes, BytesMut};
 
-use super::super::{super::assignment::ChunkId, SymbolDecoder, SymbolEncoder};
+use super::{super::assignment::ChunkId, SymbolDecoder, SymbolEncoder};
 
 pub(crate) struct RsSymbolEncoder {
     num_chunks: usize,

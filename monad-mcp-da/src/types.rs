@@ -23,7 +23,7 @@ pub(crate) use super::common::{NodeId, PubKey, Stake};
 pub use super::{
     chorus::{
         SlotLifecycle,
-        env::{D25, EncodingScheme, MerkleHash, ProposalSignature, S11},
+        env::{D25, D33, EncodingScheme, MerkleHash, ProposalSignature, S11},
         slot::chorus::{ChorusDACommand, ChorusDAEvent, MissingHeaders, ProposalDAEvent},
         types::{
             EquivCert, HeaderAuth, MerkleRoot, ProposalHeader, ProposalId, ProposerSchedule,

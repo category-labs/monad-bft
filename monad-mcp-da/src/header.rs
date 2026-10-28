@@ -67,6 +67,7 @@ fn claimed_lane(scheme: &EncodingScheme) -> Option<Lane> {
     match scheme {
         EncodingScheme::D25(_) => None,
         EncodingScheme::S11(s11) => Some(s11.lane),
+        EncodingScheme::D33(d33) => Some(d33.lane),
     }
 }
 
