@@ -53,7 +53,7 @@ Hash-container order that reached outputs:
 | `Recovery.decoded_holders` (pull recovery of our own chunks) | `BTreeSet<NodeId>`, requests in send order |
 | `SignatureCollection::signers`/`verify` and the `aggregate`/`try_aggregate` inputs (chorus `spec.rs`, stub env) | `BTreeSet`/`BTreeMap`; their signers address header pulls and decoded-holder hints |
 | `MissingHeaders` voters (header pull fan-out) | `BTreeSet<NodeId>`; DA pulls in send order |
-| `VotePool` buckets, voters and votes (chorus `types.rs`); a tally's bucket order decides weak QC order, timeout certificate groups, header-wait and fallback-wait lists | buckets in an `IndexMap` (first-vote order), voters `BTreeSet`, votes `BTreeMap` |
+| `VotePool` buckets, voters and votes (chorus `types.rs`); a tally's bucket order decides weak QC order, timeout certificate groups, header-wait and fallback-wait lists | a tally sorts its buckets by the bytes each vote signs (canonical, independent of arrival); the pool keeps them in an `IndexMap` (first-vote order, only logs see it), voters `BTreeSet`, votes `BTreeMap` |
 
 Send order: an ordered container alone would send to low node ids first,
 every time. DA instead shuffles a sender's rebroadcasts, recovery requests
