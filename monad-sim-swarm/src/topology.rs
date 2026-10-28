@@ -23,7 +23,7 @@
 
 use std::{collections::BTreeSet, ops::RangeInclusive, time::Duration};
 
-use rand::{seq::SliceRandom, Rng};
+use rand::{distributions::WeightedIndex, seq::SliceRandom, Rng};
 use rand_distr::{Distribution, LogNormal};
 
 use crate::LatencyMatrix;
@@ -308,7 +308,20 @@ pub enum Stake {
     LogNormal { sigma: f64 },
 }
 
-/// Spreads nodes over the regions of a [`RegionTable`] in proportion to the
+/// How a [`Placer`] decides how many nodes go to each region.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Regions {
+    /// Counts apportioned to the weights by largest remainder (ties to the
+    /// lower region index), so they match the weights as closely as whole
+    /// nodes allow. The seed only decides which address goes where.
+    #[default]
+    Apportioned,
+    /// Each node draws its region independently, with probability
+    /// proportional to the weights, so the seed varies the counts too.
+    Sampled,
+}
+
+/// Spreads nodes over the regions of a [`RegionTable`] according to the
 /// region weights, optionally with a per-node last-mile latency and stake
 /// weights.
 ///
@@ -317,6 +330,7 @@ pub enum Stake {
 #[derive(Clone, Debug)]
 pub struct Placer<'a> {
     table: &'a RegionTable,
+    regions: Regions,
     last_mile: Option<RangeInclusive<Duration>>,
     stake: Stake,
 }
@@ -325,9 +339,15 @@ impl<'a> Placer<'a> {
     pub fn new(table: &'a RegionTable) -> Self {
         Self {
             table,
+            regions: Regions::Apportioned,
             last_mile: None,
             stake: Stake::Equal,
         }
+    }
+
+    pub fn regions(mut self, regions: Regions) -> Self {
+        self.regions = regions;
+        self
     }
 
     /// Give each node a last-mile latency drawn uniformly from `range`. It is
@@ -348,11 +368,9 @@ impl<'a> Placer<'a> {
 
     /// Place `addrs` over the table's regions.
     ///
-    /// Region counts are apportioned to the weights by largest remainder
-    /// (ties to the lower region index), so they match the weights as
-    /// closely as whole nodes allow. Which address lands in which region is
-    /// a shuffle drawn from `rng`, followed by last miles and then stakes,
-    /// each in address order.
+    /// The draws from `rng` come in a fixed order: the regions (a shuffle of
+    /// the apportioned counts, or one draw per node in address order), then
+    /// the last miles and the stakes, each in address order. See [`Regions`].
     ///
     /// Panics if an address repeats.
     pub fn place<Addr: Ord + Clone>(
@@ -368,12 +386,21 @@ impl<'a> Placer<'a> {
         );
         let n = addrs.len();
 
-        let mut regions: Vec<usize> = apportion(self.table.weights(), n)
-            .into_iter()
-            .enumerate()
-            .flat_map(|(region, count)| std::iter::repeat_n(region, count))
-            .collect();
-        regions.shuffle(rng);
+        let regions: Vec<usize> = match self.regions {
+            Regions::Apportioned => {
+                let mut regions: Vec<usize> = apportion(self.table.weights(), n)
+                    .into_iter()
+                    .enumerate()
+                    .flat_map(|(region, count)| std::iter::repeat_n(region, count))
+                    .collect();
+                regions.shuffle(rng);
+                regions
+            }
+            Regions::Sampled => {
+                let distribution = WeightedIndex::new(self.table.weights()).expect("valid weights");
+                (0..n).map(|_| distribution.sample(rng)).collect()
+            }
+        };
 
         let last_mile: Vec<Duration> = match &self.last_mile {
             Some(range) => (0..n).map(|_| rng.gen_range(range.clone())).collect(),

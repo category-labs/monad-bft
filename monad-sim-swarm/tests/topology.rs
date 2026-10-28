@@ -18,7 +18,7 @@
 use std::time::Duration;
 
 use monad_sim::time::millis;
-use monad_sim_swarm::{Placement, Placer, Provenance, RegionTable, Stake};
+use monad_sim_swarm::{Placement, Placer, Provenance, RegionTable, Regions, Stake};
 use rand::SeedableRng;
 use rand_chacha::ChaChaRng;
 
@@ -218,4 +218,25 @@ fn every_preset_places_with_a_positive_diagonal() {
 fn duplicate_addresses_are_rejected() {
     let table = RegionTable::single_region(millis(1));
     Placer::new(&table).place([1u32, 2, 1], &mut ChaChaRng::seed_from_u64(0));
+}
+
+/// Sampled regions are reproducible per seed, vary the counts across seeds,
+/// and follow the weights for large node counts.
+#[test]
+fn sampled_regions_vary_counts_across_seeds() {
+    let table = RegionTable::public_internet();
+    let placer = Placer::new(&table).regions(Regions::Sampled);
+    assert_eq!(place(&placer, 20, 1).nodes(), place(&placer, 20, 1).nodes());
+
+    let counts: Vec<Vec<usize>> = (0..10)
+        .map(|seed| place(&placer, 20, seed).region_counts())
+        .collect();
+    assert!(counts.iter().all(|c| c.iter().sum::<usize>() == 20));
+    assert!(counts.iter().any(|c| *c != counts[0]));
+
+    let large = place(&placer, 10_000, 2).region_counts();
+    for (count, weight) in large.iter().zip(table.weights()) {
+        let share = *count as f64 / 10_000.0;
+        assert!((share - weight / 100.0).abs() < 0.02, "{large:?}");
+    }
 }

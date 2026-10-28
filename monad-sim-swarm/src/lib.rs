@@ -47,4 +47,4 @@ mod topology;
 pub use net::{Conditions, Deliver, LatencyMatrix, Link, Net, Network, NetworkModel};
 pub use swarm::{deliver_to, SimClient, Swarm};
 pub use timers::Timers;
-pub use topology::{PlacedNode, Placement, Placer, Provenance, RegionTable, Stake};
+pub use topology::{PlacedNode, Placement, Placer, Provenance, RegionTable, Regions, Stake};

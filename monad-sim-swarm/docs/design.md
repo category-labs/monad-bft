@@ -89,16 +89,22 @@ specific deployments are project data: the consumer that owns them builds a
 
 A `Placer` turns a table into a node-level topology:
 
-- Region counts are apportioned to the weights by largest remainder (ties go
-  to the lower region index), so 100 nodes over weights summing to 100 match
-  them exactly. A shuffle then decides which address goes where.
+- By default (`Regions::Apportioned`), region counts are apportioned to the
+  weights by largest remainder (ties go to the lower region index), so 100
+  nodes over weights summing to 100 match them exactly. A shuffle then
+  decides which address goes where. Every seed has the same geographic
+  composition, which suits tests and comparisons between protocol variants.
+- `Regions::Sampled` draws each node's region independently by weight, so
+  the seed varies the composition too: the right choice for Monte Carlo over
+  random node sets, and for comparing with models that sample the same way.
+  Small regions may end up empty under either method.
 - An optional last mile per node, uniform over a range, is added at both
   ends of every link. Without it the matrix stays region-level and small;
   with it, it has one row per node.
 - Stake is equal, or log-normal and normalized to sum to 1.
 
 Randomness comes only from the RNG passed to `place`, drawn in a fixed order
-(shuffle, last miles, stakes), so a seed reproduces the placement. The
+(regions, last miles, stakes), so a seed reproduces the placement. The
 placer holds no state between calls, and the matrix it yields is immutable
 data.
 
