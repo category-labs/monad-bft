@@ -178,7 +178,20 @@ impl SimClient for SimNode {
     }
 }
 
-pub fn node_config(id: u64, validators: u64) -> NodeConfig {
+// a node's seed: a function of the simulation seed and the node id
+pub fn node_seed(seed: u64, id: u64) -> u64 {
+    // splitmix64's finalizer, stable across toolchains unlike std's hashers
+    fn mix(mut z: u64) -> u64 {
+        z = z.wrapping_add(0x9e37_79b9_7f4a_7c15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        z ^ (z >> 31)
+    }
+    mix(seed ^ mix(id))
+}
+
+// validator `id` of `validators`, seeded from the simulation seed
+pub fn node_config(seed: u64, id: u64, validators: u64) -> NodeConfig {
     use monad_mcp_common::spec::KeyPair as _;
 
     let node_id = NodeId::dummy(id);
@@ -213,6 +226,7 @@ pub fn node_config(id: u64, validators: u64) -> NodeConfig {
         ledger: LedgerConfig {
             dir: "unused-ledger".into(),
         },
+        seed: Some(node_seed(seed, id)),
     }
 }
 

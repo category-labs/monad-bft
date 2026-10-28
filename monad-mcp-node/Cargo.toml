@@ -16,6 +16,7 @@ enable_stub = ["monad-mcp-chorus/enable_stub", "monad-mcp-da/enable_stub"]
 alloy-rlp = { workspace = true, features = ["derive"] }
 bytes = { workspace = true }
 rand = { workspace = true }
+rand_chacha = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "signal"] }
