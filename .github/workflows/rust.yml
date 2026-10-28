@@ -129,11 +129,12 @@ jobs:
           sudo sysctl --system
 
       - name: Run tests
+        # io_uring ring setup needs more locked memory than the runner's
+        # 8 MB memlock rlimit; only root can raise the hard limit.
         run: |
           ulimit -Hl
           cat /proc/sys/kernel/io_uring_disabled || true
-          ulimit -l unlimited
-          cargo test --release --all-targets --all-features
+          sudo env "PATH=$PATH" bash -c 'ulimit -l unlimited && cargo test --release --all-targets --all-features'
 
       - name: Add WASM target
         run: rustup target add wasm32-unknown-unknown
