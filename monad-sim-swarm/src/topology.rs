@@ -182,27 +182,31 @@ impl RegionTable {
     /// Ten public-internet regions in Europe, North America, Asia-Pacific
     /// and South America: FRA, AMS, LON, NYC, CHI, LAX, SGP, TYO, SYD, SAO.
     ///
-    /// The latencies are hand-entered approximations of typical p50 RTTs
-    /// between cloud regions, halved; they are not a measurement. Nodes in
-    /// the same region get 1 ms. The weights are illustrative, skewed
-    /// towards Europe and North America.
+    /// Derived from the public one-day dataset of the [WonderNetwork Global
+    /// Ping Statistics](https://wondernetwork.com/pings) (2020-07-19/20,
+    /// published on the [WonderProxy blog](https://wonderproxy.com/blog/a-day-in-the-life-of-the-internet/)):
+    /// per city pair, the median of the 30-ping average RTTs (48 samples per
+    /// direction), averaged over both directions and rounded to whole
+    /// milliseconds, then halved. Nodes in the same region get 1 ms (2 ms
+    /// RTT; the dataset's one same-metro pair, in New York, has 1.5 ms). The
+    /// weights are illustrative, skewed towards Europe and North America.
     pub fn public_internet() -> Self {
         const REGIONS: [&str; 10] = [
             "FRA", "AMS", "LON", "NYC", "CHI", "LAX", "SGP", "TYO", "SYD", "SAO",
         ];
         const SAME_REGION_RTT_MS: u64 = 2;
-        // p50 RTT in ms, lower triangle: row i lists regions 0..i
+        // median RTT in ms, lower triangle: row i lists regions 0..i
         const RTT_MS: [&[u64]; 10] = [
             &[],
-            &[7],
-            &[15, 8],
-            &[85, 80, 72],
-            &[100, 100, 95, 20],
-            &[150, 145, 140, 65, 50],
-            &[160, 160, 165, 230, 210, 170],
-            &[230, 230, 225, 165, 145, 105, 70],
-            &[250, 255, 260, 200, 190, 140, 95, 110],
-            &[200, 195, 190, 115, 135, 165, 330, 260, 310],
+            &[14],
+            &[13, 7],
+            &[83, 76, 71],
+            &[97, 98, 86, 23],
+            &[148, 139, 130, 68, 58],
+            &[150, 163, 170, 243, 228, 186],
+            &[222, 240, 217, 176, 169, 115, 76],
+            &[274, 290, 279, 201, 251, 138, 94, 114],
+            &[192, 188, 179, 127, 150, 165, 375, 281, 330],
         ];
         const WEIGHTS: [f64; 10] = [20.0, 12.0, 10.0, 15.0, 8.0, 8.0, 10.0, 9.0, 4.0, 4.0];
 
@@ -221,10 +225,12 @@ impl RegionTable {
         Self::from_rtt(
             Provenance::new(
                 "public-internet-10",
-                "hand-entered approximation of public-internet p50 RTTs between \
-                 ten cloud regions (not a measurement); one-way = RTT / 2, \
-                 same region = 1 ms",
-                "2026-10-28",
+                "WonderNetwork Global Ping Statistics \
+                 (https://wondernetwork.com/pings), public dataset of \
+                 2020-07-19/20: per city pair the median of 30-ping average \
+                 RTTs, mean of both directions, rounded to ms; one-way = \
+                 RTT / 2; same region = 1 ms (assumed); derived 2026-10-28",
+                "2020-07-20",
             ),
             REGIONS,
             rtt,

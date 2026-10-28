@@ -81,7 +81,8 @@ bound. A scheduler that needs a lower bound on link delays can take
 `min_latency()` or the entries themselves. A measured RTT matrix usually has
 a zero diagonal; the caller replaces it before building a table.
 
-The crate ships one approximate geographic table and a few synthetic shapes
+The crate ships one geographic table, derived from a public ping dataset (see
+its rustdoc for the sources and method), and a few synthetic shapes
 for tests (one region, two clusters, ring, star). Measured matrices of
 specific deployments are project data: the consumer that owns them builds a
 `RegionTable` with `new` or `from_rtt`, or loads one from its own files.

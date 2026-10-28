@@ -95,7 +95,7 @@ diagonal, is positive. Presets:
 
 | preset | regions | source |
 |---|---|---|
-| `RegionTable::public_internet()` | FRA, AMS, LON, NYC, CHI, LAX, SGP, TYO, SYD, SAO | hand-entered approximate p50 RTTs, halved; not a measurement |
+| `RegionTable::public_internet()` | FRA, AMS, LON, NYC, CHI, LAX, SGP, TYO, SYD, SAO | median RTTs from the [WonderNetwork](https://wondernetwork.com/pings) public dataset of 2020-07-19/20, halved |
 | `RegionTable::single_region(local)` | 1 | synthetic |
 | `RegionTable::two_clusters(near, far)` | 2 | synthetic |
 | `RegionTable::ring(n, local, hop)` | n | synthetic |

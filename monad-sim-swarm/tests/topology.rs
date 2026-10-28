@@ -70,9 +70,9 @@ fn public_internet_is_symmetric_and_halves_rtt() {
         }
     }
     let at = |a, b| table.one_way(table.region(a).unwrap(), table.region(b).unwrap());
-    assert_eq!(at("FRA", "AMS"), Duration::from_micros(3500));
-    assert_eq!(at("NYC", "LON"), millis(36));
-    assert_eq!(at("SAO", "SGP"), millis(165));
+    assert_eq!(at("FRA", "AMS"), millis(7));
+    assert_eq!(at("NYC", "LON"), Duration::from_micros(35_500));
+    assert_eq!(at("SAO", "SGP"), Duration::from_micros(187_500));
     assert_eq!(at("TYO", "TYO"), millis(1));
     assert_eq!(table.min_latency(), millis(1));
 }
