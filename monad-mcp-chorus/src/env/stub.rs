@@ -124,11 +124,7 @@ mod validator {
 }
 
 mod proposal {
-    use std::{
-        fmt,
-        hash::{DefaultHasher, Hash as _, Hasher as _},
-        ops::Range,
-    };
+    use std::{fmt, ops::Range};
 
     use alloy_rlp::{
         Decodable, Encodable, RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper,
@@ -349,12 +345,18 @@ mod proposal {
             &self.root
         }
 
+        // keccak256 of the rlp encoding: the same in every process and
+        // release, unlike std's hashers
         fn pid(&self) -> ProposalId {
-            let mut hasher = DefaultHasher::new();
-            self.hash(&mut hasher);
+            use tiny_keccak::{Hasher as _, Keccak};
+
+            let mut digest = [0; 32];
+            let mut keccak = Keccak::v256();
+            keccak.update(&alloy_rlp::encode(self));
+            keccak.finalize(&mut digest);
             let mut pid = [0; 32];
             pid[PID_ROOT].copy_from_slice(&self.root.0.0);
-            pid[PID_DIGEST].copy_from_slice(&hasher.finish().to_le_bytes());
+            pid[PID_DIGEST].copy_from_slice(&digest[..PID_DIGEST.len()]);
             ProposalId(pid)
         }
     }

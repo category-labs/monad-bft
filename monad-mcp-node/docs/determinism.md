@@ -82,6 +82,10 @@ Outside the simulated path, unchanged: the production `Clock` and
 swarm example and the UDP tests; `monad-mcp-rpc` and `monad-mcp-explorer`
 (client tooling).
 
-Fixed-key hashing: the stub `ProposalId::pid` and stub signatures use
-`DefaultHasher::new()`. Its keys are fixed, so it is the same across
-processes, but Rust does not promise it stays the same across releases.
+Stable hashing: the stub `ProposalId::pid` and stub signature digests use
+keccak256 (of the header's rlp encoding, and of the signed bytes), not std's
+`DefaultHasher`, whose algorithm and derived-`Hash` input Rust does not
+promise to keep across releases. With that, a seeded run should be the same
+across releases too, except where a dependency changes its output (rand,
+rand_chacha, blake3) or floating point differs: the random payload length
+goes through `log2`/`powf`. Tests pin the send order and the digest.

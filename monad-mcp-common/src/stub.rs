@@ -111,8 +111,6 @@ mod validator {
 }
 
 mod vote {
-    use std::hash::{DefaultHasher, Hash as _, Hasher as _};
-
     use alloy_rlp::{Decodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper};
     use bytes::Bytes;
     // Into implemented on these types for testing purpose only.
@@ -153,10 +151,24 @@ mod vote {
         }
     }
 
+    // keccak256, truncated: the same in every process and release, unlike
+    // std's hashers
     fn digest(data: &[u8]) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        data.hash(&mut hasher);
-        hasher.finish()
+        use tiny_keccak::{Hasher as _, Keccak};
+
+        let mut digest = [0; 32];
+        let mut keccak = Keccak::v256();
+        keccak.update(data);
+        keccak.finalize(&mut digest);
+        u64::from_le_bytes(digest[..8].try_into().expect("8 bytes"))
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn the_digest_is_truncated_keccak256() {
+        // keccak256("") = c5d24601 86f7233c ...
+        let expected = [0xc5, 0xd2, 0x46, 0x01, 0x86, 0xf7, 0x23, 0x3c];
+        assert_eq!(digest(b""), u64::from_le_bytes(expected));
     }
 
     impl Signature {
