@@ -21,9 +21,9 @@ use rand_chacha::ChaCha20Rng;
 
 use super::{
     super::{
-        assignment::{ChunkAssignment, PacketLossResistance},
+        assignment::{ChunkAssignment, Obligation, Obligations, PacketLossResistance},
         chunk::WireChunkId,
-        types::{Lane, MAX_PROPOSER_SET_SIZE, NodeId, PubKey, S11, Slot, ValidatorData},
+        types::{Lane, MAX_PROPOSER_SET_SIZE, NodeId, PubKey, S11, Slot, Stake, ValidatorData},
         wire::{DAHeaderScheme as _, PacketLayout as _, v1},
     },
     DAEncodingScheme,
@@ -164,12 +164,17 @@ impl DAEncodingScheme for S11 {
             weights.push(*validator_data.get_stake(node_id));
         }
         let tickets = qualification::tickets(&weights, target(self.num_source_chunks()));
+        let total = weights.into_iter().sum::<Stake>();
 
-        let mut holders: Vec<(NodeId, usize)> = nodes.into_iter().zip(tickets).collect();
+        let mut holders = Vec::with_capacity(nodes.len());
+        for (node, tickets) in nodes.into_iter().zip(tickets) {
+            holders.push((node, Obligation::whole(tickets)));
+        }
         let seed = seed(self.slot, self.unix_ts, validator_data.get_pubkey(author));
         holders.shuffle(&mut ChaCha20Rng::from_seed(seed));
 
-        ChunkAssignment::deal(author, holders, PACKET_LOSS_RESISTANCE)
+        let obligations = Obligations::new(total, holders);
+        ChunkAssignment::deal(author, obligations, PACKET_LOSS_RESISTANCE)
     }
 
     fn encoder(&self, num_chunks: usize) -> RsSymbolEncoder {

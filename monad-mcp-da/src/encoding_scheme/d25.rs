@@ -137,7 +137,7 @@ impl DAEncodingScheme for D25 {
         weights.push((*author, Stake::ZERO));
 
         let partition = StakePartition::new(weights);
-        partition.assign(
+        partition.assign_rounded_up(
             author,
             self.num_source_chunks(),
             REDUNDANCY,

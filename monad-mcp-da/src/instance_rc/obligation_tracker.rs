@@ -78,7 +78,7 @@ mod tests {
         let author = NodeId::dummy(0);
         let mut weights = vec![(author, Stake::ZERO)];
         weights.extend((1..=3).map(|id| (NodeId::dummy(id), Stake::from(1))));
-        StakePartition::new(weights).assign(&author, 30, 2.5, PACKET_LOSS_RESISTANCE)
+        StakePartition::new(weights).assign_rounded_up(&author, 30, 2.5, PACKET_LOSS_RESISTANCE)
     }
 
     #[test]
