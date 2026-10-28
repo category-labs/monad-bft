@@ -77,6 +77,39 @@ fn public_internet_is_symmetric_and_halves_rtt() {
     assert_eq!(table.min_latency(), millis(1));
 }
 
+/// No entry beats light in fiber along the great circle between the cities
+/// (refractive index 1.47), which catches typos in the table.
+#[test]
+fn public_internet_respects_the_fiber_bound() {
+    const CITIES: [(&str, f64, f64); 10] = [
+        ("FRA", 50.11, 8.68),
+        ("AMS", 52.37, 4.90),
+        ("LON", 51.51, -0.13),
+        ("NYC", 40.71, -74.01),
+        ("CHI", 41.88, -87.63),
+        ("LAX", 34.05, -118.24),
+        ("SGP", 1.35, 103.82),
+        ("TYO", 35.68, 139.69),
+        ("SYD", -33.87, 151.21),
+        ("SAO", -23.55, -46.63),
+    ];
+    const EARTH_RADIUS_KM: f64 = 6371.0;
+    const FIBER_KM_PER_SEC: f64 = 299_792.0 / 1.47;
+
+    let table = RegionTable::public_internet();
+    for (a, lat_a, lon_a) in CITIES {
+        for (b, lat_b, lon_b) in CITIES {
+            let (phi_a, phi_b) = (lat_a.to_radians(), lat_b.to_radians());
+            let haversine = ((phi_b - phi_a) / 2.0).sin().powi(2)
+                + phi_a.cos() * phi_b.cos() * ((lon_b - lon_a).to_radians() / 2.0).sin().powi(2);
+            let km = 2.0 * EARTH_RADIUS_KM * haversine.sqrt().asin();
+            let bound = Duration::from_secs_f64(km / FIBER_KM_PER_SEC);
+            let one_way = table.one_way(table.region(a).unwrap(), table.region(b).unwrap());
+            assert!(one_way >= bound, "{a}-{b}: {one_way:?} < {bound:?}");
+        }
+    }
+}
+
 #[test]
 fn synthetic_shapes() {
     let clusters = RegionTable::two_clusters(millis(2), millis(80));
