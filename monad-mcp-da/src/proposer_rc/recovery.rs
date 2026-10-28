@@ -13,12 +13,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 
 use super::super::{
     chunk::{ChunkRequest, ChunkRequestType, ChunksSubset},
     instance_rc::MissingChunks,
     types::{NodeId, ProposalId, Timestamp, TimestampDelta},
+    util::shuffle_sends,
 };
 
 // the pulls for the chunks the pinned proposal still misses: ours from the
@@ -27,7 +28,7 @@ pub(crate) struct Recovery {
     pid: ProposalId,
     self_id: NodeId,
     // nodes that can derive our chunks: the author, then hinted holders
-    decoded_holders: HashSet<NodeId>,
+    decoded_holders: BTreeSet<NodeId>,
     my_chunks_timer: RetryTimer,
     your_chunks_timer: RetryTimer,
 }
@@ -43,7 +44,7 @@ impl Recovery {
         Self {
             pid,
             self_id,
-            decoded_holders: HashSet::from([author]),
+            decoded_holders: BTreeSet::from([author]),
             my_chunks_timer: RetryTimer::new(first_pull, interval),
             your_chunks_timer: RetryTimer::new(first_pull, interval),
         }
@@ -64,7 +65,11 @@ impl Recovery {
         now: Timestamp,
     ) -> Vec<(NodeId, ChunkRequest)> {
         let mut requests = Vec::new();
-        if let Some(mine) = missing.remove(&self.self_id)
+        let mine = missing
+            .iter()
+            .position(|(owner, _)| *owner == self.self_id)
+            .map(|i| missing.remove(i).1);
+        if let Some(mine) = mine
             && self.my_chunks_timer.try_fire(now)
         {
             requests.extend(self.ask_decoded_holders(mine));
@@ -83,6 +88,7 @@ impl Recovery {
             let subset = mine.clone();
             requests.push((*holder, ChunkRequest { pid, kind, subset }));
         }
+        shuffle_sends(&mut requests, &self.pid, &self.self_id);
         requests
     }
 
@@ -93,6 +99,7 @@ impl Recovery {
         for (owner, subset) in theirs {
             requests.push((owner, ChunkRequest { pid, kind, subset }));
         }
+        shuffle_sends(&mut requests, &self.pid, &self.self_id);
         requests
     }
 }

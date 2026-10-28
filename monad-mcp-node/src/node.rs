@@ -73,7 +73,7 @@ impl Node {
 
         let proposing: Proposing = match config.proposal.source {
             SourceKind::Random => {
-                let proposing = RandomProposing::new(&epoch_handle, &config.proposal);
+                let proposing = RandomProposing::new(&epoch_handle, &config.proposal, config.rng());
                 Box::new(proposing)
             }
             SourceKind::Mempool => {

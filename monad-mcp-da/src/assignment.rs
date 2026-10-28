@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::HashSet, iter::Cycle, ops::Range};
+use std::{iter::Cycle, ops::Range};
 
 use monad_mcp_common::spec::Stake as _;
 
@@ -90,18 +90,9 @@ impl<'a> ChunkRouting<'a> {
         self.target.owner_node_index
     }
 
-    // rounding chunks in stake-proportional multicast
-    pub fn partial_rebroadcast_targets(&self) -> Option<HashSet<NodeId>> {
-        let indices = self.target.rebroadcast_targets.as_ref()?;
-        let nodes = indices
-            .iter()
-            .filter(|idx| self.is_rebroadcast_target(**idx))
-            .map(|idx| *self.assignment.nodes.get(*idx))
-            .collect();
-        Some(nodes)
-    }
-
-    // whether the node receives this chunk via rebroadcast
+    // whether the node receives this chunk via rebroadcast: every node but the
+    // owner and the author, or for a partial chunk (stake-proportional
+    // multicast) its share of them
     fn is_rebroadcast_target(&self, node: NodeIndex) -> bool {
         if node == self.owner_index() || node == self.assignment.author {
             return false;
@@ -111,6 +102,16 @@ impl<'a> ChunkRouting<'a> {
             return true;
         };
         indices.contains(&node)
+    }
+
+    // the nodes the owner rebroadcasts this chunk to, in the given send order
+    // (every node of the assignment, each once)
+    pub(crate) fn rebroadcast_targets(&self, send_order: &[NodeIndex]) -> Vec<NodeId> {
+        send_order
+            .iter()
+            .filter(|index| self.is_rebroadcast_target(**index))
+            .map(|index| *self.assignment.node(*index))
+            .collect()
     }
 
     // from whom should the receiver get this chunk? none if unrouted
@@ -286,8 +287,8 @@ pub struct ChunkAssignment {
     // mapping from chunk_id to the target node.
     targets: Vec<ChunkTarget>,
 
-    // nodes that are not assigned any chunks.
-    unassigned_nodes: HashSet<NodeIndex>,
+    // nodes that are not assigned any chunks, in index order
+    unassigned_nodes: Vec<NodeIndex>,
 
     packet_loss_resistance: PacketLossResistance,
 }
@@ -302,7 +303,7 @@ impl ChunkAssignment {
     ) -> Self {
         let num_holders = obligations.holders.len();
         let mut nodes = Vec::with_capacity(num_holders);
-        let mut unassigned_nodes = HashSet::new();
+        let mut unassigned_nodes = Vec::new();
 
         let mut remaining = Vec::new();
         for (node, obligation) in obligations.holders {
@@ -310,7 +311,7 @@ impl ChunkAssignment {
             nodes.push(node);
 
             if obligation.is_empty() {
-                unassigned_nodes.insert(node_idx);
+                unassigned_nodes.push(node_idx);
             } else {
                 remaining.push((node_idx, obligation));
             }
@@ -405,20 +406,8 @@ impl ChunkAssignment {
             .filter(move |routing| routing.owner_index() == node)
     }
 
-    pub(crate) fn unassigned_nodes(&self) -> &HashSet<NodeIndex> {
+    pub(crate) fn unassigned_nodes(&self) -> &[NodeIndex] {
         &self.unassigned_nodes
-    }
-
-    // the same for every chunk the owner rebroadcasts in full
-    pub(crate) fn full_rebroadcast_targets(&self, owner: NodeIndex) -> HashSet<NodeId> {
-        let mut targets = HashSet::with_capacity(self.num_nodes());
-        for (index, node) in self.nodes() {
-            if index == owner || index == self.author {
-                continue;
-            }
-            targets.insert(*node);
-        }
-        targets
     }
 }
 
@@ -493,10 +482,33 @@ fn scale(num_source_chunks: usize, redundancy: f32) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::{super::test_util::PACKET_LOSS_RESISTANCE, *};
 
     fn node(id: u64) -> NodeId {
         NodeId::dummy(id)
+    }
+
+    // the nodes the chunk's owner rebroadcasts it to
+    fn targets(assignment: &ChunkAssignment, chunk_id: u16) -> BTreeSet<NodeId> {
+        let index_order: Vec<NodeIndex> = assignment.nodes().map(|(index, _)| index).collect();
+        let routing = assignment.routing(ChunkId(chunk_id));
+        routing
+            .rebroadcast_targets(&index_order)
+            .into_iter()
+            .collect()
+    }
+
+    // a full rebroadcast: every node but the chunk's owner and the author
+    fn everyone_else(assignment: &ChunkAssignment, chunk_id: u16) -> BTreeSet<NodeId> {
+        let routing = assignment.routing(ChunkId(chunk_id));
+        let excluded = [routing.owner_index(), assignment.author()];
+        assignment
+            .nodes()
+            .filter(|(index, _)| !excluded.contains(index))
+            .map(|(_, node)| *node)
+            .collect()
     }
 
     // author 0 with no stake, then stakes 1, 1 and 2, over 10 chunks
@@ -568,20 +580,15 @@ mod tests {
 
         // whole chunks reach everyone
         for id in [0, 1, 2, 3, 4, 5, 8, 9, 10] {
-            let routing = assignment.routing(ChunkId(id));
-            assert_eq!(routing.partial_rebroadcast_targets(), None);
+            assert_eq!(targets(&assignment, id), everyone_else(&assignment, id));
         }
 
         // chunk 6 of node 1 is 2/4 of the 4 nodes: nodes 0 and 1, the
         // author and the owner
-        let six = assignment.routing(ChunkId(6));
-        assert_eq!(six.partial_rebroadcast_targets(), Some(HashSet::new()));
+        assert_eq!(targets(&assignment, 6), BTreeSet::new());
         // chunk 7 of node 2 picks up at node 2: the owner and node 3
+        assert_eq!(targets(&assignment, 7), BTreeSet::from([node(3)]));
         let seven = assignment.routing(ChunkId(7));
-        assert_eq!(
-            seven.partial_rebroadcast_targets(),
-            Some(HashSet::from([node(3)]))
-        );
 
         let owner = assignment.index_of(&node(2)).unwrap();
         let covered = assignment.index_of(&node(3)).unwrap();
@@ -595,8 +602,7 @@ mod tests {
     fn rounding_up_rebroadcasts_every_chunk_in_full() {
         let rounded_up = assignment();
         for id in 0..11 {
-            let routing = rounded_up.routing(ChunkId(id));
-            assert_eq!(routing.partial_rebroadcast_targets(), None);
+            assert_eq!(targets(&rounded_up, id), everyone_else(&rounded_up, id));
         }
     }
 
@@ -645,11 +651,7 @@ mod tests {
         assert_eq!(routing.upstream(other), Some(Upstream::Owner(owner)));
 
         // the full rebroadcast reaches everyone but the owner and the author
-        assert_eq!(routing.partial_rebroadcast_targets(), None);
-        assert_eq!(
-            assignment.full_rebroadcast_targets(owner),
-            HashSet::from([node(2), node(3)])
-        );
+        assert_eq!(targets(&assignment, 0), BTreeSet::from([node(2), node(3)]));
     }
 
     #[test]
