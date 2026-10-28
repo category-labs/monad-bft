@@ -206,12 +206,13 @@ mod tests {
     use super::{
         super::{
             super::{
+                assignment::{Obligation, Obligations},
                 chunk::ProposalEnvelope,
                 test_util::{
                     MESSAGE_LEN, PACKET_LOSS_RESISTANCE, SLOT, author, epoch_handle_for, group,
                     proposal_chunks,
                 },
-                types::Lane,
+                types::{Lane, Stake},
             },
             header_bytes, read_envelope, write_chunk, write_envelope,
         },
@@ -311,13 +312,14 @@ mod tests {
     fn a_node_owning_no_chunk_gets_the_header_alone() {
         let epoch_handle = authoring_handle();
         let (header, _) = proposal_chunks(&epoch_handle, 1);
-        let holders = [
-            (NodeId::dummy(0), 0),
-            (NodeId::dummy(1), 3),
-            (NodeId::dummy(2), 0),
-            (NodeId::dummy(3), 3),
+        let holders = vec![
+            (NodeId::dummy(0), Obligation::whole(0)),
+            (NodeId::dummy(1), Obligation::whole(3)),
+            (NodeId::dummy(2), Obligation::whole(0)),
+            (NodeId::dummy(3), Obligation::whole(3)),
         ];
-        let assignment = ChunkAssignment::deal(&author(), holders, PACKET_LOSS_RESISTANCE);
+        let obligations = Obligations::new(Stake::from(4), holders);
+        let assignment = ChunkAssignment::deal(&author(), obligations, PACKET_LOSS_RESISTANCE);
         let message = vec![1u8; MESSAGE_LEN];
         let chunk_tree =
             encoding_scheme::chunk_tree(header.scheme(), &message, assignment.num_chunks())

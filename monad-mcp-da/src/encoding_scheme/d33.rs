@@ -100,7 +100,7 @@ fn num_source_chunks(msg_len: u32, depth: u8) -> usize {
 // - 3.3x redundancy: 3x over the source count scaled for 10% packet loss
 // - every validator, the author included, owns its stake share
 // - stake partition with round up chunks
-// - todo: round up chunks are assigned to stake-proportional subset in second-hop
+// - round up chunks are rebroadcast to a stake-proportional subset in second-hop
 // - valset shuffled by the prod seed (slot, unix_ts / 2048, author)
 // - assigned round-robin
 // - symbols are Reed-Solomon coded
@@ -147,7 +147,7 @@ impl DAEncodingScheme for D33 {
 
         let partition = StakePartition::new(weights);
         let target = target(self.num_source_chunks());
-        partition.assign(author, target, REDUNDANCY, PACKET_LOSS_RESISTANCE)
+        partition.assign_spm(author, target, REDUNDANCY, PACKET_LOSS_RESISTANCE)
     }
 
     fn encoder(&self, num_chunks: usize) -> RsSymbolEncoder {

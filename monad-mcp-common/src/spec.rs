@@ -34,8 +34,9 @@ pub mod validator {
 
         // Proportional claim on shares discrete shares, as the
         // quotient and remainder of shares * (self / total). The
-        // caller must guarantee that total is non-zero.
-        fn obligation(&self, total: &Self, shares: usize) -> (usize, usize);
+        // remainder is in stake units: the fraction of a share times
+        // total. The caller must guarantee that total is non-zero.
+        fn obligation(&self, total: &Self, shares: usize) -> (usize, Self);
 
         // the raw integer stake amount, as consumed by stake-weighted
         // proposer scheduling

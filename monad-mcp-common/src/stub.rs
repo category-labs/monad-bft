@@ -59,6 +59,7 @@ mod validator {
         Eq,
         PartialOrd,
         Ord,
+        Default,
         derive_more::Add,
         derive_more::Sum,
         derive_more::From,
@@ -78,10 +79,10 @@ mod validator {
             Self(self.0 / 3)
         }
 
-        fn obligation(&self, total: &Self, shares: usize) -> (usize, usize) {
+        fn obligation(&self, total: &Self, shares: usize) -> (usize, Self) {
             let prod = self.0 as u128 * shares as u128;
             let total = total.0 as u128;
-            ((prod / total) as usize, (prod % total) as usize)
+            ((prod / total) as usize, Self((prod % total) as u64))
         }
 
         fn amount(&self) -> u64 {

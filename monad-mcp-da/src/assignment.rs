@@ -13,7 +13,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::HashSet;
+use std::{collections::HashSet, iter::Cycle, ops::Range};
+
+use monad_mcp_common::spec::Stake as _;
 
 use super::{
     chunk::WireChunkId,
@@ -137,9 +139,111 @@ struct ChunkTarget {
     // the first-hop recipient
     owner_node_index: NodeIndex,
 
-    // if None, rebroadcast to all other recipients. reserved for
-    // stake-proportional multicast rounding chunks.
+    // if None, rebroadcast to all other recipients. Some for a partial
+    // chunk under stake-proportional multicast.
     rebroadcast_targets: Option<Vec<NodeIndex>>,
+}
+
+#[derive(Copy, Clone)]
+pub(crate) struct Obligation {
+    pub(crate) whole: usize,
+    // one more chunk, rebroadcast to (partial / total_stake) of the
+    // holders.  ZERO for none.
+    pub(crate) partial: Stake,
+}
+
+enum ChunkType {
+    Whole,
+    Fract(Stake),
+}
+
+impl Obligation {
+    pub(crate) fn whole(whole: usize) -> Self {
+        Self {
+            whole,
+            partial: Stake::ZERO,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.whole == 0 && self.partial == Stake::ZERO
+    }
+
+    fn rounded_up(self) -> Self {
+        if self.partial == Stake::ZERO {
+            return self;
+        }
+
+        Self {
+            whole: self.whole + 1,
+            partial: Stake::ZERO,
+        }
+    }
+
+    // the caller must ensure the obligation is not empty
+    fn take_chunk(&mut self) -> ChunkType {
+        debug_assert!(!self.is_empty());
+        if self.whole > 0 {
+            self.whole -= 1;
+            return ChunkType::Whole;
+        }
+
+        let partial = std::mem::take(&mut self.partial);
+        debug_assert!(partial > Stake::ZERO);
+        ChunkType::Fract(partial)
+    }
+}
+
+pub(crate) struct Obligations {
+    total_stake: Stake,
+    holders: Vec<(NodeId, Obligation)>,
+}
+
+impl Obligations {
+    // the caller must ensure total > 0 when any partial is non-zero
+    pub(crate) fn new(total_stake: Stake, holders: Vec<(NodeId, Obligation)>) -> Self {
+        Self {
+            total_stake,
+            holders,
+        }
+    }
+
+    fn rounded_up(mut self) -> Self {
+        for (_, obligation) in &mut self.holders {
+            *obligation = obligation.rounded_up();
+        }
+        self
+    }
+}
+
+struct CoverageRing {
+    ring: Cycle<Range<usize>>,
+    num_nodes: usize,
+    total_stake: Stake,
+    // the sum of the fractional obligations so far, over total
+    acc: Stake,
+    // the holders handed out so far
+    fulfilled: usize,
+}
+
+impl CoverageRing {
+    fn new(num_nodes: usize, total_stake: Stake) -> Self {
+        Self {
+            ring: (0..num_nodes).cycle(),
+            num_nodes,
+            total_stake,
+            acc: Stake::ZERO,
+            fulfilled: 0,
+        }
+    }
+
+    fn cover(&mut self, r: Stake) -> Vec<NodeIndex> {
+        self.acc = self.acc + r;
+        let (target, _) = self.acc.obligation(&self.total_stake, self.num_nodes);
+        let n = target - self.fulfilled;
+        self.fulfilled = target;
+        self.ring.by_ref().take(n).map(NodeIndex).collect()
+    }
 }
 
 // A frozen ordered list of nodes, indexable by NodeIndex. Captures
@@ -189,42 +293,50 @@ pub struct ChunkAssignment {
 }
 
 impl ChunkAssignment {
-    // chunk ids are dealt round-robin over the holders' obligations,
-    // in holder order. the author must be a holder, possibly of nothing.
+    // chunk ids are dealt round-robin over the obligations, in holder
+    // order, a partial chunk last.
     pub(crate) fn deal(
         author: &NodeId,
-        holders: impl IntoIterator<Item = (NodeId, usize)>,
+        obligations: Obligations,
         packet_loss_resistance: PacketLossResistance,
     ) -> Self {
-        let mut nodes = Vec::new();
+        let num_holders = obligations.holders.len();
+        let mut nodes = Vec::with_capacity(num_holders);
         let mut unassigned_nodes = HashSet::new();
-        let mut remaining = Vec::new();
-        for (node, obligation) in holders {
-            if obligation > 0 {
-                remaining.push((NodeIndex(nodes.len()), obligation));
-            } else {
-                unassigned_nodes.insert(NodeIndex(nodes.len()));
-            }
-            nodes.push(node);
-        }
 
-        let mut targets = Vec::new();
-        while !remaining.is_empty() {
-            for (node_index, obligation) in &mut remaining {
-                targets.push(ChunkTarget {
-                    owner_node_index: *node_index,
-                    // every chunk (including rounding) is currently
-                    // rebroadcast to the whole group. todo: stake
-                    // proportional rebroadcast for rounding chunks.
-                    rebroadcast_targets: None,
-                });
-                *obligation -= 1;
+        let mut remaining = Vec::new();
+        for (node, obligation) in obligations.holders {
+            let node_idx = NodeIndex(nodes.len());
+            nodes.push(node);
+
+            if obligation.is_empty() {
+                unassigned_nodes.insert(node_idx);
+            } else {
+                remaining.push((node_idx, obligation));
             }
-            remaining.retain(|(_, obligation)| *obligation > 0);
         }
 
         let nodes = OrderedNodes(nodes.into_boxed_slice());
         let author = nodes.index_of(author).expect("author is a holder");
+
+        let mut ring = CoverageRing::new(num_holders, obligations.total_stake);
+        let mut targets = Vec::new();
+
+        while !remaining.is_empty() {
+            for (owner, obligation) in &mut remaining {
+                let rebroadcast_targets = match obligation.take_chunk() {
+                    ChunkType::Whole => None,
+                    ChunkType::Fract(r) => Some(ring.cover(r)),
+                };
+
+                targets.push(ChunkTarget {
+                    owner_node_index: *owner,
+                    rebroadcast_targets,
+                });
+            }
+            remaining.retain(|(_, obligation)| !obligation.is_empty());
+        }
+
         ChunkAssignment {
             nodes,
             author,
@@ -323,7 +435,7 @@ pub(crate) enum Upstream {
     Owner(NodeIndex),
 }
 
-// assign each node to chunks according to their stake, rounded up.
+// assign each node to chunks according to their stake.
 pub struct StakePartition {
     weights: Vec<(NodeId, Stake)>,
 }
@@ -336,7 +448,7 @@ impl StakePartition {
     }
 
     // the author must be one of the weighted nodes.
-    pub fn assign(
+    pub fn assign_rounded_up(
         self,
         author: &NodeId,
         num_source_chunks: usize,
@@ -344,30 +456,43 @@ impl StakePartition {
         redundancy: f32,
         packet_loss_resistance: PacketLossResistance,
     ) -> ChunkAssignment {
-        let scaled_num_source_chunks = (num_source_chunks as f32 * redundancy).ceil() as usize;
-        let obligations = self.obligations(scaled_num_source_chunks);
+        let shares = scale(num_source_chunks, redundancy);
+        let obligations = self.obligations(shares).rounded_up();
         ChunkAssignment::deal(author, obligations, packet_loss_resistance)
     }
 
-    fn obligations(&self, shares: usize) -> Vec<(NodeId, usize)> {
-        use monad_mcp_common::spec::Stake as _;
+    // stake-proportional multicast: each fractional obligation is a
+    // chunk rebroadcast to that fraction of the nodes.
+    pub fn assign_spm(
+        self,
+        author: &NodeId,
+        num_source_chunks: usize,
+        redundancy: f32,
+        packet_loss_resistance: PacketLossResistance,
+    ) -> ChunkAssignment {
+        let shares = scale(num_source_chunks, redundancy);
+        let obligations = self.obligations(shares);
+        ChunkAssignment::deal(author, obligations, packet_loss_resistance)
+    }
 
+    fn obligations(&self, shares: usize) -> Obligations {
         let total = self.weights.iter().map(|(_, stake)| *stake).sum::<Stake>();
 
-        let mut obligations = Vec::with_capacity(self.weights.len());
+        let mut holders = Vec::with_capacity(self.weights.len());
         for (node, stake) in &self.weights {
-            let (whole, remainder) = stake.obligation(&total, shares);
-            let rounding_chunk = if remainder > 0 { 1 } else { 0 };
-            obligations.push((*node, whole + rounding_chunk));
+            let (whole, partial) = stake.obligation(&total, shares);
+            holders.push((*node, Obligation { whole, partial }));
         }
-        obligations
+        Obligations::new(total, holders)
     }
+}
+
+fn scale(num_source_chunks: usize, redundancy: f32) -> usize {
+    (num_source_chunks as f32 * redundancy).ceil() as usize
 }
 
 #[cfg(test)]
 mod tests {
-    use monad_mcp_common::spec::Stake as _;
-
     use super::{super::test_util::PACKET_LOSS_RESISTANCE, *};
 
     fn node(id: u64) -> NodeId {
@@ -382,7 +507,7 @@ mod tests {
             (node(2), Stake::from(1)),
             (node(3), Stake::from(2)),
         ];
-        StakePartition::new(weights).assign(&node(0), 10, 1.0, PACKET_LOSS_RESISTANCE)
+        StakePartition::new(weights).assign_rounded_up(&node(0), 10, 1.0, PACKET_LOSS_RESISTANCE)
     }
 
     fn owned(assignment: &ChunkAssignment, id: u64) -> Vec<WireChunkId> {
@@ -412,8 +537,93 @@ mod tests {
         // ceil(3 * 2.5) = 8 shares over 3 equal nodes: 2 rem 2 -> 3 each
         let weights = (0..3).map(|id| (node(id), Stake::from(1)));
         let assignment =
-            StakePartition::new(weights).assign(&node(0), 3, 2.5, PACKET_LOSS_RESISTANCE);
+            StakePartition::new(weights).assign_rounded_up(&node(0), 3, 2.5, PACKET_LOSS_RESISTANCE);
         assert_eq!(assignment.num_chunks(), 9);
+    }
+
+    // the same weights under stake-proportional multicast
+    fn spm_assignment() -> ChunkAssignment {
+        let weights = [
+            (node(0), Stake::ZERO),
+            (node(1), Stake::from(1)),
+            (node(2), Stake::from(1)),
+            (node(3), Stake::from(2)),
+        ];
+        StakePartition::new(weights).assign_spm(&node(0), 10, 1.0, PACKET_LOSS_RESISTANCE)
+    }
+
+    #[test]
+    fn a_partial_chunk_is_dealt_last_and_rebroadcast_to_its_share_of_nodes() {
+        let assignment = spm_assignment();
+
+        // the same chunks as rounding up, as 2.5 shares deal 3 chunks
+        assert_eq!(assignment.num_chunks(), 11);
+        assert_eq!(owned(&assignment, 1), [0, 3, 6]);
+        assert_eq!(owned(&assignment, 2), [1, 4, 7]);
+        assert_eq!(owned(&assignment, 3), [2, 5, 8, 9, 10]);
+
+        // whole chunks reach everyone
+        for id in [0, 1, 2, 3, 4, 5, 8, 9, 10] {
+            let routing = assignment.routing(ChunkId(id));
+            assert_eq!(routing.partial_rebroadcast_targets(), None);
+        }
+
+        // chunk 6 of node 1 is 2/4 of the 4 nodes: nodes 0 and 1, the
+        // author and the owner
+        let six = assignment.routing(ChunkId(6));
+        assert_eq!(six.partial_rebroadcast_targets(), Some(HashSet::new()));
+        // chunk 7 of node 2 picks up at node 2: the owner and node 3
+        let seven = assignment.routing(ChunkId(7));
+        assert_eq!(
+            seven.partial_rebroadcast_targets(),
+            Some(HashSet::from([node(3)]))
+        );
+
+        let owner = assignment.index_of(&node(2)).unwrap();
+        let covered = assignment.index_of(&node(3)).unwrap();
+        let uncovered = assignment.index_of(&node(1)).unwrap();
+        assert_eq!(seven.upstream(owner), Some(Upstream::Author));
+        assert_eq!(seven.upstream(covered), Some(Upstream::Owner(owner)));
+        assert_eq!(seven.upstream(uncovered), None);
+    }
+
+    #[test]
+    fn rounding_up_rebroadcasts_every_chunk_in_full() {
+        let rounded_up = assignment();
+        for id in 0..11 {
+            let routing = rounded_up.routing(ChunkId(id));
+            assert_eq!(routing.partial_rebroadcast_targets(), None);
+        }
+    }
+
+    #[test]
+    fn every_holder_is_handed_out_once_per_pass() {
+        // 4 holders, total 10: partials 3, 3, 3, 3, 8 add up to 2 passes
+        let mut ring = CoverageRing::new(4, Stake::from(10));
+        // 1.2 nodes due so far
+        assert_eq!(ring.cover(Stake::from(3)), [NodeIndex(0)]);
+        // 2.4
+        assert_eq!(ring.cover(Stake::from(3)), [NodeIndex(1)]);
+        // 3.6
+        assert_eq!(ring.cover(Stake::from(3)), [NodeIndex(2)]);
+        // 4.8
+        assert_eq!(ring.cover(Stake::from(3)), [NodeIndex(3)]);
+        // 8.0
+        let last = ring.cover(Stake::from(8));
+        assert_eq!(
+            last,
+            [NodeIndex(0), NodeIndex(1), NodeIndex(2), NodeIndex(3)]
+        );
+    }
+
+    #[test]
+    fn a_dropped_fraction_carries_to_the_next_partial_chunk() {
+        // 3 holders, total 4: 1/4 of 3 nodes is 0.75, so the first
+        // partial chunk gets nobody and the second gets 1.5 rounded down
+        let mut ring = CoverageRing::new(3, Stake::from(4));
+        assert_eq!(ring.cover(Stake::from(1)), []);
+        assert_eq!(ring.cover(Stake::from(1)), [NodeIndex(0)]);
+        assert_eq!(ring.cover(Stake::from(2)), [NodeIndex(1), NodeIndex(2)]);
     }
 
     #[test]
