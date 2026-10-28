@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 
 use super::super::{
     chunk::{ChunkRequest, ChunkRequestType, ChunksSubset},
@@ -27,7 +27,7 @@ pub(crate) struct Recovery {
     pid: ProposalId,
     self_id: NodeId,
     // nodes that can derive our chunks: the author, then hinted holders
-    decoded_holders: HashSet<NodeId>,
+    decoded_holders: BTreeSet<NodeId>,
     my_chunks_timer: RetryTimer,
     your_chunks_timer: RetryTimer,
 }
@@ -43,7 +43,7 @@ impl Recovery {
         Self {
             pid,
             self_id,
-            decoded_holders: HashSet::from([author]),
+            decoded_holders: BTreeSet::from([author]),
             my_chunks_timer: RetryTimer::new(first_pull, interval),
             your_chunks_timer: RetryTimer::new(first_pull, interval),
         }

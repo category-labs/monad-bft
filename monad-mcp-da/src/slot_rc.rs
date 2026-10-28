@@ -255,7 +255,7 @@ impl SlotRaptorcast {
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::HashSet,
+        collections::BTreeSet,
         sync::{
             Arc,
             atomic::{AtomicUsize, Ordering},
@@ -284,7 +284,7 @@ mod tests {
         (epoch_handle, raptorcast)
     }
 
-    fn nodes(ids: impl IntoIterator<Item = u64>) -> HashSet<NodeId> {
+    fn nodes(ids: impl IntoIterator<Item = u64>) -> BTreeSet<NodeId> {
         ids.into_iter().map(NodeId::dummy).collect()
     }
 
@@ -495,7 +495,7 @@ mod tests {
     fn deliver(
         nodes: &mut [(EpochHandle, SlotRaptorcast)],
         messages: Vec<(NodeId, Dissemination)>,
-        lost: &HashSet<NodeId>,
+        lost: &BTreeSet<NodeId>,
     ) {
         for (sender, message) in messages {
             for to in &message.to {
@@ -553,7 +553,7 @@ mod tests {
         let (header, chunks) = proposal_chunks(&nodes[0].0, 1);
 
         // the author's first hop reaches 1 and 2; 3 is cut off entirely
-        let cut_off = HashSet::from([NodeId::dummy(3)]);
+        let cut_off = BTreeSet::from([NodeId::dummy(3)]);
         nodes[0]
             .1
             .ingest(&author(), group(&[chunks[0].clone(), chunks[3].clone()]))
@@ -591,7 +591,7 @@ mod tests {
             chunk_ids(responses.iter().map(|(_, message)| message)),
             [0, 1, 2, 3, 4, 5]
         );
-        deliver(&mut nodes, responses, &HashSet::new());
+        deliver(&mut nodes, responses, &BTreeSet::new());
         assert_eq!(decoded(&mut nodes[2].1), vec![message()]);
     }
 }

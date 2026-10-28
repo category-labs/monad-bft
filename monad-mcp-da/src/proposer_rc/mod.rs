@@ -323,7 +323,7 @@ impl ProposerRaptorcast {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use std::collections::{BTreeSet, HashSet};
 
     use super::{
         super::{
@@ -508,7 +508,7 @@ mod tests {
         let [Dissemination { to, envelope }] = &recovered[..] else {
             panic!("recovery unicasts to the requester");
         };
-        assert_eq!(*to, HashSet::from([requester]));
+        assert_eq!(*to, BTreeSet::from([requester]));
         assert_eq!(
             envelope.chunk_data().keys().copied().collect::<Vec<_>>(),
             [0]
