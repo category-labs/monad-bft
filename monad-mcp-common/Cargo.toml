@@ -7,6 +7,7 @@ edition = "2024"
 alloy-rlp = { workspace = true, features = ["derive"] }
 bytes = { workspace = true }
 derive_more = { workspace = true, features = ["from", "sum", "add", "into"] }
+tiny-keccak = { workspace = true, features = ["keccak"] }
 
 [dev-dependencies]
 proptest = { workspace = true }

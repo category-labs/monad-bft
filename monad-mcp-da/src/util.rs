@@ -147,10 +147,10 @@ mod tests {
         assert_eq!(order(&a, 0), order(&a, 0));
         assert_ne!(order(&a, 0), order(&a, 1));
         assert_ne!(order(&a, 0), order(&b, 0));
-        // pinned: blake3, rlp and ChaCha20 are stable, so the order is the
-        // same across processes and releases
+        // pinned: blake3, rlp, ChaCha20 and the stub pid (keccak) are stable,
+        // so the order is the same across processes and releases
         assert_eq!(order(&a, 0), PINNED);
     }
 
-    const PINNED: [u64; 16] = [8, 7, 0, 5, 6, 13, 15, 2, 9, 10, 14, 11, 12, 3, 4, 1];
+    const PINNED: [u64; 16] = [1, 5, 4, 3, 13, 0, 6, 7, 10, 9, 2, 12, 15, 8, 11, 14];
 }
