@@ -261,6 +261,7 @@ impl Filter {
 mod tests {
     use super::*;
     use crate::{
+        config::Config,
         metrics::DEFAULT_METRICS,
         state::{insert_test_responder_session, insert_test_transport_session},
     };
@@ -281,7 +282,7 @@ mod tests {
     #[test]
     fn test_basic_pass_no_limits() {
         let mut filter = default_filter();
-        let state = State::new(DEFAULT_METRICS);
+        let state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let addr = "127.0.0.1:8080".parse().unwrap();
         let action = filter.apply(
             &state,
@@ -306,7 +307,7 @@ mod tests {
             total_transport_sessions,
             100,
         );
-        let mut state = State::new(DEFAULT_METRICS);
+        let mut state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         for i in 0..total_transport_sessions {
             let addr: SocketAddr = format!("10.0.0.{}:51820", i).parse().unwrap();
             insert_test_transport_session(&mut state, addr);
@@ -335,7 +336,7 @@ mod tests {
             100,
             max_pending_accepted_sessions,
         );
-        let mut state = State::new(DEFAULT_METRICS);
+        let mut state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         for i in 0..max_pending_accepted_sessions {
             let addr: SocketAddr = format!("10.0.0.{}:51820", i).parse().unwrap();
             insert_test_responder_session(&mut state, addr);
@@ -363,7 +364,7 @@ mod tests {
             1,
             1,
         );
-        let mut state = State::new(DEFAULT_METRICS);
+        let mut state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let addr = "127.0.0.1:8080".parse().unwrap();
         insert_test_responder_session(&mut state, addr);
 
@@ -417,7 +418,7 @@ mod tests {
             100,
             100,
         );
-        let state = State::new(DEFAULT_METRICS);
+        let state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let addr = "127.0.0.1:8080".parse().unwrap();
         for _ in 0..unverified_rate_limit {
             let action = filter.apply(
@@ -454,7 +455,7 @@ mod tests {
             100,
             100,
         );
-        let state = State::new(DEFAULT_METRICS);
+        let state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let addr = "127.0.0.1:8080".parse().unwrap();
         for _ in 0..handshake_rate_limit {
             let action = filter.apply(
@@ -511,7 +512,7 @@ mod tests {
             100,
             100,
         );
-        let state = State::new(DEFAULT_METRICS);
+        let state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         for i in 0..verified_rate_limit {
             let addr: SocketAddr = format!("127.0.0.{}:8080", i + 2).parse().unwrap();
             let action = filter.apply(
@@ -545,7 +546,7 @@ mod tests {
             100,
             100,
         );
-        let state = State::new(DEFAULT_METRICS);
+        let state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let addr = "127.0.0.1:8080".parse().unwrap();
 
         assert_eq!(
@@ -593,7 +594,7 @@ mod tests {
             100,
             100,
         );
-        let state = State::new(DEFAULT_METRICS);
+        let state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let addr = "127.0.0.1:8080".parse().unwrap();
         for _ in 0..handshake_rate_limit {
             filter.apply(
@@ -628,7 +629,7 @@ mod tests {
             100,
             100,
         );
-        let state = State::new(DEFAULT_METRICS);
+        let state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let addr = "127.0.0.1:8080".parse().unwrap();
         for _ in 0..handshake_rate_limit {
             filter.apply(
@@ -663,7 +664,7 @@ mod tests {
             100,
             100,
         );
-        let state = State::new(DEFAULT_METRICS);
+        let state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let addr = "127.0.0.1:8080".parse().unwrap();
         for _ in 0..handshake_rate_limit {
             filter.apply(
@@ -721,7 +722,7 @@ mod tests {
             100,
             100,
         );
-        let state = State::new(DEFAULT_METRICS);
+        let state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let addr = "127.0.0.1:8080".parse().unwrap();
 
         assert_eq!(
@@ -778,7 +779,7 @@ mod tests {
             100,
             100,
         );
-        let state = State::new(DEFAULT_METRICS);
+        let state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
 
         assert_eq!(
             filter.apply(
@@ -836,7 +837,7 @@ mod tests {
             100,
             100,
         );
-        let state = State::new(DEFAULT_METRICS);
+        let state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
         let addr = "127.0.0.1:8080".parse().unwrap();
 
         assert_eq!(
@@ -886,7 +887,7 @@ mod tests {
             100,
             100,
         );
-        let state = State::new(DEFAULT_METRICS);
+        let state = State::new(DEFAULT_METRICS, Config::default().cookie_cache_capacity);
 
         let addr1: SocketAddr = "127.0.0.1:8080".parse().unwrap();
         let addr2: SocketAddr = "127.0.0.2:8080".parse().unwrap();
