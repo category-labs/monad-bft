@@ -15,6 +15,7 @@
 
 //! Whole-node scenarios on the deterministic simulator.
 
+mod determinism;
 mod harness;
 mod loss;
 mod mute;
