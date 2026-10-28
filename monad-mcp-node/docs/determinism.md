@@ -97,3 +97,13 @@ arm and x86), so a seeded run could diverge between machines. The random
 payload length is drawn with integers only. Basic float operations (`+`,
 `*`, `ceil`, comparisons) are exact under IEEE 754 and safe; the network's
 loss draw and DA's chunk counts use only those.
+
+Not yet portable: `monad_sim::dist`'s normal and log-normal distributions
+(rand_distr). rand_distr does its `exp`/`ln` through num-traits, which uses
+the pure-Rust `libm` crate (bit-identical on arm and x86) unless some crate in
+the build enables `num-traits/std`, and then the system libm. Cargo unifies
+features, so which one applies depends on what is built together: MCP-only
+builds get `libm`; `monad-mock-swarm` and `--workspace` builds get std (via
+criterion, among others). MCP scenarios use only `uniform_duration` and
+constant latencies; do not use the normal or log-normal ones until
+`monad-sim` samples them through `libm` directly.
