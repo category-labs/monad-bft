@@ -220,6 +220,77 @@ fn duplicate_addresses_are_rejected() {
     Placer::new(&table).place([1u32, 2, 1], &mut ChaChaRng::seed_from_u64(0));
 }
 
+/// Within bounds `lo..=hi` of `base`, allowing for nanosecond rounding.
+fn within(d: Duration, base: Duration, lo: f64, hi: f64) -> bool {
+    let nanos = d.as_nanos() as f64;
+    let base = base.as_nanos() as f64;
+    nanos >= base * lo - 1.0 && nanos <= base * hi + 1.0
+}
+
+/// The route spread scales each pair's latency, the same in both
+/// directions, and leaves a node's link to itself alone.
+#[test]
+fn route_spread_scales_pairs_symmetrically() {
+    let table = RegionTable::two_clusters(millis(2), millis(80));
+    let placement = place(&Placer::new(&table).route_spread(0.9..=1.1), 12, 4);
+    let matrix = placement.matrix();
+    let mut distinct = std::collections::BTreeSet::new();
+    for a in placement.nodes() {
+        for b in placement.nodes() {
+            let base = table.one_way(a.region, b.region);
+            let latency = matrix.latency(&a.addr, &b.addr);
+            if a.addr == b.addr {
+                assert_eq!(latency, base);
+                continue;
+            }
+            assert_eq!(latency, matrix.latency(&b.addr, &a.addr));
+            assert!(within(latency, base, 0.9, 1.1), "{latency:?} vs {base:?}");
+            distinct.insert(latency);
+        }
+    }
+    assert!(distinct.len() > 2, "pairs in the same regions differ");
+}
+
+/// Asymmetry makes the two directions differ but keeps their sum.
+#[test]
+fn asymmetry_keeps_the_round_trip() {
+    let table = RegionTable::public_internet();
+    let placement = place(&Placer::new(&table).asymmetry(0.1), 20, 6);
+    let matrix = placement.matrix();
+    let mut skewed = 0;
+    for a in placement.nodes() {
+        for b in placement.nodes() {
+            let base = table.one_way(a.region, b.region);
+            let there = matrix.latency(&a.addr, &b.addr);
+            let back = matrix.latency(&b.addr, &a.addr);
+            assert!(within(there, base, 0.9, 1.1));
+            assert!(within(there + back, base * 2, 1.0, 1.0));
+            if there != back {
+                skewed += 1;
+            }
+        }
+    }
+    assert!(skewed > 0);
+}
+
+/// Route options draw after everything else, so they leave regions, last
+/// miles and stakes as they are without them, and keep every entry
+/// positive.
+#[test]
+fn route_options_keep_the_other_draws() {
+    let table = RegionTable::public_internet();
+    let base = Placer::new(&table)
+        .last_mile(Duration::from_micros(300)..=millis(4))
+        .stake(Stake::LogNormal { sigma: 1.0 });
+    let routed = base.clone().route_spread(0.95..=1.1).asymmetry(0.04);
+    let a = place(&base, 30, 8);
+    let b = place(&routed, 30, 8);
+    assert_eq!(a.nodes(), b.nodes());
+    assert_ne!(latencies(&a), latencies(&b));
+    assert!(latencies(&b).iter().all(|d| *d > Duration::ZERO));
+    assert_eq!(latencies(&b), latencies(&place(&routed, 30, 8)));
+}
+
 /// Sampled regions are reproducible per seed, vary the counts across seeds,
 /// and follow the weights for large node counts.
 #[test]

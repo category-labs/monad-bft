@@ -105,14 +105,18 @@ diagonal, is positive. Presets:
 from a measured matrix of a specific deployment; such data belongs with the
 code that uses it, not in this crate.
 
-A `Placer` spreads nodes over a table's regions in proportion to the weights,
-optionally with a per-node last mile and stake weights. It draws only from the
-RNG it is given:
+A `Placer` spreads nodes over a table's regions by weight, with fixed
+(apportioned) or sampled counts, optionally with a per-node last mile,
+persistent per-pair route spread and asymmetry, and stake weights. It draws
+only from the RNG it is given:
 
 ```rust
 let table = RegionTable::public_internet();
 let placement = Placer::new(&table)
+    .regions(Regions::Apportioned)          // or Regions::Sampled
     .last_mile(micros(300)..=millis(4))
+    .route_spread(0.95..=1.10)              // per pair, both directions
+    .asymmetry(0.04)                        // per pair, 1 + a there, 1 - a back
     .stake(Stake::LogNormal { sigma: 1.0 })
     .place(0..100u32, &mut ChaChaRng::seed_from_u64(seed));
 let network = Network::with_matrix(placement.matrix(), jitter);

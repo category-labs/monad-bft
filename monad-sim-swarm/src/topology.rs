@@ -322,8 +322,8 @@ pub enum Regions {
 }
 
 /// Spreads nodes over the regions of a [`RegionTable`] according to the
-/// region weights, optionally with a per-node last-mile latency and stake
-/// weights.
+/// region weights, optionally with a per-node last-mile latency, per-pair
+/// route variation, and stake weights.
 ///
 /// Randomness comes only from the RNG passed to [`place`](Placer::place), so a
 /// seeded RNG gives the same placement every time.
@@ -332,6 +332,8 @@ pub struct Placer<'a> {
     table: &'a RegionTable,
     regions: Regions,
     last_mile: Option<RangeInclusive<Duration>>,
+    route_spread: Option<RangeInclusive<f64>>,
+    asymmetry: Option<f64>,
     stake: Stake,
 }
 
@@ -341,6 +343,8 @@ impl<'a> Placer<'a> {
             table,
             regions: Regions::Apportioned,
             last_mile: None,
+            route_spread: None,
+            asymmetry: None,
             stake: Stake::Equal,
         }
     }
@@ -358,6 +362,34 @@ impl<'a> Placer<'a> {
         self
     }
 
+    /// Scale the region latency of each pair of distinct nodes by a factor
+    /// drawn once, uniformly from `range`, for both directions. Unlike
+    /// jitter, which is drawn per message, the factor persists: a slow route
+    /// stays slow. The matrix becomes node-level.
+    pub fn route_spread(mut self, range: RangeInclusive<f64>) -> Self {
+        assert!(
+            range.start().is_finite() && range.end().is_finite(),
+            "route spread must be finite"
+        );
+        assert!(
+            *range.start() > 0.0 && range.start() <= range.end(),
+            "route spread must be a non-empty range of positive factors"
+        );
+        self.route_spread = Some(range);
+        self
+    }
+
+    /// Make the region latency of each pair of distinct nodes directional:
+    /// draw `a` once per pair, uniformly from `-max..=max`, and scale one
+    /// direction by `1 + a` and the other by `1 - a`, so the round trip is
+    /// unchanged. Panics unless `0 <= max < 1`. The matrix becomes
+    /// node-level.
+    pub fn asymmetry(mut self, max: f64) -> Self {
+        assert!((0.0..1.0).contains(&max), "asymmetry must be in [0, 1)");
+        self.asymmetry = Some(max);
+        self
+    }
+
     pub fn stake(mut self, stake: Stake) -> Self {
         if let Stake::LogNormal { sigma } = stake {
             assert!(sigma.is_finite() && sigma >= 0.0, "invalid sigma {sigma}");
@@ -370,7 +402,9 @@ impl<'a> Placer<'a> {
     ///
     /// The draws from `rng` come in a fixed order: the regions (a shuffle of
     /// the apportioned counts, or one draw per node in address order), then
-    /// the last miles and the stakes, each in address order. See [`Regions`].
+    /// the last miles and the stakes, each in address order, then per pair of
+    /// nodes `i < j` in row order the route spread and the asymmetry, if
+    /// configured. See [`Regions`].
     ///
     /// Panics if an address repeats.
     pub fn place<Addr: Ord + Clone>(
@@ -416,6 +450,24 @@ impl<'a> Placer<'a> {
         };
         let total: f64 = stake.iter().sum();
 
+        let factors = (self.route_spread.is_some() || self.asymmetry.is_some()).then(|| {
+            let mut factors = vec![vec![1.0; n]; n];
+            let pairs = (0..n).flat_map(|i| (i + 1..n).map(move |j| (i, j)));
+            for (i, j) in pairs {
+                let spread = match &self.route_spread {
+                    Some(range) => rng.gen_range(range.clone()),
+                    None => 1.0,
+                };
+                let skew = match self.asymmetry {
+                    Some(max) if max > 0.0 => rng.gen_range(-max..=max),
+                    _ => 0.0,
+                };
+                factors[i][j] = spread * (1.0 + skew);
+                factors[j][i] = spread * (1.0 - skew);
+            }
+            factors
+        });
+
         let nodes = addrs
             .into_iter()
             .zip(regions)
@@ -430,7 +482,8 @@ impl<'a> Placer<'a> {
             .collect();
         Placement {
             table: self.table.one_way.clone(),
-            node_level: self.last_mile.is_some(),
+            node_level: self.last_mile.is_some() || factors.is_some(),
+            factors,
             nodes,
         }
     }
@@ -461,8 +514,8 @@ pub struct PlacedNode<Addr> {
     pub addr: Addr,
     /// The region index in the table.
     pub region: usize,
-    /// Added at both ends of each of the node's links; zero without
-    /// [`Placer::last_mile`].
+    /// Added at both ends of each of the node's links, after any route
+    /// spread or asymmetry; zero without [`Placer::last_mile`].
     pub last_mile: Duration,
     /// The node's share of the total stake; the shares sum to 1.
     pub stake: f64,
@@ -474,6 +527,9 @@ pub struct PlacedNode<Addr> {
 pub struct Placement<Addr> {
     table: Vec<Vec<Duration>>,
     node_level: bool,
+    /// Per node pair, the route spread times the asymmetry; `None` if
+    /// neither is configured.
+    factors: Option<Vec<Vec<f64>>>,
     nodes: Vec<PlacedNode<Addr>>,
 }
 
@@ -493,9 +549,10 @@ impl<Addr: Ord + Clone> Placement<Addr> {
     }
 
     /// The placement as a [`LatencyMatrix`] with every node placed: the
-    /// region table itself without last miles, or one row per node with
-    /// them, where a link's latency is the region latency plus both nodes'
-    /// last miles. A node's link to itself counts its last mile twice.
+    /// region table itself if no per-node or per-pair option is set, or one
+    /// row per node, where a link's latency is the region latency, scaled by
+    /// the pair's route spread and asymmetry, plus both nodes' last miles. A
+    /// node's link to itself is not scaled and counts its last mile twice.
     pub fn matrix(&self) -> LatencyMatrix<Addr> {
         if !self.node_level {
             return self
@@ -508,10 +565,19 @@ impl<Addr: Ord + Clone> Placement<Addr> {
         let one_way = self
             .nodes
             .iter()
-            .map(|from| {
+            .enumerate()
+            .map(|(i, from)| {
                 self.nodes
                     .iter()
-                    .map(|to| self.table[from.region][to.region] + from.last_mile + to.last_mile)
+                    .enumerate()
+                    .map(|(j, to)| {
+                        let base = self.table[from.region][to.region];
+                        let base = match &self.factors {
+                            Some(factors) => base.mul_f64(factors[i][j]),
+                            None => base,
+                        };
+                        base + from.last_mile + to.last_mile
+                    })
                     .collect()
             })
             .collect();

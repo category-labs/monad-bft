@@ -99,12 +99,26 @@ A `Placer` turns a table into a node-level topology:
   random node sets, and for comparing with models that sample the same way.
   Small regions may end up empty under either method.
 - An optional last mile per node, uniform over a range, is added at both
-  ends of every link. Without it the matrix stays region-level and small;
-  with it, it has one row per node.
+  ends of every link.
+- An optional route spread scales the region latency of each node pair by a
+  factor drawn once, the same in both directions. An optional asymmetry
+  scales one direction by `1 + a` and the other by `1 - a`, keeping the
+  round trip. Both are persistent per pair, unlike jitter, which is drawn
+  per message: without them, all nodes in two regions see the same base
+  latency, and arrival times cluster by region. Asymmetry also matters to
+  anything that estimates one-way delay as half the round trip, such as
+  clock-offset estimation, since an asymmetric path looks like an offset.
+  Factors stay positive (the spread range is positive and `|a| < 1`), so
+  entries remain positive lower bounds.
 - Stake is equal, or log-normal and normalized to sum to 1.
 
+Without last mile, spread and asymmetry, the matrix stays region-level and
+small; with any of them, it has one row per node.
+
 Randomness comes only from the RNG passed to `place`, drawn in a fixed order
-(regions, last miles, stakes), so a seed reproduces the placement. The
+(regions, last miles, stakes, then per pair spread and asymmetry), so a seed
+reproduces the placement, and turning on the route options does not change
+the earlier draws. The
 placer holds no state between calls, and the matrix it yields is immutable
 data.
 
