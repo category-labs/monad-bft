@@ -61,8 +61,8 @@ where
     V: IsVote,
 {
     scope: <V as IsVote>::Scope,
-    // in the order each vote was first cast: a tally, and every certificate
-    // or request built from one, must not depend on a hasher
+    // in the order each vote was first cast, so iteration does not depend on
+    // a hasher; a tally orders them canonically
     buckets: IndexMap<V, BTreeSet<NodeId>>,
     votes: BTreeMap<NodeId, Signature>,
 }
@@ -162,8 +162,17 @@ where
                 .signers(validator_data)
                 .expect("aggregation returns a collection consistent with the validator set");
             let stake = validator_data.sum_stake(signers.iter().copied());
-            buckets.push((vote, sigcol, stake));
+            buckets.push((data, vote, sigcol, stake));
         }
+
+        // canonical order, by the bytes each vote signs: every node lists the
+        // same votes the same way whatever order they arrived in, so the qc it
+        // picks and the certificates it builds do not depend on arrival
+        buckets.sort_unstable_by(|(a, ..), (b, ..)| a.cmp(b));
+        let buckets = buckets
+            .into_iter()
+            .map(|(_, vote, sigcol, stake)| (vote, sigcol, stake))
+            .collect();
 
         Tally {
             scope: &self.scope,
@@ -537,6 +546,31 @@ mod tests {
                 .expect("each group verifies over the digest its bucket signed");
             assert_eq!(signers.len(), 3);
         }
+    }
+
+    /// A tally lists its buckets in the same order whatever order the votes
+    /// arrived in, so every node picks the same qc and builds the same
+    /// certificate from the same votes.
+    #[test]
+    fn a_tally_does_not_depend_on_arrival_order() {
+        let (nodes, validator_data) = claim_setup();
+        let votes: Vec<_> = nodes[..6]
+            .iter()
+            .enumerate()
+            .map(|(i, node)| (*node, Claim(i as u64 % 3)))
+            .collect();
+        let mut reversed = votes.clone();
+        reversed.reverse();
+
+        let groups = |votes: &[(NodeId, Claim)]| {
+            let pool = claim_pool(votes);
+            let tally = pool.tally(&validator_data);
+            tally
+                .groups()
+                .map(|(claim, sigcol)| (claim.clone(), sigcol.clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(groups(&votes), groups(&reversed));
     }
 
     /// The target is over the whole pool, so a pool short of it forms nothing
