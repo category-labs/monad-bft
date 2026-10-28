@@ -68,6 +68,7 @@ fn config(i: u64, nodes: u64, genesis_deadline: Timestamp, ledgers: &Path) -> No
         ledger: LedgerConfig {
             dir: ledgers.join(format!("ledger-{i}")),
         },
+        seed: None,
     }
 }
 

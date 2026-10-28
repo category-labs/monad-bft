@@ -31,6 +31,7 @@ fn six_of_eight_finalize_through_ten_percent_loss() {
     const VALIDATORS: u64 = 8;
     const DOWN: u64 = 2;
     const SLOTS: u64 = 500;
+    const SEED: u64 = 0xC0FFEE;
     const MAX_PROPOSAL_LEN: usize = 2000;
 
     let network = Network::reliable(Duration::from_millis(10)).loss(0.1);
@@ -38,7 +39,7 @@ fn six_of_eight_finalize_through_ten_percent_loss() {
     let mut nodes = Vec::new();
     for id in 0..VALIDATORS {
         let node_id = NodeId::dummy(id);
-        let mut config = node_config(id, VALIDATORS);
+        let mut config = node_config(SEED, id, VALIDATORS);
         // cap proposal size to reduce # of chunks
         config.proposal.max_payload_bytes = Some(MAX_PROPOSAL_LEN);
         let node = Node::new(&config).expect("config builds");
@@ -51,7 +52,7 @@ fn six_of_eight_finalize_through_ten_percent_loss() {
         nodes.pop().expect("enough nodes");
     }
 
-    let mut swarm = Swarm::build(0xC0FFEE, network, nodes);
+    let mut swarm = Swarm::build(SEED, network, nodes);
     for id in swarm.node_ids() {
         let handle = swarm.handle(&id).expect("node just built");
         let sim = swarm.sim();

@@ -18,6 +18,7 @@ use std::collections::VecDeque;
 use bytes::Bytes;
 use monad_mcp_chorus::ledger::Tx;
 use monad_mcp_common::{Lane, Lanes, Proposal, Slot, Timestamp};
+use rand_chacha::ChaCha8Rng;
 
 use super::{Component, Mempool};
 use crate::{
@@ -154,11 +155,12 @@ impl Component for MempoolProposing {
 pub struct RandomProposing {
     planner: ProposalPlanner,
     proposal_size_limit: usize,
+    rng: ChaCha8Rng,
     outbox: VecDeque<ProposingOutput>,
 }
 
 impl RandomProposing {
-    pub fn new(epoch_handle: &EpochHandle, config: &ProposalConfig) -> Self {
+    pub fn new(epoch_handle: &EpochHandle, config: &ProposalConfig, rng: ChaCha8Rng) -> Self {
         let planner = ProposalPlanner::new(
             epoch_handle.self_id,
             epoch_handle.proposers.clone(),
@@ -167,13 +169,14 @@ impl RandomProposing {
         Self {
             planner,
             proposal_size_limit: config.proposal_size_limit(),
+            rng,
             outbox: VecDeque::new(),
         }
     }
 
     fn collect(&mut self, now: Timestamp) {
         while let Some((slot, lane)) = self.planner.poll(now) {
-            let payload = random_payload(self.proposal_size_limit);
+            let payload = random_payload(&mut self.rng, self.proposal_size_limit);
             let proposal = Proposal {
                 slot,
                 lane,
@@ -215,11 +218,8 @@ impl Component for RandomProposing {
 
 // never empty, log-uniform in length: every doubling from 1 byte to the
 // proposal size limit is equally likely
-fn random_payload(proposal_size_limit: usize) -> Bytes {
-    use rand::{Rng as _, RngCore as _};
-
+fn random_payload(rng: &mut impl rand::Rng, proposal_size_limit: usize) -> Bytes {
     let proposal_size_limit = proposal_size_limit.max(1);
-    let mut rng = rand::thread_rng();
     let max_bits = (proposal_size_limit as f64).log2();
     let len = 2f64.powf(rng.gen_range(0.0..=max_bits)).round() as usize;
     let mut message = vec![0u8; len.clamp(1, proposal_size_limit)];
@@ -356,9 +356,12 @@ mod tests {
 
     #[test]
     fn a_random_payload_is_non_empty_and_within_the_proposal_size_limit() {
+        use rand::SeedableRng as _;
+
+        let mut rng = ChaCha8Rng::seed_from_u64(7);
         for proposal_size_limit in [0, 1, 7, 1024, 1 << 20] {
             for _ in 0..64 {
-                let message = random_payload(proposal_size_limit);
+                let message = random_payload(&mut rng, proposal_size_limit);
                 assert!(!message.is_empty());
                 assert!(message.len() <= proposal_size_limit.max(1));
             }
