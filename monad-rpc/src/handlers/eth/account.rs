@@ -15,7 +15,6 @@
 
 use std::collections::BTreeMap;
 
-use futures::{StreamExt, TryStreamExt};
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::Triedb;
 use serde::Deserialize;
@@ -146,7 +145,6 @@ pub async fn monad_eth_getStorageAt<T: Triedb>(
 }
 
 const MAX_GET_STORAGE_VALUES_SLOTS: usize = 1024;
-const MAX_CONCURRENT_STORAGE_READS: usize = 64;
 
 #[derive(Deserialize, Debug, schemars::JsonSchema)]
 pub struct MonadEthGetStorageValuesParams {
@@ -185,27 +183,32 @@ pub async fn monad_eth_getStorageValues<T: Triedb>(
         .await
         .ok_or_else(JsonRpcError::block_not_found)?;
 
-    let reads = params
+    let reads: Vec<_> = params
         .requests
         .iter()
-        .flat_map(|(address, slots)| slots.iter().map(move |slot| (address, slot)));
-    let values: Vec<EthHash> = futures::stream::iter(reads)
-        .map(|(address, slot)| {
-            data_provider
-                .triedb_env
-                .get_storage_at(block_key, address.0, slot.0)
-        })
-        .buffered(MAX_CONCURRENT_STORAGE_READS)
-        .map_ok(FixedData)
-        .try_collect()
+        .flat_map(|(address, slots)| slots.iter().map(|slot| (address.0, slot.0)))
+        .collect();
+    let values = data_provider
+        .triedb_env
+        .get_storage_values(block_key, &reads)
         .await
         .map_err(JsonRpcError::internal_error)?;
+    if values.len() != reads.len() {
+        return Err(JsonRpcError::internal_error(format!(
+            "expected {} storage values, got {}",
+            reads.len(),
+            values.len()
+        )));
+    }
 
     let mut values = values.into_iter();
     let result: BTreeMap<_, Vec<_>> = params
         .requests
         .into_iter()
-        .map(|(address, slots)| (address, values.by_ref().take(slots.len()).collect()))
+        .map(|(address, slots)| {
+            let values = values.by_ref().take(slots.len()).map(FixedData).collect();
+            (address, values)
+        })
         .collect();
 
     match data_provider

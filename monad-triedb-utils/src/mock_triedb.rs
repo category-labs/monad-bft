@@ -119,6 +119,17 @@ impl Triedb for MockTriedb {
             .unwrap_or_default()))
     }
 
+    fn get_storage_values(
+        &self,
+        _block_key: BlockKey,
+        reads: &[(EthAddress, EthStorageKey)],
+    ) -> impl std::future::Future<Output = Result<Vec<EthStorageSlot>, String>> + Send {
+        ready(Ok(reads
+            .iter()
+            .map(|read| self.storage.get(read).copied().unwrap_or_default())
+            .collect()))
+    }
+
     fn get_code(
         &self,
         _block_key: BlockKey,
