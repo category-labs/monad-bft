@@ -216,13 +216,16 @@ impl Component for RandomProposing {
     }
 }
 
-// never empty, log-uniform in length: every doubling from 1 byte to the
-// proposal size limit is equally likely
+// never empty, log-uniform in length: every octave [2^k, 2^(k+1)) from 1 byte
+// up to the proposal size limit is equally likely, uniform within it. Integer
+// only: libm's log2/powf differ in the last bit across platforms, which would
+// make a seeded simulation diverge between, e.g., arm and x86.
 fn random_payload(rng: &mut impl rand::Rng, proposal_size_limit: usize) -> Bytes {
-    let proposal_size_limit = proposal_size_limit.max(1);
-    let max_bits = (proposal_size_limit as f64).log2();
-    let len = 2f64.powf(rng.gen_range(0.0..=max_bits)).round() as usize;
-    let mut message = vec![0u8; len.clamp(1, proposal_size_limit)];
+    let limit = proposal_size_limit.max(1) as u64;
+    let max_bits = u64::BITS - 1 - limit.leading_zeros();
+    let low = 1u64 << rng.gen_range(0..=max_bits);
+    let len = rng.gen_range(low..=(2 * low - 1).min(limit));
+    let mut message = vec![0u8; len as usize];
     rng.fill_bytes(&mut message);
     Bytes::from(message)
 }
@@ -353,6 +356,21 @@ mod tests {
             (sealed_at_ns, vec![])
         );
     }
+
+    // pinned: integer sampling and ChaCha8 are the same on every platform, so a
+    // seeded run proposes the same lengths on arm and x86
+    #[test]
+    fn random_payload_lengths_are_fixed_by_the_seed() {
+        use rand::SeedableRng as _;
+
+        let mut rng = ChaCha8Rng::seed_from_u64(7);
+        let lengths: Vec<usize> = (0..8)
+            .map(|_| random_payload(&mut rng, 1 << 20).len())
+            .collect();
+        assert_eq!(lengths, PINNED_LENGTHS);
+    }
+
+    const PINNED_LENGTHS: [usize; 8] = [9, 52470, 32166, 12, 6184, 391, 4996, 43471];
 
     #[test]
     fn a_random_payload_is_non_empty_and_within_the_proposal_size_limit() {
