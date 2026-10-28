@@ -7,3 +7,4 @@ edition = "2021"
 monad-sim = { workspace = true }
 rand = { workspace = true }
 rand_chacha = { workspace = true }
+rand_distr = { workspace = true }
