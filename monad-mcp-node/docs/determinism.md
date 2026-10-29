@@ -96,11 +96,17 @@ Outside the simulated path, unchanged: the production `Clock` and
 swarm example and the UDP tests; `monad-mcp-rpc` and `monad-mcp-explorer`
 (client tooling).
 
-Stable hashing: the stub `ProposalId::pid` and stub signature digests use
-keccak256 (of the header's rlp encoding, and of the signed bytes), not std's
-`DefaultHasher`, whose algorithm and derived-`Hash` input Rust does not
-promise to keep across releases. With that, a seeded run should be the same
-across releases too, except where a dependency changes its output (rand,
+Stable hashing: the stub `ProposalId::pid` and stub signatures digest their
+input with `monad_mcp_common::stub::noncrypto_digest` (rapidhash v3, over the
+header's rlp encoding and over the signed bytes). Its output is fixed by the
+reference algorithm, so it is the same on every platform and across crate
+versions, unlike std's `DefaultHasher`, whose algorithm and derived-`Hash`
+input Rust does not promise to keep across releases. It is not
+cryptographic: the stub provides no security (keys derive from public
+u64s), and it costs a few nanoseconds per call, which matters because every
+vote re-verifies its pool's signatures. A production pid or signature needs a
+cryptographic hash. With that, a seeded run should be the same across
+releases too, except where a dependency changes its output (rand,
 rand_chacha, blake3). Tests pin the send order, the digest and the random
 payload lengths.
 

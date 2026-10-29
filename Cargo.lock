@@ -5742,7 +5742,7 @@ dependencies = [
  "bytes",
  "derive_more",
  "proptest",
- "tiny-keccak",
+ "rapidhash",
 ]
 
 [[package]]

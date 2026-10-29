@@ -15,6 +15,26 @@
 
 pub use self::{validator::*, vote::*};
 
+/// A fast, non-cryptographic 64-bit digest for the stub env: rapidhash v3,
+/// whose output is fixed by its reference algorithm, so it is the same on
+/// every platform and across crate versions (pinned by a test). It stands in
+/// for the hash behind a signature and a proposal id. The stub provides no
+/// security (keys derive from public u64s), so neither collision nor preimage
+/// resistance is needed here; a production pid or signature needs a
+/// cryptographic hash.
+pub fn noncrypto_digest(data: &[u8]) -> u64 {
+    rapidhash::v3::rapidhash_v3(data)
+}
+
+#[cfg(test)]
+#[test]
+fn the_noncrypto_digest_is_pinned() {
+    assert_eq!(noncrypto_digest(b""), PINNED_EMPTY_DIGEST);
+}
+
+#[cfg(test)]
+const PINNED_EMPTY_DIGEST: u64 = 232177599295442350;
+
 mod validator {
     use alloy_rlp::{RlpDecodableWrapper, RlpEncodableWrapper};
     // Into implemented for testing purpose only.
@@ -151,26 +171,6 @@ mod vote {
         }
     }
 
-    // keccak256, truncated: the same in every process and release, unlike
-    // std's hashers
-    fn digest(data: &[u8]) -> u64 {
-        use tiny_keccak::{Hasher as _, Keccak};
-
-        let mut digest = [0; 32];
-        let mut keccak = Keccak::v256();
-        keccak.update(data);
-        keccak.finalize(&mut digest);
-        u64::from_le_bytes(digest[..8].try_into().expect("8 bytes"))
-    }
-
-    #[cfg(test)]
-    #[test]
-    fn the_digest_is_truncated_keccak256() {
-        // keccak256("") = c5d24601 86f7233c ...
-        let expected = [0xc5, 0xd2, 0x46, 0x01, 0x86, 0xf7, 0x23, 0x3c];
-        assert_eq!(digest(b""), u64::from_le_bytes(expected));
-    }
-
     impl Signature {
         pub fn make_invalid(&mut self) {
             // Simulate an invalid signature
@@ -202,7 +202,7 @@ mod vote {
         fn sign(&self, data: &Bytes) -> Self::Signature {
             Signature {
                 by: self.pubkey(),
-                digest: digest(data),
+                digest: super::noncrypto_digest(data),
                 malformed: false,
             }
         }
@@ -216,7 +216,9 @@ mod vote {
         }
 
         fn verify(&self, data: &[u8], pubkey: &Self::PubKey) -> bool {
-            self.is_well_formed() && self.by == *pubkey && self.digest == digest(data)
+            self.is_well_formed()
+                && self.by == *pubkey
+                && self.digest == super::noncrypto_digest(data)
         }
     }
 }
