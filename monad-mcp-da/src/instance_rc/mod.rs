@@ -16,7 +16,7 @@
 mod obligation_tracker;
 mod serving_tracker;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use bytes::Bytes;
 use monad_mcp_chorus::spec::ProposalHeader as _;
@@ -38,8 +38,9 @@ use super::{
 };
 use crate::spec::DAProposalHeader as _;
 
-// by owner, ordered: requests go out in this order
-pub(crate) type MissingChunks = BTreeMap<NodeId, ChunksSubset>;
+// by owner, each owner once, in assignment (or validator) order; the requests
+// built from it are shuffled before they go out
+pub(crate) type MissingChunks = Vec<(NodeId, ChunksSubset)>;
 
 // decoded proposal does not reencode back to root
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -217,21 +218,22 @@ impl RaptorcastInstance {
             return None;
         }
 
-        let mut by_owner: BTreeMap<NodeIndex, Vec<ChunkId>> = BTreeMap::new();
+        // by owner, indexed by NodeIndex
+        let mut by_owner: Vec<Vec<ChunkId>> = vec![Vec::new(); self.assignment.num_nodes()];
         for chunk_id in self.assignment.chunk_ids() {
             if self.chunks.contains(chunk_id) {
                 continue;
             }
             let owner = self.assignment.routing(chunk_id).owner_index();
-            by_owner.entry(owner).or_default().push(chunk_id);
+            by_owner[usize::from(owner)].push(chunk_id);
         }
 
-        let missing = by_owner
-            .into_iter()
-            .map(|(owner, chunk_ids)| {
-                let owner = *self.assignment.node(owner);
-                (owner, ChunksSubset::narrowed(chunk_ids))
-            })
+        let missing = self
+            .assignment
+            .nodes()
+            .zip(by_owner)
+            .filter(|(_, chunk_ids)| !chunk_ids.is_empty())
+            .map(|((_, owner), chunk_ids)| (*owner, ChunksSubset::narrowed(chunk_ids)))
             .collect();
         Some(missing)
     }
