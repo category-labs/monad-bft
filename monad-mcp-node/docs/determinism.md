@@ -21,11 +21,14 @@ from config or the keystore.
 
 - No `thread_rng`, `rand::random`, `OsRng` or `from_entropy`: take an RNG or
   seed from the config or the constructor.
-- No iteration over a std `HashMap`/`HashSet` where the order reaches an
-  output (messages, their order, certificates, requests). std hashers are
-  seeded per process and per instance. Use `BTreeMap`/`BTreeSet`, `IndexMap`
-  (insertion order), or sort first. Lookup-only maps can stay hashed.
-  `clippy::iter_over_hash_type` is denied in these crates; it catches `for`
+- No output (messages, their order, certificates, requests) may depend on
+  the iteration order of a std `HashMap`/`HashSet`. std hashers are seeded
+  per process and per instance, and hashbrown lays tables out differently on
+  arm and x86 (16- vs 8-byte probe groups), so even a fixed seed does not give
+  a portable order. Pick the container for how it is used: a `Vec` for lists
+  that are only iterated, a `Vec` indexed by `NodeIndex` for dense per-node
+  state, an ordered container where order matters, a hash container only for
+  lookups. `clippy::iter_over_hash_type` is denied in these crates; it catches `for`
   loops over hash containers, not iterator chains (`.iter().map(..).collect()`),
   which the determinism test has to catch. Mark a justified exception with
   `#[allow]` and a reason.
@@ -45,19 +48,26 @@ Explicit randomness:
 | chunk-assignment shuffles in d33 and swiper (`ChaCha20Rng`) | unchanged: seeded from the header (slot, timestamp, author key), part of the protocol |
 | conductor test (`StdRng::seed_from_u64`) | unchanged: test, seeded |
 
-Hash-container order that reached outputs:
+Containers whose order reached outputs, and the related DA state:
 
 | source | resolution |
 |---|---|
 | `Dissemination.to` (DA `egress.rs`), iterated by the router's DA output handler | a `Vec<NodeId>` in send order (see below) |
-| `full_rebroadcast_targets`, `partial_rebroadcast_targets` (DA `assignment.rs`) | `BTreeSet<NodeId>` membership, sent in send order |
-| `unassigned_nodes`, the header-only first-hop recipients | `BTreeSet<NodeIndex>` |
-| `ProposalEnvelope::group` (DA `chunk.rs`) | envelopes in order of each header's first chunk |
-| `MissingChunks`, `missing_chunks`, `everything_missing` (pull recovery to owners) | `BTreeMap<NodeId, _>`, requests in send order |
+| rebroadcast targets (DA `instance_rc`) | no set: a chunk goes to the nodes of the instance's send order that `ChunkRouting::is_rebroadcast_target` admits |
+| `unassigned_nodes`, the header-only first-hop recipients | a `Vec<NodeIndex>` in index order |
+| `ProposalEnvelope::group` (DA `chunk.rs`) | a short list, envelopes in order of each header's first chunk |
+| `MissingChunks`, `everything_missing` (pull recovery to owners) | a `Vec<(NodeId, ChunksSubset)>` in assignment (or validator) order, grouped in a `Vec` indexed by `NodeIndex`; requests in send order |
+| `ServingTracker.served` | a `Vec` indexed by `NodeIndex` |
 | `Recovery.decoded_holders` (pull recovery of our own chunks) | `BTreeSet<NodeId>`, requests in send order |
 | `SignatureCollection::signers`/`verify` and the `aggregate`/`try_aggregate` inputs (chorus `spec.rs`, stub env) | `BTreeSet`/`BTreeMap`; their signers address header pulls and decoded-holder hints |
 | `MissingHeaders` voters (header pull fan-out) | `BTreeSet<NodeId>`; DA pulls in send order |
-| `VotePool` buckets, voters and votes (chorus `types.rs`); a tally's bucket order decides weak QC order, timeout certificate groups, header-wait and fallback-wait lists | a tally sorts its buckets by the bytes each vote signs (canonical, independent of arrival); the pool keeps them in an `IndexMap` (first-vote order, only logs see it), voters `BTreeSet`, votes `BTreeMap` |
+| `VotePool` buckets, voters and votes (chorus `types.rs`); a tally's bucket order decides weak QC order, timeout certificate groups, header-wait and fallback-wait lists | a tally sorts its buckets by the bytes each vote signs (canonical, independent of arrival); the pool keeps them in a short `Vec` in first-vote order, voters in a `BTreeSet`, votes in a `BTreeMap` |
+
+The validator-keyed sets and maps above (`decoded_holders`, signer sets, the
+aggregation input, `MissingHeaders` voters, `VotePool` voters and votes) are
+ordered containers for now. They are meant to move to validator-indexed
+containers (a bitset for sets, a map indexed by validator position) behind
+an abstraction keyed by a `ValidatorIndex`, in a separate change.
 
 Send order: an ordered container alone would send to low node ids first,
 every time. DA instead shuffles a sender's rebroadcasts, recovery requests
@@ -69,7 +79,7 @@ order, which S11 and D33 shuffle per proposal. This stands in for a send
 strategy (prioritized sends) still to be designed.
 
 Hash containers kept, lookup or membership only: DA `authenticated_headers`,
-`ServingTracker.served`, `ProposerRaptorcast.tracked`; chorus availability
+`ProposerRaptorcast.tracked`; chorus availability
 `headers`/`decoded`/`invalid`, MVBA `BlockStore` and its gc set, timeout
 certificate checks, stub `ValidatorData` maps (enumerated through its sorted
 list); node finalization `resolved`, mempool `pending`/`recent_set`;
