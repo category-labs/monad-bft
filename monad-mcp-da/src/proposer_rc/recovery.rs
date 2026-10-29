@@ -65,7 +65,11 @@ impl Recovery {
         now: Timestamp,
     ) -> Vec<(NodeId, ChunkRequest)> {
         let mut requests = Vec::new();
-        if let Some(mine) = missing.remove(&self.self_id)
+        let mine = missing
+            .iter()
+            .position(|(owner, _)| *owner == self.self_id)
+            .map(|i| missing.remove(i).1);
+        if let Some(mine) = mine
             && self.my_chunks_timer.try_fire(now)
         {
             requests.extend(self.ask_decoded_holders(mine));
