@@ -22,7 +22,10 @@ use rand_chacha::ChaCha8Rng;
 
 use super::{Component, Mempool};
 use crate::{
-    chorus::proposing::ProposalPlanner, common::NodeId, config::ProposalConfig, epoch::EpochHandle,
+    chorus::proposing::ProposalPlanner,
+    common::NodeId,
+    config::{ProposalConfig, SourceKind},
+    epoch::EpochHandle,
 };
 
 pub enum ProposingInput {
@@ -151,10 +154,12 @@ impl Component for MempoolProposing {
 }
 
 // proposes random bytes when the schedule says so, for load tests without
-// clients and for scenarios that do not care what a proposal carries
+// clients and for scenarios that do not care what a proposal carries; with
+// the fixed source, every proposal is exactly the size limit
 pub struct RandomProposing {
     planner: ProposalPlanner,
     proposal_size_limit: usize,
+    fixed: bool,
     rng: ChaCha8Rng,
     outbox: VecDeque<ProposingOutput>,
 }
@@ -169,6 +174,7 @@ impl RandomProposing {
         Self {
             planner,
             proposal_size_limit: config.proposal_size_limit(),
+            fixed: config.source == SourceKind::Fixed,
             rng,
             outbox: VecDeque::new(),
         }
@@ -176,7 +182,11 @@ impl RandomProposing {
 
     fn collect(&mut self, now: Timestamp) {
         while let Some((slot, lane)) = self.planner.poll(now) {
-            let payload = random_payload(&mut self.rng, self.proposal_size_limit);
+            let payload = if self.fixed {
+                random_bytes(&mut self.rng, self.proposal_size_limit.max(1))
+            } else {
+                random_payload(&mut self.rng, self.proposal_size_limit)
+            };
             let proposal = Proposal {
                 slot,
                 lane,
@@ -225,7 +235,11 @@ fn random_payload(rng: &mut impl rand::Rng, proposal_size_limit: usize) -> Bytes
     let max_bits = u64::BITS - 1 - limit.leading_zeros();
     let low = 1u64 << rng.gen_range(0..=max_bits);
     let len = rng.gen_range(low..=(2 * low - 1).min(limit));
-    let mut message = vec![0u8; len as usize];
+    random_bytes(rng, len as usize)
+}
+
+fn random_bytes(rng: &mut impl rand::Rng, len: usize) -> Bytes {
+    let mut message = vec![0u8; len];
     rng.fill_bytes(&mut message);
     Bytes::from(message)
 }

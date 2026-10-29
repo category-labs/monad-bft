@@ -17,11 +17,11 @@ use std::time::Duration;
 
 use monad_mcp_common::Slot;
 use monad_mcp_node::{Node, common::NodeId};
-use monad_sim::Time;
-use monad_sim_swarm::{Network, Swarm};
+use monad_sim_swarm::Network;
 
 use crate::harness::{
-    SLOT_INTERVAL, SimNode, assert_progress, deadline_of_slot, node_config, time_of,
+    SLOT_INTERVAL, SimNode, assert_progress, deadline_of_slot, node_config, parallel_from_env,
+    start_swarm, time_of,
 };
 
 // 8 validators, 2 never start, every wire message dropped with 10%
@@ -52,12 +52,7 @@ fn six_of_eight_finalize_through_ten_percent_loss() {
         nodes.pop().expect("enough nodes");
     }
 
-    let mut swarm = Swarm::build(SEED, network, nodes);
-    for id in swarm.node_ids() {
-        let handle = swarm.handle(&id).expect("node just built");
-        let sim = swarm.sim();
-        sim.schedule(handle, Time(0), "init", |node, ctx| node.init(ctx));
-    }
+    let mut swarm = start_swarm(SEED, network, nodes, parallel_from_env());
 
     let margin = SLOT_INTERVAL.checked_mul(5).expect("in range");
     swarm.run_until_time(time_of(deadline_of_slot(SLOTS) + margin));
