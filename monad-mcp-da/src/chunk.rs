@@ -15,7 +15,7 @@
 
 use std::{
     borrow::Cow,
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet},
 };
 
 use bytes::Bytes;
@@ -194,14 +194,17 @@ impl ProposalEnvelope {
     // group chunks by header. each header appears once, in the order of
     // its first chunk.
     pub fn group<'a>(chunks: impl IntoIterator<Item = Chunk<'a>>) -> impl Iterator<Item = Self> {
-        let mut index: HashMap<SignedProposalHeader, usize> = HashMap::new();
+        // usually one or two headers: a linear search, newest group first
         let mut groups: Vec<(SignedProposalHeader, BTreeMap<WireChunkId, ChunkData>)> = Vec::new();
         for chunk in chunks {
             let (header, chunk_id, data) = chunk.into_parts();
-            let i = *index.entry(header.clone()).or_insert_with(|| {
-                groups.push((header, BTreeMap::new()));
-                groups.len() - 1
-            });
+            let i = match groups.iter().rposition(|(seen, _)| *seen == header) {
+                Some(i) => i,
+                None => {
+                    groups.push((header, BTreeMap::new()));
+                    groups.len() - 1
+                }
+            };
             groups[i].1.insert(chunk_id, data);
         }
         groups

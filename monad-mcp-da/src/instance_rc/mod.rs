@@ -69,9 +69,7 @@ pub(crate) struct RaptorcastInstance {
     // None when this node is outside the assignment (e.g. a full node)
     self_index: Option<NodeIndex>,
     // every node of the assignment, in the order we send to them
-    send_order: Vec<NodeId>,
-    // in send order
-    full_rebroadcast_targets: Vec<NodeId>,
+    send_order: Vec<NodeIndex>,
     decoding_threshold: usize,
 
     chunks: ChunkTree,
@@ -92,12 +90,8 @@ impl RaptorcastInstance {
         let scheme = header.scheme();
         let assignment = scheme.chunk_assignment(author, &epoch_handle.validator_data);
         let self_index = assignment.index_of(&epoch_handle.self_id);
-        let mut send_order: Vec<NodeId> = assignment.nodes().map(|(_, node)| *node).collect();
+        let mut send_order: Vec<NodeIndex> = assignment.nodes().map(|(index, _)| index).collect();
         shuffle_sends(&mut send_order, &header.pid(), &epoch_handle.self_id);
-        let full_rebroadcast_targets = match self_index {
-            Some(owner) => in_order(&send_order, &assignment.full_rebroadcast_targets(owner)),
-            None => Vec::new(),
-        };
         let num_chunks = assignment.num_chunks();
         let decoding_threshold = scheme.num_source_chunks();
         assert!(0 < decoding_threshold && decoding_threshold < num_chunks);
@@ -111,7 +105,6 @@ impl RaptorcastInstance {
             assignment,
             self_index,
             send_order,
-            full_rebroadcast_targets,
             decoding_threshold,
             obligation,
             serving,
@@ -203,16 +196,17 @@ impl RaptorcastInstance {
         Some(Ok(message))
     }
 
+    // only our own chunks are queued, so the routing's owner is us
     pub(crate) fn rebroadcast_chunks(&mut self, egress: &mut ChunkEgress) {
         while let Some(chunk_id) = self.pending_rebroadcast.pop_first() {
             let routing = self.assignment.routing(chunk_id);
-            match routing.partial_rebroadcast_targets() {
-                Some(partial) => {
-                    let partial = in_order(&self.send_order, &partial);
-                    self.enqueue(chunk_id, &partial, egress);
-                }
-                None => self.enqueue(chunk_id, &self.full_rebroadcast_targets, egress),
-            }
+            let to: Vec<NodeId> = self
+                .send_order
+                .iter()
+                .filter(|index| routing.is_rebroadcast_target(**index))
+                .map(|index| *self.assignment.node(*index))
+                .collect();
+            self.enqueue(chunk_id, &to, egress);
         }
     }
 
@@ -334,15 +328,6 @@ fn verify_proof(
     let leaf_idx = chunk_id.to_wire();
     let leaf = scheme.leaf_hash(leaf_idx, &data.symbol);
     Tree::verify_proof(root, leaf_idx, &leaf, &data.proof)
-}
-
-// the members of `targets`, in send order
-fn in_order(send_order: &[NodeId], targets: &BTreeSet<NodeId>) -> Vec<NodeId> {
-    send_order
-        .iter()
-        .filter(|node| targets.contains(node))
-        .copied()
-        .collect()
 }
 
 #[cfg(test)]
