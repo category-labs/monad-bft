@@ -22,11 +22,8 @@ pub use framing::{AuthPacketFramer, LeanUdpFramer, LeanUdpFramingError, NopScore
 pub use metrics::{
     GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_READ,
     GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_WRITTEN,
-    GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_READ,
-    GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_WRITTEN,
 };
 pub use protocol::{AuthenticationProtocol, NoopAuthProtocol, NoopHeader, WireAuthProtocol};
 pub use socket::{
-    AuthRecvMsg, AuthenticatedSocketHandle, DualSocketHandle, FramedAuthenticatedSocketHandle,
-    FramedRecvError,
+    AuthRecvMsg, AuthenticatedSocketHandle, FramedAuthenticatedSocketHandle, FramedRecvError,
 };

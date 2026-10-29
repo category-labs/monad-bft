@@ -645,22 +645,13 @@ fn setup_node(
         bind_ip,
         my_config.authenticated_udp_addr.port(),
     ));
-    let non_authenticated_addr =
-        SocketAddr::V4(SocketAddrV4::new(bind_ip, my_config.udp_addr.port()));
-
     let mut dataplane = DataplaneBuilder::new(UDP_BW)
         .with_udp_multishot(true)
         .with_tcp_sockets([(monad_dataplane::TcpSocketId::Raptorcast, tcp_addr)])
-        .with_udp_sockets([
-            (
-                monad_dataplane::UdpSocketId::AuthenticatedRaptorcast,
-                authenticated_udp_addr,
-            ),
-            (
-                monad_dataplane::UdpSocketId::Raptorcast,
-                non_authenticated_addr,
-            ),
-        ])
+        .with_udp_sockets([(
+            monad_dataplane::UdpSocketId::AuthenticatedRaptorcast,
+            authenticated_udp_addr,
+        )])
         .build();
 
     let tcp_socket = dataplane
@@ -671,10 +662,6 @@ fn setup_node(
         .udp_sockets
         .take(monad_dataplane::UdpSocketId::AuthenticatedRaptorcast)
         .expect("authenticated socket not found");
-    let non_authenticated_socket = dataplane
-        .udp_sockets
-        .take(monad_dataplane::UdpSocketId::Raptorcast)
-        .expect("non-authenticated socket not found");
     let dataplane_control = dataplane.control.clone();
 
     let mut known_addresses = std::collections::HashMap::new();
@@ -712,7 +699,6 @@ fn setup_node(
         tcp_socket,
         (authenticated_socket, auth_protocol),
         None,
-        Some(non_authenticated_socket),
         dataplane_control,
         Arc::new(std::sync::Mutex::new(pd)),
         Epoch(0),
