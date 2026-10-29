@@ -16,7 +16,11 @@
 //! A sync `Node` as a monad-sim process, and the checks the scenarios
 //! share.
 
-use std::{collections::BTreeMap, net::SocketAddr};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    net::SocketAddr,
+    time::Duration,
+};
 
 use monad_mcp_common::{Lanes, Slot, Timestamp, TimestampDelta};
 use monad_mcp_node::{
@@ -31,7 +35,9 @@ use monad_mcp_node::{
     network::{NodeInbound, NodeMessage},
 };
 use monad_sim::{CancelToken, Ctx, Handle, StepLabel, Time};
-use monad_sim_swarm::{Net, SimClient, Swarm};
+use monad_sim_swarm::{Net, Network, Parallel, Placer, Provenance, RegionTable, SimClient, Swarm};
+use rand::{SeedableRng as _, distributions::Uniform};
+use rand_chacha::ChaCha8Rng;
 use rapidhash::v3::{DEFAULT_RAPID_SECRETS, RapidStreamHasherV3, rapidhash_v3};
 
 pub const DELTA: TimestampDelta = TimestampDelta::from_millis(200);
@@ -93,7 +99,8 @@ impl SimNode {
     fn handle_due(&mut self, ctx: &mut Ctx) {
         let _span = self.span().entered();
         self.due_alarm = None;
-        self.node.handle_due(timestamp_of(ctx.now()));
+        let now = self.local_now(ctx);
+        self.node.handle_due(now);
         self.process(ctx);
     }
 
@@ -101,7 +108,7 @@ impl SimNode {
     fn process(&mut self, ctx: &mut Ctx) {
         while let Some(output) = self.node.poll() {
             match output {
-                NodeOutput::Network(outbound) => self.send(outbound, ctx),
+                NodeOutput::Network(outbound) => self.transmit(outbound, ctx),
                 NodeOutput::Ledger(finalized) => {
                     let pattern = finalized.finalization.pids();
                     self.finalized.insert(finalized.slot, pattern);
@@ -111,7 +118,11 @@ impl SimNode {
         self.arm_due_alarm(ctx);
     }
 
-    fn send(&self, outbound: Outbound<NodeMessage>, ctx: &mut Ctx) {
+    // the node's whole outbound path: every message it sends goes through
+    // here to its network stack, which models the uplink. An outbound queue or
+    // send scheduler (e.g. prioritizing the proposer's own first-hop chunks)
+    // sits here, ahead of the stack.
+    fn transmit(&self, outbound: Outbound<NodeMessage>, ctx: &mut Ctx) {
         let net = self.net.expect("node not wired");
         match outbound {
             Outbound::Broadcast(message) => {
@@ -136,7 +147,10 @@ impl SimNode {
     // one step at next_due; a due already passed fires now
     fn arm_due_alarm(&mut self, ctx: &mut Ctx) {
         let me = self.me.expect("node not wired");
-        let at = self.node.next_due().map(|due| time_of(due).max(ctx.now()));
+        let at = self
+            .node
+            .next_due()
+            .map(|due| self.sim_time_of(due).max(ctx.now()));
         if self.due_alarm.as_ref().map(|(at, _)| *at) == at {
             return;
         }
@@ -149,6 +163,17 @@ impl SimNode {
             });
             self.due_alarm = Some((at, token));
         }
+    }
+
+    // the node's clock: every time the node sees comes from local_now, and its
+    // absolute due times go back through sim_time_of. Both are the simulation
+    // clock today; per-node clock offsets change only these two.
+    fn local_now(&self, ctx: &Ctx) -> Timestamp {
+        timestamp_of(ctx.now())
+    }
+
+    fn sim_time_of(&self, at: Timestamp) -> Time {
+        time_of(at)
     }
 
     pub fn finalized(&self) -> &BTreeMap<Slot, Pattern> {
@@ -193,7 +218,8 @@ impl SimClient for SimNode {
             return;
         }
         let inbound = NodeInbound { from, message };
-        self.node.handle(timestamp_of(ctx.now()), inbound);
+        let now = self.local_now(ctx);
+        self.node.handle(now, inbound);
         self.process(ctx);
     }
 }
@@ -241,6 +267,35 @@ pub fn node_config(seed: u64, id: u64, validators: u64) -> NodeConfig {
         },
         seed: Some(node_seed(seed, id)),
     }
+}
+
+// MCP_SIM_THREADS=n runs scenarios built with start_swarm in parallel on n
+// threads, one domain per node; unset, they run sequentially. Results are the
+// same either way.
+pub fn parallel_from_env() -> Option<Parallel<NodeId>> {
+    let threads = std::env::var("MCP_SIM_THREADS").ok()?;
+    let threads = threads.parse().expect("MCP_SIM_THREADS is a thread count");
+    Some(Parallel::default().threads(threads))
+}
+
+// build a swarm, sequential or parallel, and start every node at time 0
+pub fn start_swarm(
+    seed: u64,
+    network: Network<NodeId, NodeMessage>,
+    nodes: Vec<(NodeId, SimNode)>,
+    parallel: Option<Parallel<NodeId>>,
+) -> Swarm<SimNode> {
+    let mut swarm = match parallel {
+        None => Swarm::build(seed, network, nodes),
+        Some(parallel) => Swarm::build_parallel(seed, network, nodes, parallel),
+    };
+    for id in swarm.node_ids() {
+        let handle = swarm.handle(&id).expect("node just built");
+        swarm
+            .sim()
+            .schedule(handle, Time(0), "init", |node, ctx| node.init(ctx));
+    }
+    swarm
 }
 
 // a digest of the run: per node, the finalized history and every delivered
@@ -312,4 +367,92 @@ pub fn assert_consistent_progress(swarm: &Swarm<SimNode>, horizon: Slot) {
             assert_eq!(seen, pattern, "node {id:?} disagrees on {slot:?}");
         }
     }
+}
+
+// p50 RTT in ms between the testnet hosts, row = from
+// (monad-mcp-node/deploy/config/latency.toml, measured 2026-10-03):
+// ams, deu, ewr, lax, ltu, sgp, swe, vin. The diagonal is 0 there; a table
+// needs a positive one, so same-host pairs get 2 ms RTT as in
+// RegionTable::public_internet.
+const TESTNET_RTT_MS: [[f64; 8]; 8] = [
+    [0.0, 6.71, 69.7, 162.0, 34.4, 163.0, 19.6, 88.4],
+    [6.7, 0.0, 75.2, 150.0, 27.8, 153.0, 18.8, 88.1],
+    [69.7, 75.2, 0.0, 61.6, 110.0, 207.0, 89.3, 6.97],
+    [162.0, 150.0, 61.7, 0.0, 172.0, 176.0, 162.0, 65.6],
+    [34.4, 27.8, 110.0, 172.0, 0.0, 195.0, 13.0, 114.0],
+    [163.0, 153.0, 207.0, 176.0, 195.0, 0.0, 182.0, 238.0],
+    [19.6, 18.8, 89.2, 162.0, 13.0, 182.0, 0.0, 116.0],
+    [88.4, 88.1, 6.97, 65.5, 114.0, 238.0, 116.0, 0.0],
+];
+
+// the 8-host testnet as a region table, one region per host
+pub fn testnet_table() -> RegionTable {
+    let rtt = TESTNET_RTT_MS
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(|&ms| Duration::from_secs_f64(if ms == 0.0 { 2.0 } else { ms } / 1000.0))
+                .collect()
+        })
+        .collect();
+    RegionTable::from_rtt(
+        Provenance::new(
+            "mcp testnet",
+            "monad-mcp-node/deploy/config/latency.toml, p50 RTT; diagonal 2 ms",
+            "2026-10-03",
+        ),
+        ["ams", "deu", "ewr", "lax", "ltu", "sgp", "swe", "vin"],
+        rtt,
+    )
+}
+
+const GBIT: u64 = 1_000_000_000;
+
+// what one message costs on the wire: the frame (sender id, kind, payload)
+// plus the IPv4 and UDP headers
+pub fn wire_size(message: &NodeMessage) -> usize {
+    let payload = match message {
+        NodeMessage::Cadence(bytes)
+        | NodeMessage::Chunk(bytes)
+        | NodeMessage::ChunkRequest(bytes)
+        | NodeMessage::Tx(bytes) => bytes.len(),
+    };
+    9 + payload + 20 + 8
+}
+
+// validators placed over a region table: a node-level latency matrix with a
+// last mile per node, up to 1 ms jitter, and a 1 Gbit/s uplink per node
+pub struct Geo {
+    pub network: Network<NodeId, NodeMessage>,
+    // each node's region, numbered densely from 0 in table order
+    pub region_of: BTreeMap<NodeId, u32>,
+}
+
+pub fn geo(table: &RegionTable, validators: u64, seed: u64) -> Geo {
+    let placement = Placer::new(table)
+        .last_mile(Duration::from_micros(50)..=Duration::from_micros(250))
+        .place(
+            (0..validators).map(NodeId::dummy),
+            &mut ChaCha8Rng::seed_from_u64(seed),
+        );
+    let regions: BTreeSet<usize> = placement.nodes().iter().map(|n| n.region).collect();
+    let dense: BTreeMap<usize, u32> = regions
+        .into_iter()
+        .enumerate()
+        .map(|(index, region)| (region, index as u32))
+        .collect();
+    let region_of = placement
+        .nodes()
+        .iter()
+        .map(|n| (n.addr, dense[&n.region]))
+        .collect();
+    let jitter = Uniform::new_inclusive(Duration::ZERO, Duration::from_millis(1));
+    let network = Network::with_matrix(placement.matrix(), jitter).egress(GBIT, wire_size);
+    Geo { network, region_of }
+}
+
+// one domain per region of `geo`
+pub fn by_region(geo: &Geo) -> Parallel<NodeId> {
+    let region_of = geo.region_of.clone();
+    Parallel::default().domains(move |node| region_of[node])
 }

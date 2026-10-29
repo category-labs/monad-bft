@@ -320,6 +320,8 @@ pub enum SourceKind {
     // random bytes, for load tests without clients
     #[default]
     Random,
+    // random bytes, every proposal exactly the size limit: a fixed load
+    Fixed,
     // txs sent to this node over udp
     Mempool,
 }
@@ -363,7 +365,7 @@ impl ProposalConfig {
 
     pub fn proposal_size_limit(&self) -> usize {
         self.max_payload_bytes.unwrap_or(match self.source {
-            SourceKind::Random => Self::RANDOM_PROPOSAL_SIZE_LIMIT,
+            SourceKind::Random | SourceKind::Fixed => Self::RANDOM_PROPOSAL_SIZE_LIMIT,
             SourceKind::Mempool => Self::MEMPOOL_PROPOSAL_SIZE_LIMIT,
         })
     }

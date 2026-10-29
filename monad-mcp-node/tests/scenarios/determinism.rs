@@ -22,11 +22,11 @@ use std::{process::Command, time::Duration};
 
 use monad_mcp_common::Slot;
 use monad_mcp_node::{Node, common::NodeId};
-use monad_sim::Time;
-use monad_sim_swarm::{Network, Swarm};
+use monad_sim_swarm::{Network, Parallel};
 
 use crate::harness::{
-    SLOT_INTERVAL, SimNode, assert_progress, deadline_of_slot, node_config, run_digest, time_of,
+    SLOT_INTERVAL, SimNode, assert_progress, deadline_of_slot, node_config, run_digest,
+    start_swarm, time_of,
 };
 
 const SEED: u64 = 0xD1CE;
@@ -34,6 +34,10 @@ const SEED: u64 = 0xD1CE;
 // 8 validators, one never starts, 5% loss: exercises random payloads, the
 // network's loss draws, rebroadcast fan-out and pull recovery
 fn run(seed: u64) -> u64 {
+    run_with(seed, None)
+}
+
+fn run_with(seed: u64, parallel: Option<Parallel<NodeId>>) -> u64 {
     const VALIDATORS: u64 = 8;
     const SLOTS: u64 = 60;
     const MAX_PROPOSAL_LEN: usize = 16 << 10;
@@ -48,12 +52,7 @@ fn run(seed: u64) -> u64 {
         nodes.push((node_id, SimNode::new(node_id, node)));
     }
 
-    let mut swarm = Swarm::build(seed, network, nodes);
-    for id in swarm.node_ids() {
-        let handle = swarm.handle(&id).expect("node just built");
-        let sim = swarm.sim();
-        sim.schedule(handle, Time(0), "init", |node, ctx| node.init(ctx));
-    }
+    let mut swarm = start_swarm(seed, network, nodes, parallel);
 
     let margin = SLOT_INTERVAL.checked_mul(5).expect("in range");
     swarm.run_until_time(time_of(deadline_of_slot(SLOTS) + margin));
@@ -71,6 +70,23 @@ fn a_run_repeats_across_processes() {
     let in_process = run(SEED);
     for _ in 0..2 {
         assert_eq!(digest_in_child_process(), in_process);
+    }
+}
+
+// one domain per node, run on 1, 2 and 4 threads: the same run. It also
+// matches the sequential build, because the nodes draw no randomness from the
+// engine and are spawned in address order, so the domain order agrees with
+// the sequential spawn order.
+#[test]
+fn a_run_does_not_depend_on_the_thread_count() {
+    let sequential = run(SEED);
+    for threads in [1, 2, 4] {
+        let parallel = Parallel::default().threads(threads);
+        assert_eq!(
+            run_with(SEED, Some(parallel)),
+            sequential,
+            "{threads} threads"
+        );
     }
 }
 
