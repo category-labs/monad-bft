@@ -11,3 +11,7 @@ tiny-keccak = { workspace = true, features = ["keccak"] }
 
 [dev-dependencies]
 proptest = { workspace = true }
+
+[lints.clippy]
+# outputs must not depend on hash order; see monad-mcp-node/docs/determinism.md
+iter_over_hash_type = "deny"

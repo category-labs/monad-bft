@@ -34,3 +34,7 @@ monad-mcp-node = { path = ".", features = ["enable_stub"] }
 monad-sim = { workspace = true }
 monad-sim-swarm = { workspace = true }
 tempfile = { workspace = true }
+
+[lints.clippy]
+# outputs must not depend on hash order; see monad-mcp-node/docs/determinism.md
+iter_over_hash_type = "deny"

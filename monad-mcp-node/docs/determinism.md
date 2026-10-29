@@ -25,6 +25,10 @@ from config or the keystore.
   output (messages, their order, certificates, requests). std hashers are
   seeded per process and per instance. Use `BTreeMap`/`BTreeSet`, `IndexMap`
   (insertion order), or sort first. Lookup-only maps can stay hashed.
+  `clippy::iter_over_hash_type` is denied in these crates; it catches `for`
+  loops over hash containers, not iterator chains (`.iter().map(..).collect()`),
+  which the determinism test has to catch. Mark a justified exception with
+  `#[allow]` and a reason.
 - No wall-clock reads (`Instant::now`, `SystemTime::now`): take `now` from
   the caller, i.e. the injected clock.
 
