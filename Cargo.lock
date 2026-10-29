@@ -5709,7 +5709,6 @@ dependencies = [
  "bytes",
  "derive_more",
  "hex",
- "indexmap 2.12.1",
  "libc",
  "monad-mcp-common",
  "proptest",
