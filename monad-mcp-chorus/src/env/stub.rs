@@ -345,18 +345,13 @@ mod proposal {
             &self.root
         }
 
-        // keccak256 of the rlp encoding: the same in every process and
-        // release, unlike std's hashers
+        // a non-cryptographic stand-in over the rlp encoding; see
+        // noncrypto_digest
         fn pid(&self) -> ProposalId {
-            use tiny_keccak::{Hasher as _, Keccak};
-
-            let mut digest = [0; 32];
-            let mut keccak = Keccak::v256();
-            keccak.update(&alloy_rlp::encode(self));
-            keccak.finalize(&mut digest);
+            let digest = monad_mcp_common::stub::noncrypto_digest(&alloy_rlp::encode(self));
             let mut pid = [0; 32];
             pid[PID_ROOT].copy_from_slice(&self.root.0.0);
-            pid[PID_DIGEST].copy_from_slice(&digest[..PID_DIGEST.len()]);
+            pid[PID_DIGEST].copy_from_slice(&digest.to_le_bytes());
             ProposalId(pid)
         }
     }
