@@ -105,6 +105,9 @@ impl UdpNetwork {
                 let Some(frame) = self.frame(&message) else {
                     return;
                 };
+                // the real udp transport, never simulated: send order is
+                // left to the os and the network anyway
+                #[allow(clippy::iter_over_hash_type)]
                 for (peer, address) in &self.peers {
                     if *peer != self.self_id {
                         self.send_to(&frame, *address).await;

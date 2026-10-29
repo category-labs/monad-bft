@@ -19,3 +19,7 @@ monad-crypto = { workspace = true }
 monad-mcp-chorus = { workspace = true }
 monad-mcp-common = { workspace = true }
 monad-merkle = { workspace = true }
+
+[lints.clippy]
+# outputs must not depend on hash order; see monad-mcp-node/docs/determinism.md
+iter_over_hash_type = "deny"
