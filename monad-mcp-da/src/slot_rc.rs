@@ -162,7 +162,7 @@ impl SlotRaptorcast {
             ChorusDACommand::ReleaseChunks => {
                 self.egress.release();
             }
-            ChorusDACommand::AddDecodedHolders { j, pid, node_ids } => {
+            ChorusDACommand::AddDecodedHolders { j, pid, holders } => {
                 let Some(j) = self.raptorcasts.checked_lane(usize::from(j)) else {
                     return;
                 };
@@ -170,7 +170,7 @@ impl SlotRaptorcast {
                     return;
                 };
                 let requests =
-                    raptorcast.add_decoded_holders(node_ids, &pid, now, &self.epoch_handle);
+                    raptorcast.add_decoded_holders(&holders, &pid, now, &self.epoch_handle);
                 for (to, request) in requests {
                     let request = ChunkRecoveryRequest {
                         slot: self.slot,
@@ -197,7 +197,8 @@ impl SlotRaptorcast {
                 let Some(raptorcast) = self.raptorcasts[j].as_ref() else {
                     return;
                 };
-                let requests = raptorcast.pull_header(missing);
+                let requests = raptorcast.pull_header(missing, &self.epoch_handle.validator_data);
+
                 for (to, request) in requests {
                     let request = ChunkRecoveryRequest {
                         slot: self.slot,

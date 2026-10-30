@@ -15,7 +15,10 @@
 
 use std::{iter::Cycle, ops::Range};
 
-use monad_mcp_common::spec::Stake as _;
+use monad_mcp_common::{
+    containers::{Idx, IndexVec},
+    spec::Stake as _,
+};
 
 use super::{
     chunk::WireChunkId,
@@ -43,6 +46,20 @@ impl ChunkId {
 // assignment that produced it.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, derive_more::Into)]
 pub(crate) struct NodeIndex(usize);
+
+// for ByNode, which hands out only the indices of its own length
+impl Idx for NodeIndex {
+    fn new(index: usize) -> Self {
+        Self(index)
+    }
+
+    fn index(self) -> usize {
+        self.0
+    }
+}
+
+// a value per node of a chunk assignment, in index order
+pub(crate) type ByNode<T> = IndexVec<NodeIndex, T>;
 
 // an obligation of o chunks is met by ceil(o * den / num) of them, to
 // tolerate packet loss
@@ -250,11 +267,11 @@ impl CoverageRing {
 // A frozen ordered list of nodes, indexable by NodeIndex. Captures
 // the concept of "the owner table for a ChunkAssignment".
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct OrderedNodes(Box<[NodeId]>);
+struct OrderedNodes(ByNode<NodeId>);
 
 impl OrderedNodes {
     fn get(&self, index: NodeIndex) -> &NodeId {
-        &self.0[index.0]
+        &self.0[index]
     }
 
     // Note: O(N)
@@ -264,7 +281,7 @@ impl OrderedNodes {
     }
 
     fn iter(&self) -> impl Iterator<Item = (NodeIndex, &NodeId)> + '_ {
-        self.0.iter().enumerate().map(|(i, n)| (NodeIndex(i), n))
+        self.0.iter_enumerated()
     }
 }
 
@@ -317,7 +334,7 @@ impl ChunkAssignment {
             }
         }
 
-        let nodes = OrderedNodes(nodes.into_boxed_slice());
+        let nodes = OrderedNodes(nodes.into_iter().collect());
         let author = nodes.index_of(author).expect("author is a holder");
 
         let mut ring = CoverageRing::new(num_holders, obligations.total_stake);
@@ -361,6 +378,11 @@ impl ChunkAssignment {
 
     pub(crate) fn num_nodes(&self) -> usize {
         self.nodes.0.len()
+    }
+
+    // a value per node, from its index
+    pub(crate) fn by_node<T>(&self, f: impl FnMut(NodeIndex) -> T) -> ByNode<T> {
+        ByNode::from_fn(self.num_nodes(), f)
     }
 
     pub(crate) fn node(&self, index: NodeIndex) -> &NodeId {

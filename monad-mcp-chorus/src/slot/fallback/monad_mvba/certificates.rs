@@ -19,7 +19,7 @@ use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
 
 use super::{
     super::{
-        super::types::{IsVote, SignatureCollection, Slot, StrongQc, ValidatorData},
+        super::types::{IsVote, SignatureCollection, Slot, StrongQc, ValidatorData, ValidatorSet},
         FallbackView, MvbaScope,
     },
     messages::{FallbackCommitVote, PrepareVote, TimeoutVote},
@@ -87,21 +87,21 @@ impl<E: Clone + Eq + Hash + Debug + Encodable> TimeoutCertificate<E> {
 
         let scope = MvbaScope::new(self.slot, self.view);
 
-        let mut signers = HashSet::new();
+        let mut signers = ValidatorSet::new();
         for TimeoutGroup { vote, sigcol } in &self.groups {
             let data = vote.signing_bytes(&scope);
             let Some(group_signers) = sigcol.verify(&data, validator_data) else {
                 return false;
             };
-            for signer in group_signers {
-                // equivocating signers invalidates the certificate
-                if !signers.insert(signer) {
-                    return false;
-                }
+            // equivocating signers invalidates the certificate
+            if !signers.is_disjoint(&group_signers) {
+                return false;
             }
+            signers.union_with(&group_signers);
         }
 
-        let stake = validator_data.sum_stake(signers.iter().copied());
+        let stake = validator_data.sum_stake(&signers);
+
         if stake <= validator_data.total_stake().supermajority_threshold() {
             return false;
         }

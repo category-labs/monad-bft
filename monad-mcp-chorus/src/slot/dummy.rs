@@ -13,13 +13,16 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::VecDeque, sync::Arc};
+use std::{
+    collections::{HashSet, VecDeque},
+    sync::Arc,
+};
 
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 
 use super::{
     SlotConsensus, SlotOutput,
-    types::{IsVote, KeyPair, NodeId, Slot, VoteMsg, VotePool},
+    types::{IsVote, KeyPair, NodeId, Slot, VoteMsg},
 };
 use crate::spec::vote::{SigningDomain, assert_signing_prefix};
 
@@ -32,7 +35,9 @@ pub struct DummySlotConsensus {
     slot: Slot, // only used as FinalizationData
     outputs: VecDeque<SlotOutput<DummySlotConsensus>>,
     config: DummySlotConsensusConfig,
-    votes: VotePool<DummyVote>,
+    // it knows no validator set, so it counts distinct senders of a
+    // well-formed vote for its slot
+    voters: HashSet<NodeId>,
 }
 
 #[derive(Clone)]
@@ -77,7 +82,7 @@ impl SlotConsensus for DummySlotConsensus {
             slot,
             config: config.clone(),
             key: key.clone(),
-            votes: VotePool::new(slot),
+            voters: HashSet::new(),
             outputs: VecDeque::new(),
         }
     }
@@ -92,8 +97,13 @@ impl SlotConsensus for DummySlotConsensus {
     }
 
     fn handle_message(&mut self, sender: NodeId, vote: VoteMsg<DummyVote>) {
-        self.votes.add_vote(sender, vote);
-        if self.votes.all_voters().count() == self.config.quorum {
+        use monad_mcp_common::spec::Signature as _;
+
+        assert!(vote.scope == self.slot);
+        if !vote.signature.is_well_formed() || !self.voters.insert(sender) {
+            return;
+        }
+        if self.voters.len() == self.config.quorum {
             self.outputs.push_back(SlotOutput::Finalize(()));
         }
     }

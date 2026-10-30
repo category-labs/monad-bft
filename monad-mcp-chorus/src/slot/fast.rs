@@ -27,7 +27,7 @@ use super::{
     types::{
         EquivCert, Gate, HeaderAuth, IsVote, KeyPair, Lane, Lanes, NodeId, ProposalId,
         ProposalScope, ProposerSet, Signature, SignedProposalHeader, Slot, StrongQc, ValidatorData,
-        VoteMsg, VotePool, WeakQc,
+        ValidatorIndex, ValidatorSet, VoteMsg, VotePool, WeakQc,
     },
 };
 use crate::spec::{
@@ -145,7 +145,7 @@ impl FastPath {
 
     pub(crate) fn handle_batch_vote(
         &mut self,
-        voter: NodeId,
+        voter: ValidatorIndex,
         vote_msg: BatchVoteMsg,
     ) -> Option<FastBlock> {
         let in_slot = vote_msg.slot == self.slot;
@@ -161,9 +161,7 @@ impl FastPath {
         self.try_cast_fast_commit_vote()
     }
 
-    fn handle_vote(&mut self, voter: NodeId, vote_msg: VoteMsg<Entry>) {
-        debug_assert!(self.validator_data.contains(&voter));
-
+    fn handle_vote(&mut self, voter: ValidatorIndex, vote_msg: VoteMsg<Entry>) {
         let j = vote_msg.scope.lane;
         self.votes[j].add_vote(voter, vote_msg);
         self.try_form_fast_qc(j);
@@ -172,11 +170,9 @@ impl FastPath {
     #[must_use]
     pub(crate) fn handle_commit_vote(
         &mut self,
-        voter: NodeId,
+        voter: ValidatorIndex,
         vote_msg: FastCommitVoteMsg,
     ) -> Option<FastCommitQc> {
-        debug_assert!(self.validator_data.contains(&voter));
-
         let in_slot = vote_msg.scope == self.slot;
         let one_entry_per_lane = vote_msg.vote.entries.size() == self.proposals.size();
         if !in_slot || !one_entry_per_lane {
@@ -216,9 +212,11 @@ impl FastPath {
             && qc.verify(&self.validator_data)
     }
 
-    pub(crate) fn handle_fallback_vote(&mut self, voter: NodeId, vote_msg: FallbackVoteMsg) {
-        debug_assert!(self.validator_data.contains(&voter));
-
+    pub(crate) fn handle_fallback_vote(
+        &mut self,
+        voter: ValidatorIndex,
+        vote_msg: FallbackVoteMsg,
+    ) {
         let shape_valid = vote_msg.enter_fallback_vote.scope == self.slot
             && vote_msg.evidences.size() == self.proposals.size();
         if !shape_valid {
@@ -252,14 +250,19 @@ impl FastPath {
         }
     }
 
-    fn handle_fallback_signed_entry(&mut self, voter: NodeId, j: Lane, entry: FallbackSignedEntry) {
+    fn handle_fallback_signed_entry(
+        &mut self,
+        voter: ValidatorIndex,
+        j: Lane,
+        entry: FallbackSignedEntry,
+    ) {
         // 1. an unseen header goes to DA
         if let Some(header) = entry.header()
             && self.availability[j].header_for(&header.pid()).is_none()
         {
             let header = header.clone();
             self.emit(ChorusDACommand::IngestProposalHeader {
-                sender: voter,
+                sender: *self.validator_data.node_id(voter),
                 header,
             });
         }
@@ -420,7 +423,7 @@ impl FastPath {
                     continue;
                 }
                 for voter in voters {
-                    waiting_on_header.push((j, *voter));
+                    waiting_on_header.push((j, *self.validator_data.node_id(voter)));
                 }
             }
             admitted.push(count);
@@ -429,12 +432,17 @@ impl FastPath {
     }
 
     pub(crate) fn commit_voter_count(&self) -> usize {
-        self.commit_votes.all_voters().count()
+        self.commit_votes.voters().len()
     }
 
     // enter-fallback voters seen and the lanes still without a certified entry
     pub(crate) fn fallback_wait_state(&self) -> (Vec<NodeId>, Vec<Lane>) {
-        let voters: Vec<NodeId> = self.enter_fallback_votes.all_voters().copied().collect();
+        let voters = self
+            .enter_fallback_votes
+            .voters()
+            .iter()
+            .map(|voter| *self.validator_data.node_id(voter))
+            .collect();
         let uncertified = self
             .proposals
             .lanes()
@@ -521,7 +529,7 @@ impl FastPath {
             let signers = sigcol
                 .signers(&self.validator_data)
                 .expect("a tally's collections match the validator set");
-            missing.push((*pid, signers.into_iter().copied().collect()));
+            missing.push((*pid, signers));
         }
         // heuristic: the best-backed proposal first
         missing.sort_by_cached_key(|(_, voters)| Reverse(self.validator_data.sum_stake(voters)));
@@ -749,12 +757,15 @@ pub type FallbackQc = WeakQc<FallbackEntry>;
 
 impl FallbackQc {
     // a positive signer decoded the proposal
-    fn decoded_holders(&self, validator_data: &ValidatorData) -> Option<(ProposalId, Vec<NodeId>)> {
+    fn decoded_holders(
+        &self,
+        validator_data: &ValidatorData,
+    ) -> Option<(ProposalId, ValidatorSet)> {
         let Entry::Positive(pid) = self.verdict.0 else {
             return None;
         };
         let signers = self.sigcol.signers(validator_data)?;
-        Some((pid, signers.into_iter().copied().collect()))
+        Some((pid, signers))
     }
 }
 
@@ -798,7 +809,7 @@ impl CertifiedEntry {
     pub(crate) fn decoded_holders(
         &self,
         validator_data: &ValidatorData,
-    ) -> Option<(ProposalId, Vec<NodeId>)> {
+    ) -> Option<(ProposalId, ValidatorSet)> {
         let CertifiedEntry::FallbackQc(qc) = self else {
             return None;
         };
@@ -1142,13 +1153,11 @@ impl Decodable for FastCommitVote {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
-
     use monad_mcp_common::spec::KeyPair as _;
 
     use super::{
         super::{
-            super::proposers,
+            super::{proposers, test_utils::dummy_index},
             chorus::ProposalDAEvent,
             types::{
                 FixedProposerSchedule, MAX_PROPOSER_SET_SIZE, ProposerSchedule as _, Stake,
@@ -1233,7 +1242,7 @@ mod tests {
         for index in [0, 2, 3] {
             let voter = NodeId::dummy(index);
             let msg = VoteMsg::new_signed(scope, Entry::Positive(pid(byte)), &voter.keypair());
-            pool.add_vote(voter, msg);
+            pool.add_vote(dummy_index(voter), msg);
         }
         pool.tally(&validator_data(4))
             .strong_qc()
@@ -1252,7 +1261,7 @@ mod tests {
         for index in [0, 2, 3] {
             let voter = NodeId::dummy(index);
             let msg = VoteMsg::new_signed(SLOT, vote.clone(), &voter.keypair());
-            pool.add_vote(voter, msg);
+            pool.add_vote(dummy_index(voter), msg);
         }
         pool.tally(&validator_data(4))
             .strong_qc()
@@ -1323,7 +1332,7 @@ mod tests {
         for index in [0, 2, 3] {
             let voter = NodeId::dummy(index);
             let msg = VoteMsg::new_signed(SLOT, padded.clone(), &voter.keypair());
-            assert!(fast.handle_commit_vote(voter, msg).is_none());
+            assert!(fast.handle_commit_vote(dummy_index(voter), msg).is_none());
         }
     }
 
@@ -1394,7 +1403,7 @@ mod tests {
                 entry.clone(),
                 &voter.keypair(),
             );
-            pool.add_vote(voter, vote);
+            pool.add_vote(dummy_index(voter), vote);
         }
         let validator_data = validator_data(4);
         let qc = pool
@@ -1405,12 +1414,11 @@ mod tests {
             .expect("two of four votes form a weak qc");
         let cert = CertifiedEntry::FallbackQc(qc);
 
-        let (decoded_id, mut node_ids) = cert
+        let (decoded_id, holders) = cert
             .decoded_holders(&validator_data)
             .expect("a positive fallback qc");
-        node_ids.sort();
         assert_eq!(decoded_id, pid(1));
-        assert_eq!(node_ids, [NodeId::dummy(0), NodeId::dummy(2)]);
+        assert_eq!(holders, dummies([0, 2]));
     }
 
     #[test]
@@ -1479,7 +1487,7 @@ mod tests {
             batch_vote(2, Entry::Negative),
         ];
         for (voter, msg) in votes {
-            let _ = fast.handle_batch_vote(voter, msg);
+            let _ = fast.handle_batch_vote(dummy_index(voter), msg);
         }
         let _ = drain_commands(&mut fast);
 
@@ -1515,11 +1523,11 @@ mod tests {
             batch_vote(2, Entry::Negative),
         ];
         for (voter, msg) in votes {
-            let _ = fast.handle_batch_vote(voter, msg);
+            let _ = fast.handle_batch_vote(dummy_index(voter), msg);
         }
         let _ = drain_commands(&mut fast);
 
-        let voters = BTreeSet::from([NodeId::dummy(0), NodeId::dummy(3)]);
+        let voters = dummies([0, 3]);
         let pull = ChorusDACommand::PullHeader {
             j: Lane::new_unchecked(0),
             missing: MissingHeaders::from([(pid(1), voters)]),
@@ -1545,15 +1553,12 @@ mod tests {
             batch_vote(3, Entry::Positive(pid(1))),
         ];
         for (voter, msg) in votes {
-            let _ = fast.handle_batch_vote(voter, msg);
+            let _ = fast.handle_batch_vote(dummy_index(voter), msg);
         }
         let _ = drain_commands(&mut fast);
 
         let _ = fast.try_fallback_transition();
-        let missing = vec![
-            (pid(1), BTreeSet::from([NodeId::dummy(0), NodeId::dummy(3)])),
-            (pid(2), BTreeSet::from([NodeId::dummy(2)])),
-        ];
+        let missing = vec![(pid(1), dummies([0, 3])), (pid(2), dummies([2]))];
         let pull = ChorusDACommand::PullHeader {
             j: Lane::new_unchecked(0),
             missing,
@@ -1571,19 +1576,26 @@ mod tests {
             batch_vote(2, Entry::Positive(pid(2))),
         ];
         for (voter, msg) in votes {
-            let _ = fast.handle_batch_vote(voter, msg);
+            let _ = fast.handle_batch_vote(dummy_index(voter), msg);
         }
         da_event(&mut fast, ProposalDAEvent::HeaderSeen(header(1)));
         let _ = drain_commands(&mut fast);
 
         let outcome = fast.try_fallback_transition();
         assert!(matches!(outcome, FallbackTransitionOutcome::Waiting));
-        let missing = vec![(pid(2), BTreeSet::from([NodeId::dummy(2)]))];
+        let missing = vec![(pid(2), dummies([2]))];
         let pull = ChorusDACommand::PullHeader {
             j: Lane::new_unchecked(0),
             missing,
         };
         assert_eq!(drain_commands(&mut fast), vec![pull]);
+    }
+
+    // the dummy validators with these ids
+    fn dummies<const N: usize>(ids: [u64; N]) -> ValidatorSet {
+        ids.into_iter()
+            .map(|id| dummy_index(NodeId::dummy(id)))
+            .collect()
     }
 
     // a fallback vote whose entry is positive on `header`
@@ -1604,7 +1616,7 @@ mod tests {
         let mut fast = fast_path();
 
         let (voter, msg) = fallback_vote(2, header(1));
-        fast.handle_fallback_vote(voter, msg);
+        fast.handle_fallback_vote(dummy_index(voter), msg);
         let ingest = ChorusDACommand::IngestProposalHeader {
             sender: voter,
             header: header(1),
@@ -1619,7 +1631,7 @@ mod tests {
         // once DA reports it back, the header is seen and not sent again
         da_event(&mut fast, ProposalDAEvent::HeaderSeen(header(1)));
         let (voter, msg) = fallback_vote(3, header(1));
-        fast.handle_fallback_vote(voter, msg);
+        fast.handle_fallback_vote(dummy_index(voter), msg);
         assert!(drain_commands(&mut fast).is_empty());
     }
 
@@ -1628,7 +1640,7 @@ mod tests {
         let mut fast = fast_path();
         for voter in [0, 2, 3] {
             let (voter, msg) = batch_vote(voter, Entry::Positive(pid(1)));
-            let _ = fast.handle_batch_vote(voter, msg);
+            let _ = fast.handle_batch_vote(dummy_index(voter), msg);
         }
         assert!(fast.certs[Lane::new_unchecked(0)].fast_qc().is_none());
 
@@ -1646,7 +1658,7 @@ mod tests {
             batch_vote(2, Entry::Negative),
         ];
         for (voter, msg) in votes {
-            let _ = fast.handle_batch_vote(voter, msg);
+            let _ = fast.handle_batch_vote(dummy_index(voter), msg);
         }
 
         // the positive votes name a root without a header
@@ -1719,7 +1731,7 @@ mod tests {
         for index in [0, 2, 3] {
             let voter = NodeId::dummy(index);
             let msg = VoteMsg::new_signed(scope, Entry::Positive(pid(1)), &voter.keypair());
-            pool.add_vote(voter, msg);
+            pool.add_vote(dummy_index(voter), msg);
         }
 
         let strong = pool

@@ -117,7 +117,7 @@ mod rlp_tests {
             conductor::{
                 CapAdvance, ConductorMessage, deadline_agreement::DeadlineAgreementMessage,
             },
-            test_utils::assert_roundtrip,
+            test_utils::{assert_roundtrip, dummy_index},
             types::{Timestamp, WindowId},
         },
         *,
@@ -165,7 +165,7 @@ mod rlp_tests {
         let mut votes = VotePool::new(slot);
         for node in &nodes[..3] {
             votes.add_vote(
-                *node,
+                dummy_index(node),
                 VoteMsg::new_signed(slot, EnterFallbackVote, &node.keypair()),
             );
         }
