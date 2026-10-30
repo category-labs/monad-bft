@@ -64,3 +64,12 @@ where
     assert!(T::deserialize(&Bytes::from(extra)).is_err());
     decoded
 }
+
+/// The validator index of `NodeId::dummy(i)` among dummy validators `0..n`,
+/// which is `i`: the stub indexes validators in NodeId order.
+pub(crate) fn dummy_index(
+    node: impl std::borrow::Borrow<super::types::NodeId>,
+) -> super::types::ValidatorIndex {
+    super::types::ValidatorIndex::new(u64::from(*node.borrow()) as usize)
+        .expect("dummy id in range")
+}

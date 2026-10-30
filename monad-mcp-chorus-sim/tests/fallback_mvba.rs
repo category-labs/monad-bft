@@ -155,10 +155,13 @@ mod fixtures {
     }
 
     fn vote_pool<V: IsVote>(scope: V::Scope, vote: V, signers: &[NodeId]) -> VotePool<V> {
+        use monad_mcp_chorus::spec::validator::ValidatorData as _;
+
+        let validator_data = validator_data();
         let mut pool = VotePool::new(scope.clone());
         for node in signers {
             pool.add_vote(
-                *node,
+                validator_data.index_of(node).expect("a validator"),
                 VoteMsg::new_signed(scope.clone(), vote.clone(), &node.keypair()),
             );
         }

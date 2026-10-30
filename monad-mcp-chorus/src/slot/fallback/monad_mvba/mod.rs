@@ -75,7 +75,8 @@ use super::{
     super::{
         fast::EnterFallbackCert,
         types::{
-            HeaderAuth, IsVote, KeyPair, NodeId, Slot, TimestampDelta, ValidatorData, VoteMsg,
+            HeaderAuth, IsVote, KeyPair, NodeId, Slot, TimestampDelta, ValidatorData,
+            ValidatorIndex, VoteMsg,
         },
     },
     FallbackView, MVBAOutput, Metablock, Mvba, MvbaScope, ValidateCert, ValidateInput, Votable,
@@ -109,15 +110,15 @@ impl MvbaContext {
     /// `Leader(slot, view)`: placeholder round-robin, ignoring stake
     /// TODO: replace with prod leader election
     pub(crate) fn leader(&self, view: FallbackView) -> NodeId {
-        let num_nodes = self.validator_data.nodes().count() as u64;
+        *self.validator_data.node_id(self.leader_index(view))
+    }
+
+    fn leader_index(&self, view: FallbackView) -> ValidatorIndex {
+        let num_nodes = self.validator_data.len() as u64;
         assert!(num_nodes > 0);
 
         let index = self.slot.get().wrapping_add(view.get()) % num_nodes;
-        *self
-            .validator_data
-            .nodes()
-            .nth(index as usize)
-            .expect("index is taken modulo the validator set size")
+        ValidatorIndex::new(index as usize).expect("index is taken modulo the validator set size")
     }
 
     fn view_timeout(&self) -> TimestampDelta {
@@ -208,6 +209,24 @@ pub struct MonadMvba<V: ValidateInput + Votable, C: ValidateCert> {
     abandoned: bool,
 }
 
+#[cfg(test)]
+impl<V, C> MonadMvba<V, C>
+where
+    V: ValidateInput + Votable,
+    C: ValidateCert<Context = V::Context>,
+    MvbaContext: MakesValidationContext<V>,
+{
+    /// [`Mvba::handle_message`] from a validator named by its node id
+    pub(crate) fn handle_message_from(&mut self, sender: NodeId, message: MvbaMessage<V, C>) {
+        let sender = self
+            .context
+            .validator_data
+            .index_of(&sender)
+            .expect("sender is a validator");
+        self.handle_message(sender, message);
+    }
+}
+
 impl<V, C> Mvba<V> for MonadMvba<V, C>
 where
     V: ValidateInput + Votable,
@@ -262,11 +281,14 @@ where
         self.try_advance();
     }
 
-    fn handle_message(&mut self, sender: NodeId, message: Self::Message) {
+    fn validator_data(&self) -> &ValidatorData {
+        &self.context.validator_data
+    }
+
+    fn handle_message(&mut self, sender: ValidatorIndex, message: Self::Message) {
         if self.abandoned {
             return;
         }
-        assert!(self.context.validator_data.contains(&sender));
 
         match message {
             MvbaMessage::PrePrepare(msg) => self.handle_pre_prepare(sender, msg),
@@ -334,7 +356,7 @@ where
     C: ValidateCert<Context = V::Context>,
     MvbaContext: MakesValidationContext<V>,
 {
-    fn handle_pre_prepare(&mut self, sender: NodeId, msg: PrePrepareMsg<V, C>) {
+    fn handle_pre_prepare(&mut self, sender: ValidatorIndex, msg: PrePrepareMsg<V, C>) {
         // catching up is allowed past the window: only the TC arm below can
         // reach a store from there, and only behind a verified certificate
         let view = msg.view;
@@ -342,10 +364,10 @@ where
             return;
         }
 
-        if sender != self.context.leader(view) {
+        if sender != self.context.leader_index(view) {
             return;
         }
-        if !msg.verify_signature(self.context.validator_data.get_pubkey(&sender)) {
+        if !msg.verify_signature(self.context.validator_data.pubkey(sender)) {
             return;
         }
 
@@ -376,7 +398,7 @@ where
         self.collectors_mut(view).store_pre_prepare(msg);
     }
 
-    fn handle_prepare_vote(&mut self, sender: NodeId, msg: PrepareVoteMsg<V::Entries>) {
+    fn handle_prepare_vote(&mut self, sender: ValidatorIndex, msg: PrepareVoteMsg<V::Entries>) {
         let MvbaScope { slot, view } = msg.scope;
         if slot != self.context.slot || !self.in_window(view) {
             return;
@@ -385,7 +407,7 @@ where
         self.collectors_mut(view).store_prepare_vote(sender, msg);
     }
 
-    fn handle_commit_vote(&mut self, sender: NodeId, msg: CommitVoteMsg<V::Entries>) {
+    fn handle_commit_vote(&mut self, sender: ValidatorIndex, msg: CommitVoteMsg<V::Entries>) {
         let MvbaScope { slot, view } = msg.scope;
         if slot != self.context.slot || !self.in_window(view) {
             return;
@@ -394,7 +416,7 @@ where
         self.collectors_mut(view).store_commit_vote(sender, msg);
     }
 
-    fn handle_timeout(&mut self, sender: NodeId, msg: TimeoutMsg<V::Entries>) {
+    fn handle_timeout(&mut self, sender: ValidatorIndex, msg: TimeoutMsg<V::Entries>) {
         let view = msg.view();
         if msg.slot() != self.context.slot || !self.in_window(view) {
             return;
@@ -426,10 +448,15 @@ where
         }
     }
 
-    fn answer_block_request(&mut self, sender: NodeId, request: &BlockRequestMsg<V::Entries>) {
+    fn answer_block_request(
+        &mut self,
+        sender: ValidatorIndex,
+        request: &BlockRequestMsg<V::Entries>,
+    ) {
         if let Some(response) = self.block_store.handle_request(request) {
             self.outputs.push_back(MVBAOutput::Unicast {
-                to: sender,
+                to: *self.context.validator_data.node_id(sender),
+
                 message: MvbaMessage::BlockResponse(response),
             });
         }
