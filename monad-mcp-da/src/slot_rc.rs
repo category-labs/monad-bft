@@ -13,9 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::HashMap;
-
 use monad_mcp_chorus::spec::proposal::ProposalHeader as _;
+use monad_mcp_common::containers::FastHashMap;
 
 use super::{
     chunk::{ChunkRequest, ProposalEnvelope},
@@ -41,7 +40,7 @@ pub struct SlotRaptorcast {
 
     // memoize the lane of headers that authenticated. todo:
     // bound per proposer.
-    authenticated_headers: HashMap<SignedProposalHeader, Lane>,
+    authenticated_headers: FastHashMap<SignedProposalHeader, Lane>,
 
     egress: ChunkEgress,
 
@@ -81,7 +80,7 @@ impl SlotRaptorcast {
             epoch_handle: epoch_handle.clone(),
             slot,
             raptorcasts,
-            authenticated_headers: HashMap::new(),
+            authenticated_headers: FastHashMap::new(),
             egress: ChunkEgress::new(),
             out_events: Vec::new(),
             out_requests: Vec::new(),

@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::BTreeMap,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -25,7 +25,7 @@ use chorus::{
     slot::chorus::{ChorusDAEvent, ProposalDAEvent},
 };
 use monad_mcp_chorus::stub as chorus;
-use monad_mcp_common::{Slot, Timestamp, stub::NodeId};
+use monad_mcp_common::{Slot, Timestamp, containers::FastHashMap, stub::NodeId};
 use monad_sim::{RunOutcome, StepLabel};
 use monad_sim_swarm::{Network, Swarm};
 
@@ -271,11 +271,11 @@ impl<OD, FD> FinalizationObserver<OD, FD> for PlannerFacts {
 // Per-node finalization histories, shared with the observers planted in
 // the runtimes.
 type PerNodeLog = Arc<Mutex<Vec<(Timestamp, Slot)>>>;
-pub struct FinalizationLog(HashMap<NodeId, PerNodeLog>);
+pub struct FinalizationLog(FastHashMap<NodeId, PerNodeLog>);
 
 impl FinalizationLog {
     pub fn new() -> Self {
-        Self(HashMap::new())
+        Self(FastHashMap::new())
     }
 
     pub fn allocate<OD, FD>(

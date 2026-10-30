@@ -13,9 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::{HashMap, HashSet};
-
 use alloy_rlp::{RlpDecodable, RlpEncodable};
+use monad_mcp_common::containers::{FastHashMap, FastHashSet};
 
 use super::{
     super::{
@@ -47,12 +46,12 @@ pub(crate) struct BlockStore<V: Votable> {
     /// How long an unanswered request waits before it is re-sent
     retransmit_timeout: TimestampDelta,
     /// Blocks held, keyed by the entries that identify them
-    known: HashMap<V::Entries, V>,
+    known: FastHashMap<V::Entries, V>,
     /// Entries requested with no valid response back yet. Each carries its own
     /// [`super::TimerEvent::BlockRetransmit`], keyed by the very entries it
     /// asks for, so no arming state is tracked here: a fire that finds its
     /// entries gone is one whose timer is already dead
-    pending: HashSet<V::Entries>,
+    pending: FastHashSet<V::Entries>,
 }
 
 impl<V: ValidateInput + Votable> BlockStore<V> {
@@ -62,8 +61,8 @@ impl<V: ValidateInput + Votable> BlockStore<V> {
             retransmit_timeout: delta
                 .checked_mul(BLOCK_RETRANSMIT_DELTAS)
                 .expect("block retransmit timeout overflows the timestamp range"),
-            known: HashMap::new(),
-            pending: HashSet::new(),
+            known: FastHashMap::new(),
+            pending: FastHashSet::new(),
         }
     }
 
@@ -167,7 +166,7 @@ impl<V: ValidateInput + Votable> BlockStore<V> {
 
     /// Drop everything unreachable from `keep`. A want that is still live is
     /// re-registered on the next pass through the state machine
-    pub(crate) fn gc(&mut self, keep: &HashSet<V::Entries>) {
+    pub(crate) fn gc(&mut self, keep: &FastHashSet<V::Entries>) {
         self.known.retain(|entries, _| keep.contains(entries));
         self.pending.retain(|entries| keep.contains(entries));
     }

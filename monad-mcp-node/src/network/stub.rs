@@ -19,9 +19,10 @@
 //! sender, a frame from a sender outside the validator set at the
 //! receiver.
 
-use std::{collections::HashMap, io, net::SocketAddr};
+use std::{io, net::SocketAddr};
 
 use bytes::{BufMut, Bytes, BytesMut};
+use monad_mcp_common::containers::FastHashMap;
 use tokio::{net::UdpSocket, task::JoinHandle};
 use tracing::Span;
 
@@ -42,14 +43,14 @@ const MAX_FRAME_LEN: usize = 1500 - 20 - 8;
 pub struct UdpNetwork {
     socket: UdpSocket,
     self_id: NodeId,
-    peers: HashMap<NodeId, SocketAddr>,
+    peers: FastHashMap<NodeId, SocketAddr>,
 }
 
 impl UdpNetwork {
     pub async fn bind(
         self_id: NodeId,
         port: u16,
-        peers: HashMap<NodeId, SocketAddr>,
+        peers: FastHashMap<NodeId, SocketAddr>,
     ) -> io::Result<Self> {
         let socket = UdpSocket::bind(("0.0.0.0", port)).await?;
         tracing::info!(address = %socket.local_addr()?, "udp bound");
@@ -108,7 +109,7 @@ impl UdpNetwork {
                 // the real udp transport, never simulated: send order is
                 // left to the os and the network anyway
                 #[allow(clippy::iter_over_hash_type)]
-                for (peer, address) in &self.peers {
+                for (peer, address) in self.peers.iter_unordered() {
                     if *peer != self.self_id {
                         self.send_to(&frame, *address).await;
                     }
@@ -230,7 +231,7 @@ mod tests {
     // is checked, against the validator set, whatever address the datagram came from
     #[tokio::test]
     async fn only_frames_from_a_validator_id_reach_the_node() {
-        let peers = HashMap::from([
+        let peers = FastHashMap::from([
             (NodeId::dummy(0), SocketAddr::from(([127, 0, 0, 1], 1))),
             (NodeId::dummy(1), SocketAddr::from(([127, 0, 0, 1], 2))),
         ]);

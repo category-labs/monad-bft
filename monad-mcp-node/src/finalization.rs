@@ -13,10 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 
 use bytes::Bytes;
-use monad_mcp_common::{Lane, Lanes, Slot, Timestamp};
+use monad_mcp_common::{Lane, Lanes, Slot, Timestamp, containers::FastHashMap};
 
 use crate::{
     chorus::{SlotLifecycle, slot::chorus::SlotFinalization, types::ProposalId},
@@ -45,7 +45,7 @@ struct SlotCollection {
     deadline: Option<Timestamp>,
     fast_block_at: Option<Timestamp>, // demo(tx-timeline)
     finalized: Option<(Timestamp, SlotFinalization)>,
-    resolved: HashMap<(Lane, ProposalId), (Resolved, Timestamp)>, // demo(tx-timeline)
+    resolved: FastHashMap<(Lane, ProposalId), (Resolved, Timestamp)>, // demo(tx-timeline)
 }
 
 impl SlotCollection {

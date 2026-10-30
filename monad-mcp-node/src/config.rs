@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::HashMap, fmt, net::SocketAddr, num::NonZeroU64, path::PathBuf, sync::Arc};
+use std::{fmt, net::SocketAddr, num::NonZeroU64, path::PathBuf, sync::Arc};
 
 use alloy_rlp::Encodable as _;
 use monad_mcp_chorus::ledger::BatchBuilder;
@@ -167,8 +167,8 @@ impl NodeConfig {
         })
     }
 
-    pub fn peers(&self) -> HashMap<NodeId, SocketAddr> {
-        let mut peers = HashMap::new();
+    pub fn peers(&self) -> FastHashMap<NodeId, SocketAddr> {
+        let mut peers = FastHashMap::new();
         for validator in &self.validators {
             peers.insert(validator.node_id, validator.address);
         }

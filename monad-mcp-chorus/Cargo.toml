@@ -43,3 +43,5 @@ required-features = ["enable_stub"]
 [lints.clippy]
 # outputs must not depend on hash order; see monad-mcp-node/docs/determinism.md
 iter_over_hash_type = "deny"
+# std hash containers only through the named types in clippy.toml
+disallowed_types = "deny"

@@ -1,0 +1,7 @@
+# Hash containers are named for their hasher, so the choice is visible where
+# they are used; see monad_mcp_common::containers. Clippy reads the nearest
+# clippy.toml only, so each Cadence crate carries this one.
+disallowed-types = [
+    { path = "std::collections::HashMap", reason = "use FastHashMap, or SipHashMap for adversarial keys (monad_mcp_common::containers)" },
+    { path = "std::collections::HashSet", reason = "use FastHashSet, or SipHashSet for adversarial keys (monad_mcp_common::containers)" },
+]

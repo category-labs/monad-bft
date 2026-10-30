@@ -56,7 +56,7 @@ mod test_helpers;
 mod tests;
 
 use std::{
-    collections::{BTreeMap, HashSet, VecDeque},
+    collections::{BTreeMap, VecDeque},
     sync::Arc,
 };
 
@@ -69,6 +69,7 @@ use messages::{
     CommitVoteMsg, FallbackCommitVote, Justification, PrePrepareMsg, PrepareVote, PrepareVoteMsg,
     TimeoutMsg,
 };
+use monad_mcp_common::containers::FastHashSet;
 use phases::{Decided, Phase, Transition};
 
 use super::{
@@ -938,7 +939,7 @@ where
         self.collectors = self.collectors.split_off(&self.view_floor());
 
         // Blocks are not per-view, so they go by reachability
-        let mut keep = HashSet::new();
+        let mut keep = FastHashSet::new();
         if let Some(input) = &self.input {
             keep.insert(input.value.entries());
         }

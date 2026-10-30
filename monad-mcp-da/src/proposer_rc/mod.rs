@@ -15,10 +15,8 @@
 
 mod recovery;
 
-use std::collections::HashMap;
-
 use monad_mcp_chorus::spec::ProposalHeader as _;
-use monad_mcp_common::containers::ValidatorSet;
+use monad_mcp_common::containers::{FastHashMap, ValidatorSet};
 use recovery::{Recovery, everything_missing};
 
 use super::{
@@ -45,7 +43,7 @@ pub struct ProposerRaptorcast {
     pin: Pin,
     first_pull: Timestamp, // nothing is pulled before this timestamp
 
-    tracked: HashMap<ProposalId, RaptorcastInstance>,
+    tracked: FastHashMap<ProposalId, RaptorcastInstance>,
     headers: Option<HeaderState>,
 
     out_events: Vec<ProposalDAEvent>,
@@ -115,7 +113,7 @@ impl ProposerRaptorcast {
             pull_interval: timing.pull_interval,
             serve_window: timing.serve_window,
             headers: None,
-            tracked: HashMap::new(),
+            tracked: FastHashMap::new(),
             pin: Pin::Unseen,
             out_events: Vec::new(),
             resolved: Vec::new(),

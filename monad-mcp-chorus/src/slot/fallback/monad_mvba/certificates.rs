@@ -13,9 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::HashSet, fmt::Debug, hash::Hash};
+use std::{fmt::Debug, hash::Hash};
 
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
+use monad_mcp_common::containers::FastHashSet;
 
 use super::{
     super::{
@@ -114,7 +115,8 @@ impl<E: Clone + Eq + Hash + Debug + Encodable> TimeoutCertificate<E> {
     /// A real view, one group per distinct vote, and the carried prepare
     /// certificate is the one the highest claim names
     pub(crate) fn is_well_formed(&self) -> bool {
-        let votes: HashSet<&TimeoutVote> = self.groups.iter().map(|group| &group.vote).collect();
+        let votes: FastHashSet<&TimeoutVote> =
+            self.groups.iter().map(|group| &group.vote).collect();
         let real_view = self.view >= FallbackView::FIRST;
         let has_groups = !self.groups.is_empty();
         let one_group_per_vote = votes.len() == self.groups.len();
