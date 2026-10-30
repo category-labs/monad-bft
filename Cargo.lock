@@ -5707,6 +5707,7 @@ dependencies = [
  "alloy-rlp",
  "arrayvec",
  "bytes",
+ "criterion",
  "derive_more",
  "hex",
  "libc",

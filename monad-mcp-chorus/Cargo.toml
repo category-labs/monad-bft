@@ -3,6 +3,10 @@ name = "monad-mcp-chorus"
 version = "0.1.0"
 edition = "2024"
 
+# criterion takes its own command line options
+[lib]
+bench = false
+
 [features]
 # exposes the stub instantiation (crate::stub).
 enable_stub = []
@@ -25,10 +29,16 @@ monad-mcp-common = { workspace = true }
 libc = { workspace = true }
 
 [dev-dependencies]
+criterion = { workspace = true }
 proptest = { workspace = true }
 rand = { workspace = true }
 tempfile = { workspace = true }
 tracing-test = { workspace = true }
+
+[[bench]]
+name = "tally"
+harness = false
+required-features = ["enable_stub"]
 
 [lints.clippy]
 # outputs must not depend on hash order; see monad-mcp-node/docs/determinism.md
