@@ -139,8 +139,10 @@ where
         self.votes.keys()
     }
 
-    // the distinct votes cast, each with its voters
-    pub fn buckets(&self) -> impl Iterator<Item = (&V, &BTreeSet<NodeId>)> {
+    // the distinct votes cast, each with its voters, in first-vote order. For
+    // logging only: anything that decides behavior goes through a tally, which
+    // orders the buckets canonically
+    pub(crate) fn buckets(&self) -> impl Iterator<Item = (&V, &BTreeSet<NodeId>)> {
         self.buckets.iter().map(|(vote, voters)| (vote, voters))
     }
 

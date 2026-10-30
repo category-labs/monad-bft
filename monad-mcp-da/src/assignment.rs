@@ -41,7 +41,7 @@ impl ChunkId {
 
 // a verified index of a node in a chunk assignment. only meaningful with the
 // assignment that produced it.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, derive_more::Into)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, derive_more::Into)]
 pub(crate) struct NodeIndex(usize);
 
 // an obligation of o chunks is met by ceil(o * den / num) of them, to
@@ -93,7 +93,7 @@ impl<'a> ChunkRouting<'a> {
     // whether the node receives this chunk via rebroadcast: every node but the
     // owner and the author, or for a partial chunk (stake-proportional
     // multicast) its share of them
-    pub(crate) fn is_rebroadcast_target(&self, node: NodeIndex) -> bool {
+    fn is_rebroadcast_target(&self, node: NodeIndex) -> bool {
         if node == self.owner_index() || node == self.assignment.author {
             return false;
         }
@@ -102,6 +102,16 @@ impl<'a> ChunkRouting<'a> {
             return true;
         };
         indices.contains(&node)
+    }
+
+    // the nodes the owner rebroadcasts this chunk to, in the given send order
+    // (every node of the assignment, each once)
+    pub(crate) fn rebroadcast_targets(&self, send_order: &[NodeIndex]) -> Vec<NodeId> {
+        send_order
+            .iter()
+            .filter(|index| self.is_rebroadcast_target(**index))
+            .map(|index| *self.assignment.node(*index))
+            .collect()
     }
 
     // from whom should the receiver get this chunk? none if unrouted
@@ -482,11 +492,11 @@ mod tests {
 
     // the nodes the chunk's owner rebroadcasts it to
     fn targets(assignment: &ChunkAssignment, chunk_id: u16) -> BTreeSet<NodeId> {
+        let index_order: Vec<NodeIndex> = assignment.nodes().map(|(index, _)| index).collect();
         let routing = assignment.routing(ChunkId(chunk_id));
-        assignment
-            .nodes()
-            .filter(|(index, _)| routing.is_rebroadcast_target(*index))
-            .map(|(_, node)| *node)
+        routing
+            .rebroadcast_targets(&index_order)
+            .into_iter()
             .collect()
     }
 

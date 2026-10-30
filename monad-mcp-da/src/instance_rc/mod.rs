@@ -201,13 +201,8 @@ impl RaptorcastInstance {
     pub(crate) fn rebroadcast_chunks(&mut self, egress: &mut ChunkEgress) {
         while let Some(chunk_id) = self.pending_rebroadcast.pop_first() {
             let routing = self.assignment.routing(chunk_id);
-            let to: Vec<NodeId> = self
-                .send_order
-                .iter()
-                .filter(|index| routing.is_rebroadcast_target(**index))
-                .map(|index| *self.assignment.node(*index))
-                .collect();
-            self.enqueue(chunk_id, &to, egress);
+            let to = routing.rebroadcast_targets(&self.send_order);
+            self.enqueue(chunk_id, to, egress);
         }
     }
 
@@ -250,11 +245,10 @@ impl RaptorcastInstance {
             // not a validator: the assignment lists them all
             return;
         };
-        let to = [*requester];
         // a header counts as one chunk
         if request.subset == ChunksSubset::HeaderOnly {
             if self.serving.grant(requester_index, 1, now) == 1 {
-                egress.enqueue_header(&to, &self.header);
+                egress.enqueue_header(vec![*requester], &self.header);
             }
             return;
         }
@@ -264,7 +258,7 @@ impl RaptorcastInstance {
         let granted = self.serving.grant(requester_index, held.len(), now);
         held.truncate(granted);
         for chunk_id in held {
-            self.enqueue(chunk_id, &to, egress);
+            self.enqueue(chunk_id, vec![*requester], egress);
         }
     }
 
@@ -282,7 +276,7 @@ impl RaptorcastInstance {
     }
 
     // the caller must ensure the chunk is held
-    fn enqueue(&self, chunk_id: ChunkId, to: &[NodeId], egress: &mut ChunkEgress) {
+    fn enqueue(&self, chunk_id: ChunkId, to: Vec<NodeId>, egress: &mut ChunkEgress) {
         let data = self
             .chunks
             .chunk_data(chunk_id)
