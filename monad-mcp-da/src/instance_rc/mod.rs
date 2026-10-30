@@ -213,14 +213,13 @@ impl RaptorcastInstance {
             return None;
         }
 
-        // by owner, indexed by NodeIndex
-        let mut by_owner: Vec<Vec<ChunkId>> = vec![Vec::new(); self.assignment.num_nodes()];
+        let mut by_owner = self.assignment.by_node(|_| Vec::new());
         for chunk_id in self.assignment.chunk_ids() {
             if self.chunks.contains(chunk_id) {
                 continue;
             }
             let owner = self.assignment.routing(chunk_id).owner_index();
-            by_owner[usize::from(owner)].push(chunk_id);
+            by_owner[owner].push(chunk_id);
         }
 
         let missing = self

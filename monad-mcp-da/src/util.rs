@@ -14,6 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use monad_crypto::hasher::Hash;
+use monad_mcp_common::containers::OrderKey;
 use monad_merkle::{MerkleProof, MerkleTree};
 
 use super::types::{MerkleHash, MerkleRoot, NodeId, ProposalId};
@@ -25,15 +26,10 @@ use super::types::{MerkleHash, MerkleRoot, NodeId, ProposalId};
 //
 // todo: replace with the send strategy once sends are prioritized.
 pub(crate) fn shuffle_sends<T>(items: &mut [T], pid: &ProposalId, sender: &NodeId) {
-    use monad_crypto::hasher::{Hasher as _, HasherType};
-    use rand::{SeedableRng as _, seq::SliceRandom as _};
-    use rand_chacha::ChaCha20Rng;
-
-    let mut hasher = HasherType::new();
-    hasher.update(b"monad-mcp-da send order");
-    hasher.update(alloy_rlp::encode(pid));
-    hasher.update(alloy_rlp::encode(sender));
-    items.shuffle(&mut ChaCha20Rng::from_seed(hasher.hash().0));
+    OrderKey::new(b"monad-mcp-da send order")
+        .with(pid)
+        .with(sender)
+        .shuffle(items);
 }
 
 // a wrapper of MerkleTree type adapted for interfacing with da types.

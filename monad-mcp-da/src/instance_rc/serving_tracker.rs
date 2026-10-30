@@ -14,19 +14,18 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use super::super::{
-    assignment::{ChunkAssignment, NodeIndex},
+    assignment::{ByNode, ChunkAssignment, NodeIndex},
     types::{Timestamp, TimestampDelta},
 };
 
 // each requester is served at most one round of honest demand per window
 pub(crate) struct ServingTracker {
     window: TimestampDelta,
-    // chunks each node owns, by node index
-    shares: Vec<usize>,
+    // chunks each node owns
+    shares: ByNode<usize>,
     own_share: usize,
-    // each requester's current window, by node index: its start, and the
-    // chunks served in it
-    served: Vec<Option<(Timestamp, usize)>>,
+    // each requester's current window: its start, and the chunks served in it
+    served: ByNode<Option<(Timestamp, usize)>>,
 }
 
 impl ServingTracker {
@@ -35,27 +34,27 @@ impl ServingTracker {
         self_index: Option<NodeIndex>,
         window: TimestampDelta,
     ) -> Self {
-        let mut shares = vec![0; assignment.num_nodes()];
+        let mut shares = assignment.by_node(|_| 0);
         for chunk_id in assignment.chunk_ids() {
             let owner = assignment.routing(chunk_id).owner_index();
-            shares[usize::from(owner)] += 1;
+            shares[owner] += 1;
         }
         let own_share = match self_index {
-            Some(index) => shares[usize::from(index)],
+            Some(index) => shares[index],
             None => 0,
         };
         Self {
             window,
             shares,
             own_share,
-            served: vec![None; assignment.num_nodes()],
+            served: assignment.by_node(|_| None),
         }
     }
 
     // how many of the wanted chunks the requester may be sent now
     pub(crate) fn grant(&mut self, requester: NodeIndex, wanted: usize, now: Timestamp) -> usize {
         let quota = self.quota(requester);
-        let (start, served) = self.served[usize::from(requester)].get_or_insert((now, 0));
+        let (start, served) = self.served[requester].get_or_insert((now, 0));
         if now >= *start + self.window {
             *start = now;
             *served = 0;
@@ -67,7 +66,7 @@ impl ServingTracker {
 
     // the requester's chunks, ours, and the header
     fn quota(&self, requester: NodeIndex) -> usize {
-        self.shares[usize::from(requester)] + self.own_share + 1
+        self.shares[requester] + self.own_share + 1
     }
 }
 
