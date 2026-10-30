@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{HashMap, HashSet},
     hash::Hash,
 };
 
@@ -60,11 +60,8 @@ where
     V: IsVote,
 {
     scope: <V as IsVote>::Scope,
-    // each distinct vote with its voters, in the order the vote was first
-    // cast; a tally orders them canonically. Usually one to three, never more
-    // than the voters (an empty bucket is dropped), so a linear search.
-    buckets: Vec<(V, BTreeSet<NodeId>)>,
-    votes: BTreeMap<NodeId, Signature>,
+    buckets: HashMap<V, HashSet<NodeId>>,
+    votes: HashMap<NodeId, Signature>,
 }
 
 impl<V> VotePool<V>
@@ -74,8 +71,8 @@ where
     pub fn new(scope: <V as IsVote>::Scope) -> Self {
         Self {
             scope,
-            buckets: Vec::new(),
-            votes: BTreeMap::new(),
+            buckets: HashMap::new(),
+            votes: HashMap::new(),
         }
     }
 
@@ -110,24 +107,20 @@ where
             let held = self
                 .buckets
                 .iter()
-                .position(|(_, voters)| voters.contains(&node_id))
+                .find_map(|(vote, voters)| voters.contains(&node_id).then_some(vote))
                 .expect("a recorded sender is in exactly one bucket");
 
             // move the sender, dropping a bucket left empty: an empty bucket is
             // indistinguishable from a missing one everywhere else.
-            let voters = &mut self.buckets[held].1;
+            let held = held.clone();
+            let voters = self.buckets.get_mut(&held).expect("found above");
             voters.remove(&node_id);
             if voters.is_empty() {
-                self.buckets.remove(held);
+                self.buckets.remove(&held);
             }
         }
 
-        match self.buckets.iter_mut().find(|(vote, _)| *vote == msg.vote) {
-            Some((_, voters)) => {
-                voters.insert(node_id);
-            }
-            None => self.buckets.push((msg.vote, BTreeSet::from([node_id]))),
-        }
+        self.buckets.entry(msg.vote).or_default().insert(node_id);
         self.votes.insert(node_id, msg.signature);
     }
 
@@ -139,15 +132,18 @@ where
         self.votes.keys()
     }
 
-    // the distinct votes cast, each with its voters
-    pub fn buckets(&self) -> impl Iterator<Item = (&V, &BTreeSet<NodeId>)> {
-        self.buckets.iter().map(|(vote, voters)| (vote, voters))
+    // the distinct votes cast, each with its voters, for logging only
+    // for determinism, avoid iteration ordering-dependent behavior variation
+    pub(crate) fn buckets(&self) -> impl Iterator<Item = (&V, &HashSet<NodeId>)> {
+        self.buckets.iter()
     }
 
     pub fn tally<'a>(&'a self, validator_data: &'a ValidatorData) -> Tally<'a, V> {
         use crate::spec::vote::VoteAggregation as _;
 
         let mut buckets = vec![];
+        // a tally sorts its buckets below
+        #[allow(clippy::iter_over_hash_type)]
         for (vote, voters) in &self.buckets {
             let data = vote.signing_bytes(&self.scope);
             let votes = voters
@@ -190,7 +186,7 @@ pub trait Gate<V> {
     fn admits(&self, vote: &V) -> bool;
 }
 
-// invariant: every signature verified, no bucket empty
+// invariant: every signature verified, no bucket empty, buckets ordered by signed bytes
 pub struct Tally<'a, V: IsVote> {
     scope: &'a <V as IsVote>::Scope,
     validator_data: &'a ValidatorData,
@@ -468,8 +464,6 @@ impl Decodable for EquivCert {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use alloy_rlp::{RlpDecodableWrapper, RlpEncodableWrapper};
 
     use super::*;

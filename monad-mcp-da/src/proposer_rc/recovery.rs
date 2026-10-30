@@ -19,7 +19,6 @@ use super::super::{
     chunk::{ChunkRequest, ChunkRequestType, ChunksSubset},
     instance_rc::MissingChunks,
     types::{NodeId, ProposalId, Timestamp, TimestampDelta},
-    util::shuffle_sends,
 };
 
 // the pulls for the chunks the pinned proposal still misses: ours from the
@@ -65,11 +64,7 @@ impl Recovery {
         now: Timestamp,
     ) -> Vec<(NodeId, ChunkRequest)> {
         let mut requests = Vec::new();
-        let mine = missing
-            .iter()
-            .position(|(owner, _)| *owner == self.self_id)
-            .map(|i| missing.remove(i).1);
-        if let Some(mine) = mine
+        if let Some(mine) = missing.remove(&self.self_id)
             && self.my_chunks_timer.try_fire(now)
         {
             requests.extend(self.ask_decoded_holders(mine));
@@ -88,7 +83,6 @@ impl Recovery {
             let subset = mine.clone();
             requests.push((*holder, ChunkRequest { pid, kind, subset }));
         }
-        shuffle_sends(&mut requests, &self.pid, &self.self_id);
         requests
     }
 
@@ -99,7 +93,6 @@ impl Recovery {
         for (owner, subset) in theirs {
             requests.push((owner, ChunkRequest { pid, kind, subset }));
         }
-        shuffle_sends(&mut requests, &self.pid, &self.self_id);
         requests
     }
 }

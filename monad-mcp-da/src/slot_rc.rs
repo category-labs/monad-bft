@@ -288,7 +288,7 @@ mod tests {
         ids.into_iter().map(NodeId::dummy).collect()
     }
 
-    // recipients go out in a shuffled order; the tests check who, not when
+    // the tests check who receives a message, not in which order
     fn set(to: &[NodeId]) -> BTreeSet<NodeId> {
         to.iter().copied().collect()
     }

@@ -419,6 +419,8 @@ impl FastPath {
                     count += voters.len();
                     continue;
                 }
+                // the list only reaches a debug log
+                #[allow(clippy::iter_over_hash_type)]
                 for voter in voters {
                     waiting_on_header.push((j, *voter));
                 }

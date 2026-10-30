@@ -29,7 +29,6 @@ use super::{
         EquivCert, MissingHeaders, NodeId, ProposalDAEvent, ProposalId, SignedProposalHeader,
         Timestamp, TimestampDelta,
     },
-    util::shuffle_sends,
 };
 
 // per-(slot, proposer) raptorcast: keyed by proposal pid
@@ -295,8 +294,6 @@ impl ProposerRaptorcast {
                 continue;
             }
 
-            let mut voters: Vec<NodeId> = voters.into_iter().collect();
-            shuffle_sends(&mut voters, &pid, &self.self_id);
             for voter in voters {
                 let request = ChunkRequest {
                     pid,

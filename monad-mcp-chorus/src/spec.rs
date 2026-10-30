@@ -76,7 +76,7 @@ pub mod validator {
 }
 
 pub mod vote {
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::{HashMap, HashSet};
 
     use alloy_rlp::{EMPTY_LIST_CODE, Encodable};
     use bytes::{BufMut, Bytes};
@@ -154,7 +154,7 @@ pub mod vote {
         // the validator data, and all signatures are well-formed
         // (see Signature::is_well_formed).
         fn aggregate(
-            sig_map: &BTreeMap<&ValidatorNodeId<Self::ValidatorData>, &Self::Signature>,
+            sig_map: &HashMap<&ValidatorNodeId<Self::ValidatorData>, &Self::Signature>,
             validator_data: &Self::ValidatorData,
         ) -> Self;
 
@@ -165,13 +165,10 @@ pub mod vote {
         //
         // Returns None in case where signature collection is
         // malformed or inconsistent with the validator data.
-        //
-        // Ordered sets, here and in verify: callers iterate signers to
-        // address messages, and their order must not depend on a hasher.
         fn signers<'s>(
             &'s self,
             validator_data: &'s Self::ValidatorData,
-        ) -> Option<BTreeSet<&'s ValidatorNodeId<Self::ValidatorData>>>;
+        ) -> Option<HashSet<&'s ValidatorNodeId<Self::ValidatorData>>>;
 
         // invariant:
         //
@@ -180,7 +177,7 @@ pub mod vote {
             &'s self,
             data: &[u8],
             validator_data: &'s Self::ValidatorData,
-        ) -> Option<BTreeSet<&'s ValidatorNodeId<Self::ValidatorData>>>;
+        ) -> Option<HashSet<&'s ValidatorNodeId<Self::ValidatorData>>>;
     }
 
     pub trait VoteAggregation<'a, Stake>
@@ -226,14 +223,14 @@ pub mod vote {
         //     fn try_aggregate(
         //         &mut self,
         //         data: &[u8],
-        //         votes: BTreeMap<&NodeId, &Signature>,
+        //         votes: HashMap<&NodeId, &Signature>,
         //         target_stake: Stake,
         //     ) -> Option<SignatureCollection>;
         //
         fn try_aggregate(
             &mut self,
             data: &[u8],
-            votes: BTreeMap<
+            votes: HashMap<
                 &SigColNodeId<Self::SignatureCollection>,
                 &SigColSignature<Self::SignatureCollection>,
             >,

@@ -44,13 +44,13 @@ impl ChunkEgress {
     // todo: bound the pending buffer
     pub(crate) fn enqueue(
         &mut self,
-        recipients: &[NodeId],
+        recipients: Vec<NodeId>,
         header: &SignedProposalHeader,
         chunk_id: WireChunkId,
         data: ChunkData,
     ) {
         if let Some(last) = self.pending.last_mut()
-            && last.to == *recipients
+            && last.to == recipients
             && last.envelope.header() == header
         {
             // merge with existing envelop
@@ -61,15 +61,19 @@ impl ChunkEgress {
         let chunks = BTreeMap::from([(chunk_id, data)]);
         let envelope = ProposalEnvelope::new(header.clone(), chunks);
         self.pending.push(Dissemination {
-            to: recipients.to_vec(),
+            to: recipients,
             envelope,
         });
     }
 
-    pub(crate) fn enqueue_header(&mut self, recipients: &[NodeId], header: &SignedProposalHeader) {
+    pub(crate) fn enqueue_header(
+        &mut self,
+        recipients: Vec<NodeId>,
+        header: &SignedProposalHeader,
+    ) {
         let envelope = ProposalEnvelope::from_header(header.clone());
         let dissemination = Dissemination {
-            to: recipients.to_vec(),
+            to: recipients,
             envelope,
         };
         self.pending.push(dissemination);
@@ -111,7 +115,7 @@ mod tests {
         egress
     }
 
-    fn enqueue(egress: &mut ChunkEgress, chunk: &Chunk<'_>, recipients: &[NodeId]) {
+    fn enqueue(egress: &mut ChunkEgress, chunk: &Chunk<'_>, recipients: Vec<NodeId>) {
         let (header, chunk_id, data) = parts(chunk);
         egress.enqueue(recipients, &header, chunk_id, data);
     }
@@ -121,8 +125,8 @@ mod tests {
         let (_, chunks) = proposal_chunks(&epoch_handle(), 1);
         let mut egress = released();
 
-        enqueue(&mut egress, &chunks[0], &to([2, 3]));
-        enqueue(&mut egress, &chunks[1], &to([2, 3]));
+        enqueue(&mut egress, &chunks[0], to([2, 3]));
+        enqueue(&mut egress, &chunks[1], to([2, 3]));
 
         let messages = egress.drain();
         assert_eq!(messages.len(), 1);
@@ -138,11 +142,11 @@ mod tests {
         let (_, b) = proposal_chunks(&epoch_handle, 2);
         let mut egress = released();
 
-        enqueue(&mut egress, &a[0], &to([2, 3]));
-        enqueue(&mut egress, &a[1], &to([3]));
-        enqueue(&mut egress, &b[0], &to([3]));
+        enqueue(&mut egress, &a[0], to([2, 3]));
+        enqueue(&mut egress, &a[1], to([3]));
+        enqueue(&mut egress, &b[0], to([3]));
         // a repeat of an earlier key is not merged backwards
-        enqueue(&mut egress, &a[2], &to([3]));
+        enqueue(&mut egress, &a[2], to([3]));
 
         let messages = egress.drain();
         assert_eq!(messages.len(), 4);
@@ -156,7 +160,7 @@ mod tests {
         let (_, chunks) = proposal_chunks(&epoch_handle(), 1);
         let mut egress = ChunkEgress::new();
 
-        enqueue(&mut egress, &chunks[0], &to([2, 3]));
+        enqueue(&mut egress, &chunks[0], to([2, 3]));
         assert!(egress.drain().is_empty());
 
         egress.release();

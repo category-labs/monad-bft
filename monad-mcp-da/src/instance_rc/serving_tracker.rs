@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::collections::HashMap;
+
 use super::super::{
     assignment::{ChunkAssignment, NodeIndex},
     types::{Timestamp, TimestampDelta},
@@ -24,9 +26,8 @@ pub(crate) struct ServingTracker {
     // chunks each node owns, by node index
     shares: Vec<usize>,
     own_share: usize,
-    // each requester's current window, by node index: its start, and the
-    // chunks served in it
-    served: Vec<Option<(Timestamp, usize)>>,
+    // each requester's current window: its start, and the chunks served in it
+    served: HashMap<NodeIndex, (Timestamp, usize)>,
 }
 
 impl ServingTracker {
@@ -48,14 +49,14 @@ impl ServingTracker {
             window,
             shares,
             own_share,
-            served: vec![None; assignment.num_nodes()],
+            served: HashMap::new(),
         }
     }
 
     // how many of the wanted chunks the requester may be sent now
     pub(crate) fn grant(&mut self, requester: NodeIndex, wanted: usize, now: Timestamp) -> usize {
         let quota = self.quota(requester);
-        let (start, served) = self.served[usize::from(requester)].get_or_insert((now, 0));
+        let (start, served) = self.served.entry(requester).or_insert((now, 0));
         if now >= *start + self.window {
             *start = now;
             *served = 0;

@@ -93,6 +93,8 @@ impl<E: Clone + Eq + Hash + Debug + Encodable> TimeoutCertificate<E> {
             let Some(group_signers) = sigcol.verify(&data, validator_data) else {
                 return false;
             };
+            // only membership and a stake sum follow, so the order does not matter
+            #[allow(clippy::iter_over_hash_type)]
             for signer in group_signers {
                 // equivocating signers invalidates the certificate
                 if !signers.insert(signer) {
