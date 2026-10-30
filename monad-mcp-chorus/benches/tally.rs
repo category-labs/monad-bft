@@ -18,15 +18,14 @@
 //! stake sum). Every vote triggers a tally, so a slot costs about n tallies
 //! of a growing pool.
 
-use std::collections::HashMap;
-
 use alloy_rlp::{RlpDecodableWrapper, RlpEncodableWrapper};
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use monad_mcp_chorus::{
-    spec::vote::SigningDomain,
-    stub::types::{IsVote, ValidatorData, VoteMsg, VotePool},
+    spec::{validator::ValidatorData as _, vote::SigningDomain},
+    stub::types::{IsVote, ValidatorData, ValidatorIndex, VoteMsg, VotePool},
 };
 use monad_mcp_common::{
+    containers::FastHashMap,
     spec::KeyPair as _,
     stub::{NodeId, Stake},
 };
@@ -47,10 +46,10 @@ impl IsVote for Claim {
 
 const SCOPE: u64 = 7;
 
-fn setup(n: u64) -> (ValidatorData, Vec<(NodeId, VoteMsg<Claim>)>) {
+fn setup(n: u64) -> (ValidatorData, Vec<(ValidatorIndex, VoteMsg<Claim>)>) {
     let nodes: Vec<NodeId> = (0..n).map(NodeId::dummy).collect();
-    let valset: HashMap<_, _> = nodes.iter().map(|node| (*node, Stake::from(1))).collect();
-    let mapping: HashMap<_, _> = nodes
+    let valset: FastHashMap<_, _> = nodes.iter().map(|node| (*node, Stake::from(1))).collect();
+    let mapping: FastHashMap<_, _> = nodes
         .iter()
         .map(|node| (*node, node.keypair().pubkey()))
         .collect();
@@ -61,18 +60,20 @@ fn setup(n: u64) -> (ValidatorData, Vec<(NodeId, VoteMsg<Claim>)>) {
         .iter()
         .map(|node| {
             let claim = Claim(u64::from(u64::from(*node) % 10 == 0));
-            (*node, VoteMsg::new_signed(SCOPE, claim, &node.keypair()))
+            let voter = validator_data.index_of(node).unwrap();
+            (voter, VoteMsg::new_signed(SCOPE, claim, &node.keypair()))
         })
         .collect();
     votes.reverse();
     (validator_data, votes)
 }
 
-fn fill(votes: &[(NodeId, VoteMsg<Claim>)]) -> VotePool<Claim> {
+fn fill(votes: &[(ValidatorIndex, VoteMsg<Claim>)]) -> VotePool<Claim> {
     let mut pool = VotePool::new(SCOPE);
-    for (node, vote) in votes {
-        pool.add_vote(*node, vote.clone());
+    for (voter, vote) in votes {
+        pool.add_vote(*voter, vote.clone());
     }
+
     pool
 }
 

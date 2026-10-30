@@ -13,14 +13,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    hash::Hash,
-};
+use std::hash::Hash;
 
 use alloy_rlp::{Decodable, Encodable, RlpEncodable};
 use arrayvec::ArrayVec;
 use bytes::Bytes;
+pub use monad_mcp_common::containers::{ValidatorIndex, ValidatorMap, ValidatorSet};
 use monad_mcp_common::spec::{KeyPair as _, Stake as _};
 pub(crate) use monad_mcp_common::{
     Lane, Lanes, MAX_PROPOSER_SET_SIZE, ProposalScope, Slot, Timestamp, TimestampDelta, WindowId,
@@ -63,8 +61,8 @@ where
     // each distinct vote with its voters, in the order the vote was first
     // cast; a tally orders them canonically. Usually one to three, never more
     // than the voters (an empty bucket is dropped), so a linear search.
-    buckets: Vec<(V, BTreeSet<NodeId>)>,
-    votes: BTreeMap<NodeId, Signature>,
+    buckets: Vec<(V, ValidatorSet)>,
+    votes: ValidatorMap<Signature>,
 }
 
 impl<V> VotePool<V>
@@ -75,20 +73,20 @@ where
         Self {
             scope,
             buckets: Vec::new(),
-            votes: BTreeMap::new(),
+            votes: ValidatorMap::new(),
         }
     }
 
-    // the caller should ensure that the node_id is in the validator
-    // set.
-    pub fn add_vote(&mut self, node_id: NodeId, msg: VoteMsg<V>) {
+    // the caller should ensure that the voter is of the validator data the
+    // pool is tallied with.
+    pub fn add_vote(&mut self, voter: ValidatorIndex, msg: VoteMsg<V>) {
         assert!(msg.scope == self.scope);
 
         // first write wins: a sender's later vote never displaces its first.
-        if self.votes.contains_key(&node_id) {
+        if self.votes.contains_key(voter) {
             return;
         }
-        self.add_or_replace_vote(node_id, msg)
+        self.add_or_replace_vote(voter, msg)
     }
 
     /// Like [`VotePool::add_vote`], except a sender's later vote always
@@ -97,7 +95,7 @@ where
     /// preserved; what replacement concedes is that the pool's answer can
     /// change between polls, which is only sound where every certificate over
     /// the scope certifies the same fact.
-    pub fn add_or_replace_vote(&mut self, node_id: NodeId, msg: VoteMsg<V>) {
+    pub fn add_or_replace_vote(&mut self, voter: ValidatorIndex, msg: VoteMsg<V>) {
         use monad_mcp_common::spec::Signature as _;
 
         assert!(msg.scope == self.scope);
@@ -106,17 +104,17 @@ where
             return;
         }
 
-        if self.votes.contains_key(&node_id) {
+        if self.votes.contains_key(voter) {
             let held = self
                 .buckets
                 .iter()
-                .position(|(_, voters)| voters.contains(&node_id))
+                .position(|(_, voters)| voters.contains(voter))
                 .expect("a recorded sender is in exactly one bucket");
 
             // move the sender, dropping a bucket left empty: an empty bucket is
             // indistinguishable from a missing one everywhere else.
             let voters = &mut self.buckets[held].1;
-            voters.remove(&node_id);
+            voters.remove(voter);
             if voters.is_empty() {
                 self.buckets.remove(held);
             }
@@ -124,25 +122,32 @@ where
 
         match self.buckets.iter_mut().find(|(vote, _)| *vote == msg.vote) {
             Some((_, voters)) => {
-                voters.insert(node_id);
+                voters.insert(voter);
             }
-            None => self.buckets.push((msg.vote, BTreeSet::from([node_id]))),
+            None => self
+                .buckets
+                .push((msg.vote, ValidatorSet::from_iter([voter]))),
         }
-        self.votes.insert(node_id, msg.signature);
+        self.votes.insert(voter, msg.signature);
     }
 
     pub fn scope(&self) -> &<V as IsVote>::Scope {
         &self.scope
     }
 
-    pub fn all_voters(&self) -> impl Iterator<Item = &NodeId> {
-        self.votes.keys()
+    // everyone who voted, whatever for
+    pub fn voters(&self) -> ValidatorSet {
+        let mut voters = ValidatorSet::new();
+        for (_, bucket) in &self.buckets {
+            voters.union_with(bucket);
+        }
+        voters
     }
 
     // the distinct votes cast, each with its voters, in first-vote order. For
     // logging only: anything that decides behavior goes through a tally, which
     // orders the buckets canonically
-    pub(crate) fn buckets(&self) -> impl Iterator<Item = (&V, &BTreeSet<NodeId>)> {
+    pub(crate) fn buckets(&self) -> impl Iterator<Item = (&V, &ValidatorSet)> {
         self.buckets.iter().map(|(vote, voters)| (vote, voters))
     }
 
@@ -152,10 +157,7 @@ where
         let mut buckets = vec![];
         for (vote, voters) in &self.buckets {
             let data = vote.signing_bytes(&self.scope);
-            let votes = voters
-                .iter()
-                .map(|node_id| (node_id, &self.votes[node_id]))
-                .collect();
+            let votes = voters.iter().map(|voter| (voter, &self.votes[voter]));
 
             // a bucket whose signatures are all invalid holds no stake and is
             // dropped here
@@ -167,7 +169,7 @@ where
             let signers = sigcol
                 .signers(validator_data)
                 .expect("aggregation returns a collection consistent with the validator set");
-            let stake = validator_data.sum_stake(signers.iter().copied());
+            let stake = validator_data.sum_stake(&signers);
             buckets.push((data, vote, sigcol, stake));
         }
 
@@ -309,11 +311,11 @@ where
 {
     pub fn verify(&self, validator_data: &ValidatorData) -> bool {
         let data = self.verdict.signing_bytes(&self.scope);
-        let Some(nodes) = self.sigcol.verify(&data, validator_data) else {
+        let Some(signers) = self.sigcol.verify(&data, validator_data) else {
             return false;
         };
 
-        let stake = validator_data.sum_stake(nodes);
+        let stake = validator_data.sum_stake(&signers);
         stake > validator_data.total_stake().supermajority_threshold()
     }
 }
@@ -335,11 +337,11 @@ where
 {
     pub fn verify(&self, validator_data: &ValidatorData) -> bool {
         let data = self.verdict.signing_bytes(&self.scope);
-        let Some(nodes) = self.sigcol.verify(&data, validator_data) else {
+        let Some(signers) = self.sigcol.verify(&data, validator_data) else {
             return false;
         };
 
-        let stake = validator_data.sum_stake(nodes);
+        let stake = validator_data.sum_stake(&signers);
         stake > validator_data.total_stake().honest_threshold()
     }
 }
@@ -470,11 +472,10 @@ impl Decodable for EquivCert {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use alloy_rlp::{RlpDecodableWrapper, RlpEncodableWrapper};
+    use monad_mcp_common::containers::FastHashMap;
 
-    use super::*;
+    use super::{super::test_utils::dummy_index, *};
     use crate::spec::vote::assert_signing_prefix;
 
     /// A vote whose verdict is a bare number, standing in for the claims
@@ -497,8 +498,8 @@ mod tests {
     /// Seven validators of stake one each, as in the aggregation tests.
     fn claim_setup() -> (Vec<NodeId>, ValidatorData) {
         let nodes: Vec<NodeId> = (0..7).map(NodeId::dummy).collect();
-        let valset: HashMap<_, _> = nodes.iter().map(|node| (*node, Stake::from(1))).collect();
-        let mapping: HashMap<_, _> = nodes
+        let valset: FastHashMap<_, _> = nodes.iter().map(|node| (*node, Stake::from(1))).collect();
+        let mapping: FastHashMap<_, _> = nodes
             .iter()
             .map(|node| (*node, node.keypair().pubkey()))
             .collect();
@@ -512,7 +513,7 @@ mod tests {
         let mut pool = VotePool::new(SCOPE);
         for (node, claim) in votes {
             pool.add_vote(
-                *node,
+                dummy_index(node),
                 VoteMsg::new_signed(SCOPE, claim.clone(), &node.keypair()),
             );
         }
@@ -619,7 +620,7 @@ mod tests {
             if i < 2 {
                 msg.signature.make_invalid();
             }
-            pool.add_vote(*node, msg);
+            pool.add_vote(dummy_index(node), msg);
         }
 
         let tally = pool.tally(&validator_data);
@@ -655,7 +656,7 @@ mod tests {
             if i == 0 {
                 msg.signature.make_invalid();
             }
-            pool.add_vote(*node, msg);
+            pool.add_vote(dummy_index(node), msg);
         }
 
         let tally = pool.tally(&validator_data);
@@ -677,12 +678,15 @@ mod tests {
         // five agree, one dissents alone.
         for (i, node) in nodes[..6].iter().enumerate() {
             let claim = Claim(u64::from(i == 5));
-            pool.add_vote(*node, VoteMsg::new_signed(SCOPE, claim, &node.keypair()));
+            pool.add_vote(
+                dummy_index(node),
+                VoteMsg::new_signed(SCOPE, claim, &node.keypair()),
+            );
         }
 
         let raiser = nodes[5];
         pool.add_or_replace_vote(
-            raiser,
+            dummy_index(raiser),
             VoteMsg::new_signed(SCOPE, Claim(2), &raiser.keypair()),
         );
 
@@ -718,12 +722,15 @@ mod tests {
         let (nodes, validator_data) = claim_setup();
         let mut pool = VotePool::new(SCOPE);
         for node in &nodes[..5] {
-            pool.add_vote(*node, VoteMsg::new_signed(SCOPE, Claim(1), &node.keypair()));
+            pool.add_vote(
+                dummy_index(node),
+                VoteMsg::new_signed(SCOPE, Claim(1), &node.keypair()),
+            );
         }
 
         let sender = nodes[4];
         pool.add_vote(
-            sender,
+            dummy_index(sender),
             VoteMsg::new_signed(SCOPE, Claim(0), &sender.keypair()),
         );
 

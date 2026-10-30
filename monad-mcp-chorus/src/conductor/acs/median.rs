@@ -95,9 +95,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, sync::Arc};
+    use std::sync::Arc;
 
-    use monad_mcp_common::spec::KeyPair as _;
+    use monad_mcp_common::{containers::FastHashMap, spec::KeyPair as _};
 
     use super::{
         super::types::{Stake, Timestamp},
@@ -108,11 +108,11 @@ mod tests {
         let valset = validators
             .iter()
             .map(|validator| (*validator, Stake::from(1)))
-            .collect::<HashMap<_, _>>();
+            .collect::<FastHashMap<_, _>>();
         let mapping = validators
             .iter()
             .map(|validator| (*validator, validator.keypair().pubkey()))
-            .collect::<HashMap<_, _>>();
+            .collect::<FastHashMap<_, _>>();
         Arc::new(ValidatorData::new(valset, mapping))
     }
 

@@ -20,8 +20,11 @@
 //! no real cryptography. The tests therefore exercise the quorum arithmetic
 //! and the signing domains, not the primitives underneath
 
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
+use monad_mcp_common::containers::FastHashMap;
+
+pub(super) use super::super::super::super::test_utils::dummy_index;
 use super::{
     super::{
         super::{
@@ -89,11 +92,11 @@ pub(super) fn quorum() -> Vec<NodeId> {
 pub(super) fn validator_data() -> Arc<ValidatorData> {
     use monad_mcp_common::spec::KeyPair as _;
 
-    let valset: HashMap<_, _> = nodes()
+    let valset: FastHashMap<_, _> = nodes()
         .into_iter()
         .map(|node| (node, 1u64.into()))
         .collect();
-    let mapping: HashMap<_, _> = nodes()
+    let mapping: FastHashMap<_, _> = nodes()
         .into_iter()
         .map(|node| {
             let pubkey = node.keypair().pubkey();
@@ -178,7 +181,7 @@ pub(super) fn strong_qc<V: IsVote>(
     let mut pool = VotePool::new(scope.clone());
     for node in signers {
         let msg = VoteMsg::new_signed(scope.clone(), vote.clone(), &node.keypair());
-        pool.add_vote(*node, msg);
+        pool.add_vote(dummy_index(node), msg);
     }
 
     pool.tally(validator_data)
@@ -196,7 +199,7 @@ pub(super) fn weak_qc<V: IsVote>(
     let mut pool = VotePool::new(scope.clone());
     for node in signers {
         let msg = VoteMsg::new_signed(scope.clone(), vote.clone(), &node.keypair());
-        pool.add_vote(*node, msg);
+        pool.add_vote(dummy_index(node), msg);
     }
 
     let mut qcs = pool.tally(validator_data).weak_qcs().into_iter();
@@ -284,7 +287,7 @@ pub(super) fn timeout_certificate_in(
     let mut collectors = ViewCollectors::new(slot, v);
     for node in quorum() {
         collectors.store_timeout(
-            node,
+            dummy_index(node),
             TimeoutMsg::new_signed(slot, v, high_prep_qc.clone(), &node.keypair()),
         );
     }
@@ -306,7 +309,7 @@ pub(super) fn feed_prepare_votes(
             PrepareVote(entries.clone()),
             &node.keypair(),
         );
-        instance.handle_message(*node, Message::Prepare(msg));
+        instance.handle_message_from(*node, Message::Prepare(msg));
     }
 }
 
@@ -324,7 +327,7 @@ pub(super) fn feed_commit_votes(
             FallbackCommitVote(block.entries()),
             &node.keypair(),
         );
-        instance.handle_message(*node, Message::Commit(msg));
+        instance.handle_message_from(*node, Message::Commit(msg));
     }
 }
 
@@ -353,7 +356,7 @@ pub(super) fn feed_timeouts(
 ) {
     for node in signers {
         let msg = TimeoutMsg::new_signed(SLOT, v, high_prep_qc.clone(), &node.keypair());
-        instance.handle_message(*node, Message::Timeout(msg));
+        instance.handle_message_from(*node, Message::Timeout(msg));
     }
 }
 
@@ -484,7 +487,7 @@ pub(super) fn decided(
     let mut instance = started(node, block, validator_data);
 
     let (leader, proposal) = pre_prepare(view(1), block, None);
-    instance.handle_message(leader, proposal);
+    instance.handle_message_from(leader, proposal);
     feed_prepare_votes(&mut instance, view(1), &block.entries(), &quorum());
     feed_commit_votes(&mut instance, view(1), block, &quorum());
 

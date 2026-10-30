@@ -14,10 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 /// Chorus module for managing single-slot consensus state and logic.
-use std::{
-    collections::{BTreeSet, VecDeque},
-    sync::Arc,
-};
+use std::{collections::VecDeque, sync::Arc};
 
 use alloy_rlp::{Decodable, Encodable};
 
@@ -35,6 +32,7 @@ use super::{
     types::{
         HeaderAuth, KeyPair, Lane, Lanes, NodeId, ProposalId, ProposerSchedule,
         SignatureCollection, SignedProposalHeader, Slot, TimestampDelta, ValidatorData,
+        ValidatorSet,
     },
 };
 
@@ -173,8 +171,9 @@ pub enum ProposalDAEvent {
     DecodingFailed(ProposalId),
 }
 
-// must be non-empty. ordered by total stake on each pid
-pub type MissingHeaders = Vec<(ProposalId, BTreeSet<NodeId>)>;
+// must be non-empty. ordered by total stake on each pid; the voters are
+// validators of the slot's epoch
+pub type MissingHeaders = Vec<(ProposalId, ValidatorSet)>;
 
 // An effect directed at the DA layer.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -183,11 +182,12 @@ pub enum ChorusDACommand {
     // chunks, held and arriving, and serve chunk recovery requests.
     ReleaseChunks,
 
-    // nodes that decoded the proposal under j, so they can serve our own chunks
+    // validators that decoded the proposal under j, so they can serve our own
+    // chunks
     AddDecodedHolders {
         j: Lane,
         pid: ProposalId,
-        node_ids: Vec<NodeId>,
+        holders: ValidatorSet,
     },
 
     // the committed entry under j. None when it needs no data
@@ -320,8 +320,12 @@ impl SlotConsensus for Chorus {
     fn handle_message(&mut self, author: NodeId, message: Self::Message) {
         use crate::spec::validator::ValidatorData as _;
 
-        let from_validator = self.validator_data.contains(&author);
-        if self.decided || !from_validator {
+        // the one place a sender becomes a validator index: everything below
+        // addresses validators by index
+        let Some(author) = self.validator_data.index_of(&author) else {
+            return;
+        };
+        if self.decided {
             return;
         }
 
@@ -503,10 +507,10 @@ impl Chorus {
             return;
         };
         for (j, cert) in block.certified_entries().into_indexed_iter() {
-            let Some((pid, node_ids)) = cert.decoded_holders(&self.validator_data) else {
+            let Some((pid, holders)) = cert.decoded_holders(&self.validator_data) else {
                 continue;
             };
-            let command = ChorusDACommand::AddDecodedHolders { j, pid, node_ids };
+            let command = ChorusDACommand::AddDecodedHolders { j, pid, holders };
             self.push(SlotOutput::DA(command));
         }
     }
@@ -677,8 +681,12 @@ mod tests {
     use monad_mcp_common::spec::KeyPair as _;
 
     use super::{
-        super::types::{
-            FixedProposerSchedule, HeaderAuth, NodeId, Slot, Stake, TimestampDelta, ValidatorData,
+        super::{
+            super::test_utils::dummy_index,
+            types::{
+                FixedProposerSchedule, HeaderAuth, NodeId, Slot, Stake, TimestampDelta,
+                ValidatorData,
+            },
         },
         *,
     };
@@ -788,7 +796,10 @@ mod tests {
             let vote = FastCommitVote {
                 entries: entries.clone(),
             };
-            pool.add_vote(voter, VoteMsg::new_signed(Slot(1), vote, &voter.keypair()));
+            pool.add_vote(
+                dummy_index(voter),
+                VoteMsg::new_signed(Slot(1), vote, &voter.keypair()),
+            );
         }
         let qc = pool
             .tally(&context.validator_data)

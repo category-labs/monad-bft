@@ -28,7 +28,7 @@ use monad_sim_swarm::Network;
 
 /// The inputs the fast path would have formed
 mod fixtures {
-    use std::{collections::HashMap, sync::Arc};
+    use std::sync::Arc;
 
     use chorus::{
         env::{D25, EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader as Header},
@@ -44,6 +44,7 @@ mod fixtures {
     use monad_mcp_chorus_sim::MonadMvba;
     use monad_mcp_common::{
         Lane, Lanes, ProposalScope, Slot, TimestampDelta,
+        containers::FastHashMap,
         spec::KeyPair as _,
         stub::{NodeId, Stake},
     };
@@ -79,7 +80,7 @@ mod fixtures {
     }
 
     pub fn validator_data() -> Arc<ValidatorData> {
-        let valset: HashMap<_, _> = nodes()
+        let valset: FastHashMap<_, _> = nodes()
             .into_iter()
             .map(|node| (node, Stake::from(1u64)))
             .collect();
@@ -155,10 +156,13 @@ mod fixtures {
     }
 
     fn vote_pool<V: IsVote>(scope: V::Scope, vote: V, signers: &[NodeId]) -> VotePool<V> {
+        use monad_mcp_chorus::spec::validator::ValidatorData as _;
+
+        let validator_data = validator_data();
         let mut pool = VotePool::new(scope.clone());
         for node in signers {
             pool.add_vote(
-                *node,
+                validator_data.index_of(node).expect("a validator"),
                 VoteMsg::new_signed(scope.clone(), vote.clone(), &node.keypair()),
             );
         }

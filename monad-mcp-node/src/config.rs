@@ -17,7 +17,7 @@ use std::{collections::HashMap, fmt, net::SocketAddr, num::NonZeroU64, path::Pat
 
 use alloy_rlp::Encodable as _;
 use monad_mcp_chorus::ledger::BatchBuilder;
-use monad_mcp_common::{Timestamp, TimestampDelta, spec::KeyPair as _};
+use monad_mcp_common::{Timestamp, TimestampDelta, containers::FastHashMap, spec::KeyPair as _};
 use rand::SeedableRng as _;
 use rand_chacha::ChaCha8Rng;
 use serde::Deserialize;
@@ -176,8 +176,8 @@ impl NodeConfig {
     }
 
     fn validator_data(&self) -> ValidatorData {
-        let mut valset = HashMap::new();
-        let mut mapping = HashMap::new();
+        let mut valset = FastHashMap::new();
+        let mut mapping = FastHashMap::new();
         for validator in &self.validators {
             valset.insert(validator.node_id, Stake::from(validator.stake));
             mapping.insert(validator.node_id, validator.chorus_pubkey);

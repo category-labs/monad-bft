@@ -46,19 +46,39 @@ impl<S: Clone> Deserializable<S> for S {
 }
 
 pub mod validator {
-    use monad_mcp_common::spec as common_spec;
+    use monad_mcp_common::{
+        containers::{ValidatorIndex, ValidatorSet},
+        spec as common_spec,
+    };
 
+    // One epoch's validators. Each has a ValidatorIndex, dense from 0 in a
+    // stable order across all nodes, which addresses the validator in
+    // ValidatorSet and ValidatorMap. A NodeId is resolved to its index once,
+    // where a sender is checked against the set.
     #[expect(clippy::len_without_is_empty)]
     pub trait ValidatorData {
         type NodeId: common_spec::NodeId;
         type PubKey: common_spec::PubKey;
         type Stake: common_spec::Stake;
 
-        // iterate through the validators in a stable order across
-        // all nodes.
+        // in index order
         fn nodes(&self) -> impl Iterator<Item = &Self::NodeId>;
         fn len(&self) -> usize;
-        fn contains(&self, node_id: &Self::NodeId) -> bool;
+
+        // None if the node is not a validator
+        fn index_of(&self, node_id: &Self::NodeId) -> Option<ValidatorIndex>;
+
+        fn contains(&self, node_id: &Self::NodeId) -> bool {
+            self.index_of(node_id).is_some()
+        }
+
+        // the caller must guarantee that the index came from this
+        // validator data.
+        fn node_id(&self, index: ValidatorIndex) -> &Self::NodeId;
+
+        // the caller must guarantee that the index came from this
+        // validator data.
+        fn pubkey(&self, index: ValidatorIndex) -> &Self::PubKey;
 
         // the caller must guarantee that the node_id is in the valset.
         fn get_pubkey(&self, node_id: &Self::NodeId) -> &Self::PubKey;
@@ -66,21 +86,21 @@ pub mod validator {
         // the caller must guarantee that the node_id is in the valset.
         fn get_stake(&self, node_id: &Self::NodeId) -> &Self::Stake;
 
-        // the caller must guarantee that the nodes are all in the valset.
-        fn sum_stake<'a>(&self, nodes: impl IntoIterator<Item = &'a Self::NodeId>) -> Self::Stake
-        where
-            Self::NodeId: 'a;
+        // the caller must guarantee that the validators came from this
+        // validator data.
+        fn sum_stake(&self, validators: &ValidatorSet) -> Self::Stake;
 
         fn total_stake(&self) -> Self::Stake;
     }
 }
 
 pub mod vote {
-    use std::collections::{BTreeMap, BTreeSet};
-
     use alloy_rlp::{EMPTY_LIST_CODE, Encodable};
     use bytes::{BufMut, Bytes};
-    use monad_mcp_common::spec as common_spec;
+    use monad_mcp_common::{
+        containers::{ValidatorIndex, ValidatorSet},
+        spec as common_spec,
+    };
 
     // A namespace mixed into the bytes a signature covers, so a signature
     // over one message kind can never be read as another.
@@ -134,9 +154,7 @@ pub mod vote {
     type SigColSignature<SC> = <SC as SignatureCollection>::Signature;
     type SigColPubKey<SC> =
         <<SC as SignatureCollection>::Signature as common_spec::Signature>::PubKey;
-    type SigColNodeId<SC> = ValidatorNodeId<<SC as SignatureCollection>::ValidatorData>;
     type SigColValidatorData<SC> = <SC as SignatureCollection>::ValidatorData;
-    type ValidatorNodeId<VD> = <VD as super::validator::ValidatorData>::NodeId;
 
     // A collection of signatures on a common message.
     //
@@ -150,13 +168,15 @@ pub mod vote {
         // performance.
         type ValidatorData: super::validator::ValidatorData<PubKey = SigColPubKey<Self>>;
 
-        // The caller must ensure the nodes in sig_map are present in
-        // the validator data, and all signatures are well-formed
-        // (see Signature::is_well_formed).
-        fn aggregate(
-            sig_map: &BTreeMap<&ValidatorNodeId<Self::ValidatorData>, &Self::Signature>,
+        // The caller must ensure the indices come from the validator
+        // data and are distinct, and all signatures are well-formed (see
+        // Signature::is_well_formed).
+        fn aggregate<'a>(
+            sigs: impl IntoIterator<Item = (ValidatorIndex, &'a Self::Signature)>,
             validator_data: &Self::ValidatorData,
-        ) -> Self;
+        ) -> Self
+        where
+            Self::Signature: 'a;
 
         // Returns the complete set of signers who contributed to this
         // signature collection. Depending on the implementation, it
@@ -165,22 +185,13 @@ pub mod vote {
         //
         // Returns None in case where signature collection is
         // malformed or inconsistent with the validator data.
-        //
-        // Ordered sets, here and in verify: callers iterate signers to
-        // address messages, and their order must not depend on a hasher.
-        fn signers<'s>(
-            &'s self,
-            validator_data: &'s Self::ValidatorData,
-        ) -> Option<BTreeSet<&'s ValidatorNodeId<Self::ValidatorData>>>;
+        fn signers(&self, validator_data: &Self::ValidatorData) -> Option<ValidatorSet>;
 
         // invariant:
         //
-        // aggregate(sig_map).verify(data) == Some(_) iff all sigs are valid.
-        fn verify<'s>(
-            &'s self,
-            data: &[u8],
-            validator_data: &'s Self::ValidatorData,
-        ) -> Option<BTreeSet<&'s ValidatorNodeId<Self::ValidatorData>>>;
+        // aggregate(sigs).verify(data) == Some(_) iff all sigs are valid.
+        fn verify(&self, data: &[u8], validator_data: &Self::ValidatorData)
+        -> Option<ValidatorSet>;
     }
 
     pub trait VoteAggregation<'a, Stake>
@@ -197,7 +208,8 @@ pub mod vote {
 
         // The caller must guarantee that:
         //
-        // - all votes's NodeId are present in validator data
+        // - all votes' indices come from the validator data and are
+        //   distinct
         // - all signatures are well-formed
         // - summing all voter's stake does not overflow
         //
@@ -214,31 +226,25 @@ pub mod vote {
         //     // returned `sigcol` must be valid and consistent with its `signers`
         //     assert!(Some(signers) == sigcol.verify(data, validator_data));
         //
-        //     // `signers` are all in `votes`
-        //     assert!(signers.all(|signer| votes.contains_key(signer)));
+        //     // `signers` all cast one of `votes`
+        //     assert!(signers.is_subset(&votes.map(|(index, _)| index).collect()));
         //
         //     // the selected `signers` have combined stake strictly greater than `threshold`
-        //     assert!(signers.map(stake).sum() > threshold);
+        //     assert!(validator_data.sum_stake(&signers) > threshold);
         // }
-        //
-        // Simplified signature:
-        //
-        //     fn try_aggregate(
-        //         &mut self,
-        //         data: &[u8],
-        //         votes: BTreeMap<&NodeId, &Signature>,
-        //         target_stake: Stake,
-        //     ) -> Option<SignatureCollection>;
-        //
-        fn try_aggregate(
+        fn try_aggregate<'v>(
             &mut self,
             data: &[u8],
-            votes: BTreeMap<
-                &SigColNodeId<Self::SignatureCollection>,
-                &SigColSignature<Self::SignatureCollection>,
+            votes: impl IntoIterator<
+                Item = (
+                    ValidatorIndex,
+                    &'v SigColSignature<Self::SignatureCollection>,
+                ),
             >,
             target_stake: Stake,
-        ) -> Option<Self::SignatureCollection>;
+        ) -> Option<Self::SignatureCollection>
+        where
+            SigColSignature<Self::SignatureCollection>: 'v;
     }
 }
 

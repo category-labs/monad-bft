@@ -18,6 +18,7 @@ mod recovery;
 use std::collections::HashMap;
 
 use monad_mcp_chorus::spec::ProposalHeader as _;
+use monad_mcp_common::containers::ValidatorSet;
 use recovery::{Recovery, everything_missing};
 
 use super::{
@@ -27,7 +28,7 @@ use super::{
     runtime::{EpochHandle, Timing},
     types::{
         EquivCert, MissingHeaders, NodeId, ProposalDAEvent, ProposalId, SignedProposalHeader,
-        Timestamp, TimestampDelta,
+        Timestamp, TimestampDelta, ValidatorData,
     },
     util::shuffle_sends,
 };
@@ -219,7 +220,7 @@ impl ProposerRaptorcast {
 
     pub(crate) fn add_decoded_holders(
         &mut self,
-        node_ids: Vec<NodeId>,
+        holders: &ValidatorSet,
         pid: &ProposalId,
         now: Timestamp,
         epoch_handle: &EpochHandle,
@@ -230,7 +231,7 @@ impl ProposerRaptorcast {
         let Some(recovery) = self.pin.recovery_mut() else {
             return vec![];
         };
-        recovery.add_decoded_holders(node_ids, now);
+        recovery.add_decoded_holders(holders, now);
         self.poll_chunk_requests(now, epoch_handle)
     }
 
@@ -266,7 +267,7 @@ impl ProposerRaptorcast {
         let Some(recovery) = self.pin.recovery_mut() else {
             return vec![];
         };
-        recovery.pull(missing, now)
+        recovery.pull(missing, now, &epoch_handle.validator_data)
     }
 
     fn missing_chunks(
@@ -283,7 +284,14 @@ impl ProposerRaptorcast {
         }
     }
 
-    pub(crate) fn pull_header(&self, missing: MissingHeaders) -> Vec<(NodeId, ChunkRequest)> {
+    // `validator_data` is the epoch's that the voters were drawn from
+    pub(crate) fn pull_header(
+        &self,
+        missing: MissingHeaders,
+        validator_data: &ValidatorData,
+    ) -> Vec<(NodeId, ChunkRequest)> {
+        use monad_mcp_chorus::spec::validator::ValidatorData as _;
+
         let mut subset = match self.pin {
             // heuristic, HeaderOnly alone is also correct.
             Pin::Unseen => ChunksSubset::All,
@@ -295,7 +303,12 @@ impl ProposerRaptorcast {
                 continue;
             }
 
-            let mut voters: Vec<NodeId> = voters.into_iter().collect();
+            // in index order, which the shuffle below starts from
+            let mut voters: Vec<NodeId> = voters
+                .iter()
+                .map(|voter| *validator_data.node_id(voter))
+                .collect();
+
             shuffle_sends(&mut voters, &pid, &self.self_id);
             for voter in voters {
                 let request = ChunkRequest {
@@ -326,8 +339,6 @@ impl ProposerRaptorcast {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
-
     use super::{
         super::{
             chunk::{ChunkRequestType, ChunksSubset, WireChunkId},
@@ -340,6 +351,20 @@ mod tests {
         },
         *,
     };
+
+    // the validators of the epoch with these dummy ids
+    fn validators<const N: usize>(epoch_handle: &EpochHandle, ids: [u64; N]) -> ValidatorSet {
+        use monad_mcp_chorus::spec::validator::ValidatorData as _;
+
+        ids.into_iter()
+            .map(|id| {
+                epoch_handle
+                    .validator_data
+                    .index_of(&NodeId::dummy(id))
+                    .expect("a validator")
+            })
+            .collect()
+    }
 
     fn decoded_pids(instance: &mut ProposerRaptorcast) -> Vec<ProposalId> {
         let mut pids = Vec::new();
@@ -666,8 +691,8 @@ mod tests {
         let mut instance =
             ProposerRaptorcast::new(NodeId::dummy(0), epoch_handle.self_id, NOW, timing());
         instance.ingest(group(&chunks[1..2]), &author(), &epoch_handle, &mut egress);
-        let holders = vec![NodeId::dummy(2)];
-        instance.add_decoded_holders(holders, &header.pid(), NOW, &epoch_handle);
+        let holders = validators(&epoch_handle, [2]);
+        instance.add_decoded_holders(&holders, &header.pid(), NOW, &epoch_handle);
         let pulled = instance.poll_chunk_requests(after(200), &epoch_handle);
 
         let my_chunks = ChunkRequest {
@@ -715,9 +740,9 @@ mod tests {
         assert_eq!(asked_holder(pulled), vec![your_chunks.clone()]);
 
         // the hint asks for our chunks at once, the owner pull waits
-        let holders = vec![NodeId::dummy(2)];
+        let holders = validators(&epoch_handle, [2]);
         let hinted =
-            instance.add_decoded_holders(holders, &header.pid(), after(150), &epoch_handle);
+            instance.add_decoded_holders(&holders, &header.pid(), after(150), &epoch_handle);
         assert_eq!(asked_holder(hinted), vec![my_chunks.clone()]);
         assert!(asked_holder(instance.poll_chunk_requests(after(200), &epoch_handle)).is_empty());
 
@@ -736,10 +761,9 @@ mod tests {
 
         let instance =
             ProposerRaptorcast::new(NodeId::dummy(0), epoch_handle.self_id, NOW, timing());
-        let voters = BTreeSet::from([NodeId::dummy(2), NodeId::dummy(3)]);
-        let missing =
-            MissingHeaders::from([(header_a.pid(), voters.clone()), (header_b.pid(), voters)]);
-        let pulled = instance.pull_header(missing);
+        let voters = validators(&epoch_handle, [2, 3]);
+        let missing = MissingHeaders::from([(header_a.pid(), voters), (header_b.pid(), voters)]);
+        let pulled = instance.pull_header(missing, &epoch_handle.validator_data);
 
         let all_of_a = ChunkRequest::all(header_a.pid(), ChunkRequestType::YourChunks);
         let header_of_b = ChunkRequest {
@@ -772,10 +796,9 @@ mod tests {
             &mut egress,
         );
 
-        let voters = BTreeSet::from([NodeId::dummy(2), NodeId::dummy(3)]);
-        let missing =
-            MissingHeaders::from([(header_a.pid(), voters.clone()), (header_b.pid(), voters)]);
-        let pulled = instance.pull_header(missing);
+        let voters = validators(&epoch_handle, [2, 3]);
+        let missing = MissingHeaders::from([(header_a.pid(), voters), (header_b.pid(), voters)]);
+        let pulled = instance.pull_header(missing, &epoch_handle.validator_data);
 
         // a is known, so only b is asked for
         let header_alone = ChunkRequest {
@@ -829,8 +852,8 @@ mod tests {
         let mut instance =
             ProposerRaptorcast::new(NodeId::dummy(0), epoch_handle.self_id, NOW, timing());
         instance.pin_final(Some(header.pid()));
-        let holders = vec![NodeId::dummy(2)];
-        let mut asked = instance.add_decoded_holders(holders, &header.pid(), NOW, &epoch_handle);
+        let holders = validators(&epoch_handle, [2]);
+        let mut asked = instance.add_decoded_holders(&holders, &header.pid(), NOW, &epoch_handle);
 
         // owners are pulled from Delta after the deadline, even once committed
         assert!(instance.poll_chunk_requests(NOW, &epoch_handle).is_empty());
