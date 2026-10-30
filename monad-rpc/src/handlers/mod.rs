@@ -13,8 +13,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::collections::HashSet;
+
 use actix_web::{web, HttpRequest, HttpResponse};
-use futures::StreamExt;
+use alloy_consensus::transaction::SignerRecoverable;
+use alloy_eips::Decodable2718;
+use alloy_primitives::Address;
+use futures::{future::try_join_all, StreamExt};
+use itertools::Itertools;
 use monad_tracing_timing::TimingSpanExtension;
 use monad_triedb_utils::triedb_env::Triedb;
 use serde_json::value::RawValue;
@@ -22,12 +28,12 @@ use tracing::{debug, trace_span, Instrument, Span};
 use tracing_actix_web::RootSpan;
 
 use self::{
-    access::DomainPolicy,
+    access::{DomainCaller, DomainPolicy},
     eth::{
         account::{MonadEthGetBalanceParams, MonadEthGetTransactionCountParams},
         call::{MonadCreateAccessListParams, MonadEthCallParams},
         gas::{MonadEthEstimateGasParams, MonadEthFillTransactionParams},
-        txn::MonadEthGetLogsParams,
+        txn::{MonadEthGetLogsParams, MonadEthSendRawTransactionSyncParams},
     },
     txpool::TxPoolStatusByAddressParams,
 };
@@ -76,7 +82,7 @@ use crate::{
     },
     middleware::TimingRequestId,
     types::{
-        eth_json::serialize_result,
+        eth_json::{serialize_result, MonadTransactionReceipt},
         json_serialized_len::JsonSerializedLen,
         jsonrpc::{
             serialize_with_size_limit, ErrorCode, JsonRpcError, JsonRpcResult, JsonRpcResultExt,
@@ -97,7 +103,7 @@ use monad_chain_config::{
     ETHEREUM_MAINNET_CHAIN_ID, HIVE_CHAIN_ID, MONAD_DEVNET_CHAIN_ID, MONAD_MAINNET_CHAIN_ID,
     MONAD_TESTNET_CHAIN_ID,
 };
-use monad_eth_types::{domain_for_chain_id, WrongChainId};
+use monad_eth_types::{domain_for_chain_id, EthTxEnvelope, WrongChainId};
 use monad_ethcall::ChainId;
 
 pub(crate) fn parse_ethcall_chain_id(chain_id: u64) -> JsonRpcResult<ChainId> {
@@ -571,11 +577,18 @@ async fn eth_sendRawTransactionSync(
     app_state: &MonadRpcResources,
     params: RequestParams<'_>,
 ) -> Result<Box<RawValue>, JsonRpcError> {
+    let params: MonadEthSendRawTransactionSyncParams =
+        serde_json::from_str(params.get()).invalid_params()?;
+    if let Some(caller) = &app_state.caller {
+        // Checked before submission; an undecodable transaction fails in the method itself.
+        if let Ok(tx) = EthTxEnvelope::decode_2718_exact(&params.hex_tx.0) {
+            caller.require_sender(Some(tx), |tx| tx.recover_signer().unwrap_or_default())?;
+        }
+    }
     let txpool_bridge_client = app_state.txpool_bridge_client.as_ref().method_not_found()?;
     let event_server_client = app_state.event_server_client.as_ref().method_not_found()?;
-    let params = serde_json::from_str(params.get()).invalid_params()?;
 
-    monad_eth_sendRawTransactionSync(
+    let receipt = monad_eth_sendRawTransactionSync(
         txpool_bridge_client,
         event_server_client,
         params,
@@ -586,8 +599,8 @@ async fn eth_sendRawTransactionSync(
         app_state.eth_send_raw_transaction_sync_default_timeout_ms,
         app_state.eth_send_raw_transaction_sync_max_timeout_ms,
     )
-    .await
-    .map(serialize_result)?
+    .await?;
+    serialize_result(restrict_receipt(app_state, Some(receipt)).await?)
 }
 
 #[allow(non_snake_case)]
@@ -660,7 +673,13 @@ async fn eth_getLogs(
 ) -> Result<Box<RawValue>, JsonRpcError> {
     let params: MonadEthGetLogsParams = serde_json::from_str(params.get()).invalid_params()?;
     if let Some(caller) = &app_state.caller {
-        caller.require_logs_filter_pins_signer(&params.filters)?;
+        let readable = if caller.pins_signer(&params.filters) {
+            HashSet::new()
+        } else {
+            log_readable_contracts(app_state, caller, params.filters.address.iter().copied())
+                .await?
+        };
+        caller.require_logs_filter_access(&params.filters, &readable)?;
     }
     let data_provider = app_state.data_provider.as_ref().method_not_found()?;
     monad_eth_getLogs(
@@ -954,11 +973,70 @@ async fn eth_getTransactionReceipt(
         params,
     )
     .await?;
-    let receipt = match &app_state.caller {
-        Some(caller) => caller.require_sender(receipt, |receipt| receipt.0.from)?,
-        None => receipt,
+    serialize_result(restrict_receipt(app_state, receipt).await?)
+}
+
+/// Contracts looked up per request; the rest count as unreadable.
+const MAX_LOG_ACCESS_LOOKUPS: usize = 32;
+
+/// Contracts among `contracts` whose every log `caller` may read on the route's domain.
+async fn log_readable_contracts(
+    app_state: &MonadRpcResources,
+    caller: &DomainCaller,
+    contracts: impl IntoIterator<Item = Address>,
+) -> Result<HashSet<Address>, JsonRpcError> {
+    let (Some(domain), Some(spoke), Some(data_provider), false) = (
+        app_state.domain,
+        app_state.domain_spoke,
+        &app_state.data_provider,
+        caller.operator,
+    ) else {
+        return Ok(HashSet::new());
     };
-    serialize_result(receipt)
+    let contracts: Vec<Address> = contracts
+        .into_iter()
+        .unique()
+        .take(MAX_LOG_ACCESS_LOOKUPS)
+        .collect();
+    let readable = try_join_all(contracts.iter().map(|&contract| {
+        access::is_log_reader(
+            &*data_provider.triedb_env,
+            domain,
+            spoke,
+            contract,
+            caller.signer,
+        )
+    }))
+    .await
+    .map_err(JsonRpcError::internal_error)?;
+    Ok(contracts
+        .into_iter()
+        .zip(readable)
+        .filter_map(|(contract, readable)| readable.then_some(contract))
+        .collect())
+}
+
+/// On domain routes a receipt is served to its sender only, with the logs it may not read
+/// removed.
+async fn restrict_receipt(
+    app_state: &MonadRpcResources,
+    receipt: Option<MonadTransactionReceipt>,
+) -> Result<Option<MonadTransactionReceipt>, JsonRpcError> {
+    let Some(caller) = &app_state.caller else {
+        return Ok(receipt);
+    };
+    let mut receipt = caller.require_sender(receipt, |receipt| receipt.0.from)?;
+    if let Some(MonadTransactionReceipt(receipt)) = receipt.as_mut() {
+        let unpinned = receipt
+            .inner
+            .logs()
+            .iter()
+            .filter(|log| !caller.may_read_log(log, &HashSet::new()))
+            .map(|log| log.address());
+        let readable = log_readable_contracts(app_state, caller, unpinned).await?;
+        caller.redact_receipt(receipt, &readable);
+    }
+    Ok(receipt)
 }
 
 #[allow(non_snake_case)]
@@ -1149,7 +1227,6 @@ impl EnabledMethod {
             | EnabledMethod::eth_maxPriorityFeePerGas
             | EnabledMethod::eth_feeHistory
             | EnabledMethod::eth_sendRawTransaction
-            | EnabledMethod::eth_sendRawTransactionSync
             | EnabledMethod::net_version
             | EnabledMethod::web3_clientVersion => DomainPolicy::Open,
             // The dispatchers above scope these to the caller's own account.
@@ -1157,6 +1234,7 @@ impl EnabledMethod {
             | EnabledMethod::eth_getTransactionCount
             | EnabledMethod::eth_getTransactionByHash
             | EnabledMethod::eth_getTransactionReceipt
+            | EnabledMethod::eth_sendRawTransactionSync
             | EnabledMethod::eth_call
             | EnabledMethod::eth_estimateGas
             | EnabledMethod::eth_createAccessList

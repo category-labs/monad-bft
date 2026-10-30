@@ -271,7 +271,7 @@ async fn submit_to_txpool(
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct MonadEthSendRawTransactionSyncParams {
-    hex_tx: UnformattedData,
+    pub(crate) hex_tx: UnformattedData,
     #[serde(default)]
     timeout_ms: Option<u64>,
 }

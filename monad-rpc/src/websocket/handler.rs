@@ -728,6 +728,8 @@ mod tests {
             domain: None,
             caller: None,
             domain_operators: Default::default(),
+            domain_spokes: Default::default(),
+            domain_spoke: None,
             data_provider: None,
             event_server_client: Some(event_server_client),
             batch_request_limit: 5,

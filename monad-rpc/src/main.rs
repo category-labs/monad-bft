@@ -424,6 +424,7 @@ async fn main() -> std::io::Result<()> {
         rpc_comparator.clone(),
         args.feehistory_max_concurrent_requests,
         domain_operators,
+        domain_spokes,
     );
 
     // Configure the websocket server if enabled

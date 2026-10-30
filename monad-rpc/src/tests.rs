@@ -19,7 +19,9 @@ use actix_web::{
     dev::{Service, ServiceResponse},
     test, web, App, Error,
 };
+use alloy_eips::Encodable2718;
 use alloy_signer_local::PrivateKeySigner;
+use monad_eth_testutil::{make_domain_legacy_tx, make_representable_domain};
 use serde_json::{json, Value};
 use test_case::test_case;
 use tracing_actix_web::TracingLogger;
@@ -50,6 +52,8 @@ pub async fn init_server(
             DOMAIN_CHAIN_ID,
             std::collections::HashSet::from([operator_signer().address()]),
         )])),
+        domain_spokes: Default::default(),
+        domain_spoke: None,
         data_provider: None,
         event_server_client: None,
         batch_request_limit: 5,
@@ -286,6 +290,39 @@ async fn domain_route_requires_log_filter_pinned_to_signer() {
 
     let resp = call_domain(&app, Some(operator_token()), "eth_getLogs", unpinned).await;
     assert_eq!(error_code(resp), passed_access_control());
+}
+
+#[actix_web::test]
+async fn domain_route_submits_sync_transactions_from_their_sender_only() {
+    let app = init_server().await;
+    let tx = make_domain_legacy_tx(
+        make_representable_domain(1),
+        alloy_primitives::B256::repeat_byte(0x22),
+        1_000,
+        21_000,
+        0,
+        0,
+    );
+    let params = json!([format!("0x{}", hex::encode(tx.encoded_2718()))]);
+    let other = PrivateKeySigner::from_bytes(&alloy_primitives::B256::repeat_byte(0x44)).unwrap();
+
+    let resp = call_domain(
+        &app,
+        Some(user_token()),
+        "eth_sendRawTransactionSync",
+        params.clone(),
+    )
+    .await;
+    assert_eq!(error_code(resp), passed_access_control());
+
+    let resp = call_domain(
+        &app,
+        Some(access_token(&other, DOMAIN_CHAIN_ID)),
+        "eth_sendRawTransactionSync",
+        params,
+    )
+    .await;
+    assert_eq!(error_code(resp), forbidden());
 }
 
 #[actix_web::test]

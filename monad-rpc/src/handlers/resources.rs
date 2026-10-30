@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use actix::{Actor, Context};
 use actix_web::{
@@ -45,6 +45,10 @@ pub struct MonadRpcResources {
     pub caller: Option<DomainCaller>,
     /// Operator accounts of each private domain, keyed by domain chain id.
     pub domain_operators: std::sync::Arc<DomainOperators>,
+    /// DomainSpoke of each private domain, keyed by domain chain id.
+    pub domain_spokes: std::sync::Arc<HashMap<u64, Address>>,
+    /// DomainSpoke of the route's domain, which decides who may read a contract's logs.
+    pub domain_spoke: Option<Address>,
     pub data_provider: Option<DataProvider<TriedbEnv>>,
     pub event_server_client: Option<EventServerClient>,
     pub batch_request_limit: u16,
@@ -86,6 +90,7 @@ impl MonadRpcResources {
         rpc_comparator: Option<RpcComparator>,
         feehistory_max_concurrent_requests: u32,
         domain_operators: DomainOperators,
+        domain_spokes: HashMap<u64, Address>,
     ) -> Self {
         Self {
             txpool_bridge_client,
@@ -95,6 +100,8 @@ impl MonadRpcResources {
             domain: None,
             caller: None,
             domain_operators: std::sync::Arc::new(domain_operators),
+            domain_spokes: std::sync::Arc::new(domain_spokes),
+            domain_spoke: None,
             data_provider,
             event_server_client,
             batch_request_limit,
@@ -127,6 +134,7 @@ impl MonadRpcResources {
         let mut resources = self.clone();
         resources.chain_id = chain_id;
         resources.domain = Some(domain);
+        resources.domain_spoke = self.domain_spokes.get(&chain_id).copied();
         resources.caller = Some(DomainCaller::new(
             signer,
             self.domain_operators.get(&chain_id),
