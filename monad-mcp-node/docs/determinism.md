@@ -53,7 +53,7 @@ Containers whose order reached outputs, and the related DA state:
 | source | resolution |
 |---|---|
 | `Dissemination.to` (DA `egress.rs`), iterated by the router's DA output handler | a `Vec<NodeId>` in send order (see below) |
-| rebroadcast targets (DA `instance_rc`) | no set: a chunk goes to the nodes of the instance's send order that `ChunkRouting::is_rebroadcast_target` admits |
+| rebroadcast targets (DA `instance_rc`) | no set: `ChunkRouting::rebroadcast_targets` filters the instance's send order down to the chunk's targets |
 | `unassigned_nodes`, the header-only first-hop recipients | a `Vec<NodeIndex>` in index order |
 | `ProposalEnvelope::group` (DA `chunk.rs`) | a short list, envelopes in order of each header's first chunk |
 | `MissingChunks`, `everything_missing` (pull recovery to owners) | a `Vec<(NodeId, ChunksSubset)>` in assignment (or validator) order, grouped in a `Vec` indexed by `NodeIndex`; requests in send order |
@@ -77,6 +77,16 @@ same in every run and process, and pinned by a test so that it also stays the
 same across releases. The first hop already follows the assignment's holder
 order, which S11 and D33 shuffle per proposal. This stands in for a send
 strategy (prioritized sends) still to be designed.
+
+Drawing a pseudo-random order: use an explicit keyed permutation (a seeded
+shuffle, or sorting by a seeded hash of each element), not the iteration
+order of a hash container. Even with a fixed hasher seed, hashbrown lays its
+table out differently on x86 (16-byte probe groups) and arm (8-byte groups)
+and across versions, so its order is not portable. The permutation costs one
+pass over the elements; where the list is materialized anyway (the requests
+DA builds) the shuffle is in place and needs no extra buffer, and where the
+same order is reused (a raptorcast instance's send order) it is computed once
+and filtered per use.
 
 Hash containers kept, lookup or membership only: DA `authenticated_headers`,
 `ProposerRaptorcast.tracked`; chorus availability
