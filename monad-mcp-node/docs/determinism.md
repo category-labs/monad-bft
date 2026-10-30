@@ -22,16 +22,24 @@ from config or the keystore.
 - No `thread_rng`, `rand::random`, `OsRng` or `from_entropy`: take an RNG or
   seed from the config or the constructor.
 - No output (messages, their order, certificates, requests) may depend on
-  the iteration order of a std `HashMap`/`HashSet`. std hashers are seeded
-  per process and per instance, and hashbrown lays tables out differently on
-  arm and x86 (16- vs 8-byte probe groups), so even a fixed seed does not give
-  a portable order. Pick the container for how it is used: a `Vec` for lists
-  that are only iterated, a `Vec` indexed by `NodeIndex` for dense per-node
-  state, an ordered container where order matters, a hash container only for
-  lookups. `clippy::iter_over_hash_type` is denied in these crates; it catches `for`
-  loops over hash containers, not iterator chains (`.iter().map(..).collect()`),
-  which the determinism test has to catch. Mark a justified exception with
-  `#[allow]` and a reason.
+  the iteration order of a hash table. Hashers are seeded per process (and
+  std's per instance), and hashbrown lays tables out differently on arm and
+  x86 (16- vs 8-byte probe groups), so even a fixed seed does not give a
+  portable order. Pick the container for how it is used, from
+  `monad_mcp_common::containers` (its module docs say which when):
+  `ValidatorSet`/`ValidatorMap` for validators of an epoch, an `IndexVec` for
+  dense state over another index (DA's `ByNode`), a `Vec` for lists that are
+  only iterated, a `BTreeMap`/`BTreeSet` where the order means something, and
+  `FastHashMap`/`FastHashSet` (or `SipHashMap`/`SipHashSet` for keys an
+  adversary chooses) only for lookups; these offer iteration only as
+  `*_unordered`. std's `HashMap` and `HashSet` are disallowed by clippy
+  (`disallowed-types` in each crate's `clippy.toml`).
+  `clippy::iter_over_hash_type` is denied too; it catches `for` loops over
+  hash containers, including over `*_unordered`, but not iterator chains
+  (`.iter_unordered().map(..).collect()`), which the determinism test has to
+  catch. Every fast hash map is seeded at random per process, so that test
+  sees any order that leaks. Mark a justified exception with `#[allow]` and a
+  reason.
 - No wall-clock reads (`Instant::now`, `SystemTime::now`): take `now` from
   the caller, i.e. the injected clock.
 
@@ -58,42 +66,46 @@ Containers whose order reached outputs, and the related DA state:
 | `ProposalEnvelope::group` (DA `chunk.rs`) | a short list, envelopes in order of each header's first chunk |
 | `MissingChunks`, `everything_missing` (pull recovery to owners) | a `Vec<(NodeId, ChunksSubset)>` in assignment (or validator) order, grouped in a `Vec` indexed by `NodeIndex`; requests in send order |
 | `ServingTracker.served` | a `Vec` indexed by `NodeIndex` |
-| `Recovery.decoded_holders` (pull recovery of our own chunks) | `BTreeSet<NodeId>`, requests in send order |
-| `SignatureCollection::signers`/`verify` and the `aggregate`/`try_aggregate` inputs (chorus `spec.rs`, stub env) | `BTreeSet`/`BTreeMap`; their signers address header pulls and decoded-holder hints |
-| `MissingHeaders` voters (header pull fan-out) | `BTreeSet<NodeId>`; DA pulls in send order |
-| `VotePool` buckets, voters and votes (chorus `types.rs`); a tally's bucket order decides weak QC order, timeout certificate groups, header-wait and fallback-wait lists | a tally sorts its buckets by the bytes each vote signs (canonical, independent of arrival); the pool keeps them in a short `Vec` in first-vote order, voters in a `BTreeSet`, votes in a `BTreeMap` |
+| `Recovery.decoded_holders` (pull recovery of our own chunks) | the author plus a `ValidatorSet` of hinted holders, listed in index order; requests in send order |
+| `SignatureCollection::signers`/`verify` and the `aggregate`/`try_aggregate` inputs (chorus `spec.rs`, stub env) | `signers`/`verify` return a `ValidatorSet`; aggregation takes `(ValidatorIndex, &Signature)` pairs; their signers address header pulls and decoded-holder hints |
+| `MissingHeaders` voters (header pull fan-out) | `ValidatorSet`; DA pulls in send order |
+| `VotePool` buckets, voters and votes (chorus `types.rs`); a tally's bucket order decides weak QC order, timeout certificate groups, header-wait and fallback-wait lists | a tally sorts its buckets by the bytes each vote signs (canonical, independent of arrival); the pool keeps them in a short `Vec` in first-vote order, voters in a `ValidatorSet`, votes in a `ValidatorMap` |
+| timeout certificate signer check (MVBA `certificates.rs`) | `ValidatorSet`, disjointness per group |
 
-The validator-keyed sets and maps above (`decoded_holders`, signer sets, the
-aggregation input, `MissingHeaders` voters, `VotePool` voters and votes) are
-ordered containers for now. They are meant to move to validator-indexed
-containers (a bitset for sets, a map indexed by validator position) behind
-an abstraction keyed by a `ValidatorIndex`, in a separate change.
+Validators are addressed by `ValidatorIndex` from the point a sender is
+checked against the validator set (`Chorus::handle_message`, and
+`MvbaRuntime::receive` for a standalone MVBA). The stub indexes validators in
+`NodeId` order, so iterating a `ValidatorSet` in index order lists the same
+nodes in the same order as the `BTreeSet<NodeId>` it replaced.
 
 Send order: an ordered container alone would send to low node ids first,
 every time. DA instead shuffles a sender's rebroadcasts, recovery requests
-and header pulls for one proposal with `util::shuffle_sends`: ChaCha20 seeded
-from Blake3 of (pid, sender). That is uniform over proposals and senders, the
-same in every run and process, and pinned by a test so that it also stays the
-same across releases. The first hop already follows the assignment's holder
-order, which S11 and D33 shuffle per proposal. This stands in for a send
-strategy (prioritized sends) still to be designed.
+and header pulls for one proposal with `util::shuffle_sends`, an `OrderKey`
+(ChaCha20 seeded from Blake3 of a domain tag and the RLP of pid and sender).
+That is uniform over proposals and senders, the same in every run and
+process, and pinned by a test so that it also stays the same across
+releases. The first hop already follows the assignment's holder order, which
+S11 and D33 shuffle per proposal. This stands in for a send strategy
+(prioritized sends) still to be designed.
 
-Drawing a pseudo-random order: use an explicit keyed permutation (a seeded
-shuffle, or sorting by a seeded hash of each element), not the iteration
-order of a hash container. Even with a fixed hasher seed, hashbrown lays its
-table out differently on x86 (16-byte probe groups) and arm (8-byte groups)
-and across versions, so its order is not portable. The permutation costs one
-pass over the elements; where the list is materialized anyway (the requests
-DA builds) the shuffle is in place and needs no extra buffer, and where the
-same order is reused (a raptorcast instance's send order) it is computed once
-and filtered per use.
+Drawing a pseudo-random order: use `monad_mcp_common::containers::OrderKey`,
+an explicit keyed permutation, with a domain tag of its own; never the
+iteration order of a hash container. Even with a fixed hasher seed,
+hashbrown lays its table out differently on x86 (16-byte probe groups) and
+arm (8-byte groups) and across versions, so its order is not portable. The
+permutation costs one pass over the elements; where the list is materialized
+anyway (the requests DA builds) the shuffle is in place and needs no extra
+buffer, and where the same order is reused (a raptorcast instance's send
+order) it is computed once and filtered per use.
 
-Hash containers kept, lookup or membership only: DA `authenticated_headers`,
-`ProposerRaptorcast.tracked`; chorus availability
-`headers`/`decoded`/`invalid`, MVBA `BlockStore` and its gc set, timeout
-certificate checks, stub `ValidatorData` maps (enumerated through its sorted
-list); node finalization `resolved`, mempool `pending`/`recent_set`;
-chorus-sim's per-node logs.
+Hash containers, lookup or membership only, all `FastHashMap`/`FastHashSet`
+unless noted: DA `authenticated_headers`, `ProposerRaptorcast.tracked`; chorus
+availability `headers`/`decoded`/`invalid`, MVBA `BlockStore` and its gc set,
+the timeout certificate's distinct votes, the stub `ValidatorData`'s
+`NodeId -> ValidatorIndex` map (stakes, pubkeys and node ids are in
+index-ordered `IndexVec`s); node finalization `resolved`, the config and UDP
+peer maps; chorus-sim's per-node logs. Mempool `pending`/`recent_set` are
+`SipHashSet`s, since senders choose the tx hashes.
 
 Wall clock:
 
@@ -102,9 +114,11 @@ Wall clock:
 | `LedgerFollower` rescan timer, `Instant::now` (chorus `ledger/store.rs`) | `poll` and `follow_from_now` take `now`; the rpc's `LedgerWatch` passes `Instant::now()` |
 
 Outside the simulated path, unchanged: the production `Clock` and
-`AsyncNode`, log timestamps (`logging.rs`), the UDP network's peer map, the
-swarm example and the UDP tests; `monad-mcp-rpc` and `monad-mcp-explorer`
-(client tooling).
+`AsyncNode`, log timestamps (`logging.rs`), the UDP network's broadcast over
+its peer map, the swarm example and the UDP tests; `monad-mcp-rpc` and
+`monad-mcp-explorer` (client tooling, not under the Cadence lints; rpc takes
+the node's peer map as a `FastHashMap`).
+
 
 Stable hashing: the stub `ProposalId::pid` and stub signatures digest their
 input with `monad_mcp_common::stub::noncrypto_digest` (rapidhash v3, over the

@@ -25,6 +25,8 @@
 //! x86 and arm (hashbrown's probe groups) and across versions. Iteration is
 //! therefore only offered under `*_unordered` names, for order-independent
 //! uses such as a sum or a membership test of all elements.
+//! `clippy::iter_over_hash_type` still flags a `for` loop over them.
+
 // the wrappers are the one place the std types are named
 #![allow(clippy::disallowed_types)]
 
