@@ -16,11 +16,7 @@
 //! A sync `Node` as a monad-sim process, and the checks the scenarios
 //! share.
 
-use std::{
-    collections::BTreeMap,
-    hash::{DefaultHasher, Hash as _, Hasher as _},
-    net::SocketAddr,
-};
+use std::{collections::BTreeMap, net::SocketAddr};
 
 use monad_mcp_common::{Lanes, Slot, Timestamp, TimestampDelta};
 use monad_mcp_node::{
@@ -36,6 +32,7 @@ use monad_mcp_node::{
 };
 use monad_sim::{CancelToken, Ctx, Handle, StepLabel, Time};
 use monad_sim_swarm::{Net, SimClient, Swarm};
+use rapidhash::v3::{DEFAULT_RAPID_SECRETS, RapidStreamHasherV3, rapidhash_v3};
 
 pub const DELTA: TimestampDelta = TimestampDelta::from_millis(200);
 pub const SLOT_INTERVAL: TimestampDelta = TimestampDelta::from_millis(100);
@@ -63,8 +60,9 @@ pub struct SimNode {
     id: NodeId,
     node: Box<dyn Component<Input = NodeInbound, Output = NodeOutput>>,
     finalized: BTreeMap<Slot, Pattern>,
-    // every message delivered to this node, with its time, in delivery order
-    deliveries: DefaultHasher,
+    // hashes every message delivered to this node, with its time, in
+    // delivery order
+    delivery_hasher: RapidStreamHasherV3<'static>,
     // the one live timer step, at the node's last polled next_due
     due_alarm: Option<(Time, CancelToken)>,
     me: Option<Handle<Self>>,
@@ -80,7 +78,7 @@ impl SimNode {
             id,
             node: Box::new(node),
             finalized: BTreeMap::new(),
-            deliveries: DefaultHasher::new(),
+            delivery_hasher: RapidStreamHasherV3::new(&DEFAULT_RAPID_SECRETS),
             due_alarm: None,
             me: None,
             net: None,
@@ -165,7 +163,12 @@ impl SimNode {
             NodeMessage::ChunkRequest(bytes) => (2, bytes),
             NodeMessage::Tx(bytes) => (3, bytes),
         };
-        (at.0, from, kind, bytes.as_ref()).hash(&mut self.deliveries);
+        let hasher = &mut self.delivery_hasher;
+        hasher.write(&at.0.to_le_bytes());
+        hasher.write(&u64::from(from).to_le_bytes());
+        hasher.write(&[kind]);
+        hasher.write(&(bytes.len() as u64).to_le_bytes());
+        hasher.write(bytes);
     }
 
     // every log line of a step names its node
@@ -198,14 +201,7 @@ impl SimClient for SimNode {
 
 // a node's seed: a function of the simulation seed and the node id
 pub fn node_seed(seed: u64, id: u64) -> u64 {
-    // splitmix64's finalizer, stable across toolchains unlike std's hashers
-    fn mix(mut z: u64) -> u64 {
-        z = z.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        z ^ (z >> 31)
-    }
-    mix(seed ^ mix(id))
+    rapidhash_v3(&[seed.to_le_bytes(), id.to_le_bytes()].concat())
 }
 
 // validator `id` of `validators`, seeded from the simulation seed
@@ -249,16 +245,29 @@ pub fn node_config(seed: u64, id: u64, validators: u64) -> NodeConfig {
 }
 
 // a digest of the run: per node, the finalized history and every delivered
-// message with its time. DefaultHasher::new() has fixed keys, so the digest is
-// comparable across processes of the same build.
+// message with its time. Hashes explicit bytes with rapidhash v3, so the
+// digest is the same on every platform and release.
 pub fn run_digest(swarm: &Swarm<SimNode>) -> u64 {
-    let mut digest = DefaultHasher::new();
+    let mut hasher = RapidStreamHasherV3::new(&DEFAULT_RAPID_SECRETS);
     for id in swarm.node_ids() {
         swarm.with_node(&id, |node| {
-            (id, &node.finalized, node.deliveries.finish()).hash(&mut digest);
+            hasher.write(&u64::from(id).to_le_bytes());
+            for (slot, pattern) in &node.finalized {
+                hasher.write(&slot.0.to_le_bytes());
+                for lane in pattern.lanes() {
+                    match pattern.get(usize::from(lane)).expect("in range") {
+                        Some(pid) => {
+                            hasher.write(&[1]);
+                            hasher.write(pid.as_bytes());
+                        }
+                        None => hasher.write(&[0]),
+                    }
+                }
+            }
+            hasher.write(&node.delivery_hasher.finish().to_le_bytes());
         });
     }
-    digest.finish()
+    hasher.finish()
 }
 
 // every slot below the horizon finalized everywhere, with agreed-upon pattern
