@@ -7,6 +7,11 @@ edition = "2024"
 alloy-rlp = { workspace = true, features = ["derive"] }
 bytes = { workspace = true }
 derive_more = { workspace = true, features = ["from", "sum", "add", "into"] }
+rapidhash = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+
+[lints.clippy]
+# outputs must not depend on hash order; see monad-mcp-node/docs/determinism.md
+iter_over_hash_type = "deny"

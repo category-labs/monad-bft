@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet},
     hash::Hash,
 };
 
@@ -60,8 +60,11 @@ where
     V: IsVote,
 {
     scope: <V as IsVote>::Scope,
-    buckets: HashMap<V, HashSet<NodeId>>,
-    votes: HashMap<NodeId, Signature>,
+    // each distinct vote with its voters, in the order the vote was first
+    // cast; a tally orders them canonically. Usually one to three, never more
+    // than the voters (an empty bucket is dropped), so a linear search.
+    buckets: Vec<(V, BTreeSet<NodeId>)>,
+    votes: BTreeMap<NodeId, Signature>,
 }
 
 impl<V> VotePool<V>
@@ -71,8 +74,8 @@ where
     pub fn new(scope: <V as IsVote>::Scope) -> Self {
         Self {
             scope,
-            buckets: HashMap::new(),
-            votes: HashMap::new(),
+            buckets: Vec::new(),
+            votes: BTreeMap::new(),
         }
     }
 
@@ -107,20 +110,24 @@ where
             let held = self
                 .buckets
                 .iter()
-                .find_map(|(vote, voters)| voters.contains(&node_id).then_some(vote))
+                .position(|(_, voters)| voters.contains(&node_id))
                 .expect("a recorded sender is in exactly one bucket");
 
             // move the sender, dropping a bucket left empty: an empty bucket is
             // indistinguishable from a missing one everywhere else.
-            let held = held.clone();
-            let voters = self.buckets.get_mut(&held).expect("found above");
+            let voters = &mut self.buckets[held].1;
             voters.remove(&node_id);
             if voters.is_empty() {
-                self.buckets.remove(&held);
+                self.buckets.remove(held);
             }
         }
 
-        self.buckets.entry(msg.vote).or_default().insert(node_id);
+        match self.buckets.iter_mut().find(|(vote, _)| *vote == msg.vote) {
+            Some((_, voters)) => {
+                voters.insert(node_id);
+            }
+            None => self.buckets.push((msg.vote, BTreeSet::from([node_id]))),
+        }
         self.votes.insert(node_id, msg.signature);
     }
 
@@ -132,9 +139,11 @@ where
         self.votes.keys()
     }
 
-    // the distinct votes cast, each with its voters
-    pub fn buckets(&self) -> impl Iterator<Item = (&V, &HashSet<NodeId>)> {
-        self.buckets.iter()
+    // the distinct votes cast, each with its voters, in first-vote order. For
+    // logging only: anything that decides behavior goes through a tally, which
+    // orders the buckets canonically
+    pub(crate) fn buckets(&self) -> impl Iterator<Item = (&V, &BTreeSet<NodeId>)> {
+        self.buckets.iter().map(|(vote, voters)| (vote, voters))
     }
 
     pub fn tally<'a>(&'a self, validator_data: &'a ValidatorData) -> Tally<'a, V> {
@@ -159,8 +168,17 @@ where
                 .signers(validator_data)
                 .expect("aggregation returns a collection consistent with the validator set");
             let stake = validator_data.sum_stake(signers.iter().copied());
-            buckets.push((vote, sigcol, stake));
+            buckets.push((data, vote, sigcol, stake));
         }
+
+        // canonical order, by the bytes each vote signs: every node lists the
+        // same votes the same way whatever order they arrived in, so the qc it
+        // picks and the certificates it builds do not depend on arrival
+        buckets.sort_unstable_by(|(a, ..), (b, ..)| a.cmp(b));
+        let buckets = buckets
+            .into_iter()
+            .map(|(_, vote, sigcol, stake)| (vote, sigcol, stake))
+            .collect();
 
         Tally {
             scope: &self.scope,
@@ -452,6 +470,8 @@ impl Decodable for EquivCert {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use alloy_rlp::{RlpDecodableWrapper, RlpEncodableWrapper};
 
     use super::*;
@@ -532,6 +552,31 @@ mod tests {
                 .expect("each group verifies over the digest its bucket signed");
             assert_eq!(signers.len(), 3);
         }
+    }
+
+    /// A tally lists its buckets in the same order whatever order the votes
+    /// arrived in, so every node picks the same qc and builds the same
+    /// certificate from the same votes.
+    #[test]
+    fn a_tally_does_not_depend_on_arrival_order() {
+        let (nodes, validator_data) = claim_setup();
+        let votes: Vec<_> = nodes[..6]
+            .iter()
+            .enumerate()
+            .map(|(i, node)| (*node, Claim(i as u64 % 3)))
+            .collect();
+        let mut reversed = votes.clone();
+        reversed.reverse();
+
+        let groups = |votes: &[(NodeId, Claim)]| {
+            let pool = claim_pool(votes);
+            let tally = pool.tally(&validator_data);
+            tally
+                .groups()
+                .map(|(claim, sigcol)| (claim.clone(), sigcol.clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(groups(&votes), groups(&reversed));
     }
 
     /// The target is over the whole pool, so a pool short of it forms nothing

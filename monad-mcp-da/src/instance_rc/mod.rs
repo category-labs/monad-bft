@@ -16,7 +16,7 @@
 mod obligation_tracker;
 mod serving_tracker;
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::BTreeSet;
 
 use bytes::Bytes;
 use monad_mcp_chorus::spec::ProposalHeader as _;
@@ -34,11 +34,13 @@ use super::{
         EncodingScheme, MerkleRoot, NodeId, ProposalDAEvent, SignedProposalHeader, Timestamp,
         TimestampDelta,
     },
-    util::Tree,
+    util::{Tree, shuffle_sends},
 };
 use crate::spec::DAProposalHeader as _;
 
-pub(crate) type MissingChunks = HashMap<NodeId, ChunksSubset>;
+// by owner, each owner once, in assignment (or validator) order; the requests
+// built from it are shuffled before they go out
+pub(crate) type MissingChunks = Vec<(NodeId, ChunksSubset)>;
 
 // decoded proposal does not reencode back to root
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,7 +69,8 @@ pub(crate) struct RaptorcastInstance {
     assignment: ChunkAssignment,
     // None when this node is outside the assignment (e.g. a full node)
     self_index: Option<NodeIndex>,
-    full_rebroadcast_targets: HashSet<NodeId>,
+    // every node of the assignment, in the order we send to them
+    send_order: Vec<NodeIndex>,
     decoding_threshold: usize,
 
     chunks: ChunkTree,
@@ -88,10 +91,8 @@ impl RaptorcastInstance {
         let scheme = header.scheme();
         let assignment = scheme.chunk_assignment(author, &epoch_handle.validator_data);
         let self_index = assignment.index_of(&epoch_handle.self_id);
-        let full_rebroadcast_targets = match self_index {
-            Some(owner) => assignment.full_rebroadcast_targets(owner),
-            None => HashSet::new(),
-        };
+        let mut send_order: Vec<NodeIndex> = assignment.nodes().map(|(index, _)| index).collect();
+        shuffle_sends(&mut send_order, &header.pid(), &epoch_handle.self_id);
         let num_chunks = assignment.num_chunks();
         let decoding_threshold = scheme.num_source_chunks();
         assert!(0 < decoding_threshold && decoding_threshold < num_chunks);
@@ -104,7 +105,7 @@ impl RaptorcastInstance {
             header,
             assignment,
             self_index,
-            full_rebroadcast_targets,
+            send_order,
             decoding_threshold,
             obligation,
             serving,
@@ -196,13 +197,12 @@ impl RaptorcastInstance {
         Some(Ok(message))
     }
 
+    // only our own chunks are queued, so the routing's owner is us
     pub(crate) fn rebroadcast_chunks(&mut self, egress: &mut ChunkEgress) {
         while let Some(chunk_id) = self.pending_rebroadcast.pop_first() {
             let routing = self.assignment.routing(chunk_id);
-            match routing.partial_rebroadcast_targets() {
-                Some(partial) => self.enqueue(chunk_id, &partial, egress),
-                None => self.enqueue(chunk_id, &self.full_rebroadcast_targets, egress),
-            }
+            let to = routing.rebroadcast_targets(&self.send_order);
+            self.enqueue(chunk_id, to, egress);
         }
     }
 
@@ -213,21 +213,22 @@ impl RaptorcastInstance {
             return None;
         }
 
-        let mut by_owner: HashMap<NodeIndex, Vec<ChunkId>> = HashMap::new();
+        // by owner, indexed by NodeIndex
+        let mut by_owner: Vec<Vec<ChunkId>> = vec![Vec::new(); self.assignment.num_nodes()];
         for chunk_id in self.assignment.chunk_ids() {
             if self.chunks.contains(chunk_id) {
                 continue;
             }
             let owner = self.assignment.routing(chunk_id).owner_index();
-            by_owner.entry(owner).or_default().push(chunk_id);
+            by_owner[usize::from(owner)].push(chunk_id);
         }
 
-        let missing = by_owner
-            .into_iter()
-            .map(|(owner, chunk_ids)| {
-                let owner = *self.assignment.node(owner);
-                (owner, ChunksSubset::narrowed(chunk_ids))
-            })
+        let missing = self
+            .assignment
+            .nodes()
+            .zip(by_owner)
+            .filter(|(_, chunk_ids)| !chunk_ids.is_empty())
+            .map(|((_, owner), chunk_ids)| (*owner, ChunksSubset::narrowed(chunk_ids)))
             .collect();
         Some(missing)
     }
@@ -244,11 +245,10 @@ impl RaptorcastInstance {
             // not a validator: the assignment lists them all
             return;
         };
-        let to = HashSet::from([*requester]);
         // a header counts as one chunk
         if request.subset == ChunksSubset::HeaderOnly {
             if self.serving.grant(requester_index, 1, now) == 1 {
-                egress.enqueue_header(&to, &self.header);
+                egress.enqueue_header(vec![*requester], &self.header);
             }
             return;
         }
@@ -258,7 +258,7 @@ impl RaptorcastInstance {
         let granted = self.serving.grant(requester_index, held.len(), now);
         held.truncate(granted);
         for chunk_id in held {
-            self.enqueue(chunk_id, &to, egress);
+            self.enqueue(chunk_id, vec![*requester], egress);
         }
     }
 
@@ -276,7 +276,7 @@ impl RaptorcastInstance {
     }
 
     // the caller must ensure the chunk is held
-    fn enqueue(&self, chunk_id: ChunkId, to: &HashSet<NodeId>, egress: &mut ChunkEgress) {
+    fn enqueue(&self, chunk_id: ChunkId, to: Vec<NodeId>, egress: &mut ChunkEgress) {
         let data = self
             .chunks
             .chunk_data(chunk_id)
@@ -541,7 +541,7 @@ mod tests {
         };
         assert!(reply.envelope.header_only());
         assert_eq!(reply.envelope.header(), &header);
-        assert_eq!(reply.to, HashSet::from([NodeId::dummy(3)]));
+        assert_eq!(reply.to, [NodeId::dummy(3)]);
     }
 
     #[test]

@@ -32,6 +32,7 @@ use monad_mcp_node::{
 };
 use monad_sim::{CancelToken, Ctx, Handle, StepLabel, Time};
 use monad_sim_swarm::{Net, SimClient, Swarm};
+use rapidhash::v3::{DEFAULT_RAPID_SECRETS, RapidStreamHasherV3, rapidhash_v3};
 
 pub const DELTA: TimestampDelta = TimestampDelta::from_millis(200);
 pub const SLOT_INTERVAL: TimestampDelta = TimestampDelta::from_millis(100);
@@ -59,6 +60,9 @@ pub struct SimNode {
     id: NodeId,
     node: Box<dyn Component<Input = NodeInbound, Output = NodeOutput>>,
     finalized: BTreeMap<Slot, Pattern>,
+    // hashes every message delivered to this node, with its time, in
+    // delivery order
+    delivery_hasher: RapidStreamHasherV3<'static>,
     // the one live timer step, at the node's last polled next_due
     due_alarm: Option<(Time, CancelToken)>,
     me: Option<Handle<Self>>,
@@ -74,6 +78,7 @@ impl SimNode {
             id,
             node: Box::new(node),
             finalized: BTreeMap::new(),
+            delivery_hasher: RapidStreamHasherV3::new(&DEFAULT_RAPID_SECRETS),
             due_alarm: None,
             me: None,
             net: None,
@@ -151,6 +156,21 @@ impl SimNode {
         &self.finalized
     }
 
+    fn record_delivery(&mut self, at: Time, from: NodeId, message: &NodeMessage) {
+        let (kind, bytes) = match message {
+            NodeMessage::Cadence(bytes) => (0u8, bytes),
+            NodeMessage::Chunk(bytes) => (1, bytes),
+            NodeMessage::ChunkRequest(bytes) => (2, bytes),
+            NodeMessage::Tx(bytes) => (3, bytes),
+        };
+        let hasher = &mut self.delivery_hasher;
+        hasher.write(&at.0.to_le_bytes());
+        hasher.write(&u64::from(from).to_le_bytes());
+        hasher.write(&[kind]);
+        hasher.write(&(bytes.len() as u64).to_le_bytes());
+        hasher.write(bytes);
+    }
+
     // every log line of a step names its node
     fn span(&self) -> tracing::Span {
         tracing::info_span!("node", id = u64::from(self.id))
@@ -168,6 +188,7 @@ impl SimClient for SimNode {
 
     fn receive(&mut self, from: NodeId, message: NodeMessage, ctx: &mut Ctx) {
         let _span = self.span().entered();
+        self.record_delivery(ctx.now(), from, &message);
         // the node loops its own messages back itself
         if from == self.id {
             return;
@@ -178,7 +199,13 @@ impl SimClient for SimNode {
     }
 }
 
-pub fn node_config(id: u64, validators: u64) -> NodeConfig {
+// a node's seed: a function of the simulation seed and the node id
+pub fn node_seed(seed: u64, id: u64) -> u64 {
+    rapidhash_v3(&[seed.to_le_bytes(), id.to_le_bytes()].concat())
+}
+
+// validator `id` of `validators`, seeded from the simulation seed
+pub fn node_config(seed: u64, id: u64, validators: u64) -> NodeConfig {
     use monad_mcp_common::spec::KeyPair as _;
 
     let node_id = NodeId::dummy(id);
@@ -213,7 +240,34 @@ pub fn node_config(id: u64, validators: u64) -> NodeConfig {
         ledger: LedgerConfig {
             dir: "unused-ledger".into(),
         },
+        seed: Some(node_seed(seed, id)),
     }
+}
+
+// a digest of the run: per node, the finalized history and every delivered
+// message with its time. Hashes explicit bytes with rapidhash v3, so the
+// digest is the same on every platform and release.
+pub fn run_digest(swarm: &Swarm<SimNode>) -> u64 {
+    let mut hasher = RapidStreamHasherV3::new(&DEFAULT_RAPID_SECRETS);
+    for id in swarm.node_ids() {
+        swarm.with_node(&id, |node| {
+            hasher.write(&u64::from(id).to_le_bytes());
+            for (slot, pattern) in &node.finalized {
+                hasher.write(&slot.0.to_le_bytes());
+                for lane in pattern.lanes() {
+                    match pattern.get(usize::from(lane)).expect("in range") {
+                        Some(pid) => {
+                            hasher.write(&[1]);
+                            hasher.write(pid.as_bytes());
+                        }
+                        None => hasher.write(&[0]),
+                    }
+                }
+            }
+            hasher.write(&node.delivery_hasher.finish().to_le_bytes());
+        });
+    }
+    hasher.finish()
 }
 
 // every slot below the horizon finalized everywhere, with agreed-upon pattern

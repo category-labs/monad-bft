@@ -255,7 +255,7 @@ impl SlotRaptorcast {
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::HashSet,
+        collections::BTreeSet,
         sync::{
             Arc,
             atomic::{AtomicUsize, Ordering},
@@ -284,8 +284,13 @@ mod tests {
         (epoch_handle, raptorcast)
     }
 
-    fn nodes(ids: impl IntoIterator<Item = u64>) -> HashSet<NodeId> {
+    fn nodes(ids: impl IntoIterator<Item = u64>) -> BTreeSet<NodeId> {
         ids.into_iter().map(NodeId::dummy).collect()
+    }
+
+    // recipients go out in a shuffled order; the tests check who, not when
+    fn set(to: &[NodeId]) -> BTreeSet<NodeId> {
+        to.iter().copied().collect()
     }
 
     // the wire ids carried by the messages, sorted
@@ -331,8 +336,8 @@ mod tests {
         raptorcast.handle_command(ChorusDACommand::ReleaseChunks, NOW);
         let messages = raptorcast.drain_messages();
         assert_eq!(chunk_ids(&messages), [0, 0]);
-        assert_eq!(messages[0].to, nodes([2, 3]));
-        assert_eq!(messages[1].to, nodes([3]));
+        assert_eq!(set(&messages[0].to), nodes([2, 3]));
+        assert_eq!(set(&messages[1].to), nodes([3]));
 
         // released: a repeat a window later is answered at once
         let a_window_later = NOW + timing().serve_window;
@@ -370,7 +375,7 @@ mod tests {
         // our chunk 3 is forwarded on arrival, a repeat is not
         let messages = ingest(&mut raptorcast, group(&chunks[3..4]));
         assert_eq!(chunk_ids(&messages), [3]);
-        assert_eq!(messages[0].to, nodes([2, 3]));
+        assert_eq!(set(&messages[0].to), nodes([2, 3]));
         assert!(ingest(&mut raptorcast, group(&chunks[3..4])).is_empty());
 
         // a chunk we do not own is not ours to forward
@@ -495,7 +500,7 @@ mod tests {
     fn deliver(
         nodes: &mut [(EpochHandle, SlotRaptorcast)],
         messages: Vec<(NodeId, Dissemination)>,
-        lost: &HashSet<NodeId>,
+        lost: &BTreeSet<NodeId>,
     ) {
         for (sender, message) in messages {
             for to in &message.to {
@@ -553,7 +558,7 @@ mod tests {
         let (header, chunks) = proposal_chunks(&nodes[0].0, 1);
 
         // the author's first hop reaches 1 and 2; 3 is cut off entirely
-        let cut_off = HashSet::from([NodeId::dummy(3)]);
+        let cut_off = BTreeSet::from([NodeId::dummy(3)]);
         nodes[0]
             .1
             .ingest(&author(), group(&[chunks[0].clone(), chunks[3].clone()]))
@@ -591,7 +596,7 @@ mod tests {
             chunk_ids(responses.iter().map(|(_, message)| message)),
             [0, 1, 2, 3, 4, 5]
         );
-        deliver(&mut nodes, responses, &HashSet::new());
+        deliver(&mut nodes, responses, &BTreeSet::new());
         assert_eq!(decoded(&mut nodes[2].1), vec![message()]);
     }
 }

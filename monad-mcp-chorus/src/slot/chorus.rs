@@ -15,7 +15,7 @@
 
 /// Chorus module for managing single-slot consensus state and logic.
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{BTreeSet, VecDeque},
     sync::Arc,
 };
 
@@ -174,7 +174,7 @@ pub enum ProposalDAEvent {
 }
 
 // must be non-empty. ordered by total stake on each pid
-pub type MissingHeaders = Vec<(ProposalId, HashSet<NodeId>)>;
+pub type MissingHeaders = Vec<(ProposalId, BTreeSet<NodeId>)>;
 
 // An effect directed at the DA layer.
 #[derive(Clone, PartialEq, Eq, Debug)]

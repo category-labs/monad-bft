@@ -124,11 +124,7 @@ mod validator {
 }
 
 mod proposal {
-    use std::{
-        fmt,
-        hash::{DefaultHasher, Hash as _, Hasher as _},
-        ops::Range,
-    };
+    use std::{fmt, ops::Range};
 
     use alloy_rlp::{
         Decodable, Encodable, RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper,
@@ -349,12 +345,13 @@ mod proposal {
             &self.root
         }
 
+        // a non-cryptographic stand-in over the rlp encoding; see
+        // noncrypto_digest
         fn pid(&self) -> ProposalId {
-            let mut hasher = DefaultHasher::new();
-            self.hash(&mut hasher);
+            let digest = monad_mcp_common::stub::noncrypto_digest(&alloy_rlp::encode(self));
             let mut pid = [0; 32];
             pid[PID_ROOT].copy_from_slice(&self.root.0.0);
-            pid[PID_DIGEST].copy_from_slice(&hasher.finish().to_le_bytes());
+            pid[PID_DIGEST].copy_from_slice(&digest.to_le_bytes());
             ProposalId(pid)
         }
     }
@@ -417,7 +414,7 @@ mod proposal {
 }
 
 mod vote {
-    use std::collections::{BTreeMap, HashMap, HashSet};
+    use std::collections::{BTreeMap, BTreeSet};
 
     use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
     use monad_mcp_common::spec::Signature as _;
@@ -488,7 +485,7 @@ mod vote {
         type ValidatorData = ValidatorData;
 
         fn aggregate(
-            sig_map: &HashMap<&NodeId, &Signature>,
+            sig_map: &BTreeMap<&NodeId, &Signature>,
             validator_data: &ValidatorData,
         ) -> Self {
             debug_assert!(sig_map.values().all(|sig| sig.is_well_formed()));
@@ -500,8 +497,11 @@ mod vote {
             SignatureCollection { sigs }
         }
 
-        fn signers<'s>(&'s self, validator_data: &'s ValidatorData) -> Option<HashSet<&'s NodeId>> {
-            let mut signers = HashSet::new();
+        fn signers<'s>(
+            &'s self,
+            validator_data: &'s ValidatorData,
+        ) -> Option<BTreeSet<&'s NodeId>> {
+            let mut signers = BTreeSet::new();
 
             for index in self.sigs.keys() {
                 let Some(node_id) = validator_data.get_node(*index) else {
@@ -518,8 +518,8 @@ mod vote {
             &'s self,
             data: &[u8],
             validator_data: &'s ValidatorData,
-        ) -> Option<HashSet<&'s NodeId>> {
-            let mut signers = HashSet::new();
+        ) -> Option<BTreeSet<&'s NodeId>> {
+            let mut signers = BTreeSet::new();
 
             for (index, sig) in &self.sigs {
                 let Some(node_id) = validator_data.get_node(*index) else {
@@ -552,7 +552,7 @@ mod vote {
         fn try_aggregate(
             &mut self,
             data: &[u8],
-            mut votes: HashMap<&NodeId, &Signature>,
+            mut votes: BTreeMap<&NodeId, &Signature>,
             target_stake: Stake,
         ) -> Option<SignatureCollection> {
             // caller guarantee: every vote comes from a known
@@ -561,7 +561,7 @@ mod vote {
             assert!(all_voters.all(|node_id| self.validator_data.contains(*node_id)));
             assert!(votes.values().all(|sig| sig.is_well_formed()));
 
-            let sum = |votes: &HashMap<_, _>| self.validator_data.sum_stake(votes.keys().copied());
+            let sum = |votes: &BTreeMap<_, _>| self.validator_data.sum_stake(votes.keys().copied());
 
             // just naively exclude any bad signatures. we should use
             // an aggregation tree for bls to iteratively exclude bad
@@ -621,7 +621,7 @@ mod vote {
             let mut vote_agg = VoteAggregation::from_validator_data(&validator_data);
 
             sigs[0].make_invalid();
-            let votes: HashMap<&NodeId, &Signature> = nodes.iter().zip(&sigs).collect();
+            let votes: BTreeMap<&NodeId, &Signature> = nodes.iter().zip(&sigs).collect();
             let sigcol = vote_agg
                 .try_aggregate(&data, votes, threshold)
                 .expect("6 valid votes exceed threshold 5");
@@ -631,7 +631,7 @@ mod vote {
             assert_eq!(voters, nodes[1..].iter().collect());
 
             sigs[1].make_invalid();
-            let votes: HashMap<&NodeId, &Signature> = nodes.iter().zip(&sigs).collect();
+            let votes: BTreeMap<&NodeId, &Signature> = nodes.iter().zip(&sigs).collect();
             assert!(vote_agg.try_aggregate(&data, votes, threshold).is_none());
         }
     }

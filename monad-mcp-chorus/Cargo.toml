@@ -29,3 +29,7 @@ proptest = { workspace = true }
 rand = { workspace = true }
 tempfile = { workspace = true }
 tracing-test = { workspace = true }
+
+[lints.clippy]
+# outputs must not depend on hash order; see monad-mcp-node/docs/determinism.md
+iter_over_hash_type = "deny"

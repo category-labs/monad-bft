@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::time::Instant;
+
 use monad_mcp_chorus::ledger::{
     BlockMeta, Hash, LedgerError, LedgerFollower, LedgerReader, decode_batch,
 };
@@ -48,7 +50,7 @@ pub struct LedgerWatch {
 impl LedgerWatch {
     // blocks already on disk cannot hold txs submitted from now on
     pub fn from_now(reader: &LedgerReader) -> Result<Self, LedgerError> {
-        Ok(Self::new(reader.follow_from_now()?))
+        Ok(Self::new(reader.follow_from_now(Instant::now())?))
     }
 
     pub fn from_start(reader: &LedgerReader) -> Self {
@@ -63,7 +65,7 @@ impl LedgerWatch {
     }
 
     pub fn poll(&mut self) -> Result<Sighting, LedgerError> {
-        let blocks = self.follower.poll(POLL_BLOCKS)?;
+        let blocks = self.follower.poll(Instant::now(), POLL_BLOCKS)?;
         let reader = self.follower.reader();
         let mut sighting = Sighting {
             blocks: blocks.len(),

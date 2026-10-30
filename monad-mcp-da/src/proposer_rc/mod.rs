@@ -29,6 +29,7 @@ use super::{
         EquivCert, MissingHeaders, NodeId, ProposalDAEvent, ProposalId, SignedProposalHeader,
         Timestamp, TimestampDelta,
     },
+    util::shuffle_sends,
 };
 
 // per-(slot, proposer) raptorcast: keyed by proposal pid
@@ -294,6 +295,8 @@ impl ProposerRaptorcast {
                 continue;
             }
 
+            let mut voters: Vec<NodeId> = voters.into_iter().collect();
+            shuffle_sends(&mut voters, &pid, &self.self_id);
             for voter in voters {
                 let request = ChunkRequest {
                     pid,
@@ -323,7 +326,7 @@ impl ProposerRaptorcast {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use std::collections::BTreeSet;
 
     use super::{
         super::{
@@ -508,7 +511,7 @@ mod tests {
         let [Dissemination { to, envelope }] = &recovered[..] else {
             panic!("recovery unicasts to the requester");
         };
-        assert_eq!(*to, HashSet::from([requester]));
+        assert_eq!(*to, [requester]);
         assert_eq!(
             envelope.chunk_data().keys().copied().collect::<Vec<_>>(),
             [0]
@@ -733,7 +736,7 @@ mod tests {
 
         let instance =
             ProposerRaptorcast::new(NodeId::dummy(0), epoch_handle.self_id, NOW, timing());
-        let voters = HashSet::from([NodeId::dummy(2), NodeId::dummy(3)]);
+        let voters = BTreeSet::from([NodeId::dummy(2), NodeId::dummy(3)]);
         let missing =
             MissingHeaders::from([(header_a.pid(), voters.clone()), (header_b.pid(), voters)]);
         let pulled = instance.pull_header(missing);
@@ -769,7 +772,7 @@ mod tests {
             &mut egress,
         );
 
-        let voters = HashSet::from([NodeId::dummy(2), NodeId::dummy(3)]);
+        let voters = BTreeSet::from([NodeId::dummy(2), NodeId::dummy(3)]);
         let missing =
             MissingHeaders::from([(header_a.pid(), voters.clone()), (header_b.pid(), voters)]);
         let pulled = instance.pull_header(missing);

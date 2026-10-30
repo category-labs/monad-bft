@@ -15,6 +15,26 @@
 
 pub use self::{validator::*, vote::*};
 
+/// A fast, non-cryptographic 64-bit digest for the stub env: rapidhash v3,
+/// whose output is fixed by its reference algorithm, so it is the same on
+/// every platform and across crate versions (pinned by a test). It stands in
+/// for the hash behind a signature and a proposal id. The stub provides no
+/// security (keys derive from public u64s), so neither collision nor preimage
+/// resistance is needed here; a production pid or signature needs a
+/// cryptographic hash.
+pub fn noncrypto_digest(data: &[u8]) -> u64 {
+    rapidhash::v3::rapidhash_v3(data)
+}
+
+#[cfg(test)]
+#[test]
+fn the_noncrypto_digest_is_pinned() {
+    assert_eq!(noncrypto_digest(b""), PINNED_EMPTY_DIGEST);
+}
+
+#[cfg(test)]
+const PINNED_EMPTY_DIGEST: u64 = 232177599295442350;
+
 mod validator {
     use alloy_rlp::{RlpDecodableWrapper, RlpEncodableWrapper};
     // Into implemented for testing purpose only.
@@ -111,8 +131,6 @@ mod validator {
 }
 
 mod vote {
-    use std::hash::{DefaultHasher, Hash as _, Hasher as _};
-
     use alloy_rlp::{Decodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper};
     use bytes::Bytes;
     // Into implemented on these types for testing purpose only.
@@ -153,12 +171,6 @@ mod vote {
         }
     }
 
-    fn digest(data: &[u8]) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        data.hash(&mut hasher);
-        hasher.finish()
-    }
-
     impl Signature {
         pub fn make_invalid(&mut self) {
             // Simulate an invalid signature
@@ -190,7 +202,7 @@ mod vote {
         fn sign(&self, data: &Bytes) -> Self::Signature {
             Signature {
                 by: self.pubkey(),
-                digest: digest(data),
+                digest: super::noncrypto_digest(data),
                 malformed: false,
             }
         }
@@ -204,7 +216,9 @@ mod vote {
         }
 
         fn verify(&self, data: &[u8], pubkey: &Self::PubKey) -> bool {
-            self.is_well_formed() && self.by == *pubkey && self.digest == digest(data)
+            self.is_well_formed()
+                && self.by == *pubkey
+                && self.digest == super::noncrypto_digest(data)
         }
     }
 }
