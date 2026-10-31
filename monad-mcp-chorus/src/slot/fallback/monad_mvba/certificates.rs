@@ -13,13 +13,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::HashSet, fmt::Debug, hash::Hash};
+use std::{fmt::Debug, hash::Hash};
 
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
+use monad_mcp_common::containers::FastHashSet;
 
 use super::{
     super::{
-        super::types::{IsVote, SignatureCollection, Slot, StrongQc, ValidatorData},
+        super::types::{IsVote, SignatureCollection, Slot, StrongQc, ValidatorData, ValidatorSet},
         FallbackView, MvbaScope,
     },
     messages::{FallbackCommitVote, PrepareVote, TimeoutVote},
@@ -87,21 +88,21 @@ impl<E: Clone + Eq + Hash + Debug + Encodable> TimeoutCertificate<E> {
 
         let scope = MvbaScope::new(self.slot, self.view);
 
-        let mut signers = HashSet::new();
+        let mut signers = ValidatorSet::new();
         for TimeoutGroup { vote, sigcol } in &self.groups {
             let data = vote.signing_bytes(&scope);
             let Some(group_signers) = sigcol.verify(&data, validator_data) else {
                 return false;
             };
-            for signer in group_signers {
-                // equivocating signers invalidates the certificate
-                if !signers.insert(signer) {
-                    return false;
-                }
+            // equivocating signers invalidates the certificate
+            if !signers.is_disjoint(&group_signers) {
+                return false;
             }
+            signers.union_with(&group_signers);
         }
 
-        let stake = validator_data.sum_stake(signers.iter().copied());
+        let stake = validator_data.sum_stake(&signers);
+
         if stake <= validator_data.total_stake().supermajority_threshold() {
             return false;
         }
@@ -114,7 +115,8 @@ impl<E: Clone + Eq + Hash + Debug + Encodable> TimeoutCertificate<E> {
     /// A real view, one group per distinct vote, and the carried prepare
     /// certificate is the one the highest claim names
     pub(crate) fn is_well_formed(&self) -> bool {
-        let votes: HashSet<&TimeoutVote> = self.groups.iter().map(|group| &group.vote).collect();
+        let votes: FastHashSet<&TimeoutVote> =
+            self.groups.iter().map(|group| &group.vote).collect();
         let real_view = self.view >= FallbackView::FIRST;
         let has_groups = !self.groups.is_empty();
         let one_group_per_vote = votes.len() == self.groups.len();

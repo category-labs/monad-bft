@@ -17,13 +17,13 @@
 //! colocated validator's id. No reply: the ledger tells what landed.
 
 use std::{
-    collections::HashMap,
     io,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket},
 };
 
 use bytes::Bytes;
 use monad_mcp_chorus::ledger::Tx;
+use monad_mcp_common::containers::FastHashMap;
 use monad_mcp_node::{
     common::NodeId,
     network::{NodeMessage, encode_frame},
@@ -46,13 +46,13 @@ pub fn bind_ephemeral(ipv6: bool) -> io::Result<UdpSocket> {
 pub struct UdpSender {
     socket: UdpSocket,
     sender_id: NodeId,
-    peers: HashMap<NodeId, SocketAddr>,
+    peers: FastHashMap<NodeId, SocketAddr>,
 }
 
 impl UdpSender {
     // peers of one address family, as `RpcConfig::validate` checks
-    pub fn bind(sender_id: NodeId, peers: HashMap<NodeId, SocketAddr>) -> io::Result<Self> {
-        let ipv6 = peers.values().any(SocketAddr::is_ipv6);
+    pub fn bind(sender_id: NodeId, peers: FastHashMap<NodeId, SocketAddr>) -> io::Result<Self> {
+        let ipv6 = peers.values_unordered().any(SocketAddr::is_ipv6);
         let socket = bind_ephemeral(ipv6)?;
         // a full send buffer fails the send, to be resent, rather than stalling a worker
         socket.set_nonblocking(true)?;

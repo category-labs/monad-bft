@@ -676,7 +676,7 @@ mod tests {
         let cfg = cfg();
         let schedule = EpochSchedule::build(&cfg, 0, stakes(), &[]).unwrap();
         let k = cfg.concurrent_proposers;
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = monad_mcp_common::containers::FastHashSet::new();
         for window in schedule.leaders().windows(k) {
             seen.insert(window.to_vec());
         }

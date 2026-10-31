@@ -14,14 +14,13 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::HashMap,
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
 
-use monad_mcp_common::TimestampDelta;
+use monad_mcp_common::{TimestampDelta, containers::FastHashMap};
 use monad_mcp_node::{common::NodeId, config::NodeConfig};
 use serde::Deserialize;
 
@@ -39,7 +38,7 @@ pub struct RpcConfig {
     pub http_addr: String,
     // the colocated validator's id, the sender of every frame
     pub node_id: NodeId,
-    pub peers: HashMap<NodeId, SocketAddr>,
+    pub peers: FastHashMap<NodeId, SocketAddr>,
     pub planner: Arc<Planner>,
     // the node's `ledger.dir`; only `<ledger_dir>/blocks` is read
     pub ledger_dir: PathBuf,
@@ -91,8 +90,8 @@ impl RpcConfig {
         )?;
         // one socket sends to every validator
         check(
-            self.peers.values().all(SocketAddr::is_ipv4)
-                || self.peers.values().all(SocketAddr::is_ipv6),
+            self.peers.values_unordered().all(SocketAddr::is_ipv4)
+                || self.peers.values_unordered().all(SocketAddr::is_ipv6),
             "validator addresses must all be ipv4 or all ipv6",
         )
     }
@@ -472,7 +471,7 @@ rtt_min_ms = [[0.0, 19.0], [19.0, 0.0]]
         let section = with_latency(dir.path(), NODE, MATRIX);
         assert_eq!(section.latency, Some(PathBuf::from("sub/latency.toml")));
         let config = section.clone().build().unwrap();
-        let expected = HashMap::from([
+        let expected = crate::schedule::Latency::from([
             (NodeId::dummy(0), Duration::ZERO),
             (NodeId::dummy(1), Duration::from_millis(10)),
         ]);

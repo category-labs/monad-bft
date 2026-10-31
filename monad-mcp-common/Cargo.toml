@@ -5,8 +5,11 @@ edition = "2024"
 
 [dependencies]
 alloy-rlp = { workspace = true, features = ["derive"] }
+blake3 = { workspace = true }
 bytes = { workspace = true }
 derive_more = { workspace = true, features = ["from", "sum", "add", "into"] }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
 rapidhash = { workspace = true }
 
 [dev-dependencies]
@@ -15,3 +18,5 @@ proptest = { workspace = true }
 [lints.clippy]
 # outputs must not depend on hash order; see monad-mcp-node/docs/determinism.md
 iter_over_hash_type = "deny"
+# std hash containers only through the named types in clippy.toml
+disallowed_types = "deny"

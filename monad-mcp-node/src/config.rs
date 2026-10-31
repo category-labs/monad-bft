@@ -13,11 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{collections::HashMap, fmt, net::SocketAddr, num::NonZeroU64, path::PathBuf, sync::Arc};
+use std::{fmt, net::SocketAddr, num::NonZeroU64, path::PathBuf, sync::Arc};
 
 use alloy_rlp::Encodable as _;
 use monad_mcp_chorus::ledger::BatchBuilder;
-use monad_mcp_common::{Timestamp, TimestampDelta, spec::KeyPair as _};
+use monad_mcp_common::{Timestamp, TimestampDelta, containers::FastHashMap, spec::KeyPair as _};
 use rand::SeedableRng as _;
 use rand_chacha::ChaCha8Rng;
 use serde::Deserialize;
@@ -167,8 +167,8 @@ impl NodeConfig {
         })
     }
 
-    pub fn peers(&self) -> HashMap<NodeId, SocketAddr> {
-        let mut peers = HashMap::new();
+    pub fn peers(&self) -> FastHashMap<NodeId, SocketAddr> {
+        let mut peers = FastHashMap::new();
         for validator in &self.validators {
             peers.insert(validator.node_id, validator.address);
         }
@@ -176,8 +176,8 @@ impl NodeConfig {
     }
 
     fn validator_data(&self) -> ValidatorData {
-        let mut valset = HashMap::new();
-        let mut mapping = HashMap::new();
+        let mut valset = FastHashMap::new();
+        let mut mapping = FastHashMap::new();
         for validator in &self.validators {
             valset.insert(validator.node_id, Stake::from(validator.stake));
             mapping.insert(validator.node_id, validator.chorus_pubkey);

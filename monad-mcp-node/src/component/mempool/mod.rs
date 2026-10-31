@@ -17,12 +17,12 @@
 //! in flight until its slot settles: committed, it is remembered to reject
 //! re-sends; left out of the block, it goes back to the head of the queue.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use alloy_rlp::Encodable as _;
 use bytes::Bytes;
 use monad_mcp_chorus::ledger::{BatchBuilder, Hash, MAX_TX_PAYLOAD, Tx, TxError};
-use monad_mcp_common::{Lane, Slot};
+use monad_mcp_common::{Lane, Slot, containers::SipHashSet};
 
 use crate::config::MempoolConfig;
 
@@ -60,9 +60,9 @@ pub struct Mempool {
     queued_bytes: usize,
     in_flight: BTreeMap<Slot, BTreeMap<Lane, Vec<Entry>>>,
     // every hash queued or in flight
-    pending: HashSet<Hash>,
+    pending: SipHashSet<Hash>,
     recent: VecDeque<Hash>,
-    recent_set: HashSet<Hash>,
+    recent_set: SipHashSet<Hash>,
     // slots at or past which a drain may still commit: not settled, not below the cap
     floor: Slot,
     settled: BTreeSet<Slot>,
@@ -75,9 +75,9 @@ impl Mempool {
             queue: VecDeque::new(),
             queued_bytes: 0,
             in_flight: BTreeMap::new(),
-            pending: HashSet::new(),
+            pending: SipHashSet::new(),
             recent: VecDeque::new(),
-            recent_set: HashSet::new(),
+            recent_set: SipHashSet::new(),
             floor: Slot::FIRST,
             settled: BTreeSet::new(),
         }

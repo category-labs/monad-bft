@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::{HashMap, HashSet};
+use monad_mcp_common::containers::{FastHashMap, FastHashSet};
 
 use super::{
     chorus::ProposalDAEvent,
@@ -25,17 +25,17 @@ use crate::spec::ProposalHeader as _;
 #[derive(Clone, Default)]
 pub(crate) struct ProposalAvailability {
     // seen signed headers
-    headers: HashMap<ProposalId, SignedProposalHeader>,
+    headers: FastHashMap<ProposalId, SignedProposalHeader>,
 
     // proposals for which all our own chunks have been received from
     // the author.
     author_fulfilled: Vec<ProposalId>,
 
     // proposals that have been successfully decoded.
-    decoded: HashSet<ProposalId>,
+    decoded: FastHashSet<ProposalId>,
 
     // proposals whose decoding or re-encoding failed.
-    invalid: HashSet<ProposalId>,
+    invalid: FastHashSet<ProposalId>,
 }
 
 impl ProposalAvailability {
@@ -74,7 +74,7 @@ impl ProposalAvailability {
             return None;
         }
         let rival = match self.headers.len() {
-            1 => self.headers.values().next().cloned(),
+            1 => self.headers.values_unordered().next().cloned(),
             _ => None,
         };
         self.headers.insert(pid, signed.clone());

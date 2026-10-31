@@ -21,14 +21,14 @@
 //! the state machine counts every vote off the wire, its own included
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::BTreeMap,
     sync::{Arc, Mutex},
     time::Duration,
 };
 
 use chorus::slot::fallback::{EnterFallbackCert, Metablock, MvbaRuntime, monad_mvba};
 use monad_mcp_chorus::stub as chorus;
-use monad_mcp_common::{Timestamp, stub::NodeId};
+use monad_mcp_common::{Timestamp, containers::FastHashMap, stub::NodeId};
 use monad_sim::{RunOutcome, Time};
 use monad_sim_swarm::{Network, Swarm};
 
@@ -60,7 +60,7 @@ struct DecisionState {
 
 /// Per-node decisions, shared with the observers planted in the runtimes
 #[derive(Default)]
-struct DecisionLog(HashMap<NodeId, Arc<Mutex<DecisionState>>>);
+struct DecisionLog(FastHashMap<NodeId, Arc<Mutex<DecisionState>>>);
 
 impl DecisionLog {
     fn new() -> Self {

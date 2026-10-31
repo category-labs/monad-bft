@@ -18,67 +18,65 @@ pub(crate) use monad_mcp_common::stub::{KeyPair, NodeId, PubKey, Signature, Stak
 pub use self::{proposal::*, validator::*, vote::*};
 
 mod validator {
-    use std::collections::HashMap;
-
-    use monad_mcp_common::spec::Stake as _;
+    use monad_mcp_common::{
+        containers::{FastHashMap, IndexVec, MAX_VALIDATORS, ValidatorIndex, ValidatorSet},
+        spec::Stake as _,
+    };
 
     use super::{NodeId, PubKey, Stake};
     use crate::spec;
 
-    // invariant: valset/mapping have exactly the same key set, and
-    // sorted/indices are the canonical enumeration of the
-    // valset. valset is non-empty, all stakes are nonzero.
-    //
-    // sorted/indices are representation shared with this env's
-    // SignatureCollection; they are deliberately not exposed outside
-    // the env.
+    // invariant: the validators are indexed in NodeId order, the canonical
+    // enumeration of the valset; indices, nodes, stakes and pubkeys cover the
+    // same validators. The valset is non-empty and at most MAX_VALIDATORS
+    // large, all stakes are nonzero, and total_stake is their sum.
     pub struct ValidatorData {
-        valset: HashMap<NodeId, Stake>,
-        sorted: Vec<NodeId>,
-        indices: HashMap<NodeId, usize>,
-        mapping: HashMap<NodeId, PubKey>,
+        indices: FastHashMap<NodeId, ValidatorIndex>,
+        nodes: IndexVec<ValidatorIndex, NodeId>,
+        stakes: IndexVec<ValidatorIndex, Stake>,
+        pubkeys: IndexVec<ValidatorIndex, PubKey>,
+        total_stake: Stake,
     }
 
     impl ValidatorData {
-        pub fn new(valset: HashMap<NodeId, Stake>, mapping: HashMap<NodeId, PubKey>) -> Self {
+        pub fn new(
+            valset: FastHashMap<NodeId, Stake>,
+            mapping: FastHashMap<NodeId, PubKey>,
+        ) -> Self {
             assert_eq!(valset.len(), mapping.len());
             assert!(!valset.is_empty());
-            assert!(valset.keys().all(|node_id| mapping.contains_key(node_id)));
-            assert!(valset.values().all(|stake| *stake > Stake::ZERO));
+            assert!(valset.len() <= MAX_VALIDATORS);
+            assert!(
+                valset
+                    .keys_unordered()
+                    .all(|node_id| mapping.contains_key(node_id))
+            );
+            assert!(valset.values_unordered().all(|stake| *stake > Stake::ZERO));
 
-            let sorted = sort_valset(&valset);
-            Self::new_unchecked(valset, mapping, sorted)
-        }
-
-        // The caller must ensure the invariants on the valset/mapping
-        // are satisfied, as seen in the assertions in new() method. The
-        // `sorted` must be consistent with the output of sort_valset().
-        pub fn new_unchecked(
-            valset: HashMap<NodeId, Stake>,
-            mapping: HashMap<NodeId, PubKey>,
-            sorted: Vec<NodeId>,
-        ) -> Self {
-            debug_assert!(sorted == sort_valset(&valset));
-            let indices = sorted
-                .iter()
-                .enumerate()
-                .map(|(i, node_id)| (*node_id, i))
+            let mut sorted: Vec<NodeId> = valset.keys_unordered().copied().collect();
+            sorted.sort();
+            let nodes: IndexVec<ValidatorIndex, NodeId> = sorted.into_iter().collect();
+            let indices = nodes
+                .iter_enumerated()
+                .map(|(index, node_id)| (*node_id, index))
                 .collect();
+            let stakes: IndexVec<_, _> = nodes.iter().map(|node_id| valset[node_id]).collect();
+            let pubkeys = nodes.iter().map(|node_id| mapping[node_id]).collect();
+            let total_stake = stakes.iter().copied().sum();
 
             Self {
-                valset,
-                sorted,
                 indices,
-                mapping,
+                nodes,
+                stakes,
+                pubkeys,
+                total_stake,
             }
         }
 
-        pub(crate) fn indices(&self) -> &HashMap<NodeId, usize> {
-            &self.indices
-        }
-
-        pub(crate) fn get_node(&self, index: usize) -> Option<&NodeId> {
-            self.sorted.get(index)
+        // a wire index as one of this validator set's, if it is one
+        pub(crate) fn checked_index(&self, index: usize) -> Option<ValidatorIndex> {
+            let index = ValidatorIndex::new(index)?;
+            self.nodes.get(index).map(|_| index)
         }
     }
 
@@ -88,38 +86,40 @@ mod validator {
         type Stake = Stake;
 
         fn nodes(&self) -> impl Iterator<Item = &NodeId> {
-            self.sorted.iter()
+            self.nodes.iter()
         }
 
         fn len(&self) -> usize {
-            self.sorted.len()
+            self.nodes.len()
         }
 
-        fn contains(&self, node_id: &NodeId) -> bool {
-            self.valset.contains_key(node_id)
+        fn index_of(&self, node_id: &NodeId) -> Option<ValidatorIndex> {
+            self.indices.get(node_id).copied()
+        }
+
+        fn node_id(&self, index: ValidatorIndex) -> &NodeId {
+            &self.nodes[index]
+        }
+
+        fn pubkey(&self, index: ValidatorIndex) -> &PubKey {
+            &self.pubkeys[index]
         }
 
         fn get_pubkey(&self, node_id: &NodeId) -> &PubKey {
-            &self.mapping[node_id]
+            &self.pubkeys[self.indices[node_id]]
         }
 
         fn get_stake(&self, node_id: &NodeId) -> &Stake {
-            &self.valset[node_id]
+            &self.stakes[self.indices[node_id]]
         }
 
-        fn sum_stake<'a>(&self, nodes: impl IntoIterator<Item = &'a NodeId>) -> Stake {
-            nodes.into_iter().map(|node_id| self.valset[node_id]).sum()
+        fn sum_stake(&self, validators: &ValidatorSet) -> Stake {
+            validators.iter().map(|index| self.stakes[index]).sum()
         }
 
         fn total_stake(&self) -> Stake {
-            self.valset.values().copied().sum()
+            self.total_stake
         }
-    }
-
-    pub fn sort_valset<S>(valset: &HashMap<NodeId, S>) -> Vec<NodeId> {
-        let mut sorted = valset.keys().copied().collect::<Vec<_>>();
-        sorted.sort();
-        sorted
     }
 }
 
@@ -414,19 +414,23 @@ mod proposal {
 }
 
 mod vote {
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeMap;
 
     use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
-    use monad_mcp_common::spec::Signature as _;
+    use monad_mcp_common::{
+        containers::{ValidatorIndex, ValidatorSet},
+        spec::Signature as _,
+    };
 
-    use super::{NodeId, Signature, Stake, ValidatorData};
+    use super::{Signature, Stake, ValidatorData};
     use crate::spec::{self, SignatureCollection as _, validator::ValidatorData as _};
 
     #[derive(Clone, PartialEq, Eq, Hash, Debug)]
     pub struct SignatureCollection {
         // index -> sig to simulate the erasure of PubKey/NodeId in
         // BLS. keyed by index so duplicates cannot be represented,
-        // like a bitmap.
+        // like a bitmap. Wire indices: checked against the validator set
+        // by signers and verify.
         sigs: BTreeMap<usize, Signature>,
     }
 
@@ -484,56 +488,37 @@ mod vote {
         type Signature = Signature;
         type ValidatorData = ValidatorData;
 
-        fn aggregate(
-            sig_map: &BTreeMap<&NodeId, &Signature>,
-            validator_data: &ValidatorData,
+        fn aggregate<'a>(
+            sigs: impl IntoIterator<Item = (ValidatorIndex, &'a Signature)>,
+            _validator_data: &ValidatorData,
         ) -> Self {
-            debug_assert!(sig_map.values().all(|sig| sig.is_well_formed()));
-
-            let sigs = sig_map
-                .iter()
-                .map(|(node_id, sig)| (validator_data.indices()[node_id], (*sig).clone()))
+            let sigs: BTreeMap<_, _> = sigs
+                .into_iter()
+                .map(|(index, sig)| (index.get(), sig.clone()))
                 .collect();
+            debug_assert!(sigs.values().all(|sig| sig.is_well_formed()));
             SignatureCollection { sigs }
         }
 
-        fn signers<'s>(
-            &'s self,
-            validator_data: &'s ValidatorData,
-        ) -> Option<BTreeSet<&'s NodeId>> {
-            let mut signers = BTreeSet::new();
-
+        fn signers(&self, validator_data: &ValidatorData) -> Option<ValidatorSet> {
+            let mut signers = ValidatorSet::new();
             for index in self.sigs.keys() {
-                let Some(node_id) = validator_data.get_node(*index) else {
-                    return None; // Invalid index
-                };
-
-                signers.insert(node_id);
+                // None for an index outside the validator set
+                signers.insert(validator_data.checked_index(*index)?);
             }
-
             Some(signers)
         }
 
-        fn verify<'s>(
-            &'s self,
-            data: &[u8],
-            validator_data: &'s ValidatorData,
-        ) -> Option<BTreeSet<&'s NodeId>> {
-            let mut signers = BTreeSet::new();
-
+        fn verify(&self, data: &[u8], validator_data: &ValidatorData) -> Option<ValidatorSet> {
+            let mut signers = ValidatorSet::new();
             for (index, sig) in &self.sigs {
-                let Some(node_id) = validator_data.get_node(*index) else {
-                    return None; // Invalid index
-                };
-
-                let pubkey = validator_data.get_pubkey(node_id);
-
-                if !sig.verify(data, pubkey) {
+                // None for an index outside the validator set
+                let index = validator_data.checked_index(*index)?;
+                if !sig.verify(data, validator_data.pubkey(index)) {
                     return None; // Invalid signature
                 }
-                signers.insert(node_id);
+                signers.insert(index);
             }
-
             Some(signers)
         }
     }
@@ -549,40 +534,39 @@ mod vote {
             Self { validator_data }
         }
 
-        fn try_aggregate(
+        fn try_aggregate<'v>(
             &mut self,
             data: &[u8],
-            mut votes: BTreeMap<&NodeId, &Signature>,
+            votes: impl IntoIterator<Item = (ValidatorIndex, &'v Signature)>,
             target_stake: Stake,
         ) -> Option<SignatureCollection> {
-            // caller guarantee: every vote comes from a known
+            // caller guarantee: every vote comes from a distinct known
             // validator and carries a well-formed signature.
-            let mut all_voters = votes.keys();
-            assert!(all_voters.all(|node_id| self.validator_data.contains(*node_id)));
-            assert!(votes.values().all(|sig| sig.is_well_formed()));
+            let mut voters = ValidatorSet::new();
+            let mut valid = Vec::new();
+            for (index, sig) in votes {
+                assert!(index.get() < self.validator_data.len());
+                assert!(voters.insert(index), "one vote per validator");
+                assert!(sig.is_well_formed());
 
-            let sum = |votes: &BTreeMap<_, _>| self.validator_data.sum_stake(votes.keys().copied());
+                // just naively exclude any bad signatures. we should use
+                // an aggregation tree for bls to iteratively exclude bad
+                // signatures.
+                if sig.verify(data, self.validator_data.pubkey(index)) {
+                    valid.push((index, sig));
+                }
+            }
 
-            // just naively exclude any bad signatures. we should use
-            // an aggregation tree for bls to iteratively exclude bad
-            // signatures.
-            votes.retain(|node_id, sig| {
-                let pubkey = self.validator_data.get_pubkey(node_id);
-                sig.verify(data, pubkey)
-            });
-
-            if sum(&votes) <= target_stake {
+            let signers: ValidatorSet = valid.iter().map(|(index, _)| *index).collect();
+            if self.validator_data.sum_stake(&signers) <= target_stake {
                 // not enough votes to reach the target stake
                 return None;
             }
 
-            let sigcol = SignatureCollection::aggregate(&votes, self.validator_data);
+            let sigcol = SignatureCollection::aggregate(valid, self.validator_data);
 
-            let voters = sigcol
-                .signers(self.validator_data)
-                .expect("signers should be valid");
-            assert!(sum(&votes) > target_stake);
-            assert!(sigcol.verify(data, self.validator_data) == Some(voters));
+            assert!(sigcol.signers(self.validator_data) == Some(signers));
+            assert!(sigcol.verify(data, self.validator_data) == Some(signers));
 
             Some(sigcol)
         }
@@ -590,22 +574,23 @@ mod vote {
 
     #[cfg(test)]
     mod tests {
-        use std::collections::HashMap;
-
         use bytes::Bytes;
-        use monad_mcp_common::spec::KeyPair as _;
+        use monad_mcp_common::{containers::FastHashMap, spec::KeyPair as _};
 
         use super::*;
-        use crate::{env::stub::PubKey, spec::vote::VoteAggregation as _};
+        use crate::{
+            env::stub::{NodeId, PubKey},
+            spec::vote::VoteAggregation as _,
+        };
 
         // 7 nodes of stake 1 each against threshold 5: excluding one bad
         // sig leaves 6 > 5, excluding two leaves 5 == 5 which must fail.
         #[test]
         fn try_aggregate_excludes_bad_sigs() {
             let nodes: Vec<NodeId> = (0..7).map(NodeId::dummy).collect();
-            let valset: HashMap<NodeId, Stake> =
+            let valset: FastHashMap<NodeId, Stake> =
                 nodes.iter().map(|node| (*node, Stake::from(1))).collect();
-            let mapping: HashMap<NodeId, PubKey> = nodes
+            let mapping: FastHashMap<NodeId, PubKey> = nodes
                 .iter()
                 .map(|node| (*node, node.keypair().pubkey()))
                 .collect();
@@ -620,18 +605,20 @@ mod vote {
             let threshold = Stake::from(5);
             let mut vote_agg = VoteAggregation::from_validator_data(&validator_data);
 
+            let index = |node: &NodeId| validator_data.index_of(node).unwrap();
+
             sigs[0].make_invalid();
-            let votes: BTreeMap<&NodeId, &Signature> = nodes.iter().zip(&sigs).collect();
+            let votes = nodes.iter().map(index).zip(&sigs);
             let sigcol = vote_agg
                 .try_aggregate(&data, votes, threshold)
                 .expect("6 valid votes exceed threshold 5");
             let voters = sigcol
                 .signers(&validator_data)
                 .expect("signers should be valid");
-            assert_eq!(voters, nodes[1..].iter().collect());
+            assert_eq!(voters, nodes[1..].iter().map(index).collect());
 
             sigs[1].make_invalid();
-            let votes: BTreeMap<&NodeId, &Signature> = nodes.iter().zip(&sigs).collect();
+            let votes = nodes.iter().map(index).zip(&sigs);
             assert!(vote_agg.try_aggregate(&data, votes, threshold).is_none());
         }
     }

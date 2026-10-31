@@ -13,12 +13,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::BTreeSet;
+use monad_mcp_common::containers::ValidatorSet;
 
 use super::super::{
     chunk::{ChunkRequest, ChunkRequestType, ChunksSubset},
     instance_rc::MissingChunks,
-    types::{NodeId, ProposalId, Timestamp, TimestampDelta},
+    types::{NodeId, ProposalId, Timestamp, TimestampDelta, ValidatorData},
     util::shuffle_sends,
 };
 
@@ -27,8 +27,10 @@ use super::super::{
 pub(crate) struct Recovery {
     pid: ProposalId,
     self_id: NodeId,
-    // nodes that can derive our chunks: the author, then hinted holders
-    decoded_holders: BTreeSet<NodeId>,
+    // nodes that can derive our chunks: the author, and the validators hinted
+    // to have decoded the proposal
+    author: NodeId,
+    hinted_holders: ValidatorSet,
     my_chunks_timer: RetryTimer,
     your_chunks_timer: RetryTimer,
 }
@@ -44,7 +46,8 @@ impl Recovery {
         Self {
             pid,
             self_id,
-            decoded_holders: BTreeSet::from([author]),
+            author,
+            hinted_holders: ValidatorSet::new(),
             my_chunks_timer: RetryTimer::new(first_pull, interval),
             your_chunks_timer: RetryTimer::new(first_pull, interval),
         }
@@ -54,15 +57,17 @@ impl Recovery {
         self.pid
     }
 
-    pub(crate) fn add_decoded_holders(&mut self, node_ids: Vec<NodeId>, now: Timestamp) {
-        self.decoded_holders.extend(node_ids);
+    pub(crate) fn add_decoded_holders(&mut self, holders: &ValidatorSet, now: Timestamp) {
+        self.hinted_holders.union_with(holders);
         self.my_chunks_timer.set_due(now);
     }
 
+    // `validator_data` is the epoch's that the hints were drawn from
     pub(crate) fn pull(
         &mut self,
         mut missing: MissingChunks,
         now: Timestamp,
+        validator_data: &ValidatorData,
     ) -> Vec<(NodeId, ChunkRequest)> {
         let mut requests = Vec::new();
         let mine = missing
@@ -72,7 +77,7 @@ impl Recovery {
         if let Some(mine) = mine
             && self.my_chunks_timer.try_fire(now)
         {
-            requests.extend(self.ask_decoded_holders(mine));
+            requests.extend(self.ask_decoded_holders(mine, validator_data));
         }
         if !missing.is_empty() && self.your_chunks_timer.try_fire(now) {
             requests.extend(self.ask_owners(missing));
@@ -80,14 +85,27 @@ impl Recovery {
         requests
     }
 
-    fn ask_decoded_holders(&self, mine: ChunksSubset) -> Vec<(NodeId, ChunkRequest)> {
+    fn ask_decoded_holders(
+        &self,
+        mine: ChunksSubset,
+        validator_data: &ValidatorData,
+    ) -> Vec<(NodeId, ChunkRequest)> {
+        use monad_mcp_chorus::spec::validator::ValidatorData as _;
+
         let pid = self.pid;
         let kind = ChunkRequestType::MyChunks;
-        let mut requests = Vec::new();
-        for holder in &self.decoded_holders {
-            let subset = mine.clone();
-            requests.push((*holder, ChunkRequest { pid, kind, subset }));
+        // in index order, which the shuffle below starts from
+        let mut holders = self.hinted_holders;
+        if let Some(author) = validator_data.index_of(&self.author) {
+            holders.insert(author);
         }
+        let mut requests = Vec::new();
+        for holder in &holders {
+            let subset = mine.clone();
+            let holder = *validator_data.node_id(holder);
+            requests.push((holder, ChunkRequest { pid, kind, subset }));
+        }
+
         shuffle_sends(&mut requests, &self.pid, &self.self_id);
         requests
     }

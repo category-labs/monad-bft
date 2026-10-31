@@ -30,7 +30,10 @@ pub use super::fast::{
 };
 use super::{
     super::{message::Outbound, runtime::Runtime, timers::Timers},
-    types::{IsVote, Lanes, NodeId, Slot, StrongQc, Timestamp, TimestampDelta},
+    types::{
+        IsVote, Lanes, NodeId, Slot, StrongQc, Timestamp, TimestampDelta, ValidatorData,
+        ValidatorIndex,
+    },
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, RlpEncodableWrapper)]
@@ -150,7 +153,10 @@ where
     /// At most one proposal per instance
     fn propose(&mut self, data: V, cert: Option<Self::FallbackCert>);
 
-    fn handle_message(&mut self, sender: NodeId, message: Self::Message);
+    /// The validators the sender indices refer to
+    fn validator_data(&self) -> &ValidatorData;
+
+    fn handle_message(&mut self, sender: ValidatorIndex, message: Self::Message);
 
     fn handle_timer(&mut self, timer_event: Self::TimerEvent);
 
@@ -324,6 +330,13 @@ where
     }
 
     fn receive(&mut self, now: Timestamp, sender: NodeId, message: A::Message) {
+        use crate::spec::validator::ValidatorData as _;
+
+        // the boundary of a standalone instance: a sender becomes a validator
+        // index here, as in Chorus::handle_message
+        let Some(sender) = self.mvba.validator_data().index_of(&sender) else {
+            return;
+        };
         self.mvba.handle_message(sender, message);
         self.drain(now);
     }

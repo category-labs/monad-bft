@@ -18,6 +18,7 @@
 //! implementation-dependent traits, and `stub` and `prod` are its
 //! instantiations.
 
+pub mod containers;
 pub mod spec;
 
 // a stub implementation of spec for development & testing

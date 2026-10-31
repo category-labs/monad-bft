@@ -199,9 +199,8 @@ impl<'a> FirstHopDissemination<'a> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use bytes::Bytes;
+    use monad_mcp_common::containers::FastHashMap;
 
     use super::{
         super::{
@@ -238,8 +237,8 @@ mod tests {
         packets
     }
 
-    fn by_recipient(packets: Vec<(NodeId, Bytes)>) -> HashMap<NodeId, Vec<Bytes>> {
-        let mut by_recipient: HashMap<NodeId, Vec<Bytes>> = HashMap::new();
+    fn by_recipient(packets: Vec<(NodeId, Bytes)>) -> FastHashMap<NodeId, Vec<Bytes>> {
+        let mut by_recipient: FastHashMap<NodeId, Vec<Bytes>> = FastHashMap::new();
         for (node, packet) in packets {
             by_recipient.entry(node).or_default().push(packet);
         }
