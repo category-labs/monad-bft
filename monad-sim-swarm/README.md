@@ -20,6 +20,10 @@ engine.
   ```rust
   Network::reliable(delta)                    // constant latency, lossless
   Network::with_latency(distribution)         // per-message sampled latency
+  Network::with_link_latency(|link, rng| ..)  // latency per sender/receiver
+  Network::with_matrix(matrix, jitter)        // region latency matrix + jitter
+      .egress(bits_per_sec, |msg| size)       // serial per-sender uplink
+      .egress_rate(addr, bits_per_sec)        // per-sender uplink override
       .loss(p)                                // independent drop probability
       .partition(window, [group_a, group_b])  // time-bounded network split
       .drop_if(|link, msg| ...)               // predicate drop
@@ -29,6 +33,8 @@ engine.
   A model returns the delays at which *copies* of a message are delivered: an
   empty result drops it, more than one duplicates it, and reordering needs no
   special handling — a smaller delay simply arrives first.
+- **`RegionTable` / `Placer`** — predefined latency topologies (see
+  [Topologies](#topologies)).
 - **`Deliver` / `deliver_to`** — a *type-erased* per-node delivery thunk, so
   the network only ever names `Addr` and `Msg`. One net can therefore carry
   heterogeneous node process types (different protocol versions, a Byzantine
@@ -81,6 +87,42 @@ for a in 0..3 {
 Determinism comes from the engine; the net additionally keeps its own
 independently-seeded RNG, so network randomness is reproducible on its own.
 
+## Topologies
+
+A `RegionTable` holds one-way latencies between named regions, a weight per
+region, and its provenance (name, source, date). Every entry, including the
+diagonal, is positive. Presets:
+
+| preset | regions | source |
+|---|---|---|
+| `RegionTable::public_internet()` | FRA, AMS, LON, NYC, CHI, LAX, SGP, TYO, SYD, SAO | median RTTs from the [WonderNetwork](https://wondernetwork.com/pings) public dataset of 2020-07-19/20, halved |
+| `RegionTable::single_region(local)` | 1 | synthetic |
+| `RegionTable::two_clusters(near, far)` | 2 | synthetic |
+| `RegionTable::ring(n, local, hop)` | n | synthetic |
+| `RegionTable::star(leaves, local, spoke)` | hub + leaves | synthetic |
+
+`RegionTable::new` and `RegionTable::from_rtt` build your own, for example
+from a measured matrix of a specific deployment; such data belongs with the
+code that uses it, not in this crate.
+
+A `Placer` spreads nodes over a table's regions by weight, with fixed
+(apportioned) or sampled counts, optionally with a per-node last mile,
+persistent per-pair route spread and asymmetry, and stake weights. It draws
+only from the RNG it is given:
+
+```rust
+let table = RegionTable::public_internet();
+let placement = Placer::new(&table)
+    .regions(Regions::Apportioned)          // or Regions::Sampled
+    .last_mile(micros(300)..=millis(4))
+    .route_spread(0.95..=1.10)              // per pair, both directions
+    .asymmetry(0.04)                        // per pair, 1 + a there, 1 - a back
+    .stake(Stake::LogNormal { sigma: 1.0 })
+    .place(0..100u32, &mut ChaChaRng::seed_from_u64(seed));
+let network = Network::with_matrix(placement.matrix(), jitter);
+// placement.nodes(): region, last mile and stake share per address
+```
+
 ## Inspection & lifecycle
 
 `with_node` / `with_node_mut` inspect or mutate a node between steps;
@@ -95,4 +137,5 @@ cargo test -p monad-sim-swarm
 ```
 
 `tests/swarm.rs` demonstrates heterogeneous node types sharing one network,
-the swarm broadcast, and predicate drops.
+the swarm broadcast, and predicate drops. `tests/network.rs` covers the
+latency matrix and egress, and `tests/topology.rs` the presets and the placer.

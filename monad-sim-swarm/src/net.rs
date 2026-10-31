@@ -57,26 +57,118 @@ pub trait NetworkModel<Addr, Msg> {
     ) -> Vec<Duration>;
 }
 
-type LatencyFn = Box<dyn FnMut(&mut ChaChaRng) -> Duration>;
+type LatencyFn<Addr> = Box<dyn FnMut(&Link<Addr>, &mut ChaChaRng) -> Duration>;
 type DropFn<Addr, Msg> = Box<dyn Fn(&Link<Addr>, &Msg) -> bool>;
+type SizeFn<Msg> = Box<dyn Fn(&Msg) -> usize>;
 type Partition<Addr> = (Range<Time>, Vec<BTreeSet<Addr>>);
+
+/// One-way base latencies between *regions*, plus a placement of addresses
+/// into regions. A topology with one region per node is a full node-to-node
+/// matrix; a geographic topology places many nodes per region.
+///
+/// Rows are senders and columns receivers, so asymmetric paths are allowed.
+pub struct LatencyMatrix<Addr> {
+    one_way: Vec<Vec<Duration>>,
+    region: BTreeMap<Addr, usize>,
+}
+
+impl<Addr: Ord> LatencyMatrix<Addr> {
+    /// Panics unless `one_way` is square.
+    pub fn new(one_way: Vec<Vec<Duration>>) -> Self {
+        let n = one_way.len();
+        assert!(
+            one_way.iter().all(|row| row.len() == n),
+            "latency matrix must be square"
+        );
+        Self {
+            one_way,
+            region: BTreeMap::new(),
+        }
+    }
+
+    /// Place `addr` in `region` (a row/column index). Panics if out of range.
+    pub fn place(mut self, addr: Addr, region: usize) -> Self {
+        assert!(region < self.one_way.len(), "region {region} out of range");
+        self.region.insert(addr, region);
+        self
+    }
+
+    /// The base one-way latency `from` -> `to`. Panics if either address was
+    /// never placed: a missing placement is a configuration error, not a
+    /// network condition.
+    pub fn latency(&self, from: &Addr, to: &Addr) -> Duration {
+        let row = self.region(from);
+        let column = self.region(to);
+        self.one_way[row][column]
+    }
+
+    fn region(&self, addr: &Addr) -> usize {
+        *self
+            .region
+            .get(addr)
+            .expect("address not placed in the latency matrix")
+    }
+}
+
+/// A sender's serial uplink. Messages leave one after another in the order
+/// they are sent, each occupying the link for its size divided by the rate;
+/// a message sent while the link is busy waits its turn.
+///
+/// Sequencing is per message, which models a transport whose messages each
+/// fit one datagram. Anything finer (frames of a larger message interleaving
+/// with others) is out of scope.
+struct Egress<Addr, Msg> {
+    bits_per_sec: u64,
+    rates: BTreeMap<Addr, u64>,
+    size_of: SizeFn<Msg>,
+    busy_until: BTreeMap<Addr, Time>,
+}
+
+impl<Addr: Ord + Clone, Msg> Egress<Addr, Msg> {
+    /// The delay from `link.now` until `message` has fully left the sender.
+    fn transmit(&mut self, link: &Link<Addr>, message: &Msg) -> Duration {
+        let rate = self
+            .rates
+            .get(&link.from)
+            .copied()
+            .unwrap_or(self.bits_per_sec);
+        let bits = (self.size_of)(message) as u128 * 8;
+        let nanos = (bits * 1_000_000_000).div_ceil(u128::from(rate));
+        let busy_until = self.busy_until.get(&link.from).copied().unwrap_or(link.now);
+        let start = if busy_until > link.now {
+            busy_until
+        } else {
+            link.now
+        };
+        let done = start + Duration::from_nanos(u64::try_from(nanos).expect("transmit time"));
+        self.busy_until.insert(link.from.clone(), done);
+        done.abs_diff(link.now)
+    }
+}
 
 /// A declarative network model: a base latency plus optional, independent
 /// conditions. Anything left unconfigured behaves reliably.
 pub struct Conditions<Addr, Msg> {
-    latency: LatencyFn,
+    latency: LatencyFn<Addr>,
     loss: f64,
     partitions: Vec<Partition<Addr>>,
     drop_if: Option<DropFn<Addr, Msg>>,
+    egress: Option<Egress<Addr, Msg>>,
 }
 
-impl<Addr: Ord, Msg> NetworkModel<Addr, Msg> for Conditions<Addr, Msg> {
+impl<Addr: Ord + Clone, Msg> NetworkModel<Addr, Msg> for Conditions<Addr, Msg> {
     fn deliveries(
         &mut self,
         link: &Link<Addr>,
         message: &Msg,
         rng: &mut ChaChaRng,
     ) -> Vec<Duration> {
+        // a message dropped in the network still used the sender's uplink;
+        // a node's messages to itself never touch it
+        let transmit = match &mut self.egress {
+            Some(egress) if link.from != link.to => egress.transmit(link, message),
+            _ => Duration::ZERO,
+        };
         if let Some(drop_if) = &self.drop_if {
             if drop_if(link, message) {
                 return Vec::new();
@@ -94,7 +186,7 @@ impl<Addr: Ord, Msg> NetworkModel<Addr, Msg> for Conditions<Addr, Msg> {
         if self.loss > 0.0 && rng.gen::<f64>() < self.loss {
             return Vec::new();
         }
-        vec![(self.latency)(rng)]
+        vec![transmit + (self.latency)(link, rng)]
     }
 }
 
@@ -116,18 +208,73 @@ impl<Addr, Msg> Network<Addr, Msg> {
     /// Constant-latency, lossless network.
     pub fn reliable(latency: Duration) -> Self {
         Network::Conditions(Conditions {
-            latency: Box::new(move |_| latency),
+            latency: Box::new(move |_, _| latency),
             loss: 0.0,
             partitions: Vec::new(),
             drop_if: None,
+            egress: None,
         })
     }
 
     /// Latency sampled per message from `distribution`.
     pub fn with_latency(distribution: impl Distribution<Duration> + 'static) -> Self {
+        Network::with_link_latency(move |_, rng| distribution.sample(rng))
+    }
+
+    /// Latency chosen per message from the link (sender, receiver, send time)
+    /// and the network's RNG.
+    pub fn with_link_latency(
+        latency: impl FnMut(&Link<Addr>, &mut ChaChaRng) -> Duration + 'static,
+    ) -> Self {
         let mut network = Network::reliable(Duration::ZERO);
-        network.conditions().latency = Box::new(move |rng| distribution.sample(rng));
+        network.conditions().latency = Box::new(latency);
         network
+    }
+
+    /// Base latency from `matrix` for each sender/receiver pair, plus
+    /// `jitter` sampled per message.
+    pub fn with_matrix(
+        matrix: LatencyMatrix<Addr>,
+        jitter: impl Distribution<Duration> + 'static,
+    ) -> Self
+    where
+        Addr: Ord + 'static,
+    {
+        Network::with_link_latency(move |link, rng| {
+            matrix.latency(&link.from, &link.to) + jitter.sample(rng)
+        })
+    }
+
+    /// Give every sender a serial uplink of `bits_per_sec` (see
+    /// [`egress_rate`](Network::egress_rate) for per-sender rates). A message
+    /// occupies it for `size_of(message)` bytes and waits for the messages
+    /// the same sender sent before it; its delivery delay is that queueing
+    /// and transmission time plus the link latency.
+    pub fn egress(mut self, bits_per_sec: u64, size_of: impl Fn(&Msg) -> usize + 'static) -> Self {
+        assert!(bits_per_sec > 0, "egress rate must be positive");
+        self.conditions().egress = Some(Egress {
+            bits_per_sec,
+            rates: BTreeMap::new(),
+            size_of: Box::new(size_of),
+            busy_until: BTreeMap::new(),
+        });
+        self
+    }
+
+    /// Override the uplink rate of one sender. Panics unless
+    /// [`egress`](Network::egress) is configured.
+    pub fn egress_rate(mut self, addr: Addr, bits_per_sec: u64) -> Self
+    where
+        Addr: Ord,
+    {
+        assert!(bits_per_sec > 0, "egress rate must be positive");
+        self.conditions()
+            .egress
+            .as_mut()
+            .expect("configure egress before per-sender rates")
+            .rates
+            .insert(addr, bits_per_sec);
+        self
     }
 
     /// A fully custom model.
@@ -175,7 +322,7 @@ impl<Addr, Msg> Network<Addr, Msg> {
 
     fn into_model(self) -> Box<dyn NetworkModel<Addr, Msg>>
     where
-        Addr: Ord + 'static,
+        Addr: Ord + Clone + 'static,
         Msg: 'static,
     {
         match self {
