@@ -46,15 +46,19 @@ pub(crate) fn to_timestamp(time: Time) -> Timestamp {
     )
 }
 
-// How an available proposal is reported to the slot consensus: the DA
-// events, in order, that make it votable. Supplied by the wiring, which
+// What a node does with the local outputs of its runtime, supplied by the
+// wiring, which knows the concrete runtime (see swarm.rs and mvba.rs).
+pub(crate) type OutputFn<R> = dyn FnMut(Timestamp, <R as Runtime>::LocalOut);
+
+// How an available proposal is reported to the slot consensus: the local
+// inputs, in order, that make it votable. Supplied by the wiring, which
 // knows the concrete consensus (see swarm.rs).
 pub(crate) type DaEventsFn<E> = dyn Fn(&DaAnnouncement) -> Vec<E>;
 
 // The node-level proposal machinery: the planner decides when to seal, the
 // mock DA layer stores and announces the sealed proposals and reports what
-// became available. The planner is shared with the facts observer planted
-// in the runtime (see swarm.rs).
+// became available. The planner is shared with the output handler of the
+// node, which feeds it the slot lifecycle (see swarm.rs).
 pub(crate) struct ProposerHarness<E> {
     pub(crate) planner: Arc<Mutex<ProposalPlanner>>,
     pub(crate) da: Arc<MockDa>,
@@ -63,28 +67,33 @@ pub(crate) struct ProposerHarness<E> {
     pub(crate) seal_alarm: Option<(Time, CancelToken)>,
 }
 
-// A monad-sim process that contains a cadence runtime and
-// participates in a simulated network. Translates between node events
-// and monad-sim steps.
-pub struct SimNode<M, E> {
+// A monad-sim process that contains a runtime and participates in a
+// simulated network. Translates between node events and monad-sim steps.
+pub struct SimNode<R: Runtime> {
     id: NodeId,
-    runtime: Box<dyn Runtime<M, DAEvent = E>>,
-    proposer: Option<ProposerHarness<E>>,
+    runtime: R,
+    on_output: Box<OutputFn<R>>,
+    proposer: Option<ProposerHarness<R::LocalIn>>,
     /// The one live timer step, at the runtime's last polled `next_due`.
     due_alarm: Option<(Time, CancelToken)>,
     me: Option<Handle<Self>>,
-    net: Option<Handle<SimNet<M>>>,
+    net: Option<Handle<SimNet<R::Message>>>,
 }
 
-impl<M, E> SimNode<M, E>
+impl<R> SimNode<R>
 where
-    M: Clone + 'static,
-    E: 'static,
+    R: Runtime + 'static,
+    R::Message: Clone + 'static,
 {
-    pub fn new(id: NodeId, runtime: impl Runtime<M, DAEvent = E> + 'static) -> Self {
+    pub(crate) fn new(
+        id: NodeId,
+        runtime: R,
+        on_output: impl FnMut(Timestamp, R::LocalOut) + 'static,
+    ) -> Self {
         Self {
             id,
-            runtime: Box::new(runtime),
+            runtime,
+            on_output: Box::new(on_output),
             proposer: None,
             due_alarm: None,
             me: None,
@@ -94,17 +103,23 @@ where
 
     pub(crate) fn with_proposer(
         id: NodeId,
-        runtime: impl Runtime<M, DAEvent = E> + 'static,
-        harness: ProposerHarness<E>,
+        runtime: R,
+        on_output: impl FnMut(Timestamp, R::LocalOut) + 'static,
+        harness: ProposerHarness<R::LocalIn>,
     ) -> Self {
         Self {
             proposer: Some(harness),
-            ..Self::new(id, runtime)
+            ..Self::new(id, runtime, on_output)
         }
     }
 
     pub fn init(&mut self, ctx: &mut Ctx) {
-        self.runtime.init();
+        self.process(ctx);
+    }
+
+    pub(crate) fn handle_input(&mut self, input: R::LocalIn, ctx: &mut Ctx) {
+        let now = to_timestamp(ctx.now());
+        self.runtime.handle_input(now, input);
         self.process(ctx);
     }
 
@@ -124,13 +139,16 @@ where
 
     // interpret all pending runtime events into monad-sim steps.
     fn process(&mut self, ctx: &mut Ctx) {
+        let now = to_timestamp(ctx.now());
         loop {
-            while let Some(event) = self.runtime.poll() {
+            while let Some(event) = self.runtime.poll_msg() {
                 self.interpret(event, ctx);
             }
-            // runtime steps may have fed facts to the planner (through the
-            // observer planted in the runtime); seal what is due and re-arm
-            // its alarm.
+            // local outputs may feed facts to the planner (through the
+            // output handler); seal what is due and re-arm its alarm.
+            while let Some(output) = self.runtime.poll_output() {
+                (self.on_output)(now, output);
+            }
             self.drain_planner(ctx);
             // a sealed proposal is available to its own proposer at once;
             // reporting it can produce further runtime events.
@@ -167,28 +185,23 @@ where
     // consensus, the way the real DA layer does. Returns whether anything
     // was reported.
     fn report_availability(&mut self, ctx: &mut Ctx) -> bool {
-        let events: Vec<_> = match &self.proposer {
+        let inputs: Vec<_> = match &self.proposer {
             None => return false,
             Some(harness) => harness
                 .da
                 .drain_available()
                 .iter()
-                .flat_map(|announcement| {
-                    let slot = announcement.slot();
-                    (harness.da_events)(announcement)
-                        .into_iter()
-                        .map(move |event| (slot, event))
-                })
+                .flat_map(|announcement| (harness.da_events)(announcement))
                 .collect(),
         };
 
-        if events.is_empty() {
+        if inputs.is_empty() {
             return false;
         }
 
         let now = to_timestamp(ctx.now());
-        for (slot, event) in events {
-            self.runtime.handle_da_event(now, slot, event);
+        for input in inputs {
+            self.runtime.handle_input(now, input);
         }
         true
     }
@@ -247,7 +260,7 @@ where
         }
     }
 
-    fn interpret(&mut self, event: Outbound<M>, ctx: &mut Ctx) {
+    fn interpret(&mut self, event: Outbound<R::Message>, ctx: &mut Ctx) {
         let now = ctx.now();
         match event {
             Outbound::Broadcast(message) => {
@@ -270,20 +283,20 @@ where
     }
 }
 
-impl<M, E> SimClient for SimNode<M, E>
+impl<R> SimClient for SimNode<R>
 where
-    M: Clone + 'static,
-    E: 'static,
+    R: Runtime + 'static,
+    R::Message: Clone + 'static,
 {
     type Addr = NodeId;
-    type Message = SimMessage<M>;
+    type Message = SimMessage<R::Message>;
 
-    fn wire(&mut self, me: Handle<Self>, net: Handle<SimNet<M>>) {
+    fn wire(&mut self, me: Handle<Self>, net: Handle<SimNet<R::Message>>) {
         self.me = Some(me);
         self.net = Some(net);
     }
 
-    fn receive(&mut self, from: NodeId, message: SimMessage<M>, ctx: &mut Ctx) {
+    fn receive(&mut self, from: NodeId, message: SimMessage<R::Message>, ctx: &mut Ctx) {
         match message {
             SimMessage::Cadence(message) => {
                 // this is where the message validation would happen in a real

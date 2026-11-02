@@ -13,23 +13,32 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use monad_mcp_chorus::stub::{Conductor, SlotConsensus};
 use monad_mcp_chorus_sim::CadenceSwarm;
 use monad_mcp_common::{Slot, Timestamp, stub::NodeId};
 
-pub fn expect_finalized<M: Clone + 'static, E: 'static>(
-    swarm: &CadenceSwarm<M, E>,
+pub fn expect_finalized<S, C>(
+    swarm: &CadenceSwarm<S, C>,
     node: NodeId,
     slots: impl IntoIterator<Item = u64>,
-) {
+) where
+    S: SlotConsensus + 'static,
+    C: Conductor + 'static,
+    C::Message: Clone,
+{
     let expected: Vec<Slot> = slots.into_iter().map(Slot).collect();
     assert_eq!(swarm.log().get_finalized_slots(node), expected);
 }
 
-pub fn expect_finalized_at<M: Clone + 'static, E: 'static>(
-    swarm: &CadenceSwarm<M, E>,
+pub fn expect_finalized_at<S, C>(
+    swarm: &CadenceSwarm<S, C>,
     node: NodeId,
     timestamps: impl IntoIterator<Item = Timestamp>,
-) {
+) where
+    S: SlotConsensus + 'static,
+    C: Conductor + 'static,
+    C::Message: Clone,
+{
     let expected: Vec<Timestamp> = timestamps.into_iter().collect();
     let finalized: Vec<Timestamp> = swarm.log().get_finalization_times(node);
     assert_eq!(finalized, expected);

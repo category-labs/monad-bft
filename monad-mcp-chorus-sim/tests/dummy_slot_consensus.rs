@@ -18,7 +18,6 @@ mod helper;
 use std::{num::NonZeroU64, sync::Arc};
 
 use chorus::{
-    CadenceWireMsg,
     conductor::{ConductorConfig, MonadConductor, acs::nop::NopAcs},
     slot::dummy::{DummySlotConsensus, DummySlotConsensusConfig},
 };
@@ -35,8 +34,6 @@ const GENESIS_DEADLINE: SlotDeadline = SlotDeadline::from_millis(100);
 
 type Conductor = MonadConductor<NopAcs<SlotDeadline>>;
 
-type DummyMsg = CadenceWireMsg<DummySlotConsensus, Conductor>;
-
 fn conductor() -> Conductor {
     let config = ConductorConfig::new(
         SLOTS_PER_WINDOW,
@@ -49,10 +46,14 @@ fn conductor() -> Conductor {
     MonadConductor::genesis(config, ()).unwrap()
 }
 
-fn add_dummy_node(builder: &mut CadenceSwarmBuilder<DummyMsg, ()>, id: NodeId, quorum: usize) {
+fn add_dummy_node(
+    builder: &mut CadenceSwarmBuilder<DummySlotConsensus, Conductor>,
+    id: NodeId,
+    quorum: usize,
+) {
     let config = DummySlotConsensusConfig { quorum };
     let key = Arc::new(id.keypair());
-    builder.add_node::<DummySlotConsensus, _>(id, conductor(), config, key);
+    builder.add_node(id, conductor(), config, key);
 }
 
 #[test]

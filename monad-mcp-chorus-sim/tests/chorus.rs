@@ -18,9 +18,8 @@ mod helper;
 use std::{num::NonZeroU64, sync::Arc};
 
 use chorus::{
-    CadenceWireMsg,
     conductor::{ConductorConfig, MonadConductor, acs::nop::NopAcs},
-    slot::chorus::{Chorus, ChorusConfig, ChorusContext, ChorusDAEvent},
+    slot::chorus::{Chorus, ChorusConfig, ChorusContext},
     types::{
         CreditLotterySchedule, HeaderAuth, ProposerConfig, RotatingProposerSchedule, ValidatorData,
     },
@@ -42,7 +41,6 @@ const LATENCY: TimestampDelta = TimestampDelta::from_millis(50); // expected net
 const DELTA: TimestampDelta = TimestampDelta::from_millis(100); // latency bound (Delta)
 
 type Conductor = MonadConductor<NopAcs<SlotDeadline>>;
-type DummyMsg = CadenceWireMsg<Chorus, Conductor>;
 
 fn conductor() -> Conductor {
     let config = ConductorConfig::new(
@@ -70,7 +68,7 @@ fn proposer_schedule(
 }
 
 fn add_node(
-    builder: &mut CadenceSwarmBuilder<DummyMsg, ChorusDAEvent>,
+    builder: &mut CadenceSwarmBuilder<Chorus, Conductor>,
     id: u64,
     val_data: &Arc<ValidatorData>,
 ) {
@@ -84,7 +82,7 @@ fn add_node(
     };
     let config = ChorusConfig { delta: DELTA };
 
-    builder.add_node::<Chorus, _>(node_id, conductor(), config, context);
+    builder.add_node(node_id, conductor(), config, context);
 }
 
 fn gen_validator_data(n: u64) -> ValidatorData {

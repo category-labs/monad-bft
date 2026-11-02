@@ -28,11 +28,10 @@ use std::{
 };
 
 use chorus::{
-    CadenceWireMsg,
     conductor::{ConductorConfig, MonadConductor, acs::nop::NopAcs},
     proposers::header_auth,
     proposing::{PlannerConfig, ProposalPlanner},
-    slot::chorus::{Chorus, ChorusConfig, ChorusContext, ChorusDAEvent, Entry, SlotFinalization},
+    slot::chorus::{Chorus, ChorusConfig, ChorusContext, Entry, SlotFinalization},
     types::{
         ProposerConfig, ProposerSchedule, RotatingProposerSchedule, RoundRobinLeaderSchedule,
         ValidatorData,
@@ -62,7 +61,6 @@ const LEAD: TimestampDelta = TimestampDelta::from_millis(60);
 const MIN_LEAD: TimestampDelta = TimestampDelta::from_millis(30);
 
 type Conductor = MonadConductor<NopAcs<SlotDeadline>>;
-type Msg = CadenceWireMsg<Chorus, Conductor>;
 type Schedule = RotatingProposerSchedule<RoundRobinLeaderSchedule>;
 
 // Per-node record of the finalized entries: (node, slot) -> entries by
@@ -112,10 +110,10 @@ fn build_swarm(
     proposer_config: &ProposerConfig,
     schedule: &Arc<Schedule>,
     val_data: &Arc<ValidatorData>,
-) -> (CadenceSwarm<Msg, ChorusDAEvent>, EntriesLog) {
+) -> (CadenceSwarm<Chorus, Conductor>, EntriesLog) {
     let entries: EntriesLog = Arc::default();
 
-    let mut builder = CadenceSwarmBuilder::new();
+    let mut builder = CadenceSwarmBuilder::<Chorus, _>::new();
     builder.set_latency(LATENCY.as_duration());
 
     for i in 0..NODES {
@@ -156,7 +154,7 @@ fn build_swarm(
             assert!(previous.is_none(), "slot finalized twice");
         };
 
-        builder.add_proposer_node::<Chorus, _, _>(
+        builder.add_proposer_node(
             id,
             conductor(),
             ChorusConfig { delta: DELTA },

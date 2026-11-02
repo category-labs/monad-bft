@@ -13,17 +13,12 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{
-    collections::VecDeque,
-    sync::mpsc::{Receiver, Sender, channel},
-};
-
 use monad_mcp_common::{Slot, SlotDeadline, Timestamp};
 
 use super::Component;
 use crate::{
     chorus::{
-        CadenceRuntime, DASink, FinalizationObserver, Outbound, Runtime as _, SlotLifecycle,
+        CadenceOutput as LocalOut, CadenceRuntime, Outbound, Runtime as _, SlotLifecycle,
         SlotManager,
         conductor::{MonadConductor, acs::nop::NopAcs},
         slot::chorus::{Chorus, ChorusDACommand, ChorusDAEvent, SlotFinalization},
@@ -45,40 +40,19 @@ pub enum CadenceOutput {
     DACommand(Slot, ChorusDACommand),
     Finalized(Timestamp, Slot, SlotFinalization),
     FastBlock(Timestamp, Slot), // demo(tx-timeline)
-    // the contiguous finalized prefix reached cap (exclusive)
-    CapAdvance(Timestamp, Slot),
 }
 
-// the cadence runtime with its sink callbacks turned back into outputs.
-// the channel goes away with the driver collapse in chorus.
 pub struct Cadence {
     runtime: CadenceRuntime<Chorus, Conductor>,
-    from_sinks: Receiver<CadenceOutput>,
-    outbox: VecDeque<CadenceOutput>,
+    // the time of the latest input, which stamps the commits it causes
+    now: Timestamp,
 }
 
 impl Cadence {
     pub fn new(slot_manager: SlotManager<Chorus>, conductor: Conductor) -> Self {
-        let mut runtime = CadenceRuntime::new(slot_manager, conductor);
-        let (to_outbox, from_sinks) = channel();
-        runtime.on_da(DAChannel(to_outbox.clone()));
-        runtime.on_finalization(FinalizationChannel(to_outbox));
-        runtime.init();
-        let mut cadence = Self {
-            runtime,
-            from_sinks,
-            outbox: VecDeque::new(),
-        };
-        cadence.collect();
-        cadence
-    }
-
-    fn collect(&mut self) {
-        while let Ok(output) = self.from_sinks.try_recv() {
-            self.outbox.push_back(output);
-        }
-        while let Some(event) = self.runtime.poll() {
-            self.outbox.push_back(CadenceOutput::Outbound(event));
+        Self {
+            runtime: CadenceRuntime::new(slot_manager, conductor),
+            now: Timestamp::GENESIS,
         }
     }
 }
@@ -88,11 +62,11 @@ impl Component for Cadence {
     type Output = CadenceOutput;
 
     fn handle(&mut self, now: Timestamp, input: CadenceInput) {
+        self.now = now;
         match input {
             CadenceInput::Message(sender, message) => self.runtime.receive(now, sender, message),
-            CadenceInput::DAEvent(slot, event) => self.runtime.handle_da_event(now, slot, event),
+            CadenceInput::DAEvent(slot, event) => self.runtime.handle_input(now, (slot, event)),
         }
-        self.collect();
     }
 
     fn next_due(&self) -> Option<Timestamp> {
@@ -100,41 +74,22 @@ impl Component for Cadence {
     }
 
     fn handle_due(&mut self, now: Timestamp) {
+        self.now = now;
         self.runtime.handle_due(now);
-        self.collect();
     }
 
     fn poll(&mut self) -> Option<CadenceOutput> {
-        self.outbox.pop_front()
-    }
-}
-
-struct DAChannel(Sender<CadenceOutput>);
-
-impl DASink<ChorusDACommand> for DAChannel {
-    fn handle_lifecycle(&mut self, event: SlotLifecycle) {
-        self.0.send(CadenceOutput::Lifecycle(event)).ok();
-    }
-
-    fn handle_command(&mut self, slot: Slot, action: ChorusDACommand) {
-        self.0.send(CadenceOutput::DACommand(slot, action)).ok();
-    }
-}
-
-struct FinalizationChannel(Sender<CadenceOutput>);
-
-impl<OD> FinalizationObserver<OD, SlotFinalization> for FinalizationChannel {
-    // demo(tx-timeline)
-    fn handle_optimistic_commit(&mut self, now: Timestamp, slot: Slot, _data: &OD) {
-        self.0.send(CadenceOutput::FastBlock(now, slot)).ok();
-    }
-
-    fn handle_finalization(&mut self, now: Timestamp, slot: Slot, data: &SlotFinalization) {
-        let event = CadenceOutput::Finalized(now, slot, data.clone());
-        self.0.send(event).ok();
-    }
-
-    fn handle_chain_advance(&mut self, now: Timestamp, cap: Slot) {
-        self.0.send(CadenceOutput::CapAdvance(now, cap)).ok();
+        if let Some(outbound) = self.runtime.poll_msg() {
+            return Some(CadenceOutput::Outbound(outbound));
+        }
+        let output = match self.runtime.poll_output()? {
+            LocalOut::Lifecycle(event) => CadenceOutput::Lifecycle(event),
+            LocalOut::DA(slot, command) => CadenceOutput::DACommand(slot, command),
+            LocalOut::CommitOptimistic(slot) => CadenceOutput::FastBlock(self.now, slot),
+            LocalOut::Finalized(slot, finalization) => {
+                CadenceOutput::Finalized(self.now, slot, finalization)
+            }
+        };
+        Some(output)
     }
 }

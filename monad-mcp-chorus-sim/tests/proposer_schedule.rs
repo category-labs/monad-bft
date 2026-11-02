@@ -105,7 +105,7 @@ fn proposer_schedule(
 
 #[test]
 fn weighted_schedule_drives_the_swarm_across_epochs() {
-    let mut builder = CadenceSwarmBuilder::new();
+    let mut builder = CadenceSwarmBuilder::<Chorus, _>::new();
     builder.set_latency(Duration::from_millis(LATENCY));
 
     let val_data = Arc::new(gen_validator_data());
@@ -127,7 +127,7 @@ fn weighted_schedule_drives_the_swarm_across_epochs() {
             header_auth: Arc::new(HeaderAuth::new(|_, _| None)),
             proposers: schedule,
         };
-        builder.add_node::<Chorus, _>(node_id, conductor(), config, context);
+        builder.add_node(node_id, conductor(), config, context);
     }
 
     let mut swarm = builder.build();
@@ -234,7 +234,7 @@ fn vacant_indices_do_not_delay_the_fast_path() {
         assert_eq!(occupied, expected, "slot {slot}");
     }
 
-    let mut builder = CadenceSwarmBuilder::new();
+    let mut builder = CadenceSwarmBuilder::<Chorus, _>::new();
     builder.set_latency(Duration::from_millis(LATENCY));
 
     for id in 0..NODES {
@@ -249,7 +249,7 @@ fn vacant_indices_do_not_delay_the_fast_path() {
             header_auth: Arc::new(HeaderAuth::new(|_, _| None)),
             proposers: schedule.clone(),
         };
-        builder.add_node::<Chorus, _>(node_id, conductor(), chorus_config, context);
+        builder.add_node(node_id, conductor(), chorus_config, context);
     }
 
     let mut swarm = builder.build();

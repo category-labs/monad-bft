@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 
 use tracing::{debug, trace};
 
@@ -26,23 +26,21 @@ use super::{
     types::{NodeId, Slot, Timestamp},
 };
 
-// A Runtime describes the wiring logic of the consensus stack: slot
-// manager, conductor and timers.
-pub trait Runtime<M> {
-    // The local data-availability events this runtime accepts. Runtimes
-    // driving a stack without a DA layer set this to ().
-    type DAEvent;
+// A Runtime is a process that exchanges messages with peers, takes local
+// inputs and produces local outputs, and owns its timers.
+pub trait Runtime {
+    type Message;
+    type LocalIn;
+    type LocalOut;
 
-    fn init(&mut self);
-    fn next_due(&self) -> Option<Timestamp>;
+    fn receive(&mut self, now: Timestamp, sender: NodeId, message: Self::Message);
+    fn poll_msg(&mut self) -> Option<Outbound<Self::Message>>;
+
+    fn handle_input(&mut self, now: Timestamp, input: Self::LocalIn);
+    fn poll_output(&mut self) -> Option<Self::LocalOut>;
+
     fn handle_due(&mut self, now: Timestamp);
-    fn receive(&mut self, now: Timestamp, sender: NodeId, message: M);
-    fn poll(&mut self) -> Option<Outbound<M>>;
-
-    // Inject a data-availability event for `slot`. DA events are local
-    // and trusted by construction, so they do not travel as messages.
-    // The default drops them, for stacks without a DA layer.
-    fn handle_da_event(&mut self, _now: Timestamp, _slot: Slot, _event: Self::DAEvent) {}
+    fn next_due(&self) -> Option<Timestamp>;
 }
 
 // A canonical runtime implementation for cadence.
@@ -56,8 +54,16 @@ where
     conductor: C,
     timers: Timers<PendingWake<S::Timer, C::Alarm>>,
     outbox: VecDeque<Outbound<CadenceWireMsg<S, C>>>,
-    observer: Option<Box<ObserverOf<S>>>,
-    da_sink: Option<Box<DASinkOf<S>>>,
+    outputs: VecDeque<CadenceOutput<S>>,
+}
+
+// Invariant: a slot's Finalized precedes its Lifecycle(Completed).
+pub enum CadenceOutput<S: SlotConsensus> {
+    Lifecycle(SlotLifecycle),
+    DA(Slot, S::DACommand),
+    // todo: attach FastCommitVote/FastBlock as data
+    CommitOptimistic(Slot),
+    Finalized(Slot, S::FinalizationData),
 }
 
 enum PendingWake<Timer, Alarm> {
@@ -66,41 +72,22 @@ enum PendingWake<Timer, Alarm> {
     Alarm(Alarm),
 }
 
-type ObserverOf<S> = dyn FinalizationObserver<
-        <S as SlotConsensus>::OptimisticCommitData,
-        <S as SlotConsensus>::FinalizationData,
-    > + Send;
-
-type DASinkOf<S> = dyn DASink<<S as SlotConsensus>::DACommand> + Send;
-
 impl<S, C> CadenceRuntime<S, C>
 where
     S: SlotConsensus,
     C: Conductor,
 {
     pub fn new(slot_manager: SlotManager<S>, conductor: C) -> Self {
-        Self {
+        let mut runtime = Self {
             clock: Timestamp::GENESIS,
             slot_manager,
             conductor,
             timers: Timers::default(),
             outbox: VecDeque::new(),
-            observer: None,
-            da_sink: None,
-        }
-    }
-
-    pub fn on_finalization(
-        &mut self,
-        observer: impl FinalizationObserver<S::OptimisticCommitData, S::FinalizationData>
-        + Send
-        + 'static,
-    ) {
-        self.observer = Some(Box::new(observer));
-    }
-
-    pub fn on_da(&mut self, sink: impl DASink<S::DACommand> + Send + 'static) {
-        self.da_sink = Some(Box::new(sink));
+            outputs: VecDeque::new(),
+        };
+        runtime.step();
+        runtime
     }
 
     // in actual runtime this can be controlled by the system clock.
@@ -182,36 +169,32 @@ where
                 let message = CadenceMessage::Slot(slot, message);
                 self.outbox.push_back(Outbound::Unicast(to, message));
             }
-            SlotOutput::DA(action) if let Some(sink) = &mut self.da_sink => {
-                sink.handle_command(slot, action);
+            SlotOutput::DA(command) => {
+                self.outputs.push_back(CadenceOutput::DA(slot, command));
             }
-            SlotOutput::CommitOptimistic(data) if let Some(observer) = &mut self.observer => {
-                observer.handle_optimistic_commit(now, slot, &data);
+            SlotOutput::CommitOptimistic(_) => {
+                self.outputs
+                    .push_back(CadenceOutput::CommitOptimistic(slot));
             }
-            // no sink or observer to tell
-            SlotOutput::DA(_) | SlotOutput::CommitOptimistic(_) => {}
             SlotOutput::Finalize(data) => {
-                if let Some(observer) = &mut self.observer {
-                    observer.handle_finalization(now, slot, &data);
-                }
-                if let Some(sink) = &mut self.da_sink {
-                    sink.handle_lifecycle(SlotLifecycle::Completed { slot });
-                }
+                self.outputs.push_back(CadenceOutput::Finalized(slot, data));
                 self.conductor.handle_slot_finalization(now, slot);
-                self.slot_manager.close(slot);
+                self.complete(slot);
             }
             SlotOutput::Fault { reason } => {
                 tracing::warn!(?slot, reason = %reason, "slot faulted");
-                if let Some(sink) = &mut self.da_sink {
-                    sink.handle_lifecycle(SlotLifecycle::Completed { slot });
-                }
-                self.slot_manager.close(slot);
+                self.complete(slot);
             }
         }
     }
 
+    fn complete(&mut self, slot: Slot) {
+        let completed = SlotLifecycle::Completed { slot };
+        self.outputs.push_back(CadenceOutput::Lifecycle(completed));
+        self.slot_manager.close(slot);
+    }
+
     fn handle_conductor_output(&mut self, out: ConductorOutput<C>) {
-        let now = self.clock;
         match out {
             ConductorOutput::Broadcast(message) => {
                 let message = CadenceMessage::Conductor(message);
@@ -222,46 +205,54 @@ where
             }
             ConductorOutput::CloseSlots { cap } => {
                 self.slot_manager.advance_cap(cap);
-                if let Some(sink) = &mut self.da_sink {
-                    sink.handle_lifecycle(SlotLifecycle::CapAdvance { cap });
-                }
-                if let Some(observer) = &mut self.observer {
-                    observer.handle_chain_advance(now, cap);
-                }
+                let advance = SlotLifecycle::CapAdvance { cap };
+                self.outputs.push_back(CadenceOutput::Lifecycle(advance));
             }
             ConductorOutput::OpenSlots(slots) => {
-                if let Some(observer) = &mut self.observer {
-                    observer.handle_slots_opened(now, &slots);
-                }
                 for (slot, deadline) in slots {
                     self.slot_manager.open(slot);
                     self.timers.schedule(deadline, PendingWake::Deadline(slot));
-                    if let Some(sink) = &mut self.da_sink {
-                        sink.handle_lifecycle(SlotLifecycle::Opened { slot, deadline });
-                    }
+                    let opened = SlotLifecycle::Opened { slot, deadline };
+                    self.outputs.push_back(CadenceOutput::Lifecycle(opened));
                 }
             }
         }
     }
 }
 
-impl<S, C> Runtime<CadenceWireMsg<S, C>> for CadenceRuntime<S, C>
+impl<S, C> Runtime for CadenceRuntime<S, C>
 where
     S: SlotConsensus,
     C: Conductor,
 {
-    type DAEvent = S::DAEvent;
+    type Message = CadenceWireMsg<S, C>;
+    type LocalIn = (Slot, S::DAEvent);
+    type LocalOut = CadenceOutput<S>;
 
-    fn poll(&mut self) -> Option<Outbound<CadenceWireMsg<S, C>>> {
-        self.outbox.pop_front()
-    }
-
-    fn init(&mut self) {
+    fn receive(&mut self, now: Timestamp, sender: NodeId, message: CadenceWireMsg<S, C>) {
+        self.advance_clock(now);
+        self.handle_message(sender, message);
         self.step();
     }
 
-    fn next_due(&self) -> Option<Timestamp> {
-        self.timers.next_due()
+    fn poll_msg(&mut self) -> Option<Outbound<CadenceWireMsg<S, C>>> {
+        self.outbox.pop_front()
+    }
+
+    fn handle_input(&mut self, now: Timestamp, (slot, event): (Slot, S::DAEvent)) {
+        self.advance_clock(now);
+
+        if let Some(instance) = self.slot_manager.slot_instance(slot) {
+            // q: do we need to buffer the da events? da begins to
+            // accept chunk ingestion at the same time as slot
+            // consensus, which normally is already conservative.
+            instance.handle_da_event(event);
+        }
+        self.step();
+    }
+
+    fn poll_output(&mut self) -> Option<CadenceOutput<S>> {
+        self.outputs.pop_front()
     }
 
     // wakes are handled one at a time, each to quiescence
@@ -273,22 +264,8 @@ where
         }
     }
 
-    fn receive(&mut self, now: Timestamp, sender: NodeId, message: CadenceWireMsg<S, C>) {
-        self.advance_clock(now);
-        self.handle_message(sender, message);
-        self.step();
-    }
-
-    fn handle_da_event(&mut self, now: Timestamp, slot: Slot, event: S::DAEvent) {
-        self.advance_clock(now);
-
-        if let Some(instance) = self.slot_manager.slot_instance(slot) {
-            // q: do we need to buffer the da events? da begins to
-            // accept chunk ingestion at the same time as slot
-            // consensus, which normally is already conservative.
-            instance.handle_da_event(event);
-        }
-        self.step();
+    fn next_due(&self) -> Option<Timestamp> {
+        self.timers.next_due()
     }
 }
 
@@ -298,67 +275,4 @@ pub enum SlotLifecycle {
     Completed { slot: Slot },
     // every slot below cap (exclusive) is closed, finalized locally or not
     CapAdvance { cap: Slot },
-}
-
-pub trait DASink<A> {
-    fn handle_lifecycle(&mut self, event: SlotLifecycle);
-    fn handle_command(&mut self, slot: Slot, action: A);
-}
-
-/// The runtime's outward event surface: consensus facts for components
-/// outside the consensus core (ledger sequencing, the proposal planner,
-/// test logs). Observers must not influence consensus — every method is a
-/// notification, not a decision point.
-pub trait FinalizationObserver<OD, FD> {
-    fn handle_optimistic_commit(&mut self, _now: Timestamp, _slot: Slot, _data: &OD) {}
-    fn handle_finalization(&mut self, now: Timestamp, slot: Slot, data: &FD);
-
-    /// The conductor opened `slots`, each with its deadline.
-    fn handle_slots_opened(&mut self, _now: Timestamp, _slots: &BTreeMap<Slot, Timestamp>) {}
-
-    /// The contiguous finalized prefix advanced: every slot strictly below
-    /// `cap` is finalized (consensus chaining).
-    fn handle_chain_advance(&mut self, _now: Timestamp, _cap: Slot) {}
-}
-
-impl<OD, FD, F> FinalizationObserver<OD, FD> for F
-where
-    F: FnMut(Timestamp, Slot, &FD),
-{
-    fn handle_finalization(&mut self, now: Timestamp, slot: Slot, data: &FD) {
-        self(now, slot, data)
-    }
-}
-
-impl<OD, FD> FinalizationObserver<OD, FD> for Vec<(Timestamp, Slot)> {
-    fn handle_finalization(&mut self, now: Timestamp, slot: Slot, _data: &FD) {
-        self.push((now, slot));
-    }
-}
-
-/// Observers compose as pairs (and, by nesting, as arbitrary trees).
-impl<OD, FD, A, B> FinalizationObserver<OD, FD> for (A, B)
-where
-    A: FinalizationObserver<OD, FD>,
-    B: FinalizationObserver<OD, FD>,
-{
-    fn handle_optimistic_commit(&mut self, now: Timestamp, slot: Slot, data: &OD) {
-        self.0.handle_optimistic_commit(now, slot, data);
-        self.1.handle_optimistic_commit(now, slot, data);
-    }
-
-    fn handle_finalization(&mut self, now: Timestamp, slot: Slot, data: &FD) {
-        self.0.handle_finalization(now, slot, data);
-        self.1.handle_finalization(now, slot, data);
-    }
-
-    fn handle_slots_opened(&mut self, now: Timestamp, slots: &BTreeMap<Slot, Timestamp>) {
-        self.0.handle_slots_opened(now, slots);
-        self.1.handle_slots_opened(now, slots);
-    }
-
-    fn handle_chain_advance(&mut self, now: Timestamp, cap: Slot) {
-        self.0.handle_chain_advance(now, cap);
-        self.1.handle_chain_advance(now, cap);
-    }
 }

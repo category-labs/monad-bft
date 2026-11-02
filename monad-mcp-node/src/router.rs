@@ -94,7 +94,11 @@ impl NodeRouter {
                     SlotLifecycle::Completed { slot } => {
                         sink.send(Routed::Repeater(RepeaterInput::Completed(slot)));
                     }
-                    SlotLifecycle::CapAdvance { .. } => {}
+                    SlotLifecycle::CapAdvance { cap } => {
+                        tracing::debug!(cap = cap.0, "chain advanced");
+                        sink.send(Routed::Repeater(RepeaterInput::CapAdvance(cap)));
+                        sink.send(Routed::Proposing(ProposingInput::CapAdvance(cap)));
+                    }
                 }
                 let input = FinalizationInput::Lifecycle(event);
                 sink.send(Routed::Finalization(input));
@@ -124,12 +128,6 @@ impl NodeRouter {
             CadenceOutput::FastBlock(now, slot) => {
                 let input = FinalizationInput::FastBlock(now, slot);
                 sink.send(Routed::Finalization(input));
-            }
-
-            CadenceOutput::CapAdvance(now, cap) => {
-                tracing::debug!(cap = cap.0, at = now.as_nanos(), "chain advanced");
-                sink.send(Routed::Repeater(RepeaterInput::CapAdvance(cap)));
-                sink.send(Routed::Proposing(ProposingInput::CapAdvance(cap)));
             }
         }
     }

@@ -114,7 +114,7 @@ fn full_window_rolls_over_with_dummy_slot_consensus() {
     //   ACS immediately decides the natural window 1 deadline schedule, so
     //   window 1 opens with deadlines 500, 600, ... and slots 4, 5 finalize
     //   at 550, 650.
-    let mut builder = CadenceSwarmBuilder::new();
+    let mut builder = CadenceSwarmBuilder::<DummySlotConsensus, _>::new();
     builder.set_latency(TimestampDelta::from_millis(LATENCY).as_duration());
 
     for i in 0..NODES {
@@ -123,7 +123,7 @@ fn full_window_rolls_over_with_dummy_slot_consensus() {
             quorum: NODES as usize,
         };
         let key = Arc::new(id.keypair());
-        builder.add_node::<DummySlotConsensus, _>(id, conductor(), slot_config, key);
+        builder.add_node(id, conductor(), slot_config, key);
     }
 
     let mut swarm = builder.build();
@@ -152,7 +152,7 @@ fn full_window_rolls_over_with_chorus() {
     //   ACS immediately decides the natural window 1 deadline schedule, so
     //   window 1 opens with deadlines 500, 600, ... and slots 4, 5 finalize
     //   at 600, 700.
-    let mut builder = CadenceSwarmBuilder::new();
+    let mut builder = CadenceSwarmBuilder::<Chorus, _>::new();
     builder.set_latency(TimestampDelta::from_millis(LATENCY).as_duration());
 
     let val_data = Arc::new(gen_validator_data(NODES));
@@ -168,7 +168,7 @@ fn full_window_rolls_over_with_chorus() {
             header_auth: Arc::new(HeaderAuth::new(|_, _| None)),
             proposers: proposer_schedule(&val_data),
         };
-        builder.add_node::<Chorus, _>(id, conductor(), slot_config, context);
+        builder.add_node(id, conductor(), slot_config, context);
     }
 
     let mut swarm = builder.build();
@@ -199,7 +199,7 @@ fn a_partitioned_node_jumps_its_cap_to_the_majority() {
     let network = Network::reliable(TimestampDelta::from_millis(LATENCY).as_duration())
         .partition(partition, [[laggard]]);
 
-    let mut builder = CadenceSwarmBuilder::new();
+    let mut builder = CadenceSwarmBuilder::<Chorus, _>::new();
     builder.set_network(network);
 
     let val_data = Arc::new(gen_validator_data(NODES));
@@ -215,7 +215,7 @@ fn a_partitioned_node_jumps_its_cap_to_the_majority() {
             header_auth: Arc::new(HeaderAuth::new(|_, _| None)),
             proposers: proposer_schedule(&val_data),
         };
-        builder.add_node::<Chorus, _>(id, conductor(), slot_config, context);
+        builder.add_node(id, conductor(), slot_config, context);
     }
 
     let mut swarm = builder.build();

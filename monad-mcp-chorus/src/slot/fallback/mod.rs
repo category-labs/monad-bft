@@ -190,20 +190,12 @@ where
     V: ValidateInput + Votable,
 {
     mvba: M,
-    /// Held until the start timer fires; `None` is a listener, which never proposes
-    input: Option<(V, Option<M::FallbackCert>)>,
-    start_at: Timestamp,
 
     outbox: VecDeque<Outbound<M::Message>>,
-    timers: Timers<MvbaTimer<M::TimerEvent>>,
+    timers: Timers<M::TimerEvent>,
 
-    observer: Option<Box<dyn FnMut(Timestamp, &V) + Send>>,
+    decisions: VecDeque<V>,
     reported: Option<V>,
-}
-
-enum MvbaTimer<T> {
-    Start,
-    Timer(T),
 }
 
 impl<A, V> MvbaRuntime<A, V>
@@ -212,45 +204,15 @@ where
     V: ValidateInput + Votable,
     A::TimerEvent: Eq,
 {
-    pub fn new(mvba: A, input: V, cert: Option<A::FallbackCert>) -> Self {
-        Self::with_input(mvba, Some((input, cert)))
-    }
-
-    /// A validator with no fallback input: its state machine gates
-    /// participation on that input, so it listens without voting or deciding
-    pub fn listening(mvba: A) -> Self {
-        Self::with_input(mvba, None)
-    }
-
-    fn with_input(mvba: A, input: Option<(V, Option<A::FallbackCert>)>) -> Self {
+    /// A validator that is never handed an input only listens: its state
+    /// machine gates voting and deciding on that input
+    pub fn new(mvba: A) -> Self {
         Self {
             mvba,
-            input,
-            start_at: Timestamp::GENESIS,
             outbox: VecDeque::new(),
             timers: Timers::default(),
-            observer: None,
+            decisions: VecDeque::new(),
             reported: None,
-        }
-    }
-
-    /// When the state machine is handed its input
-    pub fn set_start(&mut self, at: Timestamp) {
-        self.start_at = at;
-    }
-
-    /// Reports the first decision, and any later one that differs from it
-    pub fn on_decision(&mut self, observer: impl FnMut(Timestamp, &V) + Send + 'static) {
-        self.observer = Some(Box::new(observer));
-    }
-
-    fn fire(&mut self, pending: MvbaTimer<A::TimerEvent>) {
-        match pending {
-            MvbaTimer::Start => {
-                let (input, cert) = self.input.take().expect("start timer armed with an input");
-                self.mvba.propose(input, cert);
-            }
-            MvbaTimer::Timer(timer_event) => self.mvba.handle_timer(timer_event),
         }
     }
 
@@ -268,21 +230,16 @@ where
                     timer_event,
                 } => {
                     // the last arm of the same event wins
-                    self.timers.retain(
-                        |armed| !matches!(armed, MvbaTimer::Timer(event) if *event == timer_event),
-                    );
-                    self.timers
-                        .schedule(now + duration, MvbaTimer::Timer(timer_event));
+                    self.timers.retain(|armed| *armed != timer_event);
+                    self.timers.schedule(now + duration, timer_event);
                 }
             }
         }
-        self.report_decision(now);
+        self.report_decision();
     }
 
-    fn report_decision(&mut self, now: Timestamp) {
-        if self.observer.is_none() {
-            return;
-        }
+    // reports the first decision, and any later one that differs from it
+    fn report_decision(&mut self) {
         let Some(decision) = self.mvba.decision() else {
             return;
         };
@@ -290,45 +247,48 @@ where
             return;
         }
         let decision = decision.clone();
-        let observer = self.observer.as_mut().expect("just checked");
-        observer(now, &decision);
+        self.decisions.push_back(decision.clone());
         self.reported = Some(decision);
     }
 }
 
-impl<A, V> Runtime<A::Message> for MvbaRuntime<A, V>
+impl<A, V> Runtime for MvbaRuntime<A, V>
 where
     A: Mvba<V>,
     V: ValidateInput + Votable,
     A::TimerEvent: Eq,
 {
-    // the standalone MVBA harness runs without a DA layer
-    type DAEvent = ();
-
-    fn init(&mut self) {
-        if self.input.is_none() {
-            return;
-        }
-        self.timers.schedule(self.start_at, MvbaTimer::Start);
-    }
-
-    fn next_due(&self) -> Option<Timestamp> {
-        self.timers.next_due()
-    }
-
-    fn handle_due(&mut self, now: Timestamp) {
-        while let Some(pending) = self.timers.pop_due(now) {
-            self.fire(pending);
-            self.drain(now);
-        }
-    }
+    type Message = A::Message;
+    // at most one per instance
+    type LocalIn = (V, Option<A::FallbackCert>);
+    type LocalOut = V;
 
     fn receive(&mut self, now: Timestamp, sender: NodeId, message: A::Message) {
         self.mvba.handle_message(sender, message);
         self.drain(now);
     }
 
-    fn poll(&mut self) -> Option<Outbound<A::Message>> {
+    fn poll_msg(&mut self) -> Option<Outbound<A::Message>> {
         self.outbox.pop_front()
+    }
+
+    fn handle_input(&mut self, now: Timestamp, (input, cert): (V, Option<A::FallbackCert>)) {
+        self.mvba.propose(input, cert);
+        self.drain(now);
+    }
+
+    fn poll_output(&mut self) -> Option<V> {
+        self.decisions.pop_front()
+    }
+
+    fn handle_due(&mut self, now: Timestamp) {
+        while let Some(timer_event) = self.timers.pop_due(now) {
+            self.mvba.handle_timer(timer_event);
+            self.drain(now);
+        }
+    }
+
+    fn next_due(&self) -> Option<Timestamp> {
+        self.timers.next_due()
     }
 }

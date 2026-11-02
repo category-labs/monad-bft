@@ -29,11 +29,11 @@ use std::{
 use chorus::slot::fallback::{EnterFallbackCert, Metablock, MvbaRuntime, monad_mvba};
 use monad_mcp_chorus::stub as chorus;
 use monad_mcp_common::{Timestamp, stub::NodeId};
-use monad_sim::{RunOutcome, Time};
+use monad_sim::{RunOutcome, StepLabel, Time};
 use monad_sim_swarm::{Network, Swarm};
 
 use crate::{
-    node::{SimMessage, SimNode, time_of, to_timestamp},
+    node::{SimMessage, SimNode, time_of},
     swarm::build_sim_swarm,
 };
 
@@ -41,7 +41,8 @@ use crate::{
 pub type MonadMvba = monad_mvba::MonadMvba<Metablock, EnterFallbackCert>;
 pub type Message = monad_mvba::MvbaMessage<Metablock, EnterFallbackCert>;
 
-type MvbaNodeRuntime = MvbaRuntime<MonadMvba, Metablock>;
+type MvbaNode = SimNode<MvbaRuntime<MonadMvba, Metablock>>;
+type Input = (Metablock, Option<EnterFallbackCert>);
 
 /// What one node decided, and when
 #[derive(Clone, Debug)]
@@ -58,7 +59,7 @@ struct DecisionState {
     conflict_decision: bool,
 }
 
-/// Per-node decisions, shared with the observers planted in the runtimes
+/// Per-node decisions, shared with the output handlers of the nodes
 #[derive(Default)]
 struct DecisionLog(HashMap<NodeId, Arc<Mutex<DecisionState>>>);
 
@@ -67,19 +68,19 @@ impl DecisionLog {
         Self::default()
     }
 
-    fn record_decision(&mut self, node: NodeId) -> impl FnMut(Timestamp, &Metablock) + 'static {
+    fn record_decision(&mut self, node: NodeId) -> impl FnMut(Timestamp, Metablock) + 'static {
         let state = self.0.entry(node).or_default().clone();
-        move |at: Timestamp, block: &Metablock| {
+        move |at: Timestamp, block: Metablock| {
             let mut state = state.lock().expect("not poisoned");
             match &state.first {
                 None => {
                     state.first = Some(Decision {
                         at: time_of(at),
-                        block: block.clone(),
+                        block,
                     })
                 }
                 Some(first) => {
-                    if first.block != *block {
+                    if first.block != block {
                         state.conflict_decision = true;
                     }
                 }
@@ -108,8 +109,9 @@ impl DecisionLog {
 pub struct MvbaSwarmBuilder {
     seed: u64,
     network: Network<NodeId, SimMessage<Message>>,
-    nodes: Vec<(NodeId, SimNode<Message, ()>)>,
+    nodes: Vec<(NodeId, MvbaNode)>,
     inputs: BTreeMap<NodeId, Metablock>,
+    starts: Vec<(NodeId, Time, Input)>,
     log: DecisionLog,
 }
 
@@ -120,6 +122,7 @@ impl MvbaSwarmBuilder {
             network: Network::default(),
             nodes: Vec::new(),
             inputs: BTreeMap::new(),
+            starts: Vec::new(),
             log: DecisionLog::new(),
         }
     }
@@ -144,25 +147,35 @@ impl MvbaSwarmBuilder {
         start: Time,
     ) -> &mut Self {
         self.inputs.insert(id, block.clone());
-        self.push(id, MvbaRuntime::new(mvba, block, cert), start)
+        self.starts.push((id, start, (block, cert)));
+        self.push(id, mvba)
     }
 
     /// Add a validator with no fallback input, which therefore only listens.
     /// Having nothing to hand over, it needs no start
     pub fn add_listener(&mut self, id: NodeId, mvba: MonadMvba) -> &mut Self {
-        self.push(id, MvbaRuntime::listening(mvba), Time(0))
+        self.push(id, mvba)
     }
 
-    fn push(&mut self, id: NodeId, mut runtime: MvbaNodeRuntime, start: Time) -> &mut Self {
-        runtime.set_start(to_timestamp(start));
-        runtime.on_decision(self.log.record_decision(id));
-        self.nodes.push((id, SimNode::new(id, runtime)));
+    fn push(&mut self, id: NodeId, mvba: MonadMvba) -> &mut Self {
+        let runtime = MvbaRuntime::new(mvba);
+        let on_output = self.log.record_decision(id);
+        self.nodes.push((id, SimNode::new(id, runtime, on_output)));
         self
     }
 
     pub fn build(self) -> MvbaSwarm {
+        let mut swarm = build_sim_swarm(self.seed, self.network, self.nodes);
+        for (id, start, input) in self.starts {
+            let handle = swarm.handle(&id).expect("node just built");
+            swarm
+                .sim()
+                .schedule(handle, start, StepLabel::source("input"), |node, ctx| {
+                    node.handle_input(input, ctx)
+                });
+        }
         MvbaSwarm {
-            swarm: build_sim_swarm(self.seed, self.network, self.nodes),
+            swarm,
             inputs: self.inputs,
             log: self.log,
         }
@@ -177,13 +190,13 @@ impl Default for MvbaSwarmBuilder {
 
 /// A built swarm: run control, plus the decisions reached and inputs started from
 pub struct MvbaSwarm {
-    swarm: Swarm<SimNode<Message, ()>>,
+    swarm: Swarm<MvbaNode>,
     inputs: BTreeMap<NodeId, Metablock>,
     log: DecisionLog,
 }
 
 impl MvbaSwarm {
-    pub fn swarm_mut(&mut self) -> &mut Swarm<SimNode<Message, ()>> {
+    pub fn swarm_mut(&mut self) -> &mut Swarm<MvbaNode> {
         &mut self.swarm
     }
 

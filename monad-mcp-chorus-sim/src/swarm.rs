@@ -14,13 +14,14 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::HashMap,
     sync::{Arc, Mutex},
     time::Duration,
 };
 
 use chorus::{
-    CadenceRuntime, Conductor, FinalizationObserver, Runtime, SlotConsensus, SlotManager,
+    CadenceOutput, CadenceRuntime, CadenceWireMsg, Conductor, Runtime, SlotConsensus,
+    SlotLifecycle, SlotManager,
     proposing::ProposalPlanner,
     slot::chorus::{ChorusDAEvent, ProposalDAEvent},
 };
@@ -34,15 +35,17 @@ use crate::{
     node::{ProposerHarness, SimMessage, SimNode, time_of, to_timestamp},
 };
 
-pub struct CadenceSwarmBuilder<M, E> {
+type CadenceNode<S, C> = SimNode<CadenceRuntime<S, C>>;
+
+pub struct CadenceSwarmBuilder<S: SlotConsensus, C: Conductor> {
     seed: u64,
-    network: Network<NodeId, SimMessage<M>>,
-    nodes: Vec<(NodeId, SimNode<M, E>)>,
+    network: Network<NodeId, SimMessage<CadenceWireMsg<S, C>>>,
+    nodes: Vec<(NodeId, CadenceNode<S, C>)>,
     track_logs: bool,
     log: FinalizationLog,
 }
 
-impl<M, E> CadenceSwarmBuilder<M, E> {
+impl<S: SlotConsensus, C: Conductor> CadenceSwarmBuilder<S, C> {
     pub fn new() -> Self {
         Self {
             seed: 0,
@@ -57,7 +60,7 @@ impl<M, E> CadenceSwarmBuilder<M, E> {
         self.network = Network::reliable(latency);
     }
 
-    pub fn set_network(&mut self, network: Network<NodeId, SimMessage<M>>) {
+    pub fn set_network(&mut self, network: Network<NodeId, SimMessage<CadenceWireMsg<S, C>>>) {
         self.network = network;
     }
 
@@ -69,64 +72,44 @@ impl<M, E> CadenceSwarmBuilder<M, E> {
         self.track_logs = track;
     }
 
-    pub fn add_node<S, C>(
+    pub fn add_node(
         &mut self,
         id: NodeId,
         conductor: C,
         slot_config: S::Config,
         slot_context: S::Context,
     ) where
-        M: Clone + 'static,
-        S: SlotConsensus + 'static,
-        C: Conductor + 'static,
-        E: 'static,
-        CadenceRuntime<S, C>: Runtime<M, DAEvent = E>,
+        S: 'static,
+        C: 'static,
+        C::Message: Clone,
     {
         let slot_manager = SlotManager::new(slot_config, slot_context);
-        let mut runtime = CadenceRuntime::<S, C>::new(slot_manager, conductor);
+        let runtime = CadenceRuntime::new(slot_manager, conductor);
 
-        if self.track_logs {
-            runtime.on_finalization(self.log.allocate(id));
-        }
+        let mut record = self.track_logs.then(|| self.log.allocate(id));
+        let on_output = move |now: Timestamp, output: CadenceOutput<S>| {
+            let CadenceOutput::Finalized(slot, _) = output else {
+                return;
+            };
+            if let Some(record) = &mut record {
+                record(now, slot);
+            }
+        };
 
-        self.add_generic_node(id, runtime);
-    }
-
-    pub fn add_generic_node(&mut self, id: NodeId, runtime: impl Runtime<M, DAEvent = E> + 'static)
-    where
-        M: Clone + 'static,
-        E: 'static,
-    {
-        let node = SimNode::new(id, runtime);
+        let node = SimNode::new(id, runtime, on_output);
         self.nodes.push((id, node));
     }
 
-    pub fn build(self) -> CadenceSwarm<M, E>
-    where
-        M: Clone + 'static,
-        E: 'static,
-    {
-        CadenceSwarm {
-            swarm: build_sim_swarm(self.seed, self.network, self.nodes),
-            log: self.log,
-        }
-    }
-}
-
-// The proposal machinery is Chorus-shaped: the planner consumes Chorus
-// finalization facts, and the mock DA layer reports availability as Chorus
-// DA events.
-impl<M> CadenceSwarmBuilder<M, ChorusDAEvent> {
     /// Like [`Self::add_node`], for a node that also runs the proposal
     /// machinery: `planner` decides when to seal, `da` is the node's mock DA
     /// layer (the same instance the node reports availability from, so
     /// consensus sees what the planner submits and the network delivers).
-    /// `observer` receives the runtime facts alongside the built-in wiring —
+    /// `observer` receives each finalization alongside the built-in wiring —
     /// tests use it to record finalization data.
     // one parameter per wired component; a config struct would just move
     // the count elsewhere
     #[allow(clippy::too_many_arguments)]
-    pub fn add_proposer_node<S, C, O>(
+    pub fn add_proposer_node(
         &mut self,
         id: NodeId,
         conductor: C,
@@ -134,38 +117,50 @@ impl<M> CadenceSwarmBuilder<M, ChorusDAEvent> {
         slot_context: S::Context,
         planner: ProposalPlanner,
         da: Arc<MockDa>,
-        observer: O,
+        mut observer: impl FnMut(Timestamp, Slot, &S::FinalizationData) + 'static,
     ) where
-        M: Clone + 'static,
         S: SlotConsensus<DAEvent = ChorusDAEvent> + 'static,
-        C: Conductor + 'static,
-        CadenceRuntime<S, C>: Runtime<M, DAEvent = ChorusDAEvent>,
-        O: FinalizationObserver<S::OptimisticCommitData, S::FinalizationData> + Send + 'static,
+        C: 'static,
+        C::Message: Clone,
     {
         let planner = Arc::new(Mutex::new(planner));
-        let facts = PlannerFacts(planner.clone());
+        let facts = planner.clone();
 
         let slot_manager = SlotManager::new(slot_config, slot_context);
-        let mut runtime = CadenceRuntime::<S, C>::new(slot_manager, conductor);
-        if self.track_logs {
-            runtime.on_finalization((self.log.allocate(id), (facts, observer)));
-        } else {
-            runtime.on_finalization((facts, observer));
-        }
+        let runtime = CadenceRuntime::new(slot_manager, conductor);
+
+        let mut record = self.track_logs.then(|| self.log.allocate(id));
+        let on_output = move |now: Timestamp, output: CadenceOutput<S>| match output {
+            CadenceOutput::Lifecycle(event) => tell_planner(&facts, now, event),
+            CadenceOutput::DA(..) | CadenceOutput::CommitOptimistic(_) => {}
+            CadenceOutput::Finalized(slot, data) => {
+                if let Some(record) = &mut record {
+                    record(now, slot);
+                }
+                observer(now, slot, &data);
+            }
+        };
 
         // The mock layer makes a proposal available as a whole, so one
         // announcement reports both the signed header and its decoding.
         let da_events = Box::new(|announcement: &DaAnnouncement| {
             let DaAnnouncement { lane, header } = announcement;
+            let slot = announcement.slot();
             vec![
-                ChorusDAEvent {
-                    j: *lane,
-                    event: ProposalDAEvent::HeaderSeen(header.clone()),
-                },
-                ChorusDAEvent {
-                    j: *lane,
-                    event: ProposalDAEvent::Decoded(announcement.pid()),
-                },
+                (
+                    slot,
+                    ChorusDAEvent {
+                        j: *lane,
+                        event: ProposalDAEvent::HeaderSeen(header.clone()),
+                    },
+                ),
+                (
+                    slot,
+                    ChorusDAEvent {
+                        j: *lane,
+                        event: ProposalDAEvent::Decoded(announcement.pid()),
+                    },
+                ),
             ]
         });
 
@@ -175,17 +170,44 @@ impl<M> CadenceSwarmBuilder<M, ChorusDAEvent> {
             da_events,
             seal_alarm: None,
         };
-        let node = SimNode::with_proposer(id, runtime, harness);
+        let node = SimNode::with_proposer(id, runtime, on_output, harness);
         self.nodes.push((id, node));
+    }
+
+    pub fn build(self) -> CadenceSwarm<S, C>
+    where
+        S: 'static,
+        C: 'static,
+        C::Message: Clone,
+    {
+        CadenceSwarm {
+            swarm: build_sim_swarm(self.seed, self.network, self.nodes),
+            log: self.log,
+        }
+    }
+}
+
+// Forwards the slot lifecycle the proposal planner consumes; the owning
+// SimNode polls the planner's seals and arms its alarm (see node.rs).
+fn tell_planner(planner: &Mutex<ProposalPlanner>, now: Timestamp, event: SlotLifecycle) {
+    let mut planner = planner.lock().expect("planner poisoned");
+    match event {
+        SlotLifecycle::Opened { slot, deadline } => planner.handle_slot_open(now, slot, deadline),
+        SlotLifecycle::CapAdvance { cap } => planner.handle_cap_advance(now, cap),
+        SlotLifecycle::Completed { .. } => {}
     }
 }
 
 /// Wire nodes into a simulated network and schedule each node's init step
-pub(crate) fn build_sim_swarm<M: Clone + 'static, E: 'static>(
+pub(crate) fn build_sim_swarm<R>(
     seed: u64,
-    network: Network<NodeId, SimMessage<M>>,
-    nodes: Vec<(NodeId, SimNode<M, E>)>,
-) -> Swarm<SimNode<M, E>> {
+    network: Network<NodeId, SimMessage<R::Message>>,
+    nodes: Vec<(NodeId, SimNode<R>)>,
+) -> Swarm<SimNode<R>>
+where
+    R: Runtime + 'static,
+    R::Message: Clone + 'static,
+{
     let mut swarm = Swarm::build(seed, network, nodes);
     for id in swarm.node_ids() {
         let handle = swarm.handle(&id).expect("node just built");
@@ -199,7 +221,7 @@ pub(crate) fn build_sim_swarm<M: Clone + 'static, E: 'static>(
     swarm
 }
 
-impl<M, E> Default for CadenceSwarmBuilder<M, E> {
+impl<S: SlotConsensus, C: Conductor> Default for CadenceSwarmBuilder<S, C> {
     fn default() -> Self {
         Self::new()
     }
@@ -207,19 +229,21 @@ impl<M, E> Default for CadenceSwarmBuilder<M, E> {
 
 // A built swarm: run control in cadence ticks, plus the finalization
 // logs collected from the nodes added with tracking enabled.
-pub struct CadenceSwarm<M, E>
+pub struct CadenceSwarm<S, C>
 where
-    M: Clone + 'static,
-    E: 'static,
+    S: SlotConsensus + 'static,
+    C: Conductor + 'static,
+    C::Message: Clone,
 {
-    swarm: Swarm<SimNode<M, E>>,
+    swarm: Swarm<CadenceNode<S, C>>,
     log: FinalizationLog,
 }
 
-impl<M, E> CadenceSwarm<M, E>
+impl<S, C> CadenceSwarm<S, C>
 where
-    M: Clone + 'static,
-    E: 'static,
+    S: SlotConsensus + 'static,
+    C: Conductor + 'static,
+    C::Message: Clone,
 {
     pub fn now(&self) -> Timestamp {
         to_timestamp(self.swarm.simulation().now())
@@ -237,39 +261,17 @@ where
         &self.log
     }
 
-    pub fn swarm(&self) -> &Swarm<SimNode<M, E>> {
+    pub fn swarm(&self) -> &Swarm<CadenceNode<S, C>> {
         &self.swarm
     }
 
-    pub fn swarm_mut(&mut self) -> &mut Swarm<SimNode<M, E>> {
+    pub fn swarm_mut(&mut self) -> &mut Swarm<CadenceNode<S, C>> {
         &mut self.swarm
     }
 }
 
-// Forwards the runtime facts the proposal planner consumes; the owning
-// SimNode polls the planner's seals and arms its alarm (see node.rs).
-struct PlannerFacts(Arc<Mutex<ProposalPlanner>>);
-
-impl<OD, FD> FinalizationObserver<OD, FD> for PlannerFacts {
-    fn handle_finalization(&mut self, _now: Timestamp, _slot: Slot, _data: &FD) {}
-
-    fn handle_slots_opened(&mut self, now: Timestamp, slots: &BTreeMap<Slot, Timestamp>) {
-        let mut planner = self.0.lock().expect("planner poisoned");
-        for (&slot, &deadline) in slots {
-            planner.handle_slot_open(now, slot, deadline);
-        }
-    }
-
-    fn handle_chain_advance(&mut self, now: Timestamp, cap: Slot) {
-        self.0
-            .lock()
-            .expect("planner poisoned")
-            .handle_cap_advance(now, cap);
-    }
-}
-
-// Per-node finalization histories, shared with the observers planted in
-// the runtimes.
+// Per-node finalization histories, shared with the output handlers of the
+// nodes.
 type PerNodeLog = Arc<Mutex<Vec<(Timestamp, Slot)>>>;
 pub struct FinalizationLog(HashMap<NodeId, PerNodeLog>);
 
@@ -278,12 +280,9 @@ impl FinalizationLog {
         Self(HashMap::new())
     }
 
-    pub fn allocate<OD, FD>(
-        &mut self,
-        node: NodeId,
-    ) -> impl FinalizationObserver<OD, FD> + 'static {
+    pub fn allocate(&mut self, node: NodeId) -> impl FnMut(Timestamp, Slot) + 'static {
         let log = self.0.entry(node).or_default().clone();
-        move |at: Timestamp, slot: Slot, _: &FD| log.lock().expect("not poisoned").push((at, slot))
+        move |at: Timestamp, slot: Slot| log.lock().expect("not poisoned").push((at, slot))
     }
 
     pub fn get_finalization_times(&self, node: NodeId) -> Vec<Timestamp> {

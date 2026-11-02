@@ -35,6 +35,6 @@ pub mod types;
 
 pub use conductor::{Conductor, ConductorOutput};
 pub use message::{CadenceMessage, CadenceWireMsg, Outbound};
-pub use runtime::{CadenceRuntime, DASink, FinalizationObserver, Runtime, SlotLifecycle};
+pub use runtime::{CadenceOutput, CadenceRuntime, Runtime, SlotLifecycle};
 pub use slot::{SlotConsensus, SlotOutput};
 pub use slot_manager::SlotManager;
