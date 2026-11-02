@@ -31,10 +31,8 @@ pub trait SlotConsensus: Sized {
     type OptimisticCommitData: Clone;
     type FinalizationData: Clone;
 
-    /// Notification from the data-availability layer
-    type DAEvent;
-    /// Effect directed at the data-availability layer
-    type DACommand: Clone;
+    type LocalIn;
+    type LocalOut: Clone;
 
     fn new(slot: Slot, config: &Self::Config, context: &Self::Context) -> Self;
 
@@ -45,11 +43,10 @@ pub trait SlotConsensus: Sized {
     fn handle_message(&mut self, sender: NodeId, message: Self::Message);
 
     /// Handle a timer event.
-    fn handle_timer(&mut self, timer: Self::Timer);
+    fn handle_timer(&mut self, _timer: Self::Timer) {}
 
-    /// Handle a data-availability event. Consensus without a DA layer
-    /// ignores these.
-    fn handle_da_event(&mut self, _event: Self::DAEvent) {}
+    /// Handle an local input
+    fn handle_input(&mut self, _input: Self::LocalIn) {}
 
     /// Poll for output actions to be taken by the conductor.
     fn poll(&mut self) -> Option<SlotOutput<Self>>;
@@ -70,13 +67,10 @@ pub enum SlotOutput<S: SlotConsensus> {
     /// Send a message to a single peer validator
     Unicast { to: NodeId, message: S::Message },
 
-    /// Effect directed at the data-availability layer, routed by the
-    /// runtime to the DA sink under this slot.
-    DA(S::DACommand),
+    /// Effect directed at a local component
+    Local(S::LocalOut),
 
-    /// Signal execution for optimistic execution.  Q: maybe move this
-    /// message into a Context handle method? CommitOptimistic is
-    /// meaningless without the knowledge of execution.
+    /// Signal execution for optimistic execution
     CommitOptimistic(S::OptimisticCommitData),
 
     /// Finalize the slot. Signal conductor for slot closure.

@@ -84,7 +84,7 @@ impl Component for Cadence {
         }
         let output = match self.runtime.poll_output()? {
             LocalOut::Lifecycle(event) => CadenceOutput::Lifecycle(event),
-            LocalOut::DA(slot, command) => CadenceOutput::DACommand(slot, command),
+            LocalOut::Local(slot, command) => CadenceOutput::DACommand(slot, command),
             LocalOut::CommitOptimistic(slot) => CadenceOutput::FastBlock(self.now, slot),
             LocalOut::Finalized(slot, finalization) => {
                 CadenceOutput::Finalized(self.now, slot, finalization)

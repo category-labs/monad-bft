@@ -119,7 +119,7 @@ impl<S: SlotConsensus, C: Conductor> CadenceSwarmBuilder<S, C> {
         da: Arc<MockDa>,
         mut observer: impl FnMut(Timestamp, Slot, &S::FinalizationData) + 'static,
     ) where
-        S: SlotConsensus<DAEvent = ChorusDAEvent> + 'static,
+        S: SlotConsensus<LocalIn = ChorusDAEvent> + 'static,
         C: 'static,
         C::Message: Clone,
     {
@@ -132,7 +132,7 @@ impl<S: SlotConsensus, C: Conductor> CadenceSwarmBuilder<S, C> {
         let mut record = self.track_logs.then(|| self.log.allocate(id));
         let on_output = move |now: Timestamp, output: CadenceOutput<S>| match output {
             CadenceOutput::Lifecycle(event) => tell_planner(&facts, now, event),
-            CadenceOutput::DA(..) | CadenceOutput::CommitOptimistic(_) => {}
+            CadenceOutput::Local(..) | CadenceOutput::CommitOptimistic(_) => {}
             CadenceOutput::Finalized(slot, data) => {
                 if let Some(record) = &mut record {
                     record(now, slot);

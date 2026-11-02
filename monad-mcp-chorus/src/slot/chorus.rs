@@ -240,8 +240,8 @@ impl SlotConsensus for Chorus {
     type Timer = TimerEvent;
     type OptimisticCommitData = FastBlock;
     type FinalizationData = SlotFinalization;
-    type DAEvent = ChorusDAEvent;
-    type DACommand = ChorusDACommand;
+    type LocalIn = ChorusDAEvent;
+    type LocalOut = ChorusDACommand;
 
     fn new(slot: Slot, config: &Self::Config, context: &Self::Context) -> Self {
         let ChorusConfig { delta } = config;
@@ -305,7 +305,7 @@ impl SlotConsensus for Chorus {
         self.outputs.pop_front()
     }
 
-    fn handle_da_event(&mut self, event: ChorusDAEvent) {
+    fn handle_input(&mut self, event: ChorusDAEvent) {
         if self.decided {
             return;
         }
@@ -496,7 +496,7 @@ impl Chorus {
 
     fn pin_final(&mut self, finalization: &SlotFinalization) {
         for (j, pid) in finalization.pids().into_indexed_iter() {
-            self.push(SlotOutput::DA(ChorusDACommand::PinFinal { j, pid }));
+            self.push(SlotOutput::Local(ChorusDACommand::PinFinal { j, pid }));
         }
 
         let SlotFinalization::Fallback { block, .. } = finalization else {
@@ -507,13 +507,13 @@ impl Chorus {
                 continue;
             };
             let command = ChorusDACommand::AddDecodedHolders { j, pid, node_ids };
-            self.push(SlotOutput::DA(command));
+            self.push(SlotOutput::Local(command));
         }
     }
 
     fn drain_da_commands(&mut self) {
         while let Some(command) = self.fast.next_da_command() {
-            self.push(SlotOutput::DA(command));
+            self.push(SlotOutput::Local(command));
         }
     }
 
@@ -715,7 +715,7 @@ mod tests {
 
         let mut commands = Vec::new();
         while let Some(output) = chorus.poll() {
-            if let SlotOutput::DA(command) = output {
+            if let SlotOutput::Local(command) = output {
                 commands.push(command);
             }
         }
@@ -801,7 +801,7 @@ mod tests {
         let mut pins = Vec::new();
         while let Some(output) = chorus.poll() {
             match output {
-                SlotOutput::DA(command @ ChorusDACommand::PinFinal { .. }) => {
+                SlotOutput::Local(command @ ChorusDACommand::PinFinal { .. }) => {
                     order.push("pin");
                     pins.push(command);
                 }

@@ -60,7 +60,7 @@ where
 // Invariant: a slot's Finalized precedes its Lifecycle(Completed).
 pub enum CadenceOutput<S: SlotConsensus> {
     Lifecycle(SlotLifecycle),
-    DA(Slot, S::DACommand),
+    Local(Slot, S::LocalOut),
     // todo: attach FastCommitVote/FastBlock as data
     CommitOptimistic(Slot),
     Finalized(Slot, S::FinalizationData),
@@ -169,8 +169,8 @@ where
                 let message = CadenceMessage::Slot(slot, message);
                 self.outbox.push_back(Outbound::Unicast(to, message));
             }
-            SlotOutput::DA(command) => {
-                self.outputs.push_back(CadenceOutput::DA(slot, command));
+            SlotOutput::Local(command) => {
+                self.outputs.push_back(CadenceOutput::Local(slot, command));
             }
             SlotOutput::CommitOptimistic(_) => {
                 self.outputs
@@ -226,7 +226,7 @@ where
     C: Conductor,
 {
     type Message = CadenceWireMsg<S, C>;
-    type LocalIn = (Slot, S::DAEvent);
+    type LocalIn = (Slot, S::LocalIn);
     type LocalOut = CadenceOutput<S>;
 
     fn receive(&mut self, now: Timestamp, sender: NodeId, message: CadenceWireMsg<S, C>) {
@@ -239,14 +239,14 @@ where
         self.outbox.pop_front()
     }
 
-    fn handle_input(&mut self, now: Timestamp, (slot, event): (Slot, S::DAEvent)) {
+    fn handle_input(&mut self, now: Timestamp, (slot, event): (Slot, S::LocalIn)) {
         self.advance_clock(now);
 
         if let Some(instance) = self.slot_manager.slot_instance(slot) {
             // q: do we need to buffer the da events? da begins to
             // accept chunk ingestion at the same time as slot
             // consensus, which normally is already conservative.
-            instance.handle_da_event(event);
+            instance.handle_input(event);
         }
         self.step();
     }
