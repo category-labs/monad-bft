@@ -16,7 +16,7 @@
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 
 use super::{
-    ConductorConfig, ConductorError, ConductorMessage, ConductorOutput, MonadConductor,
+    CadenceConductor, ConductorConfig, ConductorError, ConductorMessage, ConductorOutput,
     acs::{Acs, AcsOutput},
     types::{NodeId, Slot, Timestamp, WindowId},
 };
@@ -150,7 +150,7 @@ where
         self.active_round.handle_message(sender, message);
     }
 
-    pub fn poll(&mut self) -> Option<ConductorOutput<MonadConductor<A>>> {
+    pub fn poll(&mut self) -> Option<ConductorOutput<CadenceConductor<A>>> {
         self.active_round
             .poll()
             .map(|message| ConductorOutput::Broadcast(ConductorMessage::DeadlineAgreement(message)))

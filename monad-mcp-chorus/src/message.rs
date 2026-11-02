@@ -177,11 +177,11 @@ mod rlp_tests {
         use monad_mcp_common::SlotDeadline;
 
         use super::super::{
-            conductor::{MonadConductor, acs::median::MedianAcs},
+            conductor::{CadenceConductor, acs::median::MedianAcs},
             slot::chorus::Chorus,
             test_utils::{assert_roundtrip, assert_serialization_roundtrip},
         };
-        type Wire = CadenceWireMsg<Chorus, MonadConductor<MedianAcs<SlotDeadline>>>;
+        type Wire = CadenceWireMsg<Chorus, CadenceConductor<MedianAcs<SlotDeadline>>>;
 
         let slot = Slot(7);
         let message = chorus_message(slot);
@@ -209,10 +209,10 @@ mod rlp_tests {
         use monad_mcp_common::SlotDeadline;
 
         use super::super::{
-            conductor::{MonadConductor, acs::nop::NopAcs},
+            conductor::{CadenceConductor, acs::nop::NopAcs},
             slot::chorus::Chorus,
         };
-        type Wire = CadenceWireMsg<Chorus, MonadConductor<NopAcs<SlotDeadline>>>;
+        type Wire = CadenceWireMsg<Chorus, CadenceConductor<NopAcs<SlotDeadline>>>;
 
         let slot = Slot(7);
         let message = chorus_message(slot);

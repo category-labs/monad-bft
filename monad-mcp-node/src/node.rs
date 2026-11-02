@@ -23,7 +23,7 @@ use monad_mcp_common::Timestamp;
 
 use crate::{
     RunError,
-    chorus::{SlotManager, conductor::MonadConductor, slot::chorus::ChorusMessage},
+    chorus::{SlotManager, conductor::CadenceConductor, slot::chorus::ChorusMessage},
     component::{
         Cadence, Component, DA, Mempool, MempoolProposing, Proposing, RandomProposing, Repeater,
     },
@@ -62,7 +62,7 @@ impl Node {
         let slot_config = config.cadence.chorus();
         let slot_manager = SlotManager::new(slot_config, epoch_handle.chorus());
         let conductor_config = config.cadence.conductor(config.genesis_deadline)?;
-        let conductor = MonadConductor::genesis(conductor_config, ())?;
+        let conductor = CadenceConductor::genesis(conductor_config, ())?;
         let cadence = Cadence::new(slot_manager, conductor);
 
         let da = DARuntime::new(

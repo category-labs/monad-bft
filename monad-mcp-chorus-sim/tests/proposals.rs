@@ -28,7 +28,7 @@ use std::{
 };
 
 use chorus::{
-    conductor::{ConductorConfig, MonadConductor, acs::nop::NopAcs},
+    conductor::{CadenceConductor, ConductorConfig, acs::nop::NopAcs},
     proposers::header_auth,
     proposing::{PlannerConfig, ProposalPlanner},
     slot::chorus::{Chorus, ChorusConfig, ChorusContext, Entry, SlotFinalization},
@@ -60,7 +60,7 @@ const LEAD: TimestampDelta = TimestampDelta::from_millis(60);
 // below LEAD: the withhold gate is exercised in proposing.rs, not here
 const MIN_LEAD: TimestampDelta = TimestampDelta::from_millis(30);
 
-type Conductor = MonadConductor<NopAcs<SlotDeadline>>;
+type Conductor = CadenceConductor<NopAcs<SlotDeadline>>;
 type Schedule = RotatingProposerSchedule<RoundRobinLeaderSchedule>;
 
 // Per-node record of the finalized entries: (node, slot) -> entries by

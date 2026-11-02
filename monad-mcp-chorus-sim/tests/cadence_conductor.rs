@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! Exercises the Monad conductor (window management + deadline-agreement
+//! Exercises the cadence conductor (window management + deadline-agreement
 //! driven window rollover) using the no-op ACS, which decides on its own
 //! proposal without communicating. Two scenarios are tested: one with the
 //! production Chorus implementation and one with a dummy slot consensus
@@ -24,7 +24,7 @@ mod helper;
 use std::{num::NonZeroU64, sync::Arc, time::Duration};
 
 use chorus::{
-    conductor::{ConductorConfig, MonadConductor, acs::nop::NopAcs},
+    conductor::{CadenceConductor, ConductorConfig, acs::nop::NopAcs},
     slot::{
         chorus::{Chorus, ChorusConfig, ChorusContext},
         dummy::{DummySlotConsensus, DummySlotConsensusConfig},
@@ -56,7 +56,7 @@ const GENESIS_DEADLINE: Timestamp = Timestamp::from_millis(100);
 // slot consensus changes. The no-op ACS decides on the natural (genesis
 // anchored) deadline schedule, so slot k's deadline is
 // GENESIS_DEADLINE + k * tau = 100 + k * 100.
-type Conductor = MonadConductor<NopAcs<SlotDeadline>>;
+type Conductor = CadenceConductor<NopAcs<SlotDeadline>>;
 
 fn conductor() -> Conductor {
     let config = ConductorConfig::new(

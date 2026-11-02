@@ -18,7 +18,7 @@ mod helper;
 use std::{num::NonZeroU64, sync::Arc};
 
 use chorus::{
-    conductor::{ConductorConfig, MonadConductor, acs::nop::NopAcs},
+    conductor::{CadenceConductor, ConductorConfig, acs::nop::NopAcs},
     slot::dummy::{DummySlotConsensus, DummySlotConsensusConfig},
 };
 use helper::expect_finalized_at;
@@ -32,7 +32,7 @@ const SYNC_BOUNDARY_SLOTS: NonZeroU64 = NonZeroU64::new(8).unwrap();
 const SLOT_INTERVAL: TimestampDelta = TimestampDelta::from_millis(100);
 const GENESIS_DEADLINE: SlotDeadline = SlotDeadline::from_millis(100);
 
-type Conductor = MonadConductor<NopAcs<SlotDeadline>>;
+type Conductor = CadenceConductor<NopAcs<SlotDeadline>>;
 
 fn conductor() -> Conductor {
     let config = ConductorConfig::new(
@@ -43,7 +43,7 @@ fn conductor() -> Conductor {
         LAG_THRESHOLD,
     )
     .unwrap();
-    MonadConductor::genesis(config, ()).unwrap()
+    CadenceConductor::genesis(config, ()).unwrap()
 }
 
 fn add_dummy_node(

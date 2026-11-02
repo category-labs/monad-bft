@@ -23,7 +23,7 @@ mod helper;
 use std::{num::NonZeroU64, sync::Arc, time::Duration};
 
 use chorus::{
-    conductor::{ConductorConfig, MonadConductor, acs::nop::NopAcs},
+    conductor::{CadenceConductor, ConductorConfig, acs::nop::NopAcs},
     slot::chorus::{Chorus, ChorusConfig, ChorusContext},
     types::{
         CreditLotterySchedule, HeaderAuth, ProposerConfig, ProposerSchedule,
@@ -50,7 +50,7 @@ const CONCURRENT_PROPOSERS: usize = 4; // K
 const SLOTS: u64 = 12; // three epochs of four slots
 const GENESIS_DEADLINE: Timestamp = Timestamp::from_millis(100);
 
-type Conductor = MonadConductor<NopAcs<SlotDeadline>>;
+type Conductor = CadenceConductor<NopAcs<SlotDeadline>>;
 
 fn conductor() -> Conductor {
     let config = ConductorConfig::new(

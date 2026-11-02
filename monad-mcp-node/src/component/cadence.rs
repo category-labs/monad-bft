@@ -20,13 +20,13 @@ use crate::{
     chorus::{
         CadenceOutput as LocalOut, CadenceRuntime, Outbound, Runtime as _, SlotLifecycle,
         SlotManager,
-        conductor::{MonadConductor, acs::nop::NopAcs},
+        conductor::{CadenceConductor, acs::nop::NopAcs},
         slot::chorus::{Chorus, ChorusDACommand, ChorusDAEvent, SlotFinalization},
     },
     common::NodeId,
 };
 
-pub type Conductor = MonadConductor<NopAcs<SlotDeadline>>;
+pub type Conductor = CadenceConductor<NopAcs<SlotDeadline>>;
 pub type CadenceWireMsg = crate::chorus::CadenceWireMsg<Chorus, Conductor>;
 
 pub enum CadenceInput {

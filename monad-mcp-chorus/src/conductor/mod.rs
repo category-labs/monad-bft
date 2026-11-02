@@ -342,7 +342,7 @@ impl CompletionTracker {
     }
 }
 
-pub struct MonadConductor<A>
+pub struct CadenceConductor<A>
 where
     A: Acs<Timestamp>,
 {
@@ -356,12 +356,12 @@ where
     outputs: VecDeque<ConductorOutput<Self>>,
 }
 
-impl<A> fmt::Debug for MonadConductor<A>
+impl<A> fmt::Debug for CadenceConductor<A>
 where
     A: Acs<Timestamp>,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MonadConductor")
+        f.debug_struct("CadenceConductor")
             .field("config", &self.config)
             .field("open_window_cap", &self.open_window_cap)
             .field("completion_tracker", &self.completion_tracker)
@@ -369,7 +369,7 @@ where
     }
 }
 
-impl<A> MonadConductor<A>
+impl<A> CadenceConductor<A>
 where
     A: Acs<Timestamp>,
 {
@@ -562,7 +562,7 @@ where
     }
 }
 
-impl<A> Conductor for MonadConductor<A>
+impl<A> Conductor for CadenceConductor<A>
 where
     A: Acs<Timestamp>,
 {
@@ -661,8 +661,8 @@ mod tests {
         }
     }
 
-    fn conductor() -> MonadConductor<NopAcs<Timestamp>> {
-        let mut conductor = MonadConductor::genesis(config(), ()).unwrap();
+    fn conductor() -> CadenceConductor<NopAcs<Timestamp>> {
+        let mut conductor = CadenceConductor::genesis(config(), ()).unwrap();
         assert!(matches!(
             conductor.poll(),
             Some(ConductorOutput::OpenSlots(_))
@@ -672,22 +672,22 @@ mod tests {
     }
 
     fn drain_outputs<A: Acs<Timestamp>>(
-        conductor: &mut MonadConductor<A>,
-    ) -> Vec<ConductorOutput<MonadConductor<A>>> {
+        conductor: &mut CadenceConductor<A>,
+    ) -> Vec<ConductorOutput<CadenceConductor<A>>> {
         std::iter::from_fn(|| conductor.poll()).collect()
     }
 
     fn complete_slot<A: Acs<Timestamp>>(
-        conductor: &mut MonadConductor<A>,
+        conductor: &mut CadenceConductor<A>,
         slot: u64,
         time: u64,
-    ) -> Result<Vec<ConductorOutput<MonadConductor<A>>>, ConductorError> {
+    ) -> Result<Vec<ConductorOutput<CadenceConductor<A>>>, ConductorError> {
         conductor.handle_slot_completed(Slot(slot), Timestamp::from_nanos(u128::from(time)))?;
         Ok(drain_outputs(conductor))
     }
 
     fn extract_open_slots<A: Acs<Timestamp>>(
-        outputs: &[ConductorOutput<MonadConductor<A>>],
+        outputs: &[ConductorOutput<CadenceConductor<A>>],
     ) -> BTreeMap<Slot, Timestamp> {
         let batches = outputs
             .iter()
@@ -701,10 +701,10 @@ mod tests {
     }
 
     fn receive_cap_advance<A: Acs<Timestamp>>(
-        conductor: &mut MonadConductor<A>,
+        conductor: &mut CadenceConductor<A>,
         cap: u64,
         time: u64,
-    ) -> Vec<ConductorOutput<MonadConductor<A>>> {
+    ) -> Vec<ConductorOutput<CadenceConductor<A>>> {
         conductor.handle_message(
             Timestamp::from_nanos(u128::from(time)),
             NodeId::dummy(1),
@@ -714,7 +714,7 @@ mod tests {
     }
 
     fn extract_closed_caps<A: Acs<Timestamp>>(
-        outputs: &[ConductorOutput<MonadConductor<A>>],
+        outputs: &[ConductorOutput<CadenceConductor<A>>],
     ) -> Vec<Slot> {
         outputs
             .iter()
@@ -726,7 +726,7 @@ mod tests {
     }
 
     fn extract_cap_advances<A: Acs<Timestamp>>(
-        outputs: &[ConductorOutput<MonadConductor<A>>],
+        outputs: &[ConductorOutput<CadenceConductor<A>>],
     ) -> Vec<Slot> {
         outputs
             .iter()
@@ -739,7 +739,9 @@ mod tests {
             .collect()
     }
 
-    fn assert_no_window_opened<A: Acs<Timestamp>>(outputs: &[ConductorOutput<MonadConductor<A>>]) {
+    fn assert_no_window_opened<A: Acs<Timestamp>>(
+        outputs: &[ConductorOutput<CadenceConductor<A>>],
+    ) {
         assert!(
             !outputs
                 .iter()
@@ -749,7 +751,7 @@ mod tests {
     }
 
     fn extract_runtime_open_slots<A: Acs<Timestamp>>(
-        output: ConductorOutput<MonadConductor<A>>,
+        output: ConductorOutput<CadenceConductor<A>>,
     ) -> BTreeMap<Slot, Timestamp> {
         match output {
             ConductorOutput::OpenSlots(slots) => slots,
@@ -870,7 +872,7 @@ mod tests {
 
     #[test]
     fn genesis_opens_exactly_one_window() {
-        let mut conductor = MonadConductor::<NopAcs<Timestamp>>::genesis(config(), ()).unwrap();
+        let mut conductor = CadenceConductor::<NopAcs<Timestamp>>::genesis(config(), ()).unwrap();
         let schedules = extract_runtime_open_slots(conductor.poll().unwrap());
         let slot_interval = config().slot_interval();
         let expected_schedules = (0..10)
@@ -893,7 +895,7 @@ mod tests {
 
     #[test]
     fn genesis_effect_is_available_through_runtime_poll() {
-        let mut conductor = MonadConductor::<NopAcs<Timestamp>>::genesis(config(), ()).unwrap();
+        let mut conductor = CadenceConductor::<NopAcs<Timestamp>>::genesis(config(), ()).unwrap();
         let slots = extract_runtime_open_slots(conductor.poll().unwrap());
 
         assert_eq!(
@@ -916,7 +918,7 @@ mod tests {
         )
         .unwrap();
         let mut conductor =
-            MonadConductor::<NopAcs<Timestamp>>::genesis(runtime_config, ()).unwrap();
+            CadenceConductor::<NopAcs<Timestamp>>::genesis(runtime_config, ()).unwrap();
         let _ = conductor.poll().unwrap();
 
         conductor.handle_slot_finalization(Timestamp::from_nanos(11), Slot(0));
@@ -1024,7 +1026,7 @@ mod tests {
 
     #[test]
     fn deadline_decision_opens_next_window_and_derives_first_slot() {
-        let mut conductor = MonadConductor::<MessageAcs>::genesis(config(), ()).unwrap();
+        let mut conductor = CadenceConductor::<MessageAcs>::genesis(config(), ()).unwrap();
         let _ = conductor.poll().unwrap();
         for slot in 0..=7 {
             let outputs = complete_slot(&mut conductor, slot, 100).unwrap();
@@ -1101,7 +1103,7 @@ mod tests {
         .unwrap();
         let bound = 2 * config.slots_per_window().get() - config.sync_boundary_slots().get();
         let mut conductor =
-            MonadConductor::<NopAcs<Timestamp>>::genesis(config.clone(), ()).unwrap();
+            CadenceConductor::<NopAcs<Timestamp>>::genesis(config.clone(), ()).unwrap();
         let _ = conductor.poll().unwrap();
 
         for window_id in 0..4 {
@@ -1187,7 +1189,8 @@ mod tests {
             nz(20),
         )
         .unwrap();
-        let mut conductor = MonadConductor::<NopAcs<Timestamp>>::genesis(wide_config, ()).unwrap();
+        let mut conductor =
+            CadenceConductor::<NopAcs<Timestamp>>::genesis(wide_config, ()).unwrap();
         let _ = conductor.poll().unwrap();
         for slot in 0..10 {
             let _ = complete_slot(&mut conductor, slot, 100 + slot).unwrap();

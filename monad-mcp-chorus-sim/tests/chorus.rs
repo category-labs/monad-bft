@@ -18,7 +18,7 @@ mod helper;
 use std::{num::NonZeroU64, sync::Arc};
 
 use chorus::{
-    conductor::{ConductorConfig, MonadConductor, acs::nop::NopAcs},
+    conductor::{CadenceConductor, ConductorConfig, acs::nop::NopAcs},
     slot::chorus::{Chorus, ChorusConfig, ChorusContext},
     types::{
         CreditLotterySchedule, HeaderAuth, ProposerConfig, RotatingProposerSchedule, ValidatorData,
@@ -40,7 +40,7 @@ const GENESIS_DEADLINE: SlotDeadline = SlotDeadline::from_millis(100);
 const LATENCY: TimestampDelta = TimestampDelta::from_millis(50); // expected networking latency (delta)
 const DELTA: TimestampDelta = TimestampDelta::from_millis(100); // latency bound (Delta)
 
-type Conductor = MonadConductor<NopAcs<SlotDeadline>>;
+type Conductor = CadenceConductor<NopAcs<SlotDeadline>>;
 
 fn conductor() -> Conductor {
     let config = ConductorConfig::new(
@@ -51,7 +51,7 @@ fn conductor() -> Conductor {
         LAG_THRESHOLD,
     )
     .unwrap();
-    MonadConductor::genesis(config, ()).unwrap()
+    CadenceConductor::genesis(config, ()).unwrap()
 }
 
 fn proposer_schedule(
