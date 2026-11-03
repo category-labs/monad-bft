@@ -1594,8 +1594,100 @@ impl InvalidSymbol {
     }
 }
 
+// Setup cost grows with K, so a sender must deliver K / divisor symbols to trigger it.
+const DECODER_SETUP_DIVISOR: usize = 8;
+
+enum LazyDecoder {
+    Collecting {
+        num_source_symbols: usize,
+        encoded_symbol_capacity: usize,
+        symbol_len: usize,
+        decoding_countdown: usize,
+        symbols: Vec<(usize, Box<[u8]>)>,
+    },
+    Decoding(ManagedDecoder),
+}
+
+impl LazyDecoder {
+    fn new(num_source_symbols: usize, encoded_symbol_capacity: usize, symbol_len: usize) -> Self {
+        LazyDecoder::Collecting {
+            num_source_symbols,
+            encoded_symbol_capacity,
+            symbol_len,
+            decoding_countdown: num_source_symbols.div_ceil(DECODER_SETUP_DIVISOR),
+            symbols: Vec::new(),
+        }
+    }
+
+    fn received_encoded_symbol(
+        &mut self,
+        symbol: &[u8],
+        encoding_symbol_id: usize,
+    ) -> Result<(), std::io::Error> {
+        match self {
+            LazyDecoder::Decoding(decoder) => {
+                decoder.received_encoded_symbol(symbol, encoding_symbol_id);
+                Ok(())
+            }
+            LazyDecoder::Collecting {
+                num_source_symbols,
+                encoded_symbol_capacity,
+                symbol_len,
+                decoding_countdown,
+                symbols,
+            } => {
+                symbols.push((encoding_symbol_id, symbol.into()));
+                *decoding_countdown = decoding_countdown.saturating_sub(1);
+                if *decoding_countdown > 0 {
+                    return Ok(());
+                }
+
+                // expects the checks in validate_chunk_meta to ensure
+                // valid parameters such that ManagedDecoder::new() is
+                // infallible.
+                let mut decoder = ManagedDecoder::new(
+                    *num_source_symbols,
+                    *encoded_symbol_capacity,
+                    *symbol_len,
+                )?;
+                for (encoding_symbol_id, symbol) in symbols.drain(..) {
+                    decoder.received_encoded_symbol(&symbol, encoding_symbol_id);
+                }
+                *self = LazyDecoder::Decoding(decoder);
+                Ok(())
+            }
+        }
+    }
+
+    fn try_decode(&mut self) -> bool {
+        match self {
+            LazyDecoder::Collecting { .. } => false,
+            LazyDecoder::Decoding(decoder) => decoder.try_decode(),
+        }
+    }
+
+    fn reconstruct_source_data(&self) -> Option<Vec<u8>> {
+        match self {
+            LazyDecoder::Collecting { .. } => None,
+            LazyDecoder::Decoding(decoder) => decoder.reconstruct_source_data(),
+        }
+    }
+
+    fn symbol_len(&self) -> usize {
+        match self {
+            LazyDecoder::Collecting { symbol_len, .. } => *symbol_len,
+            LazyDecoder::Decoding(decoder) => decoder.symbol_len(),
+        }
+    }
+
+    #[cfg(test)]
+    fn is_collecting(&self) -> bool {
+        matches!(self, LazyDecoder::Collecting { .. })
+    }
+}
+
 struct DecoderState {
-    decoder: ManagedDecoder,
+    decoder: LazyDecoder,
     app_message_len: usize,
     seen_esis: BitVec<usize, Lsb0>,
 }
@@ -1616,8 +1708,7 @@ impl DecoderState {
             .expect("usize smaller than u32");
         let num_source_symbols = message.num_source_symbols;
         let encoded_symbol_capacity = message.encoded_symbol_capacity;
-        let decoder = ManagedDecoder::new(num_source_symbols, encoded_symbol_capacity, symbol_len)
-            .map_err(InvalidSymbol::InvalidDecoderParameter)?;
+        let decoder = LazyDecoder::new(num_source_symbols, encoded_symbol_capacity, symbol_len);
 
         let mut decoder_state = DecoderState {
             decoder,
@@ -1639,9 +1730,8 @@ impl DecoderState {
         let symbol_id = message.chunk_id.into();
         self.seen_esis.set(symbol_id, true);
         self.decoder
-            .received_encoded_symbol(&message.chunk, symbol_id);
-
-        Ok(())
+            .received_encoded_symbol(&message.chunk, symbol_id)
+            .map_err(InvalidSymbol::InvalidDecoderParameter)
     }
 
     pub fn validate_symbol<PT>(&self, message: &ValidatedChunk<PT>) -> Result<(), InvalidSymbol>
@@ -1787,7 +1877,7 @@ mod test {
     use bytes::BytesMut;
     use itertools::Itertools;
     use monad_types::{Epoch, Round, Stake};
-    use rand::seq::SliceRandom as _;
+    use rand::{rngs::StdRng, seq::SliceRandom as _, SeedableRng as _};
 
     use super::*;
     use crate::{
@@ -1927,6 +2017,85 @@ mod test {
             })) if symbol_len == deeper.chunk.len()
                 && canonical_symbol_len == Some(canonical.chunk.len())
         ));
+    }
+
+    fn encode_shuffled(
+        app_message: &[u8],
+        encoded_symbol_capacity: usize,
+        rng: &mut impl rand::Rng,
+    ) -> Vec<(usize, Vec<u8>)> {
+        let encoder = monad_raptor::Encoder::new(app_message, DATA_SIZE).unwrap();
+        let mut symbols = (0..encoded_symbol_capacity)
+            .map(|symbol_id| {
+                let mut symbol = vec![0_u8; DATA_SIZE];
+                encoder.encode_symbol(&mut symbol, symbol_id);
+                (symbol_id, symbol)
+            })
+            .collect_vec();
+        symbols.shuffle(rng);
+        symbols
+    }
+
+    #[test]
+    fn test_decoder_setup_waits_for_countdown() {
+        let num_source_symbols = MIN_DECODABLE_SYMBOLS;
+        let encoded_symbol_capacity = num_source_symbols * REDUNDANCY;
+        let countdown = num_source_symbols.div_ceil(DECODER_SETUP_DIVISOR);
+        assert!(countdown > 1);
+        let app_message = vec![1_u8; APP_MESSAGE_LEN];
+        let mut rng = StdRng::seed_from_u64(0);
+        let symbols = encode_shuffled(&app_message, encoded_symbol_capacity, &mut rng);
+
+        let mut decoder = LazyDecoder::new(num_source_symbols, encoded_symbol_capacity, DATA_SIZE);
+        for (symbol_id, symbol) in &symbols[..countdown - 1] {
+            decoder.received_encoded_symbol(symbol, *symbol_id).unwrap();
+            assert!(!decoder.try_decode());
+            assert!(decoder.is_collecting());
+        }
+
+        let (symbol_id, symbol) = &symbols[countdown - 1];
+        decoder.received_encoded_symbol(symbol, *symbol_id).unwrap();
+        assert!(!decoder.is_collecting());
+    }
+
+    fn assert_lazy_matches_eager(num_source_symbols: usize, rng: &mut StdRng) {
+        let app_message_len = num_source_symbols * DATA_SIZE;
+        let encoded_symbol_capacity = num_source_symbols * 3;
+        let app_message = (0..app_message_len).map(|i| i as u8).collect_vec();
+        let symbols = encode_shuffled(&app_message, encoded_symbol_capacity, rng);
+
+        let mut lazy = LazyDecoder::new(num_source_symbols, encoded_symbol_capacity, DATA_SIZE);
+        let lazy_decoded_at = symbols.iter().position(|(symbol_id, symbol)| {
+            lazy.received_encoded_symbol(symbol, *symbol_id).unwrap();
+            lazy.try_decode()
+        });
+
+        let mut eager =
+            ManagedDecoder::new(num_source_symbols, encoded_symbol_capacity, DATA_SIZE).unwrap();
+        let eager_decoded_at = symbols.iter().position(|(symbol_id, symbol)| {
+            eager.received_encoded_symbol(symbol, *symbol_id);
+            eager.try_decode()
+        });
+
+        assert_eq!(
+            lazy_decoded_at, eager_decoded_at,
+            "K = {num_source_symbols}"
+        );
+        assert!(lazy_decoded_at.is_some(), "K = {num_source_symbols}");
+        let mut decoded = lazy.reconstruct_source_data().unwrap();
+        decoded.truncate(app_message_len);
+        assert_eq!(decoded, app_message);
+    }
+
+    // Deferred setup must decode at the same symbol as an eager decoder fed the same order.
+    #[test]
+    fn test_lazy_decoder_matches_eager() {
+        let mut rng = StdRng::seed_from_u64(0);
+        for num_source_symbols in [1, 8, 9, 64, 300] {
+            for _ in 0..20 {
+                assert_lazy_matches_eager(num_source_symbols, &mut rng);
+            }
+        }
     }
 
     fn make_symbols(
