@@ -17,7 +17,10 @@ use alloy_rlp::{encode_list, Decodable, Encodable, Header, RlpDecodable, RlpEnco
 use bytes::{Bytes, BytesMut};
 use monad_compress::{util::BoundedWriter, zstd::ZstdCompression, CompressionAlgo};
 use monad_crypto::certificate_signature::CertificateSignatureRecoverable;
+use monad_executor_glue::Message;
+use monad_message_rate_limit::{MessageKind, Protocol, RateLimiter, Rejection};
 use monad_peer_discovery::PeerDiscoveryMessage;
+use monad_types::NodeId;
 use thiserror::Error;
 
 use super::raptorcast_secondary::group_message::FullNodesGroupMessage;
@@ -196,6 +199,15 @@ pub enum DeserializeError {
     UnexpectedDecompressedLength { expected: usize, actual: usize },
     #[error("unknown message type")]
     UnknownMessageType,
+    #[error("message rejected by rate limiter: {0:?}")]
+    RateLimited(Rejection),
+}
+
+/// A borrowed envelope. Parsing and classifying it never decodes a body.
+pub struct InboundMessageHeader<'a> {
+    version: NetworkMessageVersion,
+    message_type: u8,
+    payload: &'a [u8],
 }
 
 impl<M: Decodable, ST: CertificateSignatureRecoverable> InboundRouterMessage<M, ST> {
@@ -207,26 +219,109 @@ impl<M: Decodable, ST: CertificateSignatureRecoverable> InboundRouterMessage<M, 
         data: &Bytes,
         allow_zstd: bool,
     ) -> Result<Self, DeserializeError> {
+        InboundMessageHeader::parse(data)?.decode_body(allow_zstd)
+    }
+
+    pub fn try_deserialize_rate_limited(
+        data: &Bytes,
+        from: &NodeId<M::NodeIdPubKey>,
+        limiter: &mut RateLimiter<NodeId<M::NodeIdPubKey>>,
+    ) -> Result<Self, DeserializeError>
+    where
+        M: Message,
+    {
+        let header = InboundMessageHeader::parse(data)?;
+        limiter
+            .check(from, header.kind::<M>()?)
+            .map_err(DeserializeError::RateLimited)?;
+        header.decode_body(false)
+    }
+}
+
+impl<'a> InboundMessageHeader<'a> {
+    pub fn parse(data: &'a [u8]) -> Result<Self, DeserializeError> {
         if data.len() > MAX_MESSAGE_SIZE {
             return Err(DeserializeError::MessageTooLarge {
                 size: data.len(),
                 max: MAX_MESSAGE_SIZE,
             });
         }
-        let mut data_ref = data.as_ref();
+        let mut data_ref = data;
         let mut payload = Header::decode_bytes(&mut data_ref, true)?;
         if !data_ref.is_empty() {
             return Err(DeserializeError::ExtraDataAfterHeader);
         }
         let version = NetworkMessageVersion::decode(&mut payload)?;
         let message_type = u8::decode(&mut payload)?;
+        if !matches!(
+            message_type,
+            MESSAGE_TYPE_APP | MESSAGE_TYPE_PEER_DISC | MESSAGE_TYPE_GROUP
+        ) {
+            return Err(DeserializeError::UnknownMessageType);
+        }
+        Ok(Self {
+            version,
+            message_type,
+            payload,
+        })
+    }
+
+    pub fn kind<M: Message>(&self) -> Result<MessageKind, DeserializeError> {
+        let mut payload = self.payload;
+        let kind = match self.message_type {
+            MESSAGE_TYPE_APP => {
+                if !matches!(
+                    self.version.compression_version,
+                    CompressionVersion::UncompressedVersion
+                ) {
+                    // A protocol discriminator inside compressed bytes cannot
+                    // be used for pre-decompression admission.
+                    return Err(DeserializeError::DecompressionError(
+                        "zstd compression is disabled".to_string(),
+                    ));
+                }
+                M::decode_header(payload)?
+            }
+            MESSAGE_TYPE_PEER_DISC | MESSAGE_TYPE_GROUP => {
+                payload = Header::decode_bytes(&mut payload, true)?;
+                let (protocol, max_message) = if self.message_type == MESSAGE_TYPE_PEER_DISC {
+                    u16::decode(&mut payload)?;
+                    (Protocol::PeerDiscovery, 6)
+                } else {
+                    if u8::decode(&mut payload)? != 1 {
+                        return Err(
+                            alloy_rlp::Error::Custom("Unknown group message version").into()
+                        );
+                    }
+                    (Protocol::FullNodesGroup, 5)
+                };
+                let message = u8::decode(&mut payload)?;
+                if !(1..=max_message).contains(&message) {
+                    return Err(DeserializeError::UnknownMessageType);
+                }
+                MessageKind::new(protocol, message)
+            }
+            _ => return Err(DeserializeError::UnknownMessageType),
+        };
+        Ok(kind)
+    }
+
+    pub fn decode_body<M: Decodable, ST: CertificateSignatureRecoverable>(
+        self,
+        allow_zstd: bool,
+    ) -> Result<InboundRouterMessage<M, ST>, DeserializeError> {
+        let Self {
+            version,
+            message_type,
+            mut payload,
+        } = self;
         let result = match message_type {
             MESSAGE_TYPE_APP => {
                 match version.compression_version {
                     CompressionVersion::UncompressedVersion => {
                         // decode as uncompressed message
                         let app_message = M::decode(&mut payload)?;
-                        Ok(Self::AppMessage(app_message))
+                        Ok(InboundRouterMessage::AppMessage(app_message))
                     }
                     CompressionVersion::DefaultZSTDVersion => {
                         if !allow_zstd {
@@ -258,17 +353,19 @@ impl<M: Decodable, ST: CertificateSignatureRecoverable> InboundRouterMessage<M, 
                         }
 
                         let app_message = M::decode(&mut decompressed_app_message.as_ref())?;
-                        Ok(Self::AppMessage(app_message))
+                        Ok(InboundRouterMessage::AppMessage(app_message))
                     }
                 }
             }
             MESSAGE_TYPE_PEER_DISC => {
                 let peer_disc_message = PeerDiscoveryMessage::decode(&mut payload)?;
-                Ok(Self::PeerDiscoveryMessage(peer_disc_message))
+                Ok(InboundRouterMessage::PeerDiscoveryMessage(
+                    peer_disc_message,
+                ))
             }
             MESSAGE_TYPE_GROUP => {
                 let group_message = FullNodesGroupMessage::decode(&mut payload)?;
-                Ok(Self::FullNodesGroup(group_message))
+                Ok(InboundRouterMessage::FullNodesGroup(group_message))
             }
             _ => Err(DeserializeError::UnknownMessageType),
         };

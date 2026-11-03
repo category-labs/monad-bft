@@ -176,6 +176,12 @@ pub trait Message: Clone + Send + Sync {
     type NodeIdPubKey: PubKey;
     type Event: Send + Sync;
 
+    /// Classify the borrowed wire header without decoding the message body.
+    /// Applications without protocol subgroups share an application budget.
+    fn decode_header(_data: &[u8]) -> alloy_rlp::Result<monad_message_rate_limit::MessageKind> {
+        Ok(monad_message_rate_limit::Protocol::Application.into())
+    }
+
     // TODO-3 NodeId -> &NodeId
     fn event(self, from: NodeId<Self::NodeIdPubKey>) -> Self::Event;
 
