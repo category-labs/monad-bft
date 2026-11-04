@@ -435,29 +435,37 @@ mod vote {
         pub(super) signature: S,
     }
 
+    impl SignatureCollection {
+        fn pairs(&self) -> impl Iterator<Item = IndexedSignature<&Signature>> {
+            self.sigs.iter().map(|(index, sig)| IndexedSignature {
+                index: *index,
+                signature: sig,
+            })
+        }
+
+        // the payload of the rlp list of (index, sig) pairs
+        fn payload_length(&self) -> usize {
+            self.pairs().map(|pair| pair.length()).sum()
+        }
+    }
+
+    // the encoding of a Vec<IndexedSignature<&Signature>>, without
+    // collecting one
     impl Encodable for SignatureCollection {
         fn encode(&self, out: &mut dyn bytes::BufMut) {
-            let pairs: Vec<_> = self
-                .sigs
-                .iter()
-                .map(|(index, sig)| IndexedSignature {
-                    index: *index,
-                    signature: sig,
-                })
-                .collect();
-            pairs.encode(out);
+            alloy_rlp::Header {
+                list: true,
+                payload_length: self.payload_length(),
+            }
+            .encode(out);
+            for pair in self.pairs() {
+                pair.encode(out);
+            }
         }
 
         fn length(&self) -> usize {
-            let pairs: Vec<_> = self
-                .sigs
-                .iter()
-                .map(|(index, sig)| IndexedSignature {
-                    index: *index,
-                    signature: sig,
-                })
-                .collect();
-            pairs.length()
+            let payload_length = self.payload_length();
+            alloy_rlp::length_of_length(payload_length) + payload_length
         }
     }
 
@@ -505,11 +513,12 @@ mod vote {
         }
 
         fn verify(&self, data: &[u8], validator_data: &ValidatorData) -> Option<ValidatorSet> {
+            let digest = monad_mcp_common::stub::noncrypto_digest(data);
             let mut signers = ValidatorSet::new();
             for (index, sig) in &self.sigs {
                 // None for an index outside the validator set
                 let index = validator_data.checked_index(*index)?;
-                if !sig.verify(data, validator_data.pubkey(index)) {
+                if !sig.verify_digest(digest, validator_data.pubkey(index)) {
                     return None; // Invalid signature
                 }
                 signers.insert(index);
@@ -537,6 +546,7 @@ mod vote {
         ) -> Option<SignatureCollection> {
             // caller guarantee: every vote comes from a distinct known
             // validator and carries a well-formed signature.
+            let digest = monad_mcp_common::stub::noncrypto_digest(data);
             let mut voters = ValidatorSet::new();
             let mut valid = Vec::new();
             for (index, sig) in votes {
@@ -547,7 +557,7 @@ mod vote {
                 // just naively exclude any bad signatures. we should use
                 // an aggregation tree for bls to iteratively exclude bad
                 // signatures.
-                if sig.verify(data, self.validator_data.pubkey(index)) {
+                if sig.verify_digest(digest, self.validator_data.pubkey(index)) {
                     valid.push((index, sig));
                 }
             }
@@ -560,8 +570,8 @@ mod vote {
 
             let sigcol = SignatureCollection::aggregate(valid, self.validator_data);
 
-            assert!(sigcol.signers(self.validator_data) == Some(signers));
-            assert!(sigcol.verify(data, self.validator_data) == Some(signers));
+            debug_assert!(sigcol.signers(self.validator_data) == Some(signers));
+            debug_assert!(sigcol.verify(data, self.validator_data) == Some(signers));
 
             Some(sigcol)
         }
@@ -639,6 +649,7 @@ const _: () = crate::spec::assert_env::<
 
 #[cfg(test)]
 mod rlp_tests {
+    use alloy_rlp::Encodable as _;
     use monad_mcp_common::spec::KeyPair as _;
 
     use super::{vote::IndexedSignature, *};
@@ -671,6 +682,11 @@ mod rlp_tests {
         ]);
         let collection: SignatureCollection = alloy_rlp::decode_exact(&encoded).unwrap();
         assert_eq!(alloy_rlp::encode(&collection), encoded);
+        assert_eq!(collection.length(), encoded.len());
+        let empty: SignatureCollection =
+            alloy_rlp::decode_exact([alloy_rlp::EMPTY_LIST_CODE]).unwrap();
+        assert_eq!(alloy_rlp::encode(&empty), [alloy_rlp::EMPTY_LIST_CODE]);
+        assert_eq!(empty.length(), 1);
 
         let mut malformed = signature;
         malformed.make_malformed();

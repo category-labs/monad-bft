@@ -181,6 +181,12 @@ mod vote {
             // Simulate a bad point, e.g. outside the BLS subgroup
             self.malformed = true;
         }
+
+        /// `verify` against `noncrypto_digest(data)`, computed by the caller,
+        /// so a collection over one message hashes it once, not per signer.
+        pub fn verify_digest(&self, digest: u64, pubkey: &PubKey) -> bool {
+            self.is_well_formed() && self.by == *pubkey && self.digest == digest
+        }
     }
 
     impl spec::vote::PubKey for PubKey {}
@@ -216,9 +222,7 @@ mod vote {
         }
 
         fn verify(&self, data: &[u8], pubkey: &Self::PubKey) -> bool {
-            self.is_well_formed()
-                && self.by == *pubkey
-                && self.digest == super::noncrypto_digest(data)
+            self.verify_digest(super::noncrypto_digest(data), pubkey)
         }
     }
 }
