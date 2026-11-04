@@ -116,10 +116,7 @@ impl NodeRouter {
                 let input = ProposingInput::Finalized(slot, positive);
                 sink.send(Routed::Proposing(input));
                 let certificate = finalization.certificate_message();
-                sink.send(Routed::Repeater(RepeaterInput::Finalization(
-                    slot,
-                    certificate,
-                )));
+                sink.send(Routed::Repeater(RepeaterInput::Finalization(certificate)));
                 let input = FinalizationInput::Finalized(now, slot, finalization);
                 sink.send(Routed::Finalization(input));
             }
@@ -224,8 +221,8 @@ fn route_inbound(now: Timestamp, inbound: NodeInbound, sink: &mut impl Sink<Rout
     }
 }
 
-fn route_repeat((to, slot, message): RepeaterOutput<ChorusMessage>, sink: &mut impl Sink<Routed>) {
-    let message: CadenceWireMsg = CadenceMessage::Slot(slot, message);
+fn route_repeat((to, message): RepeaterOutput<ChorusMessage>, sink: &mut impl Sink<Routed>) {
+    let message: CadenceWireMsg = CadenceMessage::Slot(message);
     let node_message = NodeMessage::Cadence(message.serialize());
     let outbound = match to {
         Recipients::Everyone => Outbound::Broadcast(node_message),
@@ -283,10 +280,10 @@ fn route_da(now: Timestamp, output: DAOutput, sink: &mut impl Sink<Routed>) {
 
 // only slot messages are repeated
 fn record(to: Recipients, message: &CadenceWireMsg, sink: &mut impl Sink<Routed>) {
-    let CadenceMessage::Slot(slot, message) = message else {
+    let CadenceMessage::Slot(message) = message else {
         return;
     };
-    let input = RepeaterInput::Record(*slot, to, message.clone());
+    let input = RepeaterInput::Record(to, message.clone());
     sink.send(Routed::Repeater(input));
 }
 

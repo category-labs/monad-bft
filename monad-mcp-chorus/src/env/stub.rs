@@ -413,7 +413,7 @@ mod vote {
 
     use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
     use monad_mcp_common::{
-        containers::{ValidatorIndex, ValidatorSet},
+        containers::{MAX_VALIDATORS, ValidatorIndex, ValidatorSet},
         spec::Signature as _,
     };
 
@@ -480,8 +480,14 @@ mod vote {
                         "signature indices must be strictly increasing",
                     ));
                 }
+                if index >= MAX_VALIDATORS {
+                    return Err(alloy_rlp::Error::Custom("signature index out of range"));
+                }
                 previous = Some(index);
                 sigs.insert(index, signature);
+            }
+            if sigs.is_empty() {
+                return Err(alloy_rlp::Error::Custom("no signatures"));
             }
             Ok(Self { sigs })
         }
@@ -683,10 +689,8 @@ mod rlp_tests {
         let collection: SignatureCollection = alloy_rlp::decode_exact(&encoded).unwrap();
         assert_eq!(alloy_rlp::encode(&collection), encoded);
         assert_eq!(collection.length(), encoded.len());
-        let empty: SignatureCollection =
-            alloy_rlp::decode_exact([alloy_rlp::EMPTY_LIST_CODE]).unwrap();
-        assert_eq!(alloy_rlp::encode(&empty), [alloy_rlp::EMPTY_LIST_CODE]);
-        assert_eq!(empty.length(), 1);
+        let empty = [alloy_rlp::EMPTY_LIST_CODE];
+        assert!(alloy_rlp::decode_exact::<SignatureCollection>(empty).is_err());
 
         let mut malformed = signature;
         malformed.make_malformed();

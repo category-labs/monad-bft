@@ -19,7 +19,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
-use monad_mcp_common::{Slot, Timestamp, TimestampDelta};
+use monad_mcp_common::{Slot, SlotScoped, Timestamp, TimestampDelta};
 
 use super::Component;
 use crate::common::NodeId;
@@ -65,13 +65,13 @@ pub struct Repeater<M> {
 }
 
 pub enum RepeaterInput<M> {
-    Record(Slot, Recipients, M),
-    Finalization(Slot, M),
+    Record(Recipients, M),
+    Finalization(M),
     Completed(Slot),
     CapAdvance(Slot),
 }
 
-pub type RepeaterOutput<M> = (Recipients, Slot, M);
+pub type RepeaterOutput<M> = (Recipients, M);
 
 impl<M> Repeater<M> {
     pub fn new(config: RepeaterConfig) -> Self {
@@ -90,10 +90,11 @@ impl<M> Repeater<M> {
 
     /// Remember an outbound message of an undecided slot. Repeats are
     /// emitted past this point, so they are never recorded again.
-    pub fn record(&mut self, now: Timestamp, slot: Slot, to: Recipients, message: M)
+    pub fn record(&mut self, now: Timestamp, to: Recipients, message: M)
     where
-        M: PartialEq,
+        M: PartialEq + SlotScoped,
     {
+        let slot = message.slot();
         if self.finalized.contains_key(&slot) {
             return;
         }
@@ -108,7 +109,11 @@ impl<M> Repeater<M> {
         }
     }
 
-    pub fn handle_finalization(&mut self, slot: Slot, certificate: M) {
+    pub fn handle_finalization(&mut self, certificate: M)
+    where
+        M: SlotScoped,
+    {
+        let slot = certificate.slot();
         self.undecided.remove(&slot);
         let certificate = Certificate {
             message: certificate,
@@ -139,13 +144,13 @@ impl<M> Repeater<M> {
     /// The repeats owed at `now`: every recorded message of a slot whose
     /// first send is at least `interval` old, plus every retained
     /// certificate.
-    pub fn due(&mut self, now: Timestamp) -> Vec<(Recipients, Slot, M)>
+    pub fn due(&mut self, now: Timestamp) -> Vec<(Recipients, M)>
     where
         M: Clone,
     {
         let mut due = Vec::new();
 
-        for (slot, undecided) in &self.undecided {
+        for undecided in self.undecided.values() {
             let Some(age) = now.duration_since(undecided.since) else {
                 continue;
             };
@@ -156,13 +161,13 @@ impl<M> Repeater<M> {
                 undecided
                     .deliveries
                     .iter()
-                    .map(|delivery| (delivery.to, *slot, delivery.message.clone())),
+                    .map(|delivery| (delivery.to, delivery.message.clone())),
             );
         }
 
-        due.extend(self.finalized.iter_mut().map(|(slot, certificate)| {
+        due.extend(self.finalized.values_mut().map(|certificate| {
             certificate.repeated = true;
-            (Recipients::Everyone, *slot, certificate.message.clone())
+            (Recipients::Everyone, certificate.message.clone())
         }));
 
         due
@@ -171,17 +176,15 @@ impl<M> Repeater<M> {
 
 impl<M> Component for Repeater<M>
 where
-    M: Clone + PartialEq,
+    M: Clone + PartialEq + SlotScoped,
 {
     type Input = RepeaterInput<M>;
     type Output = RepeaterOutput<M>;
 
     fn handle(&mut self, now: Timestamp, input: RepeaterInput<M>) {
         match input {
-            RepeaterInput::Record(slot, to, message) => self.record(now, slot, to, message),
-            RepeaterInput::Finalization(slot, certificate) => {
-                self.handle_finalization(slot, certificate)
-            }
+            RepeaterInput::Record(to, message) => self.record(now, to, message),
+            RepeaterInput::Finalization(certificate) => self.handle_finalization(certificate),
             RepeaterInput::Completed(slot) => self.handle_completed(slot),
             RepeaterInput::CapAdvance(cap) => self.handle_cap_advance(cap),
         }
@@ -211,7 +214,17 @@ mod tests {
 
     const INTERVAL: TimestampDelta = TimestampDelta::from_millis(5_000);
 
-    fn repeater(certificate_retention: u64) -> Repeater<u64> {
+    // a message of a slot, with a body that tells messages apart
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    struct Note(Slot, u64);
+
+    impl SlotScoped for Note {
+        fn slot(&self) -> Slot {
+            self.0
+        }
+    }
+
+    fn repeater(certificate_retention: u64) -> Repeater<Note> {
         Repeater::new(RepeaterConfig {
             interval: INTERVAL,
             certificate_retention,
@@ -225,17 +238,21 @@ mod tests {
     #[test]
     fn an_equal_re_record_is_deduped() {
         let mut repeater = repeater(2);
-        repeater.record(at(0), Slot(1), Recipients::Everyone, 7);
-        repeater.record(at(1_000), Slot(1), Recipients::Everyone, 7);
-        repeater.record(at(1_000), Slot(1), Recipients::Node(NodeId::dummy(3)), 7);
-        repeater.record(at(1_000), Slot(1), Recipients::Everyone, 8);
+        repeater.record(at(0), Recipients::Everyone, Note(Slot(1), 7));
+        repeater.record(at(1_000), Recipients::Everyone, Note(Slot(1), 7));
+        repeater.record(
+            at(1_000),
+            Recipients::Node(NodeId::dummy(3)),
+            Note(Slot(1), 7),
+        );
+        repeater.record(at(1_000), Recipients::Everyone, Note(Slot(1), 8));
 
         assert_eq!(
             repeater.due(at(5_000)),
             vec![
-                (Recipients::Everyone, Slot(1), 7),
-                (Recipients::Node(NodeId::dummy(3)), Slot(1), 7),
-                (Recipients::Everyone, Slot(1), 8),
+                (Recipients::Everyone, Note(Slot(1), 7)),
+                (Recipients::Node(NodeId::dummy(3)), Note(Slot(1), 7)),
+                (Recipients::Everyone, Note(Slot(1), 8)),
             ]
         );
     }
@@ -243,25 +260,25 @@ mod tests {
     #[test]
     fn finalization_drops_the_undecided_messages_and_keeps_the_certificate() {
         let mut repeater = repeater(2);
-        repeater.record(at(0), Slot(1), Recipients::Everyone, 7);
-        repeater.handle_finalization(Slot(1), 42);
+        repeater.record(at(0), Recipients::Everyone, Note(Slot(1), 7));
+        repeater.handle_finalization(Note(Slot(1), 42));
 
         assert_eq!(
             repeater.due(at(5_000)),
-            vec![(Recipients::Everyone, Slot(1), 42)]
+            vec![(Recipients::Everyone, Note(Slot(1), 42))]
         );
         // a finalized slot records nothing further
-        repeater.record(at(5_000), Slot(1), Recipients::Everyone, 7);
+        repeater.record(at(5_000), Recipients::Everyone, Note(Slot(1), 7));
         assert_eq!(
             repeater.due(at(20_000)),
-            vec![(Recipients::Everyone, Slot(1), 42)]
+            vec![(Recipients::Everyone, Note(Slot(1), 42))]
         );
     }
 
     #[test]
     fn a_faulted_slot_is_dropped() {
         let mut repeater = repeater(2);
-        repeater.record(at(0), Slot(1), Recipients::Everyone, 7);
+        repeater.record(at(0), Recipients::Everyone, Note(Slot(1), 7));
         repeater.handle_completed(Slot(1));
 
         assert!(repeater.due(at(5_000)).is_empty());
@@ -271,10 +288,10 @@ mod tests {
     fn a_cap_advance_trims_both_maps() {
         let mut repeater = repeater(2);
         for slot in 0..6 {
-            repeater.record(at(0), Slot(slot), Recipients::Everyone, slot);
+            repeater.record(at(0), Recipients::Everyone, Note(Slot(slot), slot));
         }
         for slot in 0..3 {
-            repeater.handle_finalization(Slot(slot), 100 + slot);
+            repeater.handle_finalization(Note(Slot(slot), 100 + slot));
         }
         // a tick, so every certificate is past its guaranteed repeat
         repeater.due(at(5_000));
@@ -284,29 +301,29 @@ mod tests {
         assert_eq!(
             repeater.due(at(5_000)),
             vec![
-                (Recipients::Everyone, Slot(4), 4),
-                (Recipients::Everyone, Slot(5), 5),
-                (Recipients::Everyone, Slot(2), 102),
+                (Recipients::Everyone, Note(Slot(4), 4)),
+                (Recipients::Everyone, Note(Slot(5), 5)),
+                (Recipients::Everyone, Note(Slot(2), 102)),
             ]
         );
 
         repeater.handle_cap_advance(Slot(5));
         assert_eq!(
             repeater.due(at(5_000)),
-            vec![(Recipients::Everyone, Slot(5), 5)]
+            vec![(Recipients::Everyone, Note(Slot(5), 5))]
         );
     }
 
     #[test]
     fn a_certificate_no_tick_has_sent_yet_outlives_the_cap() {
         let mut repeater = repeater(2);
-        repeater.handle_finalization(Slot(1), 101);
+        repeater.handle_finalization(Note(Slot(1), 101));
 
         // the cap runs past the retention before the first tick
         repeater.handle_cap_advance(Slot(9));
         assert_eq!(
             repeater.due(at(5_000)),
-            vec![(Recipients::Everyone, Slot(1), 101)]
+            vec![(Recipients::Everyone, Note(Slot(1), 101))]
         );
 
         repeater.handle_cap_advance(Slot(9));
@@ -316,16 +333,16 @@ mod tests {
     #[test]
     fn a_slot_is_repeated_only_once_its_first_send_is_interval_old() {
         let mut repeater = repeater(2);
-        repeater.record(at(1_000), Slot(1), Recipients::Everyone, 7);
+        repeater.record(at(1_000), Recipients::Everyone, Note(Slot(1), 7));
         // a later message of the same slot does not reset the slot's age
-        repeater.record(at(3_000), Slot(1), Recipients::Everyone, 8);
+        repeater.record(at(3_000), Recipients::Everyone, Note(Slot(1), 8));
 
         assert!(repeater.due(at(5_999)).is_empty());
         assert_eq!(
             repeater.due(at(6_000)),
             vec![
-                (Recipients::Everyone, Slot(1), 7),
-                (Recipients::Everyone, Slot(1), 8),
+                (Recipients::Everyone, Note(Slot(1), 7)),
+                (Recipients::Everyone, Note(Slot(1), 8)),
             ]
         );
     }

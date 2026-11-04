@@ -20,7 +20,7 @@
 pub mod monad_mvba;
 use std::{collections::VecDeque, fmt::Debug, hash::Hash};
 
-use alloy_rlp::{Decodable, Encodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper};
+use alloy_rlp::{Decodable, Encodable, RlpEncodable, RlpEncodableWrapper};
 pub use monad_mvba::FallbackCommitQc;
 
 /// MetaBlock components are exported
@@ -97,7 +97,7 @@ impl FallbackView {
 }
 
 /// The value the MVBA agrees on: one certified entry per proposer
-#[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodableWrapper, RlpDecodableWrapper)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodableWrapper)]
 pub struct Metablock(Lanes<CertifiedEntry>);
 
 impl Metablock {

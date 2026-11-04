@@ -30,8 +30,8 @@ use super::{
         FastCommitQc, FastCommitVoteMsg, FastPath,
     },
     types::{
-        HeaderAuth, KeyPair, Lane, Lanes, NodeId, ProposalId, ProposerSchedule,
-        SignatureCollection, SignedProposalHeader, Slot, TimestampDelta, ValidatorData,
+        HeaderAuth, KeyPair, Lane, Lanes, NodeId, ProposalId, ProposerSchedule, ProposerSet,
+        SignatureCollection, SignedProposalHeader, Slot, SlotScoped, TimestampDelta, ValidatorData,
         ValidatorSet,
     },
 };
@@ -69,6 +69,35 @@ pub enum ChorusMessage {
     // the fallback path's own protocol, dispatched into the MVBA
     #[from]
     Fallback(FallbackMessage),
+}
+
+impl SlotScoped for ChorusMessage {
+    fn slot(&self) -> Slot {
+        match self {
+            Self::BatchVote(vote) => vote.slot(),
+            Self::FastCommitVote(vote) => vote.scope,
+            Self::FastBlock(block) => block.slot(),
+            Self::FallbackVote(vote) => vote.slot(),
+            Self::FastCommitQc(qc) => qc.scope,
+            Self::EnterFallbackCert(cert) => cert.scope,
+            Self::Fallback(message) => message.slot(),
+        }
+    }
+}
+
+impl ChorusMessage {
+    fn check_lanes(&self, proposers: &ProposerSet) -> bool {
+        match self {
+            Self::BatchVote(vote) => vote.check_lanes(proposers),
+            Self::FastCommitVote(vote) => vote.vote.check_lanes(proposers),
+            Self::FastBlock(block) => block.check_lanes(proposers),
+            Self::FallbackVote(vote) => vote.check_lanes(proposers),
+            Self::FastCommitQc(qc) => qc.verdict.check_lanes(proposers),
+            Self::EnterFallbackCert(_) => true,
+            // the MVBA validates its values against its own context
+            Self::Fallback(_) => true,
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -213,6 +242,8 @@ pub struct Chorus {
     slot: Slot,
     key: Arc<KeyPair>,
     validator_data: Arc<ValidatorData>,
+    // who occupies each lane in this slot
+    proposers: ProposerSet,
 
     fast: FastPath,
     /// memory is unbounded until this validator proposes into it: the MVBA
@@ -271,7 +302,7 @@ impl SlotConsensus for Chorus {
 
         let fast = FastPath::new(
             slot,
-            proposers,
+            num_lanes,
             key.clone(),
             validator_data.clone(),
             header_auth.clone(),
@@ -292,6 +323,7 @@ impl SlotConsensus for Chorus {
             delta: *delta,
             key: key.clone(),
             validator_data: validator_data.clone(),
+            proposers,
             fast,
             fallback,
             outputs: Default::default(),
@@ -309,6 +341,9 @@ impl SlotConsensus for Chorus {
         if self.decided {
             return;
         }
+        if self.proposers.proposer(event.j).is_none() {
+            tracing::warn!(slot = ?self.slot, lane = ?event.j, "unexpected da event for a vacant lane");
+        }
 
         if let Some(fast_block) = self.fast.handle_da_event(event) {
             self.commit_fast_block(fast_block);
@@ -320,12 +355,14 @@ impl SlotConsensus for Chorus {
     fn handle_message(&mut self, author: NodeId, message: Self::Message) {
         use crate::spec::validator::ValidatorData as _;
 
+        debug_assert_eq!(message.slot(), self.slot);
+
         // the one place a sender becomes a validator index: everything below
         // addresses validators by index
         let Some(author) = self.validator_data.index_of(&author) else {
             return;
         };
-        if self.decided {
+        if self.decided || !message.check_lanes(&self.proposers) {
             return;
         }
 
@@ -882,7 +919,7 @@ mod tests {
             let voter = NodeId::dummy(id);
             let mut fast = FastPath::new(
                 Slot(1),
-                proposer_set.clone(),
+                proposer_set.num_lanes(),
                 Arc::new(voter.keypair()),
                 validator_data.clone(),
                 header_auth.clone(),

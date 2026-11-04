@@ -23,7 +23,7 @@ use super::{
     slot::{SlotConsensus, SlotOutput},
     slot_manager::SlotManager,
     timers::Timers,
-    types::{NodeId, Slot, Timestamp},
+    types::{NodeId, Slot, SlotScoped, Timestamp},
 };
 
 // A Runtime is a process that exchanges messages with peers, takes local
@@ -123,12 +123,13 @@ where
             CadenceMessage::Conductor(message) => {
                 self.conductor.handle_message(now, sender, message);
             }
-            CadenceMessage::Slot(slot, message)
-                if let Some(instance) = self.slot_manager.slot_instance(slot) =>
+            CadenceMessage::Slot(message)
+                if let Some(instance) = self.slot_manager.slot_instance(message.slot()) =>
             {
                 instance.handle_message(sender, message);
             }
-            CadenceMessage::Slot(slot, _) => {
+            CadenceMessage::Slot(message) => {
+                let slot = message.slot();
                 trace!(?slot, ?sender, "message for a slot without instance");
             }
         }
@@ -162,11 +163,13 @@ where
                     .schedule(now + delta, PendingWake::SlotTimer(slot, timer));
             }
             SlotOutput::Broadcast(message) => {
-                let message = CadenceMessage::Slot(slot, message);
+                debug_assert_eq!(message.slot(), slot);
+                let message = CadenceMessage::Slot(message);
                 self.outbox.push_back(Outbound::Broadcast(message));
             }
             SlotOutput::Unicast { to, message } => {
-                let message = CadenceMessage::Slot(slot, message);
+                debug_assert_eq!(message.slot(), slot);
+                let message = CadenceMessage::Slot(message);
                 self.outbox.push_back(Outbound::Unicast(to, message));
             }
             SlotOutput::Local(command) => {

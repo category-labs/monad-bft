@@ -21,7 +21,8 @@ use bytes::Bytes;
 pub use monad_mcp_common::containers::{ValidatorIndex, ValidatorMap, ValidatorSet};
 use monad_mcp_common::spec::{KeyPair as _, Stake as _};
 pub(crate) use monad_mcp_common::{
-    Lane, Lanes, MAX_PROPOSER_SET_SIZE, ProposalScope, Slot, Timestamp, TimestampDelta, WindowId,
+    Lane, Lanes, MAX_PROPOSER_SET_SIZE, ProposalScope, Slot, SlotScoped, Timestamp, TimestampDelta,
+    WindowId,
 };
 
 // the environment this module subtree is instantiated.
@@ -480,6 +481,9 @@ impl Decodable for EquivCert {
         }
         if a.pid() == b.pid() {
             return Err(alloy_rlp::Error::Custom("equivocation over one proposal"));
+        }
+        if a.slot() != b.slot() {
+            return Err(alloy_rlp::Error::Custom("equivocation across slots"));
         }
         Ok(Self(a, b))
     }

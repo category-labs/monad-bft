@@ -19,14 +19,14 @@ pub mod dummy;
 pub mod fallback;
 mod fast;
 
-use super::types::{self, NodeId, Slot, TimestampDelta};
+use super::types::{self, NodeId, Slot, SlotScoped, TimestampDelta};
 
 /// A single-slot consensus algorithm
 pub trait SlotConsensus: Sized {
     type Config: Clone;
     type Context;
 
-    type Message: Clone;
+    type Message: Clone + SlotScoped;
     type Timer: PartialEq + Eq + std::hash::Hash + Clone;
     type OptimisticCommitData: Clone;
     type FinalizationData: Clone;

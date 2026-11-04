@@ -22,7 +22,7 @@ use alloy_rlp::{RlpDecodable, RlpEncodable};
 
 use super::{
     SlotConsensus, SlotOutput,
-    types::{IsVote, KeyPair, NodeId, Slot, VoteMsg},
+    types::{IsVote, KeyPair, NodeId, Slot, SlotScoped, VoteMsg},
 };
 use crate::spec::vote::{SigningDomain, assert_signing_prefix};
 
@@ -64,6 +64,12 @@ impl SigningDomain for DummyVoteDomain {
 impl IsVote for DummyVote {
     type Scope = Slot;
     type SigningDomain = DummyVoteDomain;
+}
+
+impl SlotScoped for VoteMsg<DummyVote> {
+    fn slot(&self) -> Slot {
+        self.scope
+    }
 }
 
 impl SlotConsensus for DummySlotConsensus {

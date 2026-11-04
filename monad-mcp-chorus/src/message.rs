@@ -18,11 +18,7 @@
 use alloy_rlp::{Decodable, Encodable};
 use bytes::Bytes;
 
-use super::{
-    conductor::Conductor,
-    slot::SlotConsensus,
-    types::{NodeId, Slot},
-};
+use super::{conductor::Conductor, slot::SlotConsensus, types::NodeId};
 use crate::spec::{Deserializable, Serializable};
 
 pub enum Outbound<M> {
@@ -32,7 +28,7 @@ pub enum Outbound<M> {
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum CadenceMessage<SM, CM> {
-    Slot(Slot, SM),
+    Slot(SM),
     Conductor(CM),
 }
 
@@ -47,8 +43,8 @@ where
 {
     fn encode(&self, out: &mut dyn bytes::BufMut) {
         match self {
-            Self::Slot(slot, message) => {
-                let fields: [&dyn Encodable; 3] = [&1u8, slot, message];
+            Self::Slot(message) => {
+                let fields: [&dyn Encodable; 2] = [&1u8, message];
                 alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
             }
             Self::Conductor(message) => {
@@ -60,8 +56,8 @@ where
 
     fn length(&self) -> usize {
         match self {
-            Self::Slot(slot, message) => {
-                let fields: [&dyn Encodable; 3] = [&1u8, slot, message];
+            Self::Slot(message) => {
+                let fields: [&dyn Encodable; 2] = [&1u8, message];
                 alloy_rlp::list_length::<_, dyn Encodable>(&fields)
             }
             Self::Conductor(message) => {
@@ -80,10 +76,7 @@ where
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
         let result = match <u8 as Decodable>::decode(&mut payload)? {
-            1 => Self::Slot(
-                <Slot as Decodable>::decode(&mut payload)?,
-                <SM as Decodable>::decode(&mut payload)?,
-            ),
+            1 => Self::Slot(<SM as Decodable>::decode(&mut payload)?),
             2 => Self::Conductor(<CM as Decodable>::decode(&mut payload)?),
             _ => return Err(alloy_rlp::Error::Custom("unknown CadenceMessage tag")),
         };
@@ -118,7 +111,7 @@ mod rlp_tests {
                 CapAdvance, ConductorMessage, deadline_agreement::DeadlineAgreementMessage,
             },
             test_utils::{assert_roundtrip, dummy_index},
-            types::{Timestamp, WindowId},
+            types::{Slot, SlotScoped, Timestamp, WindowId},
         },
         *,
     };
@@ -126,8 +119,8 @@ mod rlp_tests {
     #[test]
     fn cadence_wire_layout_and_byte_traits() {
         type M = CadenceMessage<u64, DeadlineAgreementMessage<Timestamp>>;
-        let slot = M::Slot(Slot(7), 42);
-        assert_eq!(alloy_rlp::encode(&slot), [0xc3, 1, 7, 42]);
+        let slot = M::Slot(42);
+        assert_eq!(alloy_rlp::encode(&slot), [0xc2, 1, 42]);
         let conductor = M::Conductor(DeadlineAgreementMessage {
             window: WindowId(3),
             acs_message: Timestamp::from_nanos(42),
@@ -186,7 +179,7 @@ mod rlp_tests {
         let slot = Slot(7);
         let message = chorus_message(slot);
         assert_roundtrip(&message);
-        assert_serialization_roundtrip(&Wire::Slot(slot, message));
+        assert_serialization_roundtrip(&Wire::Slot(message));
 
         for nanos in [0, 127, 128, u128::MAX] {
             let message = ConductorMessage::DeadlineAgreement(DeadlineAgreementMessage {
@@ -216,13 +209,13 @@ mod rlp_tests {
 
         let slot = Slot(7);
         let message = chorus_message(slot);
-        let wire = Wire::Slot(slot, message.clone());
+        let wire = Wire::Slot(message.clone());
         let bytes = <Wire as Serializable<bytes::Bytes>>::serialize(&wire);
         assert_eq!(bytes.len(), wire.length());
-        let Wire::Slot(decoded_slot, decoded_message) = Wire::deserialize(&bytes).unwrap() else {
+        let Wire::Slot(decoded_message) = Wire::deserialize(&bytes).unwrap() else {
             panic!("expected a slot message");
         };
-        assert_eq!(decoded_slot, slot);
+        assert_eq!(decoded_message.slot(), slot);
         assert_eq!(decoded_message, message);
 
         for end in 0..bytes.len() {
@@ -255,11 +248,11 @@ mod rlp_tests {
         let slot = Slot(7);
         let message = VoteMsg::new_signed(slot, DummyVote, &NodeId::dummy(1).keypair());
         assert_roundtrip(&message);
-        let wire = Wire::Slot(slot, message.clone());
+        let wire = Wire::Slot(message.clone());
         let bytes = <Wire as Serializable<bytes::Bytes>>::serialize(&wire);
         assert_eq!(bytes.len(), wire.length());
-        let Wire::Slot(decoded_slot, decoded_message) = Wire::deserialize(&bytes).unwrap();
-        assert_eq!(decoded_slot, slot);
+        let Wire::Slot(decoded_message) = Wire::deserialize(&bytes).unwrap();
+        assert_eq!(decoded_message.slot(), slot);
         assert_eq!(decoded_message, message);
 
         for end in 0..bytes.len() {
@@ -280,8 +273,8 @@ mod rlp_tests {
             vec![0xc1, 3],
             vec![0xc1, 0x80],
             vec![0x80],
-            vec![0xc4, 1, 7, 42, 0],
-            vec![0xc2, 1, 7],
+            vec![0xc3, 1, 42, 0],
+            vec![0xc1, 1],
             vec![0xc3, 2, 42, 0],
             vec![0xc3, 0x81, 2, 42],
         ] {
@@ -304,7 +297,7 @@ mod rlp_tests {
                 Ok(Self)
             }
         }
-        let bytes = CadenceMessage::<Out, Out>::Slot(Slot(1), Out).serialize();
+        let bytes = CadenceMessage::<Out, Out>::Slot(Out).serialize();
         assert!(CadenceMessage::<In, In>::deserialize(&bytes).is_ok());
     }
 }

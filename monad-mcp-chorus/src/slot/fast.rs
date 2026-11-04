@@ -73,9 +73,6 @@ pub struct FastPath {
     // effects for the DA layer, drained by the slot consensus wrapper
     commands: VecDeque<ChorusDACommand>,
 
-    // who occupies each lane in this slot
-    proposers: ProposerSet,
-
     // using Arc to avoid lifetime issues.
     key: Arc<KeyPair>,
     validator_data: Arc<ValidatorData>,
@@ -85,12 +82,11 @@ pub struct FastPath {
 impl FastPath {
     pub(crate) fn new(
         s: Slot,
-        proposers: ProposerSet,
+        num_lanes: usize,
         key: Arc<KeyPair>,
         validator_data: Arc<ValidatorData>,
         header_auth: Arc<HeaderAuth>,
     ) -> Self {
-        let num_lanes = proposers.num_lanes();
         Self {
             slot: s,
 
@@ -107,7 +103,6 @@ impl FastPath {
             proposals: Lanes::new(num_lanes, |j| j),
             availability: Lanes::new_default(num_lanes),
             commands: VecDeque::new(),
-            proposers,
 
             key,
             validator_data,
@@ -141,7 +136,7 @@ impl FastPath {
     /// verify. Checked here because the certificate no longer rides inside the
     /// MVBA input, where admission used to be re-checked on every proposal.
     pub(crate) fn enter_fallback_cert_is_valid(&self, cert: &EnterFallbackCert) -> bool {
-        cert.scope == self.slot && cert.verify(&self.validator_data)
+        cert.verify(&self.validator_data)
     }
 
     pub(crate) fn handle_batch_vote(
@@ -149,12 +144,6 @@ impl FastPath {
         voter: ValidatorIndex,
         vote_msg: BatchVoteMsg,
     ) -> Option<FastBlock> {
-        let in_slot = vote_msg.slot == self.slot;
-        let one_vote_per_lane = vote_msg.votes.size() == self.proposals.size();
-        if !in_slot || !one_vote_per_lane {
-            return None;
-        }
-
         for vote_msg in vote_msg.split() {
             self.handle_vote(voter, vote_msg);
         }
@@ -174,12 +163,6 @@ impl FastPath {
         voter: ValidatorIndex,
         vote_msg: FastCommitVoteMsg,
     ) -> Option<FastCommitQc> {
-        let in_slot = vote_msg.scope == self.slot;
-        let one_entry_per_lane = vote_msg.vote.entries.size() == self.proposals.size();
-        if !in_slot || !one_entry_per_lane {
-            return None;
-        }
-
         // no phase guard on purpose
         self.commit_votes.add_vote(voter, vote_msg);
         let supermajority = self.validator_data.total_stake().supermajority_threshold();
@@ -202,19 +185,12 @@ impl FastPath {
     }
 
     fn fast_block_is_valid(&self, fast_block: &FastBlock) -> bool {
-        if fast_block.0.size() != self.proposals.size() {
-            return false;
-        }
-        fast_block.0.as_ref().into_indexed_iter().all(|(j, qc)| {
-            let at_its_lane = qc.scope == ProposalScope::new(self.slot, j);
-            at_its_lane && qc.verify(&self.validator_data)
-        })
+        let mut qcs = fast_block.0.as_ref().into_iter();
+        qcs.all(|qc| qc.verify(&self.validator_data))
     }
 
     pub(crate) fn fast_commit_qc_is_valid(&self, qc: &FastCommitQc) -> bool {
-        qc.scope == self.slot
-            && qc.verdict.entries.size() == self.proposals.size()
-            && qc.verify(&self.validator_data)
+        qc.verify(&self.validator_data)
     }
 
     pub(crate) fn handle_fallback_vote(
@@ -222,12 +198,6 @@ impl FastPath {
         voter: ValidatorIndex,
         vote_msg: FallbackVoteMsg,
     ) {
-        let shape_valid = vote_msg.enter_fallback_vote.scope == self.slot
-            && vote_msg.evidences.size() == self.proposals.size();
-        if !shape_valid {
-            return;
-        }
-
         // admission is all-or-nothing: any invalid evidence rejects the
         // whole vote, including its enter-fallback part.
         let all_evidences_valid = vote_msg
@@ -309,15 +279,9 @@ impl FastPath {
         self.phase = Phase::Vote;
 
         let votes = self.proposals.as_ref().map(|j| {
-            let entry = match self.proposers.proposer(*j) {
-                // A vacant lane has no proposer (rotation vacancy at a
-                // handoff, genesis ramp-up, or fewer staked validators than
-                // lanes): its proposal is empty by definition.
+            let entry = match self.availability[*j].fetch_proposal() {
+                Some(proposal) => Entry::Positive(proposal.pid()),
                 None => Entry::Negative,
-                Some(_) => match self.availability[*j].fetch_proposal() {
-                    Some(proposal) => Entry::Positive(proposal.pid()),
-                    None => Entry::Negative,
-                },
             };
 
             let vote_msg =
@@ -665,6 +629,18 @@ impl Gate<Entry> for HeaderSeen<'_> {
 
 pub type FastQc = StrongQc<Entry>;
 
+// one entry per lane, and a positive entry only on a lane with a proposer
+fn check_entry_lanes(entries: Lanes<&Entry>, proposers: &ProposerSet) -> bool {
+    if entries.size() != proposers.num_lanes() {
+        return false;
+    }
+    let mut entries = entries.into_indexed_iter();
+    entries.all(|(j, entry)| match entry {
+        Entry::Positive(_) => proposers.proposer(j).is_some(),
+        Entry::Negative => true,
+    })
+}
+
 #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
 pub(crate) struct BatchVoteMsg {
     slot: Slot,
@@ -674,6 +650,15 @@ pub(crate) struct BatchVoteMsg {
 }
 
 impl BatchVoteMsg {
+    pub(crate) fn slot(&self) -> Slot {
+        self.slot
+    }
+
+    pub(crate) fn check_lanes(&self, proposers: &ProposerSet) -> bool {
+        let entries = self.votes.as_ref().map(|signed| &signed.entry);
+        check_entry_lanes(entries, proposers)
+    }
+
     // one char per lane, + positive / - negative, for logs
     pub(crate) fn shape(&self) -> String {
         self.votes
@@ -709,12 +694,45 @@ pub struct FastCommitVote {
     pub entries: Lanes<Entry>,
 }
 
+impl FastCommitVote {
+    pub(crate) fn check_lanes(&self, proposers: &ProposerSet) -> bool {
+        check_entry_lanes(self.entries.as_ref(), proposers)
+    }
+}
+
 pub(crate) type FastCommitVoteMsg = VoteMsg<FastCommitVote>;
 
-#[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodableWrapper, RlpDecodableWrapper)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodableWrapper)]
 pub struct FastBlock(Lanes<FastQc>);
 
+impl Decodable for FastBlock {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let block = Self(Lanes::decode(buf)?);
+        if !block.is_in_place() {
+            return Err(alloy_rlp::Error::Custom("fast block qcs out of place"));
+        }
+        Ok(block)
+    }
+}
+
 impl FastBlock {
+    // a block has at least one lane, and all its qcs name one slot
+    pub(crate) fn slot(&self) -> Slot {
+        self.0[Lane::new_unchecked(0)].scope.slot
+    }
+
+    pub(crate) fn check_lanes(&self, proposers: &ProposerSet) -> bool {
+        let entries = self.0.as_ref().map(|qc| &qc.verdict);
+        check_entry_lanes(entries, proposers)
+    }
+
+    // every qc names the block's slot and its own lane
+    fn is_in_place(&self) -> bool {
+        let slot = self.slot();
+        let mut qcs = self.0.as_ref().into_indexed_iter();
+        qcs.all(|(j, qc)| qc.scope == ProposalScope::new(slot, j))
+    }
+
     pub(crate) fn commit_vote(&self, slot: Slot, key: &KeyPair) -> FastCommitVoteMsg {
         let vote = FastCommitVote::from(self);
         VoteMsg::new_signed(slot, vote, key)
@@ -804,11 +822,27 @@ impl CertifiedEntry {
         }
     }
 
-    pub(crate) fn entry(&self) -> Entry {
+    pub(crate) fn entry(&self) -> &Entry {
         match self {
-            CertifiedEntry::FastQc(qc) => qc.verdict.clone(),
-            CertifiedEntry::FallbackQc(qc) => qc.verdict.0.clone(),
-            CertifiedEntry::EquivCert(_) => Entry::Negative,
+            CertifiedEntry::FastQc(qc) => &qc.verdict,
+            CertifiedEntry::FallbackQc(qc) => &qc.verdict.0,
+            CertifiedEntry::EquivCert(_) => &Entry::Negative,
+        }
+    }
+
+    pub(crate) fn slot(&self) -> Slot {
+        match self {
+            CertifiedEntry::FastQc(qc) => qc.scope.slot,
+            CertifiedEntry::FallbackQc(qc) => qc.scope.slot,
+            CertifiedEntry::EquivCert(EquivCert(header, _)) => Slot(header.slot()),
+        }
+    }
+
+    pub(crate) fn is_scoped_to(&self, scope: ProposalScope) -> bool {
+        match self {
+            CertifiedEntry::FastQc(qc) => qc.scope == scope,
+            CertifiedEntry::FallbackQc(qc) => qc.scope == scope,
+            CertifiedEntry::EquivCert(_) => self.slot() == scope.slot,
         }
     }
 
@@ -933,6 +967,24 @@ enum ProposalEvidence {
     FallbackSignedEntry(FallbackSignedEntry),
 }
 
+impl ProposalEvidence {
+    fn entry(&self) -> &Entry {
+        match self {
+            ProposalEvidence::Certified(cert) => cert.entry(),
+            ProposalEvidence::FallbackSignedEntry(signed) => &signed.entry.0,
+        }
+    }
+
+    fn is_scoped_to(&self, scope: ProposalScope) -> bool {
+        match self {
+            ProposalEvidence::Certified(cert) => cert.is_scoped_to(scope),
+            ProposalEvidence::FallbackSignedEntry(signed) => signed
+                .header()
+                .is_none_or(|header| Slot(header.slot()) == scope.slot),
+        }
+    }
+}
+
 impl From<CertifiedEntry> for ProposalEvidence {
     fn from(value: CertifiedEntry) -> Self {
         ProposalEvidence::Certified(value)
@@ -989,10 +1041,46 @@ impl IsVote for EnterFallbackVote {
     type SigningDomain = EnterFallbackVoteDomain;
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable)]
 pub(crate) struct FallbackVoteMsg {
     enter_fallback_vote: VoteMsg<EnterFallbackVote>,
     evidences: Lanes<ProposalEvidence>,
+}
+
+impl Decodable for FallbackVoteMsg {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
+        let enter_fallback_vote = VoteMsg::<EnterFallbackVote>::decode(&mut payload)?;
+        let evidences = Lanes::<ProposalEvidence>::decode(&mut payload)?;
+        if !payload.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
+        }
+        let vote = Self {
+            enter_fallback_vote,
+            evidences,
+        };
+        if !vote.is_consistent() {
+            return Err(alloy_rlp::Error::Custom("fallback evidence inconsistent"));
+        }
+        Ok(vote)
+    }
+}
+
+impl FallbackVoteMsg {
+    pub(crate) fn slot(&self) -> Slot {
+        self.enter_fallback_vote.scope
+    }
+
+    pub(crate) fn check_lanes(&self, proposers: &ProposerSet) -> bool {
+        let entries = self.evidences.as_ref().map(|evidence| evidence.entry());
+        check_entry_lanes(entries, proposers)
+    }
+
+    fn is_consistent(&self) -> bool {
+        let slot = self.slot();
+        let mut evidences = self.evidences.as_ref().into_indexed_iter();
+        evidences.all(|(j, evidence)| evidence.is_scoped_to(ProposalScope::new(slot, j)))
+    }
 }
 
 // A fallback cert certifies 2f+1 validators agree to enter fallback path
@@ -1222,16 +1310,20 @@ mod tests {
         // consensus and header authentication read the one schedule, so
         // they cannot disagree
         let schedule = Arc::new(FixedProposerSchedule::new(proposers));
-        let proposers = schedule
-            .proposers_at(SLOT)
-            .expect("fixed schedule is always available");
         FastPath::new(
             SLOT,
-            proposers,
+            schedule.num_lanes(),
             Arc::new(NodeId::dummy(1).keypair()),
             Arc::new(validator_data(4)),
             Arc::new(proposers::header_auth(schedule)),
         )
+    }
+
+    // validator 0 proposes at the only lane
+    fn proposer_set() -> ProposerSet {
+        FixedProposerSchedule::new(vec![NodeId::dummy(0)])
+            .proposers_at(SLOT)
+            .expect("fixed schedule is always available")
     }
 
     // the pins among the drained commands, for proposal 0
@@ -1276,42 +1368,33 @@ mod tests {
     }
 
     #[test]
-    fn a_fast_block_with_extra_lanes_is_rejected() {
-        let mut fast = fast_path();
-        let qc = fast_qc(ProposalScope::new(SLOT, Lane::new_unchecked(0)), 1);
-        let padded = FastBlock(Lanes::new(MAX_PROPOSER_SET_SIZE, |_| qc.clone()));
+    fn a_fast_block_with_extra_lanes_fails_the_lane_check() {
+        let padded = FastBlock(Lanes::new(MAX_PROPOSER_SET_SIZE, |j| {
+            fast_qc(ProposalScope::new(SLOT, j), 1)
+        }));
 
-        assert!(fast.handle_fast_block(padded).is_none());
-        assert!(fast.certs[Lane::new_unchecked(0)].fast_qc().is_none());
+        assert!(fast_block(1).check_lanes(&proposer_set()));
+        assert!(!padded.check_lanes(&proposer_set()));
     }
 
     #[test]
-    fn a_fast_block_with_a_qc_from_another_slot_is_rejected() {
-        let mut fast = fast_path();
+    fn a_fast_block_decodes_only_with_every_qc_in_place() {
+        fn qc_at(slot: Slot, lane: u8) -> FastQc {
+            let scope = ProposalScope::new(slot, Lane::new_unchecked(lane));
+            fast_qc(scope, 1)
+        }
+        let decodes = |first: FastQc, second: FastQc| {
+            let block = FastBlock(Lanes::new(2, |j| match usize::from(j) {
+                0 => first.clone(),
+                _ => second.clone(),
+            }));
+            alloy_rlp::decode_exact::<FastBlock>(alloy_rlp::encode(&block)).is_ok()
+        };
         let other_slot = Slot(SLOT.get() + 1);
-        let qc = fast_qc(ProposalScope::new(other_slot, Lane::new_unchecked(0)), 1);
-        let replayed = FastBlock(Lanes::new(1, |_| qc.clone()));
 
-        assert!(fast.handle_fast_block(replayed).is_none());
-        assert!(fast.certs[Lane::new_unchecked(0)].fast_qc().is_none());
-    }
-
-    #[test]
-    fn a_fast_block_with_its_qcs_on_swapped_lanes_is_rejected() {
-        let mut fast = fast_path_of(vec![NodeId::dummy(0), NodeId::dummy(2)]);
-        let lane_0 = fast_qc(ProposalScope::new(SLOT, Lane::new_unchecked(0)), 1);
-        let lane_1 = fast_qc(ProposalScope::new(SLOT, Lane::new_unchecked(1)), 2);
-        let swapped = FastBlock(Lanes::new(2, |j| match usize::from(j) {
-            0 => lane_1.clone(),
-            _ => lane_0.clone(),
-        }));
-        assert!(fast.handle_fast_block(swapped).is_none());
-
-        let ordered = FastBlock(Lanes::new(2, |j| match usize::from(j) {
-            0 => lane_0.clone(),
-            _ => lane_1.clone(),
-        }));
-        assert!(fast.handle_fast_block(ordered).is_some());
+        assert!(decodes(qc_at(SLOT, 0), qc_at(SLOT, 1)));
+        assert!(!decodes(qc_at(SLOT, 1), qc_at(SLOT, 0)));
+        assert!(!decodes(qc_at(SLOT, 0), qc_at(other_slot, 1)));
     }
 
     #[test]
@@ -1331,26 +1414,12 @@ mod tests {
     }
 
     #[test]
-    fn a_fast_commit_vote_with_extra_lanes_is_not_counted() {
-        let mut fast = fast_path();
-        let padded = FastCommitVote {
-            entries: Lanes::new(2, |_| Entry::Negative),
-        };
-        for index in [0, 2, 3] {
-            let voter = NodeId::dummy(index);
-            let msg = VoteMsg::new_signed(SLOT, padded.clone(), &voter.keypair());
-            assert!(fast.handle_commit_vote(dummy_index(voter), msg).is_none());
-        }
-    }
-
-    #[test]
-    fn a_fast_commit_qc_is_valid_only_with_one_entry_per_lane() {
-        let fast = fast_path();
+    fn a_fast_commit_vote_needs_one_entry_per_lane() {
         let exact = fast_commit_qc(Lanes::new(1, |_| Entry::Negative));
         let padded = fast_commit_qc(Lanes::new(2, |_| Entry::Negative));
 
-        assert!(fast.fast_commit_qc_is_valid(&exact));
-        assert!(!fast.fast_commit_qc_is_valid(&padded));
+        assert!(exact.verdict.check_lanes(&proposer_set()));
+        assert!(!padded.verdict.check_lanes(&proposer_set()));
     }
 
     #[test]
@@ -1793,21 +1862,29 @@ mod rlp_tests {
 
     #[test]
     fn chorus_variants_and_nested_evidence_roundtrip() {
+        use super::super::types::{SignatureCollection, Stake};
+
         let slot = Slot(9);
         let key = NodeId::dummy(1).keypair();
         let root = MerkleRoot(MerkleHash([7; 20]));
         let scheme = EncodingScheme::dummy(slot);
         let positive = Entry::Positive(ProposalHeader { root, scheme }.pid());
         let signature = key.sign(&Bytes::from_static(b"test"));
-        // Empty collections suffice for wire tests; validation remains separate.
-        let sigcol = alloy_rlp::decode_exact([0xc0]).unwrap();
+        // One signature suffices for wire tests; validation remains separate.
+        let signer = NodeId::dummy(1);
+        let validator_data = ValidatorData::new(
+            [(signer, Stake::from(1))].into(),
+            [(signer, key.pubkey())].into(),
+        );
+        let first = ValidatorIndex::new(0).expect("one validator");
+        let sigcol = SignatureCollection::aggregate([(first, &signature)], &validator_data);
         let fast_qc = StrongQc {
             scope: ProposalScope::new(slot, Lane::new_unchecked(0)),
             verdict: positive.clone(),
             sigcol,
         };
         let weak_qc = WeakQc {
-            scope: ProposalScope::new(slot, Lane::new_unchecked(0)),
+            scope: ProposalScope::new(slot, Lane::new_unchecked(1)),
             verdict: FallbackEntry(Entry::Negative),
             sigcol: fast_qc.sigcol.clone(),
         };
@@ -1878,7 +1955,10 @@ mod rlp_tests {
                 fast_commit_vote.clone(),
                 &key,
             )),
-            ChorusMessage::FastBlock(FastBlock(Lanes::new(2, |_| fast_qc.clone()))),
+            ChorusMessage::FastBlock(FastBlock(Lanes::new(2, |j| StrongQc {
+                scope: ProposalScope::new(slot, j),
+                ..fast_qc.clone()
+            }))),
             ChorusMessage::FallbackVote(FallbackVoteMsg {
                 enter_fallback_vote: VoteMsg::new_signed(slot, EnterFallbackVote, &key),
                 evidences: Lanes::new(evidence.len(), |i| evidence[usize::from(i)].clone()),
@@ -1894,7 +1974,7 @@ mod rlp_tests {
         // Check both the Chorus RLP payload and its enclosing Cadence byte serialization.
         for message in messages {
             assert_roundtrip(&message);
-            assert_serialization_roundtrip(&Wire::Slot(slot, message));
+            assert_serialization_roundtrip(&Wire::Slot(message));
         }
     }
 
@@ -1921,7 +2001,7 @@ mod rlp_tests {
         assert_eq!(alloy_rlp::encode(FastCommitVote { entries }), [0xc0]);
         let block = FastBlock(Lanes::new(0, |_| unreachable!()));
         assert_eq!(alloy_rlp::encode(&block), [0xc0]);
-        assert_roundtrip(&block);
+        assert!(alloy_rlp::decode_exact::<FastBlock>([0xc0]).is_err());
         for bad in [&[0xc1, 3][..], &[0xc2, 2, 0][..], &[0x80][..]] {
             assert!(alloy_rlp::decode_exact::<Entry>(bad).is_err());
         }

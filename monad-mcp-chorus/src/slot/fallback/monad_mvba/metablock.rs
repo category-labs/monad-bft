@@ -13,11 +13,13 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use alloy_rlp::Decodable;
+
 use super::{
     super::{
         super::{
             fast::{CertifiedEntry, Entry},
-            types::{HeaderAuth, Lanes, ProposalScope, Slot, ValidatorData},
+            types::{HeaderAuth, Lane, Lanes, ProposalScope, Slot, ValidatorData},
         },
         Metablock, ValidateInput, Votable,
     },
@@ -54,11 +56,30 @@ impl Metablock {
 
     /// `entries(B)`, in increasing order of lane
     pub(crate) fn entries(&self) -> Lanes<Entry> {
-        self.0.as_ref().map(CertifiedEntry::entry)
+        self.0.as_ref().map(CertifiedEntry::entry).into_owned()
     }
 
     pub(crate) fn certified_entries(&self) -> Lanes<&CertifiedEntry> {
         self.0.as_ref()
+    }
+}
+
+impl Decodable for Metablock {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let block = Self(Lanes::decode(buf)?);
+        if !block.is_in_place() {
+            return Err(alloy_rlp::Error::Custom("metablock entries out of place"));
+        }
+        Ok(block)
+    }
+}
+
+impl Metablock {
+    // every entry names the slot of the first and, where it names one, its own lane
+    fn is_in_place(&self) -> bool {
+        let slot = self.0[Lane::new_unchecked(0)].slot();
+        let mut certs = self.0.as_ref().into_indexed_iter();
+        certs.all(|(j, cert)| cert.is_scoped_to(ProposalScope::new(slot, j)))
     }
 }
 

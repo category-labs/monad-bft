@@ -51,6 +51,20 @@ pub enum MvbaMessage<V: Votable, C: ValidateCert> {
     BlockResponse(BlockResponseMsg<V>),
 }
 
+impl<V: Votable, C: ValidateCert> MvbaMessage<V, C> {
+    pub fn slot(&self) -> Slot {
+        match self {
+            Self::PrePrepare(msg) => msg.slot,
+            Self::Prepare(msg) => msg.scope.slot,
+            Self::Commit(msg) => msg.scope.slot,
+            Self::Timeout(msg) => msg.slot(),
+            Self::CommitQc(qc) => qc.scope.slot,
+            Self::BlockRequest(msg) => msg.slot,
+            Self::BlockResponse(msg) => msg.slot,
+        }
+    }
+}
+
 /// `⟨Prepare, slot, v, entries(x)⟩`
 #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodableWrapper, RlpDecodableWrapper)]
 pub(crate) struct PrepareVote<E>(pub E);
@@ -668,10 +682,7 @@ mod rlp_tests {
                 _ => {}
             }
             // The outer Chorus and Cadence framing also wraps the MVBA arm.
-            assert_serialization_roundtrip(&Wire::Slot(
-                h::SLOT,
-                chorus::ChorusMessage::Fallback(message),
-            ));
+            assert_serialization_roundtrip(&Wire::Slot(chorus::ChorusMessage::Fallback(message)));
         }
     }
 

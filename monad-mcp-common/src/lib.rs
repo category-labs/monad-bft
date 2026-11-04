@@ -83,6 +83,12 @@ impl Slot {
     }
 }
 
+// Message scoped to a slot. If it contains one multiple slots they
+// must agree.
+pub trait SlotScoped {
+    fn slot(&self) -> Slot;
+}
+
 // the max number of lanes we currently permit
 pub const MAX_PROPOSER_SET_SIZE: usize = 5;
 
@@ -480,9 +486,16 @@ where
     T: Decodable,
 {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let values = Vec::<T>::decode(buf)?;
-        if values.len() > MAX_PROPOSER_SET_SIZE {
-            return Err(alloy_rlp::Error::Custom("too many lanes"));
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
+        let mut values = Vec::new();
+        while !payload.is_empty() {
+            if values.len() == MAX_PROPOSER_SET_SIZE {
+                return Err(alloy_rlp::Error::Custom("too many lanes"));
+            }
+            values.push(T::decode(&mut payload)?);
+        }
+        if values.is_empty() {
+            return Err(alloy_rlp::Error::Custom("no lanes"));
         }
         let result = Self {
             values: values.into_boxed_slice(),
