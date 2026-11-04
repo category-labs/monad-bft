@@ -15,7 +15,8 @@
 
 use std::{
     path::{Component, Path, PathBuf},
-    time::Instant,
+    sync::atomic::{AtomicU64, Ordering},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use bytes::Bytes;
@@ -27,11 +28,29 @@ use super::{
 };
 use crate::{metrics::Metrics, prelude::*};
 
+const TMP_DIR_NAME: &str = ".tmp";
+
+static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
 #[derive(Clone)]
 pub struct FsStorage {
     pub root: PathBuf,
+    staging: PathBuf,
     metrics: Metrics,
     name: String,
+}
+
+fn tmp_name() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|since| since.as_nanos())
+        .unwrap_or(0);
+    format!(
+        "{}-{}-{}.tmp",
+        std::process::id(),
+        nanos,
+        TMP_SEQ.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 impl FsStorage {
@@ -39,9 +58,11 @@ impl FsStorage {
         let root = root.into();
         std::fs::create_dir_all(&root).wrap_err_with(|| format!("Failed to create {root:?}"))?;
 
+        let staging = root.join(TMP_DIR_NAME);
         let name = root.to_string_lossy().into_owned();
         Ok(Self {
             root,
+            staging,
             metrics,
             name,
         })
@@ -54,9 +75,55 @@ impl FsStorage {
             .wrap_err_with(|| format!("Failed to create {root:?}"))?;
         Ok(Self {
             root,
+            staging: self.staging,
             metrics: self.metrics,
             name: self.name,
         })
+    }
+
+    async fn write_staged(&self, dir: &Path, data: &[u8]) -> Result<PathBuf> {
+        let tmp_path = dir.join(tmp_name());
+
+        let write = async {
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp_path)
+                .await?;
+            file.write_all(data).await?;
+            file.flush().await
+        };
+
+        match write.await {
+            Ok(()) => Ok(tmp_path),
+            Err(err) => {
+                if err.kind() != std::io::ErrorKind::AlreadyExists {
+                    let _ = fs::remove_file(&tmp_path).await;
+                }
+                Err(err).wrap_err_with(|| format!("Failed to write temp file {tmp_path:?}"))
+            }
+        }
+    }
+
+    async fn put_staged(&self, path: &Path, data: &[u8], policy: WritePolicy) -> Result<PutResult> {
+        if policy == WritePolicy::NoClobber
+            && fs::try_exists(path)
+                .await
+                .wrap_err_with(|| format!("Failed to check existence of {path:?}"))?
+        {
+            return Ok(PutResult::Skipped);
+        }
+
+        fs::create_dir_all(&self.staging)
+            .await
+            .wrap_err_with(|| format!("Failed to create {:?}", self.staging))?;
+        let tmp_path = self.write_staged(&self.staging, data).await?;
+
+        if let Err(err) = fs::rename(&tmp_path, path).await {
+            let _ = fs::remove_file(&tmp_path).await;
+            return Err(err).wrap_err_with(|| format!("Failed to rename {tmp_path:?} to {path:?}"));
+        }
+        Ok(PutResult::Written)
     }
 
     pub fn key_path(&self, key: &str) -> Result<PathBuf> {
@@ -159,52 +226,28 @@ impl KVStore for FsStorage {
 
         let start = Instant::now();
 
-        if policy == WritePolicy::NoClobber {
-            // Use create_new to atomically fail if file exists
-            match fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-                .await
-            {
-                Ok(mut file) => {
-                    file.write_all(&data)
-                        .await
-                        .wrap_err_with(|| format!("Failed to write key {key} to path {path:?}"))?;
-                    kvstore_put_metrics(
-                        start.elapsed(),
-                        true,
-                        KVStoreType::FileSystem,
-                        &self.metrics,
-                    );
-                    Ok(PutResult::Written)
-                }
-                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-                    kvstore_put_metrics(
-                        start.elapsed(),
-                        true,
-                        KVStoreType::FileSystem,
-                        &self.metrics,
-                    );
+        match self.put_staged(&path, &data, policy).await {
+            Ok(result) => {
+                kvstore_put_metrics(
+                    start.elapsed(),
+                    true,
+                    KVStoreType::FileSystem,
+                    &self.metrics,
+                );
+                if result == PutResult::Skipped {
                     warn!(key, "FS put skipped: key already exists (NoClobber policy)");
-                    Ok(PutResult::Skipped)
                 }
-                Err(err) => {
-                    kvstore_put_metrics(
-                        start.elapsed(),
-                        false,
-                        KVStoreType::FileSystem,
-                        &self.metrics,
-                    );
-                    Err(err).wrap_err_with(|| format!("Failed to write key {key} to path {path:?}"))
-                }
+                Ok(result)
             }
-        } else {
-            fs::write(&path, &data)
-                .await
-                .write_put_metrics(start.elapsed(), KVStoreType::FileSystem, &self.metrics)
-                .wrap_err_with(|| format!("Failed to write key {key} to path {path:?}"))?;
-            Ok(PutResult::Written)
+            Err(err) => {
+                kvstore_put_metrics(
+                    start.elapsed(),
+                    false,
+                    KVStoreType::FileSystem,
+                    &self.metrics,
+                );
+                Err(err).wrap_err_with(|| format!("Failed to write key {key} to path {path:?}"))
+            }
         }
     }
 
@@ -212,6 +255,7 @@ impl KVStore for FsStorage {
         let root = self.root.clone();
         let prefix = prefix.to_owned();
         let name = self.name.clone();
+        let staging = self.staging.clone();
 
         spawn_blocking(move || -> Result<Vec<String>> {
             let mut matches = Vec::new();
@@ -229,7 +273,9 @@ impl KVStore for FsStorage {
                     let path = entry.path();
 
                     if path.is_dir() {
-                        stack.push(path);
+                        if path != staging {
+                            stack.push(path);
+                        }
                         continue;
                     }
 
@@ -351,10 +397,10 @@ mod tests {
             .put(key, b"data".to_vec(), WritePolicy::AllowOverwrite)
             .await?;
 
-        let file_path = dir.path().join(key);
+        let file_path = storage.root.join(key);
         assert!(file_path.is_file());
-        assert!(dir.path().join("hi").is_dir());
-        assert!(dir.path().join("hi/bye").is_dir());
+        assert!(storage.root.join("hi").is_dir());
+        assert!(storage.root.join("hi/bye").is_dir());
 
         Ok(())
     }
@@ -381,6 +427,46 @@ mod tests {
         // Verify original data is preserved
         let stored = storage.get(key).await?.unwrap();
         assert_eq!(stored, Bytes::from(original_data));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_staging_hidden_from_scans_and_cleaned_up() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let storage = FsStorage::new(dir.path(), Metrics::none())?;
+        let staging = storage.staging.clone();
+        assert_eq!(staging, storage.root.join(TMP_DIR_NAME));
+
+        storage
+            .put("1", b"block".to_vec(), WritePolicy::AllowOverwrite)
+            .await?;
+        storage
+            .put("2", b"block".to_vec(), WritePolicy::NoClobber)
+            .await?;
+
+        assert_eq!(std::fs::read_dir(&staging)?.count(), 0);
+        let mut keys = storage.scan_prefix("").await?;
+        keys.sort();
+        assert_eq!(keys, vec!["1".to_string(), "2".to_string()]);
+
+        let prefixed = storage.clone().with_prefix("1M/").await?;
+        prefixed
+            .put("3", b"block".to_vec(), WritePolicy::AllowOverwrite)
+            .await?;
+        assert_eq!(prefixed.staging, staging);
+        assert_eq!(std::fs::read_dir(&staging)?.count(), 0);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_reads_do_not_create_tmp_dir() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let storage = FsStorage::new(dir.path(), Metrics::none())?;
+
+        assert!(storage.get("missing").await?.is_none());
+        assert!(!storage.staging.exists());
 
         Ok(())
     }
