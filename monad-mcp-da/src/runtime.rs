@@ -410,8 +410,6 @@ mod tests {
                         consensus_decoded_at = Some(i);
                     }
                 }
-                // our partial chunk 10 is rebroadcast to nobody
-                DAOutput::Disseminate(dissemination) if dissemination.to.is_empty() => {}
                 DAOutput::Disseminate(dissemination) => {
                     // our chunk 2 on arrival and 6 once derivable, one message
                     let ids: Vec<_> = dissemination

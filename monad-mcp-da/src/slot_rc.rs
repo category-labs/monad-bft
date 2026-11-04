@@ -392,14 +392,11 @@ mod tests {
         let (_, chunks) = proposal_chunks(&epoch_handle, 1);
         raptorcast.handle_command(ChorusDACommand::ReleaseChunks, NOW);
 
-        // chunks 2 and 6 are ours, 1 is not. Two chunks decode, which
-        // derives our partial chunk 10, rebroadcast to nobody
+        // chunks 2 and 6 are ours, 1 is not
         let envelope = group(&[chunks[1].clone(), chunks[2].clone(), chunks[6].clone()]);
         let messages = ingest(&mut raptorcast, envelope);
-        let mut addressed = messages.iter().filter(|message| !message.to.is_empty());
-        let message = addressed.next().expect("our chunks leave");
-        assert!(addressed.next().is_none());
-        assert_eq!(chunk_ids([message]), [2, 6]);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(chunk_ids(&messages), [2, 6]);
     }
 
     #[test]
@@ -417,8 +414,9 @@ mod tests {
             event: ProposalDAEvent::Decoded(header.pid()),
         };
         assert!(raptorcast.drain_events().contains(&decoded));
-        // our chunks 2, 6 and 10 never arrived, but re-encoding derives them
-        assert_eq!(chunk_ids(&messages), [2, 6, 10]);
+        // our chunks 2 and 6 never arrived, but re-encoding derives them;
+        // our partial chunk 10 covers no node but us
+        assert_eq!(chunk_ids(&messages), [2, 6]);
     }
 
     #[test]

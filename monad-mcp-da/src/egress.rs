@@ -49,6 +49,9 @@ impl ChunkEgress {
         chunk_id: WireChunkId,
         data: ChunkData,
     ) {
+        if recipients.is_empty() {
+            return;
+        }
         if let Some(last) = self.pending.last_mut()
             && last.to == recipients
             && last.envelope.header() == header
@@ -71,6 +74,9 @@ impl ChunkEgress {
         recipients: Vec<NodeId>,
         header: &SignedProposalHeader,
     ) {
+        if recipients.is_empty() {
+            return;
+        }
         let envelope = ProposalEnvelope::from_header(header.clone());
         let dissemination = Dissemination {
             to: recipients,
