@@ -34,7 +34,7 @@ use monad_mcp_node::{
     da::ProposalKeyPair,
     network::{NodeInbound, NodeMessage},
 };
-use monad_sim::{CancelToken, Ctx, Handle, StepLabel, Time};
+use monad_sim::{CancelToken, ClockDiff, Ctx, Handle, StepLabel, Time};
 use monad_sim_swarm::{Net, Network, Parallel, Placer, Provenance, RegionTable, SimClient, Swarm};
 use rand::{SeedableRng as _, distributions::Uniform};
 use rand_chacha::ChaCha8Rng;
@@ -69,6 +69,8 @@ pub struct SimNode {
     // hashes every message delivered to this node, with its time, in
     // delivery order
     delivery_hasher: RapidStreamHasherV3<'static>,
+    // the node's clock reads sim time + clock_offset
+    clock_offset: ClockDiff,
     // the one live timer step, at the node's last polled next_due
     due_alarm: Option<(Time, CancelToken)>,
     me: Option<Handle<Self>>,
@@ -85,10 +87,23 @@ impl SimNode {
             node: Box::new(node),
             finalized: BTreeMap::new(),
             delivery_hasher: RapidStreamHasherV3::new(&DEFAULT_RAPID_SECRETS),
+            clock_offset: ClockDiff(0),
             due_alarm: None,
             me: None,
             net: None,
         }
+    }
+
+    // the node's clock runs `offset` ahead of sim time (behind if negative)
+    pub fn with_clock_offset(mut self, offset: ClockDiff) -> Self {
+        self.clock_offset = offset;
+        self
+    }
+
+    // a clock step mid-run: the pending due time is re-read on the new clock
+    pub fn set_clock_offset(&mut self, offset: ClockDiff, ctx: &mut Ctx) {
+        self.clock_offset = offset;
+        self.arm_due_alarm(ctx);
     }
 
     pub fn init(&mut self, ctx: &mut Ctx) {
@@ -166,14 +181,16 @@ impl SimNode {
     }
 
     // the node's clock: every time the node sees comes from local_now, and its
-    // absolute due times go back through sim_time_of. Both are the simulation
-    // clock today; per-node clock offsets change only these two.
+    // absolute due times go back through sim_time_of. The clock reads sim
+    // time plus clock_offset; before the epoch it reads the epoch.
     fn local_now(&self, ctx: &Ctx) -> Timestamp {
-        timestamp_of(ctx.now())
+        let local = ctx.now() + self.clock_offset;
+        timestamp_of(local.max(Time(0)))
     }
 
+    // the sim time at which the node's clock reads `at`
     fn sim_time_of(&self, at: Timestamp) -> Time {
-        time_of(at)
+        time_of(at) - self.clock_offset
     }
 
     pub fn finalized(&self) -> &BTreeMap<Slot, Pattern> {
