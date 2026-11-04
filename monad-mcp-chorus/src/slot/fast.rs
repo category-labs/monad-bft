@@ -19,6 +19,7 @@ use alloy_rlp::{
     Decodable, Encodable, RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper,
 };
 use arrayvec::ArrayVec;
+use monad_mcp_common::spec::Stake as _;
 
 use super::{
     availability::ProposalAvailability,
@@ -181,7 +182,11 @@ impl FastPath {
 
         // no phase guard on purpose
         self.commit_votes.add_vote(voter, vote_msg);
-        self.commit_votes.tally(&self.validator_data).strong_qc()
+        let supermajority = self.validator_data.total_stake().supermajority_threshold();
+        let tally = self
+            .commit_votes
+            .tally_at_least(&self.validator_data, supermajority)?;
+        tally.strong_qc()
     }
 
     pub(crate) fn handle_fast_block(&mut self, fast_block: FastBlock) -> Option<FastBlock> {
@@ -453,8 +458,6 @@ impl FastPath {
 
     // ------- internal helper methods ---------
     fn proposal_state(&self, j: Lane) -> Option<ProposalState> {
-        use monad_mcp_common::spec::Stake as _;
-
         let tally = self.votes[j].tally(&self.validator_data);
         let supermajority = self.validator_data.total_stake().supermajority_threshold();
 
@@ -542,10 +545,12 @@ impl FastPath {
             return;
         }
 
-        let mut weak_qcs = self.fallback_entry_votes[j]
-            .tally(&self.validator_data)
-            .weak_qcs()
-            .into_iter();
+        let votes = &self.fallback_entry_votes[j];
+        let honest = self.validator_data.total_stake().honest_threshold();
+        let Some(tally) = votes.tally_at_least(&self.validator_data, honest) else {
+            return;
+        };
+        let mut weak_qcs = tally.weak_qcs().into_iter();
         let weak_qc = match (weak_qcs.next(), weak_qcs.next()) {
             (None, _) => return,
             (Some(qc), None) => qc,
@@ -585,10 +590,12 @@ impl FastPath {
             return;
         }
 
-        let fast_qc = self.votes[j]
-            .tally(&self.validator_data)
-            .narrow(HeaderSeen(&self.availability[j]))
-            .strong_qc();
+        let votes = &self.votes[j];
+        let supermajority = self.validator_data.total_stake().supermajority_threshold();
+        let Some(tally) = votes.tally_at_least(&self.validator_data, supermajority) else {
+            return;
+        };
+        let fast_qc = tally.narrow(HeaderSeen(&self.availability[j])).strong_qc();
         if let Some(fast_qc) = fast_qc {
             self.certs[j].try_upgrade(fast_qc);
         }

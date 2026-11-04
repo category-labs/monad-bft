@@ -188,6 +188,21 @@ where
             buckets,
         }
     }
+
+    // short-circuit when the pool's total stake is below the threshold
+    pub fn tally_at_least<'a>(
+        &'a self,
+        validator_data: &'a ValidatorData,
+        stake: Stake,
+    ) -> Option<Tally<'a, V>> {
+        let received = validator_data.sum_stake(&self.voters());
+        if received < stake {
+            return None;
+        }
+
+        let tally = self.tally(validator_data);
+        Some(tally)
+    }
 }
 
 pub trait Gate<V> {

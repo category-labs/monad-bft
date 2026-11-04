@@ -64,7 +64,9 @@ impl<V: IsVote> SealingVotePool<V> {
         if let Some(qc) = self.sealed.get() {
             return Some(qc);
         }
-        let qc = self.votes.tally(validator_data).strong_qc()?;
+        let supermajority = validator_data.total_stake().supermajority_threshold();
+        let tally = self.votes.tally_at_least(validator_data, supermajority)?;
+        let qc = tally.strong_qc()?;
         Some(self.sealed.get_or_init(|| qc))
     }
 }
@@ -164,8 +166,11 @@ impl<V: Votable, C: ValidateCert> ViewCollectors<V, C> {
 
     /// Whether f+1 stake has timed out here
     pub(crate) fn has_honest_timeout(&self, validator_data: &ValidatorData) -> bool {
-        validator_data.sum_stake(&self.timeout_votes.voters())
-            > validator_data.total_stake().honest_threshold()
+        let honest = validator_data.total_stake().honest_threshold();
+        let Some(tally) = self.timeout_votes.tally_at_least(validator_data, honest) else {
+            return false;
+        };
+        tally.stake() > honest
     }
 
     /// First write wins: every valid certificate for a view certifies the same
@@ -188,7 +193,9 @@ impl<V: Votable, C: ValidateCert> ViewCollectors<V, C> {
         validator_data: &ValidatorData,
     ) -> Option<TimeoutCertificate<V::Entries>> {
         let target_stake = validator_data.total_stake().supermajority_threshold();
-        let tally = self.timeout_votes.tally(validator_data);
+        let tally = self
+            .timeout_votes
+            .tally_at_least(validator_data, target_stake)?;
         if tally.stake() <= target_stake {
             return None;
         }
