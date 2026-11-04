@@ -203,8 +203,8 @@ impl FastPath {
         let all_evidences_valid = vote_msg
             .evidences
             .as_ref()
-            .into_indexed_iter()
-            .all(|(j, evidence)| self.evidence_valid(j, evidence));
+            .into_iter()
+            .all(|evidence| self.evidence_valid(evidence));
         if !all_evidences_valid {
             return;
         }
@@ -250,17 +250,15 @@ impl FastPath {
         self.try_form_fallback_qc(j);
     }
 
-    fn evidence_valid(&self, j: Lane, evidence: &ProposalEvidence) -> bool {
+    fn evidence_valid(&self, evidence: &ProposalEvidence) -> bool {
         match evidence {
             ProposalEvidence::FallbackSignedEntry(entry) => match entry.header() {
-                Some(header) => self.header_auth.validate(header, self.slot.get(), j),
+                Some(header) => self.header_auth.authenticate(header),
                 None => true,
             },
-            ProposalEvidence::Certified(cert) => cert.verify(
-                ProposalScope::new(self.slot, j),
-                &self.header_auth,
-                &self.validator_data,
-            ),
+            ProposalEvidence::Certified(cert) => {
+                cert.verify(&self.header_auth, &self.validator_data)
+            }
         }
     }
 
@@ -830,19 +828,11 @@ impl CertifiedEntry {
         }
     }
 
-    pub(crate) fn slot(&self) -> Slot {
+    pub(crate) fn scope(&self) -> ProposalScope {
         match self {
-            CertifiedEntry::FastQc(qc) => qc.scope.slot,
-            CertifiedEntry::FallbackQc(qc) => qc.scope.slot,
-            CertifiedEntry::EquivCert(EquivCert(header, _)) => Slot(header.slot()),
-        }
-    }
-
-    pub(crate) fn is_scoped_to(&self, scope: ProposalScope) -> bool {
-        match self {
-            CertifiedEntry::FastQc(qc) => qc.scope == scope,
-            CertifiedEntry::FallbackQc(qc) => qc.scope == scope,
-            CertifiedEntry::EquivCert(_) => self.slot() == scope.slot,
+            CertifiedEntry::FastQc(qc) => qc.scope,
+            CertifiedEntry::FallbackQc(qc) => qc.scope,
+            CertifiedEntry::EquivCert(EquivCert(header, _)) => header.scope(),
         }
     }
 
@@ -857,24 +847,16 @@ impl CertifiedEntry {
         qc.decoded_holders(validator_data)
     }
 
-    /// Whether this certificate is bound to `scope`, is well-formed and
+    /// Whether this certificate is well-formed and
     /// carries valid signatures. Authenticity is enforced at message ingress
     /// (see the crate header); we restate it at adoption points to make the
     /// trust boundary explicit and catch protocol-logic bugs.
-    pub(crate) fn verify(
-        &self,
-        scope: ProposalScope,
-        header_auth: &HeaderAuth,
-        validator_data: &ValidatorData,
-    ) -> bool {
+    pub(crate) fn verify(&self, header_auth: &HeaderAuth, validator_data: &ValidatorData) -> bool {
         match self {
-            CertifiedEntry::FastQc(qc) => qc.scope == scope && qc.verify(validator_data),
-            CertifiedEntry::FallbackQc(qc) => qc.scope == scope && qc.verify(validator_data),
+            CertifiedEntry::FastQc(qc) => qc.verify(validator_data),
+            CertifiedEntry::FallbackQc(qc) => qc.verify(validator_data),
             CertifiedEntry::EquivCert(EquivCert(a, b)) => {
-                let ProposalScope { slot: s, lane: j } = scope;
-                let a_authentic = header_auth.validate(a, s.get(), j);
-                let b_authentic = header_auth.validate(b, s.get(), j);
-                a_authentic && b_authentic
+                header_auth.authenticate(a) && header_auth.authenticate(b)
             }
         }
     }
@@ -977,10 +959,10 @@ impl ProposalEvidence {
 
     fn is_scoped_to(&self, scope: ProposalScope) -> bool {
         match self {
-            ProposalEvidence::Certified(cert) => cert.is_scoped_to(scope),
-            ProposalEvidence::FallbackSignedEntry(signed) => signed
-                .header()
-                .is_none_or(|header| Slot(header.slot()) == scope.slot),
+            ProposalEvidence::Certified(cert) => cert.scope() == scope,
+            ProposalEvidence::FallbackSignedEntry(signed) => {
+                signed.header().is_none_or(|header| header.scope() == scope)
+            }
         }
     }
 }
@@ -1395,22 +1377,6 @@ mod tests {
         assert!(decodes(qc_at(SLOT, 0), qc_at(SLOT, 1)));
         assert!(!decodes(qc_at(SLOT, 1), qc_at(SLOT, 0)));
         assert!(!decodes(qc_at(SLOT, 0), qc_at(other_slot, 1)));
-    }
-
-    #[test]
-    fn a_certified_entry_verifies_only_at_its_own_lane() {
-        let validator_data = validator_data(4);
-        let header_auth = HeaderAuth::new(|_, _| None);
-        let lane_0 = fast_qc(ProposalScope::new(SLOT, Lane::new_unchecked(0)), 1);
-        let cert = CertifiedEntry::FastQc(lane_0);
-
-        let verify_at = |slot, lane| {
-            let scope = ProposalScope::new(slot, Lane::new_unchecked(lane));
-            cert.verify(scope, &header_auth, &validator_data)
-        };
-        assert!(verify_at(SLOT, 0));
-        assert!(!verify_at(SLOT, 1));
-        assert!(!verify_at(Slot(SLOT.get() + 1), 0));
     }
 
     #[test]
@@ -1857,7 +1823,7 @@ mod rlp_tests {
         *,
     };
     use crate::env::stub::{
-        D25, EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader, ProposalSignature,
+        EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader, ProposalSignature,
     };
 
     #[test]
@@ -1888,35 +1854,34 @@ mod rlp_tests {
             verdict: FallbackEntry(Entry::Negative),
             sigcol: fast_qc.sigcol.clone(),
         };
-        let h = SignedProposalHeader {
+        let header_at = |lane: u8, root: u8| SignedProposalHeader {
             header: ProposalHeader {
-                root,
-                scheme: EncodingScheme::D25(D25 {
-                    slot: crate::stub::types::Slot(9),
-                    msg_len: 1000,
-                    unix_ts: 12345,
-                    depth: 4,
-                }),
+                root: MerkleRoot(MerkleHash([root; 20])),
+                scheme: EncodingScheme::Test(ProposalScope::new(
+                    crate::stub::types::Slot(9),
+                    Lane::new_unchecked(lane),
+                )),
             },
             sig: ProposalSignature {
                 signer: NodeId::dummy(1),
                 checksum: 12,
             },
         };
-        let mut h2 = h.clone();
-        h2.header.root = MerkleRoot(MerkleHash([8; 20]));
         // Cover every certificate variant and signed fallback entries with/without a header.
         let evidence = vec![
             ProposalEvidence::Certified(CertifiedEntry::FastQc(fast_qc.clone())),
             ProposalEvidence::Certified(CertifiedEntry::FallbackQc(weak_qc)),
-            ProposalEvidence::Certified(CertifiedEntry::EquivCert(EquivCert(h.clone(), h2))),
+            ProposalEvidence::Certified(CertifiedEntry::EquivCert(EquivCert(
+                header_at(2, 7),
+                header_at(2, 8),
+            ))),
             ProposalEvidence::FallbackSignedEntry(FallbackSignedEntry::new_signed_positive(
-                ProposalScope::new(slot, Lane::new_unchecked(0)),
-                h,
+                ProposalScope::new(slot, Lane::new_unchecked(3)),
+                header_at(3, 7),
                 &key,
             )),
             ProposalEvidence::FallbackSignedEntry(FallbackSignedEntry::new_signed_negative(
-                ProposalScope::new(slot, Lane::new_unchecked(1)),
+                ProposalScope::new(slot, Lane::new_unchecked(4)),
                 &key,
             )),
         ];

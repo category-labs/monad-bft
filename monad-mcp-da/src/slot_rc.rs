@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::HashMap;
+use std::collections::HashSet;
 
 use monad_mcp_chorus::spec::proposal::ProposalHeader as _;
 
@@ -41,7 +41,7 @@ pub struct SlotRaptorcast {
 
     // memoize the lane of headers that authenticated. todo:
     // bound per proposer.
-    authenticated_headers: HashMap<SignedProposalHeader, Lane>,
+    authenticated_headers: HashSet<SignedProposalHeader>,
 
     egress: ChunkEgress,
 
@@ -81,7 +81,7 @@ impl SlotRaptorcast {
             epoch_handle: epoch_handle.clone(),
             slot,
             raptorcasts,
-            authenticated_headers: HashMap::new(),
+            authenticated_headers: HashSet::new(),
             egress: ChunkEgress::new(),
             out_events: Vec::new(),
             out_requests: Vec::new(),
@@ -105,7 +105,7 @@ impl SlotRaptorcast {
         sender: &NodeId,
         envelope: ProposalEnvelope,
     ) -> Result<(), InvalidProposalHeader> {
-        debug_assert_eq!(envelope.header().slot(), self.slot.get());
+        debug_assert_eq!(envelope.header().slot(), self.slot);
         let j = self
             .authenticate(envelope.header())
             .ok_or(InvalidProposalHeader::Unauthenticated)?;
@@ -143,18 +143,17 @@ impl SlotRaptorcast {
 
     // the lane of a proposer-signed header for this slot
     fn authenticate(&mut self, header: &SignedProposalHeader) -> Option<Lane> {
-        use monad_mcp_chorus::spec::proposal::HeaderAuth as _;
+        use monad_mcp_chorus::spec::{ProposalHeader as _, proposal::HeaderAuth as _};
 
-        if let Some(j) = self.authenticated_headers.get(header) {
-            return Some(*j);
+        let lane = header.lane();
+        if self.authenticated_headers.contains(header) {
+            return Some(lane);
         }
-
-        let j = self
-            .epoch_handle
-            .header_auth
-            .authenticate(header, self.slot.get())?;
-        self.authenticated_headers.insert(header.clone(), j);
-        Some(j)
+        if !self.epoch_handle.header_auth.authenticate(header) {
+            return None;
+        }
+        self.authenticated_headers.insert(header.clone());
+        Some(lane)
     }
 
     pub(crate) fn handle_command(&mut self, command: ChorusDACommand, now: Timestamp) {
@@ -270,8 +269,9 @@ mod tests {
         super::{
             chunk::{ChunkRequestType, WireChunkId},
             test_util::{
-                MESSAGE_LEN, NOW, SLOT, author, epoch_handle, epoch_handle_for, group,
-                proposal_chunks, proposal_chunks_from, proposer_schedule, timing, validator_data,
+                MESSAGE_LEN, NOW, SLOT, author, d33_scheme_at, epoch_handle, epoch_handle_for,
+                group, proposal_chunks, proposal_chunks_from, proposal_chunks_under,
+                proposer_schedule, timing, validator_data,
             },
             types::{HeaderAuth, ProposalDAEvent, ProposalKeyPair},
         },
@@ -433,12 +433,10 @@ mod tests {
         let epoch_handle = EpochHandle {
             self_id: NodeId::dummy(1),
             key_pair: Arc::new(ProposalKeyPair::dummy(NodeId::dummy(1))),
-            header_auth: Arc::new(HeaderAuth::new(
-                move |header: &SignedProposalHeader, _slot| {
-                    counted.fetch_add(1, Ordering::SeqCst);
-                    (header.sig().signer == author()).then_some(Lane::new_unchecked(0))
-                },
-            )),
+            header_auth: Arc::new(HeaderAuth::new(move |header: &SignedProposalHeader| {
+                counted.fetch_add(1, Ordering::SeqCst);
+                header.sig().signer == author()
+            })),
             validator_data: Arc::new(validator_data(4)),
         };
         let schedule = proposer_schedule(vec![author()]);
@@ -461,7 +459,8 @@ mod tests {
         let epoch_handle = epoch_handle_for(NodeId::dummy(1), 4, proposers.clone());
         let schedule = proposer_schedule(proposers);
         let mut raptorcast = SlotRaptorcast::new(&epoch_handle, SLOT, NOW, &*schedule, timing());
-        let (header, chunks) = proposal_chunks_from(&epoch_handle, 2, SLOT, 1);
+        let scheme = d33_scheme_at(&epoch_handle, SLOT, Lane::new_unchecked(1));
+        let (header, chunks) = proposal_chunks_under(&epoch_handle, scheme, 2, 1);
 
         raptorcast
             .ingest(&author(), group(&chunks[..1]))

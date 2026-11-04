@@ -165,7 +165,7 @@ fn full_window_rolls_over_with_chorus() {
             node_id: id,
             key: Arc::new(id.keypair()),
             validator_data: val_data.clone(),
-            header_auth: Arc::new(HeaderAuth::new(|_, _| None)),
+            header_auth: Arc::new(HeaderAuth::new(|_| false)),
             proposers: proposer_schedule(&val_data),
         };
         builder.add_node(id, conductor(), slot_config, context);
@@ -212,7 +212,7 @@ fn a_partitioned_node_jumps_its_cap_to_the_majority() {
             node_id: id,
             key: Arc::new(id.keypair()),
             validator_data: val_data.clone(),
-            header_auth: Arc::new(HeaderAuth::new(|_, _| None)),
+            header_auth: Arc::new(HeaderAuth::new(|_| false)),
             proposers: proposer_schedule(&val_data),
         };
         builder.add_node(id, conductor(), slot_config, context);

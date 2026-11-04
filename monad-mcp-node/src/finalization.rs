@@ -159,16 +159,17 @@ mod tests {
     use monad_mcp_chorus::spec::ProposalHeader as _;
 
     use super::*;
-    use crate::chorus::env::{D25, EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader};
+    use crate::chorus::env::{D33, EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader};
 
     fn decode(collector: &mut FinalizationCollector, slot: u64) {
         let header = ProposalHeader {
             root: MerkleRoot(MerkleHash([slot as u8; 20])),
-            scheme: EncodingScheme::D25(D25 {
+            scheme: EncodingScheme::D33(D33 {
                 slot: Slot(slot),
+                lane: Lane::new_unchecked(0),
+                depth: 3,
                 msg_len: 1,
                 unix_ts: 0,
-                depth: 3,
             }),
         };
         let at = Timestamp::from_millis(slot); // demo(tx-timeline)

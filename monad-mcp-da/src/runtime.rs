@@ -119,7 +119,7 @@ where
         sender: &NodeId,
         envelope: ProposalEnvelope,
     ) -> Result<(), InvalidProposalHeader> {
-        let slot = Slot(envelope.header().slot());
+        let slot = envelope.header().slot();
         let Some(slot_raptorcast) = self.raptorcast_map.get_mut(&slot) else {
             return Err(InvalidProposalHeader::SlotOutOfRange);
         };

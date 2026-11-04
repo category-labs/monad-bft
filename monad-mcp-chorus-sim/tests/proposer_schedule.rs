@@ -124,7 +124,7 @@ fn weighted_schedule_drives_the_swarm_across_epochs() {
             node_id,
             key: Arc::new(node_id.keypair()),
             validator_data: val_data.clone(),
-            header_auth: Arc::new(HeaderAuth::new(|_, _| None)),
+            header_auth: Arc::new(HeaderAuth::new(|_| false)),
             proposers: schedule,
         };
         builder.add_node(node_id, conductor(), config, context);
@@ -246,7 +246,7 @@ fn vacant_indices_do_not_delay_the_fast_path() {
             node_id,
             key: Arc::new(node_id.keypair()),
             validator_data: val_data.clone(),
-            header_auth: Arc::new(HeaderAuth::new(|_, _| None)),
+            header_auth: Arc::new(HeaderAuth::new(|_| false)),
             proposers: schedule.clone(),
         };
         builder.add_node(node_id, conductor(), chorus_config, context);

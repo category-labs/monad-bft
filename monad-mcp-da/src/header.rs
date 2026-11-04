@@ -16,10 +16,7 @@
 use std::sync::Arc;
 
 use super::{
-    types::{
-        EncodingScheme, HeaderAuth, Lane, ProposerSchedule, SignedProposalHeader, Slot,
-        ValidatorData,
-    },
+    types::{HeaderAuth, ProposerSchedule, SignedProposalHeader, ValidatorData},
     wire,
 };
 
@@ -45,30 +42,22 @@ where
     use super::encoding_scheme::DAEncodingScheme as _;
     use crate::spec::{DAProposalHeader as _, DAProposalSignature as _};
 
-    HeaderAuth::new(move |signed: &SignedProposalHeader, _slot: u64| {
+    HeaderAuth::new(move |signed: &SignedProposalHeader| {
         // todo: cache the auth result by (ProposalHeader, slot).
 
         if !signed.scheme().is_canonical(validator_data.len()) {
-            return None;
+            return false;
         }
         let preimage = wire::signed_bytes(&signed.header);
-        let author = signed.sig().recover_author(&preimage)?;
+        let Some(author) = signed.sig().recover_author(&preimage) else {
+            return false;
+        };
         // an unavailable schedule authenticates nothing
-        let lane = schedule.lane_at(Slot(signed.slot()), &author).ok()??;
-        if claimed_lane(signed.scheme()).is_some_and(|claimed| claimed != lane) {
-            return None;
-        }
-        Some(lane)
+        let Ok(proposers) = schedule.proposers_at(signed.slot()) else {
+            return false;
+        };
+        proposers.proposer(signed.lane()) == Some(author)
     })
-}
-
-// the lane a header carries, where its scheme carries one
-fn claimed_lane(scheme: &EncodingScheme) -> Option<Lane> {
-    match scheme {
-        EncodingScheme::D25(_) => None,
-        EncodingScheme::S11(s11) => Some(s11.lane),
-        EncodingScheme::D33(d33) => Some(d33.lane),
-    }
 }
 
 #[cfg(test)]
@@ -76,27 +65,29 @@ mod tests {
     use monad_mcp_chorus::spec::proposal::HeaderAuth as _;
 
     use super::super::{
-        test_util::{SLOT, epoch_handle, proposal_chunks, proposal_chunks_from, signed_header},
-        types::{EncodingScheme, Lane, MerkleRoot, SignedProposalHeader, Slot},
+        runtime::EpochHandle,
+        test_util::{SLOT, d33_scheme_at, epoch_handle, proposal_chunks_under, signed_header},
+        types::{EncodingScheme, Lane, MerkleRoot, SignedProposalHeader},
     };
     use crate::spec::DAMerkleRoot as _;
+
+    // a d33 proposal of the fixture's message at lane 0, signed by `author_id`
+    fn d33_header(epoch_handle: &EpochHandle, author_id: u64) -> SignedProposalHeader {
+        let scheme = d33_scheme_at(epoch_handle, SLOT, Lane::new_unchecked(0));
+        let (header, _) = proposal_chunks_under(epoch_handle, scheme, author_id, 1);
+        header
+    }
 
     #[test]
     fn authentication_needs_a_canonical_scheme_signed_by_a_proposer() {
         let epoch_handle = epoch_handle();
         let auth = &epoch_handle.header_auth;
-        let (header, _) = proposal_chunks(&epoch_handle, 1);
-        assert_eq!(
-            auth.authenticate(&header, SLOT.get()),
-            Some(Lane::new_unchecked(0))
-        );
-
-        // another slot's scope
-        assert_eq!(auth.authenticate(&header, Slot(2).get()), None);
+        let header = d33_header(&epoch_handle, 0);
+        assert!(auth.authenticate(&header));
 
         // signed by a non-proposer
-        let (other, _) = proposal_chunks_from(&epoch_handle, 2, SLOT, 1);
-        assert_eq!(auth.authenticate(&other, SLOT.get()), None);
+        let other = d33_header(&epoch_handle, 2);
+        assert!(!auth.authenticate(&other));
 
         // the signature no longer covers the header
         let SignedProposalHeader {
@@ -108,17 +99,17 @@ mod tests {
             header: tampered,
             sig,
         };
-        assert_eq!(auth.authenticate(&tampered, SLOT.get()), None);
+        assert!(!auth.authenticate(&tampered));
 
         // validly signed, but one level deeper than the message needs
         let SignedProposalHeader {
             header: mut deeper, ..
         } = header;
-        let EncodingScheme::D25(d25) = &mut deeper.scheme else {
-            panic!("the fixture is a d25 proposal");
+        let EncodingScheme::D33(d33) = &mut deeper.scheme else {
+            panic!("the fixture is a d33 proposal");
         };
-        d25.depth += 1;
+        d33.depth += 1;
         let deeper = signed_header(deeper, 0);
-        assert_eq!(auth.authenticate(&deeper, SLOT.get()), None);
+        assert!(!auth.authenticate(&deeper));
     }
 }

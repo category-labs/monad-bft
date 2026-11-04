@@ -36,14 +36,12 @@ impl Metablock {
         header_auth: &HeaderAuth,
         validator_data: &ValidatorData,
     ) -> bool {
-        if self.0.size() != num_lanes {
+        if self.0.size() != num_lanes || self.slot() != slot {
             return false;
         }
 
-        self.0.as_ref().into_indexed_iter().all(|(j, cert)| {
-            let scope = ProposalScope::new(slot, j);
-            cert.verify(scope, header_auth, validator_data)
-        })
+        let mut certs = self.0.as_ref().into_iter();
+        certs.all(|cert| cert.verify(header_auth, validator_data))
     }
 
     /// The paper's *fast metablock*: every entry a `FastQc`
@@ -75,11 +73,16 @@ impl Decodable for Metablock {
 }
 
 impl Metablock {
-    // every entry names the slot of the first and, where it names one, its own lane
+    // a block has at least one lane, and all its entries name one slot
+    fn slot(&self) -> Slot {
+        self.0[Lane::new_unchecked(0)].scope().slot
+    }
+
+    // every entry names the block's slot and its own lane
     fn is_in_place(&self) -> bool {
-        let slot = self.0[Lane::new_unchecked(0)].slot();
+        let slot = self.slot();
         let mut certs = self.0.as_ref().into_indexed_iter();
-        certs.all(|(j, cert)| cert.is_scoped_to(ProposalScope::new(slot, j)))
+        certs.all(|(j, cert)| cert.scope() == ProposalScope::new(slot, j))
     }
 }
 

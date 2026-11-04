@@ -77,7 +77,7 @@ fn add_node(
         node_id,
         key: Arc::new(node_id.keypair()),
         validator_data: val_data.clone(),
-        header_auth: Arc::new(HeaderAuth::new(|_, _| None)),
+        header_auth: Arc::new(HeaderAuth::new(|_| false)),
         proposers: proposer_schedule(val_data),
     };
     let config = ChorusConfig { delta: DELTA };

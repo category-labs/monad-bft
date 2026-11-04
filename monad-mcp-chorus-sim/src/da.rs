@@ -45,7 +45,7 @@ use std::{
 use bytes::Bytes;
 use chorus::{
     da::DataAvailability,
-    env::{D25, EncodingScheme, MerkleHash, ProposalSignature},
+    env::{D33, EncodingScheme, MerkleHash, ProposalSignature},
     types::{HeaderAuth, MerkleRoot, ProposalHeader, ProposalId, SignedProposalHeader},
 };
 use monad_mcp_chorus::{spec::proposal::ProposalHeader as _, stub as chorus};
@@ -107,7 +107,7 @@ impl MockDa {
     fn authentic(&self, lane: Lane, header: &SignedProposalHeader) -> bool {
         use monad_mcp_chorus::spec::proposal::HeaderAuth as _;
 
-        self.header_auth.validate(header, header.slot(), lane)
+        header.lane() == lane && self.header_auth.authenticate(header)
     }
 
     /// An announcement arrived over the simulated network: the proposal is
@@ -167,7 +167,7 @@ impl MockDa {
 
 impl DataAvailability for MockDa {
     fn submit_proposal(&self, slot: Slot, lane: Lane, payload: Bytes) {
-        let header = mock_header(self.me, slot, &payload);
+        let header = mock_header(self.me, slot, lane, &payload);
         let announcement = DaAnnouncement { lane, header };
 
         debug_assert!(
@@ -197,17 +197,23 @@ pub fn mock_payload(proposer: NodeId, slot: Slot, lane: Lane) -> Bytes {
 }
 
 /// The header the mock layer signs for `payload`. The DA-owned fields are
-/// opaque to consensus, so they carry only what the mock needs: the signer,
-/// for the lane check, and the payload length.
-pub fn mock_header(proposer: NodeId, slot: Slot, payload: &Bytes) -> SignedProposalHeader {
+/// opaque to consensus, so they carry only what the mock needs: the signer
+/// and the lane, for the lane check, and the payload length.
+pub fn mock_header(
+    proposer: NodeId,
+    slot: Slot,
+    lane: Lane,
+    payload: &Bytes,
+) -> SignedProposalHeader {
     SignedProposalHeader {
         header: ProposalHeader {
             root: mock_root(payload),
-            scheme: EncodingScheme::D25(D25 {
+            scheme: EncodingScheme::D33(D33 {
                 slot,
+                lane,
+                depth: 0,
                 msg_len: u32::try_from(payload.len()).expect("mock payload fits in u32"),
                 unix_ts: 0,
-                depth: 0,
             }),
         },
         sig: ProposalSignature {
@@ -253,7 +259,7 @@ mod tests {
         let payload = mock_payload(proposer, slot, lane);
         DaAnnouncement {
             lane,
-            header: mock_header(proposer, slot, &payload),
+            header: mock_header(proposer, slot, lane, &payload),
         }
     }
 

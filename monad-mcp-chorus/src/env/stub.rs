@@ -124,10 +124,10 @@ mod proposal {
     use alloy_rlp::{
         Decodable, Encodable, RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper,
     };
-    use monad_mcp_common::{Lane, Slot};
+    use monad_mcp_common::{Lane, ProposalScope, Slot};
 
     use super::NodeId;
-    use crate::spec::{self, ProposalHeader as _};
+    use crate::spec;
 
     #[derive(Clone, Copy, PartialEq, Eq, Hash, RlpEncodableWrapper, RlpDecodableWrapper)]
     pub struct MerkleHash(pub [u8; 20]);
@@ -186,17 +186,14 @@ mod proposal {
         D25(D25),
         S11(S11),
         D33(D33),
+        #[cfg(test)]
+        Test(ProposalScope),
     }
 
     #[cfg(test)]
     impl EncodingScheme {
         pub fn dummy(slot: Slot) -> Self {
-            Self::D25(D25 {
-                slot,
-                msg_len: 1,
-                unix_ts: 0,
-                depth: 3,
-            })
+            Self::Test(ProposalScope::new(slot, Lane::new_unchecked(0)))
         }
     }
 
@@ -237,6 +234,19 @@ mod proposal {
                 Self::D25(d25) => d25.slot,
                 Self::S11(s11) => s11.slot,
                 Self::D33(d33) => d33.slot,
+                #[cfg(test)]
+                Self::Test(scope) => scope.slot,
+            }
+        }
+
+        // d25 carries no lane, so it reports lane 0 until it is removed
+        pub fn lane(&self) -> Lane {
+            match self {
+                Self::D25(_) => Lane::new_unchecked(0),
+                Self::S11(s11) => s11.lane,
+                Self::D33(d33) => d33.lane,
+                #[cfg(test)]
+                Self::Test(scope) => scope.lane,
             }
         }
     }
@@ -274,6 +284,11 @@ mod proposal {
                     let fields: [&dyn Encodable; 2] = [&3u8, f0];
                     alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
                 }
+                #[cfg(test)]
+                Self::Test(f0) => {
+                    let fields: [&dyn Encodable; 2] = [&255u8, f0];
+                    alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
+                }
             }
         }
 
@@ -291,6 +306,11 @@ mod proposal {
                     let fields: [&dyn Encodable; 2] = [&3u8, f0];
                     alloy_rlp::list_length::<_, dyn Encodable>(&fields)
                 }
+                #[cfg(test)]
+                Self::Test(f0) => {
+                    let fields: [&dyn Encodable; 2] = [&255u8, f0];
+                    alloy_rlp::list_length::<_, dyn Encodable>(&fields)
+                }
             }
         }
     }
@@ -302,6 +322,8 @@ mod proposal {
                 1 => Self::D25(<D25 as Decodable>::decode(&mut payload)?),
                 2 => Self::S11(<S11 as Decodable>::decode(&mut payload)?),
                 3 => Self::D33(<D33 as Decodable>::decode(&mut payload)?),
+                #[cfg(test)]
+                255 => Self::Test(<ProposalScope as Decodable>::decode(&mut payload)?),
                 _ => return Err(alloy_rlp::Error::Custom("unknown EncodingScheme tag")),
             };
             if !payload.is_empty() {
@@ -332,8 +354,8 @@ mod proposal {
         type Root = MerkleRoot;
         type Pid = ProposalId;
 
-        fn slot(&self) -> u64 {
-            self.scheme.slot().0
+        fn scope(&self) -> ProposalScope {
+            ProposalScope::new(self.scheme.slot(), self.scheme.lane())
         }
 
         fn root(&self) -> &MerkleRoot {
@@ -355,8 +377,8 @@ mod proposal {
         type Root = MerkleRoot;
         type Pid = ProposalId;
 
-        fn slot(&self) -> u64 {
-            self.header.slot()
+        fn scope(&self) -> ProposalScope {
+            self.header.scope()
         }
 
         fn root(&self) -> &MerkleRoot {
@@ -376,10 +398,10 @@ mod proposal {
         }
     }
 
-    // the lane of a header the legitimate proposer of the
-    // slot signed. Supplied by the DA env, which owns the signature
+    // whether the legitimate proposer of the header's slot and lane
+    // signed it. Supplied by the DA env, which owns the signature
     // and scheme checks.
-    type Authenticator = dyn Fn(&SignedProposalHeader, u64) -> Option<Lane> + Send + Sync;
+    type Authenticator = dyn Fn(&SignedProposalHeader) -> bool + Send + Sync;
 
     pub struct HeaderAuth {
         authenticator: Box<Authenticator>,
@@ -388,7 +410,7 @@ mod proposal {
     impl HeaderAuth {
         pub fn new<F>(authenticator: F) -> Self
         where
-            F: Fn(&SignedProposalHeader, u64) -> Option<Lane> + Send + Sync + 'static,
+            F: Fn(&SignedProposalHeader) -> bool + Send + Sync + 'static,
         {
             Self {
                 authenticator: Box::new(authenticator),
@@ -399,11 +421,8 @@ mod proposal {
     impl spec::proposal::HeaderAuth for HeaderAuth {
         type Signed = SignedProposalHeader;
 
-        fn authenticate(&self, signed: &SignedProposalHeader, slot: u64) -> Option<Lane> {
-            if signed.slot() != slot {
-                return None;
-            }
-            (self.authenticator)(signed, slot)
+        fn authenticate(&self, signed: &SignedProposalHeader) -> bool {
+            (self.authenticator)(signed)
         }
     }
 }
@@ -700,29 +719,24 @@ mod rlp_tests {
 
 #[cfg(test)]
 mod proposal_id_tests {
-    use monad_mcp_common::Slot;
+    use monad_mcp_common::{Lane, ProposalScope, Slot};
 
     use super::*;
     use crate::spec::ProposalHeader as _;
 
-    fn header(root: u8, msg_len: u32) -> ProposalHeader {
+    fn header(root: u8, lane: u8) -> ProposalHeader {
         ProposalHeader {
             root: MerkleRoot(MerkleHash([root; 20])),
-            scheme: EncodingScheme::D25(D25 {
-                slot: Slot(1),
-                msg_len,
-                unix_ts: 0,
-                depth: 3,
-            }),
+            scheme: EncodingScheme::Test(ProposalScope::new(Slot(1), Lane::new_unchecked(lane))),
         }
     }
 
     #[test]
     fn an_id_covers_the_scheme_and_the_root_but_not_the_signature() {
-        let header = header(1, 100);
-        assert_eq!(header.pid(), self::header(1, 100).pid());
-        assert_ne!(header.pid(), self::header(1, 99).pid());
-        assert_ne!(header.pid(), self::header(2, 100).pid());
+        let header = header(1, 0);
+        assert_eq!(header.pid(), self::header(1, 0).pid());
+        assert_ne!(header.pid(), self::header(1, 1).pid());
+        assert_ne!(header.pid(), self::header(2, 0).pid());
 
         let signed = |checksum| SignedProposalHeader {
             header: header.clone(),

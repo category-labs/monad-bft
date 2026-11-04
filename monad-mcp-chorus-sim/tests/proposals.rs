@@ -177,7 +177,7 @@ fn expected_entry(schedule: &Schedule, slot: Slot, lane: Lane) -> Entry {
         return Entry::Negative;
     };
     let payload = mock_payload(proposer, slot, lane);
-    Entry::Positive(mock_header(proposer, slot, &payload).pid())
+    Entry::Positive(mock_header(proposer, slot, lane, &payload).pid())
 }
 
 fn expect_entries(

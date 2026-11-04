@@ -748,7 +748,7 @@ mod tests {
             node_id: NodeId::dummy(0),
             key: Arc::new(NodeId::dummy(0).keypair()),
             validator_data: Arc::new(validator_data(4)),
-            header_auth: Arc::new(HeaderAuth::new(|_, _| None)),
+            header_auth: Arc::new(HeaderAuth::new(|_| false)),
             proposers: Arc::new(FixedProposerSchedule::new(vec![
                 NodeId::dummy(0),
                 NodeId::dummy(1),
@@ -778,7 +778,7 @@ mod tests {
             node_id: NodeId::dummy(0),
             key: Arc::new(NodeId::dummy(0).keypair()),
             validator_data: Arc::new(validator_data(4)),
-            header_auth: Arc::new(HeaderAuth::new(|_, _| None)),
+            header_auth: Arc::new(HeaderAuth::new(|_| false)),
             proposers: Arc::new(FixedProposerSchedule::new(vec![NodeId::dummy(0)])),
         };
         let mut voter = Chorus::new(Slot(1), &config, &context);
@@ -815,7 +815,7 @@ mod tests {
             node_id: NodeId::dummy(1),
             key: Arc::new(NodeId::dummy(1).keypair()),
             validator_data: Arc::new(validator_data(4)),
-            header_auth: Arc::new(HeaderAuth::new(|_, _| None)),
+            header_auth: Arc::new(HeaderAuth::new(|_| false)),
             proposers: Arc::new(FixedProposerSchedule::new(vec![NodeId::dummy(0)])),
         };
         let mut chorus = Chorus::new(Slot(1), &config, &context);
@@ -885,7 +885,7 @@ mod tests {
             delta: TimestampDelta::from_millis(100),
         };
         let validator_data = Arc::new(validator_data(4));
-        let header_auth = Arc::new(HeaderAuth::new(|_, _| None));
+        let header_auth = Arc::new(HeaderAuth::new(|_| false));
         let proposers = Arc::new(FixedProposerSchedule::new(vec![NodeId::dummy(0)]));
         let context = ChorusContext {
             node_id: NodeId::dummy(0),

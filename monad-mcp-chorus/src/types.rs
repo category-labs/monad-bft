@@ -482,8 +482,8 @@ impl Decodable for EquivCert {
         if a.pid() == b.pid() {
             return Err(alloy_rlp::Error::Custom("equivocation over one proposal"));
         }
-        if a.slot() != b.slot() {
-            return Err(alloy_rlp::Error::Custom("equivocation across slots"));
+        if a.scope() != b.scope() {
+            return Err(alloy_rlp::Error::Custom("equivocation across scopes"));
         }
         Ok(Self(a, b))
     }

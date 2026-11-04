@@ -26,12 +26,12 @@ use super::{
     assignment::{ChunkAssignment, ChunkId, PacketLossResistance},
     chunk::{Chunk, ProposalEnvelope, WireChunkId},
     chunk_tree::ChunkTree,
-    encoding_scheme::{self, DAEncodingScheme as _, d25},
+    encoding_scheme::{self, DAEncodingScheme as _, d25, d33},
     header::header_auth,
     runtime::{DAConfig, EpochHandle, Timing},
     types::{
-        EncodingScheme, NodeId, ProposalHeader, ProposalKeyPair, SignedProposalHeader, Slot, Stake,
-        Timestamp, TimestampDelta, ValidatorData,
+        EncodingScheme, Lane, NodeId, ProposalHeader, ProposalKeyPair, SignedProposalHeader, Slot,
+        Stake, Timestamp, TimestampDelta, ValidatorData,
     },
     util::Tree,
     wire,
@@ -113,6 +113,15 @@ pub(crate) fn scheme_at(epoch_handle: &EpochHandle, slot: Slot) -> EncodingSchem
     let num_validators = epoch_handle.validator_data.len();
     let d25 = d25::for_message(slot, MESSAGE_LEN, 0, num_validators).expect("fits a depth");
     EncodingScheme::D25(d25)
+}
+
+// the d33 scheme a proposer at `lane` picks for a MESSAGE_LEN message
+pub(crate) fn d33_scheme_at(epoch_handle: &EpochHandle, slot: Slot, lane: Lane) -> EncodingScheme {
+    use monad_mcp_chorus::spec::validator::ValidatorData as _;
+
+    let num_validators = epoch_handle.validator_data.len();
+    let d33 = d33::for_message(slot, MESSAGE_LEN, 0, lane, num_validators).expect("fits a depth");
+    EncodingScheme::D33(d33)
 }
 
 // the header as validator `author_id` signs it

@@ -2042,7 +2042,7 @@ mod toy_value {
             node_id: node,
             key: Arc::new(node.keypair()),
             validator_data: validator_data.clone(),
-            header_auth: Arc::new(HeaderAuth::new(|_, _| None)),
+            header_auth: Arc::new(HeaderAuth::new(|_| false)),
             delta: DELTA,
         })
     }

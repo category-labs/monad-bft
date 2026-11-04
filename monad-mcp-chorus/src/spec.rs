@@ -249,7 +249,7 @@ pub mod vote {
 }
 
 pub mod proposal {
-    use monad_mcp_common::Lane;
+    use monad_mcp_common::{Lane, ProposalScope, Slot};
 
     // A commitment to a proposal's payload.
     pub trait MerkleRoot: Copy + Eq + std::hash::Hash + std::fmt::Debug {}
@@ -261,11 +261,17 @@ pub mod proposal {
         type Root: MerkleRoot;
         type Pid: ProposalId;
 
-        // todo: change to Slot when we move it to a shared mcp-types
-        // crate.
-        fn slot(&self) -> u64;
+        fn scope(&self) -> ProposalScope;
         fn root(&self) -> &Self::Root;
         fn pid(&self) -> Self::Pid;
+
+        fn slot(&self) -> Slot {
+            self.scope().slot
+        }
+
+        fn lane(&self) -> Lane {
+            self.scope().lane
+        }
     }
 
     // A header with the proposer's signature over it.
@@ -278,14 +284,9 @@ pub mod proposal {
     pub trait HeaderAuth {
         type Signed: SignedProposalHeader;
 
-        fn authenticate(&self, signed: &Self::Signed, slot: u64) -> Option<Lane>;
-
-        // returns true when:
-        // - header is scoped to the slot
-        // - header is signed by the legitimate proposer of the slot
-        fn validate(&self, signed: &Self::Signed, slot: u64, j: Lane) -> bool {
-            self.authenticate(signed, slot) == Some(j)
-        }
+        // returns true when the legitimate proposer of the header's
+        // slot and lane signed it
+        fn authenticate(&self, signed: &Self::Signed) -> bool;
     }
 }
 

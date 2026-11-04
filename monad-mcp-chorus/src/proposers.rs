@@ -772,25 +772,27 @@ impl ProposerSchedule for FixedProposerSchedule {
 }
 
 /// The [`HeaderAuth`] backed by a proposer schedule: a header authenticates
-/// to the lane its signer holds at the header's slot.
+/// when its signer holds the header's lane at the header's slot.
 ///
 /// This is the whole policy for an environment whose proposal signature
 /// names its signer outright. The production data-availability layer owns
 /// two further checks the header carries for it -- the encoding scheme is
 /// the canonical one for the validator set, and the author is *recovered*
-/// from the signature rather than taken at its word -- and then resolves
-/// the lane through this very same schedule, so consensus and DA cannot
+/// from the signature rather than taken at its word -- and then checks
+/// the lane against this very same schedule, so consensus and DA cannot
 /// disagree about who proposes where (see `monad-mcp-da`'s `header_auth`).
 pub fn header_auth<S>(schedule: Arc<S>) -> HeaderAuth
 where
     S: ProposerSchedule + Send + Sync + 'static,
 {
-    HeaderAuth::new(move |header: &SignedProposalHeader, slot: u64| {
-        // `slot` rather than `header.slot`: the header type is the
-        // environment's, and its slot field is not this instantiation's
-        // `Slot`. The caller has already checked the two agree.
+    HeaderAuth::new(move |header: &SignedProposalHeader| {
+        use crate::spec::ProposalHeader as _;
+
         // an unavailable schedule authenticates nothing
-        schedule.lane_at(Slot(slot), &header.sig.signer).ok()?
+        let Ok(proposers) = schedule.proposers_at(header.slot()) else {
+            return false;
+        };
+        proposers.proposer(header.lane()) == Some(header.sig.signer)
     })
 }
 
