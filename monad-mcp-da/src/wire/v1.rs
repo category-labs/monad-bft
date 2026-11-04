@@ -206,8 +206,9 @@ mod tests {
     use super::{
         super::{
             super::{
-                encoding_scheme::d25::D25Layout,
+                encoding_scheme::d33::D33Layout,
                 test_util::{epoch_handle, group, proposal_chunks},
+                types::D33,
             },
             header_bytes, write_chunk, write_envelope,
         },
@@ -216,10 +217,8 @@ mod tests {
     use crate::spec::DAProposalHeader as _;
 
     fn depth_of(header: &SignedProposalHeader) -> u8 {
-        let EncodingScheme::D25(d25) = header.scheme() else {
-            panic!("the fixture is a d25 proposal");
-        };
-        d25.depth
+        let EncodingScheme::D33(d33) = header.scheme();
+        d33.depth
     }
 
     fn corrupted(
@@ -228,7 +227,7 @@ mod tests {
     ) -> Result<Chunk<'static>, MalformedPacket> {
         let mut bytes = write_chunk(chunk).to_vec();
         corrupt(&mut bytes);
-        D25Layout::read_chunk(Bytes::from(bytes))
+        D33Layout::read_chunk(Bytes::from(bytes))
     }
 
     #[test]
@@ -248,11 +247,14 @@ mod tests {
         let version_end = SIGNATURE_LEN + VERSION_LEN;
         assert_eq!(bytes[SIGNATURE_LEN..version_end], VERSION.to_le_bytes());
 
-        let body = D25Layout::HEADER_LEN;
+        let body = D33Layout::HEADER_LEN;
         let proof_end = body + proof_len(depth);
         assert_eq!(bytes[body..body + HASH_LEN], data.proof[0].0);
-        assert_eq!(bytes[proof_end..proof_end + 4], [0, 0, chunk_id as u8, 0]);
-        assert_eq!(bytes[proof_end + 4..], data.symbol);
+        let mut chunk_header = Vec::new();
+        D33::pack_chunk_header(chunk_id, &mut chunk_header);
+        let symbol_start = proof_end + D33::CHUNK_HEADER_LEN;
+        assert_eq!(bytes[proof_end..symbol_start], chunk_header);
+        assert_eq!(bytes[symbol_start..], data.symbol);
     }
 
     #[test]
@@ -261,7 +263,7 @@ mod tests {
         let (_, chunks) = proposal_chunks(&epoch_handle, 1);
         for chunk in &chunks {
             let packet = write_chunk(chunk);
-            assert_eq!(D25Layout::read_chunk(packet), Ok(chunk.clone()));
+            assert_eq!(D33Layout::read_chunk(packet), Ok(chunk.clone()));
         }
 
         // an envelope crosses the wire as one packet per chunk
@@ -269,7 +271,7 @@ mod tests {
         let mut received = Vec::new();
         for chunk in envelope.chunks() {
             let packet = write_chunk(&chunk);
-            received.push(D25Layout::read_chunk(packet).expect("well-formed"));
+            received.push(D33Layout::read_chunk(packet).expect("well-formed"));
         }
         let regrouped: Vec<_> = ProposalEnvelope::group(received).collect();
         assert_eq!(regrouped, vec![envelope]);
@@ -283,35 +285,35 @@ mod tests {
 
         let packets = write_envelope(&header_only);
         assert_eq!(packets.len(), 1);
-        assert_eq!(packets[0].len(), D25Layout::HEADER_LEN);
+        assert_eq!(packets[0].len(), D33Layout::HEADER_LEN);
         assert_eq!(packets[0], header_bytes(&header));
         assert_eq!(
-            D25Layout::read_envelope(packets[0].clone()),
+            D33Layout::read_envelope(packets[0].clone()),
             Ok(header_only)
         );
 
         // the header bytes are the prefix of every chunk packet
         let packet = write_chunk(&chunks[0]);
-        assert_eq!(packet[..D25Layout::HEADER_LEN], packets[0]);
-        assert_eq!(D25Layout::read_envelope(packet), Ok(group(&chunks[..1])));
+        assert_eq!(packet[..D33Layout::HEADER_LEN], packets[0]);
+        assert_eq!(D33Layout::read_envelope(packet), Ok(group(&chunks[..1])));
 
         // in between is neither
         let mut between = packets[0].to_vec();
         between.push(0);
-        let between = D25Layout::read_envelope(Bytes::from(between));
-        assert_eq!(between, Err(MalformedPacket::BadLength(118)));
+        let between = D33Layout::read_envelope(Bytes::from(between));
+        let between_len = D33Layout::HEADER_LEN + 1;
+        assert_eq!(between, Err(MalformedPacket::BadLength(between_len)));
     }
 
     #[test]
     fn malformed_frames_are_rejected() {
         let epoch_handle = epoch_handle();
-        let (header, chunks) = proposal_chunks(&epoch_handle, 1);
+        let (_, chunks) = proposal_chunks(&epoch_handle, 1);
         let chunk = &chunks[0];
-        let body = D25Layout::HEADER_LEN;
-        let reserved_at = body + proof_len(depth_of(&header));
+        let body = D33Layout::HEADER_LEN;
 
         let truncated_prefix = corrupted(chunk, |b| b.truncate(body - 1));
-        assert_eq!(truncated_prefix, Err(MalformedPacket::BadLength(116)));
+        assert_eq!(truncated_prefix, Err(MalformedPacket::BadLength(body - 1)));
         let truncated_body = corrupted(chunk, |b| b.truncate(SEGMENT_LEN - 1));
         assert_eq!(truncated_body, Err(MalformedPacket::BadLength(1439)));
         let oversized = corrupted(chunk, |b| b.push(0));
@@ -321,8 +323,6 @@ mod tests {
         assert_eq!(version, Err(MalformedPacket::UnknownVersion(2)));
         let padding = corrupted(chunk, |b| b[SIGNATURE_LEN - 1] = 1);
         assert_eq!(padding, Err(MalformedPacket::BadSignature));
-        let reserved = corrupted(chunk, |b| b[reserved_at] = 1);
-        assert_eq!(reserved, Err(MalformedPacket::ReservedNonZero));
     }
 
     #[test]
@@ -330,14 +330,14 @@ mod tests {
         let (header, _) = proposal_chunks(&epoch_handle(), 1);
         let layout = header.scheme();
 
-        let body_len = proof_len(5) + 4 + D25Layout::symbol_len_at(5);
-        assert_eq!(D25Layout::BODY_LEN, body_len);
+        let body_len = proof_len(5) + D33::CHUNK_HEADER_LEN + D33Layout::symbol_len_at(5);
+        assert_eq!(D33Layout::BODY_LEN, body_len);
         assert_eq!(layout.body_len(), body_len);
         assert_eq!(
             layout.symbol_len(),
-            D25Layout::symbol_len_at(depth_of(&header))
+            D33Layout::symbol_len_at(depth_of(&header))
         );
         // the deepest tree still leaves a symbol
-        assert!(D25Layout::symbol_len_at(D25Layout::MAX_DEPTH) > 0);
+        assert!(D33Layout::symbol_len_at(D33Layout::MAX_DEPTH) > 0);
     }
 }

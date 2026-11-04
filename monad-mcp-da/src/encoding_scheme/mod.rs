@@ -13,12 +13,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-pub mod d25;
 pub mod d33;
-pub mod swiper;
 
 mod reed_solomon;
-mod stub;
 
 use bytes::Bytes;
 use monad_crypto::hasher::Hash;
@@ -101,64 +98,48 @@ impl DAEncodingScheme for EncodingScheme {
 
     fn msg_len(&self) -> usize {
         match self {
-            EncodingScheme::D25(d25) => d25.msg_len(),
-            EncodingScheme::S11(s11) => s11.msg_len(),
             EncodingScheme::D33(d33) => d33.msg_len(),
         }
     }
 
     fn num_source_chunks(&self) -> usize {
         match self {
-            EncodingScheme::D25(d25) => d25.num_source_chunks(),
-            EncodingScheme::S11(s11) => s11.num_source_chunks(),
             EncodingScheme::D33(d33) => d33.num_source_chunks(),
         }
     }
 
     fn is_canonical(&self, num_validators: usize) -> bool {
         match self {
-            EncodingScheme::D25(d25) => d25.is_canonical(num_validators),
-            EncodingScheme::S11(s11) => s11.is_canonical(num_validators),
             EncodingScheme::D33(d33) => d33.is_canonical(num_validators),
         }
     }
 
     fn chunk_assignment(&self, author: &NodeId, validator_data: &ValidatorData) -> ChunkAssignment {
         match self {
-            EncodingScheme::D25(d25) => d25.chunk_assignment(author, validator_data),
-            EncodingScheme::S11(s11) => s11.chunk_assignment(author, validator_data),
             EncodingScheme::D33(d33) => d33.chunk_assignment(author, validator_data),
         }
     }
 
     fn encoder(&self, num_chunks: usize) -> Self::Encoder {
         match self {
-            EncodingScheme::D25(d25) => Box::new(d25.encoder(num_chunks)),
-            EncodingScheme::S11(s11) => Box::new(s11.encoder(num_chunks)),
             EncodingScheme::D33(d33) => Box::new(d33.encoder(num_chunks)),
         }
     }
 
     fn decoder(&self, num_chunks: usize) -> Self::Decoder {
         match self {
-            EncodingScheme::D25(d25) => Box::new(d25.decoder(num_chunks)),
-            EncodingScheme::S11(s11) => Box::new(s11.decoder(num_chunks)),
             EncodingScheme::D33(d33) => Box::new(d33.decoder(num_chunks)),
         }
     }
 
     fn depth(&self) -> u8 {
         match self {
-            EncodingScheme::D25(d25) => d25.depth(),
-            EncodingScheme::S11(s11) => s11.depth(),
             EncodingScheme::D33(d33) => d33.depth(),
         }
     }
 
     fn leaf_hash(&self, chunk_id: WireChunkId, symbol: &[u8]) -> Hash {
         match self {
-            EncodingScheme::D25(d25) => d25.leaf_hash(chunk_id, symbol),
-            EncodingScheme::S11(s11) => s11.leaf_hash(chunk_id, symbol),
             EncodingScheme::D33(d33) => d33.leaf_hash(chunk_id, symbol),
         }
     }

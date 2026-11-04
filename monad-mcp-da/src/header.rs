@@ -105,9 +105,7 @@ mod tests {
         let SignedProposalHeader {
             header: mut deeper, ..
         } = header;
-        let EncodingScheme::D33(d33) = &mut deeper.scheme else {
-            panic!("the fixture is a d33 proposal");
-        };
+        let EncodingScheme::D33(d33) = &mut deeper.scheme;
         d33.depth += 1;
         let deeper = signed_header(deeper, 0);
         assert!(!auth.authenticate(&deeper));

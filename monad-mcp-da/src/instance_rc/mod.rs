@@ -370,6 +370,17 @@ mod tests {
         Bytes::from(vec![1u8; MESSAGE_LEN])
     }
 
+    // the wire ids of the chunks `node` owns
+    fn owned(instance: &RaptorcastInstance, node: NodeId) -> Vec<usize> {
+        let assignment = &instance.assignment;
+        let index = assignment.index_of(&node).expect("in the assignment");
+        let mut owned = Vec::new();
+        for routing in assignment.owned_chunks(index) {
+            owned.push(usize::from(routing.chunk_id().to_wire()));
+        }
+        owned
+    }
+
     // the wire ids in the drained messages, sorted
     fn sent(egress: &mut ChunkEgress) -> Vec<WireChunkId> {
         let mut ids = Vec::new();
@@ -390,13 +401,14 @@ mod tests {
             instance.accept(chunk_id, &NodeId::dummy(sender))
         };
 
-        // we are 1 and own 0 and 3; node 2 owns 1 and 4; node 3 owns 2 and 5
-        assert_eq!(from(2, &chunks[2]), Err(InvalidChunk::UnexpectedSender));
-        assert!(from(2, &chunks[1]).is_ok());
-        assert!(from(3, &chunks[0]).is_ok());
+        // we are 1 and own 2, 6 and 10; node 2 owns 3, 7 and 11; node 3
+        // owns 1, 5 and 9
+        assert_eq!(from(2, &chunks[1]), Err(InvalidChunk::UnexpectedSender));
+        assert!(from(2, &chunks[3]).is_ok());
+        assert!(from(3, &chunks[2]).is_ok());
 
         // the proposer may send any chunk
-        assert!(from(0, &chunks[2]).is_ok());
+        assert!(from(0, &chunks[1]).is_ok());
     }
 
     #[test]
@@ -430,16 +442,15 @@ mod tests {
         let mut instance = instance(&header, &epoch_handle);
         let mut egress = released();
 
-        // chunk 0 is ours: forwarded on arrival, not on the repeat
-        assert_eq!(ingest(&mut instance, &chunks[0], &mut egress), Ok(None));
-        assert_eq!(sent(&mut egress), [0]);
-        assert_eq!(ingest(&mut instance, &chunks[0], &mut egress), Ok(None));
+        // chunk 2 is ours: forwarded on arrival, not on the repeat
+        assert_eq!(ingest(&mut instance, &chunks[2], &mut egress), Ok(None));
+        assert_eq!(sent(&mut egress), [2]);
+        assert_eq!(ingest(&mut instance, &chunks[2], &mut egress), Ok(None));
         assert!(sent(&mut egress).is_empty());
 
-        // the repeat did not count towards decoding: one more distinct
-        // chunk is short, the next one decodes
-        assert_eq!(ingest(&mut instance, &chunks[1], &mut egress), Ok(None));
-        let decoded = ingest(&mut instance, &chunks[2], &mut egress);
+        // the repeat did not count towards decoding: the next distinct
+        // chunk is the second of two source chunks
+        let decoded = ingest(&mut instance, &chunks[1], &mut egress);
         assert_eq!(decoded, Ok(Some(Ok(message()))));
     }
 
@@ -450,40 +461,45 @@ mod tests {
         let mut instance = instance(&header, &epoch_handle);
         let mut egress = released();
 
-        assert_eq!(ingest(&mut instance, &chunks[0], &mut egress), Ok(None));
-        assert_eq!(ingest(&mut instance, &chunks[1], &mut egress), Ok(None));
-        let decoded = ingest(&mut instance, &chunks[2], &mut egress);
+        // chunk 2 is ours
+        assert_eq!(ingest(&mut instance, &chunks[2], &mut egress), Ok(None));
+        let decoded = ingest(&mut instance, &chunks[0], &mut egress);
         assert_eq!(decoded, Ok(Some(Err(InvalidEncoding))));
 
         assert!(instance.missing_chunks().is_none());
         // later chunks are ignored
         assert_eq!(ingest(&mut instance, &chunks[4], &mut egress), Ok(None));
 
-        // our chunk 0 went out on arrival; nothing is derivable from an
+        // our chunk 2 went out on arrival; nothing is derivable from an
         // invalid proposal
-        assert_eq!(sent(&mut egress), [0]);
+        assert_eq!(sent(&mut egress), [2]);
     }
 
     #[test]
     fn our_obligation_from_the_author_completes_with_our_last_chunk() {
-        let epoch_handle = epoch_handle();
+        // among five validators we own two chunks, no more than decoding
+        // needs, so both arrive before the proposal decodes
+        let epoch_handle = epoch_handle_for(NodeId::dummy(1), 5, vec![author()]);
         let (header, chunks) = proposal_chunks(&epoch_handle, 1);
         let mut instance = instance(&header, &epoch_handle);
         let mut egress = released();
+        let [first, last] = owned(&instance, NodeId::dummy(1))[..] else {
+            panic!("we own two chunks");
+        };
 
         assert!(instance.take_obligation_event().is_none());
 
-        // we own 0 and 3
-        ingest(&mut instance, &chunks[0], &mut egress).expect("valid");
+        ingest(&mut instance, &chunks[first], &mut egress).expect("valid");
         assert!(instance.take_obligation_event().is_none());
-        ingest(&mut instance, &chunks[3], &mut egress).expect("valid");
+        ingest(&mut instance, &chunks[last], &mut egress).expect("valid");
         assert_eq!(
             instance.take_obligation_event(),
             Some(ProposalDAEvent::ProposerObligationFulfilled(header.pid()))
         );
 
-        // node 2 owns 1 and 4: one of them settles nothing
-        ingest(&mut instance, &chunks[1], &mut egress).expect("valid");
+        // another node's chunk settles nothing
+        let other = owned(&instance, NodeId::dummy(2))[0];
+        ingest(&mut instance, &chunks[other], &mut egress).expect("valid");
         assert!(instance.take_obligation_event().is_none());
     }
 
@@ -499,7 +515,7 @@ mod tests {
         assert!(instance.missing_chunks().is_none());
 
         let mut decoded = None;
-        for chunk in &chunks[..3] {
+        for chunk in &chunks[..2] {
             decoded = ingest(&mut instance, chunk, &mut egress).expect("valid");
         }
         assert_eq!(decoded, Some(Ok(message())));
@@ -514,7 +530,7 @@ mod tests {
         assert!(sent(&mut egress).is_empty());
         let my_chunks = ChunkRequest::all(root, ChunkRequestType::MyChunks);
         instance.handle_chunk_request(my_chunks, &requester, NOW, &mut egress);
-        assert_eq!(sent(&mut egress), [2, 5]);
+        assert_eq!(sent(&mut egress), [1, 5, 9]);
     }
 
     #[test]
@@ -544,16 +560,15 @@ mod tests {
     }
 
     #[test]
-    fn decoding_needs_more_chunks_than_the_source_count() {
+    fn decoding_needs_the_source_count() {
         let epoch_handle = epoch_handle();
         let (header, chunks) = proposal_chunks(&epoch_handle, 1);
         let mut instance = instance(&header, &epoch_handle);
         let mut egress = released();
 
-        // two source chunks: two received is not enough
+        // two source chunks: one received is not enough, any two decode
         assert_eq!(ingest(&mut instance, &chunks[1], &mut egress), Ok(None));
-        assert_eq!(ingest(&mut instance, &chunks[2], &mut egress), Ok(None));
-        let decoded = ingest(&mut instance, &chunks[4], &mut egress);
+        let decoded = ingest(&mut instance, &chunks[3], &mut egress);
         assert_eq!(decoded, Ok(Some(Ok(message()))));
     }
 

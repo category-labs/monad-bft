@@ -183,8 +183,6 @@ mod proposal {
     // the encoding scheme descriptor used by DA. opaque to consensus.
     #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
     pub enum EncodingScheme {
-        D25(D25),
-        S11(S11),
         D33(D33),
         #[cfg(test)]
         Test(ProposalScope),
@@ -195,26 +193,6 @@ mod proposal {
         pub fn dummy(slot: Slot) -> Self {
             Self::Test(ProposalScope::new(slot, Lane::new_unchecked(0)))
         }
-    }
-
-    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
-    pub struct D25 {
-        pub slot: Slot,
-        pub msg_len: u32,
-        pub unix_ts: u64,
-        // the merkle tree depth
-        pub depth: u8,
-    }
-
-    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
-    pub struct S11 {
-        pub slot: Slot,
-        // the lane the author claims for the slot
-        pub lane: Lane,
-        // the merkle tree depth
-        pub depth: u8,
-        pub msg_len: u32,
-        pub unix_ts: u64,
     }
 
     #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
@@ -231,35 +209,18 @@ mod proposal {
     impl EncodingScheme {
         pub fn slot(&self) -> Slot {
             match self {
-                Self::D25(d25) => d25.slot,
-                Self::S11(s11) => s11.slot,
                 Self::D33(d33) => d33.slot,
                 #[cfg(test)]
                 Self::Test(scope) => scope.slot,
             }
         }
 
-        // d25 carries no lane, so it reports lane 0 until it is removed
         pub fn lane(&self) -> Lane {
             match self {
-                Self::D25(_) => Lane::new_unchecked(0),
-                Self::S11(s11) => s11.lane,
                 Self::D33(d33) => d33.lane,
                 #[cfg(test)]
                 Self::Test(scope) => scope.lane,
             }
-        }
-    }
-
-    impl From<D25> for EncodingScheme {
-        fn from(d25: D25) -> Self {
-            Self::D25(d25)
-        }
-    }
-
-    impl From<S11> for EncodingScheme {
-        fn from(s11: S11) -> Self {
-            Self::S11(s11)
         }
     }
 
@@ -272,16 +233,8 @@ mod proposal {
     impl Encodable for EncodingScheme {
         fn encode(&self, out: &mut dyn bytes::BufMut) {
             match self {
-                Self::D25(f0) => {
-                    let fields: [&dyn Encodable; 2] = [&1u8, f0];
-                    alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
-                }
-                Self::S11(f0) => {
-                    let fields: [&dyn Encodable; 2] = [&2u8, f0];
-                    alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
-                }
                 Self::D33(f0) => {
-                    let fields: [&dyn Encodable; 2] = [&3u8, f0];
+                    let fields: [&dyn Encodable; 2] = [&1u8, f0];
                     alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
                 }
                 #[cfg(test)]
@@ -294,16 +247,8 @@ mod proposal {
 
         fn length(&self) -> usize {
             match self {
-                Self::D25(f0) => {
-                    let fields: [&dyn Encodable; 2] = [&1u8, f0];
-                    alloy_rlp::list_length::<_, dyn Encodable>(&fields)
-                }
-                Self::S11(f0) => {
-                    let fields: [&dyn Encodable; 2] = [&2u8, f0];
-                    alloy_rlp::list_length::<_, dyn Encodable>(&fields)
-                }
                 Self::D33(f0) => {
-                    let fields: [&dyn Encodable; 2] = [&3u8, f0];
+                    let fields: [&dyn Encodable; 2] = [&1u8, f0];
                     alloy_rlp::list_length::<_, dyn Encodable>(&fields)
                 }
                 #[cfg(test)]
@@ -319,9 +264,7 @@ mod proposal {
         fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
             let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
             let result = match <u8 as Decodable>::decode(&mut payload)? {
-                1 => Self::D25(<D25 as Decodable>::decode(&mut payload)?),
-                2 => Self::S11(<S11 as Decodable>::decode(&mut payload)?),
-                3 => Self::D33(<D33 as Decodable>::decode(&mut payload)?),
+                1 => Self::D33(<D33 as Decodable>::decode(&mut payload)?),
                 #[cfg(test)]
                 255 => Self::Test(<ProposalScope as Decodable>::decode(&mut payload)?),
                 _ => return Err(alloy_rlp::Error::Custom("unknown EncodingScheme tag")),

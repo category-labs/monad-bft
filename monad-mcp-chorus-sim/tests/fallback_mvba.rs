@@ -31,7 +31,7 @@ mod fixtures {
     use std::{collections::HashMap, sync::Arc};
 
     use chorus::{
-        env::{D25, EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader as Header},
+        env::{D33, EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader as Header},
         slot::fallback::{
             CertifiedEntry, EnterFallbackCert, EnterFallbackVote, Entry, FallbackEntry, Metablock,
             Mvba as _, monad_mvba::MvbaContext,
@@ -56,11 +56,12 @@ mod fixtures {
         hash[..8].copy_from_slice(&n.to_le_bytes());
         let header = Header {
             root: MerkleRoot(MerkleHash(hash)),
-            scheme: EncodingScheme::D25(D25 {
+            scheme: EncodingScheme::D33(D33 {
                 slot: SLOT,
+                lane: Lane::new_unchecked(0),
+                depth: 3,
                 msg_len: 1,
                 unix_ts: 0,
-                depth: 3,
             }),
         };
         header.pid()

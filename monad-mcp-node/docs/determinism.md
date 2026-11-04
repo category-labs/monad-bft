@@ -47,7 +47,7 @@ Explicit randomness:
 | source | resolution |
 |---|---|
 | random payloads, `thread_rng` (`component/proposing.rs`, `random_payload`) | `RandomProposing` takes a `ChaCha8Rng` from `NodeConfig::rng` |
-| chunk-assignment shuffles in d33 and swiper (`ChaCha20Rng`) | unchanged: seeded from the header (slot, timestamp, author key), part of the protocol |
+| chunk-assignment shuffle in d33 (`ChaCha20Rng`) | unchanged: seeded from the header (slot, timestamp, author key), part of the protocol |
 | conductor test (`StdRng::seed_from_u64`) | unchanged: test, seeded |
 
 Containers whose order reached outputs, and the related DA state:
@@ -79,7 +79,7 @@ and header pulls for one proposal with `util::shuffle_sends`, an `OrderKey`
 That is uniform over proposals and senders, the same in every run and
 process, and pinned by a test so that it also stays the same across
 releases. The first hop already follows the assignment's holder order, which
-S11 and D33 shuffle per proposal. This stands in for a send strategy
+D33 shuffles per proposal. This stands in for a send strategy
 (prioritized sends) still to be designed.
 
 Drawing a pseudo-random order: use `monad_mcp_common::containers::OrderKey`,

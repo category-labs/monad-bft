@@ -26,7 +26,7 @@ use super::{
     assignment::{ChunkAssignment, ChunkId, PacketLossResistance},
     chunk::{Chunk, ProposalEnvelope, WireChunkId},
     chunk_tree::ChunkTree,
-    encoding_scheme::{self, DAEncodingScheme as _, d25, d33},
+    encoding_scheme::{self, DAEncodingScheme as _, d33},
     header::header_auth,
     runtime::{DAConfig, EpochHandle, Timing},
     types::{
@@ -108,11 +108,7 @@ pub(crate) fn scheme(epoch_handle: &EpochHandle) -> EncodingScheme {
 }
 
 pub(crate) fn scheme_at(epoch_handle: &EpochHandle, slot: Slot) -> EncodingScheme {
-    use monad_mcp_chorus::spec::validator::ValidatorData as _;
-
-    let num_validators = epoch_handle.validator_data.len();
-    let d25 = d25::for_message(slot, MESSAGE_LEN, 0, num_validators).expect("fits a depth");
-    EncodingScheme::D25(d25)
+    d33_scheme_at(epoch_handle, slot, Lane::new_unchecked(0))
 }
 
 // the d33 scheme a proposer at `lane` picks for a MESSAGE_LEN message
@@ -148,10 +144,12 @@ fn chunks_of(
 }
 
 // encode a distinct proposal per payload byte, authored by validator
-// `author_id` for `slot`. Under the default fixture: 2 source chunks
-// over 3 non-author validators at 2.5x redundancy = 6 chunks, 2 owned
-// by each: ids 0 and 3 by validator 1, 1 and 4 by validator 2, 2 and 5
-// by validator 3.
+// `author_id` for `slot`. Under the default fixture: 2 source chunks at
+// 3.3x redundancy are 9 shares over the 4 validators, the author
+// included, so each owns 2 whole chunks and 1 partial chunk, 12 in all.
+// Dealt round-robin in the shuffled order 0, 3, 1, 2: ids 0, 4 and 8 by
+// the author, 1, 5 and 9 by validator 3, 2, 6 and 10 by validator 1, 3, 7
+// and 11 by validator 2.
 pub(crate) fn proposal_chunks_from(
     epoch_handle: &EpochHandle,
     author_id: u64,

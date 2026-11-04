@@ -520,11 +520,11 @@ mod tests {
         let mut egress = released_egress();
         let (header, chunks) = proposal_chunks(&epoch_handle, 1);
 
-        // chunk ids 0 and 3 are ours (validator 1); ingesting ids 0
-        // and 1 is short of the decoding threshold
+        // chunk ids 2, 6 and 10 are ours (validator 1); ingesting id 2
+        // alone is short of the two chunks decoding needs
         let mut instance =
             ProposerRaptorcast::new(NodeId::dummy(0), epoch_handle.self_id, NOW, timing());
-        instance.ingest(group(&chunks[..2]), &author(), &epoch_handle, &mut egress);
+        instance.ingest(group(&chunks[2..3]), &author(), &epoch_handle, &mut egress);
         assert!(decoded_pids(&mut instance).is_empty());
         // discard the rebroadcast of our own chunk
         egress.drain();
@@ -539,10 +539,10 @@ mod tests {
         assert_eq!(*to, [requester]);
         assert_eq!(
             envelope.chunk_data().keys().copied().collect::<Vec<_>>(),
-            [0]
+            [2]
         );
 
-        // the requester's own chunks (ids 2 and 5) are not held yet
+        // the requester's own chunks (ids 1, 5 and 9) are not held yet
         let my_chunks = ChunkRequest::all(header.pid(), ChunkRequestType::MyChunks);
         instance.handle_chunk_request(my_chunks, &requester, NOW, &mut egress);
         assert!(egress.drain().is_empty());
@@ -639,11 +639,12 @@ mod tests {
         let mut egress = released_egress();
         let (header, chunks) = proposal_chunks(&epoch_handle, 1);
 
-        // we are 1 and own 0 and 3; node 2 owns 1 and 4; node 3 owns 2 and 5
+        // we are 1 and own 2, 6 and 10; the author owns 0, 4 and 8; node 2
+        // owns 3, 7 and 11; node 3 owns 1, 5 and 9
         let deadline = after(300);
         let mut instance =
             ProposerRaptorcast::new(NodeId::dummy(0), epoch_handle.self_id, deadline, timing());
-        instance.ingest(group(&chunks[..2]), &author(), &epoch_handle, &mut egress);
+        instance.ingest(group(&chunks[2..3]), &author(), &epoch_handle, &mut egress);
 
         let pulled = instance.poll_chunk_requests(after(350), &epoch_handle);
         assert!(requests(pulled).is_empty());
@@ -657,14 +658,21 @@ mod tests {
             ),
         };
         let expected = vec![
-            (NodeId::dummy(0), narrowed(ChunkRequestType::MyChunks, &[3])),
+            (
+                NodeId::dummy(0),
+                narrowed(ChunkRequestType::MyChunks, &[6, 10]),
+            ),
+            (
+                NodeId::dummy(0),
+                narrowed(ChunkRequestType::YourChunks, &[0, 4, 8]),
+            ),
             (
                 NodeId::dummy(2),
-                narrowed(ChunkRequestType::YourChunks, &[4]),
+                narrowed(ChunkRequestType::YourChunks, &[3, 7, 11]),
             ),
             (
                 NodeId::dummy(3),
-                narrowed(ChunkRequestType::YourChunks, &[2, 5]),
+                narrowed(ChunkRequestType::YourChunks, &[1, 5, 9]),
             ),
         ];
         let pulled = instance.poll_chunk_requests(after(400), &epoch_handle);
@@ -677,7 +685,7 @@ mod tests {
         assert_eq!(requests(pulled), expected);
 
         // decoded: nothing more to pull
-        instance.ingest(group(&chunks[2..3]), &author(), &epoch_handle, &mut egress);
+        instance.ingest(group(&chunks[3..4]), &author(), &epoch_handle, &mut egress);
         let pulled = instance.poll_chunk_requests(after(1000), &epoch_handle);
         assert!(requests(pulled).is_empty());
     }
@@ -698,7 +706,9 @@ mod tests {
         let my_chunks = ChunkRequest {
             pid: header.pid(),
             kind: ChunkRequestType::MyChunks,
-            subset: ChunksSubset::narrowed([0, 3].map(|id| chunk_id(&epoch_handle, &header, id))),
+            subset: ChunksSubset::narrowed(
+                [2, 6, 10].map(|id| chunk_id(&epoch_handle, &header, id)),
+            ),
         };
         assert!(requests(pulled).contains(&(NodeId::dummy(2), my_chunks)));
     }
@@ -709,7 +719,7 @@ mod tests {
         let mut egress = released_egress();
         let (header, chunks) = proposal_chunks(&epoch_handle, 1);
 
-        // we own 0 and 3; node 2 owns 1 and 4
+        // we own 2, 6 and 10; node 2 owns 3, 7 and 11
         let mut instance =
             ProposerRaptorcast::new(NodeId::dummy(0), epoch_handle.self_id, NOW, timing());
         instance.ingest(group(&chunks[1..2]), &author(), &epoch_handle, &mut egress);
@@ -723,11 +733,11 @@ mod tests {
         };
         let my_chunks = (
             NodeId::dummy(2),
-            request(ChunkRequestType::MyChunks, &[0, 3]),
+            request(ChunkRequestType::MyChunks, &[2, 6, 10]),
         );
         let your_chunks = (
             NodeId::dummy(2),
-            request(ChunkRequestType::YourChunks, &[4]),
+            request(ChunkRequestType::YourChunks, &[3, 7, 11]),
         );
         let asked_holder = |pulled: Vec<(NodeId, ChunkRequest)>| {
             let mut asked = requests(pulled);

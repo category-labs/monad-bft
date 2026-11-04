@@ -21,7 +21,7 @@ use super::{
         chunk::{ChunkData, ProposalEnvelope},
         chunk_tree::ChunkTree,
         egress::Dissemination,
-        encoding_scheme::{self, d25, d33, swiper},
+        encoding_scheme::{self, d33},
         runtime::EpochHandle,
         types::{
             EncodingScheme, NodeId, Proposal, ProposalHeader, ProposalKeyPair, SignedProposalHeader,
@@ -40,32 +40,6 @@ pub struct AssembledProposal {
 
 impl AssembledProposal {
     // None unless the message is the length the scheme encodes
-    pub fn build_d25(
-        epoch_handle: &EpochHandle,
-        proposal: &Proposal,
-        timestamp: u64,
-    ) -> Option<Self> {
-        let num_validators = epoch_handle.validator_data.len();
-        let msg_len = proposal.payload.len();
-        // Note: d25 doesn't encode the lane
-        let d25 = d25::for_message(proposal.slot, msg_len, timestamp, num_validators)?;
-        let scheme = EncodingScheme::D25(d25);
-        Self::build(epoch_handle, &proposal.payload, scheme)
-    }
-
-    pub fn build_s11(
-        epoch_handle: &EpochHandle,
-        proposal: &Proposal,
-        timestamp: u64,
-    ) -> Option<Self> {
-        let num_validators = epoch_handle.validator_data.len();
-        let msg_len = proposal.payload.len();
-        let lane = proposal.lane;
-        let s11 = swiper::for_message(proposal.slot, msg_len, timestamp, lane, num_validators)?;
-        let scheme = EncodingScheme::S11(s11);
-        Self::build(epoch_handle, &proposal.payload, scheme)
-    }
-
     pub fn build_d33(
         epoch_handle: &EpochHandle,
         proposal: &Proposal,
@@ -260,63 +234,80 @@ mod tests {
         let (header, chunks) = proposal_chunks(&epoch_handle, 1);
         let message = vec![1u8; MESSAGE_LEN];
 
-        let proposal = AssembledProposal::build_d25(&epoch_handle, &proposal_of(message), 0);
+        let proposal = AssembledProposal::build_d33(&epoch_handle, &proposal_of(message), 0);
         let proposal = proposal.expect("the fixture's message fits");
         assert_eq!(proposal.header(), &header);
         let empty = proposal_of(vec![]);
-        assert!(AssembledProposal::build_d25(&epoch_handle, &empty, 0).is_none());
+        assert!(AssembledProposal::build_d33(&epoch_handle, &empty, 0).is_none());
 
         let dissemination = proposal.disseminate();
         assert_eq!(dissemination.envelope(), group(&chunks));
         let packets = packets(dissemination);
-        // one per chunk, then the header alone to the author itself
-        assert_eq!(packets.len(), chunks.len() + 1);
+        // one per chunk: every validator, the author included, owns chunks
+        assert_eq!(packets.len(), chunks.len());
         for ((recipient, packet), chunk) in packets.iter().zip(&chunks) {
-            let owner = NodeId::dummy(1 + u64::from(chunk.chunk_id()) % 3);
-            assert_eq!(*recipient, owner);
+            let routing = proposal.assignment.resolve_chunk_id(chunk.chunk_id());
+            let owner = routing.expect("in the assignment").owner_index();
+            assert_eq!(recipient, proposal.assignment.node(owner));
             assert_eq!(*packet, write_chunk(chunk));
         }
-        let (recipient, packet) = &packets[chunks.len()];
-        assert_eq!((*recipient, packet), (author(), &header_bytes(&header)));
     }
 
     #[test]
     fn splitting_off_a_node_takes_its_envelope_out_of_the_first_hop() {
         let epoch_handle = authoring_handle();
-        let (header, chunks) = proposal_chunks(&epoch_handle, 1);
+        let (_, chunks) = proposal_chunks(&epoch_handle, 1);
         let message = vec![1u8; MESSAGE_LEN];
-        let proposal = AssembledProposal::build_d25(&epoch_handle, &proposal_of(message), 0);
+        let proposal = AssembledProposal::build_d33(&epoch_handle, &proposal_of(message), 0);
         let proposal = proposal.expect("the fixture's message fits");
         let mut dissemination = proposal.disseminate();
 
-        // validator 1 owns chunks 0 and 3
+        // the fixture's chunks a node owns; the chunks are in wire id order
+        let assignment = &proposal.assignment;
+        let owned = |node: NodeId| {
+            let index = assignment.index_of(&node).expect("in the assignment");
+            let mut owned = Vec::new();
+            for routing in assignment.owned_chunks(index) {
+                let id = routing.chunk_id().to_wire();
+                owned.push(chunks[usize::from(id)].clone());
+            }
+            owned
+        };
+
         let own = dissemination
             .split_off(&NodeId::dummy(1))
             .expect("in the assignment");
-        assert_eq!(own, group(&[chunks[0].clone(), chunks[3].clone()]));
-        // the author owns nothing and is owed the header alone
+        assert_eq!(own, group(&owned(NodeId::dummy(1))));
+        // the author owns chunks too, and splits them off like any owner
         let authors = dissemination
             .split_off(&author())
             .expect("in the assignment");
-        assert_eq!(authors, ProposalEnvelope::from_header(header));
+        assert_eq!(authors, group(&owned(author())));
         assert_eq!(dissemination.split_off(&NodeId::dummy(9)), None);
 
         let packets = by_recipient(packets(dissemination));
         assert!(!packets.contains_key(&NodeId::dummy(1)));
         assert!(!packets.contains_key(&author()));
-        assert_eq!(packets[&NodeId::dummy(2)].len(), 2);
-        assert_eq!(packets[&NodeId::dummy(3)].len(), 2);
+        for node in [NodeId::dummy(2), NodeId::dummy(3)] {
+            assert_eq!(packets[&node].len(), owned(node).len());
+        }
     }
 
     #[test]
     fn a_node_owning_no_chunk_gets_the_header_alone() {
+        use monad_mcp_common::spec::Stake as _;
+
         let epoch_handle = authoring_handle();
         let (header, _) = proposal_chunks(&epoch_handle, 1);
+        let whole = |whole| Obligation {
+            whole,
+            partial: Stake::ZERO,
+        };
         let holders = vec![
-            (NodeId::dummy(0), Obligation::whole(0)),
-            (NodeId::dummy(1), Obligation::whole(3)),
-            (NodeId::dummy(2), Obligation::whole(0)),
-            (NodeId::dummy(3), Obligation::whole(3)),
+            (NodeId::dummy(0), whole(0)),
+            (NodeId::dummy(1), whole(3)),
+            (NodeId::dummy(2), whole(0)),
+            (NodeId::dummy(3), whole(3)),
         ];
         let obligations = Obligations::new(Stake::from(4), holders);
         let assignment = ChunkAssignment::deal(&author(), obligations, PACKET_LOSS_RESISTANCE);
@@ -340,20 +331,5 @@ mod tests {
 
         let header_only = read_envelope(packets[&NodeId::dummy(2)][0].clone());
         assert_eq!(header_only, Ok(ProposalEnvelope::from_header(header)));
-    }
-
-    #[test]
-    fn a_s11_proposal_is_built_under_its_own_scheme() {
-        let epoch_handle = authoring_handle();
-        let message = vec![1u8; MESSAGE_LEN];
-
-        let proposal = AssembledProposal::build_s11(&epoch_handle, &proposal_of(message), 0);
-        let proposal = proposal.expect("the message fits");
-        assert!(matches!(proposal.header().scheme(), EncodingScheme::S11(_)));
-
-        for (_, packet) in packets(proposal.disseminate()) {
-            let envelope = read_envelope(packet).expect("well-formed");
-            assert_eq!(envelope.header(), proposal.header());
-        }
     }
 }

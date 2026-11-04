@@ -21,13 +21,13 @@ use super::{
     super::{
         assignment::{ChunkAssignment, PacketLossResistance, StakePartition},
         chunk::WireChunkId,
-        types::{D33, Lane, MAX_PROPOSER_SET_SIZE, NodeId, Slot, ValidatorData},
+        types::{D33, Lane, MAX_PROPOSER_SET_SIZE, NodeId, PubKey, Slot, ValidatorData},
         wire::{DAHeaderScheme as _, PacketLayout as _, v1},
     },
     DAEncodingScheme,
     reed_solomon::{RsSymbolDecoder, RsSymbolEncoder},
-    swiper::seed,
 };
+use crate::spec::PUBKEY_LEN;
 
 // over the loss-scaled source count, for 3.3x in total
 const REDUNDANCY: f32 = 3.0;
@@ -94,6 +94,22 @@ fn fits(msg_len: u32, depth: u8, num_validators: usize) -> bool {
 // the caller must ensure depth is in MIN_DEPTH..MAX_DEPTH.
 fn num_source_chunks(msg_len: u32, depth: u8) -> usize {
     (msg_len as usize).div_ceil(D33Layout::symbol_len_at(depth))
+}
+
+// the prod seed: slot(8) unix_ts_ms/2048(8) pubkey[1..17]. the first
+// pubkey byte is a low entropy tag.
+fn seed(slot: Slot, unix_ts: u64, author: &PubKey) -> [u8; 32] {
+    use crate::spec::DAPubKey as _;
+
+    let mut pubkey = [0u8; PUBKEY_LEN];
+    author.to_bytes(&mut pubkey);
+    let coarse_ts = unix_ts / 2048;
+
+    let mut seed = [0u8; 32];
+    seed[..8].copy_from_slice(&slot.get().to_le_bytes());
+    seed[8..16].copy_from_slice(&coarse_ts.to_le_bytes());
+    seed[16..].copy_from_slice(&pubkey[1..17]);
+    seed
 }
 
 // D33 encoding scheme:
@@ -338,12 +354,10 @@ mod header {
         }
 
         #[test]
-        fn a_packet_is_one_segment_at_the_s11_offsets() {
+        fn a_packet_is_one_segment_at_the_d33_offsets() {
             let epoch_handle = epoch_handle();
             let (header, chunks) = proposal_chunks(&epoch_handle, 1);
-            let EncodingScheme::D33(d33) = header.scheme() else {
-                panic!("the fixture is a d33 proposal");
-            };
+            let EncodingScheme::D33(d33) = header.scheme();
             let (_, chunk_id, data) = chunks[3].clone().into_parts();
 
             let bytes = write_chunk(&chunks[3]);

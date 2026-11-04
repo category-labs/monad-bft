@@ -27,8 +27,7 @@ use super::{
     chunk::{Chunk, ChunkData, ProposalEnvelope, WireChunkId},
     encoding_scheme::DAEncodingScheme,
     types::{
-        D25, D33, EncodingScheme, MerkleRoot, ProposalHeader, ProposalSignature, S11,
-        SignedProposalHeader,
+        D33, EncodingScheme, MerkleRoot, ProposalHeader, ProposalSignature, SignedProposalHeader,
     },
 };
 use crate::spec::DAProposalHeader as _;
@@ -53,8 +52,6 @@ pub enum MalformedPacket {
     NonZeroEpoch(u64),
     BadSignature,
     BadRoot,
-    // a reserved bit or byte: in the mode byte or the chunk header
-    ReservedNonZero,
 }
 
 // the scheme's part of the header: every field but the root, and the
@@ -98,48 +95,36 @@ pub trait PacketLayout {
 impl PacketLayout for EncodingScheme {
     fn signed_bytes(&self, root: &MerkleRoot, out: &mut impl BufMut) {
         match self {
-            Self::D25(d25) => d25.v1_layout().signed_bytes(root, out),
-            Self::S11(s11) => s11.v1_layout().signed_bytes(root, out),
             Self::D33(d33) => d33.v1_layout().signed_bytes(root, out),
         }
     }
 
     fn write_header(&self, root: &MerkleRoot, sig: &ProposalSignature, out: &mut impl BufMut) {
         match self {
-            Self::D25(d25) => d25.v1_layout().write_header(root, sig, out),
-            Self::S11(s11) => s11.v1_layout().write_header(root, sig, out),
             Self::D33(d33) => d33.v1_layout().write_header(root, sig, out),
         }
     }
 
     fn header_len(&self) -> usize {
         match self {
-            Self::D25(d25) => d25.v1_layout().header_len(),
-            Self::S11(s11) => s11.v1_layout().header_len(),
             Self::D33(d33) => d33.v1_layout().header_len(),
         }
     }
 
     fn write_body(&self, chunk_id: WireChunkId, data: &ChunkData, out: &mut impl BufMut) {
         match self {
-            Self::D25(d25) => d25.v1_layout().write_body(chunk_id, data, out),
-            Self::S11(s11) => s11.v1_layout().write_body(chunk_id, data, out),
             Self::D33(d33) => d33.v1_layout().write_body(chunk_id, data, out),
         }
     }
 
     fn body_len(&self) -> usize {
         match self {
-            Self::D25(d25) => d25.v1_layout().body_len(),
-            Self::S11(s11) => s11.v1_layout().body_len(),
             Self::D33(d33) => d33.v1_layout().body_len(),
         }
     }
 
     fn symbol_len(&self) -> usize {
         match self {
-            Self::D25(d25) => d25.v1_layout().symbol_len(),
-            Self::S11(s11) => s11.v1_layout().symbol_len(),
             Self::D33(d33) => d33.v1_layout().symbol_len(),
         }
     }
@@ -160,8 +145,6 @@ fn scheme_variant(bytes: &Bytes) -> Result<u8, MalformedPacket> {
 // routed by the version, then by the scheme byte the version places
 pub fn read_chunk(bytes: Bytes) -> Result<Chunk<'static>, MalformedPacket> {
     match scheme_variant(&bytes)? {
-        D25::VARIANT => v1::Layout::<D25>::read_chunk(bytes),
-        S11::VARIANT => v1::Layout::<S11>::read_chunk(bytes),
         D33::VARIANT => v1::Layout::<D33>::read_chunk(bytes),
         other => Err(MalformedPacket::UnknownScheme(other)),
     }
@@ -169,8 +152,6 @@ pub fn read_chunk(bytes: Bytes) -> Result<Chunk<'static>, MalformedPacket> {
 
 pub fn read_envelope(bytes: Bytes) -> Result<ProposalEnvelope, MalformedPacket> {
     match scheme_variant(&bytes)? {
-        D25::VARIANT => v1::Layout::<D25>::read_envelope(bytes),
-        S11::VARIANT => v1::Layout::<S11>::read_envelope(bytes),
         D33::VARIANT => v1::Layout::<D33>::read_envelope(bytes),
         other => Err(MalformedPacket::UnknownScheme(other)),
     }
@@ -225,7 +206,7 @@ pub fn write_envelope(envelope: &ProposalEnvelope) -> Vec<Bytes> {
 mod tests {
     use super::{
         super::{
-            encoding_scheme::d25::D25Layout,
+            encoding_scheme::d33::D33Layout,
             test_util::{SLOT, author, epoch_handle, group, proposal_chunks, proposal_chunks_from},
             types::NodeId,
         },
@@ -275,8 +256,8 @@ mod tests {
 
         let packets = write_envelope(&envelope);
         assert_eq!(packets, vec![header_bytes(&header)]);
-        assert_eq!(packets[0].len(), D25Layout::HEADER_LEN);
-        assert_eq!(header.scheme().header_len(), D25Layout::HEADER_LEN);
+        assert_eq!(packets[0].len(), D33Layout::HEADER_LEN);
+        assert_eq!(header.scheme().header_len(), D33Layout::HEADER_LEN);
         assert_eq!(read_envelope(packets[0].clone()), Ok(envelope));
 
         // a chunk packet starts with the header bytes
@@ -285,7 +266,10 @@ mod tests {
         let envelope = read_envelope(packet).expect("well-formed");
         assert_eq!(envelope, group(&chunks[..1]));
         let header_only = read_chunk(packets[0].clone());
-        assert_eq!(header_only, Err(MalformedPacket::BadLength(117)));
+        assert_eq!(
+            header_only,
+            Err(MalformedPacket::BadLength(D33Layout::HEADER_LEN))
+        );
     }
 
     #[test]
@@ -293,11 +277,11 @@ mod tests {
         let epoch_handle = epoch_handle();
         let (header, _) = proposal_chunks(&epoch_handle, 1);
         let signed = signed_bytes(&header.header);
-        assert_eq!(signed.len(), D25Layout::SIGNED_LEN);
+        assert_eq!(signed.len(), D33Layout::SIGNED_LEN);
         assert_eq!(header.sig().recover_author(&signed), Some(author()));
 
         let mut altered = signed.to_vec();
-        altered[D25Layout::SIGNED_LEN - 1] ^= 1;
+        altered[D33Layout::SIGNED_LEN - 1] ^= 1;
         assert_eq!(header.sig().recover_author(&altered), None);
 
         // the same bytes signed by another author recover that author

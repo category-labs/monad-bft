@@ -129,10 +129,10 @@ where
         Ok(())
     }
 
-    // our proposal, encoded with swiper-11
+    // our proposal, encoded with d33
     pub fn propose(&mut self, proposal: Proposal, now: Timestamp) {
         let unix_ts = unix_seconds(now);
-        let assembled = AssembledProposal::build_s11(&self.epoch_handle, &proposal, unix_ts);
+        let assembled = AssembledProposal::build_d33(&self.epoch_handle, &proposal, unix_ts);
         let Some(assembled) = assembled else {
             tracing::warn!("proposal does not fit the scheme");
             return;
@@ -410,15 +410,17 @@ mod tests {
                         consensus_decoded_at = Some(i);
                     }
                 }
+                // our partial chunk 10 is rebroadcast to nobody
+                DAOutput::Disseminate(dissemination) if dissemination.to.is_empty() => {}
                 DAOutput::Disseminate(dissemination) => {
-                    // our chunk 0 on arrival and 3 once derivable, one message
+                    // our chunk 2 on arrival and 6 once derivable, one message
                     let ids: Vec<_> = dissemination
                         .envelope
                         .chunk_data()
                         .keys()
                         .copied()
                         .collect();
-                    assert_eq!(ids, [0, 3]);
+                    assert_eq!(ids, [2, 6]);
                     disseminated_at.push(i);
                 }
                 DAOutput::RecoveryRequest { .. } => panic!("nothing to recover"),
@@ -465,7 +467,7 @@ mod tests {
         // the tick is due from the start, then every Delta
         assert_eq!(runtime.next_tick(), NOW);
         runtime
-            .ingest(&author(), group(&chunks[..2]))
+            .ingest(&author(), group(&chunks[..1]))
             .expect("valid");
         outputs(&mut runtime);
 
@@ -474,7 +476,8 @@ mod tests {
         assert_eq!(runtime.next_tick(), at(200));
         assert!(outputs(&mut runtime).is_empty());
 
-        // then the author for ours and every owner for theirs
+        // then the author for ours and for its own, and every other owner
+        // for theirs
         runtime.handle_tick(at(200));
         let mut peers = Vec::new();
         for output in outputs(&mut runtime) {
@@ -488,7 +491,12 @@ mod tests {
         peers.sort();
         assert_eq!(
             peers,
-            [NodeId::dummy(0), NodeId::dummy(2), NodeId::dummy(3)]
+            [
+                NodeId::dummy(0),
+                NodeId::dummy(0),
+                NodeId::dummy(2),
+                NodeId::dummy(3)
+            ]
         );
     }
 }

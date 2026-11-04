@@ -350,7 +350,7 @@ impl ProposalConfig {
     const OBSERVATION_CUTOFF: u64 = 5;
     const MIN_SLOTS_PER_EPOCH: u64 = 400;
 
-    // the largest message swiper-11 encodes, which monad-mcp-da keeps private
+    // the largest message d33 encodes, which monad-mcp-da keeps private
     pub const MAX_PROPOSAL_SIZE_LIMIT: usize = 1 << 20;
     pub const RANDOM_PROPOSAL_SIZE_LIMIT: usize = Self::MAX_PROPOSAL_SIZE_LIMIT;
     pub const MEMPOOL_PROPOSAL_SIZE_LIMIT: usize = 64 << 10;
@@ -698,7 +698,7 @@ max_txs = 7
         config.proposal.max_payload_bytes = Some(fits);
         config.validate().unwrap();
         // end demo(tx-timeline)
-        // a proposal size limit beyond the s11 bound drains batches that never encode
+        // a proposal size limit beyond the d33 bound drains batches that never encode
         config.proposal.max_payload_bytes = Some(ProposalConfig::MAX_PROPOSAL_SIZE_LIMIT);
         config.validate().unwrap();
         config.proposal.max_payload_bytes = Some(ProposalConfig::MAX_PROPOSAL_SIZE_LIMIT + 1);

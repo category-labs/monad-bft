@@ -328,22 +328,22 @@ mod tests {
         let (epoch_handle, mut raptorcast) = slot_raptorcast();
         let (header, chunks) = proposal_chunks(&epoch_handle, 1);
 
-        // our chunk 0 arrives and node 3 asks for it: nothing leaves
-        assert!(ingest(&mut raptorcast, group(&chunks[..1])).is_empty());
+        // our chunk 2 arrives and node 3 asks for it: nothing leaves
+        assert!(ingest(&mut raptorcast, group(&chunks[2..3])).is_empty());
         assert!(your_chunks(&mut raptorcast, header.pid(), NOW).is_empty());
 
         // released: the second hop to the other owners, and the answer
         // to node 3, both pending until now
         raptorcast.handle_command(ChorusDACommand::ReleaseChunks, NOW);
         let messages = raptorcast.drain_messages();
-        assert_eq!(chunk_ids(&messages), [0, 0]);
+        assert_eq!(chunk_ids(&messages), [2, 2]);
         assert_eq!(set(&messages[0].to), nodes([2, 3]));
         assert_eq!(set(&messages[1].to), nodes([3]));
 
         // released: a repeat a window later is answered at once
         let a_window_later = NOW + timing().serve_window;
         let repeat = your_chunks(&mut raptorcast, header.pid(), a_window_later);
-        assert_eq!(chunk_ids(&repeat), [0]);
+        assert_eq!(chunk_ids(&repeat), [2]);
     }
 
     #[test]
@@ -351,19 +351,19 @@ mod tests {
         let (epoch_handle, mut raptorcast) = slot_raptorcast();
         let (header, chunks) = proposal_chunks(&epoch_handle, 1);
         raptorcast.handle_command(ChorusDACommand::ReleaseChunks, NOW);
-        ingest(&mut raptorcast, group(&chunks[..1]));
+        ingest(&mut raptorcast, group(&chunks[2..3]));
 
-        // node 3's 2 chunks, our 2 and the header: 5 per window
+        // node 3's 3 chunks, our 3 and the header: 7 per window
         let pid = header.pid();
-        for _ in 0..5 {
-            assert_eq!(chunk_ids(&your_chunks(&mut raptorcast, pid, NOW)), [0]);
+        for _ in 0..7 {
+            assert_eq!(chunk_ids(&your_chunks(&mut raptorcast, pid, NOW)), [2]);
         }
         assert!(your_chunks(&mut raptorcast, pid, NOW).is_empty());
 
         let a_window_later = NOW + timing().serve_window;
         assert_eq!(
             chunk_ids(&your_chunks(&mut raptorcast, pid, a_window_later)),
-            [0]
+            [2]
         );
     }
 
@@ -373,14 +373,17 @@ mod tests {
         let (_, chunks) = proposal_chunks(&epoch_handle, 1);
         raptorcast.handle_command(ChorusDACommand::ReleaseChunks, NOW);
 
-        // our chunk 3 is forwarded on arrival, a repeat is not
-        let messages = ingest(&mut raptorcast, group(&chunks[3..4]));
-        assert_eq!(chunk_ids(&messages), [3]);
+        // our chunk 6 is forwarded on arrival, a repeat is not
+        let messages = ingest(&mut raptorcast, group(&chunks[6..7]));
+        assert_eq!(chunk_ids(&messages), [6]);
         assert_eq!(set(&messages[0].to), nodes([2, 3]));
-        assert!(ingest(&mut raptorcast, group(&chunks[3..4])).is_empty());
+        assert!(ingest(&mut raptorcast, group(&chunks[6..7])).is_empty());
 
-        // a chunk we do not own is not ours to forward
-        assert!(ingest(&mut raptorcast, group(&chunks[1..2])).is_empty());
+        // a chunk we do not own is not ours to forward. A second chunk
+        // would decode the proposal here, so this one goes to a fresh slot
+        let (_, mut fresh) = slot_raptorcast();
+        fresh.handle_command(ChorusDACommand::ReleaseChunks, NOW);
+        assert!(ingest(&mut fresh, group(&chunks[1..2])).is_empty());
     }
 
     #[test]
@@ -389,10 +392,14 @@ mod tests {
         let (_, chunks) = proposal_chunks(&epoch_handle, 1);
         raptorcast.handle_command(ChorusDACommand::ReleaseChunks, NOW);
 
-        // chunks 0 and 3 are ours, 1 is not
-        let messages = ingest(&mut raptorcast, group(&chunks[..4]));
-        assert_eq!(messages.len(), 1);
-        assert_eq!(chunk_ids(&messages), [0, 3]);
+        // chunks 2 and 6 are ours, 1 is not. Two chunks decode, which
+        // derives our partial chunk 10, rebroadcast to nobody
+        let envelope = group(&[chunks[1].clone(), chunks[2].clone(), chunks[6].clone()]);
+        let messages = ingest(&mut raptorcast, envelope);
+        let mut addressed = messages.iter().filter(|message| !message.to.is_empty());
+        let message = addressed.next().expect("our chunks leave");
+        assert!(addressed.next().is_none());
+        assert_eq!(chunk_ids([message]), [2, 6]);
     }
 
     #[test]
@@ -401,17 +408,17 @@ mod tests {
         let (header, chunks) = proposal_chunks(&epoch_handle, 1);
         raptorcast.handle_command(ChorusDACommand::ReleaseChunks, NOW);
 
-        // chunks 1, 2 and 4 belong to others; the third one decodes
-        assert!(ingest(&mut raptorcast, group(&chunks[1..3])).is_empty());
-        let messages = ingest(&mut raptorcast, group(&chunks[4..5]));
+        // chunks 1 and 3 belong to others; the second one decodes
+        assert!(ingest(&mut raptorcast, group(&chunks[1..2])).is_empty());
+        let messages = ingest(&mut raptorcast, group(&chunks[3..4]));
 
         let decoded = ChorusDAEvent {
             j: Lane::new_unchecked(0),
             event: ProposalDAEvent::Decoded(header.pid()),
         };
         assert!(raptorcast.drain_events().contains(&decoded));
-        // our chunks 0 and 3 never arrived, but re-encoding derives them
-        assert_eq!(chunk_ids(&messages), [0, 3]);
+        // our chunks 2, 6 and 10 never arrived, but re-encoding derives them
+        assert_eq!(chunk_ids(&messages), [2, 6, 10]);
     }
 
     #[test]
@@ -546,7 +553,8 @@ mod tests {
 
     #[test]
     fn chunks_reach_everyone_through_the_second_hop_and_requests() {
-        // validators 1, 2 and 3 own two chunks each of validator 0's proposal
+        // validators 0, 1, 2 and 3 own three chunks each of validator 0's
+        // proposal
         let mut nodes = Vec::new();
         for id in 1..=3 {
             let epoch_handle = epoch_handle_for(NodeId::dummy(id), 4, vec![author()]);
@@ -559,14 +567,10 @@ mod tests {
 
         // the author's first hop reaches 1 and 2; 3 is cut off entirely
         let cut_off = BTreeSet::from([NodeId::dummy(3)]);
-        nodes[0]
-            .1
-            .ingest(&author(), group(&[chunks[0].clone(), chunks[3].clone()]))
-            .expect("valid");
-        nodes[1]
-            .1
-            .ingest(&author(), group(&[chunks[1].clone(), chunks[4].clone()]))
-            .expect("valid");
+        let ones = group(&[chunks[2].clone(), chunks[6].clone(), chunks[10].clone()]);
+        nodes[0].1.ingest(&author(), ones).expect("valid");
+        let twos = group(&[chunks[3].clone(), chunks[7].clone(), chunks[11].clone()]);
+        nodes[1].1.ingest(&author(), twos).expect("valid");
         let second_hop = drain_all(&mut nodes);
         deliver(&mut nodes, second_hop, &cut_off);
         assert_eq!(decoded(&mut nodes[0].1), vec![message()]);
@@ -589,12 +593,12 @@ mod tests {
             server.handle_chunk_request(request, Lane::new_unchecked(0), &NodeId::dummy(3), NOW);
         }
         // 1 answers both asks in one message, 2 in another; together
-        // they carry every chunk
+        // they carry every chunk but the author's own
         let responses = drain_all(&mut nodes);
         assert_eq!(responses.len(), 2);
         assert_eq!(
             chunk_ids(responses.iter().map(|(_, message)| message)),
-            [0, 1, 2, 3, 4, 5]
+            [1, 2, 3, 5, 6, 7, 9, 10, 11]
         );
         deliver(&mut nodes, responses, &BTreeSet::new());
         assert_eq!(decoded(&mut nodes[2].1), vec![message()]);

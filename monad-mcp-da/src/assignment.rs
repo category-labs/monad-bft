@@ -176,26 +176,8 @@ enum ChunkType {
 }
 
 impl Obligation {
-    pub(crate) fn whole(whole: usize) -> Self {
-        Self {
-            whole,
-            partial: Stake::ZERO,
-        }
-    }
-
     fn is_empty(&self) -> bool {
         self.whole == 0 && self.partial == Stake::ZERO
-    }
-
-    fn rounded_up(self) -> Self {
-        if self.partial == Stake::ZERO {
-            return self;
-        }
-
-        Self {
-            whole: self.whole + 1,
-            partial: Stake::ZERO,
-        }
     }
 
     // the caller must ensure the obligation is not empty
@@ -224,13 +206,6 @@ impl Obligations {
             total_stake,
             holders,
         }
-    }
-
-    fn rounded_up(mut self) -> Self {
-        for (_, obligation) in &mut self.holders {
-            *obligation = obligation.rounded_up();
-        }
-        self
     }
 }
 
@@ -458,20 +433,6 @@ impl StakePartition {
         }
     }
 
-    // the author must be one of the weighted nodes.
-    pub fn assign_rounded_up(
-        self,
-        author: &NodeId,
-        num_source_chunks: usize,
-        // todo: use raptorcast's fixed point redundancy type
-        redundancy: f32,
-        packet_loss_resistance: PacketLossResistance,
-    ) -> ChunkAssignment {
-        let shares = scale(num_source_chunks, redundancy);
-        let obligations = self.obligations(shares).rounded_up();
-        ChunkAssignment::deal(author, obligations, packet_loss_resistance)
-    }
-
     // stake-proportional multicast: each fractional obligation is a
     // chunk rebroadcast to that fraction of the nodes.
     pub fn assign_spm(
@@ -541,7 +502,7 @@ mod tests {
             (node(2), Stake::from(1)),
             (node(3), Stake::from(2)),
         ];
-        StakePartition::new(weights).assign_rounded_up(&node(0), 10, 1.0, PACKET_LOSS_RESISTANCE)
+        StakePartition::new(weights).assign_spm(&node(0), 10, 1.0, PACKET_LOSS_RESISTANCE)
     }
 
     fn owned(assignment: &ChunkAssignment, id: u64) -> Vec<WireChunkId> {
@@ -554,47 +515,10 @@ mod tests {
     }
 
     #[test]
-    fn chunks_follow_stake_with_a_rounding_chunk_each() {
+    fn a_partial_chunk_is_dealt_last_and_rebroadcast_to_its_share_of_nodes() {
         let assignment = assignment();
 
-        // 10 * 1/4 = 2 rem 2 -> 3; 10 * 2/4 = 5; the author owns nothing.
-        // ids are dealt round-robin among the owners
-        assert_eq!(assignment.num_chunks(), 11);
-        assert!(owned(&assignment, 0).is_empty());
-        assert_eq!(owned(&assignment, 1), [0, 3, 6]);
-        assert_eq!(owned(&assignment, 2), [1, 4, 7]);
-        assert_eq!(owned(&assignment, 3), [2, 5, 8, 9, 10]);
-    }
-
-    #[test]
-    fn redundancy_scales_the_source_count_rounding_up() {
-        // ceil(3 * 2.5) = 8 shares over 3 equal nodes: 2 rem 2 -> 3 each
-        let weights = (0..3).map(|id| (node(id), Stake::from(1)));
-        let assignment = StakePartition::new(weights).assign_rounded_up(
-            &node(0),
-            3,
-            2.5,
-            PACKET_LOSS_RESISTANCE,
-        );
-        assert_eq!(assignment.num_chunks(), 9);
-    }
-
-    // the same weights under stake-proportional multicast
-    fn spm_assignment() -> ChunkAssignment {
-        let weights = [
-            (node(0), Stake::ZERO),
-            (node(1), Stake::from(1)),
-            (node(2), Stake::from(1)),
-            (node(3), Stake::from(2)),
-        ];
-        StakePartition::new(weights).assign_spm(&node(0), 10, 1.0, PACKET_LOSS_RESISTANCE)
-    }
-
-    #[test]
-    fn a_partial_chunk_is_dealt_last_and_rebroadcast_to_its_share_of_nodes() {
-        let assignment = spm_assignment();
-
-        // the same chunks as rounding up, as 2.5 shares deal 3 chunks
+        // 2.5 shares deal 3 chunks
         assert_eq!(assignment.num_chunks(), 11);
         assert_eq!(owned(&assignment, 1), [0, 3, 6]);
         assert_eq!(owned(&assignment, 2), [1, 4, 7]);
@@ -618,14 +542,6 @@ mod tests {
         assert_eq!(seven.upstream(owner), Some(Upstream::Author));
         assert_eq!(seven.upstream(covered), Some(Upstream::Owner(owner)));
         assert_eq!(seven.upstream(uncovered), None);
-    }
-
-    #[test]
-    fn rounding_up_rebroadcasts_every_chunk_in_full() {
-        let rounded_up = assignment();
-        for id in 0..11 {
-            assert_eq!(targets(&rounded_up, id), everyone_else(&rounded_up, id));
-        }
     }
 
     #[test]
