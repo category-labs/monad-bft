@@ -1,7 +1,7 @@
 # monad-sim-swarm — per-node network stacks for parallel runs (design)
 
-**Status: implemented (`lars/csim/parallel-sim`), as described below, except
-the inbound hook (deliveries go to the node directly).** `Swarm::build_parallel`
+**Status: implemented as described below, except the inbound hook
+(deliveries go to the node directly).** `Swarm::build_parallel`
 places nodes in domains (`Parallel::domains`, default one per node), and
 `Wiring` assembles the stacks; see [design.md](design.md). The engine side (domains, lookahead, windows, determinism) is in
 [`monad-sim/docs/parallel.md`](../../monad-sim/docs/parallel.md). The network
@@ -89,7 +89,7 @@ After: the handle points to the node's own stack, so node code does not change
 beyond the type.
 
 ```rust
-fn wire(&mut self, me: Handle<Self>, net: Handle<NetStack<Addr, Msg>>);
+fn wire(&mut self, me: Handle<Self>, net: Handle<Net<Addr, Msg>>); // the node's own stack
 ctx.schedule(net, ctx.now(), label, move |net, ctx| net.send(ctx, to, msg));
 ```
 
@@ -132,7 +132,8 @@ between its nodes. Between domains it must be positive, and the build fails
 otherwise. A latency matrix should not use 0 on its diagonal: nodes in the same
 region still have a positive one-way latency. With one domain per node, a 0
 diagonal would be rejected; the scenario would have to place each region in one
-domain. Topology presets belong to `lars/csim/latency-topologies`.
+domain. The topology presets (`RegionTable`, see [design.md](design.md))
+have a positive diagonal.
 
 ## Mid-run changes
 
@@ -172,10 +173,10 @@ until a scenario needs it.
 
 ## Implementation (step 7 of the engine plan)
 
-1. Split `Network` into the description and `NetStack` / `SenderModel`.
-   Per-stack RNG, `min_delay`. Port the `monad-sim-swarm` tests. This
-   conflicts with `net.rs` on `lars/csim/latency-topologies` (matrix, egress),
-   so build on that branch once it has landed.
+1. Split `Network` into the description (`NetworkModel`, assembled by
+   `Wiring`) and the per-node `Net` with its `SenderModel`.
+   Per-stack RNG, `min_delay`. Port the `monad-sim-swarm` tests, including
+   those of the latency matrix and egress.
 2. `Swarm`: one stack and one domain per node by default, an optional
    placement function `Addr → Domain`, and lookahead from `min_delay`.
 3. Harness ports: the MCP node scenarios and `monad-mcp-chorus-sim` get the

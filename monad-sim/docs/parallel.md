@@ -1,8 +1,7 @@
 # monad-sim — parallel execution of a single run (design)
 
-**Status: the engine is implemented (`lars/csim/parallel-sim`, steps 1–6 of
-the [plan](#implementation-plan)); the network side is not yet.** It extends
-[design.md](design.md). The network side is in
+**Status: implemented** (see [Implementation plan](#implementation-plan)).
+It extends [design.md](design.md). The network side is in
 [`monad-sim-swarm/docs/parallel.md`](../../monad-sim-swarm/docs/parallel.md).
 
 ## Goal
@@ -379,8 +378,8 @@ at n = 64) within noise of today.
 - State shared between processes is read-only during a run, or written by one
   process and read by the driver only between runs. The per-node logs and
   planner in `monad-mcp-chorus-sim` satisfy this.
-- No unseeded randomness or wall-clock reads in simulated code (item
-  `lars/csim/seeded-randomness`).
+- No unseeded randomness or wall-clock reads in simulated code (see
+  `monad-mcp-node/docs/determinism.md` for one consumer's rules).
 - Log lines from workers interleave; node spans keep them attributable, and
   log order is not part of the result.
 
@@ -397,8 +396,7 @@ at n = 64) within noise of today.
 
 ## Implementation plan
 
-Built on `lars/csim/latency-topologies` plus a merge of
-`lars/csim/seeded-randomness`. Each step keeps all tests green.
+Each step kept all tests green.
 
 1. Done. Order key, per-process RNG. No tick-pinned test needed re-baselining
    on this line.
@@ -420,26 +418,23 @@ Built on `lars/csim/latency-topologies` plus a merge of
 6. Done. Automatic grouping; `groups()` and `window()` report it.
 7. Done. Network side (swarm document): per-node network stacks, domains and
    lookahead from the network, `Swarm::build_parallel`.
-8. `lars/csim/parallel-sim-mcp`: the MCP harness on the windowed engine
-   (scenario options, a scaling bench, `W / D` re-measured). Measured ahead of
-   it with an uncommitted scenario on this branch, below.
+8. Done. A consumer: the MCP node scenario harness runs on the windowed
+   engine (`monad-mcp-node/tests/scenarios`), with results checked identical
+   across thread counts and a scaling bench.
 
-**MCP scenario measurement.** `n` validators from the scenario harness
-(`node_config`, 2000-byte payloads), `Network::reliable(10 ms).loss(0.05)`,
-one domain per node, grouping with 32 groups (the default then), 10 ms
-windows. Run on a
-14-core Apple M-series machine (10 performance cores). The digest of every
-delivered message (with its time) and every finalized slot was identical for
-the sequential `Swarm::build` and for every thread count.
+**Measurements on a consumer.** The MCP node scenarios record their
+measurements in
+[`monad-mcp-node/docs/parallel-scenarios.md`](../../monad-mcp-node/docs/parallel-scenarios.md).
+In summary: with one domain per node, `W / D` grows with the swarm (64.6 at
+`n = 64`, 127.4 at `n = 128`); on 10 threads, runs are 5–7 times faster than
+sequential at `n` of 128 and up, and 3–5 times at `n = 64`, where steps are
+cheap enough that the fixed cost of each window weighs more.
 
-| n | slots | steps | sequential | 2 threads | 4 | 8 | 10 |
-|---|---|---|---|---|---|---|---|
-| 16 | 20 | 75k | 0.38 s | 1.8× | 3.1× | 4.6× | 4.9× |
-| 64 | 20 | 1.17 M | 10.3 s | 1.9× | 3.6× | 6.8× | 7.1× |
-| 190 | 6 | 3.12 M | 95.7 s | 1.9× | 3.7× | 6.9× | 7.6× |
+## Future work
 
-Speedups are against the parallel engine on one thread, which is within 2% of
-the sequential build.
-
-Separately: re-measure the Monad BFT harness's `W / D` (~2.9× plateau) with
-routing not serialized (on the mock-swarm branch).
+- Parallel efficiency with cheap steps or few domains: regrouping between
+  windows from measured load (opt-in, since it moves `run_while` stop points),
+  per-pair horizons instead of global windows, and a cheaper exchange between
+  windows.
+- Re-measure the Monad BFT harness's `W / D` (a ~2.9× plateau with the single
+  network process) with per-node network stacks.
