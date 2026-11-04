@@ -13,6 +13,10 @@ name: Build and publish builder Docker image
   pull_request:
     paths:
       - 'docker/builder/**'
+
+env:
+  REGISTRY: registry.devcore4.com
+  IMAGE_NAME: category-labs/builder
       - '.github/workflows/build-builder.yml'
 
 jobs:
