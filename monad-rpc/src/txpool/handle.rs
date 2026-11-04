@@ -27,7 +27,7 @@ pub struct EthTxPoolBridgeHandle {
 }
 
 impl EthTxPoolBridgeHandle {
-    pub fn new(handle: JoinHandle<()>) -> Self {
+    pub(super) fn new(handle: JoinHandle<()>) -> Self {
         Self { handle }
     }
 }
