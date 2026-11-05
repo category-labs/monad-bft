@@ -70,6 +70,14 @@ pub enum HeaderError {
         expected: Option<[u8; 32]>,
         actual: Option<[u8; 32]>,
     },
+    InvalidBlockAccessListHash {
+        expected: Option<[u8; 32]>,
+        actual: Option<[u8; 32]>,
+    },
+    InvalidSlotNumber {
+        expected: Option<u64>,
+        actual: Option<u64>,
+    },
 }
 
 impl From<HeaderError> for EthBlockValidationError {

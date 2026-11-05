@@ -96,6 +96,12 @@ pub struct ProposedEthHeader {
     // eip-7685
     #[serde_as(as = "Option<serde_with::hex::Hex>")]
     pub requests_hash: Option<[u8; 32]>,
+    // eip-7928
+    #[serde_as(as = "Option<serde_with::hex::Hex>")]
+    pub block_access_list_hash: Option<[u8; 32]>,
+    // eip-7843
+    #[serde_as(as = "Option<DisplayFromStr>")]
+    pub slot_number: Option<u64>,
 }
 
 impl ProposedEthHeader {
@@ -119,6 +125,14 @@ impl ProposedEthHeader {
 
         if let Some(requests_hash) = &self.requests_hash {
             length += requests_hash.length();
+        }
+
+        if let Some(block_access_list_hash) = &self.block_access_list_hash {
+            length += block_access_list_hash.length();
+        }
+
+        if let Some(slot_number) = &self.slot_number {
+            length += slot_number.length();
         }
 
         length
@@ -158,6 +172,17 @@ impl Encodable for ProposedEthHeader {
         if let Some(requests_hash) = &self.requests_hash {
             requests_hash.encode(out);
         }
+
+        if let Some(block_access_list_hash) = &self.block_access_list_hash {
+            debug_assert!(self.requests_hash.is_some());
+            debug_assert!(self.slot_number.is_some());
+            block_access_list_hash.encode(out);
+        }
+
+        if let Some(slot_number) = &self.slot_number {
+            debug_assert!(self.block_access_list_hash.is_some());
+            slot_number.encode(out);
+        }
     }
 }
 
@@ -185,10 +210,20 @@ impl Decodable for ProposedEthHeader {
             excess_blob_gas: Decodable::decode(buf)?,
             parent_beacon_block_root: Decodable::decode(buf)?,
             requests_hash: None,
+            block_access_list_hash: None,
+            slot_number: None,
         };
 
         if starting_len - buf.len() < rlp_header.payload_length {
             this.requests_hash = Some(Decodable::decode(buf)?);
+        }
+
+        if starting_len - buf.len() < rlp_header.payload_length {
+            this.block_access_list_hash = Some(Decodable::decode(buf)?);
+        }
+
+        if starting_len - buf.len() < rlp_header.payload_length {
+            this.slot_number = Some(Decodable::decode(buf)?);
         }
 
         let consumed = starting_len - buf.len();
@@ -421,8 +456,10 @@ mod test {
             old_header.parent_beacon_block_root
         );
         assert_eq!(new_header.requests_hash, None);
+        assert_eq!(new_header.block_access_list_hash, None);
+        assert_eq!(new_header.slot_number, None);
 
-        // new encoding with requests_hash == None can be decoded as old header
+        // new encoding with empty trailing optional fields can be decoded as old header
 
         let new_header = ProposedEthHeader {
             ommers_hash: *EMPTY_OMMER_ROOT_HASH,
@@ -441,6 +478,8 @@ mod test {
             excess_blob_gas: 0,
             parent_beacon_block_root: [0_u8; 32],
             requests_hash: None,
+            block_access_list_hash: None,
+            slot_number: None,
         };
 
         let encoded = alloy_rlp::encode(&new_header);
@@ -467,6 +506,34 @@ mod test {
     }
 
     #[test]
+    fn test_proposed_eth_header_amsterdam_roundtrip() {
+        let amsterdam_header = ProposedEthHeader {
+            ommers_hash: *EMPTY_OMMER_ROOT_HASH,
+            beneficiary: Address::new([0xff_u8; 20]),
+            transactions_root: *EMPTY_TRANSACTIONS,
+            difficulty: 0,
+            number: 72,
+            gas_limit: 150_000_000,
+            timestamp: 1756656000,
+            extra_data: [0_u8; 32],
+            mix_hash: [0xff_u8; 32],
+            nonce: [0_u8; 8],
+            base_fee_per_gas: 100_000_000_000,
+            withdrawals_root: *EMPTY_WITHDRAWALS,
+            blob_gas_used: 0,
+            excess_blob_gas: 0,
+            parent_beacon_block_root: [0_u8; 32],
+            requests_hash: Some([0_u8; 32]),
+            block_access_list_hash: Some([0_u8; 32]),
+            slot_number: Some(1234),
+        };
+
+        let encoded = alloy_rlp::encode(&amsterdam_header);
+        let decoded: ProposedEthHeader = alloy_rlp::decode_exact(&encoded).unwrap();
+        assert_eq!(decoded, amsterdam_header);
+    }
+
+    #[test]
     fn test_proposed_eth_header_toml_roundtrip_u64_max() {
         let header = ProposedEthHeader {
             ommers_hash: *EMPTY_OMMER_ROOT_HASH,
@@ -485,6 +552,8 @@ mod test {
             excess_blob_gas: u64::MAX,
             parent_beacon_block_root: [0_u8; 32],
             requests_hash: None,
+            block_access_list_hash: None,
+            slot_number: None,
         };
 
         let encoded = toml::to_string_pretty(&header).unwrap();

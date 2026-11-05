@@ -401,6 +401,8 @@ pub fn generate_consensus_test_block(
             base_fee_per_gas: base_fee,
             withdrawals_root: EMPTY_WITHDRAWALS.0,
             requests_hash: Some([0_u8; 32]),
+            block_access_list_hash: Some([0_u8; 32]),
+            slot_number: Some(round.as_u64()),
             ..Default::default()
         },
         body.get_id(),

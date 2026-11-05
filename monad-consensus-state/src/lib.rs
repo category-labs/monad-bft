@@ -2409,23 +2409,27 @@ mod test {
                 &self.epoch_manager,
                 &self.val_epoch_map,
                 &self.election,
-                |seq_num, timestamp_ns, round_signature: RoundSignature<_>| ProposedEthHeader {
-                    transactions_root: *EMPTY_TRANSACTIONS,
-                    ommers_hash: *EMPTY_OMMER_ROOT_HASH,
-                    withdrawals_root: *EMPTY_WITHDRAWALS,
-                    beneficiary: Default::default(),
-                    difficulty: 0,
-                    number: seq_num.0,
-                    gas_limit: CHAIN_PARAMS.proposal_gas_limit,
-                    timestamp: (timestamp_ns / 1_000_000_000) as u64,
-                    mix_hash: round_signature.get_hash().0,
-                    nonce: [0_u8; 8],
-                    extra_data: [0_u8; 32],
-                    base_fee_per_gas: BASE_FEE,
-                    blob_gas_used: 0,
-                    excess_blob_gas: 0,
-                    parent_beacon_block_root: [0_u8; 32],
-                    requests_hash: Some([0_u8; 32]),
+                |seq_num, timestamp_ns, round, round_signature: RoundSignature<_>| {
+                    ProposedEthHeader {
+                        transactions_root: *EMPTY_TRANSACTIONS,
+                        ommers_hash: *EMPTY_OMMER_ROOT_HASH,
+                        withdrawals_root: *EMPTY_WITHDRAWALS,
+                        beneficiary: Default::default(),
+                        difficulty: 0,
+                        number: seq_num.0,
+                        gas_limit: CHAIN_PARAMS.proposal_gas_limit,
+                        timestamp: (timestamp_ns / 1_000_000_000) as u64,
+                        mix_hash: round_signature.get_hash().0,
+                        nonce: [0_u8; 8],
+                        extra_data: [0_u8; 32],
+                        base_fee_per_gas: BASE_FEE,
+                        blob_gas_used: 0,
+                        excess_blob_gas: 0,
+                        parent_beacon_block_root: [0_u8; 32],
+                        requests_hash: Some([0_u8; 32]),
+                        block_access_list_hash: Some([0_u8; 32]),
+                        slot_number: Some(round.as_u64()),
+                    }
                 },
                 Vec::new(),
             )
@@ -2441,7 +2445,7 @@ mod test {
                 &self.epoch_manager,
                 &self.val_epoch_map,
                 &self.election,
-                |seq_num, timestamp_ns, round_signature| ProposedEthHeader {
+                |seq_num, timestamp_ns, round, round_signature| ProposedEthHeader {
                     transactions_root: *EMPTY_TRANSACTIONS,
                     ommers_hash: *EMPTY_OMMER_ROOT_HASH,
                     withdrawals_root: *EMPTY_WITHDRAWALS,
@@ -2458,6 +2462,8 @@ mod test {
                     excess_blob_gas: 0,
                     parent_beacon_block_root: [0_u8; 32],
                     requests_hash: Some([0_u8; 32]),
+                    block_access_list_hash: Some([0_u8; 32]),
+                    slot_number: Some(round.as_u64()),
                 },
                 delayed_execution_results,
             )
@@ -2474,7 +2480,7 @@ mod test {
                 &self.epoch_manager,
                 &self.val_epoch_map,
                 &self.election,
-                |seq_num, timestamp_ns, round_signature| ProposedEthHeader {
+                |seq_num, timestamp_ns, round, round_signature| ProposedEthHeader {
                     transactions_root: *EMPTY_TRANSACTIONS,
                     ommers_hash: *EMPTY_OMMER_ROOT_HASH,
                     withdrawals_root: *EMPTY_WITHDRAWALS,
@@ -2491,6 +2497,8 @@ mod test {
                     excess_blob_gas: 0,
                     parent_beacon_block_root: [0_u8; 32],
                     requests_hash: Some([0_u8; 32]),
+                    block_access_list_hash: Some([0_u8; 32]),
+                    slot_number: Some(round.as_u64()),
                 },
                 delayed_execution_results,
             )
