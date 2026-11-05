@@ -151,6 +151,8 @@ struct OwnSlot {
     lead: f64,
     // encode-plus-upload per validator index, ms, under the order used
     extra: Vec<f64>,
+    // the first-hop send order handed to DA
+    order: Vec<NodeId>,
 }
 
 impl Adaptive {
@@ -207,14 +209,28 @@ impl Adaptive {
         self.model.withhold(ms_of(lead), &self.extra())
     }
 
+    // cold seals go out in DA's own order, which the upload term does not
+    // model: only warm seals are recorded and calibrate the model
     fn sealed(&mut self, slot: Slot, lane: Lane, lead: TimestampDelta) {
-        let extra = self.extra();
+        use crate::spec::validator::ValidatorData as _;
+
+        if !self.warm() {
+            return;
+        }
+        let order = self.model.send_order();
+        let extra = self.model.extra_ms(&order, self.setup.payload_bytes);
+        let order = order
+            .into_iter()
+            .filter_map(ValidatorIndex::new)
+            .map(|v| *self.validators.node_id(v))
+            .collect();
         self.own.insert(
             slot,
             OwnSlot {
                 lane,
                 lead: ms_of(lead),
                 extra,
+                order,
             },
         );
     }
@@ -370,7 +386,29 @@ impl ProposalPlanner {
             );
             self.pending.remove(&slot);
         }
+        self.refresh_dues(now);
         self.drop_late(now);
+    }
+
+    // Slots open a deadline-agreement window at a time, so the lead set at
+    // the open can be a window old: once per cap advance, seals not yet due
+    // move to the current L*.
+    fn refresh_dues(&mut self, now: Timestamp) {
+        let Some(adaptive) = &self.adaptive else {
+            return;
+        };
+        let waiting = self.pending.iter().find(|(_, pending)| pending.due > now);
+        let Some((slot, _)) = waiting else {
+            return;
+        };
+        let Some(lead) = adaptive.lead(*slot) else {
+            return;
+        };
+        for pending in self.pending.values_mut() {
+            if pending.due > now {
+                pending.due = pending.deadline.saturating_sub_delta(lead).max(now);
+            }
+        }
     }
 
     /// Fact: `voter`'s batch vote for `slot` arrived at `at`, with `positive`
@@ -430,6 +468,14 @@ impl ProposalPlanner {
             adaptive.sealed(slot, pending.lane, lead);
         }
         Some((slot, pending.lane))
+    }
+
+    /// The first-hop send order for `slot`, sealed by the last `poll`: the
+    /// adaptive lead's `target_far` order (`docs/0005` §5.5), once warm.
+    /// None: DA's own order.
+    pub fn send_order(&self, slot: Slot) -> Option<&[NodeId]> {
+        let own = self.adaptive.as_ref()?.own.get(&slot)?;
+        Some(&own.order)
     }
 
     /// Whether slot `r − y` is chained, for `slot = r` and the observation
@@ -833,6 +879,56 @@ mod tests {
             let due = deadline(30).saturating_sub_delta(lead);
             assert_eq!(planner.next_due(), Some(due));
             assert_eq!(planner.poll(due), Some((Slot(30), Lane::new_unchecked(1))));
+        }
+
+        #[test]
+        fn a_warm_seal_carries_the_target_far_order() {
+            let mut planner = adaptive_planner(MIN_LEAD);
+            open(&mut planner, [0]);
+            assert!(planner.poll(due(0)).is_some());
+            assert_eq!(planner.send_order(Slot(0)), None, "cold: DA's own order");
+
+            warm_up(&mut planner, 20);
+            // validator 2 is now farther away than 1 and 3 (before the open,
+            // which fixes the due time)
+            for voter in 1..VALIDATORS {
+                let after = if voter == 2 { 60 } else { ARRIVAL_MS };
+                for _ in 0..60 {
+                    let adaptive = planner.adaptive.as_mut().unwrap();
+                    adaptive.model.observe_arrival(voter as usize, after as f64);
+                }
+            }
+            open(&mut planner, [30]);
+            let due = planner.next_due().unwrap();
+            assert!(planner.poll(due).is_some());
+            let order = planner.send_order(Slot(30)).expect("warm");
+            // the core set farthest first; everyone but ourselves
+            assert_eq!(order.len(), 3);
+            assert_eq!(order[0], NodeId::dummy(2));
+            assert!(!order.contains(&NodeId::dummy(0)));
+        }
+
+        #[test]
+        fn a_cap_advance_moves_a_waiting_seal_to_the_current_lead() {
+            let mut planner = adaptive_planner(MIN_LEAD);
+            warm_up(&mut planner, 20);
+            open(&mut planner, [40]);
+            let opened_due = planner.next_due().unwrap();
+
+            // every peer moves 30 ms farther away before slot 40 is due
+            for voter in 1..VALIDATORS {
+                for _ in 0..200 {
+                    let adaptive = planner.adaptive.as_mut().unwrap();
+                    adaptive.model.observe_arrival(voter as usize, 40.0);
+                }
+            }
+            planner.handle_cap_advance(deadline(21), Slot(21));
+            let due = planner.next_due().unwrap();
+            assert!(due < opened_due, "{due:?} vs {opened_due:?}");
+            assert_eq!(
+                due,
+                deadline(40).saturating_sub_delta(adaptive_lead(&planner))
+            );
         }
 
         #[test]

@@ -129,8 +129,10 @@ where
         Ok(())
     }
 
-    // our proposal, encoded with d33
-    pub fn propose(&mut self, proposal: Proposal, now: Timestamp) {
+    // our proposal, encoded with d33. With a send order, the first hop
+    // goes out validator by validator in that order; without, in chunk-id
+    // order
+    pub fn propose(&mut self, proposal: Proposal, send_order: Option<&[NodeId]>, now: Timestamp) {
         let unix_ts = unix_seconds(now);
         let assembled = AssembledProposal::build_d33(&self.epoch_handle, &proposal, unix_ts);
         let Some(assembled) = assembled else {
@@ -148,7 +150,11 @@ where
         // don't have to rebroadcast back to author.
         self.ingest_own(first_hop.envelope());
 
-        for dissemination in first_hop.into_disseminations() {
+        let disseminations = match send_order {
+            Some(order) => first_hop.into_disseminations_in(order),
+            None => first_hop.into_disseminations(),
+        };
+        for dissemination in disseminations {
             self.outbox.push_back(DAOutput::Disseminate(dissemination));
         }
     }

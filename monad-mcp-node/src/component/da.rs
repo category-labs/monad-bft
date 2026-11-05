@@ -31,8 +31,9 @@ pub enum DAInput {
     ChunkRequest(NodeId, ChunkRecoveryRequest),
     Lifecycle(SlotLifecycle),
     Command(Slot, ChorusDACommand),
-    // our proposal, encoded at the time DA handles it
-    Propose(Proposal<Bytes>),
+    // our proposal, encoded at the time DA handles it, with the first-hop
+    // send order if the planner chose one
+    Propose(Proposal<Bytes>, Option<Vec<NodeId>>),
 }
 
 impl Component for DA {
@@ -49,7 +50,9 @@ impl Component for DA {
             DAInput::ChunkRequest(from, request) => self.handle_chunk_request(request, &from, now),
             DAInput::Lifecycle(event) => self.handle_slot_lifecycle(event),
             DAInput::Command(slot, command) => self.handle_command(command, slot, now),
-            DAInput::Propose(proposal) => self.propose(proposal, now),
+            DAInput::Propose(proposal, send_order) => {
+                self.propose(proposal, send_order.as_deref(), now);
+            }
         }
     }
 
@@ -95,7 +98,7 @@ mod tests {
                 lane: Lane::new_unchecked(0),
                 payload: Bytes::from(vec![7; len]),
             };
-            da.handle(now, DAInput::Propose(proposal));
+            da.handle(now, DAInput::Propose(proposal, None));
             let mut outputs = 0;
             while Component::poll(&mut da).is_some() {
                 outputs += 1;
