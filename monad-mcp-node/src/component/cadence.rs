@@ -17,7 +17,7 @@ use monad_mcp_common::{Slot, SlotDeadline, Timestamp};
 
 use super::Component;
 use crate::{
-    chorus::{
+    cadence::{
         CadenceOutput as LocalOut, CadenceRuntime, Outbound, Runtime as _, SlotLifecycle,
         SlotManager,
         conductor::{CadenceConductor, acs::nop::NopAcs},
@@ -27,7 +27,7 @@ use crate::{
 };
 
 pub type Conductor = CadenceConductor<NopAcs<SlotDeadline>>;
-pub type CadenceWireMsg = crate::chorus::CadenceWireMsg<Chorus, Conductor>;
+pub type CadenceWireMsg = crate::cadence::CadenceWireMsg<Chorus, Conductor>;
 
 pub enum CadenceInput {
     Message(NodeId, CadenceWireMsg),

@@ -17,7 +17,7 @@ use monad_mcp_common::{Lane, Slot, Timestamp};
 
 use super::Component;
 use crate::{
-    chorus::{SlotLifecycle, slot::chorus::SlotFinalization, types::ProposalId},
+    cadence::{SlotLifecycle, slot::chorus::SlotFinalization, types::ProposalId},
     da::Resolved,
     finalization::{FinalizationCollector, FinalizedSlot},
 };

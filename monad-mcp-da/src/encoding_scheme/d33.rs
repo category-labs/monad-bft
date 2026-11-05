@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use monad_crypto::hasher::{Hash, HasherType};
-use monad_mcp_chorus::spec::validator::ValidatorData as _;
+use monad_mcp_cadence::spec::validator::ValidatorData as _;
 use rand_chacha::ChaCha20Rng;
 
 use super::{
@@ -328,7 +328,7 @@ mod header {
     #[cfg(test)]
     mod tests {
         use bytes::Bytes;
-        use monad_mcp_chorus::spec::{ProposalHeader as _, SignedProposalHeader as _};
+        use monad_mcp_cadence::spec::{ProposalHeader as _, SignedProposalHeader as _};
 
         use super::{
             super::{

@@ -16,13 +16,13 @@
 use std::collections::VecDeque;
 
 use bytes::Bytes;
-use monad_mcp_chorus::ledger::Tx;
+use monad_mcp_cadence::ledger::Tx;
 use monad_mcp_common::{Lane, Lanes, Proposal, Slot, Timestamp};
 use rand_chacha::ChaCha8Rng;
 
 use super::{Component, Mempool};
 use crate::{
-    chorus::proposing::ProposalPlanner,
+    cadence::proposing::ProposalPlanner,
     common::NodeId,
     config::{ProposalConfig, SourceKind},
     epoch::EpochHandle,
@@ -246,7 +246,7 @@ fn random_bytes(rng: &mut impl rand::Rng, len: usize) -> Bytes {
 
 #[cfg(test)]
 mod tests {
-    use monad_mcp_chorus::ledger::{MAX_TX_PAYLOAD, decode_batch, decode_sealed_batch}; // demo(tx-timeline)
+    use monad_mcp_cadence::ledger::{MAX_TX_PAYLOAD, decode_batch, decode_sealed_batch}; // demo(tx-timeline)
 
     use super::*;
     use crate::config::NodeConfig;

@@ -127,7 +127,7 @@ mod tests {
         use super::super::test_util::{epoch_handle, proposal_chunks};
 
         let pid = |payload| -> ProposalId {
-            use monad_mcp_chorus::spec::ProposalHeader as _;
+            use monad_mcp_cadence::spec::ProposalHeader as _;
             proposal_chunks(&epoch_handle(), payload).0.pid()
         };
         let order = |pid: &ProposalId, sender: u64| {

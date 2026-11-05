@@ -21,7 +21,7 @@ use std::{
     str::FromStr,
 };
 
-use monad_mcp_chorus::ledger::{Address, BlockMeta, FinalizationPath, Hash, LaneMeta, Tx};
+use monad_mcp_cadence::ledger::{Address, BlockMeta, FinalizationPath, Hash, LaneMeta, Tx};
 
 pub const PREVIEW_LEN: usize = 32;
 
@@ -720,7 +720,7 @@ impl Index {
 #[cfg(test)]
 mod tests {
     use bytes::Bytes;
-    use monad_mcp_chorus::ledger::LEDGER_VERSION;
+    use monad_mcp_cadence::ledger::LEDGER_VERSION;
 
     use super::*;
 
@@ -741,7 +741,7 @@ mod tests {
             proposer: Some(u64::from(lane) + 10),
             pid: txs.map(|_| [lane as u8; 32]),
             payload_len: txs.map_or(0, |t| {
-                monad_mcp_chorus::ledger::encode_batch(u64::MAX, t).len() as u32 // demo(tx-timeline)
+                monad_mcp_cadence::ledger::encode_batch(u64::MAX, t).len() as u32 // demo(tx-timeline)
             }),
             tx_count: txs.map_or(0, |t| t.len() as u32),
             decode_error: false,
@@ -905,7 +905,7 @@ mod tests {
     }
 
     fn payload_hash_of(s: &str) -> Hash {
-        monad_mcp_chorus::ledger::payload_hash(s.as_bytes())
+        monad_mcp_cadence::ledger::payload_hash(s.as_bytes())
     }
 
     #[test]

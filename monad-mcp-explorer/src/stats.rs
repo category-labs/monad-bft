@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use monad_mcp_chorus::ledger::FinalizationPath;
+use monad_mcp_cadence::ledger::FinalizationPath;
 use serde::Serialize;
 
 use crate::index::{BlockSummary, Totals};
@@ -132,7 +132,7 @@ pub fn window(size: usize, blocks: &[&BlockSummary]) -> Option<WindowStats> {
 
 #[cfg(test)]
 mod tests {
-    use monad_mcp_chorus::ledger::{BlockMeta, LEDGER_VERSION, LaneMeta};
+    use monad_mcp_cadence::ledger::{BlockMeta, LEDGER_VERSION, LaneMeta};
 
     use super::*;
 

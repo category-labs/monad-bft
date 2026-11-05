@@ -22,7 +22,7 @@ use std::collections::HashMap;
 
 use alloy_rlp::{RlpDecodableWrapper, RlpEncodableWrapper};
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use monad_mcp_chorus::{
+use monad_mcp_cadence::{
     spec::{validator::ValidatorData as _, vote::SigningDomain},
     stub::types::{IsVote, ValidatorData, ValidatorIndex, VoteMsg, VotePool},
 };

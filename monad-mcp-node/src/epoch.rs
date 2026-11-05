@@ -16,7 +16,7 @@
 use std::sync::Arc;
 
 use crate::{
-    chorus::{
+    cadence::{
         slot::chorus::ChorusContext,
         types::{HeaderAuth, RotatingProposerSchedule, RoundRobinLeaderSchedule, ValidatorData},
     },

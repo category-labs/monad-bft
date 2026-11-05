@@ -223,7 +223,7 @@ mod tests {
         let NodeMessage::Tx(bytes) = decoded else {
             panic!("a tx message");
         };
-        assert_eq!(monad_mcp_chorus::ledger::Tx::decode_exact(&bytes), Ok(tx));
+        assert_eq!(monad_mcp_cadence::ledger::Tx::decode_exact(&bytes), Ok(tx));
     }
 
     // the rpc signs frames with its colocated validator's id: only the sender id

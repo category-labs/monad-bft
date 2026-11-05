@@ -23,7 +23,7 @@ use monad_mcp_common::Timestamp;
 
 use crate::{
     RunError,
-    chorus::{SlotManager, conductor::CadenceConductor, slot::chorus::ChorusMessage},
+    cadence::{SlotManager, conductor::CadenceConductor, slot::chorus::ChorusMessage},
     component::{
         Cadence, Component, DA, Mempool, MempoolProposing, Proposing, RandomProposing, Repeater,
     },

@@ -39,8 +39,8 @@ from config or the keystore.
 
 ## Sources found and what was done
 
-Audited on `mcp-dev` `e297f5204` (`monad-mcp-chorus`, `-da`, `-node`,
-`-common`, `-chorus-sim`, the scenario harness).
+Audited on `mcp-dev` `e297f5204` (`monad-mcp-cadence`, `-da`, `-node`,
+`-common`, `-cadence-sim`, the scenario harness).
 
 Explicit randomness:
 
@@ -98,7 +98,7 @@ Hash containers kept, lookup or membership only: DA `authenticated_headers`,
 certificate's distinct votes, the stub `ValidatorData`'s
 `NodeId -> ValidatorIndex` map (stakes, pubkeys and node ids are in
 index-ordered `IndexVec`s); node finalization `resolved`, mempool
-`pending`/`recent_set`; chorus-sim's per-node logs. All are std's, SipHash
+`pending`/`recent_set`; cadence-sim's per-node logs. All are std's, SipHash
 with random keys, which also covers the mempool's sender-chosen tx hashes.
 
 Wall clock:

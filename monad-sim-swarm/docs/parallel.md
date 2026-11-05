@@ -179,6 +179,6 @@ until a scenario needs it.
    those of the latency matrix and egress.
 2. `Swarm`: one stack and one domain per node by default, an optional
    placement function `Addr → Domain`, and lookahead from `min_delay`.
-3. Harness ports: the MCP node scenarios and `monad-mcp-chorus-sim` get the
+3. Harness ports: the MCP node scenarios and `monad-mcp-cadence-sim` get the
    stack handle type, and `Box<dyn Component>` becomes `+ Send` (D1).
    Re-measure `W / D`.

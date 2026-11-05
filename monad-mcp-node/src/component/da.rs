@@ -18,7 +18,7 @@ use monad_mcp_common::{Proposal, Slot, Timestamp};
 
 use super::Component;
 use crate::{
-    chorus::{SlotLifecycle, slot::chorus::ChorusDACommand},
+    cadence::{SlotLifecycle, slot::chorus::ChorusDACommand},
     common::NodeId,
     da::{ChunkRecoveryRequest, DAOutput, DARuntime, ProposalEnvelope},
     epoch::NodeProposerSchedule,

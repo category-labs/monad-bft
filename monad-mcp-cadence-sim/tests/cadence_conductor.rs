@@ -23,7 +23,7 @@ mod helper;
 
 use std::{num::NonZeroU64, sync::Arc, time::Duration};
 
-use chorus::{
+use cadence::{
     conductor::{CadenceConductor, ConductorConfig, acs::nop::NopAcs},
     slot::{
         chorus::{Chorus, ChorusConfig, ChorusContext},
@@ -34,8 +34,8 @@ use chorus::{
     },
 };
 use helper::{expect_finalized, expect_finalized_at};
-use monad_mcp_chorus::stub as chorus;
-use monad_mcp_chorus_sim::CadenceSwarmBuilder;
+use monad_mcp_cadence::stub as cadence;
+use monad_mcp_cadence_sim::CadenceSwarmBuilder;
 use monad_mcp_common::{
     SlotDeadline, Timestamp, TimestampDelta,
     stub::{NodeId, Stake},

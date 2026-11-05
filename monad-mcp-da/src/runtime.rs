@@ -18,7 +18,7 @@ use std::{
     sync::Arc,
 };
 
-use monad_mcp_chorus::spec::ProposalHeader as _;
+use monad_mcp_cadence::spec::ProposalHeader as _;
 
 use super::{
     chunk::{ChunkRequest, ProposalEnvelope},

@@ -6,7 +6,7 @@ After=network-online.target
 Slice=monad-mcp.slice
 MemoryAccounting=no
 ExecStart=%h/monad-mcp/bin/current %h/monad-mcp/config/node.toml
-Environment=RUST_LOG=info,monad_mcp_chorus=debug
+Environment=RUST_LOG=info,monad_mcp_cadence=debug
 KillSignal=SIGINT
 # a crashed node stays down for inspection
 Restart=no

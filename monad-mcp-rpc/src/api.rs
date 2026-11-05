@@ -29,7 +29,7 @@ use actix_web::{
     web,
 };
 use bytes::Bytes;
-use monad_mcp_chorus::ledger::{Address, Hash, MAX_TX_PAYLOAD, Tx};
+use monad_mcp_cadence::ledger::{Address, Hash, MAX_TX_PAYLOAD, Tx};
 use monad_mcp_common::{Lane, MAX_PROPOSER_SET_SIZE};
 use serde::{Deserialize, Serialize};
 

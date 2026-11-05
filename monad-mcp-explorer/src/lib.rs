@@ -25,7 +25,7 @@ pub mod stats;
 use std::{io, path::PathBuf, sync::Arc};
 
 use actix_web::{App, HttpServer, middleware::Compress, web};
-use monad_mcp_chorus::ledger::LedgerReader;
+use monad_mcp_cadence::ledger::LedgerReader;
 
 use crate::{
     api::AppState,

@@ -201,7 +201,7 @@ impl<H: DAHeaderScheme> PacketLayout for Layout<'_, H> {
 
 #[cfg(test)]
 mod tests {
-    use monad_mcp_chorus::spec::SignedProposalHeader as _;
+    use monad_mcp_cadence::spec::SignedProposalHeader as _;
 
     use super::{
         super::{

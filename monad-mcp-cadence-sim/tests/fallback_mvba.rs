@@ -19,9 +19,9 @@
 
 use std::{cell::Cell, collections::BTreeMap, rc::Rc, time::Duration};
 
-use chorus::slot::fallback::Metablock;
-use monad_mcp_chorus::stub as chorus;
-use monad_mcp_chorus_sim::{Message, MvbaSwarm, MvbaSwarmBuilder, SimMessage};
+use cadence::slot::fallback::Metablock;
+use monad_mcp_cadence::stub as cadence;
+use monad_mcp_cadence_sim::{Message, MvbaSwarm, MvbaSwarmBuilder, SimMessage};
 use monad_mcp_common::stub::NodeId;
 use monad_sim::{RunOutcome, Time, dist::uniform_duration};
 use monad_sim_swarm::Network;
@@ -30,7 +30,7 @@ use monad_sim_swarm::Network;
 mod fixtures {
     use std::{collections::HashMap, sync::Arc};
 
-    use chorus::{
+    use cadence::{
         env::{D33, EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader as Header},
         slot::fallback::{
             CertifiedEntry, EnterFallbackCert, EnterFallbackVote, Entry, FallbackEntry, Metablock,
@@ -40,8 +40,8 @@ mod fixtures {
             HeaderAuth, IsVote, ProposalId, StrongQc, ValidatorData, VoteMsg, VotePool, WeakQc,
         },
     };
-    use monad_mcp_chorus::{spec::ProposalHeader as _, stub as chorus};
-    use monad_mcp_chorus_sim::MonadMvba;
+    use monad_mcp_cadence::{spec::ProposalHeader as _, stub as cadence};
+    use monad_mcp_cadence_sim::MonadMvba;
     use monad_mcp_common::{
         Lane, Lanes, ProposalScope, Slot, TimestampDelta,
         spec::KeyPair as _,
@@ -156,7 +156,7 @@ mod fixtures {
     }
 
     fn vote_pool<V: IsVote>(scope: V::Scope, vote: V, signers: &[NodeId]) -> VotePool<V> {
-        use monad_mcp_chorus::spec::validator::ValidatorData as _;
+        use monad_mcp_cadence::spec::validator::ValidatorData as _;
 
         let validator_data = validator_data();
         let mut pool = VotePool::new(scope.clone());

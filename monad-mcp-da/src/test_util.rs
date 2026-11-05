@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 
-pub(crate) use super::chorus::types::FixedProposerSchedule;
+pub(crate) use super::cadence::types::FixedProposerSchedule;
 use super::{
     assignment::{ChunkAssignment, ChunkId, PacketLossResistance},
     chunk::{Chunk, ProposalEnvelope, WireChunkId},
@@ -113,7 +113,7 @@ pub(crate) fn scheme_at(epoch_handle: &EpochHandle, slot: Slot) -> EncodingSchem
 
 // the d33 scheme a proposer at `lane` picks for a MESSAGE_LEN message
 pub(crate) fn d33_scheme_at(epoch_handle: &EpochHandle, slot: Slot, lane: Lane) -> EncodingScheme {
-    use monad_mcp_chorus::spec::validator::ValidatorData as _;
+    use monad_mcp_cadence::spec::validator::ValidatorData as _;
 
     let num_validators = epoch_handle.validator_data.len();
     let d33 = d33::for_message(slot, MESSAGE_LEN, 0, lane, num_validators).expect("fits a depth");

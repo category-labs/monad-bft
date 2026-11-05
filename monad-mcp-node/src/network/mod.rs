@@ -32,7 +32,7 @@ pub enum NodeMessage {
 }
 
 // todo: move this into shared types
-pub type NodeOutbound = crate::chorus::Outbound<NodeMessage>;
+pub type NodeOutbound = crate::cadence::Outbound<NodeMessage>;
 
 // the transport authenticates the sender
 pub struct NodeInbound {

@@ -22,13 +22,13 @@ use std::{
     thread,
 };
 
-use monad_mcp_chorus::ledger::{
+use monad_mcp_cadence::ledger::{
     CommittedLane, FinalizationPath as LedgerPath, LanePid, LedgerError, LedgerWriter, NewBlock,
     NewLane,
 };
 
 use crate::{
-    chorus::{
+    cadence::{
         slot::chorus::FinalizationPath,
         types::{ProposerSchedule, ProposerSet},
     },
@@ -222,7 +222,7 @@ impl Recorder {
 mod tests {
     use std::{sync::Mutex, time::Duration};
 
-    use monad_mcp_chorus::ledger::LedgerReader;
+    use monad_mcp_cadence::ledger::LedgerReader;
 
     use super::*;
 

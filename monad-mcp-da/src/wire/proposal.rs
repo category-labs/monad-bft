@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use monad_mcp_chorus::spec::validator::ValidatorData as _;
+use monad_mcp_cadence::spec::validator::ValidatorData as _;
 
 use super::{
     super::{

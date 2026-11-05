@@ -27,13 +27,13 @@ use std::{
 };
 
 use bytes::Bytes;
-use monad_mcp_chorus::ledger::{
+use monad_mcp_cadence::ledger::{
     CommittedLane, FinalizationPath, LedgerWriter, NewBlock, NewLane, Tx, encode_batch,
 };
 use monad_mcp_common::{Lane, Slot, Timestamp};
 use monad_mcp_node::{
     NodeProposerSchedule,
-    chorus::types::ProposerSchedule,
+    cadence::types::ProposerSchedule,
     common::{KeyPair, NodeId},
     config::{NodeConfig, ValidatorConfig},
     network::{NodeMessage, decode_frame},

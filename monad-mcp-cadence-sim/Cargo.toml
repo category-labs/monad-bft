@@ -1,11 +1,11 @@
 [package]
-name = "monad-mcp-chorus-sim"
+name = "monad-mcp-cadence-sim"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 bytes = { workspace = true }
-monad-mcp-chorus = { workspace = true, features = ["enable_stub"] }
+monad-mcp-cadence = { workspace = true, features = ["enable_stub"] }
 monad-mcp-common = { workspace = true }
 monad-sim = { workspace = true }
 monad-sim-swarm = { workspace = true }

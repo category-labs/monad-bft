@@ -22,7 +22,7 @@ use std::collections::BTreeSet;
 
 use alloy_rlp::{Decodable, Encodable};
 use bytes::Bytes;
-use monad_mcp_chorus::spec::{Deserializable, Serializable};
+use monad_mcp_cadence::spec::{Deserializable, Serializable};
 
 use super::super::{
     chunk::{ChunkRequest, ChunkRequestType, ChunksSubset, WireChunkId},
@@ -173,7 +173,7 @@ impl Deserializable<Bytes> for ChunkRecoveryRequest {
 
 #[cfg(test)]
 mod tests {
-    use monad_mcp_chorus::spec::ProposalHeader as _;
+    use monad_mcp_cadence::spec::ProposalHeader as _;
 
     use super::{
         super::super::test_util::{epoch_handle, proposal_chunks},

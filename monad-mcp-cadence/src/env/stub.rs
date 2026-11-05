@@ -289,7 +289,7 @@ mod proposal {
         // DA-owned fields. defined here rather than in DA because we
         // don't want chorus to depend on DA.
         // todo: we may extract a monad-mcp-da-types crate and depend
-        // on it from monad-mcp-chorus and monad-mcp-da.
+        // on it from monad-mcp-cadence and monad-mcp-da.
         pub sig: ProposalSignature,
     }
 

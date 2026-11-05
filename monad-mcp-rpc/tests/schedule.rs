@@ -29,7 +29,7 @@ use common::{horizon_of, most_tenured, node_config, run_of, schedule_of};
 use monad_mcp_common::{Lane, Slot, Timestamp, TimestampDelta};
 use monad_mcp_node::{
     NodeProposerSchedule,
-    chorus::types::{FixedProposerSchedule, ProposerSchedule, ProposerSet, ScheduleError},
+    cadence::types::{FixedProposerSchedule, ProposerSchedule, ProposerSet, ScheduleError},
     common::NodeId,
     config::NodeConfig,
 };

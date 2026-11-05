@@ -13,8 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use monad_mcp_chorus::stub::{CadenceRuntime, CadenceWireMsg, Conductor, SlotConsensus};
-use monad_mcp_chorus_sim::CadenceSwarm;
+use monad_mcp_cadence::stub::{CadenceRuntime, CadenceWireMsg, Conductor, SlotConsensus};
+use monad_mcp_cadence_sim::CadenceSwarm;
 use monad_mcp_common::{Slot, Timestamp, stub::NodeId};
 
 pub fn expect_finalized<S, C>(

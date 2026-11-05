@@ -29,7 +29,7 @@ mod router;
 
 use std::error::Error;
 
-pub use monad_mcp_chorus::stub as chorus;
+pub use monad_mcp_cadence::stub as cadence;
 pub use monad_mcp_common::stub as common;
 pub use monad_mcp_da::stub as da;
 use tokio::task::JoinSet;

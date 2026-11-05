@@ -17,7 +17,7 @@ use std::{io::Write, sync::LazyLock};
 
 use actix_web::mime::{self, Mime};
 use flate2::{Compression, write::GzEncoder};
-use monad_mcp_chorus::ledger::keccak256;
+use monad_mcp_cadence::ledger::keccak256;
 
 pub struct Asset {
     pub body: &'static str,

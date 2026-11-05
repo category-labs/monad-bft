@@ -23,11 +23,11 @@ use std::{
 };
 
 use bytes::Bytes;
-use monad_mcp_chorus::ledger::{FinalizationPath, LedgerReader, LedgerWriter, Tx, decode_batch};
+use monad_mcp_cadence::ledger::{FinalizationPath, LedgerReader, LedgerWriter, Tx, decode_batch};
 use monad_mcp_common::{Proposal, Timestamp, TimestampDelta};
 use monad_mcp_node::{
     Component, FinalizedSlot, Node, NodeOutput, NodeRouter, Router,
-    chorus::slot::chorus::ChorusMessage,
+    cadence::slot::chorus::ChorusMessage,
     common::NodeId,
     component::{Proposing, ProposingInput, ProposingOutput},
     config::{NodeConfig, SourceKind},
@@ -132,7 +132,7 @@ impl<R: Router> Harness<R> {
 
 #[test]
 fn a_delivered_tx_is_finalized_and_written_to_the_ledger() {
-    use monad_mcp_node::chorus::types::ProposerSchedule as _;
+    use monad_mcp_node::cadence::types::ProposerSchedule as _;
 
     let config = NodeConfig::single_node(0, at(GENESIS_MS), "unused-ledger");
     let mut harness = Harness::new(&config);
@@ -339,7 +339,7 @@ fn an_oversized_tx_is_never_committed() {
     let config = NodeConfig::single_node(0, at(GENESIS_MS), "unused-ledger");
     let mut harness = Harness::new(&config);
     let oversized = Tx {
-        payload: Bytes::from(vec![3; monad_mcp_chorus::ledger::MAX_TX_PAYLOAD + 1]),
+        payload: Bytes::from(vec![3; monad_mcp_cadence::ledger::MAX_TX_PAYLOAD + 1]),
         ..tx(9)
     };
     harness.deliver(&oversized);

@@ -21,7 +21,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use monad_mcp_chorus::ledger::{
+use monad_mcp_cadence::ledger::{
     BlockMeta, FinalizationPath, LEDGER_VERSION, LaneMeta, Tx, encode_batch,
 };
 use monad_mcp_explorer::index::{Index, IndexConfig, LoadedBlock};

@@ -35,7 +35,7 @@ pub fn header_auth<S>(schedule: Arc<S>, validator_data: Arc<ValidatorData>) -> H
 where
     S: ProposerSchedule + Send + Sync + 'static,
 {
-    use monad_mcp_chorus::spec::{
+    use monad_mcp_cadence::spec::{
         ProposalHeader as _, SignedProposalHeader as _, validator::ValidatorData as _,
     };
 
@@ -62,7 +62,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use monad_mcp_chorus::spec::proposal::HeaderAuth as _;
+    use monad_mcp_cadence::spec::proposal::HeaderAuth as _;
 
     use super::super::{
         runtime::EpochHandle,

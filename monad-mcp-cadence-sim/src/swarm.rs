@@ -19,13 +19,13 @@ use std::{
     time::Duration,
 };
 
-use chorus::{
+use cadence::{
     CadenceOutput, CadenceRuntime, CadenceWireMsg, Conductor, Runtime, SlotConsensus,
     SlotLifecycle, SlotManager,
     proposing::ProposalPlanner,
     slot::chorus::{ChorusDAEvent, ProposalDAEvent},
 };
-use monad_mcp_chorus::stub as chorus;
+use monad_mcp_cadence::stub as cadence;
 use monad_mcp_common::{Slot, Timestamp, stub::NodeId};
 use monad_sim::{RunOutcome, StepLabel};
 use monad_sim_swarm::{Network, Swarm};

@@ -43,12 +43,12 @@ use std::{
 };
 
 use bytes::Bytes;
-use chorus::{
+use cadence::{
     da::DataAvailability,
     env::{D33, EncodingScheme, MerkleHash, ProposalSignature},
     types::{HeaderAuth, MerkleRoot, ProposalHeader, ProposalId, SignedProposalHeader},
 };
-use monad_mcp_chorus::{spec::proposal::ProposalHeader as _, stub as chorus};
+use monad_mcp_cadence::{spec::proposal::ProposalHeader as _, stub as cadence};
 use monad_mcp_common::{Lane, Slot, stub::NodeId};
 
 /// The mock's dissemination unit: the signed header a receiver needs to
@@ -105,7 +105,7 @@ impl MockDa {
     /// this check on the chunk header signature; here the signer is carried
     /// in the clear.
     fn authentic(&self, lane: Lane, header: &SignedProposalHeader) -> bool {
-        use monad_mcp_chorus::spec::proposal::HeaderAuth as _;
+        use monad_mcp_cadence::spec::proposal::HeaderAuth as _;
 
         header.lane() == lane && self.header_auth.authenticate(header)
     }
@@ -241,7 +241,7 @@ pub fn mock_root(payload: &Bytes) -> MerkleRoot {
 
 #[cfg(test)]
 mod tests {
-    use chorus::{proposers::header_auth, types::FixedProposerSchedule};
+    use cadence::{proposers::header_auth, types::FixedProposerSchedule};
 
     use super::*;
 

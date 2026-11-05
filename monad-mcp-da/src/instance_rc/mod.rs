@@ -19,7 +19,7 @@ mod serving_tracker;
 use std::collections::BTreeSet;
 
 use bytes::Bytes;
-use monad_mcp_chorus::spec::ProposalHeader as _;
+use monad_mcp_cadence::spec::ProposalHeader as _;
 use obligation_tracker::ObligationTracker;
 use serving_tracker::ServingTracker;
 

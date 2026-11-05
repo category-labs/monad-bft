@@ -25,7 +25,7 @@ use std::{
 use monad_mcp_common::{Lanes, Slot, Timestamp, TimestampDelta};
 use monad_mcp_node::{
     Component, NodeOutput,
-    chorus::{Outbound, types::ProposalId},
+    cadence::{Outbound, types::ProposalId},
     common::NodeId,
     config::{
         CadenceConfig, DAConfig, LedgerConfig, NetworkConfig, NodeConfig, ProposalConfig,

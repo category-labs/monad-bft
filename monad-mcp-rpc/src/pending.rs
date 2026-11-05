@@ -21,7 +21,7 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-use monad_mcp_chorus::ledger::{FinalizationPath, Hash, Tx};
+use monad_mcp_cadence::ledger::{FinalizationPath, Hash, Tx};
 use monad_mcp_common::Lane;
 use monad_mcp_node::common::NodeId;
 

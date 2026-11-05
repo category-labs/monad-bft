@@ -19,9 +19,9 @@ pub(crate) use monad_mcp_common::{
 };
 
 pub(crate) use super::common::{NodeId, PubKey, Stake};
-// re-export chorus types
+// re-export cadence types
 pub use super::{
-    chorus::{
+    cadence::{
         SlotLifecycle,
         env::{D33, EncodingScheme, MerkleHash, ProposalSignature},
         slot::chorus::{ChorusDACommand, ChorusDAEvent, MissingHeaders, ProposalDAEvent},

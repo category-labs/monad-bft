@@ -31,7 +31,7 @@ use actix_web::{
     test, web,
 };
 use bytes::Bytes;
-use monad_mcp_chorus::ledger::{
+use monad_mcp_cadence::ledger::{
     BLOCKS_DIR, BlockMeta, CommittedLane, FinalizationPath, LEDGER_VERSION, LaneMeta, LedgerReader,
     LedgerWriter, META_FILE, NewBlock, NewLane, Tx, block_dir_name, encode_batch,
 };

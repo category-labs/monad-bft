@@ -19,7 +19,7 @@ use bytes::Bytes;
 use monad_mcp_common::{Lane, Lanes, Slot, Timestamp};
 
 use crate::{
-    chorus::{SlotLifecycle, slot::chorus::SlotFinalization, types::ProposalId},
+    cadence::{SlotLifecycle, slot::chorus::SlotFinalization, types::ProposalId},
     da::Resolved,
 };
 
@@ -156,10 +156,10 @@ impl FinalizationCollector {
 
 #[cfg(test)]
 mod tests {
-    use monad_mcp_chorus::spec::ProposalHeader as _;
+    use monad_mcp_cadence::spec::ProposalHeader as _;
 
     use super::*;
-    use crate::chorus::env::{D33, EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader};
+    use crate::cadence::env::{D33, EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader};
 
     fn decode(collector: &mut FinalizationCollector, slot: u64) {
         let header = ProposalHeader {

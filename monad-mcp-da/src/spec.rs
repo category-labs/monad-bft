@@ -14,7 +14,7 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use bytes::BufMut;
-use monad_mcp_chorus::spec as chorus_spec;
+use monad_mcp_cadence::spec as cadence_spec;
 use monad_mcp_common::spec as common_spec;
 
 // the validator set an encoding scheme sizes its depth range for
@@ -26,13 +26,13 @@ pub const SIGNATURE_LEN: usize = 65;
 // the bytes a merkle root serializes to
 pub const ROOT_LEN: usize = 20;
 
-pub trait DAMerkleRoot: chorus_spec::MerkleRoot {
+pub trait DAMerkleRoot: cadence_spec::MerkleRoot {
     // writes exactly ROOT_LEN bytes
     fn to_bytes(&self, out: &mut impl BufMut);
     fn from_bytes(field: &[u8]) -> Option<Self>;
 }
 
-pub trait DAProposalHeader: chorus_spec::ProposalHeader {
+pub trait DAProposalHeader: cadence_spec::ProposalHeader {
     type Scheme;
 
     fn scheme(&self) -> &Self::Scheme;
@@ -78,7 +78,7 @@ where
     MerkleRoot: DAMerkleRoot,
     ProposalHeader: DAProposalHeader<Root = MerkleRoot, Scheme = EncodingScheme>,
     SignedProposalHeader: DAProposalHeader<Root = MerkleRoot, Scheme = EncodingScheme>
-        + chorus_spec::SignedProposalHeader<Sig = ProposalSignature>,
+        + cadence_spec::SignedProposalHeader<Sig = ProposalSignature>,
     ProposalSignature: DAProposalSignature<NodeId = NodeId>,
     ProposalKeyPair: DAProposalKeyPair<Signature = ProposalSignature>,
 {

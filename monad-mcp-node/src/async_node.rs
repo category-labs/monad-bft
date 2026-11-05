@@ -21,7 +21,7 @@ use std::future::pending;
 use tokio::task::JoinSet;
 
 use crate::{
-    chorus::slot::chorus::ChorusMessage,
+    cadence::slot::chorus::ChorusMessage,
     clock::Clock,
     component::{
         CadenceInput, CadenceOutput, DAInput, FinalizationInput, Link, ProposingInput,

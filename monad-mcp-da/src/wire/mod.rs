@@ -21,7 +21,7 @@ pub mod request;
 pub mod v1;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-use monad_mcp_chorus::spec::{ProposalHeader as _, SignedProposalHeader as _};
+use monad_mcp_cadence::spec::{ProposalHeader as _, SignedProposalHeader as _};
 
 use super::{
     chunk::{Chunk, ChunkData, ProposalEnvelope, WireChunkId},

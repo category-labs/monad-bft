@@ -27,7 +27,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use chorus::{
+use cadence::{
     conductor::{CadenceConductor, ConductorConfig, acs::nop::NopAcs},
     proposers::header_auth,
     proposing::{PlannerConfig, ProposalPlanner},
@@ -38,8 +38,8 @@ use chorus::{
     },
 };
 use helper::{expect_finalized, expect_finalized_at};
-use monad_mcp_chorus::stub as chorus;
-use monad_mcp_chorus_sim::{CadenceSwarm, CadenceSwarmBuilder, MockDa, mock_header, mock_payload};
+use monad_mcp_cadence::stub as cadence;
+use monad_mcp_cadence_sim::{CadenceSwarm, CadenceSwarmBuilder, MockDa, mock_header, mock_payload};
 use monad_mcp_common::{
     Lane, Slot, SlotDeadline, Timestamp, TimestampDelta,
     stub::{NodeId, Stake},
@@ -171,7 +171,7 @@ fn build_swarm(
 // The entry expected at (slot, lane): the pid of the scheduled proposer's
 // header, or Negative for a vacant lane.
 fn expected_entry(schedule: &Schedule, slot: Slot, lane: Lane) -> Entry {
-    use monad_mcp_chorus::spec::ProposalHeader as _;
+    use monad_mcp_cadence::spec::ProposalHeader as _;
 
     let Some(proposer) = schedule.proposers_at(slot).unwrap().proposer(lane) else {
         return Entry::Negative;

@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 
 use alloy_rlp::Encodable as _;
 use bytes::Bytes;
-use monad_mcp_chorus::ledger::{BatchBuilder, Hash, MAX_TX_PAYLOAD, Tx, TxError};
+use monad_mcp_cadence::ledger::{BatchBuilder, Hash, MAX_TX_PAYLOAD, Tx, TxError};
 use monad_mcp_common::{Lane, Slot};
 
 use crate::config::MempoolConfig;
@@ -220,7 +220,7 @@ impl Mempool {
 
 #[cfg(test)]
 mod tests {
-    use monad_mcp_chorus::ledger::{decode_batch, encode_batch}; // demo(tx-timeline)
+    use monad_mcp_cadence::ledger::{decode_batch, encode_batch}; // demo(tx-timeline)
 
     use super::*;
 

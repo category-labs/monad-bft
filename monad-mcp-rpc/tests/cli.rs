@@ -23,7 +23,7 @@ use std::{
 };
 
 use common::*;
-use monad_mcp_chorus::ledger::MAX_TX_PAYLOAD;
+use monad_mcp_cadence::ledger::MAX_TX_PAYLOAD;
 use monad_mcp_node::common::NodeId;
 use serde_json::Value;
 

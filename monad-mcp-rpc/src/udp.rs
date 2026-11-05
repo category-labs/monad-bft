@@ -23,7 +23,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use monad_mcp_chorus::ledger::Tx;
+use monad_mcp_cadence::ledger::Tx;
 use monad_mcp_node::{
     common::NodeId,
     network::{NodeMessage, encode_frame},

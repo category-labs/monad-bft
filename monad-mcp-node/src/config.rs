@@ -16,14 +16,14 @@
 use std::{collections::HashMap, fmt, net::SocketAddr, num::NonZeroU64, path::PathBuf, sync::Arc};
 
 use alloy_rlp::Encodable as _;
-use monad_mcp_chorus::ledger::BatchBuilder;
+use monad_mcp_cadence::ledger::BatchBuilder;
 use monad_mcp_common::{Timestamp, TimestampDelta, spec::KeyPair as _};
 use rand::SeedableRng as _;
 use rand_chacha::ChaCha8Rng;
 use serde::Deserialize;
 
 use crate::{
-    chorus::{
+    cadence::{
         conductor::{ConductorConfig, ConductorError},
         proposing::PlannerConfig,
         slot::chorus::ChorusConfig,
@@ -497,7 +497,7 @@ mod tests {
     use monad_mcp_common::Slot;
 
     use super::*;
-    use crate::chorus::types::ProposerSchedule as _;
+    use crate::cadence::types::ProposerSchedule as _;
 
     fn validator_data(n: u64) -> Arc<ValidatorData> {
         let valset = (0..n)

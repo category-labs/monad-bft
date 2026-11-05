@@ -22,7 +22,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use monad_mcp_chorus::ledger::{LedgerError, LedgerReader, decode_batch};
+use monad_mcp_cadence::ledger::{LedgerError, LedgerReader, decode_batch};
 use serde::Serialize;
 use tracing::{debug, info, warn};
 

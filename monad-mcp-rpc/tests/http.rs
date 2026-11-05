@@ -24,7 +24,7 @@ use actix_web::{
     test, web,
 };
 use common::{FakeSwarm, body, hash_hex, node_config, tx, unix_now};
-use monad_mcp_chorus::ledger::MAX_TX_PAYLOAD;
+use monad_mcp_cadence::ledger::MAX_TX_PAYLOAD;
 use monad_mcp_rpc::{RpcConfig, RpcState, api::app};
 use serde_json::{Value, json};
 

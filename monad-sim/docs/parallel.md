@@ -193,7 +193,7 @@ Observation is paid for only when used:
 - **With an observer:** groups buffer `StepInfo` records, and at each barrier
   the driver merges them and calls the observer on its own thread. The
   observer therefore needs no `Send`; the `Rc<Cell>` counter in
-  `monad-mcp-chorus-sim/tests/fallback_mvba.rs` keeps working.
+  `monad-mcp-cadence-sim/tests/fallback_mvba.rs` keeps working.
 - **Filtered observer** (`on_step_filtered(filter, observer)`): the filter
   (`Fn(&StepInfo) -> bool + Send + Sync`, for example a label source or a set
   of processes) runs in the workers, so only matching steps are buffered and
@@ -377,7 +377,7 @@ at n = 64) within noise of today.
 - Process state, step closures and messages are `Send`.
 - State shared between processes is read-only during a run, or written by one
   process and read by the driver only between runs. The per-node logs and
-  planner in `monad-mcp-chorus-sim` satisfy this.
+  planner in `monad-mcp-cadence-sim` satisfy this.
 - No unseeded randomness or wall-clock reads in simulated code (see
   `monad-mcp-node/docs/determinism.md` for one consumer's rules).
 - Log lines from workers interleave; node spans keep them attributable, and

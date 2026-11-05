@@ -28,8 +28,8 @@ use actix_web::{
 };
 use bytes::Bytes;
 use common::*;
-use monad_mcp_chorus::ledger::encode_batch; // demo(tx-timeline)
-use monad_mcp_chorus::ledger::{
+use monad_mcp_cadence::ledger::encode_batch; // demo(tx-timeline)
+use monad_mcp_cadence::ledger::{
     BLOCKS_DIR, LedgerWriter, MAX_TX_PAYLOAD, Tx, block_dir_name, lane_file_name,
 };
 use monad_mcp_explorer::{api::MAX_SEND_BODY, index::IndexConfig, loader::LoaderConfig};
@@ -82,9 +82,9 @@ fn phases(slot: u64, tx: &Tx) -> Value {
 struct Fixture {
     _dir: TempDir,
     explorer: Explorer,
-    hello: monad_mcp_chorus::ledger::Tx,
-    binary: monad_mcp_chorus::ledger::Tx,
-    resent: monad_mcp_chorus::ledger::Tx,
+    hello: monad_mcp_cadence::ledger::Tx,
+    binary: monad_mcp_cadence::ledger::Tx,
+    resent: monad_mcp_cadence::ledger::Tx,
 }
 
 // slots 1, 2, 4, 5 (3 is missing); slot 4 carries txs, a negative lane and a garbage lane.
@@ -621,7 +621,7 @@ async fn limit_is_clamped_and_lists_carry_no_payloads() {
         "/api/block/10/lane/0?limit=100".into(),
         format!(
             "/api/payload/{}?limit=100",
-            hex0x(&monad_mcp_chorus::ledger::payload_hash(&big))
+            hex0x(&monad_mcp_cadence::ledger::payload_hash(&big))
         ),
         format!("/api/sender/{}?limit=100", hex0x(&[10; 20])),
         "/api/block/10".into(),
@@ -637,7 +637,7 @@ async fn limit_is_clamped_and_lists_carry_no_payloads() {
         &app,
         &format!(
             "/api/payload/{}?limit=1000",
-            hex0x(&monad_mcp_chorus::ledger::payload_hash(&big))
+            hex0x(&monad_mcp_cadence::ledger::payload_hash(&big))
         ),
     )
     .await;

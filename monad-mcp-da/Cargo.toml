@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-enable_stub = ["monad-mcp-chorus/enable_stub"]
+enable_stub = ["monad-mcp-cadence/enable_stub"]
 
 [dependencies]
 alloy-rlp = { workspace = true }
@@ -16,7 +16,7 @@ reed-solomon-simd = { workspace = true }
 tracing = { workspace = true }
 
 monad-crypto = { workspace = true }
-monad-mcp-chorus = { workspace = true }
+monad-mcp-cadence = { workspace = true }
 monad-mcp-common = { workspace = true }
 monad-merkle = { workspace = true }
 

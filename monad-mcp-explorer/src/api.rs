@@ -29,7 +29,7 @@ use actix_web::{
     web,
 };
 // demo(tx-timeline): decode_sealed_batch in place of decode_batch
-use monad_mcp_chorus::ledger::{
+use monad_mcp_cadence::ledger::{
     Address, BlockMeta, Hash, LedgerError, LedgerReader, PROOF_FILE, Tx, decode_sealed_batch,
 };
 use serde::{Deserialize, Serialize};

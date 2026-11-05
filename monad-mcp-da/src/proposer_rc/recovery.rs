@@ -90,7 +90,7 @@ impl Recovery {
         mine: ChunksSubset,
         validator_data: &ValidatorData,
     ) -> Vec<(NodeId, ChunkRequest)> {
-        use monad_mcp_chorus::spec::validator::ValidatorData as _;
+        use monad_mcp_cadence::spec::validator::ValidatorData as _;
 
         let pid = self.pid;
         let kind = ChunkRequestType::MyChunks;

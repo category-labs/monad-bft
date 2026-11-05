@@ -5701,7 +5701,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "monad-mcp-chorus"
+name = "monad-mcp-cadence"
 version = "0.1.0"
 dependencies = [
  "alloy-rlp",
@@ -5724,11 +5724,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "monad-mcp-chorus-sim"
+name = "monad-mcp-cadence-sim"
 version = "0.1.0"
 dependencies = [
  "bytes",
- "monad-mcp-chorus",
+ "monad-mcp-cadence",
  "monad-mcp-common",
  "monad-sim",
  "monad-sim-swarm",
@@ -5757,7 +5757,7 @@ dependencies = [
  "bytes",
  "derive_more",
  "monad-crypto",
- "monad-mcp-chorus",
+ "monad-mcp-cadence",
  "monad-mcp-common",
  "monad-merkle",
  "rand 0.8.5",
@@ -5777,7 +5777,7 @@ dependencies = [
  "clap",
  "flate2",
  "hex",
- "monad-mcp-chorus",
+ "monad-mcp-cadence",
  "serde",
  "serde_json",
  "tempfile",
@@ -5791,7 +5791,7 @@ version = "0.1.0"
 dependencies = [
  "alloy-rlp",
  "bytes",
- "monad-mcp-chorus",
+ "monad-mcp-cadence",
  "monad-mcp-common",
  "monad-mcp-da",
  "monad-mcp-node",
@@ -5818,7 +5818,7 @@ dependencies = [
  "bytes",
  "clap",
  "hex",
- "monad-mcp-chorus",
+ "monad-mcp-cadence",
  "monad-mcp-common",
  "monad-mcp-node",
  "rand 0.8.5",
