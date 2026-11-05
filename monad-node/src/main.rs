@@ -784,10 +784,6 @@ where
         peer_discovery_config.self_direct_udp_port.is_some(),
         network_config.direct_udp_bind_address_port.is_some()
     );
-    assert_eq!(
-        peer_discovery_config.self_encrypted_tcp_port.is_some(),
-        network_config.encrypted_tcp_bind_address_port.is_some()
-    );
 
     // initial set of peers
     let bootstrap_peers: BTreeMap<_, _> = bootstrap_nodes
@@ -878,6 +874,11 @@ where
         )
     });
 
+    let tcp_auth_protocol = WireAuthProtocol::new(
+        &monad_raptorcast::auth::metrics::TCP_METRICS,
+        monad_raptorcast::auth::tcp_socket::wireauth_config(),
+        shared_key.clone(),
+    );
     MultiRouter::new(
         self_id,
         RaptorCastConfig {
@@ -899,6 +900,7 @@ where
         current_epoch,
         epoch_validators,
         auth_protocol,
+        tcp_auth_protocol,
         direct_udp_auth_protocol,
         direct_udp_peer_score_reader,
         proposer_schedule,

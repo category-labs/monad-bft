@@ -17,6 +17,9 @@ pub mod framing;
 pub mod metrics;
 pub mod protocol;
 pub mod socket;
+pub mod tcp_socket;
+
+pub type DataplaneCompletion = Option<futures::channel::oneshot::Sender<()>>;
 
 pub use framing::{AuthPacketFramer, LeanUdpFramer, LeanUdpFramingError, NopScore};
 pub use metrics::{

@@ -470,7 +470,7 @@ where
                 continue;
             }
 
-            if let Err(err) = self.auth_protocol.buffer_message(public_key, piece) {
+            if let Err(err) = self.auth_protocol.buffer_message(public_key, piece, None) {
                 warn!(error=?err, "failed to buffer message");
                 return Err(());
             }
@@ -515,7 +515,7 @@ where
     }
 
     pub fn flush(&mut self) {
-        while let Some((addr, packet)) = self.auth_protocol.next_packet() {
+        while let Some((addr, packet, _completion)) = self.auth_protocol.next_packet() {
             self.write_auth_packet(addr, packet);
         }
     }
@@ -759,6 +759,18 @@ where
 pub struct AuthenticatedTimerFuture<'a, AP: AuthenticationProtocol> {
     auth_protocol: &'a mut AP,
     auth_timer: &'a mut Option<(Pin<Box<Sleep>>, Instant)>,
+}
+
+impl<'a, AP: AuthenticationProtocol> AuthenticatedTimerFuture<'a, AP> {
+    pub(crate) fn new(
+        auth_protocol: &'a mut AP,
+        auth_timer: &'a mut Option<(Pin<Box<Sleep>>, Instant)>,
+    ) -> Self {
+        Self {
+            auth_protocol,
+            auth_timer,
+        }
+    }
 }
 
 impl<AP: AuthenticationProtocol> Future for AuthenticatedTimerFuture<'_, AP> {

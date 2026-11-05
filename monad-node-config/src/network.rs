@@ -28,6 +28,10 @@ pub struct NodeNetworkConfig {
     pub direct_udp_bind_address_port: Option<u16>,
     pub encrypted_tcp_bind_address_port: Option<u16>,
 
+    /// Advertise WireAuth support on the existing TCP socket.
+    #[serde(default)]
+    pub enable_encrypted_tcp: bool,
+
     pub max_rtt_ms: u64,
 
     /// Global UDP egress bandwidth limit in megabits per second.
@@ -146,5 +150,13 @@ mod tests {
         let config = parse("max_mbps = 2000\npeer_max_mbps = 500\nudp_tx_workers = 8");
         assert_eq!((config.max_mbps, config.peer_max_mbps), (2_000, 500));
         assert_eq!(config.udp_tx_workers, 8);
+    }
+
+    #[test]
+    fn encrypted_tcp_advertisement_is_opt_in_without_an_extra_port() {
+        assert!(!parse("max_mbps = 2000").enable_encrypted_tcp);
+        let config = parse("max_mbps = 2000\nenable_encrypted_tcp = true");
+        assert!(config.enable_encrypted_tcp);
+        assert!(config.encrypted_tcp_bind_address_port.is_none());
     }
 }
