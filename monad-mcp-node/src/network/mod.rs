@@ -34,6 +34,17 @@ pub enum NodeMessage {
 // todo: move this into shared types
 pub type NodeOutbound = crate::cadence::Outbound<NodeMessage>;
 
+// how an outbound message ranks on the node's uplink. The transport may
+// give the first hop of our own proposal strict priority over everything
+// else (docs/0005 §5.6); the stub transport sends everything in order
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum OutboundClass {
+    // our own proposal's first-hop shares
+    FirstHop,
+    #[default]
+    Standard,
+}
+
 // the transport authenticates the sender
 pub struct NodeInbound {
     pub from: NodeId,

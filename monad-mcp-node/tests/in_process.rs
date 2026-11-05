@@ -101,14 +101,14 @@ impl<R: Router> Harness<R> {
         while let Some(output) = self.node.poll() {
             match output {
                 NodeOutput::Ledger(finalized) => self.finalized.push(finalized),
-                NodeOutput::Network(NodeOutbound::Unicast(to, message)) if to == self_id => {
+                NodeOutput::Network(NodeOutbound::Unicast(to, message), _) if to == self_id => {
                     let inbound = NodeInbound {
                         from: self_id,
                         message,
                     };
                     self.node.handle(self.now, inbound);
                 }
-                NodeOutput::Network(_) => {}
+                NodeOutput::Network(..) => {}
             }
         }
     }

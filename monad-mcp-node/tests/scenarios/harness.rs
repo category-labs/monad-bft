@@ -32,7 +32,7 @@ use monad_mcp_node::{
         RepeaterSection, ValidatorConfig,
     },
     da::{self, ProposalKeyPair},
-    network::{NodeInbound, NodeMessage},
+    network::{NodeInbound, NodeMessage, OutboundClass},
 };
 use monad_sim::{CancelToken, ClockDiff, Ctx, Handle, StepLabel, Time};
 use monad_sim_swarm::{Net, Network, Parallel, Placer, Provenance, RegionTable, SimClient, Swarm};
@@ -69,6 +69,16 @@ pub struct ChunkBytes {
     pub charged: u64,
 }
 
+// a message in the simulated network: the node's message, and whether it
+// is part of its sender's first hop. The flag is simulation metadata for the
+// network's priority classes and the receivers' records: the node never sees
+// it, and it costs no bytes
+#[derive(Clone)]
+pub struct SimMessage {
+    pub message: NodeMessage,
+    pub first_hop: bool,
+}
+
 // a node as a monad-sim process, boxed so one swarm can mix node kinds
 pub struct SimNode {
     id: NodeId,
@@ -86,7 +96,7 @@ pub struct SimNode {
     // the one live timer step, at the node's last polled next_due
     due_alarm: Option<(Time, CancelToken)>,
     me: Option<Handle<Self>>,
-    net: Option<Handle<Net<NodeId, NodeMessage>>>,
+    net: Option<Handle<Net<NodeId, SimMessage>>>,
 }
 
 impl SimNode {
@@ -137,7 +147,7 @@ impl SimNode {
     fn process(&mut self, ctx: &mut Ctx) {
         while let Some(output) = self.node.poll() {
             match output {
-                NodeOutput::Network(outbound) => self.transmit(outbound, ctx),
+                NodeOutput::Network(outbound, class) => self.transmit(outbound, class, ctx),
                 NodeOutput::Ledger(finalized) => {
                     let pattern = finalized.finalization.pids();
                     // committed, but without a message
@@ -160,13 +170,15 @@ impl SimNode {
     }
 
     // the node's whole outbound path: every message it sends goes through
-    // here to its network stack, which models the uplink. An outbound queue or
-    // send scheduler (e.g. prioritizing the proposer's own first-hop chunks)
-    // sits here, ahead of the stack.
-    fn transmit(&self, outbound: Outbound<NodeMessage>, ctx: &mut Ctx) {
+    // here to its network stack, which models the uplink, with the outbound
+    // class as the message's first-hop flag (see `first_hop_priority`)
+    fn transmit(&self, outbound: Outbound<NodeMessage>, class: OutboundClass, ctx: &mut Ctx) {
         let net = self.net.expect("node not wired");
+        let first_hop = class == OutboundClass::FirstHop;
+        let wrap = |message| SimMessage { message, first_hop };
         match outbound {
             Outbound::Broadcast(message) => {
+                let message = wrap(message);
                 ctx.schedule(
                     net,
                     ctx.now(),
@@ -175,6 +187,7 @@ impl SimNode {
                 );
             }
             Outbound::Unicast(to, message) => {
+                let message = wrap(message);
                 ctx.schedule(
                     net,
                     ctx.now(),
@@ -259,21 +272,24 @@ impl SimNode {
 
 impl SimClient for SimNode {
     type Addr = NodeId;
-    type Message = NodeMessage;
+    type Message = SimMessage;
 
-    fn wire(&mut self, me: Handle<Self>, net: Handle<Net<NodeId, NodeMessage>>) {
+    fn wire(&mut self, me: Handle<Self>, net: Handle<Net<NodeId, SimMessage>>) {
         self.me = Some(me);
         self.net = Some(net);
     }
 
-    fn receive(&mut self, from: NodeId, message: NodeMessage, ctx: &mut Ctx) {
+    fn receive(&mut self, from: NodeId, message: SimMessage, ctx: &mut Ctx) {
         let _span = self.span().entered();
-        self.record_delivery(ctx.now(), from, &message);
+        self.record_delivery(ctx.now(), from, &message.message);
         // the node loops its own messages back itself
         if from == self.id {
             return;
         }
-        let inbound = NodeInbound { from, message };
+        let inbound = NodeInbound {
+            from,
+            message: message.message,
+        };
         let now = self.local_now(ctx);
         self.node.handle(now, inbound);
         self.process(ctx);
@@ -337,7 +353,7 @@ pub fn parallel_from_env() -> Option<Parallel<NodeId>> {
 // build a swarm, sequential or parallel, and start every node at time 0
 pub fn start_swarm(
     seed: u64,
-    network: Network<NodeId, NodeMessage>,
+    network: Network<NodeId, SimMessage>,
     nodes: Vec<(NodeId, SimNode)>,
     parallel: Option<Parallel<NodeId>>,
 ) -> Swarm<SimNode> {
@@ -476,10 +492,24 @@ pub fn wire_size(message: &NodeMessage) -> usize {
     9 + payload + 20 + 8
 }
 
+// what a simulated message costs on the wire: its node message's cost
+pub fn sim_wire_size(message: &SimMessage) -> usize {
+    wire_size(&message.message)
+}
+
+// Strict priority for each node's own first-hop shares on its uplink
+// (docs/0005 §5.6), as the network's priority classes: first-hop messages
+// go on the wire at once, everything else waits until the uplink is idle, so
+// a first-hop share waits behind at most the one message already on the
+// wire. `network` must have an egress
+pub fn first_hop_priority(network: Network<NodeId, SimMessage>) -> Network<NodeId, SimMessage> {
+    network.priority(|message: &SimMessage| u8::from(!message.first_hop), 1)
+}
+
 // validators placed over a region table: a node-level latency matrix with a
 // last mile per node, up to 1 ms jitter, and a 1 Gbit/s uplink per node
 pub struct Geo {
-    pub network: Network<NodeId, NodeMessage>,
+    pub network: Network<NodeId, SimMessage>,
     // each node's region, numbered densely from 0 in table order
     pub region_of: BTreeMap<NodeId, u32>,
 }
@@ -503,7 +533,7 @@ pub fn geo(table: &RegionTable, validators: u64, seed: u64) -> Geo {
         .map(|n| (n.addr, dense[&n.region]))
         .collect();
     let jitter = Uniform::new_inclusive(Duration::ZERO, Duration::from_millis(1));
-    let network = Network::with_matrix(placement.matrix(), jitter).egress(GBIT, wire_size);
+    let network = Network::with_matrix(placement.matrix(), jitter).egress(GBIT, sim_wire_size);
     Geo { network, region_of }
 }
 
