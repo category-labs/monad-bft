@@ -22,4 +22,5 @@ mod geo;
 mod harness;
 mod loss;
 mod mute;
+mod priority;
 mod tamper;

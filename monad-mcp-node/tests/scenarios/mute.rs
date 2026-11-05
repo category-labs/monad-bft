@@ -60,7 +60,7 @@ fn six_of_eight_finalize_beside_two_mute_nodes() {
 
 fn drop_network(routed: Routed) -> Vec<Routed> {
     match routed {
-        Routed::Network(_) => vec![],
+        Routed::Network(..) => vec![],
         routed => vec![routed],
     }
 }

@@ -26,7 +26,7 @@ use crate::{
     da::{ChunkRecoveryRequest, DAOutput, Dissemination, read_envelope, write_envelope},
     epoch::EpochHandle,
     finalization::FinalizedSlot,
-    network::{NodeInbound, NodeMessage, NodeOutbound},
+    network::{NodeInbound, NodeMessage, NodeOutbound, OutboundClass},
 };
 
 // everything the wiring takes in, named by where it comes from
@@ -46,7 +46,7 @@ pub enum Routed {
     Finalization(FinalizationInput),
     Proposing(ProposingInput),
     Repeater(RepeaterInput<ChorusMessage>),
-    Network(NodeOutbound),
+    Network(NodeOutbound, OutboundClass),
     // todo: the ledger / execution boundary
     Ledger(FinalizedSlot),
 }
@@ -151,7 +151,8 @@ impl NodeRouter {
             Outbound::Broadcast(message) => {
                 record(Recipients::Everyone, &message, sink);
                 let node_message = NodeMessage::Cadence(message.serialize());
-                sink.send(Routed::Network(Outbound::Broadcast(node_message)));
+                let outbound = Outbound::Broadcast(node_message);
+                sink.send(Routed::Network(outbound, OutboundClass::Standard));
                 self.loopback(message, sink);
             }
 
@@ -162,7 +163,8 @@ impl NodeRouter {
                 }
                 record(Recipients::Node(to), &message, sink);
                 let node_message = NodeMessage::Cadence(message.serialize());
-                sink.send(Routed::Network(Outbound::Unicast(to, node_message)));
+                let outbound = Outbound::Unicast(to, node_message);
+                sink.send(Routed::Network(outbound, OutboundClass::Standard));
             }
         }
     }
@@ -272,7 +274,7 @@ fn route_repeat((to, message): RepeaterOutput<ChorusMessage>, sink: &mut impl Si
         Recipients::Everyone => Outbound::Broadcast(node_message),
         Recipients::Node(to) => Outbound::Unicast(to, node_message),
     };
-    sink.send(Routed::Network(outbound));
+    sink.send(Routed::Network(outbound, OutboundClass::Standard));
 }
 
 fn route_proposal(output: ProposingOutput, sink: &mut impl Sink<Routed>) {
@@ -310,18 +312,30 @@ fn route_da(now: Timestamp, output: DAOutput, sink: &mut impl Sink<Routed>) {
             };
             sink.send(Routed::Finalization(input));
         }
-        DAOutput::Disseminate(Dissemination { to, envelope }) => {
-            let packets = write_envelope(&envelope);
-            for node in to {
-                for packet in &packets {
-                    let message = NodeMessage::Chunk(packet.clone());
-                    sink.send(Routed::Network(Outbound::Unicast(node, message)));
-                }
-            }
+        DAOutput::Disseminate(dissemination) => {
+            route_dissemination(dissemination, OutboundClass::Standard, sink);
+        }
+        DAOutput::FirstHop(dissemination) => {
+            route_dissemination(dissemination, OutboundClass::FirstHop, sink);
         }
         DAOutput::RecoveryRequest { to, request } => {
             let message = NodeMessage::ChunkRequest(request.serialize());
-            sink.send(Routed::Network(Outbound::Unicast(to, message)));
+            let outbound = Outbound::Unicast(to, message);
+            sink.send(Routed::Network(outbound, OutboundClass::Standard));
+        }
+    }
+}
+
+fn route_dissemination(
+    Dissemination { to, envelope }: Dissemination,
+    class: OutboundClass,
+    sink: &mut impl Sink<Routed>,
+) {
+    let packets = write_envelope(&envelope);
+    for node in to {
+        for packet in &packets {
+            let message = NodeMessage::Chunk(packet.clone());
+            sink.send(Routed::Network(Outbound::Unicast(node, message), class));
         }
     }
 }

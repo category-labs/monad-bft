@@ -155,7 +155,7 @@ where
             None => first_hop.into_disseminations(),
         };
         for dissemination in disseminations {
-            self.outbox.push_back(DAOutput::Disseminate(dissemination));
+            self.outbox.push_back(DAOutput::FirstHop(dissemination));
         }
     }
 
@@ -293,6 +293,10 @@ pub enum DAOutput {
     // deliver a proposal's chunks (possibly only its header) to peers
     Disseminate(Dissemination),
 
+    // the first hop of our own proposal: the same, tagged so the transport
+    // can send it ahead of other traffic
+    FirstHop(Dissemination),
+
     // request chunks from a peer
     RecoveryRequest {
         to: NodeId,
@@ -428,6 +432,7 @@ mod tests {
                     disseminated_at.push(i);
                 }
                 DAOutput::RecoveryRequest { .. } => panic!("nothing to recover"),
+                DAOutput::FirstHop(_) => panic!("we did not propose"),
             }
         }
 

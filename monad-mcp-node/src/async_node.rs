@@ -134,7 +134,9 @@ impl Sink<Routed> for Tasks {
             Routed::Repeater(input) if let Some(repeater) = &mut self.repeater => {
                 repeater.send(input);
             }
-            Routed::Network(outbound) if let Some(network) = &mut self.network => {
+            // the stub transport has one queue: the class is not acted on
+            // (production priority, pacing and batching are out of scope)
+            Routed::Network(outbound, _class) if let Some(network) = &mut self.network => {
                 network.send(outbound)
             }
             Routed::Ledger(finalized) if let Some(logger) = &mut self.finalization => {
@@ -142,7 +144,7 @@ impl Sink<Routed> for Tasks {
             }
             // component not present, dropped
             Routed::Repeater(_) => {}
-            Routed::Network(_) => {}
+            Routed::Network(..) => {}
             Routed::Ledger(_) => {}
         }
     }

@@ -17,7 +17,7 @@
 //! share.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     net::SocketAddr,
     time::Duration,
 };
@@ -32,7 +32,7 @@ use monad_mcp_node::{
         RepeaterSection, ValidatorConfig,
     },
     da::ProposalKeyPair,
-    network::{NodeInbound, NodeMessage},
+    network::{NodeInbound, NodeMessage, OutboundClass},
 };
 use monad_sim::{CancelToken, ClockDiff, Ctx, Handle, StepLabel, Time};
 use monad_sim_swarm::{Net, Network, Parallel, Placer, Provenance, RegionTable, SimClient, Swarm};
@@ -75,6 +75,43 @@ pub struct SimNode {
     due_alarm: Option<(Time, CancelToken)>,
     me: Option<Handle<Self>>,
     net: Option<Handle<Net<NodeId, NodeMessage>>>,
+    // strict first-hop priority on the uplink, when enabled
+    uplink: Option<Uplink>,
+}
+
+// A model of the node's own uplink, ahead of the network's serial egress:
+// first-hop shares go to the network at once, everything else waits here
+// until the uplink is idle, so a first-hop share never queues behind more
+// than the one message already on the wire (docs/0005 §5.6). It accounts
+// bytes exactly as the egress does, so a released message starts at once.
+struct Uplink {
+    bits_per_sec: u64,
+    // the receivers of a broadcast, each a separate transmission
+    peers: u64,
+    busy_until: Time,
+    waiting: VecDeque<Outbound<NodeMessage>>,
+    // the armed release step, if any
+    release_at: Option<Time>,
+}
+
+impl Uplink {
+    // the egress time of `outbound`, as the network's egress computes it:
+    // per transmission, rounded up to the nanosecond
+    fn transmit_time(&self, outbound: &Outbound<NodeMessage>) -> Duration {
+        let (message, copies) = match outbound {
+            Outbound::Broadcast(message) => (message, self.peers),
+            Outbound::Unicast(_, message) => (message, 1),
+        };
+        let bits = wire_size(message) as u128 * 8;
+        let nanos = (bits * 1_000_000_000).div_ceil(u128::from(self.bits_per_sec));
+        let nanos = u64::try_from(nanos).expect("transmit time") * copies;
+        Duration::from_nanos(nanos)
+    }
+
+    fn occupy(&mut self, now: Time, outbound: &Outbound<NodeMessage>) {
+        let start = self.busy_until.max(now);
+        self.busy_until = start + self.transmit_time(outbound);
+    }
 }
 
 impl SimNode {
@@ -91,6 +128,7 @@ impl SimNode {
             due_alarm: None,
             me: None,
             net: None,
+            uplink: None,
         }
     }
 
@@ -104,6 +142,20 @@ impl SimNode {
     pub fn set_clock_offset(&mut self, offset: ClockDiff, ctx: &mut Ctx) {
         self.clock_offset = offset;
         self.arm_due_alarm(ctx);
+    }
+
+    // strict priority for the node's own first-hop shares on an uplink of
+    // `bits_per_sec`, among `validators` nodes; must match the network's
+    // egress rate. Without it, every message goes to the network in order
+    pub fn first_hop_priority(mut self, bits_per_sec: u64, validators: u64) -> Self {
+        self.uplink = Some(Uplink {
+            bits_per_sec,
+            peers: validators.saturating_sub(1),
+            busy_until: Time(0),
+            waiting: VecDeque::new(),
+            release_at: None,
+        });
+        self
     }
 
     pub fn init(&mut self, ctx: &mut Ctx) {
@@ -123,7 +175,7 @@ impl SimNode {
     fn process(&mut self, ctx: &mut Ctx) {
         while let Some(output) = self.node.poll() {
             match output {
-                NodeOutput::Network(outbound) => self.transmit(outbound, ctx),
+                NodeOutput::Network(outbound, class) => self.transmit(outbound, class, ctx),
                 NodeOutput::Ledger(finalized) => {
                     let pattern = finalized.finalization.pids();
                     self.finalized.insert(finalized.slot, pattern);
@@ -134,10 +186,53 @@ impl SimNode {
     }
 
     // the node's whole outbound path: every message it sends goes through
-    // here to its network stack, which models the uplink. An outbound queue or
-    // send scheduler (e.g. prioritizing the proposer's own first-hop chunks)
-    // sits here, ahead of the stack.
-    fn transmit(&self, outbound: Outbound<NodeMessage>, ctx: &mut Ctx) {
+    // here to its network stack, which models the uplink. With first-hop
+    // priority, the uplink queue sits here, ahead of the stack.
+    fn transmit(&mut self, outbound: Outbound<NodeMessage>, class: OutboundClass, ctx: &mut Ctx) {
+        let Some(uplink) = &mut self.uplink else {
+            self.send(outbound, ctx);
+            return;
+        };
+        match class {
+            OutboundClass::FirstHop => {
+                uplink.occupy(ctx.now(), &outbound);
+                self.send(outbound, ctx);
+            }
+            OutboundClass::Standard => {
+                uplink.waiting.push_back(outbound);
+                self.release(ctx);
+            }
+        }
+    }
+
+    // hand waiting messages to the network while the uplink is idle; arm a
+    // step for when it next is
+    fn release(&mut self, ctx: &mut Ctx) {
+        let now = ctx.now();
+        let uplink = self.uplink.as_mut().expect("priority enabled");
+        let mut released = Vec::new();
+        while uplink.busy_until <= now
+            && let Some(outbound) = uplink.waiting.pop_front()
+        {
+            uplink.occupy(now, &outbound);
+            released.push(outbound);
+        }
+        let next = (!uplink.waiting.is_empty()).then_some(uplink.busy_until);
+        let arm = next.filter(|at| uplink.release_at.is_none_or(|armed| armed > *at));
+        if let Some(at) = arm {
+            uplink.release_at = Some(at);
+            let me = self.me.expect("node not wired");
+            ctx.schedule(me, at, StepLabel::source("uplink"), |node, ctx| {
+                node.uplink.as_mut().expect("priority enabled").release_at = None;
+                node.release(ctx);
+            });
+        }
+        for outbound in released {
+            self.send(outbound, ctx);
+        }
+    }
+
+    fn send(&self, outbound: Outbound<NodeMessage>, ctx: &mut Ctx) {
         let net = self.net.expect("node not wired");
         match outbound {
             Outbound::Broadcast(message) => {
@@ -423,7 +518,7 @@ pub fn testnet_table() -> RegionTable {
     )
 }
 
-const GBIT: u64 = 1_000_000_000;
+pub const GBIT: u64 = 1_000_000_000;
 
 // what one message costs on the wire: the frame (sender id, kind, payload)
 // plus the IPv4 and UDP headers
