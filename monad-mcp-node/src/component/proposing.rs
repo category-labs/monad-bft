@@ -22,7 +22,7 @@ use rand_chacha::ChaCha8Rng;
 
 use super::{Component, Mempool};
 use crate::{
-    cadence::proposing::ProposalPlanner,
+    cadence::{proposing::ProposalPlanner, slot::chorus::FinalizationPath},
     common::NodeId,
     config::{ProposalConfig, SourceKind},
     epoch::EpochHandle,
@@ -33,9 +33,21 @@ pub enum ProposingInput {
     // every slot strictly below cap is finalized
     CapAdvance(Slot),
     // demo(tx-timeline): `at` stamps mempool admission
-    Tx { at: Timestamp, from: NodeId, tx: Tx },
-    // the lanes the slot's finalization commits
-    Finalized(Slot, Lanes<bool>),
+    Tx {
+        at: Timestamp,
+        from: NodeId,
+        tx: Tx,
+    },
+    // the lanes the slot's finalization commits, and the path it took
+    Finalized(Slot, Lanes<bool>, FinalizationPath),
+    // a peer's batch vote arrived (every copy, with the adaptive lead on):
+    // per lane, whether its entry is positive
+    BatchVote {
+        slot: Slot,
+        from: NodeId,
+        at: Timestamp,
+        positive: Lanes<bool>,
+    },
 }
 
 pub type ProposingOutput = Proposal<Bytes>;
@@ -132,10 +144,17 @@ impl Component for MempoolProposing {
                 self.mempool.expire_below(cap);
             }
             ProposingInput::Tx { at, from, tx } => self.admit(tx, from, at),
-            ProposingInput::Finalized(slot, committed) => {
+            ProposingInput::Finalized(slot, committed, path) => {
+                self.planner.handle_finalized(slot, &committed, path);
                 let is_committed = |lane: Lane| committed.get(usize::from(lane)) == Some(&true);
                 self.mempool.settle(slot, is_committed);
             }
+            ProposingInput::BatchVote {
+                slot,
+                from,
+                at,
+                positive,
+            } => self.planner.handle_batch_vote(slot, &from, at, &positive),
         }
         self.collect(now);
     }
@@ -208,7 +227,15 @@ impl Component for RandomProposing {
             }
             ProposingInput::CapAdvance(cap) => self.planner.handle_cap_advance(now, cap),
             ProposingInput::Tx { from, .. } => tracing::debug!(?from, "no mempool, tx dropped"),
-            ProposingInput::Finalized(..) => {}
+            ProposingInput::Finalized(slot, committed, path) => {
+                self.planner.handle_finalized(slot, &committed, path);
+            }
+            ProposingInput::BatchVote {
+                slot,
+                from,
+                at,
+                positive,
+            } => self.planner.handle_batch_vote(slot, &from, at, &positive),
         }
         self.collect(now);
     }
@@ -331,7 +358,8 @@ mod tests {
         assert_eq!(proposing.mempool.in_flight(), 2);
 
         let committed = Lanes::new(2, |j| j != left_out);
-        proposing.handle(now, ProposingInput::Finalized(Slot(3), committed));
+        let input = ProposingInput::Finalized(Slot(3), committed, FinalizationPath::Fast);
+        proposing.handle(now, input);
         assert_eq!(proposing.mempool.in_flight(), 0);
         assert_eq!(proposing.mempool.len(), 1);
     }

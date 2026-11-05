@@ -640,7 +640,7 @@ fn check_entry_lanes(entries: Lanes<&Entry>, proposers: &ProposerSet) -> bool {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
-pub(crate) struct BatchVoteMsg {
+pub struct BatchVoteMsg {
     slot: Slot,
     votes: Lanes<SignedEntry>,
     // vote only. fields for chunks & decryption share may be added by
@@ -648,13 +648,23 @@ pub(crate) struct BatchVoteMsg {
 }
 
 impl BatchVoteMsg {
-    pub(crate) fn slot(&self) -> Slot {
+    pub fn slot(&self) -> Slot {
         self.slot
     }
 
     pub(crate) fn check_lanes(&self, proposers: &ProposerSet) -> bool {
         let entries = self.votes.as_ref().map(|signed| &signed.entry);
         check_entry_lanes(entries, proposers)
+    }
+
+    /// Per lane, whether the voter's entry is positive: it held its share of
+    /// the lane's proposal at its deadline. Read off the message as sent, its
+    /// signatures unchecked: for observers outside consensus (the proposal
+    /// planner), never for a decision that needs the vote to be authentic.
+    pub fn positive_lanes(&self) -> Lanes<bool> {
+        self.votes
+            .as_ref()
+            .map(|signed| matches!(signed.entry, Entry::Positive(_)))
     }
 
     // one char per lane, + positive / - negative, for logs

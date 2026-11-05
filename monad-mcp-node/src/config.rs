@@ -341,6 +341,17 @@ pub struct ProposalConfig {
     // proposal that cannot arrive before the deadline.
     #[serde(deserialize_with = "de::millis")]
     pub withhold_before_deadline: TimestampDelta,
+    // the adaptive lead (docs/0005), experimental and off by default
+    pub adaptive: AdaptiveSection,
+}
+
+// `[proposal.adaptive]`. Off, the planner uses the static lead above and
+// the node behaves exactly as without the section; on, the static lead is
+// the cold-start value
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct AdaptiveSection {
+    pub enabled: bool,
 }
 
 impl ProposalConfig {
@@ -413,6 +424,7 @@ impl Default for ProposalConfig {
             max_payload_bytes: None,
             propose_before_deadline: TimestampDelta::from_millis(500),
             withhold_before_deadline: TimestampDelta::ZERO,
+            adaptive: AdaptiveSection::default(),
         }
     }
 }

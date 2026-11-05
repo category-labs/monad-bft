@@ -93,7 +93,7 @@ impl Node {
             repeater,
         };
         Ok(Self {
-            router: NodeRouter::new(epoch_handle),
+            router: NodeRouter::new(epoch_handle).observe_votes(config.proposal.adaptive.enabled),
             parts,
             outbox: VecDeque::new(),
         })
