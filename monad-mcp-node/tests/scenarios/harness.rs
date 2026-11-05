@@ -22,16 +22,17 @@ use std::{
     time::Duration,
 };
 
+use monad_mcp_cadence::spec::ProposalHeader as _;
 use monad_mcp_common::{Lanes, Slot, Timestamp, TimestampDelta};
 use monad_mcp_node::{
     Component, NodeOutput,
-    cadence::{Outbound, types::ProposalId},
+    cadence::{Outbound, slot::chorus::FinalizationPath, types::ProposalId},
     common::NodeId,
     config::{
         CadenceConfig, DAConfig, LedgerConfig, NetworkConfig, NodeConfig, ProposalConfig,
         RepeaterSection, ValidatorConfig,
     },
-    da::ProposalKeyPair,
+    da::{ProposalKeyPair, read_envelope},
     network::{NodeInbound, NodeMessage, OutboundClass},
 };
 use monad_sim::{CancelToken, ClockDiff, Ctx, Handle, StepLabel, Time};
@@ -66,6 +67,11 @@ pub struct SimNode {
     id: NodeId,
     node: Box<dyn Component<Input = NodeInbound, Output = NodeOutput> + Send>,
     finalized: BTreeMap<Slot, Pattern>,
+    // how each slot finalized here
+    paths: BTreeMap<Slot, FinalizationPath>,
+    // when this node's first first-hop message of each own slot left: the
+    // seal time, as encoding is instant here
+    first_hops: BTreeMap<Slot, Time>,
     // hashes every message delivered to this node, with its time, in
     // delivery order
     delivery_hasher: RapidStreamHasherV3<'static>,
@@ -123,6 +129,8 @@ impl SimNode {
             id,
             node: Box::new(node),
             finalized: BTreeMap::new(),
+            paths: BTreeMap::new(),
+            first_hops: BTreeMap::new(),
             delivery_hasher: RapidStreamHasherV3::new(&DEFAULT_RAPID_SECRETS),
             clock_offset: ClockDiff(0),
             due_alarm: None,
@@ -179,6 +187,8 @@ impl SimNode {
                 NodeOutput::Ledger(finalized) => {
                     let pattern = finalized.finalization.pids();
                     self.finalized.insert(finalized.slot, pattern);
+                    let path = finalized.finalization.path();
+                    self.paths.insert(finalized.slot, path);
                 }
             }
         }
@@ -189,6 +199,9 @@ impl SimNode {
     // here to its network stack, which models the uplink. With first-hop
     // priority, the uplink queue sits here, ahead of the stack.
     fn transmit(&mut self, outbound: Outbound<NodeMessage>, class: OutboundClass, ctx: &mut Ctx) {
+        if class == OutboundClass::FirstHop {
+            self.record_first_hop(&outbound, ctx.now());
+        }
         let Some(uplink) = &mut self.uplink else {
             self.send(outbound, ctx);
             return;
@@ -290,6 +303,31 @@ impl SimNode {
 
     pub fn finalized(&self) -> &BTreeMap<Slot, Pattern> {
         &self.finalized
+    }
+
+    pub fn paths(&self) -> &BTreeMap<Slot, FinalizationPath> {
+        &self.paths
+    }
+
+    // per own slot, when its first hop started to leave
+    pub fn first_hops(&self) -> &BTreeMap<Slot, Time> {
+        &self.first_hops
+    }
+
+    // a proposal's first hop leaves in one burst: only the first message of
+    // a burst is decoded for its slot
+    fn record_first_hop(&mut self, outbound: &Outbound<NodeMessage>, now: Time) {
+        if self.first_hops.values().next_back() == Some(&now) {
+            return;
+        }
+        let Outbound::Unicast(_, NodeMessage::Chunk(bytes)) = outbound else {
+            return;
+        };
+        let Ok(envelope) = read_envelope(bytes.clone()) else {
+            return;
+        };
+        let slot = envelope.header().slot();
+        self.first_hops.entry(slot).or_insert(now);
     }
 
     fn record_delivery(&mut self, at: Time, from: NodeId, message: &NodeMessage) {

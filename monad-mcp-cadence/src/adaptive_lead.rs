@@ -211,6 +211,11 @@ impl LeadModel {
     /// farthest first, then the rest nearest first. Validators without a
     /// sample go last.
     pub fn send_order(&self) -> Vec<usize> {
+        self.send_order_with_core().0
+    }
+
+    /// [`Self::send_order`] and the stake of its core set.
+    pub fn send_order_with_core(&self) -> (Vec<usize>, f64) {
         let mut known: Vec<(f64, usize)> = (0..self.len())
             .filter(|&v| Some(v) != self.me)
             .filter_map(|v| self.r_hat(v).map(|r| (r, v)))
@@ -228,10 +233,11 @@ impl LeadModel {
                 break;
             }
         }
+        let core_stake = known[..core].iter().map(|(_, v)| self.stake[*v]).sum();
         let mut order: Vec<usize> = known[..core].iter().rev().map(|(_, v)| *v).collect();
         order.extend(known[core..].iter().map(|(_, v)| *v));
         order.extend((0..self.len()).filter(|&v| Some(v) != self.me && self.seen[v] == 0));
-        order
+        (order, core_stake)
     }
 
     /// `u_v(P, π)` per validator index (§3): when the last byte of `v`'s
@@ -271,6 +277,12 @@ impl LeadModel {
             var += w * w * q * (1.0 - q);
         }
         (mean, var)
+    }
+
+    /// `M(L)` and the rule's bound `M(L) + z√V(L)`.
+    pub fn bound(&self, lead: f64, extra: &[f64]) -> (f64, f64) {
+        let (mean, var) = self.risk(lead, extra);
+        (mean, mean + self.z * libm::sqrt(var))
     }
 
     /// The encode-plus-upload term per validator for `payload` sent in

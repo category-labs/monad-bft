@@ -15,6 +15,7 @@
 
 //! Whole-node scenarios on the deterministic simulator.
 
+mod adaptive;
 mod bench;
 mod clock;
 mod determinism;
