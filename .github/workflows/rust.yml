@@ -70,6 +70,7 @@ jobs:
             libsecp256k1-dev \
             libzstd-dev \
             libclang-19-dev \
+            clang-19 \
             gcc-15 \
             g++-15 \
             libhugetlbfs-dev \
