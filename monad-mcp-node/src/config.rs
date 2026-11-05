@@ -24,8 +24,9 @@ use serde::Deserialize;
 
 use crate::{
     cadence::{
+        adaptive_lead::AdaptiveConfig,
         conductor::{ConductorConfig, ConductorError},
-        proposing::PlannerConfig,
+        proposing::{AdaptiveSetup, PlannerConfig},
         slot::chorus::ChorusConfig,
         types::{
             ProposerConfig, RotatingProposerSchedule, RoundRobinLeaderSchedule, ScheduleError,
@@ -348,10 +349,45 @@ pub struct ProposalConfig {
 // `[proposal.adaptive]`. Off, the planner uses the static lead above and
 // the node behaves exactly as without the section; on, the static lead is
 // the cold-start value
-#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(default)]
 pub struct AdaptiveSection {
     pub enabled: bool,
+    // θ: bound on the negative stake on the own lane, below 1/3
+    pub theta: f64,
+    // ε: accepted risk per own slot of exceeding θ
+    pub epsilon: f64,
+    // ε_w: accepted split risk of sending a late seal
+    pub withhold_epsilon: f64,
+    // ρ: negative stake held back for unpredictable no-voters
+    pub reserve: f64,
+    // clamps on the lead; the max is the protocol delta when deployed
+    pub min_lead_ms: f64,
+    pub max_lead_ms: f64,
+    // first-hop bytes on the wire per payload byte
+    pub wire_ratio: f64,
+    // the node's uplink
+    pub uplink_mbps: f64,
+    // slots with batch-vote arrivals before the static lead is replaced
+    pub warmup_slots: u32,
+}
+
+impl Default for AdaptiveSection {
+    fn default() -> Self {
+        let model = AdaptiveConfig::default();
+        Self {
+            enabled: false,
+            theta: model.theta,
+            epsilon: model.epsilon,
+            withhold_epsilon: model.withhold_epsilon,
+            reserve: model.reserve,
+            min_lead_ms: model.min_lead,
+            max_lead_ms: model.max_lead,
+            wire_ratio: model.wire_ratio,
+            uplink_mbps: model.uplink_bytes_per_ms * 8.0 / 1000.0,
+            warmup_slots: AdaptiveSetup::default().warmup_slots,
+        }
+    }
 }
 
 impl ProposalConfig {
@@ -404,6 +440,31 @@ impl ProposalConfig {
         let cfg = self.proposer_config(election);
         let algorithm = RoundRobinLeaderSchedule::new(&cfg);
         RotatingProposerSchedule::new(cfg, algorithm, validator_data)
+    }
+
+    // the adaptive lead's setup, planned for this source's size limit; None
+    // when off
+    pub fn adaptive(&self) -> Option<AdaptiveSetup> {
+        let section = &self.adaptive;
+        if !section.enabled {
+            return None;
+        }
+        let model = AdaptiveConfig {
+            theta: section.theta,
+            epsilon: section.epsilon,
+            withhold_epsilon: section.withhold_epsilon,
+            reserve: section.reserve,
+            min_lead: section.min_lead_ms,
+            max_lead: section.max_lead_ms,
+            wire_ratio: section.wire_ratio,
+            uplink_bytes_per_ms: section.uplink_mbps * 1000.0 / 8.0,
+            ..AdaptiveConfig::default()
+        };
+        Some(AdaptiveSetup {
+            model,
+            payload_bytes: self.proposal_size_limit(),
+            warmup_slots: section.warmup_slots,
+        })
     }
 
     // the gate's cutoff is the schedule's own: the two cannot disagree
