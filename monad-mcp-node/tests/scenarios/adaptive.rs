@@ -40,20 +40,11 @@ const SEED: u64 = 0xADA;
 const STATIC_LEAD_MS: u64 = 150;
 // warm-up (20 observed slots) plus margin: steady state from here
 const STEADY: u64 = 30;
-// θ below the default 1/4. Here every region's validators share one
-// latency (no clock offsets, at most 1 ms of jitter), so a region crosses
-// its threshold as one block. With all-yes verdicts the vote calibration
-// walks the lead down about 0.5 ms per slot until such a block flips; at
-// n = 64 and θ = 1/4 a block of ~9 validators took the negative stake
-// from 0.20 to 0.34, past 1/3, in 2 of ~85 steady slots. θ = 0.2 leaves a
-// region's stake of margin
-const THETA: f64 = 0.2;
 
 fn run(
     validators: u64,
     slots: u64,
     payload: usize,
-    theta: f64,
     parallel: impl FnOnce(&Geo) -> Option<Parallel<NodeId>>,
 ) -> Swarm<SimNode> {
     use monad_mcp_node::config::SourceKind;
@@ -69,7 +60,6 @@ fn run(
             config.proposal.propose_before_deadline = TimestampDelta::from_millis(STATIC_LEAD_MS);
             config.proposal.adaptive.enabled = true;
             config.proposal.adaptive.max_lead_ms = DELTA.as_millis() as f64;
-            config.proposal.adaptive.theta = theta;
             let node = Node::new(&config).expect("config builds");
             let sim_node = SimNode::new(node_id, node).first_hop_priority(GBIT, validators);
             (node_id, sim_node)
@@ -121,24 +111,29 @@ fn mean(values: &[f64]) -> f64 {
 fn an_adaptive_run_is_the_same_in_parallel() {
     const VALIDATORS: u64 = 16;
     const SLOTS: u64 = 45;
-    let sequential = run(VALIDATORS, SLOTS, 64 << 10, THETA, |_| None);
+    let sequential = run(VALIDATORS, SLOTS, 64 << 10, |_| None);
     assert_progress(&sequential, Slot(SLOTS / 2));
     let digest = run_digest(&sequential);
-    let per_region = run(VALIDATORS, SLOTS, 64 << 10, THETA, |geo| {
+    let per_region = run(VALIDATORS, SLOTS, 64 << 10, |geo| {
         Some(by_region(geo).threads(4))
     });
     assert_eq!(run_digest(&per_region), digest, "one domain per region");
     assert!(!steady_leads(&sequential, SLOTS).is_empty(), "warm seals");
 }
 
-// n = 64, 256 KiB proposals: the adaptive lead converges without splits
+// n = 64, 256 KiB proposals, the default θ = 1/4: the adaptive lead
+// converges without splits. Here a region's validators share one latency
+// (no clock offsets, at most 1 ms of jitter) and cross their threshold as
+// one block; with independent votes in the risk rule, the vote calibration
+// walked the lead down until such a block flipped, past 1/3 in 2 of ~85
+// steady slots. The block variance (5 ms blocks) keeps the margin
 #[test]
 #[ignore = "slow: run with --release"]
 fn converges() {
     const VALIDATORS: u64 = 64;
     const SLOTS: u64 = 120;
     let horizon = SLOTS - 5;
-    let swarm = run(VALIDATORS, SLOTS, 256 << 10, THETA, |_| parallel_from_env());
+    let swarm = run(VALIDATORS, SLOTS, 256 << 10, |_| parallel_from_env());
     assert_progress(&swarm, Slot(horizon));
     println!("digest: {:016x}", run_digest(&swarm));
 

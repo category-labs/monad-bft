@@ -370,6 +370,9 @@ pub struct AdaptiveSection {
     pub uplink_mbps: f64,
     // slots with batch-vote arrivals before the static lead is replaced
     pub warmup_slots: u32,
+    // width of the latency blocks the risk rule treats as correlated, ms;
+    // 0: independent votes
+    pub block_ms: f64,
 }
 
 impl Default for AdaptiveSection {
@@ -386,6 +389,7 @@ impl Default for AdaptiveSection {
             wire_ratio: model.wire_ratio,
             uplink_mbps: model.uplink_bytes_per_ms * 8.0 / 1000.0,
             warmup_slots: AdaptiveSetup::default().warmup_slots,
+            block_ms: model.block_ms,
         }
     }
 }
@@ -458,6 +462,7 @@ impl ProposalConfig {
             max_lead: section.max_lead_ms,
             wire_ratio: section.wire_ratio,
             uplink_bytes_per_ms: section.uplink_mbps * 1000.0 / 8.0,
+            block_ms: section.block_ms,
             ..AdaptiveConfig::default()
         };
         Some(AdaptiveSetup {
