@@ -22,10 +22,17 @@ env:
 
 jobs:
   build:
-    runs-on: self-hosted
+    runs-on: ubuntu-26.04-32
     permissions:
       contents: read
+      packages: read
       pull-requests: write
+
+    container:
+      image: ghcr.io/${{ github.repository }}/builder:master
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
       - name: Checkout repository
@@ -36,8 +43,10 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v6
 
+      - uses: Swatinem/rust-cache@v2
+
       - name: Generate OpenRPC documentation
-        run: cargo run --bin monad-rpc-docs | jq . > openrpc.json
+        run: cargo run --bin monad-rpc-docs | python -m json.tool > openrpc.json
 
       - name: Validate OpenRPC documentation
         run: |
@@ -55,10 +64,11 @@ jobs:
       - name: Generate master baseline
         if: github.event_name == 'pull_request'
         run: |
+          git config --global --add safe.directory '*'
           git fetch origin master
           git checkout FETCH_HEAD --detach
           git submodule update --init --recursive
-          cargo run --bin monad-rpc-docs | jq . > openrpc-master.json
+          cargo run --bin monad-rpc-docs | python -m json.tool > openrpc-master.json
 
       - name: Comment on PR
         if: github.event_name == 'pull_request'

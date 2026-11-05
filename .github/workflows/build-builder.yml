@@ -17,7 +17,7 @@ name: Build and publish builder Docker image
 
 jobs:
   build-builder:
-    runs-on: ubuntu-24.04-32
+    runs-on: ubuntu-26.04-32
 
     permissions:
       contents: read
