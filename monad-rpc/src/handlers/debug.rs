@@ -20,6 +20,7 @@ use alloy_primitives::{
     Address, Bytes, FixedBytes, Log,
 };
 use alloy_rlp::{Decodable, Encodable, RlpDecodable};
+use monad_ethcall::PrestateTracerConfig;
 use monad_rpc_docs::rpc;
 use monad_triedb_utils::triedb_env::{BlockKey, Triedb};
 use serde::{Deserialize, Serialize};
@@ -315,8 +316,13 @@ impl From<TracerDescriptor> for monad_ethcall::MonadTracer {
         match tracer {
             TracerDescriptor::NoopTracer => Self::NoopTracer,
             TracerDescriptor::CallTracer { .. } => Self::CallTracer,
-            TracerDescriptor::PreStateTracer => Self::PreStateTracer,
-            TracerDescriptor::StateDiffTracer => Self::StateDiffTracer,
+            TracerDescriptor::PreStateTracer => {
+                Self::PreStateTracer(PrestateTracerConfig::default())
+            }
+            TracerDescriptor::StateDiffTracer => Self::PreStateTracer(PrestateTracerConfig {
+                diff_mode: true,
+                ..Default::default()
+            }),
             TracerDescriptor::AccessListTracer => Self::AccessListTracer,
         }
     }
