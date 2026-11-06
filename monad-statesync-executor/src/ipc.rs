@@ -605,10 +605,10 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
             if wip_response.from == from && wip_response.response.nonce == session_id.0 {
                 wip_response.unacknowledged_responses =
                     wip_response.unacknowledged_responses.saturating_sub(1);
+                wip_response.completion_time = Instant::now();
             } else {
                 tracing::debug!(?from, ?session_id, "unexpected completion from client");
             }
-            wip_response.completion_time = Instant::now();
             self.maybe_send_batch();
         } else {
             tracing::debug!(
@@ -807,5 +807,77 @@ impl<'a, PT: PubKey> StreamState<'a, PT> {
         };
         self.stream.write_all(&request).await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use monad_crypto::NopPubKey;
+    use monad_executor_glue::{SessionId, StateSyncRequest, SELF_STATESYNC_VERSION};
+    use monad_types::NodeId;
+    use tokio::net::UnixStream;
+
+    use super::{StreamState, WipResponse};
+
+    fn node_id(seed: u8) -> NodeId<NopPubKey> {
+        let pubkey =
+            <NopPubKey as monad_crypto::certificate_signature::PubKey>::from_bytes(&[seed; 32])
+                .expect("valid nop pubkey");
+        NodeId::new(pubkey)
+    }
+
+    fn request() -> StateSyncRequest {
+        StateSyncRequest {
+            version: SELF_STATESYNC_VERSION,
+            prefix: 0,
+            prefix_bytes: 1,
+            target: 10,
+            from: 0,
+            until: 10,
+            old_target: 0,
+        }
+    }
+
+    #[test]
+    fn unmatched_completion_does_not_postpone_client_timeout() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .unwrap();
+        let _guard = runtime.enter();
+        let (stream, _execution) = UnixStream::pair().unwrap();
+        let (_request_tx, mut request_rx) = tokio::sync::mpsc::channel(1);
+        let (mut response_tx, _response_rx) = tokio::sync::mpsc::channel(1);
+        let mut state = StreamState::new(
+            Duration::from_secs(1),
+            stream,
+            &mut request_rx,
+            &mut response_tx,
+        );
+
+        let client = node_id(1);
+        let last_ack = Instant::now().checked_sub(Duration::from_secs(30)).unwrap();
+        let mut wip_response = WipResponse::new(client, last_ack, request());
+        wip_response.unacknowledged_responses = 1;
+        wip_response.completion_time = last_ack;
+        let nonce = wip_response.response.nonce;
+        state.wip_response = Some(wip_response);
+
+        state
+            .handle_completion(node_id(2), SessionId(nonce))
+            .unwrap();
+        state
+            .handle_completion(client, SessionId(nonce.wrapping_add(1)))
+            .unwrap();
+        let wip_response = state.wip_response.as_ref().unwrap();
+        assert_eq!(wip_response.completion_time, last_ack);
+        assert_eq!(wip_response.unacknowledged_responses, 1);
+
+        state.handle_completion(client, SessionId(nonce)).unwrap();
+        let wip_response = state.wip_response.as_ref().unwrap();
+        assert!(wip_response.completion_time > last_ack);
+        assert_eq!(wip_response.unacknowledged_responses, 0);
     }
 }
