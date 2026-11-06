@@ -1,0 +1,17 @@
+[package]
+name = "monad-message-rate-limit"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+governor = { workspace = true }
+lru = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
+
+[[bench]]
+name = "dispatch"
+harness = false
