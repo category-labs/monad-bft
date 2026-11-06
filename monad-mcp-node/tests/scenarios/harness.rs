@@ -22,12 +22,17 @@ use std::{
     time::Duration,
 };
 
-use monad_mcp_cadence::spec::ProposalHeader as _;
-use monad_mcp_common::{Lanes, Slot, Timestamp, TimestampDelta};
+use monad_mcp_cadence::spec::{Deserializable as _, ProposalHeader as _};
+use monad_mcp_common::{Lane, Lanes, Slot, Timestamp, TimestampDelta};
 use monad_mcp_node::{
     Component, NodeOutput,
-    cadence::{Outbound, slot::chorus::FinalizationPath, types::ProposalId},
+    cadence::{
+        CadenceMessage, Outbound,
+        slot::chorus::{ChorusMessage, FinalizationPath},
+        types::ProposalId,
+    },
     common::NodeId,
+    component::CadenceWireMsg,
     config::{
         CadenceConfig, DAConfig, LedgerConfig, NetworkConfig, NodeConfig, ProposalConfig,
         RepeaterSection, ValidatorConfig,
@@ -36,7 +41,9 @@ use monad_mcp_node::{
     network::{NodeInbound, NodeMessage, OutboundClass},
 };
 use monad_sim::{CancelToken, ClockDiff, Ctx, Handle, StepLabel, Time};
-use monad_sim_swarm::{Net, Network, Parallel, Placer, Provenance, RegionTable, SimClient, Swarm};
+use monad_sim_swarm::{
+    Link, Net, Network, Parallel, Placer, Provenance, RegionTable, SimClient, Swarm,
+};
 use rand::{SeedableRng as _, distributions::Uniform};
 use rand_chacha::ChaCha8Rng;
 use rapidhash::v3::{DEFAULT_RAPID_SECRETS, RapidStreamHasherV3, rapidhash_v3};
@@ -62,6 +69,27 @@ pub fn deadline_of_slot(slot: u64) -> Timestamp {
 // the finalized shape of a slot: which lanes committed
 pub type Pattern = Lanes<Option<ProposalId>>;
 
+// a message in the simulated network: the node's message, plus whether it
+// is part of its sender's first hop. The flag is simulation metadata for the
+// receiver's records; the node never sees it, and it costs no wire bytes
+#[derive(Clone)]
+pub struct SimMessage {
+    pub message: NodeMessage,
+    pub first_hop: bool,
+}
+
+// What a recording node saw (opt-in, `SimNode::recording`), for checking
+// the adaptive lead against the model per validator. Times are sim times.
+#[derive(Default)]
+pub struct Records {
+    // per (slot, lane), the first-hop chunks this node received from the
+    // lane's proposer: the proposer, and the arrival times
+    pub first_hop_in: BTreeMap<(Slot, Lane), (NodeId, Vec<Time>)>,
+    // per own slot, each peer's first batch vote: arrival time, and whether
+    // its entry for the own lane is positive
+    pub votes_in: BTreeMap<Slot, BTreeMap<NodeId, (Time, bool)>>,
+}
+
 // a node as a monad-sim process, boxed so one swarm can mix node kinds
 pub struct SimNode {
     id: NodeId,
@@ -72,6 +100,10 @@ pub struct SimNode {
     // when this node's first first-hop message of each own slot left: the
     // seal time, as encoding is instant here
     first_hops: BTreeMap<Slot, Time>,
+    // the lane of each own slot
+    own_lanes: BTreeMap<Slot, Lane>,
+    // receiver-side records, when recording
+    records: Option<Records>,
     // hashes every message delivered to this node, with its time, in
     // delivery order
     delivery_hasher: RapidStreamHasherV3<'static>,
@@ -80,7 +112,7 @@ pub struct SimNode {
     // the one live timer step, at the node's last polled next_due
     due_alarm: Option<(Time, CancelToken)>,
     me: Option<Handle<Self>>,
-    net: Option<Handle<Net<NodeId, NodeMessage>>>,
+    net: Option<Handle<Net<NodeId, SimMessage>>>,
     // strict first-hop priority on the uplink, when enabled
     uplink: Option<Uplink>,
 }
@@ -131,6 +163,8 @@ impl SimNode {
             finalized: BTreeMap::new(),
             paths: BTreeMap::new(),
             first_hops: BTreeMap::new(),
+            own_lanes: BTreeMap::new(),
+            records: None,
             delivery_hasher: RapidStreamHasherV3::new(&DEFAULT_RAPID_SECRETS),
             clock_offset: ClockDiff(0),
             due_alarm: None,
@@ -164,6 +198,20 @@ impl SimNode {
             release_at: None,
         });
         self
+    }
+
+    // keep receiver-side records (see `Records`)
+    pub fn recording(mut self) -> Self {
+        self.records = Some(Records::default());
+        self
+    }
+
+    pub fn records(&self) -> Option<&Records> {
+        self.records.as_ref()
+    }
+
+    pub fn clock_offset(&self) -> ClockDiff {
+        self.clock_offset
     }
 
     pub fn init(&mut self, ctx: &mut Ctx) {
@@ -202,14 +250,15 @@ impl SimNode {
         if class == OutboundClass::FirstHop {
             self.record_first_hop(&outbound, ctx.now());
         }
+        let first_hop = class == OutboundClass::FirstHop;
         let Some(uplink) = &mut self.uplink else {
-            self.send(outbound, ctx);
+            self.send(outbound, first_hop, ctx);
             return;
         };
         match class {
             OutboundClass::FirstHop => {
                 uplink.occupy(ctx.now(), &outbound);
-                self.send(outbound, ctx);
+                self.send(outbound, true, ctx);
             }
             OutboundClass::Standard => {
                 uplink.waiting.push_back(outbound);
@@ -241,14 +290,16 @@ impl SimNode {
             });
         }
         for outbound in released {
-            self.send(outbound, ctx);
+            self.send(outbound, false, ctx);
         }
     }
 
-    fn send(&self, outbound: Outbound<NodeMessage>, ctx: &mut Ctx) {
+    fn send(&self, outbound: Outbound<NodeMessage>, first_hop: bool, ctx: &mut Ctx) {
         let net = self.net.expect("node not wired");
+        let wrap = |message| SimMessage { message, first_hop };
         match outbound {
             Outbound::Broadcast(message) => {
+                let message = wrap(message);
                 ctx.schedule(
                     net,
                     ctx.now(),
@@ -257,6 +308,7 @@ impl SimNode {
                 );
             }
             Outbound::Unicast(to, message) => {
+                let message = wrap(message);
                 ctx.schedule(
                     net,
                     ctx.now(),
@@ -314,6 +366,11 @@ impl SimNode {
         &self.first_hops
     }
 
+    // per own slot, its lane
+    pub fn own_lanes(&self) -> &BTreeMap<Slot, Lane> {
+        &self.own_lanes
+    }
+
     // a proposal's first hop leaves in one burst: only the first message of
     // a burst is decoded for its slot
     fn record_first_hop(&mut self, outbound: &Outbound<NodeMessage>, now: Time) {
@@ -328,6 +385,54 @@ impl SimNode {
         };
         let slot = envelope.header().slot();
         self.first_hops.entry(slot).or_insert(now);
+        self.own_lanes
+            .entry(slot)
+            .or_insert(envelope.header().lane());
+    }
+
+    // a recording node's view of a delivery: first-hop chunks of others'
+    // proposals, and, while it proposes, the batch votes on its own slots
+    fn record_inbound(&mut self, at: Time, from: NodeId, message: &SimMessage) {
+        let Some(records) = &mut self.records else {
+            return;
+        };
+        match &message.message {
+            NodeMessage::Chunk(bytes) if message.first_hop => {
+                let Ok(envelope) = read_envelope(bytes.clone()) else {
+                    return;
+                };
+                let header = envelope.header();
+                let key = (header.slot(), header.lane());
+                let (_, times) = records
+                    .first_hop_in
+                    .entry(key)
+                    .or_insert_with(|| (from, Vec::new()));
+                times.push(at);
+            }
+            NodeMessage::Cadence(bytes) => {
+                // votes come in up to a few slots after the deadline
+                let recent = self
+                    .own_lanes
+                    .keys()
+                    .next_back()
+                    .is_some_and(|last| time_of(deadline_of_slot(last.0 + 8)) >= at);
+                if !recent {
+                    return;
+                }
+                let Ok(CadenceMessage::Slot(ChorusMessage::BatchVote(vote))) =
+                    CadenceWireMsg::deserialize(bytes)
+                else {
+                    return;
+                };
+                let Some(lane) = self.own_lanes.get(&vote.slot()) else {
+                    return;
+                };
+                let positive = vote.positive_lanes().get(usize::from(*lane)) == Some(&true);
+                let votes = records.votes_in.entry(vote.slot()).or_default();
+                votes.entry(from).or_insert((at, positive));
+            }
+            _ => {}
+        }
     }
 
     fn record_delivery(&mut self, at: Time, from: NodeId, message: &NodeMessage) {
@@ -353,21 +458,25 @@ impl SimNode {
 
 impl SimClient for SimNode {
     type Addr = NodeId;
-    type Message = NodeMessage;
+    type Message = SimMessage;
 
-    fn wire(&mut self, me: Handle<Self>, net: Handle<Net<NodeId, NodeMessage>>) {
+    fn wire(&mut self, me: Handle<Self>, net: Handle<Net<NodeId, SimMessage>>) {
         self.me = Some(me);
         self.net = Some(net);
     }
 
-    fn receive(&mut self, from: NodeId, message: NodeMessage, ctx: &mut Ctx) {
+    fn receive(&mut self, from: NodeId, message: SimMessage, ctx: &mut Ctx) {
         let _span = self.span().entered();
-        self.record_delivery(ctx.now(), from, &message);
+        self.record_delivery(ctx.now(), from, &message.message);
         // the node loops its own messages back itself
         if from == self.id {
             return;
         }
-        let inbound = NodeInbound { from, message };
+        self.record_inbound(ctx.now(), from, &message);
+        let inbound = NodeInbound {
+            from,
+            message: message.message,
+        };
         let now = self.local_now(ctx);
         self.node.handle(now, inbound);
         self.process(ctx);
@@ -431,7 +540,7 @@ pub fn parallel_from_env() -> Option<Parallel<NodeId>> {
 // build a swarm, sequential or parallel, and start every node at time 0
 pub fn start_swarm(
     seed: u64,
-    network: Network<NodeId, NodeMessage>,
+    network: Network<NodeId, SimMessage>,
     nodes: Vec<(NodeId, SimNode)>,
     parallel: Option<Parallel<NodeId>>,
 ) -> Swarm<SimNode> {
@@ -573,12 +682,39 @@ pub fn wire_size(message: &NodeMessage) -> usize {
 // validators placed over a region table: a node-level latency matrix with a
 // last mile per node, up to 1 ms jitter, and a 1 Gbit/s uplink per node
 pub struct Geo {
-    pub network: Network<NodeId, NodeMessage>,
+    pub network: Network<NodeId, SimMessage>,
     // each node's region, numbered densely from 0 in table order
     pub region_of: BTreeMap<NodeId, u32>,
+    // per node in id order: its region's name, and its one-way base
+    // latency to every node (row = from), last miles included; 0 to itself
+    pub labels: Vec<String>,
+    pub one_way: Vec<Vec<Duration>>,
 }
 
+// the per-message jitter `geo` adds to the base latency, uniform in [0, max]
+pub const GEO_JITTER_MAX: Duration = Duration::from_millis(1);
+
+// a delay added to every message on a link, as a function of the link (its
+// send time included): a time-varying network
+pub type LinkDelay = Box<dyn Fn(&Link<NodeId>) -> Duration + Send + Sync>;
+
 pub fn geo(table: &RegionTable, validators: u64, seed: u64) -> Geo {
+    geo_delayed(
+        table,
+        validators,
+        seed,
+        None::<fn(&BTreeMap<NodeId, u32>) -> LinkDelay>,
+    )
+}
+
+// `geo` with an extra, non-negative delay per message, built from each
+// node's region. The base matrix stays each link's lower bound
+pub fn geo_delayed(
+    table: &RegionTable,
+    validators: u64,
+    seed: u64,
+    delay: Option<impl FnOnce(&BTreeMap<NodeId, u32>) -> LinkDelay>,
+) -> Geo {
     let placement = Placer::new(table)
         .last_mile(Duration::from_micros(50)..=Duration::from_micros(250))
         .place(
@@ -596,9 +732,52 @@ pub fn geo(table: &RegionTable, validators: u64, seed: u64) -> Geo {
         .iter()
         .map(|n| (n.addr, dense[&n.region]))
         .collect();
-    let jitter = Uniform::new_inclusive(Duration::ZERO, Duration::from_millis(1));
-    let network = Network::with_matrix(placement.matrix(), jitter).egress(GBIT, wire_size);
-    Geo { network, region_of }
+    let names = table.regions();
+    let labels = placement
+        .nodes()
+        .iter()
+        .map(|n| names[n.region].clone())
+        .collect();
+    let matrix = placement.matrix();
+    let addrs: Vec<NodeId> = placement.nodes().iter().map(|n| n.addr).collect();
+    let one_way = addrs
+        .iter()
+        .map(|from| {
+            addrs
+                .iter()
+                .map(|to| {
+                    if from == to {
+                        Duration::ZERO
+                    } else {
+                        matrix.latency(from, to)
+                    }
+                })
+                .collect()
+        })
+        .collect();
+    let jitter = Uniform::new_inclusive(Duration::ZERO, GEO_JITTER_MAX);
+    let size = |message: &SimMessage| wire_size(&message.message);
+    let network = match delay {
+        None => Network::with_matrix(matrix, jitter),
+        Some(delay) => {
+            use rand::distributions::Distribution as _;
+
+            let delay = delay(&region_of);
+            let matrix = std::sync::Arc::new(matrix);
+            let bound = matrix.clone();
+            Network::with_link_latency(move |link, rng| {
+                matrix.latency(&link.from, &link.to) + jitter.sample(rng) + delay(link)
+            })
+            .link_min_latency(move |from, to| bound.latency(from, to))
+        }
+    }
+    .egress(GBIT, size);
+    Geo {
+        network,
+        region_of,
+        labels,
+        one_way,
+    }
 }
 
 // one domain per region of `geo`
