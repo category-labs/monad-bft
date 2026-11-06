@@ -380,6 +380,10 @@ pub struct AdaptiveSection {
     // proposer's own clock enters the passive estimate with the wrong
     // sign); 0: off
     pub clock_sd_ms: f64,
+    // own slots whose residuals the margin leaves out (warm-up)
+    pub calib_skip: usize,
+    // re-plan waiting seals on every own-slot vote, not only per cap advance
+    pub refresh_on_vote: bool,
 }
 
 impl Default for AdaptiveSection {
@@ -399,6 +403,8 @@ impl Default for AdaptiveSection {
             block_ms: model.block_ms,
             calib_window: model.calib_window,
             clock_sd_ms: model.common_sd / 3.0,
+            calib_skip: model.calib_skip,
+            refresh_on_vote: AdaptiveSetup::default().refresh_on_vote,
         }
     }
 }
@@ -474,12 +480,15 @@ impl ProposalConfig {
             block_ms: section.block_ms,
             calib_window: section.calib_window,
             common_sd: 3.0 * section.clock_sd_ms,
+            calib_skip: section.calib_skip,
             ..AdaptiveConfig::default()
         };
         Some(AdaptiveSetup {
             model,
             payload_bytes: self.proposal_size_limit(),
             warmup_slots: section.warmup_slots,
+            refresh_on_vote: section.refresh_on_vote,
+            ..AdaptiveSetup::default()
         })
     }
 

@@ -74,6 +74,10 @@ pub struct AdaptiveConfig {
     /// `k0`: calibrated own slots over which the common spread halves its
     /// variance, `σ_c = σ_c0 / √(1 + k / k0)`.
     pub common_k0: f64,
+    /// The residuals of the first own slots stay out of the margin's sample:
+    /// below `1/ε` residuals `ŝ` is the largest one, and a warm-up outlier
+    /// would pin it for `W` own slots.
+    pub calib_skip: usize,
 }
 
 impl Default for AdaptiveConfig {
@@ -105,6 +109,7 @@ impl Default for AdaptiveConfig {
             // three clock spreads of 4 ms
             common_sd: 12.0,
             common_k0: 4.0,
+            calib_skip: 8,
         }
     }
 }
@@ -144,6 +149,8 @@ pub struct LeadModel {
     residuals: VecDeque<f64>,
     /// `k`: own slots whose votes calibrated the model
     calibrated: u32,
+    /// own-slot residuals offered so far, skipped ones included
+    offered: usize,
 }
 
 /// Residuals needed before `ŝ` widens the margin.
@@ -172,6 +179,7 @@ impl LeadModel {
             seen: vec![0; n],
             residuals: VecDeque::new(),
             calibrated: 0,
+            offered: 0,
         }
     }
 
@@ -236,7 +244,8 @@ impl LeadModel {
     /// `N` of an own slot against `M` and `V` predicted at the lead used.
     pub fn observe_residual(&mut self, negative: f64, mean: f64, var: f64) {
         let window = self.config.calib_window;
-        if window == 0 || var <= 1e-12 {
+        self.offered = self.offered.saturating_add(1);
+        if window == 0 || var <= 1e-12 || self.offered <= self.config.calib_skip {
             return;
         }
         if self.residuals.len() >= window {
@@ -518,6 +527,7 @@ mod tests {
         AdaptiveConfig {
             block_ms: 0.0,
             common_sd: 0.0,
+            calib_skip: 0,
             ..AdaptiveConfig::default()
         }
     }
@@ -781,5 +791,23 @@ mod tests {
         assert_eq!(model.plan(&extra), plan);
         model.observe_residual(5.0, 0.0, 1.0);
         close(model.calibrated_tail(), 5.0, 0.0);
+    }
+
+    // a warm-up outlier stays out of the margin's sample: below 1/ε
+    // residuals ŝ is the largest one
+    #[test]
+    fn the_first_residuals_are_skipped() {
+        let config = AdaptiveConfig {
+            calib_skip: 8,
+            ..independent()
+        };
+        let mut model = LeadModel::new(config, &STAKES, Some(0));
+        for _ in 0..8 {
+            model.observe_residual(9.0, 0.0, 1.0);
+        }
+        for _ in 0..50 {
+            model.observe_residual(1.0, 0.0, 1.0);
+        }
+        close(model.calibrated_tail(), 1.0, 0.0);
     }
 }

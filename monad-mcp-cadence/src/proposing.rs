@@ -109,6 +109,13 @@ pub struct AdaptiveSetup {
     /// Slots with batch-vote arrivals before the adaptive lead replaces the
     /// static one.
     pub warmup_slots: u32,
+    /// Re-plan the seals not yet due whenever a vote on an own slot has
+    /// calibrated the model, not only once per cap advance: the next seals
+    /// use the votes as soon as they are in.
+    pub refresh_on_vote: bool,
+    /// An own slot counts as calibrated (the common clock term shrinks) this
+    /// long after its deadline, when its votes are in: the protocol's Δ.
+    pub votes_in_after: TimestampDelta,
 }
 
 impl Default for AdaptiveSetup {
@@ -117,6 +124,8 @@ impl Default for AdaptiveSetup {
             model: AdaptiveConfig::default(),
             payload_bytes: 0,
             warmup_slots: 20,
+            refresh_on_vote: true,
+            votes_in_after: TimestampDelta::from_millis(200),
         }
     }
 }
@@ -147,6 +156,9 @@ struct Observed {
 // an own sealed slot: what its votes are learned against
 struct OwnSlot {
     lane: Lane,
+    deadline: Timestamp,
+    // counted as a calibrated own slot (the common clock term)
+    counted: bool,
     // the lead actually used, ms
     lead: f64,
     // encode-plus-upload per validator index, ms, under the order used
@@ -182,6 +194,8 @@ pub struct OwnSlotReport {
     pub negative: f64,
     pub positive: f64,
     pub missing: f64,
+    /// a re-plan moved the due time into the past: sealed at once
+    pub replan_late: bool,
     /// how the slot finalized, and whether the lane committed
     pub path: Option<FinalizationPath>,
     pub committed: Option<bool>,
@@ -247,7 +261,7 @@ impl Adaptive {
 
     // cold seals go out in DA's own order, which the upload term does not
     // model: only warm seals are recorded and calibrate the model
-    fn sealed(&mut self, slot: Slot, lane: Lane, lead: TimestampDelta) {
+    fn sealed(&mut self, slot: Slot, lane: Lane, deadline: Timestamp, lead: TimestampDelta) {
         use crate::spec::validator::ValidatorData as _;
 
         if !self.warm() {
@@ -270,6 +284,7 @@ impl Adaptive {
             negative: 0.0,
             positive: 0.0,
             missing: 0.0,
+            replan_late: false,
             path: None,
             committed: None,
         };
@@ -282,6 +297,8 @@ impl Adaptive {
             slot,
             OwnSlot {
                 lane,
+                deadline,
+                counted: false,
                 lead: ms_of(lead),
                 extra,
                 var,
@@ -291,24 +308,31 @@ impl Adaptive {
         );
     }
 
-    fn batch_vote(&mut self, slot: Slot, voter: &NodeId, at: Timestamp, positive: &Lanes<bool>) {
+    // true when the vote was on an own slot and calibrated the model
+    fn batch_vote(
+        &mut self,
+        slot: Slot,
+        voter: &NodeId,
+        at: Timestamp,
+        positive: &Lanes<bool>,
+    ) -> bool {
         use crate::spec::validator::ValidatorData as _;
 
         let Some(voter) = self.validators.index_of(voter) else {
-            return;
+            return false;
         };
         if Some(voter) == self.me {
-            return;
+            return false;
         }
         let Some(observed) = self.slots.get_mut(&slot) else {
-            return;
+            return false;
         };
         // first arrival only: the repeater re-sends
         if observed.voters.is_empty() {
             self.observed_slots = self.observed_slots.saturating_add(1);
         }
         if !observed.voters.insert(voter) {
-            return;
+            return false;
         }
         let since = at.as_nanos() as i128 - observed.deadline.as_nanos() as i128;
         let v = voter.get();
@@ -324,6 +348,26 @@ impl Adaptive {
                 own.report.negative += stake;
             }
             self.model.observe_vote(v, positive, own.lead, own.extra[v]);
+            return true;
+        }
+        false
+    }
+
+    // own slots whose votes are in (Δ past the deadline) count as calibrated
+    fn count_calibrated(&mut self, now: Timestamp) {
+        let after = self.setup.votes_in_after;
+        for own in self.own.values_mut() {
+            let voted = own.report.negative + own.report.positive > 0.0;
+            if !own.counted
+                && voted
+                && own
+                    .deadline
+                    .checked_add_delta(after)
+                    .is_some_and(|at| now >= at)
+            {
+                own.counted = true;
+                self.model.observe_calibrated_slot();
+            }
         }
     }
 
@@ -337,8 +381,8 @@ impl Adaptive {
             let report = own.report;
             self.model
                 .observe_residual(report.negative, report.predicted_negative, own.var);
-            // its votes are in and have calibrated the model
-            if report.negative + report.positive > 0.0 {
+            // counted when its votes were in; at the latest here
+            if !own.counted && report.negative + report.positive > 0.0 {
                 self.model.observe_calibrated_slot();
             }
             self.report(report);
@@ -371,6 +415,7 @@ impl Adaptive {
             positive = report.positive,
             missing = report.missing,
             calibrated_tail = self.model.calibrated_tail(),
+            replan_late = report.replan_late,
             path = ?report.path,
             committed = ?report.committed,
             "adaptive lead: own slot"
@@ -396,6 +441,8 @@ struct PendingSeal {
     deadline: Timestamp,
     /// `deadline − lead`, clamped to the open time: never in the past.
     due: Timestamp,
+    /// A re-plan wanted a due already past: the seal is due at once.
+    replan_late: bool,
 }
 
 /// See the module docs.
@@ -473,6 +520,7 @@ impl ProposalPlanner {
                 lane,
                 deadline,
                 due,
+                replan_late: false,
             },
         );
     }
@@ -485,6 +533,7 @@ impl ProposalPlanner {
         }
         self.chained_cap = cap;
         if let Some(adaptive) = &mut self.adaptive {
+            adaptive.count_calibrated(now);
             adaptive.prune(cap);
         }
 
@@ -517,7 +566,9 @@ impl ProposalPlanner {
         };
         for pending in self.pending.values_mut() {
             if pending.due > now {
-                pending.due = pending.deadline.saturating_sub_delta(lead).max(now);
+                let due = pending.deadline.saturating_sub_delta(lead);
+                pending.replan_late = due < now;
+                pending.due = due.max(now);
             }
         }
     }
@@ -535,8 +586,13 @@ impl ProposalPlanner {
         positive: &Lanes<bool>,
     ) {
         trace!(?slot, ?voter, ?at, ?positive, "batch vote observed");
-        if let Some(adaptive) = &mut self.adaptive {
-            adaptive.batch_vote(slot, voter, at, positive);
+        let Some(adaptive) = &mut self.adaptive else {
+            return;
+        };
+        let calibrated = adaptive.batch_vote(slot, voter, at, positive);
+        adaptive.count_calibrated(at);
+        if calibrated && adaptive.setup.refresh_on_vote {
+            self.refresh_dues(at);
         }
     }
 
@@ -579,7 +635,10 @@ impl ProposalPlanner {
                 .deadline
                 .duration_since(now)
                 .unwrap_or(TimestampDelta::ZERO);
-            adaptive.sealed(slot, pending.lane, lead);
+            adaptive.sealed(slot, pending.lane, pending.deadline, lead);
+            if let Some(own) = adaptive.own.get_mut(&slot) {
+                own.report.replan_late = pending.replan_late;
+            }
         }
         Some((slot, pending.lane))
     }
@@ -1043,6 +1102,50 @@ mod tests {
                 due,
                 deadline(40).saturating_sub_delta(adaptive_lead(&planner))
             );
+        }
+
+        // a no from a validator the plan counted on lengthens the lead of the
+        // next own seal at once, without waiting for a cap advance
+        #[test]
+        fn an_own_slot_vote_moves_a_waiting_seal() {
+            let mut planner = adaptive_planner(MIN_LEAD);
+            warm_up(&mut planner, 20);
+            open(&mut planner, [30]);
+            let due = planner.next_due().unwrap();
+            assert!(planner.poll(due).is_some());
+            open(&mut planner, [31]);
+            let opened_due = planner.next_due().unwrap();
+
+            let at = deadline(30)
+                .checked_add_delta(TimestampDelta::from_millis(ARRIVAL_MS))
+                .unwrap();
+            assert!(at < opened_due, "the vote is in before the next seal");
+            let no_on_ours = Lanes::new(2, |lane| usize::from(lane) == 0);
+            for voter in 1..VALIDATORS {
+                planner.handle_batch_vote(Slot(30), &NodeId::dummy(voter), at, &no_on_ours);
+            }
+            let due = planner.next_due().unwrap();
+            assert!(due < opened_due, "{due:?} vs {opened_due:?}");
+        }
+
+        // an own slot counts as calibrated once Δ past its deadline
+        #[test]
+        fn an_own_slot_counts_as_calibrated_when_its_votes_are_in() {
+            let mut planner = adaptive_planner(MIN_LEAD);
+            warm_up(&mut planner, 20);
+            open(&mut planner, [30]);
+            let due = planner.next_due().unwrap();
+            assert!(planner.poll(due).is_some());
+            let common =
+                |planner: &ProposalPlanner| planner.adaptive.as_ref().unwrap().model.common_sd();
+            let before = common(&planner);
+            vote(&mut planner, 30, 1, ARRIVAL_MS);
+            assert_eq!(common(&planner), before, "votes still coming in");
+            let after = deadline(30)
+                .checked_add_delta(TimestampDelta::from_millis(200))
+                .unwrap();
+            planner.handle_cap_advance(after, Slot(31));
+            assert!(common(&planner) < before);
         }
 
         #[test]
