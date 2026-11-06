@@ -13,11 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::{
-    hint::black_box,
-    net::{Ipv4Addr, SocketAddrV4},
-    num::NonZeroU64,
-};
+use std::{hint::black_box, net::Ipv4Addr, num::NonZeroU64};
 
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use monad_dataplane::{
@@ -44,7 +40,7 @@ fn scheduler(c: &mut Criterion) {
     let rate = NonZeroU64::new(125_000_000).unwrap();
     let mut queue = PacingQueue::new(rate, rate, usize::MAX, DataplaneMetrics::default());
     for peer in 0..PEERS {
-        let key = SocketAddrV4::new(Ipv4Addr::LOCALHOST, peer as u16);
+        let key = Ipv4Addr::new(127, 0, 0, peer as u8);
         queue
             .enqueue(key, UdpPriority::Regular, Item(peer as u16))
             .unwrap();
@@ -57,7 +53,7 @@ fn scheduler(c: &mut Criterion) {
             let scheduled = queue.dequeue(now, usize::MAX).unwrap();
             let item = black_box(scheduled.item);
             let peer = item.0;
-            let key = SocketAddrV4::new(Ipv4Addr::LOCALHOST, peer);
+            let key = Ipv4Addr::new(127, 0, 0, peer as u8);
             queue.enqueue(key, UdpPriority::Regular, item).unwrap();
             black_box(peer)
         });
