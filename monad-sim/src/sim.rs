@@ -411,9 +411,11 @@ struct Entry {
     class: u128,
     /// Simulation time at which the step was scheduled.
     created_at: Time,
-    /// `creator << 64 | counter`: the scheduling process, and how many steps
-    /// it had scheduled before.
+    /// `rank << 64 | counter`: the scheduling process's [rank](Slot::rank), and
+    /// how many steps it had scheduled before.
     id: u128,
+    /// The scheduling process. Breaks ties only if two ranks collide.
+    creator: ProcessId,
     process: ProcessId,
     /// Critical-path depth of the step that scheduled this one (`0` if scheduled
     /// outside any step). See [`SimMetrics::critical_path_len`].
@@ -424,11 +426,17 @@ struct Entry {
 }
 
 // Ordering is by (time, lane, tie_break, priority, created_at, creator,
-// counter), where `lane` is the target process's domain (0 for global steps).
-// `(creator, counter)` is unique, so the order is always total. No component is
-// a global sequence number: each depends only on the history of the scheduling
-// process, so the order does not depend on how the execution of domains is
-// interleaved.
+// counter), where `lane` is the target process's domain (0 for global steps)
+// and `creator` is the scheduling process's rank. `(creator, counter)` is
+// unique (a rank collision falls back to the process id), so the order is
+// always total. No component is a global sequence number: each depends only on
+// the history of the scheduling process, so the order does not depend on how
+// the execution of domains is interleaved.
+//
+// `creator` is the rank, not the `ProcessId`, because process ids encode the
+// domain: comparing them would order the same two steps differently under
+// different domain placements. Ranks do not depend on the placement, so
+// neither does the order of the steps on any one process.
 //
 // `lane` right after `time` makes each instant run domain by domain (global
 // steps first). Only a domain can add steps to its own current instant
@@ -455,12 +463,13 @@ impl Ord for Entry {
             .then_with(|| self.class.cmp(&other.class))
             .then_with(|| self.created_at.cmp(&other.created_at))
             .then_with(|| self.id.cmp(&other.id))
+            .then_with(|| self.creator.cmp(&other.creator))
     }
 }
 
 impl Entry {
     fn creator(&self) -> ProcessId {
-        ProcessId((self.id >> 64) as u64)
+        self.creator
     }
 
     fn counter(&self) -> u64 {
@@ -487,27 +496,64 @@ fn mix(a: u64, b: u64) -> u64 {
     z ^ (z >> 31)
 }
 
-/// Maps a step's identity `(creator, counter)`, combined with the simulation
-/// seed, to a well-distributed `tie_break`, so same-time steps get a
+/// Maps a step's identity `(creator rank, counter)`, combined with the
+/// simulation seed, to a well-distributed `tie_break`, so same-time steps get a
 /// deterministic pseudo-random order under [`TieBreak::Randomized`].
-fn tie_break_key(seed: u64, creator: ProcessId, counter: u64) -> u64 {
-    mix(mix(seed, creator.0), counter)
+fn tie_break_key(seed: u64, creator_rank: u64, counter: u64) -> u64 {
+    mix(mix(seed, creator_rank), counter)
 }
 
-/// A process's own generator, seeded from the simulation seed and its id, so
-/// its draws do not depend on what other processes sample.
-fn process_rng(seed: u64, id: ProcessId) -> Box<StdRng> {
+/// A process's own generator, seeded from the simulation seed and its rank, so
+/// its draws do not depend on what other processes sample, nor on the domain
+/// it was placed in.
+fn process_rng(seed: u64, rank: u64) -> Box<StdRng> {
     Box::new(StdRng::seed_from_u64(mix(
         seed ^ 0x6a09_e667_f3bc_c909,
-        id.0,
+        rank,
     )))
 }
+
+/// The rank of the root process.
+const ROOT_RANK: u64 = 0;
+
+/// The rank of the next process spawned by the process of rank `parent`, which
+/// has spawned `spawned` processes so far (counted up here). The root's
+/// children are ranked in spawn order, 1, 2, …; other children get a mix of
+/// their parent's rank and spawn count, with the top bit set so that they
+/// never meet a root child's rank. Either way a rank depends only on the
+/// spawning process's history, not on any process's domain.
+fn child_rank(parent: u64, spawned: &mut u64) -> u64 {
+    *spawned += 1;
+    if parent == ROOT_RANK {
+        *spawned
+    } else {
+        1 << 63 | mix(parent, *spawned) >> 1
+    }
+}
+
+/// The process that schedules a step: its id, and its rank for the step order.
+#[derive(Clone, Copy)]
+struct Creator {
+    id: ProcessId,
+    rank: u64,
+}
+
+const ROOT_CREATOR: Creator = Creator {
+    id: ROOT,
+    rank: ROOT_RANK,
+};
 
 /// A registered process: its state plus the per-process bookkeeping the
 /// scheduler keeps for it.
 struct Slot {
     /// `None` while one of its steps runs (the state is lent to the step).
     state: Option<Box<dyn Any + Send>>,
+    /// A name for the process that does not depend on its domain (see
+    /// [`child_rank`]). Steps it schedules are ordered by it, and its
+    /// generator is seeded from it.
+    rank: u64,
+    /// Processes this process has spawned so far.
+    spawned: u64,
     /// Steps this process has scheduled so far; the `counter` of the next one.
     counter: u64,
     /// The process's generator, created on first use.
@@ -518,9 +564,11 @@ struct Slot {
 }
 
 impl Slot {
-    fn new(state: Box<dyn Any + Send>) -> Self {
+    fn new(state: Box<dyn Any + Send>, rank: u64) -> Self {
         Slot {
             state: Some(state),
+            rank,
+            spawned: 0,
             counter: 0,
             rng: None,
             depth: 0,
@@ -759,7 +807,7 @@ impl SimulationBuilder {
             },
             groups: vec![group],
             globals: BinaryHeap::new(),
-            root: Slot::new(Box::new(())),
+            root: Slot::new(Box::new(()), ROOT_RANK),
             driver: DriverOut {
                 outbox: vec![Vec::new()],
                 globals: Vec::new(),
@@ -896,7 +944,12 @@ impl Simulation {
     /// [`schedule_global`](Self::schedule_global) steps draw from).
     pub fn sample<T>(&mut self, d: impl Distribution<T>) -> T {
         let seed = self.shared.seed;
-        d.sample(&mut **self.root.rng.get_or_insert_with(|| process_rng(seed, ROOT)))
+        d.sample(
+            &mut **self
+                .root
+                .rng
+                .get_or_insert_with(|| process_rng(seed, ROOT_RANK)),
+        )
     }
 
     /// Register process state in domain 0 and return a handle to it.
@@ -912,9 +965,10 @@ impl Simulation {
             "{domain:?} out of range: the simulation has {} domains",
             self.shared.lanes - 1
         );
+        let rank = child_rank(self.root.rank, &mut self.root.spawned);
         let slots = self.domain_slots(lane);
         let id = ProcessId::new(lane, slots.processes.len());
-        slots.processes.push(Some(Slot::new(Box::new(state))));
+        slots.processes.push(Some(Slot::new(Box::new(state), rank)));
         Handle {
             id,
             _pd: PhantomData,
@@ -936,7 +990,7 @@ impl Simulation {
     ) -> CancelToken {
         let (entry, cancel) = new_entry(
             &self.shared,
-            ROOT,
+            ROOT_CREATOR,
             &mut self.root.counter,
             self.now,
             0,
@@ -974,7 +1028,7 @@ impl Simulation {
     ) -> CancelToken {
         let (entry, cancel) = new_entry::<()>(
             &self.shared,
-            ROOT,
+            ROOT_CREATOR,
             &mut self.root.counter,
             self.now,
             0,
@@ -1361,8 +1415,10 @@ impl Simulation {
         let mut ctx = Ctx {
             now: entry.time,
             me: ROOT,
+            rank: ROOT_RANK,
             depth,
             counter: self.root.counter,
+            spawned: self.root.spawned,
             rng: self.root.rng.take(),
             shared: &self.shared,
             group: NO_GROUP,
@@ -1381,9 +1437,15 @@ impl Simulation {
             depth,
         };
         (entry.action)(&mut (), &mut ctx);
-        let Ctx { counter, rng, .. } = ctx;
+        let Ctx {
+            counter,
+            spawned,
+            rng,
+            ..
+        } = ctx;
         drop(guard);
         self.root.counter = counter;
+        self.root.spawned = spawned;
         self.root.rng = rng;
         self.flush_driver();
         info
@@ -1624,14 +1686,16 @@ fn run_step(shared: &Shared, index: usize, group: &mut Group, entry: Entry) -> S
         .state
         .take()
         .expect("process state unavailable (reentrant step?)");
-    let counter = slot.counter;
+    let (rank, counter, spawned) = (slot.rank, slot.counter, slot.spawned);
     let rng = slot.rng.take();
     let guard = LaneGuard::enter(shared, lane);
     let mut ctx = Ctx {
         now: entry.time,
         me: pid,
+        rank,
         depth,
         counter,
+        spawned,
         rng,
         shared,
         group: index,
@@ -1643,7 +1707,11 @@ fn run_step(shared: &Shared, index: usize, group: &mut Group, entry: Entry) -> S
     };
     (entry.action)(&mut *state, &mut ctx);
     let Ctx {
-        counter, rng, home, ..
+        counter,
+        spawned,
+        rng,
+        home,
+        ..
     } = ctx;
     drop(guard);
     let slot = home.processes[pid.index()]
@@ -1651,6 +1719,7 @@ fn run_step(shared: &Shared, index: usize, group: &mut Group, entry: Entry) -> S
         .expect("process slot vanished during step");
     slot.state = Some(state);
     slot.counter = counter;
+    slot.spawned = spawned;
     slot.rng = rng;
     info.depth = depth;
     info
@@ -1661,12 +1730,15 @@ fn run_step(shared: &Shared, index: usize, group: &mut Group, entry: Entry) -> S
 /// process's state — cross-process interaction is always a scheduled step.
 pub struct Ctx<'a> {
     now: Time,
-    /// The running process, the critical-path depth of the running step (stamped
-    /// onto steps it schedules), and the process's schedule counter and
-    /// generator (taken out of its slot for the duration of the step).
+    /// The running process and its rank, the critical-path depth of the running
+    /// step (stamped onto steps it schedules), and the process's schedule and
+    /// spawn counters and generator (taken out of its slot for the duration of
+    /// the step).
     me: ProcessId,
+    rank: u64,
     depth: u64,
     counter: u64,
+    spawned: u64,
     rng: Option<Box<StdRng>>,
     shared: &'a Shared,
     /// The running step's group and its queue; `NO_GROUP` and `None` on the
@@ -1689,8 +1761,8 @@ impl<'a> Ctx<'a> {
 
     /// Sample from `d` using the running process's own seeded generator.
     pub fn sample<T>(&mut self, d: impl Distribution<T>) -> T {
-        let (seed, me) = (self.shared.seed, self.me);
-        d.sample(&mut **self.rng.get_or_insert_with(|| process_rng(seed, me)))
+        let (seed, rank) = (self.shared.seed, self.rank);
+        d.sample(&mut **self.rng.get_or_insert_with(|| process_rng(seed, rank)))
     }
 
     /// Schedule a step on `who` at absolute time `at`. Panics if `at` is before
@@ -1706,7 +1778,7 @@ impl<'a> Ctx<'a> {
         self.check_lookahead(who.id, at);
         let (entry, cancel) = new_entry(
             self.shared,
-            self.me,
+            self.creator(),
             &mut self.counter,
             self.now,
             self.depth,
@@ -1743,7 +1815,7 @@ impl<'a> Ctx<'a> {
         self.check_lookahead(ROOT, at);
         let (entry, cancel) = new_entry::<()>(
             self.shared,
-            self.me,
+            self.creator(),
             &mut self.counter,
             self.now,
             self.depth,
@@ -1760,11 +1832,21 @@ impl<'a> Ctx<'a> {
     /// global step). The handle is usable immediately (steps can be scheduled
     /// against it), and the process becomes runnable on the next popped step.
     pub fn spawn<S: Send + 'static>(&mut self, state: S) -> Handle<S> {
+        let rank = child_rank(self.rank, &mut self.spawned);
         let id = ProcessId::new(self.home.lane, self.home.processes.len());
-        self.home.processes.push(Some(Slot::new(Box::new(state))));
+        self.home
+            .processes
+            .push(Some(Slot::new(Box::new(state), rank)));
         Handle {
             id,
             _pd: PhantomData,
+        }
+    }
+
+    fn creator(&self) -> Creator {
+        Creator {
+            id: self.me,
+            rank: self.rank,
         }
     }
 
@@ -1809,7 +1891,7 @@ impl<'a> Ctx<'a> {
 #[allow(clippy::too_many_arguments)]
 fn new_entry<S: Send + 'static>(
     shared: &Shared,
-    creator: ProcessId,
+    creator: Creator,
     counter: &mut u64,
     now: Time,
     parent_depth: u64,
@@ -1826,7 +1908,7 @@ fn new_entry<S: Send + 'static>(
     *counter += 1;
     let tie_break = match shared.tie_break {
         TieBreak::Fifo => 0,
-        TieBreak::Randomized => tie_break_key(shared.seed, creator, c),
+        TieBreak::Randomized => tie_break_key(shared.seed, creator.rank, c),
     };
     let cancel = CancelToken::new(who.lane());
     let action: Action = Box::new(move |any, ctx| {
@@ -1841,7 +1923,8 @@ fn new_entry<S: Send + 'static>(
             | u128::from(tie_break) << 32
             | u128::from(label.priority),
         created_at: now,
-        id: u128::from(creator.0) << 64 | u128::from(c),
+        id: u128::from(creator.rank) << 64 | u128::from(c),
+        creator: creator.id,
         process: who,
         parent_depth,
         label,
