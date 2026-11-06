@@ -79,6 +79,10 @@ impl Case {
 
 struct World {
     handles: Vec<Handle<Proc>>,
+    /// Each process's domain in the case. Behaviour follows it, not the
+    /// domain a run actually places the process in, so that one case can run
+    /// under several placements.
+    domain_of: Vec<usize>,
     lookahead: Vec<Vec<Duration>>,
     /// Per domain, the largest lookahead to another domain: how far ahead its
     /// steps schedule global steps.
@@ -177,7 +181,43 @@ fn act(proc: &mut Proc, ctx: &mut Ctx, tag: u64) {
 
 impl World {
     fn domain_of(&self, process: usize) -> usize {
-        self.handles[process].id().domain().expect("a process").0 as usize
+        self.domain_of[process]
+    }
+}
+
+/// Where a run places the case's processes.
+#[derive(Clone, Copy, Debug)]
+enum Placement {
+    /// In the case's domains.
+    Case,
+    /// In the case's domains, renumbered: the same partition with other
+    /// lanes, and so other process ids.
+    Relabelled,
+    /// All in one domain, as a sequential simulation.
+    Single,
+}
+
+impl Placement {
+    fn domain(self, case_domain: usize) -> usize {
+        match self {
+            Placement::Case => case_domain,
+            Placement::Relabelled => DOMAINS - 1 - case_domain,
+            Placement::Single => 0,
+        }
+    }
+
+    fn lookahead(self, case: &Case) -> Vec<Vec<Duration>> {
+        match self {
+            Placement::Case => case.lookahead.clone(),
+            Placement::Relabelled => (0..DOMAINS)
+                .map(|from| {
+                    (0..DOMAINS)
+                        .map(|to| case.lookahead[self.domain(from)][self.domain(to)])
+                        .collect()
+                })
+                .collect(),
+            Placement::Single => vec![vec![Duration::ZERO]],
+        }
     }
 }
 
@@ -200,8 +240,17 @@ fn build(
     grouping: Grouping,
     threads: usize,
 ) -> (Simulation, Vec<Handle<Proc>>, Stream) {
+    build_placed(case, Placement::Case, grouping, threads)
+}
+
+fn build_placed(
+    case: &Case,
+    placement: Placement,
+    grouping: Grouping,
+    threads: usize,
+) -> (Simulation, Vec<Handle<Proc>>, Stream) {
     let mut sim = Simulation::builder(case.seed)
-        .lookahead(&case.lookahead)
+        .lookahead(&placement.lookahead(case))
         .grouping(grouping)
         .threads(threads)
         .build();
@@ -209,7 +258,10 @@ fn build(
     let handles: Vec<_> = case
         .domain_of
         .iter()
-        .map(|&domain| sim.spawn_in(Domain(domain as u32), Proc::new(domain)))
+        .map(|&domain| {
+            let placed = Domain(placement.domain(domain) as u32);
+            sim.spawn_in(placed, Proc::new(domain))
+        })
         .collect();
     let global_lookahead = case
         .lookahead
@@ -218,6 +270,7 @@ fn build(
         .collect();
     let world = Arc::new(World {
         handles: handles.clone(),
+        domain_of: case.domain_of.clone(),
         lookahead: case.lookahead.clone(),
         global_lookahead,
     });
@@ -298,6 +351,35 @@ fn results_do_not_depend_on_grouping_or_threads() {
         for (grouping, threads) in variants {
             let label = format!("seed {seed}, {grouping:?}, {threads} threads");
             assert_eq!(run(&case, grouping, threads), reference, "{label}");
+        }
+    }
+}
+
+/// Process ids encode the domain, but nothing a process sees depends on them:
+/// the same case placed in other domains, or all in one, runs every process
+/// through the same steps. (The observer stream names processes by id, so it
+/// is not compared here.)
+#[test]
+fn results_do_not_depend_on_domain_placement() {
+    for seed in 0..cases(24) {
+        let case = Case::new(seed);
+        let placed = |placement, grouping, threads| {
+            let (mut sim, handles, stream) = build_placed(&case, placement, grouping, threads);
+            sim.run_until_time(HORIZON);
+            Outcome {
+                stream: Vec::new(),
+                ..outcome(&sim, &handles, &stream)
+            }
+        };
+        let reference = placed(Placement::Case, Grouping::Single, 1);
+        let variants = [
+            (Placement::Relabelled, Grouping::Single, 1),
+            (Placement::Relabelled, Grouping::default(), 4),
+            (Placement::Single, Grouping::Single, 1),
+        ];
+        for (placement, grouping, threads) in variants {
+            let label = format!("seed {seed}, {placement:?}, {grouping:?}, {threads} threads");
+            assert_eq!(placed(placement, grouping, threads), reference, "{label}");
         }
     }
 }

@@ -74,9 +74,9 @@ fn a_run_repeats_across_processes() {
 }
 
 // one domain per node, run on 1, 2 and 4 threads: the same run. It also
-// matches the sequential build, because the nodes draw no randomness from the
-// engine and are spawned in address order, so the domain order agrees with
-// the sequential spawn order.
+// matches the sequential build: the engine orders same-instant steps, and
+// seeds per-process generators, by spawn history rather than by process id,
+// so placing nodes and their stacks in domains changes neither.
 #[test]
 fn a_run_does_not_depend_on_the_thread_count() {
     let sequential = run(SEED);

@@ -48,9 +48,12 @@ sim.with(b, |log| assert_eq!(*log, vec![42])); // inspect between steps
 ## Determinism
 
 A run is exactly reproducible from `(configuration, seed)`. Steps execute in
-the total order `(time, tie_break, priority, created_at, creator, counter)`,
-where `(creator, counter)` names the scheduling process and how many steps it
-had scheduled before:
+the total order
+`(time, lane, tie_break, priority, created_at, creator, counter)`, where
+`lane` is the target's domain and `(creator, counter)` names the scheduling
+process, by its *rank*, and how many steps it had scheduled before. A rank
+depends only on the order in which processes were spawned, not on their
+domains:
 
 - The default `TieBreak::Fifo` orders same-time steps by priority class, then
   by when they were scheduled — stable enough that tests can assert exact
@@ -59,7 +62,7 @@ had scheduled before:
   (still fully reproducible); sweep the seed to fuzz for order-dependence bugs.
 
 All randomness flows through seeded generators: each process has its own,
-seeded from the simulation seed and the process id (`ctx.sample(..)`), and
+seeded from the simulation seed and the process's rank (`ctx.sample(..)`), and
 `sim.sample(..)` draws from the root process's.
 
 ## Toolbox
@@ -83,7 +86,8 @@ resettable watchdog timer.
 
 A simulation built with a `Lookahead` has several *domains*; their groups run
 on worker threads in windows of simulated time, with results identical for
-every grouping and thread count:
+every grouping and thread count. Every process also runs the same steps
+whichever domains the processes are placed in, one domain included:
 
 ```rust
 use monad_sim::{time::millis, Domain, Simulation, UniformLookahead};

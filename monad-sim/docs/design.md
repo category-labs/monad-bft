@@ -84,7 +84,9 @@ is what makes the engine reusable across protocols and protocol versions.
 
 The scheduler is deterministic: a run is exactly reproducible from
 `(configuration, seed)`. Steps are ordered by the total key
-`(time, tie_break, priority, created_at, creator, counter)`:
+`(time, lane, tie_break, priority, created_at, creator, counter)`, where
+`lane` is the target process's domain (see [parallel.md](parallel.md); it is
+constant in a simulation with one domain):
 
 - **`priority`** is a same-time ordering class (lower runs first); consumers
   use it to encode policies such as "drain a node's ready internal work before
@@ -99,12 +101,18 @@ The scheduler is deterministic: a run is exactly reproducible from
 - **`creator`, `counter`** identify a step: the process that scheduled it and
   how many steps that process had scheduled before. They make the key unique,
   and keep one process's same-time steps in the order it scheduled them.
+  `creator` is the process's *rank*, not its `ProcessId`: processes spawned
+  by the driver are ranked in spawn order, and a process spawned by a step
+  gets a rank derived from its spawner's rank and spawn count. A `ProcessId`
+  encodes the process's domain; a rank does not.
 
 No component of the key is a global sequence number: each depends only on the
 history of the scheduling process. The order therefore does not depend on how
 the execution of processes is interleaved, which is what lets parts of a
 simulation run in parallel with identical results (see
-[parallel.md](parallel.md)).
+[parallel.md](parallel.md)). Since ranks do not encode domains either, the
+steps each process runs also do not depend on how processes are placed in
+domains.
 
 `tie_break` deliberately precedes `priority` in the key: under `Randomized`
 the per-step tie-break dominates, so same-time steps are shuffled *across*
@@ -113,7 +121,7 @@ would put `priority` first instead; it is a clean future toggle, not
 implemented until a consumer needs it.
 
 All randomness flows through seeded generators. Each process has its own,
-seeded from the simulation seed and its process id and created on first use
+seeded from the simulation seed and its rank and created on first use
 (`Ctx::sample`); `Simulation::sample` and global steps draw from the root
 process's. A process's draws therefore do not depend on what other processes
 sample. The `dist` module provides latency and clock-drift distributions to
@@ -169,8 +177,10 @@ A single run can also execute in parallel. Processes live in *domains*; a
 `Lookahead` declares the minimum delay of any step between two domains, and
 `Simulation::builder` groups the domains and runs the groups in windows no
 wider than the lookahead between them (conservative synchronization, no
-rollback). Results are identical for every grouping and thread count. A
-`Simulation::new` simulation has one domain and runs exactly as before. See
+rollback). Results are identical for every grouping and thread count, and
+each process runs the same steps under every placement of processes in
+domains. A `Simulation::new` simulation has one domain and runs exactly as
+before. See
 [parallel.md](parallel.md).
 
 ## Future work

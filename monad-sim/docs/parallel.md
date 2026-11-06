@@ -96,9 +96,23 @@ number, which no parallel execution can reproduce. The proposal is:
 - `domain`: the target process's domain.
 - `created_at`: the simulation time at which the step was scheduled. It keeps
   today's "earlier sent arrives first" for same-instant steps.
-- `creator`: the scheduling process (`ROOT` for the driver).
+- `creator`: the scheduling process's *rank* (0 for the driver), a name
+  that does not depend on the process's domain (see below).
 - `counter`: the number of steps that process has scheduled so far.
 - Under `TieBreak::Randomized`, `tie_break = hash(seed, creator, counter)`.
+
+**Why `creator` is a rank, not a process id.** A `ProcessId` encodes the
+domain, so ordering ties by it would order the same two steps differently
+under different placements. That happened in the MCP node scenarios: a
+node's own timer and a delivery from another node's network stack, both at
+the same instant and scheduled at the same time, ran in one order
+sequentially (all nodes are spawned before all stacks) and in the other with
+one domain per node. Ranks are assigned by spawn history instead: the
+driver's children are ranked 1, 2, … in spawn order, and a process spawned by
+a step is ranked by a hash of its spawner's rank and spawn count, with the top
+bit set so that it never equals a driver child's rank. A rank collision
+between hashed ranks (probability about 2⁻⁶³ per pair) only makes the
+`ProcessId` break the tie, which keeps the order total.
 
 **Why `domain` is in the key.** `(creator, counter)` alone already makes the
 key unique, so the keys are totally ordered. But execution order is the heap's
@@ -118,7 +132,7 @@ step.
 Further requirements:
 
 - **Per-process RNG.** `Ctx::sample` draws from the running process's own
-  generator, seeded from `(seed, process id)`, created on first use and stored
+  generator, seeded from `(seed, rank)`, created on first use and stored
   in the process slot (no lookup).
 - **Deterministic process ids.** Processes spawned during a run get ids
   derived from the spawner, not from a global counter.
@@ -409,11 +423,12 @@ Each step kept all tests green.
    cancelled timers, spawns, global steps, both tie-break modes) give identical
    per-process histories, observer streams and metrics for random groupings,
    `Auto`, and 1/2/4 threads, also when a run stops at synchronization points
-   and switches between exact stepping and windows. Comparing against
-   `Simulation::new` is not possible: process ids, and so per-process
-   generators, encode the domain. Set `MONAD_SIM_PARALLEL_CASES` for a longer
-   sweep (400 cases pass). Removing the domain from the order key makes it
-   fail.
+   and switches between exact stepping and windows. The same cases placed in
+   relabelled domains, or all in one domain, give the same per-process
+   histories and metrics (`results_do_not_depend_on_domain_placement`);
+   ordering ties by process id instead of rank makes that fail. Set
+   `MONAD_SIM_PARALLEL_CASES` for a longer sweep (400 cases pass). Removing
+   the domain from the order key makes it fail.
 5. Done. rayon execution.
 6. Done. Automatic grouping; `groups()` and `window()` report it.
 7. Done. Network side (swarm document): per-node network stacks, domains and
