@@ -150,7 +150,7 @@ impl ValidatorInfo {
         let name_record = NameRecord::new_with_ports(
             Ipv4Addr::new(127, 0, 0, 1),
             dp.tcp_addr.port(),
-            Some(dp.non_auth_addr.port()),
+            None,
             dp.auth_addr.port(),
             None,
             None,
@@ -262,7 +262,6 @@ fn spawn_validator(
                 monad_raptorcast::auth::NoopAuthProtocol::new(),
             ),
             None,
-            Some(dataplane.non_authenticated_socket),
             dataplane.control,
             shared_pd,
             EPOCH_1,
@@ -312,7 +311,7 @@ async fn run_epoch_boundary_scenario() {
     let known_addresses: HashMap<_, _> = infos
         .iter()
         .zip(dataplanes.iter())
-        .map(|(v, dp)| (v.nodeid, dp.non_auth_addr))
+        .map(|(v, dp)| (v.nodeid, dp.auth_addr))
         .collect();
 
     let (cmd_txs, mut logs): (Vec<_>, Vec<_>) = infos

@@ -20,17 +20,17 @@ monad_executor::metric_consts! {
         name: "monad.raptorcast.auth.authenticated_udp_bytes_written",
         help: "Bytes written via authenticated UDP",
     }
-    pub GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_WRITTEN {
-        name: "monad.raptorcast.auth.non_authenticated_udp_bytes_written",
-        help: "Bytes written via non-authenticated UDP",
-    }
     pub GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_READ {
         name: "monad.raptorcast.auth.authenticated_udp_bytes_read",
         help: "Bytes read via authenticated UDP",
     }
-    pub GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_READ {
-        name: "monad.raptorcast.auth.non_authenticated_udp_bytes_read",
-        help: "Bytes read via non-authenticated UDP",
+    pub GAUGE_RAPTORCAST_AUTH_DIRECT_UDP_BYTES_WRITTEN {
+        name: "monad.raptorcast.auth.direct_udp_bytes_written",
+        help: "Bytes written via direct UDP",
+    }
+    pub GAUGE_RAPTORCAST_AUTH_DIRECT_UDP_BYTES_READ {
+        name: "monad.raptorcast.auth.direct_udp_bytes_read",
+        help: "Bytes read via direct UDP",
     }
 }
 
@@ -40,8 +40,13 @@ monad_wireauth::define_metric_names!(DIRECT_UDP_METRICS, "direct_udp");
 pub(crate) fn init_socket_executor_metrics() -> ExecutorMetrics {
     ExecutorMetrics::with_metric_defs(&[
         GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_WRITTEN,
-        GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_WRITTEN,
         GAUGE_RAPTORCAST_AUTH_AUTHENTICATED_UDP_BYTES_READ,
-        GAUGE_RAPTORCAST_AUTH_NON_AUTHENTICATED_UDP_BYTES_READ,
+    ])
+}
+
+pub(crate) fn init_direct_udp_executor_metrics() -> ExecutorMetrics {
+    ExecutorMetrics::with_metric_defs(&[
+        GAUGE_RAPTORCAST_AUTH_DIRECT_UDP_BYTES_WRITTEN,
+        GAUGE_RAPTORCAST_AUTH_DIRECT_UDP_BYTES_READ,
     ])
 }

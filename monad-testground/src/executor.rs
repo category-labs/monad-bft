@@ -157,14 +157,10 @@ where
                 let pdd = PeerDiscoveryDriver::new(peer_discovery_builder);
                 let shared_peer_discovery_driver = Arc::new(Mutex::new(pdd));
 
-                let auth_socket_addr =
-                    SocketAddr::new(config.local_addr.ip(), config.local_addr.port() + 1);
+                let auth_socket_addr = config.local_addr;
                 let dataplane_builder = DataplaneBuilder::new(1_000)
                     .with_udp_buffer_size(62_500_000)
-                    .with_udp_sockets([
-                        (UdpSocketId::Raptorcast, config.local_addr),
-                        (UdpSocketId::AuthenticatedRaptorcast, auth_socket_addr),
-                    ])
+                    .with_udp_sockets([(UdpSocketId::AuthenticatedRaptorcast, auth_socket_addr)])
                     .with_tcp_sockets([(TcpSocketId::Raptorcast, config.local_addr)]);
 
                 let mut dp = dataplane_builder.build();
@@ -178,10 +174,6 @@ where
                     .udp_sockets
                     .take(UdpSocketId::AuthenticatedRaptorcast)
                     .expect("authenticated raptorcast socket");
-                let non_authenticated_socket = dp
-                    .udp_sockets
-                    .take(UdpSocketId::Raptorcast)
-                    .expect("raptorcast socket");
                 let control = dp.control;
 
                 let authenticated = (authenticated_socket, NoopAuthProtocol::new());
@@ -199,7 +191,6 @@ where
                     tcp_socket,
                     authenticated,
                     None,
-                    Some(non_authenticated_socket),
                     control,
                     shared_peer_discovery_driver,
                     Epoch(0),

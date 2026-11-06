@@ -296,7 +296,7 @@ pub fn set_up_test(
     let rx_nodeid = NodeId::new(rx_keypair.pubkey());
 
     let dataplane = create_dataplane_for_tests(false);
-    let rx_addr_v4 = dataplane.non_auth_addr;
+    let rx_addr_v4 = dataplane.auth_addr;
     let rx_addr = SocketAddr::V4(rx_addr_v4);
 
     let tx_addr = socket_addr_v4(
@@ -398,15 +398,8 @@ fn socket_addr_v4(addr: SocketAddr) -> SocketAddrV4 {
 }
 
 fn test_name_record(keypair: &KeyPair, addr: SocketAddrV4) -> MonadNameRecord<SignatureType> {
-    let name_record = NameRecord::new_with_ports(
-        *addr.ip(),
-        addr.port(),
-        Some(addr.port()),
-        addr.port(),
-        None,
-        None,
-        1,
-    );
+    let name_record =
+        NameRecord::new_with_ports(*addr.ip(), addr.port(), None, addr.port(), None, None, 1);
     MonadNameRecord::new(name_record, keypair)
 }
 
@@ -558,7 +551,7 @@ async fn raptorcast_forwards_fullnodes_group_invite_at_cold_start() {
     // Only the fullnode is a real RaptorCast instance; the validator side just
     // constructs and sends a packet manually, so it needs no dataplane.
     let fullnode_dp = create_dataplane_for_tests(false);
-    let fullnode_addr = fullnode_dp.non_auth_addr;
+    let fullnode_addr = fullnode_dp.auth_addr;
 
     let known_addresses: HashMap<NodeId<PubKeyType>, SocketAddrV4> =
         [(fullnode_nodeid, fullnode_addr)].into_iter().collect();
@@ -696,21 +689,9 @@ async fn publish_to_full_nodes() {
     let full_node2_dp = create_dataplane_for_tests(false);
 
     let (known_addresses, name_records) = test_peer_maps([
-        (
-            validator_nodeid,
-            &validator_keypair,
-            validator_dp.non_auth_addr,
-        ),
-        (
-            full_node1_id,
-            &full_node1_keypair,
-            full_node1_dp.non_auth_addr,
-        ),
-        (
-            full_node2_id,
-            &full_node2_keypair,
-            full_node2_dp.non_auth_addr,
-        ),
+        (validator_nodeid, &validator_keypair, validator_dp.auth_addr),
+        (full_node1_id, &full_node1_keypair, full_node1_dp.auth_addr),
+        (full_node2_id, &full_node2_keypair, full_node2_dp.auth_addr),
     ]);
 
     // 3. Create services with known addresses
@@ -823,7 +804,7 @@ async fn primary_raptorcast_builds_once_per_round() {
         (
             validator1_nodeid,
             &validator1_keypair,
-            validator1_dp.non_auth_addr,
+            validator1_dp.auth_addr,
         ),
         (validator2_nodeid, &validator2_keypair, validator2_addr),
     ]);
@@ -898,11 +879,7 @@ async fn secondary_raptorcast_builds_once_per_round() {
 
     let validator_dp = create_dataplane_for_tests(false);
     let (known_addresses, name_records) = test_peer_maps([
-        (
-            validator_nodeid,
-            &validator_keypair,
-            validator_dp.non_auth_addr,
-        ),
+        (validator_nodeid, &validator_keypair, validator_dp.auth_addr),
         (full_node_id, &full_node_keypair, full_node_addr),
     ]);
 
@@ -1059,12 +1036,14 @@ async fn test_priority_messages() {
     let tx_dataplane = create_dataplane_for_tests(false);
     let rx_dataplane = create_dataplane_for_tests(false);
 
-    let (known_addresses, name_records) = test_peer_maps([
-        (tx_nodeid, tx_key.as_ref(), tx_dataplane.non_auth_addr),
-        (rx_nodeid, rx_key.as_ref(), rx_dataplane.non_auth_addr),
-    ]);
+    let known_addresses: HashMap<NodeId<PubKeyType>, SocketAddrV4> = [
+        (tx_nodeid, tx_dataplane.auth_addr),
+        (rx_nodeid, rx_dataplane.auth_addr),
+    ]
+    .into_iter()
+    .collect();
 
-    let mut tx_rc = new_defaulted_raptorcast_for_tests_with_name_records::<
+    let mut tx_rc = new_defaulted_raptorcast_for_tests::<
         SignatureType,
         MockMessage,
         MockMessage,
@@ -1072,12 +1051,11 @@ async fn test_priority_messages() {
     >(
         tx_dataplane,
         known_addresses.clone(),
-        name_records.clone(),
         tx_key.clone(),
         Epoch(0),
     );
 
-    let mut rx_rc = new_defaulted_raptorcast_for_tests_with_name_records::<
+    let mut rx_rc = new_defaulted_raptorcast_for_tests::<
         SignatureType,
         MockMessage,
         MockMessage,
@@ -1085,7 +1063,6 @@ async fn test_priority_messages() {
     >(
         rx_dataplane,
         known_addresses.clone(),
-        name_records,
         rx_key.clone(),
         Epoch(0),
     );
@@ -1195,17 +1172,17 @@ async fn test_raptorcast_forwarding_priority() {
         (
             validator1_nodeid,
             validator1_key.as_ref(),
-            validator1_dataplane.non_auth_addr,
+            validator1_dataplane.auth_addr,
         ),
         (
             validator2_nodeid,
             validator2_key.as_ref(),
-            validator2_dataplane.non_auth_addr,
+            validator2_dataplane.auth_addr,
         ),
         (
             validator_fullnode_nodeid,
             validator_fullnode_key.as_ref(),
-            validator_fullnode_dataplane.non_auth_addr,
+            validator_fullnode_dataplane.auth_addr,
         ),
     ]);
 

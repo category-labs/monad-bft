@@ -119,7 +119,6 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
         &mut self,
         epoch_validators: &BTreeMap<Epoch, ValidatorSet<CertificateSignaturePubKey<ST>>>,
         chunk: &ValidatedChunk<CertificateSignaturePubKey<ST>>,
-        _sender: Option<&NodeId<CertificateSignaturePubKey<ST>>>,
     ) -> Option<(NodeId<CertificateSignaturePubKey<ST>>, Bytes)> {
         if chunk.recipient_hash != Some(self.self_id_hash) {
             tracing::debug!(
@@ -518,9 +517,7 @@ impl<ST: CertificateSignatureRecoverable> UdpState<ST> {
             };
 
             let maybe_decoded_message = match chunk.broadcast_mode {
-                BroadcastMode::Unspecified => {
-                    self.handle_unicast(epoch_validators, &chunk, message.sender.as_ref())
-                }
+                BroadcastMode::Unspecified => self.handle_unicast(epoch_validators, &chunk),
                 BroadcastMode::Primary | BroadcastMode::Secondary => {
                     let accepted_metric = if chunk.broadcast_mode == BroadcastMode::Primary {
                         COUNTER_RAPTORCAST_V1_PRIMARY_CHUNKS_ACCEPTED

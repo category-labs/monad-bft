@@ -664,23 +664,6 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
     Ok(())
 }
 
-enum NonAuthRaptorcastBind {
-    Shared { port: u16 },
-    TcpOnly { tcp_port: u16 },
-}
-
-impl NonAuthRaptorcastBind {
-    fn bind_addresses(self, host: IpAddr) -> (SocketAddr, Option<SocketAddr>) {
-        match self {
-            Self::Shared { port } => {
-                let bind_address = SocketAddr::new(host, port);
-                (bind_address, Some(bind_address))
-            }
-            Self::TcpOnly { tcp_port } => (SocketAddr::new(host, tcp_port), None),
-        }
-    }
-}
-
 fn build_raptorcast_router<ST, SCT, M, OM, DS>(
     node_config: NodeConfig<ST>,
     peer_discovery_config: PeerDiscoveryConfig<ST>,
@@ -715,22 +698,28 @@ where
     DS: IdentityScore<Identity = NodeId<CertificateSignaturePubKey<ST>>>,
 {
     let network_config = node_config.network;
-    let self_udp_port = peer_discovery_config.udp_port();
-    let non_auth_raptorcast_bind = if self_udp_port.is_some() {
-        NonAuthRaptorcastBind::Shared {
-            port: network_config
-                .bind_address_port
-                .expect("network.bind_address_port must be set when peer discovery UDP is enabled"),
+    if let Some(legacy_port) = network_config.bind_address_port {
+        if let Some(tcp_port) = network_config
+            .bind_address_tcp_port
+            .filter(|port| *port != legacy_port)
+        {
+            warn!(legacy_port, tcp_port, "Non-authenticated UDP is disabled; TCP now binds to network.bind_address_tcp_port; replace network.bind_address_port");
+        } else {
+            warn!("Non-authenticated UDP is disabled; replace network.bind_address_port with network.bind_address_tcp_port");
         }
-    } else {
-        NonAuthRaptorcastBind::TcpOnly {
-            tcp_port: network_config.bind_address_tcp_port.expect(
-                "network.bind_address_tcp_port must be set when peer discovery UDP is disabled",
+    }
+    if peer_discovery_config.udp_port().is_some() {
+        warn!("Non-authenticated UDP is disabled; use peer_discovery.self_address + self_tcp_port and remove self_udp_port");
+    }
+    let tcp_bind_address = SocketAddr::new(
+        IpAddr::V4(network_config.bind_address_host),
+        network_config
+            .bind_address_tcp_port
+            .or(network_config.bind_address_port)
+            .expect(
+                "network.bind_address_tcp_port or legacy network.bind_address_port must be set",
             ),
-        }
-    };
-    let (tcp_bind_address, non_authenticated_bind_address) =
-        non_auth_raptorcast_bind.bind_addresses(IpAddr::V4(network_config.bind_address_host));
+    );
     let authenticated_bind_address = SocketAddr::new(
         IpAddr::V4(network_config.bind_address_host),
         network_config.authenticated_bind_address_port,
@@ -755,7 +744,6 @@ where
 
     tracing::debug!(
         ?tcp_bind_address,
-        ?non_authenticated_bind_address,
         ?authenticated_bind_address,
         ?direct_udp_bind_address,
         ?name_record_address,
@@ -784,9 +772,6 @@ where
         UdpSocketId::AuthenticatedRaptorcast,
         authenticated_bind_address,
     )];
-    if let Some(address) = non_authenticated_bind_address {
-        udp_sockets.push((UdpSocketId::Raptorcast, address));
-    }
     if let Some(direct_addr) = direct_udp_bind_address {
         udp_sockets.push((UdpSocketId::DirectUdp, direct_addr));
     }
@@ -806,7 +791,7 @@ where
     let self_record = NameRecord::new_with_ports(
         *name_record_address.ip(),
         self_tcp_port.get(),
-        self_udp_port.map(NonZeroU16::get),
+        peer_discovery_config.udp_port().map(NonZeroU16::get),
         peer_discovery_config.self_auth_port.get(),
         peer_discovery_config
             .self_direct_udp_port
