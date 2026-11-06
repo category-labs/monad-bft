@@ -72,6 +72,10 @@ struct Setup {
     // the clock spread the planner assumes for its common clock term (ms);
     // 0: off
     clock_sd_ms: f64,
+    // own slots whose residuals the margin leaves out
+    calib_skip: usize,
+    // re-plan waiting seals on every own-slot vote
+    refresh_on_vote: bool,
     // strict first-hop priority on the uplink; off: one FIFO
     priority: bool,
     // per-node clock offsets, normal with this standard deviation
@@ -102,6 +106,8 @@ impl Default for Setup {
             block_ms: 5.0,
             calib_window: 1000,
             clock_sd_ms: 4.0,
+            calib_skip: 8,
+            refresh_on_vote: true,
             priority: true,
             clock_sigma_ms: 4.0,
             shared_ms: 0.0,
@@ -137,6 +143,8 @@ impl Setup {
             block_ms: var("BLOCK_MS", d.block_ms),
             calib_window: var("CALIB_WINDOW", d.calib_window),
             clock_sd_ms: var("CLOCK_SD_MS", d.clock_sd_ms),
+            calib_skip: var("CALIB_SKIP", d.calib_skip),
+            refresh_on_vote: var::<u8>("REFRESH_ON_VOTE", 1) != 0,
             priority: var::<u8>("PRIORITY", 1) != 0,
             clock_sigma_ms: var("CLOCK_SIGMA_MS", d.clock_sigma_ms),
             shared_ms: var("SHARED_MS", d.shared_ms),
@@ -336,7 +344,8 @@ fn round3(ms: f64) -> f64 {
     (ms * 1000.0).round() / 1000.0
 }
 
-fn build(setup: &Setup) -> (Swarm<SimNode>, Value) {
+// `parallel`: on the threads of MCP_SIM_THREADS, else sequential
+fn build(setup: &Setup, parallel: bool) -> (Swarm<SimNode>, Value) {
     use monad_mcp_node::config::SourceKind;
 
     let table = RegionTable::public_internet();
@@ -366,6 +375,8 @@ fn build(setup: &Setup) -> (Swarm<SimNode>, Value) {
             adaptive.block_ms = setup.block_ms;
             adaptive.calib_window = setup.calib_window;
             adaptive.clock_sd_ms = setup.clock_sd_ms;
+            adaptive.calib_skip = setup.calib_skip;
+            adaptive.refresh_on_vote = setup.refresh_on_vote;
             let lanes = config.proposal.num_lanes;
             let node = Node::new(&config).expect("config builds");
             let offset = ClockDiff::from_nanos((offsets[id as usize] * 1e6).round() as i128);
@@ -407,6 +418,8 @@ fn build(setup: &Setup) -> (Swarm<SimNode>, Value) {
         "block_ms": setup.block_ms,
         "calib_window": setup.calib_window,
         "clock_sd_ms": setup.clock_sd_ms,
+        "calib_skip": setup.calib_skip,
+        "refresh_on_vote": setup.refresh_on_vote,
         "first_hop_priority": setup.priority,
         "clock_sigma_ms": setup.clock_sigma_ms,
         "shared_ms": setup.shared_ms,
@@ -417,7 +430,8 @@ fn build(setup: &Setup) -> (Swarm<SimNode>, Value) {
                   interval of the send time, receiver region), on messages into a region \
                   from outside it. Equal stakes.",
     });
-    let swarm = start_swarm(setup.seed, geo.network, nodes, parallel_from_env());
+    let parallel = parallel.then(parallel_from_env).flatten();
+    let swarm = start_swarm(setup.seed, geo.network, nodes, parallel);
     (swarm, topology)
 }
 
@@ -634,11 +648,13 @@ fn summarize(setup: &Setup, slots: &[Value], from: u64) -> Summary {
 }
 
 // one run: simulate, export, summarize
-fn validate(setup: &Setup, out: Option<&Path>) -> (Summary, u64) {
+// `parallel`: on the threads of MCP_SIM_THREADS, with the global capture
+// (run such a test alone); else sequential, with this thread's capture
+fn validate(setup: &Setup, out: Option<&Path>, parallel: bool) -> (Summary, u64) {
     let started = Instant::now();
-    let parallel = parallel_from_env().is_some();
+    let parallel = parallel && parallel_from_env().is_some();
     let ((swarm, topology), reports) = capture::run(parallel, || {
-        let (mut swarm, topology) = build(setup);
+        let (mut swarm, topology) = build(setup, parallel);
         let margin = SLOT_INTERVAL.checked_mul(5).expect("in range");
         // in chunks, for progress on long runs
         let chunk = 200;
@@ -714,9 +730,10 @@ fn records_match_the_planner() {
         ..Setup::default()
     };
     let started = Instant::now();
-    let parallel = parallel_from_env().is_some();
-    let ((swarm, _), reports) = capture::run(parallel, || {
-        let (mut swarm, topology) = build(&setup);
+    // sequential, so the capture is this thread's: other tests may run
+    // alongside in this process
+    let ((swarm, _), reports) = capture::run(false, || {
+        let (mut swarm, topology) = build(&setup, false);
         swarm.run_until_time(time_of(deadline_of_slot(setup.slots)));
         (swarm, topology)
     });
@@ -760,7 +777,7 @@ fn delayed_networks_finalize() {
         step_slot: 20,
         ..Setup::default()
     };
-    let (summary, _) = validate(&setup, None);
+    let (summary, _) = validate(&setup, None, false);
     assert!(summary.own > 0);
 }
 
@@ -770,5 +787,5 @@ fn long_run() {
     let setup = Setup::from_env();
     let out = PathBuf::from(std::env::var("VAL_OUT").expect("VAL_OUT: the output directory"));
     eprintln!("{setup:?}");
-    validate(&setup, Some(&out));
+    validate(&setup, Some(&out), true);
 }
