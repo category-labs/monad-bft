@@ -127,10 +127,7 @@ where
             BlockSyncEvent::SelfCancelRequest {
                 requester,
                 block_range,
-            } => {
-                block_sync_wrapper.handle_self_cancel_request(requester, block_range);
-                Vec::new()
-            }
+            } => block_sync_wrapper.handle_self_cancel_request(requester, block_range),
             BlockSyncEvent::SelfResponse { response } => {
                 block_sync_wrapper.handle_ledger_response(response)
             }

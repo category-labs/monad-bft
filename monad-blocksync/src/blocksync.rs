@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::{hash_map::Entry, BTreeMap, BTreeSet, HashMap};
+use std::collections::{hash_map::Entry, BTreeMap, BTreeSet, HashMap, HashSet};
 
 use alloy_rlp::{encode_list, Decodable, Encodable, Header};
 use bytes::BufMut;
@@ -289,6 +289,28 @@ where
     CCT: ChainConfig<CRT>,
     CRT: ChainRevision,
 {
+    fn release_inflight_payload_request(
+        &mut self,
+        payload_id: ConsensusBlockBodyId,
+        peer: Option<NodeId<CertificateSignaturePubKey<ST>>>,
+    ) -> Option<BlockSyncCommand<ST, SCT, EPT>> {
+        self.block_sync.self_payload_requests_in_flight -= 1;
+
+        self.metrics
+            .blocksync_events
+            .self_payload_requests_in_flight
+            .dec();
+
+        if peer.is_some() {
+            // reset timeout if the request was made to a peer
+            Some(BlockSyncCommand::ResetTimeout(
+                BlockSyncRequestMessage::Payload(payload_id),
+            ))
+        } else {
+            None
+        }
+    }
+
     #[must_use]
     pub fn handle_self_request(
         &mut self,
@@ -329,11 +351,14 @@ where
         cmds
     }
 
+    #[must_use]
     pub fn handle_self_cancel_request(
         &mut self,
         requester: BlockSyncSelfRequester,
         block_range: BlockRange,
-    ) {
+    ) -> Vec<BlockSyncCommand<ST, SCT, EPT>> {
+        let mut cmds = Vec::new();
+
         debug!(?requester, ?block_range, "blocksync: self cancel request");
         if let Entry::Occupied(entry) = self.block_sync.self_headers_requests.entry(block_range) {
             if entry.get().requester == requester {
@@ -346,11 +371,42 @@ where
             .entry(block_range)
         {
             if entry.get().requester == requester {
-                entry.remove();
+                let completed_headers = entry.remove();
+
+                // remove all payload requests provided the same payload
+                // is not needed for any other self completed headers requests
+                let mut payload_requests_to_remove = completed_headers
+                    .blocks
+                    .iter()
+                    .map(|(header, _)| header.block_body_id)
+                    .collect::<HashSet<_>>();
+                for request in self.block_sync.self_completed_headers_requests.values() {
+                    for (header, _) in &request.blocks {
+                        payload_requests_to_remove.remove(&header.block_body_id);
+                    }
+                }
+
+                for payload_id in payload_requests_to_remove {
+                    // payload may already have been received and removed
+                    let Some(maybe_request) =
+                        self.block_sync.self_payload_requests.remove(&payload_id)
+                    else {
+                        continue;
+                    };
+                    if let Some(request) = maybe_request {
+                        // payload request was already initiated
+
+                        // decrement count as the request was cancelled after
+                        // the payload request was initiated
+                        cmds.extend(self.release_inflight_payload_request(payload_id, request.to));
+                    }
+                }
             }
-            // NOTE: we don't remove the associated payload requests here since
-            // it might be required for a different requested range
         }
+
+        cmds.extend(self.try_initiate_payload_requests_for_self());
+
+        cmds
     }
 
     #[must_use]
@@ -575,19 +631,7 @@ where
 
                     // decrement count as the cache was hydrated after
                     // the request was initiated
-                    self.block_sync.self_payload_requests_in_flight -= 1;
-
-                    self.metrics
-                        .blocksync_events
-                        .self_payload_requests_in_flight
-                        .dec();
-
-                    if request.to.is_some() {
-                        // reset timeout if the request was made to a peer
-                        cmds.push(BlockSyncCommand::ResetTimeout(
-                            BlockSyncRequestMessage::Payload(payload_id),
-                        ));
-                    }
+                    cmds.extend(self.release_inflight_payload_request(payload_id, request.to));
                 }
 
                 for completed_header in self.block_sync.self_completed_headers_requests.values_mut()
@@ -824,7 +868,6 @@ where
                 .blocksync_events
                 .payload_response_unexpected
                 .inc();
-            // TODO use it if valid ?
             return cmds;
         };
 
@@ -836,22 +879,16 @@ where
                 .inc();
         }
 
-        let self_requester = self_request.requester;
         match payload_response {
             BlockSyncBodyResponse::Found(payload) => {
-                assert_eq!(self_requester, self.block_sync.self_request_mode);
+                // remove the request as the payload has been received and is valid
+                let self_request = entry.remove().expect("payload request should exist");
+                assert_eq!(self_request.requester, self.block_sync.self_request_mode);
 
-                self.block_sync.self_payload_requests_in_flight -= 1;
+                // decrement inflight count as the request was fulfilled
+                cmds.extend(self.release_inflight_payload_request(payload_id, self_request.to));
 
-                self.metrics
-                    .blocksync_events
-                    .self_payload_requests_in_flight
-                    .dec();
                 if sender.is_some() {
-                    // reset timeout if requested from peer
-                    cmds.push(BlockSyncCommand::ResetTimeout(
-                        BlockSyncRequestMessage::Payload(payload_id),
-                    ));
                     self.metrics
                         .blocksync_events
                         .payload_response_successful
@@ -864,8 +901,6 @@ where
                 }
 
                 debug!(?sender, ?payload_id, "blocksync: received payload response");
-                // remove entry and update existing requests
-                entry.remove();
 
                 for completed_header in self.block_sync.self_completed_headers_requests.values_mut()
                 {
@@ -1196,7 +1231,7 @@ where
 
 #[cfg(test)]
 mod test {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, HashSet};
 
     use bytes::Bytes;
     use itertools::{sorted, Itertools};
@@ -1247,7 +1282,9 @@ mod test {
     };
     use crate::{
         blocksync::BLOCKSYNC_MAX_PAYLOAD_REQUESTS,
-        messages::message::{BlockSyncRequestMessage, BlockSyncResponseMessage},
+        messages::message::{
+            BlockSyncBodyResponse, BlockSyncRequestMessage, BlockSyncResponseMessage,
+        },
     };
 
     const BASE_FEE: u64 = 100_000_000_000;
@@ -1354,9 +1391,10 @@ mod test {
             &mut self,
             requester: BlockSyncSelfRequester,
             block_range: BlockRange,
-        ) {
+        ) -> Vec<BlockSyncCommand<SignatureType, SignatureCollectionType, ExecutionProtocolType>>
+        {
             self.wrapped_state()
-                .handle_self_cancel_request(requester, block_range);
+                .handle_self_cancel_request(requester, block_range)
         }
 
         fn handle_peer_request(
@@ -2153,6 +2191,107 @@ mod test {
         assert_eq!(
             emit_cmds[0],
             &BlockSyncCommand::Emit(requester_2, (block_range_2, full_blocks_2))
+        );
+    }
+
+    #[test]
+    fn preserve_shared_payload_requests_on_cancel() {
+        // Canceling one completed self range should keep shared payload requests
+        // alive for any overlapping completed self range that still needs them.
+        let mut context = setup();
+
+        let full_blocks = context.get_blocks(5);
+        let requester = BlockSyncSelfRequester::Consensus;
+
+        let block_range_1 = BlockRange {
+            last_block_id: full_blocks.last().unwrap().get_id(),
+            num_blocks: full_blocks.last().unwrap().get_seq_num(),
+        };
+        let total_payload_requests = full_blocks
+            .iter()
+            .map(|b| b.get_body_id())
+            .collect::<HashSet<_>>();
+        let block_range_2 = BlockRange {
+            last_block_id: full_blocks[1].get_id(),
+            num_blocks: SeqNum(2),
+        };
+        let full_blocks_2 = full_blocks.iter().take(2).cloned().collect_vec();
+        let retained_payload_requests = full_blocks_2
+            .iter()
+            .map(|b| b.get_body_id())
+            .collect::<HashSet<_>>();
+        let removed_payload_requests = total_payload_requests
+            .difference(&retained_payload_requests)
+            .cloned()
+            .collect::<HashSet<_>>();
+
+        let (headers, _): (Vec<_>, Vec<_>) = full_blocks
+            .into_iter()
+            .map(ConsensusFullBlock::split)
+            .unzip();
+
+        let cmds = context.handle_self_request(requester, block_range_1);
+        assert_eq!(cmds.len(), 1);
+
+        let cmds = context.handle_ledger_response(BlockSyncResponseMessage::found_headers(
+            block_range_1,
+            headers.clone(),
+        ));
+        assert_eq!(find_fetch_payload_commands(&cmds).len(), 5);
+
+        // initiate an overlapping self request that shares some payload requests
+        let cmds = context.handle_self_request(requester, block_range_2);
+        assert_eq!(cmds.len(), 1);
+
+        let cmds = context.handle_ledger_response(BlockSyncResponseMessage::found_headers(
+            block_range_2,
+            headers.iter().take(2).cloned().collect_vec(),
+        ));
+        assert!(cmds.is_empty());
+
+        // initiate requesting all payloads from peers
+        for payload_id in &total_payload_requests {
+            context.handle_ledger_response(BlockSyncResponseMessage::PayloadResponse(
+                BlockSyncBodyResponse::NotAvailable(*payload_id),
+            ));
+        }
+        assert_eq!(
+            context
+                .block_sync
+                .self_payload_requests
+                .keys()
+                .cloned()
+                .collect::<HashSet<_>>(),
+            total_payload_requests
+        );
+        assert_eq!(
+            context.block_sync.self_payload_requests_in_flight,
+            total_payload_requests.len()
+        );
+
+        // canceling a self request should reset timeouts for removed payload requests
+        let cmds = context.handle_self_cancel_request(requester, block_range_1);
+        let reset_cmds = find_reset_timeout_commands(&cmds);
+        assert_eq!(reset_cmds.len(), removed_payload_requests.len());
+        for payload_id in removed_payload_requests {
+            let expected_reset_cmd =
+                BlockSyncCommand::ResetTimeout(BlockSyncRequestMessage::Payload(payload_id));
+            assert!(reset_cmds.contains(&&expected_reset_cmd));
+        }
+
+        // the overlapping payload requests should still be in flight
+        assert_eq!(
+            context.block_sync.self_payload_requests_in_flight,
+            retained_payload_requests.len()
+        );
+        assert_eq!(
+            context
+                .block_sync
+                .self_payload_requests
+                .keys()
+                .cloned()
+                .collect::<HashSet<_>>(),
+            retained_payload_requests
         );
     }
 
