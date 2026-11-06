@@ -101,6 +101,9 @@ mod round_info;
 pub mod udp;
 pub mod util;
 
+#[cfg(test)]
+mod tests;
+
 const SIGNATURE_SIZE: usize = 65;
 const DEFAULT_RETRY_ATTEMPTS: u64 = 3;
 const TX_FORWARD_DIRECT_UDP_MAX_MESSAGE_SIZE_BYTES: usize = 512 * 1024;
