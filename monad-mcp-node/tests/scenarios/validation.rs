@@ -69,6 +69,9 @@ struct Setup {
     epsilon: f64,
     block_ms: f64,
     calib_window: usize,
+    // the clock spread the planner assumes for its common clock term (ms);
+    // 0: off
+    clock_sd_ms: f64,
     // strict first-hop priority on the uplink; off: one FIFO
     priority: bool,
     // per-node clock offsets, normal with this standard deviation
@@ -98,6 +101,7 @@ impl Default for Setup {
             epsilon: 1e-3,
             block_ms: 5.0,
             calib_window: 1000,
+            clock_sd_ms: 4.0,
             priority: true,
             clock_sigma_ms: 4.0,
             shared_ms: 0.0,
@@ -132,6 +136,7 @@ impl Setup {
             epsilon: var("EPSILON", d.epsilon),
             block_ms: var("BLOCK_MS", d.block_ms),
             calib_window: var("CALIB_WINDOW", d.calib_window),
+            clock_sd_ms: var("CLOCK_SD_MS", d.clock_sd_ms),
             priority: var::<u8>("PRIORITY", 1) != 0,
             clock_sigma_ms: var("CLOCK_SIGMA_MS", d.clock_sigma_ms),
             shared_ms: var("SHARED_MS", d.shared_ms),
@@ -360,6 +365,7 @@ fn build(setup: &Setup) -> (Swarm<SimNode>, Value) {
             adaptive.withhold_epsilon = setup.epsilon;
             adaptive.block_ms = setup.block_ms;
             adaptive.calib_window = setup.calib_window;
+            adaptive.clock_sd_ms = setup.clock_sd_ms;
             let lanes = config.proposal.num_lanes;
             let node = Node::new(&config).expect("config builds");
             let offset = ClockDiff::from_nanos((offsets[id as usize] * 1e6).round() as i128);
@@ -400,6 +406,7 @@ fn build(setup: &Setup) -> (Swarm<SimNode>, Value) {
         "epsilon": setup.epsilon,
         "block_ms": setup.block_ms,
         "calib_window": setup.calib_window,
+        "clock_sd_ms": setup.clock_sd_ms,
         "first_hop_priority": setup.priority,
         "clock_sigma_ms": setup.clock_sigma_ms,
         "shared_ms": setup.shared_ms,

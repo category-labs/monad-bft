@@ -375,6 +375,11 @@ pub struct AdaptiveSection {
     pub block_ms: f64,
     // own slots whose residuals set the self-calibrating margin; 0: off
     pub calib_window: usize,
+    // the spread of clock offsets, ms: before own slots calibrate the model,
+    // the risk rule allows a shift of all thresholds of 3 spreads (the
+    // proposer's own clock enters the passive estimate with the wrong
+    // sign); 0: off
+    pub clock_sd_ms: f64,
 }
 
 impl Default for AdaptiveSection {
@@ -393,6 +398,7 @@ impl Default for AdaptiveSection {
             warmup_slots: AdaptiveSetup::default().warmup_slots,
             block_ms: model.block_ms,
             calib_window: model.calib_window,
+            clock_sd_ms: model.common_sd / 3.0,
         }
     }
 }
@@ -467,6 +473,7 @@ impl ProposalConfig {
             uplink_bytes_per_ms: section.uplink_mbps * 1000.0 / 8.0,
             block_ms: section.block_ms,
             calib_window: section.calib_window,
+            common_sd: 3.0 * section.clock_sd_ms,
             ..AdaptiveConfig::default()
         };
         Some(AdaptiveSetup {

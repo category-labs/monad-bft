@@ -337,6 +337,10 @@ impl Adaptive {
             let report = own.report;
             self.model
                 .observe_residual(report.negative, report.predicted_negative, own.var);
+            // its votes are in and have calibrated the model
+            if report.negative + report.positive > 0.0 {
+                self.model.observe_calibrated_slot();
+            }
             self.report(report);
         }
     }
