@@ -15,6 +15,7 @@
 
 use std::sync::Arc;
 
+use alloy_primitives::U128;
 use itertools::Itertools;
 use monad_event_ring::{DecodedEventRing, EventNextResult};
 use monad_exec_events::{
@@ -139,11 +140,13 @@ fn broadcast_block_updates(
     commit_state: BlockCommitState,
 ) {
     let block_id = BlockId(monad_types::Hash(block.start.block_tag.id.bytes));
+    let timestamp_ns = U128::from(block.start.proposal_epoch_nanos);
 
     let serialized_monad_header = JsonSerialized::new_shared_with_map(
         MonadNotification {
             block_id,
             commit_state,
+            timestamp_ns,
             data: block.to_alloy_rpc_header(),
         },
         |notification| notification.map(JsonSerialized::new_shared),
@@ -161,6 +164,7 @@ fn broadcast_block_updates(
                         MonadNotification {
                             block_id,
                             commit_state,
+                            timestamp_ns,
                             data: log.clone(),
                         },
                         |notification| notification.map(JsonSerialized::new_shared),
@@ -332,10 +336,18 @@ mod test {
 
         assert_eq!(commit_state, BlockCommitState::Proposed);
 
+        assert_eq!(
+            monad_header.timestamp_ns / U128::from(1_000_000_000u64),
+            U128::from(monad_header.data.timestamp)
+        );
+
         assert_json::<_, MonadNotification<alloy_rpc_types::Header>>(
             &[&monad_header],
-            include_str!(
-                "../../../monad-execution/rust/crates/monad-exec-events/test/data/exec-events-emn-30b-15m/0.monad-header.json"
+            &with_timestamp_ns(
+                include_str!(
+                    "../../../monad-execution/rust/crates/monad-exec-events/test/data/exec-events-emn-30b-15m/0.monad-header.json"
+                ),
+                monad_header.timestamp_ns,
             ),
         );
 
@@ -370,10 +382,15 @@ mod test {
             .next()
             .unwrap();
 
+        assert_eq!(monad_log.timestamp_ns, monad_header.timestamp_ns);
+
         assert_json::<_, MonadNotification<alloy_rpc_types::Log>>(
             &[&monad_log],
-            include_str!(
-                "../../../monad-execution/rust/crates/monad-exec-events/test/data/exec-events-emn-30b-15m/0.monad-log.0.json"
+            &with_timestamp_ns(
+                include_str!(
+                    "../../../monad-execution/rust/crates/monad-exec-events/test/data/exec-events-emn-30b-15m/0.monad-log.0.json"
+                ),
+                monad_log.timestamp_ns,
             ),
         );
 
@@ -385,7 +402,16 @@ mod test {
         );
     }
 
-    fn assert_json<T, E>(values: &[T], json: &'static str)
+    // The shared fixtures predate `timestampNs`, which serializes right after `commitState`.
+    fn with_timestamp_ns(json: &str, timestamp_ns: U128) -> String {
+        json.replacen(
+            r#""commitState":"Proposed","#,
+            &format!(r#""commitState":"Proposed","timestampNs":"{timestamp_ns:#x}","#),
+            1,
+        )
+    }
+
+    fn assert_json<T, E>(values: &[T], json: &str)
     where
         T: Serialize,
         E: DeserializeOwned,
