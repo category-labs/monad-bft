@@ -27,6 +27,7 @@ use monad_crypto::NopPubKey;
 use monad_types::{Balance, ExecutionProtocol, FinalizedHeader, LimitedVec, Nonce, SeqNum};
 use serde_with::{serde_as, DisplayFromStr};
 
+pub mod domain;
 pub mod serde;
 
 pub const EMPTY_RLP_TX_LIST: u8 = 0xc0;
