@@ -27,6 +27,8 @@
 //! The math goes through the `libm` crate, not the platform's libm, so a
 //! seeded simulation picks the same leads on every platform.
 
+use std::collections::VecDeque;
+
 /// Model parameters (`docs/0005` §5.9). Node-local policy, not protocol.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AdaptiveConfig {
@@ -61,6 +63,9 @@ pub struct AdaptiveConfig {
     /// fully correlated, ms (§5.4): validators with the same `⌊R̂_v / β⌋`
     /// share one block. 0: every vote independent.
     pub block_ms: f64,
+    /// `W`: own slots whose standardized residuals set the self-calibrating
+    /// margin (§5.4). 0: off.
+    pub calib_window: usize,
 }
 
 impl Default for AdaptiveConfig {
@@ -84,6 +89,7 @@ impl Default for AdaptiveConfig {
             uplink_bytes_per_ms: 125_000.0,
             encode_ms_per_mb: 2.0,
             block_ms: 5.0,
+            calib_window: 1000,
         }
     }
 }
@@ -119,7 +125,12 @@ pub struct LeadModel {
     dev: Vec<f64>,
     bias: Vec<f64>,
     seen: Vec<u32>,
+    /// `(N − M)/√V` of the last `W` own slots
+    residuals: VecDeque<f64>,
 }
+
+/// Residuals needed before `ŝ` widens the margin.
+const CALIB_MIN_SAMPLES: usize = 50;
 
 impl LeadModel {
     /// `stakes` per validator index; `me` is the proposer's own index.
@@ -142,6 +153,7 @@ impl LeadModel {
             dev: vec![5.0; n],
             bias: vec![0.0; n],
             seen: vec![0; n],
+            residuals: VecDeque::new(),
         }
     }
 
@@ -200,6 +212,30 @@ impl LeadModel {
             inv_mills(z)
         };
         self.bias[v] += self.config.eta * g.clamp(-3.0, 3.0);
+    }
+
+    /// Self-calibrating margin (§5.4): records the realized negative stake
+    /// `N` of an own slot against `M` and `V` predicted at the lead used.
+    pub fn observe_residual(&mut self, negative: f64, mean: f64, var: f64) {
+        let window = self.config.calib_window;
+        if window == 0 || var <= 1e-12 {
+            return;
+        }
+        if self.residuals.len() >= window {
+            self.residuals.pop_front();
+        }
+        self.residuals
+            .push_back((negative - mean) / libm::sqrt(var));
+    }
+
+    /// `ŝ`: the `(⌊ε·len⌋ + 1)`-th largest residual; 0 below 50 samples.
+    pub fn calibrated_tail(&self) -> f64 {
+        if self.residuals.len() < CALIB_MIN_SAMPLES {
+            return 0.0;
+        }
+        let k = (self.config.epsilon * self.residuals.len() as f64) as usize;
+        let mut sorted: Vec<f64> = self.residuals.iter().copied().collect();
+        *sorted.select_nth_unstable_by(k, |a, b| b.total_cmp(a)).1
     }
 
     fn sigma(&self, v: usize) -> f64 {
@@ -325,10 +361,15 @@ impl LeadModel {
         (mean, var)
     }
 
-    /// `M(L)` and the rule's bound `M(L) + z√V(L)`.
-    pub fn bound(&self, lead: f64, extra: &[f64]) -> (f64, f64) {
+    /// `M(L)`, `V(L)` and the rule's bound `M(L) + z√V(L)`.
+    pub fn bound(&self, lead: f64, extra: &[f64]) -> (f64, f64, f64) {
         let (mean, var) = self.risk(lead, extra);
-        (mean, mean + self.z * libm::sqrt(var))
+        (mean, var, mean + self.z_eff(self.z) * libm::sqrt(var))
+    }
+
+    /// `max(z, ŝ)`
+    fn z_eff(&self, z: f64) -> f64 {
+        z.max(self.calibrated_tail())
     }
 
     /// The encode-plus-upload term per validator for `payload` sent in
@@ -347,9 +388,10 @@ impl LeadModel {
     pub fn plan(&self, extra: &[f64]) -> LeadPlan {
         let target = self.config.theta - self.config.reserve;
         let blocks = self.blocks(extra);
+        let z = self.z_eff(self.z);
         let bound = |lead: f64| {
             let (mean, var) = self.risk_in(lead, extra, blocks.as_deref());
-            (mean, mean + self.z * libm::sqrt(var))
+            (mean, mean + z * libm::sqrt(var))
         };
         let (mut lo, mut hi) = (0.0, 600.0);
         for _ in 0..40 {
@@ -374,7 +416,7 @@ impl LeadModel {
     /// split, `M + z_w √V > 1/3`.
     pub fn withhold(&self, lead: f64, extra: &[f64]) -> bool {
         let (mean, var) = self.risk(lead, extra);
-        mean + self.z_withhold * libm::sqrt(var) > 1.0 / 3.0
+        mean + self.z_eff(self.z_withhold) * libm::sqrt(var) > 1.0 / 3.0
     }
 }
 
@@ -621,5 +663,38 @@ mod tests {
         let plan = model.plan(&extra);
         assert!(!model.withhold(plan.lead, &extra));
         assert!(model.withhold(5.0, &extra));
+    }
+
+    // §5.4: residuals above z widen the bound and lengthen the lead;
+    // residuals below z leave the rule as it was
+    #[test]
+    fn residuals_above_z_widen_the_bound() {
+        let mut model = warm_model();
+        let extra = model.extra_ms(&model.send_order(), PAYLOAD);
+        let plan = model.plan(&extra);
+        let mut calm = model.clone();
+        for _ in 0..100 {
+            model.observe_residual(5.0, 0.0, 1.0);
+            calm.observe_residual(1.0, 0.0, 1.0);
+        }
+        close(model.calibrated_tail(), 5.0, 0.0);
+        let wide = model.plan(&extra);
+        assert!(wide.lead > plan.lead, "{} vs {}", wide.lead, plan.lead);
+        assert!(model.bound(plan.lead, &extra).2 > plan.bound);
+        assert_eq!(calm.plan(&extra), plan);
+    }
+
+    #[test]
+    fn the_tail_is_ignored_below_50_samples() {
+        let mut model = warm_model();
+        let extra = model.extra_ms(&model.send_order(), PAYLOAD);
+        let plan = model.plan(&extra);
+        for _ in 0..49 {
+            model.observe_residual(5.0, 0.0, 1.0);
+        }
+        assert_eq!(model.calibrated_tail(), 0.0);
+        assert_eq!(model.plan(&extra), plan);
+        model.observe_residual(5.0, 0.0, 1.0);
+        close(model.calibrated_tail(), 5.0, 0.0);
     }
 }

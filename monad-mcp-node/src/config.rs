@@ -373,6 +373,8 @@ pub struct AdaptiveSection {
     // width of the latency blocks the risk rule treats as correlated, ms;
     // 0: independent votes
     pub block_ms: f64,
+    // own slots whose residuals set the self-calibrating margin; 0: off
+    pub calib_window: usize,
 }
 
 impl Default for AdaptiveSection {
@@ -390,6 +392,7 @@ impl Default for AdaptiveSection {
             uplink_mbps: model.uplink_bytes_per_ms * 8.0 / 1000.0,
             warmup_slots: AdaptiveSetup::default().warmup_slots,
             block_ms: model.block_ms,
+            calib_window: model.calib_window,
         }
     }
 }
@@ -463,6 +466,7 @@ impl ProposalConfig {
             wire_ratio: section.wire_ratio,
             uplink_bytes_per_ms: section.uplink_mbps * 1000.0 / 8.0,
             block_ms: section.block_ms,
+            calib_window: section.calib_window,
             ..AdaptiveConfig::default()
         };
         Some(AdaptiveSetup {

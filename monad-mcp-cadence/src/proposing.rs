@@ -151,6 +151,8 @@ struct OwnSlot {
     lead: f64,
     // encode-plus-upload per validator index, ms, under the order used
     extra: Vec<f64>,
+    // `V` at the lead used, for the residual
+    var: f64,
     // the first-hop send order handed to DA
     order: Vec<NodeId>,
     report: OwnSlotReport,
@@ -252,7 +254,7 @@ impl Adaptive {
         let (order, core_stake) = self.model.send_order_with_core();
         let extra = self.model.extra_ms(&order, self.setup.payload_bytes);
         let plan = self.model.plan(&extra);
-        let (predicted_negative, predicted_bound) = self.model.bound(ms_of(lead), &extra);
+        let (predicted_negative, var, predicted_bound) = self.model.bound(ms_of(lead), &extra);
         let report = OwnSlotReport {
             slot,
             lane,
@@ -279,6 +281,7 @@ impl Adaptive {
                 lane,
                 lead: ms_of(lead),
                 extra,
+                var,
                 order,
                 report,
             },
@@ -328,7 +331,10 @@ impl Adaptive {
             .own
             .split_off(&Slot(cap.get().saturating_sub(REPORT_SLOTS)));
         for (_, own) in std::mem::replace(&mut self.own, kept) {
-            self.report(own.report);
+            let report = own.report;
+            self.model
+                .observe_residual(report.negative, report.predicted_negative, own.var);
+            self.report(report);
         }
     }
 }
@@ -356,6 +362,7 @@ impl Adaptive {
             negative = report.negative,
             positive = report.positive,
             missing = report.missing,
+            calibrated_tail = self.model.calibrated_tail(),
             path = ?report.path,
             committed = ?report.committed,
             "adaptive lead: own slot"
