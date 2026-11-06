@@ -83,7 +83,11 @@ impl Default for AdaptiveConfig {
             core_margin: 0.03,
             min_lead: 20.0,
             max_lead: 150.0,
-            // measured S11 first-hop ratio 4.3–4.9 (docs/0005 §9.7)
+            // d33's first hop, without the author's own share, measured at
+            // equal stake: 4.0–4.4 for 64 KiB to 1 MiB at n = 16, 64, 190;
+            // up to 5.2 where a depth step leaves rounding chunks (n = 190,
+            // 256 KiB). Payloads of a few KB are dominated by the one
+            // rounding chunk per validator.
             wire_ratio: 4.5,
             // 1 Gb/s
             uplink_bytes_per_ms: 125_000.0,
