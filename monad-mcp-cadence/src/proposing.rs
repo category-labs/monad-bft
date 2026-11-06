@@ -171,8 +171,10 @@ pub struct OwnSlotReport {
     pub lead: f64,
     /// false: no lead up to `L_max` met the target, `L_max` was planned
     pub feasible: bool,
-    /// `M` and `M + z√V` at the lead used
+    /// `M`, `√V` and `M + z√V` at the lead used, with `z` the margin's
+    /// `max(z, ŝ)` at the seal
     pub predicted_negative: f64,
+    pub predicted_sd: f64,
     pub predicted_bound: f64,
     /// stake of the send order's core set
     pub core_stake: f64,
@@ -262,6 +264,7 @@ impl Adaptive {
             lead: ms_of(lead),
             feasible: plan.feasible,
             predicted_negative,
+            predicted_sd: libm::sqrt(var),
             predicted_bound,
             core_stake,
             negative: 0.0,
@@ -357,6 +360,7 @@ impl Adaptive {
             lead_ms = report.lead,
             feasible = report.feasible,
             predicted_negative = report.predicted_negative,
+            predicted_sd = report.predicted_sd,
             predicted_bound = report.predicted_bound,
             core_stake = report.core_stake,
             negative = report.negative,
