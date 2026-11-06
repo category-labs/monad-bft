@@ -122,7 +122,8 @@ L(a, b) = min over nodes i in a, j in b, i ≠ j, of min_delay(i, j)
 - `with_matrix(m, jitter)`: the base entry `m[i][j]`; jitter is a `Duration`,
   so it is never negative.
 - `with_latency` / `with_link_latency`: unknown, so 0, unless the scenario
-  declares `.min_latency(d)`. The stack checks every sample against the
+  declares `.min_latency(d)`, or a bound per link with
+  `.link_min_latency(f)`. The stack checks every sample against the
   declared bound and panics on a violation.
 - Egress only adds delay, and loss, partitions and `drop_if` only remove
   messages, so none of them lowers the bound.

@@ -202,6 +202,46 @@ fn a_declared_bound_is_checked() {
     swarm.run_until_time(Time(0) + millis(100));
 }
 
+// a per-link bound: the link's own lower bound, here a matrix entry under a
+// delay that only adds to it
+#[test]
+fn a_per_link_bound_is_the_lookahead_of_its_link() {
+    use monad_sim_swarm::Wiring;
+
+    let bound = |from: &Addr, to: &Addr| millis(1 + u64::from(from.abs_diff(*to)));
+    let network =
+        Network::with_link_latency(move |link, _| bound(&link.from, &link.to) + millis(2))
+            .link_min_latency(bound);
+    let wiring: Wiring<Addr, Msg> = Wiring::new(0, network);
+    assert_eq!(wiring.min_delay(&0, &1), millis(2));
+    assert_eq!(wiring.min_delay(&0, &3), millis(4));
+
+    let nodes = (0..4).map(|addr| (addr, Gossip::new()));
+    let network =
+        Network::with_link_latency(move |link, _| bound(&link.from, &link.to) + millis(2))
+            .link_min_latency(bound);
+    let mut swarm = Swarm::build_parallel(0, network, nodes, Parallel::default().threads(2));
+    kick(&mut swarm, &[0]);
+    swarm.run_until_time(Time(0) + millis(100));
+}
+
+#[test]
+#[should_panic(expected = "below the declared minimum")]
+fn a_declared_per_link_bound_is_checked() {
+    let nodes = (0..4).map(|addr| (addr, Gossip::new()));
+    let network =
+        Network::with_link_latency(|_, _| millis(2)).link_min_latency(|from: &Addr, to: &Addr| {
+            if from.abs_diff(*to) == 3 {
+                millis(3)
+            } else {
+                millis(1)
+            }
+        });
+    let mut swarm = Swarm::build_parallel(0, network, nodes, Parallel::default().threads(1));
+    kick(&mut swarm, &[0]);
+    swarm.run_until_time(Time(0) + millis(100));
+}
+
 #[test]
 #[should_panic(expected = "below the swarm's lookahead")]
 fn a_new_network_cannot_lower_the_bound() {

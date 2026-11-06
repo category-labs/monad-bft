@@ -76,8 +76,9 @@ that wait and transmission time plus the link latency.
 
 Each lower bound ignores the uplink: queueing only adds delay. `reliable`
 and `with_matrix` know their bounds; a sampled latency has bound 0 unless the
-scenario declares one with `Network::min_latency`, which every sample is
-checked against.
+scenario declares one with `Network::min_latency` (one bound for every
+link) or `Network::link_min_latency` (a bound per link, for example a latency
+matrix under a time-varying delay), which every sample is checked against.
 
 Sequencing is per message. That fits transports whose messages each fit one
 datagram. Splitting a large message into frames that interleave with other

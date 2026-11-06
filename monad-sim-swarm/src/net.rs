@@ -340,6 +340,18 @@ impl<Addr, Msg> Network<Addr, Msg> {
         self
     }
 
+    /// Declare a lower bound per link (sender, receiver), for a link latency
+    /// whose bound differs between links, such as a latency matrix plus a
+    /// time-varying delay. Every sample is checked against it. A parallel
+    /// swarm uses it as the lookahead between nodes.
+    pub fn link_min_latency(
+        mut self,
+        bound: impl Fn(&Addr, &Addr) -> Duration + Send + Sync + 'static,
+    ) -> Self {
+        self.conditions().min_latency = Box::new(bound);
+        self
+    }
+
     /// Give every sender a serial uplink of `bits_per_sec` (see
     /// [`egress_rate`](Network::egress_rate) for per-sender rates). A message
     /// occupies it for `size_of(message)` bytes and waits for the messages
