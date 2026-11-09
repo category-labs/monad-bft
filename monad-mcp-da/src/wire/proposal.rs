@@ -119,6 +119,12 @@ impl AssembledProposal {
         &self.header
     }
 
+    // our chunks for the instance that receives them (see
+    // `ProposalChunks::unheld`)
+    pub(crate) fn unheld_chunks(&self) -> Option<Box<dyn ProposalChunks>> {
+        self.chunks.unheld()
+    }
+
     pub fn disseminate(&self) -> FirstHopDissemination<'_> {
         let mut chunks = Vec::with_capacity(self.assignment.num_chunks());
         for chunk_id in self.assignment.chunk_ids() {

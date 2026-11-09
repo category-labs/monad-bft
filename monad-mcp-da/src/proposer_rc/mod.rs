@@ -24,7 +24,7 @@ use recovery::{Recovery, everything_missing};
 use super::{
     chunk::{ChunkRequest, ChunkRequestType, ChunksSubset, ProposalEnvelope},
     egress::ChunkEgress,
-    encoding_scheme::{InvalidEncoding, Resolved},
+    encoding_scheme::{InvalidEncoding, ProposalChunks, Resolved},
     instance_rc::{MissingChunks, RaptorcastInstance},
     runtime::{EpochHandle, Timing},
     send_order::shuffle_sends,
@@ -132,12 +132,26 @@ impl ProposerRaptorcast {
     }
 
     // The caller must ensure the header is authenticated.
+    #[cfg(test)]
     pub(crate) fn ingest(
         &mut self,
         envelope: ProposalEnvelope,
         sender: &NodeId,
         epoch_handle: &EpochHandle,
         egress: &mut ChunkEgress,
+    ) {
+        self.ingest_with(envelope, sender, epoch_handle, egress, None);
+    }
+
+    // `known`: our own proposal's chunks, for its instance if this
+    // creates it (see `ProposalChunks::unheld`)
+    pub(crate) fn ingest_with(
+        &mut self,
+        envelope: ProposalEnvelope,
+        sender: &NodeId,
+        epoch_handle: &EpochHandle,
+        egress: &mut ChunkEgress,
+        known: Option<Box<dyn ProposalChunks>>,
     ) {
         let (header, chunks) = envelope.into_parts();
         let pid = header.pid();
@@ -149,10 +163,9 @@ impl ProposerRaptorcast {
 
         let author = &self.proposer;
         let serve_window = self.serve_window;
-        let instance = self
-            .tracked
-            .entry(pid)
-            .or_insert_with(|| RaptorcastInstance::new(header, epoch_handle, author, serve_window));
+        let instance = self.tracked.entry(pid).or_insert_with(|| {
+            RaptorcastInstance::with_chunks(header, epoch_handle, author, serve_window, known)
+        });
 
         for (wire_chunk_id, data) in chunks {
             if let Err(err) = instance.ingest(wire_chunk_id, data, sender, egress) {

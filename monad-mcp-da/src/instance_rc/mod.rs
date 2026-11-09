@@ -67,18 +67,41 @@ pub(crate) struct RaptorcastInstance {
 }
 
 impl RaptorcastInstance {
+    #[cfg(test)]
     pub(crate) fn new(
         header: SignedProposalHeader,
         epoch_handle: &EpochHandle,
         author: &NodeId,
         serve_window: TimestampDelta,
     ) -> Self {
+        Self::with_chunks(header, epoch_handle, author, serve_window, None)
+    }
+
+    // `known`: our own proposal's chunks, known but not yet held (see
+    // `ProposalChunks::unheld`); empty chunks under the root otherwise
+    pub(crate) fn with_chunks(
+        header: SignedProposalHeader,
+        epoch_handle: &EpochHandle,
+        author: &NodeId,
+        serve_window: TimestampDelta,
+        known: Option<Box<dyn ProposalChunks>>,
+    ) -> Self {
         let scheme = header.scheme();
         let assignment = scheme.chunk_assignment(author, &epoch_handle.validator_data);
         let self_index = assignment.index_of(&epoch_handle.self_id);
         let mut send_order: Vec<NodeIndex> = assignment.nodes().map(|(index, _)| index).collect();
         shuffle_sends(&mut send_order, &header.pid(), &epoch_handle.self_id);
-        let chunks = scheme.empty_chunks(*header.root(), assignment.num_chunks());
+        let chunks = match known {
+            Some(known) => {
+                assert_eq!(
+                    known.root(),
+                    *header.root(),
+                    "our chunks are under our root"
+                );
+                known
+            }
+            None => scheme.empty_chunks(*header.root(), assignment.num_chunks()),
+        };
         let obligation = ObligationTracker::new(&assignment, self_index);
         let serving = ServingTracker::new(&assignment, self_index, serve_window);
         let relay = RelayTracker::new(&assignment, self_index);

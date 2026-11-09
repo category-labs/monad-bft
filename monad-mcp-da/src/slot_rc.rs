@@ -20,7 +20,7 @@ use monad_mcp_cadence::spec::proposal::ProposalHeader as _;
 use super::{
     chunk::{ChunkRequest, ProposalEnvelope},
     egress::{ChunkEgress, Dissemination},
-    encoding_scheme::Resolved,
+    encoding_scheme::{ProposalChunks, Resolved},
     header::InvalidProposalHeader,
     proposer_rc::ProposerRaptorcast,
     runtime::{ChunkRecoveryRequest, EpochHandle, Timing},
@@ -105,6 +105,16 @@ impl SlotRaptorcast {
         sender: &NodeId,
         envelope: ProposalEnvelope,
     ) -> Result<(), InvalidProposalHeader> {
+        self.ingest_with(sender, envelope, None)
+    }
+
+    // `known`: our own proposal's chunks (see `ProposalChunks::unheld`)
+    pub(crate) fn ingest_with(
+        &mut self,
+        sender: &NodeId,
+        envelope: ProposalEnvelope,
+        known: Option<Box<dyn ProposalChunks>>,
+    ) -> Result<(), InvalidProposalHeader> {
         debug_assert_eq!(envelope.header().slot(), self.slot);
         let j = self
             .authenticate(envelope.header())
@@ -113,7 +123,13 @@ impl SlotRaptorcast {
         let raptorcast = self.raptorcasts[j]
             .as_mut()
             .expect("authenticated indices have proposers");
-        raptorcast.ingest(envelope, sender, &self.epoch_handle, &mut self.egress);
+        raptorcast.ingest_with(
+            envelope,
+            sender,
+            &self.epoch_handle,
+            &mut self.egress,
+            known,
+        );
         self.collect_events(j);
         Ok(())
     }

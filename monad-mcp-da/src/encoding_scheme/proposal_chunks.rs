@@ -45,6 +45,16 @@ pub(crate) trait ProposalChunks: Send {
 
     // None unless contained
     fn chunk_data(&self, chunk_id: ChunkId) -> Option<ChunkData>;
+
+    // Complete chunks as a node holds them that knows them all but has
+    // received none: our own proposal's, encoded here. They are received
+    // and decode as empty chunks under the root do, except that a chunk
+    // equal to its known one needs no proof check, and the decode needs
+    // no re-encode. None unless complete, or when there is nothing to
+    // save.
+    fn unheld(&self) -> Option<Box<dyn ProposalChunks>> {
+        None
+    }
 }
 
 impl ProposalChunks for Box<dyn ProposalChunks> {
@@ -70,5 +80,9 @@ impl ProposalChunks for Box<dyn ProposalChunks> {
 
     fn chunk_data(&self, chunk_id: ChunkId) -> Option<ChunkData> {
         (**self).chunk_data(chunk_id)
+    }
+
+    fn unheld(&self) -> Option<Box<dyn ProposalChunks>> {
+        (**self).unheld()
     }
 }
