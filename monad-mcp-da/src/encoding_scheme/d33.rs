@@ -28,7 +28,7 @@ use super::{
     },
     DAEncodingScheme,
     merkle::{MerkleChunks, MerkleCode},
-    reed_solomon::{RsSymbolDecoder, RsSymbolEncoder},
+    symbol_code::{RsSymbolDecoder, RsSymbolEncoder},
 };
 use crate::spec::PUBKEY_LEN;
 
@@ -211,11 +211,13 @@ mod header {
     use bytes::{Buf, BufMut};
 
     use super::{
-        super::super::{
-            chunk::WireChunkId,
-            types::{D33, Lane, MAX_PROPOSER_SET_SIZE, MerkleRoot, Slot},
-            util::Tree,
-            wire::{DAHeaderScheme, MalformedPacket, v1},
+        super::{
+            super::{
+                chunk::WireChunkId,
+                types::{D33, Lane, MAX_PROPOSER_SET_SIZE, MerkleRoot, Slot},
+                wire::{DAHeaderScheme, MalformedPacket, v1},
+            },
+            merkle::Tree,
         },
         D33Layout, MAX_MESSAGE_LEN,
     };
@@ -445,7 +447,7 @@ mod tests {
                 },
                 types::{EncodingScheme, SignedProposalHeader},
             },
-            SymbolDecoder as _, SymbolEncoder as _,
+            symbol_code::{SymbolDecoder as _, SymbolEncoder as _},
         },
         *,
     };

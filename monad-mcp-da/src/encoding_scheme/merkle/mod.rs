@@ -13,21 +13,23 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+mod tree;
+
 use std::collections::BTreeMap;
 
 use bytes::Bytes;
 use monad_crypto::hasher::Hash;
 
+pub(crate) use self::tree::Tree;
 use super::{
     super::{
         assignment::ChunkId,
         chunk::{ChunkData, WireChunkId},
         types::MerkleRoot,
-        util::Tree,
         wire::{DAHeaderScheme, PacketLayout as _},
     },
-    BadProof, DAEncodingScheme, InvalidEncoding, ProposalChunks, Resolved, SymbolDecoder,
-    SymbolEncoder,
+    BadProof, DAEncodingScheme, InvalidEncoding, ProposalChunks, Resolved,
+    symbol_code::{SymbolDecoder, SymbolEncoder},
 };
 
 // the codec and leaf rule of a scheme whose chunks sit under a merkle

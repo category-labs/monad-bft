@@ -16,13 +16,13 @@
 pub mod d33;
 
 mod merkle;
-mod reed_solomon;
+mod proposal_chunks;
+mod symbol_code;
 
-use bytes::Bytes;
-
+pub(crate) use self::proposal_chunks::{BadProof, ProposalChunks};
+pub use self::proposal_chunks::{InvalidEncoding, Resolved};
 use super::{
-    assignment::{ChunkAssignment, ChunkId},
-    chunk::ChunkData,
+    assignment::ChunkAssignment,
     types::{EncodingScheme, MerkleRoot, NodeId, ValidatorData},
 };
 
@@ -48,49 +48,6 @@ pub(crate) trait DAEncodingScheme {
 
     // the chunks of a proposal under root, before any arrives
     fn empty_chunks(&self, root: MerkleRoot, num_chunks: usize) -> Self::Chunks;
-}
-
-// decoded proposal does not reencode back to root
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InvalidEncoding;
-
-pub type Resolved = Result<Bytes, InvalidEncoding>;
-
-// the chunk does not bind to the root
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct BadProof;
-
-// the chunks of one proposal under its root: complete once encoded,
-// received one by one until they decode
-pub(crate) trait ProposalChunks: Send {
-    fn root(&self) -> MerkleRoot;
-
-    // received, or derivable once decoded
-    fn contains(&self, chunk_id: ChunkId) -> bool;
-
-    // true when the chunk is new. nothing is new once resolved.
-    fn ingest(&mut self, chunk_id: ChunkId, data: ChunkData) -> Result<bool, BadProof>;
-
-    // once: the message when enough chunks arrived, or invalid when it
-    // does not re-encode to the root
-    fn try_decode(&mut self) -> Option<Resolved>;
-    fn is_resolved(&self) -> bool;
-
-    // None unless contained
-    fn chunk_data(&self, chunk_id: ChunkId) -> Option<ChunkData>;
-}
-
-pub(crate) trait SymbolEncoder: Send {
-    // one symbol per chunk, in chunk id order
-    fn encode(&self, message: &[u8]) -> Vec<Bytes>;
-}
-
-// the decoding state of one proposal.
-pub(crate) trait SymbolDecoder: Send {
-    fn ingest(&mut self, chunk_id: ChunkId, symbol: &Bytes);
-
-    // the message, once enough symbols arrived
-    fn try_decode(&mut self) -> Option<Bytes>;
 }
 
 impl DAEncodingScheme for EncodingScheme {
@@ -136,31 +93,5 @@ impl DAEncodingScheme for EncodingScheme {
                 Box::new(chunks)
             }
         }
-    }
-}
-
-impl ProposalChunks for Box<dyn ProposalChunks> {
-    fn root(&self) -> MerkleRoot {
-        (**self).root()
-    }
-
-    fn contains(&self, chunk_id: ChunkId) -> bool {
-        (**self).contains(chunk_id)
-    }
-
-    fn ingest(&mut self, chunk_id: ChunkId, data: ChunkData) -> Result<bool, BadProof> {
-        (**self).ingest(chunk_id, data)
-    }
-
-    fn try_decode(&mut self) -> Option<Resolved> {
-        (**self).try_decode()
-    }
-
-    fn is_resolved(&self) -> bool {
-        (**self).is_resolved()
-    }
-
-    fn chunk_data(&self, chunk_id: ChunkId) -> Option<ChunkData> {
-        (**self).chunk_data(chunk_id)
     }
 }

@@ -28,8 +28,8 @@ use super::{
     egress::ChunkEgress,
     encoding_scheme::{BadProof, DAEncodingScheme as _, ProposalChunks, Resolved},
     runtime::EpochHandle,
+    send_order::shuffle_sends,
     types::{NodeId, ProposalDAEvent, SignedProposalHeader, Timestamp, TimestampDelta},
-    util::shuffle_sends,
 };
 use crate::spec::DAProposalHeader as _;
 

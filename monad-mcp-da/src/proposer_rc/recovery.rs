@@ -18,8 +18,8 @@ use monad_mcp_common::containers::ValidatorSet;
 use super::super::{
     chunk::{ChunkRequest, ChunkRequestType, ChunksSubset},
     instance_rc::MissingChunks,
+    send_order::shuffle_sends,
     types::{NodeId, ProposalId, Timestamp, TimestampDelta, ValidatorData},
-    util::shuffle_sends,
 };
 
 // the pulls for the chunks the pinned proposal still misses: ours from the

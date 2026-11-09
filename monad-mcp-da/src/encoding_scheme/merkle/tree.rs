@@ -14,23 +14,9 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use monad_crypto::hasher::Hash;
-use monad_mcp_common::containers::OrderKey;
 use monad_merkle::{MerkleProof, MerkleTree};
 
-use super::types::{MerkleHash, MerkleRoot, NodeId, ProposalId};
-
-// shuffle a sender's messages about one proposal into a pseudo-random order:
-// uniform over proposals and senders, so no node is systematically served or
-// asked first, and a function of (pid, sender) alone, so it is the same in
-// every run, process and release.
-//
-// todo: replace with the send strategy once sends are prioritized.
-pub(crate) fn shuffle_sends<T>(items: &mut [T], pid: &ProposalId, sender: &NodeId) {
-    OrderKey::new(b"monad-mcp-da send order")
-        .with(pid)
-        .with(sender)
-        .shuffle(items);
-}
+use super::super::super::types::{MerkleHash, MerkleRoot};
 
 // a wrapper of MerkleTree type adapted for interfacing with da types.
 pub struct Tree(MerkleTree);
@@ -121,32 +107,4 @@ mod tests {
             &tree.proof(0)
         ));
     }
-
-    #[test]
-    fn a_send_order_is_a_permutation_fixed_by_proposal_and_sender() {
-        use super::super::test_util::{epoch_handle, proposal_chunks};
-
-        let pid = |payload| -> ProposalId {
-            use monad_mcp_cadence::spec::ProposalHeader as _;
-            proposal_chunks(&epoch_handle(), payload).0.pid()
-        };
-        let order = |pid: &ProposalId, sender: u64| {
-            let mut nodes: Vec<u64> = (0..16).collect();
-            shuffle_sends(&mut nodes, pid, &NodeId::dummy(sender));
-            nodes
-        };
-
-        let (a, b) = (pid(1), pid(2));
-        let mut sorted = order(&a, 0);
-        sorted.sort();
-        assert_eq!(sorted, (0..16).collect::<Vec<_>>());
-        assert_eq!(order(&a, 0), order(&a, 0));
-        assert_ne!(order(&a, 0), order(&a, 1));
-        assert_ne!(order(&a, 0), order(&b, 0));
-        // pinned: blake3, rlp, ChaCha20 and the stub pid (rapidhash v3) are stable,
-        // so the order is the same across processes and releases
-        assert_eq!(order(&a, 0), PINNED);
-    }
-
-    const PINNED: [u64; 16] = [3, 15, 10, 9, 8, 0, 13, 11, 6, 14, 12, 7, 2, 1, 4, 5];
 }

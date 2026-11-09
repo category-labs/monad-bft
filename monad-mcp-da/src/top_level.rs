@@ -26,9 +26,9 @@ mod header;
 mod instance_rc;
 mod proposer_rc;
 mod runtime;
+mod send_order;
 mod slot_rc;
 pub(crate) mod types;
-mod util;
 pub(crate) mod wire;
 
 #[cfg(test)]

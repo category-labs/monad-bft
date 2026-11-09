@@ -27,11 +27,11 @@ use super::{
     encoding_scheme::{InvalidEncoding, Resolved},
     instance_rc::{MissingChunks, RaptorcastInstance},
     runtime::{EpochHandle, Timing},
+    send_order::shuffle_sends,
     types::{
         EquivCert, MissingHeaders, NodeId, ProposalDAEvent, ProposalId, SignedProposalHeader,
         Timestamp, TimestampDelta, ValidatorData,
     },
-    util::shuffle_sends,
 };
 
 // per-(slot, proposer) raptorcast: keyed by proposal pid
