@@ -20,7 +20,7 @@ use super::Component;
 use crate::{
     cadence::{SlotLifecycle, slot::chorus::ChorusDACommand},
     common::NodeId,
-    da::{ChunkRecoveryRequest, DAOutput, DARuntime, ProposalEnvelope},
+    da::{ChunkRecoveryRequest, DAOutput, DARuntime, ProposalEnvelope, ProposalScheme},
     epoch::NodeProposerSchedule,
 };
 
@@ -31,8 +31,11 @@ pub enum DAInput {
     ChunkRequest(NodeId, ChunkRecoveryRequest),
     Lifecycle(SlotLifecycle),
     Command(Slot, ChorusDACommand),
-    // our proposal, encoded at the time DA handles it
-    Propose(Proposal<Bytes>),
+    // our proposal, encoded under the scheme at the time DA handles it
+    Propose {
+        scheme: ProposalScheme,
+        proposal: Proposal<Bytes>,
+    },
 }
 
 impl Component for DA {
@@ -49,7 +52,7 @@ impl Component for DA {
             DAInput::ChunkRequest(from, request) => self.handle_chunk_request(request, &from, now),
             DAInput::Lifecycle(event) => self.handle_slot_lifecycle(event),
             DAInput::Command(slot, command) => self.handle_command(command, slot, now),
-            DAInput::Propose(proposal) => self.propose(proposal, now),
+            DAInput::Propose { scheme, proposal } => self.propose(scheme, proposal, now),
         }
     }
 
@@ -95,7 +98,12 @@ mod tests {
                 lane: Lane::new_unchecked(0),
                 payload: Bytes::from(vec![7; len]),
             };
-            da.handle(now, DAInput::Propose(proposal));
+            let proposal_scheme = ProposalScheme::D33;
+            let input = DAInput::Propose {
+                scheme: proposal_scheme,
+                proposal,
+            };
+            da.handle(now, input);
             let mut outputs = 0;
             while Component::poll(&mut da).is_some() {
                 outputs += 1;

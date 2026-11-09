@@ -1857,7 +1857,7 @@ mod rlp_tests {
         let header_at = |lane: u8, root: u8| SignedProposalHeader {
             header: ProposalHeader {
                 root: MerkleRoot(MerkleHash([root; 20])),
-                scheme: EncodingScheme::Test(ProposalScope::new(
+                scheme: EncodingScheme::Trivial(ProposalScope::new(
                     crate::stub::types::Slot(9),
                     Lane::new_unchecked(lane),
                 )),

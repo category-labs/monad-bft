@@ -26,7 +26,7 @@ use super::{
     assignment::{ChunkAssignment, ChunkId, PacketLossResistance},
     chunk::{Chunk, ProposalEnvelope, WireChunkId},
     encoding_scheme::{
-        DAEncodingScheme as _, ProposalChunks,
+        DAEncodingScheme as _, Hollow, ProposalChunks,
         d33::{self, D33Chunks},
     },
     header::header_auth,
@@ -121,6 +121,14 @@ pub(crate) fn d33_scheme_at(epoch_handle: &EpochHandle, slot: Slot, lane: Lane) 
     EncodingScheme::D33(d33)
 }
 
+// the default fixture's scheme with the chunk data taken out
+pub(crate) fn hollow_scheme(epoch_handle: &EpochHandle) -> EncodingScheme {
+    let EncodingScheme::D33(d33) = scheme(epoch_handle) else {
+        panic!("the fixture's scheme is d33");
+    };
+    Hollow::new(d33).into()
+}
+
 // the header as validator `author_id` signs it
 pub(crate) fn signed_header(header: ProposalHeader, author_id: u64) -> SignedProposalHeader {
     use crate::spec::DAProposalKeyPair as _;
@@ -174,7 +182,7 @@ pub(crate) fn proposal_chunks_under(
 ) -> (SignedProposalHeader, Vec<Chunk<'static>>) {
     let author = NodeId::dummy(author_id);
     let assignment = scheme.chunk_assignment(&author, &epoch_handle.validator_data);
-    let message = vec![payload; MESSAGE_LEN];
+    let message = Bytes::from(vec![payload; MESSAGE_LEN]);
     let encoded = scheme.encode(&message, assignment.num_chunks());
     let encoded = encoded.expect("a message of the scheme's length");
     let header = ProposalHeader {
@@ -209,7 +217,9 @@ pub(crate) fn inconsistent_proposal_chunks(
         let payload = if i < num_chunks / 2 { 1 } else { 2 };
         symbols.push(Bytes::from(vec![payload; symbol_len]));
     }
-    let EncodingScheme::D33(d33) = &scheme;
+    let EncodingScheme::D33(d33) = &scheme else {
+        panic!("the fixture's scheme is d33");
+    };
     let complete = D33Chunks::from_symbols(d33, symbols);
     let header = ProposalHeader {
         root: complete.root(),

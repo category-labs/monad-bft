@@ -13,6 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use bytes::Bytes;
 use monad_crypto::hasher::{Hash, HasherType};
 use monad_mcp_cadence::spec::validator::ValidatorData as _;
 use rand_chacha::ChaCha20Rng;
@@ -170,7 +171,7 @@ impl DAEncodingScheme for D33 {
         partition.assign_spm(author, target, REDUNDANCY, PACKET_LOSS_RESISTANCE)
     }
 
-    fn encode(&self, message: &[u8], num_chunks: usize) -> Option<D33Chunks> {
+    fn encode(&self, message: &Bytes, num_chunks: usize) -> Option<D33Chunks> {
         D33Chunks::encode(self, message, num_chunks)
     }
 
@@ -207,7 +208,7 @@ impl MerkleCode for D33 {
 // the v1 header of a d33 proposal, after the version(2):
 // lane+depth(1) variant(1) slot(8) unix_ts(8) root(20) msg_len(3)
 // and its chunk header: chunk_id(2)
-mod header {
+pub(super) mod header {
     use bytes::{Buf, BufMut};
 
     use super::{
@@ -245,52 +246,14 @@ mod header {
         const PROPOSAL_HEADER_LEN: usize = PROPOSAL_HEADER_LEN;
         const CHUNK_HEADER_LEN: usize = CHUNK_HEADER_LEN;
 
-        fn pack_header(&self, root: &MerkleRoot, out: &mut impl BufMut) {
-            assert!((MIN_DEPTH..=MAX_DEPTH).contains(&self.depth));
-            assert!(usize::from(self.lane) < MAX_PROPOSER_SET_SIZE);
-            assert!(self.msg_len as usize <= MAX_MESSAGE_LEN);
+        type Frame<'a> = v1::Layout<'a, D33>;
 
-            out.put_u8((usize::from(self.lane) as u8) << LANE_SHIFT | self.depth);
-            out.put_u8(VARIANT);
-            out.put_u64_le(self.slot.get());
-            out.put_u64_le(self.unix_ts);
-            root.to_bytes(out);
-            out.put_uint_le(u64::from(self.msg_len), MSG_LEN_LEN);
+        fn pack_header(&self, root: &MerkleRoot, out: &mut impl BufMut) {
+            pack::<D33>(self, root, out);
         }
 
         fn unpack_header(bytes: &mut impl Buf) -> Result<(MerkleRoot, D33), MalformedPacket> {
-            let lane_depth = bytes.get_u8();
-            let depth = lane_depth & DEPTH_MASK;
-            if !(MIN_DEPTH..=MAX_DEPTH).contains(&depth) {
-                return Err(MalformedPacket::DepthOutOfRange(depth));
-            }
-            let lane = lane_depth >> LANE_SHIFT;
-            let lane = Lane::from_u8(lane).ok_or(MalformedPacket::LaneOutOfRange(lane))?;
-
-            let variant = bytes.get_u8();
-            if variant != VARIANT {
-                return Err(MalformedPacket::UnknownScheme(variant));
-            }
-
-            let slot = bytes.get_u64_le();
-            let slot = Slot::from_u64(slot).ok_or(MalformedPacket::SlotOutOfRange(slot))?;
-
-            let unix_ts = bytes.get_u64_le();
-
-            let mut root = [0u8; ROOT_LEN];
-            bytes.copy_to_slice(&mut root);
-            let root = MerkleRoot::from_bytes(&root).ok_or(MalformedPacket::BadRoot)?;
-
-            let msg_len = bytes.get_uint_le(MSG_LEN_LEN) as u32;
-
-            let scheme = D33 {
-                slot,
-                lane,
-                depth,
-                msg_len,
-                unix_ts,
-            };
-            Ok((root, scheme))
+            unpack::<D33>(bytes)
         }
 
         fn pack_chunk_header(chunk_id: WireChunkId, out: &mut impl BufMut) {
@@ -308,6 +271,58 @@ mod header {
         fn v1_layout(&self) -> v1::Layout<'_, D33> {
             v1::Layout::new(self)
         }
+    }
+
+    // the header of a d33 proposal under the variant of H, the scheme
+    // that carries it
+    pub(crate) fn pack<H: DAHeaderScheme>(d33: &D33, root: &MerkleRoot, out: &mut impl BufMut) {
+        assert!((MIN_DEPTH..=MAX_DEPTH).contains(&d33.depth));
+        assert!(usize::from(d33.lane) < MAX_PROPOSER_SET_SIZE);
+        assert!(d33.msg_len as usize <= MAX_MESSAGE_LEN);
+
+        out.put_u8((usize::from(d33.lane) as u8) << LANE_SHIFT | d33.depth);
+        out.put_u8(H::VARIANT);
+        out.put_u64_le(d33.slot.get());
+        out.put_u64_le(d33.unix_ts);
+        root.to_bytes(out);
+        out.put_uint_le(u64::from(d33.msg_len), MSG_LEN_LEN);
+    }
+
+    pub(crate) fn unpack<H: DAHeaderScheme>(
+        bytes: &mut impl Buf,
+    ) -> Result<(MerkleRoot, D33), MalformedPacket> {
+        let lane_depth = bytes.get_u8();
+        let depth = lane_depth & DEPTH_MASK;
+        if !(MIN_DEPTH..=MAX_DEPTH).contains(&depth) {
+            return Err(MalformedPacket::DepthOutOfRange(depth));
+        }
+        let lane = lane_depth >> LANE_SHIFT;
+        let lane = Lane::from_u8(lane).ok_or(MalformedPacket::LaneOutOfRange(lane))?;
+
+        let variant = bytes.get_u8();
+        if variant != H::VARIANT {
+            return Err(MalformedPacket::UnknownScheme(variant));
+        }
+
+        let slot = bytes.get_u64_le();
+        let slot = Slot::from_u64(slot).ok_or(MalformedPacket::SlotOutOfRange(slot))?;
+
+        let unix_ts = bytes.get_u64_le();
+
+        let mut root = [0u8; ROOT_LEN];
+        bytes.copy_to_slice(&mut root);
+        let root = MerkleRoot::from_bytes(&root).ok_or(MalformedPacket::BadRoot)?;
+
+        let msg_len = bytes.get_uint_le(MSG_LEN_LEN) as u32;
+
+        let scheme = D33 {
+            slot,
+            lane,
+            depth,
+            msg_len,
+            unix_ts,
+        };
+        Ok((root, scheme))
     }
 
     const _: () = {
@@ -376,7 +391,9 @@ mod header {
         fn a_packet_is_one_segment_at_the_d33_offsets() {
             let epoch_handle = epoch_handle();
             let (header, chunks) = proposal_chunks(&epoch_handle, 1);
-            let EncodingScheme::D33(d33) = header.scheme();
+            let EncodingScheme::D33(d33) = header.scheme() else {
+                panic!("the fixture's scheme is d33");
+            };
             let (_, chunk_id, data) = chunks[3].clone().into_parts();
 
             let bytes = write_chunk(&chunks[3]);

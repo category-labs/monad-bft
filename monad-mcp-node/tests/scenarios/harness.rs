@@ -31,7 +31,7 @@ use monad_mcp_node::{
         CadenceConfig, DAConfig, LedgerConfig, NetworkConfig, NodeConfig, ProposalConfig,
         RepeaterSection, ValidatorConfig,
     },
-    da::ProposalKeyPair,
+    da::{self, ProposalKeyPair},
     network::{NodeInbound, NodeMessage},
 };
 use monad_sim::{CancelToken, ClockDiff, Ctx, Handle, StepLabel, Time};
@@ -426,13 +426,13 @@ pub fn testnet_table() -> RegionTable {
 const GBIT: u64 = 1_000_000_000;
 
 // what one message costs on the wire: the frame (sender id, kind, payload)
-// plus the IPv4 and UDP headers
+// plus the IPv4 and UDP headers. a hollow chunk costs its d33 chunk.
 pub fn wire_size(message: &NodeMessage) -> usize {
     let payload = match message {
-        NodeMessage::Cadence(bytes)
-        | NodeMessage::Chunk(bytes)
-        | NodeMessage::ChunkRequest(bytes)
-        | NodeMessage::Tx(bytes) => bytes.len(),
+        NodeMessage::Chunk(bytes) => da::nominal_len(bytes),
+        NodeMessage::Cadence(bytes) | NodeMessage::ChunkRequest(bytes) | NodeMessage::Tx(bytes) => {
+            bytes.len()
+        }
     };
     9 + payload + 20 + 8
 }

@@ -22,7 +22,11 @@ use crate::{
         CadenceInput, CadenceOutput, CadenceWireMsg, DAInput, FinalizationInput, ProposingInput,
         ProposingOutput, Recipients, RepeaterInput, RepeaterOutput,
     },
-    da::{ChunkRecoveryRequest, DAOutput, Dissemination, read_envelope, write_envelope},
+    config::NodeConfig,
+    da::{
+        ChunkRecoveryRequest, DAOutput, Dissemination, ProposalScheme, read_envelope,
+        write_envelope,
+    },
     epoch::EpochHandle,
     finalization::FinalizedSlot,
     network::{NodeInbound, NodeMessage, NodeOutbound},
@@ -67,11 +71,16 @@ pub trait Router {
 
 pub struct NodeRouter {
     epoch_handle: EpochHandle,
+    // the scheme our proposals go to DA under
+    proposal_scheme: ProposalScheme,
 }
 
 impl NodeRouter {
-    pub fn new(epoch_handle: EpochHandle) -> Self {
-        Self { epoch_handle }
+    pub fn new(epoch_handle: EpochHandle, config: &NodeConfig) -> Self {
+        Self {
+            epoch_handle,
+            proposal_scheme: config.proposal.encoding_scheme,
+        }
     }
 
     pub fn epoch_handle(&self) -> &EpochHandle {
@@ -167,7 +176,7 @@ impl Router for NodeRouter {
             Effect::Network(inbound) => route_inbound(now, inbound, sink),
             Effect::Cadence(output) => self.route_cadence(output, sink),
             Effect::DA(output) => route_da(now, output, sink),
-            Effect::Proposing(proposal) => route_proposal(proposal, sink),
+            Effect::Proposing(proposal) => route_proposal(self.proposal_scheme, proposal, sink),
             Effect::Repeater(repeat) => route_repeat(repeat, sink),
             Effect::Finalization(finalized) => sink.send(Routed::Ledger(finalized)),
         }
@@ -231,14 +240,21 @@ fn route_repeat((to, message): RepeaterOutput<ChorusMessage>, sink: &mut impl Si
     sink.send(Routed::Network(outbound));
 }
 
-fn route_proposal(proposal: ProposingOutput, sink: &mut impl Sink<Routed>) {
+fn route_proposal(
+    proposal_scheme: ProposalScheme,
+    proposal: ProposingOutput,
+    sink: &mut impl Sink<Routed>,
+) {
     tracing::info!(
         ?proposal.slot,
         ?proposal.lane,
         len = proposal.payload.len(),
         "proposing"
     );
-    let input = DAInput::Propose(proposal);
+    let input = DAInput::Propose {
+        scheme: proposal_scheme,
+        proposal,
+    };
     sink.send(Routed::DA(input));
 }
 

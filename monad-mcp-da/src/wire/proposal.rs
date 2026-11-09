@@ -13,6 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use bytes::Bytes;
 use monad_mcp_cadence::spec::validator::ValidatorData as _;
 
 use super::{
@@ -21,7 +22,7 @@ use super::{
         chunk::{ChunkData, ProposalEnvelope},
         egress::Dissemination,
         encoding_scheme::{ProposalChunks, d33},
-        runtime::EpochHandle,
+        runtime::{EpochHandle, ProposalScheme},
         types::{
             EncodingScheme, NodeId, Proposal, ProposalHeader, ProposalKeyPair, SignedProposalHeader,
         },
@@ -38,8 +39,29 @@ pub struct AssembledProposal {
 }
 
 impl AssembledProposal {
+    pub fn build(
+        kind: ProposalScheme,
+        epoch_handle: &EpochHandle,
+        proposal: &Proposal,
+        timestamp: u64,
+    ) -> Option<Self> {
+        match kind {
+            ProposalScheme::D33 => Self::build_d33(epoch_handle, proposal, timestamp),
+            ProposalScheme::D33Hollow => Self::build_d33_hollow(epoch_handle, proposal, timestamp),
+        }
+    }
+
     // None unless the message is the length the scheme encodes
-    pub fn build_d33(
+    fn build_d33(epoch_handle: &EpochHandle, proposal: &Proposal, timestamp: u64) -> Option<Self> {
+        let num_validators = epoch_handle.validator_data.len();
+        let msg_len = proposal.payload.len();
+        let lane = proposal.lane;
+        let d33 = d33::for_message(proposal.slot, msg_len, timestamp, lane, num_validators)?;
+        let scheme = EncodingScheme::D33(d33);
+        Self::build_under(epoch_handle, &proposal.payload, scheme)
+    }
+
+    fn build_d33_hollow(
         epoch_handle: &EpochHandle,
         proposal: &Proposal,
         timestamp: u64,
@@ -48,11 +70,15 @@ impl AssembledProposal {
         let msg_len = proposal.payload.len();
         let lane = proposal.lane;
         let d33 = d33::for_message(proposal.slot, msg_len, timestamp, lane, num_validators)?;
-        let scheme = EncodingScheme::D33(d33);
-        Self::build(epoch_handle, &proposal.payload, scheme)
+        let scheme = EncodingScheme::D33Hollow(d33);
+        Self::build_under(epoch_handle, &proposal.payload, scheme)
     }
 
-    fn build(epoch_handle: &EpochHandle, message: &[u8], scheme: EncodingScheme) -> Option<Self> {
+    fn build_under(
+        epoch_handle: &EpochHandle,
+        message: &Bytes,
+        scheme: EncodingScheme,
+    ) -> Option<Self> {
         use super::super::encoding_scheme::DAEncodingScheme as _;
 
         let author = &epoch_handle.self_id;
@@ -172,8 +198,6 @@ impl<'a> FirstHopDissemination<'a> {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-
-    use bytes::Bytes;
 
     use super::{
         super::{
@@ -310,7 +334,7 @@ mod tests {
         ];
         let obligations = Obligations::new(Stake::from(4), holders);
         let assignment = ChunkAssignment::deal(&author(), obligations, PACKET_LOSS_RESISTANCE);
-        let message = vec![1u8; MESSAGE_LEN];
+        let message = Bytes::from(vec![1u8; MESSAGE_LEN]);
         let chunks = header.scheme().encode(&message, assignment.num_chunks());
         let chunks = chunks.expect("the fixture's message fits");
         let proposal = AssembledProposal::assemble(

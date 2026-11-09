@@ -16,7 +16,7 @@
 use std::time::Duration;
 
 use monad_mcp_common::Slot;
-use monad_mcp_node::{Node, common::NodeId};
+use monad_mcp_node::{Node, common::NodeId, da::ProposalScheme};
 use monad_sim_swarm::Network;
 
 use crate::harness::{
@@ -28,6 +28,16 @@ use crate::harness::{
 // probability: the live 6 keep finalizing
 #[test]
 fn six_of_eight_finalize_through_ten_percent_loss() {
+    six_of_eight_finalize_under(ProposalScheme::D33);
+}
+
+// recovery from loss works the same without chunk data on the wire
+#[test]
+fn six_of_eight_finalize_hollow_chunks_through_ten_percent_loss() {
+    six_of_eight_finalize_under(ProposalScheme::D33Hollow);
+}
+
+fn six_of_eight_finalize_under(scheme: ProposalScheme) {
     const VALIDATORS: u64 = 8;
     const DOWN: u64 = 2;
     const SLOTS: u64 = 500;
@@ -42,6 +52,7 @@ fn six_of_eight_finalize_through_ten_percent_loss() {
         let mut config = node_config(SEED, id, VALIDATORS);
         // cap proposal size to reduce # of chunks
         config.proposal.max_payload_bytes = Some(MAX_PROPOSAL_LEN);
+        config.proposal.encoding_scheme = scheme;
         let node = Node::new(&config).expect("config builds");
         let sim_node = SimNode::new(node_id, node);
         nodes.push((node_id, sim_node));

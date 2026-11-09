@@ -25,6 +25,7 @@ use monad_mcp_cadence::spec::{ProposalHeader as _, SignedProposalHeader as _};
 
 use super::{
     chunk::{Chunk, ChunkData, ProposalEnvelope, WireChunkId},
+    encoding_scheme::Hollow,
     types::{
         D33, EncodingScheme, MerkleRoot, ProposalHeader, ProposalSignature, SignedProposalHeader,
     },
@@ -60,6 +61,11 @@ pub trait DAHeaderScheme: Sized {
     const PROPOSAL_HEADER_LEN: usize;
     const CHUNK_HEADER_LEN: usize;
 
+    // the v1 frame the scheme's packets travel in
+    type Frame<'a>: PacketLayout
+    where
+        Self: 'a;
+
     // writes exactly PROPOSAL_HEADER_LEN bytes
     fn pack_header(&self, root: &MerkleRoot, out: &mut impl BufMut);
     // the caller must pass exactly PROPOSAL_HEADER_LEN bytes
@@ -73,7 +79,7 @@ pub trait DAHeaderScheme: Sized {
     // the merkle tree depth, which sizes the proof in a chunk body
     fn depth(&self) -> u8;
 
-    fn v1_layout(&self) -> v1::Layout<'_, Self>;
+    fn v1_layout(&self) -> Self::Frame<'_>;
 }
 
 // what a proposal's header determines about its packets: the frame
@@ -98,36 +104,44 @@ impl PacketLayout for EncodingScheme {
     fn signed_bytes(&self, root: &MerkleRoot, out: &mut impl BufMut) {
         match self {
             Self::D33(d33) => d33.v1_layout().signed_bytes(root, out),
+            Self::D33Hollow(d33) => Hollow::new(*d33).v1_layout().signed_bytes(root, out),
         }
     }
 
     fn write_header(&self, root: &MerkleRoot, sig: &ProposalSignature, out: &mut impl BufMut) {
         match self {
             Self::D33(d33) => d33.v1_layout().write_header(root, sig, out),
+            Self::D33Hollow(d33) => Hollow::new(*d33).v1_layout().write_header(root, sig, out),
         }
     }
 
     fn header_len(&self) -> usize {
         match self {
             Self::D33(d33) => d33.v1_layout().header_len(),
+            Self::D33Hollow(d33) => Hollow::new(*d33).v1_layout().header_len(),
         }
     }
 
     fn write_body(&self, chunk_id: WireChunkId, data: &ChunkData, out: &mut impl BufMut) {
         match self {
             Self::D33(d33) => d33.v1_layout().write_body(chunk_id, data, out),
+            Self::D33Hollow(d33) => Hollow::new(*d33)
+                .v1_layout()
+                .write_body(chunk_id, data, out),
         }
     }
 
     fn body_len(&self) -> usize {
         match self {
             Self::D33(d33) => d33.v1_layout().body_len(),
+            Self::D33Hollow(d33) => Hollow::new(*d33).v1_layout().body_len(),
         }
     }
 
     fn symbol_len(&self) -> usize {
         match self {
             Self::D33(d33) => d33.v1_layout().symbol_len(),
+            Self::D33Hollow(d33) => Hollow::new(*d33).v1_layout().symbol_len(),
         }
     }
 }
@@ -148,6 +162,7 @@ fn scheme_variant(bytes: &Bytes) -> Result<u8, MalformedPacket> {
 pub fn read_chunk(bytes: Bytes) -> Result<Chunk<'static>, MalformedPacket> {
     match scheme_variant(&bytes)? {
         D33::VARIANT => v1::Layout::<D33>::read_chunk(bytes),
+        Hollow::<D33>::VARIANT => v1::HollowLayout::<Hollow<D33>>::read_chunk(bytes),
         other => Err(MalformedPacket::UnknownScheme(other)),
     }
 }
@@ -155,8 +170,20 @@ pub fn read_chunk(bytes: Bytes) -> Result<Chunk<'static>, MalformedPacket> {
 pub fn read_envelope(bytes: Bytes) -> Result<ProposalEnvelope, MalformedPacket> {
     match scheme_variant(&bytes)? {
         D33::VARIANT => v1::Layout::<D33>::read_envelope(bytes),
+        Hollow::<D33>::VARIANT => v1::HollowLayout::<Hollow<D33>>::read_envelope(bytes),
         other => Err(MalformedPacket::UnknownScheme(other)),
     }
+}
+
+// the bytes a packet stands for on a real network: a hollow chunk stands
+// for the segment its d33 chunk fills
+pub fn nominal_len(packet: &Bytes) -> usize {
+    let hollow = scheme_variant(packet) == Ok(Hollow::<D33>::VARIANT);
+    let hollow_chunk = hollow && packet.len() == v1::HollowLayout::<Hollow<D33>>::PACKET_LEN;
+    if hollow_chunk {
+        return v1::SEGMENT_LEN;
+    }
+    packet.len()
 }
 
 pub fn signed_bytes(header: &ProposalHeader) -> Bytes {
@@ -209,7 +236,10 @@ mod tests {
     use super::{
         super::{
             encoding_scheme::d33::D33Layout,
-            test_util::{SLOT, author, epoch_handle, group, proposal_chunks, proposal_chunks_from},
+            test_util::{
+                SLOT, author, epoch_handle, group, hollow_scheme, proposal_chunks,
+                proposal_chunks_from, proposal_chunks_under,
+            },
             types::NodeId,
         },
         *,
@@ -289,5 +319,26 @@ mod tests {
         // the same bytes signed by another author recover that author
         let (other, _) = proposal_chunks_from(&epoch_handle, 2, SLOT, 1);
         assert_eq!(other.sig().recover_author(&signed), Some(NodeId::dummy(2)));
+    }
+
+    #[test]
+    fn a_hollow_chunk_is_routed_to_its_frame_and_stands_for_a_segment() {
+        let epoch_handle = epoch_handle();
+        let scheme = hollow_scheme(&epoch_handle);
+        let (header, chunks) = proposal_chunks_under(&epoch_handle, scheme, 0, 1);
+
+        let packet = write_chunk(&chunks[0]);
+        assert_eq!(packet[v1::SCHEME_VARIANT_OFFSET], Hollow::<D33>::VARIANT);
+        assert_eq!(read_chunk(packet.clone()), Ok(chunks[0].clone()));
+        assert_eq!(nominal_len(&packet), v1::SEGMENT_LEN);
+
+        let header_only = header_bytes(&header);
+        let envelope = ProposalEnvelope::from_header(header);
+        assert_eq!(read_envelope(header_only.clone()), Ok(envelope));
+        assert_eq!(nominal_len(&header_only), D33Layout::HEADER_LEN);
+
+        let (_, d33_chunks) = proposal_chunks(&epoch_handle, 1);
+        let d33_packet = write_chunk(&d33_chunks[0]);
+        assert_eq!(nominal_len(&d33_packet), v1::SEGMENT_LEN);
     }
 }

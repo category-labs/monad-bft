@@ -39,9 +39,11 @@ pub use egress::Dissemination;
 pub use encoding_scheme::{InvalidEncoding, Resolved};
 pub use env::ProposalKeyPair;
 pub use header::{InvalidProposalHeader, header_auth};
-pub use runtime::{ChunkRecoveryRequest, DAConfig, DAOutput, DARuntime, EpochHandle};
+pub use runtime::{
+    ChunkRecoveryRequest, DAConfig, DAOutput, DARuntime, EpochHandle, ProposalScheme,
+};
 pub use wire::{
-    MalformedPacket,
+    MalformedPacket, nominal_len,
     proposal::{AssembledProposal, FirstHopDissemination},
     read_chunk, read_envelope, signed_bytes, write_chunk, write_envelope,
 };

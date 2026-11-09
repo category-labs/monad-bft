@@ -48,6 +48,9 @@ source = "random"
 # proposal size limit in bytes, at most 1 MiB; absent: 1 MiB for random,
 # 64 KiB for mempool
 # max_payload_bytes = 65536
+# "d33" (the default). "d33_hollow": chunks carry no data on the wire and
+# decode from a store the nodes of one process share, for simulations only.
+encoding_scheme = "d33"
 
 # must match on every validator; absent: rotation_slack = 3
 [leader_election]

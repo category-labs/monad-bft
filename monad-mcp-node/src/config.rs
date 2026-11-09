@@ -341,6 +341,9 @@ pub struct ProposalConfig {
     // proposal that cannot arrive before the deadline.
     #[serde(deserialize_with = "de::millis")]
     pub withhold_before_deadline: TimestampDelta,
+    // "d33", or "d33_hollow" to keep chunk data off the wire in a simulation
+    #[serde(deserialize_with = "de::proposal_scheme")]
+    pub encoding_scheme: da::ProposalScheme,
 }
 
 impl ProposalConfig {
@@ -413,6 +416,7 @@ impl Default for ProposalConfig {
             max_payload_bytes: None,
             propose_before_deadline: TimestampDelta::from_millis(500),
             withhold_before_deadline: TimestampDelta::ZERO,
+            encoding_scheme: da::ProposalScheme::D33,
         }
     }
 }
@@ -463,7 +467,7 @@ mod de {
 
     use crate::{
         common::{KeyPair, NodeId, PubKey},
-        da::ProposalKeyPair,
+        da::{ProposalKeyPair, ProposalScheme},
     };
 
     pub fn node_id<'de, D: Deserializer<'de>>(d: D) -> Result<NodeId, D::Error> {
@@ -489,6 +493,16 @@ mod de {
 
     pub fn unix_millis<'de, D: Deserializer<'de>>(d: D) -> Result<Timestamp, D::Error> {
         u64::deserialize(d).map(Timestamp::from_millis)
+    }
+
+    pub fn proposal_scheme<'de, D: Deserializer<'de>>(d: D) -> Result<ProposalScheme, D::Error> {
+        const NAMES: &[&str] = &["d33", "d33_hollow"];
+        let name = String::deserialize(d)?;
+        match name.as_str() {
+            "d33" => Ok(ProposalScheme::D33),
+            "d33_hollow" => Ok(ProposalScheme::D33Hollow),
+            other => Err(serde::de::Error::unknown_variant(other, NAMES)),
+        }
     }
 }
 

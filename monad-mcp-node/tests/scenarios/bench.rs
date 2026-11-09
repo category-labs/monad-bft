@@ -33,11 +33,12 @@
 //! random payloads at it, `slot_cost` fixes them to it); for `slot_cost`,
 //! `BENCH_DOMAINS` (`node`, the default, or `region`), `BENCH_GROUPS` (the
 //! target group count with one domain per node) and `BENCH_SEQUENTIAL=0` to
-//! skip the sequential run.
+//! skip the sequential run. `BENCH_SCHEME=d33_hollow` runs either bench
+//! without chunk data on the wire.
 
 use std::time::{Duration, Instant};
 
-use monad_mcp_node::{Node, common::NodeId, config::SourceKind};
+use monad_mcp_node::{Node, common::NodeId, config::SourceKind, da::ProposalScheme};
 use monad_sim::{DEFAULT_GROUPS, Grouping};
 use monad_sim_swarm::{Network, Parallel, RegionTable, Swarm};
 
@@ -60,6 +61,14 @@ fn one(name: &str, default: u64) -> u64 {
     list(name, &[default])[0]
 }
 
+fn scheme() -> ProposalScheme {
+    match std::env::var("BENCH_SCHEME").as_deref() {
+        Err(_) | Ok("d33") => ProposalScheme::D33,
+        Ok("d33_hollow") => ProposalScheme::D33Hollow,
+        Ok(other) => panic!("BENCH_SCHEME is d33 or d33_hollow, not {other}"),
+    }
+}
+
 fn nodes(seed: u64, validators: u64, payload: usize, source: SourceKind) -> Vec<(NodeId, SimNode)> {
     (0..validators)
         .map(|id| {
@@ -67,10 +76,32 @@ fn nodes(seed: u64, validators: u64, payload: usize, source: SourceKind) -> Vec<
             let mut config = node_config(seed, id, validators);
             config.proposal.source = source;
             config.proposal.max_payload_bytes = Some(payload);
+            config.proposal.encoding_scheme = scheme();
             let node = Node::new(&config).expect("config builds");
             (node_id, SimNode::new(node_id, node))
         })
         .collect()
+}
+
+// the slot every node finalized through, and the lanes committed in all
+// the slots node 0 finalized: equal runs did the same protocol work
+fn progress(swarm: &Swarm<SimNode>) -> (u64, usize) {
+    let mut through = u64::MAX;
+    for id in swarm.node_ids() {
+        let last = swarm.with_node(&id, |node| node.finalized().keys().next_back().copied());
+        through = through.min(last.map_or(0, |slot| slot.0));
+    }
+    let committed = swarm.with_node(&NodeId::dummy(0), |node| {
+        let mut committed = 0;
+        for pattern in node.finalized().values() {
+            for lane in pattern.lanes() {
+                let entry = pattern.get(usize::from(lane)).expect("in range");
+                committed += usize::from(entry.is_some());
+            }
+        }
+        committed
+    });
+    (through, committed)
 }
 
 // run `slots` slots; the wall time covers the run only, not the build
@@ -155,10 +186,13 @@ fn slot_cost() {
             let sequential = sequential.then(|| run(false).0);
             let (parallel, swarm) = run(true);
             let steps = swarm.simulation().step_count();
+            let (through, committed) = progress(&swarm);
             println!(
-                "n {validators}, {name}, {payload} B proposals, {slots} slots: \
+                "n {validators}, {name}, {:?}, {payload} B proposals, {slots} slots: \
                  {} s per slot sequential, {:.2} s per slot on {threads} threads \
-                 ({} groups, {:?} windows), {:.0} steps per slot",
+                 ({} groups, {:?} windows), {:.0} steps per slot, finalized through \
+                 slot {through}, {committed} lanes committed",
+                scheme(),
                 sequential.map_or("-".to_string(), |s| format!("{s:.2}")),
                 parallel,
                 swarm.simulation().groups(),

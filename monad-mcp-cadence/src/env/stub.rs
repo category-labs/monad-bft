@@ -184,14 +184,16 @@ mod proposal {
     #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
     pub enum EncodingScheme {
         D33(D33),
+        // d33 without chunk data on the wire, for simulations
+        D33Hollow(D33),
         #[cfg(test)]
-        Test(ProposalScope),
+        Trivial(ProposalScope),
     }
 
     #[cfg(test)]
     impl EncodingScheme {
         pub fn dummy(slot: Slot) -> Self {
-            Self::Test(ProposalScope::new(slot, Lane::new_unchecked(0)))
+            Self::Trivial(ProposalScope::new(slot, Lane::new_unchecked(0)))
         }
     }
 
@@ -209,17 +211,17 @@ mod proposal {
     impl EncodingScheme {
         pub fn slot(&self) -> Slot {
             match self {
-                Self::D33(d33) => d33.slot,
+                Self::D33(d33) | Self::D33Hollow(d33) => d33.slot,
                 #[cfg(test)]
-                Self::Test(scope) => scope.slot,
+                Self::Trivial(scope) => scope.slot,
             }
         }
 
         pub fn lane(&self) -> Lane {
             match self {
-                Self::D33(d33) => d33.lane,
+                Self::D33(d33) | Self::D33Hollow(d33) => d33.lane,
                 #[cfg(test)]
-                Self::Test(scope) => scope.lane,
+                Self::Trivial(scope) => scope.lane,
             }
         }
     }
@@ -237,8 +239,12 @@ mod proposal {
                     let fields: [&dyn Encodable; 2] = [&1u8, f0];
                     alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
                 }
+                Self::D33Hollow(f0) => {
+                    let fields: [&dyn Encodable; 2] = [&2u8, f0];
+                    alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
+                }
                 #[cfg(test)]
-                Self::Test(f0) => {
+                Self::Trivial(f0) => {
                     let fields: [&dyn Encodable; 2] = [&255u8, f0];
                     alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
                 }
@@ -251,8 +257,12 @@ mod proposal {
                     let fields: [&dyn Encodable; 2] = [&1u8, f0];
                     alloy_rlp::list_length::<_, dyn Encodable>(&fields)
                 }
+                Self::D33Hollow(f0) => {
+                    let fields: [&dyn Encodable; 2] = [&2u8, f0];
+                    alloy_rlp::list_length::<_, dyn Encodable>(&fields)
+                }
                 #[cfg(test)]
-                Self::Test(f0) => {
+                Self::Trivial(f0) => {
                     let fields: [&dyn Encodable; 2] = [&255u8, f0];
                     alloy_rlp::list_length::<_, dyn Encodable>(&fields)
                 }
@@ -265,8 +275,9 @@ mod proposal {
             let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
             let result = match <u8 as Decodable>::decode(&mut payload)? {
                 1 => Self::D33(<D33 as Decodable>::decode(&mut payload)?),
+                2 => Self::D33Hollow(<D33 as Decodable>::decode(&mut payload)?),
                 #[cfg(test)]
-                255 => Self::Test(<ProposalScope as Decodable>::decode(&mut payload)?),
+                255 => Self::Trivial(<ProposalScope as Decodable>::decode(&mut payload)?),
                 _ => return Err(alloy_rlp::Error::Custom("unknown EncodingScheme tag")),
             };
             if !payload.is_empty() {
@@ -670,7 +681,7 @@ mod proposal_id_tests {
     fn header(root: u8, lane: u8) -> ProposalHeader {
         ProposalHeader {
             root: MerkleRoot(MerkleHash([root; 20])),
-            scheme: EncodingScheme::Test(ProposalScope::new(Slot(1), Lane::new_unchecked(lane))),
+            scheme: EncodingScheme::Trivial(ProposalScope::new(Slot(1), Lane::new_unchecked(lane))),
         }
     }
 

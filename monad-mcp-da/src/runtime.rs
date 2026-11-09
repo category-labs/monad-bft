@@ -57,6 +57,14 @@ pub struct DAConfig {
     pub delta: TimestampDelta,
 }
 
+// the scheme family our proposals are encoded with
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ProposalScheme {
+    D33,
+    // d33 without chunk data on the wire, for simulations
+    D33Hollow,
+}
+
 impl DAConfig {
     pub(crate) fn timing(&self) -> Timing {
         Timing {
@@ -129,10 +137,10 @@ where
         Ok(())
     }
 
-    // our proposal, encoded with d33
-    pub fn propose(&mut self, proposal: Proposal, now: Timestamp) {
+    pub fn propose(&mut self, proposal_scheme: ProposalScheme, proposal: Proposal, now: Timestamp) {
         let unix_ts = unix_seconds(now);
-        let assembled = AssembledProposal::build_d33(&self.epoch_handle, &proposal, unix_ts);
+        let assembled =
+            AssembledProposal::build(proposal_scheme, &self.epoch_handle, &proposal, unix_ts);
         let Some(assembled) = assembled else {
             tracing::warn!("proposal does not fit the scheme");
             return;

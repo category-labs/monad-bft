@@ -15,12 +15,18 @@
 
 pub mod d33;
 
+mod hollow;
 mod merkle;
 mod proposal_chunks;
 mod symbol_code;
 
-pub(crate) use self::proposal_chunks::{BadProof, ProposalChunks};
+use bytes::Bytes;
+
 pub use self::proposal_chunks::{InvalidEncoding, Resolved};
+pub(crate) use self::{
+    hollow::Hollow,
+    proposal_chunks::{BadProof, ProposalChunks},
+};
 use super::{
     assignment::ChunkAssignment,
     types::{EncodingScheme, MerkleRoot, NodeId, ValidatorData},
@@ -44,7 +50,7 @@ pub(crate) trait DAEncodingScheme {
 
     // every chunk of a message of the scheme's length. None for any
     // other length.
-    fn encode(&self, message: &[u8], num_chunks: usize) -> Option<Self::Chunks>;
+    fn encode(&self, message: &Bytes, num_chunks: usize) -> Option<Self::Chunks>;
 
     // the chunks of a proposal under root, before any arrives
     fn empty_chunks(&self, root: MerkleRoot, num_chunks: usize) -> Self::Chunks;
@@ -56,31 +62,41 @@ impl DAEncodingScheme for EncodingScheme {
     fn msg_len(&self) -> usize {
         match self {
             EncodingScheme::D33(d33) => d33.msg_len(),
+            EncodingScheme::D33Hollow(d33) => Hollow::new(*d33).msg_len(),
         }
     }
 
     fn num_source_chunks(&self) -> usize {
         match self {
             EncodingScheme::D33(d33) => d33.num_source_chunks(),
+            EncodingScheme::D33Hollow(d33) => Hollow::new(*d33).num_source_chunks(),
         }
     }
 
     fn is_canonical(&self, num_validators: usize) -> bool {
         match self {
             EncodingScheme::D33(d33) => d33.is_canonical(num_validators),
+            EncodingScheme::D33Hollow(d33) => Hollow::new(*d33).is_canonical(num_validators),
         }
     }
 
     fn chunk_assignment(&self, author: &NodeId, validator_data: &ValidatorData) -> ChunkAssignment {
         match self {
             EncodingScheme::D33(d33) => d33.chunk_assignment(author, validator_data),
+            EncodingScheme::D33Hollow(d33) => {
+                Hollow::new(*d33).chunk_assignment(author, validator_data)
+            }
         }
     }
 
-    fn encode(&self, message: &[u8], num_chunks: usize) -> Option<Self::Chunks> {
+    fn encode(&self, message: &Bytes, num_chunks: usize) -> Option<Self::Chunks> {
         match self {
             EncodingScheme::D33(d33) => {
                 let chunks = d33.encode(message, num_chunks)?;
+                Some(Box::new(chunks))
+            }
+            EncodingScheme::D33Hollow(d33) => {
+                let chunks = Hollow::new(*d33).encode(message, num_chunks)?;
                 Some(Box::new(chunks))
             }
         }
@@ -90,6 +106,10 @@ impl DAEncodingScheme for EncodingScheme {
         match self {
             EncodingScheme::D33(d33) => {
                 let chunks = d33.empty_chunks(root, num_chunks);
+                Box::new(chunks)
+            }
+            EncodingScheme::D33Hollow(d33) => {
+                let chunks = Hollow::new(*d33).empty_chunks(root, num_chunks);
                 Box::new(chunks)
             }
         }

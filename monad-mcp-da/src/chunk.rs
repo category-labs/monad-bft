@@ -101,6 +101,16 @@ pub struct ChunkData {
     pub(crate) proof: Box<[MerkleHash]>,
 }
 
+impl ChunkData {
+    // what a chunk of a hollow scheme carries: no symbol, no proof
+    pub(crate) fn hollow() -> Self {
+        Self {
+            symbol: Bytes::new(),
+            proof: Box::default(),
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Chunk<'a> {
     header: Cow<'a, SignedProposalHeader>,
