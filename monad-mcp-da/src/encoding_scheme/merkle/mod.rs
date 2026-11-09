@@ -51,6 +51,9 @@ pub(crate) enum MerkleChunks<S: MerkleCode> {
         root: MerkleRoot,
         num_chunks: usize,
         received: BTreeMap<ChunkId, ChunkData>,
+        // the leaf hash each received symbol had when its proof checked,
+        // by leaf index, for the re-encode
+        leaves: BTreeMap<WireChunkId, Leaf>,
         decoder: S::Decoder,
     },
     // every symbol under its tree, so any chunk is derivable
@@ -67,6 +70,12 @@ pub(crate) enum MerkleChunks<S: MerkleCode> {
     },
 }
 
+// a symbol and the leaf hash this node computed from it
+pub(crate) struct Leaf {
+    symbol: Bytes,
+    hash: Hash,
+}
+
 impl<S: MerkleCode> MerkleChunks<S> {
     pub(crate) fn new(scheme: S, root: MerkleRoot, num_chunks: usize) -> Self {
         let num_source_chunks = scheme.num_source_chunks();
@@ -77,6 +86,7 @@ impl<S: MerkleCode> MerkleChunks<S> {
             root,
             num_chunks,
             received: BTreeMap::new(),
+            leaves: BTreeMap::new(),
             decoder,
         }
     }
@@ -118,6 +128,7 @@ impl<S: MerkleCode> ProposalChunks for MerkleChunks<S> {
             scheme,
             root,
             received,
+            leaves,
             decoder,
             ..
         } = self
@@ -127,10 +138,12 @@ impl<S: MerkleCode> ProposalChunks for MerkleChunks<S> {
         if received.contains_key(&chunk_id) {
             return Ok(false);
         }
-        if !verify_proof(chunk_id, &data, scheme, root) {
+        let Some(hash) = verify_proof(chunk_id, &data, scheme, root) else {
             return Err(BadProof);
-        }
+        };
         decoder.ingest(chunk_id, &data.symbol);
+        let symbol = data.symbol.clone();
+        leaves.insert(chunk_id.to_wire(), Leaf { symbol, hash });
         received.insert(chunk_id, data);
         Ok(true)
     }
@@ -141,6 +154,7 @@ impl<S: MerkleCode> ProposalChunks for MerkleChunks<S> {
             root,
             num_chunks,
             received,
+            leaves,
             decoder,
         } = self
         else {
@@ -150,8 +164,15 @@ impl<S: MerkleCode> ProposalChunks for MerkleChunks<S> {
         // guarantee decodability (e.g. r10).
         let message = decoder.try_decode()?;
 
+        // a re-encoded symbol equal to a received one has the leaf hash
+        // computed when that chunk's proof checked; only the other
+        // leaves are hashed
         let root = *root;
-        let reencoded = chunk_tree(scheme, &message, *num_chunks);
+        let known_leaf = |leaf_idx, symbol: &[u8]| {
+            let leaf: &Leaf = leaves.get(&leaf_idx)?;
+            (leaf.symbol == symbol).then_some(leaf.hash)
+        };
+        let reencoded = chunk_tree_with(scheme, &message, *num_chunks, known_leaf);
         let Some((symbols, tree)) = reencoded.filter(|(_, tree)| tree.root() == root) else {
             let received = std::mem::take(received);
             *self = Self::Invalid { root, received };
@@ -184,35 +205,65 @@ fn chunk_tree<S: MerkleCode>(
     message: &Bytes,
     num_chunks: usize,
 ) -> Option<(Vec<Bytes>, Tree)> {
+    chunk_tree_with(scheme, message, num_chunks, |_, _| None)
+}
+
+// chunk_tree, taking a symbol's leaf hash from `known_leaf` where it has
+// one. The caller must ensure a leaf it returns is the scheme's leaf hash
+// of exactly that symbol at that index.
+fn chunk_tree_with<S: MerkleCode>(
+    scheme: &S,
+    message: &Bytes,
+    num_chunks: usize,
+    known_leaf: impl Fn(WireChunkId, &[u8]) -> Option<Hash>,
+) -> Option<(Vec<Bytes>, Tree)> {
     if message.is_empty() || message.len() != scheme.msg_len() {
         return None;
     }
     let symbols = scheme.encoder(num_chunks).encode(message);
     assert!(symbols.len() == num_chunks);
-    let tree = tree_over(scheme, &symbols);
+    let tree = tree_over_with(scheme, &symbols, known_leaf);
     Some((symbols, tree))
 }
 
 // the caller must pass the symbols in chunk id order
+#[cfg(test)]
 fn tree_over<S: MerkleCode>(scheme: &S, symbols: &[Bytes]) -> Tree {
+    tree_over_with(scheme, symbols, |_, _| None)
+}
+
+// tree_over, with known leaves as for chunk_tree_with
+fn tree_over_with<S: MerkleCode>(
+    scheme: &S,
+    symbols: &[Bytes],
+    known_leaf: impl Fn(WireChunkId, &[u8]) -> Option<Hash>,
+) -> Tree {
     let mut leaves = Vec::with_capacity(symbols.len());
     for (leaf_idx, symbol) in symbols.iter().enumerate() {
-        leaves.push(scheme.leaf_hash(leaf_idx as WireChunkId, symbol));
+        let leaf_idx = leaf_idx as WireChunkId;
+        let leaf = match known_leaf(leaf_idx, symbol) {
+            Some(leaf) => {
+                debug_assert_eq!(leaf, scheme.leaf_hash(leaf_idx, symbol));
+                leaf
+            }
+            None => scheme.leaf_hash(leaf_idx, symbol),
+        };
+        leaves.push(leaf);
     }
     Tree::from_leaves(scheme.depth(), leaves)
 }
 
-// whether the chunk's proof binds it to the root
+// the chunk's leaf hash, if its proof binds it to the root
 fn verify_proof<S: MerkleCode>(
     chunk_id: ChunkId,
     data: &ChunkData,
     scheme: &S,
     root: &MerkleRoot,
-) -> bool {
+) -> Option<Hash> {
     debug_assert_eq!(data.symbol.len(), scheme.v1_layout().symbol_len());
     let leaf_idx = chunk_id.to_wire();
     let leaf = scheme.leaf_hash(leaf_idx, &data.symbol);
-    Tree::verify_proof(root, leaf_idx, &leaf, &data.proof)
+    Tree::verify_proof(root, leaf_idx, &leaf, &data.proof).then_some(leaf)
 }
 
 #[cfg(test)]
@@ -248,12 +299,26 @@ mod tests {
         for wire in 0..9 {
             let chunk_id = ChunkId::unchecked(wire);
             let data = encoded.chunk_data(chunk_id).expect("derivable");
-            assert!(verify_proof(chunk_id, &data, &scheme, &encoded.root()));
+            assert!(verify_proof(chunk_id, &data, &scheme, &encoded.root()).is_some());
             assert!(encoded.contains(chunk_id));
         }
 
         let short = message().slice(1..);
         assert!(D33Chunks::encode(&scheme, &short, 9).is_none());
+    }
+
+    #[test]
+    fn known_leaves_build_the_same_tree() {
+        let scheme = scheme();
+        let (symbols, tree) = chunk_tree(&scheme, &message(), 9).expect("of the length");
+        // the even leaves are known, as for received chunks
+        let known = |leaf_idx: WireChunkId, symbol: &[u8]| {
+            leaf_idx.is_multiple_of(2).then(|| scheme.leaf_hash(leaf_idx, symbol))
+        };
+        let (with_known, reused) =
+            chunk_tree_with(&scheme, &message(), 9, known).expect("of the length");
+        assert_eq!(with_known, symbols);
+        assert_eq!(reused.root(), tree.root());
     }
 
     #[test]
