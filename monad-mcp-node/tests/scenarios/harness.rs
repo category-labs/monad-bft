@@ -61,6 +61,14 @@ pub fn deadline_of_slot(slot: u64) -> Timestamp {
 // the finalized shape of a slot: which lanes committed
 pub type Pattern = Lanes<Option<ProposalId>>;
 
+// the chunk bytes delivered to a node: what crossed the sim's wire, and
+// what the sim charged for it
+#[derive(Clone, Copy, Default, Debug)]
+pub struct ChunkBytes {
+    pub wire: u64,
+    pub charged: u64,
+}
+
 // a node as a monad-sim process, boxed so one swarm can mix node kinds
 pub struct SimNode {
     id: NodeId,
@@ -69,6 +77,7 @@ pub struct SimNode {
     // hashes every message delivered to this node, with its time, in
     // delivery order
     delivery_hasher: RapidStreamHasherV3<'static>,
+    chunk_bytes: ChunkBytes,
     // the node's clock reads sim time + clock_offset
     clock_offset: ClockDiff,
     // the one live timer step, at the node's last polled next_due
@@ -87,6 +96,7 @@ impl SimNode {
             node: Box::new(node),
             finalized: BTreeMap::new(),
             delivery_hasher: RapidStreamHasherV3::new(&DEFAULT_RAPID_SECRETS),
+            chunk_bytes: ChunkBytes::default(),
             clock_offset: ClockDiff(0),
             due_alarm: None,
             me: None,
@@ -197,7 +207,15 @@ impl SimNode {
         &self.finalized
     }
 
+    pub fn chunk_bytes(&self) -> ChunkBytes {
+        self.chunk_bytes
+    }
+
     fn record_delivery(&mut self, at: Time, from: NodeId, message: &NodeMessage) {
+        if let NodeMessage::Chunk(bytes) = message {
+            self.chunk_bytes.wire += bytes.len() as u64;
+            self.chunk_bytes.charged += da::nominal_len(bytes) as u64;
+        }
         let (kind, bytes) = match message {
             NodeMessage::Cadence(bytes) => (0u8, bytes),
             NodeMessage::Chunk(bytes) => (1, bytes),

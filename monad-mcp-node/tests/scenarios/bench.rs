@@ -43,8 +43,8 @@ use monad_sim::{DEFAULT_GROUPS, Grouping};
 use monad_sim_swarm::{Network, Parallel, RegionTable, Swarm};
 
 use crate::harness::{
-    SLOT_INTERVAL, SimNode, by_region, deadline_of_slot, geo, node_config, run_digest, start_swarm,
-    testnet_table, time_of,
+    ChunkBytes, SLOT_INTERVAL, SimNode, by_region, deadline_of_slot, geo, node_config, run_digest,
+    start_swarm, testnet_table, time_of,
 };
 
 fn list(name: &str, default: &[u64]) -> Vec<u64> {
@@ -102,6 +102,17 @@ fn progress(swarm: &Swarm<SimNode>) -> (u64, usize) {
         committed
     });
     (through, committed)
+}
+
+// the chunk bytes delivered to every node, summed over the nodes
+fn chunk_bytes(swarm: &Swarm<SimNode>) -> ChunkBytes {
+    let mut total = ChunkBytes::default();
+    for id in swarm.node_ids() {
+        let node = swarm.with_node(&id, SimNode::chunk_bytes);
+        total.wire += node.wire;
+        total.charged += node.charged;
+    }
+    total
 }
 
 // run `slots` slots; the wall time covers the run only, not the build
@@ -187,17 +198,22 @@ fn slot_cost() {
             let (parallel, swarm) = run(true);
             let steps = swarm.simulation().step_count();
             let (through, committed) = progress(&swarm);
+            let chunks = chunk_bytes(&swarm);
+            let mb_per_slot = |bytes: u64| bytes as f64 / 1e6 / slots as f64;
             println!(
                 "n {validators}, {name}, {:?}, {payload} B proposals, {slots} slots: \
                  {} s per slot sequential, {:.2} s per slot on {threads} threads \
                  ({} groups, {:?} windows), {:.0} steps per slot, finalized through \
-                 slot {through}, {committed} lanes committed",
+                 slot {through}, {committed} lanes committed; chunks delivered per slot: \
+                 {:.1} MB on the wire, {:.1} MB charged",
                 scheme(),
                 sequential.map_or("-".to_string(), |s| format!("{s:.2}")),
                 parallel,
                 swarm.simulation().groups(),
                 swarm.simulation().window(),
                 steps as f64 / slots as f64,
+                mb_per_slot(chunks.wire),
+                mb_per_slot(chunks.charged),
             );
         }
     }

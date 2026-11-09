@@ -382,9 +382,7 @@ mod proposal {
 }
 
 mod vote {
-    use std::collections::BTreeMap;
-
-    use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable};
+    use alloy_rlp::{Decodable, Encodable};
     use monad_mcp_common::{
         containers::{MAX_VALIDATORS, ValidatorIndex, ValidatorSet},
         spec::Signature as _,
@@ -393,116 +391,120 @@ mod vote {
     use super::{Signature, Stake, ValidatorData};
     use crate::spec::{self, SignatureCollection as _, validator::ValidatorData as _};
 
+    // the shape of a BLS collection: a signer bitmap, and the one digest
+    // every signer signed in place of the aggregate. Wire indices: checked
+    // against the validator set by signers and verify.
     #[derive(Clone, PartialEq, Eq, Hash, Debug)]
     pub struct SignatureCollection {
-        // index -> sig to simulate the erasure of PubKey/NodeId in
-        // BLS. keyed by index so duplicates cannot be represented,
-        // like a bitmap. Wire indices: checked against the validator set
-        // by signers and verify.
-        sigs: BTreeMap<usize, Signature>,
+        signers: ValidatorSet,
+        digest: u64,
     }
 
-    #[derive(RlpEncodable, RlpDecodable)]
-    pub(super) struct IndexedSignature<S> {
-        pub(super) index: usize,
-        pub(super) signature: S,
-    }
+    const BITMAP_LEN: usize = MAX_VALIDATORS / 8;
 
     impl SignatureCollection {
-        fn pairs(&self) -> impl Iterator<Item = IndexedSignature<&Signature>> {
-            self.sigs.iter().map(|(index, sig)| IndexedSignature {
-                index: *index,
-                signature: sig,
-            })
-        }
-
-        // the payload of the rlp list of (index, sig) pairs
-        fn payload_length(&self) -> usize {
-            self.pairs().map(|pair| pair.length()).sum()
+        // little-endian bits, ending with the last signer's byte
+        fn bitmap<'a>(&self, buf: &'a mut [u8; BITMAP_LEN]) -> &'a [u8] {
+            let mut len = 0;
+            for index in self.signers.iter() {
+                let index = index.get();
+                buf[index / 8] |= 1 << (index % 8);
+                len = index / 8 + 1;
+            }
+            &buf[..len]
         }
     }
 
-    // the encoding of a Vec<IndexedSignature<&Signature>>, without
-    // collecting one
+    // the rlp list [bitmap, digest]
     impl Encodable for SignatureCollection {
         fn encode(&self, out: &mut dyn bytes::BufMut) {
-            alloy_rlp::Header {
-                list: true,
-                payload_length: self.payload_length(),
-            }
-            .encode(out);
-            for pair in self.pairs() {
-                pair.encode(out);
-            }
+            let mut buf = [0; BITMAP_LEN];
+            let bitmap = self.bitmap(&mut buf);
+            let fields: [&dyn Encodable; 2] = [&bitmap, &self.digest];
+            alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
         }
 
         fn length(&self) -> usize {
-            let payload_length = self.payload_length();
-            alloy_rlp::length_of_length(payload_length) + payload_length
+            let mut buf = [0; BITMAP_LEN];
+            let bitmap = self.bitmap(&mut buf);
+            let fields: [&dyn Encodable; 2] = [&bitmap, &self.digest];
+            alloy_rlp::list_length::<_, dyn Encodable>(&fields)
         }
     }
 
     impl Decodable for SignatureCollection {
         fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-            let pairs = Vec::<IndexedSignature<Signature>>::decode(buf)?;
-            let mut sigs = BTreeMap::new();
-            let mut previous = None;
-            for IndexedSignature { index, signature } in pairs {
-                if previous.is_some_and(|prev| index <= prev) {
-                    return Err(alloy_rlp::Error::Custom(
-                        "signature indices must be strictly increasing",
-                    ));
-                }
-                if index >= MAX_VALIDATORS {
-                    return Err(alloy_rlp::Error::Custom("signature index out of range"));
-                }
-                previous = Some(index);
-                sigs.insert(index, signature);
+            let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
+            let bitmap = alloy_rlp::Header::decode_bytes(&mut payload, false)?;
+            let digest = u64::decode(&mut payload)?;
+            if !payload.is_empty() {
+                return Err(alloy_rlp::Error::UnexpectedLength);
             }
-            if sigs.is_empty() {
-                return Err(alloy_rlp::Error::Custom("no signatures"));
-            }
-            Ok(Self { sigs })
+            let signers = signers_of(bitmap)?;
+            Ok(Self { signers, digest })
         }
+    }
+
+    // a bitmap has one encoding: non-empty, with no trailing zero byte
+    fn signers_of(bitmap: &[u8]) -> alloy_rlp::Result<ValidatorSet> {
+        let Some(last) = bitmap.last() else {
+            return Err(alloy_rlp::Error::Custom("no signatures"));
+        };
+        if *last == 0 {
+            return Err(alloy_rlp::Error::Custom(
+                "signer bitmap ends in a zero byte",
+            ));
+        }
+        if bitmap.len() > BITMAP_LEN {
+            return Err(alloy_rlp::Error::Custom("signature index out of range"));
+        }
+        let mut signers = ValidatorSet::new();
+        for (byte_index, byte) in bitmap.iter().enumerate() {
+            let mut bits = *byte;
+            while bits != 0 {
+                let index = byte_index * 8 + bits.trailing_zeros() as usize;
+                signers.insert(ValidatorIndex::new(index).expect("within the bitmap"));
+                bits &= bits - 1;
+            }
+        }
+        Ok(signers)
     }
 
     impl spec::vote::SignatureCollection for SignatureCollection {
         type Signature = Signature;
         type ValidatorData = ValidatorData;
 
+        // the caller passes verified signatures over one message
         fn aggregate<'a>(
             sigs: impl IntoIterator<Item = (ValidatorIndex, &'a Signature)>,
             _validator_data: &ValidatorData,
         ) -> Self {
-            let sigs: BTreeMap<_, _> = sigs
-                .into_iter()
-                .map(|(index, sig)| (index.get(), sig.clone()))
-                .collect();
-            debug_assert!(sigs.values().all(|sig| sig.is_well_formed()));
-            SignatureCollection { sigs }
+            let mut signers = ValidatorSet::new();
+            let mut digest = None;
+            for (index, sig) in sigs {
+                debug_assert!(sig.is_well_formed());
+                debug_assert!(digest.is_none_or(|digest| digest == sig.digest()));
+                digest = Some(sig.digest());
+                signers.insert(index);
+            }
+            let digest = digest.expect("a collection aggregates at least one signature");
+            SignatureCollection { signers, digest }
         }
 
         fn signers(&self, validator_data: &ValidatorData) -> Option<ValidatorSet> {
-            let mut signers = ValidatorSet::new();
-            for index in self.sigs.keys() {
+            for index in self.signers.iter() {
                 // None for an index outside the validator set
-                signers.insert(validator_data.checked_index(*index)?);
+                validator_data.checked_index(index.get())?;
             }
-            Some(signers)
+            Some(self.signers)
         }
 
         fn verify(&self, data: &[u8], validator_data: &ValidatorData) -> Option<ValidatorSet> {
             let digest = monad_mcp_common::stub::noncrypto_digest(data);
-            let mut signers = ValidatorSet::new();
-            for (index, sig) in &self.sigs {
-                // None for an index outside the validator set
-                let index = validator_data.checked_index(*index)?;
-                if !sig.verify_digest(digest, validator_data.pubkey(index)) {
-                    return None; // Invalid signature
-                }
-                signers.insert(index);
+            if self.digest != digest {
+                return None; // Invalid signature
             }
-            Some(signers)
+            self.signers(validator_data)
         }
     }
 
@@ -628,42 +630,62 @@ const _: () = crate::spec::assert_env::<
 
 #[cfg(test)]
 mod rlp_tests {
-    use alloy_rlp::Encodable as _;
-    use monad_mcp_common::spec::KeyPair as _;
+    use std::collections::HashMap;
 
-    use super::{vote::IndexedSignature, *};
+    use alloy_rlp::Encodable;
+    use monad_mcp_common::{
+        containers::{MAX_VALIDATORS, ValidatorIndex, ValidatorSet},
+        spec::KeyPair as _,
+    };
+
+    use super::*;
+    use crate::spec::vote::SignatureCollection as _;
+
+    // validators 0 to 9 of stake 1
+    fn validator_data() -> ValidatorData {
+        let nodes: Vec<NodeId> = (0..10).map(NodeId::dummy).collect();
+        let valset = nodes.iter().map(|node| (*node, Stake::from(1))).collect();
+        let mapping: HashMap<NodeId, PubKey> = nodes
+            .iter()
+            .map(|node| (*node, node.keypair().pubkey()))
+            .collect();
+        ValidatorData::new(valset, mapping)
+    }
+
+    fn encoded(bitmap: &[u8], digest: u64) -> Vec<u8> {
+        let fields: [&dyn Encodable; 2] = [&bitmap, &digest];
+        let mut out = Vec::new();
+        alloy_rlp::encode_list::<_, dyn Encodable>(&fields, &mut out);
+        out
+    }
 
     #[test]
-    fn signature_maps_reject_duplicate_and_unordered_indices() {
-        let signature = KeyPair::dummy(1).sign(&bytes::Bytes::from_static(b"test"));
-        for indices in [[1usize, 1], [2, 1]] {
-            let encoded = alloy_rlp::encode(vec![
-                IndexedSignature {
-                    index: indices[0],
-                    signature: &signature,
-                },
-                IndexedSignature {
-                    index: indices[1],
-                    signature: &signature,
-                },
-            ]);
-            assert!(alloy_rlp::decode_exact::<SignatureCollection>(&encoded).is_err());
-        }
-        let encoded = alloy_rlp::encode(vec![
-            IndexedSignature {
-                index: 1usize,
-                signature: &signature,
-            },
-            IndexedSignature {
-                index: 2usize,
-                signature: &signature,
-            },
-        ]);
-        let collection: SignatureCollection = alloy_rlp::decode_exact(&encoded).unwrap();
-        assert_eq!(alloy_rlp::encode(&collection), encoded);
-        assert_eq!(collection.length(), encoded.len());
-        let empty = [alloy_rlp::EMPTY_LIST_CODE];
-        assert!(alloy_rlp::decode_exact::<SignatureCollection>(empty).is_err());
+    fn signer_bitmaps_have_one_encoding() {
+        let data = bytes::Bytes::from_static(b"test");
+        let signature = KeyPair::dummy(1).sign(&data);
+        let validator_data = validator_data();
+        let index = |index| ValidatorIndex::new(index).expect("in range");
+        let signers = [(index(1), &signature), (index(9), &signature)];
+        let collection = SignatureCollection::aggregate(signers, &validator_data);
+        let set = ValidatorSet::from_iter([index(1), index(9)]);
+        assert_eq!(collection.verify(&data, &validator_data), Some(set));
+        assert_eq!(collection.verify(b"other", &validator_data), None);
+        let outside = [(index(10), &signature)];
+        let outside = SignatureCollection::aggregate(outside, &validator_data);
+        assert_eq!(outside.signers(&validator_data), None);
+
+        let bytes = alloy_rlp::encode(&collection);
+        assert_eq!(bytes, encoded(&[0b10, 0b10], signature.digest()));
+        assert_eq!(collection.length(), bytes.len());
+        assert_eq!(alloy_rlp::decode_exact(&bytes), Ok(collection));
+
+        let decode = |bitmap: &[u8]| {
+            alloy_rlp::decode_exact::<SignatureCollection>(encoded(bitmap, signature.digest()))
+        };
+        assert!(decode(&[]).is_err());
+        assert!(decode(&[0b10, 0]).is_err());
+        assert!(decode(&[1; MAX_VALIDATORS / 8 + 1]).is_err());
+        assert!(decode(&[1; MAX_VALIDATORS / 8]).is_ok());
 
         let mut malformed = signature;
         malformed.make_malformed();

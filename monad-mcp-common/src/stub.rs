@@ -187,6 +187,12 @@ mod vote {
         pub fn verify_digest(&self, digest: u64, pubkey: &PubKey) -> bool {
             self.is_well_formed() && self.by == *pubkey && self.digest == digest
         }
+
+        /// `noncrypto_digest` of the signed data, the same for every signer
+        /// of it, so a collection keeps it once.
+        pub fn digest(&self) -> u64 {
+            self.digest
+        }
     }
 
     impl spec::vote::PubKey for PubKey {}
