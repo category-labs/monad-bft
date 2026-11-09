@@ -17,6 +17,8 @@ use std::{
     collections::BTreeMap,
     env,
     ffi::OsStr,
+    io::Write,
+    num::NonZeroU16,
     path::{Path, PathBuf},
     str::FromStr,
     time::Duration,
@@ -32,8 +34,9 @@ use monad_keystore::keystore::Keystore;
 use monad_node_config::{
     ForkpointConfig, MetricsConfig as NodeMetricsConfig, MonadNodeConfig, ValidatorsConfigType,
 };
-use monad_secp::KeyPair;
-use monad_types::Round;
+use monad_peer_discovery::{name_record, MonadNameRecord, NameRecord};
+use monad_secp::{KeyPair, SecpSignature};
+use monad_types::{NodeId, Round};
 use reqwest::{blocking::Client, Url};
 use tracing::{info, warn};
 use tracing_manytrace::{ManytraceLayer, TracingExtension};
@@ -78,6 +81,7 @@ pub struct NodeState {
     pub triedb_path: PathBuf,
     pub triedb_stats_path: Option<PathBuf>,
     pub persisted_peers_path: PathBuf,
+    pub name_record: MonadNameRecord<SecpSignature>,
 
     pub metrics: Option<MetricsConfig>,
     pub otel_endpoint_interval: Option<(String, Duration)>,
@@ -113,13 +117,55 @@ impl NodeState {
             pprof,
             manytrace_socket,
             persisted_peers_path,
+            name_record_path,
+            write_name_record,
         } = Cli::from_arg_matches_mut(&mut cmd.get_matches_mut())?;
 
+        let directory = match name_record_path {
+            Some(directory) => std::path::absolute(directory)?,
+            None => {
+                let mut directory = std::path::absolute(&persisted_peers_path)?;
+                // persisted_peers_path includes a filename; use its parent directory.
+                directory.pop();
+                directory
+            }
+        };
         let (reload_handle, agent) = NodeState::setup_tracing(manytrace_socket)?;
 
         let keystore_password = keystore_password.as_deref().unwrap_or("");
 
         let secp_key = load_secp256k1_keypair(&secp_identity, keystore_password)?;
+        let node_config: MonadNodeConfig =
+            toml::from_str(&std::fs::read_to_string(&node_config_path)?)?;
+        let config = &node_config.peer_discovery;
+        let address = crate::resolve_domain_v4(
+            &NodeId::new(secp_key.pubkey()),
+            (config.self_address.as_str(), config.tcp_port().get()),
+        )
+        .ok_or_else(|| NodeSetupError::Custom {
+            kind: ErrorKind::ValueValidation,
+            msg: format!("unable to resolve self address: {}", config.self_address),
+        })?;
+        let name_record = name_record::load_or_create(
+            &directory,
+            NameRecord::new_with_ports(
+                *address.ip(),
+                config.tcp_port().get(),
+                config.udp_port().map(NonZeroU16::get),
+                config.self_auth_port.get(),
+                config.self_direct_udp_port.map(NonZeroU16::get),
+                config.self_encrypted_tcp_port.map(NonZeroU16::get),
+                config.self_record_seq_num,
+            ),
+            config.self_name_record_sig,
+            &secp_key,
+        )?;
+        if write_name_record {
+            let mut stdout = std::io::stdout().lock();
+            stdout.write_all(&std::fs::read(directory.join("self.toml"))?)?;
+            stdout.flush()?;
+            std::process::exit(0);
+        }
         let secp_pubkey = secp_key.pubkey();
         info!(
             "Loaded secp256k1 key from {:?}, pubkey=0x{}",
@@ -140,8 +186,6 @@ impl NodeState {
             hex::encode(bls_key.pubkey().compress())
         );
 
-        let node_config: MonadNodeConfig =
-            toml::from_str(&std::fs::read_to_string(&node_config_path)?)?;
         let metrics = parse_metrics_config(&node_config.metrics)?;
 
         if !matches!(
@@ -210,6 +254,7 @@ impl NodeState {
             reload_handle,
             manytrace_agent: agent,
             persisted_peers_path,
+            name_record,
         })
     }
 

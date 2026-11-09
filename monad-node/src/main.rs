@@ -17,7 +17,6 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     marker::PhantomData,
     net::{IpAddr, SocketAddr, SocketAddrV4, ToSocketAddrs},
-    num::NonZeroU16,
     path::PathBuf,
     process,
     sync::{mpsc::TrySendError, Arc},
@@ -50,7 +49,7 @@ use monad_node_config::{
 };
 use monad_peer_discovery::{
     discovery::{PeerDiscovery, PeerDiscoveryBuilder},
-    MonadNameRecord, NameRecord,
+    MonadNameRecord,
 };
 use monad_peer_score::{ema, IdentityScore, StdClock};
 use monad_pprof::start_pprof_server;
@@ -210,6 +209,7 @@ async fn run(node_state: NodeState) -> Result<(), ()> {
         current_round,
         proposer_schedule,
         node_state.persisted_peers_path,
+        node_state.name_record,
         score_reader.clone(),
     );
 
@@ -692,6 +692,7 @@ fn build_raptorcast_router<ST, SCT, M, OM, DS>(
     current_round: Round,
     proposer_schedule: BoxedProposerSchedule<CertificateSignaturePubKey<ST>>,
     persisted_peers_path: PathBuf,
+    self_record: MonadNameRecord<ST>,
     direct_udp_peer_score_reader: DS,
 ) -> MultiRouter<
     ST,
@@ -739,26 +740,11 @@ where
         .direct_udp_bind_address_port
         .map(|port| SocketAddr::new(IpAddr::V4(network_config.bind_address_host), port));
     let self_id = NodeId::new(identity.pubkey());
-    let self_tcp_port = peer_discovery_config.tcp_port();
-    let name_record_address = if let Some(ip) = peer_discovery_config.ip() {
-        SocketAddrV4::new(ip, self_tcp_port.get())
-    } else {
-        let domain = peer_discovery_config
-            .domain()
-            .expect("self endpoint must be an IP address or domain");
-        let Some(name_record_address) = resolve_domain_v4(&self_id, (domain, self_tcp_port.get()))
-        else {
-            panic!("Unable to resolve self address: {domain}:{self_tcp_port}");
-        };
-        name_record_address
-    };
-
     tracing::debug!(
         ?tcp_bind_address,
         ?non_authenticated_bind_address,
         ?authenticated_bind_address,
         ?direct_udp_bind_address,
-        ?name_record_address,
         "Monad-node starting, pid: {}",
         process::id()
     );
@@ -801,26 +787,6 @@ where
     assert_eq!(
         peer_discovery_config.self_encrypted_tcp_port.is_some(),
         network_config.encrypted_tcp_bind_address_port.is_some()
-    );
-
-    let self_record = NameRecord::new_with_ports(
-        *name_record_address.ip(),
-        self_tcp_port.get(),
-        self_udp_port.map(NonZeroU16::get),
-        peer_discovery_config.self_auth_port.get(),
-        peer_discovery_config
-            .self_direct_udp_port
-            .map(NonZeroU16::get),
-        peer_discovery_config
-            .self_encrypted_tcp_port
-            .map(NonZeroU16::get),
-        peer_discovery_config.self_record_seq_num,
-    );
-    let self_record = MonadNameRecord::new(self_record, &identity);
-    info!(?self_id, ?self_record, "self name record");
-    assert!(
-        self_record.signature == peer_discovery_config.self_name_record_sig,
-        "self name record signature mismatch"
     );
 
     // initial set of peers

@@ -42,6 +42,9 @@ pub enum NodeSetupError {
     MetricsError(#[from] ExporterBuildError),
 
     #[error(transparent)]
+    NameRecord(#[from] monad_peer_discovery::name_record::Error),
+
+    #[error(transparent)]
     RayonPoolBuildError(#[from] rayon::ThreadPoolBuildError),
 
     #[error(transparent)]
@@ -77,7 +80,8 @@ impl NodeSetupError {
             | NodeSetupError::Bls12_381(_)
             | NodeSetupError::SignatureCollectionError(_)
             | NodeSetupError::TomlDeError(_)
-            | NodeSetupError::MetricsError(_) => ErrorKind::ValueValidation,
+            | NodeSetupError::MetricsError(_)
+            | NodeSetupError::NameRecord(_) => ErrorKind::ValueValidation,
         }
     }
 }
