@@ -22,3 +22,18 @@ pass it explicitly with `--self-record-seq-num`.
 is reused only when the sequence being signed matches the saved sequence;
 otherwise revision defaults to zero. An explicit `--record-revision` overrides
 that default.
+
+## Encrypted TCP
+
+`[network].enable_encrypted_tcp = true` advertises the encrypted TCP capability
+in the signed name record. Automatic signing persists the changed record with
+an increased revision. Pre-signed records must include the same capability.
+
+Both protocols use the existing TCP listener and advertised TCP port. Senders
+use WireAuth when the destination's signed record advertises support; otherwise
+they use the existing signature protocol. WireAuth failures do not fall back to
+plaintext. The old encrypted TCP port fields do not select the protocol.
+
+Deploy readers to all nodes before enabling advertisement. Both frame protocols
+are accepted regardless of the advertisement flag. WireAuth session expiry and
+garbage collection run independently of TCP connection closure.

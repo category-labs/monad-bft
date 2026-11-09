@@ -26,21 +26,17 @@ use std::{
 };
 
 use alloy_rlp::{Decodable, Encodable};
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use futures::{channel::oneshot, FutureExt, Stream, StreamExt};
 use itertools::Itertools;
 use message::{InboundRouterMessage, OutboundRouterMessage};
-use monad_crypto::{
-    certificate_signature::{
-        CertificateKeyPair, CertificateSignature, CertificateSignaturePubKey,
-        CertificateSignatureRecoverable, PubKey,
-    },
-    signing_domain,
+use monad_crypto::certificate_signature::{
+    CertificateKeyPair, CertificateSignaturePubKey, CertificateSignatureRecoverable, PubKey,
 };
 use monad_dataplane::{
     udp::{segment_size_for_mtu, DEFAULT_MTU},
-    DataplaneBuilder, DataplaneControl, RecvTcpMsg, TcpMsg, TcpSocketHandle, TcpSocketId,
-    TcpSocketReader, TcpSocketWriter, UdpSocketHandle, UdpSocketId,
+    DataplaneBuilder, DataplaneControl, TcpProtocol, TcpSocketHandle, TcpSocketId, UdpSocketHandle,
+    UdpSocketId,
 };
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{
@@ -51,7 +47,7 @@ use monad_peer_discovery::{
     driver::{PeerDiscoveryDriver, PeerDiscoveryEmit},
     message::PeerDiscoveryMessage,
     mock::{NopDiscovery, NopDiscoveryBuilder},
-    MonadNameRecord, NameRecord, PeerDiscoveryAlgo, PeerDiscoveryEvent,
+    Capability, MonadNameRecord, NameRecord, PeerDiscoveryAlgo, PeerDiscoveryEvent,
 };
 use monad_peer_score::IdentityScore;
 use monad_types::{
@@ -121,7 +117,6 @@ where
     AP: auth::AuthenticationProtocol<PublicKey = CertificateSignaturePubKey<ST>>,
     DS: IdentityScore<Identity = NodeId<CertificateSignaturePubKey<ST>>>,
 {
-    signing_key: Arc<ST::KeyPairType>,
     self_id: NodeId<CertificateSignaturePubKey<ST>>,
     is_dynamic_fullnode: bool,
 
@@ -146,8 +141,7 @@ where
     published_primary_rounds: PublishedRounds,
     published_secondary_rounds: PublishedRounds,
 
-    tcp_reader: TcpSocketReader,
-    tcp_writer: TcpSocketWriter,
+    tcp_socket: auth::tcp_socket::SharedTcpSocket<ST, AP>,
     dual_socket: auth::DualSocketHandle<AP>,
     direct_udp_transport: Option<DirectUdpTransport<ST, AP, DS>>,
     dataplane_control: DataplaneControl,
@@ -189,7 +183,7 @@ where
     pub fn new(
         config: config::RaptorCastConfig<ST>,
         secondary_mode: SecondaryRaptorCastModeConfig,
-        tcp_socket: TcpSocketHandle,
+        tcp_socket: (TcpSocketHandle, AP),
         authenticated: (UdpSocketHandle, AP),
         direct_udp: Option<(UdpSocketHandle, AP, DS)>,
         non_authenticated_socket: Option<UdpSocketHandle>,
@@ -198,7 +192,11 @@ where
         current_epoch: Epoch,
         proposer_schedule: BoxedProposerSchedule<CertificateSignaturePubKey<ST>>,
     ) -> Self {
-        let (tcp_reader, tcp_writer) = tcp_socket.split();
+        let tcp_socket = auth::tcp_socket::SharedTcpSocket::new(
+            tcp_socket.0,
+            tcp_socket.1,
+            config.shared_key.clone(),
+        );
 
         if config.primary_instance.raptor10_redundancy < 1f32 {
             panic!(
@@ -294,10 +292,9 @@ where
             invite_future_dist_max: config.secondary_instance.invite_future_dist_max,
             proposer_schedule,
 
-            dedicated_full_nodes: config.primary_instance.fullnode_dedicated.clone(),
+            dedicated_full_nodes: config.primary_instance.fullnode_dedicated,
             peer_discovery_driver,
 
-            signing_key: config.shared_key,
             message_builder,
             secondary_message_builder: Some(secondary_message_builder),
 
@@ -310,8 +307,7 @@ where
             published_primary_rounds: PublishedRounds::new(),
             published_secondary_rounds: PublishedRounds::new(),
 
-            tcp_reader,
-            tcp_writer,
+            tcp_socket,
             dual_socket,
             direct_udp_transport,
             dataplane_control: control,
@@ -415,34 +411,39 @@ where
         make_app_message: impl FnOnce() -> Bytes,
         completion: Option<oneshot::Sender<()>>,
     ) {
-        match self.peer_discovery_driver.lock().unwrap().get_tcp_addr(to) {
+        let destination = self
+            .peer_discovery_driver
+            .lock()
+            .unwrap()
+            .get_name_record(to)
+            .map(|record| {
+                let protocol = if record
+                    .name_record
+                    .check_capability(Capability::EncryptedTcp)
+                {
+                    TcpProtocol::WireAuth
+                } else {
+                    TcpProtocol::Signature
+                };
+                (SocketAddr::V4(record.name_record.tcp_socket()), protocol)
+            });
+        match destination {
             None => {
                 warn!(
                     ?to,
                     "RaptorCastPrimary TcpPointToPoint not sending message, address unknown"
                 );
             }
-            Some(address) => {
-                let app_message = make_app_message();
-                // TODO make this more sophisticated
-                // include timestamp, etc
-                let mut signed_message = BytesMut::zeroed(SIGNATURE_SIZE + app_message.len());
-                let signature = <ST as CertificateSignature>::serialize(&ST::sign::<
-                    signing_domain::RaptorcastAppMessage,
-                >(
-                    &app_message,
-                    &self.signing_key,
-                ));
-                assert_eq!(signature.len(), SIGNATURE_SIZE);
-                signed_message[..SIGNATURE_SIZE].copy_from_slice(&signature);
-                signed_message[SIGNATURE_SIZE..].copy_from_slice(&app_message);
-                self.tcp_writer.write(
+            Some((address, protocol)) => {
+                if let Err(error) = self.tcp_socket.write(
                     address,
-                    TcpMsg {
-                        msg: signed_message.freeze(),
-                        completion,
-                    },
-                );
+                    &to.pubkey(),
+                    protocol,
+                    make_app_message(),
+                    completion,
+                ) {
+                    warn!(?to, ?error, "failed to send TCP message");
+                }
             }
         };
     }
@@ -922,7 +923,7 @@ where
     RaptorCast::<ST, M, OM, SE, NopDiscovery<ST>, _, NopScore<NodeId<CertificateSignaturePubKey<ST>>>>::new(
         config,
         SecondaryRaptorCastModeConfig::None,
-        dataplane.tcp_socket,
+        (dataplane.tcp_socket, auth::NoopAuthProtocol::new()),
         (
             dataplane.authenticated_socket,
             auth::NoopAuthProtocol::new(),
@@ -988,7 +989,7 @@ where
     RaptorCast::<ST, M, OM, SE, NopDiscovery<ST>, _, NopScore<NodeId<CertificateSignaturePubKey<ST>>>>::new(
         config,
         SecondaryRaptorCastModeConfig::None,
-        dataplane.tcp_socket,
+        (dataplane.tcp_socket, auth::WireAuthProtocol::new(&auth::metrics::TCP_METRICS, auth::tcp_socket::wireauth_config(), shared_key.clone())),
         (
             dataplane.authenticated_socket,
             auth::WireAuthProtocol::new(&auth::metrics::UDP_METRICS, wireauth_config, shared_key),
@@ -1232,7 +1233,8 @@ where
             .push(self.peer_discovery_metrics.as_ref())
             .push(self.udp_state.metrics().executor_metrics())
             .chain(self.udp_state.decoder_metrics())
-            .chain(self.dual_socket.metrics());
+            .chain(self.dual_socket.metrics())
+            .chain(self.tcp_socket.metrics());
 
         if let Some(socket) = &self.direct_udp_transport {
             chain = chain.chain(socket.metrics());
@@ -1476,52 +1478,34 @@ where
 
         let mut poll_quota = TCP_POLL_QUOTA;
         loop {
-            let mut recv_fut = pin!(budgeted(this.tcp_reader.recv(), &mut poll_quota));
+            let mut recv_fut = pin!(budgeted(this.tcp_socket.recv(), &mut poll_quota));
             let Poll::Ready(msg) = recv_fut.poll_unpin(cx) else {
                 break;
             };
-            let RecvTcpMsg { payload, src_addr } = msg;
-            // check message length to prevent panic during message slicing
-            if payload.len() < SIGNATURE_SIZE {
-                warn!(
-                    ?src_addr,
-                    "invalid message, message length less than signature size"
-                );
-                this.dataplane_control.disconnect(src_addr);
-                continue;
-            }
-            let signature_bytes = &payload[..SIGNATURE_SIZE];
-            let signature = match <ST as CertificateSignature>::deserialize(signature_bytes) {
-                Ok(signature) => signature,
-                Err(err) => {
-                    warn!(?err, ?src_addr, "invalid signature");
+            let auth::tcp_socket::AuthRecvTcpMsg {
+                src_addr,
+                payload,
+                from,
+            } = match msg {
+                Ok(message) => message,
+                Err((src_addr, error)) => {
+                    warn!(?src_addr, ?error, "TCP authentication failed");
                     this.dataplane_control.disconnect(src_addr);
                     continue;
                 }
             };
-            let app_message_bytes = payload.slice(SIGNATURE_SIZE..);
             let deserialized_message =
-                match InboundRouterMessage::<M, ST>::try_deserialize(&app_message_bytes) {
+                match InboundRouterMessage::<M, ST>::try_deserialize(&payload) {
                     Ok(message) => message,
-                    Err(err) => {
+                    Err(error) => {
                         this.metrics
                             .gauge(GAUGE_RAPTORCAST_TOTAL_DESERIALIZE_ERRORS)
                             .inc();
-                        debug!(?err, ?src_addr, "failed to deserialize message");
+                        debug!(?error, ?src_addr, "failed to deserialize TCP message");
                         this.dataplane_control.disconnect(src_addr);
                         continue;
                     }
                 };
-            let from = match signature
-                .recover_pubkey::<signing_domain::RaptorcastAppMessage>(app_message_bytes.as_ref())
-            {
-                Ok(from) => from,
-                Err(err) => {
-                    warn!(?err, ?src_addr, "failed to recover pubkey");
-                    this.dataplane_control.disconnect(src_addr);
-                    continue;
-                }
-            };
 
             // Dispatch messages received via TCP
             match deserialized_message {
