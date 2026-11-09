@@ -24,7 +24,8 @@ use recovery::{Recovery, everything_missing};
 use super::{
     chunk::{ChunkRequest, ChunkRequestType, ChunksSubset, ProposalEnvelope},
     egress::ChunkEgress,
-    instance_rc::{InvalidEncoding, MissingChunks, RaptorcastInstance, Resolved},
+    encoding_scheme::{InvalidEncoding, Resolved},
+    instance_rc::{MissingChunks, RaptorcastInstance},
     runtime::{EpochHandle, Timing},
     types::{
         EquivCert, MissingHeaders, NodeId, ProposalDAEvent, ProposalId, SignedProposalHeader,
@@ -154,13 +155,13 @@ impl ProposerRaptorcast {
             .or_insert_with(|| RaptorcastInstance::new(header, epoch_handle, author, serve_window));
 
         for (wire_chunk_id, data) in chunks {
-            if let Err(err) = instance.ingest(wire_chunk_id, data, sender) {
+            if let Err(err) = instance.ingest(wire_chunk_id, data, sender, egress) {
                 tracing::debug!(?pid, wire_chunk_id, ?err, "dropping invalid chunk");
             };
         }
 
         self.out_events.extend(instance.take_obligation_event());
-        match instance.try_decode() {
+        match instance.try_decode(egress) {
             None => {}
             Some(Ok(message)) => {
                 self.out_events.push(ProposalDAEvent::Decoded(pid));
@@ -172,7 +173,6 @@ impl ProposerRaptorcast {
                 self.resolved.push((pid, Err(InvalidEncoding)));
             }
         }
-        instance.rebroadcast_chunks(egress);
     }
 
     // the pinned proposal, or before commit a recorded rival
@@ -526,7 +526,7 @@ mod tests {
             ProposerRaptorcast::new(NodeId::dummy(0), epoch_handle.self_id, NOW, timing());
         instance.ingest(group(&chunks[2..3]), &author(), &epoch_handle, &mut egress);
         assert!(decoded_pids(&mut instance).is_empty());
-        // discard the rebroadcast of our own chunk
+        // discard the relay of our own chunk
         egress.drain();
 
         let requester = NodeId::dummy(3);

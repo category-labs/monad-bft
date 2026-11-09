@@ -21,13 +21,18 @@ use super::{
     super::{
         assignment::{ChunkAssignment, PacketLossResistance, StakePartition},
         chunk::WireChunkId,
-        types::{D33, Lane, MAX_PROPOSER_SET_SIZE, NodeId, PubKey, Slot, ValidatorData},
+        types::{
+            D33, Lane, MAX_PROPOSER_SET_SIZE, MerkleRoot, NodeId, PubKey, Slot, ValidatorData,
+        },
         wire::{DAHeaderScheme as _, PacketLayout as _, v1},
     },
     DAEncodingScheme,
+    merkle::{MerkleChunks, MerkleCode},
     reed_solomon::{RsSymbolDecoder, RsSymbolEncoder},
 };
 use crate::spec::PUBKEY_LEN;
+
+pub(crate) type D33Chunks = MerkleChunks<D33>;
 
 // over the loss-scaled source count, for 3.3x in total
 const REDUNDANCY: f32 = 3.0;
@@ -116,13 +121,12 @@ fn seed(slot: Slot, unix_ts: u64, author: &PubKey) -> [u8; 32] {
 // - 3.3x redundancy: 3x over the source count scaled for 10% packet loss
 // - every validator, the author included, owns its stake share
 // - stake partition with round up chunks
-// - round up chunks are rebroadcast to a stake-proportional subset in second-hop
+// - round up chunks are relayed to a stake-proportional subset in second-hop
 // - valset shuffled by the prod seed (slot, unix_ts / 2048, author)
 // - assigned round-robin
 // - symbols are Reed-Solomon coded
 impl DAEncodingScheme for D33 {
-    type Encoder = RsSymbolEncoder;
-    type Decoder = RsSymbolDecoder;
+    type Chunks = D33Chunks;
 
     fn msg_len(&self) -> usize {
         self.msg_len as usize
@@ -166,6 +170,19 @@ impl DAEncodingScheme for D33 {
         partition.assign_spm(author, target, REDUNDANCY, PACKET_LOSS_RESISTANCE)
     }
 
+    fn encode(&self, message: &[u8], num_chunks: usize) -> Option<D33Chunks> {
+        D33Chunks::encode(self, message, num_chunks)
+    }
+
+    fn empty_chunks(&self, root: MerkleRoot, num_chunks: usize) -> D33Chunks {
+        D33Chunks::new(*self, root, num_chunks)
+    }
+}
+
+impl MerkleCode for D33 {
+    type Encoder = RsSymbolEncoder;
+    type Decoder = RsSymbolDecoder;
+
     fn encoder(&self, num_chunks: usize) -> RsSymbolEncoder {
         let symbol_len = self.v1_layout().symbol_len();
         RsSymbolEncoder::new(num_chunks, self.num_source_chunks(), symbol_len)
@@ -173,10 +190,6 @@ impl DAEncodingScheme for D33 {
 
     fn decoder(&self, num_chunks: usize) -> RsSymbolDecoder {
         RsSymbolDecoder::new(num_chunks, self.num_source_chunks(), self.msg_len())
-    }
-
-    fn depth(&self) -> u8 {
-        self.depth
     }
 
     // the message length makes the root pin the decoded message, not only the symbols
@@ -284,6 +297,10 @@ mod header {
 
         fn unpack_chunk_header(bytes: &mut impl Buf) -> Result<WireChunkId, MalformedPacket> {
             Ok(bytes.get_u16_le())
+        }
+
+        fn depth(&self) -> u8 {
+            self.depth
         }
 
         fn v1_layout(&self) -> v1::Layout<'_, D33> {

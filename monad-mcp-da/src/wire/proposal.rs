@@ -19,9 +19,8 @@ use super::{
     super::{
         assignment::{ChunkAssignment, ChunkId, NodeIndex},
         chunk::{ChunkData, ProposalEnvelope},
-        chunk_tree::ChunkTree,
         egress::Dissemination,
-        encoding_scheme::{self, d33},
+        encoding_scheme::{ProposalChunks, d33},
         runtime::EpochHandle,
         types::{
             EncodingScheme, NodeId, Proposal, ProposalHeader, ProposalKeyPair, SignedProposalHeader,
@@ -30,12 +29,12 @@ use super::{
     signed_bytes,
 };
 
-// a proposal this node authored: the signed header over the complete
-// tree of its chunks, and the assignment that routes them.
+// a proposal this node authored: the signed header over its complete
+// chunks, and the assignment that routes them.
 pub struct AssembledProposal {
     header: SignedProposalHeader,
     assignment: ChunkAssignment,
-    chunk_tree: ChunkTree,
+    chunks: Box<dyn ProposalChunks>,
 }
 
 impl AssembledProposal {
@@ -60,22 +59,21 @@ impl AssembledProposal {
         let valset = &epoch_handle.validator_data;
 
         let assignment = scheme.chunk_assignment(author, valset);
-        let chunk_tree = encoding_scheme::chunk_tree(&scheme, message, assignment.num_chunks())?;
-        assert_eq!(assignment.num_chunks(), chunk_tree.len());
+        let chunks = scheme.encode(message, assignment.num_chunks())?;
 
         let header = ProposalHeader {
-            root: chunk_tree.root(),
+            root: chunks.root(),
             scheme,
         };
 
-        let proposal = Self::assemble(&epoch_handle.key_pair, header, chunk_tree, assignment);
+        let proposal = Self::assemble(&epoch_handle.key_pair, header, chunks, assignment);
         Some(proposal)
     }
 
     pub(crate) fn assemble(
         key_pair: &ProposalKeyPair,
         header: ProposalHeader,
-        chunk_tree: ChunkTree,
+        chunks: Box<dyn ProposalChunks>,
         assignment: ChunkAssignment,
     ) -> Self {
         use crate::spec::DAProposalKeyPair as _;
@@ -87,7 +85,7 @@ impl AssembledProposal {
         Self {
             header,
             assignment,
-            chunk_tree,
+            chunks,
         }
     }
 
@@ -99,9 +97,9 @@ impl AssembledProposal {
         let mut chunks = Vec::with_capacity(self.assignment.num_chunks());
         for chunk_id in self.assignment.chunk_ids() {
             let data = self
-                .chunk_tree
+                .chunks
                 .chunk_data(chunk_id)
-                .expect("the chunk tree is complete");
+                .expect("the encoded chunks are complete");
             chunks.push((chunk_id, data));
         }
 
@@ -182,6 +180,7 @@ mod tests {
             super::{
                 assignment::{Obligation, Obligations},
                 chunk::ProposalEnvelope,
+                encoding_scheme::DAEncodingScheme as _,
                 test_util::{
                     MESSAGE_LEN, PACKET_LOSS_RESISTANCE, SLOT, author, epoch_handle_for, group,
                     proposal_chunks,
@@ -312,13 +311,12 @@ mod tests {
         let obligations = Obligations::new(Stake::from(4), holders);
         let assignment = ChunkAssignment::deal(&author(), obligations, PACKET_LOSS_RESISTANCE);
         let message = vec![1u8; MESSAGE_LEN];
-        let chunk_tree =
-            encoding_scheme::chunk_tree(header.scheme(), &message, assignment.num_chunks())
-                .expect("the fixture's message fits");
+        let chunks = header.scheme().encode(&message, assignment.num_chunks());
+        let chunks = chunks.expect("the fixture's message fits");
         let proposal = AssembledProposal::assemble(
             &epoch_handle.key_pair,
             header.header.clone(),
-            chunk_tree,
+            chunks,
             assignment,
         );
         assert_eq!(proposal.header(), &header);

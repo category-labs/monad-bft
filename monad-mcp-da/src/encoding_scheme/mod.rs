@@ -15,25 +15,22 @@
 
 pub mod d33;
 
+mod merkle;
 mod reed_solomon;
 
 use bytes::Bytes;
-use monad_crypto::hasher::Hash;
 
 use super::{
     assignment::{ChunkAssignment, ChunkId},
-    chunk::WireChunkId,
-    chunk_tree::ChunkTree,
-    types::{EncodingScheme, NodeId, ValidatorData},
-    util::Tree,
+    chunk::ChunkData,
+    types::{EncodingScheme, MerkleRoot, NodeId, ValidatorData},
 };
 
 // The encoding scheme specifies the symbol code and the chunk
 // assignment. It sizes its symbols by the layout its header travels
 // in.
 pub(crate) trait DAEncodingScheme {
-    type Encoder: SymbolEncoder;
-    type Decoder: SymbolDecoder;
+    type Chunks: ProposalChunks;
 
     fn msg_len(&self) -> usize;
     fn num_source_chunks(&self) -> usize;
@@ -45,38 +42,42 @@ pub(crate) trait DAEncodingScheme {
     // Note: can be expensive to calculate. Avoid recomputing when possible.
     fn chunk_assignment(&self, author: &NodeId, validator_data: &ValidatorData) -> ChunkAssignment;
 
-    fn encoder(&self, num_chunks: usize) -> Self::Encoder;
-    fn decoder(&self, num_chunks: usize) -> Self::Decoder;
+    // every chunk of a message of the scheme's length. None for any
+    // other length.
+    fn encode(&self, message: &[u8], num_chunks: usize) -> Option<Self::Chunks>;
 
-    fn depth(&self) -> u8;
-    fn leaf_hash(&self, chunk_id: WireChunkId, symbol: &[u8]) -> Hash;
-
-    // one symbol per chunk of a message of the scheme's length. None
-    // for any other length.
-    fn encode(&self, message: &[u8], num_chunks: usize) -> Option<Vec<Bytes>> {
-        if message.is_empty() || message.len() != self.msg_len() {
-            return None;
-        }
-        let symbols = self.encoder(num_chunks).encode(message);
-        assert!(symbols.len() == num_chunks);
-        Some(symbols)
-    }
+    // the chunks of a proposal under root, before any arrives
+    fn empty_chunks(&self, root: MerkleRoot, num_chunks: usize) -> Self::Chunks;
 }
 
-// the chunk tree of a message under the scheme. None unless the
-// message is of the scheme's length.
-pub(crate) fn chunk_tree(
-    scheme: &EncodingScheme,
-    message: &[u8],
-    num_chunks: usize,
-) -> Option<ChunkTree> {
-    let symbols = scheme.encode(message, num_chunks)?;
-    let mut leaves = Vec::with_capacity(symbols.len());
-    for (leaf_idx, symbol) in symbols.iter().enumerate() {
-        leaves.push(scheme.leaf_hash(leaf_idx as WireChunkId, symbol));
-    }
-    let tree = Tree::from_leaves(scheme.depth(), leaves);
-    Some(ChunkTree::complete(symbols, tree))
+// decoded proposal does not reencode back to root
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidEncoding;
+
+pub type Resolved = Result<Bytes, InvalidEncoding>;
+
+// the chunk does not bind to the root
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct BadProof;
+
+// the chunks of one proposal under its root: complete once encoded,
+// received one by one until they decode
+pub(crate) trait ProposalChunks: Send {
+    fn root(&self) -> MerkleRoot;
+
+    // received, or derivable once decoded
+    fn contains(&self, chunk_id: ChunkId) -> bool;
+
+    // true when the chunk is new. nothing is new once resolved.
+    fn ingest(&mut self, chunk_id: ChunkId, data: ChunkData) -> Result<bool, BadProof>;
+
+    // once: the message when enough chunks arrived, or invalid when it
+    // does not re-encode to the root
+    fn try_decode(&mut self) -> Option<Resolved>;
+    fn is_resolved(&self) -> bool;
+
+    // None unless contained
+    fn chunk_data(&self, chunk_id: ChunkId) -> Option<ChunkData>;
 }
 
 pub(crate) trait SymbolEncoder: Send {
@@ -93,8 +94,7 @@ pub(crate) trait SymbolDecoder: Send {
 }
 
 impl DAEncodingScheme for EncodingScheme {
-    type Encoder = Box<dyn SymbolEncoder>;
-    type Decoder = Box<dyn SymbolDecoder>;
+    type Chunks = Box<dyn ProposalChunks>;
 
     fn msg_len(&self) -> usize {
         match self {
@@ -120,43 +120,47 @@ impl DAEncodingScheme for EncodingScheme {
         }
     }
 
-    fn encoder(&self, num_chunks: usize) -> Self::Encoder {
+    fn encode(&self, message: &[u8], num_chunks: usize) -> Option<Self::Chunks> {
         match self {
-            EncodingScheme::D33(d33) => Box::new(d33.encoder(num_chunks)),
+            EncodingScheme::D33(d33) => {
+                let chunks = d33.encode(message, num_chunks)?;
+                Some(Box::new(chunks))
+            }
         }
     }
 
-    fn decoder(&self, num_chunks: usize) -> Self::Decoder {
+    fn empty_chunks(&self, root: MerkleRoot, num_chunks: usize) -> Self::Chunks {
         match self {
-            EncodingScheme::D33(d33) => Box::new(d33.decoder(num_chunks)),
-        }
-    }
-
-    fn depth(&self) -> u8 {
-        match self {
-            EncodingScheme::D33(d33) => d33.depth(),
-        }
-    }
-
-    fn leaf_hash(&self, chunk_id: WireChunkId, symbol: &[u8]) -> Hash {
-        match self {
-            EncodingScheme::D33(d33) => d33.leaf_hash(chunk_id, symbol),
+            EncodingScheme::D33(d33) => {
+                let chunks = d33.empty_chunks(root, num_chunks);
+                Box::new(chunks)
+            }
         }
     }
 }
 
-impl SymbolEncoder for Box<dyn SymbolEncoder> {
-    fn encode(&self, message: &[u8]) -> Vec<Bytes> {
-        (**self).encode(message)
-    }
-}
-
-impl SymbolDecoder for Box<dyn SymbolDecoder> {
-    fn ingest(&mut self, chunk_id: ChunkId, symbol: &Bytes) {
-        (**self).ingest(chunk_id, symbol)
+impl ProposalChunks for Box<dyn ProposalChunks> {
+    fn root(&self) -> MerkleRoot {
+        (**self).root()
     }
 
-    fn try_decode(&mut self) -> Option<Bytes> {
+    fn contains(&self, chunk_id: ChunkId) -> bool {
+        (**self).contains(chunk_id)
+    }
+
+    fn ingest(&mut self, chunk_id: ChunkId, data: ChunkData) -> Result<bool, BadProof> {
+        (**self).ingest(chunk_id, data)
+    }
+
+    fn try_decode(&mut self) -> Option<Resolved> {
         (**self).try_decode()
+    }
+
+    fn is_resolved(&self) -> bool {
+        (**self).is_resolved()
+    }
+
+    fn chunk_data(&self, chunk_id: ChunkId) -> Option<ChunkData> {
+        (**self).chunk_data(chunk_id)
     }
 }

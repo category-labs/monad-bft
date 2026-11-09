@@ -20,7 +20,6 @@ use super::{
 
 mod assignment;
 pub(crate) mod chunk;
-mod chunk_tree;
 mod egress;
 pub(crate) mod encoding_scheme;
 mod header;
@@ -37,9 +36,9 @@ pub(crate) mod test_util;
 
 pub use chunk::{Chunk, ChunkRequest, ProposalEnvelope};
 pub use egress::Dissemination;
+pub use encoding_scheme::{InvalidEncoding, Resolved};
 pub use env::ProposalKeyPair;
 pub use header::{InvalidProposalHeader, header_auth};
-pub use instance_rc::{InvalidEncoding, Resolved};
 pub use runtime::{ChunkRecoveryRequest, DAConfig, DAOutput, DARuntime, EpochHandle};
 pub use wire::{
     MalformedPacket,

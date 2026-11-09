@@ -91,7 +91,7 @@ impl PacketLossResistance {
 }
 
 // Resolved routing for a single chunk: the dissemination path author
-// -> owner -> rebroadcast targets. The author is never a target.
+// -> owner -> relay targets. The author is never a target.
 pub struct ChunkRouting<'a> {
     chunk_id: ChunkId,
     target: &'a ChunkTarget,
@@ -107,26 +107,26 @@ impl<'a> ChunkRouting<'a> {
         self.target.owner_node_index
     }
 
-    // whether the node receives this chunk via rebroadcast: every node but the
+    // whether the node receives this chunk via relay: every node but the
     // owner and the author, or for a partial chunk (stake-proportional
     // multicast) its share of them
-    fn is_rebroadcast_target(&self, node: NodeIndex) -> bool {
+    fn is_relay_target(&self, node: NodeIndex) -> bool {
         if node == self.owner_index() || node == self.assignment.author {
             return false;
         }
-        let Some(indices) = &self.target.rebroadcast_targets else {
-            // rebroadcast to all other nodes
+        let Some(indices) = &self.target.relay_targets else {
+            // relay to all other nodes
             return true;
         };
         indices.contains(&node)
     }
 
-    // the nodes the owner rebroadcasts this chunk to, in the given send order
+    // the nodes the owner relays this chunk to, in the given send order
     // (every node of the assignment, each once)
-    pub(crate) fn rebroadcast_targets(&self, send_order: &[NodeIndex]) -> Vec<NodeId> {
+    pub(crate) fn relay_targets(&self, send_order: &[NodeIndex]) -> Vec<NodeId> {
         send_order
             .iter()
-            .filter(|index| self.is_rebroadcast_target(**index))
+            .filter(|index| self.is_relay_target(**index))
             .map(|index| *self.assignment.node(*index))
             .collect()
     }
@@ -141,7 +141,7 @@ impl<'a> ChunkRouting<'a> {
             // receiver should receive the chunk from the author (first-hop)
             return Some(Upstream::Author);
         }
-        if self.is_rebroadcast_target(receiver) {
+        if self.is_relay_target(receiver) {
             // receiver should receive the chunk from the owner (second-hop)
             return Some(Upstream::Owner(self.owner_index()));
         }
@@ -157,15 +157,15 @@ struct ChunkTarget {
     // the first-hop recipient
     owner_node_index: NodeIndex,
 
-    // if None, rebroadcast to all other recipients. Some for a partial
+    // if None, relay to all other recipients. Some for a partial
     // chunk under stake-proportional multicast.
-    rebroadcast_targets: Option<Vec<NodeIndex>>,
+    relay_targets: Option<Vec<NodeIndex>>,
 }
 
 #[derive(Copy, Clone)]
 pub(crate) struct Obligation {
     pub(crate) whole: usize,
-    // one more chunk, rebroadcast to (partial / total_stake) of the
+    // one more chunk, relayed to (partial / total_stake) of the
     // holders.  ZERO for none.
     pub(crate) partial: Stake,
 }
@@ -317,14 +317,14 @@ impl ChunkAssignment {
 
         while !remaining.is_empty() {
             for (owner, obligation) in &mut remaining {
-                let rebroadcast_targets = match obligation.take_chunk() {
+                let relay_targets = match obligation.take_chunk() {
                     ChunkType::Whole => None,
                     ChunkType::Fract(r) => Some(ring.cover(r)),
                 };
 
                 targets.push(ChunkTarget {
                     owner_node_index: *owner,
-                    rebroadcast_targets,
+                    relay_targets,
                 });
             }
             remaining.retain(|(_, obligation)| !obligation.is_empty());
@@ -410,13 +410,13 @@ impl ChunkAssignment {
 
 // upstream(c, R) = bottom    if R == author
 //                  author    if R == owner(c)
-//                  owner(c)  if R is a rebroadcast target of c
+//                  owner(c)  if R is a relay target of c
 //                  bottom    if c is unrouted to R
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) enum Upstream {
     // the chunk is routed to the receiver in first-hop
     Author,
-    // the chunk is routed to the receiver through rebroadcast via
+    // the chunk is relayed to the receiver by
     // this node.
     Owner(NodeIndex),
 }
@@ -434,7 +434,7 @@ impl StakePartition {
     }
 
     // stake-proportional multicast: each fractional obligation is a
-    // chunk rebroadcast to that fraction of the nodes.
+    // chunk relayed to that fraction of the nodes.
     pub fn assign_spm(
         self,
         author: &NodeId,
@@ -473,17 +473,14 @@ mod tests {
         NodeId::dummy(id)
     }
 
-    // the nodes the chunk's owner rebroadcasts it to
+    // the nodes the chunk's owner relays it to
     fn targets(assignment: &ChunkAssignment, chunk_id: u16) -> BTreeSet<NodeId> {
         let index_order: Vec<NodeIndex> = assignment.nodes().map(|(index, _)| index).collect();
         let routing = assignment.routing(ChunkId(chunk_id));
-        routing
-            .rebroadcast_targets(&index_order)
-            .into_iter()
-            .collect()
+        routing.relay_targets(&index_order).into_iter().collect()
     }
 
-    // a full rebroadcast: every node but the chunk's owner and the author
+    // a full relay: every node but the chunk's owner and the author
     fn everyone_else(assignment: &ChunkAssignment, chunk_id: u16) -> BTreeSet<NodeId> {
         let routing = assignment.routing(ChunkId(chunk_id));
         let excluded = [routing.owner_index(), assignment.author()];
@@ -515,7 +512,7 @@ mod tests {
     }
 
     #[test]
-    fn a_partial_chunk_is_dealt_last_and_rebroadcast_to_its_share_of_nodes() {
+    fn a_partial_chunk_is_dealt_last_and_relayed_to_its_share_of_nodes() {
         let assignment = assignment();
 
         // 2.5 shares deal 3 chunks
@@ -588,7 +585,7 @@ mod tests {
         assert_eq!(routing.upstream(owner), Some(Upstream::Author));
         assert_eq!(routing.upstream(other), Some(Upstream::Owner(owner)));
 
-        // the full rebroadcast reaches everyone but the owner and the author
+        // the full relay reaches everyone but the owner and the author
         assert_eq!(targets(&assignment, 0), BTreeSet::from([node(2), node(3)]));
     }
 

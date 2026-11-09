@@ -32,7 +32,7 @@ use crate::harness::{
 const SEED: u64 = 0xD1CE;
 
 // 8 validators, one never starts, 5% loss: exercises random payloads, the
-// network's loss draws, rebroadcast fan-out and pull recovery
+// network's loss draws, relay fan-out and pull recovery
 fn run(seed: u64) -> u64 {
     run_with(seed, None)
 }

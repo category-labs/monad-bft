@@ -25,15 +25,16 @@ pub(crate) use super::cadence::types::FixedProposerSchedule;
 use super::{
     assignment::{ChunkAssignment, ChunkId, PacketLossResistance},
     chunk::{Chunk, ProposalEnvelope, WireChunkId},
-    chunk_tree::ChunkTree,
-    encoding_scheme::{self, DAEncodingScheme as _, d33},
+    encoding_scheme::{
+        DAEncodingScheme as _, ProposalChunks,
+        d33::{self, D33Chunks},
+    },
     header::header_auth,
     runtime::{DAConfig, EpochHandle, Timing},
     types::{
         EncodingScheme, Lane, NodeId, ProposalHeader, ProposalKeyPair, SignedProposalHeader, Slot,
         Stake, Timestamp, TimestampDelta, ValidatorData,
     },
-    util::Tree,
     wire,
 };
 
@@ -129,15 +130,15 @@ pub(crate) fn signed_header(header: ProposalHeader, author_id: u64) -> SignedPro
     SignedProposalHeader { header, sig }
 }
 
-// the header and every chunk of a complete tree, in wire id order
+// the header and every chunk of complete chunks, in wire id order
 fn chunks_of(
-    tree: &ChunkTree,
+    complete: &dyn ProposalChunks,
     assignment: &ChunkAssignment,
     header: SignedProposalHeader,
 ) -> (SignedProposalHeader, Vec<Chunk<'static>>) {
     let mut chunks = Vec::new();
     for chunk_id in assignment.chunk_ids() {
-        let data = tree.chunk_data(chunk_id).expect("complete tree");
+        let data = complete.chunk_data(chunk_id).expect("complete chunks");
         chunks.push(Chunk::new(header.clone(), chunk_id.to_wire(), data));
     }
     (header, chunks)
@@ -174,13 +175,13 @@ pub(crate) fn proposal_chunks_under(
     let author = NodeId::dummy(author_id);
     let assignment = scheme.chunk_assignment(&author, &epoch_handle.validator_data);
     let message = vec![payload; MESSAGE_LEN];
-    let tree = encoding_scheme::chunk_tree(&scheme, &message, assignment.num_chunks())
-        .expect("a message of the scheme's length");
+    let encoded = scheme.encode(&message, assignment.num_chunks());
+    let encoded = encoded.expect("a message of the scheme's length");
     let header = ProposalHeader {
-        root: tree.root(),
+        root: encoded.root(),
         scheme,
     };
-    chunks_of(&tree, &assignment, signed_header(header, author_id))
+    chunks_of(&*encoded, &assignment, signed_header(header, author_id))
 }
 
 pub(crate) fn proposal_chunks(
@@ -208,16 +209,13 @@ pub(crate) fn inconsistent_proposal_chunks(
         let payload = if i < num_chunks / 2 { 1 } else { 2 };
         symbols.push(Bytes::from(vec![payload; symbol_len]));
     }
-    let mut leaves = Vec::with_capacity(num_chunks);
-    for (leaf_idx, symbol) in symbols.iter().enumerate() {
-        leaves.push(scheme.leaf_hash(leaf_idx as WireChunkId, symbol));
-    }
-    let tree = ChunkTree::complete(symbols, Tree::from_leaves(scheme.depth(), leaves));
+    let EncodingScheme::D33(d33) = &scheme;
+    let complete = D33Chunks::from_symbols(d33, symbols);
     let header = ProposalHeader {
-        root: tree.root(),
+        root: complete.root(),
         scheme,
     };
-    chunks_of(&tree, &assignment, signed_header(header, 0))
+    chunks_of(&complete, &assignment, signed_header(header, 0))
 }
 
 // the verified id of a wire chunk id under the header's assignment

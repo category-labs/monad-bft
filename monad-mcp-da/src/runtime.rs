@@ -23,8 +23,8 @@ use monad_mcp_cadence::spec::ProposalHeader as _;
 use super::{
     chunk::{ChunkRequest, ProposalEnvelope},
     egress::Dissemination,
+    encoding_scheme::Resolved,
     header::InvalidProposalHeader,
-    instance_rc::Resolved,
     slot_rc::SlotRaptorcast,
     types::{
         ChorusDACommand, ChorusDAEvent, HeaderAuth, Lane, NodeId, Proposal, ProposalId,
@@ -70,7 +70,7 @@ impl DAConfig {
 // when a proposer's pulls happen, and how often its requests are served
 #[derive(Clone, Copy)]
 pub(crate) struct Timing {
-    // from the slot deadline, when owners release their rebroadcasts
+    // from the slot deadline, when owners release their relays
     pub(crate) pull_delay: TimestampDelta,
     pub(crate) pull_interval: TimestampDelta,
     // shorter than pull_interval, so jittered honest requests still fit
@@ -145,7 +145,7 @@ where
         }
 
         // optimization: ingest all chunks for early decode, so peers
-        // don't have to rebroadcast back to author.
+        // don't have to relay back to author.
         self.ingest_own(first_hop.envelope());
 
         for dissemination in first_hop.into_disseminations() {

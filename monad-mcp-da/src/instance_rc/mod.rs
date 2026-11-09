@@ -14,39 +14,28 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 mod obligation_tracker;
+mod relay_tracker;
 mod serving_tracker;
 
-use std::collections::BTreeSet;
-
-use bytes::Bytes;
 use monad_mcp_cadence::spec::ProposalHeader as _;
 use obligation_tracker::ObligationTracker;
+use relay_tracker::RelayTracker;
 use serving_tracker::ServingTracker;
 
 use super::{
     assignment::{ChunkAssignment, ChunkId, NodeIndex},
     chunk::{ChunkData, ChunkRequest, ChunksSubset, WireChunkId},
-    chunk_tree::ChunkTree,
     egress::ChunkEgress,
-    encoding_scheme::{self, DAEncodingScheme as _, SymbolDecoder},
+    encoding_scheme::{BadProof, DAEncodingScheme as _, ProposalChunks, Resolved},
     runtime::EpochHandle,
-    types::{
-        EncodingScheme, MerkleRoot, NodeId, ProposalDAEvent, SignedProposalHeader, Timestamp,
-        TimestampDelta,
-    },
-    util::{Tree, shuffle_sends},
+    types::{NodeId, ProposalDAEvent, SignedProposalHeader, Timestamp, TimestampDelta},
+    util::shuffle_sends,
 };
 use crate::spec::DAProposalHeader as _;
 
 // by owner, each owner once, in assignment (or validator) order; the requests
 // built from it are shuffled before they go out
 pub(crate) type MissingChunks = Vec<(NodeId, ChunksSubset)>;
-
-// decoded proposal does not reencode back to root
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InvalidEncoding;
-
-pub type Resolved = Result<Bytes, InvalidEncoding>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[expect(clippy::enum_variant_names)]
@@ -56,14 +45,13 @@ pub(crate) enum InvalidChunk {
     BadProof,
 }
 
-enum DecodingState {
-    Decoding(Box<dyn SymbolDecoder>),
-    Decoded,
-    // the decoded message does not re-encode to the root
-    Invalid,
+impl From<BadProof> for InvalidChunk {
+    fn from(_: BadProof) -> Self {
+        InvalidChunk::BadProof
+    }
 }
 
-// a tracked root: its chunks, their decoding, and the rebroadcast of our owned chunks
+// a tracked root: its chunks, their decoding, and the relay of our owned chunks
 pub(crate) struct RaptorcastInstance {
     header: SignedProposalHeader,
     assignment: ChunkAssignment,
@@ -71,14 +59,11 @@ pub(crate) struct RaptorcastInstance {
     self_index: Option<NodeIndex>,
     // every node of the assignment, in the order we send to them
     send_order: Vec<NodeIndex>,
-    decoding_threshold: usize,
 
-    chunks: ChunkTree,
+    chunks: Box<dyn ProposalChunks>,
     obligation: ObligationTracker,
     serving: ServingTracker,
-
-    pending_rebroadcast: BTreeSet<ChunkId>,
-    state: DecodingState,
+    relay: RelayTracker,
 }
 
 impl RaptorcastInstance {
@@ -93,24 +78,20 @@ impl RaptorcastInstance {
         let self_index = assignment.index_of(&epoch_handle.self_id);
         let mut send_order: Vec<NodeIndex> = assignment.nodes().map(|(index, _)| index).collect();
         shuffle_sends(&mut send_order, &header.pid(), &epoch_handle.self_id);
-        let num_chunks = assignment.num_chunks();
-        let decoding_threshold = scheme.num_source_chunks();
-        assert!(0 < decoding_threshold && decoding_threshold < num_chunks);
-        let decoder = scheme.decoder(num_chunks);
+        let chunks = scheme.empty_chunks(*header.root(), assignment.num_chunks());
         let obligation = ObligationTracker::new(&assignment, self_index);
         let serving = ServingTracker::new(&assignment, self_index, serve_window);
+        let relay = RelayTracker::new(&assignment, self_index);
 
         Self {
-            chunks: ChunkTree::new(*header.root()),
             header,
             assignment,
             self_index,
             send_order,
-            decoding_threshold,
+            chunks,
             obligation,
             serving,
-            pending_rebroadcast: BTreeSet::new(),
-            state: DecodingState::Decoding(decoder),
+            relay,
         }
     }
 
@@ -133,24 +114,15 @@ impl RaptorcastInstance {
         wire_chunk_id: WireChunkId,
         data: ChunkData,
         sender: &NodeId,
+        egress: &mut ChunkEgress,
     ) -> Result<(), InvalidChunk> {
         let chunk_id = self.accept(wire_chunk_id, sender)?;
-        let DecodingState::Decoding(decoder) = &mut self.state else {
-            return Ok(());
-        };
-        if self.chunks.contains(chunk_id) {
+
+        // proof verification, storing & decoding
+        let is_new = self.chunks.ingest(chunk_id, data)?;
+        if !is_new {
             return Ok(());
         }
-
-        // proof verification
-        let root = self.chunks.root();
-        if !verify_proof(chunk_id, &data, self.header.scheme(), &root) {
-            return Err(InvalidChunk::BadProof);
-        }
-
-        // storing & decoding
-        decoder.ingest(chunk_id, &data.symbol);
-        self.chunks.insert(chunk_id, data);
 
         // obligation tracking
         let Some(self_index) = self.self_index else {
@@ -159,9 +131,9 @@ impl RaptorcastInstance {
         let routing = self.assignment.routing(chunk_id);
         self.obligation.mark(&routing, self_index);
 
-        // rebroadcasting
-        if routing.owner_index() == self_index {
-            self.pending_rebroadcast.insert(chunk_id);
+        // relaying
+        if self.relay.take(chunk_id) {
+            self.relay_chunk(chunk_id, egress);
         }
         Ok(())
     }
@@ -176,39 +148,20 @@ impl RaptorcastInstance {
         ))
     }
 
-    pub(crate) fn try_decode(&mut self) -> Option<Resolved> {
-        let DecodingState::Decoding(decoder) = &mut self.state else {
-            return None;
-        };
-        if self.chunks.len() < self.decoding_threshold {
-            return None;
-        }
-        // todo: None after enough chunks means the codec doesn't
-        // guarantee decodability (e.g. r10).
-        let message = decoder.try_decode()?;
+    pub(crate) fn try_decode(&mut self, egress: &mut ChunkEgress) -> Option<Resolved> {
+        let resolved = self.chunks.try_decode()?;
 
-        let Some(tree) = self.reencoded_tree(&message) else {
-            self.state = DecodingState::Invalid;
-            return Some(Err(InvalidEncoding));
-        };
-        self.queue_unreceived_chunks();
-        self.chunks = tree;
-        self.state = DecodingState::Decoded;
-        Some(Ok(message))
-    }
-
-    // only our own chunks are queued, so the routing's owner is us
-    pub(crate) fn rebroadcast_chunks(&mut self, egress: &mut ChunkEgress) {
-        while let Some(chunk_id) = self.pending_rebroadcast.pop_first() {
-            let routing = self.assignment.routing(chunk_id);
-            let to = routing.rebroadcast_targets(&self.send_order);
-            self.enqueue(chunk_id, to, egress);
+        if resolved.is_ok() {
+            for chunk_id in self.relay.take_all() {
+                self.relay_chunk(chunk_id, egress);
+            }
         }
+        Some(resolved)
     }
 
     // None once resolved, or outside the assignment, whose owners serve only its nodes
     pub(crate) fn missing_chunks(&self) -> Option<MissingChunks> {
-        let resolved = !matches!(self.state, DecodingState::Decoding(_));
+        let resolved = self.chunks.is_resolved();
         if resolved || self.self_index.is_none() {
             return None;
         }
@@ -261,17 +214,11 @@ impl RaptorcastInstance {
         }
     }
 
-    // our chunks never received become derivable once decoded
-    fn queue_unreceived_chunks(&mut self) {
-        let Some(self_index) = self.self_index else {
-            return;
-        };
-        for routing in self.assignment.owned_chunks(self_index) {
-            let chunk_id = routing.chunk_id();
-            if !self.chunks.contains(chunk_id) {
-                self.pending_rebroadcast.insert(chunk_id);
-            }
-        }
+    // only our own chunks are relayed, so the routing's owner is us
+    fn relay_chunk(&self, chunk_id: ChunkId, egress: &mut ChunkEgress) {
+        let routing = self.assignment.routing(chunk_id);
+        let to = routing.relay_targets(&self.send_order);
+        self.enqueue(chunk_id, to, egress);
     }
 
     // the caller must ensure the chunk is held
@@ -281,16 +228,6 @@ impl RaptorcastInstance {
             .chunk_data(chunk_id)
             .expect("caller ensures the chunk is held");
         egress.enqueue(to, &self.header, chunk_id.to_wire(), data);
-    }
-
-    // None unless the message re-encodes to our root
-    fn reencoded_tree(&self, message: &[u8]) -> Option<ChunkTree> {
-        let num_chunks = self.assignment.num_chunks();
-        let tree = encoding_scheme::chunk_tree(self.header.scheme(), message, num_chunks)?;
-        if tree.root() != *self.header.root() {
-            return None;
-        }
-        Some(tree)
     }
 
     // the chunks a recovery request resolves to. Out-of-range ids are
@@ -310,26 +247,14 @@ impl RaptorcastInstance {
     }
 }
 
-// whether the chunk's proof binds it to the root
-fn verify_proof(
-    chunk_id: ChunkId,
-    data: &ChunkData,
-    scheme: &EncodingScheme,
-    root: &MerkleRoot,
-) -> bool {
-    use super::wire::PacketLayout as _;
-
-    debug_assert_eq!(data.symbol.len(), scheme.symbol_len());
-    let leaf_idx = chunk_id.to_wire();
-    let leaf = scheme.leaf_hash(leaf_idx, &data.symbol);
-    Tree::verify_proof(root, leaf_idx, &leaf, &data.proof)
-}
-
 #[cfg(test)]
 mod tests {
+    use bytes::Bytes;
+
     use super::{
         super::{
             chunk::{Chunk, ChunkRequestType},
+            encoding_scheme::InvalidEncoding,
             test_util::{
                 MESSAGE_LEN, NOW, author, epoch_handle, epoch_handle_for,
                 inconsistent_proposal_chunks, proposal_chunks, timing,
@@ -360,9 +285,8 @@ mod tests {
         egress: &mut ChunkEgress,
     ) -> Result<Option<Resolved>, InvalidChunk> {
         let (_, wire_chunk_id, data) = chunk.clone().into_parts();
-        instance.ingest(wire_chunk_id, data, &author())?;
-        let decoded = instance.try_decode();
-        instance.rebroadcast_chunks(egress);
+        instance.ingest(wire_chunk_id, data, &author(), egress)?;
+        let decoded = instance.try_decode(egress);
         Ok(decoded)
     }
 
@@ -416,9 +340,10 @@ mod tests {
         let epoch_handle = epoch_handle();
         let (header, chunks) = proposal_chunks(&epoch_handle, 1);
         let mut instance = instance(&header, &epoch_handle);
+        let mut egress = released();
         let (_, _, data) = chunks[0].clone().into_parts();
 
-        let out_of_range = instance.ingest(99, data.clone(), &author());
+        let out_of_range = instance.ingest(99, data.clone(), &author(), &mut egress);
         assert_eq!(out_of_range, Err(InvalidChunk::InvalidChunkId));
 
         let mut symbol = data.symbol.to_vec();
@@ -427,11 +352,11 @@ mod tests {
             symbol: Bytes::from(symbol),
             proof: data.proof.clone(),
         };
-        let tampered = instance.ingest(0, tampered, &author());
+        let tampered = instance.ingest(0, tampered, &author(), &mut egress);
         assert_eq!(tampered, Err(InvalidChunk::BadProof));
 
         // a good chunk under the wrong id fails its proof
-        let misplaced = instance.ingest(1, data, &author());
+        let misplaced = instance.ingest(1, data, &author(), &mut egress);
         assert_eq!(misplaced, Err(InvalidChunk::BadProof));
     }
 

@@ -207,7 +207,7 @@ pub type MissingHeaders = Vec<(ProposalId, ValidatorSet)>;
 // An effect directed at the DA layer.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum ChorusDACommand {
-    // release the slot's chunks to peers: rebroadcast our owned
+    // release the slot's chunks to peers: relay our owned
     // chunks, held and arriving, and serve chunk recovery requests.
     ReleaseChunks,
 

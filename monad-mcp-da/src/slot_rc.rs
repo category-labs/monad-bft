@@ -20,8 +20,8 @@ use monad_mcp_cadence::spec::proposal::ProposalHeader as _;
 use super::{
     chunk::{ChunkRequest, ProposalEnvelope},
     egress::{ChunkEgress, Dissemination},
+    encoding_scheme::Resolved,
     header::InvalidProposalHeader,
-    instance_rc::Resolved,
     proposer_rc::ProposerRaptorcast,
     runtime::{ChunkRecoveryRequest, EpochHandle, Timing},
     types::{
