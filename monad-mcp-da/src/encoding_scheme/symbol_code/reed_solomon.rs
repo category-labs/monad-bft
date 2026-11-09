@@ -40,12 +40,18 @@ impl RsSymbolEncoder {
     }
 }
 
-// the message zero padded to whole symbols
-fn source_symbols(message: &[u8], num_source_chunks: usize, symbol_len: usize) -> Vec<Bytes> {
+// the message zero padded to whole symbols. A symbol the message fills
+// is a view into it, not a copy; only a partial last symbol is copied
+// and padded.
+fn source_symbols(message: &Bytes, num_source_chunks: usize, symbol_len: usize) -> Vec<Bytes> {
     let mut sources = Vec::with_capacity(num_source_chunks);
     for i in 0..num_source_chunks {
         let start = (i * symbol_len).min(message.len());
         let end = ((i + 1) * symbol_len).min(message.len());
+        if end - start == symbol_len {
+            sources.push(message.slice(start..end));
+            continue;
+        }
         let mut symbol = BytesMut::zeroed(symbol_len);
         symbol[..end - start].copy_from_slice(&message[start..end]);
         sources.push(symbol.freeze());
@@ -54,7 +60,7 @@ fn source_symbols(message: &[u8], num_source_chunks: usize, symbol_len: usize) -
 }
 
 impl SymbolEncoder for RsSymbolEncoder {
-    fn encode(&self, message: &[u8]) -> Vec<Bytes> {
+    fn encode(&self, message: &Bytes) -> Vec<Bytes> {
         let mut symbols = source_symbols(message, self.num_source_chunks, self.symbol_len);
         let num_recovery_chunks = self.num_chunks - self.num_source_chunks;
         if num_recovery_chunks == 0 {
@@ -163,7 +169,7 @@ mod tests {
     const MESSAGE: [u8; 9] = [1, 2, 3, 4, 5, 6, 7, 8, 9];
 
     fn symbols() -> Vec<Bytes> {
-        RsSymbolEncoder::new(7, 3, 4).encode(&MESSAGE)
+        RsSymbolEncoder::new(7, 3, 4).encode(&Bytes::from_static(&MESSAGE))
     }
 
     #[test]
@@ -176,6 +182,16 @@ mod tests {
         for symbol in &symbols[3..] {
             assert_eq!(symbol.len(), 4);
         }
+    }
+
+    #[test]
+    fn whole_sources_are_views_into_the_message() {
+        let message = Bytes::from_static(&MESSAGE);
+        let symbols = RsSymbolEncoder::new(7, 3, 4).encode(&message);
+        assert_eq!(symbols[0].as_ptr(), message.as_ptr());
+        assert_eq!(symbols[1].as_ptr(), message[4..].as_ptr());
+        // the padded last source is a copy
+        assert_ne!(symbols[2].as_ptr(), message[8..].as_ptr());
     }
 
     #[test]
@@ -207,7 +223,7 @@ mod tests {
 
     #[test]
     fn a_code_without_recovery_needs_every_source() {
-        let symbols = RsSymbolEncoder::new(2, 2, 4).encode(&MESSAGE[..8]);
+        let symbols = RsSymbolEncoder::new(2, 2, 4).encode(&Bytes::from_static(&MESSAGE[..8]));
         assert_eq!(symbols.len(), 2);
         let mut decoder = RsSymbolDecoder::new(2, 2, 8);
         decoder.ingest(ChunkId::unchecked(1), &symbols[1]);

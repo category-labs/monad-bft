@@ -82,7 +82,7 @@ impl<S: MerkleCode> MerkleChunks<S> {
     }
 
     // None unless the message is of the scheme's length
-    pub(crate) fn encode(scheme: &S, message: &[u8], num_chunks: usize) -> Option<Self> {
+    pub(crate) fn encode(scheme: &S, message: &Bytes, num_chunks: usize) -> Option<Self> {
         let (symbols, tree) = chunk_tree(scheme, message, num_chunks)?;
         let encoded = Self::Decoded { symbols, tree };
         Some(encoded)
@@ -181,7 +181,7 @@ impl<S: MerkleCode> ProposalChunks for MerkleChunks<S> {
 // the symbols of a message of the scheme's length, under their tree
 fn chunk_tree<S: MerkleCode>(
     scheme: &S,
-    message: &[u8],
+    message: &Bytes,
     num_chunks: usize,
 ) -> Option<(Vec<Bytes>, Tree)> {
     if message.is_empty() || message.len() != scheme.msg_len() {
@@ -252,8 +252,8 @@ mod tests {
             assert!(encoded.contains(chunk_id));
         }
 
-        let short = &message()[1..];
-        assert!(D33Chunks::encode(&scheme, short, 9).is_none());
+        let short = message().slice(1..);
+        assert!(D33Chunks::encode(&scheme, &short, 9).is_none());
     }
 
     #[test]

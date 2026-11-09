@@ -22,7 +22,7 @@ use super::super::assignment::ChunkId;
 
 pub(crate) trait SymbolEncoder: Send {
     // one symbol per chunk, in chunk id order
-    fn encode(&self, message: &[u8]) -> Vec<Bytes>;
+    fn encode(&self, message: &Bytes) -> Vec<Bytes>;
 }
 
 // the decoding state of one proposal.

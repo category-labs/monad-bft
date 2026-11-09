@@ -617,7 +617,7 @@ mod tests {
 
     #[test]
     fn any_source_count_of_symbols_decodes() {
-        let message = vec![7u8; MESSAGE_LEN];
+        let message = Bytes::from(vec![7u8; MESSAGE_LEN]);
         let symbols = scheme().encoder(9).encode(&message);
         assert_eq!(symbols.len(), 9);
         for symbol in &symbols {
@@ -628,6 +628,6 @@ mod tests {
         decoder.ingest(ChunkId::unchecked(8), &symbols[8]);
         assert!(decoder.try_decode().is_none());
         decoder.ingest(ChunkId::unchecked(5), &symbols[5]);
-        assert_eq!(decoder.try_decode(), Some(Bytes::from(message)));
+        assert_eq!(decoder.try_decode(), Some(message));
     }
 }
