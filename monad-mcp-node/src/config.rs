@@ -34,7 +34,7 @@ use crate::{
     },
     common::{KeyPair, NodeId, PubKey, Stake},
     component::{RepeaterConfig, mempool},
-    da::{self, ProposalKeyPair, header_auth},
+    da::{self, HollowProposals, ProposalKeyPair, header_auth},
     epoch::{EpochHandle, NodeProposerSchedule},
 };
 
@@ -155,7 +155,17 @@ impl NodeConfig {
             self.proposal
                 .schedule(&self.leader_election, validator_data.clone())?,
         );
-        let header_auth = Arc::new(header_auth(proposers.clone(), validator_data.clone()));
+        // only a node that proposes hollow chunks, which is a node of an
+        // in-process simulation, takes them from others
+        let hollow = match self.proposal.encoding_scheme {
+            da::ProposalScheme::D33 => HollowProposals::Rejected,
+            da::ProposalScheme::D33Hollow => HollowProposals::Accepted,
+        };
+        let header_auth = Arc::new(header_auth(
+            proposers.clone(),
+            validator_data.clone(),
+            hollow,
+        ));
 
         Ok(EpochHandle {
             self_id: self.node_id,
@@ -341,7 +351,8 @@ pub struct ProposalConfig {
     // proposal that cannot arrive before the deadline.
     #[serde(deserialize_with = "de::millis")]
     pub withhold_before_deadline: TimestampDelta,
-    // "d33", or "d33_hollow" to keep chunk data off the wire in a simulation
+    // "d33". d33_hollow keeps chunk data off the wire in an in-process
+    // simulation; a config file cannot select it (see de::proposal_scheme)
     #[serde(deserialize_with = "de::proposal_scheme")]
     pub encoding_scheme: da::ProposalScheme,
 }
@@ -495,12 +506,17 @@ mod de {
         u64::deserialize(d).map(Timestamp::from_millis)
     }
 
+    // a config file runs a node in its own process, where a hollow
+    // proposal could never decode: its message lives in the proposer's
+    // process alone. Simulations set D33Hollow in code.
     pub fn proposal_scheme<'de, D: Deserializer<'de>>(d: D) -> Result<ProposalScheme, D::Error> {
-        const NAMES: &[&str] = &["d33", "d33_hollow"];
+        const NAMES: &[&str] = &["d33"];
         let name = String::deserialize(d)?;
         match name.as_str() {
             "d33" => Ok(ProposalScheme::D33),
-            "d33_hollow" => Ok(ProposalScheme::D33Hollow),
+            "d33_hollow" => Err(serde::de::Error::custom(
+                "d33_hollow is for in-process simulations only, not for a node config",
+            )),
             other => Err(serde::de::Error::unknown_variant(other, NAMES)),
         }
     }
@@ -598,6 +614,19 @@ mod tests {
         );
         assert_eq!(planner.lead, config.propose_before_deadline);
         assert_eq!(planner.min_lead, config.withhold_before_deadline);
+    }
+
+    // a node run from a config file is its own process, where hollow
+    // proposals could never decode
+    #[test]
+    fn a_config_file_cannot_select_hollow_chunks() {
+        let d33: ProposalConfig = toml::from_str("encoding_scheme = \"d33\"").unwrap();
+        assert_eq!(d33.encoding_scheme, da::ProposalScheme::D33);
+        let Err(error) = toml::from_str::<ProposalConfig>("encoding_scheme = \"d33_hollow\"")
+        else {
+            panic!("a config file selected hollow chunks");
+        };
+        assert!(error.to_string().contains("in-process simulations only"));
     }
 
     // the gate is off unless the deployment asks for it

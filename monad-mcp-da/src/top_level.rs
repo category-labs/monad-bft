@@ -38,7 +38,7 @@ pub use chunk::{Chunk, ChunkRequest, ProposalEnvelope};
 pub use egress::Dissemination;
 pub use encoding_scheme::{InvalidEncoding, Resolved};
 pub use env::ProposalKeyPair;
-pub use header::{InvalidProposalHeader, header_auth};
+pub use header::{HollowProposals, InvalidProposalHeader, header_auth};
 pub use runtime::{
     ChunkRecoveryRequest, DAConfig, DAOutput, DARuntime, EpochHandle, ProposalScheme,
 };

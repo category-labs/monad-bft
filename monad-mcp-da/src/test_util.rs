@@ -29,7 +29,7 @@ use super::{
         DAEncodingScheme as _, Hollow, ProposalChunks,
         d33::{self, D33Chunks},
     },
-    header::header_auth,
+    header::{HollowProposals, header_auth},
     runtime::{DAConfig, EpochHandle, Timing},
     types::{
         EncodingScheme, Lane, NodeId, ProposalHeader, ProposalKeyPair, SignedProposalHeader, Slot,
@@ -89,7 +89,11 @@ pub(crate) fn epoch_handle_for(
     EpochHandle {
         self_id,
         key_pair: Arc::new(ProposalKeyPair::dummy(self_id)),
-        header_auth: Arc::new(header_auth(schedule, validator_data.clone())),
+        header_auth: Arc::new(header_auth(
+            schedule,
+            validator_data.clone(),
+            HollowProposals::Rejected,
+        )),
         validator_data,
     }
 }
