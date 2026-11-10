@@ -11,6 +11,9 @@ monad-sim = { workspace = true }
 monad-sim-swarm = { workspace = true }
 tracing = { workspace = true }
 
+[dev-dependencies]
+alloy-rlp = { workspace = true }
+
 [lints.clippy]
 # outputs must not depend on hash order; see monad-mcp-node/docs/determinism.md
 iter_over_hash_type = "deny"

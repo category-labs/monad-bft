@@ -16,9 +16,15 @@
 mod da;
 mod mvba;
 mod node;
+mod slot_fallback;
 mod swarm;
 
 pub use da::{DaAnnouncement, MockDa, mock_header, mock_payload, mock_root};
 pub use mvba::{Decision, Message, MonadMvba, MvbaSwarm, MvbaSwarmBuilder, at_millis};
 pub use node::{SimMessage, SimNode};
+pub use slot_fallback::{
+    OutboundHook, Proposal, Received, Sent, SlotDecision, SlotFallbackSwarm,
+    SlotFallbackSwarmBuilder, TracedRuntime, commit_view, forge_pre_prepare, prepare, proposal,
+    tc_view, timeout_view,
+};
 pub use swarm::{CadenceSwarm, CadenceSwarmBuilder, FinalizationLog};

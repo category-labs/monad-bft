@@ -5727,6 +5727,7 @@ dependencies = [
 name = "monad-mcp-cadence-sim"
 version = "0.1.0"
 dependencies = [
+ "alloy-rlp",
  "bytes",
  "monad-mcp-cadence",
  "monad-mcp-common",
