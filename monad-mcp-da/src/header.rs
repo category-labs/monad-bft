@@ -27,27 +27,11 @@ pub enum InvalidProposalHeader {
     Unauthenticated,
 }
 
-// whether a node takes proposals under a hollow scheme. Hollow chunks
-// carry no data and no proof: their message exists only in the process
-// of the node that encoded it. Only nodes of an in-process simulation
-// may accept them; anywhere else a hollow proposal would count as
-// available without anyone holding its data.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum HollowProposals {
-    Rejected,
-    Accepted,
-}
-
 // the header check shared by consensus and DA: the scheme is the one
-// the proposer must have chosen for the validator set, the node takes
-// proposals under it, and a proposer of the slot signed the header. The
-// schedule is the same one consensus holds, so the two cannot disagree
-// on who proposes where.
-pub fn header_auth<S>(
-    schedule: Arc<S>,
-    validator_data: Arc<ValidatorData>,
-    hollow: HollowProposals,
-) -> HeaderAuth
+// the proposer must have chosen for the validator set, and a proposer
+// of the slot signed the header. The schedule is the same one consensus
+// holds, so the two cannot disagree on who proposes where.
+pub fn header_auth<S>(schedule: Arc<S>, validator_data: Arc<ValidatorData>) -> HeaderAuth
 where
     S: ProposerSchedule + Send + Sync + 'static,
 {
@@ -55,15 +39,10 @@ where
         ProposalHeader as _, SignedProposalHeader as _, validator::ValidatorData as _,
     };
 
-    use super::{encoding_scheme::DAEncodingScheme as _, types::EncodingScheme};
+    use super::encoding_scheme::DAEncodingScheme as _;
     use crate::spec::{DAProposalHeader as _, DAProposalSignature as _};
 
     HeaderAuth::new(move |signed: &SignedProposalHeader| {
-        if hollow == HollowProposals::Rejected
-            && matches!(signed.scheme(), EncodingScheme::D33Hollow(_))
-        {
-            return false;
-        }
         // todo: cache the auth result by (ProposalHeader, slot).
 
         if !signed.scheme().is_canonical(validator_data.len()) {
@@ -85,16 +64,10 @@ where
 mod tests {
     use monad_mcp_cadence::spec::proposal::HeaderAuth as _;
 
-    use super::{
-        super::{
-            runtime::EpochHandle,
-            test_util::{
-                SLOT, author, d33_scheme_at, epoch_handle, hollow_scheme, proposal_chunks_under,
-                proposer_schedule, signed_header,
-            },
-            types::{EncodingScheme, Lane, MerkleRoot, SignedProposalHeader},
-        },
-        HollowProposals, header_auth,
+    use super::super::{
+        runtime::EpochHandle,
+        test_util::{SLOT, d33_scheme_at, epoch_handle, proposal_chunks_under, signed_header},
+        types::{EncodingScheme, Lane, MerkleRoot, SignedProposalHeader},
     };
     use crate::spec::DAMerkleRoot as _;
 
@@ -138,24 +111,5 @@ mod tests {
         d33.depth += 1;
         let deeper = signed_header(deeper, 0);
         assert!(!auth.authenticate(&deeper));
-    }
-
-    #[test]
-    fn hollow_proposals_authenticate_only_where_accepted() {
-        let epoch_handle = epoch_handle();
-        let scheme = hollow_scheme(&epoch_handle);
-        let (hollow, _) = proposal_chunks_under(&epoch_handle, scheme, 0, 1);
-        let d33 = d33_header(&epoch_handle, 0);
-
-        // the fixture's node, like any node by default, rejects them
-        let rejecting = &epoch_handle.header_auth;
-        assert!(!rejecting.authenticate(&hollow));
-        assert!(rejecting.authenticate(&d33));
-
-        let schedule = proposer_schedule(vec![author()]);
-        let validator_data = epoch_handle.validator_data.clone();
-        let accepting = header_auth(schedule, validator_data, HollowProposals::Accepted);
-        assert!(accepting.authenticate(&hollow));
-        assert!(accepting.authenticate(&d33));
     }
 }

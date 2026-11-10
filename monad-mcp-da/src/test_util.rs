@@ -26,10 +26,10 @@ use super::{
     assignment::{ChunkAssignment, ChunkId, PacketLossResistance},
     chunk::{Chunk, ProposalEnvelope, WireChunkId},
     encoding_scheme::{
-        DAEncodingScheme as _, Hollow, ProposalChunks,
+        DAEncodingScheme as _, ProposalChunks,
         d33::{self, D33Chunks},
     },
-    header::{HollowProposals, header_auth},
+    header::header_auth,
     runtime::{DAConfig, EpochHandle, Timing},
     types::{
         EncodingScheme, Lane, NodeId, ProposalHeader, ProposalKeyPair, SignedProposalHeader, Slot,
@@ -89,11 +89,7 @@ pub(crate) fn epoch_handle_for(
     EpochHandle {
         self_id,
         key_pair: Arc::new(ProposalKeyPair::dummy(self_id)),
-        header_auth: Arc::new(header_auth(
-            schedule,
-            validator_data.clone(),
-            HollowProposals::Rejected,
-        )),
+        header_auth: Arc::new(header_auth(schedule, validator_data.clone())),
         validator_data,
     }
 }
@@ -126,7 +122,10 @@ pub(crate) fn d33_scheme_at(epoch_handle: &EpochHandle, slot: Slot, lane: Lane) 
 }
 
 // the default fixture's scheme with the chunk data taken out
+#[cfg(feature = "enable_hollow")]
 pub(crate) fn hollow_scheme(epoch_handle: &EpochHandle) -> EncodingScheme {
+    use super::encoding_scheme::Hollow;
+
     let EncodingScheme::D33(d33) = scheme(epoch_handle) else {
         panic!("the fixture's scheme is d33");
     };

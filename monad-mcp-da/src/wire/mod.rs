@@ -23,9 +23,10 @@ pub mod v1;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use monad_mcp_cadence::spec::{ProposalHeader as _, SignedProposalHeader as _};
 
+#[cfg(feature = "enable_hollow")]
+use super::encoding_scheme::Hollow;
 use super::{
     chunk::{Chunk, ChunkData, ProposalEnvelope, WireChunkId},
-    encoding_scheme::Hollow,
     types::{
         D33, EncodingScheme, MerkleRoot, ProposalHeader, ProposalSignature, SignedProposalHeader,
     },
@@ -104,6 +105,7 @@ impl PacketLayout for EncodingScheme {
     fn signed_bytes(&self, root: &MerkleRoot, out: &mut impl BufMut) {
         match self {
             Self::D33(d33) => d33.v1_layout().signed_bytes(root, out),
+            #[cfg(feature = "enable_hollow")]
             Self::D33Hollow(d33) => Hollow::new(*d33).v1_layout().signed_bytes(root, out),
         }
     }
@@ -111,6 +113,7 @@ impl PacketLayout for EncodingScheme {
     fn write_header(&self, root: &MerkleRoot, sig: &ProposalSignature, out: &mut impl BufMut) {
         match self {
             Self::D33(d33) => d33.v1_layout().write_header(root, sig, out),
+            #[cfg(feature = "enable_hollow")]
             Self::D33Hollow(d33) => Hollow::new(*d33).v1_layout().write_header(root, sig, out),
         }
     }
@@ -118,6 +121,7 @@ impl PacketLayout for EncodingScheme {
     fn header_len(&self) -> usize {
         match self {
             Self::D33(d33) => d33.v1_layout().header_len(),
+            #[cfg(feature = "enable_hollow")]
             Self::D33Hollow(d33) => Hollow::new(*d33).v1_layout().header_len(),
         }
     }
@@ -125,6 +129,7 @@ impl PacketLayout for EncodingScheme {
     fn write_body(&self, chunk_id: WireChunkId, data: &ChunkData, out: &mut impl BufMut) {
         match self {
             Self::D33(d33) => d33.v1_layout().write_body(chunk_id, data, out),
+            #[cfg(feature = "enable_hollow")]
             Self::D33Hollow(d33) => Hollow::new(*d33)
                 .v1_layout()
                 .write_body(chunk_id, data, out),
@@ -134,6 +139,7 @@ impl PacketLayout for EncodingScheme {
     fn body_len(&self) -> usize {
         match self {
             Self::D33(d33) => d33.v1_layout().body_len(),
+            #[cfg(feature = "enable_hollow")]
             Self::D33Hollow(d33) => Hollow::new(*d33).v1_layout().body_len(),
         }
     }
@@ -141,6 +147,7 @@ impl PacketLayout for EncodingScheme {
     fn symbol_len(&self) -> usize {
         match self {
             Self::D33(d33) => d33.v1_layout().symbol_len(),
+            #[cfg(feature = "enable_hollow")]
             Self::D33Hollow(d33) => Hollow::new(*d33).v1_layout().symbol_len(),
         }
     }
@@ -162,6 +169,7 @@ fn scheme_variant(bytes: &Bytes) -> Result<u8, MalformedPacket> {
 pub fn read_chunk(bytes: Bytes) -> Result<Chunk<'static>, MalformedPacket> {
     match scheme_variant(&bytes)? {
         D33::VARIANT => v1::Layout::<D33>::read_chunk(bytes),
+        #[cfg(feature = "enable_hollow")]
         Hollow::<D33>::VARIANT => v1::HollowLayout::<Hollow<D33>>::read_chunk(bytes),
         other => Err(MalformedPacket::UnknownScheme(other)),
     }
@@ -170,6 +178,7 @@ pub fn read_chunk(bytes: Bytes) -> Result<Chunk<'static>, MalformedPacket> {
 pub fn read_envelope(bytes: Bytes) -> Result<ProposalEnvelope, MalformedPacket> {
     match scheme_variant(&bytes)? {
         D33::VARIANT => v1::Layout::<D33>::read_envelope(bytes),
+        #[cfg(feature = "enable_hollow")]
         Hollow::<D33>::VARIANT => v1::HollowLayout::<Hollow<D33>>::read_envelope(bytes),
         other => Err(MalformedPacket::UnknownScheme(other)),
     }
@@ -177,6 +186,7 @@ pub fn read_envelope(bytes: Bytes) -> Result<ProposalEnvelope, MalformedPacket> 
 
 // the bytes a packet stands for on a real network: a hollow chunk stands
 // for the segment its d33 chunk fills
+#[cfg(feature = "enable_hollow")]
 pub fn nominal_len(packet: &Bytes) -> usize {
     let hollow = scheme_variant(packet) == Ok(Hollow::<D33>::VARIANT);
     let hollow_chunk = hollow && packet.len() == v1::HollowLayout::<Hollow<D33>>::PACKET_LEN;
@@ -236,10 +246,7 @@ mod tests {
     use super::{
         super::{
             encoding_scheme::d33::D33Layout,
-            test_util::{
-                SLOT, author, epoch_handle, group, hollow_scheme, proposal_chunks,
-                proposal_chunks_from, proposal_chunks_under,
-            },
+            test_util::{SLOT, author, epoch_handle, group, proposal_chunks, proposal_chunks_from},
             types::NodeId,
         },
         *,
@@ -321,8 +328,11 @@ mod tests {
         assert_eq!(other.sig().recover_author(&signed), Some(NodeId::dummy(2)));
     }
 
+    #[cfg(feature = "enable_hollow")]
     #[test]
     fn a_hollow_chunk_is_routed_to_its_frame_and_stands_for_a_segment() {
+        use super::super::test_util::{hollow_scheme, proposal_chunks_under};
+
         let epoch_handle = epoch_handle();
         let scheme = hollow_scheme(&epoch_handle);
         let (header, chunks) = proposal_chunks_under(&epoch_handle, scheme, 0, 1);

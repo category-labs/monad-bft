@@ -47,6 +47,7 @@ impl AssembledProposal {
     ) -> Option<Self> {
         match kind {
             ProposalScheme::D33 => Self::build_d33(epoch_handle, proposal, timestamp),
+            #[cfg(feature = "enable_hollow")]
             ProposalScheme::D33Hollow => Self::build_d33_hollow(epoch_handle, proposal, timestamp),
         }
     }
@@ -61,6 +62,7 @@ impl AssembledProposal {
         Self::build_under(epoch_handle, &proposal.payload, scheme)
     }
 
+    #[cfg(feature = "enable_hollow")]
     fn build_d33_hollow(
         epoch_handle: &EpochHandle,
         proposal: &Proposal,

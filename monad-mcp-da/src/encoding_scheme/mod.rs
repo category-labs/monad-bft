@@ -15,6 +15,7 @@
 
 pub mod d33;
 
+#[cfg(feature = "enable_hollow")]
 mod hollow;
 mod merkle;
 mod proposal_chunks;
@@ -22,11 +23,10 @@ mod symbol_code;
 
 use bytes::Bytes;
 
+#[cfg(feature = "enable_hollow")]
+pub(crate) use self::hollow::Hollow;
+pub(crate) use self::proposal_chunks::{BadProof, ProposalChunks};
 pub use self::proposal_chunks::{InvalidEncoding, Resolved};
-pub(crate) use self::{
-    hollow::Hollow,
-    proposal_chunks::{BadProof, ProposalChunks},
-};
 use super::{
     assignment::ChunkAssignment,
     types::{EncodingScheme, MerkleRoot, NodeId, ValidatorData},
@@ -62,6 +62,7 @@ impl DAEncodingScheme for EncodingScheme {
     fn msg_len(&self) -> usize {
         match self {
             EncodingScheme::D33(d33) => d33.msg_len(),
+            #[cfg(feature = "enable_hollow")]
             EncodingScheme::D33Hollow(d33) => Hollow::new(*d33).msg_len(),
         }
     }
@@ -69,6 +70,7 @@ impl DAEncodingScheme for EncodingScheme {
     fn num_source_chunks(&self) -> usize {
         match self {
             EncodingScheme::D33(d33) => d33.num_source_chunks(),
+            #[cfg(feature = "enable_hollow")]
             EncodingScheme::D33Hollow(d33) => Hollow::new(*d33).num_source_chunks(),
         }
     }
@@ -76,6 +78,7 @@ impl DAEncodingScheme for EncodingScheme {
     fn is_canonical(&self, num_validators: usize) -> bool {
         match self {
             EncodingScheme::D33(d33) => d33.is_canonical(num_validators),
+            #[cfg(feature = "enable_hollow")]
             EncodingScheme::D33Hollow(d33) => Hollow::new(*d33).is_canonical(num_validators),
         }
     }
@@ -83,6 +86,7 @@ impl DAEncodingScheme for EncodingScheme {
     fn chunk_assignment(&self, author: &NodeId, validator_data: &ValidatorData) -> ChunkAssignment {
         match self {
             EncodingScheme::D33(d33) => d33.chunk_assignment(author, validator_data),
+            #[cfg(feature = "enable_hollow")]
             EncodingScheme::D33Hollow(d33) => {
                 Hollow::new(*d33).chunk_assignment(author, validator_data)
             }
@@ -95,6 +99,7 @@ impl DAEncodingScheme for EncodingScheme {
                 let chunks = d33.encode(message, num_chunks)?;
                 Some(Box::new(chunks))
             }
+            #[cfg(feature = "enable_hollow")]
             EncodingScheme::D33Hollow(d33) => {
                 let chunks = Hollow::new(*d33).encode(message, num_chunks)?;
                 Some(Box::new(chunks))
@@ -108,6 +113,7 @@ impl DAEncodingScheme for EncodingScheme {
                 let chunks = d33.empty_chunks(root, num_chunks);
                 Box::new(chunks)
             }
+            #[cfg(feature = "enable_hollow")]
             EncodingScheme::D33Hollow(d33) => {
                 let chunks = Hollow::new(*d33).empty_chunks(root, num_chunks);
                 Box::new(chunks)

@@ -10,6 +10,8 @@ bench = false
 [features]
 # exposes the stub instantiation (crate::stub).
 enable_stub = []
+# adds the hollow scheme to the stub, for the nodes of one process.
+enable_hollow = ["enable_stub"]
 
 [dependencies]
 alloy-rlp = { workspace = true, features = ["derive"] }

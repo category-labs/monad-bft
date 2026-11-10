@@ -185,6 +185,7 @@ mod proposal {
     pub enum EncodingScheme {
         D33(D33),
         // d33 without chunk data on the wire, for simulations
+        #[cfg(feature = "enable_hollow")]
         D33Hollow(D33),
         #[cfg(test)]
         Trivial(ProposalScope),
@@ -211,7 +212,9 @@ mod proposal {
     impl EncodingScheme {
         pub fn slot(&self) -> Slot {
             match self {
-                Self::D33(d33) | Self::D33Hollow(d33) => d33.slot,
+                Self::D33(d33) => d33.slot,
+                #[cfg(feature = "enable_hollow")]
+                Self::D33Hollow(d33) => d33.slot,
                 #[cfg(test)]
                 Self::Trivial(scope) => scope.slot,
             }
@@ -219,7 +222,9 @@ mod proposal {
 
         pub fn lane(&self) -> Lane {
             match self {
-                Self::D33(d33) | Self::D33Hollow(d33) => d33.lane,
+                Self::D33(d33) => d33.lane,
+                #[cfg(feature = "enable_hollow")]
+                Self::D33Hollow(d33) => d33.lane,
                 #[cfg(test)]
                 Self::Trivial(scope) => scope.lane,
             }
@@ -239,6 +244,7 @@ mod proposal {
                     let fields: [&dyn Encodable; 2] = [&1u8, f0];
                     alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
                 }
+                #[cfg(feature = "enable_hollow")]
                 Self::D33Hollow(f0) => {
                     let fields: [&dyn Encodable; 2] = [&2u8, f0];
                     alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
@@ -257,6 +263,7 @@ mod proposal {
                     let fields: [&dyn Encodable; 2] = [&1u8, f0];
                     alloy_rlp::list_length::<_, dyn Encodable>(&fields)
                 }
+                #[cfg(feature = "enable_hollow")]
                 Self::D33Hollow(f0) => {
                     let fields: [&dyn Encodable; 2] = [&2u8, f0];
                     alloy_rlp::list_length::<_, dyn Encodable>(&fields)
@@ -275,6 +282,7 @@ mod proposal {
             let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
             let result = match <u8 as Decodable>::decode(&mut payload)? {
                 1 => Self::D33(<D33 as Decodable>::decode(&mut payload)?),
+                #[cfg(feature = "enable_hollow")]
                 2 => Self::D33Hollow(<D33 as Decodable>::decode(&mut payload)?),
                 #[cfg(test)]
                 255 => Self::Trivial(<ProposalScope as Decodable>::decode(&mut payload)?),

@@ -158,14 +158,17 @@ impl<H: DAHeaderScheme> Layout<'_, H> {
 
 // the v1 frame of a hollow scheme: the header, then the chunk header.
 // no proof, no symbol.
+#[cfg(feature = "enable_hollow")]
 pub struct HollowLayout<'a, H>(&'a H);
 
+#[cfg(feature = "enable_hollow")]
 impl<'a, H> HollowLayout<'a, H> {
     pub(crate) fn new(scheme: &'a H) -> Self {
         Self(scheme)
     }
 }
 
+#[cfg(feature = "enable_hollow")]
 impl<H: DAHeaderScheme> HollowLayout<'_, H> {
     pub const HEADER_LEN: usize = Layout::<H>::HEADER_LEN;
     pub const PACKET_LEN: usize = Self::HEADER_LEN + H::CHUNK_HEADER_LEN;
@@ -244,6 +247,7 @@ impl<H: DAHeaderScheme> PacketLayout for Layout<'_, H> {
 }
 
 // the header is v1's
+#[cfg(feature = "enable_hollow")]
 impl<H: DAHeaderScheme> PacketLayout for HollowLayout<'_, H> {
     fn signed_bytes(&self, root: &MerkleRoot, out: &mut impl BufMut) {
         Layout::new(self.0).signed_bytes(root, out);
@@ -278,13 +282,11 @@ mod tests {
     use super::{
         super::{
             super::{
-                encoding_scheme::{Hollow, d33::D33Layout},
-                test_util::{
-                    epoch_handle, group, hollow_scheme, proposal_chunks, proposal_chunks_under,
-                },
+                encoding_scheme::d33::D33Layout,
+                test_util::{epoch_handle, group, proposal_chunks},
                 types::D33,
             },
-            header_bytes, signed_bytes, write_chunk, write_envelope,
+            header_bytes, write_chunk, write_envelope,
         },
         *,
     };
@@ -417,8 +419,17 @@ mod tests {
         assert!(D33Layout::symbol_len_at(D33Layout::MAX_DEPTH) > 0);
     }
 
+    #[cfg(feature = "enable_hollow")]
     #[test]
     fn a_hollow_packet_is_the_d33_header_under_its_variant_then_the_chunk_id() {
+        use super::super::{
+            super::{
+                encoding_scheme::Hollow,
+                test_util::{hollow_scheme, proposal_chunks_under},
+            },
+            signed_bytes,
+        };
+
         let epoch_handle = epoch_handle();
         let (header, chunks) =
             proposal_chunks_under(&epoch_handle, hollow_scheme(&epoch_handle), 0, 1);

@@ -62,6 +62,7 @@ pub struct DAConfig {
 pub enum ProposalScheme {
     D33,
     // d33 without chunk data on the wire, for simulations
+    #[cfg(feature = "enable_hollow")]
     D33Hollow,
 }
 

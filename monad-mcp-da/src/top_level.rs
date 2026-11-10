@@ -38,12 +38,14 @@ pub use chunk::{Chunk, ChunkRequest, ProposalEnvelope};
 pub use egress::Dissemination;
 pub use encoding_scheme::{InvalidEncoding, Resolved};
 pub use env::ProposalKeyPair;
-pub use header::{HollowProposals, InvalidProposalHeader, header_auth};
+pub use header::{InvalidProposalHeader, header_auth};
 pub use runtime::{
     ChunkRecoveryRequest, DAConfig, DAOutput, DARuntime, EpochHandle, ProposalScheme,
 };
+#[cfg(feature = "enable_hollow")]
+pub use wire::nominal_len;
 pub use wire::{
-    MalformedPacket, nominal_len,
+    MalformedPacket,
     proposal::{AssembledProposal, FirstHopDissemination},
     read_chunk, read_envelope, signed_bytes, write_chunk, write_envelope,
 };

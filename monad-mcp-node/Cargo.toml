@@ -11,6 +11,8 @@ required-features = ["enable_stub"]
 
 [features]
 enable_stub = ["monad-mcp-cadence/enable_stub", "monad-mcp-da/enable_stub"]
+# a node that speaks the hollow scheme, for a network inside one process.
+enable_hollow = ["enable_stub", "monad-mcp-cadence/enable_hollow", "monad-mcp-da/enable_hollow"]
 
 [dependencies]
 alloy-rlp = { workspace = true, features = ["derive"] }
@@ -29,8 +31,8 @@ monad-mcp-common = { workspace = true }
 monad-mcp-da = { workspace = true }
 
 [dev-dependencies]
-# turns on enable_stub for the tests and examples
-monad-mcp-node = { path = ".", features = ["enable_stub"] }
+# turns on enable_stub and enable_hollow for the tests and examples
+monad-mcp-node = { path = ".", features = ["enable_stub", "enable_hollow"] }
 monad-sim = { workspace = true }
 monad-sim-swarm = { workspace = true }
 rapidhash = { workspace = true }

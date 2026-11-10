@@ -3,8 +3,13 @@ name = "monad-mcp-da"
 version = "0.1.0"
 edition = "2024"
 
+[package.metadata.cargo-shear]
+# the self dev-dependency only sets features
+ignored = ["monad-mcp-da"]
+
 [features]
 enable_stub = ["monad-mcp-cadence/enable_stub"]
+enable_hollow = ["enable_stub", "monad-mcp-cadence/enable_hollow"]
 
 [dependencies]
 alloy-rlp = { workspace = true }
@@ -19,6 +24,10 @@ monad-crypto = { workspace = true }
 monad-mcp-cadence = { workspace = true }
 monad-mcp-common = { workspace = true }
 monad-merkle = { workspace = true }
+
+[dev-dependencies]
+# turns on enable_hollow for the tests
+monad-mcp-da = { path = ".", features = ["enable_hollow"] }
 
 [lints.clippy]
 # outputs must not depend on hash order; see monad-mcp-node/docs/determinism.md
