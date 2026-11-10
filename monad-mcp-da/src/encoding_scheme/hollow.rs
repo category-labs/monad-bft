@@ -30,8 +30,9 @@ use super::{
     BadProof, DAEncodingScheme, Decoder, Encoded, d33,
 };
 
-// S with the chunk data taken out, for tests: the same shape, root and
-// decode rule. A decoder takes the message from thin air.
+// S with the chunk data taken out, for tests: the same shape and decode
+// rule. The root is a digest of the message, and a decoder takes the
+// message from thin air.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct Hollow<S>(S);
 
@@ -100,10 +101,11 @@ impl<S: DAEncodingScheme> DAEncodingScheme for Hollow<S> {
         self.0.chunk_assignment(author, validator_data)
     }
 
-    // the real encoding, once, for the real root
-    fn encode(&self, message: &Bytes, num_chunks: usize) -> Option<HollowEncoded> {
-        let encoded = self.0.encode(message, num_chunks)?;
-        let shared = SharedMessage::publish(encoded.root(), message.clone());
+    fn encode(&self, message: &Bytes, _num_chunks: usize) -> Option<HollowEncoded> {
+        if message.is_empty() || message.len() != self.msg_len() {
+            return None;
+        }
+        let shared = SharedMessage::publish(message.clone());
         Some(shared)
     }
 
@@ -171,16 +173,17 @@ impl Decoder for HollowDecoder {
     }
 }
 
-// a published message stands for its encoding
+// a published message is the encoding of itself, under the root it
+// encodes to
 pub(crate) type HollowEncoded = Arc<SharedMessage>;
 
 impl Encoded for HollowEncoded {
     fn root(&self) -> MerkleRoot {
-        self.root
+        self.actual
     }
 
     fn chunk_data(&self, chunk_id: ChunkId) -> ChunkData {
-        hollow_chunk(chunk_id, &self.root)
+        hollow_chunk(chunk_id, &self.actual)
     }
 }
 
@@ -209,7 +212,8 @@ fn verify_proof(chunk_id: ChunkId, data: &ChunkData, root: &MerkleRoot) -> bool 
     *data.proof == [stand_in_proof(chunk_id, root)]
 }
 
-// the messages of the hollow proposals that some node holds, by root
+// the messages of the hollow proposals that some node holds, by the root
+// their proposer declared
 static THIN_AIR: LazyLock<Mutex<HashMap<MerkleRoot, Weak<SharedMessage>>>> =
     LazyLock::new(Default::default);
 
@@ -220,19 +224,43 @@ fn thin_air() -> MutexGuard<'static, HashMap<MerkleRoot, Weak<SharedMessage>>> {
 // a proposal's message, shared by every node that holds its hollow
 // chunks. it leaves thin air with its last holder.
 pub(crate) struct SharedMessage {
-    root: MerkleRoot,
+    // the root the proposer signed, which is the key in thin air
+    declared: MerkleRoot,
+    // the root the message encodes to
+    actual: MerkleRoot,
     message: Bytes,
 }
 
 impl SharedMessage {
-    // a root determines its message, so a live one is reused
-    fn publish(root: MerkleRoot, message: Bytes) -> Arc<Self> {
+    fn publish(message: Bytes) -> Arc<Self> {
+        let root = root_of(&message);
+        Self::publish_under(root, root, message)
+    }
+
+    // a message under a root that it does not encode to
+    #[allow(unused)]
+    fn publish_inconsistent(message: Bytes) -> Arc<Self> {
+        let actual = root_of(&message);
+        let MerkleRoot(mut declared) = actual;
+        declared.0[0] ^= 1;
+        Self::publish_under(MerkleRoot(declared), actual, message)
+    }
+
+    // a declared root determines what it was published with, so a live
+    // one is reused
+    fn publish_under(declared: MerkleRoot, actual: MerkleRoot, message: Bytes) -> Arc<Self> {
         let mut thin_air = thin_air();
-        if let Some(shared) = thin_air.get(&root).and_then(Weak::upgrade) {
+        if let Some(shared) = thin_air.get(&declared).and_then(Weak::upgrade) {
+            let same = shared.actual == actual && shared.message == message;
+            assert!(same, "two publications share a declared root");
             return shared;
         }
-        let shared = Arc::new(Self { root, message });
-        thin_air.insert(root, Arc::downgrade(&shared));
+        let shared = Arc::new(Self {
+            declared,
+            actual,
+            message,
+        });
+        thin_air.insert(declared, Arc::downgrade(&shared));
         shared
     }
 
@@ -241,14 +269,22 @@ impl SharedMessage {
     }
 }
 
+// the root a message encodes to under a hollow scheme: its digest
+fn root_of(message: &[u8]) -> MerkleRoot {
+    let digest = monad_mcp_common::stub::noncrypto_digest(message).to_le_bytes();
+    let mut root = MerkleHash([0; 20]);
+    root.0[..digest.len()].copy_from_slice(&digest);
+    MerkleRoot(root)
+}
+
 impl Drop for SharedMessage {
     fn drop(&mut self) {
         let mut thin_air = thin_air();
         let in_use = thin_air
-            .get(&self.root)
+            .get(&self.declared)
             .is_some_and(|entry| entry.strong_count() > 0);
         if !in_use {
-            thin_air.remove(&self.root);
+            thin_air.remove(&self.declared);
         }
     }
 }
@@ -263,6 +299,7 @@ mod tests {
             super::{
                 test_util::{MESSAGE_LEN, SLOT},
                 types::{D33, Lane},
+                wire::PacketLayout as _,
             },
             Chunks, ProposalChunks as _,
             d33::{D33Encoded, for_message},
@@ -338,7 +375,6 @@ mod tests {
             let real = scheme.encode(&message, num_chunks).expect("of the length");
             let encoded = hollow.encode(&message, num_chunks).expect("of the length");
             let hollow_root = encoded.root();
-            assert_eq!(hollow_root, real.root());
 
             let short = message.slice(1..);
             assert!(scheme.encode(&short, num_chunks).is_none());
@@ -363,7 +399,7 @@ mod tests {
         let encode = |payload| scheme.encode(&message(payload), num_chunks);
         let real = encode(0x43).expect("of the length");
         let other = encode(0x44).expect("of the length");
-        let (root, other_root) = (real.root(), other.root());
+        let (root, other_root) = (root_of(&message(0x43)), root_of(&message(0x44)));
         let (first, second) = (ChunkId::unchecked(0), ChunkId::unchecked(1));
 
         let mut receiving = Chunks::Decoding(scheme.decoder(real.root(), num_chunks));
@@ -395,6 +431,40 @@ mod tests {
         assert_eq!(receiving.ingest(first, honest), Ok(true));
         let honest = hollow_chunk(first, &root);
         assert_eq!(hollow_receiving.ingest(first, honest), Ok(true));
+    }
+
+    #[test]
+    fn a_message_that_does_not_encode_to_its_declared_root_is_an_invalid_encoding() {
+        let scheme = scheme_for(MESSAGE_LEN);
+        let hollow = Hollow::new(scheme);
+        let num_chunks = 3 * scheme.num_source_chunks();
+
+        // real chunks that verify under their root and are no codeword
+        let symbol_len = scheme.v1_layout().symbol_len();
+        let mut symbols = Vec::with_capacity(num_chunks);
+        for i in 0..num_chunks {
+            let payload = if i < num_chunks / 2 { 1 } else { 2 };
+            symbols.push(Bytes::from(vec![payload; symbol_len]));
+        }
+        let real = D33Encoded::from_symbols(&scheme, symbols);
+
+        // a payload no other test publishes, so no other test holds the root
+        let message = Bytes::from(vec![0x42; MESSAGE_LEN]);
+        let honest = hollow.encode(&message, num_chunks).expect("of the length");
+        let shared = SharedMessage::publish_inconsistent(message);
+        let declared = shared.declared;
+        assert_ne!(declared, honest.root());
+
+        for seed in 0..32 {
+            let (_, mut hollow_received) = receive_alike(scheme, &real, declared, seed);
+            assert!(matches!(hollow_received, Chunks::Invalid(_)));
+            assert_eq!(hollow_received.try_resolve(), None);
+        }
+
+        // it leaves thin air under the root it was declared with
+        drop(shared);
+        assert!(!thin_air().contains_key(&declared));
+        assert!(thin_air().contains_key(&honest.root()));
     }
 
     #[test]
