@@ -42,7 +42,7 @@ pub(crate) struct D33Encoded {
 
 impl D33Encoded {
     // None unless the message is of the scheme's length
-    pub(crate) fn encode(d33: &D33, message: &[u8], num_chunks: usize) -> Option<Self> {
+    pub(crate) fn encode(d33: &D33, message: &Bytes, num_chunks: usize) -> Option<Self> {
         if message.is_empty() || message.len() != d33.msg_len() {
             return None;
         }
@@ -204,8 +204,8 @@ mod tests {
             assert!(verify_proof(chunk_id, &data, &scheme, &encoded.root()));
         }
 
-        let short = &message()[1..];
-        assert!(D33Encoded::encode(&scheme, short, 9).is_none());
+        let short = message().slice(1..);
+        assert!(D33Encoded::encode(&scheme, &short, 9).is_none());
     }
 
     #[test]
