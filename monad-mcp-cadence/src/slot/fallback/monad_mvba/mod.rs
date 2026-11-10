@@ -379,16 +379,12 @@ where
         {
             return;
         }
-        if let Some(tc) = &msg.tc {
-            // harvested ahead of the value check below: a valid
-            // certificate is evidence its view was left, whatever becomes
-            // of the message carrying it
-            if !tc.verify(&self.context.validator_data) {
-                return;
-            }
-            if self.in_window_or_catching_up(tc.view) {
-                self.collectors_mut(tc.view).store_tc(tc.clone());
-            }
+        // harvested ahead of the value check below: a valid certificate is
+        // evidence its view was left, whatever becomes of the message carrying it
+        if let Some(tc) = &msg.tc
+            && !self.harvest_tc(tc)
+        {
+            return;
         }
 
         if !msg.value.validate(self.validation_context()) {
@@ -399,7 +395,21 @@ where
     }
 
     fn handle_tc(&mut self, tc: TimeoutCertificate<V::Entries>) {
-        todo!("A1: a standalone TC is harvested as a pre-prepare's is")
+        self.harvest_tc(&tc);
+    }
+
+    /// Stores a valid certificate of this slot whose view is admitted. `false`
+    /// when it is not stored
+    fn harvest_tc(&mut self, tc: &TimeoutCertificate<V::Entries>) -> bool {
+        if tc.slot != self.context.slot || !self.in_window_or_catching_up(tc.view) {
+            return false;
+        }
+        if !tc.is_well_formed() || !tc.verify(&self.context.validator_data) {
+            return false;
+        }
+
+        self.collectors_mut(tc.view).store_tc(tc.clone());
+        true
     }
 
     fn handle_prepare_vote(&mut self, sender: ValidatorIndex, msg: PrepareVoteMsg<V::Entries>) {
@@ -781,7 +791,8 @@ where
         tracing::debug!(slot = ?self.context.slot, view = ?tc.view.next(), "mvba advancing view on tc");
 
         // persist-before-send: PrepQC and the certificate that fixes v
-        let outputs = self.enter_view(Some(tc));
+        let mut outputs = self.enter_view(Some(tc.clone()));
+        outputs.push(MVBAOutput::Broadcast(MvbaMessage::Tc(tc)));
         (Phase::new(), outputs)
     }
 
