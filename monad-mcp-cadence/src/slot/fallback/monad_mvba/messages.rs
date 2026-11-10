@@ -162,7 +162,7 @@ impl<E: Clone + Eq + Hash + Debug + Encodable> TimeoutMsg<E> {
     }
 
     /// Whether the claim in the signed digest is backed by what rides along
-    fn is_well_formed(&self) -> bool {
+    pub(crate) fn is_well_formed(&self) -> bool {
         let high_prep_view = self.vote.vote.high_prep_view;
         let Some(qc) = &self.high_prep_qc else {
             return high_prep_view == FallbackView::GENESIS;

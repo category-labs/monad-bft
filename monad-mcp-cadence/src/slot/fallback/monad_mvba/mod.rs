@@ -432,15 +432,19 @@ where
             return;
         }
 
-        if !msg.is_valid(&self.context.validator_data) {
+        // decoding checks this too; a message that never crossed the wire has not been
+        if !msg.is_well_formed() || !msg.is_valid(&self.context.validator_data) {
             return;
         }
 
         // harvested now: this validator would otherwise announce a staler lock
         // in its own timeout. A lookback-view timeout harvests too -- adoption
         // is a monotone max over verified QCs, so a stale carrier can only
-        // raise the lock
-        if let Some(qc) = &msg.high_prep_qc {
+        // raise the lock. One newer than this view waits for `advance_view`:
+        // no timeout of this view could carry it
+        if let Some(qc) = &msg.high_prep_qc
+            && qc.scope.view <= self.view()
+        {
             self.update_prep_qc(qc.clone());
         }
 
@@ -817,6 +821,17 @@ where
 
         // persist-before-send: PrepQC and the certificate that fixes v
         let mut outputs = self.enter_view(Some(tc.clone()));
+        // what buffered timeouts carried ahead of this view, now that it is reached
+        let reached: Vec<_> = self
+            .collectors
+            .values()
+            .flat_map(ViewCollectors::prep_qcs)
+            .filter(|qc| qc.scope.view <= self.view())
+            .cloned()
+            .collect();
+        for qc in reached {
+            self.update_prep_qc(qc);
+        }
         outputs.push(MVBAOutput::Broadcast(MvbaMessage::Tc(tc)));
         (Phase::new(), outputs)
     }
@@ -844,6 +859,10 @@ where
             view,
             self.high_prep_qc.clone(),
             &self.context.key,
+        );
+        debug_assert!(
+            timeout.is_well_formed(),
+            "no lock is adopted ahead of its view"
         );
 
         let phase = phase

@@ -36,7 +36,7 @@ impl Metablock {
         header_auth: &HeaderAuth,
         validator_data: &ValidatorData,
     ) -> bool {
-        if self.0.size() != num_lanes || self.slot() != slot {
+        if self.0.size() != num_lanes || self.slot() != slot || !self.is_in_place() {
             return false;
         }
 

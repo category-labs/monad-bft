@@ -17,7 +17,7 @@ use super::{
     super::{
         super::{
             fast::{CertifiedEntry, EnterFallbackCert, EnterFallbackVote},
-            types::{Lanes, ProposalScope, Slot, VoteMsg},
+            types::{HeaderAuth, Lane, Lanes, ProposalScope, Slot, VoteMsg},
         },
         FallbackView, Metablock, Mvba, MvbaScope,
     },
@@ -971,6 +971,49 @@ fn a_lookback_view_timeout_still_raises_the_lock() {
     );
 }
 
+/// No timeout of view `v` can carry a certificate of a later view, so a lock
+/// learned from a later view's timeout is taken only on reaching that view
+#[test]
+fn a_lagging_validator_takes_a_later_view_s_lock_only_on_reaching_that_view() {
+    let validator_data = validator_data();
+    let own = metablock(1, &validator_data);
+    let locked = metablock(2, &validator_data);
+    let ahead = prepare_qc(view(2), &locked.entries(), &validator_data);
+
+    let follower = nodes()[0];
+    let mut instance = started(follower, &own, &validator_data);
+    drain(&mut instance);
+
+    // a single view-2 timeout: below f+1, and no certificate to follow
+    feed_timeouts(&mut instance, view(2), Some(ahead.clone()), &nodes()[1..2]);
+    drain(&mut instance);
+
+    instance.handle_timer(TimerEvent::ViewTimeout(view(1)));
+    let timeout = timeout_message(&drain(&mut instance))
+        .expect("the timer fires this validator's timeout")
+        .clone();
+    assert_eq!(timeout.view(), view(1));
+    assert!(
+        delivered(Message::Timeout(timeout)).is_some(),
+        "a peer decodes the view-1 timeout"
+    );
+
+    feed_timeouts(&mut instance, view(1), None, &quorum());
+    assert!(scheduled_timers(&drain(&mut instance)).contains(&TimerEvent::ViewTimeout(view(2))));
+
+    instance.handle_timer(TimerEvent::ViewTimeout(view(2)));
+    let timeout = timeout_message(&drain(&mut instance))
+        .expect("the timer fires this validator's timeout")
+        .clone();
+    assert_eq!(timeout.view(), view(2));
+    assert_eq!(
+        timeout.high_prep_qc,
+        Some(ahead),
+        "reaching view 2 takes the lock its timeout carried"
+    );
+    assert!(delivered(Message::Timeout(timeout)).is_some());
+}
+
 #[test]
 fn advancing_views_stops_retransmitting_the_old_view() {
     let validator_data = validator_data();
@@ -1150,6 +1193,38 @@ fn a_bogus_block_response_is_ignored() {
     instance.handle_message_from(nodes()[1], block_response(block.clone()));
     drain(&mut instance);
     assert_eq!(instance.decision(), Some(&block));
+}
+
+#[test]
+fn an_in_process_metablock_whose_later_lane_entry_is_out_of_place_is_invalid() {
+    let validator_data = validator_data();
+    let header_auth = HeaderAuth::new(|_| false);
+    let block = metablock(1, &validator_data);
+    assert!(block.is_valid(SLOT, NUM_LANES, &header_auth, &validator_data));
+
+    let lane = Lane::new_unchecked(1);
+    let other_slot = ProposalScope::new(Slot(SLOT.get() + 1), lane);
+    let other_proposer = ProposalScope::new(SLOT, Lane::new_unchecked(0));
+    let block_entries = block.entries();
+    for scope in [other_slot, other_proposer] {
+        let misplaced = Metablock::new(Lanes::new(NUM_LANES, |j| {
+            let scope = if j == lane {
+                scope
+            } else {
+                ProposalScope::new(SLOT, j)
+            };
+            CertifiedEntry::FastQc(strong_qc(
+                scope,
+                block_entries[j].clone(),
+                &quorum(),
+                &validator_data,
+            ))
+        }));
+        assert!(
+            !misplaced.is_valid(SLOT, NUM_LANES, &header_auth, &validator_data),
+            "{scope:?}"
+        );
+    }
 }
 
 #[test]
@@ -1982,6 +2057,31 @@ fn a_timeout_whose_claim_disagrees_with_its_certificate_does_not_decode() {
     for timeout in [unbacked, from_the_future] {
         assert!(delivered(Message::Timeout(timeout)).is_none());
     }
+}
+
+#[test]
+fn an_ill_formed_timeout_delivered_in_process_is_dropped() {
+    let validator_data = validator_data();
+    let block = metablock(1, &validator_data);
+    let qc = prepare_qc(view(1), &block.entries(), &validator_data);
+
+    let follower = nodes()[0];
+    let mut instance = started(follower, &block, &validator_data);
+    drain(&mut instance);
+
+    // f+1 timeouts claiming a lock none of them carries
+    for node in &nodes()[1..3] {
+        let locked = TimeoutMsg::new_signed(SLOT, view(1), Some(qc.clone()), &node.keypair());
+        let unbacked = TimeoutMsg {
+            high_prep_qc: None,
+            ..locked
+        };
+        instance.handle_message_from(*node, Message::Timeout(unbacked));
+    }
+    assert!(
+        timed_out_view(&drain(&mut instance)).is_none(),
+        "no echo: neither timeout was stored"
+    );
 }
 
 #[test]

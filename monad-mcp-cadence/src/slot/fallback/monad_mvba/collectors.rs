@@ -167,6 +167,10 @@ impl<V: Votable, C: ValidateCert> ViewCollectors<V, C> {
         self.timeout_votes.add_or_replace_vote(sender, msg.vote);
     }
 
+    pub(crate) fn prep_qcs(&self) -> impl Iterator<Item = &PrepareQc<V::Entries>> {
+        self.prep_qcs.values()
+    }
+
     /// Whether f+1 stake has timed out here
     pub(crate) fn has_honest_timeout(&self, validator_data: &ValidatorData) -> bool {
         let honest = validator_data.total_stake().honest_threshold();
@@ -224,11 +228,14 @@ impl<V: Votable, C: ValidateCert> ViewCollectors<V, C> {
             })
             .collect();
 
-        Some(TimeoutCertificate {
+        let tc = TimeoutCertificate {
             slot: self.slot,
             view: self.view,
             groups,
             high_prep_qc,
-        })
+        };
+        // every stored timeout passed `TimeoutMsg::is_well_formed`
+        debug_assert!(tc.is_well_formed());
+        Some(tc)
     }
 }
