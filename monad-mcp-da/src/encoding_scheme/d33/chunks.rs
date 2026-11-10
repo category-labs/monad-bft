@@ -57,9 +57,34 @@ impl D33Encoded {
     // the tree over any symbols. the caller must pass them in chunk id
     // order.
     pub(crate) fn from_symbols(d33: &D33, symbols: Vec<Bytes>) -> Self {
+        Self::from_symbols_with(d33, symbols, [])
+    }
+
+    // from_symbols, taking a symbol's leaf hash from `known` where it
+    // holds one for exactly that symbol. The caller must pass `known` in
+    // ascending leaf index order, and each hash must be the leaf hash of
+    // its symbol at its index.
+    fn from_symbols_with<'a>(
+        d33: &D33,
+        symbols: Vec<Bytes>,
+        known: impl IntoIterator<Item = (WireChunkId, &'a Bytes, Hash)>,
+    ) -> Self {
+        let mut known = known.into_iter().peekable();
         let mut leaves = Vec::with_capacity(symbols.len());
         for (leaf_idx, symbol) in symbols.iter().enumerate() {
-            leaves.push(leaf_hash(d33, leaf_idx as WireChunkId, symbol));
+            let leaf_idx = leaf_idx as WireChunkId;
+            let known = known.next_if(|(known_idx, _, _)| *known_idx <= leaf_idx);
+            let reused = known.and_then(|(known_idx, known_symbol, hash)| {
+                (known_idx == leaf_idx && known_symbol == symbol).then_some(hash)
+            });
+            let leaf = match reused {
+                Some(hash) => {
+                    debug_assert_eq!(hash, leaf_hash(d33, leaf_idx, symbol));
+                    hash
+                }
+                None => leaf_hash(d33, leaf_idx, symbol),
+            };
+            leaves.push(leaf);
         }
         let tree = Tree::from_leaves(d33.depth(), leaves);
         Self { symbols, tree }
@@ -86,7 +111,14 @@ pub(crate) struct D33Decoder {
     root: MerkleRoot,
     num_chunks: usize,
     num_source_chunks: usize,
-    received: BTreeMap<ChunkId, ChunkData>,
+    received: BTreeMap<ChunkId, Received>,
+}
+
+// a chunk whose proof checked, and the leaf hash the check computed from
+// its symbol
+struct Received {
+    data: ChunkData,
+    leaf: Hash,
 }
 
 impl D33Decoder {
@@ -115,14 +147,15 @@ impl Decoder for D33Decoder {
     }
 
     fn chunk_data(&self, chunk_id: ChunkId) -> Option<ChunkData> {
-        self.received.get(&chunk_id).cloned()
+        let received = self.received.get(&chunk_id)?;
+        Some(received.data.clone())
     }
 
     fn ingest(&mut self, chunk_id: ChunkId, data: ChunkData) -> Result<(), BadProof> {
-        if !verify_proof(chunk_id, &data, &self.d33, &self.root) {
+        let Some(leaf) = verify_proof(chunk_id, &data, &self.d33, &self.root) else {
             return Err(BadProof);
-        }
-        self.received.insert(chunk_id, data);
+        };
+        self.received.insert(chunk_id, Received { data, leaf });
         Ok(())
     }
 
@@ -133,14 +166,23 @@ impl Decoder for D33Decoder {
         let symbols = self
             .received
             .iter()
-            .map(|(chunk_id, data)| (*chunk_id, &data.symbol));
+            .map(|(chunk_id, received)| (*chunk_id, &received.data.symbol));
         let code = ReedSolomon::new(self.num_chunks, self.num_source_chunks);
         // todo: None after enough chunks means the codec doesn't
         // guarantee decodability (e.g. r10).
         let message = code.decode(symbols, self.d33.msg_len())?;
 
-        let encoded = D33Encoded::encode(&self.d33, &message, self.num_chunks);
-        let encoded = encoded.expect("a decoded message is of the scheme's length");
+        // the re-encode: a symbol equal to a received one has the leaf
+        // hash computed when that chunk's proof checked; only the other
+        // leaves are hashed
+        debug_assert_eq!(message.len(), self.d33.msg_len());
+        let symbol_len = self.d33.v1_layout().symbol_len();
+        let symbols = code.encode(&message, symbol_len);
+        let known = self
+            .received
+            .iter()
+            .map(|(chunk_id, received)| (chunk_id.to_wire(), &received.data.symbol, received.leaf));
+        let encoded = D33Encoded::from_symbols_with(&self.d33, symbols, known);
         Some((message, encoded))
     }
 }
@@ -156,12 +198,12 @@ fn leaf_hash(d33: &D33, chunk_id: WireChunkId, symbol: &[u8]) -> Hash {
     hasher.hash()
 }
 
-// whether the chunk's proof binds it to the root
-fn verify_proof(chunk_id: ChunkId, data: &ChunkData, d33: &D33, root: &MerkleRoot) -> bool {
+// the chunk's leaf hash, if its proof binds it to the root
+fn verify_proof(chunk_id: ChunkId, data: &ChunkData, d33: &D33, root: &MerkleRoot) -> Option<Hash> {
     debug_assert_eq!(data.symbol.len(), d33.v1_layout().symbol_len());
     let leaf_idx = chunk_id.to_wire();
     let leaf = leaf_hash(d33, leaf_idx, &data.symbol);
-    Tree::verify_proof(root, leaf_idx, &leaf, &data.proof)
+    Tree::verify_proof(root, leaf_idx, &leaf, &data.proof).then_some(leaf)
 }
 
 #[cfg(test)]
@@ -201,11 +243,33 @@ mod tests {
             let chunk_id = ChunkId::unchecked(wire);
             let data = encoded.chunk_data(chunk_id);
             assert_eq!(data.symbol.len(), scheme.v1_layout().symbol_len());
-            assert!(verify_proof(chunk_id, &data, &scheme, &encoded.root()));
+            assert!(verify_proof(chunk_id, &data, &scheme, &encoded.root()).is_some());
         }
 
         let short = &message()[1..];
         assert!(D33Encoded::encode(&scheme, short, 9).is_none());
+    }
+
+    #[test]
+    fn known_leaves_build_the_same_tree() {
+        let scheme = scheme();
+        let encoded = encoded();
+        let symbols = encoded.symbols.clone();
+        // the even leaves known for their symbols, the odd ones for
+        // another symbol, which must not be taken
+        let other = Bytes::from(vec![0u8; symbols[0].len()]);
+        let mut known = Vec::new();
+        for (leaf_idx, symbol) in symbols.iter().enumerate() {
+            let leaf_idx = leaf_idx as WireChunkId;
+            if leaf_idx.is_multiple_of(2) {
+                known.push((leaf_idx, symbol, leaf_hash(&scheme, leaf_idx, symbol)));
+            } else {
+                known.push((leaf_idx, &other, leaf_hash(&scheme, leaf_idx, &other)));
+            }
+        }
+        let reused = D33Encoded::from_symbols_with(&scheme, symbols.clone(), known);
+        assert_eq!(reused.root(), encoded.root());
+        assert_eq!(reused.symbols, symbols);
     }
 
     #[test]
