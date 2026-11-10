@@ -89,11 +89,12 @@ const MAX_FUTURE_VIEWS: u64 = 10;
 /// TC
 const LOOKBACK_VIEWS: u64 = 1;
 
-/// View timeout in multiples of Δ: proposal, prepare round, commit round
-const VIEW_TIMEOUT_DELTAS: u64 = 3;
-
 /// `Δ_R` in multiples of Δ: one request-reply round to recover a locked block
 const RECOVER_DELTAS: u64 = 2;
+
+/// `T = Δ_R + 4Δ + max(Δ, Δ_sync)` in multiples of Δ, with `Δ_sync = Δ`: no
+/// commit waits on availability
+const VIEW_TIMEOUT_DELTAS: u64 = RECOVER_DELTAS + 5;
 
 pub struct MvbaContext {
     pub slot: Slot,
@@ -927,8 +928,7 @@ where
     }
 
     /// One place for every fetch the protocol can call for. A lock is fetched
-    /// as soon as it is adopted, not when a view forces the question: a 3Δ view
-    /// is too short to start a round trip in
+    /// as soon as it is adopted, not when a view forces the question
     fn request_missing_blocks(&mut self) {
         if self.phase.is_decided() {
             return;
