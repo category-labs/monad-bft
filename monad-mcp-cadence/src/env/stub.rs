@@ -394,10 +394,14 @@ mod vote {
     // the shape of a BLS collection: a signer bitmap, and the one digest
     // every signer signed in place of the aggregate. Wire indices: checked
     // against the validator set by signers and verify.
+    // a signer bitmap, the digest of the signed data, and the wrapping sum
+    // of the signers' shares (PubKey::share), which binds the bitmap to the
+    // signatures as an aggregate signature does
     #[derive(Clone, PartialEq, Eq, Hash, Debug)]
     pub struct SignatureCollection {
         signers: ValidatorSet,
         digest: u64,
+        shares: u64,
     }
 
     const BITMAP_LEN: usize = MAX_VALIDATORS / 8;
@@ -420,14 +424,14 @@ mod vote {
         fn encode(&self, out: &mut dyn bytes::BufMut) {
             let mut buf = [0; BITMAP_LEN];
             let bitmap = self.bitmap(&mut buf);
-            let fields: [&dyn Encodable; 2] = [&bitmap, &self.digest];
+            let fields: [&dyn Encodable; 3] = [&bitmap, &self.digest, &self.shares];
             alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
         }
 
         fn length(&self) -> usize {
             let mut buf = [0; BITMAP_LEN];
             let bitmap = self.bitmap(&mut buf);
-            let fields: [&dyn Encodable; 2] = [&bitmap, &self.digest];
+            let fields: [&dyn Encodable; 3] = [&bitmap, &self.digest, &self.shares];
             alloy_rlp::list_length::<_, dyn Encodable>(&fields)
         }
     }
@@ -437,11 +441,16 @@ mod vote {
             let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
             let bitmap = alloy_rlp::Header::decode_bytes(&mut payload, false)?;
             let digest = u64::decode(&mut payload)?;
+            let shares = u64::decode(&mut payload)?;
             if !payload.is_empty() {
                 return Err(alloy_rlp::Error::UnexpectedLength);
             }
             let signers = signers_of(bitmap)?;
-            Ok(Self { signers, digest })
+            Ok(Self {
+                signers,
+                digest,
+                shares,
+            })
         }
     }
 
@@ -481,14 +490,20 @@ mod vote {
         ) -> Self {
             let mut signers = ValidatorSet::new();
             let mut digest = None;
+            let mut shares = 0u64;
             for (index, sig) in sigs {
                 debug_assert!(sig.is_well_formed());
                 debug_assert!(digest.is_none_or(|digest| digest == sig.digest()));
                 digest = Some(sig.digest());
                 signers.insert(index);
+                shares = shares.wrapping_add(sig.share());
             }
             let digest = digest.expect("a collection aggregates at least one signature");
-            SignatureCollection { signers, digest }
+            SignatureCollection {
+                signers,
+                digest,
+                shares,
+            }
         }
 
         fn signers(&self, validator_data: &ValidatorData) -> Option<ValidatorSet> {
@@ -504,7 +519,14 @@ mod vote {
             if self.digest != digest {
                 return None; // Invalid signature
             }
-            self.signers(validator_data)
+            let signers = self.signers(validator_data)?;
+            // the signers named must be the ones whose signatures were
+            // aggregated, under their own keys
+            let mut shares = 0u64;
+            for index in signers.iter() {
+                shares = shares.wrapping_add(validator_data.pubkey(index).share(digest));
+            }
+            (shares == self.shares).then_some(signers)
         }
     }
 
@@ -609,6 +631,57 @@ mod vote {
             let votes = nodes.iter().map(index).zip(&sigs);
             assert!(vote_agg.try_aggregate(&data, votes, threshold).is_none());
         }
+
+        // a collection verifies only for the signers whose signatures it
+        // aggregates, as an aggregate signature does
+        #[test]
+        fn a_collection_binds_its_signers() {
+            let nodes: Vec<NodeId> = (0..10).map(NodeId::dummy).collect();
+            let valset: HashMap<NodeId, Stake> =
+                nodes.iter().map(|node| (*node, Stake::from(1))).collect();
+            let mapping: HashMap<NodeId, PubKey> = nodes
+                .iter()
+                .map(|node| (*node, node.keypair().pubkey()))
+                .collect();
+            let validator_data = ValidatorData::new(valset, mapping);
+
+            let data = Bytes::from_static(b"vote data");
+            let sigs: Vec<Signature> = nodes
+                .iter()
+                .map(|node| node.keypair().sign(&data))
+                .collect();
+            let index = |i: usize| validator_data.index_of(&nodes[i]).unwrap();
+            let set =
+                |signers: &[usize]| signers.iter().map(|&i| index(i)).collect::<ValidatorSet>();
+            let collection_of = |signers: &[(usize, &Signature)]| {
+                let sigs = signers.iter().map(|&(i, sig)| (index(i), sig));
+                SignatureCollection::aggregate(sigs, &validator_data)
+            };
+
+            let honest = collection_of(&[(1, &sigs[1]), (2, &sigs[2]), (3, &sigs[3])]);
+            assert_eq!(honest.verify(&data, &validator_data), Some(set(&[1, 2, 3])));
+
+            // the bitmap names a validator that did not sign, or leaves out
+            // one that did
+            for signers in [set(&[1, 2, 3, 4]), set(&[1, 2])] {
+                let forged = SignatureCollection {
+                    signers,
+                    ..honest.clone()
+                };
+                assert_eq!(forged.signers(&validator_data), Some(signers));
+                assert_eq!(forged.verify(&data, &validator_data), None);
+            }
+
+            // a signature filed under another validator's index
+            let misfiled = collection_of(&[(1, &sigs[1]), (4, &sigs[2])]);
+            assert_eq!(misfiled.verify(&data, &validator_data), None);
+
+            // an invalid signature aggregated directly
+            let mut invalid = sigs[3].clone();
+            invalid.make_invalid();
+            let with_invalid = collection_of(&[(1, &sigs[1]), (3, &invalid)]);
+            assert_eq!(with_invalid.verify(&data, &validator_data), None);
+        }
     }
 }
 
@@ -652,42 +725,51 @@ mod rlp_tests {
         ValidatorData::new(valset, mapping)
     }
 
-    fn encoded(bitmap: &[u8], digest: u64) -> Vec<u8> {
-        let fields: [&dyn Encodable; 2] = [&bitmap, &digest];
+    fn encoded(bitmap: &[u8], digest: u64, shares: u64) -> Vec<u8> {
+        let fields: [&dyn Encodable; 3] = [&bitmap, &digest, &shares];
         let mut out = Vec::new();
         alloy_rlp::encode_list::<_, dyn Encodable>(&fields, &mut out);
         out
     }
 
+    fn index(index: usize) -> ValidatorIndex {
+        ValidatorIndex::new(index).expect("in range")
+    }
+
+    // validator i's signature over data
+    fn signed(i: usize, data: &bytes::Bytes) -> Signature {
+        KeyPair::dummy(i as u64).sign(data)
+    }
+
     #[test]
     fn signer_bitmaps_have_one_encoding() {
         let data = bytes::Bytes::from_static(b"test");
-        let signature = KeyPair::dummy(1).sign(&data);
+        let (one, nine) = (signed(1, &data), signed(9, &data));
         let validator_data = validator_data();
-        let index = |index| ValidatorIndex::new(index).expect("in range");
-        let signers = [(index(1), &signature), (index(9), &signature)];
+        let signers = [(index(1), &one), (index(9), &nine)];
         let collection = SignatureCollection::aggregate(signers, &validator_data);
         let set = ValidatorSet::from_iter([index(1), index(9)]);
         assert_eq!(collection.verify(&data, &validator_data), Some(set));
         assert_eq!(collection.verify(b"other", &validator_data), None);
-        let outside = [(index(10), &signature)];
+        let outside = [(index(10), &one)];
         let outside = SignatureCollection::aggregate(outside, &validator_data);
         assert_eq!(outside.signers(&validator_data), None);
 
+        let shares = one.share().wrapping_add(nine.share());
         let bytes = alloy_rlp::encode(&collection);
-        assert_eq!(bytes, encoded(&[0b10, 0b10], signature.digest()));
+        assert_eq!(bytes, encoded(&[0b10, 0b10], one.digest(), shares));
         assert_eq!(collection.length(), bytes.len());
         assert_eq!(alloy_rlp::decode_exact(&bytes), Ok(collection));
 
         let decode = |bitmap: &[u8]| {
-            alloy_rlp::decode_exact::<SignatureCollection>(encoded(bitmap, signature.digest()))
+            alloy_rlp::decode_exact::<SignatureCollection>(encoded(bitmap, one.digest(), shares))
         };
         assert!(decode(&[]).is_err());
         assert!(decode(&[0b10, 0]).is_err());
         assert!(decode(&[1; MAX_VALIDATORS / 8 + 1]).is_err());
         assert!(decode(&[1; MAX_VALIDATORS / 8]).is_ok());
 
-        let mut malformed = signature;
+        let mut malformed = one;
         malformed.make_malformed();
         assert!(alloy_rlp::decode_exact::<Signature>(alloy_rlp::encode(&malformed)).is_err());
     }

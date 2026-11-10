@@ -193,6 +193,27 @@ mod vote {
         pub fn digest(&self) -> u64 {
             self.digest
         }
+
+        /// What this signature adds to an aggregate: its signer's share
+        /// of the data it signed (see `PubKey::share`).
+        pub fn share(&self) -> u64 {
+            self.by.share(self.digest)
+        }
+    }
+
+    impl PubKey {
+        /// The share of a signature by this key over data with digest
+        /// `digest`. A collection keeps the wrapping sum of its signers'
+        /// shares, so it binds the signers as an aggregate signature
+        /// does: naming a signer who did not sign, or leaving one out,
+        /// changes the sum. A stub, like the signatures: anyone can
+        /// compute a share.
+        pub fn share(&self, digest: u64) -> u64 {
+            let mut bytes = [0; 16];
+            bytes[..8].copy_from_slice(&self.0.to_le_bytes());
+            bytes[8..].copy_from_slice(&digest.to_le_bytes());
+            super::noncrypto_digest(&bytes)
+        }
     }
 
     impl spec::vote::PubKey for PubKey {}
