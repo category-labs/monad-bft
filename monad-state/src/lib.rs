@@ -61,6 +61,7 @@ use monad_executor_glue::{
     StateSyncCommand, StateSyncEvent, StateSyncNetworkMessage, StateSyncRequest, TxPoolCommand,
     ValSetCommand, ValidatorEvent, WriteCommand,
 };
+use monad_message_rate_limit::{MessageKind, Protocol};
 use monad_types::{
     Epoch, ExecutionProtocol, LimitedVec, MonadVersion, NodeId, Round, RouterTarget, SeqNum, Stake,
     GENESIS_BLOCK_ID, GENESIS_ROUND, GENESIS_SEQ_NUM, MAX_FORWARDED_TXS_PER_MESSAGE,
@@ -798,6 +799,45 @@ where
     type NodeIdPubKey = CertificateSignaturePubKey<ST>;
     type Event = MonadEvent<ST, SCT, EPT>;
 
+    fn decode_header(data: &[u8]) -> alloy_rlp::Result<MessageKind> {
+        let mut data = data;
+        let mut payload = Header::decode_bytes(&mut data, true)?;
+        if !data.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
+        }
+        MonadVersion::decode(&mut payload)?;
+        match u8::decode(&mut payload)? {
+            1 => {
+                // Unverified<Unvalidated<ConsensusMessage>>. Neither the
+                // protocol body nor the trailing author signature is decoded.
+                let mut unverified = Header::decode_bytes(&mut payload, true)?;
+                let mut consensus = Header::decode_bytes(&mut unverified, true)?;
+                u32::decode(&mut consensus)?;
+                decode_named_message_header(consensus, b"ProtocolMessage", Protocol::Consensus, 6)
+            }
+            2 => decode_named_message_header(
+                payload,
+                b"BlockSyncRequestMessage",
+                Protocol::BlockSyncRequest,
+                2,
+            ),
+            3 => decode_named_message_header(
+                payload,
+                b"BlockSyncResponseMessage",
+                Protocol::BlockSyncResponse,
+                2,
+            ),
+            4 => Ok(Protocol::ForwardedTx.into()),
+            5 => decode_named_message_header(
+                payload,
+                b"StateSyncNetworkMessage",
+                Protocol::StateSync,
+                5,
+            ),
+            _ => Err(alloy_rlp::Error::Custom("unknown MonadMessage header")),
+        }
+    }
+
     // FIXME-2: from: NodeId is immediately converted to pubkey. All other msgs
     // put the NodeId wrap back on again, except ConsensusMessage when verifying
     // the consensus signature
@@ -834,6 +874,23 @@ where
             }
         }
     }
+}
+
+fn decode_named_message_header(
+    mut data: &[u8],
+    expected_name: &[u8],
+    protocol: Protocol,
+    max_message: u8,
+) -> alloy_rlp::Result<MessageKind> {
+    let mut payload = Header::decode_bytes(&mut data, true)?;
+    if Header::decode_bytes(&mut payload, false)? != expected_name {
+        return Err(alloy_rlp::Error::Custom("unexpected message name"));
+    }
+    let message = u8::decode(&mut payload)?;
+    if !(1..=max_message).contains(&message) {
+        return Err(alloy_rlp::Error::Custom("unknown message discriminator"));
+    }
+    Ok(MessageKind::new(protocol, message))
 }
 
 pub struct MonadStateBuilder<ST, SCT, EPT, BPT, ESRT, VTF, LT, BVT, CCT, CRT>
