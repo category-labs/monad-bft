@@ -402,6 +402,30 @@ pub(super) fn scheduled_timers(outputs: &[Output]) -> Vec<TimerEvent> {
         .collect()
 }
 
+pub(super) fn timer_durations(outputs: &[Output]) -> Vec<(TimerEvent, TimestampDelta)> {
+    outputs
+        .iter()
+        .filter_map(|output| match output {
+            MVBAOutput::ScheduleTimer {
+                duration,
+                timer_event,
+            } => Some((timer_event.clone(), *duration)),
+            MVBAOutput::Broadcast(_) | MVBAOutput::Unicast { .. } => None,
+        })
+        .collect()
+}
+
+/// The views of the timeout certificates broadcast on their own in `outputs`
+pub(super) fn forwarded_certificates(outputs: &[Output]) -> Vec<FallbackView> {
+    broadcasts(outputs)
+        .into_iter()
+        .filter_map(|message| match message {
+            Message::Tc(tc) => Some(tc.view),
+            _ => None,
+        })
+        .collect()
+}
+
 /// The entries of every block request broadcast in `outputs`
 pub(super) fn requested_entries(outputs: &[Output]) -> Vec<Lanes<Entry>> {
     broadcasts(outputs)

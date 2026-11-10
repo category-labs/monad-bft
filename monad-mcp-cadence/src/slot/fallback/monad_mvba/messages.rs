@@ -642,7 +642,10 @@ mod rlp_tests {
         for lock in [None, Some(qc)] {
             let tc = h::timeout_certificate(h::view(1), lock.clone(), &validators);
             assert!(assert_roundtrip(&tc).verify(&validators));
-            messages.push(h::pre_prepare(h::view(2), &block, Some(tc)).1);
+            // an unlocked view admits the non-fast value only beside a certificate
+            let cert = lock.is_none().then(|| h::enter_fallback_cert(&validators));
+            messages.push(h::pre_prepare_justified(h::view(2), &block, Some(tc.clone()), cert).1);
+            messages.push(M::Tc(tc));
             messages.push(M::Timeout(TimeoutMsg::new_signed(
                 h::SLOT,
                 h::view(1),
@@ -659,6 +662,7 @@ mod rlp_tests {
                 }
                 M::Timeout(t) => assert!(t.is_valid(&validators)),
                 M::CommitQc(qc) => assert!(qc.verify(&validators)),
+                M::Tc(tc) => assert!(tc.verify(&validators)),
                 _ => {}
             }
             // The outer Chorus and Cadence framing also wraps the MVBA arm.
@@ -691,7 +695,7 @@ mod rlp_tests {
             [1]
         );
         assert!(
-            alloy_rlp::decode_exact::<MvbaMessage<Metablock, EnterFallbackCert>>(&[0xc1, 8])
+            alloy_rlp::decode_exact::<MvbaMessage<Metablock, EnterFallbackCert>>(&[0xc1, 9])
                 .is_err()
         );
     }
