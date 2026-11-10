@@ -46,7 +46,7 @@
 
 mod block_store;
 mod certificates;
-mod collectors;
+pub(crate) mod collectors;
 mod messages;
 mod metablock;
 mod phases;
@@ -66,8 +66,7 @@ use certificates::{PrepareQc, TimeoutCertificate};
 use collectors::ViewCollectors;
 pub use messages::MvbaMessage;
 use messages::{
-    CommitVoteMsg, FallbackCommitVote, Justification, PrePrepareMsg, PrepareVote, PrepareVoteMsg,
-    TimeoutMsg,
+    CommitVoteMsg, FallbackCommitVote, PrePrepareMsg, PrepareVote, PrepareVoteMsg, TimeoutMsg,
 };
 use phases::{Decided, Phase, Transition};
 
@@ -92,6 +91,9 @@ const LOOKBACK_VIEWS: u64 = 1;
 
 /// View timeout in multiples of Δ: proposal, prepare round, commit round
 const VIEW_TIMEOUT_DELTAS: u64 = 3;
+
+/// `Δ_R` in multiples of Δ: one request-reply round to recover a locked block
+const RECOVER_DELTAS: u64 = 2;
 
 pub struct MvbaContext {
     pub slot: Slot,
@@ -237,7 +239,7 @@ where
     type Context = MvbaContext;
     type TimerEvent = TimerEvent<V>;
     type FallbackCert = C;
-    type CommitVote = FallbackCommitVote<V::Entries>;
+    type DecisionProof = FallbackCommitQc<V::Entries>;
 
     fn new(context: MvbaContext) -> Self {
         let slot = context.slot;
@@ -298,6 +300,7 @@ where
             MvbaMessage::CommitQc(qc) => self.handle_commit_qc(qc),
             MvbaMessage::BlockRequest(msg) => self.answer_block_request(sender, &msg),
             MvbaMessage::BlockResponse(msg) => self.handle_block_response(msg),
+            MvbaMessage::Tc(tc) => self.handle_tc(tc),
         }
 
         self.try_advance();
@@ -337,7 +340,7 @@ where
         self.decided().map(Decided::block)
     }
 
-    fn decision_proof(&self) -> Option<&FallbackCommitQc<V::Entries>> {
+    fn decision_proof(&self) -> Option<&Self::DecisionProof> {
         // an instance with no input, an abandoned one, or still fetching
         // decided block may hold a certificate it never acted on
         self.decided().map(Decided::commit_qc)
@@ -371,23 +374,20 @@ where
             return;
         }
 
-        match &msg.justification {
-            Justification::FallbackCert(Some(cert)) => {
-                if !cert.validate(self.validation_context()) {
-                    return;
-                }
+        if let Some(cert) = &msg.cert
+            && !cert.validate(self.validation_context())
+        {
+            return;
+        }
+        if let Some(tc) = &msg.tc {
+            // harvested ahead of the value check below: a valid
+            // certificate is evidence its view was left, whatever becomes
+            // of the message carrying it
+            if !tc.verify(&self.context.validator_data) {
+                return;
             }
-            Justification::FallbackCert(None) => {}
-            Justification::Tc(tc) => {
-                // harvested ahead of the value check below: a valid
-                // certificate is evidence its view was left, whatever becomes
-                // of the message carrying it
-                if !tc.verify(&self.context.validator_data) {
-                    return;
-                }
-                if self.in_window_or_catching_up(tc.view) {
-                    self.collectors_mut(tc.view).store_tc(tc.clone());
-                }
+            if self.in_window_or_catching_up(tc.view) {
+                self.collectors_mut(tc.view).store_tc(tc.clone());
             }
         }
 
@@ -396,6 +396,10 @@ where
         }
 
         self.collectors_mut(view).store_pre_prepare(msg);
+    }
+
+    fn handle_tc(&mut self, tc: TimeoutCertificate<V::Entries>) {
+        todo!("A1: a standalone TC is harvested as a pre-prepare's is")
     }
 
     fn handle_prepare_vote(&mut self, sender: ValidatorIndex, msg: PrepareVoteMsg<V::Entries>) {
@@ -511,6 +515,12 @@ where
 
     fn validation_context(&self) -> &V::Context {
         &self.validation_context
+    }
+
+    /// Hand over a value this validator may propose in a view it leads with
+    /// nothing locked: one that is `cert_optional`, or `cert` beside it
+    pub(crate) fn offer_proposal(&mut self, value: V, cert: Option<C>) {
+        todo!("A3: store the admissible unlocked proposal and try to advance")
     }
 
     /// Each iteration takes the phase by value and gets a new one back, so no
@@ -852,16 +862,18 @@ where
             Some(lock) => self.block_store.get(lock)?.clone(),
         };
 
-        let justification = match &self.entry_tc {
-            None => Justification::FallbackCert(input.fbcert.clone()),
-            Some(tc) => Justification::Tc(tc.clone()),
+        // TODO(A3): still the v1 rule -- the certificate rides in view 1 only
+        let cert = match &self.entry_tc {
+            None => input.fbcert.clone(),
+            Some(_) => None,
         };
 
         Some(PrePrepareMsg::new_signed(
             self.context.slot,
             view,
             block,
-            justification,
+            self.entry_tc.clone(),
+            cert,
             &self.context.key,
         ))
     }

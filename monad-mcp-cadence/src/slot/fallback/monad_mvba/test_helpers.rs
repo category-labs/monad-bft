@@ -58,7 +58,6 @@ fn pid(n: u64) -> ProposalId {
 pub(super) type MonadMvba = super::MonadMvba<Metablock, EnterFallbackCert>;
 pub(super) type Message = super::messages::MvbaMessage<Metablock, EnterFallbackCert>;
 pub(super) type PrePrepareMsg = super::messages::PrePrepareMsg<Metablock, EnterFallbackCert>;
-pub(super) type Justification = super::messages::Justification<Metablock, EnterFallbackCert>;
 pub(super) type TimeoutMsg = super::messages::TimeoutMsg<<Metablock as Votable>::Entries>;
 pub(super) type PrepareQc = super::certificates::PrepareQc<<Metablock as Votable>::Entries>;
 pub(super) type TimeoutCertificate =
@@ -228,15 +227,13 @@ pub(super) fn pre_prepare(
     block: &Metablock,
     justification: Option<TimeoutCertificate>,
 ) -> (NodeId, Message) {
-    let justification = if v == view(1) {
-        Justification::FallbackCert(Some(enter_fallback_cert(&validator_data())))
+    if v == view(1) {
+        let cert = enter_fallback_cert(&validator_data());
+        pre_prepare_justified(v, block, None, Some(cert))
     } else {
-        Justification::Tc(
-            justification.expect("a view above 1 is justified by a timeout certificate"),
-        )
-    };
-
-    pre_prepare_justified(v, block, justification)
+        let tc = justification.expect("a view above 1 is justified by a timeout certificate");
+        pre_prepare_justified(v, block, Some(tc), None)
+    }
 }
 
 /// A view-1 pre-prepare carrying exactly the certificate given, for the cases
@@ -246,16 +243,17 @@ pub(super) fn pre_prepare_with_cert(
     block: &Metablock,
     cert: Option<EnterFallbackCert>,
 ) -> (NodeId, Message) {
-    pre_prepare_justified(v, block, Justification::FallbackCert(cert))
+    pre_prepare_justified(v, block, None, cert)
 }
 
 pub(super) fn pre_prepare_justified(
     v: FallbackView,
     block: &Metablock,
-    justification: Justification,
+    tc: Option<TimeoutCertificate>,
+    cert: Option<EnterFallbackCert>,
 ) -> (NodeId, Message) {
     let leader = leader_of(v);
-    let msg = PrePrepareMsg::new_signed(SLOT, v, block.clone(), justification, &leader.keypair());
+    let msg = PrePrepareMsg::new_signed(SLOT, v, block.clone(), tc, cert, &leader.keypair());
 
     (leader, Message::PrePrepare(msg))
 }

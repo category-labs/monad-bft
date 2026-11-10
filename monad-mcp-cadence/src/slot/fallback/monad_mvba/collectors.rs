@@ -46,21 +46,24 @@ pub(crate) struct SealingVotePool<V: IsVote> {
 }
 
 impl<V: IsVote> SealingVotePool<V> {
-    fn new(scope: V::Scope) -> Self {
+    pub(crate) fn new(scope: V::Scope) -> Self {
         Self {
             votes: VotePool::new(scope),
             sealed: OnceCell::new(),
         }
     }
 
-    fn add_vote(&mut self, voter: ValidatorIndex, msg: VoteMsg<V>) {
+    pub(crate) fn add_vote(&mut self, voter: ValidatorIndex, msg: VoteMsg<V>) {
         if self.sealed.get().is_some() {
             return;
         }
         self.votes.add_vote(voter, msg);
     }
 
-    fn try_form_strong_qc(&self, validator_data: &ValidatorData) -> Option<&StrongQc<V>> {
+    pub(crate) fn try_form_strong_qc(
+        &self,
+        validator_data: &ValidatorData,
+    ) -> Option<&StrongQc<V>> {
         if let Some(qc) = self.sealed.get() {
             return Some(qc);
         }

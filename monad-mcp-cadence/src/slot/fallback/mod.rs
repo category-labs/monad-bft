@@ -17,7 +17,9 @@
 //! proposer -- when the fast path cannot commit a slot. Votes and certificates
 //! range over `entries(x)`, never over the value that carried them
 
+pub mod leaderless;
 pub mod monad_mvba;
+pub mod slot_fallback;
 use std::{collections::VecDeque, fmt::Debug, hash::Hash};
 
 use alloy_rlp::{Decodable, Encodable, RlpEncodable, RlpEncodableWrapper};
@@ -30,10 +32,7 @@ pub use super::fast::{
 };
 use super::{
     super::{message::Outbound, runtime::Runtime, timers::Timers},
-    types::{
-        IsVote, Lanes, NodeId, Slot, StrongQc, Timestamp, TimestampDelta, ValidatorData,
-        ValidatorIndex,
-    },
+    types::{Lanes, NodeId, Slot, Timestamp, TimestampDelta, ValidatorData, ValidatorIndex},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, RlpEncodableWrapper)]
@@ -111,8 +110,9 @@ pub trait ValidateInput {
 
     fn validate(&self, context: &Self::Context) -> bool;
 
-    /// Whether the value is admissible alone, without an fbcert
-    fn fbcert_optional(&self) -> bool;
+    /// Whether an unlocked proposal of the value is admissible alone, without
+    /// a certificate beside it
+    fn cert_optional(&self) -> bool;
 }
 
 pub trait ValidateCert: Clone + Eq + Hash + Debug {
@@ -129,12 +129,6 @@ pub trait Votable: Clone + Eq + Hash + Debug {
     fn entries(&self) -> Self::Entries;
 }
 
-/// Not [`From`]: `V::Entries` could be the vote type itself, colliding with the
-/// blanket reflexive impl
-pub trait FromEntries<V: Votable> {
-    fn from_entries(entries: V::Entries) -> Self;
-}
-
 /// A protocol for Agreement on a Core Set
 pub trait Mvba<V>
 where
@@ -146,7 +140,8 @@ where
 
     type FallbackCert: ValidateCert;
 
-    type CommitVote: IsVote + FromEntries<V>;
+    /// What proves a decision to a party outside the instance
+    type DecisionProof;
 
     fn new(ctx: Self::Context) -> Self;
 
@@ -170,7 +165,7 @@ where
 
     /// The certificate behind [`Mvba::decision`]. `Some` exactly when the
     /// decision is
-    fn decision_proof(&self) -> Option<&StrongQc<Self::CommitVote>>;
+    fn decision_proof(&self) -> Option<&Self::DecisionProof>;
 
     fn poll(&mut self) -> Option<MVBAOutput<Self::Message, Self::TimerEvent>>;
 }

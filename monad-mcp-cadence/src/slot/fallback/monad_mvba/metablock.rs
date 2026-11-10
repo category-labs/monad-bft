@@ -98,7 +98,7 @@ impl ValidateInput for Metablock {
         )
     }
 
-    fn fbcert_optional(&self) -> bool {
+    fn cert_optional(&self) -> bool {
         self.is_fast()
     }
 }
