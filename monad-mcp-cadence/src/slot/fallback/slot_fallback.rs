@@ -19,7 +19,7 @@
 
 use std::collections::VecDeque;
 
-use alloy_rlp::{Decodable, Encodable, RlpEncodable};
+use alloy_rlp::{Decodable, Encodable};
 
 use super::{
     super::types::{Lanes, Slot, ValidatorData, ValidatorIndex, VoteMsg},
@@ -32,46 +32,91 @@ use super::{
 };
 
 /// The value the core MVBA runs over: a metablock with the `fbcert` the paper
-/// makes a field of it, so the certificate travels wherever the block does
-#[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable)]
-#[rlp(trailing)]
-pub struct CertifiedMetablock {
-    pub block: Metablock,
-    pub fbcert: Option<EnterFallbackCert>,
+/// makes a field of it, so the certificate travels wherever the block does. A
+/// fast metablock carries no `fbcert`, any other one
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct CertifiedMetablock(Certified);
+
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+enum Certified {
+    Fast(Metablock),
+    NonFast {
+        block: Metablock,
+        fbcert: EnterFallbackCert,
+    },
+}
+
+impl CertifiedMetablock {
+    /// `None` unless `block` is fast
+    pub fn fast(block: Metablock) -> Option<Self> {
+        block.is_fast().then_some(Self(Certified::Fast(block)))
+    }
+
+    /// `None` if `block` is fast
+    pub fn non_fast(block: Metablock, fbcert: EnterFallbackCert) -> Option<Self> {
+        (!block.is_fast()).then_some(Self(Certified::NonFast { block, fbcert }))
+    }
+
+    pub fn block(&self) -> &Metablock {
+        match &self.0 {
+            Certified::Fast(block) | Certified::NonFast { block, .. } => block,
+        }
+    }
+
+    pub fn fbcert(&self) -> Option<&EnterFallbackCert> {
+        match &self.0 {
+            Certified::Fast(_) => None,
+            Certified::NonFast { fbcert, .. } => Some(fbcert),
+        }
+    }
+
+    // the wire form: the block, then the `fbcert` if there is one
+    fn rlp_fields(&self) -> Vec<&dyn Encodable> {
+        match &self.0 {
+            Certified::Fast(block) => vec![block],
+            Certified::NonFast { block, fbcert } => vec![block, fbcert],
+        }
+    }
+}
+
+impl Encodable for CertifiedMetablock {
+    fn encode(&self, out: &mut dyn bytes::BufMut) {
+        alloy_rlp::encode_list::<_, dyn Encodable>(&self.rlp_fields(), out);
+    }
+
+    fn length(&self) -> usize {
+        alloy_rlp::list_length::<_, dyn Encodable>(&self.rlp_fields())
+    }
 }
 
 impl Decodable for CertifiedMetablock {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
         let block = Metablock::decode(&mut payload)?;
-        let fbcert = match payload.is_empty() {
-            true => None,
-            false => Some(EnterFallbackCert::decode(&mut payload)?),
+        let value = match payload.is_empty() {
+            true => Self::fast(block),
+            false => Self::non_fast(block, EnterFallbackCert::decode(&mut payload)?),
         };
         if !payload.is_empty() {
             return Err(alloy_rlp::Error::UnexpectedLength);
         }
-        Ok(Self { block, fbcert })
+        value.ok_or(alloy_rlp::Error::Custom(
+            "an fbcert must accompany exactly the non-fast metablocks",
+        ))
     }
 }
 
 impl ValidateInput for CertifiedMetablock {
     type Context = ValidationContext;
 
-    /// `Metablock.is_valid`: a fast metablock carries no `fbcert`, any other
-    /// a valid one
+    /// `Metablock.is_valid`; a non-fast metablock's `fbcert` must be valid too
     fn validate(&self, context: &Self::Context) -> bool {
-        if !self.block.validate(context) {
-            return false;
-        }
-        match &self.fbcert {
-            None => self.block.is_fast(),
-            Some(fbcert) => !self.block.is_fast() && fbcert.validate(context),
-        }
+        self.block().validate(context)
+            && self.fbcert().is_none_or(|fbcert| fbcert.validate(context))
     }
 
     fn cert_optional(&self) -> bool {
-        self.block.is_fast()
+        matches!(self.0, Certified::Fast(_))
     }
 }
 
@@ -79,7 +124,7 @@ impl Votable for CertifiedMetablock {
     type Entries = Lanes<Entry>;
 
     fn entries(&self) -> Self::Entries {
-        self.block.entries()
+        self.block().entries()
     }
 }
 
@@ -247,7 +292,7 @@ impl SlotFallback {
             && let Some(value) = self.core.decision()
             && let Some(qc) = self.core.decision_proof()
         {
-            self.decision = Some((value.block.clone(), SlotCommitProof::Mvba(qc.clone())));
+            self.decision = Some((value.block().clone(), SlotCommitProof::Mvba(qc.clone())));
         }
     }
 
@@ -261,15 +306,13 @@ impl SlotFallback {
                     )));
             }
             LeaderlessEffect::FastBlock(block) => {
-                let value = CertifiedMetablock {
-                    block,
-                    fbcert: None,
-                };
-                self.core.offer_proposal(value, None);
+                if let Some(value) = CertifiedMetablock::fast(block) {
+                    self.core.offer_proposal(value, None);
+                }
             }
             LeaderlessEffect::NfCert(nf_cert) => {
                 if let Some(input) = &self.input
-                    && !input.block.is_fast()
+                    && !input.block().is_fast()
                 {
                     self.core.offer_proposal(input.clone(), Some(nf_cert));
                 }
@@ -317,10 +360,14 @@ impl Mvba<Metablock> for SlotFallback {
         }
 
         // `fbcert` is ⊥ for a fast metablock, whatever certificate admitted the path
-        let fbcert = cert.filter(|_| !data.is_fast());
-        let input = CertifiedMetablock {
-            block: data.clone(),
-            fbcert,
+        let input = match cert {
+            Some(fbcert) if !data.is_fast() => CertifiedMetablock::non_fast(data.clone(), fbcert),
+            _ => CertifiedMetablock::fast(data.clone()),
+        };
+        // a non-fast metablock without its fbcert is no input: the instance stays unstarted
+        let Some(input) = input else {
+            tracing::warn!(slot = ?data.slot(), "non-fast fallback input without an fbcert ignored");
+            return;
         };
         self.input = Some(input.clone());
 
@@ -570,31 +617,38 @@ mod tests {
         }
     }
 
+    /// `[block, fbcert?]`, the wire layout, for any pairing
+    fn wire(block: &Metablock, fbcert: Option<&EnterFallbackCert>) -> Vec<u8> {
+        let mut fields: Vec<&dyn Encodable> = vec![block];
+        fields.extend(fbcert.map(|fbcert| fbcert as &dyn Encodable));
+        let mut out = Vec::new();
+        alloy_rlp::encode_list::<_, dyn Encodable>(&fields, &mut out);
+        out
+    }
+
+    fn decodes(bytes: &[u8]) -> bool {
+        alloy_rlp::decode_exact::<CertifiedMetablock>(bytes).is_ok()
+    }
+
     #[test]
     fn a_non_fast_metablock_without_its_fallback_certificate_is_invalid() {
         let context = validation_context();
         let block = non_fast(1);
 
-        let certified = CertifiedMetablock {
-            block: block.clone(),
-            fbcert: Some(fbcert()),
-        };
+        let certified =
+            CertifiedMetablock::non_fast(block.clone(), fbcert()).expect("a non-fast metablock");
         assert!(certified.validate(&context));
         assert!(!certified.cert_optional());
+        assert_eq!(wire(&block, Some(&fbcert())), alloy_rlp::encode(&certified));
 
-        let bare = CertifiedMetablock {
-            block: block.clone(),
-            fbcert: None,
-        };
-        assert!(!bare.validate(&context));
+        assert!(CertifiedMetablock::fast(block.clone()).is_none());
+        assert!(!decodes(&wire(&block, None)));
 
         // a certificate of another slot is not this metablock's
         let validators = h::validator_data();
         let elsewhere = h::strong_qc(Slot(1), EnterFallbackVote, &h::quorum(), &validators);
-        let misplaced = CertifiedMetablock {
-            block,
-            fbcert: Some(elsewhere),
-        };
+        let misplaced =
+            CertifiedMetablock::non_fast(block, elsewhere).expect("a non-fast metablock");
         assert!(!misplaced.validate(&context));
     }
 
@@ -603,63 +657,39 @@ mod tests {
         let context = validation_context();
         let block = fast(1);
 
-        let bare = CertifiedMetablock {
-            block: block.clone(),
-            fbcert: None,
-        };
+        let bare = CertifiedMetablock::fast(block.clone()).expect("a fast metablock");
         assert!(bare.validate(&context));
         assert!(bare.cert_optional());
+        assert_eq!(wire(&block, None), alloy_rlp::encode(&bare));
 
-        let certified = CertifiedMetablock {
-            block,
-            fbcert: Some(fbcert()),
-        };
-        assert!(!certified.validate(&context));
+        assert!(CertifiedMetablock::non_fast(block.clone(), fbcert()).is_none());
+        assert!(!decodes(&wire(&block, Some(&fbcert()))));
     }
 
     #[test]
     fn entries_ignore_the_fallback_certificate() {
         let block = non_fast(1);
-        let certified = CertifiedMetablock {
-            block: block.clone(),
-            fbcert: Some(fbcert()),
-        };
-        let bare = CertifiedMetablock {
-            block: block.clone(),
-            fbcert: None,
-        };
+        let certified =
+            CertifiedMetablock::non_fast(block.clone(), fbcert()).expect("a non-fast metablock");
 
         assert_eq!(certified.entries(), block.entries());
-        assert_eq!(certified.entries(), bare.entries());
         // nor do they tell a fast metablock from a non-fast one
-        let fast_value = CertifiedMetablock {
-            block: fast(1),
-            fbcert: None,
-        };
+        let fast_value = CertifiedMetablock::fast(fast(1)).expect("a fast metablock");
         assert_eq!(certified.entries(), fast_value.entries());
     }
 
     #[test]
     fn a_certified_metablock_round_trips() {
         let context = validation_context();
-        let fast_value = CertifiedMetablock {
-            block: fast(1),
-            fbcert: None,
-        };
-        let certified = CertifiedMetablock {
-            block: non_fast(1),
-            fbcert: Some(fbcert()),
-        };
+        let fast_value = CertifiedMetablock::fast(fast(1)).expect("a fast metablock");
+        let certified =
+            CertifiedMetablock::non_fast(non_fast(1), fbcert()).expect("a non-fast metablock");
         for value in [&fast_value, &certified] {
             assert!(assert_roundtrip(value).validate(&context));
         }
 
-        // decoding is structural: validity is judged at ingress
-        let bare = CertifiedMetablock {
-            block: non_fast(1),
-            fbcert: None,
-        };
-        assert!(!assert_roundtrip(&bare).validate(&context));
+        // the pairing is checked at decode, validity at ingress
+        assert!(!decodes(&wire(&non_fast(1), None)));
     }
 
     #[test]
@@ -715,10 +745,7 @@ mod tests {
         assert_eq!(proposed.len(), 1);
         let proposal = proposed[0];
         assert_eq!(proposal.view, h::view(1));
-        let value = CertifiedMetablock {
-            block,
-            fbcert: None,
-        };
+        let value = CertifiedMetablock::fast(block).expect("a fast metablock");
         assert_eq!(proposal.value, value);
         assert!(proposal.value.validate(&validation_context()));
         assert!(proposal.tc.is_none());
@@ -746,10 +773,7 @@ mod tests {
         assert_eq!(proposed.len(), 1);
         let proposal = proposed[0];
         assert_eq!(proposal.view, h::view(1));
-        let input = CertifiedMetablock {
-            block,
-            fbcert: Some(fbcert()),
-        };
+        let input = CertifiedMetablock::non_fast(block, fbcert()).expect("a non-fast metablock");
         assert_eq!(proposal.value, input);
         let nf_cert = proposal
             .cert
@@ -769,10 +793,7 @@ mod tests {
         let outputs = drain(&mut instance);
         let proposed = proposals(&outputs);
         assert_eq!(proposed.len(), 1);
-        let value = CertifiedMetablock {
-            block: received,
-            fbcert: None,
-        };
+        let value = CertifiedMetablock::fast(received).expect("a fast metablock");
         assert_eq!(proposed[0].value, value);
         assert!(proposed[0].cert.is_none());
 
@@ -808,10 +829,7 @@ mod tests {
         let proposal = proposed[0];
         assert_eq!(proposal.view, h::view(2));
         assert!(proposal.tc.is_some(), "justified by TC_1");
-        let input = CertifiedMetablock {
-            block,
-            fbcert: Some(fbcert()),
-        };
+        let input = CertifiedMetablock::non_fast(block, fbcert()).expect("a non-fast metablock");
         assert_eq!(proposal.value, input);
         let nf_cert = proposal
             .cert
@@ -886,10 +904,7 @@ mod tests {
 
         // the core is abandoned: no vote on the leader's proposal, no timeout,
         // and its own certificate changes nothing
-        let value = CertifiedMetablock {
-            block: block.clone(),
-            fbcert: None,
-        };
+        let value = CertifiedMetablock::fast(block.clone()).expect("a fast metablock");
         let proposal =
             Proposal::new_signed(h::SLOT, h::view(1), value, None, None, &leader.keypair());
         deliver(
@@ -978,7 +993,7 @@ mod tests {
         let outputs = drain(&mut instance);
         let proposed = proposals(&outputs);
         assert_eq!(proposed.len(), 1);
-        assert_eq!(proposed[0].value.block, own);
+        assert_eq!(proposed[0].value.block(), &own);
         assert!(proposed[0].cert.is_some());
 
         // a fast block: a non-fast leader proposes it at entry instead
@@ -990,7 +1005,7 @@ mod tests {
         let outputs = drain(&mut instance);
         let proposed = proposals(&outputs);
         assert_eq!(proposed.len(), 1);
-        assert_eq!(proposed[0].value.block, received);
+        assert_eq!(proposed[0].value.block(), &received);
         assert!(proposed[0].cert.is_none());
 
         // a quorum of dummy votes and their block: the decision waits for the
@@ -1111,10 +1126,10 @@ mod tests {
             })
             .collect();
         assert!(proposed.iter().any(|proposal| {
-            proposal.tc.is_some() && proposal.cert.is_some() && proposal.value.fbcert.is_some()
+            proposal.tc.is_some() && proposal.cert.is_some() && proposal.value.fbcert().is_some()
         }));
         assert!(proposed.iter().any(|proposal| {
-            proposal.tc.is_none() && proposal.cert.is_none() && proposal.value.fbcert.is_none()
+            proposal.tc.is_none() && proposal.cert.is_none() && proposal.value.fbcert().is_none()
         }));
 
         messages.dedup();
