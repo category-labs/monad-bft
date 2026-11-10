@@ -24,7 +24,7 @@ use super::{
     super::{
         assignment::{ChunkAssignment, ChunkId},
         chunk::{ChunkData, WireChunkId},
-        types::{D33, EncodingScheme, MerkleRoot, NodeId, ValidatorData},
+        types::{D33, EncodingScheme, MerkleHash, MerkleRoot, NodeId, ValidatorData},
         wire::{DAHeaderScheme, MalformedPacket, v1},
     },
     BadProof, DAEncodingScheme, Decoder, Encoded, d33,
@@ -146,11 +146,17 @@ impl Decoder for HollowDecoder {
     }
 
     fn chunk_data(&self, chunk_id: ChunkId) -> Option<ChunkData> {
-        self.contains(chunk_id).then(ChunkData::hollow)
+        if !self.contains(chunk_id) {
+            return None;
+        }
+        let data = hollow_chunk(chunk_id, &self.root);
+        Some(data)
     }
 
-    // a hollow chunk has no proof to fail
-    fn ingest(&mut self, chunk_id: ChunkId, _data: ChunkData) -> Result<(), BadProof> {
+    fn ingest(&mut self, chunk_id: ChunkId, data: ChunkData) -> Result<(), BadProof> {
+        if !verify_proof(chunk_id, &data, &self.root) {
+            return Err(BadProof);
+        }
         self.received.insert(chunk_id);
         Ok(())
     }
@@ -173,9 +179,34 @@ impl Encoded for HollowEncoded {
         self.root
     }
 
-    fn chunk_data(&self, _chunk_id: ChunkId) -> ChunkData {
-        ChunkData::hollow()
+    fn chunk_data(&self, chunk_id: ChunkId) -> ChunkData {
+        hollow_chunk(chunk_id, &self.root)
     }
+}
+
+// what a chunk under root carries: no symbol, and a one-element proof
+fn hollow_chunk(chunk_id: ChunkId, root: &MerkleRoot) -> ChunkData {
+    ChunkData {
+        symbol: Bytes::new(),
+        proof: Box::new([stand_in_proof(chunk_id, root)]),
+    }
+}
+
+// the root with the chunk id folded into its last bytes. it binds the
+// chunk to both without a hash.
+fn stand_in_proof(chunk_id: ChunkId, root: &MerkleRoot) -> MerkleHash {
+    let MerkleRoot(mut proof) = *root;
+    let id = chunk_id.to_wire().to_le_bytes();
+    let tail = proof.0.len() - id.len();
+    for (byte, id_byte) in proof.0[tail..].iter_mut().zip(id) {
+        *byte ^= id_byte;
+    }
+    proof
+}
+
+// whether the chunk's proof binds it to the root
+fn verify_proof(chunk_id: ChunkId, data: &ChunkData, root: &MerkleRoot) -> bool {
+    *data.proof == [stand_in_proof(chunk_id, root)]
 }
 
 // the messages of the hollow proposals that some node holds, by root
@@ -250,13 +281,18 @@ mod tests {
         (0..num_chunks as u16).map(ChunkId::unchecked)
     }
 
-    // `hollow` holds what `real` holds, without the data
-    fn assert_hollow_of(hollow: &HollowChunks, real: &RealChunks, num_chunks: usize) {
+    // `hollow`, under `root`, holds what `real` holds, without the data
+    fn assert_hollow_of(
+        hollow: &HollowChunks,
+        root: &MerkleRoot,
+        real: &RealChunks,
+        num_chunks: usize,
+    ) {
         assert_eq!(hollow.is_resolved(), real.is_resolved());
         for chunk_id in chunk_ids(num_chunks) {
             assert_eq!(hollow.contains(chunk_id), real.contains(chunk_id));
             let real_data = real.chunk_data(chunk_id);
-            let hollowed = real_data.map(|_| ChunkData::hollow());
+            let hollowed = real_data.map(|_| hollow_chunk(chunk_id, root));
             assert_eq!(hollow.chunk_data(chunk_id), hollowed);
         }
     }
@@ -282,10 +318,10 @@ mod tests {
         for chunk_id in arrivals {
             let data = encoded.chunk_data(chunk_id);
             let ingested = receiving.ingest(chunk_id, data);
-            let hollow_data = ChunkData::hollow();
+            let hollow_data = hollow_chunk(chunk_id, &hollow_root);
             assert_eq!(hollow_receiving.ingest(chunk_id, hollow_data), ingested);
             assert_eq!(hollow_receiving.try_resolve(), receiving.try_resolve());
-            assert_hollow_of(&hollow_receiving, &receiving, num_chunks);
+            assert_hollow_of(&hollow_receiving, &hollow_root, &receiving, num_chunks);
         }
         assert!(hollow_receiving.is_resolved());
         (receiving, hollow_receiving)
@@ -314,8 +350,51 @@ mod tests {
             }
 
             let (real, encoded) = (Chunks::Encoded(real), Chunks::Encoded(encoded));
-            assert_hollow_of(&encoded, &real, num_chunks);
+            assert_hollow_of(&encoded, &hollow_root, &real, num_chunks);
         }
+    }
+
+    #[test]
+    fn a_chunk_that_does_not_bind_to_its_id_and_root_is_a_bad_proof() {
+        let scheme = scheme_for(MESSAGE_LEN);
+        let hollow = Hollow::new(scheme);
+        let num_chunks = 3 * scheme.num_source_chunks();
+        let message = |payload| Bytes::from(vec![payload; MESSAGE_LEN]);
+        let encode = |payload| scheme.encode(&message(payload), num_chunks);
+        let real = encode(0x43).expect("of the length");
+        let other = encode(0x44).expect("of the length");
+        let (root, other_root) = (real.root(), other.root());
+        let (first, second) = (ChunkId::unchecked(0), ChunkId::unchecked(1));
+
+        let mut receiving = Chunks::Decoding(scheme.decoder(real.root(), num_chunks));
+        let mut hollow_receiving = Chunks::Decoding(hollow.decoder(root, num_chunks));
+
+        // a chunk delivered under another id
+        let relabelled = real.chunk_data(second);
+        assert_eq!(receiving.ingest(first, relabelled), Err(BadProof));
+        let relabelled = hollow_chunk(second, &root);
+        assert_eq!(hollow_receiving.ingest(first, relabelled), Err(BadProof));
+
+        // a chunk of another proposal
+        let foreign = other.chunk_data(first);
+        assert_eq!(receiving.ingest(first, foreign), Err(BadProof));
+        let foreign = hollow_chunk(first, &other_root);
+        assert_eq!(hollow_receiving.ingest(first, foreign), Err(BadProof));
+
+        // an altered proof
+        let mut altered = real.chunk_data(first);
+        altered.proof[0].0[0] ^= 1;
+        assert_eq!(receiving.ingest(first, altered), Err(BadProof));
+        let mut altered = hollow_chunk(first, &root);
+        altered.proof[0].0[0] ^= 1;
+        assert_eq!(hollow_receiving.ingest(first, altered), Err(BadProof));
+
+        // a rejected chunk leaves the chunk new
+        assert_hollow_of(&hollow_receiving, &root, &receiving, num_chunks);
+        let honest = real.chunk_data(first);
+        assert_eq!(receiving.ingest(first, honest), Ok(true));
+        let honest = hollow_chunk(first, &root);
+        assert_eq!(hollow_receiving.ingest(first, honest), Ok(true));
     }
 
     #[test]
@@ -324,10 +403,10 @@ mod tests {
         let num_chunks = 9;
         // a payload no other test publishes, so no other test holds the root
         let message = Bytes::from(vec![0x41; MESSAGE_LEN]);
-        let deliver_all = |chunks: &mut HollowChunks| {
+        let deliver_all = |chunks: &mut HollowChunks, root: MerkleRoot| {
             for chunk_id in chunk_ids(num_chunks) {
-                let data = ChunkData::hollow();
-                chunks.ingest(chunk_id, data).expect("no proof");
+                let data = hollow_chunk(chunk_id, &root);
+                chunks.ingest(chunk_id, data).expect("bound to the root");
             }
             chunks.try_resolve()
         };
@@ -336,16 +415,16 @@ mod tests {
         let root = encoded.root();
         let mut early = Chunks::Decoding(hollow.decoder(root, num_chunks));
         drop(encoded);
-        assert_eq!(deliver_all(&mut early), Some(Ok(message.clone())));
+        assert_eq!(deliver_all(&mut early, root), Some(Ok(message.clone())));
 
         // a decoded node still holds the message for a later one
         let mut late = Chunks::Decoding(hollow.decoder(root, num_chunks));
         drop(early);
-        assert_eq!(deliver_all(&mut late), Some(Ok(message)));
+        assert_eq!(deliver_all(&mut late, root), Some(Ok(message)));
 
         drop(late);
         assert!(!thin_air().contains_key(&root));
         let mut orphan = Chunks::Decoding(hollow.decoder(root, num_chunks));
-        assert_eq!(deliver_all(&mut orphan), None);
+        assert_eq!(deliver_all(&mut orphan, root), None);
     }
 }

@@ -19,7 +19,7 @@
 //! A v1 packet carries one chunk, in the following order: the header
 //! (signature, version, proposal header), the body (proof, chunk
 //! header, symbol). A header-only packet is permitted. The body of a
-//! hollow scheme's packet is the chunk header alone.
+//! hollow scheme's packet is a one-hash proof and the chunk header.
 
 use bytes::{BufMut, Bytes};
 
@@ -156,8 +156,8 @@ impl<H: DAHeaderScheme> Layout<'_, H> {
     }
 }
 
-// the v1 frame of a hollow scheme: the header, then the chunk header.
-// no proof, no symbol.
+// the v1 frame of a hollow scheme: the header, a one-hash proof, then
+// the chunk header. no symbol.
 #[cfg(feature = "enable_hollow")]
 pub struct HollowLayout<'a, H>(&'a H);
 
@@ -171,7 +171,8 @@ impl<'a, H> HollowLayout<'a, H> {
 #[cfg(feature = "enable_hollow")]
 impl<H: DAHeaderScheme> HollowLayout<'_, H> {
     pub const HEADER_LEN: usize = Layout::<H>::HEADER_LEN;
-    pub const PACKET_LEN: usize = Self::HEADER_LEN + H::CHUNK_HEADER_LEN;
+    const BODY_LEN: usize = HASH_LEN + H::CHUNK_HEADER_LEN;
+    pub const PACKET_LEN: usize = Self::HEADER_LEN + Self::BODY_LEN;
 
     pub fn read_chunk(bytes: Bytes) -> Result<Chunk<'static>, MalformedPacket>
     where
@@ -180,11 +181,17 @@ impl<H: DAHeaderScheme> HollowLayout<'_, H> {
         if bytes.len() != Self::PACKET_LEN {
             return Err(MalformedPacket::BadLength(bytes.len()));
         }
-        let (header, mut chunk_header) = bytes.split_at(Self::HEADER_LEN);
+        let (header, body) = bytes.split_at(Self::HEADER_LEN);
         let (root, scheme, sig) = Layout::<H>::read_header(header)?;
+        let (proof, mut chunk_header) = body.split_at(HASH_LEN);
+        let proof = MerkleHash(proof.try_into().expect("HASH_LEN bytes"));
         let chunk_id = H::unpack_chunk_header(&mut chunk_header)?;
+        let data = ChunkData {
+            symbol: Bytes::new(),
+            proof: Box::new([proof]),
+        };
         let header = signed_header(root, scheme, sig);
-        Ok(Chunk::new(header, chunk_id, ChunkData::hollow()))
+        Ok(Chunk::new(header, chunk_id, data))
     }
 
     // a header alone or one chunk
@@ -261,13 +268,15 @@ impl<H: DAHeaderScheme> PacketLayout for HollowLayout<'_, H> {
         Self::HEADER_LEN
     }
 
-    // a hollow chunk has no data to write
-    fn write_body(&self, chunk_id: WireChunkId, _data: &ChunkData, out: &mut impl BufMut) {
+    fn write_body(&self, chunk_id: WireChunkId, data: &ChunkData, out: &mut impl BufMut) {
+        for hash in &data.proof {
+            out.put_slice(&hash.0);
+        }
         H::pack_chunk_header(chunk_id, out);
     }
 
     fn body_len(&self) -> usize {
-        H::CHUNK_HEADER_LEN
+        Self::BODY_LEN
     }
 
     fn symbol_len(&self) -> usize {
@@ -421,7 +430,7 @@ mod tests {
 
     #[cfg(feature = "enable_hollow")]
     #[test]
-    fn a_hollow_packet_is_the_d33_header_under_its_variant_then_the_chunk_id() {
+    fn a_hollow_packet_is_the_d33_header_under_its_variant_then_a_proof_and_the_chunk_id() {
         use super::super::{
             super::{
                 encoding_scheme::Hollow,
@@ -439,7 +448,8 @@ mod tests {
             let packet = write_chunk(chunk);
             assert_eq!(packet.len(), HollowD33Layout::PACKET_LEN);
             assert_eq!(packet[..D33Layout::HEADER_LEN], header_bytes(&header));
-            let chunk_header = &packet[D33Layout::HEADER_LEN..];
+            let (proof, chunk_header) = packet[D33Layout::HEADER_LEN..].split_at(HASH_LEN);
+            assert_eq!(proof, chunk.data().proof[0].0);
             assert_eq!(chunk_header, chunk.chunk_id().to_le_bytes());
             assert_eq!(HollowD33Layout::read_chunk(packet), Ok(chunk.clone()));
         }
