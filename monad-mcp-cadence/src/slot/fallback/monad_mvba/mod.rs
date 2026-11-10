@@ -739,7 +739,7 @@ where
         };
 
         let entries = msg.value.entries();
-        self.block_store.remember(msg.value);
+        self.block_store.accept(msg.value);
         let preparing = awaiting.accept::<V>(entries);
 
         // persist-before-send: lastVotedView
@@ -976,7 +976,8 @@ where
     fn gc(&mut self) {
         self.collectors = self.collectors.split_off(&self.view_floor());
 
-        // Blocks are not per-view, so they go by reachability
+        // Blocks are not per-view, so they go by reachability; the store also
+        // keeps every block this validator prepared
         let mut keep = HashSet::new();
         if let Some(input) = &self.input {
             keep.insert(input.entries());

@@ -1068,3 +1068,90 @@ fn s14_a_seed_replays_its_run_exactly() {
     );
     assert_eq!(first, run());
 }
+
+/// A block request or response: their payload types are private to the core,
+/// so they are told apart as the MVBA messages no reader recognizes
+fn is_block_traffic(message: &SlotFallbackMessage) -> bool {
+    matches!(message, SlotFallbackMessage::Mvba(_))
+        && proposal(message).is_none()
+        && prepare(message).is_none()
+        && commit_view(message).is_none()
+        && timeout_view(message).is_none()
+        && tc_view(message).is_none()
+        && !is_commit_qc(message)
+}
+
+/// Not in the plan's list. A Byzantine view-1 leader hides the prepare
+/// certificate it alone formed until `TC_1`, and never serves the block
+#[test]
+fn a_prepare_certificate_revealed_after_view_1_decides_from_the_blocks_its_signers_kept() {
+    let byzantine = fixtures::leader_of(1);
+    let honest: Vec<NodeId> = fixtures::nodes()
+        .into_iter()
+        .filter(|node| *node != byzantine)
+        .collect();
+    let inputs = mixed_inputs(&[]);
+    let locked = entries(&inputs[&byzantine].0);
+
+    // before GST: view-1 Prepares reach only the Byzantine leader, and the
+    // proposals of views 2 and 3 are lost
+    let network = Network::reliable(LATENCY).drop_if(move |link: &Link<NodeId>, message| {
+        let Some(message) = cadence_message(message) else {
+            return false;
+        };
+        (prepare(message).is_some_and(|(view, _)| view == 1) && link.to != byzantine)
+            || proposal(message).is_some_and(|p| p.view == 2 || p.view == 3)
+    });
+    let mut swarm = build(0, network, &inputs, all_at_zero, |builder| {
+        builder.set_outbound(byzantine, |_, message| {
+            let withheld = is_block_traffic(&message)
+                || proposal(&message).is_some_and(|p| p.view >= 2)
+                || timeout_view(&message) == Some(1);
+            if withheld { vec![] } else { vec![message] }
+        });
+    });
+
+    swarm.run_until_or(views(5), |swarm| {
+        honest.iter().all(|node| swarm.decision_of(node).is_some())
+    });
+
+    for node in &honest {
+        let sent = swarm.sent(node);
+        assert!(
+            sent.iter()
+                .any(|sent| prepare(&sent.message) == Some((1, locked.clone()))),
+            "{node:?} never prepared the view-1 proposal"
+        );
+        assert!(
+            sent.iter()
+                .all(|sent| commit_view(&sent.message) != Some(1)),
+            "{node:?} saw the view-1 prepare certificate"
+        );
+    }
+
+    expect_all_decided(&swarm, &honest);
+    assert_eq!(expect_agreement(&swarm, &honest), locked);
+    for node in &honest {
+        let decision = swarm.decision_of(node).expect("checked above");
+        assert_eq!(mvba_view(&decision.proof), Some(4), "{node:?}");
+    }
+
+    // views 3 and 4 are led by honest nodes bound to the revealed lock
+    for view in [3, 4] {
+        let leader = fixtures::leader_of(view);
+        let proposals = proposals_of(&swarm, &leader);
+        let (_, p) = proposals
+            .iter()
+            .find(|(_, p)| p.view == view)
+            .unwrap_or_else(|| panic!("the view-{view} leader never proposed"));
+        assert_eq!(
+            entries(&p.value.block),
+            locked,
+            "view {view} broke the lock"
+        );
+    }
+    assert!(
+        !sent_any(&swarm, &honest, is_block_traffic),
+        "an honest node asked for, or was asked for, a block it had prepared"
+    );
+}

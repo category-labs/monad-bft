@@ -534,6 +534,51 @@ fn a_locked_leader_fetches_the_block_before_reproposing_it() {
     );
 }
 
+/// `Accepted_i`: a prepare certificate can form out of this validator's sight
+/// and surface in any later view, when its signers alone hold the block
+#[test]
+fn a_block_prepared_in_an_unlocked_view_is_still_held_when_a_later_view_locks_on_it() {
+    let validator_data = validator_data();
+    let own = metablock(1, &validator_data);
+    let prepared = metablock(2, &validator_data);
+
+    let later_leader = leader_of(view(3));
+    let mut instance = started(later_leader, &own, &validator_data);
+
+    let (leader, proposal) = pre_prepare(view(1), &prepared, None);
+    instance.handle_message_from(leader, proposal);
+    assert_eq!(
+        prepared_entries(&drain(&mut instance)),
+        Some(prepared.entries())
+    );
+
+    feed_timeouts(&mut instance, view(1), None, &quorum());
+    assert!(
+        scheduled_timers(&drain(&mut instance)).contains(&TimerEvent::ViewTimeout(view(2))),
+        "view 1 ends on a certificate that locks nothing"
+    );
+
+    let asker = nodes()[1];
+    instance.handle_message_from(asker, block_request(&prepared.entries()));
+    assert_eq!(
+        unicasts(&drain(&mut instance)),
+        vec![(asker, &block_response(prepared.clone()))],
+        "a signer of a prepare certificate serves the block behind it"
+    );
+
+    let qc = prepare_qc(view(1), &prepared.entries(), &validator_data);
+    feed_timeouts(&mut instance, view(2), Some(qc), &quorum());
+    let outputs = drain(&mut instance);
+
+    assert!(
+        requested_entries(&outputs).is_empty(),
+        "it prepared these entries, so it never let go of their block"
+    );
+    let proposal = proposed(&outputs).expect("the locked block is held, so the leader proposes");
+    assert_eq!(proposal.view, view(3));
+    assert_eq!(proposal.value, prepared);
+}
+
 #[test]
 fn a_formed_commit_certificate_is_final_against_later_votes() {
     let validator_data = validator_data();
