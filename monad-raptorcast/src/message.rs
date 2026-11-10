@@ -378,7 +378,11 @@ impl<'a> InboundMessageHeader<'a> {
 
 #[cfg(test)]
 mod tests {
+    use std::{cell::Cell, num::NonZeroU32};
+
     use bytes::BytesMut;
+    use governor::Quota;
+    use monad_crypto::certificate_signature::CertificateSignaturePubKey;
     use monad_secp::SecpSignature;
     use rstest::*;
 
@@ -392,6 +396,129 @@ mod tests {
     #[derive(RlpEncodable, RlpDecodable, Clone)]
     struct SliceMessage {
         data: Vec<u8>,
+    }
+
+    thread_local! {
+        static BODY_DECODES: Cell<usize> = const { Cell::new(0) };
+    }
+
+    #[derive(Clone)]
+    struct CountingMessage;
+
+    impl Message for CountingMessage {
+        type NodeIdPubKey = CertificateSignaturePubKey<SecpSignature>;
+        type Event = ();
+
+        fn event(self, _from: NodeId<Self::NodeIdPubKey>) {}
+    }
+
+    impl Decodable for CountingMessage {
+        fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+            BODY_DECODES.with(|count| count.set(count.get() + 1));
+            TestMessage::decode(buf)?;
+            Ok(Self)
+        }
+    }
+
+    #[test]
+    fn admission_precedes_body_decoding_and_malformed_bodies_spend_budget() {
+        let from = NodeId::new(monad_testutil::signing::get_key::<SecpSignature>(1).pubkey());
+        let mut limiter = RateLimiter::new(1);
+        limiter.register(
+            Protocol::Application,
+            Quota::per_hour(NonZeroU32::new(1).unwrap()),
+        );
+        let valid = prepare_valid_data();
+        let envelope = InboundMessageHeader::parse(&valid).unwrap();
+        assert_eq!(
+            envelope.kind::<CountingMessage>().unwrap(),
+            Protocol::Application.into()
+        );
+        assert_eq!(BODY_DECODES.with(Cell::get), 0);
+        assert!(
+            InboundRouterMessage::<CountingMessage, SecpSignature>::try_deserialize_rate_limited(
+                &valid,
+                &from,
+                &mut limiter,
+            )
+            .is_ok()
+        );
+        assert_eq!(BODY_DECODES.with(Cell::get), 1);
+
+        // A valid envelope containing an invalid application body.
+        let mut malformed = BytesMut::new();
+        let version = NetworkMessageVersion::version();
+        let enc: [&dyn Encodable; 3] = [&version, &MESSAGE_TYPE_APP, &1u8];
+        encode_list::<_, dyn Encodable>(&enc, &mut malformed);
+        let malformed = malformed.freeze();
+        assert!(matches!(
+            InboundRouterMessage::<CountingMessage, SecpSignature>::try_deserialize_rate_limited(
+                &malformed,
+                &from,
+                &mut limiter,
+            ),
+            Err(DeserializeError::RateLimited(Rejection::RateLimited))
+        ));
+        assert_eq!(BODY_DECODES.with(Cell::get), 1);
+
+        // After resetting the limiter, the bad body spends its only token.
+        let mut limiter = RateLimiter::new(1);
+        limiter.register(
+            Protocol::Application,
+            Quota::per_hour(NonZeroU32::new(1).unwrap()),
+        );
+        assert!(matches!(
+            InboundRouterMessage::<CountingMessage, SecpSignature>::try_deserialize_rate_limited(
+                &malformed,
+                &from,
+                &mut limiter,
+            ),
+            Err(DeserializeError::RlpDecode(_))
+        ));
+        assert_eq!(BODY_DECODES.with(Cell::get), 2);
+        assert!(matches!(
+            InboundRouterMessage::<CountingMessage, SecpSignature>::try_deserialize_rate_limited(
+                &valid,
+                &from,
+                &mut limiter,
+            ),
+            Err(DeserializeError::RateLimited(Rejection::RateLimited))
+        ));
+        assert_eq!(BODY_DECODES.with(Cell::get), 2);
+    }
+
+    #[test]
+    fn control_headers_are_classified_without_decoding_their_bodies() {
+        for (wire_type, protocol, count) in [
+            (MESSAGE_TYPE_PEER_DISC, Protocol::PeerDiscovery, 6),
+            (MESSAGE_TYPE_GROUP, Protocol::FullNodesGroup, 5),
+        ] {
+            for message in 1u8..=count {
+                let mut inner = BytesMut::new();
+                let fields: [&dyn Encodable; 3] = [&1u8, &message, &0u8];
+                encode_list::<_, dyn Encodable>(&fields, &mut inner);
+                let inner: Bytes = inner.freeze();
+                let version = NetworkMessageVersion::version();
+                // Preserve the inner list as raw RLP rather than a byte string.
+                let mut payload = BytesMut::new();
+                version.encode(&mut payload);
+                wire_type.encode(&mut payload);
+                payload.extend_from_slice(&inner);
+                let mut data = BytesMut::new();
+                Header {
+                    list: true,
+                    payload_length: payload.len(),
+                }
+                .encode(&mut data);
+                data.extend_from_slice(&payload);
+                let header = InboundMessageHeader::parse(&data).unwrap();
+                assert_eq!(
+                    header.kind::<CountingMessage>().unwrap(),
+                    MessageKind::new(protocol, message),
+                );
+                assert_eq!(BODY_DECODES.with(Cell::get), 0);
+            }
+        }
     }
 
     fn prepare_data_with_extra_after_header() -> (Bytes, DeserializeError) {
