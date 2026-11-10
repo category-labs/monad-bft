@@ -173,18 +173,15 @@ impl ValidateCert for EnterFallbackCert {
     }
 }
 
-/// This validator's own contribution, set once by [`Mvba::propose`]. Its
-/// presence gates participation: nothing is sent before it is set
-struct ProposedInput<V, C> {
-    value: V,
-    /// Justifies this validator's own view-1 proposal
-    fbcert: Option<C>,
-}
-
 pub struct MonadMvba<V: ValidateInput + Votable, C: ValidateCert> {
     context: MvbaContext,
     validation_context: V::Context,
-    input: Option<ProposedInput<V, C>>,
+    /// This validator's own contribution, set once by [`Mvba::propose`]. Its
+    /// presence gates participation: nothing is sent before it is set
+    input: Option<V>,
+    /// What this validator proposes in a view it leads with nothing locked;
+    /// `None` until something admissible is offered
+    unlocked: Option<(V, Option<C>)>,
 
     phase: Phase<V>,
 
@@ -252,6 +249,7 @@ where
             validation_context,
             phase: Phase::new(),
             input: None,
+            unlocked: None,
             last_voted_view: FallbackView::GENESIS,
             high_prep_qc: None,
             decided_qc: None,
@@ -273,14 +271,12 @@ where
         tracing::debug!(slot = ?self.context.slot, fallback_cert = cert.is_some(), "entering fallback mvba");
 
         self.block_store.remember(data.clone());
-        self.input = Some(ProposedInput {
-            value: data,
-            fbcert: cert,
-        });
+        self.input = Some(data.clone());
 
         let outputs = self.enter_view(None);
         self.outputs.extend(outputs);
 
+        self.store_offer(data, cert);
         self.try_advance();
     }
 
@@ -388,7 +384,8 @@ where
             return;
         }
 
-        if !msg.value.validate(self.validation_context()) {
+        // decoding checks this too; a message that never crossed the wire has not been
+        if !msg.is_well_formed() || !msg.value.validate(self.validation_context()) {
             return;
         }
 
@@ -531,7 +528,36 @@ where
     /// Hand over a value this validator may propose in a view it leads with
     /// nothing locked: one that is `cert_optional`, or `cert` beside it
     pub(crate) fn offer_proposal(&mut self, value: V, cert: Option<C>) {
-        todo!("A3: store the admissible unlocked proposal and try to advance")
+        if self.store_offer(value, cert) {
+            self.try_advance();
+        }
+    }
+
+    /// Keeps the first admissible offer, unless a `cert_optional` one comes
+    /// after a certified one. `false` when the offer is ignored
+    fn store_offer(&mut self, value: V, cert: Option<C>) -> bool {
+        if self.abandoned || self.phase.is_decided() {
+            return false;
+        }
+        if !value.validate(self.validation_context()) {
+            return false;
+        }
+        // an invalid certificate beside a value that needs none would only get
+        // the proposal refused
+        let cert = cert.filter(|cert| cert.validate(self.validation_context()));
+        if !value.cert_optional() && cert.is_none() {
+            return false;
+        }
+
+        let replaces = match &self.unlocked {
+            None => true,
+            Some((held, _)) => value.cert_optional() && !held.cert_optional(),
+        };
+        self.block_store.remember(value.clone());
+        if replaces {
+            self.unlocked = Some((value, cert));
+        }
+        true
     }
 
     /// Each iteration takes the phase by value and gets a new one back, so no
@@ -601,8 +627,8 @@ where
         }
 
         // the proposer check, run once per view and only here. A leader stays
-        // until it has a proposal to make, which a lock whose block is still in
-        // flight can delay
+        // until it has a proposal to make: a locked block still in flight, or
+        // no admissible unlocked offer yet, delays it. Timing out ends the wait
         if matches!(self.phase, Phase::NewView(_)) {
             if self.context.leader(self.view()) != self.context.node_id {
                 return Some(Transition::AwaitProposal);
@@ -859,27 +885,19 @@ where
     }
 
     /// The proposal this validator owes the view it leads, `None` while bound
-    /// by a lock whose block it does not hold yet
+    /// by a lock whose block it does not hold yet, or while nothing admissible
+    /// has been offered for an unlocked view
     fn own_proposal_ready(&self) -> Option<PrePrepareMsg<V, C>> {
         let view: FallbackView = self.view();
         debug_assert!(matches!(self.phase, Phase::NewView(_)));
         debug_assert_eq!(self.context.leader(view), self.context.node_id);
 
-        // no input means this instance does not participate at all
-        let input = self.input.as_ref()?;
-
-        let block = match self.locked_entries() {
-            // nothing locked: free to propose its own input, as in view 1
-            None => input.value.clone(),
-            Some(lock) => self.block_store.get(lock)?.clone(),
+        let (block, cert) = match self.locked_entries() {
+            Some(lock) => (self.block_store.get(lock)?.clone(), None),
+            None => self.unlocked.clone()?,
         };
 
-        // TODO(A3): still the v1 rule -- the certificate rides in view 1 only
-        let cert = match &self.entry_tc {
-            None => input.fbcert.clone(),
-            Some(_) => None,
-        };
-
+        // persist-before-send: the selected proposal and its justification
         Some(PrePrepareMsg::new_signed(
             self.context.slot,
             view,
@@ -963,7 +981,10 @@ where
         // Blocks are not per-view, so they go by reachability
         let mut keep = HashSet::new();
         if let Some(input) = &self.input {
-            keep.insert(input.value.entries());
+            keep.insert(input.entries());
+        }
+        if let Some((value, _)) = &self.unlocked {
+            keep.insert(value.entries());
         }
         if let Some(entries) = self.phase.entries() {
             keep.insert(entries.clone());

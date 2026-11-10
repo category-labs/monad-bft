@@ -258,23 +258,27 @@ impl<V: Votable, C: ValidateCert> PrePrepareMsg<V, C> {
         self.signature.verify(&data, leader_pubkey)
     }
 
-    // TODO(A3): still the v1 rule -- a certificate in view 1 only, every later
-    // view justified by the previous view's TC alone, whose lock the value keeps
-    fn is_well_formed(&self) -> bool
+    /// `J` fits the view, a lock is kept and travels alone, and an unlocked
+    /// value is `cert_optional` or has `cert` beside it -- in every view
+    pub(crate) fn is_well_formed(&self) -> bool
     where
         V: ValidateInput,
     {
-        match (&self.tc, self.view == FallbackView::FIRST) {
-            (None, true) => self.cert.is_some() || self.value.cert_optional(),
-            (Some(tc), false) => {
-                let same_slot = tc.slot == self.slot;
-                let previous_view = tc.view.next() == self.view;
-                // the lock rule
-                let keeps_lock = tc.lock().is_none_or(|lock| self.value.entries() == *lock);
-                same_slot && previous_view && keeps_lock && self.cert.is_none()
+        let justified = match &self.tc {
+            None => self.view == FallbackView::FIRST,
+            Some(tc) => {
+                self.view != FallbackView::FIRST
+                    && tc.slot == self.slot
+                    && tc.view.next() == self.view
             }
-            _ => false,
-        }
+        };
+
+        let admitted = match self.tc.as_ref().and_then(|tc| tc.lock()) {
+            Some(lock) => self.value.entries() == *lock && self.cert.is_none(),
+            None => self.cert.is_some() || self.value.cert_optional(),
+        };
+
+        justified && admitted
     }
 }
 
