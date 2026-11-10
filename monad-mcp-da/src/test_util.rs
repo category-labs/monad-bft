@@ -130,7 +130,7 @@ pub(crate) fn hollow_scheme(epoch_handle: &EpochHandle) -> EncodingScheme {
     let EncodingScheme::D33(d33) = scheme(epoch_handle) else {
         panic!("the fixture's scheme is d33");
     };
-    Hollow::new(d33).into()
+    Hollow::new(d33, true).into()
 }
 
 // the header as validator `author_id` signs it

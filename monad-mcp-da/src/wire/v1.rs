@@ -26,6 +26,7 @@ use bytes::{BufMut, Bytes};
 use super::{
     super::{
         chunk::{Chunk, ChunkData, ProposalEnvelope, WireChunkId},
+        encoding_scheme::TAG_LEN,
         types::{
             EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader, ProposalSignature,
             SignedProposalHeader,
@@ -156,8 +157,8 @@ impl<H: DAHeaderScheme> Layout<'_, H> {
     }
 }
 
-// the v1 frame of a hollow scheme: the header, then the chunk header.
-// no proof, no symbol.
+// the v1 frame of a hollow scheme: the header, the chunk header, then the
+// chunk's tag (see encoding_scheme::hollow). no proof, no symbol.
 pub struct HollowLayout<'a, H>(&'a H);
 
 impl<'a, H> HollowLayout<'a, H> {
@@ -168,7 +169,7 @@ impl<'a, H> HollowLayout<'a, H> {
 
 impl<H: DAHeaderScheme> HollowLayout<'_, H> {
     pub const HEADER_LEN: usize = Layout::<H>::HEADER_LEN;
-    pub const PACKET_LEN: usize = Self::HEADER_LEN + H::CHUNK_HEADER_LEN;
+    pub const PACKET_LEN: usize = Self::HEADER_LEN + H::CHUNK_HEADER_LEN + TAG_LEN;
 
     pub fn read_chunk(bytes: Bytes) -> Result<Chunk<'static>, MalformedPacket>
     where
@@ -177,11 +178,12 @@ impl<H: DAHeaderScheme> HollowLayout<'_, H> {
         if bytes.len() != Self::PACKET_LEN {
             return Err(MalformedPacket::BadLength(bytes.len()));
         }
-        let (header, mut chunk_header) = bytes.split_at(Self::HEADER_LEN);
-        let (root, scheme, sig) = Layout::<H>::read_header(header)?;
-        let chunk_id = H::unpack_chunk_header(&mut chunk_header)?;
+        let tag_start = Self::HEADER_LEN + H::CHUNK_HEADER_LEN;
+        let (root, scheme, sig) = Layout::<H>::read_header(&bytes[..Self::HEADER_LEN])?;
+        let chunk_id = H::unpack_chunk_header(&mut &bytes[Self::HEADER_LEN..tag_start])?;
         let header = signed_header(root, scheme, sig);
-        Ok(Chunk::new(header, chunk_id, ChunkData::hollow()))
+        let data = ChunkData::hollow(bytes.slice(tag_start..));
+        Ok(Chunk::new(header, chunk_id, data))
     }
 
     // a header alone or one chunk
@@ -257,17 +259,19 @@ impl<H: DAHeaderScheme> PacketLayout for HollowLayout<'_, H> {
         Self::HEADER_LEN
     }
 
-    // a hollow chunk has no data to write
-    fn write_body(&self, chunk_id: WireChunkId, _data: &ChunkData, out: &mut impl BufMut) {
+    // a hollow chunk's data is its tag
+    fn write_body(&self, chunk_id: WireChunkId, data: &ChunkData, out: &mut impl BufMut) {
+        assert_eq!(data.symbol.len(), TAG_LEN, "a hollow chunk carries its tag");
         H::pack_chunk_header(chunk_id, out);
+        out.put_slice(&data.symbol);
     }
 
     fn body_len(&self) -> usize {
-        H::CHUNK_HEADER_LEN
+        H::CHUNK_HEADER_LEN + TAG_LEN
     }
 
     fn symbol_len(&self) -> usize {
-        0
+        TAG_LEN
     }
 }
 
@@ -278,11 +282,11 @@ mod tests {
     use super::{
         super::{
             super::{
-                encoding_scheme::{Hollow, d33::D33Layout},
+                encoding_scheme::{Hollow, TAG_LEN, d33::D33Layout},
                 test_util::{
                     epoch_handle, group, hollow_scheme, proposal_chunks, proposal_chunks_under,
                 },
-                types::D33,
+                types::{D33, HollowD33},
             },
             header_bytes, signed_bytes, write_chunk, write_envelope,
         },
@@ -418,18 +422,21 @@ mod tests {
     }
 
     #[test]
-    fn a_hollow_packet_is_the_d33_header_under_its_variant_then_the_chunk_id() {
+    fn a_hollow_packet_is_the_d33_header_under_its_variant_then_the_chunk_id_and_tag() {
         let epoch_handle = epoch_handle();
         let (header, chunks) =
             proposal_chunks_under(&epoch_handle, hollow_scheme(&epoch_handle), 0, 1);
         type HollowD33Layout<'a> = HollowLayout<'a, Hollow<D33>>;
+        let tag_start = D33Layout::HEADER_LEN + 2;
 
         for chunk in &chunks {
             let packet = write_chunk(chunk);
             assert_eq!(packet.len(), HollowD33Layout::PACKET_LEN);
+            assert_eq!(packet.len(), D33Layout::HEADER_LEN + 2 + TAG_LEN);
             assert_eq!(packet[..D33Layout::HEADER_LEN], header_bytes(&header));
-            let chunk_header = &packet[D33Layout::HEADER_LEN..];
+            let chunk_header = &packet[D33Layout::HEADER_LEN..tag_start];
             assert_eq!(chunk_header, chunk.chunk_id().to_le_bytes());
+            assert_eq!(packet[tag_start..], chunk.data().symbol);
             assert_eq!(HollowD33Layout::read_chunk(packet), Ok(chunk.clone()));
         }
 
@@ -441,19 +448,44 @@ mod tests {
             Ok(header_only)
         );
 
-        // the same fields under d33 differ in the variant byte alone
-        let EncodingScheme::D33Hollow(d33) = header.scheme() else {
+        // the same fields under d33, or as a proposal that does not
+        // decode, differ in the variant byte alone
+        let EncodingScheme::D33Hollow(hollow) = *header.scheme() else {
             panic!("the fixture's scheme is hollow");
         };
-        let as_d33 = ProposalHeader {
-            root: header.header.root,
-            scheme: EncodingScheme::D33(*d33),
+        let under = |scheme| {
+            signed_bytes(&ProposalHeader {
+                root: header.header.root,
+                scheme,
+            })
         };
-        let hollow = signed_bytes(&header.header);
-        let real = signed_bytes(&as_d33);
         let variant = SCHEME_VARIANT_OFFSET - SIGNATURE_LEN;
-        let differing: Vec<_> = (0..real.len()).filter(|i| hollow[*i] != real[*i]).collect();
-        assert_eq!(differing, [variant]);
-        assert_eq!(hollow[variant], Hollow::<D33>::VARIANT);
+        let hollow_bytes = signed_bytes(&header.header);
+        let undecodable = HollowD33 {
+            decodes: false,
+            ..hollow
+        };
+        for (other, other_variant) in [
+            (EncodingScheme::D33(hollow.d33), D33::VARIANT),
+            (
+                EncodingScheme::D33Hollow(undecodable),
+                Hollow::<D33>::UNDECODABLE_VARIANT,
+            ),
+        ] {
+            let other_bytes = under(other);
+            let differing: Vec<_> = (0..hollow_bytes.len())
+                .filter(|i| hollow_bytes[*i] != other_bytes[*i])
+                .collect();
+            assert_eq!(differing, [variant]);
+            assert_eq!(other_bytes[variant], other_variant);
+        }
+        assert_eq!(hollow_bytes[variant], Hollow::<D33>::VARIANT);
+
+        // a header round-trips with its flag
+        let (undecodable_header, _) =
+            proposal_chunks_under(&epoch_handle, EncodingScheme::D33Hollow(undecodable), 0, 1);
+        let packet = header_bytes(&undecodable_header);
+        let envelope = ProposalEnvelope::from_header(undecodable_header);
+        assert_eq!(HollowD33Layout::read_envelope(packet), Ok(envelope));
     }
 }

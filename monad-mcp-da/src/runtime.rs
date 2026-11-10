@@ -63,6 +63,9 @@ pub enum ProposalScheme {
     D33,
     // d33 without chunk data on the wire, for simulations
     D33Hollow,
+    // a Byzantine proposer for simulations: hollow d33 proposals whose
+    // chunks form no codeword, so every node resolves them invalid
+    D33HollowUndecodable,
 }
 
 impl DAConfig {

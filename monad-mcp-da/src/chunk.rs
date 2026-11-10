@@ -102,10 +102,11 @@ pub struct ChunkData {
 }
 
 impl ChunkData {
-    // what a chunk of a hollow scheme carries: no symbol, no proof
-    pub(crate) fn hollow() -> Self {
+    // what a chunk of a hollow scheme carries: its tag in place of the
+    // symbol, and no proof
+    pub(crate) fn hollow(tag: Bytes) -> Self {
         Self {
-            symbol: Bytes::new(),
+            symbol: tag,
             proof: Box::default(),
         }
     }

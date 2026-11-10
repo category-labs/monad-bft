@@ -249,11 +249,15 @@ pub(super) mod header {
         type Frame<'a> = v1::Layout<'a, D33>;
 
         fn pack_header(&self, root: &MerkleRoot, out: &mut impl BufMut) {
-            pack::<D33>(self, root, out);
+            pack(self, D33::VARIANT, root, out);
         }
 
         fn unpack_header(bytes: &mut impl Buf) -> Result<(MerkleRoot, D33), MalformedPacket> {
-            unpack::<D33>(bytes)
+            let (root, d33, variant) = unpack(bytes)?;
+            if variant != D33::VARIANT {
+                return Err(MalformedPacket::UnknownScheme(variant));
+            }
+            Ok((root, d33))
         }
 
         fn pack_chunk_header(chunk_id: WireChunkId, out: &mut impl BufMut) {
@@ -273,24 +277,23 @@ pub(super) mod header {
         }
     }
 
-    // the header of a d33 proposal under the variant of H, the scheme
-    // that carries it
-    pub(crate) fn pack<H: DAHeaderScheme>(d33: &D33, root: &MerkleRoot, out: &mut impl BufMut) {
+    // the header of a d33 proposal under `variant`, the scheme byte of
+    // the scheme that carries it
+    pub(crate) fn pack(d33: &D33, variant: u8, root: &MerkleRoot, out: &mut impl BufMut) {
         assert!((MIN_DEPTH..=MAX_DEPTH).contains(&d33.depth));
         assert!(usize::from(d33.lane) < MAX_PROPOSER_SET_SIZE);
         assert!(d33.msg_len as usize <= MAX_MESSAGE_LEN);
 
         out.put_u8((usize::from(d33.lane) as u8) << LANE_SHIFT | d33.depth);
-        out.put_u8(H::VARIANT);
+        out.put_u8(variant);
         out.put_u64_le(d33.slot.get());
         out.put_u64_le(d33.unix_ts);
         root.to_bytes(out);
         out.put_uint_le(u64::from(d33.msg_len), MSG_LEN_LEN);
     }
 
-    pub(crate) fn unpack<H: DAHeaderScheme>(
-        bytes: &mut impl Buf,
-    ) -> Result<(MerkleRoot, D33), MalformedPacket> {
+    // the header's fields and its variant byte, which the caller checks
+    pub(crate) fn unpack(bytes: &mut impl Buf) -> Result<(MerkleRoot, D33, u8), MalformedPacket> {
         let lane_depth = bytes.get_u8();
         let depth = lane_depth & DEPTH_MASK;
         if !(MIN_DEPTH..=MAX_DEPTH).contains(&depth) {
@@ -300,9 +303,6 @@ pub(super) mod header {
         let lane = Lane::from_u8(lane).ok_or(MalformedPacket::LaneOutOfRange(lane))?;
 
         let variant = bytes.get_u8();
-        if variant != H::VARIANT {
-            return Err(MalformedPacket::UnknownScheme(variant));
-        }
 
         let slot = bytes.get_u64_le();
         let slot = Slot::from_u64(slot).ok_or(MalformedPacket::SlotOutOfRange(slot))?;
@@ -322,7 +322,7 @@ pub(super) mod header {
             msg_len,
             unix_ts,
         };
-        Ok((root, scheme))
+        Ok((root, scheme, variant))
     }
 
     const _: () = {

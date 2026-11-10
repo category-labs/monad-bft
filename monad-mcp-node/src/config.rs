@@ -159,7 +159,9 @@ impl NodeConfig {
         // in-process simulation, takes them from others
         let hollow = match self.proposal.encoding_scheme {
             da::ProposalScheme::D33 => HollowProposals::Rejected,
-            da::ProposalScheme::D33Hollow => HollowProposals::Accepted,
+            da::ProposalScheme::D33Hollow | da::ProposalScheme::D33HollowUndecodable => {
+                HollowProposals::Accepted
+            }
         };
         let header_auth = Arc::new(header_auth(
             proposers.clone(),

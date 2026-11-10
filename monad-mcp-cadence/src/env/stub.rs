@@ -185,7 +185,7 @@ mod proposal {
     pub enum EncodingScheme {
         D33(D33),
         // d33 without chunk data on the wire, for simulations
-        D33Hollow(D33),
+        D33Hollow(HollowD33),
         #[cfg(test)]
         Trivial(ProposalScope),
     }
@@ -208,10 +208,23 @@ mod proposal {
         pub unix_ts: u64,
     }
 
+    // a hollow d33 proposal: the d33 fields, and whether its chunks decode.
+    // A hollow chunk carries no symbol, so the proposer states in its
+    // signed header what real chunks would show only at decoding: an
+    // honest proposer's chunks decode, a Byzantine one's may form no
+    // codeword. The flag is part of the proposal id, so one proposal has
+    // one outcome on every node.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
+    pub struct HollowD33 {
+        pub d33: D33,
+        pub decodes: bool,
+    }
+
     impl EncodingScheme {
         pub fn slot(&self) -> Slot {
             match self {
-                Self::D33(d33) | Self::D33Hollow(d33) => d33.slot,
+                Self::D33(d33) => d33.slot,
+                Self::D33Hollow(hollow) => hollow.d33.slot,
                 #[cfg(test)]
                 Self::Trivial(scope) => scope.slot,
             }
@@ -219,7 +232,8 @@ mod proposal {
 
         pub fn lane(&self) -> Lane {
             match self {
-                Self::D33(d33) | Self::D33Hollow(d33) => d33.lane,
+                Self::D33(d33) => d33.lane,
+                Self::D33Hollow(hollow) => hollow.d33.lane,
                 #[cfg(test)]
                 Self::Trivial(scope) => scope.lane,
             }
@@ -275,7 +289,7 @@ mod proposal {
             let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
             let result = match <u8 as Decodable>::decode(&mut payload)? {
                 1 => Self::D33(<D33 as Decodable>::decode(&mut payload)?),
-                2 => Self::D33Hollow(<D33 as Decodable>::decode(&mut payload)?),
+                2 => Self::D33Hollow(<HollowD33 as Decodable>::decode(&mut payload)?),
                 #[cfg(test)]
                 255 => Self::Trivial(<ProposalScope as Decodable>::decode(&mut payload)?),
                 _ => return Err(alloy_rlp::Error::Custom("unknown EncodingScheme tag")),

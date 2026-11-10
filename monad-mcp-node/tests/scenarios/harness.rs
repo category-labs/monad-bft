@@ -74,6 +74,9 @@ pub struct SimNode {
     id: NodeId,
     node: Box<dyn Component<Input = NodeInbound, Output = NodeOutput> + Send>,
     finalized: BTreeMap<Slot, Pattern>,
+    // the lanes a slot committed whose proposal resolved invalid, for the
+    // slots that have any
+    invalid: BTreeMap<Slot, Vec<usize>>,
     // hashes every message delivered to this node, with its time, in
     // delivery order
     delivery_hasher: RapidStreamHasherV3<'static>,
@@ -95,6 +98,7 @@ impl SimNode {
             id,
             node: Box::new(node),
             finalized: BTreeMap::new(),
+            invalid: BTreeMap::new(),
             delivery_hasher: RapidStreamHasherV3::new(&DEFAULT_RAPID_SECRETS),
             chunk_bytes: ChunkBytes::default(),
             clock_offset: ClockDiff(0),
@@ -136,6 +140,18 @@ impl SimNode {
                 NodeOutput::Network(outbound) => self.transmit(outbound, ctx),
                 NodeOutput::Ledger(finalized) => {
                     let pattern = finalized.finalization.pids();
+                    // committed, but without a message
+                    let invalid: Vec<usize> = pattern
+                        .lanes()
+                        .map(usize::from)
+                        .filter(|&j| {
+                            let committed = pattern.get(j).expect("in range").is_some();
+                            committed && finalized.proposals.get(j).expect("in range").is_none()
+                        })
+                        .collect();
+                    if !invalid.is_empty() {
+                        self.invalid.insert(finalized.slot, invalid);
+                    }
                     self.finalized.insert(finalized.slot, pattern);
                 }
             }
@@ -201,6 +217,11 @@ impl SimNode {
     // the sim time at which the node's clock reads `at`
     fn sim_time_of(&self, at: Timestamp) -> Time {
         time_of(at) - self.clock_offset
+    }
+
+    // the committed lanes whose proposal resolved invalid, by slot
+    pub fn invalid(&self) -> &BTreeMap<Slot, Vec<usize>> {
+        &self.invalid
     }
 
     pub fn finalized(&self) -> &BTreeMap<Slot, Pattern> {

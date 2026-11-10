@@ -21,7 +21,7 @@ use super::{
         assignment::{ChunkAssignment, ChunkId, NodeIndex},
         chunk::{ChunkData, ProposalEnvelope},
         egress::Dissemination,
-        encoding_scheme::{ProposalChunks, d33},
+        encoding_scheme::{Hollow, ProposalChunks, d33},
         runtime::{EpochHandle, ProposalScheme},
         types::{
             EncodingScheme, NodeId, Proposal, ProposalHeader, ProposalKeyPair, SignedProposalHeader,
@@ -47,7 +47,12 @@ impl AssembledProposal {
     ) -> Option<Self> {
         match kind {
             ProposalScheme::D33 => Self::build_d33(epoch_handle, proposal, timestamp),
-            ProposalScheme::D33Hollow => Self::build_d33_hollow(epoch_handle, proposal, timestamp),
+            ProposalScheme::D33Hollow => {
+                Self::build_d33_hollow(epoch_handle, proposal, timestamp, true)
+            }
+            ProposalScheme::D33HollowUndecodable => {
+                Self::build_d33_hollow(epoch_handle, proposal, timestamp, false)
+            }
         }
     }
 
@@ -61,16 +66,19 @@ impl AssembledProposal {
         Self::build_under(epoch_handle, &proposal.payload, scheme)
     }
 
+    // `decodes` false: the chunks of a Byzantine proposer, which form no
+    // codeword
     fn build_d33_hollow(
         epoch_handle: &EpochHandle,
         proposal: &Proposal,
         timestamp: u64,
+        decodes: bool,
     ) -> Option<Self> {
         let num_validators = epoch_handle.validator_data.len();
         let msg_len = proposal.payload.len();
         let lane = proposal.lane;
         let d33 = d33::for_message(proposal.slot, msg_len, timestamp, lane, num_validators)?;
-        let scheme = EncodingScheme::D33Hollow(d33);
+        let scheme = Hollow::new(d33, decodes).into();
         Self::build_under(epoch_handle, &proposal.payload, scheme)
     }
 

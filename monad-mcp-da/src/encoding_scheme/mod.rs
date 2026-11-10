@@ -24,7 +24,7 @@ use bytes::Bytes;
 
 pub use self::proposal_chunks::{InvalidEncoding, Resolved};
 pub(crate) use self::{
-    hollow::Hollow,
+    hollow::{Hollow, TAG_LEN},
     proposal_chunks::{BadProof, ProposalChunks},
 };
 use super::{
@@ -62,29 +62,29 @@ impl DAEncodingScheme for EncodingScheme {
     fn msg_len(&self) -> usize {
         match self {
             EncodingScheme::D33(d33) => d33.msg_len(),
-            EncodingScheme::D33Hollow(d33) => Hollow::new(*d33).msg_len(),
+            EncodingScheme::D33Hollow(hollow) => Hollow::from(*hollow).msg_len(),
         }
     }
 
     fn num_source_chunks(&self) -> usize {
         match self {
             EncodingScheme::D33(d33) => d33.num_source_chunks(),
-            EncodingScheme::D33Hollow(d33) => Hollow::new(*d33).num_source_chunks(),
+            EncodingScheme::D33Hollow(hollow) => Hollow::from(*hollow).num_source_chunks(),
         }
     }
 
     fn is_canonical(&self, num_validators: usize) -> bool {
         match self {
             EncodingScheme::D33(d33) => d33.is_canonical(num_validators),
-            EncodingScheme::D33Hollow(d33) => Hollow::new(*d33).is_canonical(num_validators),
+            EncodingScheme::D33Hollow(hollow) => Hollow::from(*hollow).is_canonical(num_validators),
         }
     }
 
     fn chunk_assignment(&self, author: &NodeId, validator_data: &ValidatorData) -> ChunkAssignment {
         match self {
             EncodingScheme::D33(d33) => d33.chunk_assignment(author, validator_data),
-            EncodingScheme::D33Hollow(d33) => {
-                Hollow::new(*d33).chunk_assignment(author, validator_data)
+            EncodingScheme::D33Hollow(hollow) => {
+                Hollow::from(*hollow).chunk_assignment(author, validator_data)
             }
         }
     }
@@ -95,8 +95,8 @@ impl DAEncodingScheme for EncodingScheme {
                 let chunks = d33.encode(message, num_chunks)?;
                 Some(Box::new(chunks))
             }
-            EncodingScheme::D33Hollow(d33) => {
-                let chunks = Hollow::new(*d33).encode(message, num_chunks)?;
+            EncodingScheme::D33Hollow(hollow) => {
+                let chunks = Hollow::from(*hollow).encode(message, num_chunks)?;
                 Some(Box::new(chunks))
             }
         }
@@ -108,8 +108,8 @@ impl DAEncodingScheme for EncodingScheme {
                 let chunks = d33.empty_chunks(root, num_chunks);
                 Box::new(chunks)
             }
-            EncodingScheme::D33Hollow(d33) => {
-                let chunks = Hollow::new(*d33).empty_chunks(root, num_chunks);
+            EncodingScheme::D33Hollow(hollow) => {
+                let chunks = Hollow::from(*hollow).empty_chunks(root, num_chunks);
                 Box::new(chunks)
             }
         }

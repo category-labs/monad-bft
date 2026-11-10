@@ -23,7 +23,7 @@ pub(crate) use super::common::{NodeId, PubKey, Stake};
 pub use super::{
     cadence::{
         SlotLifecycle,
-        env::{D33, EncodingScheme, MerkleHash, ProposalSignature},
+        env::{D33, EncodingScheme, HollowD33, MerkleHash, ProposalSignature},
         slot::chorus::{ChorusDACommand, ChorusDAEvent, MissingHeaders, ProposalDAEvent},
         types::{
             EquivCert, HeaderAuth, MerkleRoot, ProposalHeader, ProposalId, ProposerSchedule,

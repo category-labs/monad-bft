@@ -104,28 +104,30 @@ impl PacketLayout for EncodingScheme {
     fn signed_bytes(&self, root: &MerkleRoot, out: &mut impl BufMut) {
         match self {
             Self::D33(d33) => d33.v1_layout().signed_bytes(root, out),
-            Self::D33Hollow(d33) => Hollow::new(*d33).v1_layout().signed_bytes(root, out),
+            Self::D33Hollow(hollow) => Hollow::from(*hollow).v1_layout().signed_bytes(root, out),
         }
     }
 
     fn write_header(&self, root: &MerkleRoot, sig: &ProposalSignature, out: &mut impl BufMut) {
         match self {
             Self::D33(d33) => d33.v1_layout().write_header(root, sig, out),
-            Self::D33Hollow(d33) => Hollow::new(*d33).v1_layout().write_header(root, sig, out),
+            Self::D33Hollow(hollow) => Hollow::from(*hollow)
+                .v1_layout()
+                .write_header(root, sig, out),
         }
     }
 
     fn header_len(&self) -> usize {
         match self {
             Self::D33(d33) => d33.v1_layout().header_len(),
-            Self::D33Hollow(d33) => Hollow::new(*d33).v1_layout().header_len(),
+            Self::D33Hollow(hollow) => Hollow::from(*hollow).v1_layout().header_len(),
         }
     }
 
     fn write_body(&self, chunk_id: WireChunkId, data: &ChunkData, out: &mut impl BufMut) {
         match self {
             Self::D33(d33) => d33.v1_layout().write_body(chunk_id, data, out),
-            Self::D33Hollow(d33) => Hollow::new(*d33)
+            Self::D33Hollow(hollow) => Hollow::from(*hollow)
                 .v1_layout()
                 .write_body(chunk_id, data, out),
         }
@@ -134,14 +136,14 @@ impl PacketLayout for EncodingScheme {
     fn body_len(&self) -> usize {
         match self {
             Self::D33(d33) => d33.v1_layout().body_len(),
-            Self::D33Hollow(d33) => Hollow::new(*d33).v1_layout().body_len(),
+            Self::D33Hollow(hollow) => Hollow::from(*hollow).v1_layout().body_len(),
         }
     }
 
     fn symbol_len(&self) -> usize {
         match self {
             Self::D33(d33) => d33.v1_layout().symbol_len(),
-            Self::D33Hollow(d33) => Hollow::new(*d33).v1_layout().symbol_len(),
+            Self::D33Hollow(hollow) => Hollow::from(*hollow).v1_layout().symbol_len(),
         }
     }
 }
@@ -162,7 +164,9 @@ fn scheme_variant(bytes: &Bytes) -> Result<u8, MalformedPacket> {
 pub fn read_chunk(bytes: Bytes) -> Result<Chunk<'static>, MalformedPacket> {
     match scheme_variant(&bytes)? {
         D33::VARIANT => v1::Layout::<D33>::read_chunk(bytes),
-        Hollow::<D33>::VARIANT => v1::HollowLayout::<Hollow<D33>>::read_chunk(bytes),
+        variant if Hollow::<D33>::is_variant(variant) => {
+            v1::HollowLayout::<Hollow<D33>>::read_chunk(bytes)
+        }
         other => Err(MalformedPacket::UnknownScheme(other)),
     }
 }
@@ -170,7 +174,9 @@ pub fn read_chunk(bytes: Bytes) -> Result<Chunk<'static>, MalformedPacket> {
 pub fn read_envelope(bytes: Bytes) -> Result<ProposalEnvelope, MalformedPacket> {
     match scheme_variant(&bytes)? {
         D33::VARIANT => v1::Layout::<D33>::read_envelope(bytes),
-        Hollow::<D33>::VARIANT => v1::HollowLayout::<Hollow<D33>>::read_envelope(bytes),
+        variant if Hollow::<D33>::is_variant(variant) => {
+            v1::HollowLayout::<Hollow<D33>>::read_envelope(bytes)
+        }
         other => Err(MalformedPacket::UnknownScheme(other)),
     }
 }
@@ -178,7 +184,7 @@ pub fn read_envelope(bytes: Bytes) -> Result<ProposalEnvelope, MalformedPacket> 
 // the bytes a packet stands for on a real network: a hollow chunk stands
 // for the segment its d33 chunk fills
 pub fn nominal_len(packet: &Bytes) -> usize {
-    let hollow = scheme_variant(packet) == Ok(Hollow::<D33>::VARIANT);
+    let hollow = scheme_variant(packet).is_ok_and(Hollow::<D33>::is_variant);
     let hollow_chunk = hollow && packet.len() == v1::HollowLayout::<Hollow<D33>>::PACKET_LEN;
     if hollow_chunk {
         return v1::SEGMENT_LEN;
@@ -240,7 +246,7 @@ mod tests {
                 SLOT, author, epoch_handle, group, hollow_scheme, proposal_chunks,
                 proposal_chunks_from, proposal_chunks_under,
             },
-            types::NodeId,
+            types::{HollowD33, NodeId},
         },
         *,
     };
@@ -336,6 +342,21 @@ mod tests {
         let envelope = ProposalEnvelope::from_header(header);
         assert_eq!(read_envelope(header_only.clone()), Ok(envelope));
         assert_eq!(nominal_len(&header_only), D33Layout::HEADER_LEN);
+
+        // a proposal that does not decode travels under its own variant
+        let EncodingScheme::D33Hollow(hollow) = scheme else {
+            panic!("the fixture's scheme is hollow");
+        };
+        let undecodable = EncodingScheme::D33Hollow(HollowD33 {
+            decodes: false,
+            ..hollow
+        });
+        let (_, chunks) = proposal_chunks_under(&epoch_handle, undecodable, 0, 1);
+        let packet = write_chunk(&chunks[0]);
+        let variant = Hollow::<D33>::UNDECODABLE_VARIANT;
+        assert_eq!(packet[v1::SCHEME_VARIANT_OFFSET], variant);
+        assert_eq!(read_chunk(packet.clone()), Ok(chunks[0].clone()));
+        assert_eq!(nominal_len(&packet), v1::SEGMENT_LEN);
 
         let (_, d33_chunks) = proposal_chunks(&epoch_handle, 1);
         let d33_packet = write_chunk(&d33_chunks[0]);
