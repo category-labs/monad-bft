@@ -19,24 +19,25 @@ pub mod d33;
 mod hollow;
 mod merkle;
 mod proposal_chunks;
-mod symbol_code;
+mod reed_solomon;
 
 use bytes::Bytes;
 
 #[cfg(feature = "enable_hollow")]
 pub(crate) use self::hollow::Hollow;
-pub(crate) use self::proposal_chunks::{BadProof, ProposalChunks};
+pub(crate) use self::proposal_chunks::{BadProof, Chunks, Decoder, Encoded, ProposalChunks};
 pub use self::proposal_chunks::{InvalidEncoding, Resolved};
 use super::{
     assignment::ChunkAssignment,
-    types::{EncodingScheme, MerkleRoot, NodeId, ValidatorData},
+    types::{EncodingScheme, MerkleRoot, NodeId, ProposalHeader, ValidatorData},
 };
 
 // The encoding scheme specifies the symbol code and the chunk
 // assignment. It sizes its symbols by the layout its header travels
 // in.
 pub(crate) trait DAEncodingScheme {
-    type Chunks: ProposalChunks;
+    // takes the chunks of a proposal back to its encoding
+    type Decoder: Decoder;
 
     fn msg_len(&self) -> usize;
     fn num_source_chunks(&self) -> usize;
@@ -50,74 +51,56 @@ pub(crate) trait DAEncodingScheme {
 
     // every chunk of a message of the scheme's length. None for any
     // other length.
-    fn encode(&self, message: &Bytes, num_chunks: usize) -> Option<Self::Chunks>;
+    fn encode(
+        &self,
+        message: &Bytes,
+        num_chunks: usize,
+    ) -> Option<<Self::Decoder as Decoder>::Encoded>;
 
-    // the chunks of a proposal under root, before any arrives
-    fn empty_chunks(&self, root: MerkleRoot, num_chunks: usize) -> Self::Chunks;
+    // for the chunks of the proposal under root, before any arrives
+    fn decoder(&self, root: MerkleRoot, num_chunks: usize) -> Self::Decoder;
 }
 
-impl DAEncodingScheme for EncodingScheme {
-    type Chunks = Box<dyn ProposalChunks>;
+// whether a proposer among num_validators must have chosen exactly the
+// scheme a header names
+pub(crate) fn is_canonical(scheme: &EncodingScheme, num_validators: usize) -> bool {
+    match scheme {
+        EncodingScheme::D33(d33) => d33.is_canonical(num_validators),
+        #[cfg(feature = "enable_hollow")]
+        EncodingScheme::D33Hollow(d33) => Hollow::new(*d33).is_canonical(num_validators),
+    }
+}
 
-    fn msg_len(&self) -> usize {
-        match self {
-            EncodingScheme::D33(d33) => d33.msg_len(),
-            #[cfg(feature = "enable_hollow")]
-            EncodingScheme::D33Hollow(d33) => Hollow::new(*d33).msg_len(),
+// the scheme a header names, applied to its proposal: who is assigned
+// which chunk, and the chunks, of which none is received yet
+pub(crate) fn instantiate(
+    header: &ProposalHeader,
+    author: &NodeId,
+    validator_data: &ValidatorData,
+) -> (ChunkAssignment, Box<dyn ProposalChunks>) {
+    let root = header.root;
+    match &header.scheme {
+        EncodingScheme::D33(d33) => instantiate_under(d33, root, author, validator_data),
+        #[cfg(feature = "enable_hollow")]
+        EncodingScheme::D33Hollow(d33) => {
+            instantiate_under(&Hollow::new(*d33), root, author, validator_data)
         }
     }
+}
 
-    fn num_source_chunks(&self) -> usize {
-        match self {
-            EncodingScheme::D33(d33) => d33.num_source_chunks(),
-            #[cfg(feature = "enable_hollow")]
-            EncodingScheme::D33Hollow(d33) => Hollow::new(*d33).num_source_chunks(),
-        }
-    }
-
-    fn is_canonical(&self, num_validators: usize) -> bool {
-        match self {
-            EncodingScheme::D33(d33) => d33.is_canonical(num_validators),
-            #[cfg(feature = "enable_hollow")]
-            EncodingScheme::D33Hollow(d33) => Hollow::new(*d33).is_canonical(num_validators),
-        }
-    }
-
-    fn chunk_assignment(&self, author: &NodeId, validator_data: &ValidatorData) -> ChunkAssignment {
-        match self {
-            EncodingScheme::D33(d33) => d33.chunk_assignment(author, validator_data),
-            #[cfg(feature = "enable_hollow")]
-            EncodingScheme::D33Hollow(d33) => {
-                Hollow::new(*d33).chunk_assignment(author, validator_data)
-            }
-        }
-    }
-
-    fn encode(&self, message: &Bytes, num_chunks: usize) -> Option<Self::Chunks> {
-        match self {
-            EncodingScheme::D33(d33) => {
-                let chunks = d33.encode(message, num_chunks)?;
-                Some(Box::new(chunks))
-            }
-            #[cfg(feature = "enable_hollow")]
-            EncodingScheme::D33Hollow(d33) => {
-                let chunks = Hollow::new(*d33).encode(message, num_chunks)?;
-                Some(Box::new(chunks))
-            }
-        }
-    }
-
-    fn empty_chunks(&self, root: MerkleRoot, num_chunks: usize) -> Self::Chunks {
-        match self {
-            EncodingScheme::D33(d33) => {
-                let chunks = d33.empty_chunks(root, num_chunks);
-                Box::new(chunks)
-            }
-            #[cfg(feature = "enable_hollow")]
-            EncodingScheme::D33Hollow(d33) => {
-                let chunks = Hollow::new(*d33).empty_chunks(root, num_chunks);
-                Box::new(chunks)
-            }
-        }
-    }
+fn instantiate_under<S>(
+    scheme: &S,
+    root: MerkleRoot,
+    author: &NodeId,
+    validator_data: &ValidatorData,
+) -> (ChunkAssignment, Box<dyn ProposalChunks>)
+where
+    S: DAEncodingScheme,
+    S::Decoder: Send + 'static,
+    <S::Decoder as Decoder>::Encoded: Send,
+{
+    let assignment = scheme.chunk_assignment(author, validator_data);
+    let decoder = scheme.decoder(root, assignment.num_chunks());
+    let chunks = Chunks::Decoding(decoder);
+    (assignment, Box::new(chunks))
 }

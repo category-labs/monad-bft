@@ -45,7 +45,6 @@ pub use runtime::{
 #[cfg(feature = "enable_hollow")]
 pub use wire::nominal_len;
 pub use wire::{
-    MalformedPacket,
-    proposal::{AssembledProposal, FirstHopDissemination},
-    read_chunk, read_envelope, signed_bytes, write_chunk, write_envelope,
+    MalformedPacket, proposal::AuthoredProposal, read_chunk, read_envelope, signed_bytes,
+    write_chunk, write_envelope,
 };

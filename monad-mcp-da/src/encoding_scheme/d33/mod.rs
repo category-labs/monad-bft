@@ -14,26 +14,24 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use bytes::Bytes;
-use monad_crypto::hasher::{Hash, HasherType};
 use monad_mcp_cadence::spec::validator::ValidatorData as _;
 use rand_chacha::ChaCha20Rng;
 
 use super::{
     super::{
         assignment::{ChunkAssignment, PacketLossResistance, StakePartition},
-        chunk::WireChunkId,
         types::{
             D33, Lane, MAX_PROPOSER_SET_SIZE, MerkleRoot, NodeId, PubKey, Slot, ValidatorData,
         },
-        wire::{DAHeaderScheme as _, PacketLayout as _, v1},
+        wire::v1,
     },
     DAEncodingScheme,
-    merkle::{MerkleChunks, MerkleCode},
-    symbol_code::{RsSymbolDecoder, RsSymbolEncoder},
 };
 use crate::spec::PUBKEY_LEN;
 
-pub(crate) type D33Chunks = MerkleChunks<D33>;
+mod chunks;
+
+pub(crate) use self::chunks::{D33Decoder, D33Encoded};
 
 // over the loss-scaled source count, for 3.3x in total
 const REDUNDANCY: f32 = 3.0;
@@ -127,7 +125,7 @@ fn seed(slot: Slot, unix_ts: u64, author: &PubKey) -> [u8; 32] {
 // - assigned round-robin
 // - symbols are Reed-Solomon coded
 impl DAEncodingScheme for D33 {
-    type Chunks = D33Chunks;
+    type Decoder = D33Decoder;
 
     fn msg_len(&self) -> usize {
         self.msg_len as usize
@@ -171,37 +169,12 @@ impl DAEncodingScheme for D33 {
         partition.assign_spm(author, target, REDUNDANCY, PACKET_LOSS_RESISTANCE)
     }
 
-    fn encode(&self, message: &Bytes, num_chunks: usize) -> Option<D33Chunks> {
-        D33Chunks::encode(self, message, num_chunks)
+    fn encode(&self, message: &Bytes, num_chunks: usize) -> Option<D33Encoded> {
+        D33Encoded::encode(self, message, num_chunks)
     }
 
-    fn empty_chunks(&self, root: MerkleRoot, num_chunks: usize) -> D33Chunks {
-        D33Chunks::new(*self, root, num_chunks)
-    }
-}
-
-impl MerkleCode for D33 {
-    type Encoder = RsSymbolEncoder;
-    type Decoder = RsSymbolDecoder;
-
-    fn encoder(&self, num_chunks: usize) -> RsSymbolEncoder {
-        let symbol_len = self.v1_layout().symbol_len();
-        RsSymbolEncoder::new(num_chunks, self.num_source_chunks(), symbol_len)
-    }
-
-    fn decoder(&self, num_chunks: usize) -> RsSymbolDecoder {
-        RsSymbolDecoder::new(num_chunks, self.num_source_chunks(), self.msg_len())
-    }
-
-    // the message length makes the root pin the decoded message, not only the symbols
-    fn leaf_hash(&self, chunk_id: WireChunkId, symbol: &[u8]) -> Hash {
-        use monad_crypto::hasher::Hasher as _;
-
-        let mut hasher = HasherType::new();
-        hasher.update(self.msg_len.to_le_bytes());
-        hasher.update(chunk_id.to_le_bytes());
-        hasher.update(symbol);
-        hasher.hash()
+    fn decoder(&self, root: MerkleRoot, num_chunks: usize) -> D33Decoder {
+        D33Decoder::new(*self, root, num_chunks)
     }
 }
 
@@ -450,21 +423,15 @@ pub(super) mod header {
 
 #[cfg(test)]
 mod tests {
-    use bytes::Bytes;
-
     use super::{
-        super::{
-            super::{
-                assignment::ChunkId,
-                chunk::Chunk,
-                runtime::EpochHandle,
-                test_util::{
-                    MESSAGE_LEN, SLOT, author, epoch_handle, proposal_chunks_under,
-                    staked_validator_data,
-                },
-                types::{EncodingScheme, SignedProposalHeader},
+        super::super::{
+            chunk::Chunk,
+            runtime::EpochHandle,
+            test_util::{
+                MESSAGE_LEN, SLOT, author, epoch_handle, proposal_chunks_under,
+                staked_validator_data,
             },
-            symbol_code::{SymbolDecoder as _, SymbolEncoder as _},
+            types::SignedProposalHeader,
         },
         *,
     };
@@ -485,8 +452,7 @@ mod tests {
         epoch_handle: &EpochHandle,
         payload: u8,
     ) -> (SignedProposalHeader, Vec<Chunk<'static>>) {
-        let scheme = EncodingScheme::D33(scheme());
-        proposal_chunks_under(epoch_handle, scheme, 0, payload)
+        proposal_chunks_under(epoch_handle, scheme(), 0, payload)
     }
 
     #[test]
@@ -613,21 +579,5 @@ mod tests {
             assert!(!distinct.contains(&order), "{order:?}");
             distinct.push(order);
         }
-    }
-
-    #[test]
-    fn any_source_count_of_symbols_decodes() {
-        let message = vec![7u8; MESSAGE_LEN];
-        let symbols = scheme().encoder(9).encode(&message);
-        assert_eq!(symbols.len(), 9);
-        for symbol in &symbols {
-            assert_eq!(symbol.len(), scheme().v1_layout().symbol_len());
-        }
-
-        let mut decoder = scheme().decoder(9);
-        decoder.ingest(ChunkId::unchecked(8), &symbols[8]);
-        assert!(decoder.try_decode().is_none());
-        decoder.ingest(ChunkId::unchecked(5), &symbols[5]);
-        assert_eq!(decoder.try_decode(), Some(Bytes::from(message)));
     }
 }

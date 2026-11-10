@@ -161,7 +161,7 @@ impl ProposerRaptorcast {
         }
 
         self.out_events.extend(instance.take_obligation_event());
-        match instance.try_decode(egress) {
+        match instance.try_resolve(egress) {
             None => {}
             Some(Ok(message)) => {
                 self.out_events.push(ProposalDAEvent::Decoded(pid));

@@ -27,7 +27,7 @@ use super::{
         types::{D33, EncodingScheme, MerkleRoot, NodeId, ValidatorData},
         wire::{DAHeaderScheme, MalformedPacket, v1},
     },
-    BadProof, DAEncodingScheme, ProposalChunks, Resolved, d33,
+    BadProof, DAEncodingScheme, Decoder, Encoded, d33,
 };
 
 // S with the chunk data taken out, for tests: the same shape, root and
@@ -82,7 +82,7 @@ impl DAHeaderScheme for Hollow<D33> {
 }
 
 impl<S: DAEncodingScheme> DAEncodingScheme for Hollow<S> {
-    type Chunks = HollowChunks;
+    type Decoder = HollowDecoder;
 
     fn msg_len(&self) -> usize {
         self.0.msg_len()
@@ -100,36 +100,32 @@ impl<S: DAEncodingScheme> DAEncodingScheme for Hollow<S> {
         self.0.chunk_assignment(author, validator_data)
     }
 
-    // the real chunks, once, for the real root
-    fn encode(&self, message: &Bytes, num_chunks: usize) -> Option<HollowChunks> {
-        let chunks = self.0.encode(message, num_chunks)?;
-        let shared = SharedMessage::publish(chunks.root(), message.clone());
-        Some(HollowChunks::Decoded(shared))
+    // the real encoding, once, for the real root
+    fn encode(&self, message: &Bytes, num_chunks: usize) -> Option<HollowEncoded> {
+        let encoded = self.0.encode(message, num_chunks)?;
+        let shared = SharedMessage::publish(encoded.root(), message.clone());
+        Some(shared)
     }
 
-    fn empty_chunks(&self, root: MerkleRoot, num_chunks: usize) -> HollowChunks {
-        HollowChunks::new(root, self.num_source_chunks(), num_chunks)
+    fn decoder(&self, root: MerkleRoot, num_chunks: usize) -> HollowDecoder {
+        HollowDecoder::new(root, self.num_source_chunks(), num_chunks)
     }
 }
 
-// the chunk ids of a hollow proposal. any num_source_chunks of them
-// decode, which is exact for an MDS code such as Reed-Solomon.
-pub(crate) enum HollowChunks {
-    Decoding {
-        root: MerkleRoot,
-        num_source_chunks: usize,
-        received: BTreeSet<ChunkId>,
-        // None when no node holds the message, as under a forged root
-        shared: Option<Arc<SharedMessage>>,
-    },
-    // every chunk is derivable
-    Decoded(Arc<SharedMessage>),
+// the chunk ids received under a hollow root. any num_source_chunks of
+// them decode, which is exact for an MDS code such as Reed-Solomon.
+pub(crate) struct HollowDecoder {
+    root: MerkleRoot,
+    num_source_chunks: usize,
+    received: BTreeSet<ChunkId>,
+    // None when no node holds the message, as under a forged root
+    shared: Option<HollowEncoded>,
 }
 
-impl HollowChunks {
+impl HollowDecoder {
     fn new(root: MerkleRoot, num_source_chunks: usize, num_chunks: usize) -> Self {
         assert!(0 < num_source_chunks && num_source_chunks < num_chunks);
-        Self::Decoding {
+        Self {
             root,
             num_source_chunks,
             received: BTreeSet::new(),
@@ -138,54 +134,47 @@ impl HollowChunks {
     }
 }
 
-impl ProposalChunks for HollowChunks {
+impl Decoder for HollowDecoder {
+    type Encoded = HollowEncoded;
+
     fn root(&self) -> MerkleRoot {
-        match self {
-            Self::Decoding { root, .. } => *root,
-            Self::Decoded(shared) => shared.root,
-        }
+        self.root
     }
 
     fn contains(&self, chunk_id: ChunkId) -> bool {
-        match self {
-            Self::Decoding { received, .. } => received.contains(&chunk_id),
-            Self::Decoded(_) => true,
-        }
-    }
-
-    // a hollow chunk has no proof to fail
-    fn ingest(&mut self, chunk_id: ChunkId, _data: ChunkData) -> Result<bool, BadProof> {
-        let Self::Decoding { received, .. } = self else {
-            return Ok(false);
-        };
-        Ok(received.insert(chunk_id))
-    }
-
-    fn try_decode(&mut self) -> Option<Resolved> {
-        let Self::Decoding {
-            num_source_chunks,
-            received,
-            shared,
-            ..
-        } = self
-        else {
-            return None;
-        };
-        if received.len() < *num_source_chunks {
-            return None;
-        }
-        let shared = shared.take()?;
-        let message = shared.message.clone();
-        *self = Self::Decoded(shared);
-        Some(Ok(message))
-    }
-
-    fn is_resolved(&self) -> bool {
-        matches!(self, Self::Decoded(_))
+        self.received.contains(&chunk_id)
     }
 
     fn chunk_data(&self, chunk_id: ChunkId) -> Option<ChunkData> {
         self.contains(chunk_id).then(ChunkData::hollow)
+    }
+
+    // a hollow chunk has no proof to fail
+    fn ingest(&mut self, chunk_id: ChunkId, _data: ChunkData) -> Result<(), BadProof> {
+        self.received.insert(chunk_id);
+        Ok(())
+    }
+
+    fn try_decode(&mut self) -> Option<(Bytes, HollowEncoded)> {
+        if self.received.len() < self.num_source_chunks {
+            return None;
+        }
+        let shared = self.shared.clone()?;
+        let message = shared.message.clone();
+        Some((message, shared))
+    }
+}
+
+// a published message stands for its encoding
+pub(crate) type HollowEncoded = Arc<SharedMessage>;
+
+impl Encoded for HollowEncoded {
+    fn root(&self) -> MerkleRoot {
+        self.root
+    }
+
+    fn chunk_data(&self, _chunk_id: ChunkId) -> ChunkData {
+        ChunkData::hollow()
     }
 }
 
@@ -235,16 +224,23 @@ impl Drop for SharedMessage {
 
 #[cfg(test)]
 mod tests {
+    use rand::{SeedableRng as _, seq::SliceRandom as _};
+    use rand_chacha::ChaCha20Rng;
+
     use super::{
         super::{
             super::{
                 test_util::{MESSAGE_LEN, SLOT},
                 types::{D33, Lane},
             },
-            d33::for_message,
+            Chunks, ProposalChunks as _,
+            d33::{D33Encoded, for_message},
         },
         *,
     };
+
+    type HollowChunks = Chunks<HollowDecoder>;
+    type RealChunks = Chunks<<D33 as DAEncodingScheme>::Decoder>;
 
     fn scheme_for(msg_len: usize) -> D33 {
         for_message(SLOT, msg_len, 0, Lane::new_unchecked(0), 4).expect("fits")
@@ -254,21 +250,49 @@ mod tests {
         (0..num_chunks as u16).map(ChunkId::unchecked)
     }
 
-    fn assert_hollow_of(hollow: &HollowChunks, real: &impl ProposalChunks, num_chunks: usize) {
-        assert_eq!(hollow.root(), real.root());
+    // `hollow` holds what `real` holds, without the data
+    fn assert_hollow_of(hollow: &HollowChunks, real: &RealChunks, num_chunks: usize) {
         assert_eq!(hollow.is_resolved(), real.is_resolved());
         for chunk_id in chunk_ids(num_chunks) {
             assert_eq!(hollow.contains(chunk_id), real.contains(chunk_id));
-            let hollowed = real.chunk_data(chunk_id).map(|_| ChunkData::hollow());
+            let real_data = real.chunk_data(chunk_id);
+            let hollowed = real_data.map(|_| ChunkData::hollow());
             assert_eq!(hollow.chunk_data(chunk_id), hollowed);
         }
     }
 
+    // delivers every chunk of `encoded` twice, in an order drawn from
+    // `seed`, to a real receiver and to a hollow one under `hollow_root`.
+    // returns the two after they resolved alike.
+    fn receive_alike(
+        scheme: D33,
+        encoded: &D33Encoded,
+        hollow_root: MerkleRoot,
+        seed: u64,
+    ) -> (RealChunks, HollowChunks) {
+        let num_chunks = 3 * scheme.num_source_chunks();
+        let real_decoder = scheme.decoder(encoded.root(), num_chunks);
+        let hollow_decoder = Hollow::new(scheme).decoder(hollow_root, num_chunks);
+        let mut receiving = Chunks::Decoding(real_decoder);
+        let mut hollow_receiving = Chunks::Decoding(hollow_decoder);
+
+        let mut arrivals: Vec<_> = chunk_ids(num_chunks).chain(chunk_ids(num_chunks)).collect();
+        arrivals.shuffle(&mut ChaCha20Rng::seed_from_u64(seed));
+
+        for chunk_id in arrivals {
+            let data = encoded.chunk_data(chunk_id);
+            let ingested = receiving.ingest(chunk_id, data);
+            let hollow_data = ChunkData::hollow();
+            assert_eq!(hollow_receiving.ingest(chunk_id, hollow_data), ingested);
+            assert_eq!(hollow_receiving.try_resolve(), receiving.try_resolve());
+            assert_hollow_of(&hollow_receiving, &receiving, num_chunks);
+        }
+        assert!(hollow_receiving.is_resolved());
+        (receiving, hollow_receiving)
+    }
+
     #[test]
     fn removing_the_data_commutes_with_every_operation() {
-        use rand::{SeedableRng as _, seq::SliceRandom as _};
-        use rand_chacha::ChaCha20Rng;
-
         for msg_len in [MESSAGE_LEN, 5000] {
             let scheme = scheme_for(msg_len);
             let hollow = Hollow::new(scheme);
@@ -277,28 +301,20 @@ mod tests {
 
             let real = scheme.encode(&message, num_chunks).expect("of the length");
             let encoded = hollow.encode(&message, num_chunks).expect("of the length");
-            assert_hollow_of(&encoded, &real, num_chunks);
+            let hollow_root = encoded.root();
+            assert_eq!(hollow_root, real.root());
+
+            let short = message.slice(1..);
+            assert!(scheme.encode(&short, num_chunks).is_none());
+            assert!(hollow.encode(&short, num_chunks).is_none());
 
             for seed in 0..32 {
-                // every chunk twice, in any order
-                let mut arrivals: Vec<_> =
-                    chunk_ids(num_chunks).chain(chunk_ids(num_chunks)).collect();
-                arrivals.shuffle(&mut ChaCha20Rng::seed_from_u64(seed));
-
-                let mut receiving = scheme.empty_chunks(real.root(), num_chunks);
-                let mut hollow_receiving = hollow.empty_chunks(real.root(), num_chunks);
-                for chunk_id in arrivals {
-                    let data = real.chunk_data(chunk_id).expect("derivable");
-                    let ingested = receiving.ingest(chunk_id, data);
-                    assert_eq!(
-                        hollow_receiving.ingest(chunk_id, ChunkData::hollow()),
-                        ingested
-                    );
-                    assert_eq!(hollow_receiving.try_decode(), receiving.try_decode());
-                    assert_hollow_of(&hollow_receiving, &receiving, num_chunks);
-                }
-                assert!(hollow_receiving.is_resolved());
+                let (_, hollow_received) = receive_alike(scheme, &real, hollow_root, seed);
+                assert!(matches!(hollow_received, Chunks::Encoded(_)));
             }
+
+            let (real, encoded) = (Chunks::Encoded(real), Chunks::Encoded(encoded));
+            assert_hollow_of(&encoded, &real, num_chunks);
         }
     }
 
@@ -310,27 +326,26 @@ mod tests {
         let message = Bytes::from(vec![0x41; MESSAGE_LEN]);
         let deliver_all = |chunks: &mut HollowChunks| {
             for chunk_id in chunk_ids(num_chunks) {
-                chunks
-                    .ingest(chunk_id, ChunkData::hollow())
-                    .expect("no proof");
+                let data = ChunkData::hollow();
+                chunks.ingest(chunk_id, data).expect("no proof");
             }
-            chunks.try_decode()
+            chunks.try_resolve()
         };
 
         let encoded = hollow.encode(&message, num_chunks).expect("of the length");
         let root = encoded.root();
-        let mut early = hollow.empty_chunks(root, num_chunks);
+        let mut early = Chunks::Decoding(hollow.decoder(root, num_chunks));
         drop(encoded);
         assert_eq!(deliver_all(&mut early), Some(Ok(message.clone())));
 
         // a decoded node still holds the message for a later one
-        let mut late = hollow.empty_chunks(root, num_chunks);
+        let mut late = Chunks::Decoding(hollow.decoder(root, num_chunks));
         drop(early);
         assert_eq!(deliver_all(&mut late), Some(Ok(message)));
 
         drop(late);
         assert!(!thin_air().contains_key(&root));
-        let mut orphan = hollow.empty_chunks(root, num_chunks);
+        let mut orphan = Chunks::Decoding(hollow.decoder(root, num_chunks));
         assert_eq!(deliver_all(&mut orphan), None);
     }
 }

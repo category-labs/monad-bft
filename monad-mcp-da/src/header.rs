@@ -39,13 +39,13 @@ where
         ProposalHeader as _, SignedProposalHeader as _, validator::ValidatorData as _,
     };
 
-    use super::encoding_scheme::DAEncodingScheme as _;
+    use super::encoding_scheme::is_canonical;
     use crate::spec::{DAProposalHeader as _, DAProposalSignature as _};
 
     HeaderAuth::new(move |signed: &SignedProposalHeader| {
         // todo: cache the auth result by (ProposalHeader, slot).
 
-        if !signed.scheme().is_canonical(validator_data.len()) {
+        if !is_canonical(signed.scheme(), validator_data.len()) {
             return false;
         }
         let preimage = wire::signed_bytes(&signed.header);

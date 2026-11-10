@@ -16,7 +16,7 @@
 use monad_crypto::hasher::Hash;
 use monad_merkle::{MerkleProof, MerkleTree};
 
-use super::super::super::types::{MerkleHash, MerkleRoot};
+use super::super::types::{MerkleHash, MerkleRoot};
 
 // a wrapper of MerkleTree type adapted for interfacing with da types.
 pub struct Tree(MerkleTree);

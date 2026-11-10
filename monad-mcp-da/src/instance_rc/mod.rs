@@ -26,12 +26,11 @@ use super::{
     assignment::{ChunkAssignment, ChunkId, NodeIndex},
     chunk::{ChunkData, ChunkRequest, ChunksSubset, WireChunkId},
     egress::ChunkEgress,
-    encoding_scheme::{BadProof, DAEncodingScheme as _, ProposalChunks, Resolved},
+    encoding_scheme::{self, BadProof, ProposalChunks, Resolved},
     runtime::EpochHandle,
     send_order::shuffle_sends,
     types::{NodeId, ProposalDAEvent, SignedProposalHeader, Timestamp, TimestampDelta},
 };
-use crate::spec::DAProposalHeader as _;
 
 // by owner, each owner once, in assignment (or validator) order; the requests
 // built from it are shuffled before they go out
@@ -73,12 +72,12 @@ impl RaptorcastInstance {
         author: &NodeId,
         serve_window: TimestampDelta,
     ) -> Self {
-        let scheme = header.scheme();
-        let assignment = scheme.chunk_assignment(author, &epoch_handle.validator_data);
+        let validator_data = &epoch_handle.validator_data;
+        let (assignment, chunks) =
+            encoding_scheme::instantiate(&header.header, author, validator_data);
         let self_index = assignment.index_of(&epoch_handle.self_id);
         let mut send_order: Vec<NodeIndex> = assignment.nodes().map(|(index, _)| index).collect();
         shuffle_sends(&mut send_order, &header.pid(), &epoch_handle.self_id);
-        let chunks = scheme.empty_chunks(*header.root(), assignment.num_chunks());
         let obligation = ObligationTracker::new(&assignment, self_index);
         let serving = ServingTracker::new(&assignment, self_index, serve_window);
         let relay = RelayTracker::new(&assignment, self_index);
@@ -148,8 +147,8 @@ impl RaptorcastInstance {
         ))
     }
 
-    pub(crate) fn try_decode(&mut self, egress: &mut ChunkEgress) -> Option<Resolved> {
-        let resolved = self.chunks.try_decode()?;
+    pub(crate) fn try_resolve(&mut self, egress: &mut ChunkEgress) -> Option<Resolved> {
+        let resolved = self.chunks.try_resolve()?;
 
         if resolved.is_ok() {
             for chunk_id in self.relay.take_all() {
@@ -286,7 +285,7 @@ mod tests {
     ) -> Result<Option<Resolved>, InvalidChunk> {
         let (_, wire_chunk_id, data) = chunk.clone().into_parts();
         instance.ingest(wire_chunk_id, data, &author(), egress)?;
-        let decoded = instance.try_decode(egress);
+        let decoded = instance.try_resolve(egress);
         Ok(decoded)
     }
 

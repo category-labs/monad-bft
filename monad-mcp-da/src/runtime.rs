@@ -31,7 +31,7 @@ use super::{
         ProposalKeyPair, ProposerSchedule, Slot, SlotLifecycle, Timestamp, TimestampDelta,
         ValidatorData, unix_seconds,
     },
-    wire::proposal::AssembledProposal,
+    wire::proposal::AuthoredProposal,
 };
 
 // todo: give this type a more proper name. it encodes the concept of
@@ -140,24 +140,23 @@ where
 
     pub fn propose(&mut self, proposal_scheme: ProposalScheme, proposal: Proposal, now: Timestamp) {
         let unix_ts = unix_seconds(now);
-        let assembled =
-            AssembledProposal::build(proposal_scheme, &self.epoch_handle, &proposal, unix_ts);
-        let Some(assembled) = assembled else {
+        let authored =
+            AuthoredProposal::build(proposal_scheme, &self.epoch_handle, &proposal, unix_ts);
+        let Some(mut authored) = authored else {
             tracing::warn!("proposal does not fit the scheme");
             return;
         };
 
         let self_id = self.epoch_handle.self_id;
-        let mut first_hop = assembled.disseminate();
-        if let Some(own_envelope) = first_hop.split_off(&self_id) {
+        if let Some(own_envelope) = authored.split_off(&self_id) {
             self.ingest_own(own_envelope);
         }
 
         // optimization: ingest all chunks for early decode, so peers
         // don't have to relay back to author.
-        self.ingest_own(first_hop.envelope());
+        self.ingest_own(authored.envelope());
 
-        for dissemination in first_hop.into_disseminations() {
+        for dissemination in authored.into_disseminations() {
             self.outbox.push_back(DAOutput::Disseminate(dissemination));
         }
     }

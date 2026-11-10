@@ -22,18 +22,20 @@ use std::sync::Arc;
 use bytes::Bytes;
 
 pub(crate) use super::cadence::types::FixedProposerSchedule;
+#[cfg(feature = "enable_hollow")]
+use super::encoding_scheme::Hollow;
 use super::{
     assignment::{ChunkAssignment, ChunkId, PacketLossResistance},
     chunk::{Chunk, ProposalEnvelope, WireChunkId},
     encoding_scheme::{
-        DAEncodingScheme as _, ProposalChunks,
-        d33::{self, D33Chunks},
+        self, DAEncodingScheme, Encoded,
+        d33::{self, D33Encoded},
     },
     header::header_auth,
     runtime::{DAConfig, EpochHandle, Timing},
     types::{
-        EncodingScheme, Lane, NodeId, ProposalHeader, ProposalKeyPair, SignedProposalHeader, Slot,
-        Stake, Timestamp, TimestampDelta, ValidatorData,
+        D33, EncodingScheme, Lane, NodeId, ProposalHeader, ProposalKeyPair, SignedProposalHeader,
+        Slot, Stake, Timestamp, TimestampDelta, ValidatorData,
     },
     wire,
 };
@@ -104,32 +106,26 @@ pub(crate) fn proposer_schedule(proposers: Vec<NodeId>) -> Arc<FixedProposerSche
 }
 
 // the scheme a proposer picks for a MESSAGE_LEN message in the epoch
-pub(crate) fn scheme(epoch_handle: &EpochHandle) -> EncodingScheme {
+pub(crate) fn scheme(epoch_handle: &EpochHandle) -> D33 {
     scheme_at(epoch_handle, SLOT)
 }
 
-pub(crate) fn scheme_at(epoch_handle: &EpochHandle, slot: Slot) -> EncodingScheme {
+pub(crate) fn scheme_at(epoch_handle: &EpochHandle, slot: Slot) -> D33 {
     d33_scheme_at(epoch_handle, slot, Lane::new_unchecked(0))
 }
 
 // the d33 scheme a proposer at `lane` picks for a MESSAGE_LEN message
-pub(crate) fn d33_scheme_at(epoch_handle: &EpochHandle, slot: Slot, lane: Lane) -> EncodingScheme {
+pub(crate) fn d33_scheme_at(epoch_handle: &EpochHandle, slot: Slot, lane: Lane) -> D33 {
     use monad_mcp_cadence::spec::validator::ValidatorData as _;
 
     let num_validators = epoch_handle.validator_data.len();
-    let d33 = d33::for_message(slot, MESSAGE_LEN, 0, lane, num_validators).expect("fits a depth");
-    EncodingScheme::D33(d33)
+    d33::for_message(slot, MESSAGE_LEN, 0, lane, num_validators).expect("fits a depth")
 }
 
 // the default fixture's scheme with the chunk data taken out
 #[cfg(feature = "enable_hollow")]
-pub(crate) fn hollow_scheme(epoch_handle: &EpochHandle) -> EncodingScheme {
-    use super::encoding_scheme::Hollow;
-
-    let EncodingScheme::D33(d33) = scheme(epoch_handle) else {
-        panic!("the fixture's scheme is d33");
-    };
-    Hollow::new(d33).into()
+pub(crate) fn hollow_scheme(epoch_handle: &EpochHandle) -> Hollow<D33> {
+    Hollow::new(scheme(epoch_handle))
 }
 
 // the header as validator `author_id` signs it
@@ -141,15 +137,15 @@ pub(crate) fn signed_header(header: ProposalHeader, author_id: u64) -> SignedPro
     SignedProposalHeader { header, sig }
 }
 
-// the header and every chunk of complete chunks, in wire id order
+// the header and every chunk of an encoding, in wire id order
 fn chunks_of(
-    complete: &dyn ProposalChunks,
+    encoded: &impl Encoded,
     assignment: &ChunkAssignment,
     header: SignedProposalHeader,
 ) -> (SignedProposalHeader, Vec<Chunk<'static>>) {
     let mut chunks = Vec::new();
     for chunk_id in assignment.chunk_ids() {
-        let data = complete.chunk_data(chunk_id).expect("complete chunks");
+        let data = encoded.chunk_data(chunk_id);
         chunks.push(Chunk::new(header.clone(), chunk_id.to_wire(), data));
     }
     (header, chunks)
@@ -177,12 +173,15 @@ pub(crate) fn proposal_chunks_from(
 }
 
 // the proposal under a given scheme for a MESSAGE_LEN message
-pub(crate) fn proposal_chunks_under(
+pub(crate) fn proposal_chunks_under<S>(
     epoch_handle: &EpochHandle,
-    scheme: EncodingScheme,
+    scheme: S,
     author_id: u64,
     payload: u8,
-) -> (SignedProposalHeader, Vec<Chunk<'static>>) {
+) -> (SignedProposalHeader, Vec<Chunk<'static>>)
+where
+    S: DAEncodingScheme + Into<EncodingScheme>,
+{
     let author = NodeId::dummy(author_id);
     let assignment = scheme.chunk_assignment(&author, &epoch_handle.validator_data);
     let message = Bytes::from(vec![payload; MESSAGE_LEN]);
@@ -190,9 +189,9 @@ pub(crate) fn proposal_chunks_under(
     let encoded = encoded.expect("a message of the scheme's length");
     let header = ProposalHeader {
         root: encoded.root(),
-        scheme,
+        scheme: scheme.into(),
     };
-    chunks_of(&*encoded, &assignment, signed_header(header, author_id))
+    chunks_of(&encoded, &assignment, signed_header(header, author_id))
 }
 
 pub(crate) fn proposal_chunks(
@@ -208,27 +207,24 @@ pub(crate) fn proposal_chunks(
 pub(crate) fn inconsistent_proposal_chunks(
     epoch_handle: &EpochHandle,
 ) -> (SignedProposalHeader, Vec<Chunk<'static>>) {
-    use super::wire::PacketLayout as _;
+    use super::wire::{DAHeaderScheme as _, PacketLayout as _};
 
-    let scheme = scheme(epoch_handle);
-    let assignment = scheme.chunk_assignment(&author(), &epoch_handle.validator_data);
+    let d33 = scheme(epoch_handle);
+    let assignment = d33.chunk_assignment(&author(), &epoch_handle.validator_data);
     let num_chunks = assignment.num_chunks();
-    let symbol_len = scheme.symbol_len();
+    let symbol_len = d33.v1_layout().symbol_len();
 
     let mut symbols = Vec::with_capacity(num_chunks);
     for i in 0..num_chunks {
         let payload = if i < num_chunks / 2 { 1 } else { 2 };
         symbols.push(Bytes::from(vec![payload; symbol_len]));
     }
-    let EncodingScheme::D33(d33) = &scheme else {
-        panic!("the fixture's scheme is d33");
-    };
-    let complete = D33Chunks::from_symbols(d33, symbols);
+    let encoded = D33Encoded::from_symbols(&d33, symbols);
     let header = ProposalHeader {
-        root: complete.root(),
-        scheme,
+        root: encoded.root(),
+        scheme: d33.into(),
     };
-    chunks_of(&complete, &assignment, signed_header(header, 0))
+    chunks_of(&encoded, &assignment, signed_header(header, 0))
 }
 
 // the verified id of a wire chunk id under the header's assignment
@@ -237,11 +233,8 @@ pub(crate) fn chunk_id(
     header: &SignedProposalHeader,
     wire: WireChunkId,
 ) -> ChunkId {
-    use crate::spec::DAProposalHeader as _;
-
-    let assignment = header
-        .scheme()
-        .chunk_assignment(&author(), &epoch_handle.validator_data);
+    let validator_data = &epoch_handle.validator_data;
+    let (assignment, _) = encoding_scheme::instantiate(&header.header, &author(), validator_data);
     assignment
         .resolve_chunk_id(wire)
         .expect("in range")

@@ -16,12 +16,14 @@
 use bytes::Bytes;
 use monad_mcp_cadence::spec::validator::ValidatorData as _;
 
+#[cfg(feature = "enable_hollow")]
+use super::super::encoding_scheme::Hollow;
 use super::{
     super::{
         assignment::{ChunkAssignment, ChunkId, NodeIndex},
-        chunk::{ChunkData, ProposalEnvelope},
+        chunk::ProposalEnvelope,
         egress::Dissemination,
-        encoding_scheme::{ProposalChunks, d33},
+        encoding_scheme::{DAEncodingScheme, Decoder, Encoded, d33},
         runtime::{EpochHandle, ProposalScheme},
         types::{
             EncodingScheme, NodeId, Proposal, ProposalHeader, ProposalKeyPair, SignedProposalHeader,
@@ -30,78 +32,65 @@ use super::{
     signed_bytes,
 };
 
-// a proposal this node authored: the signed header over its complete
-// chunks, and the assignment that routes them.
-pub struct AssembledProposal {
+// a proposal this node authored: the signed header over its encoding,
+// and the chunks still on their way to the nodes that own them
+pub struct AuthoredProposal {
     header: SignedProposalHeader,
     assignment: ChunkAssignment,
-    chunks: Box<dyn ProposalChunks>,
+    encoded: Box<dyn Encoded>,
+    // the chunks not split off yet
+    remaining: Vec<ChunkId>,
+    // the nodes that own no chunk, which get the header alone
+    header_only: Vec<NodeIndex>,
 }
 
-impl AssembledProposal {
+impl AuthoredProposal {
+    // None unless the message is of a length the scheme encodes
     pub fn build(
         kind: ProposalScheme,
         epoch_handle: &EpochHandle,
         proposal: &Proposal,
         timestamp: u64,
     ) -> Option<Self> {
+        let num_validators = epoch_handle.validator_data.len();
+        let msg_len = proposal.payload.len();
+        let lane = proposal.lane;
+        let d33 = d33::for_message(proposal.slot, msg_len, timestamp, lane, num_validators)?;
         match kind {
-            ProposalScheme::D33 => Self::build_d33(epoch_handle, proposal, timestamp),
+            ProposalScheme::D33 => Self::build_under(d33, epoch_handle, &proposal.payload),
             #[cfg(feature = "enable_hollow")]
-            ProposalScheme::D33Hollow => Self::build_d33_hollow(epoch_handle, proposal, timestamp),
+            ProposalScheme::D33Hollow => {
+                let hollow = Hollow::new(d33);
+                Self::build_under(hollow, epoch_handle, &proposal.payload)
+            }
         }
     }
 
-    // None unless the message is the length the scheme encodes
-    fn build_d33(epoch_handle: &EpochHandle, proposal: &Proposal, timestamp: u64) -> Option<Self> {
-        let num_validators = epoch_handle.validator_data.len();
-        let msg_len = proposal.payload.len();
-        let lane = proposal.lane;
-        let d33 = d33::for_message(proposal.slot, msg_len, timestamp, lane, num_validators)?;
-        let scheme = EncodingScheme::D33(d33);
-        Self::build_under(epoch_handle, &proposal.payload, scheme)
-    }
-
-    #[cfg(feature = "enable_hollow")]
-    fn build_d33_hollow(
-        epoch_handle: &EpochHandle,
-        proposal: &Proposal,
-        timestamp: u64,
-    ) -> Option<Self> {
-        let num_validators = epoch_handle.validator_data.len();
-        let msg_len = proposal.payload.len();
-        let lane = proposal.lane;
-        let d33 = d33::for_message(proposal.slot, msg_len, timestamp, lane, num_validators)?;
-        let scheme = EncodingScheme::D33Hollow(d33);
-        Self::build_under(epoch_handle, &proposal.payload, scheme)
-    }
-
-    fn build_under(
-        epoch_handle: &EpochHandle,
-        message: &Bytes,
-        scheme: EncodingScheme,
-    ) -> Option<Self> {
-        use super::super::encoding_scheme::DAEncodingScheme as _;
-
+    fn build_under<S>(scheme: S, epoch_handle: &EpochHandle, message: &Bytes) -> Option<Self>
+    where
+        S: DAEncodingScheme + Into<EncodingScheme>,
+        <S::Decoder as Decoder>::Encoded: 'static,
+    {
         let author = &epoch_handle.self_id;
         let valset = &epoch_handle.validator_data;
 
         let assignment = scheme.chunk_assignment(author, valset);
-        let chunks = scheme.encode(message, assignment.num_chunks())?;
-
+        let encoded = scheme.encode(message, assignment.num_chunks())?;
         let header = ProposalHeader {
-            root: chunks.root(),
-            scheme,
+            root: encoded.root(),
+            scheme: scheme.into(),
         };
 
-        let proposal = Self::assemble(&epoch_handle.key_pair, header, chunks, assignment);
+        let encoded = Box::new(encoded);
+        let proposal = Self::new(&epoch_handle.key_pair, header, encoded, assignment);
         Some(proposal)
     }
 
-    pub(crate) fn assemble(
+    // signs the header over the encoding
+    pub(crate) fn new(
         key_pair: &ProposalKeyPair,
         header: ProposalHeader,
-        chunks: Box<dyn ProposalChunks>,
+        encoded: Box<dyn Encoded>,
         assignment: ChunkAssignment,
     ) -> Self {
         use crate::spec::DAProposalKeyPair as _;
@@ -110,10 +99,15 @@ impl AssembledProposal {
         let sig = key_pair.sign(&preimage);
         let header = SignedProposalHeader { header, sig };
 
+        let remaining = assignment.chunk_ids().collect();
+        let header_only = assignment.unassigned_nodes().to_vec();
+
         Self {
             header,
             assignment,
-            chunks,
+            encoded,
+            remaining,
+            header_only,
         }
     }
 
@@ -121,39 +115,12 @@ impl AssembledProposal {
         &self.header
     }
 
-    pub fn disseminate(&self) -> FirstHopDissemination<'_> {
-        let mut chunks = Vec::with_capacity(self.assignment.num_chunks());
-        for chunk_id in self.assignment.chunk_ids() {
-            let data = self
-                .chunks
-                .chunk_data(chunk_id)
-                .expect("the encoded chunks are complete");
-            chunks.push((chunk_id, data));
-        }
-
-        let header_only = self.assignment.unassigned_nodes().to_vec();
-
-        FirstHopDissemination {
-            header: &self.header,
-            chunks,
-            header_only,
-            assignment: &self.assignment,
-        }
-    }
-}
-
-pub struct FirstHopDissemination<'a> {
-    header: &'a SignedProposalHeader,
-    chunks: Vec<(ChunkId, ChunkData)>,
-    header_only: Vec<NodeIndex>,
-    assignment: &'a ChunkAssignment,
-}
-
-impl<'a> FirstHopDissemination<'a> {
+    // every chunk not split off
     pub fn envelope(&self) -> ProposalEnvelope {
         let mut envelope = ProposalEnvelope::from_header(self.header.clone());
-        for (chunk_id, data) in &self.chunks {
-            envelope.insert(chunk_id.to_wire(), data.clone());
+        for chunk_id in &self.remaining {
+            let data = self.encoded.chunk_data(*chunk_id);
+            envelope.insert(chunk_id.to_wire(), data);
         }
         envelope
     }
@@ -161,25 +128,28 @@ impl<'a> FirstHopDissemination<'a> {
     // take the chunks owned by a particular node
     pub fn split_off(&mut self, node: &NodeId) -> Option<ProposalEnvelope> {
         let index = self.assignment.index_of(node)?;
-        let assignment = self.assignment;
-        let owned_by_node = |(chunk_id, _): &mut (ChunkId, ChunkData)| {
-            assignment.routing(*chunk_id).owner_index() == index
-        };
+        let assignment = &self.assignment;
+        let owned_by_node =
+            |chunk_id: &mut ChunkId| assignment.routing(*chunk_id).owner_index() == index;
 
         let mut envelope = ProposalEnvelope::from_header(self.header.clone());
-        for (chunk_id, data) in self.chunks.extract_if(.., owned_by_node) {
+        for chunk_id in self.remaining.extract_if(.., owned_by_node) {
+            let data = self.encoded.chunk_data(chunk_id);
             envelope.insert(chunk_id.to_wire(), data);
         }
         self.header_only.retain(|owed| *owed != index);
         Some(envelope)
     }
 
+    // the first hop: each chunk to its owner, and the header alone to
+    // the nodes that own none
     pub fn into_disseminations(self) -> Vec<Dissemination> {
-        let mut disseminations = Vec::with_capacity(self.chunks.len() + self.header_only.len());
-        for (chunk_id, data) in self.chunks {
+        let mut disseminations = Vec::with_capacity(self.remaining.len() + self.header_only.len());
+        for chunk_id in self.remaining {
             let routing = self.assignment.routing(chunk_id);
             let recipient = self.assignment.node(routing.owner_index());
 
+            let data = self.encoded.chunk_data(chunk_id);
             let mut envelope = ProposalEnvelope::from_header(self.header.clone());
             envelope.insert(chunk_id.to_wire(), data);
             let to = [*recipient].into();
@@ -209,7 +179,7 @@ mod tests {
                 encoding_scheme::DAEncodingScheme as _,
                 test_util::{
                     MESSAGE_LEN, PACKET_LOSS_RESISTANCE, SLOT, author, epoch_handle_for, group,
-                    proposal_chunks,
+                    proposal_chunks, scheme,
                 },
                 types::{Lane, Stake},
             },
@@ -217,17 +187,15 @@ mod tests {
         },
         *,
     };
-    use crate::spec::DAProposalHeader as _;
-
     // the author's view of the default fixture
     fn authoring_handle() -> EpochHandle {
         epoch_handle_for(author(), 4, vec![author()])
     }
 
     // the first hop as the runtime puts it on the wire
-    fn packets(first_hop: FirstHopDissemination<'_>) -> Vec<(NodeId, Bytes)> {
+    fn packets(proposal: AuthoredProposal) -> Vec<(NodeId, Bytes)> {
         let mut packets = Vec::new();
-        for Dissemination { to, envelope } in first_hop.into_disseminations() {
+        for Dissemination { to, envelope } in proposal.into_disseminations() {
             for node in to {
                 for packet in write_envelope(&envelope) {
                     packets.push((node, packet));
@@ -253,27 +221,35 @@ mod tests {
         }
     }
 
+    fn build_d33(epoch_handle: &EpochHandle, proposal: &Proposal) -> Option<AuthoredProposal> {
+        AuthoredProposal::build(ProposalScheme::D33, epoch_handle, proposal, 0)
+    }
+
     #[test]
     fn the_author_sends_each_chunk_to_its_owner_as_that_chunks_packet() {
         let epoch_handle = authoring_handle();
         let (header, chunks) = proposal_chunks(&epoch_handle, 1);
         let message = vec![1u8; MESSAGE_LEN];
 
-        let proposal = AssembledProposal::build_d33(&epoch_handle, &proposal_of(message), 0);
+        let proposal = build_d33(&epoch_handle, &proposal_of(message));
         let proposal = proposal.expect("the fixture's message fits");
         assert_eq!(proposal.header(), &header);
         let empty = proposal_of(vec![]);
-        assert!(AssembledProposal::build_d33(&epoch_handle, &empty, 0).is_none());
+        assert!(build_d33(&epoch_handle, &empty).is_none());
 
-        let dissemination = proposal.disseminate();
-        assert_eq!(dissemination.envelope(), group(&chunks));
-        let packets = packets(dissemination);
-        // one per chunk: every validator, the author included, owns chunks
-        assert_eq!(packets.len(), chunks.len());
-        for ((recipient, packet), chunk) in packets.iter().zip(&chunks) {
+        assert_eq!(proposal.envelope(), group(&chunks));
+        let mut owners = Vec::new();
+        for chunk in &chunks {
             let routing = proposal.assignment.resolve_chunk_id(chunk.chunk_id());
             let owner = routing.expect("in the assignment").owner_index();
-            assert_eq!(recipient, proposal.assignment.node(owner));
+            owners.push(*proposal.assignment.node(owner));
+        }
+
+        let packets = packets(proposal);
+        // one per chunk: every validator, the author included, owns chunks
+        assert_eq!(packets.len(), chunks.len());
+        for (((recipient, packet), chunk), owner) in packets.iter().zip(&chunks).zip(&owners) {
+            assert_eq!(recipient, owner);
             assert_eq!(*packet, write_chunk(chunk));
         }
     }
@@ -283,9 +259,8 @@ mod tests {
         let epoch_handle = authoring_handle();
         let (_, chunks) = proposal_chunks(&epoch_handle, 1);
         let message = vec![1u8; MESSAGE_LEN];
-        let proposal = AssembledProposal::build_d33(&epoch_handle, &proposal_of(message), 0);
-        let proposal = proposal.expect("the fixture's message fits");
-        let mut dissemination = proposal.disseminate();
+        let proposal = build_d33(&epoch_handle, &proposal_of(message));
+        let mut proposal = proposal.expect("the fixture's message fits");
 
         // the fixture's chunks a node owns; the chunks are in wire id order
         let assignment = &proposal.assignment;
@@ -298,24 +273,28 @@ mod tests {
             }
             owned
         };
+        let nodes = [
+            NodeId::dummy(1),
+            author(),
+            NodeId::dummy(2),
+            NodeId::dummy(3),
+        ];
+        let [ones, authors, twos, threes] = nodes.map(owned);
 
-        let own = dissemination
+        let split = proposal
             .split_off(&NodeId::dummy(1))
             .expect("in the assignment");
-        assert_eq!(own, group(&owned(NodeId::dummy(1))));
+        assert_eq!(split, group(&ones));
         // the author owns chunks too, and splits them off like any owner
-        let authors = dissemination
-            .split_off(&author())
-            .expect("in the assignment");
-        assert_eq!(authors, group(&owned(author())));
-        assert_eq!(dissemination.split_off(&NodeId::dummy(9)), None);
+        let split = proposal.split_off(&author()).expect("in the assignment");
+        assert_eq!(split, group(&authors));
+        assert_eq!(proposal.split_off(&NodeId::dummy(9)), None);
 
-        let packets = by_recipient(packets(dissemination));
+        let packets = by_recipient(packets(proposal));
         assert!(!packets.contains_key(&NodeId::dummy(1)));
         assert!(!packets.contains_key(&author()));
-        for node in [NodeId::dummy(2), NodeId::dummy(3)] {
-            assert_eq!(packets[&node].len(), owned(node).len());
-        }
+        assert_eq!(packets[&NodeId::dummy(2)].len(), twos.len());
+        assert_eq!(packets[&NodeId::dummy(3)].len(), threes.len());
     }
 
     #[test]
@@ -337,17 +316,17 @@ mod tests {
         let obligations = Obligations::new(Stake::from(4), holders);
         let assignment = ChunkAssignment::deal(&author(), obligations, PACKET_LOSS_RESISTANCE);
         let message = Bytes::from(vec![1u8; MESSAGE_LEN]);
-        let chunks = header.scheme().encode(&message, assignment.num_chunks());
-        let chunks = chunks.expect("the fixture's message fits");
-        let proposal = AssembledProposal::assemble(
+        let encoded = scheme(&epoch_handle).encode(&message, assignment.num_chunks());
+        let encoded = encoded.expect("the fixture's message fits");
+        let proposal = AuthoredProposal::new(
             &epoch_handle.key_pair,
             header.header.clone(),
-            chunks,
+            Box::new(encoded),
             assignment,
         );
         assert_eq!(proposal.header(), &header);
 
-        let packets = by_recipient(packets(proposal.disseminate()));
+        let packets = by_recipient(packets(proposal));
         assert_eq!(packets[&NodeId::dummy(1)].len(), 3);
         assert_eq!(packets[&NodeId::dummy(3)].len(), 3);
         assert_eq!(packets[&author()], vec![header_bytes(&header)]);
@@ -355,5 +334,32 @@ mod tests {
 
         let header_only = read_envelope(packets[&NodeId::dummy(2)][0].clone());
         assert_eq!(header_only, Ok(ProposalEnvelope::from_header(header)));
+    }
+
+    // the author is the first holder of a hollow message, until an
+    // instance holds it
+    #[cfg(feature = "enable_hollow")]
+    #[test]
+    fn an_authored_hollow_proposal_keeps_its_message_decodable() {
+        use super::super::super::encoding_scheme::instantiate;
+
+        let epoch_handle = authoring_handle();
+        // a payload no other test publishes
+        let message = vec![0x51u8; MESSAGE_LEN];
+        let proposal = proposal_of(message.clone());
+        let proposal =
+            AuthoredProposal::build(ProposalScheme::D33Hollow, &epoch_handle, &proposal, 0);
+        let proposal = proposal.expect("the fixture's message fits");
+
+        let validator_data = &epoch_handle.validator_data;
+        let header = &proposal.header().header;
+        let (assignment, mut chunks) = instantiate(header, &author(), validator_data);
+        let (_, envelope) = proposal.envelope().into_parts();
+        for (wire_chunk_id, data) in envelope {
+            let routing = assignment.resolve_chunk_id(wire_chunk_id);
+            let chunk_id = routing.expect("in the assignment").chunk_id();
+            assert_eq!(chunks.ingest(chunk_id, data), Ok(true));
+        }
+        assert_eq!(chunks.try_resolve(), Some(Ok(Bytes::from(message))));
     }
 }
