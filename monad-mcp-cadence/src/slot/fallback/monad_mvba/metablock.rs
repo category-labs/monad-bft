@@ -74,7 +74,7 @@ impl Decodable for Metablock {
 
 impl Metablock {
     // a block has at least one lane, and all its entries name one slot
-    fn slot(&self) -> Slot {
+    pub(crate) fn slot(&self) -> Slot {
         self.0[Lane::new_unchecked(0)].scope().slot
     }
 

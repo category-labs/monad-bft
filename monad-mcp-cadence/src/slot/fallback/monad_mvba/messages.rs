@@ -71,9 +71,9 @@ impl<V: Votable, C: ValidateCert> MvbaMessage<V, C> {
 
 /// `⟨Prepare, slot, v, entries(x)⟩`
 #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodableWrapper, RlpDecodableWrapper)]
-pub(crate) struct PrepareVote<E>(pub E);
+pub struct PrepareVote<E>(pub E);
 
-pub(crate) struct PrepareVoteDomain;
+pub struct PrepareVoteDomain;
 const _: () = assert_signing_prefix::<PrepareVoteDomain>();
 
 impl SigningDomain for PrepareVoteDomain {
@@ -109,12 +109,12 @@ pub(crate) type CommitVoteMsg<E> = VoteMsg<FallbackCommitVote<E>>;
 /// sender carries, not the certificate, so timeouts holding the same lock sign
 /// identical bytes and aggregate
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub(crate) struct TimeoutVote {
+pub struct TimeoutVote {
     /// [`FallbackView::GENESIS`] when the sender holds none
     pub high_prep_view: FallbackView,
 }
 
-pub(crate) struct TimeoutVoteDomain;
+pub struct TimeoutVoteDomain;
 const _: () = assert_signing_prefix::<TimeoutVoteDomain>();
 
 impl SigningDomain for TimeoutVoteDomain {
@@ -129,7 +129,7 @@ impl IsVote for TimeoutVote {
 /// `⟨Timeout, slot, v, PrepQC_i, σ_i⟩`
 #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable)]
 #[rlp(trailing)]
-pub(crate) struct TimeoutMsg<E: Clone + Eq + Hash + Debug + Encodable> {
+pub struct TimeoutMsg<E: Clone + Eq + Hash + Debug + Encodable> {
     pub vote: VoteMsg<TimeoutVote>,
     pub high_prep_qc: Option<PrepareQc<E>>,
 }
@@ -157,7 +157,7 @@ impl<E: Clone + Eq + Hash + Debug + Encodable> TimeoutMsg<E> {
         self.vote.scope.slot
     }
 
-    pub(crate) fn view(&self) -> FallbackView {
+    pub fn view(&self) -> FallbackView {
         self.vote.scope.view
     }
 
@@ -214,7 +214,7 @@ where
 
 /// `⟨Pre-Prepare, slot, v, x, J, σ_l⟩`: the leader's proposal for view `v`
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub(crate) struct PrePrepareMsg<V: Votable, C: ValidateCert> {
+pub struct PrePrepareMsg<V: Votable, C: ValidateCert> {
     pub slot: Slot,
     pub view: FallbackView,
     pub value: V,
@@ -231,7 +231,7 @@ pub(crate) struct PrePrepareMsg<V: Votable, C: ValidateCert> {
 }
 
 impl<V: Votable, C: ValidateCert> PrePrepareMsg<V, C> {
-    pub(crate) fn new_signed(
+    pub fn new_signed(
         slot: Slot,
         view: FallbackView,
         value: V,
@@ -578,27 +578,16 @@ mod signing_tests {
 
 #[cfg(test)]
 mod rlp_tests {
-    use monad_mcp_common::SlotDeadline;
-
     use super::{
         super::{
             super::{
-                super::{
-                    super::{
-                        conductor::{CadenceConductor, acs::median::MedianAcs},
-                        message::CadenceWireMsg,
-                        test_utils::{assert_roundtrip, assert_serialization_roundtrip},
-                    },
-                    chorus,
-                    types::Lanes,
-                },
+                super::{super::test_utils::assert_roundtrip, types::Lanes},
                 EnterFallbackCert, Entry, Metablock,
             },
             test_helpers as h,
         },
         *,
     };
-    type Wire = CadenceWireMsg<chorus::Chorus, CadenceConductor<MedianAcs<SlotDeadline>>>;
 
     #[test]
     fn every_mvba_variant_and_optional_certificate_roundtrips() {
@@ -665,8 +654,6 @@ mod rlp_tests {
                 M::Tc(tc) => assert!(tc.verify(&validators)),
                 _ => {}
             }
-            // The outer Chorus and Cadence framing also wraps the MVBA arm.
-            assert_serialization_roundtrip(&Wire::Slot(chorus::ChorusMessage::Fallback(message)));
         }
     }
 

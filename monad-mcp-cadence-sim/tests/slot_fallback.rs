@@ -82,11 +82,8 @@ fn slot_fallback(node: NodeId, validator_data: &Arc<ValidatorData>) -> SlotFallb
     )
 }
 
-/// A view's number; the type keeps it private, its wire encoding does not
 fn view_number(view: FallbackView) -> u64 {
-    let bytes = alloy_rlp::encode(view);
-    <u64 as alloy_rlp::Decodable>::decode(&mut bytes.as_slice())
-        .expect("a view encodes as its number")
+    view.get()
 }
 
 fn entries(block: &Metablock) -> Lanes<Entry> {

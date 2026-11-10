@@ -82,7 +82,7 @@ impl FallbackView {
     const GENESIS: Self = Self(0);
     const FIRST: Self = Self(1);
 
-    const fn get(self) -> u64 {
+    pub const fn get(self) -> u64 {
         self.0
     }
 

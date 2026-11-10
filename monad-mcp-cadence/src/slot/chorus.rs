@@ -22,8 +22,11 @@ pub use super::fast::Entry;
 use super::{
     SlotConsensus, SlotOutput,
     fallback::{
-        FallbackCommitQc, MVBAOutput, Metablock, Mvba as _, monad_mvba,
-        monad_mvba::{MonadMvba, MvbaContext},
+        FallbackCommitQc, MVBAOutput, Metablock, Mvba as _,
+        leaderless::{DummyQc, LeaderlessMessage},
+        monad_mvba,
+        monad_mvba::MvbaContext,
+        slot_fallback::{CertifiedMetablock, SlotCommitProof, SlotFallback, SlotFallbackMessage},
     },
     fast::{
         BatchVoteMsg, EnterFallbackCert, FallbackTransitionOutcome, FallbackVoteMsg, FastBlock,
@@ -37,9 +40,9 @@ use super::{
 };
 
 /// The fallback path's agreement protocol, at the instantiation Chorus runs it
-type FallbackState = MonadMvba<Metablock, EnterFallbackCert>;
-type FallbackMessage = monad_mvba::MvbaMessage<Metablock, EnterFallbackCert>;
-type FallbackTimer = monad_mvba::TimerEvent<Metablock>;
+type FallbackState = SlotFallback;
+type FallbackMessage = SlotFallbackMessage;
+type FallbackTimer = monad_mvba::TimerEvent<CertifiedMetablock>;
 
 #[derive(derive_more::From, Clone, PartialEq, Eq, Hash, Debug)]
 #[non_exhaustive]
@@ -136,6 +139,11 @@ pub enum SlotFinalization {
         qc: FallbackCommitQc<<Metablock as super::fallback::Votable>::Entries>,
         block: Metablock,
     },
+    /// The fallback path decided by the dummy vote rather than an MVBA view
+    FallbackDummy {
+        qc: DummyQc,
+        block: Metablock,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -148,16 +156,22 @@ impl SlotFinalization {
     pub fn certificate_message(&self) -> ChorusMessage {
         match self {
             Self::Fast { qc } => ChorusMessage::FastCommitQc(qc.clone()),
-            Self::Fallback { qc, .. } => {
-                ChorusMessage::Fallback(monad_mvba::MvbaMessage::CommitQc(qc.clone()))
-            }
+            Self::Fallback { qc, .. } => ChorusMessage::Fallback(SlotFallbackMessage::Mvba(
+                monad_mvba::MvbaMessage::CommitQc(qc.clone()),
+            )),
+            Self::FallbackDummy { qc, block } => ChorusMessage::Fallback(
+                SlotFallbackMessage::Leaderless(LeaderlessMessage::DummyDecision {
+                    qc: qc.clone(),
+                    block: block.clone(),
+                }),
+            ),
         }
     }
 
     pub fn path(&self) -> FinalizationPath {
         match self {
             Self::Fast { .. } => FinalizationPath::Fast,
-            Self::Fallback { .. } => FinalizationPath::Fallback,
+            Self::Fallback { .. } | Self::FallbackDummy { .. } => FinalizationPath::Fallback,
         }
     }
 
@@ -165,6 +179,7 @@ impl SlotFinalization {
         match self {
             Self::Fast { qc } => &qc.sigcol,
             Self::Fallback { qc, .. } => &qc.sigcol,
+            Self::FallbackDummy { qc, .. } => &qc.sigcol,
         }
     }
 
@@ -172,6 +187,7 @@ impl SlotFinalization {
         let entries = match self {
             Self::Fast { qc } => &qc.verdict.entries,
             Self::Fallback { qc, .. } => &qc.verdict.0,
+            Self::FallbackDummy { qc, .. } => &qc.verdict.0,
         };
         entries.as_ref().map(|entry| match entry {
             Entry::Positive(pid) => Some(*pid),
@@ -540,7 +556,9 @@ impl Chorus {
             self.push(SlotOutput::Local(ChorusDACommand::PinFinal { j, pid }));
         }
 
-        let SlotFinalization::Fallback { block, .. } = finalization else {
+        let (SlotFinalization::Fallback { block, .. }
+        | SlotFinalization::FallbackDummy { block, .. }) = finalization
+        else {
             return;
         };
         for (j, cert) in block.certified_entries().into_indexed_iter() {
@@ -588,11 +606,11 @@ impl Chorus {
         self.drain_fallback();
     }
 
-    /// The MVBA arms its own timers and asks for its own sends; this layer only
-    /// converts them, and finalizes once a commit certificate is complete
+    /// The fallback path arms its own timers and asks for its own sends; this
+    /// layer only converts them, and finalizes once either certificate decides
     fn drain_fallback(&mut self) {
-        // drained first: finalize -> abandon clears the MVBA's output queue,
-        // which holds the decide-broadcast certificate
+        // drained first: finalize -> abandon clears the fallback's output
+        // queue, which holds the decide-broadcast certificate
         while let Some(output) = self.fallback.poll() {
             match output {
                 MVBAOutput::Broadcast(message) => self.broadcast(message),
@@ -607,12 +625,13 @@ impl Chorus {
             }
         }
 
-        if let Some(qc) = self.fallback.decision_proof()
+        if let Some(proof) = self.fallback.decision_proof()
             && let Some(block) = self.fallback.decision()
         {
-            let finalization = SlotFinalization::Fallback {
-                qc: qc.clone(),
-                block: block.clone(),
+            let block = block.clone();
+            let finalization = match proof.clone() {
+                SlotCommitProof::Mvba(qc) => SlotFinalization::Fallback { qc, block },
+                SlotCommitProof::Dummy(qc) => SlotFinalization::FallbackDummy { qc, block },
             };
             self.finalize(finalization);
         }
@@ -932,5 +951,103 @@ mod tests {
             scheduled_timers(&mut chorus),
             vec![TimerEvent::FallbackDecision]
         );
+    }
+
+    // the commit votes fall short of a quorum, so the validator enters the
+    // fallback path on its fast block, and the dummy vote decides there
+    #[test]
+    fn a_dummy_qc_finalization_is_recorded_as_the_fallback_path() {
+        use super::super::{
+            fallback::leaderless::DummyVote,
+            types::{ProposerSchedule as _, VoteMsg},
+        };
+
+        let config = ChorusConfig {
+            delta: TimestampDelta::from_millis(100),
+        };
+        let validator_data = Arc::new(validator_data(4));
+        let header_auth = Arc::new(HeaderAuth::new(|_| false));
+        let proposers = Arc::new(FixedProposerSchedule::new(vec![NodeId::dummy(0)]));
+        let me = NodeId::dummy(0);
+        let context = ChorusContext {
+            node_id: me,
+            key: Arc::new(me.keypair()),
+            validator_data: validator_data.clone(),
+            header_auth: header_auth.clone(),
+            proposers: proposers.clone(),
+        };
+        let mut chorus = Chorus::new(Slot(1), &config, &context);
+
+        // three all-negative votes form the fast block and the commit vote
+        chorus.handle_deadline();
+        let proposer_set = proposers
+            .proposers_at(Slot(1))
+            .expect("fixed schedule covers every slot");
+        for id in 1..4 {
+            let voter = NodeId::dummy(id);
+            let mut fast = FastPath::new(
+                Slot(1),
+                proposer_set.num_lanes(),
+                Arc::new(voter.keypair()),
+                validator_data.clone(),
+                header_auth.clone(),
+            );
+            let vote = fast.on_deadline().expect("the first deadline casts a vote");
+            chorus.handle_message(voter, ChorusMessage::BatchVote(vote));
+        }
+        chorus.handle_timer(TimerEvent::FallbackTransition);
+        chorus.handle_timer(TimerEvent::FallbackDecision);
+
+        // what the fallback path sent at entry comes back off the wire
+        let sent: Vec<_> = std::iter::from_fn(|| chorus.poll())
+            .filter_map(|output| match output {
+                SlotOutput::Broadcast(ChorusMessage::Fallback(message)) => Some(message),
+                _ => None,
+            })
+            .collect();
+        let block = sent
+            .iter()
+            .find_map(|message| match message {
+                SlotFallbackMessage::Leaderless(LeaderlessMessage::FastInput(block)) => {
+                    Some(block.clone())
+                }
+                _ => None,
+            })
+            .expect("a fast input is broadcast at entry");
+        for message in sent {
+            chorus.handle_message(me, ChorusMessage::Fallback(message));
+        }
+        for id in 1..3 {
+            let voter = NodeId::dummy(id);
+            let vote = VoteMsg::new_signed(Slot(1), DummyVote(block.entries()), &voter.keypair());
+            let vote = SlotFallbackMessage::Leaderless(LeaderlessMessage::DummyVote(vote));
+            chorus.handle_message(voter, ChorusMessage::Fallback(vote));
+        }
+
+        let outputs: Vec<_> = std::iter::from_fn(|| chorus.poll()).collect();
+        let finalization = outputs
+            .iter()
+            .find_map(|output| match output {
+                SlotOutput::Finalize(finalization) => Some(finalization.clone()),
+                _ => None,
+            })
+            .expect("the DummyQC finalizes the slot");
+        assert!(matches!(
+            finalization,
+            SlotFinalization::FallbackDummy { .. }
+        ));
+        assert_eq!(finalization.path(), FinalizationPath::Fallback);
+
+        // the certificate kept for re-sending is the decision broadcast here
+        let certificate = finalization.certificate_message();
+        assert!(matches!(
+            &certificate,
+            ChorusMessage::Fallback(SlotFallbackMessage::Leaderless(
+                LeaderlessMessage::DummyDecision { .. }
+            ))
+        ));
+        assert!(outputs.iter().any(|output| {
+            matches!(output, SlotOutput::Broadcast(message) if *message == certificate)
+        }));
     }
 }

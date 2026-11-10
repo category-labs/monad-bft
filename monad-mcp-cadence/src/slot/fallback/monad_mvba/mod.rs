@@ -51,7 +51,7 @@ mod messages;
 mod metablock;
 mod phases;
 #[cfg(test)]
-mod test_helpers;
+pub(crate) mod test_helpers;
 #[cfg(test)]
 mod tests;
 
@@ -64,10 +64,8 @@ use block_store::{BlockRequestMsg, BlockResponseMsg, BlockStore};
 pub use certificates::FallbackCommitQc;
 use certificates::{PrepareQc, TimeoutCertificate};
 use collectors::ViewCollectors;
-pub use messages::MvbaMessage;
-use messages::{
-    CommitVoteMsg, FallbackCommitVote, PrePrepareMsg, PrepareVote, PrepareVoteMsg, TimeoutMsg,
-};
+use messages::{CommitVoteMsg, FallbackCommitVote, PrepareVote, PrepareVoteMsg, TimeoutMsg};
+pub use messages::{MvbaMessage, PrePrepareMsg};
 use phases::{Decided, Phase, Transition};
 
 use super::{

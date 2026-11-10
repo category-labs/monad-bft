@@ -210,37 +210,70 @@ pub struct Proposal {
 // The readers below look inside MVBA messages whose payload types the core
 // keeps `pub(crate)`; a pattern cannot even name those variants from here.
 
-pub fn proposal(_message: &SlotFallbackMessage) -> Option<Proposal> {
-    todo!("D1: needs PrePrepareMsg and TimeoutCertificate pub, and FallbackView::get pub")
+pub fn proposal(message: &SlotFallbackMessage) -> Option<Proposal> {
+    let SlotFallbackMessage::Mvba(MvbaMessage::PrePrepare(msg)) = message else {
+        return None;
+    };
+    Some(Proposal {
+        view: msg.view.get(),
+        justified: msg.tc.is_some(),
+        value: msg.value.clone(),
+        cert: msg.cert.clone(),
+    })
 }
 
 /// A Prepare's view and entries
-pub fn prepare(_message: &SlotFallbackMessage) -> Option<(u64, Lanes<Entry>)> {
-    todo!("D1: needs PrepareVote pub")
+pub fn prepare(message: &SlotFallbackMessage) -> Option<(u64, Lanes<Entry>)> {
+    let SlotFallbackMessage::Mvba(MvbaMessage::Prepare(msg)) = message else {
+        return None;
+    };
+    Some((msg.scope.view.get(), msg.vote.0.clone()))
 }
 
-pub fn commit_view(_message: &SlotFallbackMessage) -> Option<u64> {
-    todo!("D1: needs CommitVoteMsg pub")
+pub fn commit_view(message: &SlotFallbackMessage) -> Option<u64> {
+    let SlotFallbackMessage::Mvba(MvbaMessage::Commit(msg)) = message else {
+        return None;
+    };
+    Some(msg.scope.view.get())
 }
 
-pub fn timeout_view(_message: &SlotFallbackMessage) -> Option<u64> {
-    todo!("D1: needs TimeoutMsg and TimeoutVote pub")
+pub fn timeout_view(message: &SlotFallbackMessage) -> Option<u64> {
+    let SlotFallbackMessage::Mvba(MvbaMessage::Timeout(msg)) = message else {
+        return None;
+    };
+    Some(msg.view().get())
 }
 
 /// The view a standalone `Tc` certifies as left
-pub fn tc_view(_message: &SlotFallbackMessage) -> Option<u64> {
-    todo!("D1: needs TimeoutCertificate pub")
+pub fn tc_view(message: &SlotFallbackMessage) -> Option<u64> {
+    let SlotFallbackMessage::Mvba(MvbaMessage::Tc(tc)) = message else {
+        return None;
+    };
+    Some(tc.view.get())
 }
 
 /// A justified Pre-Prepare re-signed by `leader` around `value` and `cert`, as
 /// a Byzantine leader would send it; any other message is returned as is
 pub fn forge_pre_prepare(
-    _message: SlotFallbackMessage,
-    _value: CertifiedMetablock,
-    _cert: Option<NfCert>,
-    _leader: NodeId,
+    message: SlotFallbackMessage,
+    value: CertifiedMetablock,
+    cert: Option<NfCert>,
+    leader: NodeId,
 ) -> SlotFallbackMessage {
-    todo!("D1: needs PrePrepareMsg and PrePrepareMsg::new_signed pub")
+    match message {
+        SlotFallbackMessage::Mvba(MvbaMessage::PrePrepare(msg)) if msg.tc.is_some() => {
+            let forged = cadence::slot::fallback::monad_mvba::PrePrepareMsg::new_signed(
+                msg.slot,
+                msg.view,
+                value,
+                msg.tc,
+                cert,
+                &leader.keypair(),
+            );
+            SlotFallbackMessage::Mvba(MvbaMessage::PrePrepare(forged))
+        }
+        message => message,
+    }
 }
 
 fn certificate_of(message: &SlotFallbackMessage) -> Option<SlotCommitProof> {
