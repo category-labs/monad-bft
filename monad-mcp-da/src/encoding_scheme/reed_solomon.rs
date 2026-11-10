@@ -41,7 +41,7 @@ impl ReedSolomon {
 
     // one symbol per chunk, in chunk id order. the caller must ensure an
     // even symbol_len
-    pub(crate) fn encode(&self, message: &[u8], symbol_len: usize) -> Vec<Bytes> {
+    pub(crate) fn encode(&self, message: &Bytes, symbol_len: usize) -> Vec<Bytes> {
         let mut symbols = source_symbols(message, self.num_source_chunks, symbol_len);
         let num_recovery_chunks = self.num_recovery_chunks();
         if num_recovery_chunks == 0 {
@@ -120,12 +120,18 @@ impl ReedSolomon {
     }
 }
 
-// the message zero padded to whole symbols
-fn source_symbols(message: &[u8], num_source_chunks: usize, symbol_len: usize) -> Vec<Bytes> {
+// the message zero padded to whole symbols. A symbol the message fills
+// is a view into it, not a copy; only a partial last symbol is copied
+// and padded.
+fn source_symbols(message: &Bytes, num_source_chunks: usize, symbol_len: usize) -> Vec<Bytes> {
     let mut sources = Vec::with_capacity(num_source_chunks);
     for i in 0..num_source_chunks {
         let start = (i * symbol_len).min(message.len());
         let end = ((i + 1) * symbol_len).min(message.len());
+        if end - start == symbol_len {
+            sources.push(message.slice(start..end));
+            continue;
+        }
         let mut symbol = BytesMut::zeroed(symbol_len);
         symbol[..end - start].copy_from_slice(&message[start..end]);
         sources.push(symbol.freeze());
@@ -140,7 +146,7 @@ mod tests {
     const MESSAGE: [u8; 9] = [1, 2, 3, 4, 5, 6, 7, 8, 9];
 
     fn symbols() -> Vec<Bytes> {
-        ReedSolomon::new(7, 3).encode(&MESSAGE, 4)
+        ReedSolomon::new(7, 3).encode(&Bytes::from_static(&MESSAGE), 4)
     }
 
     // the symbols of the listed chunks, as a decoder receives them
@@ -169,6 +175,16 @@ mod tests {
     }
 
     #[test]
+    fn whole_sources_are_views_into_the_message() {
+        let message = Bytes::from_static(&MESSAGE);
+        let symbols = ReedSolomon::new(7, 3).encode(&message, 4);
+        assert_eq!(symbols[0].as_ptr(), message.as_ptr());
+        assert_eq!(symbols[1].as_ptr(), message[4..].as_ptr());
+        // the padded last source is a copy
+        assert_ne!(symbols[2].as_ptr(), message[8..].as_ptr());
+    }
+
+    #[test]
     fn any_k_symbols_decode() {
         let symbols = symbols();
         let code = ReedSolomon::new(7, 3);
@@ -191,7 +207,7 @@ mod tests {
     #[test]
     fn a_code_without_recovery_needs_every_source() {
         let code = ReedSolomon::new(2, 2);
-        let symbols = code.encode(&MESSAGE[..8], 4);
+        let symbols = code.encode(&Bytes::from_static(&MESSAGE[..8]), 4);
         assert_eq!(symbols.len(), 2);
         assert_eq!(code.decode(received(&symbols, &[1]), 8), None);
         let decoded = code.decode(received(&symbols, &[0, 1]), 8);
