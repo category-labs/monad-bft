@@ -385,6 +385,7 @@ async fn main() -> std::io::Result<()> {
         with_metrics.clone(),
         rpc_comparator.clone(),
         args.feehistory_max_concurrent_requests,
+        args.eth_get_storage_values_max_concurrent_requests,
     );
 
     // Configure the websocket server if enabled

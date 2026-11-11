@@ -112,6 +112,10 @@ pub struct Cli {
     #[arg(long, default_value_t = 100)]
     pub feehistory_max_concurrent_requests: u32,
 
+    /// Set the max concurrent requests for eth_getStorageValues
+    #[arg(long, default_value_t = 32)]
+    pub eth_get_storage_values_max_concurrent_requests: u32,
+
     /// Set the number of threads used for executing eth_call and eth_estimateGas
     #[arg(long, default_value_t = 2)]
     pub eth_call_executor_threads: u32,

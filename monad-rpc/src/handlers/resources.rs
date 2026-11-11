@@ -53,6 +53,7 @@ pub struct MonadRpcResources {
     pub metrics: Option<Metrics>,
     pub rpc_comparator: Option<RpcComparator>,
     pub feehistory_limiter: Arc<Semaphore>,
+    pub eth_get_storage_values_limiter: Arc<Semaphore>,
 }
 
 impl MonadRpcResources {
@@ -77,6 +78,7 @@ impl MonadRpcResources {
         metrics: Option<Metrics>,
         rpc_comparator: Option<RpcComparator>,
         feehistory_max_concurrent_requests: u32,
+        eth_get_storage_values_max_concurrent_requests: u32,
     ) -> Self {
         Self {
             txpool_bridge_client,
@@ -99,6 +101,9 @@ impl MonadRpcResources {
             rpc_comparator,
             feehistory_limiter: Arc::new(Semaphore::new(
                 feehistory_max_concurrent_requests as usize,
+            )),
+            eth_get_storage_values_limiter: Arc::new(Semaphore::new(
+                eth_get_storage_values_max_concurrent_requests as usize,
             )),
         }
     }
