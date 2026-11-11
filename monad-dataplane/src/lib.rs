@@ -450,7 +450,7 @@ impl UdpSocketReader {
 pub struct UdpSocketWriter {
     socket_id: UdpSocketId,
     socket_addr: SocketAddr,
-    egress_tx: mpsc::Sender<UdpMsg>,
+    egress_tx: mpsc::Sender<Box<UdpMsg>>,
     msgs_dropped: Arc<AtomicUsize>,
     metrics: DataplaneMetrics,
 }
@@ -509,13 +509,13 @@ impl UdpSocketHandle {
 impl UdpSocketWriter {
     pub fn write(&self, dst: SocketAddr, payload: Bytes, stride: u16) {
         let msg_length = payload.len();
-        let result = self.egress_tx.try_send(UdpMsg {
+        let result = self.egress_tx.try_send(Box::new(UdpMsg {
             socket_id: self.socket_id,
             dst,
             payload,
             stride,
             priority: UdpPriority::Regular,
-        });
+        }));
 
         match result {
             Ok(()) => {}
@@ -792,18 +792,20 @@ impl BroadcastMsg {
         self,
         socket_id: UdpSocketId,
         priority: UdpPriority,
-    ) -> impl Iterator<Item = UdpMsg> {
+    ) -> impl Iterator<Item = Box<UdpMsg>> {
         let Self {
             targets,
             payload,
             stride,
         } = self;
-        targets.into_iter().map(move |dst| UdpMsg {
-            socket_id,
-            dst,
-            payload: payload.clone(),
-            stride,
-            priority,
+        targets.into_iter().map(move |dst| {
+            Box::new(UdpMsg {
+                socket_id,
+                dst,
+                payload: payload.clone(),
+                stride,
+                priority,
+            })
         })
     }
 }
@@ -823,14 +825,16 @@ impl UnicastMsg {
         self,
         socket_id: UdpSocketId,
         priority: UdpPriority,
-    ) -> impl Iterator<Item = UdpMsg> {
+    ) -> impl Iterator<Item = Box<UdpMsg>> {
         let Self { msgs, stride } = self;
-        msgs.into_iter().map(move |(dst, payload)| UdpMsg {
-            socket_id,
-            dst,
-            payload,
-            stride,
-            priority,
+        msgs.into_iter().map(move |(dst, payload)| {
+            Box::new(UdpMsg {
+                socket_id,
+                dst,
+                payload,
+                stride,
+                priority,
+            })
         })
     }
 }

@@ -74,7 +74,7 @@ impl PacingItem for UdpMsg {
     }
 }
 
-impl Scheduled<UdpMsg> {
+impl Scheduled<Box<UdpMsg>> {
     pub(crate) fn take_chunk(&mut self) -> Bytes {
         self.item.payload.split_to(self.batch_bytes)
     }
@@ -150,7 +150,7 @@ fn set_mtu_discovery(socket: &UdpSocket) {
 
 pub(crate) fn spawn_tasks(
     socket_configs: Vec<(UdpSocketId, SocketAddr, mpsc::Sender<RecvUdpMsg>)>,
-    udp_egress_rx: mpsc::Receiver<UdpMsg>,
+    udp_egress_rx: mpsc::Receiver<Box<UdpMsg>>,
     config: UdpTaskConfig,
     bound_addrs_tx: std_mpsc::SyncSender<Vec<(UdpSocketId, SocketAddr)>>,
     metrics: DataplaneMetrics,
@@ -360,7 +360,11 @@ async fn rx_multishot_socket(
     }
 }
 
-fn enqueue_udp_msg(queue: &mut PacingQueue<UdpMsg>, metrics: &DataplaneMetrics, msg: UdpMsg) {
+fn enqueue_udp_msg(
+    queue: &mut PacingQueue<Box<UdpMsg>>,
+    metrics: &DataplaneMetrics,
+    msg: Box<UdpMsg>,
+) {
     let SocketAddr::V4(destination) = msg.dst else {
         metrics.udp_egress_messages_dropped.inc();
         debug!(destination = ?msg.dst, "IPv6 UDP message is not supported");
@@ -372,7 +376,7 @@ fn enqueue_udp_msg(queue: &mut PacingQueue<UdpMsg>, metrics: &DataplaneMetrics, 
 
 async fn tx_pacing(
     dispatch_tx: Sender<Vec<UdpSend>>,
-    mut udp_egress_rx: mpsc::Receiver<UdpMsg>,
+    mut udp_egress_rx: mpsc::Receiver<Box<UdpMsg>>,
     up_bandwidth_mbps: u64,
     pacing_config: UdpPacingConfig,
     metrics: DataplaneMetrics,
@@ -587,12 +591,14 @@ mod tests {
         let (sender, receiver) = mpsc::channel(4);
         let (dispatch_tx, dispatch_rx) = async_channel::bounded(1);
         dispatch_tx.try_send(Vec::new()).unwrap();
-        let message = || UdpMsg {
-            socket_id: UdpSocketId::Raptorcast,
-            dst: "127.0.0.1:1".parse().unwrap(),
-            payload: Bytes::from_static(&[1]),
-            stride: 1,
-            priority: monad_types::UdpPriority::High,
+        let message = || {
+            Box::new(UdpMsg {
+                socket_id: UdpSocketId::Raptorcast,
+                dst: "127.0.0.1:1".parse().unwrap(),
+                payload: Bytes::from_static(&[1]),
+                stride: 1,
+                priority: monad_types::UdpPriority::High,
+            })
         };
         assert!(sender.try_send(message()).is_ok());
         let mut pacing = std::pin::pin!(tx_pacing(
@@ -637,13 +643,13 @@ mod tests {
         let (sender, receiver) = mpsc::channel(4);
         for _ in 0..2 {
             assert!(sender
-                .try_send(UdpMsg {
+                .try_send(Box::new(UdpMsg {
                     socket_id: UdpSocketId::Raptorcast,
                     dst: regular.local_addr().unwrap(),
                     payload: vec![1; 60_000].into(),
                     stride: 60_000,
                     priority: monad_types::UdpPriority::Regular,
-                })
+                }))
                 .is_ok());
         }
         spawn(tx_pacing(
@@ -662,13 +668,13 @@ mod tests {
         assert_eq!(result.unwrap().0, 60_000);
         // Regular traffic is cooling for about 480 ms; the new peer need not wait.
         assert!(sender
-            .try_send(UdpMsg {
+            .try_send(Box::new(UdpMsg {
                 socket_id: UdpSocketId::Raptorcast,
                 dst: high.local_addr().unwrap(),
                 payload: Bytes::from_static(&[2]),
                 stride: 1,
                 priority: monad_types::UdpPriority::High,
-            })
+            }))
             .is_ok());
         let (result, payload) =
             time::timeout(Duration::from_millis(100), high.recv_from(vec![0; 1]))
