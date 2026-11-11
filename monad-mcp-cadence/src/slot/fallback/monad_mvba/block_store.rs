@@ -48,6 +48,9 @@ pub(crate) struct BlockStore<V: Votable> {
     retransmit_timeout: TimestampDelta,
     /// Blocks held, keyed by the entries that identify them
     known: HashMap<V::Entries, V>,
+    /// `Accepted_i`: entries this validator sent a Prepare on. A certificate
+    /// over them can surface in any later view, so their blocks outlive `gc`
+    accepted: HashSet<V::Entries>,
     /// Entries requested with no valid response back yet. Each carries its own
     /// [`super::TimerEvent::BlockRetransmit`], keyed by the very entries it
     /// asks for, so no arming state is tracked here: a fire that finds its
@@ -63,6 +66,7 @@ impl<V: ValidateInput + Votable> BlockStore<V> {
                 .checked_mul(BLOCK_RETRANSMIT_DELTAS)
                 .expect("block retransmit timeout overflows the timestamp range"),
             known: HashMap::new(),
+            accepted: HashSet::new(),
             pending: HashSet::new(),
         }
     }
@@ -71,6 +75,13 @@ impl<V: ValidateInput + Votable> BlockStore<V> {
         let entries = block.entries();
         self.pending.remove(&entries);
         self.known.insert(entries, block);
+    }
+
+    /// [`BlockStore::remember`] for a block this validator is about to send a
+    /// Prepare on: held until the instance is dropped
+    pub(crate) fn accept(&mut self, block: V) {
+        self.accepted.insert(block.entries());
+        self.remember(block);
     }
 
     pub(crate) fn get(&self, entries: &V::Entries) -> Option<&V> {
@@ -165,10 +176,12 @@ impl<V: ValidateInput + Votable> BlockStore<V> {
         true
     }
 
-    /// Drop everything unreachable from `keep`. A want that is still live is
-    /// re-registered on the next pass through the state machine
+    /// Drop everything unreachable from `keep` and never accepted. A want that
+    /// is still live is re-registered on the next pass through the state machine
     pub(crate) fn gc(&mut self, keep: &HashSet<V::Entries>) {
-        self.known.retain(|entries, _| keep.contains(entries));
+        let accepted = &self.accepted;
+        self.known
+            .retain(|entries, _| keep.contains(entries) || accepted.contains(entries));
         self.pending.retain(|entries| keep.contains(entries));
     }
 }

@@ -34,7 +34,7 @@ pub type FallbackCommitQc<E> = StrongQc<FallbackCommitVote<E>>;
 /// `TC_{slot, v}`: 2f+1 timeouts for view `v` from distinct senders
 #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable)]
 #[rlp(trailing)]
-pub(crate) struct TimeoutCertificate<E: Clone + Eq + Hash + Debug + Encodable> {
+pub struct TimeoutCertificate<E: Clone + Eq + Hash + Debug + Encodable> {
     pub slot: Slot,
     pub view: FallbackView,
     // exposing raw signature collection for BLS multisig optimization
@@ -74,7 +74,7 @@ where
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug, RlpEncodable, RlpDecodable)]
-pub(crate) struct TimeoutGroup {
+pub struct TimeoutGroup {
     pub vote: TimeoutVote,
     pub sigcol: SignatureCollection,
 }

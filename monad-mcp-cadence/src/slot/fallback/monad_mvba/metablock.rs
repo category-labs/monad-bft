@@ -36,7 +36,7 @@ impl Metablock {
         header_auth: &HeaderAuth,
         validator_data: &ValidatorData,
     ) -> bool {
-        if self.0.size() != num_lanes || self.slot() != slot {
+        if self.0.size() != num_lanes || self.slot() != slot || !self.is_in_place() {
             return false;
         }
 
@@ -74,7 +74,7 @@ impl Decodable for Metablock {
 
 impl Metablock {
     // a block has at least one lane, and all its entries name one slot
-    fn slot(&self) -> Slot {
+    pub(crate) fn slot(&self) -> Slot {
         self.0[Lane::new_unchecked(0)].scope().slot
     }
 
@@ -98,7 +98,7 @@ impl ValidateInput for Metablock {
         )
     }
 
-    fn fbcert_optional(&self) -> bool {
+    fn cert_optional(&self) -> bool {
         self.is_fast()
     }
 }

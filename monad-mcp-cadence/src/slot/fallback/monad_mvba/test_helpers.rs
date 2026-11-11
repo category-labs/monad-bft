@@ -58,7 +58,6 @@ fn pid(n: u64) -> ProposalId {
 pub(super) type MonadMvba = super::MonadMvba<Metablock, EnterFallbackCert>;
 pub(super) type Message = super::messages::MvbaMessage<Metablock, EnterFallbackCert>;
 pub(super) type PrePrepareMsg = super::messages::PrePrepareMsg<Metablock, EnterFallbackCert>;
-pub(super) type Justification = super::messages::Justification<Metablock, EnterFallbackCert>;
 pub(super) type TimeoutMsg = super::messages::TimeoutMsg<<Metablock as Votable>::Entries>;
 pub(super) type PrepareQc = super::certificates::PrepareQc<<Metablock as Votable>::Entries>;
 pub(super) type TimeoutCertificate =
@@ -67,27 +66,27 @@ pub(super) type ViewCollectors = super::collectors::ViewCollectors<Metablock, En
 pub(super) type TimerEvent = super::TimerEvent<Metablock>;
 
 pub(super) const NUM_NODES: u64 = 4;
-pub(super) const NUM_LANES: usize = 2;
-pub(super) const SLOT: Slot = Slot(0);
-pub(super) const DELTA: TimestampDelta = TimestampDelta::from_millis(10);
+pub(crate) const NUM_LANES: usize = 2;
+pub(crate) const SLOT: Slot = Slot(0);
+pub(crate) const DELTA: TimestampDelta = TimestampDelta::from_millis(10);
 
 pub(super) type Output = MVBAOutput<Message, TimerEvent>;
 
-pub(super) fn view(v: u64) -> FallbackView {
+pub(crate) fn view(v: u64) -> FallbackView {
     FallbackView(v)
 }
 
-pub(super) fn nodes() -> Vec<NodeId> {
+pub(crate) fn nodes() -> Vec<NodeId> {
     (0..NUM_NODES).map(NodeId::dummy).collect()
 }
 
 /// Three of four validators: a supermajority, since every validator has stake
 /// one
-pub(super) fn quorum() -> Vec<NodeId> {
+pub(crate) fn quorum() -> Vec<NodeId> {
     nodes()[..3].to_vec()
 }
 
-pub(super) fn validator_data() -> Arc<ValidatorData> {
+pub(crate) fn validator_data() -> Arc<ValidatorData> {
     use monad_mcp_common::spec::KeyPair as _;
 
     let valset: HashMap<_, _> = nodes()
@@ -107,7 +106,7 @@ pub(super) fn validator_data() -> Arc<ValidatorData> {
 
 /// The same round-robin the implementation uses, restated so the tests do not
 /// take their expectations from the code under test
-pub(super) fn leader_of(v: FallbackView) -> NodeId {
+pub(crate) fn leader_of(v: FallbackView) -> NodeId {
     let index = (SLOT.get() + v.get()) % NUM_NODES;
     nodes()[index as usize]
 }
@@ -126,7 +125,7 @@ pub(super) fn mvba(node: NodeId, validator_data: &Arc<ValidatorData>) -> MonadMv
 
 /// A valid metablock whose entries are determined by `seed`, so two seeds give
 /// two metablocks that cannot be confused for one another
-pub(super) fn metablock(seed: u64, validator_data: &ValidatorData) -> Metablock {
+pub(crate) fn metablock(seed: u64, validator_data: &ValidatorData) -> Metablock {
     Metablock::new(Lanes::new(NUM_LANES, |j| {
         let entry = Entry::Positive(pid(seed * 100 + usize::from(j) as u64));
         let fast_qc = strong_qc(
@@ -142,7 +141,7 @@ pub(super) fn metablock(seed: u64, validator_data: &ValidatorData) -> Metablock 
 /// Valid but *not* a fast metablock: its first entry rests on a fallback
 /// quorum. `entries()` matches [`metablock`] on the same seed, so the two
 /// differ only in their evidence
-pub(super) fn mixed_evidence_metablock(seed: u64, validator_data: &ValidatorData) -> Metablock {
+pub(crate) fn mixed_evidence_metablock(seed: u64, validator_data: &ValidatorData) -> Metablock {
     Metablock::new(Lanes::new(NUM_LANES, |j| {
         let entry = Entry::Positive(pid(seed * 100 + usize::from(j) as u64));
         if j == Lane::new_unchecked(0) {
@@ -165,12 +164,12 @@ pub(super) fn mixed_evidence_metablock(seed: u64, validator_data: &ValidatorData
 }
 
 /// A genuine fallback certificate for this slot
-pub(super) fn enter_fallback_cert(validator_data: &ValidatorData) -> EnterFallbackCert {
+pub(crate) fn enter_fallback_cert(validator_data: &ValidatorData) -> EnterFallbackCert {
     strong_qc(SLOT, EnterFallbackVote, &quorum(), validator_data)
 }
 
 /// Aggregate a genuine supermajority certificate over `vote`
-pub(super) fn strong_qc<V: IsVote>(
+pub(crate) fn strong_qc<V: IsVote>(
     scope: V::Scope,
     vote: V,
     signers: &[NodeId],
@@ -228,15 +227,13 @@ pub(super) fn pre_prepare(
     block: &Metablock,
     justification: Option<TimeoutCertificate>,
 ) -> (NodeId, Message) {
-    let justification = if v == view(1) {
-        Justification::FallbackCert(Some(enter_fallback_cert(&validator_data())))
+    if v == view(1) {
+        let cert = enter_fallback_cert(&validator_data());
+        pre_prepare_justified(v, block, None, Some(cert))
     } else {
-        Justification::Tc(
-            justification.expect("a view above 1 is justified by a timeout certificate"),
-        )
-    };
-
-    pre_prepare_justified(v, block, justification)
+        let tc = justification.expect("a view above 1 is justified by a timeout certificate");
+        pre_prepare_justified(v, block, Some(tc), None)
+    }
 }
 
 /// A view-1 pre-prepare carrying exactly the certificate given, for the cases
@@ -246,16 +243,17 @@ pub(super) fn pre_prepare_with_cert(
     block: &Metablock,
     cert: Option<EnterFallbackCert>,
 ) -> (NodeId, Message) {
-    pre_prepare_justified(v, block, Justification::FallbackCert(cert))
+    pre_prepare_justified(v, block, None, cert)
 }
 
 pub(super) fn pre_prepare_justified(
     v: FallbackView,
     block: &Metablock,
-    justification: Justification,
+    tc: Option<TimeoutCertificate>,
+    cert: Option<EnterFallbackCert>,
 ) -> (NodeId, Message) {
     let leader = leader_of(v);
-    let msg = PrePrepareMsg::new_signed(SLOT, v, block.clone(), justification, &leader.keypair());
+    let msg = PrePrepareMsg::new_signed(SLOT, v, block.clone(), tc, cert, &leader.keypair());
 
     (leader, Message::PrePrepare(msg))
 }
@@ -267,7 +265,7 @@ pub(super) fn delivered(message: Message) -> Option<Message> {
 
 /// A timeout certificate for `v`, aggregated from timeouts carrying
 /// `high_prep_qc`. No block travels with it
-pub(super) fn timeout_certificate(
+pub(crate) fn timeout_certificate(
     v: FallbackView,
     high_prep_qc: Option<PrepareQc>,
     validator_data: &ValidatorData,
@@ -331,7 +329,7 @@ pub(super) fn feed_commit_votes(
 
 /// A commit certificate over the entries of `block`, as the wire message
 /// carries it: the certificate alone
-pub(super) fn commit_qc_message(
+pub(crate) fn commit_qc_message(
     v: FallbackView,
     block: &Metablock,
     validator_data: &ValidatorData,
@@ -400,6 +398,30 @@ pub(super) fn scheduled_timers(outputs: &[Output]) -> Vec<TimerEvent> {
         .filter_map(|output| match output {
             MVBAOutput::ScheduleTimer { timer_event, .. } => Some(timer_event.clone()),
             MVBAOutput::Broadcast(_) | MVBAOutput::Unicast { .. } => None,
+        })
+        .collect()
+}
+
+pub(super) fn timer_durations(outputs: &[Output]) -> Vec<(TimerEvent, TimestampDelta)> {
+    outputs
+        .iter()
+        .filter_map(|output| match output {
+            MVBAOutput::ScheduleTimer {
+                duration,
+                timer_event,
+            } => Some((timer_event.clone(), *duration)),
+            MVBAOutput::Broadcast(_) | MVBAOutput::Unicast { .. } => None,
+        })
+        .collect()
+}
+
+/// The views of the timeout certificates broadcast on their own in `outputs`
+pub(super) fn forwarded_certificates(outputs: &[Output]) -> Vec<FallbackView> {
+    broadcasts(outputs)
+        .into_iter()
+        .filter_map(|message| match message {
+            Message::Tc(tc) => Some(tc.view),
+            _ => None,
         })
         .collect()
 }

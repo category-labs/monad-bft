@@ -46,21 +46,24 @@ pub(crate) struct SealingVotePool<V: IsVote> {
 }
 
 impl<V: IsVote> SealingVotePool<V> {
-    fn new(scope: V::Scope) -> Self {
+    pub(crate) fn new(scope: V::Scope) -> Self {
         Self {
             votes: VotePool::new(scope),
             sealed: OnceCell::new(),
         }
     }
 
-    fn add_vote(&mut self, voter: ValidatorIndex, msg: VoteMsg<V>) {
+    pub(crate) fn add_vote(&mut self, voter: ValidatorIndex, msg: VoteMsg<V>) {
         if self.sealed.get().is_some() {
             return;
         }
         self.votes.add_vote(voter, msg);
     }
 
-    fn try_form_strong_qc(&self, validator_data: &ValidatorData) -> Option<&StrongQc<V>> {
+    pub(crate) fn try_form_strong_qc(
+        &self,
+        validator_data: &ValidatorData,
+    ) -> Option<&StrongQc<V>> {
         if let Some(qc) = self.sealed.get() {
             return Some(qc);
         }
@@ -164,6 +167,10 @@ impl<V: Votable, C: ValidateCert> ViewCollectors<V, C> {
         self.timeout_votes.add_or_replace_vote(sender, msg.vote);
     }
 
+    pub(crate) fn prep_qcs(&self) -> impl Iterator<Item = &PrepareQc<V::Entries>> {
+        self.prep_qcs.values()
+    }
+
     /// Whether f+1 stake has timed out here
     pub(crate) fn has_honest_timeout(&self, validator_data: &ValidatorData) -> bool {
         let honest = validator_data.total_stake().honest_threshold();
@@ -221,11 +228,14 @@ impl<V: Votable, C: ValidateCert> ViewCollectors<V, C> {
             })
             .collect();
 
-        Some(TimeoutCertificate {
+        let tc = TimeoutCertificate {
             slot: self.slot,
             view: self.view,
             groups,
             high_prep_qc,
-        })
+        };
+        // every stored timeout passed `TimeoutMsg::is_well_formed`
+        debug_assert!(tc.is_well_formed());
+        Some(tc)
     }
 }

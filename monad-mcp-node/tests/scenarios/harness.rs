@@ -25,7 +25,7 @@ use std::{
 use monad_mcp_common::{Lanes, Slot, Timestamp, TimestampDelta};
 use monad_mcp_node::{
     Component, NodeOutput,
-    cadence::{Outbound, types::ProposalId},
+    cadence::{Outbound, slot::chorus::FinalizationPath, types::ProposalId},
     common::NodeId,
     config::{
         CadenceConfig, DAConfig, LedgerConfig, NetworkConfig, NodeConfig, ProposalConfig,
@@ -74,6 +74,8 @@ pub struct SimNode {
     id: NodeId,
     node: Box<dyn Component<Input = NodeInbound, Output = NodeOutput> + Send>,
     finalized: BTreeMap<Slot, Pattern>,
+    // the slots this node finalized through the fallback path
+    fallback: BTreeSet<Slot>,
     // hashes every message delivered to this node, with its time, in
     // delivery order
     delivery_hasher: RapidStreamHasherV3<'static>,
@@ -95,6 +97,7 @@ impl SimNode {
             id,
             node: Box::new(node),
             finalized: BTreeMap::new(),
+            fallback: BTreeSet::new(),
             delivery_hasher: RapidStreamHasherV3::new(&DEFAULT_RAPID_SECRETS),
             chunk_bytes: ChunkBytes::default(),
             clock_offset: ClockDiff(0),
@@ -136,6 +139,9 @@ impl SimNode {
                 NodeOutput::Network(outbound) => self.transmit(outbound, ctx),
                 NodeOutput::Ledger(finalized) => {
                     let pattern = finalized.finalization.pids();
+                    if finalized.finalization.path() == FinalizationPath::Fallback {
+                        self.fallback.insert(finalized.slot);
+                    }
                     self.finalized.insert(finalized.slot, pattern);
                 }
             }
@@ -402,6 +408,20 @@ pub fn assert_consistent_progress(swarm: &Swarm<SimNode>, horizon: Slot) {
             assert_eq!(seen, pattern, "node {id:?} disagrees on {slot:?}");
         }
     }
+}
+
+// some node finalized a slot below the horizon, one with a lane whose
+// proposer got nothing committed, through the fallback path
+pub fn assert_fallback_path_taken(swarm: &Swarm<SimNode>, horizon: Slot) {
+    let taken = swarm.node_ids().iter().any(|id| {
+        swarm.with_node(id, |node| {
+            node.fallback.range(..horizon).any(|slot| {
+                let pattern = node.finalized[slot].as_ref();
+                pattern.into_iter().any(|pid| pid.is_none())
+            })
+        })
+    });
+    assert!(taken, "no slot finalized through the fallback path");
 }
 
 // p50 RTT in ms between the testnet hosts, row = from

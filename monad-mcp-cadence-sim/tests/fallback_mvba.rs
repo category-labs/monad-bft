@@ -26,176 +26,26 @@ use monad_mcp_common::stub::NodeId;
 use monad_sim::{RunOutcome, Time, dist::uniform_duration};
 use monad_sim_swarm::Network;
 
+// only the fixtures are used here
+#[allow(dead_code)]
+mod helper;
+
 /// The inputs the fast path would have formed
 mod fixtures {
-    use std::{collections::HashMap, sync::Arc};
+    use std::sync::Arc;
 
-    use cadence::{
-        env::{D33, EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader as Header},
-        slot::fallback::{
-            CertifiedEntry, EnterFallbackCert, EnterFallbackVote, Entry, FallbackEntry, Metablock,
-            Mvba as _, monad_mvba::MvbaContext,
-        },
-        types::{
-            HeaderAuth, IsVote, ProposalId, StrongQc, ValidatorData, VoteMsg, VotePool, WeakQc,
-        },
-    };
-    use monad_mcp_cadence::{spec::ProposalHeader as _, stub as cadence};
+    use cadence::types::ValidatorData;
+    pub use helper::fixtures::*;
+    use monad_mcp_cadence::stub as cadence;
     use monad_mcp_cadence_sim::MonadMvba;
-    use monad_mcp_common::{
-        Lane, Lanes, ProposalScope, Slot, TimestampDelta,
-        spec::KeyPair as _,
-        stub::{NodeId, Stake},
-    };
+    use monad_mcp_common::{TimestampDelta, stub::NodeId};
 
-    const NUM_NODES: u64 = 4;
+    use super::helper;
 
-    /// The pid of a header whose root spells out `n`, so distinct seeds give distinct pids
-    fn pid(n: u64) -> ProposalId {
-        let mut hash = [0u8; 20];
-        hash[..8].copy_from_slice(&n.to_le_bytes());
-        let header = Header {
-            root: MerkleRoot(MerkleHash(hash)),
-            scheme: EncodingScheme::D33(D33 {
-                slot: SLOT,
-                lane: Lane::new_unchecked(0),
-                depth: 3,
-                msg_len: 1,
-                unix_ts: 0,
-            }),
-        };
-        header.pid()
-    }
-    const NUM_LANES: usize = 2;
-    const SLOT: Slot = Slot(0);
     pub const DELTA: TimestampDelta = TimestampDelta::from_millis(super::DELTA_MILLIS);
 
-    pub fn nodes() -> Vec<NodeId> {
-        (0..NUM_NODES).map(NodeId::dummy).collect()
-    }
-
-    /// A supermajority of the four: three signers
-    fn quorum() -> Vec<NodeId> {
-        nodes()[..3].to_vec()
-    }
-
-    pub fn validator_data() -> Arc<ValidatorData> {
-        let valset: HashMap<_, _> = nodes()
-            .into_iter()
-            .map(|node| (node, Stake::from(1u64)))
-            .collect();
-        let mapping = nodes()
-            .into_iter()
-            .map(|node| (node, node.keypair().pubkey()))
-            .collect();
-
-        Arc::new(ValidatorData::new(valset, mapping))
-    }
-
-    /// The same round-robin the implementation uses, restated so the tests do
-    /// not take their expectations from the code under test
-    /// TODO: wire up actual leader election
-    pub fn leader_of(view: u64) -> NodeId {
-        let index = (SLOT.get() + view) % NUM_NODES;
-        nodes()[index as usize]
-    }
-
     pub fn mvba(node: NodeId, validator_data: &Arc<ValidatorData>) -> MonadMvba {
-        MonadMvba::new(MvbaContext {
-            slot: SLOT,
-            num_lanes: NUM_LANES,
-            node_id: node,
-            key: Arc::new(node.keypair()),
-            validator_data: validator_data.clone(),
-            header_auth: Arc::new(HeaderAuth::new(|_| false)),
-            delta: DELTA,
-        })
-    }
-
-    /// A valid metablock whose entries are determined by `seed`, so two seeds
-    /// give two metablocks that cannot be confused for one another
-    pub fn fast_metablock(seed: u64, validator_data: &ValidatorData) -> Metablock {
-        Metablock::new(Lanes::new(NUM_LANES, |j| {
-            let entry = Entry::Positive(pid(seed * 100 + usize::from(j) as u64));
-            CertifiedEntry::FastQc(strong_qc(
-                ProposalScope::new(SLOT, j),
-                entry,
-                &quorum(),
-                validator_data,
-            ))
-        }))
-    }
-
-    /// Valid but *not* a fast metablock: its first entry rests on a fallback
-    /// quorum. `entries()` matches [`metablock`] on the same seed, so the two
-    /// differ only in their evidence
-    pub fn mixed_evidence_metablock(seed: u64, validator_data: &ValidatorData) -> Metablock {
-        Metablock::new(Lanes::new(NUM_LANES, |j| {
-            let entry = Entry::Positive(pid(seed * 100 + usize::from(j) as u64));
-            if j == Lane::new_unchecked(0) {
-                CertifiedEntry::FallbackQc(weak_qc(
-                    ProposalScope::new(SLOT, j),
-                    FallbackEntry(entry),
-                    &quorum(),
-                    validator_data,
-                ))
-            } else {
-                CertifiedEntry::FastQc(strong_qc(
-                    ProposalScope::new(SLOT, j),
-                    entry,
-                    &quorum(),
-                    validator_data,
-                ))
-            }
-        }))
-    }
-
-    /// A genuine fallback certificate for this slot
-    pub fn enter_fallback_cert(validator_data: &ValidatorData) -> EnterFallbackCert {
-        strong_qc(SLOT, EnterFallbackVote, &quorum(), validator_data)
-    }
-
-    fn vote_pool<V: IsVote>(scope: V::Scope, vote: V, signers: &[NodeId]) -> VotePool<V> {
-        use monad_mcp_cadence::spec::validator::ValidatorData as _;
-
-        let validator_data = validator_data();
-        let mut pool = VotePool::new(scope.clone());
-        for node in signers {
-            pool.add_vote(
-                validator_data.index_of(node).expect("a validator"),
-                VoteMsg::new_signed(scope.clone(), vote.clone(), &node.keypair()),
-            );
-        }
-        pool
-    }
-
-    /// Aggregate a genuine supermajority certificate over `vote`
-    fn strong_qc<V: IsVote>(
-        scope: V::Scope,
-        vote: V,
-        signers: &[NodeId],
-        validator_data: &ValidatorData,
-    ) -> StrongQc<V> {
-        vote_pool(scope, vote, signers)
-            .tally(validator_data)
-            .strong_qc()
-            .expect("the signers hold a supermajority of stake")
-    }
-
-    /// Aggregate a genuine `f+1` certificate over `vote`
-    fn weak_qc<V: IsVote>(
-        scope: V::Scope,
-        vote: V,
-        signers: &[NodeId],
-        validator_data: &ValidatorData,
-    ) -> WeakQc<V> {
-        let pool = vote_pool(scope, vote, signers);
-        let mut qcs = pool.tally(validator_data).weak_qcs().into_iter();
-        match (qcs.next(), qcs.next()) {
-            (Some(qc), None) => qc,
-            (None, _) => panic!("the signers hold more than an honest threshold of stake"),
-            (Some(_), Some(_)) => panic!("the signers all voted the same way"),
-        }
+        helper::fixtures::mvba(node, validator_data, DELTA)
     }
 }
 
@@ -209,8 +59,8 @@ const DELTA: Duration = Duration::from_millis(DELTA_MILLIS);
 const LATENCY: Duration = Duration::from_millis(100);
 const _: () = assert!(LATENCY.as_millis() <= DELTA.as_millis());
 
-/// The view timeout the state machine derives from Δ: proposal, prepare, commit
-const VIEW_TIMEOUT: Duration = Duration::from_millis(3 * DELTA_MILLIS);
+/// The view timeout the state machine derives from Δ: `T = Δ_R + 5Δ`, `Δ_R = 2Δ`
+const VIEW_TIMEOUT: Duration = Duration::from_millis(7 * DELTA_MILLIS);
 
 /// One leg of the agreement: pre-prepare, prepare, commit
 fn rounds(n: u32) -> Time {

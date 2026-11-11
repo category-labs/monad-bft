@@ -20,8 +20,8 @@ use monad_mcp_node::{Node, common::NodeId, da::ProposalScheme};
 use monad_sim_swarm::Network;
 
 use crate::harness::{
-    SLOT_INTERVAL, SimNode, assert_progress, deadline_of_slot, node_config, parallel_from_env,
-    start_swarm, time_of,
+    SLOT_INTERVAL, SimNode, assert_fallback_path_taken, assert_progress, deadline_of_slot,
+    node_config, parallel_from_env, start_swarm, time_of,
 };
 
 // 8 validators, 2 never start, every wire message dropped with 10%
@@ -71,4 +71,8 @@ fn six_of_eight_finalize_under(scheme: ProposalScheme) {
     // should progress to >= 80% of the slots. todo: strengthen this
     // to assert_consistent_progress.
     assert_progress(&swarm, Slot(SLOTS * 8 / 10));
+
+    // the down validators are proposers that never send, and every quorum
+    // needs all six live ones: a lost vote leaves the slot to the fallback path
+    assert_fallback_path_taken(&swarm, Slot(SLOTS * 8 / 10));
 }
