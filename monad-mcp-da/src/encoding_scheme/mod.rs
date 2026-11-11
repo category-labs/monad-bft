@@ -20,6 +20,7 @@ mod hollow;
 mod merkle;
 mod proposal_chunks;
 mod reed_solomon;
+pub(crate) mod shared;
 
 use bytes::Bytes;
 

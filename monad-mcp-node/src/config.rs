@@ -164,6 +164,7 @@ impl NodeConfig {
             validator_data,
             proposers,
             header_auth,
+            shared_encodings: self.da.shared_encodings,
         })
     }
 
@@ -295,12 +296,19 @@ impl Default for LeaderElectionConfig {
 #[serde(default)]
 pub struct DAConfig {
     pub completed_slot_retention: u64,
+    // for simulations, set in code: the nodes of one process share the
+    // encodings their proposals' authors built, so receivers skip proof
+    // checks, decoding and re-encoding without changing any output (see
+    // monad_mcp_da's encoding_scheme::shared)
+    #[serde(skip)]
+    pub shared_encodings: bool,
 }
 
 impl Default for DAConfig {
     fn default() -> Self {
         Self {
             completed_slot_retention: 50,
+            shared_encodings: false,
         }
     }
 }

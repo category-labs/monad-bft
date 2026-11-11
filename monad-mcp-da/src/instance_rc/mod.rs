@@ -74,7 +74,13 @@ impl RaptorcastInstance {
         let validator_data = &epoch_handle.validator_data;
         let (assignment, chunks) =
             encoding_scheme::instantiate(&header.header, author, validator_data);
-        let chunks = own.unwrap_or(chunks);
+        let shared = || {
+            let shared = epoch_handle.shared_encodings;
+            shared.then(|| {
+                encoding_scheme::shared::known_chunks(&header.header, assignment.num_chunks())
+            })?
+        };
+        let chunks = own.or_else(shared).unwrap_or(chunks);
         let self_index = assignment.index_of(&epoch_handle.self_id);
         let mut send_order: Vec<NodeIndex> = assignment.nodes().map(|(index, _)| index).collect();
         shuffle_sends(&mut send_order, &header.pid(), &epoch_handle.self_id);

@@ -34,7 +34,8 @@
 //! `BENCH_DOMAINS` (`node`, the default, or `region`), `BENCH_GROUPS` (the
 //! target group count with one domain per node) and `BENCH_SEQUENTIAL=0` to
 //! skip the sequential run. `BENCH_SCHEME=d33_hollow` runs either bench
-//! without chunk data on the wire.
+//! without chunk data on the wire; `BENCH_SHARED_ENCODINGS=1` runs it with
+//! the nodes sharing their encodings (same runs, less work).
 
 use std::time::{Duration, Instant};
 
@@ -77,6 +78,8 @@ fn nodes(seed: u64, validators: u64, payload: usize, source: SourceKind) -> Vec<
             config.proposal.source = source;
             config.proposal.max_payload_bytes = Some(payload);
             config.proposal.encoding_scheme = scheme();
+            config.da.shared_encodings =
+                std::env::var("BENCH_SHARED_ENCODINGS").is_ok_and(|v| v == "1");
             let node = Node::new(&config).expect("config builds");
             (node_id, SimNode::new(node_id, node))
         })
@@ -205,7 +208,7 @@ fn slot_cost() {
                  {} s per slot sequential, {:.2} s per slot on {threads} threads \
                  ({} groups, {:?} windows), {:.0} steps per slot, finalized through \
                  slot {through}, {committed} lanes committed; chunks delivered per slot: \
-                 {:.1} MB on the wire, {:.1} MB charged",
+                 {:.1} MB on the wire, {:.1} MB charged; digest {:016x}",
                 scheme(),
                 sequential.map_or("-".to_string(), |s| format!("{s:.2}")),
                 parallel,
@@ -214,6 +217,7 @@ fn slot_cost() {
                 steps as f64 / slots as f64,
                 mb_per_slot(chunks.wire),
                 mb_per_slot(chunks.charged),
+                run_digest(&swarm),
             );
         }
     }

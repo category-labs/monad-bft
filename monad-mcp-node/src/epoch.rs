@@ -40,6 +40,8 @@ pub struct EpochHandle {
     pub validator_data: Arc<ValidatorData>,
     pub proposers: Arc<NodeProposerSchedule>,
     pub header_auth: Arc<HeaderAuth>,
+    // see DAConfig::shared_encodings
+    pub shared_encodings: bool,
 }
 
 impl EpochHandle {
@@ -49,6 +51,7 @@ impl EpochHandle {
             key_pair: self.proposal_key.clone(),
             header_auth: self.header_auth.clone(),
             validator_data: self.validator_data.clone(),
+            shared_encodings: self.shared_encodings,
         }
     }
 

@@ -46,6 +46,10 @@ pub struct EpochHandle {
     pub header_auth: Arc<HeaderAuth>,
     // todo: only this field is slot-scoped, should we isolate it out?
     pub validator_data: Arc<ValidatorData>,
+    // for simulations: publish our encodings to, and start receiving from,
+    // the encodings shared by the nodes of this process (see
+    // encoding_scheme::shared). Outputs are the same either way.
+    pub shared_encodings: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -370,6 +374,7 @@ mod tests {
             key_pair: Arc::new(ProposalKeyPair::dummy(author())),
             header_auth: Arc::new(header_auth(schedule.clone(), validator_data.clone())),
             validator_data,
+            shared_encodings: false,
         };
         let mut runtime = DARuntime::new(da_config(), epoch_handle, schedule);
         open(&mut runtime, [SLOT.get()]);
@@ -470,6 +475,81 @@ mod tests {
             outputs.push(output);
         }
         outputs
+    }
+
+    // a receiver among nodes that share their encodings takes the chunks
+    // of a published proposal as one that does not, output for output,
+    // whatever arrives in whatever order
+    #[test]
+    fn a_receiver_with_shared_encodings_outputs_as_one_without() {
+        use rand::{SeedableRng as _, seq::SliceRandom as _};
+        use rand_chacha::ChaCha20Rng;
+
+        use super::super::{
+            chunk::{Chunk, ChunkData},
+            encoding_scheme::shared,
+            test_util::epoch_handle_for,
+        };
+
+        let handle = |self_id, shared_encodings| EpochHandle {
+            shared_encodings,
+            ..epoch_handle_for(self_id, 4, vec![author()])
+        };
+        let proposal = Proposal {
+            slot: SLOT,
+            lane: Lane::new_unchecked(0),
+            payload: Bytes::from((0..MESSAGE_LEN).map(|i| (i * 7) as u8).collect::<Vec<_>>()),
+        };
+        let author_handle = handle(author(), true);
+        let unix_ts = unix_seconds(NOW);
+        let authored =
+            AuthoredProposal::build(ProposalScheme::D33, &author_handle, &proposal, unix_ts);
+        // held for the test: the published encoding lives while it does
+        let authored = authored.expect("the message fits");
+        assert!(shared::is_published(&authored.header().header.root));
+
+        // every chunk from the author twice, a tampered copy of each, and
+        // each under the next chunk's id
+        let envelope = authored.envelope();
+        let num_chunks = envelope.num_chunks() as u16;
+        let mut arrivals = Vec::new();
+        for chunk in envelope.chunks() {
+            let (header, chunk_id, data) = chunk.into_parts();
+            let mut symbol = data.symbol.to_vec();
+            symbol[0] ^= 1;
+            let tampered = ChunkData {
+                symbol: Bytes::from(symbol),
+                proof: data.proof.clone(),
+            };
+            let misplaced = (chunk_id + 1) % num_chunks;
+            arrivals.push(Chunk::new(header.clone(), chunk_id, data.clone()));
+            arrivals.push(Chunk::new(header.clone(), chunk_id, data.clone()));
+            arrivals.push(Chunk::new(header.clone(), chunk_id, tampered));
+            arrivals.push(Chunk::new(header, misplaced, data));
+        }
+
+        for seed in 0..16 {
+            arrivals.shuffle(&mut ChaCha20Rng::seed_from_u64(seed));
+            let receiver = |shared_encodings| {
+                let schedule = proposer_schedule(vec![author()]);
+                let handle = handle(NodeId::dummy(1), shared_encodings);
+                let mut runtime = DARuntime::new(da_config(), handle, schedule);
+                open(&mut runtime, [SLOT.get()]);
+                runtime.handle_command(ChorusDACommand::ReleaseChunks, SLOT, NOW);
+                runtime
+            };
+            let (mut sharing, mut alone) = (receiver(true), receiver(false));
+            let mut resolved = false;
+            for chunk in &arrivals {
+                let envelope = ProposalEnvelope::from_chunk(chunk.clone());
+                let ingested = alone.ingest(&author(), envelope.clone());
+                assert_eq!(sharing.ingest(&author(), envelope), ingested);
+                let out = comparable(outputs(&mut alone));
+                resolved |= out.iter().any(|out| matches!(out, Out::Resolved(..)));
+                assert_eq!(comparable(outputs(&mut sharing)), out, "seed {seed}");
+            }
+            assert!(resolved, "seed {seed}");
+        }
     }
 
     #[test]

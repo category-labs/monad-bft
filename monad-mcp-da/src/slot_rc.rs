@@ -453,6 +453,7 @@ mod tests {
                 header.sig().signer == author()
             })),
             validator_data: Arc::new(validator_data(4)),
+            shared_encodings: false,
         };
         let schedule = proposer_schedule(vec![author()]);
         let mut raptorcast = SlotRaptorcast::new(&epoch_handle, SLOT, NOW, &*schedule, timing());
