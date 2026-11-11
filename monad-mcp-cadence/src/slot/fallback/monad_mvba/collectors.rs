@@ -35,8 +35,9 @@ use crate::spec::validator::ValidatorData as _;
 /// runs once
 ///
 /// Only sound for votes where every strong certificate over the scope
-/// certifies the same fact, which prepare and commit votes are (two strong
-/// quorums on different verdicts need a third of the stake to equivocate)
+/// certifies the same fact: `NotFull`, a unit verdict, and prepare, commit and
+/// `DummyVote` votes (two strong quorums on different verdicts need a third of
+/// the stake to equivocate)
 #[derive(Clone)]
 pub(crate) struct SealingVotePool<V: IsVote> {
     votes: VotePool<V>,
@@ -71,6 +72,16 @@ impl<V: IsVote> SealingVotePool<V> {
         let tally = self.votes.tally_at_least(validator_data, supermajority)?;
         let qc = tally.strong_qc()?;
         Some(self.sealed.get_or_init(|| qc))
+    }
+
+    /// The sealed certificate, without aggregating
+    pub(crate) fn sealed(&self) -> Option<&StrongQc<V>> {
+        self.sealed.get()
+    }
+
+    /// Installs an already verified certificate unless one is sealed
+    pub(crate) fn seal(&self, qc: StrongQc<V>) {
+        let _ = self.sealed.set(qc);
     }
 }
 

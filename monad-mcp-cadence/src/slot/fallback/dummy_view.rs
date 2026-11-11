@@ -157,18 +157,16 @@ pub(crate) enum DummyViewEffect {
 
 pub(crate) struct DummyView {
     slot: Slot,
-    key: Arc<KeyPair>,
+    /// Taken by [`Self::enter`]: the dummy view signs once
+    key: Option<Arc<KeyPair>>,
     validation_context: ValidationContext,
 
-    entered: bool,
     abandoned: bool,
 
     /// The first valid fast metablock received
     fast_block: Option<Metablock>,
     not_full: SealingVotePool<NotFull>,
-    nf_cert_emitted: bool,
     dummy_votes: SealingVotePool<DummyVote>,
-    decided: bool,
 
     effects: VecDeque<DummyViewEffect>,
 }
@@ -178,59 +176,70 @@ impl DummyView {
     pub(crate) fn new(ctx: &MvbaContext) -> Self {
         Self {
             slot: ctx.slot,
-            key: ctx.key.clone(),
+            key: Some(ctx.key.clone()),
             validation_context: MakesValidationContext::<Metablock>::make_validation_context(ctx),
-            entered: false,
             abandoned: false,
             fast_block: None,
             not_full: SealingVotePool::new(ctx.slot),
-            nf_cert_emitted: false,
             dummy_votes: SealingVotePool::new(ctx.slot),
-            decided: false,
             effects: VecDeque::new(),
         }
     }
 
     /// Registers this validator's input and sends its evidence, once
     pub(crate) fn enter(&mut self, input: Metablock) {
-        if self.abandoned || self.entered {
+        if self.abandoned {
             return;
         }
-        self.entered = true;
+        let Some(key) = self.key.take() else {
+            return;
+        };
 
         // persist-before-send: the registered input, which fixes DummyVote or NotFull
         if input.is_fast() {
-            let vote = VoteMsg::new_signed(self.slot, DummyVote(input.entries()), &self.key);
+            let vote = VoteMsg::new_signed(self.slot, DummyVote(input.entries()), &key);
             self.broadcast(DummyViewMessage::FastInput(input));
             self.broadcast(DummyViewMessage::DummyVote(vote));
         } else {
-            let declaration = VoteMsg::new_signed(self.slot, NotFull, &self.key);
+            let declaration = VoteMsg::new_signed(self.slot, NotFull, &key);
             self.broadcast(DummyViewMessage::NotFull(declaration));
         }
     }
 
     pub(crate) fn handle_message(&mut self, sender: ValidatorIndex, msg: DummyViewMessage) {
-        if self.abandoned {
+        if self.abandoned || msg.slot() != self.slot {
             return;
         }
+        let had_nf_cert = self.not_full.sealed().is_some();
+        let had_decision = self.decision().is_some();
 
         match msg {
             DummyViewMessage::FastInput(block) => self.handle_fast_input(block),
-            DummyViewMessage::NotFull(declaration) => {
-                if declaration.scope == self.slot {
-                    self.not_full.add_vote(sender, declaration);
-                }
-            }
-            DummyViewMessage::DummyVote(vote) => {
-                if vote.scope == self.slot {
-                    self.dummy_votes.add_vote(sender, vote);
-                }
-            }
+            DummyViewMessage::NotFull(declaration) => self.not_full.add_vote(sender, declaration),
+            DummyViewMessage::DummyVote(vote) => self.dummy_votes.add_vote(sender, vote),
             DummyViewMessage::DummyDecision { qc, block } => self.handle_dummy_decision(qc, block),
         }
 
-        self.try_form_nf_cert();
-        self.try_decide();
+        let validator_data = &self.validation_context.validator_data;
+        if !had_nf_cert && let Some(nf_cert) = self.not_full.try_form_strong_qc(validator_data) {
+            self.effects
+                .push_back(DummyViewEffect::NfCert(nf_cert.clone()));
+        }
+        if !had_decision {
+            self.dummy_votes.try_form_strong_qc(validator_data);
+            if let Some((qc, block)) = self.decision() {
+                let (qc, block) = (qc.clone(), block.clone());
+                self.effects
+                    .push_back(DummyViewEffect::Decided { qc, block });
+            }
+        }
+    }
+
+    /// The DummyQC and the fast block it certifies, once both are held
+    fn decision(&self) -> Option<(&DummyQc, &Metablock)> {
+        let qc = self.dummy_votes.sealed()?;
+        let block = self.fast_block.as_ref()?;
+        (qc.verdict.0 == block.entries()).then_some((qc, block))
     }
 
     pub(crate) fn abandon(&mut self) {
@@ -259,56 +268,15 @@ impl DummyView {
     }
 
     fn handle_dummy_decision(&mut self, qc: DummyQc, block: Metablock) {
-        if self.decided
-            || qc.scope != self.slot
+        if self.decision().is_some()
             || qc.verdict.0 != block.entries()
             || !self.is_fast_block(&block)
             || !qc.verify(&self.validation_context.validator_data)
         {
             return;
         }
-        self.decide(qc, block);
-    }
-
-    fn try_form_nf_cert(&mut self) {
-        if self.nf_cert_emitted {
-            return;
-        }
-        let Some(nf_cert) = self
-            .not_full
-            .try_form_strong_qc(&self.validation_context.validator_data)
-        else {
-            return;
-        };
-        let nf_cert = nf_cert.clone();
-        self.nf_cert_emitted = true;
-        self.effects.push_back(DummyViewEffect::NfCert(nf_cert));
-    }
-
-    fn try_decide(&mut self) {
-        if self.decided {
-            return;
-        }
-        let Some(block) = &self.fast_block else {
-            return;
-        };
-        let Some(qc) = self
-            .dummy_votes
-            .try_form_strong_qc(&self.validation_context.validator_data)
-        else {
-            return;
-        };
-        if qc.verdict.0 != block.entries() {
-            return;
-        }
-        let (qc, block) = (qc.clone(), block.clone());
-        self.decide(qc, block);
-    }
-
-    fn decide(&mut self, qc: DummyQc, block: Metablock) {
-        self.decided = true;
-        self.effects
-            .push_back(DummyViewEffect::Decided { qc, block });
+        self.dummy_votes.seal(qc);
+        self.fast_block = Some(block);
     }
 }
 
@@ -916,6 +884,53 @@ mod tests {
         );
 
         deliver(&mut view, nodes()[2], decision);
+        assert!(drain(&mut view).is_empty());
+    }
+
+    #[test]
+    fn declarations_and_votes_signed_for_another_slot_are_not_counted() {
+        let block = fast_metablock(1);
+        let mut view = dummy_view(nodes()[0]);
+        deliver(
+            &mut view,
+            nodes()[1],
+            DummyViewMessage::FastInput(block.clone()),
+        );
+        drain(&mut view);
+
+        let other = Slot(1);
+        for node in quorum() {
+            let declaration = VoteMsg::new_signed(other, NotFull, &node.keypair());
+            deliver(&mut view, node, DummyViewMessage::NotFull(declaration));
+            let vote = VoteMsg::new_signed(other, DummyVote(block.entries()), &node.keypair());
+            deliver(&mut view, node, DummyViewMessage::DummyVote(vote));
+        }
+        let effects = drain(&mut view);
+        assert!(nf_certs(&effects).is_empty(), "{effects:?}");
+        assert!(decisions(&effects).is_empty(), "{effects:?}");
+    }
+
+    #[test]
+    fn a_second_dummy_decision_after_deciding_has_no_effect() {
+        let block = fast_metablock(1);
+        let mut view = dummy_view(nodes()[0]);
+        deliver(
+            &mut view,
+            nodes()[1],
+            DummyViewMessage::FastInput(block.clone()),
+        );
+        for node in quorum() {
+            deliver(&mut view, node, dummy_vote(node, &block.entries()));
+        }
+        assert_eq!(decisions(&drain(&mut view)).len(), 1);
+
+        // another signer set's certificate on the same entries
+        let qc = strong_qc(SLOT, DummyVote(block.entries()), &nodes()[1..]);
+        deliver(
+            &mut view,
+            nodes()[2],
+            DummyViewMessage::DummyDecision { qc, block },
+        );
         assert!(drain(&mut view).is_empty());
     }
 
