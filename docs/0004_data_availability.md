@@ -102,7 +102,22 @@ DARuntime                                      node
 
 The instance's job is to hold chunks and decode. Ingesting a chunk is:
 verify it against the root, store it, rebroadcast it if we own it, and
-decode once enough chunks are held.
+decode once enough chunks are held. A decode ends with a check: the
+message must re-encode to the root, or the proposal is invalid, since
+chunks that each verify can still be inconsistent with one another.
+
+Two shortcuts skip repeated work without changing any outcome:
+
+- The re-encode reuses the leaf hash computed when a chunk's proof was
+  checked, for a re-encoded symbol that is byte-for-byte equal to the
+  received one. Every other leaf is hashed again.
+- The author's own instance knows the encoding it just built
+  (`Chunks::Authored`). It ingests its first hop like a receiver, but a
+  chunk equal to the known one needs no proof check, and once the
+  decoder's rule says the chunks held decode, it resolves to the known
+  message and encoding, with no decode and no re-encode. Only an
+  encoding this node built is known this way; every chunk from the wire
+  is checked as described above.
 
 Two more duties fall to the instance because of what it holds:
 

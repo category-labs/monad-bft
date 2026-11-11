@@ -90,11 +90,11 @@ pub(crate) struct D33Decoder {
     received: BTreeMap<ChunkId, Received>,
 }
 
-// a chunk whose proof checked, and the leaf hash the check computed from
-// its symbol
+// a chunk held, with the leaf hash its proof check computed from its
+// symbol; None for a chunk held unchecked
 struct Received {
     data: ChunkData,
-    leaf: Hash,
+    leaf: Option<Hash>,
 }
 
 impl D33Decoder {
@@ -111,8 +111,12 @@ impl D33Decoder {
     fn leaf_of(&self, leaf_idx: WireChunkId, symbol: &Bytes) -> Hash {
         let chunk_id = ChunkId::try_new(leaf_idx, self.code.num_chunks());
         let received = chunk_id.and_then(|chunk_id| self.received.get(&chunk_id));
+        // a chunk held unchecked has no leaf to take
         match received {
-            Some(chunk) if chunk.data.symbol == symbol => chunk.leaf,
+            Some(Received {
+                data,
+                leaf: Some(leaf),
+            }) if data.symbol == symbol => *leaf,
             _ => leaf_hash(&self.d33, leaf_idx, symbol),
         }
     }
@@ -147,12 +151,23 @@ impl Decoder for D33Decoder {
         if !Tree::verify_proof(&self.root, leaf_idx, &leaf, &data.proof) {
             return Err(InvalidChunk::BadProof);
         }
+        let leaf = Some(leaf);
         self.received.insert(chunk_id, Received { data, leaf });
         Ok(())
     }
 
+    fn hold(&mut self, chunk_id: ChunkId, data: ChunkData) {
+        self.received
+            .insert(chunk_id, Received { data, leaf: None });
+    }
+
+    // any num_source_chunks symbols decode: Reed-Solomon is MDS
+    fn decodes(&self) -> bool {
+        self.received.len() >= self.code.num_source_chunks()
+    }
+
     fn try_decode(&mut self) -> Option<(Bytes, D33Encoded)> {
-        if self.received.len() < self.code.num_source_chunks() {
+        if !self.decodes() {
             return None;
         }
         let symbols = self
@@ -222,6 +237,58 @@ mod tests {
         D33Encoded::encode(&scheme(), &message(), 9).expect("of the scheme's length")
     }
 
+    // every chunk twice, a tampered copy of each, and a chunk under the
+    // wrong id, in a random order
+    fn arrivals(encoded: &D33Encoded, seed: u64) -> Vec<(ChunkId, ChunkData)> {
+        use rand::{SeedableRng as _, seq::SliceRandom as _};
+        use rand_chacha::ChaCha20Rng;
+
+        let mut arrivals = Vec::new();
+        for wire in 0..9 {
+            let chunk_id = ChunkId::unchecked(wire);
+            let data = encoded.chunk_data(chunk_id);
+            let mut symbol = data.symbol.to_vec();
+            symbol[0] ^= 1;
+            let tampered = ChunkData {
+                symbol: Bytes::from(symbol),
+                proof: data.proof.clone(),
+            };
+            arrivals.push((chunk_id, data.clone()));
+            arrivals.push((chunk_id, data));
+            arrivals.push((chunk_id, tampered));
+        }
+        let misplaced = encoded.chunk_data(ChunkId::unchecked(0));
+        arrivals.push((ChunkId::unchecked(1), misplaced));
+        arrivals.shuffle(&mut ChaCha20Rng::seed_from_u64(seed));
+        arrivals
+    }
+
+    #[test]
+    fn authored_chunks_are_received_and_resolve_as_any_others() {
+        use std::sync::Arc;
+
+        let encoded = Arc::new(encoded());
+        for seed in 0..32 {
+            let decoder = D33Decoder::new(scheme(), encoded.root(), 9);
+            let mut authored = Chunks::authored(decoder, message(), encoded.clone());
+            let mut received = Chunks::Decoding(D33Decoder::new(scheme(), encoded.root(), 9));
+            for (chunk_id, data) in arrivals(&encoded, seed) {
+                let ingested = received.ingest(chunk_id, data.clone());
+                assert_eq!(authored.ingest(chunk_id, data), ingested, "seed {seed}");
+                let resolved = received.try_resolve();
+                assert_eq!(authored.try_resolve(), resolved, "seed {seed}");
+                assert_eq!(authored.is_resolved(), received.is_resolved());
+                for wire in 0..9 {
+                    let chunk_id = ChunkId::unchecked(wire);
+                    assert_eq!(authored.contains(chunk_id), received.contains(chunk_id));
+                    let data = received.chunk_data(chunk_id);
+                    assert_eq!(authored.chunk_data(chunk_id), data);
+                }
+            }
+            assert!(authored.is_resolved(), "seed {seed}");
+        }
+    }
+
     #[test]
     fn an_encoding_derives_every_chunk_with_its_proof() {
         let scheme = scheme();
@@ -271,7 +338,8 @@ mod tests {
             if !wire.is_multiple_of(2) {
                 data.symbol = other.clone();
             }
-            let leaf = leaf_hash(&scheme, wire, &data.symbol);
+            // chunk 8 is held unchecked, without a leaf to take
+            let leaf = (wire != 8).then(|| leaf_hash(&scheme, wire, &data.symbol));
             decoder.received.insert(chunk_id, Received { data, leaf });
         }
 

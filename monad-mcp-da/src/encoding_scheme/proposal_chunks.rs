@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::sync::Arc;
+
 use bytes::Bytes;
 
 use super::super::{
@@ -33,6 +35,18 @@ pub(crate) trait Encoded {
     fn chunk_data(&self, chunk_id: ChunkId) -> ChunkData;
 }
 
+// an encoding shared, as between the author's proposal and its own
+// chunks
+impl<E: Encoded + ?Sized> Encoded for Arc<E> {
+    fn root(&self) -> MerkleRoot {
+        (**self).root()
+    }
+
+    fn chunk_data(&self, chunk_id: ChunkId) -> ChunkData {
+        (**self).chunk_data(chunk_id)
+    }
+}
+
 // the chunks received under one root, and the rule that finishes them
 pub(crate) trait Decoder {
     type Encoded: Encoded;
@@ -46,6 +60,14 @@ pub(crate) trait Decoder {
     // chunk id not yet contained.
     fn ingest(&mut self, chunk_id: ChunkId, data: ChunkData) -> Result<(), InvalidChunk>;
 
+    // takes a chunk as ingest does, without checking it. the caller must
+    // ensure it binds to the root, and pass a chunk id not yet
+    // contained.
+    fn hold(&mut self, chunk_id: ChunkId, data: ChunkData);
+
+    // whether try_decode would decode the chunks held
+    fn decodes(&self) -> bool;
+
     // once enough chunks arrived: the message they decode to, and its
     // encoding
     fn try_decode(&mut self) -> Option<(Bytes, Self::Encoded)>;
@@ -55,11 +77,43 @@ pub(crate) trait Decoder {
 // received one by one until they decode
 pub(crate) enum Chunks<D: Decoder> {
     Decoding(D),
+    // our own proposal, received as any other, but with its message and
+    // encoding known
+    Authored(Authored<D>),
     // any chunk is derivable
-    Encoded(D::Encoded),
+    Encoded(Arc<D::Encoded>),
     // the received chunks decode to a message that does not encode to
     // the root
     Invalid(D),
+}
+
+// The author's own chunks. They arrive as a receiver's do (its own first
+// hop) and resolve when the decoder's rule says they decode, so events
+// and their order are a receiver's. A chunk equal to its known one binds
+// to the root, as the known encoding is under it, and is held without a
+// check; any other chunk is checked. The message and encoding are taken
+// as known, without decoding or re-encoding.
+pub(crate) struct Authored<D: Decoder> {
+    decoder: D,
+    message: Bytes,
+    encoded: Arc<D::Encoded>,
+}
+
+impl<D: Decoder> Chunks<D> {
+    // the caller must ensure `encoded` encodes `message` under the
+    // decoder's root
+    pub(crate) fn authored(decoder: D, message: Bytes, encoded: Arc<D::Encoded>) -> Self {
+        assert_eq!(
+            decoder.root(),
+            encoded.root(),
+            "our encoding is under our root"
+        );
+        Self::Authored(Authored {
+            decoder,
+            message,
+            encoded,
+        })
+    }
 }
 
 // what an instance asks of a proposal's chunks, whatever their scheme
@@ -82,39 +136,74 @@ pub(crate) trait ProposalChunks: Send {
 impl<D> ProposalChunks for Chunks<D>
 where
     D: Decoder + Send,
-    D::Encoded: Send,
+    D::Encoded: Send + Sync,
 {
     fn contains(&self, chunk_id: ChunkId) -> bool {
         match self {
             Self::Decoding(decoder) | Self::Invalid(decoder) => decoder.contains(chunk_id),
+            Self::Authored(authored) => authored.decoder.contains(chunk_id),
             Self::Encoded(_) => true,
         }
     }
 
     fn ingest(&mut self, chunk_id: ChunkId, data: ChunkData) -> Result<bool, InvalidChunk> {
-        let Self::Decoding(decoder) = self else {
-            return Ok(false);
-        };
-        if decoder.contains(chunk_id) {
-            return Ok(false);
+        match self {
+            Self::Decoding(decoder) => {
+                if decoder.contains(chunk_id) {
+                    return Ok(false);
+                }
+                decoder.ingest(chunk_id, data)?;
+            }
+            Self::Authored(Authored {
+                decoder, encoded, ..
+            }) => {
+                if decoder.contains(chunk_id) {
+                    return Ok(false);
+                }
+                if encoded.chunk_data(chunk_id) == data {
+                    decoder.hold(chunk_id, data);
+                } else {
+                    decoder.ingest(chunk_id, data)?;
+                }
+            }
+            Self::Encoded(_) | Self::Invalid(_) => return Ok(false),
         }
-        decoder.ingest(chunk_id, data)?;
         Ok(true)
     }
 
     fn try_resolve(&mut self) -> Option<Resolved> {
+        if let Self::Authored(authored) = self {
+            if !authored.decoder.decodes() {
+                return None;
+            }
+            // what the decoder would resolve to, every chunk held being
+            // bound to the root our encoding is under
+            debug_assert!(
+                authored
+                    .decoder
+                    .try_decode()
+                    .is_some_and(|(message, encoded)| {
+                        message == authored.message && encoded.root() == authored.encoded.root()
+                    })
+            );
+            let message = authored.message.clone();
+            *self = Self::Encoded(authored.encoded.clone());
+            return Some(Ok(message));
+        }
+
         let Self::Decoding(decoder) = self else {
             return None;
         };
         let (message, encoded) = decoder.try_decode()?;
         if encoded.root() == decoder.root() {
-            *self = Self::Encoded(encoded);
+            *self = Self::Encoded(Arc::new(encoded));
             return Some(Ok(message));
         }
 
         // the decoder moves to Invalid, with the encoding in its place
         // for the moment
-        let Self::Decoding(decoder) = std::mem::replace(self, Self::Encoded(encoded)) else {
+        let encoded = Self::Encoded(Arc::new(encoded));
+        let Self::Decoding(decoder) = std::mem::replace(self, encoded) else {
             unreachable!("the chunks are decoding");
         };
         *self = Self::Invalid(decoder);
@@ -122,12 +211,13 @@ where
     }
 
     fn is_resolved(&self) -> bool {
-        !matches!(self, Self::Decoding(_))
+        matches!(self, Self::Encoded(_) | Self::Invalid(_))
     }
 
     fn chunk_data(&self, chunk_id: ChunkId) -> Option<ChunkData> {
         match self {
             Self::Decoding(decoder) | Self::Invalid(decoder) => decoder.chunk_data(chunk_id),
+            Self::Authored(authored) => authored.decoder.chunk_data(chunk_id),
             Self::Encoded(encoded) => {
                 let data = encoded.chunk_data(chunk_id);
                 Some(data)
