@@ -15,17 +15,17 @@
 
 use bytes::Bytes;
 
-use super::super::{assignment::ChunkId, chunk::ChunkData, types::MerkleRoot};
+use super::super::{
+    assignment::ChunkId,
+    chunk::{ChunkData, InvalidChunk},
+    types::MerkleRoot,
+};
 
 // decoded proposal does not reencode back to root
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InvalidEncoding;
 
 pub type Resolved = Result<Bytes, InvalidEncoding>;
-
-// the chunk does not bind to the root
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct BadProof;
 
 // every chunk of one message, under their root
 pub(crate) trait Encoded {
@@ -44,7 +44,7 @@ pub(crate) trait Decoder {
 
     // takes a chunk that binds to the root. the caller must pass a
     // chunk id not yet contained.
-    fn ingest(&mut self, chunk_id: ChunkId, data: ChunkData) -> Result<(), BadProof>;
+    fn ingest(&mut self, chunk_id: ChunkId, data: ChunkData) -> Result<(), InvalidChunk>;
 
     // once enough chunks arrived: the message they decode to, and its
     // encoding
@@ -68,7 +68,7 @@ pub(crate) trait ProposalChunks: Send {
     fn contains(&self, chunk_id: ChunkId) -> bool;
 
     // true when the chunk is new. nothing is new once resolved.
-    fn ingest(&mut self, chunk_id: ChunkId, data: ChunkData) -> Result<bool, BadProof>;
+    fn ingest(&mut self, chunk_id: ChunkId, data: ChunkData) -> Result<bool, InvalidChunk>;
 
     // once: the message when enough chunks arrived, or invalid when it
     // does not encode to the root
@@ -91,7 +91,7 @@ where
         }
     }
 
-    fn ingest(&mut self, chunk_id: ChunkId, data: ChunkData) -> Result<bool, BadProof> {
+    fn ingest(&mut self, chunk_id: ChunkId, data: ChunkData) -> Result<bool, InvalidChunk> {
         let Self::Decoding(decoder) = self else {
             return Ok(false);
         };

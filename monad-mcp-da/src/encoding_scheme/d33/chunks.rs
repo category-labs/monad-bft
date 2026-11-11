@@ -24,11 +24,11 @@ use monad_crypto::hasher::{Hash, HasherType};
 use super::super::{
     super::{
         assignment::ChunkId,
-        chunk::{ChunkData, WireChunkId},
+        chunk::{ChunkData, InvalidChunk, WireChunkId},
         types::{D33, MerkleRoot},
         wire::{DAHeaderScheme as _, PacketLayout as _},
     },
-    BadProof, DAEncodingScheme as _, Decoder, Encoded,
+    DAEncodingScheme as _, Decoder, Encoded,
     merkle::Tree,
     reed_solomon::ReedSolomon,
 };
@@ -134,18 +134,18 @@ impl Decoder for D33Decoder {
         Some(received.data.clone())
     }
 
-    fn ingest(&mut self, chunk_id: ChunkId, data: ChunkData) -> Result<(), BadProof> {
+    fn ingest(&mut self, chunk_id: ChunkId, data: ChunkData) -> Result<(), InvalidChunk> {
         // decode relies on equal symbol lengths, which a pid collision can break
         let symbol_len = data.symbol.len();
         if symbol_len != self.code.symbol_len() {
             tracing::error!(?chunk_id, symbol_len, "symbol is not of the code's length");
-            return Err(BadProof);
+            return Err(InvalidChunk::BadSymbolLen);
         }
 
         let leaf_idx = chunk_id.to_wire();
         let leaf = leaf_hash(&self.d33, leaf_idx, &data.symbol);
         if !Tree::verify_proof(&self.root, leaf_idx, &leaf, &data.proof) {
-            return Err(BadProof);
+            return Err(InvalidChunk::BadProof);
         }
         self.received.insert(chunk_id, Received { data, leaf });
         Ok(())
@@ -249,7 +249,7 @@ mod tests {
 
         let zero = ChunkId::unchecked(0);
         let short = committed.chunk_data(zero);
-        assert_eq!(decoder.ingest(zero, short), Err(BadProof));
+        assert_eq!(decoder.ingest(zero, short), Err(InvalidChunk::BadSymbolLen));
         assert!(!decoder.contains(zero));
 
         let one = ChunkId::unchecked(1);

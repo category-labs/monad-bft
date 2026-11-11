@@ -101,6 +101,19 @@ pub struct ChunkData {
     pub(crate) proof: Box<[MerkleHash]>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(clippy::enum_variant_names)]
+pub(crate) enum InvalidChunk {
+    // chunk id out of assignment
+    InvalidChunkId,
+    // sender is not author or chunk owner
+    UnexpectedSender,
+    // the chunk does not bind to the root
+    BadProof,
+    // only possible in case of proposal id collision
+    BadSymbolLen,
+}
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Chunk<'a> {
     header: Cow<'a, SignedProposalHeader>,

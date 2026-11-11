@@ -25,7 +25,7 @@ use bytes::Bytes;
 
 #[cfg(feature = "enable_hollow")]
 pub(crate) use self::hollow::Hollow;
-pub(crate) use self::proposal_chunks::{BadProof, Chunks, Decoder, Encoded, ProposalChunks};
+pub(crate) use self::proposal_chunks::{Chunks, Decoder, Encoded, ProposalChunks};
 pub use self::proposal_chunks::{InvalidEncoding, Resolved};
 use super::{
     assignment::ChunkAssignment,

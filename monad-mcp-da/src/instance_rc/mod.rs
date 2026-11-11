@@ -24,9 +24,9 @@ use serving_tracker::ServingTracker;
 
 use super::{
     assignment::{ChunkAssignment, ChunkId, NodeIndex},
-    chunk::{ChunkData, ChunkRequest, ChunksSubset, WireChunkId},
+    chunk::{ChunkData, ChunkRequest, ChunksSubset, InvalidChunk, WireChunkId},
     egress::ChunkEgress,
-    encoding_scheme::{self, BadProof, ProposalChunks, Resolved},
+    encoding_scheme::{self, ProposalChunks, Resolved},
     runtime::EpochHandle,
     send_order::shuffle_sends,
     types::{NodeId, ProposalDAEvent, SignedProposalHeader, Timestamp, TimestampDelta},
@@ -35,20 +35,6 @@ use super::{
 // by owner, each owner once, in assignment (or validator) order; the requests
 // built from it are shuffled before they go out
 pub(crate) type MissingChunks = Vec<(NodeId, ChunksSubset)>;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[expect(clippy::enum_variant_names)]
-pub(crate) enum InvalidChunk {
-    InvalidChunkId,
-    UnexpectedSender,
-    BadProof,
-}
-
-impl From<BadProof> for InvalidChunk {
-    fn from(_: BadProof) -> Self {
-        InvalidChunk::BadProof
-    }
-}
 
 // a tracked root: its chunks, their decoding, and the relay of our owned chunks
 pub(crate) struct RaptorcastInstance {

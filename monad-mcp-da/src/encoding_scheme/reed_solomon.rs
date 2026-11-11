@@ -157,7 +157,7 @@ fn source_symbols(message: &Bytes, num_source_chunks: usize, symbol_len: usize) 
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{super::merkle::Tree, *};
 
     const MESSAGE: [u8; 9] = [1, 2, 3, 4, 5, 6, 7, 8, 9];
 
@@ -204,12 +204,112 @@ mod tests {
         assert_ne!(symbols[2].as_ptr(), message[8..].as_ptr());
     }
 
+    // every set of at least k of the code's 7 chunk ids
+    fn decodable_sets() -> Vec<Vec<u16>> {
+        let mut sets = Vec::new();
+        for mask in 0u16..1 << 7 {
+            if mask.count_ones() < 3 {
+                continue;
+            }
+            let chunk_ids = (0..7).filter(|chunk_id| mask & (1 << chunk_id) != 0);
+            sets.push(chunk_ids.collect());
+        }
+        sets
+    }
+
+    // the re-encode check needs the same symbols from the same message
     #[test]
-    fn any_k_symbols_decode() {
+    fn encoding_is_deterministic() {
+        assert_eq!(symbols(), symbols());
+    }
+
+    #[test]
+    fn any_k_or_more_symbols_decode() {
         let symbols = symbols();
-        for kept in [[3, 4, 5, 6], [1, 2, 4, 5], [0, 1, 3, 6], [0, 1, 2, 3]] {
+        for kept in decodable_sets() {
             let decoded = code().decode(received(&symbols, &kept));
             assert_eq!(decoded, Bytes::from_static(&MESSAGE));
+        }
+    }
+
+    // a decoder holds what the proposer committed to, codeword or not
+    #[test]
+    fn inconsistent_symbols_decode_to_some_message() {
+        let mut committed = Vec::new();
+        for tag in 0xa0..0xa7 {
+            committed.push(Bytes::from(vec![tag; 4]));
+        }
+        for kept in decodable_sets() {
+            let decoded = code().decode(received(&committed, &kept));
+            assert_eq!(decoded.len(), MESSAGE.len());
+        }
+    }
+
+    // the root check relies on this to reject what is not a codeword
+    #[test]
+    fn an_inconsistent_encoding_never_re_encodes_to_itself() {
+        for corrupted in 0..7 {
+            let mut committed = symbols();
+            committed[corrupted] = Bytes::from_static(&[0xaa; 4]);
+            for kept in decodable_sets() {
+                let decoded = code().decode(received(&committed, &kept));
+                assert_ne!(code().encode(&decoded), committed);
+            }
+        }
+    }
+
+    // what a proposer puts after the message in the last source is not message
+    #[test]
+    fn padding_from_the_wire_is_not_decoded() {
+        let longer = Bytes::from_static(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 7, 7, 7]);
+        let committed = ReedSolomon::new(7, 3, 4, longer.len()).encode(&longer);
+        for kept in decodable_sets() {
+            let decoded = code().decode(received(&committed, &kept));
+            assert_eq!(decoded, Bytes::from_static(&MESSAGE));
+            assert_ne!(code().encode(&decoded), committed);
+        }
+    }
+
+    #[test]
+    fn a_proposal_sized_message_decodes_from_recovery_symbols_alone() {
+        // 400 KB in the symbols of a depth 12 d33 tree
+        let msg_len = 400_000;
+        let symbol_len = 1110;
+        let num_source_chunks = 361;
+        let num_chunks = 1200;
+        let mut message = Vec::with_capacity(msg_len);
+        for i in 0..msg_len {
+            message.push((i % 251) as u8);
+        }
+        let message = Bytes::from(message);
+
+        let code = ReedSolomon::new(num_chunks, num_source_chunks, symbol_len, msg_len);
+        let symbols = code.encode(&message);
+        assert_eq!(symbols.len(), num_chunks);
+        for symbol in &symbols {
+            assert_eq!(symbol.len(), symbol_len);
+        }
+
+        let mut last_k = Vec::with_capacity(num_source_chunks);
+        for chunk_id in num_chunks - num_source_chunks..num_chunks {
+            last_k.push(chunk_id as u16);
+        }
+        let decoded = code.decode(received(&symbols, &last_k));
+        assert_eq!(decoded, message);
+    }
+
+    // encode and decode expect a shape the library supports
+    #[test]
+    fn every_shape_that_fits_a_tree_is_supported() {
+        use reed_solomon_simd::{ReedSolomonDecoder, ReedSolomonEncoder};
+
+        let max_chunks = 1usize << (Tree::MAX_DEPTH - 1);
+        for num_source_chunks in 1..max_chunks {
+            for num_recovery_chunks in 1..=max_chunks - num_source_chunks {
+                let encodes = ReedSolomonEncoder::supports(num_source_chunks, num_recovery_chunks);
+                let decodes = ReedSolomonDecoder::supports(num_source_chunks, num_recovery_chunks);
+                assert!(encodes && decodes);
+            }
         }
     }
 

@@ -23,11 +23,11 @@ use bytes::{Buf, BufMut, Bytes};
 use super::{
     super::{
         assignment::{ChunkAssignment, ChunkId},
-        chunk::{ChunkData, WireChunkId},
+        chunk::{ChunkData, InvalidChunk, WireChunkId},
         types::{D33, EncodingScheme, MerkleHash, MerkleRoot, NodeId, ValidatorData},
         wire::{DAHeaderScheme, MalformedPacket, v1},
     },
-    BadProof, DAEncodingScheme, Decoder, Encoded, d33,
+    DAEncodingScheme, Decoder, Encoded, d33,
 };
 
 // S with the chunk data taken out, for tests: the same shape and decode
@@ -155,9 +155,9 @@ impl Decoder for HollowDecoder {
         Some(data)
     }
 
-    fn ingest(&mut self, chunk_id: ChunkId, data: ChunkData) -> Result<(), BadProof> {
+    fn ingest(&mut self, chunk_id: ChunkId, data: ChunkData) -> Result<(), InvalidChunk> {
         if !verify_proof(chunk_id, &data, &self.root) {
-            return Err(BadProof);
+            return Err(InvalidChunk::BadProof);
         }
         self.received.insert(chunk_id);
         Ok(())
@@ -404,26 +404,27 @@ mod tests {
 
         let mut receiving = Chunks::Decoding(scheme.decoder(real.root(), num_chunks));
         let mut hollow_receiving = Chunks::Decoding(hollow.decoder(root, num_chunks));
+        let bad_proof = Err(InvalidChunk::BadProof);
 
         // a chunk delivered under another id
         let relabelled = real.chunk_data(second);
-        assert_eq!(receiving.ingest(first, relabelled), Err(BadProof));
+        assert_eq!(receiving.ingest(first, relabelled), bad_proof);
         let relabelled = hollow_chunk(second, &root);
-        assert_eq!(hollow_receiving.ingest(first, relabelled), Err(BadProof));
+        assert_eq!(hollow_receiving.ingest(first, relabelled), bad_proof);
 
         // a chunk of another proposal
         let foreign = other.chunk_data(first);
-        assert_eq!(receiving.ingest(first, foreign), Err(BadProof));
+        assert_eq!(receiving.ingest(first, foreign), bad_proof);
         let foreign = hollow_chunk(first, &other_root);
-        assert_eq!(hollow_receiving.ingest(first, foreign), Err(BadProof));
+        assert_eq!(hollow_receiving.ingest(first, foreign), bad_proof);
 
         // an altered proof
         let mut altered = real.chunk_data(first);
         altered.proof[0].0[0] ^= 1;
-        assert_eq!(receiving.ingest(first, altered), Err(BadProof));
+        assert_eq!(receiving.ingest(first, altered), bad_proof);
         let mut altered = hollow_chunk(first, &root);
         altered.proof[0].0[0] ^= 1;
-        assert_eq!(hollow_receiving.ingest(first, altered), Err(BadProof));
+        assert_eq!(hollow_receiving.ingest(first, altered), bad_proof);
 
         // a rejected chunk leaves the chunk new
         assert_hollow_of(&hollow_receiving, &root, &receiving, num_chunks);
