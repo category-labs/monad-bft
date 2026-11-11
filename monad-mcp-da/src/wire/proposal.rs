@@ -25,7 +25,9 @@ use super::{
         assignment::{ChunkAssignment, ChunkId, NodeIndex},
         chunk::ProposalEnvelope,
         egress::Dissemination,
-        encoding_scheme::{Chunks, DAEncodingScheme, Decoder, Encoded, ProposalChunks, d33},
+        encoding_scheme::{
+            Chunks, DAEncodingScheme, Decoder, Encoded, ProposalChunks, d33, shared,
+        },
         runtime::{EpochHandle, ProposalScheme},
         types::{
             EncodingScheme, NodeId, Proposal, ProposalHeader, ProposalKeyPair, SignedProposalHeader,
@@ -61,17 +63,31 @@ impl AuthoredProposal {
         let msg_len = proposal.payload.len();
         let lane = proposal.lane;
         let d33 = d33::for_message(proposal.slot, msg_len, timestamp, lane, num_validators)?;
+        let message = &proposal.payload;
         match kind {
-            ProposalScheme::D33 => Self::build_under(d33, epoch_handle, &proposal.payload),
+            ProposalScheme::D33 => {
+                let publish = |encoded: &Arc<_>| {
+                    if epoch_handle.shared_encodings {
+                        shared::publish(encoded, message);
+                    }
+                };
+                Self::build_under(d33, epoch_handle, message, publish)
+            }
             #[cfg(feature = "enable_hollow")]
             ProposalScheme::D33Hollow => {
                 let hollow = Hollow::new(d33);
-                Self::build_under(hollow, epoch_handle, &proposal.payload)
+                Self::build_under(hollow, epoch_handle, message, |_| {})
             }
         }
     }
 
-    fn build_under<S>(scheme: S, epoch_handle: &EpochHandle, message: &Bytes) -> Option<Self>
+    // `publish` sees the encoding once built
+    fn build_under<S>(
+        scheme: S,
+        epoch_handle: &EpochHandle,
+        message: &Bytes,
+        publish: impl FnOnce(&Arc<<S::Decoder as Decoder>::Encoded>),
+    ) -> Option<Self>
     where
         S: DAEncodingScheme + Into<EncodingScheme>,
         S::Decoder: Send + 'static,
@@ -83,6 +99,7 @@ impl AuthoredProposal {
         let assignment = scheme.chunk_assignment(author, valset);
         let num_chunks = assignment.num_chunks();
         let encoded = Arc::new(scheme.encode(message, num_chunks)?);
+        publish(&encoded);
         let root = encoded.root();
         let decoder = scheme.decoder(root, num_chunks);
         let own_chunks = Chunks::authored(decoder, message.clone(), encoded.clone());

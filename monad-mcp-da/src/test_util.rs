@@ -93,6 +93,7 @@ pub(crate) fn epoch_handle_for(
         key_pair: Arc::new(ProposalKeyPair::dummy(self_id)),
         header_auth: Arc::new(header_auth(schedule, validator_data.clone())),
         validator_data,
+        shared_encodings: false,
     }
 }
 

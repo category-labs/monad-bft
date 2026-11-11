@@ -77,8 +77,9 @@ pub(crate) trait Decoder {
 // received one by one until they decode
 pub(crate) enum Chunks<D: Decoder> {
     Decoding(D),
-    // our own proposal, received as any other, but with its message and
-    // encoding known
+    // a proposal received as any other, but with its author's message and
+    // encoding known: our own, or in a simulation one shared by its
+    // author in this process (see shared)
     Authored(Authored<D>),
     // any chunk is derivable
     Encoded(Arc<D::Encoded>),
@@ -87,9 +88,11 @@ pub(crate) enum Chunks<D: Decoder> {
     Invalid(D),
 }
 
-// The author's own chunks. They arrive as a receiver's do (its own first
-// hop) and resolve when the decoder's rule says they decode, so events
-// and their order are a receiver's. A chunk equal to its known one binds
+// Chunks whose author's encoding is known: the author's own (they
+// arrive as its first hop), or, in a simulation, a receiver's of an
+// encoding its author shared (see shared). They resolve when the
+// decoder's rule says they decode, so events and their order are a
+// receiver's. A chunk equal to its known one binds
 // to the root, as the known encoding is under it, and is held without a
 // check; any other chunk is checked. The message and encoding are taken
 // as known, without decoding or re-encoding.

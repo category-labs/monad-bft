@@ -38,6 +38,12 @@ fn run(seed: u64) -> u64 {
 }
 
 fn run_with(seed: u64, parallel: Option<Parallel<NodeId>>) -> u64 {
+    run_sharing(seed, parallel, false)
+}
+
+// shared_encodings: the nodes share the encodings their authors built
+// (see monad_mcp_node::config::DAConfig::shared_encodings)
+fn run_sharing(seed: u64, parallel: Option<Parallel<NodeId>>, shared_encodings: bool) -> u64 {
     const VALIDATORS: u64 = 8;
     const SLOTS: u64 = 60;
     const MAX_PROPOSAL_LEN: usize = 16 << 10;
@@ -48,6 +54,7 @@ fn run_with(seed: u64, parallel: Option<Parallel<NodeId>>) -> u64 {
         let node_id = NodeId::dummy(id);
         let mut config = node_config(seed, id, VALIDATORS);
         config.proposal.max_payload_bytes = Some(MAX_PROPOSAL_LEN);
+        config.da.shared_encodings = shared_encodings;
         let node = Node::new(&config).expect("config builds");
         nodes.push((node_id, SimNode::new(node_id, node)));
     }
@@ -87,6 +94,18 @@ fn a_run_does_not_depend_on_the_thread_count() {
             sequential,
             "{threads} threads"
         );
+    }
+}
+
+// sharing encodings saves work, never changes what any node does
+#[test]
+fn sharing_encodings_does_not_change_the_run() {
+    let alone = run(SEED);
+    assert_eq!(run_sharing(SEED, None, true), alone, "sequential");
+    for threads in [1, 2, 4] {
+        let parallel = Parallel::default().threads(threads);
+        let shared = run_sharing(SEED, Some(parallel), true);
+        assert_eq!(shared, alone, "{threads} threads");
     }
 }
 

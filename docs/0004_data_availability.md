@@ -118,6 +118,13 @@ Two shortcuts skip repeated work without changing any outcome:
   message and encoding, with no decode and no re-encode. Only an
   encoding this node built is known this way; every chunk from the wire
   is checked as described above.
+- In a simulation, where all nodes run in one process, the nodes may
+  share these encodings (`shared_encodings`, off by default): an author
+  publishes the encoding it built, and a receiver of the same process
+  starts from it as the author does. Chunks equal to it skip the proof
+  check, and the decode resolves to it. Outputs are the same as without
+  sharing; only the work, and the memory for one copy per node, is
+  saved.
 
 Two more duties fall to the instance because of what it holds:
 
