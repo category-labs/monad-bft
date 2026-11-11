@@ -95,8 +95,8 @@ pub mod validator {
 }
 
 pub mod vote {
-    use alloy_rlp::{EMPTY_LIST_CODE, Encodable};
-    use bytes::{BufMut, Bytes};
+    use alloy_rlp::Encodable;
+    use bytes::Bytes;
     use monad_mcp_common::{
         containers::{ValidatorIndex, ValidatorSet},
         spec as common_spec,
@@ -135,20 +135,6 @@ pub mod vote {
         out.extend_from_slice(SD::PREFIX);
         alloy_rlp::encode_list::<_, dyn Encodable>(items, &mut out);
         Bytes::from(out)
-    }
-
-    // Stands in for an absent optional item, since alloy has no Encodable
-    // for Option.
-    pub struct RlpNone;
-
-    impl Encodable for RlpNone {
-        fn encode(&self, out: &mut dyn BufMut) {
-            out.put_u8(EMPTY_LIST_CODE);
-        }
-
-        fn length(&self) -> usize {
-            1
-        }
     }
 
     type SigColSignature<SC> = <SC as SignatureCollection>::Signature;

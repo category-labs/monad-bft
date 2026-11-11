@@ -20,7 +20,10 @@ use std::{fmt::Debug, hash::Hash};
 
 use alloy_rlp::{Decodable, Encodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper};
 use bytes::Bytes;
-use monad_mcp_common::spec::KeyPair as _;
+use monad_mcp_common::{
+    rlp::{RlpNone, RlpOption},
+    spec::KeyPair as _,
+};
 
 use super::{
     super::{
@@ -30,7 +33,7 @@ use super::{
     block_store::{BlockRequestMsg, BlockResponseMsg},
     certificates::{FallbackCommitQc, PrepareQc, TimeoutCertificate},
 };
-use crate::spec::vote::{RlpNone, SigningDomain, assert_signing_prefix, signing_bytes_of};
+use crate::spec::vote::{SigningDomain, assert_signing_prefix, signing_bytes_of};
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug, derive_more::From)]
 pub enum MvbaMessage<V: Votable, C: ValidateCert> {
@@ -304,40 +307,6 @@ fn signed_bytes<V: Votable>(
     signing_bytes_of::<PrePrepareDomain>(&[&slot, &view, &value.entries(), tc])
 }
 
-/// An optional wire field as a list of zero or one item: alloy has no codec
-/// for `Option`, and a bare item could itself encode as the empty list
-struct RlpOption<'a, T>(&'a Option<T>);
-
-impl<T: Encodable> Encodable for RlpOption<'_, T> {
-    fn encode(&self, out: &mut dyn bytes::BufMut) {
-        match self.0 {
-            Some(item) => {
-                alloy_rlp::encode_list::<_, dyn Encodable>(&[item as &dyn Encodable], out)
-            }
-            None => RlpNone.encode(out),
-        }
-    }
-
-    fn length(&self) -> usize {
-        match self.0 {
-            Some(item) => alloy_rlp::list_length::<_, dyn Encodable>(&[item as &dyn Encodable]),
-            None => RlpNone.length(),
-        }
-    }
-}
-
-fn decode_option<T: Decodable>(buf: &mut &[u8]) -> alloy_rlp::Result<Option<T>> {
-    let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
-    if payload.is_empty() {
-        return Ok(None);
-    }
-    let item = T::decode(&mut payload)?;
-    if !payload.is_empty() {
-        return Err(alloy_rlp::Error::UnexpectedLength);
-    }
-    Ok(Some(item))
-}
-
 impl<V: Votable, C: ValidateCert> Encodable for MvbaMessage<V, C>
 where
     V: Encodable,
@@ -470,8 +439,8 @@ where
             &self.slot,
             &self.view,
             &self.value,
-            &RlpOption(&self.tc),
-            &RlpOption(&self.cert),
+            &RlpOption(self.tc.as_ref()),
+            &RlpOption(self.cert.as_ref()),
             &self.signature,
         ];
         alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
@@ -482,8 +451,8 @@ where
             &self.slot,
             &self.view,
             &self.value,
-            &RlpOption(&self.tc),
-            &RlpOption(&self.cert),
+            &RlpOption(self.tc.as_ref()),
+            &RlpOption(self.cert.as_ref()),
             &self.signature,
         ];
         alloy_rlp::list_length::<_, dyn Encodable>(&fields)
@@ -502,8 +471,8 @@ where
             slot: <Slot as Decodable>::decode(&mut payload)?,
             view: <FallbackView as Decodable>::decode(&mut payload)?,
             value: <V as Decodable>::decode(&mut payload)?,
-            tc: decode_option(&mut payload)?,
-            cert: decode_option(&mut payload)?,
+            tc: RlpOption::decode(&mut payload)?.0,
+            cert: RlpOption::decode(&mut payload)?.0,
             signature: <Signature as Decodable>::decode(&mut payload)?,
         };
         if !payload.is_empty() {

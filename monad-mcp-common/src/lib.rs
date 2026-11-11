@@ -19,6 +19,7 @@
 //! instantiations.
 
 pub mod containers;
+pub mod rlp;
 pub mod spec;
 
 // a stub implementation of spec for development & testing
