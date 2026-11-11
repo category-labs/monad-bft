@@ -64,6 +64,11 @@ pub enum ProposalScheme {
     // d33 without chunk data on the wire, for simulations
     #[cfg(feature = "enable_hollow")]
     D33Hollow,
+    // a Byzantine proposer for simulations: d33 hollow proposals that
+    // declare a root their message does not encode to, so every node
+    // resolves them invalid. Set in code only, never from a config file.
+    #[cfg(feature = "enable_hollow")]
+    D33HollowInconsistent,
 }
 
 impl DAConfig {

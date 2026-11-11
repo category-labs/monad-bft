@@ -63,6 +63,12 @@ impl AuthoredProposal {
                 let hollow = Hollow::new(d33);
                 Self::build_under(hollow, epoch_handle, &proposal.payload)
             }
+            #[cfg(feature = "enable_hollow")]
+            ProposalScheme::D33HollowInconsistent => {
+                let hollow = Hollow::new(d33);
+                let encoded = hollow.encode_inconsistent(&proposal.payload)?;
+                Some(Self::build_with(hollow, epoch_handle, encoded))
+            }
         }
     }
 
@@ -73,17 +79,27 @@ impl AuthoredProposal {
     {
         let author = &epoch_handle.self_id;
         let valset = &epoch_handle.validator_data;
+        let num_chunks = scheme.chunk_assignment(author, valset).num_chunks();
+        let encoded = scheme.encode(message, num_chunks)?;
+        Some(Self::build_with(scheme, epoch_handle, encoded))
+    }
+
+    // the proposal of an encoding built under the scheme
+    fn build_with<S>(scheme: S, epoch_handle: &EpochHandle, encoded: impl Encoded + 'static) -> Self
+    where
+        S: DAEncodingScheme + Into<EncodingScheme>,
+    {
+        let author = &epoch_handle.self_id;
+        let valset = &epoch_handle.validator_data;
 
         let assignment = scheme.chunk_assignment(author, valset);
-        let encoded = scheme.encode(message, assignment.num_chunks())?;
         let header = ProposalHeader {
             root: encoded.root(),
             scheme: scheme.into(),
         };
 
         let encoded = Box::new(encoded);
-        let proposal = Self::new(&epoch_handle.key_pair, header, encoded, assignment);
-        Some(proposal)
+        Self::new(&epoch_handle.key_pair, header, encoded, assignment)
     }
 
     // signs the header over the encoding
@@ -361,5 +377,35 @@ mod tests {
             assert_eq!(chunks.ingest(chunk_id, data), Ok(true));
         }
         assert_eq!(chunks.try_resolve(), Some(Ok(Bytes::from(message))));
+    }
+
+    // a Byzantine author's inconsistent hollow proposal: every chunk is
+    // valid under the declared root, and the proposal resolves invalid
+    #[cfg(feature = "enable_hollow")]
+    #[test]
+    fn an_inconsistent_hollow_proposal_resolves_invalid() {
+        use super::super::super::encoding_scheme::{InvalidEncoding, instantiate};
+
+        let epoch_handle = authoring_handle();
+        // a payload no other test publishes
+        let proposal = proposal_of(vec![0x52u8; MESSAGE_LEN]);
+        let scheme = ProposalScheme::D33HollowInconsistent;
+        let proposal = AuthoredProposal::build(scheme, &epoch_handle, &proposal, 0);
+        let proposal = proposal.expect("the fixture's message fits");
+
+        let validator_data = &epoch_handle.validator_data;
+        let header = &proposal.header().header;
+        let (assignment, mut chunks) = instantiate(header, &author(), validator_data);
+        let (_, envelope) = proposal.envelope().into_parts();
+        let mut resolved = Vec::new();
+        for (wire_chunk_id, data) in envelope {
+            let routing = assignment.resolve_chunk_id(wire_chunk_id);
+            let chunk_id = routing.expect("in the assignment").chunk_id();
+            // each chunk is new until the proposal resolves, then none is
+            let was_resolved = chunks.is_resolved();
+            assert_eq!(chunks.ingest(chunk_id, data), Ok(!was_resolved));
+            resolved.extend(chunks.try_resolve());
+        }
+        assert_eq!(resolved, [Err(InvalidEncoding)]);
     }
 }

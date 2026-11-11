@@ -187,6 +187,35 @@ impl Encoded for HollowEncoded {
     }
 }
 
+// The chunks of a Byzantine proposer that declares a root its message does
+// not encode to, for simulations. They are bound to the declared root, so
+// every node takes them as valid chunks, and decodes them to a message
+// whose encoding is under another root: an invalid encoding, as with real
+// chunks that verify under their root and form no codeword.
+pub(crate) struct Inconsistent(Arc<SharedMessage>);
+
+impl<S: DAEncodingScheme> Hollow<S> {
+    // the encoding of `message` under a root it does not encode to. None
+    // for a message of another length than the scheme's.
+    pub(crate) fn encode_inconsistent(&self, message: &Bytes) -> Option<Inconsistent> {
+        if message.is_empty() || message.len() != self.msg_len() {
+            return None;
+        }
+        let shared = SharedMessage::publish_inconsistent(message.clone());
+        Some(Inconsistent(shared))
+    }
+}
+
+impl Encoded for Inconsistent {
+    fn root(&self) -> MerkleRoot {
+        self.0.declared
+    }
+
+    fn chunk_data(&self, chunk_id: ChunkId) -> ChunkData {
+        hollow_chunk(chunk_id, &self.0.declared)
+    }
+}
+
 // what a chunk under root carries: no symbol, and a one-element proof
 fn hollow_chunk(chunk_id: ChunkId, root: &MerkleRoot) -> ChunkData {
     ChunkData {
@@ -238,7 +267,6 @@ impl SharedMessage {
     }
 
     // a message under a root that it does not encode to
-    #[allow(unused)]
     fn publish_inconsistent(message: Bytes) -> Arc<Self> {
         let actual = root_of(&message);
         let MerkleRoot(mut declared) = actual;
