@@ -2237,6 +2237,39 @@ fn a_certificate_for_a_view_already_left_is_not_forwarded() {
 }
 
 #[test]
+fn a_view_timeout_re_sends_the_certificate_that_entered_the_view() {
+    let validator_data = validator_data();
+    let block = metablock(1, &validator_data);
+    let follower = nodes()[0];
+
+    let mut instance = started(follower, &block, &validator_data);
+    drain(&mut instance);
+
+    instance.handle_timer(TimerEvent::ViewTimeout(view(1)));
+    let outputs = drain(&mut instance);
+    assert_eq!(timed_out_view(&outputs), Some(view(1)));
+    assert!(
+        forwarded_certificates(&outputs).is_empty(),
+        "view 1 is entered on no certificate"
+    );
+
+    let tc_1 = timeout_certificate(view(1), None, &validator_data);
+    instance.handle_message_from(nodes()[1], Message::Tc(tc_1.clone()));
+    assert!(scheduled_timers(&drain(&mut instance)).contains(&TimerEvent::ViewTimeout(view(2))));
+
+    for _ in 0..2 {
+        instance.handle_timer(TimerEvent::ViewTimeout(view(2)));
+        let outputs = drain(&mut instance);
+        assert_eq!(timed_out_view(&outputs), Some(view(2)));
+        let resent: Vec<_> = broadcasts(&outputs)
+            .into_iter()
+            .filter(|message| matches!(message, Message::Tc(_)))
+            .collect();
+        assert_eq!(resent, vec![&Message::Tc(tc_1.clone())]);
+    }
+}
+
+#[test]
 fn a_standalone_certificate_before_propose_jumps_at_propose() {
     let validator_data = validator_data();
     let block = metablock(1, &validator_data);

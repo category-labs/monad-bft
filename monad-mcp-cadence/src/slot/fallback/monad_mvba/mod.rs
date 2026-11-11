@@ -845,8 +845,8 @@ where
     }
 
     /// The view timeout expired, or f+1 stake has already timed out here. Also
-    /// the retransmission path for this validator's timeout: re-arming keeps
-    /// the fires coming. Block requests re-drive on their own
+    /// the retransmission path for this validator's timeout and the view's entry
+    /// certificate: re-arming keeps the fires coming. Block requests re-drive on their own
     /// [`TimerEvent::BlockRetransmit`]
     fn local_time_out(
         &mut self,
@@ -877,13 +877,17 @@ where
         // the same event, so an echo-triggered timeout still leaves exactly
         // one live timer -- and its periodic fires are what retransmit this
         // validator's timeout
-        let outputs = vec![
+        let mut outputs = vec![
             MVBAOutput::ScheduleTimer {
                 duration: self.context.view_timeout(),
                 timer_event: TimerEvent::ViewTimeout(view),
             },
             MVBAOutput::Broadcast(MvbaMessage::Timeout(timeout)),
         ];
+        // a validator still behind this view needs the certificate that entered it
+        if let Some(tc) = &self.entry_tc {
+            outputs.push(MVBAOutput::Broadcast(MvbaMessage::Tc(tc.clone())));
+        }
 
         (phase, outputs)
     }
