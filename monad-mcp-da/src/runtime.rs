@@ -552,6 +552,75 @@ mod tests {
         }
     }
 
+    // a Byzantine author's inconsistent proposal (valid proofs, no
+    // codeword) is never shared, so a receiver among sharing nodes takes it
+    // on the real path: it resolves invalid as without sharing, output for
+    // output, even while an honest proposal of the same author and slot is
+    // shared
+    #[test]
+    fn an_inconsistent_proposal_resolves_invalid_with_shared_encodings_too() {
+        use rand::{SeedableRng as _, seq::SliceRandom as _};
+        use rand_chacha::ChaCha20Rng;
+
+        use super::super::{
+            chunk::Chunk,
+            encoding_scheme::{InvalidEncoding, shared},
+            test_util::{epoch_handle_for, inconsistent_proposal_chunks},
+        };
+
+        let handle = |self_id, shared_encodings| EpochHandle {
+            shared_encodings,
+            ..epoch_handle_for(self_id, 4, vec![author()])
+        };
+
+        // the author equivocates: an honest proposal, shared, and an
+        // inconsistent one
+        let proposal = Proposal {
+            slot: SLOT,
+            lane: Lane::new_unchecked(0),
+            payload: Bytes::from(vec![0x53; MESSAGE_LEN]),
+        };
+        let unix_ts = unix_seconds(NOW);
+        let honest = AuthoredProposal::build(
+            ProposalScheme::D33,
+            &handle(author(), true),
+            &proposal,
+            unix_ts,
+        );
+        let honest = honest.expect("the message fits");
+        assert!(shared::is_published(&honest.header().header.root));
+        let (header, chunks) = inconsistent_proposal_chunks(&handle(NodeId::dummy(1), false));
+        assert_ne!(header.header.root, honest.header().header.root);
+        assert!(!shared::is_published(&header.header.root));
+
+        // every chunk twice, in random orders
+        let mut arrivals: Vec<Chunk<'static>> = chunks.iter().chain(&chunks).cloned().collect();
+        for seed in 0..8 {
+            arrivals.shuffle(&mut ChaCha20Rng::seed_from_u64(seed));
+            let receiver = |shared_encodings| {
+                let schedule = proposer_schedule(vec![author()]);
+                let handle = handle(NodeId::dummy(1), shared_encodings);
+                let mut runtime = DARuntime::new(da_config(), handle, schedule);
+                open(&mut runtime, [SLOT.get()]);
+                runtime.handle_command(ChorusDACommand::ReleaseChunks, SLOT, NOW);
+                runtime
+            };
+            let (mut sharing, mut alone) = (receiver(true), receiver(false));
+            let mut invalid = false;
+            for chunk in &arrivals {
+                let envelope = ProposalEnvelope::from_chunk(chunk.clone());
+                let ingested = alone.ingest(&author(), envelope.clone());
+                assert_eq!(sharing.ingest(&author(), envelope), ingested);
+                let out = comparable(outputs(&mut alone));
+                invalid |= out
+                    .iter()
+                    .any(|out| matches!(out, Out::Resolved(_, _, _, Err(InvalidEncoding))));
+                assert_eq!(comparable(outputs(&mut sharing)), out, "seed {seed}");
+            }
+            assert!(invalid, "seed {seed}");
+        }
+    }
+
     #[test]
     fn ingestion_is_bounded_by_the_opened_slots() {
         let mut runtime = runtime(1);
