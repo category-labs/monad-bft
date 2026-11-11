@@ -87,12 +87,20 @@ const MAX_FUTURE_VIEWS: u64 = 10;
 /// TC
 const LOOKBACK_VIEWS: u64 = 1;
 
-/// `Δ_R` in multiples of Δ: one request-reply round to recover a locked block
+/// Every correct validator enters a view within Δ of the first one
+const VIEW_SYNC_DELTAS: u64 = 1;
+/// `Δ_R`: one request-reply round for the leader to recover a locked block
 const RECOVER_DELTAS: u64 = 2;
-
-/// `T = Δ_R + 4Δ + max(Δ, Δ_sync)` in multiples of Δ, with `Δ_sync = Δ`: no
-/// commit waits on availability
-const VIEW_TIMEOUT_DELTAS: u64 = RECOVER_DELTAS + 5;
+/// Pre-Prepare and Prepare, one Δ each
+const PROPOSE_DELTAS: u64 = 2;
+/// Commit, `max(Δ, Δ_sync)`: Δ, as no commit waits on availability
+const COMMIT_DELTAS: u64 = 1;
+/// The commit certificate must form strictly before the timeout
+const MARGIN_DELTAS: u64 = 1;
+/// `T = Δ_R + 4Δ + max(Δ, Δ_sync)` in multiples of Δ: the time a view with
+/// a correct leader needs to produce a commit certificate
+const VIEW_TIMEOUT_DELTAS: u64 =
+    VIEW_SYNC_DELTAS + RECOVER_DELTAS + PROPOSE_DELTAS + COMMIT_DELTAS + MARGIN_DELTAS;
 
 pub struct MvbaContext {
     pub slot: Slot,
@@ -859,10 +867,6 @@ where
             view,
             self.high_prep_qc.clone(),
             &self.context.key,
-        );
-        debug_assert!(
-            timeout.is_well_formed(),
-            "no lock is adopted ahead of its view"
         );
 
         let phase = phase

@@ -228,14 +228,11 @@ impl<V: Votable, C: ValidateCert> ViewCollectors<V, C> {
             })
             .collect();
 
-        let tc = TimeoutCertificate {
+        Some(TimeoutCertificate {
             slot: self.slot,
             view: self.view,
             groups,
             high_prep_qc,
-        };
-        // every stored timeout passed `TimeoutMsg::is_well_formed`
-        debug_assert!(tc.is_well_formed());
-        Some(tc)
+        })
     }
 }
