@@ -15,8 +15,9 @@
 
 //! The slot fallback on a simulated network, with no Chorus around it. Each
 //! node is one [`SlotFallback`] behind the stock [`MvbaRuntime`], observed by a
-//! [`TracedRuntime`]. Which certificate decided a node is read off the wire: a
-//! `DummyDecision` or a `CommitQc` broadcast in the same step as the decision
+//! [`SlotFallbackRuntime`]. Which certificate decided a node is read off the
+//! wire: a `DummyDecision` or a `CommitQc` broadcast in the same step as the
+//! decision
 
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
@@ -28,7 +29,7 @@ use cadence::{
     Outbound, Runtime,
     slot::fallback::{
         EnterFallbackCert, Entry, Metablock, MvbaRuntime,
-        leaderless::{LeaderlessMessage, NfCert},
+        dummy_view::{DummyViewMessage, NfCert},
         monad_mvba::MvbaMessage,
         slot_fallback::{CertifiedMetablock, SlotCommitProof, SlotFallback, SlotFallbackMessage},
     },
@@ -45,7 +46,7 @@ use crate::{
 
 type Inner = MvbaRuntime<SlotFallback, Metablock>;
 type Input = (Metablock, Option<EnterFallbackCert>);
-type SlotFallbackNode = SimNode<TracedRuntime>;
+type SlotFallbackNode = SimNode<SlotFallbackRuntime>;
 /// A message and its destination, `None` for a broadcast
 type Addressed = (Option<NodeId>, SlotFallbackMessage);
 
@@ -95,7 +96,7 @@ type SharedLog = Arc<Mutex<NodeLog>>;
 /// every message the node sent again at that interval until the node decides,
 /// and from then on only the certificate it decided by -- the `Repeater`'s
 /// contract, kept out of protocol code
-pub struct TracedRuntime {
+pub struct SlotFallbackRuntime {
     inner: Inner,
     hook: Option<Box<OutboundHook>>,
     resend: Option<TimestampDelta>,
@@ -108,7 +109,7 @@ pub struct TracedRuntime {
     log: SharedLog,
 }
 
-impl TracedRuntime {
+impl SlotFallbackRuntime {
     fn new(
         inner: Inner,
         hook: Option<Box<OutboundHook>>,
@@ -278,7 +279,7 @@ pub fn forge_pre_prepare(
 
 fn certificate_of(message: &SlotFallbackMessage) -> Option<SlotCommitProof> {
     match message {
-        SlotFallbackMessage::Leaderless(LeaderlessMessage::DummyDecision { qc, .. }) => {
+        SlotFallbackMessage::DummyView(DummyViewMessage::DummyDecision { qc, .. }) => {
             Some(SlotCommitProof::Dummy(qc.clone()))
         }
         SlotFallbackMessage::Mvba(MvbaMessage::CommitQc(qc)) => {
@@ -288,7 +289,7 @@ fn certificate_of(message: &SlotFallbackMessage) -> Option<SlotCommitProof> {
     }
 }
 
-impl Runtime for TracedRuntime {
+impl Runtime for SlotFallbackRuntime {
     type Message = SlotFallbackMessage;
     type LocalIn = Input;
     type LocalOut = SlotDecision;
@@ -411,7 +412,7 @@ impl SlotFallbackSwarmBuilder {
         for (id, mvba) in self.nodes {
             let log = SharedLog::default();
             logs.insert(id, log.clone());
-            let runtime = TracedRuntime::new(
+            let runtime = SlotFallbackRuntime::new(
                 MvbaRuntime::new(mvba),
                 self.hooks.remove(&id),
                 self.resend,

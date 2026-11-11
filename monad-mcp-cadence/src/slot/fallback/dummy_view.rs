@@ -19,7 +19,9 @@
 
 use std::{collections::VecDeque, sync::Arc};
 
-use alloy_rlp::{RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper};
+use alloy_rlp::{
+    Decodable, Encodable, RlpDecodable, RlpDecodableWrapper, RlpEncodable, RlpEncodableWrapper,
+};
 
 use super::{
     super::types::{IsVote, KeyPair, Lanes, Slot, StrongQc, ValidatorIndex, VoteMsg},
@@ -77,7 +79,7 @@ impl ValidateCert for NfCert {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub enum LeaderlessMessage {
+pub enum DummyViewMessage {
     /// The sender's registered input, a fast metablock
     FastInput(Metablock),
     NotFull(VoteMsg<NotFull>),
@@ -89,10 +91,61 @@ pub enum LeaderlessMessage {
     },
 }
 
-/// What the round hands the composition that owns it
+impl DummyViewMessage {
+    pub fn slot(&self) -> Slot {
+        match self {
+            Self::FastInput(block) => block.slot(),
+            Self::NotFull(declaration) => declaration.scope,
+            Self::DummyVote(vote) => vote.scope,
+            Self::DummyDecision { qc, .. } => qc.scope,
+        }
+    }
+
+    // the wire form: a tag, then the variant's fields
+    fn rlp_fields(&self) -> Vec<&dyn Encodable> {
+        match self {
+            Self::FastInput(block) => vec![&1u8, block],
+            Self::NotFull(declaration) => vec![&2u8, declaration],
+            Self::DummyVote(vote) => vec![&3u8, vote],
+            Self::DummyDecision { qc, block } => vec![&4u8, qc, block],
+        }
+    }
+}
+
+impl Encodable for DummyViewMessage {
+    fn encode(&self, out: &mut dyn bytes::BufMut) {
+        alloy_rlp::encode_list::<_, dyn Encodable>(&self.rlp_fields(), out);
+    }
+
+    fn length(&self) -> usize {
+        alloy_rlp::list_length::<_, dyn Encodable>(&self.rlp_fields())
+    }
+}
+
+impl Decodable for DummyViewMessage {
+    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
+        let result = match u8::decode(&mut payload)? {
+            1 => Self::FastInput(Metablock::decode(&mut payload)?),
+            2 => Self::NotFull(VoteMsg::decode(&mut payload)?),
+            3 => Self::DummyVote(VoteMsg::decode(&mut payload)?),
+            4 => Self::DummyDecision {
+                qc: DummyQc::decode(&mut payload)?,
+                block: Metablock::decode(&mut payload)?,
+            },
+            _ => return Err(alloy_rlp::Error::Custom("unknown DummyViewMessage tag")),
+        };
+        if !payload.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
+        }
+        Ok(result)
+    }
+}
+
+/// What the dummy view hands its owner; consumed by `SlotFallback::apply`
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub(crate) enum LeaderlessEffect {
-    Broadcast(LeaderlessMessage),
+pub(crate) enum DummyViewEffect {
+    Broadcast(DummyViewMessage),
     /// The first valid fast metablock seen, which any leader may propose
     FastBlock(Metablock),
     NfCert(NfCert),
@@ -102,7 +155,7 @@ pub(crate) enum LeaderlessEffect {
     },
 }
 
-pub(crate) struct LeaderlessRound {
+pub(crate) struct DummyView {
     slot: Slot,
     key: Arc<KeyPair>,
     validation_context: ValidationContext,
@@ -117,10 +170,10 @@ pub(crate) struct LeaderlessRound {
     dummy_votes: SealingVotePool<DummyVote>,
     decided: bool,
 
-    effects: VecDeque<LeaderlessEffect>,
+    effects: VecDeque<DummyViewEffect>,
 }
 
-impl LeaderlessRound {
+impl DummyView {
     /// Messages are retained from construction, before [`Self::enter`]
     pub(crate) fn new(ctx: &MvbaContext) -> Self {
         Self {
@@ -148,32 +201,32 @@ impl LeaderlessRound {
         // persist-before-send: the registered input, which fixes DummyVote or NotFull
         if input.is_fast() {
             let vote = VoteMsg::new_signed(self.slot, DummyVote(input.entries()), &self.key);
-            self.broadcast(LeaderlessMessage::FastInput(input));
-            self.broadcast(LeaderlessMessage::DummyVote(vote));
+            self.broadcast(DummyViewMessage::FastInput(input));
+            self.broadcast(DummyViewMessage::DummyVote(vote));
         } else {
             let declaration = VoteMsg::new_signed(self.slot, NotFull, &self.key);
-            self.broadcast(LeaderlessMessage::NotFull(declaration));
+            self.broadcast(DummyViewMessage::NotFull(declaration));
         }
     }
 
-    pub(crate) fn handle_message(&mut self, sender: ValidatorIndex, msg: LeaderlessMessage) {
+    pub(crate) fn handle_message(&mut self, sender: ValidatorIndex, msg: DummyViewMessage) {
         if self.abandoned {
             return;
         }
 
         match msg {
-            LeaderlessMessage::FastInput(block) => self.handle_fast_input(block),
-            LeaderlessMessage::NotFull(declaration) => {
+            DummyViewMessage::FastInput(block) => self.handle_fast_input(block),
+            DummyViewMessage::NotFull(declaration) => {
                 if declaration.scope == self.slot {
                     self.not_full.add_vote(sender, declaration);
                 }
             }
-            LeaderlessMessage::DummyVote(vote) => {
+            DummyViewMessage::DummyVote(vote) => {
                 if vote.scope == self.slot {
                     self.dummy_votes.add_vote(sender, vote);
                 }
             }
-            LeaderlessMessage::DummyDecision { qc, block } => self.handle_dummy_decision(qc, block),
+            DummyViewMessage::DummyDecision { qc, block } => self.handle_dummy_decision(qc, block),
         }
 
         self.try_form_nf_cert();
@@ -185,12 +238,12 @@ impl LeaderlessRound {
         self.effects.clear();
     }
 
-    pub(crate) fn poll(&mut self) -> Option<LeaderlessEffect> {
+    pub(crate) fn poll(&mut self) -> Option<DummyViewEffect> {
         self.effects.pop_front()
     }
 
-    fn broadcast(&mut self, msg: LeaderlessMessage) {
-        self.effects.push_back(LeaderlessEffect::Broadcast(msg));
+    fn broadcast(&mut self, msg: DummyViewMessage) {
+        self.effects.push_back(DummyViewEffect::Broadcast(msg));
     }
 
     fn is_fast_block(&self, block: &Metablock) -> bool {
@@ -202,7 +255,7 @@ impl LeaderlessRound {
             return;
         }
         self.fast_block = Some(block.clone());
-        self.effects.push_back(LeaderlessEffect::FastBlock(block));
+        self.effects.push_back(DummyViewEffect::FastBlock(block));
     }
 
     fn handle_dummy_decision(&mut self, qc: DummyQc, block: Metablock) {
@@ -229,7 +282,7 @@ impl LeaderlessRound {
         };
         let nf_cert = nf_cert.clone();
         self.nf_cert_emitted = true;
-        self.effects.push_back(LeaderlessEffect::NfCert(nf_cert));
+        self.effects.push_back(DummyViewEffect::NfCert(nf_cert));
     }
 
     fn try_decide(&mut self) {
@@ -255,7 +308,7 @@ impl LeaderlessRound {
     fn decide(&mut self, qc: DummyQc, block: Metablock) {
         self.decided = true;
         self.effects
-            .push_back(LeaderlessEffect::Decided { qc, block });
+            .push_back(DummyViewEffect::Decided { qc, block });
     }
 }
 
@@ -281,7 +334,7 @@ mod tests {
             FallbackCommitQc, FallbackView, Metablock, MvbaScope, ValidateCert,
             monad_mvba::{MakesValidationContext, MvbaContext},
         },
-        DummyQc, DummyVote, LeaderlessEffect, LeaderlessMessage, LeaderlessRound, NotFull,
+        DummyQc, DummyView, DummyViewEffect, DummyViewMessage, DummyVote, NotFull,
     };
     use crate::env::stub::{EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader};
 
@@ -321,8 +374,8 @@ mod tests {
         }
     }
 
-    fn round(node: NodeId) -> LeaderlessRound {
-        LeaderlessRound::new(&context(node))
+    fn dummy_view(node: NodeId) -> DummyView {
+        DummyView::new(&context(node))
     }
 
     fn pid(slot: Slot, n: u64) -> ProposalId {
@@ -389,16 +442,16 @@ mod tests {
         }))
     }
 
-    fn dummy_vote(node: NodeId, entries: &Lanes<Entry>) -> LeaderlessMessage {
-        LeaderlessMessage::DummyVote(VoteMsg::new_signed(
+    fn dummy_vote(node: NodeId, entries: &Lanes<Entry>) -> DummyViewMessage {
+        DummyViewMessage::DummyVote(VoteMsg::new_signed(
             SLOT,
             DummyVote(entries.clone()),
             &node.keypair(),
         ))
     }
 
-    fn not_full(node: NodeId) -> LeaderlessMessage {
-        LeaderlessMessage::NotFull(VoteMsg::new_signed(SLOT, NotFull, &node.keypair()))
+    fn not_full(node: NodeId) -> DummyViewMessage {
+        DummyViewMessage::NotFull(VoteMsg::new_signed(SLOT, NotFull, &node.keypair()))
     }
 
     fn dummy_qc(entries: &Lanes<Entry>) -> DummyQc {
@@ -426,49 +479,49 @@ mod tests {
         )
     }
 
-    fn deliver(round: &mut LeaderlessRound, from: NodeId, msg: LeaderlessMessage) {
-        round.handle_message(dummy_index(from), msg);
+    fn deliver(view: &mut DummyView, from: NodeId, msg: DummyViewMessage) {
+        view.handle_message(dummy_index(from), msg);
     }
 
-    fn drain(round: &mut LeaderlessRound) -> Vec<LeaderlessEffect> {
-        std::iter::from_fn(|| round.poll()).collect()
+    fn drain(view: &mut DummyView) -> Vec<DummyViewEffect> {
+        std::iter::from_fn(|| view.poll()).collect()
     }
 
-    fn broadcasts(effects: &[LeaderlessEffect]) -> Vec<&LeaderlessMessage> {
+    fn broadcasts(effects: &[DummyViewEffect]) -> Vec<&DummyViewMessage> {
         effects
             .iter()
             .filter_map(|effect| match effect {
-                LeaderlessEffect::Broadcast(msg) => Some(msg),
+                DummyViewEffect::Broadcast(msg) => Some(msg),
                 _ => None,
             })
             .collect()
     }
 
-    fn fast_blocks(effects: &[LeaderlessEffect]) -> Vec<&Metablock> {
+    fn fast_blocks(effects: &[DummyViewEffect]) -> Vec<&Metablock> {
         effects
             .iter()
             .filter_map(|effect| match effect {
-                LeaderlessEffect::FastBlock(block) => Some(block),
+                DummyViewEffect::FastBlock(block) => Some(block),
                 _ => None,
             })
             .collect()
     }
 
-    fn nf_certs(effects: &[LeaderlessEffect]) -> Vec<&super::NfCert> {
+    fn nf_certs(effects: &[DummyViewEffect]) -> Vec<&super::NfCert> {
         effects
             .iter()
             .filter_map(|effect| match effect {
-                LeaderlessEffect::NfCert(cert) => Some(cert),
+                DummyViewEffect::NfCert(cert) => Some(cert),
                 _ => None,
             })
             .collect()
     }
 
-    fn decisions(effects: &[LeaderlessEffect]) -> Vec<(&DummyQc, &Metablock)> {
+    fn decisions(effects: &[DummyViewEffect]) -> Vec<(&DummyQc, &Metablock)> {
         effects
             .iter()
             .filter_map(|effect| match effect {
-                LeaderlessEffect::Decided { qc, block } => Some((qc, block)),
+                DummyViewEffect::Decided { qc, block } => Some((qc, block)),
                 _ => None,
             })
             .collect()
@@ -478,30 +531,30 @@ mod tests {
     fn a_fast_input_sends_its_block_and_one_dummy_vote_at_entry() {
         let me = nodes()[0];
         let block = fast_metablock(1);
-        let mut round = round(me);
+        let mut view = dummy_view(me);
 
-        round.enter(block.clone());
-        let effects = drain(&mut round);
+        view.enter(block.clone());
+        let effects = drain(&mut view);
 
         let vote = VoteMsg::new_signed(SLOT, DummyVote(block.entries()), &me.keypair());
         assert_eq!(effects.len(), 2, "only the block and the vote: {effects:?}");
         let sent = broadcasts(&effects);
-        assert!(sent.contains(&&LeaderlessMessage::FastInput(block)));
-        assert!(sent.contains(&&LeaderlessMessage::DummyVote(vote)));
+        assert!(sent.contains(&&DummyViewMessage::FastInput(block)));
+        assert!(sent.contains(&&DummyViewMessage::DummyVote(vote)));
     }
 
     #[test]
     fn a_non_fast_input_declares_not_full_and_never_votes() {
         let me = nodes()[0];
         let block = fast_metablock(1);
-        let mut round = round(me);
+        let mut view = dummy_view(me);
 
-        round.enter(non_fast_metablock(1));
-        let effects = drain(&mut round);
+        view.enter(non_fast_metablock(1));
+        let effects = drain(&mut view);
         let declaration = VoteMsg::new_signed(SLOT, NotFull, &me.keypair());
         assert_eq!(
             effects,
-            vec![LeaderlessEffect::Broadcast(LeaderlessMessage::NotFull(
+            vec![DummyViewEffect::Broadcast(DummyViewMessage::NotFull(
                 declaration
             ))]
         );
@@ -509,15 +562,15 @@ mod tests {
         // neither a later fast block, a quorum of votes, nor a second input
         // changes the choice
         deliver(
-            &mut round,
+            &mut view,
             nodes()[1],
-            LeaderlessMessage::FastInput(block.clone()),
+            DummyViewMessage::FastInput(block.clone()),
         );
         for node in &nodes()[1..] {
-            deliver(&mut round, *node, dummy_vote(*node, &block.entries()));
+            deliver(&mut view, *node, dummy_vote(*node, &block.entries()));
         }
-        round.enter(block);
-        let effects = drain(&mut round);
+        view.enter(block);
+        let effects = drain(&mut view);
         assert!(
             broadcasts(&effects).is_empty(),
             "a non-fast validator sends nothing more: {effects:?}"
@@ -528,28 +581,24 @@ mod tests {
     fn every_message_is_sent_exactly_once() {
         let me = nodes()[0];
         let block = fast_metablock(1);
-        let mut round = round(me);
+        let mut view = dummy_view(me);
 
-        round.enter(block.clone());
-        let mut effects = drain(&mut round);
-        round.enter(block.clone());
-        round.enter(non_fast_metablock(1));
+        view.enter(block.clone());
+        let mut effects = drain(&mut view);
+        view.enter(block.clone());
+        view.enter(non_fast_metablock(1));
 
-        // the round's own broadcasts come back, then everyone else's, twice
+        // the dummy view's own broadcasts come back, then everyone else's, twice
         let own: Vec<_> = broadcasts(&effects).into_iter().cloned().collect();
         for _ in 0..2 {
             for msg in &own {
-                deliver(&mut round, me, msg.clone());
+                deliver(&mut view, me, msg.clone());
             }
             for node in &nodes()[1..] {
-                deliver(
-                    &mut round,
-                    *node,
-                    LeaderlessMessage::FastInput(block.clone()),
-                );
-                deliver(&mut round, *node, dummy_vote(*node, &block.entries()));
+                deliver(&mut view, *node, DummyViewMessage::FastInput(block.clone()));
+                deliver(&mut view, *node, dummy_vote(*node, &block.entries()));
             }
-            effects.extend(drain(&mut round));
+            effects.extend(drain(&mut view));
         }
 
         assert_eq!(broadcasts(&effects).len(), 2, "{effects:?}");
@@ -561,54 +610,54 @@ mod tests {
     fn nothing_is_sent_before_entry_or_after_abandon() {
         let me = nodes()[0];
         let block = fast_metablock(1);
-        let mut round = round(me);
+        let mut view = dummy_view(me);
 
         deliver(
-            &mut round,
+            &mut view,
             nodes()[1],
-            LeaderlessMessage::FastInput(block.clone()),
+            DummyViewMessage::FastInput(block.clone()),
         );
         for node in nodes() {
-            deliver(&mut round, node, dummy_vote(node, &block.entries()));
-            deliver(&mut round, node, not_full(node));
+            deliver(&mut view, node, dummy_vote(node, &block.entries()));
+            deliver(&mut view, node, not_full(node));
         }
-        assert!(broadcasts(&drain(&mut round)).is_empty());
+        assert!(broadcasts(&drain(&mut view)).is_empty());
 
         // abandoning drops what entry queued, and later calls queue nothing
-        round.enter(block.clone());
-        round.abandon();
-        assert!(round.poll().is_none());
+        view.enter(block.clone());
+        view.abandon();
+        assert!(view.poll().is_none());
 
-        round.enter(non_fast_metablock(1));
+        view.enter(non_fast_metablock(1));
         deliver(
-            &mut round,
+            &mut view,
             nodes()[2],
-            LeaderlessMessage::FastInput(block.clone()),
+            DummyViewMessage::FastInput(block.clone()),
         );
         deliver(
-            &mut round,
+            &mut view,
             nodes()[2],
-            LeaderlessMessage::DummyDecision {
+            DummyViewMessage::DummyDecision {
                 qc: dummy_qc(&block.entries()),
                 block,
             },
         );
-        assert!(round.poll().is_none());
+        assert!(view.poll().is_none());
     }
 
     #[test]
     fn a_quorum_of_declarations_forms_the_certificate_once() {
-        let mut round = round(nodes()[0]);
-        round.enter(non_fast_metablock(1));
-        drain(&mut round);
+        let mut view = dummy_view(nodes()[0]);
+        view.enter(non_fast_metablock(1));
+        drain(&mut view);
 
         for node in &quorum()[..2] {
-            deliver(&mut round, *node, not_full(*node));
+            deliver(&mut view, *node, not_full(*node));
         }
-        assert!(nf_certs(&drain(&mut round)).is_empty());
+        assert!(nf_certs(&drain(&mut view)).is_empty());
 
-        deliver(&mut round, quorum()[2], not_full(quorum()[2]));
-        let effects = drain(&mut round);
+        deliver(&mut view, quorum()[2], not_full(quorum()[2]));
+        let effects = drain(&mut view);
         let certs = nf_certs(&effects);
         assert_eq!(certs.len(), 1);
         let validation_context =
@@ -617,51 +666,51 @@ mod tests {
         assert_eq!(certs[0].scope, SLOT);
 
         for node in nodes() {
-            deliver(&mut round, node, not_full(node));
+            deliver(&mut view, node, not_full(node));
         }
-        assert!(nf_certs(&drain(&mut round)).is_empty());
+        assert!(nf_certs(&drain(&mut view)).is_empty());
     }
 
     #[test]
     fn a_second_declaration_from_one_signer_is_not_counted() {
-        let mut round = round(nodes()[0]);
+        let mut view = dummy_view(nodes()[0]);
         let (repeater, other) = (nodes()[1], nodes()[2]);
 
-        deliver(&mut round, repeater, not_full(repeater));
-        deliver(&mut round, repeater, not_full(repeater));
-        deliver(&mut round, other, not_full(other));
+        deliver(&mut view, repeater, not_full(repeater));
+        deliver(&mut view, repeater, not_full(repeater));
+        deliver(&mut view, other, not_full(other));
         assert!(
-            nf_certs(&drain(&mut round)).is_empty(),
+            nf_certs(&drain(&mut view)).is_empty(),
             "two signers are not a quorum of four"
         );
 
-        deliver(&mut round, nodes()[3], not_full(nodes()[3]));
-        assert_eq!(nf_certs(&drain(&mut round)).len(), 1);
+        deliver(&mut view, nodes()[3], not_full(nodes()[3]));
+        assert_eq!(nf_certs(&drain(&mut view)).len(), 1);
     }
 
     #[test]
     fn a_quorum_of_dummy_votes_and_a_fast_block_decide() {
         let block = fast_metablock(1);
-        let mut round = round(nodes()[0]);
+        let mut view = dummy_view(nodes()[0]);
 
         deliver(
-            &mut round,
+            &mut view,
             nodes()[1],
-            LeaderlessMessage::FastInput(block.clone()),
+            DummyViewMessage::FastInput(block.clone()),
         );
         for node in &quorum()[..2] {
-            deliver(&mut round, *node, dummy_vote(*node, &block.entries()));
+            deliver(&mut view, *node, dummy_vote(*node, &block.entries()));
         }
-        let effects = drain(&mut round);
+        let effects = drain(&mut view);
         assert_eq!(fast_blocks(&effects), vec![&block]);
         assert!(decisions(&effects).is_empty());
 
         deliver(
-            &mut round,
+            &mut view,
             quorum()[2],
             dummy_vote(quorum()[2], &block.entries()),
         );
-        let effects = drain(&mut round);
+        let effects = drain(&mut view);
         let decided = decisions(&effects);
         assert_eq!(decided.len(), 1);
         let (qc, decided_block) = decided[0];
@@ -671,35 +720,35 @@ mod tests {
         assert!(qc.verify(&validator_data()));
 
         deliver(
-            &mut round,
+            &mut view,
             nodes()[3],
             dummy_vote(nodes()[3], &block.entries()),
         );
-        assert!(decisions(&drain(&mut round)).is_empty());
+        assert!(decisions(&drain(&mut view)).is_empty());
     }
 
     #[test]
     fn a_quorum_of_dummy_votes_waits_for_the_fast_block() {
         let block = fast_metablock(1);
-        let mut round = round(nodes()[0]);
+        let mut view = dummy_view(nodes()[0]);
 
         for node in quorum() {
-            deliver(&mut round, node, dummy_vote(node, &block.entries()));
+            deliver(&mut view, node, dummy_vote(node, &block.entries()));
         }
         // same entries, but not a fast metablock
         deliver(
-            &mut round,
+            &mut view,
             nodes()[3],
-            LeaderlessMessage::FastInput(non_fast_metablock(1)),
+            DummyViewMessage::FastInput(non_fast_metablock(1)),
         );
-        assert!(decisions(&drain(&mut round)).is_empty());
+        assert!(decisions(&drain(&mut view)).is_empty());
 
         deliver(
-            &mut round,
+            &mut view,
             nodes()[3],
-            LeaderlessMessage::FastInput(block.clone()),
+            DummyViewMessage::FastInput(block.clone()),
         );
-        let effects = drain(&mut round);
+        let effects = drain(&mut view);
         assert_eq!(fast_blocks(&effects), vec![&block]);
         let decided = decisions(&effects);
         assert_eq!(decided.len(), 1);
@@ -711,7 +760,7 @@ mod tests {
         let me = nodes()[0];
         let block = fast_metablock(1);
 
-        let mut declaring = round(me);
+        let mut declaring = dummy_view(me);
         for node in &nodes()[1..3] {
             deliver(&mut declaring, *node, not_full(*node));
         }
@@ -721,11 +770,11 @@ mod tests {
         deliver(&mut declaring, me, own);
         assert_eq!(nf_certs(&drain(&mut declaring)).len(), 1);
 
-        let mut voting = round(me);
+        let mut voting = dummy_view(me);
         deliver(
             &mut voting,
             nodes()[1],
-            LeaderlessMessage::FastInput(block.clone()),
+            DummyViewMessage::FastInput(block.clone()),
         );
         for node in &nodes()[1..3] {
             deliver(&mut voting, *node, dummy_vote(*node, &block.entries()));
@@ -752,7 +801,7 @@ mod tests {
     #[test]
     fn a_non_fast_or_invalid_metablock_is_not_fast_evidence() {
         let block = fast_metablock(1);
-        let mut round = round(nodes()[0]);
+        let mut view = dummy_view(nodes()[0]);
 
         let not_evidence = [
             non_fast_metablock(1),
@@ -761,25 +810,25 @@ mod tests {
         ];
         for candidate in &not_evidence {
             deliver(
-                &mut round,
+                &mut view,
                 nodes()[1],
-                LeaderlessMessage::FastInput(candidate.clone()),
+                DummyViewMessage::FastInput(candidate.clone()),
             );
             for node in quorum() {
-                deliver(&mut round, node, dummy_vote(node, &candidate.entries()));
+                deliver(&mut view, node, dummy_vote(node, &candidate.entries()));
             }
         }
-        let effects = drain(&mut round);
+        let effects = drain(&mut view);
         assert!(fast_blocks(&effects).is_empty(), "{effects:?}");
         assert!(decisions(&effects).is_empty());
 
         // the quorum on these entries is already in, so the fast block decides
         deliver(
-            &mut round,
+            &mut view,
             nodes()[1],
-            LeaderlessMessage::FastInput(block.clone()),
+            DummyViewMessage::FastInput(block.clone()),
         );
-        let effects = drain(&mut round);
+        let effects = drain(&mut view);
         assert_eq!(fast_blocks(&effects), vec![&block]);
         assert_eq!(decisions(&effects).len(), 1);
     }
@@ -787,24 +836,24 @@ mod tests {
     #[test]
     fn a_signer_of_both_messages_is_counted_in_both_pools() {
         let block = fast_metablock(1);
-        let mut round = round(nodes()[0]);
+        let mut view = dummy_view(nodes()[0]);
         deliver(
-            &mut round,
+            &mut view,
             nodes()[2],
-            LeaderlessMessage::FastInput(block.clone()),
+            DummyViewMessage::FastInput(block.clone()),
         );
 
         let both = nodes()[1];
-        deliver(&mut round, both, not_full(both));
-        deliver(&mut round, both, dummy_vote(both, &block.entries()));
+        deliver(&mut view, both, not_full(both));
+        deliver(&mut view, both, dummy_vote(both, &block.entries()));
         for node in [nodes()[2], nodes()[3]] {
-            deliver(&mut round, node, not_full(node));
+            deliver(&mut view, node, not_full(node));
         }
         for node in [nodes()[0], nodes()[3]] {
-            deliver(&mut round, node, dummy_vote(node, &block.entries()));
+            deliver(&mut view, node, dummy_vote(node, &block.entries()));
         }
 
-        let effects = drain(&mut round);
+        let effects = drain(&mut view);
         assert_eq!(nf_certs(&effects).len(), 1, "{effects:?}");
         assert_eq!(decisions(&effects).len(), 1, "{effects:?}");
     }
@@ -813,24 +862,24 @@ mod tests {
     fn dummy_not_full_and_commit_signatures_do_not_cross_domains() {
         let block = fast_metablock(1);
         let entries = block.entries();
-        let mut round = round(nodes()[0]);
-        deliver(&mut round, nodes()[1], LeaderlessMessage::FastInput(block));
-        drain(&mut round);
+        let mut view = dummy_view(nodes()[0]);
+        deliver(&mut view, nodes()[1], DummyViewMessage::FastInput(block));
+        drain(&mut view);
 
         // a quorum's MVBA commit signatures on the same entries, as dummy votes
         for node in quorum() {
             let commit = commit_vote(node, &entries);
             let vote = VoteMsg::new(SLOT, DummyVote(entries.clone()), commit.signature);
-            deliver(&mut round, node, LeaderlessMessage::DummyVote(vote));
+            deliver(&mut view, node, DummyViewMessage::DummyVote(vote));
         }
         // a quorum's enter-fallback signatures, which sign the same unit verdict
         // over the same slot, as declarations
         for node in quorum() {
             let enter = VoteMsg::new_signed(SLOT, EnterFallbackVote, &node.keypair());
             let declaration = VoteMsg::new(SLOT, NotFull, enter.signature);
-            deliver(&mut round, node, LeaderlessMessage::NotFull(declaration));
+            deliver(&mut view, node, DummyViewMessage::NotFull(declaration));
         }
-        let effects = drain(&mut round);
+        let effects = drain(&mut view);
         assert!(decisions(&effects).is_empty(), "{effects:?}");
         assert!(nf_certs(&effects).is_empty(), "{effects:?}");
 
@@ -852,22 +901,22 @@ mod tests {
     fn a_dummy_decision_from_a_peer_decides() {
         let block = fast_metablock(1);
         let qc = dummy_qc(&block.entries());
-        let mut round = round(nodes()[0]);
-        round.enter(non_fast_metablock(1));
-        drain(&mut round);
+        let mut view = dummy_view(nodes()[0]);
+        view.enter(non_fast_metablock(1));
+        drain(&mut view);
 
-        let decision = LeaderlessMessage::DummyDecision {
+        let decision = DummyViewMessage::DummyDecision {
             qc: qc.clone(),
             block: block.clone(),
         };
-        deliver(&mut round, nodes()[1], decision.clone());
+        deliver(&mut view, nodes()[1], decision.clone());
         assert_eq!(
-            drain(&mut round),
-            vec![LeaderlessEffect::Decided { qc, block }]
+            drain(&mut view),
+            vec![DummyViewEffect::Decided { qc, block }]
         );
 
-        deliver(&mut round, nodes()[2], decision);
-        assert!(drain(&mut round).is_empty());
+        deliver(&mut view, nodes()[2], decision);
+        assert!(drain(&mut view).is_empty());
     }
 
     #[test]
@@ -875,7 +924,7 @@ mod tests {
         let block = fast_metablock(1);
         let entries = block.entries();
         let qc = dummy_qc(&entries);
-        let mut round = round(nodes()[0]);
+        let mut view = dummy_view(nodes()[0]);
 
         let mut forged = qc.clone();
         forged.verdict = DummyVote(fast_metablock(2).entries());
@@ -915,25 +964,25 @@ mod tests {
         ];
         for (qc, block) in bad {
             deliver(
-                &mut round,
+                &mut view,
                 nodes()[1],
-                LeaderlessMessage::DummyDecision { qc, block },
+                DummyViewMessage::DummyDecision { qc, block },
             );
         }
-        let effects = drain(&mut round);
+        let effects = drain(&mut view);
         assert!(decisions(&effects).is_empty(), "{effects:?}");
 
         deliver(
-            &mut round,
+            &mut view,
             nodes()[1],
-            LeaderlessMessage::DummyDecision {
+            DummyViewMessage::DummyDecision {
                 qc: qc.clone(),
                 block: block.clone(),
             },
         );
         assert_eq!(
-            drain(&mut round),
-            vec![LeaderlessEffect::Decided { qc, block }]
+            drain(&mut view),
+            vec![DummyViewEffect::Decided { qc, block }]
         );
     }
 }

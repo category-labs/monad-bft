@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! The fallback path as Chorus runs it: the leaderless dummy vote and the
+//! The fallback path as Chorus runs it: the dummy view and the
 //! leader-based MVBA, started together and deciding by whichever certificate
 //! forms first
 
@@ -22,10 +22,10 @@ use std::collections::VecDeque;
 use alloy_rlp::{Decodable, Encodable};
 
 use super::{
-    super::types::{Lanes, Slot, ValidatorData, ValidatorIndex, VoteMsg},
+    super::types::{Lanes, Slot, ValidatorData, ValidatorIndex},
     EnterFallbackCert, Entry, FallbackCommitQc, MVBAOutput, Metablock, Mvba, ValidateCert,
     ValidateInput, Votable,
-    leaderless::{DummyQc, LeaderlessEffect, LeaderlessMessage, LeaderlessRound, NfCert},
+    dummy_view::{DummyQc, DummyView, DummyViewEffect, DummyViewMessage, NfCert},
     monad_mvba::{
         MakesValidationContext, MonadMvba, MvbaContext, MvbaMessage, TimerEvent, ValidationContext,
     },
@@ -143,74 +143,23 @@ pub enum SlotCommitProof {
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum SlotFallbackMessage {
-    Leaderless(LeaderlessMessage),
+    DummyView(DummyViewMessage),
     Mvba(MvbaMessage<CertifiedMetablock, NfCert>),
 }
 
 impl SlotFallbackMessage {
     pub fn slot(&self) -> Slot {
         match self {
-            Self::Leaderless(message) => message.slot(),
+            Self::DummyView(message) => message.slot(),
             Self::Mvba(message) => message.slot(),
         }
-    }
-}
-
-impl LeaderlessMessage {
-    pub fn slot(&self) -> Slot {
-        match self {
-            Self::FastInput(block) => block.slot(),
-            Self::NotFull(declaration) => declaration.scope,
-            Self::DummyVote(vote) => vote.scope,
-            Self::DummyDecision { qc, .. } => qc.scope,
-        }
-    }
-
-    // the wire form: a tag, then the variant's fields
-    fn rlp_fields(&self) -> Vec<&dyn Encodable> {
-        match self {
-            Self::FastInput(block) => vec![&1u8, block],
-            Self::NotFull(declaration) => vec![&2u8, declaration],
-            Self::DummyVote(vote) => vec![&3u8, vote],
-            Self::DummyDecision { qc, block } => vec![&4u8, qc, block],
-        }
-    }
-}
-
-impl Encodable for LeaderlessMessage {
-    fn encode(&self, out: &mut dyn bytes::BufMut) {
-        alloy_rlp::encode_list::<_, dyn Encodable>(&self.rlp_fields(), out);
-    }
-
-    fn length(&self) -> usize {
-        alloy_rlp::list_length::<_, dyn Encodable>(&self.rlp_fields())
-    }
-}
-
-impl Decodable for LeaderlessMessage {
-    fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
-        let result = match u8::decode(&mut payload)? {
-            1 => Self::FastInput(Metablock::decode(&mut payload)?),
-            2 => Self::NotFull(VoteMsg::decode(&mut payload)?),
-            3 => Self::DummyVote(VoteMsg::decode(&mut payload)?),
-            4 => Self::DummyDecision {
-                qc: DummyQc::decode(&mut payload)?,
-                block: Metablock::decode(&mut payload)?,
-            },
-            _ => return Err(alloy_rlp::Error::Custom("unknown LeaderlessMessage tag")),
-        };
-        if !payload.is_empty() {
-            return Err(alloy_rlp::Error::UnexpectedLength);
-        }
-        Ok(result)
     }
 }
 
 impl SlotFallbackMessage {
     fn rlp_fields(&self) -> [&dyn Encodable; 2] {
         match self {
-            Self::Leaderless(message) => [&1u8, message],
+            Self::DummyView(message) => [&1u8, message],
             Self::Mvba(message) => [&2u8, message],
         }
     }
@@ -230,7 +179,7 @@ impl Decodable for SlotFallbackMessage {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
         let result = match u8::decode(&mut payload)? {
-            1 => Self::Leaderless(LeaderlessMessage::decode(&mut payload)?),
+            1 => Self::DummyView(DummyViewMessage::decode(&mut payload)?),
             2 => Self::Mvba(MvbaMessage::decode(&mut payload)?),
             _ => return Err(alloy_rlp::Error::Custom("unknown SlotFallbackMessage tag")),
         };
@@ -244,13 +193,13 @@ impl Decodable for SlotFallbackMessage {
 type Output = MVBAOutput<SlotFallbackMessage, TimerEvent<CertifiedMetablock>>;
 
 pub struct SlotFallback {
-    round: LeaderlessRound,
+    dummy_view: DummyView,
     core: MonadMvba<CertifiedMetablock, NfCert>,
 
     /// This validator's registered input, set once by [`Mvba::propose`]
     input: Option<CertifiedMetablock>,
-    /// What the round found before the input was registered, replayed then
-    held: Vec<LeaderlessEffect>,
+    /// What the dummy view found before the input was registered, replayed then
+    held: Vec<DummyViewEffect>,
     /// The first decision recorded, by whichever certificate formed first
     decision: Option<(Metablock, SlotCommitProof)>,
 
@@ -259,16 +208,23 @@ pub struct SlotFallback {
 }
 
 impl SlotFallback {
-    /// Drains the round, feeding what it found to the core, then the core
-    fn pump(&mut self) {
-        while let Some(effect) = self.round.poll() {
+    /// Drains the dummy view, feeding what it found to the core, then the core
+    fn drain(&mut self) {
+        self.drain_dummy_view();
+        self.drain_core();
+    }
+
+    fn drain_dummy_view(&mut self) {
+        while let Some(effect) = self.dummy_view.poll() {
             if self.input.is_some() {
                 self.apply(effect);
             } else {
                 self.held.push(effect);
             }
         }
+    }
 
+    fn drain_core(&mut self) {
         while let Some(output) = self.core.poll() {
             self.outputs.push_back(match output {
                 MVBAOutput::Broadcast(message) => {
@@ -297,38 +253,38 @@ impl SlotFallback {
     }
 
     /// The core is offered proposals and abandoned in whatever view it is in
-    fn apply(&mut self, effect: LeaderlessEffect) {
+    fn apply(&mut self, effect: DummyViewEffect) {
         match effect {
-            LeaderlessEffect::Broadcast(message) => {
+            DummyViewEffect::Broadcast(message) => {
                 self.outputs
-                    .push_back(MVBAOutput::Broadcast(SlotFallbackMessage::Leaderless(
+                    .push_back(MVBAOutput::Broadcast(SlotFallbackMessage::DummyView(
                         message,
                     )));
             }
-            LeaderlessEffect::FastBlock(block) => {
+            DummyViewEffect::FastBlock(block) => {
                 if let Some(value) = CertifiedMetablock::fast(block) {
                     self.core.offer_proposal(value, None);
                 }
             }
-            LeaderlessEffect::NfCert(nf_cert) => {
+            DummyViewEffect::NfCert(nf_cert) => {
                 if let Some(input) = &self.input
                     && !input.block().is_fast()
                 {
                     self.core.offer_proposal(input.clone(), Some(nf_cert));
                 }
             }
-            LeaderlessEffect::Decided { qc, block } => {
+            DummyViewEffect::Decided { qc, block } => {
                 if self.decision.is_some() {
                     return;
                 }
                 // persist-before-send: the certificate that decides the slot
                 self.decision = Some((block.clone(), SlotCommitProof::Dummy(qc.clone())));
                 self.outputs
-                    .push_back(MVBAOutput::Broadcast(SlotFallbackMessage::Leaderless(
-                        LeaderlessMessage::DummyDecision { qc, block },
+                    .push_back(MVBAOutput::Broadcast(SlotFallbackMessage::DummyView(
+                        DummyViewMessage::DummyDecision { qc, block },
                     )));
                 self.core.abandon();
-                self.round.abandon();
+                self.dummy_view.abandon();
             }
         }
     }
@@ -337,14 +293,14 @@ impl SlotFallback {
 impl Mvba<Metablock> for SlotFallback {
     type Message = SlotFallbackMessage;
     type Context = MvbaContext;
-    // the core's timers only: the round has none
+    // the core's timers only: the dummy view has none
     type TimerEvent = TimerEvent<CertifiedMetablock>;
     type FallbackCert = EnterFallbackCert;
     type DecisionProof = SlotCommitProof;
 
     fn new(ctx: MvbaContext) -> Self {
         Self {
-            round: LeaderlessRound::new(&ctx),
+            dummy_view: DummyView::new(&ctx),
             core: MonadMvba::new(ctx),
             input: None,
             held: Vec::new(),
@@ -372,11 +328,11 @@ impl Mvba<Metablock> for SlotFallback {
         self.input = Some(input.clone());
 
         self.core.propose(input, None);
-        self.round.enter(data);
+        self.dummy_view.enter(data);
         for effect in std::mem::take(&mut self.held) {
             self.apply(effect);
         }
-        self.pump();
+        self.drain();
     }
 
     fn validator_data(&self) -> &ValidatorData {
@@ -385,21 +341,23 @@ impl Mvba<Metablock> for SlotFallback {
 
     fn handle_message(&mut self, sender: ValidatorIndex, message: SlotFallbackMessage) {
         match message {
-            SlotFallbackMessage::Leaderless(message) => self.round.handle_message(sender, message),
+            SlotFallbackMessage::DummyView(message) => {
+                self.dummy_view.handle_message(sender, message)
+            }
             SlotFallbackMessage::Mvba(message) => self.core.handle_message(sender, message),
         }
-        self.pump();
+        self.drain();
     }
 
     fn handle_timer(&mut self, timer_event: TimerEvent<CertifiedMetablock>) {
         self.core.handle_timer(timer_event);
-        self.pump();
+        self.drain();
     }
 
     fn abandon(&mut self) {
         self.abandoned = true;
         self.core.abandon();
-        self.round.abandon();
+        self.dummy_view.abandon();
         self.held.clear();
         self.outputs.clear();
     }
@@ -436,10 +394,10 @@ mod tests {
                     test_utils::{assert_roundtrip, assert_serialization_roundtrip, dummy_index},
                 },
                 chorus::{Chorus, ChorusMessage},
-                types::{HeaderAuth, NodeId},
+                types::{HeaderAuth, NodeId, VoteMsg},
             },
             EnterFallbackVote,
-            leaderless::{DummyVote, NotFull},
+            dummy_view::{DummyVote, NotFull},
             monad_mvba::{PrePrepareMsg, test_helpers as h},
         },
         *,
@@ -492,29 +450,29 @@ mod tests {
     }
 
     fn fast_input(block: &Metablock) -> SlotFallbackMessage {
-        SlotFallbackMessage::Leaderless(LeaderlessMessage::FastInput(block.clone()))
+        SlotFallbackMessage::DummyView(DummyViewMessage::FastInput(block.clone()))
     }
 
-    fn dummy_vote_of(node: NodeId, block: &Metablock) -> LeaderlessMessage {
+    fn dummy_vote_of(node: NodeId, block: &Metablock) -> DummyViewMessage {
         let vote = DummyVote(block.entries());
-        LeaderlessMessage::DummyVote(VoteMsg::new_signed(h::SLOT, vote, &node.keypair()))
+        DummyViewMessage::DummyVote(VoteMsg::new_signed(h::SLOT, vote, &node.keypair()))
     }
 
     fn dummy_vote(node: NodeId, block: &Metablock) -> SlotFallbackMessage {
-        SlotFallbackMessage::Leaderless(dummy_vote_of(node, block))
+        SlotFallbackMessage::DummyView(dummy_vote_of(node, block))
     }
 
-    fn not_full_of(node: NodeId) -> LeaderlessMessage {
-        LeaderlessMessage::NotFull(VoteMsg::new_signed(h::SLOT, NotFull, &node.keypair()))
+    fn not_full_of(node: NodeId) -> DummyViewMessage {
+        DummyViewMessage::NotFull(VoteMsg::new_signed(h::SLOT, NotFull, &node.keypair()))
     }
 
     fn not_full(node: NodeId) -> SlotFallbackMessage {
-        SlotFallbackMessage::Leaderless(not_full_of(node))
+        SlotFallbackMessage::DummyView(not_full_of(node))
     }
 
     fn dummy_decision(block: &Metablock) -> SlotFallbackMessage {
         let vote = DummyVote(block.entries());
-        SlotFallbackMessage::Leaderless(LeaderlessMessage::DummyDecision {
+        SlotFallbackMessage::DummyView(DummyViewMessage::DummyDecision {
             qc: h::strong_qc(h::SLOT, vote, &h::quorum(), &h::validator_data()),
             block: block.clone(),
         })
@@ -552,11 +510,11 @@ mod tests {
             .collect()
     }
 
-    fn leaderless(outputs: &[Output]) -> Vec<&LeaderlessMessage> {
+    fn dummy_view_messages(outputs: &[Output]) -> Vec<&DummyViewMessage> {
         broadcasts(outputs)
             .into_iter()
             .filter_map(|message| match message {
-                SlotFallbackMessage::Leaderless(message) => Some(message),
+                SlotFallbackMessage::DummyView(message) => Some(message),
                 SlotFallbackMessage::Mvba(_) => None,
             })
             .collect()
@@ -582,8 +540,8 @@ mod tests {
             .collect()
     }
 
-    fn is_dummy_decision(message: &LeaderlessMessage) -> bool {
-        matches!(message, LeaderlessMessage::DummyDecision { .. })
+    fn is_dummy_decision(message: &DummyViewMessage) -> bool {
+        matches!(message, DummyViewMessage::DummyDecision { .. })
     }
 
     /// Delivers what `cluster` sends, a broadcast to its sender too, until
@@ -693,7 +651,7 @@ mod tests {
     }
 
     #[test]
-    fn propose_starts_view_1_and_the_dummy_round_together() {
+    fn propose_starts_view_1_and_the_dummy_view_together() {
         let follower = h::nodes()[0];
         assert_ne!(
             h::leader_of(h::view(1)),
@@ -708,16 +666,16 @@ mod tests {
             vec![TimerEvent::ViewTimeout(h::view(1))],
             "the core starts view 1"
         );
-        assert_eq!(leaderless(&outputs), vec![&not_full_of(follower)]);
+        assert_eq!(dummy_view_messages(&outputs), vec![&not_full_of(follower)]);
         assert_eq!(broadcasts(&outputs).len(), 1, "a follower proposes nothing");
 
         let block = fast(1);
         let mut instance = started(follower, &block);
         let outputs = drain(&mut instance);
         assert_eq!(timers(&outputs), vec![TimerEvent::ViewTimeout(h::view(1))]);
-        let sent = leaderless(&outputs);
+        let sent = dummy_view_messages(&outputs);
         assert_eq!(sent.len(), 2, "{sent:?}");
-        assert!(sent.contains(&&LeaderlessMessage::FastInput(block.clone())));
+        assert!(sent.contains(&&DummyViewMessage::FastInput(block.clone())));
         assert!(sent.contains(&&dummy_vote_of(follower, &block)));
         assert_eq!(broadcasts(&outputs).len(), 2);
 
@@ -736,9 +694,9 @@ mod tests {
         instance.propose(block.clone(), Some(fbcert()));
         let outputs = drain(&mut instance);
 
-        let sent = leaderless(&outputs);
+        let sent = dummy_view_messages(&outputs);
         assert_eq!(sent.len(), 2, "{sent:?}");
-        assert!(sent.contains(&&LeaderlessMessage::FastInput(block.clone())));
+        assert!(sent.contains(&&DummyViewMessage::FastInput(block.clone())));
         assert!(sent.contains(&&dummy_vote_of(leader, &block)));
 
         let proposed = proposals(&outputs);
@@ -839,7 +797,7 @@ mod tests {
     }
 
     #[test]
-    fn propose_past_view_1_still_sends_evidence_and_the_dummy_vote() {
+    fn entering_directly_into_view_2_still_sends_evidence_and_the_dummy_vote() {
         let node = h::nodes()[0];
         for block in [fast(1), non_fast(2)] {
             let mut instance = slot_fallback(node);
@@ -853,10 +811,10 @@ mod tests {
                 "the buffered certificate takes the core past view 1 at entry"
             );
 
-            let sent = leaderless(&outputs);
+            let sent = dummy_view_messages(&outputs);
             if block.is_fast() {
                 assert_eq!(sent.len(), 2, "{sent:?}");
-                assert!(sent.contains(&&LeaderlessMessage::FastInput(block.clone())));
+                assert!(sent.contains(&&DummyViewMessage::FastInput(block.clone())));
                 assert!(sent.contains(&&dummy_vote_of(node, &block)));
             } else {
                 assert_eq!(sent, vec![&not_full_of(node)]);
@@ -892,13 +850,13 @@ mod tests {
         assert_eq!(qc.scope, h::SLOT);
         assert_eq!(qc.verdict, DummyVote(block.entries()));
         assert!(qc.verify(&h::validator_data()));
-        let decision = LeaderlessMessage::DummyDecision {
+        let decision = DummyViewMessage::DummyDecision {
             qc: qc.clone(),
             block: block.clone(),
         };
         assert_eq!(
             broadcasts(&outputs),
-            vec![&SlotFallbackMessage::Leaderless(decision)],
+            vec![&SlotFallbackMessage::DummyView(decision)],
             "the certificate and its block are passed on"
         );
 
@@ -943,7 +901,11 @@ mod tests {
             Some(SlotCommitProof::Dummy(_))
         ));
         let outputs = drain(&mut instance);
-        assert!(leaderless(&outputs).into_iter().any(is_dummy_decision));
+        assert!(
+            dummy_view_messages(&outputs)
+                .into_iter()
+                .any(is_dummy_decision)
+        );
 
         instance.handle_timer(TimerEvent::ViewTimeout(h::view(2)));
         assert!(drain(&mut instance).is_empty(), "the core is abandoned");
@@ -1028,16 +990,20 @@ mod tests {
             Some(SlotCommitProof::Dummy(_))
         ));
         let outputs = drain(&mut instance);
-        assert!(leaderless(&outputs).into_iter().any(is_dummy_decision));
+        assert!(
+            dummy_view_messages(&outputs)
+                .into_iter()
+                .any(is_dummy_decision)
+        );
     }
 
     fn kind(message: &SlotFallbackMessage) -> &'static str {
         match message {
-            SlotFallbackMessage::Leaderless(message) => match message {
-                LeaderlessMessage::FastInput(_) => "fast input",
-                LeaderlessMessage::NotFull(_) => "not full",
-                LeaderlessMessage::DummyVote(_) => "dummy vote",
-                LeaderlessMessage::DummyDecision { .. } => "dummy decision",
+            SlotFallbackMessage::DummyView(message) => match message {
+                DummyViewMessage::FastInput(_) => "fast input",
+                DummyViewMessage::NotFull(_) => "not full",
+                DummyViewMessage::DummyVote(_) => "dummy vote",
+                DummyViewMessage::DummyDecision { .. } => "dummy decision",
             },
             SlotFallbackMessage::Mvba(message) => match message {
                 MvbaMessage::PrePrepare(_) => "pre-prepare",
@@ -1141,6 +1107,6 @@ mod tests {
         }
 
         assert!(alloy_rlp::decode_exact::<SlotFallbackMessage>(&[0xc1, 3]).is_err());
-        assert!(alloy_rlp::decode_exact::<LeaderlessMessage>(&[0xc1, 5]).is_err());
+        assert!(alloy_rlp::decode_exact::<DummyViewMessage>(&[0xc1, 5]).is_err());
     }
 }

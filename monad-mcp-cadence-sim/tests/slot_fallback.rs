@@ -31,7 +31,7 @@ use std::{
 use cadence::{
     slot::fallback::{
         EnterFallbackCert, EnterFallbackVote, Entry, FallbackView, Metablock, Votable,
-        leaderless::{DummyVote, LeaderlessMessage, NfCert, NotFull},
+        dummy_view::{DummyViewMessage, DummyVote, NfCert, NotFull},
         monad_mvba::MvbaMessage,
         slot_fallback::{CertifiedMetablock, SlotCommitProof, SlotFallback, SlotFallbackMessage},
     },
@@ -202,29 +202,38 @@ fn mvba_view(proof: &Option<SlotCommitProof>) -> Option<u64> {
     }
 }
 
-fn leaderless(message: &SlotFallbackMessage) -> Option<&LeaderlessMessage> {
+fn dummy_view_message(message: &SlotFallbackMessage) -> Option<&DummyViewMessage> {
     match message {
-        SlotFallbackMessage::Leaderless(message) => Some(message),
+        SlotFallbackMessage::DummyView(message) => Some(message),
         SlotFallbackMessage::Mvba(_) => None,
     }
 }
 
 fn is_dummy_vote(message: &SlotFallbackMessage) -> bool {
-    matches!(leaderless(message), Some(LeaderlessMessage::DummyVote(_)))
+    matches!(
+        dummy_view_message(message),
+        Some(DummyViewMessage::DummyVote(_))
+    )
 }
 
 fn is_not_full(message: &SlotFallbackMessage) -> bool {
-    matches!(leaderless(message), Some(LeaderlessMessage::NotFull(_)))
+    matches!(
+        dummy_view_message(message),
+        Some(DummyViewMessage::NotFull(_))
+    )
 }
 
 fn is_fast_input(message: &SlotFallbackMessage) -> bool {
-    matches!(leaderless(message), Some(LeaderlessMessage::FastInput(_)))
+    matches!(
+        dummy_view_message(message),
+        Some(DummyViewMessage::FastInput(_))
+    )
 }
 
 fn is_dummy_decision(message: &SlotFallbackMessage) -> bool {
     matches!(
-        leaderless(message),
-        Some(LeaderlessMessage::DummyDecision { .. })
+        dummy_view_message(message),
+        Some(DummyViewMessage::DummyDecision { .. })
     )
 }
 
@@ -412,8 +421,9 @@ fn s3_three_fast_and_one_non_fast_input_decide_the_fast_entries_by_dummy_qc() {
 }
 
 /// S4. Two fast, two non-fast, with a fast and then a non-fast view-1 leader:
-/// no `DummyQC`, no `NfCert`; the leader proposes the fast block, its own or a
-/// received one, and all decide it by `CommitQC` in view 1
+/// no `DummyQC`, no `NfCert`; the leader proposes the fast block, its own or,
+/// if non-fast, the one it got as a `FastInput` broadcast, and all decide it by
+/// `CommitQC` in view 1
 #[test]
 fn s4_two_fast_and_two_non_fast_inputs_decide_the_fast_block_by_commit_qc_in_view_1() {
     let nodes = fixtures::nodes();
@@ -765,7 +775,7 @@ fn s10_agreement_holds_under_randomized_latency() {
 /// A `NotFull` signed by `node`, whatever its input
 fn not_full_from(node: NodeId) -> SlotFallbackMessage {
     let vote = VoteMsg::new_signed(fixtures::SLOT, NotFull, &node.keypair());
-    SlotFallbackMessage::Leaderless(LeaderlessMessage::NotFull(vote))
+    SlotFallbackMessage::DummyView(DummyViewMessage::NotFull(vote))
 }
 
 /// S11. A Byzantine node sends both a `NotFull` and a `DummyVote`, beside two
@@ -942,7 +952,7 @@ fn s12_a_byzantine_view_2_leader_s_unadmitted_non_fast_proposal_gets_no_honest_p
                 decision.proof
             );
             for sent in swarm.sent(node) {
-                if let Some(LeaderlessMessage::DummyVote(vote)) = leaderless(&sent.message) {
+                if let Some(DummyViewMessage::DummyVote(vote)) = dummy_view_message(&sent.message) {
                     assert_eq!(vote.vote, DummyVote(agreed.clone()), "{case}: {node:?}");
                 }
             }

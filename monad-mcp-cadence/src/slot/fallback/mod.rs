@@ -17,7 +17,7 @@
 //! proposer -- when the fast path cannot commit a slot. Votes and certificates
 //! range over `entries(x)`, never over the value that carried them
 
-pub mod leaderless;
+pub mod dummy_view;
 pub mod monad_mvba;
 pub mod slot_fallback;
 use std::{collections::VecDeque, fmt::Debug, hash::Hash};

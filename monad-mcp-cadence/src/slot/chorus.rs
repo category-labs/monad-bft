@@ -23,7 +23,7 @@ use super::{
     SlotConsensus, SlotOutput,
     fallback::{
         FallbackCommitQc, MVBAOutput, Metablock, Mvba as _,
-        leaderless::{DummyQc, LeaderlessMessage},
+        dummy_view::{DummyQc, DummyViewMessage},
         monad_mvba,
         monad_mvba::MvbaContext,
         slot_fallback::{CertifiedMetablock, SlotCommitProof, SlotFallback, SlotFallbackMessage},
@@ -160,7 +160,7 @@ impl SlotFinalization {
                 monad_mvba::MvbaMessage::CommitQc(qc.clone()),
             )),
             Self::FallbackDummy { qc, block } => ChorusMessage::Fallback(
-                SlotFallbackMessage::Leaderless(LeaderlessMessage::DummyDecision {
+                SlotFallbackMessage::DummyView(DummyViewMessage::DummyDecision {
                     qc: qc.clone(),
                     block: block.clone(),
                 }),
@@ -958,7 +958,7 @@ mod tests {
     #[test]
     fn a_dummy_qc_finalization_is_recorded_as_the_fallback_path() {
         use super::super::{
-            fallback::leaderless::DummyVote,
+            fallback::dummy_view::DummyVote,
             types::{ProposerSchedule as _, VoteMsg},
         };
 
@@ -1008,7 +1008,7 @@ mod tests {
         let block = sent
             .iter()
             .find_map(|message| match message {
-                SlotFallbackMessage::Leaderless(LeaderlessMessage::FastInput(block)) => {
+                SlotFallbackMessage::DummyView(DummyViewMessage::FastInput(block)) => {
                     Some(block.clone())
                 }
                 _ => None,
@@ -1020,7 +1020,7 @@ mod tests {
         for id in 1..3 {
             let voter = NodeId::dummy(id);
             let vote = VoteMsg::new_signed(Slot(1), DummyVote(block.entries()), &voter.keypair());
-            let vote = SlotFallbackMessage::Leaderless(LeaderlessMessage::DummyVote(vote));
+            let vote = SlotFallbackMessage::DummyView(DummyViewMessage::DummyVote(vote));
             chorus.handle_message(voter, ChorusMessage::Fallback(vote));
         }
 
@@ -1042,8 +1042,8 @@ mod tests {
         let certificate = finalization.certificate_message();
         assert!(matches!(
             &certificate,
-            ChorusMessage::Fallback(SlotFallbackMessage::Leaderless(
-                LeaderlessMessage::DummyDecision { .. }
+            ChorusMessage::Fallback(SlotFallbackMessage::DummyView(
+                DummyViewMessage::DummyDecision { .. }
             ))
         ));
         assert!(outputs.iter().any(|output| {
