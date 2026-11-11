@@ -163,8 +163,18 @@ impl Decoder for HollowDecoder {
         Ok(())
     }
 
+    fn hold(&mut self, chunk_id: ChunkId, _data: ChunkData) {
+        self.received.insert(chunk_id);
+    }
+
+    // any num_source_chunks ids, as for an MDS code, once the message is
+    // published
+    fn decodes(&self) -> bool {
+        self.received.len() >= self.num_source_chunks && self.shared.is_some()
+    }
+
     fn try_decode(&mut self) -> Option<(Bytes, HollowEncoded)> {
-        if self.received.len() < self.num_source_chunks {
+        if !self.decodes() {
             return None;
         }
         let shared = self.shared.clone()?;
@@ -385,7 +395,8 @@ mod tests {
                 assert!(matches!(hollow_received, Chunks::Encoded(_)));
             }
 
-            let (real, encoded) = (Chunks::Encoded(real), Chunks::Encoded(encoded));
+            let real = Chunks::Encoded(Arc::new(real));
+            let encoded = Chunks::Encoded(Arc::new(encoded));
             assert_hollow_of(&encoded, &hollow_root, &real, num_chunks);
         }
     }

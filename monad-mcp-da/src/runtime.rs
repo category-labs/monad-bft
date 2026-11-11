@@ -23,7 +23,7 @@ use monad_mcp_cadence::spec::ProposalHeader as _;
 use super::{
     chunk::{ChunkRequest, ProposalEnvelope},
     egress::Dissemination,
-    encoding_scheme::Resolved,
+    encoding_scheme::{ProposalChunks, Resolved},
     header::InvalidProposalHeader,
     slot_rc::SlotRaptorcast,
     types::{
@@ -128,12 +128,22 @@ where
         sender: &NodeId,
         envelope: ProposalEnvelope,
     ) -> Result<(), InvalidProposalHeader> {
+        self.ingest_with(sender, envelope, None)
+    }
+
+    // `own`: our own proposal's chunks (see `Chunks::Authored`)
+    fn ingest_with(
+        &mut self,
+        sender: &NodeId,
+        envelope: ProposalEnvelope,
+        own: Option<Box<dyn ProposalChunks>>,
+    ) -> Result<(), InvalidProposalHeader> {
         let slot = envelope.header().slot();
         let Some(slot_raptorcast) = self.raptorcast_map.get_mut(&slot) else {
             return Err(InvalidProposalHeader::SlotOutOfRange);
         };
 
-        slot_raptorcast.ingest(sender, envelope)?;
+        slot_raptorcast.ingest_with(sender, envelope, own)?;
         self.collect(slot);
         Ok(())
     }
@@ -147,23 +157,28 @@ where
             return;
         };
 
+        // our chunks, known to the instance that receives them: no proof
+        // checks, no decode and no re-encode for them. The first envelope
+        // creates the instance.
+        let mut own = authored.take_own_chunks();
+
         let self_id = self.epoch_handle.self_id;
         if let Some(own_envelope) = authored.split_off(&self_id) {
-            self.ingest_own(own_envelope);
+            self.ingest_own(own_envelope, own.take());
         }
 
         // optimization: ingest all chunks for early decode, so peers
         // don't have to relay back to author.
-        self.ingest_own(authored.envelope());
+        self.ingest_own(authored.envelope(), own.take());
 
         for dissemination in authored.into_disseminations() {
             self.outbox.push_back(DAOutput::Disseminate(dissemination));
         }
     }
 
-    fn ingest_own(&mut self, envelope: ProposalEnvelope) {
+    fn ingest_own(&mut self, envelope: ProposalEnvelope, own: Option<Box<dyn ProposalChunks>>) {
         let self_id = self.epoch_handle.self_id;
-        if let Err(reason) = self.ingest(&self_id, envelope) {
+        if let Err(reason) = self.ingest_with(&self_id, envelope, own) {
             tracing::error!(?reason, "rejected our own proposal envelope");
         }
     }
@@ -309,14 +324,126 @@ mod tests {
     use super::{
         super::{
             chunk::ChunkRequestType,
+            header::header_auth,
             test_util::{
                 FixedProposerSchedule, MESSAGE_LEN, NOW, SLOT, author, da_config, epoch_handle,
                 group, proposal_chunks, proposal_chunks_from, proposer_schedule,
+                staked_validator_data,
             },
             types::{ProposalDAEvent, Timestamp},
+            wire::proposal::AuthoredProposal,
         },
         *,
     };
+
+    // an output, comparable
+    #[derive(PartialEq, Debug)]
+    enum Out {
+        Consensus(Slot, ChorusDAEvent),
+        Resolved(Slot, Lane, ProposalId, Resolved),
+        Disseminate(Vec<NodeId>, ProposalEnvelope),
+        RecoveryRequest(NodeId, ChunkRecoveryRequest),
+    }
+
+    fn comparable(outputs: Vec<DAOutput>) -> Vec<Out> {
+        let out = |output| match output {
+            DAOutput::Consensus(slot, event) => Out::Consensus(slot, event),
+            DAOutput::Resolved {
+                slot,
+                lane,
+                pid,
+                message,
+            } => Out::Resolved(slot, lane, pid, message),
+            DAOutput::Disseminate(Dissemination { to, envelope }) => Out::Disseminate(to, envelope),
+            DAOutput::RecoveryRequest { to, request } => Out::RecoveryRequest(to, request),
+        };
+        outputs.into_iter().map(out).collect()
+    }
+
+    // the author's runtime over validators of the given stakes, with
+    // slot SLOT open and its chunks released or not
+    fn authoring_runtime(stakes: &[u64], released: bool) -> DARuntime<FixedProposerSchedule> {
+        let schedule = proposer_schedule(vec![author()]);
+        let validator_data = Arc::new(staked_validator_data(stakes));
+        let epoch_handle = EpochHandle {
+            self_id: author(),
+            key_pair: Arc::new(ProposalKeyPair::dummy(author())),
+            header_auth: Arc::new(header_auth(schedule.clone(), validator_data.clone())),
+            validator_data,
+        };
+        let mut runtime = DARuntime::new(da_config(), epoch_handle, schedule);
+        open(&mut runtime, [SLOT.get()]);
+        if released {
+            runtime.handle_command(ChorusDACommand::ReleaseChunks, SLOT, NOW);
+        }
+        runtime
+    }
+
+    // propose as a receiver takes our chunks: the first hop's envelopes
+    // ingested under empty chunks, every proof checked, the decode
+    // decoded and re-encoded
+    fn propose_as_received(
+        runtime: &mut DARuntime<FixedProposerSchedule>,
+        scheme: ProposalScheme,
+        proposal: &Proposal,
+    ) {
+        let unix_ts = unix_seconds(NOW);
+        let authored = AuthoredProposal::build(scheme, &runtime.epoch_handle, proposal, unix_ts);
+        let mut authored = authored.expect("the message fits");
+        if let Some(own_envelope) = authored.split_off(&author()) {
+            runtime.ingest(&author(), own_envelope).expect("ours");
+        }
+        runtime
+            .ingest(&author(), authored.envelope())
+            .expect("ours");
+        for dissemination in authored.into_disseminations() {
+            runtime
+                .outbox
+                .push_back(DAOutput::Disseminate(dissemination));
+        }
+    }
+
+    #[test]
+    fn our_authored_chunks_go_out_as_if_received() {
+        let proposal = Proposal {
+            slot: SLOT,
+            lane: Lane::new_unchecked(0),
+            payload: Bytes::from((0..MESSAGE_LEN).map(|i| i as u8).collect::<Vec<_>>()),
+        };
+        let schemes = [
+            ProposalScheme::D33,
+            #[cfg(feature = "enable_hollow")]
+            ProposalScheme::D33Hollow,
+        ];
+        // the author owns a share; then enough to decode from its own
+        // chunks alone
+        let stakes: [&[u64]; 2] = [&[1; 16], &[30, 1, 1, 1]];
+        for scheme in schemes {
+            for stakes in stakes {
+                for released in [false, true] {
+                    let mut authored = authoring_runtime(stakes, released);
+                    authored.propose(scheme, proposal.clone(), NOW);
+                    let authored = comparable(outputs(&mut authored));
+
+                    let mut received = authoring_runtime(stakes, released);
+                    propose_as_received(&mut received, scheme, &proposal);
+                    let received = comparable(outputs(&mut received));
+
+                    let case = format!("{scheme:?}, stakes {stakes:?}, released {released}");
+                    assert_eq!(authored, received, "{case}");
+                    // the decode came with the first envelope, ahead of its
+                    // events, when our own chunks suffice
+                    let first_resolved = matches!(authored[0], Out::Resolved(..));
+                    assert_eq!(first_resolved, stakes[0] > 1, "{case}");
+                    let resolved = authored.iter().find_map(|out| match out {
+                        Out::Resolved(_, _, _, message) => Some(message),
+                        _ => None,
+                    });
+                    assert_eq!(resolved, Some(&Ok(proposal.payload.clone())), "{case}");
+                }
+            }
+        }
+    }
 
     fn runtime(retention: u64) -> DARuntime<FixedProposerSchedule> {
         let config = DAConfig {

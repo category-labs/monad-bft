@@ -52,15 +52,29 @@ pub(crate) struct RaptorcastInstance {
 }
 
 impl RaptorcastInstance {
+    #[cfg(test)]
     pub(crate) fn new(
         header: SignedProposalHeader,
         epoch_handle: &EpochHandle,
         author: &NodeId,
         serve_window: TimestampDelta,
     ) -> Self {
+        Self::with_chunks(header, epoch_handle, author, serve_window, None)
+    }
+
+    // `own`: our own proposal's chunks, the encoding known (see
+    // `Chunks::Authored`); none received yet under the root otherwise
+    pub(crate) fn with_chunks(
+        header: SignedProposalHeader,
+        epoch_handle: &EpochHandle,
+        author: &NodeId,
+        serve_window: TimestampDelta,
+        own: Option<Box<dyn ProposalChunks>>,
+    ) -> Self {
         let validator_data = &epoch_handle.validator_data;
         let (assignment, chunks) =
             encoding_scheme::instantiate(&header.header, author, validator_data);
+        let chunks = own.unwrap_or(chunks);
         let self_index = assignment.index_of(&epoch_handle.self_id);
         let mut send_order: Vec<NodeIndex> = assignment.nodes().map(|(index, _)| index).collect();
         shuffle_sends(&mut send_order, &header.pid(), &epoch_handle.self_id);

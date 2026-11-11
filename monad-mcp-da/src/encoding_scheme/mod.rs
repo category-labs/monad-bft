@@ -97,7 +97,7 @@ fn instantiate_under<S>(
 where
     S: DAEncodingScheme,
     S::Decoder: Send + 'static,
-    <S::Decoder as Decoder>::Encoded: Send,
+    <S::Decoder as Decoder>::Encoded: Send + Sync,
 {
     let assignment = scheme.chunk_assignment(author, validator_data);
     let decoder = scheme.decoder(root, assignment.num_chunks());

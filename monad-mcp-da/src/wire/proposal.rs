@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::sync::Arc;
+
 use bytes::Bytes;
 use monad_mcp_cadence::spec::validator::ValidatorData as _;
 
@@ -23,7 +25,7 @@ use super::{
         assignment::{ChunkAssignment, ChunkId, NodeIndex},
         chunk::ProposalEnvelope,
         egress::Dissemination,
-        encoding_scheme::{DAEncodingScheme, Decoder, Encoded, d33},
+        encoding_scheme::{Chunks, DAEncodingScheme, Decoder, Encoded, ProposalChunks, d33},
         runtime::{EpochHandle, ProposalScheme},
         types::{
             EncodingScheme, NodeId, Proposal, ProposalHeader, ProposalKeyPair, SignedProposalHeader,
@@ -38,6 +40,9 @@ pub struct AuthoredProposal {
     header: SignedProposalHeader,
     assignment: ChunkAssignment,
     encoded: Box<dyn Encoded>,
+    // our own chunks, for the instance that receives them: the encoding
+    // known, nothing held yet
+    own_chunks: Option<Box<dyn ProposalChunks>>,
     // the chunks not split off yet
     remaining: Vec<ChunkId>,
     // the nodes that own no chunk, which get the header alone
@@ -69,20 +74,26 @@ impl AuthoredProposal {
     fn build_under<S>(scheme: S, epoch_handle: &EpochHandle, message: &Bytes) -> Option<Self>
     where
         S: DAEncodingScheme + Into<EncodingScheme>,
-        <S::Decoder as Decoder>::Encoded: 'static,
+        S::Decoder: Send + 'static,
+        <S::Decoder as Decoder>::Encoded: Send + Sync + 'static,
     {
         let author = &epoch_handle.self_id;
         let valset = &epoch_handle.validator_data;
 
         let assignment = scheme.chunk_assignment(author, valset);
-        let encoded = scheme.encode(message, assignment.num_chunks())?;
+        let num_chunks = assignment.num_chunks();
+        let encoded = Arc::new(scheme.encode(message, num_chunks)?);
+        let root = encoded.root();
+        let decoder = scheme.decoder(root, num_chunks);
+        let own_chunks = Chunks::authored(decoder, message.clone(), encoded.clone());
         let header = ProposalHeader {
-            root: encoded.root(),
+            root,
             scheme: scheme.into(),
         };
 
         let encoded = Box::new(encoded);
-        let proposal = Self::new(&epoch_handle.key_pair, header, encoded, assignment);
+        let mut proposal = Self::new(&epoch_handle.key_pair, header, encoded, assignment);
+        proposal.own_chunks = Some(Box::new(own_chunks));
         Some(proposal)
     }
 
@@ -106,6 +117,7 @@ impl AuthoredProposal {
             header,
             assignment,
             encoded,
+            own_chunks: None,
             remaining,
             header_only,
         }
@@ -113,6 +125,12 @@ impl AuthoredProposal {
 
     pub fn header(&self) -> &SignedProposalHeader {
         &self.header
+    }
+
+    // our own chunks, for the instance that receives them (see
+    // `Chunks::Authored`); None once taken
+    pub(crate) fn take_own_chunks(&mut self) -> Option<Box<dyn ProposalChunks>> {
+        self.own_chunks.take()
     }
 
     // every chunk not split off
