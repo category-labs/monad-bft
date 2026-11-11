@@ -26,7 +26,7 @@ use std::{
     time::Duration,
 };
 
-use cadence::slot::fallback::{EnterFallbackCert, Metablock, MvbaRuntime, monad_mvba};
+use cadence::slot::fallback::{Metablock, MvbaRuntime, monad_mvba};
 use monad_mcp_cadence::stub as cadence;
 use monad_mcp_common::{Timestamp, stub::NodeId};
 use monad_sim::{RunOutcome, StepLabel, Time};
@@ -38,11 +38,10 @@ use crate::{
 };
 
 // the `V = Metablock` instantiation, the one the fallback path runs
-pub type MonadMvba = monad_mvba::MonadMvba<Metablock, EnterFallbackCert>;
-pub type Message = monad_mvba::MvbaMessage<Metablock, EnterFallbackCert>;
+pub type MonadMvba = monad_mvba::MonadMvba<Metablock>;
+pub type Message = monad_mvba::MvbaMessage<Metablock>;
 
 type MvbaNode = SimNode<MvbaRuntime<MonadMvba, Metablock>>;
-type Input = (Metablock, Option<EnterFallbackCert>);
 
 /// What one node decided, and when
 #[derive(Clone, Debug)]
@@ -111,7 +110,7 @@ pub struct MvbaSwarmBuilder {
     network: Network<NodeId, SimMessage<Message>>,
     nodes: Vec<(NodeId, MvbaNode)>,
     inputs: BTreeMap<NodeId, Metablock>,
-    starts: Vec<(NodeId, Time, Input)>,
+    starts: Vec<(NodeId, Time, Metablock)>,
     log: DecisionLog,
 }
 
@@ -143,11 +142,10 @@ impl MvbaSwarmBuilder {
         id: NodeId,
         mvba: MonadMvba,
         block: Metablock,
-        cert: Option<EnterFallbackCert>,
         start: Time,
     ) -> &mut Self {
         self.inputs.insert(id, block.clone());
-        self.starts.push((id, start, (block, cert)));
+        self.starts.push((id, start, block));
         self.push(id, mvba)
     }
 

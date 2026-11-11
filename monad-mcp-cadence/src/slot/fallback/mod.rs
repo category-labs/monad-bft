@@ -109,10 +109,6 @@ pub trait ValidateInput {
     type Context;
 
     fn validate(&self, context: &Self::Context) -> bool;
-
-    /// Whether an unlocked proposal of the value is admissible alone, without
-    /// a certificate beside it
-    fn cert_optional(&self) -> bool;
 }
 
 pub trait ValidateCert: Clone + Eq + Hash + Debug {
@@ -138,15 +134,16 @@ where
     type Context;
     type TimerEvent;
 
-    type FallbackCert: ValidateCert;
+    /// What a validator registers at entry
+    type Input;
 
     /// What proves a decision to a party outside the instance
     type DecisionProof;
 
     fn new(ctx: Self::Context) -> Self;
 
-    /// At most one proposal per instance
-    fn propose(&mut self, data: V, cert: Option<Self::FallbackCert>);
+    /// At most one input per instance
+    fn propose(&mut self, input: Self::Input);
 
     /// The validators the sender indices refer to
     fn validator_data(&self) -> &ValidatorData;
@@ -261,7 +258,7 @@ where
 {
     type Message = A::Message;
     // at most one per instance
-    type LocalIn = (V, Option<A::FallbackCert>);
+    type LocalIn = A::Input;
     type LocalOut = V;
 
     fn receive(&mut self, now: Timestamp, sender: NodeId, message: A::Message) {
@@ -280,8 +277,8 @@ where
         self.outbox.pop_front()
     }
 
-    fn handle_input(&mut self, now: Timestamp, (input, cert): (V, Option<A::FallbackCert>)) {
-        self.mvba.propose(input, cert);
+    fn handle_input(&mut self, now: Timestamp, input: A::Input) {
+        self.mvba.propose(input);
         self.drain(now);
     }
 

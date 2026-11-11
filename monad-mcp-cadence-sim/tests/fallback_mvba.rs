@@ -84,8 +84,7 @@ fn swarm(
 
     for node in fixtures::nodes() {
         let mvba = fixtures::mvba(node, &validator_data);
-        let cert = fixtures::enter_fallback_cert(&validator_data);
-        builder.add_node(node, mvba, block_of(node), Some(cert), Time(0));
+        builder.add_node(node, mvba, block_of(node), Time(0));
     }
 
     builder.build()
@@ -391,13 +390,12 @@ fn agreement_holds_under_randomized_latency() {
 
             for node in fixtures::nodes() {
                 let mvba = fixtures::mvba(node, &validator_data);
-                let cert = fixtures::enter_fallback_cert(&validator_data);
                 let block = if divergent_inputs {
                     divergent[&node].clone()
                 } else {
                     identical.clone()
                 };
-                builder.add_node(node, mvba, block, Some(cert), Time(0));
+                builder.add_node(node, mvba, block, Time(0));
             }
 
             let mut swarm = builder.build();
@@ -479,8 +477,7 @@ fn a_validator_without_an_input_listens_without_deciding() {
         if *node == listener {
             builder.add_listener(*node, mvba);
         } else {
-            let cert = fixtures::enter_fallback_cert(&validator_data);
-            builder.add_node(*node, mvba, block.clone(), Some(cert), Time(0));
+            builder.add_node(*node, mvba, block.clone(), Time(0));
         }
     }
     let mut swarm = builder.build();
@@ -537,8 +534,7 @@ fn staggered_starts_wait_on_the_leader_s_own_start() {
     builder.set_network(Network::reliable(LINK));
     for node in fixtures::nodes() {
         let mvba = fixtures::mvba(node, &validator_data);
-        let cert = fixtures::enter_fallback_cert(&validator_data);
-        builder.add_node(node, mvba, block.clone(), Some(cert), starts[&node]);
+        builder.add_node(node, mvba, block.clone(), starts[&node]);
     }
 
     let mut swarm = builder.build();

@@ -147,7 +147,7 @@ pub enum TimerEvent<V: Votable> {
     BlockRetransmit(V::Entries),
 }
 
-/// Validation context for MetaBlock and FallbackCert
+/// Validation context for MetaBlock and its certificates
 pub struct ValidationContext {
     pub slot: Slot,
     pub num_lanes: usize,
@@ -179,16 +179,14 @@ impl ValidateCert for EnterFallbackCert {
     }
 }
 
-pub struct MonadMvba<V: ValidateInput + Votable, C: ValidateCert> {
+pub struct MonadMvba<V: ValidateInput + Votable> {
     context: MvbaContext,
     validation_context: V::Context,
-    /// This validator's own contribution, set once by [`Mvba::propose`]. Its
-    /// presence gates participation: nothing is sent before it is set
-    input: Option<V>,
     /// What this validator proposes in a view it leads with nothing locked;
-    /// `None` until something admissible is offered
-    unlocked: Option<(V, Option<C>)>,
+    /// the first valid value offered
+    unlocked: Option<V>,
 
+    /// [`Phase::Idle`] until [`MonadMvba::start`]: nothing is sent before it
     phase: Phase<V>,
 
     /// Safety
@@ -202,7 +200,7 @@ pub struct MonadMvba<V: ValidateInput + Votable, C: ValidateCert> {
     decided_qc: Option<FallbackCommitQc<V::Entries>>,
 
     /// Message buffer and storage
-    collectors: BTreeMap<FallbackView, ViewCollectors<V, C>>,
+    collectors: BTreeMap<FallbackView, ViewCollectors<V>>,
     block_store: BlockStore<V>,
 
     /// `J` for the current view, which also fixes it -- see [`MonadMvba::view`]
@@ -211,19 +209,18 @@ pub struct MonadMvba<V: ValidateInput + Votable, C: ValidateCert> {
     /// a view and timer fire
     timer_fired: bool,
 
-    outputs: VecDeque<MVBAOutput<MvbaMessage<V, C>, TimerEvent<V>>>,
+    outputs: VecDeque<MVBAOutput<MvbaMessage<V>, TimerEvent<V>>>,
     abandoned: bool,
 }
 
 #[cfg(test)]
-impl<V, C> MonadMvba<V, C>
+impl<V> MonadMvba<V>
 where
     V: ValidateInput + Votable,
-    C: ValidateCert<Context = V::Context>,
     MvbaContext: MakesValidationContext<V>,
 {
     /// [`Mvba::handle_message`] from a validator named by its node id
-    pub(crate) fn handle_message_from(&mut self, sender: NodeId, message: MvbaMessage<V, C>) {
+    pub(crate) fn handle_message_from(&mut self, sender: NodeId, message: MvbaMessage<V>) {
         let sender = self
             .context
             .validator_data
@@ -233,16 +230,15 @@ where
     }
 }
 
-impl<V, C> Mvba<V> for MonadMvba<V, C>
+impl<V> Mvba<V> for MonadMvba<V>
 where
     V: ValidateInput + Votable,
-    C: ValidateCert<Context = V::Context>,
     MvbaContext: MakesValidationContext<V>,
 {
-    type Message = MvbaMessage<V, C>;
+    type Message = MvbaMessage<V>;
     type Context = MvbaContext;
     type TimerEvent = TimerEvent<V>;
-    type FallbackCert = C;
+    type Input = V;
     type DecisionProof = FallbackCommitQc<V::Entries>;
 
     fn new(context: MvbaContext) -> Self {
@@ -253,8 +249,7 @@ where
         Self {
             context,
             validation_context,
-            phase: Phase::new(),
-            input: None,
+            phase: Phase::Idle,
             unlocked: None,
             last_voted_view: FallbackView::GENESIS,
             high_prep_qc: None,
@@ -268,22 +263,10 @@ where
         }
     }
 
-    // TODO: should we participate in fallback without an input?
-    fn propose(&mut self, data: V, cert: Option<Self::FallbackCert>) {
-        // prevents equivocation
-        if self.abandoned || self.input.is_some() {
-            return;
-        }
-        tracing::debug!(slot = ?self.context.slot, fallback_cert = cert.is_some(), "entering fallback mvba");
-
-        self.block_store.remember(data.clone());
-        self.input = Some(data.clone());
-
-        let outputs = self.enter_view(None);
-        self.outputs.extend(outputs);
-
-        self.store_offer(data, cert);
-        self.try_advance();
+    fn propose(&mut self, input: V) {
+        // offered first, so the first pass after starting already holds it
+        self.offer_proposal(input);
+        self.start();
     }
 
     fn validator_data(&self) -> &ValidatorData {
@@ -344,7 +327,7 @@ where
     }
 
     fn decision_proof(&self) -> Option<&Self::DecisionProof> {
-        // an instance with no input, an abandoned one, or still fetching
+        // an unstarted instance, an abandoned one, or still fetching
         // decided block may hold a certificate it never acted on
         self.decided().map(Decided::commit_qc)
     }
@@ -356,13 +339,12 @@ where
 
 // ---------------- message ingress: validate, admit, store ----------------
 
-impl<V, C> MonadMvba<V, C>
+impl<V> MonadMvba<V>
 where
     V: ValidateInput + Votable,
-    C: ValidateCert<Context = V::Context>,
     MvbaContext: MakesValidationContext<V>,
 {
-    fn handle_pre_prepare(&mut self, sender: ValidatorIndex, msg: PrePrepareMsg<V, C>) {
+    fn handle_pre_prepare(&mut self, sender: ValidatorIndex, msg: PrePrepareMsg<V>) {
         // catching up is allowed past the window: only the TC arm below can
         // reach a store from there, and only behind a verified certificate
         let view = msg.view;
@@ -377,11 +359,6 @@ where
             return;
         }
 
-        if let Some(cert) = &msg.cert
-            && !cert.validate(self.validation_context())
-        {
-            return;
-        }
         // harvested ahead of the value check below: a valid certificate is
         // evidence its view was left, whatever becomes of the message carrying it
         if let Some(tc) = &msg.tc
@@ -511,7 +488,7 @@ where
     /// Opened on first use. Callers pass a view inside the window, or a
     /// catching-up view reachable only behind a verified TC or leader-signed
     /// pre-prepare, which immediately triggers garbage collection
-    fn collectors_mut(&mut self, view: FallbackView) -> &mut ViewCollectors<V, C> {
+    fn collectors_mut(&mut self, view: FallbackView) -> &mut ViewCollectors<V> {
         let slot = self.context.slot;
         self.collectors
             .entry(view)
@@ -521,53 +498,46 @@ where
 
 // ---------------- the state machine ----------------
 
-impl<V, C> MonadMvba<V, C>
+impl<V> MonadMvba<V>
 where
     V: ValidateInput + Votable,
-    C: ValidateCert<Context = V::Context>,
     MvbaContext: MakesValidationContext<V>,
 {
     fn is_running(&self) -> bool {
-        self.input.is_some() && !self.abandoned && !self.phase.is_decided()
+        !self.abandoned && !self.phase.is_idle() && !self.phase.is_decided()
     }
 
     fn validation_context(&self) -> &V::Context {
         &self.validation_context
     }
 
-    /// Hand over a value this validator may propose in a view it leads with
-    /// nothing locked: one that is `cert_optional`, or `cert` beside it
-    pub(crate) fn offer_proposal(&mut self, value: V, cert: Option<C>) {
-        if self.store_offer(value, cert) {
-            self.try_advance();
+    /// Begin participating: enter view 1, or the view a buffered certificate justifies.
+    /// Voting and timing out need no value of this validator's
+    pub(crate) fn start(&mut self) {
+        if self.abandoned || !self.phase.is_idle() {
+            return;
         }
+        tracing::debug!(slot = ?self.context.slot, "entering fallback mvba");
+
+        self.phase = Phase::new();
+        let outputs = self.enter_view(None);
+        self.outputs.extend(outputs);
+        self.try_advance();
     }
 
-    /// Keeps the first admissible offer, unless a `cert_optional` one comes
-    /// after a certified one. `false` when the offer is ignored
-    fn store_offer(&mut self, value: V, cert: Option<C>) -> bool {
-        if self.abandoned || self.phase.is_decided() {
-            return false;
+    /// A valid value this validator may propose in a view it leads with nothing locked.
+    /// The first one offered is kept
+    pub(crate) fn offer_proposal(&mut self, value: V) {
+        if self.abandoned || self.phase.is_decided() || self.unlocked.is_some() {
+            return;
         }
         if !value.validate(self.validation_context()) {
-            return false;
-        }
-        // an invalid certificate beside a value that needs none would only get
-        // the proposal refused
-        let cert = cert.filter(|cert| cert.validate(self.validation_context()));
-        if !value.cert_optional() && cert.is_none() {
-            return false;
+            return;
         }
 
-        let replaces = match &self.unlocked {
-            None => true,
-            Some((held, _)) => value.cert_optional() && !held.cert_optional(),
-        };
         self.block_store.remember(value.clone());
-        if replaces {
-            self.unlocked = Some((value, cert));
-        }
-        true
+        self.unlocked = Some(value);
+        self.try_advance();
     }
 
     /// Each iteration takes the phase by value and gets a new one back, so no
@@ -608,7 +578,7 @@ where
     /// comes before a view change, so the highest lock is carried forward; a
     /// view change before this validator's own timeout; proposals last, as the
     /// only transitions requiring an untouched view
-    fn find_pending_transition(&self) -> Option<Transition<V, C>> {
+    fn find_pending_transition(&self) -> Option<Transition<V>> {
         if self.phase.is_decided() {
             return None;
         }
@@ -638,7 +608,7 @@ where
 
         // the proposer check, run once per view and only here. A leader stays
         // until it has a proposal to make: a locked block still in flight, or
-        // no admissible unlocked offer yet, delays it. Timing out ends the wait
+        // no unlocked offer yet, delays it. Timing out ends the wait
         if matches!(self.phase, Phase::NewView(_)) {
             if self.context.leader(self.view()) != self.context.node_id {
                 return Some(Transition::AwaitProposal);
@@ -708,7 +678,7 @@ where
 
     /// `HandleProposal`'s guard. Ingress admits only valid proposals, so this
     /// only asks whether this validator may act on one now
-    fn pending_proposal(&self) -> Option<PrePrepareMsg<V, C>> {
+    fn pending_proposal(&self) -> Option<PrePrepareMsg<V>> {
         if !matches!(self.phase, Phase::AwaitingProposal(_)) {
             // a timed-out view accepts none: last_voted_view was raised to it
             return None;
@@ -727,8 +697,8 @@ where
     fn step(
         &mut self,
         phase: Phase<V>,
-        transition: Transition<V, C>,
-    ) -> (Phase<V>, Vec<MVBAOutput<MvbaMessage<V, C>, TimerEvent<V>>>) {
+        transition: Transition<V>,
+    ) -> (Phase<V>, Vec<MVBAOutput<MvbaMessage<V>, TimerEvent<V>>>) {
         match transition {
             Transition::Proposal(pre_prepare) => self.accept_proposal(phase, pre_prepare),
             Transition::OwnProposalReady(pre_prepare) => self.propose_as_leader(phase, pre_prepare),
@@ -744,8 +714,8 @@ where
     fn accept_proposal(
         &mut self,
         phase: Phase<V>,
-        msg: PrePrepareMsg<V, C>,
-    ) -> (Phase<V>, Vec<MVBAOutput<MvbaMessage<V, C>, TimerEvent<V>>>) {
+        msg: PrePrepareMsg<V>,
+    ) -> (Phase<V>, Vec<MVBAOutput<MvbaMessage<V>, TimerEvent<V>>>) {
         let Phase::AwaitingProposal(awaiting) = phase else {
             unreachable!("a proposal transition is only found while awaiting one");
         };
@@ -770,7 +740,7 @@ where
         &mut self,
         phase: Phase<V>,
         qc: PrepareQc<V::Entries>,
-    ) -> (Phase<V>, Vec<MVBAOutput<MvbaMessage<V, C>, TimerEvent<V>>>) {
+    ) -> (Phase<V>, Vec<MVBAOutput<MvbaMessage<V>, TimerEvent<V>>>) {
         let committing = match phase {
             Phase::Preparing(p) => p.commit(qc.clone()),
             // `preparing_entries` stops looking once the timeout is sent
@@ -799,7 +769,7 @@ where
         phase: Phase<V>,
         commit_qc: FallbackCommitQc<V::Entries>,
         block: V,
-    ) -> (Phase<V>, Vec<MVBAOutput<MvbaMessage<V, C>, TimerEvent<V>>>) {
+    ) -> (Phase<V>, Vec<MVBAOutput<MvbaMessage<V>, TimerEvent<V>>>) {
         // `pending_decide` fetched the block by the certificate's entries
         debug_assert_eq!(block.entries(), commit_qc.verdict.0);
         // a decided instance finds no further transitions
@@ -819,7 +789,7 @@ where
     fn advance_view(
         &mut self,
         tc: TimeoutCertificate<V::Entries>,
-    ) -> (Phase<V>, Vec<MVBAOutput<MvbaMessage<V, C>, TimerEvent<V>>>) {
+    ) -> (Phase<V>, Vec<MVBAOutput<MvbaMessage<V>, TimerEvent<V>>>) {
         debug_assert!(tc.view >= self.view());
 
         if let Some(qc) = &tc.high_prep_qc {
@@ -851,7 +821,7 @@ where
     fn local_time_out(
         &mut self,
         phase: Phase<V>,
-    ) -> (Phase<V>, Vec<MVBAOutput<MvbaMessage<V, C>, TimerEvent<V>>>) {
+    ) -> (Phase<V>, Vec<MVBAOutput<MvbaMessage<V>, TimerEvent<V>>>) {
         self.timer_fired = false;
         let view = self.view();
         if view.get() <= 8 || view.get().is_power_of_two() {
@@ -899,7 +869,7 @@ where
     fn enter_view(
         &mut self,
         justification: Option<TimeoutCertificate<V::Entries>>,
-    ) -> Vec<MVBAOutput<MvbaMessage<V, C>, TimerEvent<V>>> {
+    ) -> Vec<MVBAOutput<MvbaMessage<V>, TimerEvent<V>>> {
         self.timer_fired = false;
         self.entry_tc = justification;
 
@@ -910,15 +880,15 @@ where
     }
 
     /// The proposal this validator owes the view it leads, `None` while bound
-    /// by a lock whose block it does not hold yet, or while nothing admissible
-    /// has been offered for an unlocked view
-    fn own_proposal_ready(&self) -> Option<PrePrepareMsg<V, C>> {
+    /// by a lock whose block it does not hold yet, or while nothing has been
+    /// offered for an unlocked view
+    fn own_proposal_ready(&self) -> Option<PrePrepareMsg<V>> {
         let view: FallbackView = self.view();
         debug_assert!(matches!(self.phase, Phase::NewView(_)));
         debug_assert_eq!(self.context.leader(view), self.context.node_id);
 
-        let (block, cert) = match self.locked_entries() {
-            Some(lock) => (self.block_store.get(lock)?.clone(), None),
+        let block = match self.locked_entries() {
+            Some(lock) => self.block_store.get(lock)?.clone(),
             None => self.unlocked.clone()?,
         };
 
@@ -928,7 +898,6 @@ where
             view,
             block,
             self.entry_tc.clone(),
-            cert,
             &self.context.key,
         ))
     }
@@ -937,8 +906,8 @@ where
     fn propose_as_leader(
         &mut self,
         phase: Phase<V>,
-        pre_prepare: PrePrepareMsg<V, C>,
-    ) -> (Phase<V>, Vec<MVBAOutput<MvbaMessage<V, C>, TimerEvent<V>>>) {
+        pre_prepare: PrePrepareMsg<V>,
+    ) -> (Phase<V>, Vec<MVBAOutput<MvbaMessage<V>, TimerEvent<V>>>) {
         tracing::debug!(slot = ?self.context.slot, view = ?self.view(), "mvba proposing as leader");
         (
             Self::leave_new_view(phase),
@@ -1006,10 +975,7 @@ where
         // Blocks are not per-view, so they go by reachability; the store also
         // keeps every block this validator prepared
         let mut keep = HashSet::new();
-        if let Some(input) = &self.input {
-            keep.insert(input.entries());
-        }
-        if let Some((value, _)) = &self.unlocked {
+        if let Some(value) = &self.unlocked {
             keep.insert(value.entries());
         }
         if let Some(entries) = self.phase.entries() {
@@ -1037,7 +1003,7 @@ where
     }
 
     /// `None` when nothing has arrived for the current view yet
-    fn current_view_collectors(&self) -> Option<&ViewCollectors<V, C>> {
+    fn current_view_collectors(&self) -> Option<&ViewCollectors<V>> {
         self.collectors.get(&self.view())
     }
 
@@ -1055,6 +1021,11 @@ where
 
     fn decided(&self) -> Option<&Decided<V>> {
         self.phase.decided()
+    }
+
+    /// The commit certificate recorded so far, whether or not its block is held
+    pub(crate) fn commit_qc(&self) -> Option<&FallbackCommitQc<V::Entries>> {
+        self.decided_qc.as_ref()
     }
 
     fn sign_vote<T>(&self, vote: T) -> VoteMsg<T>

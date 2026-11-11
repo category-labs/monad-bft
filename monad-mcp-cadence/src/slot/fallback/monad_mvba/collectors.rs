@@ -20,7 +20,7 @@ use monad_mcp_common::spec::Stake as _;
 use super::{
     super::{
         super::types::{IsVote, Slot, StrongQc, ValidatorData, ValidatorIndex, VoteMsg, VotePool},
-        FallbackView, MvbaScope, ValidateCert, Votable,
+        FallbackView, MvbaScope, Votable,
     },
     certificates::{FallbackCommitQc, PrepareQc, TimeoutCertificate, TimeoutGroup},
     messages::{
@@ -87,12 +87,12 @@ impl<V: IsVote> SealingVotePool<V> {
 
 /// Everything this instance has buffered for one view
 #[derive(Clone)]
-pub(crate) struct ViewCollectors<V: Votable, C: ValidateCert> {
+pub(crate) struct ViewCollectors<V: Votable> {
     slot: Slot,
     view: FallbackView,
 
     /// The first pre-prepare seen for the view
-    pre_prepare: Option<PrePrepareMsg<V, C>>,
+    pre_prepare: Option<PrePrepareMsg<V>>,
     prepare_votes: SealingVotePool<PrepareVote<V::Entries>>,
     commit_votes: SealingVotePool<FallbackCommitVote<V::Entries>>,
     timeout_votes: VotePool<TimeoutVote>,
@@ -104,7 +104,7 @@ pub(crate) struct ViewCollectors<V: Votable, C: ValidateCert> {
     harvested_tc: Option<TimeoutCertificate<V::Entries>>,
 }
 
-impl<V: Votable, C: ValidateCert> ViewCollectors<V, C> {
+impl<V: Votable> ViewCollectors<V> {
     pub(crate) fn new(slot: Slot, view: FallbackView) -> Self {
         Self {
             slot,
@@ -119,13 +119,13 @@ impl<V: Votable, C: ValidateCert> ViewCollectors<V, C> {
     }
 
     /// First write wins
-    pub(crate) fn store_pre_prepare(&mut self, msg: PrePrepareMsg<V, C>) {
+    pub(crate) fn store_pre_prepare(&mut self, msg: PrePrepareMsg<V>) {
         debug_assert_eq!((msg.slot, msg.view), (self.slot, self.view));
 
         self.pre_prepare.get_or_insert(msg);
     }
 
-    pub(crate) fn pre_prepare(&self) -> Option<&PrePrepareMsg<V, C>> {
+    pub(crate) fn pre_prepare(&self) -> Option<&PrePrepareMsg<V>> {
         self.pre_prepare.as_ref()
     }
 

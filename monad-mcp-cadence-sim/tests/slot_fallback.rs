@@ -375,8 +375,8 @@ fn s2_identical_non_fast_inputs_decide_in_view_1_on_the_leader_s_nf_cert_without
         "a non-fast value without its FBCert"
     );
     let cert = p
-        .cert
-        .as_ref()
+        .value
+        .nfcert()
         .expect("an unlocked non-fast proposal needs the NfCert");
     assert!(cert.verify(&validator_data), "the NfCert does not verify");
 
@@ -468,7 +468,10 @@ fn s4_two_fast_and_two_non_fast_inputs_decide_the_fast_block_by_commit_qc_in_vie
         );
         for node in &nodes {
             for (_, p) in proposals_of(&swarm, node) {
-                assert!(p.cert.is_none(), "{case}: {node:?} proposed with an NfCert");
+                assert!(
+                    p.value.nfcert().is_none(),
+                    "{case}: {node:?} proposed with an NfCert"
+                );
             }
         }
     }
@@ -532,17 +535,17 @@ fn s5_a_silent_view_1_leader_is_replaced_by_the_view_2_leader_with_its_nf_cert()
         "the view-2 leader did not propose its input"
     );
     let cert = p
-        .cert
-        .as_ref()
+        .value
+        .nfcert()
         .expect("an unlocked non-fast proposal needs the NfCert");
     assert!(cert.verify(&validator_data), "the NfCert does not verify");
 }
 
 /// S6. Non-fast inputs; view 1 forms a prepare certificate but its Commits are
 /// lost. The view-2 leader re-proposes the locked value, carrying its `FBCert`
-/// inside the value and no `NfCert`, and all decide the locked entries
+/// and `NfCert` inside the value, and all decide the locked entries
 #[test]
-fn s6_a_value_locked_in_view_1_is_re_proposed_with_its_fbcert_and_without_an_nf_cert() {
+fn s6_a_value_locked_in_view_1_is_re_proposed_with_its_certificates() {
     let inputs = mixed_inputs(&[]);
     let view_1_ends = views(1);
     let network = Network::reliable(LATENCY).drop_if(move |link: &Link<NodeId>, message| {
@@ -592,7 +595,10 @@ fn s6_a_value_locked_in_view_1_is_re_proposed_with_its_fbcert_and_without_an_nf_
         p.value.fbcert().is_some(),
         "the locked non-fast value lost its FBCert"
     );
-    assert!(p.cert.is_none(), "a locked proposal carries an NfCert");
+    assert!(
+        p.value.nfcert().is_some(),
+        "the locked non-fast value lost its NfCert"
+    );
 }
 
 /// S7. A validator enters after the others reached view 3: it sends its
@@ -834,10 +840,10 @@ fn s11_a_byzantine_signer_of_both_not_full_and_a_dummy_vote_unlocks_no_non_fast_
 /// The ways S12's Byzantine leader dresses up a non-fast metablock
 #[derive(Clone, Copy, Debug)]
 enum Forgery {
-    NoNfCert,
+    // a missing `FBCert` or `NfCert` no longer decodes; invalid ones are what remain to send
     NfCertBelowQuorum,
-    // a missing `FBCert` no longer decodes; an invalid one is what remains to send
     ForeignFbCert,
+    ForeignNfCert,
 }
 
 /// An `NfCert` over the declarations of `signers`, however few
@@ -854,9 +860,9 @@ fn nf_cert_of(signers: &[NodeId], validator_data: &ValidatorData) -> NfCert {
 
 /// S12. Three honest fast nodes cast `DummyVote`s whose certificate is delayed,
 /// and view 1 fails. A Byzantine view-2 leader proposes a non-fast metablock
-/// with an `FBCert` and no `NfCert`, with an `NfCert` below quorum, and with an
-/// `FBCert` of another slot: no honest node prepares any of them, and a later view decides the
-/// fast entries, matching the delayed `DummyQC`
+/// with an `NfCert` below quorum, with an `FBCert` of another slot, and with an
+/// `NfCert` of another slot: no honest node prepares any of them, and a later
+/// view decides the fast entries, matching the delayed `DummyQC`
 #[test]
 fn s12_a_byzantine_view_2_leader_s_unadmitted_non_fast_proposal_gets_no_honest_prepare() {
     let nodes = fixtures::nodes();
@@ -865,33 +871,34 @@ fn s12_a_byzantine_view_2_leader_s_unadmitted_non_fast_proposal_gets_no_honest_p
     let validator_data = fixtures::validator_data();
     let non_fast = fixtures::mixed_evidence_metablock(2, &validator_data);
     assert_ne!(entries(&non_fast), fast_entries());
+    let other_slot = Slot(fixtures::SLOT.get() + 1);
+    // every node's declaration: only the certificate a forgery names is invalid
+    let full_nf_cert = fixtures::strong_qc(fixtures::SLOT, NotFull, &nodes, &validator_data);
 
     for forgery in [
-        Forgery::NoNfCert,
         Forgery::NfCertBelowQuorum,
         Forgery::ForeignFbCert,
+        Forgery::ForeignNfCert,
     ] {
         // the Byzantine leader runs honest code; only its view-2 proposal is forged
         let inputs = mixed_inputs(&nodes);
-        let (fbcert, cert) = match forgery {
-            Forgery::NoNfCert => (fixtures::enter_fallback_cert(&validator_data), None),
+        let (fbcert, nf_cert) = match forgery {
             // a stake check, not whose declarations they are, has to refuse it
             Forgery::NfCertBelowQuorum => (
                 fixtures::enter_fallback_cert(&validator_data),
-                Some(nf_cert_of(&[byzantine, honest[0]], &validator_data)),
+                nf_cert_of(&[byzantine, honest[0]], &validator_data),
             ),
             Forgery::ForeignFbCert => (
-                fixtures::strong_qc(
-                    Slot(fixtures::SLOT.get() + 1),
-                    EnterFallbackVote,
-                    &nodes,
-                    &validator_data,
-                ),
-                None,
+                fixtures::strong_qc(other_slot, EnterFallbackVote, &nodes, &validator_data),
+                full_nf_cert.clone(),
+            ),
+            Forgery::ForeignNfCert => (
+                fixtures::enter_fallback_cert(&validator_data),
+                fixtures::strong_qc(other_slot, NotFull, &nodes, &validator_data),
             ),
         };
-        let forged =
-            CertifiedMetablock::non_fast(non_fast.clone(), fbcert).expect("a non-fast metablock");
+        let forged = CertifiedMetablock::non_fast(non_fast.clone(), fbcert, nf_cert)
+            .expect("a non-fast metablock");
 
         let release = views(3);
         let network = Network::reliable(LATENCY).drop_if(move |link: &Link<NodeId>, message| {
@@ -905,12 +912,7 @@ fn s12_a_byzantine_view_2_leader_s_unadmitted_non_fast_proposal_gets_no_honest_p
             builder
                 .set_resend(RESEND)
                 .set_outbound(byzantine, move |_, message| {
-                    vec![forge_pre_prepare(
-                        message,
-                        forged.clone(),
-                        cert.clone(),
-                        byzantine,
-                    )]
+                    vec![forge_pre_prepare(message, forged.clone(), byzantine)]
                 });
         });
         let case = format!("{forgery:?}");
@@ -1024,12 +1026,12 @@ fn s13_a_tc_1_formed_before_the_nf_cert_waits_for_declarations_then_a_later_lead
         .find(|(node, p)| {
             p.view >= 2
                 && p.justified
-                && p.cert.is_some()
+                && p.value.nfcert().is_some()
                 && *node == fixtures::leader_of(p.view)
                 && *p.value.block() == inputs[node].0
         });
     let (leader, p) = released.expect("no later unlocked leader proposed its input with an NfCert");
-    let cert = p.cert.as_ref().expect("just matched");
+    let cert = p.value.nfcert().expect("just matched");
     assert!(
         cert.verify(&fixtures::validator_data()),
         "{leader:?}'s NfCert does not verify"

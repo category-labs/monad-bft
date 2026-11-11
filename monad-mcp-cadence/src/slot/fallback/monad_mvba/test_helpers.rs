@@ -55,14 +55,14 @@ fn pid(n: u64) -> ProposalId {
 
 // The `V = Metablock` instantiation the existing suite runs on; the toy-value
 // test in `tests` is what pins genericity
-pub(super) type MonadMvba = super::MonadMvba<Metablock, EnterFallbackCert>;
-pub(super) type Message = super::messages::MvbaMessage<Metablock, EnterFallbackCert>;
-pub(super) type PrePrepareMsg = super::messages::PrePrepareMsg<Metablock, EnterFallbackCert>;
+pub(super) type MonadMvba = super::MonadMvba<Metablock>;
+pub(super) type Message = super::messages::MvbaMessage<Metablock>;
+pub(super) type PrePrepareMsg = super::messages::PrePrepareMsg<Metablock>;
 pub(super) type TimeoutMsg = super::messages::TimeoutMsg<<Metablock as Votable>::Entries>;
 pub(super) type PrepareQc = super::certificates::PrepareQc<<Metablock as Votable>::Entries>;
-pub(super) type TimeoutCertificate =
+pub(crate) type TimeoutCertificate =
     super::certificates::TimeoutCertificate<<Metablock as Votable>::Entries>;
-pub(super) type ViewCollectors = super::collectors::ViewCollectors<Metablock, EnterFallbackCert>;
+pub(super) type ViewCollectors = super::collectors::ViewCollectors<Metablock>;
 pub(super) type TimerEvent = super::TimerEvent<Metablock>;
 
 pub(super) const NUM_NODES: u64 = 4;
@@ -207,7 +207,7 @@ pub(super) fn weak_qc<V: IsVote>(
     }
 }
 
-pub(super) fn prepare_qc(
+pub(crate) fn prepare_qc(
     v: FallbackView,
     entries: &Lanes<Entry>,
     validator_data: &ValidatorData,
@@ -228,32 +228,20 @@ pub(super) fn pre_prepare(
     justification: Option<TimeoutCertificate>,
 ) -> (NodeId, Message) {
     if v == view(1) {
-        let cert = enter_fallback_cert(&validator_data());
-        pre_prepare_justified(v, block, None, Some(cert))
+        pre_prepare_justified(v, block, None)
     } else {
         let tc = justification.expect("a view above 1 is justified by a timeout certificate");
-        pre_prepare_justified(v, block, Some(tc), None)
+        pre_prepare_justified(v, block, Some(tc))
     }
-}
-
-/// A view-1 pre-prepare carrying exactly the certificate given, for the cases
-/// the certificate itself is under test. `None` is `fbcert = ⊥`
-pub(super) fn pre_prepare_with_cert(
-    v: FallbackView,
-    block: &Metablock,
-    cert: Option<EnterFallbackCert>,
-) -> (NodeId, Message) {
-    pre_prepare_justified(v, block, None, cert)
 }
 
 pub(super) fn pre_prepare_justified(
     v: FallbackView,
     block: &Metablock,
     tc: Option<TimeoutCertificate>,
-    cert: Option<EnterFallbackCert>,
 ) -> (NodeId, Message) {
     let leader = leader_of(v);
-    let msg = PrePrepareMsg::new_signed(SLOT, v, block.clone(), tc, cert, &leader.keypair());
+    let msg = PrePrepareMsg::new_signed(SLOT, v, block.clone(), tc, &leader.keypair());
 
     (leader, Message::PrePrepare(msg))
 }
@@ -522,6 +510,6 @@ pub(super) fn started(
     validator_data: &Arc<ValidatorData>,
 ) -> MonadMvba {
     let mut instance = mvba(node, validator_data);
-    instance.propose(block.clone(), Some(enter_fallback_cert(validator_data)));
+    instance.propose(block.clone());
     instance
 }

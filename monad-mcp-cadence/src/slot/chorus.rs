@@ -602,7 +602,7 @@ impl Chorus {
     /// `propose` is idempotent, so a second certificate changes nothing.
     /// A fast metablock needs no certificate.
     fn enter_fallback(&mut self, cert: Option<EnterFallbackCert>, block: Metablock) {
-        self.fallback.propose(block, cert);
+        self.fallback.propose((block, cert));
         self.drain_fallback();
     }
 

@@ -29,7 +29,7 @@ use cadence::{
     Outbound, Runtime,
     slot::fallback::{
         EnterFallbackCert, Entry, Metablock, MvbaRuntime,
-        dummy_view::{DummyViewMessage, NfCert},
+        dummy_view::DummyViewMessage,
         monad_mvba::MvbaMessage,
         slot_fallback::{CertifiedMetablock, SlotCommitProof, SlotFallback, SlotFallbackMessage},
     },
@@ -205,7 +205,6 @@ pub struct Proposal {
     /// Carries `J = TC_{v-1}`, which every view but the first does
     pub justified: bool,
     pub value: CertifiedMetablock,
-    pub cert: Option<NfCert>,
 }
 
 // The readers below look inside MVBA messages whose payload types the core
@@ -219,7 +218,6 @@ pub fn proposal(message: &SlotFallbackMessage) -> Option<Proposal> {
         view: msg.view.get(),
         justified: msg.tc.is_some(),
         value: msg.value.clone(),
-        cert: msg.cert.clone(),
     })
 }
 
@@ -253,12 +251,11 @@ pub fn tc_view(message: &SlotFallbackMessage) -> Option<u64> {
     Some(tc.view.get())
 }
 
-/// A justified Pre-Prepare re-signed by `leader` around `value` and `cert`, as
-/// a Byzantine leader would send it; any other message is returned as is
+/// A justified Pre-Prepare re-signed by `leader` around `value`, as a
+/// Byzantine leader would send it; any other message is returned as is
 pub fn forge_pre_prepare(
     message: SlotFallbackMessage,
     value: CertifiedMetablock,
-    cert: Option<NfCert>,
     leader: NodeId,
 ) -> SlotFallbackMessage {
     match message {
@@ -268,7 +265,6 @@ pub fn forge_pre_prepare(
                 msg.view,
                 value,
                 msg.tc,
-                cert,
                 &leader.keypair(),
             );
             SlotFallbackMessage::Mvba(MvbaMessage::PrePrepare(forged))

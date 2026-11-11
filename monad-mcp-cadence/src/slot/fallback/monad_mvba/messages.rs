@@ -28,7 +28,7 @@ use monad_mcp_common::{
 use super::{
     super::{
         super::types::{IsVote, KeyPair, PubKey, Signature, Slot, ValidatorData, VoteMsg},
-        FallbackView, MvbaScope, ValidateCert, ValidateInput, Votable,
+        FallbackView, MvbaScope, Votable,
     },
     block_store::{BlockRequestMsg, BlockResponseMsg},
     certificates::{FallbackCommitQc, PrepareQc, TimeoutCertificate},
@@ -36,9 +36,9 @@ use super::{
 use crate::spec::vote::{SigningDomain, assert_signing_prefix, signing_bytes_of};
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug, derive_more::From)]
-pub enum MvbaMessage<V: Votable, C: ValidateCert> {
+pub enum MvbaMessage<V: Votable> {
     #[from]
-    PrePrepare(PrePrepareMsg<V, C>),
+    PrePrepare(PrePrepareMsg<V>),
     #[from]
     Prepare(PrepareVoteMsg<V::Entries>),
     #[from]
@@ -57,7 +57,7 @@ pub enum MvbaMessage<V: Votable, C: ValidateCert> {
     Tc(TimeoutCertificate<V::Entries>),
 }
 
-impl<V: Votable, C: ValidateCert> MvbaMessage<V, C> {
+impl<V: Votable> MvbaMessage<V> {
     pub fn slot(&self) -> Slot {
         match self {
             Self::PrePrepare(msg) => msg.slot,
@@ -217,15 +217,12 @@ where
 
 /// `⟨Pre-Prepare, slot, v, x, J, σ_l⟩`: the leader's proposal for view `v`
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct PrePrepareMsg<V: Votable, C: ValidateCert> {
+pub struct PrePrepareMsg<V: Votable> {
     pub slot: Slot,
     pub view: FallbackView,
     pub value: V,
     /// `J`: `TC_{slot, v-1}`, absent exactly in view 1
     pub tc: Option<TimeoutCertificate<V::Entries>>,
-    /// What admits the value where `lock(J) = ⊥` and the value does not stand
-    /// alone; never beside a lock
-    pub cert: Option<C>,
     /// The leader's signature over `⟨Pre-Prepare, slot, v, H(entries(x)), J⟩`
 
     /// TODO: only the expensive aggregatable signature is available in cadence
@@ -233,13 +230,12 @@ pub struct PrePrepareMsg<V: Votable, C: ValidateCert> {
     pub signature: Signature,
 }
 
-impl<V: Votable, C: ValidateCert> PrePrepareMsg<V, C> {
+impl<V: Votable> PrePrepareMsg<V> {
     pub fn new_signed(
         slot: Slot,
         view: FallbackView,
         value: V,
         tc: Option<TimeoutCertificate<V::Entries>>,
-        cert: Option<C>,
         key: &KeyPair,
     ) -> Self {
         let signature = key.sign(&signed_bytes(slot, view, &value, tc.as_ref()));
@@ -249,7 +245,6 @@ impl<V: Votable, C: ValidateCert> PrePrepareMsg<V, C> {
             view,
             value,
             tc,
-            cert,
             signature,
         }
     }
@@ -261,12 +256,8 @@ impl<V: Votable, C: ValidateCert> PrePrepareMsg<V, C> {
         self.signature.verify(&data, leader_pubkey)
     }
 
-    /// `J` fits the view, a lock is kept and travels alone, and an unlocked
-    /// value is `cert_optional` or has `cert` beside it -- in every view
-    pub(crate) fn is_well_formed(&self) -> bool
-    where
-        V: ValidateInput,
-    {
+    /// `J` fits the view, and the value keeps the lock `J` names, if any
+    pub(crate) fn is_well_formed(&self) -> bool {
         let justified = match &self.tc {
             None => self.view == FallbackView::FIRST,
             Some(tc) => {
@@ -276,12 +267,13 @@ impl<V: Votable, C: ValidateCert> PrePrepareMsg<V, C> {
             }
         };
 
-        let admitted = match self.tc.as_ref().and_then(|tc| tc.lock()) {
-            Some(lock) => self.value.entries() == *lock && self.cert.is_none(),
-            None => self.cert.is_some() || self.value.cert_optional(),
-        };
+        let keeps_lock = self
+            .tc
+            .as_ref()
+            .and_then(|tc| tc.lock())
+            .is_none_or(|lock| self.value.entries() == *lock);
 
-        justified && admitted
+        justified && keeps_lock
     }
 }
 
@@ -292,8 +284,8 @@ impl SigningDomain for PrePrepareDomain {
     const PREFIX: &'static [u8] = b"\x21monad/cadence/mvba-pre-prepare/1\n";
 }
 
-/// Only the timeout certificate is covered beside the value; `cert` is
-/// self-certifying
+/// The value is covered by its entries alone, beside the timeout certificate;
+/// whatever certificates the value carries are self-certifying
 fn signed_bytes<V: Votable>(
     slot: Slot,
     view: FallbackView,
@@ -307,11 +299,10 @@ fn signed_bytes<V: Votable>(
     signing_bytes_of::<PrePrepareDomain>(&[&slot, &view, &value.entries(), tc])
 }
 
-impl<V: Votable, C: ValidateCert> Encodable for MvbaMessage<V, C>
+impl<V: Votable> Encodable for MvbaMessage<V>
 where
     V: Encodable,
     V::Entries: Encodable,
-    C: Encodable,
 {
     fn encode(&self, out: &mut dyn bytes::BufMut) {
         match self {
@@ -388,16 +379,15 @@ where
     }
 }
 
-impl<V: Votable, C: ValidateCert> Decodable for MvbaMessage<V, C>
+impl<V: Votable> Decodable for MvbaMessage<V>
 where
-    V: Decodable + ValidateInput,
+    V: Decodable,
     V::Entries: Decodable,
-    C: Decodable,
 {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
         let result = match <u8 as Decodable>::decode(&mut payload)? {
-            1 => Self::PrePrepare(<PrePrepareMsg<V, C> as Decodable>::decode(&mut payload)?),
+            1 => Self::PrePrepare(<PrePrepareMsg<V> as Decodable>::decode(&mut payload)?),
             2 => Self::Prepare(<PrepareVoteMsg<V::Entries> as Decodable>::decode(
                 &mut payload,
             )?),
@@ -424,46 +414,42 @@ where
     }
 }
 
-// Alloy's derives add codec bounds on V and C, but the carried TC also needs a
+// Alloy's derives add codec bounds on V, but the carried TC also needs a
 // codec for V::Entries. A codec bound on V does not imply one on its
 // associated entries type, so these manual implementations supply that bound
 // without requiring it on the struct definition.
-impl<V: Votable, C: ValidateCert> Encodable for PrePrepareMsg<V, C>
+impl<V: Votable> Encodable for PrePrepareMsg<V>
 where
     V: Encodable,
     V::Entries: Encodable,
-    C: Encodable,
 {
     fn encode(&self, out: &mut dyn bytes::BufMut) {
-        let fields: [&dyn Encodable; 6] = [
+        let fields: [&dyn Encodable; 5] = [
             &self.slot,
             &self.view,
             &self.value,
             &RlpOption(self.tc.as_ref()),
-            &RlpOption(self.cert.as_ref()),
             &self.signature,
         ];
         alloy_rlp::encode_list::<_, dyn Encodable>(&fields, out);
     }
 
     fn length(&self) -> usize {
-        let fields: [&dyn Encodable; 6] = [
+        let fields: [&dyn Encodable; 5] = [
             &self.slot,
             &self.view,
             &self.value,
             &RlpOption(self.tc.as_ref()),
-            &RlpOption(self.cert.as_ref()),
             &self.signature,
         ];
         alloy_rlp::list_length::<_, dyn Encodable>(&fields)
     }
 }
 
-impl<V: Votable, C: ValidateCert> Decodable for PrePrepareMsg<V, C>
+impl<V: Votable> Decodable for PrePrepareMsg<V>
 where
-    V: Decodable + ValidateInput,
+    V: Decodable,
     V::Entries: Decodable,
-    C: Decodable,
 {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let mut payload = alloy_rlp::Header::decode_bytes(buf, true)?;
@@ -472,7 +458,6 @@ where
             view: <FallbackView as Decodable>::decode(&mut payload)?,
             value: <V as Decodable>::decode(&mut payload)?,
             tc: RlpOption::decode(&mut payload)?.0,
-            cert: RlpOption::decode(&mut payload)?.0,
             signature: <Signature as Decodable>::decode(&mut payload)?,
         };
         if !payload.is_empty() {
@@ -528,7 +513,6 @@ mod signing_tests {
             h::view(2),
             block,
             Some(locked),
-            None,
             &leader.keypair(),
         );
         assert!(msg.verify_signature(&leader.keypair().pubkey()));
@@ -551,7 +535,7 @@ mod rlp_tests {
         super::{
             super::{
                 super::{super::test_utils::assert_roundtrip, types::Lanes},
-                EnterFallbackCert, Entry, Metablock,
+                Entry, Metablock,
             },
             test_helpers as h,
         },
@@ -560,23 +544,17 @@ mod rlp_tests {
 
     #[test]
     fn every_mvba_variant_and_optional_certificate_roundtrips() {
-        type M = MvbaMessage<Metablock, EnterFallbackCert>;
+        type M = MvbaMessage<Metablock>;
         let validators = h::validator_data();
         let block = h::mixed_evidence_metablock(7, &validators);
         let entries = block.entries();
         let key = h::nodes()[0].keypair();
         let qc = h::prepare_qc(h::view(1), &entries, &validators);
-        // a proposal without a fallback certificate is legal only over a fast metablock
         let fast_block = h::metablock(7, &validators);
-        // Cover proposals with and without a fallback certificate, votes, and block exchange.
+        // Cover view-1 proposals, votes, and block exchange.
         let mut messages = vec![
-            h::pre_prepare_with_cert(h::view(1), &fast_block, None).1,
-            h::pre_prepare_with_cert(
-                h::view(1),
-                &block,
-                Some(h::enter_fallback_cert(&validators)),
-            )
-            .1,
+            h::pre_prepare(h::view(1), &fast_block, None).1,
+            h::pre_prepare(h::view(1), &block, None).1,
             M::Prepare(VoteMsg::new_signed(
                 MvbaScope::new(h::SLOT, h::view(1)),
                 PrepareVote(entries.clone()),
@@ -600,9 +578,7 @@ mod rlp_tests {
         for lock in [None, Some(qc)] {
             let tc = h::timeout_certificate(h::view(1), lock.clone(), &validators);
             assert!(assert_roundtrip(&tc).verify(&validators));
-            // an unlocked view admits the non-fast value only beside a certificate
-            let cert = lock.is_none().then(|| h::enter_fallback_cert(&validators));
-            messages.push(h::pre_prepare_justified(h::view(2), &block, Some(tc.clone()), cert).1);
+            messages.push(h::pre_prepare(h::view(2), &block, Some(tc.clone())).1);
             messages.push(M::Tc(tc));
             messages.push(M::Timeout(TimeoutMsg::new_signed(
                 h::SLOT,
@@ -650,9 +626,6 @@ mod rlp_tests {
             }),
             [1]
         );
-        assert!(
-            alloy_rlp::decode_exact::<MvbaMessage<Metablock, EnterFallbackCert>>(&[0xc1, 9])
-                .is_err()
-        );
+        assert!(alloy_rlp::decode_exact::<MvbaMessage<Metablock>>(&[0xc1, 9]).is_err());
     }
 }

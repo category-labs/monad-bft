@@ -86,6 +86,7 @@ impl Metablock {
     }
 }
 
+/// Entry validity only; the certificates a non-fast metablock needs are `CertifiedMetablock`'s
 impl ValidateInput for Metablock {
     type Context = ValidationContext;
 
@@ -96,10 +97,6 @@ impl ValidateInput for Metablock {
             &context.header_auth,
             &context.validator_data,
         )
-    }
-
-    fn cert_optional(&self) -> bool {
-        self.is_fast()
     }
 }
 
