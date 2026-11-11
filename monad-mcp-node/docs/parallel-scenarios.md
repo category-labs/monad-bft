@@ -30,6 +30,10 @@ latency needs `Network::min_latency`.
 
 ## Measurements
 
+The tables below record the parallel engine's development; current costs,
+with real and hollow chunk data, are in
+[simulation-data.md](simulation-data.md#cost).
+
 `tests/scenarios/bench.rs` (ignored; run with `--release -- --ignored
 --nocapture`). Measured 2026-10-30 on a 14-core Apple M-series machine (10
 performance cores), the three versions run back to back and alternating:

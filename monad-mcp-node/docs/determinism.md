@@ -14,7 +14,7 @@ delivered messages at the same times, in one process or across processes.
   builds the node's generator from it; without a seed (production default) it
   draws from OS entropy.
 
-No component in the node, chorus or DA crates needs genuine entropy: keys come
+No component in the node, cadence or DA crates needs genuine entropy: keys come
 from config or the keystore.
 
 ## Rules for simulated code
@@ -61,9 +61,9 @@ Containers whose order reached outputs, and the related DA state:
 | `MissingChunks`, `everything_missing` (pull recovery to owners) | a `Vec<(NodeId, ChunksSubset)>` in assignment (or validator) order, grouped in a `Vec` indexed by `NodeIndex`; requests in send order |
 | `ServingTracker.served` | a `Vec` indexed by `NodeIndex` |
 | `Recovery.decoded_holders` (pull recovery of our own chunks) | the author plus a `ValidatorSet` of hinted holders, listed in index order; requests in send order |
-| `SignatureCollection::signers`/`verify` and the `aggregate`/`try_aggregate` inputs (chorus `spec.rs`, stub env) | `signers`/`verify` return a `ValidatorSet`; aggregation takes `(ValidatorIndex, &Signature)` pairs; their signers address header pulls and decoded-holder hints |
+| `SignatureCollection::signers`/`verify` and the `aggregate`/`try_aggregate` inputs (cadence `spec.rs`, stub env) | `signers`/`verify` return a `ValidatorSet`; aggregation takes `(ValidatorIndex, &Signature)` pairs; their signers address header pulls and decoded-holder hints |
 | `MissingHeaders` voters (header pull fan-out) | `ValidatorSet`; DA pulls in send order |
-| `VotePool` buckets, voters and votes (chorus `types.rs`); a tally's bucket order decides weak QC order, timeout certificate groups, header-wait and fallback-wait lists | a tally sorts its buckets by the bytes each vote signs (canonical, independent of arrival); the pool keeps them in a short `Vec` in first-vote order, voters in a `ValidatorSet`, votes in a `ValidatorMap` |
+| `VotePool` buckets, voters and votes (cadence `types.rs`); a tally's bucket order decides weak QC order, timeout certificate groups, header-wait and fallback-wait lists | a tally sorts its buckets by the bytes each vote signs (canonical, independent of arrival); the pool keeps them in a short `Vec` in first-vote order, voters in a `ValidatorSet`, votes in a `ValidatorMap` |
 | timeout certificate signer check (MVBA `certificates.rs`) | `ValidatorSet`, disjointness per group |
 
 Validators are addressed by `ValidatorIndex` from the point a sender is
@@ -93,7 +93,7 @@ buffer, and where the same order is reused (a raptorcast instance's send
 order) it is computed once and filtered per use.
 
 Hash containers kept, lookup or membership only: DA `authenticated_headers`,
-`ProposerRaptorcast.tracked`; chorus availability
+`ProposerRaptorcast.tracked`; cadence availability
 `headers`/`decoded`/`invalid`, MVBA `BlockStore` and its gc set, the timeout
 certificate's distinct votes, the stub `ValidatorData`'s
 `NodeId -> ValidatorIndex` map (stakes, pubkeys and node ids are in
@@ -105,7 +105,7 @@ Wall clock:
 
 | source | resolution |
 |---|---|
-| `LedgerFollower` rescan timer, `Instant::now` (chorus `ledger/store.rs`) | `poll` and `follow_from_now` take `now`; the rpc's `LedgerWatch` passes `Instant::now()` |
+| `LedgerFollower` rescan timer, `Instant::now` (cadence `ledger/store.rs`) | `poll` and `follow_from_now` take `now`; the rpc's `LedgerWatch` passes `Instant::now()` |
 
 Outside the simulated path, unchanged: the production `Clock` and
 `AsyncNode`, log timestamps (`logging.rs`), the UDP network's peer map, the
@@ -145,3 +145,10 @@ builds get `libm`; `monad-mock-swarm` and `--workspace` builds get std (via
 criterion, among others). MCP scenarios use only `uniform_duration` and
 constant latencies; do not use the normal or log-normal ones until
 `monad-sim` samples them through `libm` directly.
+
+Not yet independent of thread timing in one case: hollow chunks
+(`enable_hollow`) take their messages from a store the nodes of the process
+share, and a node that creates its decoder after every holder dropped the
+message never resolves the proposal. Under the parallel engine, such a drop
+and lookup in the same window can happen in either order. No scenario runs
+into it today; see [simulation-data.md](simulation-data.md#known-gap-a-message-missing-from-the-store).
