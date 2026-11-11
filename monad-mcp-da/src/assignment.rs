@@ -32,13 +32,21 @@ use super::{
 pub struct ChunkId(u16);
 
 impl ChunkId {
-    pub fn to_wire(self) -> WireChunkId {
-        self.0
+    pub(crate) fn try_new(wire: WireChunkId, num_chunks: usize) -> Option<Self> {
+        if usize::from(wire) >= num_chunks {
+            return None;
+        }
+
+        Some(Self(wire))
     }
 
     #[cfg(test)]
     pub(crate) fn unchecked(wire: WireChunkId) -> Self {
         Self(wire)
+    }
+
+    pub fn to_wire(self) -> WireChunkId {
+        self.0
     }
 }
 
@@ -376,10 +384,8 @@ impl ChunkAssignment {
     // Resolve the target information for a given chunk_id. Returns
     // None if chunk_id is out of range.
     pub fn resolve_chunk_id(&self, chunk_id: WireChunkId) -> Option<ChunkRouting<'_>> {
-        if usize::from(chunk_id) >= self.num_chunks() {
-            return None;
-        }
-        Some(self.routing(ChunkId(chunk_id)))
+        let chunk_id = ChunkId::try_new(chunk_id, self.num_chunks())?;
+        Some(self.routing(chunk_id))
     }
 
     pub fn routing(&self, chunk_id: ChunkId) -> ChunkRouting<'_> {

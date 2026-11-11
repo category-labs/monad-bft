@@ -54,13 +54,16 @@ impl D33Encoded {
         Some(encoded)
     }
 
-    // the tree over any symbols. the caller must pass them in chunk id
-    // order.
     pub(crate) fn from_symbols(d33: &D33, symbols: Vec<Bytes>) -> Self {
         let mut leaves = Vec::with_capacity(symbols.len());
         for (leaf_idx, symbol) in symbols.iter().enumerate() {
-            leaves.push(leaf_hash(d33, leaf_idx as WireChunkId, symbol));
+            let leaf = leaf_hash(d33, leaf_idx as WireChunkId, symbol);
+            leaves.push(leaf);
         }
+        Self::from_leaves(d33, symbols, leaves)
+    }
+
+    fn from_leaves(d33: &D33, symbols: Vec<Bytes>, leaves: Vec<Hash>) -> Self {
         let tree = Tree::from_leaves(d33.depth(), leaves);
         Self { symbols, tree }
     }
@@ -86,7 +89,14 @@ pub(crate) struct D33Decoder {
     root: MerkleRoot,
     num_chunks: usize,
     num_source_chunks: usize,
-    received: BTreeMap<ChunkId, ChunkData>,
+    received: BTreeMap<ChunkId, Received>,
+}
+
+// a chunk whose proof checked, and the leaf hash the check computed from
+// its symbol
+struct Received {
+    data: ChunkData,
+    leaf: Hash,
 }
 
 impl D33Decoder {
@@ -99,6 +109,15 @@ impl D33Decoder {
             num_chunks,
             num_source_chunks,
             received: BTreeMap::new(),
+        }
+    }
+
+    fn leaf_of(&self, leaf_idx: WireChunkId, symbol: &Bytes) -> Hash {
+        let chunk_id = ChunkId::try_new(leaf_idx, self.num_chunks);
+        let received = chunk_id.and_then(|chunk_id| self.received.get(&chunk_id));
+        match received {
+            Some(chunk) if chunk.data.symbol == symbol => chunk.leaf,
+            _ => leaf_hash(&self.d33, leaf_idx, symbol),
         }
     }
 }
@@ -115,14 +134,17 @@ impl Decoder for D33Decoder {
     }
 
     fn chunk_data(&self, chunk_id: ChunkId) -> Option<ChunkData> {
-        self.received.get(&chunk_id).cloned()
+        let received = self.received.get(&chunk_id)?;
+        Some(received.data.clone())
     }
 
     fn ingest(&mut self, chunk_id: ChunkId, data: ChunkData) -> Result<(), BadProof> {
-        if !verify_proof(chunk_id, &data, &self.d33, &self.root) {
+        let leaf_idx = chunk_id.to_wire();
+        let leaf = leaf_hash(&self.d33, leaf_idx, &data.symbol);
+        if !Tree::verify_proof(&self.root, leaf_idx, &leaf, &data.proof) {
             return Err(BadProof);
         }
-        self.received.insert(chunk_id, data);
+        self.received.insert(chunk_id, Received { data, leaf });
         Ok(())
     }
 
@@ -133,14 +155,21 @@ impl Decoder for D33Decoder {
         let symbols = self
             .received
             .iter()
-            .map(|(chunk_id, data)| (*chunk_id, &data.symbol));
+            .map(|(chunk_id, received)| (*chunk_id, &received.data.symbol));
         let code = ReedSolomon::new(self.num_chunks, self.num_source_chunks);
-        // todo: None after enough chunks means the codec doesn't
-        // guarantee decodability (e.g. r10).
         let message = code.decode(symbols, self.d33.msg_len())?;
+        debug_assert_eq!(message.len(), self.d33.msg_len());
 
-        let encoded = D33Encoded::encode(&self.d33, &message, self.num_chunks);
-        let encoded = encoded.expect("a decoded message is of the scheme's length");
+        // re-encoding
+        let symbols = code.encode(&message, self.d33.v1_layout().symbol_len());
+        assert!(symbols.len() <= WireChunkId::MAX as usize);
+        let mut leaves = Vec::with_capacity(symbols.len());
+        for (leaf_idx, symbol) in symbols.iter().enumerate() {
+            let leaf = self.leaf_of(leaf_idx as WireChunkId, symbol);
+            leaves.push(leaf);
+        }
+
+        let encoded = D33Encoded::from_leaves(&self.d33, symbols, leaves);
         Some((message, encoded))
     }
 }
@@ -154,14 +183,6 @@ fn leaf_hash(d33: &D33, chunk_id: WireChunkId, symbol: &[u8]) -> Hash {
     hasher.update(chunk_id.to_le_bytes());
     hasher.update(symbol);
     hasher.hash()
-}
-
-// whether the chunk's proof binds it to the root
-fn verify_proof(chunk_id: ChunkId, data: &ChunkData, d33: &D33, root: &MerkleRoot) -> bool {
-    debug_assert_eq!(data.symbol.len(), d33.v1_layout().symbol_len());
-    let leaf_idx = chunk_id.to_wire();
-    let leaf = leaf_hash(d33, leaf_idx, &data.symbol);
-    Tree::verify_proof(root, leaf_idx, &leaf, &data.proof)
 }
 
 #[cfg(test)]
@@ -197,15 +218,41 @@ mod tests {
     fn an_encoding_derives_every_chunk_with_its_proof() {
         let scheme = scheme();
         let encoded = encoded();
+        let mut decoder = D33Decoder::new(scheme, encoded.root(), 9);
         for wire in 0..9 {
             let chunk_id = ChunkId::unchecked(wire);
             let data = encoded.chunk_data(chunk_id);
             assert_eq!(data.symbol.len(), scheme.v1_layout().symbol_len());
-            assert!(verify_proof(chunk_id, &data, &scheme, &encoded.root()));
+            assert_eq!(decoder.ingest(chunk_id, data), Ok(()));
         }
 
         let short = message().slice(1..);
         assert!(D33Encoded::encode(&scheme, &short, 9).is_none());
+    }
+
+    #[test]
+    fn leaf_of_equals_leaf_hash_for_any_received_chunks() {
+        let scheme = scheme();
+        let encoded = encoded();
+        // the even chunks received with their symbols, the odd ones with
+        // another symbol, whose leaf must not be taken
+        let other = Bytes::from(vec![0u8; encoded.symbols[0].len()]);
+        let mut decoder = D33Decoder::new(scheme, encoded.root(), 9);
+        for wire in 0..9 {
+            let chunk_id = ChunkId::unchecked(wire);
+            let mut data = encoded.chunk_data(chunk_id);
+            if !wire.is_multiple_of(2) {
+                data.symbol = other.clone();
+            }
+            let leaf = leaf_hash(&scheme, wire, &data.symbol);
+            decoder.received.insert(chunk_id, Received { data, leaf });
+        }
+
+        for (leaf_idx, symbol) in encoded.symbols.iter().enumerate() {
+            let leaf_idx = leaf_idx as WireChunkId;
+            let leaf = decoder.leaf_of(leaf_idx, symbol);
+            assert_eq!(leaf, leaf_hash(&scheme, leaf_idx, symbol));
+        }
     }
 
     #[test]
