@@ -20,13 +20,14 @@ use std::{
     num::NonZeroU64,
     os::fd::{AsRawFd, FromRawFd},
     sync::mpsc as std_mpsc,
+    task::Poll,
     thread,
     time::Instant,
 };
 
 use async_channel::{Receiver, Sender};
 use bytes::{Bytes, BytesMut};
-use futures::future::join_all;
+use futures::future::{join_all, poll_fn};
 use monoio::{
     buf::{Ipv4RecvMsgParser, UserRecvMsgRingBuf},
     net::udp::UdpSocket,
@@ -34,7 +35,7 @@ use monoio::{
     time::sleep,
     IoUringDriver, RuntimeBuilder,
 };
-use tokio::sync::mpsc::{self, error::TryRecvError};
+use tokio::sync::mpsc;
 use tracing::{debug, error, trace, warn};
 
 use super::{RecvUdpMsg, UdpMsg, UdpPacingConfig, UdpSocketId, IPV4_HDR_SIZE, UDP_HDR_SIZE};
@@ -398,16 +399,7 @@ async fn tx_pacing(
     let mut incoming = Vec::with_capacity(MAX_CHANNEL_DRAIN);
 
     loop {
-        for _ in 0..MAX_CHANNEL_DRAIN {
-            match udp_egress_rx.try_recv() {
-                Ok(msg) => enqueue_udp_msg(&mut queue, &metrics, msg),
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => return,
-            }
-        }
-
         if queue.is_empty() {
-            incoming.clear();
             if udp_egress_rx
                 .recv_many(&mut incoming, MAX_CHANNEL_DRAIN)
                 .await
@@ -415,9 +407,19 @@ async fn tx_pacing(
             {
                 return;
             }
-            for msg in incoming.drain(..) {
-                enqueue_udp_msg(&mut queue, &metrics, msg);
+        } else {
+            // Poll once with this task's waker: available commands are admitted
+            // together, but paced work never waits for input or a full batch.
+            let received = poll_fn(|cx| {
+                Poll::Ready(udp_egress_rx.poll_recv_many(cx, &mut incoming, MAX_CHANNEL_DRAIN))
+            })
+            .await;
+            if received == Poll::Ready(0) {
+                return;
             }
+        }
+        for msg in incoming.drain(..) {
+            enqueue_udp_msg(&mut queue, &metrics, msg);
         }
 
         let now = queue.elapsed();
