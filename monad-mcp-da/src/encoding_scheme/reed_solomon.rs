@@ -24,25 +24,50 @@ use super::super::assignment::ChunkId;
 pub(crate) struct ReedSolomon {
     num_chunks: usize,
     num_source_chunks: usize,
+    symbol_len: usize,
+    msg_len: usize,
 }
 
 impl ReedSolomon {
-    // the caller must ensure 0 < num_source_chunks <= num_chunks
-    pub(crate) fn new(num_chunks: usize, num_source_chunks: usize) -> Self {
+    // the arguments must pass the asserted preconditions
+    pub(crate) fn new(
+        num_chunks: usize,
+        num_source_chunks: usize,
+        symbol_len: usize,
+        msg_len: usize,
+    ) -> Self {
+        assert!(num_source_chunks > 0 && num_source_chunks <= num_chunks);
+        assert!(symbol_len > 0 && symbol_len.is_multiple_of(2));
+        assert!(msg_len <= num_source_chunks * symbol_len);
         Self {
             num_chunks,
             num_source_chunks,
+            symbol_len,
+            msg_len,
         }
+    }
+
+    pub(crate) fn num_chunks(&self) -> usize {
+        self.num_chunks
+    }
+
+    pub(crate) fn num_source_chunks(&self) -> usize {
+        self.num_source_chunks
+    }
+
+    pub(crate) fn symbol_len(&self) -> usize {
+        self.symbol_len
     }
 
     fn num_recovery_chunks(&self) -> usize {
         self.num_chunks - self.num_source_chunks
     }
 
-    // one symbol per chunk, in chunk id order. the caller must ensure an
-    // even symbol_len
-    pub(crate) fn encode(&self, message: &Bytes, symbol_len: usize) -> Vec<Bytes> {
-        let mut symbols = source_symbols(message, self.num_source_chunks, symbol_len);
+    // one symbol per chunk, in chunk id order. the caller must pass a
+    // message of msg_len bytes
+    pub(crate) fn encode(&self, message: &Bytes) -> Vec<Bytes> {
+        debug_assert_eq!(message.len(), self.msg_len);
+        let mut symbols = source_symbols(message, self.num_source_chunks, self.symbol_len);
         let num_recovery_chunks = self.num_recovery_chunks();
         if num_recovery_chunks == 0 {
             return symbols;
@@ -56,21 +81,19 @@ impl ReedSolomon {
         symbols
     }
 
-    // the message of msg_len bytes, once the symbols are any
-    // num_source_chunks of the code. the caller must pass each chunk id
-    // once.
+    // the caller must pass at least K symbols, each chunk id once
     pub(crate) fn decode<'a>(
         &self,
-        symbols: impl Iterator<Item = (ChunkId, &'a Bytes)>,
-        msg_len: usize,
-    ) -> Option<Bytes> {
+        symbols: impl ExactSizeIterator<Item = (ChunkId, &'a Bytes)>,
+    ) -> Bytes {
+        debug_assert!(symbols.len() >= self.num_source_chunks);
+
         use bytes::BufMut as _;
 
         // by source position
         let mut sources: Vec<Option<Bytes>> = vec![None; self.num_source_chunks];
         // by recovery position
-        let mut recoveries = Vec::new();
-        let mut received = 0;
+        let mut recoveries = Vec::with_capacity(symbols.len());
         for (chunk_id, symbol) in symbols {
             let chunk_id = usize::from(chunk_id);
             if chunk_id < self.num_source_chunks {
@@ -78,28 +101,21 @@ impl ReedSolomon {
             } else {
                 recoveries.push((chunk_id - self.num_source_chunks, symbol));
             }
-            received += 1;
-        }
-        if received < self.num_source_chunks {
-            return None;
         }
         if sources.iter().any(Option::is_none) {
-            self.restore_sources(&mut sources, recoveries)?;
+            self.restore_sources(&mut sources, recoveries);
         }
 
-        let mut message = BytesMut::new();
+        let mut message = BytesMut::with_capacity(self.num_source_chunks * self.symbol_len);
         for source in &sources {
-            message.put_slice(source.as_ref()?);
+            let source = source.as_ref().expect("received or restored");
+            message.put_slice(source);
         }
-        message.truncate(msg_len);
-        Some(message.freeze())
+        message.truncate(self.msg_len);
+        message.freeze()
     }
 
-    fn restore_sources(
-        &self,
-        sources: &mut [Option<Bytes>],
-        recoveries: Vec<(usize, &Bytes)>,
-    ) -> Option<()> {
+    fn restore_sources(&self, sources: &mut [Option<Bytes>], recoveries: Vec<(usize, &Bytes)>) {
         let mut present = Vec::new();
         for (position, source) in sources.iter().enumerate() {
             if let Some(source) = source {
@@ -111,12 +127,12 @@ impl ReedSolomon {
             self.num_recovery_chunks(),
             present,
             recoveries,
-        )
-        .ok()?;
+        );
+
+        let restored = restored.expect("caller ensures passing enough well-formed symbols");
         for (position, symbol) in restored {
             sources[position] = Some(Bytes::from(symbol));
         }
-        Some(())
     }
 }
 
@@ -145,15 +161,19 @@ mod tests {
 
     const MESSAGE: [u8; 9] = [1, 2, 3, 4, 5, 6, 7, 8, 9];
 
+    fn code() -> ReedSolomon {
+        ReedSolomon::new(7, 3, 4, MESSAGE.len())
+    }
+
     fn symbols() -> Vec<Bytes> {
-        ReedSolomon::new(7, 3).encode(&Bytes::from_static(&MESSAGE), 4)
+        code().encode(&Bytes::from_static(&MESSAGE))
     }
 
     // the symbols of the listed chunks, as a decoder receives them
     fn received<'a>(
         symbols: &'a [Bytes],
         chunk_ids: &'a [u16],
-    ) -> impl Iterator<Item = (ChunkId, &'a Bytes)> {
+    ) -> impl ExactSizeIterator<Item = (ChunkId, &'a Bytes)> {
         chunk_ids.iter().map(|chunk_id| {
             (
                 ChunkId::unchecked(*chunk_id),
@@ -177,7 +197,7 @@ mod tests {
     #[test]
     fn whole_sources_are_views_into_the_message() {
         let message = Bytes::from_static(&MESSAGE);
-        let symbols = ReedSolomon::new(7, 3).encode(&message, 4);
+        let symbols = code().encode(&message);
         assert_eq!(symbols[0].as_ptr(), message.as_ptr());
         assert_eq!(symbols[1].as_ptr(), message[4..].as_ptr());
         // the padded last source is a copy
@@ -187,30 +207,18 @@ mod tests {
     #[test]
     fn any_k_symbols_decode() {
         let symbols = symbols();
-        let code = ReedSolomon::new(7, 3);
         for kept in [[3, 4, 5, 6], [1, 2, 4, 5], [0, 1, 3, 6], [0, 1, 2, 3]] {
-            let decoded = code.decode(received(&symbols, &kept), MESSAGE.len());
-            assert_eq!(decoded, Some(Bytes::from_static(&MESSAGE)));
+            let decoded = code().decode(received(&symbols, &kept));
+            assert_eq!(decoded, Bytes::from_static(&MESSAGE));
         }
     }
 
     #[test]
-    fn fewer_than_k_symbols_do_not_decode() {
-        let symbols = symbols();
-        let code = ReedSolomon::new(7, 3);
-        let decoded = code.decode(received(&symbols, &[0, 5]), MESSAGE.len());
-        assert_eq!(decoded, None);
-        let decoded = code.decode(received(&symbols, &[0, 4, 5]), MESSAGE.len());
-        assert_eq!(decoded, Some(Bytes::from_static(&MESSAGE)));
-    }
-
-    #[test]
-    fn a_code_without_recovery_needs_every_source() {
-        let code = ReedSolomon::new(2, 2);
-        let symbols = code.encode(&Bytes::from_static(&MESSAGE[..8]), 4);
+    fn a_code_without_recovery_decodes_from_every_source() {
+        let code = ReedSolomon::new(2, 2, 4, 8);
+        let symbols = code.encode(&Bytes::from_static(&MESSAGE[..8]));
         assert_eq!(symbols.len(), 2);
-        assert_eq!(code.decode(received(&symbols, &[1]), 8), None);
-        let decoded = code.decode(received(&symbols, &[0, 1]), 8);
-        assert_eq!(decoded, Some(Bytes::from_static(&MESSAGE[..8])));
+        let decoded = code.decode(received(&symbols, &[0, 1]));
+        assert_eq!(decoded, Bytes::from_static(&MESSAGE[..8]));
     }
 }

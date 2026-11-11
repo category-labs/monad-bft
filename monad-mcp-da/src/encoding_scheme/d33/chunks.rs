@@ -46,9 +46,8 @@ impl D33Encoded {
         if message.is_empty() || message.len() != d33.msg_len() {
             return None;
         }
-        let symbol_len = d33.v1_layout().symbol_len();
-        let code = ReedSolomon::new(num_chunks, d33.num_source_chunks());
-        let symbols = code.encode(message, symbol_len);
+        let code = reed_solomon(d33, num_chunks);
+        let symbols = code.encode(message);
         assert!(symbols.len() == num_chunks);
         let encoded = Self::from_symbols(d33, symbols);
         Some(encoded)
@@ -87,8 +86,7 @@ impl Encoded for D33Encoded {
 pub(crate) struct D33Decoder {
     d33: D33,
     root: MerkleRoot,
-    num_chunks: usize,
-    num_source_chunks: usize,
+    code: ReedSolomon,
     received: BTreeMap<ChunkId, Received>,
 }
 
@@ -101,19 +99,17 @@ struct Received {
 
 impl D33Decoder {
     pub(crate) fn new(d33: D33, root: MerkleRoot, num_chunks: usize) -> Self {
-        let num_source_chunks = d33.num_source_chunks();
-        assert!(0 < num_source_chunks && num_source_chunks < num_chunks);
+        let code = reed_solomon(&d33, num_chunks);
         Self {
             d33,
             root,
-            num_chunks,
-            num_source_chunks,
+            code,
             received: BTreeMap::new(),
         }
     }
 
     fn leaf_of(&self, leaf_idx: WireChunkId, symbol: &Bytes) -> Hash {
-        let chunk_id = ChunkId::try_new(leaf_idx, self.num_chunks);
+        let chunk_id = ChunkId::try_new(leaf_idx, self.code.num_chunks());
         let received = chunk_id.and_then(|chunk_id| self.received.get(&chunk_id));
         match received {
             Some(chunk) if chunk.data.symbol == symbol => chunk.leaf,
@@ -139,6 +135,13 @@ impl Decoder for D33Decoder {
     }
 
     fn ingest(&mut self, chunk_id: ChunkId, data: ChunkData) -> Result<(), BadProof> {
+        // decode relies on equal symbol lengths, which a pid collision can break
+        let symbol_len = data.symbol.len();
+        if symbol_len != self.code.symbol_len() {
+            tracing::error!(?chunk_id, symbol_len, "symbol is not of the code's length");
+            return Err(BadProof);
+        }
+
         let leaf_idx = chunk_id.to_wire();
         let leaf = leaf_hash(&self.d33, leaf_idx, &data.symbol);
         if !Tree::verify_proof(&self.root, leaf_idx, &leaf, &data.proof) {
@@ -149,19 +152,18 @@ impl Decoder for D33Decoder {
     }
 
     fn try_decode(&mut self) -> Option<(Bytes, D33Encoded)> {
-        if self.received.len() < self.num_source_chunks {
+        if self.received.len() < self.code.num_source_chunks() {
             return None;
         }
         let symbols = self
             .received
             .iter()
             .map(|(chunk_id, received)| (*chunk_id, &received.data.symbol));
-        let code = ReedSolomon::new(self.num_chunks, self.num_source_chunks);
-        let message = code.decode(symbols, self.d33.msg_len())?;
-        debug_assert_eq!(message.len(), self.d33.msg_len());
+        // assuming MDS code: decoding at K symbols is infallible.
+        let message = self.code.decode(symbols);
 
         // re-encoding
-        let symbols = code.encode(&message, self.d33.v1_layout().symbol_len());
+        let symbols = self.code.encode(&message);
         assert!(symbols.len() <= WireChunkId::MAX as usize);
         let mut leaves = Vec::with_capacity(symbols.len());
         for (leaf_idx, symbol) in symbols.iter().enumerate() {
@@ -172,6 +174,12 @@ impl Decoder for D33Decoder {
         let encoded = D33Encoded::from_leaves(&self.d33, symbols, leaves);
         Some((message, encoded))
     }
+}
+
+fn reed_solomon(d33: &D33, num_chunks: usize) -> ReedSolomon {
+    let num_source_chunks = d33.num_source_chunks();
+    let symbol_len = d33.v1_layout().symbol_len();
+    ReedSolomon::new(num_chunks, num_source_chunks, symbol_len, d33.msg_len())
 }
 
 // the message length makes the root pin the decoded message, not only the symbols
@@ -228,6 +236,25 @@ mod tests {
 
         let short = message().slice(1..);
         assert!(D33Encoded::encode(&scheme, &short, 9).is_none());
+    }
+
+    #[test]
+    fn a_symbol_of_another_length_is_rejected() {
+        let scheme = scheme();
+        let mut symbols = encoded().symbols;
+        symbols[0] = symbols[0].slice(2..);
+        // the short symbol has a proof under this root
+        let committed = D33Encoded::from_symbols(&scheme, symbols);
+        let mut decoder = D33Decoder::new(scheme, committed.root(), 9);
+
+        let zero = ChunkId::unchecked(0);
+        let short = committed.chunk_data(zero);
+        assert_eq!(decoder.ingest(zero, short), Err(BadProof));
+        assert!(!decoder.contains(zero));
+
+        let one = ChunkId::unchecked(1);
+        let whole = committed.chunk_data(one);
+        assert_eq!(decoder.ingest(one, whole), Ok(()));
     }
 
     #[test]

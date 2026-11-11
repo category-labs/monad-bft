@@ -126,7 +126,7 @@ pub(crate) struct HollowDecoder {
 
 impl HollowDecoder {
     fn new(root: MerkleRoot, num_source_chunks: usize, num_chunks: usize) -> Self {
-        assert!(0 < num_source_chunks && num_source_chunks < num_chunks);
+        assert!(0 < num_source_chunks && num_source_chunks <= num_chunks);
         Self {
             root,
             num_source_chunks,
