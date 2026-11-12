@@ -24,4 +24,5 @@ mod harness;
 mod loss;
 mod mute;
 mod priority;
+mod records;
 mod tamper;

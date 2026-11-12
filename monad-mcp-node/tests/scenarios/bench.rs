@@ -44,7 +44,7 @@ use monad_sim_swarm::{Network, Parallel, RegionTable, Swarm};
 
 use crate::harness::{
     ChunkBytes, SLOT_INTERVAL, SimNode, by_region, deadline_of_slot, geo, node_config, run_digest,
-    start_swarm, testnet_table, time_of,
+    scheme_from_env, start_swarm, testnet_table, time_of,
 };
 
 fn list(name: &str, default: &[u64]) -> Vec<u64> {
@@ -62,11 +62,7 @@ fn one(name: &str, default: u64) -> u64 {
 }
 
 fn scheme() -> ProposalScheme {
-    match std::env::var("BENCH_SCHEME").as_deref() {
-        Err(_) | Ok("d33") => ProposalScheme::D33,
-        Ok("d33_hollow") => ProposalScheme::D33Hollow,
-        Ok(other) => panic!("BENCH_SCHEME is d33 or d33_hollow, not {other}"),
-    }
+    scheme_from_env("BENCH_SCHEME")
 }
 
 fn nodes(seed: u64, validators: u64, payload: usize, source: SourceKind) -> Vec<(NodeId, SimNode)> {

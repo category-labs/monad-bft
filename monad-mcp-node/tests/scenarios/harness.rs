@@ -22,21 +22,24 @@ use std::{
     time::Duration,
 };
 
-use monad_mcp_common::{Lanes, Slot, Timestamp, TimestampDelta};
+use monad_mcp_cadence::spec::ProposalHeader as _;
+use monad_mcp_common::{Lane, Lanes, Slot, Timestamp, TimestampDelta};
 use monad_mcp_node::{
     Component, NodeOutput,
-    cadence::{Outbound, types::ProposalId},
+    cadence::{Outbound, slot::chorus::FinalizationPath, types::ProposalId},
     common::NodeId,
     config::{
         CadenceConfig, DAConfig, LedgerConfig, NetworkConfig, NodeConfig, ProposalConfig,
         RepeaterSection, ValidatorConfig,
     },
-    da::{self, ProposalKeyPair},
+    da::{self, ProposalKeyPair, ProposalScheme},
     network::{NodeInbound, NodeMessage, OutboundClass},
 };
 use monad_sim::{CancelToken, ClockDiff, Ctx, Handle, StepLabel, Time};
-use monad_sim_swarm::{Net, Network, Parallel, Placer, Provenance, RegionTable, SimClient, Swarm};
-use rand::{SeedableRng as _, distributions::Uniform};
+use monad_sim_swarm::{
+    LatencyMatrix, Net, Network, Parallel, Placer, Provenance, RegionTable, SimClient, Swarm,
+};
+use rand::{Rng as _, SeedableRng as _, distributions::Uniform};
 use rand_chacha::ChaCha8Rng;
 use rapidhash::v3::{DEFAULT_RAPID_SECRETS, RapidStreamHasherV3, rapidhash_v3};
 
@@ -79,6 +82,15 @@ pub struct SimMessage {
     pub first_hop: bool,
 }
 
+// What a recording node saw (opt-in, `SimNode::recording`), to compare a
+// run with a model per validator. Times are sim times.
+#[derive(Default)]
+pub struct Records {
+    // per (slot, lane), the first-hop chunks this node received from the
+    // lane's proposer: the proposer, and the arrival times
+    pub first_hop_in: BTreeMap<(Slot, Lane), (NodeId, Vec<Time>)>,
+}
+
 // a node as a monad-sim process, boxed so one swarm can mix node kinds
 pub struct SimNode {
     id: NodeId,
@@ -87,6 +99,13 @@ pub struct SimNode {
     // the lanes a slot committed whose proposal resolved invalid, for the
     // slots that have any
     invalid: BTreeMap<Slot, Vec<usize>>,
+    // how each slot finalized here
+    paths: BTreeMap<Slot, FinalizationPath>,
+    // per own slot, when its first first-hop message left (the seal time,
+    // as encoding is instant here), and its lane
+    first_hops: BTreeMap<Slot, (Time, Lane)>,
+    // receiver-side records, when recording
+    records: Option<Records>,
     // hashes every message delivered to this node, with its time, in
     // delivery order
     delivery_hasher: RapidStreamHasherV3<'static>,
@@ -109,6 +128,9 @@ impl SimNode {
             node: Box::new(node),
             finalized: BTreeMap::new(),
             invalid: BTreeMap::new(),
+            paths: BTreeMap::new(),
+            first_hops: BTreeMap::new(),
+            records: None,
             delivery_hasher: RapidStreamHasherV3::new(&DEFAULT_RAPID_SECRETS),
             chunk_bytes: ChunkBytes::default(),
             clock_offset: ClockDiff(0),
@@ -128,6 +150,12 @@ impl SimNode {
     pub fn set_clock_offset(&mut self, offset: ClockDiff, ctx: &mut Ctx) {
         self.clock_offset = offset;
         self.arm_due_alarm(ctx);
+    }
+
+    // keep receiver-side records (see `Records`)
+    pub fn recording(mut self) -> Self {
+        self.records = Some(Records::default());
+        self
     }
 
     pub fn init(&mut self, ctx: &mut Ctx) {
@@ -163,6 +191,8 @@ impl SimNode {
                         self.invalid.insert(finalized.slot, invalid);
                     }
                     self.finalized.insert(finalized.slot, pattern);
+                    let path = finalized.finalization.path();
+                    self.paths.insert(finalized.slot, path);
                 }
             }
         }
@@ -172,9 +202,12 @@ impl SimNode {
     // the node's whole outbound path: every message it sends goes through
     // here to its network stack, which models the uplink, with the outbound
     // class as the message's first-hop flag (see `first_hop_priority`)
-    fn transmit(&self, outbound: Outbound<NodeMessage>, class: OutboundClass, ctx: &mut Ctx) {
+    fn transmit(&mut self, outbound: Outbound<NodeMessage>, class: OutboundClass, ctx: &mut Ctx) {
         let net = self.net.expect("node not wired");
         let first_hop = class == OutboundClass::FirstHop;
+        if first_hop {
+            self.record_first_hop(&outbound, ctx.now());
+        }
         let wrap = |message| SimMessage { message, first_hop };
         match outbound {
             Outbound::Broadcast(message) => {
@@ -245,6 +278,60 @@ impl SimNode {
         self.chunk_bytes
     }
 
+    // how each slot finalized here
+    pub fn paths(&self) -> &BTreeMap<Slot, FinalizationPath> {
+        &self.paths
+    }
+
+    // per own slot, when its first hop started to leave, and its lane
+    pub fn first_hops(&self) -> &BTreeMap<Slot, (Time, Lane)> {
+        &self.first_hops
+    }
+
+    pub fn records(&self) -> Option<&Records> {
+        self.records.as_ref()
+    }
+
+    // a proposal's first hop leaves in one burst: only the first message of
+    // a burst is decoded for its slot
+    fn record_first_hop(&mut self, outbound: &Outbound<NodeMessage>, now: Time) {
+        if self.first_hops.values().next_back().map(|(at, _)| *at) == Some(now) {
+            return;
+        }
+        let Outbound::Unicast(_, NodeMessage::Chunk(bytes)) = outbound else {
+            return;
+        };
+        let Ok(envelope) = da::read_envelope(bytes.clone()) else {
+            return;
+        };
+        let header = envelope.header();
+        let first = (now, header.lane());
+        self.first_hops.entry(header.slot()).or_insert(first);
+    }
+
+    // a recording node's view of a delivery: first-hop chunks of others'
+    // proposals
+    fn record_inbound(&mut self, at: Time, from: NodeId, message: &SimMessage) {
+        let Some(records) = &mut self.records else {
+            return;
+        };
+        match &message.message {
+            NodeMessage::Chunk(bytes) if message.first_hop => {
+                let Ok(envelope) = da::read_envelope(bytes.clone()) else {
+                    return;
+                };
+                let header = envelope.header();
+                let key = (header.slot(), header.lane());
+                let (_, times) = records
+                    .first_hop_in
+                    .entry(key)
+                    .or_insert_with(|| (from, Vec::new()));
+                times.push(at);
+            }
+            _ => {}
+        }
+    }
+
     fn record_delivery(&mut self, at: Time, from: NodeId, message: &NodeMessage) {
         if let NodeMessage::Chunk(bytes) = message {
             self.chunk_bytes.wire += bytes.len() as u64;
@@ -286,6 +373,7 @@ impl SimClient for SimNode {
         if from == self.id {
             return;
         }
+        self.record_inbound(ctx.now(), from, &message);
         let inbound = NodeInbound {
             from,
             message: message.message,
@@ -512,6 +600,20 @@ pub struct Geo {
     pub network: Network<NodeId, SimMessage>,
     // each node's region, numbered densely from 0 in table order
     pub region_of: BTreeMap<NodeId, u32>,
+    // per node in id order: its region's name, and its one-way base
+    // latency to every node (row = from), last miles included; 0 to itself
+    pub labels: Vec<String>,
+    pub one_way: Vec<Vec<Duration>>,
+    // the base latencies `network` samples from, for building a variant of
+    // it (e.g. with a time-varying delay on top)
+    pub matrix: LatencyMatrix<NodeId>,
+}
+
+// the per-message jitter `geo` adds to the base latency, uniform in [0, max]
+pub const GEO_JITTER_MAX: Duration = Duration::from_millis(1);
+
+pub fn geo_jitter() -> Uniform<Duration> {
+    Uniform::new_inclusive(Duration::ZERO, GEO_JITTER_MAX)
 }
 
 pub fn geo(table: &RegionTable, validators: u64, seed: u64) -> Geo {
@@ -532,9 +634,95 @@ pub fn geo(table: &RegionTable, validators: u64, seed: u64) -> Geo {
         .iter()
         .map(|n| (n.addr, dense[&n.region]))
         .collect();
-    let jitter = Uniform::new_inclusive(Duration::ZERO, Duration::from_millis(1));
-    let network = Network::with_matrix(placement.matrix(), jitter).egress(GBIT, sim_wire_size);
-    Geo { network, region_of }
+    let names = table.regions();
+    let labels = placement
+        .nodes()
+        .iter()
+        .map(|n| names[n.region].clone())
+        .collect();
+    let matrix = placement.matrix();
+    let addrs: Vec<NodeId> = placement.nodes().iter().map(|n| n.addr).collect();
+    let one_way = addrs
+        .iter()
+        .map(|from| {
+            let latency = |to: &NodeId| {
+                if from == to {
+                    Duration::ZERO
+                } else {
+                    matrix.latency(from, to)
+                }
+            };
+            addrs.iter().map(latency).collect()
+        })
+        .collect();
+    let network =
+        Network::with_matrix(placement.matrix(), geo_jitter()).egress(GBIT, sim_wire_size);
+    Geo {
+        network,
+        region_of,
+        labels,
+        one_way,
+        matrix,
+    }
+}
+
+// The network of `geo`, with equal stakes and the given clock offsets, as
+// JSON, so a model can run on the same network: node-level one-way base
+// latencies (last miles included), the jitter bound, the uplink, the clock
+// offsets and the protocol timing. A scenario adds its own fields.
+pub fn topology_json(geo: &Geo, clock_offsets: &[ClockDiff]) -> serde_json::Value {
+    let n = geo.labels.len();
+    let ms = |nanos: f64| (nanos / 1e3).round() / 1e3;
+    let one_way: Vec<Vec<f64>> = geo
+        .one_way
+        .iter()
+        .map(|row| row.iter().map(|d| ms(d.as_nanos() as f64)).collect())
+        .collect();
+    let offsets: Vec<f64> = clock_offsets.iter().map(|c| ms(c.0 as f64)).collect();
+    serde_json::json!({
+        "n": n,
+        "labels": geo.labels,
+        "stake": vec![1.0 / n as f64; n],
+        "one_way_ms": one_way,
+        "jitter_max_ms": ms(GEO_JITTER_MAX.as_nanos() as f64),
+        "clock_offset_ms": offsets,
+        "egress_bps": GBIT as f64,
+        "delta_ms": ms(DELTA.as_nanos() as f64),
+        "slot_ms": ms(SLOT_INTERVAL.as_nanos() as f64),
+        "notes": "one_way_ms: base latency per node pair (row = from), last miles \
+                  included; every message adds uniform jitter in [0, jitter_max_ms]. \
+                  A node's clock reads sim time + clock_offset_ms. Equal stakes.",
+    })
+}
+
+// per node, a clock offset drawn from normal(0, sigma_ms), seeded, in
+// whole microseconds (so an export in ms is exact); all 0 for sigma 0
+pub fn normal_clock_offsets(seed: u64, validators: u64, sigma_ms: f64) -> Vec<ClockDiff> {
+    let mut rng = ChaCha8Rng::seed_from_u64(seed ^ 0xC10C_0FF5);
+    (0..validators)
+        .map(|_| {
+            if sigma_ms == 0.0 {
+                return ClockDiff(0);
+            }
+            // Box–Muller
+            let u1: f64 = 1.0 - rng.r#gen::<f64>();
+            let u2: f64 = rng.r#gen();
+            let z = (-2.0 * u1.ln()).sqrt() * (std::f64::consts::TAU * u2).cos();
+            let micros = (z * sigma_ms * 1000.0).round() as i128;
+            ClockDiff(micros * 1000)
+        })
+        .collect()
+}
+
+// the chunk data of a scenario's proposals from the environment variable
+// `var`: `d33` (default, real chunks) or `d33_hollow` (the same messages
+// and sizes without the data; see docs/simulation-data.md)
+pub fn scheme_from_env(var: &str) -> ProposalScheme {
+    match std::env::var(var).as_deref() {
+        Err(_) | Ok("d33") => ProposalScheme::D33,
+        Ok("d33_hollow") => ProposalScheme::D33Hollow,
+        Ok(other) => panic!("{var} is d33 or d33_hollow, not {other}"),
+    }
 }
 
 // one domain per region of `geo`

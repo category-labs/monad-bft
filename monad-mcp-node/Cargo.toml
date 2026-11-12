@@ -36,6 +36,7 @@ monad-mcp-node = { path = ".", features = ["enable_stub", "enable_hollow"] }
 monad-sim = { workspace = true }
 monad-sim-swarm = { workspace = true }
 rapidhash = { workspace = true }
+serde_json = { workspace = true }
 tempfile = { workspace = true }
 
 [lints.clippy]
