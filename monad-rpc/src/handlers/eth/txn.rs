@@ -15,12 +15,11 @@
 
 use std::{pin::pin, time::Duration};
 
-use alloy_consensus::{Transaction as _, TxEnvelope};
-use alloy_eips::Decodable2718;
 use alloy_primitives::{Address, FixedBytes};
 use alloy_rpc_types::Filter;
 use monad_exec_events::BlockCommitState;
 use monad_rpc_docs::rpc;
+use monad_transaction::TxEnvelope;
 use monad_triedb_utils::triedb_env::Triedb;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -152,10 +151,17 @@ fn validate_and_decode_tx(
     allow_unprotected_txs: bool,
     decode_error_fn: impl FnOnce() -> JsonRpcError,
 ) -> Result<TxEnvelope, JsonRpcError> {
-    let tx = TxEnvelope::decode_2718_exact(hex_tx).map_err(|err| {
+    let tx = TxEnvelope::decode_submission(hex_tx).map_err(|err| {
         debug!(?err, "eth txn decode failed");
         decode_error_fn()
     })?;
+
+    if tx.is_monad() && chain_id != monad_transaction::MONAD_DEVNET_CHAIN_ID {
+        return Err(JsonRpcError::with_message(
+            ErrorCode::InvalidParams,
+            "Native transactions are enabled only on devnet",
+        ));
+    }
 
     // drop pre EIP-155 transactions if disallowed by the rpc (for user protection purposes)
     if !allow_unprotected_txs && tx.chain_id().is_none() {
@@ -166,8 +172,11 @@ fn validate_and_decode_tx(
     }
 
     if let Some(tx_chain_id) = tx.chain_id() {
-        if tx_chain_id != chain_id {
-            return Err(JsonRpcError::invalid_chain_id(chain_id, tx_chain_id));
+        if tx_chain_id != alloy_primitives::U256::from(chain_id) {
+            return Err(JsonRpcError::with_message(
+                ErrorCode::InvalidParams,
+                format!("Invalid chain ID: expected {chain_id}, got {tx_chain_id}"),
+            ));
         }
     }
 
@@ -423,7 +432,7 @@ pub async fn monad_eth_getTransactionByBlockNumberAndIndex<T: Triedb>(
 
 #[cfg(test)]
 mod tests {
-    use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope};
+    use alloy_consensus::{SignableTransaction, TxEip1559};
     use alloy_eips::eip2718::Encodable2718;
     use alloy_primitives::{Address, FixedBytes, TxKind};
     use alloy_rlp::Encodable;
@@ -431,6 +440,7 @@ mod tests {
     use alloy_signer_local::PrivateKeySigner;
     use monad_eth_types::EthAccount;
     use monad_event_ring::SnapshotEventRing;
+    use monad_transaction::TxEnvelope;
     use monad_triedb_utils::mock_triedb::MockTriedb;
 
     use super::{
@@ -472,6 +482,41 @@ mod tests {
             .sign_hash_sync(&transaction.signature_hash())
             .unwrap();
         transaction.into_signed(signature).into()
+    }
+
+    #[test]
+    fn native_submission_returns_canonical_identity_and_rejects_other_framing() {
+        use alloy_primitives::{keccak256, U256};
+        let signer = PrivateKeySigner::from_bytes(&FixedBytes::from([1u8; 32])).unwrap();
+        let transaction = monad_transaction::TxMonad {
+            chain_id: U256::from(20143),
+            gas_limit: 21000,
+            max_fee_per_gas: U256::from(50_000_000_000u64),
+            max_priority_fee_per_gas: U256::from(2_000_000_000u64),
+            to: TxKind::Call(signer.address()),
+            ..Default::default()
+        };
+        let signature = signer
+            .sign_hash_sync(&transaction.signature_hash())
+            .unwrap();
+        let submitted = transaction.encode_submission(&signature);
+        let signed: TxEnvelope = transaction.into_signed(signature).into();
+        let decode = |raw: &[u8], chain| {
+            super::validate_and_decode_tx(
+                raw,
+                chain,
+                false,
+                crate::types::jsonrpc::JsonRpcError::invalid_params,
+            )
+        };
+        let decoded = decode(&submitted, 20143).unwrap();
+        assert_eq!(decoded, signed);
+        assert_eq!(*decoded.hash(), keccak256(signed.encoded_2718()));
+        assert_ne!(*decoded.hash(), keccak256(&submitted));
+        assert_eq!(decoded.recover_signer().unwrap(), signer.address());
+        assert!(decode(&signed.encoded_2718(), 20143).is_err());
+        assert!(decode(&submitted, 143).is_err());
+        assert!(decode(&[submitted, vec![0xc0]].concat(), 20143).is_err());
     }
 
     #[tokio::test]

@@ -15,16 +15,14 @@
 
 use core::str;
 
-use alloy_consensus::{
-    transaction::SignerRecoverable, Block as AlloyBlock, BlockBody, Header, ReceiptEnvelope,
-    TxEnvelope,
-};
+use alloy_consensus::{Block as AlloyBlock, BlockBody, Header};
 use alloy_primitives::{Address, BlockHash, Bytes, Log, U8};
 use alloy_rlp::{Decodable, Encodable, RlpDecodable, RlpEncodable, EMPTY_LIST_CODE};
 use bytes::BufMut;
 use eyre::bail;
 use futures::try_join;
 use monad_eth_types::{ReceiptWithLogIndex, TxEnvelopeWithSender};
+use monad_transaction::{ReceiptEnvelope, TxEnvelope};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 use crate::{kvstore::WritePolicy, prelude::*, rlp_offset_scanner::get_all_tx_offsets};

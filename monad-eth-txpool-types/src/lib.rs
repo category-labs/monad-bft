@@ -19,10 +19,10 @@ use std::{
     task::{Context, Poll},
 };
 
-use alloy_consensus::TxEnvelope;
 use alloy_primitives::{Address, TxHash, U256};
 use alloy_rlp::{RlpDecodable, RlpEncodable};
 use monad_eth_block_policy::validation::StaticValidationError;
+use monad_transaction::TxEnvelope;
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_TX_PRIORITY: U256 = U256::from_limbs([0xFFFFu64, 0, 0, 0]);
@@ -60,7 +60,7 @@ pub enum EthTxPoolEventType {
 }
 
 mod eth_tx_pool_event_type_tx_serde {
-    use alloy_consensus::TxEnvelope;
+    use monad_transaction::TxEnvelope;
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
     pub(super) fn serialize<S>(tx: &TxEnvelope, serializer: S) -> Result<S::Ok, S::Error>
@@ -122,6 +122,8 @@ impl EthTxPoolDropReason {
                 StaticValidationError::GasLimitOverProposalGasLimit { .. } => {
                     "Exceeds transaction gas limit"
                 }
+                StaticValidationError::NonceExceedsMax => "Nonce exceeds maximum",
+                StaticValidationError::GasLimitOverflow => "Gas cost overflows uint256",
                 StaticValidationError::InvalidSignature => "Invalid transaction signature",
                 StaticValidationError::UnsupportedTransactionType => "Unsupported transaction type",
                 StaticValidationError::AuthorizationListEmpty => "EIP7702 authorization list empty",

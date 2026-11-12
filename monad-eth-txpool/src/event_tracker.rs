@@ -18,11 +18,12 @@ use std::{
     time::Instant,
 };
 
-use alloy_consensus::{transaction::Recovered, TxEnvelope};
+use alloy_consensus::transaction::Recovered;
 use alloy_primitives::TxHash;
 use monad_eth_txpool_types::{
     EthTxPoolDropReason, EthTxPoolEventType, EthTxPoolEvictReason, EthTxPoolInternalDropReason,
 };
+use monad_transaction::TxEnvelope;
 use tracing::error;
 
 use crate::EthTxPoolMetrics;

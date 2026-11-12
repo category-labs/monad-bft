@@ -16,14 +16,15 @@
 use std::{fmt::Debug, ops::Deref};
 
 use ::serde::{Deserialize, Serialize};
-use alloy_consensus::{transaction::Recovered, Header, ReceiptEnvelope, TxEnvelope};
-use alloy_eips::eip7702::RecoveredAuthorization;
+use alloy_consensus::{transaction::Recovered, Header};
+use alloy_eips::{eip7702::RecoveredAuthorization, Decodable2718};
 use alloy_primitives::{Address, FixedBytes};
 use alloy_rlp::{
     encode_list, BytesMut, Decodable, Encodable, RlpDecodable, RlpDecodableWrapper, RlpEncodable,
     RlpEncodableWrapper,
 };
 use monad_crypto::NopPubKey;
+use monad_transaction::{ReceiptEnvelope, TxEnvelope};
 use monad_types::{Balance, ExecutionProtocol, FinalizedHeader, LimitedVec, Nonce, SeqNum};
 use serde_with::{serde_as, DisplayFromStr};
 
@@ -286,23 +287,13 @@ impl Encodable for ReceiptWithLogIndex {
 
 impl Decodable for ReceiptWithLogIndex {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let alloy_rlp::Header {
-            list,
-            payload_length: _,
-        } = alloy_rlp::Header::decode(buf)?;
-        if !list {
-            return Err(alloy_rlp::Error::UnexpectedString);
+        let mut record = alloy_rlp::Header::decode_bytes(buf, true)?;
+        let encoded_receipt = alloy_rlp::Header::decode_bytes(&mut record, false)?;
+        let receipt = decode_stored_envelope(encoded_receipt)?;
+        let starting_log_index = u64::decode(&mut record)?;
+        if !record.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
         }
-
-        let alloy_rlp::Header {
-            list,
-            payload_length: _,
-        } = alloy_rlp::Header::decode(buf)?;
-        if list {
-            return Err(alloy_rlp::Error::UnexpectedList);
-        }
-        let receipt = ReceiptEnvelope::decode(buf)?;
-        let starting_log_index = u64::decode(buf)?;
 
         Ok(ReceiptWithLogIndex {
             receipt,
@@ -328,25 +319,31 @@ impl Encodable for TxEnvelopeWithSender {
 
 impl Decodable for TxEnvelopeWithSender {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-        let alloy_rlp::Header {
-            list,
-            payload_length: _,
-        } = alloy_rlp::Header::decode(buf)?;
-        if !list {
-            return Err(alloy_rlp::Error::UnexpectedString);
+        let mut record = alloy_rlp::Header::decode_bytes(buf, true)?;
+        let encoded_tx = alloy_rlp::Header::decode_bytes(&mut record, false)?;
+        let tx = decode_stored_envelope(encoded_tx)?;
+        let sender = Address::decode(&mut record)?;
+        if !record.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
         }
-
-        let alloy_rlp::Header {
-            list,
-            payload_length: _,
-        } = alloy_rlp::Header::decode(buf)?;
-        if list {
-            return Err(alloy_rlp::Error::UnexpectedList);
-        }
-        let tx = TxEnvelope::decode(buf)?;
-        let sender = Address::decode(buf)?;
 
         Ok(TxEnvelopeWithSender { tx, sender })
+    }
+}
+
+/// TrieDB stores raw EIP-2718 bytes. Existing Rust archives store network RLP
+/// bytes inside the same string field. Keep that archive representation readable
+/// without relaxing the block/IPC decoder or consuming the record's metadata.
+fn decode_stored_envelope<T: Decodable2718>(bytes: &[u8]) -> alloy_rlp::Result<T> {
+    if matches!(bytes.first(), Some(0x80..=0xbf)) {
+        let mut item = bytes;
+        let value = T::network_decode(&mut item)?;
+        if !item.is_empty() {
+            return Err(alloy_rlp::Error::UnexpectedLength);
+        }
+        Ok(value)
+    } else {
+        T::decode_2718_exact(bytes).map_err(Into::into)
     }
 }
 

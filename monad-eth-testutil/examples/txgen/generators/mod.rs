@@ -15,7 +15,7 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope};
+use alloy_consensus::{SignableTransaction, TxEip1559};
 use alloy_primitives::{Address, Bytes, TxKind, U256};
 use duplicates::DuplicateTxGenerator;
 use ecmul::ECMulGenerator;
@@ -26,6 +26,7 @@ use extreme_values::ExtremeValuesGenerator;
 use few_to_many::CreateAccountsGenerator;
 use high_call_data::HighCallDataTxGenerator;
 use many_to_many::ManyToManyGenerator;
+use monad_transaction::TxEnvelope;
 use nft_sale::NftSaleGenerator;
 use non_deterministic_storage::NonDeterministicStorageTxGenerator;
 use reserve_balance::ReserveBalanceGenerator;

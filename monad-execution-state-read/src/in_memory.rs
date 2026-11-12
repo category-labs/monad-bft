@@ -22,12 +22,13 @@ use std::{
     },
 };
 
-use alloy_consensus::{transaction::SignerRecoverable as _, Header, Transaction, TxEnvelope};
+use alloy_consensus::Header;
 use alloy_primitives::Address;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_types::{EthAccount, EthHeader};
+use monad_transaction::TxEnvelope;
 use monad_types::{
     Balance, BlockId, Epoch, Nonce, Round, SeqNum, Stake, GENESIS_BLOCK_ID, GENESIS_ROUND,
     GENESIS_SEQ_NUM,
@@ -308,7 +309,8 @@ where
                 } else {
                     let gas_limit = Balance::from(tx.gas_limit());
                     let max_fee = Balance::from(tx.max_fee_per_gas());
-                    let priority_fee = Balance::from(tx.max_priority_fee_per_gas().unwrap_or(0));
+                    let priority_fee =
+                        Balance::from(tx.max_priority_fee_per_gas().unwrap_or_default());
                     let base_fee = Balance::from(monad_tfm::base_fee::MIN_BASE_FEE);
                     let gas_bid = max_fee.min(base_fee.saturating_add(priority_fee));
                     gas_limit.checked_mul(gas_bid).expect("no overflow")

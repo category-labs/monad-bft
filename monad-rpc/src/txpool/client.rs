@@ -15,9 +15,9 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use alloy_consensus::TxEnvelope;
 use alloy_primitives::{Address, TxHash};
 use flume::{Sender, TrySendError};
+use monad_transaction::TxEnvelope;
 
 use super::{
     state::{EthTxPoolBridgeStateView, TxStatusReceiverSender},

@@ -9,6 +9,7 @@ edition = "2021"
 bench = false
 
 [dependencies]
+monad-transaction = { workspace = true }
 monad-blocktree = { workspace = true }
 monad-chain-config = { workspace = true }
 monad-consensus = { workspace = true }

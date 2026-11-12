@@ -19,10 +19,7 @@ use std::{
     ops::{Deref, Range, RangeFrom},
 };
 
-use alloy_consensus::{
-    transaction::{Recovered, Transaction},
-    TxEnvelope,
-};
+use alloy_consensus::transaction::Recovered;
 use alloy_eips::eip7702::RecoveredAuthorization;
 use alloy_primitives::{Address, TxHash, U256};
 use itertools::Itertools;
@@ -42,6 +39,7 @@ use monad_eth_types::{
 };
 use monad_execution_state_read::{ExecutionStateRead, ExecutionStateReadError};
 use monad_system_calls::validator::{SystemTransactionValidationError, SystemTransactionValidator};
+use monad_transaction::TxEnvelope;
 use monad_types::{
     Balance, BlockId, Epoch, Nonce, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_ROUND, GENESIS_SEQ_NUM,
 };
@@ -79,7 +77,7 @@ pub fn compute_txn_max_gas_cost(txn: &TxEnvelope, base_fee: u64) -> U256 {
     // gas price is min(max_fee, base_fee + priority_fee)
     let gas_limit = U256::from(txn.gas_limit());
     let max_fee = U256::from(txn.max_fee_per_gas());
-    let priority_fee = U256::from(txn.max_priority_fee_per_gas().unwrap_or(0));
+    let priority_fee = U256::from(txn.max_priority_fee_per_gas().unwrap_or_default());
     let base_fee = U256::from(base_fee);
     let gas_bid = max_fee.min(base_fee.saturating_add(priority_fee));
     gas_limit.checked_mul(gas_bid).expect("no overflow")
@@ -1308,7 +1306,7 @@ where
 mod test {
     use std::collections::HashMap;
 
-    use alloy_consensus::{transaction::SignerRecoverable, SignableTransaction, TxEip1559};
+    use alloy_consensus::{SignableTransaction, TxEip1559};
     use alloy_eips::eip7702::{Authorization, RecoveredAuthority};
     use alloy_primitives::{Address, FixedBytes, Signature, TxKind, B256, U256};
     use alloy_signer::SignerSync;

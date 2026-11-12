@@ -9,6 +9,7 @@ edition = "2021"
 bench = false
 
 [dependencies]
+monad-transaction = { workspace = true }
 monad-crypto = { workspace = true }
 monad-types = { workspace = true }
 

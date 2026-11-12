@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 
 use alloy_consensus::{
     transaction::{Recovered, SignerRecoverable},
-    Transaction, TxEnvelope,
+    Transaction,
 };
 use alloy_rlp::Encodable;
 use itertools::Itertools;
@@ -31,6 +31,7 @@ use monad_execution_state_read::{
 };
 use monad_testutil::signing::MockSignatures;
 use monad_tfm::base_fee::MIN_BASE_FEE;
+use monad_transaction::TxEnvelope;
 use monad_types::{Round, SeqNum};
 
 pub type SignatureType = NopSignature;

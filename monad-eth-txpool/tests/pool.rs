@@ -19,10 +19,7 @@ use std::{
     time::Duration,
 };
 
-use alloy_consensus::{
-    transaction::{Recovered, SignerRecoverable},
-    SignableTransaction, Transaction, TxEnvelope, TxLegacy,
-};
+use alloy_consensus::{transaction::Recovered, SignableTransaction, TxLegacy};
 use alloy_primitives::{Address, TxKind, B256, U256};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
@@ -52,6 +49,7 @@ use monad_execution_state_read::{
     AccountState, InMemoryBlockState, InMemoryState, InMemoryStateInner,
 };
 use monad_testutil::signing::MockSignatures;
+use monad_transaction::TxEnvelope;
 use monad_types::{Balance, Epoch, NodeId, Round, SeqNum, GENESIS_ROUND, GENESIS_SEQ_NUM};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use tracing_test::traced_test;
@@ -132,11 +130,29 @@ enum TxPoolTestEvent<'a> {
 }
 
 fn run_custom_iter<const N: usize>(
+    pool: TxPoolType,
+    eth_block_policy: BlockPolicyType,
+    nonces_override: Option<BTreeMap<Address, AccountState>>,
+    events: [TxPoolTestEvent<'_>; N],
+    owned: bool,
+) {
+    run_custom_iter_with_chain(
+        pool,
+        eth_block_policy,
+        nonces_override,
+        events,
+        owned,
+        &MockChainConfig::DEFAULT,
+    );
+}
+
+fn run_custom_iter_with_chain<const N: usize>(
     mut pool: TxPoolType,
     mut eth_block_policy: BlockPolicyType,
     nonces_override: Option<BTreeMap<Address, AccountState>>,
     events: [TxPoolTestEvent<'_>; N],
     owned: bool,
+    chain_config: &MockChainConfig,
 ) {
     let mut state_read = {
         let nonces = if let Some(nonces) = nonces_override {
@@ -181,12 +197,12 @@ fn run_custom_iter<const N: usize>(
 
     pool.update_committed_block(
         &mut event_tracker,
-        &MockChainConfig::DEFAULT,
+        chain_config,
         generate_block_with_txs(
             Round(0),
             SeqNum(0),
             BASE_FEE_PER_GAS,
-            &MockChainConfig::DEFAULT,
+            chain_config,
             Vec::default(),
         ),
     );
@@ -212,7 +228,7 @@ fn run_custom_iter<const N: usize>(
                         &mut event_tracker,
                         &eth_block_policy,
                         &mut state_read,
-                        &MockChainConfig::DEFAULT,
+                        chain_config,
                         vec![(
                             tx.clone(),
                             if owned {
@@ -267,7 +283,7 @@ fn run_custom_iter<const N: usize>(
                     &mut event_tracker,
                     &eth_block_policy,
                     &mut state_read,
-                    &MockChainConfig::DEFAULT,
+                    chain_config,
                     txs.into_iter()
                         .map(ToOwned::to_owned)
                         .map(recover_tx)
@@ -311,7 +327,7 @@ fn run_custom_iter<const N: usize>(
                     &mut event_tracker,
                     &eth_block_policy,
                     &mut state_read,
-                    &MockChainConfig::DEFAULT,
+                    chain_config,
                     txs.into_iter()
                         .map(|(tx, kind)| (recover_tx(tx.to_owned()), kind))
                         .collect(),
@@ -347,7 +363,7 @@ fn run_custom_iter<const N: usize>(
                         pending_blocks.iter().cloned().collect_vec(),
                         &eth_block_policy,
                         &mut state_read,
-                        &MockChainConfig::DEFAULT,
+                        chain_config,
                     )
                     .expect("create proposal succeeds");
                 let decoded_txns = proposal.proposed_execution_inputs.body.transactions;
@@ -376,7 +392,7 @@ fn run_custom_iter<const N: usize>(
                     Round(current_round),
                     SeqNum(current_seq_num),
                     BASE_FEE_PER_GAS,
-                    &MockChainConfig::DEFAULT,
+                    chain_config,
                     decoded_txns
                         .into_iter()
                         .map(|tx| {
@@ -404,7 +420,7 @@ fn run_custom_iter<const N: usize>(
                     block.header().clone(),
                     block.body().clone(),
                     Some(&block.get_author().pubkey()),
-                    &MockChainConfig::DEFAULT,
+                    chain_config,
                     &mut Metrics::default(),
                 )
                 .unwrap();
@@ -433,11 +449,7 @@ fn run_custom_iter<const N: usize>(
                         &block,
                     );
 
-                    pool.update_committed_block(
-                        &mut event_tracker,
-                        &MockChainConfig::DEFAULT,
-                        block,
-                    );
+                    pool.update_committed_block(&mut event_tracker, chain_config, block);
                 }
 
                 assert_eq!(
@@ -2407,5 +2419,109 @@ fn test_forwarded_sender_gas_contributions_remove_replaced_forwarded_tx_after_sa
             },
         ],
         false,
+    );
+}
+
+#[test]
+fn native_submission_survives_pool_proposal_and_block_validation() {
+    use alloy_eips::eip2718::{Decodable2718, Encodable2718};
+    use alloy_rlp::Decodable;
+    use monad_transaction::{TxMonad, MONAD_DEVNET_CHAIN_ID};
+
+    let signer = PrivateKeySigner::from_bytes(&S1).unwrap();
+    let native = TxMonad {
+        chain_id: U256::from(MONAD_DEVNET_CHAIN_ID),
+        gas_limit: GAS_LIMIT,
+        max_fee_per_gas: U256::from(BASE_FEE + 1),
+        max_priority_fee_per_gas: U256::from(1),
+        to: TxKind::Call(Address::repeat_byte(2)),
+        access_list: Some(Default::default()),
+        ..Default::default()
+    };
+    let signature = signer.sign_hash_sync(&native.signature_hash()).unwrap();
+    let submission = native.encode_submission(&signature);
+    let tx = TxEnvelope::decode_submission(&submission).unwrap();
+    let canonical = tx.encoded_2718();
+    assert_ne!(*tx.hash(), alloy_primitives::keccak256(&submission));
+    assert_eq!(*tx.hash(), alloy_primitives::keccak256(&canonical));
+    assert_eq!(TxEnvelope::decode_2718_exact(&canonical).unwrap(), tx);
+    let body = monad_eth_types::EthBlockBody {
+        transactions: vec![tx.clone()].into(),
+        ..Default::default()
+    };
+    let encoded = alloy_rlp::encode(&body);
+    let mut input = encoded.as_slice();
+    assert_eq!(
+        monad_eth_types::EthBlockBody::decode(&mut input).unwrap(),
+        body
+    );
+    assert!(input.is_empty());
+
+    let chain_config = MockChainConfig::DEFAULT.with_chain_id(MONAD_DEVNET_CHAIN_ID);
+    let make_pool = || {
+        EthTxPool::new(
+            EthTxPoolConfig {
+                limits: TrackedTxLimitsConfig::new(
+                    None,
+                    None,
+                    None,
+                    None,
+                    Duration::from_secs(60),
+                    Duration::from_secs(60),
+                ),
+            },
+            MONAD_DEVNET_CHAIN_ID,
+            MockChainRevision::DEFAULT,
+            monad_chain_config::execution_revision::MonadExecutionRevision::LATEST,
+        )
+    };
+    for owned in [false, true] {
+        run_custom_iter_with_chain(
+            make_pool(),
+            make_test_block_policy(),
+            None,
+            [
+                TxPoolTestEvent::InsertTxs {
+                    txs: vec![(&tx, true)],
+                    expected_pool_size_change: 1,
+                },
+                TxPoolTestEvent::CreateProposal {
+                    base_fee: BASE_FEE_PER_GAS,
+                    tx_limit: 1,
+                    gas_limit: PROPOSAL_GAS_LIMIT,
+                    byte_limit: PROPOSAL_SIZE_LIMIT,
+                    expected_txs: vec![&tx],
+                    expected_sender_gas: None,
+                    add_to_blocktree: true,
+                },
+            ],
+            owned,
+            &chain_config,
+        );
+    }
+    run_simple(
+        &[S1],
+        [TxPoolTestEvent::InsertTxs {
+            txs: vec![(&tx, false)],
+            expected_pool_size_change: 0,
+        }],
+    );
+
+    let overflow = TxMonad {
+        max_fee_per_gas: U256::MAX,
+        ..native
+    };
+    let signature = signer.sign_hash_sync(&overflow.signature_hash()).unwrap();
+    let overflow = TxEnvelope::Monad(overflow.into_signed(signature));
+    run_custom_iter_with_chain(
+        make_pool(),
+        make_test_block_policy(),
+        None,
+        [TxPoolTestEvent::InsertTxs {
+            txs: vec![(&overflow, false)],
+            expected_pool_size_change: 0,
+        }],
+        true,
+        &chain_config,
     );
 }

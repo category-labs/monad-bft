@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 
 use alloy_consensus::{
     constants::EMPTY_WITHDRAWALS, proofs::calculate_transaction_root, transaction::Recovered,
-    SignableTransaction, TxEip7702, TxEnvelope, TxLegacy, EMPTY_OMMER_ROOT_HASH,
+    SignableTransaction, TxEip7702, TxLegacy, EMPTY_OMMER_ROOT_HASH,
 };
 use alloy_eips::eip7702::{Authorization, SignedAuthorization};
 use alloy_primitives::{Address, FixedBytes, TxKind, U256};
@@ -46,6 +46,7 @@ use monad_eth_txpool::{
 use monad_eth_types::{EthBlockBody, EthExecutionProtocol, EthHeader, ProposedEthHeader};
 use monad_execution_state_read::NopExecutionStateRead;
 use monad_testutil::signing::MockSignatures;
+use monad_transaction::TxEnvelope;
 use monad_types::{Epoch, NodeId, Round, SeqNum, GENESIS_BLOCK_ID, GENESIS_ROUND, GENESIS_SEQ_NUM};
 use tracing::info;
 

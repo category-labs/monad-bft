@@ -30,6 +30,7 @@ default = []
 mongodb-integration-tests = []
 
 [dependencies]
+monad-transaction = { workspace = true }
 monad-compress = { workspace = true }
 monad-eth-types = { workspace = true }
 monad-metrics = { workspace = true }

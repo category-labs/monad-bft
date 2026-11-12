@@ -13,9 +13,10 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_consensus::{SignableTransaction, TxEip1559, TxEip7702, TxEnvelope, TxLegacy};
+use alloy_consensus::{SignableTransaction, TxEip1559, TxEip7702, TxLegacy};
 use alloy_eips::eip7702::Authorization;
 use alloy_primitives::{Address, Bytes, TxKind, U256};
+use monad_transaction::TxEnvelope;
 use rand::Rng;
 
 use crate::{prelude::*, shared::private_key::PrivateKey};

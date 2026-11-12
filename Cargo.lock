@@ -4982,6 +4982,7 @@ dependencies = [
  "monad-eth-testutil",
  "monad-eth-types",
  "monad-metrics",
+ "monad-transaction",
  "monad-triedb-utils",
  "monad-types",
  "mongodb",
@@ -5144,6 +5145,7 @@ dependencies = [
  "monad-execution-state-read",
  "monad-multi-sig",
  "monad-testutil",
+ "monad-transaction",
  "monad-types",
  "monad-validator",
  "test-case",
@@ -5304,6 +5306,7 @@ dependencies = [
  "monad-system-calls",
  "monad-testutil",
  "monad-tfm",
+ "monad-transaction",
  "monad-types",
  "monad-validator",
  "proptest",
@@ -5336,6 +5339,7 @@ dependencies = [
  "monad-secp",
  "monad-system-calls",
  "monad-testutil",
+ "monad-transaction",
  "monad-types",
  "monad-validator",
  "proptest",
@@ -5398,6 +5402,7 @@ dependencies = [
  "monad-secp",
  "monad-testutil",
  "monad-tfm",
+ "monad-transaction",
  "monad-types",
  "monad-validator",
  "monad-version",
@@ -5445,6 +5450,7 @@ dependencies = [
  "monad-system-calls",
  "monad-testutil",
  "monad-tfm",
+ "monad-transaction",
  "monad-types",
  "monad-validator",
  "rand 0.8.6",
@@ -5484,6 +5490,7 @@ dependencies = [
  "monad-secp",
  "monad-testutil",
  "monad-tfm",
+ "monad-transaction",
  "monad-types",
  "monad-validator",
  "pin-project",
@@ -5512,9 +5519,12 @@ name = "monad-eth-txpool-types"
 version = "0.1.0"
 dependencies = [
  "alloy-consensus",
+ "alloy-eips",
  "alloy-primitives",
  "alloy-rlp",
+ "bincode",
  "monad-eth-block-policy",
+ "monad-transaction",
  "serde",
 ]
 
@@ -5527,6 +5537,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "monad-crypto",
+ "monad-transaction",
  "monad-types",
  "serde",
  "serde_with",
@@ -5546,6 +5557,7 @@ dependencies = [
  "hex",
  "monad-build",
  "monad-cxx",
+ "monad-transaction",
  "serde",
  "tracing",
 ]
@@ -5570,9 +5582,11 @@ dependencies = [
  "itertools 0.10.5",
  "monad-build",
  "monad-event-ring",
+ "monad-transaction",
  "serde",
  "strum",
  "tracing",
+ "zstd",
 ]
 
 [[package]]
@@ -5585,6 +5599,7 @@ dependencies = [
  "monad-eth-types",
  "monad-multi-sig",
  "monad-tfm",
+ "monad-transaction",
  "monad-types",
  "monad-validator",
  "serde",
@@ -5793,6 +5808,7 @@ dependencies = [
  "monad-state",
  "monad-testutil",
  "monad-tfm",
+ "monad-transaction",
  "monad-transformer",
  "monad-types",
  "monad-updaters",
@@ -6148,6 +6164,7 @@ dependencies = [
  "monad-pprof",
  "monad-rpc-docs",
  "monad-tracing-timing",
+ "monad-transaction",
  "monad-triedb-utils",
  "monad-types",
  "monad-version",
@@ -6212,6 +6229,7 @@ dependencies = [
  "monad-crypto",
  "monad-eth-types",
  "monad-testutil",
+ "monad-transaction",
  "proptest",
  "rand 0.8.6",
  "rstest",
@@ -6322,6 +6340,7 @@ dependencies = [
  "monad-eth-testutil",
  "monad-eth-types",
  "monad-testutil",
+ "monad-transaction",
  "monad-types",
  "monad-validator",
  "tracing",
@@ -6400,6 +6419,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "monad-transaction"
+version = "0.1.0"
+dependencies = [
+ "alloy-consensus",
+ "alloy-eips",
+ "alloy-primitives",
+ "alloy-rlp",
+ "alloy-rpc-types",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "monad-transformer"
 version = "0.1.0"
 dependencies = [
@@ -6437,6 +6469,7 @@ dependencies = [
  "monad-eth-types",
  "monad-execution-state-read",
  "monad-secp",
+ "monad-transaction",
  "monad-triedb",
  "monad-types",
  "rand 0.8.6",
@@ -6519,6 +6552,7 @@ dependencies = [
  "monad-node-config",
  "monad-secp",
  "monad-tfm",
+ "monad-transaction",
  "monad-types",
  "monad-validator",
  "ntest",

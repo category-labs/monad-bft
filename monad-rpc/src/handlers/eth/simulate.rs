@@ -15,13 +15,13 @@
 
 use std::ops::Add;
 
-use alloy_consensus::TxEnvelope;
 use alloy_primitives::{U256, U64};
 use monad_ethcall::{
     overrides::{BlockOverride, StateOverrideSet},
     MonadExecutor,
 };
 use monad_rpc_docs::rpc;
+use monad_transaction::TxEnvelope;
 use monad_triedb_utils::triedb_env::{Triedb, TriedbPath};
 use serde::Deserialize;
 use serde_json::value::RawValue;

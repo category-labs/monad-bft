@@ -12,6 +12,7 @@ bench = false
 raptorcast = ["dep:monad-raptorcast"]
 
 [dependencies]
+monad-transaction = { workspace = true }
 monad-blocksync = { workspace = true }
 monad-chain-config = { workspace = true }
 monad-consensus = { workspace = true }

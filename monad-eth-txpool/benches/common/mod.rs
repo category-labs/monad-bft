@@ -15,12 +15,13 @@
 
 use std::hint::black_box;
 
-use alloy_consensus::{transaction::Recovered, TxEnvelope};
+use alloy_consensus::transaction::Recovered;
 use criterion::{BatchSize, Criterion};
 use monad_chain_config::MockChainConfig;
 use monad_crypto::NopSignature;
 use monad_perf_util::PerfController;
 use monad_testutil::signing::MockSignatures;
+use monad_transaction::TxEnvelope;
 
 pub use self::controller::BenchController;
 use self::controller::BenchControllerConfig;

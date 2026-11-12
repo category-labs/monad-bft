@@ -19,11 +19,9 @@ use std::{
 };
 
 use alloy_consensus::{
-    constants::EMPTY_WITHDRAWALS,
-    proofs::calculate_transaction_root,
-    transaction::{Recovered, SignerRecoverable},
-    Eip658Value, Receipt, ReceiptWithBloom, SignableTransaction, Transaction, TxEip1559, TxEip7702,
-    TxEnvelope, TxLegacy, EMPTY_OMMER_ROOT_HASH,
+    constants::EMPTY_WITHDRAWALS, proofs::calculate_transaction_root, transaction::Recovered,
+    Eip658Value, Receipt, ReceiptWithBloom, SignableTransaction, TxEip1559, TxEip7702, TxLegacy,
+    EMPTY_OMMER_ROOT_HASH,
 };
 use alloy_eips::eip7702::{
     Authorization, RecoveredAuthority, RecoveredAuthorization, SignedAuthorization,
@@ -53,6 +51,7 @@ use monad_eth_block_policy::{
 use monad_eth_types::{EthBlockBody, EthExecutionProtocol, ProposedEthHeader, ValidatedTx};
 use monad_secp::KeyPair;
 use monad_testutil::signing::MockSignatures;
+use monad_transaction::TxEnvelope;
 use monad_types::{Balance, Epoch, NodeId, Round, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
 

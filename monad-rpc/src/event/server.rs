@@ -348,14 +348,14 @@ mod test {
 
         let (tx_first, tx_first_receipt, tx_first_monad_logs) = transactions.first().unwrap();
 
-        assert_json::<_, alloy_rpc_types::Transaction>(
+        assert_json::<_, monad_transaction::rpc::Transaction>(
             &[&tx_first],
             include_str!(
                 "../../../monad-execution/rust/crates/monad-exec-events/test/data/exec-events-emn-30b-15m/0.tx.0.json"
             ),
         );
 
-        assert_json::<_, alloy_rpc_types::TransactionReceipt>(
+        assert_json::<_, monad_transaction::rpc::TransactionReceipt>(
             &[&tx_first_receipt],
             include_str!(
                 "../../../monad-execution/rust/crates/monad-exec-events/test/data/exec-events-emn-30b-15m/0.tx-receipt.0.json"

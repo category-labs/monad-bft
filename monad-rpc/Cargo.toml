@@ -22,6 +22,7 @@ default = ["jemallocator"]
 jemallocator = ["tikv-jemallocator", "monad-pprof/jemallocator"]
 
 [dependencies]
+monad-transaction = { workspace = true }
 monad-archive = { workspace = true }
 monad-chain-config = { workspace = true }
 monad-eth-txpool-ipc = { workspace = true }
@@ -91,6 +92,7 @@ optional = true
 monad-version = { workspace = true }
 
 [dev-dependencies]
+monad-exec-events = { workspace = true, features = ["test-utils"] }
 monad-eth-testutil = { workspace = true }
 
 actix-test = { workspace = true }

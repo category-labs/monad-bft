@@ -19,11 +19,11 @@ use std::{
     time::Duration,
 };
 
-use alloy_consensus::TxEnvelope;
 use flume::Receiver;
 use futures::{SinkExt, StreamExt};
 use monad_eth_txpool_ipc::EthTxPoolIpcClient;
 use monad_eth_txpool_types::EthTxPoolIpcTx;
+use monad_transaction::TxEnvelope;
 use state::TxStatusReceiverSender;
 use tracing::{debug, error, info, warn};
 

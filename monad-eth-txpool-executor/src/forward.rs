@@ -19,7 +19,6 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use alloy_consensus::TxEnvelope;
 use alloy_eips::eip2718::Encodable2718;
 use bytes::Bytes;
 use monad_chain_config::{
@@ -31,6 +30,7 @@ use monad_crypto::certificate_signature::{
 use monad_eth_txpool::{max_eip2718_encoded_length, EthTxPool};
 use monad_eth_types::ExtractEthAddress;
 use monad_execution_state_read::ExecutionStateRead;
+use monad_transaction::TxEnvelope;
 use monad_types::{LimitedVec, MAX_FORWARDED_TXS_PER_MESSAGE};
 use monad_validator::signature_collection::SignatureCollection;
 use pin_project::pin_project;
@@ -231,11 +231,11 @@ mod test {
         time::Duration,
     };
 
-    use alloy_consensus::{Transaction, TxEnvelope};
     use bytes::Bytes;
     use futures::task::noop_waker_ref;
     use monad_chain_config::execution_revision::MonadExecutionRevision;
     use monad_eth_testutil::{make_eip1559_tx, make_eip7702_tx, make_legacy_tx, S1};
+    use monad_transaction::TxEnvelope;
 
     use crate::forward::{egress_max_size_bytes, EthTxPoolForwardingManager};
 

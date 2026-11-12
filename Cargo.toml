@@ -7,6 +7,7 @@ exclude = ["monad-execution", "monad-fuzz", "monad-scripts"]
 ignored = ["alloy-transport-http", "getrandom", "monad-peer-disc-swarm"]
 
 [workspace.dependencies]
+monad-transaction = { path = "./monad-execution/rust/crates/monad-transaction" }
 monad-archive = { path = "./monad-archive" }
 monad-block-persist = { path = "./monad-block-persist" }
 monad-blocksync = { path = "./monad-blocksync" }
