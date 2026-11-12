@@ -285,7 +285,7 @@ mod tests {
 
     use std::{collections::HashMap, marker::PhantomData, sync::Arc};
 
-    use alloy_rlp::Decodable;
+    use alloy_rlp::{Decodable, Encodable};
 
     use super::{
         super::{
@@ -1020,5 +1020,88 @@ mod tests {
             drain(&mut view),
             vec![DummyViewEffect::Decided { qc, block }]
         );
+    }
+
+    fn rlp_list(items: &[&dyn Encodable]) -> Vec<u8> {
+        let mut out = Vec::new();
+        alloy_rlp::encode_list::<_, dyn Encodable>(items, &mut out);
+        out
+    }
+
+    /// Bytes already in RLP, spliced in as one element
+    struct Raw(Vec<u8>);
+
+    impl Encodable for Raw {
+        fn encode(&self, out: &mut dyn bytes::BufMut) {
+            out.put_slice(&self.0);
+        }
+
+        fn length(&self) -> usize {
+            self.0.len()
+        }
+    }
+
+    fn decodes(bytes: &[u8]) -> bool {
+        alloy_rlp::decode_exact::<DummyViewMessage>(bytes).is_ok()
+    }
+
+    #[test]
+    fn ill_formed_encodings_are_rejected_without_a_panic() {
+        let block = fast_metablock(1);
+        let entries = block.entries();
+        let me = nodes()[0];
+        let not_full_vote = VoteMsg::new_signed(SLOT, NotFull, &me.keypair());
+        let dummy_vote_msg = VoteMsg::new_signed(SLOT, DummyVote(entries.clone()), &me.keypair());
+        let well_formed = [
+            DummyViewMessage::FastInput(block.clone()),
+            DummyViewMessage::NotFull(not_full_vote.clone()),
+            DummyViewMessage::DummyVote(dummy_vote_msg.clone()),
+            DummyViewMessage::DummyDecision {
+                qc: dummy_qc(&entries),
+                block: block.clone(),
+            },
+        ];
+
+        for msg in &well_formed {
+            let bytes = alloy_rlp::encode(msg);
+            assert_eq!(rlp_list(&msg.rlp_fields()), bytes);
+            let decoded = alloy_rlp::decode_exact::<DummyViewMessage>(&bytes).unwrap();
+            assert_eq!(&decoded, msg);
+            assert_eq!(decoded.slot(), SLOT);
+
+            // an extra element inside a consistent outer header
+            let mut fields = msg.rlp_fields();
+            fields.push(&0u8);
+            assert!(!decodes(&rlp_list(&fields)), "trailing element: {msg:?}");
+        }
+
+        // a metablock is the bare list of its entries, so with no lanes it is `[]`
+        let lanes = block.certified_entries().into_iter();
+        let lanes: Vec<&dyn Encodable> = lanes.map(|e| e as &dyn Encodable).collect();
+        assert_eq!(rlp_list(&lanes), alloy_rlp::encode(&block));
+        let no_lanes = Raw(rlp_list(&[]));
+
+        let qc = dummy_qc(&entries);
+        let ill_formed = [
+            // a decision truncated after its certificate
+            rlp_list(&[&4u8, &qc]),
+            // a block with no lanes
+            rlp_list(&[&1u8, &no_lanes]),
+            rlp_list(&[&4u8, &qc, &no_lanes]),
+            // a tag alone, an empty list, and payloads that are not lists
+            rlp_list(&[&1u8]),
+            vec![0xc0],
+            vec![0x01],
+            alloy_rlp::encode(b"\x01\x02".as_slice()),
+            // a tag carrying another variant's payload
+            rlp_list(&[&2u8, &block]),
+            rlp_list(&[&1u8, &not_full_vote]),
+            rlp_list(&[&3u8, &not_full_vote]),
+            rlp_list(&[&2u8, &dummy_vote_msg]),
+            rlp_list(&[&4u8, &block, &qc]),
+        ];
+        for bytes in &ill_formed {
+            assert!(!decodes(bytes), "{bytes:02x?}");
+        }
     }
 }

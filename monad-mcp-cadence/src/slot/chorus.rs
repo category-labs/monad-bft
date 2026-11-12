@@ -1050,4 +1050,152 @@ mod tests {
             matches!(output, SlotOutput::Broadcast(message) if *message == certificate)
         }));
     }
+
+    // a split vote leaves the lane on a fallback qc, so the validator enters on a
+    // non-fast input; a commit qc over it decides before any NFCert forms
+    #[test]
+    fn a_commit_qc_over_the_own_non_fast_input_finalizes_as_fallback() {
+        use super::super::{
+            fallback::monad_mvba::{MvbaMessage, test_helpers as h},
+            types::{Lane, ProposerSchedule as _},
+        };
+        use crate::{
+            env::stub::{
+                EncodingScheme, MerkleHash, MerkleRoot, ProposalHeader, ProposalSignature,
+            },
+            spec::ProposalHeader as _,
+        };
+
+        // the helpers' commit certificate is scoped to their slot and signed by 0, 1, 2
+        let slot = h::SLOT;
+        let config = ChorusConfig {
+            delta: TimestampDelta::from_millis(100),
+        };
+        let validator_data = Arc::new(validator_data(4));
+        let header_auth = Arc::new(HeaderAuth::new(|_| false));
+        let proposers = Arc::new(FixedProposerSchedule::new(vec![NodeId::dummy(0)]));
+        let num_lanes = proposers
+            .proposers_at(slot)
+            .expect("fixed schedule covers every slot")
+            .num_lanes();
+        let me = NodeId::dummy(3);
+        let context = ChorusContext {
+            node_id: me,
+            key: Arc::new(me.keypair()),
+            validator_data: validator_data.clone(),
+            header_auth: header_auth.clone(),
+            proposers,
+        };
+        let mut chorus = Chorus::new(slot, &config, &context);
+        let peer = |id: u64| {
+            let voter = NodeId::dummy(id);
+            let fast = FastPath::new(
+                slot,
+                num_lanes,
+                Arc::new(voter.keypair()),
+                validator_data.clone(),
+                header_auth.clone(),
+            );
+            (voter, fast)
+        };
+
+        // the proposer holds its proposal and votes for it; 1 and 2 vote negative
+        let header = SignedProposalHeader {
+            header: ProposalHeader {
+                root: MerkleRoot(MerkleHash([1; 20])),
+                scheme: EncodingScheme::dummy(slot),
+            },
+            sig: ProposalSignature {
+                signer: NodeId::dummy(0),
+                checksum: 0,
+            },
+        };
+        let pid = header.header.pid();
+        let (proposer, mut proposer_fast) = peer(0);
+        for event in [
+            ProposalDAEvent::HeaderSeen(header),
+            ProposalDAEvent::ProposerObligationFulfilled(pid),
+        ] {
+            let j = Lane::new_unchecked(0);
+            let _ = proposer_fast.handle_da_event(ChorusDAEvent { j, event });
+        }
+        let mut voters = vec![(proposer, proposer_fast), peer(1), peer(2)];
+        let batch_votes: Vec<_> = voters
+            .iter_mut()
+            .map(|(voter, fast)| {
+                let vote = fast.on_deadline().expect("the first deadline casts a vote");
+                (*voter, vote)
+            })
+            .collect();
+
+        // without the header the positive vote is not admitted, so no fast qc forms
+        chorus.handle_deadline();
+        for (voter, vote) in &batch_votes {
+            chorus.handle_message(*voter, ChorusMessage::BatchVote(vote.clone()));
+        }
+        chorus.handle_timer(TimerEvent::FallbackTransition);
+        let own_vote = std::iter::from_fn(|| chorus.poll())
+            .find_map(|output| match output {
+                SlotOutput::Broadcast(ChorusMessage::FallbackVote(vote)) => Some(vote),
+                _ => None,
+            })
+            .expect("the split vote moves to a fallback vote");
+
+        // the negative voters' fallback votes and our own form the fallback qc
+        // and the enter-fallback certificate
+        let mut fallback_votes = vec![(me, own_vote)];
+        for (voter, mut fast) in voters.drain(1..) {
+            for (author, vote) in &batch_votes {
+                let _ = fast.handle_batch_vote(dummy_index(author), vote.clone());
+            }
+            let FallbackTransitionOutcome::FallbackVote(vote) = fast.try_fallback_transition()
+            else {
+                panic!("a negative voter casts a fallback vote");
+            };
+            fallback_votes.push((voter, vote));
+        }
+        for (voter, vote) in fallback_votes {
+            chorus.handle_message(voter, ChorusMessage::FallbackVote(vote));
+        }
+        chorus.handle_timer(TimerEvent::FallbackDecision);
+        let entry: Vec<_> = std::iter::from_fn(|| chorus.poll()).collect();
+        assert!(entry.iter().any(|output| matches!(
+            output,
+            SlotOutput::Broadcast(ChorusMessage::EnterFallbackCert(_))
+        )));
+        let block = chorus
+            .fast
+            .try_build_fallback_block()
+            .expect("every lane is certified");
+        assert!(!block.is_fast());
+
+        let qc = match h::commit_qc_message(h::view(1), &block, &validator_data) {
+            MvbaMessage::CommitQc(qc) => qc,
+            _ => unreachable!("the helper builds a commit certificate"),
+        };
+        let delivered =
+            ChorusMessage::Fallback(SlotFallbackMessage::Mvba(MvbaMessage::CommitQc(qc.clone())));
+        chorus.handle_message(NodeId::dummy(1), delivered);
+
+        let outputs: Vec<_> = std::iter::from_fn(|| chorus.poll()).collect();
+        let finalization = outputs
+            .iter()
+            .find_map(|output| match output {
+                SlotOutput::Finalize(finalization) => Some(finalization.clone()),
+                _ => None,
+            })
+            .expect("the commit qc over the own input finalizes the slot");
+        assert_eq!(finalization, SlotFinalization::Fallback { qc, block });
+        assert_eq!(finalization.path(), FinalizationPath::Fallback);
+
+        // the certificate kept for re-sending is the one passed on here
+        let certificate = finalization.certificate_message();
+        assert!(matches!(
+            &certificate,
+            ChorusMessage::Fallback(SlotFallbackMessage::Mvba(MvbaMessage::CommitQc(_)))
+        ));
+        assert!(outputs.iter().any(|output| {
+            matches!(output, SlotOutput::Broadcast(message) if *message == certificate)
+        }));
+    }
 }
