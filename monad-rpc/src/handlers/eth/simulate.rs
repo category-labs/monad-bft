@@ -245,6 +245,7 @@ pub async fn monad_simulate_v1<T: Triedb + TriedbPath>(
             simulation_gas_limit,
             max_simulated_blocks,
             max_response_size,
+            params.simulation.validation,
             params.simulation.trace_transfers,
             &overrides,
         )

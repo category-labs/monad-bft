@@ -5,12 +5,12 @@ Snapshot: 2026-11-12. Branch: `feat/monad-type-40`.
 ## Matched revisions
 
 - Consensus/RPC base: `e844f6086acac664f4bd2a8ffcc99f3b5ce4b9af`.
-- Execution base: `f1a93dd450ec99d52b70b677cf8fb356a333277e`, checked out on its own `feat/monad-type-40` branch under `monad-execution/`.
-- Execution implementation: `90cbb7139a7a7366abbd8f000d266339486fccf8`, recorded by this branch's `monad-execution` submodule pin.
+- Execution upstream `main`: `27ad173ddf730deadc433987770e5c886ff1255b`, merged into `feat/monad-type-40` under `monad-execution/`.
+- Execution implementation: `79d69185e66701080e4f3b70e7dc938ceebb45ed`, recorded by this branch's `monad-execution` submodule pin.
 - Viem vector source: `40e3a58c1c8c9c0326558eee8991992173059ea4`.
 - Protocol source: the supplied universal transaction draft's main injection design, SHA-256 `79ce4f8c4910a71e3a2932c1083312577e2ef99774a98ddba081bf20face1cb9`.
 
-The execution implementation was committed first, and the BFT gitlink records that exact revision. Build this branch with its pinned execution submodule. Do not mix these BFT changes with an unmodified execution checkout or public prebuilt images.
+The BFT gitlink records the execution implementation including the upstream merge. Build this branch with its pinned execution submodule. Do not mix these BFT changes with an unmodified execution checkout or public prebuilt images.
 
 ## Scope and commitments
 
@@ -44,7 +44,7 @@ Native envelopes now flow through RPC submission, sender recovery, pool ingress 
 
 `eth_call` and `eth_estimateGas` preserve explicit `type: "0x40"` and use canonical bytes through the execution bridge. Transaction, block and receipt responses retain standard RPC fields. Both raw-submission methods use the three-field decoder. Node-managed signing and explicit native `eth_fillTransaction` are outside this milestone.
 
-The draft's separate execution/consensus input objects and new header input roots are deferred: this profile produces no such inputs. No voting/finality algorithm or EVM opcode changes are included.
+The draft's separate execution/consensus input objects and new header input roots are deferred: this profile produces no such inputs. Native transaction support adds no voting/finality algorithm or EVM opcode changes.
 
 ## Required devnet fork setting
 
@@ -85,7 +85,7 @@ CC=clang-19 CXX=clang++-19 LIBCLANG_PATH=/usr/lib/llvm-19/lib \
 cargo test -p monad-rpc --lib native_logs_tests
 ```
 
-The standalone C++ script compiles the actual transaction/receipt codecs, recovery, gas functions and static validators. It uses Linux x86-64 AVX2 and initialized source submodules, plus Clang 19, Boost, GoogleTest, libsecp256k1 and TBB headers. It does not build the complete EVM or a node process.
+The standalone C++ script compiles the actual transaction/receipt codecs, recovery, gas functions and static validators. It uses Linux x86-64 AVX2 and initialized source submodules, plus Clang 19 in C++26 mode, Boost, GoogleTest, libsecp256k1 and TBB headers. It does not build the complete EVM or a node process.
 
 Recorded results:
 
@@ -94,12 +94,13 @@ Recorded results:
 | Consensus policy, block validator and pool suites | 170 tests passed |
 | Block/database adapters and IPC types | 10 tests passed, including 7 new framing/storage regressions |
 | Shared Rust codec/RPC/trie-root regressions | 14 tests passed, including 4 new framing/stream regressions |
-| C++ native plus existing Ethereum transaction/receipt RLP and validity tests | 29 tests passed, including the new transaction-list framing regression |
+| C++ native plus existing Ethereum transaction/receipt RLP and validity tests | 30 tests passed, covering native validity and transaction-list framing alongside upstream Ethereum regressions |
 | RPC receipt/log regression source harness | 3 tests passed; all 3 fail with the previous helper |
 | Execution-event tests | 4 passed; 2 existing tests ignored; documentation test passed |
 | Linux `cargo check --all-targets` for node, RPC, archive, pool executor, updaters and TrieDB utilities | Passed, including RPC test and benchmark compilation |
 | Linux `cargo check --all-targets` for test utilities, mock swarm, consensus state, secp, TrieDB utilities and system calls | Passed, including transaction generator examples |
 | C++ event writer syntax check with execution ctypes definitions | Passed |
+| Rust formatting with BFT CI toolchain `nightly-2025-12-09`, execution formatting and Clang 19 formatting | Passed |
 | Compose overlay configuration | Confirmed setting reaches genesis, execution and RPC |
 
 Coverage includes:
@@ -125,3 +126,13 @@ Both findings are fixed without changing canonical encoding, signatures or trans
 2. **P2 — block/IPC framing:** both shared envelopes override the permissive Alloy network decoder with bounded, exact RLP decoding. Actual block-body, IPC admission/event and database adapter regressions cover the boundary. Raw canonical parsing remains separate from network parsing. Existing archive writes are preserved, with explicit support for both archive and TrieDB record payloads.
 
 Independent Rust/C++ comparisons of 14,112 raw transaction/receipt cases found no differences in acceptance, re-encoding, hashes, signing digests or recovery. After the framing fix, both implementations reject the unwrapped, undersized and split-payload transaction-list probes; the correctly wrapped list is accepted and re-encodes identically.
+
+## Main integration (2026-11-12)
+
+Execution includes upstream `main` at `27ad173ddf730deadc433987770e5c886ff1255b`. Conflict resolution retains the two-field canonical identity, separate submission envelope and five-field native receipt. Native activation now fits upstream's trait-based type validation and still requires Monad traits, Prague or later, and chain 20143. The expanded regression also rejects Ethereum Amsterdam traits and unknown transaction types.
+
+Execution events use upstream's `monad_address`/`monad_bytes32` types. The native presence flag is unchanged, and the schema fingerprint was refreshed from the merged headers. Historical Ethereum snapshots and native canonical reconstruction pass with the new fingerprint.
+
+The execution simulation API gained an explicit `validation` argument. BFT forwards its existing validated request flag; `validation: false` remains rejected at the RPC boundary. This adapter does not enable additional simulation modes or native transaction features.
+
+The pre-NEXT environment setting remains required. The merge introduces no change to this milestone's agreed scope. All codec, policy/pool, event, RPC log-harness and Linux compilation checks above were rerun against the merged source; Rust/C++ differential acceptance, encoding, hashes, signing digests and recovery still agree across 14,112 cases. Full linked runtime and wallet interoperability remain unverified.

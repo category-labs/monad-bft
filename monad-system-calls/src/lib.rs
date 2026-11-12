@@ -19,15 +19,15 @@
 //! be used which can then be converted into SystemTransaction(s) and
 //! added to the block.
 
-use alloy_consensus::{transaction::Recovered, SignableTransaction, TxLegacy};
-use alloy_primitives::{hex, Address, B256, U256};
+use alloy_consensus::{SignableTransaction, TxLegacy, transaction::Recovered};
+use alloy_primitives::{Address, B256, U256, hex};
 use alloy_rlp::Encodable;
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
-use monad_chain_config::{revision::ChainRevision, ChainConfig};
+use monad_chain_config::{ChainConfig, revision::ChainRevision};
 use monad_eth_types::ValidatedTx;
 use monad_transaction::TxEnvelope;
-use monad_types::{Epoch, Round, SeqNum, GENESIS_SEQ_NUM};
+use monad_types::{Epoch, GENESIS_SEQ_NUM, Round, SeqNum};
 use staking_contract::{StakingContractCall, StakingContractTransaction};
 use validator::SystemTransactionError;
 
@@ -234,7 +234,7 @@ impl SystemTransactionGenerator {
 
 #[cfg(test)]
 mod test_utils {
-    use alloy_consensus::{transaction::Recovered, SignableTransaction, TxLegacy};
+    use alloy_consensus::{SignableTransaction, TxLegacy, transaction::Recovered};
     use alloy_primitives::{Address, Bytes, TxKind};
     use alloy_signer::SignerSync;
     use alloy_signer_local::LocalSigner;

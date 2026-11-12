@@ -25,7 +25,7 @@ use std::collections::VecDeque;
 
 use alloy_consensus::transaction::Recovered;
 use alloy_primitives::{Address, Bytes, TxKind, U256};
-use monad_chain_config::{revision::ChainRevision, ChainConfig};
+use monad_chain_config::{ChainConfig, revision::ChainRevision};
 use monad_consensus_types::block::ConsensusBlockHeader;
 use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
@@ -36,7 +36,7 @@ use monad_types::Epoch;
 use monad_validator::signature_collection::SignatureCollection;
 use tracing::{debug, info, warn};
 
-use crate::{generate_system_calls, SystemCall, SYSTEM_SENDER_ETH_ADDRESS};
+use crate::{SYSTEM_SENDER_ETH_ADDRESS, SystemCall, generate_system_calls};
 
 #[derive(Debug)]
 pub enum SystemTransactionError {
@@ -266,9 +266,9 @@ impl SystemTransactionValidator {
 
 #[cfg(test)]
 mod test {
-    use alloy_consensus::{transaction::Recovered, SignableTransaction, TxEip1559};
+    use alloy_consensus::{SignableTransaction, TxEip1559, transaction::Recovered};
     use alloy_eips::eip2930::AccessList;
-    use alloy_primitives::{Address, Bytes, TxKind, B256};
+    use alloy_primitives::{Address, B256, Bytes, TxKind};
     use alloy_signer::SignerSync;
     use alloy_signer_local::LocalSigner;
     use monad_chain_config::{ChainConfig, MockChainConfig};
@@ -277,19 +277,19 @@ mod test {
         payload::{ConsensusBlockBodyId, RoundSignature},
         quorum_certificate::QuorumCertificate,
     };
-    use monad_crypto::{certificate_signature::CertificateKeyPair, NopKeyPair, NopSignature};
+    use monad_crypto::{NopKeyPair, NopSignature, certificate_signature::CertificateKeyPair};
     use monad_eth_testutil::make_legacy_tx;
     use monad_eth_types::{EthExecutionProtocol, ProposedEthHeader, ValidatedTx};
     use monad_testutil::signing::MockSignatures;
     use monad_transaction::TxEnvelope;
-    use monad_types::{Epoch, Hash, NodeId, Round, SeqNum, GENESIS_SEQ_NUM};
+    use monad_types::{Epoch, GENESIS_SEQ_NUM, Hash, NodeId, Round, SeqNum};
 
     use crate::{
+        SYSTEM_SENDER_ETH_ADDRESS, SYSTEM_SENDER_PRIV_KEY,
         test_utils::{get_valid_system_transaction, sign_with_system_sender},
         validator::{
             SystemTransactionError, SystemTransactionValidationError, SystemTransactionValidator,
         },
-        SYSTEM_SENDER_ETH_ADDRESS, SYSTEM_SENDER_PRIV_KEY,
     };
 
     const BASE_FEE: u64 = 100_000_000_000;
