@@ -6,7 +6,7 @@ Snapshot: 2026-11-12. Branch: `feat/monad-type-40`.
 
 - Consensus/RPC base: `e844f6086acac664f4bd2a8ffcc99f3b5ce4b9af`.
 - Execution upstream `main`: `27ad173ddf730deadc433987770e5c886ff1255b`, merged into `feat/monad-type-40` under `monad-execution/`.
-- Execution implementation: `79d69185e66701080e4f3b70e7dc938ceebb45ed`, recorded by this branch's `monad-execution` submodule pin.
+- Execution implementation: `75800de50c3983f536afa0ef1ee2966abfe2368c`, recorded by this branch's `monad-execution` submodule pin.
 - Viem vector source: `40e3a58c1c8c9c0326558eee8991992173059ea4`.
 - Protocol source: the supplied universal transaction draft's main injection design, SHA-256 `79ce4f8c4910a71e3a2932c1083312577e2ef99774a98ddba081bf20face1cb9`.
 
@@ -101,6 +101,7 @@ Recorded results:
 | Linux `cargo check --all-targets` for test utilities, mock swarm, consensus state, secp, TrieDB utilities and system calls | Passed, including transaction generator examples |
 | C++ event writer syntax check with execution ctypes definitions | Passed |
 | Rust formatting with BFT CI toolchain `nightly-2025-12-09`, execution formatting and Clang 19 formatting | Passed |
+| Upstream license-header check against `origin/main` | Passed after updating newly added execution files to the required 2025–26 header |
 | Compose overlay configuration | Confirmed setting reaches genesis, execution and RPC |
 
 Coverage includes:
