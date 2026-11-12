@@ -28,7 +28,7 @@ use crate::spec::{Stake as _, validator::ValidatorData as _, vote::SignatureColl
 pub(crate) type PrepareQc<V> = StrongQc<PrepareVote<V>>;
 
 /// `CommitQC`: 2f+1 commit votes on the same entries
-pub(crate) type FallbackCommitQc<V> = StrongQc<FallbackCommitVote<V>>;
+pub type FallbackCommitQc<V> = StrongQc<FallbackCommitVote<V>>;
 
 /// `TC_{slot, v}`: 2f+1 timeouts for view `v` from distinct senders
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]

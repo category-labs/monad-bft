@@ -387,7 +387,8 @@ fn agreement_survives_a_lossy_network() {
 }
 
 /// T5. A validator cut off for the first view's value-carrying rounds learns
-/// the verdict from an echoed commit certificate and the block from a peer
+/// the verdict from the deciders' one-shot commit certificate -- broadcast
+/// after the partition lifts -- and the block from a peer
 #[test]
 fn a_partitioned_validator_catches_up_through_block_sync() {
     let validator_data = fixtures::validator_data();
@@ -411,8 +412,9 @@ fn a_partitioned_validator_catches_up_through_block_sync() {
         .find(|node| **node != leader)
         .expect("four validators, one leader");
 
-    // the pre-prepare and prepare votes are sent inside the window and lost, the
-    // commit certificates echoed after it and kept: block sync, not slow recovery
+    // the pre-prepare and prepare votes are sent inside the window and lost; the
+    // commit certificates go out after it and are kept: block sync, not slow
+    // recovery
     let window = Time(0)..(Time(0) + 5 * LATENCY / 2);
     let network = Network::reliable(LATENCY).partition(window, [[laggard]]);
     let mut swarm = swarm(0, network, |node| inputs[&node].clone());
@@ -445,7 +447,7 @@ fn a_partitioned_validator_catches_up_through_block_sync() {
         "the partitioned validator decided without ever seeing the proposal"
     );
 
-    // then the laggard, off the echoed certificate plus a fetched block
+    // then the laggard, off the broadcast certificate plus a fetched block
     assert!(
         swarm.run_until_all_decided(views(3)),
         "the partitioned validator never caught up"
@@ -562,7 +564,7 @@ fn a_seed_reproduces_its_run() {
 }
 
 /// T7. Three validators hold a fallback input, the fourth none: it hears every
-/// message, echoed commit certificate included, and still never decides, since
+/// message, the commit certificate included, and still never decides, since
 /// participation is gated on the input. Three of four is exactly a supermajority
 #[test]
 fn a_validator_without_an_input_listens_without_deciding() {
@@ -597,8 +599,8 @@ fn a_validator_without_an_input_listens_without_deciding() {
     }
     let mut swarm = builder.build();
 
-    // long past the deciders' first echo of their commit certificate, one view
-    // timeout after they decide: whatever the listener learns, it stays out.
+    // long past the deciders' commit certificate, one view timeout after they
+    // decide: whatever the listener learns, it stays out.
     let deadline = views(3);
     let outcome = swarm.run_until_or(deadline, |_| false);
     assert_eq!(
