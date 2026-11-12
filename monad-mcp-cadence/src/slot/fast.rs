@@ -24,7 +24,7 @@ use monad_mcp_common::spec::Stake as _;
 use super::{
     availability::ProposalAvailability,
     chorus::{ChorusDACommand, ChorusDAEvent, MissingHeaders},
-    fallback::Metablock,
+    fallback::{Metablock, slot_fallback::FallbackInput},
     types::{
         EquivCert, Gate, HeaderAuth, IsVote, KeyPair, Lane, Lanes, NodeId, ProposalId,
         ProposalScope, ProposerSet, Signature, SignedProposalHeader, Slot, StrongQc, ValidatorData,
@@ -342,25 +342,22 @@ impl FastPath {
 
     // D_s + 2Delta
     #[must_use]
-    /// The block this validator can enter the fallback path with, and the
-    /// certificate admitting it. A held fast metablock is admissible alone
-    /// (the paper's MVBA proposal case 1); any other block needs the
-    /// enter-fallback certificate (case 2). The certificate is returned
-    /// alongside rather than folded into the block: it admits the path, it is
-    /// not part of the value the MVBA agrees on, and the caller has to
-    /// disseminate it.
-    pub(crate) fn on_fallback_deadline(&self) -> Option<(Option<EnterFallbackCert>, Metablock)> {
+    /// The input this validator can enter the fallback path with. A held fast
+    /// metablock is admissible alone (the paper's MVBA proposal case 1); any
+    /// other block needs the enter-fallback certificate (case 2), which the
+    /// caller has to disseminate.
+    pub(crate) fn on_fallback_deadline(&self) -> Option<FallbackInput> {
         let block = self.try_build_fallback_block()?;
         if block.is_fast() {
-            return Some((None, block));
+            return FallbackInput::fast(block);
         }
 
-        let enter_fallback_cert = self
+        let fbcert = self
             .enter_fallback_votes
             .tally(&self.validator_data)
             .strong_qc()?;
 
-        Some((Some(enter_fallback_cert), block))
+        Some(FallbackInput::with_fbcert(block, fbcert))
     }
 
     /// This validator's MVBA input: one certified entry per proposer, built
@@ -716,8 +713,8 @@ pub struct FastBlock(Lanes<FastQc>);
 impl Decodable for FastBlock {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let block = Self(Lanes::decode(buf)?);
-        if !block.is_in_place() {
-            return Err(alloy_rlp::Error::Custom("fast block qcs out of place"));
+        if !block.has_well_formed_lanes() {
+            return Err(alloy_rlp::Error::Custom("fast block lanes not well formed"));
         }
         Ok(block)
     }
@@ -735,7 +732,7 @@ impl FastBlock {
     }
 
     // every qc names the block's slot and its own lane
-    fn is_in_place(&self) -> bool {
+    fn has_well_formed_lanes(&self) -> bool {
         let slot = self.slot();
         let mut qcs = self.0.as_ref().into_indexed_iter();
         qcs.all(|(j, qc)| qc.scope == ProposalScope::new(slot, j))

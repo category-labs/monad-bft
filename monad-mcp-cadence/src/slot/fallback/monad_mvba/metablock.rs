@@ -36,7 +36,7 @@ impl Metablock {
         header_auth: &HeaderAuth,
         validator_data: &ValidatorData,
     ) -> bool {
-        if self.0.size() != num_lanes || self.slot() != slot {
+        if self.0.size() != num_lanes || self.slot() != slot || !self.has_well_formed_lanes() {
             return false;
         }
 
@@ -65,8 +65,8 @@ impl Metablock {
 impl Decodable for Metablock {
     fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
         let block = Self(Lanes::decode(buf)?);
-        if !block.is_in_place() {
-            return Err(alloy_rlp::Error::Custom("metablock entries out of place"));
+        if !block.has_well_formed_lanes() {
+            return Err(alloy_rlp::Error::Custom("metablock lanes not well formed"));
         }
         Ok(block)
     }
@@ -74,18 +74,19 @@ impl Decodable for Metablock {
 
 impl Metablock {
     // a block has at least one lane, and all its entries name one slot
-    fn slot(&self) -> Slot {
+    pub(crate) fn slot(&self) -> Slot {
         self.0[Lane::new_unchecked(0)].scope().slot
     }
 
     // every entry names the block's slot and its own lane
-    fn is_in_place(&self) -> bool {
+    fn has_well_formed_lanes(&self) -> bool {
         let slot = self.slot();
         let mut certs = self.0.as_ref().into_indexed_iter();
         certs.all(|(j, cert)| cert.scope() == ProposalScope::new(slot, j))
     }
 }
 
+/// Entry validity only; the certificates a non-fast metablock needs are `CertifiedMetablock`'s
 impl ValidateInput for Metablock {
     type Context = ValidationContext;
 
@@ -96,10 +97,6 @@ impl ValidateInput for Metablock {
             &context.header_auth,
             &context.validator_data,
         )
-    }
-
-    fn fbcert_optional(&self) -> bool {
-        self.is_fast()
     }
 }
 

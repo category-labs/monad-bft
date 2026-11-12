@@ -17,7 +17,9 @@
 //! proposer -- when the fast path cannot commit a slot. Votes and certificates
 //! range over `entries(x)`, never over the value that carried them
 
+pub mod dummy_view;
 pub mod monad_mvba;
+pub mod slot_fallback;
 use std::{collections::VecDeque, fmt::Debug, hash::Hash};
 
 use alloy_rlp::{Decodable, Encodable, RlpEncodable, RlpEncodableWrapper};
@@ -30,10 +32,7 @@ pub use super::fast::{
 };
 use super::{
     super::{message::Outbound, runtime::Runtime, timers::Timers},
-    types::{
-        IsVote, Lanes, NodeId, Slot, StrongQc, Timestamp, TimestampDelta, ValidatorData,
-        ValidatorIndex,
-    },
+    types::{Lanes, NodeId, Slot, Timestamp, TimestampDelta, ValidatorData, ValidatorIndex},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, RlpEncodableWrapper)]
@@ -83,7 +82,7 @@ impl FallbackView {
     const GENESIS: Self = Self(0);
     const FIRST: Self = Self(1);
 
-    const fn get(self) -> u64 {
+    pub const fn get(self) -> u64 {
         self.0
     }
 
@@ -110,9 +109,6 @@ pub trait ValidateInput {
     type Context;
 
     fn validate(&self, context: &Self::Context) -> bool;
-
-    /// Whether the value is admissible alone, without an fbcert
-    fn fbcert_optional(&self) -> bool;
 }
 
 pub trait ValidateCert: Clone + Eq + Hash + Debug {
@@ -129,12 +125,6 @@ pub trait Votable: Clone + Eq + Hash + Debug {
     fn entries(&self) -> Self::Entries;
 }
 
-/// Not [`From`]: `V::Entries` could be the vote type itself, colliding with the
-/// blanket reflexive impl
-pub trait FromEntries<V: Votable> {
-    fn from_entries(entries: V::Entries) -> Self;
-}
-
 /// A protocol for Agreement on a Core Set
 pub trait Mvba<V>
 where
@@ -144,14 +134,16 @@ where
     type Context;
     type TimerEvent;
 
-    type FallbackCert: ValidateCert;
+    /// What a validator registers at entry
+    type Input;
 
-    type CommitVote: IsVote + FromEntries<V>;
+    /// What proves a decision to a party outside the instance
+    type DecisionProof;
 
     fn new(ctx: Self::Context) -> Self;
 
-    /// At most one proposal per instance
-    fn propose(&mut self, data: V, cert: Option<Self::FallbackCert>);
+    /// At most one input per instance
+    fn propose(&mut self, input: Self::Input);
 
     /// The validators the sender indices refer to
     fn validator_data(&self) -> &ValidatorData;
@@ -170,7 +162,7 @@ where
 
     /// The certificate behind [`Mvba::decision`]. `Some` exactly when the
     /// decision is
-    fn decision_proof(&self) -> Option<&StrongQc<Self::CommitVote>>;
+    fn decision_proof(&self) -> Option<&Self::DecisionProof>;
 
     fn poll(&mut self) -> Option<MVBAOutput<Self::Message, Self::TimerEvent>>;
 }
@@ -266,7 +258,7 @@ where
 {
     type Message = A::Message;
     // at most one per instance
-    type LocalIn = (V, Option<A::FallbackCert>);
+    type LocalIn = A::Input;
     type LocalOut = V;
 
     fn receive(&mut self, now: Timestamp, sender: NodeId, message: A::Message) {
@@ -285,8 +277,8 @@ where
         self.outbox.pop_front()
     }
 
-    fn handle_input(&mut self, now: Timestamp, (input, cert): (V, Option<A::FallbackCert>)) {
-        self.mvba.propose(input, cert);
+    fn handle_input(&mut self, now: Timestamp, input: A::Input) {
+        self.mvba.propose(input);
         self.drain(now);
     }
 

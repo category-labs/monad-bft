@@ -16,8 +16,8 @@
 use super::{
     super::{
         super::{
-            fast::{CertifiedEntry, EnterFallbackVote},
-            types::{Lanes, ProposalScope, Slot, VoteMsg},
+            fast::CertifiedEntry,
+            types::{HeaderAuth, Lane, Lanes, ProposalScope, Slot, VoteMsg},
         },
         FallbackView, Metablock, Mvba, MvbaScope,
     },
@@ -287,60 +287,27 @@ fn a_timeout_quorum_advances_the_view_and_the_new_leader_proposes() {
         "nothing is locked, so the leader proposes its own input"
     );
     assert!(
-        matches!(proposal.justification, Justification::Tc(_)),
-        "the timeout certificate justifies this view; the fallback \
-         certificate would be weight on the wire nothing checks"
+        proposal.tc.is_some(),
+        "the timeout certificate justifies this view"
     );
 }
 
 #[test]
-fn the_view_1_leader_carries_the_fallback_certificate_beside_its_input() {
+fn the_view_1_leader_proposes_its_input_unjustified() {
     let validator_data = validator_data();
     let block = metablock(1, &validator_data);
-    let cert = enter_fallback_cert(&validator_data);
 
     let leader = leader_of(view(1));
     let mut instance = mvba(leader, &validator_data);
-    instance.propose(block.clone(), Some(cert.clone()));
+    instance.propose(block.clone());
     let outputs = drain(&mut instance);
 
     let proposal = proposed(&outputs).expect("the leader of view 1 proposes as soon as it can");
     assert_eq!(proposal.view, view(1));
     assert_eq!(proposal.value, block);
-    assert_eq!(
-        proposal.justification,
-        Justification::FallbackCert(Some(cert)),
-        "view 1 has no timeout certificate to be justified by, so it carries \
-         the certificate that admitted the path instead"
-    );
-}
-
-#[test]
-fn a_proposal_carrying_a_certificate_for_another_slot_is_rejected() {
-    let validator_data = validator_data();
-    let block = metablock(1, &validator_data);
-    let follower = nodes()[0];
-
-    let mut instance = started(follower, &block, &validator_data);
-    drain(&mut instance);
-
-    // genuinely aggregated, and genuinely irrelevant: it admits another slot
-    // to the fallback path, not this one
-    let foreign = strong_qc(
-        Slot(SLOT.get() + 1),
-        EnterFallbackVote,
-        &quorum(),
-        &validator_data,
-    );
-    let (leader, proposal) = pre_prepare_with_cert(view(1), &block, Some(foreign));
-
-    instance.handle_message_from(leader, proposal);
-    let outputs = drain(&mut instance);
-
-    assert_eq!(
-        prepared_entries(&outputs),
-        None,
-        "a carried certificate is checked, so an out-of-scope one is not voted on"
+    assert!(
+        proposal.tc.is_none(),
+        "view 1 has no timeout certificate to be justified by"
     );
 }
 
@@ -357,59 +324,6 @@ fn a_proposal_carrying_a_timeout_certificate_for_another_slot_is_rejected() {
     assert!(
         delivered(proposal).is_none(),
         "another slot's certificate is no justification for this slot's view"
-    );
-}
-
-#[test]
-fn a_view_1_proposal_without_a_certificate_is_the_paper_s_fast_metablock() {
-    let validator_data = validator_data();
-    let block = metablock(1, &validator_data);
-    let follower = nodes()[0];
-
-    let mut instance = started(follower, &block, &validator_data);
-    drain(&mut instance);
-
-    // `fbcert = ⊥`: admission rests on the entries rather than on a
-    // certificate, and every entry here is a `FastQc`
-    let (leader, proposal) = pre_prepare_with_cert(view(1), &block, None);
-
-    instance.handle_message_from(leader, proposal);
-    let outputs = drain(&mut instance);
-
-    assert_eq!(
-        prepared_entries(&outputs),
-        Some(block.entries()),
-        "an absent certificate is legal: the value decides, not the carrier"
-    );
-}
-
-#[test]
-fn a_fast_metablock_is_the_only_thing_an_absent_certificate_admits() {
-    let validator_data = validator_data();
-    let block = mixed_evidence_metablock(1, &validator_data);
-    let follower = nodes()[0];
-
-    let mut instance = started(follower, &block, &validator_data);
-    drain(&mut instance);
-
-    // one entry short of a `FastQc`, so nothing here stands in for the
-    // certificate that admits the slot to the fallback path
-    let (_, proposal) = pre_prepare_with_cert(view(1), &block, None);
-    assert!(
-        delivered(proposal).is_none(),
-        "`fbcert = ⊥` is legal only over a fast metablock"
-    );
-
-    // the same value with a certificate beside it: mixed evidence is fine
-    // once something admits the path, so it is the ⊥ arm that refused above
-    let (leader, proposal) = pre_prepare(view(1), &block, None);
-    instance.handle_message_from(leader, proposal);
-    let outputs = drain(&mut instance);
-
-    assert_eq!(
-        prepared_entries(&outputs),
-        Some(block.entries()),
-        "a carried certificate asks nothing of the entries"
     );
 }
 
@@ -481,6 +395,51 @@ fn a_locked_leader_fetches_the_block_before_reproposing_it() {
         proposal.value, locked,
         "and it proposes the retrieved block verbatim"
     );
+}
+
+/// `Accepted_i`: a prepare certificate can form out of this validator's sight
+/// and surface in any later view, when its signers alone hold the block
+#[test]
+fn a_block_prepared_in_an_unlocked_view_is_still_held_when_a_later_view_locks_on_it() {
+    let validator_data = validator_data();
+    let own = metablock(1, &validator_data);
+    let prepared = metablock(2, &validator_data);
+
+    let later_leader = leader_of(view(3));
+    let mut instance = started(later_leader, &own, &validator_data);
+
+    let (leader, proposal) = pre_prepare(view(1), &prepared, None);
+    instance.handle_message_from(leader, proposal);
+    assert_eq!(
+        prepared_entries(&drain(&mut instance)),
+        Some(prepared.entries())
+    );
+
+    feed_timeouts(&mut instance, view(1), None, &quorum());
+    assert!(
+        scheduled_timers(&drain(&mut instance)).contains(&TimerEvent::ViewTimeout(view(2))),
+        "view 1 ends on a certificate that locks nothing"
+    );
+
+    let asker = nodes()[1];
+    instance.handle_message_from(asker, block_request(&prepared.entries()));
+    assert_eq!(
+        unicasts(&drain(&mut instance)),
+        vec![(asker, &block_response(prepared.clone()))],
+        "a signer of a prepare certificate serves the block behind it"
+    );
+
+    let qc = prepare_qc(view(1), &prepared.entries(), &validator_data);
+    feed_timeouts(&mut instance, view(2), Some(qc), &quorum());
+    let outputs = drain(&mut instance);
+
+    assert!(
+        requested_entries(&outputs).is_empty(),
+        "it prepared these entries, so it never let go of their block"
+    );
+    let proposal = proposed(&outputs).expect("the locked block is held, so the leader proposes");
+    assert_eq!(proposal.view, view(3));
+    assert_eq!(proposal.value, prepared);
 }
 
 #[test]
@@ -875,6 +834,49 @@ fn a_lookback_view_timeout_still_raises_the_lock() {
     );
 }
 
+/// No timeout of view `v` can carry a certificate of a later view, so a lock
+/// learned from a later view's timeout is taken only on reaching that view
+#[test]
+fn a_lagging_validator_takes_a_later_view_s_lock_only_on_reaching_that_view() {
+    let validator_data = validator_data();
+    let own = metablock(1, &validator_data);
+    let locked = metablock(2, &validator_data);
+    let ahead = prepare_qc(view(2), &locked.entries(), &validator_data);
+
+    let follower = nodes()[0];
+    let mut instance = started(follower, &own, &validator_data);
+    drain(&mut instance);
+
+    // a single view-2 timeout: below f+1, and no certificate to follow
+    feed_timeouts(&mut instance, view(2), Some(ahead.clone()), &nodes()[1..2]);
+    drain(&mut instance);
+
+    instance.handle_timer(TimerEvent::ViewTimeout(view(1)));
+    let timeout = timeout_message(&drain(&mut instance))
+        .expect("the timer fires this validator's timeout")
+        .clone();
+    assert_eq!(timeout.view(), view(1));
+    assert!(
+        delivered(Message::Timeout(timeout)).is_some(),
+        "a peer decodes the view-1 timeout"
+    );
+
+    feed_timeouts(&mut instance, view(1), None, &quorum());
+    assert!(scheduled_timers(&drain(&mut instance)).contains(&TimerEvent::ViewTimeout(view(2))));
+
+    instance.handle_timer(TimerEvent::ViewTimeout(view(2)));
+    let timeout = timeout_message(&drain(&mut instance))
+        .expect("the timer fires this validator's timeout")
+        .clone();
+    assert_eq!(timeout.view(), view(2));
+    assert_eq!(
+        timeout.high_prep_qc,
+        Some(ahead),
+        "reaching view 2 takes the lock its timeout carried"
+    );
+    assert!(delivered(Message::Timeout(timeout)).is_some());
+}
+
 #[test]
 fn advancing_views_stops_retransmitting_the_old_view() {
     let validator_data = validator_data();
@@ -1054,6 +1056,38 @@ fn a_bogus_block_response_is_ignored() {
     instance.handle_message_from(nodes()[1], block_response(block.clone()));
     drain(&mut instance);
     assert_eq!(instance.decision(), Some(&block));
+}
+
+#[test]
+fn an_in_process_metablock_whose_later_lane_entry_is_out_of_place_is_invalid() {
+    let validator_data = validator_data();
+    let header_auth = HeaderAuth::new(|_| false);
+    let block = metablock(1, &validator_data);
+    assert!(block.is_valid(SLOT, NUM_LANES, &header_auth, &validator_data));
+
+    let lane = Lane::new_unchecked(1);
+    let other_slot = ProposalScope::new(Slot(SLOT.get() + 1), lane);
+    let other_proposer = ProposalScope::new(SLOT, Lane::new_unchecked(0));
+    let block_entries = block.entries();
+    for scope in [other_slot, other_proposer] {
+        let misplaced = Metablock::new(Lanes::new(NUM_LANES, |j| {
+            let scope = if j == lane {
+                scope
+            } else {
+                ProposalScope::new(SLOT, j)
+            };
+            CertifiedEntry::FastQc(strong_qc(
+                scope,
+                block_entries[j].clone(),
+                &quorum(),
+                &validator_data,
+            ))
+        }));
+        assert!(
+            !misplaced.is_valid(SLOT, NUM_LANES, &header_auth, &validator_data),
+            "{scope:?}"
+        );
+    }
 }
 
 #[test]
@@ -1395,7 +1429,7 @@ fn a_certificate_arriving_before_propose_is_fetched_once_it_does() {
     assert!(drain(&mut instance).is_empty());
     assert!(instance.decision().is_none());
 
-    instance.propose(own, Some(enter_fallback_cert(&validator_data)));
+    instance.propose(own);
     let outputs = drain(&mut instance);
 
     assert_eq!(
@@ -1432,7 +1466,7 @@ fn a_certificate_over_this_validators_own_input_decides_on_propose() {
     // the certificate settled the entries of this validator's own input, so
     // proposing hands the block to the store and the decision falls out of the
     // same call: nothing is fetched
-    instance.propose(own.clone(), Some(enter_fallback_cert(&validator_data)));
+    instance.propose(own.clone());
     let outputs = drain(&mut instance);
 
     assert_eq!(instance.decision(), Some(&own));
@@ -1452,7 +1486,7 @@ fn nothing_is_sent_before_propose() {
     feed_prepare_votes(&mut instance, view(1), &block.entries(), &quorum());
     assert!(drain(&mut instance).is_empty());
 
-    instance.propose(block.clone(), Some(enter_fallback_cert(&validator_data)));
+    instance.propose(block.clone());
     let outputs = drain(&mut instance);
     assert_eq!(prepared_entries(&outputs), Some(block.entries()));
 }
@@ -1810,7 +1844,7 @@ fn a_pre_input_instance_buffers_a_catch_up_only_inside_the_window() {
     let (leader, proposal) = pre_prepare(view(13), &block, Some(tc));
     instance.handle_message_from(leader, proposal);
 
-    instance.propose(block, Some(enter_fallback_cert(&validator_data)));
+    instance.propose(block);
     let outputs = drain(&mut instance);
 
     assert!(scheduled_timers(&outputs).contains(&TimerEvent::ViewTimeout(view(1))));
@@ -1831,7 +1865,7 @@ fn a_buffered_in_window_certificate_jumps_at_propose() {
     let (leader, proposal) = pre_prepare(view(6), &block, Some(tc));
     instance.handle_message_from(leader, proposal);
 
-    instance.propose(block.clone(), Some(enter_fallback_cert(&validator_data)));
+    instance.propose(block.clone());
     let outputs = drain(&mut instance);
 
     assert!(
@@ -1889,6 +1923,31 @@ fn a_timeout_whose_claim_disagrees_with_its_certificate_does_not_decode() {
 }
 
 #[test]
+fn an_ill_formed_timeout_delivered_in_process_is_dropped() {
+    let validator_data = validator_data();
+    let block = metablock(1, &validator_data);
+    let qc = prepare_qc(view(1), &block.entries(), &validator_data);
+
+    let follower = nodes()[0];
+    let mut instance = started(follower, &block, &validator_data);
+    drain(&mut instance);
+
+    // f+1 timeouts claiming a lock none of them carries
+    for node in &nodes()[1..3] {
+        let locked = TimeoutMsg::new_signed(SLOT, view(1), Some(qc.clone()), &node.keypair());
+        let unbacked = TimeoutMsg {
+            high_prep_qc: None,
+            ..locked
+        };
+        instance.handle_message_from(*node, Message::Timeout(unbacked));
+    }
+    assert!(
+        timed_out_view(&drain(&mut instance)).is_none(),
+        "no echo: neither timeout was stored"
+    );
+}
+
+#[test]
 fn a_timeout_certificate_whose_claims_disagree_with_its_lock_does_not_decode() {
     let validator_data = validator_data();
     let block = metablock(1, &validator_data);
@@ -1920,15 +1979,98 @@ fn a_pre_prepare_whose_justification_does_not_fit_its_view_does_not_decode() {
     let validator_data = validator_data();
     let block = metablock(1, &validator_data);
     let tc_1 = timeout_certificate(view(1), None, &validator_data);
-    let cert = Justification::FallbackCert(Some(enter_fallback_cert(&validator_data)));
 
-    let (_, view_1_with_tc) =
-        pre_prepare_justified(view(1), &block, Justification::Tc(tc_1.clone()));
-    let (_, view_2_with_cert) = pre_prepare_justified(view(2), &block, cert);
-    let (_, view_3_with_tc_1) = pre_prepare_justified(view(3), &block, Justification::Tc(tc_1));
-    for proposal in [view_1_with_tc, view_2_with_cert, view_3_with_tc_1] {
+    let (_, view_1_with_tc) = pre_prepare_justified(view(1), &block, Some(tc_1.clone()));
+    let (_, view_2_without_tc) = pre_prepare_justified(view(2), &block, None);
+    let (_, view_3_with_tc_1) = pre_prepare_justified(view(3), &block, Some(tc_1));
+    for proposal in [view_1_with_tc, view_2_without_tc, view_3_with_tc_1] {
         assert!(delivered(proposal).is_none());
     }
+}
+
+#[test]
+fn an_ill_formed_pre_prepare_delivered_in_process_is_dropped() {
+    let validator_data = validator_data();
+    let locked = metablock(1, &validator_data);
+    let other = metablock(2, &validator_data);
+    let follower = nodes()[0];
+    assert_ne!(leader_of(view(2)), follower, "test assumes a follower");
+
+    // a view-2 proposal carrying no certificate, received ahead of view 2
+    let mut instance = started(follower, &locked, &validator_data);
+    drain(&mut instance);
+    let (leader, unjustified) = pre_prepare_justified(view(2), &locked, None);
+    instance.handle_message_from(leader, unjustified);
+    feed_timeouts(&mut instance, view(1), None, &quorum());
+    let outputs = drain(&mut instance);
+    assert!(scheduled_timers(&outputs).contains(&TimerEvent::ViewTimeout(view(2))));
+    assert_eq!(
+        prepared_entries(&outputs),
+        None,
+        "view 2 is reached with no proposal stored for it"
+    );
+
+    // so it does not hold the place of the justified one
+    let unlocked = timeout_certificate(view(1), None, &validator_data);
+    let (leader, justified) = pre_prepare(view(2), &other, Some(unlocked));
+    instance.handle_message_from(leader, justified);
+    assert_eq!(
+        prepared_entries(&drain(&mut instance)),
+        Some(other.entries())
+    );
+
+    // a value other than the one its certificate locks
+    let qc = prepare_qc(view(1), &locked.entries(), &validator_data);
+    let tc = timeout_certificate(view(1), Some(qc), &validator_data);
+    let mut instance = started(follower, &locked, &validator_data);
+    drain(&mut instance);
+    let (leader, lock_breaking) = pre_prepare_justified(view(2), &other, Some(tc));
+    instance.handle_message_from(leader, lock_breaking);
+    let outputs = drain(&mut instance);
+    assert!(
+        scheduled_timers(&outputs).contains(&TimerEvent::ViewTimeout(view(2))),
+        "the certificate it carries is genuine, and is acted on"
+    );
+    assert_eq!(
+        prepared_entries(&outputs),
+        None,
+        "a leader may not replace the locked value"
+    );
+}
+
+#[test]
+fn an_ill_formed_certificate_delivered_in_process_is_dropped() {
+    let validator_data = validator_data();
+    let locked = metablock(1, &validator_data);
+    let other = metablock(2, &validator_data);
+    let follower = nodes()[0];
+    assert_ne!(leader_of(view(2)), follower, "test assumes a follower");
+
+    // its signers claim a lock it no longer carries, which would free the next leader
+    let qc = prepare_qc(view(1), &locked.entries(), &validator_data);
+    let stripped = TimeoutCertificate {
+        high_prep_qc: None,
+        ..timeout_certificate(view(1), Some(qc), &validator_data)
+    };
+    assert!(
+        stripped.verify(&validator_data),
+        "its signatures are genuine: only its shape is wrong"
+    );
+
+    let mut instance = started(follower, &locked, &validator_data);
+    drain(&mut instance);
+    instance.handle_message_from(nodes()[1], Message::Tc(stripped.clone()));
+    assert!(
+        drain(&mut instance).is_empty(),
+        "on its own it advances nothing"
+    );
+
+    let (leader, proposal) = pre_prepare_justified(view(2), &other, Some(stripped));
+    instance.handle_message_from(leader, proposal);
+    assert!(
+        drain(&mut instance).is_empty(),
+        "nor does the proposal it would unlock"
+    );
 }
 
 #[test]
@@ -1962,6 +2104,478 @@ fn a_timeout_certificate_needs_one_group_per_distinct_vote() {
     }
 }
 
+// ---------------- standalone timeout certificates ----------------
+
+#[test]
+fn a_standalone_certificate_advances_the_view() {
+    let validator_data = validator_data();
+    let block = metablock(1, &validator_data);
+    let follower = nodes()[0];
+
+    let mut instance = started(follower, &block, &validator_data);
+    drain(&mut instance);
+
+    let tc = timeout_certificate(view(1), None, &validator_data);
+    let message = delivered(Message::Tc(tc)).expect("a timeout certificate travels on its own");
+    instance.handle_message_from(nodes()[1], message);
+    let outputs = drain(&mut instance);
+
+    assert!(
+        scheduled_timers(&outputs).contains(&TimerEvent::ViewTimeout(view(2))),
+        "the certificate alone is evidence the view was left; no proposal is needed"
+    );
+}
+
+#[test]
+fn advancing_a_view_forwards_its_certificate_once() {
+    let validator_data = validator_data();
+    let block = metablock(1, &validator_data);
+    let follower = nodes()[0];
+
+    let mut instance = started(follower, &block, &validator_data);
+    drain(&mut instance);
+
+    feed_timeouts(&mut instance, view(1), None, &quorum());
+    assert_eq!(
+        forwarded_certificates(&drain(&mut instance)),
+        vec![view(1)],
+        "the certificate this validator formed goes out with the advance"
+    );
+
+    // the view it certifies is already left, however the certificate comes back
+    let tc_1 = timeout_certificate(view(1), None, &validator_data);
+    instance.handle_message_from(nodes()[1], Message::Tc(tc_1.clone()));
+    let (leader, proposal) = pre_prepare(view(2), &block, Some(tc_1));
+    instance.handle_message_from(leader, proposal);
+    assert!(forwarded_certificates(&drain(&mut instance)).is_empty());
+
+    // a received certificate is forwarded on the advance it causes, and only then
+    let tc_2 = timeout_certificate(view(2), None, &validator_data);
+    instance.handle_message_from(nodes()[1], Message::Tc(tc_2.clone()));
+    instance.handle_message_from(nodes()[2], Message::Tc(tc_2));
+    assert_eq!(forwarded_certificates(&drain(&mut instance)), vec![view(2)]);
+}
+
+#[test]
+fn a_certificate_for_a_view_already_left_is_not_forwarded() {
+    let validator_data = validator_data();
+    let block = metablock(1, &validator_data);
+    let follower = nodes()[0];
+
+    let mut instance = started(follower, &block, &validator_data);
+    drain(&mut instance);
+
+    let tc_2 = timeout_certificate(view(2), None, &validator_data);
+    instance.handle_message_from(nodes()[1], Message::Tc(tc_2));
+    let outputs = drain(&mut instance);
+    assert!(scheduled_timers(&outputs).contains(&TimerEvent::ViewTimeout(view(3))));
+    assert_eq!(forwarded_certificates(&outputs), vec![view(2)]);
+
+    // one below the window, one inside its lookback: neither moves this
+    // validator, so neither is passed on
+    for v in [1, 2] {
+        let stale = timeout_certificate(view(v), None, &validator_data);
+        instance.handle_message_from(nodes()[1], Message::Tc(stale));
+        assert!(
+            drain(&mut instance).is_empty(),
+            "a certificate that advances nothing is not forwarded"
+        );
+    }
+}
+
+#[test]
+fn a_view_timeout_re_sends_the_certificate_that_entered_the_view() {
+    let validator_data = validator_data();
+    let block = metablock(1, &validator_data);
+    let follower = nodes()[0];
+
+    let mut instance = started(follower, &block, &validator_data);
+    drain(&mut instance);
+
+    instance.handle_timer(TimerEvent::ViewTimeout(view(1)));
+    let outputs = drain(&mut instance);
+    assert_eq!(timed_out_view(&outputs), Some(view(1)));
+    assert!(
+        forwarded_certificates(&outputs).is_empty(),
+        "view 1 is entered on no certificate"
+    );
+
+    let tc_1 = timeout_certificate(view(1), None, &validator_data);
+    instance.handle_message_from(nodes()[1], Message::Tc(tc_1.clone()));
+    assert!(scheduled_timers(&drain(&mut instance)).contains(&TimerEvent::ViewTimeout(view(2))));
+
+    for _ in 0..2 {
+        instance.handle_timer(TimerEvent::ViewTimeout(view(2)));
+        let outputs = drain(&mut instance);
+        assert_eq!(timed_out_view(&outputs), Some(view(2)));
+        let resent: Vec<_> = broadcasts(&outputs)
+            .into_iter()
+            .filter(|message| matches!(message, Message::Tc(_)))
+            .collect();
+        assert_eq!(resent, vec![&Message::Tc(tc_1.clone())]);
+    }
+}
+
+#[test]
+fn a_standalone_certificate_before_propose_jumps_at_propose() {
+    let validator_data = validator_data();
+    let block = metablock(1, &validator_data);
+    let follower = nodes()[0];
+    assert_ne!(leader_of(view(6)), follower, "test assumes a follower");
+
+    let mut instance = mvba(follower, &validator_data);
+    let tc = timeout_certificate(view(5), None, &validator_data);
+    instance.handle_message_from(nodes()[1], Message::Tc(tc));
+    assert!(
+        drain(&mut instance).is_empty(),
+        "an instance with no input sends nothing"
+    );
+
+    instance.propose(block);
+    let outputs = drain(&mut instance);
+
+    assert!(
+        scheduled_timers(&outputs).contains(&TimerEvent::ViewTimeout(view(6))),
+        "the buffered certificate is acted on once the instance can run"
+    );
+    assert_eq!(forwarded_certificates(&outputs), vec![view(5)]);
+}
+
+#[test]
+fn a_standalone_certificate_with_a_bad_signature_is_dropped() {
+    let validator_data = validator_data();
+    let block = metablock(1, &validator_data);
+    let follower = nodes()[0];
+
+    let mut instance = started(follower, &block, &validator_data);
+    drain(&mut instance);
+
+    // view 1's signatures presented as view 2's certificate
+    let genuine = timeout_certificate(view(1), None, &validator_data);
+    let forged = TimeoutCertificate {
+        view: view(2),
+        ..genuine
+    };
+    let message =
+        delivered(Message::Tc(forged)).expect("well-formed: only its signatures are wrong");
+    instance.handle_message_from(nodes()[1], message);
+
+    assert!(
+        drain(&mut instance).is_empty(),
+        "an unverified certificate neither advances the view nor is forwarded"
+    );
+}
+
+// ---------------- the view timeout ----------------
+
+#[test]
+fn the_view_timeout_is_seven_delta() {
+    let validator_data = validator_data();
+    let block = metablock(1, &validator_data);
+    let follower = nodes()[0];
+    // Δ_R = 2Δ, plus 4Δ, plus max(Δ, Δ_sync) = Δ
+    let seven_delta = DELTA.checked_mul(7).expect("a small duration");
+
+    let mut instance = started(follower, &block, &validator_data);
+    assert_eq!(
+        timer_durations(&drain(&mut instance)),
+        vec![(TimerEvent::ViewTimeout(view(1)), seven_delta)]
+    );
+
+    instance.handle_timer(TimerEvent::ViewTimeout(view(1)));
+    assert_eq!(
+        timer_durations(&drain(&mut instance)),
+        vec![(TimerEvent::ViewTimeout(view(1)), seven_delta)],
+        "the re-armed timer that paces timeout retransmission has the same period"
+    );
+
+    feed_timeouts(&mut instance, view(1), None, &quorum());
+    assert!(
+        timer_durations(&drain(&mut instance))
+            .contains(&(TimerEvent::ViewTimeout(view(2)), seven_delta))
+    );
+}
+
+// ---------------- entry: start and set_input ----------------
+
+#[test]
+fn a_started_instance_without_a_value_votes_and_times_out() {
+    let validator_data = validator_data();
+    let block = metablock(1, &validator_data);
+    let follower = nodes()[0];
+    assert_ne!(leader_of(view(1)), follower, "test assumes a follower");
+
+    let mut instance = mvba(follower, &validator_data);
+    instance.start();
+    let outputs = drain(&mut instance);
+    assert_eq!(
+        scheduled_timers(&outputs),
+        vec![TimerEvent::ViewTimeout(view(1))]
+    );
+    assert!(broadcasts(&outputs).is_empty());
+
+    let (leader, proposal) = pre_prepare(view(1), &block, None);
+    instance.handle_message_from(leader, proposal);
+    assert_eq!(
+        prepared_entries(&drain(&mut instance)),
+        Some(block.entries()),
+        "preparing a leader's value needs no value of this validator's"
+    );
+
+    instance.handle_timer(TimerEvent::ViewTimeout(view(1)));
+    assert_eq!(timed_out_view(&drain(&mut instance)), Some(view(1)));
+}
+
+#[test]
+fn a_started_leader_proposes_as_soon_as_a_value_is_offered() {
+    let validator_data = validator_data();
+    let block = mixed_evidence_metablock(1, &validator_data);
+
+    for v in [view(1), view(2)] {
+        let mut instance = mvba(leader_of(v), &validator_data);
+        instance.start();
+        let mut outputs = drain(&mut instance);
+        if v != view(1) {
+            feed_timeouts(&mut instance, view(1), None, &quorum());
+            outputs = drain(&mut instance);
+        }
+
+        assert!(
+            scheduled_timers(&outputs).contains(&TimerEvent::ViewTimeout(v)),
+            "the view runs, timer and all"
+        );
+        assert!(
+            proposed(&outputs).is_none(),
+            "nothing was offered for an unlocked view yet"
+        );
+
+        instance.set_input(block.clone());
+        let outputs = drain(&mut instance);
+
+        let proposal = proposed(&outputs).expect("the offer releases the waiting leader");
+        assert_eq!(proposal.view, v);
+        assert_eq!(proposal.value, block);
+        assert_eq!(
+            proposal.tc.as_ref().map(|tc| tc.view.next()),
+            (v != view(1)).then_some(v)
+        );
+        assert!(
+            delivered(Message::PrePrepare(proposal.clone())).is_some(),
+            "and peers admit what it sent"
+        );
+    }
+}
+
+#[test]
+fn a_timed_out_leader_does_not_propose_on_offer() {
+    let validator_data = validator_data();
+    let block = mixed_evidence_metablock(1, &validator_data);
+
+    let mut instance = mvba(leader_of(view(1)), &validator_data);
+    instance.start();
+    drain(&mut instance);
+
+    instance.handle_timer(TimerEvent::ViewTimeout(view(1)));
+    assert_eq!(timed_out_view(&drain(&mut instance)), Some(view(1)));
+
+    instance.set_input(block);
+    assert!(
+        proposed(&drain(&mut instance)).is_none(),
+        "a leader that has timed out in its view proposes nothing there"
+    );
+}
+
+#[test]
+fn the_latest_offer_is_the_one_proposed() {
+    let validator_data = validator_data();
+    let non_fast = mixed_evidence_metablock(2, &validator_data);
+    let fast = metablock(3, &validator_data);
+
+    // what the leader of view 2 proposes there, after registering `input`, if
+    // any, and having each of `offers` set in view 1
+    let proposed_in_view_2 = |input: Option<&Metablock>, offers: &[&Metablock]| {
+        let mut instance = mvba(leader_of(view(2)), &validator_data);
+        match input {
+            Some(input) => instance.propose(input.clone()),
+            None => instance.start(),
+        }
+        for value in offers {
+            instance.set_input((*value).clone());
+        }
+        drain(&mut instance);
+
+        feed_timeouts(&mut instance, view(1), None, &quorum());
+        proposed(&drain(&mut instance))
+            .expect("the view-2 leader holds an offer")
+            .value
+            .clone()
+    };
+
+    assert_eq!(proposed_in_view_2(None, &[&non_fast, &fast]), fast);
+    assert_eq!(
+        proposed_in_view_2(None, &[&fast, &non_fast]),
+        non_fast,
+        "the order decides, not the kind of value"
+    );
+    assert_eq!(
+        proposed_in_view_2(Some(&non_fast), &[&fast]),
+        fast,
+        "an offer displaces the input `propose` registered"
+    );
+
+    // a leader that has proposed in its view does not propose there again
+    let mut instance = mvba(leader_of(view(1)), &validator_data);
+    instance.propose(non_fast.clone());
+    assert_eq!(
+        proposed(&drain(&mut instance)).map(|proposal| &proposal.value),
+        Some(&non_fast)
+    );
+    instance.set_input(fast);
+    assert!(
+        proposed(&drain(&mut instance)).is_none(),
+        "a later offer is not proposed in a view already proposed in"
+    );
+}
+
+#[test]
+fn an_invalid_offer_is_ignored() {
+    let validator_data = validator_data();
+    let block = metablock(1, &validator_data);
+    // the same entries, certified for another slot
+    let block_entries = block.entries();
+    let elsewhere = Metablock::new(Lanes::new(NUM_LANES, |j| {
+        CertifiedEntry::FastQc(strong_qc(
+            ProposalScope::new(Slot(SLOT.get() + 1), j),
+            block_entries[j].clone(),
+            &quorum(),
+            &validator_data,
+        ))
+    }));
+
+    let mut instance = mvba(leader_of(view(1)), &validator_data);
+    instance.start();
+    drain(&mut instance);
+
+    instance.set_input(elsewhere);
+    assert!(
+        proposed(&drain(&mut instance)).is_none(),
+        "an invalid value is no proposal"
+    );
+
+    instance.set_input(block.clone());
+    let outputs = drain(&mut instance);
+    assert_eq!(
+        proposed(&outputs).map(|proposal| &proposal.value),
+        Some(&block),
+        "and it does not hold the place of a valid one"
+    );
+}
+
+#[test]
+fn an_offer_after_deciding_is_ignored() {
+    let validator_data = validator_data();
+    let block = metablock(1, &validator_data);
+    let other = metablock(2, &validator_data);
+    let follower = nodes()[0];
+    assert_ne!(leader_of(view(1)), follower, "test assumes a follower");
+
+    let mut instance = mvba(follower, &validator_data);
+    instance.start();
+    let (leader, proposal) = pre_prepare(view(1), &block, None);
+    instance.handle_message_from(leader, proposal);
+    feed_commit_votes(&mut instance, view(1), &block, &quorum());
+    drain(&mut instance);
+    assert_eq!(instance.decision(), Some(&block));
+
+    instance.set_input(other);
+    assert!(drain(&mut instance).is_empty());
+    assert!(
+        instance.input.is_none(),
+        "a decided instance keeps no offer"
+    );
+    assert_eq!(instance.decision(), Some(&block));
+}
+
+#[test]
+fn a_second_propose_proposes_nothing_more() {
+    let validator_data = validator_data();
+    let first = metablock(1, &validator_data);
+    let second = metablock(2, &validator_data);
+
+    let mut instance = mvba(leader_of(view(1)), &validator_data);
+    instance.propose(first.clone());
+    let outputs = drain(&mut instance);
+    assert_eq!(
+        proposed(&outputs).map(|proposal| &proposal.value),
+        Some(&first)
+    );
+    instance.propose(second.clone());
+    assert!(drain(&mut instance).is_empty(), "one input per instance");
+
+    // nor does the second input surface in a later view this validator leads
+    let mut instance = mvba(leader_of(view(2)), &validator_data);
+    instance.propose(first.clone());
+    instance.propose(second);
+    drain(&mut instance);
+    feed_timeouts(&mut instance, view(1), None, &quorum());
+    let outputs = drain(&mut instance);
+    assert_eq!(
+        proposed(&outputs).map(|proposal| &proposal.value),
+        Some(&first)
+    );
+}
+
+#[test]
+fn a_propose_after_an_invalid_one_is_ignored() {
+    let validator_data = validator_data();
+    let block = metablock(1, &validator_data);
+    // the same entries, certified for another slot
+    let block_entries = block.entries();
+    let elsewhere = Metablock::new(Lanes::new(NUM_LANES, |j| {
+        CertifiedEntry::FastQc(strong_qc(
+            ProposalScope::new(Slot(SLOT.get() + 1), j),
+            block_entries[j].clone(),
+            &quorum(),
+            &validator_data,
+        ))
+    }));
+
+    let mut instance = mvba(leader_of(view(1)), &validator_data);
+    instance.propose(elsewhere);
+    instance.propose(block);
+    assert!(
+        proposed(&drain(&mut instance)).is_none(),
+        "the first propose started the instance; the second is no input"
+    );
+    assert!(instance.input.is_none());
+}
+
+#[test]
+fn a_locked_leader_proposes_the_locked_block_not_its_offer() {
+    let validator_data = validator_data();
+    let own = metablock(1, &validator_data);
+    let locked = metablock(2, &validator_data);
+
+    let mut instance = started(leader_of(view(2)), &own, &validator_data);
+    let (leader, proposal) = pre_prepare(view(1), &locked, None);
+    instance.handle_message_from(leader, proposal);
+    assert_eq!(
+        prepared_entries(&drain(&mut instance)),
+        Some(locked.entries())
+    );
+
+    let qc = prepare_qc(view(1), &locked.entries(), &validator_data);
+    feed_timeouts(&mut instance, view(1), Some(qc), &quorum());
+    let outputs = drain(&mut instance);
+
+    let proposal = proposed(&outputs).expect("the locked block is held, so the leader proposes");
+    assert_eq!(proposal.view, view(2));
+    assert_eq!(
+        proposal.value, locked,
+        "the lock binds the leader, whatever it was offered"
+    );
+}
+
 // ---------------- the genericity pin ----------------
 
 /// A second value type, with nothing of a metablock about it: its projection is
@@ -1978,12 +2592,10 @@ mod toy_value {
         super::{
             super::{
                 super::types::{HeaderAuth, NodeId, ValidatorData, VoteMsg},
-                MVBAOutput, Mvba, ValidateCert, ValidateInput, Votable,
+                MVBAOutput, Mvba, ValidateInput, Votable,
             },
             MakesValidationContext, MonadMvba, MvbaContext, TimerEvent,
-            messages::{
-                FallbackCommitVote, Justification, MvbaMessage, PrePrepareMsg, PrepareVote,
-            },
+            messages::{FallbackCommitVote, MvbaMessage, PrePrepareMsg, PrepareVote},
             test_helpers::{
                 DELTA, NUM_LANES, SLOT, leader_of, nodes, quorum, validator_data, view,
             },
@@ -2002,10 +2614,6 @@ mod toy_value {
         fn validate(&self, (): &Self::Context) -> bool {
             true
         }
-
-        fn fbcert_optional(&self) -> bool {
-            false
-        }
     }
 
     impl Votable for TestValue {
@@ -2020,22 +2628,7 @@ mod toy_value {
         fn make_validation_context(&self) {}
     }
 
-    /// The certificate that admits this value type, sharing its empty context
-    #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-    struct TestCert;
-
-    impl ValidateCert for TestCert {
-        type Context = ();
-
-        fn validate(&self, (): &Self::Context) -> bool {
-            true
-        }
-    }
-
-    fn instance(
-        node: NodeId,
-        validator_data: &Arc<ValidatorData>,
-    ) -> MonadMvba<TestValue, TestCert> {
+    fn instance(node: NodeId, validator_data: &Arc<ValidatorData>) -> MonadMvba<TestValue> {
         MonadMvba::new(MvbaContext {
             slot: SLOT,
             num_lanes: NUM_LANES,
@@ -2061,16 +2654,11 @@ mod toy_value {
         let value = TestValue(7);
 
         let mut instance = instance(follower, &validator_data);
-        instance.propose(value.clone(), Some(TestCert));
+        instance.propose(value.clone());
         drain(&mut instance);
 
-        let proposal = PrePrepareMsg::new_signed(
-            SLOT,
-            view(1),
-            value.clone(),
-            Justification::FallbackCert(Some(TestCert)),
-            &leader.keypair(),
-        );
+        let proposal =
+            PrePrepareMsg::new_signed(SLOT, view(1), value.clone(), None, &leader.keypair());
         instance.handle_message_from(leader, MvbaMessage::PrePrepare(proposal));
         assert!(
             drain(&mut instance)
@@ -2114,8 +2702,8 @@ mod toy_value {
     /// `drain`, for this instantiation: the shared helper is typed at
     /// `V = Metablock`
     fn drain(
-        instance: &mut MonadMvba<TestValue, TestCert>,
-    ) -> Vec<MVBAOutput<MvbaMessage<TestValue, TestCert>, TimerEvent<TestValue>>> {
+        instance: &mut MonadMvba<TestValue>,
+    ) -> Vec<MVBAOutput<MvbaMessage<TestValue>, TimerEvent<TestValue>>> {
         std::iter::from_fn(|| instance.poll()).collect()
     }
 }
