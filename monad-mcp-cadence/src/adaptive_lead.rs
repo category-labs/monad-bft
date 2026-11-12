@@ -65,6 +65,14 @@ pub struct AdaptiveConfig {
     /// `W`: own slots whose standardized residuals set the self-calibrating
     /// margin (§5.4). 0: off.
     pub calib_window: usize,
+    /// `σ_c0`: spread of the shift common to all thresholds before any own
+    /// slot calibrated the model, ms (§5.4, common clock term). The
+    /// proposer's own clock offset enters the passive estimate with the
+    /// wrong sign, so all thresholds are off by `2 o_p` together. 0: off.
+    pub common_sd: f64,
+    /// `k0`: calibrated own slots over which the common spread halves its
+    /// variance, `σ_c = σ_c0 / √(1 + k / k0)`.
+    pub common_k0: f64,
     /// The residuals of the first own slots stay out of the margin's sample:
     /// below `1/ε` residuals `ŝ` is the largest one, and a warm-up outlier
     /// would pin it for `W` own slots.
@@ -97,6 +105,9 @@ impl Default for AdaptiveConfig {
             encode_ms_per_mb: 2.0,
             block_ms: 5.0,
             calib_window: 1000,
+            // three clock spreads of 4 ms
+            common_sd: 12.0,
+            common_k0: 4.0,
             calib_skip: 8,
         }
     }
@@ -135,6 +146,8 @@ pub struct LeadModel {
     seen: Vec<u32>,
     /// `(N − M)/√V` of the last `W` own slots
     residuals: VecDeque<f64>,
+    /// `k`: own slots whose votes calibrated the model
+    calibrated: u32,
     /// own-slot residuals offered so far, skipped ones included
     offered: usize,
 }
@@ -164,6 +177,7 @@ impl LeadModel {
             bias: vec![0.0; n],
             seen: vec![0; n],
             residuals: VecDeque::new(),
+            calibrated: 0,
             offered: 0,
         }
     }
@@ -238,6 +252,21 @@ impl LeadModel {
         }
         self.residuals
             .push_back((negative - mean) / libm::sqrt(var));
+    }
+
+    /// An own slot's votes have calibrated the model: the common term
+    /// (§5.4) shrinks.
+    pub fn observe_calibrated_slot(&mut self) {
+        self.calibrated = self.calibrated.saturating_add(1);
+    }
+
+    /// `σ_c = σ_c0 / √(1 + k / k0)`, ms.
+    pub fn common_sd(&self) -> f64 {
+        let config = &self.config;
+        if config.common_sd <= 0.0 {
+            return 0.0;
+        }
+        config.common_sd / libm::sqrt(1.0 + f64::from(self.calibrated) / config.common_k0)
     }
 
     /// `ŝ`: the `(⌊ε·len⌋ + 1)`-th largest residual; 0 below 50 samples.
@@ -344,10 +373,13 @@ impl LeadModel {
     // With blocks, `V = Σ_b (Σ_{v∈b} w_v √(q_v (1 − q_v)))²`: the votes of a
     // block move together. Singleton blocks give the independent
     // `Σ w_v² q_v (1 − q_v)`. Validators without history have q = 1 and add
-    // no variance either way.
+    // no variance either way. The common clock term adds `(dM/dL · σ_c)²`:
+    // a shift of every threshold by `σ_c` moves `M` by its slope in `L`.
     fn risk_in(&self, lead: f64, extra: &[f64], blocks: Option<&[(i64, usize)]>) -> (f64, f64) {
+        let common = self.common_sd();
         let mut mean = 0.0;
         let mut var = 0.0;
+        let mut slope = 0.0;
         for (v, &w) in self.stake.iter().enumerate() {
             if w == 0.0 {
                 continue;
@@ -357,7 +389,13 @@ impl LeadModel {
             if blocks.is_none() {
                 var += w * w * q * (1.0 - q);
             }
+            if common > 0.0 && self.seen[v] > 0 {
+                let sigma = self.sigma(v);
+                let z = (lead - (self.mu[v] + self.bias[v] + extra[v])) / sigma;
+                slope += w * FRAC_1_SQRT_2PI * libm::exp(-0.5 * z * z) / sigma;
+            }
         }
+        var += (slope * common) * (slope * common);
         if let Some(blocks) = blocks {
             for block in blocks.chunk_by(|a, b| a.0 == b.0) {
                 let sd: f64 = block
@@ -486,12 +524,51 @@ mod tests {
         );
     }
 
+    // the bare rule: independent votes, no common clock term
     fn independent() -> AdaptiveConfig {
         AdaptiveConfig {
             block_ms: 0.0,
+            common_sd: 0.0,
             calib_skip: 0,
             ..AdaptiveConfig::default()
         }
+    }
+
+    // the reference model with σ_c0 = 12 ms and k0 = 4 on the default
+    // fixture: the common term lengthens the cold lead, and shrinks with
+    // each calibrated own slot
+    #[test]
+    fn common_clock_term_matches_the_reference() {
+        let config = AdaptiveConfig {
+            common_sd: 12.0,
+            common_k0: 4.0,
+            ..independent()
+        };
+        let mut model = LeadModel::new(config, &STAKES, Some(0));
+        for k in 0..60 {
+            let wobble = libm::sin(0.7 * f64::from(k) + 0.3);
+            for v in 1..STAKES.len() {
+                model.observe_arrival(v, BASE[v] + WOBBLE[v] * wobble);
+            }
+        }
+        let extra = model.extra_ms(&model.send_order(), PAYLOAD);
+        let plan = model.plan(&extra);
+        close(plan.lead, 131.68900735399802, 1e-3);
+        let (mean, var) = model.risk(131.68900735399802, &extra);
+        close(mean, 0.012618354056533288, 1e-6);
+        close(var, 0.0059008152393014695, 1e-6);
+
+        let positive = [true, true, true, false, true, false, true, true];
+        for v in 1..STAKES.len() {
+            model.observe_vote(v, positive[v], plan.lead, extra[v]);
+        }
+        model.observe_calibrated_slot();
+        close(model.bias[5], 7.854614378438901, 1e-3);
+        let extra = model.extra_ms(&model.send_order(), PAYLOAD);
+        close(model.plan(&extra).lead, 110.86772415492305, 1e-3);
+        // off, it is the bare rule
+        let bare = LeadModel::new(independent(), &STAKES, Some(0));
+        assert_eq!(bare.common_sd(), 0.0);
     }
 
     fn warm_model() -> LeadModel {
@@ -609,18 +686,22 @@ mod tests {
             model.plan(&model.extra_ms(&order, 10_000)).lead
         };
         close(lead(&warm(independent())), 83.24761995645531, 1e-3);
-        close(
-            lead(&warm(AdaptiveConfig::default())),
-            85.35242986945377,
-            1e-3,
-        );
+        let blocks = AdaptiveConfig {
+            common_sd: 0.0,
+            ..AdaptiveConfig::default()
+        };
+        close(lead(&warm(blocks)), 85.35242986945377, 1e-3);
     }
 
     #[test]
     fn singleton_blocks_are_the_independent_variance() {
         // the default fixture's validators are at least 5 ms apart
         let independent = warm_model();
-        let mut blocks = LeadModel::new(AdaptiveConfig::default(), &STAKES, Some(0));
+        let config = AdaptiveConfig {
+            common_sd: 0.0,
+            ..AdaptiveConfig::default()
+        };
+        let mut blocks = LeadModel::new(config, &STAKES, Some(0));
         blocks.mu = independent.mu.clone();
         blocks.dev = independent.dev.clone();
         blocks.seen = independent.seen.clone();
