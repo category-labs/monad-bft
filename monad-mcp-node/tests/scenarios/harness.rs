@@ -22,12 +22,17 @@ use std::{
     time::Duration,
 };
 
-use monad_mcp_cadence::spec::ProposalHeader as _;
+use monad_mcp_cadence::spec::{Deserializable as _, ProposalHeader as _};
 use monad_mcp_common::{Lane, Lanes, Slot, Timestamp, TimestampDelta};
 use monad_mcp_node::{
     Component, NodeOutput,
-    cadence::{Outbound, slot::chorus::FinalizationPath, types::ProposalId},
+    cadence::{
+        CadenceMessage, Outbound,
+        slot::chorus::{ChorusMessage, FinalizationPath},
+        types::ProposalId,
+    },
     common::NodeId,
+    component::CadenceWireMsg,
     config::{
         CadenceConfig, DAConfig, LedgerConfig, NetworkConfig, NodeConfig, ProposalConfig,
         RepeaterSection, ValidatorConfig,
@@ -89,7 +94,13 @@ pub struct Records {
     // per (slot, lane), the first-hop chunks this node received from the
     // lane's proposer: the proposer, and the arrival times
     pub first_hop_in: BTreeMap<(Slot, Lane), (NodeId, Vec<Time>)>,
+    // per own slot, each peer's first batch vote: its arrival time, and
+    // whether its entry for the own lane is positive
+    pub votes_in: BTreeMap<Slot, BTreeMap<NodeId, (Time, bool)>>,
 }
+
+// batch votes on an own slot come in up to this many slots after it
+const VOTE_SLOTS: u64 = 8;
 
 // a node as a monad-sim process, boxed so one swarm can mix node kinds
 pub struct SimNode {
@@ -310,7 +321,7 @@ impl SimNode {
     }
 
     // a recording node's view of a delivery: first-hop chunks of others'
-    // proposals
+    // proposals, and the batch votes on its own recent slots
     fn record_inbound(&mut self, at: Time, from: NodeId, message: &SimMessage) {
         let Some(records) = &mut self.records else {
             return;
@@ -327,6 +338,27 @@ impl SimNode {
                     .entry(key)
                     .or_insert_with(|| (from, Vec::new()));
                 times.push(at);
+            }
+            NodeMessage::Cadence(bytes) => {
+                let recent = self
+                    .first_hops
+                    .keys()
+                    .next_back()
+                    .is_some_and(|last| time_of(deadline_of_slot(last.0 + VOTE_SLOTS)) >= at);
+                if !recent {
+                    return;
+                }
+                let Ok(CadenceMessage::Slot(ChorusMessage::BatchVote(vote))) =
+                    CadenceWireMsg::deserialize(bytes)
+                else {
+                    return;
+                };
+                let Some((_, lane)) = self.first_hops.get(&vote.slot()) else {
+                    return;
+                };
+                let positive = vote.positive_lanes().get(usize::from(*lane)) == Some(&true);
+                let votes = records.votes_in.entry(vote.slot()).or_default();
+                votes.entry(from).or_insert((at, positive));
             }
             _ => {}
         }
