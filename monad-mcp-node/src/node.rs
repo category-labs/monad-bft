@@ -25,7 +25,8 @@ use crate::{
     RunError,
     cadence::{SlotManager, conductor::CadenceConductor, slot::chorus::ChorusMessage},
     component::{
-        Cadence, Component, DA, Mempool, MempoolProposing, Proposing, RandomProposing, Repeater,
+        Cadence, Component, DA, Mempool, MempoolProposing, Proposing, ProposingComponent as _,
+        RandomProposing, Repeater,
     },
     config::{NodeConfig, SourceKind},
     da::DARuntime,
@@ -82,6 +83,7 @@ impl Node {
                 Box::new(proposing)
             }
         };
+        let observe_votes = proposing.wants_vote_facts();
         let repeater = config.repeater().map(Repeater::new);
         let collector = FinalizationCollector::default();
 
@@ -93,10 +95,19 @@ impl Node {
             repeater,
         };
         Ok(Self {
-            router: NodeRouter::new(epoch_handle, config),
+            router: NodeRouter::new(epoch_handle, config).observe_votes(observe_votes),
             parts,
             outbox: VecDeque::new(),
         })
+    }
+
+    // the same node with a wrapped or replaced proposer, for scenarios; the
+    // router copies batch votes to it if it wants them
+    pub fn map_proposing(mut self, wrap: impl FnOnce(Proposing) -> Proposing) -> Self {
+        self.parts.proposing = wrap(self.parts.proposing);
+        let observe_votes = self.parts.proposing.wants_vote_facts();
+        self.router = self.router.observe_votes(observe_votes);
+        self
     }
 
     // the same components under a wrapped router, for scenarios
@@ -112,12 +123,6 @@ impl Node {
 impl<R> Node<R> {
     pub fn router(&self) -> &R {
         &self.router
-    }
-
-    // the same node with a wrapped or replaced proposer, for scenarios
-    pub fn map_proposing(mut self, wrap: impl FnOnce(Proposing) -> Proposing) -> Self {
-        self.parts.proposing = wrap(self.parts.proposing);
-        self
     }
 }
 

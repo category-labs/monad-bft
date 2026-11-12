@@ -26,3 +26,4 @@ mod mute;
 mod priority;
 mod records;
 mod tamper;
+mod vote_facts;

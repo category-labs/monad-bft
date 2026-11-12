@@ -35,7 +35,10 @@ pub use self::{
     da::{DA, DAInput},
     finalization::FinalizationInput,
     mempool::Mempool,
-    proposing::{MempoolProposing, Proposing, ProposingInput, ProposingOutput, RandomProposing},
+    proposing::{
+        MempoolProposing, Proposing, ProposingComponent, ProposingInput, ProposingOutput,
+        RandomProposing,
+    },
     repeater::{Recipients, Repeater, RepeaterConfig, RepeaterInput, RepeaterOutput},
 };
 use crate::clock::Clock;

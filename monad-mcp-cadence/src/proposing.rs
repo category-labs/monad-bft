@@ -64,9 +64,12 @@
 
 use std::{collections::BTreeMap, sync::Arc};
 
-use tracing::{info, warn};
+use tracing::{info, trace, warn};
 
-use super::types::{Lane, NodeId, ProposerSchedule, Slot, Timestamp, TimestampDelta};
+use super::{
+    slot::chorus::FinalizationPath,
+    types::{Lane, Lanes, NodeId, ProposerSchedule, Slot, Timestamp, TimestampDelta},
+};
 
 /// Timing parameters of the proposal planner. Node-local policy, not
 /// protocol: a bad value costs proposals, never consensus.
@@ -172,6 +175,30 @@ impl ProposalPlanner {
             self.pending.remove(&slot);
         }
         self.drop_late(now);
+    }
+
+    /// Fact: `voter`'s batch vote for `slot` arrived at `at`, with `positive`
+    /// its entry per lane. Every copy is reported (the repeater re-sends);
+    /// only the first is a sample. A validator that saw a fast block before
+    /// its deadline sends no batch vote: missing, not negative.
+    pub fn handle_batch_vote(
+        &mut self,
+        slot: Slot,
+        voter: &NodeId,
+        at: Timestamp,
+        positive: &Lanes<bool>,
+    ) {
+        trace!(?slot, ?voter, ?at, ?positive, "batch vote observed");
+    }
+
+    /// Fact: `slot` finalized, committing the `committed` lanes over `path`.
+    pub fn handle_finalized(
+        &mut self,
+        slot: Slot,
+        committed: &Lanes<bool>,
+        path: FinalizationPath,
+    ) {
+        trace!(?slot, ?committed, ?path, "slot finalized");
     }
 
     /// When `poll` may next seal. May already be in the past (a seal

@@ -29,7 +29,7 @@ use monad_mcp_node::{
     Component, FinalizedSlot, Node, NodeOutput, NodeRouter, Router,
     cadence::slot::chorus::ChorusMessage,
     common::NodeId,
-    component::{Proposing, ProposingInput, ProposingOutput},
+    component::{Proposing, ProposingComponent, ProposingInput, ProposingOutput},
     config::{NodeConfig, SourceKind},
     ledger::new_block,
     network::{NodeInbound, NodeMessage, NodeOutbound},
@@ -266,6 +266,12 @@ fn a_random_source_node_drops_txs() {
 struct DropFirstBatch {
     inner: Proposing,
     dropped: Arc<OnceLock<u64>>,
+}
+
+impl ProposingComponent for DropFirstBatch {
+    fn wants_vote_facts(&self) -> bool {
+        self.inner.wants_vote_facts()
+    }
 }
 
 impl Component for DropFirstBatch {

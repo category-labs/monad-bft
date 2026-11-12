@@ -18,6 +18,7 @@ use monad_mcp_common::Timestamp;
 
 use crate::{
     cadence::{CadenceMessage, Outbound, SlotLifecycle, slot::chorus::ChorusMessage},
+    common::NodeId,
     component::{
         CadenceInput, CadenceOutput, CadenceWireMsg, DAInput, FinalizationInput, ProposingInput,
         ProposingOutput, Recipients, RepeaterInput, RepeaterOutput,
@@ -73,6 +74,8 @@ pub struct NodeRouter {
     epoch_handle: EpochHandle,
     // the scheme our proposals go to DA under
     proposal_scheme: ProposalScheme,
+    // copy every inbound batch vote to proposing (`ProposingInput::BatchVote`)
+    observe_votes: bool,
 }
 
 impl NodeRouter {
@@ -80,7 +83,16 @@ impl NodeRouter {
         Self {
             epoch_handle,
             proposal_scheme: config.proposal.encoding_scheme,
+            observe_votes: false,
         }
+    }
+
+    // proposing sees every peer's batch vote with its arrival time, for a
+    // proposing component that wants them (`wants_vote_facts`). Off, the
+    // router emits exactly what it did before
+    pub fn observe_votes(mut self, observe: bool) -> Self {
+        self.observe_votes = observe;
+        self
     }
 
     pub fn epoch_handle(&self) -> &EpochHandle {
@@ -122,7 +134,7 @@ impl NodeRouter {
                 let path = finalization.path();
                 tracing::debug!(slot = slot.0, ?path, committed, "cadence finalized");
                 let positive = finalization.pids().map(|pid| pid.is_some());
-                let input = ProposingInput::Finalized(slot, positive);
+                let input = ProposingInput::Finalized(slot, positive, path);
                 sink.send(Routed::Proposing(input));
                 let certificate = finalization.certificate_message();
                 sink.send(Routed::Repeater(RepeaterInput::Finalization(certificate)));
@@ -175,7 +187,9 @@ impl NodeRouter {
 impl Router for NodeRouter {
     fn route(&mut self, now: Timestamp, effect: Effect, sink: &mut impl Sink<Routed>) {
         match effect {
-            Effect::Network(inbound) => route_inbound(now, inbound, sink),
+            Effect::Network(inbound) => {
+                route_inbound(now, inbound, self.observe_votes, sink);
+            }
             Effect::Cadence(output) => self.route_cadence(output, sink),
             Effect::DA(output) => route_da(now, output, sink),
             Effect::Proposing(proposal) => route_proposal(self.proposal_scheme, proposal, sink),
@@ -185,7 +199,33 @@ impl Router for NodeRouter {
     }
 }
 
-fn route_inbound(now: Timestamp, inbound: NodeInbound, sink: &mut impl Sink<Routed>) {
+// the arrival time of a peer's batch vote, at the router: in the async node
+// the time the network task handed it over, not the Cadence task's dequeue.
+// Every copy goes out, the repeater's too; proposing keeps the first.
+fn observe_vote(
+    now: Timestamp,
+    from: NodeId,
+    message: &CadenceWireMsg,
+    sink: &mut impl Sink<Routed>,
+) {
+    let CadenceMessage::Slot(ChorusMessage::BatchVote(vote)) = message else {
+        return;
+    };
+    let input = ProposingInput::BatchVote {
+        slot: vote.slot(),
+        from,
+        at: now,
+        positive: vote.positive_lanes(),
+    };
+    sink.send(Routed::Proposing(input));
+}
+
+fn route_inbound(
+    now: Timestamp,
+    inbound: NodeInbound,
+    observe_votes: bool,
+    sink: &mut impl Sink<Routed>,
+) {
     use monad_mcp_cadence::spec::Deserializable as _;
 
     let NodeInbound { from, message } = inbound;
@@ -195,6 +235,9 @@ fn route_inbound(now: Timestamp, inbound: NodeInbound, sink: &mut impl Sink<Rout
                 tracing::debug!(?from, "malformed cadence message");
                 return;
             };
+            if observe_votes {
+                observe_vote(now, from, &message, sink);
+            }
             // todo: signature checks for a transport that does
             // not authenticate the sender.
 
