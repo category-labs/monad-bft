@@ -56,6 +56,10 @@ pub struct AdaptiveConfig {
     pub uplink_bytes_per_ms: f64,
     /// Encode time `e(P)`, ms per MB of payload.
     pub encode_ms_per_mb: f64,
+    /// Width `β` of the latency blocks whose votes the risk rule treats as
+    /// fully correlated, ms (§5.4): validators with the same `⌊R̂_v / β⌋`
+    /// share one block. 0: every vote independent.
+    pub block_ms: f64,
 }
 
 impl Default for AdaptiveConfig {
@@ -82,6 +86,7 @@ impl Default for AdaptiveConfig {
             // 1 Gb/s
             uplink_bytes_per_ms: 125_000.0,
             encode_ms_per_mb: 2.0,
+            block_ms: 5.0,
         }
     }
 }
@@ -269,6 +274,33 @@ impl LeadModel {
 
     /// `M(L)` and `V(L)` (§5.4) with `extra[v]` the encode-plus-upload term.
     pub fn risk(&self, lead: f64, extra: &[f64]) -> (f64, f64) {
+        self.risk_in(lead, extra, self.blocks(extra).as_deref())
+    }
+
+    /// The validators with history, sorted by latency block `⌊R̂_v / β⌋`;
+    /// None when every vote counts as independent. `R̂_v` does not depend
+    /// on the lead, so one partition serves a whole bisection.
+    fn blocks(&self, extra: &[f64]) -> Option<Vec<(i64, usize)>> {
+        let width = self.config.block_ms;
+        if width <= 0.0 {
+            return None;
+        }
+        let mut blocks: Vec<(i64, usize)> = (0..self.len())
+            .filter(|&v| self.stake[v] > 0.0 && self.seen[v] > 0)
+            .map(|v| {
+                let r = self.mu[v] + self.bias[v] + extra[v];
+                (libm::floor(r / width) as i64, v)
+            })
+            .collect();
+        blocks.sort_unstable();
+        Some(blocks)
+    }
+
+    // With blocks, `V = Σ_b (Σ_{v∈b} w_v √(q_v (1 − q_v)))²`: the votes of a
+    // block move together. Singleton blocks give the independent
+    // `Σ w_v² q_v (1 − q_v)`. Validators without history have q = 1 and add
+    // no variance either way.
+    fn risk_in(&self, lead: f64, extra: &[f64], blocks: Option<&[(i64, usize)]>) -> (f64, f64) {
         let mut mean = 0.0;
         let mut var = 0.0;
         for (v, &w) in self.stake.iter().enumerate() {
@@ -277,7 +309,21 @@ impl LeadModel {
             }
             let q = self.q(v, lead, extra[v]);
             mean += w * q;
-            var += w * w * q * (1.0 - q);
+            if blocks.is_none() {
+                var += w * w * q * (1.0 - q);
+            }
+        }
+        if let Some(blocks) = blocks {
+            for block in blocks.chunk_by(|a, b| a.0 == b.0) {
+                let sd: f64 = block
+                    .iter()
+                    .map(|&(_, v)| {
+                        let q = self.q(v, lead, extra[v]);
+                        self.stake[v] * libm::sqrt(q * (1.0 - q))
+                    })
+                    .sum();
+                var += sd * sd;
+            }
         }
         (mean, var)
     }
@@ -303,8 +349,9 @@ impl LeadModel {
     /// [`L_min`, `L_max`]. Infeasible at `L_max`: `L_max`.
     pub fn plan(&self, extra: &[f64]) -> LeadPlan {
         let target = self.config.theta - self.config.reserve;
+        let blocks = self.blocks(extra);
         let bound = |lead: f64| {
-            let (mean, var) = self.risk(lead, extra);
+            let (mean, var) = self.risk_in(lead, extra, blocks.as_deref());
             (mean, mean + self.z * libm::sqrt(var))
         };
         let (mut lo, mut hi) = (0.0, 600.0);
@@ -388,8 +435,15 @@ mod tests {
         );
     }
 
+    fn independent() -> AdaptiveConfig {
+        AdaptiveConfig {
+            block_ms: 0.0,
+            ..AdaptiveConfig::default()
+        }
+    }
+
     fn warm_model() -> LeadModel {
-        let mut model = LeadModel::new(AdaptiveConfig::default(), &STAKES, Some(0));
+        let mut model = LeadModel::new(independent(), &STAKES, Some(0));
         for k in 0..60 {
             let wobble = libm::sin(0.7 * f64::from(k) + 0.3);
             for v in 1..STAKES.len() {
@@ -478,6 +532,52 @@ mod tests {
         close(model.plan(&extra).lead, 110.6089096821961, 1e-3);
         let extra = model.extra_ms(&model.send_order(), 10_000);
         close(model.plan(&extra).lead, 101.64675267278653, 1e-3);
+    }
+
+    // the reference model without and with 5 ms blocks, on a fixture whose far
+    // cluster (validators 3, 6, 7: 0.45 of the stake) shares one 5 ms block
+    // at a 10 kB payload
+    #[test]
+    fn block_variance_matches_the_reference() {
+        const CLUSTERED: [f64; 8] = [0.0, 10.0, 12.0, 75.0, 11.0, 50.0, 76.0, 77.0];
+        const WOBBLE: [f64; 8] = [0.0, 0.5, -0.4, 0.6, 0.3, -0.8, 0.2, 0.5];
+        let warm = |config| {
+            let mut model = LeadModel::new(config, &STAKES, Some(0));
+            for k in 0..60 {
+                let wobble = libm::sin(0.7 * f64::from(k) + 0.3);
+                for v in 1..STAKES.len() {
+                    model.observe_arrival(v, CLUSTERED[v] + WOBBLE[v] * wobble);
+                }
+            }
+            model
+        };
+        let lead = |model: &LeadModel| {
+            let order = model.send_order();
+            assert_eq!(order, [6, 3, 5, 2, 4, 1, 7]);
+            model.plan(&model.extra_ms(&order, 10_000)).lead
+        };
+        close(lead(&warm(independent())), 83.24761995645531, 1e-3);
+        close(
+            lead(&warm(AdaptiveConfig::default())),
+            85.35242986945377,
+            1e-3,
+        );
+    }
+
+    #[test]
+    fn singleton_blocks_are_the_independent_variance() {
+        // the default fixture's validators are at least 5 ms apart
+        let independent = warm_model();
+        let mut blocks = LeadModel::new(AdaptiveConfig::default(), &STAKES, Some(0));
+        blocks.mu = independent.mu.clone();
+        blocks.dev = independent.dev.clone();
+        blocks.seen = independent.seen.clone();
+        let extra = vec![0.0; STAKES.len()];
+        for lead in [60.0, 80.0, 100.0, 125.0] {
+            let (_, a) = independent.risk(lead, &extra);
+            let (_, b) = blocks.risk(lead, &extra);
+            close(b, a, 1e-15);
+        }
     }
 
     #[test]
