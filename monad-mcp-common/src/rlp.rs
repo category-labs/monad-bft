@@ -35,6 +35,12 @@ impl Encodable for RlpNone {
 /// for `Option`, and a bare item could itself encode as the empty list
 pub struct RlpOption<T>(pub Option<T>);
 
+impl<T> RlpOption<T> {
+    pub fn into_inner(self) -> Option<T> {
+        self.0
+    }
+}
+
 impl<T: Encodable> Encodable for RlpOption<T> {
     fn encode(&self, out: &mut dyn BufMut) {
         match &self.0 {
@@ -86,13 +92,13 @@ mod tests {
         assert_eq!(none, encoded(&RlpNone));
 
         let decoded = RlpOption::<Vec<u64>>::decode(&mut none.as_slice()).unwrap();
-        assert_eq!(decoded.0, None);
+        assert_eq!(decoded.into_inner(), None);
         let decoded = RlpOption::<Vec<u64>>::decode(&mut empty.as_slice()).unwrap();
-        assert_eq!(decoded.0, Some(vec![]));
+        assert_eq!(decoded.into_inner(), Some(vec![]));
 
         let some = encoded(&RlpOption(Some(vec![1u64, 2])));
         let decoded = RlpOption::<Vec<u64>>::decode(&mut some.as_slice()).unwrap();
-        assert_eq!(decoded.0, Some(vec![1, 2]));
+        assert_eq!(decoded.into_inner(), Some(vec![1, 2]));
     }
 
     #[test]

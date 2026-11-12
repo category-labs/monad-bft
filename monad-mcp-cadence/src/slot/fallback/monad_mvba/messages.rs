@@ -457,7 +457,7 @@ where
             slot: <Slot as Decodable>::decode(&mut payload)?,
             view: <FallbackView as Decodable>::decode(&mut payload)?,
             value: <V as Decodable>::decode(&mut payload)?,
-            tc: RlpOption::decode(&mut payload)?.0,
+            tc: RlpOption::decode(&mut payload)?.into_inner(),
             signature: <Signature as Decodable>::decode(&mut payload)?,
         };
         if !payload.is_empty() {
