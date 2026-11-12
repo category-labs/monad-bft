@@ -19,6 +19,7 @@
 /// expose the selected env implementation
 use super::env;
 
+pub mod adaptive_lead;
 pub mod conductor;
 pub mod da;
 pub mod message;
