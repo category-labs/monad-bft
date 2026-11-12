@@ -64,7 +64,7 @@
 
 use std::{collections::BTreeMap, sync::Arc};
 
-use tracing::{info, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use super::{
     adaptive_lead::{AdaptiveConfig, LeadModel},
@@ -163,20 +163,47 @@ struct OwnSlot {
     lead: f64,
     // encode-plus-upload per validator index, ms, under the order used
     extra: Vec<f64>,
-    // `M` and `V` at the lead used, for the residual
-    predicted_negative: f64,
+    // `V` at the lead used, for the residual
     var: f64,
-    // stake that voted no on the lane, and yes
-    negative: f64,
-    positive: f64,
     // the first-hop send order handed to DA
     order: Vec<NodeId>,
+    report: OwnSlotReport,
 }
 
-// own slots are settled (their residual taken) this many slots below the
-// cap: by then the slot and its successors finalized, and the late batch
-// votes are in
-const SETTLE_SLOTS: u64 = 4;
+/// What the adaptive lead planned for an own slot, and what came of it: the
+/// planner's observability, logged once per own slot as one structured line
+/// (`adaptive lead: own slot`) once its late votes are in.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OwnSlotReport {
+    pub slot: Slot,
+    pub lane: Lane,
+    /// `L*` as planned at the seal, and the lead actually used (shorter when
+    /// a gate released the seal late), ms
+    pub planned_lead: f64,
+    pub lead: f64,
+    /// false: no lead up to `L_max` met the target, `L_max` was planned
+    pub feasible: bool,
+    /// `M`, `√V` and `M + z√V` at the lead used, with `z` the margin's
+    /// `max(z, ŝ)` at the seal
+    pub predicted_negative: f64,
+    pub predicted_sd: f64,
+    pub predicted_bound: f64,
+    /// stake of the send order's core set
+    pub core_stake: f64,
+    /// stake that voted no on the lane, voted yes, and sent no batch vote
+    pub negative: f64,
+    pub positive: f64,
+    pub missing: f64,
+    /// a re-plan moved the due time into the past: sealed at once
+    pub replan_late: bool,
+    /// how the slot finalized, and whether the lane committed
+    pub path: Option<FinalizationPath>,
+    pub committed: Option<bool>,
+}
+
+// own slots are reported this many slots below the cap: by then the slot
+// and its successors finalized, and the late batch votes are in
+const REPORT_SLOTS: u64 = 4;
 
 impl Adaptive {
     fn new(setup: AdaptiveSetup, validators: Arc<ValidatorData>, me: &NodeId) -> Self {
@@ -240,9 +267,27 @@ impl Adaptive {
         if !self.warm() {
             return;
         }
-        let order = self.model.send_order();
+        let (order, core_stake) = self.model.send_order_with_core();
         let extra = self.model.extra_ms(&order, self.setup.payload_bytes);
-        let (predicted_negative, var, _) = self.model.bound(ms_of(lead), &extra);
+        let plan = self.model.plan(&extra);
+        let (predicted_negative, var, predicted_bound) = self.model.bound(ms_of(lead), &extra);
+        let report = OwnSlotReport {
+            slot,
+            lane,
+            planned_lead: plan.lead,
+            lead: ms_of(lead),
+            feasible: plan.feasible,
+            predicted_negative,
+            predicted_sd: libm::sqrt(var),
+            predicted_bound,
+            core_stake,
+            negative: 0.0,
+            positive: 0.0,
+            missing: 0.0,
+            replan_late: false,
+            path: None,
+            committed: None,
+        };
         let order = order
             .into_iter()
             .filter_map(ValidatorIndex::new)
@@ -256,11 +301,9 @@ impl Adaptive {
                 counted: false,
                 lead: ms_of(lead),
                 extra,
-                predicted_negative,
                 var,
-                negative: 0.0,
-                positive: 0.0,
                 order,
+                report,
             },
         );
     }
@@ -300,9 +343,9 @@ impl Adaptive {
         {
             let stake = self.model.stake(v);
             if positive {
-                own.positive += stake;
+                own.report.positive += stake;
             } else {
-                own.negative += stake;
+                own.report.negative += stake;
             }
             self.model.observe_vote(v, positive, own.lead, own.extra[v]);
             return true;
@@ -314,7 +357,7 @@ impl Adaptive {
     fn count_calibrated(&mut self, now: Timestamp) {
         let after = self.setup.votes_in_after;
         for own in self.own.values_mut() {
-            let voted = own.negative + own.positive > 0.0;
+            let voted = own.report.negative + own.report.positive > 0.0;
             if !own.counted
                 && voted
                 && own
@@ -333,15 +376,55 @@ impl Adaptive {
         self.slots = self.slots.split_off(&keep);
         let kept = self
             .own
-            .split_off(&Slot(cap.get().saturating_sub(SETTLE_SLOTS)));
+            .split_off(&Slot(cap.get().saturating_sub(REPORT_SLOTS)));
         for (_, own) in std::mem::replace(&mut self.own, kept) {
+            let report = own.report;
             self.model
-                .observe_residual(own.negative, own.predicted_negative, own.var);
+                .observe_residual(report.negative, report.predicted_negative, own.var);
             // counted when its votes were in; at the latest here
-            if !own.counted && own.negative + own.positive > 0.0 {
+            if !own.counted && report.negative + report.positive > 0.0 {
                 self.model.observe_calibrated_slot();
             }
+            self.report(report);
         }
+    }
+}
+
+impl Adaptive {
+    fn finalized(&mut self, slot: Slot, committed: &Lanes<bool>, path: FinalizationPath) {
+        if let Some(own) = self.own.get_mut(&slot) {
+            own.report.path = Some(path);
+            own.report.committed = committed.get(usize::from(own.lane)).copied();
+        }
+    }
+
+    fn report(&self, mut report: OwnSlotReport) {
+        let others: f64 = (0..self.model.len()).map(|v| self.model.stake(v)).sum();
+        report.missing = (others - report.negative - report.positive).max(0.0);
+        info!(
+            slot = report.slot.get(),
+            lane = usize::from(report.lane),
+            planned_lead_ms = report.planned_lead,
+            lead_ms = report.lead,
+            feasible = report.feasible,
+            predicted_negative = report.predicted_negative,
+            predicted_sd = report.predicted_sd,
+            predicted_bound = report.predicted_bound,
+            core_stake = report.core_stake,
+            negative = report.negative,
+            positive = report.positive,
+            missing = report.missing,
+            calibrated_tail = self.model.calibrated_tail(),
+            replan_late = report.replan_late,
+            path = ?report.path,
+            committed = ?report.committed,
+            "adaptive lead: own slot"
+        );
+        debug!(
+            slot = report.slot.get(),
+            r_hat = ?(0..self.model.len()).map(|v| self.model.r_hat(v)).collect::<Vec<_>>(),
+            "adaptive lead: per-validator estimates"
+        );
     }
 }
 
@@ -358,6 +441,8 @@ struct PendingSeal {
     deadline: Timestamp,
     /// `deadline − lead`, clamped to the open time: never in the past.
     due: Timestamp,
+    /// A re-plan wanted a due already past: the seal is due at once.
+    replan_late: bool,
 }
 
 /// See the module docs.
@@ -441,6 +526,7 @@ impl ProposalPlanner {
                 lane,
                 deadline,
                 due,
+                replan_late: false,
             },
         );
     }
@@ -486,7 +572,9 @@ impl ProposalPlanner {
         };
         for pending in self.pending.values_mut() {
             if pending.due > now {
-                pending.due = pending.deadline.saturating_sub_delta(lead).max(now);
+                let due = pending.deadline.saturating_sub_delta(lead);
+                pending.replan_late = due < now;
+                pending.due = due.max(now);
             }
         }
     }
@@ -521,6 +609,9 @@ impl ProposalPlanner {
         path: FinalizationPath,
     ) {
         trace!(?slot, ?committed, ?path, "slot finalized");
+        if let Some(adaptive) = &mut self.adaptive {
+            adaptive.finalized(slot, committed, path);
+        }
     }
 
     /// When `poll` may next seal. May already be in the past (a seal
@@ -550,6 +641,9 @@ impl ProposalPlanner {
                 .duration_since(now)
                 .unwrap_or(TimestampDelta::ZERO);
             adaptive.sealed(slot, pending.lane, pending.deadline, lead);
+            if let Some(own) = adaptive.own.get_mut(&slot) {
+                own.report.replan_late = pending.replan_late;
+            }
         }
         Some((slot, pending.lane))
     }
@@ -1092,7 +1186,7 @@ mod tests {
         }
 
         #[test]
-        fn an_own_slot_tallies_no_and_yes_and_settles() {
+        fn an_own_slot_report_splits_no_from_missing() {
             let mut planner = adaptive_planner(MIN_LEAD);
             warm_up(&mut planner, 20);
             open(&mut planner, [30]);
@@ -1105,16 +1199,21 @@ mod tests {
             let no_on_ours = Lanes::new(2, |lane| usize::from(lane) == 0);
             planner.handle_batch_vote(Slot(30), &NodeId::dummy(3), at, &no_on_ours);
             vote(&mut planner, 30, 1, ARRIVAL_MS);
-            // validator 2 saw a fast block first: no batch vote, so neither
+            // validator 2 saw a fast block first: no batch vote
+            let committed = Lanes::new(2, |_| true);
+            planner.handle_finalized(Slot(30), &committed, FinalizationPath::Fast);
 
             let adaptive = planner.adaptive.as_ref().unwrap();
-            let own = &adaptive.own[&Slot(30)];
-            assert_eq!(own.negative, 0.25);
-            assert_eq!(own.positive, 0.25);
-            assert!(own.var > 0.0);
+            let report = &adaptive.own[&Slot(30)].report;
+            assert_eq!(report.negative, 0.25);
+            assert_eq!(report.positive, 0.25);
+            assert_eq!(report.path, Some(FinalizationPath::Fast));
+            assert_eq!(report.committed, Some(true));
+            assert!(report.feasible);
+            assert!((report.lead - report.planned_lead).abs() < 1e-6);
+            assert!(report.core_stake > 0.0);
 
-            // settled (its residual taken) and dropped once the cap is far
-            // enough past
+            // reported and dropped once the cap is far enough past
             planner.handle_cap_advance(deadline(35), Slot(35));
             assert!(planner.adaptive.as_ref().unwrap().own.is_empty());
         }
