@@ -42,7 +42,7 @@ use monad_mcp_node::{
 };
 use monad_sim::{CancelToken, ClockDiff, Ctx, Handle, StepLabel, Time};
 use monad_sim_swarm::{
-    LatencyMatrix, Net, Network, Parallel, Placer, Provenance, RegionTable, SimClient, Swarm,
+    LatencyMatrix, Link, Net, Network, Parallel, Placer, Provenance, RegionTable, SimClient, Swarm,
 };
 use rand::{Rng as _, SeedableRng as _, distributions::Uniform};
 use rand_chacha::ChaCha8Rng;
@@ -301,6 +301,10 @@ impl SimNode {
 
     pub fn records(&self) -> Option<&Records> {
         self.records.as_ref()
+    }
+
+    pub fn clock_offset(&self) -> ClockDiff {
+        self.clock_offset
     }
 
     // a proposal's first hop leaves in one burst: only the first message of
@@ -755,6 +759,34 @@ pub fn scheme_from_env(var: &str) -> ProposalScheme {
         Ok("d33_hollow") => ProposalScheme::D33Hollow,
         Ok(other) => panic!("{var} is d33 or d33_hollow, not {other}"),
     }
+}
+
+// a delay added to every message on a link, as a function of the link (its
+// send time included): a time-varying network
+pub type LinkDelay = Box<dyn Fn(&Link<NodeId>) -> Duration + Send + Sync>;
+
+// `geo`'s network with an extra, non-negative delay per message, built from
+// each node's region. The base matrix stays each link's lower bound, which a
+// parallel swarm takes as its lookahead
+pub fn geo_delayed(
+    table: &RegionTable,
+    validators: u64,
+    seed: u64,
+    delay: impl FnOnce(&BTreeMap<NodeId, u32>) -> LinkDelay,
+) -> Geo {
+    use rand::distributions::Distribution as _;
+
+    let mut delayed = geo(table, validators, seed);
+    let delay = delay(&delayed.region_of);
+    let latency = std::sync::Arc::new(geo(table, validators, seed).matrix);
+    let bound = latency.clone();
+    let jitter = geo_jitter();
+    delayed.network = Network::with_link_latency(move |link, rng| {
+        latency.latency(&link.from, &link.to) + jitter.sample(rng) + delay(link)
+    })
+    .link_min_latency(move |from, to| bound.latency(from, to))
+    .egress(GBIT, sim_wire_size);
+    delayed
 }
 
 // one domain per region of `geo`
