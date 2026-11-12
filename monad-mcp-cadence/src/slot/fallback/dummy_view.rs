@@ -157,8 +157,7 @@ pub(crate) enum DummyViewEffect {
 
 pub(crate) struct DummyView {
     slot: Slot,
-    /// Taken by [`Self::enter`]: the dummy view signs once
-    key: Option<Arc<KeyPair>>,
+    key: Arc<KeyPair>,
     validation_context: ValidationContext,
 
     abandoned: bool,
@@ -176,7 +175,7 @@ impl DummyView {
     pub(crate) fn new(ctx: &MvbaContext) -> Self {
         Self {
             slot: ctx.slot,
-            key: Some(ctx.key.clone()),
+            key: ctx.key.clone(),
             validation_context: MakesValidationContext::<Metablock>::make_validation_context(ctx),
             abandoned: false,
             fast_block: None,
@@ -186,22 +185,20 @@ impl DummyView {
         }
     }
 
-    /// Registers this validator's input and sends its evidence, once
+    /// Registers this validator's input and sends its evidence. Called once:
+    /// the owner guards on its own registered input
     pub(crate) fn enter(&mut self, input: Metablock) {
         if self.abandoned {
             return;
         }
-        let Some(key) = self.key.take() else {
-            return;
-        };
 
         // persist-before-send: the registered input, which fixes DummyVote or NotFull
         if input.is_fast() {
-            let vote = VoteMsg::new_signed(self.slot, DummyVote(input.entries()), &key);
+            let vote = VoteMsg::new_signed(self.slot, DummyVote(input.entries()), &self.key);
             self.broadcast(DummyViewMessage::FastInput(input));
             self.broadcast(DummyViewMessage::DummyVote(vote));
         } else {
-            let declaration = VoteMsg::new_signed(self.slot, NotFull, &key);
+            let declaration = VoteMsg::new_signed(self.slot, NotFull, &self.key);
             self.broadcast(DummyViewMessage::NotFull(declaration));
         }
     }
@@ -527,8 +524,7 @@ mod tests {
             ))]
         );
 
-        // neither a later fast block, a quorum of votes, nor a second input
-        // changes the choice
+        // neither a later fast block nor a quorum of votes changes the choice
         deliver(
             &mut view,
             nodes()[1],
@@ -537,7 +533,6 @@ mod tests {
         for node in &nodes()[1..] {
             deliver(&mut view, *node, dummy_vote(*node, &block.entries()));
         }
-        view.enter(block);
         let effects = drain(&mut view);
         assert!(
             broadcasts(&effects).is_empty(),
@@ -553,8 +548,6 @@ mod tests {
 
         view.enter(block.clone());
         let mut effects = drain(&mut view);
-        view.enter(block.clone());
-        view.enter(non_fast_metablock(1));
 
         // the dummy view's own broadcasts come back, then everyone else's, twice
         let own: Vec<_> = broadcasts(&effects).into_iter().cloned().collect();
