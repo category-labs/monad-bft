@@ -95,11 +95,13 @@ type SharedLog = Arc<Mutex<NodeLog>>;
 /// A node's [`MvbaRuntime`], observed. With a resend interval it delivers
 /// every message the node sent again at that interval until the node decides,
 /// and from then on only the certificate it decided by -- the `Repeater`'s
-/// contract, kept out of protocol code
+/// contract, kept out of protocol code. Silent after deciding, it hands nothing
+/// more to the state machine, as Chorus does once it finalizes
 pub struct SlotFallbackRuntime {
     inner: Inner,
     hook: Option<Box<OutboundHook>>,
     resend: Option<TimestampDelta>,
+    silent_after_decide: bool,
     next_resend: Option<Timestamp>,
     history: Vec<Addressed>,
     certificate: Option<(SlotCommitProof, Addressed)>,
@@ -114,12 +116,14 @@ impl SlotFallbackRuntime {
         inner: Inner,
         hook: Option<Box<OutboundHook>>,
         resend: Option<TimestampDelta>,
+        silent_after_decide: bool,
         log: SharedLog,
     ) -> Self {
         Self {
             inner,
             hook,
             resend,
+            silent_after_decide,
             next_resend: None,
             history: Vec::new(),
             certificate: None,
@@ -195,6 +199,10 @@ impl SlotFallbackRuntime {
             self.emit(now, outbound, true);
         }
         self.next_resend = Some(now + interval);
+    }
+
+    fn silent(&self) -> bool {
+        self.silent_after_decide && self.decided
     }
 }
 
@@ -300,6 +308,9 @@ impl Runtime for SlotFallbackRuntime {
                 from: sender,
                 message: message.clone(),
             });
+        if self.silent() {
+            return;
+        }
         self.inner.receive(now, sender, message);
         self.pull(now);
     }
@@ -319,11 +330,17 @@ impl Runtime for SlotFallbackRuntime {
 
     fn handle_due(&mut self, now: Timestamp) {
         self.resend_due(now);
+        if self.silent() {
+            return;
+        }
         self.inner.handle_due(now);
         self.pull(now);
     }
 
     fn next_due(&self) -> Option<Timestamp> {
+        if self.silent() {
+            return self.next_resend;
+        }
         match (self.inner.next_due(), self.next_resend) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
@@ -337,6 +354,7 @@ pub struct SlotFallbackSwarmBuilder {
     seed: u64,
     network: Network<NodeId, SimMessage<SlotFallbackMessage>>,
     resend: Option<TimestampDelta>,
+    silent_after_decide: bool,
     nodes: Vec<(NodeId, SlotFallback)>,
     hooks: HashMap<NodeId, Box<OutboundHook>>,
     inputs: BTreeMap<NodeId, Metablock>,
@@ -349,6 +367,7 @@ impl SlotFallbackSwarmBuilder {
             seed: 0,
             network: Network::default(),
             resend: None,
+            silent_after_decide: false,
             nodes: Vec::new(),
             hooks: HashMap::new(),
             inputs: BTreeMap::new(),
@@ -373,6 +392,13 @@ impl SlotFallbackSwarmBuilder {
     pub fn set_resend(&mut self, interval: Duration) -> &mut Self {
         let nanos = u64::try_from(interval.as_nanos()).expect("resend interval fits in u64 nanos");
         self.resend = Some(TimestampDelta::from_nanos(nanos));
+        self
+    }
+
+    /// Once a node decides, drop what it receives and stop its timers; the
+    /// resend loop still repeats the certificate
+    pub fn set_silent_after_decide(&mut self) -> &mut Self {
+        self.silent_after_decide = true;
         self
     }
 
@@ -412,6 +438,7 @@ impl SlotFallbackSwarmBuilder {
                 MvbaRuntime::new(mvba),
                 self.hooks.remove(&id),
                 self.resend,
+                self.silent_after_decide,
                 log.clone(),
             );
             let on_output = move |_: Timestamp, decision: SlotDecision| {

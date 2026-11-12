@@ -144,6 +144,7 @@ fn fast_entries() -> Lanes<Entry> {
 /// Agreement on entries among `honest`, no second decision, and external
 /// validity; returns the agreed entries
 fn expect_agreement(swarm: &SlotFallbackSwarm, honest: &[NodeId]) -> Lanes<Entry> {
+    expect_honest_invariants(swarm, honest);
     for node in honest {
         assert!(
             !swarm.conflicted(node),
@@ -178,6 +179,33 @@ fn expect_agreement(swarm: &SlotFallbackSwarm, honest: &[NodeId]) -> Lanes<Entry
         "the decided entries were nobody's input"
     );
     agreed
+}
+
+/// What the safety argument rests on, read off each honest node's sent log:
+/// one of `NotFull` and `DummyVote`, one Prepare per view, and no non-fast
+/// Prepare in a run that holds a `DummyQC`
+fn expect_honest_invariants(swarm: &SlotFallbackSwarm, honest: &[NodeId]) {
+    let dummy_qc = sent_any(swarm, honest, is_dummy_decision);
+    let fast = fast_entries();
+    for node in honest {
+        let sent = swarm.sent(node);
+        let declared = sent.iter().any(|s| is_not_full(&s.message));
+        let voted = sent.iter().any(|s| is_dummy_vote(&s.message));
+        assert!(
+            !(declared && voted),
+            "{node:?} signed both NotFull and a DummyVote"
+        );
+
+        let mut prepared: BTreeMap<u64, Lanes<Entry>> = BTreeMap::new();
+        for (view, entries) in sent.iter().filter_map(|s| prepare(&s.message)) {
+            assert!(
+                !dummy_qc || entries == fast,
+                "{node:?} prepared non-fast entries in view {view} beside a DummyQC"
+            );
+            let first = prepared.entry(view).or_insert_with(|| entries.clone());
+            assert_eq!(*first, entries, "{node:?} prepared twice in view {view}");
+        }
+    }
 }
 
 fn expect_all_decided(swarm: &SlotFallbackSwarm, nodes: &[NodeId]) {
@@ -750,6 +778,151 @@ fn s9_every_node_decides_and_agrees_through_twenty_percent_loss() {
         );
         expect_agreement(&swarm, &nodes);
     }
+}
+
+/// S9's lossy run of one seed, with decided nodes silent as Chorus leaves them
+fn silent_lossy_run(seed: u64) -> SlotFallbackSwarm {
+    let inputs = mixed_inputs(&fast_nodes_of(seed));
+    let network = Network::reliable(LATENCY).loss(0.2);
+    let mut swarm = build(seed, network, &inputs, all_at_zero, |builder| {
+        builder.set_resend(RESEND).set_silent_after_decide();
+    });
+    swarm.run_until_all_decided(views(30));
+    swarm
+}
+
+/// S15. S9 with every node silent once it decides, as Chorus leaves it: every
+/// node decides and agreement holds, with only the resend loop speaking after
+#[test]
+fn s15_decided_nodes_gone_silent_still_decide_and_agree_through_twenty_percent_loss() {
+    let nodes = fixtures::nodes();
+    let mut ignored_after_deciding = false;
+    for seed in 0..20 {
+        let swarm = silent_lossy_run(seed);
+        let decisions = swarm.decisions();
+        let decided: Vec<NodeId> = decisions.keys().copied().collect();
+        expect_agreement(&swarm, &decided);
+        assert_eq!(
+            decided.len(),
+            4,
+            "seed {seed}: only {} of 4 decided",
+            decided.len()
+        );
+        expect_agreement(&swarm, &nodes);
+
+        for (node, decision) in &decisions {
+            assert!(
+                swarm
+                    .sent(node)
+                    .iter()
+                    .all(|s| s.at <= decision.at || s.resent),
+                "seed {seed}: {node:?} spoke after deciding"
+            );
+            ignored_after_deciding |= swarm.received(node).iter().any(|r| r.at > decision.at);
+        }
+    }
+    assert!(
+        ignored_after_deciding,
+        "no node received anything after deciding, so silence was never tested"
+    );
+}
+
+/// S16. Four identical non-fast inputs, decided nodes silent, and every
+/// message to one non-leader cut but a `CommitQc`: with no `NfCert` and no
+/// Pre-Prepare, it decides its own input on the others' resent `CommitQc`
+#[test]
+fn s16_a_validator_cut_off_but_for_a_commit_qc_decides_its_own_non_fast_input() {
+    let nodes = fixtures::nodes();
+    let validator_data = fixtures::validator_data();
+    let input = fixtures::non_fast_input(1, &validator_data);
+    let inputs: BTreeMap<NodeId, Input> = nodes.iter().map(|node| (*node, input.clone())).collect();
+    let cut = *nodes
+        .iter()
+        .find(|node| **node != fixtures::leader_of(1))
+        .expect("four nodes");
+    let network = Network::reliable(LATENCY).drop_if(move |link: &Link<NodeId>, message| {
+        link.to == cut && !cadence_message(message).is_some_and(is_commit_qc)
+    });
+    let mut swarm = build(0, network, &inputs, all_at_zero, |builder| {
+        builder.set_resend(RESEND).set_silent_after_decide();
+    });
+
+    swarm.run_until_or(views(3), SlotFallbackSwarm::all_decided);
+    let decision = swarm
+        .decision_of(&cut)
+        .unwrap_or_else(|| panic!("{cut:?} did not decide by {:?}", swarm.now()));
+    expect_all_decided(&swarm, &nodes);
+    assert_eq!(expect_agreement(&swarm, &nodes), entries(&input.0));
+
+    assert_eq!(decision.block, input.0, "{cut:?} decided another block");
+    assert!(
+        matches!(decision.proof, Some(SlotCommitProof::Mvba(_))),
+        "{cut:?} decided by {:?}",
+        decision.proof
+    );
+    let received = swarm.received(&cut);
+    assert!(!received.is_empty(), "{cut:?} received nothing");
+    assert!(
+        received.iter().all(|r| is_commit_qc(&r.message)),
+        "{cut:?} received more than a CommitQc"
+    );
+}
+
+/// Distinct non-fast inputs, and one non-leader reached only by a `CommitQc`
+/// and block traffic: it must fetch the decided block from the other three
+fn fetching_laggard_run(silent: bool) -> (SlotFallbackSwarm, NodeId) {
+    let nodes = fixtures::nodes();
+    let cut = *nodes
+        .iter()
+        .find(|node| **node != fixtures::leader_of(1))
+        .expect("four nodes");
+    let network = Network::reliable(LATENCY).drop_if(move |link: &Link<NodeId>, message| {
+        link.to == cut
+            && !cadence_message(message).is_some_and(|m| is_commit_qc(m) || is_block_traffic(m))
+    });
+    let mut swarm = build(0, network, &mixed_inputs(&[]), all_at_zero, |builder| {
+        builder.set_resend(RESEND);
+        if silent {
+            builder.set_silent_after_decide();
+        }
+    });
+    swarm.run_until_or(views(3), SlotFallbackSwarm::all_decided);
+    (swarm, cut)
+}
+
+/// S17. A laggard holding only the `CommitQc` fetches the decided block from
+/// peers that still serve it
+#[test]
+fn s17_a_laggard_with_only_a_commit_qc_fetches_the_block_from_serving_peers() {
+    let (swarm, cut) = fetching_laggard_run(false);
+    let nodes = fixtures::nodes();
+
+    expect_all_decided(&swarm, &nodes);
+    let agreed = expect_agreement(&swarm, &nodes);
+    assert_ne!(
+        agreed,
+        entries(&swarm.inputs()[&cut]),
+        "the test needs the laggard's input to lose"
+    );
+    assert!(
+        swarm
+            .received(&cut)
+            .iter()
+            .any(|r| is_block_traffic(&r.message)),
+        "{cut:?} decided without fetching the block"
+    );
+}
+
+/// S17 with decided peers silent, as Chorus leaves them: nobody serves the
+/// block, so the laggard never decides (follow-up F3)
+#[test]
+#[ignore = "F3: a finalized peer stops serving blocks"]
+fn s17_a_laggard_with_only_a_commit_qc_decides_among_silent_peers() {
+    let (swarm, _) = fetching_laggard_run(true);
+    let nodes = fixtures::nodes();
+
+    expect_agreement(&swarm, &nodes);
+    expect_all_decided(&swarm, &nodes);
 }
 
 /// S10. Mixed inputs, latency sampled within Δ, 20 seeds: agreement holds, and
