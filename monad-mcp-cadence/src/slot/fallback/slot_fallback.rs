@@ -218,8 +218,8 @@ impl Decodable for SlotFallbackMessage {
 type Output = MVBAOutput<SlotFallbackMessage, TimerEvent<CertifiedMetablock>>;
 
 /// What `propose` registered. A non-fast input is no value until the NFCert exists
-enum Registered {
-    Fast,
+enum FallbackInput {
+    Fast(Metablock),
     NonFast {
         block: Metablock,
         fbcert: EnterFallbackCert,
@@ -231,7 +231,7 @@ pub struct SlotFallback {
     core: MonadMvba<CertifiedMetablock>,
 
     /// This validator's registered input, set once by [`Mvba::propose`]
-    input: Option<Registered>,
+    input: Option<FallbackInput>,
     /// What the dummy view found before the input was registered, replayed then
     held: Vec<DummyViewEffect>,
     /// The first decision recorded, by whichever certificate formed first
@@ -285,7 +285,7 @@ impl SlotFallback {
             && let Some(qc) = self.core.decision_proof()
         {
             self.decision = Some((value.block().clone(), SlotCommitProof::Mvba(qc.clone())));
-        } else if let Some(Registered::NonFast { block, .. }) = &self.input
+        } else if let Some(FallbackInput::NonFast { block, .. }) = &self.input
             && let Some(qc) = self.core.commit_qc()
             && block.entries() == qc.verdict.0
         {
@@ -313,7 +313,7 @@ impl SlotFallback {
             }
             DummyViewEffect::FastBlock(block) => {
                 // a fast input is already the offer, with the same entries as any fast block
-                if let Some(Registered::NonFast { .. }) = &self.input
+                if let Some(FallbackInput::NonFast { .. }) = &self.input
                     && let Some(value) = CertifiedMetablock::fast(block)
                 {
                     self.core.offer_proposal(value);
@@ -322,7 +322,7 @@ impl SlotFallback {
             DummyViewEffect::NfCert(nf_cert) => {
                 // a fast block held is, or is about to be, the offer
                 if self.dummy_view.fast_block().is_none()
-                    && let Some(Registered::NonFast { block, fbcert }) = &self.input
+                    && let Some(FallbackInput::NonFast { block, fbcert }) = &self.input
                     && let Some(value) =
                         CertifiedMetablock::non_fast(block.clone(), fbcert.clone(), nf_cert)
                 {
@@ -372,25 +372,26 @@ impl Mvba<Metablock> for SlotFallback {
         }
 
         // `fbcert` is ⊥ for a fast metablock, whatever certificate admitted the path
-        let registered = match (CertifiedMetablock::fast(data.clone()), cert) {
-            (Some(value), _) => {
-                self.core.propose(value);
-                Registered::Fast
-            }
-            (None, Some(fbcert)) => {
-                self.core.start();
-                Registered::NonFast {
-                    block: data.clone(),
-                    fbcert,
-                }
-            }
+        let input = match (data.is_fast(), cert) {
+            (true, _) => FallbackInput::Fast(data.clone()),
+            (false, Some(fbcert)) => FallbackInput::NonFast {
+                block: data.clone(),
+                fbcert,
+            },
             // a non-fast metablock without its fbcert is no input: the instance stays unstarted
-            (None, None) => {
+            (false, None) => {
                 tracing::warn!(slot = ?data.slot(), "non-fast fallback input without an fbcert ignored");
                 return;
             }
         };
-        self.input = Some(registered);
+        // offered before starting, so the core's first pass already holds it
+        if let FallbackInput::Fast(block) = &input
+            && let Some(value) = CertifiedMetablock::fast(block.clone())
+        {
+            self.core.offer_proposal(value);
+        }
+        self.core.start();
+        self.input = Some(input);
 
         self.dummy_view.enter(data);
         for effect in std::mem::take(&mut self.held) {
