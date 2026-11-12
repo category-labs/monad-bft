@@ -138,6 +138,7 @@ impl ProposerRaptorcast {
         sender: &NodeId,
         epoch_handle: &EpochHandle,
         egress: &mut ChunkEgress,
+        now: Timestamp,
     ) {
         let (header, chunks) = envelope.into_parts();
         let pid = header.pid();
@@ -149,10 +150,9 @@ impl ProposerRaptorcast {
 
         let author = &self.proposer;
         let serve_window = self.serve_window;
-        let instance = self
-            .tracked
-            .entry(pid)
-            .or_insert_with(|| RaptorcastInstance::new(header, epoch_handle, author, serve_window));
+        let instance = self.tracked.entry(pid).or_insert_with(|| {
+            RaptorcastInstance::new(header, epoch_handle, author, serve_window, now)
+        });
 
         for (wire_chunk_id, data) in chunks {
             if let Err(err) = instance.ingest(wire_chunk_id, data, sender, egress) {
@@ -395,6 +395,7 @@ mod tests {
             &author(),
             &epoch_handle,
             &mut egress,
+            NOW,
         );
         let events = instance.drain_events();
 
@@ -414,12 +415,19 @@ mod tests {
             &author(),
             &epoch_handle,
             &mut egress,
+            NOW,
         );
         let events = instance.drain_events();
         assert_eq!(events, vec![ProposalDAEvent::HeaderSeen(header.clone())]);
 
         // the instance exists: later chunks decode it
-        instance.ingest(group(&chunks[..3]), &author(), &epoch_handle, &mut egress);
+        instance.ingest(
+            group(&chunks[..3]),
+            &author(),
+            &epoch_handle,
+            &mut egress,
+            NOW,
+        );
         let events = instance.drain_events();
         assert!(events.contains(&ProposalDAEvent::Decoded(header.pid())));
     }
@@ -433,7 +441,13 @@ mod tests {
 
         let mut instance =
             ProposerRaptorcast::new(NodeId::dummy(0), epoch_handle.self_id, NOW, timing());
-        instance.ingest(group(&chunks[..3]), &author(), &epoch_handle, &mut egress);
+        instance.ingest(
+            group(&chunks[..3]),
+            &author(),
+            &epoch_handle,
+            &mut egress,
+            NOW,
+        );
 
         let events = instance.drain_events();
         assert!(events.contains(&ProposalDAEvent::DecodingFailed(pid)));
@@ -455,6 +469,7 @@ mod tests {
             &author(),
             &epoch_handle,
             &mut egress,
+            NOW,
         );
         instance.drain_events();
 
@@ -463,6 +478,7 @@ mod tests {
             &author(),
             &epoch_handle,
             &mut egress,
+            NOW,
         );
         let events = instance.drain_events();
         assert_eq!(events, vec![ProposalDAEvent::HeaderSeen(header_b.clone())]);
@@ -471,12 +487,13 @@ mod tests {
             &author(),
             &epoch_handle,
             &mut egress,
+            NOW,
         );
         let events = instance.drain_events();
         assert!(events.is_empty());
 
         // announced once; the rival's chunks decode it like any tracked root
-        instance.ingest(group(&chunks_b), &author(), &epoch_handle, &mut egress);
+        instance.ingest(group(&chunks_b), &author(), &epoch_handle, &mut egress, NOW);
         let events = instance.drain_events();
         assert!(!events.contains(&ProposalDAEvent::HeaderSeen(header_b.clone())));
         assert_eq!(decoded_pids(&mut instance), vec![header_b.pid()]);
@@ -497,18 +514,20 @@ mod tests {
             &author(),
             &epoch_handle,
             &mut egress,
+            NOW,
         );
         instance.ingest(
             header_only(&header_b),
             &author(),
             &epoch_handle,
             &mut egress,
+            NOW,
         );
         instance.drain_events();
         egress.drain();
 
         // every chunk of the third root: no event, no decode, nothing relayed
-        instance.ingest(group(&chunks_c), &author(), &epoch_handle, &mut egress);
+        instance.ingest(group(&chunks_c), &author(), &epoch_handle, &mut egress, NOW);
         assert!(instance.drain_events().is_empty());
         assert!(decoded_pids(&mut instance).is_empty());
         assert!(egress.drain().is_empty());
@@ -524,7 +543,13 @@ mod tests {
         // alone is short of the two chunks decoding needs
         let mut instance =
             ProposerRaptorcast::new(NodeId::dummy(0), epoch_handle.self_id, NOW, timing());
-        instance.ingest(group(&chunks[2..3]), &author(), &epoch_handle, &mut egress);
+        instance.ingest(
+            group(&chunks[2..3]),
+            &author(),
+            &epoch_handle,
+            &mut egress,
+            NOW,
+        );
         assert!(decoded_pids(&mut instance).is_empty());
         // discard the relay of our own chunk
         egress.drain();
@@ -576,8 +601,9 @@ mod tests {
             &author(),
             &epoch_handle,
             &mut egress,
+            NOW,
         );
-        instance.ingest(group(&chunks_b), &author(), &epoch_handle, &mut egress);
+        instance.ingest(group(&chunks_b), &author(), &epoch_handle, &mut egress, NOW);
 
         assert_eq!(decoded_pids(&mut instance), vec![header_b.pid()]);
         egress.drain();
@@ -600,8 +626,15 @@ mod tests {
             &author(),
             &epoch_handle,
             &mut egress,
+            NOW,
         );
-        instance.ingest(group(&chunks_b[..3]), &author(), &epoch_handle, &mut egress);
+        instance.ingest(
+            group(&chunks_b[..3]),
+            &author(),
+            &epoch_handle,
+            &mut egress,
+            NOW,
+        );
         assert_eq!(decoded_pids(&mut instance), vec![header_b.pid()]);
 
         instance.pin_final(Some(header_b.pid()));
@@ -620,7 +653,13 @@ mod tests {
 
         let mut instance =
             ProposerRaptorcast::new(NodeId::dummy(0), epoch_handle.self_id, NOW, timing());
-        instance.ingest(group(&chunks_a[..1]), &author(), &epoch_handle, &mut egress);
+        instance.ingest(
+            group(&chunks_a[..1]),
+            &author(),
+            &epoch_handle,
+            &mut egress,
+            NOW,
+        );
         instance.pin_final(None);
 
         assert!(instance.tracked.is_empty());
@@ -629,6 +668,7 @@ mod tests {
             &author(),
             &epoch_handle,
             &mut egress,
+            NOW,
         );
         assert!(!instance.tracked.contains_key(&header_a.pid()));
     }
@@ -644,7 +684,13 @@ mod tests {
         let deadline = after(300);
         let mut instance =
             ProposerRaptorcast::new(NodeId::dummy(0), epoch_handle.self_id, deadline, timing());
-        instance.ingest(group(&chunks[2..3]), &author(), &epoch_handle, &mut egress);
+        instance.ingest(
+            group(&chunks[2..3]),
+            &author(),
+            &epoch_handle,
+            &mut egress,
+            NOW,
+        );
 
         let pulled = instance.poll_chunk_requests(after(350), &epoch_handle);
         assert!(requests(pulled).is_empty());
@@ -685,7 +731,13 @@ mod tests {
         assert_eq!(requests(pulled), expected);
 
         // decoded: nothing more to pull
-        instance.ingest(group(&chunks[3..4]), &author(), &epoch_handle, &mut egress);
+        instance.ingest(
+            group(&chunks[3..4]),
+            &author(),
+            &epoch_handle,
+            &mut egress,
+            NOW,
+        );
         let pulled = instance.poll_chunk_requests(after(1000), &epoch_handle);
         assert!(requests(pulled).is_empty());
     }
@@ -698,7 +750,13 @@ mod tests {
 
         let mut instance =
             ProposerRaptorcast::new(NodeId::dummy(0), epoch_handle.self_id, NOW, timing());
-        instance.ingest(group(&chunks[1..2]), &author(), &epoch_handle, &mut egress);
+        instance.ingest(
+            group(&chunks[1..2]),
+            &author(),
+            &epoch_handle,
+            &mut egress,
+            NOW,
+        );
         let holders = validators(&epoch_handle, [2]);
         instance.add_decoded_holders(&holders, &header.pid(), NOW, &epoch_handle);
         let pulled = instance.poll_chunk_requests(after(200), &epoch_handle);
@@ -722,7 +780,13 @@ mod tests {
         // we own 2, 6 and 10; node 2 owns 3, 7 and 11
         let mut instance =
             ProposerRaptorcast::new(NodeId::dummy(0), epoch_handle.self_id, NOW, timing());
-        instance.ingest(group(&chunks[1..2]), &author(), &epoch_handle, &mut egress);
+        instance.ingest(
+            group(&chunks[1..2]),
+            &author(),
+            &epoch_handle,
+            &mut egress,
+            NOW,
+        );
 
         let request = |kind, ids: &[WireChunkId]| ChunkRequest {
             pid: header.pid(),
@@ -804,6 +868,7 @@ mod tests {
             &author(),
             &epoch_handle,
             &mut egress,
+            NOW,
         );
 
         let voters = validators(&epoch_handle, [2, 3]);
@@ -832,12 +897,19 @@ mod tests {
 
         let mut instance =
             ProposerRaptorcast::new(NodeId::dummy(0), epoch_handle.self_id, NOW, timing());
-        instance.ingest(group(&chunks_a[..1]), &author(), &epoch_handle, &mut egress);
+        instance.ingest(
+            group(&chunks_a[..1]),
+            &author(),
+            &epoch_handle,
+            &mut egress,
+            NOW,
+        );
         instance.ingest(
             header_only(&header_b),
             &author(),
             &epoch_handle,
             &mut egress,
+            NOW,
         );
         assert!(
             !instance
@@ -886,8 +958,15 @@ mod tests {
             &NodeId::dummy(2),
             &epoch_handle,
             &mut egress,
+            NOW,
         );
-        instance.ingest(group(&chunks[..3]), &author(), &epoch_handle, &mut egress);
+        instance.ingest(
+            group(&chunks[..3]),
+            &author(),
+            &epoch_handle,
+            &mut egress,
+            NOW,
+        );
         assert_eq!(decoded_pids(&mut instance), vec![header.pid()]);
     }
 }

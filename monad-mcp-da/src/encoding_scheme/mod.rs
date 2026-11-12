@@ -23,13 +23,15 @@ mod reed_solomon;
 
 use bytes::Bytes;
 
+#[cfg(all(test, feature = "enable_hollow"))]
+pub(crate) use self::hollow::{HORIZON, SLACK, is_published, root_of_message};
 #[cfg(feature = "enable_hollow")]
-pub(crate) use self::hollow::Hollow;
+pub(crate) use self::hollow::{Hollow, Retained};
 pub(crate) use self::proposal_chunks::{Chunks, Decoder, Encoded, ProposalChunks};
 pub use self::proposal_chunks::{InvalidEncoding, Resolved};
 use super::{
     assignment::ChunkAssignment,
-    types::{EncodingScheme, MerkleRoot, NodeId, ProposalHeader, ValidatorData},
+    types::{EncodingScheme, MerkleRoot, NodeId, ProposalHeader, Timestamp, ValidatorData},
 };
 
 // The encoding scheme specifies the symbol code and the chunk
@@ -72,35 +74,38 @@ pub(crate) fn is_canonical(scheme: &EncodingScheme, num_validators: usize) -> bo
 }
 
 // the scheme a header names, applied to its proposal: who is assigned
-// which chunk, and the chunks, of which none is received yet
+// which chunk, and the chunks, of which none is received yet. `now` is
+// when this node takes the proposal up; a hollow decoder depends on it.
 pub(crate) fn instantiate(
     header: &ProposalHeader,
     author: &NodeId,
     validator_data: &ValidatorData,
+    now: Timestamp,
 ) -> (ChunkAssignment, Box<dyn ProposalChunks>) {
     let root = header.root;
     match &header.scheme {
-        EncodingScheme::D33(d33) => instantiate_under(d33, root, author, validator_data),
+        EncodingScheme::D33(d33) => {
+            // real chunks decode whenever they arrive
+            let _ = now;
+            let assignment = d33.chunk_assignment(author, validator_data);
+            let decoder = d33.decoder(root, assignment.num_chunks());
+            (assignment, boxed(decoder))
+        }
         #[cfg(feature = "enable_hollow")]
         EncodingScheme::D33Hollow(d33) => {
-            instantiate_under(&Hollow::new(*d33), root, author, validator_data)
+            let hollow = Hollow::new(*d33);
+            let assignment = hollow.chunk_assignment(author, validator_data);
+            let decoder = hollow.decoder_at(root, assignment.num_chunks(), now);
+            (assignment, boxed(decoder))
         }
     }
 }
 
-fn instantiate_under<S>(
-    scheme: &S,
-    root: MerkleRoot,
-    author: &NodeId,
-    validator_data: &ValidatorData,
-) -> (ChunkAssignment, Box<dyn ProposalChunks>)
+// chunks of which none is received yet
+fn boxed<D>(decoder: D) -> Box<dyn ProposalChunks>
 where
-    S: DAEncodingScheme,
-    S::Decoder: Send + 'static,
-    <S::Decoder as Decoder>::Encoded: Send,
+    D: Decoder + Send + 'static,
+    D::Encoded: Send,
 {
-    let assignment = scheme.chunk_assignment(author, validator_data);
-    let decoder = scheme.decoder(root, assignment.num_chunks());
-    let chunks = Chunks::Decoding(decoder);
-    (assignment, Box::new(chunks))
+    Box::new(Chunks::Decoding(decoder))
 }

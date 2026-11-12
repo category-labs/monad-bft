@@ -104,6 +104,7 @@ impl SlotRaptorcast {
         &mut self,
         sender: &NodeId,
         envelope: ProposalEnvelope,
+        now: Timestamp,
     ) -> Result<(), InvalidProposalHeader> {
         debug_assert_eq!(envelope.header().slot(), self.slot);
         let j = self
@@ -113,7 +114,7 @@ impl SlotRaptorcast {
         let raptorcast = self.raptorcasts[j]
             .as_mut()
             .expect("authenticated indices have proposers");
-        raptorcast.ingest(envelope, sender, &self.epoch_handle, &mut self.egress);
+        raptorcast.ingest(envelope, sender, &self.epoch_handle, &mut self.egress, now);
         self.collect_events(j);
         Ok(())
     }
@@ -209,7 +210,7 @@ impl SlotRaptorcast {
             }
             ChorusDACommand::IngestProposalHeader { sender, header } => {
                 let envelope = ProposalEnvelope::from_header(header);
-                if let Err(err) = self.ingest(&sender, envelope) {
+                if let Err(err) = self.ingest(&sender, envelope, now) {
                     tracing::debug!(?err, "dropping a header from consensus");
                 }
             }
@@ -307,7 +308,7 @@ mod tests {
     // ingest, returning the messages it caused
     fn ingest(raptorcast: &mut SlotRaptorcast, envelope: ProposalEnvelope) -> Vec<Dissemination> {
         raptorcast
-            .ingest(&author(), envelope)
+            .ingest(&author(), envelope, NOW)
             .expect("well-formed header");
         raptorcast.drain_messages()
     }
@@ -425,7 +426,7 @@ mod tests {
         // signed by validator 2, who proposes nothing
         let (_, chunks) = proposal_chunks_from(&epoch_handle, 2, SLOT, 1);
 
-        let rejected = raptorcast.ingest(&author(), group(&chunks[..1]));
+        let rejected = raptorcast.ingest(&author(), group(&chunks[..1]), NOW);
         assert_eq!(rejected, Err(InvalidProposalHeader::Unauthenticated));
         assert!(raptorcast.drain_events().is_empty());
         assert!(raptorcast.drain_messages().is_empty());
@@ -449,10 +450,10 @@ mod tests {
         let (_, chunks) = proposal_chunks(&epoch_handle, 1);
 
         raptorcast
-            .ingest(&author(), group(&chunks[..1]))
+            .ingest(&author(), group(&chunks[..1]), NOW)
             .expect("valid");
         raptorcast
-            .ingest(&author(), group(&chunks[1..2]))
+            .ingest(&author(), group(&chunks[1..2]), NOW)
             .expect("valid");
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
@@ -468,7 +469,7 @@ mod tests {
         let (header, chunks) = proposal_chunks_under(&epoch_handle, scheme, 2, 1);
 
         raptorcast
-            .ingest(&author(), group(&chunks[..1]))
+            .ingest(&author(), group(&chunks[..1]), NOW)
             .expect("valid");
         let events = raptorcast.drain_events();
         assert!(events.contains(&ChorusDAEvent {
@@ -516,7 +517,7 @@ mod tests {
                 else {
                     continue;
                 };
-                node.ingest(&sender, message.envelope.clone())
+                node.ingest(&sender, message.envelope.clone(), NOW)
                     .expect("valid");
             }
         }
@@ -566,9 +567,9 @@ mod tests {
         // the author's first hop reaches 1 and 2; 3 is cut off entirely
         let cut_off = BTreeSet::from([NodeId::dummy(3)]);
         let ones = group(&[chunks[2].clone(), chunks[6].clone(), chunks[10].clone()]);
-        nodes[0].1.ingest(&author(), ones).expect("valid");
+        nodes[0].1.ingest(&author(), ones, NOW).expect("valid");
         let twos = group(&[chunks[3].clone(), chunks[7].clone(), chunks[11].clone()]);
-        nodes[1].1.ingest(&author(), twos).expect("valid");
+        nodes[1].1.ingest(&author(), twos, NOW).expect("valid");
         let second_hop = drain_all(&mut nodes);
         deliver(&mut nodes, second_hop, &cut_off);
         assert_eq!(decoded(&mut nodes[0].1), vec![message()]);

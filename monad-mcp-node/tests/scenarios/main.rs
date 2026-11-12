@@ -21,6 +21,7 @@ mod clock;
 mod determinism;
 mod geo;
 mod harness;
+mod hollow_lag;
 mod loss;
 mod mute;
 mod priority;

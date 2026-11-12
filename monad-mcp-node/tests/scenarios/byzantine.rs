@@ -34,6 +34,22 @@ use crate::harness::{
 // Every node must resolve those lanes invalid alike and keep finalizing.
 #[test]
 fn the_lanes_of_an_inconsistent_proposer_resolve_invalid_on_every_node() {
+    lanes_resolve_invalid_on_every_node(ProposalScheme::D33HollowInconsistent);
+}
+
+// A proposer whose chunks are valid under a root no node can decode to a
+// message, as under a forged root: with hollow chunks, a root whose
+// message is in no store (ProposalScheme::D33HollowWithheld). Every node,
+// the proposer included, resolves its lanes invalid at k chunks, and keeps
+// finalizing.
+#[test]
+fn the_lanes_of_a_withheld_proposer_resolve_invalid_on_every_node() {
+    lanes_resolve_invalid_on_every_node(ProposalScheme::D33HollowWithheld);
+}
+
+// one Byzantine proposer under `byzantine` among hollow nodes: its lanes
+// commit and resolve invalid alike everywhere
+fn lanes_resolve_invalid_on_every_node(byzantine: ProposalScheme) {
     const VALIDATORS: u64 = 8;
     const BYZANTINE: u64 = 0;
     const SLOTS: u64 = 60;
@@ -47,7 +63,7 @@ fn the_lanes_of_an_inconsistent_proposer_resolve_invalid_on_every_node() {
         let mut config = node_config(SEED, id, VALIDATORS);
         config.proposal.max_payload_bytes = Some(MAX_PROPOSAL_LEN);
         config.proposal.encoding_scheme = if id == BYZANTINE {
-            ProposalScheme::D33HollowInconsistent
+            byzantine
         } else {
             ProposalScheme::D33Hollow
         };

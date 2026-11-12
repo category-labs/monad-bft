@@ -234,7 +234,8 @@ pub(crate) fn chunk_id(
     wire: WireChunkId,
 ) -> ChunkId {
     let validator_data = &epoch_handle.validator_data;
-    let (assignment, _) = encoding_scheme::instantiate(&header.header, &author(), validator_data);
+    let (assignment, _) =
+        encoding_scheme::instantiate(&header.header, &author(), validator_data, NOW);
     assignment
         .resolve_chunk_id(wire)
         .expect("in range")

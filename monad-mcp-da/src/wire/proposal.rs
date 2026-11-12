@@ -19,7 +19,7 @@ use bytes::Bytes;
 use monad_mcp_cadence::spec::validator::ValidatorData as _;
 
 #[cfg(feature = "enable_hollow")]
-use super::super::encoding_scheme::Hollow;
+use super::super::encoding_scheme::{Hollow, Retained};
 use super::{
     super::{
         assignment::{ChunkAssignment, ChunkId, NodeIndex},
@@ -44,6 +44,9 @@ pub struct AuthoredProposal {
     remaining: Vec<ChunkId>,
     // the nodes that own no chunk, which get the header alone
     header_only: Vec<NodeIndex>,
+    // a hollow message, until the author's runtime takes it over
+    #[cfg(feature = "enable_hollow")]
+    retained: Option<Retained>,
 }
 
 impl AuthoredProposal {
@@ -63,12 +66,23 @@ impl AuthoredProposal {
             #[cfg(feature = "enable_hollow")]
             ProposalScheme::D33Hollow => {
                 let hollow = Hollow::new(d33);
-                Self::build_under(hollow, epoch_handle, &proposal.payload)
+                let encoded = hollow.publish(&proposal.payload)?;
+                let retained = hollow.retain(encoded.clone());
+                let authored = Self::build_with(hollow, epoch_handle, encoded);
+                Some(authored.retaining(retained))
             }
             #[cfg(feature = "enable_hollow")]
             ProposalScheme::D33HollowInconsistent => {
                 let hollow = Hollow::new(d33);
                 let encoded = hollow.encode_inconsistent(&proposal.payload)?;
+                let retained = hollow.retain(encoded.shared());
+                let authored = Self::build_with(hollow, epoch_handle, encoded);
+                Some(authored.retaining(retained))
+            }
+            #[cfg(feature = "enable_hollow")]
+            ProposalScheme::D33HollowWithheld => {
+                let hollow = Hollow::new(d33);
+                let encoded = hollow.encode_withheld(&proposal.payload)?;
                 Some(Self::build_with(hollow, epoch_handle, encoded))
             }
         }
@@ -126,7 +140,24 @@ impl AuthoredProposal {
             encoded,
             remaining,
             header_only,
+            #[cfg(feature = "enable_hollow")]
+            retained: None,
         }
+    }
+
+    #[cfg(feature = "enable_hollow")]
+    fn retaining(self, retained: Retained) -> Self {
+        Self {
+            retained: Some(retained),
+            ..self
+        }
+    }
+
+    // the author's hold on its hollow message, which its runtime keeps
+    // for the horizon (see encoding_scheme::hollow)
+    #[cfg(feature = "enable_hollow")]
+    pub(crate) fn take_retained(&mut self) -> Option<Retained> {
+        self.retained.take()
     }
 
     pub fn header(&self) -> &SignedProposalHeader {
@@ -221,8 +252,8 @@ mod tests {
                 chunk::ProposalEnvelope,
                 encoding_scheme::DAEncodingScheme as _,
                 test_util::{
-                    MESSAGE_LEN, PACKET_LOSS_RESISTANCE, SLOT, author, epoch_handle_for, group,
-                    proposal_chunks, scheme,
+                    MESSAGE_LEN, NOW, PACKET_LOSS_RESISTANCE, SLOT, author, epoch_handle_for,
+                    group, proposal_chunks, scheme,
                 },
                 types::{Lane, Stake},
             },
@@ -442,7 +473,7 @@ mod tests {
 
         let validator_data = &epoch_handle.validator_data;
         let header = &proposal.header().header;
-        let (assignment, mut chunks) = instantiate(header, &author(), validator_data);
+        let (assignment, mut chunks) = instantiate(header, &author(), validator_data, NOW);
         let (_, envelope) = proposal.envelope().into_parts();
         for (wire_chunk_id, data) in envelope {
             let routing = assignment.resolve_chunk_id(wire_chunk_id);
@@ -468,7 +499,7 @@ mod tests {
 
         let validator_data = &epoch_handle.validator_data;
         let header = &proposal.header().header;
-        let (assignment, mut chunks) = instantiate(header, &author(), validator_data);
+        let (assignment, mut chunks) = instantiate(header, &author(), validator_data, NOW);
         let (_, envelope) = proposal.envelope().into_parts();
         let mut resolved = Vec::new();
         for (wire_chunk_id, data) in envelope {

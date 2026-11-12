@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#[cfg(debug_assertions)]
+use std::collections::HashSet;
 use std::{
     collections::{BTreeSet, HashMap},
     sync::{Arc, LazyLock, Mutex, MutexGuard, Weak},
@@ -24,7 +26,10 @@ use super::{
     super::{
         assignment::{ChunkAssignment, ChunkId},
         chunk::{ChunkData, InvalidChunk, WireChunkId},
-        types::{D33, EncodingScheme, MerkleHash, MerkleRoot, NodeId, ValidatorData},
+        types::{
+            D33, EncodingScheme, MerkleHash, MerkleRoot, NodeId, Timestamp, TimestampDelta,
+            ValidatorData,
+        },
         wire::{DAHeaderScheme, MalformedPacket, v1},
     },
     DAEncodingScheme, Decoder, Encoded, d33,
@@ -102,15 +107,155 @@ impl<S: DAEncodingScheme> DAEncodingScheme for Hollow<S> {
     }
 
     fn encode(&self, message: &Bytes, _num_chunks: usize) -> Option<HollowEncoded> {
+        self.publish(message)
+    }
+
+    // a decoder that takes whatever the store holds under root, as a node
+    // within the horizon does. Nodes create theirs with decoder_at.
+    fn decoder(&self, root: MerkleRoot, num_chunks: usize) -> HollowDecoder {
+        let shared = SharedMessage::lookup(&root);
+        HollowDecoder::new(root, self.num_source_chunks(), num_chunks, shared)
+    }
+}
+
+impl<S: DAEncodingScheme> Hollow<S> {
+    // the encoding of `message`: the message, published. None for a
+    // message of another length than the scheme's.
+    pub(crate) fn publish(&self, message: &Bytes) -> Option<HollowEncoded> {
         if message.is_empty() || message.len() != self.msg_len() {
             return None;
         }
         let shared = SharedMessage::publish(message.clone());
         Some(shared)
     }
+}
 
-    fn decoder(&self, root: MerkleRoot, num_chunks: usize) -> HollowDecoder {
-        HollowDecoder::new(root, self.num_source_chunks(), num_chunks)
+// Retention and misses.
+//
+// A hollow message travels in no chunk: the store is the only place a
+// receiver takes it from, so what a node finds there decides its outcome.
+// To keep every outcome a function of the node's own inputs, a node does
+// not ask whether an entry happens to be in the store; it applies a rule
+// when it creates its decoder for a proposal authored at τ (the header's
+// unix_ts), at its own time t:
+//
+// - t < τ + HORIZON: it takes the message published under the root, and
+//   at k chunks decodes it, or resolves invalid if the message was
+//   published under a root it does not encode to (Inconsistent);
+// - t ≥ τ + HORIZON, or no node of the process published the root (a
+//   forged or withheld root): it does not read the store, and resolves
+//   InvalidEncoding at k chunks, as real chunks that verify and form no
+//   codeword do.
+//
+// The author keeps every message it publishes (Retained, held by its
+// DARuntime) until its own clock reads τ + HORIZON + SLACK. So whenever
+// the rule sends a node to the store, the entry is there, sequentially and
+// on any number of threads:
+//
+// - a node learns a root from a message, so its lookup comes after the
+//   author's publish;
+// - the parallel engine (monad-sim/docs/parallel.md) runs one window at a
+//   time: every step running at one moment lies in the current window,
+//   which is at most the smallest lookahead between domains wide (about
+//   1 ms in the scenarios), and earlier windows are done. The author's
+//   release, at its time ≥ τ + HORIZON + SLACK, and a lookup at t <
+//   τ + HORIZON are more than SLACK minus the spread of node clock offsets
+//   apart, so the release lands in a later window than the lookup.
+//
+// This assumes SLACK ≫ the window width plus the spread of clock offsets
+// (`harness::with_clock_offset`; tens of milliseconds in the scenarios).
+// Debug builds check it: a node that misses within the horizon a root
+// whose author already released it panics.
+//
+// Other holders (each node's instance, until it drops the slot) only
+// lengthen an entry's life, and no node reads it beyond the horizon, so
+// their drops change no outcome. A sweep of the store by simulation time
+// would not do: the store is shared by every simulation in the process,
+// such as the tests of one binary, each with a clock of its own.
+//
+// A node removed from a swarm (Swarm::remove_node) takes its retention
+// with it; nodes that look up its messages within the horizon then depend
+// on other holders.
+//
+// HORIZON covers any node a scenario keeps in sync: 100 slots at the
+// scenarios' 100 ms, twice the slots DA keeps past the cap
+// (completed_slot_retention), so a node that pulls its chunks from peers
+// still holding the slot decodes. A node beyond it resolves the
+// proposal invalid where a D33 node could still decode.
+pub(crate) const HORIZON: TimestampDelta = TimestampDelta::from_millis(10_000);
+pub(crate) const SLACK: TimestampDelta = TimestampDelta::from_millis(1_000);
+
+impl Hollow<D33> {
+    // when the proposal was authored, to the second its header carries
+    fn authored_at(&self) -> Timestamp {
+        let nanos_per_second = 1_000_000_000;
+        Timestamp::from_nanos(u128::from(self.0.unix_ts) * nanos_per_second)
+    }
+
+    // a node that creates its decoder before then takes the message
+    fn visible_until(&self) -> Timestamp {
+        self.authored_at() + HORIZON
+    }
+
+    // the decoder of a node that creates it at `now`: with the published
+    // message within the horizon, without beyond it
+    pub(crate) fn decoder_at(
+        &self,
+        root: MerkleRoot,
+        num_chunks: usize,
+        now: Timestamp,
+    ) -> HollowDecoder {
+        let within = now < self.visible_until();
+        let shared = within.then(|| SharedMessage::lookup(&root)).flatten();
+        #[cfg(debug_assertions)]
+        if within && shared.is_none() {
+            assert!(
+                !released().contains(&root),
+                "a hollow message left the store within its horizon: its author's \
+                 release ran before this lookup (see Retention and misses)"
+            );
+        }
+        HollowDecoder::new(root, self.num_source_chunks(), num_chunks, shared)
+    }
+
+    // the author's hold on a message it published under this scheme
+    pub(crate) fn retain(&self, shared: Arc<SharedMessage>) -> Retained {
+        Retained {
+            until: self.visible_until() + SLACK,
+            shared,
+        }
+    }
+}
+
+// a published message its author keeps until `until`, so that every node
+// that looks it up within the horizon finds it
+pub(crate) struct Retained {
+    until: Timestamp,
+    shared: Arc<SharedMessage>,
+}
+
+impl Retained {
+    // the author may let go of it once its clock reads this
+    pub(crate) fn until(&self) -> Timestamp {
+        self.until
+    }
+}
+
+// roots whose author let go of them, for the check in decoder_at
+#[cfg(debug_assertions)]
+static RELEASED: LazyLock<Mutex<HashSet<MerkleRoot>>> = LazyLock::new(Default::default);
+
+#[cfg(debug_assertions)]
+fn released() -> MutexGuard<'static, HashSet<MerkleRoot>> {
+    RELEASED
+        .lock()
+        .expect("no thread panics holding the released roots")
+}
+
+#[cfg(debug_assertions)]
+impl Drop for Retained {
+    fn drop(&mut self) {
+        released().insert(self.shared.declared);
     }
 }
 
@@ -120,18 +265,24 @@ pub(crate) struct HollowDecoder {
     root: MerkleRoot,
     num_source_chunks: usize,
     received: BTreeSet<ChunkId>,
-    // None when no node holds the message, as under a forged root
+    // the message this node takes; None under a root no node published,
+    // or beyond the horizon
     shared: Option<HollowEncoded>,
 }
 
 impl HollowDecoder {
-    fn new(root: MerkleRoot, num_source_chunks: usize, num_chunks: usize) -> Self {
+    fn new(
+        root: MerkleRoot,
+        num_source_chunks: usize,
+        num_chunks: usize,
+        shared: Option<HollowEncoded>,
+    ) -> Self {
         assert!(0 < num_source_chunks && num_source_chunks <= num_chunks);
         Self {
             root,
             num_source_chunks,
             received: BTreeSet::new(),
-            shared: SharedMessage::lookup(&root),
+            shared,
         }
     }
 }
@@ -163,11 +314,16 @@ impl Decoder for HollowDecoder {
         Ok(())
     }
 
+    // at k chunks, by count. Without a message to take, the chunks decode
+    // to nothing that encodes to the root: an invalid encoding.
     fn try_decode(&mut self) -> Option<(Bytes, HollowEncoded)> {
         if self.received.len() < self.num_source_chunks {
             return None;
         }
-        let shared = self.shared.clone()?;
+        let shared = match &self.shared {
+            Some(shared) => shared.clone(),
+            None => SharedMessage::unpublished(self.root),
+        };
         let message = shared.message.clone();
         Some((message, shared))
     }
@@ -194,6 +350,13 @@ impl Encoded for HollowEncoded {
 // chunks that verify under their root and form no codeword.
 pub(crate) struct Inconsistent(Arc<SharedMessage>);
 
+impl Inconsistent {
+    // the message, as published under the declared root
+    pub(crate) fn shared(&self) -> Arc<SharedMessage> {
+        self.0.clone()
+    }
+}
+
 impl<S: DAEncodingScheme> Hollow<S> {
     // the encoding of `message` under a root it does not encode to. None
     // for a message of another length than the scheme's.
@@ -204,6 +367,19 @@ impl<S: DAEncodingScheme> Hollow<S> {
         let shared = SharedMessage::publish_inconsistent(message.clone());
         Some(Inconsistent(shared))
     }
+
+    // chunks of `message` under a root that no store entry has. None for
+    // a message of another length than the scheme's.
+    pub(crate) fn encode_withheld(&self, message: &Bytes) -> Option<Withheld> {
+        if message.is_empty() || message.len() != self.msg_len() {
+            return None;
+        }
+        // root_of leaves the bytes after the digest zero
+        let MerkleRoot(mut root) = root_of(message);
+        let last = root.0.len() - 1;
+        root.0[last] ^= 1;
+        Some(Withheld(MerkleRoot(root)))
+    }
 }
 
 impl Encoded for Inconsistent {
@@ -213,6 +389,23 @@ impl Encoded for Inconsistent {
 
     fn chunk_data(&self, chunk_id: ChunkId) -> ChunkData {
         hollow_chunk(chunk_id, &self.0.declared)
+    }
+}
+
+// The chunks of a Byzantine proposer that publishes no message, for
+// simulations: a root as a forger would make one. Its chunks are valid
+// under the root, so nodes count them and vote; at k chunks every node,
+// the proposer included, finds no message and resolves the proposal
+// InvalidEncoding.
+pub(crate) struct Withheld(MerkleRoot);
+
+impl Encoded for Withheld {
+    fn root(&self) -> MerkleRoot {
+        self.0
+    }
+
+    fn chunk_data(&self, chunk_id: ChunkId) -> ChunkData {
+        hollow_chunk(chunk_id, &self.0)
     }
 }
 
@@ -258,6 +451,9 @@ pub(crate) struct SharedMessage {
     // the root the message encodes to
     actual: MerkleRoot,
     message: Bytes,
+    // false for the stand-in of a message no node published, which is
+    // not in thin air
+    published: bool,
 }
 
 impl SharedMessage {
@@ -287,9 +483,25 @@ impl SharedMessage {
             declared,
             actual,
             message,
+            published: true,
         });
         thin_air.insert(declared, Arc::downgrade(&shared));
+        #[cfg(debug_assertions)]
+        released().remove(&declared);
         shared
+    }
+
+    // what chunks under a root with no message decode to: nothing, which
+    // encodes to another root
+    fn unpublished(declared: MerkleRoot) -> Arc<Self> {
+        let MerkleRoot(mut actual) = declared;
+        actual.0[0] ^= 1;
+        Arc::new(Self {
+            declared,
+            actual: MerkleRoot(actual),
+            message: Bytes::new(),
+            published: false,
+        })
     }
 
     fn lookup(root: &MerkleRoot) -> Option<Arc<Self>> {
@@ -305,8 +517,23 @@ fn root_of(message: &[u8]) -> MerkleRoot {
     MerkleRoot(root)
 }
 
+// whether some node holds the message published under root
+#[cfg(test)]
+pub(crate) fn is_published(root: &MerkleRoot) -> bool {
+    SharedMessage::lookup(root).is_some()
+}
+
+// the root an honest hollow proposal of `message` declares
+#[cfg(test)]
+pub(crate) fn root_of_message(message: &[u8]) -> MerkleRoot {
+    root_of(message)
+}
+
 impl Drop for SharedMessage {
     fn drop(&mut self) {
+        if !self.published {
+            return;
+        }
         let mut thin_air = thin_air();
         let in_use = thin_air
             .get(&self.declared)
@@ -329,7 +556,7 @@ mod tests {
                 types::{D33, Lane},
                 wire::PacketLayout as _,
             },
-            Chunks, ProposalChunks as _,
+            Chunks, InvalidEncoding, ProposalChunks as _, Resolved,
             d33::{D33Encoded, for_message},
         },
         *,
@@ -524,6 +751,156 @@ mod tests {
         drop(late);
         assert!(!thin_air().contains_key(&root));
         let mut orphan = Chunks::Decoding(hollow.decoder(root, num_chunks));
-        assert_eq!(deliver_all(&mut orphan, root), None);
+        assert_eq!(deliver_all(&mut orphan, root), Some(Err(InvalidEncoding)));
+    }
+
+    // a node's chunks under `root`, one by one: what each resolves to
+    fn resolutions(
+        mut chunks: HollowChunks,
+        root: MerkleRoot,
+        num_chunks: usize,
+    ) -> Vec<Option<Resolved>> {
+        let mut resolved = Vec::new();
+        for chunk_id in chunk_ids(num_chunks) {
+            let data = hollow_chunk(chunk_id, &root);
+            chunks.ingest(chunk_id, data).expect("bound to the root");
+            resolved.push(chunks.try_resolve());
+        }
+        resolved
+    }
+
+    // nothing until k chunks, then `outcome`, then nothing
+    fn at_k(
+        num_source_chunks: usize,
+        num_chunks: usize,
+        outcome: Resolved,
+    ) -> Vec<Option<Resolved>> {
+        let mut expected = vec![None; num_chunks];
+        expected[num_source_chunks - 1] = Some(outcome);
+        expected
+    }
+
+    fn at_seconds(seconds: u64) -> Timestamp {
+        Timestamp::from_millis(seconds * 1000)
+    }
+
+    #[test]
+    fn chunks_under_a_root_no_node_published_resolve_invalid_at_k() {
+        let hollow = Hollow::new(scheme_for(MESSAGE_LEN));
+        let num_chunks = 9;
+        let k = hollow.num_source_chunks();
+        // a payload no other test publishes
+        let message = Bytes::from(vec![0x61; MESSAGE_LEN]);
+
+        // a forged root, and a withheld proposer's: in no store
+        let MerkleRoot(mut forged) = root_of(&message);
+        forged.0[3] ^= 0x10;
+        let withheld = hollow.encode_withheld(&message).expect("of the length");
+        for root in [MerkleRoot(forged), withheld.root()] {
+            assert!(!thin_air().contains_key(&root));
+            let invalid = at_k(k, num_chunks, Err(InvalidEncoding));
+            let chunks = Chunks::Decoding(hollow.decoder_at(root, num_chunks, at_seconds(0)));
+            assert_eq!(resolutions(chunks, root, num_chunks), invalid);
+        }
+
+        // a withheld root is no root a message published here digests to
+        let published = hollow.publish(&message).expect("of the length");
+        assert_ne!(published.root(), withheld.root());
+    }
+
+    #[test]
+    fn a_node_takes_a_message_within_the_horizon_only() {
+        let d33 = D33 {
+            unix_ts: 20,
+            ..scheme_for(MESSAGE_LEN)
+        };
+        let hollow = Hollow::new(d33);
+        let num_chunks = 9;
+        let k = hollow.num_source_chunks();
+        // a payload no other test publishes
+        let message = Bytes::from(vec![0x62; MESSAGE_LEN]);
+        let encoded = hollow.publish(&message).expect("of the length");
+        let root = encoded.root();
+
+        let horizon = at_seconds(20) + HORIZON;
+        let just_before = Timestamp::from_nanos(horizon.as_nanos() - 1);
+        let decoded = at_k(k, num_chunks, Ok(message));
+        let invalid = at_k(k, num_chunks, Err(InvalidEncoding));
+        for (now, expected) in [
+            (at_seconds(20), &decoded),
+            (just_before, &decoded),
+            (horizon, &invalid),
+            (horizon + HORIZON, &invalid),
+        ] {
+            // the message is published all along: beyond the horizon a
+            // node does not take it
+            let chunks = Chunks::Decoding(hollow.decoder_at(root, num_chunks, now));
+            assert_eq!(&resolutions(chunks, root, num_chunks), expected, "{now:?}");
+        }
+
+        // nor does a node beyond the horizon hold it
+        let late = hollow.decoder_at(root, num_chunks, horizon);
+        drop(encoded);
+        assert!(!thin_air().contains_key(&root));
+        drop(late);
+    }
+
+    #[test]
+    fn an_inconsistent_message_resolves_invalid_on_both_sides_of_the_horizon() {
+        let hollow = Hollow::new(scheme_for(MESSAGE_LEN));
+        let num_chunks = 9;
+        let k = hollow.num_source_chunks();
+        // a payload no other test publishes
+        let message = Bytes::from(vec![0x63; MESSAGE_LEN]);
+        let inconsistent = hollow.encode_inconsistent(&message).expect("of the length");
+        let declared = inconsistent.root();
+
+        let invalid = at_k(k, num_chunks, Err(InvalidEncoding));
+        for now in [at_seconds(0), at_seconds(0) + HORIZON] {
+            let chunks = Chunks::Decoding(hollow.decoder_at(declared, num_chunks, now));
+            assert_eq!(resolutions(chunks, declared, num_chunks), invalid);
+        }
+    }
+
+    #[test]
+    fn an_author_retains_its_message_after_every_node_let_go() {
+        let hollow = Hollow::new(scheme_for(MESSAGE_LEN));
+        let num_chunks = 9;
+        let k = hollow.num_source_chunks();
+        // a payload no other test publishes
+        let message = Bytes::from(vec![0x64; MESSAGE_LEN]);
+        let encoded = hollow.publish(&message).expect("of the length");
+        let root = encoded.root();
+        let retained = hollow.retain(encoded.clone());
+        assert_eq!(retained.until(), at_seconds(0) + HORIZON + SLACK);
+
+        // every node that decoded dropped the slot, and so did the author's
+        // own encoding
+        let early = Chunks::Decoding(hollow.decoder_at(root, num_chunks, at_seconds(1)));
+        let decoded = at_k(k, num_chunks, Ok(message));
+        assert_eq!(resolutions(early, root, num_chunks), decoded);
+        drop(encoded);
+
+        // a late node within the horizon still decodes
+        let late = Chunks::Decoding(hollow.decoder_at(root, num_chunks, at_seconds(9)));
+        assert_eq!(resolutions(late, root, num_chunks), decoded);
+
+        drop(retained);
+        assert!(!thin_air().contains_key(&root));
+    }
+
+    // the check of the determinism argument: a release before a lookup
+    // within the horizon
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "left the store within its horizon")]
+    fn a_miss_within_the_horizon_after_the_release_panics() {
+        let hollow = Hollow::new(scheme_for(MESSAGE_LEN));
+        // a payload no other test publishes
+        let message = Bytes::from(vec![0x65; MESSAGE_LEN]);
+        let encoded = hollow.publish(&message).expect("of the length");
+        let root = encoded.root();
+        drop(hollow.retain(encoded));
+        let _ = hollow.decoder_at(root, 9, at_seconds(1));
     }
 }

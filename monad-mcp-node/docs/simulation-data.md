@@ -16,19 +16,21 @@ A node proposes under `NodeConfig::proposal.encoding_scheme`
 | `D33` (default) | real chunks: symbol and Merkle proof, 1440 bytes per packet | check proofs, decode, re-encode |
 | `D33Hollow` | the chunk id and a stand-in proof, 130 bytes per packet | check the stand-in proof, count chunks, take the message from a store the nodes of the process share |
 | `D33HollowInconsistent` | as `D33Hollow`, for a Byzantine proposer: a root the message does not encode to | as for `D33Hollow`; every node resolves the proposal invalid |
+| `D33HollowWithheld` | as `D33Hollow`, for a Byzantine proposer: a root whose message is in no store, as a forged root | as for `D33Hollow`; every node resolves the proposal invalid |
 
-The two hollow schemes exist only with the cargo feature `enable_hollow`
+The hollow schemes exist only with the cargo feature `enable_hollow`
 (`monad-mcp-cadence`, `monad-mcp-da`, `monad-mcp-node`). The node's tests and
 examples turn it on (the node's dev-dependency on itself); a node built
 without it, as a deployed node is, does not know the scheme: it cannot propose
 hollow chunks or parse them. With the feature, a config file can also select
 `encoding_scheme = "d33_hollow"`, but hollow chunks only decode within one
-process. `D33HollowInconsistent` is set in code only.
+process. `D33HollowInconsistent` and `D33HollowWithheld` are set in code
+only.
 
 In the scenarios:
 
 - set `config.proposal.encoding_scheme` per node, as `loss.rs` does for
-  `D33` and `D33Hollow`, and `byzantine.rs` does for a Byzantine proposer
+  `D33` and `D33Hollow`, and `byzantine.rs` does for Byzantine proposers
   among hollow nodes;
 - `BENCH_SCHEME=d33_hollow` runs `bench::slot_cost` and `bench::scaling` with
   hollow chunks.
@@ -61,33 +63,75 @@ Modelled:
   `InvalidEncoding` at decoding, as with real chunks that verify and form no
   codeword. `byzantine.rs` checks that such lanes commit and resolve invalid
   alike on every node, and that every slot still reaches the ledger.
-- **Messages.** The author publishes its message, which any node holding a
-  decoder for the root takes at decoding. The store (`THIN_AIR` in
-  `encoding_scheme::hollow`) is shared by the nodes of the process. An entry
-  lives while a node holds it: the author until it has disseminated, then
-  every node that decoded it, until it drops the slot.
+- **Forged roots.** A proposer under `D33HollowWithheld` declares a root
+  whose message no node of the process published. Its chunks are valid
+  under the root; at `k` chunks every node, the proposer included, finds no
+  message and resolves the proposal `InvalidEncoding`, as with real chunks
+  under a root that no codeword has. `byzantine.rs` checks it as for
+  inconsistent proposals.
+- **Messages.** The author publishes its message in a store the nodes of the
+  process share (`THIN_AIR` in `encoding_scheme::hollow`), and a node takes
+  it from there when it creates its decoder for the root, by the rule below.
 
-## Known gap: a message missing from the store
+## Retention and misses
 
-A node looks a hollow message up once, when it creates its decoder for the
-root. If the store has no entry then, the decoder never resolves: the
-proposal neither decodes nor fails, the node keeps pulling its chunks, and
-a finalized slot that commits it is never handed to the ledger. That happens
-in two cases:
+The store is the only place a node takes a hollow message from, so what a
+node finds there would decide its outcome. To keep every outcome a function
+of what the node received and of its own clock, a node does not ask whether
+an entry happens to be there; when it creates its decoder for a proposal
+authored at `τ` (the header's `unix_ts`, whole seconds), at its own time
+`t`:
 
-- **No node of the process published the root**, for example a root a test
-  forges without a message. Real chunks under such a root either fail their
-  proofs or decode to an invalid encoding.
-- **Every holder already dropped the message**, so a node that creates its
-  decoder late misses it, where a D33 node would decode from the chunks it
-  receives. Under the parallel engine, a holder's drop on one thread and a
-  late node's lookup on another can fall in the same window in either order,
-  so this can also depend on thread timing. It needs a node that lags behind
-  the retention window of every other node; no scenario does this today.
+- `t < τ + HORIZON` (10 s): it takes the message published under the root,
+  and at `k` chunks decodes it, or resolves the proposal invalid if the
+  message was published inconsistent;
+- `t ≥ τ + HORIZON`, or nothing was published under the root: it does not
+  read the store, and resolves the proposal `InvalidEncoding` at `k` chunks.
+  A `DecodingFailed` event follows, and the slot reaches the ledger.
 
-This is waiting for the DA chunk store design in progress. Possible fixes are
-keeping entries for a window of slots, so that an honest lookup never misses,
-and resolving a miss at `k` chunks as `InvalidEncoding`.
+The author's DA runtime keeps each message it publishes until its own clock
+reads `τ + HORIZON + SLACK` (1 s more), and lets go of it at its next DA
+tick. Nodes that hold the proposal keep it as well, until they drop the
+slot; that only lengthens its life. So the entry is there whenever the rule
+sends a node to it, on any number of threads:
+
+- a node learns a root from a message, so its lookup comes after the
+  author's publish;
+- the parallel engine runs one window at a time, every step running at one
+  moment lies in the current window, at most the smallest lookahead between
+  domains wide (about 1 ms in the scenarios), and earlier windows are done.
+  The author's release and a lookup the rule allows are more than `SLACK`
+  minus the spread of node clock offsets apart in simulated time, so the
+  release runs in a later window than the lookup.
+
+This assumes `SLACK` is far larger than a window plus the spread of node
+clock offsets (tens of milliseconds in the scenarios). Debug builds check
+it: a node that misses within the horizon a root its author already let go
+of panics. There is no store-wide sweep by simulation time: the store is
+shared by every simulation in the process, such as the tests of one binary,
+each with a clock of its own.
+
+`HORIZON` is 100 slots at the scenarios' 100 ms slot interval, twice the 50
+slots DA keeps a slot past the cap, so a node that is in sync, or pulls its
+chunks from peers that still hold the slot, decodes. A node that takes a
+proposal up later resolves it invalid, where a D33 node might still decode
+it from chunks it already holds. `hollow_lag.rs` runs a node that handles
+every message 7 s late (past every other node's slot drop, within the
+horizon: it decodes every proposal) and 13 s late (beyond: it resolves every
+other node's proposal invalid and still finalizes), and checks that both
+runs are the same sequentially and on 2, 4 and 10 threads.
+
+Memory: the messages authored in the last `HORIZON + SLACK` plus up to a
+second, and those of slots some node still holds. At 5 lanes of 400 KB
+every 100 ms that is at most about 240 MB, however long the run. Measured
+in `bench::slot_cost` at `n = 190`: about 465 messages (186 MB) stay in the
+store throughout, against about 243 (97 MB) when only the nodes holding a
+slot keep its messages; the process's peak footprint is the same within
+noise (9.7 GB over 300 slots, 10.0 GB over 2000).
+
+A node removed from a swarm (`Swarm::remove_node`) takes its retention with
+it. No scenario removes nodes; restarts would also need the nodes that take
+a message to retain it.
 
 ## Cost
 

@@ -47,7 +47,7 @@ impl Component for DA {
     fn handle(&mut self, now: Timestamp, input: DAInput) {
         match input {
             DAInput::Envelope(sender, envelope) => {
-                if let Err(reason) = self.ingest(&sender, envelope) {
+                if let Err(reason) = self.ingest(&sender, envelope, now) {
                     tracing::debug!(?reason, "rejected proposal envelope");
                 }
             }

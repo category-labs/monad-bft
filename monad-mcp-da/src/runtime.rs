@@ -20,6 +20,8 @@ use std::{
 
 use monad_mcp_cadence::spec::ProposalHeader as _;
 
+#[cfg(feature = "enable_hollow")]
+use super::encoding_scheme::Retained;
 use super::{
     chunk::{ChunkRequest, ProposalEnvelope},
     egress::Dissemination,
@@ -69,6 +71,11 @@ pub enum ProposalScheme {
     // resolves them invalid. Set in code only, never from a config file.
     #[cfg(feature = "enable_hollow")]
     D33HollowInconsistent,
+    // a Byzantine proposer for simulations: d33 hollow proposals whose
+    // message no node of the process can take, as under a forged root, so
+    // every node resolves them invalid. Set in code only.
+    #[cfg(feature = "enable_hollow")]
+    D33HollowWithheld,
 }
 
 impl DAConfig {
@@ -104,6 +111,11 @@ pub struct DARuntime<S> {
     next_tick: Timestamp,
 
     outbox: VecDeque<DAOutput>,
+
+    // our hollow messages, each kept until its retention ends (see
+    // encoding_scheme::hollow), in the order we authored them
+    #[cfg(feature = "enable_hollow")]
+    retained: VecDeque<Retained>,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -125,6 +137,8 @@ where
             raptorcast_map: Default::default(),
             next_tick: Timestamp::GENESIS,
             outbox: Default::default(),
+            #[cfg(feature = "enable_hollow")]
+            retained: Default::default(),
         }
     }
 
@@ -132,13 +146,14 @@ where
         &mut self,
         sender: &NodeId,
         envelope: ProposalEnvelope,
+        now: Timestamp,
     ) -> Result<(), InvalidProposalHeader> {
         let slot = envelope.header().slot();
         let Some(slot_raptorcast) = self.raptorcast_map.get_mut(&slot) else {
             return Err(InvalidProposalHeader::SlotOutOfRange);
         };
 
-        slot_raptorcast.ingest(sender, envelope)?;
+        slot_raptorcast.ingest(sender, envelope, now)?;
         self.collect(slot);
         Ok(())
     }
@@ -161,14 +176,17 @@ where
             return;
         };
 
+        #[cfg(feature = "enable_hollow")]
+        self.retained.extend(authored.take_retained());
+
         let self_id = self.epoch_handle.self_id;
         if let Some(own_envelope) = authored.split_off(&self_id) {
-            self.ingest_own(own_envelope);
+            self.ingest_own(own_envelope, now);
         }
 
         // optimization: ingest all chunks for early decode, so peers
         // don't have to relay back to author.
-        self.ingest_own(authored.envelope());
+        self.ingest_own(authored.envelope(), now);
 
         let disseminations = match send_order {
             Some(order) => authored.into_disseminations_in(order),
@@ -179,9 +197,9 @@ where
         }
     }
 
-    fn ingest_own(&mut self, envelope: ProposalEnvelope) {
+    fn ingest_own(&mut self, envelope: ProposalEnvelope, now: Timestamp) {
         let self_id = self.epoch_handle.self_id;
-        if let Err(reason) = self.ingest(&self_id, envelope) {
+        if let Err(reason) = self.ingest(&self_id, envelope, now) {
             tracing::error!(?reason, "rejected our own proposal envelope");
         }
     }
@@ -280,7 +298,24 @@ where
             slot_raptorcast.tick(now);
             self.collect(slot);
         }
+        #[cfg(feature = "enable_hollow")]
+        self.release_retained(now);
         self.next_tick = now + self.config.delta;
+    }
+
+    // lets go of our hollow messages whose retention ended. The queue is in
+    // authoring order, which is retention order unless our clock was set
+    // back; then an entry waits for the one before it, which only keeps it
+    // longer.
+    #[cfg(feature = "enable_hollow")]
+    fn release_retained(&mut self, now: Timestamp) {
+        while self
+            .retained
+            .front()
+            .is_some_and(|retained| retained.until() <= now)
+        {
+            self.retained.pop_front();
+        }
     }
 
     pub fn poll(&mut self) -> Option<DAOutput> {
@@ -373,14 +408,14 @@ mod tests {
         let epoch_handle = epoch_handle();
         let (_, chunks) = proposal_chunks(&epoch_handle, 1);
 
-        let closed = runtime.ingest(&author(), group(&chunks[..1]));
+        let closed = runtime.ingest(&author(), group(&chunks[..1]), NOW);
         assert_eq!(closed, Err(InvalidProposalHeader::SlotOutOfRange));
 
         open(&mut runtime, [0, 1]);
-        assert_eq!(runtime.ingest(&author(), group(&chunks[..1])), Ok(()));
+        assert_eq!(runtime.ingest(&author(), group(&chunks[..1]), NOW), Ok(()));
 
         let (_, later) = proposal_chunks_from(&epoch_handle, 0, Slot(5), 1);
-        let beyond = runtime.ingest(&author(), group(&later[..1]));
+        let beyond = runtime.ingest(&author(), group(&later[..1]), NOW);
         assert_eq!(beyond, Err(InvalidProposalHeader::SlotOutOfRange));
     }
 
@@ -391,18 +426,18 @@ mod tests {
         open(&mut runtime, [0, 1, 2]);
         let (_, slot0) = proposal_chunks_from(&epoch_handle, 0, Slot(0), 1);
         let (_, slot1) = proposal_chunks_from(&epoch_handle, 0, Slot(1), 1);
-        assert_eq!(runtime.ingest(&author(), group(&slot0[..1])), Ok(()));
-        assert_eq!(runtime.ingest(&author(), group(&slot1[..1])), Ok(()));
+        assert_eq!(runtime.ingest(&author(), group(&slot0[..1]), NOW), Ok(()));
+        assert_eq!(runtime.ingest(&author(), group(&slot1[..1]), NOW), Ok(()));
 
         // cap 1 closes slot 0, kept for one slot of retention
         runtime.handle_slot_lifecycle(SlotLifecycle::CapAdvance { cap: Slot(1) });
-        assert_eq!(runtime.ingest(&author(), group(&slot0[1..2])), Ok(()));
+        assert_eq!(runtime.ingest(&author(), group(&slot0[1..2]), NOW), Ok(()));
 
         // cap 2: slot 0 leaves the retention window, slot 1 stays
         runtime.handle_slot_lifecycle(SlotLifecycle::CapAdvance { cap: Slot(2) });
-        let retired = runtime.ingest(&author(), group(&slot0[2..3]));
+        let retired = runtime.ingest(&author(), group(&slot0[2..3]), NOW);
         assert_eq!(retired, Err(InvalidProposalHeader::SlotOutOfRange));
-        assert_eq!(runtime.ingest(&author(), group(&slot1[1..2])), Ok(()));
+        assert_eq!(runtime.ingest(&author(), group(&slot1[1..2]), NOW), Ok(()));
     }
 
     #[test]
@@ -413,7 +448,7 @@ mod tests {
         runtime.handle_command(ChorusDACommand::ReleaseChunks, SLOT, NOW);
         let (header, chunks) = proposal_chunks(&epoch_handle, 1);
         runtime
-            .ingest(&author(), group(&chunks[..3]))
+            .ingest(&author(), group(&chunks[..3]), NOW)
             .expect("valid");
 
         let mut decoded_at = None;
@@ -496,7 +531,7 @@ mod tests {
         // the tick is due from the start, then every Delta
         assert_eq!(runtime.next_tick(), NOW);
         runtime
-            .ingest(&author(), group(&chunks[..1]))
+            .ingest(&author(), group(&chunks[..1]), NOW)
             .expect("valid");
         outputs(&mut runtime);
 
@@ -527,5 +562,40 @@ mod tests {
                 NodeId::dummy(3)
             ]
         );
+    }
+
+    // the author keeps its hollow message until its clock reads the end of
+    // the retention, whoever else let go of it
+    #[cfg(feature = "enable_hollow")]
+    #[test]
+    fn an_author_releases_its_hollow_message_at_the_end_of_its_retention() {
+        use super::super::encoding_scheme::{HORIZON, SLACK, is_published, root_of_message};
+
+        let retention = 1;
+        let mut runtime = runtime(retention);
+        open(&mut runtime, [SLOT.0]);
+        // a payload no other test publishes
+        let payload = Bytes::from(vec![0x66u8; MESSAGE_LEN]);
+        let root = root_of_message(&payload);
+        let proposal = Proposal {
+            slot: SLOT,
+            lane: Lane::new_unchecked(0),
+            payload,
+        };
+        // authored at 3.5 s, which the header carries as 3 s
+        let authored = Timestamp::from_millis(3_500);
+        runtime.propose(ProposalScheme::D33Hollow, proposal, None, authored);
+        outputs(&mut runtime);
+
+        // the slot is gone, and with it the author's own instance
+        let cap = Slot(SLOT.0 + retention + 1);
+        runtime.handle_slot_lifecycle(SlotLifecycle::CapAdvance { cap });
+        let until = Timestamp::from_millis(3_000) + HORIZON + SLACK;
+        let before = Timestamp::from_nanos(until.as_nanos() - 1);
+        runtime.handle_tick(before);
+        assert!(is_published(&root));
+
+        runtime.handle_tick(until);
+        assert!(!is_published(&root));
     }
 }

@@ -57,10 +57,11 @@ impl RaptorcastInstance {
         epoch_handle: &EpochHandle,
         author: &NodeId,
         serve_window: TimestampDelta,
+        now: Timestamp,
     ) -> Self {
         let validator_data = &epoch_handle.validator_data;
         let (assignment, chunks) =
-            encoding_scheme::instantiate(&header.header, author, validator_data);
+            encoding_scheme::instantiate(&header.header, author, validator_data, now);
         let self_index = assignment.index_of(&epoch_handle.self_id);
         let mut send_order: Vec<NodeIndex> = assignment.nodes().map(|(index, _)| index).collect();
         shuffle_sends(&mut send_order, &header.pid(), &epoch_handle.self_id);
@@ -254,6 +255,7 @@ mod tests {
             epoch_handle,
             &author(),
             timing().serve_window,
+            NOW,
         )
     }
 

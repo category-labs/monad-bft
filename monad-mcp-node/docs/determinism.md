@@ -146,9 +146,10 @@ criterion, among others). MCP scenarios use only `uniform_duration` and
 constant latencies; do not use the normal or log-normal ones until
 `monad-sim` samples them through `libm` directly.
 
-Not yet independent of thread timing in one case: hollow chunks
-(`enable_hollow`) take their messages from a store the nodes of the process
-share, and a node that creates its decoder after every holder dropped the
-message never resolves the proposal. Under the parallel engine, such a drop
-and lookup in the same window can happen in either order. No scenario runs
-into it today; see [simulation-data.md](simulation-data.md#known-gap-a-message-missing-from-the-store).
+Shared state across nodes: hollow chunks (`enable_hollow`) take their
+messages from a store the nodes of the process share. Whether a node takes a
+message is decided by a rule on the proposal's authoring time and the node's
+own clock, not by whether another node still holds the entry, and the
+author keeps each entry long enough that the rule never sends a node to a
+missing one, on any thread count; see
+[simulation-data.md](simulation-data.md#retention-and-misses).
