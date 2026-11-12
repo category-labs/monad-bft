@@ -286,7 +286,7 @@ impl Component for DropFirstBatch {
 
     fn poll(&mut self) -> Option<ProposingOutput> {
         let proposal = self.inner.poll()?;
-        let Proposal { slot, payload, .. } = &proposal;
+        let Proposal { slot, payload, .. } = &proposal.proposal;
         let has_txs = !decode_batch(payload).unwrap().is_empty();
         if !has_txs || self.dropped.get().is_some() {
             return Some(proposal);

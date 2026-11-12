@@ -143,7 +143,16 @@ where
         Ok(())
     }
 
-    pub fn propose(&mut self, proposal_scheme: ProposalScheme, proposal: Proposal, now: Timestamp) {
+    // our proposal. With a send order, the first hop goes out validator by
+    // validator in that order (`AuthoredProposal::into_disseminations_in`);
+    // without, in chunk-id order
+    pub fn propose(
+        &mut self,
+        proposal_scheme: ProposalScheme,
+        proposal: Proposal,
+        send_order: Option<&[NodeId]>,
+        now: Timestamp,
+    ) {
         let unix_ts = unix_seconds(now);
         let authored =
             AuthoredProposal::build(proposal_scheme, &self.epoch_handle, &proposal, unix_ts);
@@ -161,7 +170,11 @@ where
         // don't have to relay back to author.
         self.ingest_own(authored.envelope());
 
-        for dissemination in authored.into_disseminations() {
+        let disseminations = match send_order {
+            Some(order) => authored.into_disseminations_in(order),
+            None => authored.into_disseminations(),
+        };
+        for dissemination in disseminations {
             self.outbox.push_back(DAOutput::Disseminate(dissemination));
         }
     }

@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::collections::BTreeMap;
+
 use bytes::Bytes;
 use monad_mcp_cadence::spec::validator::ValidatorData as _;
 
@@ -181,6 +183,31 @@ impl AuthoredProposal {
 
         disseminations
     }
+
+    // the first hop validator by validator, in `order` (docs/0005 §5.5), so
+    // each validator's share leaves the uplink as one block:
+    // - the listed validators first, in `order`: each one's chunks, or its
+    //   bare header if it owns none, back to back in chunk-id order;
+    // - the validators not listed after, in `into_disseminations`'s order;
+    // - ids that are not first-hop recipients (unknown, the author) are
+    //   ignored, and a repeated id keeps its first place.
+    // The messages are those of `into_disseminations`, only reordered, and
+    // the result is a function of the proposal and `order` alone.
+    pub fn into_disseminations_in(self, order: &[NodeId]) -> Vec<Dissemination> {
+        let mut rank = BTreeMap::new();
+        for (place, node) in order.iter().enumerate() {
+            rank.entry(*node).or_insert(place);
+        }
+        let mut disseminations = self.into_disseminations();
+        // stable: chunk-id order within a share, and among the unlisted
+        disseminations.sort_by_key(|dissemination| {
+            let to = dissemination.to.first();
+            to.and_then(|node| rank.get(node))
+                .copied()
+                .unwrap_or(usize::MAX)
+        });
+        disseminations
+    }
 }
 
 #[cfg(test)]
@@ -268,6 +295,52 @@ mod tests {
             assert_eq!(recipient, owner);
             assert_eq!(*packet, write_chunk(chunk));
         }
+    }
+
+    // the first hop as (recipient, envelope), in send order
+    fn sends(disseminations: Vec<Dissemination>) -> Vec<(NodeId, ProposalEnvelope)> {
+        let mut sends = Vec::new();
+        for Dissemination { to, envelope } in disseminations {
+            for node in to {
+                sends.push((node, envelope.clone()));
+            }
+        }
+        sends
+    }
+
+    #[test]
+    fn a_send_order_sends_each_share_as_a_block() {
+        let epoch_handle = authoring_handle();
+        let message = vec![1u8; MESSAGE_LEN];
+        let proposal = || {
+            let proposal = build_d33(&epoch_handle, &proposal_of(message.clone()));
+            proposal.expect("the fixture's message fits")
+        };
+        let default = sends(proposal().into_disseminations());
+
+        // validator 3 twice, an id outside the validator set
+        let unknown = NodeId::dummy(99);
+        let order = [
+            NodeId::dummy(3),
+            unknown,
+            NodeId::dummy(1),
+            NodeId::dummy(3),
+        ];
+        let ordered = sends(proposal().into_disseminations_in(&order));
+
+        // validator 3's share, then 1's, then the rest in default order
+        let share = |node: NodeId| default.iter().filter(move |(to, _)| *to == node);
+        let listed = [NodeId::dummy(3), NodeId::dummy(1)];
+        let mut expected: Vec<_> = listed.into_iter().flat_map(share).cloned().collect();
+        let rest = default.iter().filter(|(to, _)| !listed.contains(to));
+        expected.extend(rest.cloned());
+        assert_eq!(ordered, expected);
+        assert!(listed.iter().all(|node| share(*node).count() > 0));
+        assert!(default.iter().any(|(to, _)| !listed.contains(to)));
+
+        // deterministic, and an empty order is the default order
+        assert_eq!(sends(proposal().into_disseminations_in(&order)), ordered);
+        assert_eq!(sends(proposal().into_disseminations_in(&[])), default);
     }
 
     #[test]

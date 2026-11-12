@@ -242,9 +242,13 @@ fn route_repeat((to, message): RepeaterOutput<ChorusMessage>, sink: &mut impl Si
 
 fn route_proposal(
     proposal_scheme: ProposalScheme,
-    proposal: ProposingOutput,
+    output: ProposingOutput,
     sink: &mut impl Sink<Routed>,
 ) {
+    let ProposingOutput {
+        proposal,
+        send_order,
+    } = output;
     tracing::info!(
         ?proposal.slot,
         ?proposal.lane,
@@ -254,6 +258,7 @@ fn route_proposal(
     let input = DAInput::Propose {
         scheme: proposal_scheme,
         proposal,
+        send_order,
     };
     sink.send(Routed::DA(input));
 }

@@ -38,7 +38,21 @@ pub enum ProposingInput {
     Finalized(Slot, Lanes<bool>),
 }
 
-pub type ProposingOutput = Proposal<Bytes>;
+// a sealed proposal for DA, with the first-hop send order the planner
+// chose; None: DA's own order (chunk-id order)
+pub struct ProposingOutput {
+    pub proposal: Proposal<Bytes>,
+    pub send_order: Option<Vec<NodeId>>,
+}
+
+impl From<Proposal<Bytes>> for ProposingOutput {
+    fn from(proposal: Proposal<Bytes>) -> Self {
+        Self {
+            proposal,
+            send_order: None,
+        }
+    }
+}
 
 // any proposing component; the node holds one and never knows which
 pub type Proposing = Box<dyn Component<Input = ProposingInput, Output = ProposingOutput> + Send>;
@@ -113,7 +127,7 @@ impl MempoolProposing {
                 lane,
                 payload,
             };
-            self.outbox.push_back(proposal);
+            self.outbox.push_back(proposal.into());
         }
     }
 }
@@ -192,7 +206,7 @@ impl RandomProposing {
                 lane,
                 payload,
             };
-            self.outbox.push_back(proposal);
+            self.outbox.push_back(proposal.into());
         }
     }
 }
@@ -360,7 +374,7 @@ mod tests {
         let due = proposing.next_due().expect("a seal is due");
         proposing.handle_due(due);
 
-        let Some(proposal) = proposing.poll() else {
+        let Some(ProposingOutput { proposal, .. }) = proposing.poll() else {
             panic!("a proposal at the seal time");
         };
         assert_eq!(proposal.slot, Slot(0));
