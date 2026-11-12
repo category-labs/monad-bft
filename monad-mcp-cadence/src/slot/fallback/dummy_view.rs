@@ -204,11 +204,10 @@ impl DummyView {
     }
 
     pub(crate) fn handle_message(&mut self, sender: ValidatorIndex, msg: DummyViewMessage) {
-        if self.abandoned || msg.slot() != self.slot {
+        if self.abandoned || msg.slot() != self.slot || self.decision().is_some() {
             return;
         }
         let had_nf_cert = self.not_full.sealed().is_some();
-        let had_decision = self.decision().is_some();
 
         match msg {
             DummyViewMessage::FastInput(block) => self.handle_fast_input(block),
@@ -222,13 +221,11 @@ impl DummyView {
             self.effects
                 .push_back(DummyViewEffect::NfCert(nf_cert.clone()));
         }
-        if !had_decision {
-            self.dummy_votes.try_form_strong_qc(validator_data);
-            if let Some((qc, block)) = self.decision() {
-                let (qc, block) = (qc.clone(), block.clone());
-                self.effects
-                    .push_back(DummyViewEffect::Decided { qc, block });
-            }
+        self.dummy_votes.try_form_strong_qc(validator_data);
+        if let Some((qc, block)) = self.decision() {
+            let (qc, block) = (qc.clone(), block.clone());
+            self.effects
+                .push_back(DummyViewEffect::Decided { qc, block });
         }
     }
 
@@ -270,8 +267,7 @@ impl DummyView {
     }
 
     fn handle_dummy_decision(&mut self, qc: DummyQc, block: Metablock) {
-        if self.decision().is_some()
-            || qc.verdict.0 != block.entries()
+        if qc.verdict.0 != block.entries()
             || !self.is_fast_block(&block)
             || !qc.verify(&self.validation_context.validator_data)
         {
@@ -928,6 +924,33 @@ mod tests {
             &mut view,
             nodes()[2],
             DummyViewMessage::DummyDecision { qc, block },
+        );
+        assert!(drain(&mut view).is_empty());
+    }
+
+    #[test]
+    fn a_decided_view_handles_no_further_message() {
+        let block = fast_metablock(1);
+        let mut view = dummy_view(nodes()[0]);
+        deliver(
+            &mut view,
+            nodes()[1],
+            DummyViewMessage::FastInput(block.clone()),
+        );
+        for node in quorum() {
+            deliver(&mut view, node, dummy_vote(node, &block.entries()));
+        }
+        assert_eq!(decisions(&drain(&mut view)).len(), 1);
+
+        for node in quorum() {
+            deliver(&mut view, node, not_full(node));
+        }
+        assert!(drain(&mut view).is_empty(), "no NfCert after deciding");
+
+        deliver(
+            &mut view,
+            nodes()[2],
+            DummyViewMessage::FastInput(fast_metablock(2)),
         );
         assert!(drain(&mut view).is_empty());
     }

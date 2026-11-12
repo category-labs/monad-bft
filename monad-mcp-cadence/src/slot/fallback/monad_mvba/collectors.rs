@@ -79,7 +79,8 @@ impl<V: IsVote> SealingVotePool<V> {
         self.sealed.get()
     }
 
-    /// Installs an already verified certificate unless one is sealed
+    /// Installs `qc` unless a certificate is already sealed. Nothing is checked
+    /// here: the caller has verified `qc`
     pub(crate) fn seal(&self, qc: StrongQc<V>) {
         let _ = self.sealed.set(qc);
     }
