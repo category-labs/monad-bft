@@ -301,7 +301,8 @@ impl SlotFallback {
         }
     }
 
-    /// The core is offered proposals and abandoned in whatever view it is in
+    /// The core is offered proposals, a fast block over the non-fast input, and
+    /// abandoned in whatever view it is in
     fn apply(&mut self, effect: DummyViewEffect) {
         match effect {
             DummyViewEffect::Broadcast(message) => {
@@ -311,12 +312,17 @@ impl SlotFallback {
                     )));
             }
             DummyViewEffect::FastBlock(block) => {
-                if let Some(value) = CertifiedMetablock::fast(block) {
+                // a fast input is already the offer, with the same entries as any fast block
+                if let Some(Registered::NonFast { .. }) = &self.input
+                    && let Some(value) = CertifiedMetablock::fast(block)
+                {
                     self.core.offer_proposal(value);
                 }
             }
             DummyViewEffect::NfCert(nf_cert) => {
-                if let Some(Registered::NonFast { block, fbcert }) = &self.input
+                // a fast block held is, or is about to be, the offer
+                if self.dummy_view.fast_block().is_none()
+                    && let Some(Registered::NonFast { block, fbcert }) = &self.input
                     && let Some(value) =
                         CertifiedMetablock::non_fast(block.clone(), fbcert.clone(), nf_cert)
                 {
@@ -950,6 +956,83 @@ mod tests {
             .nfcert()
             .expect("a non-fast value carries the NfCert");
         assert!(nf_cert.validate(&validation_context()));
+    }
+
+    #[test]
+    fn a_view_2_leader_proposes_a_received_fast_block_over_its_own_non_fast_input() {
+        // Cases: the NFCert arrives before or after the received fast block, and the
+        // leader's own input is set before or after both.
+        let leader = h::leader_of(h::view(2));
+        assert_ne!(
+            h::leader_of(h::view(1)),
+            leader,
+            "test assumes a view-2 leader"
+        );
+        let own = non_fast(1);
+        let received = fast(2);
+
+        let deliver_nf_cert = |instance: &mut SlotFallback| {
+            for node in h::quorum() {
+                deliver(instance, node, not_full(node));
+            }
+        };
+        let deliver_fast_block = |instance: &mut SlotFallback| {
+            deliver(instance, h::nodes()[0], fast_input(&received));
+        };
+
+        for nf_cert_first in [true, false] {
+            for before_propose in [false, true] {
+                let case =
+                    format!("nf_cert_first: {nf_cert_first}, before_propose: {before_propose}");
+                let mut instance = slot_fallback(leader);
+                if !before_propose {
+                    instance.propose((own.clone(), Some(fbcert())));
+                }
+                if nf_cert_first {
+                    deliver_nf_cert(&mut instance);
+                    deliver_fast_block(&mut instance);
+                } else {
+                    deliver_fast_block(&mut instance);
+                    deliver_nf_cert(&mut instance);
+                }
+                if before_propose {
+                    instance.propose((own.clone(), Some(fbcert())));
+                }
+                assert!(proposals(&drain(&mut instance)).is_empty(), "{case}");
+
+                deliver(&mut instance, h::nodes()[0], tc(1));
+                let outputs = drain(&mut instance);
+                let proposed = proposals(&outputs);
+                assert_eq!(proposed.len(), 1, "{case}");
+                assert_eq!(proposed[0].view, h::view(2), "{case}");
+                let value = CertifiedMetablock::fast(received.clone()).expect("a fast metablock");
+                assert_eq!(proposed[0].value, value, "{case}");
+                assert!(
+                    proposed[0].value.fbcert().is_none() && proposed[0].value.nfcert().is_none(),
+                    "{case}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_fast_input_is_not_displaced_by_a_received_fast_block() {
+        let received = fast(2);
+        for view in [1, 2] {
+            let leader = h::leader_of(h::view(view));
+            assert_ne!(h::nodes()[0], leader, "test assumes another sender");
+            let own = fast(1);
+            let mut instance = started(leader, &own);
+            deliver(&mut instance, h::nodes()[0], fast_input(&received));
+            deliver(&mut instance, h::nodes()[0], tc(1));
+
+            let outputs = drain(&mut instance);
+            let proposed = proposals(&outputs);
+            assert_eq!(proposed.len(), 1, "view {view}");
+            assert_eq!(proposed[0].view, h::view(view));
+            let value = CertifiedMetablock::fast(own).expect("a fast metablock");
+            assert_eq!(proposed[0].value, value, "view {view}");
+        }
     }
 
     #[test]

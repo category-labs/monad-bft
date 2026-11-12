@@ -232,6 +232,11 @@ impl DummyView {
         }
     }
 
+    /// The valid fast metablock held, received or certified
+    pub(crate) fn fast_block(&self) -> Option<&Metablock> {
+        self.fast_block.as_ref()
+    }
+
     /// The DummyQC and the fast block it certifies, once both are held
     fn decision(&self) -> Option<(&DummyQc, &Metablock)> {
         let qc = self.dummy_votes.sealed()?;

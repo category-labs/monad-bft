@@ -183,7 +183,7 @@ pub struct MonadMvba<V: ValidateInput + Votable> {
     context: MvbaContext,
     validation_context: V::Context,
     /// What this validator proposes in a view it leads with nothing locked;
-    /// the first valid value offered
+    /// the latest valid value offered
     unlocked: Option<V>,
 
     /// [`Phase::Idle`] until [`MonadMvba::start`]: nothing is sent before it
@@ -264,6 +264,9 @@ where
     }
 
     fn propose(&mut self, input: V) {
+        if !self.phase.is_idle() {
+            return;
+        }
         // offered first, so the first pass after starting already holds it
         self.offer_proposal(input);
         self.start();
@@ -526,9 +529,9 @@ where
     }
 
     /// A valid value this validator may propose in a view it leads with nothing locked.
-    /// The first one offered is kept
+    /// The latest one offered is kept
     pub(crate) fn offer_proposal(&mut self, value: V) {
-        if self.abandoned || self.phase.is_decided() || self.unlocked.is_some() {
+        if self.abandoned || self.phase.is_decided() {
             return;
         }
         if !value.validate(self.validation_context()) {

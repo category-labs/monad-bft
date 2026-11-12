@@ -2301,7 +2301,7 @@ fn a_timed_out_leader_does_not_propose_on_offer() {
 }
 
 #[test]
-fn the_first_offer_is_the_one_proposed() {
+fn the_latest_offer_is_the_one_proposed() {
     let validator_data = validator_data();
     let non_fast = mixed_evidence_metablock(2, &validator_data);
     let fast = metablock(3, &validator_data);
@@ -2326,16 +2326,29 @@ fn the_first_offer_is_the_one_proposed() {
             .clone()
     };
 
-    assert_eq!(proposed_in_view_2(None, &[&non_fast, &fast]), non_fast);
+    assert_eq!(proposed_in_view_2(None, &[&non_fast, &fast]), fast);
     assert_eq!(
         proposed_in_view_2(None, &[&fast, &non_fast]),
-        fast,
+        non_fast,
         "the order decides, not the kind of value"
     );
     assert_eq!(
         proposed_in_view_2(Some(&non_fast), &[&fast]),
-        non_fast,
-        "an offer does not displace the input `propose` registered"
+        fast,
+        "an offer displaces the input `propose` registered"
+    );
+
+    // a leader that has proposed in its view does not propose there again
+    let mut instance = mvba(leader_of(view(1)), &validator_data);
+    instance.propose(non_fast.clone());
+    assert_eq!(
+        proposed(&drain(&mut instance)).map(|proposal| &proposal.value),
+        Some(&non_fast)
+    );
+    instance.offer_proposal(fast);
+    assert!(
+        proposed(&drain(&mut instance)).is_none(),
+        "a later offer is not proposed in a view already proposed in"
     );
 }
 
@@ -2425,6 +2438,31 @@ fn a_second_propose_proposes_nothing_more() {
         proposed(&outputs).map(|proposal| &proposal.value),
         Some(&first)
     );
+}
+
+#[test]
+fn a_propose_after_an_invalid_one_is_ignored() {
+    let validator_data = validator_data();
+    let block = metablock(1, &validator_data);
+    // the same entries, certified for another slot
+    let block_entries = block.entries();
+    let elsewhere = Metablock::new(Lanes::new(NUM_LANES, |j| {
+        CertifiedEntry::FastQc(strong_qc(
+            ProposalScope::new(Slot(SLOT.get() + 1), j),
+            block_entries[j].clone(),
+            &quorum(),
+            &validator_data,
+        ))
+    }));
+
+    let mut instance = mvba(leader_of(view(1)), &validator_data);
+    instance.propose(elsewhere);
+    instance.propose(block);
+    assert!(
+        proposed(&drain(&mut instance)).is_none(),
+        "the first propose started the instance; the second is no input"
+    );
+    assert!(instance.unlocked.is_none());
 }
 
 #[test]
