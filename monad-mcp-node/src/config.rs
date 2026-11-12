@@ -24,8 +24,9 @@ use serde::Deserialize;
 
 use crate::{
     cadence::{
+        adaptive_lead::AdaptiveConfig,
         conductor::{ConductorConfig, ConductorError},
-        proposing::PlannerConfig,
+        proposing::{AdaptiveSetup, PlannerConfig},
         slot::chorus::ChorusConfig,
         types::{
             ProposerConfig, RotatingProposerSchedule, RoundRobinLeaderSchedule, ScheduleError,
@@ -344,6 +345,72 @@ pub struct ProposalConfig {
     // "d33". A node built with enable_hollow also takes "d33_hollow".
     #[serde(deserialize_with = "de::proposal_scheme")]
     pub encoding_scheme: da::ProposalScheme,
+    // the adaptive lead (docs/0005), experimental and off by default
+    pub adaptive: AdaptiveSection,
+}
+
+// `[proposal.adaptive]`. Off, the planner uses the static lead above and
+// the node behaves exactly as without the section; on, the static lead is
+// the cold-start value
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(default)]
+pub struct AdaptiveSection {
+    pub enabled: bool,
+    // θ: bound on the negative stake on the own lane, below 1/3
+    pub theta: f64,
+    // ε: accepted risk per own slot of exceeding θ
+    pub epsilon: f64,
+    // ε_w: accepted split risk of sending a late seal
+    pub withhold_epsilon: f64,
+    // ρ: negative stake held back for unpredictable no-voters
+    pub reserve: f64,
+    // clamps on the lead; the max is the protocol delta when deployed
+    pub min_lead_ms: f64,
+    pub max_lead_ms: f64,
+    // first-hop bytes on the wire per payload byte
+    pub wire_ratio: f64,
+    // the node's uplink
+    pub uplink_mbps: f64,
+    // slots with batch-vote arrivals before the static lead is replaced
+    pub warmup_slots: u32,
+    // width of the latency blocks the risk rule treats as correlated, ms;
+    // 0: independent votes
+    pub block_ms: f64,
+    // own slots whose residuals set the self-calibrating margin; 0: off
+    pub calib_window: usize,
+    // the spread of clock offsets, ms: before own slots calibrate the model,
+    // the risk rule allows a shift of all thresholds of 3 spreads (the
+    // proposer's own clock enters the passive estimate with the wrong
+    // sign); 0: off
+    pub clock_sd_ms: f64,
+    // own slots whose residuals the margin leaves out (warm-up)
+    pub calib_skip: usize,
+    // re-plan waiting seals on every own-slot vote, not only per cap advance
+    pub refresh_on_vote: bool,
+}
+
+impl Default for AdaptiveSection {
+    fn default() -> Self {
+        let model = AdaptiveConfig::default();
+        let setup = AdaptiveSetup::default();
+        Self {
+            enabled: false,
+            theta: model.theta,
+            epsilon: model.epsilon,
+            withhold_epsilon: model.withhold_epsilon,
+            reserve: model.reserve,
+            min_lead_ms: model.min_lead,
+            max_lead_ms: model.max_lead,
+            wire_ratio: model.wire_ratio,
+            uplink_mbps: model.uplink_bytes_per_ms * 8.0 / 1000.0,
+            warmup_slots: setup.warmup_slots,
+            block_ms: model.block_ms,
+            calib_window: model.calib_window,
+            clock_sd_ms: model.common_sd / 3.0,
+            calib_skip: model.calib_skip,
+            refresh_on_vote: setup.refresh_on_vote,
+        }
+    }
 }
 
 impl ProposalConfig {
@@ -398,6 +465,37 @@ impl ProposalConfig {
         RotatingProposerSchedule::new(cfg, algorithm, validator_data)
     }
 
+    // the adaptive lead's setup, planned for this source's size limit; None
+    // when off
+    pub fn adaptive(&self) -> Option<AdaptiveSetup> {
+        let section = &self.adaptive;
+        if !section.enabled {
+            return None;
+        }
+        let model = AdaptiveConfig {
+            theta: section.theta,
+            epsilon: section.epsilon,
+            withhold_epsilon: section.withhold_epsilon,
+            reserve: section.reserve,
+            min_lead: section.min_lead_ms,
+            max_lead: section.max_lead_ms,
+            wire_ratio: section.wire_ratio,
+            uplink_bytes_per_ms: section.uplink_mbps * 1000.0 / 8.0,
+            block_ms: section.block_ms,
+            calib_window: section.calib_window,
+            common_sd: 3.0 * section.clock_sd_ms,
+            calib_skip: section.calib_skip,
+            ..AdaptiveConfig::default()
+        };
+        Some(AdaptiveSetup {
+            model,
+            payload_bytes: self.proposal_size_limit(),
+            warmup_slots: section.warmup_slots,
+            refresh_on_vote: section.refresh_on_vote,
+            ..AdaptiveSetup::default()
+        })
+    }
+
     // the gate's cutoff is the schedule's own: the two cannot disagree
     pub fn planner(&self, proposers: &NodeProposerSchedule) -> PlannerConfig {
         PlannerConfig {
@@ -417,6 +515,7 @@ impl Default for ProposalConfig {
             propose_before_deadline: TimestampDelta::from_millis(500),
             withhold_before_deadline: TimestampDelta::ZERO,
             encoding_scheme: da::ProposalScheme::D33,
+            adaptive: AdaptiveSection::default(),
         }
     }
 }
@@ -603,6 +702,29 @@ mod tests {
         );
         assert_eq!(planner.lead, config.propose_before_deadline);
         assert_eq!(planner.min_lead, config.withhold_before_deadline);
+    }
+
+    // the adaptive lead is off unless the section turns it on; on, it plans
+    // for the source's size limit with the section's parameters
+    #[test]
+    fn the_adaptive_section_defaults_off() {
+        assert!(ProposalConfig::default().adaptive().is_none());
+        let off: ProposalConfig = toml::from_str("[adaptive]\ntheta = 0.2").unwrap();
+        assert!(off.adaptive().is_none());
+
+        let toml = "max_payload_bytes = 65536\n[adaptive]\nenabled = true\ntheta = 0.2\n\
+                    clock_sd_ms = 0\ncalib_skip = 3";
+        let on: ProposalConfig = toml::from_str(toml).unwrap();
+        let setup = on.adaptive().expect("on");
+        assert_eq!(setup.payload_bytes, 65536);
+        assert_eq!(setup.model.theta, 0.2);
+        assert_eq!(setup.model.common_sd, 0.0);
+        assert_eq!(setup.model.calib_skip, 3);
+        let defaults = AdaptiveConfig::default();
+        assert_eq!(setup.model.epsilon, defaults.epsilon);
+        assert_eq!(setup.model.block_ms, defaults.block_ms);
+        assert_eq!(setup.model.common_k0, defaults.common_k0);
+        assert!(setup.refresh_on_vote);
     }
 
     // the gate is off unless the deployment asks for it

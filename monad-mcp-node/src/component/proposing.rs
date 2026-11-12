@@ -105,6 +105,20 @@ impl Component for Proposing {
     }
 }
 
+// the planner of a proposing component: with the adaptive lead when the
+// config turns it on
+fn planner(epoch_handle: &EpochHandle, config: &ProposalConfig) -> ProposalPlanner {
+    let planner = ProposalPlanner::new(
+        epoch_handle.self_id,
+        epoch_handle.proposers.clone(),
+        config.planner(&epoch_handle.proposers),
+    );
+    match config.adaptive() {
+        Some(setup) => planner.with_adaptive(setup, epoch_handle.validator_data.clone()),
+        None => planner,
+    }
+}
+
 // decides when we propose in a slot and proposes the mempool's head
 pub struct MempoolProposing {
     planner: ProposalPlanner,
@@ -115,11 +129,7 @@ pub struct MempoolProposing {
 
 impl MempoolProposing {
     pub fn new(epoch_handle: &EpochHandle, config: &ProposalConfig, mempool: Mempool) -> Self {
-        let planner = ProposalPlanner::new(
-            epoch_handle.self_id,
-            epoch_handle.proposers.clone(),
-            config.planner(&epoch_handle.proposers),
-        );
+        let planner = planner(epoch_handle, config);
         Self {
             planner,
             mempool,
@@ -154,12 +164,22 @@ impl MempoolProposing {
                 lane,
                 payload,
             };
-            self.outbox.push_back(proposal.into());
+            // the planner's first-hop send order, once its adaptive lead is warm
+            let send_order = self.planner.send_order(slot).map(<[NodeId]>::to_vec);
+            self.outbox.push_back(ProposingOutput {
+                proposal,
+                send_order,
+            });
         }
     }
 }
 
-impl ProposingComponent for MempoolProposing {}
+impl ProposingComponent for MempoolProposing {
+    // the adaptive lead learns from every peer's batch vote
+    fn wants_vote_facts(&self) -> bool {
+        self.planner.is_adaptive()
+    }
+}
 
 impl Component for MempoolProposing {
     type Input = ProposingInput;
@@ -216,11 +236,7 @@ pub struct RandomProposing {
 
 impl RandomProposing {
     pub fn new(epoch_handle: &EpochHandle, config: &ProposalConfig, rng: ChaCha8Rng) -> Self {
-        let planner = ProposalPlanner::new(
-            epoch_handle.self_id,
-            epoch_handle.proposers.clone(),
-            config.planner(&epoch_handle.proposers),
-        );
+        let planner = planner(epoch_handle, config);
         Self {
             planner,
             proposal_size_limit: config.proposal_size_limit(),
@@ -242,12 +258,22 @@ impl RandomProposing {
                 lane,
                 payload,
             };
-            self.outbox.push_back(proposal.into());
+            // the planner's first-hop send order, once its adaptive lead is warm
+            let send_order = self.planner.send_order(slot).map(<[NodeId]>::to_vec);
+            self.outbox.push_back(ProposingOutput {
+                proposal,
+                send_order,
+            });
         }
     }
 }
 
-impl ProposingComponent for RandomProposing {}
+impl ProposingComponent for RandomProposing {
+    // the adaptive lead learns from every peer's batch vote
+    fn wants_vote_facts(&self) -> bool {
+        self.planner.is_adaptive()
+    }
+}
 
 impl Component for RandomProposing {
     type Input = ProposingInput;
