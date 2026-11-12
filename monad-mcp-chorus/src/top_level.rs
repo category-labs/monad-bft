@@ -21,6 +21,7 @@ use super::env;
 
 pub mod conductor;
 pub mod driver;
+pub mod node;
 pub mod runtime;
 pub mod slot;
 pub mod slot_manager;
@@ -28,6 +29,7 @@ pub mod types;
 
 pub use conductor::{Conductor, ConductorOutput};
 pub use driver::{CadenceDriver, CadenceDriverMsg, CadenceMessage, Driver, NodeEvent, WakeId};
-pub use runtime::{CadenceRuntime, FinalizationObserver, Runtime};
+pub use node::{CadenceNodeMsg, DAOutput, DataAvailability, NodeMessage, NodeRuntime};
+pub use runtime::{CadenceRuntime, DAQueue, DASink, FinalizationObserver, Runtime, SlotLifecycle};
 pub use slot::{SlotConsensus, SlotOutput};
 pub use slot_manager::SlotManager;

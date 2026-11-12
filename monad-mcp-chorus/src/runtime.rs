@@ -13,6 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+use std::{cell::RefCell, collections::VecDeque, rc::Rc};
+
 use super::{
     conductor::{Conductor, ConductorOutput},
     driver::{CadenceDriver, CadenceEvent, Driver, NodeEvent, WakeId},
@@ -42,12 +44,15 @@ where
     conductor: C,
     driver: D,
     observer: Option<Box<ObserverOf<S>>>,
+    da_sink: Option<Box<DASinkOf<S>>>,
 }
 
 type ObserverOf<S> = dyn FinalizationObserver<
         <S as SlotConsensus>::OptimisticCommitData,
         <S as SlotConsensus>::FinalizationData,
     >;
+
+type DASinkOf<S> = dyn DASink<<S as SlotConsensus>::DACommand>;
 
 impl<S, C> CadenceRuntime<S, C>
 where
@@ -61,6 +66,7 @@ where
             conductor,
             driver: CadenceDriver::default(),
             observer: None,
+            da_sink: None,
         }
     }
 
@@ -73,6 +79,7 @@ where
             slot_manager: self.slot_manager,
             conductor: self.conductor,
             observer: self.observer,
+            da_sink: self.da_sink,
             driver,
         }
     }
@@ -91,10 +98,28 @@ where
         self.observer = Some(Box::new(observer));
     }
 
+    pub fn on_da(&mut self, sink: impl DASink<S::DACommand> + 'static) {
+        self.da_sink = Some(Box::new(sink));
+    }
+
     // in actual runtime this can be controlled by the system clock.
     pub fn advance_clock(&mut self, now: Timestamp) {
         assert!(now >= self.clock);
         self.clock = now;
+    }
+
+    // Inject a data-availability event into the slot's consensus
+    // instance. DA events are local and trusted by construction.
+    pub fn handle_da_event(&mut self, now: Timestamp, slot: Slot, event: S::DAEvent) {
+        self.advance_clock(now);
+
+        if let Some(instance) = self.slot_manager.slot_instance(slot) {
+            // q: do we need to buffer the da events? da begins to
+            // accept chunk ingestion at the same time as slot
+            // consensus, which normally is already conservative.
+            instance.handle_da_event(event);
+        }
+        self.step();
     }
 
     fn step(&mut self) {
@@ -117,6 +142,11 @@ where
                 SlotOutput::Unicast { to, message } => {
                     self.driver.unicast_slot(slot, to, message);
                 }
+                SlotOutput::DA(action) => {
+                    if let Some(sink) = &mut self.da_sink {
+                        sink.handle_command(slot, action);
+                    }
+                }
                 SlotOutput::CommitOptimistic(data) => {
                     if let Some(observer) = &mut self.observer {
                         observer.handle_optimistic_commit(now, slot, &data);
@@ -126,11 +156,17 @@ where
                     if let Some(observer) = &mut self.observer {
                         observer.handle_finalization(now, slot, &data);
                     }
+                    if let Some(sink) = &mut self.da_sink {
+                        sink.handle_lifecycle(slot, SlotLifecycle::Completed);
+                    }
                     self.conductor.handle_slot_finalization(now, slot);
                     self.slot_manager.close(slot);
                 }
                 SlotOutput::Fault { reason } => {
                     tracing::warn!(?slot, reason = %reason, "slot faulted");
+                    if let Some(sink) = &mut self.da_sink {
+                        sink.handle_lifecycle(slot, SlotLifecycle::Completed);
+                    }
                     self.slot_manager.close(slot);
                 }
             }
@@ -152,6 +188,9 @@ where
                     for (slot, deadline) in slots {
                         self.slot_manager.open(slot);
                         self.driver.schedule_slot_deadline(slot, deadline);
+                        if let Some(sink) = &mut self.da_sink {
+                            sink.handle_lifecycle(slot, SlotLifecycle::Opened);
+                        }
                     }
                 }
             }
@@ -218,6 +257,89 @@ where
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SlotLifecycle {
+    Opened,
+    Completed,
+}
+
+/// What consensus hands the DA layer, in the order it happens: a slot's
+/// commands fall strictly between its `Opened` and `Completed`
+pub trait DASink<A> {
+    fn handle_lifecycle(&mut self, slot: Slot, event: SlotLifecycle);
+    fn handle_command(&mut self, slot: Slot, action: A);
+}
+
+/// One deferred sink call; a single queue of these keeps the two methods'
+/// relative order
+enum Queued<A> {
+    Lifecycle(SlotLifecycle),
+    Command(A),
+}
+
+type SinkQueue<A> = VecDeque<(Slot, Queued<A>)>;
+
+impl<A> DASink<A> for SinkQueue<A> {
+    fn handle_lifecycle(&mut self, slot: Slot, event: SlotLifecycle) {
+        self.push_back((slot, Queued::Lifecycle(event)));
+    }
+
+    fn handle_command(&mut self, slot: Slot, action: A) {
+        self.push_back((slot, Queued::Command(action)));
+    }
+}
+
+impl<A, T: DASink<A>> DASink<A> for Rc<RefCell<T>> {
+    fn handle_lifecycle(&mut self, slot: Slot, event: SlotLifecycle) {
+        self.borrow_mut().handle_lifecycle(slot, event);
+    }
+
+    fn handle_command(&mut self, slot: Slot, action: A) {
+        self.borrow_mut().handle_command(slot, action);
+    }
+}
+
+/// A shared sink queue: one clone is boxed into [`CadenceRuntime::on_da`],
+/// the other is replayed into the DA layer by whoever runs it.
+pub struct DAQueue<A>(Rc<RefCell<SinkQueue<A>>>);
+
+impl<A> DAQueue<A> {
+    /// Replays the oldest deferred call into `sink`; false when there is none
+    pub fn pop_into(&self, sink: &mut impl DASink<A>) -> bool {
+        // the borrow ends with the let-else statement, before the sink call
+        let Some((slot, queued)) = self.0.borrow_mut().pop_front() else {
+            return false;
+        };
+        match queued {
+            Queued::Lifecycle(event) => sink.handle_lifecycle(slot, event),
+            Queued::Command(action) => sink.handle_command(slot, action),
+        }
+        true
+    }
+}
+
+impl<A> Clone for DAQueue<A> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<A> Default for DAQueue<A> {
+    fn default() -> Self {
+        Self(Rc::default())
+    }
+}
+
+impl<A> DASink<A> for DAQueue<A> {
+    fn handle_lifecycle(&mut self, slot: Slot, event: SlotLifecycle) {
+        self.0.handle_lifecycle(slot, event);
+    }
+
+    fn handle_command(&mut self, slot: Slot, action: A) {
+        self.0.handle_command(slot, action);
+    }
+}
+
 pub trait FinalizationObserver<OD, FD> {
     fn handle_optimistic_commit(&mut self, _now: Timestamp, _slot: Slot, _data: &OD) {}
     fn handle_finalization(&mut self, now: Timestamp, slot: Slot, data: &FD);
@@ -235,5 +357,57 @@ where
 impl<OD, FD> FinalizationObserver<OD, FD> for Vec<(Timestamp, Slot)> {
     fn handle_finalization(&mut self, now: Timestamp, slot: Slot, _data: &FD) {
         self.push((now, slot));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(PartialEq, Eq, Debug)]
+    enum Seen {
+        Lifecycle(Slot, SlotLifecycle),
+        Command(Slot, u8),
+    }
+
+    impl DASink<u8> for Vec<Seen> {
+        fn handle_lifecycle(&mut self, slot: Slot, event: SlotLifecycle) {
+            self.push(Seen::Lifecycle(slot, event));
+        }
+
+        fn handle_command(&mut self, slot: Slot, action: u8) {
+            self.push(Seen::Command(slot, action));
+        }
+    }
+
+    /// A slot's commands replay between its Opened and Completed even when
+    /// other slots interleave
+    #[test]
+    fn da_queue_replays_in_sink_order() {
+        let queue = DAQueue::<u8>::default();
+        let mut producer = queue.clone();
+        producer.handle_lifecycle(Slot(1), SlotLifecycle::Opened);
+        producer.handle_command(Slot(1), 7);
+        producer.handle_lifecycle(Slot(2), SlotLifecycle::Opened);
+        producer.handle_command(Slot(1), 8);
+        producer.handle_lifecycle(Slot(1), SlotLifecycle::Completed);
+
+        let mut seen = Vec::new();
+        while queue.pop_into(&mut seen) {}
+
+        assert_eq!(
+            seen,
+            vec![
+                Seen::Lifecycle(Slot(1), SlotLifecycle::Opened),
+                Seen::Command(Slot(1), 7),
+                Seen::Lifecycle(Slot(2), SlotLifecycle::Opened),
+                Seen::Command(Slot(1), 8),
+                Seen::Lifecycle(Slot(1), SlotLifecycle::Completed),
+            ]
+        );
+        assert!(
+            !queue.pop_into(&mut seen),
+            "an empty queue reports no progress"
+        );
     }
 }

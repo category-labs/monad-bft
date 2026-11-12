@@ -13,6 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+mod availability;
 pub mod chorus;
 pub mod dummy;
 pub mod fallback;
@@ -30,6 +31,11 @@ pub trait SlotConsensus: Sized {
     type OptimisticCommitData: Clone;
     type FinalizationData: Clone;
 
+    /// Notification from the data-availability layer
+    type DAEvent;
+    /// Effect directed at the data-availability layer
+    type DACommand: Clone;
+
     fn new(slot: Slot, config: &Self::Config, context: &Self::Context) -> Self;
 
     /// Called on the deadline of the slot
@@ -40,6 +46,10 @@ pub trait SlotConsensus: Sized {
 
     /// Handle a timer event.
     fn handle_timer(&mut self, timer: Self::Timer);
+
+    /// Handle a data-availability event. Consensus without a DA layer
+    /// ignores these.
+    fn handle_da_event(&mut self, _event: Self::DAEvent) {}
 
     /// Poll for output actions to be taken by the conductor.
     fn poll(&mut self) -> Option<SlotOutput<Self>>;
@@ -59,6 +69,10 @@ pub enum SlotOutput<S: SlotConsensus> {
 
     /// Send a message to a single peer validator
     Unicast { to: NodeId, message: S::Message },
+
+    /// Effect directed at the data-availability layer, routed by the
+    /// runtime to the DA component under this slot.
+    DA(S::DACommand),
 
     /// Signal execution for optimistic execution.  Q: maybe move this
     /// message into a Context handle method? CommitOptimistic is
