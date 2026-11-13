@@ -13,8 +13,8 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-//! Network model features: per-link latency from a matrix, and per-sender
-//! egress sequencing by message size.
+//! Network model features: per-link latency from a matrix, per-sender
+//! egress sequencing by message size, and priority classes on the egress.
 
 use std::time::Duration;
 
@@ -91,6 +91,7 @@ fn run(
         })
         .collect();
     let net = sim.spawn(wiring.stack(0));
+    sim.with_mut(net, |stack| stack.set_handle(net));
     sim.with_mut(send, |s| s.wire(send, net));
 
     sim.schedule(send, Time(0), StepLabel::source("start"), |s, ctx| {
@@ -217,4 +218,101 @@ fn self_sends_bypass_egress() {
         &[1],
     );
     assert_eq!(arrivals, vec![vec![Time(0) + millis(6)]]);
+}
+
+/// Priority classes by size, at 10 Mbit/s: 1250 bytes (1 ms on the wire) are
+/// class 0, 2000 bytes (1.6 ms) class 1, 2500 bytes (2 ms) class 2.
+fn class_of(size: &Msg) -> u8 {
+    match size {
+        1250 => 0,
+        2000 => 1,
+        _ => 2,
+    }
+}
+
+fn prioritized(depth: usize) -> Network<Addr, Msg> {
+    Network::reliable(millis(5))
+        .egress(10_000_000, |size: &Msg| *size)
+        .priority(class_of, depth)
+}
+
+fn at(ms: f64) -> Time {
+    Time(0) + Duration::from_secs_f64(ms / 1000.0)
+}
+
+/// With a ring of 1, a class-0 message sent after three class-2 ones waits
+/// only for the one on the wire; the others follow it, one at a time.
+#[test]
+fn class_zero_overtakes_waiting_messages() {
+    let script = vec![(1, 2500), (1, 2500), (1, 2500), (1, 1250)];
+    let fifo = run(
+        Network::reliable(millis(5)).egress(10_000_000, |size: &Msg| *size),
+        script.clone(),
+        &[1],
+    );
+    assert_eq!(fifo, vec![vec![at(7.0), at(9.0), at(11.0), at(12.0)]]);
+    let arrivals = run(prioritized(1), script, &[1]);
+    assert_eq!(arrivals, vec![vec![at(7.0), at(8.0), at(10.0), at(12.0)]]);
+}
+
+/// With a ring of 2, the class-0 message waits behind two.
+#[test]
+fn the_ring_depth_bounds_the_wait() {
+    let script = vec![(1, 2500), (1, 2500), (1, 2500), (1, 1250)];
+    let arrivals = run(prioritized(2), script, &[1]);
+    assert_eq!(arrivals, vec![vec![at(7.0), at(9.0), at(10.0), at(12.0)]]);
+}
+
+/// Among waiting messages, the more urgent class goes first.
+#[test]
+fn waiting_messages_leave_by_class() {
+    let script = vec![(1, 2500), (1, 2500), (1, 2000)];
+    let arrivals = run(prioritized(1), script, &[1]);
+    assert_eq!(arrivals, vec![vec![at(7.0), at(8.6), at(10.6)]]);
+}
+
+/// One class only: the same arrivals as one queue in the order sent.
+#[test]
+fn one_class_is_the_plain_egress() {
+    let script = vec![(1, 2500), (2, 2500), (1, 2500), (2, 2500)];
+    let plain = run(
+        Network::reliable(millis(5)).egress(10_000_000, |size: &Msg| *size),
+        script.clone(),
+        &[1, 2],
+    );
+    assert_eq!(run(prioritized(1), script, &[1, 2]), plain);
+}
+
+/// Class 0 never waits for a wake-up: a burst of it leaves back to back,
+/// as without priority.
+#[test]
+fn a_class_zero_burst_leaves_back_to_back() {
+    let script = vec![(1, 1250), (2, 1250), (1, 1250)];
+    let plain = run(
+        Network::reliable(millis(5)).egress(10_000_000, |size: &Msg| *size),
+        script.clone(),
+        &[1, 2],
+    );
+    assert_eq!(run(prioritized(1), script, &[1, 2]), plain);
+}
+
+/// A stack that holds messages back wakes itself, so it needs its handle.
+#[test]
+#[should_panic(expected = "set_handle")]
+fn holding_back_needs_the_stack_handle() {
+    let mut sim = Simulation::new(0);
+    let mut wiring = Wiring::new(0, prioritized(1));
+    let send = sim.spawn(Sender {
+        script: vec![(1, 2500), (1, 2500)],
+        net: None,
+    });
+    wiring.register(0, deliver_to(send));
+    let recorder = sim.spawn(Recorder::default());
+    wiring.register(1, deliver_to(recorder));
+    let net = sim.spawn(wiring.stack(0));
+    sim.with_mut(send, |s| s.wire(send, net));
+    sim.schedule(send, Time(0), StepLabel::source("start"), |s, ctx| {
+        s.emit(ctx)
+    });
+    sim.run_to_completion();
 }

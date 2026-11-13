@@ -242,6 +242,7 @@ impl<N: SimClient> Swarm<N> {
         for (addr, node) in spawned {
             let domain = self.domain(&addr);
             let net = self.sim.spawn_in(domain, self.wiring.stack(addr));
+            self.sim.with_mut(net, |stack| stack.set_handle(net));
             self.sim.with_mut(node, |n| n.wire(node, net));
             self.nodes.insert(addr, Member { node, net });
         }

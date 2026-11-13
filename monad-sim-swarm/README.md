@@ -25,6 +25,7 @@ engine.
   Network::with_matrix(matrix, jitter)        // region latency matrix + jitter
       .egress(bits_per_sec, |msg| size)       // serial per-sender uplink
       .egress_rate(addr, bits_per_sec)        // per-sender uplink override
+      .priority(|msg| class, depth)           // priority classes on the uplink
       .loss(p)                                // independent drop probability
       .partition(window, [group_a, group_b])  // time-bounded network split
       .drop_if(|link, msg| ...)               // predicate drop

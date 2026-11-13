@@ -52,12 +52,14 @@ The network splits into two parts:
   - the routing table (address → delivery thunk);
   - the latency model;
   - loss probability, time-bounded partitions, and `drop_if`;
-  - egress rates and `size_of`.
+  - egress rates, `size_of`, and priority classes (`class_of`, ring depth).
 
   Every stack holds the same `Arc`, which is the global routing table
   available at every instance, without copying.
 - **Per-stack state**:
-  - egress `busy_until`;
+  - egress `busy_until`; with priority classes, the transmit ring, the
+    messages waiting per class, and the stack's own wake-up step (always in
+    its own domain, so it never meets the lookahead);
   - the stack's RNG, seeded from `(net seed, address)`, so loss and jitter draws
     do not depend on grouping or on other senders' traffic.
 
@@ -125,8 +127,9 @@ L(a, b) = min over nodes i in a, j in b, i ≠ j, of min_delay(i, j)
   declares `.min_latency(d)`, or a bound per link with
   `.link_min_latency(f)`. The stack checks every sample against the
   declared bound and panics on a violation.
-- Egress only adds delay, and loss, partitions and `drop_if` only remove
-  messages, so none of them lowers the bound.
+- Egress only adds delay (with priority classes, a waiting message only
+  leaves later), and loss, partitions and `drop_if` only remove messages, so
+  none of them lowers the bound.
 
 Within a domain, the lookahead is 0 by definition, whatever the latencies
 between its nodes. Between domains it must be positive, and the build fails

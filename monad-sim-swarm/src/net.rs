@@ -26,13 +26,13 @@
 //! ([`NetworkModel::min_delay`]) is the lookahead between them.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     ops::Range,
     sync::Arc,
     time::Duration,
 };
 
-use monad_sim::{Ctx, Time};
+use monad_sim::{CancelToken, Ctx, Handle, StepLabel, Time};
 use rand::{distributions::Distribution, Rng, SeedableRng};
 use rand_chacha::ChaChaRng;
 
@@ -72,6 +72,15 @@ pub trait NetworkModel<Addr, Msg>: Send + Sync {
 /// copies are delivered to `link.to`. An empty result drops the message; more
 /// than one duplicates it. Reordering needs no special handling — a smaller
 /// delay simply arrives first.
+///
+/// A sender may also hold messages back on its uplink, for example to send
+/// them by priority: [`submit`](Self::submit) keeps a message, and the stack
+/// asks for it again with [`release`](Self::release) from
+/// [`wake_at`](Self::wake_at) on. A message's fate ([`deliveries`]) is
+/// decided when it goes on the wire, with the link's `now` at that time. The
+/// defaults hold nothing back.
+///
+/// [`deliveries`]: Self::deliveries
 pub trait SenderModel<Addr, Msg>: Send {
     fn deliveries(
         &mut self,
@@ -79,12 +88,31 @@ pub trait SenderModel<Addr, Msg>: Send {
         message: &Msg,
         rng: &mut ChaChaRng,
     ) -> Vec<Duration>;
+
+    /// The node sends `message` on `link`. `Some`: it goes on the wire now.
+    /// `None`: the sender keeps it, to hand it back from `release`.
+    fn submit(&mut self, _link: &Link<Addr>, message: Msg) -> Option<Msg> {
+        Some(message)
+    }
+
+    /// From when a kept message may go on the wire; `None` while none is
+    /// kept. A time already past means now.
+    fn wake_at(&self) -> Option<Time> {
+        None
+    }
+
+    /// The next kept message to put on the wire at `now`, with its
+    /// receiver, if the uplink takes one then. Called until `None`.
+    fn release(&mut self, _now: Time) -> Option<(Addr, Msg)> {
+        None
+    }
 }
 
 type LatencyFn<Addr> = Box<dyn Fn(&Link<Addr>, &mut ChaChaRng) -> Duration + Send + Sync>;
 type MinLatencyFn<Addr> = Box<dyn Fn(&Addr, &Addr) -> Duration + Send + Sync>;
 type DropFn<Addr, Msg> = Box<dyn Fn(&Link<Addr>, &Msg) -> bool + Send + Sync>;
 type SizeFn<Msg> = Box<dyn Fn(&Msg) -> usize + Send + Sync>;
+type ClassFn<Msg> = Box<dyn Fn(&Msg) -> u8 + Send + Sync>;
 type Partition<Addr> = (Range<Time>, Vec<BTreeSet<Addr>>);
 
 /// One-way base latencies between *regions*, plus a placement of addresses
@@ -147,6 +175,13 @@ struct Egress<Addr, Msg> {
     bits_per_sec: u64,
     rates: BTreeMap<Addr, u64>,
     size_of: SizeFn<Msg>,
+    priority: Option<Priority<Msg>>,
+}
+
+/// Strict priority classes on the uplink (see [`Network::priority`]).
+struct Priority<Msg> {
+    class_of: ClassFn<Msg>,
+    depth: usize,
 }
 
 /// A declarative network model: a base latency plus optional, independent
@@ -167,7 +202,7 @@ struct SharedConditions<Addr, Msg>(Arc<Conditions<Addr, Msg>>);
 impl<Addr, Msg> NetworkModel<Addr, Msg> for SharedConditions<Addr, Msg>
 where
     Addr: Ord + Clone + Send + Sync + 'static,
-    Msg: 'static,
+    Msg: Send + 'static,
 {
     fn sender(&self, from: &Addr) -> Box<dyn SenderModel<Addr, Msg>> {
         let rate = self.0.egress.as_ref().map(|egress| {
@@ -181,6 +216,8 @@ where
             conditions: self.0.clone(),
             rate,
             busy_until: Time(0),
+            ring: VecDeque::new(),
+            waiting: BTreeMap::new(),
         })
     }
 
@@ -197,6 +234,29 @@ struct ConditionsSender<Addr, Msg> {
     /// The uplink rate, if egress is configured.
     rate: Option<u64>,
     busy_until: Time,
+    /// With priority classes: when each message on the wire finishes
+    /// leaving, in order (the transmit ring), and the messages waiting for
+    /// room in it, per class.
+    ring: VecDeque<Time>,
+    waiting: BTreeMap<u8, VecDeque<(Addr, Msg)>>,
+}
+
+impl<Addr, Msg> ConditionsSender<Addr, Msg> {
+    fn priority(&self) -> Option<&Priority<Msg>> {
+        self.conditions.egress.as_ref()?.priority.as_ref()
+    }
+
+    /// Messages still leaving the uplink at `now`.
+    fn on_the_wire(&mut self, now: Time) -> usize {
+        while self.ring.front().is_some_and(|done| *done <= now) {
+            self.ring.pop_front();
+        }
+        self.ring.len()
+    }
+
+    fn any_waiting(&self) -> bool {
+        self.waiting.values().any(|queue| !queue.is_empty())
+    }
 }
 
 /// The delay from `now` until `message` has fully left an uplink of `rate`
@@ -218,8 +278,8 @@ fn transmit<Msg>(
 
 impl<Addr, Msg> SenderModel<Addr, Msg> for ConditionsSender<Addr, Msg>
 where
-    Addr: Ord + Send + Sync,
-    Msg: 'static,
+    Addr: Ord + Clone + Send + Sync,
+    Msg: Send + 'static,
 {
     fn deliveries(
         &mut self,
@@ -231,13 +291,19 @@ where
         // a message dropped in the network still used the sender's uplink;
         // a node's messages to itself never touch it
         let transmit = match (self.rate, &conditions.egress) {
-            (Some(rate), Some(egress)) if link.from != link.to => transmit(
-                &mut self.busy_until,
-                rate,
-                &egress.size_of,
-                link.now,
-                message,
-            ),
+            (Some(rate), Some(egress)) if link.from != link.to => {
+                let transmit = transmit(
+                    &mut self.busy_until,
+                    rate,
+                    &egress.size_of,
+                    link.now,
+                    message,
+                );
+                if egress.priority.is_some() {
+                    self.ring.push_back(self.busy_until);
+                }
+                transmit
+            }
             _ => Duration::ZERO,
         };
         if let Some(drop_if) = &conditions.drop_if {
@@ -266,6 +332,50 @@ where
             );
         }
         vec![transmit + latency]
+    }
+
+    // Class 0 goes on the wire at once, behind what is on it already:
+    // nothing can overtake it. Another class goes on only while fewer than
+    // `depth` messages are on the wire and no message of its class or a more
+    // urgent one waits; otherwise it waits for room.
+    fn submit(&mut self, link: &Link<Addr>, message: Msg) -> Option<Msg> {
+        let Some(priority) = self.priority() else {
+            return Some(message);
+        };
+        let class = (priority.class_of)(&message);
+        let depth = priority.depth;
+        if class == 0 || link.from == link.to {
+            return Some(message);
+        }
+        let queued = self
+            .waiting
+            .range(..=class)
+            .any(|(_, queue)| !queue.is_empty());
+        if !queued && self.on_the_wire(link.now) < depth {
+            return Some(message);
+        }
+        let queue = self.waiting.entry(class).or_default();
+        queue.push_back((link.to.clone(), message));
+        None
+    }
+
+    // the ring has room once all but `depth − 1` of its messages have left
+    fn wake_at(&self) -> Option<Time> {
+        let depth = self.priority()?.depth;
+        if !self.any_waiting() {
+            return None;
+        }
+        let full = self.ring.len().checked_sub(depth);
+        Some(full.map_or(Time(0), |index| self.ring[index]))
+    }
+
+    // the most urgent waiting message, oldest first, while the ring has room
+    fn release(&mut self, now: Time) -> Option<(Addr, Msg)> {
+        let depth = self.priority()?.depth;
+        if self.on_the_wire(now) >= depth {
+            return None;
+        }
+        self.waiting.values_mut().find_map(VecDeque::pop_front)
     }
 }
 
@@ -367,6 +477,39 @@ impl<Addr, Msg> Network<Addr, Msg> {
             bits_per_sec,
             rates: BTreeMap::new(),
             size_of: Box::new(size_of),
+            priority: None,
+        });
+        self
+    }
+
+    /// Strict priority classes on every sender's uplink, as a transmit ring
+    /// of `depth` messages fed by one queue per class. `class_of` gives a
+    /// message's class, 0 the most urgent.
+    ///
+    /// - Class 0 goes on the wire at once, behind the messages already on
+    ///   it, in the order sent.
+    /// - Any other class goes on only while fewer than `depth` messages are
+    ///   on the wire, after every waiting message of a more urgent class and
+    ///   the older ones of its own; until then it waits.
+    ///
+    /// So a class-0 message waits behind at most `depth` messages of other
+    /// classes. A waiting message's fate (loss, latency, ...) is decided
+    /// when it goes on the wire. Without `priority`, the uplink is one queue
+    /// in the order sent. Panics unless [`egress`](Network::egress) is
+    /// configured, or if `depth` is 0.
+    pub fn priority(
+        mut self,
+        class_of: impl Fn(&Msg) -> u8 + Send + Sync + 'static,
+        depth: usize,
+    ) -> Self {
+        assert!(depth > 0, "the transmit ring holds at least one message");
+        self.conditions()
+            .egress
+            .as_mut()
+            .expect("configure egress before priority classes")
+            .priority = Some(Priority {
+            class_of: Box::new(class_of),
+            depth,
         });
         self
     }
@@ -436,7 +579,7 @@ impl<Addr, Msg> Network<Addr, Msg> {
     fn into_model(self) -> Arc<dyn NetworkModel<Addr, Msg>>
     where
         Addr: Ord + Clone + Send + Sync + 'static,
-        Msg: 'static,
+        Msg: Send + 'static,
     {
         match self {
             Network::Conditions(conditions) => Arc::new(SharedConditions(Arc::new(conditions))),
@@ -460,6 +603,10 @@ pub struct Net<Addr, Msg> {
     shared: Arc<Shared<Addr, Msg>>,
     sender: Box<dyn SenderModel<Addr, Msg>>,
     rng: ChaChaRng,
+    /// This stack's own handle, for its wake-up steps
+    me: Option<Handle<Self>>,
+    /// The armed wake-up step, while the sender holds messages back
+    wake: Option<(Time, CancelToken)>,
 }
 
 impl<Addr, Msg> Net<Addr, Msg>
@@ -472,9 +619,34 @@ where
         self.addr
     }
 
+    /// The stack's own handle, which it needs to wake itself when its sender
+    /// holds messages back (priority classes). [`crate::Swarm`] sets it; a
+    /// stack wired by hand sets it after spawning.
+    pub fn set_handle(&mut self, me: Handle<Self>) {
+        self.me = Some(me);
+    }
+
     /// Send one message to `to`: apply the model and schedule the surviving
-    /// deliveries. A recipient not in the routing table drops it.
+    /// deliveries. A recipient not in the routing table drops it. The sender
+    /// may hold the message back on its uplink; it then goes on the wire,
+    /// and its fate is decided, when the uplink takes it.
     pub fn send(&mut self, ctx: &mut Ctx, to: Addr, msg: Msg) {
+        if !self.shared.routes.contains_key(&to) {
+            return;
+        }
+        let link = Link {
+            now: ctx.now(),
+            from: self.addr,
+            to,
+        };
+        if let Some(msg) = self.sender.submit(&link, msg) {
+            self.wire(ctx, to, msg);
+        }
+        self.arm(ctx);
+    }
+
+    // put a message on the wire now: apply the model, schedule the deliveries
+    fn wire(&mut self, ctx: &mut Ctx, to: Addr, msg: Msg) {
         let Some(deliver) = self.shared.routes.get(&to).cloned() else {
             return;
         };
@@ -502,6 +674,33 @@ where
         for &to in shared.routes.keys() {
             self.send(ctx, to, msg.clone());
         }
+    }
+
+    // one wake-up step, at the sender's wake_at, while it holds messages back
+    fn arm(&mut self, ctx: &mut Ctx) {
+        let at = self.sender.wake_at().map(|at| at.max(ctx.now()));
+        if self.wake.as_ref().map(|(armed, _)| *armed) == at {
+            return;
+        }
+        if let Some((_, token)) = self.wake.take() {
+            token.cancel();
+        }
+        if let Some(at) = at {
+            let me = self
+                .me
+                .expect("a stack whose sender holds messages back needs Net::set_handle");
+            let label = StepLabel::source("egress");
+            let token = ctx.schedule(me, at, label, |net: &mut Self, ctx| net.wake(ctx));
+            self.wake = Some((at, token));
+        }
+    }
+
+    fn wake(&mut self, ctx: &mut Ctx) {
+        self.wake = None;
+        while let Some((to, msg)) = self.sender.release(ctx.now()) {
+            self.wire(ctx, to, msg);
+        }
+        self.arm(ctx);
     }
 
     /// The set of currently-routable node addresses.
@@ -575,11 +774,14 @@ where
             sender: self.shared.model.sender(&addr),
             shared: self.shared.clone(),
             rng,
+            me: None,
+            wake: None,
         }
     }
 
     /// Bring a live stack up to date: the current routes, and with a new model
-    /// a fresh sender part.
+    /// a fresh sender part. Messages the old sender part held back on its
+    /// uplink are dropped with it.
     pub fn refresh(&self, net: &mut Net<Addr, Msg>) {
         if !Arc::ptr_eq(&net.shared.model, &self.shared.model) {
             net.sender = self.shared.model.sender(&net.addr);

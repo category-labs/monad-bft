@@ -127,8 +127,12 @@ fn heard(swarm: &Swarm<Gossip>) -> Heard {
 }
 
 fn run(parallel: Parallel<Addr>) -> (Heard, u64) {
+    run_on(network(), parallel)
+}
+
+fn run_on(network: Network<Addr, Msg>, parallel: Parallel<Addr>) -> (Heard, u64) {
     let nodes = (0..NODES).map(|addr| (addr, Gossip::new()));
-    let mut swarm = Swarm::build_parallel(3, network(), nodes, parallel);
+    let mut swarm = Swarm::build_parallel(3, network, nodes, parallel);
     kick(&mut swarm, &[0, 7, 13]);
     swarm.run_until_time(Time(0) + millis(500));
     (heard(&swarm), swarm.simulation().step_count())
@@ -147,6 +151,22 @@ fn gossip_does_not_depend_on_threads_or_grouping() {
         Parallel::default().threads(4).domains(|addr| addr % 4),
     ] {
         assert_eq!(run(parallel), reference);
+    }
+}
+
+/// Priority classes hold messages back and wake the stack: still the same
+/// run on every thread count and grouping. A rumor's first hop is urgent.
+#[test]
+fn priority_classes_do_not_depend_on_threads_or_grouping() {
+    let prioritized = || network().priority(|rumor: &Msg| u8::from(rumor.1 > 0), 1);
+    let single = || Parallel::default().threads(1).grouping(Grouping::Single);
+    let reference = run_on(prioritized(), single());
+    assert_ne!(reference.0, run(single()).0, "priority changes the run");
+    for parallel in [
+        Parallel::default().threads(4),
+        Parallel::default().threads(4).domains(|addr| addr % 4),
+    ] {
+        assert_eq!(run_on(prioritized(), parallel), reference);
     }
 }
 

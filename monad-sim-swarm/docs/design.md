@@ -82,9 +82,36 @@ matrix under a time-varying delay), which every sample is checked against.
 
 Sequencing is per message. That fits transports whose messages each fit one
 datagram. Splitting a large message into frames that interleave with other
-traffic is out of scope. Scheduling *policy*, such as priority queues, belongs
-to the node: a node decides in which order it hands messages to the net, and
-the net transmits them in that order.
+traffic is out of scope.
+
+#### Priority classes
+
+`Network::priority(class_of, depth)` turns the uplink into a transmit ring of
+`depth` messages fed by one queue per class (0 the most urgent), as on a NIC
+whose TX ring is fed by priority queues:
+
+- class 0 goes on the wire at once, behind what is on it already;
+- any other class goes on only while fewer than `depth` messages are on the
+  wire, after every waiting message of a more urgent class and the older ones
+  of its own.
+
+A class-0 message therefore waits behind at most `depth` messages of other
+classes.
+
+Without priority, a message's departure depends only on the bytes its sender
+handed over before it. It is known when the message is sent, and the stack
+adds the transmission and the link latency into one delay. With priority, the
+departure of a waiting message also depends on more urgent messages not sent
+yet. So the sender's part of the model keeps waiting messages
+(`SenderModel::submit`), and the stack wakes itself when the ring has room
+(`wake_at`, `release`). A waiting message's fate (loss, latency) is decided
+when it goes on the wire.
+
+The cost is one local step per wake-up. A class-0 message never waits, so
+bursts of it cost what they cost without priority. A node only states each
+message's class (through `class_of` on its message type); it needs no model
+of the uplink's timing. The send port is the node's own, but the network
+models it.
 
 ### Topology presets
 
