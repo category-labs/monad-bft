@@ -53,6 +53,16 @@ source = "random"
 # store that the nodes of one process share.
 encoding_scheme = "d33"
 
+# experimental: the adaptive proposal lead (docs/0005). Off by default; on,
+# propose_before_deadline is the cold-start lead, and the planner learns each
+# peer's latency from its batch votes and leads just enough for the target.
+# [proposal.adaptive]
+# enabled = true
+# theta = 0.25        # bound on the negative stake on the own lane
+# epsilon = 0.001     # accepted risk per own slot of exceeding theta
+# max_lead_ms = 150
+# clock_sd_ms = 4     # spread of clock offsets in the network
+
 # must match on every validator; absent: rotation_slack = 3
 [leader_election]
 # z: a lane rotates every 5 + z slots and is vacant for 5 of them; a proposer
