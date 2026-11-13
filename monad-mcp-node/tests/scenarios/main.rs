@@ -15,6 +15,7 @@
 
 //! Whole-node scenarios on the deterministic simulator.
 
+mod adaptive;
 mod bench;
 mod byzantine;
 mod clock;
@@ -26,4 +27,5 @@ mod mute;
 mod priority;
 mod records;
 mod tamper;
+mod validation;
 mod vote_facts;

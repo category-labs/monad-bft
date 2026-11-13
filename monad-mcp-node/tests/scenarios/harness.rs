@@ -22,12 +22,17 @@ use std::{
     time::Duration,
 };
 
-use monad_mcp_cadence::spec::ProposalHeader as _;
+use monad_mcp_cadence::spec::{Deserializable as _, ProposalHeader as _};
 use monad_mcp_common::{Lane, Lanes, Slot, Timestamp, TimestampDelta};
 use monad_mcp_node::{
     Component, NodeOutput,
-    cadence::{Outbound, slot::chorus::FinalizationPath, types::ProposalId},
+    cadence::{
+        CadenceMessage, Outbound,
+        slot::chorus::{ChorusMessage, FinalizationPath},
+        types::ProposalId,
+    },
     common::NodeId,
+    component::CadenceWireMsg,
     config::{
         CadenceConfig, DAConfig, LedgerConfig, NetworkConfig, NodeConfig, ProposalConfig,
         RepeaterSection, ValidatorConfig,
@@ -37,7 +42,7 @@ use monad_mcp_node::{
 };
 use monad_sim::{CancelToken, ClockDiff, Ctx, Handle, StepLabel, Time};
 use monad_sim_swarm::{
-    LatencyMatrix, Net, Network, Parallel, Placer, Provenance, RegionTable, SimClient, Swarm,
+    LatencyMatrix, Link, Net, Network, Parallel, Placer, Provenance, RegionTable, SimClient, Swarm,
 };
 use rand::{Rng as _, SeedableRng as _, distributions::Uniform};
 use rand_chacha::ChaCha8Rng;
@@ -89,7 +94,13 @@ pub struct Records {
     // per (slot, lane), the first-hop chunks this node received from the
     // lane's proposer: the proposer, and the arrival times
     pub first_hop_in: BTreeMap<(Slot, Lane), (NodeId, Vec<Time>)>,
+    // per own slot, each peer's first batch vote: its arrival time, and
+    // whether its entry for the own lane is positive
+    pub votes_in: BTreeMap<Slot, BTreeMap<NodeId, (Time, bool)>>,
 }
+
+// batch votes on an own slot come in up to this many slots after it
+const VOTE_SLOTS: u64 = 8;
 
 // a node as a monad-sim process, boxed so one swarm can mix node kinds
 pub struct SimNode {
@@ -292,6 +303,10 @@ impl SimNode {
         self.records.as_ref()
     }
 
+    pub fn clock_offset(&self) -> ClockDiff {
+        self.clock_offset
+    }
+
     // a proposal's first hop leaves in one burst: only the first message of
     // a burst is decoded for its slot
     fn record_first_hop(&mut self, outbound: &Outbound<NodeMessage>, now: Time) {
@@ -310,7 +325,7 @@ impl SimNode {
     }
 
     // a recording node's view of a delivery: first-hop chunks of others'
-    // proposals
+    // proposals, and the batch votes on its own recent slots
     fn record_inbound(&mut self, at: Time, from: NodeId, message: &SimMessage) {
         let Some(records) = &mut self.records else {
             return;
@@ -327,6 +342,27 @@ impl SimNode {
                     .entry(key)
                     .or_insert_with(|| (from, Vec::new()));
                 times.push(at);
+            }
+            NodeMessage::Cadence(bytes) => {
+                let recent = self
+                    .first_hops
+                    .keys()
+                    .next_back()
+                    .is_some_and(|last| time_of(deadline_of_slot(last.0 + VOTE_SLOTS)) >= at);
+                if !recent {
+                    return;
+                }
+                let Ok(CadenceMessage::Slot(ChorusMessage::BatchVote(vote))) =
+                    CadenceWireMsg::deserialize(bytes)
+                else {
+                    return;
+                };
+                let Some((_, lane)) = self.first_hops.get(&vote.slot()) else {
+                    return;
+                };
+                let positive = vote.positive_lanes().get(usize::from(*lane)) == Some(&true);
+                let votes = records.votes_in.entry(vote.slot()).or_default();
+                votes.entry(from).or_insert((at, positive));
             }
             _ => {}
         }
@@ -723,6 +759,34 @@ pub fn scheme_from_env(var: &str) -> ProposalScheme {
         Ok("d33_hollow") => ProposalScheme::D33Hollow,
         Ok(other) => panic!("{var} is d33 or d33_hollow, not {other}"),
     }
+}
+
+// a delay added to every message on a link, as a function of the link (its
+// send time included): a time-varying network
+pub type LinkDelay = Box<dyn Fn(&Link<NodeId>) -> Duration + Send + Sync>;
+
+// `geo`'s network with an extra, non-negative delay per message, built from
+// each node's region. The base matrix stays each link's lower bound, which a
+// parallel swarm takes as its lookahead
+pub fn geo_delayed(
+    table: &RegionTable,
+    validators: u64,
+    seed: u64,
+    delay: impl FnOnce(&BTreeMap<NodeId, u32>) -> LinkDelay,
+) -> Geo {
+    use rand::distributions::Distribution as _;
+
+    let mut delayed = geo(table, validators, seed);
+    let delay = delay(&delayed.region_of);
+    let latency = std::sync::Arc::new(geo(table, validators, seed).matrix);
+    let bound = latency.clone();
+    let jitter = geo_jitter();
+    delayed.network = Network::with_link_latency(move |link, rng| {
+        latency.latency(&link.from, &link.to) + jitter.sample(rng) + delay(link)
+    })
+    .link_min_latency(move |from, to| bound.latency(from, to))
+    .egress(GBIT, sim_wire_size);
+    delayed
 }
 
 // one domain per region of `geo`
