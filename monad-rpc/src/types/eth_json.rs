@@ -15,14 +15,14 @@
 
 use std::str::FromStr;
 
-use alloy_consensus::TxEnvelope;
 use alloy_eips::BlockNumberOrTag;
 use alloy_primitives::{Address, FixedBytes, LogData, U256};
-use alloy_rpc_types::{
-    pubsub::Params, serde_helpers::JsonStorageKey, AccessList, Block, FeeHistory, Header, Log,
-    Transaction, TransactionReceipt,
-};
+use alloy_rpc_types::{pubsub::Params, serde_helpers::JsonStorageKey, AccessList, Header, Log};
 use monad_exec_events::BlockCommitState;
+use monad_transaction::{
+    rpc::{Block, FeeHistory, Transaction, TransactionReceipt},
+    TxEnvelope,
+};
 use monad_types::BlockId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};

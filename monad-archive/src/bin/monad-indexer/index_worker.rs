@@ -272,14 +272,14 @@ async fn checkpoint_latest(archiver: &TxIndexArchiver, block_num: u64, async_bac
 #[cfg(test)]
 mod tests {
     use alloy_consensus::{
-        BlockBody, Header, Receipt, ReceiptEnvelope, ReceiptWithBloom, SignableTransaction,
-        TxEip1559,
+        BlockBody, Header, Receipt, ReceiptWithBloom, SignableTransaction, TxEip1559,
     };
     use alloy_primitives::{Bloom, Log, B256, U256};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use monad_archive::kvstore::{memory::MemoryStorage, WritePolicy};
     use monad_eth_types::{ReceiptWithLogIndex, TxEnvelopeWithSender};
+    use monad_transaction::ReceiptEnvelope;
 
     use super::*;
 

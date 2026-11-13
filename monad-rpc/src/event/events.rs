@@ -25,8 +25,8 @@ pub type Header = SharedJsonSerialized<alloy_rpc_types::eth::Header>;
 pub type BlockTransactions = Arc<Box<[BlockTransaction]>>;
 pub type BlockTransaction = (Transaction, TransactionReceipt, Box<[LogNotification]>);
 
-pub type Transaction = SharedJsonSerialized<alloy_rpc_types::Transaction>;
-pub type TransactionReceipt = SharedJsonSerialized<alloy_rpc_types::TransactionReceipt>;
+pub type Transaction = SharedJsonSerialized<monad_transaction::rpc::Transaction>;
+pub type TransactionReceipt = SharedJsonSerialized<monad_transaction::rpc::TransactionReceipt>;
 
 pub type LogNotification = SharedJsonSerialized<MonadNotification<Log>>;
 pub type Log = SharedJsonSerialized<alloy_rpc_types::eth::Log>;

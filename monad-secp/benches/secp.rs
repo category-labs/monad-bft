@@ -13,9 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_consensus::{
-    transaction::SignerRecoverable, SignableTransaction, Signed, TxEnvelope, TxLegacy,
-};
+use alloy_consensus::{SignableTransaction, Signed, TxLegacy};
 use alloy_primitives::{Address, Bytes, Signature, U256};
 use alloy_signer::{k256::ecdsa::SigningKey, SignerSync};
 use alloy_signer_local::PrivateKeySigner;
@@ -26,6 +24,7 @@ use monad_crypto::{
 };
 use monad_secp::{KeyPair, RecoverableAddress, SecpSignature};
 use monad_testutil::signing::get_key;
+use monad_transaction::TxEnvelope;
 use rand::{thread_rng, RngCore};
 
 type SigningDomainType = signing_domain::ConsensusMessage;

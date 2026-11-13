@@ -63,6 +63,7 @@ monad-system-calls = { path = "./monad-system-calls" }
 monad-testutil = { path = "./monad-testutil" }
 monad-tfm = { path = "./monad-tfm" }
 monad-tracing-timing = { path = "./monad-tracing-timing" }
+monad-transaction = { path = "./monad-execution/rust/crates/monad-transaction" }
 monad-transformer = { path = "./monad-transformer" }
 monad-triedb-utils = { path = "./monad-triedb-utils" }
 monad-twins-utils = { path = "./monad-twins/utils" }

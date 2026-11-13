@@ -10,6 +10,7 @@ bench = false
 
 [dependencies]
 monad-crypto = { workspace = true }
+monad-transaction = { workspace = true }
 monad-types = { workspace = true }
 
 alloy-consensus = { workspace = true, features = ["serde"] }

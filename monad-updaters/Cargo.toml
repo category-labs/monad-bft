@@ -27,6 +27,7 @@ monad-executor-glue = { workspace = true }
 monad-node-config = { workspace = true }
 monad-secp = { workspace = true, optional = true }
 monad-tfm = { workspace = true }
+monad-transaction = { workspace = true }
 monad-types = { workspace = true }
 monad-validator = { workspace = true }
 

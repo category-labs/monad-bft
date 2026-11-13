@@ -23,6 +23,7 @@ monad-executor-glue = { workspace = true }
 monad-fair-queue = { workspace = true }
 monad-peer-score = { workspace = true }
 monad-secp = { workspace = true }
+monad-transaction = { workspace = true }
 monad-types = { workspace = true }
 monad-validator = { workspace = true }
 

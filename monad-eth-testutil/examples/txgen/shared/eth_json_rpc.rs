@@ -15,12 +15,11 @@
 
 use std::time::Duration;
 
-use alloy_consensus::TxEnvelope;
 use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{Address, Bytes, TxHash, U128, U256, U64};
 use alloy_rpc_client::ReqwestClient;
-use alloy_rpc_types::TransactionReceipt;
 use eyre::Result;
+use monad_transaction::{rpc::TransactionReceipt, TxEnvelope};
 use monad_types::DropTimer;
 use tracing::trace;
 
@@ -67,8 +66,11 @@ impl EthJsonRpc for ReqwestClient {
     }
 
     async fn send_raw_transaction_params(&self, tx: TxEnvelope) -> (&'static str, Bytes) {
-        let mut rlp_encoded_tx = Vec::new();
-        tx.encode_2718(&mut rlp_encoded_tx);
+        let rlp_encoded_tx = if let Some(native) = tx.as_monad() {
+            native.tx().encode_submission(native.signature())
+        } else {
+            tx.encoded_2718()
+        };
         ("eth_sendRawTransaction", rlp_encoded_tx.into())
     }
 

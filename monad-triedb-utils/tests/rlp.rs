@@ -13,11 +13,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_consensus::{transaction::SignerRecoverable, ReceiptEnvelope};
 use alloy_primitives::B256;
 use alloy_rlp::{Decodable, Encodable};
 use monad_eth_testutil::{make_eip1559_tx, make_legacy_tx, make_receipt};
 use monad_eth_types::{ReceiptWithLogIndex, TxEnvelopeWithSender};
+use monad_transaction::ReceiptEnvelope;
 
 #[test]
 fn test_rlp_encode_decode_legacy_tx() {

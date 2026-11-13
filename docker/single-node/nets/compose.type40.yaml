@@ -1,0 +1,12 @@
+# Use with compose.yaml and images built from the matched type-0x40 branches.
+# Consensus models pre-NEXT intrinsic/access-list gas at these revisions.
+services:
+  build_genesis:
+    environment:
+      MONAD_DEVNET_FORK_TS: "18446744073709551615"
+  monad_execution:
+    environment:
+      MONAD_DEVNET_FORK_TS: "18446744073709551615"
+  monad_rpc:
+    environment:
+      MONAD_DEVNET_FORK_TS: "18446744073709551615"

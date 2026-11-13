@@ -23,7 +23,7 @@
 
 use std::collections::VecDeque;
 
-use alloy_consensus::{Transaction, TxEnvelope, transaction::Recovered};
+use alloy_consensus::transaction::Recovered;
 use alloy_primitives::{Address, Bytes, TxKind, U256};
 use monad_chain_config::{ChainConfig, revision::ChainRevision};
 use monad_consensus_types::block::ConsensusBlockHeader;
@@ -31,6 +31,7 @@ use monad_crypto::certificate_signature::{
     CertificateSignaturePubKey, CertificateSignatureRecoverable,
 };
 use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress, ValidatedTx};
+use monad_transaction::TxEnvelope;
 use monad_types::Epoch;
 use monad_validator::signature_collection::SignatureCollection;
 use tracing::{debug, info, warn};
@@ -99,7 +100,7 @@ impl SystemTransactionValidator {
         }
 
         // EIP-155
-        if txn.inner().chain_id() != Some(chain_config.chain_id()) {
+        if txn.inner().chain_id() != Some(alloy_primitives::U256::from(chain_config.chain_id())) {
             return Err(SystemTransactionError::InvalidChainId);
         }
 
@@ -108,7 +109,7 @@ impl SystemTransactionValidator {
             return Err(SystemTransactionError::InvalidTxSignature);
         }
 
-        if txn.inner().gas_price() != Some(0) {
+        if txn.inner().gas_price() != Some(Default::default()) {
             return Err(SystemTransactionError::NonZeroGasPrice);
         }
 
@@ -265,10 +266,7 @@ impl SystemTransactionValidator {
 
 #[cfg(test)]
 mod test {
-    use alloy_consensus::{
-        SignableTransaction, TxEip1559, TxEnvelope,
-        transaction::{Recovered, SignerRecoverable},
-    };
+    use alloy_consensus::{SignableTransaction, TxEip1559, transaction::Recovered};
     use alloy_eips::eip2930::AccessList;
     use alloy_primitives::{Address, B256, Bytes, TxKind};
     use alloy_signer::SignerSync;
@@ -283,6 +281,7 @@ mod test {
     use monad_eth_testutil::make_legacy_tx;
     use monad_eth_types::{EthExecutionProtocol, ProposedEthHeader, ValidatedTx};
     use monad_testutil::signing::MockSignatures;
+    use monad_transaction::TxEnvelope;
     use monad_types::{Epoch, GENESIS_SEQ_NUM, Hash, NodeId, Round, SeqNum};
 
     use crate::{

@@ -18,15 +18,11 @@ use std::{
     sync::Arc,
 };
 
-use alloy_consensus::{
-    transaction::Recovered, Header as RlpHeader, ReceiptEnvelope, ReceiptWithBloom,
-    Transaction as _,
-};
+use alloy_consensus::{transaction::Recovered, Header as RlpHeader, ReceiptWithBloom};
 use alloy_primitives::{Bloom, FixedBytes, TxHash, TxKind, U256};
 use alloy_rlp::Encodable;
 use alloy_rpc_types::{
-    Block, BlockTransactions, Filter, FilterBlockOption, FilteredParams, Header, Log, Receipt,
-    Transaction, TransactionReceipt,
+    BlockTransactions, Filter, FilterBlockOption, FilteredParams, Header, Log, Receipt,
 };
 use futures::{stream, Stream, StreamExt, TryStreamExt};
 use itertools::Either;
@@ -36,6 +32,10 @@ use monad_archive::{
 };
 use monad_eth_types::{
     BlockHeader, ReceiptWithLogIndex, TransactionLocation, TxEnvelopeWithSender,
+};
+use monad_transaction::{
+    rpc::{Block, Transaction, TransactionReceipt},
+    ReceiptEnvelope,
 };
 use monad_triedb_utils::triedb_env::{BlockKey, FinalizedBlockKey, ProposedBlockKey, Triedb};
 use monad_types::{BlockId, Hash, SeqNum};
@@ -61,6 +61,9 @@ use crate::{
 pub mod buffer;
 pub mod eth_call_handler;
 mod source;
+
+#[cfg(test)]
+mod native_logs_tests;
 
 #[derive(Clone)]
 pub struct DataProvider<T> {
@@ -411,7 +414,12 @@ where
             if let Some(height) = resolve_block_height_from_buffer(buffer, &block) {
                 if let Some(mut block) = buffer.get_block_by_height(height) {
                     if !return_full_txns {
-                        block.transactions = block.transactions.into_hashes();
+                        block.transactions = match block.transactions {
+                            BlockTransactions::Full(txs) => BlockTransactions::Hashes(
+                                txs.into_iter().map(|tx| *tx.inner.tx_hash()).collect(),
+                            ),
+                            other => other,
+                        };
                     }
                     return Ok(block);
                 }
@@ -1012,16 +1020,7 @@ fn receipt_envelope_to_logs_iter<'a>(
     receipt: ReceiptEnvelope<Log>,
     filtered_params: &'a FilteredParams,
 ) -> impl Iterator<Item = Log> + 'a {
-    let logs = match receipt {
-        alloy_consensus::ReceiptEnvelope::Legacy(receipt_with_bloom)
-        | alloy_consensus::ReceiptEnvelope::Eip2930(receipt_with_bloom)
-        | alloy_consensus::ReceiptEnvelope::Eip1559(receipt_with_bloom)
-        | alloy_consensus::ReceiptEnvelope::Eip4844(receipt_with_bloom)
-        | alloy_consensus::ReceiptEnvelope::Eip7702(receipt_with_bloom) => {
-            receipt_with_bloom.receipt.logs
-        }
-        _ => unreachable!(),
-    };
+    let logs = receipt.into_receipt().logs;
 
     logs.into_iter().filter(|log: &Log| {
         !(filtered_params.filter.is_some()
@@ -1384,6 +1383,7 @@ pub fn parse_receipt_envelope(
         ReceiptEnvelope::Eip2930(_) => ReceiptEnvelope::Eip2930(receipt_with_bloom),
         ReceiptEnvelope::Eip1559(_) => ReceiptEnvelope::Eip1559(receipt_with_bloom),
         ReceiptEnvelope::Eip7702(_) => ReceiptEnvelope::Eip7702(receipt_with_bloom),
+        ReceiptEnvelope::Monad(_) => ReceiptEnvelope::Monad(receipt_with_bloom),
         _ => ReceiptEnvelope::Eip1559(receipt_with_bloom),
     }
 }
@@ -1609,7 +1609,7 @@ async fn get_receipt_from_triedb<T: Triedb>(
 mod tests {
     use std::sync::Arc;
 
-    use alloy_consensus::{Block as ConsensusBlock, BlockBody, Header, TxEnvelope};
+    use alloy_consensus::{Block as ConsensusBlock, BlockBody, Header};
     use alloy_eips::BlockNumberOrTag;
     use alloy_rlp::Encodable;
     use alloy_rpc_types::{Filter, FilterBlockOption};
@@ -1619,6 +1619,7 @@ mod tests {
         test_utils::{mock_block, mock_rx, mock_tx, MemoryStorage},
     };
     use monad_eth_types::TxEnvelopeWithSender;
+    use monad_transaction::TxEnvelope;
     use monad_triedb_utils::mock_triedb::MockTriedb;
 
     use crate::{

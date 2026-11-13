@@ -15,11 +15,12 @@
 
 use std::{collections::HashMap, future::ready};
 
-use alloy_consensus::{transaction::SignerRecoverable, Block, TxEnvelope};
+use alloy_consensus::Block;
 use monad_eth_types::{
     BlockHeader, EthAccount, EthAddress, EthBlockHash, EthCode, EthCodeHash, EthStorageKey,
     EthStorageSlot, EthTxHash, ReceiptWithLogIndex, TransactionLocation, TxEnvelopeWithSender,
 };
+use monad_transaction::TxEnvelope;
 use monad_types::SeqNum;
 
 use crate::triedb_env::{BlockKey, FinalizedBlockKey, Triedb};

@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_consensus::{transaction::Recovered, Transaction, TxEnvelope};
+use alloy_consensus::transaction::Recovered;
 use alloy_eips::eip7702::Authorization;
 use alloy_primitives::{Address, TxHash, U256};
 use alloy_rlp::Encodable;
@@ -30,6 +30,7 @@ use monad_eth_txpool_types::{EthTxPoolDropReason, DEFAULT_TX_PRIORITY};
 use monad_eth_types::EthExecutionProtocol;
 use monad_system_calls::{validator::SystemTransactionValidator, SYSTEM_SENDER_ETH_ADDRESS};
 use monad_tfm::base_fee::MIN_BASE_FEE;
+use monad_transaction::TxEnvelope;
 use monad_types::{Balance, NodeId, Nonce, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
 use tracing::trace;
@@ -103,19 +104,19 @@ impl<PT: PubKey> PoolTx<PT> {
         }
 
         // TODO(andr-dev): Adjust minimum dynamically using current base fee.
-        if tx.max_fee_per_gas() < MIN_BASE_FEE.into() {
+        if tx.max_fee_per_gas() < alloy_primitives::U256::from(MIN_BASE_FEE) {
             return Err((tx, EthTxPoolDropReason::FeeTooLow));
         }
-
-        let last_commit_base_fee = last_commit.base_fee;
-        let max_value = compute_txn_max_value(&tx, last_commit_base_fee);
-        let max_gas_cost = compute_txn_max_gas_cost(&tx, last_commit_base_fee);
 
         if let Err(error) =
             static_validate_transaction(&tx, chain_id, chain_params, execution_params)
         {
             return Err((tx, EthTxPoolDropReason::NotWellFormed(error)));
         }
+
+        let last_commit_base_fee = last_commit.base_fee;
+        let max_value = compute_txn_max_value(&tx, last_commit_base_fee);
+        let max_gas_cost = compute_txn_max_gas_cost(&tx, last_commit_base_fee);
 
         let valid_recovered_authorizations =
             if let Some(signed_authorizations) = tx.authorization_list() {
@@ -212,7 +213,7 @@ impl<PT: PubKey> PoolTx<PT> {
         self.tx.nonce()
     }
 
-    pub fn max_fee_per_gas(&self) -> u128 {
+    pub fn max_fee_per_gas(&self) -> alloy_primitives::U256 {
         self.tx.max_fee_per_gas()
     }
 
@@ -327,7 +328,7 @@ impl<PT: PubKey> PoolTx<PT> {
             return None;
         }
 
-        if self.tx.max_fee_per_gas() < last_commit_base_fee as u128 {
+        if self.tx.max_fee_per_gas() < alloy_primitives::U256::from(last_commit_base_fee) {
             return None;
         }
 

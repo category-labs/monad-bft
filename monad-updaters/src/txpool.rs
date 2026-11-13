@@ -18,10 +18,7 @@ use std::{
     task::{Poll, Waker},
 };
 
-use alloy_consensus::{
-    transaction::{Recovered, SignerRecoverable},
-    TxEnvelope,
-};
+use alloy_consensus::transaction::Recovered;
 use alloy_eips::eip2718::{Decodable2718, Encodable2718};
 use bytes::Bytes;
 use futures::Stream;
@@ -44,6 +41,7 @@ use monad_eth_types::{EthExecutionProtocol, ExtractEthAddress};
 use monad_execution_state_read::ExecutionStateRead;
 use monad_executor::{Executor, ExecutorMetrics, ExecutorMetricsChain};
 use monad_executor_glue::{MempoolEvent, MonadEvent, TxPoolCommand};
+use monad_transaction::TxEnvelope;
 use monad_types::{ExecutionProtocol, LimitedVec, SeqNum};
 use monad_validator::signature_collection::SignatureCollection;
 

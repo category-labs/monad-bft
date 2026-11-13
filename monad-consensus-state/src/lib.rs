@@ -2065,7 +2065,7 @@ mod test {
 
     use alloy_consensus::{
         constants::{EMPTY_TRANSACTIONS, EMPTY_WITHDRAWALS},
-        Header, TxEnvelope, EMPTY_OMMER_ROOT_HASH,
+        Header, EMPTY_OMMER_ROOT_HASH,
     };
     use itertools::Itertools;
     use monad_chain_config::{
@@ -2117,6 +2117,7 @@ mod test {
         signing::{create_certificate_keys, create_keys, get_key},
         validators::create_keys_w_validators,
     };
+    use monad_transaction::TxEnvelope;
     use monad_types::{
         BlockId, Epoch, ExecutionProtocol, NodeId, Round, RouterTarget, SeqNum, Stake,
         GENESIS_SEQ_NUM,

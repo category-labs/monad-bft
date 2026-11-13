@@ -79,6 +79,5 @@ monad-version = { workspace = true }
 [dev-dependencies]
 monad-block-persist = { workspace = true }
 
-alloy-consensus = { workspace = true }
 inotify = { workspace = true }
 lru = { workspace = true }

@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use alloy_consensus::{Block, BlockBody, TxEnvelope};
+use alloy_consensus::{Block, BlockBody};
 use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{
     aliases::{U256, U64, U8},
@@ -21,6 +21,7 @@ use alloy_primitives::{
 };
 use alloy_rlp::{Decodable, Encodable, RlpDecodable};
 use monad_rpc_docs::rpc;
+use monad_transaction::TxEnvelope;
 use monad_triedb_utils::triedb_env::{BlockKey, Triedb};
 use serde::{Deserialize, Serialize};
 use tracing::{error, trace};
@@ -60,7 +61,7 @@ pub async fn monad_debug_getRawBlock<T: Triedb>(
         return Err(JsonRpcError::internal_error("block data not found".into()));
     };
 
-    let alloy_rpc_types::Block {
+    let monad_transaction::rpc::Block {
         header,
         transactions,
         uncles: _,
@@ -821,11 +822,12 @@ fn build_call_tree(frames: Vec<CallFrame>) -> Option<MonadCallFrame> {
 mod tests {
     use std::sync::Arc;
 
-    use alloy_consensus::{BlockBody, Header, ReceiptEnvelope, ReceiptWithBloom};
+    use alloy_consensus::{BlockBody, Header, ReceiptWithBloom};
     use alloy_primitives::Bloom;
     use alloy_rlp::{BufMut, Encodable};
     use monad_archive::test_utils::mock_tx;
     use monad_eth_types::{EthTxHash, ReceiptWithLogIndex, TransactionLocation};
+    use monad_transaction::ReceiptEnvelope;
     use monad_triedb_utils::mock_triedb;
     use monad_types::SeqNum;
 
