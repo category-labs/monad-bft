@@ -141,3 +141,11 @@ The pre-NEXT environment setting remains required. The merge introduces no chang
 ## Ethereum RPC compatibility review (2026-11-12)
 
 The [compatibility report](rpc-type40-compatibility.md) compares this PR with master across existing Ethereum transaction types. Regression tests cover wire representations, hashes, fee calculations, simulation request conversion and raw-submission policy. Two regressions were reproduced and are corrected on this branch: wrong-chain submissions again return `-32003`, and missing/null receipt prices default to zero while preserving valid uint256 values. The receipt fix affects Rust consumers rather than the server's emitted receipt JSON. Category-box validation on 2026-11-13 passes all 221 tests: 17 shared-crate tests, 13 wire tests and 191 RPC unit tests. Formatting passes in both Rust workspaces. The execution fix was committed first as `d2fadff7c960e655ff7d3e76ea244f4dc8346aa4`; the BFT gitlink records that commit.
+
+## CI cleanup (2026-11-13)
+
+Native dependency entries follow the workspace's ordering, test-only dependencies are scoped to development targets, and obsolete Alloy dependencies/imports are removed. The compatibility tests use the exact repository license header. Benchmark/test conversion cleanup preserves behavior; transaction codecs, signing, hashing and fork selection are unchanged.
+
+OpenRPC validation still runs for fork PRs. Its diff is always written to the job summary; posting a PR comment is restricted to same-repository branches because fork tokens are read-only. The schema artifact remains available. Eight routing checks cover changed/unchanged schemas, fork/same-repository PRs, and creation/update of comments.
+
+License, lockfile, dependency ordering, unused-dependency and formatting checks pass. Category-box also passes release Clippy across all targets/features with the CI deny list. Existing non-fatal warnings remain. Logs are retained in the integration checkout under `.build/type40/category-box-ci-3352/`; the integration profile records the final node commits used for its subsequent network run.

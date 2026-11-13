@@ -12,7 +12,6 @@ bench = false
 raptorcast = ["dep:monad-raptorcast"]
 
 [dependencies]
-monad-transaction = { workspace = true }
 monad-blocksync = { workspace = true }
 monad-chain-config = { workspace = true }
 monad-consensus = { workspace = true }
@@ -50,8 +49,8 @@ monad-eth-ledger = { workspace = true }
 monad-eth-testutil = { workspace = true }
 monad-eth-types = { workspace = true }
 monad-secp = { workspace = true }
+monad-transaction = { workspace = true }
 
-alloy-consensus = { workspace = true }
 alloy-eips = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }

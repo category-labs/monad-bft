@@ -20,7 +20,6 @@ use std::{
     time::Duration,
 };
 
-use alloy_consensus::Transaction;
 use alloy_primitives::Address;
 use monad_bls::BlsSignatureCollection;
 use monad_chain_config::{

@@ -167,7 +167,7 @@ fn receipt_database_decoder_bounds_both_record_and_envelope() {
 fn block_body_requires_wrapped_typed_transactions_and_preserves_mixed_blocks() {
     let txs = transactions();
     let body = EthBlockBody {
-        transactions: txs.clone().try_into().unwrap(),
+        transactions: txs.clone().into(),
         ..Default::default()
     };
     let bytes = alloy_rlp::encode(&body);

@@ -9,14 +9,14 @@ edition = "2021"
 bench = false
 
 [dependencies]
-monad-transaction = { workspace = true }
 monad-eth-block-policy = { workspace = true }
+monad-transaction = { workspace = true }
 
-alloy-consensus = { workspace = true }
 alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 serde = { workspace = true }
 
 [dev-dependencies]
+alloy-consensus = { workspace = true }
 alloy-eips = { workspace = true }
 bincode = { workspace = true }

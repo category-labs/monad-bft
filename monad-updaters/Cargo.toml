@@ -13,7 +13,6 @@ monad-triedb = ["dep:monad-bls", "dep:monad-secp", "tokio"]
 tokio = ["dep:tokio"]
 
 [dependencies]
-monad-transaction = { workspace = true }
 monad-blocksync = { workspace = true }
 monad-bls = { workspace = true, optional = true }
 monad-chain-config = { workspace = true }
@@ -28,6 +27,7 @@ monad-executor-glue = { workspace = true }
 monad-node-config = { workspace = true }
 monad-secp = { workspace = true, optional = true }
 monad-tfm = { workspace = true }
+monad-transaction = { workspace = true }
 monad-types = { workspace = true }
 monad-validator = { workspace = true }
 

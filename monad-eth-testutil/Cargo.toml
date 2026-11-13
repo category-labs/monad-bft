@@ -9,7 +9,6 @@ edition = "2021"
 bench = false
 
 [dependencies]
-monad-transaction = { workspace = true }
 monad-chain-config = { workspace = true }
 monad-consensus-types = { workspace = true }
 monad-crypto = { workspace = true }
@@ -18,6 +17,7 @@ monad-eth-types = { workspace = true }
 monad-secp = { workspace = true }
 monad-testutil = { workspace = true }
 monad-tfm = { workspace = true }
+monad-transaction = { workspace = true }
 monad-types = { workspace = true }
 monad-validator = { workspace = true }
 

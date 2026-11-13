@@ -5778,7 +5778,6 @@ dependencies = [
 name = "monad-mock-swarm"
 version = "0.1.0"
 dependencies = [
- "alloy-consensus",
  "alloy-eips",
  "alloy-primitives",
  "alloy-rlp",
@@ -5848,7 +5847,6 @@ dependencies = [
  "actix-server",
  "actix-web",
  "agent",
- "alloy-consensus",
  "alloy-rlp",
  "chrono",
  "clap",

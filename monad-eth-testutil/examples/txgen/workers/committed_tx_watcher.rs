@@ -241,7 +241,7 @@ impl CommittedTxWatcher {
         let mut gas_consumed = U256::ZERO;
         let mut contract_addresses = Vec::new();
 
-        for hash in transaction_hashes(&block) {
+        for hash in transaction_hashes(block) {
             rpc_calls += 1;
             let rx: TransactionReceipt =
                 match client.request("eth_getTransactionReceipt", [hash]).await {
