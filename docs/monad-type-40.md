@@ -1,12 +1,12 @@
 # Baseline native transaction development profile
 
-Snapshot: 2026-11-12. Branch: `feat/monad-type-40`.
+Snapshot: 2026-11-12; RPC compatibility fixes: 2026-11-13. Branch: `feat/monad-type-40`.
 
 ## Matched revisions
 
 - Consensus/RPC base: `e844f6086acac664f4bd2a8ffcc99f3b5ce4b9af`.
 - Execution upstream `main`: `27ad173ddf730deadc433987770e5c886ff1255b`, merged into `feat/monad-type-40` under `monad-execution/`.
-- Execution implementation: `75800de50c3983f536afa0ef1ee2966abfe2368c`, recorded by this branch's `monad-execution` submodule pin.
+- Execution implementation: `d2fadff7c960e655ff7d3e76ea244f4dc8346aa4`, recorded by this branch's `monad-execution` submodule pin, including nullable receipt-price compatibility.
 - Viem vector source: `40e3a58c1c8c9c0326558eee8991992173059ea4`.
 - Protocol source: the supplied universal transaction draft's main injection design, SHA-256 `79ce4f8c4910a71e3a2932c1083312577e2ef99774a98ddba081bf20face1cb9`.
 
@@ -54,7 +54,7 @@ Execution's default devnet is `MONAD_NEXT`, while the matched BFT source models 
 export MONAD_DEVNET_FORK_TS=18446744073709551615
 ```
 
-Apply that environment to **execution and RPC** (which hosts an execution engine), and genesis initialization. It keeps execution on `MONAD_NINE`, whose relevant transaction gas rules match the BFT baseline. Supporting NEXT requires separately reconciling the fork rules; do not use the default NEXT configuration for this milestone.
+Apply that environment to **execution and RPC** (which hosts an execution engine), and genesis initialization. At the execution pin above, it selects `MONAD_LATEST_STABLE_REVISION`, now `MONAD_TEN`, whose relevant transaction gas rules match the BFT baseline. TEN uses page-encoded storage; the integration profile selects `MONAD_DB_STATE_MACHINE=monad`. Supporting NEXT requires separately reconciling the fork rules; do not use the default NEXT configuration for this milestone.
 
 The optional [Compose overlay](../docker/single-node/nets/compose.type40.yaml) supplies the setting. From `docker/single-node/`, the existing source-build launcher can use it with:
 
@@ -117,7 +117,7 @@ Coverage includes:
 - Native execution-event reconstruction, presence fidelity and legacy Ethereum snapshot replay.
 - C++ activation, dynamic pricing, fee/nonce bounds and existing intrinsic/calldata/access-list gas.
 
-A complete linked `monad-node`/`monad-rpc`/execution build, full RPC runtime tests and a live Rabby submit/include/execute/receipt transaction are still required. A Rust `cargo check` does not link the C++ execution/TrieDB libraries or prove live interoperability. The three checked-in RPC log tests were run in an isolated harness containing the current helper bodies and required error types; the full crate's test targets were also checked. This verifies extraction/filtering and mixed-block scans, not the MongoDB-backed indexed query or a running RPC process. Existing ignored event snapshot tests remain ignored.
+The original checks above did not link the complete node. Subsequent [integration PR #478](https://github.com/category-labs/monad-integration/pull/478), at `c493731b18c69bfe552995713645e3781e2d061d`, built BFT `d1861e6c3fbf5bbf2a57d65724fcc04958d4e831` with execution `75800de50c3983f536afa0ef1ee2966abfe2368c` and passed five live tests on two TEN validators plus a separate database RPC on category-box. These cover native submission, execution, receipts, canonical bytes, both trie roots, access-list simulation, creation, storage, logs and reverts, with an Ethereum EIP-1559 control. That profile still records the earlier pair; the RPC compatibility fixes below were validated separately against their exact source snapshot. The shared RPC fork-environment correction is [PR #479](https://github.com/category-labs/monad-integration/pull/479), merged into that integration branch. Live Rabby browser use, node restart/replay and MongoDB/archive-indexed queries remain unverified. Existing ignored event snapshot tests remain ignored.
 
 ## Review fixes (2026-11-12)
 
@@ -136,4 +136,8 @@ Execution events use upstream's `monad_address`/`monad_bytes32` types. The nativ
 
 The execution simulation API gained an explicit `validation` argument. BFT forwards its existing validated request flag; `validation: false` remains rejected at the RPC boundary. This adapter does not enable additional simulation modes or native transaction features.
 
-The pre-NEXT environment setting remains required. The merge introduces no change to this milestone's agreed scope. All codec, policy/pool, event, RPC log-harness and Linux compilation checks above were rerun against the merged source; Rust/C++ differential acceptance, encoding, hashes, signing digests and recovery still agree across 14,112 cases. Full linked runtime and wallet interoperability remain unverified.
+The pre-NEXT environment setting remains required. The merge introduces no change to this milestone's agreed scope. All codec, policy/pool, event, RPC log-harness and Linux compilation checks above were rerun against the merged source; Rust/C++ differential acceptance, encoding, hashes, signing digests and recovery still agree across 14,112 cases. The later TEN integration run is recorded above; wallet interoperability remains unverified.
+
+## Ethereum RPC compatibility review (2026-11-12)
+
+The [compatibility report](rpc-type40-compatibility.md) compares this PR with master across existing Ethereum transaction types. Regression tests cover wire representations, hashes, fee calculations, simulation request conversion and raw-submission policy. Two regressions were reproduced and are corrected on this branch: wrong-chain submissions again return `-32003`, and missing/null receipt prices default to zero while preserving valid uint256 values. The receipt fix affects Rust consumers rather than the server's emitted receipt JSON. Category-box validation on 2026-11-13 passes all 221 tests: 17 shared-crate tests, 13 wire tests and 191 RPC unit tests. Formatting passes in both Rust workspaces. The execution fix was committed first as `d2fadff7c960e655ff7d3e76ea244f4dc8346aa4`; the BFT gitlink records that commit.

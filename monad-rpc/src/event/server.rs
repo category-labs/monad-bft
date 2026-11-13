@@ -275,9 +275,9 @@ mod test {
     async fn testing_server() {
         let snapshot_event_ring = SnapshotEventRing::new_from_zstd_bytes(
             "TEST",
-            include_bytes!(
+            &monad_exec_events::test_utils::upgrade_legacy_snapshot(include_bytes!(
                 "../../../monad-execution/rust/crates/monad-exec-events/test/data/exec-events-emn-30b-15m/snapshot.zst"
-            ),
+            )),
             None,
         )
         .unwrap();
@@ -303,9 +303,9 @@ mod test {
     async fn json() {
         let snapshot_event_ring = SnapshotEventRing::new_from_zstd_bytes(
             "TEST",
-            include_bytes!(
+            &monad_exec_events::test_utils::upgrade_legacy_snapshot(include_bytes!(
                 "../../../monad-execution/rust/crates/monad-exec-events/test/data/exec-events-emn-30b-15m/snapshot.zst"
-            ),
+            )),
             None,
         )
         .unwrap();
@@ -397,7 +397,11 @@ mod test {
             assert!(!str.contains("RawValue"));
             assert!(!str.contains("$serde_json::private::RawValue"));
 
-            assert_eq!(str, json);
+            // Object member order is not part of the RPC contract.
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&str).unwrap(),
+                serde_json::from_str::<serde_json::Value>(json).unwrap()
+            );
 
             let _: E = serde_json::from_str(&str).unwrap();
         }

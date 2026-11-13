@@ -1918,3 +1918,6 @@ mod native_request_tests {
         assert!(tx.is_create());
     }
 }
+
+#[cfg(test)]
+mod ethereum_rpc_compat;

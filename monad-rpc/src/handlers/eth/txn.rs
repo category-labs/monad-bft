@@ -174,7 +174,7 @@ fn validate_and_decode_tx(
     if let Some(tx_chain_id) = tx.chain_id() {
         if tx_chain_id != alloy_primitives::U256::from(chain_id) {
             return Err(JsonRpcError::with_message(
-                ErrorCode::InvalidParams,
+                ErrorCode::TransactionRejected,
                 format!("Invalid chain ID: expected {chain_id}, got {tx_chain_id}"),
             ));
         }
@@ -578,9 +578,9 @@ mod tests {
 
         let snapshot_event_ring = SnapshotEventRing::new_from_zstd_bytes(
             "TEST",
-            include_bytes!(
+            &monad_exec_events::test_utils::upgrade_legacy_snapshot(include_bytes!(
                 "../../../../monad-execution/rust/crates/monad-exec-events/test/data/exec-events-emn-30b-15m/snapshot.zst"
-            ),
+            )),
             None,
         )
         .unwrap();
@@ -631,3 +631,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod ethereum_rpc_compat;
