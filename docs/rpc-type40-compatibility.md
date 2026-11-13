@@ -1,75 +1,68 @@
-# Ethereum RPC compatibility review
+# RPC surface changes and compatibility
 
-Review date: 2026-11-12; fixes: 2026-11-13. Compared [PR #3352](https://github.com/category-labs/monad-bft/pull/3352) at `d1861e6c3fbf5bbf2a57d65724fcc04958d4e831` with master `e844f6086acac664f4bd2a8ffcc99f3b5ce4b9af`, using execution `75800de50c3983f536afa0ef1ee2966abfe2368c` from [PR #2840](https://github.com/category-labs/monad/pull/2840). Both BFT revisions use Alloy 2.0.4. Both findings are corrected on this branch. The execution fix is committed as `d2fadff7c960e655ff7d3e76ea244f4dc8346aa4`, which this branch now pins. The committed implementation and test files match the paired source snapshot validated on category-box.
+[PR #3352](https://github.com/category-labs/monad-bft/pull/3352) adds native `0x40` support to existing RPC methods. Method names and parameter structures remain unchanged. No breaking JSON-RPC change is intended for existing Ethereum transaction types `0x0`–`0x4`, and none remains identified in the comparison below after the compatibility fixes.
 
-## Finding 1: wrong-chain submission error code
+Native transactions extend the response types and numeric ranges clients can encounter. Strict Ethereum-only decoders need updating on native-enabled networks, and direct Rust integrations have source API changes. These boundaries are detailed below.
 
-**P2 — fixed: restore the existing error code for Ethereum chain mismatches.** The native implementation replaced `JsonRpcError::invalid_chain_id` with an inline `InvalidParams` error in [`validate_and_decode_tx`](../monad-rpc/src/handlers/eth/txn.rs). A valid Ethereum transaction signed for another chain returned **`-32602`**, whereas master returned **`-32003`** (`TransactionRejected`). The message and rejection behavior were unchanged. Both `eth_sendRawTransaction` and `eth_sendRawTransactionSync` use this helper, so clients that classify failures by code observed a wire-level compatibility change.
-
-The fix restores `TransactionRejected` in the shared chain-mismatch branch and retains full-width chain-ID formatting. For example, a protected legacy transaction with chain ID 20143 submitted to chain 143 again returns `-32003` with `Invalid chain ID: expected 143, got 20143`. The 384-case admission regression covers existing Ethereum types and both methods' error factories. An additional native regression checks a `2^200` chain ID and the same rejection category, while native submissions on a disabled network still return the separate `InvalidParams` activation error.
-
-## Finding 2: nullable receipt gas prices
-
-**P2 — fixed: preserve the previous receipt JSON reader's null handling.** The shared [`TransactionReceipt`](../monad-execution/rust/crates/monad-transaction/src/rpc.rs) originally used a non-optional `U256` with `serde(default)`. An omitted field defaulted to zero, but explicit `"effectiveGasPrice": null` failed with `invalid type: null, expected a 32 byte hex string`. Master's Alloy reader accepted both forms and returned zero. The `gasPrice` alias had the same null-handling issue.
-
-The affected surface is Rust code reading receipts returned by an RPC: the transaction generator's [`eth_json_rpc`](../monad-eth-testutil/examples/txgen/shared/eth_json_rpc.rs) and [`committed_tx_watcher`](../monad-eth-testutil/examples/txgen/workers/committed_tx_watcher.rs) now use this reader for transaction and block receipts. This does not demonstrate a changed response from this server: its receipt construction supplies a numeric price, which still serializes as a hex quantity. RPC request parameters do not use this receipt type.
-
-The fix deserializes the price through `Option<U256>` and defaults only missing/null values to zero. The stored field remains `U256`; serialization emits the canonical `effectiveGasPrice` hex quantity. Malformed quantities, overflow and duplicate canonical/alias fields remain errors. The original `receipt_reader_accepts_null_effective_gas_price_like_master` regression is retained, and execution owns three additional receipt-reader tests across types 0–4 and `0x40`. Execution was committed before updating BFT's pin; no wire-format or feature-scope decision was needed.
+The native scope is sender-paid calls, contract creation and optional access lists on devnet chain **20143** after Prague. Authorization lists, sponsorship, batching, nonempty auxiliary data and node-managed signing are outside this milestone. See the [development profile](monad-type-40.md) for the paired execution implementation and runtime setup.
 
 ## RPC surface compared
 
-| Surface | Result and coverage |
+| Surface | Change for native `0x40` | Compatibility for existing Ethereum transactions |
+| --- | --- | --- |
+| `eth_sendRawTransaction`, `eth_sendRawTransactionSync` | Accept the `0x40` prefix followed by `RLP([chainId, signedFeatures, []])`. Use the two-field canonical transaction's hash for the hash result or synchronous receipt's `transactionHash`. Native submission is restricted to devnet. | Existing envelope bytes, hashes, signer recovery, unprotected-legacy policy and method-specific decode errors are preserved. Wrong-chain submissions retain `-32003` (`TransactionRejected`). |
+| `eth_call`, `eth_estimateGas` and shared call-request consumers | Explicit `type: "0x40"` selects native conversion, preserving 256-bit fees, contract creation and omitted versus empty access lists. Unsupported authorization/blob fields and invalid fee combinations are rejected. | Existing fee/type inference, defaults, integer boundaries and creation-size errors match the baseline converter. |
+| `eth_fillTransaction` | Explicit native fill remains unsupported. | Existing request/response structures and Ethereum type selection are preserved. |
+| Transaction lookups and full/hash-only block responses | Return native transaction objects or canonical hashes, including mixed Ethereum/native blocks. Native objects retain `type: "0x40"` and full-width quantities. | Existing transaction fields, pending/mined metadata and JSON quantities match the baseline representations for types `0x0`–`0x4`. |
+| `eth_getTransactionReceipt`, `eth_getBlockReceipts`, synchronous send receipts | Return native receipt types with standard receipt fields and full-width effective gas prices. | Success/revert, call/creation, optional blob fields, logs and historical legacy receipt roots retain their representation. |
+| `eth_getLogs` and receipt log extraction | Handle native receipts through the common log filtering path, preserving canonical transaction hashes, ordering and log metadata. | Existing log fields and address/topic filters are preserved. Native and Ethereum variants share regression coverage. |
+| `eth_feeHistory` | Include native transactions in reward calculations without narrowing their fee quantities to `u128`. | JSON quantities remain hex strings. Optional/empty rewards and Ethereum fee-cap/base-fee boundaries match Alloy. |
+| Debug raw transaction/receipt/block paths | Encode canonical native transactions and five-field native receipts. The submission wrapper is not part of raw canonical transaction output. | Existing raw and network-RLP bytes match Alloy. Ethereum envelopes gain no auxiliary field. |
+| WebSocket event payloads | Transaction and receipt events use the shared serializers that support native types. | Subscription names, filters and existing Ethereum payload fields are preserved. |
+| `eth_simulateV1` | Uses the shared transaction envelope and forwards the existing validation flag to the updated execution API. | No new simulation mode is enabled: `validation: false` remains rejected. |
+
+Implementation: [submission](../monad-rpc/src/handlers/eth/txn.rs), [call conversion](../monad-rpc/src/handlers/eth/call.rs), [fees](../monad-rpc/src/handlers/eth/gas.rs), [data and logs](../monad-rpc/src/data/mod.rs), and [shared RPC representations](https://github.com/haythemsellami/monad/blob/d2fadff7c960e655ff7d3e76ea244f4dc8346aa4/rust/crates/monad-transaction/src/rpc.rs).
+
+The existing Ethereum call converter infers encoding from fee and authorization fields even when a type is supplied. That behavior, including access lists with legacy gas pricing, is preserved; only explicit `type: "0x40"` takes the new conversion branch.
+
+## Breaking changes and consumer impact
+
+| Consumer | Impact and required action |
 | --- | --- |
-| `eth_sendRawTransaction`, `eth_sendRawTransactionSync` | Parameter shapes are unchanged. Existing Ethereum raw envelopes retain their framing, hashes and recovery. The admission helper is compared with master for chain checks, unprotected legacy policy and each method's distinct decode-error code. The fix restores master's wrong-chain rejection code. |
-| `eth_call`, `eth_estimateGas` and shared call-request consumers | Request fields are unchanged. The new branch applies only to explicit `type: "0x40"`. A frozen master converter compares existing fee/type/access-list/authorization combinations, defaults, integer boundaries and creation-size errors. |
-| `eth_fillTransaction` | Request/response structures and Ethereum type selection remain unchanged. The existing fill-transaction unit cases run as part of the full RPC suite. Explicit native fill remains outside the milestone. |
-| `eth_getTransaction*`, full/hash-only block responses | Existing transaction fields, pending/mined metadata and JSON quantities match master's representations for types 0–4. |
-| `eth_getTransactionReceipt`, `eth_getBlockReceipts`, synchronous send receipts | Success/revert, call/creation, optional blob fields, logs and historical legacy receipt roots retain their representation. The null-price finding concerns reading these responses. |
-| `eth_feeHistory` | Optional/empty rewards and Ethereum uint128 fee boundaries serialize identically; effective prices and tips match Alloy at fee caps and base-fee boundaries. |
-| Debug raw transaction/receipt/block paths | Existing raw and network-RLP envelope bytes match Alloy. No extra auxiliary field is added to Ethereum envelopes. |
-| WebSocket event payloads | Transaction and receipt aliases use the same shared serializers covered above. Subscription names and filters are unchanged. |
+| JSON-RPC clients processing existing Ethereum transactions | **No breaking wire change identified in the compared cases.** Existing requests, response field meanings, encodings, hashes and error categories are retained. The validation scope below bounds this conclusion. |
+| Clients with exhaustive Ethereum-only transaction or receipt decoders | **Can break on native-enabled devnets.** Add `0x40` decoding before reading native transactions, receipts, mixed blocks or transaction/receipt events. A client can encounter these responses even if it only submits Ethereum transactions. Raw-byte consumers also need the native transaction and receipt formats. |
+| Clients assuming fees or fee-history rewards fit in `u128` | **Can overflow or reject native values.** Parse native fee quantities, effective prices and rewards as 256-bit values. Their JSON representation remains a hex quantity; existing Ethereum value ranges are unchanged. |
+| Rust code depending directly on RPC/envelope types | **Source API changes.** Alloy envelope and response types are replaced by shared `monad-transaction` types, and fee/chain quantities widen. The shared envelope does not implement Alloy's transaction trait with `u128` fee methods. Update imports, type assumptions and conversions. |
+| Deployments sharing execution event rings | **Internal schema change.** Build execution producers and RPC readers from the paired revisions and use a fresh event ring. Old live rings are rejected by production schema validation; see the [development profile](monad-type-40.md). |
 
-The method registration and request parameter structs were inspected against master. `eth_simulateV1` continues to reject `validation: false`; the execution bridge's new argument forwards the existing validated mode. This is not an additional simulation capability.
+Transaction JSON object member order can change. Fields and values are preserved for existing Ethereum transactions, but byte-for-byte JSON comparisons must normalize object order. Member order is not part of the JSON-RPC contract.
 
-Master's call converter infers Ethereum encoding from fee and authorization fields even when a type is supplied. The regression preserves this behavior, including its existing treatment of access lists with legacy gas pricing; this review does not redesign request inference.
+## Compatibility fixes included
+
+- **Wrong-chain errors:** Both raw-send methods retain `-32003` (`TransactionRejected`) for a transaction chain mismatch, including full-width native chain IDs in the message. Native submission on a network where the type is disabled has a separate `-32602` (`InvalidParams`) error. The earlier error-code regression is fixed.
+- **Nullable receipt prices:** The shared Rust receipt reader accepts missing/null `effectiveGasPrice` and its `gasPrice` alias as zero, preserving the previous Alloy behavior. Valid values retain 256-bit precision; malformed, overflowing or duplicate fields remain errors. This fix is in the pinned execution crate. It affects receipt deserialization by Rust consumers; the server continues to emit a numeric hex quantity.
 
 ## Regression tests and validation
 
-- [`ethereum_wire_compat.rs`](../monad-rpc/tests/ethereum_wire_compat.rs): protected/unprotected legacy, EIP-2930, EIP-1559, EIP-4844 and EIP-7702; pending/mined transactions, nonempty access/authorization lists, a blob-sidecar framing control, malformed/truncated submissions, hashes, signing digests and recovery, receipts, blocks, fee history and reader compatibility.
-- [`call/ethereum_rpc_compat.rs`](../monad-rpc/src/handlers/eth/call/ethereum_rpc_compat.rs): 252 request combinations and 19 default/boundary/error cases against the frozen master converter.
-- [`txn/ethereum_rpc_compat.rs`](../monad-rpc/src/handlers/eth/txn/ethereum_rpc_compat.rs): 384 combinations across existing Ethereum types, valid/truncated/trailing/empty bytes, chain IDs, unprotected policy and both methods' error factories.
-- [`monad-transaction/tests/rpc.rs`](../monad-execution/rust/crates/monad-transaction/tests/rpc.rs): missing/null prices, both field names, exact uint256 round trips, malformed/overflowing quantities and duplicate-alias rejection across Ethereum and native receipts.
+Comparison baseline: master `e844f6086acac664f4bd2a8ffcc99f3b5ce4b9af`. Reviewed implementation: BFT `6dab54f1efcc6ade9bb2f3225b3c31dfcf13874f`, with execution `d2fadff7c960e655ff7d3e76ea244f4dc8346aa4` from [PR #2840](https://github.com/category-labs/monad/pull/2840). Both BFT revisions use Alloy 2.0.4.
 
-Run with the execution/TrieDB libraries and repository toolchain available:
+Recorded compatibility-fix validation on Linux x86-64 category-box, **2026-11-13**, passed all **221 tests**, with no failures or ignored tests:
+
+| Check | Coverage | Result |
+| --- | --- | --- |
+| [Shared transaction crate](https://github.com/haythemsellami/monad/blob/d2fadff7c960e655ff7d3e76ea244f4dc8346aa4/rust/crates/monad-transaction/tests/rpc.rs) | Codec/framing coverage and receipt-reader defaults, aliases, null handling and 256-bit boundaries | 17 passed across the crate |
+| [Ethereum wire compatibility](../monad-rpc/tests/ethereum_wire_compat.rs) | Types `0x0`–`0x4`: encodings, hashes, recovery, transaction/receipt/block/fee-history JSON and reader behavior | 13 passed |
+| Full RPC unit suite | [252 call-conversion combinations plus 19 boundary cases](../monad-rpc/src/handlers/eth/call/ethereum_rpc_compat.rs), [384 raw-admission combinations and native chain checks](../monad-rpc/src/handlers/eth/txn/ethereum_rpc_compat.rs), [native log handling](../monad-rpc/src/data/native_logs_tests.rs), existing fill-transaction, event and WebSocket tests | 191 passed |
+
+Historical event fixtures use a test-only snapshot adapter; production event-ring schema validation remains strict. Formatting and whitespace checks passed in both Rust workspaces. Logs and the validated source snapshot are retained under `.build/type40/category-box-rpc-compat-fixes-3352/` in the integration checkout.
+
+To reproduce with the execution/TrieDB libraries and repository toolchain available:
 
 ```sh
 cargo test --locked --release -p monad-rpc --test ethereum_wire_compat
-cargo test --locked --release -p monad-rpc --lib ethereum_rpc_compat
-# Include the existing RPC regressions as well:
 cargo test --locked --release -p monad-rpc --lib
 cargo test --locked --release --manifest-path monad-execution/rust/Cargo.toml -p monad-transaction
 cargo +nightly-2025-12-09 fmt --all --check
 ```
 
-Before the fixes, the full repository run on Linux x86-64 category-box using the integration toolchain and Rust 1.97.1 recorded **201 passes and two failing regressions**. The wire test reproduced the null-price issue for both field names across types 0–4. Both call-conversion regressions passed. The admission matrix completed all 384 cases and found 56 mismatches, all due to the wrong-chain error code; valid input and other rejection cases matched.
-
-Running the entire RPC unit suite also found three old event-snapshot fixtures that failed at schema validation before exercising their assertions. The two event-server tests and synchronous-send test now use the existing `test-utils` snapshot adapter, matching the WebSocket tests already adapted in this PR. The historical JSON assertion compares parsed objects, retaining its typed decode and raw-value leakage checks: transaction object member order changes (`from` moves), while fields and values are preserved. Object order is not part of the RPC contract. Production event-ring validation remains strict.
-
-Fix validation (2026-11-13), using the paired working-tree changes on category-box:
-
-| Check | Result |
-| --- | --- |
-| Shared transaction crate: codec, framing and receipt-reader tests | 17 passed |
-| Wire compatibility integration target | 13 passed |
-| Full RPC unit suite, including 4 handler compatibility tests | 191 passed |
-| Rust formatting in both workspaces (`nightly-2025-12-09`) and whitespace checks | Passed |
-
-**All 221 tests pass, with no failures or ignored tests.** The two original regressions now pass, all 384 Ethereum admission cases match master, and the native full-width chain-ID control passes. The shared crate also passes its 17 tests locally. The full RPC suite includes the historical event/receipt and WebSocket assertions restored during review.
-
-The category-box run used tmux session `rpc-compat-fixes-3352`. Logs and the exact source snapshot are retained under `.build/type40/category-box-rpc-compat-fixes-3352/` in the local and remote integration checkouts: `check-0.log` for the shared crate, `check-1.log` for wire compatibility, `check-2.log` for the RPC unit suite, and `session.log` for commands and exit codes. The remote node source overlays were restored after validation. The review's failing baseline remains recorded in `.build/type40/category-box-rpc-compat-3352/`.
-
-## Compatibility boundaries
-
-The identified error-code and receipt-reader regressions are corrected; no additional changed Ethereum RPC field shape, valid encoding or hash was found in the review matrix. This is not a complete live endpoint or state-transition equivalence proof: blob cases test representation only, and do not imply Monad admits blob transactions. Restart/replay, archive/MongoDB queries and a live wallet session are outside this review.
-
-The PR changes Rust source APIs: Alloy response/envelope types are replaced, fee/chain quantities widen, and the native-aware envelope does not implement Alloy's uint128 transaction trait. External Rust callers may need source changes. On a native-enabled devnet, clients with exhaustive Ethereum-only transaction-type decoders also need `0x40` support when reading mixed blocks. Those extension/integration requirements are separate from compatibility of existing Ethereum transaction values.
+This comparison covers the listed representations and handler cases, not complete live endpoint or state-transition equivalence. Blob cases establish representation compatibility, not blob-transaction admission. Restart/replay, archive/MongoDB queries and a live wallet session remain outside this review.
