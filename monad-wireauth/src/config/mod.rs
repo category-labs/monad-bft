@@ -13,7 +13,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-use std::time::Duration;
+use std::{num::NonZeroU32, time::Duration};
 
 use zeroize::Zeroizing;
 
@@ -56,8 +56,10 @@ pub struct Config {
     /// nonzero lru capacity for cookies received from peers, keyed by public key.
     /// size alongside handshake/session limits to retain cookies until retries.
     pub cookie_cache_capacity: usize,
-    /// time window for counting cookie-valid handshake requests per ip
+    /// time to replenish one cookie-valid handshake token per ip; zero disables the limit
     pub ip_rate_limit_window: Duration,
+    /// maximum cookie-valid handshake tokens per ip, initially available in full
+    pub ip_rate_limit_burst: NonZeroU32,
     /// lru cache size for tracking recent cookie-valid handshake requests per ip
     pub ip_history_capacity: usize,
     /// maximum established transport sessions; also drop handshakes at this threshold
@@ -107,6 +109,7 @@ impl Default for Config {
             // changing admission limits; see the API cookie-flood tests.
             cookie_cache_capacity: 256_000,
             ip_rate_limit_window: Duration::from_secs(10),
+            ip_rate_limit_burst: NonZeroU32::new(4).unwrap(),
             ip_history_capacity: 1_000_000,
             total_transport_sessions: 40_000,
             max_pending_accepted_sessions: 20_000,

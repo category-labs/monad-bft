@@ -82,6 +82,7 @@ impl<C: Context, K: AsRef<monad_secp::KeyPair>, M> API<C, K, M> {
             config.handshake_cookie_verified_rate_limit,
             config.handshake_rate_reset_interval,
             config.ip_rate_limit_window,
+            config.ip_rate_limit_burst,
             config.ip_history_capacity,
             config.total_transport_sessions,
             config.max_pending_accepted_sessions,
